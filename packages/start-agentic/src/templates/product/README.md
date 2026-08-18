@@ -85,6 +85,11 @@ ClickHouse settings stay at this installation boundary.
 - `src/features/**/model.ts` contains views, callbacks, workflows, tools, and
   explicit typed authority.
 - `src/routes/` is ordinary TanStack Start UI.
+- `src/components/ui/`, `src/lib/utils.ts`, and `components.json` are the
+  source-owned shadcn/ui foundation. Extend it with
+  `bunx shadcn add <component>` instead of inventing parallel form,
+  overlay, menu, or accessibility primitives. Product-specific bounded-state
+  components remain in `src/components/ui.tsx`.
 - `src/application.ts` is the compiler-discovered public application facade.
 - `src/modules.ts` installs provider-neutral conversations, approvals,
   artifacts, evaluations, billing, usage, object storage, and the operations
@@ -115,9 +120,10 @@ bun run destroy
 ```
 
 `test/application.test.ts` is application-owned evidence: it validates model
-input, exercises the credential-free deterministic AI/tool fixture, inspects
-the discovered model/view/agent graph, and proves that inferred transport did
-not create anonymous authority.
+input and the shape of the credential-free deterministic AI/tool fixture,
+inspects the discovered model/view/agent graph, and proves that inferred
+transport did not create anonymous authority. The maintained product browser
+gate exercises the assistant and tool path end to end.
 
 Starter lineage: `agentic@0.7.0`;
 generator `@applik8s/start-agentic@0.7.0`;

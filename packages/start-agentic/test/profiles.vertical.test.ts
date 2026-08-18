@@ -4,6 +4,7 @@ import {
   AgenticExternal,
   AgenticStarter,
   agenticCapacity,
+  agenticPrincipalScope,
 } from '@applik8s/start-agentic';
 import { describe, expect, it } from 'vitest';
 
@@ -13,6 +14,23 @@ const context = {
 } as const;
 
 describe('maintained Agentic Start profiles', () => {
+  it('uses the identity-admitted principal scope as the canonical RLS boundary', () => {
+    expect(
+      agenticPrincipalScope({
+        trustedContext: {
+          principalScope: 'principal:research:local-developer',
+        },
+      }),
+    ).toBe('principal:research:local-developer');
+
+    expect(() => agenticPrincipalScope({ trustedContext: {} })).toThrow(
+      'Agentic work requires an admitted principal scope.',
+    );
+    expect(() =>
+      agenticPrincipalScope({ trustedContext: { principalScope: '  ' } })
+    ).toThrow('Agentic work requires an admitted principal scope.');
+  });
+
   it('keeps the starter credential-free while using real provider contracts', () => {
     expect(AgenticStarter.database(context)).toMatchObject({
       kind: 'postgres',

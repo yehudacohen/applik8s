@@ -1,0 +1,17 @@
+import { useApplicationIdentitySession } from '@applik8s/react/identity';
+import { Link } from '@tanstack/react-router';
+import type { ReactNode } from 'react';
+import { Button, RouteState } from './ui';
+
+export function BuilderBoundary({ children }: { readonly children: ReactNode }) {
+  const session = useApplicationIdentitySession();
+  if (!session.data) {
+    return <RouteState title="Loading Builder" description="Workspace authority is being resolved." />;
+  }
+  const canBuild = session.data.capabilities?.workspaceAdministration === true
+    || session.data.capabilities?.applicationOperations === true;
+  if (!canBuild) {
+    return <RouteState tone="warning" title="Builder authority required" description="Builder can change agent behavior, knowledge, connections, and release evidence. Workspace administration or application-operator authority is required." action={<Button asChild><Link to="/app">Return to product</Link></Button>} />;
+  }
+  return children;
+}

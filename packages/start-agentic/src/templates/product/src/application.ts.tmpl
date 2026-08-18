@@ -1,4 +1,7 @@
 import { application } from './app';
+import { ActiveAgentProfile, AgentProfile, AgentProfileList, AgentPublicationSupersession } from './features/agents/model';
+import { AgentKnowledgeContext, KnowledgeSearch, KnowledgeSource, KnowledgeSources } from './features/knowledge/model';
+import { IntegrationConnection, IntegrationConnections } from './features/integrations/model';
 import {
   BillingDashboard,
   CancelSubscription,
@@ -10,23 +13,37 @@ import {
 } from './features/billing';
 import {
   Document,
+  DocumentComment,
   DocumentDetail,
   DocumentList,
+  DocumentPublicationArtifacts,
+  DocumentRevision,
   WorkspaceAssistant,
 } from './features/documents/model';
 import { Conversation, ConversationDetail, ConversationList } from './features/conversations/model';
+import {
+  AgentEvaluationProcessor,
+  AgentEvaluationRuns,
+  EvaluationCatalog,
+  EvaluationCase,
+  EvaluationDataset,
+  EvaluationRun,
+  EvaluationScorer,
+} from './features/evaluations/model';
 import {
   DecisionInbox,
   DecisionReview,
   DecisionReviewSignal,
 } from './features/inbox/model';
-import { ArtifactDetail, WorkspaceLibrary } from './features/library/model';
+import { ArtifactDetail, DownloadArtifact, WorkspaceLibrary } from './features/library/model';
 import {
   DataLifecycleRequest,
   DataLifecycleRequests,
 } from './features/lifecycle/model';
 import { OnboardingProgress, OnboardingState } from './features/onboarding/model';
 import {
+  CancelTenantSubscription,
+  ChangeTenantPlan,
   PlatformCatalog,
   PlatformTenant,
   PlatformTenants,
@@ -39,29 +56,72 @@ import {
   WorkspaceDashboard,
   WorkspaceList,
 } from './features/workspaces/model';
-import { Notifications, OperationsSnapshot } from './modules';
+import {
+  AIUsageBudgetLedger,
+  AIUsageReservation,
+  WorkspaceBudgetPolicy,
+} from './features/budgets/model';
+import {
+  ArtifactObjects,
+  Billing,
+  Notifications,
+  OperationsSnapshot,
+} from './modules';
+
+const BillingPlan = Billing.BillingPlan;
+const BillingCatalogVersion = Billing.BillingCatalogVersion;
+const BillingCatalogPrice = Billing.BillingCatalogPrice;
+const BillingCatalogEntitlement = Billing.BillingCatalogEntitlement;
 
 export {
+  ActiveAgentProfile,
+  AgentProfile,
+  AgentProfileList,
+  AgentPublicationSupersession,
+  AgentKnowledgeContext,
+  KnowledgeSearch,
+  KnowledgeSource,
+  KnowledgeSources,
+  IntegrationConnection,
+  IntegrationConnections,
   BillingDashboard,
+  BillingCatalogEntitlement,
+  BillingCatalogPrice,
+  BillingCatalogVersion,
+  BillingPlan,
   CancelSubscription,
   ChangeSubscription,
   Document,
+  DocumentComment,
   DocumentDetail,
   DocumentList,
+  DocumentPublicationArtifacts,
+  DocumentRevision,
   WorkspaceAssistant,
   Conversation,
   ConversationDetail,
   ConversationList,
+  AgentEvaluationProcessor,
+  AgentEvaluationRuns,
+  EvaluationCatalog,
+  EvaluationCase,
+  EvaluationDataset,
+  EvaluationRun,
+  EvaluationScorer,
   DecisionInbox,
   DecisionReview,
   DecisionReviewSignal,
   DataLifecycleRequest,
   DataLifecycleRequests,
   ArtifactDetail,
+  DownloadArtifact,
+  ArtifactObjects,
   WorkspaceLibrary,
   OnboardingProgress,
   OnboardingState,
   PlatformCatalog,
+  CancelTenantSubscription,
+  ChangeTenantPlan,
   PlatformTenant,
   PlatformTenants,
   OpenBillingPortal,
@@ -74,6 +134,9 @@ export {
   Invitation,
   Membership,
   Workspace,
+  WorkspaceBudgetPolicy,
+  AIUsageBudgetLedger,
+  AIUsageReservation,
   WorkspaceDashboard,
   WorkspaceList,
 };

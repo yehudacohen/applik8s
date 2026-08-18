@@ -1,6 +1,7 @@
+import { useState } from 'react';
 import { Link, createFileRoute } from '@tanstack/react-router';
-import { ArtifactDetail } from '../application';
-import { Alert, Badge, Card, PageHeader, Skeleton } from '../components/ui';
+import { ArtifactDetail, DownloadArtifact } from '../application';
+import { Alert, Badge, Button, Card, PageHeader, Skeleton } from '../components/ui';
 
 export const Route = createFileRoute('/app/artifacts/$artifactId')({
   component: ArtifactDetailRoute,
@@ -9,17 +10,57 @@ export const Route = createFileRoute('/app/artifacts/$artifactId')({
 function ArtifactDetailRoute() {
   const { artifactId } = Route.useParams();
   const detail = ArtifactDetail({ id: artifactId }).useQuery();
+  const [downloading, setDownloading] = useState(false);
+  const [downloadError, setDownloadError] = useState<string>();
+  const sourceDocumentId = detail.data ? provenanceString(detail.data.provenance, 'documentId') : undefined;
+  const sourceRevision = detail.data ? provenanceString(detail.data.provenance, 'documentRevision') : undefined;
+
+  async function download() {
+    if (!detail.data) return;
+    setDownloadError(undefined);
+    setDownloading(true);
+    try {
+      const intent = await DownloadArtifact({ id: detail.data.id });
+      const response = await fetch(intent.url);
+      if (!response.ok) throw new Error(`Artifact download failed with HTTP ${response.status}.`);
+      const href = URL.createObjectURL(await response.blob());
+      const anchor = document.createElement('a');
+      anchor.href = href;
+      anchor.download = intent.fileName;
+      anchor.click();
+      URL.revokeObjectURL(href);
+      setDownloading(false);
+    } catch (error) {
+      setDownloadError(
+        error instanceof Error
+          ? error.message
+          : 'The download intent could not be created.',
+      );
+      setDownloading(false);
+    }
+  }
   return <div>
-    <Link to="/app/library" className="text-sm font-semibold text-emerald-800">← Back to Library</Link>
-    <PageHeader eyebrow="Immutable run output" title={detail.data?.kind ?? 'Artifact'} description="Digest, production lineage, and retention belong to the artifact record. Store credentials and raw object keys never enter this page." action={detail.phase === 'reconnecting' ? <Badge tone="warning">Reconnecting…</Badge> : detail.data ? <Badge tone={detail.data.state === 'available' ? 'success' : 'warning'}>{detail.data.state}</Badge> : null} />
-    {detail.phase === 'error' ? <Alert tone="warning" title="Artifact unavailable">The library remains usable. Retry after its authoritative provider recovers.</Alert> : null}
+    <Link to="/app/artifacts" className="text-sm font-semibold text-emerald-800">← Back to Artifacts</Link>
+    <PageHeader eyebrow="Immutable run output" title={detail.data ? detail.data.title ?? humanizeArtifactKind(detail.data.kind) : 'Artifact'} description="Digest, production lineage, and retention belong to the artifact record. Store credentials and raw object keys never enter this page." action={detail.phase === 'reconnecting' ? <Badge tone="warning">Reconnecting…</Badge> : detail.data ? <Badge tone={detail.data.state === 'available' ? 'success' : 'warning'}>{detail.data.state}</Badge> : null} />
+    {detail.phase === 'error' ? <Alert tone="warning" title="Artifact unavailable">Your other work remains available. Try loading this artifact again.</Alert> : null}
     {detail.data === undefined && detail.phase !== 'error' ? <Skeleton className="h-72" /> : null}
-    {detail.data === null ? <Alert tone="warning" title="Artifact not found">It may have expired, been deleted, or belong to another admitted scope.</Alert> : null}
+    {detail.data === null ? <Alert tone="warning" title="Artifact not found">It may have expired, been deleted, or belong to another workspace.</Alert> : null}
+    {downloadError ? <Alert tone="warning" title="Download unavailable">{downloadError}</Alert> : null}
     {detail.data ? <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_20rem]">
       <Card><p className="eyebrow">Content identity</p><dl className="mt-4 grid gap-4 text-sm sm:grid-cols-2"><Fact label="Media type" value={detail.data.mediaType} /><Fact label="Size" value={`${detail.data.size.toLocaleString()} bytes`} /><Fact label="Created" value={new Date(detail.data.createdAt).toLocaleString()} /><Fact label="Retention" value={detail.data.retentionUntil ? new Date(detail.data.retentionUntil).toLocaleString() : 'Application policy'} /></dl><code className="mt-5 block break-all rounded-xl bg-stone-100 p-3 text-xs">sha256:{detail.data.sha256}</code></Card>
-      <aside className="space-y-4"><Card><p className="eyebrow">Producing execution</p><div className="mt-3 grid gap-3 text-sm">{detail.data.agentRunId ? <Fact label="Agent run" value={detail.data.agentRunId} /> : null}{detail.data.workflowRunId ? <Fact label="Workflow run" value={detail.data.workflowRunId} /> : null}{detail.data.protocolRunId ? <Fact label="Protocol run" value={detail.data.protocolRunId} /> : null}{detail.data.invocationId ? <Fact label="Invocation" value={detail.data.invocationId} /> : null}{detail.data.conversationId ? <Link to="/app/conversations/$conversationId" params={{ conversationId: detail.data.conversationId }} className="font-semibold text-emerald-800">Open related conversation →</Link> : null}</div></Card><Card><p className="text-sm leading-6 text-stone-600">Downloads require a fresh signed object intent. This metadata is safe to retain after an intent expires.</p></Card></aside>
+      <aside className="space-y-4"><Card><p className="eyebrow">Published from</p><div className="mt-3 grid gap-3 text-sm">{sourceDocumentId ? <Link to="/app/documents/$documentId" params={{ documentId: sourceDocumentId }} className="font-semibold text-emerald-800">Open source document{sourceRevision ? ` · version ${sourceRevision}` : ''} →</Link> : null}{detail.data.conversationId ? <Link to="/app/conversations/$conversationId" params={{ conversationId: detail.data.conversationId }} className="font-semibold text-emerald-800">Open related conversation →</Link> : null}</div><details className="mt-4 border-t border-stone-200 pt-3 text-xs text-stone-500"><summary className="cursor-pointer font-semibold text-stone-700">Execution identifiers</summary><div className="mt-3 grid gap-3">{detail.data.agentRunId ? <Fact label="Agent run" value={detail.data.agentRunId} /> : null}{detail.data.workflowRunId ? <Fact label="Workflow run" value={detail.data.workflowRunId} /> : null}{detail.data.protocolRunId ? <Fact label="Protocol run" value={detail.data.protocolRunId} /> : null}{detail.data.invocationId ? <Fact label="Invocation" value={detail.data.invocationId} /> : null}</div></details></Card><Card><p className="text-sm leading-6 text-stone-600">Downloads use a fresh, short-lived signed intent. Store credentials and raw content remain outside the browser facade.</p><Button className="mt-4 w-full" type="button" onClick={() => void download()} disabled={downloading || detail.data.state !== 'available'}>{downloading ? 'Preparing…' : 'Download artifact'}</Button></Card></aside>
     </div> : null}
   </div>;
+}
+
+function provenanceString(value: unknown, key: string) {
+  if (!value || typeof value !== 'object') return undefined;
+  const candidate = Reflect.get(value, key);
+  return typeof candidate === 'string' && candidate.trim() ? candidate : undefined;
+}
+
+function humanizeArtifactKind(value: string) {
+  return value.replace(/[._-]+/gu, ' ').replace(/\b\w/gu, character => character.toUpperCase());
 }
 
 function Fact({ label, value }: { readonly label: string; readonly value: string }) {

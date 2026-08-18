@@ -1,0 +1,114 @@
+{
+  "schemaVersion": 1,
+  "release": "v0.7",
+  "evidenceClass": "live-orbstack",
+  "limitations": [
+    "This is a bounded single-node OrbStack observation, not a public-cloud capacity guarantee.",
+    "Database contention measures a temporary table through the application PostgreSQL provider, not every authored transaction shape.",
+    "JetStream scaling uses the production runtime consumer with one shared durable consumer, but does not claim sustained soak capacity.",
+    "HTTP latency includes the generated application SSR path over kubectl port-forward and is not internet-edge latency.",
+    "Resource requests and limits are portable capacity and cost proxies; they are not dollar estimates."
+  ],
+  "generatedAt": "2026-08-16T13:01:22.937Z",
+  "git": {
+    "commit": "39eeaed400cc5ff8e9de3bff01988034bef157ac",
+    "dirty": true,
+    "workingTreeDigest": "sha256:7527e7da9915b462fe3c91e2db452609b94f8e32cb98ea78b9a046225dab0aa4"
+  },
+  "environment": {
+    "context": "orbstack",
+    "namespace": "agentic-product-evidence-system",
+    "platform": "darwin",
+    "architecture": "arm64",
+    "cpuModel": "Apple M5 Max",
+    "cpuCount": 18,
+    "runtime": "bun-1.3.10"
+  },
+  "database": {
+    "sameKey": {
+      "name": "same-key",
+      "operations": 1000,
+      "concurrency": 16,
+      "durationMs": 2563.85,
+      "throughputPerSecond": 390.04,
+      "latencyMs": {
+        "p50": 34.71,
+        "p95": 65.27,
+        "p99": 124.53,
+        "maximum": 138.58
+      }
+    },
+    "distinctKeys": {
+      "name": "distinct-keys",
+      "operations": 1000,
+      "concurrency": 16,
+      "durationMs": 533.74,
+      "throughputPerSecond": 1873.56,
+      "latencyMs": {
+        "p50": 7.99,
+        "p95": 11.66,
+        "p99": 20.07,
+        "maximum": 24.05
+      }
+    }
+  },
+  "jetStream": {
+    "scenarios": [
+      {
+        "replicas": 1,
+        "concurrencyPerReplica": 8,
+        "operations": 1000,
+        "durationMs": 857.47,
+        "throughputPerSecond": 1166.22
+      },
+      {
+        "replicas": 2,
+        "concurrencyPerReplica": 8,
+        "operations": 1000,
+        "durationMs": 293.18,
+        "throughputPerSecond": 3410.86
+      },
+      {
+        "replicas": 4,
+        "concurrencyPerReplica": 8,
+        "operations": 1000,
+        "durationMs": 124.55,
+        "throughputPerSecond": 8029.1
+      }
+    ]
+  },
+  "http": {
+    "operations": 500,
+    "concurrency": 16,
+    "errors": 0,
+    "durationMs": 4150.7,
+    "throughputPerSecond": 120.46,
+    "latencyMs": {
+      "p50": 122.04,
+      "p95": 235.05,
+      "p99": 275.91,
+      "maximum": 308.24
+    }
+  },
+  "kubernetes": {
+    "podCount": 21,
+    "readyPodSamples": 18,
+    "readyLatencyMs": {
+      "p50": 6000,
+      "p95": 37000,
+      "p99": 37000,
+      "maximum": 37000
+    },
+    "restartCount": 0,
+    "capacity": {
+      "requestedCpuMillicores": 2550,
+      "requestedMemoryMiB": 5696,
+      "limitedCpuMillicores": 20000,
+      "limitedMemoryMiB": 14848
+    },
+    "metrics": {
+      "available": false,
+      "reason": "Kubernetes Metrics API is not installed."
+    }
+  }
+}

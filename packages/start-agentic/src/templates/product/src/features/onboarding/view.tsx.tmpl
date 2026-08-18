@@ -1,61 +1,56 @@
 import { Link } from '@tanstack/react-router';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { OnboardingProgress, OnboardingState } from '../../application';
 import { Alert, Button, Card, Progress } from '../../components/ui';
 
 export const productJourneySteps = [
-  { id: 'first-document', label: 'Create something with the assistant', to: '/app' },
-  { id: 'open-library', label: 'Review the document in your library', to: '/app/library' },
-  { id: 'review-inbox', label: 'See durable decisions in Inbox', to: '/app/inbox' },
-  { id: 'resume-conversation', label: 'Resume a conversation after reload', to: '/app' },
+  { id: 'first-document', label: 'Create useful work with the assistant', to: '/app' },
+  { id: 'edit-document', label: 'Refine it as a new document revision', to: '/app/documents' },
+  { id: 'request-review', label: 'Request a durable review', to: '/app/documents' },
+  { id: 'publish-document', label: 'Approve and publish the result', to: '/app/inbox' },
 ] as const;
 
 export type ProductJourneyStepId = typeof productJourneySteps[number]['id'];
 
-export function ProductJourney({ documentCount }: { readonly documentCount: number }) {
+export function ProductJourney({ documents }: { readonly documents: readonly { readonly version: number; readonly state: string }[] }) {
   const state = OnboardingState({}).useQuery();
   const create = OnboardingProgress.create.useMutation();
   const update = OnboardingProgress.update.useMutation();
   const [notice, setNotice] = useState<string>();
   const recording = useRef<ReadonlySet<string>>(new Set());
-  const completed = new Set(state.data?.completedSteps ?? []);
-  if (documentCount > 0) completed.add('first-document');
+  const completed = useMemo(() => {
+    const steps = new Set(state.data?.completedSteps ?? []);
+    if (documents.length > 0) steps.add('first-document');
+    if (documents.some(document => document.version > 1)) steps.add('edit-document');
+    if (documents.some(document => ['in-review', 'approved', 'published'].includes(document.state))) steps.add('request-review');
+    if (documents.some(document => document.state === 'published')) steps.add('publish-document');
+    return steps;
+  }, [documents, state.data?.completedSteps]);
   const percent = completed.size / productJourneySteps.length * 100;
 
   useEffect(() => {
-    if (documentCount < 1 || state.data === undefined || state.data?.completedSteps.includes('first-document')) return;
-    if (recording.current.has('first-document')) return;
-    recording.current = new Set([...recording.current, 'first-document']);
-    const completedSteps = [...new Set([...(state.data?.completedSteps ?? []), 'first-document'])];
-    const now = new Date().toISOString();
-    const progress = {
-      completedSteps,
-      dismissed: state.data?.dismissed ?? false,
-      updatedAt: now,
-      ...(completedSteps.length === productJourneySteps.length ? { completedAt: now } : {}),
-    };
+    const achieved = productJourneySteps.map(step => step.id).filter(step => completed.has(step));
+    const missing = achieved.filter(step => !state.data?.completedSteps.includes(step));
+    if (missing.length === 0 || state.data === undefined || missing.some(step => recording.current.has(step))) return;
+    recording.current = new Set([...recording.current, ...missing]);
+    const completedSteps = [...new Set([...(state.data?.completedSteps ?? []), ...achieved])];
+    const progress = { completedSteps, dismissed: state.data?.dismissed ?? false };
     const save = state.data
       ? update({ identity: state.data.principalId, patch: progress })
       : create(progress);
     void save
       .then(() => state.refresh())
       .catch(() => {
-        recording.current = new Set([...recording.current].filter(step => step !== 'first-document'));
+        recording.current = new Set([...recording.current].filter(step => !missing.includes(step as ProductJourneyStepId)));
         setNotice('Progress could not be saved. The product remains available.');
       });
-  }, [documentCount, state.data]);
+  }, [completed, create, state.data, state.refresh, update]);
 
   if (state.data?.dismissed || state.data?.completedAt) return null;
 
-  async function persist(dismissed = false, step?: ProductJourneyStepId) {
-    const completedSteps = [...new Set([...completed, ...(step ? [step] : [])])];
-    const now = new Date().toISOString();
-    const progress = {
-      completedSteps,
-      dismissed,
-      updatedAt: now,
-      ...(completedSteps.length === productJourneySteps.length ? { completedAt: now } : {}),
-    };
+  async function persist(dismissed = false) {
+    const completedSteps = [...completed];
+    const progress = { completedSteps, dismissed };
     try {
       if (state.data) {
         await update({
@@ -78,7 +73,7 @@ export function ProductJourney({ documentCount }: { readonly documentCount: numb
         <div className="max-w-2xl">
           <p className="eyebrow !text-emerald-300">Your app is running</p>
           <h2 className="mt-2 text-2xl font-semibold tracking-tight">Make the first useful loop visible.</h2>
-          <p className="mt-2 text-sm leading-6 text-emerald-100/80">Use the real copilot, then follow its committed result through the library and durable product surfaces.</p>
+          <p className="mt-2 text-sm leading-6 text-emerald-100/80">Ask the assistant for a useful first draft, refine it in Documents, and publish it when it is ready.</p>
         </div>
         <span className="text-sm font-semibold text-emerald-100">{completed.size} of {productJourneySteps.length}</span>
       </div>
@@ -86,44 +81,10 @@ export function ProductJourney({ documentCount }: { readonly documentCount: numb
         <Progress value={percent} label="Product activation" />
       </div>
       <div className="mt-5 flex flex-wrap gap-3">
-        {next ? <Link className="button-link !bg-white !text-emerald-950" to={next.to}>{next.label}</Link> : null}
-        {next ? <Button type="button" variant="ghost" className="text-emerald-50 hover:bg-white/10" onClick={() => void persist(false, next.id)}>Skip this step</Button> : null}
+        {next ? <Button asChild variant="secondary" className="border-white bg-white text-emerald-950 hover:bg-emerald-50"><Link to={next.to}>{next.label}</Link></Button> : null}
         <Button type="button" variant="ghost" className="text-emerald-50 hover:bg-white/10" onClick={() => void persist(true)}>Dismiss tour</Button>
       </div>
       {notice ? <div className="mt-4"><Alert tone="warning" title="Progress unavailable">{notice}</Alert></div> : null}
     </Card>
   );
-}
-
-/**
- * Records an ordinary product outcome as onboarding progress. Feature routes
- * opt in at the point the outcome becomes authoritative; the framework does
- * not own or infer application-product progress.
- */
-export function useProductJourneyStep(step: ProductJourneyStepId, ready = true) {
-  const state = OnboardingState({}).useQuery();
-  const create = OnboardingProgress.create.useMutation();
-  const update = OnboardingProgress.update.useMutation();
-  const recording = useRef(false);
-
-  useEffect(() => {
-    if (!ready || recording.current || state.data === undefined || state.data?.completedSteps.includes(step)) return;
-    recording.current = true;
-    const completedSteps = [...new Set([...(state.data?.completedSteps ?? []), step])];
-    const now = new Date().toISOString();
-    const progress = {
-      completedSteps,
-      dismissed: state.data?.dismissed ?? false,
-      updatedAt: now,
-      ...(completedSteps.length === productJourneySteps.length ? { completedAt: now } : {}),
-    };
-    const save = state.data
-      ? update({ identity: state.data.principalId, patch: progress })
-      : create(progress);
-    void save
-      .then(() => state.refresh())
-      .catch(() => {
-        recording.current = false;
-      });
-  }, [ready, state.data, step]);
 }

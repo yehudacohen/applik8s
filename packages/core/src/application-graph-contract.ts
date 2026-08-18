@@ -831,6 +831,11 @@ export interface ApplicationWorkflowWorkerNode extends ApplicationGraphNodeBase<
  */
 export interface ApplicationAIAgentNode extends ApplicationGraphNodeBase<'aiAgent'> {
   readonly serviceIdentity: ApplicationIdentityReference;
+  /** Optional application-owned trusted context used for durable conversation and usage scope. */
+  readonly scope?: {
+    readonly kind: 'trustedContext';
+    readonly name: string;
+  };
   readonly model: {
     readonly apiVersion: 'applik8s.aiModel/v1alpha1';
     readonly name: string;
@@ -888,6 +893,29 @@ export interface ApplicationAIAgentNode extends ApplicationGraphNodeBase<'aiAgen
       readonly functionNativeTransaction: ApplicationFunctionNativeTransactionContract;
     };
     readonly authority: ApplicationOperationAuthorityGraphContract;
+  }[];
+  /**
+   * Function-native mutation handles called by the agent execution closure.
+   * These are compiler-captured dependencies, not model-visible tools.
+   */
+  readonly operations?: readonly {
+    readonly alias: string;
+    /** Identity carried by the authored callable at execution time. */
+    readonly authoringOperationId: string;
+    /** Canonical catalog identity used for authority and placement. */
+    readonly operationId: ApplicationOperationId;
+    readonly command: ApplicationGraphNodeRef;
+    readonly handler: ApplicationGraphNodeRef;
+  }[];
+  /**
+   * Function-native queries called by the agent execution closure itself.
+   * These are compiler-captured dependencies, not model-visible tools: the
+   * generated agent injects bounded authenticated query clients without
+   * importing or replaying the application authoring graph at runtime.
+   */
+  readonly queries?: readonly {
+    readonly alias: string;
+    readonly query: ApplicationGraphNodeRef;
   }[];
   readonly responseSchemaDigest?: string;
   readonly budgets: {
@@ -1058,6 +1086,8 @@ export interface ApplicationReactiveDatabaseRuntimeContract {
     readonly contextSchema: JsonObject;
     readonly setting: string;
     readonly column: string;
+    /** Present in current graphs; omission in older graph artifacts means required. */
+    readonly default?: 'required' | 'global';
   };
 }
 
@@ -3370,8 +3400,17 @@ function applicationAIAgentNodeStructureDiagnostics(
   if (node.tools.length === 0) {
     messages.push(`Application AI agent ${node.id} must declare at least one operation tool.`);
   }
+  if (node.scope && !/^[A-Za-z][A-Za-z0-9._-]*$/.test(node.scope.name)) {
+    messages.push(`Application AI agent ${node.id} scope must reference a stable trusted-context name.`);
+  }
   for (const operationId of duplicateStrings(node.tools.map((tool) => tool.operationId))) {
     messages.push(`Application AI agent ${node.id} declares operation tool ${operationId} more than once.`);
+  }
+  for (const operationId of duplicateStrings((node.operations ?? []).map((operation) => operation.operationId))) {
+    messages.push(`Application AI agent ${node.id} calls function-native operation ${operationId} more than once.`);
+  }
+  for (const operationId of duplicateStrings((node.operations ?? []).map((operation) => operation.authoringOperationId))) {
+    messages.push(`Application AI agent ${node.id} retains function-native authoring identity ${operationId} more than once.`);
   }
   const provider = graph.nodes.find((candidate) => candidate.id === node.inference.nodeId);
   if (provider?.kind !== 'provider' || provider.interface !== 'AI') {
@@ -3418,6 +3457,23 @@ function applicationAIAgentNodeStructureDiagnostics(
           graph,
         ),
       );
+    }
+  }
+  for (const operation of node.operations ?? []) {
+    if (!operation.authoringOperationId.trim()) {
+      messages.push(`Application AI agent ${node.id} function-native operation ${operation.operationId} has no authoring identity.`);
+    }
+    const command = graph.nodes.find((candidate) => candidate.id === operation.command.nodeId);
+    const handler = graph.nodes.find((candidate) => candidate.id === operation.handler.nodeId);
+    if (command?.kind !== 'command' || handler?.kind !== 'commandHandler' || handler.command.nodeId !== command.id) {
+      messages.push(`Application AI agent ${node.id} function-native operation ${operation.operationId} has an invalid command placement.`);
+    }
+    const staticallyGranted = authority?.kind === 'authorityManifest'
+      && authority.manifest.grants.some((grant) =>
+        grant.identity.id === node.serviceIdentity.id
+        && grant.operationIds.includes(operation.operationId));
+    if (!staticallyGranted) {
+      messages.push(`Application AI agent ${node.id} function-native operation ${operation.operationId} requires an explicit service-identity grant.`);
     }
   }
   if ((typeof node.deployment.replicas === 'number' && node.deployment.replicas < 1)

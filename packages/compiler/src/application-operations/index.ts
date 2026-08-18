@@ -90,11 +90,27 @@ export function compileApplicationWorkloadAuthority(
     }));
   const agentEnvelopes = graph.nodes
     .filter((node) => node.kind === 'aiAgent')
-    .flatMap((agent) => agent.tools.map((tool) => {
-      const operation = operations.get(tool.operationId);
+    .flatMap((agent) => {
+      const declared = new Map<string, {
+        readonly operationId: ApplicationOperationDescriptor['id'];
+        readonly authority?: ApplicationOperationAuthorityGraphContract;
+      }>();
+      for (const tool of agent.tools) {
+        declared.set(tool.operationId, {
+          operationId: tool.operationId,
+          authority: tool.authority,
+        });
+      }
+      for (const dependency of agent.operations ?? []) {
+        if (!declared.has(dependency.operationId)) {
+          declared.set(dependency.operationId, { operationId: dependency.operationId });
+        }
+      }
+      return [...declared.values()].map((dependency) => {
+      const operation = operations.get(dependency.operationId);
       if (!operation) {
         throw new Error(
-          `AI agent ${agent.id} workload authority references unavailable operation ${tool.operationId}.`,
+          `AI agent ${agent.id} workload authority references unavailable operation ${dependency.operationId}.`,
         );
       }
       const workloadIdentity = {
@@ -110,8 +126,8 @@ export function compileApplicationWorkloadAuthority(
         id: `workload-authority:${digestJson({
           application: graph.metadata.name,
           agent: agent.id,
-          operationId: tool.operationId,
-          authority: tool.authority,
+          operationId: dependency.operationId,
+          authority: dependency.authority ?? operation.authority,
           catalogRevision: catalog.revision,
         }).slice('sha256:'.length)}`,
         workloadIdentity,
@@ -127,13 +143,13 @@ export function compileApplicationWorkloadAuthority(
           // envelope must use that final catalog scope; retaining the
           // placeholder would make a valid static grant unusable at runtime.
           target:
-            tool.authority.classification === 'unclassified'
+            !dependency.authority || dependency.authority.classification === 'unclassified'
               ? staticAgentToolScope(
                   graph,
                   agent.serviceIdentity.id,
                   operation,
                 )
-              : tool.authority.scope,
+              : dependency.authority.scope,
           predicates: [],
         },
         inputSchemaDigest: operation.input.digest,
@@ -142,7 +158,8 @@ export function compileApplicationWorkloadAuthority(
         delegation: 'forbidden' as const,
         impersonation: 'forbidden' as const,
       };
-    }));
+      });
+    });
   return [...taskEnvelopes, ...agentEnvelopes]
     .sort((left, right) => left.id.localeCompare(right.id));
 }
@@ -951,7 +968,10 @@ function modelOperationReachability(
       }
       if (
         node.kind === 'aiAgent'
-        && node.tools.some((tool) => tool.operationId === operationId)
+        && (
+          node.tools.some((tool) => tool.operationId === operationId)
+          || (node.operations ?? []).some((dependency) => dependency.operationId === operationId)
+        )
       ) {
         return 'external';
       }

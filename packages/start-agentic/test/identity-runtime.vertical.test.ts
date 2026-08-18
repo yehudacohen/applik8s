@@ -41,6 +41,7 @@ describe('Agentic Start identity runtime', () => {
     }]);
     expect(admission.trustedContext).toEqual({
       issuer: 'applik8s://research/identity/deterministic',
+      principalScope: workspaceId,
       workspaceId,
       workspaceRole: 'workspace-administrator',
     });
@@ -67,6 +68,42 @@ describe('Agentic Start identity runtime', () => {
     } satisfies Partial<AgenticWorkspaceAdmissionError>);
   });
 
+  it('preserves authenticated identity when a stale selected workspace is loaded by the session endpoint', async () => {
+    vi.stubEnv('APPLIK8S_APPLICATION_NAME', 'research');
+    const workspaceId = '9d389c54-4e6e-4e69-995f-c663946cef3e';
+
+    const admission = await authenticateAgenticStarterRequest(
+      new Request(
+        'http://research.example.test/__applik8s/v1/identity/session',
+        { headers: { cookie: `applik8s_workspace=${workspaceId}` } },
+      ),
+      { lookup: async () => undefined },
+    );
+
+    expect(admission.principal.roles).toEqual(['authenticated']);
+    expect(admission.trustedContext).toEqual({
+      issuer: 'applik8s://research/identity/deterministic',
+      principalScope: 'principal:research:deterministic:local-developer',
+    });
+  });
+
+  it('preserves authenticated identity when the session endpoint receives a malformed workspace selector', async () => {
+    vi.stubEnv('APPLIK8S_APPLICATION_NAME', 'research');
+
+    const admission = await authenticateAgenticStarterRequest(
+      new Request(
+        'http://research.example.test/__applik8s/v1/identity/session',
+        { headers: { cookie: 'applik8s_workspace=deleted-workspace' } },
+      ),
+    );
+
+    expect(admission.principal.roles).toEqual(['authenticated']);
+    expect(admission.trustedContext).toEqual({
+      issuer: 'applik8s://research/identity/deterministic',
+      principalScope: 'principal:research:deterministic:local-developer',
+    });
+  });
+
   it('authenticates receipt-backed command progress without re-admitting a consumed workspace selector', async () => {
     vi.stubEnv('APPLIK8S_APPLICATION_NAME', 'research');
     const workspaceId = '9d389c54-4e6e-4e69-995f-c663946cef3e';
@@ -86,6 +123,7 @@ describe('Agentic Start identity runtime', () => {
     expect(lookup).not.toHaveBeenCalled();
     expect(admission.trustedContext).toEqual({
       issuer: 'applik8s://research/identity/deterministic',
+      principalScope: 'principal:research:deterministic:local-developer',
     });
     expect(admission.principal.roles).toEqual(['authenticated']);
   });
@@ -103,7 +141,7 @@ describe('Agentic Start identity runtime', () => {
     expect(lookup).not.toHaveBeenCalled();
   });
 
-  it('does not invent product tenancy when a Starter request has no workspace selector', async () => {
+  it('admits a personal data scope without inventing product tenancy when Starter has no workspace selector', async () => {
     vi.stubEnv('APPLIK8S_APPLICATION_NAME', 'notes');
 
     const admission = await authenticateAgenticStarterRequest(
@@ -112,6 +150,7 @@ describe('Agentic Start identity runtime', () => {
 
     expect(admission.trustedContext).toEqual({
       issuer: 'applik8s://notes/identity/deterministic',
+      principalScope: 'principal:notes:deterministic:local-developer',
     });
     expect(admission.principal.roles).toEqual(['authenticated']);
   });
@@ -166,6 +205,36 @@ describe('Agentic Start identity runtime', () => {
     });
   });
 
+  it('makes Starter logout authoritative until an explicit login transition', async () => {
+    vi.stubEnv('APPLIK8S_APPLICATION_NAME', 'notes');
+    const logout = await handleAgenticStarterIdentityRequest(new Request(
+      'http://notes.example.test/__applik8s/v1/identity/session',
+      { method: 'DELETE' },
+    ));
+    const signedOutCookie = logout.headers.get('set-cookie');
+    expect(signedOutCookie).toContain('applik8s_starter_signed_out=1');
+    expect(signedOutCookie).toContain('HttpOnly');
+    await expect(authenticateAgenticStarterRequest(new Request(
+      'http://notes.example.test/__applik8s/v1/queries/DocumentList/snapshot',
+      { headers: { cookie: 'applik8s_starter_signed_out=1' } },
+    ))).rejects.toMatchObject({
+      code: 'APPLIK8S_AUTHENTICATION_REQUIRED',
+      status: 401,
+    });
+
+    const login = await handleAgenticStarterIdentityRequest(new Request(
+      'http://notes.example.test/__applik8s/v1/identity/flows/login/transitions/password',
+      {
+        method: 'POST',
+        headers: { cookie: 'applik8s_starter_signed_out=1' },
+      },
+    ));
+    expect(login.headers.get('set-cookie')).toContain(
+      'applik8s_starter_signed_out=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0',
+    );
+    await expect(login.json()).resolves.toMatchObject({ authenticated: true });
+  });
+
   it('keeps Starter identity recovery independent from stale workspace selectors', async () => {
     vi.stubEnv('APPLIK8S_APPLICATION_NAME', 'notes');
 
@@ -206,6 +275,7 @@ describe('Agentic Start identity runtime', () => {
       principalId: 'principal:research:deterministic:local-developer',
     });
     expect(admission.trustedContext).toMatchObject({
+      principalScope: '9d389c54-4e6e-4e69-995f-c663946cef3e',
       workspaceId: '9d389c54-4e6e-4e69-995f-c663946cef3e',
       workspaceRole: 'workspace-owner',
     });
@@ -249,6 +319,7 @@ describe('Agentic Start identity runtime', () => {
     expect(admission).toMatchObject({
       trustedContext: {
         issuer: 'https://identity.research.example.test',
+        principalScope: 'principal:research:ory:human-1',
       },
       principal: {
         kind: 'human',

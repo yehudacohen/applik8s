@@ -31,7 +31,10 @@ describe('application AI conversation persistence', () => {
       input.conversationId,
       run.principalScope,
     );
-    expect(conversation).toMatchObject({ revision: 2 });
+    expect(conversation).toMatchObject({
+      revision: 2,
+      title: 'Investigate this.',
+    });
     expect(
       await store.listMessages({
         conversationId: input.conversationId,
@@ -99,6 +102,57 @@ describe('application AI conversation persistence', () => {
     expect(
       await store.getRun(input.protocolRunId, first.principalScope),
     ).toMatchObject({ status: 'running' });
+  });
+
+  it('derives one bounded durable title from the first native user text part', async () => {
+    const store = createMemoryApplicationConversationStore();
+    const persistence = createApplicationAIAgentConversationPersistence({ store });
+    // Preserve literal native-message discriminants in this fixture.
+    // typecast: exercise the exact public agent persistence input.
+    const input = {
+      ...runInput(),
+      messages: [{
+        id: 'user-parts',
+        role: 'user',
+        parts: [{
+          type: 'text',
+          content: 'prepare a detailed launch brief for the first customer and include operational rollback ownership',
+        }],
+      }],
+    } as const;
+
+    const run = await persistence.begin(input);
+    await expect(store.getConversation(
+      input.conversationId,
+      run.principalScope,
+    )).resolves.toMatchObject({
+      title: 'Prepare a detailed launch brief for the first customer and include…',
+    });
+  });
+
+  it('lets an application select one admitted collaborative scope without exposing tenancy policy', async () => {
+    const store = createMemoryApplicationConversationStore();
+    const persistence = createApplicationAIAgentConversationPersistence({
+      store,
+      scope: ({ trustedContext }) => {
+        const value = trustedContext.workspaceId;
+        if (typeof value !== 'string' || !value.trim()) throw new Error('workspace scope missing');
+        return value;
+      },
+    });
+
+    const first = await persistence.begin(runInput());
+    const second = await persistence.begin({
+      ...runInput(),
+      principal: { ...principal(), causalPrincipalId: 'identity:another-member' },
+      protocolRunId: 'protocol-run-2',
+      agentRunId: 'agent-run-2',
+      invocationId: 'invocation-2',
+      messages: [],
+    });
+
+    expect(first.principalScope).toBe('workspace-one');
+    expect(second.principalScope).toBe('workspace-one');
   });
 
   it('scopes inbox identity to the causal actor and admitted trusted context', () => {

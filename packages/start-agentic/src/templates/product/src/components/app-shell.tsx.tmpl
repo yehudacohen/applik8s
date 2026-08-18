@@ -1,15 +1,60 @@
 import { useApplicationIdentitySession } from '@applik8s/react/identity';
 import { AgenticAccountSession } from '@applik8s/start-agentic/react';
 import { Link, useRouterState } from '@tanstack/react-router';
-import { type ReactNode, useEffect, useState } from 'react';
+import {
+  Activity,
+  Archive,
+  Bot,
+  Boxes,
+  Building2,
+  CircleUserRound,
+  CreditCard,
+  FileText,
+  FlaskConical,
+  Gauge,
+  Home,
+  Inbox,
+  LibraryBig,
+  PlugZap,
+  ShieldCheck,
+  UsersRound,
+  type LucideIcon,
+} from 'lucide-react';
+import type { ReactNode } from 'react';
 import { brand } from '../brand';
-import { Badge, RouteState, cn } from './ui';
+import { MobileMoreNavigation, ThemeControl, WorkspaceScopeControl } from './mobile-navigation';
+import { Badge, Button, RouteState, cn } from './ui';
 
 const productNavigation = [
-  { to: '/app', label: 'Copilot', icon: '✦' },
-  { to: '/app/library', label: 'Library', icon: '▤' },
-  { to: '/app/inbox', label: 'Inbox', icon: '◎' },
+  { to: '/app', label: 'Home', icon: Home },
+  { to: '/app/documents', label: 'Documents', icon: FileText },
+  { to: '/app/artifacts', label: 'Artifacts', icon: Archive },
+  { to: '/app/inbox', label: 'Inbox', icon: Inbox },
+  { to: '/app/workspaces', label: 'Workspaces', icon: UsersRound },
+  { to: '/app/usage', label: 'Usage', icon: Gauge },
+  { to: '/app/billing', label: 'Billing', icon: CreditCard },
+  { to: '/app/account', label: 'Account', icon: CircleUserRound },
 ] as const;
+
+const builderNavigation = [
+  { to: '/app/agents', label: 'Agents', icon: Bot },
+  { to: '/app/knowledge', label: 'Knowledge', icon: LibraryBig },
+  { to: '/app/integrations', label: 'Connections', icon: PlugZap },
+  { to: '/app/evaluations', label: 'Evaluations', icon: FlaskConical },
+] as const;
+
+const administrationNavigation = [
+  { to: '/admin', label: 'Overview', icon: Building2 },
+  { to: '/admin/tenants', label: 'Tenants', icon: UsersRound },
+  { to: '/admin/catalog', label: 'Catalog', icon: Boxes },
+] as const;
+
+const operatorNavigation = [
+  { to: '/app/setup', label: 'Launchpad', icon: ShieldCheck },
+  { to: '/app/operations', label: 'Operations', icon: Activity },
+] as const;
+
+type ShellSurface = 'product' | 'builder' | 'administration' | 'operator';
 
 export function AppShell({ children }: { readonly children: ReactNode }) {
   const session = useApplicationIdentitySession();
@@ -17,6 +62,16 @@ export function AppShell({ children }: { readonly children: ReactNode }) {
   const authenticated = session.data?.authenticated === true;
   const workspaceAdministrator = session.data?.capabilities?.workspaceAdministration === true;
   const operator = session.data?.capabilities?.applicationOperations === true;
+  const builder = workspaceAdministrator || operator;
+  const surface = shellSurface(pathname);
+  const admissionRoute = isAdmissionPath(pathname);
+  const navigation = surface === 'builder'
+    ? builderNavigation
+    : surface === 'administration'
+      ? administrationNavigation
+      : surface === 'operator'
+        ? operatorNavigation
+        : productNavigation;
 
   if (!authenticated) {
     return (
@@ -28,14 +83,35 @@ export function AppShell({ children }: { readonly children: ReactNode }) {
             <nav aria-label="Admission" className="flex items-center gap-2">
               <ThemeControl compact />
               <Link to="/sign-in" search={{ returnTo: '/app' }} className="px-3 py-2 text-sm font-semibold text-stone-700 no-underline">Sign in</Link>
-              <Link to="/sign-up" className="button-link">Get started</Link>
+              <Button asChild><Link to="/sign-up">Get started</Link></Button>
             </nav>
           </div>
         </header>
         <main id="main-content" className="mx-auto w-full max-w-6xl px-4 py-8 sm:px-7 lg:px-10">
           {pathname.startsWith('/app') ? (
-            <div className="py-12"><RouteState title="Sign in to continue" description="Your intended product destination is preserved. Authentication is established before workspace queries or mutations can mount." action={<Link to="/sign-in" search={{ returnTo: pathname }} className="button-link">Continue to sign in</Link>} /></div>
+            <div className="py-12"><RouteState title="Sign in to continue" description="We’ll bring you back here after you sign in." action={<Button asChild><Link to="/sign-in" search={{ returnTo: pathname }}>Continue to sign in</Link></Button>} /></div>
           ) : children}
+        </main>
+      </div>
+    );
+  }
+
+  // An already-admitted principal can briefly render an admission route before
+  // its route-level redirect commits. Keep that transition outside the
+  // workspace shell so it cannot issue workspace-scoped queries without an
+  // admitted workspace selector (notably in WebKit's slower redirect path).
+  if (admissionRoute) {
+    return (
+      <div className="min-h-screen bg-[var(--canvas)] text-stone-900">
+        <a className="skip-link" href="#main-content">Skip to content</a>
+        <header className="border-b border-stone-200/80 bg-white/70 px-4 py-4 backdrop-blur">
+          <div className="mx-auto flex max-w-6xl items-center justify-between gap-4">
+            <Brand />
+            <div className="flex items-center gap-2"><ThemeControl compact /><AgenticAccountSession /></div>
+          </div>
+        </header>
+        <main id="main-content" className="mx-auto w-full max-w-6xl px-4 py-8 sm:px-7 lg:px-10">
+          {children}
         </main>
       </div>
     );
@@ -45,44 +121,23 @@ export function AppShell({ children }: { readonly children: ReactNode }) {
     <div className="min-h-screen bg-[var(--canvas)] text-stone-900">
       <a className="skip-link" href="#main-content">Skip to content</a>
       <header className="sticky top-0 z-40 border-b border-stone-200/80 bg-[color:var(--canvas)]/95 px-4 py-3 backdrop-blur lg:hidden">
-        <div className="flex items-center justify-between gap-3">
-          <Brand />
-          <div className="flex items-center gap-2"><ThemeControl compact /><AgenticAccountSession /></div>
+        <div className="grid gap-2">
+          <div className="flex items-center justify-between gap-3">
+            <Brand />
+            <div className="flex items-center gap-2"><ThemeControl compact /><AgenticAccountSession /></div>
+          </div>
+          <WorkspaceScopeControl compact />
         </div>
-        {authenticated ? (
-          <nav aria-label="Application" className="mt-3 flex gap-1 overflow-x-auto pb-1">
-            {productNavigation.map(item => <NavLink key={item.to} {...item} compact />)}
-            {operator ? <NavLink to="/app/setup" label="Launchpad" icon="△" compact /> : null}
-          </nav>
-        ) : null}
       </header>
       <div className="mx-auto flex min-h-screen w-full max-w-[96rem]">
-        <aside className="sticky top-0 hidden h-screen w-64 shrink-0 flex-col border-r border-stone-200/80 bg-white/70 px-4 py-6 backdrop-blur lg:flex">
+        <aside className="sticky top-0 hidden h-screen w-64 shrink-0 flex-col overflow-y-auto border-r border-stone-200/80 bg-white/70 px-4 py-6 backdrop-blur lg:flex">
           <Brand />
+          <WorkspaceScopeControl />
           {authenticated ? (
             <nav aria-label="Application" className="mt-9 flex flex-1 flex-col">
-              <p className="nav-label">Product</p>
-              {productNavigation.map(item => <NavLink key={item.to} {...item} />)}
-              <NavLink to="/app/workspaces" label="Workspaces" icon="◇" />
-              <NavLink to="/app/account" label="Account" icon="○" />
-              {workspaceAdministrator ? (
-                <div className="mt-7">
-                  <p className="nav-label">Manage</p>
-                  <NavLink to="/app/usage" label="Usage" icon="◒" />
-                  <NavLink to="/app/billing" label="Billing" icon="◫" />
-                </div>
-              ) : null}
-              {operator ? (
-                <div className="mt-7">
-                  <p className="nav-label">Admin</p>
-                  <NavLink to="/admin" label="Overview" icon="▦" />
-                  <NavLink to="/admin/tenants" label="Tenants" icon="◇" />
-                  <NavLink to="/admin/catalog" label="Catalog" icon="◫" />
-                  <p className="nav-label mt-7">Operator</p>
-                  <NavLink to="/app/setup" label="Launchpad" icon="△" />
-                  <NavLink to="/app/operations" label="Operations" icon="⌁" />
-                </div>
-              ) : null}
+              <SurfaceSwitcher surface={surface} builder={builder} operator={operator} />
+              <p className="nav-label mt-7">{surfaceLabel(surface)}</p>
+              {navigation.map(item => <NavLink key={item.to} {...item} />)}
             </nav>
           ) : <div className="mt-9 text-sm leading-6 text-stone-600">Sign in to enter your workspace copilot.</div>}
           <div className="mt-auto border-t border-stone-200 pt-4">
@@ -92,63 +147,101 @@ export function AppShell({ children }: { readonly children: ReactNode }) {
           </div>
         </aside>
         <div className="min-w-0 flex-1">
-          <main id="main-content" className="mx-auto w-full max-w-6xl px-4 py-8 sm:px-7 lg:px-10 lg:py-10">
+          <main id="main-content" className="mx-auto w-full max-w-6xl px-4 pb-28 pt-8 sm:px-7 lg:px-10 lg:py-10">
             {children}
           </main>
         </div>
       </div>
       {authenticated ? (
-        <nav aria-label="Mobile application" className="fixed inset-x-3 bottom-3 z-50 grid grid-cols-4 rounded-2xl border border-stone-200 bg-white/95 p-1.5 shadow-xl backdrop-blur lg:hidden">
-          <NavLink to="/app" label="Copilot" icon="✦" compact />
-          <NavLink to="/app/library" label="Library" icon="▤" compact />
-          <NavLink to="/app/inbox" label="Inbox" icon="◎" compact />
-          <NavLink to="/app/account" label="Account" icon="○" compact />
+        <nav aria-label="Mobile application" data-mobile-navigation className="fixed inset-x-3 bottom-[calc(.75rem+env(safe-area-inset-bottom))] z-50 grid grid-cols-4 rounded-2xl border border-stone-200 bg-white/95 p-1.5 shadow-xl backdrop-blur dark:border-stone-700 dark:bg-stone-950/95 lg:hidden">
+          <NavLink to="/app" label="Home" icon={Home} compact />
+          <NavLink to="/app/documents" label="Documents" icon={FileText} compact />
+          <NavLink to="/app/inbox" label="Inbox" icon={Inbox} compact />
+          <MobileMoreNavigation
+            pathname={pathname}
+            workspaceAdministrator={builder}
+            operator={operator}
+            product={productNavigation}
+            builder={builderNavigation}
+            administration={administrationNavigation}
+            operations={operatorNavigation}
+          />
         </nav>
       ) : null}
     </div>
   );
 }
 
-type ThemePreference = 'light' | 'dark' | 'system';
-
-function ThemeControl({ compact = false }: { readonly compact?: boolean }) {
-  const [preference, setPreference] = useState<ThemePreference>('system');
-  useEffect(() => {
-    const stored = globalThis.localStorage?.getItem('applik8s.theme');
-    const initial = stored === 'light' || stored === 'dark' ? stored : 'system';
-    setPreference(initial);
-    applyTheme(initial);
-  }, []);
-
-  function cycle() {
-    const next = preference === 'system' ? 'light' : preference === 'light' ? 'dark' : 'system';
-    setPreference(next);
-    if (next === 'system') globalThis.localStorage?.removeItem('applik8s.theme');
-    else globalThis.localStorage?.setItem('applik8s.theme', next);
-    applyTheme(next);
-  }
-
-  return (
-    <button
-      type="button"
-      className={cn(
-        'inline-flex min-h-10 items-center justify-center rounded-xl border border-stone-200 bg-white text-sm font-semibold text-stone-700 transition hover:bg-stone-50',
-        compact ? 'size-10' : 'w-full gap-2 px-3',
-      )}
-      onClick={cycle}
-      aria-label={`Theme: ${preference}. Activate to change.`}
-    >
-      <span aria-hidden="true">{preference === 'dark' ? '☾' : preference === 'light' ? '☀' : '◐'}</span>
-      {!compact ? <span className="capitalize">{preference} theme</span> : null}
-    </button>
-  );
+function shellSurface(pathname: string): ShellSurface {
+  if (pathname.startsWith('/admin')) return 'administration';
+  if (pathname === '/app/setup' || pathname === '/app/operations') return 'operator';
+  if (
+    pathname === '/app/agents'
+    || pathname === '/app/knowledge'
+    || pathname === '/app/integrations'
+    || pathname === '/app/evaluations'
+  ) return 'builder';
+  return 'product';
 }
 
-function applyTheme(preference: ThemePreference) {
-  const dark = preference === 'dark'
-    || (preference === 'system' && globalThis.matchMedia?.('(prefers-color-scheme: dark)').matches);
-  globalThis.document?.documentElement.classList.toggle('dark', dark);
-  globalThis.document?.documentElement.style.setProperty('color-scheme', dark ? 'dark' : 'light');
+function isAdmissionPath(pathname: string) {
+  return pathname === '/sign-in'
+    || pathname === '/sign-up'
+    || pathname === '/recover'
+    || pathname === '/verify';
+}
+
+function surfaceLabel(surface: ShellSurface) {
+  if (surface === 'builder') return 'Builder';
+  if (surface === 'administration') return 'Administration';
+  if (surface === 'operator') return 'Operator';
+  return 'Product';
+}
+
+function SurfaceSwitcher({
+  surface,
+  builder,
+  operator,
+  compact = false,
+}: {
+  readonly surface: ShellSurface;
+  readonly builder: boolean;
+  readonly operator: boolean;
+  readonly compact?: boolean;
+}) {
+  const destinations = [
+    { surface: 'product' as const, label: 'Product', to: '/app' as const },
+    ...(builder ? [{ surface: 'builder' as const, label: 'Builder', to: '/app/agents' as const }] : []),
+    ...(operator ? [
+      { surface: 'administration' as const, label: 'Admin', to: '/admin' as const },
+      { surface: 'operator' as const, label: 'Operator', to: '/app/setup' as const },
+    ] : []),
+  ];
+  return (
+    <nav
+      aria-label="Workspace mode"
+      className={cn(
+        'grid gap-1 rounded-xl border border-stone-200 bg-stone-100 p-1',
+        compact ? 'mt-3 auto-cols-fr grid-flow-col overflow-x-auto' : 'grid-cols-2',
+      )}
+    >
+      {destinations.map(destination => (
+        <Link
+          key={destination.surface}
+          to={destination.to}
+          aria-current={surface === destination.surface ? 'page' : undefined}
+          className={cn(
+            'rounded-lg px-2.5 py-2 text-center text-xs font-semibold no-underline transition',
+            surface === destination.surface
+              ? 'bg-white text-stone-950 shadow-sm'
+              : 'text-stone-600 hover:bg-white/60 hover:text-stone-900',
+          )}
+        >
+          {destination.label}
+        </Link>
+      ))}
+    </nav>
+  );
 }
 
 function Brand() {
@@ -166,21 +259,22 @@ function NavLink({
   icon,
   compact = false,
 }: {
-  readonly to: '/' | '/app' | '/app/library' | '/app/inbox' | '/app/workspaces' | '/app/usage' | '/app/billing' | '/app/account' | '/app/setup' | '/app/operations' | '/admin' | '/admin/tenants' | '/admin/catalog';
+  readonly to: '/' | '/app' | '/app/documents' | '/app/artifacts' | '/app/inbox' | '/app/agents' | '/app/knowledge' | '/app/integrations' | '/app/evaluations' | '/app/workspaces' | '/app/usage' | '/app/billing' | '/app/account' | '/app/setup' | '/app/operations' | '/admin' | '/admin/tenants' | '/admin/catalog';
   readonly label: string;
-  readonly icon: string;
+  readonly icon: LucideIcon;
   readonly compact?: boolean;
 }) {
+  const Icon = icon;
   return (
     <Link
       to={to}
       activeOptions={{ exact: to === '/app' }}
       className={cn(
         'flex items-center gap-3 rounded-xl text-sm font-medium text-stone-600 no-underline transition hover:bg-stone-100 hover:text-stone-950 [&.active]:bg-emerald-50 [&.active]:text-emerald-900',
-        compact ? 'shrink-0 px-3 py-2' : 'px-3 py-2.5',
+        compact ? 'min-w-0 flex-col gap-0.5 px-1 py-2 text-[.68rem] leading-none' : 'px-3 py-2.5',
       )}
     >
-      <span aria-hidden="true" className="w-4 text-center">{icon}</span>
+      <Icon aria-hidden="true" className="size-4 shrink-0" />
       {label}
     </Link>
   );

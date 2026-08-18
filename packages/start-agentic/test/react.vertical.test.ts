@@ -46,12 +46,20 @@ describe('Agentic Start onboarding', () => {
 
   it('stores only a SameSite workspace selector and never browser authority', () => {
     const writes: string[] = [];
+    const dispatched: string[] = [];
     vi.stubGlobal('document', {
       set cookie(value: string) {
         writes.push(value);
       },
     });
     vi.stubGlobal('location', { protocol: 'https:' });
+    vi.stubGlobal('Event', class BrowserEvent {
+      constructor(readonly type: string) {}
+    });
+    vi.stubGlobal('dispatchEvent', (event: { readonly type: string }) => {
+      dispatched.push(event.type);
+      return true;
+    });
 
     selectAgenticWorkspace('9D389C54-4E6E-4E69-995F-C663946CEF3E');
     clearAgenticWorkspaceSelection();
@@ -59,6 +67,10 @@ describe('Agentic Start onboarding', () => {
     expect(writes).toEqual([
       'applik8s_workspace=9d389c54-4e6e-4e69-995f-c663946cef3e; Path=/; SameSite=Lax; Secure',
       'applik8s_workspace=; Path=/; SameSite=Lax; Max-Age=0; Secure',
+    ]);
+    expect(dispatched).toEqual([
+      'applik8s:workspace-selection',
+      'applik8s:workspace-selection',
     ]);
     expect(writes.join(' ')).not.toMatch(/role|principal|authorization/i);
   });

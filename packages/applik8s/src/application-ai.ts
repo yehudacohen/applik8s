@@ -22,6 +22,9 @@ import {
 } from '@applik8s/core';
 import type { SchemaInput } from '@applik8s/sdk';
 import type { ApplicationServiceIdentityBinding } from './application-authority.js';
+import { applicationQueryBindingForOperation } from './application-queries.js';
+import { applicationModelCommandBindingForOperation } from './native-models.js';
+import type { ApplicationTrustedContext } from './trusted-context.js';
 import {
   expandApplicationCallbackDependencies,
   serializeApplicationCallback,
@@ -46,6 +49,11 @@ export interface ApplicationAgentDeploymentOptions {
 
 export interface ApplicationAgentOptions {
   readonly identity: ApplicationServiceIdentityBinding;
+  /**
+   * Application-owned server-admitted scope for conversations, runs, and
+   * usage. When absent, the causal principal remains the durable scope.
+   */
+  readonly scope?: ApplicationTrustedContext<string>;
   readonly model: ApplicationAIModelDefinition;
   readonly instructions: string | ((context: Readonly<Record<string, unknown>>) => string);
   /**
@@ -66,6 +74,10 @@ export interface ApplicationAgentOptions {
     readonly uncertainCompletion?: 'escalate' | 'retry-if-replay-safe';
   };
   readonly deployment?: ApplicationAgentDeploymentOptions;
+  /** @internal Compiler-instrumented direct calls reached by the handler. */
+  readonly __generatedCalls?: readonly unknown[];
+  /** @internal Compiler-instrumented identifiers for direct handler calls. */
+  readonly __generatedBindings?: Readonly<Record<string, unknown>>;
 }
 
 export type ApplicationAgentTool =
@@ -108,6 +120,9 @@ export function registerApplicationAgent<
   if (options.identity.kind !== 'applicationServiceIdentity') {
     throw new Error(`Application agent ${normalizedName} requires an application.serviceIdentity(...) binding.`);
   }
+  if (options.scope && options.scope.kind !== 'applicationTrustedContext') {
+    throw new Error(`Application agent ${normalizedName} scope must be declared with trustedContext(...).`);
+  }
   if (options.model.apiVersion !== 'applik8s.aiModel/v1alpha1') {
     throw new Error(`Application agent ${normalizedName} requires an AI.model(...) logical model.`);
   }
@@ -126,6 +141,19 @@ export function registerApplicationAgent<
     callback: handler as (...args: never[]) => unknown,
     allowDeferredResolution: true,
   });
+  const handlerDependencies = expandApplicationCallbackDependencies({
+    calls: options.__generatedCalls,
+    bindings: options.__generatedBindings,
+  });
+  const queries = applicationAgentQueries(
+    normalizedName,
+    handlerDependencies,
+  );
+  const operations = applicationAgentOperations(
+    state,
+    normalizedName,
+    handlerDependencies,
+  );
   const instructions = typeof options.instructions === 'string'
     ? staticInstructions(normalizedName, options.instructions)
     : closureInstructions(normalizedName, options.instructions);
@@ -159,6 +187,12 @@ export function registerApplicationAgent<
     name: normalizedName,
     stability: 'stable',
     serviceIdentity: options.identity.identity,
+    ...(options.scope ? {
+      scope: {
+        kind: 'trustedContext' as const,
+        name: options.scope.name,
+      },
+    } : {}),
     model: {
       apiVersion: options.model.apiVersion,
       name: options.model.name,
@@ -173,6 +207,8 @@ export function registerApplicationAgent<
     },
     instructions,
     tools,
+    ...(operations.length > 0 ? { operations } : {}),
+    ...(queries.length > 0 ? { queries } : {}),
     ...(options.responseSchemaDigest
       ? { responseSchemaDigest: nonEmpty(options.responseSchemaDigest, 'response schema digest') }
       : {}),
@@ -254,6 +290,20 @@ export function registerApplicationAgent<
       });
     }
   }
+  for (const query of queries) {
+    addApplicationGraphEdge(state, {
+      from: { nodeId },
+      to: query.query,
+      relationship: 'queries',
+    });
+  }
+  for (const operation of operations) {
+    addApplicationGraphEdge(state, {
+      from: { nodeId },
+      to: operation.handler,
+      relationship: 'writes',
+    });
+  }
   addApplicationProviderRequirement(state, {
     id: `requirement.${nodeId}.ai`,
     interface: 'AI',
@@ -289,6 +339,91 @@ export function registerApplicationAgent<
     identity: options.identity,
     handler,
   });
+}
+
+function applicationAgentOperations(
+  state: ApplicationGraphState,
+  agentName: string,
+  dependencies: ReturnType<typeof expandApplicationCallbackDependencies>,
+): readonly NonNullable<ApplicationAIAgentNode['operations']>[number][] {
+  const operations = new Map<string, NonNullable<ApplicationAIAgentNode['operations']>[number]>();
+  for (const value of dependencies.calls) {
+    if (applicationQueryBindingForOperation(value)) continue;
+    const binding = applicationModelCommandBindingForOperation(value);
+    const contract = getApplicationOperationContract(value as ApplicationOperationLike);
+    if (!binding || !contract) continue;
+    const aliases = Object.entries(dependencies.bindings)
+      .filter(([identifier, candidate]) => candidate === value && !/^generatedCall\d+$/.test(identifier))
+      .map(([identifier]) => identifier);
+    if (aliases.length === 0) {
+      throw new Error(
+        `Application agent ${agentName} calls mutation ${contract.id} without a stable captured identifier. Import or bind the operation handle with a module-level name.`,
+      );
+    }
+    const handler = state.graphNodes.find(
+      (candidate) => candidate.kind === 'commandHandler' && candidate.name === binding.name,
+    );
+    if (handler?.kind !== 'commandHandler') {
+      throw new Error(
+        `Application agent ${agentName} mutation ${contract.id} cannot resolve command handler ${binding.name}. Declare the model operation before the agent.`,
+      );
+    }
+    const alias = [...aliases].sort()[0] as string;
+    const operationId = applicationOperationId({
+      domain: 'models',
+      owner: contract.model,
+      operation: contract.name,
+    });
+    operations.set(operationId, {
+      alias,
+      authoringOperationId: contract.id,
+      operationId,
+      command: handler.command,
+      handler: { nodeId: handler.id },
+    });
+  }
+  return [...operations.values()].sort((left, right) => left.alias.localeCompare(right.alias));
+}
+
+function applicationAgentQueries(
+  agentName: string,
+  dependencies: ReturnType<typeof expandApplicationCallbackDependencies>,
+): readonly NonNullable<ApplicationAIAgentNode['queries']>[number][] {
+  const queries = new Map<string, NonNullable<ApplicationAIAgentNode['queries']>[number]>();
+  for (const value of dependencies.calls) {
+    const query = applicationQueryBindingForOperation(value);
+    if (!query) continue;
+    const nodeId = `query.${query.id}`;
+    const aliases = Object.entries(dependencies.bindings)
+      .filter(
+        ([identifier, candidate]) =>
+          candidate === value && !/^generatedCall\d+$/.test(identifier),
+      )
+      .map(([identifier]) => identifier);
+    if (aliases.length === 0) {
+      throw new Error(
+        `Application agent ${agentName} calls query ${query.id} without a stable captured identifier. Import or bind the query handle with a module-level name.`,
+      );
+    }
+    for (const alias of aliases) {
+      const root = alias.split('.')[0];
+      if (!root || !/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(root)) {
+        throw new Error(
+          `Application agent ${agentName} query ${query.id} has unsupported captured identifier ${JSON.stringify(alias)}.`,
+        );
+      }
+      const previous = queries.get(alias);
+      if (previous && previous.query.nodeId !== nodeId) {
+        throw new Error(
+          `Application agent ${agentName} query identifier ${alias} is ambiguous between ${previous.query.nodeId} and ${nodeId}.`,
+        );
+      }
+      queries.set(alias, { alias, query: { nodeId } });
+    }
+  }
+  return [...queries.values()].sort((left, right) =>
+    left.alias.localeCompare(right.alias),
+  );
 }
 
 function applicationAgentStateProviderNodeId(

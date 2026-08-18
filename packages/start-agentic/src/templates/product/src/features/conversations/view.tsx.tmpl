@@ -1,45 +1,59 @@
 import {
   createApplicationTanStackConnection,
-  hydrateApplicationConversationMessage,
 } from '@applik8s/ai-tanstack/client';
+import type { MessagePart } from '@tanstack/ai';
 import { useChat } from '@tanstack/ai-react';
 import { Link, useNavigate } from '@tanstack/react-router';
 import { type FormEvent, useEffect, useMemo, useState } from 'react';
-import { Conversation, ConversationDetail, WorkspaceAssistant } from '../../application';
-import { Alert, Button, Card, EmptyState, PageHeader, Skeleton } from '../../components/ui';
-import { useProductJourneyStep } from '../onboarding/view';
+import { agenticAssistantFailureMessage, agenticToolLabel, agenticToolStateLabel } from '@applik8s/start-agentic/product-presentation';
+import { Conversation, ConversationDetail, DocumentList, WorkspaceAssistant } from '../../application';
+import { Alert, Badge, Button, Card, EmptyState, Input, PageHeader, Skeleton, Textarea } from '../../components/ui';
 
 export function ConversationView({ conversationId }: { readonly conversationId: string }) {
   const detail = ConversationDetail({ conversationId }).useQuery();
-  useProductJourneyStep('resume-conversation', detail.data !== undefined);
+  const documents = DocumentList({}).useQuery();
+  const relatedDocuments = documents.data?.filter(
+    document => document.sourceConversationId === conversationId,
+  ) ?? [];
   const update = Conversation.update.useMutation();
   const navigate = useNavigate();
   const connection = useMemo(() => createApplicationTanStackConnection({ agent: WorkspaceAssistant }), []);
-  const initialMessages = useMemo(
-    () => detail.data?.messages.map(hydrateApplicationConversationMessage) ?? [],
-    [detail.data],
-  );
-  const { messages, sendMessage, isLoading, error, stop, setMessages } = useChat({
+  const { messages, sendMessage, isLoading, error, stop } = useChat({
     connection,
     threadId: conversationId,
-    initialMessages,
+    persistence: true,
   });
   const [draft, setDraft] = useState('');
   const [lastPrompt, setLastPrompt] = useState<string>();
   const [title, setTitle] = useState('');
+  const [startedAt, setStartedAt] = useState<number>();
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const latestRun = detail.data?.runs[0];
 
   useEffect(() => setTitle(detail.data?.conversation.title ?? ''), [detail.data?.conversation.title]);
   useEffect(() => {
-    if (detail.data && !isLoading) setMessages(initialMessages);
-  }, [detail.data, initialMessages, isLoading, setMessages]);
+    if (!isLoading || startedAt === undefined) {
+      setElapsedSeconds(0);
+      return;
+    }
+    const updateElapsed = () => setElapsedSeconds(Math.floor((Date.now() - startedAt) / 1_000));
+    updateElapsed();
+    const timer = globalThis.setInterval(updateElapsed, 1_000);
+    return () => globalThis.clearInterval(timer);
+  }, [isLoading, startedAt]);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const message = draft.trim();
     if (!message) return;
     setLastPrompt(message);
+    setStartedAt(Date.now());
     setDraft('');
-    await sendMessage(message);
+    try {
+      await sendMessage(message);
+    } finally {
+      setStartedAt(undefined);
+    }
   }
 
   async function rename(event: FormEvent<HTMLFormElement>) {
@@ -57,8 +71,8 @@ export function ConversationView({ conversationId }: { readonly conversationId: 
   return (
     <div>
       <Link to="/app" className="text-sm font-semibold text-emerald-800">← Back to Copilot</Link>
-      <PageHeader eyebrow="Persistent conversation" title={detail.data?.conversation.title ?? 'New conversation'} description="This URL is stable. History is restored from the admitted identity scope after reload." />
-      {detail.error ? <Alert tone="warning" title="Conversation unavailable">The shell remains usable. Retry after the conversation provider recovers.</Alert> : null}
+      <PageHeader eyebrow="Workspace assistant" title={detail.data?.conversation.title ?? 'New conversation'} description="Continue where you left off, or ask the assistant to turn an idea into a document your team can refine." />
+      {detail.error ? <Alert tone="warning" title="Conversation unavailable">Your other work remains available. Try loading this conversation again.</Alert> : null}
       <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_18rem]">
         <Card className="min-h-[32rem]">
           {!detail.data && messages.length === 0 ? <><Skeleton className="h-16" /><Skeleton className="mt-3 h-24" /></> : null}
@@ -67,32 +81,43 @@ export function ConversationView({ conversationId }: { readonly conversationId: 
             {messages.map(message => (
               <article key={message.id} className={message.role === 'user' ? 'ml-auto max-w-[85%] rounded-2xl bg-emerald-900 p-4 text-white' : 'mr-auto max-w-[92%] rounded-2xl bg-stone-100 p-4 text-stone-900'}>
                 <strong className="text-xs uppercase tracking-wide opacity-70">{message.role}</strong>
-                {message.parts.map((part, index) => part.type === 'text' ? <p className="mt-1 whitespace-pre-wrap text-sm leading-6" key={index}>{part.content}</p> : null)}
+                {message.parts.map(part => <ConversationPart key={`${message.id}:${JSON.stringify(part)}`} part={part} />)}
               </article>
             ))}
           </div>
-          {error ? <div className="mt-4"><Alert tone="danger" title="Assistant run ended"><p>{assistantFailureMessage(error)} No product change is complete unless it appears in Documents.</p>{lastPrompt ? <Button type="button" variant="secondary" className="mt-3" onClick={() => setDraft(lastPrompt)}>Restore prompt</Button> : null}</Alert></div> : null}
+          {isLoading ? <div role="status" className="mt-4 rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-950"><strong>{elapsedSeconds > 45 ? 'This is taking longer than expected.' : 'The assistant is working.'}</strong><p className="mt-1 text-emerald-800">Progress appears above. {elapsedSeconds > 45 ? 'You can stop safely; saved changes already visible in Documents will remain.' : `${elapsedSeconds}s elapsed.`}</p></div> : null}
+          {error ? <div className="mt-4"><Alert tone="danger" title="Assistant run ended"><p>{agenticAssistantFailureMessage(error)} No product change is complete unless it appears in Documents.</p>{lastPrompt ? <Button type="button" variant="secondary" className="mt-3" onClick={() => setDraft(lastPrompt)}>Restore prompt</Button> : null}</Alert></div> : null}
+          {!error && latestRun && ['failed', 'interrupted', 'cancelled'].includes(latestRun.status) ? <div className="mt-4"><Alert tone="danger" title="The latest assistant run did not complete"><p>{latestRun.terminalReason ? agenticAssistantFailureMessage(new Error(latestRun.terminalReason)) : `The durable run ended as ${latestRun.status}.`} No product change is complete unless it appears in Documents.</p><p className="mt-2 text-xs">Attempt ended {new Date(latestRun.updatedAt).toLocaleString()}. You can revise the prompt and retry safely.</p></Alert></div> : null}
           <form onSubmit={submit} className="mt-5 grid gap-3 border-t border-stone-200 pt-5">
             <label htmlFor="conversation-prompt" className="text-sm font-semibold">Ask, create, analyze, or update</label>
-            <textarea id="conversation-prompt" value={draft} onChange={event => setDraft(event.currentTarget.value)} disabled={isLoading} placeholder="Create a document about our launch plan" />
+            <Textarea id="conversation-prompt" value={draft} onChange={event => setDraft(event.currentTarget.value)} disabled={isLoading} placeholder="Create a document about our launch plan" />
             <div className="flex gap-2"><Button type="submit" disabled={isLoading || !draft.trim()}>{isLoading ? 'Working…' : 'Send'}</Button>{isLoading ? <Button type="button" variant="secondary" onClick={stop}>Stop</Button> : null}</div>
           </form>
         </Card>
         <aside className="space-y-4">
-          {detail.data ? <Card><h2 className="font-semibold">Conversation</h2><form onSubmit={rename} className="mt-3 grid gap-2"><label htmlFor="conversation-title" className="text-sm">Title</label><input id="conversation-title" value={title} onChange={event => setTitle(event.currentTarget.value)} /><Button type="submit" variant="secondary" disabled={update.pending || !title.trim()}>Rename</Button></form><Button type="button" variant="ghost" className="mt-3 w-full" onClick={() => void archive()}>Archive</Button></Card> : null}
+          {relatedDocuments.some(document => document.state === 'in-review') ? <Card className="border-amber-200 bg-amber-50/70"><div className="flex items-center justify-between gap-3"><h2 className="font-semibold">Review in progress</h2><Badge tone="warning">Needs attention</Badge></div><p className="mt-2 text-sm leading-6 text-stone-600">The durable review belongs to the workspace Inbox, where only an admitted reviewer can decide it.</p><Button asChild type="button" variant="secondary" className="mt-3"><Link to="/app/inbox">Open Inbox</Link></Button></Card> : null}
+          <Card>
+            <div className="flex items-center justify-between gap-3">
+              <h2 className="font-semibold">Durable results</h2>
+              <span className="text-xs text-stone-500">{relatedDocuments.length}</span>
+            </div>
+            {relatedDocuments.length === 0 ? <p className="mt-3 text-sm leading-6 text-stone-600">Authoritative work created by this conversation will appear here and remain available after the stream ends.</p> : <div className="mt-3 space-y-2">{relatedDocuments.map(document => <Link key={document.id} to="/app/documents/$documentId" params={{ documentId: document.id }} className="block rounded-xl border border-stone-200 p-3 text-stone-900 no-underline hover:border-emerald-300"><strong className="block text-sm">{document.title}</strong><span className="mt-1 block text-xs text-stone-500">{document.state} · revision {document.revision}</span></Link>)}</div>}
+          </Card>
+          {detail.data ? <Card><h2 className="font-semibold">Conversation</h2><form onSubmit={rename} className="mt-3 grid gap-2"><label htmlFor="conversation-title" className="text-sm">Title</label><Input id="conversation-title" value={title} onChange={event => setTitle(event.currentTarget.value)} /><Button type="submit" variant="secondary" disabled={update.pending || !title.trim()}>Rename</Button></form><Button type="button" variant="ghost" className="mt-3 w-full" onClick={() => void archive()}>Archive</Button></Card> : null}
+          {detail.data?.runs.length ? <Card><div className="flex items-center justify-between gap-3"><h2 className="font-semibold">Run history</h2><Badge tone={latestRun?.status === 'completed' ? 'success' : latestRun?.status === 'running' ? 'info' : 'warning'}>{latestRun?.status}</Badge></div><ol className="mt-3 space-y-2">{detail.data.runs.slice(0, 5).map(run => <li key={run.id} className="border-t border-stone-100 pt-2 text-xs text-stone-600"><div className="flex justify-between gap-3"><strong className="text-stone-800">{run.status}</strong><time>{new Date(run.updatedAt).toLocaleString()}</time></div>{run.terminalReason ? <p className="mt-1 line-clamp-2">{agenticAssistantFailureMessage(new Error(run.terminalReason))}</p> : null}</li>)}</ol></Card> : null}
           <Card>
             <p className="eyebrow">Trust boundary</p>
-            <p className="mt-2 text-sm leading-6 text-stone-600">The assistant receives only its declared typed tools. Committed documents—not streamed text—are authoritative.</p>
+            <p className="mt-2 text-sm leading-6 text-stone-600">Only saved changes that appear in Documents count as completed work. A chat response alone never changes your workspace.</p>
             <details className="mt-4 border-t border-stone-200 pt-4 text-sm">
               <summary className="cursor-pointer font-semibold text-stone-900">How this execution works</summary>
               <dl className="mt-3 grid gap-3 text-stone-600">
-                <div><dt className="font-semibold text-stone-800">Logical model</dt><dd>fast · deployment selects the qualified provider server-side</dd></div>
-                <div><dt className="font-semibold text-stone-800">Declared tools</dt><dd>Create and update documents through admitted model operations</dd></div>
-                <div><dt className="font-semibold text-stone-800">Authority</dt><dd>Every tool call is re-authorized with causal-principal lineage</dd></div>
-                <div><dt className="font-semibold text-stone-800">Data boundary</dt><dd>External profiles may send prompt content to the selected inference provider; Starter remains deterministic and local</dd></div>
-                <div><dt className="font-semibold text-stone-800">Completion</dt><dd>Stopping can leave provider completion uncertain. Only authoritative model changes are presented as committed work</dd></div>
+                <div><dt className="font-semibold text-stone-800">Model</dt><dd>fast · selected by your deployment configuration</dd></div>
+                <div><dt className="font-semibold text-stone-800">Workspace access</dt><dd>The assistant can create and update Documents only when your account could perform the same action</dd></div>
+                <div><dt className="font-semibold text-stone-800">Audit trail</dt><dd>Saved changes retain the person, conversation, and assistant run that produced them</dd></div>
+                <div><dt className="font-semibold text-stone-800">Data boundary</dt><dd>Your prompt may be sent to the configured inference provider</dd></div>
+                <div><dt className="font-semibold text-stone-800">Completion</dt><dd>Stopping may interrupt a response; saved work remains visible in Documents</dd></div>
               </dl>
-              <Link to="/app/usage" className="mt-4 inline-block font-semibold text-emerald-800">Inspect usage evidence →</Link>
+              <Link to="/app/usage" className="mt-4 inline-block font-semibold text-emerald-800">View usage and limits →</Link>
             </details>
           </Card>
         </aside>
@@ -101,19 +126,10 @@ export function ConversationView({ conversationId }: { readonly conversationId: 
   );
 }
 
-function assistantFailureMessage(error: Error) {
-  const message = error.message.toLowerCase();
-  if (/credential|unauthorized|forbidden|\b401\b|\b403\b/.test(message)) {
-    return 'The selected inference provider rejected its server-side credential.';
-  }
-  if (/timeout/.test(message)) {
-    return 'The run exceeded its bounded wait. You can restore the prompt and retry.';
-  }
-  if (/abort|cancel/.test(message)) {
-    return 'The run was cancelled before the framework observed a terminal provider result.';
-  }
-  if (/\b5\d\d\b|unavailable|backend|provider|inference|network|fetch/.test(message)) {
-    return 'The inference runtime or selected provider is temporarily unavailable.';
-  }
-  return 'The inference runtime did not return a usable terminal result. Check provider status in Launchpad or retry.';
+function ConversationPart({ part }: { readonly part: MessagePart }) {
+  if (part.type === 'text') return <p className="mt-1 whitespace-pre-wrap text-sm leading-6">{part.content}</p>;
+  if (part.type === 'tool-call') return <div className="mt-2 rounded-xl border border-stone-200 bg-white p-3 text-xs"><strong>{agenticToolLabel(part.name)}</strong><span className="ml-2 text-stone-500">{agenticToolStateLabel(part.state)}</span></div>;
+  if (part.type === 'tool-result') return <div className="mt-2 rounded-xl border border-stone-200 bg-white p-3 text-xs"><strong>Authoritative tool result</strong><span className="ml-2 text-stone-500">{part.error ? 'failed' : agenticToolStateLabel(part.state)}</span></div>;
+  if (part.type === 'thinking') return <p className="mt-2 text-xs text-stone-500">Planning the next step…</p>;
+  return null;
 }

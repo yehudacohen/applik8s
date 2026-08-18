@@ -119,7 +119,7 @@ function ApplicationOperationsDashboard(
     createElement('div', { key: 'summary', style: styles.summaryGrid }, [
       summaryMetric('Product records', visibleActivity.reduce((total, [, rows]) => total + rows.length, 0)),
       summaryMetric('Runtime observations', visibleRuntime.reduce((total, [, rows]) => total + rows.length, 0)),
-      summaryMetric('Declared components', declared.length),
+      summaryMetric('Topology declarations', declared.length),
       summaryMetric('Needs attention', attention.length),
     ]),
     createElement('section', {
@@ -154,8 +154,8 @@ function ApplicationOperationsDashboard(
     ]),
     operationsGroup('Product activity', 'What people and managed executions have actually done.', visibleActivity),
     operationsGroup('Runtime health', 'Current provider and delivery evidence. Absent observations stay absent rather than becoming synthetic incidents.', visibleRuntime),
-    operationsGroup('Deployment contract', 'Declared graph components and go-live duties are intent, not runtime health.', [
-      ['Declared topology', declared, 'Components inferred from the compiled application graph'],
+    operationsGroup('Deployment contract', 'Compiled topology and go-live duties describe what must exist; the runtime evidence above proves what is healthy now.', [
+      ['Compiled topology', declared, 'Deployable responsibilities inferred from the application graph'],
       ...visibleGovernance,
     ]),
   ]);
@@ -314,11 +314,11 @@ function attentionPriority(value: unknown): number {
   ) {
     return 0;
   }
-  if (
-    /waiting|pending|retry|installing|unknown|missing|reconcil|terminating/.test(
-      state,
-    )
-  ) {
+  // A durable workflow waiting for a human decision is healthy steady state.
+  // Likewise, bounded reconciliation is activity rather than an incident.
+  // Elevate only states that themselves communicate loss of progress or
+  // unavailable truth; age/SLO-specific policies can layer on separately.
+  if (/retry|unknown|missing/.test(state)) {
     return 1;
   }
   return 2;

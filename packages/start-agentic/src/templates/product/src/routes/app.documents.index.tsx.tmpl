@@ -1,0 +1,4 @@
+import { createFileRoute } from '@tanstack/react-router';
+import { DocumentsView } from '../features/documents/view';
+
+export const Route = createFileRoute('/app/documents/')({ component: DocumentsView });

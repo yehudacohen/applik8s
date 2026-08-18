@@ -553,6 +553,29 @@ Account.create.beforeCommit({ history: true }, async (account, input) => {
     expect(instrumented).not.toContain('transaction:');
   });
 
+  it('captures model commands staged through the transaction context', () => {
+    const source = `
+Review.create.beforeCommit({ history: true }, async (review, _input, context) => {
+  context.send(Document.update, {
+    identity: review.value.documentId,
+    patch: { state: 'in-review' },
+  });
+});
+`;
+
+    const instrumented = instrumentApplicationCallbackRegistrations(
+      source,
+      '/workspace/src/reviews.ts',
+    );
+
+    expect(instrumented).toContain(
+      '__generatedCalls: [Document, Document.update]',
+    );
+    expect(instrumented).toContain(
+      '__generatedModelBindings: { "Document": Document, "Document.update": Document.update }',
+    );
+  });
+
   it('preserves direct dependency inference through same-file named callbacks', () => {
     const source = `
 async function createAccount(account, input) {
@@ -701,6 +724,41 @@ Post.on.create({}, async created => {
     expect(instrumentedNested).toContain('value: CreateCredentialLink');
   });
 
+  it('never emits hoisted function-local helpers as module-scope metadata values', () => {
+    const source = `
+import { boundFetch } from './transport.js';
+export function createTransport() {
+  const request = boundFetch();
+  return createMultiplexer(request);
+}
+function createMultiplexer(request) {
+  run();
+  function run() {
+    request('/events');
+    scheduleRestart();
+  }
+  function scheduleRestart() {
+    queueMicrotask(run);
+  }
+  return { run };
+}
+`;
+
+    const instrumented = instrumentApplicationCallbackRegistrations(
+      source,
+      '/workspace/src/transport.ts',
+    );
+
+    expect(instrumented).toContain('identifier: "boundFetch", value: boundFetch');
+    expect(instrumented).not.toContain('identifier: "run", value: run');
+    expect(instrumented).not.toContain(
+      'identifier: "scheduleRestart", value: scheduleRestart',
+    );
+    expect(instrumented).not.toContain(
+      'identifier: "queueMicrotask", value: queueMicrotask',
+    );
+  });
+
   it('captures guarded relational handles without evaluating their methods during discovery', () => {
     const source = `
 const Database = application.database.postgres('catalog', options);
@@ -750,6 +808,34 @@ Account.create.beforeCommit({ history: true }, async (account, input) => {
 
     expect(instrumented).toContain(
       '__generatedAwaitedCalls: { "Account": Account, "CreateCredentialLink": CreateCredentialLink }',
+    );
+  });
+
+  it('records awaited direct model operations for named lifecycle callbacks', () => {
+    const source = `
+async function evaluateRun(created) {
+  await Evaluations.EvaluationRun.update({
+    identity: created.value.id,
+    patch: { status: 'running' },
+  });
+  for (const result of created.value.results) {
+    await Evaluations.EvaluationResult.create(result);
+  }
+}
+
+Evaluations.EvaluationRun.on.create(
+  { processor: { replicas: 1 } },
+  evaluateRun,
+);
+`;
+
+    const instrumented = instrumentApplicationCallbackRegistrations(
+      source,
+      '/workspace/src/evaluations.ts',
+    );
+
+    expect(instrumented).toContain(
+      '__generatedAwaitedCalls: { "Evaluations.EvaluationRun.update": Evaluations.EvaluationRun.update, "Evaluations.EvaluationResult.create": Evaluations.EvaluationResult.create }',
     );
   });
 

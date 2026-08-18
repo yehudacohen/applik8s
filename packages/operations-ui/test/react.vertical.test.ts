@@ -50,7 +50,8 @@ describe('maintained operations React surface', () => {
       { snapshot, title: 'Example operations' },
     ));
 
-    expect(html).toContain('Declared topology');
+    expect(html).toContain('Compiled topology');
+    expect(html).toContain('Topology declarations');
     expect(html).toContain('ExampleWorkflow');
     expect(html).toContain('No observed failures, blocked work, degraded providers, or unresolved runtime waits.');
   });

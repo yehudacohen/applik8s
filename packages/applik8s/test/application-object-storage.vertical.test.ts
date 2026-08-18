@@ -6,6 +6,7 @@ import {
 	setApplicationObjectStorageRuntimeFactory,
 } from "@applik8s/applik8s";
 import { afterEach, describe, expect, it } from "vitest";
+import { applicationCallableProviderDependencies } from "../src/application-provider-dependencies.js";
 
 describe("provider-neutral application object stores", () => {
 	afterEach(() => setApplicationObjectStorageRuntimeFactory(undefined));
@@ -73,6 +74,33 @@ describe("provider-neutral application object stores", () => {
 		} finally {
 			uninstall();
 		}
+	});
+
+	it("exposes direct store handles as compiler-hydrated ObjectStorage dependencies", () => {
+		const application = app("compiled-objects");
+		application.provide(
+			ObjectStorage,
+			ObjectStorage.s3({
+				bucket: "compiled-objects",
+				region: "us-east-1",
+				ownership: "external",
+			}),
+		);
+		const artifacts = application.objectStore("artifacts", {
+			mode: "immutable",
+			maxObjectBytes: 1_000,
+			contentTypes: ["text/plain"],
+		});
+
+		expect(
+			applicationCallableProviderDependencies({ ArtifactObjects: artifacts }),
+		).toEqual([{
+			identifier: "ArtifactObjects",
+			provider: {
+				interface: "ObjectStorage",
+				nodeId: "provider.object-storage",
+			},
+		}]);
 	});
 
 	it("records a bounded S3-compatible logical store and hydrates runtime I/O without exposing credentials", async () => {

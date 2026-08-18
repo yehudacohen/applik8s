@@ -1,0 +1,95 @@
+import { type FormEvent, useState } from 'react';
+import { ArtifactObjects, KnowledgeSource, KnowledgeSources } from '../../application';
+import { Badge, Button, Card, EmptyState, Input, PageHeader, RouteState, Skeleton, Textarea } from '../../components/ui';
+
+export function KnowledgeView() {
+  const sources = KnowledgeSources({}).useQuery();
+  const create = KnowledgeSource.create.useMutation();
+  const update = KnowledgeSource.update.useMutation();
+  const [adding, setAdding] = useState(false);
+  const [title, setTitle] = useState('');
+  const [content, setContent] = useState('');
+  const [sourceUrl, setSourceUrl] = useState('');
+  const [file, setFile] = useState<File>();
+  const [phase, setPhase] = useState<'idle' | 'hashing' | 'uploading' | 'verifying' | 'saving'>('idle');
+  const [notice, setNotice] = useState<string>();
+  async function importFile(file: File | undefined) {
+    if (!file) return;
+    if (file.size > 1_000_000) {
+      setNotice('This starter import is bounded to 1 MB. Use the object-storage ingestion adapter for larger sources.');
+      return;
+    }
+    setFile(file);
+    setTitle(current => current || file.name.replace(/\.[^.]+$/u, ''));
+    setContent('');
+    setSourceUrl('');
+    setNotice(`Prepared ${file.name}. Its digest and object metadata will be verified before this source becomes agent context.`);
+  }
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    try {
+      const verified = file ? await uploadKnowledgeFile(file, setPhase) : undefined;
+      setPhase('saving');
+      await create({
+        title: title.trim(),
+        content: file ? '' : content.trim(),
+        kind: file ? 'upload' : sourceUrl.trim() ? 'url' : 'text',
+        ...(sourceUrl.trim() ? { sourceUrl: sourceUrl.trim() } : {}),
+        ...(verified ? {
+          id: verified.objectId,
+          objectKey: verified.key,
+          mediaType: verified.contentType,
+          size: verified.size,
+          sha256: verified.sha256,
+          uploadReceipt: verified.receipt,
+        } : {}),
+      });
+      setTitle(''); setContent(''); setSourceUrl(''); setFile(undefined); setAdding(false); await sources.refresh();
+      setNotice(file ? 'Upload complete. Extraction and indexing are running in the background.' : 'Knowledge added. New assistant runs can use it immediately.');
+    } catch { setNotice('The source was not added. Your text is still here so you can try again.'); }
+    finally { setPhase('idle'); }
+  }
+  const busy = phase !== 'idle' || create.pending;
+  return <div><PageHeader eyebrow="Agent context" title="Knowledge" description="Add trusted product, customer, and policy sources that your workspace agents can use." action={<Button type="button" onClick={() => setAdding(value => !value)}>{adding ? 'Close' : 'Add source'}</Button>} />{adding ? <Card className="mb-6 border-emerald-200 bg-emerald-50/60"><form onSubmit={submit} className="grid gap-4"><label className="text-sm font-medium">Upload a source<Input className="mt-2 block w-full text-sm" type="file" accept=".txt,.md,.markdown,.json,text/plain,text/markdown,application/json" onChange={event => void importFile(event.currentTarget.files?.[0])} /><span className="mt-1 block text-xs text-stone-500">Text, Markdown, or JSON up to 1 MB. We’ll extract and index it after upload.</span></label><label className="text-sm font-medium">Title<Input className="mt-2" value={title} onChange={event => setTitle(event.currentTarget.value)} placeholder="Product positioning" /></label><label className="text-sm font-medium">Source URL (optional)<Input className="mt-2" value={sourceUrl} onChange={event => setSourceUrl(event.currentTarget.value)} placeholder="https://…" /></label>{!file ? <label className="text-sm font-medium">Content<Textarea className="mt-2 min-h-64" value={content} onChange={event => setContent(event.currentTarget.value)} placeholder="Paste source text the agent may use." /></label> : <div className="rounded-xl bg-white p-4 text-sm text-stone-600"><strong className="block text-stone-900">{file.name}</strong>Ready to upload and index.</div>}<Button type="submit" disabled={busy || !title.trim() || (!file && !content.trim())}>{phaseLabel(phase, create.pending)}</Button></form></Card> : null}{notice ? <p role="status" className="mb-4 text-sm text-stone-600">{notice}</p> : null}{sources.phase === 'error' ? <RouteState tone="warning" title="Knowledge is temporarily unavailable" description="Your sources are safe. Retry the Builder connection." action={<Button variant="secondary" onClick={() => void sources.refresh()}>Retry</Button>} /> : null}{sources.data === undefined && sources.phase !== 'error' ? <Skeleton className="h-60" /> : sources.data?.length === 0 ? <EmptyState title="No knowledge sources yet" description="Add a concise source to ground the Workspace assistant in your product, customers, or policies." /> : <div className="grid gap-4 md:grid-cols-2">{sources.data?.map(source => <Card key={source.id}><div className="flex items-center justify-between"><Badge tone={source.state === 'ready' ? 'success' : source.state === 'failed' ? 'danger' : 'neutral'}>{source.state}</Badge><span className="text-xs text-stone-500">{source.kind}{source.size ? ` · ${formatBytes(source.size)}` : ''}</span></div><h2 className="mt-4 font-semibold">{source.title}</h2><p className="mt-2 line-clamp-4 whitespace-pre-wrap text-sm leading-6 text-stone-600">{source.content || (source.state === 'processing' ? 'Extraction and indexing are in progress.' : 'No readable content was produced.')}</p>{source.processingStage ? <p className="mt-3 text-xs text-stone-500">Stage: {source.processingStage}{source.chunkCount ? ` · ${source.chunkCount} chunk${source.chunkCount === 1 ? '' : 's'}` : ''}</p> : null}{source.failureReason ? <p className="mt-3 rounded-xl bg-red-50 p-3 text-sm text-red-800">{source.failureReason}</p> : null}{source.sha256 ? <p className="mt-3 truncate font-mono text-[11px] text-stone-500" title={source.sha256}>sha256 {source.sha256}</p> : null}{source.sourceUrl ? <a href={source.sourceUrl} className="mt-3 inline-block text-sm font-semibold text-emerald-800" target="_blank" rel="noreferrer">Open source ↗</a> : null}{source.state === 'ready' || source.state === 'disabled' ? <Button type="button" variant="ghost" className="mt-4 w-full" onClick={() => void update({ identity: source.id, patch: { state: source.state === 'ready' ? 'disabled' : 'ready' } }).then(() => sources.refresh())}>{source.state === 'ready' ? 'Disable for agents' : 'Enable for agents'}</Button> : null}</Card>)}</div>}</div>;
+}
+
+async function uploadKnowledgeFile(
+  file: File,
+  phase: (value: 'idle' | 'hashing' | 'uploading' | 'verifying' | 'saving') => void,
+) {
+  phase('hashing');
+  const sha256 = [...new Uint8Array(await crypto.subtle.digest('SHA-256', await file.arrayBuffer()))]
+    .map(byte => byte.toString(16).padStart(2, '0'))
+    .join('');
+  const contentType = normalizedKnowledgeContentType(file);
+  const intent = await ArtifactObjects.createUpload({ contentType, size: file.size, sha256 });
+  phase('uploading');
+  const response = await fetch(intent.url, {
+    method: intent.method,
+    credentials: 'same-origin',
+    headers: intent.headers,
+    body: file,
+  });
+  if (!response.ok) throw new Error(`Knowledge upload failed with HTTP ${response.status}.`);
+  phase('verifying');
+  return ArtifactObjects.completeUpload({ key: intent.object.key, contentType, size: file.size, sha256 });
+}
+
+function normalizedKnowledgeContentType(file: File) {
+  const candidate = file.type.toLowerCase();
+  if (candidate === 'application/json' || candidate === 'text/markdown') return candidate;
+  return 'text/plain';
+}
+
+function phaseLabel(phase: 'idle' | 'hashing' | 'uploading' | 'verifying' | 'saving', pending: boolean) {
+  if (phase === 'hashing') return 'Checking integrity…';
+  if (phase === 'uploading') return 'Uploading…';
+  if (phase === 'verifying') return 'Verifying…';
+  if (phase === 'saving' || pending) return 'Adding source…';
+  return 'Add to agent context';
+}
+
+function formatBytes(value: number) {
+  if (value < 1_024) return `${value} B`;
+  return `${(value / 1_024).toFixed(1)} KB`;
+}

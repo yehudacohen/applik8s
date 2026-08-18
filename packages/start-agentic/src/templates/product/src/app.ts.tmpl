@@ -8,5 +8,5 @@ export const application = app("applik8s-template-project", {
 });
 
 function applicationNamespace(name: string): string {
-  return name + '-system';
+  return `${name}-system`;
 }

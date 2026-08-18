@@ -213,6 +213,7 @@ export function applik8sVite(options: Applik8sViteOptions = {}): PluginOption {
       modelExports: discovered.value.modelExports,
       signalExports: discovered.value.signalExports,
       agentExports: discovered.value.agentExports,
+      objectStoreExports: discovered.value.objectStoreExports,
     });
     const metadataPath = resolve(root, '.applik8s/application-facade.json');
     await mkdir(dirname(metadataPath), { recursive: true });

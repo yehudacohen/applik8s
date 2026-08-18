@@ -436,7 +436,14 @@ function normalizedSelection(
     ? selection.operation
     : selection;
   const contract = getApplicationOperationContract(operation);
-  if (!contract) throw new Error('Application authority selections must be operation handles or their typed scopes.');
+  if (!contract) {
+    const description = typeof operation === 'function'
+      ? operation.name || '<anonymous function>'
+      : `${Object.prototype.toString.call(operation)} with keys ${Reflect.ownKeys(operation as object).map(String).join(', ') || '<none>'}`;
+    throw new Error(
+      `Application authority selection ${description} must be an operation handle or one of its typed scopes.`,
+    );
+  }
   const authority = Reflect.get(operation as object, 'authority') as
     | {
         readonly scope: ApplicationScopeExpression;

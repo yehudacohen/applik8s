@@ -1,12 +1,11 @@
 {
   "schemaVersion": 3,
   "baseline": {
-    "repository": "/Users/yehudac/workspace/stimp",
-    "revision": "602ec975f7c29c9e2faa7b767ec218745590c7cf",
-    "inventoryDigest": "sha256:cc277b8ba332ef66292d59ee20c0152c52202b87d6426e30dfea84ddc21b98df"
+    "id": "agentic-product-baseline",
+    "version": 1
   },
   "behaviorFixture": {
-    "test": "packages/start-agentic/test/stimp-parity.vertical.test.ts",
+    "test": "packages/start-agentic/test/product-baseline.vertical.test.ts",
     "generatedApplication": "Agentic Start research-workspace",
     "contracts": [
       "deterministic feature-first generation",
@@ -15,14 +14,14 @@
       "explicit plan/deploy/status/destroy lifecycle",
       "maintained conversations, approvals, artifacts, evaluations, usage, and operations modules",
       "externally owned provider boundaries",
-      "no Stimp runtime or source dependency"
+      "no external product runtime or source dependency"
     ]
   },
   "capabilityMap": {
-    "document": "docs/v07-agentic-start-stimp-capability-map.md",
-    "scope": "complete committed agent-saas-starter product surface",
+    "document": "docs/v07-agentic-start-capability-map.md",
+    "scope": "complete Agentic Start product surface",
     "implementationColumns": [
-      "Stimp authority",
+      "Product capability",
       "Applik8s implementation",
       "Agentic Start product shape",
       "Current"
@@ -43,12 +42,12 @@
     {
       "id": "deterministic-generation",
       "scripts": [
-        "check:v07:stimp",
+        "check:v07:product-baseline",
         "check:package-consumer"
       ],
       "evidence": [
         {
-          "path": "packages/start-agentic/test/stimp-parity.vertical.test.ts",
+          "path": "packages/start-agentic/test/product-baseline.vertical.test.ts",
           "marker": "generates the same feature-first product twice"
         }
       ]
@@ -78,7 +77,7 @@
         },
         {
           "path": "packages/e2e/browser/agentic-product-golden-path.e2e.test.ts",
-          "marker": "renders maintained provider-neutral account security without generated provider plumbing"
+          "marker": "agenticProductEvidenceJourneys.maintainedAccount.test"
         },
         {
           "path": "scripts/run-identity-start-dedicated-live.ts",
@@ -97,7 +96,7 @@
           "marker": "persists, reloads, renames, and archives a generated research conversation"
         },
         {
-          "path": "packages/start-agentic/test/stimp-parity.vertical.test.ts",
+          "path": "packages/start-agentic/test/product-baseline.vertical.test.ts",
           "marker": "await Usage.UsageFact.create({"
         }
       ]
@@ -130,7 +129,7 @@
     {
       "id": "billing-and-stripe-boundary",
       "scripts": [
-        "check:v07:stimp",
+        "check:v07:product-baseline",
         "check:v07:agentic-start:orbstack"
       ],
       "evidence": [
@@ -140,7 +139,7 @@
         },
         {
           "path": "packages/e2e/browser/agentic-product-golden-path.e2e.test.ts",
-          "marker": "uses the provider-neutral Starter billing path without Stripe credentials"
+          "marker": "agenticProductEvidenceJourneys.starterBilling.test"
         },
         {
           "path": "packages/billing-stripe/test/stripe.vertical.test.ts",
@@ -241,96 +240,72 @@
     {
       "id": "onboarding-control-center",
       "disposition": "preserved",
-      "baselinePath": "examples/agent-saas-app/src/components/ui/onboarding-experience.tsx",
-      "baselineBlob": "fdfdde723b26d07662a6a96153e2ade7a242ad34",
       "evidence": "packages/start-agentic/src/react.ts",
       "marker": "AgenticStartOnboarding"
     },
     {
       "id": "safe-configuration-guide",
       "disposition": "improved",
-      "baselinePath": "examples/agent-saas-app/src/onboarding/guide.ts",
-      "baselineBlob": "61e5753aeb3eabb76c57c8cf7e731aa9d150d40e",
       "evidence": "packages/start-agentic/src/react.ts",
       "marker": "Starter is the credential-free, explicitly non-production first-run default"
     },
     {
       "id": "health-readiness",
       "disposition": "improved",
-      "baselinePath": "examples/agent-saas-app/src/routes/health.ts",
-      "baselineBlob": "71ebd7e2e601d9a8bb232979946f8a63fae91501",
       "evidence": "packages/operations-ui/src/index.ts",
       "marker": "applicationOperationalObservations"
     },
     {
       "id": "identity-session",
       "disposition": "improved",
-      "baselinePath": "examples/agent-saas-app/src/routes/auth.session.ts",
-      "baselineBlob": "2e78731f48b3df00e5b8ea451b4977eabb8df04a",
       "evidence": "packages/identity/src/server.ts",
       "marker": "path[0] === 'session'"
     },
     {
       "id": "application-owned-tenancy",
       "disposition": "improved",
-      "baselinePath": "examples/agent-saas-app/src/routes/tenants.index.ts",
-      "baselineBlob": "fab44723b37a974ba27fe527409b839bd4fe71ca",
       "evidence": "docs/v07-baseline-and-contract-inventory.md",
       "marker": "A generic `tenantId` framework primitive"
     },
     {
       "id": "usage-entitlements",
       "disposition": "improved",
-      "baselinePath": "examples/agent-saas-app/src/routes/billing.entitlements.ts",
-      "baselineBlob": "d4ebd874862163cd6d73efd28323658a1adcc828",
       "evidence": "packages/usage/src/index.ts",
       "marker": "applicationEntitlements"
     },
     {
       "id": "conversation-inbox",
       "disposition": "improved",
-      "baselinePath": "examples/agent-saas-app/src/routes/chat.conversations.ts",
-      "baselineBlob": "87f9b75955d4e489308df9758c8205882460aeb7",
       "evidence": "packages/conversations/src/module.ts",
       "marker": "Conversation"
     },
     {
       "id": "run-administration",
       "disposition": "improved",
-      "baselinePath": "examples/agent-saas-app/src/routes/admin.runs.index.ts",
-      "baselineBlob": "118faac8be85c746fed243ce04ba08a55ee7d018",
       "evidence": "packages/operations-ui/src/react.ts",
       "marker": "Runs"
     },
     {
       "id": "operation-authority-administration",
       "disposition": "improved",
-      "baselinePath": "examples/agent-saas-app/src/routes/admin.role-policies.ts",
-      "baselineBlob": "faf0f38ccbabc2f9459205baa5146966e2170750",
       "evidence": "packages/operations/src/authority.ts",
       "marker": "createRuntimeRole"
     },
     {
       "id": "evaluation-history",
       "disposition": "improved",
-      "baselinePath": "examples/agent-saas-app/src/evals/review.ts",
-      "baselineBlob": "b65d1326eee11f81c184353ebeb92f85d37edd0b",
       "evidence": "packages/evals/src/index.ts",
       "marker": "EvaluationResult"
     },
     {
       "id": "artifact-provenance",
       "disposition": "improved",
-      "baselinePath": "examples/agent-saas-app/src/artifacts/plan.ts",
-      "baselineBlob": "1bddc23319031793b1e18e0c4c9e2b0d448a2b7f",
       "evidence": "packages/artifacts/src/index.ts",
       "marker": "applicationArtifacts"
     },
     {
       "id": "durable-review-workflow",
       "disposition": "improved",
-      "baselinePath": "examples/agent-saas-app/src/workflows/review.ts",
-      "baselineBlob": "3dcdcd987d466e45348313e951775e0143839ab1",
       "evidence": "examples/chirp-start/src/automation/workflow.ts",
       "marker": "emitSignal"
     }

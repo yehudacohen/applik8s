@@ -1,0 +1,89 @@
+import { module } from '@applik8s/applik8s';
+import {
+  applicationIntegrationConnectionSummarySchema as IntegrationConnectionSummary,
+  applicationIntegrationConnections as IntegrationConnectionTable,
+  integrations as maintainedIntegrations,
+  listApplicationIntegrationConnections,
+} from '@applik8s/integrations';
+import { type } from 'arktype';
+import { application } from '../../app';
+import { database } from '../../providers';
+import { agenticWorkspaceScope } from '../../workspace-scope';
+
+const integrationQueries = { database, scope: agenticWorkspaceScope } as const;
+
+async function listIntegrationConnections(input: object, context: Parameters<typeof listApplicationIntegrationConnections>[1]) {
+  return listApplicationIntegrationConnections(input, context, integrationQueries);
+}
+
+const integrationConnections = module(
+  'integration-connection-workbench',
+  {},
+  currentApplication => {
+currentApplication.include(maintainedIntegrations);
+const IntegrationConnections = IntegrationConnectionTable.view(
+  {
+    input: type({}),
+    output: IntegrationConnectionSummary.array(),
+    database,
+    authorize: ({ principal }) => principal.id.length > 0,
+    budgets: { timeoutMs: 2_000, maxRows: 100, maxResultBytes: 256_000 },
+  },
+  listIntegrationConnections,
+);
+
+IntegrationConnectionTable.create.beforeCommit(
+  { history: true },
+  async function establishIntegrationConnectionScope(connection, input, context) {
+    if (!context.principal) throw new Error('Connecting an integration requires an authenticated principal.');
+    if (
+      input.principalScope !== undefined
+      || input.provider !== undefined
+      || input.state !== undefined
+      || input.expiresAt !== undefined
+      || input.lastCheckedAt !== undefined
+      || input.actionRequired !== undefined
+    ) throw new Error('Provider state is established by the server-side connection authority.');
+    if (!input.name.trim() || !input.capability.trim()) throw new Error('Connection name and capability are required.');
+    connection.patch({ spec: { principalScope: agenticWorkspaceScope(context) } });
+  },
+);
+
+IntegrationConnectionTable.update.beforeCommit(
+  { history: true },
+  async function protectIntegrationConnectionScope(connection, input, context) {
+    if (!context.principal || connection.value.principalScope !== agenticWorkspaceScope(context)) {
+      throw new Error('The integration connection is outside the admitted workspace scope.');
+    }
+    const operator = context.principal.roles?.includes('application-operator') === true;
+    const fields = Object.keys(input.patch);
+    if (!operator && fields.some(field => !['name', 'requestedScopes'].includes(field))) {
+      throw new Error('Only the server-side connection authority may change provider state.');
+    }
+    connection.patch({ spec: { updatedAt: context.now } });
+  },
+);
+
+IntegrationConnectionTable.delete.beforeCommit(
+  { history: true },
+  async function protectIntegrationConnectionDeletion(connection, _input, context) {
+    if (!context.principal || connection.value.principalScope !== agenticWorkspaceScope(context)) {
+      throw new Error('The integration connection is outside the admitted workspace scope.');
+    }
+  },
+);
+
+const Administrator = currentApplication.role('workspace-administrator');
+const Owner = currentApplication.role('workspace-owner');
+const ApplicationOperator = currentApplication.role('application-operator');
+Administrator.can(IntegrationConnectionTable.create, IntegrationConnectionTable.update, IntegrationConnectionTable.delete, IntegrationConnections);
+Owner.can(IntegrationConnectionTable.create, IntegrationConnectionTable.update, IntegrationConnectionTable.delete, IntegrationConnections);
+ApplicationOperator.can(IntegrationConnectionTable.update.all(), IntegrationConnections);
+
+return {
+  IntegrationConnection: IntegrationConnectionTable,
+  IntegrationConnections,
+};
+});
+
+export const { IntegrationConnection, IntegrationConnections } = application.include(integrationConnections);

@@ -1,0 +1,7 @@
+import { createFileRoute } from '@tanstack/react-router';
+import { EvaluationsView } from '../features/evaluations/view';
+import { BuilderBoundary } from '../components/builder-boundary';
+
+export const Route = createFileRoute('/app/evaluations')({
+  component: () => <BuilderBoundary><EvaluationsView /></BuilderBoundary>,
+});

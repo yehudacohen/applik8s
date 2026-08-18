@@ -23,6 +23,7 @@ import type {
 } from './native-model-execution.js';
 import { withApplicationNativeModelClients } from './native-model-execution.js';
 import type { ApplicationPostgresSql, ApplicationPostgresTransactionSql } from './postgres-runtime-contract.js';
+import type { ApplicationDatabaseClient } from './relational-runtime.js';
 import { createApplicationPostgresSql } from './postgres-runtime-loader.js';
 import { applicationRelationalChangeScopeDigest } from './relational-runtime.js';
 import { applicationModelChangeCommitScope } from './relational-runtime-contract.js';
@@ -270,7 +271,32 @@ interface EmittedCommand {
 
 const commandConnections = new Map<string, Promise<ApplicationPostgresSql>>();
 const commandEffectBoundary = new AsyncLocalStorage<boolean>();
+interface FunctionNativePostgresTransactionContext {
+  readonly transaction: ApplicationPostgresTransactionSql;
+  readonly database?: ApplicationDatabaseClient<Readonly<Record<string, unknown>>>;
+}
+
+const functionNativePostgresTransaction =
+  new AsyncLocalStorage<FunctionNativePostgresTransactionContext>();
 let commandEffectGuardsInstalled = false;
+
+/**
+ * Returns the transaction currently executing a compiler-inferred callback.
+ * Generated application views use this to read their own staged model
+ * operations instead of opening an inconsistent sibling connection.
+ */
+export function currentFunctionNativePostgresTransaction():
+  | ApplicationPostgresTransactionSql
+  | undefined {
+  return functionNativePostgresTransaction.getStore()?.transaction;
+}
+
+/** Returns the Drizzle transaction paired with the current inferred callback. */
+export function currentFunctionNativePostgresDatabase():
+  | ApplicationDatabaseClient<Readonly<Record<string, unknown>>>
+  | undefined {
+  return functionNativePostgresTransaction.getStore()?.database;
+}
 
 export async function closePostgresModelCommandRuntime(): Promise<void> {
   const clients = [...commandConnections.values()];
@@ -333,7 +359,11 @@ export async function executePostgresModelCommand<
     if (execution.message.context?.digest) {
       await transaction.unsafe('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [applicationModelChangeCommitScope(execution.message.context.digest)]);
     }
-    await installCommandTrustedContext(transaction, execution.model, execution.message.context);
+    await installCommandTrustedContexts(
+      transaction,
+      [execution.model, ...(execution.models ?? [])],
+      execution.message.context,
+    );
     await persistCommandAuthorizationAdmission(transaction, execution.bindingId, execution.command, execution.message, scope);
     const completedRows = await transaction.unsafe('SELECT result.output, result.error, result.model_revision, result.model_snapshot, result.model_deleted, inbox.target_key FROM applik8s_command_results result JOIN applik8s_command_inbox inbox ON inbox.scope = result.scope WHERE result.scope = $1 LIMIT 1', [scope]);
     // typecast: the fixed projection comes from an Applik8s-owned command-results migration.
@@ -438,7 +468,16 @@ export async function executePostgresModelCommand<
       }
       before = {
         id: effectiveTargetKey,
-        spec: execution.initialize(execution.message.input, effectiveTargetKey),
+        // The relational access column is framework-owned. Hydrate it from the
+        // server-admitted context before the initial INSERT so PostgreSQL RLS
+        // can validate the row that the policy callback is about to refine.
+        // Waiting for beforeCommit to patch this field is too late: the
+        // initializer itself must cross WITH CHECK first.
+        spec: modelSpecAtTrustedAccess(
+          execution.model,
+          execution.initialize(execution.message.input, effectiveTargetKey),
+          execution.message.context,
+        ),
         revision: commandDeterministicId(scope, 'initial-revision'),
       };
       initializedTarget = true;
@@ -895,8 +934,17 @@ export async function executeFunctionNativePostgresTransaction<TResult>(
     () => sql.begin(async (transaction) => {
       let sequence = 0;
       const principal = applicationCommandPrincipal(execution.delivery.context);
-      return withApplicationManagedEffects(
+      const transactionDatabase = transaction.database as
+        | ApplicationDatabaseClient<Readonly<Record<string, unknown>>>
+        | undefined;
+      return functionNativePostgresTransaction.run(
         {
+          transaction,
+          // typecast: the runtime-postgres adapter supplies a Drizzle
+          // transaction implementing the framework's narrowed client surface.
+          ...(transactionDatabase ? { database: transactionDatabase } : {}),
+        },
+        () => withApplicationManagedEffects({
           commandId: execution.delivery.id,
           routingContext: {
             ...(principal ? { principal } : {}),
@@ -972,8 +1020,7 @@ export async function executeFunctionNativePostgresTransaction<TResult>(
             });
             return result.output;
           },
-        },
-        handler,
+        }, handler),
       );
     }),
     execution.retry,
@@ -1100,14 +1147,37 @@ export async function executeFunctionNativePostgresModelEdit<
  * Mutations remain available only through the durable command/edit kernels.
  */
 export async function applicationPostgresModelReadClients(
-  database: ApplicationPostgresSql | string,
+  database:
+    | ApplicationPostgresSql
+    | ApplicationPostgresTransactionSql
+    | string,
   models: readonly ApplicationRuntimeModelContract[],
+  context?: PostgresModelCommandMessage<object>['context'],
 ): Promise<Readonly<Record<string, ApplicationModelCommandParticipantClient>>> {
   const firstModel = models[0];
   if (!firstModel) return Object.freeze({});
   const sql = typeof database === 'string'
     ? await postgresCommandDatabase(firstModel, database)
     : database;
+  const read = async <TResult>(
+    model: ApplicationRuntimeModelContract,
+    operation: (
+      transaction: ApplicationPostgresTransactionSql,
+    ) => Promise<TResult>,
+  ): Promise<TResult> => {
+    if (!context) {
+      return operation(sql as ApplicationPostgresTransactionSql);
+    }
+    if ('begin' in sql && typeof sql.begin === 'function') {
+      return sql.begin(async (transaction) => {
+        await installCommandTrustedContext(transaction, model, context);
+        return operation(transaction);
+      });
+    }
+    const transaction = sql as ApplicationPostgresTransactionSql;
+    await installCommandTrustedContext(transaction, model, context);
+    return operation(transaction);
+  };
   const clients: Record<string, ApplicationModelCommandParticipantClient> = {};
   const mutationError = () => {
     throw new Error(
@@ -1116,21 +1186,27 @@ export async function applicationPostgresModelReadClients(
   };
   for (const model of models) {
     const client: ApplicationModelCommandParticipantClient = Object.freeze({
-      get: (reference: ApplicationModelRef) => lockedModelObject<object, object>(
-        sql,
+      get: (reference: ApplicationModelRef) => read(
         model,
-        reference.id,
-        false,
+        (transaction) => lockedModelObject<object, object>(
+          transaction,
+          model,
+          reference.id,
+          false,
+        ),
       ),
       query: (
         options: ApplicationModelQueryOptions<object> & {
           readonly limit: number;
         },
-      ) => lockedModelObjects<object, object>(
-        sql,
+      ) => read(
         model,
-        options,
-        false,
+        (transaction) => lockedModelObjects<object, object>(
+          transaction,
+          model,
+          options,
+          false,
+        ),
       ),
       create: mutationError,
       patch: mutationError,
@@ -1410,7 +1486,11 @@ function commandParticipantClients(
       query: (options) => lockedModelObjects<object, object>(transaction, model, options),
       async create(input) {
         const revision = nextRevision('create');
-        const created = { id: input.id ?? nextRevision('id'), spec: input.spec, revision };
+        const created = {
+          id: input.id ?? nextRevision('id'),
+          spec: modelSpecAtTrustedAccess(model, input.spec, execution.message.context),
+          revision,
+        };
         await insertModelObject(transaction, model, created, false);
         await transition({ id: created.id, spec: {}, revision: nextRevision('missing-before-create') }, created, revision);
         await recordGenericModelChange(transaction, model, created.id, revision, execution.message.context, {}, created.spec, 'insert');
@@ -1839,6 +1919,14 @@ async function installCommandTrustedContext(
   model: ApplicationRuntimeModelContract,
   context: PostgresModelCommandMessage<object>['context'],
 ): Promise<void> {
+  await installCommandTrustedContexts(transaction, [model], context);
+}
+
+async function installCommandTrustedContexts(
+  transaction: ApplicationPostgresTransactionSql,
+  models: readonly ApplicationRuntimeModelContract[],
+  context: PostgresModelCommandMessage<object>['context'],
+): Promise<void> {
   const principal = applicationCommandPrincipal(context);
   // Install the actor setting on every transaction. An explicit empty value
   // prevents a pooled connection from retaining an earlier actor if this
@@ -1850,12 +1938,40 @@ async function installCommandTrustedContext(
     'SELECT set_config($1, $2, true)',
     ['applik8s.principal.causal_id', causalPrincipalId ?? ''],
   );
+  const settings = new Map<string, { readonly value: string; readonly model: string; readonly context: string }>();
+  for (const model of models) {
+    const access = model.nativeRelational?.access;
+    if (!access) continue;
+    const value = context?.values[access.context];
+    if (value === undefined) throw new Error(`applik8s-command-trusted-context-missing: Native model ${model.name} requires trusted context ${access.context}.`);
+    const serialized = typeof value === 'string' ? value : JSON.stringify(value);
+    const previous = settings.get(access.setting);
+    if (previous && previous.value !== serialized) {
+      throw new Error(
+        `applik8s-command-trusted-context-conflict: Models ${previous.model} and ${model.name} bind PostgreSQL setting ${access.setting} from incompatible trusted contexts ${previous.context} and ${access.context}.`,
+      );
+    }
+    settings.set(access.setting, { value: serialized, model: model.name, context: access.context });
+  }
+  for (const [setting, binding] of settings) {
+    await transaction.unsafe('SELECT set_config($1, $2, true)', [setting, binding.value]);
+  }
+}
+
+function modelSpecAtTrustedAccess<TSpec extends object>(
+  model: ApplicationRuntimeModelContract,
+  spec: TSpec,
+  context: PostgresModelCommandMessage<object>['context'],
+): TSpec {
   const access = model.nativeRelational?.access;
-  if (!access) return;
+  if (!access) return spec;
   const value = context?.values[access.context];
-  if (value === undefined) throw new Error(`applik8s-command-trusted-context-missing: Native model ${model.name} requires trusted context ${access.context}.`);
-  const serialized = typeof value === 'string' ? value : JSON.stringify(value);
-  await transaction.unsafe('SELECT set_config($1, $2, true)', [access.setting, serialized]);
+  if (value === undefined) {
+    throw new Error(
+      `applik8s-command-trusted-context-missing: Native model ${model.name} requires trusted context ${access.context}.`,
+    );
+  }
+  return { ...spec, [access.property]: value };
 }
 
 async function recordGenericModelChange(

@@ -8,9 +8,11 @@ import {
   readFile,
   rename,
   rm,
+  writeFile,
 } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createApplicationAgenticStart } from '../packages/start-agentic/src/index.js';
+import { agenticProductEvidenceJourneys } from '../packages/e2e/browser/agentic-product-evidence-contract.js';
 import {
   writeOfficialTanStackScaffold,
 } from './generated-agentic-start-live-support.js';
@@ -33,6 +35,8 @@ import {
   discardV06Evidence,
   writeV06EvidenceReceipt,
 } from './v06-evidence.js';
+import { checkAgenticProductBundles } from './check-agentic-product-bundles.js';
+import { v07ReleaseEvidenceContract } from './v07-release-evidence-contract.js';
 
 const root = process.cwd();
 const context = process.env.APPLIK8S_E2E_CONTEXT ?? 'orbstack';
@@ -56,21 +60,279 @@ const evidencePath = join(
   root,
   '.applik8s-tmp/evidence/v0.7/agentic-product-starter.json',
 );
+const requiredAssertions = v07ReleaseEvidenceContract['agentic-product-starter'];
+if (!requiredAssertions) {
+  throw new Error('The v0.7 evidence contract must define the Agentic product suite.');
+}
 const deploymentGraphPath = join(
   target,
   '.applik8s/deploy/typekro/application-deployment-graph.json',
 );
 const runId = randomUUID();
 const startedAt = new Date().toISOString();
+const focusedBrowserTest = process.env.APPLIK8S_AGENTIC_PRODUCT_TEST_GREP;
 const observed = new Map<
   string,
   { readonly test: string; readonly observedAt: string }
 >();
 let deployed = false;
 let tunnel: IdentityStartServiceTunnel | undefined;
-let preservedEnvironmentPath: string | undefined;
+const preservedEnvironmentFiles = new Map<string, string>();
+let qualificationEnvironmentBackup: string | undefined;
+let qualificationEnvironmentOverlay = false;
+let buildLineage = '';
 
-await discardV06Evidence(evidencePath);
+async function waitForExactGeneratedHandoff(
+  url: string,
+  expectedBuildLineage: string,
+): Promise<void> {
+  const deadline = Date.now() + 90_000;
+  let consecutiveHealthyResponses = 0;
+  let lastDiagnostic = 'the application did not answer';
+
+  while (Date.now() < deadline) {
+    try {
+      const response = await fetch(`${url}/app`, {
+        signal: AbortSignal.timeout(10_000),
+      });
+      const body = await response.text();
+      const exactBuild = body.includes('applik8s-build-lineage')
+        && body.includes(expectedBuildLineage);
+      if (response.ok && body.includes('What should we accomplish?') && exactBuild) {
+        consecutiveHealthyResponses += 1;
+        if (consecutiveHealthyResponses >= 3) return;
+      } else {
+        consecutiveHealthyResponses = 0;
+        lastDiagnostic = `HTTP ${response.status}; heading=${body.includes('What should we accomplish?')}; exactBuild=${exactBuild}`;
+      }
+    } catch (error) {
+      consecutiveHealthyResponses = 0;
+      lastDiagnostic = error instanceof Error ? error.message : String(error);
+    }
+    await new Promise(resolve => setTimeout(resolve, 2_000));
+  }
+
+  throw new Error(
+    `The deployed handoff server did not serve the exact generated build for three consecutive observations: ${lastDiagnostic}`,
+  );
+}
+
+async function restoreQualificationEnvironment(): Promise<void> {
+  if (!qualificationEnvironmentOverlay) return;
+  const overlay = join(target, '.env.local');
+  await rm(overlay, { force: true });
+  if (qualificationEnvironmentBackup) {
+    await rename(qualificationEnvironmentBackup, overlay);
+  }
+  qualificationEnvironmentBackup = undefined;
+  qualificationEnvironmentOverlay = false;
+}
+
+async function normalizeGeneratedMigrationIdentity(): Promise<string> {
+  const directory = join(target, 'drizzle');
+  const generated = (await readdir(directory)).filter(
+    file => /^\d{4}_.+\.sql$/u.test(file),
+  );
+  if (generated.length !== 1) {
+    throw new Error(
+      `Expected one generated baseline migration, received ${generated.length}.`,
+    );
+  }
+  const tag = '0000_agentic_product_schema';
+  const filename = `${tag}.sql`;
+  const generatedMigration = generated[0];
+  if (!generatedMigration) {
+    throw new Error('Generated migration selection became empty after validation.');
+  }
+  if (generatedMigration !== filename) {
+    await rename(join(directory, generatedMigration), join(directory, filename));
+  }
+
+  const journalPath = join(directory, 'meta/_journal.json');
+  const journal: unknown = JSON.parse(await readFile(journalPath, 'utf8'));
+  const entries = journal && typeof journal === 'object'
+    ? Reflect.get(journal, 'entries')
+    : undefined;
+  if (!Array.isArray(entries) || entries.length !== 1) {
+    throw new Error('Expected one Drizzle journal entry for the baseline migration.');
+  }
+  const entry = entries[0];
+  if (!entry || typeof entry !== 'object') {
+    throw new Error('The generated Drizzle journal entry is malformed.');
+  }
+  Reflect.set(entry, 'tag', tag);
+  Reflect.set(entry, 'when', 0);
+  await writeFile(journalPath, `${JSON.stringify(journal, null, 2)}\n`);
+
+  const snapshotPath = join(directory, 'meta/0000_snapshot.json');
+  const snapshot: unknown = JSON.parse(await readFile(snapshotPath, 'utf8'));
+  if (!snapshot || typeof snapshot !== 'object') {
+    throw new Error('The generated Drizzle baseline snapshot is malformed.');
+  }
+  Reflect.set(snapshot, 'id', '00000000-0000-4000-8000-000000000001');
+  await writeFile(snapshotPath, `${JSON.stringify(snapshot, null, 2)}\n`);
+  return filename;
+}
+
+async function captureGeneratedContainerLogs(
+  component: string,
+  container: string,
+) {
+  let pods = await captureIdentityStartCommand(
+    'kubectl',
+    [
+      '--context',
+      context,
+      'get',
+      'pods',
+      '--selector',
+      `applik8s.dev/graph=${projectName},app.kubernetes.io/component=${component}`,
+      '--namespace',
+      namespace,
+      '--output=json',
+    ],
+    root,
+  );
+  if (pods.code !== 0) return pods;
+  try {
+    const value: unknown = JSON.parse(pods.stdout);
+    const items = value && typeof value === 'object'
+      ? Reflect.get(value, 'items')
+      : undefined;
+    if (Array.isArray(items) && items.length === 0) {
+      // Some framework-owned workloads predate graph-label propagation. The
+      // generated product owns this namespace, so component-only fallback is
+      // still bounded to the qualification deployment and preserves useful
+      // failure evidence while that compatibility seam is removed.
+      pods = await captureIdentityStartCommand(
+        'kubectl',
+        [
+          '--context',
+          context,
+          'get',
+          'pods',
+          '--selector',
+          `app.kubernetes.io/component=${component}`,
+          '--namespace',
+          namespace,
+          '--output=json',
+        ],
+        root,
+      );
+    }
+  } catch {
+    return pods;
+  }
+  let selectedPod: string | undefined;
+  try {
+    const value: unknown = JSON.parse(pods.stdout);
+    const items = value && typeof value === 'object'
+      ? Reflect.get(value, 'items')
+      : undefined;
+    if (Array.isArray(items)) {
+      for (const item of items) {
+        const containers = item && typeof item === 'object'
+          ? Reflect.get(Reflect.get(item, 'spec') ?? {}, 'containers')
+          : undefined;
+        if (!Array.isArray(containers) || !containers.some(
+          (candidate) => candidate
+            && typeof candidate === 'object'
+            && Reflect.get(candidate, 'name') === container,
+        )) continue;
+        const metadata = Reflect.get(item, 'metadata');
+        const name = metadata && typeof metadata === 'object'
+          ? Reflect.get(metadata, 'name')
+          : undefined;
+        if (typeof name === 'string') {
+          selectedPod = name;
+          break;
+        }
+      }
+    }
+  } catch {
+    return pods;
+  }
+  if (!selectedPod) return pods;
+  return captureIdentityStartCommand(
+    'kubectl',
+    [
+      '--context',
+      context,
+      'logs',
+      selectedPod,
+      '--namespace',
+      namespace,
+      '--container',
+      container,
+      '--tail=200',
+    ],
+    root,
+  );
+}
+
+async function preserveGeneratedDiagnostic(
+  name: string,
+  diagnostic: { readonly stdout: string; readonly stderr: string },
+): Promise<void> {
+  const directory = join(
+    root,
+    '.applik8s-tmp/evidence/v0.7/agentic-product-diagnostics',
+  );
+  await mkdir(directory, { recursive: true });
+  await writeFile(
+    join(directory, `${name}.log`),
+    [diagnostic.stdout, diagnostic.stderr].filter(Boolean).join('\n'),
+  );
+}
+
+async function captureLifecycleDatabaseDiagnostics() {
+  const pods = await captureIdentityStartCommand(
+    'kubectl',
+    [
+      '--context',
+      context,
+      'get',
+      'pods',
+      '--selector',
+      `cnpg.io/cluster=${projectName}-db`,
+      '--namespace',
+      namespace,
+      '--output=jsonpath={.items[0].metadata.name}',
+    ],
+    root,
+  );
+  const pod = pods.stdout.trim();
+  if (pods.code !== 0 || !pod) return pods;
+  return captureIdentityStartCommand(
+    'kubectl',
+    [
+      '--context',
+      context,
+      'exec',
+      pod,
+      '--namespace',
+      namespace,
+      '--container',
+      'postgres',
+      '--',
+      'psql',
+      '--username=postgres',
+      `--dbname=${projectName}`,
+      '--tuples-only',
+      '--no-align',
+      '--command',
+      `SELECT json_build_object(
+  'requests', coalesce((SELECT json_agg(json_build_object('id', id, 'state', state, 'requestedAt', requested_at)) FROM data_lifecycle_requests), '[]'::json),
+  'stream', coalesce((SELECT json_agg(json_build_object('id', id, 'sequence', sequence, 'contract', contract_name, 'recordedAt', recorded_at, 'payload', payload)) FROM applik8s_public_stream_events WHERE contract_name = 'models.DataLifecycleRequest.created'), '[]'::json),
+  'checkpoint', coalesce((SELECT json_agg(json_build_object('processor', processor, 'stream', stream, 'sequence', sequence, 'updatedAt', updated_at)) FROM applik8s_stream_processor_checkpoints WHERE processor = 'process-data-lifecycle-request-create'), '[]'::json),
+  'deadLetters', coalesce((SELECT json_agg(json_build_object('eventId', event_id, 'attempts', attempts, 'error', error)) FROM applik8s_stream_processor_dead_letters WHERE processor = 'process-data-lifecycle-request-create'), '[]'::json)
+)::text;`,
+    ],
+    root,
+  );
+}
+
+if (!focusedBrowserTest) await discardV06Evidence(evidencePath);
 
 try {
   await runIdentityStartCommand(
@@ -120,20 +382,23 @@ try {
       timeoutMs,
     );
   }
-  const generatedEnvironmentPath = join(target, '.env');
-  if (await Bun.file(generatedEnvironmentPath).exists()) {
-    preservedEnvironmentPath = join(
+  for (const name of ['.env', '.env.local']) {
+    const generatedEnvironmentPath = join(target, name);
+    if (!await Bun.file(generatedEnvironmentPath).exists()) continue;
+    const preservedEnvironmentPath = join(
       root,
       '.applik8s-tmp',
-      `${projectName}.${runId}.env.preserved`,
+      `${projectName}.${runId}.${name.slice(1)}.preserved`,
     );
     await rename(generatedEnvironmentPath, preservedEnvironmentPath);
+    preservedEnvironmentFiles.set(name, preservedEnvironmentPath);
   }
   await rm(target, { recursive: true, force: true });
   await createApplicationAgenticStart({
     targetDirectory: target,
     projectName,
     applik8sVersion: 'workspace:*',
+    context,
     example: 'product',
     install: false,
     async run(command) {
@@ -148,20 +413,33 @@ try {
       await writeOfficialTanStackScaffold(target, projectName);
     },
   });
-  if (preservedEnvironmentPath) {
-    await rename(preservedEnvironmentPath, join(target, '.env'));
-    preservedEnvironmentPath = undefined;
+  if (preservedEnvironmentFiles.size > 0) {
+    for (const [name, preservedEnvironmentPath] of preservedEnvironmentFiles) {
+      await rename(preservedEnvironmentPath, join(target, name));
+    }
+    preservedEnvironmentFiles.clear();
     observed.set('environment-preservation', {
-      test: 'an existing generated-project .env was mechanically preserved across regeneration without reading, logging, or overwriting it',
+      test: 'existing generated-project environment files were mechanically preserved across regeneration without reading, logging, or overwriting them',
       observedAt: new Date().toISOString(),
     });
-  } else if (environmentFile) {
+  }
+  if (environmentFile) {
     if (!await Bun.file(environmentFile).exists()) {
       throw new Error(`The requested mechanical environment source does not exist: ${environmentFile}`);
     }
-    await copyFile(environmentFile, join(target, '.env'));
+    const overlay = join(target, '.env.local');
+    if (await Bun.file(overlay).exists()) {
+      qualificationEnvironmentBackup = join(
+        root,
+        '.applik8s-tmp',
+        `${projectName}.${runId}.env-local.qualification-preserved`,
+      );
+      await rename(overlay, qualificationEnvironmentBackup);
+    }
+    qualificationEnvironmentOverlay = true;
+    await copyFile(environmentFile, overlay);
     observed.set('environment-copy', {
-      test: 'the requested environment file was mechanically copied without inspecting or logging its values',
+      test: 'the requested environment file was mechanically overlaid for qualification and restored afterward without inspecting or logging its values',
       observedAt: new Date().toISOString(),
     });
   }
@@ -192,8 +470,9 @@ try {
       'Drizzle reported success without generating a product migration.',
     );
   }
+  const normalizedMigration = await normalizeGeneratedMigrationIdentity();
   observed.set('migration-generation', {
-    test: 'Drizzle generated the Document schema from its model declaration',
+    test: `Drizzle generated the model-owned schema and the release runner normalized its reproducible baseline identity to ${normalizedMigration}`,
     observedAt: new Date().toISOString(),
   });
   await runIdentityStartCommand(
@@ -203,23 +482,29 @@ try {
     ['generate'],
     target,
   );
+  const lineage = JSON.parse(await readFile(join(target, '.applik8s/start-lineage.json'), 'utf8')) as { readonly templateRevision?: unknown };
+  if (typeof lineage.templateRevision !== 'string' || !/^sha256:[a-f0-9]{64}$/u.test(lineage.templateRevision)) {
+    throw new Error('Generated product lineage is missing its canonical template revision.');
+  }
+  buildLineage = lineage.templateRevision;
   await runIdentityStartCommand(
     execution,
-    'typecheck the generated product',
-    join(root, 'node_modules/.bin/tsc'),
-    ['--project', 'tsconfig.json', '--noEmit'],
-    target,
-  );
-  await runIdentityStartCommand(
-    execution,
-    'build the generated product',
+    'run the generated product consumer gates',
     'bun',
-    ['run', 'build'],
+    ['run', 'check'],
     target,
-    { NODE_OPTIONS: '--max-old-space-size=8192' },
+    {
+      NODE_OPTIONS: '--max-old-space-size=8192',
+      APPLIK8S_BUILD_LINEAGE: buildLineage,
+    },
   );
+  observed.set('generated-consumer-gates', {
+    test: 'the clean generated application passed route generation, typecheck, lint, unit tests, application compilation, and database-schema verification',
+    observedAt: new Date().toISOString(),
+  });
+  const bundleReport = await checkAgenticProductBundles(target);
   observed.set('production-build', {
-    test: 'official TanStack Start client, SSR, and Nitro production build',
+    test: `official TanStack Start client, SSR, and Nitro production build within bundle ceilings (client ${bundleReport.javascriptBytes} bytes/${bundleReport.javascriptGzipBytes} gzip; server ${bundleReport.serverJavaScriptBytes} bytes/${bundleReport.serverJavaScriptGzipBytes} gzip; largest client chunk ${bundleReport.largestChunk.name}; largest server chunk ${bundleReport.largestServerChunk.name})`,
     observedAt: new Date().toISOString(),
   });
 
@@ -273,57 +558,79 @@ try {
     observedAt: new Date().toISOString(),
   });
 
+  await runIdentityStartCommand(
+    execution,
+    'observe the exact deployment and publish a bounded Launchpad receipt when application authority is reachable',
+    cli,
+    ['status', '--context', context],
+    target,
+  );
+  observed.set('deployment-status', {
+    test: 'the CLI observed the exact persisted graph and published canonical redacted Launchpad evidence through application authority',
+    observedAt: new Date().toISOString(),
+  });
+
   tunnel = await identityStartServiceTunnel(
     execution,
     `${projectName}-app`,
     namespace,
     3000,
   );
+  await waitForExactGeneratedHandoff(tunnel.url, buildLineage);
+  observed.set('handoff-freshness', {
+    test: 'the live application served the exact generated template lineage and remained healthy at browser handoff',
+    observedAt: new Date().toISOString(),
+  });
   await runIdentityStartCommand(
     execution,
     'execute the generated product browser journeys',
     join(root, 'node_modules/.bin/playwright'),
-    ['test', '--config', 'playwright.agentic-product.config.ts'],
+    [
+      'test',
+      '--config',
+      'playwright.agentic-product.config.ts',
+      ...(focusedBrowserTest
+        ? ['--grep', focusedBrowserTest]
+        : []),
+    ],
     root,
-    { APPLIK8S_AGENTIC_PRODUCT_BASE_URL: tunnel.url },
+    {
+      APPLIK8S_AGENTIC_PRODUCT_BASE_URL: tunnel.url,
+      APPLIK8S_AGENTIC_PRODUCT_PROFILE: developerProfile
+        ? 'developer'
+        : 'starter',
+    },
   );
-  const journeys = new Map([
-    [
-      'renders every first-run route without an unexpected server or hydration failure',
-      'route-reliability',
-    ],
-    [
-      'attributes an agent-created document to its human requester and reactively renders it',
-      'causal-agent-note',
-    ],
-    [
-      'uses the provider-neutral Starter billing path without Stripe credentials',
-      'starter-billing',
-    ],
-    [
-      'renders maintained provider-neutral account security without generated provider plumbing',
-      'maintained-account',
-    ],
-    [
-      'delivers and resolves a durable workspace decision across browser reload',
-      'durable-decision',
-    ],
-    [
-      'persists the product journey, explains AI trust, and enforces bounded data lifecycle controls',
-      'product-lifecycle-trust',
-    ],
-    [
-      'delivers an authenticated workspace invitation through the configured notification provider',
-      'application-notification-delivery',
-    ],
-  ] as const);
+  const visualArtifactsRoot = join(
+    root,
+    '.applik8s-tmp/evidence/v0.7/agentic-product-browser-artifacts',
+  );
+  const visualArtifacts = (await readdir(visualArtifactsRoot, { recursive: true }))
+    .filter(path => path.endsWith('.png'));
+  if (!focusedBrowserTest && visualArtifacts.length < 16) {
+    throw new Error(`Generated product retained only ${visualArtifacts.length} visual captures; expected product, builder, billing, and operator views for four browser/device profiles.`);
+  }
+  if (!focusedBrowserTest) {
+    observed.set('visual-review-artifacts', {
+      test: `${visualArtifacts.length} desktop/mobile visual captures retained for product review`,
+      observedAt: new Date().toISOString(),
+    });
+  }
+  const journeys = new Map(
+    Object.values(agenticProductEvidenceJourneys).map(
+      journey => [journey.test, journey.evidenceId] as const,
+    ),
+  );
   const results = await passedIdentityStartBrowserTests(
     join(
       root,
       '.applik8s-tmp/evidence/v0.7/agentic-product-browser-results.json',
     ),
   );
-  if ([...journeys.keys()].some((journey) => !results.has(journey))) {
+  if (
+    !focusedBrowserTest
+    && [...journeys.keys()].some((journey) => !results.has(journey))
+  ) {
     throw new Error(
       `Generated Agentic product browser evidence is incomplete: ${[
         ...results.keys(),
@@ -332,9 +639,10 @@ try {
   }
   for (const [journey, evidenceId] of journeys) {
     const browser = results.get(journey);
-    if (!browser) {
+    if (!browser && !focusedBrowserTest) {
       throw new Error(`Generated product browser evidence vanished for ${journey}.`);
     }
+    if (!browser) continue;
     observed.set(evidenceId, {
       test: journey,
       observedAt: browser.completedAt,
@@ -350,7 +658,10 @@ try {
     'keeps the representative product surface responsive and free of browser failures',
     'exposes a keyboard-usable, semantically named first-run experience',
     'preserves product meaning in dark mode and reduced motion',
+    'captures a reviewable product, builder, billing, and operator journey',
     'preserves SSR content, bounded navigation, and live-query recovery on a degraded connection',
+    'recovers an authenticated session from a stale workspace selector',
+    'uses one bounded mobile navigation with an authority-shaped More sheet',
   ] as const;
   const qualityProjects = [
     'chromium-product-quality',
@@ -373,16 +684,18 @@ try {
       );
     }
   }
-  if (missingQualityEvidence.length > 0) {
+  if (!focusedBrowserTest && missingQualityEvidence.length > 0) {
     throw new Error(
       `Generated Agentic product cross-browser evidence is incomplete: ${missingQualityEvidence.join(', ')}.`,
     );
   }
-  const qualityCompletedAt = new Date(qualityCompletedAtMs).toISOString();
-  observed.set('cross-browser-product-quality', {
-    test: 'Chromium, Firefox, WebKit, and mobile product quality journeys',
-    observedAt: qualityCompletedAt,
-  });
+  if (!focusedBrowserTest) {
+    const qualityCompletedAt = new Date(qualityCompletedAtMs).toISOString();
+    observed.set('cross-browser-product-quality', {
+      test: 'Chromium, Firefox, WebKit, and mobile product quality journeys',
+      observedAt: qualityCompletedAt,
+    });
+  }
 
   const [git, cluster, installation, artifacts] = await Promise.all([
     collectV06GitIdentity(root),
@@ -421,21 +734,11 @@ try {
     test: 'Applik8s destroy removed the product graph and owned namespace',
     observedAt: new Date().toISOString(),
   });
+  await restoreQualificationEnvironment();
 
-  const required = [
-    'doctor',
-    'migration-generation',
-    'production-build',
-    'graph-backed-deploy',
-    'graph-noop-redeploy',
-    'causal-agent-note',
-    'application-notification-delivery',
-    'product-lifecycle-trust',
-    'cross-browser-product-quality',
-    'graph-backed-destroy',
-  ];
   const completedAt = new Date().toISOString();
-  await writeV06EvidenceReceipt(evidencePath, {
+  if (!focusedBrowserTest) {
+    await writeV06EvidenceReceipt(evidencePath, {
     suite: 'agentic-product-starter',
     run: { id: runId, startedAt, completedAt },
     candidate: { git, cluster, installation, artifacts },
@@ -448,7 +751,7 @@ try {
       deployment: 'ApplicationDeploymentGraph -> Alchemy -> TypeKro',
     },
     assertionEvidence: createV06AssertionEvidence(
-      required.map((assertion) => {
+      requiredAssertions.map((assertion) => {
         const evidence = observed.get(assertion);
         if (!evidence) {
           throw new Error(
@@ -459,55 +762,111 @@ try {
       }),
       runId,
     ),
-  });
-  console.log(
-    `Generated Agentic product qualification passed; evidence recorded at ${evidencePath}.`,
-  );
+    });
+    console.log(
+      `Generated Agentic product qualification passed; evidence recorded at ${evidencePath}.`,
+    );
+  } else {
+    console.log(
+      `Focused generated Agentic product qualification passed for ${JSON.stringify(focusedBrowserTest)}; the application graph was destroyed cleanly and no release evidence receipt was published.`,
+    );
+  }
 } catch (error) {
-  await discardV06Evidence(evidencePath);
+  if (!focusedBrowserTest) await discardV06Evidence(evidencePath);
   await tunnel?.close();
   if (deployed && await Bun.file(deploymentGraphPath).exists()) {
-    const lifecycleLogs = await captureIdentityStartCommand(
-      'kubectl',
-      [
-        '--context',
-        context,
-        'logs',
-        '--selector',
-        `applik8s.dev/graph=${projectName},app.kubernetes.io/component=reactive-worker`,
-        '--namespace',
-        namespace,
-        '--container',
-        `${projectName}-process-data-lifecycle-request-create`,
-        '--tail=200',
-      ],
-      root,
+    const documentPublicationLogs = await captureGeneratedContainerLogs(
+      'reactive-worker',
+      `${projectName}-publish-document-artifact-update`,
+    );
+    if (
+      documentPublicationLogs.stdout.trim()
+      || documentPublicationLogs.stderr.trim()
+    ) {
+      console.error('\n[agentic-product-starter] document publication diagnostics');
+      process.stderr.write(documentPublicationLogs.stdout);
+      process.stderr.write(documentPublicationLogs.stderr);
+    }
+    const lifecycleLogs = await captureGeneratedContainerLogs(
+      'reactive-worker',
+      `${projectName}-process-data-lifecycle-request-create`,
     );
     if (lifecycleLogs.stdout.trim() || lifecycleLogs.stderr.trim()) {
       console.error('\n[agentic-product-starter] lifecycle processor diagnostics');
       process.stderr.write(lifecycleLogs.stdout);
       process.stderr.write(lifecycleLogs.stderr);
     }
-    const queryGatewayLogs = await captureIdentityStartCommand(
-      'kubectl',
-      [
-        '--context',
-        context,
-        'logs',
-        '--selector',
-        `applik8s.dev/graph=${projectName},app.kubernetes.io/component=query-gateway`,
-        '--namespace',
-        namespace,
-        '--container',
-        `${projectName}-web`,
-        '--tail=200',
-      ],
-      root,
+    const lifecycleDatabase = await captureLifecycleDatabaseDiagnostics();
+    if (lifecycleDatabase.stdout.trim() || lifecycleDatabase.stderr.trim()) {
+      console.error('\n[agentic-product-starter] lifecycle database diagnostics');
+      process.stderr.write(lifecycleDatabase.stdout);
+      process.stderr.write(lifecycleDatabase.stderr);
+    }
+    const evaluationLogs = await captureGeneratedContainerLogs(
+      'reactive-worker',
+      `${projectName}-evaluate-agent-revision-create`,
+    );
+    if (evaluationLogs.stdout.trim() || evaluationLogs.stderr.trim()) {
+      console.error('\n[agentic-product-starter] agent evaluation processor diagnostics');
+      process.stderr.write(evaluationLogs.stdout);
+      process.stderr.write(evaluationLogs.stderr);
+    }
+    const queryGatewayLogs = await captureGeneratedContainerLogs(
+      'query-gateway',
+      `${projectName}-web`,
     );
     if (queryGatewayLogs.stdout.trim() || queryGatewayLogs.stderr.trim()) {
       console.error('\n[agentic-product-starter] query gateway diagnostics');
       process.stderr.write(queryGatewayLogs.stdout);
       process.stderr.write(queryGatewayLogs.stderr);
+    }
+    const billingHttpLogs = await captureGeneratedContainerLogs(
+      'typed-http',
+      'http',
+    );
+    if (billingHttpLogs.stdout.trim() || billingHttpLogs.stderr.trim()) {
+      console.error('\n[agentic-product-starter] billing HTTP diagnostics');
+      process.stderr.write(billingHttpLogs.stdout);
+      process.stderr.write(billingHttpLogs.stderr);
+    }
+    const agentLogs = await captureGeneratedContainerLogs(
+      'ai-agent',
+      'agent',
+    );
+    await preserveGeneratedDiagnostic('ai-agent', agentLogs);
+    if (agentLogs.stdout.trim() || agentLogs.stderr.trim()) {
+      console.error('\n[agentic-product-starter] AI agent diagnostics');
+      process.stderr.write(agentLogs.stdout);
+      process.stderr.write(agentLogs.stderr);
+    }
+    const toolReceiverLogs = await captureGeneratedContainerLogs(
+      'query-gateway',
+      `${projectName}-workspace-assistant-tool-receiver`,
+    );
+    await preserveGeneratedDiagnostic('agent-tool-receiver', toolReceiverLogs);
+    if (toolReceiverLogs.stdout.trim() || toolReceiverLogs.stderr.trim()) {
+      console.error('\n[agentic-product-starter] agent tool receiver diagnostics');
+      process.stderr.write(toolReceiverLogs.stdout);
+      process.stderr.write(toolReceiverLogs.stderr);
+    }
+    const commandProcessorLogs = await captureGeneratedContainerLogs(
+      'command-processor',
+      'processor',
+    );
+    await preserveGeneratedDiagnostic('command-processor', commandProcessorLogs);
+    if (commandProcessorLogs.stdout.trim() || commandProcessorLogs.stderr.trim()) {
+      console.error('\n[agentic-product-starter] command processor diagnostics');
+      process.stderr.write(commandProcessorLogs.stdout);
+      process.stderr.write(commandProcessorLogs.stderr);
+    }
+    const workflowWorkerLogs = await captureGeneratedContainerLogs(
+      'workflow-worker',
+      'worker',
+    );
+    if (workflowWorkerLogs.stdout.trim() || workflowWorkerLogs.stderr.trim()) {
+      console.error('\n[agentic-product-starter] workflow worker diagnostics');
+      process.stderr.write(workflowWorkerLogs.stdout);
+      process.stderr.write(workflowWorkerLogs.stderr);
     }
     try {
       await runIdentityStartCommand(
@@ -518,16 +877,20 @@ try {
         target,
       );
     } catch (cleanupError) {
+      await restoreQualificationEnvironment();
       throw new AggregateError(
         [error, cleanupError],
         'Generated product qualification and cleanup both failed.',
       );
     }
   }
-  if (preservedEnvironmentPath) {
+  await restoreQualificationEnvironment();
+  if (preservedEnvironmentFiles.size > 0) {
     await mkdir(target, { recursive: true });
-    await rename(preservedEnvironmentPath, join(target, '.env'));
-    preservedEnvironmentPath = undefined;
+    for (const [name, preservedEnvironmentPath] of preservedEnvironmentFiles) {
+      await rename(preservedEnvironmentPath, join(target, name));
+    }
+    preservedEnvironmentFiles.clear();
   }
   throw error;
 }

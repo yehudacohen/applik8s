@@ -422,6 +422,13 @@ describe('v0.6 app-scoped native model promotion', () => {
     });
     expect(() => catalog.model(globals, { database: Database })).toThrow('must declare column organizationId');
     expect(() => catalog.model(globals, { database: Database, access: 'global' })).not.toThrow();
+    const graph = applicationGraphFor(catalog.composition);
+    const globalModel = graph?.nodes.find(
+      (node) => node.kind === 'model' && node.name === 'Globals',
+    );
+    expect(globalModel?.kind === 'model'
+      ? globalModel.runtime?.nativeRelational?.access
+      : undefined).toBeUndefined();
   });
 
   test('records fluent model-native views as direct query operations', () => {
@@ -811,6 +818,68 @@ describe('v0.6 app-scoped native model promotion', () => {
       common: { operations: expect.arrayContaining([expect.objectContaining({ name: 'create', operation: 'create' })]) },
     });
     expect(() => Card.create.beforeCommit({}, async () => undefined)).toThrow('may be declared only once');
+  });
+
+  test('infers a context-staged model operation as both a participant and durable command', () => {
+    const parents = pgTable('inferred_outbox_parents', {
+      id: text('id').primaryKey(),
+      revision: text('revision').notNull(),
+    });
+    const children = pgTable('inferred_outbox_children', {
+      id: text('id').primaryKey(),
+      parentId: text('parent_id').notNull(),
+      revision: text('revision').notNull(),
+    });
+    const application = app('inferred-context-staged-model-operation');
+    const Database = application.database.postgres('catalog', {
+      schema: { parents, children },
+    });
+    const Parent = application.model(parents, {
+      name: 'InferredParent',
+      database: Database,
+    });
+    const Child = application.model(children, {
+      name: 'InferredChild',
+      database: Database,
+    });
+
+    Parent.create.beforeCommit(
+      {
+        history: true,
+        __generatedCalls: [Child, Child.create],
+        __generatedModelBindings: {
+          Child,
+          'Child.create': Child.create,
+        },
+      },
+      async (parent, _input, context) => {
+        context.send(Child.create, {
+          id: context.id('child'),
+          parentId: parent.identity,
+          revision: context.id('child-revision'),
+        }, { targetKey: parent.identity });
+      },
+    );
+
+    const graph = applicationGraphFor(application.composition);
+    const handler = graph?.nodes.find(
+      (node) =>
+        node.kind === 'commandHandler'
+        && node.name === 'InferredParent-models.InferredParent.create.v1',
+    );
+    expect(handler).toMatchObject({
+      transaction: {
+        models: [
+          { nodeId: 'model.inferred-parent' },
+          { nodeId: 'model.inferred-child' },
+        ],
+        commands: [{ nodeId: 'command.models.inferred-child.create.v1' }],
+      },
+      commandBindings: [{
+        identifier: 'Child.create',
+        command: { nodeId: 'command.models.inferred-child.create.v1' },
+      }],
+    });
   });
 
   test('rejects an awaited staged command during application discovery with the lint-safe remedy', () => {

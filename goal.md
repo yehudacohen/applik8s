@@ -2,12 +2,38 @@
 
 ## v0.7 release objective
 
+**Release status:** The maintainer explicitly authorized v0.7.0 on 2026-08-18.
+The immutable candidate must pass the maintained exact-commit evidence and
+trusted-publishing workflows before publication is reported complete.
+
 The active objective is to execute
 [`docs/charter-v07-agentic-platform.md`](./docs/charter-v07-agentic-platform.md)
 and its machine-readable scorecard completely and excellently, while preserving
-the graph-backed TypeKro/Alchemy lifecycle established below. Vasco is a
-dependent customer-zero project after the framework is complete; it is not an
-Applik8s v0.7 release fixture.
+the graph-backed TypeKro/Alchemy lifecycle established below.
+
+### 2026-08-16 Agentic Start exact-candidate checkpoint
+
+The product-framework correction described below is implemented and qualified.
+The exact generated Starter candidate passed doctor, reproducible migration
+generation, official TanStack generation/build, client and server bundle
+ceilings, fresh 49-resource/21-artifact OrbStack deployment, stable readiness,
+zero-change reapply, redacted status observation, 38 browser journeys across
+Chromium, Firefox, WebKit, and mobile, 16 settled visual captures, and complete
+graph-backed teardown. The source ownership budget passes at 45 application-
+behavior files and 5,732 application-owned nonblank lines. Agentic product baseline conformance,
+scorecard, 55-package workspace typecheck, lint/release, and whitespace gates
+are green. The retained receipt records the final working-tree, source-graph,
+deployment-graph, artifact-set, cluster, installation, and run identities.
+
+The sole conditional release blocker is external credential evidence, not a
+missing product or framework capability. The Developer harness mechanically
+overlaid the available environment file without inspecting, logging, rewriting,
+or deleting it; the graph correctly failed before provider mutation because it
+did not receive a non-empty canonical `OPENROUTER_API_KEY`, and cleanup reported
+zero changes. Once a valid credential source is supplied, qualify live
+OpenRouter tool-created Documents, live Stripe checkout, and component
+restart/update recovery. Maintainer visual sign-off is complete. No release or
+tag is authorized by this checkpoint.
 
 ### 2026-08-14 exact-candidate stabilization checkpoint
 
@@ -18,7 +44,7 @@ The final product-correction cohort is implemented and locally qualified:
 - the packed-consumer gate installs 49 coordinated packages, imports 79 public
   entrypoints, generates Agentic Start, discovers and compiles its graph, and
   builds its browser and server artifacts outside the monorepo;
-- TypeKro 0.33.6, Alchemy, profile topology, performance history, STIMP parity,
+- TypeKro 0.33.7, Alchemy, profile topology, performance history, Agentic product baseline conformance,
   browser security, identity acceptance, GuestBook, Chirp, Identity Start, and
   the full Rust host/bridge cohort pass;
 - the generated Developer application is live on OrbStack with identity,
@@ -41,6 +67,24 @@ deleted. Once that variable is supplied, the remaining exact-candidate work is
 one deploy, the human → agent/tool → Document → live-query browser journey,
 and refreshed immutable release receipts. No release or tag is authorized
 before that evidence is captured and reviewed.
+
+### 2026-08-14 Agentic Start product-framework audit
+
+The subsequent live product review reopened Agentic Start product readiness.
+The execution substrate and individual journeys above remain qualified, but
+the generated product still presents several architectural acceptance fixtures
+as member UX and does not yet deliver the complete agent, knowledge, document,
+integration, evaluation, administration, and billing workbench required by the
+Agentic product baseline.
+
+The normative correction is
+[`docs/agentic-start-full-product-framework-plan.md`](./docs/agentic-start-full-product-framework-plan.md).
+In particular, the body-only Document, synthetic Inbox decision creator,
+fragmented Copilot work surface, read-only administration, and incomplete
+agent-builder experience are now release-readiness gaps. The OpenRouter live
+journey remains required, but it is no longer the sole work between this branch
+and an exceptional Agentic Start deliverable. No v0.7 release or tag is
+authorized until the revised acceptance journeys are complete and reviewed.
 
 ### 2026-08-08 Agentic Start product-readiness correction
 
@@ -117,7 +161,7 @@ The planning audit also reopened independent release obligations rather than
 hiding them inside the generator item:
 
 1. make the tracked charter, accepted RFP decisions, function-native matrix,
-   Stimp capability map, and scorecard mechanically consistent;
+   the Agentic product baseline capability map, and scorecard mechanically consistent;
 2. qualify the generated live frozen-batch path and
    the Chirp signal/batch/resource-workflow paths attributed to the example;
 3. build the public landing, sign-up/sign-in, verification, recovery, MFA, and
@@ -156,7 +200,7 @@ runtime/provider machinery. Monolithic templates do not satisfy compression.
   compatibility/internal seam.
 - The official TanStack scaffold now receives a reviewable 24-file default
   product overlay. The full 42-file `--example research` application remains
-  the Stimp and distributed-behavior acceptance fixture rather than the first
+  the Agentic product baseline and distributed-behavior acceptance fixture rather than the first
   thing a builder must understand.
 - The default product includes one authenticated native model, one direct
   view, one typed agent tool, explicit authority, reviewed profile capacity,
@@ -167,7 +211,7 @@ runtime/provider machinery. Monolithic templates do not satisfy compression.
   entrypoints, then generates a migration, runs the generated product tests,
   discovers and compiles the application graph, and builds the browser/server
   production artifacts without monorepo-only package resolution.
-- All nine Stimp acceptance journeys have named executable local/live/browser
+- All nine Agentic product baseline acceptance journeys have named executable local/live/browser
   gates and source evidence. The fast parity fixture remains honestly reported
   as seven generated product contracts; live receipts remain separate release
   authority.
@@ -184,7 +228,7 @@ OrbStack prerelease refresh rather than reuse of those now-stale receipts.
 
 ### 2026-08-05 exact-candidate update
 
-- TypeKro `0.33.6` is published, pinned in every Applik8s consumer, and passes
+- TypeKro `0.33.7` is published, pinned in every Applik8s consumer, and passes
   the released-package/Alchemy qualification gate.
 - Agentic Start is now part of the release authority rather than a
   documentation-only starter: the pinned official TanStack generator produces
@@ -206,7 +250,7 @@ OrbStack prerelease refresh rather than reuse of those now-stale receipts.
 - Teardown completed only through `applik8s destroy` → Alchemy → TypeKro,
   including root instance, generated RGD, persistent dependencies, and the
   owned Namespace. No graph child or finalizer was deleted out of band.
-- The pinned Stimp baseline map now has no partial or missing product row, and
+- The Agentic product baseline map now has no partial or missing product row, and
   the machine-readable scorecard reports 27 complete, zero partial/pending/
   blocked, and one intentionally deferred multi-cluster item.
 
@@ -224,7 +268,7 @@ review.
 - The exact source passed the complete local release cohort: all workspace and
   maintained-example typechecks, lint and repository audits, module/deployment
   ratchets, 160 v0.7 package contract tests, package dry runs, scorecard,
-  profile topology, performance/history, TypeKro qualification, Stimp parity,
+  profile topology, performance/history, TypeKro qualification, Agentic product baseline conformance,
   browser security, identity acceptance, all three production application
   builds, Rust formatting/Clippy, 9 operator-host tests, 100 host contracts,
   12 runtime-bridge tests, 27 ComponentizeJS/WIT/Wasmtime contracts, and 7
@@ -239,7 +283,7 @@ review.
   GuestBook 9/12 nodes/edges; Chirp Starter 38/95, Dedicated 40/98, External
   27/48; and Identity Start Starter 24/46, Dedicated 39/80, External 16/24.
 - The clean Starter live gate built from packed packages, deployed 37 resources
-  through ApplicationDeploymentGraph → Alchemy → TypeKro 0.33.6, reached
+  through ApplicationDeploymentGraph → Alchemy → TypeKro 0.33.7, reached
   stable readiness, passed both maintained browser journeys, and removed all
   37 resources plus the owned Namespace through the same graph-backed destroy
   path.
@@ -364,14 +408,14 @@ old, and contain exactly one run-bound observation for every classified
 assertion. Stale, partial, duplicate, unclassified, or wrong-cluster receipts
 fail closed.
 
-**Status:** TypeKro 0.33.6 is pinned, the pre-graph lifecycle engine has been removed, and GuestBook,
+**Status:** TypeKro 0.33.7 is pinned, the pre-graph lifecycle engine has been removed, and GuestBook,
 Chirp, and the generated v0.6 application have each passed their live OrbStack golden paths through
 the graph-backed Alchemy/TypeKro deployment engine. `Resource.on.reconcile(...)` is now the sole public
 continuous-reconciliation API; `app.reconcile(...)` has been physically removed from the authoring
 surface, examples, generated applications, compiler fixtures, and public API tests. Operator-host reconciliation is
 globally bounded to the declared single-worker contract and immutable WASM components are compiled once
 while every invocation receives fresh host state, eliminating the publisher OOM exposed by the GuestBook
-restart path. TypeKro 0.33.6 includes the status-projection, singleton-scheduling, generated-CRD
+restart path. TypeKro 0.33.7 includes the status-projection, singleton-scheduling, generated-CRD
 migration, and stable artifact-binding fixes required by
 the current graph. Final qualification is focused on
 refreshing exact-worktree evidence across the complete release cohort.
@@ -433,7 +477,7 @@ The reproducible release commands are now:
 The prerelease command ending at a partial scorecard is a failure, not an
 informational warning.
 
-**Upstream prerequisite:** TypeKro 0.33.6 contains PR #117's semantic planning, Alchemy v2,
+**Upstream prerequisite:** TypeKro 0.33.7 contains PR #117's semantic planning, Alchemy v2,
 artifact-output, singleton, scope, namespace-lifecycle, and structured-default fixes plus PR #126's secure,
 unambiguous arbitrary-resource status projection. Applik8s pins it exactly; do not use a caret range until
 the experimental planning DTOs have a qualified compatibility policy.
@@ -547,14 +591,14 @@ graph-backed end to end:
   and JetStream command-consumer heartbeats write observations automatically
   through generated runtimes; applications do not configure a telemetry sink.
   Expired provider heartbeats render as `unknown`, not stale readiness;
-- Stimp parity is now executable rather than aspirational: twelve reviewed
-  product paths carry pinned and locally Git-verified baseline blob identities,
-  explicit disposition rationales and replacement guidance, current Applik8s
-  evidence, and a generated behavioral fixture. `check:v07:stimp` proves
+- Agentic product baseline conformance is now executable rather than aspirational: twelve reviewed
+  product paths carry a versioned baseline identity, explicit disposition
+  rationales and replacement guidance, current Applik8s evidence, and a
+  generated behavioral fixture. `check:v07:product-baseline` proves
   deterministic feature-first generation, the official TanStack boundary,
   credential-free onboarding, maintained module composition, external
-  ownership, explicit lifecycle commands, and absence of a Stimp runtime
-  dependency; the clean packed-consumer release gate proves the same generated
+  ownership, explicit lifecycle commands, and absence of an external product
+  runtime dependency; the clean packed-consumer release gate proves the same generated
   product from package tarballs;
 - generated Agentic Start applications now render a maintained, browser-safe
   onboarding surface rather than copying a product-specific guide. It starts
@@ -798,7 +842,7 @@ graph-backed end to end:
 
 Earlier live OrbStack work published every Chirp image successfully, including both derived operator images,
 and proved creation of the Harbor project, expandable 20Gi CNPG database, and the first artifact level. That
-run then exposed insufficient Ceph daemon sizing under concurrent registry builds. The pinned TypeKro 0.33.6 exposes
+run then exposed insufficient Ceph daemon sizing under concurrent registry builds. The pinned TypeKro 0.33.7 exposes
 the required Rook/Ceph resource overrides and fixes the object-valued `Cel.default()` output that was rejected by live
 KRO because the schema-object branch and literal-map branch had incompatible CEL types. The local TypeKro
 repair widens both structured branches to `dyn` while preserving direct-mode JavaScript semantics; the
@@ -832,7 +876,7 @@ The remaining steady-state cleanup and qualification work is:
   workers share bounded eight-container envelopes with unique health ports. Dedicated profiles may retain
   isolation. Further footprint work should be driven by measured scheduling, memory, cold-start, and
   contention evidence rather than another unbounded consolidation heuristic;
-- TypeKro 0.33.6 is the exact pinned cohort. Its reviewed surface covers semantic and imperative
+- TypeKro 0.33.7 is the exact pinned cohort. Its reviewed surface covers semantic and imperative
   alias-collision parity, secret-taint rejection, canonical expressions, nested identities, client
   hydration, stable artifact-binding schemas, scheduling-only singleton
   prerequisites, restart-safe generated-CRD migration, and ordinary Alchemy
@@ -842,7 +886,7 @@ The remaining steady-state cleanup and qualification work is:
   migration defects: Enhanced RGD metadata proxies reached the Kubernetes
   serializer, and the migration did not wait for KRO to create the generated
   CRD after repairing the RGD. Both are repaired and qualified in the local
-  TypeKro worktree and released TypeKro 0.33.6. The migration now normalizes caller
+  TypeKro worktree and released TypeKro 0.33.7. The migration now normalizes caller
   objects at its boundary, retries resource-version conflicts from a fresh RGD
   read, waits boundedly for the generated CRD without swallowing API failures,
   and synchronizes the complete artifact-binding map before imperative or
@@ -850,7 +894,7 @@ The remaining steady-state cleanup and qualification work is:
   focused 153-test cohort, all three TypeKro typechecks, build, lint,
   deterministic/randomized/coverage unit cohorts, and the live OrbStack v0.32
   interrupted-upgrade recovery passed with complete cleanup. Applik8s now pins
-  that published cohort. Version 0.33.6 also replaces the complete generated
+  that published cohort. Version 0.33.7 also replaces the complete generated
   CRD through the released client path and represents singleton ownership
   through a scheduling-only barrier. Native qualification passes; complete
   lifecycle and External-provider live evidence remain release-candidate
@@ -862,7 +906,7 @@ The remaining steady-state cleanup and qualification work is:
   not patch finalizers, rediscover ownership, or implement a second deletion
   engine, and it cannot report success before the owned Namespace reaches a
   real `404`;
-- TypeKro 0.33.6 no longer emits the earlier false Namespace or literal Kubernetes `.svc` dependency
+- TypeKro 0.33.7 no longer emits the earlier false Namespace or literal Kubernetes `.svc` dependency
   diagnostics for Applik8s's reconstructed graph. The adapter regression keeps those messages absent
   without filtering or patching TypeKro diagnostics.
 
@@ -912,7 +956,7 @@ candidate source stops changing:
 - profile topology remains stable at GuestBook 7 nodes/9 edges; Chirp Starter
   32/82, Dedicated 33/83, and External 26/48; and Identity Start Starter
   16/30, Dedicated 25/49, and External 13/23;
-- TypeKro 0.33.6/Alchemy beta.58 qualification, all twelve Stimp parity paths,
+- TypeKro 0.33.7/Alchemy beta.58 qualification, all twelve Agentic product baseline conformance paths,
   thirteen browser-security controls with 37 focused tests, and the
   seventeen-item identity acceptance contract all passed. Identity acceptance
   remains honestly partial at 13 complete and four integrated-live items;
@@ -929,7 +973,7 @@ candidate source stops changing:
   Namespace `404` without imperative graph deletion; and
 - the exact GuestBook Start browser-shaped Kubernetes command, reconciliation,
   resumable invalidation, and requery journey passes on OrbStack under the
-  TypeKro 0.33.6 cohort. The compiler now recognizes when the selected
+  TypeKro 0.33.7 cohort. The compiler now recognizes when the selected
   `ApplicationHost` already owns a purely Kubernetes-native browser surface and
   keeps that gateway runtime-only, preventing a second Deployment, Service,
   service account, RBAC, and NetworkPolicy owner from competing for the same
@@ -943,7 +987,7 @@ The local cohort is necessary but not sufficient for release. The remaining
 release authority is the exact-candidate maintained-application/browser,
 provider-profile, identity, and signal-provider matrix and
 conversion of every non-deferred scorecard item from partial to complete.
-TypeKro 0.33.6 is published and pinned. Native singleton scheduling, artifact
+TypeKro 0.33.7 is published and pinned. Native singleton scheduling, artifact
 dependency, and generated-CRD migration qualification passes. The scorecard
 remains partial until the exact candidate passes the direct/KRO lifecycle
 matrix and live External graph.
@@ -1045,7 +1089,7 @@ every exact-worktree live receipt is refreshed together.
 The scorecard correctly rejects receipts from an earlier dirty-worktree digest. The shared Ceph platform is
 healthy, Harbor's authenticated data path is proven, the isolated Alchemy transaction converges to a
 zero-change plan, and the GuestBook, generated-application, and Chirp runtime/browser paths are functionally
-green. TypeKro 0.33.6 is now pinned; refresh the exact-worktree datastore and application receipts together
+green. TypeKro 0.33.7 is now pinned; refresh the exact-worktree datastore and application receipts together
 and complete the separate-identity direct lifecycle matrix.
 
 ## Objective
@@ -1691,8 +1735,8 @@ work is qualification of the single graph-backed engine, not migration between e
 
 | Decision                 | Default for this goal                                                                                                         | Required evidence                                                   |
 | ------------------------ | ----------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
-| TypeKro version/API      | exact pin to TypeKro 0.33.6; all experimental planning access isolated in one adapter                                          | `check:v07:typekro`, adapter contract tests, and packed-import test |
-| Alchemy version cohort   | Alchemy 2.0.0-beta.58 and Effect 4.0.0-beta.84, exactly matching TypeKro 0.33.6                                                | `check:v07:typekro`; no duplicate incompatible Effect runtime       |
+| TypeKro version/API      | exact pin to TypeKro 0.33.7; all experimental planning access isolated in one adapter                                          | `check:v07:typekro`, adapter contract tests, and packed-import test |
+| Alchemy version cohort   | Alchemy 2.0.0-beta.58 and Effect 4.0.0-beta.84, exactly matching TypeKro 0.33.7                                                | `check:v07:typekro`; no duplicate incompatible Effect runtime       |
 | local/CI state backend   | one secured, atomic filesystem-backed implementation for local use and an isolated CI location; in-memory only for unit tests | restart/resume, lock contention, corruption, backup/restore tests   |
 | production state backend | interface and threat model documented, but a remote implementation may follow this single-cluster goal                        | no claim that local filesystem state is multi-host production state |
 | Stack identity           | canonical encoded full identity plus digest and persisted reverse lookup                                                      | adversarial collision/property tests and two simultaneous installs  |
@@ -1826,7 +1870,7 @@ CLI, compiler pipeline, deletion runner, and receipt machinery.
       deletion removed every graph-owned object and awaited a real namespace 404, but empty test
       namespaces took roughly five and a half minutes to clear Kubernetes' built-in finalizer in the
       focused 2026-08-01 direct/KRO run.
-- [x] Prove TypeKro 0.33.6 no longer misclassifies literal Kubernetes `.svc` hostnames or cluster-scoped
+- [x] Prove TypeKro 0.33.7 no longer misclassifies literal Kubernetes `.svc` hostnames or cluster-scoped
       Namespaces in Applik8s's reconstructed plans. The adapter asserts the real diagnostics are absent;
       Applik8s does not suppress or rewrite upstream diagnostics.
 

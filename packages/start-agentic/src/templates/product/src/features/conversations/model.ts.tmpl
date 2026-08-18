@@ -1,19 +1,21 @@
 import type { ApplicationModelViewContext } from '@applik8s/applik8s';
-import { applicationAIConversationPrincipalScope } from '@applik8s/conversations/runtime';
 import { type } from 'arktype';
-import { and, desc, eq, isNull } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull } from 'drizzle-orm';
 import { Conversations } from '../../modules';
 import { database } from '../../providers';
 import { Authenticated } from '../workspaces/model';
+import { agenticWorkspaceScope } from '../../workspace-scope';
 
 const ConversationSummary = type({
   id: 'string',
   'title?': 'string',
   updatedAt: 'string',
+  'runStatus?': "'running' | 'interrupted' | 'completed' | 'failed' | 'cancelled'",
+  'terminalReason?': 'string',
 });
 
 async function listConversations(_input: object, context: ApplicationModelViewContext) {
-  const scope = applicationAIConversationPrincipalScope(context.principal, context.trustedContext);
+  const scope = agenticWorkspaceScope(context);
   const rows = await context.database(database).select({
     id: Conversations.Conversation.id,
     title: Conversations.Conversation.title,
@@ -22,14 +24,38 @@ async function listConversations(_input: object, context: ApplicationModelViewCo
     eq(Conversations.Conversation.principalScope, scope),
     isNull(Conversations.Conversation.archivedAt),
   )).orderBy(desc(Conversations.Conversation.updatedAt)).limit(50);
-  return rows.map(row => ({ id: row.id, ...(row.title ? { title: row.title } : {}), updatedAt: row.updatedAt }));
+  if (rows.length === 0) return [];
+  const runs = await context.database(database).select({
+    conversationId: Conversations.ProtocolRun.conversationId,
+    status: Conversations.ProtocolRun.status,
+    terminalReason: Conversations.ProtocolRun.terminalReason,
+  }).from(Conversations.ProtocolRun).where(and(
+    eq(Conversations.ProtocolRun.principalScope, scope),
+    inArray(Conversations.ProtocolRun.conversationId, rows.map(row => row.id)),
+  )).orderBy(desc(Conversations.ProtocolRun.updatedAt)).limit(200);
+  const latestRuns = new Map<string, typeof runs[number]>();
+  for (const run of runs) {
+    if (!latestRuns.has(run.conversationId)) latestRuns.set(run.conversationId, run);
+  }
+  return rows.map(row => {
+    const run = latestRuns.get(row.id);
+    return {
+      id: row.id,
+      ...(row.title ? { title: row.title } : {}),
+      updatedAt: row.updatedAt,
+      ...(run ? {
+        runStatus: run.status,
+        ...(run.terminalReason ? { terminalReason: run.terminalReason } : {}),
+      } : {}),
+    };
+  });
 }
 
 async function loadConversation(
   input: { readonly conversationId: string },
   context: ApplicationModelViewContext,
 ) {
-  const scope = applicationAIConversationPrincipalScope(context.principal, context.trustedContext);
+  const scope = agenticWorkspaceScope(context);
   const client = context.database(database);
   const [conversation] = await client.select({
     id: Conversations.Conversation.id,
@@ -40,7 +66,7 @@ async function loadConversation(
     eq(Conversations.Conversation.principalScope, scope),
   )).limit(1);
   if (!conversation) return null;
-  const messages = await client.select({
+  const [messages, runs] = await Promise.all([client.select({
     id: Conversations.Message.id,
     role: Conversations.Message.role,
     content: Conversations.Message.content,
@@ -48,10 +74,20 @@ async function loadConversation(
   }).from(Conversations.Message).where(eq(
     Conversations.Message.conversationId,
     conversation.id,
-  )).orderBy(Conversations.Message.revision).limit(1_000);
+  )).orderBy(Conversations.Message.revision).limit(1_000), client.select({
+    id: Conversations.ProtocolRun.id,
+    status: Conversations.ProtocolRun.status,
+    startedAt: Conversations.ProtocolRun.startedAt,
+    updatedAt: Conversations.ProtocolRun.updatedAt,
+    terminalReason: Conversations.ProtocolRun.terminalReason,
+  }).from(Conversations.ProtocolRun).where(and(
+    eq(Conversations.ProtocolRun.conversationId, conversation.id),
+    eq(Conversations.ProtocolRun.principalScope, scope),
+  )).orderBy(desc(Conversations.ProtocolRun.updatedAt)).limit(20)]);
   return {
     conversation: { id: conversation.id, ...(conversation.title ? { title: conversation.title } : {}), updatedAt: conversation.updatedAt },
     messages,
+    runs,
   };
 }
 
@@ -59,6 +95,7 @@ export const ConversationList = Conversations.Conversation.view({
   input: type({}),
   output: ConversationSummary.array(),
   database,
+  reads: [Conversations.ProtocolRun],
   authorize: ({ principal }) => principal.id.length > 0,
   budgets: { timeoutMs: 2_000, maxRows: 50, maxResultBytes: 128_000 },
 }, listConversations);
@@ -73,9 +110,16 @@ export const ConversationDetail = Conversations.Conversation.view({
       content: 'unknown',
       createdAt: 'string',
     }).array(),
+    runs: type({
+      id: 'string',
+      status: "'running' | 'interrupted' | 'completed' | 'failed' | 'cancelled'",
+      startedAt: 'string',
+      updatedAt: 'string',
+      'terminalReason?': 'string | null',
+    }).array(),
   }).or('null'),
   database,
-  reads: [Conversations.Message],
+  reads: [Conversations.Message, Conversations.ProtocolRun],
   authorize: ({ principal }) => principal.id.length > 0,
   budgets: { timeoutMs: 2_000, maxRows: 1_001, maxResultBytes: 1_000_000 },
 }, loadConversation);
@@ -93,11 +137,7 @@ Conversations.Conversation.update.beforeCommit(
   async function enforceConversationOwnership(conversation, input, context) {
     if (
       !context.principal
-      || conversation.value.principalScope
-        !== applicationAIConversationPrincipalScope(
-          context.principal,
-          context.trustedContext,
-        )
+      || conversation.value.principalScope !== agenticWorkspaceScope(context)
     ) {
       throw new Error('Conversation is unavailable in this identity scope.');
     }

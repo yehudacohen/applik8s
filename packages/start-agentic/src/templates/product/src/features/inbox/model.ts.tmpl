@@ -6,6 +6,8 @@ import { type } from 'arktype';
 import { desc, eq } from 'drizzle-orm';
 import { application } from '../../app';
 import { database } from '../../providers';
+import { selectedAgenticWorkspaceId } from '../../workspace-scope';
+import { Document } from '../documents/model';
 import {
   Administrator,
   Member,
@@ -18,9 +20,14 @@ async function loadDecisionInbox(
   input: { readonly workspaceId: string },
   context: ApplicationModelViewContext,
 ) {
+  const workspaceId = selectedAgenticWorkspaceId(context);
+  if (!workspaceId || workspaceId !== input.workspaceId) {
+    throw new Error('The requested Inbox is outside the server-admitted workspace scope.');
+  }
   return context.database(database).select({
     id: DecisionReviewTable.id,
     workspaceId: DecisionReviewTable.workspaceId,
+    documentId: DecisionReviewTable.documentId,
     title: DecisionReviewTable.title,
     state: DecisionReviewTable.state,
     decisionReceipt: DecisionReviewTable.decisionReceipt,
@@ -28,7 +35,7 @@ async function loadDecisionInbox(
     createdAt: DecisionReviewTable.createdAt,
     updatedAt: DecisionReviewTable.updatedAt,
   }).from(DecisionReviewTable).where(
-    eq(DecisionReviewTable.workspaceId, input.workspaceId),
+    eq(DecisionReviewTable.workspaceId, workspaceId),
   ).orderBy(desc(DecisionReviewTable.createdAt)).limit(100);
 }
 
@@ -41,12 +48,46 @@ const reviews = module(
 export const { DecisionReview } = application.include(reviews);
 const workflow = application.workflow;
 
+DecisionReview.create.beforeCommit(
+  { history: true },
+  async function markDocumentInReview(review, input, context) {
+    if (!context.principal) throw new Error('Requesting review requires an admitted principal.');
+    if (
+      input.requestedByPrincipalId !== undefined
+      || input.state !== undefined
+      || input.decisionReceipt !== undefined
+      || input.decidedByPrincipalId !== undefined
+      || input.createdAt !== undefined
+      || input.updatedAt !== undefined
+    ) throw new Error('Review provenance, state, receipts, and timestamps are server-owned.');
+    const admittedWorkspace = selectedAgenticWorkspaceId(context);
+    if (!admittedWorkspace || input.workspaceId !== admittedWorkspace) {
+      throw new Error('Review requests must target the server-admitted workspace.');
+    }
+    const document = await Document.require(input.documentId);
+    if (document.value.principalScope !== admittedWorkspace) {
+      throw new Error('The review target is outside the server-admitted workspace.');
+    }
+    if (document.value.state !== 'draft') {
+      throw new Error(`Only a draft document may enter review; the target is ${document.value.state}.`);
+    }
+    context.send(Document.update, {
+      identity: review.value.documentId,
+      patch: { state: 'in-review' },
+    }, {
+      targetKey: review.value.documentId,
+      idempotencyKey: `document-review:${review.value.id}`,
+    });
+  },
+);
+
 export const DecisionReviewSignal = workflow.signal(
   'starter.decision-review.v1',
   {
     input: type({
       reviewId: 'string',
       workspaceId: 'string',
+      documentId: 'string',
       title: 'string',
     }),
     actions: {
@@ -72,6 +113,7 @@ export const DecisionInbox = DecisionReview.view(
     output: type({
       id: 'string',
       workspaceId: 'string',
+      documentId: 'string',
       title: 'string',
       state: "'pending' | 'approved' | 'rejected' | 'expired'",
       decisionReceipt: 'string | null',
@@ -106,24 +148,30 @@ Member.can(
 );
 
 const DecisionWorker = application.serviceIdentity('starter-decision-worker');
+DecisionWorker.can(
+  DecisionReview.update.all(),
+  Document.update.all(),
+);
 
 export const finalizeDecisionReview = workflow(
   'starter.decision-review.finalize.v1',
   {
     input: type({
       reviewId: 'string',
+      documentId: 'string',
       action: "'approved' | 'rejected' | 'expired'",
       'actorId?': 'string',
       'receipt?': 'string',
     }),
     output: type({
       reviewId: 'string',
+      documentId: 'string',
       state: "'approved' | 'rejected' | 'expired'",
       'receipt?': 'string',
     }),
   },
   {
-    authority: [DecisionReview.update.all()],
+    authority: [DecisionReview.update.all(), Document.update.all()],
     identity: DecisionWorker,
     retries: 3,
     idempotencyKey: ({ reviewId, action }) => `${reviewId}:${action}`,
@@ -138,8 +186,20 @@ export const finalizeDecisionReview = workflow(
         updatedAt: new Date().toISOString(),
       },
     });
+    if (input.action === 'approved') {
+      await Document.update({
+        identity: input.documentId,
+        patch: { state: 'approved' },
+      });
+    } else if (input.action === 'rejected') {
+      await Document.update({
+        identity: input.documentId,
+        patch: { state: 'draft' },
+      });
+    }
     return {
       reviewId: input.reviewId,
+      documentId: input.documentId,
       state: input.action,
       ...(input.receipt ? { receipt: input.receipt } : {}),
     };
@@ -148,6 +208,7 @@ export const finalizeDecisionReview = workflow(
 
 async function waitForDecision(input: {
   readonly reviewId: string;
+  readonly documentId: string;
   readonly workspaceId: string;
   readonly title: string;
 }) {
@@ -156,6 +217,7 @@ async function waitForDecision(input: {
     expiresIn: '24h',
     target: {
       reviewId: input.reviewId,
+      documentId: input.documentId,
       workspaceId: input.workspaceId,
     },
     authorize: [
@@ -170,18 +232,21 @@ async function waitForDecision(input: {
   return outcome.match({
     approve: async ({ actor, receipt }) => finalizeDecisionReview({
       reviewId: input.reviewId,
+      documentId: input.documentId,
       action: 'approved',
       actorId: actor.id,
       receipt: receipt.id,
     }),
     reject: async ({ actor, receipt }) => finalizeDecisionReview({
       reviewId: input.reviewId,
+      documentId: input.documentId,
       action: 'rejected',
       actorId: actor.id,
       receipt: receipt.id,
     }),
     expired: async () => finalizeDecisionReview({
       reviewId: input.reviewId,
+      documentId: input.documentId,
       action: 'expired',
     }),
   });
@@ -192,6 +257,7 @@ export const reviewDecision = workflow(
   {
     input: type({
       reviewId: 'string',
+      documentId: 'string',
       workspaceId: 'string',
       title: 'string',
     }),
@@ -207,6 +273,7 @@ export const reviewDecision = workflow(
 async function beginDecisionReview(created: {
   readonly value: {
     readonly id: string;
+    readonly documentId: string;
     readonly workspaceId: string;
     readonly title: string;
   };
@@ -214,6 +281,7 @@ async function beginDecisionReview(created: {
   await reviewDecision.start(
     {
       reviewId: created.value.id,
+      documentId: created.value.documentId,
       workspaceId: created.value.workspaceId,
       title: created.value.title,
     },

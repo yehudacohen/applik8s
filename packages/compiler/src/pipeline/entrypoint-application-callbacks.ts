@@ -279,7 +279,9 @@ export function decorateApplicationCallbackArguments(
           )
         : visited;
     });
-    const capturePositions = registrar === 'workflow'
+    const capturePositions = registrar === 'agent'
+      ? { options: 1, callback: 2 }
+      : registrar === 'workflow'
       ? {
           options:
             node.arguments.length === 4
@@ -342,7 +344,7 @@ export function decorateApplicationCallbackArguments(
             )
           : undefined;
         const generatedAwaitedCalls =
-          registrar === 'beforeCommit' && analysis.awaited.length > 0
+          analysis.awaited.length > 0
             ? ts.factory.createPropertyAssignment(
                 '__generatedAwaitedCalls',
                 ts.factory.createObjectLiteralExpression(
@@ -866,6 +868,13 @@ function directApplicationCallAnalysis(
   for (const parameter of resolved.parameters) collectBindingNames(parameter.name, localNames);
   if (resolved.name) localNames.add(resolved.name.text);
   if (ts.isIdentifier(callback)) localNames.add(callback.text);
+  // Function declarations are hoisted and lexical bindings are visible for
+  // the whole authored closure even when their declaration appears after a
+  // call site. Collect them before dependency traversal so a local helper is
+  // never emitted as a module-scope metadata value. The traversal still walks
+  // each local helper body and captures any actual module dependencies it
+  // reaches.
+  collectFunctionLocalApplicationBindings(resolved.body, localNames);
   const candidates = new Map<string, ts.Expression>();
   const awaited = new Map<string, ts.Expression>();
   const returned = new Map<string, ts.Expression>();
@@ -887,6 +896,44 @@ function directApplicationCallAnalysis(
       collectBindingNames(node.variableDeclaration.name, localNames);
     }
     if (ts.isCallExpression(node)) {
+      if (
+        ts.isPropertyAccessExpression(node.expression)
+        && node.expression.name.text === 'send'
+        && node.arguments[0]
+      ) {
+        const stagedArgument = node.arguments[0] as ts.Expression;
+        const stagedOwner = ts.isPropertyAccessExpression(stagedArgument)
+          ? stagedArgument.expression
+          : stagedArgument;
+        const stagedRoot = expressionRootIdentifier(stagedOwner);
+        if (
+          stagedRoot
+          && !localNames.has(stagedRoot.text)
+          && !mutableModuleState.has(stagedRoot.text)
+          && !knownRuntimeGlobal(stagedRoot.text)
+        ) {
+          candidates.set(
+            applicationNodeText(stagedOwner, file),
+            stagedOwner,
+          );
+          // A model operation staged through context.send(...) carries two
+          // distinct pieces of compiler authority: the owning model is a
+          // transaction participant, while the complete member expression is
+          // the durable outbound command contract. Preserve both. Reducing
+          // Document.create to Document silently produced a read-only model
+          // facade and omitted the command from generated admission.
+          if (stagedArgument !== stagedOwner) {
+            candidates.set(
+              applicationNodeText(stagedArgument, file),
+              stagedArgument,
+            );
+          }
+        }
+        for (const argument of node.arguments.slice(1)) {
+          ts.forEachChild(argument, visit);
+        }
+        return;
+      }
       if (
         ts.isPropertyAccessExpression(node.expression)
         && node.expression.name.text === 'emitSignal'
@@ -947,6 +994,7 @@ function directApplicationCallAnalysis(
             collectBindingNames(parameter.name, helperLocals);
           }
           if (helper.name) helperLocals.add(helper.name.text);
+          collectFunctionLocalApplicationBindings(helper.body, helperLocals);
           const addedHelperLocals = [...helperLocals].filter(
             (name) => !localNames.has(name),
           );
@@ -975,6 +1023,26 @@ function directApplicationCallAnalysis(
     awaited: [...awaited.values()],
     returned: [...returned.values()],
   };
+}
+
+function collectFunctionLocalApplicationBindings(
+  root: ts.Node,
+  names: Set<string>,
+): void {
+  function visit(node: ts.Node): void {
+    if (ts.isVariableDeclaration(node)) collectBindingNames(node.name, names);
+    if (ts.isFunctionDeclaration(node) && node.name) names.add(node.name.text);
+    if (ts.isFunctionLike(node)) {
+      for (const parameter of node.parameters) {
+        collectBindingNames(parameter.name, names);
+      }
+    }
+    if (ts.isCatchClause(node) && node.variableDeclaration) {
+      collectBindingNames(node.variableDeclaration.name, names);
+    }
+    ts.forEachChild(node, visit);
+  }
+  visit(root);
 }
 
 function topLevelMutableApplicationBindings(file: ts.SourceFile): ReadonlySet<string> {
@@ -1171,10 +1239,14 @@ function collectBindingNames(name: ts.BindingName, target: Set<string>): void {
 
 function knownRuntimeGlobal(name: string): boolean {
   return new Set([
+    'AbortController',
+    'AbortSignal',
     'Array',
     'BigInt',
     'Boolean',
     'Date',
+    'TextDecoder',
+    'TextEncoder',
     'Error',
     'JSON',
     'Map',
@@ -1182,12 +1254,23 @@ function knownRuntimeGlobal(name: string): boolean {
     'Number',
     'Object',
     'Promise',
+    'queueMicrotask',
     'Reflect',
     'RegExp',
     'Set',
     'String',
     'URL',
+    'URLSearchParams',
+    'clearInterval',
+    'clearTimeout',
     'console',
+    'crypto',
+    'decodeURIComponent',
+    'encodeURIComponent',
+    'fetch',
+    'setInterval',
+    'setTimeout',
+    'structuredClone',
   ]).has(name);
 }
 

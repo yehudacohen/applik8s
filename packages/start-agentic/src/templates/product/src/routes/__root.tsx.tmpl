@@ -16,6 +16,8 @@ import {
 } from './-route-state';
 import '../styles.css';
 
+declare const __APPLIK8S_BUILD_LINEAGE__: string;
+
 export const Route = createRootRoute({
   head: () => ({
     meta: [
@@ -49,6 +51,7 @@ function Document({ children }: { readonly children: ReactNode }) {
     <html lang="en">
       <head>
         <HeadContent />
+        <meta name="applik8s-build-lineage" content={__APPLIK8S_BUILD_LINEAGE__} />
       </head>
       <body>
         {children}

@@ -1,0 +1,17 @@
+{
+  "apiVersion": "applik8s.agenticStartBundleBudget/v1alpha1",
+  "client": {
+    "maximumJavaScriptBytes": 1050000,
+    "maximumJavaScriptGzipBytes": 330000,
+    "maximumChunkBytes": 400000,
+    "maximumChunkGzipBytes": 125000,
+    "maximumCssBytes": 100000,
+    "maximumCssGzipBytes": 25000
+  },
+  "server": {
+    "maximumJavaScriptBytes": 5750000,
+    "maximumJavaScriptGzipBytes": 1200000,
+    "maximumChunkBytes": 1150000,
+    "maximumChunkGzipBytes": 150000
+  }
+}

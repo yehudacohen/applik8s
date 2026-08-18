@@ -7,6 +7,47 @@ import { Authenticated } from '../workspaces/model';
 import { OnboardingProgress as OnboardingProgressTable } from './schema';
 
 const onboarding = module('onboarding', OnboardingProgressTable, () => {
+  OnboardingProgressTable.create.beforeCommit(
+    { history: true },
+    async function establishOnboardingIdentity(progress, input, context) {
+      if (!context.principal) {
+        throw new Error('Onboarding progress requires an authenticated identity.');
+      }
+      if (
+        input.principalId !== undefined
+        || input.completedAt !== undefined
+        || input.updatedAt !== undefined
+      ) {
+        throw new Error('Onboarding identity and timestamps are server-owned.');
+      }
+      progress.patch({
+        spec: {
+          principalId: context.principal.id,
+          updatedAt: context.now,
+          completedAt: (input.completedSteps?.length ?? 0) >= 4 ? context.now : null,
+        },
+      });
+    },
+  );
+  OnboardingProgressTable.update.beforeCommit(
+    { history: true },
+    async function protectOnboardingIdentity(progress, input, context) {
+      if (!context.principal || progress.value.principalId !== context.principal.id) {
+        throw new Error('Onboarding progress is outside the authenticated identity.');
+      }
+      if ('principalId' in input.patch || 'completedAt' in input.patch || 'updatedAt' in input.patch) {
+        throw new Error('Onboarding identity and timestamps are server-owned.');
+      }
+      progress.patch({
+        spec: {
+          updatedAt: context.now,
+          ...('completedSteps' in input.patch
+            ? { completedAt: (input.patch.completedSteps?.length ?? 0) >= 4 ? context.now : null }
+            : {}),
+        },
+      });
+    },
+  );
   const OnboardingState = OnboardingProgressTable.view({
     input: type({}),
     output: type({
@@ -33,8 +74,8 @@ const onboarding = module('onboarding', OnboardingProgressTable, () => {
   });
 
   Authenticated.can(
-    OnboardingProgressTable.create.all(),
-    OnboardingProgressTable.update.all(),
+    OnboardingProgressTable.create,
+    OnboardingProgressTable.update,
     OnboardingState,
   );
   return { OnboardingProgress: OnboardingProgressTable, OnboardingState };

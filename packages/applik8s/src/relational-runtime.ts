@@ -212,10 +212,15 @@ export function createApplicationRelationalContext(options: {
       return registered.db.transaction(async (tx) => {
         await tx.execute(sql.raw('set transaction isolation level repeatable read read only'));
         await installTrustedContext(tx, registered.binding, options.admittedContext);
-        const changeScope = relationalChangeScopeDigest(registered.binding, options.admittedContext);
-        await acquireApplicationModelChangeCommitLock(tx, changeScope);
+        const changeScopes = relationalReadChangeScopeDigests(
+          registered.binding,
+          options.admittedContext,
+        );
+        for (const changeScope of changeScopes) {
+          await acquireApplicationModelChangeCommitLock(tx, changeScope);
+        }
         const value = await active.run({ database: binding.name, db: tx as ApplicationDatabaseClient<Readonly<Record<string, unknown>>> }, handler);
-        const rows = await tx.execute(sql`select coalesce(max(sequence), 0) as sequence from applik8s_model_changes where context_digest = ${changeScope}`);
+        const rows = await tx.execute(sql`select coalesce(max(sequence), 0) as sequence from applik8s_model_changes where context_digest in (${sql.join(changeScopes.map((scope) => sql`${scope}`), sql`, `)})`);
         return { value, sequence: numericResult(rows, 'sequence') };
       });
     },
@@ -225,15 +230,18 @@ export function createApplicationRelationalContext(options: {
       const registered = registeredDatabase(databases, binding);
       return context.run(binding, async () => {
         const db = context.database(binding);
-        const digest = relationalChangeScopeDigest(registered.binding, options.admittedContext);
+        const digests = relationalReadChangeScopeDigests(
+          registered.binding,
+          options.admittedContext,
+        );
         const rows = await db.execute(sql`
           select sequence, model, operation, identity, revision, context_digest, changed_fields, recorded_at
           from applik8s_model_changes
-          where context_digest = ${digest} and sequence > ${afterSequence}
+          where context_digest in (${sql.join(digests.map((digest) => sql`${digest}`), sql`, `)}) and sequence > ${afterSequence}
           order by sequence asc
           limit ${limit}
         `);
-        const floorRows = await db.execute(sql`select coalesce(min(sequence), 0) as floor from applik8s_model_changes where context_digest = ${digest}`);
+        const floorRows = await db.execute(sql`select coalesce(min(sequence), 0) as floor from applik8s_model_changes where context_digest in (${sql.join(digests.map((digest) => sql`${digest}`), sql`, `)})`);
         return { items: applicationChangeRows(rows), retentionFloor: numericResult(floorRows, 'floor') };
       });
     },
@@ -466,10 +474,12 @@ function relationalTrustedContext(
  * controller, or administrator updating data on a user's behalf produces a
  * change that the user's live query can never observe.
  *
- * Global databases therefore share one opaque invalidation scope. RLS-backed
- * databases share one scope per validated access-context value. Full principal,
- * claims, authorization version, and other trusted context remain bound into
- * command/result and query cursors; they are deliberately not change scopes.
+ * Global models therefore write one opaque invalidation scope. RLS-backed
+ * models write one scope per validated access-context value, while readers of
+ * an RLS-capable database follow both because one query may join scoped and
+ * intentionally global models. Full principal, claims, authorization version,
+ * and other trusted context remain bound into command/result and query cursors;
+ * they are deliberately not change scopes.
  */
 function relationalChangeScopeDigest(binding: ApplicationDatabaseBinding, admitted: ApplicationAdmittedContext): string {
   const access = binding.access;
@@ -479,6 +489,35 @@ function relationalChangeScopeDigest(binding: ApplicationDatabaseBinding, admitt
   if (raw === undefined) throw new Error(`Required trusted context ${access.context.name} is missing for database ${binding.name}.`);
   validateTrustedContextValue(access.context, raw);
   return applicationRelationalChangeScopeDigest(scopes, access.context.name);
+}
+
+/**
+ * A database with an access boundary may still contain framework or
+ * application models that are intentionally global. A live query can join
+ * those models with access-scoped rows, so its invalidation frontier must
+ * follow both streams. The query result remains protected by PostgreSQL RLS;
+ * observing a global sequence advance reveals no row data and only causes a
+ * conservative authoritative requery.
+ */
+function relationalReadChangeScopeDigests(
+  binding: ApplicationDatabaseBinding,
+  admitted: ApplicationAdmittedContext,
+): readonly string[] {
+  const scopes = applicationRelationalChangeScopes(admitted);
+  if (!binding.access) {
+    return [applicationRelationalChangeScopeDigest(scopes)];
+  }
+  const raw = admitted.values[binding.access.context.name];
+  if (raw === undefined) {
+    throw new Error(
+      `Required trusted context ${binding.access.context.name} is missing for database ${binding.name}.`,
+    );
+  }
+  validateTrustedContextValue(binding.access.context, raw);
+  return [
+    applicationRelationalChangeScopeDigest(scopes),
+    applicationRelationalChangeScopeDigest(scopes, binding.access.context.name),
+  ].sort();
 }
 
 /**

@@ -184,6 +184,15 @@ export function applicationCallableProviderDependencies(
 ): readonly ApplicationCallableProviderDependency[] {
   const discovered: ApplicationCallableProviderDependency[] = [];
   for (const [identifier, callable] of Object.entries(bindings)) {
+    if (isApplicationObjectStoreBinding(callable)) {
+      discovered.push({
+        identifier,
+        provider: {
+          interface: 'ObjectStorage',
+          nodeId: applicationProviderGraphNodeId('ObjectStorage'),
+        },
+      });
+    }
     const dependencies = [
       ...(isApplicationProviderBinding(callable) ? [callable] : []),
       ...applicationProviderDependenciesFor(callable),
@@ -220,6 +229,16 @@ export function applicationCallableProviderDependencies(
       `${left.identifier}:${left.provider.nodeId}`.localeCompare(
         `${right.identifier}:${right.provider.nodeId}`,
       ));
+}
+
+function isApplicationObjectStoreBinding(
+  value: unknown,
+): value is { readonly kind: 'applicationObjectStore' } {
+  return Boolean(
+    value
+      && typeof value === 'object'
+      && Reflect.get(value, 'kind') === 'applicationObjectStore',
+  );
 }
 
 function isApplicationProviderBinding(

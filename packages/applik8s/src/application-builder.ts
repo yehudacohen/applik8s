@@ -2602,6 +2602,17 @@ function createKubernetesApplicationBuilder<TSpec extends KroCompatibleType = Re
         const command = applicationModelCommandBindingForOperation(tool);
         return command ? [tool] : [];
       });
+      const inferredHandlerCommands = expandApplicationCallbackDependencies({
+        calls: agentOptions.__generatedCalls,
+        bindings: agentOptions.__generatedBindings,
+      }).calls.flatMap((operation) => {
+        const command = applicationModelCommandBindingForOperation(operation);
+        return command ? [operation as typeof internalCommands[number]] : [];
+      });
+      const allInternalCommands = [...new Set([
+        ...internalCommands,
+        ...inferredHandlerCommands,
+      ])];
       const internalQueries = agentOptions.tools.flatMap((tool) => {
         const query = applicationQueryBindingForOperation(tool);
         return query ? [tool] : [];
@@ -2639,7 +2650,7 @@ function createKubernetesApplicationBuilder<TSpec extends KroCompatibleType = Re
               },
             });
       const internalCommandNodeIds = new Map(
-        internalCommands.map((operation) => {
+        allInternalCommands.map((operation) => {
           const command = applicationModelCommandBindingForOperation(operation);
           const handler = command
             ? previewContext.state.graphNodes.find(
@@ -2676,14 +2687,14 @@ function createKubernetesApplicationBuilder<TSpec extends KroCompatibleType = Re
       replays.push((scope) => {
         scope.agent(agentName, agentOptions, handler);
       });
-      if (internalCommands.length + internalQueries.length > 0) {
+      if (allInternalCommands.length + internalQueries.length > 0) {
         inferredGatewayReplays.push((state) => {
           const gateways = state.graphNodes.filter(
             (node) =>
               node.kind === 'gateway'
               && node.materialization === 'generatedDeployment',
           );
-          const uncoveredCommands = internalCommands.filter((operation) => {
+          const uncoveredCommands = allInternalCommands.filter((operation) => {
             const commandNodeId = internalCommandNodeIds.get(operation);
             if (!commandNodeId) return true;
             return !gateways.some((gateway) =>

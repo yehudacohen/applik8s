@@ -1,6 +1,6 @@
 import { useApplicationIdentitySession } from '@applik8s/react/identity';
 import { Link, createFileRoute } from '@tanstack/react-router';
-import { Badge, Card } from '../components/ui';
+import { Badge, Button, Card } from '../components/ui';
 
 export const Route = createFileRoute('/')({
   component: Landing,
@@ -12,36 +12,36 @@ function Landing() {
   return (
     <div className="py-6 sm:py-12">
       <div className="mx-auto max-w-4xl text-center">
-        <Badge tone="success">Agentic SaaS, already connected</Badge>
+        <Badge tone="success">Your intelligent workspace</Badge>
         <h1 className="mt-6 text-balance text-5xl font-semibold tracking-[-0.06em] text-stone-950 sm:text-7xl">
-          Build the product.<br />Keep the control plane.
+          Turn a conversation<br /> into finished work.
         </h1>
         <p className="mx-auto mt-6 max-w-2xl text-pretty text-lg leading-8 text-stone-600">
-          A production-shaped workspace copilot with typed models, live UI,
-          durable execution, identity, billing, and explainable infrastructure.
+          Create documents with an assistant, bring in trusted knowledge,
+          review important changes, and keep every result organized with your team.
         </p>
         <div className="mt-8 flex flex-wrap justify-center gap-3">
-          <Link to={destination} className="button-link">
+          <Button asChild><Link to={destination}>
             {session.data?.authenticated ? 'Open your workspace' : 'Get started'}
-          </Link>
-          <a href="https://github.com/yehudacohen/applik8s" className="button-link secondary">View the source</a>
+          </Link></Button>
+          <Button asChild variant="secondary"><Link to="/sign-in" search={{ returnTo: '/app' }}>Sign in</Link></Button>
         </div>
       </div>
       <div className="mt-14 grid gap-4 md:grid-cols-3">
         <Card>
-          <p className="eyebrow">Function native</p>
-          <h2 className="mt-2 text-lg font-semibold">Ordinary TypeScript</h2>
-          <p className="mt-2 text-sm leading-6 text-stone-600">Models, agents, events, workflows, and projections remain direct callable values.</p>
+          <p className="eyebrow">Create</p>
+          <h2 className="mt-2 text-lg font-semibold">Work that stays useful</h2>
+          <p className="mt-2 text-sm leading-6 text-stone-600">The assistant saves authoritative documents instead of leaving valuable work buried in chat.</p>
         </Card>
         <Card>
-          <p className="eyebrow">Live by default</p>
-          <h2 className="mt-2 text-lg font-semibold">One authoritative loop</h2>
-          <p className="mt-2 text-sm leading-6 text-stone-600">Committed model changes invalidate typed queries and reconcile the browser without hand-built glue.</p>
+          <p className="eyebrow">Collaborate</p>
+          <h2 className="mt-2 text-lg font-semibold">Decisions in context</h2>
+          <p className="mt-2 text-sm leading-6 text-stone-600">Route sensitive work for review, keep the conversation attached, and publish only the approved result.</p>
         </Card>
         <Card>
-          <p className="eyebrow">Deployable</p>
-          <h2 className="mt-2 text-lg font-semibold">Inferred infrastructure</h2>
-          <p className="mt-2 text-sm leading-6 text-stone-600">The same application graph explains and deploys its providers through TypeKro and Alchemy.</p>
+          <p className="eyebrow">Trust</p>
+          <h2 className="mt-2 text-lg font-semibold">Clear authority</h2>
+          <p className="mt-2 text-sm leading-6 text-stone-600">Every saved change keeps its author, workspace, conversation, and approval history.</p>
         </Card>
       </div>
     </div>

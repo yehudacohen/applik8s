@@ -9,6 +9,8 @@ import {
 } from './schema.js';
 
 export * from './schema.js';
+export * from './queries.js';
+export * from './runtime.js';
 
 function installEvaluations() {
   return {

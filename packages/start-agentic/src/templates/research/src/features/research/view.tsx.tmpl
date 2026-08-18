@@ -1,7 +1,4 @@
-import {
-  createApplicationTanStackConnection,
-  hydrateApplicationConversationMessage,
-} from '@applik8s/ai-tanstack/client';
+import { createApplicationTanStackConnection } from '@applik8s/ai-tanstack/client';
 import { AgenticStartOnboarding } from '@applik8s/start-agentic/react';
 import { useChat } from '@tanstack/ai-react';
 import { Link, useNavigate } from '@tanstack/react-router';
@@ -88,21 +85,16 @@ export function ResearchConversation({
     }),
     [],
   );
-  const initialMessages = useMemo(
-    () => detail.data?.messages.map(hydrateApplicationConversationMessage) ?? [],
-    [detail.data],
-  );
   const {
     messages,
     sendMessage,
     isLoading,
     error,
     stop,
-    setMessages,
   } = useChat({
     connection,
     threadId: conversationId,
-    initialMessages,
+    persistence: true,
   });
   const [draft, setDraft] = useState('');
   const [title, setTitle] = useState('');
@@ -110,11 +102,6 @@ export function ResearchConversation({
   useEffect(() => {
     setTitle(detail.data?.conversation.title ?? '');
   }, [detail.data?.conversation.title]);
-
-  useEffect(() => {
-    if (!detail.data || isLoading) return;
-    setMessages(initialMessages);
-  }, [detail.data, initialMessages, isLoading, setMessages]);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();

@@ -25,6 +25,10 @@ export async function recordApplicationDeploymentEvidence(input: {
   readonly evidence: JsonObject;
   readonly outDir: string;
   readonly cwd: string;
+  readonly deployment?: {
+    readonly context: string;
+    readonly installationSpec: Readonly<Record<string, unknown>>;
+  };
   stdout(message: string): void;
   readonly now?: Date;
 }): Promise<ApplicationDeploymentEvidenceReceipt> {
@@ -74,6 +78,7 @@ export async function recordApplicationDeploymentEvidence(input: {
     receipt,
     input.outDir,
     { cwd: input.cwd, stdout: input.stdout },
+    input.deployment,
   );
   input.stdout(
     published
@@ -87,6 +92,10 @@ interface ApplicationEvidenceIo {
   readonly outDir: string;
   readonly cwd: string;
   stdout(message: string): void;
+  readonly deployment?: {
+    readonly context: string;
+    readonly installationSpec: Readonly<Record<string, unknown>>;
+  };
 }
 
 export function recordApplicationPlanEvidence(input: ApplicationEvidenceIo & {

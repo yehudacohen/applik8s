@@ -31,6 +31,20 @@ function operationPrincipalVariable(id: string): string {
   return `principal_${createHash('sha256').update(id).digest('hex').slice(0, 12)}`;
 }
 
+export function taskServicePrincipalInput(
+  serviceIdentity: NonNullable<ApplicationTaskHandlerNode['serviceIdentity']>,
+  authorizationVersion: string,
+): { readonly id: string; readonly authorizationVersion: string } {
+  return Object.freeze({
+    // canonicalApplicationTaskServicePrincipal() accepts the authored service
+    // name and constructs the application-qualified identity. Passing the
+    // already-qualified identity ID double-prefixes the runtime principal and
+    // makes its static grants impossible to match.
+    id: serviceIdentity.subject,
+    authorizationVersion,
+  });
+}
+
 function workflowOperationAliasesSource(
   aliases: Readonly<Record<string, WorkflowOperationAliasContract>>,
 ): string {
@@ -60,10 +74,10 @@ export function generatedWorkerSource(contract: WorkflowContract): string {
     const projections = contract.projectionEffects?.aliases[handler.id] ?? {};
 		const objects = contract.objectEffects?.aliases[handler.id] ?? {};
     const principal = handler.serviceIdentity
-      ? JSON.stringify({
-          id: handler.serviceIdentity.id,
-          authorizationVersion: contract.operationCatalog?.revision ?? 'canonical-authority',
-        })
+      ? JSON.stringify(taskServicePrincipalInput(
+          handler.serviceIdentity,
+          contract.operationCatalog?.revision ?? 'canonical-authority',
+        ))
       : handler.operationPrincipalSource
         ? `${operationPrincipalVariable(handler.id)}(validInput)`
         : 'undefined';
@@ -99,8 +113,8 @@ export function generatedWorkerSource(contract: WorkflowContract): string {
     const functionNativeRuntime = !functionNativeTransaction
       ? ''
       : functionNativeTransaction.mode === 'read'
-        ? `withApplicationNativeModelReadClients(await functionNativeTaskReadClients(${JSON.stringify(handler.id)}), () => `
-        : `withApplicationNativeModelTransactionRuntime(functionNativeTaskRuntime(${JSON.stringify(handler.id)}, context), async () => withApplicationNativeModelReadClients(await functionNativeTaskReadClients(${JSON.stringify(handler.id)}), () => `;
+        ? `withApplicationNativeModelReadClients(await functionNativeTaskReadClients(${JSON.stringify(handler.id)}, context), () => `
+        : `withApplicationNativeModelTransactionRuntime(functionNativeTaskRuntime(${JSON.stringify(handler.id)}, context), async () => withApplicationNativeModelReadClients(await functionNativeTaskReadClients(${JSON.stringify(handler.id)}, context), () => `;
     const functionNativeRuntimeClose = !functionNativeTransaction
       ? ''
       : functionNativeTransaction.mode === 'read'
@@ -1272,10 +1286,14 @@ function functionNativeTaskBindings(handlerId) {
   if (!transaction) throw new Error('No function-native transaction was declared for task handler ' + handlerId + '.');
   return transaction.bindings;
 }
-function functionNativeTaskReadClients(handlerId) {
+function functionNativeTaskReadClients(handlerId, context) {
   const transaction = functionNativeTaskTransactions[handlerId];
   if (!transaction) throw new Error('No function-native read scope was declared for task handler ' + handlerId + '.');
-  return applicationPostgresModelReadClients(transaction.databaseUrl, transaction.models);
+  return applicationPostgresModelReadClients(
+    transaction.databaseUrl,
+    transaction.models,
+    metadata(context).trustedContext,
+  );
 }
 function functionNativeTaskRuntime(handlerId, context) {
   const transaction = functionNativeTaskTransactions[handlerId];

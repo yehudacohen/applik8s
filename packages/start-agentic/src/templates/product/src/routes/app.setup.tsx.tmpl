@@ -1,19 +1,30 @@
 import { useApplicationIdentitySession } from '@applik8s/react/identity';
 import type { ApplicationOperationsSnapshot } from '@applik8s/operations-ui';
+import {
+  agenticLaunchpadEvidenceState,
+  summarizeAgenticLaunchpadEvidence,
+} from '@applik8s/start-agentic/launchpad';
 import { createFileRoute, Link } from '@tanstack/react-router';
 import { OperationsSnapshot } from '../application';
-import { Badge, Card, PageHeader, RouteState } from '../components/ui';
+import { Badge, Button, Card, PageHeader, RouteState } from '../components/ui';
 
 export const Route = createFileRoute('/app/setup')({ component: Launchpad });
 
 const obligationGroups = [
-  ['Identity and authority', 'identity', 'identity', 'Provider admission, canonical operator grants, and recovery'],
-  ['Application database', 'databases', 'database', 'Transactional authority, migration, backup, and restore evidence'],
-  ['Event delivery', 'eventConsumers', 'eventConsumer', 'JetStream delivery, checkpoints, retries, and dead letters'],
-  ['Durable workflows', 'workflows', 'workflow', 'Hatchet workers, waits, signals, cancellation, and recovery'],
-  ['Object storage', 'objectStores', 'objectStore', 'Object authority, retention, and provider readiness'],
-  ['AI runtime', 'ai', 'ai', 'Logical model resolution, provider boundary, budget, and uncertain completion'],
-  ['Public gateway', 'gateways', 'gateway', 'Exposure, DNS, TLS, identity admission, and route readiness'],
+  ['Identity and authority', 'identity', 'identity', 'Provider admission, canonical operator grants, and recovery', 'Verify sign-in, recovery, and an operator-only route with the selected identity profile.'],
+  ['Application database', 'databases', 'database', 'Transactional authority, migration, backup, and restore evidence', 'Run migrations, then verify a write, restart, and restore receipt.'],
+  ['Event delivery', 'eventConsumers', 'eventConsumer', 'JetStream delivery, checkpoints, retries, and dead letters', 'Create a document and confirm its lifecycle processor advances without lag or dead letters.'],
+  ['Durable workflows', 'workflows', 'workflow', 'Hatchet workers, waits, signals, cancellation, and recovery', 'Request document review, reload, and resolve the durable decision from Inbox.'],
+  ['Object storage', 'objectStores', 'objectStore', 'Object authority, retention, and provider readiness', 'Produce and download an Artifact through its signed intent.'],
+  ['AI runtime', 'ai', 'ai', 'Logical model resolution, provider boundary, budget, and uncertain completion', 'Run the Workspace assistant and confirm a durable Document appears before accepting completion.'],
+  ['Public gateway', 'gateways', 'gateway', 'Exposure, DNS, TLS, identity admission, and route readiness', 'Verify the deployed hostname, certificate, and admitted application route.'],
+] as const;
+
+const deploymentProfiles = [
+  ['starter', 'Credential-free', 'Deterministic local identity, inference, billing, notifications, and bounded infrastructure.'],
+  ['developer', 'Live providers', 'Local application with explicit OpenRouter, Stripe, and optional SMTP credentials from .env or an existing Secret.'],
+  ['dedicated', 'Owned platform', 'Application-owned CNPG, JetStream, Hatchet, object storage, search, identity, and provider gateways.'],
+  ['external', 'Bring your platform', 'Explicit externally owned endpoints, Secret references, readiness, and lifecycle responsibility.'],
 ] as const;
 
 function Launchpad() {
@@ -34,22 +45,42 @@ function AuthorizedLaunchpad() {
   }
   const data = snapshot.data;
   const obligations = obligationGroups
-    .map(([name, key, category, description]) => ({
+    .map(([name, key, category, description, verification]) => ({
       name,
       description,
+      verification,
       declared: data[key].filter(record => record.category === category && record.authority === 'inferred'),
       evidence: data[key].filter(record => record.authority !== 'inferred'),
-    }))
-    .filter(({ declared, evidence }) => declared.length > 0 || evidence.length > 0);
+    }));
+  const deploymentRecords =
+    data.installations.filter(record => record.authority !== 'inferred');
+  const deployment = agenticLaunchpadEvidenceState(deploymentRecords);
+  const evidenceSummary = summarizeAgenticLaunchpadEvidence([
+    {
+      name: 'current deployment',
+      verification: 'Run `bun run status` after deployment to publish a fresh, redacted readiness receipt for the exact graph.',
+      records: deploymentRecords,
+    },
+    ...obligations.map(obligation => ({
+      name: obligation.name,
+      verification: obligation.verification,
+      records: obligation.evidence,
+    })),
+  ]);
+  const { ready, actionRequired, needsVerification, next: nextObligation } = evidenceSummary;
+  const nextState = nextObligation?.state;
   return <div>
     <PageHeader
       eyebrow="Builder Launchpad"
-      title="Deployment intent, evidence, and the next honest action"
-      description="Every row comes from the compiled application graph or a bounded, digest-bound operational receipt. Missing evidence remains Unknown. Cluster mutation stays in the CLI."
+      title="Get this application ready to launch"
+      description="See what is configured, what has been verified, and the next safe action for every production capability. Deployment changes remain explicit CLI operations."
       action={<Badge tone="warning">Operator authority</Badge>}
     />
     <div className="grid gap-5 lg:grid-cols-[1fr_22rem]">
       <section className="space-y-3" aria-label="Graph-derived go-live obligations">
+        <Card className="border-blue-200 bg-blue-50/60"><div className="flex flex-wrap items-start justify-between gap-4"><div><p className="eyebrow">Recommended next action</p><h2 className="mt-1 text-xl font-semibold">{nextObligation ? `${nextState === 'Action required' ? 'Repair' : 'Verify'} ${nextObligation.name}` : 'Review and retain the release evidence'}</h2><p className="mt-2 max-w-3xl text-sm leading-6 text-stone-600">{nextObligation ? nextState === 'Action required' ? 'Open the affected evidence, repair the provider or delivery path, and rerun only this product journey.' : nextObligation.verification : 'Every discovered capability and the current deployment have fresh positive evidence. Review the exact graph digest before release.'}</p></div><LaunchpadNextAction name={nextObligation?.name} state={nextState} /></div></Card>
+        <Card className={deployment === 'Ready' ? 'border-emerald-200 bg-emerald-50/60' : deployment === 'Action required' ? 'border-red-200 bg-red-50/60' : 'border-amber-200 bg-amber-50/60'}><div className="flex flex-wrap items-center justify-between gap-3"><div><p className="eyebrow">Current deployment</p><h2 className="mt-1 text-xl font-semibold">{deployment === 'Ready' ? 'Application deployment is healthy' : deployment === 'Action required' ? 'Deployment needs attention' : 'Publish fresh deployment evidence'}</h2><p className="mt-2 text-sm text-stone-600">{deployment === 'Needs verification' ? 'Run `bun run status` from the generated project after deployment to publish a fresh, redacted readiness receipt.' : 'This state comes from a bounded receipt for the exact deployment graph.'}</p></div><Badge tone={deployment === 'Ready' ? 'success' : deployment === 'Action required' ? 'danger' : 'warning'}>{deployment}</Badge></div></Card>
+        <div className="grid gap-3 sm:grid-cols-3"><Card><p className="text-sm text-stone-500">Verified</p><p className="mt-1 text-2xl font-semibold">{ready}</p></Card><Card><p className="text-sm text-stone-500">Action required</p><p className="mt-1 text-2xl font-semibold">{actionRequired}</p></Card><Card><p className="text-sm text-stone-500">Needs verification</p><p className="mt-1 text-2xl font-semibold">{needsVerification}</p></Card></div>
         <Card>
           <p className="eyebrow">Production obligations</p>
           <h2 className="mt-2 font-semibold">Derived from this application graph</h2>
@@ -62,13 +93,14 @@ function AuthorizedLaunchpad() {
         </Card>
         {obligations.length === 0
           ? <Card><h2 className="font-semibold">No graph obligations discovered</h2><p className="mt-2 text-sm text-stone-600">Build the application candidate before treating any capability as ready.</p></Card>
-          : obligations.map(({ name, description, declared, evidence }) => {
-              const state = obligationState(evidence);
+          : obligations.map(({ name, description, verification, declared, evidence }) => {
+              const state = agenticLaunchpadEvidenceState(evidence);
               return <Card key={name} className="flex items-start justify-between gap-4">
                 <div>
                   <h2 className="font-semibold">{name}</h2>
                   <p className="mt-1 text-sm text-stone-600">{description}</p>
-                  <p className="mt-2 text-xs text-stone-500">{declared.length} declared component{declared.length === 1 ? '' : 's'} · {evidence.length} live observation{evidence.length === 1 ? '' : 's'}</p>
+                  <p className="mt-2 text-xs text-stone-500">{declared.length > 0 ? `${declared.length} topology declaration${declared.length === 1 ? '' : 's'} · ` : 'Runtime-discovered · '}{evidence.length} fresh evidence receipt{evidence.length === 1 ? '' : 's'}</p>
+                  <p className="mt-3 rounded-lg bg-stone-50 p-3 text-xs leading-5 text-stone-600"><strong className="text-stone-800">{state === 'Ready' ? 'Acceptance evidence' : state === 'Action required' ? 'Repair and retry' : 'Next verification'}</strong><span className="mt-1 block">{state === 'Action required' ? 'Open Operations, repair the failed provider or delivery path, then rerun the product journey.' : verification}</span></p>
                 </div>
                 <Badge tone={state === 'Ready' ? 'success' : state === 'Action required' ? 'danger' : 'warning'}>{state}</Badge>
               </Card>;
@@ -78,16 +110,24 @@ function AuthorizedLaunchpad() {
         <Card>
           <p className="eyebrow">Safe sequence</p>
           <ol className="mt-3 space-y-3 text-sm text-stone-700">
-            <li><code>bun run doctor</code></li>
-            <li><code>bun run plan</code></li>
-            <li><code>bun run deploy</code></li>
-            <li><code>bun run status</code></li>
+            <li><strong>1. Validate</strong><code className="mt-1 block">bun run doctor</code></li>
+            <li><strong>2. Preview</strong><code className="mt-1 block">bun run plan</code></li>
+            <li><strong>3. Reconcile</strong><code className="mt-1 block">bun run deploy</code></li>
+            <li><strong>4. Publish evidence</strong><code className="mt-1 block">bun run status</code></li>
           </ol>
-          <p className="mt-4 text-xs leading-5 text-stone-500">The CLI writes immutable local receipts and publishes their redacted projection only when the explicit application database environment is available. Launchpad receives neither kubeconfig nor Alchemy mutation authority.</p>
+          <p className="mt-4 text-xs leading-5 text-stone-500">The CLI writes immutable local receipts and publishes their redacted projection through an explicit database environment or a short-lived operator-side tunnel to the managed application database. Launchpad receives neither kubeconfig nor Alchemy mutation authority.</p>
+        </Card>
+        <Card>
+          <p className="eyebrow">Choose a deployment shape</p>
+          <div className="mt-3 space-y-3">{deploymentProfiles.map(([profile, label, description]) => <div key={profile} className="rounded-xl border border-stone-200 p-3"><div className="flex items-center justify-between gap-3"><strong className="capitalize">{profile}</strong><Badge tone={profile === 'starter' ? 'info' : 'neutral'}>{label}</Badge></div><p className="mt-1 text-xs leading-5 text-stone-600">{description}</p><code className="mt-2 block text-xs">{deploymentProfileFile(profile)}</code></div>)}</div>
+        </Card>
+        <Card>
+          <p className="eyebrow">Product-to-source map</p>
+          <dl className="mt-3 grid gap-3 text-sm"><div><dt className="font-semibold">Assistant and documents</dt><dd className="text-stone-600">features/documents/model.ts · typed agent tools and authoritative work</dd></div><div><dt className="font-semibold">Durable review</dt><dd className="text-stone-600">features/inbox/model.ts · workflow signal, authorization, and receipt</dd></div><div><dt className="font-semibold">Provider composition</dt><dd className="text-stone-600">providers.ts + installation.ts · qualified interfaces and profiles</dd></div><div><dt className="font-semibold">Tenant and billing policy</dt><dd className="text-stone-600">features/workspaces + features/billing · application-owned scope and catalog</dd></div></dl>
         </Card>
         <Card>
           <h2 className="font-semibold">Operational truth</h2>
-          <p className="mt-2 text-sm leading-6 text-stone-600">Graph presence proves intent, never readiness. Expired provider evidence is stale; an absent receipt is Unknown.</p>
+          <p className="mt-2 text-sm leading-6 text-stone-600">A configured component is not presented as healthy until fresh evidence proves it. Expired evidence returns to Needs verification.</p>
           <Link to="/app/operations" className="mt-4 inline-block text-sm font-semibold text-emerald-800">Inspect evidence →</Link>
         </Card>
       </aside>
@@ -95,17 +135,28 @@ function AuthorizedLaunchpad() {
   </div>;
 }
 
-function obligationState(records: readonly { readonly state?: string; readonly authority?: string }[]): 'Ready' | 'Action required' | 'Unknown' {
-  const states = records.map(({ state }) => state?.toLowerCase());
-  if (states.some((state) => state && /failed|degraded|blocked|denied/.test(state))) return 'Action required';
-  if (records.some(({ state, authority }) =>
-    authority !== 'inferred'
-    && state !== undefined
-    && /^(ready|running|succeeded)$/u.test(state.toLowerCase()))) return 'Ready';
-  return 'Unknown';
+function LaunchpadNextAction({
+  name,
+  state,
+}: {
+  readonly name: string | undefined;
+  readonly state: 'Ready' | 'Action required' | 'Needs verification' | undefined;
+}) {
+  if (!name) return <Badge tone="success">Ready for review</Badge>;
+  if (state === 'Action required') return <Button asChild><Link to="/app/operations">Open exception</Link></Button>;
+  if (name === 'current deployment') return <code className="rounded-lg bg-white px-3 py-2 text-xs">bun run status</code>;
+  if (name === 'AI runtime') return <Button asChild><Link to="/app">Open assistant</Link></Button>;
+  if (name === 'Identity and authority') return <Button asChild><Link to="/app/account">Open account</Link></Button>;
+  return <Button asChild><Link to="/app/operations">Open evidence</Link></Button>;
 }
 
-function goLiveObligationState(snapshot: ApplicationOperationsSnapshot, id: string): 'Ready' | 'Action required' | 'Unknown' {
+function deploymentProfileFile(profile: (typeof deploymentProfiles)[number][0]) {
+  if (profile === 'starter') return 'kubernetes/application.yaml';
+  if (profile === 'developer') return 'kubernetes/application.developer.yaml';
+  return `kubernetes/application.${profile}.example.yaml`;
+}
+
+function goLiveObligationState(snapshot: ApplicationOperationsSnapshot, id: string) {
   const evidence = id.endsWith('database-migrations') || id.endsWith('backup-restore')
     ? snapshot.databases
     : id.endsWith('dns-tls')
@@ -119,5 +170,5 @@ function goLiveObligationState(snapshot: ApplicationOperationsSnapshot, id: stri
             : id.endsWith('rollback-destruction')
               ? snapshot.installations
               : snapshot.operational;
-  return obligationState(evidence);
+  return agenticLaunchpadEvidenceState(evidence);
 }

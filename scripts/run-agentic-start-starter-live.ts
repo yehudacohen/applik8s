@@ -55,27 +55,16 @@ let deployed = false;
 let tunnel: IdentityStartServiceTunnel | undefined;
 
 await discardV06Evidence(evidencePath);
-await rm(target, { recursive: true, force: true });
-await createApplicationAgenticStart({
-  targetDirectory: target,
-  projectName,
-  applik8sVersion: 'workspace:*',
-  example: 'research',
-  install: false,
-  async run(command) {
-    if (
-      command.executable !== 'bunx'
-      || command.arguments[0] !== '@tanstack/cli@0.70.1'
-    ) {
-      throw new Error(
-        `Generated live Start invoked an unexpected scaffold command: ${command.executable} ${command.arguments.join(' ')}`,
-      );
-    }
-    await writeOfficialTanStackScaffold(target, projectName);
-  },
-});
 
 try {
+  await runIdentityStartCommand(
+    execution,
+    'build publishable Applik8s packages and the CLI',
+    'node',
+    ['scripts/build-publishable-packages.mjs'],
+    root,
+    { NODE_OPTIONS: '--max-old-space-size=8192' },
+  );
   if (
     await identityStartResourceExists(
       execution,
@@ -86,6 +75,11 @@ try {
       `namespace/${namespace}`,
     )
   ) {
+    if (!await Bun.file(deploymentGraphPath).exists()) {
+      throw new Error(
+        'A prior generated Agentic Start is still deployed, but its local Alchemy/TypeKro lifecycle state is absent. Restore the matching generated project and run `applik8s destroy`; refusing to guess ownership from cluster resources.',
+      );
+    }
     await runIdentityStartCommand(
       execution,
       'destroy a prior or interrupted generated Agentic Start graph',
@@ -107,14 +101,25 @@ try {
     );
   }
 
-  await runIdentityStartCommand(
-    execution,
-    'build publishable Applik8s packages and the CLI',
-    'node',
-    ['scripts/build-publishable-packages.mjs'],
-    root,
-    { NODE_OPTIONS: '--max-old-space-size=8192' },
-  );
+  await rm(target, { recursive: true, force: true });
+  await createApplicationAgenticStart({
+    targetDirectory: target,
+    projectName,
+    applik8sVersion: 'workspace:*',
+    example: 'research',
+    install: false,
+    async run(command) {
+      if (
+        command.executable !== 'bunx'
+        || command.arguments[0] !== '@tanstack/cli@0.70.1'
+      ) {
+        throw new Error(
+          `Generated live Start invoked an unexpected scaffold command: ${command.executable} ${command.arguments.join(' ')}`,
+        );
+      }
+      await writeOfficialTanStackScaffold(target, projectName);
+    },
+  });
   await runIdentityStartCommand(
     execution,
     'generate relational migrations from the generated model declarations',

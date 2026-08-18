@@ -144,6 +144,10 @@ export function createApplicationIdentitySessionHandler(
             || principal.roles?.includes('workspace-administrator') === true,
           applicationOperations:
             principal.roles?.includes('application-operator') === true,
+          workspaceSelection:
+            typeof admission.trustedContext.workspaceId === 'string'
+              ? 'admitted'
+              : 'none',
         },
       });
     } catch {

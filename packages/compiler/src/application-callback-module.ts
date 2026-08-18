@@ -6,6 +6,8 @@ export interface GeneratedCallbackFactoryModuleOptions {
   readonly source: string;
   readonly dependencies?: ApplicationHandlerDependencies;
   readonly injectedIdentifiers: readonly string[];
+  /** Exact admitted leaves; roots may still expose ordinary maintained functions. */
+  readonly injectedBindingPaths?: readonly string[];
   readonly exportName: string;
 }
 
@@ -27,10 +29,22 @@ export function generatedCallbackFactoryModule(
         options.dependencies.resolveDir,
       )
     : '';
-  const dependencySource = dependencySourceWithoutInjectedBindings(
+  const focusedDependencySource = focusedCallbackDependencySource(
     rawDependencySource,
-    new Set(injectedIdentifiers),
+    options.source,
   );
+  const preservedRoots = preservedInjectedImportRoots(
+    `${options.source}\n${focusedDependencySource}`,
+    injectedIdentifiers,
+    options.injectedBindingPaths ?? injectedIdentifiers,
+  );
+  const preparedDependencies = dependencySourceWithoutInjectedBindings(
+    focusedDependencySource,
+    new Set(injectedIdentifiers),
+    preservedRoots,
+  );
+  const dependencySource = preparedDependencies.source;
+  assertNoCapturedHandleDeclarations(dependencySource, injectedIdentifiers);
   const collisions = moduleBindingNames(dependencySource).filter((identifier) =>
     injectedIdentifiers.includes(identifier),
   );
@@ -42,16 +56,328 @@ export function generatedCallbackFactoryModule(
   const bindings = injectedIdentifiers
     .map(
       (identifier) =>
-        `const ${identifier} = __applik8sBindings[${JSON.stringify(identifier)}];`,
+        preparedDependencies.capturedImports.has(identifier)
+          ? `const ${identifier} = __applik8sMergeCapturedBinding(${preparedDependencies.capturedImports.get(identifier)}, __applik8sBindings[${JSON.stringify(identifier)}]);`
+          : `const ${identifier} = __applik8sBindings[${JSON.stringify(identifier)}];`,
     )
     .join('\n');
   const dependencyModule = callbackDependencyModule(dependencySource);
-  return `${dependencyModule.imports}${dependencyModule.imports ? '\n\n' : ''}export function ${options.exportName}(__applik8sBindings = {}) {
+  const mergeHelper = preparedDependencies.capturedImports.size > 0
+    ? `${capturedBindingMergeSource}\n\n`
+    : '';
+  return `${dependencyModule.imports}${dependencyModule.imports ? '\n\n' : ''}${mergeHelper}export function ${options.exportName}(__applik8sBindings = {}) {
 ${bindings}
 ${dependencyModule.locals}
 return (${options.source});
 }
 `;
+}
+
+const capturedBindingMergeSource = `function __applik8sMergeCapturedBinding(captured, injected) {
+  if (captured == null) return injected;
+  if (injected == null) return captured;
+  const capturedObject = typeof captured === 'object' || typeof captured === 'function';
+  const injectedObject = typeof injected === 'object' || typeof injected === 'function';
+  if (!capturedObject || !injectedObject) return injected;
+  const target = typeof captured === 'function'
+    ? function (...args) { return Reflect.apply(captured, this, args); }
+    : {};
+  return new Proxy(target, {
+    get(_target, property) {
+      if (!Reflect.has(injected, property)) {
+        return Reflect.get(captured, property, captured);
+      }
+      return __applik8sMergeCapturedBinding(
+        Reflect.get(captured, property, captured),
+        Reflect.get(injected, property),
+      );
+    },
+    has(_target, property) {
+      return Reflect.has(injected, property) || Reflect.has(captured, property);
+    },
+  });
+}`;
+
+const applicationHandleFactoryMethods = new Set([
+  'project',
+  'projection',
+  'query',
+  'search',
+  'view',
+]);
+
+/**
+ * A module-local declaration such as `const Recent = Model.view(...)` is an
+ * application handle, not an ordinary helper value. If discovery did not
+ * promote that handle into an injected runtime binding, replaying the
+ * declaration inside the callback factory creates an authoring-time facade
+ * from a deliberately narrowed runtime model binding. Fail during compilation
+ * instead of producing a handler that traps later with `view is not a
+ * function`.
+ */
+function assertNoCapturedHandleDeclarations(
+  source: string,
+  injectedIdentifiers: readonly string[],
+): void {
+  if (!source.trim() || injectedIdentifiers.length === 0) return;
+  const injected = new Set(injectedIdentifiers);
+  const file = ts.createSourceFile(
+    'applik8s-captured-handle-declarations.ts',
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TS,
+  );
+  for (const statement of file.statements) {
+    if (!ts.isVariableStatement(statement)) continue;
+    for (const declaration of statement.declarationList.declarations) {
+      if (!ts.isIdentifier(declaration.name) || !declaration.initializer) {
+        continue;
+      }
+      let invalidFactory: string | undefined;
+      const visit = (node: ts.Node): void => {
+        if (invalidFactory) return;
+        if (
+          ts.isCallExpression(node)
+          && ts.isPropertyAccessExpression(node.expression)
+          && applicationHandleFactoryMethods.has(node.expression.name.text)
+          && injected.has(propertyAccessRoot(node.expression.expression) ?? '')
+        ) {
+          invalidFactory = node.expression.name.text;
+          return;
+        }
+        ts.forEachChild(node, visit);
+      };
+      visit(declaration.initializer);
+      if (invalidFactory) {
+        throw new Error(
+          `Generated callback cannot reconstruct module-local application handle ${declaration.name.text} declared with .${invalidFactory}(). Export and register the handle so compiler discovery can inject it, or replace it with an ordinary helper that uses the callback context. Captured application handles fail closed instead of becoming partial runtime facades.`,
+        );
+      }
+    }
+  }
+}
+
+function propertyAccessRoot(expression: ts.Expression): string | undefined {
+  let current = expression;
+  while (ts.isPropertyAccessExpression(current)) current = current.expression;
+  return ts.isIdentifier(current) ? current.text : undefined;
+}
+
+function preservedInjectedImportRoots(
+  source: string,
+  injectedIdentifiers: readonly string[],
+  injectedBindingPaths: readonly string[],
+): ReadonlySet<string> {
+  const injected = new Set(injectedIdentifiers);
+  const paths = new Set(injectedBindingPaths);
+  const preserved = new Set<string>();
+  if (!source.trim()) return preserved;
+  const file = ts.createSourceFile(
+    'applik8s-captured-binding-uses.ts',
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TS,
+  );
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isPropertyAccessExpression(node)
+      && !(
+        ts.isPropertyAccessExpression(node.parent)
+        && node.parent.expression === node
+      )
+    ) {
+      const path = propertyAccessPath(node);
+      const root = path?.split('.')[0];
+      if (
+        path
+        && root
+        && injected.has(root)
+        && ![...paths].some(
+          (candidate) =>
+            candidate === path
+            || candidate.startsWith(`${path}.`)
+            || (!candidate.includes('.') && path.startsWith(`${candidate}.`)),
+        )
+      ) {
+        preserved.add(root);
+      }
+    }
+    if (ts.isElementAccessExpression(node)) {
+      const root = propertyAccessRoot(node.expression);
+      if (root && injected.has(root)) preserved.add(root);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(file);
+  return preserved;
+}
+
+function propertyAccessPath(expression: ts.Expression): string | undefined {
+  const segments: string[] = [];
+  let current = expression;
+  while (ts.isPropertyAccessExpression(current)) {
+    segments.unshift(current.name.text);
+    current = current.expression;
+  }
+  if (!ts.isIdentifier(current)) return undefined;
+  segments.unshift(current.text);
+  return segments.join('.');
+}
+
+/**
+ * Closure discovery may need to retain an enclosing module while it proves a
+ * nested callback. Generated runtimes must not execute that whole authoring
+ * module: keep only declarations transitively reached by the callback and
+ * the exact import bindings those declarations use.
+ */
+function focusedCallbackDependencySource(
+  source: string,
+  callbackSource: string,
+): string {
+  if (!source.trim()) return source;
+  const file = ts.createSourceFile(
+    'applik8s-focused-callback-dependencies.ts',
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TS,
+  );
+  const statements = file.statements.map((statement) => ({
+    statement,
+    bindings: statementBindingNames(statement),
+  }));
+  const required = new Set(referencedIdentifiers(callbackSource));
+  const retained = new Set<ts.Statement>();
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const entry of statements) {
+      if (retained.has(entry.statement)) continue;
+      if (
+        entry.bindings.length === 0
+        || !entry.bindings.some((binding) => required.has(binding))
+      ) {
+        continue;
+      }
+      retained.add(entry.statement);
+      for (const identifier of referencedIdentifiers(entry.statement.getText(file))) {
+        if (!required.has(identifier)) {
+          required.add(identifier);
+          changed = true;
+        }
+      }
+    }
+  }
+  const focused = file.statements.flatMap((statement) => {
+    if (!retained.has(statement)) return [];
+    if (!ts.isImportDeclaration(statement) || !statement.importClause) {
+      return [statement];
+    }
+    const clause = statement.importClause;
+    const name = clause.name && required.has(clause.name.text)
+      ? clause.name
+      : undefined;
+    let namedBindings = clause.namedBindings;
+    if (namedBindings && ts.isNamespaceImport(namedBindings)) {
+      if (!required.has(namedBindings.name.text)) namedBindings = undefined;
+    } else if (namedBindings && ts.isNamedImports(namedBindings)) {
+      const elements = namedBindings.elements.filter(
+        (element) => element.isTypeOnly || required.has(element.name.text),
+      );
+      namedBindings = elements.length > 0
+        ? ts.factory.updateNamedImports(namedBindings, elements)
+        : undefined;
+    }
+    if (!name && !namedBindings) return [];
+    return [ts.factory.updateImportDeclaration(
+      statement,
+      statement.modifiers,
+      ts.factory.updateImportClause(
+        clause,
+        clause.isTypeOnly,
+        name,
+        namedBindings,
+      ),
+      statement.moduleSpecifier,
+      statement.attributes,
+    )];
+  });
+  return ts.createPrinter({ newLine: ts.NewLineKind.LineFeed })
+    .printList(
+      ts.ListFormat.MultiLine,
+      ts.factory.createNodeArray(focused),
+      file,
+    )
+    .trim();
+}
+
+function statementBindingNames(statement: ts.Statement): readonly string[] {
+  const names = new Set<string>();
+  if (ts.isImportDeclaration(statement)) {
+    const clause = statement.importClause;
+    if (clause?.name) names.add(clause.name.text);
+    if (clause?.namedBindings && ts.isNamespaceImport(clause.namedBindings)) {
+      names.add(clause.namedBindings.name.text);
+    }
+    if (clause?.namedBindings && ts.isNamedImports(clause.namedBindings)) {
+      for (const element of clause.namedBindings.elements) {
+        if (!element.isTypeOnly) names.add(element.name.text);
+      }
+    }
+  } else if (
+    (ts.isFunctionDeclaration(statement) || ts.isClassDeclaration(statement))
+    && statement.name
+  ) {
+    names.add(statement.name.text);
+  } else if (ts.isVariableStatement(statement)) {
+    for (const declaration of statement.declarationList.declarations) {
+      collectBindingNames(declaration.name, names);
+    }
+  }
+  return [...names];
+}
+
+function referencedIdentifiers(source: string): readonly string[] {
+  if (!source.trim()) return [];
+  const file = ts.createSourceFile(
+    'applik8s-callback-references.ts',
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TS,
+  );
+  const identifiers = new Set<string>();
+  const visit = (node: ts.Node): void => {
+    if (ts.isIdentifier(node) && identifierIsReference(node)) {
+      identifiers.add(node.text);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(file);
+  return [...identifiers];
+}
+
+function identifierIsReference(node: ts.Identifier): boolean {
+  const parent = node.parent;
+  if (!parent) return true;
+  if (
+    (ts.isPropertyAccessExpression(parent) && parent.name === node)
+    || (ts.isPropertyAssignment(parent) && parent.name === node)
+    || (ts.isMethodDeclaration(parent) && parent.name === node)
+    || (ts.isPropertyDeclaration(parent) && parent.name === node)
+    || (ts.isBindingElement(parent) && parent.name === node)
+    || (ts.isVariableDeclaration(parent) && parent.name === node)
+    || (ts.isFunctionDeclaration(parent) && parent.name === node)
+    || (ts.isClassDeclaration(parent) && parent.name === node)
+    || (ts.isImportSpecifier(parent) && parent.name === node)
+    || (ts.isImportClause(parent) && parent.name === node)
+    || (ts.isNamespaceImport(parent) && parent.name === node)
+  ) {
+    return false;
+  }
+  return true;
 }
 
 /**
@@ -139,8 +465,14 @@ function localCallbackDependencyStatement(statement: ts.Statement): ts.Statement
 function dependencySourceWithoutInjectedBindings(
   source: string,
   injected: ReadonlySet<string>,
-): string {
-  if (!source.trim() || injected.size === 0) return source;
+  preservedImports: ReadonlySet<string> = new Set(),
+): {
+  readonly source: string;
+  readonly capturedImports: ReadonlyMap<string, string>;
+} {
+  if (!source.trim() || injected.size === 0) {
+    return { source, capturedImports: new Map() };
+  }
   const file = ts.createSourceFile(
     'applik8s-generated-callback-dependencies.ts',
     source,
@@ -149,19 +481,48 @@ function dependencySourceWithoutInjectedBindings(
     ts.ScriptKind.TS,
   );
   const statements: ts.Statement[] = [];
+  const capturedImports = new Map<string, string>();
   for (const statement of file.statements) {
     if (ts.isImportDeclaration(statement) && statement.importClause) {
       const clause = statement.importClause;
-      const name = clause.name && !injected.has(clause.name.text)
-        ? clause.name
-        : undefined;
+      let name = clause.name;
+      if (name && injected.has(name.text)) {
+        if (preservedImports.has(name.text)) {
+          const alias = capturedImportAlias(name.text);
+          capturedImports.set(name.text, alias);
+          name = ts.factory.createIdentifier(alias);
+        } else {
+          name = undefined;
+        }
+      }
       let namedBindings = clause.namedBindings;
       if (namedBindings && ts.isNamespaceImport(namedBindings)) {
-        if (injected.has(namedBindings.name.text)) namedBindings = undefined;
+        if (injected.has(namedBindings.name.text)) {
+          if (preservedImports.has(namedBindings.name.text)) {
+            const alias = capturedImportAlias(namedBindings.name.text);
+            capturedImports.set(namedBindings.name.text, alias);
+            namedBindings = ts.factory.createNamespaceImport(
+              ts.factory.createIdentifier(alias),
+            );
+          } else {
+            namedBindings = undefined;
+          }
+        }
       } else if (namedBindings && ts.isNamedImports(namedBindings)) {
-        const elements = namedBindings.elements.filter(
-          (element) => element.isTypeOnly || !injected.has(element.name.text),
-        );
+        const elements = namedBindings.elements.flatMap((element) => {
+          if (element.isTypeOnly || !injected.has(element.name.text)) {
+            return [element];
+          }
+          if (!preservedImports.has(element.name.text)) return [];
+          const alias = capturedImportAlias(element.name.text);
+          capturedImports.set(element.name.text, alias);
+          return [ts.factory.updateImportSpecifier(
+            element,
+            element.isTypeOnly,
+            element.propertyName ?? element.name,
+            ts.factory.createIdentifier(alias),
+          )];
+        });
         namedBindings = elements.length > 0
           ? ts.factory.updateNamedImports(namedBindings, elements)
           : undefined;
@@ -204,13 +565,20 @@ function dependencySourceWithoutInjectedBindings(
     }
     statements.push(statement);
   }
-  return ts.createPrinter({ newLine: ts.NewLineKind.LineFeed })
+  return {
+    source: ts.createPrinter({ newLine: ts.NewLineKind.LineFeed })
     .printList(
       ts.ListFormat.MultiLine,
       ts.factory.createNodeArray(statements),
       file,
     )
-    .trim();
+    .trim(),
+    capturedImports,
+  };
+}
+
+function capturedImportAlias(identifier: string): string {
+  return `__applik8sCaptured${identifier[0]?.toUpperCase() ?? ''}${identifier.slice(1)}`;
 }
 
 function absoluteDependencyImports(source: string, resolveDir: string): string {

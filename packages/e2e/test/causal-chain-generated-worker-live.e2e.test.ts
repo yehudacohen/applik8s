@@ -218,9 +218,9 @@ describe('v0.7 causal chain through the generated function-native processor', ()
         };
         const durablePrincipal = envelope.trustedContext?.values?.['applik8s.dev/principal'];
         expect(durablePrincipal).toMatchObject({
-          id: workflow.id,
+          id: `execution:${processorId}:${sourceEventId}`,
           kind: 'execution',
-          executionKind: 'workflow',
+          executionKind: 'processor',
           causalPrincipalId: human.id,
         });
         expect(emitted?.context_digest).toBe(digest);

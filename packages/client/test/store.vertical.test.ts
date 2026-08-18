@@ -6,7 +6,7 @@ import { ApplicationQueryClient, queryInputKey } from '../src/store.js';
 
 class FakeTransport implements ApplicationQueryTransport {
   readonly snapshots: { query: string; input: unknown }[] = [];
-  readonly subscriptions: { query: string; input: unknown; cursor: string; onEvent: (event: ApplicationQueryEvent) => void; onError: (error: Error) => void }[] = [];
+  readonly subscriptions: { query: string; input: unknown; cursor: string; signal: AbortSignal; onEvent: (event: ApplicationQueryEvent) => void; onError: (error: Error) => void }[] = [];
   nextValue: unknown = [{ id: 'card-1', name: 'First' }];
   sequence = 1;
   snapshotOverride: ((query: string, input: unknown) => Promise<ApplicationQuerySnapshot>) | undefined;
@@ -16,7 +16,7 @@ class FakeTransport implements ApplicationQueryTransport {
     return { kind: 'snapshot', protocol: 'applik8s.query/v1alpha1', query, inputKey: queryInputKey(input), value: this.nextValue as TValue, cursor: `cursor-${this.sequence++}`, capability: 'resumableInvalidation', generatedAt: '2026-07-15T12:00:00.000Z' };
   }
   subscribe<TInput>(query: string, input: TInput, cursor: string, options: { signal: AbortSignal; onEvent: (event: ApplicationQueryEvent) => void; onError: (error: Error) => void }): void {
-    this.subscriptions.push({ query, input, cursor, onEvent: options.onEvent, onError: options.onError });
+    this.subscriptions.push({ query, input, cursor, signal: options.signal, onEvent: options.onEvent, onError: options.onError });
   }
 }
 
@@ -68,6 +68,26 @@ describe('browser-safe application query client', () => {
       value: [{ id: 'workspace-created-while-inactive' }],
     });
     unsubscribeAgain();
+  });
+
+  test('does not classify a late transport error from an intentional disconnect as reconnecting', async () => {
+    const transport = new FakeTransport();
+    const client = new ApplicationQueryClient(transport, {
+      reconnect: { initialMs: 0, maxMs: 0, factor: 1 },
+    });
+    const store = client.query('documents.detail.v1', { id: 'document-1' });
+    const unsubscribe = store.subscribe(() => undefined);
+    await settle();
+    const subscription = transport.subscriptions[0];
+    expect(subscription?.signal.aborted).toBe(false);
+
+    unsubscribe();
+    expect(subscription?.signal.aborted).toBe(true);
+    subscription?.onError(new DOMException('The operation was aborted.', 'AbortError'));
+    await settle();
+
+    expect(store.getSnapshot()).toMatchObject({ phase: 'ready', stale: false });
+    expect(transport.subscriptions).toHaveLength(1);
   });
 
   test('accepts a newer hydration snapshot and rejects an older navigation snapshot', () => {

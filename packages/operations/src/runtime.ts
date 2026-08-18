@@ -81,6 +81,7 @@ export interface ApplicationExecutionPrincipalAdmission {
   readonly attempt: number;
   readonly workloadIdentity: ApplicationIdentityReference;
   readonly serviceIdentity?: ApplicationIdentityReference;
+  readonly executionContext?: ApplicationExecutionPrincipal['executionContext'];
   readonly causalPrincipalId?: string;
   readonly causalPrincipal?: ApplicationIdentityReference;
   readonly causalGrantIds?: readonly string[];
@@ -310,6 +311,16 @@ export class ApplicationOperationAuthorityRuntime {
     if (!admission.cancellationRevision.trim()) {
       throw new Error('Application execution admission requires a cancellation revision.');
     }
+    if (admission.executionContext) {
+      if (
+        admission.executionContext.kind !== admission.executionKind
+        || admission.executionContext.kind !== 'agent'
+        || !admission.executionContext.threadId.trim()
+        || !admission.executionContext.runId.trim()
+      ) {
+        throw new Error('Application execution admission context must match its managed execution kind and contain stable identifiers.');
+      }
+    }
     const deadline = new Date(admission.deadline);
     if (Number.isNaN(deadline.getTime())) {
       throw new Error('Application execution admission deadline must be an ISO timestamp.');
@@ -340,6 +351,7 @@ export class ApplicationOperationAuthorityRuntime {
       attempt: admission.attempt,
       workloadIdentity: admission.workloadIdentity,
       ...(admission.serviceIdentity ? { serviceIdentity: admission.serviceIdentity } : {}),
+      ...(admission.executionContext ? { executionContext: admission.executionContext } : {}),
       ...(admission.causalPrincipalId ? { causalPrincipalId: admission.causalPrincipalId } : {}),
       ...(admission.causalPrincipal ? { causalPrincipal: admission.causalPrincipal } : {}),
       causalGrantIds: [...(admission.causalGrantIds ?? [])],

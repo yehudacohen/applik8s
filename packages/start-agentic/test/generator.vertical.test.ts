@@ -183,6 +183,18 @@ describe('Agentic Start generator', () => {
     expect(workspaceModel).not.toContain('defineApplicationModule');
     expect(workspaceModel).toContain('WorkspaceTable.on.create(');
     expect(workspaceModel).toContain('await MembershipTable.create({');
+    expect(workspaceModel).toContain("'workspace-membership-bootstrap'");
+    expect(workspaceModel).toContain('WorkspaceTable.create.beforeCommit(');
+    expect(workspaceModel).toContain(
+      'Workspace identity, ownership, lifecycle state, and timestamps are server-owned.',
+    );
+    expect(workspaceModel).toContain("input.role !== 'workspace-owner'");
+    expect(workspaceModel).toContain(
+      'principal.serviceIdentity?.id !== WorkspaceMembershipBootstrapIdentity.identity.id',
+    );
+    expect(workspaceModel).toContain(
+      'Workspace ownership cannot be granted through an invitation.',
+    );
     expect(workspaceModel).toContain(
       "WHEN ${WorkspaceTable.ownerPrincipalId} = ${context.principal.id}",
     );
@@ -190,7 +202,7 @@ describe('Agentic Start generator', () => {
       "const Authenticated = application.role('authenticated')",
     );
     expect(workspaceModel).toContain(
-      "export const WorkspaceId = trustedContext('workspaceId'",
+      'export const WorkspaceId = AgenticWorkspaceId;',
     );
     expect(workspaceModel).toContain(
       'membership.workspaceId.eq(WorkspaceId)',
@@ -238,7 +250,8 @@ describe('Agentic Start generator', () => {
     expect(researchView).toContain('agent: Researcher');
     expect(researchView).not.toContain("agent: 'researcher'");
     expect(researchView).not.toContain('useId');
-    expect(researchView).toContain(
+    expect(researchView).toContain('persistence: true');
+    expect(researchView).not.toContain(
       'hydrateApplicationConversationMessage',
     );
     expect(researchView).toContain(
@@ -249,8 +262,17 @@ describe('Agentic Start generator', () => {
       'utf8',
     );
     expect(conversationModel).toContain(
+      'agenticPrincipalScope(context)',
+    );
+    const billingModel = await readFile(
+      join(target, 'src/features/billing.tsx'),
+      'utf8',
+    );
+    expect(billingModel).toContain('agenticPrincipalScope(context)');
+    expect(billingModel).not.toContain(
       'applicationAIConversationPrincipalScope',
     );
+    expect(researchModel).toContain('scope: AgenticPrincipalScope');
     expect(conversationModel).not.toContain(
       'ApplicationModelBeforeCommitHandler',
     );
@@ -264,9 +286,7 @@ describe('Agentic Start generator', () => {
     expect(conversationModel).toContain(
       'Conversations.Conversation.update.beforeCommit(',
     );
-    expect(conversationModel).toContain(
-      'context.trustedContext',
-    );
+    expect(conversationModel).toContain('agenticPrincipalScope(context)');
     expect(conversationModel).toContain(
       'Authenticated.can(',
     );
@@ -276,7 +296,7 @@ describe('Agentic Start generator', () => {
     expect(researchView).toContain(
       'const updateConversation = Conversation.update.useMutation()',
     );
-    expect(researchView).toContain('setMessages(initialMessages)');
+    expect(researchView).not.toContain('setMessages(initialMessages)');
     expect(researchView).toContain(
       'patch: { archivedAt: new Date().toISOString() }',
     );
@@ -322,6 +342,7 @@ describe('Agentic Start generator', () => {
       readonly scripts: Readonly<Record<string, string>>;
       readonly dependencies: Readonly<Record<string, string>>;
       readonly devDependencies: Readonly<Record<string, string>>;
+      readonly imports: Readonly<Record<string, string>>;
       readonly applik8s: Readonly<Record<string, string>>;
     };
     expect(manifest.scripts.plan).toBe('bun run build && applik8s plan');
@@ -356,7 +377,8 @@ describe('Agentic Start generator', () => {
     );
     expect(manifest.dependencies['@applik8s/identity']).toBe('workspace:*');
     expect(manifest.dependencies['@applik8s/runtime-s3']).toBe('workspace:*');
-    expect(manifest.dependencies['@tanstack/ai-react']).toBe('0.18.1');
+    expect(manifest.dependencies['@tanstack/ai-react']).toBe('0.19.2');
+    expect(manifest.dependencies['@tanstack/ai-persistence']).toBe('0.1.4');
     expect(
       await readFile(join(target, 'kubernetes/application.yaml'), 'utf8'),
     ).toContain('kind: ResearchWorkspace');
@@ -452,9 +474,6 @@ describe('Agentic Start generator', () => {
     expect(result.files).toEqual(
       expect.arrayContaining(applicationAgenticStartDefinition.generator.files),
     );
-    expect(result.files).toHaveLength(
-      applicationAgenticStartDefinition.generator.maximumApplicationFiles,
-    );
     expect(result.files.length).toBeLessThanOrEqual(
       applicationAgenticStartDefinition.generator.maximumApplicationFiles,
     );
@@ -472,6 +491,9 @@ describe('Agentic Start generator', () => {
       'utf8',
     );
     expect(accountSessionLoader).toContain('return undefined;');
+    expect(accountSessionLoader).toContain(
+      "session.capabilities?.workspaceSelection !== 'admitted'",
+    );
     expect(accountSessionLoader).not.toContain(
       'applicationIdentityHttpProtocol',
     );
@@ -504,6 +526,12 @@ describe('Agentic Start generator', () => {
     expect(lifecycleModel).toContain(
       "state: 'actionRequired'",
     );
+    expect(lifecycleModel).toContain(
+      'principalScope: agenticWorkspaceScope(context)',
+    );
+    expect(lifecycleModel).not.toContain(
+      ": request.value.targetId\n              : principalId",
+    );
     expect(lifecycleModel).toContain('await Document.delete({ identity });');
     expect(lifecycleModel).toContain(
       'await Conversations.Conversation.update({',
@@ -524,6 +552,7 @@ describe('Agentic Start generator', () => {
       readonly applik8s: Readonly<Record<string, string>>;
       readonly dependencies: Readonly<Record<string, string>>;
       readonly devDependencies: Readonly<Record<string, string>>;
+      readonly imports: Readonly<Record<string, string>>;
     };
     expect(manifest.applik8s.context).toBe('orbstack');
     expect(manifest.scripts).toMatchObject({
@@ -533,12 +562,15 @@ describe('Agentic Start generator', () => {
       lint: 'biome lint src test vite.config.ts vitest.config.ts',
       doctor: 'applik8s doctor',
       check:
-        'bun run typecheck && bun run lint && bun run test && bun run app:check && bun run db:check',
+        'bun run typecheck && bun run lint && bun run test && bun run build && bun run app:check && bun run db:check',
     });
     expect(manifest.dependencies['@applik8s/operations-ui']).toBe(
       'workspace:*',
     );
     expect(manifest.dependencies['@applik8s/conversations']).toBe(
+      'workspace:*',
+    );
+    expect(manifest.dependencies['@applik8s/data-lifecycle']).toBe(
       'workspace:*',
     );
     expect(manifest.dependencies['@applik8s/approvals']).toBe('workspace:*');
@@ -556,7 +588,15 @@ describe('Agentic Start generator', () => {
       'workspace:*',
     );
     expect(manifest.dependencies['@applik8s/usage']).toBe('workspace:*');
-    expect(manifest.devDependencies['tailwindcss']).toBe('4.3.3');
+    expect(manifest.dependencies['class-variance-authority']).toBe('0.7.1');
+    expect(manifest.dependencies['lucide-react']).toBe('1.31.0');
+    expect(manifest.dependencies['radix-ui']).toBe('1.6.7');
+    expect(manifest.dependencies['react-markdown']).toBe('10.1.0');
+    expect(manifest.dependencies['remark-gfm']).toBe('4.0.1');
+    expect(manifest.dependencies['tailwind-merge']).toBe('3.6.0');
+    expect(manifest.imports['#components/*']).toBe('./src/components/*.tsx');
+    expect(manifest.devDependencies.tailwindcss).toBe('4.3.3');
+    expect(manifest.devDependencies.shadcn).toBe('4.18.0');
     expect(manifest.devDependencies['@tailwindcss/vite']).toBe('4.3.3');
     const readme = await readFile(join(target, 'README.md'), 'utf8');
     expect(readme).toContain('Starter profile is credential-free');
@@ -567,6 +607,13 @@ describe('Agentic Start generator', () => {
     );
     expect(readme).toContain('applik8s.context');
     expect(readme).toContain('Starter lineage');
+    expect(readme).toContain('bunx shadcn add <component>');
+    expect(
+      await readFile(join(target, 'components.json'), 'utf8'),
+    ).toContain('"style": "base-nova"');
+    expect(
+      await readFile(join(target, 'src/components/ui/button.tsx'), 'utf8'),
+    ).toContain('buttonVariants = cva(');
     const environment = await readFile(join(target, '.env.example'), 'utf8');
     expect(environment).not.toContain('APPLIK8S_PROFILE=');
     expect(environment).not.toContain('APPLIK8S_CONTEXT=');
@@ -586,6 +633,14 @@ describe('Agentic Start generator', () => {
     );
     expect(databaseSchema).toContain(
       'export { DecisionReview, decisionReviewState }',
+    );
+    const productWorkspaceSchema = await readFile(
+      join(target, 'src/features/workspaces/schema.ts'),
+      'utf8',
+    );
+    const productAIUsageBudget = await readFile(
+      join(target, 'src/features/budgets/model.ts'),
+      'utf8',
     );
     const onboardingSchema = await readFile(
       join(target, 'src/features/onboarding/schema.ts'),
@@ -618,22 +673,21 @@ describe('Agentic Start generator', () => {
       join(target, 'src/features/documents/model.ts'),
       'utf8',
     );
-    expect(notesModel).toContain("const documents = module(");
-    expect(notesModel).toContain("'documents',\n  DocumentTable,");
+    expect(notesModel).toContain("const documentWorkspace = module(");
+    expect(notesModel).toContain('currentApplication.include(maintainedDocuments)');
     expect(notesModel).not.toContain('ApplicationModelViewContext');
-    expect(notesModel).not.toContain('{ schema: { Document: DocumentTable } }');
+    const productModulesSource = await readFile(
+      join(target, 'src/modules.ts'),
+      'utf8',
+    );
+    expect(productModulesSource).toContain('Billing.Subscription.find({');
+    expect(productModulesSource).toContain('if (!billable) return;');
     const notesSchema = await readFile(
       join(target, 'src/features/documents/schema.ts'),
       'utf8',
     );
-    expect(notesSchema).toContain(
-      'ownerPrincipalId: field.text',
-    );
-    expect(notesSchema).toContain('.default(causalPrincipalId)');
-    expect(notesSchema).toContain(
-      'createdByPrincipalId: field.text',
-    );
-    expect(notesSchema).toContain('.default(authenticatedPrincipalId)');
+    expect(notesSchema).toContain('applicationDocuments as Document');
+    expect(notesSchema).toContain("from '@applik8s/documents/schema'");
     const developerInstallation = await readFile(
       join(target, 'kubernetes/application.developer.yaml'),
       'utf8',
@@ -654,17 +708,238 @@ describe('Agentic Start generator', () => {
     expect(home).toContain('<WorkspaceAssistantCard key={threadId}');
     expect(home).not.toContain('pending-conversation');
     expect(home).toContain('documents.refresh()');
-    expect(home).toContain('live query will reconcile');
+    expect(home).toContain('What should we accomplish?');
+    expect(home).not.toContain('Create manually');
     expect(home).toContain('Workspace assistant');
     expect(home).not.toMatch(/\bNotes assistant\b/u);
+    const inboxView = await readFile(
+      join(target, 'src/features/inbox/view.tsx'),
+      'utf8',
+    );
+    expect(inboxView).toContain('const [workspaceId, setWorkspaceId] = useState<string>();');
+    expect(inboxView).toContain('setWorkspaceId(readAgenticWorkspaceSelection())');
+    expect(inboxView).not.toContain('useState<string | undefined>(() =>');
+    expect(inboxView).toContain("workspaceSelectionLoaded && workspaces.phase !== 'loading'");
     const libraryView = await readFile(
       join(target, 'src/features/library/view.tsx'),
       'utf8',
     );
     expect(libraryView).toContain("library.phase === 'error'");
     expect(libraryView).toContain("library.phase === 'reconnecting'");
-    expect(libraryView).toContain('The empty result is authoritative.');
     expect(libraryView).toContain('library.data.artifacts.length === 0');
+    expect(libraryView).toContain('Publish a Document to preserve an immutable Markdown output');
+    expect(libraryView).not.toContain('library.data.documents');
+    const libraryModel = await readFile(
+      join(target, 'src/features/library/model.ts'),
+      'utf8',
+    );
+    expect(libraryModel).toContain('return listApplicationArtifacts(_input, context, {');
+    expect(libraryModel).toContain('return loadApplicationArtifact(input, context, {');
+    expect(libraryModel).not.toContain('artifacts.map(item => ({ ...item,');
+    const documentsModel = await readFile(
+      join(target, 'src/features/documents/model.ts'),
+      'utf8',
+    );
+    expect(documentsModel).toContain('DocumentTable.on.update(');
+    expect(documentsModel).toContain('await ArtifactObjects.put({');
+    expect(documentsModel).toContain('await Artifacts.Artifact.create({');
+    expect(documentsModel).toContain('DocumentPublicationArtifacts');
+    expect(documentsModel).toContain(
+      'principalScope: updated.current.principalScope',
+    );
+    expect(documentsModel).toContain('agenticWorkspaceScope(context)');
+    expect(documentsModel).toContain('scope: WorkspaceId');
+    expect(documentsModel).toContain('selectApplicationTanStackTools(');
+    expect(documentsModel).toContain("'Document.create': DocumentTable.create");
+    expect(documentsModel).toContain("context.principal.executionContext?.kind === 'agent'");
+    expect(documentsModel).toContain('sourceConversationId: agentExecution.threadId');
+    expect(documentsModel).toContain('sourceRunId: agentExecution.runId');
+    expect(documentsModel).toContain('listApplicationDocuments(input, context, {');
+    await expect(readFile(
+      join(target, 'src/features/documents/queries.ts'),
+      'utf8',
+    )).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(documentsModel).not.toContain('For every Document.create or Document.update in this run');
+    const agentsModel = await readFile(
+      join(target, 'src/features/agents/model.ts'),
+      'utf8',
+    );
+    expect(agentsModel).toContain('const AgentReleaseGate = AgentProfileTable.view({');
+    expect(agentsModel).toContain('qualifiedVersion: AgentProfileTable.qualifiedVersion');
+    expect(agentsModel).toContain('qualificationScore: AgentProfileTable.qualificationScore');
+    expect(agentsModel).toContain('result?.qualifiedVersion === input.version');
+    expect(agentsModel).not.toContain('.from(Evaluations.EvaluationResult)');
+    expect(agentsModel).toContain('Run and pass the deterministic runtime-contract gate before publishing this revision.');
+    expect(agentsModel).toContain('Published agent versions are immutable.');
+    expect(agentsModel).toContain(
+      'profile.patch({ spec: { principalScope: agenticWorkspaceScope(context) } })',
+    );
+    expect(agentsModel).toContain("'knowledgeSourceIds'");
+    expect(agentsModel).toContain("'memoryWindowMessages'");
+    expect(agentsModel).toContain('assertApplicationAgentExecutionContract(profile.value)');
+    expect(agentsModel).toContain('version: profile.value.version + 1');
+    expect(agentsModel).toContain('profile.value.qualifiedVersion !== profile.value.version');
+    expect(agentsModel).toContain('loadApplicationAgentProfileVersion(input, context, agentQueries)');
+    expect(agentsModel).toContain("currentApplication.role('application-operator')");
+    expect(agentsModel).toContain('ApplicationOperator.can(');
+    expect(agentsModel).not.toContain('qualifiedRevision');
+    const agentsView = await readFile(
+      join(target, 'src/features/agents/view.tsx'),
+      'utf8',
+    );
+    expect(agentsView).toContain('Selections resolve to compiled operation handles.');
+    expect(agentsView).toContain("selected?.state === 'draft'");
+    expect(agentsView).toContain('Knowledge access');
+    expect(agentsView).toContain('These budgets are enforced by the application-owned agent loop');
+    const knowledgeModel = await readFile(
+      join(target, 'src/features/knowledge/model.ts'),
+      'utf8',
+    );
+    expect(knowledgeModel).toContain(
+      'context.principal.serviceIdentity?.id === KnowledgeWorker.identity.id',
+    );
+    expect(knowledgeModel).toContain('Uploaded knowledge must be verified by the object provider');
+    expect(knowledgeModel).toContain('verifyApplicationObjectCompletionReceipt({');
+    expect(knowledgeModel).toContain('authorizationVersion: context.principal.authorityRevision');
+    expect(knowledgeModel).toContain("store: 'agentic-artifacts'");
+    expect(knowledgeModel).toContain('sha256: input.sha256');
+    expect(knowledgeModel).toContain('Uploaded knowledge completion evidence is invalid or no longer authorized.');
+    expect(knowledgeModel).toContain('agenticWorkspaceScope(context)');
+    expect(knowledgeModel).toContain("'starter.knowledge.ingest.v1'");
+    expect(knowledgeModel).toContain('const bytes = await ArtifactObjects.get(input.objectKey)');
+    expect(knowledgeModel).toContain('KnowledgeSourceTable.on.create(');
+    expect(knowledgeModel).toContain("currentApplication.index(\n    'workspace-knowledge-search'");
+    expect(knowledgeModel).toContain("authorizationFields: ['principalScope']");
+    expect(knowledgeModel).toContain('KnowledgeSearch.search');
+    expect(knowledgeModel).toContain("currentApplication.role('application-operator')");
+    const assistantQuery = await readFile(
+      join(target, 'src/features/documents/assistant-query.ts'),
+      'utf8',
+    );
+    expect(documentsModel).toContain('applicationKnowledgeContext(knowledge)');
+    expect(assistantQuery).toContain('assembleApplicationKnowledgeContext(sources');
+    expect(assistantQuery).toContain('maximumBytes: 48_000');
+    expect(knowledgeModel).toContain("processingStage: 'search-projection-pending'");
+    const knowledgeView = await readFile(
+      join(target, 'src/features/knowledge/view.tsx'),
+      'utf8',
+    );
+    expect(knowledgeView).toContain('ArtifactObjects.createUpload({');
+    expect(knowledgeView).toContain('ArtifactObjects.completeUpload({');
+    expect(knowledgeView).toContain('id: verified.objectId');
+    expect(knowledgeView).toContain('Checking integrity…');
+    expect(knowledgeView).toContain('We’ll extract and index it after upload.');
+    const evaluationsModel = await readFile(
+      join(target, 'src/features/evaluations/model.ts'),
+      'utf8',
+    );
+    expect(evaluationsModel).toContain('EvaluationRun.on.create(');
+    expect(evaluationsModel).toContain("logicalModel.startsWith('agent:')");
+    expect(evaluationsModel).toContain("profile.tools.includes('Document.create')");
+    expect(evaluationsModel).toContain('AgentEvaluationProcessor');
+    expect(evaluationsModel).toContain('runtimeContract,');
+    expect(evaluationsModel).toContain('qualifiedVersion: profile.version');
+    expect(evaluationsModel).toContain('executeApplicationDeterministicAgentCase({');
+    expect(evaluationsModel).toContain("evidenceKind: runtimeContract ? 'deterministic-runtime-contract'");
+    expect(evaluationsModel).not.toContain('qualifiedRevision');
+    expect(evaluationsModel).toContain('export const EvaluationDataset = Evaluations.Dataset');
+    expect(evaluationsModel).toContain('ApplicationOperator.can(\n  Evaluations.EvaluationRun.create,\n  AgentEvaluationRuns,');
+    expect(evaluationsModel).not.toContain('Evaluations.Dataset.update');
+    expect(evaluationsModel).not.toContain('Evaluations.Case.update');
+    expect(evaluationsModel).not.toContain('Evaluations.Scorer.update');
+    const evaluationsView = await readFile(
+      join(target, 'src/features/evaluations/view.tsx'),
+      'utf8',
+    );
+    expect(evaluationsView).toContain('Versioned evaluation catalog');
+    expect(evaluationsView).toContain('Regression');
+    expect(evaluationsView).toContain('Run runtime gate');
+    const integrationsView = await readFile(
+      join(target, 'src/features/integrations/view.tsx'),
+      'utf8',
+    );
+    expect(integrationsView).toContain('PaymentProvider');
+    expect(integrationsView).toContain('OPENROUTER_API_KEY');
+    expect(integrationsView).toContain('Request operator setup');
+    const billingModel = await readFile(
+      join(target, 'src/features/billing.tsx'),
+      'utf8',
+    );
+    expect(billingModel).toContain('await requirePublishedBillingPlan(request.input.plan)');
+    expect(billingModel).toContain('await requirePublishedBillingPlan(event.plan)');
+    expect(billingModel).toContain('await applicationBillingPlans.find({');
+    expect(integrationsView).toContain('secrets never enter this page.');
+    const integrationsModel = await readFile(
+      join(target, 'src/features/integrations/model.ts'),
+      'utf8',
+    );
+    expect(integrationsModel).toContain('agenticWorkspaceScope(context)');
+    expect(integrationsModel).toContain('Only the server-side connection authority may change provider state.');
+    const billing = await readFile(
+      join(target, 'src/features/billing.tsx'),
+      'utf8',
+    );
+    expect(billing).toContain('agenticWorkspaceScope(context)');
+    expect(billing).toContain('export const ReserveWorkspaceAIRun = AIUsageReservation.create');
+    expect(billing).toContain('canManageWorkspaceBilling(context)');
+    expect(billing).toContain('const returnTo = trustedBillingReturnUrl(');
+    expect(billing).toContain('request.input.returnTo,');
+    expect(billing).toContain('context.requestOrigin,');
+    expect(billing).toContain('async function loadStarterSubscription(');
+    expect(billing).toContain('await loadStarterSubscription(principalScope)');
+    expect(billing).toContain('await Billing.Subscription.find({');
+    expect(billing).not.toContain('const StarterSubscriptionState =');
+    expect(billing).toContain("if (result.mode === 'simulated')");
+    expect(billing).toContain('await Billing.Subscription.create({');
+    expect(billing).toContain('await Billing.Subscription.update({');
+    expect(billing).toContain('Billing.Subscription.create.applicationPolicy()');
+    expect(billing).toContain('Billing.Subscription.update.applicationPolicy()');
+    expect(billing).toContain('customerId: providerCustomerId');
+    expect(documentsModel).toContain('if (workspaceId) {');
+    expect(documentsModel).toContain('await ReserveWorkspaceAIRun({');
+    expect(documentsModel).not.toContain('The workspace assistant requires an admitted workspace.');
+    expect(productAIUsageBudget).toContain('const reservation = await AIUsageReservationTable.get(');
+    expect(productAIUsageBudget).toContain('if (!reservation) return;');
+    expect(documentsModel).toContain('maximumTokens: 72_000');
+    expect(documentsModel).toContain('maximumCostMicrounits: 500_000');
+    expect(documentsModel).toContain('maximumInputTokens: 64_000');
+    expect(documentsModel).toContain('maximumOutputTokens: 8_000');
+    expect(productWorkspaceSchema).toContain("model('ai_usage_budget_ledgers'");
+    expect(productWorkspaceSchema).toContain("model('ai_usage_reservations'");
+    expect(productAIUsageBudget).toContain("'starter.ai-usage-reservation.release.v1'");
+    expect(productAIUsageBudget).toContain("'starter.ai-usage-reservation.settle.v1'");
+    expect(productAIUsageBudget).toContain('Usage.UsageFact.on.create(');
+    expect(productAIUsageBudget).toContain('await SettleAIUsageReservation.start(');
+    expect(billing).toContain("rawType: 'checkout.completed'");
+    expect(billing).toContain(
+      'applicationBillingSubscriptionResumeInputSchema as ResumeSubscriptionInput',
+    );
+    const billingPolicy = await readFile(
+      join(target, 'src/features/billing-policy.ts'),
+      'utf8',
+    );
+    expect(billingPolicy).toContain("role === 'workspace-owner'");
+    expect(billingPolicy).toContain(
+      'if (typeof workspaceId !== \'string\' || !workspaceId.trim()) return true;',
+    );
+    const scopedConversationModel = await readFile(
+      join(target, 'src/features/conversations/model.ts'),
+      'utf8',
+    );
+    expect(scopedConversationModel).toContain('agenticWorkspaceScope(context)');
+    expect(scopedConversationModel).toContain('Conversations.ProtocolRun');
+    expect(scopedConversationModel).toContain('terminalReason: run.terminalReason');
+    const artifactRoute = await readFile(
+      join(target, 'src/routes/app.artifacts.$artifactId.tsx'),
+      'utf8',
+    );
+    expect(artifactRoute).toContain('DownloadArtifact({ id: detail.data.id })');
+    expect(artifactRoute).not.toContain('objectKey');
+    expect(artifactRoute).toContain('Download artifact');
+    expect(libraryModel).toContain('const ArtifactDownloadTarget');
+    expect(libraryModel).toContain('loadApplicationArtifactDownloadTarget(input, context, {');
+    expect(libraryModel).toContain('scope: agenticWorkspaceScope');
+    expect(libraryModel).toContain('ArtifactObjects.signDownload({ key: target.objectKey })');
     const administrationModel = await readFile(
       join(target, 'src/features/administration/model.ts'),
       'utf8',
@@ -681,15 +956,45 @@ describe('Agentic Start generator', () => {
     expect(
       await readFile(join(target, 'src/routes/admin.tenants.$tenantId.tsx'), 'utf8'),
     ).toContain('TenantAdministration');
-    expect(
-      await readFile(join(target, 'src/routes/app.documents.$documentId.tsx'), 'utf8'),
-    ).toContain("detail.phase === 'error'");
+    const documentDetailRoute = await readFile(
+      join(target, 'src/routes/app.documents.$documentId.tsx'),
+      'utf8',
+    );
+    expect(documentDetailRoute).toContain("detail.phase === 'error'");
+    expect(documentDetailRoute).toContain('setReviewRequested(true)');
+    expect(documentDetailRoute).toContain(
+      "document.state === 'in-review' || reviewRequested",
+    );
+    expect(documentDetailRoute).toContain('Open review Inbox');
+    expect(documentDetailRoute).toContain('aria-label="Document state"');
+    expect(documentsModel).toContain(
+      'const nextVersion = document.value.version + 1;',
+    );
+    expect(documentsModel).toContain("'publishedAt' in input.patch");
+    expect(documentsModel).toContain("requestedState === 'published' ? { publishedAt: context.now }");
+    expect(documentsModel).toContain('Only draft documents may be edited.');
+    expect(documentsModel).toContain('version: nextVersion');
+    expect(documentsModel).toContain('revision: nextVersion');
+    const inboxModel = await readFile(
+      join(target, 'src/features/inbox/model.ts'),
+      'utf8',
+    );
+    expect(inboxModel).toContain('targetKey: review.value.documentId');
+    expect(inboxModel).toContain('selectedAgenticWorkspaceId(context)');
+    expect(inboxModel).toContain('The requested Inbox is outside the server-admitted workspace scope.');
+    expect(inboxModel).toContain(
+      'idempotencyKey: `document-review:${review.value.id}`',
+    );
+    expect(inboxModel).toContain('DecisionWorker.can(');
+    expect(inboxModel).toContain('DecisionReview.update.all()');
+    expect(inboxModel).toContain('Document.update.all()');
     const markdownDocument = await readFile(
       join(target, 'src/components/markdown-document.tsx'),
       'utf8',
     );
     expect(markdownDocument).toContain('export function documentTitle');
     expect(markdownDocument).toContain('<table');
+    expect(markdownDocument).toContain('h1: props => <h2');
     expect(markdownDocument).not.toContain('dangerouslySetInnerHTML');
     expect(
       await readFile(join(target, 'src/routes/app.artifacts.$artifactId.tsx'), 'utf8'),
@@ -699,12 +1004,29 @@ describe('Agentic Start generator', () => {
       'utf8',
     );
     expect(appLayout).toContain('<Outlet />');
+    expect(appLayout).toContain('notFoundComponent: RouteNotFound');
+    const setupRoute = await readFile(
+      join(target, 'src/routes/app.setup.tsx'),
+      'utf8',
+    );
+    expect(setupRoute).not.toContain('groupHasEvidence');
     const rootRoute = await readFile(
       join(target, 'src/routes/__root.tsx'),
       'utf8',
     );
     expect(rootRoute).toContain('errorComponent: RouteErrorBoundary');
     expect(rootRoute).toContain('<AppShell><Outlet /></AppShell>');
+    const appShell = await readFile(
+      join(target, 'src/components/app-shell.tsx'),
+      'utf8',
+    );
+    expect(appShell).toContain('if (admissionRoute)');
+    expect(appShell).toContain("pathname === '/sign-up'");
+    expect(appShell).toContain('cannot issue workspace-scoped queries');
+    expect(await readFile(
+      join(target, 'src/components/builder-boundary.tsx'),
+      'utf8',
+    )).toContain('applicationOperations === true');
     expect(
       await readFile(join(target, 'src/modules.ts'), 'utf8'),
     ).toContain('application.include(operationsControlCenter)');
@@ -722,6 +1044,9 @@ describe('Agentic Start generator', () => {
     expect(billingView).not.toContain(
       'providerSubscriptionId:',
     );
+    expect(billingView).toContain('intentId: crypto.randomUUID()');
+    expect(billingView).toContain('else await dashboard.refresh();');
+    expect(billingView).toContain('dashboard.data?.canManageBilling');
     expect(
       await readFile(join(target, 'src/features/workspaces/model.ts'), 'utf8'),
     ).toContain("const workspaces = module(");
@@ -744,9 +1069,16 @@ describe('Agentic Start generator', () => {
     ).toContain(
       'onClick={() => selectAgenticWorkspace(workspaceId)}',
     );
-    expect(
-      await readFile(join(target, 'test/application.test.ts'), 'utf8'),
-    ).toContain('explicit authority graph');
+    const applicationTest = await readFile(
+      join(target, 'test/application.test.ts'),
+      'utf8',
+    );
+    expect(applicationTest).toContain('explicit authority graph');
+    expect(applicationTest).toContain('canManageWorkspaceBilling({');
+    expect(applicationTest).toContain('assembleApplicationKnowledgeContext([');
+    const generatedBiome = await readFile(join(target, 'biome.json'), 'utf8');
+    expect(generatedBiome).toContain('"root": true');
+    expect(generatedBiome).toContain('"src/**/*.tsx"');
   });
 
   it('generates the file-route tree after installing the generated application', async () => {
@@ -844,7 +1176,13 @@ describe('Agentic Start generator', () => {
       expect(result.value.metadata.name).toBe('documents-product');
       expect(result.value.nodes).toEqual(expect.arrayContaining([
         expect.objectContaining({ kind: 'model', id: 'model.document' }),
-        expect.objectContaining({ kind: 'aiAgent', name: 'workspace-assistant' }),
+        expect.objectContaining({
+          kind: 'aiAgent',
+          name: 'workspace-assistant',
+          queries: expect.arrayContaining([
+            expect.objectContaining({ alias: 'KnowledgeSearch.search' }),
+          ]),
+        }),
         expect.objectContaining({ kind: 'authorityManifest' }),
       ]));
       // The product Start intentionally includes the maintained SaaS modules;
@@ -852,15 +1190,34 @@ describe('Agentic Start generator', () => {
       // The product includes one complete durable-decision vertical: model,
       // workflow, signal, subscription, and terminal update. Keep a tight
       // ceiling so future examples cannot hide graph sprawl behind generation.
-      expect(result.value.nodes.length).toBeLessThan(400);
+      // The maintained Document collaboration contract adds one model plus
+      // its conventional lifecycle/command nodes; this remains bounded rather
+      // than allowing template-owned feature sprawl.
+      // The budget authority adds two durable models, one expiry workflow,
+      // and settlement processors so concurrent AI runs cannot race a read-
+      // then-charge check. Keep that safety cost explicit in this ceiling.
+      expect(result.value.nodes.length).toBeLessThan(520);
       expect(result.value.nodes).toEqual(expect.arrayContaining([
+        expect.objectContaining({ kind: 'model', id: 'model.document-comment' }),
         expect.objectContaining({ kind: 'model', id: 'model.billing-plan' }),
         expect.objectContaining({ kind: 'model', id: 'model.usage-fact' }),
+        expect.objectContaining({ kind: 'model', id: 'model.aiusage-budget-ledger' }),
+        expect.objectContaining({ kind: 'model', id: 'model.aiusage-reservation' }),
         expect.objectContaining({ kind: 'model', id: 'model.conversation' }),
+        expect.objectContaining({ kind: 'model', id: 'model.document-revision' }),
+        expect.objectContaining({ kind: 'model', id: 'model.agent-profile' }),
+        expect.objectContaining({ kind: 'model', id: 'model.knowledge-source' }),
+        expect.objectContaining({ kind: 'model', id: 'model.integration-connection' }),
         expect.objectContaining({ kind: 'model', id: 'model.approval-review' }),
         expect.objectContaining({ kind: 'model', id: 'model.data-lifecycle-request' }),
         expect.objectContaining({ kind: 'streamProcessor', name: 'process-data-lifecycle-request-create' }),
       ]));
+      expect(
+        result.value.nodes.flatMap((node) =>
+          node.kind === 'query' && (node.handlerUnresolved?.length ?? 0) > 0
+            ? [{ query: node.id, unresolved: node.handlerUnresolved }]
+            : []),
+      ).toEqual([]);
       const payments = result.value.nodes.find(
         (node) =>
           node.kind === 'provider'

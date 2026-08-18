@@ -3227,7 +3227,7 @@
           "source": {}
         },
         {
-          "id": "artifact.migration.identity-start-application-migration-b7f3c05891ca",
+          "id": "artifact.migration.identity-start-application-migration-676de4e23bb9",
           "kind": "artifact",
           "scope": {
             "connectionDigest": "sha256:4212c1b73a5dc7d34c5b85a62b1c427c670d881b64eea7e780880764e43fe686"
@@ -3505,20 +3505,6 @@
           "source": {}
         },
         {
-          "id": "external.generated-secret.workflow-worker.identity-start-workflows.context",
-          "kind": "externalProvider",
-          "scope": {
-            "connectionDigest": "sha256:4212c1b73a5dc7d34c5b85a62b1c427c670d881b64eea7e780880764e43fe686",
-            "namespace": "identity-start-system"
-          },
-          "lifecycle": {
-            "ownership": "application",
-            "deletion": "delete",
-            "adoption": "createOrAdoptExact"
-          },
-          "source": {}
-        },
-        {
           "id": "kubernetes.application",
           "kind": "kubernetesComposition",
           "scope": {
@@ -3638,13 +3624,13 @@
           "relationship": "publishes"
         },
         {
-          "from": "artifact.migration.identity-start-application-migration-b7f3c05891ca",
+          "from": "artifact.migration.identity-start-application-migration-676de4e23bb9",
           "to": "kubernetes.application",
           "relationship": "requiresOutput",
           "output": "immutableReference"
         },
         {
-          "from": "artifact.migration.identity-start-application-migration-b7f3c05891ca",
+          "from": "artifact.migration.identity-start-application-migration-676de4e23bb9",
           "to": "kubernetes.application",
           "relationship": "publishes"
         },
@@ -3783,12 +3769,6 @@
           "output": "name"
         },
         {
-          "from": "external.generated-secret.workflow-worker.identity-start-workflows.context",
-          "to": "kubernetes.application",
-          "relationship": "requiresOutput",
-          "output": "name"
-        },
-        {
           "from": "direct.namespace.workload",
           "to": "direct.provider.event-log.v1alpha1.primary.nats",
           "relationship": "requiresReady"
@@ -3842,11 +3822,6 @@
           "from": "direct.namespace.workload",
           "to": "external.generated-secret.gateway.web.cursor",
           "relationship": "requiresReady"
-        },
-        {
-          "from": "direct.namespace.workload",
-          "to": "external.generated-secret.workflow-worker.identity-start-workflows.context",
-          "relationship": "requiresReady"
         }
       ]
     },
@@ -3895,7 +3870,7 @@
           "source": {}
         },
         {
-          "id": "artifact.migration.identity-start-application-migration-b7f3c05891ca",
+          "id": "artifact.migration.identity-start-application-migration-676de4e23bb9",
           "kind": "artifact",
           "scope": {
             "connectionDigest": "sha256:4212c1b73a5dc7d34c5b85a62b1c427c670d881b64eea7e780880764e43fe686"
@@ -4425,20 +4400,6 @@
           "source": {}
         },
         {
-          "id": "external.generated-secret.workflow-worker.identity-start-workflows.context",
-          "kind": "externalProvider",
-          "scope": {
-            "connectionDigest": "sha256:4212c1b73a5dc7d34c5b85a62b1c427c670d881b64eea7e780880764e43fe686",
-            "namespace": "identity-start-system"
-          },
-          "lifecycle": {
-            "ownership": "application",
-            "deletion": "delete",
-            "adoption": "createOrAdoptExact"
-          },
-          "source": {}
-        },
-        {
           "id": "kubernetes.application",
           "kind": "kubernetesComposition",
           "scope": {
@@ -4558,13 +4519,13 @@
           "relationship": "publishes"
         },
         {
-          "from": "artifact.migration.identity-start-application-migration-b7f3c05891ca",
+          "from": "artifact.migration.identity-start-application-migration-676de4e23bb9",
           "to": "kubernetes.application",
           "relationship": "requiresOutput",
           "output": "immutableReference"
         },
         {
-          "from": "artifact.migration.identity-start-application-migration-b7f3c05891ca",
+          "from": "artifact.migration.identity-start-application-migration-676de4e23bb9",
           "to": "kubernetes.application",
           "relationship": "publishes"
         },
@@ -4829,12 +4790,6 @@
           "output": "name"
         },
         {
-          "from": "external.generated-secret.workflow-worker.identity-start-workflows.context",
-          "to": "kubernetes.application",
-          "relationship": "requiresOutput",
-          "output": "name"
-        },
-        {
           "from": "direct.namespace.workload",
           "to": "direct.provider.ai.v1alpha1.inference.envoy-ai-gateway",
           "relationship": "requiresReady"
@@ -4933,11 +4888,6 @@
           "from": "direct.namespace.workload",
           "to": "external.generated-secret.gateway.web.cursor",
           "relationship": "requiresReady"
-        },
-        {
-          "from": "direct.namespace.workload",
-          "to": "external.generated-secret.workflow-worker.identity-start-workflows.context",
-          "relationship": "requiresReady"
         }
       ]
     },
@@ -4986,7 +4936,7 @@
           "source": {}
         },
         {
-          "id": "artifact.migration.identity-start-application-migration-b7f3c05891ca",
+          "id": "artifact.migration.identity-start-application-migration-676de4e23bb9",
           "kind": "artifact",
           "scope": {
             "connectionDigest": "sha256:4212c1b73a5dc7d34c5b85a62b1c427c670d881b64eea7e780880764e43fe686"
@@ -5134,20 +5084,6 @@
           "source": {}
         },
         {
-          "id": "external.generated-secret.workflow-worker.identity-start-workflows.context",
-          "kind": "externalProvider",
-          "scope": {
-            "connectionDigest": "sha256:4212c1b73a5dc7d34c5b85a62b1c427c670d881b64eea7e780880764e43fe686",
-            "namespace": "identity-start-system"
-          },
-          "lifecycle": {
-            "ownership": "application",
-            "deletion": "delete",
-            "adoption": "createOrAdoptExact"
-          },
-          "source": {}
-        },
-        {
           "id": "kubernetes.application",
           "kind": "kubernetesComposition",
           "scope": {
@@ -5267,13 +5203,13 @@
           "relationship": "publishes"
         },
         {
-          "from": "artifact.migration.identity-start-application-migration-b7f3c05891ca",
+          "from": "artifact.migration.identity-start-application-migration-676de4e23bb9",
           "to": "kubernetes.application",
           "relationship": "requiresOutput",
           "output": "immutableReference"
         },
         {
-          "from": "artifact.migration.identity-start-application-migration-b7f3c05891ca",
+          "from": "artifact.migration.identity-start-application-migration-676de4e23bb9",
           "to": "kubernetes.application",
           "relationship": "publishes"
         },
@@ -5357,12 +5293,6 @@
         },
         {
           "from": "external.generated-secret.gateway.web.cursor",
-          "to": "kubernetes.application",
-          "relationship": "requiresOutput",
-          "output": "name"
-        },
-        {
-          "from": "external.generated-secret.workflow-worker.identity-start-workflows.context",
           "to": "kubernetes.application",
           "relationship": "requiresOutput",
           "output": "name"

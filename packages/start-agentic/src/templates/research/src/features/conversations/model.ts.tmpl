@@ -2,7 +2,7 @@ import type {
   ApplicationModelViewContext,
   ApplicationQueryPrincipal,
 } from '@applik8s/applik8s';
-import { applicationAIConversationPrincipalScope } from '@applik8s/conversations/runtime';
+import { agenticPrincipalScope } from '@applik8s/start-agentic';
 import { type } from 'arktype';
 import {
   and,
@@ -41,10 +41,7 @@ async function listConversations(
   context: ApplicationModelViewContext,
 ) {
   const client = context.database(database);
-  const principalScope = applicationAIConversationPrincipalScope(
-    context.principal,
-    context.trustedContext,
-  );
+  const principalScope = agenticPrincipalScope(context);
   const rows = await client.select({
     id: Conversations.Conversation.id,
     title: Conversations.Conversation.title,
@@ -69,10 +66,7 @@ async function loadConversation(
   context: ApplicationModelViewContext,
 ) {
   const client = context.database(database);
-  const principalScope = applicationAIConversationPrincipalScope(
-    context.principal,
-    context.trustedContext,
-  );
+  const principalScope = agenticPrincipalScope(context);
   const [conversation] = await client.select({
     id: Conversations.Conversation.id,
     title: Conversations.Conversation.title,
@@ -153,11 +147,7 @@ Conversations.Conversation.update.beforeCommit(
   ) {
     if (
       !context.principal
-      || conversation.value.principalScope
-        !== applicationAIConversationPrincipalScope(
-          context.principal,
-          context.trustedContext,
-        )
+      || conversation.value.principalScope !== agenticPrincipalScope(context)
     ) {
       throw new Error('Conversation is unavailable in this identity scope.');
     }
@@ -196,11 +186,7 @@ Conversations.Conversation.create.beforeCommit(
   ) {
     if (
       !context.principal
-      || conversation.value.principalScope
-        !== applicationAIConversationPrincipalScope(
-          context.principal,
-          context.trustedContext,
-        )
+      || conversation.value.principalScope !== agenticPrincipalScope(context)
     ) {
       throw new Error(
         'Conversation creation must use the admitted identity scope.',
@@ -226,11 +212,7 @@ Conversations.Conversation.delete.beforeCommit(
   ) {
     if (
       !context.principal
-      || conversation.value.principalScope
-        !== applicationAIConversationPrincipalScope(
-          context.principal,
-          context.trustedContext,
-        )
+      || conversation.value.principalScope !== agenticPrincipalScope(context)
     ) {
       throw new Error('Conversation is unavailable in this identity scope.');
     }

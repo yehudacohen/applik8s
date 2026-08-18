@@ -12,6 +12,7 @@ export const applicationUsageFacts = model(
     principalScope: field.text('principal_scope').notNull(),
     operationId: field.text('operation_id'),
     invocationId: field.text('invocation_id'),
+    protocolRunId: field.text('protocol_run_id'),
     attemptId: field.text('attempt_id'),
     provider: field.text('provider'),
     backend: field.text('backend'),

@@ -6,6 +6,7 @@ import { getApplicationOperationSchemas } from '@applik8s/client';
 import type { ApplicationExecutionPrincipal, JsonObject } from '@applik8s/core';
 import { toRuntimeSchema } from '@applik8s/sdk/schema-runtime';
 import type { StandardJSONSchemaV1, StandardSchemaV1 } from '@standard-schema/spec';
+import type { ApplicationTanStackChatTranscriptPersistence } from './persistence.js';
 import {
   type AnyTextAdapter,
   type AnyTool,
@@ -51,24 +52,112 @@ export interface ApplicationTanStackToolExecutionContext {
 
 /**
  * Native TanStack values injected into one application.agent(...) execution.
- * Persistence stays opaque until TanStack publishes its server-side contract;
- * compatibility gates reject unsupported substitutes.
+ * Persistence is TanStack's published transcript/run contract, backed by an
+ * authority-scoped application store.
  */
 export interface ApplicationTanStackAgentRuntime {
   readonly adapter: AnyTextAdapter;
   readonly tools: AnyTool[];
-  readonly persistence: unknown;
+  readonly persistence: ApplicationTanStackChatTranscriptPersistence;
   readonly execution: ApplicationTanStackToolExecutionContext;
 }
 
 export interface ApplicationTanStackToolOptions<TName extends string = string> {
   readonly name?: TName;
   readonly description?: string;
+  /** Product-facing activity language retained beside the canonical operation ID. */
+  readonly presentation?: {
+    readonly label: string;
+    readonly runningLabel?: string;
+    readonly completedLabel?: string;
+  };
   /**
    * Presentation only. The canonical operation runtime still authorizes every
    * invocation under the supplied ExecutionPrincipal.
    */
   readonly needsApproval?: boolean;
+}
+
+export interface ApplicationTanStackToolReference {
+  readonly operation: {
+    readonly id: string;
+  };
+}
+
+/**
+ * Select hydrated TanStack tools through stable, application-owned catalog
+ * keys. Persisted agent configuration never depends on a provider tool name,
+ * and a stale or unavailable selection fails before inference starts.
+ */
+export function selectApplicationTanStackTools<
+  const TCatalog extends Readonly<
+    Record<string, ApplicationTanStackToolReference>
+  >,
+>(
+  tools: readonly AnyTool[],
+  catalog: TCatalog,
+  selected: readonly (keyof TCatalog & string)[] | readonly string[],
+): AnyTool[] {
+  const operationByKey = new Map(
+    Object.entries(catalog).map(([key, operation]) => [
+      key,
+      operation.operation.id,
+    ]),
+  );
+  const selectedOperations = new Set<string>();
+  for (const key of selected) {
+    const operationId = operationByKey.get(key);
+    if (!operationId) {
+      throw new Error(
+        `Agent tool catalog does not declare selected tool ${JSON.stringify(key)}.`,
+      );
+    }
+    if (selectedOperations.has(operationId)) {
+      throw new Error(
+        `Agent tool catalog selects operation ${operationId} more than once.`,
+      );
+    }
+    selectedOperations.add(operationId);
+  }
+  const hydrated = new Map<string, AnyTool>();
+  for (const tool of tools) {
+    const operationId = applicationTanStackToolOperationId(tool);
+    if (!operationId || !selectedOperations.has(operationId)) continue;
+    if (hydrated.has(operationId)) {
+      throw new Error(
+        `TanStack runtime hydrated application operation ${operationId} more than once.`,
+      );
+    }
+    hydrated.set(operationId, tool);
+  }
+  const missing = [...selectedOperations].filter(
+    operationId => !hydrated.has(operationId),
+  );
+  if (missing.length > 0) {
+    throw new Error(
+      `TanStack runtime did not hydrate selected application tools: ${missing.join(', ')}.`,
+    );
+  }
+  return [...selectedOperations].map((operationId) => {
+    const tool = hydrated.get(operationId);
+    if (!tool) {
+      throw new Error(
+        `TanStack runtime lost hydrated application tool ${operationId} after validation.`,
+      );
+    }
+    return tool;
+  });
+}
+
+function applicationTanStackToolOperationId(tool: AnyTool): string | undefined {
+  const metadata = Reflect.get(tool, 'metadata');
+  if (!metadata || typeof metadata !== 'object') return undefined;
+  const applik8s = Reflect.get(metadata, 'applik8s');
+  if (!applik8s || typeof applik8s !== 'object') return undefined;
+  const operationId = Reflect.get(applik8s, 'operationId');
+  return typeof operationId === 'string' && operationId.trim()
+    ? operationId
+    : undefined;
 }
 
 /**
@@ -113,7 +202,8 @@ export type ApplicationTanStackServerTool<
   StandardSchemaV1<TInput, TInput>,
   StandardSchemaV1<TOutput, TOutput>,
   TName,
-  ApplicationTanStackToolExecutionContext
+  ApplicationTanStackToolExecutionContext,
+  boolean
 >;
 
 /**
@@ -139,14 +229,20 @@ export function asTool<
       `Application operation ${operation.operation.id} cannot be adapted as a TanStack tool because both authored schemas must implement Standard Schema.`,
     );
   }
-  const name = (options.name ?? applicationTanStackToolName(operation.operation.id)) as TName;
+  const name = (options.name ?? applicationTanStackToolName(
+    operation.operation.id,
+    options.presentation?.label,
+  )) as TName;
   validateToolName(name);
   const inputSchema = schemas.input as StandardSchemaV1<TInput, TInput>;
   const outputSchema = schemas.output as StandardSchemaV1<TOutput, TOutput>;
   const needsApproval = options.needsApproval ?? operation.authority.grantable;
   return toolDefinition({
     name,
-    description: options.description ?? `Invoke the ${operation.operation.id} application operation.`,
+    description: options.description
+      ?? (options.presentation
+        ? options.presentation.label
+        : `Invoke the ${operation.operation.id} application operation.`),
     inputSchema,
     outputSchema,
     needsApproval,
@@ -156,6 +252,9 @@ export function asTool<
         operationVersion: operation.operation.version ?? 'unversioned',
         transport: operation.operation.transport,
         approvalPresentationOnly: true,
+        ...(options.presentation
+          ? { presentation: Object.freeze({ ...options.presentation }) }
+          : {}),
       },
     },
   }).server<ApplicationTanStackToolExecutionContext>(
@@ -178,8 +277,11 @@ export function asTool<
   );
 }
 
-export function applicationTanStackToolName(operationId: string): string {
-  const normalized = operationId
+export function applicationTanStackToolName(
+  operationId: string,
+  label?: string,
+): string {
+  const normalized = (label?.trim() || operationId)
     .replace(/^applik8s:\/\//u, '')
     .replace(/[^A-Za-z0-9_-]+/gu, '_')
     .replace(/^_+|_+$/gu, '')

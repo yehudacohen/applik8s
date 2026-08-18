@@ -119,7 +119,7 @@ afterAll(async () => {
     environment: {
       context: cluster.context,
       clusterUid: cluster.uid,
-      typekro: "0.33.6",
+      typekro: "0.33.7",
       strategies: ["direct", "kro"],
     },
     assertionEvidence: createV06AssertionEvidence(

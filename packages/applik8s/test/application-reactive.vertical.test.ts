@@ -482,6 +482,57 @@ describe('v0.6 streams, subscriptions, and projections', () => {
     );
   });
 
+  it('accepts compiler-recorded awaited model operations in lifecycle callbacks', () => {
+    const parents = pgTable('awaited_lifecycle_parents', {
+      id: text('id').primaryKey(),
+      revision: text('revision').notNull(),
+    });
+    const children = pgTable('awaited_lifecycle_children', {
+      id: text('id').primaryKey(),
+      parentId: text('parent_id').notNull(),
+      revision: text('revision').notNull(),
+    });
+    const application = app('awaited-lifecycle-operation');
+    const database = application.database.postgres('main', {
+      schema: { parents, children },
+    });
+    const Parent = application.model(parents, {
+      name: 'AwaitedParent',
+      database,
+    });
+    const Child = application.model(children, {
+      name: 'AwaitedChild',
+      database,
+    });
+
+    const processor = Parent.on.create(
+      {
+        __generatedBindings: { 'Child.create': Child.create },
+        __generatedAwaitedCalls: { 'Child.create': Child.create },
+      },
+      async function createChild(event) {
+        await Child.create({
+          id: event.identity,
+          parentId: event.identity,
+          revision: event.identity,
+        });
+      },
+    );
+
+    const graphProcessor = applicationGraphFor(application.composition)?.nodes.find(
+      (node) => node.kind === 'streamProcessor' && node.name === processor.name,
+    );
+    expect(graphProcessor).toMatchObject({
+      operationBindings: [
+        {
+          identifier: 'Child.create',
+          operation: { model: 'AwaitedChild', operation: 'create' },
+        },
+      ],
+      idempotency: 'source-event-id',
+    });
+  });
+
   it('omits unconditional ClickHouse includeWhen literals that KRO cannot parse', () => {
     const catalog = app('clickhouse-conditional-contract', { namespace: 'catalog' });
     const database = catalog.database.postgres('catalog', { schema: {} });

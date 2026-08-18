@@ -127,7 +127,7 @@ describe('v0.6 relational runtime', () => {
     const transaction = {
       async execute(statement: unknown) {
         executed.push(statement);
-        return executed.length === 4 ? [{ sequence: 7 }] : [];
+        return executed.length === 5 ? [{ sequence: 7 }] : [];
       },
     };
     const db = { async transaction<TResult>(handler: (tx: typeof transaction) => Promise<TResult>) { return handler(transaction); } };
@@ -138,7 +138,7 @@ describe('v0.6 relational runtime', () => {
 
     const snapshot = await context.snapshot(database, () => {
       handlerExecuted = true;
-      expect(executed).toHaveLength(3);
+      expect(executed).toHaveLength(4);
       return 'snapshot-value';
     });
 
@@ -146,11 +146,12 @@ describe('v0.6 relational runtime', () => {
     expect(dialect.sqlToQuery(executed[0] as never).sql).toContain('set transaction isolation level repeatable read read only');
     expect(dialect.sqlToQuery(executed[1] as never).sql).toBe('select set_config($1, $2, true)');
     expect(dialect.sqlToQuery(executed[2] as never).sql).toContain('pg_advisory_xact_lock');
+    expect(dialect.sqlToQuery(executed[3] as never).sql).toContain('pg_advisory_xact_lock');
     expect(handlerExecuted).toBe(true);
     expect(snapshot).toEqual({ value: 'snapshot-value', sequence: 7 });
   });
 
-  test('computes retention floors inside the admitted context instead of leaking global sequence state', async () => {
+  test('follows global and admitted invalidation streams for mixed-scope models without exposing raw context', async () => {
     const { database } = fixture();
     const executed: unknown[] = [];
     const transaction = {
@@ -168,9 +169,14 @@ describe('v0.6 relational runtime', () => {
     await context.changes(database, 0);
 
     const dialect = new PgDialect();
+    const changes = dialect.sqlToQuery(executed[1] as never);
     const floor = dialect.sqlToQuery(executed[2] as never);
-    expect(floor.sql).toContain('where context_digest = $1');
-    expect(floor.params).toHaveLength(1);
+    expect(changes.sql).toContain('where context_digest in ($1, $2)');
+    expect(floor.sql).toContain('where context_digest in ($1, $2)');
+    expect(changes.params).toHaveLength(4);
+    expect(floor.params).toHaveLength(2);
+    expect(new Set(floor.params)).toEqual(new Set(changes.params.slice(0, 2)));
+    expect(floor.params).toEqual([...floor.params].sort());
     expect(floor.params).not.toContain('organization-private');
   });
 

@@ -474,7 +474,13 @@ function stableJson(value: unknown): string {
 export class ApplicationTaskOperationRejectedError extends Error {
   readonly code = 'APPLIK8S_TASK_OPERATION_REJECTED';
   constructor(readonly command: string, readonly rejection: { readonly name: string; readonly payload: unknown }) {
-    super(`Application task operation ${command} was rejected with ${rejection.name}.`);
+    const detail = rejection.payload
+      && typeof rejection.payload === 'object'
+      && typeof Reflect.get(rejection.payload, 'message') === 'string'
+      && String(Reflect.get(rejection.payload, 'message')).trim()
+      ? `: ${String(Reflect.get(rejection.payload, 'message')).trim()}`
+      : '';
+    super(`Application task operation ${command} was rejected with ${rejection.name}${detail}.`);
     this.name = 'ApplicationTaskOperationRejectedError';
   }
 }

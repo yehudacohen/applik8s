@@ -1,6 +1,8 @@
 // typecast-file-boundary: generated graph/catalog artifacts are validated at this administrative boundary before creating canonical authority records.
 import { readFile } from 'node:fs/promises';
+import { createServer } from 'node:net';
 import { resolve } from 'node:path';
+import { PassThrough } from 'node:stream';
 import type {
   ApplicationGraph,
   ApplicationIdentityReference,
@@ -9,7 +11,10 @@ import type {
 } from '@applik8s/core';
 import { createApplicationOperationAuthorityRuntime } from '@applik8s/operations';
 import type { ApplicationDeploymentEvidenceReceipt } from '@applik8s/operations';
+import * as kubernetes from '@kubernetes/client-node';
 import postgres from 'postgres';
+import { resolveApplicationInstallationValues } from './application-installation-values.js';
+import { makeKubernetesApiClient } from './kubernetes-api-client.js';
 
 export interface ApplicationOperatorAuthorityIo {
   readonly cwd: string;
@@ -105,8 +110,12 @@ export async function publishApplicationDeploymentReceipt(
   receipt: ApplicationDeploymentEvidenceReceipt,
   outDir: string,
   io: ApplicationOperatorAuthorityIo,
+  deployment?: {
+    readonly context: string;
+    readonly installationSpec: Readonly<Record<string, unknown>>;
+  },
 ): Promise<boolean> {
-  const context = await loadAuthorityContext(outDir, io, false);
+  const context = await loadAuthorityContext(outDir, io, false, deployment);
   if (!context) return false;
   try {
     await context.runtime.observeDeploymentReceipt(receipt);
@@ -150,6 +159,10 @@ async function loadAuthorityContext(
   outDir: string,
   io: ApplicationOperatorAuthorityIo,
   requireDatabase: boolean,
+  deployment?: {
+    readonly context: string;
+    readonly installationSpec: Readonly<Record<string, unknown>>;
+  },
 ): Promise<{
   readonly runtime: ReturnType<typeof createApplicationOperationAuthorityRuntime>;
   readonly roleId: string;
@@ -187,7 +200,24 @@ async function loadAuthorityContext(
     throw new Error(`Application operator authority requires exactly one canonical transactional database environment; found ${[...connectionEnvironments].join(', ') || 'none'}.`);
   }
   const connectionEnvironment = [...connectionEnvironments][0]!;
-  const databaseUrl = process.env[connectionEnvironment];
+  let databaseUrl = process.env[connectionEnvironment];
+  let closeTunnel: (() => Promise<void>) | undefined;
+  if (!databaseUrl && deployment) {
+    const resolvedGraph = resolveApplicationInstallationValues(
+      graph,
+      deployment.installationSpec,
+      { preserveUnknownReferences: true },
+    );
+    const connection = applicationAuthorityDatabaseConnection(resolvedGraph);
+    if (connection) {
+      const tunnel = await openApplicationDatabaseTunnel(
+        deployment.context,
+        connection,
+      );
+      databaseUrl = tunnel.url;
+      closeTunnel = tunnel.close;
+    }
+  }
   if (!databaseUrl) {
     if (!requireDatabase) return undefined;
     throw new Error(`Missing ${connectionEnvironment}. Load the application's explicit .env or export the canonical database URL before changing operator authority.`);
@@ -215,7 +245,129 @@ async function loadAuthorityContext(
     runtime,
     roleId: role.id,
     issuer,
-    close: () => sql.end({ timeout: 2 }),
+    close: async () => {
+      await sql.end({ timeout: 2 });
+      await closeTunnel?.();
+    },
+  };
+}
+
+interface ApplicationAuthorityDatabaseConnection {
+  readonly clusterName: string;
+  readonly database: string;
+  readonly secretKey: string;
+  readonly secretName: string;
+  readonly secretNamespace: string;
+}
+
+export function applicationAuthorityDatabaseConnection(
+  graph: ApplicationGraph,
+): ApplicationAuthorityDatabaseConnection | undefined {
+  const connections = new Map<string, ApplicationAuthorityDatabaseConnection>();
+  for (const node of graph.nodes) {
+    if (node.kind !== 'model' || !('runtime' in node)) continue;
+    const runtime = node.runtime;
+    if (runtime?.authorityName !== 'application') continue;
+    const connection = {
+      clusterName: requiredRuntimeString(runtime.clusterName),
+      database: requiredRuntimeString(runtime.database),
+      secretKey: requiredRuntimeString(runtime.secretKey),
+      secretName: requiredRuntimeString(runtime.secretName),
+      secretNamespace: requiredRuntimeString(runtime.secretNamespace),
+    };
+    if (Object.values(connection).some((value) => value === undefined)) {
+      return undefined;
+    }
+    const exact = connection as ApplicationAuthorityDatabaseConnection;
+    connections.set(JSON.stringify(exact), exact);
+  }
+  if (connections.size !== 1) return undefined;
+  return [...connections.values()][0];
+}
+
+function requiredRuntimeString(value: unknown): string | undefined {
+  return typeof value === 'string'
+    && value.trim().length > 0
+    && !value.includes('${')
+    ? value
+    : undefined;
+}
+
+async function openApplicationDatabaseTunnel(
+  context: string,
+  connection: ApplicationAuthorityDatabaseConnection,
+): Promise<{ readonly url: string; close(): Promise<void> }> {
+  const kubeConfig = new kubernetes.KubeConfig();
+  kubeConfig.loadFromDefault();
+  kubeConfig.setCurrentContext(context);
+  const core = makeKubernetesApiClient(kubeConfig, kubernetes.CoreV1Api);
+  const [secret, pods] = await Promise.all([
+    core.readNamespacedSecret({
+      name: connection.secretName,
+      namespace: connection.secretNamespace,
+    }),
+    core.listNamespacedPod({
+      namespace: connection.secretNamespace,
+      labelSelector: `cnpg.io/cluster=${connection.clusterName}`,
+    }),
+  ]);
+  const encoded = secret.data?.[connection.secretKey];
+  if (!encoded) {
+    throw new Error(
+      `Application database Secret ${connection.secretNamespace}/${connection.secretName} has no ${connection.secretKey} entry.`,
+    );
+  }
+  const sourceUrl = new URL(Buffer.from(encoded, 'base64').toString('utf8'));
+  const pod = pods.items.find((candidate) =>
+    candidate.status?.phase === 'Running'
+    && candidate.metadata?.labels?.['role'] === 'primary')
+    ?? pods.items.find((candidate) => candidate.status?.phase === 'Running');
+  const podName = pod?.metadata?.name;
+  if (!podName) {
+    throw new Error(
+      `Application database cluster ${connection.secretNamespace}/${connection.clusterName} has no running pod for receipt publication.`,
+    );
+  }
+  const portForward = new kubernetes.PortForward(kubeConfig);
+  const targetPort = Number(sourceUrl.port || '5432');
+  const server = createServer((socket) => {
+    const errors = new PassThrough();
+    errors.on('data', () => {
+      socket.destroy();
+    });
+    void portForward.portForward(
+      connection.secretNamespace,
+      podName,
+      [targetPort],
+      socket,
+      errors,
+      socket,
+    ).catch((cause: unknown) => {
+      socket.destroy(
+        cause instanceof Error ? cause : new Error(String(cause)),
+      );
+    });
+  });
+  await new Promise<void>((resolveListen, rejectListen) => {
+    server.once('error', rejectListen);
+    server.listen(0, '127.0.0.1', () => {
+      server.off('error', rejectListen);
+      resolveListen();
+    });
+  });
+  const address = server.address();
+  if (!address || typeof address === 'string') {
+    server.close();
+    throw new Error('Application database receipt tunnel did not bind a TCP port.');
+  }
+  sourceUrl.hostname = '127.0.0.1';
+  sourceUrl.port = String(address.port);
+  sourceUrl.pathname = `/${connection.database}`;
+  return {
+    url: sourceUrl.toString(),
+    close: () => new Promise<void>((resolveClose, rejectClose) => {
+      server.close((error) => error ? rejectClose(error) : resolveClose());
+    }),
   };
 }
 

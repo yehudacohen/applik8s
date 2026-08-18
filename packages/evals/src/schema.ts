@@ -1,4 +1,5 @@
 import {
+  causalPrincipalId,
   field,
   index,
   model,
@@ -6,13 +7,14 @@ import {
   relations,
   uniqueIndex,
 } from '@applik8s/applik8s/drizzle';
+import type { ApplicationRelationalModel } from '@applik8s/applik8s';
 
 export const applicationEvaluationRunState = pgEnum(
   'applik8s_evaluation_run_state',
   ['pending', 'running', 'completed', 'failed', 'cancelled'],
 );
 
-export const applicationEvaluationDatasets = model(
+const evaluationDatasetTable = model(
   'applik8s_evaluation_datasets',
   {
     id: field.text('id').primaryKey(),
@@ -32,8 +34,9 @@ export const applicationEvaluationDatasets = model(
   ],
   { name: 'EvaluationDataset', revision: 'revision' },
 );
+export const applicationEvaluationDatasets: ApplicationRelationalModel<typeof evaluationDatasetTable> = evaluationDatasetTable;
 
-export const applicationEvaluationCases = model(
+const evaluationCaseTable = model(
   'applik8s_evaluation_cases',
   {
     id: field.text('id').primaryKey(),
@@ -51,8 +54,9 @@ export const applicationEvaluationCases = model(
   ],
   { name: 'EvaluationCase', revision: false },
 );
+export const applicationEvaluationCases: ApplicationRelationalModel<typeof evaluationCaseTable> = evaluationCaseTable;
 
-export const applicationEvaluationScorers = model(
+const evaluationScorerTable = model(
   'applik8s_evaluation_scorers',
   {
     id: field.text('id').primaryKey(),
@@ -72,11 +76,13 @@ export const applicationEvaluationScorers = model(
   ],
   { name: 'EvaluationScorer', revision: 'revision' },
 );
+export const applicationEvaluationScorers: ApplicationRelationalModel<typeof evaluationScorerTable> = evaluationScorerTable;
 
-export const applicationEvaluationRuns = model(
+const evaluationRunTable = model(
   'applik8s_evaluation_runs',
   {
     id: field.text('id').primaryKey(),
+    principalScope: field.text('principal_scope').notNull().default(causalPrincipalId),
     datasetId: field.text('dataset_id')
       .notNull()
       .references(() => applicationEvaluationDatasets.id),
@@ -98,10 +104,17 @@ export const applicationEvaluationRuns = model(
       mode: 'string',
     }).notNull().defaultNow(),
   },
+  (table) => [
+    index('applik8s_evaluation_runs_scope_created_idx').on(
+      table.principalScope,
+      table.createdAt,
+    ),
+  ],
   { name: 'EvaluationRun', revision: false },
 );
+export const applicationEvaluationRuns: ApplicationRelationalModel<typeof evaluationRunTable> = evaluationRunTable;
 
-export const applicationEvaluationResults = model(
+const evaluationResultTable = model(
   'applik8s_evaluation_results',
   {
     id: field.text('id').primaryKey(),
@@ -130,6 +143,7 @@ export const applicationEvaluationResults = model(
   ],
   { name: 'EvaluationResult', revision: false },
 );
+export const applicationEvaluationResults: ApplicationRelationalModel<typeof evaluationResultTable> = evaluationResultTable;
 
 export const applicationEvaluationDatasetRelations = relations(
   applicationEvaluationDatasets,

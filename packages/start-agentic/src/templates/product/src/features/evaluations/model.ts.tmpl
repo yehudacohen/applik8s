@@ -1,0 +1,466 @@
+import {
+  applicationCausalPrincipalContext,
+  type ApplicationStreamProcessContext,
+} from '@applik8s/applik8s';
+import { type } from 'arktype';
+import {
+  applicationAgentEvaluationSummarySchema as AgentEvaluationSummary,
+  applicationEvaluationCasesForRunSchema as EvaluationCasesForRunResult,
+  applicationEvaluationCatalogSchema as EvaluationCatalogResult,
+  listApplicationAgentEvaluationRuns,
+  loadApplicationEvaluationCases,
+  loadApplicationEvaluationCatalog,
+  executeApplicationDeterministicAgentCase,
+} from '@applik8s/evals';
+import { application } from '../../app';
+import { Evaluations } from '../../modules';
+import { database } from '../../providers';
+import { AgentProfile, AgentProfileForEvaluation } from '../agents/model';
+import { agenticWorkspaceScope } from '../../workspace-scope';
+
+const EvaluationDocumentCreateInput = type({
+  title: 'string',
+  body: 'string',
+  summary: 'string',
+  tags: 'string[]',
+});
+const EvaluationDocumentUpdateInput = type({
+  identity: 'string',
+  patch: {
+    body: 'string',
+    summary: 'string',
+  },
+});
+const EvaluationDocumentOperationOutput = type({
+  identity: 'string',
+  value: 'object',
+  revision: 'string',
+});
+
+const evaluationQueries = { database, scope: agenticWorkspaceScope } as const;
+
+async function evaluationCatalog(input: object, context: Parameters<typeof loadApplicationEvaluationCatalog>[1]) {
+  return loadApplicationEvaluationCatalog(input, context, evaluationQueries);
+}
+
+async function evaluationCasesForRun(input: { readonly datasetId: string }, context: Parameters<typeof loadApplicationEvaluationCases>[1]) {
+  return loadApplicationEvaluationCases(input, context, evaluationQueries);
+}
+
+async function listAgentEvaluationRuns(input: { readonly agentId?: string }, context: Parameters<typeof listApplicationAgentEvaluationRuns>[1]) {
+  return listApplicationAgentEvaluationRuns(input, context, evaluationQueries);
+}
+
+export const EvaluationCatalog = Evaluations.Dataset.view(
+  {
+    input: type({}),
+    output: EvaluationCatalogResult,
+    database,
+    reads: [Evaluations.Case, Evaluations.Scorer],
+    authorize: ({ principal }) => principal.id.length > 0,
+    budgets: { timeoutMs: 2_000, maxRows: 500, maxResultBytes: 512_000 },
+  },
+  evaluationCatalog,
+);
+
+const EvaluationCasesForRun = Evaluations.Case.view(
+  {
+    input: type({ datasetId: 'string' }),
+    output: EvaluationCasesForRunResult,
+    database,
+    authorize: ({ principal }) => principal.id.length > 0,
+    budgets: { timeoutMs: 2_000, maxRows: 250, maxResultBytes: 512_000 },
+  },
+  evaluationCasesForRun,
+);
+
+export const AgentEvaluationRuns = Evaluations.EvaluationRun.view(
+  {
+    input: type({ 'agentId?': 'string' }),
+    output: AgentEvaluationSummary.array(),
+    database,
+    reads: [Evaluations.EvaluationResult],
+    authorize: ({ principal }) => principal.id.length > 0,
+    budgets: { timeoutMs: 2_000, maxRows: 100, maxResultBytes: 256_000 },
+  },
+  listAgentEvaluationRuns,
+);
+
+const EvaluationWorker = application.serviceIdentity('agent-evaluation-worker');
+
+Evaluations.EvaluationRun.create.beforeCommit(
+  { history: true },
+  async function establishEvaluationScope(run, input, context) {
+    if (!context.principal) {
+      throw new Error('Evaluation admission requires an authenticated principal.');
+    }
+    if (input.principalScope !== undefined) {
+      throw new Error('Evaluation scope is established by admitted workspace context.');
+    }
+    run.patch({ spec: { principalScope: agenticWorkspaceScope(context) } });
+  },
+);
+
+async function evaluateAgentRevision(created: {
+  readonly value: {
+    readonly id: string;
+    readonly logicalModel: string;
+    readonly datasetId: string;
+    readonly scorerId: string;
+  };
+}, context: ApplicationStreamProcessContext) {
+  if (!created.value.logicalModel.startsWith('agent:')) return;
+  const [, agentId, versionText] = created.value.logicalModel.split(':');
+  const version = Number(versionText);
+  const startedAt = new Date().toISOString();
+  await Evaluations.EvaluationRun.update({
+    identity: created.value.id,
+    patch: { status: 'running', startedAt },
+  });
+  if (!agentId || !Number.isSafeInteger(version) || version < 1) {
+    await Evaluations.EvaluationRun.update({
+      identity: created.value.id,
+      patch: { status: 'failed', completedAt: new Date().toISOString() },
+    });
+    return;
+  }
+  const profile = await AgentProfileForEvaluation({ id: agentId, version });
+  if (!profile) {
+    await Evaluations.EvaluationRun.update({
+      identity: created.value.id,
+      patch: { status: 'failed', completedAt: new Date().toISOString() },
+    });
+    return;
+  }
+  const definitionOnly = created.value.scorerId === 'agent-definition-v1';
+  const runtimeContract = created.value.scorerId === 'agent-runtime-contract-v1';
+  if (!definitionOnly && !runtimeContract) {
+    await Evaluations.EvaluationRun.update({
+      identity: created.value.id,
+      patch: { status: 'failed', completedAt: new Date().toISOString() },
+    });
+    return;
+  }
+  const cases = await EvaluationCasesForRun({ datasetId: created.value.datasetId });
+  if (cases.length === 0) {
+    await Evaluations.EvaluationRun.update({
+      identity: created.value.id,
+      patch: { status: 'failed', completedAt: new Date().toISOString() },
+    });
+    return;
+  }
+  const definitionChecks = [
+    {
+      id: 'substantive-instructions',
+      passed: profile.instructions.trim().length >= 160,
+      explanation: 'Instructions are detailed enough to constrain a useful product agent.',
+    },
+    {
+      id: 'authoritative-completion',
+      passed: /authoritative|only claim|committed|succeeds?/iu.test(profile.instructions),
+      explanation: 'The agent distinguishes streamed language from authoritative product changes.',
+    },
+    {
+      id: 'document-create-tool',
+      passed: profile.tools.includes('Document.create'),
+      explanation: 'The agent can produce a durable document rather than a chat-only answer.',
+    },
+    {
+      id: 'document-update-tool',
+      passed: profile.tools.includes('Document.update'),
+      explanation: 'The agent can continue and revise an existing work product.',
+    },
+  ];
+  const completedAt = new Date().toISOString();
+  const scores: number[] = [];
+  for (const evaluationCase of cases) {
+    const runtimeEvidence = runtimeContract
+      ? await deterministicRuntimeChecks(
+          profile,
+          evaluationCase.input,
+          evaluationCase.expected,
+          context,
+        )
+      : undefined;
+    const behaviorChecks = runtimeEvidence?.checks ?? [];
+    const checks = [...definitionChecks, ...behaviorChecks];
+    const score = checks.filter(check => check.passed).length / checks.length;
+    scores.push(score);
+    await Evaluations.EvaluationResult.create({
+      id: `${created.value.id}:${evaluationCase.id}`,
+      runId: created.value.id,
+      caseId: evaluationCase.id,
+      score,
+      evidence: {
+        profileId: profile.id,
+        version: profile.version,
+        caseInput: evaluationCase.input,
+        expected: evaluationCase.expected,
+        tags: evaluationCase.tags,
+        checks,
+        evaluator: created.value.scorerId,
+        evidenceKind: runtimeContract ? 'deterministic-runtime-contract' : 'definition-validation',
+        runtimeContract,
+        ...(runtimeEvidence?.execution
+          ? { execution: runtimeEvidence.execution }
+          : {}),
+      },
+    });
+  }
+  const qualificationScore = scores.length > 0 ? Math.min(...scores) : 0;
+  if (runtimeContract) {
+    await AgentProfile.update({
+      identity: profile.id,
+      patch: {
+        qualifiedVersion: profile.version,
+        qualificationScore,
+        qualifiedAt: completedAt,
+      },
+    });
+  }
+  await Evaluations.EvaluationRun.update({
+    identity: created.value.id,
+    patch: { status: 'completed', completedAt },
+  });
+}
+
+async function deterministicRuntimeChecks(
+  profile: NonNullable<Awaited<ReturnType<typeof AgentProfileForEvaluation>>>,
+  input: unknown,
+  expected: unknown,
+  context: ApplicationStreamProcessContext,
+) {
+  const request = jsonString(input, 'request');
+  const expectedTool = jsonString(expected, 'expectedTool');
+  const declared = Boolean(
+    request
+    && expectedTool
+    && profile.tools.includes(expectedTool),
+  );
+  const staticChecks = [
+    {
+      id: 'admitted-operation-selected',
+      passed: declared,
+      explanation: expectedTool
+        ? `The immutable case selects the admitted ${expectedTool} operation.`
+        : 'The case declares the typed operation it expects.',
+    },
+    {
+      id: 'bounded-agent-loop',
+      passed: profile.maximumTurns > 0
+        && profile.maximumTurns <= 10
+        && profile.maximumToolCalls > 0
+        && profile.maximumToolCalls <= 20,
+      explanation: 'The controlled run has explicit turn and tool-call ceilings.',
+    },
+    {
+      id: 'authoritative-output-contract',
+      passed: /authoritative|document|committed|durable/iu.test(profile.outputContract),
+      explanation: 'The result contract requires a durable product outcome rather than chat-only text.',
+    },
+    {
+      id: 'case-request-is-executable',
+      passed: typeof request === 'string' && request.trim().length >= 12,
+      explanation: 'The versioned case contains a substantive request that exercises agent behavior.',
+    },
+  ];
+  if (
+    !declared
+    || !request
+    || !expectedTool
+    || context.principal?.kind !== 'execution'
+  ) {
+    return {
+      checks: [
+        ...staticChecks,
+        {
+          id: 'native-agent-runtime-executed',
+          passed: false,
+          explanation: context.principal?.kind !== 'execution'
+            ? 'Runtime qualification requires the admitted evaluation-worker execution principal.'
+            : 'The case does not resolve one operation from the exact agent revision.',
+        },
+      ],
+    };
+  }
+  const documentId = '00000000-0000-4000-8000-000000000001';
+  const body = `# Evaluation document\n\n${request}`;
+  const value = evaluationDocumentValue(
+    documentId,
+    body,
+    applicationCausalPrincipalContext(context.principal).id,
+  );
+  try {
+    const execution = expectedTool === 'Document.create'
+      ? await executeApplicationDeterministicAgentCase({
+          instructions: profile.instructions,
+          request,
+          operation: {
+            id: 'Document.create',
+            schemas: {
+              input: EvaluationDocumentCreateInput,
+              output: EvaluationDocumentOperationOutput,
+            },
+          },
+          operationInput: {
+            title: 'Evaluation document',
+            body,
+            summary: 'An isolated deterministic evaluation document.',
+            tags: ['evaluation'],
+          },
+          operationOutput: {
+            identity: documentId,
+            value,
+            revision: 'evaluation-v1',
+          },
+          principal: context.principal,
+          maximumTurns: profile.maximumTurns,
+          maximumToolCalls: profile.maximumToolCalls,
+        })
+      : expectedTool === 'Document.update'
+        ? await executeApplicationDeterministicAgentCase({
+            instructions: profile.instructions,
+            request,
+            operation: {
+              id: 'Document.update',
+              schemas: {
+                input: EvaluationDocumentUpdateInput,
+                output: EvaluationDocumentOperationOutput,
+              },
+            },
+            operationInput: {
+              identity: documentId,
+              patch: {
+                body,
+                summary: 'An isolated deterministic evaluation revision.',
+              },
+            },
+            operationOutput: {
+              identity: documentId,
+              value,
+              revision: 'evaluation-v1',
+            },
+            principal: context.principal,
+            maximumTurns: profile.maximumTurns,
+            maximumToolCalls: profile.maximumToolCalls,
+          })
+        : undefined;
+    return {
+      execution,
+      checks: [
+        ...staticChecks,
+        {
+          id: 'native-agent-runtime-executed',
+          passed: execution?.invocationCount === 1,
+          explanation: execution
+            ? 'The exact revision executed through the native agent loop and invoked one typed operation.'
+            : `The ${expectedTool} operation is not supported by this runtime gate.`,
+        },
+        {
+          id: 'typed-operation-receipt',
+          passed: Boolean(execution?.operationId && execution.providerToolCallId),
+          explanation: 'The isolated effect sink recorded the canonical operation and provider tool-call identities.',
+        },
+        {
+          id: 'terminal-agent-response',
+          passed: Boolean(execution?.response.trim()),
+          explanation: 'The bounded agent loop reached a terminal response after the typed operation receipt.',
+        },
+      ],
+    };
+  } catch (error) {
+    return {
+      checks: [
+        ...staticChecks,
+        {
+          id: 'native-agent-runtime-executed',
+          passed: false,
+          explanation: error instanceof Error
+            ? `The deterministic runtime gate failed closed: ${error.message}`
+            : 'The deterministic runtime gate failed closed.',
+        },
+      ],
+    };
+  }
+}
+
+function evaluationDocumentValue(
+  id: string,
+  body: string,
+  createdByPrincipalId: string,
+) {
+  const timestamp = '2026-01-01T00:00:00.000Z';
+  return {
+    id,
+    principalScope: 'evaluation-isolated',
+    createdByPrincipalId,
+    title: 'Evaluation document',
+    body,
+    summary: 'An isolated deterministic evaluation document.',
+    tags: ['evaluation'],
+    state: 'draft' as const,
+    contentType: 'text/markdown',
+    version: 1,
+    revision: 'evaluation-v1',
+    sourceConversationId: null,
+    sourceRunId: null,
+    publishedAt: null,
+    archivedAt: null,
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  };
+}
+
+function jsonString(value: unknown, key: string): string | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const candidate = Reflect.get(value, key);
+  return typeof candidate === 'string' ? candidate : undefined;
+}
+
+export const AgentEvaluationProcessor = Evaluations.EvaluationRun.on.create(
+  {
+    processor: { replicas: 1, concurrency: 4 },
+    retry: {
+      maxAttempts: 5,
+      initialDelayMs: 250,
+      maxDelayMs: 5_000,
+      deadLetter: true,
+    },
+    budgets: { timeoutMs: 15_000, maxInputBytes: 32_000 },
+  },
+  evaluateAgentRevision,
+);
+
+const Owner = application.role('workspace-owner');
+const Administrator = application.role('workspace-administrator');
+Owner.can(
+  Evaluations.EvaluationRun.create,
+  AgentEvaluationRuns,
+  EvaluationCatalog,
+);
+Administrator.can(
+  Evaluations.EvaluationRun.create,
+  AgentEvaluationRuns,
+  EvaluationCatalog,
+);
+EvaluationWorker.can(
+  Evaluations.EvaluationRun.update,
+  Evaluations.EvaluationResult.create,
+  AgentProfile.update.all(),
+  AgentProfileForEvaluation,
+  EvaluationCasesForRun,
+);
+const ApplicationOperator = application.role('application-operator');
+ApplicationOperator.can(
+  Evaluations.EvaluationRun.create,
+  AgentEvaluationRuns,
+  Evaluations.Dataset.create,
+  Evaluations.Case.create,
+  Evaluations.Scorer.create,
+  EvaluationCatalog,
+);
+
+export const EvaluationRun = Evaluations.EvaluationRun;
+export const EvaluationDataset = Evaluations.Dataset;
+export const EvaluationCase = Evaluations.Case;
+export const EvaluationScorer = Evaluations.Scorer;

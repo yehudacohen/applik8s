@@ -1,0 +1,31 @@
+{
+  "name": "@applik8s/documents",
+  "version": "0.7.0",
+  "description": "Maintained mutable document, revision, provenance, and publication models for Applik8s applications.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "files": ["dist"],
+  "publishConfig": { "access": "public" },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yehudacohen/applik8s.git",
+    "directory": "packages/documents"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./schema": {
+      "types": "./dist/schema.d.ts",
+      "import": "./dist/schema.js",
+      "default": "./dist/schema.js"
+    }
+  },
+  "dependencies": {
+    "@applik8s/applik8s": "0.7.0",
+    "arktype": "2.2.1",
+    "drizzle-orm": "^0.45.1"
+  }
+}

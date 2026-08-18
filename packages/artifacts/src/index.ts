@@ -5,6 +5,7 @@ import {
 } from './schema.js';
 
 export * from './schema.js';
+export * from './queries.js';
 
 function installArtifacts() {
   return { Artifact: applicationArtifacts };

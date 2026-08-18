@@ -2,8 +2,19 @@ import {
   type ApplicationModelViewContext,
 } from '@applik8s/applik8s';
 import {
-  applicationAIConversationPrincipalScope,
-} from '@applik8s/conversations';
+  applicationBillingCheckoutInputSchema as CheckoutInput,
+  applicationBillingCheckoutOutputSchema as CheckoutOutput,
+  applicationBillingPaymentEventSchema as PaymentEvent,
+  applicationBillingPaymentWebhookResultSchema as PaymentWebhookResult,
+  applicationBillingPortalInputSchema as PortalInput,
+  applicationBillingPortalOutputSchema as PortalOutput,
+  applicationBillingSubscriptionCancellationInputSchema as CancelSubscriptionInput,
+  applicationBillingSubscriptionCancellationOutputSchema as CancelSubscriptionOutput,
+  applicationBillingSubscriptionChangeInputSchema as ChangeSubscriptionInput,
+  applicationBillingSubscriptionChangeOutputSchema as ChangeSubscriptionOutput,
+  applicationBillingSubscriptionResumeInputSchema as ResumeSubscriptionInput,
+} from '@applik8s/billing';
+import { agenticPrincipalScope } from '@applik8s/start-agentic';
 import { type } from 'arktype';
 import { desc, eq, sql } from 'drizzle-orm';
 import { application } from '../app';
@@ -44,10 +55,7 @@ async function loadBillingDashboard(
   context: ApplicationModelViewContext,
 ) {
   const client = context.database(database);
-  const principalScope = applicationAIConversationPrincipalScope(
-    context.principal,
-    context.trustedContext,
-  );
+  const principalScope = agenticPrincipalScope(context);
   const [plans, subscriptions, usageRows, entitlements] = await Promise.all([
     client.select({
       id: Billing.BillingPlan.id,
@@ -121,63 +129,6 @@ export const BillingDashboard = Billing.BillingPlan.view(
   loadBillingDashboard,
 );
 
-const CheckoutInput = type({
-  plan: 'string > 0',
-  returnTo: 'string > 0',
-});
-const CheckoutOutput = type({
-  provider: 'string',
-  'providerCustomerId?': 'string',
-  providerCheckoutId: 'string',
-  url: 'string',
-  mode: "'simulated' | 'live'",
-  'expiresAt?': 'string',
-});
-const PortalInput = type({
-  returnTo: 'string > 0',
-});
-const PortalOutput = type({
-  provider: 'string',
-  url: 'string',
-  mode: "'simulated' | 'live'",
-});
-const ChangeSubscriptionInput = type({
-  plan: 'string > 0',
-  timing: "'immediate' | 'periodEnd'",
-});
-const ChangeSubscriptionOutput = type({
-  provider: 'string',
-  providerSubscriptionId: 'string',
-  state: "'applied' | 'scheduled'",
-  effectiveAt: 'string',
-});
-const CancelSubscriptionInput = type({
-  timing: "'immediate' | 'periodEnd'",
-});
-const CancelSubscriptionOutput = type({
-  provider: 'string',
-  providerSubscriptionId: 'string',
-  cancelled: 'boolean',
-  effectiveAt: 'string',
-});
-const ResumeSubscriptionInput = type({});
-const PaymentEvent = type({
-  provider: 'string > 0',
-  id: 'string > 0',
-  customerId: 'string > 0',
-  subscriptionId: 'string > 0',
-  principalScope: 'string > 0',
-  plan: 'string > 0',
-  status: "'active' | 'pastDue' | 'cancelled'",
-  occurredAt: 'string > 0',
-  periodStart: 'string > 0',
-  periodEnd: 'string > 0',
-  rawType: 'string > 0',
-});
-const PaymentWebhookResult = type({
-  received: 'true',
-  eventId: 'string > 0',
-});
 const billingApi = application.http('billing');
 
 export const ReceivePaymentWebhook = billingApi.webhook(
@@ -217,13 +168,10 @@ export const StartCheckout = billingApi.post(
   },
   async function startCheckout(request, context) {
     return Billing.startCheckout({
-      principalScope: applicationAIConversationPrincipalScope(
-        context.principal,
-        context.trustedContext,
-      ),
+      principalScope: agenticPrincipalScope(context),
       plan: request.input.plan,
       returnTo: request.input.returnTo,
-      idempotencyKey: `${context.principal.id}:${request.input.plan}`,
+      idempotencyKey: `${context.principal.id}:checkout:${request.input.intentId}`,
     });
   },
 );
@@ -238,12 +186,9 @@ export const OpenBillingPortal = billingApi.post(
   },
   async function openBillingPortal(request, context) {
     return Billing.openBillingPortal({
-      principalScope: applicationAIConversationPrincipalScope(
-        context.principal,
-        context.trustedContext,
-      ),
+      principalScope: agenticPrincipalScope(context),
       returnTo: request.input.returnTo,
-      idempotencyKey: `${context.principal.id}:portal`,
+      idempotencyKey: `${context.principal.id}:portal:${request.input.intentId}`,
     });
   },
 );
@@ -257,17 +202,14 @@ export const ChangeSubscription = billingApi.post(
     authorize: (_request, context) => context.principal.id.length > 0,
   },
   async function changeSubscription(request, context) {
-    const principalScope = applicationAIConversationPrincipalScope(
-      context.principal,
-      context.trustedContext,
-    );
+    const principalScope = agenticPrincipalScope(context);
     return Billing.changeSubscription({
       principalScope,
       plan: request.input.plan,
       timing: request.input.timing,
       proration: 'createProrations',
       idempotencyKey:
-        `${principalScope}:change:${request.input.timing}:${request.input.plan}`,
+        `${principalScope}:change:${request.input.intentId}`,
     });
   },
 );
@@ -281,15 +223,12 @@ export const CancelSubscription = billingApi.post(
     authorize: (_request, context) => context.principal.id.length > 0,
   },
   async function cancelSubscription(request, context) {
-    const principalScope = applicationAIConversationPrincipalScope(
-      context.principal,
-      context.trustedContext,
-    );
+    const principalScope = agenticPrincipalScope(context);
     return Billing.cancelSubscription({
       principalScope,
       timing: request.input.timing,
       idempotencyKey:
-        `${principalScope}:cancel:${request.input.timing}`,
+        `${principalScope}:cancel:${request.input.intentId}`,
     });
   },
 );
@@ -303,14 +242,11 @@ export const ResumeSubscription = billingApi.post(
     authorize: (_request, context) => context.principal.id.length > 0,
   },
   async function resumeSubscription(request, context) {
-    const principalScope = applicationAIConversationPrincipalScope(
-      context.principal,
-      context.trustedContext,
-    );
+    const principalScope = agenticPrincipalScope(context);
     return Billing.resumeSubscription({
       principalScope,
       idempotencyKey:
-        `${principalScope}:resume`,
+        `${principalScope}:resume:${request.input.intentId}`,
     });
   },
 );

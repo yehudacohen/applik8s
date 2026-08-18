@@ -1,0 +1,5 @@
+import { createFileRoute } from '@tanstack/react-router';
+import { AgentsView } from '../features/agents/view';
+import { BuilderBoundary } from '../components/builder-boundary';
+
+export const Route = createFileRoute('/app/agents')({ component: () => <BuilderBoundary><AgentsView /></BuilderBoundary> });

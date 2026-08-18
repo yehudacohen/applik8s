@@ -21,8 +21,8 @@ interface V07Scorecard {
   readonly release: 'v0.7';
   readonly releaseAuthorized: boolean;
   readonly baseline: {
-    readonly repository: string;
-    readonly revision: string;
+    readonly id: 'agentic-product-baseline';
+    readonly version: 1;
     readonly inventory: string;
   };
   readonly compatibility: Readonly<Record<string, string>>;
@@ -86,13 +86,18 @@ for (const path of acceptedPlanningDocuments) {
   }
 }
 
-if (scorecard.releaseAuthorized) {
+if (requireRelease && !scorecard.releaseAuthorized) {
   findings.push(
-    'releaseAuthorized must remain false until the maintainer explicitly authorizes v0.7.0.',
+    'releaseAuthorized must be true after the maintainer explicitly authorizes v0.7.0.',
   );
 }
-if (scorecard.baseline.revision !== '602ec975f7c29c9e2faa7b767ec218745590c7cf') {
-  findings.push('The pinned Stimp baseline revision changed without a reviewed inventory update.');
+if (
+  scorecard.baseline.id !== 'agentic-product-baseline'
+  || scorecard.baseline.version !== 1
+) {
+  findings.push(
+    'The Agentic product baseline identity changed without a reviewed inventory update.',
+  );
 }
 if (
   scorecard.compatibility.typekro
@@ -224,7 +229,7 @@ const requiredItems = [
   'chirp-acceptance',
   'guestbook-acceptance',
   'agentic-identity-acceptance',
-  'stimp-behavioral-parity',
+  'agentic-product-baseline',
   'packed-agentic-start-consumer',
   'typekro-provider-qualification',
   'integrated-orbstack-lifecycle',
@@ -289,8 +294,8 @@ function parseScorecard(value: unknown): V07Scorecard {
   }
   const baseline = record.baseline as Record<string, unknown>;
   if (
-    typeof baseline.repository !== 'string'
-    || typeof baseline.revision !== 'string'
+    baseline.id !== 'agentic-product-baseline'
+    || baseline.version !== 1
     || typeof baseline.inventory !== 'string'
   ) {
     throw new Error('v0.7 scorecard baseline is invalid.');
@@ -321,8 +326,8 @@ function parseScorecard(value: unknown): V07Scorecard {
     release: record.release,
     releaseAuthorized: record.releaseAuthorized,
     baseline: {
-      repository: baseline.repository,
-      revision: baseline.revision,
+      id: baseline.id,
+      version: baseline.version,
       inventory: baseline.inventory,
     },
     compatibility: Object.fromEntries(

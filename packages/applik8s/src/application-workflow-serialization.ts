@@ -82,11 +82,11 @@ export function workflowHandlerSerialization(
   const candidate = instrumented
     ? { source: instrumented.source ? transpileApplicationCallbackExpression(instrumented.source) : Function.prototype.toString.call(handler), location: { file: instrumented.file, line: instrumented.line, column: instrumented.column } }
     : extractedCandidates.find((candidate) =>
-      applicationCallbackSourceMatchesRuntime(candidate.source, runtimeSource)
+      applicationCallbackSourceMatchesRuntime(candidate.source, runtimeSource, candidate.location.file)
     );
   const extracted = candidate && (
     instrumented
-    || applicationCallbackSourceMatchesRuntime(candidate.source, runtimeSource)
+    || applicationCallbackSourceMatchesRuntime(candidate.source, runtimeSource, candidate.location.file)
   )
     ? candidate
     : undefined;

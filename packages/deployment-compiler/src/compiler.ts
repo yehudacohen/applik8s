@@ -426,49 +426,16 @@ function applicationGraphGeneratedSecrets(
     ];
   });
   const nodes = new Map(request.graph.nodes.map((node) => [node.id, node]));
-  const workflowSecrets = request.graph.nodes.flatMap((node) => {
-    if (node.kind !== "workflowWorker") return [];
-    const taskOperations = node.handlers.flatMap((reference) => {
-      const handler = nodes.get(reference.nodeId);
-      return handler?.kind === "taskHandler"
-        ? handler.operations ?? []
-        : [];
-    });
-    if (taskOperations.length === 0) return [];
-    const exposedGateway = request.graph.nodes.some(
-      (candidate) =>
-        candidate.kind === "gateway" &&
-        candidate.materialization === "generatedDeployment" &&
-        candidate.commands.some((command) =>
-          taskOperations.some(
-            (operation) => operation.command.nodeId === command.command.nodeId,
-          ),
-        ),
-    );
-    if (exposedGateway) return [];
-    return [
-      {
-        id: `${node.id}.context`,
-        namespace: requiredConcreteNamespace(
-          request.graph.metadata.namespace ?? "default",
-          `workflow worker ${node.id} context Secret namespace`,
-        ),
-        name: safeNodeId(`${node.name}-context`),
-        values: {
-          key: {
-            kind: "random" as const,
-            bytes: 48,
-            encoding: "base64url" as const,
-          },
-        },
-        consumers: [node.id],
-      },
-    ];
-  });
   const contextConsumers = request.graph.nodes.flatMap((node) =>
     (node.kind === "gateway" &&
       node.materialization === "generatedDeployment") ||
-    node.kind === "server"
+    node.kind === "server" ||
+    (node.kind === "workflowWorker" &&
+      node.handlers.some((reference) => {
+        const handler = nodes.get(reference.nodeId);
+        return handler?.kind === "taskHandler" &&
+          (handler.operations?.length ?? 0) > 0;
+      }))
       ? [node.id]
       : [],
   );
@@ -493,7 +460,7 @@ function applicationGraphGeneratedSecrets(
             consumers: [...new Set(contextConsumers)].sort(),
           },
         ];
-  return [...gatewaySecrets, ...workflowSecrets, ...contextSecrets];
+  return [...gatewaySecrets, ...contextSecrets];
 }
 
 function dedupeGeneratedSecrets(

@@ -1,4 +1,5 @@
 // typecast-file-boundary: this live compiler fixture intentionally assembles the normalized graph contract exercised by the generated worker.
+import { createHash } from 'node:crypto';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { createServer } from 'node:net';
@@ -7,6 +8,7 @@ import { join } from 'node:path';
 import type {
   ApplicationGraph,
   ApplicationGraphNode,
+  ApplicationPrincipal,
   JsonObject,
 } from '@applik8s/core';
 import postgres from 'postgres';
@@ -15,6 +17,7 @@ import {
   applicationModelMigrationSql,
   type ApplicationRuntimeModelContract,
 } from '../../applik8s/src/application-models.js';
+import { applicationRequestContextValues } from '../../applik8s/src/command-principal.js';
 import { emitGeneratedApplicationReactive } from '../../compiler/src/application-reactive/index.js';
 
 const databaseUrl =
@@ -81,10 +84,34 @@ describe('v0.7 exact generated function-native worker', () => {
         );
         const sourceEventId = `source-${suffix}`;
         const sourceRecordedAt = new Date().toISOString();
+        const principal: ApplicationPrincipal = Object.freeze({
+          id: 'principal:human:function-native-worker',
+          identity: Object.freeze({
+            id: 'identity:human:function-native-worker',
+            kind: 'human',
+            issuer: 'https://identity.example.test',
+            subject: 'function-native-worker',
+          }),
+          kind: 'human',
+          authenticationMethod: 'oidc',
+          audience: ['function-native-worker'],
+          trustedContextDigest: 'a'.repeat(64),
+          catalogRevision: 'catalog-1',
+          authorityRevision: 'authority-1',
+          admittedAt: sourceRecordedAt,
+        });
+        const contextValues = applicationRequestContextValues(
+          principal,
+          principal.authorityRevision,
+          {},
+        );
+        const contextDigest = createHash('sha256')
+          .update(JSON.stringify(contextValues))
+          .digest('hex');
         const sourceRows = await sql.unsafe(
           `INSERT INTO applik8s_public_stream_events
-             (id, contract_name, contract_version, partition_key, envelope, payload, recorded_at)
-           VALUES ($1, $2, 'v1', $3, $4::jsonb, $5::jsonb, $6::timestamptz)
+             (id, contract_name, contract_version, partition_key, envelope, payload, context_digest, recorded_at)
+           VALUES ($1, $2, 'v1', $3, $4::jsonb, $5::jsonb, $6, $7::timestamptz)
            RETURNING sequence`,
           [
             sourceEventId,
@@ -96,8 +123,13 @@ describe('v0.7 exact generated function-native worker', () => {
               payload: { postId: 'post-1' },
               partitionKey: 'post-1',
               recordedAt: sourceRecordedAt,
+              trustedContext: {
+                values: contextValues,
+                digest: contextDigest,
+              },
             }),
             sql.json({ postId: 'post-1' }),
+            contextDigest,
             sourceRecordedAt,
           ],
         );

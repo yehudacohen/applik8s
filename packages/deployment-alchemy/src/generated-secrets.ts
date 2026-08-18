@@ -64,3 +64,41 @@ export function generatedSecretProps(
       : {}),
   };
 }
+
+/**
+ * Fail before Alchemy mutates any provider when the selected installation
+ * requires operation-host credentials that are not available. Secret values
+ * are neither returned nor included in the diagnostic.
+ */
+export function assertGeneratedSecretHostEnvironmentAvailable(
+  nodes: readonly ApplicationExternalProviderDeploymentNode[],
+  environment: Readonly<Record<string, string | undefined>> = process.env,
+): void {
+  const missing = new Map<string, string[]>();
+  for (const node of nodes) {
+    const configuration = decodeGeneratedSecretConfiguration(
+      node.spec.configuration,
+      node.id,
+    );
+    for (const value of Object.values(configuration.values)) {
+      if (
+        value.kind !== "hostEnvironment" ||
+        environment[value.name]?.trim()
+      ) {
+        continue;
+      }
+      const consumers = missing.get(value.name) ?? [];
+      consumers.push(node.id);
+      missing.set(value.name, consumers);
+    }
+  }
+  if (missing.size === 0) return;
+  throw new Error(
+    `Application deployment requires non-empty operation-host environment variable(s) ${[
+      ...missing.entries(),
+    ]
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([name, consumers]) => `${name} (${consumers.sort().join(", ")})`)
+      .join(", ")}. Configure the selected installation environment before retrying; no provider resources were changed.`,
+  );
+}

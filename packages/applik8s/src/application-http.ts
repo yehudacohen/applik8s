@@ -63,6 +63,12 @@ export interface ApplicationHttpWebhookRequest {
 export interface ApplicationHttpContext {
   readonly principal: ApplicationPrincipal;
   readonly trustedContext: Readonly<Record<string, JsonValue>>;
+  /**
+   * Browser-supplied HTTP Origin after strict HTTP(S) normalization. This is
+   * framework transport metadata, not application input, and is intentionally
+   * absent for non-browser/server-to-server callers.
+   */
+  readonly requestOrigin?: string;
   readonly signal: AbortSignal;
 }
 

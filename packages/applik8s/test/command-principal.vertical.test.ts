@@ -40,6 +40,11 @@ const agent: ApplicationExecutionPrincipal = {
   authenticationMethod: 'workload-identity',
   executionKind: 'agent',
   executionId: 'run-1',
+  executionContext: {
+    kind: 'agent',
+    threadId: 'thread-1',
+    runId: 'run-1',
+  },
   attempt: 1,
   workloadIdentity: {
     id: 'identity:notes:workload:assistant',
@@ -81,6 +86,11 @@ describe('durable command ownership attribution', () => {
     expect(applicationCommandPrincipal({ values: delivered })).toMatchObject({
       id: agent.id,
       causalPrincipalId: human.id,
+      executionContext: {
+        kind: 'agent',
+        threadId: 'thread-1',
+        runId: 'run-1',
+      },
     });
     const handlerVisible = applicationCommandTrustedContext({
       values: delivered,

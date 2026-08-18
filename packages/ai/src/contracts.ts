@@ -136,6 +136,8 @@ export type ApplicationAIDeterministicFixture = JsonObject & {
   readonly tool?: JsonObject & {
     readonly index?: number;
     readonly input: JsonObject;
+    /** Derives a bounded demonstration Document from the latest user message. */
+    readonly inputFromLatestUser?: 'document';
   };
 };
 
@@ -332,7 +334,11 @@ export interface ApplicationAIAgentPersistenceRun {
 export interface ApplicationAIAgentRuntimeContext<TTanStack = unknown> {
   readonly runId: string;
   readonly invocationId: string;
+  /** Retry-attempt identity used by inferred function-native effects. */
+  readonly attemptId: string;
   readonly principal: ApplicationExecutionPrincipal;
+  /** Exact server-admitted context used by focused runtime dependencies. */
+  readonly trustedContext: Readonly<Record<string, JsonValue>>;
   readonly signal: AbortSignal;
   readonly tanstack: TTanStack;
 }
@@ -404,6 +410,8 @@ export interface ApplicationAIProtocolRunRecord {
   readonly agentRunId?: string;
   readonly invocationId?: string;
   readonly terminalReason?: string;
+  /** Provider/protocol bookkeeping retained without becoming product authority. */
+  readonly runtimeState?: JsonObject;
   readonly startedAt: string;
   readonly updatedAt: string;
 }
@@ -669,6 +677,14 @@ const aiProviderToken: ApplicationAIProviderToken = {
       ) {
         throw new Error(
           'AI.deterministic({ fixture.tool.index }) must be a non-negative integer.',
+        );
+      }
+      if (
+        tool.inputFromLatestUser !== undefined
+        && tool.inputFromLatestUser !== 'document'
+      ) {
+        throw new Error(
+          'AI.deterministic({ fixture.tool.inputFromLatestUser }) supports only document.',
         );
       }
     }

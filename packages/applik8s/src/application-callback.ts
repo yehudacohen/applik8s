@@ -246,7 +246,7 @@ export function serializeApplicationCallback(options: {
       : extractApplicationCallObjectFunctionSource(options.registrar, options.argumentIndex, options.property);
   const extracted = candidate && (
     instrumented
-    || applicationCallbackSourceMatchesRuntime(candidate.source, runtimeSource)
+    || applicationCallbackSourceMatchesRuntime(candidate.source, runtimeSource, candidate.location.file)
   )
     ? candidate
     : undefined;

@@ -1,11 +1,29 @@
 import {
   LocalPayments,
   PaymentProvider,
+  applicationBillingCheckoutInputSchema,
+  applicationBillingPaymentEventSchema,
   projectSubscriptionEvent,
 } from '@applik8s/billing';
 import { describe, expect, it } from 'vitest';
 
 describe('provider-neutral billing', () => {
+  it('publishes provider-neutral wire contracts for generated route composition', () => {
+    expect(applicationBillingCheckoutInputSchema.assert({
+      intentId: 'checkout-1',
+      plan: 'team',
+      returnTo: '/settings/billing',
+    })).toEqual({
+      intentId: 'checkout-1',
+      plan: 'team',
+      returnTo: '/settings/billing',
+    });
+    expect(() => applicationBillingPaymentEventSchema.assert({
+      provider: 'stripe',
+      id: '',
+    })).toThrow();
+  });
+
   it('offers deterministic, credential-free Starter checkout and portal flows', async () => {
     const payments = LocalPayments.simulated({
       origin: 'http://app.example.test',

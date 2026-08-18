@@ -23,6 +23,23 @@ This is a manual, bounded scaling story. Lag-driven KEDA scaling is deliberately
 
 ## Performance evidence
 
+The v0.7 Agentic Start release also has an explicit live OrbStack lane:
+
+- `bun run check:v07:performance:live` runs a bounded regression sample against
+  the deployed application's real PostgreSQL, JetStream, SSR route, and
+  Kubernetes pods; and
+- `bun run check:v07:performance:live:record` records a Git/worktree-identified
+  baseline and append-only history entry under `benchmarks/v0.7/live/`.
+
+The live contract measures hot-identity and distributed-key PostgreSQL
+contention, one/two/four-consumer JetStream convergence, concurrent generated
+SSR requests, pod-ready latency, restarts, and aggregate requested/limited
+CPU and memory. It creates only temporary database and JetStream benchmark
+state and removes that state before exit. The report explicitly identifies
+OrbStack, port-forward overhead, bounded duration, missing Metrics API data,
+and portable capacity units so these observations cannot be mistaken for EKS,
+internet-edge, sustained-soak, or dollar-cost guarantees.
+
 The current v0.6 lanes are:
 
 - `bun run benchmark:v06:record`, which records a Git/worktree- and hardware-identified synthetic-local

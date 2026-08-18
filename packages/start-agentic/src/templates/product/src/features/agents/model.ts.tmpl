@@ -1,0 +1,226 @@
+import { module } from '@applik8s/applik8s';
+import {
+  agents as maintainedAgents,
+  applicationAgentProfileResultSchema as AgentProfileResult,
+  applicationAgentProfiles as AgentProfileTable,
+  assertApplicationAgentExecutionContract,
+  listApplicationAgentProfiles,
+  loadActiveApplicationAgentProfile,
+  loadApplicationAgentProfileVersion,
+} from '@applik8s/agents';
+import { type } from 'arktype';
+import { and, eq } from 'drizzle-orm';
+import { application } from '../../app';
+import { database } from '../../providers';
+import { agenticWorkspaceScope } from '../../workspace-scope';
+import { Administrator, Owner } from '../workspaces/model';
+
+const agentQueries = { database, scope: agenticWorkspaceScope } as const;
+
+async function listAgentProfiles(input: object, context: Parameters<typeof listApplicationAgentProfiles>[1]) {
+  return listApplicationAgentProfiles(input, context, agentQueries);
+}
+
+async function loadActiveAgentProfile(input: { readonly slug: string }, context: Parameters<typeof loadActiveApplicationAgentProfile>[1]) {
+  return loadActiveApplicationAgentProfile(input, context, agentQueries);
+}
+
+async function loadAgentProfileForEvaluation(input: { readonly id: string; readonly version: number }, context: Parameters<typeof loadApplicationAgentProfileVersion>[1]) {
+  return loadApplicationAgentProfileVersion(input, context, agentQueries);
+}
+
+const agentProfiles = module('agent-profile-workbench', {}, currentApplication => {
+  currentApplication.include(maintainedAgents);
+  const AgentProfileList = AgentProfileTable.view({
+    input: type({}),
+    output: AgentProfileResult.array(),
+    database,
+    authorize: ({ principal }) => principal.id.length > 0,
+    budgets: { timeoutMs: 2_000, maxRows: 50, maxResultBytes: 256_000 },
+  }, listAgentProfiles);
+
+  const ActiveAgentProfile = AgentProfileTable.view({
+    input: type({ slug: 'string' }),
+    output: AgentProfileResult.or('null'),
+    database,
+    authorize: ({ principal }) => principal.id.length > 0,
+    budgets: { timeoutMs: 1_000, maxRows: 1, maxResultBytes: 64_000 },
+  }, loadActiveAgentProfile);
+
+  const AgentProfileForEvaluation = AgentProfileTable.view({
+    input: type({ id: 'string', version: 'number' }),
+    output: AgentProfileResult.or('null'),
+    database,
+    authorize: ({ principal }) => principal.id.length > 0,
+    budgets: { timeoutMs: 1_000, maxRows: 1, maxResultBytes: 64_000 },
+  }, loadAgentProfileForEvaluation);
+
+  const AgentReleaseGate = AgentProfileTable.view({
+    input: type({ id: 'string', version: 'number' }),
+    output: type({ passed: 'boolean', score: 'number | null' }),
+    database,
+    authorize: ({ principal }) => principal.id.length > 0,
+    budgets: { timeoutMs: 1_500, maxRows: 25, maxResultBytes: 64_000 },
+  }, async function loadAgentReleaseGate(input, context) {
+    const owner = agenticWorkspaceScope(context);
+    const [result] = await context.database(database)
+      .select({
+        qualifiedVersion: AgentProfileTable.qualifiedVersion,
+        qualificationScore: AgentProfileTable.qualificationScore,
+      })
+      .from(AgentProfileTable)
+      .where(and(
+        eq(AgentProfileTable.principalScope, owner),
+        eq(AgentProfileTable.id, input.id),
+        eq(AgentProfileTable.version, input.version),
+      ))
+      .limit(1);
+    const score = result?.qualificationScore ?? null;
+    return {
+      passed: result?.qualifiedVersion === input.version && (score ?? 0) >= 1,
+      score,
+    };
+  });
+
+  AgentProfileTable.create.beforeCommit({ history: true }, async function protectAgentProfileCreation(profile, input, context) {
+    if (!context.principal) throw new Error('Agent profile creation requires an admitted principal.');
+    if (input.principalScope !== undefined || input.version !== undefined || input.revision !== undefined || input.qualifiedVersion !== undefined || input.qualificationScore !== undefined || input.qualifiedAt !== undefined || input.createdAt !== undefined || input.updatedAt !== undefined) {
+      throw new Error('Agent profile ownership, version, revision, qualification, and timestamps are server-owned.');
+    }
+    assertApplicationAgentExecutionContract(profile.value);
+    profile.patch({ spec: { principalScope: agenticWorkspaceScope(context) } });
+  });
+  AgentProfileTable.update.beforeCommit({ history: true }, async function protectAgentProfileUpdate(profile, input, context) {
+    if (!context.principal) throw new Error('Agent profile updates require an admitted principal.');
+    const evaluationWorker = context.principal.kind === 'execution'
+      && context.principal.serviceIdentity?.subject === 'agent-evaluation-worker';
+    const qualificationFields = ['qualifiedVersion', 'qualificationScore', 'qualifiedAt'] as const;
+    const updatesQualification = qualificationFields.some(field => field in input.patch);
+    if (
+      'principalScope' in input.patch
+      || 'version' in input.patch
+      || 'revision' in input.patch
+      || 'createdAt' in input.patch
+      || 'updatedAt' in input.patch
+      || (updatesQualification && !evaluationWorker)
+    ) {
+      throw new Error('Agent profile ownership, version, revision, qualification, and timestamps are server-owned.');
+    }
+    if (evaluationWorker && Object.keys(input.patch).some(field => !qualificationFields.includes(field as typeof qualificationFields[number]))) {
+      throw new Error('The evaluation worker may update only agent qualification evidence.');
+    }
+    if (profile.value.principalScope !== agenticWorkspaceScope(context)) {
+      throw new Error('The agent profile is outside the admitted workspace scope.');
+    }
+    const behaviorFields = ['name', 'description', 'instructions', 'logicalModel', 'tools', 'knowledgeSourceIds', 'memoryWindowMessages', 'maximumTurns', 'maximumToolCalls', 'outputContract'] as const;
+    const behaviorChanged = behaviorFields.some(field => field in input.patch);
+    assertApplicationAgentExecutionContract(profile.value);
+    if (profile.value.state === 'retired') {
+      throw new Error('Retired agent versions are immutable. Create a new draft instead.');
+    }
+    if (profile.value.state === 'published' && behaviorChanged) {
+      throw new Error('Published agent versions are immutable. Create a new draft before changing behavior.');
+    }
+    if (input.patch.state === 'published') {
+      if (behaviorChanged) {
+        throw new Error('Save and evaluate the draft before publishing it. Publishing cannot change agent behavior.');
+      }
+      if (
+        profile.value.qualifiedVersion !== profile.value.version
+        || (profile.value.qualificationScore ?? 0) < 1
+      ) {
+        throw new Error('Run and pass the deterministic runtime-contract gate before publishing this revision. Definition validation alone is insufficient, and provider-backed model-quality evaluation remains a separate policy.');
+      }
+    }
+    profile.patch({
+      spec: {
+        ...(behaviorChanged
+          ? {
+            version: profile.value.version + 1,
+            state: 'draft' as const,
+            qualifiedVersion: null,
+            qualificationScore: null,
+            qualifiedAt: null,
+          }
+          : {}),
+        updatedAt: context.now,
+      },
+    });
+  });
+
+  AgentProfileTable.delete.beforeCommit({ history: true }, async function protectAgentProfileDeletion(profile, _input, context) {
+    if (!context.principal || profile.value.principalScope !== agenticWorkspaceScope(context)) {
+      throw new Error('The agent profile is outside the admitted workspace scope.');
+    }
+    if (profile.value.state === 'published') {
+      throw new Error('Retire a published agent version before deleting it.');
+    }
+  });
+
+  const AgentPublicationSupersession = AgentProfileTable.on.update(
+    {
+      processor: { replicas: 1, concurrency: 4 },
+      retry: { maxAttempts: 5, initialDelayMs: 250, maxDelayMs: 5_000, deadLetter: true },
+      budgets: { timeoutMs: 10_000, maxInputBytes: 64_000 },
+    },
+    async function retireSupersededAgentVersions(updated) {
+      if (updated.current.state !== 'published' || updated.previous.state === 'published') return;
+      const profiles = await AgentProfileList({});
+      for (const candidate of profiles) {
+        if (
+          candidate.id !== updated.current.id
+          && candidate.slug === updated.current.slug
+          && candidate.state === 'published'
+        ) {
+          await AgentProfileTable.update({ identity: candidate.id, patch: { state: 'retired' } });
+        }
+      }
+    },
+  );
+
+  Owner.can(
+    AgentProfileTable.create,
+    AgentProfileTable.update,
+    AgentProfileTable.delete,
+    AgentProfileList,
+    ActiveAgentProfile,
+    AgentProfileForEvaluation,
+    AgentReleaseGate,
+  );
+  Administrator.can(
+    AgentProfileTable.create,
+    AgentProfileTable.update,
+    AgentProfileTable.delete,
+    AgentProfileList,
+    ActiveAgentProfile,
+    AgentProfileForEvaluation,
+    AgentReleaseGate,
+  );
+  const ApplicationOperator = currentApplication.role('application-operator');
+  ApplicationOperator.can(
+    AgentProfileTable.create,
+    AgentProfileTable.update,
+    AgentProfileTable.delete,
+    AgentProfileList,
+    ActiveAgentProfile,
+    AgentProfileForEvaluation,
+    AgentReleaseGate,
+  );
+  return {
+    AgentProfile: AgentProfileTable,
+    AgentProfileList,
+    ActiveAgentProfile,
+    AgentProfileForEvaluation,
+    AgentReleaseGate,
+    AgentPublicationSupersession,
+  };
+});
+
+export const {
+  AgentProfile,
+  AgentProfileList,
+  ActiveAgentProfile,
+  AgentProfileForEvaluation,
+  AgentReleaseGate,
+  AgentPublicationSupersession,
+} = application.include(agentProfiles);

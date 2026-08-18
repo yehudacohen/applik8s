@@ -1,0 +1,7 @@
+import { createFileRoute } from '@tanstack/react-router';
+import { IntegrationsView } from '../features/integrations/view';
+import { BuilderBoundary } from '../components/builder-boundary';
+
+export const Route = createFileRoute('/app/integrations')({
+  component: () => <BuilderBoundary><IntegrationsView /></BuilderBoundary>,
+});

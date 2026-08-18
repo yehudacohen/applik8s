@@ -72,16 +72,16 @@ export function createPostgresApplicationStreamProcessorStore(options: PostgresA
   if (!options.sql && !options.databaseUrl) throw new Error('PostgreSQL stream processor store requires sql or databaseUrl.');
   const ownsClient = !options.sql;
   const sql = options.sql ? Promise.resolve(options.sql) : createApplicationPostgresSql(options.databaseUrl as string, { max: 4, idle_timeout: 20, connect_timeout: 10, prepare: false });
-  return {
-    async prepare() {
-      await (await sql).unsafe(`CREATE TABLE IF NOT EXISTS applik8s_stream_processor_checkpoints (
+  let preparation: Promise<void> | undefined;
+  async function prepareStore() {
+    await (await sql).unsafe(`CREATE TABLE IF NOT EXISTS applik8s_stream_processor_checkpoints (
   processor text NOT NULL,
   stream text NOT NULL,
   sequence bigint NOT NULL CHECK (sequence >= 0),
   updated_at timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (processor, stream)
 )`);
-      await (await sql).unsafe(`CREATE TABLE IF NOT EXISTS applik8s_stream_processor_dead_letters (
+    await (await sql).unsafe(`CREATE TABLE IF NOT EXISTS applik8s_stream_processor_dead_letters (
   processor text NOT NULL,
   stream text NOT NULL,
   event_id text NOT NULL,
@@ -94,7 +94,7 @@ export function createPostgresApplicationStreamProcessorStore(options: PostgresA
   failed_at timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (processor, stream, event_id)
 )`);
-      await (await sql).unsafe(`CREATE TABLE IF NOT EXISTS applik8s_stream_processor_batch_groups (
+    await (await sql).unsafe(`CREATE TABLE IF NOT EXISTS applik8s_stream_processor_batch_groups (
   processor text NOT NULL,
   stream text NOT NULL,
   group_id text NOT NULL,
@@ -106,13 +106,21 @@ export function createPostgresApplicationStreamProcessorStore(options: PostgresA
   PRIMARY KEY (processor, stream),
   UNIQUE (group_id)
 )`);
-      // v0.7 development builds briefly persisted the otherwise valid batch
-      // array as a JSONB string. Restore its exact structured value in place;
-      // the checkpoint has not advanced while a group exists, so neither
-      // membership nor replay identity changes during this repair.
-      await (await sql).unsafe(`UPDATE applik8s_stream_processor_batch_groups
+    // v0.7 development builds briefly persisted the otherwise valid batch
+    // array as a JSONB string. Restore its exact structured value in place;
+    // the checkpoint has not advanced while a group exists, so neither
+    // membership nor replay identity changes during this repair.
+    await (await sql).unsafe(`UPDATE applik8s_stream_processor_batch_groups
 SET batches = (batches #>> '{}')::jsonb
 WHERE jsonb_typeof(batches) = 'string'`);
+  }
+  return {
+    prepare() {
+      preparation ??= prepareStore().catch((cause: unknown) => {
+        preparation = undefined;
+        throw cause;
+      });
+      return preparation;
     },
     async checkpoint(processor, stream) {
       const rows = await (await sql).unsafe('SELECT sequence FROM applik8s_stream_processor_checkpoints WHERE processor = $1 AND stream = $2', [processor, stream]);
@@ -515,7 +523,9 @@ async function processFrozenBatch<
       });
       return { state: 'processed', eventId: frozen.id };
     } catch (error) {
-      lastError = controller.signal.aborted ? `Timed out after ${options.timeoutMs}ms` : error instanceof Error ? error.message : String(error);
+      lastError = controller.signal.aborted
+        ? `Timed out after ${options.timeoutMs}ms`
+        : applicationStreamProcessorErrorMessage(error);
     } finally {
       clearTimeout(timeout);
     }
@@ -587,13 +597,41 @@ async function processEnvelope<
       await options.handle(payload, context);
       return { state: 'processed', eventId: envelope.id };
     } catch (error) {
-      lastError = controller.signal.aborted ? `Timed out after ${options.timeoutMs}ms` : error instanceof Error ? error.message : String(error);
+      lastError = controller.signal.aborted
+        ? `Timed out after ${options.timeoutMs}ms`
+        : applicationStreamProcessorErrorMessage(error);
     } finally {
       clearTimeout(timeout);
     }
     if (attempt < options.retry.maxAttempts) await sleep(Math.min(options.retry.maxDelayMs, options.retry.initialDelayMs * options.retry.factor ** (attempt - 1)));
   }
   return terminalFailure(options, envelope, options.retry.maxAttempts, lastError);
+}
+
+/**
+ * Preserves the public-safe durable rejection envelope in dead-letter evidence.
+ * Error.message alone drops the model and target that operators need to repair
+ * an inferred transaction, while stack traces and arbitrary enumerable fields
+ * can contain implementation or credential detail and must not be persisted.
+ */
+function applicationStreamProcessorErrorMessage(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  if (!error || typeof error !== 'object') return message;
+  const code = Reflect.get(error, 'code');
+  const rejection = Reflect.get(error, 'rejection');
+  if (
+    code !== 'applik8s-command-rejected'
+    || !rejection
+    || typeof rejection !== 'object'
+  ) {
+    return message;
+  }
+  const name = Reflect.get(rejection, 'name');
+  const payload = Reflect.get(rejection, 'payload');
+  if (typeof name !== 'string' || !payload || typeof payload !== 'object') {
+    return message;
+  }
+  return `${message}: ${JSON.stringify({ name, payload })}`;
 }
 
 function streamPayloadDecodeContext<TPayload extends object>(

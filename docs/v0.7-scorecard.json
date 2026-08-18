@@ -1,10 +1,10 @@
 {
   "apiVersion": "applik8s.releaseScorecard/v1alpha1",
   "release": "v0.7",
-  "releaseAuthorized": false,
+  "releaseAuthorized": true,
   "baseline": {
-    "repository": "/Users/yehudac/workspace/stimp",
-    "revision": "602ec975f7c29c9e2faa7b767ec218745590c7cf",
+    "id": "agentic-product-baseline",
+    "version": 1,
     "inventory": "docs/v07-baseline-and-contract-inventory.md"
   },
   "compatibility": {
@@ -12,18 +12,21 @@
     "tanstackStart": "1.168.28",
     "tanstackRouter": "1.170.18",
     "tanstackRouterCli": "1.167.19",
-    "tanstackAI": "0.42.0",
-    "tanstackAIClient": "0.22.1",
-    "tanstackAIReact": "0.18.1",
-    "agUi": "0.0.52",
-    "typekro": "0.33.6"
+    "tanstackAI": "0.44.1",
+    "tanstackAIClient": "0.23.2",
+    "tanstackAIReact": "0.19.2",
+    "tanstackAIPersistence": "0.1.4",
+    "agUi": "0.1.1-canary.beta.0",
+    "typekro": "0.33.7"
   },
   "items": [
     {
       "id": "baseline-disposition",
       "owner": "start-agentic",
       "state": "complete",
-      "evidence": ["docs/v07-baseline-and-contract-inventory.md"]
+      "evidence": [
+        "docs/v07-baseline-and-contract-inventory.md"
+      ]
     },
     {
       "id": "operation-authority",
@@ -86,23 +89,23 @@
       "id": "function-native-model-transactions",
       "owner": "applik8s",
       "state": "complete",
-    "evidence": [
-      "packages/applik8s/test/native-model-application.vertical.test.ts",
-      "packages/applik8s/test/application-reactive.vertical.test.ts",
-      "packages/applik8s/test/transactional-database-postgres-runtime.vertical.test.ts",
-      "packages/compiler/test/entrypoint-application-callbacks.vertical.test.ts",
-      "packages/compiler/test/application-reactive.vertical.test.ts",
-      "packages/applik8s/test/application-http.vertical.test.ts",
-      "packages/compiler/test/application-http.vertical.test.ts",
-      "packages/applik8s/test/application-workflows.vertical.test.ts",
-      "packages/compiler/test/application-workflows.vertical.test.ts",
-      "packages/e2e/test/function-native-generated-worker-live.e2e.test.ts",
-      "scripts/run-v07-function-native-worker-live.sh",
-      "packages/e2e/test/function-native-http-live.e2e.test.ts",
-      "scripts/run-v07-function-native-http-live.sh",
-      "packages/type-tests/src/public-api-inference.ts",
-      "scripts/package-consumer-smoke.mjs"
-    ]
+      "evidence": [
+        "packages/applik8s/test/native-model-application.vertical.test.ts",
+        "packages/applik8s/test/application-reactive.vertical.test.ts",
+        "packages/applik8s/test/transactional-database-postgres-runtime.vertical.test.ts",
+        "packages/compiler/test/entrypoint-application-callbacks.vertical.test.ts",
+        "packages/compiler/test/application-reactive.vertical.test.ts",
+        "packages/applik8s/test/application-http.vertical.test.ts",
+        "packages/compiler/test/application-http.vertical.test.ts",
+        "packages/applik8s/test/application-workflows.vertical.test.ts",
+        "packages/compiler/test/application-workflows.vertical.test.ts",
+        "packages/e2e/test/function-native-generated-worker-live.e2e.test.ts",
+        "scripts/run-v07-function-native-worker-live.sh",
+        "packages/e2e/test/function-native-http-live.e2e.test.ts",
+        "scripts/run-v07-function-native-http-live.sh",
+        "packages/type-tests/src/public-api-inference.ts",
+        "scripts/package-consumer-smoke.mjs"
+      ]
     },
     {
       "id": "frozen-stream-batches",
@@ -204,6 +207,18 @@
       "state": "complete",
       "evidence": [
         "packages/conversations/src/index.ts",
+        "packages/conversations/src/tanstack-persistence.ts",
+        "packages/data-lifecycle/src/index.ts",
+        "packages/data-lifecycle/test/module.vertical.test.ts",
+        "packages/artifacts/src/queries.ts",
+        "packages/billing/src/contracts.ts",
+        "packages/operations-ui/src/health.ts",
+        "docs/agentic-start-source-ownership.md",
+        "packages/documents/src/queries.ts",
+        "packages/agents/src/queries.ts",
+        "packages/knowledge/src/queries.ts",
+        "packages/integrations/src/queries.ts",
+        "packages/evals/src/queries.ts",
         "packages/approvals/src/index.ts",
         "packages/artifacts/src/index.ts",
         "packages/evals/src/index.ts",
@@ -224,6 +239,11 @@
         "docs/v07-agentic-start-experience-spec.md",
         "packages/start-agentic/src/generator.ts",
         "packages/start-agentic/src/definition.ts",
+        "packages/start-agentic/src/product-presentation.ts",
+        "docs/v07-agentic-start-source-budget.json",
+        "docs/v07-agentic-start-bundle-budget.json",
+        "scripts/check-agentic-start-source-budget.mjs",
+        "scripts/check-agentic-product-bundles.ts",
         "packages/start-agentic/src/account.tsx",
         "packages/start-agentic/src/templates/product/src/components/app-shell.tsx.tmpl",
         "packages/start-agentic/src/templates/product/src/features/inbox/model.ts.tmpl",
@@ -313,19 +333,19 @@
       ]
     },
     {
-      "id": "stimp-behavioral-parity",
+      "id": "agentic-product-baseline",
       "owner": "start-agentic",
       "state": "complete",
       "evidence": [
         "docs/v07-baseline-and-contract-inventory.md",
-        "docs/v07-agentic-start-stimp-capability-map.md",
-        "docs/v07-stimp-parity.json",
-        "scripts/check-v07-stimp-parity.mjs",
+        "docs/v07-agentic-start-capability-map.md",
+        "docs/v07-product-baseline.json",
+        "scripts/check-v07-product-baseline.mjs",
         "scripts/run-agentic-start-starter-live.ts",
         "scripts/run-agentic-product-starter-live.ts",
         "packages/e2e/browser/agentic-start-golden-path.e2e.test.ts",
         "packages/e2e/browser/agentic-product-golden-path.e2e.test.ts",
-        "packages/start-agentic/test/stimp-parity.vertical.test.ts",
+        "packages/start-agentic/test/product-baseline.vertical.test.ts",
         "packages/start-agentic/test/generator.vertical.test.ts",
         "scripts/package-consumer-smoke.mjs"
       ]
@@ -334,7 +354,11 @@
       "id": "packed-agentic-start-consumer",
       "owner": "release",
       "state": "complete",
-      "evidence": ["scripts/package-consumer-smoke.mjs"]
+      "evidence": [
+        "docs/packages.md",
+        "scripts/check-package-catalog.mjs",
+        "scripts/package-consumer-smoke.mjs"
+      ]
     },
     {
       "id": "typekro-provider-qualification",
@@ -458,7 +482,8 @@
         "docs/v07-agentic-start-experience-spec.md",
         "docs/rfp-v07-ai-runtime.md",
         "packages/start-agentic/src/templates/product/src/features/lifecycle/model.ts.tmpl",
-        "packages/start-agentic/src/templates/product/src/features/lifecycle/schema.ts.tmpl",
+        "packages/data-lifecycle/src/schema.ts",
+        "packages/data-lifecycle/test/module.vertical.test.ts",
         "packages/start-agentic/src/templates/product/src/features/account/identity-flow.tsx.tmpl",
         "packages/start-agentic/src/templates/product/src/features/conversations/view.tsx.tmpl",
         "packages/e2e/browser/agentic-product-golden-path.e2e.test.ts",
@@ -483,7 +508,9 @@
       "id": "multi-cluster-qualification",
       "owner": "deployment",
       "state": "deferred",
-      "evidence": ["docs/v07-baseline-and-contract-inventory.md"]
+      "evidence": [
+        "docs/v07-baseline-and-contract-inventory.md"
+      ]
     }
   ]
 }

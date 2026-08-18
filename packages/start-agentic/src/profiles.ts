@@ -19,10 +19,14 @@ import {
   type KubernetesApplicationScope,
   module,
   ObjectStorage,
+  postgres,
   Search,
   TransactionalDatabase,
+  trustedContext,
   WorkflowEngine,
 } from '@applik8s/applik8s';
+import type { JsonValue } from '@applik8s/core';
+import { type } from 'arktype';
 import {
   type ApplicationPaymentProvider,
   type BillingUsageReportInput,
@@ -296,6 +300,42 @@ export type AgenticProfileName =
   | 'dedicated'
   | 'external';
 
+/** Canonical server-admitted workspace boundary shared by profiles and models. */
+export const AgenticWorkspaceId = trustedContext('workspaceId', {
+  schema: type('string'),
+});
+
+/**
+ * Canonical data-isolation boundary for both personal and shared work.
+ *
+ * Identity admission always supplies this value. It is the authenticated
+ * principal for personal work and the proven workspace ID after a workspace
+ * has been selected. Keeping it distinct from AgenticWorkspaceId prevents a
+ * personal scope from masquerading as a selected tenant.
+ */
+export const AgenticPrincipalScope = trustedContext('principalScope', {
+  schema: type('string'),
+});
+
+export interface AgenticPrincipalScopeContext {
+  readonly trustedContext: Readonly<Record<string, JsonValue>>;
+}
+
+/**
+ * Returns the principal or workspace boundary admitted by the maintained
+ * identity adapter. Callers never derive this database/RLS key from browser
+ * input or reuse a domain-specific conversation hash for tenant ownership.
+ */
+export function agenticPrincipalScope(
+  context: AgenticPrincipalScopeContext,
+): string {
+  const scope = context.trustedContext[AgenticPrincipalScope.name];
+  if (typeof scope !== 'string' || !scope.trim()) {
+    throw new Error('Agentic work requires an admitted principal scope.');
+  }
+  return scope;
+}
+
 /**
  * Reviewed workload and stateful-capacity defaults for the maintained Start.
  *
@@ -447,11 +487,42 @@ export const AgenticStarter = Object.freeze({
   inference() {
     return AI.deterministic({
       fixture: {
-        response: 'Credential-free starter inference.',
+        response: 'I created a launch-readiness brief with an objective, execution plan, success measures, risks, and a concrete next action. The saved Document is the authoritative result.',
         tool: {
           index: 0,
+          inputFromLatestUser: 'document',
           input: {
-            body: 'Starter tool-created document.',
+            title: 'Launch readiness brief',
+            body: [
+              '# Launch readiness brief',
+              '',
+              '## Objective',
+              'Ship the first customer-ready release with a clear owner, measurable success criteria, and a reversible rollout.',
+              '',
+              '## Assumptions',
+              '- The product journey has passed the Starter acceptance suite.',
+              '- One product owner can make the final go/no-go decision.',
+              '- Deployment and rollback are both exercised before launch.',
+              '',
+              '## Execution plan',
+              '- [ ] Assign an owner and launch window.',
+              '- [ ] Verify the critical user journey in the target environment.',
+              '- [ ] Confirm support, monitoring, and incident escalation coverage.',
+              '- [ ] Publish the release notes and customer communication.',
+              '',
+              '## Success measures',
+              '- A new customer completes the primary workflow without assistance.',
+              '- No critical errors or unresolved provider failures appear after deployment.',
+              '- The team can identify the exact release, owner, and rollback action.',
+              '',
+              '## Risks and rollback',
+              'Pause the rollout if the primary workflow fails, provider health degrades, or data integrity cannot be verified. Restore the previous known-good deployment and retain the incident evidence for review.',
+              '',
+              '## Next action',
+              'Name the launch owner, choose the target date, and request review of this brief.',
+            ].join('\n'),
+            summary: 'A customer-ready launch plan with ownership, acceptance checks, measurable outcomes, and rollback criteria.',
+            tags: ['launch', 'readiness', 'agent-created'],
           },
         },
       },
@@ -1063,6 +1134,11 @@ export function configureAgenticProfiles<
     {
       provider: primaryDatabase,
       schema: options.schema ?? {},
+      access: postgres.rls({
+        context: AgenticPrincipalScope,
+        column: 'principalScope',
+        default: 'global',
+      }),
       ...(options.migrations ? { migrations: options.migrations } : {}),
       processor: options.processor ?? {
         group: 'agentic-commands',

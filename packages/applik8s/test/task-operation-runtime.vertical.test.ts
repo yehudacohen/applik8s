@@ -21,6 +21,19 @@ const inputSchema = {
 } as const;
 
 describe('task operation runtime', () => {
+  it('retains a declared model-policy explanation in durable task diagnostics', () => {
+    const error = new ApplicationTaskOperationRejectedError(
+      'models.Document.update.v1',
+      {
+        name: 'policyRejected',
+        payload: { message: 'The document is outside the admitted workspace scope' },
+      },
+    );
+    expect(error.message).toBe(
+      'Application task operation models.Document.update.v1 was rejected with policyRejected: The document is outside the admitted workspace scope.',
+    );
+  });
+
   it('promotes the authored task identity into one revision-bound admitted principal', () => {
     const principal = canonicalApplicationTaskServicePrincipal({
       id: 'media-verifier',

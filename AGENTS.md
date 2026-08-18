@@ -1,13 +1,13 @@
 # AGENTS.md
 
-applik8s: TypeScript framework for building applications on the Kubernetes control plane. TypeScript authoring APIs (packages/) are compiled to WASM components executed by a Rust operator host (crates/). Active release line is v0.7; see `goal.md` and `docs/charter-v07-agentic-platform.md`. CI on PRs runs `bun run check:v06:local`.
+applik8s: TypeScript framework for building applications on the Kubernetes control plane. TypeScript authoring APIs (packages/) are compiled to WASM components executed by a Rust operator host (crates/). Active release line is v0.7; see `goal.md` and `docs/charter-v07-agentic-platform.md`. CI on PRs runs `bun run check:v07:local`.
 
 ## Setup and toolchain
 
 - Bun 1.3.13 is the package manager (`bun install --frozen-lockfile`), never npm.
 - Rust workspace (`crates/`) uses edition 2024 and needs a current stable toolchain. Rust owns Kubernetes runtime behavior (watches, plan validation, apply); TypeScript owns authoring, compiler contracts, and generated artifacts.
 - Biome linter only — formatter is disabled. Do not run `biome format`; match surrounding style.
-- `.env` holds real secrets (STRIPE_*, STIMP_*, OPENROUTER_API_KEY). Never commit or print them.
+- `.env` may hold real provider credentials and application secrets. Never commit, inspect, or print them.
 
 ## Test taxonomy (enforced by `lint`)
 

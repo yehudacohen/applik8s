@@ -50,6 +50,11 @@ export interface ApplicationIdentitySessionView {
   readonly capabilities?: {
     readonly workspaceAdministration: boolean;
     readonly applicationOperations: boolean;
+    /**
+     * Coarse selector state used to recover from a deleted or revoked
+     * workspace without exposing its identifier, role, or trusted context.
+     */
+    readonly workspaceSelection: 'none' | 'admitted';
   };
 }
 

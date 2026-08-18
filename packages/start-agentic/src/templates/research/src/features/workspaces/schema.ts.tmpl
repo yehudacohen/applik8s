@@ -6,10 +6,16 @@ export const workspaceRole = pgEnum('workspace_role', [
   'workspace-member',
 ]);
 
+export const workspaceState = pgEnum('workspace_state', [
+  'active',
+  'suspended',
+]);
+
 export const Workspace = model('workspaces', {
   id: field.uuid('id').defaultRandom().primaryKey(),
   slug: field.text('slug').notNull(),
   name: field.text('name').notNull(),
+  state: workspaceState('state').notNull().default('active'),
   ownerPrincipalId: field.text('owner_principal_id').notNull().default(authenticatedPrincipalId),
   createdAt: field.timestamp('created_at', { withTimezone: true, mode: 'string' }).notNull().defaultNow(),
 }, table => [

@@ -9,6 +9,7 @@ import {
   normalizeApplicationGraph,
 } from '@applik8s/core';
 import { applicationGraphNumberValue, applicationGraphStringValue } from '../application-installation-values.js';
+import { applicationObjectStorageEnvironment } from '../application-object-storage-environment.js';
 
 export interface GeneratedApplicationHostResource {
   readonly apiVersion: string;
@@ -129,7 +130,15 @@ export async function emitGeneratedApplicationHost(options: {
     requests: { cpu: '100m', memory: '128Mi', ...objectValue(resources.requests) },
     limits: { memory: '256Mi', ...objectValue(resources.limits) },
   };
-  const objectStorageEnvironment = applicationHostObjectStorageEnvironment(options.graph, namespace);
+  const objectStorageEnvironment = options.graph.nodes.some(
+    (node) => node.kind === 'objectStore',
+  )
+    ? applicationObjectStorageEnvironment(
+        options.graph,
+        namespace,
+        'ApplicationHost browser object intents',
+      )
+    : [];
   const identityDatabaseEnvironment =
     applicationHostIdentityDatabaseEnvironment(options.graph, namespace);
   const internalOperationEnvironment = applicationHostInternalOperationEnvironment(
@@ -409,109 +418,6 @@ function applicationSharedGatewayCursorSecret(graph: ApplicationGraph, namespace
     candidates.set(`${name}\0${key}`, { name, key });
   }
   return candidates.size === 1 ? [...candidates.values()][0] : undefined;
-}
-
-function applicationHostObjectStorageEnvironment(
-  graph: ApplicationGraph,
-  hostNamespace: string,
-): readonly Readonly<Record<string, unknown>>[] {
-  if (!graph.nodes.some((node) => node.kind === 'objectStore')) return [];
-  const provider = graph.nodes.find(
-    (node): node is ApplicationProviderNode => node.kind === 'provider' && node.interface === 'ObjectStorage',
-  );
-  const config = objectValue(objectValue(provider?.config).objectStorage);
-  if (stringValue(config.kind) !== 's3') throw new Error('ApplicationHost browser object intents require an S3-compatible ObjectStorage provider.');
-  const bucket = stringValue(config.bucket);
-  const region = stringValue(config.region);
-  if (!bucket || !region) throw new Error('ApplicationHost browser object intents require ObjectStorage bucket and region values.');
-  const environment: Readonly<Record<string, unknown>>[] = [
-    { name: 'APPLIK8S_OBJECT_STORAGE_ENABLED', value: environmentScalar(config.enabled, 'true') },
-    { name: 'APPLIK8S_OBJECT_STORAGE_BUCKET', value: bucket },
-    { name: 'APPLIK8S_OBJECT_STORAGE_REGION', value: region },
-    { name: 'APPLIK8S_OBJECT_STORAGE_FORCE_PATH_STYLE', value: environmentScalar(config.forcePathStyle, 'false') },
-  ];
-  const provisioning = objectValue(config.provisioning);
-  const objectBucketClaim =
-    !stringValue(provisioning.kind)
-    || stringValue(provisioning.kind) === 'object-bucket-claim';
-  const connectionConfigMapName =
-    objectBucketClaim
-      ? stringValue(provisioning.claimName)
-        ?? stringValue(config.name)
-        ?? stringValue(objectValue(config.credentialsSecret).name)
-        ?? bucket
-      : undefined;
-  if (connectionConfigMapName && config.endpoint === undefined) {
-    environment.push(
-      configMapEnvironment(
-        'APPLIK8S_OBJECT_STORAGE_HOST',
-        connectionConfigMapName,
-        'BUCKET_HOST',
-      ),
-      configMapEnvironment(
-        'APPLIK8S_OBJECT_STORAGE_PORT',
-        connectionConfigMapName,
-        'BUCKET_PORT',
-      ),
-      {
-        name: 'APPLIK8S_OBJECT_STORAGE_ENDPOINT',
-        value:
-          'http://$(APPLIK8S_OBJECT_STORAGE_HOST):$(APPLIK8S_OBJECT_STORAGE_PORT)',
-      },
-    );
-  }
-  for (const [name, value] of [
-    ['APPLIK8S_OBJECT_STORAGE_ENDPOINT', config.endpoint],
-    ['APPLIK8S_OBJECT_STORAGE_PREFIX', config.prefix],
-  ] as const) {
-    if (typeof value === 'string' && value.length > 0) environment.push({ name, value });
-  }
-  const credentials = objectValue(config.credentialsSecret);
-  const secretName = stringValue(credentials.name);
-  if (!secretName) return environment;
-  const secretNamespace = stringValue(credentials.namespace) ?? hostNamespace;
-  if (secretNamespace !== hostNamespace && !secretNamespace.startsWith('${')) {
-    throw new Error(`ApplicationHost cannot mount ObjectStorage credentials Secret ${secretName} from namespace ${secretNamespace}; the host runs in ${hostNamespace}.`);
-  }
-  const optional = config.enabled !== true;
-  environment.push(
-    secretEnvironment('AWS_ACCESS_KEY_ID', secretName, stringValue(config.accessKeyIdKey) ?? 'AWS_ACCESS_KEY_ID', optional),
-    secretEnvironment('AWS_SECRET_ACCESS_KEY', secretName, stringValue(config.secretAccessKeyKey) ?? 'AWS_SECRET_ACCESS_KEY', optional),
-  );
-  const sessionTokenKey = stringValue(config.sessionTokenKey);
-  if (sessionTokenKey) environment.push(secretEnvironment('AWS_SESSION_TOKEN', secretName, sessionTokenKey, true));
-  return environment;
-}
-
-function secretEnvironment(name: string, secretName: string, key: string, optional: boolean): Readonly<Record<string, unknown>> {
-  return { name, valueFrom: { secretKeyRef: { name: secretName, key, ...(optional ? { optional: true } : {}) } } };
-}
-
-function configMapEnvironment(
-  name: string,
-  configMapName: string,
-  key: string,
-): Readonly<Record<string, unknown>> {
-  return {
-    name,
-    valueFrom: {
-      configMapKeyRef: {
-        name: configMapName,
-        key,
-      },
-    },
-  };
-}
-
-function environmentScalar(value: unknown, fallback: string): string {
-  if (typeof value === 'boolean' || typeof value === 'number') return String(value);
-  if (typeof value !== 'string' || value.length === 0) return fallback;
-  const expression = value.match(/^\$\{([\s\S]+)\}$/)?.[1];
-  // Kubernetes EnvVar.value is always a string. KRO validates the expression's
-  // result type before it creates the resource, so installation-derived
-  // booleans and numbers must be converted explicitly instead of relying on
-  // Kubernetes' eventual YAML coercion.
-  return expression ? `\${string(${expression})}` : value;
 }
 
 function applicationArtifactRoot(manifestPath: string): string {

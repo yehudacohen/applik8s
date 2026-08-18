@@ -35,6 +35,11 @@
       "types": "./dist/redaction.d.ts",
       "import": "./dist/redaction.js",
       "default": "./dist/redaction.js"
+    },
+    "./health": {
+      "types": "./dist/health.d.ts",
+      "import": "./dist/health.js",
+      "default": "./dist/health.js"
     }
   },
   "dependencies": {
@@ -46,7 +51,7 @@
     "@applik8s/core": "0.7.0",
     "@applik8s/evals": "0.7.0",
     "@applik8s/usage": "0.7.0",
-    "arktype": "^2.1.20",
+    "arktype": "2.2.1",
     "drizzle-orm": "^0.45.1"
   },
   "peerDependencies": {

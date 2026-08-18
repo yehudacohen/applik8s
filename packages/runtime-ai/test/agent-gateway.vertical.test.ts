@@ -155,6 +155,52 @@ describe('application AI agent gateway', () => {
     expect(decoded.causalGrantIds).toEqual(['grant:research:human-delegation']);
   });
 
+  it('authenticates server-authoritative transcript hydration and binds it to the selected agent', async () => {
+    let forwarded: Request | undefined;
+    const authorize = vi.fn(async () => true);
+    const gateway = createApplicationAIAgentGateway({
+      application: 'research',
+      secret,
+      targets: [target],
+      authenticate: async () => admission(),
+      authorize,
+      now: () => new Date('2026-07-30T12:00:00.000Z'),
+      fetch: Object.assign(async (input: RequestInfo | URL, init?: RequestInit) => {
+        forwarded = input instanceof Request ? input : new Request(input, init);
+        return Response.json({ messages: [], activeRun: null, interrupts: null });
+      }, { preconnect: vi.fn() }),
+    });
+
+    const response = await gateway.handle(new Request(
+      'https://research.example.test/__applik8s/v1/ai/chat?agent=researcher&threadId=conversation-1',
+    ));
+
+    expect(response?.status).toBe(200);
+    expect(authorize).toHaveBeenCalledWith({
+      admission: admission(),
+      target,
+      threadId: 'conversation-1',
+      runId: 'hydrate:conversation-1',
+    });
+    expect(forwarded?.url).toBe(
+      'http://researcher.research-system.svc:3000/__applik8s/v1/ai/chat?threadId=conversation-1',
+    );
+    const token = forwarded?.headers.get('x-applik8s-execution-admission');
+    expect(token).toBeTruthy();
+    expect(() => decodeApplicationExecutionAdmission(secret, token!, {
+      executionKind: 'agent',
+      workloadIdentityId: target.workloadIdentityId,
+      serviceIdentityId: target.serviceIdentityId,
+      audience: target.audience,
+      binding: {
+        agentId: target.nodeId,
+        threadId: 'conversation-1',
+        runId: 'hydrate:conversation-1',
+      },
+      now: new Date('2026-07-30T12:00:01.000Z'),
+    })).not.toThrow();
+  });
+
   it('fails closed for unknown agents, denied requests, and oversized bodies', async () => {
     const dispatch = vi.fn(async (
       _input: RequestInfo | URL,

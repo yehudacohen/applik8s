@@ -1,6 +1,6 @@
 # Charter: Applik8s v0.7 — Agentic Starts, Typed Authority, Search, and AI Infrastructure
 
-**Status:** Accepted v0.7 program charter; implementation and release qualification remain in progress.
+**Status:** Accepted and implemented v0.7 program charter; release qualification is complete.
 This acceptance authorizes the bounded implementation RFPs but does not authorize release tagging.
 
 **Audience:** Applik8s maintainers, RFP owners, Start authors, TypeKro contributors, provider-adapter
@@ -90,7 +90,7 @@ supporting:
 - GuestBook's minimal model/resource, lifecycle, live-view, and browser-requery path;
 - an Auth0-like agentic identity and authorization platform built on provider-neutral identity,
   authorization, OAuth, workflow, MCP, search, and enforcement contracts;
-- Stimp's current `agent-saas-starter` as the concrete application/product baseline, including its
+- the Agentic product baseline as the concrete application/product contract, including its
   credential-free first run, onboarding/control center, conversations, agents, tools, durable
   workflows, approvals, artifacts, evaluations, usage, audit, administration, safe configuration,
   generated-example parity, and release gates, while CollectorBills adds scheduled and artifact-heavy
@@ -644,11 +644,11 @@ and safer alternative.
 66. **Profile knowledge is not a beginner prerequisite.** The generated profile modules remain editable
     and exhaustive, but the first successful local application path does not ask the author to select or
     configure a profile.
-67. **Stimp is the application baseline, not merely inspiration.** The pinned `agent-saas-starter`,
-    rendered example, onboarding/control center, generator and package contracts, product paths, and
-    release gates receive an evidenced preserved/improved/deferred/rejected disposition. Applik8s
-    replaces Stimp plumbing and artifact-first source organization without silently reducing the
-    generated application's usefulness or day-two operability.
+67. **The Agentic product baseline is a release contract, not merely inspiration.** Its
+    onboarding/control center, generator and package contracts, product paths, and
+    release gates receive an evidenced preserved/improved/deferred/rejected
+    disposition. Applik8s may improve internal plumbing and source organization
+    without reducing the generated application's usefulness or day-two operability.
 68. **Execution-binding keys are exact, not widened approximations.** Values may vary by execution, but
     every reachable projection branch must return the same statically proven key set. Conditional keys,
     unresolved spreads, computed keys, and unnormalizable helper results fail compilation. Generated
@@ -1478,7 +1478,10 @@ TanStack AI's chat and tool protocol.
 `@applik8s/ai-tanstack` is an adapter package, not an application-facing AI facade. It may provide
 `asTool(operation)`, connection, persistence, lock, reconstruction, and runtime-context adapters only
 when their public values implement or return upstream TanStack AI contracts. Native TanStack tools and
-operation-derived tools must compose in one `tools` array.
+operation-derived tools must compose in one `tools` array. Application-owned
+profile selection may filter that array through a typed catalog whose values
+are the original operation handles; stale or unavailable selections fail
+closed and cannot grant authority.
 
 The adapter mapping is normative: TanStack `threadId` is an admitted `Conversation.id`; its persisted
 messages adapt canonical `Message` records; its persisted `runId` is the protocol/delivery run and remains
@@ -1522,6 +1525,7 @@ const SourceResearcher = application.agent(
   "source-researcher",
   {
     identity: SourceResearcherIdentity,
+    scope: WorkspaceId,
     model: ReasoningModel,
     tools: [
       EvidenceSearch.search,
@@ -1543,6 +1547,12 @@ const SourceResearcher = application.agent(
       ],
     }),
 );
+
+The optional agent `scope` is an application-declared trusted-context handle.
+It aligns canonical conversation, run, and usage persistence with an admitted
+application scope while leaving tenant definition, membership, and context
+resolution entirely application-owned. An agent without `scope` remains
+causal-principal scoped.
 
 SourceResearcherIdentity.can(
   EvidenceSearch.search,
@@ -2024,14 +2034,14 @@ The required maintained modules are:
 - MCP server/client integration;
 - OpenSearch-backed `Index(...)`;
 - first-run onboarding, safe non-secret configuration, local bootstrap, and an application/control-center
-  shell derived from the pinned Stimp baseline;
+  shell derived from the Agentic product baseline;
 - operations and administration UI;
 - health, readiness, dependency, lag, and provider status;
 - local, dedicated, and external provider modules;
 - example policies, tests, deployment, and recovery runbooks.
 
 Billing remains optional for ordinary Applik8s applications, but the full
-Agentic Start must preserve the pinned Stimp baseline's local billing,
+Agentic Start must preserve the Agentic product baseline local billing,
 checkout, portal, signed webhook, entitlement-projection, and dashboard
 behavior. v0.7 therefore supplies a provider-neutral maintained billing module,
 an explicitly simulated Starter implementation, and one server-only Stripe
@@ -2128,13 +2138,13 @@ execution. It may use generated provider exports without teaching profile constr
 selection, overrides, transitions, and external providers appear only after the ordinary application
 path works.
 
-## Stimp application baseline and replacement of plumbing
+## Agentic product baseline
 
-The pinned Stimp `agent-saas-starter`, its rendered example, generator contracts,
-onboarding/control-center behavior, and release verification are the concrete application baseline for
-the Agentic Start. This is stronger than using Stimp as inspiration or a benchmark: every baseline
-capability, generated-application responsibility, first-run path, extension seam, and release proof is
-preserved, deliberately improved, explicitly deferred, or explicitly rejected with reviewed rationale.
+The Agentic product baseline covers generator contracts,
+onboarding/control-center behavior, and release verification. Every baseline
+capability, generated-application responsibility, first-run path, extension
+seam, and release proof is preserved, deliberately improved, explicitly
+deferred, or explicitly rejected with reviewed rationale.
 
 The baseline includes:
 
@@ -2154,8 +2164,8 @@ The baseline includes:
 - upstream TanStack Start/Vite SSR, hydration, routing, and server-only boundaries;
 - generated template/rendered-example parity, package-consumer checks, real-app smoke, and production
   runbook expectations;
-- non-interactive CLI automation and an explicit disposition for Stimp's optional rich terminal
-  experience.
+- non-interactive CLI automation and an explicit disposition for the baseline's
+  optional rich terminal experience.
 
 Applik8s preserves that product behavior while replacing:
 
@@ -2167,17 +2177,18 @@ Applik8s preserves that product behavior while replacing:
 - string identities and tool lookup with typed operation references;
 - custom deployment stacks with TypeKro and Alchemy.
 
-The v0.7 scorecard pins the baseline revision and contains:
+The v0.7 scorecard versions the baseline and contains:
 
-1. a manifest mapping every Stimp capability and product path to an Applik8s
+1. a manifest mapping every Agentic product capability and product path to an Applik8s
    package/model/operation/profile;
-2. a generated Applik8s behavioral parity fixture;
+2. a generated Applik8s behavioral conformance fixture;
 3. an improved/deferred/rejected ledger with rationale and replacement guidance;
 4. evidence that feature-first source and maintained packages preserve the baseline without copying
-   Stimp's registry, runtime, auth, workflow, or deployment implementations.
+   prototype registry, runtime, auth, workflow, or deployment implementations.
 
-Stimp remains an executable application baseline and migration fixture, not a runtime dependency of the
-Start. Its artifact-first source topology is not normative; Applik8s keeps feature-first domain source,
+The Agentic product baseline remains an executable application contract, not a
+runtime dependency of the Start. Prototype source topology is not normative;
+Applik8s keeps feature-first domain source,
 thin upstream routes, explicit modules, and the TypeKro/Alchemy lifecycle.
 
 ## Acceptance applications
@@ -2185,11 +2196,6 @@ thin upstream routes, explicit modules, and the TypeKro/Alchemy lifecycle.
 ### Chirp and GuestBook vertical slices
 
 The required public slices divide acceptance deliberately:
-
-Downstream products such as Vasco are post-release customer-zero dogfooding, not source-tree fixtures
-or v0.7 release gates. They may discover framework defects after consuming the released public
-packages, but Applik8s must not couple its package graph, examples, or release authority to their
-private domain models.
 
 1. GuestBook proves the complete minimal path from typed create through `on.create`/`on.update`,
    publication, persistent view, SSE invalidation, and browser requery.
@@ -2362,7 +2368,7 @@ definitions of done live in the bounded RFPs listed in the charter document map.
 
 ### Phase 0 — Contract and maintainability preparation
 
-- pin the Stimp `agent-saas-starter` baseline revision and inventory its generator, product paths,
+- version the Agentic product baseline and inventory its generator, product paths,
   onboarding/control center, extension seams, package boundaries, generated-example parity, and release
   evidence;
 - publish the preserved/improved/deferred/rejected baseline ledger before replacing implementation
@@ -2471,7 +2477,7 @@ definitions of done live in the bounded RFPs listed in the charter document map.
 ### Phase 7 — Start completion
 
 - package account, consent, permission, grant, review, and operations UI;
-- reach evidenced behavioral parity with the pinned Stimp baseline for credential-free first run,
+- reach evidenced behavioral conformance with the Agentic product baseline for credential-free first run,
   onboarding/safe configuration, core agentic product paths, operational visibility, and generated
   application release gates;
 - build the small feature-first generator and local/dedicated/external modules;
@@ -2484,7 +2490,7 @@ definitions of done live in the bounded RFPs listed in the charter document map.
 
 ### Phase 8 — Acceptance applications and release qualification
 
-- run the pinned Stimp behavioral baseline fixture and require an explicit disposition for every
+- run the Agentic product baseline fixture and require an explicit disposition for every
   baseline capability and product path;
 - migrate the Chirp and GuestBook vertical slices;
 - implement the identity vertical slice;
@@ -2573,7 +2579,7 @@ definitions of done live in the bounded RFPs listed in the charter document map.
 ### OrbStack product gates
 
 - generate a fresh Agentic Start from packed packages;
-- prove the pinned Stimp baseline's credential-free onboarding, safe configuration, agent/workflow/
+- prove the Agentic product baseline credential-free onboarding, safe configuration, agent/workflow/
   approval/artifact/eval/admin product paths, and operational status through Applik8s-owned behavior;
 - start the credential-free local profile;
 - complete the documented create/dev/test/plan/deploy/status/destroy loop;
@@ -2685,8 +2691,8 @@ v0.7 does not require:
    it; operation IDs, replacement, migration, and fail-closed behavior are mandatory.
 4. **Cross-model index fan-out.** Related-model changes can create unbounded reindex work unless path,
    cardinality, and capacity are planned.
-5. **Start monolith growth.** Packaging every capability in one module would recreate Stimp's upgrade and
-   copy-surface problem.
+5. **Start monolith growth.** Packaging every capability in one module would
+   recreate monolithic upgrade and copy-surface problems.
 6. **Provider leakage.** Envoy, Ory, OpenSearch, and Hatchet types can easily enter core contracts or
    browser bundles.
 7. **AI and MCP trust confusion.** Tool availability, tool authority, retrieved content, and delegated
@@ -2764,8 +2770,8 @@ v0.7 is ready for maintainer release review when:
   possible;
 - the Start packages conversations, workflows, approvals, artifacts, evaluations, usage, audit, MCP,
   search, operations, and deployment without copying a private runtime into applications;
-- the pinned Stimp application baseline is fully dispositioned and its preserved/improved behavior passes
-  through the generated Applik8s Start without a Stimp runtime dependency;
+- the Agentic product baseline is fully dispositioned and its preserved/improved behavior passes
+  through the generated Applik8s Start without an external product runtime dependency;
 - Chirp, GuestBook, and the agentic identity vertical slices pass locally and on OrbStack;
 - adversarial security, cleanup, upgrade, package-consumer, browser-boundary, and performance gates pass;
 - Chromium, Firefox, and WebKit product journeys pass keyboard/accessibility, slow-network/SSE recovery,

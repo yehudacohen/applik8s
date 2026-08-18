@@ -72,6 +72,10 @@ const SourceResearcher = application.agent(
   "source-researcher",
   {
     identity: SourceResearcherIdentity,
+    // Optional application-owned collaboration scope. Applik8s uses the
+    // admitted value consistently for conversations, runs, and usage; it
+    // neither defines nor resolves tenancy itself.
+    scope: WorkspaceId,
     model: FastModel,
     instructions: sourceResearcherInstructions,
     tools: [
@@ -96,6 +100,13 @@ const SourceResearcher = application.agent(
       ],
     }),
 );
+
+`scope` accepts a declared `trustedContext(...)` handle rather than a string or
+client-supplied tenant identifier. When omitted, durable agent data retains the
+causal-principal scope used by personal agents. When present, the identity
+provider must first admit that context, and every agent persistence and usage
+write uses the same value. This lets two authorized workspace members share a
+conversation without granting Applik8s ownership of workspace policy.
 
 SourceResearcherIdentity.can(
   EvidenceSearch.search,
@@ -151,6 +162,13 @@ const tools = [
 context, but its return value is an upstream TanStack tool definition. It must not define an
 Applik8s-only tool protocol.
 
+When an application persists an Agent Profile, it may name entries in a typed,
+application-owned tool catalog. `selectApplicationTanStackTools(...)` resolves
+those stable keys to the already hydrated operation-derived TanStack tools. It
+must fail closed for unknown keys, duplicate operation identities, or a
+selected operation missing from the runtime tool set; selection never creates
+authority and never introduces a second tool representation.
+
 The Start provides the default qualified inference capability, so ordinary model declarations do not
 repeat dependency wiring. Applications with multiple inference planes may select one explicitly with a
 typed qualification:
@@ -185,11 +203,13 @@ internal invocation bridge. Operation-derived tools require it at the type level
 the upstream tool-call ID is absent. Application agent closures call imported operation handles
 directly; the adapter bridge is runtime machinery for TanStack's generated tool callbacks.
 
-At the pinned `@tanstack/ai@0.42.0` baseline, `@tanstack/ai-persistence` has not yet published its server
-package. `@applik8s/ai-tanstack` records that state as `unreleased` and exposes a fail-closed compatibility
-gate; it does not substitute the browser-only `ChatClientPersistence` contract. The middleware line
-above remains the release target and becomes executable only after the upstream server contract is
-published, pinned, and passes its conformance suite.
+The pinned compatibility tuple is `@tanstack/ai@0.44.1`,
+`@tanstack/ai-client@0.23.2`, `@tanstack/ai-react@0.19.2`, and
+`@tanstack/ai-persistence@0.1.4`. `@applik8s/conversations` implements the
+published `MessageStore` and `RunStore` contracts over one admitted principal
+scope. The shared gateway supports both streaming POST and read-only hydration
+GET, and generated clients use `persistence: true`; no browser-only persistence
+or parallel transcript reconstruction is substituted.
 
 ## Owned contracts
 
@@ -599,9 +619,10 @@ evaluation and operations experiences ship by default.
 
 ## Closed v0.7 decisions
 
-1. The compatibility baseline is `@tanstack/ai@0.42.0`, `@tanstack/ai-client@0.22.1`, and
-   `@tanstack/ai-react@0.18.1`; changing it requires an explicit compatibility review and regenerated
-   acceptance evidence.
+1. The compatibility baseline is `@tanstack/ai@0.44.1`,
+   `@tanstack/ai-client@0.23.2`, `@tanstack/ai-react@0.19.2`, and
+   `@tanstack/ai-persistence@0.1.4`; changing it requires an explicit
+   compatibility review and regenerated acceptance evidence.
 2. Provider request identity is used when it can prove recovery. When it cannot, connection loss after
    dispatch produces an explicit uncertain-completion outcome; the framework does not infer success or
    retry an external effect blindly.

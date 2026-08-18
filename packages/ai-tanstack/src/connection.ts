@@ -23,9 +23,12 @@ export interface ApplicationTanStackAgentReference {
 export function createApplicationTanStackConnection(
   options: ApplicationTanStackConnectionOptions = {},
 ): ConnectConnectionAdapter {
-  const endpoint = options.endpoint ?? '/__applik8s/v1/ai/chat';
-  if (!endpoint.trim()) throw new Error('TanStack AI connection endpoint must be non-empty.');
   const agent = options.agent;
+  const baseEndpoint = options.endpoint ?? '/__applik8s/v1/ai/chat';
+  const endpoint = agent
+    ? withQueryParameter(baseEndpoint, 'agent', agent.name)
+    : baseEndpoint;
+  if (!endpoint.trim()) throw new Error('TanStack AI connection endpoint must be non-empty.');
   if (agent && (agent.kind !== 'applicationAgent' || !agent.name.trim())) {
     throw new Error(
       'TanStack AI connection agent must be an application.agent(...) handle.',
@@ -48,5 +51,11 @@ export function createApplicationTanStackConnection(
       }
       yield* upstream.connect(messages, data, abortSignal, runContext);
     },
+    ...(upstream.hydrate ? { hydrate: upstream.hydrate } : {}),
   };
+}
+
+function withQueryParameter(endpoint: string, name: string, value: string): string {
+  const separator = endpoint.includes('?') ? '&' : '?';
+  return `${endpoint}${separator}${encodeURIComponent(name)}=${encodeURIComponent(value)}`;
 }

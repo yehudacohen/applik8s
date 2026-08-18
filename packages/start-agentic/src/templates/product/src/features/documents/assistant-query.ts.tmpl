@@ -1,0 +1,35 @@
+import {
+  assembleApplicationKnowledgeContext,
+  type ApplicationKnowledgeContextSource,
+} from '@applik8s/knowledge';
+
+export function applicationKnowledgeContext(
+  sources: readonly ApplicationKnowledgeContextSource[],
+): string {
+  return assembleApplicationKnowledgeContext(sources, {
+    maximumBytes: 48_000,
+    maximumSourceBytes: 12_000,
+  });
+}
+
+export function latestKnowledgeQuery(
+  messages: readonly unknown[],
+): string | undefined {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (!message || typeof message !== 'object' || Reflect.get(message, 'role') !== 'user') continue;
+    const direct = Reflect.get(message, 'content');
+    if (typeof direct === 'string' && direct.trim()) return direct.trim().slice(0, 1_000);
+    const parts = Reflect.get(message, 'parts');
+    if (!Array.isArray(parts)) continue;
+    const text = parts.flatMap(part =>
+      part && typeof part === 'object'
+      && Reflect.get(part, 'type') === 'text'
+      && typeof Reflect.get(part, 'content') === 'string'
+        ? [String(Reflect.get(part, 'content'))]
+        : [],
+    ).join(' ').trim();
+    if (text) return text.slice(0, 1_000);
+  }
+  return undefined;
+}

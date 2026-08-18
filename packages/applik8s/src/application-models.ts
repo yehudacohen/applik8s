@@ -124,7 +124,16 @@ export interface ApplicationModelCommandOptions<
 }
 
 /** Named models and promoted native Drizzle models share the same transaction-participant experience. */
-export type ApplicationModelTransactionParticipant = ApplicationModelBinding<object, object> | (AnyPgTable & { readonly [applicationModelFacet]: unknown });
+export type ApplicationModelTransactionParticipant =
+  | ApplicationModelBinding<object, object>
+  | (AnyPgTable & (
+      | { readonly [applicationModelFacet]: unknown }
+      // Exported maintained-model declarations intentionally omit the private
+      // symbol facet. Their collision-safe direct model surface is still a
+      // valid transaction participant; runtime resolution recovers the same
+      // canonical facet from the table.
+      | { readonly $model: unknown }
+    ));
 
 export const defaultApplicationCommandRetention: ApplicationCommandRetentionContract = {
   replayWindowSeconds: 7 * 24 * 60 * 60,

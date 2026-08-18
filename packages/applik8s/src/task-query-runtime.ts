@@ -1,7 +1,11 @@
 // typecast-file-boundary: Task-query HTTP payloads are validated against signed admission and declared schemas before generic conversion.
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { queryInputKey } from '@applik8s/client';
-import type { JsonObject } from '@applik8s/core';
+import type {
+  ApplicationIdentityReference,
+  ApplicationPrincipal,
+  JsonObject,
+} from '@applik8s/core';
 import { normalizeSchema } from '@applik8s/sdk/schema-runtime';
 import type { ApplicationTaskServicePrincipal } from './application-workflows.js';
 
@@ -36,6 +40,9 @@ interface ApplicationTaskQueryToken {
   readonly inputKey: string;
   readonly principal: {
     readonly id: string;
+    readonly identity?: ApplicationIdentityReference;
+    readonly kind?: ApplicationPrincipal['kind'];
+    readonly authenticationMethod?: string;
     readonly roles?: readonly string[];
     readonly attributes?: Readonly<Record<string, unknown>>;
   };
@@ -86,6 +93,11 @@ export function createApplicationTaskQueryRuntime(options: {
             inputKey: queryInputKey(input),
             principal: {
               id: admitted.id,
+              ...(admitted.identity ? { identity: admitted.identity } : {}),
+              ...(admitted.kind ? { kind: admitted.kind } : {}),
+              ...(admitted.authenticationMethod
+                ? { authenticationMethod: admitted.authenticationMethod }
+                : {}),
               ...(admitted.roles ? { roles: admitted.roles } : {}),
               ...(admitted.attributes ? { attributes: admitted.attributes } : {}),
             },
@@ -131,6 +143,9 @@ export function verifyApplicationTaskQueryAdmission(options: {
 }): {
   readonly principal: {
     readonly id: string;
+    readonly identity?: ApplicationIdentityReference;
+    readonly kind?: ApplicationPrincipal['kind'];
+    readonly authenticationMethod?: string;
     readonly roles?: readonly string[];
     readonly attributes?: Readonly<Record<string, unknown>>;
   };
@@ -177,6 +192,19 @@ function decodeToken(secret: string, encoded: string): ApplicationTaskQueryToken
     const principal = Reflect.get(value, 'principal');
     const trustedContext = Reflect.get(value, 'trustedContext');
     if (!principal || typeof principal !== 'object' || typeof Reflect.get(principal, 'id') !== 'string' || !trustedContext || typeof trustedContext !== 'object' || Array.isArray(trustedContext)) return undefined;
+    const identity = Reflect.get(principal, 'identity');
+    if (identity !== undefined && (
+      !identity
+      || typeof identity !== 'object'
+      || typeof Reflect.get(identity, 'id') !== 'string'
+      || typeof Reflect.get(identity, 'kind') !== 'string'
+      || typeof Reflect.get(identity, 'issuer') !== 'string'
+      || typeof Reflect.get(identity, 'subject') !== 'string'
+    )) return undefined;
+    const principalKind = Reflect.get(principal, 'kind');
+    if (principalKind !== undefined && typeof principalKind !== 'string') return undefined;
+    const authenticationMethod = Reflect.get(principal, 'authenticationMethod');
+    if (authenticationMethod !== undefined && typeof authenticationMethod !== 'string') return undefined;
     if (typeof Reflect.get(value, 'audience') !== 'string' || typeof Reflect.get(value, 'query') !== 'string' || Reflect.get(value, 'operation') !== 'snapshot' || typeof Reflect.get(value, 'inputKey') !== 'string' || typeof Reflect.get(value, 'authorizationVersion') !== 'string' || typeof Reflect.get(value, 'expiresAt') !== 'number') return undefined;
     return value as ApplicationTaskQueryToken;
   } catch {

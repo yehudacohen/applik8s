@@ -1281,7 +1281,7 @@ describe("TypeKro deployment adapter", () => {
       });
 
       expect(adapted.adapter).toEqual({
-        typekro: "0.33.6",
+        typekro: "0.33.7",
         semanticPlanVersion: 1,
         artifactPlanVersion: 1,
       });

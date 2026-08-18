@@ -1,0 +1,238 @@
+import { useApplicationIdentitySession } from '@applik8s/react/identity';
+import { agenticLaunchpadEvidenceState } from '@applik8s/start-agentic/launchpad';
+import { Link } from '@tanstack/react-router';
+import { useState } from 'react';
+import {
+  IntegrationConnection,
+  IntegrationConnections,
+  OperationsSnapshot,
+} from '../../application';
+import {
+  Badge,
+  Button,
+  Card,
+  EmptyState,
+  PageHeader,
+  RadioGroup,
+  RadioGroupItem,
+  RouteState,
+  Skeleton,
+} from '../../components/ui';
+
+const integrationContracts = [
+  {
+    id: 'inference',
+    name: 'AI inference',
+    contract: 'InferenceProvider',
+    environment: ['OPENROUTER_API_KEY'],
+    description: 'Assistant models, streaming responses, tool use, and spending controls.',
+    evidence: ['ai', 'providers'],
+  },
+  {
+    id: 'payments',
+    name: 'Payments',
+    contract: 'PaymentProvider',
+    environment: ['STRIPE_SECRET_KEY', 'STRIPE_WEBHOOK_SECRET'],
+    description: 'Checkout, customer billing portal, subscriptions, and usage billing.',
+    evidence: ['providers'],
+  },
+  {
+    id: 'notifications',
+    name: 'Notifications',
+    contract: 'NotificationProvider',
+    environment: ['SMTP_URL'],
+    description: 'Invitations, account messages, review reminders, and product notifications.',
+    evidence: ['eventConsumers', 'providers'],
+  },
+  {
+    id: 'identity',
+    name: 'Identity',
+    contract: 'IdentityProvider',
+    environment: [],
+    description: 'Authentication, recovery, verification, sessions, and user access.',
+    evidence: ['identity', 'providers'],
+  },
+  {
+    id: 'objects',
+    name: 'Object storage',
+    contract: 'ObjectStoreProvider',
+    environment: [],
+    description: 'Signed upload/download intents, immutable artifacts, and retention policy.',
+    evidence: ['objectStores', 'providers'],
+  },
+] as const;
+
+type ConnectionKind = 'oauth' | 'api-key' | 'webhook' | 'mcp';
+
+/** Application-owned connection contributions. Add a typed contribution here;
+ * the generated UI never asks a workspace user to invent capabilities/scopes. */
+const connectionContributions = [
+  { id: 'customer-records', name: 'Customer records', kind: 'oauth', capability: 'customers.read', scopes: ['customers.read', 'companies.read'], description: 'Give agents read-only customer and company context.' },
+  { id: 'issue-tracker', name: 'Issue tracker', kind: 'oauth', capability: 'issues.manage', scopes: ['issues.read', 'issues.write'], description: 'Let admitted tools read and update product issues.' },
+  { id: 'workspace-webhook', name: 'Workspace webhook', kind: 'webhook', capability: 'events.deliver', scopes: ['documents.published'], description: 'Deliver typed product events to an application endpoint.' },
+  { id: 'mcp-tools', name: 'MCP tool server', kind: 'mcp', capability: 'tools.invoke', scopes: ['tools.list', 'tools.invoke'], description: 'Expose an approved MCP tool catalog to selected agents.' },
+] as const satisfies readonly {
+  readonly id: string;
+  readonly name: string;
+  readonly kind: ConnectionKind;
+  readonly capability: string;
+  readonly scopes: readonly string[];
+  readonly description: string;
+}[];
+
+export function IntegrationsView() {
+  const session = useApplicationIdentitySession();
+  const connections = IntegrationConnections({}).useQuery();
+  const createConnection = IntegrationConnection.create.useMutation();
+  const [notice, setNotice] = useState<string>();
+
+  async function requestConnection(input: {
+    readonly name: string;
+    readonly kind: ConnectionKind;
+    readonly capability: string;
+    readonly scopes: readonly string[];
+  }) {
+    try {
+      await createConnection({
+        name: input.name,
+        kind: input.kind,
+        capability: input.capability,
+        requestedScopes: [...input.scopes],
+      });
+      setNotice('Operator setup requested. Credentials and OAuth grants remain outside the browser and database.');
+      await connections.refresh();
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : 'The connection request could not be created.');
+    }
+  }
+
+  return (
+    <div>
+      <PageHeader
+        eyebrow="Workspace connections"
+        title="Integrations"
+        description="Request the services your agents and automations need, then track their operator-completed binding. The v0.7 starter deliberately does not pretend that creating a request completes OAuth or credential setup."
+        action={session.data?.capabilities?.applicationOperations
+          ? <Button asChild><Link to="/app/setup">Open Launchpad</Link></Button>
+          : null}
+      />
+      <ConnectionRegistry
+        records={connections.data}
+        pending={createConnection.pending}
+        notice={notice}
+        onRequest={requestConnection}
+      />
+      {session.data?.capabilities?.applicationOperations
+        ? <OperatorIntegrationEvidence />
+        : <WorkspaceCapabilityCatalog />}
+    </div>
+  );
+}
+
+function ConnectionRegistry(props: {
+  readonly records: ReturnType<typeof IntegrationConnections>['useQuery'] extends () => infer Query
+    ? Query extends { readonly data?: infer Data } ? Data | undefined : never
+    : never;
+  readonly pending: boolean;
+  readonly notice?: string;
+  readonly onRequest: (input: {
+    readonly name: string;
+    readonly kind: ConnectionKind;
+    readonly capability: string;
+    readonly scopes: readonly string[];
+  }) => Promise<void>;
+}) {
+  const [contributionId, setContributionId] = useState<(typeof connectionContributions)[number]['id']>(connectionContributions[0].id);
+  const selected = connectionContributions.find(contribution => contribution.id === contributionId) ?? connectionContributions[0];
+  return (
+    <div className="mb-8 grid gap-5 lg:grid-cols-[minmax(0,1fr)_22rem]">
+      <section aria-label="Workspace integration connections">
+        {props.records === undefined ? <Skeleton className="h-52" /> : props.records.length === 0 ? (
+          <EmptyState
+            title="No workspace connections yet"
+            description="Request the service your workspace needs. An operator can then complete its secure credential or OAuth setup."
+          />
+        ) : (
+          <div className="space-y-3">
+            {props.records.map(connection => (
+              <Card key={connection.id}>
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <p className="eyebrow">{connection.kind} · {connection.capability}</p>
+                    <h2 className="mt-1 text-lg font-semibold">{connection.name}</h2>
+                    <p className="mt-2 text-sm text-stone-600">
+                      {connection.provider ? `Bound to ${connection.provider}.` : 'Awaiting a server-side provider binding.'}
+                      {connection.requestedScopes.length > 0 ? ` Requested scopes: ${connection.requestedScopes.join(', ')}.` : ''}
+                    </p>
+                  </div>
+                  <Badge tone={connection.state === 'ready' ? 'success' : connection.state === 'degraded' ? 'danger' : 'warning'}>{connection.state}</Badge>
+                </div>
+                {connection.actionRequired ? <p className="mt-3 rounded-xl bg-amber-50 p-3 text-sm text-amber-900">{connection.actionRequired}</p> : null}
+                <p className="mt-3 text-xs text-stone-500">Updated {new Date(connection.updatedAt).toLocaleString()}{connection.expiresAt ? ` · expires ${new Date(connection.expiresAt).toLocaleString()}` : ''}</p>
+              </Card>
+            ))}
+          </div>
+        )}
+      </section>
+      <Card>
+        <div className="flex items-start justify-between gap-3"><p className="eyebrow">Request provider binding</p><Badge tone="info">Operator completed</Badge></div>
+        <form className="mt-3 space-y-3" onSubmit={event => {
+          event.preventDefault();
+          if (!selected) return;
+          void props.onRequest({
+            name: selected.name,
+            kind: selected.kind,
+            capability: selected.capability,
+            scopes: selected.scopes,
+          });
+        }}>
+          <fieldset className="space-y-2"><legend className="text-sm font-medium">Available connection</legend><RadioGroup value={contributionId} onValueChange={value => { const contribution = connectionContributions.find(candidate => candidate.id === value); if (contribution) setContributionId(contribution.id); }}>{connectionContributions.map(contribution => <label key={contribution.id} className={`block cursor-pointer rounded-xl border p-3 ${contribution.id === contributionId ? 'border-emerald-500 bg-emerald-50' : 'border-stone-200'}`}><span className="flex gap-3"><RadioGroupItem value={contribution.id} aria-label={contribution.name} /><span><strong className="block text-sm">{contribution.name}</strong><span className="mt-1 block text-xs leading-5 text-stone-600">{contribution.description}</span></span></span></label>)}</RadioGroup></fieldset>
+          {selected ? <div className="rounded-xl bg-stone-50 p-3 text-xs leading-5 text-stone-600"><strong className="text-stone-800">Requested authority</strong><p>{selected.scopes.join(' · ')}</p></div> : null}
+          <Button type="submit" disabled={props.pending || !selected}>{props.pending ? 'Requesting…' : 'Request operator setup'}</Button>
+          <p className="text-xs leading-5 text-stone-500">This creates a durable request and status record only. An application operator completes OAuth or credential binding through the provider/deployment authority; secrets never enter this page.</p>
+          {props.notice ? <p role="status" className="text-sm text-stone-600">{props.notice}</p> : null}
+        </form>
+      </Card>
+    </div>
+  );
+}
+
+function WorkspaceCapabilityCatalog() {
+  return (
+    <section>
+      <h2 className="mb-3 text-xl font-semibold">Application capabilities</h2>
+      <div className="grid gap-4 md:grid-cols-2">{integrationContracts.map(integration => (
+        <Card key={integration.id}>
+          <div className="flex items-start justify-between gap-3"><div><p className="eyebrow">{integration.contract}</p><h3 className="mt-1 text-lg font-semibold">{integration.name}</h3></div><Badge tone="info">Operator managed</Badge></div>
+          <p className="mt-3 text-sm leading-6 text-stone-600">{integration.description}</p>
+        </Card>
+      ))}</div>
+    </section>
+  );
+}
+
+function OperatorIntegrationEvidence() {
+  const snapshot = OperationsSnapshot({ limit: 100 }).useQuery();
+  if (snapshot.phase === 'idle' || snapshot.phase === 'loading') return <Skeleton className="h-96" />;
+  if (snapshot.error || !snapshot.data) return <RouteState tone="warning" title="Integration evidence is unavailable" description="The workspace registry remains available while the bounded operations snapshot recovers." />;
+  const data = snapshot.data;
+  return (
+    <section>
+      <div className="mb-3 flex items-center justify-between gap-3"><div><p className="eyebrow">Application operator</p><h2 className="mt-1 text-xl font-semibold">Provider evidence</h2></div><Button type="button" variant="secondary" onClick={() => void snapshot.refresh()}>Refresh evidence</Button></div>
+      <div className="grid gap-4 md:grid-cols-2">
+        {integrationContracts.map(integration => {
+          const records = integration.evidence.flatMap(key => data[key]);
+          const state = agenticLaunchpadEvidenceState(records);
+          return (
+            <Card key={integration.id}>
+              <div className="flex items-start justify-between gap-3"><div><p className="eyebrow">{integration.contract}</p><h3 className="mt-1 text-lg font-semibold">{integration.name}</h3></div><Badge tone={state === 'Ready' ? 'success' : state === 'Action required' ? 'danger' : 'warning'}>{state}</Badge></div>
+              <p className="mt-3 text-sm leading-6 text-stone-600">{integration.description}</p>
+              <div className="mt-4 rounded-xl bg-stone-50 p-3 text-xs text-stone-600"><strong className="text-stone-800">Operator configuration</strong>{integration.environment.length > 0 ? <p className="mt-1">Provide {integration.environment.map(name => <code key={name} className="mx-1">{name}</code>)} through the deployment environment or external secret manager.</p> : <p className="mt-1">Selected by the deployment profile; no browser-managed secret is required.</p>}</div>
+              <p className="mt-3 text-xs text-stone-500">{records.length} current health record{records.length === 1 ? '' : 's'}</p>
+            </Card>
+          );
+        })}
+      </div>
+    </section>
+  );
+}

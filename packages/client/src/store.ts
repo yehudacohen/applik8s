@@ -184,8 +184,8 @@ export class ApplicationQueryClient {
     void Promise.resolve(this.transport.subscribe(entry.query, entry.input, entry.state.cursor, {
       signal: controller.signal,
       onEvent: (event) => this.#event(entry, event),
-      onError: (error) => this.#subscriptionError(entry, error),
-    })).catch((error: unknown) => this.#subscriptionError(entry, error instanceof Error ? error : new Error(String(error))));
+      onError: (error) => this.#subscriptionError(entry, controller, error),
+    })).catch((error: unknown) => this.#subscriptionError(entry, controller, error instanceof Error ? error : new Error(String(error))));
   }
 
   #event(entry: StoreEntry, event: ApplicationQueryEvent): void {
@@ -240,8 +240,12 @@ export class ApplicationQueryClient {
     }, delay);
   }
 
-  #subscriptionError(entry: StoreEntry, error: Error): void {
-    if (entry.controller?.signal.aborted) return;
+  #subscriptionError(entry: StoreEntry, controller: AbortController, error: Error): void {
+    // The transport can report an AbortError asynchronously, after #disconnect
+    // has already removed this controller from the entry. Preserve the specific
+    // subscription identity so an intentional disconnect can never turn a
+    // healthy cached snapshot into a spurious reconnecting state.
+    if (controller.signal.aborted || entry.controller !== controller) return;
     entry.controller = undefined;
     entry.state = { ...entry.state, phase: 'reconnecting', stale: true, error, revision: entry.state.revision + 1 };
     this.#notify(entry);

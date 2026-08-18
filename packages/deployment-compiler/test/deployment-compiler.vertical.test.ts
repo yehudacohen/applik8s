@@ -467,6 +467,56 @@ describe("Application deployment compiler", () => {
     });
   });
 
+  it("gives workflow model operations the application context authority instead of a gateway cursor", () => {
+    const base = applicationGraph();
+    const graph = {
+      ...base,
+      metadata: { ...base.metadata, namespace: "guestbook" },
+      nodes: [
+        ...base.nodes,
+        {
+          id: "task-handler.update-document",
+          kind: "taskHandler",
+          name: "update-document",
+          stability: "stable",
+          operations: [{ alias: "Document.update" }],
+        },
+        {
+          id: "workflow-worker.guestbook-workflows",
+          kind: "workflowWorker",
+          name: "guestbook-workflows",
+          stability: "stable",
+          handlers: [{ nodeId: "task-handler.update-document" }],
+        },
+      ],
+    } as unknown as ApplicationGraph;
+
+    const result = compileApplicationDeploymentGraph({
+      ...request(),
+      graph,
+    });
+    const context = result.graph.nodes.find(
+      ({ id }) => id === "external.generated-secret.application.context",
+    );
+    expect(context).toMatchObject({
+      scope: { namespace: "guestbook" },
+      spec: {
+        configuration: {
+          name: "guestbook-context",
+          values: {
+            key: { kind: "random", bytes: 48, encoding: "base64url" },
+          },
+        },
+      },
+    });
+    expect(result.graph.edges).toContainEqual({
+      from: "external.generated-secret.application.context",
+      to: "kubernetes.application",
+      relationship: "requiresOutput",
+      output: "name",
+    });
+  });
+
   it("rejects duplicate contributor identities", () => {
     const contributor: ApplicationDeploymentContributor = {
       interface: "TransactionalDatabase",

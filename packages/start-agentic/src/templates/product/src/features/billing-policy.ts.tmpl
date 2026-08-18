@@ -1,0 +1,41 @@
+export function canManageWorkspaceBilling(context: {
+  readonly principal: { readonly roles?: readonly string[] };
+  readonly trustedContext: Readonly<Record<string, unknown>>;
+}): boolean {
+  // Personal work has no Workspace row or membership role: the admitted
+  // principal is necessarily the owner of that server-derived scope. Once a
+  // workspace is selected, billing becomes a shared-resource mutation and
+  // requires an ownership, administration, or operator grant.
+  const workspaceId = context.trustedContext.workspaceId;
+  if (typeof workspaceId !== 'string' || !workspaceId.trim()) return true;
+  return context.principal.roles?.some(role =>
+    role === 'workspace-owner'
+    || role === 'workspace-administrator'
+    || role === 'application-operator'
+  ) === true;
+}
+
+export function trustedBillingReturnUrl(
+  returnTo: string,
+  requestOrigin: string | undefined,
+): string {
+  if (!requestOrigin) {
+    throw new Error('Billing actions require a same-origin browser request.');
+  }
+  let destination: URL;
+  try {
+    destination = new URL(returnTo);
+  } catch {
+    throw new Error('Billing return destination must be an absolute application URL.');
+  }
+  if (
+    destination.origin !== requestOrigin
+    || destination.pathname !== '/app/billing'
+    || destination.username
+    || destination.password
+  ) {
+    throw new Error('Billing return destination must be this application\'s Billing page.');
+  }
+  destination.hash = '';
+  return destination.href;
+}

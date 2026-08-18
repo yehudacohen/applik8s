@@ -6,3 +6,4 @@ export * from './agent-persistence.js';
 export * from './contracts.js';
 export * from './memory.js';
 export * from './postgres.js';
+export * from './tanstack-persistence.js';

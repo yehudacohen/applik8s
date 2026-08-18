@@ -125,8 +125,8 @@ test(
       page.getByRole('heading', { name: 'Plan, usage, and entitlements' }),
     ).toBeVisible();
     await expect(
-      page.getByRole('region', { name: 'Current subscription' }),
-    ).toContainText('No active subscription');
+      page.getByRole('region', { name: 'Current plan' }),
+    ).toContainText('Research Free · included');
     await expect(
       page.getByRole('region', { name: 'Plans' }),
     ).toContainText('Research Free');
@@ -176,7 +176,7 @@ test(
     const assistant = conversation.locator('[data-role="assistant"]');
     await expect(assistant).toHaveCount(1);
     await expect(assistant).toContainText(
-      'Credential-free starter inference.',
+      'authoritative result',
     );
     // Assistant tokens are intentionally visible while the durable stream is
     // still running. Wait for the terminal UI state so this reload verifies
@@ -190,7 +190,7 @@ test(
     );
     await expect(assistant).toHaveCount(1);
     await expect(assistant).toContainText(
-      'Credential-free starter inference.',
+      'authoritative result',
     );
 
     await page.getByLabel('Conversation title').fill(title);
@@ -198,16 +198,24 @@ test(
     await expect(page.getByRole('heading', { name: title })).toBeVisible();
 
     await page.getByRole('link', { name: 'Back to inbox' }).click();
-    const card = page.locator('article').filter({ hasText: title });
+    await expect(
+      page.getByRole('heading', { name: 'Research inbox' }),
+    ).toBeVisible();
+    const conversationList = page.getByRole('region', {
+      name: 'Research conversations',
+    });
+    const card = conversationList.locator('article').filter({ hasText: title });
     await expect(card).toBeVisible();
     await card.getByRole('link', { name: 'Open conversation' }).click();
     await page.getByRole('button', { name: 'Archive' }).click();
     await expect(
       page.getByRole('heading', { name: 'Research inbox' }),
     ).toBeVisible();
-    await expect(page.locator('article').filter({ hasText: title })).toHaveCount(
-      0,
-    );
+    await expect(
+      page.getByRole('region', { name: 'Research conversations' })
+        .locator('article')
+        .filter({ hasText: title }),
+    ).toHaveCount(0);
   },
 );
 
@@ -256,7 +264,7 @@ test(
       page.getByRole('region', { name: 'Artifacts' }),
     ).not.toContainText('No observed records');
     await expect(
-      page.getByRole('region', { name: 'Runs' }),
+      page.getByRole('region', { name: 'Run events' }),
     ).not.toContainText('No observed records');
     await expect(
       page.getByRole('region', { name: 'Memory' }),

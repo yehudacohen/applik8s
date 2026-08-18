@@ -11,7 +11,8 @@ export {
   type AgenticAccountSettingsProps,
 } from './account.js';
 
-const workspaceCookieName = 'applik8s_workspace';
+export const agenticWorkspaceCookieName = 'applik8s_workspace';
+export const agenticWorkspaceSelectionEventName = 'applik8s:workspace-selection';
 const workspaceIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 /**
@@ -32,8 +33,9 @@ export function selectAgenticWorkspace(workspaceId: string): void {
   }
   const secure = globalThis.location?.protocol === 'https:' ? '; Secure' : '';
   document.cookie =
-    `${workspaceCookieName}=${encodeURIComponent(workspaceId.toLowerCase())}`
+    `${agenticWorkspaceCookieName}=${encodeURIComponent(workspaceId.toLowerCase())}`
     + `; Path=/; SameSite=Lax${secure}`;
+  globalThis.dispatchEvent(new Event(agenticWorkspaceSelectionEventName));
 }
 
 /**
@@ -43,7 +45,7 @@ export function selectAgenticWorkspace(workspaceId: string): void {
  */
 export function readAgenticWorkspaceSelection(): string | undefined {
   if (typeof document === 'undefined') return undefined;
-  const prefix = `${workspaceCookieName}=`;
+  const prefix = `${agenticWorkspaceCookieName}=`;
   const encoded = document.cookie
     .split(';')
     .map(part => part.trim())
@@ -68,7 +70,8 @@ export function clearAgenticWorkspaceSelection(): void {
   }
   const secure = globalThis.location?.protocol === 'https:' ? '; Secure' : '';
   document.cookie =
-    `${workspaceCookieName}=; Path=/; SameSite=Lax; Max-Age=0${secure}`;
+    `${agenticWorkspaceCookieName}=; Path=/; SameSite=Lax; Max-Age=0${secure}`;
+  globalThis.dispatchEvent(new Event(agenticWorkspaceSelectionEventName));
 }
 
 export interface AgenticStartOnboardingProps {

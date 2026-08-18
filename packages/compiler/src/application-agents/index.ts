@@ -3,6 +3,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import type {
   ApplicationAIAgentNode,
+  ApplicationGatewayNode,
   ApplicationGraph,
   ApplicationHandlerDependencies,
   ApplicationModelNode,
@@ -10,6 +11,7 @@ import type {
   ApplicationOperationCatalog,
   ApplicationOperationDescriptor,
   ApplicationProviderNode,
+  ApplicationQueryNode,
   ApplicationWorkloadAuthorityEnvelope,
   JsonObject,
 } from '@applik8s/core';
@@ -71,8 +73,28 @@ interface ApplicationAgentCompilerContract {
     readonly receiver?: ApplicationOperationPlacementReceiver;
     readonly local?: NonNullable<ApplicationAIAgentNode['tools'][number]['local']>;
   }[];
+  readonly operations: readonly {
+    readonly alias: string;
+    readonly authoringOperationId: string;
+    readonly operation: ApplicationOperationDescriptor;
+    readonly workloadAuthority: ApplicationWorkloadAuthorityEnvelope;
+    readonly receiver: ApplicationOperationPlacementReceiver;
+  }[];
+  readonly queries: readonly {
+    readonly alias: string;
+    readonly query: ApplicationQueryNode;
+    readonly gateway: ApplicationGatewayNode & {
+      readonly deployment: NonNullable<ApplicationGatewayNode['deployment']>;
+      readonly cursorSecret: NonNullable<ApplicationGatewayNode['cursorSecret']>;
+    };
+    readonly endpoint: string;
+  }[];
+  readonly queryCursorSecret?: { readonly name: string; readonly key: string };
   readonly namespace: string;
   readonly state: NonNullable<ApplicationModelNode['runtime']>;
+  readonly conversationAccess?: {
+    readonly setting: string;
+  };
   readonly usage?: ApplicationModelRuntimeContract;
   readonly route: JsonObject;
 }
@@ -174,6 +196,36 @@ function applicationAgentCompilerContract(
           }),
     };
   });
+  const directOperations = (agent.operations ?? []).map((dependency) => {
+    const operation = operations.get(dependency.operationId);
+    const authority = envelopes.get(dependency.operationId);
+    if (!operation) {
+      throw new Error(
+        `Application agent ${agent.id} function-native operation ${dependency.operationId} is absent from operation catalog ${operationCatalog.revision}.`,
+      );
+    }
+    if (!authority) {
+      throw new Error(
+        `Application agent ${agent.id} function-native operation ${dependency.operationId} has no workload-authority envelope.`,
+      );
+    }
+    if (operation.input.digest !== authority.inputSchemaDigest) {
+      throw new Error(
+        `Application agent ${agent.id} function-native operation ${dependency.operationId} authority input schema is stale.`,
+      );
+    }
+    return {
+      alias: dependency.alias,
+      authoringOperationId: dependency.authoringOperationId,
+      operation,
+      workloadAuthority: authority,
+      receiver: compileApplicationOperationPlacementReceiver(
+        graph,
+        operation,
+        `Application agent ${agent.name} function-native operation ${operation.id}`,
+      ),
+    };
+  });
   const stateModels = graph.nodes.filter(
     (
       node,
@@ -204,7 +256,12 @@ function applicationAgentCompilerContract(
       `Application agent ${agent.id} durable provider ${agent.state.nodeId} resolves inconsistent connection secrets.`,
     );
   }
+  const conversationRuntime = stateModels.find(
+    (model) => model.runtime.tableName === 'applik8s_conversations',
+  )?.runtime;
+  const conversationAccess = conversationRuntime?.nativeRelational?.access;
   const namespace = graph.metadata.namespace ?? stringValue(providerConfig.namespace) ?? 'default';
+  const queryRuntime = applicationAgentQueryRuntime(graph, agent, namespace);
   const usage = graph.nodes.find(
     (node): node is ApplicationModelNode & { readonly runtime: ApplicationModelRuntimeContract } =>
       node.kind === 'model'
@@ -219,11 +276,109 @@ function applicationAgentCompilerContract(
     providerConfig,
     operationCatalog,
     tools,
+    operations: directOperations,
+    queries: queryRuntime.queries,
+    ...(queryRuntime.cursorSecret
+      ? { queryCursorSecret: queryRuntime.cursorSecret }
+      : {}),
     namespace,
     state: stateRuntime,
+    ...(conversationAccess
+      ? { conversationAccess: { setting: conversationAccess.setting } }
+      : {}),
     ...(usage ? { usage } : {}),
     route: applicationAgentRoute(agent, providerConfig),
   };
+}
+
+function applicationAgentQueryRuntime(
+  graph: ApplicationGraph,
+  agent: ApplicationAIAgentNode,
+  namespace: string,
+): {
+  readonly queries: ApplicationAgentCompilerContract['queries'];
+  readonly cursorSecret?: { readonly name: string; readonly key: string };
+} {
+  if ((agent.queries?.length ?? 0) === 0) return { queries: [] };
+  const nodes = new Map(graph.nodes.map((node) => [node.id, node]));
+  const queries: ApplicationAgentCompilerContract['queries'][number][] = [];
+  const cursorSecrets = new Map<string, { readonly name: string; readonly key: string }>();
+  for (const reference of agent.queries ?? []) {
+    const query = nodes.get(reference.query.nodeId);
+    if (query?.kind !== 'query') {
+      throw new Error(
+        `Application agent ${agent.id} query ${reference.alias} references missing query ${reference.query.nodeId}.`,
+      );
+    }
+    const gateways = graph.nodes.filter(
+      (candidate): candidate is ApplicationGatewayNode =>
+        candidate.kind === 'gateway'
+        && candidate.materialization === 'generatedDeployment'
+        && candidate.queries.some((entry) => entry.nodeId === query.id),
+    );
+    if (gateways.length !== 1) {
+      throw new Error(
+        `Application agent ${agent.id} query ${reference.alias} must be exposed by exactly one generated gateway; found ${gateways.length}.`,
+      );
+    }
+    const candidate = gateways[0];
+    const deployment = candidate?.deployment;
+    const cursorSecret = candidate?.cursorSecret;
+    if (!candidate || !deployment || !cursorSecret) {
+      throw new Error(
+        `Application agent ${agent.id} query ${reference.alias} gateway has no deployment cursor Secret.`,
+      );
+    }
+    const gateway = { ...candidate, deployment, cursorSecret };
+    const gatewayNamespace = applicationGraphStringValue(
+      deployment.namespace,
+    ) || namespace;
+    if (gatewayNamespace !== namespace) {
+      throw new Error(
+        `Application agent ${agent.id} query ${reference.alias} gateway ${candidate.id} is in ${gatewayNamespace}, but the agent is in ${namespace}.`,
+      );
+    }
+    const secretNamespace = applicationGraphStringValue(
+      cursorSecret.namespace,
+    );
+    if (secretNamespace && secretNamespace !== namespace) {
+      throw new Error(
+        `Application agent ${agent.id} query ${reference.alias} cursor Secret is in ${secretNamespace}, but the agent is in ${namespace}.`,
+      );
+    }
+    const secretName = applicationGraphStringValue(gateway.cursorSecret.name);
+    if (!secretName || !gateway.cursorSecret.key) {
+      throw new Error(
+        `Application agent ${agent.id} query ${reference.alias} gateway cursor Secret is not concrete.`,
+      );
+    }
+    cursorSecrets.set(`${secretName}\0${gateway.cursorSecret.key}`, {
+      name: secretName,
+      key: gateway.cursorSecret.key,
+    });
+    const publicId = query.publicId ?? `${query.name}.${query.version}`;
+    const route = gateway.routes.snapshots.replace(
+      ':query',
+      encodeURIComponent(publicId),
+    );
+    const serviceName = kubernetesName(`${graph.metadata.name}-${candidate.name}`);
+    queries.push({
+      alias: reference.alias,
+      query,
+      gateway,
+      endpoint: `http://${serviceName}:${gateway.deployment.port}${route}`,
+    });
+  }
+  if (cursorSecrets.size !== 1) {
+    throw new Error(
+      `Application agent ${agent.id} calls queries backed by ${cursorSecrets.size} cursor Secrets. Use one application query context authority per agent.`,
+    );
+  }
+  const cursorSecret = [...cursorSecrets.values()][0];
+  if (!cursorSecret) {
+    throw new Error(`Application agent ${agent.id} query cursor Secret is absent.`);
+  }
+  return { queries, cursorSecret };
 }
 
 async function emitAgent(
@@ -238,11 +393,22 @@ async function emitAgent(
   const manifestPath = join(agentDir, 'agent.manifest.json');
   const metafilePath = join(agentDir, 'agent.esbuild-meta.json');
   await mkdir(agentDir, { recursive: true });
-  await writeCallbackModule(
-    agentDir,
-    'handler',
-    contract.agent.handlerSource,
-    contract.agent.handlerDependencies,
+  await writeFile(
+    join(agentDir, 'handler.generated.ts'),
+    generatedCallbackFactoryModule({
+      source: contract.agent.handlerSource,
+      ...(contract.agent.handlerDependencies
+        ? { dependencies: contract.agent.handlerDependencies }
+        : {}),
+      injectedIdentifiers: contract.queries
+        .map(({ alias }) => alias.split('.')[0] ?? alias)
+        .filter(
+          (identifier, index, values) =>
+            /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(identifier)
+            && values.indexOf(identifier) === index,
+        ),
+      exportName: 'createHandler',
+    }),
   );
   for (const [index, tool] of contract.tools.entries()) {
     if (!tool.local) continue;
@@ -367,10 +533,10 @@ function generatedAgentSource(contract: ApplicationAgentCompilerContract): strin
   }
   const audiences = [
     ...new Set(
-      contract.tools.flatMap((tool) => tool.workloadAuthority.audiences),
+      [...contract.tools, ...contract.operations].flatMap((dependency) => dependency.workloadAuthority.audiences),
     ),
   ].sort();
-  const routeEntries = contract.tools.filter(
+  const routeEntries = [...contract.tools, ...contract.operations].filter(
     (tool): tool is typeof tool & { readonly receiver: ApplicationOperationPlacementReceiver } =>
       Boolean(tool.receiver),
   ).map((tool) =>
@@ -386,14 +552,17 @@ function generatedAgentSource(contract: ApplicationAgentCompilerContract): strin
   const localToolRuntime = generatedLocalAgentToolRuntime(contract);
   return `
 import { createHash } from 'node:crypto';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { createServer } from 'node:http';
 import postgres from 'postgres';
+import { installApplicationOperationRuntimeResolver } from '@applik8s/client';
 import { createApplicationAIAttemptRuntime } from '@applik8s/ai';
-import { createApplicationAIAgentConversationPersistence, createPostgresApplicationConversationStore } from '@applik8s/conversations/runtime';
+import { applicationAIConversationPrincipalScope, createApplicationAIAgentConversationPersistence, createApplicationTanStackConversationPersistence, createPostgresApplicationConversationStore } from '@applik8s/conversations/runtime';
 import { applicationCausalPrincipalContext } from '@applik8s/core';
 import { createApplicationOperationAuthorityRuntime, decodeApplicationExecutionAdmission } from '@applik8s/operations';
 import { createApplicationAIAgentRequestHandler, createApplicationAIOperationExecutor, createPostgresApplicationAIAttemptStore } from '@applik8s/runtime-ai';
-import { callback as handler } from './handler.generated.js';
+import { createApplicationTaskQueryRuntime } from '@applik8s/applik8s/task-query-runtime';
+import { createHandler } from './handler.generated.js';
 ${localToolImports}
 ${contract.tools.some((tool) => tool.local)
     ? "import { normalizeSchema } from '@applik8s/sdk/schema-runtime';\nimport { applicationPostgresModelReadClients, applicationRequestContextValues, createApplicationFunctionNativeEventHandle, editApplicationNativeModelObject, executeFunctionNativePostgresModelEdit, findApplicationNativeModelObjects, getApplicationNativeModelObject, requireApplicationNativeModelObject, withApplicationNativeModelReadClients, withApplicationNativeModelTransactionRuntime } from '@applik8s/applik8s/stream-worker-runtime';"
@@ -407,12 +576,27 @@ const contract = ${JSON.stringify({
     name: contract.agent.name,
     nodeId: contract.agent.id,
     serviceIdentity: contract.agent.serviceIdentity,
+    ...(contract.agent.scope ? { scope: contract.agent.scope } : {}),
     model: contract.agent.model,
     provider: contract.providerConfig,
     route: contract.route,
     state: contract.state,
+    ...(contract.conversationAccess
+      ? { conversationAccess: contract.conversationAccess }
+      : {}),
     ...(contract.usage ? { usage: contract.usage } : {}),
     tools: contract.tools,
+    operations: contract.operations,
+    queries: contract.queries.map(({ alias, query, gateway, endpoint }) => ({
+      alias,
+      id: query.publicId ?? `${query.name}.${query.version}`,
+      audience: gateway.id,
+      endpoint,
+      inputSchema: query.input.jsonSchema,
+      outputSchema: query.output.jsonSchema,
+      timeoutMs: query.budgets.timeoutMs,
+      maxResultBytes: query.budgets.maxResultBytes,
+    })),
     budgets: contract.agent.budgets,
     executionPolicy: contract.agent.executionPolicy,
     deployment: contract.agent.deployment,
@@ -422,6 +606,19 @@ function requiredEnv(name) {
   const value = process.env[name];
   if (!value) throw new Error('Missing required environment variable ' + name);
   return value;
+}
+function applicationAgentDurableScope(principal, trustedContext) {
+  const contextName = contract.scope?.kind === 'trustedContext'
+    ? contract.scope.name
+    : undefined;
+  const selected = contextName ? trustedContext?.[contextName] : undefined;
+  if (selected !== undefined) {
+    if (typeof selected !== 'string' || !selected.trim()) {
+      throw new Error('Agent durable scope ' + contextName + ' must be a non-empty admitted string.');
+    }
+    return selected;
+  }
+  return applicationAIConversationPrincipalScope(principal, trustedContext ?? {});
 }
 function selectedProfileValue(value) {
   if (value?.kind !== 'application-provider-selection') return value;
@@ -461,6 +658,72 @@ const selectedModelRoute = selectedProvider?.models?.[contract.model.name];
 const selectedBackend = Array.isArray(selectedModelRoute?.backends)
   ? selectedModelRoute.backends[0]
   : undefined;
+const agentQueryRuntime = contract.queries.length > 0
+  ? createApplicationTaskQueryRuntime({
+      queries: contract.queries,
+      cursorSecret: requiredEnv('APPLIK8S_AGENT_QUERY_CONTEXT_SECRET'),
+    })
+  : undefined;
+const directOperationScope = new AsyncLocalStorage();
+installApplicationOperationRuntimeResolver(() => directOperationScope.getStore());
+const directOperations = new Map(
+  contract.operations.flatMap((dependency) => [
+    [dependency.operation.id, dependency.operation],
+    [dependency.authoringOperationId, dependency.operation],
+  ]),
+);
+function focusedAgentBindings(flat) {
+  const bindings = {};
+  for (const [path, value] of Object.entries(flat)) {
+    const segments = path.split('.');
+    let current = bindings;
+    for (const segment of segments.slice(0, -1)) {
+      current = current[segment] ??= {};
+    }
+    current[segments.at(-1)] = value;
+  }
+  return bindings;
+}
+const handler = (request, context) => {
+  let directOperationOrdinal = 0;
+  const runtime = Object.freeze({
+    execute(operation, input) {
+      const descriptor = directOperations.get(operation.id);
+      if (!descriptor) {
+        throw new Error('Agent callback attempted undeclared function-native operation ' + operation.id + '.');
+      }
+      const providerToolCallId = 'handler-' + directOperationOrdinal + '-' + operation.id;
+      directOperationOrdinal += 1;
+      return invokeOperation(descriptor, input, {
+        admission: {
+          principal: context.principal,
+          trustedContext: context.trustedContext,
+        },
+        invocationId: context.invocationId,
+        attemptId: context.attemptId,
+        providerToolCallId,
+        signal: context.signal,
+      });
+    },
+  });
+  return directOperationScope.run(runtime, () => createHandler(
+    focusedAgentBindings(agentQueryRuntime?.bind(
+      Object.fromEntries(contract.queries.map((query) => [query.alias, query.id])),
+      {
+        id: contract.serviceIdentity.id,
+        identity: contract.serviceIdentity,
+        kind: 'service',
+        authenticationMethod: 'workload-identity',
+        authorizationVersion: context.principal.authorityRevision,
+        trustedContext: context.trustedContext,
+      },
+      {
+        correlationId: context.runId,
+        causationId: context.invocationId,
+      },
+    ) ?? {}),
+  )(request, context));
+};
 function requiredProviderString(value, label) {
   if (typeof value !== 'string' || !value.trim()) {
     throw new Error('Selected AI provider is missing ' + label + '.');
@@ -485,9 +748,15 @@ const sql = postgres(requiredEnv(${JSON.stringify(contract.state.connectionEnvNa
 });
 const attemptStore = createPostgresApplicationAIAttemptStore({ sql });
 const attemptRuntime = createApplicationAIAttemptRuntime({ store: attemptStore });
-const conversationStore = createPostgresApplicationConversationStore({ sql });
+const conversationStore = createPostgresApplicationConversationStore({
+  sql,
+  ...(contract.conversationAccess
+    ? { access: { setting: contract.conversationAccess.setting } }
+    : {}),
+});
 const conversationPersistence = createApplicationAIAgentConversationPersistence({
   store: conversationStore,
+  scope: ({ principal, trustedContext }) => applicationAgentDurableScope(principal, trustedContext),
 });
 const operationAuthority = createApplicationOperationAuthorityRuntime({
   sql,
@@ -511,6 +780,7 @@ async function recordUsageFact(reservation, usage) {
     principalScope: reservation.principalScope,
     operationId: 'agent:' + contract.name,
     invocationId: reservation.invocationId,
+    protocolRunId: reservation.runId,
     attemptId: reservation.attemptId,
     provider: selectedBackend?.name ?? selectedProvider.name ?? selectedProvider.kind,
     backend: selectedBackend?.endpoint ?? selectedBackend?.name ?? selectedProvider.name ?? selectedProvider.kind,
@@ -526,6 +796,7 @@ async function recordUsageFact(reservation, usage) {
       agent: contract.name,
       providerClass: selectedProvider.kind,
       route: selectedBackend?.name ?? selectedProvider.name ?? selectedProvider.kind,
+      protocolRunId: reservation.runId,
     },
     occurredAt: new Date().toISOString(),
   };
@@ -545,19 +816,37 @@ async function recordUsageFact(reservation, usage) {
     property === 'dimensions' ? JSON.stringify(value) : value);
   const attemptColumn = quotedIdentifier(columns.get('attemptId'));
   const pricingColumn = quotedIdentifier(columns.get('pricingRevision'));
-  await sql.unsafe(
+  const insert = async (client) => client.unsafe(
     'INSERT INTO ' + table + ' (' + names.join(', ') + ') VALUES ('
       + placeholders.join(', ') + ') ON CONFLICT (' + attemptColumn + ', '
       + pricingColumn + ') DO NOTHING',
     values,
   );
+  const accessSetting = contract.usage.nativeRelational.access?.setting;
+  if (!accessSetting) {
+    await insert(sql);
+    return;
+  }
+  await sql.begin(async transaction => {
+    await transaction.unsafe(
+      'SELECT set_config($1, $2, true)',
+      [accessSetting, reservation.principalScope],
+    );
+    await insert(transaction);
+  });
 }
 ${localToolRuntime}
 const placementRoutes = new Map([${routeEntries}]);
+const workloadEnvelopes = [...new Map(
+  [...contract.tools, ...contract.operations].map((dependency) => [
+    dependency.operation.id,
+    dependency.workloadAuthority,
+  ]),
+).values()];
 const invokeOperation = createApplicationAIOperationExecutor({
   authority: operationAuthority,
   attemptRuntime,
-  envelopes: contract.tools.map((tool) => tool.workloadAuthority),
+  envelopes: workloadEnvelopes,
   transportSecret: requiredEnv('APPLIK8S_INTERNAL_OPERATION_SECRET'),
   dispatch: {
     async dispatch({ operation, arguments: input, invocationToken, invocationId, idempotencyKey, principal, authorizationReceipt, trustedContext, signal }) {
@@ -591,7 +880,19 @@ const invokeOperation = createApplicationAIOperationExecutor({
       }
       const value = JSON.parse(new TextDecoder().decode(bytes));
       if (!response.ok || !value || typeof value !== 'object' || !('value' in value)) {
-        throw new Error('AI placement invocation failed without exposing internal details.');
+        const placementError = value && typeof value === 'object'
+          && typeof value.error === 'string'
+          ? value.error
+          : 'invalid_response';
+        console.error(JSON.stringify({
+          event: 'applik8s-ai-operation-placement-error',
+          operationId: operation.id,
+          status: response.status,
+          error: placementError,
+        }));
+        throw new Error(
+          'AI placement invocation failed (' + response.status + ', ' + placementError + ').',
+        );
       }
       return value.value;
     },
@@ -638,6 +939,12 @@ const handle = createApplicationAIAgentRequestHandler({
       },
   tools: contract.tools,
   persistence: conversationPersistence,
+  tanstackPersistence({ principal, trustedContext }) {
+    return createApplicationTanStackConversationPersistence({
+      store: conversationStore,
+      principalScope: applicationAgentDurableScope(principal, trustedContext),
+    });
+  },
   timeoutMs: contract.budgets.timeoutMs,
   maximumConcurrency: contract.deployment.maximumConcurrency,
   async admit(request, body) {
@@ -667,6 +974,11 @@ const handle = createApplicationAIAgentRequestHandler({
       attempt: invocation.attempt,
       workloadIdentity: ${JSON.stringify(workloadIdentity)},
       serviceIdentity: contract.serviceIdentity,
+      executionContext: {
+        kind: 'agent',
+        threadId: body.threadId,
+        runId: body.runId,
+      },
       causalPrincipalId: causalPrincipal.id,
       causalPrincipal: causalPrincipal.identity,
       causalGrantIds: [
@@ -686,7 +998,7 @@ const handle = createApplicationAIAgentRequestHandler({
       trustedContext: invocation.admission.trustedContext,
     };
   },
-  async reserveAttempt({ principal, threadId, runId, logicalModel, request }) {
+  async reserveAttempt({ principal, trustedContext, threadId, runId, logicalModel, request }) {
     const invocationId = 'invocation_' + createHash('sha256')
       .update(contract.application)
       .update('\\0')
@@ -740,7 +1052,7 @@ const handle = createApplicationAIAgentRequestHandler({
       invocationId,
       attemptId: decision.attempt.id,
       version: decision.attempt.version,
-      principalScope: applicationCausalPrincipalContext(principal).id,
+      principalScope: applicationAgentDurableScope(principal, trustedContext),
     };
   },
   recovery: {
@@ -796,7 +1108,20 @@ const handle = createApplicationAIAgentRequestHandler({
               ? 'unknown'
               : 'provider-reported',
           }
-        : undefined;
+        : contract.usage
+          ? {
+              apiVersion: 'applik8s.aiUsage/v1alpha1',
+              invocationId: reservation.invocationId,
+              attemptId: reservation.attemptId,
+              inputTokens: Number.isInteger(terminal.estimatedInputTokens)
+                ? terminal.estimatedInputTokens
+                : 1,
+              outputTokens: Number.isInteger(terminal.estimatedOutputTokens)
+                ? terminal.estimatedOutputTokens
+                : 1,
+              confidence: 'calculated',
+            }
+          : undefined;
       await recordUsageFact(reservation, usage);
       const attempt = await attemptRuntime.transition(
         reservation.invocationId,
@@ -1068,6 +1393,14 @@ function generatedLocalAgentToolRuntime(
         await applicationPostgresModelReadClients(
           requiredEnv(${JSON.stringify(primary.runtime.connectionEnvName)}),
           ${JSON.stringify(models)},
+          {
+            values: applicationRequestContextValues(
+              context.principal,
+              context.principal.authorityRevision,
+              context.trustedContext,
+            ),
+            digest: context.principal.trustedContextDigest,
+          },
         ),
         () => authored(validInput),
       );
@@ -1348,6 +1681,18 @@ function generatedAgentResources(
                       },
                     },
                   },
+                  ...(contract.queryCursorSecret
+                    ? [{
+                        name: 'APPLIK8S_AGENT_QUERY_CONTEXT_SECRET',
+                        valueFrom: {
+                          secretKeyRef: {
+                            name: contract.queryCursorSecret.name,
+                            key: contract.queryCursorSecret.key,
+                            optional: false,
+                          },
+                        },
+                      }]
+                    : []),
                 ],
                 readinessProbe: {
                   httpGet: {

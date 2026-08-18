@@ -5,6 +5,7 @@ import {
   KubeConfig,
   type KubernetesObject,
   KubernetesObjectApi,
+  PatchStrategy,
 } from '@kubernetes/client-node';
 import { type } from 'arktype';
 import { kubernetesComposition } from 'typekro';
@@ -317,18 +318,26 @@ try {
       }
     }
 
-    await waitForKubernetesObjectAbsent(
-      objectApi,
-      {
-        apiVersion: 'csi.ceph.io/v1',
-        kind: 'ClientProfile',
-        metadata: {
-          name: options.rookClusterName,
-          namespace: options.rookOperatorNamespace,
+    if (retainedOperatorNamespace?.metadata?.deletionTimestamp) {
+      await releaseOrphanedCsiClientProfileFinalizers(
+        objectApi,
+        options.rookOperatorNamespace,
+      );
+      await waitForKubernetesObjectAbsent(
+        objectApi,
+        {
+          apiVersion: 'v1',
+          kind: 'Namespace',
+          metadata: { name: options.rookOperatorNamespace, namespace: '' },
         },
-      },
-      300_000,
-    );
+        300_000,
+      );
+    } else if (retainedOperatorNamespace) {
+      await deleteCsiClientProfilesBeforeOperatorTeardown(
+        objectApi,
+        options.rookOperatorNamespace,
+      );
+    }
 
     if (recoveryOperatorDeployed) {
       const recoveryDeletion =
@@ -344,7 +353,10 @@ try {
           `Recovered Rook operator cleanup did not complete: ${JSON.stringify(recoveryDeletion)}`,
         );
       }
-    } else if (retainedOperatorNamespace) {
+    } else if (
+      retainedOperatorNamespace &&
+      !retainedOperatorNamespace.metadata?.deletionTimestamp
+    ) {
       const retainedOperator = await retainedRookOperatorCleanupFactory.deploy({
         name: 'retained-rook-operator',
       });
@@ -550,7 +562,10 @@ test -s '/run/udev/data/b7:${fixtureOptions.loopDeviceNumber}'`,
                 { name: 'sys', hostPath: { path: '/sys', type: 'Directory' } },
                 {
                   name: 'udev',
-                  hostPath: { path: '/run/udev', type: 'Directory' },
+                  hostPath: {
+                    path: '/run/udev',
+                    type: 'DirectoryOrCreate',
+                  },
                 },
                 {
                   name: 'data',
@@ -790,6 +805,117 @@ async function waitForKubernetesObjectAbsent(
   throw new Error(
     `Timed out waiting for ${identity.kind ?? 'resource'} ${identity.metadata.name} to disappear.`,
   );
+}
+
+async function deleteCsiClientProfilesBeforeOperatorTeardown(
+  api: KubernetesObjectApi,
+  namespace: string,
+): Promise<void> {
+  const profiles = await api.list(
+    'csi.ceph.io/v1',
+    'ClientProfile',
+    namespace,
+  );
+  for (const profile of profiles.items) {
+    const name = profile.metadata?.name;
+    const uid = profile.metadata?.uid;
+    if (!name || !uid) {
+      throw new Error(
+        `Refusing CSI cleanup for an identity-less ClientProfile in ${namespace}.`,
+      );
+    }
+    if (!profile.metadata?.deletionTimestamp) {
+      await api.delete(
+        profile,
+        undefined,
+        undefined,
+        0,
+        undefined,
+        'Foreground',
+        { preconditions: { uid } },
+      );
+    }
+    await waitForKubernetesObjectAbsent(
+      api,
+      {
+        apiVersion: 'csi.ceph.io/v1',
+        kind: 'ClientProfile',
+        metadata: { name, namespace },
+      },
+      300_000,
+    );
+  }
+}
+
+async function releaseOrphanedCsiClientProfileFinalizers(
+  api: KubernetesObjectApi,
+  namespace: string,
+): Promise<void> {
+  const terminatingNamespace = await readOptionalKubernetesObject(api, {
+    apiVersion: 'v1',
+    kind: 'Namespace',
+    metadata: { name: namespace, namespace: '' },
+  });
+  if (!terminatingNamespace?.metadata?.deletionTimestamp) {
+    throw new Error(
+      `Refusing orphaned CSI finalizer repair because Namespace ${namespace} is not terminating.`,
+    );
+  }
+
+  const profiles = await api.list(
+    'csi.ceph.io/v1',
+    'ClientProfile',
+    namespace,
+  );
+  for (const profile of profiles.items) {
+    const name = profile.metadata?.name;
+    const uid = profile.metadata?.uid;
+    const finalizers = profile.metadata?.finalizers ?? [];
+    if (!name || !uid || !profile.metadata?.deletionTimestamp) {
+      throw new Error(
+        `Refusing orphaned CSI finalizer repair for incomplete ClientProfile identity in ${namespace}.`,
+      );
+    }
+    if (
+      finalizers.some((finalizer) => finalizer !== 'csi.ceph.com/cleanup')
+    ) {
+      throw new Error(
+        `Refusing orphaned CSI finalizer repair for ${namespace}/${name}; unexpected finalizers ${JSON.stringify(finalizers)}.`,
+      );
+    }
+    const connection = await readOptionalKubernetesObject(api, {
+      apiVersion: 'csi.ceph.io/v1',
+      kind: 'CephConnection',
+      metadata: { name, namespace },
+    });
+    if (connection) {
+      throw new Error(
+        `Refusing orphaned CSI finalizer repair for ${namespace}/${name}; its CephConnection still exists.`,
+      );
+    }
+    await api.patch(
+      {
+        apiVersion: 'csi.ceph.io/v1',
+        kind: 'ClientProfile',
+        metadata: {
+          name,
+          namespace,
+          uid,
+          ...(profile.metadata?.resourceVersion
+            ? { resourceVersion: profile.metadata.resourceVersion }
+            : {}),
+          finalizers: finalizers.filter(
+            (finalizer) => finalizer !== 'csi.ceph.com/cleanup',
+          ),
+        },
+      },
+      undefined,
+      undefined,
+      'applik8s-v07-fixture-cleanup',
+      undefined,
+      PatchStrategy.MergePatch,
+    );
+  }
 }
 
 async function waitForKubernetesObjectReadyCondition(

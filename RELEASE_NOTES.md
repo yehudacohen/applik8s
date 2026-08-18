@@ -1,6 +1,6 @@
 # Release Notes
 
-## v0.7.0 (unreleased)
+## v0.7.0
 
 v0.7 makes model reads function-native without collapsing their lifecycle
 semantics. Promoted relational, analytical, and Kubernetes models now expose
@@ -19,6 +19,12 @@ principal without inheriting its authority. Signal issuance is an application
 event and a serializable capability: authorized browser consumers hydrate the
 exact instance, submit only action input, and receive a one-shot outcome whose
 actor and authorization receipt are derived by the framework.
+
+The independently built Identity Start keeps exported-agent chat, durable
+review signals, account admission, and the operations control center in one
+browser acceptance application. Its reviewed JavaScript ceiling is 160 kB
+gzip after the TanStack AI 0.44 protocol upgrade; the release gate measured
+154,250 bytes and continues to reject server-only package capture.
 
 Generated callback capture preserves typed model deletion just like create,
 update, and read operations, including calls reached through application-local
@@ -42,7 +48,7 @@ options object: `Workspace.on.create(createOwningMembership)` is canonical.
 The maintained Agentic Start is generated over the pinned official TanStack
 scaffold. It provides a responsive source-owned light/dark shell, public
 identity and recovery routes, persistent workspace onboarding, resumable
-conversations, a mutable-document/immutable-artifact Library, durable Inbox,
+conversations, maintained revisioned Documents, immutable Artifacts, durable Inbox,
 provider-neutral billing and usage, account security, bounded product export
 and deletion controls, and redacted operations integration. Starter remains
 credential-free; explicit `.env` values remain valid in development and
@@ -50,11 +56,72 @@ production. Plain Vite development receives only deterministic framework-owned
 fallbacks and never deploys infrastructure implicitly. CLI plan/deploy/destroy
 remain the Alchemy and TypeKro lifecycle boundary.
 
+Agentic Start now has an enforced source-ownership boundary. Product nouns,
+policy, provider selection, branding, shell, routes, Documents, Inbox/reviews,
+Library presentation, and account/workspace lifecycle choices remain generated
+source. Provider-neutral billing contracts, artifact transfer/query helpers,
+canonical TanStack conversation persistence, browser-safe operational-health
+reduction, and generic lifecycle request/progress storage live in maintained
+packages. The packed-consumer gate generates, migrates, discovers, compiles,
+typechecks, tests, and production-builds the clean application so extraction
+cannot hide undeclared dependencies or leak server packages into browser chunks.
+
+The public package surface now has one authoritative package and module catalog.
+It explains all publishable boundaries, distinguishes similarly named runtime
+and deployment integrations, and is checked against package manifests so new,
+removed, duplicated, or undocumented packages fail the release gates. Agentic
+Start acceptance is likewise a self-contained, versioned product contract.
+
+Generated product UI now uses a source-owned shadcn/ui substrate rather than
+an Applik8s-specific component system: Radix primitives, CVA variants, the
+canonical `cn()` utility, Lucide icons, and Tailwind animation utilities back
+the maintained controls. ReactMarkdown and GFM replace the handwritten
+Markdown renderer with raw HTML disabled, and axe-powered Chromium, Firefox,
+WebKit, and mobile qualification covers the core product, builder, billing,
+and operator journeys.
+
+The product journey no longer exposes framework acceptance fixtures to ordinary
+members. Review requests originate from real Documents and workflow decisions
+advance their lifecycle. Outcome-driven onboarding follows creation, revision,
+review, and publication. Published application-owned Agent Profiles are resolved
+inside managed agent execution, while admitted Knowledge Sources augment new
+runs through the same causal-principal boundary. `@applik8s/documents` carries
+the reusable document/revision schema so generated applications extend a
+maintained contract instead of copying a body-only table.
+
+Application-owned Agent Profiles can select from a typed tool catalog through
+`selectApplicationTanStackTools(...)`. The adapter resolves catalog keys back
+to compiled operation identities, returns ordinary TanStack tools, and fails
+closed when configuration names an unknown, duplicate, or unhydrated tool.
+
+Agent definitions may now select an application-declared `trustedContext(...)`
+as their durable scope. The admitted value consistently scopes conversations,
+runs, and usage for collaborative agents, while omitted scope preserves the
+personal causal-principal behavior. This is a persistence seam, not a tenancy
+system: applications still own workspace identity, membership, and admission.
+
+Publishing a Document now produces a real immutable object-backed Artifact,
+while the product keeps editable Documents and immutable Artifacts as distinct
+destinations. The generated workbench includes execution-effective Agents,
+bounded Knowledge imports, redacted provider Integrations, durable
+revision-bound Evaluations, complete catalog-version creation, workspace role
+management, and guided Launchpad verification. Maintained Artifacts and
+Evaluations also preserve their native model facets in emitted declarations,
+so packed consumers keep the same `.view()`, lifecycle, and operation surface
+as source consumers.
+
 The release remains gated on the exact generated product, Chirp, and profile
 acceptance paths. A final tag must additionally prove the route matrix, durable
 decision reload/recovery, application-operator authority and read-only
 Launchpad evidence, packed generation, cross-browser/accessibility behavior,
 and graph-backed OrbStack teardown for the exact source candidate.
+
+TypeKro 0.33.7 removes the previously nested `js-yaml` 4.1.0 installation and
+updates the constrained dependency graph. The remaining `js-yaml` 4.3.0 and
+unpatched `decompress` findings are explicitly time-bounded to trusted build
+inputs in isolated compiler tooling; they do not ship in generated runtime
+images. The audit gate records those narrow dispositions and will fail on any
+unreviewed expansion while the upstream dependency upgrades are pursued.
 
 ## v0.6.0
 

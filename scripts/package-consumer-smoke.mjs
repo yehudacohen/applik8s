@@ -47,11 +47,14 @@ const publicEntrypoints = [
   '@applik8s/billing-stripe',
   '@applik8s/conversations',
   '@applik8s/conversations/schema',
+  '@applik8s/data-lifecycle',
+  '@applik8s/data-lifecycle/schema',
   '@applik8s/start-agentic',
   '@applik8s/start-agentic/react',
   '@applik8s/start-agentic/identity-runtime',
   '@applik8s/start-agentic/payments-runtime',
   '@applik8s/operations-ui',
+  '@applik8s/operations-ui/health',
   '@applik8s/operations-ui/react',
   '@applik8s/operations-ui/schema',
   '@applik8s/evals',
@@ -174,9 +177,17 @@ try {
     '@tanstack/ai-react',
     '@tailwindcss/vite',
     '@vitejs/plugin-react',
+    'class-variance-authority',
+    'clsx',
     'drizzle-kit',
+    'lucide-react',
+    'radix-ui',
     'react-dom',
+    'react-markdown',
+    'remark-gfm',
+    'tailwind-merge',
     'tailwindcss',
+    'tw-animate-css',
     'vitest',
   ]) {
     externalPackages.set(
@@ -357,6 +368,19 @@ export function getRouter() {
       );
     },
   });
+  const generatedDoctorHelp = await execFileAsync(
+    'bun',
+    ['run', 'doctor', '--help'],
+    {
+      cwd: agenticStartTarget,
+      maxBuffer: 20 * 1024 * 1024,
+    },
+  );
+  if (!generatedDoctorHelp.stdout.includes('Usage: applik8s doctor')) {
+    throw new Error(
+      'Packed Agentic Start could not resolve its declared @applik8s/cli executable from a generated package script.',
+    );
+  }
   await execFileAsync(
     join(root, 'node_modules', '.bin', 'drizzle-kit'),
     ['generate', '--config', 'drizzle.config.ts'],

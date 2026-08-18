@@ -1,0 +1,44 @@
+import {
+  type ApplicationExecutionPrincipal,
+  type ApplicationPrincipal,
+  applicationCausalPrincipalContext,
+} from '@applik8s/applik8s';
+import type { JsonValue } from '@applik8s/core';
+
+export interface AgenticWorkspaceScopeContext {
+  readonly principal?: ApplicationPrincipal | ApplicationExecutionPrincipal;
+  readonly trustedContext: Readonly<Record<string, JsonValue>>;
+}
+
+/**
+ * Resolves the application-owned collaboration boundary admitted by the
+ * identity adapter. It deliberately falls back to the causal principal when
+ * no workspace is selected, keeping personal use useful without inventing a
+ * tenant or accepting a browser-supplied scope field.
+ */
+export function agenticWorkspaceScope(
+  context: AgenticWorkspaceScopeContext,
+): string {
+  if (!context.principal) {
+    throw new Error('Workspace-scoped work requires an admitted principal.');
+  }
+  const workspaceId = context.trustedContext.workspaceId;
+  return typeof workspaceId === 'string' && workspaceId.trim()
+    ? workspaceId
+    : applicationCausalPrincipalContext(context.principal).id;
+}
+
+/**
+ * Returns the application-owned workspace selected by the admitted identity
+ * boundary. Unlike agenticWorkspaceScope(), this never falls back to a
+ * principal identifier because callers use it to address UUID-backed
+ * workspace records.
+ */
+export function selectedAgenticWorkspaceId(
+  context: Pick<AgenticWorkspaceScopeContext, 'trustedContext'>,
+): string | undefined {
+  const workspaceId = context.trustedContext.workspaceId;
+  return typeof workspaceId === 'string' && workspaceId.trim()
+    ? workspaceId
+    : undefined;
+}

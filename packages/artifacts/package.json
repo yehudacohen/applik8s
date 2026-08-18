@@ -25,6 +25,7 @@
   },
   "dependencies": {
     "@applik8s/applik8s": "0.7.0",
+    "arktype": "2.2.1",
     "drizzle-orm": "^0.45.1"
   }
 }

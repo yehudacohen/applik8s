@@ -7,6 +7,7 @@ import type {
   ApplicationWorkloadAuthorityEnvelope,
 } from '@applik8s/core';
 import { chat } from '@tanstack/ai';
+import { memoryPersistence } from '@tanstack/ai-persistence';
 import { describe, expect, it } from 'vitest';
 import {
   type ApplicationAIAgentAttemptLifecycle,
@@ -31,6 +32,7 @@ describe('generated application AI runtime', () => {
   it('runs a native TanStack stream with server instructions and physical attempt identity', async () => {
     const invocations: unknown[] = [];
     const lifecycleEvents: string[] = [];
+    const providerTerminals: unknown[] = [];
     const handler = createApplicationAIAgentRequestHandler({
       name: 'researcher',
       logicalModel: 'fast',
@@ -38,6 +40,7 @@ describe('generated application AI runtime', () => {
       provider: { kind: 'deterministic', response: 'evidenced' },
       tools: [toolContract()],
       persistence: persistence(),
+      tanstackPersistence: memoryPersistence,
       timeoutMs: 5_000,
       maximumConcurrency: 2,
       admit: () => admission(),
@@ -49,7 +52,7 @@ describe('generated application AI runtime', () => {
         version: 1,
       }),
       recovery: unavailableRecovery(),
-      attemptLifecycle: attemptLifecycle(lifecycleEvents),
+      attemptLifecycle: attemptLifecycle(lifecycleEvents, providerTerminals),
       invoke: async (...args) => {
         invocations.push(args);
         return {};
@@ -83,6 +86,12 @@ describe('generated application AI runtime', () => {
       'complete:7',
       'commit:message-',
     ]);
+    expect(providerTerminals).toEqual([
+      expect.objectContaining({
+        estimatedInputTokens: expect.any(Number),
+        estimatedOutputTokens: expect.any(Number),
+      }),
+    ]);
   });
 
   it('executes a declared typed tool from a deterministic starter fixture before returning text', async () => {
@@ -98,6 +107,7 @@ describe('generated application AI runtime', () => {
       },
       tools: [toolContract()],
       persistence: persistence(),
+      tanstackPersistence: memoryPersistence,
       timeoutMs: 5_000,
       maximumConcurrency: 1,
       admit: () => admission(),
@@ -142,6 +152,122 @@ describe('generated application AI runtime', () => {
     });
   });
 
+  it('grounds the deterministic Starter document fixture in the latest request', async () => {
+    const inputs: unknown[] = [];
+    const handler = createApplicationAIAgentRequestHandler({
+      name: 'writer',
+      logicalModel: 'fast',
+      instructions: 'Create the requested document.',
+      provider: {
+        kind: 'deterministic',
+        tool: {
+          input: { title: 'Fallback', body: 'Fallback', summary: 'Fallback', tags: [] },
+          inputFromLatestUser: 'document',
+        },
+      },
+      tools: [documentToolContract()],
+      persistence: persistence(),
+      tanstackPersistence: memoryPersistence,
+      timeoutMs: 5_000,
+      maximumConcurrency: 1,
+      admit: () => admission(),
+      reserveAttempt: ({ runId }) => ({
+        action: 'dispatch', runId, invocationId: 'request-fixture', attemptId: 'attempt-fixture', version: 1,
+      }),
+      recovery: unavailableRecovery(),
+      attemptLifecycle: attemptLifecycle([]),
+      invoke: async (_operation, input) => {
+        inputs.push(input);
+        return { id: 'document-1' };
+      },
+      handler: async (request, context) => chat({
+        adapter: context.tanstack.adapter,
+        messages: request.messages,
+        threadId: request.threadId,
+        runId: context.runId,
+        tools: context.tanstack.tools,
+        context: context.tanstack.execution,
+      }),
+    });
+    const response = await handler(agentRequest(
+      'Create a short live-review checklist document with exactly three checklist items.',
+    ));
+    expect(response.status).toBe(200);
+    await response.text();
+    expect(inputs).toHaveLength(1);
+    const body = String(Reflect.get(inputs[0] as object, 'body'));
+    expect(inputs[0]).toMatchObject({
+      title: 'Short live-review checklist document',
+      body: expect.stringContaining('## Objective'),
+    });
+    expect(body.length).toBeGreaterThan(900);
+    expect(body).toContain('Create a short live-review checklist document with exactly three checklist items.');
+    expect(body).toContain('## Risks and rollback');
+    expect(body.match(/- \[ \]/gu)).toHaveLength(3);
+  });
+
+  it('persists a terminal failure when provider setup fails after the run begins', async () => {
+    const lifecycleEvents: string[] = [];
+    const persistenceEvents: string[] = [];
+    const handler = createApplicationAIAgentRequestHandler({
+      name: 'researcher',
+      logicalModel: 'fast',
+      instructions: async () => {
+        throw new Error('provider credential rejected');
+      },
+      provider: { kind: 'deterministic', response: 'unused' },
+      tools: [],
+      persistence: {
+        async begin(input) {
+          persistenceEvents.push(`begin:${input.protocolRunId}`);
+          return {
+            conversationId: input.conversationId,
+            protocolRunId: input.protocolRunId,
+            principalScope: 'principal:test',
+            async append() {},
+            async complete() {
+              persistenceEvents.push('complete');
+            },
+            async terminate(input) {
+              persistenceEvents.push(`terminate:${input.status}:${input.reason}`);
+            },
+          };
+        },
+      },
+      tanstackPersistence: memoryPersistence,
+      timeoutMs: 5_000,
+      maximumConcurrency: 1,
+      admit: () => admission(),
+      reserveAttempt: ({ runId }) => ({
+        action: 'dispatch',
+        runId,
+        invocationId: 'invocation-provider-failure',
+        attemptId: 'attempt-provider-failure',
+        version: 1,
+      }),
+      recovery: unavailableRecovery(),
+      attemptLifecycle: attemptLifecycle(lifecycleEvents),
+      invoke: async () => ({}),
+      handler: async () => ({ unused: true }),
+    });
+
+    const response = await handler(agentRequest());
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({
+      error: 'agent_request_failed',
+      message: 'provider credential rejected',
+    });
+    expect(persistenceEvents).toEqual([
+      'begin:protocol-run-1',
+      'terminate:failed:provider credential rejected',
+    ]);
+    expect(lifecycleEvents).toEqual([
+      'dispatching:1',
+      'fail:provider-failed:2',
+    ]);
+  });
+
   it('commits a terminal empty assistant turn after a successful tool turn', async () => {
     const lifecycleEvents: string[] = [];
     const handler = createApplicationAIAgentRequestHandler({
@@ -151,6 +277,7 @@ describe('generated application AI runtime', () => {
       provider: { kind: 'deterministic' },
       tools: [],
       persistence: persistence(),
+      tanstackPersistence: memoryPersistence,
       timeoutMs: 5_000,
       maximumConcurrency: 1,
       admit: () => admission(),
@@ -224,6 +351,7 @@ describe('generated application AI runtime', () => {
       provider: { kind: 'deterministic' },
       tools: [toolContract()],
       persistence: persistence(),
+      tanstackPersistence: memoryPersistence,
       timeoutMs: 5_000,
       maximumConcurrency: 1,
       admit: () => admission(expired),
@@ -254,6 +382,7 @@ describe('generated application AI runtime', () => {
       provider: { kind: 'deterministic' },
       tools: [],
       persistence: persistence(),
+      tanstackPersistence: memoryPersistence,
       timeoutMs: 5_000,
       maximumConcurrency: 1,
       admit: () => admission(),
@@ -297,6 +426,7 @@ describe('generated application AI runtime', () => {
       provider: { kind: 'deterministic' },
       tools: [],
       persistence: persistence(),
+      tanstackPersistence: memoryPersistence,
       timeoutMs: 5_000,
       maximumConcurrency: 1,
       admit: () => admission(),
@@ -345,6 +475,7 @@ describe('generated application AI runtime', () => {
       provider: { kind: 'deterministic' },
       tools: [],
       persistence: persistence(),
+      tanstackPersistence: memoryPersistence,
       timeoutMs: 5_000,
       maximumConcurrency: 1,
       admit: () => admission(),
@@ -389,6 +520,7 @@ describe('generated application AI runtime', () => {
       provider: { kind: 'deterministic' },
       tools: [],
       persistence: persistence(),
+      tanstackPersistence: memoryPersistence,
       timeoutMs: 5_000,
       maximumConcurrency: 1,
       admit: () => admission(),
@@ -543,7 +675,10 @@ function recoveryObservation(
   };
 }
 
-function attemptLifecycle(events: string[]): ApplicationAIAgentAttemptLifecycle {
+function attemptLifecycle(
+  events: string[],
+  providerTerminals: unknown[] = [],
+): ApplicationAIAgentAttemptLifecycle {
   return {
     async dispatching(reservation) {
       events.push(`dispatching:${reservation.version}`);
@@ -553,8 +688,9 @@ function attemptLifecycle(events: string[]): ApplicationAIAgentAttemptLifecycle 
       events.push(`append:${String(event.type)}:${reservation.version}`);
       return { ...reservation, version: reservation.version + 1 };
     },
-    async completeProvider(reservation) {
+    async completeProvider(reservation, terminal) {
       events.push(`complete:${reservation.version}`);
+      providerTerminals.push(terminal);
       return { ...reservation, version: reservation.version + 1 };
     },
     async commitCanonical(reservation, terminal) {
@@ -583,14 +719,14 @@ function persistence(): ApplicationAIAgentPersistence {
   };
 }
 
-function agentRequest(): Request {
+function agentRequest(text = 'hello'): Request {
   return new Request('http://agent.test/__applik8s/v1/ai/chat', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
       threadId: 'conversation-1',
       runId: 'protocol-run-1',
-      messages: [{ role: 'user', content: 'hello' }],
+      messages: [{ role: 'user', content: text }],
     }),
   });
 }
@@ -663,6 +799,34 @@ function toolContract(): ApplicationAIAgentToolContract {
     impersonation: 'forbidden',
   };
   return { operation, transport: 'command', workloadAuthority };
+}
+
+function documentToolContract(): ApplicationAIAgentToolContract {
+  const contract = toolContract();
+  return {
+    ...contract,
+    operation: {
+      ...contract.operation,
+      input: {
+        digest: 'sha256:document-input',
+        schema: {
+          type: 'object',
+          properties: {
+            title: { type: 'string' },
+            body: { type: 'string' },
+            summary: { type: 'string' },
+            tags: { type: 'array', items: { type: 'string' } },
+          },
+          required: ['title', 'body', 'summary', 'tags'],
+          additionalProperties: false,
+        },
+      },
+    },
+    workloadAuthority: {
+      ...contract.workloadAuthority,
+      inputSchemaDigest: 'sha256:document-input',
+    },
+  };
 }
 
 function principal(): ApplicationExecutionPrincipal {

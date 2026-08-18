@@ -1,0 +1,7 @@
+import { Progress as ProgressPrimitive } from 'radix-ui';
+import { cn } from '#lib/utils';
+
+export function Progress({ value, label, className }: { readonly value: number; readonly label: string; readonly className?: string }) {
+  const bounded = Math.max(0, Math.min(100, value));
+  return <div className={cn('grid gap-2', className)}><div className="flex justify-between text-xs font-semibold text-stone-600 dark:text-stone-300"><span>{label}</span><span>{Math.round(bounded)}%</span></div><ProgressPrimitive.Root data-slot="progress" className="relative h-2 w-full overflow-hidden rounded-full bg-stone-200 dark:bg-stone-800" value={bounded} aria-label={label}><ProgressPrimitive.Indicator className="h-full w-full flex-1 bg-emerald-700 transition-transform" style={{ transform: `translateX(-${100 - bounded}%)` }} /></ProgressPrimitive.Root></div>;
+}

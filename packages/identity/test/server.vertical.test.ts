@@ -64,6 +64,7 @@ describe('application identity session boundary', () => {
       capabilities: {
         workspaceAdministration: true,
         applicationOperations: false,
+        workspaceSelection: 'admitted',
       },
     });
   });
@@ -85,6 +86,33 @@ describe('application identity session boundary', () => {
       kind: 'session',
       authenticated: false,
       assurance: [],
+    });
+  });
+
+  it('reports only that no workspace selector was admitted', async () => {
+    const admission = createDeterministicApplicationAdmission({
+      mode: 'starter',
+      application: 'research',
+      subject: 'member-1',
+      roles: ['authenticated'],
+      audience: ['research'],
+      trustedContext: { issuer: 'https://identity.example.test' },
+      catalogRevision: 'catalog-v1',
+      authorityRevision: 'authority-v1',
+    });
+    const handle = createApplicationIdentitySessionHandler({
+      authenticate: async () => admission,
+    });
+
+    const response = await handle(
+      new Request('https://research.example.test/__applik8s/v1/identity/session'),
+    );
+
+    await expect(response.json()).resolves.toMatchObject({
+      authenticated: true,
+      capabilities: {
+        workspaceSelection: 'none',
+      },
     });
   });
 });

@@ -1,31 +1,18 @@
 # v0.7 baseline and contract inventory
 
-This inventory is the Phase 0 authority for the v0.7 Agentic Platform work. It records what is being
-preserved from the reviewed Stimp starter, what Applik8s already owns, and which vocabulary and package
-boundaries must change before runtime expansion.
+This inventory is the Phase 0 authority for the v0.7 Agentic Platform work. It
+records the product behavior Applik8s preserves, improves, defers, or rejects
+and the package boundaries that own each reusable mechanism.
 
-## Pinned Stimp baseline
+## Agentic product baseline
 
-The reviewed `agent-saas-starter` baseline is pinned to:
-
-```text
-repository: /Users/yehudac/workspace/stimp
-revision:   602ec975f7c29c9e2faa7b767ec218745590c7cf
-template:   packages/create-app/templates/agent-saas-starter
-example:    examples/agent-saas-app
-```
-
-The pin refers to the committed tree only. The Stimp worktree contained uncommitted application and
-template changes during this review; those changes are deliberately not smuggled into the baseline.
-They require a later explicit revision and ledger update before adoption.
-
-[`v07-stimp-parity.json`](./v07-stimp-parity.json) pins the reviewed source
-blobs used by the baseline ledger.
-[`v07-agentic-start-stimp-capability-map.md`](./v07-agentic-start-stimp-capability-map.md)
-is the normative implementation and acceptance map for the complete committed
-product surface. `bun run check:v07:stimp` must verify both the pinned
+[`v07-product-baseline.json`](./v07-product-baseline.json) is the self-contained
+machine-readable product ledger.
+[`v07-agentic-start-capability-map.md`](./v07-agentic-start-capability-map.md)
+is the normative implementation and acceptance map for the complete
+product surface. `bun run check:v07:product-baseline` must verify both the versioned
 dispositions and the generated behavioral journeys; a source marker, prose-only
-claim, or unpinned moving Stimp checkout is not parity evidence.
+claim, or external checkout is not acceptance evidence.
 
 ## Baseline ledger
 
@@ -74,7 +61,7 @@ claim, or unpinned moving Stimp checkout is not parity evidence.
 
 ### Rejected
 
-- Copying the Stimp runtime, auth, billing, policy, workflow, or route implementation into each
+- Copying runtime, auth, billing, policy, workflow, or route implementation into each
   generated application.
 - Treating fixture-grade local auth, billing, policy, or deterministic agent execution as production
   implementations.

@@ -46,6 +46,7 @@ describe('application environment files', () => {
         env: {
           PATH: process.env.PATH ?? '',
           EXPLICIT_OPERATION_HOST: 'exported-value',
+          PRESERVED_SECRET: '',
         },
       },
     );

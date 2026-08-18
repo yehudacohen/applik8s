@@ -163,6 +163,7 @@ export interface DiscoveredApplicationGraph {
   readonly modelExports: readonly { readonly name: string; readonly modelName: string }[];
   readonly signalExports: readonly { readonly name: string; readonly signalId: string }[];
   readonly agentExports: readonly { readonly name: string; readonly agentName: string }[];
+  readonly objectStoreExports: readonly { readonly name: string; readonly objectStoreName: string }[];
 }
 
 export async function discoverApplicationGraphWithExports(
@@ -194,6 +195,7 @@ export async function discoverApplicationGraphWithExports(
         modelExports: discovered.value.applicationModels,
         signalExports: discovered.value.applicationSignals,
         agentExports: discovered.value.applicationAgents,
+        objectStoreExports: discovered.value.applicationObjectStores,
       },
     };
   }

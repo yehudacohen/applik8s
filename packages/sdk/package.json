@@ -29,6 +29,6 @@
   },
   "dependencies": {
     "@applik8s/core": "0.7.0",
-    "arktype": "^2.1.20"
+    "arktype": "2.2.1"
   }
 }

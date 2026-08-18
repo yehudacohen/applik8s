@@ -149,6 +149,10 @@ export async function runApplicationDeploy(
         outDir,
         cwd: io.cwd,
         stdout: io.stdout,
+        deployment: {
+          context: options.context,
+          installationSpec: instance.spec,
+        },
       });
     });
     io.stdout('Plan-only deployment completed without applying effects.');
@@ -182,6 +186,10 @@ export async function runApplicationDeploy(
       outDir,
       cwd: io.cwd,
       stdout: io.stdout,
+      deployment: {
+        context: options.context,
+        installationSpec: instance.spec,
+      },
     });
   });
   io.stdout(`Application ready: ${instance.apiVersion}/${instance.kind}/${instance.name}${readiness.url ? ` at ${readiness.url}` : ''}`);

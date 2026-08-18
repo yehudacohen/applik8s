@@ -1,23 +1,15 @@
 # Agentic Start capability map
 
 **Status:** Normative v0.7 implementation and acceptance plan
-**Baseline:** Stimp `agent-saas-starter` at
-`602ec975f7c29c9e2faa7b767ec218745590c7cf`
 
-This document maps the complete committed Stimp Start product baseline to the
-Applik8s primitives, maintained modules, provider adapters, generated
-application code, and evidence required to implement it. It is intentionally
-stronger than the existing source-marker ledger: a capability is not parity
-complete until the generated Agentic Start demonstrates the user-visible
-behavior.
-
-The pinned Git revision is authoritative. Uncommitted work in the Stimp
-worktree is not silently part of the baseline. Selected improvements from that
-worktree are listed separately as explicit Applik8s extensions.
+This document maps the complete Agentic product baseline to Applik8s
+primitives, maintained modules, provider adapters, generated application code,
+and executable evidence. A capability is complete only when the generated
+Agentic Start demonstrates its user-visible behavior.
 
 ## Ownership rules
 
-Agentic Start preserves behavior without copying Stimp's implementation:
+Agentic Start preserves product behavior without copying prototype implementation:
 
 - **Applik8s primitives** own generic execution, persistence, authority,
   identity, reactive delivery, infrastructure, and lifecycle semantics.
@@ -39,7 +31,7 @@ reusable modules, and provider seams needed to implement them.
 
 ## Developer-experience invariants
 
-Feature parity does not justify reproducing Stimp plumbing with different
+Product completeness does not justify reproducing prototype plumbing with different
 names. The v0.7 Agentic Start is conformant only when authored source obeys
 these rules:
 
@@ -511,7 +503,7 @@ ImportJob.on.reconcile(async job => {
 | Deployment | One application graph lowered through TypeKro and Alchemy |
 | Operations | Maintained observations and redacted `@applik8s/operations-ui` projections |
 
-## Committed Stimp baseline mapping
+## Product capability mapping
 
 Status values describe the current Applik8s worktree, not the intended release:
 
@@ -524,9 +516,9 @@ Status values describe the current Applik8s worktree, not the intended release:
 
 ### Generation, onboarding, and lifecycle
 
-| Capability | Stimp authority | Applik8s implementation | Agentic Start product shape | Current |
+| Product capability | Prior product shape | Applik8s implementation | Agentic Start product shape | Current |
 | --- | --- | --- | --- | --- |
-| Deterministic generation | `.stimp/registry.ts`, app config, registry test | `ApplicationStartDefinition`, deterministic generator plan, collision refusal | Run official TanStack CLI, apply deterministic feature packs, produce identical output twice | Implemented |
+| Deterministic generation | `legacy generator registry`, app config, registry test | `ApplicationStartDefinition`, deterministic generator plan, collision refusal | Run official TanStack CLI, apply deterministic feature packs, produce identical output twice | Implemented |
 | Official web foundation | `router.ts`, `ssr.tsx`, `client.tsx`, `vite.config.ts` | `@applik8s/vite`, `@applik8s/tanstack-start` | Preserve the official TanStack Start scaffold and file router | Implemented |
 | Feature-first organization | agents, tools, workflows, inbox, billing, routes | Maintained modules plus application feature directories | Generated research and workspace source is organized by product feature; account protocol plumbing and runtime artifacts remain framework-owned | Implemented |
 | Explicit lifecycle | `deployment.example`, TypeKro local/dev files | Applik8s CLI plan/deploy/status/destroy over one application graph | `bun run plan`, `deploy`, `status`, and `destroy` require no handwritten TypeKro | Implemented |
@@ -540,7 +532,7 @@ Status values describe the current Applik8s worktree, not the intended release:
 
 ### Authentication, identity, and sessions
 
-| Capability | Stimp authority | Applik8s implementation | Agentic Start product shape | Current |
+| Product capability | Prior product shape | Applik8s implementation | Agentic Start product shape | Current |
 | --- | --- | --- | --- | --- |
 | Email sign-up and sign-in | Better Auth adapter and auth routes | Provider-neutral identity operations through `IdentityProvider`; deterministic Starter and Ory Dedicated adapters | Ordinary typed `signUp`, `signIn`, and `signOut` calls; TanStack imports generate the admitted transport | Implemented |
 | Canonical session | session route and signed cookie | The compiler-owned Fetch gateway authenticates once and emits the provider-neutral public session view; the TanStack request adapter loads that view through the in-process gateway and hydrates the React identity provider | Generated browser components use `useApplicationIdentitySession()` without provider imports or a client-only loading shell; the identity acceptance suite covers restoration, expiry, and provider transitions | Implemented |
@@ -551,7 +543,7 @@ Status values describe the current Applik8s worktree, not the intended release:
 
 ### Workspaces, membership, and application-owned tenancy
 
-| Capability | Stimp authority | Applik8s implementation | Agentic Start product shape | Current |
+| Product capability | Prior product shape | Applik8s implementation | Agentic Start product shape | Current |
 | --- | --- | --- | --- | --- |
 | Workspace model | tenancy context/service and migration | Application-owned `Workspace`, `Membership`, and `Invitation` models | Generated `features/workspaces` declares the domain once with Drizzle relationships | Complete |
 | Create/select workspace | tenant routes and dashboard | Direct `Workspace.create(...)`, URL-addressable selection, and a server-side membership-filtered live view; browser route state remains an untrusted selector until membership is proven | The generated Start creates workspaces directly, writes only an untrusted UUID selector cookie, validates ownership or membership in PostgreSQL, and promotes the result into trusted context with a canonical digest; the live journey rejects a forged selector | Implemented |
@@ -561,17 +553,17 @@ Status values describe the current Applik8s worktree, not the intended release:
 
 ### Typed authority and product policy
 
-| Capability | Stimp authority | Applik8s implementation | Agentic Start product shape | Current |
+| Product capability | Prior product shape | Applik8s implementation | Agentic Start product shape | Current |
 | --- | --- | --- | --- | --- |
 | Role-based product authority | Casbin model, seed, and checks | Typed operations, `Role.can(...)`, scope selectors, grants, receipts, revocation | Generated roles refer to callable handles rather than resource/action strings | Implemented |
 | Workflow/tool admission | workflow and tool policy checks | The same operation identity is used by HTTP, MCP, agents, workflows, and direct calls | A member may call a tool or workflow only when its typed role permits that handle and scope | Implemented |
 | Policy administration | role-policy routes | Runtime role/grant operations plus redacted operations UI | Administrators inspect and change bounded application policy without editing string registries | Implemented |
 | Entitlement admission | billing-entitlement policy checks | `@applik8s/usage` entitlement model plus transaction-authoritative `requireActiveEntitlement(...)` | The ordinary `ResearchReview.create(...)` call is admitted inside its model transaction against the trusted workspace scope; entitlements narrow existing role authority and never manufacture identity | Implemented |
-| Auditable decisions | Stimp result records | Canonical admission, grant, signal, and execution receipts | Operations UI correlates principal, role, operation, scope, decision, run, and outcome | Implemented |
+| Auditable decisions | Decision and result history | Canonical admission, grant, signal, and execution receipts | Operations UI correlates principal, role, operation, scope, decision, run, and outcome | Implemented |
 
 ### Conversations, AI, tools, and memory
 
-| Capability | Stimp authority | Applik8s implementation | Agentic Start product shape | Current |
+| Product capability | Prior product shape | Applik8s implementation | Agentic Start product shape | Current |
 | --- | --- | --- | --- | --- |
 | Public safe assistant | `/chat/public` | A deliberately public typed operation with bounded deterministic Starter inference | Public chat answers onboarding questions through its generated function-native facade and cannot read private models, tools, or workspace context; the exact generated application path passes on OrbStack | Implemented |
 | Conversation inbox | inbox and conversation routes | `@applik8s/conversations` models, relationships, operations, and views | Generated routes list, create, rename, archive, and select conversations through direct callable handles; before-commit policy recomputes principal scope and permits only title/archive patches; the exact generated app proves reload and graph-reapply durability | Implemented |
@@ -584,7 +576,7 @@ Status values describe the current Applik8s worktree, not the intended release:
 
 ### Workflows, approvals, runs, and artifacts
 
-| Capability | Stimp authority | Applik8s implementation | Agentic Start product shape | Current |
+| Product capability | Prior product shape | Applik8s implementation | Agentic Start product shape | Current |
 | --- | --- | --- | --- | --- |
 | Durable review workflow | review workflow and Inngest adapter | Function-native `workflow(...)`, Hatchet provider, direct child calls, `context.step(...)` | Authored as ordinary control flow with provider-safe external effects | Implemented |
 | Human approval | approval route and workflow approval | Typed signal event plus `workflow.emitSignal(...)` and callable one-shot decision | Approval appears over normal SSE; authenticated reviewer calls `signal.approve(...)` or `reject(...)` | Implemented |
@@ -597,7 +589,7 @@ Status values describe the current Applik8s worktree, not the intended release:
 
 ### Usage, entitlements, and billing
 
-| Capability | Stimp authority | Applik8s implementation | Agentic Start product shape | Current |
+| Product capability | Prior product shape | Applik8s implementation | Agentic Start product shape | Current |
 | --- | --- | --- | --- | --- |
 | Usage facts | usage dashboard and provider status | `@applik8s/usage` UsageFact model populated from AI/tool/workflow observations | Dashboard reports bounded provider/model/operation usage without exposing credentials | Implemented |
 | Entitlements | billing entitlement route | Maintained Entitlement model plus typed operation admission | Application plans map to provider-neutral capability limits and periods | Implemented |
@@ -609,7 +601,7 @@ Status values describe the current Applik8s worktree, not the intended release:
 
 ### Operations, security, and distribution
 
-| Capability | Stimp authority | Applik8s implementation | Agentic Start product shape | Current |
+| Product capability | Prior product shape | Applik8s implementation | Agentic Start product shape | Current |
 | --- | --- | --- | --- | --- |
 | Health/readiness | health and runtime routes | Provider observations, workload readiness, migration state, consumer lag, workflow health | `/healthz` is liveness; readiness and degraded dependencies are separately projected | Implemented |
 | Operations control center | admin routes and dashboards | `@applik8s/operations-ui` redacted snapshot and typed administrative operations | One maintained route covers runs, providers, consumers, projections, authority, identity, storage, and gateways | Implemented |
@@ -621,8 +613,8 @@ Status values describe the current Applik8s worktree, not the intended release:
 
 ## Explicit Applik8s v0.7 extensions
 
-These are not smuggled in from the dirty Stimp worktree. They are deliberate
-improvements that make sense for a production-oriented Agentic Start:
+These are deliberate improvements that make sense for a production-oriented
+Agentic Start:
 
 | Extension | Primitive implementation | Reason |
 | --- | --- | --- |
@@ -634,7 +626,7 @@ improvements that make sense for a production-oriented Agentic Start:
 | Search across conversations/artifacts/runs | One logical model search contract with PostgreSQL/OpenSearch providers | Demonstrates provider multiplexing without changing application queries |
 | MCP exposure of authorized tools | The same callable tool handles and operation authority | Makes the starter genuinely agentic rather than merely chat-enabled |
 | Projection-backed live dashboards | `Model.view(...)`, projections, rebuild authority, resumable SSE | Demonstrates the function-native reactive thesis |
-| Complete deployment profiles | Starter, explicit non-production Developer, Dedicated, and External from one installation schema; TypeKro hot reload remains an independent deployment aspect | Stimp required handwritten local/dev TypeKro files |
+| Complete deployment profiles | Starter, explicit non-production Developer, Dedicated, and External from one installation schema; TypeKro hot reload remains an independent deployment aspect | Earlier prototypes required handwritten local/dev TypeKro files |
 
 ## Generated application shape
 
@@ -696,10 +688,10 @@ Transport-level admission remains compiler-owned. The application author sees
 typed roles, callable handles, framework-derived principals, and ordinary
 TanStack routes.
 
-## Remaining release qualification
+## Release qualification
 
-The implementation surface is converged. The remaining v0.7 work is evidence
-and product hardening rather than new framework capability:
+The implementation surface is converged. The release retains these evidence
+and product-hardening gates:
 
 1. retain exact packed-consumer and official TanStack generation/build gates;
 2. keep the research starter's workspace, assistant, billing, conversation,
@@ -708,7 +700,12 @@ and product hardening rather than new framework capability:
    maintained account journeys green on OrbStack;
 4. run browser zoning, identity profile, TypeKro/Alchemy lifecycle, performance,
    and release-scorecard gates against the same commit;
-5. publish no v0.7 tag until those receipts are current and explicitly reviewed.
+5. require current exact-candidate receipts and explicit maintainer review
+   before publishing the v0.7 tag.
+
+The maintainer completed that review and explicitly authorized v0.7.0 on
+2026-08-18. The publication workflow must still prove the tag, packages,
+operator-host image, and published-consumer build before reporting success.
 
 ## Acceptance matrix
 
@@ -736,6 +733,6 @@ Parity requires executable generated-application journeys, not source markers:
 9. Prove browser bundle zoning, redacted public schemas, authenticated SSE
    resumption, CSRF/origin policy, and context-bound cursors.
 
-The scorecard may mark Stimp behavioral parity complete only after the pinned
-baseline map, the generated behavior fixture, and the applicable live/browser
+The scorecard may mark the Agentic product baseline complete only after the
+capability map, generated behavior fixture, and applicable live/browser
 journeys all pass against one commit.

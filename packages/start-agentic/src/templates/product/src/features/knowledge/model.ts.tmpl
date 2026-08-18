@@ -1,0 +1,232 @@
+import {
+  module,
+  search,
+  verifyApplicationObjectCompletionReceipt,
+} from '@applik8s/applik8s';
+import {
+  applicationAgentKnowledgeContextSchema as AgentKnowledgeContextResult,
+  applicationKnowledgeItemSchema as KnowledgeItem,
+  applicationKnowledgeSources as KnowledgeSourceTable,
+  knowledge as maintainedKnowledge,
+  listApplicationKnowledgeSources,
+  loadApplicationAgentKnowledge,
+} from '@applik8s/knowledge';
+import { type } from 'arktype';
+import { application } from '../../app';
+import { ArtifactObjects } from '../../modules';
+import { database } from '../../providers';
+import { agenticWorkspaceScope } from '../../workspace-scope';
+
+const knowledgeQueries = { database, scope: agenticWorkspaceScope } as const;
+
+async function listKnowledge(input: object, context: Parameters<typeof listApplicationKnowledgeSources>[1]) {
+  return listApplicationKnowledgeSources(input, context, knowledgeQueries);
+}
+
+async function loadAgentKnowledge(input: { readonly sourceIds?: readonly string[] }, context: Parameters<typeof loadApplicationAgentKnowledge>[1]) {
+  return loadApplicationAgentKnowledge(input, context, knowledgeQueries);
+}
+
+const workflow = application.workflow;
+const KnowledgeWorker = application.serviceIdentity('knowledge-ingestion-worker');
+
+const knowledge = module('knowledge-workbench', {}, currentApplication => {
+  currentApplication.include(maintainedKnowledge);
+  const KnowledgeSearch = currentApplication.index(
+    'workspace-knowledge-search',
+    {
+      root: KnowledgeSourceTable,
+      authorizationFields: ['principalScope'],
+    },
+    search.filter(KnowledgeSourceTable.id).as('id'),
+    search.text(KnowledgeSourceTable.title, { boost: 3 }).as('title'),
+    search.text(KnowledgeSourceTable.content).as('content'),
+    search.filter(KnowledgeSourceTable.sourceUrl).as('sourceUrl'),
+    search.filter(KnowledgeSourceTable.principalScope).as('principalScope'),
+    search.filter(KnowledgeSourceTable.state).as('state'),
+  );
+  const KnowledgeSources = KnowledgeSourceTable.view({ input: type({}), output: KnowledgeItem.array(), database, authorize: ({ principal }) => principal.id.length > 0, budgets: { timeoutMs: 2_000, maxRows: 100, maxResultBytes: 1_000_000 } }, listKnowledge);
+  const AgentKnowledgeContext = KnowledgeSourceTable.view({ input: type({ 'sourceIds?': 'string[]' }), output: AgentKnowledgeContextResult, database, authorize: ({ principal }) => principal.id.length > 0, budgets: { timeoutMs: 1_000, maxRows: 20, maxResultBytes: 256_000 } }, loadAgentKnowledge);
+  KnowledgeSourceTable.create.beforeCommit({ history: true }, async function protectKnowledgeCreation(source, input, context) {
+    if (!context.principal) throw new Error('Knowledge creation requires an admitted principal.');
+    if (input.principalScope !== undefined || input.createdAt !== undefined || input.updatedAt !== undefined || input.failureReason !== undefined || input.processingStage !== undefined || input.indexedAt !== undefined || input.chunkCount !== undefined || input.state !== undefined) {
+      throw new Error('Knowledge scope, ingestion state, diagnostics, and timestamps are server-owned.');
+    }
+    const objectFields = [input.objectKey, input.mediaType, input.size, input.sha256, input.uploadReceipt];
+    const hasObject = objectFields.some(value => value !== undefined && value !== null);
+    const hasCompleteObject = typeof input.objectKey === 'string'
+      && typeof input.mediaType === 'string'
+      && typeof input.size === 'number'
+      && typeof input.sha256 === 'string'
+      && typeof input.uploadReceipt === 'string';
+    if (hasObject && !hasCompleteObject) {
+      throw new Error('Uploaded knowledge requires verified object key, media type, size, and digest metadata.');
+    }
+    if (input.kind === 'upload' && !hasCompleteObject) {
+      throw new Error('Uploaded knowledge must be verified by the object provider before admission.');
+    }
+    if (input.kind !== 'upload' && hasObject) {
+      throw new Error('Only uploaded knowledge may carry object-provider metadata.');
+    }
+    if (input.kind === 'upload' && (input.content ?? '').trim()) {
+      throw new Error('Uploaded knowledge content is extracted by the server and must not be supplied by the browser.');
+    }
+    if (input.kind === 'upload') {
+      if (
+        typeof input.id !== 'string'
+        || typeof input.objectKey !== 'string'
+        || typeof input.mediaType !== 'string'
+        || typeof input.size !== 'number'
+        || typeof input.sha256 !== 'string'
+        || typeof input.uploadReceipt !== 'string'
+      ) {
+        throw new Error('Uploaded knowledge object evidence is incomplete.');
+      }
+      if (!verifyApplicationObjectCompletionReceipt({
+        receipt: input.uploadReceipt,
+        secret: process.env.APPLIK8S_CURSOR_SECRET ?? '',
+        principalId: context.principal.id,
+        authorizationVersion: context.principal.authorityRevision,
+        store: 'agentic-artifacts',
+        objectId: input.id,
+        key: input.objectKey,
+        contentType: input.mediaType,
+        size: input.size,
+        sha256: input.sha256,
+      })) {
+        throw new Error('Uploaded knowledge completion evidence is invalid or no longer authorized.');
+      }
+    }
+    source.patch({ spec: {
+      principalScope: agenticWorkspaceScope(context),
+      ...(input.kind === 'upload'
+        ? { state: 'processing' as const, processingStage: 'verified-upload' }
+        : { state: 'ready' as const, processingStage: 'reviewed-text', indexedAt: context.now, chunkCount: 1 }),
+    } });
+  });
+  KnowledgeSourceTable.update.beforeCommit({ history: true }, async function protectKnowledgeUpdate(source, input, context) {
+    if (!context.principal || source.value.principalScope !== agenticWorkspaceScope(context)) throw new Error('The knowledge source is outside the admitted workspace scope.');
+    const workerUpdate = context.principal.kind === 'execution'
+      && context.principal.serviceIdentity?.id === KnowledgeWorker.identity.id;
+    if (
+      'principalScope' in input.patch
+      || 'createdAt' in input.patch
+      || 'updatedAt' in input.patch
+      || 'objectKey' in input.patch
+      || 'mediaType' in input.patch
+      || 'size' in input.patch
+      || 'sha256' in input.patch
+      || 'uploadReceipt' in input.patch
+    ) throw new Error('Knowledge scope, object identity, diagnostics, and timestamps are server-owned.');
+    if (workerUpdate) {
+      const allowed = new Set(['content', 'failureReason', 'processingStage', 'indexedAt', 'chunkCount', 'state']);
+      if (Object.keys(input.patch).some(field => !allowed.has(field))) {
+        throw new Error('The knowledge ingestion worker may change only extraction and indexing outcomes.');
+      }
+    } else {
+      const allowed = new Set(['title', 'content', 'sourceUrl', 'state']);
+      if (Object.keys(input.patch).some(field => !allowed.has(field))) {
+        throw new Error('Knowledge members may change only reviewed content, title, source URL, or enabled state.');
+      }
+      if (source.value.kind === 'upload' && 'content' in input.patch) {
+        throw new Error('Content extracted from an uploaded source is server-owned.');
+      }
+      if ('state' in input.patch && input.patch.state !== 'ready' && input.patch.state !== 'disabled') {
+        throw new Error('Members may only enable or disable an indexed knowledge source.');
+      }
+    }
+    source.patch({ spec: { updatedAt: context.now } });
+  });
+  KnowledgeSourceTable.delete.beforeCommit({ history: true }, async function protectKnowledgeDeletion(source, _input, context) {
+    if (!context.principal || source.value.principalScope !== agenticWorkspaceScope(context)) {
+      throw new Error('The knowledge source is outside the admitted workspace scope.');
+    }
+  });
+  const ingestKnowledgeSource = workflow(
+    'starter.knowledge.ingest.v1',
+    {
+      input: type({ sourceId: 'string', objectKey: 'string', mediaType: 'string', size: 'number', sha256: 'string' }),
+      output: type({ sourceId: 'string', state: "'ready' | 'failed'", chunkCount: 'number' }),
+    },
+    {
+      identity: KnowledgeWorker,
+      authority: [KnowledgeSourceTable.update.all()],
+      retries: 4,
+      executionTimeoutSeconds: 60,
+      idempotencyKey: ({ sourceId, objectKey }) => `${sourceId}:${objectKey}`,
+    },
+    async function ingestVerifiedKnowledge(input) {
+      try {
+        const metadata = await ArtifactObjects.head(input.objectKey);
+        if (
+          !metadata
+          || metadata.size !== input.size
+          || metadata.contentType !== input.mediaType
+          || metadata.sha256 !== input.sha256
+        ) {
+          throw new Error('The verified upload no longer matches its admitted object metadata.');
+        }
+        const bytes = await ArtifactObjects.get(input.objectKey);
+        if (!bytes || bytes.byteLength !== input.size) {
+          throw new Error('The verified knowledge object is unavailable or incomplete.');
+        }
+        const content = new TextDecoder('utf-8', { fatal: true }).decode(bytes).trim();
+        if (!content) throw new Error('The uploaded knowledge source contains no readable text.');
+        if (content.includes('EICAR-STANDARD-ANTIVIRUS-TEST-FILE')) {
+          throw new Error('The uploaded object matched the malware test signature.');
+        }
+        const chunkCount = Math.max(1, Math.ceil(content.length / 4_000));
+        await KnowledgeSourceTable.update({ identity: input.sourceId, patch: {
+          content: content.slice(0, 1_000_000),
+          state: 'ready',
+          processingStage: 'search-projection-pending',
+          indexedAt: new Date().toISOString(),
+          chunkCount,
+        } });
+        return { sourceId: input.sourceId, state: 'ready' as const, chunkCount };
+      } catch (error) {
+        await KnowledgeSourceTable.update({ identity: input.sourceId, patch: {
+          state: 'failed',
+          processingStage: 'failed',
+          failureReason: error instanceof Error ? error.message.slice(0, 240) : 'Knowledge ingestion failed.',
+          chunkCount: 0,
+        } });
+        return { sourceId: input.sourceId, state: 'failed' as const, chunkCount: 0 };
+      }
+    },
+  );
+  const KnowledgeIngestionCoordinator = KnowledgeSourceTable.on.create(
+    {
+      processor: { replicas: 1, concurrency: 4 },
+      retry: { maxAttempts: 5, initialDelayMs: 250, maxDelayMs: 5_000, deadLetter: true },
+      budgets: { timeoutMs: 10_000, maxInputBytes: 128_000 },
+    },
+    async function beginKnowledgeIngestion(created) {
+      if (created.value.kind !== 'upload' || !created.value.objectKey || !created.value.mediaType || created.value.size === null || !created.value.sha256) return;
+      await ingestKnowledgeSource.start({
+        sourceId: created.value.id,
+        objectKey: created.value.objectKey,
+        mediaType: created.value.mediaType,
+        size: created.value.size,
+        sha256: created.value.sha256,
+      }, { idempotencyKey: `${created.value.id}:${created.value.objectKey}` });
+    },
+  );
+  const Owner = currentApplication.role('workspace-owner');
+  const Administrator = currentApplication.role('workspace-administrator');
+  const ApplicationOperator = currentApplication.role('application-operator');
+  Owner.can(KnowledgeSourceTable.create, KnowledgeSourceTable.update, KnowledgeSourceTable.delete, KnowledgeSources, AgentKnowledgeContext, KnowledgeSearch.search);
+  Administrator.can(KnowledgeSourceTable.create, KnowledgeSourceTable.update, KnowledgeSourceTable.delete, KnowledgeSources, AgentKnowledgeContext, KnowledgeSearch.search);
+  ApplicationOperator.can(KnowledgeSourceTable.create, KnowledgeSourceTable.update, KnowledgeSourceTable.delete, KnowledgeSources, AgentKnowledgeContext, KnowledgeSearch.search);
+  KnowledgeWorker.can(KnowledgeSourceTable.update.all());
+  return { KnowledgeSource: KnowledgeSourceTable, KnowledgeSources, AgentKnowledgeContext, KnowledgeSearch, ingestKnowledgeSource, KnowledgeIngestionCoordinator };
+});
+
+export const {
+  KnowledgeSource,
+  KnowledgeSources,
+  AgentKnowledgeContext,
+  KnowledgeSearch,
+  ingestKnowledgeSource,
+  KnowledgeIngestionCoordinator,
+} = application.include(knowledge);

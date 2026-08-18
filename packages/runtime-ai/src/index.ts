@@ -17,6 +17,7 @@ import type {
 import type {
   ApplicationTanStackAgentRuntime,
   ApplicationTanStackAIAgentRequest,
+  ApplicationTanStackChatTranscriptPersistence,
   ApplicationTanStackToolExecutionContext,
   ApplicationTanStackToolInvocation,
   ApplicationTanStackToolOperation,
@@ -24,6 +25,7 @@ import type {
 import {
   applicationTanStackStandardSchema,
   asTool,
+  reconstructApplicationTanStackChat,
 } from '@applik8s/ai-tanstack';
 import {
   type ApplicationOperationAuthorizationContract,
@@ -38,6 +40,7 @@ import type {
   ApplicationRequestAdmission,
   ApplicationWorkloadAuthorityEnvelope,
   JsonObject,
+  JsonValue,
 } from '@applik8s/core';
 import {
   type AnyTextAdapter,
@@ -61,6 +64,7 @@ export type ApplicationAITextProvider =
       readonly tool?: {
         readonly index?: number;
         readonly input: JsonObject;
+        readonly inputFromLatestUser?: 'document';
       };
     }
   | {
@@ -111,6 +115,8 @@ export interface ApplicationAIAgentAttemptLifecycle {
     terminal: {
       readonly messageId: string;
       readonly usage?: Readonly<Record<string, unknown>>;
+      readonly estimatedInputTokens?: number;
+      readonly estimatedOutputTokens?: number;
     },
   ) => Promise<ApplicationAIAgentAttemptReservation>;
   readonly commitCanonical: (
@@ -152,6 +158,11 @@ export interface ApplicationAIAgentRuntimeOptions<
   readonly provider: ApplicationAITextProvider;
   readonly tools: readonly ApplicationAIAgentToolContract[];
   readonly persistence: ApplicationAIAgentPersistence;
+  readonly tanstackPersistence: (input: {
+    readonly principal: ApplicationExecutionPrincipal;
+    readonly trustedContext: Readonly<Record<string, JsonValue>>;
+    readonly threadId: string;
+  }) => ApplicationTanStackChatTranscriptPersistence;
   readonly timeoutMs: number;
   readonly maximumConcurrency: number;
   readonly maximumRequestBytes?: number;
@@ -170,6 +181,7 @@ export interface ApplicationAIAgentRuntimeOptions<
   readonly reserveAttempt: (
     input: {
       readonly principal: ApplicationExecutionPrincipal;
+      readonly trustedContext: Readonly<Record<string, JsonValue>>;
       readonly threadId: string;
       readonly runId: string;
       readonly logicalModel: string;
@@ -209,6 +221,30 @@ export function createApplicationAIAgentRequestHandler<TResult>(
     if (request.method === 'GET' && (url.pathname === '/healthz' || url.pathname === '/readyz')) {
       return Response.json({ ready: true, agent: options.name });
     }
+    if (request.method === 'GET' && url.pathname === '/__applik8s/v1/ai/chat') {
+      const threadId = url.searchParams.get('threadId')?.trim() ?? '';
+      if (!threadId) {
+        return Response.json({ messages: [], activeRun: null, interrupts: null }, {
+          headers: { 'cache-control': 'no-store' },
+        });
+      }
+      const runId = `hydrate:${threadId}`;
+      const admission = await options.admit(request, {
+        threadId,
+        runId,
+        messages: [],
+      });
+      const principal = admission.principal;
+      assertAgentPrincipal(principal, options.name);
+      const persistence = options.tanstackPersistence({
+        principal,
+        trustedContext: admission.trustedContext,
+        threadId,
+      });
+      return reconstructApplicationTanStackChat(persistence, request, {
+        authorize: () => true,
+      });
+    }
     if (request.method !== 'POST' || url.pathname !== '/__applik8s/v1/ai/chat') {
       return Response.json({ error: 'not_found' }, { status: 404 });
     }
@@ -234,6 +270,7 @@ export function createApplicationAIAgentRequestHandler<TResult>(
       assertAgentPrincipal(principal, options.name);
       let reservation = await options.reserveAttempt({
         principal,
+        trustedContext: admission.trustedContext,
         threadId: body.threadId,
         runId: body.runId,
         logicalModel: options.logicalModel,
@@ -276,110 +313,143 @@ export function createApplicationAIAgentRequestHandler<TResult>(
         });
         throw error;
       }
-      const instructions = typeof options.instructions === 'string'
-        ? options.instructions
-        : await options.instructions(body.data ?? {});
-      if (!instructions.trim()) {
-        throw new Error(`Agent ${options.name} resolved empty instructions.`);
-      }
-      const controller = new AbortController();
-      const abort = () => controller.abort(request.signal.reason);
-      request.signal.addEventListener('abort', abort, { once: true });
-      const timeout = setTimeout(
-        () => controller.abort(new Error(`Agent ${options.name} exceeded ${options.timeoutMs}ms.`)),
-        options.timeoutMs,
-      );
-      let executionTransferred = false;
-      const releaseExecution = () => {
-        clearTimeout(timeout);
-        request.signal.removeEventListener('abort', abort);
-      };
-      const execution: ApplicationTanStackToolExecutionContext = {
-        principal,
-        invocationId: reservation.invocationId,
-        attemptId: reservation.attemptId,
-        async invoke<TInput, TOutput>(
-          operation: ApplicationTanStackToolOperation<TInput, TOutput>,
-          input: TInput,
-          invocation: ApplicationTanStackToolInvocation,
-        ): Promise<TOutput> {
-          const tool = requiredTool(options.tools, operation.operation.id);
-          if (tool.workloadAuthority.operationId !== tool.operation.id) {
-            throw new Error(`Agent ${options.name} tool authority does not match ${tool.operation.id}.`);
-          }
-          return await options.invoke(
-            tool.operation,
-            input,
-            invocation,
-            admission,
-          ) as TOutput;
-        },
-      };
-      const runtime: ApplicationTanStackAgentRuntime = {
-        adapter: withApplicationInstructions(baseAdapter, instructions),
-        tools: operationTools,
-        persistence: options.persistence,
-        execution,
-      };
+      let persistenceTerminal = false;
       try {
-        const result = await options.handler(
-          {
-            threadId: body.threadId,
-            messages: body.messages,
-            ...(body.resume !== undefined ? { resume: body.resume } : {}),
+        const instructions = typeof options.instructions === 'string'
+          ? options.instructions
+          : await options.instructions(body.data ?? {});
+        if (!instructions.trim()) {
+          throw new Error(`Agent ${options.name} resolved empty instructions.`);
+        }
+        const controller = new AbortController();
+        const abort = () => controller.abort(request.signal.reason);
+        request.signal.addEventListener('abort', abort, { once: true });
+        const timeout = setTimeout(
+          () => controller.abort(new Error(`Agent ${options.name} exceeded ${options.timeoutMs}ms.`)),
+          options.timeoutMs,
+        );
+        let executionTransferred = false;
+        const releaseExecution = () => {
+          clearTimeout(timeout);
+          request.signal.removeEventListener('abort', abort);
+        };
+        const execution: ApplicationTanStackToolExecutionContext = {
+          principal,
+          invocationId: reservation.invocationId,
+          attemptId: reservation.attemptId,
+          async invoke<TInput, TOutput>(
+            operation: ApplicationTanStackToolOperation<TInput, TOutput>,
+            input: TInput,
+            invocation: ApplicationTanStackToolInvocation,
+          ): Promise<TOutput> {
+            const tool = requiredTool(options.tools, operation.operation.id);
+            if (tool.workloadAuthority.operationId !== tool.operation.id) {
+              throw new Error(`Agent ${options.name} tool authority does not match ${tool.operation.id}.`);
+            }
+            return await options.invoke(
+              tool.operation,
+              input,
+              invocation,
+              admission,
+            ) as TOutput;
           },
-          {
-            runId: reservation.runId,
-            invocationId: reservation.invocationId,
+        };
+        const runtime: ApplicationTanStackAgentRuntime = {
+          adapter: withApplicationInstructions(baseAdapter, instructions),
+          tools: operationTools,
+          persistence: options.tanstackPersistence({
             principal,
-            signal: controller.signal,
-            tanstack: runtime,
-          },
-        );
-        if (result instanceof Response) {
-          throw new Error(
-            `Agent ${options.name} returned an opaque Response; managed agents must return a native TanStack stream or a serializable result so durability remains observable.`,
+            trustedContext: admission.trustedContext,
+            threadId: body.threadId,
+          }),
+          execution,
+        };
+        try {
+          const result = await options.handler(
+            {
+              threadId: body.threadId,
+              messages: body.messages,
+              ...(body.resume !== undefined ? { resume: body.resume } : {}),
+            },
+            {
+              runId: reservation.runId,
+              invocationId: reservation.invocationId,
+              attemptId: reservation.attemptId,
+              principal,
+              trustedContext: admission.trustedContext,
+              signal: controller.signal,
+              tanstack: runtime,
+            },
           );
-        }
-        if (isAsyncIterable(result)) {
-          const response = toServerSentEventsResponse(managedAgentStream(
-            durableAgentStream(
-              result as AsyncIterable<StreamChunk>,
-              reservation,
-              options.attemptLifecycle,
-              persistedRun,
-              controller.signal,
-            ),
-            releaseExecution,
-          ), {
-            abortController: controller,
-          });
-          const managed = responseWithCapacity(response, releaseCapacity);
-          executionTransferred = true;
-          capacityTransferred = true;
-          return managed;
-        }
-        const messageId = `message-${reservation.attemptId}`;
-        reservation = await options.attemptLifecycle.completeProvider(
-          reservation,
-          { messageId },
-        );
-        const completedAt = new Date().toISOString();
-        await persistedRun.complete({
-          messageId,
-          content: jsonValue(result, 'Agent result'),
-          completedAt,
-        });
-        await options.attemptLifecycle.commitCanonical(
-          reservation,
-          {
+          if (result instanceof Response) {
+            throw new Error(
+              `Agent ${options.name} returned an opaque Response; managed agents must return a native TanStack stream or a serializable result so durability remains observable.`,
+            );
+          }
+          if (isAsyncIterable(result)) {
+            const response = toServerSentEventsResponse(managedAgentStream(
+              durableAgentStream(
+                result as AsyncIterable<StreamChunk>,
+                reservation,
+                options.attemptLifecycle,
+                persistedRun,
+                controller.signal,
+                estimatedTokenCount(body.messages),
+              ),
+              releaseExecution,
+            ), {
+              abortController: controller,
+            });
+            const managed = responseWithCapacity(response, releaseCapacity);
+            executionTransferred = true;
+            capacityTransferred = true;
+            return managed;
+          }
+          const messageId = `message-${reservation.attemptId}`;
+          reservation = await options.attemptLifecycle.completeProvider(
+            reservation,
+            {
+              messageId,
+              estimatedInputTokens: estimatedTokenCount(body.messages),
+              estimatedOutputTokens: estimatedTokenCount(result),
+            },
+          );
+          const completedAt = new Date().toISOString();
+          await persistedRun.complete({
             messageId,
-            content: JSON.stringify(result),
-          },
-        );
-        return Response.json({ result });
-      } finally {
-        if (!executionTransferred) releaseExecution();
+            content: jsonValue(result, 'Agent result'),
+            completedAt,
+          });
+          persistenceTerminal = true;
+          await options.attemptLifecycle.commitCanonical(
+            reservation,
+            {
+              messageId,
+              content: JSON.stringify(result),
+            },
+          );
+          return Response.json({ result });
+        } finally {
+          if (!executionTransferred) releaseExecution();
+        }
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        if (!persistenceTerminal) {
+          await Promise.allSettled([
+            persistedRun.terminate({
+              status: request.signal.aborted ? 'cancelled' : 'failed',
+              reason,
+              terminatedAt: new Date().toISOString(),
+            }),
+            options.attemptLifecycle.fail(reservation, {
+              classification: request.signal.aborted
+                ? 'cancelled'
+                : 'provider-failed',
+              reason,
+            }),
+          ]);
+        }
+        throw error;
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -466,6 +536,7 @@ async function* durableAgentStream(
   lifecycle: ApplicationAIAgentAttemptLifecycle,
   persistence: ApplicationAIAgentPersistenceRun,
   signal: AbortSignal,
+  estimatedInputTokens: number,
 ): AsyncIterable<StreamChunk> {
   let reservation = initialReservation;
   let terminal = false;
@@ -521,6 +592,8 @@ async function* durableAgentStream(
         messageId ??= `message-${reservation.attemptId}`;
         reservation = await lifecycle.completeProvider(reservation, {
           messageId,
+          estimatedInputTokens,
+          estimatedOutputTokens: estimatedTokenCount(content),
           ...(chunk.usage
             ? { usage: jsonRecord(chunk.usage, 'TanStack AI usage') }
             : {}),
@@ -572,6 +645,11 @@ async function* durableAgentStream(
     }
     throw error;
   }
+}
+
+function estimatedTokenCount(value: unknown): number {
+  const serialized = typeof value === 'string' ? value : JSON.stringify(value);
+  return Math.max(1, Math.ceil((serialized?.length ?? 0) / 4));
 }
 
 async function* managedAgentStream(
@@ -854,6 +932,7 @@ export function applicationAITextAdapter(
 function applicationAgentTool(
   contract: ApplicationAIAgentToolContract,
 ): ReturnType<typeof asTool> {
+  const presentation = applicationOperationPresentation(contract.operation);
   const operationContract = clientOperationContract(
     contract.operation,
     contract.transport,
@@ -891,7 +970,43 @@ function applicationAgentTool(
       : createApplicationMutationOperation(operationContract, invoke, schemas);
   return asTool(operation, {
     needsApproval: contract.operation.authority.grantable,
+    presentation,
   });
+}
+
+function applicationOperationPresentation(
+  descriptor: ApplicationOperationDescriptor,
+): {
+  readonly label: string;
+  readonly runningLabel: string;
+  readonly completedLabel: string;
+} {
+  const target = humanizeApplicationOperationToken(
+    descriptor.target?.model ?? descriptor.name,
+  );
+  const action = descriptor.kind === 'model.create'
+    ? 'Create'
+    : descriptor.kind === 'model.update'
+      ? 'Update'
+      : descriptor.kind === 'model.delete'
+        ? 'Delete'
+        : descriptor.kind === 'model.read' || descriptor.kind === 'model.query'
+          ? 'Read'
+          : humanizeApplicationOperationToken(descriptor.name);
+  const label = `${action} ${target}`.trim();
+  return Object.freeze({
+    label,
+    runningLabel: `${label}…`,
+    completedLabel: `${target} ${action === 'Read' ? 'read' : `${action.toLowerCase()}d`}`,
+  });
+}
+
+function humanizeApplicationOperationToken(value: string): string {
+  return value
+    .replace(/([a-z0-9])([A-Z])/gu, '$1 $2')
+    .replace(/[-_]+/gu, ' ')
+    .trim()
+    .replace(/^./u, character => character.toUpperCase());
 }
 
 function clientOperationContract(
@@ -974,7 +1089,6 @@ function withApplicationInstructions(
 function deterministicTextAdapter(
   provider: Extract<ApplicationAITextProvider, { readonly kind: 'deterministic' }>,
 ): AnyTextAdapter {
-  const response = provider.response ?? 'Deterministic Applik8s AI response.';
   const delay = provider.latencyMs ?? 0;
   const adapter: AnyTextAdapter = {
     kind: 'text',
@@ -997,7 +1111,10 @@ function deterministicTextAdapter(
           );
         }
         const toolCallId = `tool-call-${crypto.randomUUID()}`;
-        const argumentsJson = JSON.stringify(fixtureTool.input);
+        const toolInput = fixtureTool.inputFromLatestUser === 'document'
+          ? deterministicDocumentInput(options.messages)
+          : fixtureTool.input;
+        const argumentsJson = JSON.stringify(toolInput);
         yield {
           type: EventType.TOOL_CALL_START,
           toolCallId,
@@ -1020,7 +1137,7 @@ function deterministicTextAdapter(
           toolCallId,
           toolCallName: tool.name,
           toolName: tool.name,
-          input: fixtureTool.input,
+          input: toolInput,
           model: adapter.model,
           timestamp,
         };
@@ -1034,6 +1151,7 @@ function deterministicTextAdapter(
         };
         return;
       }
+      const response = deterministicResponse(provider, options.messages);
       const messageId = `message-${crypto.randomUUID()}`;
       yield { type: EventType.TEXT_MESSAGE_START, messageId, role: 'assistant', model: adapter.model, timestamp };
       yield { type: EventType.TEXT_MESSAGE_CONTENT, messageId, delta: response, model: adapter.model, timestamp };
@@ -1041,11 +1159,108 @@ function deterministicTextAdapter(
       yield { type: EventType.RUN_FINISHED, runId, threadId, model: adapter.model, timestamp, finishReason: 'stop' };
     },
     async structuredOutput() {
+      const response = provider.response ?? 'Deterministic Applik8s AI response.';
       const parsed = JSON.parse(response) as unknown;
       return { data: parsed, rawText: response };
     },
   };
   return adapter;
+}
+
+function deterministicResponse(
+  provider: Extract<ApplicationAITextProvider, { readonly kind: 'deterministic' }>,
+  messages: readonly unknown[],
+): string {
+  if (provider.tool?.inputFromLatestUser !== 'document') {
+    return provider.response ?? 'Deterministic Applik8s AI response.';
+  }
+  const input = deterministicDocumentInput(messages);
+  return `I created “${String(input.title)}” from your request. The saved Document is the authoritative result.`;
+}
+
+function deterministicDocumentInput(messages: readonly unknown[]): JsonObject {
+  const prompt = latestUserText(messages) || 'Create a useful workspace document.';
+  const requestedTitle = prompt
+    .replace(/^(?:please\s+)?(?:create|write|draft|make)\s+(?:a|an|the)?\s*/iu, '')
+    .split(/\s+(?:with|containing|that)\s+/iu)[0]
+    ?.replace(/[.!?]+$/u, '')
+    .trim();
+  const title = sentenceCase((requestedTitle || 'Requested deliverable').slice(0, 96));
+  const count = requestedChecklistCount(prompt);
+  const checklist = [
+    'Confirm the scope, accountable owner, intended audience, and decision deadline before work begins.',
+    'Exercise the critical path in the target environment and attach the observable result to this document.',
+    'Resolve or explicitly assign every blocker, then record the next decision and the person responsible for it.',
+    'Share the outcome with affected stakeholders and confirm that each dependency has an acknowledged owner.',
+    'Schedule a time-boxed follow-up verification with an explicit success or rollback decision.',
+  ].slice(0, count);
+  return {
+    title,
+    body: [
+      `# ${title}`,
+      '',
+      '## Objective',
+      `Turn the request below into a reviewable, owned result rather than an informal conversation. The work is complete only when the critical path has evidence, remaining risk has an owner, and the next decision is unambiguous.`,
+      '',
+      '> Requested outcome',
+      `> ${prompt}`,
+      '',
+      '## Execution plan',
+      '1. **Frame the outcome.** Confirm the audience, scope, constraints, deadline, and the decision this document needs to support. Record assumptions instead of silently filling gaps.',
+      '2. **Exercise the path.** Run the smallest representative journey that proves the outcome in the environment where it matters. Capture concrete observations, not only implementation activity.',
+      '3. **Review the evidence.** Compare the result with the success measures below, identify gaps, and assign each follow-up to one accountable person.',
+      '4. **Communicate the decision.** Publish the result, its limitations, and the next checkpoint in the shared workspace so downstream work can rely on one authoritative artifact.',
+      '',
+      '## Success measures',
+      '- The requested outcome is demonstrated through an observable end-to-end result.',
+      '- A reviewer can understand what was tested, what passed, and what remains uncertain without reconstructing the conversation.',
+      '- Every blocker and dependency has an owner and a bounded next action.',
+      '- The artifact is stored in the workspace and can be found, reviewed, revised, and published through the normal product journey.',
+      '',
+      '## Risks and rollback',
+      'The primary risk is mistaking a plausible-looking artifact for completed work. Treat unverified assumptions, unavailable dependencies, and partial environment coverage as explicit open items. If the representative journey fails or evidence is incomplete, do not present the outcome as finished: preserve the last known-good state, record the failed observation, assign remediation, and return to the previous checkpoint.',
+      '',
+      '## Checklist',
+      ...checklist.map(item => `- [ ] ${item}`),
+      '',
+      '## Next action',
+      'Name the accountable owner and schedule the first evidence-producing step. Update this document with the observed result before requesting approval or publication.',
+    ].join('\n'),
+    summary: `A deterministic Starter document grounded in the request: ${prompt.slice(0, 180)}`,
+    tags: ['assistant-created', 'starter-demo'],
+  };
+}
+
+function latestUserText(messages: readonly unknown[]): string {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (!message || typeof message !== 'object' || Reflect.get(message, 'role') !== 'user') continue;
+    const directContent = Reflect.get(message, 'content');
+    if (typeof directContent === 'string' && directContent.trim()) return directContent.trim();
+    const parts = Reflect.get(message, 'parts');
+    if (!Array.isArray(parts)) continue;
+    const text = parts.map(part => {
+      if (!part || typeof part !== 'object') return '';
+      const content = Reflect.get(part, 'content');
+      return typeof content === 'string' ? content : '';
+    }).filter(Boolean).join('\n').trim();
+    if (text) return text;
+  }
+  return '';
+}
+
+function requestedChecklistCount(prompt: string): number {
+  const match = /\b(?:exactly\s+)?(one|two|three|four|five|[1-5])\s+(?:checklist\s+)?items?\b/iu.exec(prompt);
+  const value = match?.[1]?.toLowerCase();
+  const wordCounts: Readonly<Record<string, number>> = {
+    one: 1, two: 2, three: 3, four: 4, five: 5,
+  };
+  return (value ? wordCounts[value] : undefined)
+    ?? (value ? Number(value) : 3);
+}
+
+function sentenceCase(value: string): string {
+  return value ? `${value[0]?.toUpperCase()}${value.slice(1)}` : value;
 }
 
 function hasToolResultAfterLatestUser(

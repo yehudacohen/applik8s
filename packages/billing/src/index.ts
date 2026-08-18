@@ -27,6 +27,7 @@ import {
 } from './schema.js';
 
 export * from './schema.js';
+export * from './contracts.js';
 
 export type PaymentMode = 'simulated' | 'live';
 export type BillingChangeTiming = 'immediate' | 'periodEnd';
@@ -637,15 +638,12 @@ function installBilling(
     [],
   );
 
-  // Customer mappings are reachable only through the billing module's
-  // authenticated server-side intent functions. The caller's route/tool
-  // policy supplies the application decision; the raw model operation is not
-  // independently public.
+  // Customer mappings and provider events are reachable only through the
+  // billing module's authenticated server-side intent functions. The
+  // enclosing checkout or webhook route supplies the application decision;
+  // neither raw model operation is independently browser-callable.
   customers.create.applicationPolicy();
-
-  application
-    .role('applik8s-provider-webhook')
-    .can(paymentEvents.create.all());
+  paymentEvents.create.applicationPolicy();
 
   paymentEvents.on.create(
     {

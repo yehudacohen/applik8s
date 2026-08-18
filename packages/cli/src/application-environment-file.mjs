@@ -33,6 +33,15 @@ export async function loadApplicationEnvironmentFile(cwd) {
   }
 
   const exportedEnvironment = { ...process.env };
-  Object.assign(process.env, fileEnvironment, exportedEnvironment);
+  Object.assign(process.env, fileEnvironment);
+  for (const [key, value] of Object.entries(exportedEnvironment)) {
+    // A blank parent-process placeholder is not an authoritative credential
+    // override. This matters for shells, CI runners, and generated launchers
+    // that predeclare a variable while the application's .env supplies its
+    // actual value. A non-empty exported value remains authoritative, and an
+    // explicitly blank value is preserved when no environment file binds it.
+    if (value === '' && fileEnvironment[key]) continue;
+    process.env[key] = value;
+  }
   return loaded;
 }

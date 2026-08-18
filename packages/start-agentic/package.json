@@ -31,6 +31,16 @@
       "import": "./dist/identity-runtime.js",
       "default": "./dist/identity-runtime.js"
     },
+    "./launchpad": {
+      "types": "./dist/launchpad.d.ts",
+      "import": "./dist/launchpad.js",
+      "default": "./dist/launchpad.js"
+    },
+    "./product-presentation": {
+      "types": "./dist/product-presentation.d.ts",
+      "import": "./dist/product-presentation.js",
+      "default": "./dist/product-presentation.js"
+    },
     "./payments-runtime": {
       "types": "./dist/payments-runtime.d.ts",
       "import": "./dist/payments-runtime.js",
@@ -47,11 +57,17 @@
     "@applik8s/applik8s": "0.7.0",
     "@applik8s/approvals": "0.7.0",
     "@applik8s/artifacts": "0.7.0",
+    "@applik8s/documents": "0.7.0",
+    "@applik8s/agents": "0.7.0",
+    "@applik8s/knowledge": "0.7.0",
+    "@applik8s/integrations": "0.7.0",
     "@applik8s/billing": "0.7.0",
     "@applik8s/billing-stripe": "0.7.0",
     "@applik8s/notifications": "0.7.0",
+    "@applik8s/operations": "0.7.0",
     "@applik8s/notifications-smtp": "0.7.0",
     "@applik8s/conversations": "0.7.0",
+    "@applik8s/data-lifecycle": "0.7.0",
     "@applik8s/core": "0.7.0",
     "@applik8s/evals": "0.7.0",
     "@applik8s/identity": "0.7.0",
@@ -59,6 +75,7 @@
     "@applik8s/react": "0.7.0",
     "@applik8s/operations-ui": "0.7.0",
     "@applik8s/usage": "0.7.0",
+    "arktype": "2.2.1",
     "postgres": "^3.4.7"
   },
   "peerDependencies": {

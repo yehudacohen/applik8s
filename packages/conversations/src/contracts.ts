@@ -4,7 +4,7 @@ import type {
   ApplicationAIProtocolRunRecord,
   ApplicationAIRunEventRecord,
 } from '@applik8s/ai';
-import type { JsonValue } from '@applik8s/core';
+import type { JsonObject, JsonValue } from '@applik8s/core';
 
 export interface ApplicationConversationPage<TValue> {
   readonly values: readonly TValue[];
@@ -57,6 +57,13 @@ export interface ApplicationConversationStore {
     readonly afterRevision?: number;
     readonly limit: number;
   }): Promise<readonly ApplicationAIMessageRecord[]>;
+  /** Replace the complete authoritative transcript for one admitted thread. */
+  replaceMessages(input: {
+    readonly conversationId: string;
+    readonly principalScope: string;
+    readonly messages: readonly ApplicationConversationMessageInput[];
+    readonly updatedAt: string;
+  }): Promise<void>;
   startRun(
     run: ApplicationConversationRunInput,
   ): Promise<ApplicationAIProtocolRunRecord>;
@@ -64,6 +71,18 @@ export interface ApplicationConversationStore {
     id: string,
     principalScope: string,
   ): Promise<ApplicationAIProtocolRunRecord | undefined>;
+  listRuns(input: {
+    readonly conversationId: string;
+    readonly principalScope: string;
+  }): Promise<readonly ApplicationAIProtocolRunRecord[]>;
+  patchRun(input: {
+    readonly runId: string;
+    readonly principalScope: string;
+    readonly status?: ApplicationAIProtocolRunRecord['status'];
+    readonly updatedAt: string;
+    readonly terminalReason?: string | null;
+    readonly runtimeState?: JsonObject;
+  }): Promise<ApplicationAIProtocolRunRecord | undefined>;
   transitionRun(input: {
     readonly runId: string;
     readonly principalScope: string;

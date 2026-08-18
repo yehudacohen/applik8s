@@ -518,9 +518,13 @@ function generatedBindingSource(handler: ProcessorContract['handlers'][number]):
   const eventDeclarations = handler.events.map((event) =>
     `const ${event.identifier}Contract = Object.freeze({ ...${JSON.stringify(event.definition)}${event.partition ? `, partition: ${event.partition.variableName}` : ''} });`,
   ).join('\n      ');
-  const commandDeclarations = handler.commands.map((command) => `const ${command.identifier}Contract = ${JSON.stringify(command.definition)};`).join('\n      ');
+  const commandDeclarations = handler.commands.map((command) =>
+    `const ${commandCallbackBindingVariable(command.identifier)}Contract = ${JSON.stringify(command.definition)};`,
+  ).join('\n      ');
   const outbox = handler.events.map((event) => `${event.identifier}Contract`).join(', ');
-  const commands = handler.commands.map((command) => `${command.identifier}Contract`).join(', ');
+  const commands = handler.commands.map((command) =>
+    `${commandCallbackBindingVariable(command.identifier)}Contract`,
+  ).join(', ');
   const completionEventIdentifier = handler.node.completionEvent
     ? handler.node.eventBindings?.find(
         (binding) =>
@@ -542,6 +546,11 @@ function generatedBindingSource(handler: ProcessorContract['handlers'][number]):
           async get(identity) {
             const value = await context.models[${JSON.stringify(model.name)}].get({ id: String(identity) });
             return value ? { identity: value.id, value: value.spec, ...(value.revision ? { revision: value.revision } : {}) } : undefined;
+          },
+          async require(identity) {
+            const value = await context.models[${JSON.stringify(model.name)}].get({ id: String(identity) });
+            if (!value) throw new Error(${JSON.stringify(`Application model ${model.name} has no object with the requested identity.`)});
+            return { identity: value.id, value: value.spec, ...(value.revision ? { revision: value.revision } : {}) };
           },
           async find(options) {
             const page = await context.models[${JSON.stringify(model.name)}].query(options);
@@ -570,11 +579,11 @@ function generatedBindingSource(handler: ProcessorContract['handlers'][number]):
               ? `(${command.idempotencySource})(payload)`
               : `context.id(${JSON.stringify(`staged-command:${command.definition.id}`)})`};
             const targetKey = canonicalApplicationCommandKey((${command.keySource})(payload, undefined, idempotencyKey));
-            context.send(${command.identifier}Contract, payload, { targetKey, idempotencyKey });
+            context.send(${commandCallbackBindingVariable(command.identifier)}Contract, payload, { targetKey, idempotencyKey });
             return Object.freeze({
               kind: "applicationStagedEffect",
               effect: "command",
-              contract: ${command.identifier}Contract.id,
+              contract: ${commandCallbackBindingVariable(command.identifier)}Contract.id,
               then() {
                 throw new Error("Transaction-staged commands cannot be awaited before commit.");
               },
@@ -582,7 +591,7 @@ function generatedBindingSource(handler: ProcessorContract['handlers'][number]):
           },
           {
             operation: Object.freeze({
-              id: ${command.identifier}Contract.id,
+              id: ${commandCallbackBindingVariable(command.identifier)}Contract.id,
               model: ${JSON.stringify(command.definition.name.split('.')[0] ?? command.definition.name)},
               name: ${JSON.stringify(command.definition.name)},
               operation: "custom",
@@ -807,12 +816,15 @@ function nestedCommandCallbackBindingsSource(
       if (value.direct && value.properties.size === 0) {
         return `${JSON.stringify(root)}: ${value.direct}`;
       }
-      return `${JSON.stringify(root)}: { ${[...value.properties.entries()]
+      const properties = [...value.properties.entries()]
         .map(
           ([property, expression]) =>
             `${JSON.stringify(property)}: ${expression}`,
         )
-        .join(', ')} }`;
+        .join(', ');
+      return value.direct
+        ? `${JSON.stringify(root)}: Object.freeze({ ...${value.direct}, ${properties} })`
+        : `${JSON.stringify(root)}: { ${properties} }`;
     })
     .join(', ')} }`;
 }

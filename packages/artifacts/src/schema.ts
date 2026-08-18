@@ -5,6 +5,7 @@ import {
   pgEnum,
   uniqueIndex,
 } from '@applik8s/applik8s/drizzle';
+import type { ApplicationRelationalModel } from '@applik8s/applik8s';
 
 export const applicationArtifactState = pgEnum('applik8s_artifact_state', [
   'pending',
@@ -13,7 +14,7 @@ export const applicationArtifactState = pgEnum('applik8s_artifact_state', [
   'deleted',
 ]);
 
-export const applicationArtifacts = model(
+const artifactTable = model(
   'applik8s_artifacts',
   {
     id: field.text('id').primaryKey(),
@@ -61,6 +62,7 @@ export const applicationArtifacts = model(
   ],
   { name: 'Artifact', revision: false },
 );
+export const applicationArtifacts: ApplicationRelationalModel<typeof artifactTable> = artifactTable;
 
 export const applicationArtifactSchema = Object.freeze({
   applicationArtifacts,

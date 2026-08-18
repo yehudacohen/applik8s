@@ -46,6 +46,7 @@ import {
   artifactProps,
 } from "./artifact-resources.js";
 import {
+  assertGeneratedSecretHostEnvironmentAvailable,
   generatedSecretNodes,
   generatedSecretProps,
 } from "./generated-secrets.js";
@@ -422,6 +423,7 @@ export function createApplicationAlchemyDeployment(
       }),
     apply: () =>
       withDeploymentLease(options, stack, async () => {
+        assertGeneratedSecretHostEnvironmentAvailable(generatedSecrets);
         await claimApplicationAlchemyStackIdentity(options.stateRoot, stack);
         const output = (await runApplicationAlchemyEffect(
           deployAlchemyStack({

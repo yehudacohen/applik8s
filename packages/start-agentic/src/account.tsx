@@ -30,6 +30,8 @@ export interface AgenticAccountSessionProps {
   readonly loginLabel?: string;
   readonly registrationLabel?: string;
   readonly defaultMode?: 'login' | 'register';
+  readonly signedInHref?: string;
+  readonly signedOutHref?: string;
 }
 
 /** Maintained sign-in, registration, session restoration, and logout surface. */
@@ -70,6 +72,9 @@ export function AgenticAccountSession(
         }
         await client.transitionFlow(flow.id, transition, { email, password });
         await session.refresh();
+        if (props.signedInHref) {
+          globalThis.location?.assign(props.signedInHref);
+        }
       } catch (cause) {
         setError(identityErrorMessage(cause, 'Authentication failed.'));
       } finally {
@@ -119,7 +124,7 @@ export function AgenticAccountSession(
   return (
     <span aria-label="Account session" className="grid gap-2 text-xs text-stone-600">
       Signed in as <strong className="truncate text-stone-900">{session.data.principal.identity.subject}</strong>
-      <button className="text-left font-semibold text-emerald-800" type="button" onClick={() => void session.logout()}>
+      <button className="text-left font-semibold text-emerald-800" type="button" onClick={() => void session.logout().then(() => globalThis.location?.assign(props.signedOutHref ?? '/sign-in'))}>
         Sign out
       </button>
     </span>

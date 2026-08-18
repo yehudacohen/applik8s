@@ -45,12 +45,12 @@ function startDefinition(): ApplicationStartDefinition {
       tanstackStart: '1.168.28',
       tanstackRouter: '1.170.18',
       tanstackRouterCli: '1.167.19',
-      tanstackAI: '0.42.0',
-      tanstackAIClient: '0.22.1',
-      tanstackAIReact: '0.18.1',
-      agUi: '0.0.52',
-      tanstackAIPersistence: 'unreleased',
-      typekro: '0.33.6',
+      tanstackAI: '0.44.1',
+      tanstackAIClient: '0.23.2',
+      tanstackAIReact: '0.19.2',
+      tanstackAIPersistence: '0.1.4',
+      agUi: '0.1.1-canary.beta.0',
+      typekro: '0.33.7',
     },
     packages: [
       {

@@ -4,12 +4,14 @@ import { desc, eq, inArray, sql } from 'drizzle-orm';
 import { application } from '../../app';
 import { ApplicationOperator, Billing, Usage, database } from '../../modules';
 import { Membership, Workspace } from '../workspaces/model';
+import { requirePublishedBillingPlan } from '../billing';
 
 const TenantSummary = type({
   id: 'string',
   slug: 'string',
   name: 'string',
   ownerPrincipalId: 'string',
+  state: "'active' | 'suspended'",
   createdAt: 'string',
   memberCount: 'number',
   planId: 'string | null',
@@ -44,7 +46,6 @@ async function listTenants(_input: object, context: ApplicationModelViewContext)
   const workspaces = await client.select().from(Workspace).orderBy(desc(Workspace.createdAt)).limit(100);
   if (workspaces.length === 0) return [];
   const workspaceIds = workspaces.map(workspace => workspace.id);
-  const owners = [...new Set(workspaces.map(workspace => workspace.ownerPrincipalId))];
   const [memberCounts, subscriptions, usage] = await Promise.all([
     client.select({
       workspaceId: Membership.workspaceId,
@@ -55,26 +56,27 @@ async function listTenants(_input: object, context: ApplicationModelViewContext)
       planId: Billing.Subscription.planId,
       status: Billing.Subscription.status,
       updatedAt: Billing.Subscription.updatedAt,
-    }).from(Billing.Subscription).where(inArray(Billing.Subscription.principalScope, owners)).orderBy(desc(Billing.Subscription.updatedAt)).limit(250),
+    }).from(Billing.Subscription).where(inArray(Billing.Subscription.principalScope, workspaceIds)).orderBy(desc(Billing.Subscription.updatedAt)).limit(250),
     client.select({
       principalScope: Usage.UsageFact.principalScope,
       inputTokens: sql<number>`coalesce(sum(${Usage.UsageFact.inputTokens}), 0)`,
       outputTokens: sql<number>`coalesce(sum(${Usage.UsageFact.outputTokens}), 0)`,
       costMicrounits: sql<number>`coalesce(sum(${Usage.UsageFact.costMicrounits}), 0)`,
-    }).from(Usage.UsageFact).where(inArray(Usage.UsageFact.principalScope, owners)).groupBy(Usage.UsageFact.principalScope),
+    }).from(Usage.UsageFact).where(inArray(Usage.UsageFact.principalScope, workspaceIds)).groupBy(Usage.UsageFact.principalScope),
   ]);
   const memberCount = new Map(memberCounts.map(row => [row.workspaceId, Number(row.count)]));
   const subscription = new Map<string, (typeof subscriptions)[number]>();
   for (const row of subscriptions) if (!subscription.has(row.principalScope)) subscription.set(row.principalScope, row);
-  const usageByOwner = new Map(usage.map(row => [row.principalScope, row]));
+  const usageByWorkspace = new Map(usage.map(row => [row.principalScope, row]));
   return workspaces.map(workspace => {
-    const currentSubscription = subscription.get(workspace.ownerPrincipalId);
-    const currentUsage = usageByOwner.get(workspace.ownerPrincipalId);
+    const currentSubscription = subscription.get(workspace.id);
+    const currentUsage = usageByWorkspace.get(workspace.id);
     return {
       id: workspace.id,
       slug: workspace.slug,
       name: workspace.name,
       ownerPrincipalId: workspace.ownerPrincipalId,
+      state: workspace.state,
       createdAt: workspace.createdAt,
       memberCount: Math.max(1, memberCount.get(workspace.id) ?? 0),
       planId: currentSubscription?.planId ?? null,
@@ -142,7 +144,68 @@ export const PlatformCatalog = Billing.BillingPlan.view(
   },
 );
 
+const administrationApi = application.http('administration');
+
+export const ChangeTenantPlan = administrationApi.post(
+  'change-tenant-plan',
+  '/tenants/subscription/change',
+  {
+    input: type({ tenantId: 'string', plan: 'string > 0' }),
+    output: type({
+      provider: 'string',
+      providerSubscriptionId: 'string',
+      state: "'applied' | 'scheduled'",
+      effectiveAt: 'string',
+    }),
+    authorize: (_request, context) => context.principal.roles?.includes('application-operator') === true,
+  },
+  async function changeTenantPlan(request) {
+    const detail = await PlatformTenant({ tenantId: request.input.tenantId });
+    if (!detail?.tenant.subscriptionState) throw new Error('The tenant has no provider subscription to change.');
+    const plan = await requirePublishedBillingPlan(request.input.plan);
+    return Billing.changeSubscription({
+      principalScope: detail.tenant.id,
+      plan: plan.id,
+      timing: 'immediate',
+      proration: 'createProrations',
+      idempotencyKey: `operator:${request.input.tenantId}:change:${request.input.plan}`,
+    });
+  },
+);
+
+export const CancelTenantSubscription = administrationApi.post(
+  'cancel-tenant-subscription',
+  '/tenants/subscription/cancel',
+  {
+    input: type({ tenantId: 'string' }),
+    output: type({
+      provider: 'string',
+      providerSubscriptionId: 'string',
+      cancelled: 'boolean',
+      effectiveAt: 'string',
+    }),
+    authorize: (_request, context) => context.principal.roles?.includes('application-operator') === true,
+  },
+  async function cancelTenantSubscription(request) {
+    const detail = await PlatformTenant({ tenantId: request.input.tenantId });
+    if (!detail?.tenant.subscriptionState) throw new Error('The tenant has no provider subscription to cancel.');
+    return Billing.cancelSubscription({
+      principalScope: detail.tenant.id,
+      timing: 'periodEnd',
+      idempotencyKey: `operator:${request.input.tenantId}:cancel`,
+    });
+  },
+);
+
 ApplicationOperator.can(
+  Billing.BillingPlan.create,
+  Billing.BillingPlan.update,
+  Billing.BillingCatalogVersion.create,
+  Billing.BillingCatalogVersion.update,
+  Billing.BillingCatalogPrice.create,
+  Billing.BillingCatalogPrice.update,
+  Billing.BillingCatalogEntitlement.create,
+  Billing.BillingCatalogEntitlement.update,
   PlatformTenants,
   PlatformTenant,
   PlatformCatalog,

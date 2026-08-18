@@ -355,10 +355,15 @@ describe('PostgreSQL operation authority repositories', () => {
       impersonation: 'forbidden' as const,
     };
     const principal = await runtime.admitExecutionPrincipal({
-      executionKind: 'task',
+      executionKind: 'agent',
       executionId: 'task-run-1',
       attempt: 1,
       workloadIdentity,
+      executionContext: {
+        kind: 'agent',
+        threadId: 'thread-1',
+        runId: 'run-1',
+      },
       causalPrincipalId: 'principal:chirp:human:author-1',
       causalPrincipal: {
         id: 'identity:chirp:human:author-1',
@@ -385,9 +390,14 @@ describe('PostgreSQL operation authority repositories', () => {
     });
     expect(principal).toMatchObject({
       kind: 'execution',
-      executionKind: 'task',
+      executionKind: 'agent',
       executionId: 'task-run-1',
       workloadIdentity,
+      executionContext: {
+        kind: 'agent',
+        threadId: 'thread-1',
+        runId: 'run-1',
+      },
       causalPrincipalId: 'principal:chirp:human:author-1',
       causalPrincipal: {
         id: 'identity:chirp:human:author-1',

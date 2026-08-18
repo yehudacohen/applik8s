@@ -14,7 +14,7 @@ import { type ApplicationRuntimeModelContract, applicationModelMigrationPrefligh
 import { generatedApplicationRuntimeModuleSource } from '../src/application-runtime-modules.js';
 import { applicationRequestContextValues } from '../src/command-principal.js';
 import { command, event } from '../src/dsl.js';
-import { closePostgresModelCommandRuntime, executeFunctionNativePostgresModelEdit, executeFunctionNativePostgresTransaction, executePostgresModelCommand, type FunctionNativePostgresNestedOperation, isRetryablePostgresTransactionError, normalizePostgresNativeModelValue, type PostgresModelCommandEventDefinition, recordPostgresModelCommandTerminalFailure } from '../src/model-command-postgres-runtime.js';
+import { applicationPostgresModelReadClients, closePostgresModelCommandRuntime, executeFunctionNativePostgresModelEdit, executeFunctionNativePostgresTransaction, executePostgresModelCommand, type FunctionNativePostgresNestedOperation, isRetryablePostgresTransactionError, normalizePostgresNativeModelValue, type PostgresModelCommandEventDefinition, recordPostgresModelCommandTerminalFailure } from '../src/model-command-postgres-runtime.js';
 import { applicationModelCommandBindingForOperation, nativeApplicationModelBindingFor, nativeApplicationModelCommandRegistrar } from '../src/native-models.js';
 import { cleanupPostgresCommandData, observePostgresOutboxLag, relayPostgresCommandOutbox, relayPostgresEventOutbox } from '../src/postgres-outbox-runtime.js';
 import { applicationRelationalFrameworkMigrationSql } from '../src/relational-runtime.js';
@@ -103,6 +103,85 @@ describe('Postgres TransactionalDatabase script runtime', () => {
       nested: [{ observedAt: '2026-08-06T04:43:58.000Z' }],
       retained: '2026-08-06T04:43:58.000Z',
     });
+  });
+
+  it('installs admitted RLS context before function-native model reads', async () => {
+    const queries: { readonly query: string; readonly parameters?: readonly unknown[] }[] = [];
+    const transaction = {
+      async unsafe(query: string, parameters?: readonly unknown[]) {
+        queries.push({ query, ...(parameters ? { parameters } : {}) });
+        if (query.startsWith('SELECT * FROM')) {
+          return [{
+            id: 'note-1',
+            principal_scope: 'workspace:trusted',
+            message: 'visible',
+            revision: 'revision-1',
+          }];
+        }
+        return [];
+      },
+      json(value: unknown) { return value; },
+    };
+    const database = {
+      async begin<TResult>(handler: (value: typeof transaction) => Promise<TResult>) {
+        return handler(transaction);
+      },
+      async unsafe() { return []; },
+      async end() {},
+    };
+    const scopedModel: ApplicationRuntimeModelContract = {
+      name: 'ScopedRead',
+      tableName: 'scoped_reads',
+      provider: 'postgres',
+      database: 'application',
+      clusterName: 'application-db',
+      secretName: 'application-db-app',
+      secretKey: 'uri',
+      connectionEnvName: 'APPLIK8S_DATABASE_APPLICATION_URL',
+      constraints: [],
+      indexes: [],
+      retention: { mode: 'retain' },
+      storageShape: 'native-relational',
+      nativeRelational: {
+        identity: { property: 'id', column: 'id' },
+        revision: { property: 'revision', column: 'revision' },
+        columns: [
+          { property: 'id', column: 'id' },
+          { property: 'principalScope', column: 'principal_scope' },
+          { property: 'message', column: 'message' },
+          { property: 'revision', column: 'revision' },
+        ],
+        access: {
+          context: 'principalScope',
+          setting: 'applik8s.test.principal_scope',
+          property: 'principalScope',
+          column: 'principal_scope',
+        },
+      },
+    };
+
+    const clients = await applicationPostgresModelReadClients(
+      database,
+      [scopedModel],
+      {
+        values: { principalScope: 'workspace:trusted' },
+        digest: 'a'.repeat(64),
+      },
+    );
+    await expect(clients.ScopedRead?.get({ id: 'note-1' })).resolves.toMatchObject({
+      id: 'note-1',
+      spec: { principalScope: 'workspace:trusted', message: 'visible' },
+    });
+    expect(queries.map(({ query }) => query)).toEqual([
+      'SELECT set_config($1, $2, true)',
+      'SELECT set_config($1, $2, true)',
+      'SELECT set_config($1, $2, true)',
+      expect.stringContaining('SELECT * FROM "scoped_reads"'),
+    ]);
+    expect(queries[2]?.parameters).toEqual([
+      'applik8s.test.principal_scope',
+      'workspace:trusted',
+    ]);
   });
 
   it('restores PostgreSQL int8 strings using the compiled Drizzle number intent', () => {
@@ -609,6 +688,93 @@ describe.runIf(liveDatabaseUrl)('Postgres TransactionalDatabase script runtime l
     await expect(sql.unsafe('SELECT count(*)::int AS count FROM applik8s_command_inbox WHERE binding_id = $1', [bindingId])).resolves.toMatchObject([{ count: 4 }]);
     await sql.unsafe('DELETE FROM applik8s_command_inbox WHERE binding_id = $1', [bindingId]);
     await sql.unsafe(`DROP TABLE IF EXISTS ${quoteIdentifier(commandModel.tableName)}`);
+  });
+
+  it('hydrates a native create access column from trusted context before the RLS-checked insert', async () => {
+    if (!liveDatabaseUrl) {
+      throw new Error('Native command RLS creation test requires APPLIK8S_TRANSACTIONAL_DATABASE_SCRIPT_RUNTIME_DATABASE_URL.');
+    }
+    const rlsTable = `applik8s_native_command_rls_${process.pid}`;
+    const bindingId = `native-command-rls-${process.pid}`;
+    const rlsModel: ApplicationRuntimeModelContract = {
+      name: 'NativeCommandRls',
+      tableName: rlsTable,
+      provider: 'postgres',
+      database: 'script_runtime',
+      clusterName: 'script-runtime-db',
+      secretName: 'script-runtime-db-app',
+      secretKey: 'uri',
+      connectionEnvName: 'APPLIK8S_TRANSACTIONAL_DATABASE_SCRIPT_LIVE_NOTE_DATABASE_URL',
+      constraints: [],
+      indexes: [],
+      retention: { mode: 'retain' },
+      storageShape: 'native-relational',
+      nativeRelational: {
+        identity: { property: 'id', column: 'id' },
+        revision: { property: 'revision', column: 'revision' },
+        columns: [
+          { property: 'id', column: 'id' },
+          { property: 'principalScope', column: 'principal_scope' },
+          { property: 'message', column: 'message' },
+          { property: 'revision', column: 'revision' },
+        ],
+        access: {
+          context: 'principalScope',
+          setting: 'applik8s.test.principal_scope',
+          property: 'principalScope',
+          column: 'principal_scope',
+        },
+      },
+    };
+    await sql.unsafe(applicationModelMigrationSql(rlsModel));
+    await sql.unsafe(`DROP TABLE IF EXISTS ${quoteIdentifier(rlsTable)}`);
+    await sql.unsafe(`CREATE TABLE ${quoteIdentifier(rlsTable)} (id text PRIMARY KEY, principal_scope text NOT NULL, message text NOT NULL, revision text NOT NULL)`);
+    await sql.unsafe(`ALTER TABLE ${quoteIdentifier(rlsTable)} ENABLE ROW LEVEL SECURITY`);
+    await sql.unsafe(`ALTER TABLE ${quoteIdentifier(rlsTable)} FORCE ROW LEVEL SECURITY`);
+    await sql.unsafe(`CREATE POLICY ${quoteIdentifier(`${rlsTable}_scope`)} ON ${quoteIdentifier(rlsTable)} USING (principal_scope = current_setting('applik8s.test.principal_scope', true)) WITH CHECK (principal_scope = current_setting('applik8s.test.principal_scope', true))`);
+    try {
+      const result = await executePostgresModelCommand({
+        bindingId,
+        operation: 'create',
+        command: { name: 'models.NativeCommandRls.create', version: 'v1' },
+        model: rlsModel,
+        message: {
+          id: 'native-command-rls-create',
+          input: { message: 'created' },
+          targetKey: 'native-command-rls-row',
+          idempotencyKey: 'native-command-rls-create',
+          context: {
+            values: { principalScope: 'workspace:trusted' },
+            digest: 'f'.repeat(64),
+            changeScopes: {
+              global: 'a'.repeat(64),
+              'context:principalScope': 'b'.repeat(64),
+            },
+          },
+        },
+        initialize: (input: { readonly message: string }) => ({
+          id: 'native-command-rls-row',
+          // This deliberately models a schema default that cannot know the
+          // selected workspace. The framework must replace it before INSERT.
+          principalScope: 'principal:default',
+          message: input.message,
+          revision: '',
+        }),
+        databaseUrl: liveDatabaseUrl,
+        async handler(target) {
+          expect(target.spec.principalScope).toBe('workspace:trusted');
+          return { principalScope: target.spec.principalScope };
+        },
+      });
+
+      expect(result.model.spec).toMatchObject({
+        principalScope: 'workspace:trusted',
+        message: 'created',
+      });
+    } finally {
+      await sql.unsafe('DELETE FROM applik8s_command_inbox WHERE binding_id = $1', [bindingId]);
+      await sql.unsafe(`DROP TABLE IF EXISTS ${quoteIdentifier(rlsTable)}`);
+    }
   });
 
   it('executes function-native Model.edit through the same durable transaction and duplicate-recovery kernel', async () => {
@@ -1453,6 +1619,73 @@ describe.runIf(liveDatabaseUrl)('Postgres TransactionalDatabase script runtime l
     await sql.unsafe('DELETE FROM applik8s_command_inbox WHERE binding_id = $1', [rejectedBindingId]);
     await sql.unsafe(`DROP TABLE IF EXISTS ${quoteIdentifier(accountModel.tableName)}`);
     await sql.unsafe(`DROP TABLE IF EXISTS ${quoteIdentifier(auditModel.tableName)}`);
+  });
+
+  it('installs admitted RLS context for a scoped participant of an unscoped command model', async () => {
+    if (!liveDatabaseUrl) throw new Error('Live participant RLS test requires APPLIK8S_TRANSACTIONAL_DATABASE_SCRIPT_RUNTIME_DATABASE_URL.');
+    const primaryModel = commandCounterModel(`applik8s_script_unscoped_primary_${process.pid}`);
+    const participantTable = `applik8s_script_scoped_participant_${process.pid}`;
+    const participantModel: ApplicationRuntimeModelContract = {
+      ...commandCounterModel(participantTable),
+      name: 'ScopedParticipant',
+      storageShape: 'native-relational',
+      nativeRelational: {
+        identity: { property: 'id', column: 'id' },
+        revision: { property: 'revision', column: 'revision' },
+        columns: [
+          { property: 'id', column: 'id' },
+          { property: 'principalScope', column: 'principal_scope' },
+          { property: 'message', column: 'message' },
+          { property: 'revision', column: 'revision' },
+        ],
+        access: {
+          context: 'principalScope',
+          setting: 'applik8s.test.participant_scope',
+          property: 'principalScope',
+          column: 'principal_scope',
+        },
+      },
+    };
+    const bindingId = `script-participant-rls-${process.pid}`;
+    await sql.unsafe(applicationModelMigrationSql(primaryModel));
+    await sql.unsafe(`DROP TABLE IF EXISTS ${quoteIdentifier(participantTable)}`);
+    await sql.unsafe(`CREATE TABLE ${quoteIdentifier(participantTable)} (id text PRIMARY KEY, principal_scope text NOT NULL, message text NOT NULL, revision text NOT NULL)`);
+    await sql.unsafe(`INSERT INTO ${quoteIdentifier(participantTable)} (id, principal_scope, message, revision) VALUES ('participant-1', 'workspace:trusted', 'visible', 'revision-1')`);
+    await sql.unsafe(`ALTER TABLE ${quoteIdentifier(participantTable)} ENABLE ROW LEVEL SECURITY`);
+    await sql.unsafe(`ALTER TABLE ${quoteIdentifier(participantTable)} FORCE ROW LEVEL SECURITY`);
+    await sql.unsafe(`CREATE POLICY ${quoteIdentifier(`${participantTable}_scope`)} ON ${quoteIdentifier(participantTable)} USING (principal_scope = current_setting('applik8s.test.participant_scope', true)) WITH CHECK (principal_scope = current_setting('applik8s.test.participant_scope', true))`);
+    const primaryClient = createPostgresModelClient<{ readonly count: number }>(primaryModel);
+    await primaryClient.create({ id: 'primary-1', spec: { count: 0 } });
+
+    try {
+      const result = await executePostgresModelCommand({
+        bindingId,
+        command: { name: 'primary.read-participant', version: 'v1' },
+        model: primaryModel,
+        models: [primaryModel, participantModel],
+        message: {
+          id: 'participant-rls-message',
+          input: {},
+          targetKey: 'primary-1',
+          idempotencyKey: 'participant-rls-request',
+          context: {
+            values: { principalScope: 'workspace:trusted' },
+            digest: 'e'.repeat(64),
+          },
+        },
+        databaseUrl: liveDatabaseUrl,
+        async handler(_primary, _input, context) {
+          const participant = await context.models.ScopedParticipant?.get({ id: 'participant-1' });
+          return { message: Reflect.get(participant?.spec ?? {}, 'message') };
+        },
+      });
+
+      expect(result.output).toEqual({ message: 'visible' });
+    } finally {
+      await sql.unsafe('DELETE FROM applik8s_command_inbox WHERE binding_id = $1', [bindingId]);
+      await sql.unsafe(`DROP TABLE IF EXISTS ${quoteIdentifier(primaryModel.tableName)}`);
+      await sql.unsafe(`DROP TABLE IF EXISTS ${quoteIdentifier(participantTable)}`);
+    }
   });
 
   it('retries an intentionally deadlocked multi-model transaction from a clean boundary', async () => {

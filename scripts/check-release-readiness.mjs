@@ -48,6 +48,11 @@ const requiredDocs = [
   'docs/v0.4-scorecard.md',
   'docs/v0.5-scorecard.md',
   'docs/v0.6-scorecard.md',
+  'docs/v0.7-scorecard.md',
+  'docs/packages.md',
+  'docs/charter-v07-agentic-platform.md',
+  'docs/v07-agentic-start-capability-map.md',
+  'docs/v07-product-baseline.json',
   'docs/v0.6-foundation.md',
   'docs/native-models-and-live-queries.md',
   'docs/workflows.md',
@@ -66,6 +71,7 @@ const publicReleaseFiles = [
   'scripts/check-local-gates.mjs',
   'scripts/check-prerelease-gates.mjs',
   'scripts/check-docs-consistency.mjs',
+  'scripts/check-package-catalog.mjs',
   'scripts/build-publishable-packages.mjs',
   'scripts/package-publish-dry-run.mjs',
   'scripts/package-consumer-smoke.mjs',
@@ -75,6 +81,9 @@ const publicReleaseFiles = [
   'scripts/check-v05-scorecard.ts',
   'scripts/benchmark-v05.ts',
   'scripts/check-v06-scorecard.ts',
+  'scripts/check-v07-scorecard.ts',
+  'scripts/check-v07-product-baseline.mjs',
+  'scripts/write-v07-release-attestation.mjs',
   'scripts/benchmark-v06.ts',
   'scripts/verify-v04-live-evidence.mjs',
   'scripts/publish-packages.mjs',
@@ -124,6 +133,11 @@ const publicReleaseFiles = [
 ];
 
 const privateBrand = ['ska', 'tes'].join('');
+const privateProductBrands = [
+  ['va', 'sco'].join(''),
+  ['st', 'imp'].join(''),
+  ['open-', 'arti', 'swarm'].join(''),
+];
 const privatePatterns = [
   new RegExp(`@${privateBrand}/`, 'i'),
   new RegExp(`${privateBrand}-operator`, 'i'),
@@ -138,6 +152,7 @@ const privatePatterns = [
   /WorkloadReplica/,
   /cross-cluster migration/i,
   new RegExp(['virtual', 'iz'].join(''), 'i'),
+  ...privateProductBrands.map((brand) => new RegExp(`\\b${brand}\\b`, 'i')),
 ];
 
 const disallowedPublicPaths = [

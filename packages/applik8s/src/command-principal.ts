@@ -123,10 +123,20 @@ function isApplicationPrincipal(value: JsonValue | undefined): value is Applicat
     && nonEmpty(value.authorityRevision)
     && validTimestamp(value.admittedAt)
     && (value.expiresAt === undefined || validTimestamp(value.expiresAt))
+    && validExecutionContext(value)
     && nonEmpty(identity.id)
     && nonEmpty(identity.kind)
     && nonEmpty(identity.issuer)
     && nonEmpty(identity.subject);
+}
+
+function validExecutionContext(value: JsonObject): boolean {
+  const executionContext = value.executionContext;
+  if (executionContext === undefined) return true;
+  if (!isJsonObject(executionContext)) return false;
+  return executionContext.kind === 'agent'
+    && nonEmpty(executionContext.threadId)
+    && nonEmpty(executionContext.runId);
 }
 
 function nonEmpty(value: JsonValue | undefined): value is string {

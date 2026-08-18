@@ -7,7 +7,10 @@ import type {
   ApplicationAIProtocolRunRecord,
   ApplicationAIRunEventRecord,
 } from '@applik8s/ai';
-import type { ApplicationPostgresSql } from '@applik8s/applik8s/postgres-runtime-contract';
+import type {
+  ApplicationPostgresSql,
+  ApplicationPostgresTransactionSql,
+} from '@applik8s/applik8s/postgres-runtime-contract';
 import {
   ApplicationConversationConflictError,
   type ApplicationConversationStore,
@@ -16,6 +19,10 @@ import {
 export interface PostgresApplicationConversationStoreOptions {
   readonly sql: ApplicationPostgresSql;
   readonly schema?: string;
+  /** Database RLS setting installed from each method's admitted principal scope. */
+  readonly access?: {
+    readonly setting: string;
+  };
 }
 
 export function createPostgresApplicationConversationStore(
@@ -36,7 +43,7 @@ export function createPostgresApplicationConversationStore(
   const store: ApplicationConversationStore = {
     async createConversation(conversation) {
       await prepare();
-      const rows = await options.sql.unsafe(
+      const rows = await withPrincipalScope(options, conversation.principalScope, transaction => transaction.unsafe(
         `INSERT INTO ${tables.conversations}
           (id, principal_scope, title, revision, created_at, updated_at,
            archived_at, retention_until)
@@ -54,7 +61,7 @@ export function createPostgresApplicationConversationStore(
           conversation.archivedAt ?? null,
           conversation.retentionUntil ?? null,
         ],
-      );
+      ));
       const created = conversationRecord(rows[0]);
       if (!created) {
         throw new ApplicationConversationConflictError(
@@ -68,11 +75,11 @@ export function createPostgresApplicationConversationStore(
       await prepare();
       return conversationRecord(
         (
-          await options.sql.unsafe(
+          await withPrincipalScope(options, principalScope, transaction => transaction.unsafe(
             `SELECT * FROM ${tables.conversations}
              WHERE id = $1 AND principal_scope = $2`,
             [id, principalScope],
-          )
+          ))
         )[0],
       );
     },
@@ -81,7 +88,7 @@ export function createPostgresApplicationConversationStore(
       await prepare();
       return messageRecord(
         (
-          await options.sql.unsafe(
+          await withPrincipalScope(options, input.principalScope, transaction => transaction.unsafe(
             `SELECT message.*, message.content::text AS content_json
              FROM ${tables.messages} AS message
              JOIN ${tables.conversations} AS conversation
@@ -90,14 +97,14 @@ export function createPostgresApplicationConversationStore(
                AND message.conversation_id = $2
                AND conversation.principal_scope = $3`,
             [input.id, input.conversationId, input.principalScope],
-          )
+          ))
         )[0],
       );
     },
 
     async appendMessage(input) {
       await prepare();
-      return options.sql.begin(async (transaction) => {
+      return withPrincipalScope(options, input.principalScope, async (transaction) => {
         const conversations = await transaction.unsafe(
           `UPDATE ${tables.conversations}
            SET revision = revision + 1, updated_at = $4::timestamptz
@@ -148,7 +155,7 @@ export function createPostgresApplicationConversationStore(
       await prepare();
       assertLimit(input.limit);
       return (
-        await options.sql.unsafe(
+        await withPrincipalScope(options, input.principalScope, transaction => transaction.unsafe(
           `SELECT message.*, message.content::text AS content_json
            FROM ${tables.messages} AS message
            JOIN ${tables.conversations} AS conversation
@@ -164,13 +171,72 @@ export function createPostgresApplicationConversationStore(
             input.afterRevision ?? 0,
             input.limit,
           ],
-        )
+        ))
       ).map((row) => required(messageRecord(row), 'message'));
+    },
+
+    async replaceMessages(input) {
+      await prepare();
+      await withPrincipalScope(options, input.principalScope, async (transaction) => {
+        const owned = await transaction.unsafe(
+          `SELECT id FROM ${tables.conversations}
+           WHERE id = $1 AND principal_scope = $2
+           FOR UPDATE`,
+          [input.conversationId, input.principalScope],
+        );
+        if (!owned[0]) {
+          throw new ApplicationConversationConflictError(
+            `Conversation ${input.conversationId} is absent or outside the admitted scope.`,
+          );
+        }
+        const identifiers = new Set<string>();
+        for (const message of input.messages) {
+          if (identifiers.has(message.id)) {
+            throw new ApplicationConversationConflictError(
+              `Message ${message.id} occurs more than once in the authoritative transcript.`,
+            );
+          }
+          identifiers.add(message.id);
+        }
+        await transaction.unsafe(
+          `DELETE FROM ${tables.messages} WHERE conversation_id = $1`,
+          [input.conversationId],
+        );
+        for (const [index, message] of input.messages.entries()) {
+          await transaction.unsafe(
+            `INSERT INTO ${tables.messages}
+              (id, conversation_id, revision, role, content, state,
+               invocation_id, created_at)
+             VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8::timestamptz)`,
+            [
+              message.id,
+              input.conversationId,
+              index + 1,
+              message.role,
+              transaction.json(message.content),
+              message.state ?? 'committed',
+              message.invocationId ?? null,
+              message.createdAt,
+            ],
+          );
+        }
+        await transaction.unsafe(
+          `UPDATE ${tables.conversations}
+           SET revision = $3, updated_at = $4::timestamptz
+           WHERE id = $1 AND principal_scope = $2`,
+          [
+            input.conversationId,
+            input.principalScope,
+            input.messages.length,
+            input.updatedAt,
+          ],
+        );
+      });
     },
 
     async startRun(run) {
       await prepare();
-      const rows = await options.sql.unsafe(
+      const rows = await withPrincipalScope(options, run.principalScope, transaction => transaction.unsafe(
         `INSERT INTO ${tables.runs}
           (id, conversation_id, principal_scope, status, agent_run_id,
            invocation_id, started_at, updated_at)
@@ -188,7 +254,7 @@ export function createPostgresApplicationConversationStore(
           run.invocationId ?? null,
           run.startedAt,
         ],
-      );
+      ));
       const created = runRecord(rows[0]);
       if (!created) {
         throw new ApplicationConversationConflictError(
@@ -202,24 +268,63 @@ export function createPostgresApplicationConversationStore(
       await prepare();
       return runRecord(
         (
-          await options.sql.unsafe(
-            `SELECT * FROM ${tables.runs}
+          await withPrincipalScope(options, principalScope, transaction => transaction.unsafe(
+            `SELECT *, runtime_state::text AS runtime_state_json FROM ${tables.runs}
              WHERE id = $1 AND principal_scope = $2`,
             [id, principalScope],
-          )
+          ))
         )[0],
       );
+    },
+
+    async listRuns(input) {
+      await prepare();
+      return (
+        await withPrincipalScope(options, input.principalScope, transaction => transaction.unsafe(
+          `SELECT *, runtime_state::text AS runtime_state_json
+           FROM ${tables.runs}
+           WHERE conversation_id = $1 AND principal_scope = $2
+           ORDER BY started_at`,
+          [input.conversationId, input.principalScope],
+        ))
+      ).map(row => required(runRecord(row), 'run'));
+    },
+
+    async patchRun(input) {
+      await prepare();
+      const rows = await withPrincipalScope(options, input.principalScope, transaction => transaction.unsafe(
+        `UPDATE ${tables.runs}
+         SET status = COALESCE($3, status),
+             updated_at = $4::timestamptz,
+             terminal_reason = CASE
+               WHEN $5::boolean THEN $6
+               ELSE terminal_reason
+             END,
+             runtime_state = COALESCE($7::jsonb, runtime_state)
+         WHERE id = $1 AND principal_scope = $2
+         RETURNING *, runtime_state::text AS runtime_state_json`,
+        [
+          input.runId,
+          input.principalScope,
+          input.status ?? null,
+          input.updatedAt,
+          input.terminalReason !== undefined,
+          input.terminalReason ?? null,
+          input.runtimeState ? transaction.json(input.runtimeState) : null,
+        ],
+      ));
+      return runRecord(rows[0]);
     },
 
     async transitionRun(input) {
       await prepare();
       assertRunTransition(input.from, input.to);
-      const rows = await options.sql.unsafe(
+      const rows = await withPrincipalScope(options, input.principalScope, transaction => transaction.unsafe(
         `UPDATE ${tables.runs}
          SET status = $4, updated_at = $5::timestamptz,
              terminal_reason = $6
          WHERE id = $1 AND principal_scope = $2 AND status = $3
-         RETURNING *`,
+           RETURNING *, runtime_state::text AS runtime_state_json`,
         [
           input.runId,
           input.principalScope,
@@ -228,7 +333,7 @@ export function createPostgresApplicationConversationStore(
           input.updatedAt,
           input.terminalReason ?? null,
         ],
-      );
+      ));
       const transitioned = runRecord(rows[0]);
       if (!transitioned) {
         throw new ApplicationConversationConflictError(
@@ -241,7 +346,7 @@ export function createPostgresApplicationConversationStore(
     async appendRunEvent(input) {
       await prepare();
       const sequence = input.expectedSequence + 1;
-      return options.sql.begin(async (transaction) => {
+      return withPrincipalScope(options, input.principalScope, async (transaction) => {
         const runs = await transaction.unsafe(
           `SELECT id FROM ${tables.runs}
            WHERE id = $1 AND principal_scope = $2
@@ -287,7 +392,7 @@ export function createPostgresApplicationConversationStore(
       await prepare();
       return runEventRecord(
         (
-          await options.sql.unsafe(
+          await withPrincipalScope(options, input.principalScope, transaction => transaction.unsafe(
             `SELECT event.*, event.payload::text AS payload_json
              FROM ${tables.events} AS event
              JOIN ${tables.runs} AS run ON run.id = event.run_id
@@ -295,7 +400,7 @@ export function createPostgresApplicationConversationStore(
                AND run.principal_scope = $2
                AND event.sequence = $3`,
             [input.runId, input.principalScope, input.sequence],
-          )
+          ))
         )[0],
       );
     },
@@ -303,13 +408,13 @@ export function createPostgresApplicationConversationStore(
     async getRunEventFrontier(runId, principalScope) {
       await prepare();
       const row = (
-        await options.sql.unsafe(
+        await withPrincipalScope(options, principalScope, transaction => transaction.unsafe(
           `SELECT COALESCE(MAX(event.sequence), 0) AS sequence
            FROM ${tables.runs} AS run
            LEFT JOIN ${tables.events} AS event ON event.run_id = run.id
            WHERE run.id = $1 AND run.principal_scope = $2`,
           [runId, principalScope],
-        )
+        ))
       )[0];
       return numberValue(row?.sequence);
     },
@@ -321,7 +426,7 @@ export function createPostgresApplicationConversationStore(
         ? 'AND event.visibility = $5'
         : '';
       return (
-        await options.sql.unsafe(
+        await withPrincipalScope(options, input.principalScope, transaction => transaction.unsafe(
           `SELECT event.*, event.payload::text AS payload_json
            FROM ${tables.events} AS event
            JOIN ${tables.runs} AS run ON run.id = event.run_id
@@ -338,11 +443,27 @@ export function createPostgresApplicationConversationStore(
             input.limit,
             ...(input.visibility ? [input.visibility] : []),
           ],
-        )
+        ))
       ).map((row) => required(runEventRecord(row), 'run event'));
     },
   };
   return Object.freeze({ ...store, prepare });
+}
+
+async function withPrincipalScope<TResult>(
+  options: PostgresApplicationConversationStoreOptions,
+  principalScope: string,
+  operation: (transaction: ApplicationPostgresTransactionSql) => Promise<TResult>,
+): Promise<TResult> {
+  return options.sql.begin(async (transaction) => {
+    if (options.access) {
+      await transaction.unsafe(
+        'SELECT set_config($1, $2, true)',
+        [options.access.setting, principalScope],
+      );
+    }
+    return operation(transaction);
+  });
 }
 
 interface ConversationTableNames {
@@ -407,12 +528,14 @@ async function prepareConversationStore(
       invocation_id text,
       started_at timestamptz NOT NULL,
       updated_at timestamptz NOT NULL,
-      terminal_reason text
+      terminal_reason text,
+      runtime_state jsonb
     )`,
   );
   await sql.unsafe(
     `ALTER TABLE ${tables.runs}
-     ADD COLUMN IF NOT EXISTS terminal_reason text`,
+     ADD COLUMN IF NOT EXISTS terminal_reason text,
+     ADD COLUMN IF NOT EXISTS runtime_state jsonb`,
   );
   await sql.unsafe(
     `CREATE TABLE IF NOT EXISTS ${tables.events} (
@@ -516,6 +639,10 @@ function runRecord(
   }
   const agentRunId = stringValue(row.agent_run_id);
   const invocationId = stringValue(row.invocation_id);
+  const runtimeState = postgresJsonValue(row.runtime_state_json, row.runtime_state);
+  if (runtimeState !== undefined && runtimeState !== null && !isJsonObject(runtimeState)) {
+    throw new Error('PostgreSQL returned invalid conversation run runtime state.');
+  }
   return {
     apiVersion: 'applik8s.aiProtocolRun/v1alpha1',
     id,
@@ -524,6 +651,7 @@ function runRecord(
     status,
     ...(agentRunId ? { agentRunId } : {}),
     ...(invocationId ? { invocationId } : {}),
+    ...(runtimeState && isJsonObject(runtimeState) ? { runtimeState } : {}),
     startedAt,
     updatedAt,
   };

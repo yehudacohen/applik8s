@@ -1,5 +1,4 @@
 // typecast-file-boundary: compiler-discovered module exports and serialized composition metadata are discriminator-checked before typed planning.
-import { rmSync } from 'node:fs';
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -10,6 +9,7 @@ import { build } from 'esbuild';
 
 import { applik8sWorkspaceSourcePlugin } from '../bundling/index.js';
 import type { CompileResult } from '../interfaces.js';
+import { deferTemporaryDirectoryCleanup } from './entrypoint-discovery-cleanup.js';
 import { handlerSourceMetadataPlugin } from './entrypoint-handler-instrumentation.js';
 
 export {
@@ -26,6 +26,7 @@ export interface EntrypointExports {
   readonly applicationModels: readonly EntrypointApplicationModelExport[];
   readonly applicationSignals: readonly EntrypointApplicationSignalExport[];
   readonly applicationAgents: readonly EntrypointApplicationAgentExport[];
+  readonly applicationObjectStores: readonly EntrypointApplicationObjectStoreExport[];
 }
 
 export interface EntrypointApplicationOperationExport {
@@ -46,6 +47,11 @@ export interface EntrypointApplicationSignalExport {
 export interface EntrypointApplicationAgentExport {
   readonly name: string;
   readonly agentName: string;
+}
+
+export interface EntrypointApplicationObjectStoreExport {
+  readonly name: string;
+  readonly objectStoreName: string;
 }
 
 export interface TypeKroCompositionExport {
@@ -125,6 +131,12 @@ export async function discoverEntrypointExports(entrypoint: string): Promise<Res
         return agentName ? [{ name, agentName }] : [];
       })
       .sort((left, right) => left.name.localeCompare(right.name));
+    const applicationObjectStores = Object.entries(imported)
+      .flatMap(([name, value]) => {
+        const objectStoreName = exportedApplicationObjectStoreName(value);
+        return objectStoreName ? [{ name, objectStoreName }] : [];
+      })
+      .sort((left, right) => left.name.localeCompare(right.name));
     return {
       ok: true,
       value: {
@@ -134,6 +146,7 @@ export async function discoverEntrypointExports(entrypoint: string): Promise<Res
         applicationModels,
         applicationSignals,
         applicationAgents,
+        applicationObjectStores,
       },
     };
   } catch (cause) {
@@ -145,7 +158,12 @@ export async function discoverEntrypointExports(entrypoint: string): Promise<Res
 
 function exportedApplicationOperationId(value: unknown): string | undefined {
   if ((typeof value !== 'object' && typeof value !== 'function') || value === null) return undefined;
-  const operation = Reflect.get(value, 'operation');
+  const search = Reflect.get(value, 'search');
+  const operation = Reflect.get(value, 'kind') === 'applicationSearchIndex'
+    && (typeof search === 'object' || typeof search === 'function')
+    && search !== null
+    ? Reflect.get(search, 'operation')
+    : Reflect.get(value, 'operation');
   if (typeof operation !== 'object' || operation === null) return undefined;
   const id = Reflect.get(operation, 'id');
   const kind = Reflect.get(operation, 'kind');
@@ -187,18 +205,11 @@ function exportedApplicationAgentName(value: unknown): string | undefined {
   return typeof name === 'string' && name.trim() ? name : undefined;
 }
 
-const deferredTemporaryDirectoryCleanups = new Set<string>();
-let temporaryDirectoryCleanupRegistered = false;
-
-function deferTemporaryDirectoryCleanup(directory: string): void {
-  if (process.env.APPLIK8S_KEEP_TMP === '1') return;
-  deferredTemporaryDirectoryCleanups.add(directory);
-  if (temporaryDirectoryCleanupRegistered) return;
-  temporaryDirectoryCleanupRegistered = true;
-  process.once('exit', () => {
-    for (const cleanupDirectory of deferredTemporaryDirectoryCleanups) rmSync(cleanupDirectory, { recursive: true, force: true });
-    deferredTemporaryDirectoryCleanups.clear();
-  });
+function exportedApplicationObjectStoreName(value: unknown): string | undefined {
+  if (typeof value !== 'object' || value === null) return undefined;
+  if (Reflect.get(value, 'kind') !== 'applicationObjectStore') return undefined;
+  const name = Reflect.get(value, 'name');
+  return typeof name === 'string' && name.trim() ? name : undefined;
 }
 
 function isExportedOperator(value: unknown): value is { readonly definition: OperatorDefinition } {

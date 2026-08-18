@@ -230,7 +230,7 @@ function workflowOperationEnvironment(contract: WorkflowContract): readonly Reco
   if (authMode !== 'token' && authMode !== 'userPassword') throw new Error(`Workflow worker ${contract.worker.id} EventLog authMode must be token or userPassword.`);
   const databases = new Map(effects.operations.map(({ model }) => [model.runtime.connectionEnvName, model.runtime]));
   const environment: Record<string, unknown>[] = [
-    { name: 'APPLIK8S_TASK_OPERATION_CONTEXT_SECRET', valueFrom: { secretKeyRef: { name: effects.cursorSecret.name, key: effects.cursorSecret.key } } },
+    { name: 'APPLIK8S_TASK_OPERATION_CONTEXT_SECRET', valueFrom: { secretKeyRef: { name: effects.contextSecret.name, key: effects.contextSecret.key } } },
     { name: 'APPLIK8S_NATS_SERVERS', value: applicationGraphJsonStringArray(workflowEventLogServers(config)) },
     { name: 'APPLIK8S_NATS_STREAM', value: applicationGraphStringValue(config.stream) || 'APPLIK8S_EVENTS' },
     { name: 'APPLIK8S_NATS_SUBJECT_PREFIX', value: applicationGraphStringValue(config.subjectPrefix) || 'applik8s' },

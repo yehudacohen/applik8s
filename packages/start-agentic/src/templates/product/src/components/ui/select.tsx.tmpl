@@ -1,0 +1,7 @@
+import type { ComponentProps } from 'react';
+import { cn } from '#lib/utils';
+
+/** Native-select adapter for forms that do not need the compound Radix Select API. */
+export function Select({ className, ...props }: ComponentProps<'select'>) {
+  return <select data-slot="native-select" className={cn('flex h-10 w-full rounded-xl border border-stone-200 bg-white px-3 py-2 text-sm text-stone-950 outline-none transition focus-visible:border-emerald-700 focus-visible:ring-2 focus-visible:ring-emerald-700/15 disabled:cursor-not-allowed disabled:opacity-50 dark:border-stone-700 dark:bg-stone-900 dark:text-stone-50', className)} {...props} />;
+}

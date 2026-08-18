@@ -10,6 +10,7 @@ import {
   ApplicationPostgresSearchBoundError,
   createPostgresApplicationSearchRuntime,
   type PostgresApplicationSearchRuntime,
+  postgresApplicationSearchFilterJsonText,
   postgresApplicationSearchMigrationSql,
 } from '../src/search-runtime-postgres.js';
 
@@ -142,6 +143,19 @@ function runtimeOptions(sql?: ApplicationPostgresSql) {
 }
 
 describe('PostgreSQL search runtime contract', () => {
+  it('serializes scalar authorization filters as JSON text before PostgreSQL casts them', () => {
+    expect(postgresApplicationSearchFilterJsonText('workspace-a')).toBe(
+      '"workspace-a"',
+    );
+    expect(postgresApplicationSearchFilterJsonText(3)).toBe('3');
+    expect(
+      postgresApplicationSearchFilterJsonText({ state: 'ready' }),
+    ).toBe('{"state":"ready"}');
+    expect(() =>
+      postgresApplicationSearchFilterJsonText(undefined),
+    ).toThrow(/JSON-serializable/u);
+  });
+
   it('emits durable state, GIN full-text, and JSONB index migrations', () => {
     const migration = postgresApplicationSearchMigrationSql('search_runtime');
     expect(migration.join('\n')).toContain(

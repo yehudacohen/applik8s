@@ -6,7 +6,11 @@ import type {
   ApplicationQueryOperation,
   ApplicationScopedOperation,
 } from '@applik8s/client';
-import type { JsonObject } from '@applik8s/core';
+import type {
+  ApplicationIdentityReference,
+  ApplicationPrincipal,
+  JsonObject,
+} from '@applik8s/core';
 import type { ApplicationServiceIdentityBinding } from './application-authority.js';
 import type { ApplicationGraphState } from './application-graph-state.js';
 import type { ApplicationObjectReference, ApplicationObjectStoreBinding } from './application-object-storage.js';
@@ -47,6 +51,10 @@ export interface ApplicationTaskProjectionTarget {
 
 export interface ApplicationTaskServicePrincipal {
   readonly id: string;
+  /** Canonical identity established by the compiler-owned workload boundary. */
+  readonly identity?: ApplicationIdentityReference;
+  readonly kind?: ApplicationPrincipal['kind'];
+  readonly authenticationMethod?: string;
   readonly roles?: readonly string[];
   readonly attributes?: JsonObject;
   readonly authorizationVersion: string;

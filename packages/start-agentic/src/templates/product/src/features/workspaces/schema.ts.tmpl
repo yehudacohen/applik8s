@@ -13,10 +13,22 @@ export const workspaceRole = pgEnum('workspace_role', [
   'workspace-member',
 ]);
 
+export const workspaceState = pgEnum('workspace_state', [
+  'active',
+  'suspended',
+]);
+
+export const aiUsageReservationState = pgEnum('ai_usage_reservation_state', [
+  'active',
+  'settled',
+  'released',
+]);
+
 export const Workspace = model('workspaces', {
   id: field.uuid('id').defaultRandom().primaryKey(),
   slug: field.text('slug').notNull(),
   name: field.text('name').notNull(),
+  state: workspaceState('state').notNull().default('active'),
   ownerPrincipalId: field.text('owner_principal_id')
     .notNull()
     .default(authenticatedPrincipalId),
@@ -60,6 +72,73 @@ export const Invitation = model('workspace_invitations', {
     mode: 'string',
   }).notNull(),
   createdAt: field.timestamp('created_at', {
+    withTimezone: true,
+    mode: 'string',
+  }).notNull().defaultNow(),
+});
+
+export const WorkspaceBudgetPolicy = model('workspace_budget_policies', {
+  workspaceId: field.uuid('workspace_id').primaryKey()
+    .references(() => Workspace.id, { onDelete: 'cascade' }),
+  maxMonthlyTokens: field.bigint('max_monthly_tokens', { mode: 'number' }),
+  maxMonthlyCostMicrounits: field.bigint('max_monthly_cost_microunits', { mode: 'number' }),
+  alertThresholdPercent: field.integer('alert_threshold_percent').notNull().default(80),
+  hardLimit: field.boolean('hard_limit').notNull().default(true),
+  updatedAt: field.timestamp('updated_at', {
+    withTimezone: true,
+    mode: 'string',
+  }).notNull().defaultNow(),
+});
+
+/** One transaction-locked monthly counter keeps concurrent AI admission exact. */
+export const AIUsageBudgetLedger = model('ai_usage_budget_ledgers', {
+  id: field.text('id').primaryKey(),
+  workspaceId: field.uuid('workspace_id').notNull()
+    .references(() => Workspace.id, { onDelete: 'cascade' }),
+  principalScope: field.text('principal_scope').notNull().default('pending'),
+  periodStart: field.timestamp('period_start', {
+    withTimezone: true,
+    mode: 'string',
+  }).notNull(),
+  reservedTokens: field.bigint('reserved_tokens', { mode: 'number' }).notNull().default(0),
+  reservedCostMicrounits: field.bigint('reserved_cost_microunits', { mode: 'number' }).notNull().default(0),
+  consumedTokens: field.bigint('consumed_tokens', { mode: 'number' }).notNull().default(0),
+  consumedCostMicrounits: field.bigint('consumed_cost_microunits', { mode: 'number' }).notNull().default(0),
+  updatedAt: field.timestamp('updated_at', {
+    withTimezone: true,
+    mode: 'string',
+  }).notNull().defaultNow(),
+}, table => [
+  uniqueIndex('ai_usage_budget_ledgers_workspace_period_uidx')
+    .on(table.workspaceId, table.periodStart),
+]);
+
+/** A bounded lease reserves a run's maximum charge before provider dispatch. */
+export const AIUsageReservation = model('ai_usage_reservations', {
+  id: field.text('id').primaryKey(),
+  workspaceId: field.uuid('workspace_id').notNull()
+    .references(() => Workspace.id, { onDelete: 'cascade' }),
+  principalScope: field.text('principal_scope').notNull().default('pending'),
+  ledgerId: field.text('ledger_id')
+    .references(() => AIUsageBudgetLedger.id, { onDelete: 'cascade' }),
+  maximumTokens: field.bigint('maximum_tokens', { mode: 'number' }).notNull(),
+  maximumCostMicrounits: field.bigint('maximum_cost_microunits', { mode: 'number' }).notNull(),
+  actualTokens: field.bigint('actual_tokens', { mode: 'number' }),
+  actualCostMicrounits: field.bigint('actual_cost_microunits', { mode: 'number' }),
+  state: aiUsageReservationState('state').notNull().default('active'),
+  expiresAt: field.timestamp('expires_at', {
+    withTimezone: true,
+    mode: 'string',
+  }).notNull().defaultNow(),
+  settledAt: field.timestamp('settled_at', {
+    withTimezone: true,
+    mode: 'string',
+  }),
+  createdAt: field.timestamp('created_at', {
+    withTimezone: true,
+    mode: 'string',
+  }).notNull().defaultNow(),
+  updatedAt: field.timestamp('updated_at', {
     withTimezone: true,
     mode: 'string',
   }).notNull().defaultNow(),

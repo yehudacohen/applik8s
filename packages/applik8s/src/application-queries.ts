@@ -875,6 +875,7 @@ function reactiveDatabaseRuntime(binding: ApplicationDatabaseBinding): {
     readonly contextSchema: JsonObject;
     readonly setting: string;
     readonly column: string;
+    readonly default: 'required' | 'global';
   };
 } {
   const provider = binding.provider;
@@ -902,6 +903,7 @@ function reactiveDatabaseRuntime(binding: ApplicationDatabaseBinding): {
             contextSchema: binding.access.context.contract.jsonSchema,
             setting: binding.access.setting,
             column: binding.access.column,
+            default: binding.access.default,
           },
         }
       : {}),

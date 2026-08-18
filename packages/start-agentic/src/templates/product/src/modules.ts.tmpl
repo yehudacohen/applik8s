@@ -46,6 +46,19 @@ export const UsageDelivery = Usage.UsageFact.on.create(
       Number(created.value.inputTokens ?? 0)
       + Number(created.value.outputTokens ?? 0);
     if (quantity < 1) return;
+    const subscriptions = await Billing.Subscription.find({
+      where: { principalScope: created.value.principalScope },
+      limit: 5,
+    });
+    const billable = subscriptions.find(subscription =>
+      subscription.value.status === 'trialing'
+      || subscription.value.status === 'active',
+    );
+    // Included/free usage remains authoritative in UsageFact for budgets and
+    // operations, but it is not a provider billing event until the workspace
+    // has an admitted billable customer/subscription. This avoids retrying and
+    // dead-lettering every first-run assistant invocation before checkout.
+    if (!billable) return;
     const idempotencyKey = `usage:${created.value.id}`;
     const dimensions = billingDimensions(created.value.dimensions);
     const delivered = await Billing.reportUsage({
@@ -77,12 +90,17 @@ export const ArtifactObjects = application.objectStore('agentic-artifacts', {
   contentTypes: [
     'application/json',
     'application/octet-stream',
+    'text/markdown',
     'text/plain',
   ],
   mode: 'immutable',
   browser: {
     upload: 'signed',
-    download: { mode: 'signed', access: 'owner' },
+    // Artifact metadata and opaque object keys are disclosed only through the
+    // workspace-authorized Artifact views. The signed intent still requires an
+    // authenticated admission, while allowing collaborators in the selected
+    // workspace to retrieve the same immutable result.
+    download: { mode: 'signed', access: 'authenticated' },
     ttlSeconds: 300,
   },
   deletion: 'explicit',

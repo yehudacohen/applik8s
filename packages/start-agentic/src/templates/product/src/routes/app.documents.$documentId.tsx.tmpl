@@ -1,8 +1,9 @@
+import { selectAgenticWorkspace } from '@applik8s/start-agentic/react';
 import { Link, createFileRoute } from '@tanstack/react-router';
-import { type FormEvent, useEffect, useState } from 'react';
-import { Document, DocumentDetail } from '../application';
-import { Alert, Badge, Button, Card, PageHeader, Skeleton } from '../components/ui';
-import { documentTitle, MarkdownDocument } from '../components/markdown-document';
+import { type FormEvent, useEffect, useMemo, useState } from 'react';
+import { DecisionReview, Document, DocumentComment, DocumentDetail, WorkspaceList } from '../application';
+import { Alert, Badge, Button, Card, Input, LiveQueryStatus, PageHeader, Skeleton, Textarea, humanizePrincipal } from '../components/ui';
+import { MarkdownDocument, MarkdownEditor } from '../components/markdown-document';
 
 export const Route = createFileRoute('/app/documents/$documentId')({
   component: DocumentDetailRoute,
@@ -11,33 +12,202 @@ export const Route = createFileRoute('/app/documents/$documentId')({
 function DocumentDetailRoute() {
   const { documentId } = Route.useParams();
   const detail = DocumentDetail({ id: documentId }).useQuery();
-  const update = Document.update.useMutation();
+  const workspaces = WorkspaceList({}).useQuery();
+  const document = detail.data?.document;
+  const update = Document.update.useMutation({
+    expectedRevision: () => document ? String(document.revision) : undefined,
+  });
+  const createReview = DecisionReview.create.useMutation();
+  const createComment = DocumentComment.create.useMutation();
+  const updateComment = DocumentComment.update.useMutation();
+  const [title, setTitle] = useState('');
   const [body, setBody] = useState('');
+  const [summary, setSummary] = useState('');
+  const [tags, setTags] = useState('');
   const [editing, setEditing] = useState(false);
+  const [reviewRequested, setReviewRequested] = useState(false);
   const [notice, setNotice] = useState<string>();
-  useEffect(() => setBody(detail.data?.body ?? ''), [detail.data?.body]);
+  const [commentBody, setCommentBody] = useState('');
+  const reviewWorkspace = useMemo(
+    () => workspaces.data?.find(workspace => workspace.id === document?.principalScope),
+    [document?.principalScope, workspaces.data],
+  );
+  const outline = useMemo(() => document?.body
+    .split('\n')
+    .map(line => /^(#{1,3})\s+(.+)$/u.exec(line))
+    .filter((match): match is RegExpExecArray => match !== null)
+    .map(match => ({ id: `${match.index}:${match[2] ?? ''}`, depth: match[1]?.length ?? 1, title: match[2] ?? '' })) ?? [], [document?.body]);
+
+  useEffect(() => {
+    if (!document) return;
+    setTitle(document.title);
+    setBody(document.body);
+    setSummary(document.summary);
+    setTags(document.tags.join(', '));
+  }, [document]);
 
   async function save(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     try {
-      await update({ identity: documentId, patch: { body } });
+      await update({
+        identity: documentId,
+        patch: {
+          title: title.trim(),
+          body,
+          summary: summary.trim(),
+          tags: tags.split(',').map(tag => tag.trim()).filter(Boolean),
+        },
+      });
       await detail.refresh();
-      setNotice('Document committed. Subscribers now observe the authoritative revision.');
+      setNotice('Saved as a new revision.');
       setEditing(false);
     } catch {
-      setNotice('The document was not changed. Check your authority and retry.');
+      setNotice('This revision was not saved. Refresh if someone else changed the document, then retry.');
     }
   }
 
-  return <div>
-    <Link to="/app/library" className="text-sm font-semibold text-emerald-800">← Back to Library</Link>
-    <PageHeader eyebrow="Mutable document" title={detail.data ? documentTitle(detail.data.body) : 'Document'} description="This application model can change through the same typed operation whether a human or an admitted agent acts." action={<Badge tone={detail.phase === 'reconnecting' ? 'warning' : 'info'}>{detail.phase === 'reconnecting' ? 'Reconnecting…' : 'Authoritative model'}</Badge>} />
-    {detail.phase === 'error' ? <Alert tone="warning" title="Document unavailable">The library remains usable. Retry after the query provider recovers.</Alert> : null}
-    {detail.data === undefined && detail.phase !== 'error' ? <Skeleton className="h-72" /> : null}
-    {detail.data === null ? <Alert tone="warning" title="Document not found">It may have been removed or belong to another admitted scope.</Alert> : null}
-    {detail.data ? <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_18rem]">
-      <Card><div className="mb-5 flex items-center justify-between gap-3"><div><p className="eyebrow">Content</p><p className="mt-1 text-sm text-stone-600">Readable Markdown with an authoritative editable source.</p></div><Button variant="secondary" type="button" onClick={() => setEditing(value => !value)}>{editing ? 'Preview' : 'Edit'}</Button></div>{editing ? <form onSubmit={save} className="grid gap-3"><label htmlFor="document-body" className="sr-only">Document source</label><textarea id="document-body" className="min-h-96 font-mono text-sm leading-6" value={body} onChange={event => setBody(event.currentTarget.value)} /><Button type="submit" disabled={update.pending || !body.trim()}>{update.pending ? 'Saving…' : 'Save document'}</Button></form> : <MarkdownDocument source={detail.data.body} />}{notice ? <p role="status" className="mt-5 border-t border-stone-100 pt-4 text-sm text-stone-600">{notice}</p> : null}</Card>
-      <aside className="space-y-4"><Card><p className="eyebrow">Provenance</p><dl className="mt-3 grid gap-3 text-sm"><div><dt className="text-stone-500">Owner</dt><dd className="mt-1 break-all font-medium">{detail.data.ownerPrincipalId}</dd></div><div><dt className="text-stone-500">Acting creator</dt><dd className="mt-1 break-all font-medium">{detail.data.createdByPrincipalId}</dd></div><div><dt className="text-stone-500">Created</dt><dd className="mt-1 font-medium">{new Date(detail.data.createdAt).toLocaleString()}</dd></div></dl></Card><Card><p className="text-sm leading-6 text-stone-600">Ownership comes from the framework-admitted causal principal. Agent provenance remains distinct from human ownership.</p></Card></aside>
-    </div> : null}
-  </div>;
+  async function requestReview() {
+    if (!document || !reviewWorkspace) return;
+    try {
+      selectAgenticWorkspace(reviewWorkspace.id);
+      await createReview({
+        workspaceId: reviewWorkspace.id,
+        documentId: document.id,
+        title: `Review “${document.title}”`,
+      });
+      setReviewRequested(true);
+      await detail.refresh();
+      setNotice('Review requested. Owners and administrators can decide from Inbox.');
+    } catch {
+      setNotice('Review could not be requested. Confirm workspace access and retry.');
+    }
+  }
+
+  async function transition(state: 'draft' | 'published' | 'archived') {
+    if (!document) return;
+    try {
+      await update({
+        identity: document.id,
+        patch: {
+          state,
+        },
+      });
+      await detail.refresh();
+      setNotice(state === 'published' ? 'Document published.' : state === 'archived' ? 'Document archived.' : 'Document returned to draft.');
+    } catch {
+      setNotice('The lifecycle change was not committed. Refresh and retry.');
+    }
+  }
+
+  async function restoreRevision(revision: {
+    readonly revision: number;
+    readonly title: string;
+    readonly body: string;
+    readonly summary: string;
+    readonly tags: readonly string[];
+  }) {
+    if (!document) return;
+    try {
+      await update({
+        identity: document.id,
+        patch: {
+          title: revision.title,
+          body: revision.body,
+          summary: revision.summary,
+          tags: [...revision.tags],
+          state: 'draft',
+        },
+      });
+      await detail.refresh();
+      setNotice(`Version ${revision.revision} was restored as a new draft revision.`);
+    } catch {
+      setNotice('The earlier version could not be restored. Refresh and retry.');
+    }
+  }
+
+  async function addComment(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!commentBody.trim()) return;
+    try {
+      await createComment({ documentId, body: commentBody.trim() });
+      setCommentBody('');
+      setNotice('Comment added to this document.');
+    } catch {
+      setNotice('The comment could not be added. Refresh and retry.');
+      return;
+    }
+    try {
+      await detail.refresh();
+    } catch {
+      setNotice('Comment added. Document updates are reconnecting; your comment is safe.');
+    }
+  }
+
+  async function setCommentResolved(comment: { readonly id: string; readonly resolvedAt?: string }, resolved: boolean) {
+    try {
+      await updateComment({
+        identity: comment.id,
+        patch: { resolvedAt: resolved ? new Date().toISOString() : null },
+      });
+      setNotice(resolved ? 'Comment resolved.' : 'Comment reopened.');
+    } catch {
+      setNotice('The comment changed elsewhere or could not be updated. Refresh and retry.');
+      return;
+    }
+    try {
+      await detail.refresh();
+    } catch {
+      setNotice(`${resolved ? 'Comment resolved' : 'Comment reopened'}. Document updates are reconnecting.`);
+    }
+  }
+
+  return (
+    <div>
+      <Link to="/app/documents" className="text-sm font-semibold text-emerald-800">← Back to Documents</Link>
+      <PageHeader
+        eyebrow="Document workspace"
+        title={document?.title ?? 'Document'}
+        description="A durable work product with version history, causal provenance, and a review lifecycle."
+        action={document ? <div className="flex items-center gap-2"><span role="status" aria-label="Document state"><Badge tone={document.state === 'approved' || document.state === 'published' ? 'success' : document.state === 'in-review' ? 'warning' : 'info'}>{document.state}</Badge></span><Badge>v{document.version}</Badge></div> : null}
+      />
+      <div className="mb-5"><LiveQueryStatus phase={detail.phase} label="Document updates" onRetry={() => detail.refresh()} /></div>
+      {detail.phase === 'error' ? <Alert tone="warning" title="Document unavailable">Your document is safe. Try loading it again.</Alert> : null}
+      {detail.data === undefined && detail.phase !== 'error' ? <Skeleton className="h-72" /> : null}
+      {detail.data === null ? <Alert tone="warning" title="Document not found">It may have been removed or belong to another workspace.</Alert> : null}
+      {document ? (
+        <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_20rem]">
+          <Card>
+            <div className="mb-5 flex flex-wrap items-center justify-between gap-3"><div><p className="eyebrow">Content</p><p className="mt-1 text-sm text-stone-600">Markdown source with explicit save and optimistic revision checks.</p></div>{document.state === 'draft' ? <Button variant="secondary" type="button" onClick={() => setEditing(value => !value)}>{editing ? 'Preview' : 'Edit document'}</Button> : <Badge>Read only outside draft</Badge>}</div>
+            {editing ? (
+              <form onSubmit={save} className="grid gap-4">
+                <label className="text-sm font-medium">Title<Input className="mt-2" value={title} onChange={event => setTitle(event.currentTarget.value)} /></label>
+                <label className="text-sm font-medium">Summary<Textarea className="mt-2 min-h-24" value={summary} onChange={event => setSummary(event.currentTarget.value)} /></label>
+                <label className="text-sm font-medium">Tags<Input className="mt-2" value={tags} onChange={event => setTags(event.currentTarget.value)} placeholder="launch, customer, strategy" /></label>
+                <label className="grid gap-2 text-sm font-medium">Content<MarkdownEditor value={body} onChange={setBody} /></label>
+                <div className="flex gap-2"><Button type="submit" disabled={update.pending || !title.trim() || !body.trim()}>{update.pending ? 'Saving…' : 'Save revision'}</Button><Button type="button" variant="secondary" onClick={() => setEditing(false)}>Cancel</Button></div>
+              </form>
+            ) : <MarkdownDocument source={document.body} />}
+            {notice ? <p role="status" className="mt-5 border-t border-stone-100 pt-4 text-sm text-stone-600">{notice}</p> : null}
+          </Card>
+          <aside className="space-y-4">
+            <Card><p className="eyebrow">Actions</p><div className="mt-3 grid gap-2">{document.state === 'draft' && !reviewRequested ? <Button type="button" onClick={() => void requestReview()} disabled={createReview.pending || !reviewWorkspace}>{createReview.pending ? 'Requesting…' : 'Request review'}</Button> : null}{document.state === 'approved' ? <Button type="button" onClick={() => void transition('published')}>Publish document</Button> : null}{document.state === 'in-review' || reviewRequested ? <Button asChild><Link to="/app/inbox">Open review Inbox</Link></Button> : null}{document.state !== 'archived' ? <Button type="button" variant="ghost" onClick={() => void transition('archived')}>Archive</Button> : <Button type="button" variant="secondary" onClick={() => void transition('draft')}>Restore to draft</Button>}</div>{!reviewWorkspace ? <p className="mt-3 text-xs text-amber-700">Create or join a workspace before requesting review.</p> : null}</Card>
+            {outline.length > 1 ? <Card><p className="eyebrow">Outline</p><ol className="mt-3 space-y-2 text-sm">{outline.map(heading => <li key={heading.id} className={heading.depth > 1 ? 'pl-3 text-stone-600' : 'font-semibold text-stone-900'}>{heading.title}</li>)}</ol></Card> : null}
+            <Card><p className="eyebrow">Provenance</p><dl className="mt-3 grid gap-3 text-sm"><div><dt className="text-stone-500">Workspace</dt><dd className="mt-1 font-medium">{reviewWorkspace?.name ?? 'Personal workspace'}</dd></div><div><dt className="text-stone-500">Created by</dt><dd className="mt-1 font-medium">{document.sourceConversationId ? 'Workspace assistant' : humanizePrincipal(document.createdByPrincipalId)}</dd></div>{document.sourceConversationId ? <div><dt className="text-stone-500">Source conversation</dt><dd className="mt-1"><Link to="/app/conversations/$conversationId" params={{ conversationId: document.sourceConversationId }} className="font-semibold text-emerald-800">Continue working →</Link></dd></div> : null}<div><dt className="text-stone-500">Updated</dt><dd className="mt-1 font-medium">{new Date(document.updatedAt).toLocaleString()}</dd></div></dl><details className="mt-4 border-t border-stone-200 pt-3 text-xs text-stone-500"><summary className="cursor-pointer font-semibold text-stone-700">Audit identifiers</summary><dl className="mt-2 grid gap-2"><div><dt>Principal</dt><dd className="break-all font-mono">{document.createdByPrincipalId}</dd></div>{document.sourceRunId ? <div><dt>Run</dt><dd className="break-all font-mono">{document.sourceRunId}</dd></div> : null}</dl></details></Card>
+            <Card><div className="flex items-center justify-between"><p className="eyebrow">Discussion</p><Badge tone={detail.data?.comments.some(comment => !comment.resolvedAt) ? 'warning' : 'neutral'}>{detail.data?.comments.filter(comment => !comment.resolvedAt).length ?? 0} open</Badge></div><form onSubmit={addComment} className="mt-3 grid gap-2"><label htmlFor="document-comment" className="sr-only">Add a comment</label><Textarea id="document-comment" className="min-h-24" value={commentBody} onChange={event => setCommentBody(event.currentTarget.value)} placeholder="Ask a question or suggest a change…" /><Button type="submit" variant="secondary" disabled={createComment.pending || !commentBody.trim()}>Add comment</Button></form><ol className="mt-4 space-y-3">{detail.data?.comments.map(comment => <li key={comment.id} className={`rounded-xl border p-3 text-sm ${comment.resolvedAt ? 'border-stone-200 bg-stone-50 text-stone-500' : 'border-amber-200 bg-amber-50/50'}`}><div className="flex items-start justify-between gap-2"><strong>{humanizePrincipal(comment.createdByPrincipalId)}</strong><span className="text-xs">{new Date(comment.createdAt).toLocaleDateString()}</span></div><p className="mt-2 whitespace-pre-wrap leading-6">{comment.body}</p><Button type="button" variant="ghost" className="mt-2" disabled={updateComment.pending} onClick={() => void setCommentResolved(comment, !comment.resolvedAt)}>{comment.resolvedAt ? 'Reopen' : 'Resolve'}</Button></li>)}</ol>{detail.data?.comments.length === 0 ? <p className="mt-4 text-sm leading-6 text-stone-500">No discussion yet. Comments remain attached to this durable document across revisions.</p> : null}</Card>
+            <Card><div className="flex items-center justify-between"><p className="eyebrow">Version history</p><Badge>{detail.data?.revisions.length ?? 0}</Badge></div><ol className="mt-3 space-y-3">{detail.data?.revisions.map((revision, index, revisions) => { const previous = revisions[index + 1]; return <li key={revision.id} className="border-b border-stone-100 pb-3 text-sm last:border-0"><div className="flex items-center justify-between"><strong>Version {revision.revision}</strong><Badge>{revision.state}</Badge></div><p className="mt-1 text-xs text-stone-500">{humanizePrincipal(revision.authoredByPrincipalId)} · {new Date(revision.createdAt).toLocaleString()}</p>{previous ? <p className="mt-2 text-xs font-medium text-stone-600">{revisionChangeSummary(previous, revision)}</p> : <p className="mt-2 text-xs font-medium text-stone-600">Initial version</p>}<details className="mt-2 rounded-lg bg-stone-50 p-2 text-xs text-stone-600"><summary className="cursor-pointer font-semibold">Preview this version</summary><p className="mt-2 line-clamp-5 whitespace-pre-wrap">{revision.body}</p>{revision.revision !== document.version && document.state === 'draft' ? <Button type="button" variant="secondary" className="mt-3 w-full" disabled={update.pending} onClick={() => void restoreRevision(revision)}>Restore as new draft</Button> : revision.revision === document.version ? <p className="mt-2 font-semibold text-emerald-800">Current version</p> : <p className="mt-2 text-stone-500">Return to draft before restoring this version.</p>}</details></li>; })}</ol></Card>
+          </aside>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function revisionChangeSummary(previous: { readonly title: string; readonly body: string; readonly tags: readonly string[] }, current: { readonly title: string; readonly body: string; readonly tags: readonly string[] }) {
+  const changes: string[] = [];
+  if (previous.title !== current.title) changes.push('title changed');
+  const lineDelta = current.body.split('\n').length - previous.body.split('\n').length;
+  if (lineDelta !== 0) changes.push(`${lineDelta > 0 ? '+' : ''}${lineDelta} line${Math.abs(lineDelta) === 1 ? '' : 's'}`);
+  if (previous.body !== current.body && lineDelta === 0) changes.push('content edited');
+  if (previous.tags.join('\u0000') !== current.tags.join('\u0000')) changes.push('tags changed');
+  return changes.length > 0 ? changes.join(' · ') : 'Lifecycle or summary updated';
 }

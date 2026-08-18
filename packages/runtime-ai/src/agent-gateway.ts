@@ -77,11 +77,45 @@ export function createApplicationAIAgentGateway(
     async handle(incoming) {
       const url = new URL(incoming.url);
       if (url.pathname !== '/__applik8s/v1/ai/chat') return undefined;
-      if (incoming.method !== 'POST') {
-        return json({ error: 'method_not_allowed' }, 405, { allow: 'POST' });
+      if (incoming.method !== 'POST' && incoming.method !== 'GET') {
+        return json({ error: 'method_not_allowed' }, 405, { allow: 'GET, POST' });
       }
       try {
         const authenticationRequest = incoming.clone();
+        if (incoming.method === 'GET') {
+          const threadId = stable(url.searchParams.get('threadId'), 'threadId');
+          const target = selectedTargetFromName(
+            targets,
+            stable(url.searchParams.get('agent'), 'agent'),
+          );
+          const runId = `hydrate:${threadId}`;
+          const admission = await options.authenticate(authenticationRequest);
+          assertAdmission(admission, application);
+          if (!await options.authorize({ admission, target, threadId, runId })) {
+            return json({ error: 'forbidden' }, 403);
+          }
+          const token = executionAdmission({
+            application,
+            admission,
+            target,
+            threadId,
+            runId,
+            now,
+            maximumLifetimeMs,
+            secret: options.secret,
+          });
+          return await request(new Request(
+            new URL(`/__applik8s/v1/ai/chat?threadId=${encodeURIComponent(threadId)}`, target.baseUrl),
+            {
+              method: 'GET',
+              headers: forwardedHeaders(incoming.headers, token),
+              signal: AbortSignal.any([
+                incoming.signal,
+                AbortSignal.timeout(target.timeoutMs),
+              ]),
+            },
+          ));
+        }
         const { source, value } = await boundedJson(
           incoming,
           maximumRequestBytes,
@@ -236,6 +270,72 @@ function validatedTargets(
     targets.set(name, Object.freeze({ ...value, name }));
   }
   return targets;
+}
+
+function selectedTargetFromName(
+  targets: ReadonlyMap<string, ApplicationAIAgentGatewayTarget>,
+  name: string,
+): ApplicationAIAgentGatewayTarget {
+  const target = targets.get(name);
+  if (!target) {
+    throw gatewayError('agent_unavailable', 404, `Unknown application agent ${name}.`);
+  }
+  return target;
+}
+
+function executionAdmission(input: {
+  readonly application: string;
+  readonly admission: ApplicationRequestAdmission;
+  readonly target: ApplicationAIAgentGatewayTarget;
+  readonly threadId: string;
+  readonly runId: string;
+  readonly now: () => Date;
+  readonly maximumLifetimeMs: number;
+  readonly secret: string;
+}): string {
+  const issuedAt = input.now();
+  const principalExpiry = input.admission.principal.expiresAt
+    ? Date.parse(input.admission.principal.expiresAt)
+    : Number.POSITIVE_INFINITY;
+  const expiresAt = Math.min(
+    issuedAt.getTime() + input.maximumLifetimeMs,
+    principalExpiry,
+  );
+  if (!Number.isFinite(issuedAt.getTime()) || expiresAt <= issuedAt.getTime()) {
+    throw gatewayError('unauthorized', 401, 'Agent admission is expired.');
+  }
+  const executionDigest = digest({
+    application: input.application,
+    target: input.target.nodeId,
+    principal: input.admission.principal.id,
+    threadId: input.threadId,
+    runId: input.runId,
+  });
+  const causalPrincipal = applicationCausalPrincipalContext(input.admission.principal);
+  return encodeApplicationExecutionAdmission(input.secret, {
+    apiVersion: applicationExecutionAdmissionProtocol,
+    id: `agent-admission:${executionDigest}`,
+    executionKind: 'agent',
+    executionId: `agent-run:${executionDigest}`,
+    attempt: 1,
+    workloadIdentityId: input.target.workloadIdentityId,
+    serviceIdentityId: input.target.serviceIdentityId,
+    admission: input.admission,
+    audience: input.target.audience,
+    causalGrantIds: [...causalPrincipal.grantIds],
+    cancellationRevision: `agent-cancellation:${digest({
+      authority: input.admission.principal.authorityRevision,
+      target: input.target.nodeId,
+      runId: input.runId,
+    })}`,
+    binding: {
+      agentId: input.target.nodeId,
+      threadId: input.threadId,
+      runId: input.runId,
+    },
+    issuedAt: issuedAt.toISOString(),
+    expiresAt: new Date(expiresAt).toISOString(),
+  });
 }
 
 function selectedTarget(

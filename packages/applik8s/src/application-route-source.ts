@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { JsonObject } from '@applik8s/core';
+import { normalizeBundledImportAccess } from './application-callback-source-equivalence.js';
 import { blockCommentEnd, escapeRegExp, isDeclarationIdentifier, isRegexLiteralStart, lineCommentEnd, matchingDelimiter, nextNonWhitespace, previousNonWhitespace, quotedSourceEnd, regexLiteralEnd, splitTopLevelArguments, templateSourceEnd, transpileApplicationCallbackExpression, transpileApplicationRouteModuleForDependencies, unique } from './application-route-source-utilities.js';
 
 export { matchingDelimiter, normalizeSerializableFunctionSource, splitTopLevelArguments, transpileApplicationCallbackExpression } from './application-route-source-utilities.js';
@@ -122,7 +123,11 @@ interface ApplicationRouteTopLevelBinding {
 }
 
 export function analyzeApplicationServerRouteSource(source: string): ApplicationServerRouteSourceAnalysis {
-  const strippedSource = stripCommentsAndStrings(source);
+  // Vite's SSR loader rewrites imported bindings through generated namespace
+  // objects. Those names are bundler implementation details, not authored
+  // closure captures. Normalize them before dependency analysis so source-tree
+  // tests and production compilation see the same callback.
+  const strippedSource = stripCommentsAndStrings(normalizeBundledImportAccess(source));
   const declaredIdentifiers = declaredRouteIdentifiers(strippedSource);
   const functionCalls = routeFunctionCalls(strippedSource);
   const memberCalls = routeMemberCalls(strippedSource);

@@ -1,0 +1,360 @@
+import { module } from '@applik8s/applik8s';
+import { agenticLeaseExpiration } from '@applik8s/start-agentic';
+import { type } from 'arktype';
+import { application } from '../../app';
+import { ApplicationOperator, Usage } from '../../modules';
+import { agenticWorkspaceScope } from '../../workspace-scope';
+import {
+  AIUsageBudgetLedger as AIUsageBudgetLedgerTable,
+  AIUsageReservation as AIUsageReservationTable,
+  WorkspaceBudgetPolicy as WorkspaceBudgetPolicyTable,
+} from './models';
+
+const workspaceAIUsageBudgets = module(
+  'workspace-ai-usage-budgets',
+  {
+    schema: {},
+  },
+  currentApplication => {
+    WorkspaceBudgetPolicyTable.create.beforeCommit(
+      { history: true },
+      async function protectBudgetPolicyCreation(policy, input, context) {
+        if (!context.principal || input.workspaceId !== agenticWorkspaceScope(context)) {
+          throw new Error('Budget policy creation requires the admitted workspace identity.');
+        }
+        validateBudgetPolicy(input);
+        policy.patch({ spec: { updatedAt: context.now } });
+      },
+    );
+    WorkspaceBudgetPolicyTable.update.beforeCommit(
+      { history: true },
+      async function protectBudgetPolicyUpdate(policy, input, context) {
+        if (!context.principal || policy.value.workspaceId !== agenticWorkspaceScope(context)) {
+          throw new Error('The budget policy is outside the admitted workspace scope.');
+        }
+        validateBudgetPolicy({ ...policy.value, ...input.patch });
+        policy.patch({ spec: { updatedAt: context.now } });
+      },
+    );
+
+    const UsageBudgetWorker = currentApplication.serviceIdentity('usage-budget-worker');
+    AIUsageReservationTable.create.beforeCommit(
+      {
+        history: true,
+        transaction: {
+          models: [WorkspaceBudgetPolicyTable, AIUsageBudgetLedgerTable],
+        },
+      },
+      async function reserveWorkspaceAIUsage(reservation, input, context) {
+        const principal = context.principal;
+        if (
+          principal?.kind !== 'execution'
+          || principal.serviceIdentity?.subject !== 'workspace-assistant'
+          || principal.executionContext?.kind !== 'agent'
+        ) {
+          throw new Error('AI usage reservations are created only by the admitted workspace assistant.');
+        }
+        if (
+          input.principalScope !== undefined
+          || input.ledgerId !== undefined
+          || input.actualTokens !== undefined
+          || input.actualCostMicrounits !== undefined
+          || input.state !== undefined
+          || input.expiresAt !== undefined
+          || input.settledAt !== undefined
+          || input.createdAt !== undefined
+          || input.updatedAt !== undefined
+        ) {
+          throw new Error('AI usage scope, settlement, state, and timestamps are server-owned.');
+        }
+        const workspaceId = selectedWorkspaceId(context);
+        if (input.workspaceId !== workspaceId) {
+          throw new Error('AI usage reservation is outside the admitted workspace.');
+        }
+        if (
+          !Number.isSafeInteger(input.maximumTokens)
+          || input.maximumTokens < 1
+          || !Number.isSafeInteger(input.maximumCostMicrounits)
+          || input.maximumCostMicrounits < 0
+        ) {
+          throw new Error('AI usage reservations require bounded token and cost ceilings.');
+        }
+        const policy = await context.models.WorkspaceBudgetPolicy?.get({ id: workspaceId });
+        const principalScope = agenticWorkspaceScope(context);
+        const periodStart = `${context.now.slice(0, 7)}-01T00:00:00.000Z`;
+        const expiresAt = agenticLeaseExpiration(context.now, 10 * 60_000);
+        if (!policy || Reflect.get(policy.spec, 'hardLimit') !== true) {
+          reservation.patch({ spec: {
+            principalScope,
+            ledgerId: null,
+            state: 'released',
+            expiresAt,
+            createdAt: context.now,
+            updatedAt: context.now,
+          } });
+          return;
+        }
+        const ledgerId = `${workspaceId}:${periodStart}`;
+        const current = await context.models.AIUsageBudgetLedger?.get({ id: ledgerId });
+        const reservedTokens = numberField(current?.spec, 'reservedTokens');
+        const reservedCost = numberField(current?.spec, 'reservedCostMicrounits');
+        const consumedTokens = numberField(current?.spec, 'consumedTokens');
+        const consumedCost = numberField(current?.spec, 'consumedCostMicrounits');
+        const maximumTokens = numberField(policy.spec, 'maxMonthlyTokens', null);
+        const maximumCost = numberField(policy.spec, 'maxMonthlyCostMicrounits', null);
+        if (
+          maximumTokens !== null
+          && consumedTokens + reservedTokens + input.maximumTokens > maximumTokens
+        ) {
+          throw new Error('The workspace monthly token budget cannot reserve this run.');
+        }
+        if (
+          maximumCost !== null
+          && consumedCost + reservedCost + input.maximumCostMicrounits > maximumCost
+        ) {
+          throw new Error('The workspace monthly cost budget cannot reserve this run.');
+        }
+        const nextLedger = {
+          reservedTokens: reservedTokens + input.maximumTokens,
+          reservedCostMicrounits: reservedCost + input.maximumCostMicrounits,
+          consumedTokens,
+          consumedCostMicrounits: consumedCost,
+          updatedAt: context.now,
+        };
+        if (current) {
+          await context.models.AIUsageBudgetLedger?.patch(
+            { id: ledgerId },
+            { spec: nextLedger },
+          );
+        } else {
+          await context.models.AIUsageBudgetLedger?.create({
+            id: ledgerId,
+            spec: {
+              id: ledgerId,
+              workspaceId,
+              principalScope,
+              periodStart,
+              ...nextLedger,
+            },
+          });
+        }
+        reservation.patch({ spec: {
+          principalScope,
+          ledgerId,
+          state: 'active',
+          expiresAt,
+          createdAt: context.now,
+          updatedAt: context.now,
+        } });
+      },
+    );
+    AIUsageReservationTable.update.beforeCommit(
+      {
+        history: true,
+        transaction: {
+          models: [AIUsageReservationTable, AIUsageBudgetLedgerTable],
+        },
+      },
+      async function settleWorkspaceAIUsage(reservation, input, context) {
+        const principal = context.principal;
+        if (
+          principal?.kind !== 'execution'
+          || principal.serviceIdentity?.id !== UsageBudgetWorker.identity.id
+        ) {
+          throw new Error('AI usage reservations are settled only by the framework budget worker.');
+        }
+        const allowed = new Set(['state', 'actualTokens', 'actualCostMicrounits']);
+        if (Object.keys(input.patch).some(field => !allowed.has(field))) {
+          throw new Error('AI usage settlement accepts only terminal usage evidence.');
+        }
+        const desired = input.patch.state;
+        if (desired !== 'settled' && desired !== 'released') {
+          throw new Error('AI usage reservations may only settle or release.');
+        }
+        const previous = await context.models.AIUsageReservation?.get({ id: reservation.id });
+        if (!previous) throw new Error('AI usage reservation disappeared during settlement.');
+        const previousState = String(Reflect.get(previous.spec, 'state'));
+        if (previousState === 'settled') {
+          if (desired === 'settled') return;
+          throw new Error('AI usage reservation is already settled.');
+        }
+        if (previousState === 'released' && desired === 'released') return;
+        const actualTokens = numberField(input.patch, 'actualTokens');
+        const actualCost = numberField(input.patch, 'actualCostMicrounits');
+        const ledgerId = Reflect.get(previous.spec, 'ledgerId');
+        if (typeof ledgerId === 'string') {
+          const ledger = await context.models.AIUsageBudgetLedger?.get({ id: ledgerId });
+          if (!ledger) throw new Error('AI usage budget ledger disappeared during settlement.');
+          const wasActive = previousState === 'active';
+          await context.models.AIUsageBudgetLedger?.patch(
+            { id: ledgerId },
+            { spec: {
+              reservedTokens: Math.max(0, numberField(ledger.spec, 'reservedTokens') - (wasActive ? numberField(previous.spec, 'maximumTokens') : 0)),
+              reservedCostMicrounits: Math.max(0, numberField(ledger.spec, 'reservedCostMicrounits') - (wasActive ? numberField(previous.spec, 'maximumCostMicrounits') : 0)),
+              consumedTokens: numberField(ledger.spec, 'consumedTokens') + (desired === 'settled' ? actualTokens : 0),
+              consumedCostMicrounits: numberField(ledger.spec, 'consumedCostMicrounits') + (desired === 'settled' ? actualCost : 0),
+              updatedAt: context.now,
+            } },
+          );
+        }
+        reservation.patch({ spec: {
+          state: desired,
+          ...(desired === 'settled'
+            ? { actualTokens, actualCostMicrounits: actualCost, settledAt: context.now }
+            : {}),
+          updatedAt: context.now,
+        } });
+      },
+    );
+
+    const SettleAIUsageReservation = currentApplication.workflow(
+      'starter.ai-usage-reservation.settle.v1',
+      {
+        input: type({
+          reservationId: 'string',
+          state: "'settled' | 'released'",
+          'actualTokens?': 'number.integer >= 0',
+          'actualCostMicrounits?': 'number.integer >= 0',
+        }),
+        output: type({ released: 'boolean' }),
+      },
+      {
+        identity: UsageBudgetWorker,
+        authority: [AIUsageReservationTable.update.all()],
+        retries: 3,
+        executionTimeoutSeconds: 15 * 60,
+        idempotencyKey: input => `${input.reservationId}:${input.state}`,
+      },
+      async function settleAIUsageReservation(input) {
+        try {
+          await AIUsageReservationTable.update({
+            identity: input.reservationId,
+            patch: {
+              state: input.state,
+              ...(input.state === 'settled'
+                ? {
+                    actualTokens: input.actualTokens ?? 0,
+                    actualCostMicrounits: input.actualCostMicrounits ?? 0,
+                  }
+                : {}),
+            },
+          });
+          return { released: input.state === 'released' };
+        } catch (error) {
+          if (error instanceof Error && error.message.includes('already settled')) {
+            return { released: false };
+          }
+          throw error;
+        }
+      },
+    );
+    ApplicationOperator.can(
+      WorkspaceBudgetPolicyTable.create.all(),
+      WorkspaceBudgetPolicyTable.update.all(),
+    );
+    return { WorkspaceBudgetPolicy: WorkspaceBudgetPolicyTable, AIUsageBudgetLedger: AIUsageBudgetLedgerTable, AIUsageReservation: AIUsageReservationTable, SettleAIUsageReservation };
+  },
+);
+
+export const WorkspaceAIUsageBudgets = application.include(workspaceAIUsageBudgets);
+export const { WorkspaceBudgetPolicy, AIUsageBudgetLedger, AIUsageReservation, SettleAIUsageReservation } = WorkspaceAIUsageBudgets;
+
+export const ReleaseAIUsageReservation = application.workflow(
+  'starter.ai-usage-reservation.release.v1',
+  {
+    input: type({ reservationId: 'string' }),
+    output: type({ released: 'boolean' }),
+  },
+  async function releaseAIUsageReservationAfterLease(input, context) {
+    await context.sleep('10m');
+    return SettleAIUsageReservation(
+      { ...input, state: 'released' },
+      { idempotencyKey: `${input.reservationId}:released` },
+    );
+  },
+);
+
+export const AIUsageReservationExpiry = AIUsageReservation.on.create(
+  {
+    processor: { replicas: 1, concurrency: 8 },
+    retry: { maxAttempts: 5, initialDelayMs: 250, maxDelayMs: 5_000, deadLetter: true },
+    budgets: { timeoutMs: 5_000, maxInputBytes: 32_000 },
+  },
+  async function scheduleAIUsageReservationExpiry(created) {
+    if (created.value.state !== 'active') return;
+    await ReleaseAIUsageReservation.start(
+      { reservationId: created.value.id },
+      { idempotencyKey: created.value.id },
+    );
+  },
+);
+
+export const AIUsageSettlement = Usage.UsageFact.on.create(
+  {
+    processor: { replicas: 1, concurrency: 8 },
+    retry: { maxAttempts: 8, initialDelayMs: 250, maxDelayMs: 15_000, deadLetter: true },
+    budgets: { timeoutMs: 10_000, maxInputBytes: 64_000 },
+  },
+  async function settleAIUsageReservation(created) {
+    if (
+      created.value.operationId !== 'agent:workspace-assistant'
+      || !created.value.protocolRunId
+    ) return;
+    // A personal-scope assistant run has no workspace budget reservation. The
+    // UsageFact remains authoritative metering evidence; only workspace runs
+    // have a reservation to settle.
+    const reservation = await AIUsageReservationTable.get(
+      created.value.protocolRunId,
+    );
+    if (!reservation) return;
+    await SettleAIUsageReservation.start(
+      {
+        reservationId: created.value.protocolRunId,
+        state: 'settled',
+        actualTokens: Number(created.value.inputTokens ?? 0) + Number(created.value.outputTokens ?? 0),
+        actualCostMicrounits: Number(created.value.costMicrounits ?? 0),
+      },
+      { idempotencyKey: `usage-fact:${created.value.id}` },
+    );
+  },
+);
+
+function selectedWorkspaceId(context: { readonly trustedContext: Readonly<Record<string, unknown>> }): string {
+  const workspaceId = context.trustedContext.workspaceId;
+  if (typeof workspaceId !== 'string' || !workspaceId) {
+    throw new Error('AI usage reservation requires an admitted workspace.');
+  }
+  return workspaceId;
+}
+
+function numberField(value: unknown, field: string): number;
+function numberField(value: unknown, field: string, fallback: null): number | null;
+function numberField(
+  value: unknown,
+  field: string,
+  fallback: number | null = 0,
+): number | null {
+  if (!value || typeof value !== 'object') return fallback;
+  const candidate = Reflect.get(value, field);
+  if (candidate === null) return null;
+  return typeof candidate === 'number' && Number.isFinite(candidate)
+    ? candidate
+    : fallback;
+}
+
+function validateBudgetPolicy(policy: {
+  readonly maxMonthlyTokens?: number | null;
+  readonly maxMonthlyCostMicrounits?: number | null;
+  readonly alertThresholdPercent?: number;
+}) {
+  if (policy.maxMonthlyTokens !== undefined && policy.maxMonthlyTokens !== null && policy.maxMonthlyTokens < 1) {
+    throw new Error('Monthly token limits must be positive.');
+  }
+  if (policy.maxMonthlyCostMicrounits !== undefined && policy.maxMonthlyCostMicrounits !== null && policy.maxMonthlyCostMicrounits < 1) {
+    throw new Error('Monthly cost limits must be positive.');
+  }
+  const threshold = policy.alertThresholdPercent ?? 80;
+  if (!Number.isInteger(threshold) || threshold < 1 || threshold > 100) {
+    throw new Error('Budget alert threshold must be an integer from 1 through 100.');
+  }
+}

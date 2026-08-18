@@ -396,8 +396,8 @@ for (const name of [
   assert(workflowWorkerEnvironment.some((entry) => entry.name === name), `Chirp workflow operations require ${name} at the generated worker boundary.`);
 }
 assert(
-  workflowWorkerEnvironment.find((entry) => entry.name === 'APPLIK8S_TASK_OPERATION_CONTEXT_SECRET')?.valueFrom?.secretKeyRef?.name === 'chirp-gateway-cursor',
-  'Workflow-issued commands must reuse the application gateway context authority without embedding its secret.',
+  workflowWorkerEnvironment.find((entry) => entry.name === 'APPLIK8S_TASK_OPERATION_CONTEXT_SECRET')?.valueFrom?.secretKeyRef?.name === 'chirp-context',
+  'Workflow-issued commands must use the application-wide context authority without embedding its secret or coupling durable execution to one gateway.',
 );
 const timelineRebuildHandler = graph.nodes.find((node) => node.kind === 'taskHandler' && node.name === 'timeline.rebuild.v1.step');
 const homeTimelineProjection = graph.nodes.find((node) => node.kind === 'projection' && node.name === 'home-timeline');

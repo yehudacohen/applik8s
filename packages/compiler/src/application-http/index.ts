@@ -258,6 +258,7 @@ async function emitHttpServer(
           ? { dependencies: route.route.functionNative.handler.dependencies }
           : {}),
         injectedIdentifiers: roots,
+        injectedBindingPaths: applicationHttpRouteBindingPaths(route),
         exportName: 'createHandler',
       }),
     );
@@ -721,6 +722,9 @@ async function invokeRoute(route, params, request, url, runtimeProtocol) {
   const context = Object.freeze({
     principal,
     trustedContext: Object.freeze({ ...admission.trustedContext }),
+    ...(normalizedRequestOrigin(request) ? {
+      requestOrigin: normalizedRequestOrigin(request),
+    } : {}),
     signal: request.signal,
   });
   const applicationPolicyAllowed = route.authorize
@@ -782,7 +786,26 @@ async function invokeRoute(route, params, request, url, runtimeProtocol) {
   );
   const invokeWithModelReads = route.transaction
     ? async () => withApplicationNativeModelReadClients(
-        await applicationPostgresModelReadClients(sql, route.transaction.models),
+        await applicationPostgresModelReadClients(
+          sql,
+          route.transaction.models,
+          {
+            values: applicationRequestContextValues(
+              principal,
+              principal.authorityRevision,
+              admission.trustedContext,
+            ),
+            digest: principal.trustedContextDigest,
+            changeScopes: applicationRelationalChangeScopes({
+              values: applicationRequestContextValues(
+                principal,
+                principal.authorityRevision,
+                admission.trustedContext,
+              ),
+              digestSecret: contextSecret,
+            }),
+          },
+        ),
         invoke,
       )
     : invoke;
@@ -828,6 +851,19 @@ async function invokeRoute(route, params, request, url, runtimeProtocol) {
       )
     : await invokeWithModelReads();
   return validate(route.outputSchema, result, route.id + '.output');
+}
+
+function normalizedRequestOrigin(request) {
+  const candidate = request.headers.get('origin');
+  if (!candidate) return undefined;
+  try {
+    const origin = new URL(candidate);
+    if (origin.protocol !== 'http:' && origin.protocol !== 'https:') return undefined;
+    if (origin.username || origin.password || origin.pathname !== '/' || origin.search || origin.hash) return undefined;
+    return origin.origin;
+  } catch {
+    return undefined;
+  }
 }
 
 let ready = false;
@@ -934,9 +970,15 @@ function applicationHttpRouteBindingsSource(
         `HTTP route ${route.route.id} model binding ${binding.identifier} references missing ${binding.model.nodeId}.`,
       );
     }
+    const segments = binding.identifier.split('.');
+    const method = segments.at(-1);
+    const isRuntimeMethod =
+      method !== undefined && ['get', 'find', 'require', 'edit'].includes(method);
     entries.push({
-      path: bindingRoot(binding.identifier),
-      value: `modelHandle(${JSON.stringify(model.name)})`,
+      path: binding.identifier,
+      value: isRuntimeMethod
+        ? `modelHandle(${JSON.stringify(model.name)})[${JSON.stringify(method)}]`
+        : `modelHandle(${JSON.stringify(model.name)})`,
       target: model.id,
     });
   }
@@ -948,7 +990,7 @@ function applicationHttpRouteBindingsSource(
       );
     }
     entries.push({
-      path: bindingRoot(binding.identifier),
+      path: binding.identifier,
       value: `createApplicationFunctionNativeEventHandle(${JSON.stringify(`${event.contract.name}.${event.contract.version}`)}, { payload: schema(${JSON.stringify(event.contract.payload.jsonSchema)}, ${JSON.stringify(`${event.name}.payload`)}) })`,
       target: event.id,
     });
@@ -959,6 +1001,14 @@ function applicationHttpRouteBindingsSource(
 function applicationHttpRouteBindingRoots(
   route: HttpRouteCompilerContract,
 ): readonly string[] {
+  return applicationHttpRouteBindingPaths(route).map(bindingRoot).filter(
+    (identifier, index, identifiers) => identifiers.indexOf(identifier) === index,
+  );
+}
+
+function applicationHttpRouteBindingPaths(
+  route: HttpRouteCompilerContract,
+): readonly string[] {
   return [
     ...route.operationBindings.map((binding) => binding.identifier),
     ...(route.route.functionNative.transaction?.modelBindings ?? []).map(
@@ -967,9 +1017,7 @@ function applicationHttpRouteBindingRoots(
     ...(route.route.functionNative.transaction?.eventBindings ?? []).map(
       (binding) => binding.identifier,
     ),
-  ].map(bindingRoot).filter(
-    (identifier, index, identifiers) => identifiers.indexOf(identifier) === index,
-  );
+  ];
 }
 
 function generatedHttpTransactionContract(

@@ -1,0 +1,26 @@
+import type { HTMLAttributes } from 'react';
+import { cn } from '#lib/utils';
+
+export function Card({ className, surface = 'default', ...props }: HTMLAttributes<HTMLElement> & { readonly surface?: 'default' | 'unstyled' }) {
+  return <section data-slot="card" className={cn('rounded-2xl border border-stone-200/90 p-5 shadow-[0_12px_40px_rgba(28,25,23,0.05)] dark:border-stone-700 dark:shadow-[0_12px_40px_rgba(0,0,0,0.24)]', surface === 'default' && 'bg-white dark:bg-stone-900', className)} {...props} />;
+}
+
+export function CardHeader({ className, ...props }: HTMLAttributes<HTMLDivElement>) {
+  return <div data-slot="card-header" className={cn('grid gap-1.5', className)} {...props} />;
+}
+
+export function CardTitle({ className, ...props }: HTMLAttributes<HTMLHeadingElement>) {
+  return <h3 data-slot="card-title" className={cn('font-semibold leading-none tracking-tight', className)} {...props} />;
+}
+
+export function CardDescription({ className, ...props }: HTMLAttributes<HTMLParagraphElement>) {
+  return <p data-slot="card-description" className={cn('text-sm text-stone-500', className)} {...props} />;
+}
+
+export function CardContent({ className, ...props }: HTMLAttributes<HTMLDivElement>) {
+  return <div data-slot="card-content" className={cn(className)} {...props} />;
+}
+
+export function CardFooter({ className, ...props }: HTMLAttributes<HTMLDivElement>) {
+  return <div data-slot="card-footer" className={cn('flex items-center', className)} {...props} />;
+}

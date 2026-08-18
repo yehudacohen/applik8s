@@ -137,6 +137,10 @@ export async function runApplicationStatus(
     outDir,
     cwd: io.cwd,
     stdout: io.stdout,
+    deployment: {
+      context: options.context,
+      installationSpec: spec,
+    },
   });
   if (options.json) {
     io.stdout(JSON.stringify(report));

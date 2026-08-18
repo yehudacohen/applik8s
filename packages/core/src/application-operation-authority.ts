@@ -237,6 +237,15 @@ export interface ApplicationExecutionPrincipal extends ApplicationPrincipalBase 
   readonly workloadIdentity: ApplicationIdentityReference;
   readonly serviceIdentity?: ApplicationIdentityReference;
   /**
+   * Framework-derived invocation coordinates for the managed execution.
+   *
+   * These values are signed admission evidence, not caller input and not an
+   * authorization grant. Application policies may use them for durable
+   * provenance without asking a model, task, or workflow to echo identifiers
+   * back through an operation payload.
+   */
+  readonly executionContext?: ApplicationExecutionContext;
+  /**
    * Stable principal ID of the request principal that initiated this execution.
    *
    * This is attribution evidence, never ambient authority. Authorization still
@@ -250,6 +259,13 @@ export interface ApplicationExecutionPrincipal extends ApplicationPrincipalBase 
   readonly bindings: readonly ApplicationExecutionBinding[];
   readonly effectiveAuthority: readonly ApplicationEffectiveAuthority[];
 }
+
+export type ApplicationExecutionContext =
+  | {
+      readonly kind: 'agent';
+      readonly threadId: string;
+      readonly runId: string;
+    };
 
 /**
  * Immutable attribution carried across managed execution boundaries.

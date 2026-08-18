@@ -150,6 +150,62 @@ INSERT INTO applik8s_billing_meters (
   )
 ON CONFLICT (id) DO NOTHING;
 
+-- The credential-free starter ships definition validation and a deterministic
+-- runtime-contract gate that executes the native agent loop and typed tool
+-- adapter against an isolated receipt sink. Provider-backed model-quality
+-- scorers remain a distinct, additive concern.
+INSERT INTO applik8s_evaluation_datasets (
+  id,
+  name,
+  revision,
+  schema_digest
+) VALUES (
+  'agentic-workspace-v1',
+  'Workspace agent release contract',
+  '1',
+  'agent-definition-v1'
+)
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO applik8s_evaluation_cases (
+  id,
+  dataset_id,
+  input,
+  expected,
+  tags
+) VALUES (
+  'agentic-workspace-contract-v1',
+  'agentic-workspace-v1',
+  '{"request":"Create a launch brief for the first customer."}'::jsonb,
+  '{"expectedTool":"Document.create","durableOutput":true,"authoritativeCompletion":true}'::jsonb,
+  '["runtime-contract","create","deterministic"]'::jsonb
+), (
+  'agentic-workspace-update-v1',
+  'agentic-workspace-v1',
+  '{"request":"Revise the existing launch brief with a rollout checklist.","existingDocument":true}'::jsonb,
+  '{"expectedTool":"Document.update","durableOutput":true,"authoritativeCompletion":true}'::jsonb,
+  '["runtime-contract","update","deterministic"]'::jsonb
+)
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO applik8s_evaluation_scorers (
+  id,
+  name,
+  revision,
+  implementation_digest
+) VALUES (
+  'agent-definition-v1',
+  'Agent definition validator',
+  '1',
+  'agent-definition-v1'
+), (
+  'agent-runtime-contract-v1',
+  'Deterministic agent runtime gate',
+  '1',
+  'agent-runtime-contract-v1'
+)
+ON CONFLICT (id) DO NOTHING;
+
 -- Live Stripe profiles resolve non-price IDs as Stripe Price lookup keys.
 -- Reconcile a Stripe Price with lookup_key=agentic_team_monthly before using
 -- the generated Team plan against a live Stripe account.

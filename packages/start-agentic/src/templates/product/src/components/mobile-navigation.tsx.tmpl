@@ -1,0 +1,227 @@
+import {
+  agenticWorkspaceSelectionEventName,
+  clearAgenticWorkspaceSelection,
+  readAgenticWorkspaceSelection,
+  selectAgenticWorkspace,
+} from '@applik8s/start-agentic/react';
+import { Link } from '@tanstack/react-router';
+import { Menu, Monitor, Moon, Sun, type LucideIcon } from 'lucide-react';
+import { useSyncExternalStore } from 'react';
+import { WorkspaceList } from '../application';
+import { Button, Sheet, SheetClose, SheetContent, SheetDescription, SheetHeader, SheetTitle, SheetTrigger, cn } from './ui';
+
+type ApplicationRoute =
+  | '/app'
+  | '/app/documents'
+  | '/app/artifacts'
+  | '/app/inbox'
+  | '/app/agents'
+  | '/app/knowledge'
+  | '/app/integrations'
+  | '/app/evaluations'
+  | '/app/workspaces'
+  | '/app/usage'
+  | '/app/billing'
+  | '/app/account'
+  | '/app/setup'
+  | '/app/operations'
+  | '/admin'
+  | '/admin/tenants'
+  | '/admin/catalog';
+
+export interface MobileNavigationItem {
+  readonly to: ApplicationRoute;
+  readonly label: string;
+  readonly icon: LucideIcon;
+}
+
+export function MobileMoreNavigation({
+  pathname,
+  workspaceAdministrator,
+  operator,
+  product,
+  builder,
+  administration,
+  operations,
+}: {
+  readonly pathname: string;
+  readonly workspaceAdministrator: boolean;
+  readonly operator: boolean;
+  readonly product: readonly MobileNavigationItem[];
+  readonly builder: readonly MobileNavigationItem[];
+  readonly administration: readonly MobileNavigationItem[];
+  readonly operations: readonly MobileNavigationItem[];
+}) {
+  const primaryPaths = ['/app', '/app/documents', '/app/inbox'];
+  const moreIsCurrent = !primaryPaths.some(path =>
+    path === '/app' ? pathname === path : pathname.startsWith(path),
+  );
+  return (
+    <Sheet>
+      <SheetTrigger asChild>
+        <button
+          type="button"
+          aria-current={moreIsCurrent ? 'page' : undefined}
+          className={cn(
+            'flex min-h-12 min-w-0 flex-col items-center justify-center gap-0.5 rounded-xl px-1 py-2 text-[.68rem] font-medium leading-none text-stone-600 transition hover:bg-stone-100 hover:text-stone-950 dark:text-stone-300 dark:hover:bg-stone-800 dark:hover:text-stone-50',
+            moreIsCurrent && 'bg-emerald-50 text-emerald-900 dark:bg-emerald-950 dark:text-emerald-200',
+          )}
+        >
+          <Menu aria-hidden="true" className="size-4 shrink-0" />
+          <span>More</span>
+        </button>
+      </SheetTrigger>
+      <SheetContent>
+        <SheetHeader>
+          <SheetTitle>Explore the application</SheetTitle>
+          <SheetDescription>Product, builder, administration, and operations stay separate while remaining one coherent application.</SheetDescription>
+        </SheetHeader>
+        <div className="mt-5 grid gap-5">
+          <MobileNavigationGroup label="Product" items={product.filter(item => !primaryPaths.includes(item.to))} />
+          {workspaceAdministrator ? <MobileNavigationGroup label="Builder" items={builder} /> : null}
+          {operator ? <MobileNavigationGroup label="Administration" items={administration} /> : null}
+          {operator ? <MobileNavigationGroup label="Operator" items={operations} /> : null}
+        </div>
+      </SheetContent>
+    </Sheet>
+  );
+}
+
+function MobileNavigationGroup({ label, items }: { readonly label: string; readonly items: readonly MobileNavigationItem[] }) {
+  return (
+    <section>
+      <p className="nav-label">{label}</p>
+      <div className="mt-2 grid grid-cols-2 gap-2">
+        {items.map(item => {
+          const Icon = item.icon;
+          return (
+            <SheetClose asChild key={item.to}>
+              <Link to={item.to} activeOptions={{ exact: item.to === '/app' }} className="flex items-center gap-3 rounded-xl px-3 py-2 text-sm font-medium text-stone-600 no-underline transition hover:bg-stone-100 hover:text-stone-950 [&.active]:bg-emerald-50 [&.active]:text-emerald-900 dark:text-stone-300 dark:hover:bg-stone-800 dark:hover:text-stone-50">
+                <Icon aria-hidden="true" className="size-4 shrink-0" />
+                {item.label}
+              </Link>
+            </SheetClose>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+type ThemePreference = 'light' | 'dark' | 'system';
+
+export function ThemeControl({ compact = false }: { readonly compact?: boolean }) {
+  const preference = useSyncExternalStore(subscribeTheme, readThemePreference, () => 'system');
+  const next = preference === 'system' ? 'light' : preference === 'light' ? 'dark' : 'system';
+  return (
+    <Button
+      type="button"
+      variant="secondary"
+      className={cn(
+        'inline-flex min-h-10 items-center justify-center rounded-xl border border-stone-200 bg-white text-sm font-semibold text-stone-700 transition hover:bg-stone-50',
+        compact ? 'size-10' : 'w-full gap-2 px-3',
+      )}
+      onClick={() => setThemePreference(next)}
+      aria-label={`Theme: ${preference}. Activate to change.`}
+    >
+      {preference === 'dark' ? <Moon aria-hidden="true" /> : preference === 'light' ? <Sun aria-hidden="true" /> : <Monitor aria-hidden="true" />}
+      {!compact ? <span className="capitalize">{preference} theme</span> : null}
+    </Button>
+  );
+}
+
+const themeEventName = 'applik8s:theme';
+let currentThemePreference: ThemePreference = 'system';
+
+function readThemePreference(): ThemePreference {
+  return currentThemePreference;
+}
+
+function subscribeTheme(notify: () => void) {
+  const media = globalThis.matchMedia?.('(prefers-color-scheme: dark)');
+  const update = () => {
+    const stored = globalThis.localStorage?.getItem('applik8s.theme');
+    currentThemePreference = stored === 'light' || stored === 'dark' ? stored : 'system';
+    applyTheme(currentThemePreference);
+    notify();
+  };
+  globalThis.addEventListener?.(themeEventName, update);
+  globalThis.addEventListener?.('storage', update);
+  media?.addEventListener('change', update);
+  queueMicrotask(update);
+  return () => {
+    globalThis.removeEventListener?.(themeEventName, update);
+    globalThis.removeEventListener?.('storage', update);
+    media?.removeEventListener('change', update);
+  };
+}
+
+function setThemePreference(preference: ThemePreference) {
+  currentThemePreference = preference;
+  if (preference === 'system') globalThis.localStorage?.removeItem('applik8s.theme');
+  else globalThis.localStorage?.setItem('applik8s.theme', preference);
+  applyTheme(preference);
+  globalThis.dispatchEvent?.(new Event(themeEventName));
+}
+
+function applyTheme(preference: ThemePreference) {
+  const dark = preference === 'dark'
+    || (preference === 'system' && globalThis.matchMedia?.('(prefers-color-scheme: dark)').matches);
+  globalThis.document?.documentElement.classList.toggle('dark', dark);
+  globalThis.document?.documentElement.style.setProperty('color-scheme', dark ? 'dark' : 'light');
+}
+
+export function WorkspaceScopeControl({ compact = false }: { readonly compact?: boolean }) {
+  const workspaces = WorkspaceList({}).useQuery();
+  const selection = useSyncExternalStore(
+    subscribeWorkspaceSelection,
+    readWorkspaceSelectionSnapshot,
+    () => undefined,
+  );
+  const selected = workspaces.data?.find(workspace => workspace.id === selection);
+  return (
+    <label className={cn(
+      'grid gap-1 rounded-xl border border-stone-200 bg-white/80 p-2 text-xs text-stone-600',
+      compact ? 'grid-cols-[auto_minmax(0,1fr)] items-center' : 'mt-5',
+    )}>
+      <span className="font-semibold text-stone-800">Working in</span>
+      <select
+        aria-label="Current workspace"
+        className="min-w-0 rounded-lg border border-stone-200 bg-white px-2 py-1.5 font-medium text-stone-900"
+        value={selection ?? ''}
+        disabled={Boolean(selection) && workspaces.data === undefined}
+        onChange={event => {
+          const nextSelection = event.currentTarget.value;
+          if (nextSelection) selectAgenticWorkspace(nextSelection);
+          else clearAgenticWorkspaceSelection();
+          globalThis.location.assign('/app');
+        }}
+      >
+        <option value="">Personal workspace</option>
+        {workspaces.data?.map(workspace => (
+          <option key={workspace.id} value={workspace.id}>{workspace.name}</option>
+        ))}
+        {selection && !selected ? <option value={selection}>{workspaces.data === undefined ? 'Loading workspace…' : 'Workspace unavailable'}</option> : null}
+      </select>
+    </label>
+  );
+}
+
+let currentWorkspaceSelection: string | undefined;
+
+function readWorkspaceSelectionSnapshot() {
+  if (currentWorkspaceSelection === undefined) {
+    currentWorkspaceSelection = readAgenticWorkspaceSelection();
+  }
+  return currentWorkspaceSelection;
+}
+
+function subscribeWorkspaceSelection(notify: () => void) {
+  const update = () => {
+    currentWorkspaceSelection = readAgenticWorkspaceSelection();
+    notify();
+  };
+  globalThis.addEventListener?.(agenticWorkspaceSelectionEventName, update);
+  queueMicrotask(update);
+  return () => globalThis.removeEventListener?.(agenticWorkspaceSelectionEventName, update);
+}

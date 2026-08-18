@@ -15,6 +15,7 @@ import {
   asTool,
   createApplicationAICompatibilityTuple,
   createApplicationTanStackConnection,
+  selectApplicationTanStackTools,
 } from '../src/index.js';
 
 const Input = type({ query: 'string' });
@@ -142,6 +143,50 @@ describe('TanStack AI operation tools', () => {
     expect(applicationTanStackToolName('applik8s://a-b/c')).not.toBe(
       applicationTanStackToolName('applik8s://a/b-c'),
     );
+    expect(applicationTanStackToolName(
+      'applik8s://models/Document/operations/create',
+      'Create document',
+    )).toMatch(/^applik8s_Create_document_[a-z0-9]{7}$/u);
+  });
+
+  it('retains product-facing presentation metadata without replacing canonical authority identity', () => {
+    const tool = asTool(operation, {
+      presentation: {
+        label: 'Search evidence',
+        runningLabel: 'Searching evidence…',
+        completedLabel: 'Evidence searched',
+      },
+    });
+    expect(tool.name).toMatch(/^applik8s_Search_evidence_[a-z0-9]{7}$/u);
+    expect(tool.metadata).toMatchObject({
+      applik8s: {
+        operationId: operation.operation.id,
+        presentation: {
+          label: 'Search evidence',
+          runningLabel: 'Searching evidence…',
+          completedLabel: 'Evidence searched',
+        },
+      },
+    });
+  });
+
+  it('selects hydrated tools through stable application-owned catalog keys', () => {
+    const tool = asTool(operation);
+    expect(selectApplicationTanStackTools(
+      [tool],
+      { 'Evidence.search': operation },
+      ['Evidence.search'],
+    )).toEqual([tool]);
+    expect(() => selectApplicationTanStackTools(
+      [tool],
+      { 'Evidence.search': operation },
+      ['Evidence.missing'],
+    )).toThrow(/does not declare selected tool/);
+    expect(() => selectApplicationTanStackTools(
+      [],
+      { 'Evidence.search': operation },
+      ['Evidence.search'],
+    )).toThrow(/did not hydrate selected application tools/);
   });
 });
 
@@ -178,6 +223,26 @@ describe('TanStack AI connection and compatibility', () => {
         request: 'value',
       },
     });
+    expect(String(request.mock.calls[0]?.[0])).toContain('agent=access-advisor');
+  });
+
+  it('preserves upstream server-authoritative hydration on the admitted agent endpoint', async () => {
+    const request = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      expect(url).toContain('agent=access-advisor');
+      expect(url).toContain('threadId=conversation-1');
+      return Response.json({ messages: [], activeRun: null, interrupts: null });
+    });
+    const connection = createApplicationTanStackConnection({
+      endpoint: '/api/agent',
+      fetchClient: Object.assign(request, { preconnect: vi.fn() }),
+      agent: { kind: 'applicationAgent', name: 'access-advisor' },
+    });
+    await expect(connection.hydrate?.('conversation-1')).resolves.toEqual({
+      messages: [],
+      activeRun: null,
+      interrupts: null,
+    });
   });
 
   it('fails closed instead of accepting an untyped or empty agent selector', () => {
@@ -210,19 +275,17 @@ describe('TanStack AI connection and compatibility', () => {
     ));
   });
 
-  it('pins released upstream contracts and fails closed for unreleased server persistence', () => {
+  it('pins released upstream contracts and exposes the supported server persistence seam', () => {
     expect(applicationTanStackAICompatibility).toEqual({
-      tanstackAI: '0.42.0',
-      tanstackAIClient: '0.22.1',
-      tanstackAIReact: '0.18.1',
-      tanstackAIPersistence: 'unreleased',
-      agUi: '0.0.52',
+      tanstackAI: '0.44.1',
+      tanstackAIClient: '0.23.2',
+      tanstackAIReact: '0.19.2',
+      tanstackAIPersistence: '0.1.4',
+      agUi: '0.1.1-canary.beta.0',
       applik8sAdapter: 'applik8s.ai-tanstack/v1alpha1',
     });
-    expect(applicationTanStackServerPersistenceCompatibility.status).toBe('unavailable');
-    expect(() => assertApplicationTanStackServerPersistenceAvailable()).toThrow(
-      /refuses to substitute browser ChatClientPersistence/,
-    );
+    expect(applicationTanStackServerPersistenceCompatibility.status).toBe('supported');
+    expect(() => assertApplicationTanStackServerPersistenceAvailable()).not.toThrow();
     expect(createApplicationAICompatibilityTuple({
       envoyGateway: 'v1.5.0',
       envoyAIGateway: 'v0.4.0',

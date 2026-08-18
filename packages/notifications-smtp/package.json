@@ -20,7 +20,7 @@
   },
   "dependencies": {
     "@applik8s/notifications": "0.7.0",
-    "nodemailer": "^7.0.6"
+    "nodemailer": "^9.0.5"
   },
   "devDependencies": {
     "@types/nodemailer": "^7.0.1"

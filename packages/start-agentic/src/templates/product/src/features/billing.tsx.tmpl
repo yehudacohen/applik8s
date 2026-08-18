@@ -1,10 +1,38 @@
 import type { ApplicationModelViewContext } from '@applik8s/applik8s';
+import {
+  applicationBillingCheckoutInputSchema as CheckoutInput,
+  applicationBillingCheckoutOutputSchema as CheckoutOutput,
+  applicationBillingPaymentEventSchema as PaymentEvent,
+  applicationBillingPaymentWebhookResultSchema as PaymentWebhookResult,
+  applicationBillingPortalInputSchema as PortalInput,
+  applicationBillingPortalOutputSchema as PortalOutput,
+  applicationBillingPlans,
+  applicationBillingSubscriptionCancellationInputSchema as CancelSubscriptionInput,
+  applicationBillingSubscriptionCancellationOutputSchema as CancelSubscriptionOutput,
+  applicationBillingSubscriptionChangeInputSchema as ChangeSubscriptionInput,
+  applicationBillingSubscriptionChangeOutputSchema as ChangeSubscriptionOutput,
+  applicationBillingSubscriptionResumeInputSchema as ResumeSubscriptionInput,
+} from '@applik8s/billing';
 import { type } from 'arktype';
-import { desc, eq, sql } from 'drizzle-orm';
+import { and, desc, eq, gte, sql } from 'drizzle-orm';
 import { application } from '../app';
 import { Billing, Usage, database } from '../modules';
+import {
+  agenticWorkspaceScope,
+  selectedAgenticWorkspaceId,
+} from '../workspace-scope';
+import {
+  AIUsageBudgetLedger,
+  AIUsageReservation,
+  WorkspaceBudgetPolicy,
+} from './budgets/models';
+import {
+  canManageWorkspaceBilling,
+  trustedBillingReturnUrl,
+} from './billing-policy';
 
 const BillingDashboardResult = type({
+  canManageBilling: 'boolean',
   plans: type({
     id: 'string',
     name: 'string',
@@ -18,18 +46,34 @@ const BillingDashboardResult = type({
     provider: 'string',
     status: "'trialing' | 'active' | 'past_due' | 'paused' | 'unpaid' | 'cancelled' | 'incomplete'",
     periodEnd: 'string',
+    cancelAtPeriodEnd: 'boolean',
+    'scheduledChangeAt?': 'string',
   }).or('null'),
   usage: {
     inputTokens: 'number',
     outputTokens: 'number',
     costMicrounits: 'number',
+    reservedTokens: 'number',
+    reservedCostMicrounits: 'number',
   },
+  budget: type({
+    'maxMonthlyTokens?': 'number | null',
+    'maxMonthlyCostMicrounits?': 'number | null',
+    alertThresholdPercent: 'number',
+    hardLimit: 'boolean',
+  }).or('null'),
   entitlements: type({
     capability: 'string',
     'limit?': 'number | null',
     'period?': 'string | null',
     validFrom: 'string',
     'validUntil?': 'string | null',
+  }).array(),
+  history: type({
+    id: 'string',
+    provider: 'string',
+    type: 'string',
+    occurredAt: 'string',
   }).array(),
 });
 
@@ -38,8 +82,10 @@ async function loadBillingDashboard(
   context: ApplicationModelViewContext,
 ) {
   const client = context.database(database);
-  const principalScope = context.principal.id;
-  const [plans, subscriptions, usageRows, entitlements] = await Promise.all([
+  const principalScope = agenticWorkspaceScope(context);
+  const workspaceId = selectedAgenticWorkspaceId(context);
+  const periodStart = `${new Date().toISOString().slice(0, 7)}-01T00:00:00.000Z`;
+  const [plans, subscriptions, usageRows, budgetRows, ledgerRows, entitlements, history] = await Promise.all([
     client.select({
       id: Billing.BillingPlan.id,
       name: Billing.BillingPlan.name,
@@ -56,6 +102,8 @@ async function loadBillingDashboard(
       provider: Billing.Subscription.provider,
       status: Billing.Subscription.status,
       periodEnd: Billing.Subscription.periodEnd,
+      cancelAtPeriodEnd: Billing.Subscription.cancelAtPeriodEnd,
+      scheduledChangeAt: Billing.Subscription.scheduledChangeAt,
     })
       .from(Billing.Subscription)
       .where(eq(Billing.Subscription.principalScope, principalScope))
@@ -67,7 +115,27 @@ async function loadBillingDashboard(
       costMicrounits: sql<number>`coalesce(sum(${Usage.UsageFact.costMicrounits}), 0)`,
     })
       .from(Usage.UsageFact)
-      .where(eq(Usage.UsageFact.principalScope, principalScope)),
+      .where(and(
+        eq(Usage.UsageFact.principalScope, principalScope),
+        gte(Usage.UsageFact.occurredAt, periodStart),
+      )),
+    workspaceId ? client.select({
+      maxMonthlyTokens: WorkspaceBudgetPolicy.maxMonthlyTokens,
+      maxMonthlyCostMicrounits: WorkspaceBudgetPolicy.maxMonthlyCostMicrounits,
+      alertThresholdPercent: WorkspaceBudgetPolicy.alertThresholdPercent,
+      hardLimit: WorkspaceBudgetPolicy.hardLimit,
+    }).from(WorkspaceBudgetPolicy)
+      .where(eq(WorkspaceBudgetPolicy.workspaceId, workspaceId))
+      .limit(1) : Promise.resolve([]),
+    workspaceId ? client.select({
+      reservedTokens: AIUsageBudgetLedger.reservedTokens,
+      reservedCostMicrounits: AIUsageBudgetLedger.reservedCostMicrounits,
+    }).from(AIUsageBudgetLedger)
+      .where(and(
+        eq(AIUsageBudgetLedger.workspaceId, workspaceId),
+        eq(AIUsageBudgetLedger.periodStart, periodStart),
+      ))
+      .limit(1) : Promise.resolve([]),
     client.select({
       capability: Usage.Entitlement.capability,
       limit: Usage.Entitlement.limit,
@@ -78,17 +146,49 @@ async function loadBillingDashboard(
       .from(Usage.Entitlement)
       .where(eq(Usage.Entitlement.principalScope, principalScope))
       .limit(100),
+    client.select({
+      id: Billing.PaymentEvent.id,
+      provider: Billing.PaymentEvent.provider,
+      type: Billing.PaymentEvent.type,
+      occurredAt: Billing.PaymentEvent.occurredAt,
+    })
+      .from(Billing.PaymentEvent)
+      .where(eq(Billing.PaymentEvent.principalScope, principalScope))
+      .orderBy(desc(Billing.PaymentEvent.occurredAt))
+      .limit(25),
   ]);
   const usage = usageRows[0];
+  const budget = budgetRows[0];
+  const ledger = ledgerRows[0];
+  const subscription = subscriptions[0];
   return {
+    canManageBilling: canManageWorkspaceBilling(context),
     plans,
-    subscription: subscriptions[0] ?? null,
+    subscription: subscription ? {
+      planId: subscription.planId,
+      provider: subscription.provider,
+      status: subscription.status,
+      periodEnd: subscription.periodEnd,
+      cancelAtPeriodEnd: subscription.cancelAtPeriodEnd,
+      ...(subscription.scheduledChangeAt
+        ? { scheduledChangeAt: subscription.scheduledChangeAt }
+        : {}),
+    } : null,
     usage: {
       inputTokens: Number(usage?.inputTokens ?? 0),
       outputTokens: Number(usage?.outputTokens ?? 0),
       costMicrounits: Number(usage?.costMicrounits ?? 0),
+      reservedTokens: Number(ledger?.reservedTokens ?? 0),
+      reservedCostMicrounits: Number(ledger?.reservedCostMicrounits ?? 0),
     },
+    budget: budget ? {
+      maxMonthlyTokens: budget.maxMonthlyTokens,
+      maxMonthlyCostMicrounits: budget.maxMonthlyCostMicrounits,
+      alertThresholdPercent: budget.alertThresholdPercent,
+      hardLimit: budget.hardLimit,
+    } : null,
     entitlements,
+    history,
   };
 }
 
@@ -99,8 +199,11 @@ export const BillingDashboard = Billing.BillingPlan.view(
     database,
     reads: [
       Billing.Subscription,
+      Billing.PaymentEvent,
       Usage.UsageFact,
       Usage.Entitlement,
+      WorkspaceBudgetPolicy,
+      AIUsageBudgetLedger,
     ],
     authorize: ({ principal }) => principal.id.length > 0,
     budgets: {
@@ -112,64 +215,42 @@ export const BillingDashboard = Billing.BillingPlan.view(
   loadBillingDashboard,
 );
 
-const CheckoutInput = type({
-  plan: 'string > 0',
-  returnTo: 'string > 0',
-});
-const CheckoutOutput = type({
-  provider: 'string',
-  'providerCustomerId?': 'string',
-  providerCheckoutId: 'string',
-  url: 'string',
-  mode: "'simulated' | 'live'",
-  'expiresAt?': 'string',
-});
-const PortalInput = type({
-  returnTo: 'string > 0',
-});
-const PortalOutput = type({
-  provider: 'string',
-  url: 'string',
-  mode: "'simulated' | 'live'",
-});
-const ChangeSubscriptionInput = type({
-  plan: 'string > 0',
-  timing: "'immediate' | 'periodEnd'",
-});
-const ChangeSubscriptionOutput = type({
-  provider: 'string',
-  providerSubscriptionId: 'string',
-  state: "'applied' | 'scheduled'",
-  effectiveAt: 'string',
-});
-const CancelSubscriptionInput = type({
-  timing: "'immediate' | 'periodEnd'",
-});
-const CancelSubscriptionOutput = type({
-  provider: 'string',
-  providerSubscriptionId: 'string',
-  cancelled: 'boolean',
-  effectiveAt: 'string',
-});
-const ResumeSubscriptionInput = type({});
-const PaymentEvent = type({
-  provider: 'string > 0',
-  id: 'string > 0',
-  customerId: 'string > 0',
-  subscriptionId: 'string > 0',
-  principalScope: 'string > 0',
-  plan: 'string > 0',
-  status: "'active' | 'pastDue' | 'cancelled'",
-  occurredAt: 'string > 0',
-  periodStart: 'string > 0',
-  periodEnd: 'string > 0',
-  rawType: 'string > 0',
-});
-const PaymentWebhookResult = type({
-  received: 'true',
-  eventId: 'string > 0',
-});
+/** The application catalog is authoritative for every provider-facing plan. */
+export async function requirePublishedBillingPlan(id: string) {
+  const [snapshot] = await applicationBillingPlans.find({
+    where: { id, active: true },
+    limit: 1,
+  });
+  if (!snapshot?.value.active) {
+    throw new Error(`Billing plan ${JSON.stringify(id)} is not active in the application catalog.`);
+  }
+  return snapshot.value;
+}
+
+/**
+ * The assistant reserves its worst-case provider charge atomically before
+ * dispatch. The model hook owns workspace scope, policy checks, and the
+ * monthly ledger; callers cannot accidentally recreate a read/check race.
+ */
+export const ReserveWorkspaceAIRun = AIUsageReservation.create;
+
+async function loadStarterSubscription(
+  principalScope: string,
+) {
+  const [subscription] = await Billing.Subscription.find({
+    where: { principalScope },
+    limit: 1,
+  });
+  return subscription?.value ?? null;
+}
+
 const billingApi = application.http('billing');
+
+// Subscription state is reachable only through the billing intent routes and
+// the maintained payment-event projection. The enclosing route policy is the
+// application decision; raw model writes are never granted to a browser role.
+Billing.Subscription.create.applicationPolicy();
+Billing.Subscription.update.applicationPolicy();
 
 export const ReceivePaymentWebhook = billingApi.webhook(
   'receive-payment-webhook',
@@ -184,6 +265,7 @@ export const ReceivePaymentWebhook = billingApi.webhook(
   },
   async function receivePaymentWebhook(request) {
     const event = request.input;
+    await requirePublishedBillingPlan(event.plan);
     await Billing.PaymentEvent.create({
       id: event.id,
       provider: event.provider,
@@ -204,15 +286,83 @@ export const StartCheckout = billingApi.post(
   {
     input: CheckoutInput,
     output: CheckoutOutput,
-    authorize: (_request, context) => context.principal.id.length > 0,
+    authorize: (_request, context) => canManageWorkspaceBilling(context),
   },
   async function startCheckout(request, context) {
-    return Billing.startCheckout({
-      principalScope: context.principal.id,
-      plan: request.input.plan,
-      returnTo: request.input.returnTo,
-      idempotencyKey: `${context.principal.id}:${request.input.plan}`,
+    const principalScope = agenticWorkspaceScope(context);
+    const plan = await requirePublishedBillingPlan(request.input.plan);
+    const returnTo = trustedBillingReturnUrl(
+      request.input.returnTo,
+      context.requestOrigin,
+    );
+    const result = await Billing.startCheckout({
+      principalScope,
+      plan: plan.id,
+      returnTo,
+      idempotencyKey: `${principalScope}:checkout:${request.input.intentId}`,
     });
+    if (result.mode === 'simulated') {
+      const now = new Date();
+      const periodEnd = new Date(now);
+      periodEnd.setUTCMonth(periodEnd.getUTCMonth() + 1);
+      const current = await loadStarterSubscription(principalScope);
+      const providerCustomerId = result.providerCustomerId ?? `starter-customer:${principalScope}`;
+      if (current) {
+        await Billing.Subscription.update({
+          identity: current.id,
+          patch: {
+            planId: plan.id,
+            provider: result.provider,
+            providerCustomerId,
+            status: 'active',
+            cancelAtPeriodEnd: false,
+            scheduledChangeAt: null,
+            periodStart: now.toISOString(),
+            periodEnd: periodEnd.toISOString(),
+            providerOccurredAt: now.toISOString(),
+            updatedAt: now.toISOString(),
+          },
+        });
+      } else {
+        await Billing.Subscription.create({
+          id: `starter-subscription:${principalScope}`,
+          principalScope,
+          planId: plan.id,
+          provider: result.provider,
+          providerCustomerId,
+          providerSubscriptionId: `starter-subscription:${principalScope}`,
+          status: 'active',
+          cancelAtPeriodEnd: false,
+          periodStart: now.toISOString(),
+          periodEnd: periodEnd.toISOString(),
+          providerOccurredAt: now.toISOString(),
+          updatedAt: now.toISOString(),
+        });
+      }
+      await Billing.PaymentEvent.create({
+        id: `starter-checkout:${request.input.intentId}`,
+        provider: result.provider,
+        providerEventId: result.providerCheckoutId,
+        principalScope,
+        providerSubscriptionId: current?.providerSubscriptionId ?? `starter-subscription:${principalScope}`,
+        type: 'checkout.completed',
+        occurredAt: now.toISOString(),
+        payload: {
+          provider: result.provider,
+          id: result.providerCheckoutId,
+          customerId: providerCustomerId,
+          subscriptionId: current?.providerSubscriptionId ?? `starter-subscription:${principalScope}`,
+          principalScope,
+          plan: plan.id,
+          status: 'active',
+          occurredAt: now.toISOString(),
+          periodStart: now.toISOString(),
+          periodEnd: periodEnd.toISOString(),
+          rawType: 'checkout.completed',
+        },
+      });
+    }
+    return result;
   },
 );
 
@@ -222,13 +372,18 @@ export const OpenBillingPortal = billingApi.post(
   {
     input: PortalInput,
     output: PortalOutput,
-    authorize: (_request, context) => context.principal.id.length > 0,
+    authorize: (_request, context) => canManageWorkspaceBilling(context),
   },
   async function openBillingPortal(request, context) {
+    const principalScope = agenticWorkspaceScope(context);
+    const returnTo = trustedBillingReturnUrl(
+      request.input.returnTo,
+      context.requestOrigin,
+    );
     return Billing.openBillingPortal({
-      principalScope: context.principal.id,
-      returnTo: request.input.returnTo,
-      idempotencyKey: `${context.principal.id}:portal`,
+      principalScope,
+      returnTo,
+      idempotencyKey: `${principalScope}:portal:${request.input.intentId}`,
     });
   },
 );
@@ -239,17 +394,33 @@ export const ChangeSubscription = billingApi.post(
   {
     input: ChangeSubscriptionInput,
     output: ChangeSubscriptionOutput,
-    authorize: (_request, context) => context.principal.id.length > 0,
+    authorize: (_request, context) => canManageWorkspaceBilling(context),
   },
   async function changeSubscription(request, context) {
-    return Billing.changeSubscription({
-      principalScope: context.principal.id,
-      plan: request.input.plan,
+    const principalScope = agenticWorkspaceScope(context);
+    const plan = await requirePublishedBillingPlan(request.input.plan);
+    const result = await Billing.changeSubscription({
+      principalScope,
+      plan: plan.id,
       timing: request.input.timing,
       proration: 'createProrations',
       idempotencyKey:
-        `${context.principal.id}:change:${request.input.timing}:${request.input.plan}`,
+        `${principalScope}:change:${request.input.intentId}`,
     });
+    const current = await loadStarterSubscription(principalScope);
+    if (current && result.provider === 'local') {
+      await Billing.Subscription.update({
+        identity: current.id,
+        patch: {
+          planId: plan.id,
+          ...(result.state === 'scheduled'
+            ? { scheduledChangeAt: result.effectiveAt }
+            : { scheduledChangeAt: null }),
+          updatedAt: new Date().toISOString(),
+        },
+      });
+    }
+    return result;
   },
 );
 
@@ -259,15 +430,28 @@ export const CancelSubscription = billingApi.post(
   {
     input: CancelSubscriptionInput,
     output: CancelSubscriptionOutput,
-    authorize: (_request, context) => context.principal.id.length > 0,
+    authorize: (_request, context) => canManageWorkspaceBilling(context),
   },
   async function cancelSubscription(request, context) {
-    return Billing.cancelSubscription({
-      principalScope: context.principal.id,
+    const principalScope = agenticWorkspaceScope(context);
+    const result = await Billing.cancelSubscription({
+      principalScope,
       timing: request.input.timing,
       idempotencyKey:
-        `${context.principal.id}:cancel:${request.input.timing}`,
+        `${principalScope}:cancel:${request.input.intentId}`,
     });
+    const current = await loadStarterSubscription(principalScope);
+    if (current && result.provider === 'local') {
+      await Billing.Subscription.update({
+        identity: current.id,
+        patch: {
+          cancelAtPeriodEnd: request.input.timing === 'periodEnd',
+          status: request.input.timing === 'immediate' ? 'cancelled' : 'active',
+          updatedAt: new Date().toISOString(),
+        },
+      });
+    }
+    return result;
   },
 );
 
@@ -277,13 +461,27 @@ export const ResumeSubscription = billingApi.post(
   {
     input: ResumeSubscriptionInput,
     output: CancelSubscriptionOutput,
-    authorize: (_request, context) => context.principal.id.length > 0,
+    authorize: (_request, context) => canManageWorkspaceBilling(context),
   },
   async function resumeSubscription(_request, context) {
-    return Billing.resumeSubscription({
-      principalScope: context.principal.id,
+    const principalScope = agenticWorkspaceScope(context);
+    const result = await Billing.resumeSubscription({
+      principalScope,
       idempotencyKey:
-        `${context.principal.id}:resume`,
+        `${principalScope}:resume:${_request.input.intentId}`,
     });
+    const current = await loadStarterSubscription(principalScope);
+    if (current && result.provider === 'local') {
+      await Billing.Subscription.update({
+        identity: current.id,
+        patch: {
+          status: 'active',
+          cancelAtPeriodEnd: false,
+          scheduledChangeAt: null,
+          updatedAt: new Date().toISOString(),
+        },
+      });
+    }
+    return result;
   },
 );

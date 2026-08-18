@@ -1,13 +1,23 @@
 import {
-  type ApplicationModelViewContext,
+  applicationCausalPrincipalContext,
   module,
-  trustedContext,
 } from '@applik8s/applik8s';
+import { AgenticWorkspaceId } from '@applik8s/start-agentic';
 import { type } from 'arktype';
-import { and, eq, inArray, or, sql } from 'drizzle-orm';
 import { application } from '../../app';
-import { Notifications } from '../../modules';
+import { ApplicationOperator, Notifications } from '../../modules';
 import { database } from '../../providers';
+import {
+  AIUsageBudgetLedger as AIUsageBudgetLedgerTable,
+  AIUsageReservation as AIUsageReservationTable,
+  WorkspaceBudgetPolicy as WorkspaceBudgetPolicyTable,
+} from '../budgets/models';
+import {
+  listWorkspaces,
+  loadWorkspaceDashboard,
+  WorkspaceDashboardResult,
+  WorkspaceSummary,
+} from './queries';
 import {
   Invitation as InvitationTable,
   InvitationRelations,
@@ -17,173 +27,7 @@ import {
   WorkspaceRelations,
 } from './schema';
 
-export const WorkspaceId = trustedContext('workspaceId', {
-  schema: type('string'),
-});
-
-const WorkspaceSummary = type({
-  id: 'string',
-  slug: 'string',
-  name: 'string',
-  role: 'string',
-});
-
-const WorkspaceDashboardResult = type({
-  workspace: WorkspaceSummary,
-  members: type({
-    id: 'string',
-    identityId: 'string',
-    role: "'workspace-owner' | 'workspace-administrator' | 'workspace-member'",
-    createdAt: 'string',
-  }).array(),
-  invitations: type({
-    id: 'string',
-    email: 'string',
-    role: 'string',
-    state: 'string',
-    expiresAt: 'string',
-    deliveryState: "'queued' | 'pending' | 'delivering' | 'delivered' | 'failed' | 'unknown'",
-    deliveryAttempts: 'number',
-    deliveryProvider: 'string | null',
-  }).array(),
-}).or('null');
-
-async function listWorkspaces(
-  _input: object,
-  context: ApplicationModelViewContext,
-) {
-  const client = context.database(database);
-  return client.select({
-    id: WorkspaceTable.id,
-    slug: WorkspaceTable.slug,
-    name: WorkspaceTable.name,
-    role: sql<string>`CASE
-      WHEN ${WorkspaceTable.ownerPrincipalId} = ${context.principal.id}
-        THEN 'workspace-owner'
-      ELSE ${MembershipTable.role}
-    END`,
-  })
-    .from(WorkspaceTable)
-    .leftJoin(
-      MembershipTable,
-      and(
-        eq(MembershipTable.workspaceId, WorkspaceTable.id),
-        eq(MembershipTable.identityId, context.principal.id),
-      ),
-    )
-    .where(or(
-      eq(WorkspaceTable.ownerPrincipalId, context.principal.id),
-      eq(MembershipTable.identityId, context.principal.id),
-    ))
-    .limit(100);
-}
-
-async function loadWorkspaceDashboard(
-  input: { readonly workspaceId: string },
-  context: ApplicationModelViewContext,
-) {
-  const client = context.database(database);
-  const [workspace] = await client.select({
-    id: WorkspaceTable.id,
-    slug: WorkspaceTable.slug,
-    name: WorkspaceTable.name,
-    ownerPrincipalId: WorkspaceTable.ownerPrincipalId,
-    createdAt: WorkspaceTable.createdAt,
-    role: sql<string>`CASE
-      WHEN ${WorkspaceTable.ownerPrincipalId} = ${context.principal.id}
-        THEN 'workspace-owner'
-      ELSE ${MembershipTable.role}
-    END`,
-  })
-    .from(WorkspaceTable)
-    .leftJoin(
-      MembershipTable,
-      and(
-        eq(MembershipTable.workspaceId, WorkspaceTable.id),
-        eq(MembershipTable.identityId, context.principal.id),
-      ),
-    )
-    .where(and(
-      eq(WorkspaceTable.id, input.workspaceId),
-      or(
-        eq(WorkspaceTable.ownerPrincipalId, context.principal.id),
-        eq(MembershipTable.identityId, context.principal.id),
-      ),
-    ))
-    .limit(1);
-  if (!workspace) return null;
-
-  const storedMembers = await client.select({
-    id: MembershipTable.id,
-    identityId: MembershipTable.identityId,
-    role: MembershipTable.role,
-    createdAt: MembershipTable.createdAt,
-  })
-    .from(MembershipTable)
-    .where(eq(MembershipTable.workspaceId, workspace.id))
-    .limit(250);
-  const members = storedMembers.some(
-    member => member.identityId === workspace.ownerPrincipalId,
-  )
-    ? storedMembers
-    : [{
-        id: workspace.id,
-        identityId: workspace.ownerPrincipalId,
-        role: 'workspace-owner' as const,
-        createdAt: workspace.createdAt,
-      }, ...storedMembers];
-  const invitations = ['workspace-owner', 'workspace-administrator']
-    .includes(workspace.role)
-    ? await client.select({
-        id: InvitationTable.id,
-        email: InvitationTable.email,
-        role: InvitationTable.role,
-        state: InvitationTable.state,
-        expiresAt: InvitationTable.expiresAt,
-      })
-        .from(InvitationTable)
-        .where(eq(InvitationTable.workspaceId, workspace.id))
-        .limit(250)
-    : [];
-  const notificationIds = invitations.map(
-    invitation => `workspace-invitation:${invitation.id}`,
-  );
-  const notificationRows = notificationIds.length > 0
-    ? await client.select({
-        id: Notifications.NotificationRequest.id,
-        state: Notifications.NotificationRequest.state,
-        attempts: Notifications.NotificationRequest.attempts,
-        provider: Notifications.NotificationRequest.provider,
-      })
-        .from(Notifications.NotificationRequest)
-        .where(inArray(Notifications.NotificationRequest.id, notificationIds))
-        .limit(250)
-    : [];
-  const notificationsById = new Map(
-    notificationRows.map(notification => [notification.id, notification]),
-  );
-
-  return {
-    workspace: {
-      id: workspace.id,
-      slug: workspace.slug,
-      name: workspace.name,
-      role: workspace.role,
-    },
-    members,
-    invitations: invitations.map(invitation => {
-      const notification = notificationsById.get(
-        `workspace-invitation:${invitation.id}`,
-      );
-      return {
-        ...invitation,
-        deliveryState: notification?.state ?? 'pending',
-        deliveryAttempts: notification?.attempts ?? 0,
-        deliveryProvider: notification?.provider ?? null,
-      };
-    }),
-  };
-}
+export const WorkspaceId = AgenticWorkspaceId;
 
 const workspaces = module(
   'workspaces',
@@ -198,6 +42,35 @@ const workspaces = module(
     },
   },
   currentApplication => {
+    const WorkspaceMembershipBootstrapIdentity = currentApplication.serviceIdentity(
+      'workspace-membership-bootstrap',
+    );
+    WorkspaceTable.create.beforeCommit(
+      { history: true },
+      async function establishWorkspaceOwnership(workspace, input, context) {
+        const principal = context.principal;
+        if (!principal) {
+          throw new Error('Workspace creation requires an authenticated identity.');
+        }
+        if (
+          input.id !== undefined
+          || input.ownerPrincipalId !== undefined
+          || input.state !== undefined
+          || input.createdAt !== undefined
+        ) {
+          throw new Error(
+            'Workspace identity, ownership, lifecycle state, and timestamps are server-owned.',
+          );
+        }
+        workspace.patch({
+          spec: {
+            ownerPrincipalId: applicationCausalPrincipalContext(principal).id,
+            state: 'active',
+            createdAt: context.now,
+          },
+        });
+      },
+    );
     const WorkspaceMembershipBootstrap = WorkspaceTable.on.create(
       {
         processor: { replicas: 1, concurrency: 8 },
@@ -215,6 +88,32 @@ const workspaces = module(
           identityId: created.value.ownerPrincipalId,
           role: 'workspace-owner',
         });
+      },
+    );
+    MembershipTable.create.beforeCommit(
+      { history: true },
+      async function protectWorkspaceMembershipCreation(_membership, input, context) {
+        if (input.role !== 'workspace-owner') return;
+        const principal = context.principal;
+        if (
+          principal?.kind !== 'execution'
+          || principal.serviceIdentity?.id !== WorkspaceMembershipBootstrapIdentity.identity.id
+          || principal.causalPrincipalId !== input.identityId
+        ) {
+          throw new Error(
+            'Workspace ownership is created only by the framework-owned workspace bootstrap.',
+          );
+        }
+      },
+    );
+    InvitationTable.create.beforeCommit(
+      { history: true },
+      async function protectWorkspaceInvitationCreation(_invitation, input) {
+        if (input.role === 'workspace-owner') {
+          throw new Error(
+            'Workspace ownership cannot be granted through an invitation.',
+          );
+        }
       },
     );
     const InvitationDelivery = InvitationTable.on.create(
@@ -240,7 +139,7 @@ const workspaces = module(
               `Invitation: ${created.value.id}`,
               `Role: ${created.value.role}`,
               `Expires: ${created.value.expiresAt}`,
-              'Open the application invitation link supplied by the workspace owner.',
+              `Open /invitations/${created.value.id} in the application to accept.`,
             ].join('\n'),
           },
           template: { id: 'workspace-invitation', version: 'v1' },
@@ -296,6 +195,40 @@ const workspaces = module(
         );
       },
     );
+    MembershipTable.update.beforeCommit(
+      { history: true },
+      async function protectMembershipRole(member, input) {
+        if (member.value.role === 'workspace-owner') {
+          throw new Error('Workspace ownership cannot be changed through membership role management.');
+        }
+        const fields = Object.keys(input.patch);
+        if (fields.length !== 1 || fields[0] !== 'role' || input.patch.role === 'workspace-owner') {
+          throw new Error('Membership updates may only select administrator or member.');
+        }
+      },
+    );
+    MembershipTable.delete.beforeCommit(
+      { history: true },
+      async function protectOwningMembership(member) {
+        if (member.value.role === 'workspace-owner') {
+          throw new Error('Transfer workspace ownership before removing the owner.');
+        }
+      },
+    );
+    WorkspaceTable.update.beforeCommit(
+      { history: true },
+      async function protectWorkspaceUpdate(_workspace, input, context) {
+        const fields = Object.keys(input.patch);
+        if (
+          fields.length === 1
+          && fields[0] === 'state'
+          && context.principal?.roles?.includes('application-operator')
+        ) return;
+        if (fields.length === 0 || fields.some(field => field !== 'name' && field !== 'slug')) {
+          throw new Error('Workspace updates may change only its name or slug.');
+        }
+      },
+    );
     const WorkspaceList = WorkspaceTable.view(
       {
         input: type({}),
@@ -344,6 +277,8 @@ const workspaces = module(
       InvitationTable.create.where(invitation => invitation.workspaceId.eq(WorkspaceId)),
       InvitationTable.update.where(invitation => invitation.workspaceId.eq(WorkspaceId)),
       InvitationTable.delete.where(invitation => invitation.workspaceId.eq(WorkspaceId)),
+      WorkspaceBudgetPolicyTable.create.where(policy => policy.workspaceId.eq(WorkspaceId)),
+      WorkspaceBudgetPolicyTable.update.where(policy => policy.workspaceId.eq(WorkspaceId)),
       WorkspaceList,
       WorkspaceDashboard,
     );
@@ -355,13 +290,24 @@ const workspaces = module(
       InvitationTable.create.where(invitation => invitation.workspaceId.eq(WorkspaceId)),
       InvitationTable.update.where(invitation => invitation.workspaceId.eq(WorkspaceId)),
       InvitationTable.delete.where(invitation => invitation.workspaceId.eq(WorkspaceId)),
+      WorkspaceBudgetPolicyTable.create.where(policy => policy.workspaceId.eq(WorkspaceId)),
+      WorkspaceBudgetPolicyTable.update.where(policy => policy.workspaceId.eq(WorkspaceId)),
       WorkspaceList,
       WorkspaceDashboard,
     );
     Member.can(WorkspaceList, WorkspaceDashboard);
+    WorkspaceMembershipBootstrapIdentity.can(MembershipTable.create.all());
+    ApplicationOperator.can(
+      WorkspaceTable.update.all(),
+      WorkspaceList,
+      WorkspaceDashboard,
+    );
 
     return {
       Workspace: WorkspaceTable,
+      WorkspaceBudgetPolicy: WorkspaceBudgetPolicyTable,
+      AIUsageBudgetLedger: AIUsageBudgetLedgerTable,
+      AIUsageReservation: AIUsageReservationTable,
       Membership: MembershipTable,
       Invitation: InvitationTable,
       AcceptInvitation: InvitationTable.update,
@@ -380,6 +326,9 @@ const workspaces = module(
 export const Workspaces = application.include(workspaces);
 export const {
   Workspace,
+  WorkspaceBudgetPolicy,
+  AIUsageBudgetLedger,
+  AIUsageReservation,
   Membership,
   Invitation,
   AcceptInvitation,

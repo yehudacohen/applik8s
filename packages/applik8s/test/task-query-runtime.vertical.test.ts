@@ -46,6 +46,66 @@ describe('task query runtime', () => {
     expect(() => runtime.bind({ forbidden: 'Post.notDeclared' }, { id: 'worker', authorizationVersion: 'v1' })).toThrow(/undeclared/);
   });
 
+  it('preserves canonical service identity through signed internal query admission', async () => {
+    let admission: ReturnType<typeof verifyApplicationTaskQueryAdmission> | undefined;
+    const runtime = createApplicationTaskQueryRuntime({
+      cursorSecret: secret,
+      fetch: (async (_url: string | URL | Request, init?: RequestInit) => {
+        const request = new Request('http://gateway/queries/AgentProfile.active/snapshot', init);
+        admission = verifyApplicationTaskQueryAdmission({
+          request,
+          cursorSecret: secret,
+          audience: 'gateway.web',
+          query: 'AgentProfile.active',
+          input: { slug: 'workspace-assistant' },
+        });
+        return new Response(JSON.stringify({
+          kind: 'snapshot',
+          protocol: 'applik8s.query/v1alpha1',
+          query: 'AgentProfile.active',
+          value: {},
+        }));
+      }) as typeof fetch,
+      queries: [{
+        id: 'AgentProfile.active',
+        audience: 'gateway.web',
+        endpoint: 'http://gateway/queries/AgentProfile.active/snapshot',
+        inputSchema: {
+          type: 'object',
+          properties: { slug: { type: 'string' } },
+          required: ['slug'],
+          additionalProperties: false,
+        },
+        outputSchema: { type: 'object', additionalProperties: false },
+        timeoutMs: 1_000,
+        maxResultBytes: 1_000,
+      }],
+    });
+    const identity = {
+      id: 'identity:agentic-product:service:workspace-assistant',
+      kind: 'service' as const,
+      issuer: 'applik8s://agentic-product',
+      subject: 'workspace-assistant',
+    };
+    const active = runtime.bind({ active: 'AgentProfile.active' }, {
+      id: identity.id,
+      identity,
+      kind: 'service',
+      authenticationMethod: 'workload-identity',
+      authorizationVersion: 'authority-v1',
+    }).active;
+    if (!active) throw new Error('Expected declared query.');
+
+    await active({ slug: 'workspace-assistant' });
+
+    expect(admission?.principal).toEqual({
+      id: identity.id,
+      identity,
+      kind: 'service',
+      authenticationMethod: 'workload-identity',
+    });
+  });
+
   it('preserves function-native zero-input queries while required inputs remain fail-closed', async () => {
     const inputs: unknown[] = [];
     const runtime = createApplicationTaskQueryRuntime({

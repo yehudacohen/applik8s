@@ -8,11 +8,27 @@ const liveDescribe = databaseUrl ? describe : describe.skip;
 liveDescribe('PostgreSQL conversation authority', () => {
   const sql = postgres(databaseUrl ?? '', { prepare: false });
   const schema = `applik8s_conversations_${process.pid}_${Date.now()}`;
-  const store = createPostgresApplicationConversationStore({ sql, schema });
+  const accessSetting = 'applik8s.context.principalScope';
+  const store = createPostgresApplicationConversationStore({
+    sql,
+    schema,
+    access: { setting: accessSetting },
+  });
 
   beforeAll(async () => {
     await sql.unsafe(`CREATE SCHEMA "${schema}"`);
     await store.prepare();
+    await sql.unsafe(
+      `ALTER TABLE "${schema}"."applik8s_conversations" ENABLE ROW LEVEL SECURITY`,
+    );
+    await sql.unsafe(
+      `ALTER TABLE "${schema}"."applik8s_conversations" FORCE ROW LEVEL SECURITY`,
+    );
+    await sql.unsafe(
+      `CREATE POLICY conversation_scope ON "${schema}"."applik8s_conversations"
+       USING (principal_scope = current_setting('${accessSetting}', true))
+       WITH CHECK (principal_scope = current_setting('${accessSetting}', true))`,
+    );
   });
 
   afterAll(async () => {
@@ -53,6 +69,9 @@ liveDescribe('PostgreSQL conversation authority', () => {
       principalScope: 'principal-scope-1',
       startedAt: now,
     });
+    await expect(
+      store.getConversation('conversation-1', 'another-principal-scope'),
+    ).resolves.toBeUndefined();
     const event = await store.appendRunEvent({
       runId: 'run-1',
       principalScope: 'principal-scope-1',

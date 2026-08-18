@@ -6,9 +6,10 @@ on:
       release_line:
         description: Release line to attest
         required: true
-        default: 'v0.6'
+        default: 'v0.7'
         type: choice
         options:
+          - 'v0.7'
           - 'v0.6'
           - 'v0.5'
           - 'v0.4'
@@ -49,7 +50,7 @@ jobs:
         run: bun install --frozen-lockfile
 
       - name: Run legacy local gates
-        if: ${{ inputs.release_line != 'v0.5' && inputs.release_line != 'v0.6' }}
+        if: ${{ inputs.release_line != 'v0.4' && inputs.release_line != 'v0.5' && inputs.release_line != 'v0.6' && inputs.release_line != 'v0.7' }}
         run: bun run check:local
 
       - name: Run v0.4 durable-behavior gates
@@ -64,8 +65,12 @@ jobs:
         if: ${{ inputs.release_line == 'v0.6' }}
         run: bun run check:v06:local
 
+      - name: Run v0.7 Agentic Platform release gates
+        if: ${{ inputs.release_line == 'v0.7' }}
+        run: bun run check:v07:local && TYPEKRO_LOG_LEVEL=fatal bun run scripts/check-v07-scorecard.ts --require-release
+
       - name: Run package release checks
-        if: ${{ inputs.release_line != 'v0.5' && inputs.release_line != 'v0.6' }}
+        if: ${{ inputs.release_line != 'v0.5' && inputs.release_line != 'v0.6' && inputs.release_line != 'v0.7' }}
         run: bun run check:packages
 
       - name: Review published consumer dependency audit
@@ -116,6 +121,12 @@ jobs:
       - name: Run v0.6 live prerelease gates
         if: ${{ inputs.release_line == 'v0.6' && inputs.run_live_e2e == 'true' && inputs.live_attestation_b64 == '' }}
         run: bun run test:v06:full-live
+        env:
+          APPLIK8S_E2E_CONTEXT: ${{ vars.APPLIK8S_E2E_CONTEXT }}
+
+      - name: Run v0.7 live prerelease gates
+        if: ${{ inputs.release_line == 'v0.7' && inputs.run_live_e2e == 'true' && inputs.live_attestation_b64 == '' }}
+        run: bun run check:v07:prerelease:orbstack
         env:
           APPLIK8S_E2E_CONTEXT: ${{ vars.APPLIK8S_E2E_CONTEXT }}
 

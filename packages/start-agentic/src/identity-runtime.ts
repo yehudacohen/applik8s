@@ -63,20 +63,37 @@ export async function authenticateAgenticStarterRequest(
   request: Request,
   options: AuthenticateAgenticStarterRequestOptions = {},
 ): Promise<ApplicationRequestAdmission> {
+  if (starterIdentitySignedOut(request)) {
+    throw new AgenticStarterAuthenticationRequiredError();
+  }
   const admission = agenticStarterAdmission();
   if (isReceiptBackedCommandProgress(request)) {
-    return freezeAdmission(
-      withRoles(admission.principal, ['authenticated']),
-      admission.trustedContext,
-    );
+    return authenticatedAgenticStarterAdmission(admission);
   }
-  const selected = selectedWorkspaceId(request);
+  let selected: string | undefined;
+  try {
+    selected = selectedWorkspaceId(request);
+  } catch (error) {
+    if (!isApplicationIdentitySessionRequest(request)
+      || !(error instanceof AgenticWorkspaceSelectorError)) {
+      throw error;
+    }
+    return authenticatedAgenticStarterAdmission(admission);
+  }
   if (selected) {
-    return admitAgenticWorkspaceRequest(
-      request,
-      admission,
-      options.lookup ?? lookupAgenticWorkspaceAccess,
-    );
+    try {
+      return await admitAgenticWorkspaceRequest(
+        request,
+        admission,
+        options.lookup ?? lookupAgenticWorkspaceAccess,
+      );
+    } catch (error) {
+      if (!isApplicationIdentitySessionRequest(request)
+        || !(error instanceof AgenticWorkspaceAdmissionError)) {
+        throw error;
+      }
+      return authenticatedAgenticStarterAdmission(admission);
+    }
   }
   if (options.bootstrap) {
     const access = await options.bootstrap({
@@ -88,9 +105,18 @@ export async function authenticateAgenticStarterRequest(
     });
     return admissionWithAgenticWorkspaceAccess(admission, access);
   }
+  return authenticatedAgenticStarterAdmission(admission);
+}
+
+function authenticatedAgenticStarterAdmission(
+  admission: ApplicationRequestAdmission,
+): ApplicationRequestAdmission {
   return freezeAdmission(
     withRoles(admission.principal, ['authenticated']),
-    admission.trustedContext,
+    {
+      ...admission.trustedContext,
+      principalScope: admission.principal.id,
+    },
   );
 }
 
@@ -146,7 +172,7 @@ export async function authenticateAgenticProfileRequest(
   if (isReceiptBackedCommandProgress(request)) {
     return freezeAdmission(
       withRoles(principal, ['authenticated']),
-      trustedContext,
+      { ...trustedContext, principalScope: principal.id },
     );
   }
   return admitAgenticWorkspaceRequest(
@@ -184,7 +210,10 @@ export async function admitAgenticWorkspaceRequest(
   const workspaceId = selectedWorkspaceId(request);
   const authenticated = withRoles(admission.principal, ['authenticated']);
   if (!workspaceId) {
-    return freezeAdmission(authenticated, admission.trustedContext);
+    return freezeAdmission(authenticated, {
+      ...admission.trustedContext,
+      principalScope: authenticated.id,
+    });
   }
   const access = await lookup({
     workspaceId,
@@ -203,6 +232,7 @@ function admissionWithAgenticWorkspaceAccess(
   const authenticated = withRoles(admission.principal, ['authenticated']);
   const trustedContext = Object.freeze({
     ...admission.trustedContext,
+    principalScope: access.workspaceId,
     workspaceId: access.workspaceId,
     workspaceRole: access.role,
   }) satisfies JsonObject;
@@ -222,6 +252,25 @@ export class AgenticWorkspaceAdmissionError extends Error {
     );
     this.name = 'AgenticWorkspaceAdmissionError';
     this.workspaceId = workspaceId;
+  }
+}
+
+class AgenticWorkspaceSelectorError extends Error {
+  readonly code = 'APPLIK8S_WORKSPACE_SELECTOR_INVALID';
+
+  constructor(message: string) {
+    super(message);
+    this.name = 'AgenticWorkspaceSelectorError';
+  }
+}
+
+class AgenticStarterAuthenticationRequiredError extends Error {
+  readonly code = 'APPLIK8S_AUTHENTICATION_REQUIRED';
+  readonly status = 401;
+
+  constructor() {
+    super('Sign in before accessing the application.');
+    this.name = 'AgenticStarterAuthenticationRequiredError';
   }
 }
 
@@ -251,7 +300,18 @@ export async function handleAgenticStarterIdentityRequest(
   const path = agenticIdentityPath(url);
   try {
     if (path[0] === 'session' && request.method === 'DELETE') {
-      return identityJson(anonymousIdentitySession());
+      return identityJson(
+        anonymousIdentitySession(),
+        200,
+        [starterIdentitySessionCookie(request, true)],
+      );
+    }
+    if (starterIdentitySignedOut(request) && path[0] !== 'flows') {
+      return identityError(
+        'authentication_required',
+        'Sign in before accessing account identity operations.',
+        401,
+      );
     }
     // Identity admission is deliberately independent from the product's
     // workspace selector. A stale, deleted, or malformed workspace cookie must
@@ -293,7 +353,11 @@ export async function handleAgenticStarterIdentityRequest(
       && path.length === 4
       && request.method === 'POST'
     ) {
-      return identityJson(identitySession(admission.principal));
+      return identityJson(
+        identitySession(admission.principal),
+        200,
+        [starterIdentitySessionCookie(request, false)],
+      );
     }
     return identityError('invalid_request', 'The identity route does not exist.', 404);
   } catch {
@@ -474,6 +538,7 @@ function agenticIdentityPath(url: URL): readonly string[] {
 
 function identitySession(
   principal: ApplicationPrincipal,
+  trustedContext: Readonly<Record<string, JsonValue>> = {},
 ): ApplicationIdentitySessionView {
   return {
     protocol: applicationIdentityHttpProtocol,
@@ -496,6 +561,8 @@ function identitySession(
         || principal.roles?.includes('workspace-administrator') === true,
       applicationOperations:
         principal.roles?.includes('application-operator') === true,
+      workspaceSelection:
+        typeof trustedContext.workspaceId === 'string' ? 'admitted' : 'none',
     },
   };
 }
@@ -740,6 +807,7 @@ async function lookupAgenticWorkspaceAccess(
       ON membership.workspace_id = workspace.id
       AND membership.identity_id = ${input.principalId}
     WHERE workspace.id = ${input.workspaceId}::uuid
+      AND workspace.state = 'active'
       AND (
         workspace.owner_principal_id = ${input.principalId}
         OR membership.identity_id = ${input.principalId}
@@ -794,18 +862,50 @@ function selectedWorkspaceId(request: Request): string | undefined {
     try {
       value = decodeURIComponent(encoded);
     } catch {
-      throw new Error('Agentic workspace selector cookie is malformed.');
+      throw new AgenticWorkspaceSelectorError(
+        'Agentic workspace selector cookie is malformed.',
+      );
     }
     if (
       !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
         value,
       )
     ) {
-      throw new Error('Agentic workspace selector must be a UUID.');
+      throw new AgenticWorkspaceSelectorError(
+        'Agentic workspace selector must be a UUID.',
+      );
     }
     return value.toLowerCase();
   }
   return undefined;
+}
+
+const starterIdentitySignedOutCookieName = 'applik8s_starter_signed_out';
+
+function starterIdentitySignedOut(request: Request): boolean {
+  return requestCookie(request, starterIdentitySignedOutCookieName) === '1';
+}
+
+function requestCookie(request: Request, name: string): string | undefined {
+  const cookie = request.headers.get('cookie');
+  if (!cookie) return undefined;
+  for (const pair of cookie.split(';')) {
+    const separator = pair.indexOf('=');
+    if (separator < 0 || pair.slice(0, separator).trim() !== name) continue;
+    return pair.slice(separator + 1).trim();
+  }
+  return undefined;
+}
+
+function starterIdentitySessionCookie(request: Request, signedOut: boolean): string {
+  const secure = new URL(request.url).protocol === 'https:' ? '; Secure' : '';
+  return `${starterIdentitySignedOutCookieName}=${signedOut ? '1' : ''}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${signedOut ? 31_536_000 : 0}${secure}`;
+}
+
+function isApplicationIdentitySessionRequest(request: Request): boolean {
+  const url = new URL(request.url);
+  return request.method === 'GET'
+    && url.pathname === '/__applik8s/v1/identity/session';
 }
 
 function agenticWorkspaceRole(

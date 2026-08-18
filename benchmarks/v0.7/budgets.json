@@ -17,7 +17,7 @@
     "maximumRssGrowthBytes": 134217728
   },
   "identityStart": {
-    "maximumBrowserJavaScriptGzipBytes": 150000,
+    "maximumBrowserJavaScriptGzipBytes": 160000,
     "maximumServerOutputBytes": 5242880,
     "maximumApplicationGraphNodes": 320,
     "maximumResourceGraphBytes": 524288

@@ -5,6 +5,7 @@ import {
   pgEnum,
 } from '@applik8s/applik8s/drizzle';
 import { Workspace } from '../workspaces/schema';
+import { Document } from '../documents/schema';
 
 export const decisionReviewState = pgEnum('decision_review_state', [
   'pending',
@@ -17,6 +18,8 @@ export const DecisionReview = model('decision_reviews', {
   id: field.uuid('id').defaultRandom().primaryKey(),
   workspaceId: field.uuid('workspace_id').notNull()
     .references(() => Workspace.id, { onDelete: 'cascade' }),
+  documentId: field.uuid('document_id').notNull()
+    .references(() => Document.id, { onDelete: 'cascade' }),
   title: field.text('title').notNull(),
   requestedByPrincipalId: field.text('requested_by_principal_id').notNull()
     .default(authenticatedPrincipalId),

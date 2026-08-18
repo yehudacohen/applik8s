@@ -4,6 +4,7 @@ import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Command, CommanderError } from 'commander';
 import { resolveApplicationBuildPackage } from './application-build-package.js';
+import { loadApplicationEnvironmentFile } from './application-environment-file.mjs';
 import type {
   ApplicationDeleteCommandOptions,
   ApplicationDeployCommandOptions,
@@ -433,6 +434,13 @@ async function runDeploy(
     io.stderr(`applik8s deploy --strategy must be "direct" or "kro", received ${JSON.stringify(options.strategy)}.`);
     return 1;
   }
+  // The installed executable starts under Node, while source/workspace
+  // invocations can start under Bun and hand off to Node. Load the
+  // application-root environment at the command boundary so both execution
+  // paths give providers the same operation-host inputs. The handoff runner
+  // also loads defensively before registering authored TypeScript; repeated
+  // loading is idempotent because already-exported values remain authoritative.
+  await loadApplicationEnvironmentFile(io.cwd);
   if (isBunRuntime() && process.env.APPLIK8S_DISABLE_NODE_DEPLOY_HANDOFF !== '1') {
     io.stdout('Handing application planning and deployment to the Node deployment host.');
     return runChild({

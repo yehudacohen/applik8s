@@ -1,10 +1,23 @@
 import { loadApplicationIdentitySession } from '@applik8s/tanstack-start/server';
+import { agenticWorkspaceCookieName } from '@applik8s/start-agentic/react';
 import { createServerFn } from '@tanstack/react-start';
+import { deleteCookie, getCookie } from '@tanstack/react-start/server';
 
 export const getApplicationIdentitySession = createServerFn({ method: 'GET' })
   .handler(async () => {
     try {
-      return await loadApplicationIdentitySession();
+      const session = await loadApplicationIdentitySession();
+      if (
+        session.authenticated
+        && getCookie(agenticWorkspaceCookieName)
+        && session.capabilities?.workspaceSelection !== 'admitted'
+      ) {
+        // The selector is untrusted browser state. The identity boundary has
+        // already proved that it no longer names an admitted workspace, so
+        // clear only that selector while preserving the authenticated session.
+        deleteCookie(agenticWorkspaceCookieName, { path: '/' });
+      }
+      return session;
     } catch {
       // Identity availability must not turn the public shell into an SSR 500.
       // Undefined means "not hydrated" so the provider-neutral browser client

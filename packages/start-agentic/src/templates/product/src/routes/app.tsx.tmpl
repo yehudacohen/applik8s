@@ -1,6 +1,8 @@
 import { Outlet, createFileRoute } from '@tanstack/react-router';
+import { RouteNotFound } from './-route-state';
 
 export const Route = createFileRoute('/app')({
+  notFoundComponent: RouteNotFound,
   component: ApplicationLayout,
 });
 

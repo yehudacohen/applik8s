@@ -27,9 +27,9 @@ afterEach(async () => {
   );
 });
 
-describe('pinned Stimp product-contract parity', () => {
-  it('generates the same feature-first product twice without retaining Stimp runtime authority', async () => {
-    const parent = await mkdtemp(join(tmpdir(), 'applik8s-stimp-parity-'));
+describe('Agentic product baseline', () => {
+  it('generates the same feature-first product twice without external source authority', async () => {
+    const parent = await mkdtemp(join(tmpdir(), 'applik8s-product-baseline-'));
     temporaryDirectories.push(parent);
     const first = join(parent, 'first');
     const second = join(parent, 'second');
@@ -53,7 +53,6 @@ describe('pinned Stimp product-contract parity', () => {
       status: 'applik8s status',
       destroy: 'applik8s destroy',
     });
-    expect(Object.keys(manifest.dependencies)).not.toContain('stimp');
     const productCatalog = await readFile(
       join(first, 'drizzle/zzzz_agentic_product_catalog.sql'),
       'utf8',
@@ -69,7 +68,7 @@ describe('pinned Stimp product-contract parity', () => {
           .map((path) => readFile(join(first, path), 'utf8')),
       )
     ).join('\n');
-    expect(allSource).not.toMatch(/from ['"][^'"]*stimp/i);
+    expect(allSource).not.toMatch(/from ['"]\/Users\//);
     expect(allSource).toContain('application.include(agenticProfiles)');
     expect(allSource).toContain('application.include(conversations)');
     expect(allSource).toContain('application.include(approvals)');
@@ -113,7 +112,7 @@ describe('pinned Stimp product-contract parity', () => {
     expect(allSource).toContain('export const StartCheckout = billingApi.post(');
     expect(allSource).toContain('export const OpenBillingPortal = billingApi.post(');
     expect(allSource).toContain(
-      'principalScope: applicationAIConversationPrincipalScope(',
+      'principalScope: agenticPrincipalScope(context)',
     );
     expect(allSource).toContain(
       "ResearchReviewDecision = workflow.signal(\n  'research.review-decision.v1'",
@@ -182,10 +181,15 @@ describe('pinned Stimp product-contract parity', () => {
     expect(AgenticStarter.inference()).toMatchObject({
       kind: 'ai-deterministic',
       fixture: {
-        response: 'Credential-free starter inference.',
+        response: expect.stringContaining('authoritative result'),
         tool: {
           index: 0,
-          input: { body: 'Starter tool-created document.' },
+          input: {
+            title: 'Launch readiness brief',
+            body: expect.stringContaining('## Execution plan'),
+            summary: 'A customer-ready launch plan with ownership, acceptance checks, measurable outcomes, and rollback criteria.',
+            tags: ['launch', 'readiness', 'agent-created'],
+          },
         },
       },
     });

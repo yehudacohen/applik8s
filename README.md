@@ -420,6 +420,7 @@ bun run check:v04:prerelease:orbstack
 
 ## Documentation
 
+- [`docs/packages.md`](docs/packages.md) — authoritative public package and module boundaries
 - `docs/imagejob-golden-path.md`
 - `docs/first-run.md`
 - `docs/npm-first-run.md`

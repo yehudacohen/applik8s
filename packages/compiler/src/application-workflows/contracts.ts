@@ -96,7 +96,7 @@ interface WorkflowOperationEffectsContract {
   readonly operations: readonly WorkflowTaskOperationContract[];
   readonly aliases: Readonly<Record<string, Readonly<Record<string, WorkflowOperationAliasContract>>>>;
   readonly eventLog: ApplicationProviderNode;
-  readonly cursorSecret: { readonly name: string; readonly key: string };
+  readonly contextSecret: { readonly name: string; readonly key: string };
 }
 
 export interface WorkflowOperationAliasContract {
@@ -227,7 +227,6 @@ export function workflowContract(
     namespace,
     worker,
     workloadAuthority,
-    queryEffects?.cursorSecret,
   );
   const projectionEffects = workflowProjectionEffects(nodes, tasks, namespace, worker);
 	const objectEffects = workflowObjectEffects(nodes, tasks, namespace, worker);
@@ -245,9 +244,6 @@ export function workflowContract(
     tasks,
     worker,
   );
-  if (operationEffects && queryEffects && (operationEffects.cursorSecret.name !== queryEffects.cursorSecret.name || operationEffects.cursorSecret.key !== queryEffects.cursorSecret.key)) {
-    throw new Error(`Workflow worker ${worker.id} operations and queries must use one service-principal context authority.`);
-  }
   if (worker.deployment.scaling.mode === 'kedaHatchetSlots' && !stringConfig(config.tenantId)) {
     throw new Error(`Generated workflow worker ${worker.id} uses KEDA Hatchet task-stat scaling but its WorkflowEngine provider has no tenantId.`);
   }
@@ -597,13 +593,9 @@ function workflowOperationEffects(
   namespace: string,
   worker: ApplicationWorkflowWorkerNode,
   workloadAuthority: readonly ApplicationWorkloadAuthorityEnvelope[],
-  sharedContextSecret:
-    | { readonly name: string; readonly key: string }
-    | undefined,
 ): WorkflowOperationEffectsContract | undefined {
   const operations: WorkflowTaskOperationContract[] = [];
   const aliases: Record<string, Record<string, WorkflowOperationAliasContract>> = {};
-  const cursorSecrets = new Map<string, { readonly name: string; readonly key: string }>();
   const eventLogs = new Map<string, ApplicationProviderNode>();
   for (const { handler } of tasks) {
     if ((handler.operations?.length ?? 0) === 0) continue;
@@ -641,20 +633,6 @@ function workflowOperationEffects(
         throw new Error(`Workflow task ${handler.id} operation ${operation.alias} has no compiled workload authority envelope.`);
       }
       assertWorkflowSecretNamespace(model.runtime.secretNamespace, namespace, `Workflow task ${handler.id} operation ${operation.alias} database Secret`);
-      const gateways = [...nodes.values()].filter((candidate): candidate is ApplicationGatewayNode => candidate.kind === 'gateway'
-        && candidate.materialization === 'generatedDeployment'
-        && candidate.commands.some((entry) => entry.command.nodeId === command.id));
-      if (gateways.length > 1) throw new Error(`Workflow task ${handler.id} operation ${operation.alias} is exposed by ${gateways.length} generated gateways. A workflow worker requires one unambiguous context authority.`);
-      const gateway = gateways[0];
-      if (gateway) {
-        if (!gateway.deployment || !gateway.cursorSecret) throw new Error(`Workflow task ${handler.id} operation ${operation.alias} gateway ${gateway.id} has no deployment cursor Secret.`);
-        const gatewayNamespace = applicationGraphStringValue(gateway.deployment.namespace);
-        if (gatewayNamespace && gatewayNamespace !== namespace) throw new Error(`Workflow task ${handler.id} operation ${operation.alias} gateway ${gateway.id} is in ${gatewayNamespace}, but the worker is in ${namespace}.`);
-        assertWorkflowSecretNamespace(gateway.cursorSecret.namespace, namespace, `Workflow task ${handler.id} operation ${operation.alias} cursor Secret`);
-        const secretName = applicationGraphStringValue(gateway.cursorSecret.name);
-        if (!secretName || !gateway.cursorSecret.key) throw new Error(`Workflow task ${handler.id} operation ${operation.alias} gateway cursor Secret is not concrete.`);
-        cursorSecrets.set(`${secretName}\0${gateway.cursorSecret.key}`, { name: secretName, key: gateway.cursorSecret.key });
-      }
       operations.push({
         taskHandlerId: handler.id,
         alias: operation.alias,
@@ -676,20 +654,6 @@ function workflowOperationEffects(
     aliases[handler.id] = taskAliases;
   }
   if (operations.length === 0) return undefined;
-  if (sharedContextSecret) {
-    cursorSecrets.set(
-      `${sharedContextSecret.name}\0${sharedContextSecret.key}`,
-      sharedContextSecret,
-    );
-  }
-  if (cursorSecrets.size === 0) {
-    const secret = {
-      name: kubernetesName(`${worker.name}-context`),
-      key: 'key',
-    };
-    cursorSecrets.set(`${secret.name}\0${secret.key}`, secret);
-  }
-  if (cursorSecrets.size !== 1) throw new Error(`Workflow worker ${worker.id} declared task operations backed by ${cursorSecrets.size} cursor Secrets. Use one application command context authority per worker group.`);
   if (eventLogs.size !== 1) throw new Error(`Workflow worker ${worker.id} task operations require exactly one EventLog provider.`);
   const eventLog = [...eventLogs.values()][0] as ApplicationProviderNode;
   const connectionSecret = objectConfig(eventLog.config?.connectionSecret);
@@ -698,7 +662,10 @@ function workflowOperationEffects(
     operations,
     aliases,
     eventLog,
-    cursorSecret: [...cursorSecrets.values()][0] as { readonly name: string; readonly key: string },
+    contextSecret: {
+      name: kubernetesName(`${graph.metadata.name}-context`),
+      key: 'key',
+    },
   };
 }
 

@@ -182,12 +182,12 @@
     "@applik8s/sdk": "0.7.0",
     "@applik8s/typekro-adapter": "0.7.0",
     "@applik8s/typetainer": "0.7.0",
-    "arktype": "^2.1.20",
+    "arktype": "2.2.1",
     "drizzle-arktype": "0.1.3",
     "drizzle-orm": "^0.45.1",
     "esbuild": "^0.28.1",
     "hono": "^4.10.7",
-    "typekro": "0.33.6"
+    "typekro": "0.33.7"
   },
   "peerDependencies": {
     "@applik8s/runtime-hatchet": "0.7.0",

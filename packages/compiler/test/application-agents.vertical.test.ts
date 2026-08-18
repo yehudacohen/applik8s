@@ -4,8 +4,9 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { AI } from '@applik8s/ai';
-import { app, applicationGraphFor, IdentityProvider } from '@applik8s/applik8s';
+import { app, applicationGraphFor, IdentityProvider, postgres, trustedContext } from '@applik8s/applik8s';
 import { type } from '@applik8s/applik8s/dsl';
+import { applicationConversations } from '@applik8s/conversations';
 import { usage } from '@applik8s/usage';
 import { pgTable, text } from 'drizzle-orm/pg-core';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -19,6 +20,7 @@ import {
   compileApplicationWorkloadAuthority,
 } from '../src/application-operations/index.js';
 import {
+  compileTypeKroComposition,
   discoverApplicationGraph,
   discoverApplicationGraphWithExports,
 } from '../src/pipeline/index.js';
@@ -33,6 +35,134 @@ afterEach(async () => {
 });
 
 describe('generated application AI agents', () => {
+  it('injects direct query handles without importing the authoring graph into the agent runtime', async () => {
+    const fixture = new URL(
+      './fixtures/v07-agent-query-app.ts',
+      import.meta.url,
+    ).pathname;
+    const discovered = await discoverApplicationGraphWithExports(
+      fixture,
+      'agentQueryProof',
+    );
+    expect(
+      discovered.ok,
+      discovered.ok ? undefined : discovered.error.message,
+    ).toBe(true);
+    if (!discovered.ok) return;
+    const agent = discovered.value.graph.nodes.find(
+      (node) => node.kind === 'aiAgent',
+    );
+    expect(agent).toMatchObject({
+      operations: [{
+        alias: 'Audit.create',
+        authoringOperationId: 'Audit.create',
+        operationId: 'applik8s://models/Audit/operations/create',
+      }],
+      queries: [{
+        alias: 'RecordById',
+        query: { nodeId: 'query.Record.loadRecord' },
+      }],
+    });
+    const catalog = compileApplicationOperationCatalog(discovered.value.graph);
+    const authority = compileApplicationWorkloadAuthority(
+      discovered.value.graph,
+      catalog,
+    );
+    const outDir = await mkdtemp(join(tmpdir(), 'applik8s-agent-query-'));
+    temporaryDirectories.push(outDir);
+    const [artifact] = await emitGeneratedApplicationAgents({
+      graph: discovered.value.graph,
+      operationCatalog: catalog,
+      workloadAuthority: authority,
+      outDir,
+      entrypoint: fixture,
+    });
+    if (!artifact) throw new Error('Expected one generated query agent.');
+    const directory = dirname(artifact.sourcePath);
+    const callback = await readFile(
+      join(directory, 'handler.generated.ts'),
+      'utf8',
+    );
+    const generated = await readFile(
+      join(directory, 'agent.generated.ts'),
+      'utf8',
+    );
+    expect(callback).toContain(
+      'export function createHandler(__applik8sBindings = {})',
+    );
+    expect(callback).toContain(
+      'const RecordById = __applik8sBindings["RecordById"]',
+    );
+    expect(callback).not.toContain('v07-agent-query-app');
+    expect(generated).toContain('createApplicationTaskQueryRuntime');
+    expect(generated).toContain('installApplicationOperationRuntimeResolver');
+    expect(generated).toContain('directOperationScope.run(runtime');
+    expect(generated).toContain('Agent callback attempted undeclared function-native operation');
+    expect(generated).toContain('applik8s://models/Audit/operations/create');
+    expect(generated).toContain('"authoringOperationId":"Audit.create"');
+    expect(generated).toContain('[dependency.authoringOperationId, dependency.operation]');
+    expect(generated).toContain('APPLIK8S_AGENT_QUERY_CONTEXT_SECRET');
+    expect(generated).toContain(
+      'http://agent-query-proof-queries:8080/queries/Record.loadRecord/snapshot',
+    );
+    expect(generated).toContain('trustedContext: context.trustedContext');
+    expect(generated).toContain('identity: contract.serviceIdentity');
+    expect(generated).toContain("authenticationMethod: 'workload-identity'");
+    expect(JSON.stringify(artifact.resources)).toContain(
+      'APPLIK8S_AGENT_QUERY_CONTEXT_SECRET',
+    );
+    expect(await readFile(artifact.sourcePath, 'utf8')).not.toContain(
+      'Application task starter.knowledge.ingest',
+    );
+  }, 20_000);
+
+  it('binds function-native agent mutations in their generated placement receiver', async () => {
+    const fixture = new URL(
+      './fixtures/v07-agent-query-app.ts',
+      import.meta.url,
+    ).pathname;
+    const outDir = await mkdtemp(join(tmpdir(), 'applik8s-agent-placement-'));
+    temporaryDirectories.push(outDir);
+    const result = await compileTypeKroComposition({
+      entrypoint: fixture,
+      compositionName: 'agentQueryProof',
+      outDir,
+      runtimeVersionRange: '^0.7.0',
+      handlerAbiVersion: 'applik8s.handler/v1alpha1',
+      adapter: 'wasmComponent',
+      portability: {
+        deterministicBuild: true,
+        allowEnvironmentAccess: false,
+        allowFilesystemAccess: false,
+        allowNetworkAccess: true,
+        allowedHostImports: [],
+        sourceMaps: {
+          emit: true,
+          includeSourceContent: false,
+          redactPaths: false,
+        },
+      },
+    });
+    expect(result.ok, result.ok ? undefined : result.error.message).toBe(true);
+    if (!result.ok) return;
+    const receiver = result.value.artifacts.reactiveArtifacts.find(
+      (artifact) => artifact.kind === 'queryGateway'
+        && artifact.name.includes('tool-receiver'),
+    );
+    expect(receiver).toBeDefined();
+    const source = await readFile(
+      join(dirname(receiver?.sourcePath ?? ''), 'gateway.generated.ts'),
+      'utf8',
+    );
+    const bindings = /bindings: \[([\s\S]*?)\],\n\s*revalidate:/u.exec(source)?.[1];
+    expect(bindings).toContain(
+      'applik8s://models/Audit/operations/create',
+    );
+    expect(bindings).toContain(
+      'commandGateway.invoke({ operationId: "applik8s://models/Audit/operations/create"',
+    );
+  }, 120_000);
+
   it('compiles an ordinary exported function into one durable local agent tool', async () => {
     const discovered = await discoverApplicationGraphWithExports(
       new URL(
@@ -114,6 +244,9 @@ describe('generated application AI agents', () => {
     );
     expect(generated).toContain(
       'values: applicationRequestContextValues(',
+    );
+    expect(generated).toMatch(
+      /applicationPostgresModelReadClients\([\s\S]*?values: applicationRequestContextValues\(\s*context\.principal,\s*context\.principal\.authorityRevision,\s*context\.trustedContext,[\s\S]*?digest: context\.principal\.trustedContextDigest/u,
     );
     expect(generated).toContain(
       'authorizationReceipt: context.authorizationReceipt',
@@ -297,17 +430,35 @@ describe('generated application AI agents', () => {
       id: text('id').primaryKey(),
       body: text('body').notNull(),
     });
+    const PrincipalScope = trustedContext('principalScope', {
+      schema: type('string'),
+    });
     const database = application.database.postgres('application', {
-      schema: { posts },
+      schema: { posts, applicationConversations },
       migrations: { path: './drizzle' },
+      access: postgres.rls({
+        context: PrincipalScope,
+        column: 'principalScope',
+        setting: 'applik8s.context.agentConversationScope',
+      }),
     });
     application.include(usage);
-    const Post = application.model(posts, { name: 'Post', database });
+    const Post = application.model(posts, {
+      name: 'Post',
+      database,
+      access: 'global',
+    });
+    application.model(applicationConversations, {
+      name: 'Conversation',
+      database,
+    });
+    const WorkspaceId = trustedContext('workspaceId', { schema: type('string') });
     const identity = application.serviceIdentity('researcher');
     application.agent(
       'researcher',
       {
         identity,
+        scope: WorkspaceId,
         model: AI.model('fast', {
           capabilities: [AI.chat, AI.tools, AI.streaming],
           inference: application.inject(inference),
@@ -342,6 +493,9 @@ describe('generated application AI agents', () => {
     ).toEqual(['agent-tools']);
     const graph = applicationGraphFor(application.composition);
     if (!graph) throw new Error('Expected an application graph.');
+    expect(graph.nodes.find(node => node.kind === 'aiAgent')).toMatchObject({
+      scope: { kind: 'trustedContext', name: 'workspaceId' },
+    });
     expect(
       graph.nodes
         .filter((node) => node.kind === 'gateway')
@@ -468,6 +622,7 @@ describe('generated application AI agents', () => {
     const normalizedSource = source.replaceAll('\\\n', '');
     expect(normalizedSource).toContain('x-applik8s-execution-admission');
     expect(normalizedSource).toContain('x-applik8s-internal-invocation');
+    expect(normalizedSource).toContain('applik8s-ai-operation-placement-error');
     expect(normalizedSource).toContain(
       'Agent execution admission is required.',
     );
@@ -485,10 +640,34 @@ describe('generated application AI agents', () => {
     expect(generatedSource).toContain(
       'createApplicationAIAgentConversationPersistence',
     );
+    expect(generatedSource).toContain('applicationAgentDurableScope');
+    expect(generatedSource).toContain('contract.scope.name');
+    expect(generatedSource).toContain(
+      'applicationAIConversationPrincipalScope(principal, trustedContext ?? {})',
+    );
     expect(generatedSource).toContain('async function recordUsageFact');
     expect(generatedSource).toContain('applik8s_usage_facts');
     expect(generatedSource).toContain('await recordUsageFact(reservation, usage)');
+    expect(generatedSource).toContain(
+      'contract.usage.nativeRelational.access?.setting',
+    );
+    expect(generatedSource).toContain(
+      "'SELECT set_config($1, $2, true)'",
+    );
+    expect(generatedSource).toContain(
+      '[accessSetting, reservation.principalScope]',
+    );
+    expect(generatedSource).toContain('protocolRunId: reservation.runId');
+    expect(generatedSource).toContain('protocolRunId: runId');
+    expect(generatedSource).toContain("confidence: 'calculated'");
+    expect(generatedSource).toContain('terminal.estimatedInputTokens');
     expect(generatedSource).toContain('await conversationStore.prepare()');
+    expect(generatedSource).toContain(
+      "access: { setting: contract.conversationAccess.setting }",
+    );
+    expect(generatedSource).toContain(
+      '"conversationAccess":{"setting":"applik8s.context.agentConversationScope"}',
+    );
     expect(generatedSource).toContain('persistence: conversationPersistence');
     expect(generatedSource).toContain(
       'applicationCausalPrincipalContext',
@@ -496,6 +675,9 @@ describe('generated application AI agents', () => {
     expect(generatedSource).toContain(
       'causalPrincipalId: causalPrincipal.id',
     );
+    expect(generatedSource).toContain("kind: 'agent'");
+    expect(generatedSource).toContain('threadId: body.threadId');
+    expect(generatedSource).toContain('runId: body.runId');
     expect(generatedSource).toContain(
       '...causalPrincipal.grantIds',
     );

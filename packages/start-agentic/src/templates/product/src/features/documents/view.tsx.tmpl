@@ -1,0 +1,99 @@
+import { Link } from '@tanstack/react-router';
+import { type FormEvent, useState } from 'react';
+import { Document, DocumentList } from '../../application';
+import {
+  Badge,
+  Button,
+  Card,
+  EmptyState,
+  Input,
+  PageHeader,
+  RouteState,
+  Select,
+  Skeleton,
+  Textarea,
+} from '../../components/ui';
+import { documentExcerpt } from '../../components/markdown-document';
+
+type DocumentState = 'draft' | 'in-review' | 'approved' | 'published' | 'archived';
+
+export function DocumentsView() {
+  const [search, setSearch] = useState('');
+  const [state, setState] = useState<DocumentState | ''>('');
+  const [creating, setCreating] = useState(false);
+  const [title, setTitle] = useState('');
+  const [body, setBody] = useState('');
+  const [notice, setNotice] = useState<string>();
+  const documents = DocumentList({
+    ...(search.trim() ? { search: search.trim() } : {}),
+    ...(state ? { state } : {}),
+  }).useQuery();
+  const create = Document.create.useMutation();
+
+  async function createDocument(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!title.trim() || !body.trim()) return;
+    try {
+      await create({
+        title: title.trim(),
+        body: body.trim(),
+        summary: body.trim().replace(/[#*_`>\n]+/g, ' ').slice(0, 180),
+        tags: [],
+      });
+      setTitle('');
+      setBody('');
+      setCreating(false);
+      setNotice('Document created. It is ready to edit, review, or continue with the assistant.');
+      await documents.refresh();
+    } catch {
+      setNotice('The document was not created. Your draft is still here; try again in a moment.');
+    }
+  }
+
+  return (
+    <div>
+      <PageHeader
+        eyebrow="Workspace knowledge"
+        title="Documents"
+        description="Create, refine, review, and publish the durable work your team and agents produce together."
+        action={<Button type="button" onClick={() => setCreating(value => !value)}>{creating ? 'Close editor' : 'New document'}</Button>}
+      />
+
+      {creating ? (
+        <Card className="mb-6 border-emerald-200 bg-emerald-50/60">
+          <form onSubmit={createDocument} className="grid gap-4">
+            <div><p className="eyebrow">New document</p><h2 className="mt-1 text-xl font-semibold">Start with a useful shape</h2></div>
+            <label className="text-sm font-medium">Title<Input className="mt-2" value={title} onChange={event => setTitle(event.currentTarget.value)} placeholder="Launch plan" autoFocus /></label>
+            <label className="text-sm font-medium">Content<Textarea className="mt-2 min-h-52" value={body} onChange={event => setBody(event.currentTarget.value)} placeholder="# Launch plan\n\n## Objective\n..." /></label>
+            <div className="flex gap-2"><Button type="submit" disabled={create.pending || !title.trim() || !body.trim()}>{create.pending ? 'Creating…' : 'Create document'}</Button><Button type="button" variant="secondary" onClick={() => setCreating(false)}>Cancel</Button></div>
+          </form>
+        </Card>
+      ) : null}
+
+      <Card className="mb-6">
+        <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_13rem]">
+          <label className="text-sm font-medium">Search<Input className="mt-2" value={search} onChange={event => setSearch(event.currentTarget.value)} placeholder="Title, summary, or content" /></label>
+          <label className="text-sm font-medium">Status<Select className="mt-2" value={state} onChange={event => setState(event.currentTarget.value as DocumentState | '')}><option value="">All active work</option><option value="draft">Draft</option><option value="in-review">In review</option><option value="approved">Approved</option><option value="published">Published</option><option value="archived">Archived</option></Select></label>
+        </div>
+      </Card>
+
+      {notice ? <p role="status" className="mb-4 text-sm text-stone-600">{notice}</p> : null}
+      {documents.phase === 'error' ? <RouteState tone="warning" title="Documents are temporarily unavailable" description="Your work is safe. Try loading Documents again." action={<Button variant="secondary" onClick={() => void documents.refresh()}>Retry</Button>} /> : null}
+      {documents.data === undefined && documents.phase !== 'error' ? <div className="grid gap-4 sm:grid-cols-2"><Skeleton className="h-48" /><Skeleton className="h-48" /></div> : null}
+      {documents.data?.length === 0 ? <EmptyState title={search || state ? 'No documents match these filters' : 'Create your first work product'} description={search || state ? 'Adjust the search or status filter.' : 'Start a document here, or ask the assistant to produce one from a goal.'} action={!search && !state ? <Button asChild><Link to="/app">Ask the assistant</Link></Button> : undefined} /> : null}
+      <div className="grid gap-4 md:grid-cols-2">
+        {documents.data?.map(document => (
+          <Link key={document.id} to="/app/documents/$documentId" params={{ documentId: document.id }} className="text-stone-950 no-underline">
+            <Card className="h-full transition hover:-translate-y-0.5 hover:border-emerald-300 hover:shadow-md">
+              <div className="flex flex-wrap items-center justify-between gap-2"><Badge tone={document.state === 'approved' || document.state === 'published' ? 'success' : document.state === 'in-review' ? 'warning' : 'info'}>{document.state}</Badge><span className="text-xs text-stone-500">v{document.version} · {new Date(document.updatedAt).toLocaleDateString()}</span></div>
+              <h2 className="mt-4 text-lg font-semibold">{document.title}</h2>
+              <p className="mt-2 line-clamp-3 text-sm leading-6 text-stone-600">{document.summary || documentExcerpt(document.body)}</p>
+              {document.tags.length > 0 ? <div className="mt-4 flex flex-wrap gap-2">{document.tags.map(tag => <Badge key={tag}>{tag}</Badge>)}</div> : null}
+              <p className="mt-5 text-xs text-stone-500">{document.sourceConversationId ? 'Created by your workspace agent' : 'Created by a workspace member'}</p>
+            </Card>
+          </Link>
+        ))}
+      </div>
+    </div>
+  );
+}

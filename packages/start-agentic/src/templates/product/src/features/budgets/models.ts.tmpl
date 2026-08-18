@@ -1,0 +1,32 @@
+import { module } from '@applik8s/applik8s';
+import { application } from '../../app';
+import {
+  AIUsageBudgetLedger as AIUsageBudgetLedgerTable,
+  AIUsageReservation as AIUsageReservationTable,
+  WorkspaceBudgetPolicy as WorkspaceBudgetPolicyTable,
+} from '../workspaces/schema';
+
+const workspaceAIUsageBudgetModels = module(
+  'workspace-ai-usage-budget-models',
+  {
+    schema: {
+      WorkspaceBudgetPolicy: WorkspaceBudgetPolicyTable,
+      AIUsageBudgetLedger: AIUsageBudgetLedgerTable,
+      AIUsageReservation: AIUsageReservationTable,
+    },
+  },
+  () => ({
+    WorkspaceBudgetPolicy: WorkspaceBudgetPolicyTable,
+    AIUsageBudgetLedger: AIUsageBudgetLedgerTable,
+    AIUsageReservation: AIUsageReservationTable,
+  }),
+);
+
+export const WorkspaceAIUsageBudgetModels = application.include(
+  workspaceAIUsageBudgetModels,
+);
+export const {
+  WorkspaceBudgetPolicy,
+  AIUsageBudgetLedger,
+  AIUsageReservation,
+} = WorkspaceAIUsageBudgetModels;

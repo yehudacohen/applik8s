@@ -1000,13 +1000,13 @@ export async function createPostgresApplicationSearchRuntime<
           predicates,
           parameters,
           admission.where,
-          (value) => transaction.json(value),
+          postgresApplicationSearchFilterJsonText,
         );
         appendIndexedWhere(
           predicates,
           parameters,
           request.where ?? {},
-          (value) => transaction.json(value),
+          postgresApplicationSearchFilterJsonText,
         );
         parameters.push(maximumCandidateRows + 1);
         const limitParameter = parameters.length;
@@ -1387,7 +1387,7 @@ function appendIndexedWhere<TDocument extends object>(
     readonly [TKey in keyof TDocument]?:
       ApplicationSearchComparison<TDocument[TKey]>;
   },
-  encodeJson: (value: unknown) => unknown,
+  encodeJson: (value: unknown) => string,
 ): void {
   for (const [field, comparison] of Object.entries(where)) {
     const equality = indexedEqualityValues(
@@ -1405,7 +1405,7 @@ function appendIndexedWhere<TDocument extends object>(
       const valueParameter = parameters.length;
       return `document @> jsonb_build_object(
         $${fieldParameter}::text,
-        $${valueParameter}::jsonb
+        $${valueParameter}::text::jsonb
       )`;
     });
     predicates.push(
@@ -1414,6 +1414,19 @@ function appendIndexedWhere<TDocument extends object>(
         : `(${alternatives.join(' OR ')})`,
     );
   }
+}
+
+/** @internal Exported for provider-boundary regression coverage. */
+export function postgresApplicationSearchFilterJsonText(
+  value: unknown,
+): string {
+  const encoded = JSON.stringify(normalizeJsonValue(value));
+  if (encoded === undefined) {
+    throw new Error(
+      'Search equality filters must contain JSON-serializable values.',
+    );
+  }
+  return encoded;
 }
 
 function indexedEqualityValues(

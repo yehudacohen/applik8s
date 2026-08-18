@@ -116,6 +116,7 @@ export const applicationConversationRuns = model(
       mode: 'string',
     }).notNull().defaultNow(),
     terminalReason: field.text('terminal_reason'),
+    runtimeState: field.jsonb('runtime_state'),
   },
   (table) => [
     index('applik8s_conversation_runs_scope_status_idx').on(

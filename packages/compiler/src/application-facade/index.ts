@@ -23,6 +23,7 @@ export interface ApplicationFacadeModelManifest {
 export interface ApplicationFacadeObjectStoreManifest {
   readonly name: string;
   readonly exportName: string;
+  readonly exportNames: readonly string[];
   readonly operations: readonly ApplicationFacadeOperationManifest[];
 }
 
@@ -58,6 +59,7 @@ export function applicationFacadeManifest(
     readonly modelExports?: readonly { readonly name: string; readonly modelName: string }[];
     readonly signalExports?: readonly { readonly name: string; readonly signalId: string }[];
     readonly agentExports?: readonly { readonly name: string; readonly agentName: string }[];
+    readonly objectStoreExports?: readonly { readonly name: string; readonly objectStoreName: string }[];
   } = {},
 ): ApplicationFacadeManifest {
   const exportNamesByOperation = new Map<string, string[]>();
@@ -71,6 +73,14 @@ export function applicationFacadeManifest(
   const exportedModels = new Set(
     (options.modelExports ?? []).map((model) => model.modelName),
   );
+  const objectStoreExports = new Map<string, string[]>();
+  for (const exported of options.objectStoreExports ?? []) {
+    assertJavaScriptExportName(exported.name, `Application object store ${exported.objectStoreName}`);
+    objectStoreExports.set(exported.objectStoreName, [
+      ...(objectStoreExports.get(exported.objectStoreName) ?? []),
+      exported.name,
+    ]);
+  }
   const nodes = new Map(graph.nodes.map((node) => [node.id, node]));
   const gateways = graph.nodes.filter(
     (node): node is ApplicationGatewayNode => node.kind === 'gateway',
@@ -223,6 +233,7 @@ export function applicationFacadeManifest(
       return {
         name: node.name,
         exportName,
+        exportNames: [...new Set([exportName, ...(objectStoreExports.get(node.name) ?? [])])],
         operations: ['createUpload', 'completeUpload', 'createDownload'].map((name) => ({
           id: `objectStore.${node.name}.${name}`,
           name,
@@ -369,6 +380,11 @@ export function generatedApplicationFacadeSource(
     assertUniqueFacadeExport(emittedExports, store.exportName, `object store ${store.name}`);
     const operations = store.operations.map((operation) => `${JSON.stringify(operation.name)}: ${operationSource(store.name, operation, target)}`);
     lines.push(`export const ${store.exportName} = Object.freeze({ name: ${JSON.stringify(store.name)}, ${operations.join(', ')} });`);
+    for (const alias of store.exportNames) {
+      if (alias === store.exportName) continue;
+      assertUniqueFacadeExport(emittedExports, alias, `object store ${store.name}`);
+      lines.push(`export const ${alias} = ${store.exportName};`);
+    }
   }
   for (const signal of manifest.signals) {
     const variable = javascriptExportName(`signal-${signal.id}`);

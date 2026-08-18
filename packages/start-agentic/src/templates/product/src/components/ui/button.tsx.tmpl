@@ -1,0 +1,34 @@
+import { Slot } from 'radix-ui';
+import { cva, type VariantProps } from 'class-variance-authority';
+import type { ButtonHTMLAttributes } from 'react';
+import { cn } from '#lib/utils';
+
+export const buttonVariants = cva(
+  'inline-flex min-h-10 shrink-0 items-center justify-center gap-2 whitespace-nowrap rounded-xl px-4 py-2 text-sm font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600 focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:size-4',
+  {
+    variants: {
+      variant: {
+        default: 'bg-emerald-800 text-white shadow-sm hover:bg-emerald-900 dark:bg-emerald-600 dark:text-stone-950 dark:hover:bg-emerald-500',
+        primary: 'bg-emerald-800 text-white shadow-sm hover:bg-emerald-900 dark:bg-emerald-600 dark:text-stone-950 dark:hover:bg-emerald-500',
+        destructive: 'bg-red-700 text-white hover:bg-red-800',
+        danger: 'bg-red-700 text-white hover:bg-red-800',
+        outline: 'border border-stone-200 bg-white text-stone-800 hover:bg-stone-50 dark:border-stone-700 dark:bg-stone-900 dark:text-stone-100 dark:hover:bg-stone-800',
+        secondary: 'border border-stone-200 bg-white text-stone-800 hover:bg-stone-50 dark:border-stone-700 dark:bg-stone-900 dark:text-stone-100 dark:hover:bg-stone-800',
+        ghost: 'text-stone-700 hover:bg-stone-100 dark:text-stone-200 dark:hover:bg-stone-800',
+        link: 'text-emerald-800 underline-offset-4 hover:underline dark:text-emerald-300',
+      },
+      size: {
+        default: 'h-10 px-4 py-2',
+        sm: 'h-9 rounded-lg px-3',
+        lg: 'h-11 rounded-xl px-6',
+        icon: 'size-10 p-0',
+      },
+    },
+    defaultVariants: { variant: 'default', size: 'default' },
+  },
+);
+
+export function Button({ className, variant, size, asChild = false, ...props }: ButtonHTMLAttributes<HTMLButtonElement> & VariantProps<typeof buttonVariants> & { readonly asChild?: boolean }) {
+  const Component = asChild ? Slot.Root : 'button';
+  return <Component data-slot="button" className={cn(buttonVariants({ variant, size }), className)} {...props} />;
+}

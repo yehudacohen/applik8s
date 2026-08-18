@@ -1,151 +1,486 @@
 import { AI } from '@applik8s/ai';
-import { applicationCausalPrincipalContext, module } from '@applik8s/applik8s';
+import {
+  selectApplicationTanStackTools,
+  withApplicationTanStackPersistence,
+} from '@applik8s/ai-tanstack';
+import { module } from '@applik8s/applik8s';
+import {
+  applicationDocumentComments as DocumentCommentTable,
+  type ApplicationDocumentListInput,
+  type ApplicationDocumentViewContext,
+  applicationDocumentDetailSchema as DocumentDetailSchema,
+  applicationDocumentRevisions as DocumentRevisionTable,
+  applicationDocuments as DocumentTable,
+  applicationDocumentStateSchema as DocumentState,
+  applicationDocumentSummarySchema as DocumentSummary,
+  documents as maintainedDocuments,
+  listApplicationDocuments,
+  loadApplicationDocument,
+} from '@applik8s/documents';
 import { type } from 'arktype';
-import { chat } from '@tanstack/ai';
-import { and, desc, eq } from 'drizzle-orm';
+import { chat, combineStrategies, maxIterations } from '@tanstack/ai';
 import { application } from '../../app';
+import { ArtifactObjects, Artifacts } from '../../modules';
 import { database, inference } from '../../providers';
-import { Document as DocumentTable } from './schema';
+import { ActiveAgentProfile } from '../agents/model';
+import { KnowledgeSearch } from '../knowledge/model';
+import { WorkspaceId } from '../workspaces/model';
+import {
+  agenticWorkspaceScope,
+  selectedAgenticWorkspaceId,
+} from '../../workspace-scope';
+import { ReserveWorkspaceAIRun } from '../billing';
+import { applicationKnowledgeContext, latestKnowledgeQuery } from './assistant-query';
 
-const documents = module(
-  'documents',
-  DocumentTable,
-  (application) => {
+async function listDocuments(
+  input: ApplicationDocumentListInput,
+  context: ApplicationDocumentViewContext,
+) {
+  return listApplicationDocuments(input, context, {
+    database,
+    scope: agenticWorkspaceScope,
+  });
+}
+
+async function loadDocument(
+  input: { readonly id: string },
+  context: ApplicationDocumentViewContext,
+) {
+  return loadApplicationDocument(input, context, {
+    database,
+    scope: agenticWorkspaceScope,
+  });
+}
+
+const documentWorkspace = module('document-workspace', {},
+  currentApplication => {
+    currentApplication.include(maintainedDocuments);
     const DocumentList = DocumentTable.view(
       {
-        input: type({}),
-        output: type({
-          id: 'string',
-          ownerPrincipalId: 'string',
-          createdByPrincipalId: 'string',
-          body: 'string',
-          createdAt: 'string',
-        }).array(),
+        input: type({
+          'search?': 'string',
+          'state?': DocumentState,
+        }),
+        output: DocumentSummary.array(),
         database,
         authorize: ({ principal }) => principal.id.length > 0,
+        budgets: { timeoutMs: 2_000, maxRows: 200, maxResultBytes: 768_000 },
       },
-      async function listDocuments(_input, context) {
-        return context.database(database)
-          .select({
-            id: DocumentTable.id,
-            ownerPrincipalId: DocumentTable.ownerPrincipalId,
-            createdByPrincipalId: DocumentTable.createdByPrincipalId,
-            body: DocumentTable.body,
-            createdAt: DocumentTable.createdAt,
-          })
-          .from(DocumentTable)
-          .where(eq(DocumentTable.ownerPrincipalId, context.principal.id))
-          .orderBy(desc(DocumentTable.createdAt))
-          .limit(100);
-      },
+      listDocuments,
     );
+
     const DocumentDetail = DocumentTable.view(
       {
         input: type({ id: 'string' }),
-        output: type({
-          id: 'string',
-          ownerPrincipalId: 'string',
-          createdByPrincipalId: 'string',
-          body: 'string',
-          createdAt: 'string',
-        }).or('null'),
+        output: DocumentDetailSchema.or('null'),
         database,
+        reads: [DocumentRevisionTable, DocumentCommentTable],
         authorize: ({ principal }) => principal.id.length > 0,
+        budgets: { timeoutMs: 2_000, maxRows: 100, maxResultBytes: 512_000 },
       },
-      async function loadDocument(input, context) {
-        const [document] = await context.database(database)
-          .select({
-            id: DocumentTable.id,
-            ownerPrincipalId: DocumentTable.ownerPrincipalId,
-            createdByPrincipalId: DocumentTable.createdByPrincipalId,
-            body: DocumentTable.body,
-            createdAt: DocumentTable.createdAt,
-          })
-          .from(DocumentTable)
-          .where(and(
-            eq(DocumentTable.id, input.id),
-            eq(DocumentTable.ownerPrincipalId, context.principal.id),
-          ))
-          .limit(1);
-        return document ?? null;
+      loadDocument,
+    );
+
+    DocumentTable.create.beforeCommit(
+      { history: true },
+      async function protectDocumentCreation(document, input, context) {
+        if (!context.principal) throw new Error('Document creation requires an admitted principal.');
+        if (
+          input.principalScope !== undefined
+          || input.createdByPrincipalId !== undefined
+          || input.version !== undefined
+          || input.revision !== undefined
+          || input.createdAt !== undefined
+          || input.updatedAt !== undefined
+          || input.state !== undefined
+          || input.publishedAt !== undefined
+          || input.archivedAt !== undefined
+        ) throw new Error('Document ownership, provenance, revision, and lifecycle timestamps are server-owned.');
+        const assistant = context.principal.kind === 'execution'
+          && context.principal.serviceIdentity?.subject === 'workspace-assistant';
+        if (input.sourceConversationId !== undefined || input.sourceRunId !== undefined) {
+          throw new Error('Conversation and run provenance are framework-owned.');
+        }
+        const agentExecution = assistant
+          && context.principal.kind === 'execution'
+          && context.principal.executionContext?.kind === 'agent'
+          ? context.principal.executionContext
+          : undefined;
+        if (assistant && !agentExecution) throw new Error('Agent-authored documents require admitted execution provenance.');
+        if (document.value.createdByPrincipalId !== context.principal.id) {
+          throw new Error('Document creator provenance must match the acting principal.');
+        }
+        document.patch({
+          spec: {
+            principalScope: agenticWorkspaceScope(context),
+            ...(agentExecution
+              ? {
+                  sourceConversationId: agentExecution.threadId,
+                  sourceRunId: agentExecution.runId,
+                }
+              : {}),
+          },
+        });
+        context.send(DocumentRevisionTable.create, {
+          id: `${document.value.id}:1`,
+          documentId: document.value.id,
+          revision: 1,
+          title: document.value.title,
+          body: document.value.body,
+          summary: document.value.summary,
+          tags: document.value.tags,
+          state: document.value.state,
+        }, { targetKey: `${document.value.id}:1` });
       },
     );
-    DocumentTable.create.beforeCommit({ history: true }, async (document, input, context) => {
-      if (!context.principal) throw new Error('Document creation requires an admitted principal.');
-      if (
-        input.ownerPrincipalId !== undefined
-        || input.createdByPrincipalId !== undefined
-        || input.createdAt !== undefined
-      ) throw new Error('Document ownership, provenance, and timestamps are server-owned.');
-      const causal = applicationCausalPrincipalContext(context.principal);
-      if (document.value.ownerPrincipalId !== causal.id) {
-        throw new Error('The document owner must match the admitted causal principal.');
-      }
-      if (document.value.createdByPrincipalId !== context.principal.id) {
-        throw new Error('Document creator provenance must match the acting principal.');
-      }
-    });
-    DocumentTable.update.beforeCommit({ history: true }, async (document, input, context) => {
-      if (!context.principal) throw new Error('Document updates require an admitted principal.');
-      if (
-        'id' in input.patch
-        || 'ownerPrincipalId' in input.patch
-        || 'createdByPrincipalId' in input.patch
-        || 'createdAt' in input.patch
-      ) throw new Error('Document identity, ownership, provenance, and timestamps are immutable.');
-      if (document.value.ownerPrincipalId !== applicationCausalPrincipalContext(context.principal).id) {
-        throw new Error('Only the document owner, or an admitted execution acting for that owner, may update it.');
-      }
-    });
-    DocumentTable.delete.beforeCommit({ history: true }, async (document, _input, context) => {
-      if (!context.principal) throw new Error('Document deletion requires an admitted principal.');
-      if (document.value.ownerPrincipalId !== applicationCausalPrincipalContext(context.principal).id) {
-        throw new Error('Only the document owner, or an admitted execution acting for that owner, may delete it.');
-      }
-    });
-    const Authenticated = application.role('authenticated');
-    const AssistantIdentity = application.serviceIdentity('workspace-assistant');
+
+    DocumentTable.update.beforeCommit(
+      { history: true },
+      async function protectDocumentUpdate(document, input, context) {
+        if (!context.principal) throw new Error('Document updates require an admitted principal.');
+        if (
+          'id' in input.patch
+          || 'principalScope' in input.patch
+          || 'createdByPrincipalId' in input.patch
+          || 'version' in input.patch
+          || 'revision' in input.patch
+          || 'createdAt' in input.patch
+          || 'updatedAt' in input.patch
+          || 'publishedAt' in input.patch
+          || 'archivedAt' in input.patch
+        ) throw new Error('Document identity, ownership, provenance, revision, and update time are server-owned.');
+        const assistant = context.principal.kind === 'execution'
+          && context.principal.serviceIdentity?.subject === 'workspace-assistant';
+        if ('sourceConversationId' in input.patch || 'sourceRunId' in input.patch) {
+          throw new Error('Conversation and run provenance are framework-owned.');
+        }
+        if (document.value.principalScope !== agenticWorkspaceScope(context)) {
+          throw new Error('The document is outside the admitted workspace scope.');
+        }
+        if (!Number.isSafeInteger(document.value.version) || document.value.version < 1) {
+          throw new Error('The document version is not a valid positive integer.');
+        }
+        const requestedState = input.patch.state;
+        const decisionWorker = context.principal.kind === 'execution'
+          && context.principal.serviceIdentity?.subject === 'starter-decision-worker';
+        const managesLifecycle = context.principal.roles?.some(role =>
+          role === 'workspace-owner'
+          || role === 'workspace-administrator'
+          || role === 'application-operator'
+        ) === true;
+        const contentFields = ['title', 'body', 'summary', 'tags', 'contentType'] as const;
+        const changesContent = contentFields.some(field => field in input.patch);
+        if (changesContent && document.value.state !== 'draft') {
+          throw new Error('Only draft documents may be edited. Return the document to draft through its lifecycle first.');
+        }
+        if (requestedState !== undefined && requestedState !== document.value.state) {
+          const allowed = decisionWorker
+            ? document.value.state === 'in-review'
+              && (requestedState === 'approved' || requestedState === 'draft')
+            : requestedState === 'in-review'
+              ? document.value.state === 'draft'
+              : requestedState === 'published'
+                ? document.value.state === 'approved' && managesLifecycle
+                : requestedState === 'archived'
+                  ? managesLifecycle && document.value.state !== 'archived'
+                  : requestedState === 'draft'
+                    ? managesLifecycle && document.value.state === 'archived'
+                    : false;
+          if (!allowed) {
+            throw new Error(`Document lifecycle transition ${document.value.state} -> ${requestedState} is not authorized.`);
+          }
+          if (changesContent) {
+            throw new Error('Document lifecycle transitions and content edits must be committed separately.');
+          }
+        }
+        const nextVersion = document.value.version + 1;
+        document.patch({
+          spec: {
+            version: nextVersion,
+            updatedAt: context.now,
+            ...(requestedState === 'published' ? { publishedAt: context.now } : {}),
+            ...(requestedState === 'archived' ? { archivedAt: context.now } : {}),
+            ...(requestedState === 'draft' && document.value.state === 'archived'
+              ? { archivedAt: null }
+              : {}),
+            ...(assistant
+              && context.principal.kind === 'execution'
+              && context.principal.executionContext?.kind === 'agent'
+              ? {
+                  sourceConversationId: context.principal.executionContext.threadId,
+                  sourceRunId: context.principal.executionContext.runId,
+                }
+              : {}),
+          },
+        });
+        context.send(DocumentRevisionTable.create, {
+          id: `${document.value.id}:${nextVersion}`,
+          documentId: document.value.id,
+          revision: nextVersion,
+          title: document.value.title,
+          body: document.value.body,
+          summary: document.value.summary,
+          tags: document.value.tags,
+          state: document.value.state,
+        }, { targetKey: `${document.value.id}:${nextVersion}` });
+      },
+    );
+
+    DocumentTable.delete.beforeCommit(
+      { history: true },
+      async function protectDocumentDeletion(document, _input, context) {
+        if (!context.principal) throw new Error('Document deletion requires an admitted principal.');
+        if (document.value.principalScope !== agenticWorkspaceScope(context)) {
+          throw new Error('The document is outside the admitted workspace scope.');
+        }
+      },
+    );
+
+    DocumentCommentTable.create.beforeCommit(
+      { transaction: { models: [DocumentTable] }, history: true },
+      async function protectDocumentCommentCreation(comment, input, context) {
+        if (!context.principal) throw new Error('Document comments require an admitted principal.');
+        if (
+          input.principalScope !== undefined
+          || input.createdByPrincipalId !== undefined
+          || input.resolvedAt !== undefined
+          || input.resolvedByPrincipalId !== undefined
+          || input.createdAt !== undefined
+          || input.updatedAt !== undefined
+          || input.revision !== undefined
+        ) throw new Error('Comment ownership, resolution, and timestamps are server-owned.');
+        const document = await context.models.Document?.get({ id: input.documentId });
+        if (!document || Reflect.get(document.spec, 'principalScope') !== agenticWorkspaceScope(context)) {
+          throw new Error('The comment target is outside the admitted workspace scope.');
+        }
+        if (!input.body.trim()) throw new Error('A comment cannot be empty.');
+        comment.patch({ spec: { principalScope: agenticWorkspaceScope(context) } });
+      },
+    );
+
+    DocumentCommentTable.update.beforeCommit(
+      { history: true },
+      async function protectDocumentCommentUpdate(comment, input, context) {
+        if (!context.principal || comment.value.principalScope !== agenticWorkspaceScope(context)) {
+          throw new Error('The comment is outside the admitted workspace scope.');
+        }
+        if (
+          'id' in input.patch
+          || 'documentId' in input.patch
+          || 'principalScope' in input.patch
+          || 'createdByPrincipalId' in input.patch
+          || 'createdAt' in input.patch
+          || 'updatedAt' in input.patch
+          || 'revision' in input.patch
+          || 'resolvedByPrincipalId' in input.patch
+        ) throw new Error('Comment identity, ownership, and audit fields are server-owned.');
+        if ('body' in input.patch && !input.patch.body?.trim()) throw new Error('A comment cannot be empty.');
+        const resolving = 'resolvedAt' in input.patch && input.patch.resolvedAt !== null;
+        comment.patch({
+          spec: {
+            updatedAt: context.now,
+            resolvedByPrincipalId: resolving ? context.principal.id : null,
+          },
+        });
+      },
+    );
+
+    const Authenticated = currentApplication.role('authenticated');
+    const AssistantIdentity = currentApplication.serviceIdentity('workspace-assistant');
     const FastModel = AI.model('fast', {
       inference,
       capabilities: [AI.chat, AI.tools, AI.streaming],
     });
-    const WorkspaceAssistant = application.agent(
+    const WorkspaceAssistant = currentApplication.agent(
       'workspace-assistant',
       {
         identity: AssistantIdentity,
+        scope: WorkspaceId,
         model: FastModel,
-        instructions: 'Help the user create and refine useful workspace documents. Use the admitted document tools whenever the user asks you to create or update durable work.',
+        instructions: [
+          'You are a workspace copilot that produces substantive, editable work rather than chat-only answers.',
+          'When asked to create a deliverable, call Document.create with a useful title, Markdown body, concise summary, and tags.',
+          'When asked to refine existing work, call Document.update and preserve the document identity.',
+          'Only claim that work is complete after the admitted document tool succeeds.',
+        ].join(' '),
         tools: [DocumentTable.create, DocumentTable.update],
+        budgets: {
+          maximumInputTokens: 64_000,
+          maximumOutputTokens: 8_000,
+          maximumCostMicrounits: 500_000,
+          timeoutMs: 120_000,
+        },
       },
-      async (request, context) => chat({
-        adapter: context.tanstack.adapter,
-        messages: request.messages,
-        threadId: request.threadId,
-        runId: context.runId,
-        tools: context.tanstack.tools,
-        context: context.tanstack.execution,
-      }),
+      async (request, context) => {
+        const workspaceId = selectedAgenticWorkspaceId(context);
+        // Personal scope is a real first-run product surface, not a placeholder
+        // workspace. Shared workspace runs reserve against the workspace budget;
+        // personal runs remain metered through UsageFact without inventing a
+        // tenancy record or requiring an otherwise meaningless workspace.
+        if (workspaceId) {
+          await ReserveWorkspaceAIRun({
+            id: context.runId,
+            workspaceId,
+            maximumTokens: 72_000,
+            maximumCostMicrounits: 500_000,
+          });
+        }
+        const profile = await ActiveAgentProfile({ slug: 'workspace-assistant' });
+        const knowledgeQuery = latestKnowledgeQuery(request.messages);
+        const knowledgeResult = knowledgeQuery
+          ? await KnowledgeSearch.search({
+              text: knowledgeQuery,
+              where: {
+                principalScope: agenticWorkspaceScope(context),
+                state: 'ready',
+                ...(profile?.knowledgeSourceIds.length
+                  ? { id: { in: profile.knowledgeSourceIds } }
+                  : {}),
+              },
+              limit: 8,
+            })
+          : undefined;
+        const knowledge = knowledgeResult?.hits.map(hit => hit.document) ?? [];
+        const knowledgeContext = applicationKnowledgeContext(knowledge);
+        const toolCatalog = {
+          'Document.create': DocumentTable.create,
+          'Document.update': DocumentTable.update,
+        } as const;
+        const systemMessages = [
+          ...(profile ? [{
+              id: `agent-profile:${profile.id}:${profile.revision}`,
+              role: 'system' as const,
+              parts: [{ type: 'text' as const, content: profile.instructions }],
+            }] : []),
+          ...(profile ? [{
+            id: `agent-output-contract:${profile.id}:${profile.revision}`,
+            role: 'system' as const,
+            parts: [{ type: 'text' as const, content: `Output contract: ${profile.outputContract}` }],
+          }] : []),
+          ...(knowledgeContext ? [{
+            id: `workspace-knowledge:${context.runId}`,
+            role: 'system' as const,
+            parts: [{
+              type: 'text' as const,
+              content: `Use the following relevance-ranked, admitted workspace knowledge when relevant. Cite it by title as [Source: title].\n\n${knowledgeContext}`,
+            }],
+          }] : []),
+        ];
+        const memoryWindow = profile?.memoryWindowMessages ?? 100;
+        const messages = [...systemMessages, ...request.messages.slice(-memoryWindow)];
+        return chat({
+          adapter: context.tanstack.adapter,
+          messages,
+          threadId: request.threadId,
+          runId: context.runId,
+          tools: profile
+            ? selectApplicationTanStackTools(
+                context.tanstack.tools,
+                toolCatalog,
+                profile.tools,
+              )
+            : context.tanstack.tools,
+          agentLoopStrategy: combineStrategies([
+            maxIterations(profile?.maximumTurns ?? 5),
+            ({ toolCallCount }) => toolCallCount < (profile?.maximumToolCalls ?? 8),
+          ]),
+          middleware: [
+            withApplicationTanStackPersistence(context.tanstack.persistence),
+          ],
+          context: context.tanstack.execution,
+        });
+      },
     );
 
-    Authenticated.can(DocumentTable.create, DocumentTable.update, DocumentTable.delete, DocumentList, DocumentDetail);
-    AssistantIdentity.can(DocumentTable.create, DocumentTable.update);
+    const DocumentPublicationArtifacts = DocumentTable.on.update(
+      {
+        processor: { replicas: 1, concurrency: 4 },
+        retry: {
+          maxAttempts: 8,
+          initialDelayMs: 250,
+          maxDelayMs: 15_000,
+          deadLetter: true,
+        },
+        budgets: { timeoutMs: 30_000, maxInputBytes: 1_000_000 },
+      },
+      async function publishDocumentArtifact(updated, context) {
+        if (updated.current.state !== 'published' || updated.previous.state === 'published') return;
+        const body = documentArtifactBody(updated.current.title, updated.current.body);
+        const objectKey = `documents/${updated.current.id}/versions/${updated.current.version}.md`;
+        const size = new TextEncoder().encode(body).byteLength;
+        const existing = await ArtifactObjects.head(objectKey);
+        if (existing && (
+          existing.contentType !== 'text/markdown'
+          || existing.size !== size
+        )) {
+          throw new Error('Published document artifact identity already contains different content.');
+        }
+        const stored = existing ?? await ArtifactObjects.put({
+            key: objectKey,
+            body,
+            contentType: 'text/markdown',
+});
+        await Artifacts.Artifact.create({
+          id: `${updated.current.id}:version:${updated.current.version}`,
+          principalScope: updated.current.principalScope,
+          kind: 'published-document',
+          mediaType: stored.contentType,
+          state: 'available',
+          store: stored.store,
+          objectKey: stored.key,
+          sha256: stored.sha256,
+          size,
+          ...(updated.current.sourceConversationId
+            ? { conversationId: updated.current.sourceConversationId }
+            : {}),
+          invocationId: context.idempotencyKey,
+          provenance: {
+            documentId: updated.current.id,
+            documentTitle: updated.current.title, documentRevision: String(updated.current.version),
+            publishedByPrincipalId: context.principal?.id ?? 'managed-execution',
+          },
+        });
+      },
+    );
+
+    Authenticated.can(
+      DocumentTable.create,
+      DocumentTable.update,
+      DocumentTable.delete,
+      DocumentCommentTable.create,
+      DocumentCommentTable.update,
+      DocumentList,
+      DocumentDetail,
+    );
+    AssistantIdentity.can(
+      DocumentTable.create,
+      DocumentTable.update,
+      ActiveAgentProfile,
+      KnowledgeSearch.search,
+      ReserveWorkspaceAIRun,
+    );
 
     return {
       Document: DocumentTable,
+      DocumentRevision: DocumentRevisionTable,
+      DocumentComment: DocumentCommentTable,
       DocumentList,
       DocumentDetail,
       WorkspaceAssistant,
+      DocumentPublicationArtifacts,
       Authenticated,
       AssistantIdentity,
     };
   },
 );
 
-export const {
-  Document,
-  DocumentList,
-  DocumentDetail,
-  WorkspaceAssistant,
-  Authenticated,
-  AssistantIdentity,
-} = application.include(documents);
+export const { Document, DocumentRevision, DocumentComment, DocumentList, DocumentDetail,
+  WorkspaceAssistant, DocumentPublicationArtifacts, Authenticated,
+  AssistantIdentity } = application.include(documentWorkspace);
+
+function documentArtifactBody(title: string, body: string): string {
+  const firstHeading = body.match(/^\s*#\s+(.+)$/mu)?.[1]?.trim();
+  return firstHeading?.localeCompare(title.trim(), undefined, { sensitivity: 'accent' }) === 0
+    ? body
+    : `# ${title}\n\n${body}`;
+}

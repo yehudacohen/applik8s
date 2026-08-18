@@ -11,10 +11,23 @@ import {
 import {
   handlerModuleFile,
   nestedCallbackBindingsSource,
+  taskServicePrincipalInput,
 } from '../src/application-workflows/source.js';
 import { compileTypeKroComposition, discoverApplicationGraph } from '../src/pipeline/index.js';
 
 describe('v0.5 generated workflow lowering', () => {
+  it('lowers a task service identity by its authored subject exactly once', () => {
+    expect(taskServicePrincipalInput({
+      id: 'identity:workflow-model-edit:service:record-editor',
+      kind: 'service',
+      issuer: 'applik8s://workflow-model-edit',
+      subject: 'record-editor',
+    }, 'catalog-v1')).toEqual({
+      id: 'record-editor',
+      authorizationVersion: 'catalog-v1',
+    });
+  });
+
   it('hydrates arbitrarily nested module model bindings without flattening their public shape', () => {
     expect(
       nestedCallbackBindingsSource([
@@ -121,6 +134,12 @@ export const workflowModelEdit = platform.composition;
         'createApplicationFunctionNativeEventHandle',
       );
       expect(generatedSource).toContain('functionNativeTaskBindings');
+      expect(generatedSource).toContain(
+        'function functionNativeTaskReadClients(handlerId, context)',
+      );
+      expect(generatedSource).toContain(
+        'metadata(context).trustedContext',
+      );
       expect(generatedSource).toContain(
         'const authoredHandler = handler_',
       );

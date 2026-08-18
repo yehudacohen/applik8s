@@ -109,7 +109,11 @@ describe('durable replay stream processor runtime', () => {
       completedBatchIds: [],
     };
 
-    await processorStore.prepare();
+    await Promise.all([
+      processorStore.prepare(),
+      processorStore.prepare(),
+      processorStore.prepare(),
+    ]);
     await processorStore.deadLetter('batch-worker', 'posts.published.v1', event, 2, 'failed');
     await processorStore.freezeBatchGroup?.('batch-worker', 'posts.published.v1', group);
     await processorStore.markBatchComplete?.(
@@ -121,6 +125,10 @@ describe('durable replay stream processor runtime', () => {
 
     expect(calls.some(({ query }) =>
       query.includes("SET batches = (batches #>> '{}')::jsonb"))).toBe(true);
+    expect(calls.filter(({ query }) =>
+      query.includes('CREATE TABLE IF NOT EXISTS applik8s_stream_processor_'))).toHaveLength(3);
+    expect(calls.filter(({ query }) =>
+      query.includes("SET batches = (batches #>> '{}')::jsonb"))).toHaveLength(1);
     const deadLetter = calls.find(({ query }) =>
       query.includes('INSERT INTO applik8s_stream_processor_dead_letters'));
     expect(deadLetter?.parameters[6]).toEqual(json(event.payload));

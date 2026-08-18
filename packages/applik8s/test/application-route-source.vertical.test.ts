@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { serializeApplicationCallback } from '../src/application-callback';
+import { serializeApplicationCallback as AliasedSerializeCallback } from '../src/application-callback';
 import { applicationCallbackSourceMatchesRuntime } from '../src/application-callback-source-equivalence';
 import { analyzeApplicationServerRouteSource, applicationRouteSourceDependencies, extractApplicationCallArgumentSource, extractApplicationCallObjectFunctionSource, unsupportedRouteFreeIdentifiers } from '../src/application-route-source';
 
@@ -187,6 +187,27 @@ class DeliveryError extends Error {
     )).toBe(false);
   });
 
+  it('normalizes Vite SSR import wrappers before closure discovery', () => {
+    const analysis = analyzeApplicationServerRouteSource(
+      'async () => __vite_ssr_import_7__.ArtifactObjects.head("source")',
+    );
+    expect(analysis.freeIdentifiers).toContain('ArtifactObjects');
+    expect(analysis.freeIdentifiers).not.toContain('__vite_ssr_import_7__');
+    expect(analysis.memberCalls).toContainEqual({
+      objectName: 'ArtifactObjects',
+      methodName: 'head',
+    });
+  });
+
+  it('recovers authored aliases from Vite SSR named-import wrappers', () => {
+    void AliasedSerializeCallback;
+    expect(applicationCallbackSourceMatchesRuntime(
+      'async input => AliasedSerializeCallback(input)',
+      'async input => __vite_ssr_import_9__.serializeApplicationCallback(input)',
+      import.meta.filename,
+    )).toBe(true);
+  });
+
   it('does not persist compiler discovery scratch paths as callback provenance', () => {
     const callback = async (input: string) => input;
     Object.defineProperty(
@@ -202,7 +223,7 @@ class DeliveryError extends Error {
       },
     );
 
-    const serialized = serializeApplicationCallback({
+    const serialized = AliasedSerializeCallback({
       registrar: 'IdentityProvider',
       argumentIndex: 0,
       property: 'authenticate',

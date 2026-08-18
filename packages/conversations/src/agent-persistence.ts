@@ -23,6 +23,7 @@ import {
 export interface ApplicationAIAgentConversationPersistenceOptions {
   readonly store: ApplicationConversationStore;
   readonly now?: () => Date;
+  readonly scope?: (input: Pick<ApplicationAIAgentPersistenceInput, 'principal' | 'trustedContext'>) => string;
 }
 
 /**
@@ -37,10 +38,14 @@ export function createApplicationAIAgentConversationPersistence(
   const now = options.now ?? (() => new Date());
   return Object.freeze({
     async begin(input: ApplicationAIAgentPersistenceInput) {
-      const principalScope = applicationAIConversationPrincipalScope(
-        input.principal,
-        input.trustedContext,
-      );
+      const principalScope = options.scope?.(input)
+        ?? applicationAIConversationPrincipalScope(
+          input.principal,
+          input.trustedContext,
+        );
+      if (!principalScope.trim()) {
+        throw new Error('Agent conversation persistence resolved an empty durable scope.');
+      }
       const conversation = await ensureConversation(
         options.store,
         input,
@@ -166,11 +171,13 @@ async function ensureConversation(
     principalScope,
   );
   if (existing) return existing;
+  const title = conversationTitle(input.messages);
   try {
     return await store.createConversation({
       apiVersion: 'applik8s.aiConversation/v1alpha1',
       id: requiredString(input.conversationId, 'conversationId'),
       principalScope,
+      ...(title ? { title } : {}),
       revision: 0,
       createdAt: input.startedAt,
       updatedAt: input.startedAt,
@@ -186,6 +193,31 @@ async function ensureConversation(
       `Conversation ${input.conversationId} already belongs to another admitted principal scope.`,
     );
   }
+}
+
+function conversationTitle(messages: readonly JsonValue[]): string | undefined {
+  for (const value of messages) {
+    const message = jsonObjectOrUndefined(value);
+    if (messageRole(message?.role) !== 'user') continue;
+    const direct = typeof message?.content === 'string'
+      ? message.content
+      : undefined;
+    const parts = Array.isArray(message?.parts) ? message.parts : [];
+    const fromParts = parts
+      .map(part => jsonObjectOrUndefined(part))
+      .filter(part => part?.type === 'text' && typeof part.content === 'string')
+      .map(part => String(part?.content))
+      .join(' ');
+    const source = (direct ?? fromParts).replace(/\s+/gu, ' ').trim();
+    if (!source) continue;
+    const prefix = source.slice(0, 69).trimEnd();
+    const wordBoundary = prefix.lastIndexOf(' ');
+    const bounded = source.length > 72
+      ? `${wordBoundary >= 48 ? prefix.slice(0, wordBoundary) : prefix}…`
+      : source;
+    return bounded.replace(/^./u, character => character.toUpperCase());
+  }
+  return undefined;
 }
 
 async function ensureInputMessages(

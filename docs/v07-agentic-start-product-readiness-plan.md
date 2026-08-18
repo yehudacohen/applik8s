@@ -1,6 +1,9 @@
 # Agentic Start product-readiness plan
 
-**Status:** Implementation complete; exact-candidate AI live evidence pending
+**Status:** Historical substrate and route-readiness record. The active,
+normative completion state is maintained in
+[`agentic-start-full-product-framework-plan.md`](./agentic-start-full-product-framework-plan.md);
+claims below do not independently qualify the v0.7 product for release.
 **Audience:** framework maintainers and generated-application contributors
 **Purpose:** turn Agentic Start from a broad capability demonstration into an
 exceptional, production-ready first experience for a new Applik8s builder.
@@ -14,7 +17,15 @@ The page-by-page layout, visual hierarchy, route states, transitions, and
 responsive behavior are normative in
 [`v07-agentic-start-experience-spec.md`](./v07-agentic-start-experience-spec.md).
 
-## 2026-08-14 execution status
+The live product review found that infrastructure and execution qualification
+outpaced the generated product experience. The corrective module, journey, and
+acceptance sequence is defined in
+[`agentic-start-full-product-framework-plan.md`](./agentic-start-full-product-framework-plan.md).
+That plan supersedes any claim below that the complete Agentic Start product is
+finished; the evidence in this document remains valid for the substrate and
+individual implemented paths.
+
+## 2026-08-15 execution status
 
 This plan has been executed through the source, package, production-build, and
 non-AI OrbStack lanes. The sections below retain the original baseline gaps and
@@ -28,9 +39,10 @@ Completed evidence includes:
 - a cohesive source-owned product shell and component language, persistent
   conversations, one mutable Document concept, immutable Artifacts, durable
   decisions, workspace administration, and audience-shaped navigation;
-- provider-neutral billing with an included Free plan and a successful live
-  Stripe test checkout for Team, without exposing provider identity or
-  credentials to the browser;
+- provider-neutral billing with an included Free plan and a successful
+  simulated Starter checkout without exposing provider identity or credentials
+  to the browser; the real Stripe path is implemented but remains part of the
+  separate credentialed Developer lane;
 - graph-derived Launchpad intent paired with bounded live observations for
   identity, database, running event consumers, ready workflows, object stores,
   and gateways;
@@ -39,20 +51,30 @@ Completed evidence includes:
   tables rather than flooding readiness state;
 - clean rapid-navigation logs: client disconnects during initial query
   multiplex connection are ordinary cancellation, not upstream failures;
-- 83 focused product/runtime tests, workspace typecheck across 51 packages,
-  lint/release audits, 179 contract tests, 49-package packed-consumer smoke,
-  36 complete scorecard contracts, profile/performance/TypeKro/STIMP/security/
-  identity gates, all maintained production application builds, and 155 Rust
-  tests.
+- exact generation of 96 readable product files within the enforced source
+  budget, 12 versioned Agentic product baseline conformance paths, 32 focused
+  baseline/package tests, 36
+  complete scorecard contracts with no partial/pending/blocked contract, and
+  workspace typecheck across 55 packages, four script shards, and root configs;
+- a fresh 49-resource/21-artifact OrbStack deployment, stable readiness,
+  exact-graph no-op reapply, redacted Launchpad observation, and complete
+  graph-backed teardown; and
+- 29/29 live product journeys across Chromium, Firefox, WebKit, and mobile,
+  including accessibility, responsive layout, dark/reduced-motion behavior,
+  durable reload, degraded-network recovery, agent evaluation, knowledge,
+  invitations, causal Documents, and bounded lifecycle controls.
 
 The remaining release action is deliberately narrow. The Developer
 installation declares a host-environment OpenRouter credential and fails
-closed while `OPENROUTER_API_KEY` is absent. The framework did not inspect or
-modify the user's environment files. After that canonical variable is present,
-rerun the normal graph deployment and prove the exact human → assistant → typed
-tool → authoritative Document → live query journey. Then refresh immutable
-candidate receipts and perform maintainer visual review. This is qualification,
-not new capability work.
+closed before graph mutation while `OPENROUTER_API_KEY` is absent. The
+qualification harness can mechanically overlay a requested environment file
+and restores the generated project's `.env.local` afterward; it does not
+inspect or log either file's values. Neither currently available source binds
+the canonical variable. Once it is present, rerun the normal graph deployment
+and prove the exact human -> assistant -> typed tool -> authoritative Document
+-> live query path plus live Stripe checkout. Then capture restart/update
+recovery, refresh immutable candidate receipts, and perform maintainer visual
+review. This is qualification, not new capability work.
 
 The v0.7 release is not ready merely because the application graph compiles,
 deploys, and has evidence for individual capabilities. A generated application
@@ -207,6 +229,9 @@ work rather than bury it beneath UI polish:
   customer-scoped portal, meter, and subscription operations rely on it;
 - billing mutations must derive provider subscription identity from the
   authoritative principal-scoped record, never browser input;
+- checkout, subscription changes, administration, and authenticated webhook
+  events must resolve an active application-catalog plan before invoking a
+  payment provider;
 - live Stripe mutation belongs in an explicitly credentialed end-to-end lane,
   not a default vertical test;
 - provider prerequisite discovery must use module/capability metadata rather
@@ -260,7 +285,7 @@ The accepted ownership model is:
 The former total-file budget is replaced by categorized ownership, largest-file,
 dependency-direction, and per-feature readability budgets. The generator must
 not satisfy a small-file count by producing monoliths. After the cohesive
-reference product is reviewed, its category inventory becomes the release
+generated product is reviewed, its category inventory becomes the release
 baseline; no category may grow more than 15% and no application file may exceed
 400 nonblank lines without a reviewed ownership exception. v0.7 also includes a
 read-only `applik8s start update --check` command so application-owned auth and
@@ -377,7 +402,7 @@ digest, package/artifact set, cluster identity where applicable, and assertion
 results.
 
 The planning-consistency gate compares charter/RFP status, deferred decisions,
-the function-native conformance matrix, the Stimp capability map, scorecard
+the function-native conformance matrix, the Agentic product baseline capability map, scorecard
 state, and acceptance manifests. A capability cannot be Complete in one source
 while Partial, absent, or unexercised in another.
 
@@ -587,7 +612,7 @@ Before visual restructuring, generate and maintain a route manifest covering:
 - `/`, `/sign-up`, `/sign-in`, `/verify`, and `/recover` in the public shell;
 - `/app` for the authenticated copilot home;
 - `/app/conversations/:conversationId`;
-- `/app/library`, `/app/documents/:documentId`, and `/app/artifacts/:artifactId`;
+- `/app/artifacts`, `/app/documents/:documentId`, and `/app/artifacts/:artifactId`;
 - `/app/inbox`;
 - `/app/workspaces`;
 - `/app/workspaces/:workspaceId`;
@@ -767,6 +792,8 @@ authority and no credential leakage.
 
 1. Complete the canonical Stripe Customer mapping and tenant-safe subscription
    operations.
+   Keep the application plan catalog authoritative over every provider-facing
+   plan identifier.
 2. Move live Stripe mutations to the opt-in end-to-end lane.
 3. Replace syntax-based provider prerequisite inference with declared metadata.
 4. Preserve webhook error taxonomy end to end.
@@ -794,7 +821,7 @@ causal, and deployment contracts it claims to demonstrate.
    readability, route determinism, application tests, production build, live
    deployment, no-op redeploy, restart, and graph-backed teardown.
 6. Refresh exact-candidate release receipts only after the final visual and
-   behavioral source changes.
+   deterministic-runtime source changes.
 7. Exercise the public acquisition/identity journey, notification delivery,
    AI trust controls, data deletion/export, go-live obligations, and unsupported
    profile-transition diagnostics.
@@ -865,8 +892,8 @@ Agentic Start is complete for v0.7 only when all of these are true:
 
 - Do not add unrelated v0.7 platform capabilities to make the starter look
   richer.
-- Do not copy STIMP's component implementation, monolithic onboarding class,
-  or inline-style architecture.
+- Do not turn baseline evidence into application runtime code, a monolithic
+  onboarding class, or an inline-style architecture.
 - Do not make Vite an implicit deployment engine.
 - Do not hide TypeKro/Alchemy ownership or provider decisions behind an opaque
   `agenticStart(...)` constructor.

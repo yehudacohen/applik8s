@@ -1,0 +1,197 @@
+import { useApplicationIdentitySession } from '@applik8s/react/identity';
+import { type FormEvent, useState } from 'react';
+import {
+  AgentEvaluationRuns,
+  AgentProfileList,
+  EvaluationCatalog,
+  EvaluationCase,
+  EvaluationDataset,
+  EvaluationRun,
+  EvaluationScorer,
+} from '../../application';
+import {
+  Badge,
+  Button,
+  Card,
+  EmptyState,
+  Input,
+  PageHeader,
+  Select,
+  Skeleton,
+  Textarea,
+} from '../../components/ui';
+
+export function EvaluationsView() {
+  const session = useApplicationIdentitySession();
+  const profiles = AgentProfileList({}).useQuery();
+  const catalog = EvaluationCatalog({}).useQuery();
+  const [agentId, setAgentId] = useState<string>();
+  const selected = profiles.data?.find(profile => profile.id === agentId)
+    ?? profiles.data?.[0];
+  const runs = AgentEvaluationRuns(
+    selected ? { agentId: selected.id } : {},
+  ).useQuery();
+  const createRun = EvaluationRun.create.useMutation();
+  const [notice, setNotice] = useState<string>();
+  const [datasetId, setDatasetId] = useState('agentic-workspace-v1');
+  const [scorerId, setScorerId] = useState('agent-runtime-contract-v1');
+
+  async function runChecks() {
+    if (!selected) return;
+    const runId = crypto.randomUUID();
+    try {
+      // Release evidence must bind to the authoritative definition version,
+      // never to a stale route snapshot. The server still validates the exact
+      // version before the worker evaluates it.
+      const latestProfiles = await AgentProfileList({});
+      const current = latestProfiles.find(profile => profile.id === selected.id);
+      if (!current) throw new Error('The selected agent profile no longer exists.');
+      await createRun({
+        id: runId,
+        datasetId,
+        scorerId,
+        logicalModel: `agent:${current.id}:${current.version}`,
+      });
+      setNotice(scorerId === 'agent-runtime-contract-v1'
+        ? 'Deterministic runtime gate started for this exact agent revision.'
+        : 'Definition validation started for this exact agent revision.');
+      await runs.refresh();
+    } catch {
+      setNotice('The evaluation could not be started. Refresh and try again.');
+    }
+  }
+
+  return (
+    <div>
+      <PageHeader
+        eyebrow="Agent quality"
+        title="Evaluations"
+        description="Run an exact agent revision through the native agent loop and typed operation adapter. The deterministic runtime gate proves wiring without mutating product state; provider-backed model-quality scorers can be added separately."
+        action={selected ? (
+          <Button type="button" onClick={() => void runChecks()} disabled={createRun.pending}>
+            {createRun.pending ? 'Starting…' : scorerId === 'agent-runtime-contract-v1' ? 'Run runtime gate' : 'Validate definition'}
+          </Button>
+        ) : null}
+      />
+      {profiles.data === undefined ? <Skeleton className="h-64" /> : (
+        <div className="grid gap-5 lg:grid-cols-[19rem_minmax(0,1fr)]">
+          <div className="space-y-4"><Card>
+            <p className="eyebrow">Agent revisions</p>
+            <div className="mt-3 space-y-2">
+              {profiles.data.map(profile => (
+                <Button
+                  key={profile.id}
+                  type="button"
+                  className="w-full rounded-xl border border-stone-200 p-3 text-left transition hover:border-emerald-300"
+                  onClick={() => setAgentId(profile.id)}
+                >
+                  <strong className="block">{profile.name}</strong>
+                  <span className="text-xs text-stone-500">version {profile.version} · {profile.state}</span>
+                </Button>
+              ))}
+            </div>
+            {profiles.data.length === 0 ? (
+              <EmptyState title="No agent profile yet" description="Create a draft Agent before running a release gate." />
+            ) : null}
+          </Card><Card><p className="eyebrow">Evaluation contract</p>{catalog.data === undefined ? <Skeleton className="mt-3 h-28" /> : <div className="mt-3 space-y-3"><label className="block text-sm font-medium">Dataset<Select aria-label="Evaluation dataset" className="mt-1" value={datasetId} onChange={event => setDatasetId(event.target.value)}>{catalog.data.datasets.map(dataset => <option key={dataset.id} value={dataset.id}>{dataset.name} · v{dataset.revision}</option>)}</Select></label><label className="block text-sm font-medium">Scorer<Select aria-label="Evaluation scorer" className="mt-1" value={scorerId} onChange={event => setScorerId(event.target.value)}>{catalog.data.scorers.map(scorer => <option key={scorer.id} value={scorer.id}>{scorer.name} · v{scorer.revision}</option>)}</Select></label><p className="text-xs leading-5 text-stone-500">{catalog.data.cases.filter(candidate => candidate.datasetId === datasetId).length} case(s) in this immutable dataset revision.</p></div>}</Card></div>
+          <section aria-label="Evaluation history">
+            {notice ? <p role="status" className="mb-4 text-sm text-stone-600">{notice}</p> : null}
+            {runs.data === undefined ? <Skeleton className="h-56" /> : runs.data.length === 0 ? (
+              <EmptyState title="No checks for this revision" description="Run the deterministic runtime gate before publishing. Results remain attached to this exact agent revision." />
+            ) : (
+              <div className="space-y-3">
+                {runs.data.map((run, index) => {
+                  const priorCompleted = (runs.data ?? []).slice(index + 1).find(candidate => candidate.status === 'completed' && candidate.score !== undefined);
+                  const regression = run.status === 'completed' && run.score !== undefined && priorCompleted?.score !== undefined
+                    ? run.score - priorCompleted.score
+                    : undefined;
+                  return (
+                  <Card
+                    key={run.id}
+                    role="group"
+                    aria-label={index === 0 ? 'Latest evaluation' : 'Prior evaluation'}
+                  >
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div>
+                        <p className="eyebrow">Revision {run.revision}</p>
+                        <h2 className="mt-1 font-semibold">{index === 0 ? 'Latest evaluation' : 'Prior evaluation'}</h2>
+                        <p className="mt-1 text-xs text-stone-500">{new Date(run.createdAt).toLocaleString()}</p>
+                      </div>
+                      <Badge tone={run.status === 'completed' && run.score === 1 ? 'success' : run.status === 'failed' ? 'danger' : 'warning'}>
+                        {run.status === 'completed' ? `${Math.round((run.score ?? 0) * 100)}%` : run.status}
+                      </Badge>
+                    </div>
+                    {regression !== undefined ? <p className={`mt-3 text-sm font-medium ${regression < 0 ? 'text-red-700' : 'text-emerald-700'}`}>{regression < 0 ? 'Regression' : regression > 0 ? 'Improvement' : 'No score change'} · {Math.abs(Math.round(regression * 100))} points versus the prior completed run</p> : null}
+                    {isEvaluationEvidence(run.evidence) ? (
+                      <ul className="mt-4 grid gap-2 text-sm">
+                        {run.evidence.checks.map(check => (
+                          <li key={check.id} className="flex gap-3 rounded-lg bg-stone-50 p-3">
+                            <span aria-hidden="true">{check.passed ? '✓' : '×'}</span>
+                            <span><strong>{check.id}</strong><span className="block text-stone-600">{check.explanation}</span></span>
+                          </li>
+                        ))}
+                      </ul>
+                    ) : null}
+                  </Card>
+                  );
+                })}
+              </div>
+            )}
+          </section>
+        </div>
+      )}
+      {session.data?.capabilities?.applicationOperations ? <details className="mt-8 rounded-2xl border border-stone-200 bg-white p-4"><summary className="cursor-pointer font-semibold">Advanced: manage versioned evaluation contracts</summary><EvaluationCatalogEditor catalog={catalog.data} refresh={catalog.refresh} /></details> : null}
+    </div>
+  );
+}
+
+function EvaluationCatalogEditor({
+  catalog,
+  refresh,
+}: {
+  readonly catalog: ReturnType<typeof EvaluationCatalog>['useQuery'] extends () => infer Query
+    ? Query extends { readonly data?: infer Data } ? Data | undefined : never
+    : never;
+  readonly refresh: () => Promise<unknown>;
+}) {
+  const createDataset = EvaluationDataset.create.useMutation();
+  const createCase = EvaluationCase.create.useMutation();
+  const createScorer = EvaluationScorer.create.useMutation();
+  const [kind, setKind] = useState<'dataset' | 'case' | 'scorer'>('dataset');
+  const [id, setId] = useState('');
+  const [name, setName] = useState('');
+  const [datasetId, setDatasetId] = useState('agentic-workspace-v1');
+  const [input, setInput] = useState('{"surface":"workspace-assistant"}');
+  const [expected, setExpected] = useState('{"authoritativeCompletion":true}');
+  const [notice, setNotice] = useState<string>();
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    try {
+      if (kind === 'dataset') await createDataset({ id, name, revision: '1', schemaDigest: `${id}:v1` });
+      if (kind === 'case') await createCase({ id, datasetId, input: JSON.parse(input), expected: JSON.parse(expected), tags: ['operator-authored'] });
+      if (kind === 'scorer') await createScorer({ id, name, revision: '1', implementationDigest: id });
+      setId(''); setName(''); await refresh(); setNotice('Versioned evaluation contract created. Existing runs remain immutable.');
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : 'The evaluation contract could not be created.');
+    }
+  }
+  return <Card className="mt-8 border-blue-200 bg-blue-50/40"><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="eyebrow">Application operator</p><h2 className="mt-1 text-xl font-semibold">Versioned evaluation catalog</h2><p className="mt-2 max-w-3xl text-sm leading-6 text-stone-600">Datasets, cases, and scorer identities are append-only release inputs. Agent runs bind to exact IDs so a later edit cannot rewrite prior evidence.</p></div><Badge tone="info">Global product policy</Badge></div><form className="mt-5 grid gap-3 sm:grid-cols-2" onSubmit={submit}><label className="text-sm font-medium">Contract kind<Select className="mt-1 w-full" value={kind} onChange={event => setKind(event.target.value as typeof kind)}><option value="dataset">Dataset</option><option value="case">Case</option><option value="scorer">Scorer</option></Select></label><label className="text-sm font-medium">Stable ID<Input className="mt-1 w-full" value={id} onChange={event => setId(event.target.value)} placeholder="support-agent-v1" /></label>{kind !== 'case' ? <label className="text-sm font-medium sm:col-span-2">Name<Input className="mt-1 w-full" value={name} onChange={event => setName(event.target.value)} /></label> : <><label className="text-sm font-medium sm:col-span-2">Dataset<Select className="mt-1 w-full" value={datasetId} onChange={event => setDatasetId(event.target.value)}>{catalog?.datasets.map(dataset => <option key={dataset.id} value={dataset.id}>{dataset.name} · v{dataset.revision}</option>)}</Select></label><label className="text-sm font-medium">Input JSON<Textarea className="mt-1 min-h-28 font-mono text-xs" value={input} onChange={event => setInput(event.target.value)} /></label><label className="text-sm font-medium">Expected JSON<Textarea className="mt-1 min-h-28 font-mono text-xs" value={expected} onChange={event => setExpected(event.target.value)} /></label></>}<Button type="submit" disabled={!id.trim() || (kind !== 'case' && !name.trim()) || createDataset.pending || createCase.pending || createScorer.pending}>Create immutable {kind}</Button>{notice ? <p role="status" className="text-sm text-stone-600 sm:col-span-2">{notice}</p> : null}</form></Card>;
+}
+
+function isEvaluationEvidence(value: unknown): value is {
+  readonly checks: readonly {
+    readonly id: string;
+    readonly passed: boolean;
+    readonly explanation: string;
+  }[];
+} {
+  if (!value || typeof value !== 'object') return false;
+  const checks = Reflect.get(value, 'checks');
+  return Array.isArray(checks) && checks.every(check => (
+    check
+    && typeof check === 'object'
+    && typeof Reflect.get(check, 'id') === 'string'
+    && typeof Reflect.get(check, 'passed') === 'boolean'
+    && typeof Reflect.get(check, 'explanation') === 'string'
+  ));
+}

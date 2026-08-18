@@ -244,6 +244,8 @@ export function applik8sWorkspaceSourcePlugin(): Plugin {
     ['@applik8s/conversations', resolve(workspaceRoot, 'packages/conversations/src/index.ts')],
     ['@applik8s/conversations/schema', resolve(workspaceRoot, 'packages/conversations/src/schema.ts')],
     ['@applik8s/conversations/runtime', resolve(workspaceRoot, 'packages/conversations/src/runtime.ts')],
+    ['@applik8s/data-lifecycle', resolve(workspaceRoot, 'packages/data-lifecycle/src/index.ts')],
+    ['@applik8s/data-lifecycle/schema', resolve(workspaceRoot, 'packages/data-lifecycle/src/schema.ts')],
     ['@applik8s/billing', resolve(workspaceRoot, 'packages/billing/src/index.ts')],
     ['@applik8s/billing/schema', resolve(workspaceRoot, 'packages/billing/src/schema.ts')],
     ['@applik8s/billing-stripe', resolve(workspaceRoot, 'packages/billing-stripe/src/index.ts')],

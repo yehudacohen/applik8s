@@ -1,20 +1,21 @@
 import { Link } from '@tanstack/react-router';
-import { Badge, Card, EmptyState, Metric, PageHeader, RouteState } from '../../components/ui';
-import { PlatformCatalog, PlatformTenant, PlatformTenants } from '../../application';
+import { type FormEvent, useState } from 'react';
+import { Badge, Button, Card, EmptyState, Input, Metric, PageHeader, RouteState, Select, Textarea, humanizePrincipal } from '../../components/ui';
+import { BillingCatalogEntitlement, BillingCatalogPrice, BillingCatalogVersion, BillingPlan, CancelTenantSubscription, ChangeTenantPlan, PlatformCatalog, PlatformTenant, PlatformTenants, Workspace } from '../../application';
 
 export function AdministrationOverview() {
   const tenants = PlatformTenants({}).useQuery();
   const catalog = PlatformCatalog({}).useQuery();
-  if (tenants.error || catalog.error) return <RouteState tone="warning" title="Administration is temporarily unavailable" description="Tenant and product state remains authoritative while the query provider recovers." />;
+  if (tenants.error || catalog.error) return <RouteState tone="warning" title="Administration is temporarily unavailable" description="No tenant or catalog changes were made. Try loading the dashboard again." />;
   if (!tenants.data || !catalog.data) return <RouteState title="Loading administration" description="Tenant, subscription, and usage summaries are being assembled." />;
   const activeSubscriptions = tenants.data.filter(tenant => tenant.subscriptionState === 'active').length;
   const totalUsage = tenants.data.reduce((sum, tenant) => sum + tenant.inputTokens + tenant.outputTokens, 0);
   return <div>
-    <PageHeader eyebrow="Application administration" title="Product control center" description="Operate tenants, product plans, subscriptions, and usage without crossing into Kubernetes or provider credentials." />
+    <PageHeader eyebrow="Administration" title="Product control center" description="Manage customers, product plans, subscriptions, and usage from one place." />
     <div className="grid gap-4 sm:grid-cols-3"><Metric label="Tenants" value={String(tenants.data.length)} /><Metric label="Active subscriptions" value={String(activeSubscriptions)} /><Metric label="Recorded tokens" value={totalUsage.toLocaleString()} /></div>
     <div className="mt-6 grid gap-5 lg:grid-cols-2">
-      <Card><h2 className="text-lg font-semibold">Tenant management</h2><p className="mt-2 text-sm text-stone-600">Membership, plan state, and admitted usage stay attached to the application tenant.</p><Link className="mt-4 inline-block font-semibold text-emerald-800" to="/admin/tenants">Open tenants →</Link></Card>
-      <Card><h2 className="text-lg font-semibold">Product catalog</h2><p className="mt-2 text-sm text-stone-600">{catalog.data.length} application-owned plans resolve through the active billing provider.</p><Link className="mt-4 inline-block font-semibold text-emerald-800" to="/admin/catalog">Open catalog →</Link></Card>
+      <Card><h2 className="text-lg font-semibold">Tenant management</h2><p className="mt-2 text-sm text-stone-600">Review membership, plan state, access, and usage for every customer workspace.</p><Link className="mt-4 inline-block font-semibold text-emerald-800" to="/admin/tenants">Open tenants →</Link></Card>
+      <Card><h2 className="text-lg font-semibold">Product catalog</h2><p className="mt-2 text-sm text-stone-600">{catalog.data.length} plans define what customers can buy and use.</p><Link className="mt-4 inline-block font-semibold text-emerald-800" to="/admin/catalog">Open catalog →</Link></Card>
     </div>
   </div>;
 }
@@ -23,28 +24,79 @@ export function TenantDirectory() {
   const tenants = PlatformTenants({}).useQuery();
   if (tenants.error) return <RouteState tone="warning" title="Tenants unavailable" description="Retry after the application database recovers." />;
   if (!tenants.data) return <RouteState title="Loading tenants" description="The application is assembling tenant summaries." />;
-  return <div><PageHeader eyebrow="Application administration" title="Tenants" description="A tenant is an application workspace with its own membership, product plan, and admitted usage." />
-    {tenants.data.length === 0 ? <EmptyState title="No tenants yet" description="The first workspace created by a product user will appear here." /> : <div className="grid gap-3">{tenants.data.map(tenant => <Card key={tenant.id} className="grid gap-3 sm:grid-cols-[1fr_auto] sm:items-center"><div><Link className="font-semibold text-emerald-900" to="/admin/tenants/$tenantId" params={{ tenantId: tenant.id }}>{tenant.name}</Link><p className="mt-1 text-sm text-stone-600">{tenant.slug} · {tenant.memberCount} member{tenant.memberCount === 1 ? '' : 's'}</p></div><div className="flex flex-wrap gap-2"><Badge>{tenant.planId ?? 'No plan'}</Badge><Badge tone={tenant.subscriptionState === 'active' ? 'success' : 'warning'}>{tenant.subscriptionState ?? 'Not subscribed'}</Badge></div></Card>)}</div>}
+  return <div><PageHeader eyebrow="Administration" title="Tenants" description="Each customer workspace has its own members, access state, product plan, and usage." />
+    {tenants.data.length === 0 ? <EmptyState title="No tenants yet" description="The first workspace created by a product user will appear here." /> : <div className="grid gap-3">{tenants.data.map(tenant => <Card key={tenant.id} className="grid gap-3 sm:grid-cols-[1fr_auto] sm:items-center"><div><Link className="font-semibold text-emerald-900" to="/admin/tenants/$tenantId" params={{ tenantId: tenant.id }}>{tenant.name}</Link><p className="mt-1 text-sm text-stone-600">{tenant.slug} · {tenant.memberCount} member{tenant.memberCount === 1 ? '' : 's'}</p></div><div className="flex flex-wrap gap-2"><Badge tone={tenant.state === 'active' ? 'success' : 'danger'}>{tenant.state}</Badge><Badge>{tenant.planId ?? 'No plan'}</Badge><Badge tone={tenant.subscriptionState === 'active' ? 'success' : 'warning'}>{tenant.subscriptionState ?? 'Not subscribed'}</Badge></div></Card>)}</div>}
   </div>;
 }
 
 export function TenantAdministration({ tenantId }: { readonly tenantId: string }) {
   const detail = PlatformTenant({ tenantId }).useQuery();
+  const catalog = PlatformCatalog({}).useQuery();
+  const [plan, setPlan] = useState('');
+  const [notice, setNotice] = useState<string>();
+  const updateTenant = Workspace.update.useMutation();
   if (detail.error) return <RouteState tone="warning" title="Tenant unavailable" description="The tenant query failed without exposing provider details." />;
   if (detail.data === undefined) return <RouteState title="Loading tenant" description="Membership, subscription, and usage are being assembled." />;
-  if (detail.data === null) return <RouteState tone="warning" title="Tenant not found" description="The tenant may have been removed or the link may be stale." action={<Link to="/admin/tenants" className="button-link">Return to tenants</Link>} />;
+  if (detail.data === null) return <RouteState tone="warning" title="Tenant not found" description="The tenant may have been removed or the link may be stale." action={<Button asChild><Link to="/admin/tenants">Return to tenants</Link></Button>} />;
   const { tenant, members } = detail.data;
-  return <div><PageHeader eyebrow="Tenant administration" title={tenant.name} description="Product state and provider delivery remain distinct and traceable." action={<Badge tone={tenant.subscriptionState === 'active' ? 'success' : 'warning'}>{tenant.subscriptionState ?? 'No subscription'}</Badge>} />
-    <div className="grid gap-4 sm:grid-cols-3"><Metric label="Members" value={String(tenant.memberCount)} /><Metric label="Plan" value={tenant.planId ?? 'None'} /><Metric label="Tokens" value={(tenant.inputTokens + tenant.outputTokens).toLocaleString()} /></div>
-    <div className="mt-6 grid gap-5 lg:grid-cols-2"><Card><h2 className="text-lg font-semibold">People and roles</h2><div className="mt-3 space-y-2">{members.map(member => <div key={member.id} className="flex justify-between gap-3 border-b border-stone-100 py-2 text-sm"><span>{member.identityId}</span><Badge>{member.role}</Badge></div>)}</div></Card><Card><h2 className="text-lg font-semibold">Subscription and usage</h2><dl className="mt-3 grid grid-cols-2 gap-3 text-sm"><dt className="text-stone-500">Plan</dt><dd>{tenant.planId ?? 'No plan'}</dd><dt className="text-stone-500">State</dt><dd>{tenant.subscriptionState ?? 'Not subscribed'}</dd><dt className="text-stone-500">Input tokens</dt><dd>{tenant.inputTokens.toLocaleString()}</dd><dt className="text-stone-500">Output tokens</dt><dd>{tenant.outputTokens.toLocaleString()}</dd><dt className="text-stone-500">Cost</dt><dd>{tenant.costMicrounits.toLocaleString()} µ-units</dd></dl></Card></div>
+  async function changePlan() {
+    if (!plan) return;
+    try { const result = await ChangeTenantPlan({ tenantId, plan }); setNotice(result.state === 'scheduled' ? `Plan change scheduled for ${result.effectiveAt}.` : 'Tenant plan changed.'); await detail.refresh(); }
+    catch { setNotice('The plan change was not accepted. Confirm the tenant has an active provider subscription and the catalog price exists.'); }
+  }
+  async function cancelSubscription() {
+    try { const result = await CancelTenantSubscription({ tenantId }); setNotice(`Cancellation scheduled for ${result.effectiveAt}.`); await detail.refresh(); }
+    catch { setNotice('The cancellation was not accepted. The tenant may not have an active provider subscription.'); }
+  }
+  async function setTenantState(state: 'active' | 'suspended') {
+    try { await updateTenant({ identity: tenantId, patch: { state } }); setNotice(state === 'active' ? 'Tenant access restored.' : 'Tenant suspended. New workspace-scoped admission is now denied.'); await detail.refresh(); }
+    catch { setNotice('The tenant state could not be changed. Refresh and try again with administrator access.'); }
+  }
+  return <div><PageHeader eyebrow="Tenant administration" title={tenant.name} description="Product state and provider delivery remain distinct and traceable." action={<div className="flex gap-2"><Badge tone={tenant.state === 'active' ? 'success' : 'danger'}>{tenant.state}</Badge><Badge tone={tenant.subscriptionState === 'active' ? 'success' : 'warning'}>{tenant.subscriptionState ?? 'No subscription'}</Badge></div>} />
+    <div className="grid gap-4 sm:grid-cols-3"><Metric label="Members" value={String(tenant.memberCount)} /><Metric label="Plan" value={tenant.planId ? humanizeValue(tenant.planId) : 'None'} /><Metric label="Tokens" value={(tenant.inputTokens + tenant.outputTokens).toLocaleString()} /></div>
+    <div className="mt-6 grid gap-5 lg:grid-cols-2"><Card><h2 className="text-lg font-semibold">People and roles</h2><div className="mt-3 space-y-2">{members.map(member => <div key={member.id} className="flex justify-between gap-3 border-b border-stone-100 py-2 text-sm"><span>{humanizePrincipal(member.identityId)}</span><Badge>{humanizeValue(member.role)}</Badge></div>)}</div><div className="mt-5 border-t border-stone-200 pt-4"><h3 className="font-semibold">Tenant access</h3><p className="mt-1 text-sm leading-6 text-stone-600">Suspension fails closed during workspace admission without deleting product or billing state.</p><Button className="mt-3" type="button" variant={tenant.state === 'active' ? 'danger' : 'secondary'} disabled={updateTenant.pending} onClick={() => void setTenantState(tenant.state === 'active' ? 'suspended' : 'active')}>{tenant.state === 'active' ? 'Suspend tenant' : 'Restore tenant'}</Button></div></Card><Card><h2 className="text-lg font-semibold">Subscription and usage</h2><dl className="mt-3 grid grid-cols-2 gap-3 text-sm"><dt className="text-stone-500">Plan</dt><dd>{tenant.planId ? humanizeValue(tenant.planId) : 'No plan'}</dd><dt className="text-stone-500">State</dt><dd>{tenant.subscriptionState ? humanizeValue(tenant.subscriptionState) : 'Not subscribed'}</dd><dt className="text-stone-500">Input tokens</dt><dd>{tenant.inputTokens.toLocaleString()}</dd><dt className="text-stone-500">Output tokens</dt><dd>{tenant.outputTokens.toLocaleString()}</dd><dt className="text-stone-500">Estimated cost</dt><dd>{new Intl.NumberFormat(undefined, { style: 'currency', currency: 'USD' }).format(tenant.costMicrounits / 1_000_000)}</dd></dl>{tenant.subscriptionState ? <div className="mt-5 border-t border-stone-200 pt-4"><label className="text-sm font-semibold" htmlFor="tenant-plan">Change plan</label><Select id="tenant-plan" className="mt-2" value={plan} onChange={event => setPlan(event.currentTarget.value)}><option value="">Select a published plan</option>{catalog.data?.filter(candidate => candidate.active).map(candidate => <option key={candidate.id} value={candidate.id}>{candidate.name}</option>)}</Select><div className="mt-3 flex gap-2"><Button type="button" disabled={!plan} onClick={() => void changePlan()}>Apply plan</Button><Button type="button" variant="ghost" onClick={() => void cancelSubscription()}>Cancel at period end</Button></div></div> : <p className="mt-5 rounded-xl bg-stone-50 p-3 text-sm text-stone-600">This tenant is using the application’s included plan. A paid subscription begins from the tenant Billing page so customer identity remains provider-authenticated.</p>}</Card></div>
+    {notice ? <p role="status" className="mt-4 text-sm text-stone-600">{notice}</p> : null}
   </div>;
+}
+
+function humanizeValue(value: string) {
+  return value.replace(/[._-]+/gu, ' ').replace(/\b\w/gu, character => character.toUpperCase());
 }
 
 export function ProductCatalogAdministration() {
   const catalog = PlatformCatalog({}).useQuery();
+  const create = BillingPlan.create.useMutation();
+  const update = BillingPlan.update.useMutation();
+  const createVersion = BillingCatalogVersion.create.useMutation();
+  const createPrice = BillingCatalogPrice.create.useMutation();
+  const createEntitlement = BillingCatalogEntitlement.create.useMutation();
+  const [adding, setAdding] = useState(false);
+  const [name, setName] = useState('');
+  const [description, setDescription] = useState('');
+  const [price, setPrice] = useState('29');
+  const [capabilities, setCapabilities] = useState('documents, assistant, live-inference');
+  const [notice, setNotice] = useState<string>();
+  async function addPlan(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const id = name.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+    const versionId = `${id}_v1`;
+    const capabilityList = [...new Set(capabilities.split(',').map(value => value.trim()).filter(Boolean))];
+    try {
+      const priceMicrounits = Math.round(Number(price) * 1_000_000);
+      await create({ id, name: name.trim(), description: description.trim(), interval: 'month', priceMicrounits, currency: 'usd', capabilities: capabilityList, sortOrder: (catalog.data?.length ?? 0) + 1, active: false });
+      await createVersion({ id: versionId, planId: id, version: 1, state: 'published', currency: 'usd', recommended: false, publishedAt: new Date().toISOString() });
+      await createPrice({ id: `${versionId}_local`, catalogVersionId: versionId, billingModel: 'flat', interval: 'month', unitAmountMicrounits: priceMicrounits, provider: 'local', lookupKey: id });
+      await createPrice({ id: `${versionId}_stripe`, catalogVersionId: versionId, billingModel: 'flat', interval: 'month', unitAmountMicrounits: priceMicrounits, provider: 'stripe', lookupKey: id });
+      await Promise.all(capabilityList.map(capability => createEntitlement({ id: `${versionId}_${capability.replace(/[^a-z0-9]+/g, '_')}`, catalogVersionId: versionId, capability, enabled: true, constraints: {} })));
+      await update({ identity: id, patch: { active: true } });
+      setName(''); setDescription(''); setAdding(false); await catalog.refresh(); setNotice('Plan version 1 is published with local and Stripe lookup-key prices plus its entitlements.');
+    } catch { setNotice('The plan was not created. Check its unique identifier and price, then retry.'); }
+  }
   if (catalog.error) return <RouteState tone="warning" title="Catalog unavailable" description="Product plans remain unchanged while the query provider recovers." />;
   if (!catalog.data) return <RouteState title="Loading product catalog" description="Application-owned plans are being loaded." />;
-  return <div><PageHeader eyebrow="Product management" title="Catalog" description="Plans and entitlements are application-owned. Stripe or another payment provider delivers the selected catalog server-side." />
-    <div className="grid gap-4 lg:grid-cols-3">{catalog.data.map(plan => <Card key={plan.id}><div className="flex items-start justify-between gap-3"><h2 className="text-lg font-semibold">{plan.name}</h2><Badge tone={plan.active ? 'success' : 'warning'}>{plan.active ? 'Active' : 'Inactive'}</Badge></div><p className="mt-2 min-h-12 text-sm text-stone-600">{plan.description}</p><p className="mt-5 text-2xl font-semibold">{(plan.priceMicrounits / 1_000_000).toLocaleString(undefined, { style: 'currency', currency: plan.currency.toUpperCase() })}<span className="text-sm font-normal text-stone-500">/{plan.interval}</span></p></Card>)}</div>
+  return <div><PageHeader eyebrow="Product management" title="Catalog" description="Plans and entitlements are application-owned. Stripe or another payment provider delivers the selected catalog server-side." action={<Button type="button" onClick={() => setAdding(value => !value)}>{adding ? 'Close' : 'New plan'}</Button>} />
+    {adding ? <Card className="mb-6 border-emerald-200 bg-emerald-50/60"><form onSubmit={addPlan} className="grid gap-4 sm:grid-cols-2"><label className="text-sm font-medium">Plan name<Input className="mt-2" value={name} onChange={event => setName(event.currentTarget.value)} /></label><label className="text-sm font-medium">Monthly price (USD)<Input className="mt-2" inputMode="decimal" value={price} onChange={event => setPrice(event.currentTarget.value)} /></label><label className="text-sm font-medium sm:col-span-2">Description<Textarea className="mt-2 min-h-24" value={description} onChange={event => setDescription(event.currentTarget.value)} /></label><label className="text-sm font-medium sm:col-span-2">Entitlements<Input className="mt-2" value={capabilities} onChange={event => setCapabilities(event.currentTarget.value)} /><span className="mt-1 block text-xs text-stone-500">Comma-separated application capabilities. Provider price IDs stay out of the product model; Stripe resolves the plan ID as a lookup key.</span></label><Button type="submit" disabled={create.pending || createVersion.pending || createPrice.pending || createEntitlement.pending || !name.trim() || !description.trim() || !(Number(price) >= 0)}>Publish plan v1</Button></form></Card> : null}
+    {notice ? <p role="status" className="mb-4 text-sm text-stone-600">{notice}</p> : null}
+    <div className="grid gap-4 lg:grid-cols-3">{catalog.data.map(plan => <Card key={plan.id}><div className="flex items-start justify-between gap-3"><h2 className="text-lg font-semibold">{plan.name}</h2><Badge tone={plan.active ? 'success' : 'warning'}>{plan.active ? 'Active' : 'Inactive'}</Badge></div><p className="mt-2 min-h-12 text-sm text-stone-600">{plan.description}</p><p className="mt-5 text-2xl font-semibold">{(plan.priceMicrounits / 1_000_000).toLocaleString(undefined, { style: 'currency', currency: plan.currency.toUpperCase() })}<span className="text-sm font-normal text-stone-500">/{plan.interval}</span></p><Button type="button" variant="ghost" className="mt-4 w-full" onClick={() => void update({ identity: plan.id, patch: { active: !plan.active } }).then(() => catalog.refresh())}>{plan.active ? 'Deactivate plan' : 'Activate plan'}</Button></Card>)}</div>
   </div>;
 }

@@ -100,6 +100,42 @@ export function createMemoryApplicationConversationStore(): ApplicationConversat
         .map(clone);
     },
 
+    async replaceMessages(input) {
+      const conversation = conversations.get(input.conversationId);
+      if (conversation?.principalScope !== input.principalScope) {
+        throw new ApplicationConversationConflictError(
+          `Conversation ${input.conversationId} is absent or outside the admitted scope.`,
+        );
+      }
+      const identifiers = new Set<string>();
+      const replacement = input.messages.map((message, index) => {
+        if (identifiers.has(message.id)) {
+          throw new ApplicationConversationConflictError(
+            `Message ${message.id} occurs more than once in the authoritative transcript.`,
+          );
+        }
+        identifiers.add(message.id);
+        // typecast: the canonical API revision is a protocol literal, not caller data.
+        return {
+          apiVersion: 'applik8s.aiMessage/v1alpha1' as const, // typecast: canonical protocol revision literal
+          id: message.id,
+          conversationId: input.conversationId,
+          revision: index + 1,
+          role: message.role,
+          content: clone(message.content),
+          state: message.state ?? 'committed',
+          ...(message.invocationId ? { invocationId: message.invocationId } : {}),
+          createdAt: message.createdAt,
+        };
+      });
+      messages.set(input.conversationId, replacement);
+      conversations.set(input.conversationId, {
+        ...conversation,
+        revision: replacement.length,
+        updatedAt: input.updatedAt,
+      });
+    },
+
     async startRun(input) {
       const conversation = conversations.get(input.conversationId);
       if (
@@ -128,6 +164,28 @@ export function createMemoryApplicationConversationStore(): ApplicationConversat
     async getRun(id, principalScope) {
       const run = runs.get(id);
       return run?.principalScope === principalScope ? clone(run) : undefined;
+    },
+
+    async listRuns(input) {
+      return [...runs.values()]
+        .filter(run => run.conversationId === input.conversationId && run.principalScope === input.principalScope)
+        .sort((left, right) => Date.parse(left.startedAt) - Date.parse(right.startedAt))
+        .map(clone);
+    },
+
+    async patchRun(input) {
+      const run = runs.get(input.runId);
+      if (!run || run.principalScope !== input.principalScope) return undefined;
+      const { terminalReason: _terminalReason, ...runWithoutTerminalReason } = run;
+      const patched: ApplicationAIProtocolRunRecord = {
+        ...(input.terminalReason === null ? runWithoutTerminalReason : run),
+        ...(input.status ? { status: input.status } : {}),
+        ...(input.terminalReason ? { terminalReason: input.terminalReason } : {}),
+        ...(input.runtimeState ? { runtimeState: clone(input.runtimeState) } : {}),
+        updatedAt: input.updatedAt,
+      };
+      runs.set(run.id, patched);
+      return clone(patched);
     },
 
     async transitionRun(input) {

@@ -11,6 +11,12 @@ export interface ApplicationPostgresSql {
 export interface ApplicationPostgresTransactionSql {
   unsafe(query: string, parameters?: readonly unknown[]): Promise<readonly Record<string, unknown>[]>;
   json(value: unknown): unknown;
+  /**
+   * Drizzle transaction bound to this exact PostgreSQL transaction. Runtime
+   * adapters populate it so function-native views observe staged model writes
+   * and use savepoints instead of opening an inconsistent sibling connection.
+   */
+  readonly database?: unknown;
 }
 
 export interface ApplicationPostgresClientOptions {

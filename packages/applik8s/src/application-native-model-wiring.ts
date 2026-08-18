@@ -123,6 +123,9 @@ export function applicationNativeRuntimeModelContract<TTable extends AnyPgTable>
     apiVersion: 'v1', kind: 'Secret', name: `${clusterName}-app`, ...(provider.namespace ? { namespace: provider.namespace } : {}),
   };
   const columns = getTableColumns(model);
+  const accessColumn = database.access
+    ? columns[database.access.column]
+    : undefined;
   const identityProperty = facet.identity.fields[0];
   const identityColumn = identityProperty ? columns[identityProperty] : undefined;
   if (!identityProperty || !identityColumn) throw new Error(`Native model ${name} has no serializable identity column.`);
@@ -154,12 +157,12 @@ export function applicationNativeRuntimeModelContract<TTable extends AnyPgTable>
         column: column.name,
         logicalType: column.dataType,
       })),
-      ...(database.access ? {
+      ...(database.access && accessColumn ? {
         access: {
           context: database.access.context.name,
           setting: database.access.setting,
           property: database.access.column,
-          column: columns[database.access.column]?.name ?? database.access.column,
+          column: accessColumn.name,
         },
       } : {}),
     },

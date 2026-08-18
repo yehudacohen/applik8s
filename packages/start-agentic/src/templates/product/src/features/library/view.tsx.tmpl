@@ -1,64 +1,35 @@
 import { Link } from '@tanstack/react-router';
 import { WorkspaceLibrary } from '../../application';
 import { Badge, Button, Card, EmptyState, PageHeader, RouteState, Skeleton } from '../../components/ui';
-import { useProductJourneyStep } from '../onboarding/view';
-import { documentExcerpt, documentTitle } from '../../components/markdown-document';
 
-export function LibraryView() {
+export function ArtifactsView() {
   const library = WorkspaceLibrary({}).useQuery();
-  useProductJourneyStep('open-library', library.data !== undefined);
   return (
     <div>
       <PageHeader
-        eyebrow="Workspace library"
-        title="Documents and artifacts"
-        description="Mutable application models and immutable run outputs stay distinct, even when they appear in one useful place."
+        eyebrow="Published work"
+        title="Artifacts"
+        description="Immutable published files and generated outputs remain distinct from editable Documents, with a digest, provenance, and bounded download authority."
         action={library.phase === 'reconnecting'
           ? <Badge tone="warning">Reconnecting…</Badge>
-          : library.data ? <Badge tone="success">Library connected</Badge> : null}
+          : library.data ? <Badge tone="success">Up to date</Badge> : null}
       />
       {library.phase === 'error' ? (
         <RouteState
           tone="warning"
-          title="The library is temporarily unavailable"
-          description="Your workspace remains intact. Retry the authoritative library query when its provider is available."
-          action={<Button variant="secondary" onClick={() => void library.refresh()}>Retry library</Button>}
+          title="Artifacts are temporarily unavailable"
+          description="Your work is safe. Try loading published outputs again."
+          action={<Button variant="secondary" onClick={() => void library.refresh()}>Retry artifacts</Button>}
         />
       ) : null}
       {library.data === undefined && library.phase !== 'error' ? (
-        <div aria-label="Loading workspace library" className="grid gap-4 sm:grid-cols-2">
+        <div role="status" aria-label="Loading artifacts" className="grid gap-4 sm:grid-cols-2">
           <Skeleton className="h-40" />
           <Skeleton className="h-40" />
         </div>
       ) : null}
       {library.data ? (
-        <div className="grid items-start gap-8 xl:grid-cols-2">
-          <section aria-labelledby="documents-title">
-            <div className="mb-3 flex items-center gap-3">
-              <h2 id="documents-title" className="text-xl font-semibold">Documents</h2>
-              <Badge>{library.data.documents.length}</Badge>
-            </div>
-            {library.data.documents.length === 0 ? (
-              <EmptyState
-                title="No documents yet"
-                description="Create one manually or ask the copilot. Mutable application records will appear here through the live query."
-                action={<Link to="/app" className="button-link">Open Copilot</Link>}
-              />
-            ) : (
-              <div className="grid gap-4">
-                {library.data.documents.map(document => (
-                  <Link key={document.id} to="/app/documents/$documentId" params={{ documentId: document.id }} className="text-stone-950 no-underline">
-                    <Card className="h-full transition hover:border-emerald-300">
-                      <div className="flex items-center justify-between"><Badge tone="info">Mutable document</Badge><span className="text-xs text-stone-500">{new Date(document.createdAt).toLocaleDateString()}</span></div>
-                      <h3 className="mt-4 text-lg font-semibold">{documentTitle(document.body)}</h3>
-                      <p className="mt-2 line-clamp-4 text-sm leading-6 text-stone-600">{documentExcerpt(document.body)}</p>
-                      <p className="mt-4 text-xs text-stone-500">Owner {document.ownerPrincipalId === document.createdByPrincipalId ? 'created this directly' : 'received an agent-created result'}</p>
-                    </Card>
-                  </Link>
-                ))}
-              </div>
-            )}
-          </section>
+        <div>
           <section aria-labelledby="artifacts-title">
             <div className="mb-3 flex items-center gap-3">
               <h2 id="artifacts-title" className="text-xl font-semibold">Artifacts</h2>
@@ -67,7 +38,8 @@ export function LibraryView() {
             {library.data.artifacts.length === 0 ? (
               <EmptyState
                 title="No immutable artifacts yet"
-                description="Durable workflow and agent outputs appear here with their digest, provenance, and retention state. The empty result is authoritative."
+                description="Publish a Document to preserve an immutable Markdown output with its source and revision history."
+                action={<Button asChild><Link to="/app/documents">Open Documents</Link></Button>}
               />
             ) : (
               <div className="grid gap-4">
@@ -75,7 +47,7 @@ export function LibraryView() {
                   <Link key={artifact.id} to="/app/artifacts/$artifactId" params={{ artifactId: artifact.id }} className="text-stone-950 no-underline">
                     <Card className="h-full transition hover:border-emerald-300">
                       <div className="flex items-center justify-between"><Badge tone="success">Immutable artifact</Badge><Badge tone={artifact.state === 'available' ? 'success' : 'warning'}>{artifact.state}</Badge></div>
-                      <h3 className="mt-4 font-semibold">{artifact.kind}</h3>
+                      <h3 className="mt-4 font-semibold">{artifact.title ?? humanizeArtifactKind(artifact.kind)}</h3>
                       <p className="mt-1 text-sm text-stone-600">{artifact.mediaType} · {artifact.size.toLocaleString()} bytes</p>
                       <code className="mt-4 block truncate rounded-lg bg-stone-100 p-2 text-xs">sha256:{artifact.sha256}</code>
                     </Card>
@@ -88,4 +60,8 @@ export function LibraryView() {
       ) : null}
     </div>
   );
+}
+
+function humanizeArtifactKind(value: string) {
+  return value.replace(/[._-]+/gu, ' ').replace(/\b\w/gu, character => character.toUpperCase());
 }

@@ -2,11 +2,14 @@ import type {
   ApplicationSignal,
   ApplicationSignalIssuance,
 } from '@applik8s/applik8s';
-import { selectAgenticWorkspace } from '@applik8s/start-agentic/react';
-import { type FormEvent, useEffect, useMemo, useState } from 'react';
+import {
+  readAgenticWorkspaceSelection,
+  selectAgenticWorkspace,
+} from '@applik8s/start-agentic/react';
+import { Link } from '@tanstack/react-router';
+import { useEffect, useMemo, useState } from 'react';
 import {
   DecisionInbox,
-  DecisionReview,
   DecisionReviewSignal,
   WorkspaceList,
 } from '../../application';
@@ -15,11 +18,10 @@ import {
   Button,
   Card,
   EmptyState,
-  Input,
   PageHeader,
+  Select,
   Skeleton,
 } from '../../components/ui';
-import { useProductJourneyStep } from '../onboarding/view';
 
 type ReviewDefinition = typeof DecisionReviewSignal.signal;
 type ReviewIssuance = ApplicationSignalIssuance<
@@ -30,230 +32,90 @@ type InboxTab = 'attention' | 'resolved' | 'all';
 
 export function InboxView() {
   const workspaces = WorkspaceList({}).useQuery();
+  // Cookies are browser-owned. Keep the server and first client render on the
+  // same empty snapshot, then hydrate the selection after React attaches.
   const [workspaceId, setWorkspaceId] = useState<string>();
+  const [workspaceSelectionLoaded, setWorkspaceSelectionLoaded] = useState(false);
   const [admittedWorkspaceId, setAdmittedWorkspaceId] = useState<string>();
-  const [title, setTitle] = useState('Review the first assistant result');
-  const createReview = DecisionReview.create.useMutation();
 
   useEffect(() => {
-    const first = workspaces.data?.[0];
-    if (!workspaceId && first) setWorkspaceId(first.id);
-  }, [workspaceId, workspaces.data]);
+    setWorkspaceId(readAgenticWorkspaceSelection());
+    setWorkspaceSelectionLoaded(true);
+  }, []);
   useEffect(() => {
+    if (!workspaceSelectionLoaded || !workspaces.data) return;
+    const selected = workspaceId
+      ? workspaces.data.find(workspace => workspace.id === workspaceId)
+      : undefined;
+    if (!selected) setWorkspaceId(workspaces.data[0]?.id);
+  }, [workspaceId, workspaceSelectionLoaded, workspaces.data]);
+  useEffect(() => {
+    if (!workspaceSelectionLoaded) return;
     if (!workspaceId) {
       setAdmittedWorkspaceId(undefined);
       return;
     }
     selectAgenticWorkspace(workspaceId);
     setAdmittedWorkspaceId(workspaceId);
-  }, [workspaceId]);
-
-  async function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!workspaceId || !title.trim()) return;
-    await createReview({ workspaceId, title: title.trim() });
-    setTitle('Review another assistant result');
-  }
+  }, [workspaceId, workspaceSelectionLoaded]);
 
   return (
     <div>
       <PageHeader
         eyebrow="Durable attention"
         title="Inbox"
-        description="Review requests survive reload and reconnect. Your action sends only typed application input; Applik8s derives the actor and authorization receipt."
+        description="Real approvals and decisions requested by agent work appear here, survive reload, and stay connected to the document that needs attention."
       />
-
       <Card className="mb-6">
-        <div className="grid gap-4 lg:grid-cols-[14rem_1fr_auto] lg:items-end">
+        <div className="grid gap-4 sm:grid-cols-[14rem_1fr] sm:items-end">
           <label className="text-sm font-medium text-stone-700">
             Workspace
-            <select
-              className="mt-2 w-full rounded-xl border border-stone-300 bg-white px-3 py-2.5 text-sm"
-              value={workspaceId ?? ''}
-              onChange={event => setWorkspaceId(event.currentTarget.value)}
-            >
+            <Select className="mt-2" value={workspaceId ?? ''} onChange={event => setWorkspaceId(event.currentTarget.value)}>
               <option value="">Choose a workspace</option>
-              {(workspaces.data ?? []).map(workspace => (
-                <option key={workspace.id} value={workspace.id}>
-                  {workspace.name}
-                </option>
-              ))}
-            </select>
+              {(workspaces.data ?? []).map(workspace => <option key={workspace.id} value={workspace.id}>{workspace.name}</option>)}
+            </Select>
           </label>
-          <form className="contents" onSubmit={submit}>
-            <label className="text-sm font-medium text-stone-700">
-              Example decision
-              <Input
-                className="mt-2"
-                value={title}
-                onChange={event => setTitle(event.currentTarget.value)}
-                aria-label="Decision title"
-              />
-            </label>
-            <Button
-              type="submit"
-              disabled={
-                !workspaceId
-                || admittedWorkspaceId !== workspaceId
-                || !title.trim()
-                || createReview.pending
-              }
-            >
-              {createReview.pending ? 'Starting…' : 'Start durable review'}
-            </Button>
-          </form>
+          <p className="text-sm leading-6 text-stone-600">Request review from a document when it is ready for an owner or administrator decision. Inbox is intentionally quiet when no workflow needs you.</p>
         </div>
-        {createReview.error ? (
-          <p className="mt-3 text-sm text-red-700" role="alert">
-            {createReview.error.message}
-          </p>
-        ) : null}
-        {workspaces.phase !== 'loading' && (workspaces.data ?? []).length === 0 ? (
-          <p className="mt-3 text-sm text-amber-800">
-            Create a workspace first. Decision authority is scoped to its owner and administrators.
-          </p>
-        ) : null}
+        {workspaceSelectionLoaded && workspaces.phase !== 'loading' && (workspaces.data ?? []).length === 0 ? <p className="mt-3 text-sm text-amber-800">Create a workspace first. Decision authority is scoped to its owner and administrators.</p> : null}
       </Card>
-
-      {admittedWorkspaceId ? (
-        <WorkspaceInbox workspaceId={admittedWorkspaceId} />
-      ) : workspaces.phase === 'loading' ? (
-        <Skeleton className="h-44" />
-      ) : (workspaces.data ?? []).length > 0 ? (
-        <EmptyState
-          title="Choose a workspace"
-          description="Inbox queries and signal subscriptions start only after the workspace authority boundary is selected."
-        />
-      ) : null}
+      {admittedWorkspaceId ? <WorkspaceInbox workspaceId={admittedWorkspaceId} /> : !workspaceSelectionLoaded || workspaces.phase === 'loading' ? <Skeleton className="h-44" /> : (workspaces.data ?? []).length > 0 ? <EmptyState title="Choose a workspace" description="Select a workspace to see review requests waiting for you." /> : null}
     </div>
   );
 }
 
 function WorkspaceInbox({ workspaceId }: { readonly workspaceId: string }) {
   const [tab, setTab] = useState<InboxTab>('attention');
-  const signals = useDecisionReviewSignals();
+  const signals = useDecisionReviewSignals(workspaceId);
   const inbox = DecisionInbox({ workspaceId }).useQuery();
-
   const reviews = useMemo(() => (inbox.data ?? []).filter(review => {
     if (tab === 'attention') return review.state === 'pending';
     if (tab === 'resolved') return review.state !== 'pending';
     return true;
   }), [inbox.data, tab]);
-  useProductJourneyStep(
-    'review-inbox',
-    inbox.data !== undefined && signals.loading === false,
-  );
 
   return (
     <>
-
       <div className="mb-5 flex gap-2" role="tablist" aria-label="Decision state">
-        {([
-          ['attention', 'Needs attention'],
-          ['resolved', 'Resolved'],
-          ['all', 'All'],
-        ] as const).map(([value, label]) => (
-          <Button
-            key={value}
-            type="button"
-            variant={tab === value ? 'primary' : 'secondary'}
-            role="tab"
-            aria-selected={tab === value}
-            onClick={() => setTab(value)}
-          >
-            {label}
-          </Button>
-        ))}
+        {([['attention', 'Needs attention'], ['resolved', 'Resolved'], ['all', 'All']] as const).map(([value, label]) => <Button key={value} type="button" variant={tab === value ? 'primary' : 'secondary'} role="tab" aria-selected={tab === value} onClick={() => setTab(value)}>{label}</Button>)}
       </div>
-
-      {signals.error ? (
-        <Card surface="unstyled" className="mb-4 border-red-200 bg-red-50 text-sm text-red-800" role="alert">
-          {signals.error.message}
-        </Card>
-      ) : null}
-      {signals.loading || (workspaceId && !inbox.data) ? <Skeleton className="h-44" /> : null}
-
+      {signals.error ? <Card surface="unstyled" className="mb-4 border-red-200 bg-red-50 text-sm text-red-800" role="alert">{signals.error.message}</Card> : null}
+      {signals.loading || !inbox.data ? <Skeleton className="h-44" /> : null}
       {tab !== 'resolved' && signals.items.length > 0 ? (
         <section className="mb-8 space-y-3" aria-labelledby="live-decisions">
-          <h2 id="live-decisions" className="text-sm font-semibold uppercase tracking-[0.16em] text-stone-500">
-            Live decision signals
-          </h2>
-          {signals.items.map(review => (
-            <Card
-              key={review.id}
-              role="group"
-              aria-label={`Decision ${review.input.title}`}
-              className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between"
-            >
-              <div>
-                <div className="flex flex-wrap items-center gap-2">
-                  <h3 className="font-semibold text-stone-950">{review.input.title}</h3>
-                  <Badge tone="warning">Needs attention</Badge>
-                </div>
-                <p className="mt-1 text-sm text-stone-600">
-                  Issued by workflow · expires {new Date(review.expiresAt).toLocaleString()}
-                </p>
-              </div>
-              <div className="flex gap-2">
-                <Button
-                  type="button"
-                  disabled={signals.pending === review.id}
-                  onClick={() => signals.resolve(review, 'approve')}
-                >
-                  Approve
-                </Button>
-                <Button
-                  type="button"
-                  variant="secondary"
-                  disabled={signals.pending === review.id}
-                  onClick={() => signals.resolve(review, 'reject')}
-                >
-                  Reject
-                </Button>
-              </div>
-            </Card>
-          ))}
+          <h2 id="live-decisions" className="text-sm font-semibold uppercase tracking-[0.16em] text-stone-500">Needs attention now</h2>
+          {signals.items.map(review => <Card key={review.id} role="group" aria-label={`Decision ${review.input.title}`} className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between"><div><div className="flex flex-wrap items-center gap-2"><h3 className="font-semibold text-stone-950">{review.input.title}</h3><Badge tone="warning">Needs attention</Badge></div><p className="mt-1 text-sm text-stone-600">Review requested · expires {new Date(review.expiresAt).toLocaleString()}</p><Link to="/app/documents/$documentId" params={{ documentId: review.input.documentId }} className="mt-2 inline-block text-sm font-semibold text-emerald-800">Open document →</Link></div><div className="flex gap-2"><Button type="button" disabled={signals.pending === review.id} onClick={() => signals.resolve(review, 'approve')}>Approve</Button><Button type="button" variant="secondary" disabled={signals.pending === review.id} onClick={() => signals.resolve(review, 'reject')}>Request changes</Button></div></Card>)}
         </section>
       ) : null}
-
-      {inbox.data && reviews.length === 0 && signals.items.length === 0 ? (
-        <EmptyState
-          title={tab === 'attention' ? 'Nothing needs your attention' : 'No decisions in this view'}
-          description="Start the safe example above to see typed workflow issuance, SSE delivery, durable waiting, and receipt-backed resolution in one small path."
-        />
-      ) : null}
+      {inbox.data && reviews.length === 0 && signals.items.length === 0 ? <EmptyState title={tab === 'attention' ? 'Nothing needs your attention' : 'No decisions in this view'} description="When someone requests review from a document, the durable decision will appear here and inline with the originating work." action={<Button asChild><Link to="/app/documents">Browse documents</Link></Button>} /> : null}
       <div className="space-y-3">
-        {reviews.map(item => (
-          <Card
-            key={item.id}
-            role="group"
-            aria-label={`Review ${item.title}`}
-            className="flex items-center justify-between gap-4"
-          >
-            <div>
-              <div className="flex flex-wrap items-center gap-2">
-                <h2 className="font-semibold">{item.title}</h2>
-                <Badge tone={item.state === 'pending' ? 'warning' : 'neutral'}>
-                  {item.state}
-                </Badge>
-              </div>
-              <p className="mt-1 text-sm text-stone-600">
-                Requested {new Date(item.createdAt).toLocaleString()}
-              </p>
-              {item.decidedByPrincipalId ? (
-                <p className="mt-1 text-xs text-stone-500">
-                  Actor {item.decidedByPrincipalId} · authorization receipt retained
-                </p>
-              ) : null}
-            </div>
-          </Card>
-        ))}
+        {reviews.map(item => <Card key={item.id} role="group" aria-label={`Review record: ${item.title}`} className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"><div><div className="flex flex-wrap items-center gap-2"><h2 className="font-semibold">{item.title}</h2><Badge tone={item.state === 'pending' ? 'warning' : item.state === 'approved' ? 'success' : 'neutral'}>{item.state}</Badge></div><p className="mt-1 text-sm text-stone-600">Requested {new Date(item.createdAt).toLocaleString()}</p>{item.decidedByPrincipalId ? <p className="mt-1 text-xs text-stone-500">Decision recorded with actor · authorization receipt retained</p> : null}</div><Link to="/app/documents/$documentId" params={{ documentId: item.documentId }} className="text-sm font-semibold text-emerald-800">View document →</Link></Card>)}
       </div>
     </>
   );
 }
 
-function useDecisionReviewSignals() {
+function useDecisionReviewSignals(workspaceId: string) {
   const [items, setItems] = useState<readonly ReviewIssuance[]>([]);
   const [pending, setPending] = useState<string>();
   const [error, setError] = useState<Error>();
@@ -262,17 +124,16 @@ function useDecisionReviewSignals() {
     const controller = new AbortController();
     void (async () => {
       try {
-        const initial = await DecisionReviewSignal.subscribe({
-          signal: controller.signal,
-        }).replay({ limit: 100, signal: controller.signal });
-        setItems(uniqueReviews(initial.items));
+        const initial = await DecisionReviewSignal.subscribe({ signal: controller.signal }).replay({ limit: 100, signal: controller.signal });
+        setItems(uniqueReviews(initial.items.filter(
+          review => review.input.workspaceId === workspaceId,
+        )));
         setLoading(false);
-        const live = DecisionReviewSignal.subscribe({
-          after: initial.cursor,
-          signal: controller.signal,
-        });
+        const live = DecisionReviewSignal.subscribe({ after: initial.cursor, signal: controller.signal });
         for await (const review of live) {
-          setItems(current => uniqueReviews([review, ...current]));
+          if (review.input.workspaceId === workspaceId) {
+            setItems(current => uniqueReviews([review, ...current]));
+          }
         }
       } catch (cause) {
         if (!controller.signal.aborted) {
@@ -282,7 +143,7 @@ function useDecisionReviewSignals() {
       }
     })();
     return () => controller.abort();
-  }, []);
+  }, [workspaceId]);
 
   return {
     items,
@@ -294,17 +155,9 @@ function useDecisionReviewSignals() {
       setError(undefined);
       try {
         const result = action === 'approve'
-          ? await review.signal.approve(
-              { comment: 'Approved from the generated product Inbox.' },
-              { idempotencyKey: `${review.id}:approve` },
-            )
-          : await review.signal.reject(
-              { reason: 'Rejected from the generated product Inbox.' },
-              { idempotencyKey: `${review.id}:reject` },
-            );
-        if (result.status === 'resolved' || result.status === 'alreadyResolved') {
-          setItems(current => current.filter(candidate => candidate.id !== review.id));
-        }
+          ? await review.signal.approve({ comment: 'Approved from Inbox.' }, { idempotencyKey: `${review.id}:approve` })
+          : await review.signal.reject({ reason: 'Changes requested from Inbox.' }, { idempotencyKey: `${review.id}:reject` });
+        if (result.status === 'resolved' || result.status === 'alreadyResolved') setItems(current => current.filter(candidate => candidate.id !== review.id));
       } catch (cause) {
         setError(cause instanceof Error ? cause : new Error(String(cause)));
       } finally {
@@ -315,6 +168,5 @@ function useDecisionReviewSignals() {
 }
 
 function uniqueReviews(reviews: readonly ReviewIssuance[]): readonly ReviewIssuance[] {
-  return [...new Map(reviews.map(review => [review.id, review])).values()]
-    .sort((left, right) => right.issuedAt.localeCompare(left.issuedAt));
+  return [...new Map(reviews.map(review => [review.id, review])).values()].sort((left, right) => right.issuedAt.localeCompare(left.issuedAt));
 }

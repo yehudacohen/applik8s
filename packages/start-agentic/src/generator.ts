@@ -3,8 +3,8 @@ import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
   mkdir,
-  readFile,
   readdir,
+  readFile,
   stat,
   writeFile,
 } from 'node:fs/promises';
@@ -263,6 +263,7 @@ async function updateGeneratedPackage(
     dependencies?: Record<string, string>;
     devDependencies?: Record<string, string>;
     applik8s?: Record<string, string>;
+    imports?: Record<string, string>;
   };
   const managed = managedApplicationAgenticStartPackage(
     projectName,
@@ -276,6 +277,7 @@ async function updateGeneratedPackage(
     ...managed.scripts,
   };
   manifest.applik8s = { ...managed.applik8s };
+  manifest.imports = { ...manifest.imports, ...managed.imports };
   manifest.dependencies = {
     ...manifest.dependencies,
     ...managed.dependencies,
@@ -291,6 +293,7 @@ interface ManagedApplicationAgenticStartPackage {
   readonly name: string;
   readonly scripts: Readonly<Record<string, string>>;
   readonly applik8s: Readonly<Record<string, string>>;
+  readonly imports: Readonly<Record<string, string>>;
   readonly dependencies: Readonly<Record<string, string>>;
   readonly devDependencies: Readonly<Record<string, string>>;
 }
@@ -304,9 +307,14 @@ function managedApplicationAgenticStartPackage(
   const maintainedDependencies = {
     '@applik8s/approvals': version,
     '@applik8s/artifacts': version,
+    '@applik8s/documents': version,
+    '@applik8s/agents': version,
+    '@applik8s/knowledge': version,
+    '@applik8s/integrations': version,
     '@applik8s/billing': version,
     '@applik8s/billing-stripe': version,
     '@applik8s/conversations': version,
+    '@applik8s/data-lifecycle': version,
     '@applik8s/evals': version,
     '@applik8s/identity': version,
     '@applik8s/notifications': version,
@@ -324,7 +332,7 @@ function managedApplicationAgenticStartPackage(
       lint: 'biome lint src test vite.config.ts vitest.config.ts',
       'app:check': 'applik8s build src/application.ts --typekro --composition-name application --out-dir .applik8s/check',
       'db:check': 'drizzle-kit check',
-      check: 'bun run typecheck && bun run lint && bun run test && bun run app:check && bun run db:check',
+      check: 'bun run typecheck && bun run lint && bun run test && bun run build && bun run app:check && bun run db:check',
       'db:generate': 'drizzle-kit generate',
       doctor: 'applik8s doctor',
       plan: 'bun run build && applik8s plan',
@@ -340,6 +348,11 @@ function managedApplicationAgenticStartPackage(
       instance: 'kubernetes/application.yaml',
       outDir: '.applik8s/deploy',
       ...(context?.trim() ? { context: context.trim() } : {}),
+    }),
+    imports: Object.freeze({
+      '#components/*': './src/components/*.tsx',
+      '#lib/*': './src/lib/*.ts',
+      '#hooks/*': './src/hooks/*.ts',
     }),
     dependencies: Object.freeze({
       '@tanstack/react-router': applicationAgenticStartDefinition.compatibility.tanstackRouter,
@@ -359,11 +372,20 @@ function managedApplicationAgenticStartPackage(
           '@applik8s/search': version,
         }
         : {}),
-      '@tanstack/ai': '0.42.0',
+      '@tanstack/ai': '0.44.1',
+      '@tanstack/ai-persistence': '0.1.4',
       '@tanstack/ai-react': applicationAgenticStartDefinition.compatibility.tanstackAIReact,
-      arktype: '^2.1.20',
+      arktype: '2.2.1',
+      'class-variance-authority': '0.7.1',
+      clsx: '2.1.1',
       'drizzle-orm': '^0.45.1',
+      'lucide-react': '1.31.0',
       postgres: '^3.4.7',
+      'radix-ui': '1.6.7',
+      'react-markdown': '10.1.0',
+      'remark-gfm': '4.0.1',
+      'tailwind-merge': '3.6.0',
+      'tw-animate-css': '1.4.0',
     }),
     devDependencies: Object.freeze({
       '@tanstack/router-cli': applicationAgenticStartDefinition.compatibility.tanstackRouterCli,
@@ -373,6 +395,7 @@ function managedApplicationAgenticStartPackage(
       '@tailwindcss/vite': '4.3.3',
       'drizzle-kit': '0.31.10',
       nitro: agenticStartNitroVersion,
+      shadcn: '4.18.0',
       vitest: '^3.2.4',
       tailwindcss: '4.3.3',
     }),
@@ -413,6 +436,7 @@ export function projectApplicationAgenticStartManagedPackage(
     name: typeof parsed.name === 'string' ? parsed.name : '',
     scripts: select(parsed.scripts, Object.keys(shape.scripts)),
     applik8s: select(parsed.applik8s, Object.keys(shape.applik8s)),
+    imports: select(parsed.imports, Object.keys(shape.imports)),
     dependencies: select(parsed.dependencies, Object.keys(shape.dependencies)),
     devDependencies: select(parsed.devDependencies, Object.keys(shape.devDependencies)),
   };
@@ -444,12 +468,21 @@ export async function renderApplicationAgenticStartTemplates(
   const files = await readTemplateDirectory(templateRoot);
   const kind = applicationKind(projectName);
   const rendered = Object.fromEntries(
-    Object.entries(files).map(([path, source]) => [
-      path,
-      source
+    Object.entries(files).map(([path, source]) => {
+      const projectSource = source
         .replaceAll('Applik8sTemplateProject', kind)
-        .replaceAll('applik8s-template-project', projectName),
-    ]),
+        .replaceAll('applik8s-template-project', projectName);
+      // The checked-in template is nested below Applik8s's own Biome root, but
+      // the generated application must be a self-contained project when it is
+      // created outside this monorepo. Materialize that ownership boundary at
+      // generation time so neither environment depends on ambient config.
+      return [
+        path,
+        path === 'biome.json'
+          ? projectSource.replace('"root": false', '"root": true')
+          : projectSource,
+      ];
+    }),
   );
   return Object.freeze(rendered);
 }

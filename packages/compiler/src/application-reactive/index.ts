@@ -4,7 +4,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { gzipSync } from 'node:zlib';
-import type { ApplicationAIAgentNode, ApplicationCommandHandlerNode, ApplicationCommandNode, ApplicationGatewayNode, ApplicationGraph, ApplicationHandlerDependencies, ApplicationIndexNode, ApplicationModelNode, ApplicationOperationCatalog, ApplicationProfiledCallbackContract, ApplicationProjectionNode, ApplicationProviderNode, ApplicationQueryNode, ApplicationReactiveDatabaseRuntimeContract, ApplicationSearchIndexPlan, ApplicationSerializedCallbackContract, ApplicationStreamNode, ApplicationStreamProcessorNode, ApplicationSubscriptionNode, ApplicationWorkloadAuthorityEnvelope, JsonObject } from '@applik8s/core';
+import type { ApplicationAIAgentNode, ApplicationCommandHandlerNode, ApplicationCommandNode, ApplicationGatewayNode, ApplicationGraph, ApplicationHandlerDependencies, ApplicationIdentityReference, ApplicationIndexNode, ApplicationModelNode, ApplicationOperationCatalog, ApplicationProfiledCallbackContract, ApplicationProjectionNode, ApplicationProviderNode, ApplicationQueryNode, ApplicationReactiveDatabaseRuntimeContract, ApplicationSearchIndexPlan, ApplicationSerializedCallbackContract, ApplicationStreamNode, ApplicationStreamProcessorNode, ApplicationSubscriptionNode, ApplicationWorkloadAuthorityEnvelope, JsonObject } from '@applik8s/core';
 import { build } from 'esbuild';
 import ts from 'typescript';
 import { generatedCallbackFactoryModule } from '../application-callback-module.js';
@@ -13,6 +13,7 @@ import { emitGeneratedApplicationContainer } from '../application-containers/ind
 import { applicationGraphAllConditions, applicationGraphBooleanCondition, applicationGraphJsonStringArray, applicationGraphNumberValue, applicationGraphServiceHost, applicationGraphStringValue } from '../application-installation-values.js';
 import type { ApplicationOperationPlacementReceiver } from '../application-mcp/index.js';
 import { compileApplicationMcpPlacementRoutes, compileApplicationOperationPlacementReceiver } from '../application-mcp/index.js';
+import { applicationObjectStorageEnvironment } from '../application-object-storage-environment.js';
 import { applicationStaticAuthorityManifest, compileApplicationOperationCatalog, compileApplicationWorkloadAuthority } from '../application-operations/index.js';
 import { applik8sWorkspaceSourcePlugin } from '../bundling/index.js';
 
@@ -236,29 +237,37 @@ function compileApplicationAgentPlacementRoutes(
   return graph.nodes
     .filter((node): node is ApplicationAIAgentNode => node.kind === 'aiAgent')
     .flatMap((agent) =>
-      agent.tools.flatMap((tool) => {
-        if (tool.local) return [];
-        const operation = operations.get(tool.operationId);
+      [
+        ...agent.tools.flatMap((tool) => tool.local ? [] : [{
+          operationId: tool.operationId,
+          dependency: 'tool',
+        } as const]),
+        ...(agent.operations ?? []).map((operation) => ({
+          operationId: operation.operationId,
+          dependency: 'function-native operation',
+        } as const)),
+      ].flatMap((reference) => {
+        const operation = operations.get(reference.operationId);
         if (!operation) {
           throw new Error(
-            `Application agent ${agent.name} exposes unavailable operation ${tool.operationId}.`,
+            `Application agent ${agent.name} exposes unavailable ${reference.dependency} ${reference.operationId}.`,
           );
         }
         const envelope = workloadAuthority.find(
           (candidate) =>
             candidate.workloadIdentity.subject === agent.id
             && candidate.serviceIdentity?.id === agent.serviceIdentity.id
-            && candidate.operationId === tool.operationId,
+            && candidate.operationId === reference.operationId,
         );
         if (!envelope || envelope.audiences.length === 0) {
           throw new Error(
-            `Application agent ${agent.name} tool ${tool.operationId} has no compiler-proven internal audience.`,
+            `Application agent ${agent.name} ${reference.dependency} ${reference.operationId} has no compiler-proven internal audience.`,
           );
         }
         const receiver = compileApplicationOperationPlacementReceiver(
           graph,
           operation,
-          `Application agent ${agent.name} tool ${operation.id}`,
+          `Application agent ${agent.name} ${reference.dependency} ${operation.id}`,
         );
         return envelope.audiences.map((audience) => ({
           operationId: operation.id,
@@ -643,6 +652,11 @@ async function emitStreamProcessor(
     operationCatalog,
   );
   const queries = streamProcessorQueryContracts(graph, processor);
+  const serviceIdentity = inferredStreamProcessorServiceIdentity(
+    graph,
+    processor,
+    operationCatalog,
+  );
   if (processor.invocation === 'batch' && operations.length > 0) {
     throw new Error(
       `Generated batch processor ${processor.id} reaches durable model operations. Batch command authority requires an explicit per-item identity and is not inferred from one frozen batch.`,
@@ -681,9 +695,11 @@ async function emitStreamProcessor(
       operationCatalog,
       operations,
       queries,
+      serviceIdentity,
     ),
   );
   const includeWhen = applicationGraphAllConditions(processor.enabled, workflow?.provider.config?.enabled);
+  const usesObjectStorage = streamProcessorUsesObjectStorage(processor);
   return bundleReactive({
     graphName: graph.metadata.name,
     name,
@@ -698,6 +714,13 @@ async function emitStreamProcessor(
       { name: processor.database.connectionEnvName, valueFrom: { secretKeyRef: { name: processor.database.secretName, key: processor.database.secretKey } } },
       { name: 'APPLIK8S_PROCESSOR_CONCURRENCY', value: reactiveEnvironmentInteger(processor.deployment.concurrency) },
       { name: 'APPLIK8S_PROCESSOR_MAX_ACK_PENDING', value: reactiveEnvironmentInteger(processor.deployment.maxAckPending) },
+      ...(usesObjectStorage
+        ? applicationObjectStorageEnvironment(
+            graph,
+            namespace,
+            `Generated stream processor ${processor.id}`,
+          )
+        : []),
       ...streamProcessorScheduleEnvironment(workflow),
       ...(queries.length > 0 ? [{
         name: 'APPLIK8S_CONTEXT_SECRET',
@@ -712,6 +735,14 @@ async function emitStreamProcessor(
     ...(workflow ? { workflowToken: streamProcessorWorkflowCredential(workflow) } : {}),
     ...(includeWhen !== undefined ? { includeWhen } : {}),
   });
+}
+
+function streamProcessorUsesObjectStorage(
+  processor: ApplicationStreamProcessorNode,
+): boolean {
+  return (processor.providerBindings ?? []).some(
+    (binding) => binding.provider.interface === 'ObjectStorage',
+  );
 }
 
 interface StreamProcessorQueryContract {
@@ -815,6 +846,54 @@ function streamProcessorOperationContracts(
       },
     };
   });
+}
+
+/**
+ * Resolves the least-ceremony workload identity for a function-native event
+ * handler from the authority it actually calls. Application authors declare
+ * the identity once through ServiceIdentity.can(...); the compiler binds it to
+ * the processor only when one service identity covers every inferred effect.
+ */
+function inferredStreamProcessorServiceIdentity(
+  graph: ApplicationGraph,
+  processor: ApplicationStreamProcessorNode,
+  operationCatalog: ApplicationOperationCatalog,
+): ApplicationIdentityReference | undefined {
+  const requiredOperationIds = new Set<string>([
+    ...(processor.operationBindings ?? []).map((binding) => binding.operationId),
+    ...(processor.queryBindings ?? []).map((binding) => {
+      const operation = operationCatalog.operations.find(
+        (candidate) => candidate.placement.nodeId === binding.query.nodeId,
+      );
+      if (!operation) {
+        throw new Error(
+          `Generated stream processor ${processor.id} view ${binding.query.nodeId} is absent from the operation catalog.`,
+        );
+      }
+      return operation.id;
+    }),
+  ]);
+  if (requiredOperationIds.size === 0) return undefined;
+  const manifest = applicationStaticAuthorityManifest(graph);
+  if (!manifest) return undefined;
+  const serviceIdentities = manifest.identities.filter(
+    (identity) => identity.kind === 'service'
+      && identity.subject !== 'application-authority',
+  );
+  const candidates = serviceIdentities.filter((identity) => {
+    const granted = new Set<string>(
+      manifest.grants
+        .filter((grant) => grant.identity.id === identity.id)
+        .flatMap((grant) => grant.operationIds),
+    );
+    return [...requiredOperationIds].every((operationId) => granted.has(operationId));
+  });
+  if (candidates.length > 1) {
+    throw new Error(
+      `Generated stream processor ${processor.id} has ambiguous service authority: ${candidates.map((identity) => identity.id).join(', ')} each grant every inferred operation. Narrow the service grants so one workload identity owns this handler.`,
+    );
+  }
+  return candidates[0];
 }
 
 interface StreamProcessorWorkflowContract {
@@ -1482,11 +1561,18 @@ function generatedSearchQueryBinding(
     );
   }
   const id = query.publicId ?? `${query.name}.${query.version}`;
-  const authorizationWhere = searchAuthorizationWhere(contract);
-  return `{ kind: 'applicationQuery', id: ${JSON.stringify(id)}, name: ${JSON.stringify(query.name)}, version: ${JSON.stringify(query.version)}, input: schema(${JSON.stringify(query.input.jsonSchema)}, ${JSON.stringify(`${id}.input`)}), output: schema(${JSON.stringify(query.output.jsonSchema)}, ${JSON.stringify(`${id}.output`)}), database: ${databaseVariable(database.name)}Binding, sourceRuntime: ${sourceRuntime}, trustedContext: [], reads: ${JSON.stringify(modelNames.map((name) => ({ $model: { name } })))}, budgets: ${JSON.stringify(query.budgets)}, authorize: async () => true, run: async (context, principal, input, source) => source.execute(input, { principalId: principal.id, contextDigest: applicationAdmittedContextDigest(context.admittedContext), authorizationVersion: principal.authorityRevision, where: ${authorizationWhere} }) }`;
+  const access = database.access;
+  const contexts = access
+    ? [`{ kind: 'applicationTrustedContext', name: ${JSON.stringify(access.context)}, schema: schema(${JSON.stringify(access.contextSchema)}, ${JSON.stringify(access.context)}), contract: { source: 'identity-provider', trust: 'server-admitted', jsonSchema: ${JSON.stringify(access.contextSchema)} } }`]
+    : [];
+  const authorizationWhere = searchAuthorizationWhere(contract, database);
+  return `{ kind: 'applicationQuery', id: ${JSON.stringify(id)}, name: ${JSON.stringify(query.name)}, version: ${JSON.stringify(query.version)}, input: schema(${JSON.stringify(query.input.jsonSchema)}, ${JSON.stringify(`${id}.input`)}), output: schema(${JSON.stringify(query.output.jsonSchema)}, ${JSON.stringify(`${id}.output`)}), database: ${databaseVariable(database.name)}Binding, sourceRuntime: ${sourceRuntime}, trustedContext: [${contexts.join(', ')}], reads: ${JSON.stringify(modelNames.map((name) => ({ $model: { name } })))}, budgets: ${JSON.stringify(query.budgets)}, authorize: async () => true, run: async (context, principal, input, source) => source.execute(input, { principalId: principal.id, contextDigest: applicationAdmittedContextDigest(context.admittedContext), authorizationVersion: principal.authorityRevision, where: ${authorizationWhere} }) }`;
 }
 
-function searchAuthorizationWhere(contract: GatewaySearchContract): string {
+function searchAuthorizationWhere(
+  contract: GatewaySearchContract,
+  database: ApplicationReactiveDatabaseRuntimeContract,
+): string {
   const fields = contract.index.search.fields.filter(
     ({ authorizationRelevant }) => authorizationRelevant,
   );
@@ -1494,7 +1580,22 @@ function searchAuthorizationWhere(contract: GatewaySearchContract): string {
   const root = contract.models.find(
     ({ id }) => id === contract.index.search.root.model.nodeId,
   );
-  const access = root?.common.access;
+  if (!root) {
+    throw new Error(
+      `Generated search query ${contract.query.id} references a missing root model ${contract.index.search.root.model.nodeId}.`,
+    );
+  }
+  const access = root.common.access ?? (database.access
+    ? {
+        context: database.access.context,
+        providerField: database.access.column,
+      }
+    : root.runtime?.nativeRelational?.access
+      ? {
+          context: root.runtime.nativeRelational.access.context,
+          providerField: root.runtime.nativeRelational.access.property,
+        }
+      : undefined);
   if (!access) {
     throw new Error(
       `Generated search query ${contract.query.id} marks authorization fields but its root model has no trusted access context.`,
@@ -2415,11 +2516,38 @@ function generatedStreamProcessorSource(
   operationCatalog: ApplicationOperationCatalog,
   operations: readonly StreamProcessorOperationContract[],
   queries: readonly StreamProcessorQueryContract[],
+  serviceIdentity: ApplicationIdentityReference | undefined,
 ): string {
-  const workflowImport = workflow ? "import { AsyncLocalStorage } from 'node:async_hooks';\nimport { applicationWorkflowCausalPrincipalMetadata } from '@applik8s/applik8s/workflow-runtime';\nimport { installApplicationWorkflowRuntimeResolver } from '@applik8s/applik8s/workflow-runtime-resolvers';\nimport { createHatchetWorkflowRuntime } from '@applik8s/runtime-hatchet';\nimport { normalizeSchema } from '@applik8s/sdk/schema-runtime';" : '';
-  const causalImport = workflow || queries.length > 0
-    ? "import { applicationCausalPrincipalContext } from '@applik8s/core';"
+  const usesObjectStorage = streamProcessorUsesObjectStorage(processor);
+  const objectStorageImports = usesObjectStorage
+    ? "import { installApplicationObjectStorageRuntimeResolver } from '@applik8s/applik8s/workflow-runtime-resolvers';\nimport { createS3ApplicationObjectStorageRuntime } from '@applik8s/runtime-s3';"
     : '';
+  const objectStorageDeclarations = usesObjectStorage
+    ? `
+const objectStorageProvider = Object.freeze({
+  kind: 's3',
+  bucket: requiredEnv('APPLIK8S_OBJECT_STORAGE_BUCKET'),
+  region: requiredEnv('APPLIK8S_OBJECT_STORAGE_REGION'),
+  ...(process.env.APPLIK8S_OBJECT_STORAGE_PREFIX ? { prefix: process.env.APPLIK8S_OBJECT_STORAGE_PREFIX } : {}),
+  ...(process.env.APPLIK8S_OBJECT_STORAGE_ENDPOINT ? { endpoint: process.env.APPLIK8S_OBJECT_STORAGE_ENDPOINT } : {}),
+  forcePathStyle: process.env.APPLIK8S_OBJECT_STORAGE_FORCE_PATH_STYLE === 'true',
+});
+const objectStorageRuntimes = new Map();
+installApplicationObjectStorageRuntimeResolver((binding) => {
+  if (process.env.APPLIK8S_OBJECT_STORAGE_ENABLED === 'false') return undefined;
+  const existing = objectStorageRuntimes.get(binding.name);
+  if (existing) return existing;
+  const runtime = createS3ApplicationObjectStorageRuntime({
+    store: binding.name,
+    provider: objectStorageProvider,
+  });
+  objectStorageRuntimes.set(binding.name, runtime);
+  return runtime;
+});
+`
+    : '';
+  const workflowImport = workflow ? "import { AsyncLocalStorage } from 'node:async_hooks';\nimport { applicationWorkflowCausalPrincipalMetadata } from '@applik8s/applik8s/workflow-runtime';\nimport { installApplicationWorkflowRuntimeResolver } from '@applik8s/applik8s/workflow-runtime-resolvers';\nimport { createHatchetWorkflowRuntime } from '@applik8s/runtime-hatchet';\nimport { normalizeSchema } from '@applik8s/sdk/schema-runtime';" : '';
+  const causalImport = "import { applicationCausalPrincipalContext } from '@applik8s/core';";
   const postgresImport = queries.length > 0 || Boolean(stream.signal)
     ? "import postgres from 'postgres';"
     : '';
@@ -2439,7 +2567,7 @@ import { createApplicationRelationalContext, withApplicationDatabaseRuntimeResol
     `import { callback as ${callbackVariable(query.id, 'run')} } from './${callbackName(query.id, 'run')}.generated.js';`,
   ]).join('\n');
   const functionNativeImport = hasFunctionNativeRuntime
-    ? "import { applicationCommandPrincipalValues, applicationPostgresModelReadClients, createApplicationFunctionNativeEventHandle, createApplicationFunctionNativeOperationHandle, editApplicationNativeModelObject, executeFunctionNativePostgresModelEdit, executeFunctionNativePostgresTransaction, findApplicationNativeModelObjects, getApplicationNativeModelObject, requireApplicationNativeModelObject, withApplicationNativeModelReadClients, withApplicationNativeModelTransactionRuntime } from '@applik8s/applik8s/stream-worker-runtime';\nimport { runApplicationModelBeforeCommit } from '@applik8s/applik8s/processor-runtime';"
+    ? "import { applicationCommandPrincipalValues, applicationPostgresModelReadClients, createApplicationFunctionNativeEventHandle, createApplicationFunctionNativeOperationHandle, currentFunctionNativePostgresDatabase, currentFunctionNativePostgresTransaction, editApplicationNativeModelObject, executeFunctionNativePostgresModelEdit, executeFunctionNativePostgresTransaction, findApplicationNativeModelObjects, getApplicationNativeModelObject, requireApplicationNativeModelObject, withApplicationNativeModelReadClients, withApplicationNativeModelTransactionRuntime } from '@applik8s/applik8s/stream-worker-runtime';\nimport { runApplicationModelBeforeCommit } from '@applik8s/applik8s/processor-runtime';"
     : '';
   const callableImports = (processor.callableBindings ?? []).some(
     (binding) => binding.runtime === 'notifications.request.v1',
@@ -2475,11 +2603,19 @@ function directWorkflowRuntime(context) { const requireContract = (contract) => 
     graph,
     processor,
     operations,
+    serviceIdentity,
   );
   const queryDeclarations = generatedStreamProcessorQueries(
     graph,
     processor,
     queries,
+    hasFunctionNativeRuntime,
+  );
+  const executionPrincipal = generatedStreamProcessorExecutionPrincipal(
+    graph,
+    processor,
+    queries,
+    serviceIdentity,
   );
   const authoredHandlerInvocation =
     generatedStreamProcessorAuthoredHandlerInvocation(
@@ -2516,6 +2652,7 @@ ${queryImports}
 ${functionNativeImport}
 ${callableImports}
 ${signalImports}
+${objectStorageImports}
 import { createCallback as createHandleEvent } from './handle.generated.js';
 ${queryCallbackImports}
 function requiredEnv(name) { const value = process.env[name]; if (!value) throw new Error('Missing required environment variable ' + name); return value; }
@@ -2527,10 +2664,12 @@ const databaseUrl = requiredEnv(${JSON.stringify(stream.database.connectionEnvNa
 const createSource = () => createPostgresApplicationStream({ stream, databaseUrl, principal: { id: ${JSON.stringify(`applik8s:processor:${processor.name}`)} }, includeTrustedContext: true, internalConsumer: { kind: 'processor', name: ${JSON.stringify(processor.name)} } });
 let source = createSource();
 const store = createPostgresApplicationStreamProcessorStore({ databaseUrl });
+${objectStorageDeclarations}
 ${signalRuntime.declarations}
 const processorConcurrency = requiredIntegerEnv('APPLIK8S_PROCESSOR_CONCURRENCY', 1, 64);
 const processorMaxAckPending = requiredIntegerEnv('APPLIK8S_PROCESSOR_MAX_ACK_PENDING', processorConcurrency, 65536);
 ${workflowDeclarations}
+${executionPrincipal}
 ${queryDeclarations}
 ${functionNativeDeclarations}
 ${authoredHandlerInvocation}
@@ -2551,6 +2690,7 @@ function generatedFunctionNativeStreamTransaction(
   graph: ApplicationGraph,
   processor: ApplicationStreamProcessorNode,
   operations: readonly StreamProcessorOperationContract[],
+  serviceIdentity: ApplicationIdentityReference | undefined,
 ): string {
   const transaction = processor.functionNativeTransaction;
   if (!transaction && operations.length === 0) {
@@ -2637,7 +2777,6 @@ const functionNativeCommands = Object.freeze(${JSON.stringify(executableOperatio
       },
     ])),
   })))});
-const functionNativeReadClients = await applicationPostgresModelReadClients(databaseUrl, functionNativeModels);
 function functionNativeModelSnapshot(value) { return value ? { identity: value.id, value: value.spec, ...(value.revision ? { revision: value.revision } : {}) } : undefined; }
 function functionNativeModelHandle(name) { return Object.freeze({
   get: async identity => functionNativeModelSnapshot(await getApplicationNativeModelObject(name, identity)),
@@ -2650,6 +2789,7 @@ ${streamProcessorCallableBindingsSource(processor)}
 function functionNativeDelivery(context) {
   const sourceId = context.event?.id ?? context.batch?.id;
   if (!sourceId) throw new Error('Function-native transaction requires a durable source event or frozen batch identity.');
+  const principal = processorExecutionPrincipal(context);
   return {
     id: sourceId,
     idempotencyKey: context.idempotencyKey,
@@ -2658,7 +2798,7 @@ function functionNativeDelivery(context) {
     recordedAt: context.event?.recordedAt ?? context.batch?.recordedAt,
     ...(context.event?.contextDigest ? {
       context: {
-        values: { ...context.trustedContext, ...(context.principal ? applicationCommandPrincipalValues(context.principal) : {}) },
+        values: { ...context.trustedContext, ...(principal ? applicationCommandPrincipalValues(principal) : {}) },
         digest: context.event.contextDigest,
         ...(context.event.changeScopes ? { changeScopes: context.event.changeScopes } : {}),
       },
@@ -2680,11 +2820,19 @@ function functionNativeRuntime(context) {
     }, request),
   });
 }
-const invokeWithModelReads = (input, context) =>
-  withApplicationNativeModelReadClients(
-    functionNativeReadClients,
+const invokeWithModelReads = async (input, context) => {
+  const delivery = functionNativeDelivery(context);
+  const activeTransaction = currentFunctionNativePostgresTransaction();
+  const clients = await applicationPostgresModelReadClients(
+    activeTransaction ?? databaseUrl,
+    functionNativeModels,
+    delivery.context,
+  );
+  return withApplicationNativeModelReadClients(
+    clients,
     () => invokeAuthoredHandler(input, context),
   );
+};
 const invokeHandler = (input, context) =>
   ${operations.length > 0 && transaction?.mode !== 'write'
     ? `executeFunctionNativePostgresTransaction({ bindingId: ${JSON.stringify(processor.id)}, databaseUrl, connectionModel: functionNativePrimaryModel, operations: functionNativeOperations, delivery: functionNativeDelivery(context), retry: ${JSON.stringify(processor.retry)} }, () => invokeWithModelReads(input, context))`
@@ -2850,10 +2998,13 @@ function streamProcessorNestedOperationsSource(
         return `const ${variable} = () => { throw new Error(${JSON.stringify(`Nested operation ${operation.operationId} references outbound command ${nestedCommand.id} without a local owning handler.`)}); };`;
       }
       return `const ${variable}Contract = Object.freeze(${JSON.stringify(nestedCommandDefinition(nestedCommand))});
-      const ${variable} = input => {
-        const idempotencyKey = ${owner.idempotencyKey ? `(${owner.idempotencyKey.source})(input)` : `context.id(${JSON.stringify(`nested-command:${nestedCommand.id}`)})`};
-        context.send(${variable}Contract, input, { targetKey: (${owner.key.source})(input, undefined, idempotencyKey), idempotencyKey });
-      };`;
+      const ${variable} = Object.assign(
+        input => {
+          const idempotencyKey = ${owner.idempotencyKey ? `(${owner.idempotencyKey.source})(input)` : `context.id(${JSON.stringify(`nested-command:${nestedCommand.id}`)})`};
+          context.send(${variable}Contract, input, { targetKey: (${owner.key.source})(input, undefined, idempotencyKey), idempotencyKey });
+        },
+        ${variable}Contract,
+      );`;
     }).join('\n      ');
     const bindingEntries = [
       ...modelBindings.map(({ identifier, variable }) => ({ path: identifier, value: variable })),
@@ -3123,10 +3274,70 @@ function streamProcessorCallbackBindingsSource(
     .join(', ')} }`;
 }
 
+function generatedStreamProcessorExecutionPrincipal(
+  graph: ApplicationGraph,
+  processor: ApplicationStreamProcessorNode,
+  queries: readonly StreamProcessorQueryContract[],
+  serviceIdentity: ApplicationIdentityReference | undefined,
+): string {
+  const bindings = queries.map((binding) => ({
+    kind: 'query' as const,
+    alias: binding.identifier,
+    target: binding.query,
+  }));
+  const identity = serviceIdentity
+    ? JSON.stringify(serviceIdentity)
+    : "Object.freeze({ id: 'identity:' + executionId, kind: 'execution', issuer: "
+      + JSON.stringify(`applik8s://${graph.metadata.name}`)
+      + ", subject: executionId })";
+  const service = serviceIdentity
+    ? `serviceIdentity: Object.freeze(${JSON.stringify(serviceIdentity)}),`
+    : '';
+  return `
+function processorExecutionPrincipal(context) {
+  const source = context.principal;
+  const event = context.event;
+  const sourceId = event?.id ?? context.batch?.id;
+  if (!sourceId) throw new Error('applik8s-processor-execution-principal-required');
+  const workloadIdentity = Object.freeze({ id: ${JSON.stringify(`workload:${processor.id}`)}, kind: 'workload', issuer: ${JSON.stringify(`applik8s://${graph.metadata.name}`)}, subject: ${JSON.stringify(processor.id)} });
+  const causal = source
+    ? applicationCausalPrincipalContext(source)
+    : Object.freeze({ id: workloadIdentity.id, identity: workloadIdentity, grantIds: Object.freeze([]) });
+  const executionId = ${JSON.stringify(processor.id)} + ':' + sourceId;
+  return Object.freeze({
+    id: 'execution:' + executionId,
+    identity: Object.freeze(${identity}),
+    kind: 'execution',
+    executionKind: 'processor',
+    executionId,
+    attempt: context.attempt,
+    workloadIdentity,
+    ${service}
+    causalPrincipalId: causal.id,
+    causalPrincipal: causal.identity,
+    causalGrantIds: Object.freeze([...causal.grantIds]),
+    authenticationMethod: 'applik8s-stream-processor/v1',
+    audience: Object.freeze([${JSON.stringify(processor.id)}]),
+    trustedContextDigest: event?.contextDigest ?? source?.trustedContextDigest ?? 'batch:' + sourceId,
+    catalogRevision: source?.catalogRevision ?? ${JSON.stringify(`static:${graph.metadata.name}`)},
+    authorityRevision: source?.authorityRevision ?? ${JSON.stringify(`static:${graph.metadata.name}:${processor.id}`)},
+    admittedAt: new Date().toISOString(),
+    deadline: new Date(Date.now() + ${processor.budgets.timeoutMs}).toISOString(),
+    cancellationRevision: 'active:' + executionId,
+    bindings: Object.freeze(${JSON.stringify(bindings)}),
+    effectiveAuthority: Object.freeze([]),
+  });
+}
+function processorAuthoredContext(context) {
+  return Object.freeze({ ...context, principal: processorExecutionPrincipal(context) });
+}`;
+}
+
 function generatedStreamProcessorQueries(
   graph: ApplicationGraph,
   processor: ApplicationStreamProcessorNode,
   bindings: readonly StreamProcessorQueryContract[],
+  functionNative: boolean,
 ): string {
   if (bindings.length === 0) {
     return 'const processorQueries = () => Object.freeze({});';
@@ -3175,44 +3386,17 @@ function processorQuerySchema(json, name) {
   };
 }
 const processorQueryContracts = Object.freeze({ ${queryContracts} });
-function processorQueryPrincipal(context) {
-  const source = context.principal;
-  const event = context.event;
-  if (!source || !event?.id) throw new Error('applik8s-processor-query-principal-required');
-  const causal = applicationCausalPrincipalContext(source);
-  const executionId = ${JSON.stringify(processor.id)} + ':' + event.id;
-  return Object.freeze({
-    id: 'execution:' + executionId,
-    identity: Object.freeze({ id: 'identity:' + executionId, kind: 'execution', issuer: ${JSON.stringify(`applik8s://${graph.metadata.name}`)}, subject: executionId }),
-    kind: 'execution',
-    executionKind: 'processor',
-    executionId,
-    attempt: context.attempt,
-    workloadIdentity: Object.freeze({ id: ${JSON.stringify(`workload:${processor.id}`)}, kind: 'workload', issuer: ${JSON.stringify(`applik8s://${graph.metadata.name}`)}, subject: ${JSON.stringify(processor.id)} }),
-    causalPrincipalId: causal.id,
-    causalPrincipal: causal.identity,
-    causalGrantIds: Object.freeze([...causal.grantIds]),
-    authenticationMethod: 'applik8s-stream-processor/v1',
-    audience: Object.freeze([${JSON.stringify(processor.id)}]),
-    trustedContextDigest: event.contextDigest ?? source.trustedContextDigest,
-    catalogRevision: source.catalogRevision,
-    authorityRevision: source.authorityRevision,
-    admittedAt: new Date().toISOString(),
-    deadline: new Date(Date.now() + ${processor.budgets.timeoutMs}).toISOString(),
-    cancellationRevision: 'active:' + executionId,
-    bindings: Object.freeze(${JSON.stringify(bindings.map((binding) => ({ kind: 'query', alias: binding.identifier, target: binding.query })))}),
-    effectiveAuthority: Object.freeze([]),
-  });
-}
 async function runProcessorQuery(id, rawInput, context) {
   const contract = processorQueryContracts[id];
   if (!contract) throw new Error('applik8s-processor-query-undeclared: ' + id);
   const input = contract.input(rawInput);
-  const principal = processorQueryPrincipal(context);
+  const principal = processorExecutionPrincipal(context);
   const allowed = await contract.authorize({ principal, context: context.trustedContext, input });
   if (!allowed) throw new Error('applik8s-processor-query-denied: ' + contract.id);
+  const activeDatabase = ${functionNative ? 'currentFunctionNativePostgresDatabase()' : 'undefined'};
+  const runtimeDatabase = activeDatabase ?? processorQueryDb;
   const relational = createApplicationRelationalContext({
-    databases: [{ binding: processorQueryDatabaseBinding, db: processorQueryDb }],
+    databases: [{ binding: processorQueryDatabaseBinding, db: runtimeDatabase }],
     admittedContext: {
       values: { ...context.trustedContext, ...applicationCommandPrincipalValues(principal) },
       digestSecret: processorQueryContextSecret,
@@ -3263,19 +3447,21 @@ function generatedStreamProcessorAuthoredHandlerInvocation(
     ? 'functionNativeBindings'
     : 'Object.freeze({})';
   if (!workflow && !queries) {
-    return `const invokeAuthoredHandler = createHandleEvent(${bindings});
+    return `const handleAuthoredEvent = createHandleEvent(${bindings});
+const invokeAuthoredHandler = (input, context) => handleAuthoredEvent(input, processorAuthoredContext(context));
 ${functionNative ? '' : 'const invokeHandler = invokeAuthoredHandler;'}`;
   }
   if (!workflow) {
-    return `const invokeAuthoredHandler = (input, context) => createHandleEvent(mergeProcessorBindings(${bindings}, processorQueries(context)))(input, context);
+    return `const invokeAuthoredHandler = (input, context) => createHandleEvent(mergeProcessorBindings(${bindings}, processorQueries(context)))(input, processorAuthoredContext(context));
 ${functionNative ? '' : 'const invokeHandler = invokeAuthoredHandler;'}`;
   }
   return `const invokeAuthoredHandler = (input, context) => {
-  const workflows = processorWorkflows(context);
-  const handleEvent = createHandleEvent(${queries ? `mergeProcessorBindings(${bindings}, processorQueries(context), workflows)` : `{ ...${bindings}, ...workflows }`});
+  const authoredContext = processorAuthoredContext(context);
+  const workflows = processorWorkflows(authoredContext);
+  const handleEvent = createHandleEvent(${queries ? `mergeProcessorBindings(${bindings}, processorQueries(authoredContext), workflows)` : `{ ...${bindings}, ...workflows }`});
   return directWorkflowScope.run(
-    directWorkflowRuntime(context),
-    () => handleEvent(input, { ...context, schedules, workflows, tasks: workflows }),
+    directWorkflowRuntime(authoredContext),
+    () => handleEvent(input, { ...authoredContext, schedules, workflows, tasks: workflows }),
   );
 };
 ${functionNative ? '' : 'const invokeHandler = invokeAuthoredHandler;'}`;
@@ -4959,7 +5145,7 @@ function gatewayAnalyticalProjectionEnvironment(contract: GatewayAnalyticalProje
 }
 
 function databaseBindingSource(database: ApplicationReactiveDatabaseRuntimeContract): string {
-  const access = database.access ? `{ kind: 'postgresRls', context: { kind: 'applicationTrustedContext', name: ${JSON.stringify(database.access.context)}, schema: schema(${JSON.stringify(database.access.contextSchema)}, ${JSON.stringify(database.access.context)}), contract: { source: 'identity-provider', trust: 'server-admitted', jsonSchema: ${JSON.stringify(database.access.contextSchema)} } }, column: ${JSON.stringify(database.access.column)}, default: 'required', setting: ${JSON.stringify(database.access.setting)} }` : 'undefined';
+  const access = database.access ? `{ kind: 'postgresRls', context: { kind: 'applicationTrustedContext', name: ${JSON.stringify(database.access.context)}, schema: schema(${JSON.stringify(database.access.contextSchema)}, ${JSON.stringify(database.access.context)}), contract: { source: 'identity-provider', trust: 'server-admitted', jsonSchema: ${JSON.stringify(database.access.contextSchema)} } }, column: ${JSON.stringify(database.access.column)}, default: ${JSON.stringify(database.access.default ?? 'required')}, setting: ${JSON.stringify(database.access.setting)} }` : 'undefined';
   return `{ kind: 'applicationDatabase', name: ${JSON.stringify(database.name)}, provider: { kind: 'postgres' }, schema: {}, ...((${access}) ? { access: ${access} } : {}) }`;
 }
 
@@ -5115,7 +5301,16 @@ function matchingClosingParenthesis(source: string, start: number): number {
   }
   return -1;
 }
-function uniqueDatabaseRuntimes(databases: readonly ApplicationReactiveDatabaseRuntimeContract[]): readonly ApplicationReactiveDatabaseRuntimeContract[] { const result = new Map<string, ApplicationReactiveDatabaseRuntimeContract>(); for (const database of databases) { const previous = result.get(database.name); if (previous && JSON.stringify(previous) !== JSON.stringify(database)) throw new Error(`Generated reactive runtimes contain conflicting database contracts named ${database.name}.`); result.set(database.name, database); } return [...result.values()].sort((left, right) => left.name.localeCompare(right.name)); }
+function uniqueDatabaseRuntimes(databases: readonly ApplicationReactiveDatabaseRuntimeContract[]): readonly ApplicationReactiveDatabaseRuntimeContract[] { const result = new Map<string, ApplicationReactiveDatabaseRuntimeContract>(); for (const database of databases) { const previous = result.get(database.name); if (previous && serializedDatabaseRuntime(previous) !== serializedDatabaseRuntime(database)) throw new Error(`Generated reactive runtimes contain conflicting database contracts named ${database.name}.`); result.set(database.name, database); } return [...result.values()].sort((left, right) => left.name.localeCompare(right.name)); }
+
+function serializedDatabaseRuntime(database: ApplicationReactiveDatabaseRuntimeContract): string {
+  return JSON.stringify({
+    ...database,
+    ...(database.access
+      ? { access: { ...database.access, default: database.access.default ?? 'required' } }
+      : {}),
+  });
+}
 function uniqueCommandDatabases(commands: readonly GatewayCommandContract[]): readonly NonNullable<ApplicationModelNode['runtime']>[] { const result = new Map<string, NonNullable<ApplicationModelNode['runtime']>>(); for (const command of commands) result.set(command.model.runtime.connectionEnvName, command.model.runtime); return [...result.values()]; }
 // typecast: the exact-one guard and provider type predicate establish a present EventLog provider.
 function gatewayEventLog(

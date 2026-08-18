@@ -1,0 +1,21 @@
+{
+  "database": {
+    "minimumSameKeyThroughputPerSecond": 40,
+    "maximumSameKeyP95Ms": 500,
+    "minimumDistinctKeyThroughputPerSecond": 100,
+    "maximumDistinctKeyP95Ms": 250
+  },
+  "jetStream": {
+    "minimumThroughputPerSecond": 100,
+    "maximumConvergenceMs": 30000
+  },
+  "http": {
+    "minimumThroughputPerSecond": 20,
+    "maximumP95Ms": 1500,
+    "maximumErrorCount": 0
+  },
+  "kubernetes": {
+    "maximumReadyP95Ms": 600000,
+    "maximumRestartCount": 0
+  }
+}

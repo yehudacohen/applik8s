@@ -1,12 +1,14 @@
 import { createApplicationTanStackConnection } from '@applik8s/ai-tanstack/client';
 import { useApplicationIdentitySession } from '@applik8s/react/identity';
 import { readAgenticWorkspaceSelection } from '@applik8s/start-agentic/react';
+import { agenticAssistantFailureMessage, agenticToolLabel, agenticToolStateLabel } from '@applik8s/start-agentic/product-presentation';
 import type { MessagePart } from '@tanstack/ai';
 import { useChat } from '@tanstack/ai-react';
 import { createFileRoute, Link } from '@tanstack/react-router';
 import { type FormEvent, useEffect, useMemo, useState } from 'react';
-import { Badge, Button, Card, EmptyState, PageHeader, RouteState, Skeleton } from '../components/ui';
-import { ConversationList, Document, DocumentList, WorkspaceAssistant } from '../application';
+import { Badge, Button, Card, EmptyState, LiveQueryStatus, PageHeader, RouteState, Skeleton, Textarea } from '../components/ui';
+import { ConversationList, DocumentList, WorkspaceAssistant } from '../application';
+import { documentExcerpt } from '../components/markdown-document';
 import { ProductJourney } from '../features/onboarding/view';
 
 export const Route = createFileRoute('/app/')({
@@ -16,9 +18,7 @@ export const Route = createFileRoute('/app/')({
 function CopilotHome() {
   const documents = DocumentList({}).useQuery();
   const conversations = ConversationList({}).useQuery();
-  const createDocument = Document.create.useMutation();
   const session = useApplicationIdentitySession();
-  const [body, setBody] = useState('');
   const [notice, setNotice] = useState<string>();
   const [threadId, setThreadId] = useState<string>();
   useEffect(() => {
@@ -44,80 +44,54 @@ function CopilotHome() {
     setNotice('A new persistent conversation is ready. Previous conversations remain in your history.');
   }
 
-  async function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    try {
-      await createDocument({ body });
-      setBody('');
-      setNotice('Document committed. The live query will reconcile this list.');
-    } catch {
-      setNotice('The document was not committed. Check your session and retry.');
-    }
-  }
-
   return (
     <div>
-      <ProductJourney documentCount={documents.data?.length ?? 0} />
+      <ProductJourney documents={documents.data ?? []} />
       <PageHeader
         eyebrow="Workspace copilot"
-        title="Make useful work appear."
-        description="Start with a document yourself, or ask the assistant to use the same typed model operation."
-        action={<Badge tone="info">Provider resolved server-side</Badge>}
+        title="What should we accomplish?"
+        description="Give the assistant an outcome. Follow its durable work into Documents, approvals, and published artifacts."
+        action={<Button asChild variant="secondary"><Link to="/app/documents">Browse documents</Link></Button>}
       />
+      <div className="mb-5"><LiveQueryStatus phase={documents.phase} label="Document updates" onRetry={() => documents.refresh()} /></div>
       {documents.phase === 'error' ? (
         <RouteState
           tone="warning"
           title="Your documents are temporarily unavailable"
-          description="The product shell and assistant remain available while the query provider recovers."
+          description="Your work is safe. Try loading the workspace again in a moment."
           action={<Button variant="secondary" onClick={() => void documents.refresh()}>Retry documents</Button>}
         />
       ) : (
-        <div className="grid items-start gap-5 lg:grid-cols-[minmax(0,1.05fr)_minmax(22rem,.95fr)]">
-          <Card aria-label="Your documents">
+        <div className="grid items-start gap-5 lg:grid-cols-[minmax(0,1.35fr)_minmax(20rem,.65fr)]">
+          <section>
+            {threadId ? <WorkspaceAssistantCard key={threadId} threadId={threadId} onSettled={async () => { await Promise.all([documents.refresh(), conversations.refresh()]); }} /> : <Card surface="unstyled" className="border-emerald-900/15 bg-emerald-950 text-emerald-50"><Skeleton className="h-72 bg-white/10" /></Card>}
+          </section>
+          <section aria-label="Recent work sessions"><Card>
             <div className="flex items-center justify-between gap-3">
-              <div><p className="eyebrow">Documents</p><h2 id="documents-title" className="mt-1 text-xl font-semibold">Recent work</h2></div>
-              <Badge tone={documents.phase === 'reconnecting' ? 'warning' : documents.data?.length ? 'success' : 'neutral'}>
-                {documents.phase === 'reconnecting' ? 'Reconnecting…' : `${documents.data?.length ?? 0} documents`}
-              </Badge>
+              <div><p className="eyebrow">Resume</p><h2 id="work-sessions-title" className="mt-1 text-xl font-semibold">Recent work</h2></div>
+              <Button type="button" variant="secondary" onClick={beginConversation}>New</Button>
             </div>
-            <form onSubmit={submit} className="mt-5 grid gap-3">
-              <label htmlFor="document-body" className="text-sm font-medium">Create manually</label>
-              <textarea id="document-body" value={body} onChange={event => setBody(event.currentTarget.value)} placeholder="Something worth remembering" />
-              <Button type="submit" disabled={!body.trim() || createDocument.pending}>
-                {createDocument.pending ? 'Saving…' : 'Save document'}
-              </Button>
-            </form>
-            <div aria-label="Documents" aria-live="polite" className="mt-6 space-y-3">
-              {!documents.data ? <><Skeleton className="h-20" /><Skeleton className="h-20" /></> : null}
-              {documents.data?.length === 0 ? <EmptyState title="No documents yet" description="Your assistant can create the first one through the same typed model operation." /> : null}
-              {documents.data?.map(document => (
-                <article key={document.id} className="rounded-xl border border-stone-200 bg-stone-50/60 p-4">
-                  <p className="whitespace-pre-wrap text-sm leading-6">{document.body}</p>
-                  <small className="mt-2 block text-xs text-stone-500">{new Date(document.createdAt).toLocaleString()}</small>
-                </article>
-              ))}
-            </div>
-          </Card>
-          {threadId ? <WorkspaceAssistantCard key={threadId} threadId={threadId} /> : <Card surface="unstyled" className="border-emerald-900/15 bg-emerald-950 text-emerald-50"><Skeleton className="h-72 bg-white/10" /></Card>}
+            <section aria-label="Work sessions" aria-live="polite" className="mt-6 space-y-3">
+              {!documents.data || !conversations.data ? <><Skeleton className="h-24" /><Skeleton className="h-24" /></> : null}
+              {documents.data?.length === 0 && conversations.data?.length === 0 ? <EmptyState title="Start your first work session" description="Ask for a launch brief, research summary, plan, or another useful result." /> : null}
+              {conversations.data?.slice(0, 4).map(conversation => {
+                const results = documents.data?.filter(document => document.sourceConversationId === conversation.id) ?? [];
+                const result = results[0];
+                const failed = conversation.runStatus === 'failed' || conversation.runStatus === 'interrupted' || conversation.runStatus === 'cancelled';
+                return <Link key={conversation.id} to="/app/conversations/$conversationId" params={{ conversationId: conversation.id }} className="block rounded-xl border border-stone-200 bg-stone-50/60 p-4 text-stone-900 no-underline transition hover:border-emerald-300"><div className="flex items-center justify-between gap-2"><strong className="line-clamp-1">{conversation.title ?? 'Untitled conversation'}</strong>{result ? <Badge tone="success">{results.length} {results.length === 1 ? 'result' : 'results'}</Badge> : failed ? <Badge tone="warning">Needs retry</Badge> : conversation.runStatus === 'completed' ? <Badge>Completed</Badge> : <Badge>In progress</Badge>}</div>{result ? <div className="mt-3 border-l-2 border-emerald-300 pl-3"><span className="block text-xs font-semibold uppercase tracking-wide text-stone-500">Latest document</span><span className="mt-1 block text-sm font-medium">{result.title}</span><span className="mt-1 block line-clamp-2 text-xs leading-5 text-stone-500">{result.summary || documentExcerpt(result.body)}</span></div> : <p className="mt-2 text-sm leading-6 text-stone-600">{failed ? 'The latest assistant attempt ended without an authoritative result. Open it to review the durable failure and retry.' : 'Continue this conversation to create an authoritative result.'}</p>}<small className="mt-3 block text-xs text-stone-500">Updated {new Date(conversation.updatedAt).toLocaleString()}</small></Link>;
+              })}
+              {documents.data?.filter(document => !document.sourceConversationId || !conversations.data?.some(conversation => conversation.id === document.sourceConversationId)).slice(0, Math.max(0, 4 - (conversations.data?.length ?? 0))).map(document => <Link key={document.id} to="/app/documents/$documentId" params={{ documentId: document.id }} className="block rounded-xl border border-stone-200 bg-stone-50/60 p-4 text-stone-900 no-underline transition hover:border-emerald-300"><div className="flex items-center justify-between gap-2"><strong className="line-clamp-1">{document.title}</strong><Badge tone={document.sourceConversationId ? 'success' : 'neutral'}>{document.sourceConversationId ? 'Agent result' : document.state}</Badge></div><p className="mt-2 line-clamp-2 text-sm leading-6 text-stone-600">{document.summary || documentExcerpt(document.body)}</p><small className="mt-2 block text-xs text-stone-500">{document.sourceConversationId ? 'Created by your workspace agent' : 'Member-created'} · v{document.version}</small></Link>)}
+              <div className="flex gap-4 pt-2 text-sm font-semibold"><Link to="/app/documents" className="text-emerald-800">All documents →</Link>{threadId ? <Link to="/app/conversations/$conversationId" params={{ conversationId: threadId }} className="text-emerald-800">Current session →</Link> : null}</div>
+            </section>
+          </Card></section>
         </div>
       )}
-      <section className="mt-8" aria-labelledby="recent-conversations-title">
-        <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
-          <h2 id="recent-conversations-title" className="text-xl font-semibold">Continue working</h2>
-          <div className="flex items-center gap-3">
-            {threadId ? <Link to="/app/conversations/$conversationId" params={{ conversationId: threadId }} className="text-sm font-semibold text-emerald-800">Open current conversation →</Link> : null}
-            <Button type="button" variant="secondary" onClick={beginConversation}>New conversation</Button>
-          </div>
-        </div>
-        {conversations.data?.length === 0 ? <EmptyState title="No saved conversations yet" description="Send the assistant a message. The conversation protocol persists its messages and run history under your admitted scope." /> : null}
-        <div className="grid gap-3 sm:grid-cols-2">{conversations.data?.slice(0, 4).map(conversation => <Link key={conversation.id} to="/app/conversations/$conversationId" params={{ conversationId: conversation.id }} className="rounded-2xl border border-stone-200 bg-white p-4 text-stone-900 no-underline shadow-sm transition hover:border-emerald-300"><strong>{conversation.title ?? 'Untitled conversation'}</strong><p className="mt-1 text-xs text-stone-500">Updated {new Date(conversation.updatedAt).toLocaleString()}</p></Link>)}</div>
-      </section>
       {notice ? <p role="status" className="mt-4 text-sm text-stone-600">{notice}</p> : null}
     </div>
   );
 }
 
-function WorkspaceAssistantCard({ threadId }: { readonly threadId: string }) {
+function WorkspaceAssistantCard({ threadId, onSettled }: { readonly threadId: string; readonly onSettled: () => Promise<void> }) {
   const [prompt, setPrompt] = useState('');
   const [lastPrompt, setLastPrompt] = useState<string>();
   const [startedAt, setStartedAt] = useState<number>();
@@ -152,6 +126,7 @@ function WorkspaceAssistantCard({ threadId }: { readonly threadId: string }) {
       await sendMessage(message);
     } finally {
       setStartedAt(undefined);
+      await onSettled().catch(() => undefined);
     }
   }
 
@@ -164,15 +139,15 @@ function WorkspaceAssistantCard({ threadId }: { readonly threadId: string }) {
       {messages.map(message => (
         <article key={message.id} className="rounded-lg bg-white/10 p-3 text-sm" data-role={message.role}>
           <strong className="text-xs uppercase tracking-wide text-emerald-200">{message.role}</strong>
-          {message.parts.map((part, index) => <AssistantPart key={index} part={part} />)}
+          {message.parts.map(part => <AssistantPart key={`${message.id}:${JSON.stringify(part)}`} part={part} />)}
         </article>
       ))}
       {isLoading ? <div role="status" className="rounded-lg border border-emerald-300/20 bg-emerald-300/10 p-3 text-sm text-emerald-50"><strong>{elapsedSeconds > 45 ? 'This is taking longer than expected.' : 'The assistant is working.'}</strong><p className="mt-1 text-emerald-100/70">Tool calls and committed results appear here as the durable run advances. {elapsedSeconds > 45 ? 'You can stop safely; only results already visible in Documents are committed.' : `${elapsedSeconds}s elapsed.`}</p></div> : null}
-      {error ? <div role="alert" className="rounded-lg border border-red-300/25 bg-red-950/35 p-3 text-sm text-red-100"><strong>Assistant run ended</strong><p className="mt-1">{assistantFailureMessage(error)} No result is complete unless it appears in Documents.</p>{lastPrompt ? <Button type="button" variant="ghost" className="mt-2 text-white hover:bg-white/10" onClick={() => setPrompt(lastPrompt)}>Restore prompt</Button> : null}</div> : null}
+      {error ? <div role="alert" className="rounded-lg border border-red-300/25 bg-red-950/35 p-3 text-sm text-red-100"><strong>Assistant run ended</strong><p className="mt-1">{agenticAssistantFailureMessage(error)} No result is complete unless it appears in Documents.</p>{lastPrompt ? <Button type="button" variant="ghost" className="mt-2 text-white hover:bg-white/10" onClick={() => setPrompt(lastPrompt)}>Restore prompt</Button> : null}</div> : null}
     </div>
     <form onSubmit={askAssistant} className="mt-4 grid gap-3">
       <label htmlFor="assistant-prompt" className="text-sm font-medium">Message</label>
-      <textarea id="assistant-prompt" value={prompt} onChange={event => setPrompt(event.currentTarget.value)} disabled={isLoading} placeholder="Create a document about shipping the first version" className="border-white/20 bg-white/10 text-white placeholder:text-emerald-100/45" />
+      <Textarea id="assistant-prompt" value={prompt} onChange={event => setPrompt(event.currentTarget.value)} disabled={isLoading} placeholder="Create a document about shipping the first version" className="border-white/20 bg-white/10 text-white placeholder:text-emerald-100/45" />
       <div className="flex gap-2">
         <Button type="submit" className="bg-emerald-100 text-emerald-950 hover:bg-white" disabled={isLoading || !prompt.trim()}>{isLoading ? 'Working…' : 'Send'}</Button>
         {isLoading ? <Button type="button" variant="ghost" className="text-white hover:bg-white/10" onClick={stop}>Stop</Button> : null}
@@ -183,24 +158,8 @@ function WorkspaceAssistantCard({ threadId }: { readonly threadId: string }) {
 
 function AssistantPart({ part }: { readonly part: MessagePart }) {
   if (part.type === 'text') return <p className="mt-1 whitespace-pre-wrap leading-6">{part.content}</p>;
-  if (part.type === 'tool-call') return <p className="mt-2 rounded-md bg-black/15 px-3 py-2 text-xs text-emerald-100"><strong>{humanizeToolName(part.name)}</strong> · {humanizeToolState(part.state)}</p>;
-  if (part.type === 'tool-result') return <p className="mt-2 rounded-md bg-black/15 px-3 py-2 text-xs text-emerald-100">Tool result · {part.error ? 'failed' : humanizeToolState(part.state)}</p>;
-  if (part.type === 'thinking') return <p className="mt-2 text-xs text-emerald-100/60">Planning the next admitted step…</p>;
+  if (part.type === 'tool-call') return <p className="mt-2 rounded-md bg-black/15 px-3 py-2 text-xs text-emerald-100"><strong>{agenticToolLabel(part.name)}</strong> · {agenticToolStateLabel(part.state)}</p>;
+  if (part.type === 'tool-result') return <p className="mt-2 rounded-md bg-black/15 px-3 py-2 text-xs text-emerald-100">Tool result · {part.error ? 'failed' : agenticToolStateLabel(part.state)}</p>;
+  if (part.type === 'thinking') return <p className="mt-2 text-xs text-emerald-100/60">Planning the next step…</p>;
   return null;
-}
-
-function humanizeToolName(value: string) {
-  return value.replace(/^.*[/:]/, '').replace(/([a-z])([A-Z])/g, '$1 $2').replace(/[-_]+/g, ' ').replace(/^./, character => character.toUpperCase());
-}
-
-function humanizeToolState(value: string) {
-  return value.replace(/[-_]+/g, ' ');
-}
-
-function assistantFailureMessage(error: Error) {
-  const message = error.message.toLowerCase();
-  if (/credential|unauthorized|\b401\b|\b403\b/.test(message)) return 'The selected inference provider rejected its server-side credential.';
-  if (/timeout|abort/.test(message)) return 'The run exceeded its bounded wait or was cancelled.';
-  if (/\b5\d\d\b|unavailable|backend|provider|inference|network|fetch/.test(message)) return 'The inference runtime or selected provider is temporarily unavailable.';
-  return 'The inference runtime did not return a usable terminal result. Check provider status in Launchpad or retry.';
 }

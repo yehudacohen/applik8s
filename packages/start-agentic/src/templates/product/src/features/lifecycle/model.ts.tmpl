@@ -3,15 +3,18 @@ import {
   type ApplicationModelViewContext,
   module,
 } from '@applik8s/applik8s';
-import { applicationAIConversationPrincipalScope } from '@applik8s/conversations/runtime';
 import { type } from 'arktype';
+import {
+  applicationDataLifecycleRequests as DataLifecycleRequestTable,
+  dataLifecycle as maintainedDataLifecycle,
+} from '@applik8s/data-lifecycle';
 import { and, desc, eq, isNull, sql } from 'drizzle-orm';
 import { application } from '../../app';
 import { Artifacts, Billing, Conversations } from '../../modules';
 import { database } from '../../providers';
+import { agenticWorkspaceScope } from '../../workspace-scope';
 import { Document } from '../documents/schema';
 import { Authenticated, Workspace } from '../workspaces/model';
-import { DataLifecycleRequest as DataLifecycleRequestTable } from './schema';
 
 const LifecycleRequestResult = type({
   id: 'string',
@@ -25,6 +28,12 @@ const LifecycleRequestResult = type({
   requestedAt: 'string',
   'startedAt?': 'string',
   'completedAt?': 'string',
+});
+
+const LifecycleProgress = type({
+  deletedDocuments: 'number',
+  archivedConversations: 'number',
+  retainedArtifacts: 'number',
 });
 
 const LifecycleTargetsResult = type({
@@ -43,7 +52,7 @@ async function lifecycleTargets(
   const [documents, conversations, artifactCount, ownedWorkspaces, subscriptions] = await Promise.all([
     client.select({ id: Document.id })
       .from(Document)
-      .where(eq(Document.ownerPrincipalId, input.principalId))
+      .where(eq(Document.principalScope, input.principalScope))
       .limit(100),
     client.select({ id: Conversations.Conversation.id })
       .from(Conversations.Conversation)
@@ -61,7 +70,7 @@ async function lifecycleTargets(
       .limit(25),
     client.select({ status: Billing.Subscription.status })
       .from(Billing.Subscription)
-      .where(eq(Billing.Subscription.principalScope, input.principalId))
+      .where(eq(Billing.Subscription.principalScope, input.principalScope))
       .limit(25),
   ]);
   return {
@@ -75,9 +84,10 @@ async function lifecycleTargets(
 }
 
 const lifecycle = module(
-  'data-lifecycle',
-  { schema: { DataLifecycleRequest: DataLifecycleRequestTable } },
+  'agentic-data-lifecycle',
+  {},
   currentApplication => {
+    currentApplication.include(maintainedDataLifecycle);
     const LifecycleTargets = DataLifecycleRequestTable.view(
       {
         input: type({ principalId: 'string', principalScope: 'string' }),
@@ -107,19 +117,22 @@ const lifecycle = module(
           ))
           .orderBy(desc(DataLifecycleRequestTable.requestedAt))
           .limit(25);
-        return rows.map(row => ({
-          id: row.id,
-          scope: row.scope,
-          targetId: row.targetId,
-          state: row.state,
-          deletedDocuments: row.deletedDocuments,
-          archivedConversations: row.archivedConversations,
-          retainedArtifacts: row.retainedArtifacts,
-          requestedAt: row.requestedAt,
-          ...(row.consequence ? { consequence: row.consequence } : {}),
-          ...(row.startedAt ? { startedAt: row.startedAt } : {}),
-          ...(row.completedAt ? { completedAt: row.completedAt } : {}),
-        }));
+        return rows.map(row => {
+          const progress = LifecycleProgress.assert(row.progress.details);
+          return {
+            id: row.id,
+            scope: row.scope as 'account' | 'workspace',
+            targetId: row.targetId,
+            state: row.state,
+            deletedDocuments: progress.deletedDocuments,
+            archivedConversations: progress.archivedConversations,
+            retainedArtifacts: progress.retainedArtifacts,
+            requestedAt: row.requestedAt,
+            ...(row.consequence ? { consequence: row.consequence } : {}),
+            ...(row.startedAt ? { startedAt: row.startedAt } : {}),
+            ...(row.completedAt ? { completedAt: row.completedAt } : {}),
+          };
+        });
       },
     );
     DataLifecycleRequestTable.create.beforeCommit(
@@ -132,9 +145,7 @@ const lifecycle = module(
           'requestedByPrincipalId',
           'principalScope',
           'state',
-          'deletedDocuments',
-          'archivedConversations',
-          'retainedArtifacts',
+          'progress',
           'consequence',
           'requestedAt',
           'startedAt',
@@ -144,6 +155,12 @@ const lifecycle = module(
           throw new Error('Lifecycle ownership, progress, and consequences are server-owned.');
         }
         const principalId = applicationCausalPrincipalContext(context.principal).id;
+        if (
+          request.value.scope !== 'account'
+          && request.value.scope !== 'workspace'
+        ) {
+          throw new Error('Agentic Start lifecycle scope must be account or workspace.');
+        }
         if (request.value.scope === 'account' && request.value.targetId !== principalId) {
           throw new Error('Account lifecycle requests must target the admitted causal principal.');
         }
@@ -158,10 +175,20 @@ const lifecycle = module(
         request.patch({
           spec: {
             requestedByPrincipalId: principalId,
-            principalScope: applicationAIConversationPrincipalScope(
-              context.principal,
-              context.trustedContext,
-            ),
+            // The row remains owned by the server-admitted RLS scope that
+            // authorized this request. Account deletion cannot jump from a
+            // selected workspace into personal data: owned workspaces are a
+            // blocker, and a later personal-scope request performs the sweep.
+            principalScope: agenticWorkspaceScope(context),
+            progress: {
+              completed: 0,
+              unit: 'records',
+              details: {
+                deletedDocuments: 0,
+                archivedConversations: 0,
+                retainedArtifacts: 0,
+              },
+            },
           },
         });
       },
@@ -187,57 +214,57 @@ const lifecycle = module(
           patch: { state: 'running', startedAt, consequence: null },
         });
         try {
-          if (current.value.scope === 'workspace') {
-            const targets = await LifecycleTargets({
-              principalId: current.value.requestedByPrincipalId,
-              principalScope: current.value.principalScope,
-            });
-            if (targets.ownedWorkspaces.includes(current.value.targetId)) {
-              await Workspace.delete({ identity: current.value.targetId });
-            }
-            await DataLifecycleRequestTable.update({
-              identity: created.identity,
-              patch: {
-                state: 'completed',
-                completedAt: new Date().toISOString(),
-                consequence: 'Workspace membership and invitations were removed. Principal-owned documents, conversations, immutable artifacts, billing, and retained audit evidence were not deleted.',
-              },
-            });
-            return;
-          }
-
-          let deletedDocuments = current.value.deletedDocuments;
-          let archivedConversations = current.value.archivedConversations;
+          const deletingWorkspace = current.value.scope === 'workspace';
+          const previousProgress = LifecycleProgress.assert(current.value.progress.details);
+          let deletedDocuments = previousProgress.deletedDocuments;
+          let archivedConversations = previousProgress.archivedConversations;
           for (let batch = 0; batch < 100; batch += 1) {
             const targets = await LifecycleTargets({
               principalId: current.value.requestedByPrincipalId,
               principalScope: current.value.principalScope,
             });
-            if (targets.activeSubscription || targets.ownedWorkspaces.length > 0) {
+            if (
+              targets.activeSubscription
+              || (!deletingWorkspace && targets.ownedWorkspaces.length > 0)
+            ) {
               const blockers = [
                 ...(targets.activeSubscription ? ['cancel the active subscription'] : []),
-                ...(targets.ownedWorkspaces.length > 0 ? ['transfer or delete owned workspaces'] : []),
+                ...(!deletingWorkspace && targets.ownedWorkspaces.length > 0 ? ['transfer or delete owned workspaces'] : []),
               ];
               await DataLifecycleRequestTable.update({
                 identity: created.identity,
                 patch: {
                   state: 'actionRequired',
-                  retainedArtifacts: targets.retainedArtifacts,
-                  consequence: `Before account-data removal, ${blockers.join(' and ')}. Immutable artifacts and required audit evidence remain governed by their retention policies.`,
+                  progress: lifecycleProgress(
+                    deletedDocuments,
+                    archivedConversations,
+                    targets.retainedArtifacts,
+                  ),
+                  consequence: `Before ${deletingWorkspace ? 'workspace' : 'account'} data removal, ${blockers.join(' and ')}. Immutable artifacts and required audit evidence remain governed by their retention policies.`,
                 },
               });
               return;
             }
             if (targets.documents.length === 0 && targets.conversations.length === 0) {
+              if (deletingWorkspace) {
+                if (!targets.ownedWorkspaces.includes(current.value.targetId)) {
+                  throw new Error('The requested workspace is no longer owned by the requesting principal.');
+                }
+                await Workspace.delete({ identity: current.value.targetId });
+              }
               await DataLifecycleRequestTable.update({
                 identity: created.identity,
                 patch: {
                   state: 'completed',
-                  deletedDocuments,
-                  archivedConversations,
-                  retainedArtifacts: targets.retainedArtifacts,
+                  progress: lifecycleProgress(
+                    deletedDocuments,
+                    archivedConversations,
+                    targets.retainedArtifacts,
+                  ),
                   completedAt: new Date().toISOString(),
-                  consequence: 'Mutable documents were deleted and active conversations were archived. Immutable artifacts, provider records, authorization receipts, and required audit evidence remain governed by their declared retention policies.',
+                  consequence: deletingWorkspace
+                    ? 'Workspace-scoped mutable documents were deleted, active conversations were archived, and membership was removed. Immutable artifacts, provider records, authorization receipts, and required audit evidence remain governed by their declared retention policies.'
+                    : 'Personal mutable documents were deleted and active conversations were archived. Immutable artifacts, provider records, authorization receipts, and required audit evidence remain governed by their declared retention policies.',
                 },
               });
               return;
@@ -255,7 +282,13 @@ const lifecycle = module(
             archivedConversations += targets.conversations.length;
             await DataLifecycleRequestTable.update({
               identity: created.identity,
-              patch: { deletedDocuments, archivedConversations },
+              patch: {
+                progress: lifecycleProgress(
+                  deletedDocuments,
+                  archivedConversations,
+                  targets.retainedArtifacts,
+                ),
+              },
             });
           }
           throw new Error('Lifecycle processing exceeded its bounded batch budget.');
@@ -288,3 +321,19 @@ export const {
   DataLifecycleRequests,
   DataLifecycleProcessor,
 } = DataLifecycle;
+
+function lifecycleProgress(
+  deletedDocuments: number,
+  archivedConversations: number,
+  retainedArtifacts: number,
+) {
+  return {
+    completed: deletedDocuments + archivedConversations,
+    unit: 'records',
+    details: {
+      deletedDocuments,
+      archivedConversations,
+      retainedArtifacts,
+    },
+  };
+}

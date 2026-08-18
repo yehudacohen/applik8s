@@ -122,6 +122,40 @@ describe('generated function-native HTTP worker', () => {
       async () => ({ count: (await Post.find({ limit: 10 })).length }),
     );
     listPosts.public();
+    const Catalog = Post;
+    const listCatalogPosts = api.post(
+      'list-catalog-posts',
+      '/catalog/posts',
+      {
+        input: type({}),
+        output: type({ count: 'number' }),
+        authorize: (_request, context) => context.principal.id === 'alice',
+        // A helper may capture the model object and select its operation at
+        // runtime; the generated worker must hydrate the complete handle.
+        __generatedBindings: { Catalog },
+      },
+      async () => ({ count: (await Catalog.find({ limit: 10 })).length }),
+    );
+    listCatalogPosts.public();
+    const Billing = { Subscription: Post };
+    const listNestedSubscriptions = api.post(
+      'list-nested-subscriptions',
+      '/billing/subscriptions',
+      {
+        input: type({}),
+        output: type({ count: 'number' }),
+        authorize: (_request, context) => context.principal.id === 'alice',
+        // Compiler-equivalent metadata for a model reached through a module
+        // namespace. The emitted runtime must preserve this complete path.
+        __generatedBindings: {
+          'Billing.Subscription.find': Post.find,
+        },
+      },
+      async () => ({
+        count: (await Billing.Subscription.find({ limit: 10 })).length,
+      }),
+    );
+    listNestedSubscriptions.public();
     api.webhook(
       'receive-provider-event',
       '/webhooks/provider',
@@ -233,10 +267,30 @@ describe('generated function-native HTTP worker', () => {
     expect(source).toContain('applicationPostgresModelReadClients');
     expect(source).toContain('withApplicationNativeModelReadClients');
     expect(source).toContain('trustedContext:{values:');
+    expect(source).toContain('requestOrigin:');
+    expect(source).toContain('headers.get("origin")');
+    expect(source).toContain('pathname!=="/"');
     expect(source).toMatch(
       /digest:[A-Za-z_$][\w$]*\.trustedContextDigest/u,
     );
     expect(source).not.toContain('__generatedBindings');
+    const generatedEntrypoint = await readFile(
+      join(outDir, 'public-api', 'http.generated.ts'),
+      'utf8',
+    );
+    expect(generatedEntrypoint).toMatch(
+      /"Billing":\s*\{\s*"Subscription":\s*\{\s*"find":\s*modelHandle\("Post"\)\["find"\]/u,
+    );
+    expect(generatedEntrypoint).toContain('"Catalog": modelHandle("Post")');
+    expect(generatedEntrypoint).toMatch(
+      /"Post":\s*\{\s*"find":\s*modelHandle\("Post"\)\["find"\]/u,
+    );
+    expect(generatedEntrypoint).toMatch(
+      /applicationPostgresModelReadClients\(\s*sql,\s*route\.transaction\.models,\s*\{\s*values:\s*applicationRequestContextValues\([\s\S]*?digest:\s*principal\.trustedContextDigest,[\s\S]*?changeScopes:\s*applicationRelationalChangeScopes/u,
+    );
+    expect(generatedEntrypoint).not.toContain(
+      '"Billing": modelHandle("Post")',
+    );
     const deployment = artifacts[0]!.resources.find(
       (resource) => resource.kind === 'Deployment',
     );

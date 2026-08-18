@@ -1,0 +1,42 @@
+import { X } from 'lucide-react';
+import { Dialog as DialogPrimitive } from 'radix-ui';
+import type { ComponentProps } from 'react';
+import { cn } from '#lib/utils';
+
+export const Sheet = DialogPrimitive.Root;
+export const SheetTrigger = DialogPrimitive.Trigger;
+export const SheetClose = DialogPrimitive.Close;
+
+export function SheetContent({ className, children, ...props }: ComponentProps<typeof DialogPrimitive.Content>) {
+  return (
+    <DialogPrimitive.Portal>
+      <DialogPrimitive.Overlay className="fixed inset-0 z-[60] bg-stone-950/45 backdrop-blur-sm data-[state=closed]:animate-out data-[state=open]:animate-in" />
+      <DialogPrimitive.Content
+        data-slot="sheet-content"
+        className={cn(
+          'fixed inset-x-0 bottom-0 z-[70] max-h-[85dvh] overflow-y-auto rounded-t-3xl border border-b-0 border-stone-200 bg-white px-5 pb-[calc(1.25rem+env(safe-area-inset-bottom))] pt-5 shadow-2xl outline-none dark:border-stone-700 dark:bg-stone-950',
+          className,
+        )}
+        {...props}
+      >
+        {children}
+        <DialogPrimitive.Close className="absolute right-4 top-4 grid size-10 place-items-center rounded-xl text-stone-500 transition hover:bg-stone-100 hover:text-stone-950 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600 dark:hover:bg-stone-800 dark:hover:text-stone-50">
+          <X aria-hidden="true" />
+          <span className="sr-only">Close navigation</span>
+        </DialogPrimitive.Close>
+      </DialogPrimitive.Content>
+    </DialogPrimitive.Portal>
+  );
+}
+
+export function SheetHeader({ className, ...props }: ComponentProps<'div'>) {
+  return <div className={cn('pr-12', className)} {...props} />;
+}
+
+export function SheetTitle({ className, ...props }: ComponentProps<typeof DialogPrimitive.Title>) {
+  return <DialogPrimitive.Title className={cn('text-lg font-semibold text-stone-950 dark:text-stone-50', className)} {...props} />;
+}
+
+export function SheetDescription({ className, ...props }: ComponentProps<typeof DialogPrimitive.Description>) {
+  return <DialogPrimitive.Description className={cn('mt-1 text-sm leading-6 text-stone-500 dark:text-stone-300', className)} {...props} />;
+}

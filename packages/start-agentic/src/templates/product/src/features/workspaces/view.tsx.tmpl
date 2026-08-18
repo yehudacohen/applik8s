@@ -1,9 +1,10 @@
 import { selectAgenticWorkspace } from '@applik8s/start-agentic/react';
 import { type FormEvent, useState } from 'react';
-import { Badge, Button, Card, EmptyState, PageHeader, RouteState } from '../../components/ui';
+import { Badge, Button, Card, EmptyState, Input, PageHeader, RouteState, Select } from '../../components/ui';
 import {
   DataLifecycleRequest,
   Invitation,
+  Membership,
   Workspace,
   WorkspaceDashboard,
   WorkspaceList,
@@ -25,9 +26,9 @@ export function WorkspaceHome() {
 
   return (
     <div>
-      <PageHeader eyebrow="Application-owned collaboration" title="Workspaces" description="Identity is framework-owned. Workspace policy and membership remain ordinary application models with typed authority." />
+      <PageHeader eyebrow="Your teams" title="Workspaces" description="Create a dedicated place for each team, product, or customer and control who can collaborate there." />
       <div className="grid gap-5 lg:grid-cols-[1fr_22rem]"><section aria-label="Your workspaces" className="space-y-3">
-        {workspaces.data?.length === 0 ? <EmptyState title="Create your first workspace" description="A workspace scopes collaboration and policy without changing your identity provider." /> : null}
+        {workspaces.data?.length === 0 ? <EmptyState title="Create your first workspace" description="Bring documents, conversations, agents, and teammates together in one place." /> : null}
         {workspaces.data?.map(workspace => (
           <Card key={workspace.id} className="flex items-center justify-between gap-4">
             <a
@@ -37,20 +38,20 @@ export function WorkspaceHome() {
             >
               {workspace.name}
             </a>
-            <Badge>{workspace.role}</Badge>
+            <div className="flex gap-2"><Badge>{workspace.role}</Badge><Badge tone={workspace.state === 'active' ? 'success' : 'danger'}>{workspace.state}</Badge></div>
           </Card>
         ))}
       </section>
       <Card><form onSubmit={create} className="grid gap-3">
         <h2 className="text-lg font-semibold">Create a workspace</h2>
         <label htmlFor="workspace-name">Name</label>
-        <input
+        <Input
           id="workspace-name"
           value={name}
           onChange={event => setName(event.currentTarget.value)}
         />
         <label htmlFor="workspace-slug">Slug</label>
-        <input
+        <Input
           id="workspace-slug"
           value={slug}
           onChange={event => setSlug(event.currentTarget.value)}
@@ -71,8 +72,12 @@ export function WorkspaceDashboardView(
 ) {
   const dashboard = WorkspaceDashboard({ workspaceId }).useQuery();
   const createInvitation = Invitation.create.useMutation();
+  const updateInvitation = Invitation.update.useMutation();
+  const updateMembership = Membership.update.useMutation();
+  const deleteMembership = Membership.delete.useMutation();
   const requestLifecycle = DataLifecycleRequest.create.useMutation();
   const [email, setEmail] = useState('');
+  const [invitationRole, setInvitationRole] = useState<'workspace-administrator' | 'workspace-member'>('workspace-member');
   const [notice, setNotice] = useState<string>();
   const [deleteConfirmation, setDeleteConfirmation] = useState('');
 
@@ -83,7 +88,7 @@ export function WorkspaceDashboardView(
     const invitation = await createInvitation({
       workspaceId,
       email: email.trim(),
-      role: 'workspace-member',
+      role: invitationRole,
       state: 'pending',
       expiresAt,
     });
@@ -112,23 +117,28 @@ export function WorkspaceDashboardView(
 
   return (
     <div>
-      <PageHeader eyebrow="Trusted workspace context" title={dashboard.data.workspace.name} action={<Badge tone="info">{dashboard.data.workspace.role}</Badge>} />
+      <PageHeader eyebrow="Trusted workspace context" title={dashboard.data.workspace.name} action={<div className="flex gap-2"><Badge tone="info">{dashboard.data.workspace.role}</Badge><Badge tone={dashboard.data.workspace.state === 'active' ? 'success' : 'danger'}>{dashboard.data.workspace.state}</Badge></div>} />
+      {dashboard.data.workspace.state === 'suspended' ? <RouteState tone="warning" title="This workspace is suspended" description="Product mutations and workspace-scoped agent execution are disabled at admission. An application operator must restore the tenant before work can continue." /> : null}
       <div className="grid gap-5 lg:grid-cols-2"><Card aria-label="Members">
-        <h2 className="text-lg font-semibold">Members</h2>
-        {dashboard.data.members.map(member => (
-          <p key={member.id}>{member.identityId} · {member.role}</p>
-        ))}
+        <h2 className="text-lg font-semibold">People and roles</h2>
+        <p className="mt-2 text-sm text-stone-600">Invite teammates and choose who can manage this workspace.</p>
+        <div className="mt-4 space-y-3">{dashboard.data.members.map(member => (
+          <div key={member.id} className="grid gap-2 rounded-xl border border-stone-200 p-3 sm:grid-cols-[1fr_12rem_auto] sm:items-center">
+            <span className="min-w-0 truncate text-sm">{member.identityId}</span>
+            {member.role === 'workspace-owner' ? <Badge>workspace-owner</Badge> : <Select value={member.role} onChange={event => void updateMembership({ identity: member.id, patch: { role: event.currentTarget.value as 'workspace-administrator' | 'workspace-member' } }).then(() => dashboard.refresh())}><option value="workspace-member">Member</option><option value="workspace-administrator">Administrator</option></Select>}
+            {member.role === 'workspace-owner' ? null : <Button type="button" variant="ghost" disabled={deleteMembership.pending} onClick={() => void deleteMembership({ identity: member.id }).then(() => dashboard.refresh())}>Remove</Button>}
+          </div>
+        ))}</div>
       </Card>
       <Card aria-label="Invitations">
         <h2 className="text-lg font-semibold">Invitations</h2>
         {dashboard.data.invitations.map(invitation => (
-          <article
+          <fieldset
             key={invitation.id}
-            role="group"
             aria-label={`Invitation ${invitation.email}`}
             className="my-3 rounded-xl border border-stone-200 p-3"
           >
-            <p>{invitation.email} · {invitation.role} · {invitation.state}</p>
+            <div className="flex items-start justify-between gap-3"><p>{invitation.email} · {invitation.role}</p><Badge>{invitation.state}</Badge></div>
             <p className="mt-1 flex flex-wrap items-center gap-2 text-xs text-stone-600">
               Delivery
               <Badge
@@ -146,16 +156,19 @@ export function WorkspaceDashboardView(
                 ? `${invitation.deliveryProvider} · ${invitation.deliveryAttempts} attempt${invitation.deliveryAttempts === 1 ? '' : 's'}`
                 : 'Waiting for the configured application notification provider'}
             </p>
-          </article>
+            {invitation.state === 'pending' ? <Button type="button" variant="ghost" className="mt-2" disabled={updateInvitation.pending} onClick={() => void updateInvitation({ identity: invitation.id, patch: { state: 'revoked' } }).then(() => dashboard.refresh())}>Revoke invitation</Button> : null}
+          </fieldset>
         ))}
         <form onSubmit={invite}>
           <label htmlFor="invitation-email">Invite by email</label>
-          <input
+          <Input
             id="invitation-email"
             type="email"
             value={email}
             onChange={event => setEmail(event.currentTarget.value)}
           />
+          <label className="mt-3 block" htmlFor="invitation-role">Role</label>
+          <Select id="invitation-role" value={invitationRole} onChange={event => setInvitationRole(event.currentTarget.value as 'workspace-administrator' | 'workspace-member')}><option value="workspace-member">Member</option><option value="workspace-administrator">Administrator</option></Select>
           <Button
             type="submit"
             disabled={createInvitation.pending || !email.trim()}
@@ -171,9 +184,9 @@ export function WorkspaceDashboardView(
       </Card></div>
       {dashboard.data.workspace.role === 'workspace-owner' ? <Card className="mt-5 border-rose-200">
         <h2 className="text-lg font-semibold">Delete workspace</h2>
-        <p className="mt-2 text-sm leading-6 text-stone-600">This asynchronous application request removes workspace membership and invitations. Principal-owned documents, conversations, billing, immutable artifacts, and required audit evidence retain their own lifecycle.</p>
+        <p className="mt-2 text-sm leading-6 text-stone-600">This asynchronous application request first requires paid billing to be cancelled, then deletes workspace-scoped mutable documents, archives active conversations, and removes membership. Immutable artifacts, provider records, receipts, and required audit evidence retain their declared lifecycle.</p>
         <label className="mt-4 block text-sm font-semibold" htmlFor="workspace-delete-confirmation">Type {dashboard.data.workspace.name} to continue</label>
-        <input id="workspace-delete-confirmation" className="mt-2" value={deleteConfirmation} onChange={event => setDeleteConfirmation(event.currentTarget.value)} />
+        <Input id="workspace-delete-confirmation" className="mt-2" value={deleteConfirmation} onChange={event => setDeleteConfirmation(event.currentTarget.value)} />
         <Button className="mt-3" variant="danger" type="button" disabled={deleteConfirmation !== dashboard.data.workspace.name || requestLifecycle.pending} onClick={() => void requestWorkspaceDeletion()}>Request workspace deletion</Button>
       </Card> : null}
     </div>

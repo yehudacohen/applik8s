@@ -24,7 +24,7 @@
   },
   "dependencies": {
     "@applik8s/deployment-contract": "0.7.0",
-    "arktype": "^2.1.20",
-    "typekro": "0.33.6"
+    "arktype": "2.2.1",
+    "typekro": "0.33.7"
   }
 }

@@ -2,6 +2,11 @@
 
 Last updated: 2026-07-12
 
+- `[post-v0.7]` Add adapter-owned browser OAuth completion for provider-neutral
+  Integration requests. Preserve the v0.7 safe intent/status model, keep
+  credentials outside browser persistence, and hydrate provider-specific
+  authorization only behind maintained adapters.
+
 This backlog prioritizes correctness, excellence, and the public developer experience over feature completeness.
 
 ## Guiding Priorities
@@ -19,6 +24,12 @@ Completed:
 - Function-native one-shot `Model.query(contract, implementation)` across
   relational, analytical, and Kubernetes models, with graph-visible
   distinction from persistent `Model.view(...)` declarations.
+- Maintained revisioned Documents, product-originated durable review, and
+  execution-effective Agent Profile and Knowledge configuration in Agentic Start.
+- Typed Agent Profile tool catalogs whose persisted selections resolve to the
+  original compiled operation handles and fail closed before inference.
+- Application-owned trusted-context scoping for collaborative agent
+  conversations, runs, and usage, with personal causal-principal fallback.
 
 Remaining release work is authoritative in `goal.md`, the v0.7 charter, and
 the machine-readable v0.7 scorecard.

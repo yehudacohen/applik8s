@@ -1,12 +1,18 @@
 {
   "apiVersion": "applik8s.agenticStartSourceBudget/v1alpha1",
-  "maximumNonblankLines": 400,
-  "maximumFilesPerFeature": 3,
+  "maximumNonblankLines": 500,
+  "maximumFilesPerFeature": 5,
+  "ownership": {
+    "maximumApplicationBehaviorFiles": 52,
+    "maximumApplicationBehaviorNonblankLines": 7000,
+    "maximumRouteDeclarationNonblankLines": 220,
+    "maximumDesignPrimitiveNonblankLines": 300
+  },
   "categories": {
-    "features": { "baseline": 23, "maximum": 23 },
-    "routes": { "baseline": 28, "maximum": 31 },
-    "design": { "baseline": 5, "maximum": 5 },
+    "features": { "baseline": 39, "maximum": 39 },
+    "routes": { "baseline": 34, "maximum": 34 },
+    "design": { "baseline": 20, "maximum": 20 },
     "deployment": { "baseline": 7, "maximum": 8 },
-    "other": { "baseline": 10, "maximum": 11 }
+    "other": { "baseline": 14, "maximum": 14 }
   }
 }

@@ -1,12 +1,18 @@
 import { applicationGraphFor } from '@applik8s/applik8s';
+import { assembleApplicationKnowledgeContext } from '@applik8s/knowledge';
 import { AgenticStarter } from '@applik8s/start-agentic';
 import { describe, expect, it } from 'vitest';
 import {
   Document,
   DocumentList,
+  KnowledgeSearch,
   WorkspaceAssistant,
   application,
 } from '../src/application';
+import {
+  canManageWorkspaceBilling,
+  trustedBillingReturnUrl,
+} from '../src/features/billing-policy';
 
 describe('generated application', () => {
   it('discovers one typed model, view, agent, and explicit authority graph', () => {
@@ -33,6 +39,25 @@ describe('generated application', () => {
     ]));
   });
 
+  it('ships durable run hydration and an authorized search-backed knowledge path', () => {
+    const graph = applicationGraphFor(application.composition);
+
+    expect(KnowledgeSearch).toMatchObject({
+      kind: 'applicationSearchIndex',
+      name: 'workspace-knowledge-search',
+    });
+    expect(graph?.nodes).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: 'index',
+        name: 'workspace-knowledge-search',
+      }),
+      expect.objectContaining({
+        kind: 'model',
+        id: 'model.protocol-run',
+      }),
+    ]));
+  });
+
   it('validates model input and the deterministic Starter tool fixture', () => {
     const fixture = AgenticStarter.inference().fixture;
     const toolInput = fixture?.tool?.input;
@@ -41,8 +66,8 @@ describe('generated application', () => {
     expect(Document.$model.schema.insert({ body: 'A typed document' })).not.toHaveProperty(
       'problems',
     );
-    expect(toolInput).toEqual({
-      body: 'Starter tool-created document.',
+    expect(toolInput).toMatchObject({
+      body: expect.stringContaining('## Execution plan'),
     });
     expect(Document.$model.schema.insert(toolInput ?? {})).not.toHaveProperty(
       'problems',
@@ -68,5 +93,34 @@ describe('generated application', () => {
       },
     });
     expect(JSON.stringify(manifest)).not.toContain('"name":"anonymous"');
+  });
+
+  it('fails shared-workspace billing closed for ordinary members and unsafe returns', () => {
+    expect(canManageWorkspaceBilling({
+      principal: { roles: ['member'] },
+      trustedContext: { workspaceId: 'workspace-one' },
+    })).toBe(false);
+    expect(canManageWorkspaceBilling({
+      principal: { roles: ['workspace-owner'] },
+      trustedContext: { workspaceId: 'workspace-one' },
+    })).toBe(true);
+    expect(() => trustedBillingReturnUrl(
+      'https://attacker.example/app/billing',
+      'https://product.example',
+    )).toThrow(/this application's Billing page/u);
+    expect(trustedBillingReturnUrl(
+      'https://product.example/app/billing?checkout=complete',
+      'https://product.example',
+    )).toBe('https://product.example/app/billing?checkout=complete');
+  });
+
+  it('bounds relevance-ranked knowledge before it enters an agent prompt', () => {
+    const context = assembleApplicationKnowledgeContext([
+      { id: 'one', title: 'First', content: '😀'.repeat(20_000) },
+      { id: 'two', title: 'Second', content: 'second'.repeat(20_000) },
+    ], { maximumBytes: 48_000, maximumSourceBytes: 12_000 });
+
+    expect(new TextEncoder().encode(context).byteLength).toBeLessThanOrEqual(48_000);
+    expect(context).toContain('## First');
   });
 });

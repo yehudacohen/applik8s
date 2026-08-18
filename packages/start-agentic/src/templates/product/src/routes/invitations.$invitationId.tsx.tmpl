@@ -2,6 +2,7 @@ import { selectAgenticWorkspace } from '@applik8s/start-agentic/react';
 import { createFileRoute, Link } from '@tanstack/react-router';
 import { useState } from 'react';
 import { Invitation } from '../application';
+import { Button } from '../components/ui';
 
 export const Route = createFileRoute('/invitations/$invitationId')({
   component: InvitationAcceptance,
@@ -47,13 +48,13 @@ function InvitationAcceptance() {
           Open workspace
         </Link>
       ) : (
-        <button
+        <Button
           type="button"
           disabled={accept.pending}
           onClick={acceptInvitation}
         >
           {accept.pending ? 'Joining…' : 'Accept invitation'}
-        </button>
+        </Button>
       )}
       {error ? <p role="alert">{error}</p> : null}
     </article>

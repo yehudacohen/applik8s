@@ -36,22 +36,23 @@ Applik8s authority:
 
 ```text
 Product experience
-├── Copilot and persistent conversations
-├── Document and artifact library
+├── Home assistant and persistent conversations
+├── Mutable Documents and immutable Artifacts
 ├── Inbox and durable decisions
+├── Workspaces, usage, billing, and account
 └── Product-member onboarding
 
-Workspace administration
-├── Members and roles
-├── Usage and billing
-└── Workspace settings
+Builder
+├── Agents and typed tools
+├── Knowledge and connections
+└── Evaluations and publishing
 
 Product administration
 ├── Tenant directory and tenant detail
 ├── Product catalog
 └── Tenant-scoped subscription and usage state
 
-Builder Launchpad
+Operator Launchpad
 ├── Source orientation
 ├── Provider and profile setup
 ├── Doctor and plan evidence
@@ -63,9 +64,10 @@ Operations
 └── Deployment graph and ownership
 ```
 
-Product members see only the first surface. Workspace owners receive the first
-two. Application operators receive product administration, Launchpad, and Operations in addition to any
-product roles they separately hold. The UI does not infer operator authority
+Product members receive the Product surface. Workspace owners and
+administrators additionally receive Builder. Application operators receive
+product administration, Launchpad, and Operations in addition to any product
+roles they separately hold. The UI does not infer operator authority
 from a local URL, workspace ownership, a Kubernetes namespace, or visibility of
 an installation.
 
@@ -96,39 +98,33 @@ not a neon developer dashboard and not a generic shadcn component gallery.
 
 ```text
 ┌──────────────────────────────────────────────────────────────────────────┐
-│  applik8s-template      Workspace ▾     [role-shaped actions]  Avatar ▾ │
-├───────────────┬──────────────────────────────────────────────────────────┤
-│ Product       │ Breadcrumb / contextual status                          │
-│  Copilot      │                                                          │
-│  Library      │ Route content                                            │
-│  Workspaces   │                                                          │
-│  Inbox        │                                                          │
+│ A8 Your app   │                                                          │
+├───────────────┤                                                          │
+│               │ Route content                                            │
+│ Product       │                                                          │
+│ Builder*      │                                                          │
+│ Admin*        │                                                          │
+│ Operator*     │                                                          │
 │               │                                                          │
-│ Manage        │                                                          │
-│  Usage        │                                                          │
-│  Billing      │                                                          │
-│  Account      │                                                          │
+│ Active surface│                                                          │
+│ navigation    │                                                          │
 │               │                                                          │
-│ Operator*     │ *group absent without application-operator authority     │
-│  Launchpad    │                                                          │
-│  Operations   │                                                          │
-│               │                                                          │
-│ Starter*      │ *environment badge exists only for application operators │
-│ non-production│                                                          │
+│───────────────│                                                          │
+│ Theme         │                                                          │
+│ Account       │                                                          │
 └───────────────┴──────────────────────────────────────────────────────────┘
 ```
 
-- The top bar contains the application identity, workspace switcher,
-  role-shaped actions, command palette trigger, and account menu. Product
-  members may see pending Inbox work; only operators may see setup state.
-- The left navigation groups product use, workspace administration, and
-  application operation. Workspace administration and the complete Operator
-  group are authority-shaped and absent when unauthorized. “Launchpad” carries
-  a count only when operator action is required.
-- The active profile appears at the bottom only for application operators as a
-  compact environment badge. Product members and workspace owners do not see
-  deployment topology. The badge is never a profile selector unless the current
-  application has a proven safe transition.
+- The left rail starts with the application identity, exposes Product,
+  Builder, Administration, and Operator as distinct surfaces, then shows only
+  the active surface's destinations. Builder, Administration, and Operator are
+  absent unless the admitted session has their required authority.
+- Product contains Home, Documents, Artifacts, Inbox, Workspaces, Usage,
+  Billing, and Account. Builder contains Agents, Knowledge, Connections, and
+  Evaluations. Administration contains Overview, Tenants, and Catalog.
+  Operator contains Launchpad and Operations.
+- Theme and account controls remain at the rail boundary. Deployment topology
+  is never inferred from workspace ownership or presented as product state.
 - Route content uses a consistent maximum readable width. Data-heavy operations
   views may use the full available width.
 
@@ -136,11 +132,15 @@ not a neon developer dashboard and not a generic shadcn component gallery.
 
 - Top bar retains application identity and account avatar. Product members may
   see Inbox state; only application operators may see setup status.
-- Primary product destinations use a four-item bottom navigation: Copilot,
-  Library, Inbox, and More.
-- “More” opens an authority-shaped sheet. Members receive Workspaces and
-  Account; owners also receive Usage and Billing; operators separately receive
-  Launchpad and Operations.
+- Primary product destinations use one four-item bottom navigation: Home,
+  Documents, Inbox, and More. The desktop surface switcher and complete route
+  list are not duplicated into a horizontally scrolling mobile header.
+- “More” opens a source-owned shadcn/Radix sheet. Members receive Artifacts,
+  Workspaces, Usage, Billing, and Account. Workspace administrators additionally
+  receive Builder. Application operators separately receive Administration,
+  Launchpad, and Operations.
+- Main content reserves the complete bottom-navigation height plus the device
+  safe area. The last interactive control cannot be obscured by fixed chrome.
 - Side panels become full-width sheets; causal timelines become vertical.
 - No feature relies on hover.
 
@@ -347,7 +347,7 @@ It becomes a useful work surface:
 
 ## View 7: Document and artifact library
 
-**Routes:** `/app/library`, `/app/documents/:documentId`, and
+**Routes:** `/app/artifacts`, `/app/documents/:documentId`, and
 `/app/artifacts/:artifactId`
 
 The library is not a file-system metaphor and does not collapse mutable product

@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "reviewedAt": "2026-08-01",
+  "reviewedAt": "2026-08-16",
   "scope": "Nested production dependency graph of all publishable @applik8s/* packages",
   "advisories": {
     "GHSA-pw8r-6689-xvf4": {
@@ -24,26 +24,19 @@
       "disposition": "No patched decompress, weval, or ComponentizeJS release exists. Weval downloads only its fixed Bytecode Alliance release asset, but the archive is not integrity-pinned; keep compiler builds isolated, never accept an untrusted archive source, and replace this dependency path when upstream publishes a fix.",
       "expires": "2026-08-31"
     },
-    "GHSA-mh29-5h37-fv8m": {
-      "dependency": "js-yaml",
+    "GHSA-jwp9-9v96-94mx": {
+      "dependency": "decompress",
       "severity": "moderate",
-      "path": "typekro",
-      "disposition": "Upgrade TypeKro's exact js-yaml pin to a patched release.",
+      "path": "@bytecodealliance/componentize-js > @bytecodealliance/weval",
+      "disposition": "No patched decompress, weval, or ComponentizeJS release exists. The affected archive extraction remains confined to isolated trusted compiler builds over Bytecode Alliance's fixed upstream asset; do not accept attacker-selected archives and replace the dependency path when upstream publishes a fix.",
       "expires": "2026-08-31"
     },
-    "GHSA-h67p-54hq-rp68": {
-      "dependency": "js-yaml",
-      "severity": "moderate",
-      "path": "typekro",
-      "disposition": "Upgrade TypeKro's exact js-yaml pin to a patched release.",
-      "expires": "2026-08-31"
-    },
-    "GHSA-52cp-r559-cp3m": {
+    "GHSA-5p4m-2wfm-xmqj": {
       "dependency": "js-yaml",
       "severity": "high",
       "path": "typekro",
-      "disposition": "Upgrade TypeKro's exact js-yaml pin to >=4.3.0; until then, TypeKro remains a trusted build-time dependency and must not parse attacker-controlled YAML.",
-      "expires": "2026-08-07"
+      "disposition": "TypeKro 0.33.7 pins js-yaml 4.3.0 while the ordered-map CPU fix first appears in 4.3.1. TypeKro remains a trusted build-time dependency and Applik8s must not compile attacker-controlled YAML; upgrade immediately when TypeKro publishes the patched pin.",
+      "expires": "2026-08-31"
     },
     "GHSA-r5fr-rjxr-66jc": {
       "dependency": "lodash-es",

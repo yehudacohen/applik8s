@@ -4,29 +4,28 @@ For the native Drizzle/Kubernetes model, trusted-context, migration, query,
 stream, client, and projection contracts, see
 [Native Models and Live Queries](./native-models-and-live-queries.md).
 
-This is the supported public surface for the pending `applik8s` v0.7 release.
+This is the supported public surface for the `applik8s` v0.7 release.
 It includes the earlier application substrate, durable messaging and
 workflows, native models, live queries, browser facades, application hosting,
 and the v0.7 function-native execution and Agentic Start contracts.
 
 ## Packages
 
-- `@applik8s/applik8s`: umbrella package for normal users. Re-exports SDK, TypeKro adapter, and typed container helpers.
-- `@applik8s/applik8s/dns`: handler-safe DNS normalization, observation, capability, ownership, and ExternalDNS `DNSEndpoint` decisions.
-- `@applik8s/sdk`: CRD authoring, operator definitions, handler dispatch, runtime schema helpers, and status helpers.
-- `@applik8s/compiler`: build pipeline, manifest generation, Kubernetes YAML generation, diagnostics, runtime contract helpers, and WASM component generation.
-- `@applik8s/testing`: local operator test harness and proxy recorder utilities.
-- `@applik8s/typekro-adapter`: TypeKro install composition and operation-target adapters.
-- `@applik8s/core`: shared types and contracts.
-- `@applik8s/runtime-contract`: generated runtime/handler ABI schema constants.
-- `@applik8s/runtime`: TypeScript-facing operator runtime interfaces.
-- `@applik8s/typetainer`: typed container image reference utilities.
-- `@applik8s/client`: framework-neutral browser/server operation clients and transports.
-- `@applik8s/react`: router-independent providers, hydration boundary, and live-query/mutation hooks.
-- `@applik8s/server`: framework-neutral authenticated request scope and Fetch-compatible Kubernetes gateway.
-- `@applik8s/vite`: graph discovery, dual-runtime facade partitioning, dependency-zone enforcement, and web-artifact recording.
-- `@applik8s/tanstack-start`: the thin Nitro/TanStack adapter; it does not re-export application providers.
-- `@applik8s/applik8s/search-runtime`: focused PostgreSQL search runtime used by generated gateways and projection workers; application authoring should normally use the umbrella model/search APIs.
+The authoritative [package and module catalog](./packages.md) lists every
+published boundary, its runtime zone, and when to install it.
+
+Most application authors need only:
+
+- `@applik8s/applik8s` for application authoring;
+- selected application modules such as `documents`, `conversations`, or
+  `billing`;
+- selected provider/runtime adapters; and
+- `@applik8s/react`, `@applik8s/server`, or a framework integration when the
+  application has a web surface.
+
+Operator-only and WASM code should prefer the focused `@applik8s/sdk` surface.
+Compiler, deployment, and provider packages are public extension seams but are
+normally reached through `@applik8s/cli`.
 
 The umbrella package is the normal application-authoring and integration surface. Code that must be captured inside a minimal WASM reconciliation closure should import focused handler-safe APIs from `@applik8s/sdk` or an explicitly documented handler-safe subpath. The compiler follows the reachable closure and fails closed on unsupported Node or integration dependencies; it does not promise that importing the umbrella entrypoint from inside a handler is minimal or portable.
 
@@ -309,6 +308,11 @@ The UI leads with failed, blocked, waiting, degraded, and unknown evidence and
 retains category/id identifiers while keeping raw evidence and credentials
 server-side.
 
+Pure browser health classification is exported separately from
+`@applik8s/operations-ui/health`. Importing that entrypoint cannot pull the
+server-only authority, receipt-signing, or PostgreSQL runtime into a browser
+bundle.
+
 ## Resource Operations
 
 Generated `app.server(...)` routes can call typed resource helpers such as `Resource.create(...)`, `Resource.get(...)`, `Resource.query(...)`, `Resource.patch(...)`, `Resource.delete(...)`, and `Resource.increment(...)`. `increment(...)` is generated-runtime-only: route code declares the target resource, object identity, spec fields, labels, and numeric field, while the generated server batches increments and flushes them with create-on-miss and patch-on-existing-object semantics.
@@ -329,7 +333,7 @@ The defaults are deliberately bounded: Postgres/CNPG for models; Valkey for inde
 
 “Broad provider implementations” can also mean multiple production-scale adapters behind each contract—for example S3 and GCS, several hosted queues, multiple SQL databases, secret managers, and several gateway choices. v0.3 does not require that catalog: it requires one working zero-configuration default for every native interface. `defaultApplicationProviders` exposes those choices, while `app.defaults(...)` and `app.provide(...)` remain override points.
 
-Applik8s qualifies TypeKro 0.33.6 and consumes its production Valkey,
+Applik8s qualifies TypeKro 0.33.7 and consumes its production Valkey,
 Rook/Ceph, NATS/JetStream, Harbor, Hatchet, OpenSearch, Ory, and deployment
 planning surfaces through the focused deployment packages. These are explicit
 profile scale-up paths rather than unconditional defaults: operators and

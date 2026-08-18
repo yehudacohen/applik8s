@@ -252,6 +252,8 @@ export interface ApplicationStreamProcessOptions<TSchedules extends ApplicationS
   readonly __generatedCalls?: readonly unknown[];
   /** Compiler-owned source identifiers for direct callable captures. */
   readonly __generatedBindings?: Readonly<Record<string, unknown>>;
+  /** Compiler-owned direct calls whose result was awaited by the authored callback. */
+  readonly __generatedAwaitedCalls?: Readonly<Record<string, unknown>>;
 }
 
 export interface ApplicationStreamBatchOptions<TSchedules extends ApplicationStreamScheduleTargets = Readonly<Record<never, never>>, TTasks extends ApplicationStreamTaskTargets = Readonly<Record<never, never>>> extends ApplicationStreamProcessOptions<TSchedules, TTasks> {
@@ -1210,6 +1212,7 @@ function registerApplicationStreamProcessorInternal<
     // that metadata without requiring application-facing __generatedCalls.
     calls: [handler, ...(options.__generatedCalls ?? [])],
     bindings: options.__generatedBindings,
+    awaited: options.__generatedAwaitedCalls,
   });
   const discoveredTransaction = inferApplicationFunctionNativeTransaction(
     state,
@@ -2128,11 +2131,11 @@ function isApplicationModelCommandBinding(value: unknown): value is ApplicationM
   return Boolean(value && typeof value === 'object' && Reflect.get(value, 'kind') === 'applicationModelCommand');
 }
 
-function reactiveDatabaseRuntime(binding: ApplicationDatabaseBinding): { readonly name: string; readonly connectionEnvName: string; readonly secretName: string; readonly secretKey: string; readonly secretNamespace?: string; readonly access?: { readonly context: string; readonly contextSchema: JsonObject; readonly setting: string; readonly column: string } } {
+function reactiveDatabaseRuntime(binding: ApplicationDatabaseBinding): { readonly name: string; readonly connectionEnvName: string; readonly secretName: string; readonly secretKey: string; readonly secretNamespace?: string; readonly access?: { readonly context: string; readonly contextSchema: JsonObject; readonly setting: string; readonly column: string; readonly default: 'required' | 'global' } } {
   const provider = binding.provider;
   const clusterName = provider.clusterName ?? provider.name ?? `${reactiveName(binding.name)}-db`;
   const secret = provider.connectionSecret ?? { apiVersion: 'v1', kind: 'Secret', name: `${clusterName}-app`, ...(provider.namespace ? { namespace: provider.namespace } : {}) };
-  return { name: binding.name, connectionEnvName: `APPLIK8S_DATABASE_${reactiveName(binding.name).replace(/[^A-Z0-9_a-z]+/g, '_').toUpperCase()}_URL`, secretName: applicationTypeKroSerializedValue(secret.name ?? `${clusterName}-app`), secretKey: applicationTypeKroSerializedValue(provider.connectionSecretKey ?? 'uri'), ...(secret.namespace ?? provider.namespace ? { secretNamespace: applicationTypeKroSerializedValue(secret.namespace ?? provider.namespace) } : {}), ...(binding.access ? { access: { context: binding.access.context.name, contextSchema: binding.access.context.contract.jsonSchema, setting: binding.access.setting, column: binding.access.column } } : {}) };
+  return { name: binding.name, connectionEnvName: `APPLIK8S_DATABASE_${reactiveName(binding.name).replace(/[^A-Z0-9_a-z]+/g, '_').toUpperCase()}_URL`, secretName: applicationTypeKroSerializedValue(secret.name ?? `${clusterName}-app`), secretKey: applicationTypeKroSerializedValue(provider.connectionSecretKey ?? 'uri'), ...(secret.namespace ?? provider.namespace ? { secretNamespace: applicationTypeKroSerializedValue(secret.namespace ?? provider.namespace) } : {}), ...(binding.access ? { access: { context: binding.access.context.name, contextSchema: binding.access.context.contract.jsonSchema, setting: binding.access.setting, column: binding.access.column, default: binding.access.default } } : {}) };
 }
 
 function recordProjectionProvider(

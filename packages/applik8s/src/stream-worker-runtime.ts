@@ -18,6 +18,8 @@ export type {
 } from './model-command-postgres-runtime.js';
 export {
   applicationPostgresModelReadClients,
+  currentFunctionNativePostgresDatabase,
+  currentFunctionNativePostgresTransaction,
   executeFunctionNativePostgresModelEdit,
   executeFunctionNativePostgresTransaction,
 } from './model-command-postgres-runtime.js';

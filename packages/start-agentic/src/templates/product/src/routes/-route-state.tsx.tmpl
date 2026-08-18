@@ -4,7 +4,7 @@ import { Button, RouteState, Skeleton } from '../components/ui';
 
 export function RoutePending() {
   return (
-    <div aria-label="Loading page" className="space-y-4">
+    <div role="status" aria-label="Loading page" className="space-y-4">
       <Skeleton className="h-4 w-28" />
       <Skeleton className="h-10 w-80 max-w-full" />
       <Skeleton className="h-32 w-full" />
@@ -17,7 +17,7 @@ export function RouteNotFound() {
     <RouteState
       title="That page is not here"
       description="The address may be outdated, or this capability is not part of the selected application profile."
-      action={<Link to="/app" className="button-link">Return to the product</Link>}
+      action={<Button asChild><Link to="/app">Return to the product</Link></Button>}
     />
   );
 }

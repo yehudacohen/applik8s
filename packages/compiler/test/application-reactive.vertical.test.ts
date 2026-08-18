@@ -3,7 +3,7 @@ import { mkdtemp, readdir, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { gunzipSync } from 'node:zlib';
-import { app, applicationGraphFor } from '@applik8s/applik8s';
+import { app, applicationGraphFor, EventLog } from '@applik8s/applik8s';
 import { bindApplicationCallableDependencies } from '@applik8s/applik8s/internal/provider-runtime';
 import type { ApplicationGraph, ApplicationGraphNode, JsonObject } from '@applik8s/core';
 import { pgTable, text } from 'drizzle-orm/pg-core';
@@ -13,6 +13,7 @@ import {
   emitGeneratedApplicationReactive,
   kubernetesContainerName,
 } from '../src/application-reactive/index.js';
+import { emitGeneratedApplicationProcessors } from '../src/application-processors/index.js';
 import {
   compileTypeKroComposition,
   discoverApplicationGraph,
@@ -26,6 +27,76 @@ const database = { name: 'catalog', connectionEnvName: 'APPLIK8S_DATABASE_CATALO
 const reactiveRuntimeBundleBudgetBytes = 570_000;
 
 describe('generated v0.6 reactive workloads', () => {
+  it('emits collision-safe variables for inferred dotted outbox model operations', async () => {
+    const parents = pgTable('compiler_outbox_parents', {
+      id: text('id').primaryKey(),
+      revision: text('revision').notNull(),
+    });
+    const children = pgTable('compiler_outbox_children', {
+      id: text('id').primaryKey(),
+      parentId: text('parent_id').notNull(),
+      revision: text('revision').notNull(),
+    });
+    const application = app('dotted-outbox-binding', { namespace: 'tests' });
+    application.provide(EventLog, {
+      kind: 'nats-jetstream',
+      name: 'events',
+      namespace: 'tests',
+    });
+    const Database = application.database.postgres('application', {
+      schema: { parents, children },
+    });
+    const Parent = application.model(parents, {
+      name: 'CompilerParent',
+      database: Database,
+    });
+    const Child = application.model(children, {
+      name: 'CompilerChild',
+      database: Database,
+    });
+    Parent.create.beforeCommit(
+      {
+        history: true,
+        __generatedCalls: [Child, Child.require, Child.create],
+        __generatedModelBindings: {
+          Child,
+          'Child.require': Child.require,
+          'Child.create': Child.create,
+        },
+      },
+      async (parent, _input, context) => {
+        await Child.require(parent.identity);
+        context.send(Child.create, {
+          id: context.id('child'),
+          parentId: parent.identity,
+          revision: context.id('child-revision'),
+        }, { targetKey: parent.identity });
+      },
+    );
+    const graph = applicationGraphFor(application.composition);
+    if (!graph) throw new Error('Dotted outbox fixture produced no application graph.');
+    const outDir = await mkdtemp(join(tmpdir(), 'applik8s-dotted-outbox-'));
+    const artifacts = await emitGeneratedApplicationProcessors({
+      graph,
+      outDir,
+      entrypoint: import.meta.filename,
+    });
+    const artifact = artifacts.find((candidate) =>
+      candidate.name === 'compiler-parent-commands',
+    );
+    expect(artifact, 'CompilerParent processor artifact').toBeDefined();
+    const generated = await readFile(
+      join(dirname(artifact?.sourcePath ?? ''), 'processor.generated.ts'),
+      'utf8',
+    );
+
+    expect(generated).not.toContain('const Child.createContract');
+    expect(generated).toContain('async require(identity)');
+    expect(generated).toContain('"Child": Object.freeze({ ...Child, "create": callbackBinding_');
+    expect(generated).toMatch(/const callbackBinding_[a-f0-9]{12}Contract = /u);
+    expect(generated).toMatch(/context\.send\(callbackBinding_[a-f0-9]{12}Contract,/u);
+  }, 120_000);
+
   it('generates bounded collision-resistant container names for long workload identities', () => {
     const first = kubernetesContainerName(`agentic-product-${'document-projection-'.repeat(5)}primary`);
     const second = kubernetesContainerName(`agentic-product-${'document-projection-'.repeat(5)}secondary`);
@@ -234,8 +305,121 @@ describe('generated v0.6 reactive workloads', () => {
     expect(generated).toContain('const createSource = () => createPostgresApplicationStream');
     expect(generated).toContain('await source.close().catch(() => undefined)');
     expect(generated).toContain('lastSuccessfulCycleAt');
+    expect(generated).toContain('const sourceId = event?.id ?? context.batch?.id');
+    expect(generated).toContain(
+      'Object.freeze({ id: workloadIdentity.id, identity: workloadIdentity, grantIds: Object.freeze([]) })',
+    );
+    expect(generated).toContain("trustedContextDigest: event?.contextDigest ?? source?.trustedContextDigest ?? 'batch:' + sourceId");
     expect(generated).not.toContain('runApplicationStreamProcessor({');
   });
+
+  it('hydrates an inferred object-store handle inside a managed stream processor', async () => {
+    const graph = reactiveGraph([
+      {
+        id: 'provider.object-storage',
+        kind: 'provider',
+        name: 'ObjectStorage',
+        stability: 'stable',
+        interface: 'ObjectStorage',
+        implementation: 's3',
+        config: {
+          objectStorage: {
+            kind: 's3',
+            bucket: 'catalog-objects',
+            region: 'us-east-1',
+            endpoint: 'http://objects.catalog.svc:8333',
+            forcePathStyle: true,
+            enabled: true,
+            credentialsSecret: {
+              name: 'catalog-objects',
+              namespace: 'catalog',
+            },
+          },
+        },
+      },
+      {
+        id: 'stream.documents.published.v1',
+        kind: 'stream',
+        name: 'documents.published',
+        version: 'v1',
+        stability: 'stable',
+        payload: schema({
+          type: 'object',
+          properties: { documentId: { type: 'string' } },
+          required: ['documentId'],
+        }),
+        authority: 'postgres-outbox',
+        delivery: 'at-least-once',
+        replay: 'supported',
+        retention: { maxAgeSeconds: 86_400 },
+        partitioning: 'declared',
+        compatibility: 'versioned-schema',
+        authorization: 'application-defined',
+        database,
+        partitionSource: '(event) => event.documentId',
+        authorizationSource: '() => false',
+      },
+      {
+        id: 'streamProcessor.publish-document',
+        kind: 'streamProcessor',
+        name: 'publish-document',
+        stability: 'stable',
+        source: { nodeId: 'stream.documents.published.v1' },
+        database,
+        handlerSource: 'async event => ArtifactObjects.put({ key: event.documentId, body: "published", contentType: "text/plain" })',
+        providerBindings: [{
+          identifier: 'ArtifactObjects',
+          provider: {
+            interface: 'ObjectStorage',
+            nodeId: 'provider.object-storage',
+          },
+        }],
+        delivery: 'at-least-once',
+        invocation: 'event',
+        idempotency: 'source-event-id',
+        checkpoint: 'postgres',
+        failure: 'deadLetter',
+        retry: {
+          mode: 'boundedExponentialBackoff',
+          maxAttempts: 5,
+          initialDelayMs: 100,
+          maxDelayMs: 5_000,
+          factor: 2,
+        },
+        deployment: {
+          image: 'node:22-alpine',
+          replicas: 1,
+          concurrency: 1,
+          maxAckPending: 64,
+          healthPort: 8_080,
+          gracefulShutdownSeconds: 30,
+          resources: {},
+          scaling: { mode: 'fixed' },
+        },
+        budgets: { timeoutMs: 30_000, maxInputBytes: 256_000 },
+      },
+    ] as unknown as ApplicationGraphNode[]);
+    const [artifact] = await emitGeneratedApplicationReactive({
+      graph,
+      outDir: await mkdtemp(join(tmpdir(), 'applik8s-object-store-processor-')),
+      entrypoint: import.meta.filename,
+    });
+    const generated = await readFile(
+      join(dirname(artifact?.sourcePath ?? ''), 'stream-processor.generated.ts'),
+      'utf8',
+    );
+    const resources = JSON.stringify(artifact?.resources);
+
+    expect(generated).toContain('installApplicationObjectStorageRuntimeResolver');
+    expect(generated).toContain('createS3ApplicationObjectStorageRuntime');
+    expect(generated).toContain('objectStorageRuntimes.get(binding.name)');
+    expect(resources).toContain('APPLIK8S_OBJECT_STORAGE_BUCKET');
+    expect(resources).toContain('catalog-objects');
+    expect(resources).toContain('APPLIK8S_OBJECT_STORAGE_ENDPOINT');
+    expect(resources).toContain('http://objects.catalog.svc:8333');
+    expect(resources).toContain('AWS_ACCESS_KEY_ID');
+    expect(resources).toContain('AWS_SECRET_ACCESS_KEY');
+  }, 120_000);
 
   it('lowers inferred Model.edit dependencies into the durable command kernel', async () => {
     const modelRuntime = (name: string, tableName: string) => ({
@@ -293,6 +477,32 @@ describe('generated v0.6 reactive workloads', () => {
         },
       },
       {
+        id: 'query.posts.pending.v1',
+        kind: 'query',
+        name: 'posts.pending',
+        version: 'v1',
+        stability: 'stable',
+        input: schema({ type: 'object', properties: {}, required: [] }),
+        output: schema({
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: { id: { type: 'string' } },
+            required: ['id'],
+          },
+        }),
+        reads: [{ model: { nodeId: 'model.post' }, relationship: 'set' }],
+        authorization: 'application-defined',
+        trustedContext: [],
+        budgets: { timeoutMs: 1_000, maxResultBytes: 10_000, maxRows: 100 },
+        snapshotResume: 'resumableInvalidation',
+        incremental: 'invalidation-requery',
+        cursor: 'opaque-query-version-context-scoped',
+        database,
+        authorizationSource: '() => true',
+        handlerSource: 'async () => []',
+      },
+      {
         id: 'stream.posts.requested.v1',
         kind: 'stream',
         name: 'posts.requested',
@@ -321,7 +531,7 @@ describe('generated v0.6 reactive workloads', () => {
         stability: 'stable',
         source: { nodeId: 'stream.posts.requested.v1' },
         database,
-        handlerSource: 'async event => Post.edit(event.postId, async post => { const account = await Account.require(post.accountId); await post.update({ state: account.value.state }); PostChanged.emit({ postId: event.postId }); })',
+        handlerSource: 'async event => Post.edit(event.postId, async post => { const account = await Account.require(post.accountId); await post.update({ state: account.value.state }); await PendingPosts({}); PostChanged.emit({ postId: event.postId }); })',
         functionNativeTransaction: {
           primaryModel: { nodeId: 'model.post' },
           models: [{ nodeId: 'model.account' }, { nodeId: 'model.post' }],
@@ -335,6 +545,12 @@ describe('generated v0.6 reactive workloads', () => {
           outbox: [{ nodeId: 'event.posts.changed.v1' }],
           idempotency: 'source-event-id',
         },
+        queryBindings: [
+          {
+            identifier: 'PendingPosts',
+            query: { nodeId: 'query.posts.pending.v1' },
+          },
+        ],
         delivery: 'at-least-once',
         invocation: 'event',
         idempotency: 'source-event-id',
@@ -376,8 +592,17 @@ describe('generated v0.6 reactive workloads', () => {
     expect(generated).toContain('executeFunctionNativePostgresModelEdit');
     expect(generated).toContain('withApplicationNativeModelTransactionRuntime');
     expect(generated).toContain('functionNativeModelHandle');
+    expect(generated).toContain(
+      'currentFunctionNativePostgresDatabase, currentFunctionNativePostgresTransaction, editApplicationNativeModelObject',
+    );
+    expect(generated).toContain('activeTransaction ?? databaseUrl');
+    expect(generated).toContain('delivery.context');
     expect(generated).toContain('createApplicationFunctionNativeEventHandle');
-    expect(generated).toContain('createHandleEvent(functionNativeBindings)');
+    expect(generated).toContain('currentFunctionNativePostgresDatabase()');
+    expect(generated).toContain(
+      'const runtimeDatabase = activeDatabase ?? processorQueryDb;',
+    );
+    expect(generated).toContain('processorQueries(context)');
     expect(generated).toContain('"name":"Post"');
     expect(generated).toContain('"name":"Account"');
     expect(generated).toContain('"id":"posts.changed.v1"');
@@ -434,6 +659,67 @@ describe('generated v0.6 reactive workloads', () => {
       /cannot atomically call.*source transaction uses.*while CrossAuthorityChild uses.*workflow or post-commit event handler/s,
     );
   });
+
+  it('infers a lifecycle processor service identity from its complete static authority', async () => {
+    const records = pgTable('service_identity_records', {
+      id: text('id').primaryKey(),
+      state: text('state').notNull(),
+      revision: text('revision').notNull(),
+    });
+    const application = app('processor-service-authority');
+    const Database = application.database.postgres('application', {
+      schema: { records },
+    });
+    const Record = application.model(records, {
+      name: 'ServiceIdentityRecord',
+      database: Database,
+    });
+    const Worker = application.serviceIdentity('record-worker');
+    async function activateRecord(created: { readonly value: { readonly id: string } }) {
+      await Record.update({
+        identity: created.value.id,
+        patch: { state: 'active' },
+      });
+    }
+    bindApplicationCallableDependencies(activateRecord, [
+      { identifier: 'Record.update', value: Record.update },
+    ]);
+    Record.on.create(activateRecord);
+    Worker.can(Record.update);
+    const graph = applicationGraphFor(application.composition);
+    if (!graph) throw new Error('Expected processor service-authority graph.');
+
+    const artifacts = await emitGeneratedApplicationReactive({
+      graph,
+      outDir: await mkdtemp(join(tmpdir(), 'applik8s-processor-service-')),
+      entrypoint: import.meta.filename,
+    });
+    const artifact = artifacts.find((candidate) =>
+      candidate.kind === 'streamProcessorWorker',
+    );
+    const generated = await readFile(
+      join(dirname(artifact?.sourcePath ?? ''), 'stream-processor.generated.ts'),
+      'utf8',
+    );
+
+    expect(generated).toContain('function processorExecutionPrincipal(context)');
+    expect(generated).toContain(
+      '"id":"identity:processor-service-authority:service:record-worker"',
+    );
+    expect(generated).toContain(
+      'serviceIdentity: Object.freeze({"id":"identity:processor-service-authority:service:record-worker"',
+    );
+    expect(generated).toContain(
+      "const principal = processorExecutionPrincipal(context);",
+    );
+    expect(generated).toContain(
+      'applicationCommandPrincipalValues(principal)',
+    );
+    expect(generated).toContain('causalPrincipalId: causal.id');
+    expect(generated).toContain(
+      'handleAuthoredEvent(input, processorAuthoredContext(context))',
+    );
+  }, 120_000);
 
   it('lowers profiled identity callbacks into isolated server modules and an installation-bound dispatcher', async () => {
     const graph = await nativeQueryFixtureGraph();
@@ -665,11 +951,11 @@ describe('generated v0.6 reactive workloads', () => {
         },
         compatibility: {
           apiVersion: 'applik8s.aiCompatibility/v1alpha1',
-          tanstackAI: '0.42.0',
-          tanstackAIClient: '0.22.1',
-          tanstackAIReact: '0.18.1',
-          tanstackAIPersistence: 'unreleased',
-          agUi: '0.0.52',
+          tanstackAI: '0.44.1',
+          tanstackAIClient: '0.23.2',
+          tanstackAIReact: '0.19.2',
+          tanstackAIPersistence: '0.1.4',
+          agUi: '0.1.1-canary.beta.0',
           applik8sAdapter: 'applik8s.ai-tanstack/v1alpha1',
         },
         handlerSource: 'async () => ({})',

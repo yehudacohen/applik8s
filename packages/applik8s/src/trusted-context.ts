@@ -1,4 +1,5 @@
 import type { JsonObject } from '@applik8s/core';
+import { normalizeSchema } from '@applik8s/sdk/schema-runtime';
 import type { Type } from 'arktype';
 
 export interface ApplicationTrustedContext<TValue> {
@@ -71,10 +72,30 @@ export const postgres = Object.freeze({
 });
 
 export function validateTrustedContextValue<TValue>(context: ApplicationTrustedContext<TValue>, value: unknown): TValue {
-  const result = context.schema(value);
-  if (result && typeof result === 'object' && 'summary' in result) {
-    throw new Error(`Trusted context ${context.name} failed runtime validation: ${String(Reflect.get(result, 'summary'))}`);
+  if (typeof context.schema === 'function') {
+    const result = context.schema(value);
+    if (result && typeof result === 'object' && 'summary' in result) {
+      throw new Error(`Trusted context ${context.name} failed runtime validation: ${String(Reflect.get(result, 'summary'))}`);
+    }
+    // typecast: ArkType returns TValue after its error-result branch has been rejected above.
+    return result as TValue;
   }
-  // typecast: ArkType returns TValue after its error-result branch has been rejected above.
-  return result as TValue;
+
+  // Managed closures retain the portable JSON Schema contract even when the
+  // authoring-time ArkType callable cannot cross the serialization boundary.
+  // Validate through the common runtime rather than weakening RLS admission.
+  const result = normalizeSchema({
+    kind: 'jsonSchema',
+    ref: { kind: 'jsonSchema', exportName: `${context.name}.trusted-context` },
+    schema: context.contract.jsonSchema,
+  }, `${context.name}.trusted-context`).validate(
+    // typecast: normalizeSchema owns input validation; its generic never input is an internal schema-runtime artifact.
+    value as never,
+  );
+  if (!result.ok) {
+    throw new Error(`Trusted context ${context.name} failed runtime validation: ${result.error.message}`);
+  }
+  // The portable JSON Schema is emitted from the declared ArkType schema.
+  // typecast: successful runtime validation establishes the same TValue contract.
+  return result.value as TValue;
 }
