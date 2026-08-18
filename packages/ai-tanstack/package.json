@@ -1,6 +1,6 @@
 {
   "name": "@applik8s/ai-tanstack",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "Native TanStack AI tool, connection, compatibility, and runtime-context adapters for Applik8s.",
   "license": "Apache-2.0",
   "type": "module",
@@ -28,10 +28,10 @@
     }
   },
   "dependencies": {
-    "@applik8s/ai": "0.7.0",
-    "@applik8s/client": "0.7.0",
-    "@applik8s/core": "0.7.0",
-    "@applik8s/sdk": "0.7.0",
+    "@applik8s/ai": "0.7.1",
+    "@applik8s/client": "0.7.1",
+    "@applik8s/core": "0.7.1",
+    "@applik8s/sdk": "0.7.1",
     "@standard-schema/spec": "1.1.0",
     "@tanstack/ai": "0.44.1",
     "@tanstack/ai-client": "0.23.2",

@@ -1,6 +1,6 @@
 {
   "name": "@applik8s/runtime-opensearch",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "OpenSearch projection, query, rebuild, and cutover runtime for Applik8s search indexes.",
   "license": "Apache-2.0",
   "type": "module",
@@ -23,6 +23,6 @@
     }
   },
   "dependencies": {
-    "@applik8s/applik8s": "0.7.0"
+    "@applik8s/applik8s": "0.7.1"
   }
 }

@@ -1,6 +1,6 @@
 {
   "name": "@applik8s/core",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "Core types and contracts for applik8s TypeScript Kubernetes operators.",
   "license": "Apache-2.0",
   "type": "module",

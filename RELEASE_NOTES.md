@@ -1,5 +1,19 @@
 # Release Notes
 
+## v0.7.1
+
+v0.7.1 corrects the released-compiler and clean-consumer boundary discovered
+while qualifying v0.7.0. The compiler now derives the immutable operator-host
+tag from its own package version instead of carrying a release-specific
+constant, and the published-artifact smoke installs the intentionally separate
+`@applik8s/cli` package before invoking the `applik8s` executable. This makes
+the host image, compiler output, npm package graph, and release evidence agree
+at the same version and prevents future release lines from silently retaining
+an older runtime host.
+
+The v0.7.0 GitHub Release was intentionally withheld after the clean consumer
+gate exposed the stale host default. Use v0.7.1 for the complete v0.7 release.
+
 ## v0.7.0
 
 v0.7 makes model reads function-native without collapsing their lifecycle

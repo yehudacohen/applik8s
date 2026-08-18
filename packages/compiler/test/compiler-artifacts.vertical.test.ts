@@ -12,6 +12,7 @@ import {
   bindKubernetesConnections,
   buildOperatorManifest,
   bundleHandlerEntrypoint,
+  COMPILER_PACKAGE_VERSION,
   compileTypeKroComposition,
   createCompilerPipeline,
   emitHandlerWitArtifact,
@@ -2005,7 +2006,7 @@ export const imagePipeline = sdk.operator({
       expect(result.value.manifest.spec.container?.baseImage).toMatchObject({
         registry: 'ghcr.io',
         repository: 'yehudacohen/applik8s-operator-host',
-        tag: 'v0.6.0',
+        tag: `v${COMPILER_PACKAGE_VERSION}`,
       });
       expect(result.value.manifest.spec.container?.files).toEqual([
         { source: 'operator-manifest.json', destination: '/etc/applik8s/operator-manifest.json' },
@@ -2130,7 +2131,7 @@ export const imagePipeline = sdk.operator({
       expect(result.value.manifest.spec.bundle.artifacts).toContainEqual(expect.objectContaining({ kind: 'esbuild-metafile' }));
       const dockerfile = await readFile(result.value.artifacts.generatedImageDockerfilePath ?? '', 'utf8');
       expect(dockerfile).toContain(
-        'ARG APPLIK8S_BASE_IMAGE=ghcr.io/yehudacohen/applik8s-operator-host:v0.6.0',
+        `ARG APPLIK8S_BASE_IMAGE=ghcr.io/yehudacohen/applik8s-operator-host:v${COMPILER_PACKAGE_VERSION}`,
       );
       expect(dockerfile).toContain(['FROM $', '{APPLIK8S_BASE_IMAGE}'].join(''));
       expect(dockerfile).toContain('COPY --chown=65532:65532 operator-manifest.json /etc/applik8s/operator-manifest.json');

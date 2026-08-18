@@ -1,11 +1,15 @@
 {
   "name": "@applik8s/notifications-smtp",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "Server-only SMTP notification delivery adapter for Applik8s.",
   "license": "Apache-2.0",
   "type": "module",
-  "files": ["dist"],
-  "publishConfig": { "access": "public" },
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/yehudacohen/applik8s.git",
@@ -19,7 +23,7 @@
     }
   },
   "dependencies": {
-    "@applik8s/notifications": "0.7.0",
+    "@applik8s/notifications": "0.7.1",
     "nodemailer": "^9.0.5"
   },
   "devDependencies": {
