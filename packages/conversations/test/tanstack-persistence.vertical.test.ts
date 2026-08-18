@@ -44,6 +44,7 @@ describe('TanStack AI conversation persistence adapter', () => {
       id: 'message-1',
       // A browser/server JSON boundary serializes Date to an ISO string even
       // though TanStack's in-process type is Date.
+      // typecast: model the hydrated runtime value while retaining TanStack's Date-typed fixture contract.
       createdAt: '2026-08-17T12:00:01.000Z' as unknown as Date,
     }]);
 
