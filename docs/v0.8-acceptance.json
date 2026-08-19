@@ -1,0 +1,158 @@
+{
+  "schemaVersion": 1,
+  "release": "0.8.0",
+  "status": "proposed",
+  "cadences": {
+    "per-pr": "deterministic static, unit, compiler, conformance, security, and package checks",
+    "nightly": "stateful local, OrbStack, MiniStack, browser, lifecycle, and integration checks",
+    "release-candidate": "real AWS, EventBridge Scheduler, CloudWatch, Athena, a qualified distributed actor provider, Kubernetes lifecycle, migration, and clean-consumer qualification; Rivet is initially nonblocking",
+    "historical-benchmark": "recorded performance, scale, telemetry-overhead, and cost histories"
+  },
+  "gates": [
+    {
+      "id": "graph-provenance",
+      "owner": "compiler-foundation",
+      "maturity": "stable",
+      "command": "bun run check:v08:graph-provenance",
+      "implemented": false,
+      "cadence": ["per-pr", "nightly"],
+      "environments": ["compiler-fixtures", "componentized-wasm-host"],
+      "evidence": ["canonical-node-identity", "recursive-closure-discovery", "source-provenance", "execution-boundary-attribution", "stable-source-movement", "ambiguity-rejection", "sensitive-data-absence"]
+    },
+    {
+      "id": "local-runtime",
+      "owner": "portable-runtime",
+      "maturity": "stable",
+      "command": "bun run check:v08:local",
+      "implemented": false,
+      "cadence": ["per-pr", "nightly", "historical-benchmark"],
+      "environments": ["clean-generated-agentic-start", "local-processes-and-containers"],
+      "evidence": ["cold-start", "hot-reload", "crash-recovery", "lease-safe-reset"]
+    },
+    {
+      "id": "aws-core",
+      "owner": "portable-runtime",
+      "maturity": "stable-contract-provider-specific",
+      "command": "bun run check:v08:aws",
+      "implemented": false,
+      "cadence": ["release-candidate", "historical-benchmark"],
+      "environments": ["real-aws-acceptance-account"],
+      "evidence": ["create-update-drift-delete", "iam", "networking", "encryption", "cost"]
+    },
+    {
+      "id": "provider-guarantees",
+      "owner": "portable-runtime",
+      "maturity": "stable",
+      "command": "bun run check:v08:provider-conformance",
+      "implemented": false,
+      "cadence": ["per-pr", "nightly", "release-candidate"],
+      "environments": ["local", "aws-local", "real-aws", "kubernetes"],
+      "evidence": ["machine-readable-guarantees", "differential-fixtures", "provider-labels"]
+    },
+    {
+      "id": "target-parity",
+      "owner": "portable-runtime",
+      "maturity": "stable",
+      "command": "bun run check:v08:target-parity",
+      "implemented": false,
+      "cadence": ["per-pr", "nightly", "release-candidate"],
+      "environments": ["local", "aws-local", "real-aws", "kubernetes"],
+      "evidence": ["one-semantic-graph", "fail-closed-incompatibility", "single-lifecycle-owner"]
+    },
+    {
+      "id": "application-plan",
+      "owner": "application-plan",
+      "maturity": "stable",
+      "command": "bun run check:v08:application-plan",
+      "implemented": false,
+      "cadence": ["per-pr", "nightly", "release-candidate"],
+      "environments": ["local", "real-aws", "kubernetes"],
+      "evidence": ["stable-artifact", "source-provenance", "native-plan-composition", "deterministic-diff", "sensitive-data-absence"]
+    },
+    {
+      "id": "runtime-access",
+      "owner": "inferred-runtime-access",
+      "maturity": "stable",
+      "command": "bun run check:v08:runtime-access",
+      "implemented": false,
+      "cadence": ["per-pr", "nightly", "release-candidate"],
+      "environments": ["local", "real-aws", "kubernetes"],
+      "evidence": ["per-execution-identity", "source-provenance", "narrowing", "denial", "no-wildcards"]
+    },
+    {
+      "id": "observability",
+      "owner": "unified-observability",
+      "maturity": "stable-contract-provider-specific",
+      "command": "bun run check:v08:observability",
+      "implemented": false,
+      "cadence": ["per-pr", "nightly", "release-candidate", "historical-benchmark"],
+      "environments": ["local-collector", "clickstack-typekro", "real-aws-cloudwatch", "external-otlp"],
+      "evidence": ["causal-traces", "correlated-logs", "bounded-metrics", "failure-isolation", "redaction", "cardinality-and-cost"]
+    },
+    {
+      "id": "scheduling",
+      "owner": "function-native-scheduling",
+      "maturity": "stable-contract-provider-specific",
+      "command": "bun run check:v08:scheduling",
+      "implemented": false,
+      "cadence": ["per-pr", "nightly", "release-candidate", "historical-benchmark"],
+      "environments": ["deterministic-local-clock", "orbstack-scheduling", "real-aws-eventbridge-scheduler"],
+      "evidence": [
+        "inert-definition-discovery",
+        "qualified-scheduler-resolution",
+        "fixed-and-dynamic-instances",
+        "recurring-and-one-time",
+        "stable-occurrence-identity",
+        "prior-receipt-recovery",
+        "overlap-and-misfire",
+        "workflow-launch",
+        "runtime-access",
+        "otel-causality",
+        "bounded-kubernetes-topology",
+        "retry-and-dead-letter",
+        "lifecycle-and-drift"
+      ]
+    },
+    {
+      "id": "lakehouse",
+      "owner": "lakehouse-query",
+      "maturity": "beta",
+      "command": "bun run check:v08:lakehouse",
+      "implemented": false,
+      "cadence": ["per-pr", "nightly", "release-candidate", "historical-benchmark"],
+      "environments": ["duckdb-local", "real-aws-athena-glue-s3"],
+      "evidence": ["atomic-publication", "schema-evolution", "pagination", "cancellation", "cost"]
+    },
+    {
+      "id": "actors",
+      "owner": "durable-actors",
+      "maturity": "beta",
+      "command": "bun run check:v08:actors",
+      "implemented": false,
+      "cadence": ["per-pr", "nightly", "release-candidate", "historical-benchmark"],
+      "environments": ["deterministic-local", "celld-live", "kubernetes-lifecycle"],
+      "nonBlockingEnvironments": ["rivet-conformance"],
+      "evidence": ["schema-backed-protocol", "generated-callback-and-call-surfaces", "full-turn-serialization-across-await", "admission-and-prior-result-recovery", "object-store-fencing", "acknowledged-write-recovery", "state-outbox-alarm-durability", "node-loss-and-reassignment", "websocket-hibernation-and-reconnection", "rolling-deployment", "migration", "authority", "cycles", "provider-semantic-differences"]
+    },
+    {
+      "id": "development-agent",
+      "owner": "independent-development-environment",
+      "maturity": "developer-preview",
+      "command": "bun run check:v08:development-agent",
+      "implemented": false,
+      "cadence": ["per-pr", "nightly"],
+      "environments": ["clean-generated-agentic-start", "broken-application"],
+      "evidence": ["visual-product-selection", "source-graph-plan-resolution", "persistent-referents", "attachment-redaction", "plan-diff-approval", "truthful-validation", "journal-recovery", "undo", "source-governance"]
+    },
+    {
+      "id": "release",
+      "owner": "manifesto",
+      "maturity": "release",
+      "command": "bun run check:v08:release",
+      "implemented": false,
+      "cadence": ["release-candidate"],
+      "environments": ["clean-consumer", "real-aws", "orbstack-kubernetes"],
+      "evidence": ["scorecard-consistency", "packages", "v07-to-v08-migration", "security", "performance", "product-review"]
+    }
+  ]
+}

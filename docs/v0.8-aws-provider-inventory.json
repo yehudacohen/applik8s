@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "release": "0.8.0",
+  "status": "proposed",
+  "targetContractMaturity": "stable-contract-provider-specific",
+  "releaseDispositions": {
+    "stable-required": "must pass real-AWS lifecycle, security, drift, and deletion qualification before v0.8.0",
+    "beta-required": "must pass its beta vertical's real-AWS gates and remain labeled beta",
+    "experimental-nonblocking": "may ship only with explicit experimental labeling and cannot satisfy stable acceptance",
+    "deferred": "not part of v0.8 public scope"
+  },
+  "providers": [
+    { "id": "aws-network", "capabilities": ["vpc", "subnets", "routing", "security-groups", "service-discovery"], "releaseDisposition": "stable-required" },
+    { "id": "aws-iam", "capabilities": ["execution-roles", "task-roles", "least-privilege-policies"], "releaseDisposition": "stable-required" },
+    { "id": "aws-secrets", "capabilities": ["secrets-manager"], "releaseDisposition": "stable-required" },
+    { "id": "aws-registry", "capabilities": ["ecr"], "releaseDisposition": "stable-required" },
+    { "id": "aws-application-host", "capabilities": ["ecs-fargate-web", "ecs-fargate-processors", "health", "autoscaling-policy"], "releaseDisposition": "stable-required" },
+    { "id": "aws-http", "capabilities": ["alb", "target-groups", "health-checks"], "releaseDisposition": "stable-required" },
+    { "id": "aws-dns", "capabilities": ["route53"], "releaseDisposition": "stable-required" },
+    { "id": "aws-certificates", "capabilities": ["acm"], "releaseDisposition": "stable-required" },
+    { "id": "aws-transactional-database", "capabilities": ["rds-postgresql"], "releaseDisposition": "stable-required" },
+    { "id": "aws-aurora-postgresql", "capabilities": ["aurora-postgresql"], "releaseDisposition": "deferred" },
+    { "id": "aws-index-store", "capabilities": ["elasticache-valkey-redis-compatible"], "releaseDisposition": "stable-required" },
+    { "id": "aws-object-storage", "capabilities": ["s3"], "releaseDisposition": "stable-required" },
+    { "id": "aws-event-stream", "capabilities": ["kinesis"], "releaseDisposition": "stable-required" },
+    { "id": "aws-queue", "capabilities": ["sqs"], "releaseDisposition": "stable-required" },
+    { "id": "aws-scheduler", "capabilities": ["eventbridge-scheduler", "schedule-groups", "cron-rate-one-time", "sqs-admission", "retry-dlq"], "releaseDisposition": "stable-required" },
+    { "id": "aws-observability", "capabilities": ["cloudwatch-logs", "cloudwatch-metrics", "cloudwatch-traces", "otel-collector-agent"], "releaseDisposition": "stable-required" },
+    { "id": "aws-lakehouse", "capabilities": ["athena", "glue", "s3-datasets", "query-results"], "releaseDisposition": "beta-required" }
+  ]
+}

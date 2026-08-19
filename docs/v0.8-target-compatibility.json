@@ -1,0 +1,110 @@
+{
+  "schemaVersion": 1,
+  "release": "0.8.0",
+  "status": "proposed",
+  "contract": "One target-compatible semantic graph deploys without domain-source branching. A capability without a qualified provider fails planning or requires an explicitly selected external provider.",
+  "targets": ["local", "aws-local", "aws", "kubernetes"],
+  "dispositions": {
+    "required": "must pass the vertical's release gate on this target",
+    "api-fidelity-only": "may exercise a pinned compatible API but is not production evidence",
+    "qualified-provider-required": "supported only when an individually qualified provider is selected",
+    "not-applicable": "outside this vertical rather than silently emulated",
+    "deferred": "not promised by v0.8"
+  },
+  "verticals": [
+    {
+      "id": "portable-stable-core",
+      "application": "agentic-start",
+      "scope": ["application-host", "transactional-models", "migrations", "object-storage", "identity", "http", "events", "processors", "workflows", "external-ai", "billing", "documents", "reviews", "operations", "lifecycle", "runtime-access", "application-plan"],
+      "targets": {
+        "local": "required",
+        "aws-local": "api-fidelity-only",
+        "aws": "required",
+        "kubernetes": "required"
+      }
+    },
+    {
+      "id": "function-native-scheduling",
+      "application": "agentic-start",
+      "scope": ["fixed-schedule", "dynamic-schedule", "one-time-schedule", "workflow-launch", "occurrence-recovery", "qualified-provider-selection"],
+      "targets": {
+        "local": "required",
+        "aws-local": "api-fidelity-only",
+        "aws": "required",
+        "kubernetes": "required"
+      }
+    },
+    {
+      "id": "actors",
+      "application": "agentic-start",
+      "scope": ["workspace-actor-command", "message", "alarm", "optional-realtime"],
+      "providerQualification": {
+        "releaseRequirement": "deterministic local plus one fully qualified distributed provider",
+        "implementationOrder": ["celld", "rivet"],
+        "intendedFirstCandidate": "celld",
+        "initiallyNonBlocking": ["rivet"]
+      },
+      "targets": {
+        "local": "required",
+        "aws-local": "not-applicable",
+        "aws": "qualified-provider-required",
+        "kubernetes": "required"
+      }
+    },
+    {
+      "id": "lakehouse",
+      "application": "agentic-start",
+      "scope": ["published-dataset", "snapshot-query", "pagination", "cancellation", "cost-evidence"],
+      "targets": {
+        "local": "required",
+        "aws-local": "api-fidelity-only",
+        "aws": "required",
+        "kubernetes": "qualified-provider-required"
+      }
+    },
+    {
+      "id": "observability",
+      "application": "agentic-start",
+      "scope": ["traces", "structured-logs", "metrics", "collector", "backend-query"],
+      "targets": {
+        "local": "required",
+        "aws-local": "api-fidelity-only",
+        "aws": "required",
+        "kubernetes": "required"
+      }
+    },
+    {
+      "id": "development-agent",
+      "application": "agentic-start",
+      "scope": ["independent-portal", "visual-context", "reviewed-change", "validation", "undo"],
+      "targets": {
+        "local": "required",
+        "aws-local": "not-applicable",
+        "aws": "deferred",
+        "kubernetes": "deferred"
+      }
+    },
+    {
+      "id": "distributed-stream-pressure-test",
+      "application": "chirp",
+      "scope": ["stream", "projection", "per-workload-access", "object-storage", "transactional-models"],
+      "targets": {
+        "local": "required",
+        "aws-local": "api-fidelity-only",
+        "aws": "required",
+        "kubernetes": "required"
+      }
+    },
+    {
+      "id": "readability-floor",
+      "application": "guestbook",
+      "scope": ["application-host", "transactional-model", "typed-operation", "live-query"],
+      "targets": {
+        "local": "required",
+        "aws-local": "api-fidelity-only",
+        "aws": "required",
+        "kubernetes": "required"
+      }
+    }
+  ]
+}
