@@ -33,8 +33,8 @@
     "@applik8s/core": "0.7.1",
     "@applik8s/sdk": "0.7.1",
     "@standard-schema/spec": "1.1.0",
-    "@tanstack/ai": "0.44.1",
-    "@tanstack/ai-client": "0.23.2",
-    "@tanstack/ai-persistence": "0.1.4"
+    "@tanstack/ai": "0.45.1",
+    "@tanstack/ai-client": "0.23.3",
+    "@tanstack/ai-persistence": "0.1.5"
   }
 }
