@@ -138,6 +138,8 @@
     "test:v06:live:orbstack": "APPLIK8S_E2E_CONTEXT=orbstack bun run test:v06:live",
     "check:v06:scorecard": "TYPEKRO_LOG_LEVEL=fatal bun run scripts/check-v06-scorecard.ts && APPLIK8S_RELEASE_LINE=v0.6 node scripts/verify-v04-live-evidence.mjs --self-test",
     "check:v07:scorecard": "TYPEKRO_LOG_LEVEL=fatal bun run scripts/check-v07-scorecard.ts && bun run scripts/check-v07-live-evidence.ts --self-test",
+    "check:v08:graph-provenance": "bun run build:packages && bunx vitest run packages/core/test/application-foundation.vertical.test.ts packages/compiler/test/entrypoint-application-callbacks.vertical.test.ts packages/compiler/test/application-callback-module.vertical.test.ts packages/compiler/test/wasm-component.vertical.test.ts",
+    "check:v08:application-plan": "bun run build:packages && bunx vitest run packages/core/test/application-foundation.vertical.test.ts packages/deployment-compiler/test/deployment-compiler.vertical.test.ts",
     "check:v07:scorecard:release": "TYPEKRO_LOG_LEVEL=fatal bun run scripts/check-v07-scorecard.ts --require-release && bun run scripts/check-v07-live-evidence.ts",
     "check:v07:profile-graphs": "TYPEKRO_LOG_LEVEL=fatal bun run scripts/check-v07-profile-graphs.ts",
     "check:v07:profile-graphs:record": "TYPEKRO_LOG_LEVEL=fatal bun run scripts/check-v07-profile-graphs.ts --record",

@@ -1,6 +1,6 @@
 # applik8s Backlog
 
-Last updated: 2026-07-12
+Last updated: 2026-08-19
 
 - `[post-v0.7]` Add adapter-owned browser OAuth completion for provider-neutral
   Integration requests. Preserve the v0.7 safe intent/status model, keep
@@ -8,6 +8,45 @@ Last updated: 2026-07-12
   authorization only behind maintained adapters.
 
 This backlog prioritizes correctness, excellence, and the public developer experience over feature completeness.
+
+## v0.8 Explainable portable runtime program
+
+Status: implementation started on `codex/v0.8-rfps`; no release is authorized.
+
+Current foundation increment:
+
+- Added versioned canonical application, graph-node, operation, source,
+  provider, execution-boundary, artifact, and target identities without using
+  source positions or timestamps as semantic identity.
+- Added structured workspace-relative source provenance, provider guarantee,
+  deployment-target, runtime-access, native-plan adapter, and bounded
+  guest/host identity-envelope contracts in `@applik8s/core`.
+- Added fail-closed foundation validation for identity collisions, ambiguous or
+  wildcard runtime access, missing execution attribution, absolute source-path
+  leakage, invalid native-plan summaries, and stale guest/host access records.
+- Added the first canonical `ApplicationPlan` compiler over the existing
+  `ApplicationGraph` and `ApplicationDeploymentGraph`, preserving distinct
+  semantic, provider-resolution, and physical layers with deterministic JSON,
+  timestamp-independent content identity, concise text, stable diffs, and
+  Alchemy/TypeKro native-plan records.
+- Added executable partial `check:v08:graph-provenance` and
+  `check:v08:application-plan` gates. The machine-readable acceptance entries
+  remain `implemented: false` until guest/host propagation, recursive source
+  attribution, complete access inference, schemas, renderers, and integration
+  evidence satisfy their full RFP evidence sets.
+
+Next, in manifesto dependency order:
+
+1. Thread canonical execution/provenance identities through compiler discovery,
+   generated artifacts, WIT, and the Rust host.
+2. Emit source-attributed runtime-access requirements from typed handle calls
+   and framework-generated behavior, failing closed on unresolved helper paths.
+3. Complete ApplicationPlan schemas, authority/data-flow/access views, native
+   plan adapters, graph renderer, diff policy, CLI output, and sensitive-canary
+   qualification.
+4. Build the lightweight local supervisor on the frozen plan/access contracts
+   before expanding AWS, scheduling, observability, lakehouse, actors, or the
+   development-agent preview.
 
 ## Guiding Priorities
 

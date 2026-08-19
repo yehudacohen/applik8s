@@ -22,6 +22,15 @@ export function normalizeApplicationGraphArtifact(graph: ApplicationGraph): Appl
       postV3Surfaces: sortedStrings(graph.compatibility.postV3Surfaces),
       labels: [...(graph.compatibility.labels ?? [])].sort(compareApplicationCompatibilityLabels),
     },
+    ...(graph.foundation
+      ? {
+          foundation: {
+            identities: [...graph.foundation.identities].sort((left, right) => compareStrings(left.id, right.id)),
+            provenance: [...graph.foundation.provenance].sort((left, right) => compareStrings(left.id, right.id)),
+            runtimeAccess: [...graph.foundation.runtimeAccess].sort((left, right) => compareStrings(left.id, right.id)),
+          },
+        }
+      : {}),
   };
 }
 

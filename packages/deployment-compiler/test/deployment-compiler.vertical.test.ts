@@ -1,15 +1,24 @@
-import type { ApplicationGraph } from "@applik8s/core";
+// typecast-file-boundary: Test fixtures preserve literal discriminants while exercising the public portable compiler and plan contracts.
+import {
+  type ApplicationGraph,
+  applicationCanonicalIdentity,
+  applicationProviderIdentity,
+  diffApplicationPlans,
+  renderApplicationPlanText,
+  serializeApplicationPlan,
+  serializeApplicationPlanContent,
+  validateApplicationPlan,
+} from "@applik8s/core";
 import {
   digestApplicationDeploymentGraph,
   validateApplicationDeploymentGraph,
 } from "@applik8s/deployment-contract";
 import { describe, expect, it } from "vitest";
 
-// typecast-file-boundary: Test fixtures preserve literal discriminants while
-// exercising the public portable compiler contract.
 import {
   type ApplicationDeploymentContributor,
   compileApplicationDeploymentGraph,
+  compileApplicationPlan,
 } from "../src/index.js";
 
 const sourceGraphDigest = `sha256:${"a".repeat(64)}`;
@@ -2266,6 +2275,112 @@ describe("Application deployment compiler", () => {
     expect(
       `ai-gateway-${configuration.name}-${configuration.namespace}`.length,
     ).toBeLessThanOrEqual(63);
+  });
+  it("derives a deterministic three-layer ApplicationPlan from the semantic and deployment graphs", () => {
+    const base = request();
+    const graph: ApplicationGraph = {
+      ...base.graph,
+      metadata: {
+        ...base.graph.metadata,
+        sourceLocation: { file: "src/app.ts", line: 1, column: 1 },
+      },
+      nodes: base.graph.nodes.map((node) => ({
+        ...node,
+        sourceLocation: { file: "src/app.ts", line: 12, column: 3 },
+      })),
+      providerRequirements: [{
+        id: "requirement.database",
+        interface: "TransactionalDatabase",
+        consumer: { nodeId: "provider.transactional-database" },
+        provider: { interface: "TransactionalDatabase", nodeId: "provider.transactional-database" },
+        required: true,
+        purpose: "transactionalDatabase",
+        diagnostics: { missing: "Database provider is missing.", ambiguous: "Database provider is ambiguous." },
+      }],
+      providerBindings: [{
+        requirement: "requirement.database",
+        provider: { interface: "TransactionalDatabase", nodeId: "provider.transactional-database" },
+        generatedResources: [],
+        runtime: {},
+      }],
+    };
+    const deployment = compileApplicationDeploymentGraph({ ...base, graph }).graph;
+    const provider = applicationProviderIdentity({
+      application: "guestbook",
+      capabilityInterface: "TransactionalDatabase",
+      nodeId: "provider.transactional-database",
+    });
+    const compile = (generatedAt: string) => compileApplicationPlan({
+      graph,
+      deployment,
+      target: "kubernetes",
+      lifecycleAuthority: "alchemy",
+      generatedAt,
+      providerGuarantees: [{
+        apiVersion: "applik8s.providerGuarantees/v1alpha1",
+        provider,
+        capability: {
+          interface: "TransactionalDatabase",
+          implementation: "postgres",
+          version: "unknown",
+        },
+        targets: ["kubernetes"],
+        maturity: "stable",
+        guarantees: [{
+          id: "transaction-boundary",
+          category: "transaction-outbox",
+          statement: "One database transaction is authoritative.",
+          disposition: "guaranteed",
+          evidence: ["postgres-runtime-live"],
+        }],
+        limitations: [],
+        evidenceLevel: "target-live",
+      }],
+    });
+    const first = compile("2026-08-19T12:00:00.000Z");
+    const second = compile("2026-08-19T12:05:00.000Z");
+
+    expect(first.semantic.nodes).toHaveLength(graph.nodes.length);
+    expect(first.resolution.capabilities).toEqual([
+      expect.objectContaining({ disposition: "supported", maturity: "stable", guarantees: ["transaction-boundary"] }),
+    ]);
+    expect(first.physical.nativePlans.map(({ authority }) => authority).sort()).toEqual(["alchemy", "typekro"]);
+    expect(validateApplicationPlan(first)).toEqual({ valid: true, diagnostics: [] });
+    expect(serializeApplicationPlan(first)).not.toBe(serializeApplicationPlan(second));
+    expect(serializeApplicationPlanContent(first)).toBe(serializeApplicationPlanContent(second));
+    expect(renderApplicationPlanText(first)).toContain("Providers: 1 resolved, 0 unresolved/incompatible");
+    expect(diffApplicationPlans(first, {
+      ...first,
+      resolution: {
+        capabilities: first.resolution.capabilities.map((capability) => ({ ...capability, maturity: "beta" as const })),
+      },
+    }).entries).toEqual([
+      expect.objectContaining({ category: "maturity", change: "changed" }),
+    ]);
+    const unresolved = compileApplicationPlan({
+      graph,
+      deployment,
+      target: "kubernetes",
+      lifecycleAuthority: "alchemy",
+      generatedAt: "2026-08-19T12:00:00.000Z",
+    });
+    expect(unresolved.diagnostics).toEqual([
+      expect.objectContaining({ code: "PLAN_PROVIDER_GUARANTEES_UNRESOLVED", severity: "error" }),
+    ]);
+    expect(validateApplicationPlan(unresolved).valid).toBe(false);
+
+    const [nativePlan, ...otherNativePlans] = first.physical.nativePlans;
+    if (!nativePlan) throw new Error("ApplicationPlan fixture has no native plan record.");
+    const leaked = {
+      ...first,
+      physical: {
+        ...first.physical,
+        nativePlans: [{ ...nativePlan, summary: { ...nativePlan.summary, apiKey: "sk-do-not-serialize" } }, ...otherNativePlans],
+      },
+    };
+    expect(validateApplicationPlan(leaked).diagnostics).toEqual([
+      expect.objectContaining({ code: "PLAN_SENSITIVE_DATA" }),
+    ]);
   });
 });
 

@@ -1,5 +1,27 @@
 export type * from './application-explain.js';
 export { explainApplicationGraph } from './application-explain.js';
+export type * from './application-foundation.js';
+export {
+  applicationCanonicalIdentity,
+  applicationExecutionBoundaryIdentity,
+  applicationFoundationApiVersion,
+  applicationGraphNodeIdentity,
+  applicationOperationIdentity,
+  applicationProviderIdentity,
+  applicationTargetIdentity,
+  sourceProvenance,
+  validateApplicationFoundation,
+} from './application-foundation.js';
+export type * from './application-plan.js';
+export {
+  diffApplicationPlans,
+  normalizeApplicationPlan,
+  providerGuaranteeFor,
+  renderApplicationPlanText,
+  serializeApplicationPlan,
+  serializeApplicationPlanContent,
+  validateApplicationPlan,
+} from './application-plan.js';
 export { applicationGraphArtifactFileName, applicationGraphMetadataProperty, applicationGraphNodeKinds, applicationInstallationMetadataProperty, applicationProviderInterfaceKinds, applicationTypeKroDefinitionProperty, applicationV03LiveValidationAssertions, applicationV03ProviderInterfaceKinds, isApplicationGraphNodeKind, isApplicationProviderInterfaceKind, normalizeApplicationGraph, resolveApplicationGraphProviderRequirement, serializeApplicationGraph, validateApplicationCrdSchemaCompatibilityContract, validateApplicationDurableStatusOwnershipContract, validateApplicationGraph, validateApplicationGraphCompatibilityPolicy, validateApplicationGraphProviderBindings, validateApplicationGraphStructure, validateApplicationJobStatusLifecycleContract, validateApplicationMigrationDriftCheckContract, validateApplicationOperationTargetContract, validateApplicationProviderCompatibilityMatrixContract, validateApplicationProviderInterfaceContract, validateApplicationRuntimeModuleInterfaceContract, validateApplicationRuntimeModuleManifestContract, validateApplicationTransactionalDatabaseSemanticsContract, validateApplicationV03PressureTestContract, validateApplicationWatchScopeLoweringContract } from './application-graph.js';
 export type * from './application-operation-authority.js';
 export {

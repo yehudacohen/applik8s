@@ -13,6 +13,12 @@ import type {
   ApplicationScopeExpression,
   ApplicationStaticAuthorityManifest,
 } from './application-operation-authority.js';
+import {
+  type ApplicationCanonicalIdentity,
+  type ApplicationRuntimeAccessRequirement,
+  type ApplicationSourceProvenance,
+  validateApplicationFoundation,
+} from './application-foundation.js';
 import type { ApiVersion, Condition, Diagnostic, JsonObject, KubernetesName, NamespaceName, ObjectRef, ResourceScope, SourceLocation } from './common.js';
 import type { PermissionRule } from './resource.js';
 
@@ -226,6 +232,14 @@ export interface ApplicationGraph {
   readonly providerRequirements: readonly ApplicationProviderRequirement[];
   readonly providerBindings: readonly ApplicationProviderBindingContract[];
   readonly compatibility: ApplicationGraphCompatibility;
+  /** v0.8 derived analysis remains part of this graph rather than a parallel semantic model. */
+  readonly foundation?: ApplicationGraphFoundationContract;
+}
+
+export interface ApplicationGraphFoundationContract {
+  readonly identities: readonly ApplicationCanonicalIdentity[];
+  readonly provenance: readonly ApplicationSourceProvenance[];
+  readonly runtimeAccess: readonly ApplicationRuntimeAccessRequirement[];
 }
 
 export interface ApplicationGraphMetadata {
@@ -2321,6 +2335,25 @@ export function validateApplicationGraphStructure(graph: ApplicationGraph): read
 
   for (const node of graph.nodes) {
     diagnostics.push(...applicationGraphNodeStructureDiagnostics(node, graph));
+  }
+
+  if (graph.foundation) {
+    diagnostics.push(...validateApplicationFoundation({
+      identities: graph.foundation.identities,
+      provenance: graph.foundation.provenance,
+      runtimeAccess: graph.foundation.runtimeAccess,
+    }).map((diagnostic): Diagnostic => ({
+      severity: diagnostic.severity,
+      code: 'MANIFEST_INVALID',
+      message: `[${diagnostic.code}] ${diagnostic.message}`,
+    })));
+    for (const requirement of graph.foundation.runtimeAccess) {
+      if (!nodeIds.has(requirement.consumer.nodeId)) {
+        diagnostics.push(applicationGraphStructureDiagnostic(
+          `Application runtime-access requirement ${requirement.id} references missing consumer node ${requirement.consumer.nodeId}.`,
+        ));
+      }
+    }
   }
 
   return diagnostics;
