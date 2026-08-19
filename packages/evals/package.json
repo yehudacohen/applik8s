@@ -1,11 +1,15 @@
 {
   "name": "@applik8s/evals",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "Versioned datasets, scorers, evaluation runs, and result models for Applik8s.",
   "license": "Apache-2.0",
   "type": "module",
-  "files": ["dist"],
-  "publishConfig": { "access": "public" },
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/yehudacohen/applik8s.git",
@@ -24,12 +28,12 @@
     }
   },
   "dependencies": {
-    "@applik8s/ai-tanstack": "0.7.0",
-    "@applik8s/applik8s": "0.7.0",
-    "@applik8s/client": "0.7.0",
-    "@applik8s/core": "0.7.0",
-    "@applik8s/runtime-ai": "0.7.0",
-    "@tanstack/ai": "0.44.1",
+    "@applik8s/ai-tanstack": "0.7.1",
+    "@applik8s/applik8s": "0.7.1",
+    "@applik8s/client": "0.7.1",
+    "@applik8s/core": "0.7.1",
+    "@applik8s/runtime-ai": "0.7.1",
+    "@tanstack/ai": "0.45.1",
     "arktype": "2.2.1",
     "drizzle-orm": "^0.45.1"
   }

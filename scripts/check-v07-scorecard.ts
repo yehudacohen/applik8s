@@ -88,7 +88,7 @@ for (const path of acceptedPlanningDocuments) {
 
 if (requireRelease && !scorecard.releaseAuthorized) {
   findings.push(
-    'releaseAuthorized must be true after the maintainer explicitly authorizes v0.7.0.',
+    'releaseAuthorized must be true after the maintainer explicitly authorizes v0.7.1.',
   );
 }
 if (

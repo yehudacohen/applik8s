@@ -377,8 +377,8 @@ describe('Agentic Start generator', () => {
     );
     expect(manifest.dependencies['@applik8s/identity']).toBe('workspace:*');
     expect(manifest.dependencies['@applik8s/runtime-s3']).toBe('workspace:*');
-    expect(manifest.dependencies['@tanstack/ai-react']).toBe('0.19.2');
-    expect(manifest.dependencies['@tanstack/ai-persistence']).toBe('0.1.4');
+    expect(manifest.dependencies['@tanstack/ai-react']).toBe('0.19.3');
+    expect(manifest.dependencies['@tanstack/ai-persistence']).toBe('0.1.5');
     expect(
       await readFile(join(target, 'kubernetes/application.yaml'), 'utf8'),
     ).toContain('kind: ResearchWorkspace');

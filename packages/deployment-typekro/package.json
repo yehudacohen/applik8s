@@ -1,6 +1,6 @@
 {
   "name": "@applik8s/deployment-typekro",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "Version-pinned TypeKro deployment adapter for Applik8s.",
   "license": "Apache-2.0",
   "type": "module",
@@ -23,7 +23,7 @@
     }
   },
   "dependencies": {
-    "@applik8s/deployment-contract": "0.7.0",
+    "@applik8s/deployment-contract": "0.7.1",
     "arktype": "2.2.1",
     "typekro": "0.33.7"
   }

@@ -5,10 +5,10 @@ import {
 } from '@applik8s/ai';
 
 export const applicationTanStackAICompatibility = Object.freeze({
-  tanstackAI: '0.44.1',
-  tanstackAIClient: '0.23.2',
-  tanstackAIReact: '0.19.2',
-  tanstackAIPersistence: '0.1.4',
+  tanstackAI: '0.45.1',
+  tanstackAIClient: '0.23.3',
+  tanstackAIReact: '0.19.3',
+  tanstackAIPersistence: '0.1.5',
   agUi: '0.1.1-canary.beta.0',
   applik8sAdapter: applicationAIAdapterRevision,
 } as const);

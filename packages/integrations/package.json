@@ -1,11 +1,15 @@
 {
   "name": "@applik8s/integrations",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "Maintained provider-neutral integration connection intent and safe lifecycle-state models for Applik8s.",
   "license": "Apache-2.0",
   "type": "module",
-  "files": ["dist"],
-  "publishConfig": { "access": "public" },
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/yehudacohen/applik8s.git",
@@ -24,7 +28,7 @@
     }
   },
   "dependencies": {
-    "@applik8s/applik8s": "0.7.0",
+    "@applik8s/applik8s": "0.7.1",
     "arktype": "2.2.1",
     "drizzle-orm": "^0.45.1"
   }

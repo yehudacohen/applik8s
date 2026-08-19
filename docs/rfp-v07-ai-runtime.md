@@ -203,9 +203,9 @@ internal invocation bridge. Operation-derived tools require it at the type level
 the upstream tool-call ID is absent. Application agent closures call imported operation handles
 directly; the adapter bridge is runtime machinery for TanStack's generated tool callbacks.
 
-The pinned compatibility tuple is `@tanstack/ai@0.44.1`,
-`@tanstack/ai-client@0.23.2`, `@tanstack/ai-react@0.19.2`, and
-`@tanstack/ai-persistence@0.1.4`. `@applik8s/conversations` implements the
+The pinned compatibility tuple is `@tanstack/ai@0.45.1`,
+`@tanstack/ai-client@0.23.3`, `@tanstack/ai-react@0.19.3`, and
+`@tanstack/ai-persistence@0.1.5`. `@applik8s/conversations` implements the
 published `MessageStore` and `RunStore` contracts over one admitted principal
 scope. The shared gateway supports both streaming POST and read-only hydration
 GET, and generated clients use `persistence: true`; no browser-only persistence
@@ -619,9 +619,9 @@ evaluation and operations experiences ship by default.
 
 ## Closed v0.7 decisions
 
-1. The compatibility baseline is `@tanstack/ai@0.44.1`,
-   `@tanstack/ai-client@0.23.2`, `@tanstack/ai-react@0.19.2`, and
-   `@tanstack/ai-persistence@0.1.4`; changing it requires an explicit
+1. The compatibility baseline is `@tanstack/ai@0.45.1`,
+   `@tanstack/ai-client@0.23.3`, `@tanstack/ai-react@0.19.3`, and
+   `@tanstack/ai-persistence@0.1.5`; changing it requires an explicit
    compatibility review and regenerated acceptance evidence.
 2. Provider request identity is used when it can prove recovery. When it cannot, connection loss after
    dispatch produces an explicit uncertain-completion outcome; the framework does not infer success or

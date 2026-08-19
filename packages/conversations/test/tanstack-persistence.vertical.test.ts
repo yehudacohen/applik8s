@@ -31,6 +31,38 @@ describe('TanStack AI conversation persistence adapter', () => {
     }).stores.messages.loadThread('conversation-1')).resolves.toEqual([]);
   });
 
+  it('normalizes JSON-hydrated message timestamps at the persistence boundary', async () => {
+    const store = createMemoryApplicationConversationStore();
+    const persistence = createApplicationTanStackConversationPersistence({
+      store,
+      principalScope: 'workspace-1',
+      now: () => new Date('2026-08-17T12:00:00.000Z'),
+    });
+    await persistence.stores.messages.saveThread('conversation-1', [{
+      role: 'assistant',
+      content: 'Transport-hydrated response.',
+      id: 'message-1',
+      // A browser/server JSON boundary serializes Date to an ISO string even
+      // though TanStack's in-process type is Date.
+      // typecast: model the hydrated runtime value while retaining TanStack's Date-typed fixture contract.
+      createdAt: '2026-08-17T12:00:01.000Z' as unknown as Date,
+    }]);
+
+    await expect(store.listMessages({
+      conversationId: 'conversation-1',
+      principalScope: 'workspace-1',
+      limit: 10,
+    })).resolves.toEqual([
+      expect.objectContaining({
+        id: 'message-1',
+        createdAt: '2026-08-17T12:00:01.000Z',
+        content: expect.objectContaining({
+          createdAt: '2026-08-17T12:00:01.000Z',
+        }),
+      }),
+    ]);
+  });
+
   it('preserves TanStack protocol-run state without weakening canonical status', async () => {
     const store = createMemoryApplicationConversationStore();
     const persistence = createApplicationTanStackConversationPersistence({

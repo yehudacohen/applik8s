@@ -2,10 +2,13 @@ import { execFile } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import { promisify } from 'node:util';
 import { publishablePackageNames } from './publishable-packages.mjs';
 
 const execFileAsync = promisify(execFile);
+const npmTimeoutMs = Number(process.env.APPLIK8S_PACKAGE_AUDIT_TIMEOUT_MS ?? 900_000);
+const npmInstallAttempts = 2;
 const root = resolve(process.cwd());
 const manifest = JSON.parse(await readFile(join(root, 'packages/applik8s/package.json'), 'utf8'));
 const baseline = JSON.parse(await readFile(join(root, 'security/npm-audit-baseline.json'), 'utf8'));
@@ -43,17 +46,40 @@ try {
     private: true,
     dependencies,
   }, null, 2)}\n`);
-  await execFileAsync('npm', ['install', '--package-lock-only', '--ignore-scripts', '--no-audit', '--no-fund'], {
-    cwd: workDir,
-    timeout: 300_000,
-    maxBuffer: 20 * 1024 * 1024,
-  });
+  const installArgs = ['install', '--package-lock-only', '--ignore-scripts', '--no-audit', '--no-fund'];
+  for (let attempt = 1; attempt <= npmInstallAttempts; attempt += 1) {
+    try {
+      await execFileAsync('npm', installArgs, {
+        cwd: workDir,
+        timeout: npmTimeoutMs,
+        maxBuffer: 20 * 1024 * 1024,
+      });
+      break;
+    } catch (error) {
+      const timedOut = error?.killed === true || error?.signal === 'SIGTERM' || error?.code === 'ETIMEDOUT';
+      const transientNetworkFailure = /(?:ECONNRESET|ETIMEDOUT|EAI_AGAIN|ENETUNREACH|socket hang up|HTTP 5\d\d)/i.test(
+        `${error?.message ?? ''}\n${error?.stderr ?? ''}`,
+      );
+      if ((timedOut || transientNetworkFailure) && attempt < npmInstallAttempts) {
+        console.warn(`npm dependency resolution attempt ${attempt} did not complete; retrying once after a bounded delay.`);
+        await delay(2_000);
+        continue;
+      }
+      const reason = timedOut
+        ? `timed out after ${npmTimeoutMs}ms on attempt ${attempt}/${npmInstallAttempts}`
+        : `failed on attempt ${attempt}/${npmInstallAttempts}`;
+      throw new Error(
+        `Unable to resolve the isolated npm audit graph: npm ${installArgs.join(' ')} ${reason}.\n${error?.stderr || error?.message || 'No npm diagnostics were emitted.'}`,
+        { cause: error },
+      );
+    }
+  }
 
   let report;
   try {
     const result = await execFileAsync('npm', ['audit', '--omit=dev', '--json'], {
       cwd: workDir,
-      timeout: 300_000,
+      timeout: npmTimeoutMs,
       maxBuffer: 20 * 1024 * 1024,
     });
     report = JSON.parse(result.stdout);

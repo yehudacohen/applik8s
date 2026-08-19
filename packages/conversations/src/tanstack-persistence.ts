@@ -64,18 +64,22 @@ export function createApplicationTanStackConversationPersistence(
       const existingCreatedAt = new Map(existing.map(message => [message.id, message.createdAt]));
       const persisted = transcript.map((message, index) => {
         const id = message.id?.trim() || stableMessageId(threadId, message, index);
+        // TanStack's public type uses Date, but browser/server transport
+        // hydration necessarily crosses JSON and can therefore supply the
+        // same instant as an ISO string. Normalize at this adapter boundary
+        // instead of requiring every transport to reconstitute Date objects.
+        const createdAt = normalizedInstant(
+          message.createdAt,
+          existingCreatedAt.get(id) ?? instant,
+        );
         return {
           id,
           role: message.role,
           content: jsonValue({
             ...message,
-            ...(message.createdAt
-              ? { createdAt: message.createdAt.toISOString() }
-              : {}),
+            ...(message.createdAt ? { createdAt } : {}),
           }, `TanStack transcript message ${id}`),
-          createdAt: message.createdAt?.toISOString()
-            ?? existingCreatedAt.get(id)
-            ?? instant,
+          createdAt,
         } satisfies ApplicationConversationMessageInput;
       });
       await options.store.replaceMessages({
@@ -154,6 +158,22 @@ export function createApplicationTanStackConversationPersistence(
   });
 
   return defineAIPersistence({ stores: { messages, runs } });
+}
+
+function normalizedInstant(value: unknown, fallback: string): string {
+  if (value === undefined || value === null) return fallback;
+  if (
+    !(value instanceof Date)
+    && typeof value !== 'string'
+    && typeof value !== 'number'
+  ) {
+    throw new TypeError('TanStack transcript message createdAt must be a valid instant.');
+  }
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    throw new TypeError('TanStack transcript message createdAt must be a valid instant.');
+  }
+  return date.toISOString();
 }
 
 async function ensureConversation(
