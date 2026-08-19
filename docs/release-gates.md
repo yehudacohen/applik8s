@@ -43,7 +43,7 @@ bun run check:release
 The checker verifies:
 
 - publishable package metadata
-- version `0.7.1` by default, or `APPLIK8S_RELEASE_VERSION` when validating a different candidate
+- version `0.7.2` by default, or `APPLIK8S_RELEASE_VERSION` when validating a different candidate
 - Apache-2.0 license metadata
 - public publish config
 - no `file:` dependency ranges in publishable packages

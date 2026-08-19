@@ -1,6 +1,6 @@
 {
   "name": "@applik8s/mcp",
-  "version": "0.7.1",
+  "version": "0.7.2",
   "description": "Provider-neutral MCP transport, catalog pinning, and external-tool trust boundaries for Applik8s.",
   "license": "Apache-2.0",
   "type": "module",
@@ -38,8 +38,8 @@
     }
   },
   "dependencies": {
-    "@applik8s/core": "0.7.1",
-    "@applik8s/operations": "0.7.1",
+    "@applik8s/core": "0.7.2",
+    "@applik8s/operations": "0.7.2",
     "postgres": "^3.4.7"
   },
   "devDependencies": {

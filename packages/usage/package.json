@@ -1,6 +1,6 @@
 {
   "name": "@applik8s/usage",
-  "version": "0.7.1",
+  "version": "0.7.2",
   "description": "Provider-neutral usage, cost, quota, and entitlement accounting models for Applik8s.",
   "license": "Apache-2.0",
   "type": "module",
@@ -28,7 +28,7 @@
     }
   },
   "dependencies": {
-    "@applik8s/applik8s": "0.7.1",
+    "@applik8s/applik8s": "0.7.2",
     "drizzle-orm": "^0.45.1"
   }
 }

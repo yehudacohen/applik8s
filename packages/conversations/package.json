@@ -1,6 +1,6 @@
 {
   "name": "@applik8s/conversations",
-  "version": "0.7.1",
+  "version": "0.7.2",
   "description": "Canonical conversation, message, protocol-run, run-event, and memory models for Applik8s applications.",
   "license": "Apache-2.0",
   "type": "module",
@@ -33,9 +33,9 @@
     }
   },
   "dependencies": {
-    "@applik8s/ai": "0.7.1",
-    "@applik8s/applik8s": "0.7.1",
-    "@applik8s/core": "0.7.1",
+    "@applik8s/ai": "0.7.2",
+    "@applik8s/applik8s": "0.7.2",
+    "@applik8s/core": "0.7.2",
     "@tanstack/ai": "0.45.1",
     "@tanstack/ai-persistence": "0.1.5",
     "drizzle-orm": "^0.45.1"

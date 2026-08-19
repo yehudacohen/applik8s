@@ -1,6 +1,6 @@
 {
   "name": "@applik8s/identity-ory",
-  "version": "0.7.1",
+  "version": "0.7.2",
   "description": "Ory Kratos and Hydra adapters for the provider-neutral Applik8s identity and OAuth contracts.",
   "license": "Apache-2.0",
   "type": "module",
@@ -23,7 +23,7 @@
     }
   },
   "dependencies": {
-    "@applik8s/core": "0.7.1",
-    "@applik8s/identity": "0.7.1"
+    "@applik8s/core": "0.7.2",
+    "@applik8s/identity": "0.7.2"
   }
 }

@@ -1,6 +1,6 @@
 {
   "name": "@applik8s/tanstack-start",
-  "version": "0.7.1",
+  "version": "0.7.2",
   "description": "Thin Nitro request-context and Vite build adapter for Applik8s TanStack Start applications.",
   "license": "Apache-2.0",
   "type": "module",
@@ -16,11 +16,11 @@
     "directory": "packages/tanstack-start"
   },
   "dependencies": {
-    "@applik8s/client": "0.7.1",
-    "@applik8s/identity": "0.7.1",
-    "@applik8s/react": "0.7.1",
-    "@applik8s/server": "0.7.1",
-    "@applik8s/vite": "0.7.1",
+    "@applik8s/client": "0.7.2",
+    "@applik8s/identity": "0.7.2",
+    "@applik8s/react": "0.7.2",
+    "@applik8s/server": "0.7.2",
+    "@applik8s/vite": "0.7.2",
     "nitro": "npm:nitro-nightly@3.0.1-20260715-190547-7af4fee3"
   },
   "peerDependencies": {

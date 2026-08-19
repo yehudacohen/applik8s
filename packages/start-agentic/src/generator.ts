@@ -300,7 +300,7 @@ interface ManagedApplicationAgenticStartPackage {
 
 function managedApplicationAgenticStartPackage(
   projectName: string,
-  example: ApplicationAgenticStartExample,
+  _example: ApplicationAgenticStartExample,
   version: string,
   context?: string,
 ): ManagedApplicationAgenticStartPackage {
@@ -319,7 +319,9 @@ function managedApplicationAgenticStartPackage(
     '@applik8s/identity': version,
     '@applik8s/notifications': version,
     '@applik8s/runtime-hatchet': version,
+    '@applik8s/runtime-opensearch': version,
     '@applik8s/runtime-s3': version,
+    '@applik8s/search': version,
     '@applik8s/usage': version,
   };
   return Object.freeze({
@@ -366,12 +368,6 @@ function managedApplicationAgenticStartPackage(
       '@applik8s/start-agentic': version,
       '@applik8s/tanstack-start': version,
       ...maintainedDependencies,
-      ...(example === 'research'
-        ? {
-          '@applik8s/runtime-opensearch': version,
-          '@applik8s/search': version,
-        }
-        : {}),
       '@tanstack/ai': '0.45.1',
       '@tanstack/ai-persistence': '0.1.5',
       '@tanstack/ai-react': applicationAgenticStartDefinition.compatibility.tanstackAIReact,
@@ -404,12 +400,12 @@ function managedApplicationAgenticStartPackage(
 
 export function renderApplicationAgenticStartManagedPackage(
   projectName: string,
-  example: ApplicationAgenticStartExample,
+  _example: ApplicationAgenticStartExample,
   version: string,
   context?: string,
 ): string {
   return `${JSON.stringify(
-    managedApplicationAgenticStartPackage(projectName, example, version, context),
+    managedApplicationAgenticStartPackage(projectName, _example, version, context),
     null,
     2,
   )}\n`;

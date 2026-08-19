@@ -1,6 +1,6 @@
 {
   "name": "@applik8s/deployment-provider-kubernetes",
-  "version": "0.7.1",
+  "version": "0.7.2",
   "description": "Kubernetes-specific Alchemy provider resources for Applik8s deployment.",
   "license": "Apache-2.0",
   "type": "module",

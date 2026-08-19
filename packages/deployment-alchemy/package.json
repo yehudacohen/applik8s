@@ -1,6 +1,6 @@
 {
   "name": "@applik8s/deployment-alchemy",
-  "version": "0.7.1",
+  "version": "0.7.2",
   "description": "Alchemy v2 deployment backend for Applik8s.",
   "license": "Apache-2.0",
   "type": "module",
@@ -23,11 +23,11 @@
     }
   },
   "dependencies": {
-    "@applik8s/deployment-contract": "0.7.1",
-    "@applik8s/deployment-provider-harbor": "0.7.1",
-    "@applik8s/deployment-provider-kubernetes": "0.7.1",
-    "@applik8s/deployment-provider-oci": "0.7.1",
-    "@applik8s/deployment-typekro": "0.7.1",
+    "@applik8s/deployment-contract": "0.7.2",
+    "@applik8s/deployment-provider-harbor": "0.7.2",
+    "@applik8s/deployment-provider-kubernetes": "0.7.2",
+    "@applik8s/deployment-provider-oci": "0.7.2",
+    "@applik8s/deployment-typekro": "0.7.2",
     "@effect/platform-bun": "4.0.0-beta.84",
     "@effect/platform-node": "4.0.0-beta.84",
     "alchemy": "2.0.0-beta.58",

@@ -1,6 +1,6 @@
 {
   "name": "@applik8s/vite",
-  "version": "0.7.1",
+  "version": "0.7.2",
   "description": "Framework-neutral Vite build partitioning for Applik8s applications.",
   "license": "Apache-2.0",
   "type": "module",
@@ -16,8 +16,8 @@
     "directory": "packages/vite"
   },
   "dependencies": {
-    "@applik8s/compiler": "0.7.1",
-    "@applik8s/server": "0.7.1"
+    "@applik8s/compiler": "0.7.2",
+    "@applik8s/server": "0.7.2"
   },
   "peerDependencies": {
     "vite": ">=7 <9"

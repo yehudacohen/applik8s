@@ -304,7 +304,7 @@ export const smoke = sdk.operator({ name: 'packed-smoke', deployment: { namespac
   await createApplicationAgenticStart({
     targetDirectory: agenticStartTarget,
     projectName: 'packed-agentic-start',
-    applik8sVersion: '0.7.1',
+    applik8sVersion: '0.7.2',
     install: false,
     async run(command) {
       if (

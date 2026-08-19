@@ -1,5 +1,15 @@
 # Release Notes
 
+## v0.7.2
+
+v0.7.2 fixes the Agentic Start package manifest emitted for generated
+applications. Shared generated search gateways import `@applik8s/search` and
+`@applik8s/runtime-opensearch` for relational and dedicated search provider
+resolution, but the v0.7.1 generator declared those packages only for the
+research example. Both packages are now maintained dependencies of every
+generated Agentic Start, including the default product starter. Generator
+regressions verify the product and research manifests independently.
+
 ## v0.7.1
 
 v0.7.1 corrects the released-compiler and clean-consumer boundary discovered
