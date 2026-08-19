@@ -33,7 +33,7 @@
     "@applik8s/client": "0.7.1",
     "@applik8s/core": "0.7.1",
     "@applik8s/runtime-ai": "0.7.1",
-    "@tanstack/ai": "0.44.1",
+    "@tanstack/ai": "0.45.1",
     "arktype": "2.2.1",
     "drizzle-orm": "^0.45.1"
   }

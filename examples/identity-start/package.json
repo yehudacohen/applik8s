@@ -43,8 +43,8 @@
     "@applik8s/start-agentic": "workspace:*",
     "@applik8s/tanstack-start": "workspace:*",
     "@applik8s/usage": "workspace:*",
-    "@tanstack/ai": "0.44.1",
-    "@tanstack/ai-react": "0.19.2",
+    "@tanstack/ai": "0.45.1",
+    "@tanstack/ai-react": "0.19.3",
     "arktype": "2.2.1",
     "drizzle-orm": "^0.45.1"
   },

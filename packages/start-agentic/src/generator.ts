@@ -372,8 +372,8 @@ function managedApplicationAgenticStartPackage(
           '@applik8s/search': version,
         }
         : {}),
-      '@tanstack/ai': '0.44.1',
-      '@tanstack/ai-persistence': '0.1.4',
+      '@tanstack/ai': '0.45.1',
+      '@tanstack/ai-persistence': '0.1.5',
       '@tanstack/ai-react': applicationAgenticStartDefinition.compatibility.tanstackAIReact,
       arktype: '2.2.1',
       'class-variance-authority': '0.7.1',

@@ -36,8 +36,8 @@
     "@applik8s/ai": "0.7.1",
     "@applik8s/applik8s": "0.7.1",
     "@applik8s/core": "0.7.1",
-    "@tanstack/ai": "0.44.1",
-    "@tanstack/ai-persistence": "0.1.4",
+    "@tanstack/ai": "0.45.1",
+    "@tanstack/ai-persistence": "0.1.5",
     "drizzle-orm": "^0.45.1"
   }
 }

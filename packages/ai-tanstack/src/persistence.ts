@@ -13,8 +13,8 @@ import type {
 // typecast: preserve the exact tested compatibility tuple as public literal metadata.
 export const applicationTanStackServerPersistenceCompatibility = Object.freeze({
   package: '@tanstack/ai-persistence',
-  version: '0.1.4',
-  tanstackAI: '0.44.1',
+  version: '0.1.5',
+  tanstackAI: '0.45.1',
   contract: 'ChatPersistence',
   status: 'supported',
 } as const);
