@@ -1,6 +1,6 @@
 {
   "name": "@applik8s/notifications-smtp",
-  "version": "0.7.1",
+  "version": "0.7.2",
   "description": "Server-only SMTP notification delivery adapter for Applik8s.",
   "license": "Apache-2.0",
   "type": "module",
@@ -23,7 +23,7 @@
     }
   },
   "dependencies": {
-    "@applik8s/notifications": "0.7.1",
+    "@applik8s/notifications": "0.7.2",
     "nodemailer": "^9.0.5"
   },
   "devDependencies": {

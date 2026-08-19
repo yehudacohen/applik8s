@@ -62,7 +62,7 @@ The tag-driven workflow publishes the host before npm packages. It then installs
 Run the same released-artifact proof against OrbStack with:
 
 ```sh
-APPLIK8S_PUBLISHED_VERSION=0.7.1 bun run check:published-release:orbstack
+APPLIK8S_PUBLISHED_VERSION=0.7.2 bun run check:published-release:orbstack
 ```
 
 The live script refuses to mutate a cluster unless the current kubectl context exactly matches `orbstack`. It deploys the generated CRD/controller, observes a real reconciliation status write, and cleans up its namespace and CRD.

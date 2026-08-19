@@ -1,6 +1,6 @@
 {
   "name": "@applik8s/runtime-nats",
-  "version": "0.7.1",
+  "version": "0.7.2",
   "description": "NATS JetStream event-log and command-consumer runtime for Applik8s workloads.",
   "license": "Apache-2.0",
   "type": "module",
@@ -33,8 +33,8 @@
     }
   },
   "dependencies": {
-    "@applik8s/applik8s": "0.7.1",
-    "@applik8s/core": "0.7.1",
+    "@applik8s/applik8s": "0.7.2",
+    "@applik8s/core": "0.7.2",
     "@nats-io/jetstream": "3.4.0",
     "@nats-io/nats-core": "3.4.0",
     "@nats-io/transport-node": "3.4.0",

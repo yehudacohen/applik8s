@@ -9,7 +9,7 @@ on:
       release_version:
         description: Existing immutable release version to recover (X.Y.Z)
         required: true
-        default: '0.7.1'
+        default: '0.7.2'
         type: string
       publish_npm:
         description: Publish packages to npm using trusted publishing

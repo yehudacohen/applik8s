@@ -1,6 +1,6 @@
 {
   "name": "@applik8s/deployment-compiler",
-  "version": "0.7.1",
+  "version": "0.7.2",
   "description": "Pure ApplicationGraph to ApplicationDeploymentGraph lowering for Applik8s.",
   "license": "Apache-2.0",
   "type": "module",
@@ -23,7 +23,7 @@
     }
   },
   "dependencies": {
-    "@applik8s/core": "0.7.1",
-    "@applik8s/deployment-contract": "0.7.1"
+    "@applik8s/core": "0.7.2",
+    "@applik8s/deployment-contract": "0.7.2"
   }
 }

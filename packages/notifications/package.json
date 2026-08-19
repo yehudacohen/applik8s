@@ -1,6 +1,6 @@
 {
   "name": "@applik8s/notifications",
-  "version": "0.7.1",
+  "version": "0.7.2",
   "description": "Provider-neutral transactional application notification delivery for Applik8s.",
   "license": "Apache-2.0",
   "type": "module",
@@ -33,11 +33,11 @@
     }
   },
   "dependencies": {
-    "@applik8s/applik8s": "0.7.1",
+    "@applik8s/applik8s": "0.7.2",
     "drizzle-orm": "^0.45.1"
   },
   "peerDependencies": {
-    "@applik8s/notifications-smtp": "0.7.1"
+    "@applik8s/notifications-smtp": "0.7.2"
   },
   "peerDependenciesMeta": {
     "@applik8s/notifications-smtp": {

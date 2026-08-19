@@ -1,6 +1,6 @@
 {
   "name": "@applik8s/operations",
-  "version": "0.7.1",
+  "version": "0.7.2",
   "description": "Provider-neutral operation catalog and authority lifecycle for Applik8s applications.",
   "license": "Apache-2.0",
   "type": "module",
@@ -23,6 +23,6 @@
     }
   },
   "dependencies": {
-    "@applik8s/core": "0.7.1"
+    "@applik8s/core": "0.7.2"
   }
 }

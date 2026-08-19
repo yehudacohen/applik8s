@@ -376,6 +376,10 @@ describe('Agentic Start generator', () => {
       'workspace:*',
     );
     expect(manifest.dependencies['@applik8s/identity']).toBe('workspace:*');
+    expect(manifest.dependencies['@applik8s/search']).toBe('workspace:*');
+    expect(manifest.dependencies['@applik8s/runtime-opensearch']).toBe(
+      'workspace:*',
+    );
     expect(manifest.dependencies['@applik8s/runtime-s3']).toBe('workspace:*');
     expect(manifest.dependencies['@tanstack/ai-react']).toBe('0.19.3');
     expect(manifest.dependencies['@tanstack/ai-persistence']).toBe('0.1.5');
@@ -576,6 +580,10 @@ describe('Agentic Start generator', () => {
     expect(manifest.dependencies['@applik8s/approvals']).toBe('workspace:*');
     expect(manifest.dependencies['@applik8s/artifacts']).toBe('workspace:*');
     expect(manifest.dependencies['@applik8s/evals']).toBe('workspace:*');
+    expect(manifest.dependencies['@applik8s/search']).toBe('workspace:*');
+    expect(manifest.dependencies['@applik8s/runtime-opensearch']).toBe(
+      'workspace:*',
+    );
     expect(manifest.dependencies['@applik8s/runtime-s3']).toBe('workspace:*');
     expect(manifest.dependencies['@applik8s/billing']).toBe('workspace:*');
     expect(manifest.dependencies['@applik8s/billing-stripe']).toBe(
