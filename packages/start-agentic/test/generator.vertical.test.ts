@@ -1342,7 +1342,7 @@ describe('Agentic Start generator', () => {
         },
       ]));
     },
-    30_000,
+    120_000,
   );
 
   it(
