@@ -51,8 +51,12 @@ export interface ApplicationAdmissionContextV1 {
   };
 }
 
-export interface CreateApplicationAdmissionContextV1Options {
-  readonly admission: ApplicationRequestAdmission;
+export interface CreateApplicationAdmissionContextV1Options<
+  TPrincipal extends ApplicationPrincipal = ApplicationPrincipal,
+> {
+  readonly admission: ApplicationRequestAdmission & {
+    readonly principal: TPrincipal;
+  };
   readonly operation: ApplicationAdmissionContextV1['operation'];
   readonly correlationId: string;
 }
@@ -90,9 +94,11 @@ export class ApplicationAdmissionContextV1Error extends TypeError {
  * transport provenance here. Execution families receive only narrowed views of
  * the validated result.
  */
-export function createApplicationAdmissionContextV1(
-  options: CreateApplicationAdmissionContextV1Options,
-): ApplicationAdmissionContextV1 {
+export function createApplicationAdmissionContextV1<
+  TPrincipal extends ApplicationPrincipal,
+>(
+  options: CreateApplicationAdmissionContextV1Options<TPrincipal>,
+): ApplicationAdmissionContextV1 & { readonly principal: TPrincipal } {
   if (!options.admission || typeof options.admission !== 'object') {
     throw new TypeError('Admission is required.');
   }
@@ -134,15 +140,20 @@ export function createApplicationAdmissionContextV1(
 }
 
 /** Adds validated W3C trace provenance without widening the base constructor. */
-export function withApplicationAdmissionTraceV1(
-  context: ApplicationAdmissionContextV1,
+export function withApplicationAdmissionTraceV1<
+  TContext extends ApplicationAdmissionContextV1,
+>(
+  context: TContext,
   trace: ApplicationAdmissionContextV1['trace'],
-): ApplicationAdmissionContextV1 {
+): TContext {
   if (!trace || !/^00-[\da-f]{32}-[\da-f]{16}-[\da-f]{2}$/u.test(trace.traceparent)
     || (trace.tracestate !== undefined && !trace.tracestate.trim())) {
     throw new TypeError('Admission trace is invalid.');
   }
-  return Object.freeze({ ...context, trace: Object.freeze({ ...trace }) });
+  return Object.freeze({
+    ...context,
+    trace: Object.freeze({ ...trace }),
+  }) as TContext;
 }
 
 /**
@@ -151,10 +162,12 @@ export function withApplicationAdmissionTraceV1(
  * workflows, tasks, brokers, actors, schedules, and agents one validation
  * boundary for causation, deadlines, cancellation, receipts, and delivery.
  */
-export function withApplicationAdmissionExecutionV1(
-  context: ApplicationAdmissionContextV1,
+export function withApplicationAdmissionExecutionV1<
+  TContext extends ApplicationAdmissionContextV1,
+>(
+  context: TContext,
   provenance: ApplicationAdmissionExecutionProvenanceV1,
-): ApplicationAdmissionContextV1 {
+): TContext {
   return validateApplicationAdmissionContextV1({
     ...context,
     ...(provenance.causationId ? { causationId: provenance.causationId } : {}),
@@ -170,7 +183,7 @@ export function withApplicationAdmissionExecutionV1(
     // Construction validates the timestamp but must not reject deterministic
     // fixtures or replayed durable records merely because wall time advanced.
     now: Number.NEGATIVE_INFINITY,
-  });
+  }) as TContext;
 }
 
 export function validateApplicationAdmissionContextV1(

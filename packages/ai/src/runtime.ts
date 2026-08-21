@@ -1,12 +1,15 @@
 // typecast-file-boundary: durable AI records are checked against invocation and attempt invariants before JSON payloads are restored to protocol record types.
 import {
+  type ApplicationAdmissionContextV1,
   type ApplicationExecutionPrincipal,
   type ApplicationOperationId,
   canonicalJsonCompatibleV1Policy,
   canonicalJsonV1String,
   type JsonObject,
+  validateApplicationAdmissionContextV1,
 } from '@applik8s/core';
 import type {
+  ApplicationAIAdmissionEvidenceV1,
   ApplicationAIAttemptRecord,
   ApplicationAIAttemptRecoveryClass,
   ApplicationAIInvocationRecord,
@@ -54,6 +57,9 @@ export interface ApplicationAIInvocationReservation {
   readonly logicalModel: string;
   readonly request: unknown;
   readonly admittedPrincipal: ApplicationExecutionPrincipal;
+  readonly admission: ApplicationAdmissionContextV1 & {
+    readonly principal: ApplicationExecutionPrincipal;
+  };
 }
 
 export interface ApplicationAIAttemptReservation {
@@ -104,6 +110,15 @@ export function createApplicationAIAttemptRuntime(options: {
       input: ApplicationAIInvocationReservation,
     ): Promise<ApplicationAIInvocationRecord> {
       validatePrincipal(input.admittedPrincipal, input.agentRunId);
+      const admission = validateApplicationAdmissionContextV1(input.admission, {
+        now: clock.now().getTime(),
+      });
+      if (admission.principal.id !== input.admittedPrincipal.id) {
+        throw new ApplicationAIProtocolConflictError(
+          `AI invocation ${input.invocationId} admission does not match its execution principal.`,
+        );
+      }
+      const admissionEvidence = applicationAIAdmissionEvidence(admission);
       const requestHash = await applicationAIDigest(input.request);
       return options.store.transact(input.invocationId, (transaction) => {
         const existing = transaction.getInvocation();
@@ -115,6 +130,8 @@ export function createApplicationAIAttemptRuntime(options: {
             || existing.agentRunId !== input.agentRunId
             || existing.logicalModel !== input.logicalModel
             || existing.admittedPrincipal.id !== input.admittedPrincipal.id
+            || canonicalJsonV1String(existing.admissionEvidence)
+              !== canonicalJsonV1String(admissionEvidence)
           ) {
             throw new ApplicationAIProtocolConflictError(
               `AI invocation ${input.invocationId} was reused with another request or execution identity.`,
@@ -132,6 +149,7 @@ export function createApplicationAIAttemptRuntime(options: {
           logicalModel: nonEmpty(input.logicalModel, 'logicalModel'),
           requestHash,
           admittedPrincipal: structuredClone(input.admittedPrincipal),
+          admissionEvidence,
           authorityRevision: input.admittedPrincipal.authorityRevision,
           state: 'active',
           createdAt: now,
@@ -467,6 +485,32 @@ export function createApplicationAIAttemptRuntime(options: {
         };
       });
     },
+  });
+}
+
+function applicationAIAdmissionEvidence(
+  context: ApplicationAdmissionContextV1,
+): ApplicationAIAdmissionEvidenceV1 {
+  return Object.freeze({
+    apiVersion: 'applik8s.aiAdmissionEvidence/v1',
+    admissionVersion: context.apiVersion,
+    principalId: context.principal.id,
+    authorityRevision: context.authorityRevision,
+    trustedContextDigest: context.trustedContext.digest,
+    operation: Object.freeze({ ...context.operation }),
+    correlationId: context.correlationId,
+    ...(context.causationId ? { causationId: context.causationId } : {}),
+    ...(context.deadline ? { deadline: context.deadline } : {}),
+    ...(context.cancellation
+      ? { cancellationRevision: context.cancellation.revision }
+      : {}),
+    ...(context.trace ? { traceparent: context.trace.traceparent } : {}),
+    ...(context.delivery
+      ? { delivery: Object.freeze({ ...context.delivery }) }
+      : {}),
+    ...(context.authorizationReceipt
+      ? { authorizationReceiptId: context.authorizationReceipt.id }
+      : {}),
   });
 }
 

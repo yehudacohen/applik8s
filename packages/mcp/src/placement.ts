@@ -6,6 +6,10 @@ import type {
   JsonValue,
 } from '@applik8s/core';
 import {
+  createApplicationAdmissionContextV1,
+  withApplicationAdmissionExecutionV1,
+} from '@applik8s/core';
+import {
   type ApplicationOperationAuthorityRuntime,
   applicationInternalOperationInputDigest,
   encodeApplicationInternalOperationInvocation,
@@ -99,6 +103,23 @@ export function createApplicationMcpPlacementExecutor(
       );
       const issuedAt = clock();
       const invocationId = `internal_${identifier()}`;
+      const expiresAt = new Date(issuedAt.getTime() + lifetime).toISOString();
+      const context = withApplicationAdmissionExecutionV1(
+        createApplicationAdmissionContextV1({
+          admission: input.admission,
+          operation: { id: input.operation.id, transport: 'mcp' },
+          correlationId: input.sessionId ?? invocationId,
+        }),
+        {
+          causationId: invocationId,
+          deadline: expiresAt,
+          authorizationReceipt: authorization.receipt,
+          delivery: {
+            id: invocationId,
+            source: `applik8s://internal-operation/${input.serverId}`,
+          },
+        },
+      );
       const invocationToken =
         encodeApplicationInternalOperationInvocation(
           options.transportSecret,
@@ -114,15 +135,14 @@ export function createApplicationMcpPlacementExecutor(
               workloadId: input.serverId,
               ...(input.sessionId ? { sessionId: input.sessionId } : {}),
             },
+            context,
             admission: input.admission,
             authorizationReceipt: authorization.receipt,
             ...(input.idempotencyKey
               ? { idempotencyKey: input.idempotencyKey }
               : {}),
             issuedAt: issuedAt.toISOString(),
-            expiresAt: new Date(
-              issuedAt.getTime() + lifetime,
-            ).toISOString(),
+            expiresAt,
           },
         );
       return options.dispatch.dispatch({

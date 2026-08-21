@@ -75,17 +75,19 @@
     {
       "id": "agent-ai-execution",
       "transport": "framework",
-      "state": "in-progress",
+      "state": "implemented",
       "evidenceVerifier": "registered agent execution and internal AI attempt evidence",
       "principalSource": "framework execution principal preserving original causal attribution",
       "operationIdentity": "registered agent, tool, model, and attempt operation",
       "owners": [
         "@applik8s/runtime-ai browser gateway",
         "@applik8s/operations execution-admission transport",
-        "@applik8s/compiler generated agent worker"
+        "@applik8s/compiler generated agent worker",
+        "@applik8s/runtime-ai tool-operation bridge",
+        "@applik8s/ai durable attempt admission evidence"
       ],
-      "regression": "bunx vitest run --maxWorkers=1 packages/operations/test/execution-admission-transport.vertical.test.ts packages/runtime-ai/test/agent-gateway.vertical.test.ts packages/compiler/test/application-agents.vertical.test.ts",
-      "remaining": "propagate the worker-produced execution context through tool calls and AI provider attempts, then add matrix/source-gate coverage"
+      "regression": "bunx vitest run --maxWorkers=1 packages/operations/test/execution-admission-transport.vertical.test.ts packages/operations/test/internal-transport.vertical.test.ts packages/ai/test/runtime.vertical.test.ts packages/runtime-ai/test/agent-gateway.vertical.test.ts packages/runtime-ai/test/operation-executor.vertical.test.ts packages/runtime-ai/test/runtime.vertical.test.ts packages/compiler/test/application-agents.vertical.test.ts",
+      "remaining": "add aggregate matrix/source-gate enforcement and version/rejection telemetry"
     }
   ]
 }

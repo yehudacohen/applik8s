@@ -636,7 +636,7 @@ import postgres from 'postgres';
 import { installApplicationOperationRuntimeResolver } from '@applik8s/client';
 import { createApplicationAIAttemptRuntime } from '@applik8s/ai';
 import { applicationAIConversationPrincipalScope, createApplicationAIAgentConversationPersistence, createApplicationTanStackConversationPersistence, createPostgresApplicationConversationStore } from '@applik8s/conversations/runtime';
-import { applicationCausalPrincipalContext } from '@applik8s/core';
+import { applicationCausalPrincipalContext, validateApplicationAdmissionContextV1 } from '@applik8s/core';
 import { createApplicationOperationAuthorityRuntime, decodeApplicationExecutionAdmission } from '@applik8s/operations';
 import { createApplicationAIAgentRequestHandler, createApplicationAIOperationExecutor, createPostgresApplicationAIAttemptStore } from '@applik8s/runtime-ai';
 import { createApplicationTaskQueryRuntime } from '@applik8s/applik8s/task-query-runtime';
@@ -799,10 +799,7 @@ const handler = (request, context) => {
       const providerToolCallId = 'handler-' + directOperationOrdinal + '-' + operation.id;
       directOperationOrdinal += 1;
       return invokeOperation(descriptor, input, {
-        admission: {
-          principal: context.principal,
-          trustedContext: context.trustedContext,
-        },
+        context: context.admission,
         invocationId: context.invocationId,
         attemptId: context.attemptId,
         providerToolCallId,
@@ -1128,11 +1125,18 @@ const handle = createApplicationAIAgentRequestHandler({
       cancellationRevision: invocation.cancellationRevision,
     });
     return {
-      principal,
-      trustedContext: invocation.context.trustedContext.values,
+      context: validateApplicationAdmissionContextV1({
+        ...invocation.context,
+        principal,
+        authorityRevision: principal.authorityRevision,
+        trustedContext: {
+          values: invocation.context.trustedContext.values,
+          digest: principal.trustedContextDigest,
+        },
+      }),
     };
   },
-  async reserveAttempt({ principal, trustedContext, threadId, runId, logicalModel, request }) {
+  async reserveAttempt({ principal, admission, trustedContext, threadId, runId, logicalModel, request }) {
     const invocationId = 'invocation_' + createHash('sha256')
       .update(contract.application)
       .update('\\0')
@@ -1150,6 +1154,7 @@ const handle = createApplicationAIAgentRequestHandler({
       logicalModel,
       request,
       admittedPrincipal: principal,
+      admission,
     });
     const decision = await attemptRuntime.reserveAttempt({
       invocationId,
@@ -1359,7 +1364,7 @@ const handle = createApplicationAIAgentRequestHandler({
   invoke: (operation, input, invocation, admission) =>
     invokeOperation(operation, input, {
       ...invocation,
-      admission,
+      context: admission.context,
     }),
   handler,
 });

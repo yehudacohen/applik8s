@@ -1,5 +1,6 @@
 // typecast-file-boundary: provider-neutral AI constructors validate JSON-like model and provider inputs before restoring their declared contract types.
 import type {
+  ApplicationAdmissionContextV1,
   ApplicationExecutionPrincipal,
   ApplicationIdentityReference,
   ApplicationOperationId,
@@ -337,6 +338,10 @@ export interface ApplicationAIAgentRuntimeContext<TTanStack = unknown> {
   /** Retry-attempt identity used by inferred function-native effects. */
   readonly attemptId: string;
   readonly principal: ApplicationExecutionPrincipal;
+  /** Canonical transport and execution provenance for nested calls. */
+  readonly admission: ApplicationAdmissionContextV1 & {
+    readonly principal: ApplicationExecutionPrincipal;
+  };
   /** Exact server-admitted context used by focused runtime dependencies. */
   readonly trustedContext: Readonly<Record<string, JsonValue>>;
   readonly signal: AbortSignal;
@@ -504,12 +509,36 @@ export interface ApplicationAIInvocationRecord {
   readonly logicalModel: string;
   readonly requestHash: string;
   readonly admittedPrincipal: ApplicationExecutionPrincipal;
+  /** Credential-free canonical provenance retained for recovery and audit. */
+  readonly admissionEvidence: ApplicationAIAdmissionEvidenceV1;
   readonly authorityRevision: string;
   readonly state: 'active' | 'completed' | 'failed' | 'uncertain' | 'cancelled';
   readonly currentAttemptId?: string;
   readonly canonicalMessageId?: string;
   readonly createdAt: string;
   readonly updatedAt: string;
+}
+
+export interface ApplicationAIAdmissionEvidenceV1 {
+  readonly apiVersion: 'applik8s.aiAdmissionEvidence/v1';
+  readonly admissionVersion: 'applik8s.admission/v1';
+  readonly principalId: string;
+  readonly authorityRevision: string;
+  readonly trustedContextDigest: string;
+  readonly operation: {
+    readonly id: string;
+    readonly transport: string;
+  };
+  readonly correlationId: string;
+  readonly causationId?: string;
+  readonly deadline?: string;
+  readonly cancellationRevision?: string;
+  readonly traceparent?: string;
+  readonly delivery?: {
+    readonly id: string;
+    readonly source: string;
+  };
+  readonly authorizationReceiptId?: string;
 }
 
 export interface ApplicationAIAttemptRecord {

@@ -2,12 +2,18 @@
 // after HMAC verification and full receipt/principal/identity validation.
 import { createHash } from 'node:crypto';
 import type {
+  ApplicationAdmissionContextV1,
   ApplicationAuthorizationReceipt,
   ApplicationOperationId,
   ApplicationRequestAdmission,
   JsonValue,
 } from '@applik8s/core';
-import { validateApplicationAuthorizationReceipt } from '@applik8s/core';
+import {
+  createApplicationAdmissionContextV1,
+  validateApplicationAdmissionContextV1,
+  validateApplicationAuthorizationReceipt,
+  withApplicationAdmissionExecutionV1,
+} from '@applik8s/core';
 import {
   canonicalInternalJson,
   internalTransportSecret,
@@ -30,6 +36,8 @@ export interface ApplicationInternalOperationInvocation {
     readonly workloadId: string;
     readonly sessionId?: string;
   };
+  /** Canonical v0.8 context; admission remains during the Release A rollback window. */
+  readonly context: ApplicationAdmissionContextV1;
   readonly admission: ApplicationRequestAdmission;
   readonly authorizationReceipt: ApplicationAuthorizationReceipt;
   readonly idempotencyKey?: string;
@@ -128,16 +136,22 @@ export function decodeApplicationInternalOperationInvocation(
       'The internal operation invocation payload is invalid.',
     );
   }
-  const invocation = decoded as ApplicationInternalOperationInvocation;
-  validateInvocation(invocation, expected);
+  const wireInvocation = decoded as LegacyCompatibleInternalOperationInvocation;
+  validateInvocation(wireInvocation, expected);
   assertApplicationInternalContextHasNoCredentials(
-    invocation.admission.trustedContext,
+    wireInvocation.admission.trustedContext,
   );
-  return structuredClone(invocation);
+  const context = wireInvocation.context
+    ? validateApplicationAdmissionContextV1(wireInvocation.context, {
+        now: (expected.now ?? new Date()).getTime(),
+      })
+    : legacyInternalOperationContext(wireInvocation);
+  validateCanonicalParity(wireInvocation, context);
+  return structuredClone({ ...wireInvocation, context });
 }
 
 function validateInvocation(
-  invocation: ApplicationInternalOperationInvocation,
+  invocation: LegacyCompatibleInternalOperationInvocation,
   expected: ApplicationInternalOperationVerification,
 ): void {
   const receiptDiagnostics = validateApplicationAuthorizationReceipt(
@@ -203,6 +217,70 @@ function validateInvocation(
       'The internal operation invocation does not match its authority evidence.',
     );
   }
+  if (invocation.context) {
+    const context = validateApplicationAdmissionContextV1(invocation.context, {
+      now,
+    });
+    validateCanonicalParity(invocation, context);
+  }
+}
+
+type LegacyCompatibleInternalOperationInvocation =
+  Omit<ApplicationInternalOperationInvocation, 'context'> & {
+    readonly context?: ApplicationAdmissionContextV1;
+  };
+
+function legacyInternalOperationContext(
+  invocation: LegacyCompatibleInternalOperationInvocation,
+): ApplicationAdmissionContextV1 {
+  return withApplicationAdmissionExecutionV1(
+    createApplicationAdmissionContextV1({
+      admission: invocation.admission,
+      operation: {
+        id: invocation.operationId,
+        transport: canonicalInternalTransport(invocation.source.transport),
+      },
+      correlationId: invocation.source.sessionId ?? invocation.id,
+    }),
+    {
+      causationId: invocation.id,
+      deadline: invocation.expiresAt,
+      authorizationReceipt: invocation.authorizationReceipt,
+      delivery: {
+        id: invocation.id,
+        source: `applik8s://internal-operation/${invocation.source.workloadId}`,
+      },
+    },
+  );
+}
+
+function validateCanonicalParity(
+  invocation: LegacyCompatibleInternalOperationInvocation,
+  context: ApplicationAdmissionContextV1,
+): void {
+  if (
+    context.principal.id !== invocation.admission.principal.id
+    || context.authorityRevision !== invocation.admission.principal.authorityRevision
+    || context.trustedContext.digest !== invocation.admission.principal.trustedContextDigest
+    || canonicalInternalJson(context.trustedContext.values)
+      !== canonicalInternalJson(invocation.admission.trustedContext)
+    || context.operation.id !== invocation.operationId
+    || context.operation.transport !== canonicalInternalTransport(invocation.source.transport)
+    || context.authorizationReceipt?.id !== invocation.authorizationReceipt.id
+    || context.deadline !== invocation.expiresAt
+    || context.delivery?.id !== invocation.id
+  ) {
+    throw transportError(
+      'INTERNAL_INVOCATION_INVALID',
+      'The canonical admission context does not match its Release A compatibility fields.',
+    );
+  }
+}
+
+function canonicalInternalTransport(
+  transport: ApplicationInternalOperationInvocation['source']['transport'],
+): ApplicationAdmissionContextV1['operation']['transport'] {
+  return transport === 'event' ? 'broker' : transport;
 }
 
 function expectedAudiences(

@@ -6,9 +6,11 @@ import {
   type ApplicationAIResolvedRoute,
   createApplicationAIAttemptRuntime,
 } from '@applik8s/ai';
-import type {
+import {
   ApplicationExecutionPrincipal,
   ApplicationOperationId,
+  createApplicationAdmissionContextV1,
+  withApplicationAdmissionExecutionV1,
 } from '@applik8s/core';
 import postgres from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -38,6 +40,7 @@ live('PostgreSQL durable AI attempt store', () => {
       store,
       ids: deterministicIds(),
     });
+    const admittedPrincipal = principal();
     await runtime.reserveInvocation({
       invocationId: 'invocation-live-1',
       conversationId: 'conversation-live-1',
@@ -45,7 +48,31 @@ live('PostgreSQL durable AI attempt store', () => {
       agentRunId: 'agent-run-live-1',
       logicalModel: 'fast',
       request: { messages: [{ role: 'user', content: 'hello' }] },
-      admittedPrincipal: principal(),
+      admittedPrincipal,
+      admission: withApplicationAdmissionExecutionV1(
+        createApplicationAdmissionContextV1({
+          admission: {
+            principal: admittedPrincipal,
+            trustedContext: { tenant: 'tenant-live-1' },
+          },
+          operation: {
+            id: 'applik8s://agent/live/execute',
+            transport: 'framework',
+          },
+          correlationId: 'protocol-run-live-1',
+        }),
+        {
+          causationId: 'invocation-live-1',
+          deadline: admittedPrincipal.deadline,
+          cancellation: {
+            revision: admittedPrincipal.cancellationRevision,
+          },
+          delivery: {
+            id: 'agent-admission-live-1',
+            source: 'applik8s://agent-gateway',
+          },
+        },
+      ),
     });
     const persistedInvocations = await sql.unsafe(
       `SELECT count(*)::integer AS count, min(record->>'id') AS id FROM ${schema}.applik8s_ai_invocations`,

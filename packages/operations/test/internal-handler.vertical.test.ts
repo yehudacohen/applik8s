@@ -4,6 +4,10 @@ import type {
   ApplicationRequestAdmission,
   JsonValue,
 } from '@applik8s/core';
+import {
+  createApplicationAdmissionContextV1,
+  withApplicationAdmissionExecutionV1,
+} from '@applik8s/core';
 import { describe, expect, it, vi } from 'vitest';
 import { createApplicationInternalOperationHandler } from '../src/internal-handler.js';
 import {
@@ -135,6 +139,7 @@ function request(
 function invocationToken(input: JsonValue): string {
   const inputDigest = applicationInternalOperationInputDigest(input);
   const admission = admitted();
+  const authorizationReceipt = receipt(admission, inputDigest);
   return encodeApplicationInternalOperationInvocation(secret, {
     apiVersion: 'applik8s.internalOperation/v1alpha1',
     id: 'invocation-1',
@@ -147,8 +152,24 @@ function invocationToken(input: JsonValue): string {
       workloadId: 'mcpServer.research',
       sessionId: 'session-1',
     },
+    context: withApplicationAdmissionExecutionV1(
+      createApplicationAdmissionContextV1({
+        admission,
+        operation: { id: operation.id, transport: 'mcp' },
+        correlationId: 'session-1',
+      }),
+      {
+        causationId: 'invocation-1',
+        deadline: '2026-07-30T00:00:30.000Z',
+        authorizationReceipt,
+        delivery: {
+          id: 'invocation-1',
+          source: 'applik8s://internal-operation/mcpServer.research',
+        },
+      },
+    ),
     admission,
-    authorizationReceipt: receipt(admission, inputDigest),
+    authorizationReceipt,
     issuedAt: now.toISOString(),
     expiresAt: '2026-07-30T00:00:30.000Z',
   });

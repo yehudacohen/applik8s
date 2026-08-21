@@ -3,8 +3,11 @@ import type {
   ApplicationAuthorizationReceipt,
   ApplicationExecutionPrincipal,
   ApplicationOperationDescriptor,
-  ApplicationRequestAdmission,
   ApplicationWorkloadAuthorityEnvelope,
+} from '@applik8s/core';
+import {
+  createApplicationAdmissionContextV1,
+  withApplicationAdmissionExecutionV1,
 } from '@applik8s/core';
 import {
   applicationInternalOperationInputDigest,
@@ -38,13 +41,13 @@ describe('AI operation executor', () => {
     const reserveToolProposal = vi.fn(async () => proposal);
     const expectedReceipt = receipt(
       operation,
-      admission.principal,
+      admission.context.principal,
       envelope,
       inputDigest,
     );
     const authorizeExecution = vi.fn(async () => ({
       allowed: true as const,
-      principal: admission.principal,
+      principal: admission.context.principal,
       receipt: expectedReceipt,
     }));
     const dispatch = vi.fn(async ({
@@ -69,7 +72,21 @@ describe('AI operation executor', () => {
         sessionId: 'invocation-1',
       });
       expect(invocation.idempotencyKey).toBe('command-1');
-      expect(invocation.admission).toEqual(admission);
+      expect(invocation.admission).toEqual({
+        principal: admission.context.principal,
+        trustedContext: admission.context.trustedContext.values,
+      });
+      expect(invocation.context).toMatchObject({
+        principal: admission.context.principal,
+        operation: { id: operation.id, transport: 'http' },
+        correlationId: admission.context.correlationId,
+        causationId: 'command-1',
+        authorizationReceipt: expectedReceipt,
+        delivery: {
+          id: 'internal_internal-1',
+          source: 'applik8s://internal-operation/aiAgent.researcher',
+        },
+      });
       expect(authorizationReceipt).toEqual(expectedReceipt);
       expect(principal).toMatchObject({
         id: 'principal:research:execution:agent:agent-run-1:1',
@@ -92,7 +109,7 @@ describe('AI operation executor', () => {
 
     await expect(
       invoke(operation, args, {
-        admission,
+        context: admission.context,
         invocationId: 'invocation-1',
         attemptId: 'attempt-1',
         providerToolCallId: 'tool-call-1',
@@ -107,7 +124,7 @@ describe('AI operation executor', () => {
     );
     expect(authorizeExecution).toHaveBeenCalledWith(
       expect.objectContaining({
-        principal: admission.principal,
+        principal: admission.context.principal,
         envelope,
         transport: 'http',
         inputDigest,
@@ -129,7 +146,7 @@ describe('AI operation executor', () => {
 
     await expect(
       invoke(descriptor(), {}, {
-        admission: executionAdmission(),
+        context: executionAdmission().context,
         invocationId: 'invocation-1',
         attemptId: 'attempt-1',
         providerToolCallId: 'tool-call-1',
@@ -194,11 +211,8 @@ function workloadEnvelope(
   };
 }
 
-function executionAdmission(): ApplicationRequestAdmission & {
-  readonly principal: ApplicationExecutionPrincipal;
-} {
-  return {
-    principal: {
+function executionAdmission() {
+  const principal: ApplicationExecutionPrincipal = {
       id: 'principal:research:execution:agent:agent-run-1:1',
       identity: {
         id: 'identity:research:service:researcher',
@@ -241,8 +255,28 @@ function executionAdmission(): ApplicationRequestAdmission & {
       cancellationRevision: 'cancel-1',
       bindings: [],
       effectiveAuthority: [],
-    },
-    trustedContext: { tenant: 'tenant-1' },
+  };
+  const trustedContext = { tenant: 'tenant-1' };
+  return {
+    context: withApplicationAdmissionExecutionV1(
+      createApplicationAdmissionContextV1({
+        admission: { principal, trustedContext },
+        operation: {
+          id: 'applik8s://agent/researcher/execute',
+          transport: 'framework',
+        },
+        correlationId: 'conversation-1',
+      }),
+      {
+        causationId: 'agent-run-1',
+        deadline: principal.deadline,
+        cancellation: { revision: principal.cancellationRevision },
+        delivery: {
+          id: 'agent-admission-1',
+          source: 'applik8s://agent-gateway',
+        },
+      },
+    ),
   };
 }
 

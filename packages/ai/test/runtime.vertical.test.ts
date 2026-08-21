@@ -8,9 +8,11 @@ import {
   createMemoryApplicationAIAttemptStore,
   defineApplicationAIAgent,
 } from '@applik8s/ai';
-import type {
+import {
   ApplicationExecutionPrincipal,
   ApplicationOperationId,
+  createApplicationAdmissionContextV1,
+  withApplicationAdmissionExecutionV1,
 } from '@applik8s/core';
 import { describe, expect, it } from 'vitest';
 
@@ -137,6 +139,20 @@ describe('durable AI attempts', () => {
       runtime.reserveInvocation(reservation),
     ]);
     expect(left).toEqual(right);
+    expect(left.admissionEvidence).toMatchObject({
+      apiVersion: 'applik8s.aiAdmissionEvidence/v1',
+      admissionVersion: 'applik8s.admission/v1',
+      principalId: principal.id,
+      authorityRevision: principal.authorityRevision,
+      trustedContextDigest: principal.trustedContextDigest,
+      operation: {
+        id: 'applik8s://agent/test/execute',
+        transport: 'framework',
+      },
+      correlationId: 'protocol-run-1',
+      causationId: 'invocation-1',
+    });
+    expect(JSON.stringify(left.admissionEvidence)).not.toContain('tenant-1');
 
     const decisions = await Promise.all([
       runtime.reserveAttempt({
@@ -357,7 +373,24 @@ function invocation() {
     logicalModel: 'fast',
     request: { messages: [{ role: 'user', content: 'hello' }] },
     admittedPrincipal: principal,
+    admission: agentAdmission(principal),
   };
+}
+
+function agentAdmission(value: ApplicationExecutionPrincipal) {
+  return withApplicationAdmissionExecutionV1(
+    createApplicationAdmissionContextV1({
+      admission: { principal: value, trustedContext: { tenant: 'tenant-1' } },
+      operation: { id: 'applik8s://agent/test/execute', transport: 'framework' },
+      correlationId: 'protocol-run-1',
+    }),
+    {
+      causationId: 'invocation-1',
+      deadline: value.deadline,
+      cancellation: { revision: value.cancellationRevision },
+      delivery: { id: 'agent-admission-1', source: 'applik8s://agent-gateway' },
+    },
+  );
 }
 
 function agentPrincipal(executionId: string): ApplicationExecutionPrincipal {

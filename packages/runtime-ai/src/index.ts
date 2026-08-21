@@ -35,9 +35,9 @@ import {
   createApplicationRuntimeOperation,
 } from '@applik8s/client';
 import type {
+  ApplicationAdmissionContextV1,
   ApplicationExecutionPrincipal,
   ApplicationOperationDescriptor,
-  ApplicationRequestAdmission,
   ApplicationWorkloadAuthorityEnvelope,
   JsonObject,
   JsonValue,
@@ -170,17 +170,14 @@ export interface ApplicationAIAgentRuntimeOptions<
     request: Request,
     body: ApplicationAIAgentRequestBody,
   ) =>
-    | Promise<
-      ApplicationRequestAdmission & {
-        readonly principal: ApplicationExecutionPrincipal;
-      }
-    >
-    | (ApplicationRequestAdmission & {
-      readonly principal: ApplicationExecutionPrincipal;
-    });
+    | Promise<ApplicationAIAgentExecutionAdmission>
+    | ApplicationAIAgentExecutionAdmission;
   readonly reserveAttempt: (
     input: {
       readonly principal: ApplicationExecutionPrincipal;
+      readonly admission: ApplicationAdmissionContextV1 & {
+        readonly principal: ApplicationExecutionPrincipal;
+      };
       readonly trustedContext: Readonly<Record<string, JsonValue>>;
       readonly threadId: string;
       readonly runId: string;
@@ -196,10 +193,14 @@ export interface ApplicationAIAgentRuntimeOptions<
     operation: ApplicationOperationDescriptor,
     input: unknown,
     invocation: ApplicationTanStackToolInvocation,
-    admission: ApplicationRequestAdmission & {
-      readonly principal: ApplicationExecutionPrincipal;
-    },
+    admission: ApplicationAIAgentExecutionAdmission,
   ) => Promise<unknown>;
+}
+
+export interface ApplicationAIAgentExecutionAdmission {
+  readonly context: ApplicationAdmissionContextV1 & {
+    readonly principal: ApplicationExecutionPrincipal;
+  };
 }
 
 /**
@@ -234,11 +235,12 @@ export function createApplicationAIAgentRequestHandler<TResult>(
         runId,
         messages: [],
       });
-      const principal = admission.principal;
+      const principal = admission.context.principal;
+      const trustedContext = admission.context.trustedContext.values;
       assertAgentPrincipal(principal, options.name);
       const persistence = options.tanstackPersistence({
         principal,
-        trustedContext: admission.trustedContext,
+        trustedContext,
         threadId,
       });
       return reconstructApplicationTanStackChat(persistence, request, {
@@ -266,11 +268,13 @@ export function createApplicationAIAgentRequestHandler<TResult>(
       const body = await boundedJson(request, maximumRequestBytes);
       assertAgentRequest(body);
       const admission = await options.admit(request, body);
-      const principal = admission.principal;
+      const principal = admission.context.principal;
+      const trustedContext = admission.context.trustedContext.values;
       assertAgentPrincipal(principal, options.name);
       let reservation = await options.reserveAttempt({
         principal,
-        trustedContext: admission.trustedContext,
+        admission: admission.context,
+        trustedContext,
         threadId: body.threadId,
         runId: body.runId,
         logicalModel: options.logicalModel,
@@ -297,7 +301,7 @@ export function createApplicationAIAgentRequestHandler<TResult>(
       try {
         persistedRun = await options.persistence.begin({
           principal,
-          trustedContext: admission.trustedContext,
+          trustedContext,
           conversationId: body.threadId,
           protocolRunId: body.runId,
           agentRunId: principal.executionId,
@@ -359,7 +363,7 @@ export function createApplicationAIAgentRequestHandler<TResult>(
           tools: operationTools,
           persistence: options.tanstackPersistence({
             principal,
-            trustedContext: admission.trustedContext,
+            trustedContext,
             threadId: body.threadId,
           }),
           execution,
@@ -376,7 +380,8 @@ export function createApplicationAIAgentRequestHandler<TResult>(
               invocationId: reservation.invocationId,
               attemptId: reservation.attemptId,
               principal,
-              trustedContext: admission.trustedContext,
+              admission: admission.context,
+              trustedContext,
               signal: controller.signal,
               tanstack: runtime,
             },

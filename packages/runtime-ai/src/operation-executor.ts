@@ -1,12 +1,17 @@
 import { randomUUID } from 'node:crypto';
 import type {
+  ApplicationAdmissionContextV1,
   ApplicationAuthorizationReceipt,
   ApplicationExecutionPrincipal,
   ApplicationOperationDescriptor,
   ApplicationOperationTransport,
-  ApplicationRequestAdmission,
   ApplicationWorkloadAuthorityEnvelope,
   JsonValue,
+} from '@applik8s/core';
+import {
+  createApplicationAdmissionContextV1,
+  withApplicationAdmissionExecutionV1,
+  withApplicationAdmissionTraceV1,
 } from '@applik8s/core';
 import {
   type ApplicationOperationAuthorityRuntime,
@@ -52,7 +57,7 @@ export interface ApplicationAIOperationExecutorOptions {
 }
 
 export interface ApplicationAIOperationInvocation {
-  readonly admission: ApplicationRequestAdmission & {
+  readonly context: ApplicationAdmissionContextV1 & {
     readonly principal: ApplicationExecutionPrincipal;
   };
   readonly invocationId: string;
@@ -120,16 +125,16 @@ export function createApplicationAIOperationExecutor(
       );
     }
     const authorization = await options.authority.authorizeExecution({
-      principal: invocation.admission.principal,
+      principal: invocation.context.principal,
       envelope,
       target: operation.authority.defaultScope,
       audience,
       transport,
       inputDigest,
       trustedContextDigest:
-        invocation.admission.principal.trustedContextDigest,
+        invocation.context.trustedContext.digest,
       currentCancellationRevision:
-        invocation.admission.principal.cancellationRevision,
+        invocation.context.principal.cancellationRevision,
       idempotencyKey: proposal.commandId,
       commandId: proposal.commandId,
     });
@@ -146,6 +151,33 @@ export function createApplicationAIOperationExecutor(
       Math.min(issuedAt.getTime() + lifetime, principalExpiry),
     );
     const internalInvocationId = `internal_${identifier()}`;
+    const admission = {
+      principal: authorization.principal,
+      trustedContext: invocation.context.trustedContext.values,
+    };
+    const baseContext = createApplicationAdmissionContextV1({
+      admission,
+      operation: {
+        id: operation.id,
+        transport: transport === 'event' ? 'broker' : transport,
+      },
+      correlationId: invocation.context.correlationId,
+    });
+    const tracedContext = invocation.context.trace
+      ? withApplicationAdmissionTraceV1(baseContext, invocation.context.trace)
+      : baseContext;
+    const context = withApplicationAdmissionExecutionV1(tracedContext, {
+      causationId: proposal.commandId,
+      deadline: expiresAt.toISOString(),
+      cancellation: {
+        revision: authorization.principal.cancellationRevision,
+      },
+      authorizationReceipt: authorization.receipt,
+      delivery: {
+        id: internalInvocationId,
+        source: `applik8s://internal-operation/${authorization.principal.workloadIdentity.subject}`,
+      },
+    });
     const invocationToken = encodeApplicationInternalOperationInvocation(
       options.transportSecret,
       {
@@ -160,10 +192,8 @@ export function createApplicationAIOperationExecutor(
           workloadId: authorization.principal.workloadIdentity.subject,
           sessionId: invocation.invocationId,
         },
-        admission: {
-          principal: authorization.principal,
-          trustedContext: invocation.admission.trustedContext,
-        },
+        context,
+        admission,
         authorizationReceipt: authorization.receipt,
         idempotencyKey: proposal.commandId,
         issuedAt: issuedAt.toISOString(),
@@ -178,7 +208,7 @@ export function createApplicationAIOperationExecutor(
       idempotencyKey: proposal.commandId,
       principal: authorization.principal,
       authorizationReceipt: authorization.receipt,
-      trustedContext: invocation.admission.trustedContext,
+      trustedContext: invocation.context.trustedContext.values,
       ...(invocation.signal ? { signal: invocation.signal } : {}),
     });
   };

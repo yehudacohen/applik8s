@@ -1,10 +1,12 @@
 // typecast-file-boundary: AI runtime tests deliberately inspect provider payload fixtures after validation.
 
 import type { ApplicationAIAgentPersistence } from '@applik8s/ai';
-import type {
+import {
   ApplicationExecutionPrincipal,
   ApplicationOperationDescriptor,
   ApplicationWorkloadAuthorityEnvelope,
+  createApplicationAdmissionContextV1,
+  withApplicationAdmissionExecutionV1,
 } from '@applik8s/core';
 import { chat } from '@tanstack/ai';
 import { memoryPersistence } from '@tanstack/ai-persistence';
@@ -590,6 +592,7 @@ function recoveryObservation(
   state: 'streaming' | 'canonical-committed' | 'completion-uncertain',
 ) {
   const now = new Date().toISOString();
+  const context = admission().context;
   return {
     invocation: {
       apiVersion: 'applik8s.aiInvocation/v1alpha1' as const,
@@ -600,6 +603,21 @@ function recoveryObservation(
       logicalModel: 'fast',
       requestHash: 'sha256:request',
       admittedPrincipal: principal(),
+      admissionEvidence: {
+        apiVersion: 'applik8s.aiAdmissionEvidence/v1' as const,
+        admissionVersion: context.apiVersion,
+        principalId: context.principal.id,
+        authorityRevision: context.authorityRevision,
+        trustedContextDigest: context.trustedContext.digest,
+        operation: context.operation,
+        correlationId: context.correlationId,
+        ...(context.causationId ? { causationId: context.causationId } : {}),
+        ...(context.deadline ? { deadline: context.deadline } : {}),
+        ...(context.cancellation
+          ? { cancellationRevision: context.cancellation.revision }
+          : {}),
+        ...(context.delivery ? { delivery: context.delivery } : {}),
+      },
       authorityRevision: 'authority-1',
       state:
         state === 'canonical-committed'
@@ -869,8 +887,26 @@ function principal(): ApplicationExecutionPrincipal {
 }
 
 function admission(value = principal()) {
+  const trustedContext = { tenant: 'tenant-1' };
   return {
-    principal: value,
-    trustedContext: { tenant: 'tenant-1' },
+    context: withApplicationAdmissionExecutionV1(
+      createApplicationAdmissionContextV1({
+        admission: { principal: value, trustedContext },
+        operation: {
+          id: 'applik8s://agent/researcher/execute',
+          transport: 'framework',
+        },
+        correlationId: 'run-1',
+      }),
+      {
+        causationId: 'invocation-1',
+        deadline: value.deadline,
+        cancellation: { revision: value.cancellationRevision },
+        delivery: {
+          id: 'agent-admission-1',
+          source: 'applik8s://agent-gateway',
+        },
+      },
+    ),
   };
 }
