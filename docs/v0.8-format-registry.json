@@ -294,6 +294,38 @@
       "telemetry": "pending-context-version-legacy-read-and-parity-rejection-metrics",
       "rollbackSafeThrough": "0.7.x-readers-retain-every-required-legacy-field",
       "decoderRemovalRelease": "0.10.0-earliest-after-zero-legacy-read-telemetry"
+    },
+    {
+      "id": "application-schedule-runtime-snapshot-v1alpha1",
+      "kind": "durable-runtime-record",
+      "wireVersion": "applik8s.scheduleRuntime/v1alpha1",
+      "canonicalBytesVersion": "applik8s.canonical-json/v1",
+      "state": "implemented",
+      "owner": "@applik8s/applik8s",
+      "writers": ["0.8.x:local-scheduler-canonical-json-policy"],
+      "readers": ["0.8.x:local-scheduler"],
+      "maximumLifetime": "owned-local-environment-lifetime",
+      "purposeOrKeyNamespace": "application-schedule-local-persistence",
+      "migrationPhase": "new-v0.8-capability-no-released-legacy-reader",
+      "telemetry": "local-schedule-revision-and-recovery-diagnostics",
+      "rollbackSafeThrough": "v0.8-pre-release-only",
+      "decoderRemovalRelease": null
+    },
+    {
+      "id": "application-schedule-admission-v1alpha1",
+      "kind": "admission-record",
+      "wireVersion": "applik8s.scheduleAdmission/v1alpha1",
+      "canonicalContextVersion": "applik8s.admission/v1",
+      "state": "implemented",
+      "owner": "@applik8s/applik8s",
+      "writers": ["0.8.x:local-kubernetes-aws-scheduler-adapters"],
+      "readers": ["0.8.x:generated-schedule-runner"],
+      "maximumLifetime": "definition-retry-maximum-age",
+      "purposeOrKeyNamespace": "application-schedule-occurrence",
+      "migrationPhase": "new-v0.8-capability-no-released-legacy-reader",
+      "telemetry": "schedule-definition-instance-occurrence-attempt-and-rejection-reason",
+      "rollbackSafeThrough": "v0.8-pre-release-only",
+      "decoderRemovalRelease": null
     }
   ],
   "requiredInventory": [
