@@ -1,6 +1,6 @@
 {
   "name": "@applik8s/data-lifecycle",
-  "version": "0.7.1",
+  "version": "0.8.0",
   "description": "Provider-neutral data lifecycle request state and progress vocabulary for Applik8s applications.",
   "license": "Apache-2.0",
   "type": "module",
@@ -28,6 +28,6 @@
     }
   },
   "dependencies": {
-    "@applik8s/applik8s": "0.7.1"
+    "@applik8s/applik8s": "0.8.0"
   }
 }

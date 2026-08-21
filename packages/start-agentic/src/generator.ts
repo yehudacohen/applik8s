@@ -94,7 +94,7 @@ export async function createApplicationAgenticStart(
     phase: 'templates',
     message: `Applying the Applik8s Agentic ${example} templates`,
   });
-  const packageVersion = options.applik8sVersion ?? '^0.7.0';
+  const packageVersion = options.applik8sVersion ?? '^0.8.0';
   const templates = await renderApplicationAgenticStartTemplates(
     projectName,
     example,

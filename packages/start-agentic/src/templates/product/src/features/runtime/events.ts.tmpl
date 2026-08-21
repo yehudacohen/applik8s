@@ -1,0 +1,13 @@
+import { event, type } from '@applik8s/applik8s';
+
+/** Canonical product usage event published into the selected lakehouse. */
+export const HistoricalUsageRow = type({
+  principalScope: 'string',
+  meter: 'string',
+  quantity: 'number',
+  occurredAt: 'string',
+});
+
+export const HistoricalUsageRecorded = event('agentic.usage-recorded.v1', {
+  payload: HistoricalUsageRow,
+});

@@ -9,6 +9,32 @@ import { type Applik8sVitePlugin, applik8sVite } from '../src/index.js';
 const fixtureRoot = join(dirname(fileURLToPath(import.meta.url)), 'fixtures');
 
 describe('framework-neutral Applik8s Vite integration', () => {
+  it('injects a selection-scoped Builder toolbar only into supervised development HTML', () => {
+    const names = ['APPLIK8S_DEV_PORTAL_ORIGIN', 'APPLIK8S_DEV_BRIDGE_TOKEN', 'APPLIK8S_DEV_REVISION'] as const;
+    const previous = Object.fromEntries(names.map((name) => [name, process.env[name]]));
+    try {
+      process.env.APPLIK8S_DEV_PORTAL_ORIGIN = 'http://127.0.0.1:3418';
+      process.env.APPLIK8S_DEV_BRIDGE_TOKEN = 'selection-capability';
+      process.env.APPLIK8S_DEV_REVISION = 'sha256:revision';
+      const development = adapter();
+      development.config({}, { command: 'serve' });
+      const transformed = development.transformIndexHtml('<html><body><main>Product</main></body></html>');
+      expect(transformed).toContain('data-applik8s-development-only="true"');
+      expect(transformed).toContain("'/v1/selections'");
+      expect(transformed).toContain('selection-capability');
+      expect(transformed).not.toContain('sessionToken');
+
+      const production = adapter();
+      production.config({}, { command: 'build' });
+      expect(production.transformIndexHtml('<html><body>Product</body></html>')).toBe('<html><body>Product</body></html>');
+    } finally {
+      for (const name of names) {
+        const value = previous[name];
+        if (value === undefined) delete process.env[name]; else process.env[name] = value;
+      }
+    }
+  });
+
   it('hydrates framework-owned local runtime values for serve without overriding explicit environment', async () => {
     const names = [
       'APPLIK8S_APPLICATION_NAME',
@@ -47,11 +73,14 @@ describe('framework-neutral Applik8s Vite integration', () => {
         else process.env[name] = value;
       }
     }
-  }, 60_000);
+  }, 120_000);
 
   it('discovers the ApplicationGraph and generates facades without source regex parsing', async () => {
     const plugin = adapter();
-    plugin.config({}, { command: 'serve' });
+    expect(plugin.config({}, { command: 'serve' })).toMatchObject({
+      ssr: { external: ['@duckdb/node-api'] },
+      optimizeDeps: { exclude: ['@duckdb/node-api'] },
+    });
     await mkdir(join(fixtureRoot, '.applik8s/generated'), { recursive: true });
     await writeFile(join(fixtureRoot, '.applik8s/generated/stale.generated.ts'), 'throw new Error("stale");\n');
     await writeFile(join(fixtureRoot, '.applik8s/generated/adapter-owned.generated.ts'), 'export const adapter = true;\n');

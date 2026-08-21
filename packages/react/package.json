@@ -1,6 +1,6 @@
 {
   "name": "@applik8s/react",
-  "version": "0.7.1",
+  "version": "0.8.0",
   "description": "Router-independent React hooks for Applik8s live application queries.",
   "license": "Apache-2.0",
   "type": "module",
@@ -16,8 +16,8 @@
     "directory": "packages/react"
   },
   "dependencies": {
-    "@applik8s/client": "0.7.1",
-    "@applik8s/identity": "0.7.1"
+    "@applik8s/client": "0.8.0",
+    "@applik8s/identity": "0.8.0"
   },
   "peerDependencies": {
     "react": ">=18.3.0 <20"

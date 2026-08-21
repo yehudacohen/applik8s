@@ -1,0 +1,154 @@
+import {
+  actor,
+  schedule,
+  type,
+  type ApplicationLakehouseRowExpression,
+} from '@applik8s/applik8s';
+import { application } from '../../app';
+import { AgenticPrincipalScope } from '@applik8s/start-agentic';
+import {
+  database,
+  historicalDataset,
+  historicalQueries,
+} from '../../providers';
+import { Usage } from '../../modules';
+import { HistoricalUsageRecorded, HistoricalUsageRow } from './events';
+
+export const WorkspaceActivityState = type({
+  revision: 'number.integer >= 0',
+  activityCount: 'number.integer >= 0',
+  'lastActivityAt': 'string | null',
+});
+
+/**
+ * One provider-neutral, identity-addressed coordination boundary. Relational
+ * workspace membership remains in PostgreSQL; the actor owns only the hot,
+ * serialized activity state for one workspace.
+ */
+export const WorkspaceActivity = application.actor('workspace-activity.v1', {
+  key: type('string'),
+  state: WorkspaceActivityState,
+  protocol: {
+    snapshot: actor.command({ input: type({}), output: WorkspaceActivityState }),
+    record: actor.message(type({ occurredAt: 'string' })),
+    expire: actor.alarm(type({ expectedRevision: 'number.integer >= 0' })),
+  },
+});
+
+WorkspaceActivity.on.initialize(() => ({
+  revision: 0,
+  activityCount: 0,
+  lastActivityAt: null,
+}));
+
+WorkspaceActivity.on.snapshot(async workspace => workspace.state());
+
+WorkspaceActivity.on.record(async (workspace, input) => {
+  const state = await workspace.state();
+  const next = {
+    ...state,
+    revision: state.revision + 1,
+    activityCount: state.activityCount + 1,
+    lastActivityAt: input.occurredAt,
+  };
+  await workspace.setState(next);
+});
+
+WorkspaceActivity.on.expire(async (workspace, input) => {
+  const state = await workspace.state();
+  if (state.revision !== input.expectedRevision) return;
+  const next = { ...state, revision: state.revision + 1 };
+  await workspace.setState(next);
+});
+
+const WorkspaceDigestWorkflow = application.workflow(
+  'workspace.digest.v1',
+  {
+    input: type({ workspaceId: 'string' }),
+    output: type({ workspaceId: 'string', revision: 'number.integer >= 0' }),
+  },
+  async input => {
+    const snapshot = await WorkspaceActivity.snapshot(input.workspaceId, {});
+    return { workspaceId: input.workspaceId, revision: snapshot.revision };
+  },
+);
+
+/** Framework-owned fixed maintenance cadence. */
+export const RuntimeEvidenceMaintenance = schedule(
+  {
+    id: 'agentic.runtime-evidence-maintenance.v1',
+    cron: '17 3 * * *',
+    timezone: 'UTC',
+    overlap: 'skip',
+    misfires: 'latest',
+  },
+  async context => {
+    await WorkspaceActivity.record.send(
+      'platform',
+      { occurredAt: context.scheduledAt },
+      { idempotencyKey: context.occurrenceId },
+    );
+    return { occurrenceId: context.occurrenceId };
+  },
+);
+
+/** Product-configured cadence converged once per workspace by domain code. */
+export const WorkspaceDigestSchedule = schedule(
+  {
+    id: 'agentic.workspace-digest.v1',
+    input: type({ workspaceId: 'string' }),
+    overlapBy: input => input.workspaceId,
+    overlap: 'skip',
+    misfires: 'latest',
+    requirements: { configuration: 'dynamic', cardinality: 'bounded' },
+  },
+  async input => WorkspaceDigestWorkflow(input),
+);
+
+export const HistoricalUsagePublication = HistoricalUsageRecorded.publish(
+  historicalDataset,
+  type({
+    principalScope: 'string',
+    meter: 'string',
+    quantity: 'number',
+    occurredAt: 'string',
+  }),
+  (usage, output) => output.append(usage),
+).partitionBy(row => ({
+  principalScope: row.principalScope,
+  month: row.occurredAt.slice(0, 7),
+}));
+
+type HistoricalUsageRow = {
+  readonly principalScope: string;
+  readonly meter: string;
+  readonly quantity: number;
+  readonly occurredAt: string;
+};
+
+export const HistoricalUsage = application.query('historical.usage.v1', {
+  input: type({ principalScope: 'string', 'cursor?': 'string' }),
+  output: type({
+    snapshot: 'string',
+    schemaRevision: 'string',
+    rows: HistoricalUsageRow.array(),
+    'cursor?': 'string',
+    scannedBytes: 'number.integer >= 0',
+  }),
+  database,
+  context: [AgenticPrincipalScope],
+  reads: [Usage.UsageFact],
+  authorize: ({ principal, context, input }) =>
+    principal.id.length > 0 && context.principalScope === input.principalScope,
+  run: async ({ input }) => historicalQueries.query({
+    dataset: historicalDataset,
+    where: (row: ApplicationLakehouseRowExpression<HistoricalUsageRow>) =>
+      row.principalScope.eq(input.principalScope),
+    orderBy: (row: ApplicationLakehouseRowExpression<HistoricalUsageRow>) => [
+      row.occurredAt.desc(),
+    ],
+    page: { size: 100, ...(input.cursor ? { cursor: input.cursor } : {}) },
+    principalScope: input.principalScope,
+    timeout: '10s',
+  }),
+});

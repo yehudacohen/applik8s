@@ -4,7 +4,7 @@ import { GuestBook, GuestBookEntry, PublishedEntries } from './models';
 
 export const host = app.provide(
   ApplicationHost,
-  ApplicationHost.kubernetes({
+  ApplicationHost.managed({
     namespace: process.env.APPLIK8S_NAMESPACE ?? 'guestbook',
     replicas: Number(process.env.APPLIK8S_WEB_REPLICAS ?? '1'),
     resources: {

@@ -7,6 +7,9 @@ import {
   DocumentList,
   KnowledgeSearch,
   WorkspaceAssistant,
+  WorkspaceActivity,
+  WorkspaceDigestSchedule,
+  HistoricalUsagePublication,
   application,
 } from '../src/application';
 import {
@@ -55,6 +58,34 @@ describe('generated application', () => {
         kind: 'model',
         id: 'model.protocol-run',
       }),
+    ]));
+  });
+
+  it('keeps v0.8 stateful capabilities provider-neutral in product source', () => {
+    const graph = applicationGraphFor(application.composition);
+
+    expect(WorkspaceActivity).toMatchObject({
+      kind: 'applicationActor',
+      id: 'workspace-activity.v1',
+    });
+    expect(WorkspaceDigestSchedule.kind).toBe('applicationSchedule');
+    expect(WorkspaceDigestSchedule.definition).toMatchObject({
+      configuration: 'dynamic',
+    });
+    expect(HistoricalUsagePublication).toMatchObject({
+      kind: 'applicationLakehousePublication',
+      dataset: { qualification: { name: 'historical-usage' } },
+    });
+    expect(WorkspaceDigestSchedule.graphNode).toMatchObject({
+      kind: 'schedule',
+      id: 'schedule.agentic.workspace-digest.v1',
+    });
+    expect(HistoricalUsagePublication.graphNode).toMatchObject({
+      kind: 'lakehousePublication',
+    });
+    expect(graph?.nodes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: 'actor', id: 'actor.workspace-activity.v1' }),
+      expect.objectContaining({ kind: 'provider', interface: 'Observability' }),
     ]));
   });
 

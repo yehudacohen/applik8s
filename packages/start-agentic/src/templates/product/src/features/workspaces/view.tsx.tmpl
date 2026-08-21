@@ -5,7 +5,9 @@ import {
   DataLifecycleRequest,
   Invitation,
   Membership,
+  HistoricalUsage,
   Workspace,
+  WorkspaceActivitySnapshot,
   WorkspaceDashboard,
   WorkspaceList,
 } from '../../application';
@@ -71,6 +73,8 @@ export function WorkspaceDashboardView(
   { workspaceId }: { readonly workspaceId: string },
 ) {
   const dashboard = WorkspaceDashboard({ workspaceId }).useQuery();
+  const activity = WorkspaceActivitySnapshot({ workspaceId }).useQuery();
+  const history = HistoricalUsage({ principalScope: workspaceId }).useQuery();
   const createInvitation = Invitation.create.useMutation();
   const updateInvitation = Invitation.update.useMutation();
   const updateMembership = Membership.update.useMutation();
@@ -119,6 +123,29 @@ export function WorkspaceDashboardView(
     <div>
       <PageHeader eyebrow="Trusted workspace context" title={dashboard.data.workspace.name} action={<div className="flex gap-2"><Badge tone="info">{dashboard.data.workspace.role}</Badge><Badge tone={dashboard.data.workspace.state === 'active' ? 'success' : 'danger'}>{dashboard.data.workspace.state}</Badge></div>} />
       {dashboard.data.workspace.state === 'suspended' ? <RouteState tone="warning" title="This workspace is suspended" description="Product mutations and workspace-scoped agent execution are disabled at admission. An application operator must restore the tenant before work can continue." /> : null}
+      <div className="mb-5 grid gap-5 md:grid-cols-2">
+        <Card aria-label="Live workspace coordination">
+          <p className="eyebrow">Durable workspace actor</p>
+          <h2 className="mt-1 text-lg font-semibold">Live coordination</h2>
+          {activity.data ? (
+            <dl className="mt-4 grid grid-cols-3 gap-3 text-sm">
+              <div><dt className="text-stone-500">Activities</dt><dd className="text-2xl font-semibold">{activity.data.activityCount}</dd></div>
+              <div><dt className="text-stone-500">Revision</dt><dd className="text-2xl font-semibold">{activity.data.revision}</dd></div>
+              <div><dt className="text-stone-500">Last activity</dt><dd className="text-sm font-semibold">{activity.data.lastActivityAt ? new Date(activity.data.lastActivityAt).toLocaleString() : 'Not recorded'}</dd></div>
+            </dl>
+          ) : <p className="mt-3 text-sm text-stone-600">The workspace actor is establishing its serialized state.</p>}
+        </Card>
+        <Card aria-label="Historical workspace usage">
+          <p className="eyebrow">Published lakehouse snapshot</p>
+          <h2 className="mt-1 text-lg font-semibold">Historical usage</h2>
+          {history.data ? (
+            <div className="mt-3 text-sm text-stone-600">
+              <p><strong className="text-stone-950">{history.data.rows.length}</strong> recent usage facts</p>
+              <p className="mt-1">{history.data.scannedBytes.toLocaleString()} bytes scanned · schema {history.data.schemaRevision}</p>
+            </div>
+          ) : <p className="mt-3 text-sm text-stone-600">No published usage snapshot is visible yet.</p>}
+        </Card>
+      </div>
       <div className="grid gap-5 lg:grid-cols-2"><Card aria-label="Members">
         <h2 className="text-lg font-semibold">People and roles</h2>
         <p className="mt-2 text-sm text-stone-600">Invite teammates and choose who can manage this workspace.</p>

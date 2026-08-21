@@ -1,6 +1,6 @@
 {
   "name": "@applik8s/identity",
-  "version": "0.7.1",
+  "version": "0.8.0",
   "description": "Provider-neutral authentication flow, session, OAuth admission, and recovery contracts for Applik8s.",
   "license": "Apache-2.0",
   "type": "module",
@@ -33,6 +33,6 @@
     }
   },
   "dependencies": {
-    "@applik8s/core": "0.7.1"
+    "@applik8s/core": "0.8.0"
   }
 }

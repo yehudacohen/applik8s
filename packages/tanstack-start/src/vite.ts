@@ -54,7 +54,9 @@ export function applik8sStart(options: Applik8sStartViteOptions = {}): PluginOpt
       },
     } satisfies Exclude<PluginOption, false | null | undefined | readonly PluginOption[]>;
   const nitroPlugins = nitro({
-    rollupConfig: { external: [/^@sentry\//] },
+    // Native provider bindings must remain runtime dependencies. Nitro's
+    // nested server build does not inherit the outer Vite SSR external list.
+    rollupConfig: { external: [/^@sentry\//, /^@duckdb\//] },
     experimental: { asyncContext: true },
     plugins: ['.applik8s/generated/nitro-plugin.generated.ts'],
     handlers: [{ route: '/__applik8s/v1/**', handler: '.applik8s/generated/nitro-handler.generated.ts' }],

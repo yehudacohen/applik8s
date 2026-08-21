@@ -53,6 +53,7 @@ export interface Applik8sVitePlugin {
   buildStart(): Promise<void>;
   resolveId(this: { resolve(source: string, importer?: string, options?: { readonly skipSelf?: boolean; readonly ssr?: boolean }): Promise<{ readonly id: string } | null> }, source: string, importer?: string, options?: { readonly ssr?: boolean }): Promise<string | undefined>;
   load(id: string): string | undefined;
+  transformIndexHtml(html: string): string;
   generateBundle(options: { readonly dir?: string }, bundle: Readonly<Record<string, ViteOutputLike>>): Promise<void>;
   closeBundle(): Promise<void>;
 }
@@ -107,6 +108,13 @@ export function applik8sVite(options: Applik8sViteOptions = {}): PluginOption {
           managedDevelopmentEnvironment,
         );
       }
+      // DuckDB is a Node-native local runtime. Keeping the public package
+      // external lets Node load the platform binding at runtime instead of
+      // asking browser/server bundlers to parse a `.node` binary as source.
+      return {
+        ssr: { external: ['@duckdb/node-api'] },
+        optimizeDeps: { exclude: ['@duckdb/node-api'] },
+      };
     },
     async configResolved(config) {
       root = config.root;
@@ -148,6 +156,14 @@ export function applik8sVite(options: Applik8sViteOptions = {}): PluginOption {
             : {}),
         },
       );
+    },
+    transformIndexHtml(html) {
+      if (!developmentServer) return html;
+      const portalOrigin = process.env.APPLIK8S_DEV_PORTAL_ORIGIN?.trim();
+      const bridgeToken = process.env.APPLIK8S_DEV_BRIDGE_TOKEN?.trim();
+      const revision = process.env.APPLIK8S_DEV_REVISION?.trim();
+      if (!portalOrigin || !bridgeToken || !revision) return html;
+      return injectDevelopmentToolbar(html, { portalOrigin, bridgeToken, revision });
     },
     async generateBundle(outputOptions, bundle) {
       const allFiles = Object.values(bundle);
@@ -214,6 +230,7 @@ export function applik8sVite(options: Applik8sViteOptions = {}): PluginOption {
       signalExports: discovered.value.signalExports,
       agentExports: discovered.value.agentExports,
       objectStoreExports: discovered.value.objectStoreExports,
+      actorExports: discovered.value.actorExports,
     });
     const metadataPath = resolve(root, '.applik8s/application-facade.json');
     await mkdir(dirname(metadataPath), { recursive: true });
@@ -222,6 +239,7 @@ export function applik8sVite(options: Applik8sViteOptions = {}): PluginOption {
     const ownedFilesPath = resolve(generatedRoot, 'applik8s-vite-files.json');
     const gateway = generatedApplicationFetchGatewayModules(discovered.value.graph, {
       modelExports: discovered.value.modelExports,
+      actorExports: discovered.value.actorExports,
     });
     const files = gateway?.files ?? {};
     const previous = await readFile(ownedFilesPath, 'utf8')
@@ -240,6 +258,25 @@ export function applik8sVite(options: Applik8sViteOptions = {}): PluginOption {
     }));
     await writeFile(ownedFilesPath, `${JSON.stringify(currentFiles, null, 2)}\n`);
   }
+}
+
+function injectDevelopmentToolbar(
+  html: string,
+  configuration: { readonly portalOrigin: string; readonly bridgeToken: string; readonly revision: string },
+): string {
+  const encoded = JSON.stringify(configuration).replaceAll('<', '\\u003c');
+  const source = `<style id="applik8s-dev-toolbar-style">
+#applik8s-dev-toolbar{position:fixed;right:16px;bottom:16px;z-index:2147483647;display:flex;gap:8px;padding:8px;border:1px solid #b6c8c0;border-radius:999px;background:#f8fffc;color:#123229;box-shadow:0 10px 30px #0b2a2130;font:600 13px/1.2 ui-sans-serif,system-ui,sans-serif}
+#applik8s-dev-toolbar button{border:0;border-radius:999px;padding:8px 12px;background:#123229;color:#fff;cursor:pointer;font:inherit}#applik8s-dev-toolbar button[data-active=true]{background:#087f5b}#applik8s-dev-toolbar-status{align-self:center;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#315e50}
+.applik8s-dev-inspect{outline:3px solid #28c891!important;outline-offset:3px!important;cursor:crosshair!important}
+</style><div id="applik8s-dev-toolbar" data-applik8s-development-only="true"><button type="button" id="applik8s-dev-open">Builder</button><button type="button" id="applik8s-dev-inspect">Inspect</button><span id="applik8s-dev-toolbar-status" role="status">Ready</span></div><script type="module" id="applik8s-dev-toolbar-script">
+const config=${encoded};const toolbar=document.querySelector('#applik8s-dev-toolbar');const inspect=document.querySelector('#applik8s-dev-inspect');const status=document.querySelector('#applik8s-dev-toolbar-status');let active=false;let hovered;
+document.querySelector('#applik8s-dev-open')?.addEventListener('click',()=>window.open(config.portalOrigin+'/#builder','applik8s-builder'));
+inspect?.addEventListener('click',()=>{active=!active;inspect.dataset.active=String(active);inspect.textContent=active?'Cancel':'Inspect';status.textContent=active?'Select an element':'Ready';if(!active&&hovered){hovered.classList.remove('applik8s-dev-inspect');hovered=undefined;}});
+document.addEventListener('pointerover',(event)=>{if(!active)return;const target=event.target;if(!(target instanceof HTMLElement)||toolbar?.contains(target))return;if(hovered&&hovered!==target)hovered.classList.remove('applik8s-dev-inspect');hovered=target;target.classList.add('applik8s-dev-inspect');},true);
+document.addEventListener('click',async(event)=>{if(!active)return;const target=event.target;if(!(target instanceof HTMLElement)||toolbar?.contains(target))return;event.preventDefault();event.stopPropagation();active=false;inspect.dataset.active='false';inspect.textContent='Inspect';target.classList.remove('applik8s-dev-inspect');const text=(target.innerText||target.textContent||'').trim().slice(0,4000);const provenance=target.closest('[data-applik8s-provenance]')?.getAttribute('data-applik8s-provenance');status.textContent='Sending selection…';try{const response=await fetch(config.portalOrigin+'/v1/selections',{method:'POST',headers:{'content-type':'application/json','x-applik8s-bridge':config.bridgeToken,'x-applik8s-bridge-nonce':crypto.randomUUID()},body:JSON.stringify({id:'selection_'+crypto.randomUUID(),capturedAtRevision:config.revision,route:{pathname:location.pathname,searchKeys:[...new URLSearchParams(location.search).keys()].slice(0,64)},element:{role:target.getAttribute('role')||undefined,accessibleName:target.getAttribute('aria-label')||undefined,boundedText:text||undefined,componentInstanceId:provenance||undefined},text:text?{boundedValue:text,redaction:'none'}:undefined,sourceHints:provenance?[{provenanceId:provenance,confidence:'exact'}]:[]})});if(!response.ok)throw new Error('HTTP '+response.status);status.textContent='Selection attached';window.open(config.portalOrigin+'/#builder','applik8s-builder');}catch(error){status.textContent=error instanceof Error?error.message:'Selection failed';}},true);
+</script>`;
+  return html.includes('</body>') ? html.replace('</body>', `${source}</body>`) : `${html}${source}`;
 }
 
 function installApplicationViteDevelopmentEnvironment(
@@ -263,6 +300,9 @@ function installApplicationViteDevelopmentEnvironment(
     .digest('hex');
   const defaults = {
     APPLIK8S_APPLICATION_NAME: applicationName,
+	APPLIK8S_DEPLOYMENT_TARGET: 'local',
+	APPLIK8S_ENVIRONMENT_ID: 'vite-development',
+	APPLIK8S_SCHEDULE_STATE_PATH: resolve(root, '.applik8s/local/vite/schedules.json'),
     APPLIK8S_NAMESPACE: `${namespace}-system`,
     APPLIK8S_PROFILE_VARIANT: 'starter',
     APPLIK8S_CURSOR_SECRET: localSecret('cursor'),

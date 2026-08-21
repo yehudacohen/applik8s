@@ -1,6 +1,6 @@
 {
   "name": "@applik8s/billing-stripe",
-  "version": "0.7.1",
+  "version": "0.8.0",
   "description": "Server-only Stripe payment provider adapter for Applik8s billing.",
   "license": "Apache-2.0",
   "type": "module",
@@ -23,6 +23,6 @@
     }
   },
   "dependencies": {
-    "@applik8s/billing": "0.7.1"
+    "@applik8s/billing": "0.8.0"
   }
 }

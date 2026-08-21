@@ -7,12 +7,12 @@ import {
 export const applicationAgenticStartDefinition = Object.freeze({
   apiVersion: applicationStartDefinitionApiVersion,
   name: 'agentic',
-  version: '0.7.0',
+  version: '0.8.0',
   compatibility: {
     // Exact upstream-compatible tuple. TanStack packages intentionally carry
     // independent release numbers; generators and examples must use this
     // whole set rather than independently ranged versions.
-    applik8s: '0.7.0',
+    applik8s: '0.8.0',
     tanstackCli: '0.70.1',
     tanstackStart: '1.168.28',
     tanstackRouter: '1.170.18',
@@ -164,10 +164,10 @@ export const applicationAgenticStartDefinition = Object.freeze({
       mode: 'start-file-router',
       blank: true,
     },
-    // Compatibility ceiling required by the v0.7 definition schema. Release
+    // Compatibility ceiling retained by the Start definition schema. Release
     // review uses the categorized source-ownership inventory below rather than
     // treating one aggregate count as a quality target.
-    maximumApplicationFiles: 116,
+    maximumApplicationFiles: 118,
     maximumIntegrationLines: 600,
     files: [
       '.applik8s/start-lineage.json',
@@ -229,6 +229,8 @@ export const applicationAgenticStartDefinition = Object.freeze({
       'src/features/agents/view.tsx',
       'src/features/evaluations/model.ts',
       'src/features/evaluations/view.tsx',
+      'src/features/runtime/events.ts',
+      'src/features/runtime/model.ts',
       'src/features/integrations/model.ts',
       'src/features/integrations/schema.ts',
       'src/features/integrations/view.tsx',

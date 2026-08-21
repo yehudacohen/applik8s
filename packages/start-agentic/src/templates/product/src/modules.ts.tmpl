@@ -8,6 +8,7 @@ import { operationsControlCenter } from '@applik8s/operations-ui';
 import { usage } from '@applik8s/usage';
 import { application } from './app';
 import { objects, providers } from './providers';
+import { HistoricalUsageRecorded } from './features/runtime/events';
 
 function billingDimensions(
   value: unknown,
@@ -45,6 +46,12 @@ export const UsageDelivery = Usage.UsageFact.on.create(
     const quantity =
       Number(created.value.inputTokens ?? 0)
       + Number(created.value.outputTokens ?? 0);
+    HistoricalUsageRecorded.emit({
+      principalScope: created.value.principalScope,
+      meter: 'agentic_tokens',
+      quantity,
+      occurredAt: created.value.occurredAt,
+    });
     if (quantity < 1) return;
     const subscriptions = await Billing.Subscription.find({
       where: { principalScope: created.value.principalScope },

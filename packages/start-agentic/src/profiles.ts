@@ -15,10 +15,14 @@ import {
   Database,
   EventLog,
   IdentityProvider,
+  Lakehouse,
+  LakehouseDataset,
+  LakehouseQuery,
   type KubernetesApplicationBuilder,
   type KubernetesApplicationScope,
   module,
   ObjectStorage,
+  Observability,
   postgres,
   Search,
   TransactionalDatabase,
@@ -934,12 +938,81 @@ export function configureAgenticProfiles<
   const PrimaryPayments = PaymentProvider.named('primary');
   const TransactionalNotifications = NotificationDelivery.named('transactional');
   const Inference = AI.named('inference');
+  const HistoricalDataset = LakehouseDataset.named('historical-usage');
+  const HistoricalQueries = LakehouseQuery.named('historical-usage');
+  const ApplicationObservability = Observability.named('primary');
   const applicationName = options.application ?? application.name;
   const namespace = options.namespace ?? `${application.name}-system`;
   const profileContext = {
     application: applicationName,
     namespace,
   } as const;
+  const historyBucket = `${applicationName}-history`;
+  const historyCatalog = `${applicationName.replace(/[^a-zA-Z0-9_]+/gu, '_')}_history`;
+
+  // Runtime topology is selected by the deployment target, independently of
+  // product profile. Feature source consumes only the qualified capabilities.
+  // Kubernetes deliberately uses an externally qualified S3/Athena path until
+  // a Kubernetes-native lakehouse provider passes the same beta contract.
+  const observability = application
+    .provide(ApplicationObservability)
+    .local(() => Observability.local())
+    .awsLocal(() => Observability.cloudWatch({ region: 'us-east-1' }))
+    .aws(() => Observability.cloudWatch({ region: 'us-east-1' }))
+    .kubernetes(() => Observability.clickStack({
+      namespace: `${applicationName}-observability`,
+      storageSize: '20Gi',
+    }));
+
+  application
+    .provide(HistoricalDataset)
+    .local(() => Lakehouse.duckdbDataset({
+      root: '.applik8s/state/lakehouse/historical-usage',
+      schemaRevision: 'v1',
+    }))
+    .awsLocal(() => Lakehouse.s3Dataset({
+      bucket: historyBucket,
+      prefix: 'lakehouse/historical-usage',
+      region: 'us-east-1',
+      catalog: historyCatalog,
+      schemaRevision: 'v1',
+    }))
+    .aws(() => Lakehouse.s3Dataset({
+      bucket: historyBucket,
+      prefix: 'lakehouse/historical-usage',
+      region: 'us-east-1',
+      catalog: historyCatalog,
+      schemaRevision: 'v1',
+    }))
+    .kubernetes(() => Lakehouse.s3Dataset({
+      bucket: historyBucket,
+      prefix: 'lakehouse/historical-usage',
+      region: 'us-east-1',
+      catalog: historyCatalog,
+      schemaRevision: 'v1',
+    }));
+
+  application
+    .provide(HistoricalQueries)
+    .local(() => Lakehouse.duckdbQueries({
+      maximumRows: 1_000,
+      maximumScannedBytes: 64 * 1024 * 1024,
+    }))
+    .awsLocal(() => Lakehouse.athenaQueries({
+      workgroup: `${applicationName}-history`,
+      region: 'us-east-1',
+      resultLocation: `s3://${historyBucket}/queries/`,
+    }))
+    .aws(() => Lakehouse.athenaQueries({
+      workgroup: `${applicationName}-history`,
+      region: 'us-east-1',
+      resultLocation: `s3://${historyBucket}/queries/`,
+    }))
+    .kubernetes(() => Lakehouse.athenaQueries({
+      workgroup: `${applicationName}-history`,
+      region: 'us-east-1',
+      resultLocation: `s3://${historyBucket}/queries/`,
+    }));
 
   deployment
     .provide(PrimaryDatabase)
@@ -1010,12 +1083,18 @@ export function configureAgenticProfiles<
     .starter(() =>
       options.starterInference?.() ?? AgenticStarter.inference(),
     )
-    .developer((spec) =>
-      AgenticDeveloper.inference(spec.providers.inference, profileContext),
-    )
-    .dedicated((spec) =>
-      AgenticDedicated.inference(spec.providers.inference, profileContext),
-    )
+    .developer((spec) => application.selectTarget({
+      local: () => AgenticExternal.inference(spec.providers.inference, profileContext),
+      awsLocal: () => AgenticExternal.inference(spec.providers.inference, profileContext),
+      aws: () => AgenticExternal.inference(spec.providers.inference, profileContext),
+      kubernetes: () => AgenticDeveloper.inference(spec.providers.inference, profileContext),
+    }))
+    .dedicated((spec) => application.selectTarget({
+      local: () => AgenticExternal.inference(spec.providers.inference, profileContext),
+      awsLocal: () => AgenticExternal.inference(spec.providers.inference, profileContext),
+      aws: () => AgenticExternal.inference(spec.providers.inference, profileContext),
+      kubernetes: () => AgenticDedicated.inference(spec.providers.inference, profileContext),
+    }))
     .external((spec) =>
       AgenticExternal.inference(spec.providers.inference, profileContext),
     )
@@ -1114,7 +1193,6 @@ export function configureAgenticProfiles<
   const identity = application.inject(PrimaryIdentity);
   const payments = application.inject(PrimaryPayments);
   const notifications = application.inject(TransactionalNotifications);
-
   application.defaults({
     database: primaryDatabase,
     analytics,
@@ -1162,6 +1240,9 @@ export function configureAgenticProfiles<
     identity,
     payments,
     notifications,
+    observability,
+    historicalDataset: HistoricalDataset,
+    historicalQueries: HistoricalQueries,
   });
 }
 
@@ -1348,7 +1429,7 @@ export function agenticProfilesWith(
     });
     const host = application.provide(
       ApplicationHost,
-      ApplicationHost.kubernetes({
+      ApplicationHost.managed({
         name: `${application.name}-app`,
         namespace: `${application.name}-system`,
         replicas: capacity.webReplicas,

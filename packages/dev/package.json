@@ -1,0 +1,23 @@
+{
+  "name": "@applik8s/dev",
+  "version": "0.8.0",
+  "description": "Independent reviewed development environment and coding-agent integration for Applik8s.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "files": ["dist"],
+  "publishConfig": { "access": "public" },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yehudacohen/applik8s.git",
+    "directory": "packages/dev"
+  },
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js", "default": "./dist/index.js" },
+    "./server": { "types": "./dist/server.d.ts", "import": "./dist/server.js", "default": "./dist/server.js" },
+    "./ui": { "types": "./dist/ui.d.ts", "import": "./dist/ui.js", "default": "./dist/ui.js" },
+    "./agent": { "types": "./dist/agent/index.d.ts", "import": "./dist/agent/index.js", "default": "./dist/agent/index.js" },
+    "./agent/opencode": { "types": "./dist/agent/opencode.d.ts", "import": "./dist/agent/opencode.js", "default": "./dist/agent/opencode.js" },
+    "./skills": { "types": "./dist/skills.d.ts", "import": "./dist/skills.js", "default": "./dist/skills.js" }
+  },
+  "dependencies": { "@libsql/client": "^0.17.4" }
+}

@@ -16,7 +16,7 @@ export const workloadNamespace = app.infra(() => externalRef({
   metadata: { name: namespace },
 }));
 
-export const host = app.provide(ApplicationHost, ApplicationHost.kubernetes({
+export const host = app.provide(ApplicationHost, ApplicationHost.managed({
   namespace,
   // The checked-in starter profile must fit on a single-node development
   // cluster. Dedicated installations opt into horizontal redundancy through

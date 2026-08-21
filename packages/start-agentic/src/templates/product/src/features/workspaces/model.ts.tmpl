@@ -8,6 +8,11 @@ import { application } from '../../app';
 import { ApplicationOperator, Notifications } from '../../modules';
 import { database } from '../../providers';
 import {
+  WorkspaceActivity,
+  WorkspaceActivityState,
+  WorkspaceDigestSchedule,
+} from '../runtime/model';
+import {
   AIUsageBudgetLedger as AIUsageBudgetLedgerTable,
   AIUsageReservation as AIUsageReservationTable,
   WorkspaceBudgetPolicy as WorkspaceBudgetPolicyTable,
@@ -87,6 +92,12 @@ const workspaces = module(
           workspaceId: created.value.id,
           identityId: created.value.ownerPrincipalId,
           role: 'workspace-owner',
+        });
+        await WorkspaceDigestSchedule.schedule({
+          id: created.value.id,
+          revision: '1',
+          input: { workspaceId: created.value.id },
+          every: '24h',
         });
       },
     );
@@ -254,6 +265,20 @@ const workspaces = module(
       },
       loadWorkspaceDashboard,
     );
+    const WorkspaceActivitySnapshot = currentApplication.query(
+      'workspace.activity.v1',
+      {
+        input: type({ workspaceId: 'string' }),
+        output: WorkspaceActivityState,
+        database,
+        context: [AgenticWorkspaceId],
+        reads: [WorkspaceTable],
+        authorize: ({ principal, context, input }) =>
+          principal.id.length > 0 && context.workspaceId === input.workspaceId,
+        run: async ({ input }) =>
+          WorkspaceActivity.snapshot(input.workspaceId, {}),
+      },
+    );
 
     const Authenticated = currentApplication.role('authenticated');
     const Owner = currentApplication.role('workspace-owner');
@@ -313,6 +338,7 @@ const workspaces = module(
       AcceptInvitation: InvitationTable.update,
       WorkspaceList,
       WorkspaceDashboard,
+      WorkspaceActivitySnapshot,
       WorkspaceMembershipBootstrap,
       InvitationDelivery,
       Authenticated,
@@ -333,6 +359,7 @@ export const {
   Invitation,
   AcceptInvitation,
   WorkspaceDashboard,
+  WorkspaceActivitySnapshot,
   WorkspaceList,
   InvitationDelivery,
   Authenticated,

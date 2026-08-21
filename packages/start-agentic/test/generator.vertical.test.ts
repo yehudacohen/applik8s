@@ -14,7 +14,11 @@ import {
   compileTypeKroComposition,
   discoverApplicationGraph,
 } from '@applik8s/compiler';
-import { compileApplicationDeploymentGraph } from '@applik8s/deployment-compiler';
+import {
+  compileApplicationAwsDeploymentPlan,
+  compileApplicationDeploymentGraph,
+  compileLocalSupervisorPlan,
+} from '@applik8s/deployment-compiler';
 import {
   type ApplicationStartCommand,
   applicationAgenticStartDefinition,
@@ -1196,7 +1200,10 @@ describe('Agentic Start generator', () => {
       // The budget authority adds two durable models, one expiry workflow,
       // and settlement processors so concurrent AI runs cannot race a read-
       // then-charge check. Keep that safety cost explicit in this ceiling.
-      expect(result.value.nodes.length).toBeLessThan(520);
+      // v0.8 adds one visible actor, fixed/dynamic schedules, historical
+      // lakehouse publication/query, and target-selected observability. Keep
+      // their complete generated surface bounded rather than hiding growth.
+      expect(result.value.nodes.length).toBeLessThan(540);
       expect(result.value.nodes).toEqual(expect.arrayContaining([
         expect.objectContaining({ kind: 'model', id: 'model.document-comment' }),
         expect.objectContaining({ kind: 'model', id: 'model.billing-plan' }),
@@ -1397,8 +1404,56 @@ describe('Agentic Start generator', () => {
           )
           .map((gateway) => gateway.name),
       ).toEqual(['web']);
+      const localPlan = compileLocalSupervisorPlan({
+        graph: result.value,
+        target: 'local',
+        profile: 'starter',
+        projectDigest: `sha256:${'9'.repeat(64)}`,
+        projectDirectory: target,
+      });
+      expect(
+        localPlan.diagnostics.filter(({ severity }) => severity === 'error'),
+      ).toEqual([]);
+      expect(localPlan.resources).toEqual(expect.arrayContaining([
+        expect.objectContaining({ kind: 'process' }),
+      ]));
+      const awsPlan = compileApplicationAwsDeploymentPlan({
+        graph: result.value,
+        workspaceRoot: target,
+        target: 'aws',
+        environment: 'starter',
+        profile: 'developer',
+        region: 'us-east-1',
+        accountId: '123456789012',
+        installationSpec: {
+          name: 'research-workspace',
+          profile: 'developer',
+          providers: {
+            inference: {
+              endpoint: 'https://openrouter.ai/api/v1',
+              model: 'inclusionai/ling-3.0-tiny:free',
+              credentialSecretName: 'research-workspace-providers',
+            },
+            payments: {
+              secretName: 'research-workspace-providers',
+            },
+            notifications: {
+              host: 'smtp.example.test',
+              secretName: 'research-workspace-providers',
+              senderEmail: 'hello@example.test',
+            },
+          },
+        },
+      });
+      expect(
+        awsPlan.diagnostics.filter(({ severity }) => severity === 'error'),
+      ).toEqual([]);
+      expect(awsPlan.resources).toEqual(expect.arrayContaining([
+        expect.objectContaining({ resourceType: 'fargate-service' }),
+      ]));
       const dedicatedDeployment = compileApplicationDeploymentGraph({
         graph: result.value,
+        workspaceRoot: target,
         sourceGraphDigest: `sha256:${'a'.repeat(64)}`,
         compilerVersion: '0.7.0',
         identity: {
@@ -1542,6 +1597,7 @@ describe('Agentic Start generator', () => {
       });
       const starterDeployment = compileApplicationDeploymentGraph({
         graph: result.value,
+        workspaceRoot: target,
         sourceGraphDigest: `sha256:${'c'.repeat(64)}`,
         compilerVersion: '0.7.0',
         identity: {
@@ -1572,6 +1628,7 @@ describe('Agentic Start generator', () => {
       ).toBe(false);
       const externalDeployment = compileApplicationDeploymentGraph({
         graph: result.value,
+        workspaceRoot: target,
         sourceGraphDigest: `sha256:${'d'.repeat(64)}`,
         compilerVersion: '0.7.0',
         identity: {
@@ -1644,8 +1701,26 @@ describe('Agentic Start generator', () => {
           (node) =>
             node.kind === 'kubernetesDirect'
             && node.source.semanticNodeId?.startsWith('provider.') === true,
-        ),
-      ).toEqual([]);
+        ).map((node) => ({
+          compositionId: node.kind === 'kubernetesDirect'
+            ? node.spec.compositionId
+            : undefined,
+          semanticNodeId: node.source.semanticNodeId,
+        })),
+      ).toEqual([
+        {
+          compositionId: 'clickhouse-operator-bootstrap',
+          semanticNodeId: 'provider.observability.v1alpha1.primary',
+        },
+        {
+          compositionId: 'applik8s-clickstack-clickhouse',
+          semanticNodeId: 'provider.observability.v1alpha1.primary',
+        },
+        {
+          compositionId: 'applik8s-clickstack',
+          semanticNodeId: 'provider.observability.v1alpha1.primary',
+        },
+      ]);
       expect(
         result.value.nodes
           .filter((node) => node.kind === 'aiAgent')

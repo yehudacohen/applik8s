@@ -1,6 +1,6 @@
 {
   "name": "create-applik8s",
-  "version": "0.7.1",
+  "version": "0.8.0",
   "description": "Create an upstream-shaped TanStack Start application with an Applik8s Start overlay.",
   "license": "Apache-2.0",
   "type": "module",
@@ -19,6 +19,6 @@
     "directory": "packages/create-applik8s"
   },
   "dependencies": {
-    "@applik8s/start-agentic": "0.7.1"
+    "@applik8s/start-agentic": "0.8.0"
   }
 }

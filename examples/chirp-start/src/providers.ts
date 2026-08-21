@@ -1,6 +1,8 @@
 // typecast-file-boundary: inactive external profile branches are validated before graph materialization.
 import {
+  type ApplicationAnalyticalDatabaseProvider,
   AnalyticalDatabase,
+  Analytics,
   ContainerRegistry,
   defaultApplicationEventLogProvider,
   EventLog,
@@ -200,13 +202,24 @@ deployment
   })
   .exhaustive();
 
+export const databaseProvider = app.inject(PrimaryDatabase);
+
+function targetAnalytics(clickHouse: ReturnType<typeof AnalyticalDatabase.clickhouse>) {
+  return app.selectTarget<ApplicationAnalyticalDatabaseProvider>({
+    local: () => clickHouse,
+    awsLocal: () => Analytics.postgres({ database: databaseProvider, schema: 'analytics' }),
+    aws: () => Analytics.postgres({ database: databaseProvider, schema: 'analytics' }),
+    kubernetes: () => clickHouse,
+  });
+}
+
 deployment
   .provide(PrimaryAnalytics)
-  .starter(() => managedAnalytics())
-  .dedicated(() => managedAnalytics())
+  .starter(() => targetAnalytics(managedAnalytics()))
+  .dedicated(() => targetAnalytics(managedAnalytics()))
   .external((spec) => {
     const external = externalProviders(spec);
-    return AnalyticalDatabase.clickhouse({
+    return targetAnalytics(AnalyticalDatabase.clickhouse({
       enabled: app.installation.spec.features.analytics,
       name: 'chirp-analytics',
       namespace,
@@ -219,7 +232,7 @@ deployment
         name: external.analytics.credentialsSecretName,
         namespace,
       },
-    });
+    }));
   })
   .exhaustive();
 
@@ -326,7 +339,6 @@ deployment
   })
   .exhaustive();
 
-export const databaseProvider = app.inject(PrimaryDatabase);
 const analytics = app.inject(PrimaryAnalytics);
 const eventLog = app.inject(PrimaryEvents);
 const workflows = app.inject(DurableWorkflows);

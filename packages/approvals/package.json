@@ -1,6 +1,6 @@
 {
   "name": "@applik8s/approvals",
-  "version": "0.7.1",
+  "version": "0.8.0",
   "description": "Canonical review queues and outcome-observation models over Applik8s grant requests.",
   "license": "Apache-2.0",
   "type": "module",
@@ -28,7 +28,7 @@
     }
   },
   "dependencies": {
-    "@applik8s/applik8s": "0.7.1",
+    "@applik8s/applik8s": "0.8.0",
     "drizzle-orm": "^0.45.1"
   }
 }
