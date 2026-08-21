@@ -1,8 +1,10 @@
 // typecast-file-boundary: durable AI records are checked against invocation and attempt invariants before JSON payloads are restored to protocol record types.
-import type {
-  ApplicationExecutionPrincipal,
-  ApplicationOperationId,
-  JsonObject,
+import {
+  type ApplicationExecutionPrincipal,
+  type ApplicationOperationId,
+  canonicalJsonCompatibleV1Policy,
+  canonicalJsonV1String,
+  type JsonObject,
 } from '@applik8s/core';
 import type {
   ApplicationAIAttemptRecord,
@@ -469,21 +471,12 @@ export function createApplicationAIAttemptRuntime(options: {
 }
 
 export async function applicationAIDigest(value: unknown): Promise<string> {
-  const bytes = new TextEncoder().encode(canonicalJson(value));
+  const bytes = new TextEncoder().encode(
+    canonicalJsonV1String(value, canonicalJsonCompatibleV1Policy),
+  );
   const digest = await globalThis.crypto.subtle.digest('SHA-256', bytes);
   return `sha256:${Array.from(new Uint8Array(digest), (byte) =>
     byte.toString(16).padStart(2, '0')).join('')}`;
-}
-
-function canonicalJson(value: unknown): string {
-  if (value === undefined) return 'null';
-  if (value === null || typeof value !== 'object') return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
-  return `{${Object.entries(value)
-    .filter(([, entry]) => entry !== undefined)
-    .sort(([left], [right]) => left.localeCompare(right))
-    .map(([key, entry]) => `${JSON.stringify(key)}:${canonicalJson(entry)}`)
-    .join(',')}}`;
 }
 
 function validatePrincipal(

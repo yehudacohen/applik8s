@@ -1,9 +1,10 @@
 import { createHash } from 'node:crypto';
-import type {
-  ApplicationAdmittedPrincipal,
-  ApplicationIdentityKind,
-  ApplicationRequestAdmission,
-  JsonValue,
+import {
+  type ApplicationAdmittedPrincipal,
+  type ApplicationIdentityKind,
+  type ApplicationRequestAdmission,
+  canonicalJsonV1String,
+  type JsonValue,
 } from '@applik8s/core';
 
 export interface ApplicationDeterministicIdentityOptions {
@@ -104,18 +105,7 @@ export function createDeterministicApplicationAdmission(
 function digestTrustedContext(
   value: Readonly<Record<string, JsonValue>>,
 ): string {
-  return createHash('sha256').update(canonicalJson(value)).digest('hex');
-}
-
-function canonicalJson(value: JsonValue): string {
-  if (value === null || typeof value !== 'object') return JSON.stringify(value);
-  if (Array.isArray(value)) {
-    return `[${value.map((item) => canonicalJson(item)).join(',')}]`;
-  }
-  return `{${Object.entries(value)
-    .sort(([left], [right]) => left.localeCompare(right))
-    .map(([key, item]) => `${JSON.stringify(key)}:${canonicalJson(item)}`)
-    .join(',')}}`;
+  return createHash('sha256').update(canonicalJsonV1String(value)).digest('hex');
 }
 
 function required(value: string, label: string): string {

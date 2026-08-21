@@ -1,20 +1,21 @@
 // typecast-file-boundary: Installation input is validated before it selects a provider runtime endpoint.
 import { createHash } from 'node:crypto';
-import type {
-  ApplicationPrincipal,
-  ApplicationRequestAdmission,
-  JsonObject,
-  JsonValue,
+import {
+  type ApplicationPrincipal,
+  type ApplicationRequestAdmission,
+  canonicalJsonV1String,
+  type JsonObject,
+  type JsonValue,
 } from '@applik8s/core';
 import {
   createDeterministicApplicationAdmission,
 } from '@applik8s/identity';
 import {
-  applicationIdentityHttpProtocol,
   type ApplicationIdentityAccountView,
   type ApplicationIdentityFlowView,
   type ApplicationIdentitySessionDeviceView,
   type ApplicationIdentitySessionView,
+  applicationIdentityHttpProtocol,
 } from '@applik8s/identity/client';
 import { OryKratosIdentityAdapter } from '@applik8s/identity-ory';
 import postgres, { type Sql } from 'postgres';
@@ -947,18 +948,7 @@ function freezeAdmission(
 function digestTrustedContext(
   value: Readonly<Record<string, JsonValue>>,
 ): string {
-  return createHash('sha256').update(canonicalJson(value)).digest('hex');
-}
-
-function canonicalJson(value: JsonValue): string {
-  if (value === null || typeof value !== 'object') return JSON.stringify(value);
-  if (Array.isArray(value)) {
-    return `[${value.map((item) => canonicalJson(item)).join(',')}]`;
-  }
-  return `{${Object.entries(value)
-    .sort(([left], [right]) => left.localeCompare(right))
-    .map(([key, item]) => `${JSON.stringify(key)}:${canonicalJson(item)}`)
-    .join(',')}}`;
+  return createHash('sha256').update(canonicalJsonV1String(value)).digest('hex');
 }
 
 function requiredEnv(name: string, message: string): string {

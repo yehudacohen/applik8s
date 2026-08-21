@@ -1,10 +1,11 @@
 // typecast-file-boundary: Kubernetes identity resources are schema-validated before admission metadata is interpreted.
 import { createHash } from 'node:crypto';
-import type {
-  ApplicationIdentityReference,
-  ApplicationPrincipal,
-  ApplicationRequestAdmission,
-  JsonObject,
+import {
+  type ApplicationIdentityReference,
+  type ApplicationPrincipal,
+  type ApplicationRequestAdmission,
+  canonicalJsonV1String,
+  type JsonObject,
 } from '@applik8s/core';
 import type {
   ApplicationOAuthProtocolProviderAdapter,
@@ -314,19 +315,8 @@ function required(value: string, label: string): string {
 
 function digestJson(value: JsonObject): string {
   return createHash('sha256')
-    .update(canonicalJson(value))
+    .update(canonicalJsonV1String(value))
     .digest('hex');
-}
-
-function canonicalJson(value: unknown): string {
-  if (value === null || typeof value !== 'object') return JSON.stringify(value);
-  if (Array.isArray(value)) {
-    return `[${value.map((item) => canonicalJson(item)).join(',')}]`;
-  }
-  return `{${Object.entries(value as Record<string, unknown>)
-    .sort(([left], [right]) => left.localeCompare(right))
-    .map(([key, item]) => `${JSON.stringify(key)}:${canonicalJson(item)}`)
-    .join(',')}}`;
 }
 
 export type ApplicationOAuthResourceAdmissionErrorCode =

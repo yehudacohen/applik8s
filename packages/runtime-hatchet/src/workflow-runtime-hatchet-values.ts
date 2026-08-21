@@ -1,3 +1,5 @@
+import { canonicalJsonV1String } from '@applik8s/core';
+
 export function boundedScheduleString(value: unknown, name: string, maximumLength: number): string {
   if (typeof value !== 'string' || value.trim().length === 0 || value.length > maximumLength) {
     throw new Error(`applik8s-workflow-schedule-${name}-invalid`);
@@ -15,7 +17,7 @@ export function boundedJsonObject(value: unknown, name: string, maximumBytes: nu
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`applik8s-workflow-schedule-${name}-invalid`);
   let encoded: string;
   try {
-    encoded = canonicalJson(value);
+    encoded = canonicalWorkflowJson(value);
   } catch (cause) {
     throw new Error(`applik8s-workflow-schedule-${name}-invalid`, { cause });
   }
@@ -26,14 +28,6 @@ export function boundedJsonObject(value: unknown, name: string, maximumBytes: nu
   return parsed as Record<string, unknown>;
 }
 
-export function canonicalJson(value: unknown): string {
-  return JSON.stringify(canonicalJsonValue(value));
-}
-
-function canonicalJsonValue(value: unknown): unknown {
-  if (value === null || typeof value === 'string' || typeof value === 'boolean') return value;
-  if (typeof value === 'number' && Number.isFinite(value)) return value;
-  if (Array.isArray(value)) return value.map(canonicalJsonValue);
-  if (!value || typeof value !== 'object') throw new Error('Value is not JSON-serializable.');
-  return Object.fromEntries(Object.entries(value).sort(([left], [right]) => left.localeCompare(right)).map(([key, nested]) => [key, canonicalJsonValue(nested)]));
+export function canonicalWorkflowJson(value: unknown): string {
+  return canonicalJsonV1String(value);
 }

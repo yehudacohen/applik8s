@@ -27,6 +27,7 @@
     "@applik8s/applik8s": "0.8.0",
     "@applik8s/core": "0.8.0",
     "@applik8s/deployment-contract": "0.8.0",
+    "@applik8s/runtime": "0.8.0",
     "@applik8s/sdk": "0.8.0"
   }
 }

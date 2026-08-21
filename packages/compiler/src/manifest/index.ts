@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 
-import { applicationCanonicalIdentity, applicationExecutionBoundaryIdentity, applicationGraphNodeIdentity, applicationOperationId, applicationOperationIdentity, type AnyHandlerRegistration, type AnyResourceDefinition, type BundleArtifact, type CapabilityDescriptor, type CapabilityExecutionPolicy, type CapabilityKind, type ConcurrencyConfig, type HandlerEventType, type HandlerId, type KubernetesConnectionBinding, type OperatorDefinition, type OperatorManifest, type OperatorRuntimeIdentityContract, type PermissionRule, type ResourceWatchAddress, type Result, type RetryPolicy, type RuntimePayloadSchemaDigests, type SecretRef } from '@applik8s/core';
+import { applicationCanonicalIdentity, applicationExecutionBoundaryIdentity, applicationGraphNodeIdentity, applicationOperationId, applicationOperationIdentity, canonicalJsonCompatibleV1Policy, canonicalJsonV1String, type AnyHandlerRegistration, type AnyResourceDefinition, type BundleArtifact, type CapabilityDescriptor, type CapabilityExecutionPolicy, type CapabilityKind, type ConcurrencyConfig, type HandlerEventType, type HandlerId, type KubernetesConnectionBinding, type OperatorDefinition, type OperatorManifest, type OperatorRuntimeIdentityContract, type PermissionRule, type ResourceWatchAddress, type Result, type RetryPolicy, type RuntimePayloadSchemaDigests, type SecretRef } from '@applik8s/core';
 import { canonicalRuntimeContract } from '@applik8s/runtime-contract';
 import type { ContainerRecipe } from '@applik8s/typetainer';
 import { DEFAULT_OPERATOR_HOST_IMAGE } from '../operator-host-image.js';
@@ -1160,22 +1160,25 @@ function canonicalWatchAddress(watch: ResourceWatchAddress | undefined): Resourc
     ...(watch.namespace ? { namespace: watch.namespace } : {}),
     ...(watch.name ? { name: watch.name } : {}),
     ...(watch.names && watch.names.length > 0 ? { names: [...unique(watch.names)].sort() } : {}),
-    ...(watch.labelSelector ? { labelSelector: canonicalJsonValue(watch.labelSelector) } : {}),
+    ...(watch.labelSelector ? { labelSelector: canonicalSelectorValue(watch.labelSelector) } : {}),
     ...(watch.fieldSelector ? { fieldSelector: watch.fieldSelector } : {}),
   };
 }
 
-function canonicalJsonValue<T>(value: T): T {
+function canonicalSelectorValue<T>(value: T): T {
   if (Array.isArray(value)) {
     // typecast: sorting selector arrays by canonical JSON preserves their value shape while making equivalent selectors stable.
-    return value.map(canonicalJsonValue).sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right))) as T;
+    return value.map(canonicalSelectorValue).sort((left, right) =>
+      canonicalJsonV1String(left, canonicalJsonCompatibleV1Policy).localeCompare(
+        canonicalJsonV1String(right, canonicalJsonCompatibleV1Policy),
+      )) as T;
   }
   if (value && typeof value === 'object') {
     // typecast: canonicalization only reads enumerable JSON-like selector fields after the object guard.
     const record = value as Record<string, unknown>;
     const sorted: Record<string, unknown> = {};
     for (const key of Object.keys(record).sort()) {
-      sorted[key] = canonicalJsonValue(record[key]);
+      sorted[key] = canonicalSelectorValue(record[key]);
     }
     // typecast: object key ordering is normalized without changing the selector's structural type.
     return sorted as T;
@@ -1189,7 +1192,13 @@ function canonicalJsonValue<T>(value: T): T {
  * validation must compare their value rather than JavaScript object identity.
  */
 function portableValueEquals(left: unknown, right: unknown): boolean {
-  return JSON.stringify(canonicalJsonValue(left)) === JSON.stringify(canonicalJsonValue(right));
+  return canonicalJsonV1String(
+    canonicalSelectorValue(left),
+    canonicalJsonCompatibleV1Policy,
+  ) === canonicalJsonV1String(
+    canonicalSelectorValue(right),
+    canonicalJsonCompatibleV1Policy,
+  );
 }
 
 function hasResourceHandlerIdentity(handler: AnyHandlerRegistration): handler is AnyHandlerRegistration & ResourceHandlerIdentity {

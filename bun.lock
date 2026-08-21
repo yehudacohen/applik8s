@@ -5,56 +5,56 @@
     "": {
       "name": "@applik8s/workspace",
       "dependencies": {
-        "@applik8s/agents": "0.7.1",
-        "@applik8s/ai": "0.7.1",
-        "@applik8s/ai-tanstack": "0.7.1",
-        "@applik8s/applik8s": "0.7.1",
-        "@applik8s/approvals": "0.7.1",
-        "@applik8s/artifacts": "0.7.1",
-        "@applik8s/billing": "0.7.1",
-        "@applik8s/billing-stripe": "0.7.1",
-        "@applik8s/client": "0.7.1",
-        "@applik8s/compiler": "0.7.1",
-        "@applik8s/conversations": "0.7.1",
-        "@applik8s/core": "0.7.1",
-        "@applik8s/data-lifecycle": "0.7.1",
-        "@applik8s/deployment-alchemy": "0.7.1",
-        "@applik8s/deployment-compiler": "0.7.1",
-        "@applik8s/deployment-contract": "0.7.1",
-        "@applik8s/deployment-provider-harbor": "0.7.1",
-        "@applik8s/deployment-provider-kubernetes": "0.7.1",
-        "@applik8s/deployment-provider-oci": "0.7.1",
-        "@applik8s/deployment-typekro": "0.7.1",
-        "@applik8s/documents": "0.7.1",
-        "@applik8s/evals": "0.7.1",
-        "@applik8s/identity": "0.7.1",
-        "@applik8s/identity-ory": "0.7.1",
-        "@applik8s/identity-postgres": "0.7.1",
-        "@applik8s/integrations": "0.7.1",
-        "@applik8s/knowledge": "0.7.1",
-        "@applik8s/mcp": "0.7.1",
-        "@applik8s/notifications": "0.7.1",
-        "@applik8s/notifications-smtp": "0.7.1",
-        "@applik8s/operations": "0.7.1",
-        "@applik8s/operations-ui": "0.7.1",
-        "@applik8s/react": "0.7.1",
-        "@applik8s/runtime-ai": "0.7.1",
-        "@applik8s/runtime-aws": "0.7.1",
-        "@applik8s/runtime-celld": "0.7.1",
-        "@applik8s/runtime-duckdb": "0.7.1",
-        "@applik8s/runtime-opensearch": "0.7.1",
-        "@applik8s/runtime-otel": "0.7.1",
-        "@applik8s/runtime-s3": "0.7.1",
-        "@applik8s/sdk": "0.7.1",
-        "@applik8s/search": "0.7.1",
-        "@applik8s/server": "0.7.1",
-        "@applik8s/start-agentic": "0.7.1",
-        "@applik8s/tanstack-start": "0.7.1",
-        "@applik8s/testing": "0.7.1",
-        "@applik8s/typekro-adapter": "0.7.1",
-        "@applik8s/typetainer": "0.7.1",
-        "@applik8s/usage": "0.7.1",
-        "@applik8s/vite": "0.7.1",
+        "@applik8s/agents": "0.8.0",
+        "@applik8s/ai": "0.8.0",
+        "@applik8s/ai-tanstack": "0.8.0",
+        "@applik8s/applik8s": "0.8.0",
+        "@applik8s/approvals": "0.8.0",
+        "@applik8s/artifacts": "0.8.0",
+        "@applik8s/billing": "0.8.0",
+        "@applik8s/billing-stripe": "0.8.0",
+        "@applik8s/client": "0.8.0",
+        "@applik8s/compiler": "0.8.0",
+        "@applik8s/conversations": "0.8.0",
+        "@applik8s/core": "0.8.0",
+        "@applik8s/data-lifecycle": "0.8.0",
+        "@applik8s/deployment-alchemy": "0.8.0",
+        "@applik8s/deployment-compiler": "0.8.0",
+        "@applik8s/deployment-contract": "0.8.0",
+        "@applik8s/deployment-provider-harbor": "0.8.0",
+        "@applik8s/deployment-provider-kubernetes": "0.8.0",
+        "@applik8s/deployment-provider-oci": "0.8.0",
+        "@applik8s/deployment-typekro": "0.8.0",
+        "@applik8s/documents": "0.8.0",
+        "@applik8s/evals": "0.8.0",
+        "@applik8s/identity": "0.8.0",
+        "@applik8s/identity-ory": "0.8.0",
+        "@applik8s/identity-postgres": "0.8.0",
+        "@applik8s/integrations": "0.8.0",
+        "@applik8s/knowledge": "0.8.0",
+        "@applik8s/mcp": "0.8.0",
+        "@applik8s/notifications": "0.8.0",
+        "@applik8s/notifications-smtp": "0.8.0",
+        "@applik8s/operations": "0.8.0",
+        "@applik8s/operations-ui": "0.8.0",
+        "@applik8s/react": "0.8.0",
+        "@applik8s/runtime-ai": "0.8.0",
+        "@applik8s/runtime-aws": "0.8.0",
+        "@applik8s/runtime-celld": "0.8.0",
+        "@applik8s/runtime-duckdb": "0.8.0",
+        "@applik8s/runtime-opensearch": "0.8.0",
+        "@applik8s/runtime-otel": "0.8.0",
+        "@applik8s/runtime-s3": "0.8.0",
+        "@applik8s/sdk": "0.8.0",
+        "@applik8s/search": "0.8.0",
+        "@applik8s/server": "0.8.0",
+        "@applik8s/start-agentic": "0.8.0",
+        "@applik8s/tanstack-start": "0.8.0",
+        "@applik8s/testing": "0.8.0",
+        "@applik8s/typekro-adapter": "0.8.0",
+        "@applik8s/typetainer": "0.8.0",
+        "@applik8s/usage": "0.8.0",
+        "@applik8s/vite": "0.8.0",
         "@aws-sdk/client-s3": "3.1113.0",
         "@duckdb/node-api": "1.5.5-r.4",
         "@hatchet-dev/typescript-sdk": "1.24.3",
@@ -198,7 +198,7 @@
     },
     "packages/agents": {
       "name": "@applik8s/agents",
-      "version": "0.7.1",
+      "version": "0.8.0",
       "dependencies": {
         "@applik8s/applik8s": "0.7.1",
         "arktype": "2.2.1",
@@ -207,19 +207,19 @@
     },
     "packages/ai": {
       "name": "@applik8s/ai",
-      "version": "0.7.1",
+      "version": "0.8.0",
       "dependencies": {
-        "@applik8s/core": "0.7.1",
+        "@applik8s/core": "0.8.0",
       },
     },
     "packages/ai-tanstack": {
       "name": "@applik8s/ai-tanstack",
-      "version": "0.7.1",
+      "version": "0.8.0",
       "dependencies": {
-        "@applik8s/ai": "0.7.1",
-        "@applik8s/client": "0.7.1",
-        "@applik8s/core": "0.7.1",
-        "@applik8s/sdk": "0.7.1",
+        "@applik8s/ai": "0.8.0",
+        "@applik8s/client": "0.8.0",
+        "@applik8s/core": "0.8.0",
+        "@applik8s/sdk": "0.8.0",
         "@standard-schema/spec": "1.1.0",
         "@tanstack/ai": "0.45.1",
         "@tanstack/ai-client": "0.23.3",
@@ -228,18 +228,18 @@
     },
     "packages/applik8s": {
       "name": "@applik8s/applik8s",
-      "version": "0.7.1",
+      "version": "0.8.0",
       "dependencies": {
-        "@applik8s/ai": "0.7.1",
-        "@applik8s/ai-tanstack": "0.7.1",
-        "@applik8s/client": "0.7.1",
-        "@applik8s/core": "0.7.1",
-        "@applik8s/deployment-contract": "0.7.1",
-        "@applik8s/identity": "0.7.1",
-        "@applik8s/operations": "0.7.1",
-        "@applik8s/sdk": "0.7.1",
-        "@applik8s/typekro-adapter": "0.7.1",
-        "@applik8s/typetainer": "0.7.1",
+        "@applik8s/ai": "0.8.0",
+        "@applik8s/ai-tanstack": "0.8.0",
+        "@applik8s/client": "0.8.0",
+        "@applik8s/core": "0.8.0",
+        "@applik8s/deployment-contract": "0.8.0",
+        "@applik8s/identity": "0.8.0",
+        "@applik8s/operations": "0.8.0",
+        "@applik8s/sdk": "0.8.0",
+        "@applik8s/typekro-adapter": "0.8.0",
+        "@applik8s/typetainer": "0.8.0",
         "arktype": "2.2.1",
         "drizzle-arktype": "0.1.3",
         "drizzle-orm": "^0.45.1",
@@ -248,12 +248,12 @@
         "typekro": "0.33.7",
       },
       "peerDependencies": {
-        "@applik8s/runtime-aws": "0.7.1",
-        "@applik8s/runtime-hatchet": "0.7.1",
-        "@applik8s/runtime-kubernetes": "0.7.1",
-        "@applik8s/runtime-nats": "0.7.1",
-        "@applik8s/runtime-opensearch": "0.7.1",
-        "@applik8s/runtime-postgres": "0.7.1",
+        "@applik8s/runtime-aws": "0.8.0",
+        "@applik8s/runtime-hatchet": "0.8.0",
+        "@applik8s/runtime-kubernetes": "0.8.0",
+        "@applik8s/runtime-nats": "0.8.0",
+        "@applik8s/runtime-opensearch": "0.8.0",
+        "@applik8s/runtime-postgres": "0.8.0",
       },
       "optionalPeers": [
         "@applik8s/runtime-aws",
@@ -266,7 +266,7 @@
     },
     "packages/approvals": {
       "name": "@applik8s/approvals",
-      "version": "0.7.1",
+      "version": "0.8.0",
       "dependencies": {
         "@applik8s/applik8s": "0.7.1",
         "drizzle-orm": "^0.45.1",
@@ -274,7 +274,7 @@
     },
     "packages/artifacts": {
       "name": "@applik8s/artifacts",
-      "version": "0.7.1",
+      "version": "0.8.0",
       "dependencies": {
         "@applik8s/applik8s": "0.7.1",
         "arktype": "2.2.1",
@@ -283,7 +283,7 @@
     },
     "packages/billing": {
       "name": "@applik8s/billing",
-      "version": "0.7.1",
+      "version": "0.8.0",
       "dependencies": {
         "@applik8s/applik8s": "0.7.1",
         "arktype": "2.2.1",
@@ -292,14 +292,14 @@
     },
     "packages/billing-stripe": {
       "name": "@applik8s/billing-stripe",
-      "version": "0.7.1",
+      "version": "0.8.0",
       "dependencies": {
         "@applik8s/billing": "0.7.1",
       },
     },
     "packages/cli": {
       "name": "@applik8s/cli",
-      "version": "0.7.1",
+      "version": "0.8.0",
       "bin": {
         "applik8s": "dist/bin.js",
       },
@@ -328,35 +328,35 @@
     },
     "packages/client": {
       "name": "@applik8s/client",
-      "version": "0.7.1",
+      "version": "0.8.0",
       "dependencies": {
-        "@applik8s/core": "0.7.1",
+        "@applik8s/core": "0.8.0",
       },
     },
     "packages/compiler": {
       "name": "@applik8s/compiler",
-      "version": "0.7.1",
+      "version": "0.8.0",
       "dependencies": {
-        "@applik8s/conversations": "0.7.1",
-        "@applik8s/core": "0.7.1",
-        "@applik8s/deployment-compiler": "0.7.1",
-        "@applik8s/deployment-contract": "0.7.1",
-        "@applik8s/identity": "0.7.1",
-        "@applik8s/identity-ory": "0.7.1",
-        "@applik8s/mcp": "0.7.1",
-        "@applik8s/operations": "0.7.1",
-        "@applik8s/runtime-ai": "0.7.1",
-        "@applik8s/runtime-aws": "0.7.1",
-        "@applik8s/runtime-celld": "0.7.1",
-        "@applik8s/runtime-contract": "0.7.1",
-        "@applik8s/runtime-duckdb": "0.7.1",
-        "@applik8s/runtime-hatchet": "0.7.1",
-        "@applik8s/runtime-kubernetes": "0.7.1",
-        "@applik8s/runtime-nats": "0.7.1",
-        "@applik8s/runtime-otel": "0.7.1",
-        "@applik8s/runtime-postgres": "0.7.1",
-        "@applik8s/runtime-s3": "0.7.1",
-        "@applik8s/typetainer": "0.7.1",
+        "@applik8s/conversations": "0.8.0",
+        "@applik8s/core": "0.8.0",
+        "@applik8s/deployment-compiler": "0.8.0",
+        "@applik8s/deployment-contract": "0.8.0",
+        "@applik8s/identity": "0.8.0",
+        "@applik8s/identity-ory": "0.8.0",
+        "@applik8s/mcp": "0.8.0",
+        "@applik8s/operations": "0.8.0",
+        "@applik8s/runtime-ai": "0.8.0",
+        "@applik8s/runtime-aws": "0.8.0",
+        "@applik8s/runtime-celld": "0.8.0",
+        "@applik8s/runtime-contract": "0.8.0",
+        "@applik8s/runtime-duckdb": "0.8.0",
+        "@applik8s/runtime-hatchet": "0.8.0",
+        "@applik8s/runtime-kubernetes": "0.8.0",
+        "@applik8s/runtime-nats": "0.8.0",
+        "@applik8s/runtime-otel": "0.8.0",
+        "@applik8s/runtime-postgres": "0.8.0",
+        "@applik8s/runtime-s3": "0.8.0",
+        "@applik8s/typetainer": "0.8.0",
         "@bytecodealliance/componentize-js": "^0.21.0",
         "@hatchet-dev/typescript-sdk": "1.24.3",
         "@kubernetes/client-node": "^1.3.0",
@@ -369,11 +369,11 @@
     },
     "packages/conversations": {
       "name": "@applik8s/conversations",
-      "version": "0.7.1",
+      "version": "0.8.0",
       "dependencies": {
-        "@applik8s/ai": "0.7.1",
-        "@applik8s/applik8s": "0.7.1",
-        "@applik8s/core": "0.7.1",
+        "@applik8s/ai": "0.8.0",
+        "@applik8s/applik8s": "0.8.0",
+        "@applik8s/core": "0.8.0",
         "@tanstack/ai": "0.45.1",
         "@tanstack/ai-persistence": "0.1.5",
         "drizzle-orm": "^0.45.1",
@@ -381,11 +381,11 @@
     },
     "packages/core": {
       "name": "@applik8s/core",
-      "version": "0.7.1",
+      "version": "0.8.0",
     },
     "packages/create-applik8s": {
       "name": "create-applik8s",
-      "version": "0.7.1",
+      "version": "0.8.0",
       "bin": {
         "create-applik8s": "./dist/bin.js",
       },
@@ -395,14 +395,14 @@
     },
     "packages/data-lifecycle": {
       "name": "@applik8s/data-lifecycle",
-      "version": "0.7.1",
+      "version": "0.8.0",
       "dependencies": {
         "@applik8s/applik8s": "0.7.1",
       },
     },
     "packages/deployment-alchemy": {
       "name": "@applik8s/deployment-alchemy",
-      "version": "0.7.1",
+      "version": "0.8.0",
       "dependencies": {
         "@applik8s/deployment-contract": "0.7.1",
         "@applik8s/deployment-provider-harbor": "0.7.1",
@@ -418,19 +418,19 @@
     },
     "packages/deployment-compiler": {
       "name": "@applik8s/deployment-compiler",
-      "version": "0.7.1",
+      "version": "0.8.0",
       "dependencies": {
-        "@applik8s/core": "0.7.1",
-        "@applik8s/deployment-contract": "0.7.1",
+        "@applik8s/core": "0.8.0",
+        "@applik8s/deployment-contract": "0.8.0",
       },
     },
     "packages/deployment-contract": {
       "name": "@applik8s/deployment-contract",
-      "version": "0.7.1",
+      "version": "0.8.0",
     },
     "packages/deployment-provider-harbor": {
       "name": "@applik8s/deployment-provider-harbor",
-      "version": "0.7.1",
+      "version": "0.8.0",
       "dependencies": {
         "alchemy": "2.0.0-beta.58",
         "effect": "4.0.0-beta.84",
@@ -439,7 +439,7 @@
     },
     "packages/deployment-provider-kubernetes": {
       "name": "@applik8s/deployment-provider-kubernetes",
-      "version": "0.7.1",
+      "version": "0.8.0",
       "dependencies": {
         "@kubernetes/client-node": "^1.3.0",
         "alchemy": "2.0.0-beta.58",
@@ -448,7 +448,7 @@
     },
     "packages/deployment-provider-oci": {
       "name": "@applik8s/deployment-provider-oci",
-      "version": "0.7.1",
+      "version": "0.8.0",
       "dependencies": {
         "alchemy": "2.0.0-beta.58",
         "effect": "4.0.0-beta.84",
@@ -457,7 +457,7 @@
     },
     "packages/deployment-typekro": {
       "name": "@applik8s/deployment-typekro",
-      "version": "0.7.1",
+      "version": "0.8.0",
       "dependencies": {
         "@applik8s/deployment-contract": "0.7.1",
         "arktype": "2.2.1",
@@ -466,14 +466,14 @@
     },
     "packages/dev": {
       "name": "@applik8s/dev",
-      "version": "0.7.1",
+      "version": "0.8.0",
       "dependencies": {
         "@libsql/client": "^0.17.4",
       },
     },
     "packages/documents": {
       "name": "@applik8s/documents",
-      "version": "0.7.1",
+      "version": "0.8.0",
       "dependencies": {
         "@applik8s/applik8s": "0.7.1",
         "arktype": "2.2.1",
@@ -485,7 +485,7 @@
     },
     "packages/evals": {
       "name": "@applik8s/evals",
-      "version": "0.7.1",
+      "version": "0.8.0",
       "dependencies": {
         "@applik8s/ai-tanstack": "0.7.1",
         "@applik8s/applik8s": "0.7.1",
@@ -499,22 +499,22 @@
     },
     "packages/identity": {
       "name": "@applik8s/identity",
-      "version": "0.7.1",
+      "version": "0.8.0",
       "dependencies": {
-        "@applik8s/core": "0.7.1",
+        "@applik8s/core": "0.8.0",
       },
     },
     "packages/identity-ory": {
       "name": "@applik8s/identity-ory",
-      "version": "0.7.1",
+      "version": "0.8.0",
       "dependencies": {
-        "@applik8s/core": "0.7.1",
-        "@applik8s/identity": "0.7.1",
+        "@applik8s/core": "0.8.0",
+        "@applik8s/identity": "0.8.0",
       },
     },
     "packages/identity-postgres": {
       "name": "@applik8s/identity-postgres",
-      "version": "0.7.1",
+      "version": "0.8.0",
       "dependencies": {
         "@applik8s/identity": "0.7.0",
         "postgres": "^3.4.7",
@@ -522,7 +522,7 @@
     },
     "packages/integrations": {
       "name": "@applik8s/integrations",
-      "version": "0.7.1",
+      "version": "0.8.0",
       "dependencies": {
         "@applik8s/applik8s": "0.7.1",
         "arktype": "2.2.1",
@@ -531,7 +531,7 @@
     },
     "packages/knowledge": {
       "name": "@applik8s/knowledge",
-      "version": "0.7.1",
+      "version": "0.8.0",
       "dependencies": {
         "@applik8s/applik8s": "0.7.1",
         "arktype": "2.2.1",
@@ -540,10 +540,10 @@
     },
     "packages/mcp": {
       "name": "@applik8s/mcp",
-      "version": "0.7.1",
+      "version": "0.8.0",
       "dependencies": {
-        "@applik8s/core": "0.7.1",
-        "@applik8s/operations": "0.7.1",
+        "@applik8s/core": "0.8.0",
+        "@applik8s/operations": "0.8.0",
         "postgres": "^3.4.7",
       },
       "devDependencies": {
@@ -552,7 +552,7 @@
     },
     "packages/notifications": {
       "name": "@applik8s/notifications",
-      "version": "0.7.1",
+      "version": "0.8.0",
       "dependencies": {
         "@applik8s/applik8s": "0.7.1",
         "drizzle-orm": "^0.45.1",
@@ -566,7 +566,7 @@
     },
     "packages/notifications-smtp": {
       "name": "@applik8s/notifications-smtp",
-      "version": "0.7.1",
+      "version": "0.8.0",
       "dependencies": {
         "@applik8s/notifications": "0.7.1",
         "nodemailer": "^9.0.5",
@@ -577,14 +577,14 @@
     },
     "packages/operations": {
       "name": "@applik8s/operations",
-      "version": "0.7.1",
+      "version": "0.8.0",
       "dependencies": {
-        "@applik8s/core": "0.7.1",
+        "@applik8s/core": "0.8.0",
       },
     },
     "packages/operations-ui": {
       "name": "@applik8s/operations-ui",
-      "version": "0.7.1",
+      "version": "0.8.0",
       "dependencies": {
         "@applik8s/applik8s": "0.7.1",
         "@applik8s/approvals": "0.7.1",
@@ -604,7 +604,7 @@
     },
     "packages/react": {
       "name": "@applik8s/react",
-      "version": "0.7.1",
+      "version": "0.8.0",
       "dependencies": {
         "@applik8s/client": "0.7.1",
         "@applik8s/identity": "0.7.1",
@@ -615,20 +615,20 @@
     },
     "packages/runtime": {
       "name": "@applik8s/runtime",
-      "version": "0.7.1",
+      "version": "0.8.0",
       "dependencies": {
-        "@applik8s/core": "0.7.0",
+        "@applik8s/core": "0.8.0",
       },
     },
     "packages/runtime-ai": {
       "name": "@applik8s/runtime-ai",
-      "version": "0.7.1",
+      "version": "0.8.0",
       "dependencies": {
-        "@applik8s/ai": "0.7.1",
-        "@applik8s/ai-tanstack": "0.7.1",
-        "@applik8s/client": "0.7.1",
-        "@applik8s/core": "0.7.1",
-        "@applik8s/operations": "0.7.1",
+        "@applik8s/ai": "0.8.0",
+        "@applik8s/ai-tanstack": "0.8.0",
+        "@applik8s/client": "0.8.0",
+        "@applik8s/core": "0.8.0",
+        "@applik8s/operations": "0.8.0",
         "@tanstack/ai": "0.45.1",
         "@tanstack/ai-openai": "0.19.1",
         "postgres": "^3.4.7",
@@ -636,10 +636,11 @@
     },
     "packages/runtime-aws": {
       "name": "@applik8s/runtime-aws",
-      "version": "0.7.1",
+      "version": "0.8.0",
       "dependencies": {
-        "@applik8s/applik8s": "0.7.1",
-        "@applik8s/sdk": "0.7.1",
+        "@applik8s/applik8s": "0.8.0",
+        "@applik8s/core": "0.8.0",
+        "@applik8s/sdk": "0.8.0",
         "@aws-sdk/client-athena": "3.1113.0",
         "@aws-sdk/client-dynamodb": "3.1113.0",
         "@aws-sdk/client-glue": "3.1113.0",
@@ -653,53 +654,57 @@
     },
     "packages/runtime-celld": {
       "name": "@applik8s/runtime-celld",
-      "version": "0.7.1",
+      "version": "0.8.0",
       "dependencies": {
-        "@applik8s/applik8s": "0.7.1",
-        "@applik8s/deployment-contract": "0.7.1",
-        "@applik8s/sdk": "0.7.1",
+        "@applik8s/applik8s": "0.8.0",
+        "@applik8s/core": "0.8.0",
+        "@applik8s/deployment-contract": "0.8.0",
+        "@applik8s/runtime": "0.8.0",
+        "@applik8s/sdk": "0.8.0",
       },
     },
     "packages/runtime-contract": {
       "name": "@applik8s/runtime-contract",
-      "version": "0.7.1",
+      "version": "0.8.0",
       "dependencies": {
         "arktype": "2.2.1",
       },
     },
     "packages/runtime-duckdb": {
       "name": "@applik8s/runtime-duckdb",
-      "version": "0.7.1",
+      "version": "0.8.0",
       "dependencies": {
-        "@applik8s/applik8s": "0.7.1",
-        "@applik8s/sdk": "0.7.1",
+        "@applik8s/applik8s": "0.8.0",
+        "@applik8s/core": "0.8.0",
+        "@applik8s/sdk": "0.8.0",
         "@duckdb/node-api": "1.5.5-r.4",
       },
     },
     "packages/runtime-hatchet": {
       "name": "@applik8s/runtime-hatchet",
-      "version": "0.7.1",
+      "version": "0.8.0",
       "dependencies": {
-        "@applik8s/applik8s": "0.7.1",
+        "@applik8s/applik8s": "0.8.0",
+        "@applik8s/core": "0.8.0",
         "@hatchet-dev/typescript-sdk": "1.24.3",
       },
     },
     "packages/runtime-kubernetes": {
       "name": "@applik8s/runtime-kubernetes",
-      "version": "0.7.1",
+      "version": "0.8.0",
       "dependencies": {
-        "@applik8s/applik8s": "0.7.1",
-        "@applik8s/core": "0.7.1",
+        "@applik8s/applik8s": "0.8.0",
+        "@applik8s/core": "0.8.0",
         "@kubernetes/client-node": "^1.3.0",
         "postgres": "^3.4.7",
       },
     },
     "packages/runtime-nats": {
       "name": "@applik8s/runtime-nats",
-      "version": "0.7.1",
+      "version": "0.8.0",
       "dependencies": {
-        "@applik8s/applik8s": "0.7.1",
-        "@applik8s/core": "0.7.1",
+        "@applik8s/applik8s": "0.8.0",
+        "@applik8s/core": "0.8.0",
         "@nats-io/jetstream": "3.4.0",
         "@nats-io/nats-core": "3.4.0",
         "@nats-io/transport-node": "3.4.0",
@@ -708,16 +713,17 @@
     },
     "packages/runtime-opensearch": {
       "name": "@applik8s/runtime-opensearch",
-      "version": "0.7.1",
+      "version": "0.8.0",
       "dependencies": {
-        "@applik8s/applik8s": "0.7.1",
+        "@applik8s/applik8s": "0.8.0",
+        "@applik8s/core": "0.8.0",
       },
     },
     "packages/runtime-otel": {
       "name": "@applik8s/runtime-otel",
-      "version": "0.7.1",
+      "version": "0.8.0",
       "dependencies": {
-        "@applik8s/applik8s": "0.7.1",
+        "@applik8s/applik8s": "0.8.0",
         "@opentelemetry/api": "1.9.0",
         "@opentelemetry/exporter-metrics-otlp-http": "0.221.0",
         "@opentelemetry/exporter-trace-otlp-http": "0.221.0",
@@ -730,33 +736,33 @@
     },
     "packages/runtime-postgres": {
       "name": "@applik8s/runtime-postgres",
-      "version": "0.7.1",
+      "version": "0.8.0",
       "dependencies": {
-        "@applik8s/applik8s": "0.7.1",
+        "@applik8s/applik8s": "0.8.0",
         "drizzle-orm": "^0.45.1",
         "postgres": "^3.4.7",
       },
     },
     "packages/runtime-s3": {
       "name": "@applik8s/runtime-s3",
-      "version": "0.7.1",
+      "version": "0.8.0",
       "dependencies": {
-        "@applik8s/applik8s": "0.7.1",
+        "@applik8s/applik8s": "0.8.0",
         "@aws-sdk/client-s3": "3.1113.0",
         "@aws-sdk/s3-request-presigner": "3.1075.0",
       },
     },
     "packages/sdk": {
       "name": "@applik8s/sdk",
-      "version": "0.7.1",
+      "version": "0.8.0",
       "dependencies": {
-        "@applik8s/core": "0.7.1",
+        "@applik8s/core": "0.8.0",
         "arktype": "2.2.1",
       },
     },
     "packages/search": {
       "name": "@applik8s/search",
-      "version": "0.7.1",
+      "version": "0.8.0",
       "dependencies": {
         "@applik8s/applik8s": "0.7.1",
         "@applik8s/core": "0.7.1",
@@ -765,7 +771,7 @@
     },
     "packages/server": {
       "name": "@applik8s/server",
-      "version": "0.7.1",
+      "version": "0.8.0",
       "dependencies": {
         "@applik8s/client": "0.7.1",
         "@applik8s/core": "0.7.1",
@@ -775,7 +781,7 @@
     },
     "packages/start-agentic": {
       "name": "@applik8s/start-agentic",
-      "version": "0.7.1",
+      "version": "0.8.0",
       "dependencies": {
         "@applik8s/agents": "0.7.1",
         "@applik8s/ai": "0.7.1",
@@ -808,7 +814,7 @@
     },
     "packages/tanstack-start": {
       "name": "@applik8s/tanstack-start",
-      "version": "0.7.1",
+      "version": "0.8.0",
       "dependencies": {
         "@applik8s/client": "0.7.1",
         "@applik8s/identity": "0.7.1",
@@ -826,7 +832,7 @@
     },
     "packages/testing": {
       "name": "@applik8s/testing",
-      "version": "0.7.1",
+      "version": "0.8.0",
       "dependencies": {
         "@applik8s/core": "0.7.0",
         "@applik8s/sdk": "0.7.0",
@@ -837,23 +843,23 @@
     },
     "packages/typekro-adapter": {
       "name": "@applik8s/typekro-adapter",
-      "version": "0.7.1",
+      "version": "0.8.0",
       "dependencies": {
-        "@applik8s/compiler": "0.7.1",
-        "@applik8s/core": "0.7.1",
-        "@applik8s/sdk": "0.7.1",
-        "@applik8s/typetainer": "0.7.1",
+        "@applik8s/compiler": "0.8.0",
+        "@applik8s/core": "0.8.0",
+        "@applik8s/sdk": "0.8.0",
+        "@applik8s/typetainer": "0.8.0",
         "arktype": "2.2.1",
         "typekro": "0.33.7",
       },
     },
     "packages/typetainer": {
       "name": "@applik8s/typetainer",
-      "version": "0.7.1",
+      "version": "0.8.0",
     },
     "packages/usage": {
       "name": "@applik8s/usage",
-      "version": "0.7.1",
+      "version": "0.8.0",
       "dependencies": {
         "@applik8s/applik8s": "0.7.1",
         "drizzle-orm": "^0.45.1",
@@ -861,7 +867,7 @@
     },
     "packages/vite": {
       "name": "@applik8s/vite",
-      "version": "0.7.1",
+      "version": "0.8.0",
       "dependencies": {
         "@applik8s/compiler": "0.7.1",
         "@applik8s/server": "0.7.1",

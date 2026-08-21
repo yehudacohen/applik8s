@@ -1,19 +1,24 @@
 // typecast-file-boundary: Schedule contracts erase user schemas for transport and validate every admission before dispatch.
-import { sha256Hex } from '@applik8s/deployment-contract';
+
 import type {
   ApplicationScheduleNode,
   JsonObject,
 } from '@applik8s/core';
+import {
+  canonicalJsonCompatibleV1Policy,
+  canonicalJsonV1String,
+} from '@applik8s/core';
+import { sha256Hex } from '@applik8s/deployment-contract';
 import type { SchemaInput } from '@applik8s/sdk';
 import { serializeApplicationCallback } from './application-callback.js';
 import { applicationProviderGraphNodeId } from './application-identifiers.js';
-import { runApplicationTelemetryBoundary } from './application-telemetry-runtime.js';
 import type {
   ApplicationQualifiedProviderToken,
   ApplicationSchedulerProvider,
   ApplicationSchedulerProviderToken,
 } from './application-providers.js';
 import { Scheduler } from './application-providers.js';
+import { runApplicationTelemetryBoundary } from './application-telemetry-runtime.js';
 import {
   declaredSchema,
   validateMessage,
@@ -982,15 +987,7 @@ function compareRevision(left: string, right: string): number {
 }
 
 function stableDigest(value: unknown): string {
-  return sha256Hex(stableStringify(value));
-}
-
-function stableStringify(value: unknown): string {
-  if (value === null || typeof value !== 'object') return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
-  return `{${Object.entries(value)
-    .filter(([, entry]) => entry !== undefined)
-    .sort(([left], [right]) => left.localeCompare(right))
-    .map(([key, entry]) => `${JSON.stringify(key)}:${stableStringify(entry)}`)
-    .join(',')}}`;
+  return sha256Hex(
+    canonicalJsonV1String(value, canonicalJsonCompatibleV1Policy),
+  );
 }

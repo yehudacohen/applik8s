@@ -28,6 +28,7 @@ import {
   ApplicationSearchFanOutError,
   ApplicationSearchHistoryLossError,
 } from '@applik8s/applik8s';
+import { canonicalJsonV1String, type JsonValue } from '@applik8s/core';
 
 const STATE_DOCUMENT_ID = '__applik8s_search_state';
 const INTERNAL_KIND_FIELD = '__applik8s_kind';
@@ -2206,38 +2207,30 @@ function changeDocumentId(position: number): string {
 
 function digest(value: unknown): string {
   return createHash('sha256')
-    .update(canonicalJson(value))
+    .update(openSearchCanonicalJson(value))
     .digest('hex');
 }
 
-function canonicalJson(value: unknown): string {
-  if (
-    value === null
-    || typeof value === 'string'
-    || typeof value === 'boolean'
-  ) {
-    return JSON.stringify(value);
+function openSearchCanonicalJson(value: unknown): string {
+  return canonicalJsonV1String(openSearchCanonicalValue(value));
+}
+
+function openSearchCanonicalValue(value: unknown): JsonValue {
+  if (value instanceof Date) return value.toISOString();
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') {
+    return value;
   }
-  if (typeof value === 'number') {
-    if (!Number.isFinite(value)) {
-      throw new Error('Search digest cannot encode a non-finite number.');
-    }
-    return JSON.stringify(value);
-  }
-  if (value instanceof Date) return JSON.stringify(value.toISOString());
-  if (Array.isArray(value)) {
-    return `[${value.map(canonicalJson).join(',')}]`;
-  }
+  if (typeof value === 'number') return value;
+  if (Array.isArray(value)) return value.map(openSearchCanonicalValue);
   if (value && typeof value === 'object') {
-    return `{${Object.entries(value)
-      .sort(([left], [right]) => left.localeCompare(right))
-      .map(
-        ([key, candidate]) =>
-          `${JSON.stringify(key)}:${canonicalJson(candidate)}`,
-      )
-      .join(',')}}`;
+    return Object.fromEntries(
+      Object.entries(value).map(([key, candidate]) => [
+        key,
+        openSearchCanonicalValue(candidate),
+      ]),
+    );
   }
-  return JSON.stringify(String(value));
+  throw new TypeError(`OpenSearch canonical values cannot encode ${typeof value}.`);
 }
 
 function normalizeValue(value: unknown): unknown {

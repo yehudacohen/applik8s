@@ -48,6 +48,10 @@ import type {
   TrackExecutionOptions,
   TrackedExecutionObservation,
 } from '@applik8s/core';
+import {
+  canonicalJsonCompatibleV1Policy,
+  canonicalJsonV1String,
+} from '@applik8s/core';
 import { isRunnableHandlerRegistration, type RunnableHandlerRegistration } from './runtime.js';
 
 export interface HandlerDispatchHostImports {
@@ -679,7 +683,10 @@ function createRecorder<TSpec extends object, TStatus extends object>(object: Re
   let requeue: RequeuePolicy | undefined;
   // typecast: an absent Kubernetes status is represented as an empty draft for the resource-specific status type.
   const status = cloneJson((object.status ?? {}) as TStatus);
-  let statusSnapshot = canonicalJson(status);
+  let statusSnapshot = canonicalJsonV1String(
+    status,
+    canonicalJsonCompatibleV1Policy,
+  );
 
   const k8s = {
     Job: (config: KubernetesFactoryConfig) => kubernetesFactory('batch/v1', 'Job', config),
@@ -952,9 +959,15 @@ function createRecorder<TSpec extends object, TStatus extends object>(object: Re
       if (deletes.length > 0) {
         result.delete = deletes;
       }
-      if (canonicalJson(status) !== statusSnapshot) {
+      if (
+        canonicalJsonV1String(status, canonicalJsonCompatibleV1Policy)
+        !== statusSnapshot
+      ) {
         result.status = cloneJson(status);
-        statusSnapshot = canonicalJson(status);
+        statusSnapshot = canonicalJsonV1String(
+          status,
+          canonicalJsonCompatibleV1Policy,
+        );
       }
       if (events.length > 0) {
         result.events = events;
@@ -1770,20 +1783,6 @@ function stableHash(input: string): string {
 
 function uncapitalize(value: string): string {
   return `${value.slice(0, 1).toLowerCase()}${value.slice(1)}`;
-}
-
-function canonicalJson(value: unknown): string {
-  if (value === null || typeof value !== 'object') {
-    return JSON.stringify(value) ?? 'null';
-  }
-  if (Array.isArray(value)) {
-    return `[${value.map((entry) => canonicalJson(entry)).join(',')}]`;
-  }
-  return `{${Object.entries(value)
-    .filter(([, entry]) => entry !== undefined)
-    .sort(([left], [right]) => left.localeCompare(right))
-    .map(([key, entry]) => `${JSON.stringify(key)}:${canonicalJson(entry)}`)
-    .join(',')}}`;
 }
 
 function cloneJson<T>(value: T): T {

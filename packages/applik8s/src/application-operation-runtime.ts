@@ -1,4 +1,8 @@
 import { createHash } from 'node:crypto';
+import {
+  canonicalJsonCompatibleV1Policy,
+  canonicalJsonV1String,
+} from '@applik8s/core';
 
 /**
  * Canonical digest shared by operation-admission and revalidation boundaries.
@@ -6,16 +10,7 @@ import { createHash } from 'node:crypto';
  * helper, but the serializer remains deterministic for every JSON value.
  */
 export function applicationOperationInputDigest(value: unknown): string {
-  return `sha256:${createHash('sha256').update(canonicalJson(value)).digest('hex')}`;
-}
-
-function canonicalJson(value: unknown): string {
-  if (value === undefined) return 'null';
-  if (value === null || typeof value !== 'object') return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
-  return `{${Object.entries(value)
-    .filter(([, entry]) => entry !== undefined)
-    .sort(([left], [right]) => left.localeCompare(right))
-    .map(([key, entry]) => `${JSON.stringify(key)}:${canonicalJson(entry)}`)
-    .join(',')}}`;
+  return `sha256:${createHash('sha256')
+    .update(canonicalJsonV1String(value, canonicalJsonCompatibleV1Policy))
+    .digest('hex')}`;
 }

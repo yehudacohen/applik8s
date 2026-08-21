@@ -1,4 +1,16 @@
-import { validateApplicationAuthorizationReceipt, type ApplicationAuthorizationReceipt } from '@applik8s/core';
+import {
+  type ApplicationAuthorizationReceipt,
+  canonicalJsonCompatibleV1Policy,
+  canonicalJsonV1String,
+  canonicalJsonV1Value,
+  type JsonValue,
+  validateApplicationAuthorizationReceipt,
+} from '@applik8s/core';
+import {
+  createSignedEnvelopeCodec,
+  signedEnvelopeUtf8Key,
+  staticSignedEnvelopeKeyProvider,
+} from '@applik8s/runtime';
 
 // typecast-file-boundary: Signed JSON claims are restored only after signature, expiry, and structural validation.
 /** Short-lived signed capability used only to admit one public actor WebSocket. */
@@ -28,18 +40,34 @@ export class CelldActorConnectionTicketError extends Error {
   }
 }
 
+const CELLD_ACTOR_CONNECTION_TICKET_PURPOSE =
+  'applik8s.actor-connection-ticket/v1' as const;
+const CELLD_ACTOR_CONNECTION_TICKET_KEY_ID = 'actor-connection-current';
+const CELLD_ACTOR_CONNECTION_TICKET_MAXIMUM_LIFETIME_MS = 300_000;
+const CELLD_ACTOR_CONNECTION_TICKET_MAXIMUM_BYTES = 32_768;
+
 export async function signCelldActorConnectionTicket(
   claims: CelldActorConnectionTicketClaims,
   secret: string,
 ): Promise<string> {
   validateClaims(claims, Date.now(), false);
-  const payload = base64Url(new TextEncoder().encode(canonicalJson(claims)));
-  const signature = new Uint8Array(await crypto.subtle.sign(
-    'HMAC',
-    await hmacKey(secret, ['sign']),
-    new TextEncoder().encode(payload),
-  ));
-  return `${payload}.${base64Url(signature)}`;
+  const issuedAt = Date.parse(claims.issuedAt);
+  const expiresAt = Date.parse(claims.expiresAt);
+  try {
+    return await actorConnectionTicketCodec(secret, {
+      now: Date.now(),
+      validateTime: false,
+      clockSkewMilliseconds: 0,
+    }).sign(
+      canonicalJsonV1Value(
+        claims,
+        canonicalJsonCompatibleV1Policy,
+      ),
+      { issuedAt, expiresAt },
+    );
+  } catch (cause) {
+    throw connectionTicketError(cause);
+  }
 }
 
 export async function verifyCelldActorConnectionTicket(
@@ -47,25 +75,52 @@ export async function verifyCelldActorConnectionTicket(
   secret: string,
   options: { readonly now?: number; readonly maximumClockSkewMilliseconds?: number } = {},
 ): Promise<CelldActorConnectionTicketClaims> {
-  const [payload, signature, extra] = ticket.split('.');
-  if (!payload || !signature || extra !== undefined) throw new CelldActorConnectionTicketError('Actor connection ticket must contain one payload and signature.');
-  let signatureBytes: Uint8Array;
-  let value: unknown;
+  const now = options.now ?? Date.now();
+  const clockSkewMilliseconds = options.maximumClockSkewMilliseconds ?? 30_000;
   try {
-    signatureBytes = fromBase64Url(signature);
-    value = JSON.parse(new TextDecoder().decode(fromBase64Url(payload)));
+    const envelope = await actorConnectionTicketCodec(secret, {
+      now,
+      validateTime: true,
+      clockSkewMilliseconds,
+    }).verify(ticket);
+    return validateClaims(envelope.payload, now, true, clockSkewMilliseconds);
   } catch (cause) {
-    throw new CelldActorConnectionTicketError('Actor connection ticket is not valid base64url JSON.', { cause });
+    if (cause instanceof CelldActorConnectionTicketError) throw cause;
+    throw connectionTicketError(cause);
   }
-  const valid = await crypto.subtle.verify(
-    'HMAC',
-    await hmacKey(secret, ['verify']),
-    new Uint8Array([...signatureBytes]),
-    new TextEncoder().encode(payload),
-  );
-  if (!valid) throw new CelldActorConnectionTicketError('Actor connection ticket signature is invalid.');
-  const claims = validateClaims(value, options.now ?? Date.now(), true, options.maximumClockSkewMilliseconds ?? 30_000);
-  return claims;
+}
+
+function actorConnectionTicketCodec(
+  secret: string,
+  options: {
+    readonly now: number;
+    readonly validateTime: boolean;
+    readonly clockSkewMilliseconds: number;
+  },
+) {
+  return createSignedEnvelopeCodec({
+    purpose: CELLD_ACTOR_CONNECTION_TICKET_PURPOSE,
+    keys: staticSignedEnvelopeKeyProvider({
+      current: {
+        id: CELLD_ACTOR_CONNECTION_TICKET_KEY_ID,
+        key: signedEnvelopeUtf8Key(secret),
+      },
+    }),
+    now: () => options.validateTime
+      ? options.now - options.clockSkewMilliseconds
+      : options.now,
+    maximumLifetimeMs: CELLD_ACTOR_CONNECTION_TICKET_MAXIMUM_LIFETIME_MS,
+    maximumEncodedBytes: CELLD_ACTOR_CONNECTION_TICKET_MAXIMUM_BYTES,
+    validatePayload(value: JsonValue) {
+      validateClaims(
+        value,
+        options.now,
+        options.validateTime,
+        options.clockSkewMilliseconds,
+      );
+      return value;
+    },
+  });
 }
 
 function validateClaims(
@@ -101,7 +156,10 @@ function validateClaims(
   const expectedOperationId = `applik8s://actors/${claims.actor}/operations/${claims.connect.member}`;
   const expectedTarget = { kind: 'target', model: claims.actor, identity: { key: claims.key } };
   if (claims.authorizationReceipt.operationId !== expectedOperationId
-    || canonicalJson(claims.authorizationReceipt.target) !== canonicalJson(expectedTarget)) {
+    || canonicalJsonV1String(
+      claims.authorizationReceipt.target,
+      canonicalJsonCompatibleV1Policy,
+    ) !== canonicalJsonV1String(expectedTarget, canonicalJsonCompatibleV1Policy)) {
     throw new CelldActorConnectionTicketError('Actor connection ticket receipt does not match its actor, key, and member.');
   }
   if (!Number.isSafeInteger(claims.leaseMilliseconds) || claims.leaseMilliseconds < 5_000 || claims.leaseMilliseconds > 300_000) {
@@ -118,34 +176,6 @@ function validateClaims(
   return claims;
 }
 
-async function hmacKey(secret: string, usages: readonly KeyUsage[]): Promise<CryptoKey> {
-  if (secret.length < 32) throw new CelldActorConnectionTicketError('Actor connection signing key must contain at least 32 characters.');
-  return crypto.subtle.importKey('raw', new TextEncoder().encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, usages);
-}
-
-function base64Url(value: Uint8Array): string {
-  let binary = '';
-  for (const byte of value) binary += String.fromCharCode(byte);
-  return btoa(binary).replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/u, '');
-}
-
-function fromBase64Url(value: string): Uint8Array {
-  if (!/^[A-Za-z0-9_-]+$/u.test(value)) throw new TypeError('invalid base64url');
-  const standard = value.replaceAll('-', '+').replaceAll('_', '/');
-  const decoded = atob(standard.padEnd(standard.length + ((4 - standard.length % 4) % 4), '='));
-  return Uint8Array.from(decoded, (character) => character.charCodeAt(0));
-}
-
-function canonicalJson(value: unknown): string {
-  if (value === null || typeof value !== 'object') return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
-  return `{${Object.entries(value)
-    .filter(([, entry]) => entry !== undefined)
-    .sort(([left], [right]) => left.localeCompare(right))
-    .map(([key, entry]) => `${JSON.stringify(key)}:${canonicalJson(entry)}`)
-    .join(',')}}`;
-}
-
 function requiredObject(value: unknown, label: string): Readonly<Record<string, unknown>> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new CelldActorConnectionTicketError(`${label} must be an object.`);
   return value as Readonly<Record<string, unknown>>;
@@ -154,4 +184,14 @@ function requiredObject(value: unknown, label: string): Readonly<Record<string, 
 function requiredString(value: unknown, label: string): string {
   if (typeof value !== 'string' || !value.trim()) throw new CelldActorConnectionTicketError(`${label} must be a non-empty string.`);
   return value;
+}
+
+function connectionTicketError(cause: unknown): CelldActorConnectionTicketError {
+  const message = cause instanceof Error
+    ? cause.message
+    : 'Actor connection ticket validation failed.';
+  return new CelldActorConnectionTicketError(
+    `Actor connection ticket is invalid: ${message}`,
+    { cause },
+  );
 }

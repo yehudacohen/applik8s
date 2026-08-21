@@ -8,12 +8,13 @@ import type {
   ApplicationAIMessageRecord,
   ApplicationAIProtocolRunRecord,
 } from '@applik8s/ai';
-import type {
-  ApplicationExecutionPrincipal,
-  ApplicationIdentityReference,
-  ApplicationPrincipal,
-  JsonObject,
-  JsonValue,
+import {
+  type ApplicationExecutionPrincipal,
+  type ApplicationIdentityReference,
+  type ApplicationPrincipal,
+  canonicalJsonV1String,
+  type JsonObject,
+  type JsonValue,
 } from '@applik8s/core';
 import {
   ApplicationConversationConflictError,
@@ -98,7 +99,7 @@ export function createApplicationAIAgentConversationPersistence(
             if (
               !existing
               || existing.type !== event.type
-              || canonicalJson(existing.payload) !== canonicalJson(event)
+              || canonicalJsonV1String(existing.payload) !== canonicalJsonV1String(event)
             ) {
               throw error;
             }
@@ -154,7 +155,7 @@ export function applicationAIConversationPrincipalScope(
     ? principal.causalPrincipal ?? principal.identity
     : principal.identity;
   return `principal_${createHash('sha256')
-    .update(canonicalJson({
+    .update(canonicalJsonV1String({
       actor: identityScope(actor),
       trustedContext,
     }))
@@ -400,7 +401,7 @@ function normalizedInputMessage(
       .update('\0')
       .update(String(index))
       .update('\0')
-      .update(canonicalJson(content))
+      .update(canonicalJsonV1String(content))
       .digest('hex')}`,
     role,
     content,
@@ -429,7 +430,7 @@ function assertSameMessage(
   if (
     existing.id !== expected.id
     || existing.role !== expected.role
-    || canonicalJson(existing.content) !== canonicalJson(expected.content)
+    || canonicalJsonV1String(existing.content) !== canonicalJsonV1String(expected.content)
   ) {
     throw new ApplicationConversationConflictError(
       `Message ${expected.id} was reused with different durable content.`,
@@ -475,20 +476,6 @@ function cloneJson<T extends JsonValue>(value: T): T {
 
 function cloneJsonObject(value: JsonObject): JsonObject {
   return cloneJson(value);
-}
-
-function canonicalJson(value: unknown): string {
-  return JSON.stringify(sortJson(value));
-}
-
-function sortJson(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(sortJson);
-  if (!value || typeof value !== 'object') return value;
-  return Object.fromEntries(
-    Object.entries(value as Record<string, unknown>)
-      .sort(([left], [right]) => left.localeCompare(right))
-      .map(([key, nested]) => [key, sortJson(nested)]),
-  );
 }
 
 function requiredString(value: unknown, field: string): string {

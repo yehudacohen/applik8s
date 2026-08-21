@@ -1,18 +1,19 @@
 // typecast-file-boundary: DuckDB native bindings return dynamically typed rows that are schema-validated before exposure.
 import { createHash, randomUUID } from 'node:crypto';
-import { chmod, mkdir, readFile, readdir, rename, stat, unlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, readdir, readFile, rename, stat, unlink, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import {
-  applicationLakehouseQueryIdentity,
-  ApplicationLakehouseQueryTerminalError,
-  applicationLakehouseQueryTerminalError,
-  compileApplicationLakehouseQuery,
-  createDeterministicApplicationLakehouseRuntime,
   type ApplicationLakehouseManifest,
   type ApplicationLakehouseQueryRequest,
   type ApplicationLakehouseQueryResult,
+  ApplicationLakehouseQueryTerminalError,
+  applicationLakehouseQueryIdentity,
+  applicationLakehouseQueryTerminalError,
+  compileApplicationLakehouseQuery,
+  createDeterministicApplicationLakehouseRuntime,
   type DeterministicApplicationLakehouseRuntime,
 } from '@applik8s/applik8s/lakehouse-runtime';
+import { canonicalJsonV1String, type JsonValue } from '@applik8s/core';
 import type { SchemaInput } from '@applik8s/sdk';
 import { DuckDBInstance } from '@duckdb/node-api';
 
@@ -444,12 +445,12 @@ function assertProviderResultContainsPage(
   pageRows: readonly object[],
   ordered: boolean,
 ): void {
-  const serialized = providerRows.map((row) => canonicalJson(row));
+  const serialized = providerRows.map((row) => duckDbCanonicalJson(row));
   let previous = -1;
   for (const row of pageRows) {
     const start = ordered ? previous + 1 : 0;
     const index = providerRows.findIndex((providerRow, candidateIndex) => candidateIndex >= start && rowsEquivalent(providerRow, row));
-    if (index < 0) throw new Error(`DuckDB provider result diverged from the portable lakehouse query result (providerRows=${providerRows.length}, pageRows=${pageRows.length}, providerDigests=${serialized.map(shortDigest).join(',')}, expectedDigest=${shortDigest(canonicalJson(row))}).`);
+    if (index < 0) throw new Error(`DuckDB provider result diverged from the portable lakehouse query result (providerRows=${providerRows.length}, pageRows=${pageRows.length}, providerDigests=${serialized.map(shortDigest).join(',')}, expectedDigest=${shortDigest(duckDbCanonicalJson(row))}).`);
     previous = index;
   }
 }
@@ -470,13 +471,28 @@ function shortDigest(value: string): string {
   return createHash('sha256').update(value).digest('hex').slice(0, 12);
 }
 
-function canonicalJson(value: unknown): string {
-  if (typeof value === 'bigint') return value >= BigInt(Number.MIN_SAFE_INTEGER) && value <= BigInt(Number.MAX_SAFE_INTEGER) ? String(Number(value)) : JSON.stringify(value.toString());
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
-  if (value && typeof value === 'object') {
-    return `{${Object.entries(value).sort(([left], [right]) => left.localeCompare(right)).map(([key, item]) => `${JSON.stringify(key)}:${canonicalJson(item)}`).join(',')}}`;
+function duckDbCanonicalJson(value: unknown): string {
+  return canonicalJsonV1String(duckDbCanonicalValue(value));
+}
+
+function duckDbCanonicalValue(value: unknown): JsonValue {
+  if (typeof value === 'bigint') {
+    return value >= BigInt(Number.MIN_SAFE_INTEGER)
+      && value <= BigInt(Number.MAX_SAFE_INTEGER)
+      ? Number(value)
+      : value.toString();
   }
-  return JSON.stringify(value);
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') {
+    return value;
+  }
+  if (typeof value === 'number') return value;
+  if (Array.isArray(value)) return value.map(duckDbCanonicalValue);
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, item]) => [key, duckDbCanonicalValue(item)]),
+    );
+  }
+  throw new TypeError(`DuckDB canonical rows cannot encode ${typeof value}.`);
 }
 
 function safeSegment(value: string): string {

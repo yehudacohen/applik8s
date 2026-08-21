@@ -1,8 +1,8 @@
 // typecast-file-boundary: the compiler validates graph node discriminators and schema descriptors before lowering them to canonical operation and authority artifacts.
 import { createHash } from 'node:crypto';
 import type {
-  ApplicationGraph,
   ApplicationCrdNode,
+  ApplicationGraph,
   ApplicationMessageContractSchema,
   ApplicationModelNode,
   ApplicationOperationAuthorityDescriptor,
@@ -12,13 +12,17 @@ import type {
   ApplicationOperationKind,
   ApplicationOperationTransportBinding,
   ApplicationSchemaDescriptor,
-  ApplicationStaticGrantDefinition,
   ApplicationStaticAuthorityManifest,
+  ApplicationStaticGrantDefinition,
   ApplicationStaticPermissionDefinition,
   ApplicationWorkloadAuthorityEnvelope,
-  JsonObject,
 } from '@applik8s/core';
-import { applicationOperationId, validateApplicationOperationCatalog } from '@applik8s/core';
+import {
+  applicationOperationId,
+  canonicalJsonCompatibleV1Policy,
+  canonicalJsonV1String,
+  validateApplicationOperationCatalog,
+} from '@applik8s/core';
 
 export interface CompileApplicationOperationCatalogOptions {
   readonly revision?: string;
@@ -941,7 +945,11 @@ function mergeAuthorityRecords<TValue extends { readonly id: string }>(
   const values = new Map(existing.map((record) => [record.id, record]));
   for (const record of added) {
     const previous = values.get(record.id);
-    if (previous && canonicalJson(previous) !== canonicalJson(record)) {
+    if (
+      previous
+      && canonicalJsonV1String(previous, canonicalJsonCompatibleV1Policy)
+        !== canonicalJsonV1String(record, canonicalJsonCompatibleV1Policy)
+    ) {
       throw new Error(
         `Application compiler-owned ${kind} ${record.id} conflicts with an authored authority record.`,
       );
@@ -1402,14 +1410,7 @@ function httpMethod(method: string): 'GET' | 'HEAD' | 'POST' | 'PUT' | 'PATCH' |
 }
 
 function digestJson(value: unknown): string {
-  return `sha256:${createHash('sha256').update(canonicalJson(value)).digest('hex')}`;
-}
-
-function canonicalJson(value: unknown): string {
-  if (value === null || typeof value !== 'object') return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
-  return `{${Object.entries(value as JsonObject)
-    .sort(([left], [right]) => left.localeCompare(right))
-    .map(([key, entry]) => `${JSON.stringify(key)}:${canonicalJson(entry)}`)
-    .join(',')}}`;
+  return `sha256:${createHash('sha256')
+    .update(canonicalJsonV1String(value, canonicalJsonCompatibleV1Policy))
+    .digest('hex')}`;
 }

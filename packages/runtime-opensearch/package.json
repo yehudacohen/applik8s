@@ -23,6 +23,7 @@
     }
   },
   "dependencies": {
-    "@applik8s/applik8s": "0.8.0"
+    "@applik8s/applik8s": "0.8.0",
+    "@applik8s/core": "0.8.0"
   }
 }

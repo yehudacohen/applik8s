@@ -31,6 +31,10 @@ import type {
   Result,
   Sha256Digest,
 } from '@applik8s/core';
+import {
+  canonicalJsonCompatibleV1Policy,
+  canonicalJsonV1String,
+} from '@applik8s/core';
 import { sdk } from '@applik8s/sdk';
 
 export type {
@@ -660,18 +664,8 @@ function samePlacement(left: DnsPublicationPlacement, right: DnsPublicationPlace
 }
 
 function sameJson(left: unknown, right: unknown): boolean {
-  return JSON.stringify(canonicalJson(left)) === JSON.stringify(canonicalJson(right));
-}
-
-function canonicalJson(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(canonicalJson);
-  if (!value || typeof value !== 'object') return value;
-  const canonical: Record<string, unknown> = {};
-  for (const key of Object.keys(value).sort()) {
-    const next = Reflect.get(value, key);
-    if (next !== undefined) canonical[key] = canonicalJson(next);
-  }
-  return canonical;
+  return canonicalJsonV1String(left, canonicalJsonCompatibleV1Policy)
+    === canonicalJsonV1String(right, canonicalJsonCompatibleV1Policy);
 }
 
 function uniqueSorted<T extends string>(values: readonly T[]): T[] {

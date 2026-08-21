@@ -14,6 +14,21 @@
       "maximumLifetime": "unbounded-when-used-by-durable-digests",
       "purposeOrKeyNamespace": "named-domain-policy",
       "migrationPhase": "provider-and-gateway-adoption",
+      "adoptedBy": [
+        "application-operation-input-digests",
+        "application-operation-authority",
+        "operation-catalog-digests",
+        "identity-trusted-context-digests",
+        "agent-conversation-digests",
+        "ai-attempt-digests",
+        "handler-status-diffing",
+        "schedule-digests",
+        "dns-value-equivalence",
+        "hatchet-schedule-inputs",
+        "duckdb-row-comparison",
+        "opensearch-digests",
+        "compiler-selector-adapter"
+      ],
       "telemetry": "runtime-integrity-format-version",
       "rollbackSafeThrough": "pending-mixed-version-evidence",
       "decoderRemovalRelease": null
@@ -31,6 +46,22 @@
       "migrationPhase": "gateway-adoption-not-yet-integrated",
       "telemetry": "runtime-integrity-envelope-version-and-purpose",
       "rollbackSafeThrough": "pending-gateway-inventory",
+      "decoderRemovalRelease": null
+    },
+    {
+      "id": "celld-actor-connection-ticket-v1",
+      "kind": "signed-envelope-payload",
+      "wireVersion": "applik8s.signed-envelope/v1",
+      "payloadVersion": "applik8s.actorConnectionTicket/v1alpha1",
+      "state": "implemented",
+      "owner": "@applik8s/runtime-celld",
+      "writers": ["0.8.x"],
+      "readers": ["0.8.x"],
+      "maximumLifetime": "5m-plus-30s-verifier-clock-skew",
+      "purposeOrKeyNamespace": "applik8s.actor-connection-ticket/v1",
+      "migrationPhase": "new-v0.8-capability-no-released-legacy-reader",
+      "telemetry": "pending-envelope-version-and-rejection-metrics",
+      "rollbackSafeThrough": "v0.8-pre-release-only",
       "decoderRemovalRelease": null
     },
     {

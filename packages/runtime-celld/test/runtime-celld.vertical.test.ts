@@ -1,6 +1,6 @@
 // typecast-file-boundary: Test fixtures intentionally exercise untyped Celld storage and worker request boundaries.
 import { createHash } from 'node:crypto';
-import { actor, actorState, app, event, executeApplicationActorRealtime, installApplicationActorInvocationAuthorityResolver, installApplicationActorRuntimeResolver, type, withApplicationActorTurnAuthority, type ApplicationActorTurnAuthority, type ApplicationAuthorizationReceipt } from '@applik8s/applik8s';
+import { type ApplicationActorTurnAuthority, type ApplicationAuthorizationReceipt, actor, actorState, app, event, executeApplicationActorRealtime, installApplicationActorInvocationAuthorityResolver, installApplicationActorRuntimeResolver, type, withApplicationActorTurnAuthority } from '@applik8s/applik8s';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createCelldApplicationActorRuntime, signCelldActorConnectionTicket, verifyCelldActorConnectionTicket } from '../src/index.js';
 import worker, { Applik8sActorCell, type CelldActorWorkerEnvironment } from '../src/worker.js';
@@ -201,6 +201,23 @@ describe('celld actor runtime', () => {
     };
     const ticket = await signCelldActorConnectionTicket(claims, service.connectionSigningKey);
     await expect(verifyCelldActorConnectionTicket(ticket, service.connectionSigningKey)).resolves.toEqual(claims);
+    const [protectedBody, signature] = ticket.split('.');
+    expect(JSON.parse(Buffer.from(protectedBody ?? '', 'base64url').toString('utf8'))).toMatchObject({
+      version: 'applik8s.signed-envelope/v1',
+      purpose: 'applik8s.actor-connection-ticket/v1',
+      payload: claims,
+    });
+    await expect(verifyCelldActorConnectionTicket(
+      `${protectedBody}.${signature?.slice(0, -2)}aa`,
+      service.connectionSigningKey,
+    )).rejects.toMatchObject({ code: 'APPLIK8S_ACTOR_CONNECTION_TICKET_INVALID' });
+    await expect(verifyCelldActorConnectionTicket(
+      ticket,
+      'different-actor-connection-signing-key-which-is-long-enough',
+    )).rejects.toMatchObject({ code: 'APPLIK8S_ACTOR_CONNECTION_TICKET_INVALID' });
+    await expect(verifyCelldActorConnectionTicket(ticket, service.connectionSigningKey, {
+      now: Date.parse(claims.expiresAt) + 30_001,
+    })).rejects.toMatchObject({ code: 'APPLIK8S_ACTOR_CONNECTION_TICKET_INVALID' });
     await expect(signCelldActorConnectionTicket({
       ...claims,
       authorizationReceipt: {
@@ -532,7 +549,7 @@ describe('celld actor runtime', () => {
     });
     v1.on.initialize(() => ({ count: 7 }));
     v1.on.read(async turn => turn.state());
-    let runtime = createCelldApplicationActorRuntime({ endpoint: 'http://celld.test/', authorization: service.authorization, fetch: service.fetch as typeof fetch });
+    const runtime = createCelldApplicationActorRuntime({ endpoint: 'http://celld.test/', authorization: service.authorization, fetch: service.fetch as typeof fetch });
     disposers.push(installApplicationActorRuntimeResolver(() => runtime));
     await withApplicationActorTurnAuthority(turnAuthority('celld-migration-v1', 'celld-migrating.v1', 'read', { input: {} }), () => v1.read('one', {}, { idempotencyKey: 'v1' }));
 

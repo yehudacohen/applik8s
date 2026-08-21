@@ -1,4 +1,6 @@
 // typecast-file-boundary: authority normalization validates canonical identities, scopes, and JSON records before restoring branded operation contracts.
+
+import { canonicalJsonV1String } from './canonical-json.js';
 import type { JsonObject, JsonValue, SourceLocation } from './common.js';
 
 export type ApplicationOperationId = `applik8s://${string}`;
@@ -1061,7 +1063,7 @@ function deduplicateScopes(expressions: readonly ApplicationScopeExpression[]): 
   const seen = new Set<string>();
   const result: ApplicationScopeExpression[] = [];
   for (const expression of expressions) {
-    const key = canonicalJson(expression);
+    const key = canonicalJsonV1String(expression);
     if (seen.has(key)) continue;
     seen.add(key);
     result.push(expression);
@@ -1069,11 +1071,6 @@ function deduplicateScopes(expressions: readonly ApplicationScopeExpression[]): 
   return result;
 }
 
-function canonicalJson(value: JsonValue | ApplicationScopeExpression): string {
-  if (value === null || typeof value !== 'object') return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
-  return `{${Object.entries(value).sort(([left], [right]) => left.localeCompare(right)).map(([key, entry]) => `${JSON.stringify(key)}:${canonicalJson(entry as JsonValue)}`).join(',')}}`;
-}
 
 function validateScopePath(value: string, path: string): readonly ApplicationAuthorityDiagnostic[] {
   return value.trim() && !value.split('.').some((segment) => !segment || segment === '__proto__' || segment === 'prototype' || segment === 'constructor')

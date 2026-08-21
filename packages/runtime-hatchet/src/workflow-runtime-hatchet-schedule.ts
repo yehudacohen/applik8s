@@ -15,7 +15,7 @@ import {
   boundedCronExpression,
   boundedJsonObject,
   boundedScheduleString,
-  canonicalJson,
+  canonicalWorkflowJson,
 } from './workflow-runtime-hatchet-values.js';
 
 interface HatchetCronRecord {
@@ -69,7 +69,7 @@ export async function reconcileHatchetWorkflowSchedule<TInput extends object>(
     : schedule.expression;
   const encodedInput = boundedJsonObject(schedule.input, 'input', 64 * 1_024);
   const fingerprint = createHash('sha256')
-    .update(canonicalJson({ contract, expression, input: encodedInput, revision }))
+    .update(canonicalWorkflowJson({ contract, expression, input: encodedInput, revision }))
     .digest('hex');
   const listed = await boundedHatchetOperation(
     () =>
