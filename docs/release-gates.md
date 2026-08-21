@@ -2,6 +2,52 @@
 
 Release readiness has two layers: local gates and pre-release live gates. v0.6 retains the earlier substrate, command, workflow, connection, and DNS gates and adds native-model, PostgreSQL RLS, live-query, stream, projection, browser-client, performance-history, and generated TypeKro lifecycle evidence.
 
+## v0.8 Portable Stateful Development Gates
+
+The complete locally provable v0.8 candidate is checked with:
+
+```sh
+bun run check:v08:local-qualification
+```
+
+That command verifies the canonical graph and ApplicationPlan, local runtime,
+runtime-access inference, OpenTelemetry, scheduling, lakehouse, actors, provider
+conformance, target parity, independent Builder, v0.7 source migration,
+cross-artifact secret canaries, synthetic performance/cost history, all three
+acceptance applications, packages, Rust contracts, and the machine-readable
+scorecard. The migration lane compiles the released v0.7.1 GuestBook source
+with the v0.8 toolchain and verifies every v0.7 public package export remains
+available. It does not substitute for retained-data or persisted-ownership
+upgrade evidence on OrbStack.
+
+The final release command is deliberately fail-closed:
+
+```sh
+bun run check:v08:release
+```
+
+It first runs the local qualification and then requires every acceptance gate
+and every normative document to be marked release-candidate/Accepted. Real AWS
+create/update/drift/delete, EventBridge Scheduler, CloudWatch, Athena, a
+qualified live celld deployment, MiniStack fidelity, and Kubernetes lifecycle
+evidence must exist for the exact commit before those declarations can change.
+AWS-local evidence is API-fidelity evidence only and never satisfies the real-
+AWS lane.
+
+Performance commands are split by evidence class:
+
+```sh
+bun run check:v08:performance
+bun run check:v08:performance:record
+bun run check:v08:performance:history
+```
+
+The tracked synthetic history measures plan compilation, deterministic actor
+turns, occurrence identity, immutable lakehouse queries, telemetry-boundary
+overhead, memory growth, and a static AWS cost-class inventory. Its report
+states its limitations; live provider latency, scale, and actual cloud cost are
+separate release-candidate observations.
+
 ## Local Gates
 
 Run:
@@ -43,7 +89,7 @@ bun run check:release
 The checker verifies:
 
 - publishable package metadata
-- version `0.7.1` by default, or `APPLIK8S_RELEASE_VERSION` when validating a different candidate
+- version `0.8.0` by default, or `APPLIK8S_RELEASE_VERSION` when validating a different candidate
 - Apache-2.0 license metadata
 - public publish config
 - no `file:` dependency ranges in publishable packages

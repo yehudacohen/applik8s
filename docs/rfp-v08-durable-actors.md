@@ -1,7 +1,6 @@
 # RFP: Applik8s v0.8 — Durable Identity-Addressed Actors
 
-**Status:** Proposed v0.8 beta contract. This document authorizes design review and provider spikes,
-not implementation or release.
+**Status:** Accepted v0.8 beta implementation contract. Release publication remains separately authorized.
 
 **Manifesto:** [`manifesto-v08-portable-stateful-development.md`](manifesto-v08-portable-stateful-development.md)
 
@@ -497,6 +496,16 @@ Connection admission has a stable connection identity, authenticated immediate p
 principal, actor key, protocol revision, and lease. Explicit close may produce disconnection promptly;
 network loss is observed through bounded lease expiry. The runtime admits one logical disconnection turn
 per connection identity even when providers deliver duplicate physical notifications.
+
+An entrypoint-exported realtime actor is admitted through a short-lived, single-use signed connection
+ticket minted by the authenticated ApplicationHost. Browser clients use the application origin under
+`/__applik8s/v1/actors`; they never receive the actor-provider bearer or select a provider endpoint.
+Planning fails closed unless that origin has an explicit `HttpExposure` provider. Kubernetes lowering
+routes only the exact actor prefix from the declared ingress-controller namespace to celld's public
+listener, while peer traffic remains namespace-private. AWS lowering attaches the same exact prefix to
+the ApplicationHost ALB. Ticket claims carry the framework-derived principal, causal principal,
+authorization receipt, trusted-context digest, actor/key/protocol identity, nonce, and expiry. Actor
+turn callbacks receive that authority as framework metadata; client input cannot claim or replace it.
 
 Framework presence is derived from live connection leases. Applications must not assume that a durable
 participants array updated only by prompt disconnect callbacks is authoritative. An application may

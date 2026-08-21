@@ -1,7 +1,7 @@
 # RFP: Applik8s v0.8 — Function-Native Scheduling
 
-**Status:** Proposed v0.8 stable contract with individually qualified providers. This document
-authorizes design review and provider spikes, not implementation or release.
+**Status:** Accepted v0.8 stable implementation contract with individually qualified providers. Release
+publication remains separately authorized.
 
 **Manifesto:**
 [`manifesto-v08-portable-stateful-development.md`](manifesto-v08-portable-stateful-development.md)

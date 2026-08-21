@@ -1,0 +1,147 @@
+{
+  "schemaVersion": 1,
+  "release": "v0.8",
+  "evidenceClass": "synthetic-local",
+  "limitations": [
+    "This history isolates framework overhead and does not claim network, Kubernetes, MiniStack, or real-AWS latency.",
+    "Actor measurements use the deterministic local semantic reference, not celld fleet capacity.",
+    "Lakehouse measurements use the deterministic manifest/query authority, while DuckDB and Athena remain separate provider lanes.",
+    "AWS cost evidence is a static resource/cost-class inventory and is not a cloud bill or price prediction."
+  ],
+  "generatedAt": "2026-08-21T02:36:28.530Z",
+  "git": {
+    "commit": "dbb63f1863f88b629a9dcf0f6b24ca5699a16170",
+    "dirty": true
+  },
+  "environment": {
+    "platform": "darwin",
+    "architecture": "arm64",
+    "cpuModel": "Apple M5 Max",
+    "cpuCount": 18,
+    "runtime": "bun-1.3.10"
+  },
+  "plan": {
+    "operations": 3000,
+    "durationMs": 1799.15,
+    "compilationsPerSecond": 1667.46,
+    "latencyMs": {
+      "p50": 0.26,
+      "p95": 1.79,
+      "p99": 7.43,
+      "maximum": 47.77
+    },
+    "rssGrowthBytes": 78872576
+  },
+  "actors": {
+    "operations": 2000,
+    "durationMs": 560.47,
+    "turnsPerSecond": 3568.42,
+    "latencyMs": {
+      "p50": 0.11,
+      "p95": 0.88,
+      "p99": 3.95,
+      "maximum": 19.57
+    },
+    "rssGrowthBytes": 50462720
+  },
+  "schedules": {
+    "operations": 20000,
+    "durationMs": 494.31,
+    "identitiesPerSecond": 40460.48,
+    "latencyMs": {
+      "p50": 0.01,
+      "p95": 0.04,
+      "p99": 0.12,
+      "maximum": 11.08
+    },
+    "rssGrowthBytes": 0
+  },
+  "lakehouse": {
+    "operations": 1000,
+    "durationMs": 583.99,
+    "queriesPerSecond": 1712.36,
+    "latencyMs": {
+      "p50": 0.37,
+      "p95": 1.72,
+      "p99": 3.82,
+      "maximum": 8.27
+    },
+    "rssGrowthBytes": 0,
+    "maximumScannedBytesPerQuery": 28781
+  },
+  "telemetry": {
+    "operations": 10000,
+    "durationMs": 93.88,
+    "boundariesPerSecond": 106516.36,
+    "latencyMs": {
+      "p50": 0,
+      "p95": 0.01,
+      "p99": 0.02,
+      "maximum": 9.62
+    },
+    "rssGrowthBytes": 1081344
+  },
+  "cost": {
+    "evidenceClass": "static-plan-inventory",
+    "awsResources": 10,
+    "services": [
+      "cloudwatch",
+      "ec2",
+      "ecr",
+      "ecs",
+      "service-discovery"
+    ],
+    "estimates": [
+      {
+        "id": "foundation.compute",
+        "service": "ecs",
+        "resourceType": "cluster"
+      },
+      {
+        "id": "foundation.discovery",
+        "service": "service-discovery",
+        "resourceType": "private-dns-namespace"
+      },
+      {
+        "id": "foundation.logs",
+        "service": "cloudwatch",
+        "resourceType": "log-group"
+      },
+      {
+        "id": "foundation.network",
+        "service": "ec2",
+        "resourceType": "vpc"
+      },
+      {
+        "id": "foundation.registry",
+        "service": "ecr",
+        "resourceType": "repository"
+      },
+      {
+        "id": "foundation.security-group.application",
+        "service": "ec2",
+        "resourceType": "security-group"
+      },
+      {
+        "id": "foundation.subnet.private.1",
+        "service": "ec2",
+        "resourceType": "subnet"
+      },
+      {
+        "id": "foundation.subnet.private.2",
+        "service": "ec2",
+        "resourceType": "subnet"
+      },
+      {
+        "id": "foundation.subnet.public.1",
+        "service": "ec2",
+        "resourceType": "subnet"
+      },
+      {
+        "id": "foundation.subnet.public.2",
+        "service": "ec2",
+        "resourceType": "subnet"
+      }
+    ]
+  }
+}

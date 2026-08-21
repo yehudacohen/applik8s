@@ -288,9 +288,14 @@ const analyticalBranches = analyticalConfiguration?.kind === 'application-provid
       ...Object.values(analyticalConfiguration.cases ?? {}),
     ]
   : [analyticalConfiguration];
+const kubernetesAnalyticalBranches = analyticalBranches.map((branch) =>
+  branch?.kind === 'application-target-provider-selection'
+    ? branch.targets?.kubernetes
+    : branch,
+);
 assert(
-  analyticalBranches.length > 0
-    && analyticalBranches.every(
+  kubernetesAnalyticalBranches.length > 0
+    && kubernetesAnalyticalBranches.every(
       (branch) => branch?.enabled === installationFeatureValue('analytics'),
     ),
   'ChirpInstallation.spec.features.analytics must drive every selectable AnalyticalDatabase provider.',
@@ -415,6 +420,11 @@ assert(
   'Chirp timeline recovery must infer the generation-scoped projection and framework-owned immutable evidence store from HomeTimeline.rebuild(...).',
 );
 const workflowSource = await readFile(join(output, 'typekro/workflows/chirp-workflows/workflow-worker.generated.ts'), 'utf8');
+assert(
+  workflowSource.includes("@applik8s/runtime-nats/event-log")
+    && !workflowSource.includes("@applik8s/runtime-aws/kinesis"),
+  'The Kubernetes workflow worker must contain only its selected JetStream event-log implementation.',
+);
 for (const marker of [
   'createPostgresApplicationProjectionSnapshotSource', 'createPostgresApplicationStream', 'createValkeyOnlineProjectionWriter',
   'createS3ApplicationObjectStorageRuntime', 'runApplicationOnlineProjectionRebuild', 'snapshotPartition',
@@ -684,7 +694,7 @@ assert(
 const workflowWorkerSource = await readFile(workflowWorkerRuntimePath, 'utf8');
 assert(workflowWorkerSource.includes('applik8s.task-query/v1alpha1') && workflowWorkerSource.includes('Post.homeTimeline') && workflowWorkerSource.includes('AutomationControl.current'), 'The workflow worker must bundle its schema-bound task-query runtime and both declared views.');
 assert(workflowWorkerSource.includes('REPEATABLE READ READ ONLY') && workflowWorkerSource.includes('different projection definition') && workflowWorkerSource.includes('applik8s.online-projection-rebuild/v1alpha1'), 'The workflow worker must bundle authoritative PostgreSQL snapshot, immutable-manifest resume, and projection-rebuild integrity semantics.');
-assert(workflowWorkerSource.includes('http://chirp-social:8080/') && workflowWorkerSource.includes('http://chirp-administration:8080/'), 'Task queries must use same-namespace Service discovery that remains valid for installation-derived namespaces.');
+assert(workflowWorkerSource.includes('http://chirp-social:8080') && workflowWorkerSource.includes('http://chirp-administration:8080'), 'Task queries must use same-namespace Service discovery that remains valid for installation-derived namespaces.');
 assert(!workflowWorkerSource.includes('http://chirp-social.${schema.spec.name}') && !workflowWorkerSource.includes('http://chirp-administration.${schema.spec.name}'), 'Generated Node workers must never receive unevaluated KRO namespace expressions.');
 const workflowCallingStreamSource = await readFile(workflowCallingStreamRuntimePath, 'utf8');
 for (const authoringOnlyMarker of ['typekro', '@kubernetes/client-node', 'ObservableAPI', 'CoreV1Api']) {

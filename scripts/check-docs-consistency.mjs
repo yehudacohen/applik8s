@@ -73,6 +73,7 @@ const publicDocs = [
   'docs/v0.7-scorecard.md',
   'docs/manifesto-v08-portable-stateful-development.md',
   'docs/rfp-v08-portable-local-and-aws-runtime.md',
+  'docs/rfp-v08-runtime-integrity.md',
   'docs/rfp-v08-application-plan.md',
   'docs/rfp-v08-inferred-runtime-access.md',
   'docs/rfp-v08-unified-observability.md',

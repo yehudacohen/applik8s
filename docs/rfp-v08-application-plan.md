@@ -1,7 +1,6 @@
 # RFP: Applik8s v0.8 — Canonical Application Plan
 
-**Status:** Proposed stable v0.8 contract. This document authorizes design review, not implementation or
-release.
+**Status:** Accepted stable v0.8 implementation contract. Release publication remains separately authorized.
 
 **Manifesto:** [`manifesto-v08-portable-stateful-development.md`](manifesto-v08-portable-stateful-development.md)
 

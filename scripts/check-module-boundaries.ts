@@ -95,6 +95,26 @@ const rules: readonly BoundaryRule[] = [
     rationale: 'The PostgreSQL runtime may implement the provider-neutral SQL contract but must not depend on compiler, deployment, Kubernetes, TypeKro, or Alchemy packages.',
   },
   {
+    roots: ['packages/runtime-aws/src'],
+    forbidden: [/^@applik8s\/(?!applik8s(?:\/|$)|core(?:\/|$)|sdk(?:\/|$))/, /^@kubernetes\//, /^typekro(?:\/|$)/, /^alchemy(?:\/|$)/],
+    rationale: 'The AWS runtime may implement provider-neutral Applik8s/core contracts and validate focused SDK schemas, but must not depend on compiler, deployment, Kubernetes, TypeKro, or Alchemy packages.',
+  },
+  {
+    roots: ['packages/runtime-celld/src'],
+    forbidden: [/^@applik8s\/(?!applik8s(?:\/|$)|deployment-contract(?:\/|$)|sdk(?:\/|$))/, /^@kubernetes\//, /^typekro(?:\/|$)/, /^alchemy(?:\/|$)/],
+    rationale: 'The celld runtime may implement actor contracts and use stable hashing/schema validation, but must not depend on compiler, Kubernetes, TypeKro, or Alchemy packages.',
+  },
+  {
+    roots: ['packages/runtime-otel/src'],
+    forbidden: [/^@applik8s\/(?!applik8s(?:\/|$))/, /^@kubernetes\//, /^typekro(?:\/|$)/, /^alchemy(?:\/|$)/],
+    rationale: 'The OpenTelemetry runtime may implement the provider-neutral telemetry contract but must not depend on compiler, deployment, Kubernetes, TypeKro, or Alchemy packages.',
+  },
+  {
+    roots: ['packages/runtime-duckdb/src'],
+    forbidden: [/^@applik8s\/(?!applik8s(?:\/|$)|sdk(?:\/|$))/, /^@kubernetes\//, /^typekro(?:\/|$)/, /^alchemy(?:\/|$)/],
+    rationale: 'The DuckDB runtime may implement the provider-neutral lakehouse contract and validate focused SDK schemas, but must not depend on compiler, deployment, Kubernetes, TypeKro, or Alchemy packages.',
+  },
+  {
     roots: ['packages/runtime-opensearch/src'],
     forbidden: [/^@applik8s\/(?!applik8s(?:\/|$))/, /^@kubernetes\//, /^typekro(?:\/|$)/, /^alchemy(?:\/|$)/],
     rationale: 'The OpenSearch runtime may implement provider-neutral search contracts but must not depend on compiler, deployment, Kubernetes, TypeKro, or Alchemy packages.',

@@ -24,6 +24,9 @@ const publicEntrypoints = [
   '@applik8s/applik8s/factories',
   '@applik8s/applik8s/processor-runtime',
   '@applik8s/applik8s/event-log-runtime',
+  '@applik8s/applik8s/lakehouse-runtime',
+  '@applik8s/applik8s/schedule-runtime-local',
+  '@applik8s/applik8s/actor-runtime-local',
   '@applik8s/applik8s/postgres-runtime-contract',
   '@applik8s/applik8s/search-runtime',
   '@applik8s/applik8s/dns',
@@ -90,6 +93,19 @@ const publicEntrypoints = [
   '@applik8s/runtime-nats/command-processor',
   '@applik8s/runtime-kubernetes',
   '@applik8s/runtime-postgres',
+  '@applik8s/runtime-aws',
+  '@applik8s/runtime-aws/bootstrap',
+  '@applik8s/runtime-aws/kinesis',
+  '@applik8s/runtime-celld',
+  '@applik8s/runtime-celld/worker',
+  '@applik8s/runtime-otel',
+  '@applik8s/runtime-duckdb',
+  '@applik8s/dev',
+  '@applik8s/dev/server',
+  '@applik8s/dev/ui',
+  '@applik8s/dev/agent',
+  '@applik8s/dev/agent/opencode',
+  '@applik8s/dev/skills',
   '@applik8s/search',
   '@applik8s/runtime-opensearch',
   '@applik8s/runtime-ai',
@@ -304,7 +320,7 @@ export const smoke = sdk.operator({ name: 'packed-smoke', deployment: { namespac
   await createApplicationAgenticStart({
     targetDirectory: agenticStartTarget,
     projectName: 'packed-agentic-start',
-    applik8sVersion: '0.7.1',
+    applik8sVersion: '0.8.0',
     install: false,
     async run(command) {
       if (
@@ -587,5 +603,8 @@ export function getRouter() {
 
   console.log(`Package consumer smoke passed under Node for ${packageDirs.length} packed packages, ${publicEntrypoints.length} public entrypoints, the packed executable, function-native workflows and the registry-free model API, v0.6 native model/query/exposure, and packed Agentic Start graphs, plus clean-directory CLI, generated migration/tests, and Agentic Start builds.`);
 } finally {
-  await rm(workDir, { recursive: true, force: true });
+  // Generated builds may close file handles a few milliseconds after their
+  // child process exits on macOS. Retry recursive cleanup so teardown cannot
+  // mask the actual package-consumer result with a transient ENOTEMPTY.
+  await rm(workDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
 }

@@ -1,5 +1,23 @@
 # Release Notes
 
+## v0.8.0
+
+v0.8.0 makes one semantic application graph portable across local, AWS-local,
+AWS, and Kubernetes targets. It adds the canonical ApplicationPlan, persistent
+local supervision and Builder portal, Alchemy-owned AWS deployment, inferred
+runtime access, provider-neutral OpenTelemetry, function-native schedules,
+immutable lakehouse publication/query contracts, and durable actors with local
+and celld runtimes. Agentic Start, Chirp, and GuestBook remain the maintained
+acceptance applications. Real-target qualification remains mandatory before
+the release is tagged or published.
+
+The candidate now includes fail-closed plan serialization, known-secret
+canaries across canonical/AWS plans and the independent Builder, a released
+v0.7.1 source-and-export migration fixture, and a v0.8-specific synthetic
+performance/cost history. Those are local evidence only: retained-data
+OrbStack migration, MiniStack, real AWS, and distributed celld qualification
+remain explicit release blockers until exact-commit live evidence exists.
+
 ## v0.7.1
 
 v0.7.1 corrects the released-compiler and clean-consumer boundary discovered

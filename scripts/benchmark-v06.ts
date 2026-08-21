@@ -189,6 +189,7 @@ function facadeGzipBytes(modelCount: number): number {
     objectStores: [],
     signals: [],
     agents: [],
+    actors: [],
     models: Array.from({ length: modelCount }, (_, index) => ({
       name: `Model${index + 1}`,
       operations: [{

@@ -1,7 +1,6 @@
 # RFP: Applik8s v0.8 — Published Lakehouse Datasets and Queries
 
-**Status:** Proposed v0.8 beta contract. This document authorizes design review and provider spikes,
-not implementation or release.
+**Status:** Accepted v0.8 beta implementation contract. Release publication remains separately authorized.
 
 **Manifesto:** [`manifesto-v08-portable-stateful-development.md`](manifesto-v08-portable-stateful-development.md)
 

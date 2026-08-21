@@ -1,0 +1,26 @@
+{
+  "plan": {
+    "minimumCompilationsPerSecond": 500,
+    "maximumP95Ms": 5,
+    "maximumRssGrowthBytes": 134217728
+  },
+  "actors": {
+    "minimumTurnsPerSecond": 250,
+    "maximumP95Ms": 15,
+    "maximumRssGrowthBytes": 134217728
+  },
+  "schedules": {
+    "minimumIdentitiesPerSecond": 10000,
+    "maximumP95Ms": 2
+  },
+  "lakehouse": {
+    "minimumQueriesPerSecond": 100,
+    "maximumP95Ms": 20,
+    "maximumScannedBytesPerQuery": 1048576
+  },
+  "telemetry": {
+    "minimumBoundariesPerSecond": 5000,
+    "maximumP95Ms": 5,
+    "maximumRssGrowthBytes": 134217728
+  }
+}

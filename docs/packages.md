@@ -15,6 +15,7 @@ provider, runtime, deployment, or tooling boundaries.
 | `@applik8s/ai` | Provider-neutral logical models, agents, attempt records, usage, and AI contracts. |
 | `@applik8s/identity` | Provider-neutral identity, session, admission, OAuth, and recovery contracts. |
 | `@applik8s/operations` | Typed operation catalog, roles, grants, receipts, revocation, and authority. |
+| `@applik8s/dev` | Independent local development daemon, durable change journal, reviewed workspace mutation, portal UI, coding-agent adapters, and version-matched skills. |
 | `@applik8s/mcp` | Provider-neutral MCP catalog, transport, trust, and persistence contracts. |
 
 ## Web application integrations
@@ -65,8 +66,18 @@ Install only the providers selected by the application profile.
 | `@applik8s/runtime-nats` | NATS JetStream event log and command consumers. |
 | `@applik8s/runtime-kubernetes` | Kubernetes API runtime access for application workloads. |
 | `@applik8s/runtime-postgres` | PostgreSQL model, command, stream, and projection runtime. |
+| `@applik8s/runtime-aws` | AWS runtime bindings for managed secrets, Kinesis delivery, EventBridge schedule admission, and S3/Glue/Athena lakehouse queries. |
+| `@applik8s/runtime-celld` | celld-backed distributed durable actor admission, state, receipts, broadcasts, and alarms. |
+| `@applik8s/runtime-otel` | OpenTelemetry spans, correlated structured logs, bounded metrics, and OTLP export. |
+| `@applik8s/runtime-duckdb` | DuckDB-backed local lakehouse snapshots and bounded query execution. |
 | `@applik8s/runtime-opensearch` | OpenSearch projection, query, rebuild, and cutover runtime. |
 | `@applik8s/runtime-ai` | Bounded server execution for agents, tools, attempts, and logical AI models. |
+
+Generated publisher workers use the focused
+`@applik8s/applik8s/lakehouse-runtime` subpath. It contains only portable
+publication, immutable-manifest, cursor, and query execution contracts; normal
+application source continues to declare publications from the main
+`@applik8s/applik8s` authoring surface.
 
 ## Compiler, deployment, and tooling
 

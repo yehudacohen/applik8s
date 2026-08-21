@@ -1,8 +1,8 @@
 # RFP: Applik8s v0.8 — Portable Local Runtime and AWS Deployment
 
-**Status:** Proposed v0.8 contract. The local runtime and target/plan contract aim for stable; each AWS
-provider remains experimental until its own guarantee manifest and real-target gates qualify it. This
-document authorizes design review, not implementation or release.
+**Status:** Accepted v0.8 implementation contract. The local runtime and target/plan contract aim for stable; each AWS
+provider remains experimental until its own guarantee manifest and real-target gates qualify it. Release
+publication remains separately authorized.
 
 **Manifesto:** [`manifesto-v08-portable-stateful-development.md`](manifesto-v08-portable-stateful-development.md)
 
@@ -146,6 +146,32 @@ Examples:
 
 The compiler produces a compatibility diagnostic when a profile requires guarantees that a target
 cannot supply. Target selection does not rewrite application policy.
+
+When one logical qualification deliberately uses different compatible provider implementations by
+target, target selection composes inside the profile branch rather than leaking target checks into
+domain code:
+
+```ts
+const HistoricalAnalytics = AnalyticalDatabase.named("historical");
+
+deployment
+  .provide(HistoricalAnalytics)
+  .starter(() => app.selectTarget<ApplicationAnalyticalDatabaseProvider>({
+    local: () => AnalyticalDatabase.clickhouse({ name: "analytics" }),
+    awsLocal: () => Analytics.postgres({ database: PrimaryDatabase }),
+    aws: () => Analytics.postgres({ database: PrimaryDatabase }),
+    kubernetes: () => AnalyticalDatabase.clickhouse({ name: "analytics" }),
+  }))
+  .dedicated(() => /* the same target-shaped policy */)
+  .external(spec => /* target-compatible external implementations */)
+  .exhaustive();
+```
+
+`app.selectTarget(...)` is a typed provider-selection seam, not an execution-time branch. Its
+factories remain inert until planning selects a target, the selected implementation is recorded in
+the canonical graph, and every incompatible or missing branch fails during planning. This is useful
+when systems are honestly different—such as ClickHouse locally and PostgreSQL-backed analytics on
+AWS—without pretending the two provider contracts are identical or branching application behavior.
 
 The normalized graph records:
 

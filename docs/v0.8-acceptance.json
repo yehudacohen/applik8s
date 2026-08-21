@@ -20,6 +20,25 @@
       "evidence": ["canonical-node-identity", "recursive-closure-discovery", "source-provenance", "execution-boundary-attribution", "stable-source-movement", "ambiguity-rejection", "sensitive-data-absence"]
     },
     {
+      "id": "runtime-integrity",
+      "owner": "runtime-integrity",
+      "maturity": "stable",
+      "command": "bun run check:v08:runtime-integrity",
+      "implemented": false,
+      "cadence": ["per-pr", "nightly", "release-candidate"],
+      "environments": ["node", "browser", "worker", "componentized-wasm-host", "rolling-runtime-fixture"],
+      "evidence": [
+        "canonical-json-v1-fixed-vectors",
+        "purpose-separated-signed-envelopes",
+        "cross-purpose-and-tamper-rejection",
+        "key-rotation-and-expiry",
+        "canonical-admission-ingress-parity",
+        "search-provider-cursor-parity",
+        "mixed-version-rolling-migration",
+        "private-crypto-source-inventory"
+      ]
+    },
+    {
       "id": "local-runtime",
       "owner": "portable-runtime",
       "maturity": "stable",

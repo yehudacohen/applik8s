@@ -1,8 +1,7 @@
 # RFP: Applik8s v0.8 — Unified OpenTelemetry Observability
 
-**Status:** Proposed stable v0.8 semantic and collector contract. ClickStack/HyperDX, CloudWatch, and
-external OTLP providers qualify independently. This document authorizes design review, not implementation
-or release.
+**Status:** Accepted stable v0.8 semantic and collector implementation contract. ClickStack/HyperDX, CloudWatch, and
+external OTLP providers qualify independently. Release publication remains separately authorized.
 
 **Manifesto:** [`manifesto-v08-portable-stateful-development.md`](manifesto-v08-portable-stateful-development.md)
 

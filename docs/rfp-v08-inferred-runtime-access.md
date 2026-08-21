@@ -1,6 +1,6 @@
 # RFP: Applik8s v0.8 — Inferred Runtime Access and Least-Privilege Lowering
 
-**Status:** Proposed v0.8 contract. This document authorizes design review, not implementation or
+**Status:** Accepted v0.8 implementation contract. This document authorizes implementation, not
 release.
 
 **Manifesto:** [`manifesto-v08-portable-stateful-development.md`](manifesto-v08-portable-stateful-development.md)

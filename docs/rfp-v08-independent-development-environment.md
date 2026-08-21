@@ -1,7 +1,7 @@
 # RFP: Applik8s v0.8 — Independent Development Environment and Coding Agent
 
-**Status:** Proposed v0.8 developer-preview contract. This document authorizes design review and a
-bounded OpenCode integration, not implementation or release.
+**Status:** Accepted v0.8 developer-preview implementation contract with a bounded OpenCode integration.
+Release publication remains separately authorized.
 
 **Manifesto:** [`manifesto-v08-portable-stateful-development.md`](manifesto-v08-portable-stateful-development.md)
 
@@ -591,7 +591,11 @@ The portal is a development product, not a chat page with terminal output append
 - models, operations, events, workflows, actors, resources, providers, and routes;
 - source ownership and dependencies;
 - profile and target comparison;
-- readiness and runtime evidence.
+- readiness and runtime evidence;
+- canonical semantic/execution/authority/data-flow/state/exposure counts from the current
+  `ApplicationPlan`; and
+- resolved provider guarantees, unresolved capabilities, and explicit semantic gaps rather than a
+  static explanatory placeholder.
 
 ### Runtime
 
@@ -599,13 +603,19 @@ The portal is a development product, not a chat page with terminal output append
 - logs and traces;
 - rebuild/restart controls;
 - local dependency state;
-- current compile failure even when the application is down.
+- current compile failure even when the application is down;
+- least-privilege runtime-access identities; and
+- declared telemetry, schedules, lakehouse publications, and actor publication/realtime facts for the
+  current source digest.
 
 ### Deployments
 
 - local, AWS-local, AWS, and Kubernetes target plans;
 - infrastructure, cost-class, secret, migration, and destructive changes;
-- explicit deploy authority outside the default Builder mutation grant.
+- explicit deploy authority outside the default Builder mutation grant;
+- exact lifecycle owner and artifact path for materialized plans; and
+- a visible distinction between materialized evidence, an on-demand target plan, API-fidelity-only
+  evidence, and real-target qualification that remains externally required.
 
 ## Approval policy
 

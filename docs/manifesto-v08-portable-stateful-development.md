@@ -1,7 +1,7 @@
 # Manifesto: Applik8s v0.8 — Explainable Portable Runtime, Function-Native Scheduling, Inferred Least Privilege, Unified Observability, Lakehouse Analytics, Stateful Actors, and Agent-Assisted Development
 
-**Status:** Proposed v0.8.0 program manifesto. This document defines the product thesis, authority
-boundaries, sequencing, and release bar. It does not authorize implementation, tagging, or publication.
+**Status:** Accepted v0.8.0 implementation program. This document defines the product thesis, authority
+boundaries, sequencing, and release bar. Tagging and publication still require explicit maintainer authorization.
 
 **Audience:** Applik8s maintainers, Start authors, compiler/runtime owners, Alchemy and TypeKro provider
 authors, security reviewers, and acceptance-application maintainers
@@ -18,7 +18,7 @@ Applik8s v0.7 proved that one TypeScript application can describe models, operat
 signals, projections, AI, authority, provider dependencies, and Kubernetes deployment without splitting
 the application into unrelated programming models.
 
-v0.8 removes the next eight forms of friction:
+v0.8 removes the next nine forms of friction:
 
 1. **Kubernetes is too heavy for the default local feedback loop.** Developers should get a faithful,
    observable application quickly, then select Kubernetes when they need control-plane fidelity.
@@ -41,6 +41,9 @@ v0.8 removes the next eight forms of friction:
 8. **The framework remains difficult to learn and evolve by inspection alone.** A development agent
    should understand the application graph, propose Applik8s-native changes, and prove them—but it must
    survive the code it edits and remain subordinate to developer review.
+9. **Runtime integrity is implemented repeatedly at gateway and provider boundaries.** Canonical JSON,
+   signed cursors, expiry, and principal/trusted-context admission must use versioned shared contracts so
+   target and provider differences cannot create digest drift or weaken authority.
 
 The v0.8 promise is:
 
@@ -48,7 +51,8 @@ The v0.8 promise is:
 > least-privilege runtime access from typed behavior, express time-driven work through ordinary managed
 > closures, emit correlated traces/logs/metrics, deploy through managed AWS services or Kubernetes, query
 > published historical datasets, express durable identity-scoped actors, and evolve through an
-> independent evidence-driven development environment.
+> independent evidence-driven development environment while preserving one canonical serialization,
+> signed-envelope, and admission foundation across runtimes.
 
 This is not a promise that every environment is identical. It is a promise that differences are typed,
 planned, explained, and rejected when incompatible rather than hidden in application code.
@@ -58,8 +62,15 @@ planned, explained, and rejected when incompatible rather than hidden in applica
 This manifesto owns the cross-cutting thesis, document boundaries, shared invariants, maturity labels,
 program order, acceptance applications, and final release definition.
 
+The accepted implementation order, checkpoint/reconciliation rules, Runtime Integrity workstream, and
+evidence discipline are maintained in
+[`v0.8-execution-plan.md`](v0.8-execution-plan.md). That plan sequences this manifesto and its RFPs; it
+does not weaken or replace their normative contracts. The copy/paste execution goal is maintained in
+[`v0.8-goal-prompt.md`](v0.8-goal-prompt.md).
+
 | RFP | Owns | Must not own |
 | --- | --- | --- |
+| [`rfp-v08-runtime-integrity.md`](rfp-v08-runtime-integrity.md) | Canonical JSON policies, purpose-separated signed envelopes, canonical admission, package ownership, rolling migration, cross-runtime vectors, and source inventory | Application authorization policy, provider continuation semantics, TypeKro proxy inference, or transport authentication mechanisms |
 | [`rfp-v08-portable-local-and-aws-runtime.md`](rfp-v08-portable-local-and-aws-runtime.md) | Local supervisor, deployment targets, AWS Alchemy providers, MiniStack fidelity, target compatibility, local/AWS/Kubernetes lifecycle, and provider guarantee vocabulary | Domain behavior, lakehouse query semantics, actor semantics, coding-agent mutation, or TypeKro's Kubernetes internals |
 | [`rfp-v08-application-plan.md`](rfp-v08-application-plan.md) | Canonical semantic requirements, authority/data-flow views, provider resolution, physical topology, exposure, lifecycle, cost classes, provenance, plan composition, and stable diffs | Deployment-engine lifecycle, application authorization decisions, provider implementation, or an alternative application graph |
 | [`rfp-v08-inferred-runtime-access.md`](rfp-v08-inferred-runtime-access.md) | Provider-neutral runtime access requirements, inference from known graph behavior, execution-identity attribution, explicit-access interaction, policy provenance, and least-privilege provider-lowering inputs | Application roles/grants, provider policy resource lifecycle, credential values, development-agent command approval, or wildcard fallback |
@@ -93,7 +104,9 @@ Phase 0 freezes the minimal shared foundation used to break implementation cycle
 - provider-guarantee manifest and maturity vocabulary;
 - runtime-access operation descriptors;
 - native-plan adapter records for Alchemy, TypeKro, and the local supervisor; and
-- bounded guest/host identity envelopes used by compiler/runtime integrations.
+- bounded guest/host identity envelopes used by compiler/runtime integrations; and
+- Canonical JSON v1 policies, signed-envelope wire identity, and canonical admission records used by
+  maintained ingress and runtime boundaries.
 
 The application-plan, runtime-access, observability, portable-runtime, and scheduling RFPs integrate over
 these records. None requires every sibling provider or renderer to be complete before its own semantic
@@ -102,10 +115,11 @@ integrations.
 
 ## Maturity contract
 
-The nine program pillars deliberately ship at different maturity levels:
+The ten program pillars deliberately ship at different maturity levels:
 
 | Pillar | v0.8 promise | Reason |
 | --- | --- | --- |
+| Runtime integrity | Stable canonical JSON, signed-envelope, and admission contracts with cross-runtime and rolling-migration evidence | Every other v0.8 target and stateful feature depends on stable bytes and authority admission. |
 | Local runtime | Stable v0.8 surface with production-quality lifecycle evidence | This is the prerequisite for the everyday development loop. |
 | AWS target and core production slice | Stable target/plan contract; only individually qualified providers carry a stable label | A broad provider catalog must not inherit maturity from a smaller proven slice. |
 | Application plan | Stable versioned semantic and target-plan contract | Every other v0.8 capability needs a truthful, reviewable explanation surface. |
@@ -453,6 +467,12 @@ v0.8 retains v0.7 schema-derived profiles. It adds a first-class deployment-targ
 | Provider implementation | PostgreSQL, RDS PostgreSQL, S3, EventBridge Scheduler, celld, Rivet | behavior and deployment adapter satisfying the capability |
 
 This separation prevents profile names from accumulating environment and cloud semantics.
+
+Profile selection and target selection may be composed at the provider boundary. A profile branch
+can return `app.selectTarget(...)` when the same qualified capability has deliberately different
+compatible implementations on local, AWS-local, AWS, and Kubernetes. This selection is normalized
+into the application graph and resolved during planning; domain models, handlers, workflows, and
+queries never inspect the target.
 
 ## Implementation and package ownership
 

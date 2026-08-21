@@ -9,6 +9,12 @@
   "awsProviderInventory": "v0.8-aws-provider-inventory.json",
   "pillars": [
     {
+      "id": "runtime-integrity",
+      "maturity": "stable",
+      "rfp": "rfp-v08-runtime-integrity.md",
+      "acceptance": ["graph-provenance", "runtime-integrity"]
+    },
+    {
       "id": "local-runtime",
       "maturity": "stable",
       "rfp": "rfp-v08-portable-local-and-aws-runtime.md",
