@@ -1031,6 +1031,11 @@ function generatedGatewaySource(
   executionTarget: 'kubernetes' | 'local' | 'aws-local' | 'aws',
 ): string {
   const gatewayNamespace = applicationGraphStringValue(gateway.deployment?.namespace) ?? 'default';
+  const acceptsTaskQueryAdmission = graph.nodes.some(
+    (node) => node.kind === 'taskHandler'
+      && (node.queries ?? []).some((binding) =>
+        gateway.queries.some((query) => query.nodeId === binding.query.nodeId)),
+  );
   const relationalQueries = queries.filter((query) => !query.kubernetes);
   const kubernetesQueries = queries.filter((query) => Boolean(query.kubernetes));
   const searchContracts = relationalQueries
@@ -1058,7 +1063,9 @@ function generatedGatewaySource(
     "import { drizzle } from 'drizzle-orm/postgres-js';",
     "import { normalizeSchema } from '@applik8s/sdk/schema-runtime';",
     `import { applicationAdmittedContextDigest, applicationRequestContextValues, createApplicationQueryGateway, createApplicationQueryGatewayHttpHandler, createApplicationRelationalContext, createApplicationSubscriptionLimiter, withApplicationDatabaseRuntimeResolver${relationalQueries.length > 0 && kubernetesQueries.length > 0 ? ', proxyApplicationQueryMultiplex' : ''} } from '@applik8s/applik8s/query-runtime';`,
-    "import { verifyApplicationTaskQueryAdmission } from '@applik8s/applik8s/task-query-runtime';",
+    ...(acceptsTaskQueryAdmission
+      ? ["import { verifyApplicationTaskQueryAdmission } from '@applik8s/applik8s/task-query-runtime';"]
+      : []),
     ...(onlineSources.length > 0 ? ["import { createValkeyOnlineProjectionReader } from '@applik8s/applik8s/projection-worker-runtime';"] : []),
     ...(analyticalSources.length > 0 ? ["import { createClickHouseAnalyticalProjectionReader } from '@applik8s/applik8s/projection-worker-runtime';"] : []),
     ...(searchContracts.length > 0
@@ -1244,7 +1251,9 @@ ${authorityDatabaseEnvironment ? `async function admitGatewayPrincipal(admission
 const queries = [${queryDeclarations}];
 const subscriptionLimiter = createApplicationSubscriptionLimiter(${JSON.stringify(gateway.subscriptionLimits)});
 async function admitRequest(request) { const admitted = await authenticateRequest(request); if (!admitted || typeof admitted !== 'object') throw new Error('Gateway authentication returned no admission.'); return admitted; }
-async function admitQuery(request, query, input) { const internal = await verifyApplicationTaskQueryAdmission({ request, cursorSecret, audience: ${JSON.stringify(gateway.id)}, query: query.id, input }); return internal ?? admitRequest(request); }
+async function admitQuery(request, query, input) { ${acceptsTaskQueryAdmission
+  ? `const internal = await verifyApplicationTaskQueryAdmission({ request, cursorSecret, audience: ${JSON.stringify(gateway.id)}, query: query.id, input }); return internal ?? admitRequest(request);`
+  : 'return admitRequest(request);'} }
 const gateway = queries.length > 0 ? createApplicationQueryGateway({
   queries,
   cursorSecret,

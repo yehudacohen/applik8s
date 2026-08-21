@@ -42,13 +42,16 @@
     {
       "id": "workflow-task-delivery",
       "transport": "workflow",
-      "state": "not-started",
+      "state": "in-progress",
       "evidenceVerifier": "workflow engine run or task delivery evidence",
       "principalSource": "framework execution principal preserving causal lineage",
       "operationIdentity": "registered workflow or task operation",
-      "owners": [],
-      "regression": null,
-      "remaining": "integrate workflow starts, resumes, tasks, signals, cancellation, and reattachment"
+      "owners": [
+        "packages/applik8s/src/task-query-runtime.ts",
+        "packages/compiler/src/application-reactive/index.ts"
+      ],
+      "regression": "bunx vitest run --maxWorkers=1 packages/applik8s/test/task-query-runtime.vertical.test.ts packages/compiler/test/application-reactive.vertical.test.ts",
+      "remaining": "task-query delivery now dual-writes and validates canonical admission under an exact service principal; integrate workflow starts, resumes, task operations, signals, cancellation, and reattachment before advancing the complete adapter"
     },
     {
       "id": "schedule-occurrence",

@@ -1,14 +1,21 @@
 // typecast-file-boundary: Task-query HTTP payloads are validated against signed admission and declared schemas before generic conversion.
 import { queryInputKey } from '@applik8s/client';
 import {
+  type ApplicationAdmissionContextV1,
+  type ApplicationAdmittedPrincipal,
   type ApplicationIdentityReference,
-  type ApplicationPrincipal,
+  type ApplicationRequestAdmission,
   canonicalJsonCompatibleV1Policy,
   canonicalJsonV1String,
   canonicalJsonV1Value,
+  createApplicationAdmissionContextV1,
   type JsonObject,
   SignedEnvelopeV1ValidationError,
+  validateApplicationAdmissionContextV1WithoutReceipt,
+  withApplicationAdmissionExecutionV1,
+  withApplicationAdmissionTraceV1,
 } from '@applik8s/core';
+import { nodeKeyedDigestHex } from '@applik8s/runtime/node-integrity';
 import {
   createSignedEnvelopeCodec,
   SignedEnvelopeRuntimeError,
@@ -54,13 +61,14 @@ interface ApplicationTaskQueryToken {
   readonly principal: {
     readonly id: string;
     readonly identity?: ApplicationIdentityReference;
-    readonly kind?: ApplicationPrincipal['kind'];
+    readonly kind?: 'service';
     readonly authenticationMethod?: string;
     readonly roles?: readonly string[];
-    readonly attributes?: Readonly<Record<string, unknown>>;
+    readonly attributes?: JsonObject;
   };
   readonly authorizationVersion: string;
   readonly trustedContext: Readonly<Record<string, unknown>>;
+  readonly context?: ApplicationAdmissionContextV1;
   readonly expiresAt: number;
 }
 
@@ -99,12 +107,25 @@ export function createApplicationTaskQueryRuntime(options: {
           );
           const timeoutMs = boundedTimeout(invokeOptions.timeoutMs ?? contract.timeoutMs);
           const issuedAt = now().getTime();
+          const expiresAt = issuedAt + Math.min(timeoutMs + 5_000, maximumTokenLifetimeMs);
+          const inputKey = queryInputKey(input);
+          const context = taskQueryAdmissionContext({
+            principal: admitted,
+            trustedContext: admitted.trustedContext ?? {},
+            secret: options.cursorSecret,
+            audience: contract.audience,
+            query: contract.id,
+            inputKey,
+            issuedAt,
+            expiresAt,
+            metadata,
+          });
           const token = await encodeToken(options.cursorSecret, {
             protocol,
             audience: contract.audience,
             query: contract.id,
             operation: 'snapshot',
-            inputKey: queryInputKey(input),
+            inputKey,
             principal: {
               id: admitted.id,
               ...(admitted.identity ? { identity: admitted.identity } : {}),
@@ -117,7 +138,8 @@ export function createApplicationTaskQueryRuntime(options: {
             },
             authorizationVersion: admitted.authorizationVersion,
             trustedContext: admitted.trustedContext ?? {},
-            expiresAt: issuedAt + Math.min(timeoutMs + 5_000, maximumTokenLifetimeMs),
+            context,
+            expiresAt,
           });
           const response = await request(contract.endpoint, {
             method: 'POST',
@@ -154,18 +176,7 @@ export async function verifyApplicationTaskQueryAdmission(options: {
   readonly query: string;
   readonly input: unknown;
   readonly now?: Date;
-}): Promise<{
-  readonly principal: {
-    readonly id: string;
-    readonly identity?: ApplicationIdentityReference;
-    readonly kind?: ApplicationPrincipal['kind'];
-    readonly authenticationMethod?: string;
-    readonly roles?: readonly string[];
-    readonly attributes?: Readonly<Record<string, unknown>>;
-  };
-  readonly authorizationVersion: string;
-  readonly trustedContext: Readonly<Record<string, unknown>>;
-} | undefined> {
+}): Promise<ApplicationRequestAdmission | undefined> {
   assertSecret(options.cursorSecret);
   const encoded = options.request.headers.get('x-applik8s-task-query');
   if (!encoded) return undefined;
@@ -178,11 +189,155 @@ export async function verifyApplicationTaskQueryAdmission(options: {
     return undefined;
   }
   if (!token.principal.id || !token.authorizationVersion) return undefined;
+  let context: ApplicationAdmissionContextV1;
+  try {
+    context = token.context
+      ? validateApplicationAdmissionContextV1WithoutReceipt(token.context, { now: timestamp })
+      : legacyTaskQueryAdmissionContext(token, options.cursorSecret);
+  } catch {
+    return undefined;
+  }
+  const admittedAt = Date.parse(context.principal.admittedAt);
+  if (!Number.isFinite(admittedAt)) return undefined;
+  const expectedPrincipal = taskQueryPrincipal({
+    principal: {
+      ...token.principal,
+      authorizationVersion: token.authorizationVersion,
+      trustedContext: token.trustedContext as JsonObject,
+    },
+    trustedContext: token.trustedContext as JsonObject,
+    secret: options.cursorSecret,
+    audience: token.audience,
+    issuedAt: admittedAt,
+    expiresAt: token.expiresAt,
+  });
+  const expectedDeliveryId = `task-query:${token.query}:${token.inputKey}:${admittedAt}`;
+  if (
+    canonicalJsonV1String(context.principal) !== canonicalJsonV1String(expectedPrincipal)
+    || context.authorityRevision !== token.authorizationVersion
+    || canonicalJsonV1String(context.trustedContext.values)
+      !== canonicalJsonV1String(token.trustedContext)
+    || context.operation.id !== taskQueryOperationId(token.query)
+    || context.operation.transport !== 'workflow'
+    || context.deadline !== new Date(token.expiresAt).toISOString()
+    || (token.context !== undefined && (
+      context.delivery?.id !== expectedDeliveryId
+      || context.delivery.source !== 'applik8s://workflow/task-query'
+    ))
+  ) return undefined;
   return {
-    principal: token.principal,
-    authorizationVersion: token.authorizationVersion,
-    trustedContext: token.trustedContext,
+    principal: context.principal,
+    trustedContext: context.trustedContext.values,
   };
+}
+
+function taskQueryAdmissionContext(input: {
+  readonly principal: ApplicationTaskQueryServicePrincipal;
+  readonly trustedContext: JsonObject;
+  readonly secret: string;
+  readonly audience: string;
+  readonly query: string;
+  readonly inputKey: string;
+  readonly issuedAt: number;
+  readonly expiresAt: number;
+  readonly metadata: {
+    readonly correlationId?: string;
+    readonly causationId?: string;
+    readonly traceparent?: string;
+  };
+}): ApplicationAdmissionContextV1 {
+  const principal = taskQueryPrincipal(input);
+  const deliveryId = `task-query:${input.query}:${input.inputKey}:${input.issuedAt}`;
+  const base = createApplicationAdmissionContextV1({
+    admission: { principal, trustedContext: input.trustedContext },
+    operation: { id: taskQueryOperationId(input.query), transport: 'workflow' },
+    correlationId: input.metadata.correlationId ?? deliveryId,
+  });
+  const traced = input.metadata.traceparent
+    ? withApplicationAdmissionTraceV1(base, {
+        traceparent: input.metadata.traceparent,
+      })
+    : base;
+  return withApplicationAdmissionExecutionV1(traced, {
+    ...(input.metadata.causationId
+      ? { causationId: input.metadata.causationId }
+      : {}),
+    deadline: new Date(input.expiresAt).toISOString(),
+    delivery: {
+      id: deliveryId,
+      source: 'applik8s://workflow/task-query',
+    },
+  });
+}
+
+function legacyTaskQueryAdmissionContext(
+  token: ApplicationTaskQueryToken,
+  secret: string,
+): ApplicationAdmissionContextV1 {
+  const principal = taskQueryPrincipal({
+    principal: {
+      ...token.principal,
+      authorizationVersion: token.authorizationVersion,
+      trustedContext: token.trustedContext as JsonObject,
+    },
+    trustedContext: token.trustedContext as JsonObject,
+    secret,
+    audience: token.audience,
+    issuedAt: token.expiresAt - maximumTokenLifetimeMs,
+    expiresAt: token.expiresAt,
+  });
+  return withApplicationAdmissionExecutionV1(
+    createApplicationAdmissionContextV1({
+      admission: { principal, trustedContext: token.trustedContext as JsonObject },
+      operation: { id: taskQueryOperationId(token.query), transport: 'workflow' },
+      correlationId: `legacy-task-query:${token.query}:${token.inputKey}`,
+    }),
+    {
+      deadline: new Date(token.expiresAt).toISOString(),
+      delivery: {
+        id: `legacy-task-query:${token.query}:${token.inputKey}`,
+        source: 'applik8s://workflow/task-query/legacy',
+      },
+    },
+  );
+}
+
+function taskQueryPrincipal(input: {
+  readonly principal: ApplicationTaskQueryServicePrincipal;
+  readonly trustedContext: JsonObject;
+  readonly secret: string;
+  readonly audience: string;
+  readonly issuedAt: number;
+  readonly expiresAt: number;
+}): ApplicationAdmittedPrincipal {
+  const contextDigest = `sha256:${nodeKeyedDigestHex({
+    key: input.secret,
+    purpose: 'applik8s.task-query-trusted-context/v1',
+    value: canonicalJsonV1String(input.trustedContext),
+  })}`;
+  return {
+    id: input.principal.id,
+    identity: input.principal.identity ?? {
+      id: `identity:task-query:service:${input.principal.id}`,
+      kind: 'service',
+      issuer: 'applik8s://task-query',
+      subject: input.principal.id,
+    },
+    kind: 'service',
+    authenticationMethod: input.principal.authenticationMethod ?? 'workload-identity',
+    audience: [input.audience],
+    trustedContextDigest: contextDigest,
+    catalogRevision: input.principal.authorizationVersion,
+    authorityRevision: input.principal.authorizationVersion,
+    admittedAt: new Date(input.issuedAt).toISOString(),
+    expiresAt: new Date(input.expiresAt).toISOString(),
+    ...(input.principal.roles ? { roles: input.principal.roles } : {}),
+    ...(input.principal.attributes ? { attributes: input.principal.attributes } : {}),
+  };
+}
+
+function taskQueryOperationId(query: string): string {
+  return `applik8s://queries/${encodeURIComponent(query)}/snapshot`;
 }
 
 async function encodeToken(
@@ -268,16 +423,27 @@ function validateTaskQueryToken(value: unknown): ApplicationTaskQueryToken {
     || typeof Reflect.get(identity, 'subject') !== 'string'
   )) throw new TypeError('Task query token identity is invalid.');
   const principalKind = Reflect.get(principal, 'kind');
-  if (principalKind !== undefined && typeof principalKind !== 'string') throw new TypeError('Task query token principal kind is invalid.');
+  if (principalKind !== undefined && principalKind !== 'service') throw new TypeError('Task query token principal kind is invalid.');
+  if (identity !== undefined && Reflect.get(identity, 'kind') !== 'service') throw new TypeError('Task query token identity must be a service identity.');
   const authenticationMethod = Reflect.get(principal, 'authenticationMethod');
   if (authenticationMethod !== undefined && typeof authenticationMethod !== 'string') throw new TypeError('Task query token authentication method is invalid.');
   if (typeof Reflect.get(value, 'audience') !== 'string' || typeof Reflect.get(value, 'query') !== 'string' || Reflect.get(value, 'operation') !== 'snapshot' || typeof Reflect.get(value, 'inputKey') !== 'string' || typeof Reflect.get(value, 'authorizationVersion') !== 'string' || typeof Reflect.get(value, 'expiresAt') !== 'number') throw new TypeError('Task query token contract is invalid.');
   return value as ApplicationTaskQueryToken;
 }
 
-function requiredServicePrincipal(principal: ApplicationTaskServicePrincipal | undefined): ApplicationTaskServicePrincipal {
+type ApplicationTaskQueryServicePrincipal = Omit<ApplicationTaskServicePrincipal, 'kind'> & {
+  readonly kind?: 'service';
+};
+
+function requiredServicePrincipal(
+  principal: ApplicationTaskServicePrincipal | undefined,
+): ApplicationTaskQueryServicePrincipal {
   if (!principal?.id?.trim() || !principal.authorizationVersion?.trim()) throw new Error('applik8s-task-query-principal-invalid');
-  return principal;
+  if (
+    (principal.kind !== undefined && principal.kind !== 'service')
+    || (principal.identity !== undefined && principal.identity.kind !== 'service')
+  ) throw new Error('applik8s-task-query-principal-not-service');
+  return principal as ApplicationTaskQueryServicePrincipal;
 }
 
 function validate<T extends object>(schema: ReturnType<typeof normalizeSchema<T>>, value: unknown, label: string): T {

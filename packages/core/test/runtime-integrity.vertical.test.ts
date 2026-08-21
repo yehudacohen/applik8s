@@ -14,6 +14,7 @@ import {
   signedEnvelopeAlgorithm,
   signedEnvelopeVersion,
   validateApplicationAdmissionContextV1,
+  validateApplicationAdmissionContextV1WithoutReceipt,
   validateSignedEnvelopeV1Protected,
   withApplicationAdmissionTraceV1,
 } from '@applik8s/core';
@@ -222,5 +223,16 @@ describe('Admission Context v1', () => {
       trustedContext: { ...context.trustedContext, values: { now: new Date() } },
     }, { now: Date.parse('2026-08-21T12:00:30.000Z') }))
       .toThrow(ApplicationAdmissionContextV1Error);
+  });
+
+  it('keeps receiptless transport validation canonical and fail-closed', () => {
+    expect(validateApplicationAdmissionContextV1WithoutReceipt(context, {
+      now: Date.parse('2026-08-21T12:00:30.000Z'),
+    })).toEqual(context);
+    expect(() => validateApplicationAdmissionContextV1WithoutReceipt({
+      ...context,
+      authorizationReceipt: { id: 'unverified-receipt' },
+    }, { now: Date.parse('2026-08-21T12:00:30.000Z') }))
+      .toThrow(/receipt is forbidden/u);
   });
 });

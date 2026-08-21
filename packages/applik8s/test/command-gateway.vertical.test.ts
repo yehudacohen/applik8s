@@ -1,7 +1,7 @@
 // typecast-file-boundary: test doubles model untyped PostgreSQL and protocol boundaries exercised by runtime validation.
 import { createHmac } from 'node:crypto';
 import { createApplicationCommandGateway } from '@applik8s/applik8s';
-import { canonicalJsonV1Value } from '@applik8s/core';
+import { canonicalJsonV1Value, createApplicationAdmissionContextV1, withApplicationAdmissionExecutionV1 } from '@applik8s/core';
 import { createSignedEnvelopeCodec, signedEnvelopeUtf8Key, staticSignedEnvelopeKeyProvider } from '@applik8s/runtime/signed-envelope';
 import { describe, expect, it, vi } from 'vitest';
 import { applicationCommandPrincipal, applicationCommandTrustedContext } from '../src/command-principal.js';
@@ -110,6 +110,25 @@ describe('authenticated command gateway', () => {
       now: () => new Date('2026-07-30T12:00:00.000Z'),
     });
     const input = { cardId: 'card-1' };
+    const context = withApplicationAdmissionExecutionV1(
+      createApplicationAdmissionContextV1({
+        admission: {
+          principal,
+          trustedContext: { organizationId: 'organization-1' },
+        },
+        operation: { id: receipt.operationId, transport: 'mcp' },
+        correlationId: 'internal-1',
+      }),
+      {
+        causationId: 'internal-1',
+        deadline: '2026-07-30T12:00:30.000Z',
+        authorizationReceipt: receipt,
+        delivery: {
+          id: 'internal-1',
+          source: 'applik8s://internal-operation/mcpServer.public',
+        },
+      },
+    );
     const invocation = {
       apiVersion: 'applik8s.internalOperation/v1alpha1' as const,
       id: 'internal-1',
@@ -121,6 +140,7 @@ describe('authenticated command gateway', () => {
         transport: 'mcp' as const,
         workloadId: 'mcpServer.public',
       },
+      context,
       admission: {
         principal,
         trustedContext: { organizationId: 'organization-1' },

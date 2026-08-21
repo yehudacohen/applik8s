@@ -3,7 +3,7 @@ import { createHmac } from 'node:crypto';
 import type { ApplicationModelChange, ApplicationOnlineQueryRuntimeSource, ApplicationOnlineQuerySource, ApplicationQueryBinding, ApplicationRelationalContext } from '@applik8s/applik8s';
 import { app, applicationGraphFor, createApplicationQueryGateway, createApplicationQueryGatewayHttpHandler, createApplicationStreamSubscriptionGateway, createApplicationSubscriptionLimiter, postgres, trustedContext } from '@applik8s/applik8s';
 import { type } from '@applik8s/applik8s/dsl';
-import { type ApplicationAuthorizationReceipt, canonicalJsonV1Value } from '@applik8s/core';
+import { type ApplicationAuthorizationReceipt, canonicalJsonV1Value, createApplicationAdmissionContextV1, withApplicationAdmissionExecutionV1 } from '@applik8s/core';
 import { createSignedEnvelopeCodec, signedEnvelopeUtf8Key, staticSignedEnvelopeKeyProvider } from '@applik8s/runtime/signed-envelope';
 import { pgTable, text, uuid } from 'drizzle-orm/pg-core';
 import { describe, expect, test } from 'vitest';
@@ -171,6 +171,25 @@ describe('v0.6 authenticated query gateway', () => {
       cursorSecret: 'cursor-signing-secret-cursor-signing-secret',
     });
 
+    const context = withApplicationAdmissionExecutionV1(
+      createApplicationAdmissionContextV1({
+        admission: {
+          principal,
+          trustedContext: { organizationId: 'organization-1' },
+        },
+        operation: { id: receipt.operationId, transport: 'mcp' },
+        correlationId: 'internal-query-1',
+      }),
+      {
+        causationId: 'internal-query-1',
+        deadline: '2026-07-30T12:00:30.000Z',
+        authorizationReceipt: receipt,
+        delivery: {
+          id: 'internal-query-1',
+          source: 'applik8s://internal-operation/mcpServer.public',
+        },
+      },
+    );
     await expect(gateway.invoke({
       query: query.id,
       input: { limit: 5 },
@@ -185,6 +204,7 @@ describe('v0.6 authenticated query gateway', () => {
           transport: 'mcp',
           workloadId: 'mcpServer.public',
         },
+        context,
         admission: {
           principal,
           trustedContext: { organizationId: 'organization-1' },

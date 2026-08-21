@@ -10,9 +10,8 @@ import type {
 } from '@applik8s/core';
 import {
   createApplicationAdmissionContextV1,
-  validateApplicationAdmissionContextV1,
+  validateApplicationAdmissionContextV1WithoutReceipt,
   validateApplicationAuthorizationReceipt,
-  withApplicationAdmissionExecutionV1,
 } from '@applik8s/core';
 import {
   canonicalInternalJson,
@@ -80,6 +79,12 @@ export function encodeApplicationInternalOperationInvocation(
     now: new Date(invocation.issuedAt),
     maximumLifetimeMs: 60_000,
   });
+  const context = validatePreauthorizedInternalOperationContext(
+    invocation.context,
+    invocation,
+    new Date(invocation.issuedAt).getTime(),
+  );
+  validateCanonicalParity(invocation, context);
   assertApplicationInternalContextHasNoCredentials(
     invocation.admission.trustedContext,
   );
@@ -142,9 +147,11 @@ export function decodeApplicationInternalOperationInvocation(
     wireInvocation.admission.trustedContext,
   );
   const context = wireInvocation.context
-    ? validateApplicationAdmissionContextV1(wireInvocation.context, {
-        now: (expected.now ?? new Date()).getTime(),
-      })
+    ? validatePreauthorizedInternalOperationContext(
+        wireInvocation.context,
+        wireInvocation,
+        (expected.now ?? new Date()).getTime(),
+      )
     : legacyInternalOperationContext(wireInvocation);
   validateCanonicalParity(wireInvocation, context);
   return structuredClone({ ...wireInvocation, context });
@@ -217,12 +224,6 @@ function validateInvocation(
       'The internal operation invocation does not match its authority evidence.',
     );
   }
-  if (invocation.context) {
-    const context = validateApplicationAdmissionContextV1(invocation.context, {
-      now,
-    });
-    validateCanonicalParity(invocation, context);
-  }
 }
 
 type LegacyCompatibleInternalOperationInvocation =
@@ -233,8 +234,8 @@ type LegacyCompatibleInternalOperationInvocation =
 function legacyInternalOperationContext(
   invocation: LegacyCompatibleInternalOperationInvocation,
 ): ApplicationAdmissionContextV1 {
-  return withApplicationAdmissionExecutionV1(
-    createApplicationAdmissionContextV1({
+  const context = validateApplicationAdmissionContextV1WithoutReceipt({
+    ...createApplicationAdmissionContextV1({
       admission: invocation.admission,
       operation: {
         id: invocation.operationId,
@@ -242,16 +243,46 @@ function legacyInternalOperationContext(
       },
       correlationId: invocation.source.sessionId ?? invocation.id,
     }),
-    {
-      causationId: invocation.id,
-      deadline: invocation.expiresAt,
-      authorizationReceipt: invocation.authorizationReceipt,
-      delivery: {
-        id: invocation.id,
-        source: `applik8s://internal-operation/${invocation.source.workloadId}`,
-      },
+    causationId: invocation.id,
+    deadline: invocation.expiresAt,
+    delivery: {
+      id: invocation.id,
+      source: `applik8s://internal-operation/${invocation.source.workloadId}`,
     },
+  }, { now: Number.NEGATIVE_INFINITY });
+  return Object.freeze({
+    ...context,
+    authorizationReceipt: invocation.authorizationReceipt,
+  });
+}
+
+function validatePreauthorizedInternalOperationContext(
+  value: ApplicationAdmissionContextV1,
+  invocation: LegacyCompatibleInternalOperationInvocation,
+  now: number,
+): ApplicationAdmissionContextV1 {
+  const {
+    authorizationReceipt,
+    ...contextWithoutReceipt
+  } = value;
+  if (
+    !authorizationReceipt
+    || canonicalInternalJson(authorizationReceipt)
+      !== canonicalInternalJson(invocation.authorizationReceipt)
+  ) {
+    throw transportError(
+      'INTERNAL_INVOCATION_INVALID',
+      'The canonical admission receipt does not match its prevalidated compatibility receipt.',
+    );
+  }
+  const context = validateApplicationAdmissionContextV1WithoutReceipt(
+    contextWithoutReceipt,
+    { now },
   );
+  return Object.freeze({
+    ...context,
+    authorizationReceipt: invocation.authorizationReceipt,
+  });
 }
 
 function validateCanonicalParity(
@@ -266,7 +297,8 @@ function validateCanonicalParity(
       !== canonicalInternalJson(invocation.admission.trustedContext)
     || context.operation.id !== invocation.operationId
     || context.operation.transport !== canonicalInternalTransport(invocation.source.transport)
-    || context.authorizationReceipt?.id !== invocation.authorizationReceipt.id
+    || canonicalInternalJson(context.authorizationReceipt)
+      !== canonicalInternalJson(invocation.authorizationReceipt)
     || context.deadline !== invocation.expiresAt
     || context.delivery?.id !== invocation.id
   ) {

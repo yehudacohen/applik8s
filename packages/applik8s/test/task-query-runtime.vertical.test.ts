@@ -42,18 +42,57 @@ describe('task query runtime', () => {
     });
 
     await expect(queries.context?.({ viewerId: 'automation-account' })).resolves.toEqual([{ id: 'post-1', body: 'hello' }]);
-    expect(admission).toEqual({
-      principal: { id: 'automation-account', roles: ['automation-worker'] },
-      authorizationVersion: 'policy-v1', trustedContext: { automationId: 'automation-1' },
+    expect(admission).toMatchObject({
+      principal: {
+        id: 'automation-account',
+        identity: {
+          id: 'identity:task-query:service:automation-account',
+          kind: 'service',
+          issuer: 'applik8s://task-query',
+          subject: 'automation-account',
+        },
+        kind: 'service',
+        authenticationMethod: 'workload-identity',
+        audience: ['gateway.social'],
+        trustedContextDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/u),
+        catalogRevision: 'policy-v1',
+        authorityRevision: 'policy-v1',
+        admittedAt: '2026-07-20T00:00:00.000Z',
+        expiresAt: '2026-07-20T00:00:07.000Z',
+        roles: ['automation-worker'],
+      },
+      trustedContext: { automationId: 'automation-1' },
     });
+    expect(admission).not.toHaveProperty('authorizationVersion');
     expect(request).toHaveBeenCalledTimes(1);
     const [legacyPayload, legacySignature] = emittedToken?.split('.') ?? [];
     expect(legacySignature).toBe(
       createHmac('sha256', secret).update(legacyPayload ?? '').digest('base64url'),
     );
     expect(JSON.parse(Buffer.from(legacyPayload ?? '', 'base64url').toString('utf8')))
-      .toMatchObject({ protocol: 'applik8s.task-query/v1alpha1' });
+      .toMatchObject({
+        protocol: 'applik8s.task-query/v1alpha1',
+        authorizationVersion: 'policy-v1',
+        trustedContext: { automationId: 'automation-1' },
+        context: {
+          apiVersion: 'applik8s.admission/v1',
+          authorityRevision: 'policy-v1',
+          operation: {
+            id: 'applik8s://queries/Post.homeTimeline/snapshot',
+            transport: 'workflow',
+          },
+          deadline: '2026-07-20T00:00:07.000Z',
+          delivery: {
+            source: 'applik8s://workflow/task-query',
+          },
+        },
+      });
     expect(() => runtime.bind({ forbidden: 'Post.notDeclared' }, { id: 'worker', authorizationVersion: 'v1' })).toThrow(/undeclared/);
+    expect(() => runtime.bind({ context: 'Post.homeTimeline' }, {
+      id: 'user-1',
+      kind: 'human',
+      authorizationVersion: 'v1',
+    })).toThrow(/not-service/u);
   });
 
   it('preserves canonical service identity through signed internal query admission', async () => {
@@ -108,11 +147,15 @@ describe('task query runtime', () => {
 
     await active({ slug: 'workspace-assistant' });
 
-    expect(admission?.principal).toEqual({
+    expect(admission?.principal).toMatchObject({
       id: identity.id,
       identity,
       kind: 'service',
       authenticationMethod: 'workload-identity',
+      audience: ['gateway.web'],
+      catalogRevision: 'authority-v1',
+      authorityRevision: 'authority-v1',
+      trustedContextDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/u),
     });
   });
 
@@ -179,8 +222,21 @@ describe('task query runtime', () => {
     expect(await verifyApplicationTaskQueryAdmission({ request: signedRequest, cursorSecret: secret, audience: 'gateway.other', query: 'Account.mine', input: {}, now: new Date('2026-07-20T00:00:00.000Z') })).toBeUndefined();
     expect(await verifyApplicationTaskQueryAdmission({ request: signedRequest, cursorSecret: secret, audience: 'gateway.account', query: 'Account.mine', input: {}, now: new Date('2026-07-20T00:01:01.000Z') })).toBeUndefined();
     expect(await verifyApplicationTaskQueryAdmission({ request: signedRequest, cursorSecret: secret, audience: 'gateway.account', query: 'Account.mine', input: { changed: true }, now: new Date('2026-07-20T00:00:00.000Z') })).toBeUndefined();
-    const tampered = new Request(signedRequest, { headers: { ...Object.fromEntries(signedRequest.headers), 'x-applik8s-task-query': `${signedRequest.headers.get('x-applik8s-task-query')}x` } });
+    const tampered = new Request(signedRequest.url, { method: signedRequest.method, headers: { ...Object.fromEntries(signedRequest.headers), 'x-applik8s-task-query': `${signedRequest.headers.get('x-applik8s-task-query')}x` } });
     expect(await verifyApplicationTaskQueryAdmission({ request: tampered, cursorSecret: secret, audience: 'gateway.account', query: 'Account.mine', input: {}, now: new Date('2026-07-20T00:00:00.000Z') })).toBeUndefined();
+
+    const [payload] = signedRequest.headers.get('x-applik8s-task-query')?.split('.') ?? [];
+    const mismatchedPayload = JSON.parse(Buffer.from(payload ?? '', 'base64url').toString('utf8'));
+    mismatchedPayload.context.principal.roles = ['unexpected-role'];
+    const encodedMismatch = Buffer.from(JSON.stringify(mismatchedPayload)).toString('base64url');
+    const mismatch = new Request(signedRequest.url, {
+      method: signedRequest.method,
+      headers: {
+        ...Object.fromEntries(signedRequest.headers),
+        'x-applik8s-task-query': `${encodedMismatch}.${createHmac('sha256', secret).update(encodedMismatch).digest('base64url')}`,
+      },
+    });
+    expect(await verifyApplicationTaskQueryAdmission({ request: mismatch, cursorSecret: secret, audience: 'gateway.account', query: 'Account.mine', input: {}, now: new Date('2026-07-20T00:00:00.000Z') })).toBeUndefined();
   });
 
   it('reads the bounded pre-v0.8 compact admission during the rolling migration', async () => {
@@ -209,9 +265,24 @@ describe('task query runtime', () => {
       query: 'Account.mine',
       input,
       now: new Date('2026-07-20T00:00:00.000Z'),
-    })).resolves.toEqual({
-      principal: { id: 'account-1', roles: ['member'] },
-      authorizationVersion: 'authority-v1',
+    })).resolves.toMatchObject({
+      principal: {
+        id: 'account-1',
+        identity: {
+          id: 'identity:task-query:service:account-1',
+          kind: 'service',
+          issuer: 'applik8s://task-query',
+          subject: 'account-1',
+        },
+        kind: 'service',
+        authenticationMethod: 'workload-identity',
+        audience: ['gateway.account'],
+        trustedContextDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/u),
+        catalogRevision: 'authority-v1',
+        authorityRevision: 'authority-v1',
+        expiresAt: '2026-07-20T00:00:30.000Z',
+        roles: ['member'],
+      },
       trustedContext: { organizationId: 'organization-1' },
     });
   });

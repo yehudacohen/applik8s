@@ -28,11 +28,11 @@ const database = { name: 'catalog', connectionEnvName: 'APPLIK8S_DATABASE_CATALO
 // canonical signed-envelope reader/writer and bounded legacy decoder. Keep in
 // sync with benchmarks/v0.8/budgets.json.
 // Runtime Integrity adds one shared dual-reader substrate for the public query,
-// command, stream, search, and object-intent protocols. Keep the complete
-// generated gateway below a fixed 585 KiB ceiling while Release-A compatibility
-// readers remain present; later release phases must lower this rather than
-// increasing it again.
-const reactiveRuntimeBundleBudgetBytes = 585_000;
+// command, stream, search, object-intent, and canonical internal-operation
+// protocols. benchmarks/v0.8/budgets.json fixes a 580 KB gateway budget plus at
+// most 10 KB of Runtime Integrity overhead while Release-A compatibility readers
+// remain present; later release phases must lower this rather than increase it.
+const reactiveRuntimeBundleBudgetBytes = 590_000;
 
 describe('generated v0.6 reactive workloads', () => {
   it('emits collision-safe variables for inferred dotted outbox model operations', async () => {
@@ -1082,6 +1082,7 @@ describe('generated v0.6 reactive workloads', () => {
     expect(generatedSource).toContain("from '@applik8s/runtime-nats/event-log'");
     expect(generatedSource).not.toContain("from '@applik8s/runtime-aws/kinesis'");
     expect(generatedSource).toContain('async function admitQuery(request, query, input)');
+    expect(generatedSource).not.toContain('verifyApplicationTaskQueryAdmission');
     expect(generatedSource).toContain('authenticate: admitRequest');
     expect(generatedSource).toContain('createApplicationOperationAuthorityRuntime');
     expect(generatedSource).toContain('applik8s://models/Card/operations/rename');
@@ -1685,8 +1686,36 @@ describe('generated v0.6 reactive workloads', () => {
       cursorSecret: { apiVersion: 'v1', kind: 'Secret', name: 'gateway-cursor', namespace: '${schema.spec.namespace}', key: 'secret' },
       deployment: { namespace: '${schema.spec.namespace}', image: 'node:22-alpine@sha256:16e22a550f3863206a3f701448c45f7912c6896a62de43add43bb9c86130c3e2', replicas: 1, port: 8080 },
     } as const;
+    const task = {
+      id: 'task.moderation.inspect.v1',
+      kind: 'task',
+      name: 'moderation.inspect.v1',
+      stability: 'stable',
+      contract: {
+        name: 'moderation.inspect',
+        version: 'v1',
+        input: schema({ type: 'object', properties: {}, required: [] }),
+        output: schema({ type: 'object', properties: {}, required: [] }),
+        errors: [],
+      },
+    } as const;
+    const taskHandler = {
+      id: 'task-handler.moderation.inspect.v1',
+      kind: 'taskHandler',
+      name: 'moderation.inspect.v1',
+      stability: 'stable',
+      task: { nodeId: task.id },
+      workflowEngine: { interface: 'WorkflowEngine', nodeId: 'provider.workflow-engine' },
+      queries: [{ alias: 'current', query: { nodeId: query.id } }],
+      retry: { mode: 'boundedExponentialBackoff', maxAttempts: 3, initialDelayMs: 100, maxDelayMs: 1_000, factor: 2 },
+      executionTimeoutSeconds: 30,
+      scheduleTimeoutSeconds: 60,
+      idempotency: { required: true, keySource: 'invocation', guarantee: 'atLeastOnceRetrySafe' },
+      effectBoundary: 'externalEffectsAllowed',
+      handlerSource: 'async () => ({})',
+    } as const;
     const [artifact] = await emitGeneratedApplicationReactive({
-      graph: reactiveGraph([card, cardQuery, policy, query, gateway] as unknown as ApplicationGraphNode[]),
+      graph: reactiveGraph([card, cardQuery, policy, query, gateway, task, taskHandler] as unknown as ApplicationGraphNode[]),
       outDir: await mkdtemp(join(tmpdir(), 'applik8s-kubernetes-query-gateway-')),
       entrypoint: import.meta.filename,
     });
@@ -1699,6 +1728,7 @@ describe('generated v0.6 reactive workloads', () => {
     expect(source).toContain('APPLIK8S_KUBERNETES_QUERY_');
     expect(source).toContain('allowedNamespaces');
     expect(source).toContain('applik8s.task-query/v1alpha1');
+    expect(generatedSource).toContain('verifyApplicationTaskQueryAdmission');
     expect(source).toContain('Applik8s Kubernetes query request failed');
     expect(generatedSource).toContain('proxyApplicationQueryMultiplex');
     expect(generatedSource).toContain('relationalQueryIds');

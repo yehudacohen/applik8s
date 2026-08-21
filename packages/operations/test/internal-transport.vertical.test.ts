@@ -142,6 +142,18 @@ describe('internal operation transport', () => {
         },
       }),
     ).toThrow(/authority evidence/u);
+    expect(() =>
+      encodeApplicationInternalOperationInvocation(secret, {
+        ...invocation,
+        context: {
+          ...invocation.context,
+          operation: {
+            ...invocation.context.operation,
+            id: 'applik8s://models/Other/operations/update',
+          },
+        },
+      }),
+    ).toThrow(/canonical admission context/u);
   });
 
   it.each([

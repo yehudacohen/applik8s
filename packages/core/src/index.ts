@@ -6,6 +6,7 @@ export {
   applicationAdmissionInvocationView,
   createApplicationAdmissionContextV1,
   validateApplicationAdmissionContextV1,
+  validateApplicationAdmissionContextV1WithoutReceipt,
   withApplicationAdmissionExecutionV1,
   withApplicationAdmissionTraceV1,
 } from './application-admission.js';

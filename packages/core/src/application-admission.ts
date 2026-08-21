@@ -190,6 +190,35 @@ export function validateApplicationAdmissionContextV1(
   value: unknown,
   options: { readonly now?: number } = {},
 ): ApplicationAdmissionContextV1 {
+  return validateApplicationAdmissionContextStructureV1(
+    value,
+    options,
+    validateReceipt,
+  );
+}
+
+/**
+ * Validates a canonical context for transports whose protocol forbids an
+ * authorization receipt. Keeping this profile in the canonical owner lets
+ * generated runtimes omit the operation-authority receipt verifier without
+ * implementing a second admission parser.
+ */
+export function validateApplicationAdmissionContextV1WithoutReceipt(
+  value: unknown,
+  options: { readonly now?: number } = {},
+): ApplicationAdmissionContextV1 {
+  return validateApplicationAdmissionContextStructureV1(value, options);
+}
+
+function validateApplicationAdmissionContextStructureV1(
+  value: unknown,
+  options: { readonly now?: number },
+  receiptValidator?: (
+    receipt: ApplicationAuthorizationReceipt,
+    principal: ApplicationPrincipal,
+    operationId: string,
+  ) => void,
+): ApplicationAdmissionContextV1 {
   const input = record(value, '$');
   if (input.apiVersion !== applicationAdmissionContextVersion) {
     throw admissionError('ADMISSION_VERSION_INVALID', '$.apiVersion', 'Admission context version is unsupported');
@@ -223,7 +252,14 @@ export function validateApplicationAdmissionContextV1(
     ? undefined
     : input.authorizationReceipt as ApplicationAuthorizationReceipt;
   if (authorizationReceipt) {
-    validateReceipt(authorizationReceipt, principal, operation.id);
+    if (!receiptValidator) {
+      throw admissionError(
+        'ADMISSION_RECEIPT_INVALID',
+        '$.authorizationReceipt',
+        'Admission authorization receipt is forbidden for this transport',
+      );
+    }
+    receiptValidator(authorizationReceipt, principal, operation.id);
   }
   return Object.freeze({
     apiVersion: applicationAdmissionContextVersion,
