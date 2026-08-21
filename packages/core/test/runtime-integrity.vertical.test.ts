@@ -1,0 +1,204 @@
+import {
+  ApplicationAdmissionContextV1Error,
+  applicationAdmissionContextVersion,
+  applicationAdmissionIdentityView,
+  applicationAdmissionInvocationView,
+  CanonicalJsonV1Error,
+  canonicalJsonCompatibleV1Policy,
+  canonicalJsonStrictV1Policy,
+  canonicalJsonV1Bytes,
+  canonicalJsonV1String,
+  canonicalJsonV1Value,
+  SignedEnvelopeV1ValidationError,
+  signedEnvelopeAlgorithm,
+  signedEnvelopeVersion,
+  validateApplicationAdmissionContextV1,
+  validateSignedEnvelopeV1Protected,
+} from '@applik8s/core';
+import { describe, expect, it } from 'vitest';
+
+describe('Canonical JSON v1', () => {
+  it('produces stable UTF-8 bytes with lexical keys and normalized negative zero', () => {
+    const first = { z: -0, nested: { b: true, a: 'value' }, a: [3, 2, 1] };
+    const second = { a: [3, 2, 1], nested: { a: 'value', b: true }, z: 0 };
+    const expected = '{"a":[3,2,1],"nested":{"a":"value","b":true},"z":0}';
+
+    expect(canonicalJsonV1String(first)).toBe(expected);
+    expect(canonicalJsonV1String(second)).toBe(expected);
+    expect(new TextDecoder().decode(canonicalJsonV1Bytes(first))).toBe(expected);
+  });
+
+  it('makes undefined semantics explicit through named policies', () => {
+    expect(() => canonicalJsonV1Value({ missing: undefined }))
+      .toThrowError(expect.objectContaining({
+        name: 'CanonicalJsonV1Error',
+        code: 'CANONICAL_JSON_UNDEFINED',
+        path: '$.missing',
+        policy: 'strict',
+      }));
+    expect(canonicalJsonV1String(
+      { kept: true, missing: undefined, array: [1, undefined] },
+      canonicalJsonCompatibleV1Policy,
+    )).toBe('{"array":[1,null],"kept":true}');
+    expect(() => canonicalJsonV1Value(undefined, canonicalJsonCompatibleV1Policy))
+      .toThrow(CanonicalJsonV1Error);
+    expect(canonicalJsonStrictV1Policy.name).toBe('strict');
+  });
+
+  it('allows repeated value references but rejects cycles at the exact path', () => {
+    const shared = { id: 'shared' };
+    expect(canonicalJsonV1String({ first: shared, second: shared }))
+      .toBe('{"first":{"id":"shared"},"second":{"id":"shared"}}');
+
+    const cycle: Record<string, unknown> = {};
+    cycle.self = cycle;
+    expect(() => canonicalJsonV1String({ cycle })).toThrowError(
+      expect.objectContaining({
+        code: 'CANONICAL_JSON_CYCLE',
+        path: '$.cycle.self',
+      }),
+    );
+  });
+
+  it.each([
+    ['non-finite number', Number.NaN, 'CANONICAL_JSON_NON_FINITE_NUMBER'],
+    ['date', new Date('2026-08-21T00:00:00.000Z'), 'CANONICAL_JSON_UNSUPPORTED_VALUE'],
+    ['bigint', 1n, 'CANONICAL_JSON_UNSUPPORTED_VALUE'],
+    ['function', () => undefined, 'CANONICAL_JSON_UNSUPPORTED_VALUE'],
+    ['symbol', Symbol('value'), 'CANONICAL_JSON_UNSUPPORTED_VALUE'],
+  ])('rejects unsupported %s values', (_name, value, code) => {
+    expect(() => canonicalJsonV1String({ value })).toThrowError(
+      expect.objectContaining({ code, path: '$.value' }),
+    );
+  });
+});
+
+describe('Signed Envelope v1 protected contract', () => {
+  const protectedBody = {
+    version: signedEnvelopeVersion,
+    purpose: 'applik8s.test.cursor/v1',
+    algorithm: signedEnvelopeAlgorithm,
+    keyId: 'test-key-1',
+    issuedAt: 1_800_000_000_000,
+    expiresAt: 1_800_000_060_000,
+    payload: { cursor: 'next' },
+  } as const;
+
+  it('validates purpose, lifetime, key identity, and a typed payload', () => {
+    expect(validateSignedEnvelopeV1Protected(protectedBody, {
+      purpose: protectedBody.purpose,
+      now: protectedBody.issuedAt,
+      maximumLifetimeMs: 60_000,
+      validatePayload(value) {
+        if (!value || typeof value !== 'object' || Array.isArray(value)) {
+          throw new TypeError('payload must be an object');
+        }
+        return value;
+      },
+    })).toEqual(protectedBody);
+  });
+
+  it.each([
+    ['purpose', { ...protectedBody, purpose: 'another-purpose' }, 'SIGNED_ENVELOPE_PURPOSE_INVALID'],
+    ['algorithm', { ...protectedBody, algorithm: 'none' }, 'SIGNED_ENVELOPE_ALGORITHM_INVALID'],
+    ['key identity', { ...protectedBody, keyId: '../secret' }, 'SIGNED_ENVELOPE_KEY_ID_INVALID'],
+    ['expiry', protectedBody, 'SIGNED_ENVELOPE_EXPIRED'],
+  ])('rejects invalid %s before payload use', (_name, value, code) => {
+    expect(() => validateSignedEnvelopeV1Protected(value, {
+      purpose: protectedBody.purpose,
+      now: code === 'SIGNED_ENVELOPE_EXPIRED'
+        ? protectedBody.expiresAt + 1
+        : protectedBody.issuedAt,
+      validatePayload(payload) { return payload; },
+    })).toThrowError(expect.objectContaining({
+      name: 'SignedEnvelopeV1ValidationError',
+      code,
+    }));
+  });
+
+  it('normalizes payload validator failures without retaining their cause', () => {
+    expect(() => validateSignedEnvelopeV1Protected(protectedBody, {
+      purpose: protectedBody.purpose,
+      now: protectedBody.issuedAt,
+      validatePayload() { throw new Error('schema mismatch'); },
+    })).toThrow(SignedEnvelopeV1ValidationError);
+  });
+});
+
+describe('Admission Context v1', () => {
+  const principal = {
+    id: 'principal:human:user-1',
+    kind: 'human',
+    identity: {
+      id: 'identity:human:user-1',
+      kind: 'human',
+      issuer: 'https://identity.example.test',
+      subject: 'user-1',
+    },
+    authenticationMethod: 'oidc',
+    audience: ['application'],
+    trustedContextDigest: 'sha256:trusted-context',
+    catalogRevision: 'catalog-v1',
+    authorityRevision: 'authority-v1',
+    admittedAt: '2026-08-21T12:00:00.000Z',
+  } as const;
+  const context = {
+    apiVersion: applicationAdmissionContextVersion,
+    principal,
+    authorityRevision: 'authority-v1',
+    trustedContext: {
+      values: { organizationId: 'organization-1' },
+      digest: 'sha256:trusted-context',
+    },
+    operation: {
+      id: 'applik8s://models/Document/operations/create',
+      transport: 'http',
+    },
+    correlationId: 'request-1',
+    causationId: 'browser-action-1',
+    deadline: '2026-08-21T12:01:00.000Z',
+    cancellation: { revision: 'cancel-v1' },
+    trace: {
+      traceparent: '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01',
+    },
+    delivery: { id: 'http-request-1', source: 'public-api' },
+  } as const;
+
+  it('validates once and exposes immutable narrowed execution views', () => {
+    const admitted = validateApplicationAdmissionContextV1(context, {
+      now: Date.parse('2026-08-21T12:00:30.000Z'),
+    });
+    expect(applicationAdmissionIdentityView(admitted)).toEqual({
+      apiVersion: applicationAdmissionContextVersion,
+      principal,
+      authorityRevision: 'authority-v1',
+      trustedContext: context.trustedContext,
+    });
+    expect(applicationAdmissionInvocationView(admitted)).not.toHaveProperty('delivery');
+    expect(Object.isFrozen(admitted)).toBe(true);
+  });
+
+  it.each([
+    ['principal authority', { ...context, authorityRevision: 'authority-v2' }, 'ADMISSION_AUTHORITY_MISMATCH'],
+    ['trusted context', { ...context, trustedContext: { ...context.trustedContext, digest: 'sha256:other' } }, 'ADMISSION_AUTHORITY_MISMATCH'],
+    ['operation', { ...context, operation: { ...context.operation, id: 'unsafe' } }, 'ADMISSION_OPERATION_INVALID'],
+    ['deadline', context, 'ADMISSION_DEADLINE_EXPIRED'],
+  ])('fails closed for mismatched %s evidence', (_name, value, code) => {
+    expect(() => validateApplicationAdmissionContextV1(value, {
+      now: code === 'ADMISSION_DEADLINE_EXPIRED'
+        ? Date.parse('2026-08-21T12:02:00.000Z')
+        : Date.parse('2026-08-21T12:00:30.000Z'),
+    })).toThrowError(expect.objectContaining({
+      name: 'ApplicationAdmissionContextV1Error',
+      code,
+    }));
+  });
+
+  it('rejects non-JSON trusted context values at their path', () => {
+    expect(() => validateApplicationAdmissionContextV1({
+      ...context,
+      trustedContext: { ...context.trustedContext, values: { now: new Date() } },
+    }, { now: Date.parse('2026-08-21T12:00:30.000Z') }))
+      .toThrow(ApplicationAdmissionContextV1Error);
+  });
+});

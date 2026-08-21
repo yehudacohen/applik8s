@@ -1,3 +1,11 @@
+export type * from './application-admission.js';
+export {
+  ApplicationAdmissionContextV1Error,
+  applicationAdmissionContextVersion,
+  applicationAdmissionIdentityView,
+  applicationAdmissionInvocationView,
+  validateApplicationAdmissionContextV1,
+} from './application-admission.js';
 export type * from './application-explain.js';
 export { explainApplicationGraph } from './application-explain.js';
 export type * from './application-foundation.js';
@@ -14,23 +22,12 @@ export {
   sourceProvenance,
   validateApplicationFoundation,
 } from './application-foundation.js';
+export { applicationGraphArtifactFileName, applicationGraphMetadataProperty, applicationGraphNodeKinds, applicationInstallationMetadataProperty, applicationProviderInterfaceKinds, applicationTypeKroDefinitionProperty, applicationV03LiveValidationAssertions, applicationV03ProviderInterfaceKinds, isApplicationGraphNodeKind, isApplicationProviderInterfaceKind, normalizeApplicationGraph, resolveApplicationGraphProviderRequirement, serializeApplicationGraph, validateApplicationCrdSchemaCompatibilityContract, validateApplicationDurableStatusOwnershipContract, validateApplicationGraph, validateApplicationGraphCompatibilityPolicy, validateApplicationGraphProviderBindings, validateApplicationGraphStructure, validateApplicationJobStatusLifecycleContract, validateApplicationMigrationDriftCheckContract, validateApplicationOperationTargetContract, validateApplicationProviderCompatibilityMatrixContract, validateApplicationProviderInterfaceContract, validateApplicationRuntimeModuleInterfaceContract, validateApplicationRuntimeModuleManifestContract, validateApplicationTransactionalDatabaseSemanticsContract, validateApplicationV03PressureTestContract, validateApplicationWatchScopeLoweringContract } from './application-graph.js';
 export type * from './application-graph-foundation.js';
 export {
   deriveApplicationGraphFoundation,
   withDerivedApplicationGraphFoundation,
 } from './application-graph-foundation.js';
-export type * from './application-plan.js';
-export {
-  diffApplicationPlans,
-  normalizeApplicationPlan,
-  providerGuaranteeFor,
-  renderApplicationPlanGraph,
-  renderApplicationPlanText,
-  serializeApplicationPlan,
-  serializeApplicationPlanContent,
-  validateApplicationPlan,
-} from './application-plan.js';
-export { applicationGraphArtifactFileName, applicationGraphMetadataProperty, applicationGraphNodeKinds, applicationInstallationMetadataProperty, applicationProviderInterfaceKinds, applicationTypeKroDefinitionProperty, applicationV03LiveValidationAssertions, applicationV03ProviderInterfaceKinds, isApplicationGraphNodeKind, isApplicationProviderInterfaceKind, normalizeApplicationGraph, resolveApplicationGraphProviderRequirement, serializeApplicationGraph, validateApplicationCrdSchemaCompatibilityContract, validateApplicationDurableStatusOwnershipContract, validateApplicationGraph, validateApplicationGraphCompatibilityPolicy, validateApplicationGraphProviderBindings, validateApplicationGraphStructure, validateApplicationJobStatusLifecycleContract, validateApplicationMigrationDriftCheckContract, validateApplicationOperationTargetContract, validateApplicationProviderCompatibilityMatrixContract, validateApplicationProviderInterfaceContract, validateApplicationRuntimeModuleInterfaceContract, validateApplicationRuntimeModuleManifestContract, validateApplicationTransactionalDatabaseSemanticsContract, validateApplicationV03PressureTestContract, validateApplicationWatchScopeLoweringContract } from './application-graph.js';
 export type * from './application-operation-authority.js';
 export {
   applicationCausalPrincipalContext,
@@ -44,6 +41,17 @@ export {
   validateApplicationOperationCatalog,
   validateApplicationScope,
 } from './application-operation-authority.js';
+export type * from './application-plan.js';
+export {
+  diffApplicationPlans,
+  normalizeApplicationPlan,
+  providerGuaranteeFor,
+  renderApplicationPlanGraph,
+  renderApplicationPlanText,
+  serializeApplicationPlan,
+  serializeApplicationPlanContent,
+  validateApplicationPlan,
+} from './application-plan.js';
 export type * from './application-profile.js';
 export {
   validateApplicationProfileDescriptor,
@@ -59,5 +67,22 @@ export {
   applicationStartDefinitionApiVersion,
   validateApplicationStartDefinition,
 } from './application-start.js';
+export type * from './canonical-json.js';
+export {
+  CanonicalJsonV1Error,
+  canonicalJsonCompatibleV1Policy,
+  canonicalJsonStrictV1Policy,
+  canonicalJsonV1Bytes,
+  canonicalJsonV1String,
+  canonicalJsonV1Value,
+  canonicalJsonVersion,
+} from './canonical-json.js';
 export type * from './dns.js';
+export type * from './signed-envelope.js';
+export {
+  SignedEnvelopeV1ValidationError,
+  signedEnvelopeAlgorithm,
+  signedEnvelopeVersion,
+  validateSignedEnvelopeV1Protected,
+} from './signed-envelope.js';
 export type * from './types.js';

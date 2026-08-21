@@ -1,0 +1,104 @@
+import {
+  createSignedEnvelopeCodec,
+  SignedEnvelopeRuntimeError,
+  signedEnvelopeUtf8Key,
+  staticSignedEnvelopeKeyProvider,
+} from '@applik8s/runtime';
+import { describe, expect, it } from 'vitest';
+
+const purpose = 'applik8s.test.cursor/v1';
+const issuedAt = 1_800_000_000_000;
+const expiresAt = issuedAt + 60_000;
+const current = {
+  id: 'test-key-2',
+  key: signedEnvelopeUtf8Key('test-key-material-current-00000000000000000000000000000000'),
+};
+const previous = {
+  id: 'test-key-1',
+  key: signedEnvelopeUtf8Key('test-key-material-previous-000000000000000000000000000000'),
+};
+
+function codec(options: {
+  readonly now?: number;
+  readonly maximumEncodedBytes?: number;
+  readonly key?: typeof current;
+  readonly previous?: readonly (typeof current)[];
+  readonly purpose?: string;
+} = {}) {
+  return createSignedEnvelopeCodec({
+    purpose: options.purpose ?? purpose,
+    keys: staticSignedEnvelopeKeyProvider({
+      current: options.key ?? current,
+      ...(options.previous ? { previous: options.previous } : {}),
+    }),
+    now: () => options.now ?? issuedAt,
+    maximumLifetimeMs: 60_000,
+    ...(options.maximumEncodedBytes === undefined
+      ? {}
+      : { maximumEncodedBytes: options.maximumEncodedBytes }),
+    validatePayload(value) {
+      if (
+        !value
+        || typeof value !== 'object'
+        || Array.isArray(value)
+        || typeof Reflect.get(value, 'cursor') !== 'string'
+      ) {
+        throw new TypeError('cursor must be a string');
+      }
+      return value as { readonly cursor: string };
+    },
+  });
+}
+
+describe('portable Signed Envelope v1 runtime', () => {
+  it('emits deterministic canonical bytes and verifies its typed payload', async () => {
+    const token = await codec().sign(
+      { cursor: 'next' },
+      { issuedAt, expiresAt },
+    );
+
+    expect(token).toBe('eyJhbGdvcml0aG0iOiJITUFDLVNIQS0yNTYiLCJleHBpcmVzQXQiOjE4MDAwMDAwNjAwMDAsImlzc3VlZEF0IjoxODAwMDAwMDAwMDAwLCJrZXlJZCI6InRlc3Qta2V5LTIiLCJwYXlsb2FkIjp7ImN1cnNvciI6Im5leHQifSwicHVycG9zZSI6ImFwcGxpazhzLnRlc3QuY3Vyc29yL3YxIiwidmVyc2lvbiI6ImFwcGxpazhzLnNpZ25lZC1lbnZlbG9wZS92MSJ9.6-8fCWqRwu_T5hINXZVkAcFgrWQ-BWHuLV_QMLUQSAs');
+    await expect(codec().verify(token)).resolves.toMatchObject({
+      purpose,
+      keyId: current.id,
+      issuedAt,
+      expiresAt,
+      payload: { cursor: 'next' },
+    });
+  });
+
+  it('supports bounded key rotation without changing the purpose', async () => {
+    const legacy = await codec({ key: previous }).sign(
+      { cursor: 'legacy' },
+      { issuedAt, expiresAt },
+    );
+    await expect(codec({ previous: [previous] }).verify(legacy))
+      .resolves.toMatchObject({ keyId: previous.id, payload: { cursor: 'legacy' } });
+  });
+
+  it('fails closed for cross-purpose substitution, tampering, truncation, and unknown keys', async () => {
+    const token = await codec().sign({ cursor: 'next' }, { issuedAt, expiresAt });
+    await expect(codec({ purpose: 'applik8s.other.cursor/v1' }).verify(token))
+      .rejects.toMatchObject({ code: 'SIGNED_ENVELOPE_PURPOSE_INVALID' });
+    const [body, signature] = token.split('.');
+    await expect(codec().verify(`${body}.${signature?.slice(0, -2)}aa`))
+      .rejects.toMatchObject({ code: 'SIGNED_ENVELOPE_SIGNATURE_INVALID' });
+    await expect(codec().verify(token.slice(0, -8)))
+      .rejects.toBeInstanceOf(Error);
+    await expect(codec({
+      key: { ...current, id: 'unknown-key' },
+    }).verify(token)).rejects.toMatchObject({ code: 'SIGNED_ENVELOPE_KEY_UNKNOWN' });
+  });
+
+  it('rejects expiry, malformed canonical input, invalid payloads, weak keys, and oversize values', async () => {
+    const token = await codec().sign({ cursor: 'next' }, { issuedAt, expiresAt });
+    await expect(codec({ now: expiresAt + 1 }).verify(token))
+      .rejects.toMatchObject({ code: 'SIGNED_ENVELOPE_EXPIRED' });
+    await expect(codec({ maximumEncodedBytes: 512 }).sign(
+      { cursor: 'x'.repeat(1_000) },
+      { issuedAt, expiresAt },
+    ))
+      .rejects.toMatchObject({ code: 'SIGNED_ENVELOPE_OVERSIZED' });
+    expect(() => signedEnvelopeUtf8Key('weak')).toThrow(SignedEnvelopeRuntimeError);
+  });
+});
