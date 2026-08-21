@@ -1,9 +1,7 @@
 // typecast-file-boundary: OpenSearch responses and projection payloads are validated against compiled index contracts before typed reconstruction.
 import {
   createHash,
-  createHmac,
   randomUUID,
-  timingSafeEqual,
 } from 'node:crypto';
 import type {
   ApplicationSearchAdmissionScope,
@@ -28,7 +26,13 @@ import {
   ApplicationSearchFanOutError,
   ApplicationSearchHistoryLossError,
 } from '@applik8s/applik8s';
-import { canonicalJsonV1String, type JsonValue } from '@applik8s/core';
+import { createApplicationSearchCursorCodec } from '@applik8s/applik8s/search-cursor-codec';
+import {
+  canonicalJsonStrictV1Policy,
+  canonicalJsonV1String,
+  canonicalJsonV1Value,
+  type JsonValue,
+} from '@applik8s/core';
 
 const STATE_DOCUMENT_ID = '__applik8s_search_state';
 const INTERNAL_KIND_FIELD = '__applik8s_kind';
@@ -60,6 +64,8 @@ export interface OpenSearchApplicationSearchRuntimeOptions<
   readonly initialCheckpoint?: number;
   readonly sourceProjectionRevision?: string;
   readonly cursorSecret: string;
+  /** Search page cursors expire after this duration; defaults to 15 minutes. */
+  readonly cursorLifetimeMs?: number;
   readonly fields: ApplicationSearchRuntimeFields<TDocument>;
   readonly hydration: ApplicationSearchHydration<TDocument>;
   readonly changes: ApplicationSearchChangeSource;
@@ -109,19 +115,6 @@ export class ApplicationOpenSearchSearchUnavailableError extends Error {
     super(`Search index ${logicalIndex} is unavailable: ${reason}`);
     this.name = 'ApplicationOpenSearchSearchUnavailableError';
   }
-}
-
-interface OpenSearchCursor {
-  readonly protocol: 'applik8s.opensearch-cursor/v1alpha1';
-  readonly logicalIndex: string;
-  readonly indexRevision: string;
-  readonly physicalGeneration: string;
-  readonly checkpoint: number;
-  readonly principalId: string;
-  readonly contextDigest: string;
-  readonly authorizationVersion: string;
-  readonly queryDigest: string;
-  readonly searchAfter: readonly unknown[];
 }
 
 interface InFlightChange {
@@ -243,6 +236,13 @@ export async function createOpenSearchApplicationSearchRuntime<
     'maximumValidationDocuments',
   );
   const now = options.now ?? Date.now;
+  const cursorCodec = createApplicationSearchCursorCodec({
+    secret: options.cursorSecret,
+    now,
+    ...(options.cursorLifetimeMs === undefined
+      ? {}
+      : { lifetimeMs: options.cursorLifetimeMs }),
+  });
   const client = createClient(options);
   const alias = openSearchAliasName(
     options.indexPrefix ?? 'applik8s-search',
@@ -767,20 +767,18 @@ export async function createOpenSearchApplicationSearchRuntime<
           limit: request.limit ?? 20,
         });
         const cursor = request.cursor
-          ? decodeCursor(request.cursor, options.cursorSecret)
+          ? await cursorCodec.decode(request.cursor, {
+              logicalIndex: options.logicalIndex,
+              indexRevision: options.indexRevision,
+              physicalGeneration: state.generation,
+              checkpoint: state.checkpoint,
+              principalId: admission.principalId,
+              contextDigest: admission.contextDigest,
+              authorizationVersion: admission.authorizationVersion,
+              queryDigest,
+              continuationKind: 'orderedValues',
+            })
           : undefined;
-        if (cursor) {
-          validateCursor(cursor, {
-            logicalIndex: options.logicalIndex,
-            indexRevision: options.indexRevision,
-            physicalGeneration: state.generation,
-            checkpoint: state.checkpoint,
-            principalId: admission.principalId,
-            contextDigest: admission.contextDigest,
-            authorizationVersion: admission.authorizationVersion,
-            queryDigest,
-          });
-        }
         const limit = boundedInteger(
           request.limit ?? 20,
           1,
@@ -793,7 +791,9 @@ export async function createOpenSearchApplicationSearchRuntime<
           track_total_hits: true,
           query: openSearchQuery(request, admission, options.fields),
           sort: openSearchSort(request),
-          ...(cursor ? { search_after: cursor.searchAfter } : {}),
+          ...(cursor?.continuation.kind === 'orderedValues'
+            ? { search_after: cursor.continuation.values }
+            : {}),
           ...(request.text
             ? {
                 highlight: {
@@ -822,9 +822,8 @@ export async function createOpenSearchApplicationSearchRuntime<
         const lastSort = hits.at(-1)?.sort;
         const nextCursor =
           hits.length === limit && lastSort
-            ? encodeCursor(
+            ? await cursorCodec.encode(
                 {
-                  protocol: 'applik8s.opensearch-cursor/v1alpha1',
                   logicalIndex: options.logicalIndex,
                   indexRevision: options.indexRevision,
                   physicalGeneration: state.generation,
@@ -833,9 +832,11 @@ export async function createOpenSearchApplicationSearchRuntime<
                   contextDigest: admission.contextDigest,
                   authorizationVersion: admission.authorizationVersion,
                   queryDigest,
-                  searchAfter: lastSort,
+                  continuation: {
+                    kind: 'orderedValues',
+                    values: canonicalSearchAfter(lastSort),
+                  },
                 },
-                options.cursorSecret,
               )
             : undefined;
         const sourceProjectionRevision =
@@ -2102,72 +2103,12 @@ function validateChange(change: ApplicationSearchCommittedChange): void {
   }
 }
 
-function encodeCursor(cursor: OpenSearchCursor, secret: string): string {
-  const payload = Buffer.from(JSON.stringify(cursor)).toString('base64url');
-  const signature = createHmac('sha256', secret)
-    .update(payload)
-    .digest('base64url');
-  return `${payload}.${signature}`;
-}
-
-function decodeCursor(
-  encoded: string,
-  secret: string,
-): OpenSearchCursor {
-  const [payload, signature, extra] = encoded.split('.');
-  if (!payload || !signature || extra !== undefined) {
-    throw new ApplicationSearchCursorError('Search cursor is malformed.');
+function canonicalSearchAfter(value: readonly unknown[]): readonly JsonValue[] {
+  const normalized = canonicalJsonV1Value(value, canonicalJsonStrictV1Policy);
+  if (!Array.isArray(normalized)) {
+    throw new ApplicationSearchCursorError('OpenSearch continuation is not a JSON array.');
   }
-  const expected = createHmac('sha256', secret).update(payload).digest();
-  let actual: Buffer;
-  try {
-    actual = Buffer.from(signature, 'base64url');
-  } catch {
-    throw new ApplicationSearchCursorError(
-      'Search cursor signature is malformed.',
-    );
-  }
-  if (
-    actual.length !== expected.length
-    || !timingSafeEqual(actual, expected)
-  ) {
-    throw new ApplicationSearchCursorError(
-      'Search cursor signature is invalid.',
-    );
-  }
-  try {
-    return JSON.parse(
-      Buffer.from(payload, 'base64url').toString('utf8'),
-    ) as OpenSearchCursor;
-  } catch {
-    throw new ApplicationSearchCursorError(
-      'Search cursor payload is invalid.',
-    );
-  }
-}
-
-function validateCursor(
-  cursor: OpenSearchCursor,
-  expected: Omit<
-    OpenSearchCursor,
-    'protocol' | 'searchAfter'
-  >,
-): void {
-  if (
-    cursor.protocol !== 'applik8s.opensearch-cursor/v1alpha1'
-    || !Array.isArray(cursor.searchAfter)
-  ) {
-    throw new ApplicationSearchCursorError(
-      'Search cursor contract is invalid.',
-    );
-  }
-  for (const [key, value] of Object.entries(expected)) {
-    if (Reflect.get(cursor, key) !== value) {
-      throw new ApplicationSearchCursorError(
-        `Search cursor ${key} does not match the current admitted query.`,
-      );
-    }
-  }
+  return normalized;
 }
 
 function openSearchAliasName(

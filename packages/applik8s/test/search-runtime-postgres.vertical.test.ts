@@ -67,7 +67,7 @@ function runtimeOptions(sql?: ApplicationPostgresSql) {
     indexRevision: 'revision-1',
     ...(sql ? { sql } : { databaseUrl: databaseUrl as string }),
     schema,
-    cursorSecret: 'live-search-cursor-secret',
+    cursorSecret: 'live-search-cursor-secret-with-at-least-32-bytes',
     fields: {
       title: { kind: 'text' as const },
       tenant: { kind: 'filter' as const },

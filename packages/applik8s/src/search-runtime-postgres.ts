@@ -1,5 +1,5 @@
 // typecast-file-boundary: PostgreSQL search rows and cursor payloads are validated against compiled index contracts before typed document reconstruction.
-import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import type {
   ApplicationSearchComparison,
   ApplicationSearchRequest,
@@ -10,12 +10,12 @@ import type {
   ApplicationPostgresTransactionSql,
 } from './postgres-runtime-contract.js';
 import { createApplicationPostgresSql } from './postgres-runtime-loader.js';
+import { createApplicationSearchCursorCodec } from './search-cursor-codec.js';
 import {
   type ApplicationSearchAdmissionScope,
   type ApplicationSearchChangePage,
   type ApplicationSearchChangeSource,
   type ApplicationSearchCommittedChange,
-  ApplicationSearchCursorError,
   ApplicationSearchFanOutError,
   ApplicationSearchHistoryLossError,
   type ApplicationSearchHydratedDocument,
@@ -43,6 +43,8 @@ export interface PostgresApplicationSearchRuntimeOptions<
   readonly initialCheckpoint?: number;
   readonly sourceProjectionRevision?: string;
   readonly cursorSecret: string;
+  /** Search page cursors expire after this duration; defaults to 15 minutes. */
+  readonly cursorLifetimeMs?: number;
   readonly fields: SearchFieldMap<TDocument>;
   readonly hydration: ApplicationSearchHydration<TDocument>;
   readonly changes: ApplicationSearchChangeSource;
@@ -62,19 +64,6 @@ export interface PostgresApplicationSearchRuntime<
   /** Refreshes the process-local state view from durable provider authority. */
   refresh(): Promise<ApplicationSearchProjectionState>;
   close(): Promise<void>;
-}
-
-interface SearchCursor {
-  readonly protocol: 'applik8s.search-cursor/v1alpha1';
-  readonly logicalIndex: string;
-  readonly indexRevision: string;
-  readonly physicalGeneration: string;
-  readonly checkpoint: number;
-  readonly principalId: string;
-  readonly contextDigest: string;
-  readonly authorizationVersion: string;
-  readonly queryDigest: string;
-  readonly offset: number;
 }
 
 interface DurableIndexRow {
@@ -245,6 +234,13 @@ export async function createPostgresApplicationSearchRuntime<
   const identityParameters = [options.logicalIndex, options.indexRevision] as const;
   const lockIdentity = `applik8s.search/${options.logicalIndex}/${options.indexRevision}`;
   const now = options.now ?? Date.now;
+  const cursorCodec = createApplicationSearchCursorCodec({
+    secret: options.cursorSecret,
+    now,
+    ...(options.cursorLifetimeMs === undefined
+      ? {}
+      : { lifetimeMs: options.cursorLifetimeMs }),
+  });
   validateRuntimeFields(options.fields);
 
   for (const statement of postgresApplicationSearchMigrationSql(schema)) {
@@ -966,20 +962,18 @@ export async function createPostgresApplicationSearchRuntime<
         cachedLastAppliedAt = detailed.lastAppliedAt;
         const state = detailed.state;
         const cursor = request.cursor
-          ? decodeCursor(request.cursor, options.cursorSecret)
+          ? await cursorCodec.decode(request.cursor, {
+              logicalIndex: options.logicalIndex,
+              indexRevision: options.indexRevision,
+              physicalGeneration: state.activeGeneration,
+              checkpoint: state.checkpoint,
+              principalId: admission.principalId,
+              contextDigest: admission.contextDigest,
+              authorizationVersion: admission.authorizationVersion,
+              queryDigest,
+              continuationKind: 'offset',
+            })
           : undefined;
-        if (cursor) {
-          validateCursor(cursor, {
-            logicalIndex: options.logicalIndex,
-            indexRevision: options.indexRevision,
-            physicalGeneration: state.activeGeneration,
-            checkpoint: state.checkpoint,
-            principalId: admission.principalId,
-            contextDigest: admission.contextDigest,
-            authorizationVersion: admission.authorizationVersion,
-            queryDigest,
-          });
-        }
         const parameters: unknown[] = [
           options.logicalIndex,
           options.indexRevision,
@@ -1057,7 +1051,9 @@ export async function createPostgresApplicationSearchRuntime<
         visible.sort((left, right) =>
           compareSearchRows(left, right, order),
         );
-        const offset = cursor?.offset ?? 0;
+        const offset = cursor?.continuation.kind === 'offset'
+          ? cursor.continuation.offset
+          : 0;
         const limit = boundedInteger(
           request.limit ?? 20,
           1,
@@ -1068,9 +1064,8 @@ export async function createPostgresApplicationSearchRuntime<
         const nextOffset = offset + page.length;
         const nextCursor =
           nextOffset < visible.length
-            ? encodeCursor(
+            ? await cursorCodec.encode(
                 {
-                  protocol: 'applik8s.search-cursor/v1alpha1',
                   logicalIndex: options.logicalIndex,
                   indexRevision: options.indexRevision,
                   physicalGeneration: state.activeGeneration,
@@ -1079,9 +1074,8 @@ export async function createPostgresApplicationSearchRuntime<
                   contextDigest: admission.contextDigest,
                   authorizationVersion: admission.authorizationVersion,
                   queryDigest,
-                  offset: nextOffset,
+                  continuation: { kind: 'offset', offset: nextOffset },
                 },
-                options.cursorSecret,
               )
             : undefined;
         const requestedFacets =
@@ -1764,69 +1758,6 @@ function facetBuckets<TDocument extends object>(
       right.count - left.count
       || String(left.value).localeCompare(String(right.value)),
   );
-}
-
-function encodeCursor(cursor: SearchCursor, secret: string): string {
-  const payload = Buffer.from(JSON.stringify(cursor)).toString('base64url');
-  const signature = createHmac('sha256', secret)
-    .update(payload)
-    .digest('base64url');
-  return `${payload}.${signature}`;
-}
-
-function decodeCursor(encoded: string, secret: string): SearchCursor {
-  const [payload, signature, extra] = encoded.split('.');
-  if (!payload || !signature || extra !== undefined) {
-    throw new ApplicationSearchCursorError('Search cursor is malformed.');
-  }
-  const expected = createHmac('sha256', secret).update(payload).digest();
-  let actual: Buffer;
-  try {
-    actual = Buffer.from(signature, 'base64url');
-  } catch {
-    throw new ApplicationSearchCursorError(
-      'Search cursor signature is malformed.',
-    );
-  }
-  if (
-    actual.length !== expected.length
-    || !timingSafeEqual(actual, expected)
-  ) {
-    throw new ApplicationSearchCursorError(
-      'Search cursor signature is invalid.',
-    );
-  }
-  try {
-    return JSON.parse(
-      Buffer.from(payload, 'base64url').toString('utf8'),
-    ) as SearchCursor;
-  } catch {
-    throw new ApplicationSearchCursorError(
-      'Search cursor payload is invalid.',
-    );
-  }
-}
-
-function validateCursor(
-  cursor: SearchCursor,
-  expected: Omit<SearchCursor, 'protocol' | 'offset'>,
-): void {
-  if (
-    cursor.protocol !== 'applik8s.search-cursor/v1alpha1'
-    || !Number.isSafeInteger(cursor.offset)
-    || cursor.offset < 0
-  ) {
-    throw new ApplicationSearchCursorError(
-      'Search cursor contract is invalid.',
-    );
-  }
-  for (const [key, value] of Object.entries(expected)) {
-    if (Reflect.get(cursor, key) !== value) {
-      throw new ApplicationSearchCursorError(
-        `Search cursor ${key} does not match the current admitted query.`,
-      );
-    }
-  }
 }
 
 function parseDocument<TDocument extends object>(value: unknown): TDocument {

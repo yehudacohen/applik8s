@@ -14,8 +14,10 @@ describe('task query runtime', () => {
 
   it('injects only declared bounded queries under a signed compiler-owned service principal', async () => {
     let admission: Awaited<ReturnType<typeof verifyApplicationTaskQueryAdmission>> | undefined;
+    let emittedToken: string | undefined;
     const request = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
       const incoming = new Request('http://chirp-social.chirp.svc:8080/__applik8s/v1/queries/Post.homeTimeline/snapshot', init);
+      emittedToken = incoming.headers.get('x-applik8s-task-query') ?? undefined;
       admission = await verifyApplicationTaskQueryAdmission({ request: incoming, cursorSecret: secret, audience: 'gateway.social', query: 'Post.homeTimeline', input: { viewerId: 'automation-account' }, now: new Date('2026-07-20T00:00:00.000Z') });
       return new Response(JSON.stringify({
         kind: 'snapshot', protocol: 'applik8s.query/v1alpha1', query: 'Post.homeTimeline',
@@ -45,6 +47,12 @@ describe('task query runtime', () => {
       authorizationVersion: 'policy-v1', trustedContext: { automationId: 'automation-1' },
     });
     expect(request).toHaveBeenCalledTimes(1);
+    const [legacyPayload, legacySignature] = emittedToken?.split('.') ?? [];
+    expect(legacySignature).toBe(
+      createHmac('sha256', secret).update(legacyPayload ?? '').digest('base64url'),
+    );
+    expect(JSON.parse(Buffer.from(legacyPayload ?? '', 'base64url').toString('utf8')))
+      .toMatchObject({ protocol: 'applik8s.task-query/v1alpha1' });
     expect(() => runtime.bind({ forbidden: 'Post.notDeclared' }, { id: 'worker', authorizationVersion: 'v1' })).toThrow(/undeclared/);
   });
 

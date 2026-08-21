@@ -23,7 +23,7 @@ export interface SignedEnvelopeKeyProvider {
   ): Promise<SignedEnvelopeKeyMaterial | undefined>;
 }
 
-export interface SignedEnvelopeCodecOptions<TPayload extends JsonValue> {
+export interface SignedEnvelopeCodecOptions<TPayload> {
   readonly purpose: string;
   readonly keys: SignedEnvelopeKeyProvider;
   readonly validatePayload: (value: JsonValue) => TPayload;
@@ -38,14 +38,19 @@ export interface SignedEnvelopeSignOptions {
   readonly expiresInMs?: number;
 }
 
-export interface SignedEnvelopeCodec<TPayload extends JsonValue> {
+export interface SignedEnvelopeCodec<TPayload> {
   sign(payload: TPayload, options?: SignedEnvelopeSignOptions): Promise<string>;
   verify(token: string): Promise<SignedEnvelopeV1Protected<TPayload>>;
 }
 
-export interface LegacyCompactHmacJsonOptions<TPayload extends JsonValue> {
+export interface LegacyCompactHmacJsonOptions<TPayload> {
   readonly key: SignedEnvelopeKeyMaterial;
   readonly validatePayload: (value: JsonValue) => TPayload;
+  readonly maximumEncodedBytes?: number;
+}
+
+export interface LegacyCompactHmacJsonSigningOptions {
+  readonly key: SignedEnvelopeKeyMaterial;
   readonly maximumEncodedBytes?: number;
 }
 
@@ -67,7 +72,7 @@ export class SignedEnvelopeRuntimeError extends Error {
   }
 }
 
-export function createSignedEnvelopeCodec<TPayload extends JsonValue>(
+export function createSignedEnvelopeCodec<TPayload>(
   options: SignedEnvelopeCodecOptions<TPayload>,
 ): SignedEnvelopeCodec<TPayload> {
   if (!options.purpose.trim()) throw new TypeError('Signed envelope purpose must be non-empty.');
@@ -211,13 +216,39 @@ export function staticSignedEnvelopeKeyProvider(options: {
 }
 
 /**
+ * Temporary Release-A writer for durable formats following the accepted
+ * three-release migration. The payload bytes are Canonical JSON v1, while the
+ * compact signature remains readable by pre-v0.8 decoders.
+ *
+ * Do not use for new formats. Every caller must have a format-registry entry
+ * with a release that switches the writer to Signed Envelope v1.
+ */
+export async function signLegacyCompactHmacJsonForRollingMigration(
+  payload: JsonValue,
+  options: LegacyCompactHmacJsonSigningOptions,
+): Promise<string> {
+  const maximumEncodedBytes = options.maximumEncodedBytes ?? 16_384;
+  const encodedPayload = base64UrlEncode(
+    new TextEncoder().encode(canonicalJsonV1String(payload)),
+  );
+  const signature = new Uint8Array(await subtle().sign(
+    'HMAC',
+    await hmacKey(options.key, ['sign']),
+    new TextEncoder().encode(encodedPayload),
+  ));
+  const token = `${encodedPayload}.${base64UrlEncode(signature)}`;
+  assertEncodedSize(token, maximumEncodedBytes);
+  return token;
+}
+
+/**
  * Bounded read-only compatibility decoder for the pre-v0.8
  * `base64url(JSON).base64url(HMAC(encodedBody))` format.
  *
  * New writers must use Signed Envelope v1. Payload owners are responsible for
  * recording the decoder lifetime and removal release in the format registry.
  */
-export async function verifyLegacyCompactHmacJson<TPayload extends JsonValue>(
+export async function verifyLegacyCompactHmacJson<TPayload>(
   token: string,
   options: LegacyCompactHmacJsonOptions<TPayload>,
 ): Promise<TPayload> {

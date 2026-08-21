@@ -1,10 +1,13 @@
 // typecast-file-boundary: provider-neutral search projections validate schemas, frontier identities, and document shapes before restoring model generics.
-import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import type {
   ApplicationSearchComparison,
   ApplicationSearchRequest,
   ApplicationSearchResult,
 } from './application-search.js';
+import { createApplicationSearchCursorCodec } from './search-cursor-codec.js';
+
+export { ApplicationSearchCursorError } from './search-cursor-codec.js';
 
 export interface ApplicationSearchCommittedChange {
   /** Stable outbox/change-log identity. */
@@ -192,6 +195,8 @@ export interface DeterministicApplicationSearchRuntimeOptions<
   readonly initialCheckpoint?: number;
   readonly sourceProjectionRevision?: string;
   readonly cursorSecret: string;
+  /** Search page cursors expire after this duration; defaults to 15 minutes. */
+  readonly cursorLifetimeMs?: number;
   readonly fields: ApplicationSearchRuntimeFields<TDocument>;
   readonly hydration: ApplicationSearchHydration<TDocument>;
   readonly changes: ApplicationSearchChangeSource;
@@ -208,20 +213,6 @@ interface SearchGeneration<TDocument extends object> {
   }>;
   readonly applied: Map<number, string>;
   checkpoint: number;
-}
-
-interface SearchCursor {
-  readonly protocol: 'applik8s.search-cursor/v1alpha1';
-  readonly logicalIndex: string;
-  readonly indexRevision: string;
-  readonly physicalGeneration: string;
-  /** Exact committed projection frontier used to construct this page. */
-  readonly checkpoint: number;
-  readonly principalId: string;
-  readonly contextDigest: string;
-  readonly authorizationVersion: string;
-  readonly queryDigest: string;
-  readonly offset: number;
 }
 
 export class ApplicationSearchHistoryLossError extends Error {
@@ -251,15 +242,6 @@ export class ApplicationSearchFanOutError extends Error {
       `Search index ${logicalIndex} change ${changeId} exceeds its ${maximum}-root incremental fan-out ceiling and requires partitioned repair or rebuild.`,
     );
     this.name = 'ApplicationSearchFanOutError';
-  }
-}
-
-export class ApplicationSearchCursorError extends Error {
-  readonly code = 'APPLIK8S_SEARCH_CURSOR_INVALID';
-
-  constructor(message: string) {
-    super(message);
-    this.name = 'ApplicationSearchCursorError';
   }
 }
 
@@ -313,6 +295,13 @@ export function createDeterministicApplicationSearchRuntime<
   let projectionState: ApplicationSearchProjectionState['state'] = 'current';
   const previousGenerations: string[] = [];
   const now = options.now ?? Date.now;
+  const cursorCodec = createApplicationSearchCursorCodec({
+    secret: options.cursorSecret,
+    now,
+    ...(options.cursorLifetimeMs === undefined
+      ? {}
+      : { lifetimeMs: options.cursorLifetimeMs }),
+  });
 
   const currentGeneration = () => {
     const generation = generations.get(activeGeneration);
@@ -618,20 +607,18 @@ export function createDeterministicApplicationSearchRuntime<
         limit: request.limit ?? 20,
       });
       const cursor = request.cursor
-        ? decodeCursor(request.cursor, options.cursorSecret)
+        ? await cursorCodec.decode(request.cursor, {
+            logicalIndex: options.logicalIndex,
+            indexRevision: options.indexRevision,
+            physicalGeneration: activeGeneration,
+            checkpoint: generation.checkpoint,
+            principalId: admission.principalId,
+            contextDigest: admission.contextDigest,
+            authorizationVersion: admission.authorizationVersion,
+            queryDigest,
+            continuationKind: 'offset',
+          })
         : undefined;
-      if (cursor) {
-        validateCursor(cursor, {
-          logicalIndex: options.logicalIndex,
-          indexRevision: options.indexRevision,
-          physicalGeneration: activeGeneration,
-          checkpoint: generation.checkpoint,
-          principalId: admission.principalId,
-          contextDigest: admission.contextDigest,
-          authorizationVersion: admission.authorizationVersion,
-          queryDigest,
-        });
-      }
       const callerWhere = request.where ?? {};
       const mandatoryWhere = admission.where;
       const all = [...generation.documents.entries()];
@@ -660,15 +647,16 @@ export function createDeterministicApplicationSearchRuntime<
       visible.sort((left, right) =>
         compareSearchRows(left, right, order),
       );
-      const offset = cursor?.offset ?? 0;
+      const offset = cursor?.continuation.kind === 'offset'
+        ? cursor.continuation.offset
+        : 0;
       const limit = boundedInteger(request.limit ?? 20, 1, 100, 'limit');
       const page = visible.slice(offset, offset + limit);
       const nextOffset = offset + page.length;
       const nextCursor =
         nextOffset < visible.length
-          ? encodeCursor(
+          ? await cursorCodec.encode(
               {
-                protocol: 'applik8s.search-cursor/v1alpha1',
                 logicalIndex: options.logicalIndex,
                 indexRevision: options.indexRevision,
                 physicalGeneration: activeGeneration,
@@ -677,9 +665,8 @@ export function createDeterministicApplicationSearchRuntime<
                 contextDigest: admission.contextDigest,
                 authorizationVersion: admission.authorizationVersion,
                 queryDigest,
-                offset: nextOffset,
+                continuation: { kind: 'offset', offset: nextOffset },
               },
-              options.cursorSecret,
             )
           : undefined;
       const requestedFacets = request.facets?.map(({ name }) => name) ?? [];
@@ -1022,57 +1009,6 @@ function validationEvidence<TDocument extends object>(
       Boolean(value.document && typeof value.document === 'object'),
     ),
   };
-}
-
-function encodeCursor(cursor: SearchCursor, secret: string): string {
-  const payload = Buffer.from(JSON.stringify(cursor)).toString('base64url');
-  const signature = createHmac('sha256', secret).update(payload).digest('base64url');
-  return `${payload}.${signature}`;
-}
-
-function decodeCursor(encoded: string, secret: string): SearchCursor {
-  const [payload, signature, extra] = encoded.split('.');
-  if (!payload || !signature || extra !== undefined) {
-    throw new ApplicationSearchCursorError('Search cursor is malformed.');
-  }
-  const expected = createHmac('sha256', secret).update(payload).digest();
-  let actual: Buffer;
-  try {
-    actual = Buffer.from(signature, 'base64url');
-  } catch {
-    throw new ApplicationSearchCursorError('Search cursor signature is malformed.');
-  }
-  if (
-    actual.length !== expected.length
-    || !timingSafeEqual(actual, expected)
-  ) {
-    throw new ApplicationSearchCursorError('Search cursor signature is invalid.');
-  }
-  try {
-    return JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')) as SearchCursor;
-  } catch {
-    throw new ApplicationSearchCursorError('Search cursor payload is invalid.');
-  }
-}
-
-function validateCursor(
-  cursor: SearchCursor,
-  expected: Omit<SearchCursor, 'protocol' | 'offset'>,
-): void {
-  if (
-    cursor.protocol !== 'applik8s.search-cursor/v1alpha1'
-    || !Number.isSafeInteger(cursor.offset)
-    || cursor.offset < 0
-  ) {
-    throw new ApplicationSearchCursorError('Search cursor contract is invalid.');
-  }
-  for (const [key, value] of Object.entries(expected)) {
-    if (Reflect.get(cursor, key) !== value) {
-      throw new ApplicationSearchCursorError(
-        `Search cursor ${key} does not match the current admitted query.`,
-      );
-    }
-  }
 }
 
 function validatePosition(value: number, name: string): void {

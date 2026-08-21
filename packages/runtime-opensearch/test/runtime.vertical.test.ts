@@ -427,7 +427,7 @@ function fixture() {
     indexRevision: 'revision-1',
     endpoint: 'https://opensearch.test',
     fetch: server.fetch,
-    cursorSecret: 'cursor-secret',
+    cursorSecret: 'opensearch-cursor-secret-with-at-least-32-bytes',
     fields: {
       title: { kind: 'text' as const, valueType: 'string' as const, boost: 4 },
       tenant: { kind: 'filter' as const, valueType: 'string' as const },

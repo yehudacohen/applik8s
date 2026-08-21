@@ -91,6 +91,11 @@
       "import": "./dist/search-runtime-entry.js",
       "default": "./dist/search-runtime-entry.js"
     },
+    "./search-cursor-codec": {
+      "types": "./dist/search-cursor-codec.d.ts",
+      "import": "./dist/search-cursor-codec.js",
+      "default": "./dist/search-cursor-codec.js"
+    },
     "./command-gateway-runtime": {
       "types": "./dist/command-gateway-runtime.d.ts",
       "import": "./dist/command-gateway-runtime.js",

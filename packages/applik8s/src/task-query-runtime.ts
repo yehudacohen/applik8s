@@ -13,6 +13,7 @@ import {
   createSignedEnvelopeCodec,
   SignedEnvelopeRuntimeError,
   signedEnvelopeUtf8Key,
+  signLegacyCompactHmacJsonForRollingMigration,
   staticSignedEnvelopeKeyProvider,
   verifyLegacyCompactHmacJson,
 } from '@applik8s/runtime/signed-envelope';
@@ -117,7 +118,7 @@ export function createApplicationTaskQueryRuntime(options: {
             authorizationVersion: admitted.authorizationVersion,
             trustedContext: admitted.trustedContext ?? {},
             expiresAt: issuedAt + Math.min(timeoutMs + 5_000, maximumTokenLifetimeMs),
-          }, issuedAt);
+          });
           const response = await request(contract.endpoint, {
             method: 'POST',
             headers: {
@@ -187,7 +188,6 @@ export async function verifyApplicationTaskQueryAdmission(options: {
 async function encodeToken(
   secret: string,
   token: ApplicationTaskQueryToken,
-  issuedAt: number,
 ): Promise<string> {
   const payload = canonicalJsonV1Value(
     token,
@@ -196,9 +196,9 @@ async function encodeToken(
   if (new TextEncoder().encode(canonicalJsonV1String(payload)).byteLength > maximumTokenBytes) {
     throw new Error('applik8s-task-query-principal-too-large');
   }
-  return taskQueryTokenCodec(secret, issuedAt).sign(payload, {
-    issuedAt,
-    expiresAt: token.expiresAt,
+  return signLegacyCompactHmacJsonForRollingMigration(payload, {
+    key: signedEnvelopeUtf8Key(secret),
+    maximumEncodedBytes: maximumEncodedTokenBytes,
   });
 }
 

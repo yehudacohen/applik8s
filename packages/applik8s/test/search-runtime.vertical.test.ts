@@ -157,7 +157,7 @@ function fixture(options: {
   const runtime = createDeterministicApplicationSearchRuntime<ProductDocument>({
     logicalIndex: 'products',
     indexRevision: 'revision-v1',
-    cursorSecret: 'test-secret',
+    cursorSecret: 'test-search-cursor-secret-with-at-least-32-bytes',
     fields: {
       id: { kind: 'filter' },
       organizationId: { kind: 'filter' },

@@ -3,6 +3,7 @@ import {
   createSignedEnvelopeCodec,
   SignedEnvelopeRuntimeError,
   signedEnvelopeUtf8Key,
+  signLegacyCompactHmacJsonForRollingMigration,
   staticSignedEnvelopeKeyProvider,
   verifyLegacyCompactHmacJson,
 } from '@applik8s/runtime';
@@ -121,5 +122,21 @@ describe('portable Signed Envelope v1 runtime', () => {
       key: previous.key,
       validatePayload: (value) => value,
     })).rejects.toMatchObject({ code: 'SIGNED_ENVELOPE_SIGNATURE_INVALID' });
+  });
+
+  it('centralizes the temporary Release-A legacy writer over canonical v1 bytes', async () => {
+    const token = await signLegacyCompactHmacJsonForRollingMigration(
+      { z: 2, cursor: 'legacy', a: 1 },
+      { key: previous.key, maximumEncodedBytes: 512 },
+    );
+    const [payload] = token.split('.');
+    expect(Buffer.from(payload ?? '', 'base64url').toString('utf8')).toBe(
+      '{"a":1,"cursor":"legacy","z":2}',
+    );
+    await expect(verifyLegacyCompactHmacJson(token, {
+      key: previous.key,
+      maximumEncodedBytes: 512,
+      validatePayload(value) { return value; },
+    })).resolves.toEqual({ a: 1, cursor: 'legacy', z: 2 });
   });
 });

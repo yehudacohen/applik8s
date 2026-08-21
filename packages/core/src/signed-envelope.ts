@@ -3,7 +3,7 @@ import type { JsonValue } from './common.js';
 export const signedEnvelopeVersion = 'applik8s.signed-envelope/v1' as const;
 export const signedEnvelopeAlgorithm = 'HMAC-SHA-256' as const;
 
-export interface SignedEnvelopeV1Protected<TPayload extends JsonValue = JsonValue> {
+export interface SignedEnvelopeV1Protected<TPayload = JsonValue> {
   readonly version: typeof signedEnvelopeVersion;
   readonly purpose: string;
   readonly algorithm: typeof signedEnvelopeAlgorithm;
@@ -41,14 +41,14 @@ export class SignedEnvelopeV1ValidationError extends TypeError {
   }
 }
 
-export interface SignedEnvelopeV1ValidationOptions<TPayload extends JsonValue> {
+export interface SignedEnvelopeV1ValidationOptions<TPayload> {
   readonly purpose: string;
   readonly now?: number;
   readonly maximumLifetimeMs?: number;
   readonly validatePayload: (value: JsonValue) => TPayload;
 }
 
-export function validateSignedEnvelopeV1Protected<TPayload extends JsonValue>(
+export function validateSignedEnvelopeV1Protected<TPayload>(
   value: unknown,
   options: SignedEnvelopeV1ValidationOptions<TPayload>,
 ): SignedEnvelopeV1Protected<TPayload> {
