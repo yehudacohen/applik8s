@@ -1045,7 +1045,8 @@ function workflowSignalApi() {
   const definitions = new Map(
     effects.signals.map(({ binding }) => [binding.id, binding]),
   );
-  if (!contract.operationCatalog) {
+  const operationCatalog = contract.operationCatalog;
+  if (!operationCatalog) {
     throw new Error(
       `Workflow worker ${contract.worker.id} signals require the canonical operation catalog.`,
     );
@@ -1053,7 +1054,7 @@ function workflowSignalApi() {
   const issueOperations = Object.fromEntries(
     [...definitions.values()].map((binding) => {
       const id = `applik8s://signals/${binding.id}/operations/issue`;
-      const operation = contract.operationCatalog!.operations.find(
+      const operation = operationCatalog.operations.find(
         (candidate) => candidate.id === id,
       );
       if (!operation) {
@@ -1075,7 +1076,7 @@ function workflowSignalApi() {
       ].sort();
       const missing = operationIds.filter(
         (id) =>
-          !contract.operationCatalog!.operations.some(
+          !operationCatalog.operations.some(
             (operation) => operation.id === id,
           ),
       );
@@ -1097,12 +1098,6 @@ function workflowSignalApi() {
       ];
     }),
   );
-  const workloadIdentity = {
-    id: `identity:${contract.graphName}:workload:${contract.worker.id}`,
-    kind: 'workload',
-    issuer: `applik8s://${contract.graphName}`,
-    subject: contract.worker.id,
-  } as const;
   const definitionSource = [...definitions.values()]
     .sort((left, right) => left.id.localeCompare(right.id))
     .map((binding) => {
@@ -1144,7 +1139,6 @@ ${definitionSource}
 });
 const signalIssueOperations = Object.freeze(${JSON.stringify(issueOperations)});
 const signalGrantContracts = Object.freeze(${JSON.stringify(grantContracts)});
-const signalWorkloadIdentity = Object.freeze(${JSON.stringify(workloadIdentity)});
 function signalGrantIds(signal) {
   if (signal.access.mode !== 'grant') return [];
   const subjects = Array.isArray(signal.access.subject)
@@ -1208,6 +1202,7 @@ function workflowSignalApi(context, execution) {
   const occurrences = Object.create(null);
   const runtime = createApplicationWorkflowSignalRuntime({
     store: signalStore,
+    signal: execution.signal,
     invocation: {
       id: execution.invocationId,
       revision: ${JSON.stringify(contract.worker.id)},
@@ -1232,12 +1227,23 @@ function workflowSignalApi(context, execution) {
         throw new Error('Signal issuance has no canonical issue operation for ' + JSON.stringify(request.definition.id));
       }
       const trustedContextDigest = execution.trustedContext?.digest ?? ('workflow:' + execution.invocationId);
+      if (execution.signal?.aborted) {
+        throw execution.signal.reason ?? new Error('Signal issuance was cancelled.');
+      }
+      const principal = execution.admission?.principal;
+      if (!principal || principal.kind !== 'execution'
+        || principal.executionId !== execution.invocationId
+        || principal.executionKind !== execution.admission.execution?.kind
+        || principal.cancellationRevision !== execution.cancellationRevision) {
+        throw new Error('Signal issuance requires the workflow canonical execution principal.');
+      }
       const envelope = {
         apiVersion: 'applik8s.workloadAuthority/v1alpha1',
         id: 'signal-issue:' + request.definition.id + ':' + authorityContext.signalId,
-        workloadIdentity: signalWorkloadIdentity,
+        workloadIdentity: principal.workloadIdentity,
+        ...(principal.serviceIdentity ? { serviceIdentity: principal.serviceIdentity } : {}),
         operationId: operation.id,
-        catalogRevision: ${JSON.stringify(contract.operationCatalog.revision)},
+        catalogRevision: ${JSON.stringify(operationCatalog.revision)},
         restrictions: {
           target: {
             kind: 'target',
@@ -1255,22 +1261,6 @@ function workflowSignalApi(context, execution) {
         impersonation: 'forbidden',
       };
       return operationAuthority.withinTransaction(authorityContext.transaction, async () => {
-        const principal = await operationAuthority.admitExecutionPrincipal({
-          executionKind: 'workflow',
-          executionId: execution.invocationId,
-          attempt: execution.attempt,
-          workloadIdentity: signalWorkloadIdentity,
-          causalPrincipalId:
-            execution.causalPrincipal?.id ?? signalWorkloadIdentity.id,
-          causalPrincipal:
-            execution.causalPrincipal?.identity ?? signalWorkloadIdentity,
-          causalGrantIds: execution.causalPrincipal?.grantIds ?? [],
-          envelopes: [envelope],
-          trustedContextDigest,
-          audience: envelope.audiences,
-          deadline: new Date(Date.now() + 60_000).toISOString(),
-          cancellationRevision: 'active:' + execution.invocationId,
-        });
         const authorized = await operationAuthority.authorizeExecution({
           principal,
           envelope,
@@ -1279,7 +1269,7 @@ function workflowSignalApi(context, execution) {
           transport: 'workflow',
           inputDigest: applicationOperationInputDigest(request.input),
           trustedContextDigest,
-          currentCancellationRevision: principal.cancellationRevision,
+          currentCancellationRevision: execution.cancellationRevision,
           applicationPolicyAllowed: true,
         });
         if (!authorized.allowed) {
@@ -1322,11 +1312,11 @@ function workflowSignalApi(context, execution) {
                 identity: targetIdentity,
               },
               transports: ['direct', 'event', 'http'],
-              issuedBy: signalWorkloadIdentity,
+              issuedBy: principal.workloadIdentity,
               lifecycleOwner: 'signal:' + authorityContext.signalId,
               reason: 'Exact-instance access created by workflow.emitSignal(..., { grantAccessTo }).',
               expiresAt: request.expiresAt,
-              catalogRevision: ${JSON.stringify(contract.operationCatalog.revision)},
+              catalogRevision: ${JSON.stringify(operationCatalog.revision)},
               authorityRevision,
               createdAt: request.issuedAt,
             });

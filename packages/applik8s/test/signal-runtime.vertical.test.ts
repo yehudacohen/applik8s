@@ -514,6 +514,37 @@ describe('v0.7 canonical signal runtime', () => {
     ).resolves.toBe('reviewer-3:ship it');
   });
 
+  it('propagates the owning workflow cancellation through issuance and durable wait', async () => {
+    const store = createMemoryApplicationSignalStore();
+    const cancellation = new AbortController();
+    const runtime = createApplicationWorkflowSignalRuntime({
+      store,
+      signal: cancellation.signal,
+      invocation: { id: 'run-cancelled', revision: 'revision-1' },
+      occurrence: () => 'call-site-cancelled:1',
+      now: () => new Date('2026-01-01T00:00:00.000Z'),
+      authorizeIssue: () => undefined,
+      wait: async (_reference, options) => {
+        expect(options?.signal).toBe(cancellation.signal);
+        cancellation.abort(new Error('workflow-cancelled'));
+      },
+    });
+    const decision = await runtime.emit(ReviewDecision, {
+      input: { postId: 'post-cancelled' },
+      expiresIn: '24h',
+      target: { postId: 'post-cancelled' },
+      authorize: [],
+    });
+
+    await expect(decision()).rejects.toThrow('workflow-cancelled');
+    await expect(runtime.emit(ReviewDecision, {
+      input: { postId: 'post-never-issued' },
+      expiresIn: '24h',
+      target: { postId: 'post-never-issued' },
+      authorize: [],
+    })).rejects.toThrow('workflow-cancelled');
+  });
+
   it('always replays the durable wait before reading an already-terminal decision', async () => {
     const store = createMemoryApplicationSignalStore();
     let waits = 0;

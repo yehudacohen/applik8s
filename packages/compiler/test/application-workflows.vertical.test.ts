@@ -672,6 +672,10 @@ export const signalProof = platform.composition;
       });
       const artifact = result.value.artifacts.workflowArtifacts[0];
       const source = await readFile(artifact?.sourcePath ?? '', 'utf8');
+      const generatedSource = await readFile(
+        join(dirname(artifact?.sourcePath ?? ''), 'workflow-worker.generated.ts'),
+        'utf8',
+      );
       // The emitted worker is an optimized bundle, so helper identifiers are
       // intentionally not stable. Assert the durable protocol that must
       // survive minification instead of implementation-local symbol names.
@@ -703,6 +707,19 @@ export const signalProof = platform.composition;
       expect(source).toContain('worker-stopping');
       expect(source).toContain('executionId');
       expect(source).not.toContain("import { app");
+      expect(generatedSource).toContain('signal: execution.signal');
+      expect(generatedSource).toContain(
+        'const principal = execution.admission?.principal',
+      );
+      expect(generatedSource).toContain(
+        'currentCancellationRevision: execution.cancellationRevision',
+      );
+      expect(generatedSource).toContain(
+        'issuedBy: principal.workloadIdentity',
+      );
+      expect(generatedSource).not.toContain(
+        'const principal = await operationAuthority.admitExecutionPrincipal({',
+      );
       const handlerSource = await readFile(
         join(
           dirname(artifact?.sourcePath ?? ''),

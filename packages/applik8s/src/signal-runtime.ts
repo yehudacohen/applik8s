@@ -215,6 +215,8 @@ export interface ApplicationWorkflowSignalRuntimeOptions {
     readonly id: string;
     readonly revision: string;
   };
+  /** Cancellation for the admitted workflow execution that owns this signal. */
+  readonly signal?: AbortSignal;
   readonly now?: () => Date;
   readonly wait: (
     reference: ApplicationSignalReference,
@@ -298,6 +300,7 @@ export function createApplicationWorkflowSignalRuntime(
   let occurrence = 0;
   return {
     async emit(definition, emitOptions) {
+      throwIfApplicationSignalAborted(options.signal);
       assertApplicationSignalAccessMode(definition.id, emitOptions);
       const now = (options.now ?? (() => new Date()))();
       const expiresAt = new Date(
@@ -338,11 +341,13 @@ export function createApplicationWorkflowSignalRuntime(
         request,
         options.authorizeIssue,
       );
+      throwIfApplicationSignalAborted(options.signal);
       return signalDecision(
         definition,
         issued.instance,
         options.store,
         options.wait,
+        options.signal,
       );
     },
   };
@@ -1214,6 +1219,7 @@ function signalDecision<TDefinition extends ApplicationSignalDefinition>(
   instance: ApplicationSignalStoredInstance,
   store: ApplicationSignalStore,
   wait: ApplicationWorkflowSignalRuntimeOptions['wait'],
+  signal: AbortSignal | undefined,
 ): ApplicationSignalDecision<TDefinition> {
   const reference = signalReference(definition, instance);
   const decision = async (): Promise<ApplicationMatchedSignalOutcome<TDefinition>> => {
@@ -1224,7 +1230,8 @@ function signalDecision<TDefinition extends ApplicationSignalDefinition>(
     // consume the wait event's payload. Provider lookback makes this safe when
     // the signal resolved before the first wait or while the workflow was
     // evicted.
-    await wait(reference);
+    await wait(reference, signal ? { signal } : undefined);
+    throwIfApplicationSignalAborted(signal);
     const current = await store.read(instance.id);
     if (!current) throw new Error(`Signal ${instance.id} no longer exists.`);
     if (!current?.terminal) {
@@ -1248,6 +1255,13 @@ function signalDecision<TDefinition extends ApplicationSignalDefinition>(
   return Object.assign(decision, reference, {
     issueReceipt: instance.issueReceipt,
   });
+}
+
+function throwIfApplicationSignalAborted(signal: AbortSignal | undefined): void {
+  if (!signal?.aborted) return;
+  throw signal.reason instanceof Error
+    ? signal.reason
+    : new Error('Application workflow signal operation was cancelled.');
 }
 
 function signalActionResult<
