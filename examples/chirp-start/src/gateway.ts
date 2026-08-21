@@ -12,7 +12,7 @@ import { Post, PostByAuthor, PostByAuthorHandle, PostConversation, PostHomeTimel
 import { Block, BlockViewerState, Follow, FollowFollowers, FollowFollowing, FollowViewerState, Mute, MuteViewerState } from './domain/relationships';
 import { Bookmark, BookmarkMine, Reaction } from './domain/social';
 
-function authenticatedAdmission({
+async function authenticatedAdmission({
   principal, authorizationVersion, command, input,
 }: {
   readonly principal: { readonly id: string };
@@ -27,7 +27,7 @@ function authenticatedAdmission({
   if (command !== Media.create.operation.id) return true;
   if (!input || typeof input !== 'object') return false;
   const byteLength = Number(Reflect.get(input, 'byteLength'));
-  return verifyApplicationObjectCompletionReceipt({
+  return await verifyApplicationObjectCompletionReceipt({
     receipt: String(Reflect.get(input, 'uploadReceipt') ?? ''),
     secret: process.env.APPLIK8S_CURSOR_SECRET ?? '',
     principalId: principal.id,

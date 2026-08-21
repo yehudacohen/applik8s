@@ -82,7 +82,7 @@ const knowledge = module('knowledge-workbench', {}, currentApplication => {
       ) {
         throw new Error('Uploaded knowledge object evidence is incomplete.');
       }
-      if (!verifyApplicationObjectCompletionReceipt({
+      if (!await verifyApplicationObjectCompletionReceipt({
         receipt: input.uploadReceipt,
         secret: process.env.APPLIK8S_CURSOR_SECRET ?? '',
         principalId: context.principal.id,

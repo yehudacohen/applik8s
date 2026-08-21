@@ -27,7 +27,12 @@ const database = { name: 'catalog', connectionEnvName: 'APPLIK8S_DATABASE_CATALO
 // v0.8 reserves at most 10 KiB over the previous 570 KiB ceiling for the
 // canonical signed-envelope reader/writer and bounded legacy decoder. Keep in
 // sync with benchmarks/v0.8/budgets.json.
-const reactiveRuntimeBundleBudgetBytes = 580_000;
+// Runtime Integrity adds one shared dual-reader substrate for the public query,
+// command, stream, search, and object-intent protocols. Keep the complete
+// generated gateway below a fixed 585 KiB ceiling while Release-A compatibility
+// readers remain present; later release phases must lower this rather than
+// increasing it again.
+const reactiveRuntimeBundleBudgetBytes = 585_000;
 
 describe('generated v0.6 reactive workloads', () => {
   it('emits collision-safe variables for inferred dotted outbox model operations', async () => {

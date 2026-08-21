@@ -1,6 +1,6 @@
 import { createHmac } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
-import { nodeKeyedDigestBase64Url } from '../src/node-integrity.js';
+import { nodeKeyedDigestBase64Url, nodeKeyedDigestHex } from '../src/node-integrity.js';
 
 describe('Node Runtime Integrity compatibility adapter', () => {
   it('preserves the purpose-separated keyed-digest bytes used by released cursors', () => {
@@ -12,6 +12,12 @@ describe('Node Runtime Integrity compatibility adapter', () => {
         .update(`${purpose}\0`)
         .update(value)
         .digest('base64url'),
+    );
+    expect(nodeKeyedDigestHex({ key, purpose, value })).toBe(
+      createHmac('sha256', key)
+        .update(`${purpose}\0`)
+        .update(value)
+        .digest('hex'),
     );
   });
 

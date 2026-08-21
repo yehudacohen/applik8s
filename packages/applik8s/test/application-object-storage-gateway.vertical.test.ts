@@ -1,6 +1,8 @@
 // typecast-file-boundary: Gateway tests construct protocol-boundary fakes and inspect validated response bodies as their expected contracts.
-import { createHash } from 'node:crypto';
+import { createHash, createHmac } from 'node:crypto';
 import { type ApplicationObjectMetadata, type ApplicationObjectStorageRuntime, createApplicationFetchGateway, verifyApplicationObjectCompletionReceipt } from '@applik8s/applik8s';
+import { canonicalJsonV1Value } from '@applik8s/core';
+import { createSignedEnvelopeCodec, signedEnvelopeUtf8Key, staticSignedEnvelopeKeyProvider } from '@applik8s/runtime/signed-envelope';
 import { describe, expect, it, vi } from 'vitest';
 import { testApplicationAdmission } from '../../../test-support/application-principal.js';
 
@@ -48,9 +50,40 @@ describe('authenticated application object-storage gateway', () => {
     expect(String(intent.object.key)).toMatch(/^[a-f0-9]{32}\/[0-9a-f-]+$/);
     expect(signUpload).not.toHaveBeenCalled();
 
+    const legacyToken = new URL(String(intent.url)).searchParams.get('token') ?? '';
+    const [legacyBody, legacySignature] = legacyToken.split('.');
+    expect(legacySignature).toBe(
+      createHmac('sha256', 'object-intent-secret-that-is-at-least-thirty-two-bytes')
+        .update(legacyBody ?? '')
+        .digest('base64url'),
+    );
+    const legacyPayload = JSON.parse(
+      Buffer.from(legacyBody ?? '', 'base64url').toString('utf8'),
+    ) as Record<string, unknown>;
+    const expiresAt = Number(legacyPayload.expiresAt);
+    const currentTime = expiresAt - 10 * 60_000;
+    const v1Codec = createSignedEnvelopeCodec({
+      purpose: 'applik8s.object-intent/v1',
+      keys: staticSignedEnvelopeKeyProvider({
+        current: {
+          id: 'object-intent-current',
+          key: signedEnvelopeUtf8Key('object-intent-secret-that-is-at-least-thirty-two-bytes'),
+        },
+      }),
+      now: () => currentTime,
+      maximumLifetimeMs: 10 * 60_000,
+      validatePayload(value) { return value; },
+    });
+    const v1UploadToken = await v1Codec.sign(canonicalJsonV1Value(legacyPayload), {
+      issuedAt: currentTime,
+      expiresAt,
+    });
+    const v1UploadUrl = new URL(String(intent.url));
+    v1UploadUrl.searchParams.set('token', v1UploadToken);
+
     const rejectedPrincipal = await gateway.handle(new Request(String(intent.url), { method: 'PUT', headers: { ...record(intent.headers), 'x-user': 'bob' }, body }));
     expect(rejectedPrincipal.status).toBe(401);
-    const upload = await gateway.handle(new Request(String(intent.url), { method: 'PUT', headers: { ...record(intent.headers), 'x-user': 'alice' }, body }));
+    const upload = await gateway.handle(new Request(v1UploadUrl, { method: 'PUT', headers: { ...record(intent.headers), 'x-user': 'alice' }, body }));
     expect(upload.status).toBe(201);
 
     const completion = await gateway.handle(jsonRequest('/__applik8s/v1/runtime/objectStore.attachments.completeUpload', {
@@ -59,7 +92,7 @@ describe('authenticated application object-storage gateway', () => {
     expect(completion.status).toBe(200);
     const completed = runtimeResult(await completion.json());
     expect(completed).toMatchObject({ key: intent.object.key, objectId: String(intent.object.key).split('/').at(-1), size: 5, contentType: 'text/plain', sha256 });
-    expect(verifyApplicationObjectCompletionReceipt({
+    await expect(verifyApplicationObjectCompletionReceipt({
       receipt: String(completed.receipt),
       secret: 'object-intent-secret-that-is-at-least-thirty-two-bytes',
       principalId: 'alice',
@@ -70,8 +103,8 @@ describe('authenticated application object-storage gateway', () => {
       contentType: String(completed.contentType),
       size: Number(completed.size),
       sha256: String(completed.sha256),
-    })).toBe(true);
-    expect(verifyApplicationObjectCompletionReceipt({
+    })).resolves.toBe(true);
+    await expect(verifyApplicationObjectCompletionReceipt({
       receipt: String(completed.receipt),
       secret: 'object-intent-secret-that-is-at-least-thirty-two-bytes',
       principalId: 'bob',
@@ -82,7 +115,28 @@ describe('authenticated application object-storage gateway', () => {
       contentType: String(completed.contentType),
       size: Number(completed.size),
       sha256: String(completed.sha256),
-    })).toBe(false);
+    })).resolves.toBe(false);
+
+    const completionPayload = JSON.parse(
+      Buffer.from(String(completed.receipt).split('.')[0] ?? '', 'base64url').toString('utf8'),
+    ) as Record<string, unknown>;
+    const completionExpiresAt = Number(completionPayload.expiresAt);
+    const v1Receipt = await v1Codec.sign(canonicalJsonV1Value(completionPayload), {
+      issuedAt: completionExpiresAt - 10 * 60_000,
+      expiresAt: completionExpiresAt,
+    });
+    await expect(verifyApplicationObjectCompletionReceipt({
+      receipt: v1Receipt,
+      secret: 'object-intent-secret-that-is-at-least-thirty-two-bytes',
+      principalId: 'alice',
+      authorizationVersion: 'policy-v1',
+      store: 'attachments',
+      objectId: String(completed.objectId),
+      key: String(completed.key),
+      contentType: String(completed.contentType),
+      size: Number(completed.size),
+      sha256: String(completed.sha256),
+    })).resolves.toBe(true);
 
     const downloadIntentResponse = await gateway.handle(jsonRequest('/__applik8s/v1/runtime/objectStore.attachments.createDownload', {
       input: { key: intent.object.key },

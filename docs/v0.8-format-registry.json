@@ -150,6 +150,23 @@
       "decoderRemovalRelease": "0.10.0-earliest-after-zero-legacy-telemetry"
     },
     {
+      "id": "application-object-intent-migration",
+      "kind": "signed-envelope-payload",
+      "wireVersion": "pre-v0.8-object-intent-v1alpha1",
+      "targetWireVersion": "applik8s.signed-envelope/v1",
+      "payloadVersion": "applik8s.object-intent/v1alpha1",
+      "state": "implemented",
+      "owner": "@applik8s/applik8s",
+      "writers": ["0.8.x:legacy-object-intent-over-canonical-json-v1"],
+      "readers": ["0.8.x", "pre-v0.8-object-intent-v1alpha1"],
+      "maximumLifetime": "0.8-store-configured-with-30s-minimum-and-24h-maximum; pre-v0.8-configured-expiry-had-no-framework-maximum",
+      "purposeOrKeyNamespace": "applik8s.object-intent/v1",
+      "migrationPhase": "release-a-reads-legacy-and-v1-writes-legacy",
+      "telemetry": "pending-envelope-version-and-rejection-metrics",
+      "rollbackSafeThrough": "0.7.x-readers-accept-all-0.8.x-output",
+      "decoderRemovalRelease": "0.10.0-earliest-after-zero-legacy-telemetry"
+    },
+    {
       "id": "application-admission-v1",
       "kind": "admission-context",
       "wireVersion": "applik8s.admission/v1",

@@ -13,6 +13,16 @@ export interface NodeKeyedDigestOptions {
 export function nodeKeyedDigestBase64Url(
   options: NodeKeyedDigestOptions,
 ): string {
+  return nodeKeyedDigest(options).digest('base64url');
+}
+
+export function nodeKeyedDigestHex(
+  options: NodeKeyedDigestOptions,
+): string {
+  return nodeKeyedDigest(options).digest('hex');
+}
+
+function nodeKeyedDigest(options: NodeKeyedDigestOptions) {
   if (!options.purpose.trim()) {
     throw new TypeError('Keyed digest purpose must be non-empty.');
   }
@@ -27,6 +37,5 @@ export function nodeKeyedDigestBase64Url(
     : options.value;
   return createHmac('sha256', key)
     .update(`${options.purpose}\0`)
-    .update(value)
-    .digest('base64url');
+    .update(value);
 }

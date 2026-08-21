@@ -1,5 +1,8 @@
 // typecast-file-boundary: HTTP and object-store payloads are validated before conversion at this protocol adapter boundary.
-import { createHash, createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import { canonicalJsonV1Value, type JsonValue } from '@applik8s/core';
+import { nodeKeyedDigestHex } from '@applik8s/runtime/node-integrity';
+import { createRollingSignedEnvelopeCodec, type RollingSignedEnvelopeCodec, signedEnvelopeUtf8Key, staticSignedEnvelopeKeyProvider } from '@applik8s/runtime/signed-envelope';
 import type { ApplicationObjectStorageRuntime, ApplicationSignedObjectIntent, ApplicationVerifiedObjectCompletion } from './application-object-storage.js';
 import type { ApplicationIdentityProvider, ApplicationRequestAdmission } from './application-providers.js';
 
@@ -63,10 +66,14 @@ export interface ApplicationObjectCompletionReceiptVerification {
  * object completed by the same admitted principal. The proof is deliberately
  * short-lived and is not an object-store credential.
  */
-export function verifyApplicationObjectCompletionReceipt(options: ApplicationObjectCompletionReceiptVerification): boolean {
+export async function verifyApplicationObjectCompletionReceipt(options: ApplicationObjectCompletionReceiptVerification): Promise<boolean> {
   if (options.secret.length < 32 || !options.principalId || !options.authorizationVersion) return false;
-  const token = decodeObjectIntentToken(options.secret, options.receipt);
-  if (token?.action !== 'complete' || token.expiresAt <= (options.now ?? new Date()).getTime()) return false;
+  const currentTime = (options.now ?? new Date()).getTime();
+  const token = await decodeObjectIntentToken(
+    objectIntentCodec(options.secret, () => currentTime, 24 * 60 * 60),
+    options.receipt,
+  );
+  if (token?.action !== 'complete' || token.expiresAt <= currentTime) return false;
   const contentType = options.contentType.trim().toLowerCase();
   const sha256 = options.sha256.trim().replace(/^sha256:/i, '').toLowerCase();
   return token.store === options.store
@@ -88,9 +95,17 @@ export function createApplicationObjectStorageGateway(options: ApplicationObject
   const stores = new Map(options.stores.map((store) => {
     if (!/^[a-z][a-z0-9-]*$/.test(store.name)) throw new Error(`Application object gateway store ${JSON.stringify(store.name)} must be a lowercase DNS-style identifier.`);
     if (!Number.isSafeInteger(store.maxObjectBytes) || store.maxObjectBytes < 1) throw new Error(`Application object gateway store ${store.name} has an invalid object-size bound.`);
+    if (!Number.isSafeInteger(store.browser.ttlSeconds) || store.browser.ttlSeconds < 30 || store.browser.ttlSeconds > 24 * 60 * 60) {
+      throw new Error(`Application object gateway store ${store.name} browser intent lifetime must be between 30 seconds and 24 hours.`);
+    }
     return [store.name, store] as const;
   }));
   if (stores.size !== options.stores.length) throw new Error('Application object gateway store names must be unique.');
+  const intentCodec = objectIntentCodec(
+    options.cursorSecret,
+    () => now().getTime(),
+    Math.max(...options.stores.map((store) => store.browser.ttlSeconds), 30),
+  );
 
   return {
     async handle(request) {
@@ -126,7 +141,7 @@ export function createApplicationObjectStorageGateway(options: ApplicationObject
         const principalScope = scopeForPrincipal(admission.principal.id);
         const key = `${principalScope}/${id()}`;
         const expiresAt = now().getTime() + store.browser.ttlSeconds * 1_000;
-        const token = signToken({
+        const token = await signToken({
           protocol: 'applik8s.object-intent/v1alpha1', action: 'upload', store: store.name, key,
           principalScope, admissionScope: admittedScope(admission), expiresAt, contentType, size, sha256,
         });
@@ -153,7 +168,7 @@ export function createApplicationObjectStorageGateway(options: ApplicationObject
           return json({ error: 'object_integrity_mismatch', store: store.name, key }, 409);
         }
         const expiresAt = now().getTime() + store.browser.ttlSeconds * 1_000;
-        const receipt = signToken({
+        const receipt = await signToken({
           protocol: 'applik8s.object-intent/v1alpha1', action: 'complete', store: store.name, key,
           principalScope: scopeForPrincipal(admission.principal.id),
           admissionScope: admittedScope(admission), expiresAt,
@@ -173,7 +188,7 @@ export function createApplicationObjectStorageGateway(options: ApplicationObject
       if (!metadata) return json({ error: 'object_not_found', store: store.name, key }, 404);
       const principalScope = scopeForPrincipal(admission.principal.id);
       const expiresAt = now().getTime() + store.browser.ttlSeconds * 1_000;
-      const token = signToken({
+      const token = await signToken({
         protocol: 'applik8s.object-intent/v1alpha1', action: 'download', store: store.name, key,
         principalScope, admissionScope: admittedScope(admission), expiresAt,
       });
@@ -198,7 +213,7 @@ export function createApplicationObjectStorageGateway(options: ApplicationObject
     }
     const admission = await authenticate(request);
     if (admission instanceof Response) return admission;
-    const token = verifyToken(tokenValue);
+    const token = await verifyToken(tokenValue);
     if (!token || token.action !== action || token.store !== store.name || token.expiresAt <= now().getTime()
       || token.principalScope !== scopeForPrincipal(admission.principal.id) || token.admissionScope !== admittedScope(admission)) {
       return json({ error: 'object_intent_invalid' }, 401);
@@ -275,23 +290,25 @@ export function createApplicationObjectStorageGateway(options: ApplicationObject
     return admittedObjectScope(options.cursorSecret, admission.principal.id, admission.principal.authorityRevision);
   }
 
-  function signToken(token: ObjectIntentToken): string {
-    return encodeObjectIntentToken(options.cursorSecret, token);
+  function signToken(token: ObjectIntentToken): Promise<string> {
+    return intentCodec.sign(token, { expiresAt: token.expiresAt });
   }
 
-  function verifyToken(value: string): ObjectIntentToken | undefined {
-    return decodeObjectIntentToken(options.cursorSecret, value);
+  function verifyToken(value: string): Promise<ObjectIntentToken | undefined> {
+    return decodeObjectIntentToken(intentCodec, value);
   }
 }
 
 function principalObjectScope(secret: string, principalId: string): string {
-  return createHmac('sha256', secret).update('object-principal\0').update(principalId).digest('hex').slice(0, 32);
+  return nodeKeyedDigestHex({ key: secret, purpose: 'object-principal', value: principalId }).slice(0, 32);
 }
 
 function admittedObjectScope(secret: string, principalId: string, authorizationVersion: string): string {
-  return createHmac('sha256', secret)
-    .update('object-admission\0').update(principalId).update('\0').update(authorizationVersion)
-    .digest('hex');
+  return nodeKeyedDigestHex({
+    key: secret,
+    purpose: 'object-admission',
+    value: `${principalId}\0${authorizationVersion}`,
+  });
 }
 
 function objectIdForKey(key: string): string {
@@ -300,41 +317,60 @@ function objectIdForKey(key: string): string {
   return objectId;
 }
 
-function encodeObjectIntentToken(secret: string, token: ObjectIntentToken): string {
-  const payload = Buffer.from(JSON.stringify(token)).toString('base64url');
-  const signature = createHmac('sha256', secret).update(payload).digest('base64url');
-  return `${payload}.${signature}`;
+function objectIntentCodec(
+  secret: string,
+  now: () => number,
+  maximumLifetimeSeconds: number,
+): RollingSignedEnvelopeCodec<ObjectIntentToken> {
+  const key = signedEnvelopeUtf8Key(secret);
+  return createRollingSignedEnvelopeCodec<ObjectIntentToken, ObjectIntentToken>({
+    purpose: 'applik8s.object-intent/v1',
+    keys: staticSignedEnvelopeKeyProvider({
+      current: { id: 'object-intent-current', key },
+    }),
+    now,
+    maximumLifetimeMs: maximumLifetimeSeconds * 1_000,
+    maximumEncodedBytes: 64 * 1_024,
+    validatePayload: validateObjectIntentToken,
+    writer: 'legacy',
+    legacy: {
+      key,
+      validatePayload: validateObjectIntentToken,
+      toCurrent: (payload) => payload,
+      fromCurrent: (payload) => canonicalJsonV1Value(payload),
+    },
+  });
 }
 
-function decodeObjectIntentToken(secret: string, value: string): ObjectIntentToken | undefined {
-  const [payload, signature, extra] = value.split('.');
-  if (!payload || !signature || extra !== undefined) return undefined;
-  const expected = createHmac('sha256', secret).update(payload).digest();
-  let supplied: Buffer;
-  try { supplied = Buffer.from(signature, 'base64url'); } catch { return undefined; }
-  if (supplied.byteLength !== expected.byteLength || !timingSafeEqual(supplied, expected)) return undefined;
+async function decodeObjectIntentToken(codec: RollingSignedEnvelopeCodec<ObjectIntentToken>, value: string): Promise<ObjectIntentToken | undefined> {
   try {
-    const parsed = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')) as unknown;
-    if (!isObjectIntentToken(parsed)) return undefined;
-    return parsed;
+    return await codec.verify(value);
   } catch {
     return undefined;
   }
 }
 
-function isObjectIntentToken(value: unknown): value is ObjectIntentToken {
-  if (!value || typeof value !== 'object') return false;
-  const action = Reflect.get(value, 'action');
-  return Reflect.get(value, 'protocol') === 'applik8s.object-intent/v1alpha1'
+function validateObjectIntentToken(value: JsonValue): ObjectIntentToken {
+  if (!isJsonObject(value)) throw new TypeError('Application object intent is invalid.');
+  const action = value.action;
+  if (!(value.protocol === 'applik8s.object-intent/v1alpha1'
     && (action === 'upload' || action === 'complete' || action === 'download')
-    && typeof Reflect.get(value, 'store') === 'string'
-    && typeof Reflect.get(value, 'key') === 'string'
-    && typeof Reflect.get(value, 'principalScope') === 'string'
-    && typeof Reflect.get(value, 'admissionScope') === 'string'
-    && typeof Reflect.get(value, 'expiresAt') === 'number'
-    && (Reflect.get(value, 'contentType') === undefined || typeof Reflect.get(value, 'contentType') === 'string')
-    && (Reflect.get(value, 'size') === undefined || typeof Reflect.get(value, 'size') === 'number')
-    && (Reflect.get(value, 'sha256') === undefined || typeof Reflect.get(value, 'sha256') === 'string');
+    && typeof value.store === 'string'
+    && typeof value.key === 'string'
+    && typeof value.principalScope === 'string'
+    && typeof value.admissionScope === 'string'
+    && Number.isSafeInteger(value.expiresAt)
+    && Number(value.expiresAt) >= 0
+    && (value.contentType === undefined || typeof value.contentType === 'string')
+    && (value.size === undefined || (Number.isSafeInteger(value.size) && Number(value.size) >= 0))
+    && (value.sha256 === undefined || typeof value.sha256 === 'string'))) {
+    throw new TypeError('Application object intent contract is invalid.');
+  }
+  return value as unknown as ObjectIntentToken;
+}
+
+function isJsonObject(value: JsonValue): value is Readonly<Record<string, JsonValue>> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
 class ObjectRequestError extends Error {}

@@ -2,7 +2,6 @@
   "extends": "../../tsconfig.json",
   "compilerOptions": {
     "baseUrl": "../..",
-    "paths": { "#/*": ["examples/chirp-start/src/*"] },
     "jsx": "react-jsx",
     "noEmit": true
   },
