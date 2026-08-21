@@ -1,0 +1,66 @@
+{
+  "schemaVersion": 1,
+  "release": "0.8.0",
+  "status": "active",
+  "entries": [
+    {
+      "id": "canonical-json-v1",
+      "kind": "canonical-bytes",
+      "wireVersion": "applik8s.canonical-json/v1",
+      "state": "implemented",
+      "owner": "@applik8s/core",
+      "writers": ["0.8.x"],
+      "readers": ["0.8.x"],
+      "maximumLifetime": "unbounded-when-used-by-durable-digests",
+      "purposeOrKeyNamespace": "named-domain-policy",
+      "migrationPhase": "provider-and-gateway-adoption",
+      "telemetry": "runtime-integrity-format-version",
+      "rollbackSafeThrough": "pending-mixed-version-evidence",
+      "decoderRemovalRelease": null
+    },
+    {
+      "id": "signed-envelope-v1",
+      "kind": "signed-envelope",
+      "wireVersion": "applik8s.signed-envelope/v1",
+      "state": "implemented",
+      "owner": "@applik8s/runtime",
+      "writers": ["0.8.x"],
+      "readers": ["0.8.x"],
+      "maximumLifetime": "payload-contract-specific",
+      "purposeOrKeyNamespace": "required-per-payload-contract",
+      "migrationPhase": "gateway-adoption-not-yet-integrated",
+      "telemetry": "runtime-integrity-envelope-version-and-purpose",
+      "rollbackSafeThrough": "pending-gateway-inventory",
+      "decoderRemovalRelease": null
+    },
+    {
+      "id": "application-admission-v1",
+      "kind": "admission-context",
+      "wireVersion": "applik8s.admission/v1",
+      "state": "implemented",
+      "owner": "@applik8s/core",
+      "writers": ["0.8.x"],
+      "readers": ["0.8.x"],
+      "maximumLifetime": "bounded-by-admitted-execution",
+      "purposeOrKeyNamespace": "transport-adapter-specific-evidence",
+      "migrationPhase": "ingress-adapter-adoption-not-yet-integrated",
+      "telemetry": "runtime-integrity-admission-version-and-transport",
+      "rollbackSafeThrough": "pending-ingress-parity-evidence",
+      "decoderRemovalRelease": null
+    }
+  ],
+  "requiredInventory": [
+    "command-results",
+    "query-cursors",
+    "stream-subscriptions",
+    "task-query-cursors",
+    "object-storage-intents",
+    "search-cursors",
+    "celld-connection-tickets",
+    "lakehouse-cursors",
+    "application-graph-digests",
+    "deployment-artifacts",
+    "schedule-occurrences",
+    "actor-records"
+  ]
+}
