@@ -66,7 +66,7 @@
         "packages/runtime-hatchet/src/index.ts"
       ],
       "regression": "bunx vitest run --maxWorkers=1 packages/core/test/runtime-integrity.vertical.test.ts packages/operations/test/postgres.vertical.test.ts packages/applik8s/test/task-operation-runtime.vertical.test.ts packages/applik8s/test/task-query-runtime.vertical.test.ts packages/compiler/test/application-reactive.vertical.test.ts packages/compiler/test/application-http.vertical.test.ts packages/runtime-hatchet/test/runtime.vertical.test.ts; NODE_OPTIONS=--max-old-space-size=8192 bunx vitest run --maxWorkers=1 packages/compiler/test/application-workflows.vertical.test.ts",
-      "remaining": "workflow/task starts, resumes, operations, signal issuance, and typed HTTP gateway starts preserve canonical execution admission; broker-side signal action hydration consumes canonical processor admission while task queries retain an intentionally bounded service projection; add exact emitted-worker lost-response/restart evidence, finish cancellation recovery, and add version/rejection telemetry before advancing the complete adapter"
+      "remaining": "workflow/task starts, resumes, operations, signal issuance, and typed HTTP gateway starts preserve canonical execution admission; the exact generated HTTP worker retries a destroyed post-admission response with one durable identity and one effect; broker-side signal action hydration consumes canonical processor admission while task queries retain an intentionally bounded service projection; finish cancellation recovery, real Hatchet lifecycle evidence, and version/rejection telemetry before advancing the complete adapter"
     },
     {
       "id": "schedule-occurrence",
