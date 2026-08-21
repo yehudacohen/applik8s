@@ -24,7 +24,10 @@ const database = { name: 'catalog', connectionEnvName: 'APPLIK8S_DATABASE_CATALO
 // boundary are part of the function-native runtime contract. The bounded
 // overhead keeps identity inference and revocable authorization correct after
 // minification without relaxing the generated-runtime budget materially.
-const reactiveRuntimeBundleBudgetBytes = 570_000;
+// v0.8 reserves at most 10 KiB over the previous 570 KiB ceiling for the
+// canonical signed-envelope reader/writer and bounded legacy decoder. Keep in
+// sync with benchmarks/v0.8/budgets.json.
+const reactiveRuntimeBundleBudgetBytes = 580_000;
 
 describe('generated v0.6 reactive workloads', () => {
   it('emits collision-safe variables for inferred dotted outbox model operations', async () => {

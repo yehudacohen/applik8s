@@ -65,6 +65,22 @@
       "decoderRemovalRelease": null
     },
     {
+      "id": "task-query-admission-v1",
+      "kind": "signed-envelope-payload",
+      "wireVersion": "applik8s.signed-envelope/v1",
+      "payloadVersion": "applik8s.task-query/v1alpha1",
+      "state": "implemented",
+      "owner": "@applik8s/applik8s",
+      "writers": ["0.8.x"],
+      "readers": ["0.8.x", "pre-v0.8-compact-hmac-json"],
+      "maximumLifetime": "60s",
+      "purposeOrKeyNamespace": "applik8s.task-query-admission/v1",
+      "migrationPhase": "v0.8-writes-v1-and-reads-v1-plus-legacy",
+      "telemetry": "pending-envelope-version-and-rejection-metrics",
+      "rollbackSafeThrough": "0.7.x-readers-cannot-read-v1-in-flight-tokens; bounded-by-60s-token-lifetime",
+      "decoderRemovalRelease": "0.10.0"
+    },
+    {
       "id": "application-admission-v1",
       "kind": "admission-context",
       "wireVersion": "applik8s.admission/v1",

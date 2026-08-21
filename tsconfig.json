@@ -116,6 +116,7 @@
       "@applik8s/compiler/diagnostics": ["packages/compiler/src/diagnostics/index.ts"],
       "@applik8s/compiler/kubernetes-schema": ["packages/compiler/src/kubernetes-schema/index.ts"],
       "@applik8s/runtime": ["packages/runtime/src/index.ts"],
+      "@applik8s/runtime/signed-envelope": ["packages/runtime/src/signed-envelope.ts"],
       "@applik8s/runtime-s3": ["packages/runtime-s3/src/index.ts"],
       "@applik8s/runtime-hatchet": ["packages/runtime-hatchet/src/index.ts"],
       "@applik8s/runtime-nats": ["packages/runtime-nats/src/index.ts"],

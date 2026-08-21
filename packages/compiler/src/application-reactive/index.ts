@@ -7,20 +7,20 @@ import { gzipSync } from 'node:zlib';
 import type { ApplicationAIAgentNode, ApplicationCommandHandlerNode, ApplicationCommandNode, ApplicationGatewayNode, ApplicationGraph, ApplicationHandlerDependencies, ApplicationIdentityReference, ApplicationIndexNode, ApplicationModelNode, ApplicationOperationCatalog, ApplicationProfiledCallbackContract, ApplicationProjectionNode, ApplicationProviderNode, ApplicationQueryNode, ApplicationReactiveDatabaseRuntimeContract, ApplicationSearchIndexPlan, ApplicationSerializedCallbackContract, ApplicationStreamNode, ApplicationStreamProcessorNode, ApplicationSubscriptionNode, ApplicationWorkloadAuthorityEnvelope, JsonObject } from '@applik8s/core';
 import { build } from 'esbuild';
 import ts from 'typescript';
-import { generatedCallbackFactoryModule } from '../application-callback-module.js';
 import {
   applicationActorInvocationBoundary,
   generatedApplicationActorInvocationClientSource,
 } from '../application-actor-invocation.js';
+import { generatedCallbackFactoryModule } from '../application-callback-module.js';
 import type { GeneratedApplicationContainerArtifact } from '../application-containers/index.js';
 import { emitGeneratedApplicationContainer } from '../application-containers/index.js';
+import { generatedApplicationEventLogPublisherSource } from '../application-event-log-runtime-source.js';
 import { applicationGraphAllConditions, applicationGraphBooleanCondition, applicationGraphJsonStringArray, applicationGraphNumberValue, applicationGraphServiceHost, applicationGraphStringValue } from '../application-installation-values.js';
 import type { ApplicationOperationPlacementReceiver } from '../application-mcp/index.js';
 import { compileApplicationMcpPlacementRoutes, compileApplicationOperationPlacementReceiver } from '../application-mcp/index.js';
 import { applicationObjectStorageEnvironment } from '../application-object-storage-environment.js';
 import { applicationStaticAuthorityManifest, compileApplicationOperationCatalog, compileApplicationWorkloadAuthority } from '../application-operations/index.js';
 import { applik8sWorkspaceSourcePlugin } from '../bundling/index.js';
-import { generatedApplicationEventLogPublisherSource } from '../application-event-log-runtime-source.js';
 
 const DEFAULT_NODE_IMAGE = 'node:22-alpine@sha256:16e22a550f3863206a3f701448c45f7912c6896a62de43add43bb9c86130c3e2';
 
@@ -1244,7 +1244,7 @@ ${authorityDatabaseEnvironment ? `async function admitGatewayPrincipal(admission
 const queries = [${queryDeclarations}];
 const subscriptionLimiter = createApplicationSubscriptionLimiter(${JSON.stringify(gateway.subscriptionLimits)});
 async function admitRequest(request) { const admitted = await authenticateRequest(request); if (!admitted || typeof admitted !== 'object') throw new Error('Gateway authentication returned no admission.'); return admitted; }
-async function admitQuery(request, query, input) { const internal = verifyApplicationTaskQueryAdmission({ request, cursorSecret, audience: ${JSON.stringify(gateway.id)}, query: query.id, input }); return internal ?? admitRequest(request); }
+async function admitQuery(request, query, input) { const internal = await verifyApplicationTaskQueryAdmission({ request, cursorSecret, audience: ${JSON.stringify(gateway.id)}, query: query.id, input }); return internal ?? admitRequest(request); }
 const gateway = queries.length > 0 ? createApplicationQueryGateway({
   queries,
   cursorSecret,
@@ -2631,7 +2631,7 @@ installApplicationObjectStorageRuntimeResolver((binding) => {
     : '';
   const workflowImport = workflow ? "import { AsyncLocalStorage } from 'node:async_hooks';\nimport { applicationWorkflowCausalPrincipalMetadata } from '@applik8s/applik8s/workflow-runtime';\nimport { installApplicationWorkflowRuntimeResolver } from '@applik8s/applik8s/workflow-runtime-resolvers';\nimport { createHatchetWorkflowRuntime } from '@applik8s/runtime-hatchet';\nimport { normalizeSchema } from '@applik8s/sdk/schema-runtime';" : '';
   const causalImport = "import { applicationCausalPrincipalContext } from '@applik8s/core';";
-  const postgresImport = queries.length > 0 || Boolean(stream.signal)
+  const postgresImport = queries.length > 0 || stream.signal
     ? "import postgres from 'postgres';"
     : '';
   const hasFunctionNativeRuntime = Boolean(

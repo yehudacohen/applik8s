@@ -10,7 +10,7 @@ import {
   createSignedEnvelopeCodec,
   signedEnvelopeUtf8Key,
   staticSignedEnvelopeKeyProvider,
-} from '@applik8s/runtime';
+} from '@applik8s/runtime/signed-envelope';
 
 // typecast-file-boundary: Signed JSON claims are restored only after signature, expiry, and structural validation.
 /** Short-lived signed capability used only to admit one public actor WebSocket. */

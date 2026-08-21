@@ -1,11 +1,21 @@
 // typecast-file-boundary: Task-query HTTP payloads are validated against signed admission and declared schemas before generic conversion.
-import { createHmac, timingSafeEqual } from 'node:crypto';
 import { queryInputKey } from '@applik8s/client';
-import type {
-  ApplicationIdentityReference,
-  ApplicationPrincipal,
-  JsonObject,
+import {
+  type ApplicationIdentityReference,
+  type ApplicationPrincipal,
+  canonicalJsonCompatibleV1Policy,
+  canonicalJsonV1String,
+  canonicalJsonV1Value,
+  type JsonObject,
+  SignedEnvelopeV1ValidationError,
 } from '@applik8s/core';
+import {
+  createSignedEnvelopeCodec,
+  SignedEnvelopeRuntimeError,
+  signedEnvelopeUtf8Key,
+  staticSignedEnvelopeKeyProvider,
+  verifyLegacyCompactHmacJson,
+} from '@applik8s/runtime/signed-envelope';
 import { normalizeSchema } from '@applik8s/sdk/schema-runtime';
 import type { ApplicationTaskServicePrincipal } from './application-workflows.js';
 
@@ -13,6 +23,8 @@ const protocol = 'applik8s.task-query/v1alpha1';
 const defaultTimeoutMs = 5_000;
 const maximumTokenLifetimeMs = 60_000;
 const maximumTokenBytes = 32 * 1_024;
+const maximumEncodedTokenBytes = 64 * 1_024;
+const tokenPurpose = 'applik8s.task-query-admission/v1';
 
 export interface ApplicationTaskQueryRuntimeContract {
   readonly id: string;
@@ -85,7 +97,8 @@ export function createApplicationTaskQueryRuntime(options: {
             `${contract.id}.input`,
           );
           const timeoutMs = boundedTimeout(invokeOptions.timeoutMs ?? contract.timeoutMs);
-          const token = encodeToken(options.cursorSecret, {
+          const issuedAt = now().getTime();
+          const token = await encodeToken(options.cursorSecret, {
             protocol,
             audience: contract.audience,
             query: contract.id,
@@ -103,8 +116,8 @@ export function createApplicationTaskQueryRuntime(options: {
             },
             authorizationVersion: admitted.authorizationVersion,
             trustedContext: admitted.trustedContext ?? {},
-            expiresAt: now().getTime() + Math.min(timeoutMs + 5_000, maximumTokenLifetimeMs),
-          });
+            expiresAt: issuedAt + Math.min(timeoutMs + 5_000, maximumTokenLifetimeMs),
+          }, issuedAt);
           const response = await request(contract.endpoint, {
             method: 'POST',
             headers: {
@@ -133,14 +146,14 @@ export function createApplicationTaskQueryRuntime(options: {
 }
 
 /** Verifies the compiler-owned service principal before application authentication runs. */
-export function verifyApplicationTaskQueryAdmission(options: {
+export async function verifyApplicationTaskQueryAdmission(options: {
   readonly request: Request;
   readonly cursorSecret: string;
   readonly audience: string;
   readonly query: string;
   readonly input: unknown;
   readonly now?: Date;
-}): {
+}): Promise<{
   readonly principal: {
     readonly id: string;
     readonly identity?: ApplicationIdentityReference;
@@ -151,12 +164,12 @@ export function verifyApplicationTaskQueryAdmission(options: {
   };
   readonly authorizationVersion: string;
   readonly trustedContext: Readonly<Record<string, unknown>>;
-} | undefined {
+} | undefined> {
   assertSecret(options.cursorSecret);
   const encoded = options.request.headers.get('x-applik8s-task-query');
   if (!encoded) return undefined;
-  const token = decodeToken(options.cursorSecret, encoded);
   const timestamp = (options.now ?? new Date()).getTime();
+  const token = await decodeToken(options.cursorSecret, encoded, timestamp);
   if (!token || token.audience !== options.audience || token.query !== options.query || token.operation !== 'snapshot' || token.inputKey !== queryInputKey(options.input) || token.expiresAt <= timestamp || token.expiresAt > timestamp + maximumTokenLifetimeMs) return undefined;
   try {
     if (!new URL(options.request.url).pathname.endsWith('/snapshot')) return undefined;
@@ -171,45 +184,95 @@ export function verifyApplicationTaskQueryAdmission(options: {
   };
 }
 
-function encodeToken(secret: string, token: ApplicationTaskQueryToken): string {
-  const serialized = JSON.stringify(token);
-  if (Buffer.byteLength(serialized) > maximumTokenBytes) throw new Error('applik8s-task-query-principal-too-large');
-  const payload = Buffer.from(serialized).toString('base64url');
-  return `${payload}.${createHmac('sha256', secret).update(payload).digest('base64url')}`;
+async function encodeToken(
+  secret: string,
+  token: ApplicationTaskQueryToken,
+  issuedAt: number,
+): Promise<string> {
+  const payload = canonicalJsonV1Value(
+    token,
+    canonicalJsonCompatibleV1Policy,
+  );
+  if (new TextEncoder().encode(canonicalJsonV1String(payload)).byteLength > maximumTokenBytes) {
+    throw new Error('applik8s-task-query-principal-too-large');
+  }
+  return taskQueryTokenCodec(secret, issuedAt).sign(payload, {
+    issuedAt,
+    expiresAt: token.expiresAt,
+  });
 }
 
-function decodeToken(secret: string, encoded: string): ApplicationTaskQueryToken | undefined {
-  if (Buffer.byteLength(encoded) > Math.ceil(maximumTokenBytes * 1.5)) return undefined;
-  const [payload, signature, extra] = encoded.split('.');
-  if (!payload || !signature || extra !== undefined) return undefined;
-  const expected = createHmac('sha256', secret).update(payload).digest();
-  let supplied: Buffer;
-  try { supplied = Buffer.from(signature, 'base64url'); } catch { return undefined; }
-  if (supplied.byteLength !== expected.byteLength || !timingSafeEqual(supplied, expected)) return undefined;
+async function decodeToken(
+  secret: string,
+  encoded: string,
+  now: number,
+): Promise<ApplicationTaskQueryToken | undefined> {
   try {
-    const value: unknown = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
-    if (!value || typeof value !== 'object' || Reflect.get(value, 'protocol') !== protocol) return undefined;
-    const principal = Reflect.get(value, 'principal');
-    const trustedContext = Reflect.get(value, 'trustedContext');
-    if (!principal || typeof principal !== 'object' || typeof Reflect.get(principal, 'id') !== 'string' || !trustedContext || typeof trustedContext !== 'object' || Array.isArray(trustedContext)) return undefined;
-    const identity = Reflect.get(principal, 'identity');
-    if (identity !== undefined && (
-      !identity
-      || typeof identity !== 'object'
-      || typeof Reflect.get(identity, 'id') !== 'string'
-      || typeof Reflect.get(identity, 'kind') !== 'string'
-      || typeof Reflect.get(identity, 'issuer') !== 'string'
-      || typeof Reflect.get(identity, 'subject') !== 'string'
-    )) return undefined;
-    const principalKind = Reflect.get(principal, 'kind');
-    if (principalKind !== undefined && typeof principalKind !== 'string') return undefined;
-    const authenticationMethod = Reflect.get(principal, 'authenticationMethod');
-    if (authenticationMethod !== undefined && typeof authenticationMethod !== 'string') return undefined;
-    if (typeof Reflect.get(value, 'audience') !== 'string' || typeof Reflect.get(value, 'query') !== 'string' || Reflect.get(value, 'operation') !== 'snapshot' || typeof Reflect.get(value, 'inputKey') !== 'string' || typeof Reflect.get(value, 'authorizationVersion') !== 'string' || typeof Reflect.get(value, 'expiresAt') !== 'number') return undefined;
-    return value as ApplicationTaskQueryToken;
+    const envelope = await taskQueryTokenCodec(secret, now).verify(encoded);
+    return validateTaskQueryToken(envelope.payload);
+  } catch (cause) {
+    const legacyCandidate = (
+      cause instanceof SignedEnvelopeV1ValidationError
+      && cause.code === 'SIGNED_ENVELOPE_VERSION_INVALID'
+    ) || (
+      cause instanceof SignedEnvelopeRuntimeError
+      && cause.code === 'SIGNED_ENVELOPE_MALFORMED'
+    );
+    if (!legacyCandidate) return undefined;
+  }
+  try {
+    const value = await verifyLegacyCompactHmacJson(encoded, {
+      key: signedEnvelopeUtf8Key(secret),
+      maximumEncodedBytes: maximumEncodedTokenBytes,
+      validatePayload(value) {
+        validateTaskQueryToken(value);
+        return value;
+      },
+    });
+    return validateTaskQueryToken(value);
   } catch {
     return undefined;
   }
+}
+
+function taskQueryTokenCodec(secret: string, now: number) {
+  return createSignedEnvelopeCodec({
+    purpose: tokenPurpose,
+    keys: staticSignedEnvelopeKeyProvider({
+      current: { id: 'task-query-current', key: signedEnvelopeUtf8Key(secret) },
+    }),
+    now: () => now,
+    maximumLifetimeMs: maximumTokenLifetimeMs,
+    maximumEncodedBytes: maximumEncodedTokenBytes,
+    validatePayload(value) {
+      validateTaskQueryToken(value);
+      return value;
+    },
+  });
+}
+
+function validateTaskQueryToken(value: unknown): ApplicationTaskQueryToken {
+  if (!value || typeof value !== 'object' || Reflect.get(value, 'protocol') !== protocol) {
+    throw new TypeError('Task query token protocol is invalid.');
+  }
+  const principal = Reflect.get(value, 'principal');
+  const trustedContext = Reflect.get(value, 'trustedContext');
+  if (!principal || typeof principal !== 'object' || typeof Reflect.get(principal, 'id') !== 'string' || !trustedContext || typeof trustedContext !== 'object' || Array.isArray(trustedContext)) throw new TypeError('Task query token principal is invalid.');
+  const identity = Reflect.get(principal, 'identity');
+  if (identity !== undefined && (
+    !identity
+    || typeof identity !== 'object'
+    || typeof Reflect.get(identity, 'id') !== 'string'
+    || typeof Reflect.get(identity, 'kind') !== 'string'
+    || typeof Reflect.get(identity, 'issuer') !== 'string'
+    || typeof Reflect.get(identity, 'subject') !== 'string'
+  )) throw new TypeError('Task query token identity is invalid.');
+  const principalKind = Reflect.get(principal, 'kind');
+  if (principalKind !== undefined && typeof principalKind !== 'string') throw new TypeError('Task query token principal kind is invalid.');
+  const authenticationMethod = Reflect.get(principal, 'authenticationMethod');
+  if (authenticationMethod !== undefined && typeof authenticationMethod !== 'string') throw new TypeError('Task query token authentication method is invalid.');
+  if (typeof Reflect.get(value, 'audience') !== 'string' || typeof Reflect.get(value, 'query') !== 'string' || Reflect.get(value, 'operation') !== 'snapshot' || typeof Reflect.get(value, 'inputKey') !== 'string' || typeof Reflect.get(value, 'authorizationVersion') !== 'string' || typeof Reflect.get(value, 'expiresAt') !== 'number') throw new TypeError('Task query token contract is invalid.');
+  return value as ApplicationTaskQueryToken;
 }
 
 function requiredServicePrincipal(principal: ApplicationTaskServicePrincipal | undefined): ApplicationTaskServicePrincipal {

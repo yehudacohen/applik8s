@@ -1,8 +1,10 @@
+import { createHmac } from 'node:crypto';
 import {
   createSignedEnvelopeCodec,
   SignedEnvelopeRuntimeError,
   signedEnvelopeUtf8Key,
   staticSignedEnvelopeKeyProvider,
+  verifyLegacyCompactHmacJson,
 } from '@applik8s/runtime';
 import { describe, expect, it } from 'vitest';
 
@@ -100,5 +102,24 @@ describe('portable Signed Envelope v1 runtime', () => {
     ))
       .rejects.toMatchObject({ code: 'SIGNED_ENVELOPE_OVERSIZED' });
     expect(() => signedEnvelopeUtf8Key('weak')).toThrow(SignedEnvelopeRuntimeError);
+  });
+
+  it('reads the bounded legacy compact format without exposing a legacy writer', async () => {
+    const payload = Buffer.from(JSON.stringify({ cursor: 'legacy' })).toString('base64url');
+    const token = `${payload}.${createHmac('sha256', previous.key).update(payload).digest('base64url')}`;
+    await expect(verifyLegacyCompactHmacJson(token, {
+      key: previous.key,
+      maximumEncodedBytes: 512,
+      validatePayload(value) {
+        if (!value || typeof value !== 'object' || Reflect.get(value, 'cursor') !== 'legacy') {
+          throw new TypeError('cursor is invalid');
+        }
+        return value as { readonly cursor: string };
+      },
+    })).resolves.toEqual({ cursor: 'legacy' });
+    await expect(verifyLegacyCompactHmacJson(`${payload}.invalid`, {
+      key: previous.key,
+      validatePayload: (value) => value,
+    })).rejects.toMatchObject({ code: 'SIGNED_ENVELOPE_SIGNATURE_INVALID' });
   });
 });

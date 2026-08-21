@@ -43,6 +43,12 @@ export interface SignedEnvelopeCodec<TPayload extends JsonValue> {
   verify(token: string): Promise<SignedEnvelopeV1Protected<TPayload>>;
 }
 
+export interface LegacyCompactHmacJsonOptions<TPayload extends JsonValue> {
+  readonly key: SignedEnvelopeKeyMaterial;
+  readonly validatePayload: (value: JsonValue) => TPayload;
+  readonly maximumEncodedBytes?: number;
+}
+
 export type SignedEnvelopeRuntimeErrorCode =
   | 'SIGNED_ENVELOPE_CRYPTO_UNAVAILABLE'
   | 'SIGNED_ENVELOPE_KEY_INVALID'
@@ -140,17 +146,10 @@ export function createSignedEnvelopeCodec<TPayload extends JsonValue>(
         if (error instanceof SignedEnvelopeRuntimeError) throw error;
         throw malformed();
       }
-      const preliminary = validateSignedEnvelopeV1Protected(parsed, {
-        purpose: options.purpose,
-        now: now(),
-        ...(options.maximumLifetimeMs === undefined
-          ? {}
-          : { maximumLifetimeMs: options.maximumLifetimeMs }),
-        validatePayload(value) { return value; },
-      });
+      const keyId = untrustedKeyId(parsed);
       const key = await options.keys.verificationKey(
         options.purpose,
-        preliminary.keyId,
+        keyId,
       );
       if (!key) {
         throw new SignedEnvelopeRuntimeError(
@@ -183,6 +182,15 @@ export function createSignedEnvelopeCodec<TPayload extends JsonValue>(
   return Object.freeze(codec);
 }
 
+function untrustedKeyId(value: unknown): string {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw malformed();
+  const keyId = Reflect.get(value, 'keyId');
+  if (typeof keyId !== 'string' || !/^[A-Za-z0-9._:-]{1,128}$/u.test(keyId)) {
+    throw malformed();
+  }
+  return keyId;
+}
+
 export function staticSignedEnvelopeKeyProvider(options: {
   readonly current: SignedEnvelopeSigningKey;
   readonly previous?: readonly SignedEnvelopeSigningKey[];
@@ -200,6 +208,58 @@ export function staticSignedEnvelopeKeyProvider(options: {
     },
   };
   return Object.freeze(provider);
+}
+
+/**
+ * Bounded read-only compatibility decoder for the pre-v0.8
+ * `base64url(JSON).base64url(HMAC(encodedBody))` format.
+ *
+ * New writers must use Signed Envelope v1. Payload owners are responsible for
+ * recording the decoder lifetime and removal release in the format registry.
+ */
+export async function verifyLegacyCompactHmacJson<TPayload extends JsonValue>(
+  token: string,
+  options: LegacyCompactHmacJsonOptions<TPayload>,
+): Promise<TPayload> {
+  const maximumEncodedBytes = options.maximumEncodedBytes ?? 16_384;
+  assertEncodedSize(token, maximumEncodedBytes);
+  const parts = token.split('.');
+  if (parts.length !== 2 || !parts[0] || !parts[1]) throw malformed();
+  const signature = ownedBytes(base64UrlDecode(parts[1]));
+  if (signature.byteLength !== 32) {
+    throw new SignedEnvelopeRuntimeError(
+      'SIGNED_ENVELOPE_SIGNATURE_INVALID',
+      'Legacy signed JSON signature is invalid.',
+    );
+  }
+  const valid = await subtle().verify(
+    'HMAC',
+    await hmacKey(options.key, ['verify']),
+    signature,
+    new TextEncoder().encode(parts[0]),
+  );
+  if (!valid) {
+    throw new SignedEnvelopeRuntimeError(
+      'SIGNED_ENVELOPE_SIGNATURE_INVALID',
+      'Legacy signed JSON signature is invalid.',
+    );
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(
+      new TextDecoder('utf-8', { fatal: true }).decode(base64UrlDecode(parts[0])),
+    ) as unknown;
+  } catch {
+    throw malformed();
+  }
+  try {
+    return options.validatePayload(parsed as JsonValue);
+  } catch {
+    throw new SignedEnvelopeRuntimeError(
+      'SIGNED_ENVELOPE_MALFORMED',
+      'Legacy signed JSON payload is invalid.',
+    );
+  }
 }
 
 export function signedEnvelopeUtf8Key(value: string): Uint8Array {

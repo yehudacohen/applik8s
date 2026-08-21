@@ -20,6 +20,11 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "default": "./dist/index.js"
+    },
+    "./signed-envelope": {
+      "types": "./dist/signed-envelope.d.ts",
+      "import": "./dist/signed-envelope.js",
+      "default": "./dist/signed-envelope.js"
     }
   },
   "dependencies": {

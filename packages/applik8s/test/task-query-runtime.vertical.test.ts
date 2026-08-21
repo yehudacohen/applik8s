@@ -1,4 +1,6 @@
 // typecast-file-boundary: Task-query tests intentionally construct signed protocol fixtures and generic handler fakes for negative validation coverage.
+import { createHmac } from 'node:crypto';
+import { queryInputKey } from '@applik8s/client';
 import { describe, expect, it, vi } from 'vitest';
 import { createApplicationTaskQueryRuntime, verifyApplicationTaskQueryAdmission } from '../src/task-query-runtime.js';
 
@@ -11,10 +13,10 @@ describe('task query runtime', () => {
   });
 
   it('injects only declared bounded queries under a signed compiler-owned service principal', async () => {
-    let admission: ReturnType<typeof verifyApplicationTaskQueryAdmission> | undefined;
+    let admission: Awaited<ReturnType<typeof verifyApplicationTaskQueryAdmission>> | undefined;
     const request = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
       const incoming = new Request('http://chirp-social.chirp.svc:8080/__applik8s/v1/queries/Post.homeTimeline/snapshot', init);
-      admission = verifyApplicationTaskQueryAdmission({ request: incoming, cursorSecret: secret, audience: 'gateway.social', query: 'Post.homeTimeline', input: { viewerId: 'automation-account' }, now: new Date('2026-07-20T00:00:00.000Z') });
+      admission = await verifyApplicationTaskQueryAdmission({ request: incoming, cursorSecret: secret, audience: 'gateway.social', query: 'Post.homeTimeline', input: { viewerId: 'automation-account' }, now: new Date('2026-07-20T00:00:00.000Z') });
       return new Response(JSON.stringify({
         kind: 'snapshot', protocol: 'applik8s.query/v1alpha1', query: 'Post.homeTimeline',
         inputKey: 'ignored', cursor: 'opaque', capability: 'resumableInvalidation', generatedAt: '2026-07-20T00:00:00.000Z',
@@ -47,12 +49,12 @@ describe('task query runtime', () => {
   });
 
   it('preserves canonical service identity through signed internal query admission', async () => {
-    let admission: ReturnType<typeof verifyApplicationTaskQueryAdmission> | undefined;
+    let admission: Awaited<ReturnType<typeof verifyApplicationTaskQueryAdmission>> | undefined;
     const runtime = createApplicationTaskQueryRuntime({
       cursorSecret: secret,
       fetch: (async (_url: string | URL | Request, init?: RequestInit) => {
         const request = new Request('http://gateway/queries/AgentProfile.active/snapshot', init);
-        admission = verifyApplicationTaskQueryAdmission({
+        admission = await verifyApplicationTaskQueryAdmission({
           request,
           cursorSecret: secret,
           audience: 'gateway.web',
@@ -166,11 +168,44 @@ describe('task query runtime', () => {
     if (!mine) throw new Error('Expected declared query.');
     await mine({});
     if (!signedRequest) throw new Error('Expected signed request.');
-    expect(verifyApplicationTaskQueryAdmission({ request: signedRequest, cursorSecret: secret, audience: 'gateway.other', query: 'Account.mine', input: {}, now: new Date('2026-07-20T00:00:00.000Z') })).toBeUndefined();
-    expect(verifyApplicationTaskQueryAdmission({ request: signedRequest, cursorSecret: secret, audience: 'gateway.account', query: 'Account.mine', input: {}, now: new Date('2026-07-20T00:01:01.000Z') })).toBeUndefined();
-    expect(verifyApplicationTaskQueryAdmission({ request: signedRequest, cursorSecret: secret, audience: 'gateway.account', query: 'Account.mine', input: { changed: true }, now: new Date('2026-07-20T00:00:00.000Z') })).toBeUndefined();
+    expect(await verifyApplicationTaskQueryAdmission({ request: signedRequest, cursorSecret: secret, audience: 'gateway.other', query: 'Account.mine', input: {}, now: new Date('2026-07-20T00:00:00.000Z') })).toBeUndefined();
+    expect(await verifyApplicationTaskQueryAdmission({ request: signedRequest, cursorSecret: secret, audience: 'gateway.account', query: 'Account.mine', input: {}, now: new Date('2026-07-20T00:01:01.000Z') })).toBeUndefined();
+    expect(await verifyApplicationTaskQueryAdmission({ request: signedRequest, cursorSecret: secret, audience: 'gateway.account', query: 'Account.mine', input: { changed: true }, now: new Date('2026-07-20T00:00:00.000Z') })).toBeUndefined();
     const tampered = new Request(signedRequest, { headers: { ...Object.fromEntries(signedRequest.headers), 'x-applik8s-task-query': `${signedRequest.headers.get('x-applik8s-task-query')}x` } });
-    expect(verifyApplicationTaskQueryAdmission({ request: tampered, cursorSecret: secret, audience: 'gateway.account', query: 'Account.mine', input: {}, now: new Date('2026-07-20T00:00:00.000Z') })).toBeUndefined();
+    expect(await verifyApplicationTaskQueryAdmission({ request: tampered, cursorSecret: secret, audience: 'gateway.account', query: 'Account.mine', input: {}, now: new Date('2026-07-20T00:00:00.000Z') })).toBeUndefined();
+  });
+
+  it('reads the bounded pre-v0.8 compact admission during the rolling migration', async () => {
+    const input = { accountId: 'account-1' };
+    const payload = Buffer.from(JSON.stringify({
+      protocol: 'applik8s.task-query/v1alpha1',
+      audience: 'gateway.account',
+      query: 'Account.mine',
+      operation: 'snapshot',
+      inputKey: queryInputKey(input),
+      principal: { id: 'account-1', roles: ['member'] },
+      authorizationVersion: 'authority-v1',
+      trustedContext: { organizationId: 'organization-1' },
+      expiresAt: Date.parse('2026-07-20T00:00:30.000Z'),
+    })).toString('base64url');
+    const legacyToken = `${payload}.${createHmac('sha256', secret).update(payload).digest('base64url')}`;
+    const request = new Request('http://gateway/queries/Account.mine/snapshot', {
+      method: 'POST',
+      headers: { 'x-applik8s-task-query': legacyToken },
+    });
+
+    await expect(verifyApplicationTaskQueryAdmission({
+      request,
+      cursorSecret: secret,
+      audience: 'gateway.account',
+      query: 'Account.mine',
+      input,
+      now: new Date('2026-07-20T00:00:00.000Z'),
+    })).resolves.toEqual({
+      principal: { id: 'account-1', roles: ['member'] },
+      authorizationVersion: 'authority-v1',
+      trustedContext: { organizationId: 'organization-1' },
+    });
   });
 
   it('streams responses through a hard byte ceiling instead of buffering an unbounded body', async () => {

@@ -5,4 +5,5 @@ export {
   SignedEnvelopeRuntimeError,
   signedEnvelopeUtf8Key,
   staticSignedEnvelopeKeyProvider,
+  verifyLegacyCompactHmacJson,
 } from './signed-envelope.js';

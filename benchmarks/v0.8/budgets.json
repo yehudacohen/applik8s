@@ -22,5 +22,9 @@
     "minimumBoundariesPerSecond": 5000,
     "maximumP95Ms": 5,
     "maximumRssGrowthBytes": 134217728
+  },
+  "bundles": {
+    "maximumReactiveGatewayBytes": 580000,
+    "maximumRuntimeIntegrityOverheadBytes": 10000
   }
 }
