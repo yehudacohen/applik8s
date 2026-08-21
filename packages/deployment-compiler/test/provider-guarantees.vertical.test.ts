@@ -159,6 +159,7 @@ function scheduleNode(
 			},
 		},
 		scheduler: { interface: 'Scheduler', nodeId: providerId },
+		state: { interface: 'TransactionalDatabase', nodeId: 'provider.TransactionalDatabase' },
 		handler: { source: 'async () => undefined' },
 		functionNative: true,
 	}

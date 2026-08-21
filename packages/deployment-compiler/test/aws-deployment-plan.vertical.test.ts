@@ -438,6 +438,7 @@ function awsGraph(): ApplicationGraph {
         id: 'schedule.cleanup', kind: 'schedule', name: 'cleanup', stability: 'stable',
         definition: { id: 'documents.cleanup', configuration: 'fixed', every: '1h', timezone: 'UTC', overlap: 'skip', misfires: 'latest', maximumLatenessSeconds: 300, retry: { maxAttempts: 3, maximumAgeSeconds: 3600 }, requirements: { configuration: 'fixed', cardinality: 'bounded', precision: 'minute' } },
         scheduler: { interface: 'Scheduler', nodeId: 'provider.Scheduler' },
+        state: { interface: 'TransactionalDatabase', nodeId: 'provider.TransactionalDatabase' },
         handler: { source: 'async () => undefined', location: { file: 'src/cleanup.ts', line: 1, column: 1 } },
         functionNative: true,
       },

@@ -1,6 +1,8 @@
 // typecast-file-boundary: Test fixtures intentionally exercise generic schedule schemas and transport admissions.
 import {
   createDeterministicApplicationScheduleRuntime,
+  createDeterministicApplicationScheduleStateAuthority,
+  applicationScheduleProjectedDesiredState,
   executeApplicationScheduleAdmission,
   installApplicationScheduleRuntimeResolver,
   registerFixedApplicationSchedule,
@@ -173,6 +175,7 @@ describe('v0.8 function-native schedules', () => {
       now: () => clock.now,
     });
     disposers.push(installApplicationScheduleRuntimeResolver(() => runtime));
+    disposers.push(installApplicationInvocationAdmissionResolver(() => admittedCaller()));
     const SourcePolling = Scheduler.named('source-polling');
     const seen: string[] = [];
     const PollSource = SourcePolling.schedule(
@@ -348,6 +351,7 @@ describe('v0.8 function-native schedules', () => {
       applicationId: 'schedule-test', environmentId: 'catch-up', now: () => clock.now,
     });
     disposers.push(installApplicationScheduleRuntimeResolver(() => runtime));
+    disposers.push(installApplicationInvocationAdmissionResolver(() => admittedCaller()));
     const seen: string[] = [];
     const CatchUp = Scheduler.named('catch-up').schedule(
       {
@@ -373,6 +377,7 @@ describe('v0.8 function-native schedules', () => {
       applicationId: 'schedule-test', environmentId: 'misfires', now: () => clock.now,
     });
     disposers.push(installApplicationScheduleRuntimeResolver(() => runtime));
+    disposers.push(installApplicationInvocationAdmissionResolver(() => admittedCaller()));
     const skipped: string[] = [];
     const Skip = Scheduler.named('skip').schedule(
       {
@@ -426,6 +431,7 @@ describe('v0.8 function-native schedules', () => {
       },
     });
     disposers.push(installApplicationScheduleRuntimeResolver(() => first));
+    disposers.push(installApplicationInvocationAdmissionResolver(() => admittedCaller()));
     const runs: string[] = [];
     const Rebuild = Scheduler.named('durable').schedule(
       {
@@ -450,7 +456,10 @@ describe('v0.8 function-native schedules', () => {
     expect(durable?.occurrences).toEqual([expect.objectContaining({ state: 'admitted', scheduledAt: '2026-01-01T00:01:00.000Z' })]);
     const interruptedRevision = durable?.revision ?? 0;
 
-    disposers.pop()?.();
+    const disposeAdmission = disposers.pop();
+    const disposeRuntime = disposers.pop();
+    disposeAdmission?.();
+    disposeRuntime?.();
     // Misfire and retry-age selection applies before admission. A durable
     // admitted occurrence must still recover after that window has elapsed.
     clock.now = new Date('2026-01-01T00:10:00.000Z');
@@ -464,10 +473,90 @@ describe('v0.8 function-native schedules', () => {
       persist(snapshot) { durable = snapshot; },
     });
     disposers.push(installApplicationScheduleRuntimeResolver(() => restarted));
+    disposers.push(installApplicationInvocationAdmissionResolver(() => admittedCaller()));
     await expect(Rebuild.schedule(durableInstance)).resolves.toMatchObject({ state: 'unchanged' });
     const recovered = await restarted.tick(clock.now);
     expect(recovered).toEqual([expect.objectContaining({ state: 'succeeded', scheduledAt: '2026-01-01T00:01:00.000Z' })]);
     expect(runs).toHaveLength(1);
     expect(restarted.snapshot().revision).toBeGreaterThan(interruptedRevision);
+  });
+
+  it('retains restart-safe desired projections and deletion tombstones', async () => {
+    const authority = createDeterministicApplicationScheduleStateAuthority({
+      now: () => new Date('2026-01-01T00:00:00.000Z'),
+    });
+    const definition = {
+      id: 'authority.v1', configuration: 'dynamic' as const, timezone: 'UTC', overlap: 'skip' as const,
+      overlapBy: (input: { tenantId: string }) => input.tenantId,
+      misfires: 'latest' as const, maximumLatenessSeconds: 300,
+      retry: { maxAttempts: 3, maximumAgeSeconds: 1800 },
+      requirements: { configuration: 'dynamic' as const, cardinality: 'bounded' as const, precision: 'minute' as const },
+    };
+    const instance = { id: 'job-a', revision: '1', input: { tenantId: 'tenant-a' }, every: '1h' };
+    await expect(authority.reconcile({ definition, instance })).resolves.toMatchObject({ state: 'created' });
+    const pending = await authority.pending();
+    expect(pending).toHaveLength(1);
+    expect(applicationScheduleProjectedDesiredState(pending[0]!)).toMatchObject({
+      overlapKey: 'tenant-a',
+      instance: { id: 'job-a', revision: '1' },
+    });
+    await authority.markProjected(definition.id, instance.id, instance.revision, 'active');
+    expect(await authority.pending()).toEqual([]);
+    const management = {
+      apiVersion: 'applik8s.scheduleManagement/v1alpha1' as const,
+      id: 'schedule-management:test',
+      action: 'configure' as const,
+      definitionId: definition.id,
+      instanceId: instance.id,
+      revision: instance.revision,
+      principalId: 'principal-a',
+      authorityRevision: 'authority-1',
+      trustedContextDigest: 'context-digest',
+      correlationId: 'correlation-a',
+      admittedAt: '2026-01-01T00:00:00.000Z',
+    };
+    await expect(authority.reconcile({ definition, instance, management })).resolves.toMatchObject({
+      state: 'unchanged', management,
+    });
+    expect(await authority.pending()).toEqual([expect.objectContaining({
+      projection: 'pending', management,
+    })]);
+    await authority.markProjected(definition.id, instance.id, instance.revision, 'active');
+    await expect(authority.reconcile({
+      definition,
+      instance: { ...instance, input: { tenantId: 'different' } },
+    })).rejects.toThrow(/conflicts with different desired state/u);
+
+    const restarted = createDeterministicApplicationScheduleStateAuthority({ records: authority.records() });
+    await expect(restarted.remove(definition.id, instance.id)).resolves.toMatchObject({ state: 'removed', revision: '1' });
+    expect(await restarted.pending()).toEqual([expect.objectContaining({
+      state: 'removed', projection: 'pending', revision: '1',
+    })]);
+    expect(restarted.records()[0]).not.toHaveProperty('desired');
+    await expect(restarted.markProjected(definition.id, instance.id, '1', 'active')).resolves.toBe(false);
+    expect(await restarted.pending()).toHaveLength(1);
+    await restarted.markProjected(definition.id, instance.id, '1', 'removed');
+    expect(restarted.records()).toEqual([expect.objectContaining({ state: 'removed', projection: 'applied' })]);
+  });
+
+  it('keeps delimiter-like schedule identities distinct in deterministic state', async () => {
+    const authority = createDeterministicApplicationScheduleStateAuthority();
+    const definition = {
+      id: 'definition:a', configuration: 'dynamic' as const, timezone: 'UTC', overlap: 'skip' as const,
+      misfires: 'latest' as const, maximumLatenessSeconds: 300,
+      retry: { maxAttempts: 3, maximumAgeSeconds: 1800 },
+      requirements: { configuration: 'dynamic' as const, cardinality: 'bounded' as const, precision: 'minute' as const },
+    };
+
+    await authority.reconcile({
+      definition,
+      instance: { id: 'instance', revision: '1', input: {}, every: '1h' },
+    });
+    await authority.reconcile({
+      definition: { ...definition, id: 'definition' },
+      instance: { id: 'a:instance', revision: '1', input: {}, every: '1h' },
+    });
+
+    expect(authority.records()).toHaveLength(2);
   });
 });

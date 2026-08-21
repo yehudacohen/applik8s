@@ -1,8 +1,14 @@
 // typecast-file-boundary: workflow fixtures inspect compiler-owned metadata and deliberately restore their declared generic binding shapes.
-import { actor, app, applicationGraphFor, event, IndexStore, ObjectStorage, StructuredGeneration as StructuredGenerationProvider, setApplicationWorkflowRuntimeFactory, WorkflowEngine, workflow } from '@applik8s/applik8s';
+import { actor, app, applicationGraphFor, applicationScheduleInvocationAdmission, event, IndexStore, installApplicationScheduleRuntimeResolver, ObjectStorage, StructuredGeneration as StructuredGenerationProvider, setApplicationWorkflowRuntimeFactory, WorkflowEngine, workflow } from '@applik8s/applik8s';
+import { installApplicationInvocationAdmissionResolver } from '@applik8s/client';
 import { type } from '@applik8s/applik8s/dsl';
 import { StructuredGeneration } from '@applik8s/applik8s/structured-generation';
-import { validateApplicationGraphStructure } from '@applik8s/core';
+import {
+  applicationAdmissionInvocationView,
+  createApplicationAdmissionContextV1,
+  validateApplicationAdmissionContextV1WithoutReceipt,
+  validateApplicationGraphStructure,
+} from '@applik8s/core';
 import { pgTable, text } from 'drizzle-orm/pg-core';
 import { describe, expect, it } from 'vitest';
 import { testApplicationAdmission } from '../../../test-support/application-principal.js';
@@ -330,6 +336,168 @@ describe('v0.5 durable task and workflow contracts', () => {
       })]);
     } finally {
       restore();
+    }
+  });
+
+  it('converges delayed workflow starts through Scheduler and preserves workflow-owned run admission', async () => {
+    let reconcileRequest: {
+      readonly definition: { readonly id: string };
+      readonly instance: { readonly id: string; readonly at?: string | Date; readonly deleteAfterCompletion?: boolean };
+      readonly handler: (input: { tenantId: string; requestId: string }, context: never) => Promise<{ readonly id: string }>;
+      readonly management?: { readonly principalId: string; readonly authorizationReceiptId?: string };
+    } | undefined;
+    let removedInstance: { readonly definitionId: string; readonly instanceId: string } | undefined;
+    const workflowCalls: unknown[] = [];
+    const restoreSchedule = installApplicationScheduleRuntimeResolver(() => ({
+      async invoke() { throw new Error('not used'); },
+      async reconcile(request) {
+        reconcileRequest = request as unknown as typeof reconcileRequest;
+        return {
+          definitionId: request.definition.id,
+          instanceId: request.instance.id,
+          revision: request.instance.revision,
+          state: 'created',
+        };
+      },
+      async remove(definitionId, instanceId) {
+        removedInstance = { definitionId, instanceId };
+        return { definitionId, instanceId, revision: 'removed', state: 'removed' };
+      },
+    }));
+    const restoreWorkflow = setApplicationWorkflowRuntimeFactory(async () => ({
+      async run() { throw new Error('not used'); },
+      async start(contract, input, metadata) {
+        workflowCalls.push({ contract, input, metadata });
+        return {
+          id: 'workflow-run-1',
+          async result() { return { endpoint: 'unused' } as never; },
+          async cancel() {},
+        };
+      },
+      async schedule() { throw new Error('provider-native workflow scheduling must not be used'); },
+      async reconcileSchedule() { throw new Error('provider-native workflow cron must not be used'); },
+      async signal() {},
+    }));
+    const configurationAdmission = applicationAdmissionInvocationView(
+      validateApplicationAdmissionContextV1WithoutReceipt(
+        createApplicationAdmissionContextV1({
+          admission: testApplicationAdmission('principal:configuration-admin', {
+            authorityRevision: 'schedule-management-v1',
+            trustedContext: { organizationId: 'organization-1' },
+          }),
+          operation: {
+            id: 'applik8s://schedule-management/operations/configure',
+            transport: 'direct',
+          },
+          correlationId: 'schedule-management-correlation-1',
+        }),
+        { now: Date.parse('2026-01-01T00:00:00.000Z') },
+      ),
+    );
+    const restoreAdmission = installApplicationInvocationAdmissionResolver(
+      () => configurationAdmission,
+    );
+    try {
+      const platform = app('scheduled-runtime-platform');
+      const provision = platform.workflow(
+        ProvisionTenant,
+        { idempotencyKey: (input) => input.requestId },
+        async () => ({ endpoint: 'unused' }),
+      );
+      const at = new Date('2026-09-01T12:00:00.000Z');
+      const scheduled = await provision.schedule(
+        { tenantId: 'tenant-a', requestId: 'request-1' },
+        at,
+        { idempotencyKey: 'caller-key' },
+      );
+      expect(scheduled.id).toMatch(/^start-[a-f0-9]{64}$/u);
+      expect(reconcileRequest).toMatchObject({
+        definition: { id: 'workflow-start.tenant.provision.v1' },
+        instance: {
+          id: scheduled.id,
+          at: at.toISOString(),
+          deleteAfterCompletion: true,
+        },
+        management: {
+          principalId: 'principal:configuration-admin',
+          authorityRevision: 'schedule-management-v1',
+          correlationId: 'schedule-management-correlation-1',
+        },
+      });
+      const admission = applicationScheduleInvocationAdmission({
+        applicationId: 'scheduled-runtime-platform',
+        environmentId: 'test',
+        definitionId: 'workflow-start.tenant.provision.v1',
+        instanceId: scheduled.id,
+        occurrenceId: 'occurrence-1',
+        admittedAt: at.toISOString(),
+        maximumAgeSeconds: 21_600,
+        trigger: 'schedule',
+      });
+      const result = await reconcileRequest?.handler(
+        { tenantId: 'tenant-a', requestId: 'request-1' },
+        {
+          definitionId: 'workflow-start.tenant.provision.v1',
+          instanceId: scheduled.id,
+          occurrenceId: 'occurrence-1',
+          scheduledAt: at.toISOString(),
+          admittedAt: at.toISOString(),
+          startedAt: at.toISOString(),
+          attempt: 1,
+          trigger: 'schedule',
+          admission,
+          signal: new AbortController().signal,
+        } as never,
+      );
+      expect(result).toEqual({ id: 'workflow-run-1' });
+      expect(workflowCalls).toEqual([expect.objectContaining({
+        contract: 'tenant.provision.v1',
+        input: { tenantId: 'tenant-a', requestId: 'request-1' },
+        metadata: expect.objectContaining({
+          idempotencyKey: 'occurrence-1',
+          correlationId: 'occurrence-1',
+          causationId: 'occurrence-1',
+        }),
+      })]);
+      await expect(provision.reconcile({
+        id: 'tenant-daily',
+        expression: '0 4 * * *',
+        revision: 'revision-1',
+        enabled: true,
+        input: { tenantId: 'tenant-a', requestId: 'daily' },
+      })).resolves.toEqual({
+        id: 'tenant-daily',
+        revision: 'revision-1',
+        state: 'created',
+      });
+      expect(reconcileRequest).toMatchObject({
+        definition: { id: 'workflow-start.tenant.provision.v1' },
+        instance: {
+          id: expect.stringMatching(/^recurring-[a-f0-9]{64}$/u),
+          revision: 'revision-1',
+          cron: '0 4 * * *',
+          input: { tenantId: 'tenant-a', requestId: 'daily' },
+        },
+      });
+      await expect(provision.reconcile({
+        id: 'tenant-daily',
+        expression: '0 4 * * *',
+        revision: 'revision-2',
+        enabled: false,
+        input: { tenantId: 'tenant-a', requestId: 'daily' },
+      })).resolves.toEqual({
+        id: 'tenant-daily',
+        revision: 'revision-2',
+        state: 'removed',
+      });
+      expect(removedInstance).toEqual({
+        definitionId: 'workflow-start.tenant.provision.v1',
+        instanceId: expect.stringMatching(/^recurring-[a-f0-9]{64}$/u),
+      });
+    } finally {
+      restoreAdmission();
+      restoreWorkflow();
+      restoreSchedule();
     }
   });
 

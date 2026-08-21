@@ -27,6 +27,7 @@ export interface EntrypointExports {
   readonly applicationSignals: readonly EntrypointApplicationSignalExport[];
   readonly applicationAgents: readonly EntrypointApplicationAgentExport[];
   readonly applicationObjectStores: readonly EntrypointApplicationObjectStoreExport[];
+  readonly applicationDurables: readonly EntrypointApplicationDurableExport[];
   readonly applicationSchedules: readonly EntrypointApplicationScheduleExport[];
   readonly applicationLakehousePublications: readonly EntrypointApplicationLakehousePublicationExport[];
   readonly applicationActors: readonly EntrypointApplicationActorExport[];
@@ -55,6 +56,12 @@ export interface EntrypointApplicationAgentExport {
 export interface EntrypointApplicationObjectStoreExport {
   readonly name: string;
   readonly objectStoreName: string;
+}
+
+export interface EntrypointApplicationDurableExport {
+  readonly name: string;
+  readonly kind: 'workflow' | 'task';
+  readonly id: string;
 }
 
 export interface EntrypointApplicationScheduleExport {
@@ -156,6 +163,12 @@ export async function discoverEntrypointExports(entrypoint: string): Promise<Res
         return objectStoreName ? [{ name, objectStoreName }] : [];
       })
       .sort((left, right) => left.name.localeCompare(right.name));
+    const applicationDurables = Object.entries(imported)
+      .flatMap(([name, value]) => {
+        const durable = exportedApplicationDurable(value);
+        return durable ? [{ name, ...durable }] : [];
+      })
+      .sort((left, right) => left.name.localeCompare(right.name));
     const applicationSchedules = Object.entries(imported)
       .flatMap(([name, value]) => {
         const schedule = exportedApplicationSchedule(value);
@@ -184,6 +197,7 @@ export async function discoverEntrypointExports(entrypoint: string): Promise<Res
         applicationSignals,
         applicationAgents,
         applicationObjectStores,
+        applicationDurables,
         applicationSchedules,
         applicationLakehousePublications,
         applicationActors,
@@ -194,6 +208,27 @@ export async function discoverEntrypointExports(entrypoint: string): Promise<Res
   } finally {
     deferTemporaryDirectoryCleanup(bundleRoot);
   }
+}
+
+function exportedApplicationDurable(value: unknown): {
+  readonly kind: 'workflow' | 'task';
+  readonly id: string;
+} | undefined {
+  if (typeof value !== 'function') return undefined;
+  const bindingKind = Reflect.get(value, 'kind');
+  const kind = bindingKind === 'applicationWorkflow'
+    ? 'workflow'
+    : bindingKind === 'applicationTask'
+      ? 'task'
+      : undefined;
+  if (!kind) return undefined;
+  const definition = Reflect.get(value, 'definition');
+  const id = definition && typeof definition === 'object'
+    ? Reflect.get(definition, 'id')
+    : undefined;
+  return typeof id === 'string' && id.trim().length > 0
+    ? { kind, id }
+    : undefined;
 }
 
 function exportedApplicationActorId(value: unknown): string | undefined {

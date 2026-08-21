@@ -51,12 +51,16 @@ export async function emitGeneratedApplicationWorkflows(options: {
       options.graph,
       worker,
     );
+    const scheduleGatewayCallers = applicationScheduleWorkflowGatewayCallers(
+      options.graph,
+      worker,
+    );
     const contract = workflowContract(
       options.graph,
       worker,
       operationCatalog,
       workloadAuthority,
-      [...gatewayCallers, ...httpGatewayCallers],
+      [...gatewayCallers, ...httpGatewayCallers, ...scheduleGatewayCallers],
       authorityManifest,
     );
     const ownsProvider = !provisionedProviders.has(contract.provider.id);
@@ -69,6 +73,60 @@ export async function emitGeneratedApplicationWorkflows(options: {
     ));
   }
   return artifacts;
+}
+
+export function applicationScheduleWorkflowGatewayCallers(
+  graph: ApplicationGraph,
+  worker: ApplicationWorkflowWorkerNode,
+) {
+  const nodes = new Map(graph.nodes.map((node) => [node.id, node]));
+  const workerTargets = new Map<string, string>();
+  for (const reference of worker.handlers) {
+    const handler = nodes.get(reference.nodeId);
+    if (handler?.kind === 'workflowHandler') {
+      const workflow = nodes.get(handler.workflow.nodeId);
+      if (workflow?.kind === 'workflow') {
+        workerTargets.set(
+          workflow.id,
+          `${workflow.contract.name}.${workflow.contract.version}`,
+        );
+      }
+    } else if (handler?.kind === 'taskHandler') {
+      const task = nodes.get(handler.task.nodeId);
+      if (task?.kind === 'task') {
+        workerTargets.set(
+          task.id,
+          `${task.contract.name}.${task.contract.version}`,
+        );
+      }
+    }
+  }
+  const contracts = [...new Set(graph.nodes.flatMap((node) => {
+    if (node.kind !== 'schedule' || node.target?.kind !== 'durableStart') return [];
+    const contract = workerTargets.get(node.target.durable.nodeId);
+    return contract ? [contract] : [];
+  }))].sort();
+  if (contracts.length === 0) return [];
+  const hosts = graph.nodes.filter(
+    (node): node is Extract<ApplicationGraph['nodes'][number], { readonly kind: 'provider' }> =>
+      node.kind === 'provider'
+        && node.interface === 'ApplicationHost'
+        && !node.config?.qualification,
+  );
+  if (hosts.length !== 1) {
+    throw new Error(
+      `Scheduled workflows require exactly one unqualified ApplicationHost caller; found ${hosts.length}.`,
+    );
+  }
+  const hostConfig = objectConfig(hosts[0]?.config?.host);
+  const name = applicationGraphStringValue(hostConfig.name)
+    ?? `${graph.metadata.name}-web`;
+  const namespace = applicationGraphStringValue(hostConfig.namespace)
+    ?? graph.metadata.namespace
+    ?? 'default';
+  const serviceAccount = applicationGraphStringValue(hostConfig.serviceAccountName)
+    ?? name;
+  return [{ operator: name, namespace, serviceAccount, contracts }];
 }
 
 function applicationHttpWorkflowGatewayCallers(

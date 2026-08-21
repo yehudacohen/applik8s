@@ -1,8 +1,9 @@
 // typecast-file-boundary: the fixture intentionally assembles the smallest
 // erased graph needed to exercise compiler-owned browser publication.
-import type { ApplicationGraph, ApplicationGatewayNode } from '@applik8s/core';
+import { type ApplicationGraph, type ApplicationGatewayNode, validateApplicationGraphStructure } from '@applik8s/core';
 import { describe, expect, it } from 'vitest';
 import { applicationFacadeManifest, generatedApplicationFacadeSource } from '../src/application-facade/index.js';
+import { generatedApplicationFetchGatewayModules } from '../src/application-fetch-gateway/index.js';
 import { applicationGraphWithEntrypointPublicSurface } from '../src/application-facade/public-surface.js';
 
 describe('entrypoint-driven application public surface', () => {
@@ -282,7 +283,218 @@ describe('entrypoint-driven application public surface', () => {
       'export const WorkspaceActivitySnapshot = createApplicationQueryOperation',
     );
   });
+
+  it('lowers legacy workflow crons through the shared schedule graph without duplicating provider cron ownership', () => {
+    const published = applicationGraphWithEntrypointPublicSurface(
+      workflowScheduleGraph(),
+      {
+        operationIds: [],
+        modelNames: [],
+        durables: [{ kind: 'workflow', id: 'tenant.onboarding.v1' }],
+      },
+    );
+    const workflow = published.nodes.find(
+      (node) => node.id === 'workflow.tenant.onboarding.v1',
+    );
+    expect(workflow?.kind === 'workflow' ? workflow.triggers.crons : undefined)
+      .toEqual([]);
+    const scheduled = published.nodes.find(
+      (node) => node.kind === 'schedule'
+        && node.target?.kind === 'durableStart'
+        && node.definition.configuration === 'fixed',
+    );
+    expect(scheduled).toMatchObject({
+      kind: 'schedule',
+      definition: {
+        configuration: 'fixed',
+        cron: '0 4 * * *',
+        timezone: 'UTC',
+        overlap: 'skip',
+        misfires: 'latest',
+      },
+      scheduler: { interface: 'Scheduler', nodeId: 'provider.scheduler' },
+      target: {
+        kind: 'durableStart',
+        durable: { kind: 'workflow', nodeId: 'workflow.tenant.onboarding.v1' },
+        contract: { name: 'tenant.onboarding', version: 'v1' },
+        input: { kind: 'literal', value: { tenantId: 'scheduled', requestId: 'daily' } },
+      },
+    });
+    expect(published.edges).toContainEqual({
+      from: { nodeId: scheduled?.id },
+      to: { nodeId: 'workflow.tenant.onboarding.v1' },
+      relationship: 'dependsOn',
+    });
+    expect(published.providerRequirements).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        consumer: { nodeId: scheduled?.id },
+        interface: 'Scheduler',
+      }),
+    ]));
+    expect(published.nodes).toContainEqual(expect.objectContaining({
+      id: 'schedule.workflow-start.tenant.onboarding.v1',
+      definition: expect.objectContaining({ configuration: 'dynamic' }),
+      state: {
+        interface: 'TransactionalDatabase',
+        nodeId: 'provider.TransactionalDatabase',
+      },
+      target: expect.objectContaining({
+        kind: 'durableStart',
+        durable: { kind: 'workflow', nodeId: 'workflow.tenant.onboarding.v1' },
+        input: { kind: 'scheduleInput' },
+      }),
+    }));
+    expect(published.nodes).toContainEqual(expect.objectContaining({
+      id: 'provider.TransactionalDatabase',
+      kind: 'provider',
+      interface: 'TransactionalDatabase',
+      implementation: 'postgres',
+      config: {
+        transactionalDatabase: expect.objectContaining({
+          clusterName: 'agentic-start-schedule-state',
+          ownership: 'application-graph',
+        }),
+      },
+    }));
+    expect(validateApplicationGraphStructure(published)).toEqual([]);
+
+    const source = generatedApplicationFetchGatewayModules(published)
+      ?.files['gateway.generated.ts'] ?? '';
+    expect(source).toContain('startScheduledWorkflow');
+    expect(source).toContain('tenant.onboarding.v1');
+    expect(source).toContain("'idempotency-key': idempotencyKey");
+    expect(source).toContain('context.occurrenceId');
+    expect(source).toContain("purpose: 'applik8s.workflow-gateway-admission/v1'");
+  });
+
+  it('reuses one qualified application database as schedule state without provisioning a shadow authority', () => {
+    const authored = workflowScheduleGraph();
+    const published = applicationGraphWithEntrypointPublicSurface({
+      ...authored,
+      nodes: [
+        ...authored.nodes,
+        {
+          id: 'provider.transactional-database.v1alpha1.primary',
+          kind: 'provider',
+          name: 'TransactionalDatabase',
+          stability: 'stable',
+          interface: 'TransactionalDatabase',
+          implementation: 'postgres',
+          config: {
+            qualification: { apiVersion: 'v1alpha1', name: 'primary' },
+            transactionalDatabase: {
+              kind: 'postgres',
+              clusterName: 'primary-db',
+              namespace: 'workflow-system',
+            },
+          },
+        },
+      ],
+    } as ApplicationGraph, {
+      operationIds: [],
+      modelNames: [],
+      durables: [{ kind: 'workflow', id: 'tenant.onboarding.v1' }],
+    });
+
+    expect(published.nodes.filter((node) => node.kind === 'schedule')).not.toHaveLength(0);
+    expect(published.nodes.filter((node) => node.kind === 'schedule')).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          state: {
+            interface: 'TransactionalDatabase',
+            nodeId: 'provider.transactional-database.v1alpha1.primary',
+          },
+        }),
+      ]),
+    );
+    expect(published.nodes.some((node) => node.id === 'provider.TransactionalDatabase')).toBe(false);
+  });
 });
+
+function workflowScheduleGraph(): ApplicationGraph {
+  const authored = graph();
+  return {
+    ...authored,
+    metadata: { ...authored.metadata, namespace: 'workflow-system' },
+    nodes: [
+      ...authored.nodes.filter((node) => node.kind === 'provider'),
+      {
+        id: 'provider.application-host',
+        kind: 'provider',
+        name: 'ApplicationHost',
+        stability: 'stable',
+        interface: 'ApplicationHost',
+        implementation: 'managed-application-host',
+        config: { host: { name: 'workflow-web', namespace: 'workflow-system' } },
+      },
+      {
+        id: 'provider.workflow-engine',
+        kind: 'provider',
+        name: 'WorkflowEngine',
+        stability: 'stable',
+        interface: 'WorkflowEngine',
+        implementation: 'hatchet',
+        config: { namespace: 'workflow-system' },
+      },
+      {
+        id: 'workflow.tenant.onboarding.v1',
+        kind: 'workflow',
+        name: 'tenant.onboarding.v1',
+        stability: 'stable',
+        contract: {
+          name: 'tenant.onboarding',
+          version: 'v1',
+          input: { jsonSchema: { type: 'object' } },
+          output: { jsonSchema: { type: 'object' } },
+          errors: [],
+          signals: [],
+        },
+        triggers: {
+          crons: [{
+            name: 'daily-onboarding',
+            expression: '0 4 * * *',
+            input: { tenantId: 'scheduled', requestId: 'daily' },
+          }],
+        },
+      },
+      {
+        id: 'workflow-handler.tenant.onboarding.v1',
+        kind: 'workflowHandler',
+        name: 'tenant.onboarding.v1',
+        stability: 'stable',
+        workflow: { nodeId: 'workflow.tenant.onboarding.v1' },
+        workflowEngine: { interface: 'WorkflowEngine', nodeId: 'provider.workflow-engine' },
+        tasks: [],
+        childWorkflows: [],
+        taskBindings: [],
+        childWorkflowBindings: [],
+        handlerSource: 'async input => input',
+        orchestrationBoundary: 'durableEffectsThroughTasks',
+        deterministicOperations: ['task'],
+        sourceAnalysis: 'closedWorkflowAllowlist',
+      },
+      {
+        id: 'workflow-worker.tenant.onboarding.v1',
+        kind: 'workflowWorker',
+        name: 'tenant-onboarding-worker',
+        stability: 'stable',
+        workflowEngine: { interface: 'WorkflowEngine', nodeId: 'provider.workflow-engine' },
+        handlers: [{ nodeId: 'workflow-handler.tenant.onboarding.v1' }],
+        runtime: 'node',
+        lifecycle: 'longLived',
+        deployment: {
+          replicas: 1,
+          taskSlots: 4,
+          durableSlots: 4,
+          gracefulShutdownSeconds: 30,
+          healthPort: 8080,
+          egress: 'allowAll',
+          scaling: { mode: 'fixed' },
+        },
+      },
+    ],
+  } as unknown as ApplicationGraph;
+}
 
 function graphWithHttp(): ApplicationGraph {
   const authored = graph();

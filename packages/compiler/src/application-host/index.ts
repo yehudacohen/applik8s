@@ -149,6 +149,9 @@ export async function emitGeneratedApplicationHost(options: {
     options.graph,
     namespace,
   );
+  const workflowScheduleAccess = options.graph.nodes.some(
+    (node) => node.kind === 'schedule' && node.target?.kind === 'durableStart',
+  );
   const artifactRoot = resolve(applicationArtifactRoot(manifestPath), manifest.output);
   const contextRoot = resolve(options.outDir, 'context');
   await rm(contextRoot, { recursive: true, force: true });
@@ -238,15 +241,42 @@ export async function emitGeneratedApplicationHost(options: {
                 { name: 'APPLIK8S_CURSOR_SECRET', valueFrom: { secretKeyRef: { name: cursorSecretName, key: cursorSecretKey } } },
                 ...internalOperationEnvironment,
                 ...scheduleDatabaseEnvironment,
+                ...applicationHostWorkflowScheduleEnvironment(options.graph),
                 ...identityDatabaseEnvironment,
                 ...objectStorageEnvironment,
               ],
+              ...(workflowScheduleAccess
+                ? {
+                    volumeMounts: [{
+                      name: 'workflow-gateway-token',
+                      mountPath: '/var/run/secrets/applik8s/workflow-gateway',
+                      readOnly: true,
+                    }],
+                  }
+                : {}),
               ports: [{ name: 'http', containerPort: port }],
               startupProbe: { httpGet: { path: '/__applik8s/v1/healthz', port: 'http' }, periodSeconds: 2, failureThreshold: 30 },
               readinessProbe: { httpGet: { path: '/__applik8s/v1/readyz', port: 'http' }, periodSeconds: 5, failureThreshold: 6 },
               livenessProbe: { httpGet: { path: '/__applik8s/v1/healthz', port: 'http' }, periodSeconds: 10, failureThreshold: 6 },
               resources: resourceRequirements,
             }],
+            ...(workflowScheduleAccess
+              ? {
+                  volumes: [{
+                    name: 'workflow-gateway-token',
+                    projected: {
+                      defaultMode: 0o400,
+                      sources: [{
+                        serviceAccountToken: {
+                          path: 'token',
+                          expirationSeconds: 3_600,
+                          audience: 'https://kubernetes.default.svc',
+                        },
+                      }],
+                    },
+                  }],
+                }
+              : {}),
           },
         },
       },
@@ -502,14 +532,39 @@ function applicationHostInternalOperationEnvironment(
   }];
 }
 
+function applicationHostWorkflowScheduleEnvironment(
+  graph: ApplicationGraph,
+): readonly Readonly<Record<string, unknown>>[] {
+  return graph.nodes.some(
+    (node) => node.kind === 'schedule' && node.target?.kind === 'durableStart',
+  )
+    ? [{
+        name: 'APPLIK8S_WORKFLOW_GATEWAY_TOKEN_FILE',
+        value: '/var/run/secrets/applik8s/workflow-gateway/token',
+      }]
+    : [];
+}
+
 function applicationHostScheduleDatabaseEnvironment(
   graph: ApplicationGraph,
   hostNamespace: string,
 ): readonly Readonly<Record<string, unknown>>[] {
-  if (!graph.nodes.some((node) => node.kind === 'schedule')) return [];
+  const schedules = graph.nodes.filter((node): node is Extract<ApplicationGraph['nodes'][number], { readonly kind: 'schedule' }> => node.kind === 'schedule');
+  if (schedules.length === 0) return [];
+  const providerIds = new Set(schedules.map((schedule) => schedule.state.nodeId));
+  if (providerIds.size !== 1) {
+    throw new Error(`ApplicationHost schedules resolve ${providerIds.size} TransactionalDatabase state authorities; exactly one is required.`);
+  }
+  const providerId = [...providerIds][0]!;
+  const stateProvider = graph.nodes.find((node) => node.id === providerId);
+  if (stateProvider?.kind !== 'provider' || stateProvider.interface !== 'TransactionalDatabase') {
+    throw new Error(`ApplicationHost schedule state authority ${providerId} is not a TransactionalDatabase provider.`);
+  }
+  const aliasOf = applicationGraphStringValue(stateProvider.config?.aliasOf);
+  const authorityIds = new Set([providerId, ...(aliasOf ? [aliasOf] : [])]);
   const runtimes = new Map<string, { readonly secretName: string; readonly secretNamespace?: string; readonly secretKey: string }>();
   for (const node of graph.nodes) {
-    if (node.kind !== 'model' || !node.runtime) continue;
+    if (node.kind !== 'model' || !node.database || !authorityIds.has(node.database.nodeId) || !node.runtime) continue;
     const runtime = {
       secretName: node.runtime.secretName,
       ...(node.runtime.secretNamespace ? { secretNamespace: node.runtime.secretNamespace } : {}),
@@ -517,8 +572,36 @@ function applicationHostScheduleDatabaseEnvironment(
     };
     runtimes.set(JSON.stringify(runtime), runtime);
   }
+  if (runtimes.size === 0) {
+    const aliasedProvider = aliasOf
+      ? graph.nodes.find((node) => node.id === aliasOf)
+      : undefined;
+    const provider = aliasedProvider?.kind === 'provider'
+      && aliasedProvider.interface === 'TransactionalDatabase'
+      ? aliasedProvider
+      : stateProvider;
+    const config = objectValue(provider.config?.transactionalDatabase);
+    const connectionSecret = objectValue(config.connectionSecret);
+    const cluster = objectValue(config.cluster);
+    const secretName = applicationGraphStringValue(connectionSecret.name)
+      ?? `${applicationGraphStringValue(config.clusterName)
+        ?? applicationGraphStringValue(cluster.name)
+        ?? applicationGraphStringValue(config.name)
+        ?? `${graph.metadata.name}-db`}-app`;
+    const secretKey = applicationGraphStringValue(config.connectionSecretKey) ?? 'uri';
+    const secretNamespace = applicationGraphStringValue(connectionSecret.namespace)
+      ?? applicationGraphStringValue(config.namespace);
+    if (provider.implementation === 'target-selected' && Object.keys(config).length === 0) {
+      throw new Error(`ApplicationHost Kubernetes Scheduler requires a concrete PostgreSQL TransactionalDatabase binding for ${providerId}; target-selected state has no Kubernetes credential source.`);
+    }
+    runtimes.set(JSON.stringify({ secretName, secretNamespace, secretKey }), {
+      secretName,
+      ...(secretNamespace ? { secretNamespace } : {}),
+      secretKey,
+    });
+  }
   if (runtimes.size !== 1) {
-    throw new Error(`ApplicationHost Kubernetes Scheduler requires exactly one PostgreSQL runtime authority; found ${runtimes.size}. Bind scheduled application state to one TransactionalDatabase.`);
+    throw new Error(`ApplicationHost Kubernetes Scheduler requires exactly one PostgreSQL credential for state authority ${providerId}; found ${runtimes.size}.`);
   }
   const runtime = [...runtimes.values()][0]!;
   const secretNamespace = runtime.secretNamespace ?? hostNamespace;

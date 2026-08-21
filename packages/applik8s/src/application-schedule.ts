@@ -117,6 +117,24 @@ export interface ApplicationScheduleConvergenceResult {
   readonly instanceId: string;
   readonly revision: string;
   readonly state: 'created' | 'updated' | 'unchanged' | 'removed';
+  readonly management?: ApplicationScheduleManagementReceipt;
+}
+
+/** Immutable audit evidence for one desired-state configuration operation. */
+export interface ApplicationScheduleManagementReceipt {
+  readonly apiVersion: 'applik8s.scheduleManagement/v1alpha1';
+  readonly id: string;
+  readonly action: 'configure' | 'remove';
+  readonly definitionId: string;
+  readonly instanceId: string;
+  readonly revision: string;
+  readonly principalId: string;
+  readonly authorityRevision: string;
+  readonly trustedContextDigest: string;
+  readonly correlationId: string;
+  readonly causationId?: string;
+  readonly authorizationReceiptId?: string;
+  readonly admittedAt: string;
 }
 
 export interface ApplicationScheduleOccurrenceReceipt<TResult = unknown> {
@@ -163,6 +181,7 @@ export interface ApplicationSchedulePersistedInstance {
   readonly digest: string;
   readonly anchorAt: string;
   readonly lastEvaluatedAt: string;
+  readonly management?: ApplicationScheduleManagementReceipt;
 }
 
 export type ApplicationSchedulePersistedOccurrence =
@@ -204,8 +223,182 @@ export interface ApplicationScheduleRuntime {
     readonly definition: ApplicationScheduleDefinitionContract<TInput>;
     readonly instance: ApplicationScheduleInstance<TInput>;
     readonly handler: ApplicationScheduleHandler<TInput, TResult>;
+    readonly management?: ApplicationScheduleManagementReceipt;
   }): Promise<ApplicationScheduleConvergenceResult>;
-  remove(definitionId: string, instanceId: string): Promise<ApplicationScheduleConvergenceResult>;
+  remove(definitionId: string, instanceId: string, management?: ApplicationScheduleManagementReceipt): Promise<ApplicationScheduleConvergenceResult>;
+}
+
+/**
+ * Canonical desired-state authority used by provider adapters. Provider-native
+ * CronJobs, EventBridge schedules, and workflow timers are projections of this
+ * record and may be safely rebuilt from it.
+ */
+export interface ApplicationScheduleStateAuthority {
+  reconcile<TInput extends object>(options: {
+    readonly definition: ApplicationScheduleDefinitionContract<TInput>;
+    readonly instance: ApplicationScheduleInstance<TInput>;
+    readonly management?: ApplicationScheduleManagementReceipt;
+  }): Promise<ApplicationScheduleConvergenceResult>;
+  remove(
+    definitionId: string,
+    instanceId: string,
+    management?: ApplicationScheduleManagementReceipt,
+  ): Promise<ApplicationScheduleConvergenceResult>;
+  /** Pending provider projections retained across process failure and restart. */
+  pending(): Promise<readonly ApplicationScheduleStateRecord[]>;
+  /** Acknowledges only the exact canonical revision that was projected. */
+  markProjected(
+    definitionId: string,
+    instanceId: string,
+    revision: string,
+    state: 'active' | 'removed',
+  ): Promise<boolean>;
+  close?(): Promise<void>;
+}
+
+export interface ApplicationScheduleStateRecord {
+  readonly schemaVersion: 'applik8s.scheduleState/v1alpha1';
+  readonly definitionId: string;
+  readonly instanceId: string;
+  readonly revision: string;
+  readonly digest: string;
+  readonly state: 'active' | 'removed';
+  readonly projection: 'pending' | 'applied';
+  readonly desired?: JsonObject;
+  readonly management?: ApplicationScheduleManagementReceipt;
+  readonly updatedAt: string;
+}
+
+export interface ApplicationScheduleProjectedDesiredState {
+  readonly definition: ApplicationScheduleDefinitionContract<object>;
+  readonly instance: ApplicationScheduleInstance<object>;
+  readonly overlapKey: string;
+  readonly management?: ApplicationScheduleManagementReceipt;
+}
+
+export interface DeterministicApplicationScheduleStateAuthority extends ApplicationScheduleStateAuthority {
+  records(): readonly ApplicationScheduleStateRecord[];
+}
+
+/** Durable-by-callback reference authority used by local runtimes and tests. */
+export function createDeterministicApplicationScheduleStateAuthority(options: {
+  readonly now?: () => Date;
+  readonly records?: readonly ApplicationScheduleStateRecord[];
+  readonly persist?: (records: readonly ApplicationScheduleStateRecord[]) => void | Promise<void>;
+} = {}): DeterministicApplicationScheduleStateAuthority {
+  const now = options.now ?? (() => new Date());
+  const records = new Map(
+    (options.records ?? []).map((record) => [scheduleStateKey(record.definitionId, record.instanceId), record]),
+  );
+  const snapshot = (): readonly ApplicationScheduleStateRecord[] => [...records.values()]
+    .sort((left, right) => `${left.definitionId}:${left.instanceId}`.localeCompare(`${right.definitionId}:${right.instanceId}`));
+  const persist = async (): Promise<void> => options.persist?.(snapshot());
+
+  return {
+    records: snapshot,
+    async reconcile(request) {
+      const key = scheduleStateKey(request.definition.id, request.instance.id);
+      const desired = applicationScheduleDesiredStateRecord(request.definition, request.instance);
+      const digest = stableDigest(desired);
+      const prior = records.get(key);
+      if (prior?.state === 'active' && prior.revision === request.instance.revision) {
+        if (prior.digest !== digest) {
+          throw new Error(`Schedule ${key} revision ${request.instance.revision} conflicts with different desired state.`);
+        }
+        if (request.management) {
+          records.set(key, Object.freeze({
+            ...prior,
+            management: request.management,
+            projection: 'pending',
+            updatedAt: now().toISOString(),
+          }));
+          await persist();
+        }
+        return convergenceResult(request.definition.id, request.instance.id, request.instance.revision, 'unchanged', request.management);
+      }
+      if (prior?.state === 'active' && compareRevision(request.instance.revision, prior.revision) < 0) {
+        throw new Error(`Schedule ${key} revision ${request.instance.revision} is stale; current revision is ${prior.revision}.`);
+      }
+      records.set(key, Object.freeze({
+        schemaVersion: 'applik8s.scheduleState/v1alpha1',
+        definitionId: request.definition.id,
+        instanceId: request.instance.id,
+        revision: request.instance.revision,
+        digest,
+        state: 'active',
+        projection: 'pending',
+        desired,
+        ...(request.management ? { management: request.management } : {}),
+        updatedAt: now().toISOString(),
+      }));
+      await persist();
+      return convergenceResult(
+        request.definition.id,
+        request.instance.id,
+        request.instance.revision,
+        prior?.state === 'active' ? 'updated' : 'created',
+        request.management,
+      );
+    },
+    async remove(definitionId, instanceId, management) {
+      const key = scheduleStateKey(definitionId, instanceId);
+      const prior = records.get(key);
+      const revision = prior?.revision ?? management?.revision ?? 'removed';
+      records.set(key, Object.freeze({
+        schemaVersion: 'applik8s.scheduleState/v1alpha1',
+        definitionId,
+        instanceId,
+        revision,
+        digest: prior?.digest ?? '',
+        state: 'removed',
+        projection: 'pending',
+        ...(management ? { management } : {}),
+        updatedAt: now().toISOString(),
+      }));
+      await persist();
+      return convergenceResult(definitionId, instanceId, revision, prior?.state === 'active' ? 'removed' : 'unchanged', management);
+    },
+    async pending() {
+      return snapshot().filter((record) => record.projection === 'pending');
+    },
+    async markProjected(definitionId, instanceId, revision, state) {
+      const key = scheduleStateKey(definitionId, instanceId);
+      const prior = records.get(key);
+      if (!prior || prior.revision !== revision || prior.state !== state) {
+        if (prior) {
+          records.set(key, Object.freeze({ ...prior, projection: 'pending', updatedAt: now().toISOString() }));
+          await persist();
+        }
+        return false;
+      }
+      records.set(key, Object.freeze({ ...prior, projection: 'applied', updatedAt: now().toISOString() }));
+      await persist();
+      return true;
+    },
+  };
+}
+
+function scheduleStateKey(definitionId: string, instanceId: string): string {
+  return canonicalJsonV1String(
+    [definitionId, instanceId],
+    canonicalJsonCompatibleV1Policy,
+  );
+}
+
+function convergenceResult(
+  definitionId: string,
+  instanceId: string,
+  revision: string,
+  state: ApplicationScheduleConvergenceResult['state'],
+  management?: ApplicationScheduleManagementReceipt,
+): ApplicationScheduleConvergenceResult {
+  return {
+    definitionId,
+    instanceId,
+    revision,
+    state,
+    ...(management ? { management } : {}),
+  };
 }
 
 export interface ApplicationScheduleAdmissionRunner {
@@ -372,6 +565,7 @@ export function createApplicationSchedule<TInput extends object, TResult>(
       requirements: normalized.requirements,
     },
     scheduler: { interface: 'Scheduler' as const, nodeId: schedulerNodeId },
+    state: { interface: 'TransactionalDatabase' as const, nodeId: 'provider.TransactionalDatabase' },
     ...(providerBindings.length > 0 ? { providerBindings } : {}),
     handler: serialized,
     functionNative: true,
@@ -395,14 +589,34 @@ export function createApplicationSchedule<TInput extends object, TResult>(
       if (fixed) {
         throw new Error(`Fixed schedule ${normalized.id} cannot create dynamic instances.`);
       }
-      return applicationScheduleRuntime().reconcile({
-        definition: normalized,
-        instance: normalizeScheduleInstance(normalized, instance),
-        handler: runtimeHandler,
+      const normalizedInstance = normalizeScheduleInstance(normalized, instance);
+      const management = applicationScheduleManagementReceipt({
+        action: 'configure',
+        definitionId: normalized.id,
+        instanceId: normalizedInstance.id,
+        revision: normalizedInstance.revision,
+        admission: requireApplicationInvocationAdmission(),
       });
+      const converged = await applicationScheduleRuntime().reconcile({
+        definition: normalized,
+        instance: normalizedInstance,
+        handler: runtimeHandler,
+        management,
+      });
+      return { ...converged, management: converged.management ?? management };
     },
-    unschedule: (instanceId: string) =>
-      applicationScheduleRuntime().remove(normalized.id, nonEmptyId(instanceId, 'schedule instance id')),
+    unschedule: async (instanceId: string) => {
+      const normalizedInstanceId = nonEmptyId(instanceId, 'schedule instance id');
+      const management = applicationScheduleManagementReceipt({
+        action: 'remove',
+        definitionId: normalized.id,
+        instanceId: normalizedInstanceId,
+        revision: 'removed',
+        admission: requireApplicationInvocationAdmission(),
+      });
+      const converged = await applicationScheduleRuntime().remove(normalized.id, normalizedInstanceId, management);
+      return { ...converged, management: converged.management ?? management };
+    },
     [applicationScheduleHandlerSymbol]: runtimeHandler,
   }) as ApplicationScheduleHandle<TInput, TResult>;
 }
@@ -597,6 +811,117 @@ interface MemoryScheduleInstance {
   readonly digest: string;
   readonly anchorAt: string;
   readonly lastEvaluatedAt: string;
+  readonly management?: ApplicationScheduleManagementReceipt;
+}
+
+function applicationScheduleManagementReceipt(options: {
+  readonly action: 'configure' | 'remove';
+  readonly definitionId: string;
+  readonly instanceId: string;
+  readonly revision: string;
+  readonly admission: ApplicationAdmissionInvocationContextV1;
+}): ApplicationScheduleManagementReceipt {
+  const evidence = {
+    action: options.action,
+    definitionId: options.definitionId,
+    instanceId: options.instanceId,
+    revision: options.revision,
+    principalId: options.admission.principal.id,
+    authorityRevision: options.admission.authorityRevision,
+    trustedContextDigest: options.admission.trustedContext.digest,
+    correlationId: options.admission.correlationId,
+    ...(options.admission.causationId
+      ? { causationId: options.admission.causationId }
+      : {}),
+    ...(options.admission.authorizationReceipt
+      ? { authorizationReceiptId: options.admission.authorizationReceipt.id }
+      : {}),
+  };
+  return Object.freeze({
+    apiVersion: 'applik8s.scheduleManagement/v1alpha1',
+    id: `schedule-management:${stableDigest(evidence)}`,
+    ...evidence,
+    admittedAt: options.admission.principal.admittedAt,
+  });
+}
+
+/** Portable provider-independent record for one desired schedule instance. */
+export function applicationScheduleDesiredStateRecord<TInput extends object>(
+  definition: ApplicationScheduleDefinitionContract<TInput>,
+  instance: ApplicationScheduleInstance<TInput>,
+): JsonObject {
+  const overlapKey = definition.overlapBy
+    ? nonEmptyString(String(definition.overlapBy(instance.input)), `${definition.id} overlap key`)
+    : instance.id;
+  if (overlapKey.length > 512) {
+    throw new Error(`Schedule ${definition.id} overlap key exceeds the portable 512-character limit.`);
+  }
+  return {
+    schemaVersion: 'applik8s.scheduleDesiredState/v1alpha1',
+    overlapKey,
+    definition: {
+      id: definition.id,
+      configuration: definition.configuration,
+      ...(definition.cron ? { cron: definition.cron } : {}),
+      ...(definition.every ? { every: definition.every } : {}),
+      ...(definition.at ? { at: definition.at } : {}),
+      timezone: definition.timezone,
+      overlap: definition.overlap,
+      misfires: definition.misfires,
+      maximumLatenessSeconds: definition.maximumLatenessSeconds,
+      ...(definition.maximumCatchUp !== undefined
+        ? { maximumCatchUp: definition.maximumCatchUp }
+        : {}),
+      retry: definition.retry,
+      requirements: definition.requirements,
+    },
+    instance: instance as unknown as JsonObject,
+  };
+}
+
+/**
+ * Rehydrates the provider projection subset from canonical desired state. It
+ * deliberately does not reconstruct authoring schemas or callback functions.
+ */
+export function applicationScheduleProjectedDesiredState(
+  record: ApplicationScheduleStateRecord,
+): ApplicationScheduleProjectedDesiredState {
+  if (record.state !== 'active' || !record.desired) {
+    throw new Error(`Schedule ${record.definitionId}:${record.instanceId} has no active desired state to project.`);
+  }
+  if (stableDigest(record.desired) !== record.digest) {
+    throw new Error(`Schedule ${record.definitionId}:${record.instanceId} desired-state digest is invalid.`);
+  }
+  if (record.desired.schemaVersion !== 'applik8s.scheduleDesiredState/v1alpha1') {
+    throw new Error(`Schedule ${record.definitionId}:${record.instanceId} has an unsupported desired-state schema.`);
+  }
+  const definition = jsonObjectValue(record.desired.definition, 'schedule definition');
+  const instance = jsonObjectValue(record.desired.instance, 'schedule instance');
+  if (definition.id !== record.definitionId || instance.id !== record.instanceId || instance.revision !== record.revision) {
+    throw new Error(`Schedule ${record.definitionId}:${record.instanceId} desired-state identity does not match its authority row.`);
+  }
+  const overlapKey = nonEmptyString(String(record.desired.overlapKey ?? ''), `${record.definitionId} overlap key`);
+  return Object.freeze({
+    definition: definition as unknown as ApplicationScheduleDefinitionContract<object>,
+    instance: instance as unknown as ApplicationScheduleInstance<object>,
+    overlapKey,
+    ...(record.management ? { management: record.management } : {}),
+  });
+}
+
+function jsonObjectValue(value: unknown, label: string): JsonObject {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error(`${label} must be a JSON object.`);
+  }
+  return value as JsonObject;
+}
+
+/** Stable provider-independent digest for one desired schedule instance. */
+export function applicationScheduleDesiredStateDigest<TInput extends object>(
+  definition: ApplicationScheduleDefinitionContract<TInput>,
+  instance: ApplicationScheduleInstance<TInput>,
+): string {
+  return stableDigest(applicationScheduleDesiredStateRecord(definition, instance));
 }
 
 export interface DeterministicApplicationScheduleRuntime extends ApplicationScheduleRuntime {
@@ -869,13 +1194,14 @@ export function createDeterministicApplicationScheduleRuntime(options: {
     applicationId: options.applicationId,
     environmentId: options.environmentId,
     revision,
-    instances: [...instances.values()].map(({ key, definition, instance, digest, anchorAt, lastEvaluatedAt }) => ({
+    instances: [...instances.values()].map(({ key, definition, instance, digest, anchorAt, lastEvaluatedAt, management }) => ({
       key,
       definitionId: definition.id,
       instance,
       digest,
       anchorAt,
       lastEvaluatedAt,
+      ...(management ? { management } : {}),
     })).sort((left, right) => left.key.localeCompare(right.key)),
     occurrences: [...occurrences.values()].sort((left, right) => left.occurrenceId.localeCompare(right.occurrenceId)),
   });
@@ -928,10 +1254,10 @@ export function createDeterministicApplicationScheduleRuntime(options: {
     invoke,
     async reconcile(request) {
       const key = `${request.definition.id}:${request.instance.id}`;
-      const digest = stableDigest({
-        definition: request.definition.id,
-        instance: request.instance as unknown as JsonObject,
-      });
+      const digest = applicationScheduleDesiredStateDigest(
+        request.definition,
+        request.instance,
+      );
       const existing = instances.get(key);
       const restored = restoredInstances.get(key);
       const previous = existing ?? (restored && restored.definitionId === request.definition.id
@@ -945,13 +1271,20 @@ export function createDeterministicApplicationScheduleRuntime(options: {
         if (previous.digest !== digest) {
           throw new Error(`Schedule ${key} revision ${request.instance.revision} conflicts with different desired state.`);
         }
-        if (!existing) instances.set(key, previous);
+        const retained = request.management
+          ? { ...previous, management: request.management }
+          : previous;
+        if (!existing || retained !== previous) {
+          instances.set(key, retained);
+          if (request.management) await persist();
+        }
         restoredInstances.delete(key);
         return {
           definitionId: request.definition.id,
           instanceId: request.instance.id,
           revision: request.instance.revision,
           state: 'unchanged',
+          ...(request.management ? { management: request.management } : {}),
         };
       }
       if (previous && compareRevision(request.instance.revision, previous.instance.revision) < 0) {
@@ -966,6 +1299,7 @@ export function createDeterministicApplicationScheduleRuntime(options: {
         digest,
         anchorAt: previous?.anchorAt ?? reconciledAt,
         lastEvaluatedAt: previous?.lastEvaluatedAt ?? reconciledAt,
+        ...(request.management ? { management: request.management } : {}),
       });
       restoredInstances.delete(key);
       await persist();
@@ -974,9 +1308,10 @@ export function createDeterministicApplicationScheduleRuntime(options: {
         instanceId: request.instance.id,
         revision: request.instance.revision,
         state: previous ? 'updated' : 'created',
+        ...(request.management ? { management: request.management } : {}),
       };
     },
-    async remove(definitionId, instanceId) {
+    async remove(definitionId, instanceId, management) {
       const key = `${definitionId}:${instanceId}`;
       const existing = instances.get(key);
       const restored = restoredInstances.get(key);
@@ -988,6 +1323,7 @@ export function createDeterministicApplicationScheduleRuntime(options: {
         instanceId,
         revision: existing?.instance.revision ?? restored?.instance.revision ?? 'absent',
         state: existing || restored ? 'removed' : 'unchanged',
+        ...(management ? { management } : {}),
       };
     },
     async registerFixed(definition, handler) {

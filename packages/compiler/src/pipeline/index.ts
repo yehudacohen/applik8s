@@ -169,6 +169,7 @@ export interface DiscoveredApplicationGraph {
   readonly signalExports: readonly { readonly name: string; readonly signalId: string }[];
   readonly agentExports: readonly { readonly name: string; readonly agentName: string }[];
   readonly objectStoreExports: readonly { readonly name: string; readonly objectStoreName: string }[];
+  readonly durableExports: readonly { readonly name: string; readonly kind: 'workflow' | 'task'; readonly id: string }[];
   readonly scheduleExports: readonly { readonly name: string; readonly id: string }[];
   readonly lakehousePublicationExports: readonly { readonly name: string; readonly id: string }[];
   readonly actorExports: readonly { readonly name: string; readonly actorId: string }[];
@@ -177,6 +178,7 @@ export interface DiscoveredApplicationGraph {
 export async function discoverApplicationGraphWithExports(
   entrypoint: string,
   compositionName?: string,
+  options: { readonly hosted?: boolean } = {},
 ): Promise<Result<DiscoveredApplicationGraph>> {
   const discovered = await discoverEntrypointExports(entrypoint);
   if (!discovered.ok) return discovered;
@@ -194,6 +196,8 @@ export async function discoverApplicationGraphWithExports(
       signalIds: discovered.value.applicationSignals.map(
         (signal) => signal.signalId,
       ),
+      durables: discovered.value.applicationDurables,
+      ...(options.hosted === undefined ? {} : { hosted: options.hosted }),
       schedules: discovered.value.applicationSchedules.map((schedule) => schedule.graphNode),
       lakehousePublications: discovered.value.applicationLakehousePublications.map((publication) => publication.graphNode),
       actorIds: discovered.value.applicationActors.map((actor) => actor.actorId),
@@ -207,6 +211,7 @@ export async function discoverApplicationGraphWithExports(
         signalExports: discovered.value.applicationSignals,
         agentExports: discovered.value.applicationAgents,
         objectStoreExports: discovered.value.applicationObjectStores,
+        durableExports: discovered.value.applicationDurables,
         scheduleExports: discovered.value.applicationSchedules.map(({ name, id }) => ({ name, id })),
         lakehousePublicationExports: discovered.value.applicationLakehousePublications.map(({ name, graphNode }) => ({ name, id: graphNode.id })),
         actorExports: discovered.value.applicationActors,
@@ -328,28 +333,33 @@ export async function compileTypeKroComposition(request: CompileTypeKroCompositi
   const authoredApplicationGraph =
     applicationGraphForComposition(composition.value);
   const applicationGraph = authoredApplicationGraph
-    ? await applicationGraphWithInferredApplicationHost(
-        applicationGraphWithEntrypointPublicSurface(
+    ? applicationGraphWithEntrypointPublicSurface(
+        await applicationGraphWithInferredApplicationHost(
           authoredApplicationGraph,
-          {
-            operationIds: discovered.value.applicationOperations.map(
-              (operation) => operation.operationId,
-            ),
-            modelNames: discovered.value.applicationModels.map(
-              (model) => model.modelName,
-            ),
-            signalIds: discovered.value.applicationSignals.map(
-              (signal) => signal.signalId,
-            ),
-            schedules: discovered.value.applicationSchedules.map(
-              (schedule) => schedule.graphNode,
-            ),
-            lakehousePublications: discovered.value.applicationLakehousePublications.map(
-              (publication) => publication.graphNode,
-            ),
-          },
+          request.entrypoint,
         ),
-        request.entrypoint,
+        {
+          operationIds: discovered.value.applicationOperations.map(
+            (operation) => operation.operationId,
+          ),
+          modelNames: discovered.value.applicationModels.map(
+            (model) => model.modelName,
+          ),
+          signalIds: discovered.value.applicationSignals.map(
+            (signal) => signal.signalId,
+          ),
+          durables: discovered.value.applicationDurables,
+          hosted: true,
+          schedules: discovered.value.applicationSchedules.map(
+            (schedule) => schedule.graphNode,
+          ),
+          lakehousePublications: discovered.value.applicationLakehousePublications.map(
+            (publication) => publication.graphNode,
+          ),
+          actorIds: discovered.value.applicationActors.map(
+            (actor) => actor.actorId,
+          ),
+        },
       )
     : undefined;
   const applicationInstallation = applicationInstallationForComposition(composition.value);

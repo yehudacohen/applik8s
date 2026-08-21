@@ -271,6 +271,7 @@ describe('v0.8 canonical foundation', () => {
             requirements: { configuration: 'fixed', cardinality: 'bounded', precision: 'minute' },
           },
           scheduler: { interface: 'Scheduler', nodeId: 'provider.scheduler' },
+          state: { interface: 'TransactionalDatabase', nodeId: 'provider.TransactionalDatabase' },
           handler: { source: 'async () => undefined' },
           functionNative: true,
           sourceLocation: { file: 'src/schedules.ts', line: 4, column: 1 },

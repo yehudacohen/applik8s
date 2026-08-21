@@ -120,6 +120,10 @@ export function generatedApplicationFetchGatewayModules(
 		const provider = graph.nodes.find((candidate) => candidate.id === node.scheduler.nodeId);
 		return provider?.kind === "provider" && !provider.config?.qualification;
 	});
+	const workflowScheduleTargets = schedules.filter(
+		(schedule): schedule is ApplicationScheduleNode & { readonly target: NonNullable<ApplicationScheduleNode["target"]> } =>
+			schedule.target?.kind === "durableStart",
+	);
 	const actors = graph.nodes.filter(
 		(node): node is ApplicationActorNode => node.kind === "actor",
 	);
@@ -255,6 +259,12 @@ export function generatedApplicationFetchGatewayModules(
 			"import { createKubernetesApplicationScheduleRuntime, executeKubernetesApplicationScheduleAdmission } from '@applik8s/runtime-kubernetes';",
 			"import { AsyncLocalStorage } from 'node:async_hooks';",
 		);
+	if (workflowScheduleTargets.length > 0)
+		imports.push(
+			"import { readFile } from 'node:fs/promises';",
+			"import { validateApplicationAdmissionContextV1 } from '@applik8s/core';",
+			"import { createSignedEnvelopeCodec, signedEnvelopeUtf8Key, staticSignedEnvelopeKeyProvider } from '@applik8s/runtime';",
+		);
 	if (actors.length > 0)
 		imports.push(
 			"import { actor, actorState, createApplicationActor, executeApplicationActorAlarm, executeApplicationActorRealtime, installApplicationActorInvocationAuthorityResolver, installApplicationActorRuntimeResolver, validateApplicationAuthorizationReceipt, withApplicationActorTurnAuthority } from '@applik8s/applik8s';",
@@ -295,7 +305,23 @@ export function generatedApplicationFetchGatewayModules(
 		objectConfig(identity[0]?.config).identity,
 	);
 	const scheduleSources = schedules.map((scheduleNode) => {
-		const callback = graphCallback(files, imports, scheduleNode.id, "schedule", scheduleNode.handler);
+		const callback = scheduleNode.handler
+			? graphCallback(files, imports, scheduleNode.id, "schedule", scheduleNode.handler)
+			: scheduleNode.target?.kind === "durableStart"
+				? (() => {
+					const target = {
+						contract: `${scheduleNode.target.contract.name}.${scheduleNode.target.contract.version}`,
+						endpoint: applicationScheduleWorkflowGatewayEndpoint(graph, scheduleNode),
+					};
+					if (scheduleNode.target.input.kind === "literal") {
+						return `async (context) => startScheduledWorkflow(${JSON.stringify({
+							...target,
+							input: scheduleNode.target.input.value,
+						})}, context)`;
+					}
+					return `async (input, context) => startScheduledWorkflow({ ...${JSON.stringify(target)}, input }, context)`;
+				})()
+				: (() => { throw new Error(`Schedule ${scheduleNode.id} has neither a handler nor a supported execution target.`); })();
 		const definition = scheduleNode.definition;
 		const overlapBy = definition.overlapBy
 			? graphCallback(
@@ -677,6 +703,92 @@ function optionalEnv(name) {
   const value = process.env[name];
   return value && value.length > 0 ? value : undefined;
 }
+
+${workflowScheduleTargets.length > 0 ? `const scheduledWorkflowAdmission = createSignedEnvelopeCodec({
+  purpose: 'applik8s.workflow-gateway-admission/v1',
+  keys: staticSignedEnvelopeKeyProvider({
+    current: {
+      id: 'application-internal-operation',
+      key: signedEnvelopeUtf8Key(requiredEnv('APPLIK8S_INTERNAL_OPERATION_SECRET')),
+    },
+  }),
+  validatePayload: value => validateApplicationAdmissionContextV1(value),
+  maximumEncodedBytes: 32_768,
+  maximumLifetimeMs: 60_000,
+});
+
+async function scheduledWorkflowGatewayToken() {
+  const value = (await readFile(
+    requiredEnv('APPLIK8S_WORKFLOW_GATEWAY_TOKEN_FILE'),
+    'utf8',
+  )).trim();
+  if (!value) throw new Error('Workflow gateway service-account token is empty.');
+  return value;
+}
+
+async function startScheduledWorkflow(target, context) {
+  const idempotencyKey = context.occurrenceId;
+  let lastFailure;
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      const response = await fetch(
+        target.endpoint + '/v1/workflows/' + encodeURIComponent(target.contract) + '/runs',
+        {
+          method: 'POST',
+          headers: {
+            accept: 'application/json',
+            authorization: 'Bearer ' + await scheduledWorkflowGatewayToken(),
+            'content-type': 'application/json',
+            'idempotency-key': idempotencyKey,
+          },
+          body: JSON.stringify({
+            input: target.input,
+            metadata: {
+              idempotencyKey,
+              correlationId: context.admission.correlationId,
+              causationId: context.occurrenceId,
+              ...(context.admission.trace?.traceparent
+                ? { traceparent: context.admission.trace.traceparent }
+                : {}),
+              trustedContext: context.admission.trustedContext,
+            },
+            admission: await scheduledWorkflowAdmission.sign(
+              context.admission,
+              { expiresInMs: 60_000 },
+            ),
+          }),
+          signal: AbortSignal.any([context.signal, AbortSignal.timeout(15_000)]),
+        },
+      );
+      const value = await response.json().catch(() => ({}));
+      if (response.ok) {
+        if (!value || typeof value !== 'object' || typeof value.id !== 'string'
+          || typeof value.admittedAt !== 'string') {
+          throw new Error('Workflow gateway returned an invalid scheduled run reference.');
+        }
+        return Object.freeze({
+          workflow: target.contract,
+          run: value.id,
+          admittedAt: value.admittedAt,
+          occurrenceId: context.occurrenceId,
+        });
+      }
+      if (![502, 503, 504].includes(response.status) || attempt === 3) {
+        throw new Error(
+          'Scheduled workflow gateway request failed with HTTP ' + response.status
+            + ': ' + String(value?.error ?? 'request-failed'),
+        );
+      }
+      lastFailure = new Error('Scheduled workflow gateway temporarily unavailable.');
+    } catch (error) {
+      if (context.signal.aborted) throw context.signal.reason ?? error;
+      lastFailure = error;
+      if (attempt === 3) throw error;
+    }
+    await new Promise(resolve => setTimeout(resolve, Math.min(1_000, attempt * 100)));
+  }
+  throw lastFailure ?? new Error('Scheduled workflow gateway request failed.');
+}` : ''}
 
 ${actors.length > 0 || lakehousePublications.length > 0 ? `function runtimeJsonSchema(schema, exportName) {
   return { kind: 'jsonSchema', ref: { kind: 'jsonSchema', exportName }, schema };
@@ -1242,7 +1354,7 @@ const awsScheduleConfiguration = process.env.APPLIK8S_DEPLOYMENT_TARGET === 'aws
     }
   : undefined;
 const awsScheduleRuntime = awsScheduleConfiguration
-  ? createAwsApplicationScheduleRuntime(awsScheduleConfiguration, { admissionRunner: scheduleAdmissionRunner })
+  ? await createAwsApplicationScheduleRuntime(awsScheduleConfiguration, { admissionRunner: scheduleAdmissionRunner })
   : undefined;
 const disposeAwsScheduleRuntime = awsScheduleRuntime
   ? installApplicationScheduleRuntimeResolver(() => awsScheduleRuntime)
@@ -1267,6 +1379,7 @@ const kubernetesScheduleRuntime = process.env.APPLIK8S_DEPLOYMENT_TARGET === 'ku
       namespace: process.env.APPLIK8S_NAMESPACE ?? ${JSON.stringify(scheduleHost?.namespace ?? graph.metadata.namespace ?? 'default')},
       admissionEndpoint: ${JSON.stringify(scheduleHost?.admissionEndpoint ?? '')},
       authorizationSecretName: ${JSON.stringify(`${kubernetesName(graph.metadata.name)}-internal-operation`)},
+      databaseUrl: process.env.APPLIK8S_SCHEDULE_DATABASE_URL ?? '',
       admissionRunner: scheduleAdmissionRunner,
     })
   : undefined;
@@ -1965,6 +2078,48 @@ function applicationScheduleHost(graph: ApplicationGraph): { readonly namespace:
 		namespace,
 		admissionEndpoint: `http://${name}.${namespace}.svc:${port}/__applik8s/v1/internal/schedules/occurrences`,
 	};
+}
+
+function applicationScheduleWorkflowGatewayEndpoint(
+	graph: ApplicationGraph,
+	schedule: ApplicationScheduleNode,
+): string {
+	if (schedule.target?.kind !== "durableStart") {
+		throw new Error(`Schedule ${schedule.definition.id} has no workflow execution target.`);
+	}
+	const targetId = schedule.target.durable.nodeId;
+	const handlers = graph.nodes.filter(
+		(node) => schedule.target?.kind === "durableStart"
+			&& (schedule.target.durable.kind === "workflow"
+				? node.kind === "workflowHandler" && node.workflow.nodeId === targetId
+				: node.kind === "taskHandler" && node.task.nodeId === targetId),
+	);
+	const handlerIds = new Set(handlers.map(({ id }) => id));
+	const workers = graph.nodes.filter(
+		(node) => node.kind === "workflowWorker"
+			&& node.handlers.some((handler) => handlerIds.has(handler.nodeId)),
+	);
+	if (workers.length !== 1) {
+		throw new Error(
+			`Schedule ${schedule.definition.id} workflow target ${targetId} must resolve to exactly one workflow worker; found ${workers.length}.`,
+		);
+	}
+	const worker = workers[0];
+	if (!worker || worker.kind !== "workflowWorker") {
+		throw new Error(`Schedule ${schedule.definition.id} workflow target ${targetId} has no workflow worker.`);
+	}
+	const provider = graph.nodes.find((node) => node.id === worker.workflowEngine.nodeId);
+	const providerNamespace = provider?.kind === "provider"
+		? applicationGraphStringValue(provider.config?.namespace)
+		: undefined;
+	const namespace = providerNamespace
+		?? applicationScheduleHost(graph).namespace;
+	if (namespace !== applicationScheduleHost(graph).namespace) {
+		throw new Error(
+			`Schedule ${schedule.definition.id} runs in ${applicationScheduleHost(graph).namespace}, but workflow ${targetId} runs in ${namespace}; the private workflow gateway requires a shared namespace.`,
+		);
+	}
+	return `http://${kubernetesName(worker.name)}.${namespace}.svc:${worker.deployment.healthPort + 1}`;
 }
 
 function objectStoreGatewaySource(store: ApplicationObjectStoreNode): string {

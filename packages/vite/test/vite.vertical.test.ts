@@ -134,6 +134,21 @@ describe('framework-neutral Applik8s Vite integration', () => {
     expect(identitySource).toContain('/packages/vite/test/fixtures/identity');
   }, 60_000);
 
+  it('includes exported durable scheduling in the generated hosted gateway before the server artifact exists', async () => {
+    const plugin = adapter({ application: 'schedule-application.ts' });
+    plugin.config({}, { command: 'build' });
+    await plugin.configResolved({ root: fixtureRoot, build: { outDir: 'dist/server', ssr: true } });
+    await plugin.buildStart();
+    const source = await readFile(
+      join(fixtureRoot, '.applik8s/generated/gateway.generated.ts'),
+      'utf8',
+    );
+    expect(source).toContain('workflow-start.tenant.rebuild.v1');
+    expect(source).toContain('startScheduledWorkflow');
+    expect(source).toContain('tenant.rebuild.v1');
+    expect(source).toContain("purpose: 'applik8s.workflow-gateway-admission/v1'");
+  }, 60_000);
+
   it('emits immutable build metadata and rejects browser server-dependency capture', async () => {
     const plugin = adapter();
     await plugin.configResolved({ root: fixtureRoot, build: { outDir: 'dist/client' } });

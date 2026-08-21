@@ -215,6 +215,7 @@ export function applik8sVite(options: Applik8sViteOptions = {}): PluginOption {
     const discovered = await discoverApplicationGraphWithExports(
       application,
       options.compositionName,
+      { hosted: true },
     );
     if (!discovered.ok) throw new Error(`Applik8s Vite could not discover the ApplicationGraph: ${discovered.error.message}`);
     if (developmentServer) {

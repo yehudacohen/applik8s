@@ -15,8 +15,9 @@ import {
   SQSClient,
   type ReceiveMessageCommandOutput,
 } from '@aws-sdk/client-sqs'
-import { applicationScheduleImmediateInvocationAdmission, applicationScheduleOccurrenceId, type ApplicationScheduleAdmissionRunner } from '@applik8s/applik8s'
+import { applicationScheduleImmediateInvocationAdmission, applicationScheduleOccurrenceId, applicationScheduleProjectedDesiredState, type ApplicationScheduleAdmissionRunner, type ApplicationScheduleConvergenceResult, type ApplicationScheduleDefinitionContract, type ApplicationScheduleInstance, type ApplicationScheduleManagementReceipt, type ApplicationScheduleStateAuthority } from '@applik8s/applik8s'
 import { type ApplicationAdmissionInvocationContextV1, canonicalJsonCompatibleV1Policy, canonicalJsonV1String } from '@applik8s/core'
+import { createPostgresApplicationScheduleStateAuthority } from '@applik8s/runtime-postgres'
 import postgres, { type Sql } from 'postgres'
 
 export interface AwsApplicationScheduleAdmission {
@@ -56,27 +57,8 @@ export interface AwsApplicationScheduleRuntimeConfiguration {
   readonly databaseUrl: string
 }
 
-interface ScheduleDefinition {
-  readonly id: string
-  readonly configuration: 'fixed' | 'dynamic'
-  readonly timezone: string
-  readonly overlap: 'allow' | 'skip'
-  readonly overlapBy?: (input: object) => string
-  readonly retry: { readonly maxAttempts: number; readonly maximumAgeSeconds: number }
-  readonly requirements?: { readonly precision?: 'minute' | 'second' }
-}
-
-interface ScheduleInstance {
-  readonly id: string
-  readonly revision: string
-  readonly input: object
-  readonly cron?: string
-  readonly every?: string
-  readonly at?: string | Date
-  readonly timezone?: string
-  readonly enabled?: boolean
-  readonly deleteAfterCompletion?: boolean
-}
+type ScheduleDefinition = ApplicationScheduleDefinitionContract<object>
+type ScheduleInstance = ApplicationScheduleInstance<object>
 
 interface ScheduleHandlerRequest {
   readonly definition: ScheduleDefinition
@@ -89,6 +71,15 @@ interface ScheduleReconcileRequest {
   readonly definition: ScheduleDefinition
   readonly instance: ScheduleInstance
   readonly handler: (input: object, context: Record<string, unknown>) => unknown | Promise<unknown>
+  readonly management?: ApplicationScheduleManagementReceipt
+}
+
+export interface AwsApplicationScheduleRuntime {
+  invoke(request: ScheduleHandlerRequest): Promise<unknown>
+  reconcile(request: ScheduleReconcileRequest): Promise<ApplicationScheduleConvergenceResult>
+  remove(definitionId: string, instanceId: string, management?: ApplicationScheduleManagementReceipt): Promise<ApplicationScheduleConvergenceResult>
+  recover(): Promise<readonly ApplicationScheduleConvergenceResult[]>
+  close(): Promise<void>
 }
 
 /**
@@ -96,30 +87,95 @@ interface ScheduleReconcileRequest {
  * schedules are reconciled by CloudFormation; dynamic instances use the same
  * group, queue, role, admission envelope, and lifecycle identity.
  */
-export function createAwsApplicationScheduleRuntime(
+export async function createAwsApplicationScheduleRuntime(
   configuration: AwsApplicationScheduleRuntimeConfiguration,
   dependencies: {
     readonly scheduler?: SchedulerClient
     readonly admissionRunner?: ApplicationScheduleAdmissionRunner
+    readonly stateAuthority?: ApplicationScheduleStateAuthority
   } = {},
-): {
-  invoke(request: ScheduleHandlerRequest): Promise<unknown>
-  reconcile(request: ScheduleReconcileRequest): Promise<{
-    readonly definitionId: string
-    readonly instanceId: string
-    readonly revision: string
-    readonly state: 'created' | 'updated' | 'unchanged'
-  }>
-  remove(definitionId: string, instanceId: string): Promise<{
-    readonly definitionId: string
-    readonly instanceId: string
-    readonly revision: string
-    readonly state: 'removed' | 'unchanged'
-  }>
-} {
+): Promise<AwsApplicationScheduleRuntime> {
   validateConfiguration(configuration)
   const scheduler = dependencies.scheduler ?? new SchedulerClient(configuration.region ? { region: configuration.region } : {})
-  return {
+  const stateAuthority = dependencies.stateAuthority
+    ?? createPostgresApplicationScheduleStateAuthority({
+      databaseUrl: configuration.databaseUrl,
+      applicationId: configuration.applicationId,
+      environmentId: configuration.environmentId,
+    })
+  const ownsStateAuthority = !dependencies.stateAuthority
+  const project = async (request: {
+    readonly definition: ScheduleDefinition
+    readonly instance: ScheduleInstance
+    readonly overlapKey: string
+    readonly management?: ApplicationScheduleManagementReceipt
+  }): Promise<'created' | 'updated' | 'unchanged'> => {
+    const name = dynamicScheduleName(configuration, request.definition.id, request.instance.id)
+    const existing = await readSchedule(scheduler, configuration.groupName, name)
+    const target = {
+      Arn: configuration.queueArn,
+      RoleArn: configuration.executionRoleArn,
+      Input: JSON.stringify({
+        schemaVersion: 'applik8s.scheduleAdmission/v1alpha1',
+        definitionId: request.definition.id,
+        instanceId: request.instance.id,
+        input: request.instance.input,
+        overlap: request.definition.overlap,
+        overlapKey: request.overlapKey,
+        scheduledAt: '<aws.scheduler.scheduled-time>',
+        schedulerExecutionId: '<aws.scheduler.execution-id>',
+        schedulerAttempt: '<aws.scheduler.attempt-number>',
+      }),
+      RetryPolicy: {
+        MaximumEventAgeInSeconds: clamp(request.definition.retry.maximumAgeSeconds, 60, 86_400),
+        MaximumRetryAttempts: clamp(request.definition.retry.maxAttempts - 1, 0, 185),
+      },
+      DeadLetterConfig: { Arn: configuration.deadLetterQueueArn },
+    }
+    const desiredDigest = createHash('sha256').update(canonicalJsonV1String({
+      definitionId: request.definition.id,
+      instance: request.instance,
+      target,
+    }, canonicalJsonCompatibleV1Policy)).digest('hex')
+    const description = scheduleDescription(request.instance.revision, desiredDigest, request.management?.id)
+    const common = {
+      Name: name,
+      GroupName: configuration.groupName,
+      ScheduleExpression: awsScheduleExpression(request.instance, request.definition),
+      ScheduleExpressionTimezone: request.instance.timezone ?? request.definition.timezone,
+      FlexibleTimeWindow: { Mode: 'OFF' as const },
+      State: request.instance.enabled === false ? 'DISABLED' as const : 'ENABLED' as const,
+      Target: target,
+      Description: description,
+      ...(request.instance.at && request.instance.deleteAfterCompletion
+        ? { ActionAfterCompletion: 'DELETE' as const }
+        : {}),
+    }
+    if (existing) {
+      const ownership = parseScheduleDescription(existing.Description)
+      if (!ownership) {
+        throw new Error(`AWS Scheduler resource ${configuration.groupName}/${name} is not owned by Applik8s; refusing adoption.`)
+      }
+      if (ownership.revision === request.instance.revision && ownership.digest !== desiredDigest) {
+        throw new Error(`Schedule ${request.definition.id}/${request.instance.id} revision ${request.instance.revision} conflicts with different desired state.`)
+      }
+      if (compareRevision(request.instance.revision, ownership.revision) < 0) {
+        throw new Error(`Schedule ${request.definition.id}/${request.instance.id} revision ${request.instance.revision} is stale; current revision is ${ownership.revision}.`)
+      }
+      if (ownership.digest === desiredDigest && awsScheduleMatches(existing, common)) return 'unchanged'
+      await scheduler.send(new UpdateScheduleCommand({
+        ...common,
+        ClientToken: scheduleClientToken(configuration, request.definition.id, request.instance.id, request.instance.revision, desiredDigest),
+      }))
+      return 'updated'
+    }
+    await scheduler.send(new CreateScheduleCommand({
+      ...common,
+      ClientToken: scheduleClientToken(configuration, request.definition.id, request.instance.id, request.instance.revision, desiredDigest),
+    }))
+    return 'created'
+  }
+  const runtime: AwsApplicationScheduleRuntime = {
     async invoke(request) {
       const now = new Date().toISOString()
 			const occurrenceId = applicationScheduleOccurrenceId({
@@ -157,95 +213,72 @@ export function createAwsApplicationScheduleRuntime(
       if (request.definition.configuration !== 'dynamic') {
         throw new Error(`AWS Scheduler cannot reconcile a dynamic instance for fixed definition ${request.definition.id}.`)
       }
-      const name = dynamicScheduleName(configuration, request.definition.id, request.instance.id)
-      const existing = await readSchedule(scheduler, configuration.groupName, name)
-      const overlapKey = scheduleOverlapKey(request.definition, request.instance)
-      const target = {
-        Arn: configuration.queueArn,
-        RoleArn: configuration.executionRoleArn,
-        Input: JSON.stringify({
-          schemaVersion: 'applik8s.scheduleAdmission/v1alpha1',
-          definitionId: request.definition.id,
-          instanceId: request.instance.id,
-          input: request.instance.input,
-          overlap: request.definition.overlap,
-          overlapKey,
-          scheduledAt: '<aws.scheduler.scheduled-time>',
-          schedulerExecutionId: '<aws.scheduler.execution-id>',
-          schedulerAttempt: '<aws.scheduler.attempt-number>',
-        }),
-        RetryPolicy: {
-          MaximumEventAgeInSeconds: clamp(request.definition.retry.maximumAgeSeconds, 60, 86_400),
-          MaximumRetryAttempts: clamp(request.definition.retry.maxAttempts - 1, 0, 185),
-        },
-        DeadLetterConfig: { Arn: configuration.deadLetterQueueArn },
-      }
-      const desiredDigest = createHash('sha256').update(canonicalJsonV1String({
-        definitionId: request.definition.id,
+      const canonical = await stateAuthority.reconcile(request)
+      const state = await project({
+        definition: request.definition,
         instance: request.instance,
-        target,
-      }, canonicalJsonCompatibleV1Policy)).digest('hex')
-      const description = scheduleDescription(request.instance.revision, desiredDigest)
-      const common = {
-        Name: name,
-        GroupName: configuration.groupName,
-        ScheduleExpression: awsScheduleExpression(request.instance, request.definition),
-        ScheduleExpressionTimezone: request.instance.timezone ?? request.definition.timezone,
-        FlexibleTimeWindow: { Mode: 'OFF' as const },
-        State: request.instance.enabled === false ? 'DISABLED' as const : 'ENABLED' as const,
-        Target: target,
-        Description: description,
-        ...(request.instance.at && request.instance.deleteAfterCompletion
-          ? { ActionAfterCompletion: 'DELETE' as const }
-          : {}),
+        overlapKey: scheduleOverlapKey(request.definition, request.instance),
+        ...(request.management ? { management: request.management } : {}),
+      })
+      if (!await stateAuthority.markProjected(request.definition.id, request.instance.id, request.instance.revision, 'active')) {
+        await runtime.recover()
+        throw new Error(`Schedule ${request.definition.id}:${request.instance.id} revision ${request.instance.revision} was superseded during AWS projection.`)
       }
-      if (existing) {
-        const ownership = parseScheduleDescription(existing.Description)
-        if (!ownership) {
-          throw new Error(`AWS Scheduler resource ${configuration.groupName}/${name} is not owned by Applik8s; refusing adoption.`)
-        }
-        if (ownership.revision === request.instance.revision && ownership.digest !== desiredDigest) {
-          throw new Error(`Schedule ${request.definition.id}/${request.instance.id} revision ${request.instance.revision} conflicts with different desired state.`)
-        }
-        if (compareRevision(request.instance.revision, ownership.revision) < 0) {
-          throw new Error(`Schedule ${request.definition.id}/${request.instance.id} revision ${request.instance.revision} is stale; current revision is ${ownership.revision}.`)
-        }
-        if (ownership.digest === desiredDigest && awsScheduleMatches(existing, common)) {
-          return {
-            definitionId: request.definition.id,
-            instanceId: request.instance.id,
-            revision: request.instance.revision,
-            state: 'unchanged',
-          }
-        }
-        await scheduler.send(new UpdateScheduleCommand({
-          ...common,
-          ClientToken: scheduleClientToken(configuration, request.definition.id, request.instance.id, request.instance.revision, desiredDigest),
-        }))
-      } else {
-        await scheduler.send(new CreateScheduleCommand({
-          ...common,
-          ClientToken: scheduleClientToken(configuration, request.definition.id, request.instance.id, request.instance.revision, desiredDigest),
-        }))
-      }
-      return {
-        definitionId: request.definition.id,
-        instanceId: request.instance.id,
-        revision: request.instance.revision,
-        state: existing ? 'updated' : 'created',
-      }
+      return { ...canonical, state: state === 'unchanged' ? canonical.state : state }
     },
-    async remove(definitionId, instanceId) {
+    async remove(definitionId, instanceId, management) {
+      const canonical = await stateAuthority.remove(definitionId, instanceId, management)
       const name = dynamicScheduleName(configuration, definitionId, instanceId)
       try {
         await scheduler.send(new DeleteScheduleCommand({ Name: name, GroupName: configuration.groupName }))
-        return { definitionId, instanceId, revision: 'deleted', state: 'removed' }
+        if (!await stateAuthority.markProjected(definitionId, instanceId, canonical.revision, 'removed')) {
+          await runtime.recover()
+          throw new Error(`Schedule ${definitionId}:${instanceId} removal was superseded during AWS projection.`)
+        }
+        return { ...canonical, state: 'removed' }
       } catch (error) {
-        if (isNotFound(error)) return { definitionId, instanceId, revision: 'absent', state: 'unchanged' }
+        if (isNotFound(error)) {
+          if (!await stateAuthority.markProjected(definitionId, instanceId, canonical.revision, 'removed')) {
+            await runtime.recover()
+            throw new Error(`Schedule ${definitionId}:${instanceId} removal was superseded during AWS projection.`)
+          }
+          return canonical
+        }
         throw error
       }
     },
+    async recover() {
+      const recovered: ApplicationScheduleConvergenceResult[] = []
+      for (const record of await stateAuthority.pending()) {
+        if (record.state === 'active') {
+          const desired = applicationScheduleProjectedDesiredState(record)
+          const state = await project(desired)
+          if (!await stateAuthority.markProjected(record.definitionId, record.instanceId, record.revision, 'active')) {
+            throw new Error(`Schedule ${record.definitionId}:${record.instanceId} changed during AWS recovery.`)
+          }
+          recovered.push({ definitionId: record.definitionId, instanceId: record.instanceId, revision: record.revision, state, ...(record.management ? { management: record.management } : {}) })
+          continue
+        }
+        const name = dynamicScheduleName(configuration, record.definitionId, record.instanceId)
+        try {
+          await scheduler.send(new DeleteScheduleCommand({ Name: name, GroupName: configuration.groupName }))
+        } catch (error) {
+          if (!isNotFound(error)) throw error
+        }
+        if (!await stateAuthority.markProjected(record.definitionId, record.instanceId, record.revision, 'removed')) {
+          throw new Error(`Schedule ${record.definitionId}:${record.instanceId} changed during AWS recovery.`)
+        }
+        recovered.push({ definitionId: record.definitionId, instanceId: record.instanceId, revision: record.revision, state: 'removed', ...(record.management ? { management: record.management } : {}) })
+      }
+      return recovered
+    },
+    async close() {
+      if (ownsStateAuthority) await stateAuthority.close?.()
+      if (!dependencies.scheduler) scheduler.destroy()
+    },
   }
+  await runtime.recover()
+  return runtime
 }
 
 /**
@@ -604,8 +637,8 @@ function safeName(value: string, maximum: number): string {
   return value.toLowerCase().replace(/[^a-z0-9_-]+/gu, '-').replace(/^-+|-+$/gu, '').slice(0, maximum) || 'schedule'
 }
 
-function scheduleDescription(revision: string, digest: string): string {
-  return `applik8s.schedule/v1:${base64Url(JSON.stringify({ revision, digest }))}`
+function scheduleDescription(revision: string, digest: string, management?: string): string {
+  return `applik8s.schedule/v1:${base64Url(JSON.stringify({ revision, digest, ...(management ? { management } : {}) }))}`
 }
 
 function parseScheduleDescription(value: string | undefined): { readonly revision: string; readonly digest: string } | undefined {

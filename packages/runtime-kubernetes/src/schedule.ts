@@ -2,6 +2,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import {
   applicationScheduleOccurrenceId,
+  applicationScheduleProjectedDesiredState,
   applicationScheduleImmediateInvocationAdmission,
   executeApplicationScheduleAdmission,
   type ApplicationScheduleAdmission,
@@ -11,10 +12,13 @@ import {
   type ApplicationScheduleHandle,
   type ApplicationScheduleHandler,
   type ApplicationScheduleInstance,
+  type ApplicationScheduleManagementReceipt,
   type ApplicationScheduleOccurrenceReceipt,
   type ApplicationScheduleRuntime,
+  type ApplicationScheduleStateAuthority,
 } from '@applik8s/applik8s';
 import type { ApplicationAdmissionInvocationContextV1 } from '@applik8s/core';
+import { createPostgresApplicationScheduleStateAuthority } from '@applik8s/runtime-postgres';
 import type { BatchV1Api, KubeConfig, V1CronJob } from '@kubernetes/client-node';
 import postgres, { type Sql } from 'postgres';
 
@@ -27,20 +31,26 @@ export interface KubernetesApplicationScheduleRuntimeOptions {
   readonly admissionEndpoint: string;
   readonly authorizationSecretName: string;
   readonly authorizationSecretKey?: string;
+  readonly databaseUrl?: string;
   readonly kubeConfig?: KubeConfig;
   readonly image?: string;
   readonly admissionRunner?: ApplicationScheduleAdmissionRunner;
+  readonly stateAuthority?: ApplicationScheduleStateAuthority;
 }
 
 export interface KubernetesApplicationScheduleRuntime extends ApplicationScheduleRuntime {
   /** Removes an exact, already-authorized CronJob identity after one-time execution. */
   readonly removeResource: (name: string) => Promise<void>;
+  /** Replays canonical desired state left pending by an interrupted projection. */
+  readonly recover: () => Promise<readonly ApplicationScheduleConvergenceResult[]>;
+  readonly close: () => Promise<void>;
 }
 
 /**
  * Kubernetes implementation of the function-native dynamic Scheduler surface.
- * CronJobs are ordinary application-owned resources; PostgreSQL remains the
- * canonical occurrence and overlap authority at admission time.
+ * PostgreSQL owns desired state before provider projection and remains the
+ * canonical occurrence and overlap authority at admission time. CronJobs are
+ * restart-recoverable, application-owned projections of that state.
  */
 export async function createKubernetesApplicationScheduleRuntime(
   options: KubernetesApplicationScheduleRuntimeOptions,
@@ -55,7 +65,46 @@ export async function createKubernetesApplicationScheduleRuntime(
   }
   const api = kubeConfig.makeApiClient(kubernetes.BatchV1Api);
   const image = options.image ?? admissionImage;
-  return {
+  const stateAuthority = options.stateAuthority
+    ?? createPostgresApplicationScheduleStateAuthority({
+      databaseUrl: required(options.databaseUrl ?? '', 'Kubernetes schedule PostgreSQL state authority'),
+      applicationId: options.applicationId,
+      environmentId: options.environmentId,
+    });
+  const ownsStateAuthority = !options.stateAuthority;
+  const project = async (request: {
+    readonly definition: ApplicationScheduleDefinitionContract<object>;
+    readonly instance: ApplicationScheduleInstance<object>;
+    readonly management?: ApplicationScheduleManagementReceipt;
+  }): Promise<'created' | 'updated' | 'unchanged'> => {
+    const name = dynamicScheduleName(options, request.definition.id, request.instance.id);
+    const desired = cronJob({
+      options,
+      image,
+      name,
+      definition: request.definition,
+      instance: request.instance,
+      ...(request.management ? { management: request.management } : {}),
+    });
+    let existing: V1CronJob | undefined;
+    try {
+      existing = await api.readNamespacedCronJob({ namespace: options.namespace, name });
+    } catch (cause) {
+      if (statusCode(cause) !== 404) throw cause;
+    }
+    if (existing?.metadata?.annotations?.['applik8s.dev/schedule-revision'] === request.instance.revision
+      && kubernetesScheduleResourceMatches(existing, desired)) {
+      return 'unchanged';
+    }
+    if (existing) {
+      if (existing.metadata?.resourceVersion) desired.metadata!.resourceVersion = existing.metadata.resourceVersion;
+      await api.replaceNamespacedCronJob({ namespace: options.namespace, name, body: desired, fieldManager: 'applik8s-scheduler', fieldValidation: 'Strict' });
+      return 'updated';
+    }
+    await api.createNamespacedCronJob({ namespace: options.namespace, body: desired, fieldManager: 'applik8s-scheduler', fieldValidation: 'Strict' });
+    return 'created';
+  };
+  const runtime: KubernetesApplicationScheduleRuntime = {
     async invoke<TInput extends object, TResult>(request: {
       readonly definition: ApplicationScheduleDefinitionContract<TInput>;
       readonly input: TInput;
@@ -98,43 +147,38 @@ export async function createKubernetesApplicationScheduleRuntime(
       readonly definition: ApplicationScheduleDefinitionContract<TInput>;
       readonly instance: ApplicationScheduleInstance<TInput>;
       readonly handler: ApplicationScheduleHandler<TInput, unknown>;
+      readonly management?: ApplicationScheduleManagementReceipt;
     }): Promise<ApplicationScheduleConvergenceResult> {
       if (request.definition.configuration !== 'dynamic') {
         throw new Error(`Kubernetes Scheduler cannot reconcile dynamic instance state for fixed definition ${request.definition.id}.`);
       }
-      const name = dynamicScheduleName(options, request.definition.id, request.instance.id);
-      const desired = cronJob({
-        options,
-        image,
-        name,
-        definition: request.definition,
-        instance: request.instance,
+      const canonical = await stateAuthority.reconcile(request);
+      const projected = await project({
+        definition: request.definition as unknown as ApplicationScheduleDefinitionContract<object>,
+        instance: request.instance as ApplicationScheduleInstance<object>,
+        ...(request.management ? { management: request.management } : {}),
       });
-      let existing: V1CronJob | undefined;
-      try {
-        existing = await api.readNamespacedCronJob({ namespace: options.namespace, name });
-      } catch (cause) {
-        if (statusCode(cause) !== 404) throw cause;
+      if (!await stateAuthority.markProjected(request.definition.id, request.instance.id, request.instance.revision, 'active')) {
+        await runtime.recover();
+        throw new Error(`Schedule ${request.definition.id}:${request.instance.id} revision ${request.instance.revision} was superseded during Kubernetes projection.`);
       }
-      const desiredRevision = request.instance.revision;
-      if (existing?.metadata?.annotations?.['applik8s.dev/schedule-revision'] === desiredRevision
-        && kubernetesScheduleResourceMatches(existing, desired)) {
-        return { definitionId: request.definition.id, instanceId: request.instance.id, revision: desiredRevision, state: 'unchanged' };
-      }
-      if (existing) {
-        if (existing.metadata?.resourceVersion) desired.metadata!.resourceVersion = existing.metadata.resourceVersion;
-        await api.replaceNamespacedCronJob({ namespace: options.namespace, name, body: desired, fieldManager: 'applik8s-scheduler', fieldValidation: 'Strict' });
-      } else {
-        await api.createNamespacedCronJob({ namespace: options.namespace, body: desired, fieldManager: 'applik8s-scheduler', fieldValidation: 'Strict' });
-      }
-      return { definitionId: request.definition.id, instanceId: request.instance.id, revision: desiredRevision, state: existing ? 'updated' : 'created' };
+      return {
+        ...canonical,
+        state: projected === 'unchanged' ? canonical.state : projected,
+      };
     },
-    async remove(definitionId, instanceId) {
+    async remove(definitionId, instanceId, management) {
+      const canonical = await stateAuthority.remove(definitionId, instanceId, management);
       const name = dynamicScheduleName(options, definitionId, instanceId);
       const removed = await deleteKubernetesScheduleResource(api, options.namespace, name);
-      return removed
-        ? { definitionId, instanceId, revision: 'deleted', state: 'removed' }
-        : { definitionId, instanceId, revision: 'absent', state: 'unchanged' };
+      if (!await stateAuthority.markProjected(definitionId, instanceId, canonical.revision, 'removed')) {
+        await runtime.recover();
+        throw new Error(`Schedule ${definitionId}:${instanceId} removal was superseded during Kubernetes projection.`);
+      }
+      return {
+        ...canonical,
+        state: removed || canonical.state === 'removed' ? 'removed' : 'unchanged',
+      };
     },
     async removeResource(name) {
       if (!/^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/u.test(name) || name.length > 253) {
@@ -142,7 +186,48 @@ export async function createKubernetesApplicationScheduleRuntime(
       }
       await deleteKubernetesScheduleResource(api, options.namespace, name);
     },
+    async recover() {
+      const recovered: ApplicationScheduleConvergenceResult[] = [];
+      for (const record of await stateAuthority.pending()) {
+        if (record.state === 'active') {
+          const desired = applicationScheduleProjectedDesiredState(record);
+          const state = await project(desired);
+          if (!await stateAuthority.markProjected(record.definitionId, record.instanceId, record.revision, 'active')) {
+            throw new Error(`Schedule ${record.definitionId}:${record.instanceId} changed during Kubernetes recovery.`);
+          }
+          recovered.push({
+            definitionId: record.definitionId,
+            instanceId: record.instanceId,
+            revision: record.revision,
+            state,
+            ...(record.management ? { management: record.management } : {}),
+          });
+          continue;
+        }
+        const removed = await deleteKubernetesScheduleResource(
+          api,
+          options.namespace,
+          dynamicScheduleName(options, record.definitionId, record.instanceId),
+        );
+        if (!await stateAuthority.markProjected(record.definitionId, record.instanceId, record.revision, 'removed')) {
+          throw new Error(`Schedule ${record.definitionId}:${record.instanceId} changed during Kubernetes recovery.`);
+        }
+        recovered.push({
+          definitionId: record.definitionId,
+          instanceId: record.instanceId,
+          revision: record.revision,
+          state: removed ? 'removed' : 'unchanged',
+          ...(record.management ? { management: record.management } : {}),
+        });
+      }
+      return recovered;
+    },
+    async close() {
+      if (ownsStateAuthority) await stateAuthority.close?.();
+    },
   };
+  await runtime.recover();
+  return runtime;
 }
 
 async function deleteKubernetesScheduleResource(
@@ -282,11 +367,16 @@ export class KubernetesScheduleOccurrenceBusyError extends Error {
 }
 
 function cronJob<TInput extends object>(request: {
-  readonly options: KubernetesApplicationScheduleRuntimeOptions;
+  readonly options: Pick<
+    KubernetesApplicationScheduleRuntimeOptions,
+    'applicationId' | 'environmentId' | 'namespace' | 'admissionEndpoint'
+      | 'authorizationSecretName' | 'authorizationSecretKey'
+  >;
   readonly image: string;
   readonly name: string;
   readonly definition: ApplicationScheduleDefinitionContract<TInput>;
   readonly instance: ApplicationScheduleInstance<TInput>;
+  readonly management?: ApplicationScheduleManagementReceipt;
 }): V1CronJob {
   const labels = {
     'app.kubernetes.io/name': request.options.applicationId,
@@ -303,6 +393,11 @@ function cronJob<TInput extends object>(request: {
       annotations: {
         'applik8s.dev/schedule-revision': request.instance.revision,
         'applik8s.dev/schedule-definition': request.definition.id,
+        ...(request.management ? {
+          'applik8s.dev/schedule-management-receipt': request.management.id,
+          'applik8s.dev/schedule-management-principal': request.management.principalId,
+          'applik8s.dev/schedule-management-authority': request.management.authorityRevision,
+        } : {}),
       },
     },
     spec: {
@@ -486,8 +581,11 @@ function safeLabel(value: string): string {
 }
 
 function validateOptions(options: KubernetesApplicationScheduleRuntimeOptions): void {
+  if (!options.stateAuthority && !options.databaseUrl?.trim()) {
+    throw new Error('Kubernetes Scheduler runtime databaseUrl is required when no stateAuthority is injected.');
+  }
   for (const [name, value] of Object.entries(options)) {
-    if (name === 'kubeConfig' || name === 'authorizationSecretKey' || name === 'image') continue;
+    if (name === 'kubeConfig' || name === 'authorizationSecretKey' || name === 'image' || name === 'admissionRunner' || name === 'stateAuthority' || name === 'databaseUrl') continue;
     if (typeof value !== 'string' || !value.trim()) throw new Error(`Kubernetes Scheduler runtime ${name} is required.`);
   }
 }

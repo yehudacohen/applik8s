@@ -36,6 +36,7 @@
   "dependencies": {
     "@applik8s/applik8s": "0.8.0",
     "@applik8s/core": "0.8.0",
+    "@applik8s/runtime-postgres": "0.8.0",
     "@applik8s/sdk": "0.8.0",
     "@aws-sdk/client-athena": "3.1113.0",
     "@aws-sdk/client-glue": "3.1113.0",

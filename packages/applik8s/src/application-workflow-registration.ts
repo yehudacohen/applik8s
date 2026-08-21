@@ -1,7 +1,7 @@
 // typecast-file-boundary: Workflow registration preserves generic schema inference while normalizing validated graph metadata at the registration boundary.
 import { createHash } from 'node:crypto';
 import { type ApplicationOperationLike, getApplicationOperationContract, isApplicationBoundOperation, isApplicationScopedOperation } from '@applik8s/client';
-import { type ApplicationOperationInvocationDependency, type ApplicationProviderRuntimeContract, type ApplicationResourceRef, applicationOperationId } from '@applik8s/core';
+import { type ApplicationOperationInvocationDependency, type ApplicationProviderRuntimeContract, type ApplicationResourceRef, applicationOperationId, canonicalJsonV1String } from '@applik8s/core';
 import {
   expandApplicationCallbackDependencies,
   serializeApplicationCallback,
@@ -11,9 +11,13 @@ import { addApplicationGraphEdge, addApplicationGraphNode, addApplicationProvide
 import type { ApplicationObjectStoreBinding } from './application-object-storage.js';
 import { applicationProjectionRebuildTarget } from './application-projection-binding.js';
 import { applicationCallableProviderDependencies } from './application-provider-dependencies.js';
-import { type ApplicationProviderSelectionValue, type ApplicationProviderToken, type ApplicationWorkflowEngineProvider, applicationProviderImplementationName, applicationWorkflowEngineImplementation, isApplicationProviderSelection } from './application-providers.js';
+import { type ApplicationProviderSelectionValue, type ApplicationProviderToken, type ApplicationWorkflowEngineProvider, Scheduler, applicationProviderImplementationName, applicationWorkflowEngineImplementation, isApplicationProviderSelection } from './application-providers.js';
 import { applicationQueryBindingForOperation } from './application-queries.js';
 import type { ApplicationSignalDefinition } from './application-signals.js';
+import {
+  createApplicationSchedule,
+  type ApplicationScheduleHandle,
+} from './application-schedule.js';
 import { applicationTypeKroGraphValue, applicationTypeKroString } from './application-typekro-values.js';
 import type { ApplicationWorkflowTaskDefinition as TaskDefinition } from './application-workflow-internal.js';
 import { declaredSchema, durableContract, functionExpression, requiredSchema, schemaRecord, validateMessage, workflowHandlerSerialization } from './application-workflow-serialization.js';
@@ -45,6 +49,7 @@ import {
   type ApplicationWorkflowRun,
   type ApplicationWorkflowScheduleSpec,
   applicationWorkflowRuntime,
+  withApplicationWorkflowCausalPrincipal,
 } from './workflow-runtime.js';
 
 
@@ -507,7 +512,7 @@ function contractForCandidate(candidate: unknown): ReturnType<typeof getApplicat
 function applicationActorOperation(
   contract: ReturnType<typeof getApplicationOperationContract>,
 ): { readonly actorId: string; readonly member: string } | undefined {
-  if (!contract || contract.transport !== 'runtime') return undefined;
+  if (contract?.transport !== 'runtime') return undefined;
   const match = /^applik8s:\/\/actors\/([^/]+)\/operations\/([^/]+)$/u.exec(contract.id);
   return match?.[1] && match[2] ? { actorId: match[1], member: match[2] } : undefined;
 }
@@ -858,7 +863,17 @@ export function registerApplicationWorkflow<
     name: definition.id,
     stability: 'stable',
     contract: { ...durableContract(definition), signals: Object.keys(definition.signals).sort().map((name) => ({ name, schema: declaredSchema(requiredSchema(schemaRecord(definition.signals), name, `${definition.id}.signals`), `${definition.id}.signals.${name}`) })) },
-    triggers: { crons: (options.crons ?? []).map((cron, index) => ({ name: kubernetesName(cron.name ?? `${definition.name}-${index + 1}`), expression: validCron(cron.expression), input: jsonObject(cron.input) })) },
+    triggers: {
+      crons: (options.crons ?? []).map((cron, index) => ({
+        name: kubernetesName(cron.name ?? `${definition.name}-${index + 1}`),
+        expression: validCron(cron.expression),
+        input: jsonObject(validateMessage(
+          definition.input,
+          cron.input,
+          `${definition.id}.crons.${cron.name ?? index + 1}.input`,
+        )),
+      })),
+    },
   });
   addApplicationGraphNode(state, {
     id: handlerNodeId,
@@ -1052,7 +1067,112 @@ function workflowEngineResources(engine: ApplicationWorkflowEngineProvider): App
   ];
 }
 
+function durableStartSchedule<TInput extends object>(
+  kind: 'workflow' | 'task',
+  definition: { readonly id: string; readonly input: import('@applik8s/sdk').SchemaInput<TInput> },
+  engine: () => ApplicationWorkflowEngineProvider,
+): ApplicationScheduleHandle<TInput, { readonly id: string }> {
+  return createApplicationSchedule<TInput, { readonly id: string }>(
+    Scheduler,
+    {
+      id: `${kind}-start.${definition.id}`,
+      input: definition.input,
+      overlap: 'allow',
+      misfires: 'latest',
+      maximumLateness: '5m',
+      retry: { maxAttempts: 4, maximumAge: '6h' },
+      requirements: {
+        configuration: 'dynamic',
+        cardinality: 'high',
+        precision: 'second',
+      },
+    },
+    async (input, context) => {
+      const metadata = withApplicationWorkflowCausalPrincipal({
+        idempotencyKey: context.occurrenceId,
+        correlationId: context.admission.correlationId,
+        causationId: context.admission.causationId ?? context.occurrenceId,
+        ...(context.admission.trace?.traceparent
+          ? { traceparent: context.admission.trace.traceparent }
+          : {}),
+        trustedContext: context.admission.trustedContext,
+      }, context.admission.principal);
+      const run = await (await applicationWorkflowRuntime(engine())).start(
+        definition.id,
+        input,
+        metadata,
+      );
+      return { id: run.id };
+    },
+  ) as ApplicationScheduleHandle<TInput, { readonly id: string }>;
+}
+
+function durableStartInstanceId(
+  kind: 'workflow' | 'task',
+  contract: string,
+  input: object,
+  at: Date,
+  idempotencyKey?: string,
+): string {
+  const digest = createHash('sha256')
+    .update(canonicalJsonV1String({
+      kind,
+      contract,
+      input,
+      at: at.toISOString(),
+      ...(idempotencyKey ? { idempotencyKey } : {}),
+    }))
+    .digest('hex');
+  return `start-${digest}`;
+}
+
+function durableScheduleInstanceId(
+  kind: 'workflow' | 'task',
+  contract: string,
+  scheduleId: string,
+): string {
+  return `recurring-${createHash('sha256')
+    .update(`${kind}\0${contract}\0${scheduleId}`)
+    .digest('hex')}`;
+}
+
+async function reconcileDurableStartSchedule<TInput extends object>(options: {
+  readonly kind: 'workflow' | 'task';
+  readonly definition: { readonly id: string; readonly input: import('@applik8s/sdk').SchemaInput<TInput> };
+  readonly handle: ApplicationScheduleHandle<TInput, { readonly id: string }>;
+  readonly schedule: ApplicationWorkflowScheduleSpec<TInput>;
+}): Promise<import('./workflow-runtime.js').ApplicationWorkflowScheduleResult> {
+  const input = validateMessage(
+    options.definition.input,
+    options.schedule.input,
+    `${options.definition.id}.input`,
+  );
+  const instanceId = durableScheduleInstanceId(
+    options.kind,
+    options.definition.id,
+    options.schedule.id,
+  );
+  const converged = options.schedule.enabled
+    ? await options.handle.schedule({
+        id: instanceId,
+        revision: options.schedule.revision,
+        cron: options.schedule.expression,
+        input,
+      })
+    : await options.handle.unschedule(instanceId);
+  return {
+    id: options.schedule.id,
+    revision: options.schedule.revision,
+    state: converged.state === 'removed'
+      ? 'removed'
+      : converged.state === 'unchanged'
+        ? 'unchanged'
+        : 'created',
+  };
+}
+
 function taskBinding<TInput extends object, TOutput extends object, TErrors extends Readonly<Record<string, object>>>(definition: TaskDefinition<TInput, TOutput, TErrors>, options: ApplicationTaskOptions<TInput>, engine: () => ApplicationWorkflowEngineProvider): ApplicationTaskBinding<TInput, TOutput, TErrors> {
+  const startSchedule = durableStartSchedule('task', definition, engine);
   const invocationMetadata = (input: TInput, metadata: ApplicationWorkflowInvocationMetadata | undefined): ApplicationWorkflowInvocationMetadata | undefined => {
     if (metadata?.idempotencyKey || !options.idempotencyKey) return metadata;
     return { ...metadata, idempotencyKey: options.idempotencyKey(input) };
@@ -1077,19 +1197,32 @@ function taskBinding<TInput extends object, TOutput extends object, TErrors exte
       return applicationWorkflowRun(providerRun, definition.id, definition.version);
     },
     async schedule(input: TInput, at: Date, metadata?: ApplicationWorkflowInvocationMetadata) {
-      return (await applicationWorkflowRuntime(engine())).schedule(definition.id, validateMessage(definition.input, input, `${definition.id}.input`), at, invocationMetadata(input, metadata));
+      const validInput = validateMessage(definition.input, input, `${definition.id}.input`);
+      const invocation = invocationMetadata(validInput, metadata);
+      const id = durableStartInstanceId('task', definition.id, validInput, at, invocation?.idempotencyKey);
+      await startSchedule.schedule({
+        id,
+        revision: createHash('sha256').update(`${id}\0${at.toISOString()}`).digest('hex'),
+        at,
+        input: validInput,
+        deleteAfterCompletion: true,
+      });
+      return { id };
     },
     async reconcile(schedule: ApplicationWorkflowScheduleSpec<TInput>, metadata?: ApplicationWorkflowInvocationMetadata) {
-      return (await applicationWorkflowRuntime(engine())).reconcileSchedule(
-        definition.id,
-        { ...schedule, input: validateMessage(definition.input, schedule.input, `${definition.id}.input`) },
-        invocationMetadata(schedule.input, metadata),
-      );
+      void metadata;
+      return reconcileDurableStartSchedule({
+        kind: 'task',
+        definition,
+        handle: startSchedule,
+        schedule,
+      });
     },
   }) as ApplicationTaskBinding<TInput, TOutput, TErrors>;
 }
 
 function workflowBinding<TInput extends object, TOutput extends object, TErrors extends Readonly<Record<string, object>>, TSignals extends Readonly<Record<string, object>>>(definition: WorkflowDefinition<TInput, TOutput, TErrors, TSignals>, engine: () => ApplicationWorkflowEngineProvider): ApplicationWorkflowBinding<TInput, TOutput, TErrors, TSignals> {
+  const startSchedule = durableStartSchedule('workflow', definition, engine);
   const run = async (input: TInput, metadata?: ApplicationWorkflowInvocationMetadata, result?: ApplicationWorkflowResultOptions) =>
     (await applicationWorkflowRuntime(engine())).run(
       definition.id,
@@ -1110,14 +1243,25 @@ function workflowBinding<TInput extends object, TOutput extends object, TErrors 
       return applicationWorkflowRun(providerRun, definition.id, definition.version);
     },
     async schedule(input: TInput, at: Date, metadata?: ApplicationWorkflowInvocationMetadata) {
-      return (await applicationWorkflowRuntime(engine())).schedule(definition.id, validateMessage(definition.input, input, `${definition.id}.input`), at, metadata);
+      const validInput = validateMessage(definition.input, input, `${definition.id}.input`);
+      const id = durableStartInstanceId('workflow', definition.id, validInput, at, metadata?.idempotencyKey);
+      await startSchedule.schedule({
+        id,
+        revision: createHash('sha256').update(`${id}\0${at.toISOString()}`).digest('hex'),
+        at,
+        input: validInput,
+        deleteAfterCompletion: true,
+      });
+      return { id };
     },
     async reconcile(schedule: ApplicationWorkflowScheduleSpec<TInput>, metadata?: ApplicationWorkflowInvocationMetadata) {
-      return (await applicationWorkflowRuntime(engine())).reconcileSchedule(
-        definition.id,
-        { ...schedule, input: validateMessage(definition.input, schedule.input, `${definition.id}.input`) },
-        metadata,
-      );
+      void metadata;
+      return reconcileDurableStartSchedule({
+        kind: 'workflow',
+        definition,
+        handle: startSchedule,
+        schedule,
+      });
     },
     async signal<TName extends [keyof TSignals] extends [never] ? string : keyof TSignals & string>(
       runId: string,

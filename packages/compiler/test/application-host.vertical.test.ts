@@ -297,14 +297,23 @@ describe('generated ApplicationHost', () => {
       nodes: [...base.nodes, {
         id: 'provider.scheduler', kind: 'provider', name: 'Scheduler', stability: 'stable', interface: 'Scheduler', implementation: 'target-selected', config: {},
       }, {
+        id: 'provider.database', kind: 'provider', name: 'PrimaryDatabase', stability: 'stable', interface: 'TransactionalDatabase', implementation: 'postgres',
+        config: { transactionalDatabase: { kind: 'postgres', clusterName: 'guestbook-db', namespace: 'guestbook' } },
+      }, {
+        id: 'provider.TransactionalDatabase', kind: 'provider', name: 'TransactionalDatabase', stability: 'stable', interface: 'TransactionalDatabase', implementation: 'application-provider-selection',
+        config: { aliasOf: 'provider.database' },
+      }, {
         id: 'model.Note', kind: 'model', name: 'Note', stability: 'stable', native: 'relational', source: { kind: 'drizzle', tableName: 'notes', exportName: 'notes' },
         schema: { kind: 'declared', runtime: 'arktype', jsonSchema: { type: 'object' } }, relationships: [], operations: [], events: [],
         database: { interface: 'TransactionalDatabase', nodeId: 'provider.database' },
         runtime: { connectionEnvName: 'DATABASE_URL', database: 'app', secretName: 'guestbook-db-app', secretKey: 'uri' },
       }, {
-        id: 'schedule.cleanup.v1', kind: 'schedule', name: 'cleanup.v1', stability: 'stable', scheduler: { interface: 'Scheduler', nodeId: 'provider.scheduler' },
+        id: 'schedule.cleanup.v1', kind: 'schedule', name: 'cleanup.v1', stability: 'stable', scheduler: { interface: 'Scheduler', nodeId: 'provider.scheduler' }, state: { interface: 'TransactionalDatabase', nodeId: 'provider.TransactionalDatabase' },
         definition: { id: 'cleanup.v1', configuration: 'fixed', every: '15m', timezone: 'UTC', overlap: 'skip', misfires: 'latest', maximumLatenessSeconds: 300, retry: { maxAttempts: 4, maximumAgeSeconds: 3600 }, requirements: { configuration: 'fixed', cardinality: 'bounded', precision: 'minute' } },
-        handler: { source: 'async () => undefined' }, functionNative: true,
+        target: {
+          kind: 'durableStart', durable: { kind: 'workflow', nodeId: 'workflow.cleanup.v1' },
+          contract: { name: 'cleanup', version: 'v1', input: { jsonSchema: { type: 'object' } } }, input: { kind: 'literal', value: {} },
+        }, functionNative: true,
       }] as ApplicationGraph['nodes'],
     };
     const resources = await emitGeneratedApplicationHost({ graph, entrypoint: join(root, 'src/application.ts'), outDir: join(root, 'host') });
@@ -314,12 +323,40 @@ describe('generated ApplicationHost', () => {
       spec: { schedule: '*/15 * * * *', timeZone: 'UTC', concurrencyPolicy: 'Forbid', jobTemplate: { spec: { backoffLimit: 3 } } },
     });
     expect(JSON.stringify(resources.find(({ kind }) => kind === 'CronJob'))).toContain('/__applik8s/v1/internal/schedules/occurrences');
-    expect(resources.find(({ kind }) => kind === 'Deployment')).toMatchObject({
-      spec: { template: { spec: { containers: [expect.objectContaining({ env: expect.arrayContaining([
-        { name: 'APPLIK8S_INTERNAL_OPERATION_SECRET', valueFrom: { secretKeyRef: { name: 'guestbook-internal-operation', key: 'key' } } },
-        { name: 'APPLIK8S_SCHEDULE_DATABASE_URL', valueFrom: { secretKeyRef: { name: 'guestbook-db-app', key: 'uri', optional: false } } },
-      ]) })] } } },
-    });
+    const applicationHostDeployment = resources.find(
+      (resource) => resource.kind === 'Deployment'
+        && (resource.metadata.labels as Readonly<Record<string, unknown>> | undefined)?.['app.kubernetes.io/component'] === 'application-host',
+    ) as {
+      readonly spec?: { readonly template?: { readonly spec?: unknown } };
+    } | undefined;
+    const podSpec = applicationHostDeployment?.spec?.template?.spec as {
+      readonly containers?: readonly {
+        readonly env?: readonly unknown[];
+        readonly volumeMounts?: readonly unknown[];
+      }[];
+      readonly volumes?: readonly unknown[];
+    } | undefined;
+    expect(podSpec?.containers?.[0]?.env).toEqual(expect.arrayContaining([
+      { name: 'APPLIK8S_INTERNAL_OPERATION_SECRET', valueFrom: { secretKeyRef: { name: 'guestbook-internal-operation', key: 'key' } } },
+      { name: 'APPLIK8S_SCHEDULE_DATABASE_URL', valueFrom: { secretKeyRef: { name: 'guestbook-db-app', key: 'uri', optional: false } } },
+      { name: 'APPLIK8S_WORKFLOW_GATEWAY_TOKEN_FILE', value: '/var/run/secrets/applik8s/workflow-gateway/token' },
+    ]));
+    expect(podSpec?.containers?.[0]?.volumeMounts).toEqual([{
+      name: 'workflow-gateway-token',
+      mountPath: '/var/run/secrets/applik8s/workflow-gateway',
+      readOnly: true,
+    }]);
+    expect(podSpec?.volumes).toEqual([expect.objectContaining({
+      name: 'workflow-gateway-token',
+      projected: expect.objectContaining({
+        sources: [expect.objectContaining({
+          serviceAccountToken: expect.objectContaining({
+            path: 'token',
+            audience: 'https://kubernetes.default.svc',
+          }),
+        })],
+      }),
+    })]);
     expect(resources.find(({ kind }) => kind === 'Role')).toMatchObject({
       rules: expect.arrayContaining([{ apiGroups: ['batch'], resources: ['cronjobs'], verbs: ['create', 'delete', 'get', 'update'] }]),
     });

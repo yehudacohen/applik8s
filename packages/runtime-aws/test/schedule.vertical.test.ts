@@ -7,6 +7,7 @@ import {
   UpdateScheduleCommand,
 } from '@aws-sdk/client-scheduler';
 import { describe, expect, it } from 'vitest';
+import { createDeterministicApplicationScheduleStateAuthority } from '@applik8s/applik8s';
 import { createAwsApplicationScheduleRuntime } from '../src/schedule.js';
 
 const configuration = {
@@ -27,15 +28,18 @@ const definition = {
   timezone: 'UTC',
   overlap: 'skip' as const,
   overlapBy: (input: object) => String(Reflect.get(input, 'sourceId')),
+  misfires: 'latest' as const,
+  maximumLatenessSeconds: 300,
   retry: { maxAttempts: 4, maximumAgeSeconds: 3_600 },
-  requirements: { precision: 'minute' as const },
+  requirements: { configuration: 'dynamic' as const, cardinality: 'bounded' as const, precision: 'minute' as const },
 };
 
 describe('AWS function-native Scheduler', () => {
   it('converges revisions, repairs drift, and retains a dead-letter target', async () => {
     const client = new MemorySchedulerClient();
-    const runtime = createAwsApplicationScheduleRuntime(configuration, {
+    const runtime = await createAwsApplicationScheduleRuntime(configuration, {
       scheduler: client as unknown as SchedulerClient,
+      stateAuthority: createDeterministicApplicationScheduleStateAuthority(),
     });
     const request = {
       definition,
@@ -89,8 +93,9 @@ describe('AWS function-native Scheduler', () => {
     client.current = {
       Name: 'external', GroupName: configuration.groupName, Description: 'owned elsewhere',
     };
-    const runtime = createAwsApplicationScheduleRuntime(configuration, {
+    const runtime = await createAwsApplicationScheduleRuntime(configuration, {
       scheduler: client as unknown as SchedulerClient,
+      stateAuthority: createDeterministicApplicationScheduleStateAuthority(),
     });
     await expect(runtime.reconcile({
       definition,
@@ -99,11 +104,36 @@ describe('AWS function-native Scheduler', () => {
     })).rejects.toThrow(/not owned by Applik8s/u);
     expect(client.mutations).toEqual([]);
   });
+
+  it('replays canonical state after an interrupted EventBridge projection', async () => {
+    const client = new MemorySchedulerClient();
+    client.failNextMutation = true;
+    const authority = createDeterministicApplicationScheduleStateAuthority();
+    const runtime = await createAwsApplicationScheduleRuntime(configuration, {
+      scheduler: client as unknown as SchedulerClient,
+      stateAuthority: authority,
+    });
+    const request = {
+      definition,
+      instance: { id: 'tenant-a', revision: '1', input: { sourceId: 'source-a' }, every: '5m' },
+      handler: async () => undefined,
+    };
+    await expect(runtime.reconcile(request)).rejects.toThrow(/simulated provider interruption/u);
+    expect(await authority.pending()).toHaveLength(1);
+
+    await createAwsApplicationScheduleRuntime(configuration, {
+      scheduler: client as unknown as SchedulerClient,
+      stateAuthority: authority,
+    });
+    expect(await authority.pending()).toHaveLength(0);
+    expect(client.current?.ScheduleExpression).toBe('rate(5 minutes)');
+  });
 });
 
 class MemorySchedulerClient {
   current: Record<string, unknown> | undefined;
   readonly mutations: string[] = [];
+  failNextMutation = false;
 
   async send(command: object): Promise<Record<string, unknown>> {
     if (command instanceof GetScheduleCommand) {
@@ -111,6 +141,10 @@ class MemorySchedulerClient {
       return structuredClone(this.current);
     }
     if (command instanceof CreateScheduleCommand || command instanceof UpdateScheduleCommand) {
+      if (this.failNextMutation) {
+        this.failNextMutation = false;
+        throw new Error('simulated provider interruption');
+      }
       this.mutations.push(command.constructor.name);
       this.current = structuredClone(command.input) as unknown as Record<string, unknown>;
       return {};

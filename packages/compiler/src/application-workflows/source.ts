@@ -1058,6 +1058,7 @@ async function handleGatewayRequest(request, response) {
       if (
         sourceAdmission.operation.transport !== 'http'
         && sourceAdmission.operation.transport !== 'webhook'
+        && sourceAdmission.operation.transport !== 'schedule'
       ) {
         return gatewayJson(response, 403, { error: 'admission-transport-invalid' });
       }

@@ -904,12 +904,32 @@ export interface ApplicationScheduleNode extends ApplicationGraphNodeBase<'sched
     };
   };
   readonly scheduler: ApplicationProviderRef<'Scheduler'>;
+  /** Canonical desired-state, management-receipt, and occurrence authority. */
+  readonly state: ApplicationProviderRef<'TransactionalDatabase'>;
   /** Function-native provider operations captured directly by the scheduled closure. */
   readonly providerBindings?: readonly {
     readonly identifier: string;
     readonly provider: ApplicationProviderRef;
   }[];
-  readonly handler: ApplicationSerializedCallbackContract;
+  /**
+   * Ordinary function-native schedule execution. Exactly one of `handler` or
+   * `target` is present. Targeted schedules deliberately keep the downstream
+   * execution family's identity and durability outside Scheduler ownership.
+   */
+  readonly handler?: ApplicationSerializedCallbackContract;
+  /** Compiler-owned lowering for a schedule occurrence that admits a workflow run. */
+  readonly target?: {
+    readonly kind: 'durableStart';
+    readonly durable: ApplicationGraphNodeRef & { readonly kind: 'workflow' | 'task' };
+    readonly contract: {
+      readonly name: string;
+      readonly version: string;
+      readonly input: ApplicationMessageContractSchema;
+    };
+    readonly input:
+      | { readonly kind: 'literal'; readonly value: JsonObject }
+      | { readonly kind: 'scheduleInput' };
+  };
   readonly functionNative: true;
 }
 
@@ -3586,8 +3606,31 @@ function applicationScheduleNodeStructureDiagnostics(
   if (!node.definition.timezone.trim()) {
     messages.push(`Application schedule ${node.id} must declare a timezone.`);
   }
-  if (!node.handler.source.trim()) {
+  if (node.state.interface !== 'TransactionalDatabase' || !node.state.nodeId.trim()) {
+    messages.push(`Application schedule ${node.id} must declare one canonical TransactionalDatabase state authority.`);
+  }
+  if (Boolean(node.handler) === Boolean(node.target)) {
+    messages.push(`Application schedule ${node.id} must declare exactly one serializable handler or execution target.`);
+  }
+  if (node.handler && !node.handler.source.trim()) {
     messages.push(`Application schedule ${node.id} must retain a serializable handler closure.`);
+  }
+  if (node.target?.kind === 'durableStart') {
+    if (!node.target.contract.name.trim() || !node.target.contract.version.trim()) {
+      messages.push(`Application schedule ${node.id} durable target must retain a versioned contract identity.`);
+    }
+    if (
+      node.target.input.kind === 'literal'
+      && node.definition.configuration !== 'fixed'
+    ) {
+      messages.push(`Application schedule ${node.id} with literal durable input must be a fixed schedule definition.`);
+    }
+    if (
+      node.target.input.kind === 'scheduleInput'
+      && node.definition.configuration !== 'dynamic'
+    ) {
+      messages.push(`Application schedule ${node.id} with instance durable input must be a dynamic schedule definition.`);
+    }
   }
   if (!Number.isSafeInteger(node.definition.retry.maxAttempts) || node.definition.retry.maxAttempts < 1) {
     messages.push(`Application schedule ${node.id} retry maxAttempts must be a positive integer.`);

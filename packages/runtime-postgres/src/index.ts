@@ -11,6 +11,9 @@ import {
 } from 'drizzle-orm/postgres-js';
 import postgres from 'postgres';
 
+export { createPostgresApplicationScheduleStateAuthority } from './schedule-state.js';
+export type { PostgresApplicationScheduleStateAuthority, PostgresApplicationScheduleStateAuthorityOptions } from './schedule-state.js';
+
 export function createApplicationPostgresSql(url: string, options: ApplicationPostgresClientOptions = {}): ApplicationPostgresSql {
   const native = postgres(url, options);
   return createApplicationPostgresSqlFromNative(native);

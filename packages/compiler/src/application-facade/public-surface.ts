@@ -1,5 +1,6 @@
 // typecast-file-boundary: provider callback metadata is decoded from the
 // validated ApplicationGraph before constructing one compiler-owned gateway.
+import { createHash } from 'node:crypto';
 import {
   type ApplicationGatewayNode,
   type ApplicationGraph,
@@ -10,6 +11,7 @@ import {
   type ApplicationScheduleNode,
   type ApplicationSerializedCallbackContract,
   applicationOperationId,
+  canonicalJsonV1String,
   normalizeApplicationGraph,
 } from '@applik8s/core';
 
@@ -20,6 +22,13 @@ export interface ApplicationEntrypointPublicSurface {
   readonly operationIds: readonly string[];
   readonly modelNames: readonly string[];
   readonly signalIds?: readonly string[];
+  /** Durable handles explicitly exported from the application entrypoint. */
+  readonly durables?: readonly {
+    readonly kind: 'workflow' | 'task';
+    readonly id: string;
+  }[];
+  /** The selected artifact contains the generated application control boundary. */
+  readonly hosted?: boolean;
   readonly schedules?: readonly ApplicationScheduleNode[];
   readonly lakehousePublications?: readonly ApplicationLakehousePublicationNode[];
   /** Exported actor definitions are the only actor protocols publishable to browsers. */
@@ -39,9 +48,17 @@ export function applicationGraphWithEntrypointPublicSurface(
   graph: ApplicationGraph,
   surface: ApplicationEntrypointPublicSurface,
 ): ApplicationGraph {
-  const graphWithSchedules = applicationGraphWithEntrypointSchedules(
+  const graphWithWorkflowSchedules = applicationGraphWithWorkflowSchedules(
     graph,
-    surface.schedules ?? [],
+    surface.durables ?? [],
+    surface.hosted === true,
+  );
+  const graphWithSchedules = applicationGraphWithEntrypointSchedules(
+    graphWithWorkflowSchedules.graph,
+    [
+      ...graphWithWorkflowSchedules.schedules,
+      ...(surface.schedules ?? []),
+    ],
   );
   const graphWithPublications = applicationGraphWithEntrypointLakehousePublications(
     graphWithSchedules,
@@ -205,6 +222,173 @@ export function applicationGraphWithEntrypointPublicSurface(
   });
 }
 
+/**
+ * Compatibility lowering for the pre-v0.8 `workflow(..., { crons })` surface.
+ * The resulting occurrence is scheduler-owned, but the target run remains
+ * workflow-owned and is admitted through the same private workflow gateway as
+ * an ordinary typed invocation. The authored trigger is cleared from the
+ * compiled workflow node so a provider cannot register a second native cron.
+ */
+function applicationGraphWithWorkflowSchedules(
+  graph: ApplicationGraph,
+  exported: readonly { readonly kind: 'workflow' | 'task'; readonly id: string }[],
+  hosted: boolean,
+): {
+  readonly graph: ApplicationGraph;
+  readonly schedules: readonly ApplicationScheduleNode[];
+} {
+  // Dynamic workflow/task schedule configuration is currently served by the
+  // generated ApplicationHost control boundary. Do not add an undeployable
+  // Scheduler requirement to workflow-only graphs: those continue through the
+  // compatibility runtime until the dedicated non-web schedule control worker
+  // is lowered. The compile pipeline infers the host before this pass for Start
+  // applications, so the supported golden path still receives the shared graph.
+  const hasApplicationHost = graph.nodes.some(
+    (node) => node.kind === 'provider' && node.interface === 'ApplicationHost',
+  );
+  if (!hosted && !hasApplicationHost) return { graph, schedules: [] };
+  const durableNodeIds = reachableDurableScheduleTargets(graph, exported);
+  const schedules: ApplicationScheduleNode[] = [];
+  const nodes = graph.nodes.map((node) => {
+    if (node.kind !== 'workflow' && node.kind !== 'task') return node;
+    if (durableNodeIds.has(node.id)) {
+      const durableStartIdentity = durableStartScheduleIdentity(node.kind, node.id);
+      schedules.push({
+        id: `schedule.${durableStartIdentity}`,
+        kind: 'schedule',
+        name: durableStartIdentity,
+        stability: 'stable',
+        definition: {
+          id: durableStartIdentity,
+          configuration: 'dynamic',
+          input: node.contract.input,
+          timezone: 'UTC',
+          overlap: 'allow',
+          misfires: 'latest',
+          maximumLatenessSeconds: 300,
+          retry: { maxAttempts: 4, maximumAgeSeconds: 21_600 },
+          requirements: {
+            configuration: 'dynamic',
+            cardinality: 'high',
+            precision: 'second',
+          },
+        },
+        scheduler: { interface: 'Scheduler', nodeId: 'provider.scheduler' },
+        state: { interface: 'TransactionalDatabase', nodeId: 'provider.TransactionalDatabase' },
+        target: {
+          kind: 'durableStart',
+          durable: { kind: node.kind, nodeId: node.id },
+          contract: {
+            name: node.contract.name,
+            version: node.contract.version,
+            input: node.contract.input,
+          },
+          input: { kind: 'scheduleInput' },
+        },
+        functionNative: true,
+      });
+    }
+    if (node.kind === 'task') return node;
+    const identities = new Set<string>();
+    for (const cron of node.triggers.crons) {
+      const identity = workflowCronScheduleIdentity(node.id, cron.name);
+      if (identities.has(identity)) {
+        throw new Error(
+          `Workflow ${node.contract.name}.${node.contract.version} declares duplicate cron identity ${cron.name}.`,
+        );
+      }
+      identities.add(identity);
+      schedules.push({
+        id: `schedule.${identity}`,
+        kind: 'schedule',
+        name: identity,
+        stability: 'stable',
+        definition: {
+          id: identity,
+          configuration: 'fixed',
+          cron: cron.expression,
+          timezone: 'UTC',
+          overlap: 'skip',
+          misfires: 'latest',
+          maximumLatenessSeconds: 300,
+          retry: { maxAttempts: 4, maximumAgeSeconds: 21_600 },
+          requirements: {
+            configuration: 'fixed',
+            cardinality: 'bounded',
+            precision: 'minute',
+          },
+        },
+        scheduler: { interface: 'Scheduler', nodeId: 'provider.scheduler' },
+        state: { interface: 'TransactionalDatabase', nodeId: 'provider.TransactionalDatabase' },
+        target: {
+          kind: 'durableStart',
+          durable: { kind: 'workflow', nodeId: node.id },
+          contract: {
+            name: node.contract.name,
+            version: node.contract.version,
+            input: node.contract.input,
+          },
+          input: { kind: 'literal', value: cron.input },
+        },
+        functionNative: true,
+      });
+    }
+    return node.triggers.crons.length > 0
+      ? { ...node, triggers: { crons: [] } }
+      : node;
+  });
+  return {
+    graph: schedules.length > 0 ? normalizeApplicationGraph({ ...graph, nodes }) : graph,
+    schedules,
+  };
+}
+
+function reachableDurableScheduleTargets(
+  graph: ApplicationGraph,
+  exported: readonly { readonly kind: 'workflow' | 'task'; readonly id: string }[],
+): ReadonlySet<string> {
+  const targets = new Set(
+    exported.map(({ kind, id }) => `${kind}.${id}`),
+  );
+  for (const node of graph.nodes) {
+    if (node.kind === 'server') {
+      for (const route of node.routes) {
+        for (const binding of route.functionNative?.workflowBindings ?? []) {
+          targets.add(binding.target.nodeId);
+        }
+      }
+    }
+    if (node.kind === 'streamProcessor') {
+      for (const binding of node.schedules ?? []) {
+        targets.add(binding.target.nodeId);
+      }
+    }
+  }
+  return targets;
+}
+
+function durableStartScheduleIdentity(kind: 'workflow' | 'task', nodeId: string): string {
+  const prefix = `${kind}.`;
+  const durableId = nodeId.startsWith(prefix)
+    ? nodeId.slice(prefix.length)
+    : nodeId;
+  return `${kind}-start.${durableId}`;
+}
+
+function workflowCronScheduleIdentity(workflowNodeId: string, cronName: string): string {
+  const readable = `${workflowNodeId}.${cronName}`
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/gu, '-')
+    .replace(/^[^a-z]+/u, '')
+    .replace(/[-._]+$/u, '')
+    .slice(0, 72);
+  const digest = createHash('sha256')
+    .update(`${workflowNodeId}\0${cronName}`)
+    .digest('hex')
+    .slice(0, 12);
+  return `workflow-cron.${readable || 'workflow'}.${digest}`;
+}
+
 function publishExportedActors(
   graph: ApplicationGraph,
   actorIds: ReadonlySet<string>,
@@ -331,7 +515,12 @@ function applicationGraphWithEntrypointSchedules(
   const providerRequirements = [...graph.providerRequirements];
   const providerBindings = [...graph.providerBindings];
   const edges = [...graph.edges];
-  for (const schedule of [...schedules].sort((left, right) => left.id.localeCompare(right.id))) {
+  for (const authoredSchedule of [...schedules].sort((left, right) => left.id.localeCompare(right.id))) {
+    const schedule = resolveScheduleStateAuthority(
+      graph,
+      nodes,
+      authoredSchedule,
+    );
     const existing = nodes.get(schedule.id);
     if (existing && JSON.stringify(existing) !== JSON.stringify(schedule)) {
       throw new Error(`Entrypoint schedule ${schedule.definition.id} conflicts with application graph node ${schedule.id}.`);
@@ -367,6 +556,15 @@ function applicationGraphWithEntrypointSchedules(
     } else if (provider.kind !== 'provider' || provider.interface !== 'Scheduler') {
       throw new Error(`Entrypoint schedule ${schedule.definition.id} requires Scheduler provider ${schedule.scheduler.nodeId}.`);
     }
+    const stateProvider = nodes.get(schedule.state.nodeId);
+    if (!stateProvider) {
+      throw new Error(
+        `Entrypoint schedule ${schedule.definition.id} uses missing state authority ${schedule.state.nodeId}.`,
+      );
+    }
+    if (stateProvider.kind !== 'provider' || stateProvider.interface !== 'TransactionalDatabase') {
+      throw new Error(`Entrypoint schedule ${schedule.definition.id} requires TransactionalDatabase state authority ${schedule.state.nodeId}.`);
+    }
     for (const binding of schedule.providerBindings ?? []) {
       const callableProvider = nodes.get(binding.provider.nodeId);
       if (
@@ -387,6 +585,35 @@ function applicationGraphWithEntrypointSchedules(
           from: { nodeId: callableProvider.id },
           to: { nodeId: schedule.id },
           relationship: 'provides',
+        });
+      }
+    }
+    if (schedule.target?.kind === 'durableStart') {
+      const durable = nodes.get(schedule.target.durable.nodeId);
+      if (durable?.kind !== schedule.target.durable.kind) {
+        throw new Error(
+          `Schedule ${schedule.definition.id} references missing ${schedule.target.durable.kind} target ${schedule.target.durable.nodeId}.`,
+        );
+      }
+      if (
+        durable.contract.name !== schedule.target.contract.name
+        || durable.contract.version !== schedule.target.contract.version
+        || canonicalJsonV1String(durable.contract.input)
+          !== canonicalJsonV1String(schedule.target.contract.input)
+      ) {
+        throw new Error(
+          `Schedule ${schedule.definition.id} durable target contract does not match ${durable.id}.`,
+        );
+      }
+      if (!edges.some(
+        (edge) => edge.from.nodeId === schedule.id
+          && edge.to.nodeId === durable.id
+          && edge.relationship === 'dependsOn',
+      )) {
+        edges.push({
+          from: { nodeId: schedule.id },
+          to: { nodeId: durable.id },
+          relationship: 'dependsOn',
         });
       }
     }
@@ -417,6 +644,33 @@ function applicationGraphWithEntrypointSchedules(
         relationship: 'dependsOn',
       });
     }
+    const stateRequirementId = `requirement.${schedule.id}.state`;
+    if (!requirementIds.has(stateRequirementId)) {
+      requirementIds.add(stateRequirementId);
+      providerRequirements.push({
+        id: stateRequirementId,
+        interface: 'TransactionalDatabase',
+        consumer: { nodeId: schedule.id },
+        provider: schedule.state,
+        required: true,
+        purpose: 'transactionalDatabase',
+        diagnostics: {
+          missing: `Schedule ${schedule.definition.id} requires one canonical TransactionalDatabase state authority.`,
+          ambiguous: `Schedule ${schedule.definition.id} has multiple TransactionalDatabase state authorities; bind exactly one.`,
+        },
+      });
+      providerBindings.push({
+        requirement: stateRequirementId,
+        provider: schedule.state,
+        generatedResources: [],
+        runtime: {},
+      });
+      edges.push({
+        from: { nodeId: schedule.state.nodeId },
+        to: { nodeId: schedule.id },
+        relationship: 'provides',
+      });
+    }
   }
   return normalizeApplicationGraph({
     ...graph,
@@ -425,6 +679,86 @@ function applicationGraphWithEntrypointSchedules(
     providerRequirements,
     providerBindings,
   });
+}
+
+function resolveScheduleStateAuthority(
+  graph: ApplicationGraph,
+  nodes: Map<string, ApplicationGraph['nodes'][number]>,
+  schedule: ApplicationScheduleNode,
+): ApplicationScheduleNode {
+  const existing = nodes.get(schedule.state.nodeId);
+  if (existing) return schedule;
+  if (schedule.state.nodeId !== 'provider.TransactionalDatabase') {
+    return schedule;
+  }
+
+  const databases = [...nodes.values()].filter(
+    (node): node is ApplicationProviderNode<'TransactionalDatabase'> =>
+      node.kind === 'provider'
+      && node.interface === 'TransactionalDatabase',
+  );
+  const unqualified = databases.filter(
+    (provider) => !record(provider.config?.qualification).name,
+  );
+  const modelAuthorities = new Set(
+    [...nodes.values()].flatMap((node) =>
+      node.kind === 'model' && node.database
+        ? [node.database.nodeId]
+        : []),
+  );
+  const modelAuthority = modelAuthorities.size === 1
+    ? databases.find((provider) => provider.id === [...modelAuthorities][0])
+    : undefined;
+  const selected = unqualified.length === 1
+    ? unqualified[0]
+    : databases.length === 1
+      ? databases[0]
+      : modelAuthority;
+  if (selected) {
+    return {
+      ...schedule,
+      state: { interface: 'TransactionalDatabase', nodeId: selected.id },
+    };
+  }
+  if (databases.length > 1) {
+    throw new Error(
+      `Schedule ${schedule.definition.id} has ${databases.length} TransactionalDatabase candidates and no unqualified application default. Bind the intended authority with app.defaults({ database }).`,
+    );
+  }
+
+  const namespace = graph.metadata.namespace ?? 'default';
+  const clusterName = `${graph.metadata.name}-schedule-state`;
+  nodes.set(schedule.state.nodeId, {
+    id: schedule.state.nodeId,
+    kind: 'provider',
+    name: 'TransactionalDatabase',
+    stability: 'stable',
+    interface: 'TransactionalDatabase',
+    implementation: 'postgres',
+    contract: {
+      apiVersion: 'applik8s.provider/v1alpha1',
+      interface: 'TransactionalDatabase',
+      version: 'v1alpha1',
+      requirements: ['applicationRuntimeBinding'],
+      guarantees: ['sameDomainTransactions', 'durableResults', 'transactionalOutbox'],
+      implementation: { name: 'postgres' },
+      surface: 'stablePublicApi',
+      support: 'implemented',
+      diagnostics: [],
+    },
+    config: {
+      transactionalDatabase: {
+        kind: 'postgres',
+        name: clusterName,
+        clusterName,
+        namespace,
+        database: graph.metadata.name,
+        ownership: 'application-graph',
+        lifecycle: { deletionPolicy: 'delete' },
+      },
+    },
+  });
+  return schedule;
 }
 
 function publishExportedHttpRoutes(

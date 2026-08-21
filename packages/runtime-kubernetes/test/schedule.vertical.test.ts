@@ -1,5 +1,6 @@
 // typecast-file-boundary: Test doubles intentionally implement partial Kubernetes SDK APIs and custom-object payloads.
 import type { KubeConfig, V1CronJob } from '@kubernetes/client-node';
+import { createDeterministicApplicationScheduleStateAuthority } from '@applik8s/applik8s';
 import { describe, expect, test } from 'vitest';
 import {
   createKubernetesApplicationScheduleRuntime,
@@ -74,6 +75,7 @@ describe('Kubernetes function-native Scheduler', () => {
     const runtime = await createKubernetesApplicationScheduleRuntime({
       applicationId: 'demo', environmentId: 'test', namespace: 'demo',
       admissionEndpoint: 'http://demo.demo.svc/internal', authorizationSecretName: 'demo-internal-operation', kubeConfig,
+      stateAuthority: createDeterministicApplicationScheduleStateAuthority(),
     });
     const definition = {
       id: 'digest.v1', configuration: 'dynamic' as const, timezone: 'UTC', overlap: 'skip' as const, misfires: 'latest' as const, maximumLatenessSeconds: 300,
@@ -90,5 +92,54 @@ describe('Kubernetes function-native Scheduler', () => {
     expect([...resources.values()][0]?.spec?.schedule).toBe('0 */2 * * *');
     expect((await runtime.remove(definition.id, 'tenant-a')).state).toBe('removed');
     expect((await runtime.remove(definition.id, 'tenant-a')).state).toBe('unchanged');
+  });
+
+  test('replays canonical state after provider projection is interrupted', async () => {
+    const resources = new Map<string, V1CronJob>();
+    let failCreate = true;
+    const api = {
+      async readNamespacedCronJob({ name }: { readonly name: string }) {
+        const value = resources.get(name);
+        if (!value) throw { code: 404 };
+        return structuredClone(value);
+      },
+      async createNamespacedCronJob({ body }: { readonly body: V1CronJob }) {
+        if (failCreate) {
+          failCreate = false;
+          throw new Error('simulated provider interruption');
+        }
+        resources.set(body.metadata!.name!, structuredClone({
+          ...body,
+          metadata: { ...body.metadata, uid: 'recovered-uid' },
+        }));
+        return body;
+      },
+      async replaceNamespacedCronJob() { throw new Error('unexpected replace'); },
+      async deleteNamespacedCronJob() { return {}; },
+    };
+    const authority = createDeterministicApplicationScheduleStateAuthority();
+    const options = {
+      applicationId: 'demo', environmentId: 'test', namespace: 'demo',
+      admissionEndpoint: 'http://demo.demo.svc/internal', authorizationSecretName: 'demo-internal-operation',
+      kubeConfig: { makeApiClient: () => api } as unknown as KubeConfig,
+      stateAuthority: authority,
+    };
+    const definition = {
+      id: 'recover.v1', configuration: 'dynamic' as const, timezone: 'UTC', overlap: 'skip' as const,
+      misfires: 'latest' as const, maximumLatenessSeconds: 300,
+      retry: { maxAttempts: 3, maximumAgeSeconds: 1800 },
+      requirements: { configuration: 'dynamic' as const, cardinality: 'bounded' as const, precision: 'minute' as const },
+    };
+    const runtime = await createKubernetesApplicationScheduleRuntime(options);
+    await expect(runtime.reconcile({
+      definition,
+      instance: { id: 'tenant-a', revision: '1', input: {}, every: '1h' },
+      handler: async () => undefined,
+    })).rejects.toThrow(/simulated provider interruption/u);
+    expect(await authority.pending()).toHaveLength(1);
+
+    await createKubernetesApplicationScheduleRuntime(options);
+    expect(await authority.pending()).toHaveLength(0);
+    expect([...resources.values()][0]?.metadata?.annotations?.['applik8s.dev/schedule-revision']).toBe('1');
   });
 });
