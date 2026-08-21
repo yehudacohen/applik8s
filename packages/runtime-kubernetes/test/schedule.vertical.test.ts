@@ -23,6 +23,7 @@ describe('Kubernetes function-native Scheduler', () => {
         timezone: 'UTC',
         overlap: 'skip',
         misfires: 'latest',
+        maximumLatenessSeconds: 300,
         retry: { maxAttempts: 4, maximumAgeSeconds: 3600 },
         requirements: { configuration: 'fixed', cardinality: 'bounded', precision: 'minute' },
       },
@@ -75,7 +76,7 @@ describe('Kubernetes function-native Scheduler', () => {
       admissionEndpoint: 'http://demo.demo.svc/internal', authorizationSecretName: 'demo-internal-operation', kubeConfig,
     });
     const definition = {
-      id: 'digest.v1', configuration: 'dynamic' as const, timezone: 'UTC', overlap: 'skip' as const, misfires: 'latest' as const,
+      id: 'digest.v1', configuration: 'dynamic' as const, timezone: 'UTC', overlap: 'skip' as const, misfires: 'latest' as const, maximumLatenessSeconds: 300,
       retry: { maxAttempts: 3, maximumAgeSeconds: 1800 },
       requirements: { configuration: 'dynamic' as const, cardinality: 'bounded' as const, precision: 'minute' as const },
     };

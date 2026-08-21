@@ -344,9 +344,19 @@ run remains active until completion or cancellation.
 
 Portable misfire modes are:
 
-- `skip` — do not admit an occurrence after its allowed lateness;
-- `latest` — admit at most the latest eligible missed occurrence; and
+- `skip` — admit only the latest due occurrence when it is within
+  `maximumLateness`, otherwise skip the missed work;
+- `latest` — admit at most the latest missed occurrence that remains within the
+  retry policy's `maximumAge`; and
 - `all-bounded` — admit missed occurrences up to an explicit `maximumCatchUp`.
+
+`maximumLateness` is a duration and defaults to `"5m"`. It is the explicit
+portable scheduling-delay window for `skip`; it is not inferred from the
+provider's polling cadence. `maximumCatchUp` is valid only with `all-bounded` and
+selects the newest eligible occurrences. All policies discard work older than
+`retry.maximumAge`. Once an occurrence has been durably admitted, these misfire
+rules no longer apply: restart recovery resumes that occurrence instead of
+reclassifying it as missed.
 
 Every provider states its precision, lateness, outage recovery, and catch-up behavior. A provider whose
 native behavior is weaker must route through the framework admission layer or reject the requested

@@ -557,7 +557,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
 import postgres from 'postgres';
-import { installApplicationOperationRuntimeResolver } from '@applik8s/client';
+import { installApplicationInvocationAdmissionResolver, installApplicationOperationRuntimeResolver } from '@applik8s/client';
 import { applicationAdmissionInvocationView, canonicalJsonV1String, createApplicationAdmissionContextV1, validateApplicationAdmissionContextV1, validateApplicationAdmissionContextV1WithoutReceipt, withApplicationAdmissionExecutionV1 } from '@applik8s/core';
 import { createApplicationOperationAuthorityRuntime } from '@applik8s/operations';
 import { normalizeSchema } from '@applik8s/sdk/schema-runtime';
@@ -608,6 +608,7 @@ const operationAuthority = createApplicationOperationAuthorityRuntime({
 });
 const directOperationScope = new AsyncLocalStorage();
 installApplicationOperationRuntimeResolver(() => directOperationScope.getStore());
+installApplicationInvocationAdmissionResolver(() => directOperationScope.getStore()?.admission);
 ${hasWorkflows ? `const directWorkflowScope = new AsyncLocalStorage();
 const workflowGatewayAdmission = createSignedEnvelopeCodec({
   purpose: 'applik8s.workflow-gateway-admission/v1',
@@ -1253,6 +1254,7 @@ async function invokeRoute(route, params, request, url, runtimeProtocol) {
     : {};
   const handler = route.createHandler(route.bindings);
   const execute = {
+    admission: context.admission,
     execute(operation, operationInput) {
       const invoke = operationBindings[operation.id];
       if (!invoke) throw new Error('HTTP route attempted undeclared operation ' + operation.id + '.');

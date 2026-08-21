@@ -176,7 +176,7 @@ describe('v0.8 AWS deployment planning', () => {
         : node),
     } satisfies ApplicationGraph;
     expect(() => compileApplicationAwsDeploymentPlan({ graph: secondPrecision, environment: 'review', region: 'us-east-1', accountId: '123456789012' }))
-      .toThrow(/cannot satisfy second-precision/u);
+      .toThrow(/SCHEDULE_PRECISION_UNSUPPORTED/u);
 
     const inexactMinute = {
       ...base,
@@ -436,7 +436,7 @@ function awsGraph(): ApplicationGraph {
       },
       {
         id: 'schedule.cleanup', kind: 'schedule', name: 'cleanup', stability: 'stable',
-        definition: { id: 'documents.cleanup', configuration: 'fixed', every: '1h', timezone: 'UTC', overlap: 'skip', misfires: 'latest', retry: { maxAttempts: 3, maximumAgeSeconds: 3600 }, requirements: { configuration: 'fixed', cardinality: 'bounded', precision: 'minute' } },
+        definition: { id: 'documents.cleanup', configuration: 'fixed', every: '1h', timezone: 'UTC', overlap: 'skip', misfires: 'latest', maximumLatenessSeconds: 300, retry: { maxAttempts: 3, maximumAgeSeconds: 3600 }, requirements: { configuration: 'fixed', cardinality: 'bounded', precision: 'minute' } },
         scheduler: { interface: 'Scheduler', nodeId: 'provider.Scheduler' },
         handler: { source: 'async () => undefined', location: { file: 'src/cleanup.ts', line: 1, column: 1 } },
         functionNative: true,

@@ -12,6 +12,7 @@ describe('v0.8 function-native schedule discovery', () => {
     if (!discovered.ok) return;
     expect(discovered.value.scheduleExports).toEqual([
       { name: 'Cleanup', id: 'evidence.cleanup.v1' },
+			{ name: 'DefaultPoll', id: 'source.default-poll.v1' },
       { name: 'PollSource', id: 'source.poll.v1' },
     ]);
     expect(discovered.value.actorExports).toEqual([
@@ -39,6 +40,13 @@ describe('v0.8 function-native schedule discovery', () => {
           nodeId: 'provider.scheduler.v1alpha1.source-polling',
         },
       }),
+			expect.objectContaining({
+				id: 'schedule.source.default-poll.v1',
+				kind: 'schedule',
+				definition: expect.objectContaining({
+					overlapBy: expect.objectContaining({ source: expect.stringContaining('sourceBindingId') }),
+				}),
+			}),
       expect.objectContaining({
         id: 'provider.scheduler',
         kind: 'provider',
@@ -80,11 +88,15 @@ describe('v0.8 function-native schedule discovery', () => {
     expect(gateway?.files['gateway.generated.ts']).toContain("installLocalApplicationScheduleRuntime");
     expect(gateway?.files['gateway.generated.ts']).toContain("APPLIK8S_DEPLOYMENT_TARGET === 'local'");
     expect(gateway?.files['gateway.generated.ts']).toContain('createKubernetesApplicationScheduleRuntime');
+    expect(gateway?.files['gateway.generated.ts']).toContain('installApplicationInvocationAdmissionResolver');
+    expect(gateway?.files['gateway.generated.ts']).toContain('admissionRunner: scheduleAdmissionRunner');
     expect(gateway?.files['gateway.generated.ts']).toContain('/__applik8s/v1/internal/schedules/occurrences');
     expect(gateway?.files['gateway.generated.ts']).toContain("requiredEnv('APPLIK8S_SCHEDULE_DATABASE_URL')");
     expect(gateway?.files['gateway.generated.ts']).toContain('evidence.cleanup.v1');
     expect(gateway?.files['gateway.generated.ts']).not.toContain('source.poll.v1');
     const generatedSources = Object.values(gateway?.files ?? {}).join('\n');
+		expect(generatedSources).toContain('overlapBy: callback_schedule_overlap_key_');
+		expect(generatedSources).toContain('sourceBindingId');
     expect(generatedSources).toContain('const acquire = acquisition.acquire');
     expect(generatedSources).toContain('.profile(');
     expect(generatedSources).toContain('platform.installation.spec');

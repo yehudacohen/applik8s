@@ -303,7 +303,7 @@ describe('generated ApplicationHost', () => {
         runtime: { connectionEnvName: 'DATABASE_URL', database: 'app', secretName: 'guestbook-db-app', secretKey: 'uri' },
       }, {
         id: 'schedule.cleanup.v1', kind: 'schedule', name: 'cleanup.v1', stability: 'stable', scheduler: { interface: 'Scheduler', nodeId: 'provider.scheduler' },
-        definition: { id: 'cleanup.v1', configuration: 'fixed', every: '15m', timezone: 'UTC', overlap: 'skip', misfires: 'latest', retry: { maxAttempts: 4, maximumAgeSeconds: 3600 }, requirements: { configuration: 'fixed', cardinality: 'bounded', precision: 'minute' } },
+        definition: { id: 'cleanup.v1', configuration: 'fixed', every: '15m', timezone: 'UTC', overlap: 'skip', misfires: 'latest', maximumLatenessSeconds: 300, retry: { maxAttempts: 4, maximumAgeSeconds: 3600 }, requirements: { configuration: 'fixed', cardinality: 'bounded', precision: 'minute' } },
         handler: { source: 'async () => undefined' }, functionNative: true,
       }] as ApplicationGraph['nodes'],
     };

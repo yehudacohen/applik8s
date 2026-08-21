@@ -1,10 +1,25 @@
 import { mkdtemp, stat } from 'node:fs/promises';
 import { join } from 'node:path';
+import { canonicalJsonV1String } from '@applik8s/core';
 import { describe, expect, it } from 'vitest';
 import { schedule } from '../src/application-schedule.js';
-import { installLocalApplicationScheduleRuntime } from '../src/application-schedule-local-runtime.js';
+import {
+  installLocalApplicationScheduleRuntime,
+  localApplicationScheduleCanonicalJsonPolicy,
+} from '../src/application-schedule-local-runtime.js';
 
 describe('maintained local schedule runtime', () => {
+  it('preserves the v1alpha1 durable byte contract through the named Canonical JSON policy', () => {
+    expect(canonicalJsonV1String({
+      schemaVersion: 'applik8s.scheduleRuntime/v1alpha1',
+      optional: undefined,
+      values: ['one', undefined, 'two'],
+      revision: 3,
+    }, localApplicationScheduleCanonicalJsonPolicy)).toBe(
+      '{"revision":3,"schemaVersion":"applik8s.scheduleRuntime/v1alpha1","values":["one",null,"two"]}',
+    );
+  });
+
   it('discovers fixed handles, persists privately, and recovers prior occurrence receipts', async () => {
     const root = await mkdtemp(join(process.env.TMPDIR ?? '/tmp', 'applik8s-local-schedules-'));
     const statePath = join(root, 'state', 'schedules.json');

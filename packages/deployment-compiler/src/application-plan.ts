@@ -500,7 +500,7 @@ function semanticEstimates(
         value: node.definition.requirements.cardinality,
         unit: 'definitions',
         costClass: node.definition.requirements.cardinality === 'high' ? 'medium' : 'low',
-        assumptions: [`configuration=${node.definition.configuration}`, `precision=${node.definition.requirements.precision}`, `maxCatchUp=${node.definition.maxCatchUp ?? 0}`],
+        assumptions: [`configuration=${node.definition.configuration}`, `precision=${node.definition.requirements.precision}`, `maximumLatenessSeconds=${node.definition.maximumLatenessSeconds}`, `maximumCatchUp=${node.definition.maximumCatchUp ?? 0}`],
         fact: 'estimated',
         provenance,
       });

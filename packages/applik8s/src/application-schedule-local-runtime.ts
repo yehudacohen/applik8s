@@ -3,7 +3,13 @@ import { access, chmod, mkdir, open, readFile, rename, unlink, writeFile } from 
 import { randomUUID } from 'node:crypto';
 import { dirname, resolve } from 'node:path';
 import {
+  canonicalJsonCompatibleV1Policy,
+  canonicalJsonV1String,
+  type CanonicalJsonV1Policy,
+} from '@applik8s/core';
+import {
   type ApplicationFixedScheduleHandle,
+  type ApplicationScheduleAdmissionRunner,
   type ApplicationScheduleRuntimeSnapshot,
   createDeterministicApplicationScheduleRuntime,
   installApplicationScheduleRuntimeResolver,
@@ -14,6 +20,16 @@ export interface LocalApplicationScheduleRuntimeSession {
   readonly runtime: ReturnType<typeof createDeterministicApplicationScheduleRuntime>;
   stop(): Promise<void>;
 }
+
+/**
+ * Named Canonical JSON policy for the durable local scheduler files. This
+ * preserves the v1alpha1 writer's historical JSON-compatible handling of
+ * optional object fields while moving byte ownership to Runtime Integrity.
+ */
+export const localApplicationScheduleCanonicalJsonPolicy: CanonicalJsonV1Policy = Object.freeze({
+  ...canonicalJsonCompatibleV1Policy,
+  name: 'application-schedule-local-persistence',
+});
 
 /**
  * Installs the maintained durable local Scheduler provider for exported fixed
@@ -28,6 +44,7 @@ export async function installLocalApplicationScheduleRuntime(options: {
   readonly tickIntervalMs?: number;
   readonly now?: () => Date;
   readonly onError?: (error: unknown) => void;
+  readonly admissionRunner?: ApplicationScheduleAdmissionRunner;
 }): Promise<LocalApplicationScheduleRuntimeSession> {
   const environmentId = options.environmentId ?? 'local';
   const statePath = resolve(options.statePath ?? process.env.APPLIK8S_SCHEDULE_STATE_PATH ?? '.applik8s/local/schedules.json');
@@ -46,6 +63,7 @@ export async function installLocalApplicationScheduleRuntime(options: {
     now,
     ...(store.snapshot ? { snapshot: store.snapshot } : {}),
     persist: store.persist,
+    ...(options.admissionRunner ? { admissionRunner: options.admissionRunner } : {}),
   });
   const disposeResolver = installApplicationScheduleRuntimeResolver(() => runtime);
   try {
@@ -106,7 +124,7 @@ async function acquireScheduleLease(options: {
     try {
       const handle = await open(options.path, 'wx', 0o600);
       try {
-        await handle.writeFile(`${stableJson(record)}\n`, { encoding: 'utf8' });
+        await handle.writeFile(`${canonicalScheduleJson(record)}\n`, { encoding: 'utf8' });
         await handle.sync();
       } finally {
         await handle.close();
@@ -181,12 +199,12 @@ async function openScheduleStore(options: {
     throw new Error(`Local schedule state ${options.path} belongs to another application or environment.`);
   }
   let revision = initial?.revision ?? 0;
-  let serialized = initial ? stableJson(initial) : undefined;
+  let serialized = initial ? canonicalScheduleJson(initial) : undefined;
   return {
     ...(initial ? { snapshot: initial } : {}),
     async persist(snapshot) {
       validateSnapshot(snapshot, options);
-      const next = stableJson(snapshot);
+      const next = canonicalScheduleJson(snapshot);
       if (snapshot.revision < revision) throw new Error(`Local schedule state revision ${snapshot.revision} is stale; persisted revision is ${revision}.`);
       if (snapshot.revision === revision) {
         if (next !== serialized) throw new Error(`Local schedule state revision ${revision} conflicts with different content.`);
@@ -226,9 +244,6 @@ async function writeAtomic(path: string, content: string): Promise<void> {
   await rename(temporary, path);
 }
 
-function stableJson(value: unknown): string {
-  if (value === undefined) return 'null';
-  if (value === null || typeof value !== 'object') return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
-  return `{${Object.entries(value).filter(([, entry]) => entry !== undefined).sort(([left], [right]) => left.localeCompare(right)).map(([key, entry]) => `${JSON.stringify(key)}:${stableJson(entry)}`).join(',')}}`;
+function canonicalScheduleJson(value: unknown): string {
+  return canonicalJsonV1String(value, localApplicationScheduleCanonicalJsonPolicy);
 }

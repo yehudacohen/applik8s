@@ -15,6 +15,8 @@ import {
   SQSClient,
   type ReceiveMessageCommandOutput,
 } from '@aws-sdk/client-sqs'
+import { applicationScheduleImmediateInvocationAdmission, applicationScheduleOccurrenceId, type ApplicationScheduleAdmissionRunner } from '@applik8s/applik8s'
+import { type ApplicationAdmissionInvocationContextV1, canonicalJsonCompatibleV1Policy, canonicalJsonV1String } from '@applik8s/core'
 import postgres, { type Sql } from 'postgres'
 
 export interface AwsApplicationScheduleAdmission {
@@ -26,6 +28,8 @@ export interface AwsApplicationScheduleAdmission {
   readonly scheduledAt: string
   readonly admittedAt: string
   readonly attempt: number
+  readonly overlap: 'allow' | 'skip'
+  readonly overlapKey: string
   readonly input?: object
   readonly schedulerExecutionId?: string
 }
@@ -46,6 +50,7 @@ export interface AwsApplicationScheduleRuntimeConfiguration {
   readonly region?: string
   readonly queueUrl: string
   readonly queueArn: string
+  readonly deadLetterQueueArn: string
   readonly groupName: string
   readonly executionRoleArn: string
   readonly databaseUrl: string
@@ -55,6 +60,8 @@ interface ScheduleDefinition {
   readonly id: string
   readonly configuration: 'fixed' | 'dynamic'
   readonly timezone: string
+  readonly overlap: 'allow' | 'skip'
+  readonly overlapBy?: (input: object) => string
   readonly retry: { readonly maxAttempts: number; readonly maximumAgeSeconds: number }
   readonly requirements?: { readonly precision?: 'minute' | 'second' }
 }
@@ -75,10 +82,13 @@ interface ScheduleHandlerRequest {
   readonly definition: ScheduleDefinition
   readonly input: object
   readonly handler: (input: object, context: Record<string, unknown>) => unknown | Promise<unknown>
+  readonly callerAdmission: ApplicationAdmissionInvocationContextV1
 }
 
-interface ScheduleReconcileRequest extends ScheduleHandlerRequest {
+interface ScheduleReconcileRequest {
+  readonly definition: ScheduleDefinition
   readonly instance: ScheduleInstance
+  readonly handler: (input: object, context: Record<string, unknown>) => unknown | Promise<unknown>
 }
 
 /**
@@ -88,6 +98,10 @@ interface ScheduleReconcileRequest extends ScheduleHandlerRequest {
  */
 export function createAwsApplicationScheduleRuntime(
   configuration: AwsApplicationScheduleRuntimeConfiguration,
+  dependencies: {
+    readonly scheduler?: SchedulerClient
+    readonly admissionRunner?: ApplicationScheduleAdmissionRunner
+  } = {},
 ): {
   invoke(request: ScheduleHandlerRequest): Promise<unknown>
   reconcile(request: ScheduleReconcileRequest): Promise<{
@@ -104,28 +118,48 @@ export function createAwsApplicationScheduleRuntime(
   }>
 } {
   validateConfiguration(configuration)
-  const scheduler = new SchedulerClient(configuration.region ? { region: configuration.region } : {})
+  const scheduler = dependencies.scheduler ?? new SchedulerClient(configuration.region ? { region: configuration.region } : {})
   return {
     async invoke(request) {
       const now = new Date().toISOString()
-      return request.handler(request.input, {
+			const occurrenceId = applicationScheduleOccurrenceId({
+				applicationId: configuration.applicationId,
+				environmentId: configuration.environmentId,
+				definitionId: request.definition.id,
+				instanceId: 'immediate',
+				scheduledAt: now,
+			})
+      const invocationAdmission = applicationScheduleImmediateInvocationAdmission({
+        caller: request.callerAdmission,
         definitionId: request.definition.id,
         instanceId: 'immediate',
-        occurrenceId: occurrenceId(configuration, request.definition.id, 'immediate', now),
+        occurrenceId,
+        admittedAt: now,
+        maximumAgeSeconds: request.definition.retry.maximumAgeSeconds,
+      })
+      const invokeHandler = async () => request.handler(request.input, {
+        definitionId: request.definition.id,
+        instanceId: 'immediate',
+				occurrenceId,
         scheduledAt: now,
         admittedAt: now,
         startedAt: now,
         attempt: 1,
         trigger: 'immediate',
+				admission: invocationAdmission,
         signal: new AbortController().signal,
       })
+      return dependencies.admissionRunner
+        ? dependencies.admissionRunner.run(invocationAdmission, invokeHandler)
+        : invokeHandler()
     },
     async reconcile(request) {
       if (request.definition.configuration !== 'dynamic') {
         throw new Error(`AWS Scheduler cannot reconcile a dynamic instance for fixed definition ${request.definition.id}.`)
       }
       const name = dynamicScheduleName(configuration, request.definition.id, request.instance.id)
-      const existed = await scheduleExists(scheduler, configuration.groupName, name)
+      const existing = await readSchedule(scheduler, configuration.groupName, name)
+      const overlapKey = scheduleOverlapKey(request.definition, request.instance)
       const target = {
         Arn: configuration.queueArn,
         RoleArn: configuration.executionRoleArn,
@@ -134,6 +168,8 @@ export function createAwsApplicationScheduleRuntime(
           definitionId: request.definition.id,
           instanceId: request.instance.id,
           input: request.instance.input,
+          overlap: request.definition.overlap,
+          overlapKey,
           scheduledAt: '<aws.scheduler.scheduled-time>',
           schedulerExecutionId: '<aws.scheduler.execution-id>',
           schedulerAttempt: '<aws.scheduler.attempt-number>',
@@ -142,7 +178,14 @@ export function createAwsApplicationScheduleRuntime(
           MaximumEventAgeInSeconds: clamp(request.definition.retry.maximumAgeSeconds, 60, 86_400),
           MaximumRetryAttempts: clamp(request.definition.retry.maxAttempts - 1, 0, 185),
         },
+        DeadLetterConfig: { Arn: configuration.deadLetterQueueArn },
       }
+      const desiredDigest = createHash('sha256').update(canonicalJsonV1String({
+        definitionId: request.definition.id,
+        instance: request.instance,
+        target,
+      }, canonicalJsonCompatibleV1Policy)).digest('hex')
+      const description = scheduleDescription(request.instance.revision, desiredDigest)
       const common = {
         Name: name,
         GroupName: configuration.groupName,
@@ -151,25 +194,45 @@ export function createAwsApplicationScheduleRuntime(
         FlexibleTimeWindow: { Mode: 'OFF' as const },
         State: request.instance.enabled === false ? 'DISABLED' as const : 'ENABLED' as const,
         Target: target,
+        Description: description,
         ...(request.instance.at && request.instance.deleteAfterCompletion
           ? { ActionAfterCompletion: 'DELETE' as const }
           : {}),
       }
-      if (existed) {
-        await scheduler.send(new UpdateScheduleCommand(common))
+      if (existing) {
+        const ownership = parseScheduleDescription(existing.Description)
+        if (!ownership) {
+          throw new Error(`AWS Scheduler resource ${configuration.groupName}/${name} is not owned by Applik8s; refusing adoption.`)
+        }
+        if (ownership.revision === request.instance.revision && ownership.digest !== desiredDigest) {
+          throw new Error(`Schedule ${request.definition.id}/${request.instance.id} revision ${request.instance.revision} conflicts with different desired state.`)
+        }
+        if (compareRevision(request.instance.revision, ownership.revision) < 0) {
+          throw new Error(`Schedule ${request.definition.id}/${request.instance.id} revision ${request.instance.revision} is stale; current revision is ${ownership.revision}.`)
+        }
+        if (ownership.digest === desiredDigest && awsScheduleMatches(existing, common)) {
+          return {
+            definitionId: request.definition.id,
+            instanceId: request.instance.id,
+            revision: request.instance.revision,
+            state: 'unchanged',
+          }
+        }
+        await scheduler.send(new UpdateScheduleCommand({
+          ...common,
+          ClientToken: scheduleClientToken(configuration, request.definition.id, request.instance.id, request.instance.revision, desiredDigest),
+        }))
       } else {
         await scheduler.send(new CreateScheduleCommand({
           ...common,
-          ClientToken: createHash('sha256')
-            .update(`${configuration.applicationId}\0${configuration.environmentId}\0${request.definition.id}\0${request.instance.id}\0${request.instance.revision}`)
-            .digest('hex'),
+          ClientToken: scheduleClientToken(configuration, request.definition.id, request.instance.id, request.instance.revision, desiredDigest),
         }))
       }
       return {
         definitionId: request.definition.id,
         instanceId: request.instance.id,
         revision: request.instance.revision,
-        state: existed ? 'updated' : 'created',
+        state: existing ? 'updated' : 'created',
       }
     },
     async remove(definitionId, instanceId) {
@@ -249,10 +312,25 @@ async function admissionLoop(options: {
       const attempt = positiveInteger(message.Attributes?.ApproximateReceiveCount, 1)
       try {
         const admission = parseAdmission(message.Body, options.configuration, attempt)
-        const id = occurrenceId(options.configuration, admission.definitionId, admission.instanceId, admission.scheduledAt, admission.schedulerExecutionId)
-        const claim = await claimOccurrence(options.sql, id)
+        const id = applicationScheduleOccurrenceId({
+          applicationId: options.configuration.applicationId,
+          environmentId: options.configuration.environmentId,
+          definitionId: admission.definitionId,
+          instanceId: admission.instanceId,
+          scheduledAt: admission.scheduledAt,
+          ...(admission.schedulerExecutionId ? { schedulerExecutionId: admission.schedulerExecutionId } : {}),
+        })
+        const claim = await claimOccurrence(options.sql, {
+          occurrenceId: id,
+          definitionId: admission.definitionId,
+          instanceId: admission.instanceId,
+          overlapKey: admission.overlapKey,
+          overlap: admission.overlap,
+          scheduledAt: admission.scheduledAt,
+          attempt,
+        })
         if (claim.state === 'busy') continue
-        if (claim.state === 'complete') {
+        if (claim.state === 'complete' || claim.state === 'skipped') {
           await deleteMessage(options.sqs, options.configuration.queueUrl, receiptHandle)
           continue
         }
@@ -294,35 +372,98 @@ async function admissionLoop(options: {
 async function ensureOccurrenceAuthority(sql: Sql): Promise<void> {
   await sql`CREATE TABLE IF NOT EXISTS applik8s_schedule_occurrences (
     occurrence_id text PRIMARY KEY,
+    definition_id text NOT NULL,
+    overlap_key text NOT NULL,
     state text NOT NULL CHECK (state IN ('running', 'succeeded', 'skipped')),
     lease_owner text,
     lease_until timestamptz,
     receipt jsonb,
     updated_at timestamptz NOT NULL DEFAULT now()
   )`
+  await sql`ALTER TABLE applik8s_schedule_occurrences ADD COLUMN IF NOT EXISTS definition_id text`
+  await sql`ALTER TABLE applik8s_schedule_occurrences ADD COLUMN IF NOT EXISTS overlap_key text`
+  await sql`UPDATE applik8s_schedule_occurrences SET definition_id = '__legacy__' WHERE definition_id IS NULL`
+  await sql`UPDATE applik8s_schedule_occurrences SET overlap_key = occurrence_id WHERE overlap_key IS NULL`
+  await sql`ALTER TABLE applik8s_schedule_occurrences ALTER COLUMN definition_id SET NOT NULL`
+  await sql`ALTER TABLE applik8s_schedule_occurrences ALTER COLUMN overlap_key SET NOT NULL`
+  await sql`CREATE INDEX IF NOT EXISTS applik8s_schedule_occurrences_overlap ON applik8s_schedule_occurrences (definition_id, overlap_key, state, lease_until)`
 }
 
 type OccurrenceClaim =
   | { readonly state: 'claimed'; readonly leaseOwner: string }
   | { readonly state: 'complete' }
+  | { readonly state: 'skipped' }
   | { readonly state: 'busy' }
 
-async function claimOccurrence(sql: Sql, id: string): Promise<OccurrenceClaim> {
-  const owner = randomUUID()
-  const rows = await sql<{ state: string }[]>`
-    INSERT INTO applik8s_schedule_occurrences (occurrence_id, state, lease_owner, lease_until)
-    VALUES (${id}, 'running', ${owner}, now() + interval '5 minutes')
-    ON CONFLICT (occurrence_id) DO UPDATE SET
-      lease_owner = EXCLUDED.lease_owner,
-      lease_until = EXCLUDED.lease_until,
-      updated_at = now()
-    WHERE applik8s_schedule_occurrences.state = 'running'
-      AND (applik8s_schedule_occurrences.lease_until IS NULL OR applik8s_schedule_occurrences.lease_until < now())
-    RETURNING state
-  `
-  if (rows.length > 0) return { state: 'claimed', leaseOwner: owner }
-  const existing = await sql<{ state: string }[]>`SELECT state FROM applik8s_schedule_occurrences WHERE occurrence_id = ${id}`
-  return existing[0]?.state === 'succeeded' || existing[0]?.state === 'skipped' ? { state: 'complete' } : { state: 'busy' }
+async function claimOccurrence(sql: Sql, options: {
+  readonly occurrenceId: string
+  readonly definitionId: string
+  readonly instanceId: string
+  readonly overlapKey: string
+  readonly overlap: 'allow' | 'skip'
+  readonly scheduledAt: string
+  readonly attempt: number
+}): Promise<OccurrenceClaim> {
+  return sql.begin(async (transaction) => {
+    await transaction.unsafe(
+      'SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))',
+      [options.definitionId, options.overlapKey],
+    )
+    const prior = await transaction<{ state: string; lease_until: Date | null }[]>`
+      SELECT state, lease_until FROM applik8s_schedule_occurrences
+      WHERE occurrence_id = ${options.occurrenceId}
+    `
+    if (prior[0]?.state === 'succeeded' || prior[0]?.state === 'skipped') return { state: 'complete' }
+    if (prior[0]?.state === 'running' && prior[0].lease_until && prior[0].lease_until.getTime() >= Date.now()) {
+      return { state: 'busy' }
+    }
+    if (options.overlap === 'skip') {
+      const active = await transaction<{ occurrence_id: string }[]>`
+        SELECT occurrence_id FROM applik8s_schedule_occurrences
+        WHERE definition_id = ${options.definitionId}
+          AND overlap_key = ${options.overlapKey}
+          AND state = 'running'
+          AND lease_until >= now()
+          AND occurrence_id <> ${options.occurrenceId}
+        LIMIT 1
+      `
+      if (active.length > 0) {
+        const receipt: AwsApplicationScheduleReceipt = {
+          occurrenceId: options.occurrenceId,
+          definitionId: options.definitionId,
+          instanceId: options.instanceId,
+          scheduledAt: options.scheduledAt,
+          state: 'skipped',
+          attempts: options.attempt,
+        }
+        await transaction`
+          INSERT INTO applik8s_schedule_occurrences
+            (occurrence_id, definition_id, overlap_key, state, receipt)
+          VALUES
+            (${options.occurrenceId}, ${options.definitionId}, ${options.overlapKey}, 'skipped', ${transaction.json(jsonValue(receipt))})
+          ON CONFLICT (occurrence_id) DO NOTHING
+        `
+        return { state: 'skipped' }
+      }
+    }
+    const owner = randomUUID()
+    const rows = await transaction<{ state: string }[]>`
+      INSERT INTO applik8s_schedule_occurrences
+        (occurrence_id, definition_id, overlap_key, state, lease_owner, lease_until)
+      VALUES
+        (${options.occurrenceId}, ${options.definitionId}, ${options.overlapKey}, 'running', ${owner}, now() + interval '5 minutes')
+      ON CONFLICT (occurrence_id) DO UPDATE SET
+        definition_id = EXCLUDED.definition_id,
+        overlap_key = EXCLUDED.overlap_key,
+        lease_owner = EXCLUDED.lease_owner,
+        lease_until = EXCLUDED.lease_until,
+        updated_at = now()
+      WHERE applik8s_schedule_occurrences.state = 'running'
+        AND (applik8s_schedule_occurrences.lease_until IS NULL OR applik8s_schedule_occurrences.lease_until < now())
+      RETURNING state
+    `
+    return rows.length > 0 ? { state: 'claimed', leaseOwner: owner } : { state: 'busy' }
+  })
 }
 
 async function completeOccurrence(sql: Sql, id: string, owner: string, receipt: AwsApplicationScheduleReceipt): Promise<boolean> {
@@ -373,6 +514,9 @@ function parseAdmission(body: string, configuration: AwsApplicationScheduleRunti
   if (read('schemaVersion') !== 'applik8s.scheduleAdmission/v1alpha1'
     || typeof read('definitionId') !== 'string'
     || typeof read('instanceId') !== 'string'
+    || (read('overlap') !== 'allow' && read('overlap') !== 'skip')
+    || typeof read('overlapKey') !== 'string'
+    || !String(read('overlapKey')).trim()
     || typeof read('scheduledAt') !== 'string'
     || !Number.isFinite(Date.parse(String(read('scheduledAt'))))) {
     throw new Error('AWS Scheduler admission body does not match applik8s.scheduleAdmission/v1alpha1.')
@@ -390,9 +534,22 @@ function parseAdmission(body: string, configuration: AwsApplicationScheduleRunti
     scheduledAt: new Date(String(read('scheduledAt'))).toISOString(),
     admittedAt: new Date().toISOString(),
     attempt,
+    overlap: read('overlap') as 'allow' | 'skip',
+    overlapKey: String(read('overlapKey')),
     ...(input ? { input: input as object } : {}),
     ...(typeof read('schedulerExecutionId') === 'string' ? { schedulerExecutionId: String(read('schedulerExecutionId')) } : {}),
   }
+}
+
+function scheduleOverlapKey(definition: ScheduleDefinition, instance: ScheduleInstance): string {
+  const value = definition.overlapBy ? definition.overlapBy(instance.input) : instance.id
+  if (typeof value !== 'string' || !value.trim()) {
+    throw new Error(`Schedule ${definition.id}/${instance.id} produced an empty overlap key.`)
+  }
+  if (Buffer.byteLength(value, 'utf8') > 512) {
+    throw new Error(`Schedule ${definition.id}/${instance.id} produced an overlap key larger than 512 bytes.`)
+  }
+  return value
 }
 
 function awsScheduleExpression(instance: ScheduleInstance, definition?: ScheduleDefinition): string {
@@ -418,12 +575,11 @@ function awsScheduleExpression(instance: ScheduleInstance, definition?: Schedule
   return `at(${date.toISOString().replace(/\.\d{3}Z$/u, '')})`
 }
 
-async function scheduleExists(client: SchedulerClient, groupName: string, name: string): Promise<boolean> {
+async function readSchedule(client: SchedulerClient, groupName: string, name: string) {
   try {
-    await client.send(new GetScheduleCommand({ GroupName: groupName, Name: name }))
-    return true
+    return await client.send(new GetScheduleCommand({ GroupName: groupName, Name: name }))
   } catch (error) {
-    if (isNotFound(error)) return false
+    if (isNotFound(error)) return undefined
     throw error
   }
 }
@@ -444,12 +600,83 @@ function dynamicScheduleName(configuration: AwsApplicationScheduleRuntimeConfigu
   return `applik8s-${safeName(definitionId, 20)}-${suffix}`.slice(0, 64)
 }
 
-function occurrenceId(configuration: AwsApplicationScheduleRuntimeConfiguration, definitionId: string, instanceId: string, scheduledAt: string, schedulerExecutionId?: string): string {
-  return `occ_${createHash('sha256').update(`${configuration.applicationId}\0${configuration.environmentId}\0${definitionId}\0${instanceId}\0${schedulerExecutionId?.trim() || scheduledAt}`).digest('hex')}`
-}
-
 function safeName(value: string, maximum: number): string {
   return value.toLowerCase().replace(/[^a-z0-9_-]+/gu, '-').replace(/^-+|-+$/gu, '').slice(0, maximum) || 'schedule'
+}
+
+function scheduleDescription(revision: string, digest: string): string {
+  return `applik8s.schedule/v1:${base64Url(JSON.stringify({ revision, digest }))}`
+}
+
+function parseScheduleDescription(value: string | undefined): { readonly revision: string; readonly digest: string } | undefined {
+  const prefix = 'applik8s.schedule/v1:'
+  if (!value?.startsWith(prefix)) return undefined
+  try {
+    const parsed = JSON.parse(Buffer.from(value.slice(prefix.length), 'base64url').toString('utf8')) as unknown
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined
+    const revision = Reflect.get(parsed, 'revision')
+    const digest = Reflect.get(parsed, 'digest')
+    return typeof revision === 'string' && revision.length > 0 && typeof digest === 'string' && /^[a-f0-9]{64}$/u.test(digest)
+      ? { revision, digest }
+      : undefined
+  } catch {
+    return undefined
+  }
+}
+
+function awsScheduleMatches(live: unknown, desired: {
+  readonly ScheduleExpression: string
+  readonly ScheduleExpressionTimezone: string
+  readonly FlexibleTimeWindow: unknown
+  readonly State: string
+  readonly Target: unknown
+  readonly Description: string
+  readonly ActionAfterCompletion?: string
+}): boolean {
+  const liveRecord = live as Readonly<Record<string, unknown>>
+  const liveComparable = {
+    ScheduleExpression: liveRecord.ScheduleExpression,
+    ScheduleExpressionTimezone: liveRecord.ScheduleExpressionTimezone,
+    FlexibleTimeWindow: liveRecord.FlexibleTimeWindow,
+    State: liveRecord.State,
+    Target: liveRecord.Target,
+    Description: liveRecord.Description,
+    ...(liveRecord.ActionAfterCompletion ? { ActionAfterCompletion: liveRecord.ActionAfterCompletion } : {}),
+  }
+  const desiredComparable = {
+    ScheduleExpression: desired.ScheduleExpression,
+    ScheduleExpressionTimezone: desired.ScheduleExpressionTimezone,
+    FlexibleTimeWindow: desired.FlexibleTimeWindow,
+    State: desired.State,
+    Target: desired.Target,
+    Description: desired.Description,
+    ...(desired.ActionAfterCompletion ? { ActionAfterCompletion: desired.ActionAfterCompletion } : {}),
+  }
+  return canonicalJsonV1String(liveComparable, canonicalJsonCompatibleV1Policy)
+    === canonicalJsonV1String(desiredComparable, canonicalJsonCompatibleV1Policy)
+}
+
+function scheduleClientToken(
+  configuration: AwsApplicationScheduleRuntimeConfiguration,
+  definitionId: string,
+  instanceId: string,
+  revision: string,
+  digest: string,
+): string {
+  return createHash('sha256')
+    .update(`${configuration.applicationId}\0${configuration.environmentId}\0${definitionId}\0${instanceId}\0${revision}\0${digest}`)
+    .digest('hex')
+}
+
+function compareRevision(left: string, right: string): number {
+  if (/^\d+$/u.test(left) && /^\d+$/u.test(right)) {
+    return BigInt(left) < BigInt(right) ? -1 : BigInt(left) > BigInt(right) ? 1 : 0
+  }
+  return left.localeCompare(right)
+}
+
+function base64Url(value: string): string {
+  return Buffer.from(value, 'utf8').toString('base64url')
 }
 
 function validateConfiguration(value: AwsApplicationScheduleRuntimeConfiguration): void {

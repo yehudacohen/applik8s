@@ -8,10 +8,71 @@ import {
   Scheduler,
   type,
 } from '@applik8s/applik8s';
-import { validateApplicationGraphStructure } from '@applik8s/core';
+import { installApplicationInvocationAdmissionResolver } from '@applik8s/client';
+import {
+  applicationAdmissionInvocationView,
+  createApplicationAdmissionContextV1,
+  validateApplicationAdmissionContextV1WithoutReceipt,
+  validateApplicationGraphStructure,
+  withApplicationAdmissionExecutionV1,
+} from '@applik8s/core';
 import { afterEach, describe, expect, it } from 'vitest';
 
 const disposers: Array<() => void> = [];
+
+function admittedCaller() {
+  const admittedAt = '2026-01-01T00:00:00.000Z';
+  const deadline = '2026-01-01T01:00:00.000Z';
+  const principal = Object.freeze({
+    id: 'principal:schedule-test:execution:workflow:caller:1',
+    identity: Object.freeze({
+      id: 'identity:schedule-test:workflow',
+      kind: 'workload' as const,
+      issuer: 'applik8s://test',
+      subject: 'workflow/caller',
+    }),
+    kind: 'execution' as const,
+    executionKind: 'workflow' as const,
+    executionId: 'caller',
+    attempt: 1,
+    workloadIdentity: Object.freeze({
+      id: 'identity:schedule-test:workflow',
+      kind: 'workload' as const,
+      issuer: 'applik8s://test',
+      subject: 'workflow/caller',
+    }),
+    causalPrincipalId: 'principal:schedule-test:human:user-1',
+    causalPrincipal: Object.freeze({
+      id: 'identity:schedule-test:human:user-1',
+      kind: 'human' as const,
+      issuer: 'applik8s://test',
+      subject: 'user-1',
+    }),
+    causalGrantIds: Object.freeze([] as string[]),
+    authenticationMethod: 'test-workload',
+    audience: Object.freeze(['applik8s://schedules/evidence.cleanup.v1/instances/immediate/operations/invoke']),
+    trustedContextDigest: 'sha256:test-context',
+    catalogRevision: 'catalog:test',
+    authorityRevision: 'authority:test',
+    admittedAt,
+    deadline,
+    expiresAt: deadline,
+    cancellationRevision: 'active:caller',
+    bindings: Object.freeze([]),
+    effectiveAuthority: Object.freeze([]),
+  });
+  return applicationAdmissionInvocationView(validateApplicationAdmissionContextV1WithoutReceipt(
+    withApplicationAdmissionExecutionV1(createApplicationAdmissionContextV1({
+      admission: { principal, trustedContext: { organizationId: 'organization-1' } },
+      operation: { id: 'applik8s://workflows/caller/operations/run', transport: 'workflow' },
+      correlationId: 'workflow-run-1',
+    }), {
+      deadline,
+      cancellation: { revision: 'active:caller' },
+    }),
+    { now: Date.parse(admittedAt) },
+  ));
+}
 
 afterEach(() => {
   while (disposers.length > 0) disposers.pop()?.();
@@ -26,13 +87,18 @@ describe('v0.8 function-native schedules', () => {
       now: () => clock.now,
     });
     disposers.push(installApplicationScheduleRuntimeResolver(() => runtime));
+    const caller = admittedCaller();
+    const immediateContexts: unknown[] = [];
     const Cleanup = schedule(
       {
         id: 'evidence.cleanup.v1',
         cron: '0 3 * * *',
         timezone: 'UTC',
       },
-      async (context) => ({ occurrenceId: context.occurrenceId }),
+      async (context) => {
+        immediateContexts.push(context);
+        return { occurrenceId: context.occurrenceId };
+      },
     );
 
     expect(Cleanup.kind).toBe('applicationSchedule');
@@ -73,9 +139,25 @@ describe('v0.8 function-native schedules', () => {
         labels: [],
       },
     })).toEqual([]);
+    await expect(Cleanup()).rejects.toThrow(/active managed-execution admission/u);
+    disposers.push(installApplicationInvocationAdmissionResolver(() => caller));
     await expect(Cleanup()).resolves.toEqual({
       occurrenceId: expect.stringMatching(/^occ_[a-f0-9]{64}$/u),
     });
+    expect(immediateContexts).toEqual([
+      expect.objectContaining({
+        trigger: 'immediate',
+        admission: expect.objectContaining({
+          principal: caller.principal,
+          trustedContext: caller.trustedContext,
+          causationId: caller.correlationId,
+          operation: {
+            id: 'applik8s://schedules/evidence.cleanup.v1/instances/immediate/operations/invoke',
+            transport: 'direct',
+          },
+        }),
+      }),
+    ]);
     await expect(registerFixedApplicationSchedule(runtime, Cleanup)).resolves.toMatchObject({ state: 'created', instanceId: 'fixed' });
     clock.now = new Date('2026-01-01T03:00:00.000Z');
     await expect(runtime.tick(clock.now)).resolves.toEqual([
@@ -155,7 +237,15 @@ describe('v0.8 function-native schedules', () => {
         misfires: 'all-bounded',
       },
       async () => ({}),
-    )).toThrow(/maxCatchUp/u);
+    )).toThrow(/maximumCatchUp/u);
+    expect(() => schedule(
+      { id: 'invalid.cron.v1', cron: '61 * * * *' },
+      async () => ({}),
+    )).toThrow(/out-of-range/u);
+    expect(() => schedule(
+      { id: 'invalid.timestamp.v1', at: '2026-08-19T12:00:00' },
+      async () => ({}),
+    )).toThrow(/explicit offset/u);
   });
 
   it('executes a provider-admitted occurrence with stable identity and typed context', async () => {
@@ -179,16 +269,144 @@ describe('v0.8 function-native schedules', () => {
       input: { sourceId: 'source-a' },
       schedulerExecutionId: 'aws-execution-1',
     });
+    expect(receipt.occurrenceId).toMatch(/^occ_[a-f0-9]{64}$/u);
+    const occurrenceId = receipt.occurrenceId;
     expect(receipt).toMatchObject({
-      occurrenceId: expect.stringMatching(/^occ_[a-f0-9]{64}$/u),
       state: 'succeeded',
       attempts: 2,
       result: { polled: 'source-a' },
     });
     expect(seen).toEqual([expect.objectContaining({
       input: { sourceId: 'source-a' },
-      context: expect.objectContaining({ instanceId: 'tenant-a', attempt: 2, trigger: 'schedule' }),
+			context: expect.objectContaining({
+				instanceId: 'tenant-a',
+				attempt: 2,
+				trigger: 'schedule',
+				admission: expect.objectContaining({
+					apiVersion: 'applik8s.admission/v1',
+					principal: expect.objectContaining({ kind: 'service' }),
+					operation: {
+						id: 'applik8s://schedules/source.poll.aws.v1/instances/tenant-a/operations/invoke',
+						transport: 'schedule',
+					},
+				}),
+			}),
     })]);
+
+    const redelivered = await executeApplicationScheduleAdmission(Poll, {
+      schemaVersion: 'applik8s.scheduleAdmission/v1alpha1',
+      applicationId: 'documents',
+      environmentId: 'production',
+      definitionId: 'source.poll.aws.v1',
+      instanceId: 'tenant-a',
+      scheduledAt: '2026-08-19T12:00:00.000Z',
+      admittedAt: '2026-08-19T12:00:02.000Z',
+      attempt: 3,
+      input: { sourceId: 'source-a' },
+      schedulerExecutionId: 'aws-execution-2',
+    });
+    expect(redelivered.occurrenceId).toBe(occurrenceId);
+  });
+
+  it('fails closed on early delivery and skips provider delivery outside portable lateness bounds', async () => {
+    let invocations = 0;
+    const Skip = Scheduler.named('bounded').schedule(
+      {
+        id: 'bounded.provider.v1',
+        input: type({ id: 'string' }),
+        misfires: 'skip',
+        maximumLateness: '30s',
+        retry: { maximumAge: '5m' },
+      },
+      async () => { invocations += 1; },
+    );
+    const base = {
+      schemaVersion: 'applik8s.scheduleAdmission/v1alpha1' as const,
+      applicationId: 'documents',
+      environmentId: 'production',
+      definitionId: 'bounded.provider.v1',
+      instanceId: 'tenant-a',
+      attempt: 1,
+      input: { id: 'tenant-a' },
+    };
+    await expect(executeApplicationScheduleAdmission(Skip, {
+      ...base,
+      scheduledAt: '2026-08-19T12:00:00.000Z',
+      admittedAt: '2026-08-19T12:00:31.000Z',
+    })).resolves.toMatchObject({ state: 'skipped', attempts: 1 });
+    await expect(executeApplicationScheduleAdmission(Skip, {
+      ...base,
+      scheduledAt: '2026-08-19T12:00:01.000Z',
+      admittedAt: '2026-08-19T12:00:00.000Z',
+    })).rejects.toThrow(/precedes its scheduled time/u);
+    expect(invocations).toBe(0);
+  });
+
+  it('bounds catch-up to the newest eligible occurrences', async () => {
+    const clock = { now: new Date('2026-01-01T00:00:00.000Z') };
+    const runtime = createDeterministicApplicationScheduleRuntime({
+      applicationId: 'schedule-test', environmentId: 'catch-up', now: () => clock.now,
+    });
+    disposers.push(installApplicationScheduleRuntimeResolver(() => runtime));
+    const seen: string[] = [];
+    const CatchUp = Scheduler.named('catch-up').schedule(
+      {
+        id: 'catch-up.v1',
+        input: type({ id: 'string' }),
+        misfires: 'all-bounded',
+        maximumCatchUp: 2,
+      },
+      async (_input, context) => { seen.push(context.scheduledAt); },
+    );
+    await CatchUp.schedule({ id: 'tenant-a', revision: '1', every: '1m', input: { id: 'tenant-a' } });
+    clock.now = new Date('2026-01-01T00:05:00.000Z');
+    await runtime.tick(clock.now);
+    expect(seen).toEqual([
+      '2026-01-01T00:04:00.000Z',
+      '2026-01-01T00:05:00.000Z',
+    ]);
+  });
+
+  it('applies bounded skip/latest misfires while resuming already-admitted work', async () => {
+    const clock = { now: new Date('2026-01-01T00:00:00.000Z') };
+    const runtime = createDeterministicApplicationScheduleRuntime({
+      applicationId: 'schedule-test', environmentId: 'misfires', now: () => clock.now,
+    });
+    disposers.push(installApplicationScheduleRuntimeResolver(() => runtime));
+    const skipped: string[] = [];
+    const Skip = Scheduler.named('skip').schedule(
+      {
+        id: 'skip.v1',
+        input: type({ id: 'string' }),
+        misfires: 'skip',
+        maximumLateness: '20s',
+        retry: { maximumAge: '10m' },
+      },
+      async (_input, context) => { skipped.push(context.scheduledAt); },
+    );
+    await Skip.schedule({ id: 'tenant-a', revision: '1', every: '1m', input: { id: 'tenant-a' } });
+
+    clock.now = new Date('2026-01-01T00:01:15.000Z');
+    await runtime.tick(clock.now);
+    expect(skipped).toEqual(['2026-01-01T00:01:00.000Z']);
+    clock.now = new Date('2026-01-01T00:03:30.000Z');
+    await runtime.tick(clock.now);
+    expect(skipped).toEqual(['2026-01-01T00:01:00.000Z']);
+
+    const latest: string[] = [];
+    const Latest = Scheduler.named('latest').schedule(
+      {
+        id: 'latest.v1',
+        input: type({ id: 'string' }),
+        misfires: 'latest',
+        retry: { maximumAge: '2m' },
+      },
+      async (_input, context) => { latest.push(context.scheduledAt); },
+    );
+    await Latest.schedule({ id: 'tenant-a', revision: '1', every: '1m', input: { id: 'tenant-a' } });
+    clock.now = new Date('2026-01-01T00:06:30.000Z');
+    await runtime.tick(clock.now);
+    expect(latest).toEqual(['2026-01-01T00:06:30.000Z']);
   });
 
   it('recovers admitted occurrences and stable interval anchors from durable snapshots', async () => {
@@ -210,10 +428,22 @@ describe('v0.8 function-native schedules', () => {
     disposers.push(installApplicationScheduleRuntimeResolver(() => first));
     const runs: string[] = [];
     const Rebuild = Scheduler.named('durable').schedule(
-      { id: 'durable.rebuild.v1', input: type({ id: 'string' }), misfires: 'latest' },
+      {
+        id: 'durable.rebuild.v1',
+        input: type({ id: 'string' }),
+        misfires: 'latest',
+        retry: { maximumAge: '1m' },
+      },
       async (_input, context) => { runs.push(context.occurrenceId); return { done: true }; },
     );
-    await Rebuild.schedule({ id: 'tenant-a', revision: '1', every: '1m', input: { id: 'tenant-a' } });
+    const durableInstance = {
+      id: 'tenant-a',
+      revision: '1',
+      at: '2026-01-01T00:01:00.000Z',
+      deleteAfterCompletion: true,
+      input: { id: 'tenant-a' },
+    } as const;
+    await Rebuild.schedule(durableInstance);
     clock.now = new Date('2026-01-01T00:01:00.000Z');
     await expect(first.tick(clock.now)).rejects.toThrow(/simulated process loss/u);
     expect(runs).toEqual([]);
@@ -221,15 +451,20 @@ describe('v0.8 function-native schedules', () => {
     const interruptedRevision = durable?.revision ?? 0;
 
     disposers.pop()?.();
+    // Misfire and retry-age selection applies before admission. A durable
+    // admitted occurrence must still recover after that window has elapsed.
+    clock.now = new Date('2026-01-01T00:10:00.000Z');
+    const recoveredSnapshot = durable;
+    if (!recoveredSnapshot) throw new Error('Expected a durable admitted schedule snapshot.');
     const restarted = createDeterministicApplicationScheduleRuntime({
       applicationId: 'schedule-test',
       environmentId: 'restart-test',
       now: () => clock.now,
-      snapshot: durable!,
+      snapshot: recoveredSnapshot,
       persist(snapshot) { durable = snapshot; },
     });
     disposers.push(installApplicationScheduleRuntimeResolver(() => restarted));
-    await expect(Rebuild.schedule({ id: 'tenant-a', revision: '1', every: '1m', input: { id: 'tenant-a' } })).resolves.toMatchObject({ state: 'unchanged' });
+    await expect(Rebuild.schedule(durableInstance)).resolves.toMatchObject({ state: 'unchanged' });
     const recovered = await restarted.tick(clock.now);
     expect(recovered).toEqual([expect.objectContaining({ state: 'succeeded', scheduledAt: '2026-01-01T00:01:00.000Z' })]);
     expect(runs).toHaveLength(1);

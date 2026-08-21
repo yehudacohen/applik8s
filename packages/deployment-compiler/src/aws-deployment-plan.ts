@@ -17,6 +17,7 @@ import {
 import { compileApplicationRuntimeAccessPlan } from './runtime-access-plan.js';
 import { resolveApplicationProviderForTarget } from './providers.js';
 import { applicationWorkloadProviderNodeIds } from './workload-provider-references.js';
+import { assertApplicationScheduleProviderCompatibility } from './provider-guarantees.js';
 
 const awsHatchetImage = 'ghcr.io/hatchet-dev/hatchet/hatchet-lite@sha256:5405c7f3991e85b7490b4e9fd7187bf5699f7cdd5b6e0c9a751751164b801aa9';
 const awsHatchetTenantId = '707d0855-80ab-4e1f-a156-f1c4546cbf52';
@@ -42,6 +43,11 @@ export interface CompileApplicationAwsDeploymentPlanRequest {
 
 /** Pure semantic graph -> reviewable AWS resource planning. Alchemy owns all effects. */
 export function compileApplicationAwsDeploymentPlan(request: CompileApplicationAwsDeploymentPlanRequest): ApplicationAwsDeploymentPlan {
+	assertApplicationScheduleProviderCompatibility({
+		graph: request.graph,
+		target: request.target ?? 'aws',
+		...(request.profile ? { profile: request.profile } : {}),
+	});
   assertAwsSegment(request.environment, 'environment');
   if (!/^[a-z]{2}(?:-gov)?-[a-z]+-\d$/u.test(request.region)) throw new Error(`AWS region ${request.region} is invalid.`);
   if (!/^\d{12}$/u.test(request.accountId)) throw new Error('AWS accountId must contain exactly 12 digits.');
@@ -439,8 +445,14 @@ export function compileApplicationAwsDeploymentPlan(request: CompileApplicationA
       const id = `schedule.${hash(schedule.definition.id, 20)}`;
       add(resource(id, 'eventbridge-scheduler', 'schedule', name(`schedule-${hash(schedule.definition.id, 10)}`), {
         definitionId: schedule.definition.id,
+        overlap: schedule.definition.overlap,
         expression: awsScheduleExpression(schedule.definition),
         timezone: schedule.definition.timezone,
+        misfires: schedule.definition.misfires,
+        maximumLatenessSeconds: schedule.definition.maximumLatenessSeconds,
+        ...(schedule.definition.maximumCatchUp !== undefined
+          ? { maximumCatchUp: schedule.definition.maximumCatchUp }
+          : {}),
         maximumRetryAttempts: Math.min(185, Math.max(0, schedule.definition.retry.maxAttempts - 1)),
         maximumEventAgeSeconds: Math.min(86_400, Math.max(60, schedule.definition.retry.maximumAgeSeconds)),
         targetQueue: 'scheduler.admission', deadLetterQueue: 'scheduler.dead-letter',

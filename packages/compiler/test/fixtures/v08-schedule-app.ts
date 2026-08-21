@@ -63,6 +63,18 @@ export const Cleanup = schedule(
   }),
 );
 
+export const DefaultPoll = schedule(
+	{
+		id: 'source.default-poll.v1',
+		input: type({ sourceBindingId: 'string' }),
+		overlapBy: ({ sourceBindingId }) => sourceBindingId,
+	},
+	async ({ sourceBindingId }, context) => ({
+		sourceBindingId,
+		occurrenceId: context.occurrenceId,
+	}),
+);
+
 const SourcePolling = Scheduler.named('source-polling');
 
 platform.provide(SourcePolling, Scheduler.hatchet());
@@ -71,6 +83,7 @@ export const PollSource = SourcePolling.schedule(
   {
     id: 'source.poll.v1',
     input: type({ sourceBindingId: 'string' }),
+		overlapBy: ({ sourceBindingId }) => sourceBindingId,
     requirements: {
       configuration: 'dynamic',
       cardinality: 'high',

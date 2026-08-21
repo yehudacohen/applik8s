@@ -659,7 +659,7 @@ import { createHash } from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { createServer } from 'node:http';
 import postgres from 'postgres';
-import { installApplicationOperationRuntimeResolver } from '@applik8s/client';
+import { installApplicationInvocationAdmissionResolver, installApplicationOperationRuntimeResolver } from '@applik8s/client';
 import { createApplicationAIAttemptRuntime } from '@applik8s/ai';
 import { applicationAIConversationPrincipalScope, createApplicationAIAgentConversationPersistence, createApplicationTanStackConversationPersistence, createPostgresApplicationConversationStore } from '@applik8s/conversations/runtime';
 import { applicationCausalPrincipalContext, validateApplicationAdmissionContextV1 } from '@applik8s/core';
@@ -795,6 +795,7 @@ const agentQueryRuntime = runtimeQueries.length > 0
   : undefined;
 const directOperationScope = new AsyncLocalStorage();
 installApplicationOperationRuntimeResolver(() => directOperationScope.getStore());
+installApplicationInvocationAdmissionResolver(() => directOperationScope.getStore()?.admission);
 const directOperations = new Map(
   contract.operations.flatMap((dependency) => [
     [dependency.operation.id, dependency.operation],
@@ -817,6 +818,7 @@ const handler = (request, context) => {
   let directOperationOrdinal = 0;
   let directActorOrdinal = 0;
   const runtime = Object.freeze({
+    admission: context.admission,
     execute(operation, input) {
       const descriptor = directOperations.get(operation.id);
       if (!descriptor) {

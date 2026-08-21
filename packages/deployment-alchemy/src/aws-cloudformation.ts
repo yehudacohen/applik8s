@@ -1031,6 +1031,8 @@ function addSchedule(resources: Record<string, DeploymentJsonObject>, plan: Appl
         schemaVersion: "applik8s.scheduleAdmission/v1alpha1",
         definitionId: stringConfig(entry, "definitionId"),
         instanceId: "fixed",
+        overlap: stringConfig(entry, "overlap", "skip"),
+        overlapKey: "fixed",
         scheduledAt: "<aws.scheduler.scheduled-time>",
         schedulerExecutionId: "<aws.scheduler.execution-id>",
         schedulerAttempt: "<aws.scheduler.attempt-number>",
@@ -1351,6 +1353,7 @@ function applicationEnvironment(
     result.push(
       { Name: "APPLIK8S_AWS_SCHEDULE_QUEUE_URL", Value: ref(logical.get(scheduleQueue.id)!) },
       { Name: "APPLIK8S_AWS_SCHEDULE_QUEUE_ARN", Value: getAtt(logical.get(scheduleQueue.id)!, "Arn") },
+      { Name: "APPLIK8S_AWS_SCHEDULE_DLQ_ARN", Value: getAtt(logical.get("scheduler.dead-letter")!, "Arn") },
       { Name: "APPLIK8S_AWS_SCHEDULE_GROUP", Value: ref(logical.get(scheduleGroup.id)!) },
       { Name: "APPLIK8S_AWS_SCHEDULE_ROLE_ARN", Value: getAtt(logical.get("scheduler.execution-role")!, "Arn") },
     );

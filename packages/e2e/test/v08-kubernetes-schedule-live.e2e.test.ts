@@ -38,6 +38,7 @@ describeLive('v0.8 Kubernetes Scheduler lifecycle on OrbStack', () => {
       timezone: 'UTC',
       overlap: 'skip' as const,
       misfires: 'latest' as const,
+      maximumLatenessSeconds: 300,
       retry: { maxAttempts: 3, maximumAgeSeconds: 1_800 },
       requirements: {
         configuration: 'dynamic' as const,

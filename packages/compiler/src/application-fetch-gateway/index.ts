@@ -249,9 +249,11 @@ export function generatedApplicationFetchGatewayModules(
 	if (schedules.length > 0)
 		imports.push(
 			"import { executeApplicationScheduleAdmission, installApplicationScheduleRuntimeResolver, schedule } from '@applik8s/applik8s';",
+			"import { installApplicationInvocationAdmissionResolver } from '@applik8s/client';",
 			"import { installLocalApplicationScheduleRuntime } from '@applik8s/applik8s/schedule-runtime-local';",
 			"import { createAwsApplicationScheduleRuntime, startAwsApplicationScheduleQueueRunner } from '@applik8s/runtime-aws';",
 			"import { createKubernetesApplicationScheduleRuntime, executeKubernetesApplicationScheduleAdmission } from '@applik8s/runtime-kubernetes';",
+			"import { AsyncLocalStorage } from 'node:async_hooks';",
 		);
 	if (actors.length > 0)
 		imports.push(
@@ -295,6 +297,15 @@ export function generatedApplicationFetchGatewayModules(
 	const scheduleSources = schedules.map((scheduleNode) => {
 		const callback = graphCallback(files, imports, scheduleNode.id, "schedule", scheduleNode.handler);
 		const definition = scheduleNode.definition;
+		const overlapBy = definition.overlapBy
+			? graphCallback(
+					files,
+					imports,
+					scheduleNode.id,
+					"schedule-overlap-key",
+					definition.overlapBy,
+				)
+			: undefined;
 		const options = {
 			id: definition.id,
 			...(definition.input
@@ -312,11 +323,15 @@ export function generatedApplicationFetchGatewayModules(
 			timezone: definition.timezone,
 			overlap: definition.overlap,
 			misfires: definition.misfires,
-			...(definition.maxCatchUp ? { maxCatchUp: definition.maxCatchUp } : {}),
+			maximumLateness: `${definition.maximumLatenessSeconds}s`,
+			...(definition.maximumCatchUp ? { maximumCatchUp: definition.maximumCatchUp } : {}),
 			retry: { maxAttempts: definition.retry.maxAttempts, maximumAge: `${definition.retry.maximumAgeSeconds}s` },
 			requirements: definition.requirements,
 		};
-		return `schedule(${JSON.stringify(options)}, ${callback})`;
+		const optionsSource = overlapBy
+			? `{ ...${JSON.stringify(options)}, overlapBy: ${overlapBy} }`
+			: JSON.stringify(options);
+		return `schedule(${optionsSource}, ${callback})`;
 	});
 	const scheduleHost = schedules.length > 0 ? applicationScheduleHost(graph) : undefined;
 	const actorSources = actors.map((actorNode) => {
@@ -1197,12 +1212,18 @@ ${actors.length > 0 || lakehousePublications.length > 0 || schedules.length > 0 
   );
 }` : ""}
 const applicationSchedules = [${scheduleSources.join(",\n")}];
+const scheduleInvocationScope = new AsyncLocalStorage();
+installApplicationInvocationAdmissionResolver(() => scheduleInvocationScope.getStore());
+const scheduleAdmissionRunner = Object.freeze({
+  run: (admission, invoke) => scheduleInvocationScope.run(admission, invoke),
+});
 const fixedSchedules = applicationSchedules.filter((entry) => entry.definition.configuration === 'fixed');
 const localScheduleRuntime = process.env.APPLIK8S_DEPLOYMENT_TARGET === 'local' && applicationSchedules.length > 0
   ? installLocalApplicationScheduleRuntime({
       applicationId: ${JSON.stringify(graph.metadata.name)},
       environmentId: process.env.APPLIK8S_ENVIRONMENT_ID ?? 'local',
       schedules: fixedSchedules,
+      admissionRunner: scheduleAdmissionRunner,
       onError: (error) => console.error('Applik8s local schedule runtime failed', error),
     })
   : undefined;
@@ -1214,13 +1235,14 @@ const awsScheduleConfiguration = process.env.APPLIK8S_DEPLOYMENT_TARGET === 'aws
       region: process.env.AWS_REGION,
       queueUrl: process.env.APPLIK8S_AWS_SCHEDULE_QUEUE_URL ?? '',
       queueArn: process.env.APPLIK8S_AWS_SCHEDULE_QUEUE_ARN ?? '',
+      deadLetterQueueArn: process.env.APPLIK8S_AWS_SCHEDULE_DLQ_ARN ?? '',
       groupName: process.env.APPLIK8S_AWS_SCHEDULE_GROUP ?? '',
       executionRoleArn: process.env.APPLIK8S_AWS_SCHEDULE_ROLE_ARN ?? '',
       databaseUrl: process.env.APPLIK8S_SCHEDULE_DATABASE_URL ?? '',
     }
   : undefined;
 const awsScheduleRuntime = awsScheduleConfiguration
-  ? createAwsApplicationScheduleRuntime(awsScheduleConfiguration)
+  ? createAwsApplicationScheduleRuntime(awsScheduleConfiguration, { admissionRunner: scheduleAdmissionRunner })
   : undefined;
 const disposeAwsScheduleRuntime = awsScheduleRuntime
   ? installApplicationScheduleRuntimeResolver(() => awsScheduleRuntime)
@@ -1232,7 +1254,7 @@ const awsScheduleRunner = awsScheduleConfiguration
       execute: async (admission, signal) => {
         const handle = applicationSchedules.find((candidate) => candidate.definition.id === admission.definitionId);
         if (!handle) throw new Error('AWS Scheduler admitted unknown definition ' + admission.definitionId + '.');
-        return executeApplicationScheduleAdmission(handle, admission, signal);
+        return executeApplicationScheduleAdmission(handle, admission, signal, scheduleAdmissionRunner);
       },
       onError: (error) => console.error('Applik8s AWS schedule admission failed', error),
     })
@@ -1245,6 +1267,7 @@ const kubernetesScheduleRuntime = process.env.APPLIK8S_DEPLOYMENT_TARGET === 'ku
       namespace: process.env.APPLIK8S_NAMESPACE ?? ${JSON.stringify(scheduleHost?.namespace ?? graph.metadata.namespace ?? 'default')},
       admissionEndpoint: ${JSON.stringify(scheduleHost?.admissionEndpoint ?? '')},
       authorizationSecretName: ${JSON.stringify(`${kubernetesName(graph.metadata.name)}-internal-operation`)},
+      admissionRunner: scheduleAdmissionRunner,
     })
   : undefined;
 const disposeKubernetesScheduleRuntime = kubernetesScheduleRuntime
@@ -1418,6 +1441,7 @@ const applicationGatewayCore = {
           ...(admission.deleteAfterCompletion && admission.providerResourceName && kubernetesScheduleRuntime
             ? { removeCompletedOneTime: () => kubernetesScheduleRuntime.removeResource(admission.providerResourceName) }
             : {}),
+          admissionRunner: scheduleAdmissionRunner,
         });
         return new Response(JSON.stringify({ accepted: receipt.state !== 'failed', receipt }), { status: receipt.state === 'failed' ? 500 : 200, headers: { 'content-type': 'application/json' } });
       } catch (error) {

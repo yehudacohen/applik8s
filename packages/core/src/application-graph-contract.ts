@@ -891,7 +891,8 @@ export interface ApplicationScheduleNode extends ApplicationGraphNodeBase<'sched
     readonly overlap: ApplicationScheduleOverlapPolicy;
     readonly overlapBy?: ApplicationSerializedCallbackContract;
     readonly misfires: ApplicationScheduleMisfirePolicy;
-    readonly maxCatchUp?: number;
+    readonly maximumLatenessSeconds: number;
+    readonly maximumCatchUp?: number;
     readonly retry: {
       readonly maxAttempts: number;
       readonly maximumAgeSeconds: number;
@@ -3594,11 +3595,17 @@ function applicationScheduleNodeStructureDiagnostics(
   if (!Number.isSafeInteger(node.definition.retry.maximumAgeSeconds) || node.definition.retry.maximumAgeSeconds < 1) {
     messages.push(`Application schedule ${node.id} retry maximumAgeSeconds must be a positive integer.`);
   }
+  if (!Number.isSafeInteger(node.definition.maximumLatenessSeconds) || node.definition.maximumLatenessSeconds < 1) {
+    messages.push(`Application schedule ${node.id} maximumLatenessSeconds must be a positive integer.`);
+  }
   if (
     node.definition.misfires === 'all-bounded'
-    && (!Number.isSafeInteger(node.definition.maxCatchUp) || (node.definition.maxCatchUp ?? 0) < 1)
+    && (!Number.isSafeInteger(node.definition.maximumCatchUp) || (node.definition.maximumCatchUp ?? 0) < 1)
   ) {
-    messages.push(`Application schedule ${node.id} all-bounded misfires require a positive maxCatchUp.`);
+    messages.push(`Application schedule ${node.id} all-bounded misfires require a positive maximumCatchUp.`);
+  }
+  if (node.definition.misfires !== 'all-bounded' && node.definition.maximumCatchUp !== undefined) {
+    messages.push(`Application schedule ${node.id} may declare maximumCatchUp only with all-bounded misfires.`);
   }
   return messages.map(applicationGraphStructureDiagnostic);
 }

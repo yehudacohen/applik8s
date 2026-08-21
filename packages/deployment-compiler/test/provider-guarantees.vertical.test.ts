@@ -1,7 +1,7 @@
 // typecast-file-boundary: Test fixtures intentionally construct heterogeneous provider nodes at the graph boundary.
-import type { ApplicationGraph, ApplicationProviderNode } from '@applik8s/core'
+import type { ApplicationGraph, ApplicationProviderNode, ApplicationScheduleNode } from '@applik8s/core'
 import { describe, expect, it } from 'vitest'
-import { applicationProviderGuaranteesForGraph } from '../src/index.js'
+import { applicationProviderGuaranteesForGraph, applicationScheduleProviderCompatibilityFindings, assertApplicationScheduleProviderCompatibility } from '../src/index.js'
 
 describe('v0.8 provider guarantee manifests', () => {
   it.each([
@@ -47,6 +47,55 @@ describe('v0.8 provider guarantee manifests', () => {
       expect.objectContaining({ id: 'actor-realtimeBroadcast', disposition: 'bounded' }),
     ]))
   })
+
+	it('rejects provider semantics that cannot preserve the authored schedule contract', () => {
+		const source = graph()
+		const scheduler = source.nodes.find((node): node is ApplicationProviderNode =>
+			node.kind === 'provider' && node.interface === 'Scheduler')!
+		const highCardinality = scheduleNode(scheduler.id, {
+			cardinality: 'high', precision: 'second', misfires: 'all-bounded',
+		})
+		const incompatible = { ...source, nodes: [...source.nodes, highCardinality] }
+		expect(applicationScheduleProviderCompatibilityFindings({ graph: incompatible, target: 'kubernetes' }))
+			.toEqual(expect.arrayContaining([
+				expect.objectContaining({ code: 'SCHEDULE_CARDINALITY_UNSUPPORTED' }),
+				expect.objectContaining({ code: 'SCHEDULE_PRECISION_UNSUPPORTED' }),
+				expect.objectContaining({ code: 'SCHEDULE_MISFIRE_UNSUPPORTED' }),
+			]))
+		expect(() => assertApplicationScheduleProviderCompatibility({ graph: incompatible, target: 'kubernetes' }))
+			.toThrow(/SCHEDULE_CARDINALITY_UNSUPPORTED/u)
+	})
+
+	it('rejects Kubernetes skip windows below the controller scheduling floor', () => {
+		const source = graph()
+		const scheduler = source.nodes.find((node): node is ApplicationProviderNode =>
+			node.kind === 'provider' && node.interface === 'Scheduler')!
+		const schedule = {
+			...scheduleNode(scheduler.id, { misfires: 'skip' }),
+			definition: { ...scheduleNode(scheduler.id, { misfires: 'skip' }).definition, maximumLatenessSeconds: 9 },
+		}
+		expect(applicationScheduleProviderCompatibilityFindings({
+			graph: { ...source, nodes: [...source.nodes, schedule] },
+			target: 'kubernetes',
+		})).toEqual(expect.arrayContaining([
+			expect.objectContaining({ code: 'SCHEDULE_LATENESS_UNSUPPORTED' }),
+		]))
+	})
+
+	it('records exact schedule guarantees for compatible target-selected providers', () => {
+		const source = graph()
+		const scheduler = source.nodes.find((node): node is ApplicationProviderNode =>
+			node.kind === 'provider' && node.interface === 'Scheduler')!
+		const compatible = { ...source, nodes: [...source.nodes, scheduleNode(scheduler.id)] }
+		const manifests = applicationProviderGuaranteesForGraph({ graph: compatible, target: 'aws' })
+		const scheduleManifest = manifests.find(({ capability }) => capability.interface === 'Scheduler')
+		expect(scheduleManifest?.guarantees).toEqual(expect.arrayContaining([
+			expect.objectContaining({ id: 'schedule-occurrence-identity', disposition: 'bounded' }),
+			expect.objectContaining({ id: 'schedule-overlap', disposition: 'bounded' }),
+			expect.objectContaining({ id: 'schedule-retry-dead-letter', disposition: 'bounded' }),
+		]))
+		expect(scheduleManifest?.limitations).not.toEqual(expect.arrayContaining([expect.stringMatching(/cannot preserve/u)]))
+	})
 })
 
 function graph(): ApplicationGraph {
@@ -78,4 +127,39 @@ function provider(providerInterface: string, implementation: string): Applicatio
     interface: providerInterface,
     implementation,
   }
+}
+
+function scheduleNode(
+	providerId: string,
+	overrides: {
+		readonly cardinality?: 'bounded' | 'high'
+		readonly precision?: 'minute' | 'second'
+		readonly misfires?: 'skip' | 'latest' | 'all-bounded'
+	} = {},
+): ApplicationScheduleNode {
+	return {
+		id: 'schedule.test.v1',
+		kind: 'schedule',
+		name: 'test.v1',
+		stability: 'stable',
+		definition: {
+			id: 'test.v1',
+			configuration: 'fixed',
+			cron: '* * * * *',
+			timezone: 'UTC',
+			overlap: 'skip',
+			misfires: overrides.misfires ?? 'latest',
+			maximumLatenessSeconds: 300,
+			...(overrides.misfires === 'all-bounded' ? { maximumCatchUp: 3 } : {}),
+			retry: { maxAttempts: 4, maximumAgeSeconds: 3_600 },
+			requirements: {
+				configuration: 'fixed',
+				cardinality: overrides.cardinality ?? 'bounded',
+				precision: overrides.precision ?? 'minute',
+			},
+		},
+		scheduler: { interface: 'Scheduler', nodeId: providerId },
+		handler: { source: 'async () => undefined' },
+		functionNative: true,
+	}
 }

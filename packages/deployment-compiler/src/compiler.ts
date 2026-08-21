@@ -28,6 +28,7 @@ import type {
   CompileApplicationDeploymentGraphResult,
 } from "./types.js";
 import { compileApplicationRuntimeAccessPlan } from './runtime-access-plan.js';
+import { assertApplicationScheduleProviderCompatibility } from './provider-guarantees.js';
 
 export function compileApplicationDeploymentGraph(
   request: CompileApplicationDeploymentGraphRequest,
@@ -44,6 +45,11 @@ export function compileApplicationDeploymentGraph(
       ? { materializedComposition: request.materializedComposition }
       : {}),
   };
+	assertApplicationScheduleProviderCompatibility({
+		graph: request.graph,
+		target: context.target,
+		...(request.identity.profile ? { profile: request.identity.profile } : {}),
+	});
   const contributors = contributorRegistryWithBuiltins(request.contributors ?? []);
   const contributions: ApplicationDeploymentContribution[] = [];
   const fragments: ApplicationTypeKroFragmentDescriptor[] = [];

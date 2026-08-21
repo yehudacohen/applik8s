@@ -5,6 +5,7 @@ import {
   type ApplicationProviderGuarantee,
   type ApplicationProviderGuaranteeManifest,
   type ApplicationProviderNode,
+  type ApplicationScheduleNode,
   applicationCanonicalIdentity,
   applicationProviderIdentity,
 } from '@applik8s/core';
@@ -13,6 +14,21 @@ export interface ApplicationProviderGuaranteeRegistryRequest {
   readonly graph: ApplicationGraph;
   readonly target: ApplicationDeploymentTargetKind;
   readonly profile?: string;
+}
+
+export interface ApplicationScheduleProviderCompatibilityFinding {
+  readonly code:
+    | 'SCHEDULE_CARDINALITY_UNSUPPORTED'
+    | 'SCHEDULE_LATENESS_UNSUPPORTED'
+    | 'SCHEDULE_MISFIRE_UNSUPPORTED'
+    | 'SCHEDULE_PRECISION_UNSUPPORTED'
+    | 'SCHEDULE_PROVIDER_UNIMPLEMENTED'
+    | 'SCHEDULE_PROVIDER_UNRESOLVED';
+  readonly scheduleId: string;
+  readonly providerId: string;
+  readonly implementation: string;
+  readonly target: ApplicationDeploymentTargetKind;
+  readonly message: string;
 }
 
 /**
@@ -34,6 +50,9 @@ export function applicationProviderGuaranteesForGraph(
     .map((provider) => {
       const implementation = selectedImplementation(provider, request.profile, request.target);
       const support = providerSupport(provider.interface, implementation, request.target);
+			const scheduleFindings = provider.interface === 'Scheduler'
+				? scheduleProviderFindings(request.graph, provider, implementation, request.target)
+				: [];
       return {
         apiVersion: 'applik8s.providerGuarantees/v1alpha1',
         provider: applicationProviderIdentity({
@@ -49,11 +68,53 @@ export function applicationProviderGuaranteesForGraph(
         },
         targets: [request.target],
         maturity: support ? providerMaturity(request.target, provider.stability) : 'experimental',
-        guarantees: baselineGuarantees(provider, request.target, support),
-        limitations: support ? targetLimitations(request.target) : [`${provider.interface}/${implementation} has no qualified ${request.target} lowering.`],
+        guarantees: baselineGuarantees(provider, request.target, implementation, support, request.graph),
+        limitations: support
+					? [...targetLimitations(request.target), ...scheduleFindings.map(({ message }) => message)]
+					: [`${provider.interface}/${implementation} has no qualified ${request.target} lowering.`],
         evidenceLevel: request.target === 'local' && support ? 'static' : 'none',
       } satisfies ApplicationProviderGuaranteeManifest;
     });
+}
+
+/**
+ * Returns exact schedule/provider semantic mismatches before a target plan can
+ * accidentally inherit a provider default. The same function feeds plan
+ * diagnostics and provider-guarantee records.
+ */
+export function applicationScheduleProviderCompatibilityFindings(
+  request: ApplicationProviderGuaranteeRegistryRequest,
+): readonly ApplicationScheduleProviderCompatibilityFinding[] {
+  const providers = new Map(request.graph.nodes
+    .filter((node): node is ApplicationProviderNode => node.kind === 'provider')
+    .map((provider) => [provider.id, provider] as const));
+  return request.graph.nodes
+    .filter((node): node is ApplicationScheduleNode => node.kind === 'schedule')
+    .flatMap((schedule) => {
+      const provider = providers.get(schedule.scheduler.nodeId);
+      if (!provider) {
+        return [{
+          code: 'SCHEDULE_PROVIDER_UNRESOLVED' as const,
+          scheduleId: schedule.definition.id,
+          providerId: schedule.scheduler.nodeId,
+          implementation: 'unresolved',
+          target: request.target,
+          message: `Schedule ${schedule.definition.id} references missing Scheduler provider ${schedule.scheduler.nodeId}.`,
+        }];
+      }
+      const implementation = selectedImplementation(provider, request.profile, request.target);
+      return scheduleProviderFindings(schedule, provider, implementation, request.target);
+    });
+}
+
+export function assertApplicationScheduleProviderCompatibility(
+  request: ApplicationProviderGuaranteeRegistryRequest,
+): void {
+  const findings = applicationScheduleProviderCompatibilityFindings(request);
+  if (findings.length === 0) return;
+  throw new Error(`Application schedules are incompatible with the ${request.target} target:\n${findings
+    .map(({ code, message }) => `- [${code}] ${message}`)
+    .join('\n')}`);
 }
 
 function selectedImplementation(provider: ApplicationProviderNode, profile: string | undefined, target: ApplicationDeploymentTargetKind): string {
@@ -197,7 +258,9 @@ function providerMaturity(target: ApplicationDeploymentTargetKind, stability: Ap
 function baselineGuarantees(
   provider: ApplicationProviderNode,
   target: ApplicationDeploymentTargetKind,
+  implementation: string,
   supported: boolean,
+  graph: ApplicationGraph,
 ): readonly ApplicationProviderGuarantee[] {
   const disposition = supported ? 'bounded' as const : 'unsupported' as const;
   const evidence = supported ? [`static:${target}:${provider.interface}:${provider.implementation}`] : [];
@@ -215,7 +278,121 @@ function baselineGuarantees(
     ...(provider.interface === 'ActorRuntime'
       ? actorGuarantees(provider, target, supported)
       : []),
+		...(provider.interface === 'Scheduler'
+			? scheduleGuarantees(graph, provider, implementation, target, supported)
+			: []),
   ];
+}
+
+function scheduleGuarantees(
+  graph: ApplicationGraph,
+  provider: ApplicationProviderNode,
+  implementation: string,
+  target: ApplicationDeploymentTargetKind,
+  supported: boolean,
+): readonly ApplicationProviderGuarantee[] {
+  const schedules = graph.nodes.filter((node): node is ApplicationScheduleNode =>
+    node.kind === 'schedule' && node.scheduler.nodeId === provider.id);
+  if (schedules.length === 0) return [];
+  const findings = schedules.flatMap((schedule) =>
+    scheduleProviderFindings(schedule, provider, implementation, target));
+  const findingCodes = new Set(findings.map(({ code }) => code));
+  const bounded = (id: string, category: ApplicationProviderGuarantee['category'], statement: string, incompatible = false): ApplicationProviderGuarantee => ({
+    id,
+    category,
+    statement,
+    disposition: supported && !incompatible ? 'bounded' : 'unsupported',
+    evidence: supported && !incompatible ? [`static:${target}:Scheduler:${implementation}:${id}`] : [],
+  });
+  return [
+    bounded('schedule-occurrence-identity', 'consistency', 'Logical occurrence identity is independent of provider delivery identifiers.'),
+    bounded('schedule-overlap', 'ordering-partitioning', 'Overlap is enforced by the framework occurrence authority.', findingCodes.has('SCHEDULE_PROVIDER_UNIMPLEMENTED')),
+    bounded('schedule-misfire', 'replay-retention-acknowledgement-duplicates', 'Misfire and catch-up behavior matches the authored schedule policy.', findingCodes.has('SCHEDULE_MISFIRE_UNSUPPORTED')),
+    bounded('schedule-lateness', 'limits', 'The provider preserves the authored maximum lateness window.', findingCodes.has('SCHEDULE_LATENESS_UNSUPPORTED')),
+    bounded('schedule-precision', 'limits', 'Cadence precision is preserved by the selected provider.', findingCodes.has('SCHEDULE_PRECISION_UNSUPPORTED')),
+    bounded('schedule-cardinality', 'limits', 'Configured schedule cardinality fits the selected provider topology.', findingCodes.has('SCHEDULE_CARDINALITY_UNSUPPORTED')),
+    bounded('schedule-retry-dead-letter', 'replay-retention-acknowledgement-duplicates', 'Retries retain occurrence identity and terminal failures reach a declared dead-letter authority.'),
+    bounded('schedule-lifecycle', 'lifecycle', 'Schedule create, update, pause, removal, and drift use one lifecycle owner.', findingCodes.has('SCHEDULE_PROVIDER_UNIMPLEMENTED')),
+  ];
+}
+
+function scheduleProviderFindings(
+  graph: ApplicationGraph,
+  provider: ApplicationProviderNode,
+  implementation: string,
+  target: ApplicationDeploymentTargetKind,
+): readonly ApplicationScheduleProviderCompatibilityFinding[];
+function scheduleProviderFindings(
+  schedule: ApplicationScheduleNode,
+  provider: ApplicationProviderNode,
+  implementation: string,
+  target: ApplicationDeploymentTargetKind,
+): readonly ApplicationScheduleProviderCompatibilityFinding[];
+function scheduleProviderFindings(
+  source: ApplicationGraph | ApplicationScheduleNode,
+  provider: ApplicationProviderNode,
+  implementation: string,
+  target: ApplicationDeploymentTargetKind,
+): readonly ApplicationScheduleProviderCompatibilityFinding[] {
+  const schedules = 'nodes' in source
+    ? source.nodes.filter((node): node is ApplicationScheduleNode =>
+      node.kind === 'schedule' && node.scheduler.nodeId === provider.id)
+    : [source];
+  return schedules.flatMap((schedule) => {
+    const details = {
+      scheduleId: schedule.definition.id,
+      providerId: provider.id,
+      implementation,
+      target,
+    } as const;
+    if (implementation === 'hatchet-scheduler') {
+      return [{
+        ...details,
+        code: 'SCHEDULE_PROVIDER_UNIMPLEMENTED' as const,
+        message: `Schedule ${schedule.definition.id} selects hatchet-scheduler, whose general function-native lowering is not implemented yet.`,
+      }];
+    }
+    if (!['local-scheduler', 'eventbridge-scheduler', 'kubernetes-cronjob-scheduler'].includes(implementation)) {
+      return [{
+        ...details,
+        code: 'SCHEDULE_PROVIDER_UNIMPLEMENTED' as const,
+        message: `Schedule ${schedule.definition.id} selects unsupported Scheduler implementation ${implementation}.`,
+      }];
+    }
+    const findings: ApplicationScheduleProviderCompatibilityFinding[] = [];
+    if (implementation !== 'local-scheduler' && schedule.definition.requirements.precision === 'second') {
+      findings.push({
+        ...details,
+        code: 'SCHEDULE_PRECISION_UNSUPPORTED',
+        message: `Schedule ${schedule.definition.id} requires second precision, but ${implementation} preserves only minute-or-coarser cadence.`,
+      });
+    }
+    if (implementation === 'kubernetes-cronjob-scheduler'
+      && schedule.definition.requirements.cardinality === 'high') {
+      findings.push({
+        ...details,
+        code: 'SCHEDULE_CARDINALITY_UNSUPPORTED',
+        message: `Schedule ${schedule.definition.id} requires high-cardinality dynamic instances, but Kubernetes CronJobs are the bounded-topology provider.`,
+      });
+    }
+    if (implementation === 'kubernetes-cronjob-scheduler'
+      && schedule.definition.misfires === 'skip'
+      && schedule.definition.maximumLatenessSeconds < 10) {
+      findings.push({
+        ...details,
+        code: 'SCHEDULE_LATENESS_UNSUPPORTED',
+        message: `Schedule ${schedule.definition.id} permits ${schedule.definition.maximumLatenessSeconds}s lateness, but Kubernetes CronJob reconciliation cannot reliably preserve a starting deadline below 10 seconds.`,
+      });
+    }
+    if (implementation !== 'local-scheduler' && schedule.definition.misfires === 'all-bounded') {
+      findings.push({
+        ...details,
+        code: 'SCHEDULE_MISFIRE_UNSUPPORTED',
+        message: `Schedule ${schedule.definition.id} requires all-bounded catch-up, which ${implementation} cannot preserve without a shared catch-up planner.`,
+      });
+    }
+    return findings;
+  });
 }
 
 function actorGuarantees(

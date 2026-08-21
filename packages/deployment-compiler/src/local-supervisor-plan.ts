@@ -27,7 +27,7 @@ import type {
 } from '@applik8s/deployment-contract';
 import { compileApplicationPlan } from './application-plan.js';
 import { compileApplicationAwsDeploymentPlan } from './aws-deployment-plan.js';
-import { applicationProviderGuaranteesForGraph } from './provider-guarantees.js';
+import { applicationProviderGuaranteesForGraph, assertApplicationScheduleProviderCompatibility } from './provider-guarantees.js';
 import { resolveApplicationProviderForTarget } from './providers.js';
 import { applicationWorkloadDependencyNodeIds, applicationWorkloadProviderNodeIds } from './workload-provider-references.js';
 
@@ -50,6 +50,11 @@ export interface CompileLocalSupervisorPlanRequest {
 export type ApplicationLocalRuntimeArtifact = ApplicationRuntimeArtifact;
 
 export function compileLocalSupervisorPlan(request: CompileLocalSupervisorPlanRequest): LocalSupervisorPlan {
+	assertApplicationScheduleProviderCompatibility({
+		graph: request.graph,
+		target: request.target,
+		...(request.profile ? { profile: request.profile } : {}),
+	});
   const resources: LocalSupervisorResource[] = [];
   const bindings: LocalSupervisorBinding[] = [];
   const diagnostics: LocalSupervisorDiagnostic[] = [];
@@ -845,6 +850,7 @@ function awsLocalRuntimeEnvironment(
   if (scheduleAccess) {
     add('APPLIK8S_AWS_SCHEDULE_QUEUE_URL', output('scheduler.admission', 'queueUrl'));
     add('APPLIK8S_AWS_SCHEDULE_QUEUE_ARN', output('scheduler.admission', 'queueArn'));
+    add('APPLIK8S_AWS_SCHEDULE_DLQ_ARN', output('scheduler.dead-letter', 'queueArn'));
     const scheduleGroup = plan.resources.find(({ id }) => id === 'scheduler.group');
     if (!scheduleGroup) throw new Error('AWS-local schedule access has no schedule group authority.');
     add('APPLIK8S_AWS_SCHEDULE_GROUP', `literal:${scheduleGroup.physicalName}`);

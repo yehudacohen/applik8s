@@ -71,13 +71,18 @@
     {
       "id": "schedule-occurrence",
       "transport": "schedule",
-      "state": "not-started",
-      "evidenceVerifier": "schedule definition, occurrence identity, and scheduler delivery",
-      "principalSource": "bounded scheduler service principal; never the configuring human principal",
+		"state": "in-progress",
+		"evidenceVerifier": "provider delivery evidence followed by applicationScheduleInvocationAdmission() canonicalization",
+      "principalSource": "bounded scheduler service principal for provider occurrences; current execution and causal principal for immediate callable invocation; never the configuring human principal for a future occurrence",
       "operationIdentity": "schedule definition and occurrence target",
-      "owners": [],
-      "regression": null,
-      "remaining": "integrate local, Kubernetes, Hatchet, and EventBridge schedule providers"
+		"owners": [
+			"packages/applik8s/src/application-schedule.ts",
+			"packages/runtime-kubernetes/src/schedule.ts",
+			"packages/runtime-aws/src/schedule.ts",
+			"packages/compiler/src/application-fetch-gateway/index.ts"
+		],
+		"regression": "bunx vitest run --maxWorkers=1 packages/applik8s/test/application-schedule.vertical.test.ts packages/applik8s/test/application-schedule-local-runtime.vertical.test.ts packages/runtime-kubernetes/test/schedule.vertical.test.ts packages/runtime-aws/test/schedule.vertical.test.ts packages/compiler/test/application-schedules.vertical.test.ts",
+		"remaining": "local, Kubernetes, and AWS paths now share canonical occurrence admission while immediate calls preserve caller lineage; complete Hatchet general schedule lowering, emitted-host rejection/version telemetry, and OrbStack plus real EventBridge lifecycle evidence"
     },
     {
       "id": "actor-call-alarm",

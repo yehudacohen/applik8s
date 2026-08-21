@@ -266,7 +266,7 @@ describe('v0.8 canonical foundation', () => {
           name: 'notes.compact.v1',
           stability: 'stable',
           definition: {
-            id: 'notes.compact.v1', configuration: 'fixed', cron: '0 3 * * *', timezone: 'UTC', overlap: 'skip', misfires: 'latest',
+            id: 'notes.compact.v1', configuration: 'fixed', cron: '0 3 * * *', timezone: 'UTC', overlap: 'skip', misfires: 'latest', maximumLatenessSeconds: 300,
             retry: { maxAttempts: 4, maximumAgeSeconds: 21_600 },
             requirements: { configuration: 'fixed', cardinality: 'bounded', precision: 'minute' },
           },

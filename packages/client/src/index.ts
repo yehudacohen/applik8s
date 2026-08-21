@@ -8,6 +8,12 @@ export type { HttpApplicationQueryTransportOptions } from './http-transport.js';
 export { createHttpApplicationQueryTransport } from './http-transport.js';
 export type * from './hydration.js';
 export { createApplicationQueryLoader, hydrateApplicationQueries, preloadApplicationQuery } from './hydration.js';
+export type * from './invocation-admission.js';
+export {
+  currentApplicationInvocationAdmission,
+  installApplicationInvocationAdmissionResolver,
+  requireApplicationInvocationAdmission,
+} from './invocation-admission.js';
 export type * from './operations.js';
 export {
   ApplicationBoundFieldOverrideError,

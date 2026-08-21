@@ -322,6 +322,7 @@ export const RefreshEntitlements = schedule(
     every: "15m",
     overlap: "skip",
     misfires: "latest",
+    maximumLateness: "5m",
   },
   async context => {
     await RefreshEntitlementsWorkflow.start({

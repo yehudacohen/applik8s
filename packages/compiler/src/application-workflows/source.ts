@@ -311,7 +311,7 @@ import { createSignedEnvelopeCodec, signedEnvelopeUtf8Key, staticSignedEnvelopeK
 	import { nodeKeyedDigestHex } from '@applik8s/runtime/node-integrity';
 		import { installApplicationObjectStorageRuntimeResolver, installApplicationProjectionRuntimeResolver, installApplicationWorkflowRuntimeResolver } from '@applik8s/applik8s/workflow-runtime-resolvers';
 import { applicationWorkflowCausalPrincipalMetadata } from '@applik8s/applik8s/workflow-runtime';
-import { installApplicationOperationRuntimeResolver } from '@applik8s/client';
+import { installApplicationInvocationAdmissionResolver, installApplicationOperationRuntimeResolver } from '@applik8s/client';
 import { normalizeSchema } from '@applik8s/sdk';
 ${capabilityImports}
 ${operationImports}
@@ -336,6 +336,7 @@ const declarations = Object.create(null);
 	const directProjectionScope = new AsyncLocalStorage();
 	installApplicationWorkflowRuntimeResolver(() => directWorkflowScope.getStore());
 	installApplicationOperationRuntimeResolver(() => directOperationScope.getStore());
+	installApplicationInvocationAdmissionResolver(() => directOperationScope.getStore()?.admission);
 	installApplicationObjectStorageRuntimeResolver((binding) => directObjectScope.getStore()?.(binding));
 	installApplicationProjectionRuntimeResolver((binding) => directProjectionScope.getStore()?.(binding));
 const capabilities = Object.create(null);
@@ -743,6 +744,7 @@ function taskContext(_context, contractName, errorSchemas, declaredCapabilities,
 }
 function directApplicationRuntime(execution) {
   return {
+    admission: execution.admission,
     execute(operation, input) {
       const invoke = execution.operations[operation.id];
       if (!invoke) throw new Error('Workflow step attempted to call undeclared operation ' + JSON.stringify(operation.id));

@@ -1,0 +1,140 @@
+{
+  "schemaVersion": 1,
+  "release": "0.8.0",
+  "status": "active",
+  "semantics": [
+    "definition-identity",
+    "instance-revision-convergence",
+    "occurrence-identity",
+    "canonical-admission",
+    "time-and-timezone",
+    "overlap",
+    "misfire-and-catch-up",
+    "retry-and-dead-letter",
+    "pause-update-cancel",
+    "history-and-observability",
+    "lifecycle-and-drift"
+  ],
+  "sources": [
+    {
+      "id": "function-native-schedule",
+      "state": "implemented",
+      "disposition": "public-golden-path",
+      "notes": "Inert schedule(parameters, closure) definitions, immediate invocation, dynamic convergence, and one-time instances use the shared graph."
+    },
+    {
+      "id": "static-workflow-cron",
+      "state": "in-progress",
+      "disposition": "lower-to-shared-definition",
+      "notes": "Existing Hatchet workflow cron convergence remains compatible but has not yet been lowered through the complete shared schedule occurrence contract."
+    },
+    {
+      "id": "delayed-workflow-start",
+      "state": "in-progress",
+      "disposition": "lower-durable-future-start-to-one-occurrence",
+      "notes": "Immediate workflow start remains workflow-owned; durable future admission still needs shared occurrence evidence."
+    },
+    {
+      "id": "dynamic-reconcile-schedule",
+      "state": "in-progress",
+      "disposition": "framework-convergence-operation",
+      "notes": "Function-native dynamic schedules converge through the shared graph; legacy workflow reconciliation still needs migration."
+    },
+    {
+      "id": "stream-processor-schedule",
+      "state": "implemented",
+      "disposition": "processor-internal",
+      "notes": "Processor checkpoint, partition, and consumer lifecycle remain processor semantics and are not exposed as public schedule parity."
+    },
+    {
+      "id": "actor-alarm",
+      "state": "implemented",
+      "disposition": "actor-owned-not-a-schedule",
+      "notes": "Alarm authority, actor identity, persisted timer state, and turn ordering remain actor-owned."
+    },
+    {
+      "id": "raw-kubernetes-cron",
+      "state": "implemented",
+      "disposition": "infrastructure-escape-hatch",
+      "notes": "Image/command CronJobs are target-specific infrastructure and never claim function-native parity."
+    }
+  ],
+  "providers": [
+    {
+      "id": "deterministic-local",
+      "state": "implemented",
+      "target": "local",
+      "capabilities": {
+        "definition-identity": "framework",
+        "instance-revision-convergence": "framework",
+        "occurrence-identity": "framework",
+        "canonical-admission": "framework-scheduler-service-for-occurrences-caller-lineage-for-immediate",
+        "time-and-timezone": "framework",
+        "overlap": "framework",
+        "misfire-and-catch-up": "framework-skip-maximum-lateness-latest-maximum-age-and-newest-n-bounded-catch-up",
+        "retry-and-dead-letter": "retry-with-terminal-receipt-no-external-dlq",
+        "pause-update-cancel": "framework",
+        "history-and-observability": "durable-local-snapshot-and-otel",
+        "lifecycle-and-drift": "lease-safe-local-state"
+      },
+      "remaining": "Bounded history policy and fresh generated-product restart/teardown qualification. Canonical persistence and admitted-occurrence recovery are covered deterministically."
+    },
+    {
+      "id": "kubernetes-cronjob",
+      "state": "in-progress",
+      "target": "kubernetes",
+      "capabilities": {
+        "definition-identity": "framework",
+        "instance-revision-convergence": "framework-plus-server-drift-repair",
+        "occurrence-identity": "framework",
+        "canonical-admission": "framework-scheduler-service-for-occurrences-caller-lineage-for-immediate",
+        "time-and-timezone": "kubernetes-minute-precision",
+        "overlap": "postgres-lease-authority",
+        "misfire-and-catch-up": "latest-or-skip-only-all-bounded-rejected-starting-deadline-and-admission-window-enforced",
+        "retry-and-dead-letter": "job-retry-with-terminal-receipt-no-external-dlq",
+        "pause-update-cancel": "cronjob-suspend-update-uid-leased-delete",
+        "history-and-observability": "postgres-receipt-and-otel",
+        "lifecycle-and-drift": "uid-leased-resource-lifecycle"
+      },
+      "remaining": "Bounded instance ceiling enforcement and OrbStack create/no-op/update/disable/duplicate/restart/drift/delete lifecycle evidence."
+    },
+    {
+      "id": "hatchet-shared",
+      "state": "in-progress",
+      "target": "kubernetes",
+      "capabilities": {
+        "definition-identity": "workflow-contract-only",
+        "instance-revision-convergence": "workflow-cron-only",
+        "occurrence-identity": "missing-shared-schedule-contract",
+        "canonical-admission": "missing-shared-schedule-contract",
+        "time-and-timezone": "provider-cron-only",
+        "overlap": "missing-shared-schedule-contract",
+        "misfire-and-catch-up": "missing-shared-schedule-contract",
+        "retry-and-dead-letter": "workflow-provider-specific",
+        "pause-update-cancel": "workflow-cron-only",
+        "history-and-observability": "workflow-provider-specific",
+        "lifecycle-and-drift": "workflow-cron-convergence"
+      },
+      "remaining": "Lower general function-native schedule definitions into a generated Hatchet workflow while retaining framework occurrence authority."
+    },
+    {
+      "id": "eventbridge-scheduler",
+      "state": "in-progress",
+      "target": "aws",
+      "capabilities": {
+        "definition-identity": "framework",
+        "instance-revision-convergence": "framework-plus-provider-drift-repair",
+        "occurrence-identity": "framework",
+        "canonical-admission": "framework-scheduler-service-for-occurrences-caller-lineage-for-immediate",
+        "time-and-timezone": "eventbridge-minute-precision",
+        "overlap": "postgres-advisory-lock-and-lease-authority",
+        "misfire-and-catch-up": "provider-limited-all-bounded-unsupported",
+        "retry-and-dead-letter": "eventbridge-retry-and-sqs-dlq",
+        "pause-update-cancel": "provider-state-update-delete",
+        "history-and-observability": "postgres-receipt-cloudwatch-and-otel",
+        "lifecycle-and-drift": "alchemy-plus-runtime-convergence"
+      },
+      "remaining": "Real-AWS create/no-op/update/one-time/disable/duplicate/retry/DLQ/drift/interruption/delete and cost evidence; all-bounded remains an explicit compatibility rejection."
+    }
+  ]
+}

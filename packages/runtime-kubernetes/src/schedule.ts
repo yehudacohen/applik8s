@@ -2,8 +2,10 @@
 import { createHash, randomUUID } from 'node:crypto';
 import {
   applicationScheduleOccurrenceId,
+  applicationScheduleImmediateInvocationAdmission,
   executeApplicationScheduleAdmission,
   type ApplicationScheduleAdmission,
+  type ApplicationScheduleAdmissionRunner,
   type ApplicationScheduleConvergenceResult,
   type ApplicationScheduleDefinitionContract,
   type ApplicationScheduleHandle,
@@ -12,6 +14,7 @@ import {
   type ApplicationScheduleOccurrenceReceipt,
   type ApplicationScheduleRuntime,
 } from '@applik8s/applik8s';
+import type { ApplicationAdmissionInvocationContextV1 } from '@applik8s/core';
 import type { BatchV1Api, KubeConfig, V1CronJob } from '@kubernetes/client-node';
 import postgres, { type Sql } from 'postgres';
 
@@ -26,6 +29,7 @@ export interface KubernetesApplicationScheduleRuntimeOptions {
   readonly authorizationSecretKey?: string;
   readonly kubeConfig?: KubeConfig;
   readonly image?: string;
+  readonly admissionRunner?: ApplicationScheduleAdmissionRunner;
 }
 
 export interface KubernetesApplicationScheduleRuntime extends ApplicationScheduleRuntime {
@@ -56,25 +60,39 @@ export async function createKubernetesApplicationScheduleRuntime(
       readonly definition: ApplicationScheduleDefinitionContract<TInput>;
       readonly input: TInput;
       readonly handler: ApplicationScheduleHandler<TInput, TResult>;
+      readonly callerAdmission: ApplicationAdmissionInvocationContextV1;
     }): Promise<TResult> {
       const now = new Date().toISOString();
-      return request.handler(request.input, {
+			const occurrenceId = applicationScheduleOccurrenceId({
+				applicationId: options.applicationId,
+				environmentId: options.environmentId,
+				definitionId: request.definition.id,
+				instanceId: 'immediate',
+				scheduledAt: now,
+			});
+      const invocationAdmission = applicationScheduleImmediateInvocationAdmission({
+        caller: request.callerAdmission,
         definitionId: request.definition.id,
         instanceId: 'immediate',
-        occurrenceId: applicationScheduleOccurrenceId({
-          applicationId: options.applicationId,
-          environmentId: options.environmentId,
-          definitionId: request.definition.id,
-          instanceId: 'immediate',
-          scheduledAt: now,
-        }),
+        occurrenceId,
+        admittedAt: now,
+        maximumAgeSeconds: request.definition.retry.maximumAgeSeconds,
+      });
+      const invokeHandler = async () => request.handler(request.input, {
+        definitionId: request.definition.id,
+        instanceId: 'immediate',
+				occurrenceId,
         scheduledAt: now,
         admittedAt: now,
         startedAt: now,
         attempt: 1,
         trigger: 'immediate',
+				admission: invocationAdmission,
         signal: new AbortController().signal,
       });
+      return options.admissionRunner
+        ? options.admissionRunner.run(invocationAdmission, invokeHandler)
+        : invokeHandler();
     },
     async reconcile<TInput extends object>(request: {
       readonly definition: ApplicationScheduleDefinitionContract<TInput>;
@@ -201,6 +219,7 @@ export interface KubernetesScheduleAdmissionAuthorityOptions<TInput extends obje
   readonly admission: ApplicationScheduleAdmission;
   readonly signal?: AbortSignal;
   readonly removeCompletedOneTime?: () => Promise<void>;
+  readonly admissionRunner?: ApplicationScheduleAdmissionRunner;
 }
 
 /**
@@ -234,7 +253,12 @@ export async function executeKubernetesApplicationScheduleAdmission<TInput exten
     if (claim.state === 'complete') return claim.receipt as ApplicationScheduleOccurrenceReceipt<TResult>;
     if (claim.state === 'busy') throw new KubernetesScheduleOccurrenceBusyError(occurrenceId);
     if (claim.state === 'skipped') return claim.receipt as ApplicationScheduleOccurrenceReceipt<TResult>;
-    const receipt = await executeApplicationScheduleAdmission(options.handle, options.admission, options.signal);
+    const receipt = await executeApplicationScheduleAdmission(
+      options.handle,
+      options.admission,
+      options.signal,
+      options.admissionRunner,
+    );
     if (receipt.state === 'succeeded' || receipt.state === 'skipped') {
       if (!await completeOccurrence(sql, occurrenceId, claim.owner, receipt)) {
         throw new Error(`Kubernetes schedule occurrence ${occurrenceId} lost its durable execution lease.`);
@@ -288,7 +312,12 @@ function cronJob<TInput extends object>(request: {
       concurrencyPolicy: request.definition.overlap === 'skip' ? 'Forbid' : 'Allow',
       failedJobsHistoryLimit: 3,
       successfulJobsHistoryLimit: 1,
-      startingDeadlineSeconds: Math.min(request.definition.retry.maximumAgeSeconds, 2_147_483_647),
+      startingDeadlineSeconds: Math.min(
+        request.definition.misfires === 'skip'
+          ? request.definition.maximumLatenessSeconds
+          : request.definition.retry.maximumAgeSeconds,
+        2_147_483_647,
+      ),
       jobTemplate: {
         metadata: { labels },
         spec: {
