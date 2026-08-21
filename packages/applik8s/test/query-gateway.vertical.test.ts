@@ -1,8 +1,10 @@
 // typecast-file-boundary: gateway fixtures emulate heterogeneous query and database results validated by the runtime.
+import { createHmac } from 'node:crypto';
 import type { ApplicationModelChange, ApplicationOnlineQueryRuntimeSource, ApplicationOnlineQuerySource, ApplicationQueryBinding, ApplicationRelationalContext } from '@applik8s/applik8s';
 import { app, applicationGraphFor, createApplicationQueryGateway, createApplicationQueryGatewayHttpHandler, createApplicationStreamSubscriptionGateway, createApplicationSubscriptionLimiter, postgres, trustedContext } from '@applik8s/applik8s';
 import { type } from '@applik8s/applik8s/dsl';
-import type { ApplicationAuthorizationReceipt } from '@applik8s/core';
+import { type ApplicationAuthorizationReceipt, canonicalJsonV1Value } from '@applik8s/core';
+import { createSignedEnvelopeCodec, signedEnvelopeUtf8Key, staticSignedEnvelopeKeyProvider } from '@applik8s/runtime/signed-envelope';
 import { pgTable, text, uuid } from 'drizzle-orm/pg-core';
 import { describe, expect, test } from 'vitest';
 import { testApplicationPrincipal } from '../../../test-support/application-principal.js';
@@ -126,6 +128,20 @@ describe('v0.6 authenticated query gateway', () => {
     const response = await handler(new Request('https://catalog.test/queries/cards.list.v1/snapshot', { method: 'POST', body: JSON.stringify({ input: { limit: 5 } }) }));
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({ kind: 'snapshot', query: 'cards.list.v1' });
+  });
+
+  test('bounds query cursor lifetime at the framework boundary', () => {
+    const { query } = queryFixture();
+    expect(() => createApplicationQueryGateway({
+      queries: [query as ApplicationQueryBinding<unknown, unknown>],
+      authenticate: async () => ({
+        principal: testApplicationPrincipal('allowed'),
+        admittedContext: { values: {}, digestSecret: 'context-digest-secret-context-digest-secret' },
+      }),
+      context: () => fakeContext(),
+      cursorSecret: 'cursor-signing-secret-cursor-signing-secret',
+      cursorTtlSeconds: 24 * 60 * 60 + 1,
+    })).toThrow(/cursor, session, or page bounds/);
   });
 
   test('runs signed internal queries through the existing bounded query binding', async () => {
@@ -270,6 +286,12 @@ describe('v0.6 authenticated query gateway', () => {
     expect(snapshot).toMatchObject({ kind: 'snapshot', query: 'cards.list.v1', value: [{ id: 'card-1', name: 'First' }], capability: 'resumableInvalidation' });
     expect(snapshot.cursor).not.toContain('organization-1');
     const cursorBody = JSON.parse(Buffer.from(snapshot.cursor.split('.')[0] ?? '', 'base64url').toString('utf8')) as Record<string, unknown>;
+    const [encodedBody, encodedSignature] = snapshot.cursor.split('.');
+    expect(encodedSignature).toBe(
+      createHmac('sha256', 'cursor-signing-secret-cursor-signing-secret')
+        .update(encodedBody ?? '')
+        .digest('base64url'),
+    );
     expect(cursorBody).toMatchObject({ version: 2, query: 'cards.list.v1' });
     expect(cursorBody).not.toHaveProperty('authorizationVersion');
     expect(cursorBody).not.toHaveProperty('contextDigest');
@@ -377,6 +399,30 @@ describe('v0.6 authenticated query gateway', () => {
       sleep: async () => undefined,
     });
     const snapshot = await gateway.snapshot({}, query.id, { limit: 5 });
+    const legacyPayload = JSON.parse(
+      Buffer.from(snapshot.cursor.split('.')[0] ?? '', 'base64url').toString('utf8'),
+    ) as Record<string, unknown>;
+    const v1Codec = createSignedEnvelopeCodec({
+      purpose: 'applik8s.query-cursor/v1',
+      keys: staticSignedEnvelopeKeyProvider({
+        current: {
+          id: 'query-cursor-current',
+          key: signedEnvelopeUtf8Key('cursor-signing-secret-cursor-signing-secret'),
+        },
+      }),
+      now: () => current.getTime(),
+      maximumLifetimeMs: 30_000,
+      validatePayload(value) { return value; },
+    });
+    const v1WrongQuery = await v1Codec.sign(
+      canonicalJsonV1Value({ ...legacyPayload, query: 'cards.list.previous' }),
+      {
+        issuedAt: current.getTime(),
+        expiresAt: Number(legacyPayload.expiresAt),
+      },
+    );
+    expect((await gateway.subscribe({}, query.id, { limit: 5 }, v1WrongQuery)[Symbol.asyncIterator]().next()).value)
+      .toMatchObject({ kind: 'reset', reason: 'queryVersionChanged' });
     const tampered = `${snapshot.cursor.slice(0, -1)}x`;
     expect((await gateway.subscribe({}, query.id, { limit: 5 }, tampered)[Symbol.asyncIterator]().next()).value).toMatchObject({ kind: 'reset', reason: 'cursorInvalid' });
     organizationId = 'organization-2';

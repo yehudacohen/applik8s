@@ -25,6 +25,11 @@
       "types": "./dist/signed-envelope.d.ts",
       "import": "./dist/signed-envelope.js",
       "default": "./dist/signed-envelope.js"
+    },
+    "./node-integrity": {
+      "types": "./dist/node-integrity.d.ts",
+      "import": "./dist/node-integrity.js",
+      "default": "./dist/node-integrity.js"
     }
   },
   "dependencies": {

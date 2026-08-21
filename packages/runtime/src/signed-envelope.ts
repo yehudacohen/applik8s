@@ -1,8 +1,10 @@
 import {
   canonicalJsonV1Bytes,
   canonicalJsonV1String,
+  canonicalJsonV1Value,
   type JsonValue,
   type SignedEnvelopeV1Protected,
+  SignedEnvelopeV1ValidationError,
   signedEnvelopeAlgorithm,
   signedEnvelopeVersion,
   validateSignedEnvelopeV1Protected,
@@ -52,6 +54,27 @@ export interface LegacyCompactHmacJsonOptions<TPayload> {
 export interface LegacyCompactHmacJsonSigningOptions {
   readonly key: SignedEnvelopeKeyMaterial;
   readonly maximumEncodedBytes?: number;
+}
+
+export interface RollingSignedEnvelopeLegacyAdapter<TPayload, TLegacyPayload> {
+  readonly key: SignedEnvelopeKeyMaterial;
+  readonly validatePayload: (value: JsonValue) => TLegacyPayload;
+  readonly toCurrent: (payload: TLegacyPayload, now: number) => TPayload;
+  readonly fromCurrent: (
+    payload: TPayload,
+    timing: { readonly issuedAt: number; readonly expiresAt?: number },
+  ) => JsonValue;
+}
+
+export interface RollingSignedEnvelopeCodecOptions<TPayload, TLegacyPayload>
+  extends SignedEnvelopeCodecOptions<TPayload> {
+  readonly writer: 'legacy' | 'v1';
+  readonly legacy: RollingSignedEnvelopeLegacyAdapter<TPayload, TLegacyPayload>;
+}
+
+export interface RollingSignedEnvelopeCodec<TPayload> {
+  sign(payload: TPayload, options?: SignedEnvelopeSignOptions): Promise<string>;
+  verify(token: string): Promise<TPayload>;
 }
 
 export type SignedEnvelopeRuntimeErrorCode =
@@ -185,6 +208,93 @@ export function createSignedEnvelopeCodec<TPayload>(
     },
   };
   return Object.freeze(codec);
+}
+
+/**
+ * Coordinates the accepted Release-A/B/C migration without allowing payload
+ * owners to duplicate format probing or cryptography.
+ */
+export function createRollingSignedEnvelopeCodec<TPayload, TLegacyPayload>(
+  options: RollingSignedEnvelopeCodecOptions<TPayload, TLegacyPayload>,
+): RollingSignedEnvelopeCodec<TPayload> {
+  const current = createSignedEnvelopeCodec(options);
+  const now = options.now ?? Date.now;
+  const codec: RollingSignedEnvelopeCodec<TPayload> = {
+    async sign(payload, signOptions = {}) {
+      if (options.writer === 'v1') return current.sign(payload, signOptions);
+      const timing = signedEnvelopeTiming(now(), signOptions);
+      const normalized = validateSignedEnvelopeV1Protected({
+        version: signedEnvelopeVersion,
+        purpose: options.purpose,
+        algorithm: signedEnvelopeAlgorithm,
+        keyId: 'legacy-rolling-migration',
+        issuedAt: timing.issuedAt,
+        ...(timing.expiresAt === undefined
+          ? {}
+          : { expiresAt: timing.expiresAt }),
+        payload,
+      }, {
+        purpose: options.purpose,
+        now: timing.issuedAt,
+        ...(options.maximumLifetimeMs === undefined
+          ? {}
+          : { maximumLifetimeMs: options.maximumLifetimeMs }),
+        validatePayload: options.validatePayload,
+      }).payload;
+      return signLegacyCompactHmacJsonForRollingMigration(
+        options.legacy.fromCurrent(normalized, timing),
+        {
+          key: options.legacy.key,
+          ...(options.maximumEncodedBytes === undefined
+            ? {}
+            : { maximumEncodedBytes: options.maximumEncodedBytes }),
+        },
+      );
+    },
+    async verify(token) {
+      try {
+        return (await current.verify(token)).payload;
+      } catch (cause) {
+        if (!isLegacyCompactCandidate(cause)) throw cause;
+      }
+      const legacy = await verifyLegacyCompactHmacJson(token, {
+        key: options.legacy.key,
+        ...(options.maximumEncodedBytes === undefined
+          ? {}
+          : { maximumEncodedBytes: options.maximumEncodedBytes }),
+        validatePayload: options.legacy.validatePayload,
+      });
+      return options.validatePayload(canonicalJsonV1Value(
+        options.legacy.toCurrent(legacy, now()),
+      ));
+    },
+  };
+  return Object.freeze(codec);
+}
+
+function signedEnvelopeTiming(
+  now: number,
+  options: SignedEnvelopeSignOptions,
+): { readonly issuedAt: number; readonly expiresAt?: number } {
+  if (options.expiresAt !== undefined && options.expiresInMs !== undefined) {
+    throw new TypeError('Signed envelope expiry must use expiresAt or expiresInMs, not both.');
+  }
+  const issuedAt = options.issuedAt ?? now;
+  const expiresAt = options.expiresAt
+    ?? (options.expiresInMs === undefined
+      ? undefined
+      : issuedAt + options.expiresInMs);
+  return { issuedAt, ...(expiresAt === undefined ? {} : { expiresAt }) };
+}
+
+function isLegacyCompactCandidate(cause: unknown): boolean {
+  return (
+    cause instanceof SignedEnvelopeV1ValidationError
+    && cause.code === 'SIGNED_ENVELOPE_VERSION_INVALID'
+  ) || (
+    cause instanceof SignedEnvelopeRuntimeError
+    && cause.code === 'SIGNED_ENVELOPE_MALFORMED'
+  );
 }
 
 function untrustedKeyId(value: unknown): string {

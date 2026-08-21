@@ -117,6 +117,7 @@
       "@applik8s/compiler/kubernetes-schema": ["packages/compiler/src/kubernetes-schema/index.ts"],
       "@applik8s/runtime": ["packages/runtime/src/index.ts"],
       "@applik8s/runtime/signed-envelope": ["packages/runtime/src/signed-envelope.ts"],
+      "@applik8s/runtime/node-integrity": ["packages/runtime/src/node-integrity.ts"],
       "@applik8s/applik8s/search-cursor-codec": ["packages/applik8s/src/search-cursor-codec.ts"],
       "@applik8s/runtime-s3": ["packages/runtime-s3/src/index.ts"],
       "@applik8s/runtime-hatchet": ["packages/runtime-hatchet/src/index.ts"],

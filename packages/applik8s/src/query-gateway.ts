@@ -1,7 +1,8 @@
-import { createHmac, timingSafeEqual } from 'node:crypto';
 import { type ApplicationQueryEvent, type ApplicationQueryMultiplexErrorFrame, type ApplicationQueryMultiplexFrame, type ApplicationQueryMultiplexSubscription, type ApplicationQuerySnapshot, queryInputKey } from '@applik8s/client';
-import { type ApplicationAuthorizationReceipt, type JsonValue, validateApplicationAuthorizationReceipt } from '@applik8s/core';
+import { type ApplicationAuthorizationReceipt, canonicalJsonV1Value, type JsonValue, validateApplicationAuthorizationReceipt } from '@applik8s/core';
 import type { ApplicationInternalOperationInvocation } from '@applik8s/operations';
+import { nodeKeyedDigestBase64Url } from '@applik8s/runtime/node-integrity';
+import { createRollingSignedEnvelopeCodec, type RollingSignedEnvelopeCodec, signedEnvelopeUtf8Key, staticSignedEnvelopeKeyProvider } from '@applik8s/runtime/signed-envelope';
 import { applicationOperationInputDigest } from './application-operation-runtime.js';
 import type { ApplicationQueryBinding, ApplicationQueryPrincipal } from './application-queries.js';
 import { validateQueryInput, validateQueryOutput } from './application-query-runtime.js';
@@ -159,7 +160,25 @@ export function createApplicationQueryGateway<TRequest, TPrincipal extends Appli
   const limits = { perPrincipal: options.subscriptionLimits?.perPrincipal ?? 20, total: options.subscriptionLimits?.total ?? 1_000 };
   if (!Number.isSafeInteger(limits.perPrincipal) || !Number.isSafeInteger(limits.total) || limits.perPrincipal < 1 || limits.total < limits.perPrincipal) throw new Error('Application query gateway subscription limits are invalid.');
   const limiter = options.subscriptionLimiter ?? createApplicationSubscriptionLimiter(limits);
-  if (cursorTtlSeconds < 30 || pollIntervalMs < 10 || heartbeatMs < pollIntervalMs || maxSessionMs < heartbeatMs || changePageSize < 1 || changePageSize > 1_000) throw new Error('Application query gateway polling, heartbeat, cursor, session, or page bounds are invalid.');
+  if (cursorTtlSeconds < 30 || cursorTtlSeconds > 24 * 60 * 60 || pollIntervalMs < 10 || heartbeatMs < pollIntervalMs || maxSessionMs < heartbeatMs || changePageSize < 1 || changePageSize > 1_000) throw new Error('Application query gateway polling, heartbeat, cursor, session, or page bounds are invalid.');
+  const cursorKey = signedEnvelopeUtf8Key(options.cursorSecret);
+  const cursorCodec = createRollingSignedEnvelopeCodec<CursorPayload, CursorPayload>({
+    purpose: 'applik8s.query-cursor/v1',
+    keys: staticSignedEnvelopeKeyProvider({
+      current: { id: 'query-cursor-current', key: cursorKey },
+    }),
+    now: () => now().getTime(),
+    maximumLifetimeMs: cursorTtlSeconds * 1_000,
+    maximumEncodedBytes: 64 * 1_024,
+    validatePayload: validateCursorPayload,
+    writer: 'legacy',
+    legacy: {
+      key: cursorKey,
+      validatePayload: validateCursorPayload,
+      toCurrent: (payload) => payload,
+      fromCurrent: (payload) => canonicalJsonV1Value(payload),
+    },
+  });
 
   return {
     async snapshot<TValue>(request: TRequest, queryId: string, rawInput: unknown): Promise<ApplicationQuerySnapshot<TValue>> {
@@ -185,7 +204,7 @@ export function createApplicationQueryGateway<TRequest, TPrincipal extends Appli
       enforceResultBudget(query, output);
       await authorizeQueryOutputCapabilities(options, query, identity, output);
       const inputKey = queryInputKey(input);
-      const cursor = encodeCursor(options.cursorSecret, {
+      const cursorPayload: CursorPayload = {
         version: receipt ? 3 : 2,
         query: query.id,
         inputKey,
@@ -195,6 +214,9 @@ export function createApplicationQueryGateway<TRequest, TPrincipal extends Appli
         sequence: result.sequence,
         ...(providerSnapshot ? { providerRevision: providerSnapshot.revision } : {}),
         expiresAt: now().getTime() + cursorTtlSeconds * 1_000,
+      };
+      const cursor = await cursorCodec.sign(cursorPayload, {
+        expiresAt: cursorPayload.expiresAt,
       });
       const snapshot = {
         kind: 'snapshot',
@@ -230,7 +252,7 @@ export function createApplicationQueryGateway<TRequest, TPrincipal extends Appli
       }
       let cursor: CursorPayload;
       try {
-        cursor = decodeCursor(options.cursorSecret, encoded, {
+        cursor = await decodeCursor(cursorCodec, options.cursorSecret, encoded, {
           query: query.id,
           inputKey: queryInputKey(input),
           contextDigest: applicationAdmittedContextDigest(identity.admittedContext),
@@ -274,7 +296,9 @@ export function createApplicationQueryGateway<TRequest, TPrincipal extends Appli
             ...(providerRevision === undefined ? {} : { providerRevision }),
             expiresAt: now().getTime() + cursorTtlSeconds * 1_000,
           };
-          const nextCursor = encodeCursor(options.cursorSecret, cursor);
+          const nextCursor = await cursorCodec.sign(cursor, {
+            expiresAt: cursor.expiresAt,
+          });
           const relevant = page.items.filter((change) => relevantModels.has(change.model));
           if (relevant.some((change) => change.operation === 'reset')) {
             yield resetEvent(query.id, 'providerReset', now());
@@ -292,7 +316,7 @@ export function createApplicationQueryGateway<TRequest, TPrincipal extends Appli
           if (page.items.length === changePageSize) continue;
         } else if (now().getTime() - lastHeartbeat >= heartbeatMs) {
           cursor = { ...cursor, expiresAt: now().getTime() + cursorTtlSeconds * 1_000 };
-          yield { kind: 'keepalive', protocol: 'applik8s.query/v1alpha1', id: `${query.id}:heartbeat:${now().getTime()}`, sequence: cursor.sequence, query: query.id, cursor: encodeCursor(options.cursorSecret, cursor) };
+          yield { kind: 'keepalive', protocol: 'applik8s.query/v1alpha1', id: `${query.id}:heartbeat:${now().getTime()}`, sequence: cursor.sequence, query: query.id, cursor: await cursorCodec.sign(cursor, { expiresAt: cursor.expiresAt }) };
           lastHeartbeat = now().getTime();
         }
         await sleep(pollIntervalMs, subscribeOptions.signal);
@@ -722,31 +746,25 @@ function queryModelNames(query: ApplicationQueryBinding): Set<string> {
   return names;
 }
 
-function encodeCursor(secret: string, payload: CursorPayload): string {
-  const body = Buffer.from(JSON.stringify(payload)).toString('base64url');
-  const signature = createHmac('sha256', secret).update(body).digest('base64url');
-  return `${body}.${signature}`;
-}
-
-// typecast-boundary: HMAC verification precedes the closed cursor shape and every identity/version/expiry field is checked below.
-function decodeCursor(secret: string, cursor: string, expected: {
+async function decodeCursor(
+  codec: RollingSignedEnvelopeCodec<CursorPayload>,
+  secret: string,
+  cursor: string,
+  expected: {
   readonly query: string;
   readonly inputKey: string;
   readonly contextDigest: string;
   readonly authorizationVersion: string;
   readonly now: number;
   readonly receipt?: ApplicationAuthorizationReceipt;
-}): CursorPayload {
-  const [body, signature, extra] = cursor.split('.');
-  if (!body || !signature || extra) throw new CursorValidationError('cursorInvalid');
-  const calculated = createHmac('sha256', secret).update(body).digest();
-  let supplied: Buffer;
-  try { supplied = Buffer.from(signature, 'base64url'); } catch { throw new CursorValidationError('cursorInvalid'); }
-  if (supplied.length !== calculated.length || !timingSafeEqual(supplied, calculated)) throw new CursorValidationError('cursorInvalid');
+  },
+): Promise<CursorPayload> {
   let payload: CursorPayload;
-  try { payload = JSON.parse(Buffer.from(body, 'base64url').toString('utf8')) as CursorPayload; } catch { throw new CursorValidationError('cursorInvalid'); }
-  if ((payload.version !== 2 && payload.version !== 3) || !Number.isSafeInteger(payload.sequence) || payload.sequence < 0 || !opaqueCursorField(payload.contextBinding) || !opaqueCursorField(payload.authorizationBinding)) throw new CursorValidationError('cursorInvalid');
-  if (payload.providerRevision !== undefined && (typeof payload.providerRevision !== 'string' || payload.providerRevision.length < 1 || payload.providerRevision.length > 512)) throw new CursorValidationError('cursorInvalid');
+  try {
+    payload = await codec.verify(cursor);
+  } catch {
+    throw new CursorValidationError('cursorInvalid');
+  }
   if (payload.query !== expected.query) throw new CursorValidationError('queryVersionChanged');
   if (payload.inputKey !== expected.inputKey) throw new CursorValidationError('cursorInvalid');
   if (payload.contextBinding !== cursorBinding(secret, 'context', expected.contextDigest)) throw new CursorValidationError('contextChanged');
@@ -767,6 +785,51 @@ function decodeCursor(secret: string, cursor: string, expected: {
   }
   if (payload.expiresAt < expected.now) throw new CursorValidationError('cursorExpired');
   return payload;
+}
+
+function validateCursorPayload(value: JsonValue): CursorPayload {
+  if (!isJsonObject(value)) {
+    throw new TypeError('Query cursor payload is invalid.');
+  }
+  if (
+    (value.version !== 2 && value.version !== 3)
+    || typeof value.query !== 'string'
+    || typeof value.inputKey !== 'string'
+    || !Number.isSafeInteger(value.sequence)
+    || Number(value.sequence) < 0
+    || !opaqueCursorField(value.contextBinding)
+    || !opaqueCursorField(value.authorizationBinding)
+    || !Number.isSafeInteger(value.expiresAt)
+    || Number(value.expiresAt) < 0
+  ) {
+    throw new TypeError('Query cursor contract is invalid.');
+  }
+  if (value.providerRevision !== undefined && (
+    typeof value.providerRevision !== 'string'
+    || value.providerRevision.length < 1
+    || value.providerRevision.length > 512
+  )) {
+    throw new TypeError('Query cursor provider revision is invalid.');
+  }
+  const optionalStrings = [
+    'applicationBinding',
+    'principalBinding',
+    'operationId',
+    'operationVersion',
+    'catalogRevision',
+    'authorityRevision',
+    'receiptId',
+  ] as const;
+  for (const field of optionalStrings) {
+    if (value[field] !== undefined && typeof value[field] !== 'string') {
+      throw new TypeError(`Query cursor ${field} is invalid.`);
+    }
+  }
+  return value as unknown as CursorPayload;
+}
+
+function isJsonObject(value: JsonValue): value is Readonly<Record<string, JsonValue>> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
 async function authorizeQueryOperation<TRequest, TPrincipal extends ApplicationQueryPrincipal>(
@@ -826,7 +889,13 @@ function sameReceiptRevision(
     && admitted.principal.id === current.principal.id;
 }
 
-function cursorBinding(secret: string, domain: 'application' | 'authorization' | 'context' | 'principal', value: string): string { return createHmac('sha256', secret).update(`applik8s.query-cursor.${domain}\0`).update(value).digest('base64url'); }
+function cursorBinding(secret: string, domain: 'application' | 'authorization' | 'context' | 'principal', value: string): string {
+  return nodeKeyedDigestBase64Url({
+    key: secret,
+    purpose: `applik8s.query-cursor.${domain}`,
+    value,
+  });
+}
 function opaqueCursorField(value: unknown): value is string { return typeof value === 'string' && /^[A-Za-z0-9_-]{43}$/.test(value); }
 
 class CursorValidationError extends Error {

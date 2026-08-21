@@ -101,6 +101,7 @@ export function workspaceAliases(): Record<string, string> {
     '@applik8s/compiler/kubernetes-schema': fileURLToPath(new URL('./packages/compiler/src/kubernetes-schema/index.ts', import.meta.url)),
     '@applik8s/compiler': fileURLToPath(new URL('./packages/compiler/src/index.ts', import.meta.url)),
     '@applik8s/runtime/signed-envelope': fileURLToPath(new URL('./packages/runtime/src/signed-envelope.ts', import.meta.url)),
+    '@applik8s/runtime/node-integrity': fileURLToPath(new URL('./packages/runtime/src/node-integrity.ts', import.meta.url)),
     '@applik8s/runtime': fileURLToPath(new URL('./packages/runtime/src/index.ts', import.meta.url)),
     '@applik8s/runtime-s3': fileURLToPath(new URL('./packages/runtime-s3/src/index.ts', import.meta.url)),
     '@applik8s/runtime-hatchet': fileURLToPath(new URL('./packages/runtime-hatchet/src/index.ts', import.meta.url)),

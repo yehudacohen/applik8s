@@ -5,6 +5,7 @@ const root = process.cwd();
 const maintainedRoots = ['packages', 'crates'];
 const findings: string[] = [];
 const allowedCryptoOwners = new Set([
+  'packages/runtime/src/node-integrity.ts',
   'packages/runtime/src/signed-envelope.ts',
 ]);
 const canonicalOwners = new Set([

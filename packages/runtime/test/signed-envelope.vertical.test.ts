@@ -1,5 +1,6 @@
 import { createHmac } from 'node:crypto';
 import {
+  createRollingSignedEnvelopeCodec,
   createSignedEnvelopeCodec,
   SignedEnvelopeRuntimeError,
   signedEnvelopeUtf8Key,
@@ -138,5 +139,75 @@ describe('portable Signed Envelope v1 runtime', () => {
       maximumEncodedBytes: 512,
       validatePayload(value) { return value; },
     })).resolves.toEqual({ a: 1, cursor: 'legacy', z: 2 });
+  });
+
+  it('coordinates Release-A legacy writes with legacy and v1 reads', async () => {
+    interface CursorPayload { readonly cursor: string }
+    const rolling = createRollingSignedEnvelopeCodec<CursorPayload, CursorPayload>({
+      purpose,
+      keys: staticSignedEnvelopeKeyProvider({ current }),
+      now: () => issuedAt,
+      maximumLifetimeMs: 60_000,
+      writer: 'legacy',
+      validatePayload(value) {
+        if (!value || typeof value !== 'object' || Array.isArray(value) || typeof value.cursor !== 'string') {
+          throw new TypeError('cursor is invalid');
+        }
+        return { cursor: value.cursor };
+      },
+      legacy: {
+        key: current.key,
+        validatePayload(value) {
+          if (!value || typeof value !== 'object' || Array.isArray(value) || typeof value.cursor !== 'string') {
+            throw new TypeError('legacy cursor is invalid');
+          }
+          return { cursor: value.cursor };
+        },
+        toCurrent: (value) => value,
+        fromCurrent: (value) => ({ cursor: value.cursor }),
+      },
+    });
+    const legacy = await rolling.sign({ cursor: 'legacy-write' }, { issuedAt, expiresAt });
+    await expect(rolling.verify(legacy)).resolves.toEqual({ cursor: 'legacy-write' });
+
+    const v1 = await codec().sign({ cursor: 'v1-read' }, { issuedAt, expiresAt });
+    await expect(rolling.verify(v1)).resolves.toEqual({ cursor: 'v1-read' });
+
+    await expect(rolling.sign(
+      { cursor: 'overlong' },
+      { issuedAt, expiresAt: issuedAt + 60_001 },
+    )).rejects.toMatchObject({ code: 'SIGNED_ENVELOPE_LIFETIME_INVALID' });
+  });
+
+  it('revalidates legacy adapters against the current payload contract', async () => {
+    interface CursorPayload { readonly cursor: string }
+    const rolling = createRollingSignedEnvelopeCodec<CursorPayload, { readonly legacy: string }>({
+      purpose,
+      keys: staticSignedEnvelopeKeyProvider({ current }),
+      now: () => issuedAt,
+      writer: 'legacy',
+      validatePayload(value) {
+        if (!value || typeof value !== 'object' || Array.isArray(value) || typeof value.cursor !== 'string') {
+          throw new TypeError('current cursor is invalid');
+        }
+        return { cursor: value.cursor };
+      },
+      legacy: {
+        key: current.key,
+        validatePayload(value) {
+          if (!value || typeof value !== 'object' || Array.isArray(value) || typeof value.legacy !== 'string') {
+            throw new TypeError('legacy cursor is invalid');
+          }
+          return { legacy: value.legacy };
+        },
+        toCurrent: () => ({ cursor: 42 } as unknown as CursorPayload),
+        fromCurrent: (value) => ({ legacy: value.cursor }),
+      },
+    });
+    const legacy = await signLegacyCompactHmacJsonForRollingMigration(
+      { legacy: 'cursor' },
+      { key: current.key },
+    );
+    await expect(rolling.verify(legacy)).rejects.toThrow('current cursor is invalid');
   });
 });
