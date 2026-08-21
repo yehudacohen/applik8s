@@ -1100,7 +1100,7 @@ const handle = createApplicationAIAgentRequestHandler({
       },
     );
     const causalPrincipal = applicationCausalPrincipalContext(
-      invocation.admission.principal,
+      invocation.context.principal,
     );
     const principal = await operationAuthority.admitExecutionPrincipal({
       executionKind: 'agent',
@@ -1122,14 +1122,14 @@ const handle = createApplicationAIAgentRequestHandler({
         ]),
       ],
       envelopes: workloadEnvelopes,
-      trustedContextDigest: invocation.admission.principal.trustedContextDigest,
+      trustedContextDigest: invocation.context.trustedContext.digest,
       audience: invocation.audience,
       deadline: invocation.expiresAt,
       cancellationRevision: invocation.cancellationRevision,
     });
     return {
       principal,
-      trustedContext: invocation.admission.trustedContext,
+      trustedContext: invocation.context.trustedContext.values,
     };
   },
   async reserveAttempt({ principal, trustedContext, threadId, runId, logicalModel, request }) {

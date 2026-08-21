@@ -770,7 +770,7 @@ describe('generated application AI agents', () => {
     expect(generatedSource).toContain('selectedBackend?.endpoint');
     expect(generatedSource).toContain('selectedBackend?.model');
     expect(generatedSource).toContain(
-      'materializeInstallationValue(selectedProfileValue(contract.provider))',
+      'materializeInstallationValue(selectedProviderValue(contract.provider))',
     );
     expect(normalizedSource).toContain('APPLIK8S_INSTALLATION_SPEC');
     expect(normalizedSource).toContain(

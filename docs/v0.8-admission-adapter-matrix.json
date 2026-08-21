@@ -75,13 +75,17 @@
     {
       "id": "agent-ai-execution",
       "transport": "framework",
-      "state": "not-started",
+      "state": "in-progress",
       "evidenceVerifier": "registered agent execution and internal AI attempt evidence",
       "principalSource": "framework execution principal preserving original causal attribution",
       "operationIdentity": "registered agent, tool, model, and attempt operation",
-      "owners": [],
-      "regression": null,
-      "remaining": "integrate agent workers, tool calls, and AI provider attempts"
+      "owners": [
+        "@applik8s/runtime-ai browser gateway",
+        "@applik8s/operations execution-admission transport",
+        "@applik8s/compiler generated agent worker"
+      ],
+      "regression": "bunx vitest run --maxWorkers=1 packages/operations/test/execution-admission-transport.vertical.test.ts packages/runtime-ai/test/agent-gateway.vertical.test.ts packages/compiler/test/application-agents.vertical.test.ts",
+      "remaining": "propagate the worker-produced execution context through tool calls and AI provider attempts, then add matrix/source-gate coverage"
     }
   ]
 }

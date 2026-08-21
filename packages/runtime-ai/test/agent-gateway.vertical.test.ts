@@ -68,6 +68,10 @@ describe('application AI agent gateway', () => {
           authorization: 'Bearer browser-token',
           cookie: 'session=browser-cookie',
           'content-type': 'application/json',
+          'x-applik8s-correlation-id': 'correlation-1',
+          'x-applik8s-causation-id': 'causation-1',
+          traceparent: '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01',
+          tracestate: 'vendor=value',
           'x-applik8s-execution-admission': 'forged-browser-token',
         },
         body: JSON.stringify(body),
@@ -107,6 +111,25 @@ describe('application AI agent gateway', () => {
       },
     );
     expect(decoded.admission).toEqual(admission());
+    expect(decoded.context).toMatchObject({
+      apiVersion: 'applik8s.admission/v1',
+      principal: admission().principal,
+      operation: {
+        id: 'applik8s://agent/aiAgent.researcher/execute',
+        transport: 'framework',
+      },
+      correlationId: 'correlation-1',
+      causationId: 'causation-1',
+      cancellation: { revision: decoded.cancellationRevision },
+      trace: {
+        traceparent: '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01',
+        tracestate: 'vendor=value',
+      },
+      delivery: {
+        id: decoded.id,
+        source: 'applik8s://agent-gateway',
+      },
+    });
     expect(decoded.executionId).toMatch(/^agent-run:[a-f0-9]{64}$/u);
     expect(await internal?.json()).toEqual(body);
   });
@@ -153,6 +176,10 @@ describe('application AI agent gateway', () => {
       },
     });
     expect(decoded.causalGrantIds).toEqual(['grant:research:human-delegation']);
+    expect(decoded.context.principal).toMatchObject({
+      kind: 'execution',
+      causalPrincipalId: 'principal:research:human:user-1',
+    });
   });
 
   it('authenticates server-authoritative transcript hydration and binds it to the selected agent', async () => {

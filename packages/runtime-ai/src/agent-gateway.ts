@@ -3,6 +3,9 @@ import { createHash } from 'node:crypto';
 import {
   applicationCausalPrincipalContext,
   type ApplicationRequestAdmission,
+  createApplicationAdmissionContextV1,
+  withApplicationAdmissionExecutionV1,
+  withApplicationAdmissionTraceV1,
 } from '@applik8s/core';
 import {
   applicationExecutionAdmissionProtocol,
@@ -103,6 +106,7 @@ export function createApplicationAIAgentGateway(
             now,
             maximumLifetimeMs,
             secret: options.secret,
+            request: incoming,
           });
           return await request(new Request(
             new URL(`/__applik8s/v1/ai/chat?threadId=${encodeURIComponent(threadId)}`, target.baseUrl),
@@ -134,52 +138,16 @@ export function createApplicationAIAgentGateway(
         })) {
           return json({ error: 'forbidden' }, 403);
         }
-        const issuedAt = now();
-        const principalExpiry = admission.principal.expiresAt
-          ? Date.parse(admission.principal.expiresAt)
-          : Number.POSITIVE_INFINITY;
-        const expiresAt = Math.min(
-          issuedAt.getTime() + maximumLifetimeMs,
-          principalExpiry,
-        );
-        if (!Number.isFinite(issuedAt.getTime()) || expiresAt <= issuedAt.getTime()) {
-          return json({ error: 'unauthorized' }, 401);
-        }
-        const binding = {
-          agentId: target.nodeId,
-          threadId,
-          runId,
-        };
-        const executionDigest = digest({
+        const token = executionAdmission({
           application,
-          target: target.nodeId,
-          principal: admission.principal.id,
+          admission,
+          target,
           threadId,
           runId,
-        });
-        const causalPrincipal = applicationCausalPrincipalContext(
-          admission.principal,
-        );
-        const token = encodeApplicationExecutionAdmission(options.secret, {
-          apiVersion: applicationExecutionAdmissionProtocol,
-          id: `agent-admission:${executionDigest}`,
-          executionKind: 'agent',
-          executionId: `agent-run:${executionDigest}`,
-          attempt: 1,
-          workloadIdentityId: target.workloadIdentityId,
-          serviceIdentityId: target.serviceIdentityId,
-          admission,
-          audience: target.audience,
-          causalGrantIds: [...causalPrincipal.grantIds],
-          cancellationRevision:
-            `agent-cancellation:${digest({
-              authority: admission.principal.authorityRevision,
-              target: target.nodeId,
-              runId,
-            })}`,
-          binding,
-          issuedAt: issuedAt.toISOString(),
-          expiresAt: new Date(expiresAt).toISOString(),
+          now,
+          maximumLifetimeMs,
+          secret: options.secret,
+          request: incoming,
         });
         const timeout = AbortSignal.timeout(target.timeoutMs);
         try {
@@ -292,6 +260,7 @@ function executionAdmission(input: {
   readonly now: () => Date;
   readonly maximumLifetimeMs: number;
   readonly secret: string;
+  readonly request: Request;
 }): string {
   const issuedAt = input.now();
   const principalExpiry = input.admission.principal.expiresAt
@@ -312,22 +281,57 @@ function executionAdmission(input: {
     runId: input.runId,
   });
   const causalPrincipal = applicationCausalPrincipalContext(input.admission.principal);
+  const id = `agent-admission:${executionDigest}`;
+  const executionId = `agent-run:${executionDigest}`;
+  const cancellationRevision = `agent-cancellation:${digest({
+    authority: input.admission.principal.authorityRevision,
+    target: input.target.nodeId,
+    runId: input.runId,
+  })}`;
+  const correlationId = stableHeader(
+    input.request.headers.get('x-applik8s-correlation-id'),
+  ) ?? input.threadId;
+  const causationId = stableHeader(
+    input.request.headers.get('x-applik8s-causation-id'),
+  ) ?? input.runId;
+  const traceparent = stableHeader(input.request.headers.get('traceparent'));
+  const tracestate = stableHeader(input.request.headers.get('tracestate'));
+  const baseContext = createApplicationAdmissionContextV1({
+    admission: input.admission,
+    operation: {
+      id: `applik8s://agent/${input.target.nodeId}/execute`,
+      transport: 'framework',
+    },
+    correlationId,
+  });
+  const tracedContext = traceparent
+    ? withApplicationAdmissionTraceV1(baseContext, {
+        traceparent,
+        ...(tracestate ? { tracestate } : {}),
+      })
+    : baseContext;
+  const context = withApplicationAdmissionExecutionV1(tracedContext, {
+    causationId,
+    deadline: new Date(expiresAt).toISOString(),
+    cancellation: { revision: cancellationRevision },
+    delivery: {
+      id,
+      source: 'applik8s://agent-gateway',
+    },
+  });
   return encodeApplicationExecutionAdmission(input.secret, {
     apiVersion: applicationExecutionAdmissionProtocol,
-    id: `agent-admission:${executionDigest}`,
+    id,
     executionKind: 'agent',
-    executionId: `agent-run:${executionDigest}`,
+    executionId,
     attempt: 1,
     workloadIdentityId: input.target.workloadIdentityId,
     serviceIdentityId: input.target.serviceIdentityId,
+    context,
     admission: input.admission,
     audience: input.target.audience,
     causalGrantIds: [...causalPrincipal.grantIds],
-    cancellationRevision: `agent-cancellation:${digest({
-      authority: input.admission.principal.authorityRevision,
-      target: input.target.nodeId,
-      runId: input.runId,
-    })}`,
+    cancellationRevision,
     binding: {
       agentId: input.target.nodeId,
       threadId: input.threadId,
@@ -336,6 +340,14 @@ function executionAdmission(input: {
     issuedAt: issuedAt.toISOString(),
     expiresAt: new Date(expiresAt).toISOString(),
   });
+}
+
+function stableHeader(value: string | null): string | undefined {
+  if (value === null) return undefined;
+  const normalized = value.trim();
+  return normalized.length > 0 && normalized.length <= 2_048
+    ? normalized
+    : undefined;
 }
 
 function selectedTarget(

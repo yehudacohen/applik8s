@@ -2,9 +2,15 @@
 // only after HMAC, expiry, identity, and request-binding validation.
 import { createHash } from 'node:crypto';
 import type {
+  ApplicationAdmissionContextV1,
   ApplicationExecutionKind,
   ApplicationRequestAdmission,
   JsonObject,
+} from '@applik8s/core';
+import {
+  createApplicationAdmissionContextV1,
+  validateApplicationAdmissionContextV1,
+  withApplicationAdmissionExecutionV1,
 } from '@applik8s/core';
 import {
   canonicalInternalJson,
@@ -25,6 +31,8 @@ export interface ApplicationExecutionAdmissionInvocation {
   readonly attempt: number;
   readonly workloadIdentityId: string;
   readonly serviceIdentityId?: string;
+  /** Canonical v0.8 execution admission; legacy admission remains during Release A rollback compatibility. */
+  readonly context: ApplicationAdmissionContextV1;
   readonly admission: ApplicationRequestAdmission;
   readonly audience: readonly string[];
   readonly causalGrantIds: readonly string[];
@@ -118,16 +126,22 @@ export function decodeApplicationExecutionAdmission(
       'The execution-admission payload is invalid.',
     );
   }
-  const invocation = decoded as ApplicationExecutionAdmissionInvocation;
-  validateExecutionAdmission(invocation, expectation);
+  const wireInvocation = decoded as LegacyCompatibleExecutionAdmissionInvocation;
+  validateExecutionAdmission(wireInvocation, expectation);
   assertApplicationInternalContextHasNoCredentials(
-    invocation.admission.trustedContext,
+    wireInvocation.admission.trustedContext,
   );
-  return structuredClone(invocation);
+  const context = wireInvocation.context
+    ? validateApplicationAdmissionContextV1(wireInvocation.context, {
+        now: (expectation.now ?? new Date()).getTime(),
+      })
+    : legacyExecutionAdmissionContext(wireInvocation);
+  validateCanonicalParity(wireInvocation, context);
+  return structuredClone({ ...wireInvocation, context });
 }
 
 function validateExecutionAdmission(
-  invocation: ApplicationExecutionAdmissionInvocation,
+  invocation: LegacyCompatibleExecutionAdmissionInvocation,
   expectation: ApplicationExecutionAdmissionExpectation,
 ): void {
   const issuedAt = Date.parse(invocation.issuedAt);
@@ -171,6 +185,62 @@ function validateExecutionAdmission(
     throw admissionError(
       'EXECUTION_ADMISSION_INVALID',
       'The execution-admission token does not match its execution boundary.',
+    );
+  }
+  if (invocation.context) {
+    const context = validateApplicationAdmissionContextV1(invocation.context, {
+      now,
+    });
+    validateCanonicalParity(invocation, context);
+  }
+}
+
+type LegacyCompatibleExecutionAdmissionInvocation =
+  Omit<ApplicationExecutionAdmissionInvocation, 'context'> & {
+    readonly context?: ApplicationAdmissionContextV1;
+  };
+
+function legacyExecutionAdmissionContext(
+  invocation: LegacyCompatibleExecutionAdmissionInvocation,
+): ApplicationAdmissionContextV1 {
+  return withApplicationAdmissionExecutionV1(
+    createApplicationAdmissionContextV1({
+      admission: invocation.admission,
+      operation: {
+        id: `applik8s://execution/${invocation.executionKind}/${invocation.executionId}`,
+        transport: 'framework',
+      },
+      correlationId: invocation.executionId,
+    }),
+    {
+      causationId: invocation.id,
+      deadline: invocation.expiresAt,
+      cancellation: { revision: invocation.cancellationRevision },
+      delivery: {
+        id: invocation.id,
+        source: 'applik8s://execution-admission/legacy',
+      },
+    },
+  );
+}
+
+function validateCanonicalParity(
+  invocation: LegacyCompatibleExecutionAdmissionInvocation,
+  context: ApplicationAdmissionContextV1,
+): void {
+  if (
+    context.principal.id !== invocation.admission.principal.id
+    || context.authorityRevision !== invocation.admission.principal.authorityRevision
+    || context.trustedContext.digest !== invocation.admission.principal.trustedContextDigest
+    || canonicalInternalJson(context.trustedContext.values)
+      !== canonicalInternalJson(invocation.admission.trustedContext)
+    || context.deadline !== invocation.expiresAt
+    || context.cancellation?.revision !== invocation.cancellationRevision
+    || context.delivery?.id !== invocation.id
+  ) {
+    throw admissionError(
+      'EXECUTION_ADMISSION_INVALID',
+      'The canonical admission context does not match its Release A compatibility fields.',
     );
   }
 }

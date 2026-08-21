@@ -6,6 +6,7 @@ export {
   applicationAdmissionInvocationView,
   createApplicationAdmissionContextV1,
   validateApplicationAdmissionContextV1,
+  withApplicationAdmissionExecutionV1,
   withApplicationAdmissionTraceV1,
 } from './application-admission.js';
 export type * from './application-explain.js';

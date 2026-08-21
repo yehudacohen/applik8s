@@ -224,6 +224,22 @@
       "telemetry": "runtime-integrity-admission-version-and-transport",
       "rollbackSafeThrough": "pending-ingress-parity-evidence",
       "decoderRemovalRelease": null
+    },
+    {
+      "id": "agent-execution-admission-release-a",
+      "kind": "admission-record",
+      "wireVersion": "applik8s.executionAdmission/v1alpha1",
+      "canonicalContextVersion": "applik8s.admission/v1",
+      "state": "in-progress",
+      "owner": "@applik8s/operations",
+      "writers": ["0.8.x:legacy-fields-plus-canonical-context"],
+      "readers": ["0.8.x", "0.7.x:legacy-fields-ignore-canonical-context"],
+      "maximumLifetime": "5m",
+      "purposeOrKeyNamespace": "agent-execution-admission",
+      "migrationPhase": "release-a-reads-legacy-and-dual-write-reads-canonical",
+      "telemetry": "pending-context-version-legacy-read-and-parity-rejection-metrics",
+      "rollbackSafeThrough": "0.7.x-readers-retain-every-required-legacy-field",
+      "decoderRemovalRelease": "0.10.0-earliest-after-zero-legacy-read-telemetry"
     }
   ],
   "requiredInventory": [

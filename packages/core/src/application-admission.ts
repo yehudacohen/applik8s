@@ -57,6 +57,14 @@ export interface CreateApplicationAdmissionContextV1Options {
   readonly correlationId: string;
 }
 
+export interface ApplicationAdmissionExecutionProvenanceV1 {
+  readonly causationId?: string;
+  readonly deadline?: string;
+  readonly cancellation?: ApplicationAdmissionContextV1['cancellation'];
+  readonly authorizationReceipt?: ApplicationAuthorizationReceipt;
+  readonly delivery?: ApplicationAdmissionContextV1['delivery'];
+}
+
 export class ApplicationAdmissionContextV1Error extends TypeError {
   constructor(
     readonly code:
@@ -135,6 +143,34 @@ export function withApplicationAdmissionTraceV1(
     throw new TypeError('Admission trace is invalid.');
   }
   return Object.freeze({ ...context, trace: Object.freeze({ ...trace }) });
+}
+
+/**
+ * Adds execution-family provenance after transport evidence has produced the
+ * canonical base context. This keeps request-only bundles small while giving
+ * workflows, tasks, brokers, actors, schedules, and agents one validation
+ * boundary for causation, deadlines, cancellation, receipts, and delivery.
+ */
+export function withApplicationAdmissionExecutionV1(
+  context: ApplicationAdmissionContextV1,
+  provenance: ApplicationAdmissionExecutionProvenanceV1,
+): ApplicationAdmissionContextV1 {
+  return validateApplicationAdmissionContextV1({
+    ...context,
+    ...(provenance.causationId ? { causationId: provenance.causationId } : {}),
+    ...(provenance.deadline ? { deadline: provenance.deadline } : {}),
+    ...(provenance.cancellation
+      ? { cancellation: provenance.cancellation }
+      : {}),
+    ...(provenance.authorizationReceipt
+      ? { authorizationReceipt: provenance.authorizationReceipt }
+      : {}),
+    ...(provenance.delivery ? { delivery: provenance.delivery } : {}),
+  }, {
+    // Construction validates the timestamp but must not reject deterministic
+    // fixtures or replayed durable records merely because wall time advanced.
+    now: Number.NEGATIVE_INFINITY,
+  });
 }
 
 export function validateApplicationAdmissionContextV1(
