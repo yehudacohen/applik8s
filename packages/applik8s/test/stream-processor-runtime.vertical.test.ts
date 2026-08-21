@@ -1,5 +1,6 @@
 // typecast-file-boundary: adversarial stream fixtures deliberately restore provider records and callback generics after explicit shape checks.
-import { type ApplicationEventBatch, type ApplicationFrozenStreamBatchGroup, type ApplicationReplayPage, ApplicationStreamProcessorPausedError, ApplicationStreamProcessorRetentionGapError, type ApplicationStreamProcessorStore, createPostgresApplicationStreamProcessorStore, runApplicationStreamBatchProcessor, runApplicationStreamProcessor } from '@applik8s/applik8s';
+import { type ApplicationEventBatch, type ApplicationFrozenStreamBatchGroup, type ApplicationReplayPage, type ApplicationStreamDeliveryAdmitter, ApplicationStreamProcessorPausedError, ApplicationStreamProcessorRetentionGapError, type ApplicationStreamProcessorStore, createPostgresApplicationStreamProcessorStore, runApplicationStreamBatchProcessor, runApplicationStreamProcessor } from '@applik8s/applik8s';
+import { applicationAdmissionInvocationView, applicationCausalPrincipalContext, createApplicationAdmissionContextV1, createApplicationExecutionPrincipalV1, validateApplicationAdmissionContextV1WithoutReceipt, withApplicationAdmissionExecutionV1 } from '@applik8s/core';
 import { describe, expect, it } from 'vitest';
 import { testApplicationPrincipal } from '../../../test-support/application-principal.js';
 import type { ApplicationPostgresSql, ApplicationPostgresTransactionSql } from '../src/postgres-runtime-contract.js';
@@ -21,6 +22,63 @@ function envelope(sequence: number) {
     payload: { postId: `post-${sequence}` },
   };
 }
+
+const admitStreamDelivery: ApplicationStreamDeliveryAdmitter<{
+  readonly postId: string;
+}> = ({ envelope: delivery, attempt, signal }) => {
+  if (signal.aborted) throw new Error('test delivery aborted');
+  const workloadIdentity = {
+    id: 'identity:test:workload:stream-processor',
+    kind: 'workload' as const,
+    issuer: 'applik8s://test',
+    subject: 'stream-processor',
+  };
+  const causal = delivery.principal
+    ? applicationCausalPrincipalContext(delivery.principal)
+    : { id: workloadIdentity.id, identity: workloadIdentity, grantIds: [] };
+  const executionId = `stream-processor:${delivery.id}`;
+  const deadline = new Date(Date.now() + 60_000).toISOString();
+  const cancellationRevision = `active:${executionId}`;
+  const principal = createApplicationExecutionPrincipalV1({
+    application: 'test',
+    executionKind: 'processor',
+    executionId,
+    attempt,
+    workloadIdentity,
+    causalPrincipal: causal,
+    envelopes: [],
+    trustedContextDigest: delivery.contextDigest ?? delivery.principal?.trustedContextDigest ?? 'test-context',
+    audience: ['stream-processor'],
+    catalogRevision: 'catalog-v1',
+    authorityRevision: 'authority-v1',
+    deadline,
+    cancellationRevision,
+    authenticationMethod: 'test-stream-delivery',
+  });
+  return applicationAdmissionInvocationView(
+    validateApplicationAdmissionContextV1WithoutReceipt(
+      withApplicationAdmissionExecutionV1(
+        createApplicationAdmissionContextV1({
+          admission: {
+            principal,
+            trustedContext: delivery.trustedContext ?? {},
+          },
+          operation: {
+            id: 'applik8s://processors/test/operations/deliver',
+            transport: 'broker',
+          },
+          correlationId: delivery.id,
+        }),
+        {
+          causationId: delivery.id,
+          deadline,
+          cancellation: { revision: cancellationRevision },
+          delivery: { id: delivery.id, source: 'test-stream' },
+        },
+      ),
+    ),
+  );
+};
 
 function store() {
   let checkpoint = 0;
@@ -147,6 +205,7 @@ describe('durable replay stream processor runtime', () => {
     const source = { async read(): Promise<ApplicationReplayPage<{ postId: string }>> { return { items: [envelope(1), envelope(2)], nextSequence: 2, exhausted: true, retentionFloor: 0 }; } };
     const result = await runApplicationStreamProcessor({
       processor: 'timeline', streamName: 'posts.published.v1', source, store: checkpoints.value,
+      admit: admitStreamDelivery,
       handle: async (_payload, context) => {
         observed.push({
           idempotencyKey: context.idempotencyKey,
@@ -200,6 +259,7 @@ describe('durable replay stream processor runtime', () => {
       streamName: 'posts.published.v1',
       source,
       store: checkpoints.value,
+      admit: admitStreamDelivery,
       handle: async (_payload, context) => {
         const key = `${context.event.partitionKey}:${context.event.sequence}`;
         calls.push(`start:${key}`);
@@ -262,6 +322,7 @@ describe('durable replay stream processor runtime', () => {
         streamName: 'posts.published.v1',
         source,
         store: checkpoints.value,
+        admit: admitStreamDelivery,
         handle: async (_payload, context) => {
           invoked.push(context.event.sequence);
           if (context.event.sequence === 1) throw new Error('pause author-a');
@@ -284,11 +345,11 @@ describe('durable replay stream processor runtime', () => {
   it('dead-letters only after bounded retries and otherwise pauses without advancing', async () => {
     const source = { async read(): Promise<ApplicationReplayPage<{ postId: string }>> { return { items: [envelope(1)], nextSequence: 1, exhausted: true, retentionFloor: 0 }; } };
     const dead = store();
-    await expect(runApplicationStreamProcessor({ processor: 'timeline', streamName: 'posts.published.v1', source, store: dead.value, handle: async () => { throw new Error('boom'); }, concurrency: 1, retry: { maxAttempts: 2, initialDelayMs: 1, maxDelayMs: 1, factor: 2 }, failure: 'deadLetter', timeoutMs: 1_000, maxInputBytes: 1_000 })).resolves.toMatchObject({ deadLettered: 1, checkpoint: 1 });
+    await expect(runApplicationStreamProcessor({ processor: 'timeline', streamName: 'posts.published.v1', source, store: dead.value, admit: admitStreamDelivery, handle: async () => { throw new Error('boom'); }, concurrency: 1, retry: { maxAttempts: 2, initialDelayMs: 1, maxDelayMs: 1, factor: 2 }, failure: 'deadLetter', timeoutMs: 1_000, maxInputBytes: 1_000 })).resolves.toMatchObject({ deadLettered: 1, checkpoint: 1 });
     expect(dead.deadLetters).toEqual(['event-1']);
 
     const paused = store();
-    await expect(runApplicationStreamProcessor({ processor: 'timeline', streamName: 'posts.published.v1', source, store: paused.value, handle: async () => { throw new Error('boom'); }, concurrency: 1, retry: { maxAttempts: 1, initialDelayMs: 1, maxDelayMs: 1, factor: 2 }, failure: 'pause', timeoutMs: 1_000, maxInputBytes: 1_000 })).rejects.toBeInstanceOf(ApplicationStreamProcessorPausedError);
+    await expect(runApplicationStreamProcessor({ processor: 'timeline', streamName: 'posts.published.v1', source, store: paused.value, admit: admitStreamDelivery, handle: async () => { throw new Error('boom'); }, concurrency: 1, retry: { maxAttempts: 1, initialDelayMs: 1, maxDelayMs: 1, factor: 2 }, failure: 'pause', timeoutMs: 1_000, maxInputBytes: 1_000 })).rejects.toBeInstanceOf(ApplicationStreamProcessorPausedError);
     expect(paused.checkpoint()).toBe(0);
   });
 
@@ -297,6 +358,9 @@ describe('durable replay stream processor runtime', () => {
     const inert = envelope(1);
     let decodes = 0;
     let attempts = 0;
+    const order: string[] = [];
+    const decodedAdmissions: object[] = [];
+    const handledAdmissions: object[] = [];
     const source = {
       async read(): Promise<ApplicationReplayPage<{ postId: string }>> {
         return { items: [inert], nextSequence: 1, exhausted: true, retentionFloor: 0 };
@@ -307,15 +371,23 @@ describe('durable replay stream processor runtime', () => {
       streamName: 'review-decision.v1',
       source,
       store: checkpoints.value,
+      admit: async (request) => {
+        order.push(`admit:${request.attempt}`);
+        return admitStreamDelivery(request);
+      },
       decodePayload: async (payload, context) => {
         decodes += 1;
+        order.push(`decode:${decodes}`);
+        decodedAdmissions.push(context.admission);
         expect(payload).toBe(inert.payload);
         expect(context.event.id).toBe('event-1');
         expect(context.principal?.id).toBe('author-1');
         return { ...payload, approve: async () => 'approved' } as typeof payload;
       },
-      handle: async (payload) => {
+      handle: async (payload, context) => {
         attempts += 1;
+        order.push(`handle:${attempts}`);
+        handledAdmissions.push(context.admission);
         expect(typeof Reflect.get(payload, 'approve')).toBe('function');
         if (attempts === 1) throw new Error('retry after authority changed');
       },
@@ -326,7 +398,63 @@ describe('durable replay stream processor runtime', () => {
       maxInputBytes: 1_000,
     })).resolves.toMatchObject({ processed: 1, checkpoint: 1 });
     expect(decodes).toBe(2);
+    expect(order).toEqual([
+      'admit:1',
+      'decode:1',
+      'handle:1',
+      'admit:2',
+      'decode:2',
+      'handle:2',
+    ]);
+    expect(handledAdmissions[0]).toBe(decodedAdmissions[0]);
+    expect(handledAdmissions[1]).toBe(decodedAdmissions[1]);
+    expect(handledAdmissions[0]).not.toBe(handledAdmissions[1]);
     expect(inert.payload).toEqual({ postId: 'post-1' });
+  });
+
+  it('never decodes or invokes a delivery whose canonical admission exceeded the handler deadline', async () => {
+    const checkpoints = store();
+    let decoded = false;
+    let handled = false;
+    await expect(runApplicationStreamProcessor({
+      processor: 'bounded-admission',
+      streamName: 'posts.published.v1',
+      source: {
+        async read() {
+          return {
+            items: [envelope(1)],
+            nextSequence: 1,
+            exhausted: true,
+            retentionFloor: 0,
+          };
+        },
+      },
+      store: checkpoints.value,
+      admit: async (request) => {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        return admitStreamDelivery(request);
+      },
+      decodePayload: async (payload) => {
+        decoded = true;
+        return payload;
+      },
+      handle: async () => {
+        handled = true;
+      },
+      concurrency: 1,
+      retry: {
+        maxAttempts: 1,
+        initialDelayMs: 1,
+        maxDelayMs: 1,
+        factor: 2,
+      },
+      failure: 'pause',
+      timeoutMs: 1,
+      maxInputBytes: 1_000,
+    })).rejects.toBeInstanceOf(ApplicationStreamProcessorPausedError);
+    expect(decoded).toBe(false);
+    expect(handled).toBe(false);
+    expect(checkpoints.checkpoint()).toBe(0);
   });
 
   it('does not confuse a globally allocated first event sequence with retention, but fails closed for an actual deletion watermark', async () => {
@@ -336,6 +464,7 @@ describe('durable replay stream processor runtime', () => {
       streamName: 'posts.published.v1',
       source: { async read() { return { items: [envelope(2)], nextSequence: 2, exhausted: true, retentionFloor: 0 }; } },
       store: globallyInterleaved.value,
+      admit: admitStreamDelivery,
       handle: async () => undefined,
       concurrency: 1,
       retry: { maxAttempts: 1, initialDelayMs: 1, maxDelayMs: 1, factor: 2 },
@@ -350,6 +479,7 @@ describe('durable replay stream processor runtime', () => {
       streamName: 'posts.published.v1',
       source: { async read() { return { items: [], nextSequence: 0, exhausted: true, retentionFloor: 2 }; } },
       store: actuallyTrimmed.value,
+      admit: admitStreamDelivery,
       handle: async () => undefined,
       concurrency: 1,
       retry: { maxAttempts: 1, initialDelayMs: 1, maxDelayMs: 1, factor: 2 },
@@ -381,6 +511,7 @@ describe('durable replay stream processor runtime', () => {
       streamName: 'posts.published.v1',
       source,
       store: persisted.value,
+      admit: admitStreamDelivery,
       handle: async (batch: ApplicationEventBatch<{ postId: string }>) => {
         calls.push({
           id: batch.id,
@@ -433,17 +564,24 @@ describe('durable replay stream processor runtime', () => {
       },
     };
     let observedCallable = false;
+    let decodedAdmission: object | undefined;
+    let handledAdmission: object | undefined;
     const result = await runApplicationStreamBatchProcessor({
       processor: 'signal-batch',
       streamName: 'review-decision.v1',
       source,
       store: persisted.value,
-      decodePayload: async (payload) =>
-        ({ ...payload, approve: async () => 'approved' }) as typeof payload,
+      admit: admitStreamDelivery,
+      decodePayload: async (payload, context) => {
+        decodedAdmission = context.admission;
+        return ({ ...payload, approve: async () => 'approved' }) as typeof payload;
+      },
       handle: async (batch) => {
         const value = batch.events[0]?.value;
+        handledAdmission = batch.events[0]?.admission;
         observedCallable =
-          Boolean(value) && typeof Reflect.get(value!, 'approve') === 'function';
+          value !== undefined
+          && typeof Reflect.get(value, 'approve') === 'function';
       },
       concurrency: 1,
       retry: { maxAttempts: 1, initialDelayMs: 1, maxDelayMs: 1, factor: 2 },
@@ -456,6 +594,7 @@ describe('durable replay stream processor runtime', () => {
     });
     expect(result).toMatchObject({ processed: 1, checkpoint: 1 });
     expect(observedCallable).toBe(true);
+    expect(handledAdmission).toBe(decodedAdmission);
     expect(persisted.pending()).toBeUndefined();
   });
 });

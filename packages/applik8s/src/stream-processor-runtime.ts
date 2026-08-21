@@ -1,6 +1,7 @@
 // typecast-file-boundary: stream envelope payloads are schema-authoritative and regain their declared payload generic after runtime decoding.
 
 import { createHash } from 'node:crypto';
+import type { ApplicationAdmissionInvocationContextV1 } from '@applik8s/core';
 import type { ApplicationEventBatch, ApplicationStreamBatchContext, ApplicationStreamProcessContext } from './application-reactive.js';
 import type { ApplicationPostgresSql } from './postgres-runtime-contract.js';
 import { createApplicationPostgresSql } from './postgres-runtime-loader.js';
@@ -54,6 +55,7 @@ export type ApplicationStreamPayloadDecoder<
 > = (
   payload: TPersisted,
   context: {
+    readonly admission: ApplicationAdmissionInvocationContextV1;
     readonly event: {
       readonly id: string;
       readonly stream: { readonly name: string; readonly version: string };
@@ -67,6 +69,20 @@ export type ApplicationStreamPayloadDecoder<
     readonly signal: AbortSignal;
   },
 ) => TDecoded | Promise<TDecoded>;
+
+export interface ApplicationStreamDeliveryAdmissionRequest<
+  TPayload extends object = object,
+> {
+  readonly envelope: ApplicationStreamEnvelope<TPayload>;
+  readonly attempt: number;
+  readonly signal: AbortSignal;
+}
+
+export type ApplicationStreamDeliveryAdmitter<TPayload extends object = object> = (
+  request: ApplicationStreamDeliveryAdmissionRequest<TPayload>,
+) =>
+  | ApplicationAdmissionInvocationContextV1
+  | Promise<ApplicationAdmissionInvocationContextV1>;
 
 export function createPostgresApplicationStreamProcessorStore(options: PostgresApplicationStreamProcessorStoreOptions): ApplicationStreamProcessorStore {
   if (!options.sql && !options.databaseUrl) throw new Error('PostgreSQL stream processor store requires sql or databaseUrl.');
@@ -239,6 +255,7 @@ export interface RunApplicationStreamProcessorOptions<
   readonly source: ApplicationReplayableStream<TPersisted>;
   readonly store: ApplicationStreamProcessorStore;
   readonly handle: (payload: TDecoded, context: ApplicationStreamProcessContext) => void | Promise<void>;
+  readonly admit: ApplicationStreamDeliveryAdmitter<TPersisted>;
   readonly decodePayload?: ApplicationStreamPayloadDecoder<TPersisted, TDecoded>;
   readonly concurrency: number;
   readonly retry: { readonly maxAttempts: number; readonly initialDelayMs: number; readonly maxDelayMs: number; readonly factor: number };
@@ -290,6 +307,7 @@ export interface RunApplicationStreamBatchProcessorOptions<
   readonly source: ApplicationReplayableStream<TPersisted>;
   readonly store: ApplicationStreamProcessorStore;
   readonly handle: (batch: ApplicationEventBatch<TDecoded>, context: ApplicationStreamBatchContext) => void | Promise<void>;
+  readonly admit: ApplicationStreamDeliveryAdmitter<TPersisted>;
   readonly decodePayload?: ApplicationStreamPayloadDecoder<TPersisted, TDecoded>;
   readonly retry: RunApplicationStreamProcessorOptions<TPersisted>['retry'];
   readonly failure: RunApplicationStreamProcessorOptions<TPersisted>['failure'];
@@ -481,17 +499,28 @@ async function processFrozenBatch<
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), options.timeoutMs);
     try {
-      const values = await Promise.all(frozen.events.map(async (event) => ({
-        event,
-        value: await decodeStreamPayload(
-          options.decodePayload,
-          event.payload,
-          streamPayloadDecodeContext(event, controller.signal),
-        ),
-      })));
+      const values = await Promise.all(frozen.events.map(async (event) => {
+        const admission = await options.admit({
+          envelope: event,
+          attempt,
+          signal: controller.signal,
+        });
+        controller.signal.throwIfAborted();
+        return {
+          event,
+          admission,
+          value: await decodeStreamPayload(
+            options.decodePayload,
+            event.payload,
+            streamPayloadDecodeContext(event, controller.signal, admission),
+          ),
+        };
+      }));
+      controller.signal.throwIfAborted();
       const batch = Object.freeze({
         id: frozen.id,
-        events: Object.freeze(values.map(({ event, value }) => Object.freeze({
+        events: Object.freeze(values.map(({ event, admission, value }) => Object.freeze({
+          admission,
           id: event.id,
           stream: event.stream,
           sequence: event.sequence,
@@ -570,7 +599,14 @@ async function processEnvelope<
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), options.timeoutMs);
     try {
+      const admission = await options.admit({
+        envelope,
+        attempt,
+        signal: controller.signal,
+      });
+      controller.signal.throwIfAborted();
       const context: ApplicationStreamProcessContext = {
+        admission,
         event: {
           id: envelope.id,
           stream: envelope.stream,
@@ -583,8 +619,8 @@ async function processEnvelope<
         ...(envelope.principal ? { principal: envelope.principal } : {}),
         trustedContext: envelope.trustedContext ?? {},
         schedules: Object.freeze({}),
-		workflows: Object.freeze({}),
-		tasks: Object.freeze({}),
+        workflows: Object.freeze({}),
+        tasks: Object.freeze({}),
         idempotencyKey: envelope.id,
         attempt,
         signal: controller.signal,
@@ -592,8 +628,9 @@ async function processEnvelope<
       const payload = await decodeStreamPayload(
         options.decodePayload,
         envelope.payload,
-        streamPayloadDecodeContext(envelope, controller.signal),
+        streamPayloadDecodeContext(envelope, controller.signal, admission),
       );
+      controller.signal.throwIfAborted();
       await options.handle(payload, context);
       return { state: 'processed', eventId: envelope.id };
     } catch (error) {
@@ -637,8 +674,10 @@ function applicationStreamProcessorErrorMessage(error: unknown): string {
 function streamPayloadDecodeContext<TPayload extends object>(
   envelope: ApplicationStreamEnvelope<TPayload>,
   signal: AbortSignal,
+  admission: ApplicationAdmissionInvocationContextV1,
 ): Parameters<ApplicationStreamPayloadDecoder<TPayload, object>>[1] {
   return {
+    admission,
     event: {
       id: envelope.id,
       stream: envelope.stream,

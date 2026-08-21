@@ -13,6 +13,12 @@ import {
   type ApplicationSignalReference,
 } from '@applik8s/applik8s';
 import { type } from '@applik8s/applik8s/dsl';
+import {
+  applicationAdmissionInvocationView,
+  createApplicationAdmissionContextV1,
+  createApplicationExecutionPrincipalV1,
+  withApplicationAdmissionExecutionV1,
+} from '@applik8s/core';
 import { describe, expect, it } from 'vitest';
 import type { ApplicationPostgresSql } from '../src/postgres-runtime-contract.js';
 
@@ -393,6 +399,46 @@ describe('v0.7 canonical signal runtime', () => {
       }),
       now: () => new Date('2026-01-01T01:00:00.000Z'),
     });
+    const workloadIdentity = {
+      id: 'identity:test:workload:signal-processor',
+      kind: 'workload' as const,
+      issuer: 'applik8s://test',
+      subject: 'signal-processor',
+    };
+    const deadline = new Date(Date.now() + 60_000).toISOString();
+    const executionPrincipal = createApplicationExecutionPrincipalV1({
+      application: 'test',
+      executionKind: 'processor',
+      executionId: 'signal-processor:event-decoder',
+      attempt: 1,
+      workloadIdentity,
+      envelopes: [],
+      trustedContextDigest: 'signal-context-v1',
+      audience: ['signal-processor'],
+      catalogRevision: 'catalog-v1',
+      authorityRevision: 'authority-v1',
+      deadline,
+      cancellationRevision: 'active:signal-processor:event-decoder',
+    });
+    const admission = applicationAdmissionInvocationView(
+      withApplicationAdmissionExecutionV1(
+        createApplicationAdmissionContextV1({
+          admission: { principal: executionPrincipal, trustedContext: {} },
+          operation: {
+            id: 'applik8s://processors/signal/operations/deliver',
+            transport: 'broker',
+          },
+          correlationId: 'event-decoder',
+        }),
+        {
+          causationId: 'event-decoder',
+          deadline,
+          cancellation: {
+            revision: 'active:signal-processor:event-decoder',
+          },
+        },
+      ),
+    );
     const decoded = await decoder({
       id: reference.issuance.id,
       input: { postId: 'post-decoder' },
@@ -400,6 +446,7 @@ describe('v0.7 canonical signal runtime', () => {
       issuedAt: '2026-01-01T00:00:00.000Z',
       expiresAt: reference.expiresAt,
     }, {
+      admission,
       event: {
         id: 'event-decoder',
         stream: { name: ReviewDecision.name, version: ReviewDecision.version },

@@ -2639,10 +2639,9 @@ installApplicationObjectStorageRuntimeResolver((binding) => {
 `
     : '';
   const workflowImport = workflow ? "import { AsyncLocalStorage } from 'node:async_hooks';\nimport { applicationWorkflowCausalPrincipalMetadata } from '@applik8s/applik8s/workflow-runtime';\nimport { installApplicationWorkflowRuntimeResolver } from '@applik8s/applik8s/workflow-runtime-resolvers';\nimport { createHatchetWorkflowRuntime } from '@applik8s/runtime-hatchet';\nimport { normalizeSchema } from '@applik8s/sdk/schema-runtime';" : '';
-  const causalImport = "import { applicationCausalPrincipalContext } from '@applik8s/core';";
-  const postgresImport = queries.length > 0 || stream.signal
-    ? "import postgres from 'postgres';"
-    : '';
+  const admissionImport = "import { applicationAdmissionInvocationView, applicationCausalPrincipalContext, createApplicationAdmissionContextV1, validateApplicationAdmissionContextV1WithoutReceipt, withApplicationAdmissionExecutionV1 } from '@applik8s/core';";
+  const postgresImport = "import postgres from 'postgres';";
+  const authorityImport = "import { createApplicationOperationAuthorityRuntime } from '@applik8s/operations';";
   const hasFunctionNativeRuntime = Boolean(
     processor.functionNativeTransaction || operations.length > 0,
   );
@@ -2706,7 +2705,6 @@ function directWorkflowRuntime(context) { const requireContract = (contract) => 
   const executionPrincipal = generatedStreamProcessorExecutionPrincipal(
     graph,
     processor,
-    queries,
     serviceIdentity,
     workloadAuthority.filter((candidate) =>
       candidate.workloadIdentity.subject === processor.id),
@@ -2733,8 +2731,7 @@ function directWorkflowRuntime(context) { const requireContract = (contract) => 
     ? processor.batch?.maxWaitMs ?? 1_000
     : 1_000;
   const signalImports = stream.signal
-    ? `import { createApplicationOperationAuthorityRuntime } from '@applik8s/operations';
-import { applicationOperationInputDigest } from '@applik8s/applik8s/operation-runtime';
+    ? `import { applicationOperationInputDigest } from '@applik8s/applik8s/operation-runtime';
 import { applicationSignalAccessAllows, createApplicationSignalIssuanceDecoder, createPostgresApplicationSignalStore } from '@applik8s/applik8s/signal-runtime';`
     : '';
   const signalRuntime = generatedStreamProcessorSignalRuntime(
@@ -2746,7 +2743,8 @@ import { applicationSignalAccessAllows, createApplicationSignalIssuanceDecoder, 
   return `import { createServer } from 'node:http';
 import { createPostgresApplicationStream, createPostgresApplicationStreamProcessorStore, enforcePostgresApplicationStreamRetention, ${runtimeFunction} } from '@applik8s/applik8s/stream-worker-runtime';
 ${postgresImport}
-${causalImport}
+${admissionImport}
+${authorityImport}
 ${workflowImport}
 ${queryImports}
 ${functionNativeImport}
@@ -2761,6 +2759,13 @@ function schema(json) { return { kind: 'jsonSchema', ref: { kind: 'jsonSchema', 
 const database = ${databaseBindingSource(stream.database)};
 const stream = { kind: 'applicationStream', definition: { kind: 'stream', id: ${JSON.stringify(`${stream.name}.${stream.version}`)}, name: ${JSON.stringify(stream.name)}, version: ${JSON.stringify(stream.version)}, payload: schema(${JSON.stringify(stream.payload.jsonSchema)}) }, retention: ${JSON.stringify(stream.retention)}, authority: 'postgres-outbox', replay: 'supported', database, partition: () => { throw new Error('Processor replay never repartitions persisted events.'); }, authorize: async () => false };
 const databaseUrl = requiredEnv(${JSON.stringify(stream.database.connectionEnvName)});
+const processorAuthoritySql = postgres(databaseUrl, { max: 4, idle_timeout: 20, connect_timeout: 10, prepare: false });
+const processorOperationAuthority = createApplicationOperationAuthorityRuntime({
+  sql: processorAuthoritySql,
+  application: ${JSON.stringify(graph.metadata.name)},
+  catalog: ${JSON.stringify(operationCatalog)},
+  ${applicationStaticAuthorityManifest(graph) ? `authorityManifest: ${JSON.stringify(applicationStaticAuthorityManifest(graph))},` : ''}
+});
 const createSource = () => createPostgresApplicationStream({ stream, databaseUrl, principal: { id: ${JSON.stringify(`applik8s:processor:${processor.name}`)} }, includeTrustedContext: true, internalConsumer: { kind: 'processor', name: ${JSON.stringify(processor.name)} } });
 let source = createSource();
 const store = createPostgresApplicationStreamProcessorStore({ databaseUrl });
@@ -2778,10 +2783,10 @@ let ready = false; let stopping = false; let lastError; let checkpoint = 0; let 
 const loopController = new AbortController();
 const server = createServer((request, response) => { const live = request.url === '/live'; const health = live || request.url === '/ready'; if (!health) { response.writeHead(404); response.end(); return; } const fresh = lastSuccessfulCycleAt > 0 && Date.now() - lastSuccessfulCycleAt < 60_000; const ok = live || (ready && fresh && !stopping); response.writeHead(ok ? 200 : 503, { 'content-type': 'application/json' }); response.end(JSON.stringify({ ready: ready && fresh, stopping, checkpoint, processed, deadLettered, lastError, lastSuccessfulCycleAt })); });
 server.listen(Number(process.env.APPLIK8S_HEALTH_PORT ?? '8080'), '0.0.0.0');
-async function loop() { while (!stopping) { try { const result = await ${runtimeFunction}({ processor: ${JSON.stringify(processor.name)}, streamName: ${JSON.stringify(`${stream.name}.${stream.version}`)}, source, store, handle: invokeHandler, ${signalRuntime.runtimeOption}${runtimeOptions}, retry: ${JSON.stringify(processor.retry)}, failure: ${JSON.stringify(processor.failure)}, timeoutMs: ${processor.budgets.timeoutMs}, maxInputBytes: ${processor.budgets.maxInputBytes} }); checkpoint = result.checkpoint; processed += result.processed; deadLettered += result.deadLettered; await enforcePostgresApplicationStreamRetention({ stream, databaseUrl, batchSize: 1000 }); lastError = undefined; ready = true; lastSuccessfulCycleAt = Date.now(); await abortableSleep(result.exhausted ? ${exhaustedWaitMs} : 10, loopController.signal); } catch (error) { lastError = error instanceof Error ? error.message : String(error); ready = false; await source.close().catch(() => undefined); if (!stopping) { source = createSource(); console.error(error); } await abortableSleep(5000, loopController.signal); } } }
+async function loop() { while (!stopping) { try { const result = await ${runtimeFunction}({ processor: ${JSON.stringify(processor.name)}, streamName: ${JSON.stringify(`${stream.name}.${stream.version}`)}, source, store, handle: invokeHandler, admit: processorAdmission, ${signalRuntime.runtimeOption}${runtimeOptions}, retry: ${JSON.stringify(processor.retry)}, failure: ${JSON.stringify(processor.failure)}, timeoutMs: ${processor.budgets.timeoutMs}, maxInputBytes: ${processor.budgets.maxInputBytes} }); checkpoint = result.checkpoint; processed += result.processed; deadLettered += result.deadLettered; await enforcePostgresApplicationStreamRetention({ stream, databaseUrl, batchSize: 1000 }); lastError = undefined; ready = true; lastSuccessfulCycleAt = Date.now(); await abortableSleep(result.exhausted ? ${exhaustedWaitMs} : 10, loopController.signal); } catch (error) { lastError = error instanceof Error ? error.message : String(error); ready = false; await source.close().catch(() => undefined); if (!stopping) { source = createSource(); console.error(error); } await abortableSleep(5000, loopController.signal); } } }
 function abortableSleep(ms, signal) { if (signal.aborted) return Promise.resolve(); return new Promise((resolve) => { const timeout = setTimeout(done, ms); const abort = () => done(); function done() { clearTimeout(timeout); signal.removeEventListener('abort', abort); resolve(); } signal.addEventListener('abort', abort, { once: true }); }); }
 const loopTask = loop();
-async function shutdown() { if (stopping) return; stopping = true; ready = false; loopController.abort(); await new Promise((resolve) => server.close(resolve)); await loopTask; await Promise.all([source.close(), store.close()${queries.length > 0 ? ', processorQuerySql.end({ timeout: 5 })' : ''}${signalRuntime.shutdown}]); }
+async function shutdown() { if (stopping) return; stopping = true; ready = false; loopController.abort(); await new Promise((resolve) => server.close(resolve)); await loopTask; await Promise.all([source.close(), store.close(), processorAuthoritySql.end({ timeout: 5 })${queries.length > 0 ? ', processorQuerySql.end({ timeout: 5 })' : ''}${signalRuntime.shutdown}]); }
 process.once('SIGTERM', () => { void shutdown(); }); process.once('SIGINT', () => { void shutdown(); });
 await loopTask;
 `;
@@ -3378,65 +3383,92 @@ function streamProcessorCallbackBindingsSource(
 function generatedStreamProcessorExecutionPrincipal(
   graph: ApplicationGraph,
   processor: ApplicationStreamProcessorNode,
-  queries: readonly StreamProcessorQueryContract[],
   serviceIdentity: ApplicationIdentityReference | undefined,
   workloadAuthority: readonly ApplicationWorkloadAuthorityEnvelope[],
 ): string {
-  const bindings = queries.map((binding) => ({
-    kind: 'query' as const,
-    alias: binding.identifier,
-    target: binding.query,
-  }));
-  const identity = serviceIdentity
-    ? JSON.stringify(serviceIdentity)
-    : "Object.freeze({ id: 'identity:' + executionId, kind: 'execution', issuer: "
-      + JSON.stringify(`applik8s://${graph.metadata.name}`)
-      + ", subject: executionId })";
   const service = serviceIdentity
-    ? `serviceIdentity: Object.freeze(${JSON.stringify(serviceIdentity)}),`
+    ? `serviceIdentity: ${JSON.stringify(serviceIdentity)},`
     : '';
   const actorAudiences = [...new Set(workloadAuthority.flatMap((envelope) => envelope.audiences))];
   const actorWorkloadIdentity = workloadAuthority[0]?.workloadIdentity;
   if (workloadAuthority.some((envelope) => envelope.workloadIdentity.id !== actorWorkloadIdentity?.id)) {
     throw new Error(`Generated stream processor ${processor.id} resolves multiple workload identities.`);
   }
+  const workloadIdentity = actorWorkloadIdentity ?? {
+    id: `identity:${graph.metadata.name}:workload:${processor.id}`,
+    kind: 'workload',
+    issuer: `applik8s://${graph.metadata.name}`,
+    subject: processor.id,
+  };
+  const authoredContext = processor.invocation === 'batch'
+    ? 'return Object.freeze({ ...context });'
+    : 'return Object.freeze({ ...context, principal: processorExecutionPrincipal(context) });';
   return `
-function processorExecutionPrincipal(context) {
-  const source = context.principal;
-  const event = context.event;
-  const sourceId = event?.id ?? context.batch?.id;
-  if (!sourceId) throw new Error('applik8s-processor-execution-principal-required');
-  const workloadIdentity = Object.freeze(${JSON.stringify(actorWorkloadIdentity ?? { id: `identity:${graph.metadata.name}:workload:${processor.id}`, kind: 'workload', issuer: `applik8s://${graph.metadata.name}`, subject: processor.id })});
-  const causal = source
-    ? applicationCausalPrincipalContext(source)
+async function processorAdmission({ envelope, attempt, signal }) {
+  if (signal.aborted) throw new Error('applik8s-processor-delivery-cancelled');
+  const trustedContextDigest = envelope.contextDigest ?? envelope.principal?.trustedContextDigest;
+  if (!trustedContextDigest) throw new Error('applik8s-processor-trusted-context-required');
+  const workloadIdentity = Object.freeze(${JSON.stringify(workloadIdentity)});
+  const causal = envelope.principal
+    ? applicationCausalPrincipalContext(envelope.principal)
     : Object.freeze({ id: workloadIdentity.id, identity: workloadIdentity, grantIds: Object.freeze([]) });
-  const executionId = ${JSON.stringify(processor.id)} + ':' + sourceId;
-  return Object.freeze({
-    id: 'execution:' + executionId,
-    identity: Object.freeze(${identity}),
-    kind: 'execution',
+  const executionId = ${JSON.stringify(processor.id)} + ':' + envelope.id;
+  const deadline = new Date(Date.now() + ${processor.budgets.timeoutMs}).toISOString();
+  const cancellationRevision = 'active:' + executionId;
+  const principal = await processorOperationAuthority.admitExecutionPrincipal({
     executionKind: 'processor',
     executionId,
-    attempt: context.attempt,
+    attempt,
     workloadIdentity,
     ${service}
     causalPrincipalId: causal.id,
     causalPrincipal: causal.identity,
-    causalGrantIds: Object.freeze([...causal.grantIds]),
-    authenticationMethod: 'applik8s-stream-processor/v1',
-    audience: Object.freeze(${JSON.stringify([...new Set([processor.id, ...actorAudiences])])}),
-    trustedContextDigest: event?.contextDigest ?? source?.trustedContextDigest ?? 'batch:' + sourceId,
-    catalogRevision: ${JSON.stringify(workloadAuthority[0]?.catalogRevision ?? `static:${graph.metadata.name}`)},
-    authorityRevision: source?.authorityRevision ?? ${JSON.stringify(`static:${graph.metadata.name}:${processor.id}`)},
-    admittedAt: new Date().toISOString(),
-    deadline: new Date(Date.now() + ${processor.budgets.timeoutMs}).toISOString(),
-    cancellationRevision: 'active:' + executionId,
-    bindings: Object.freeze(${JSON.stringify(bindings)}),
-    effectiveAuthority: Object.freeze([]),
+    causalGrantIds: causal.grantIds,
+    envelopes: ${JSON.stringify(workloadAuthority)},
+    trustedContextDigest,
+    audience: ${JSON.stringify([...new Set([processor.id, ...actorAudiences])])},
+    deadline,
+    cancellationRevision,
+    authenticationMethod: 'applik8s-postgres-stream-delivery/v1',
   });
+  if (signal.aborted) throw new Error('applik8s-processor-delivery-cancelled');
+  const context = validateApplicationAdmissionContextV1WithoutReceipt(
+    withApplicationAdmissionExecutionV1(
+      createApplicationAdmissionContextV1({
+        admission: { principal, trustedContext: envelope.trustedContext ?? {} },
+        operation: {
+          id: ${JSON.stringify(`applik8s://processors/${encodeURIComponent(processor.id)}/operations/deliver`)},
+          transport: 'broker',
+        },
+        correlationId: envelope.id,
+      }),
+      {
+        causationId: envelope.id,
+        deadline,
+        cancellation: { revision: cancellationRevision },
+        delivery: {
+          id: envelope.id,
+          source: ${JSON.stringify(`stream:${processor.source.nodeId}`)},
+        },
+      },
+    ),
+  );
+  return applicationAdmissionInvocationView(context);
+}
+function processorExecutionPrincipal(context) {
+  const principal = context.admission?.principal;
+  const sourceId = context.event?.id;
+  const executionId = sourceId ? ${JSON.stringify(processor.id)} + ':' + sourceId : undefined;
+  if (!principal || principal.kind !== 'execution'
+    || principal.executionKind !== 'processor'
+    || principal.executionId !== executionId
+    || principal.attempt !== context.attempt) {
+    throw new Error('applik8s-processor-execution-admission-required');
+  }
+  return principal;
 }
 function processorAuthoredContext(context) {
-  return Object.freeze({ ...context, principal: processorExecutionPrincipal(context) });
+  ${authoredContext}
 }`;
 }
 
@@ -3778,21 +3810,9 @@ function generatedStreamProcessorSignalRuntime(
       return [action.name, id];
     }),
   );
-  const workloadIdentity = {
-    id: `identity:${graph.metadata.name}:workload:${processor.id}`,
-    kind: 'workload',
-    issuer: `applik8s://${graph.metadata.name}`,
-    subject: processor.id,
-  };
   return {
     declarations: `const signalSql = postgres(databaseUrl, { max: 4, idle_timeout: 20, connect_timeout: 10, prepare: false });
 const signalStore = createPostgresApplicationSignalStore({ sql: signalSql });
-const signalOperationAuthority = createApplicationOperationAuthorityRuntime({
-  sql: signalSql,
-  application: ${JSON.stringify(graph.metadata.name)},
-  catalog: ${JSON.stringify(operationCatalog)},
-  ${applicationStaticAuthorityManifest(graph) ? `authorityManifest: ${JSON.stringify(applicationStaticAuthorityManifest(graph))},` : ''}
-});
 const signalDefinition = Object.freeze({
   kind: 'applicationSignalDefinition',
   id: ${JSON.stringify(stream.signal.id)},
@@ -3814,7 +3834,6 @@ const signalDefinition = Object.freeze({
   ))}),
 });
 const signalActionOperations = Object.freeze(${JSON.stringify(actionOperations)});
-const signalWorkloadIdentity = Object.freeze(${JSON.stringify(workloadIdentity)});
 function signalGrantIds(signal) {
   if (signal.access.mode !== 'grant') return [];
   const subjects = Array.isArray(signal.access.subject)
@@ -3825,7 +3844,7 @@ function signalGrantIds(signal) {
 }
 async function revokeSignalGrants(signal, transaction) {
   for (const grantId of signalGrantIds(signal)) {
-    await signalOperationAuthority.revokeGrant(
+    await processorOperationAuthority.revokeGrant(
       grantId,
       'Signal ' + signal.id + ' reached terminal state.',
       transaction,
@@ -3836,26 +3855,29 @@ const decodeSignalIssuance = createApplicationSignalIssuanceDecoder({
   store: signalStore,
   definition: signalDefinition,
   admit: async (issuance, context) => {
+    const executionPrincipal = context.admission.principal;
     const durablePrincipal = context.principal;
-    const actor = durablePrincipal
-      ? {
-          id: durablePrincipal.identity.id,
-          ...(durablePrincipal.roles ? { roles: durablePrincipal.roles } : {}),
-          ...(durablePrincipal.attributes ? { attributes: durablePrincipal.attributes } : {}),
-        }
-      : { id: signalWorkloadIdentity.id };
+    if (executionPrincipal.kind !== 'execution'
+      || executionPrincipal.executionKind !== 'processor'
+      || !durablePrincipal
+      || executionPrincipal.causalPrincipalId !== durablePrincipal.id
+      || executionPrincipal.causalPrincipal?.id !== durablePrincipal.identity.id) {
+      throw new Error('APPLIK8S_SIGNAL_EXECUTION_IDENTITY_REQUIRED');
+    }
+    const actor = {
+      id: durablePrincipal.identity.id,
+      ...(durablePrincipal.roles ? { roles: durablePrincipal.roles } : {}),
+      ...(durablePrincipal.attributes ? { attributes: durablePrincipal.attributes } : {}),
+    };
     return {
       actor,
       authorizeAction: async ({ signal, action, input, transaction }) => {
         if (!applicationSignalAccessAllows(signal, actor)) {
           throw new Error('APPLIK8S_SIGNAL_SUBJECT_DENIED');
         }
-        if (!durablePrincipal) {
-          throw new Error('APPLIK8S_SIGNAL_EXECUTION_IDENTITY_REQUIRED');
-        }
         const operationId = signalActionOperations[action];
         if (!operationId) throw new Error('APPLIK8S_SIGNAL_ACTION_UNDECLARED');
-        const authorize = () => signalOperationAuthority.authorize({
+        const authorize = () => processorOperationAuthority.authorize({
             principal: durablePrincipal,
             operationId,
             target: {
@@ -3866,17 +3888,17 @@ const decodeSignalIssuance = createApplicationSignalIssuanceDecoder({
             audience: ${JSON.stringify(processor.id)},
             transport: 'event',
             inputDigest: applicationOperationInputDigest(input),
-            trustedContextDigest: context.event.contextDigest ?? durablePrincipal.trustedContextDigest,
+            trustedContextDigest: context.admission.trustedContext.digest,
           });
         const result = transaction
-          ? await signalOperationAuthority.withinTransaction(transaction, authorize)
+          ? await processorOperationAuthority.withinTransaction(transaction, authorize)
           : await authorize();
         if (!result.allowed) throw new Error(result.code + ': ' + result.message);
         return { id: result.receipt.id };
       },
       finalizeAction: async ({ signal, terminal }, { transaction }) => {
         await revokeSignalGrants(signal, transaction);
-        await signalOperationAuthority.observe({
+        await processorOperationAuthority.observe({
           id: 'signal:' + signal.id,
           domain: 'workflow',
           subject: signal.contract.id,

@@ -38,6 +38,10 @@ export {
 export {
   applicationRelationalChangeScopes,
 } from './relational-runtime.js';
+export type {
+  ApplicationStreamDeliveryAdmissionRequest,
+  ApplicationStreamDeliveryAdmitter,
+} from './stream-processor-runtime.js';
 export { createPostgresApplicationStreamProcessorStore, runApplicationStreamBatchProcessor, runApplicationStreamProcessor } from './stream-processor-runtime.js';
 export { createPostgresApplicationStream, enforcePostgresApplicationStreamRetention } from './stream-runtime-postgres.js';
 

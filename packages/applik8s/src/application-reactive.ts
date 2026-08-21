@@ -5,7 +5,7 @@ import {
   type ApplicationOperationLike,
   getApplicationOperationContract,
 } from '@applik8s/client';
-import type { ApplicationMessageContractSchema, ApplicationProfiledCallbackContract, ApplicationProviderNode, ApplicationProviderRef, ApplicationRetryPolicy, ApplicationStreamNode, ApplicationStreamProcessorNode, JsonObject, JsonValue } from '@applik8s/core';
+import type { ApplicationAdmissionInvocationContextV1, ApplicationMessageContractSchema, ApplicationProfiledCallbackContract, ApplicationProviderNode, ApplicationProviderRef, ApplicationRetryPolicy, ApplicationStreamNode, ApplicationStreamProcessorNode, JsonObject, JsonValue } from '@applik8s/core';
 import { applicationOperationId } from '@applik8s/core';
 import type { SchemaInput } from '@applik8s/sdk';
 import { normalizeSchema } from '@applik8s/sdk';
@@ -269,6 +269,8 @@ export interface ApplicationStreamBatchOptions<TSchedules extends ApplicationStr
 }
 
 export interface ApplicationStreamProcessContext<TSchedules extends ApplicationStreamScheduleTargets = Readonly<Record<never, never>>, TTasks extends ApplicationStreamTaskTargets = Readonly<Record<never, never>>> {
+  /** Framework-admitted execution narrowed for the authored callback. */
+  readonly admission: ApplicationAdmissionInvocationContextV1;
   readonly event: {
     readonly id: string;
     readonly stream: { readonly name: string; readonly version: string };
@@ -296,6 +298,8 @@ export interface ApplicationStreamProcessContext<TSchedules extends ApplicationS
 export type ApplicationStreamProcessHandler<TPayload extends object, TSchedules extends ApplicationStreamScheduleTargets = Readonly<Record<never, never>>, TTasks extends ApplicationStreamTaskTargets = Readonly<Record<never, never>>> = (payload: TPayload, context: ApplicationStreamProcessContext<TSchedules, TTasks>) => void | Promise<void>;
 
 export interface ApplicationEventEnvelope<TPayload extends object> {
+  /** Per-event admission narrowed for this delivery attempt. */
+  readonly admission: ApplicationAdmissionInvocationContextV1;
   readonly id: string;
   readonly stream: { readonly name: string; readonly version: string };
   readonly sequence: number;

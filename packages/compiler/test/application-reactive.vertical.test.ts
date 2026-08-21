@@ -8,12 +8,12 @@ import { bindApplicationCallableDependencies } from '@applik8s/applik8s/internal
 import type { ApplicationGraph, ApplicationGraphNode, JsonObject } from '@applik8s/core';
 import { pgTable, text } from 'drizzle-orm/pg-core';
 import { describe, expect, it } from 'vitest';
+import { emitGeneratedApplicationProcessors } from '../src/application-processors/index.js';
 import {
   consolidateGeneratedApplicationReactiveResources,
   emitGeneratedApplicationReactive,
   kubernetesContainerName,
 } from '../src/application-reactive/index.js';
-import { emitGeneratedApplicationProcessors } from '../src/application-processors/index.js';
 import {
   compileTypeKroComposition,
   discoverApplicationGraph,
@@ -332,11 +332,20 @@ describe('generated v0.6 reactive workloads', () => {
     expect(generated).toContain('const createSource = () => createPostgresApplicationStream');
     expect(generated).toContain('await source.close().catch(() => undefined)');
     expect(generated).toContain('lastSuccessfulCycleAt');
-    expect(generated).toContain('const sourceId = event?.id ?? context.batch?.id');
+    expect(generated).toContain('async function processorAdmission');
+    expect(generated).toContain('admit: processorAdmission');
+    expect(generated).toContain("transport: 'broker'");
+    expect(generated).toContain(
+      'processorOperationAuthority.admitExecutionPrincipal',
+    );
     expect(generated).toContain(
       'Object.freeze({ id: workloadIdentity.id, identity: workloadIdentity, grantIds: Object.freeze([]) })',
     );
-    expect(generated).toContain("trustedContextDigest: event?.contextDigest ?? source?.trustedContextDigest ?? 'batch:' + sourceId");
+    expect(generated).toContain(
+      'const trustedContextDigest = envelope.contextDigest ?? envelope.principal?.trustedContextDigest',
+    );
+    expect(generated).toContain('return Object.freeze({ ...context });');
+    expect(generated).not.toContain("'batch:' + sourceId");
     expect(generated).not.toContain('runApplicationStreamProcessor({');
   });
 
@@ -793,7 +802,7 @@ describe('generated v0.6 reactive workloads', () => {
       '"id":"identity:processor-service-authority:service:record-worker"',
     );
     expect(generated).toContain(
-      'serviceIdentity: Object.freeze({"id":"identity:processor-service-authority:service:record-worker"',
+      'serviceIdentity: {"id":"identity:processor-service-authority:service:record-worker"',
     );
     expect(generated).toContain(
       "const principal = processorExecutionPrincipal(context);",
@@ -802,6 +811,7 @@ describe('generated v0.6 reactive workloads', () => {
       'applicationCommandPrincipalValues(principal)',
     );
     expect(generated).toContain('causalPrincipalId: causal.id');
+    expect(generated).toContain('const principal = context.admission?.principal');
     expect(generated).toContain(
       'handleAuthoredEvent(input, processorAuthoredContext(context))',
     );
@@ -1369,6 +1379,16 @@ describe('generated v0.6 reactive workloads', () => {
     );
     expect(processorGenerated).toContain(
       'decodePayload: decodeSignalIssuance',
+    );
+    expect(processorGenerated).toContain('admit: processorAdmission');
+    expect(processorGenerated).toContain(
+      'const executionPrincipal = context.admission.principal',
+    );
+    expect(processorGenerated).toContain(
+      'executionPrincipal.causalPrincipalId !== durablePrincipal.id',
+    );
+    expect(processorGenerated).not.toContain(
+      'const signalOperationAuthority',
     );
     expect(processorGenerated).toContain("transport: 'event'");
     expect(processorGenerated).toContain('APPLIK8S_SIGNAL_SUBJECT_DENIED');
