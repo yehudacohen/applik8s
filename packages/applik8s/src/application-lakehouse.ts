@@ -1,6 +1,12 @@
 // typecast-file-boundary: Lakehouse rows and cursors cross provider-neutral schema boundaries and are validated before materialization.
-import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
-import type { ApplicationLakehousePublicationNode } from '@applik8s/core';
+import { createHash } from 'node:crypto';
+import { canonicalJsonV1Value, type ApplicationLakehousePublicationNode, type JsonValue } from '@applik8s/core';
+import {
+  createRollingSignedEnvelopeCodec,
+  signedEnvelopeUtf8Key,
+  staticSignedEnvelopeKeyProvider,
+  type RollingSignedEnvelopeCodec,
+} from '@applik8s/runtime/signed-envelope';
 import type { SchemaInput } from '@applik8s/sdk';
 import type { ApplicationMessageEnvelope, EventDefinition } from './dsl.js';
 import type {
@@ -226,6 +232,38 @@ export function applicationLakehouseQueryTerminalError(
 
 export interface ApplicationLakehouseQueryRuntime<TRow extends object = object> {
   query(request: ApplicationLakehouseQueryRequest<TRow>): Promise<ApplicationLakehouseQueryResult<TRow>>;
+}
+
+export interface ApplicationLakehouseCursorPayload {
+  readonly snapshot: string;
+  readonly queryShape: string;
+  readonly principalScope: string;
+  readonly offset: number;
+  readonly expiresAt: number;
+}
+
+export function createApplicationLakehouseCursorCodec(
+  key: string,
+  now: () => number = Date.now,
+): RollingSignedEnvelopeCodec<ApplicationLakehouseCursorPayload> {
+  const keyBytes = signedEnvelopeUtf8Key(key);
+  return createRollingSignedEnvelopeCodec<ApplicationLakehouseCursorPayload, ApplicationLakehouseCursorPayload>({
+    purpose: 'applik8s.lakehouse-cursor/v1',
+    keys: staticSignedEnvelopeKeyProvider({
+      current: { id: 'lakehouse-cursor-current', key: keyBytes },
+    }),
+    now,
+    maximumLifetimeMs: 15 * 60_000,
+    maximumEncodedBytes: 64 * 1_024,
+    validatePayload: validateApplicationLakehouseCursorPayload,
+    writer: 'legacy',
+    legacy: {
+      key: keyBytes,
+      validatePayload: validateApplicationLakehouseCursorPayload,
+      toCurrent: (payload) => payload,
+      fromCurrent: (payload) => canonicalJsonV1Value(payload),
+    },
+  });
 }
 
 export type ApplicationLakehouseQueryRegistrar = <TRow extends object>(
@@ -546,6 +584,7 @@ export function createDeterministicApplicationLakehouseRuntime<TRow extends obje
   }
   const persist = async (values = [...manifests.values()]): Promise<void> => options.persist?.(values);
   const now = options.now ?? (() => new Date());
+  const cursorCodec = createApplicationLakehouseCursorCodec(options.cursorKey, () => now().getTime());
   return {
     async append(request) {
       if (!request.frontier.trim()) throw new Error('Lakehouse publication frontier must be non-empty.');
@@ -627,7 +666,7 @@ export function createDeterministicApplicationLakehouseRuntime<TRow extends obje
       const compiled = compileApplicationLakehouseQuery(request);
       const queryShape = stableDigest({ dataset: options.datasetId, snapshot: snapshot.snapshotId, compiled, pageSize, principalScope: request.principalScope ?? 'anonymous' });
       const cursorIdentity = applicationLakehouseQueryIdentity({ dataset: options.datasetId, snapshot: snapshot.snapshotId, queryShape });
-      const offset = request.page?.cursor ? decodeCursor(request.page.cursor, options.cursorKey, {
+      const offset = request.page?.cursor ? await decodeCursor(cursorCodec, request.page.cursor, {
         dataset: options.datasetId,
         snapshot: snapshot.snapshotId,
         schemaRevision: snapshot.schemaRevision,
@@ -676,7 +715,7 @@ export function createDeterministicApplicationLakehouseRuntime<TRow extends obje
         snapshot: snapshot.snapshotId,
         schemaRevision: snapshot.schemaRevision,
         rows: page,
-        ...(nextOffset < rows.length ? { cursor: encodeCursor({ snapshot: snapshot.snapshotId, queryShape, principalScope: request.principalScope ?? 'anonymous', offset: nextOffset, expiresAt: now().getTime() + 900_000 }, options.cursorKey) } : {}),
+        ...(nextOffset < rows.length ? { cursor: await encodeCursor(cursorCodec, { snapshot: snapshot.snapshotId, queryShape, principalScope: request.principalScope ?? 'anonymous', offset: nextOffset, expiresAt: now().getTime() + 900_000 }) } : {}),
         scannedBytes: Buffer.byteLength(encoded, 'utf8'),
         receipt: {
           schemaVersion: 'applik8s.lakehouseQueryReceipt/v1alpha1',
@@ -763,40 +802,78 @@ function lakehouseRequiredFields(schema: Readonly<Record<string, unknown>>): rea
   return schema.required as readonly string[];
 }
 
-function encodeCursor(value: object, key: string): string {
-  const body = Buffer.from(JSON.stringify(value)).toString('base64url');
-  const signature = createHmac('sha256', key).update(body).digest('base64url');
-  return `${body}.${signature}`;
+async function encodeCursor(
+  codec: RollingSignedEnvelopeCodec<ApplicationLakehouseCursorPayload>,
+  value: ApplicationLakehouseCursorPayload,
+): Promise<string> {
+  return codec.sign(value, { expiresAt: value.expiresAt });
 }
 
-function decodeCursor(value: string, key: string, expected: {
+async function decodeCursor(
+  codec: RollingSignedEnvelopeCodec<ApplicationLakehouseCursorPayload>,
+  value: string,
+  expected: {
   readonly dataset: string;
   readonly snapshot: string;
   readonly schemaRevision: string;
   readonly queryShape: string;
   readonly principalScope: string;
   readonly queryId: string;
-}, currentTime: number): number {
-  const [body, signature, extra] = value.split('.');
-  if (!body || !signature || extra) throw new Error('Lakehouse cursor is malformed.');
-  const actual = createHmac('sha256', key).update(body).digest();
-  const supplied = Buffer.from(signature, 'base64url');
-  if (supplied.length !== actual.length || !timingSafeEqual(supplied, actual)) throw new Error('Lakehouse cursor signature is invalid.');
-  const cursor = JSON.parse(Buffer.from(body, 'base64url').toString('utf8')) as Record<string, unknown>;
-  if (cursor.snapshot !== expected.snapshot || cursor.queryShape !== expected.queryShape || cursor.principalScope !== expected.principalScope) throw new Error('Lakehouse cursor does not match this snapshot, query, or principal.');
-  if (typeof cursor.expiresAt !== 'number' || cursor.expiresAt < currentTime) {
-    throw applicationLakehouseQueryTerminalError({
-      queryId: expected.queryId,
-      dataset: expected.dataset,
-      snapshot: expected.snapshot,
-      schemaRevision: expected.schemaRevision,
-      provider: 'deterministic',
-      state: 'expired',
-      diagnostic: 'Lakehouse query result cursor expired.',
-    });
+  },
+  currentTime: number,
+): Promise<number> {
+  let cursor: ApplicationLakehouseCursorPayload;
+  try {
+    cursor = await codec.verify(value);
+  } catch (cause) {
+    if (isSignedEnvelopeExpiry(cause)) throw expiredLakehouseCursor(expected);
+    throw new Error('Lakehouse cursor is malformed or has an invalid signature.', { cause });
   }
-  if (!Number.isSafeInteger(cursor.offset) || Number(cursor.offset) < 0) throw new Error('Lakehouse cursor offset is invalid.');
-  return Number(cursor.offset);
+  if (cursor.snapshot !== expected.snapshot || cursor.queryShape !== expected.queryShape || cursor.principalScope !== expected.principalScope) throw new Error('Lakehouse cursor does not match this snapshot, query, or principal.');
+  if (cursor.expiresAt < currentTime) throw expiredLakehouseCursor(expected);
+  return cursor.offset;
+}
+
+function validateApplicationLakehouseCursorPayload(value: JsonValue): ApplicationLakehouseCursorPayload {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new TypeError('Lakehouse cursor payload is invalid.');
+  const cursor = value as Readonly<Record<string, JsonValue>>;
+  if (
+    typeof cursor.snapshot !== 'string'
+    || typeof cursor.queryShape !== 'string'
+    || typeof cursor.principalScope !== 'string'
+    || !Number.isSafeInteger(cursor.offset)
+    || Number(cursor.offset) < 0
+    || !Number.isSafeInteger(cursor.expiresAt)
+    || Number(cursor.expiresAt) < 0
+  ) throw new TypeError('Lakehouse cursor payload is invalid.');
+  return {
+    snapshot: cursor.snapshot,
+    queryShape: cursor.queryShape,
+    principalScope: cursor.principalScope,
+    offset: Number(cursor.offset),
+    expiresAt: Number(cursor.expiresAt),
+  };
+}
+
+function isSignedEnvelopeExpiry(cause: unknown): boolean {
+  return !!cause && typeof cause === 'object' && Reflect.get(cause, 'code') === 'SIGNED_ENVELOPE_EXPIRED';
+}
+
+function expiredLakehouseCursor(expected: {
+  readonly queryId: string;
+  readonly dataset: string;
+  readonly snapshot: string;
+  readonly schemaRevision: string;
+}): ApplicationLakehouseQueryTerminalError {
+  return applicationLakehouseQueryTerminalError({
+    queryId: expected.queryId,
+    dataset: expected.dataset,
+    snapshot: expected.snapshot,
+    schemaRevision: expected.schemaRevision,
+    provider: 'deterministic',
+    state: 'expired',
+    diagnostic: 'Lakehouse query result cursor expired.',
+  });
 }
 
 function stableDigest(value: unknown): string {

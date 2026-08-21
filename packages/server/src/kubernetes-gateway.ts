@@ -1,9 +1,16 @@
 // typecast-file-boundary: Kubernetes custom objects and generated JSON-schema contracts are validated at the public gateway boundary.
-import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { CustomObjectsApi, KubeConfig, VersionApi, Watch } from '@kubernetes/client-node';
 import { normalizeSchema } from '@applik8s/sdk/schema-runtime';
 import type { ApplicationCommandProgress, ApplicationCommandSubmission, ApplicationQueryEvent, ApplicationQueryMultiplexFrame, ApplicationQuerySnapshot } from '@applik8s/client';
-import type { JsonObject } from '@applik8s/core';
+import { canonicalJsonV1Value, type JsonObject, type JsonValue } from '@applik8s/core';
+import { nodeLegacyHmacBase64Url } from '@applik8s/runtime/node-integrity';
+import {
+  createRollingSignedEnvelopeCodec,
+  signedEnvelopeUtf8Key,
+  staticSignedEnvelopeKeyProvider,
+  type RollingSignedEnvelopeCodec,
+} from '@applik8s/runtime/signed-envelope';
 
 export interface Applik8sGatewayAdmission {
   readonly principal: {
@@ -225,13 +232,34 @@ export function createApplik8sKubernetesGateway(options: Applik8sKubernetesGatew
   if (options.cursorSecret.length < 32) throw new Error('Applik8s Kubernetes gateway cursorSecret must contain at least 32 characters.');
   const basePath = normalizeBasePath(options.basePath ?? '/__applik8s/v1');
   const maxRequestBytes = options.maxRequestBytes ?? 1024 * 1024;
+  const now = options.now ?? (() => new Date());
   const cursorTtlSeconds = options.cursorTtlSeconds ?? 15 * 60;
+  if (!Number.isSafeInteger(cursorTtlSeconds) || cursorTtlSeconds < 30 || cursorTtlSeconds > 24 * 60 * 60) {
+    throw new Error('Applik8s Kubernetes gateway cursor lifetime must be between 30 seconds and 24 hours.');
+  }
+  const cursorKey = signedEnvelopeUtf8Key(options.cursorSecret);
+  const cursorCodec = createRollingSignedEnvelopeCodec<GatewayCursor, GatewayCursor>({
+    purpose: 'applik8s.kubernetes-gateway-cursor/v1',
+    keys: staticSignedEnvelopeKeyProvider({
+      current: { id: 'kubernetes-gateway-cursor-current', key: cursorKey },
+    }),
+    now: () => now().getTime(),
+    maximumLifetimeMs: cursorTtlSeconds * 1_000,
+    maximumEncodedBytes: 64 * 1_024,
+    validatePayload: validateGatewayCursor,
+    writer: 'legacy',
+    legacy: {
+      key: cursorKey,
+      validatePayload: validateGatewayCursor,
+      toCurrent: (payload) => payload,
+      fromCurrent: (payload) => canonicalJsonV1Value(payload),
+    },
+  });
   const maxSessionMs = options.maxSessionMs ?? 5 * 60_000;
   const maxMultiplexSubscriptions = options.maxMultiplexSubscriptions ?? 100;
   if (!Number.isSafeInteger(maxMultiplexSubscriptions) || maxMultiplexSubscriptions < 1 || maxMultiplexSubscriptions > 1_000) {
     throw new Error('Applik8s Kubernetes gateway maxMultiplexSubscriptions must be between 1 and 1000.');
   }
-  const now = options.now ?? (() => new Date());
   const commands = uniqueById(options.commands ?? [], 'command');
   const queries = uniqueById(options.queries ?? [], 'query');
   const config = options.kubeConfig ?? defaultKubeConfig();
@@ -349,7 +377,7 @@ export function createApplik8sKubernetesGateway(options: Applik8sKubernetesGatew
         throw new Error(`Application command ${command.id} idempotency key already identifies a different Kubernetes object.`);
       }
     }
-    const cursor = signCursor(options.cursorSecret, {
+    const cursor = await signCursor(cursorCodec, {
       version: 1,
       kind: 'kubernetes-command',
       command: command.id,
@@ -378,7 +406,7 @@ export function createApplik8sKubernetesGateway(options: Applik8sKubernetesGatew
   async function commandProgress(request: Request, command: Applik8sKubernetesCreateContract, body: Readonly<Record<string, unknown>>): Promise<Response> {
     const encoded = requiredString(body.cursor, 'cursor');
     const admission = await admit(options.authenticate, request, { kind: 'command', id: command.id, input: { cursor: encoded } });
-    const cursor = verifyCursor(options.cursorSecret, encoded, now().getTime());
+    const cursor = await verifyCursor(cursorCodec, encoded, now().getTime());
     if (cursor.kind !== 'kubernetes-command' || cursor.command !== command.id) throw new Error('Application command cursor is invalid.');
     assertCursorIdentity(cursor, admission, options.cursorSecret);
     const object = await getObject(objects, command.resource, cursor.namespace, cursor.name);
@@ -409,7 +437,7 @@ export function createApplik8sKubernetesGateway(options: Applik8sKubernetesGatew
     enforceOutputBudgets(query, output);
     const contextDigest = admittedContextDigest(options.cursorSecret, admission.trustedContext);
     const inputKey = stableInputKey(input);
-    const cursor = signCursor(options.cursorSecret, {
+    const cursor = await signCursor(cursorCodec, {
       version: 1,
       kind: 'kubernetes-query',
       query: query.id,
@@ -440,7 +468,7 @@ export function createApplik8sKubernetesGateway(options: Applik8sKubernetesGatew
     if (!await query.authorize({ principal: admission.principal, context: admission.trustedContext, input })) {
       throw new Error(`Application query ${query.id} is not authorized.`);
     }
-    const cursor = verifyCursor(options.cursorSecret, requiredString(body.cursor, 'cursor'), now().getTime());
+    const cursor = await verifyCursor(cursorCodec, requiredString(body.cursor, 'cursor'), now().getTime());
     if (cursor.kind !== 'kubernetes-query' || cursor.query !== query.id || cursor.inputKey !== stableInputKey(input)) {
       throw new Error('Application query cursor is invalid.');
     }
@@ -452,7 +480,7 @@ export function createApplik8sKubernetesGateway(options: Applik8sKubernetesGatew
       input,
       context: admission.trustedContext,
       cursor,
-      secret: options.cursorSecret,
+      cursorCodec,
       ttlSeconds: cursorTtlSeconds,
       maxSessionMs,
       now,
@@ -651,7 +679,7 @@ function kubernetesSubscriptionStream(options: {
   readonly input: unknown;
   readonly context: Readonly<Record<string, unknown>>;
   readonly cursor: QueryCursor;
-  readonly secret: string;
+  readonly cursorCodec: RollingSignedEnvelopeCodec<GatewayCursor>;
   readonly ttlSeconds: number;
   readonly maxSessionMs: number;
   readonly now: () => Date;
@@ -681,6 +709,8 @@ function kubernetesSubscriptionStream(options: {
       const fieldSelector = options.query.fieldSelector?.({ context: options.context, input: options.input });
       const path = watchPath(options.query.resource, namespace);
       let sequence = options.cursor.sequence;
+      let delivery = Promise.resolve();
+      let deliveryFailed = false;
       const deadline = setTimeout(() => abort?.abort(), options.maxSessionMs);
       const send = (event: ApplicationQueryEvent) => controller.enqueue(encoder.encode(`event: ${event.kind}\ndata: ${JSON.stringify(event)}\n\n`));
       try {
@@ -706,23 +736,33 @@ function kubernetesSubscriptionStream(options: {
               return;
             }
             sequence += 1;
-            const cursor = signCursor(options.secret, {
-              ...options.cursor,
-              resourceVersion,
-              sequence,
-              expiresAt: options.now().getTime() + options.ttlSeconds * 1_000,
+            const eventSequence = sequence;
+            delivery = delivery.then(async () => {
+              const cursor = await signCursor(options.cursorCodec, {
+                ...options.cursor,
+                resourceVersion,
+                sequence: eventSequence,
+                expiresAt: options.now().getTime() + options.ttlSeconds * 1_000,
+              });
+              if (phase === 'BOOKMARK') {
+                send({ kind: 'keepalive', protocol: 'applik8s.query/v1alpha1', query: options.query.id, id: `${options.query.id}:bookmark:${resourceVersion}`, cursor, sequence: eventSequence });
+                return;
+              }
+              send({ kind: 'invalidate', protocol: 'applik8s.query/v1alpha1', query: options.query.id, id: `${options.query.id}:${phase}:${resourceVersion}`, cursor, sequence: eventSequence, models: [options.query.model] });
+            }).catch((error: unknown) => {
+              deliveryFailed = true;
+              controller.error(error);
+              abort?.abort();
             });
-            if (phase === 'BOOKMARK') {
-              send({ kind: 'keepalive', protocol: 'applik8s.query/v1alpha1', query: options.query.id, id: `${options.query.id}:bookmark:${resourceVersion}`, cursor, sequence });
-              return;
-            }
-            send({ kind: 'invalidate', protocol: 'applik8s.query/v1alpha1', query: options.query.id, id: `${options.query.id}:${phase}:${resourceVersion}`, cursor, sequence, models: [options.query.model] });
           },
           (error) => {
             clearTimeout(deadline);
             release();
-            if (error) controller.error(error);
-            else controller.close();
+            void delivery.then(() => {
+              if (deliveryFailed) return;
+              if (error) controller.error(error);
+              else controller.close();
+            }, (deliveryError: unknown) => controller.error(deliveryError));
           },
         );
         untrack = options.track(abort);
@@ -873,7 +913,7 @@ function reconciliationState(object: KubernetesObject): 'notObserved' | 'progres
 }
 
 function admittedContextDigest(secret: string, context: Readonly<Record<string, unknown>>): string {
-  return createHmac('sha256', secret).update(stableJson(context)).digest('base64url');
+  return nodeLegacyHmacBase64Url({ key: secret, value: stableJson(context) });
 }
 
 function assertCursorIdentity(cursor: GatewayCursor, admission: Applik8sGatewayAdmission, secret: string): void {
@@ -884,20 +924,80 @@ function assertCursorIdentity(cursor: GatewayCursor, admission: Applik8sGatewayA
   ) throw new Error('Application cursor identity is invalid.');
 }
 
-function signCursor(secret: string, cursor: GatewayCursor): string {
-  const body = Buffer.from(JSON.stringify(cursor)).toString('base64url');
-  return `${body}.${createHmac('sha256', secret).update(body).digest('base64url')}`;
+async function signCursor(
+  codec: RollingSignedEnvelopeCodec<GatewayCursor>,
+  cursor: GatewayCursor,
+): Promise<string> {
+  return codec.sign(cursor, { expiresAt: cursor.expiresAt });
 }
 
-function verifyCursor(secret: string, value: string, currentTime: number): GatewayCursor {
-  const [body, signature, extra] = value.split('.');
-  if (!body || !signature || extra) throw new Error('Application cursor is invalid.');
-  const expected = createHmac('sha256', secret).update(body).digest();
-  const supplied = Buffer.from(signature, 'base64url');
-  if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) throw new Error('Application cursor is invalid.');
-  const cursor = JSON.parse(Buffer.from(body, 'base64url').toString('utf8')) as GatewayCursor;
+async function verifyCursor(
+  codec: RollingSignedEnvelopeCodec<GatewayCursor>,
+  value: string,
+  currentTime: number,
+): Promise<GatewayCursor> {
+  let cursor: GatewayCursor;
+  try {
+    cursor = await codec.verify(value);
+  } catch (cause) {
+    throw new Error('Application cursor is invalid or expired.', { cause });
+  }
   if (cursor.version !== 1 || cursor.expiresAt < currentTime) throw new Error('Application cursor is invalid or expired.');
   return cursor;
+}
+
+function validateGatewayCursor(value: JsonValue): GatewayCursor {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new TypeError('Application cursor is invalid.');
+  const cursor = value as Readonly<Record<string, JsonValue>>;
+  const common = cursor.version === 1
+    && typeof cursor.principalId === 'string'
+    && typeof cursor.contextDigest === 'string'
+    && typeof cursor.authorizationVersion === 'string'
+    && Number.isSafeInteger(cursor.expiresAt)
+    && Number(cursor.expiresAt) >= 0;
+  if (!common) throw new TypeError('Application cursor is invalid.');
+  if (
+    cursor.kind === 'kubernetes-command'
+    && typeof cursor.command === 'string'
+    && typeof cursor.commandId === 'string'
+    && typeof cursor.name === 'string'
+    && (cursor.namespace === undefined || typeof cursor.namespace === 'string')
+  ) {
+    return {
+      version: 1,
+      kind: 'kubernetes-command',
+      command: cursor.command,
+      commandId: cursor.commandId,
+      principalId: cursor.principalId as string,
+      contextDigest: cursor.contextDigest as string,
+      authorizationVersion: cursor.authorizationVersion as string,
+      ...(cursor.namespace === undefined ? {} : { namespace: cursor.namespace }),
+      name: cursor.name,
+      expiresAt: Number(cursor.expiresAt),
+    };
+  }
+  if (
+    cursor.kind === 'kubernetes-query'
+    && typeof cursor.query === 'string'
+    && typeof cursor.inputKey === 'string'
+    && typeof cursor.resourceVersion === 'string'
+    && Number.isSafeInteger(cursor.sequence)
+    && Number(cursor.sequence) >= 0
+  ) {
+    return {
+      version: 1,
+      kind: 'kubernetes-query',
+      query: cursor.query,
+      inputKey: cursor.inputKey,
+      principalId: cursor.principalId as string,
+      contextDigest: cursor.contextDigest as string,
+      authorizationVersion: cursor.authorizationVersion as string,
+      resourceVersion: cursor.resourceVersion,
+      sequence: Number(cursor.sequence),
+      expiresAt: Number(cursor.expiresAt),
+    };
+  }
+  throw new TypeError('Application cursor is invalid.');
 }
 
 function subscriptionLimiter(limits: { readonly perPrincipal: number; readonly total: number }) {

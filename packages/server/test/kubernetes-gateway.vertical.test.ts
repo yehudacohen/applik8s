@@ -1,5 +1,12 @@
 // typecast-file-boundary: focused runtime tests use structural Kubernetes client doubles for only the methods exercised by the gateway.
 import type { CustomObjectsApi, Watch } from '@kubernetes/client-node';
+import type { JsonValue } from '@applik8s/core';
+import {
+  createSignedEnvelopeCodec,
+  signedEnvelopeUtf8Key,
+  staticSignedEnvelopeKeyProvider,
+  verifyLegacyCompactHmacJson,
+} from '@applik8s/runtime/signed-envelope';
 import { describe, expect, it } from 'vitest';
 import { createApplik8sKubernetesGateway } from '../src/kubernetes-gateway.js';
 
@@ -60,6 +67,8 @@ describe('generated Kubernetes application gateway', () => {
     expect(submission.status).toBe(200);
     const accepted = await submission.json() as { readonly durableResult: string; readonly progressCursor: string };
     expect(accepted.durableResult).toBe('pending');
+    const legacyPayload = await releasedKubernetesCursorPayload(accepted.progressCursor);
+    expect(legacyPayload).toMatchObject({ kind: 'kubernetes-command', commandId: 'command-1' });
     expect(stored).toMatchObject({
       metadata: {
         namespace: 'guestbook',
@@ -70,7 +79,7 @@ describe('generated Kubernetes application gateway', () => {
     });
 
     const progress = await gateway.handle(post('/__applik8s/v1/commands/GuestBookEntry.create/progress', {
-      cursor: accepted.progressCursor,
+      cursor: await signedEnvelopeV1KubernetesCursor(legacyPayload),
     }));
     expect(await progress.json()).toMatchObject({
       durableResult: 'succeeded',
@@ -335,6 +344,29 @@ describe('generated Kubernetes application gateway', () => {
     }]);
   });
 });
+
+async function releasedKubernetesCursorPayload(value: string): Promise<JsonValue> {
+  return verifyLegacyCompactHmacJson(value, {
+    key: signedEnvelopeUtf8Key(secret),
+    validatePayload: (payload) => payload,
+  });
+}
+
+async function signedEnvelopeV1KubernetesCursor(payload: JsonValue): Promise<string> {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw new TypeError('Test cursor payload is invalid.');
+  const expiresAt = Reflect.get(payload, 'expiresAt');
+  if (!Number.isSafeInteger(expiresAt)) throw new TypeError('Test cursor expiry is invalid.');
+  const issuedAt = Date.now();
+  return createSignedEnvelopeCodec<JsonValue>({
+    purpose: 'applik8s.kubernetes-gateway-cursor/v1',
+    keys: staticSignedEnvelopeKeyProvider({
+      current: { id: 'kubernetes-gateway-cursor-current', key: signedEnvelopeUtf8Key(secret) },
+    }),
+    now: () => issuedAt,
+    maximumLifetimeMs: 15 * 60_000,
+    validatePayload: (value) => value,
+  }).sign(payload, { issuedAt, expiresAt: Number(expiresAt) });
+}
 
 function identity(guestbook: string) {
   return async () => ({

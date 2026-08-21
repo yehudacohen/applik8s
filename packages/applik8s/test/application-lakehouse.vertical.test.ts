@@ -14,6 +14,14 @@ import {
   type,
   type ApplicationLakehouseRowExpression,
 } from '@applik8s/applik8s';
+import { createApplicationLakehouseCursorCodec } from '@applik8s/applik8s/lakehouse-runtime';
+import type { JsonValue } from '@applik8s/core';
+import {
+  createSignedEnvelopeCodec,
+  signedEnvelopeUtf8Key,
+  staticSignedEnvelopeKeyProvider,
+  verifyLegacyCompactHmacJson,
+} from '@applik8s/runtime/signed-envelope';
 import { afterEach, describe, expect, it } from 'vitest';
 
 const disposers: Array<() => void> = [];
@@ -21,6 +29,38 @@ afterEach(() => { while (disposers.length > 0) disposers.pop()?.(); });
 
 describe('v0.8 published lakehouse snapshots', () => {
   type UsageRow = { organizationId: string; occurredAt: string; quantity: number };
+  it('keeps Release-A lakehouse cursors readable by v0.7 while accepting Signed Envelope v1', async () => {
+    const now = Date.parse('2026-08-19T12:00:00.000Z');
+    const expiresAt = now + 15 * 60_000;
+    const secret = 'l'.repeat(32);
+    const key = signedEnvelopeUtf8Key(secret);
+    const payload = {
+      snapshot: 'snapshot_one',
+      queryShape: 'sha256:query',
+      principalScope: 'principal:one',
+      offset: 20,
+      expiresAt,
+    };
+    const rolling = createApplicationLakehouseCursorCodec(secret, () => now);
+    const legacy = await rolling.sign(payload, { expiresAt });
+    await expect(verifyLegacyCompactHmacJson(legacy, {
+      key,
+      validatePayload: (value) => value,
+    })).resolves.toEqual(payload);
+
+    const current = createSignedEnvelopeCodec<JsonValue>({
+      purpose: 'applik8s.lakehouse-cursor/v1',
+      keys: staticSignedEnvelopeKeyProvider({
+        current: { id: 'lakehouse-cursor-current', key },
+      }),
+      now: () => now,
+      maximumLifetimeMs: 15 * 60_000,
+      validatePayload: (value) => value,
+    });
+    const v1 = await current.sign(payload, { issuedAt: now, expiresAt });
+    await expect(rolling.verify(v1)).resolves.toEqual(payload);
+  });
+
   it('binds one qualified capability fluently across deployment targets', () => {
     const application = app('portable-history');
     const Dataset = LakehouseDataset.named('history');

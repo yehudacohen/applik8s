@@ -1,5 +1,5 @@
 // typecast-file-boundary: Athena, Glue, and S3 responses cross SDK JSON boundaries and are validated before hydration.
-import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import {
   GetQueryExecutionCommand,
   GetQueryResultsCommand,
@@ -13,9 +13,11 @@ import {
   applicationLakehouseQueryIdentity,
   applicationLakehouseQueryTerminalError,
   compileApplicationLakehouseQuery,
+  createApplicationLakehouseCursorCodec,
   createDeterministicApplicationLakehouseRuntime,
   verifyApplicationLakehouseManifest,
   type ApplicationLakehouseManifest,
+  type ApplicationLakehouseCursorPayload,
   type ApplicationLakehousePublicationRuntime,
   type ApplicationLakehouseQueryRequest,
   type ApplicationLakehouseQueryResult,
@@ -143,8 +145,9 @@ export function createAwsApplicationLakehouseQueryRuntime(
         const compiled = compileApplicationLakehouseQuery(request);
         const queryShape = digest({ dataset: qualification, snapshot: snapshot.snapshotId, compiled, pageSize, principalScope: request.principalScope ?? 'anonymous' });
         const cursorQueryId = applicationLakehouseQueryIdentity({ dataset: qualification, snapshot: snapshot.snapshotId, queryShape });
+        const cursorCodec = createApplicationLakehouseCursorCodec(dataset.cursorKey);
         const offset = request.page?.cursor
-          ? decodeCursor(request.page.cursor, dataset.cursorKey, {
+          ? await decodeCursor(cursorCodec, request.page.cursor, {
             dataset: qualification,
             snapshot: snapshot.snapshotId,
             schemaRevision: snapshot.schemaRevision,
@@ -216,7 +219,7 @@ export function createAwsApplicationLakehouseQueryRuntime(
           snapshot: snapshot.snapshotId,
           schemaRevision: snapshot.schemaRevision,
           rows,
-          ...(hasMore ? { cursor: encodeCursor({ snapshot: snapshot.snapshotId, queryShape, principalScope: request.principalScope ?? 'anonymous', offset: nextOffset, expiresAt: Date.now() + 900_000 }, dataset.cursorKey) } : {}),
+          ...(hasMore ? { cursor: await encodeCursor(cursorCodec, { snapshot: snapshot.snapshotId, queryShape, principalScope: request.principalScope ?? 'anonymous', offset: nextOffset, expiresAt: Date.now() + 900_000 }) } : {}),
           scannedBytes: terminal.scannedBytes,
           receipt: {
             schemaVersion: 'applik8s.lakehouseQueryReceipt/v1alpha1',
@@ -491,34 +494,54 @@ function physicalRows<TRow extends object>(manifest: ApplicationLakehouseManifes
 function digest(value: unknown): string { return createHash('sha256').update(stableJson(value)).digest('hex'); }
 function stableJson(value: unknown): string { if (value === null || typeof value !== 'object') return JSON.stringify(value); if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`; return `{${Object.entries(value).filter(([, item]) => item !== undefined).sort(([left], [right]) => left.localeCompare(right)).map(([key, item]) => `${JSON.stringify(key)}:${stableJson(item)}`).join(',')}}`; }
 
-function encodeCursor(value: object, key: string): string { const body = Buffer.from(JSON.stringify(value)).toString('base64url'); return `${body}.${createHmac('sha256', key).update(body).digest('base64url')}`; }
-function decodeCursor(value: string, key: string, expected: {
+type ApplicationLakehouseCursorCodec = ReturnType<typeof createApplicationLakehouseCursorCodec>;
+
+async function encodeCursor(
+  codec: ApplicationLakehouseCursorCodec,
+  value: ApplicationLakehouseCursorPayload,
+): Promise<string> {
+  return codec.sign(value, { expiresAt: value.expiresAt });
+}
+
+async function decodeCursor(codec: ApplicationLakehouseCursorCodec, value: string, expected: {
   readonly dataset: string;
   readonly snapshot: string;
   readonly schemaRevision: string;
   readonly queryShape: string;
   readonly principalScope: string;
   readonly queryId: string;
-}): number {
-  const [body, signature, extra] = value.split('.');
-  if (!body || !signature || extra) throw new Error('AWS lakehouse cursor is malformed.');
-  const actual = createHmac('sha256', key).update(body).digest();
-  const supplied = Buffer.from(signature, 'base64url');
-  if (actual.length !== supplied.length || !timingSafeEqual(actual, supplied)) throw new Error('AWS lakehouse cursor signature is invalid.');
-  const cursor = JSON.parse(Buffer.from(body, 'base64url').toString('utf8')) as Record<string, unknown>;
-  if (cursor.snapshot !== expected.snapshot || cursor.queryShape !== expected.queryShape || cursor.principalScope !== expected.principalScope || !Number.isSafeInteger(cursor.offset)) throw new Error('AWS lakehouse cursor does not match this snapshot, query, or principal.');
-  if (typeof cursor.expiresAt !== 'number' || cursor.expiresAt < Date.now()) {
-    throw applicationLakehouseQueryTerminalError({
-      queryId: expected.queryId,
-      dataset: expected.dataset,
-      snapshot: expected.snapshot,
-      schemaRevision: expected.schemaRevision,
-      provider: 'athena',
-      state: 'expired',
-      diagnostic: 'AWS lakehouse query result cursor expired.',
-    });
+}): Promise<number> {
+  let cursor: ApplicationLakehouseCursorPayload;
+  try {
+    cursor = await codec.verify(value);
+  } catch (cause) {
+    if (isSignedEnvelopeExpiry(cause)) throw expiredAwsLakehouseCursor(expected);
+    throw new Error('AWS lakehouse cursor is malformed or has an invalid signature.', { cause });
   }
-  return Number(cursor.offset);
+  if (cursor.snapshot !== expected.snapshot || cursor.queryShape !== expected.queryShape || cursor.principalScope !== expected.principalScope) throw new Error('AWS lakehouse cursor does not match this snapshot, query, or principal.');
+  if (cursor.expiresAt < Date.now()) throw expiredAwsLakehouseCursor(expected);
+  return cursor.offset;
+}
+
+function isSignedEnvelopeExpiry(cause: unknown): boolean {
+  return !!cause && typeof cause === 'object' && Reflect.get(cause, 'code') === 'SIGNED_ENVELOPE_EXPIRED';
+}
+
+function expiredAwsLakehouseCursor(expected: {
+  readonly queryId: string;
+  readonly dataset: string;
+  readonly snapshot: string;
+  readonly schemaRevision: string;
+}) {
+  return applicationLakehouseQueryTerminalError({
+    queryId: expected.queryId,
+    dataset: expected.dataset,
+    snapshot: expected.snapshot,
+    schemaRevision: expected.schemaRevision,
+    provider: 'athena',
+    state: 'expired',
+    diagnostic: 'AWS lakehouse query result cursor expired.',
+  });
 }
 
 function validateDataset(value: AwsApplicationLakehouseDatasetConfiguration<object>): void {
