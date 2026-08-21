@@ -7,6 +7,7 @@ import type {
   ApplicationScopedOperation,
 } from '@applik8s/client';
 import type {
+  ApplicationAdmissionInvocationContextV1,
   ApplicationIdentityReference,
   ApplicationPrincipal,
   JsonObject,
@@ -95,6 +96,8 @@ export interface ApplicationTaskContext<
   TProjections extends ApplicationTaskProjections = Readonly<Record<never, never>>,
 	TObjects extends ApplicationTaskObjectStores = Readonly<Record<never, never>>,
 > {
+  /** Framework-admitted execution identity and immutable invocation provenance. */
+  readonly admission: ApplicationAdmissionInvocationContextV1;
   readonly invocationId: string;
   readonly idempotencyKey: string;
   readonly attempt: number;
@@ -121,6 +124,8 @@ export interface ApplicationWorkflowContext<
   TSignals extends Readonly<Record<string, object>> = Readonly<Record<string, object>>,
   TErrors extends Readonly<Record<string, object>> = Readonly<Record<never, never>>,
 > {
+  /** Framework-admitted execution identity and immutable invocation provenance. */
+  readonly admission: ApplicationAdmissionInvocationContextV1;
   task<TAlias extends keyof TTasks & string>(alias: TAlias, input: ApplicationTaskReferenceInput<TTasks[TAlias]>, options?: ApplicationWorkflowInvocationMetadata): Promise<ApplicationTaskReferenceOutput<TTasks[TAlias]>>;
   child<TAlias extends keyof TWorkflows & string>(alias: TAlias, input: ApplicationWorkflowReferenceInput<TWorkflows[TAlias]>, options?: ApplicationWorkflowInvocationMetadata): Promise<ApplicationWorkflowReferenceOutput<TWorkflows[TAlias]>>;
   sleep(duration: string): Promise<void>;

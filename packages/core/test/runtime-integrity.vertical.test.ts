@@ -10,6 +10,7 @@ import {
   canonicalJsonV1String,
   canonicalJsonV1Value,
   createApplicationAdmissionContextV1,
+  createApplicationExecutionPrincipalV1,
   SignedEnvelopeV1ValidationError,
   signedEnvelopeAlgorithm,
   signedEnvelopeVersion,
@@ -234,5 +235,111 @@ describe('Admission Context v1', () => {
       authorizationReceipt: { id: 'unverified-receipt' },
     }, { now: Date.parse('2026-08-21T12:00:30.000Z') }))
       .toThrow(/receipt is forbidden/u);
+  });
+
+  it('constructs one framework execution principal without granting operation authority', () => {
+    const workloadIdentity = {
+      id: 'identity:demo:workload:task.publish',
+      kind: 'workload' as const,
+      issuer: 'applik8s://demo',
+      subject: 'task.publish',
+    };
+    const execution = createApplicationExecutionPrincipalV1({
+      application: 'demo',
+      executionKind: 'task',
+      executionId: 'task-run-1',
+      attempt: 2,
+      workloadIdentity,
+      causalPrincipal: {
+        id: principal.id,
+        identity: principal.identity,
+        grantIds: ['grant:publish'],
+      },
+      envelopes: [],
+      trustedContextDigest: context.trustedContext.digest,
+      audience: ['workflow-worker'],
+      catalogRevision: 'catalog-v1',
+      authorityRevision: 'authority-v1',
+      admittedAt: '2026-08-21T12:00:00.000Z',
+      deadline: '2026-08-21T12:01:00.000Z',
+      cancellationRevision: 'cancel-v1',
+      authenticationMethod: 'hatchet-delivery',
+    });
+    expect(execution).toMatchObject({
+      kind: 'execution',
+      executionKind: 'task',
+      executionId: 'task-run-1',
+      attempt: 2,
+      workloadIdentity,
+      causalPrincipalId: principal.id,
+      causalPrincipal: principal.identity,
+      causalGrantIds: ['grant:publish'],
+      authenticationMethod: 'hatchet-delivery',
+      bindings: [],
+      effectiveAuthority: [],
+    });
+    expect(validateApplicationAdmissionContextV1WithoutReceipt({
+      ...createApplicationAdmissionContextV1({
+        admission: {
+          principal: execution,
+          trustedContext: context.trustedContext.values,
+        },
+        operation: {
+          id: 'applik8s://tasks/Publish/operations/execute',
+          transport: 'workflow',
+        },
+        correlationId: 'workflow-run-1',
+      }),
+      causationId: 'workflow-parent-1',
+      deadline: execution.deadline,
+      cancellation: { revision: execution.cancellationRevision },
+      delivery: { id: execution.executionId, source: 'hatchet' },
+    }, { now: Date.parse('2026-08-21T12:00:30.000Z') })).toMatchObject({
+      principal: execution,
+      operation: {
+        id: 'applik8s://tasks/Publish/operations/execute',
+        transport: 'workflow',
+      },
+    });
+  });
+
+  it('fails closed when execution envelopes drift from compiler-owned identity or revision', () => {
+    const workloadIdentity = {
+      id: 'identity:demo:workload:task.publish',
+      kind: 'workload' as const,
+      issuer: 'applik8s://demo',
+      subject: 'task.publish',
+    };
+    const envelope = {
+      apiVersion: 'applik8s.workloadAuthority/v1alpha1' as const,
+      id: 'envelope:publish',
+      workloadIdentity: {
+        ...workloadIdentity,
+        subject: 'task.other',
+      },
+      operationId: 'applik8s://models/Post/operations/publish' as const,
+      catalogRevision: 'catalog-v1',
+      restrictions: { predicates: [] },
+      inputSchemaDigest: 'sha256:input',
+      audiences: ['workflow-worker'],
+      transports: ['workflow' as const],
+      delegation: 'forbidden' as const,
+      impersonation: 'forbidden' as const,
+    };
+    expect(() => createApplicationExecutionPrincipalV1({
+      application: 'demo',
+      executionKind: 'task',
+      executionId: 'task-run-1',
+      attempt: 1,
+      workloadIdentity,
+      envelopes: [envelope],
+      trustedContextDigest: 'sha256:context',
+      audience: ['workflow-worker'],
+      catalogRevision: 'catalog-v1',
+      authorityRevision: 'authority-v1',
+      admittedAt: '2026-08-21T12:00:00.000Z',
+      deadline: '2026-08-21T12:01:00.000Z',
+      cancellationRevision: 'cancel-v1',
+    })).toThrow(/belongs to/u);
   });
 });

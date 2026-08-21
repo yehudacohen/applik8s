@@ -84,6 +84,16 @@ export function generatedWorkerSource(
     const actorEffects = contract.actorEffects?.actors.filter(
       (candidate) => candidate.taskHandlerId === handler.id,
     ) ?? [];
+    const authorityEnvelopes = [...new Map([
+      ...Object.values(operations).map((binding) => [
+        binding.envelope.id,
+        binding.envelope,
+      ] as const),
+      ...actorEffects.map((effect) => [
+        effect.workloadAuthority.id,
+        effect.workloadAuthority,
+      ] as const),
+    ]).values()];
     const capabilityBindings = (handler.capabilities ?? []).map((reference) => {
       const provider = contract.capabilities.find(
         (candidate) => candidate.id === reference.nodeId,
@@ -105,9 +115,11 @@ export function generatedWorkerSource(
         ))
       : handler.operationPrincipalSource
         ? `${operationPrincipalVariable(handler.id)}(validInput)`
-        : actorBindings.length > 0
-          ? JSON.stringify({ id: `workflow-task:${task.name}`, authorizationVersion: 'v1' })
-        : 'undefined';
+        : JSON.stringify({
+            id: `workflow-task:${task.name}`,
+            authorizationVersion:
+              contract.operationCatalog?.revision ?? 'canonical-authority',
+          });
     const functionNativeTransaction = contract.functionNativeTransactions?.find(
       (transaction) => transaction.taskHandlerId === handler.id,
     );
@@ -173,8 +185,9 @@ const ${jsName(task.id)} = hatchet.${durableSignalTask ? 'durableTask' : 'task'}
   scheduleTimeout: ${JSON.stringify(`${handler.scheduleTimeoutSeconds}s`)},
   fn: async (input, context) => {
     const validInput = validate(${JSON.stringify(task.contract.input.jsonSchema)}, input, ${JSON.stringify(`${task.name}.input`)});
-    const principal = await canonicalTaskPrincipal(${principal}, context);
-    const execution = taskContext(context, ${JSON.stringify(task.name)}, ${JSON.stringify(errors)}, ${JSON.stringify(capabilities)}, ${workflowOperationAliasesSource(operations)}, ${JSON.stringify(queries)}, ${JSON.stringify(projections)}, ${JSON.stringify(objects)}, principal, validInput, ${handler.executionTimeoutSeconds});
+    const admitted = await canonicalTaskAdmission(${principal}, context, ${JSON.stringify(handler.id)}, ${JSON.stringify(task.name)}, ${JSON.stringify(authorityEnvelopes)}, ${handler.executionTimeoutSeconds});
+    const principal = admitted.principal;
+    const execution = taskContext(context, ${JSON.stringify(task.name)}, ${JSON.stringify(errors)}, ${JSON.stringify(capabilities)}, ${workflowOperationAliasesSource(operations)}, ${JSON.stringify(queries)}, ${JSON.stringify(projections)}, ${JSON.stringify(objects)}, principal, admitted.servicePrincipal, admitted.execution, validInput);
     const workflowSignals = workflowSignalApi(context, execution);
     const authoredHandler = ${handlerVariable(handler.id)}(${directBindings});
 	    const output = await ${functionNativeRuntime}directOperationScope.run(directApplicationRuntime(execution), () => directObjectScope.run((binding) => execution.objects[binding.name], () => directProjectionScope.run((binding) => execution.projections[binding.name], () => authoredHandler(validInput, execution))))${functionNativeRuntimeClose};
@@ -213,7 +226,8 @@ const ${jsName(workflow.id)} = hatchet.durableTask({
   executionTimeout: '8760h',
   fn: async (input, context) => {
     const validInput = validate(${JSON.stringify(workflow.contract.input.jsonSchema)}, input, ${JSON.stringify(`${workflow.name}.input`)});
-    const execution = workflowContext(context, ${JSON.stringify(workflow.name)}, ${JSON.stringify(taskBindings)}, ${JSON.stringify(childBindings)}, ${JSON.stringify(errors)}, declarations);
+    const admitted = await canonicalWorkflowAdmission(context, ${JSON.stringify(handler.id)}, ${JSON.stringify(workflow.name)});
+    const execution = workflowContext(context, ${JSON.stringify(workflow.name)}, ${JSON.stringify(taskBindings)}, ${JSON.stringify(childBindings)}, ${JSON.stringify(errors)}, declarations, admitted);
     await observeWorkflowExecution(execution, ${JSON.stringify(workflow.name)}, 'running');
     try {
       const directRuntime = directWorkflowRuntime(context, execution, ${JSON.stringify(taskBindings)}, ${JSON.stringify(childBindings)}, declarations);
@@ -251,11 +265,10 @@ const ${jsName(workflow.id)} = hatchet.durableTask({
         connectionName: `applik8s-workflow-${contract.worker.name}`,
       })
     : undefined;
-  const operationImports = contract.operationEffects || contract.signalEffects || contract.actorEffects
-    ? `${contract.operationEffects || contract.actorEffects ? `import { canonicalApplicationTaskServicePrincipal${contract.operationEffects ? ', createApplicationTaskOperationRuntime' : ''} } from '@applik8s/applik8s/task-operation-runtime';\n` : ''}${contract.operationEffects || contract.signalEffects ? `import { createApplicationOperationAuthorityRuntime } from '@applik8s/operations';
-import postgres from 'postgres';
-${eventLogPublisher?.importSource ?? ''}` : ''}`
-    : '';
+  const operationImports = `import { canonicalApplicationTaskServicePrincipal${contract.operationEffects ? ', createApplicationTaskOperationRuntime' : ''} } from '@applik8s/applik8s/task-operation-runtime';
+${contract.operationEffects || contract.signalEffects ? `import { createApplicationOperationAuthorityRuntime } from '@applik8s/operations';
+	import postgres from 'postgres';
+	${eventLogPublisher?.importSource ?? ''}` : ''}`;
   const queryImports = contract.queryEffects
     ? `import { createApplicationTaskQueryRuntime } from '@applik8s/applik8s/task-query-runtime';`
     : '';
@@ -290,11 +303,13 @@ import { createHatchetWorkflowRuntimeFromClient, observeHatchetWorkflowRun } fro
     generatedWorkflowFunctionNativeTransactions(contract);
   const gatewayInitializer = generatedWorkflowGateway(contract);
   return `import { AsyncLocalStorage } from 'node:async_hooks';
-import { createServer } from 'node:http';
-import { readFile } from 'node:fs/promises';
-import { connect as connectTcp } from 'node:net';
-import { HatchetClient } from '@hatchet-dev/typescript-sdk/v1/index.js';
-	import { installApplicationObjectStorageRuntimeResolver, installApplicationProjectionRuntimeResolver, installApplicationWorkflowRuntimeResolver } from '@applik8s/applik8s/workflow-runtime-resolvers';
+	import { createServer } from 'node:http';
+	import { readFile } from 'node:fs/promises';
+	import { connect as connectTcp } from 'node:net';
+	import { HatchetClient } from '@hatchet-dev/typescript-sdk/v1/index.js';
+	import { applicationAdmissionInvocationView, canonicalJsonV1String, createApplicationAdmissionContextV1, createApplicationExecutionPrincipalV1, validateApplicationAdmissionContextV1WithoutReceipt, withApplicationAdmissionExecutionV1, withApplicationAdmissionTraceV1 } from '@applik8s/core';
+	import { nodeKeyedDigestHex } from '@applik8s/runtime/node-integrity';
+		import { installApplicationObjectStorageRuntimeResolver, installApplicationProjectionRuntimeResolver, installApplicationWorkflowRuntimeResolver } from '@applik8s/applik8s/workflow-runtime-resolvers';
 import { applicationWorkflowCausalPrincipalMetadata } from '@applik8s/applik8s/workflow-runtime';
 import { installApplicationOperationRuntimeResolver } from '@applik8s/client';
 import { normalizeSchema } from '@applik8s/sdk';
@@ -474,19 +489,138 @@ async function observeWorkflowRuntime(state, reason) {
   ]);
 }
 
-async function canonicalTaskPrincipal(principal, context) {
-  if (!principal) return principal;
-  const invocationId = String(context.workflowRunId?.() ?? context.stepRunId?.() ?? 'unknown');
-  const authorityRevision = operationAuthority ? await operationAuthority.authorityRevision() : 'internal-actor-runtime-v1';
-  const causalPrincipal = workflowCausalPrincipal(context);
-  return canonicalApplicationTaskServicePrincipal(principal, {
-    application: ${JSON.stringify(contract.graphName)},
-    workerId: ${JSON.stringify(contract.worker.id)},
-    catalogRevision: ${JSON.stringify(contract.operationCatalog?.revision ?? 'no-operation-catalog')},
-    authorityRevision,
-    invocationId,
-    contextSecret: requiredEnv(operationAuthority ? 'APPLIK8S_TASK_OPERATION_CONTEXT_SECRET' : 'APPLIK8S_INTERNAL_OPERATION_SECRET'),
-    ...(causalPrincipal ? { causalPrincipal } : {}),
+function canonicalTaskAdmission(principal, context, handlerId, contractName, envelopes, timeoutSeconds) {
+  return canonicalManagedAdmission({
+    context,
+    executionKind: 'task',
+    handlerId,
+    operationId: 'applik8s://tasks/' + encodeURIComponent(contractName) + '/operations/execute',
+    envelopes,
+    principal,
+    timeoutSeconds,
+  });
+}
+
+function canonicalWorkflowAdmission(context, handlerId, contractName) {
+  return canonicalManagedAdmission({
+    context,
+    executionKind: 'workflow',
+    handlerId,
+    operationId: 'applik8s://workflows/' + encodeURIComponent(contractName) + '/operations/execute',
+    envelopes: [],
+    timeoutSeconds: 365 * 24 * 60 * 60,
+  });
+}
+
+async function canonicalManagedAdmission(options) {
+  const raw = metadata(options.context, options.executionKind);
+  const authorityRevision = operationAuthority
+    ? await operationAuthority.authorityRevision()
+    : ${JSON.stringify(contract.authorityManifest?.revision ?? contract.operationCatalog?.revision ?? `authority:${contract.graphName}:none`)};
+  const catalogRevision = ${JSON.stringify(contract.operationCatalog?.revision ?? `catalog:${contract.graphName}:none`)};
+  const authoredPrincipal = options.principal
+    ? canonicalApplicationTaskServicePrincipal(options.principal, {
+        application: ${JSON.stringify(contract.graphName)},
+        workerId: ${JSON.stringify(contract.worker.id)},
+        catalogRevision,
+        authorityRevision,
+        invocationId: raw.invocationId,
+        contextSecret: requiredEnv('APPLIK8S_INTERNAL_OPERATION_SECRET'),
+        ...(raw.causalPrincipal ? { causalPrincipal: raw.causalPrincipal } : {}),
+      })
+    : undefined;
+  const firstEnvelope = options.envelopes[0];
+  const workloadIdentity = firstEnvelope?.workloadIdentity ?? Object.freeze({
+    id: 'identity:' + ${JSON.stringify(contract.graphName)} + ':workload:' + options.handlerId,
+    kind: 'workload',
+    issuer: 'applik8s://' + ${JSON.stringify(contract.graphName)},
+    subject: options.handlerId,
+  });
+  const serviceIdentity = options.envelopes.length > 0
+    ? firstEnvelope?.serviceIdentity
+    : authoredPrincipal?.identity;
+  const trustedContext = raw.trustedContext ?? Object.freeze({
+    values: authoredPrincipal?.trustedContext ?? Object.freeze({}),
+    digest: authoredPrincipal?.trustedContextDigest ?? nodeKeyedDigestHex({
+      key: requiredEnv('APPLIK8S_INTERNAL_OPERATION_SECRET'),
+      purpose: 'applik8s.workflow-trusted-context/v1',
+      value: canonicalJsonV1String({}),
+    }),
+  });
+  const causalPrincipal = raw.causalPrincipal ?? (authoredPrincipal
+    ? Object.freeze({
+        id: authoredPrincipal.id,
+        identity: authoredPrincipal.identity,
+        grantIds: Object.freeze([]),
+      })
+    : undefined);
+  const audience = [...new Set(options.envelopes.flatMap((envelope) => envelope.audiences))];
+  if (audience.length === 0) audience.push(${JSON.stringify(contract.worker.id)});
+  const deadline = new Date(Date.now() + options.timeoutSeconds * 1_000).toISOString();
+  const cancellationRevision = 'active:' + raw.invocationId;
+  const principal = operationAuthority
+    ? await operationAuthority.admitExecutionPrincipal({
+        executionKind: options.executionKind,
+        executionId: raw.invocationId,
+        attempt: raw.attempt,
+        workloadIdentity,
+        ...(serviceIdentity ? { serviceIdentity } : {}),
+        causalPrincipalId: causalPrincipal?.id ?? workloadIdentity.id,
+        causalPrincipal: causalPrincipal?.identity ?? workloadIdentity,
+        causalGrantIds: causalPrincipal?.grantIds ?? [],
+        envelopes: options.envelopes,
+        trustedContextDigest: trustedContext.digest,
+        audience,
+        deadline,
+        cancellationRevision,
+      })
+    : createApplicationExecutionPrincipalV1({
+        application: ${JSON.stringify(contract.graphName)},
+        executionKind: options.executionKind,
+        executionId: raw.invocationId,
+        attempt: raw.attempt,
+        workloadIdentity,
+        ...(serviceIdentity ? { serviceIdentity } : {}),
+        ...(causalPrincipal ? { causalPrincipal } : {}),
+        envelopes: options.envelopes,
+        trustedContextDigest: trustedContext.digest,
+        audience,
+        catalogRevision,
+        authorityRevision,
+        deadline,
+        cancellationRevision,
+        authenticationMethod: 'hatchet-workflow-delivery',
+      });
+  const base = createApplicationAdmissionContextV1({
+    admission: { principal, trustedContext: trustedContext.values },
+    operation: { id: options.operationId, transport: 'workflow' },
+    correlationId: raw.correlationId ?? raw.invocationId,
+  });
+  const traced = raw.traceparent
+    ? withApplicationAdmissionTraceV1(base, { traceparent: raw.traceparent })
+    : base;
+  const context = validateApplicationAdmissionContextV1WithoutReceipt(
+    withApplicationAdmissionExecutionV1(traced, {
+      ...(raw.causationId ? { causationId: raw.causationId } : {}),
+      deadline,
+      cancellation: { revision: cancellationRevision },
+      delivery: {
+        id: raw.invocationId,
+        source: 'hatchet:' + ${JSON.stringify(contract.worker.id)},
+      },
+    }),
+  );
+  return Object.freeze({
+    principal,
+    servicePrincipal: authoredPrincipal,
+    execution: Object.freeze({
+      ...raw,
+      deadline,
+      cancellationRevision,
+      trustedContext,
+      ...(causalPrincipal ? { causalPrincipal } : {}),
+      admission: applicationAdmissionInvocationView(context),
+    }),
   });
 }
 
@@ -563,8 +697,10 @@ function workflowCausalPrincipal(context) {
   });
 }
 
-function metadata(context) {
-  const invocationId = String(context.workflowRunId?.() ?? context.stepRunId?.() ?? 'unknown');
+function metadata(context, executionKind = 'task') {
+  const invocationId = String(executionKind === 'task'
+    ? context.stepRunId?.() ?? context.workflowRunId?.() ?? 'unknown'
+    : context.workflowRunId?.() ?? context.stepRunId?.() ?? 'unknown');
   const data = typeof context.additionalMetadata === 'function' ? context.additionalMetadata() : {};
   let trustedContext;
   if (data?.['applik8s.trusted-context']) {
@@ -580,17 +716,11 @@ function declaredFailure(contractName, errorSchemas, name, payload) {
   const validPayload = validate(schema, payload, contractName + '.errors.' + name);
   throw new Error('applik8s-durable-error:' + JSON.stringify({ name, payload: validPayload }));
 }
-function taskContext(context, contractName, errorSchemas, declaredCapabilities, declaredOperations, declaredQueries, declaredProjections, declaredObjects, principal, executionSource, executionTimeoutSeconds) {
-  const raw = metadata(context);
-  const base = {
-    ...raw,
-    deadline: new Date(Date.now() + executionTimeoutSeconds * 1000).toISOString(),
-    cancellationRevision: 'active:' + raw.invocationId,
-  };
+function taskContext(_context, contractName, errorSchemas, declaredCapabilities, declaredOperations, declaredQueries, declaredProjections, declaredObjects, principal, queryPrincipal, base, executionSource) {
   return {
     ...base,
     operations: operationRuntime ? operationRuntime.bind(declaredOperations, principal, base, executionSource) : Object.freeze({}),
-    queries: queryRuntime ? queryRuntime.bind(declaredQueries, principal, base) : Object.freeze({}),
+    queries: queryRuntime ? queryRuntime.bind(declaredQueries, queryPrincipal, base) : Object.freeze({}),
     projections: Object.freeze(Object.fromEntries(Object.entries(declaredProjections).map(([alias, id]) => {
       const runtime = projectionRuntimes[id];
       if (!runtime) throw new Error('Task ' + contractName + ' attempted to use undeclared projection ' + JSON.stringify(alias));
@@ -656,8 +786,7 @@ function childInvocationMetadata(parent, options) {
     trustedContext: options?.trustedContext ?? inherited.trustedContext,
   };
 }
-function workflowContext(context, workflowName, taskBindings, childBindings, errorSchemas, registry) {
-  const base = metadata(context);
+function workflowContext(context, workflowName, taskBindings, childBindings, errorSchemas, registry, base) {
   return {
     ...base,
     task: (alias, input, options) => context.spawnChild(resolveDeclaration(registry, taskBindings, 'task', alias), input, childOptions(childInvocationMetadata(base, options))),

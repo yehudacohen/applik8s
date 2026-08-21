@@ -608,7 +608,8 @@ async function applicationGeneratedSecretRequirements(
   const internalCallbacks = graph.nodes.filter((node) =>
     node.kind === "schedule"
     || node.kind === "actor"
-    || node.kind === "lakehousePublication");
+    || node.kind === "lakehousePublication"
+    || node.kind === "workflowWorker");
   if (mcpServers.length > 0 || agents.length > 0 || internalCallbacks.length > 0) {
     const namespace = stringValue(
       resolvedApplicationNamespace ?? graph.metadata.namespace ?? "default",

@@ -1,7 +1,12 @@
 import type {
   ApplicationAuthorizationReceipt,
+  ApplicationCausalPrincipalContext,
+  ApplicationExecutionKind,
+  ApplicationExecutionPrincipal,
+  ApplicationIdentityReference,
   ApplicationPrincipal,
   ApplicationRequestAdmission,
+  ApplicationWorkloadAuthorityEnvelope,
 } from './application-operation-authority.js';
 import { validateApplicationAuthorizationReceipt } from './application-operation-authority.js';
 import { canonicalJsonV1Value } from './canonical-json.js';
@@ -51,6 +56,12 @@ export interface ApplicationAdmissionContextV1 {
   };
 }
 
+/** Read-only managed-execution view exposed to application closures. */
+export type ApplicationAdmissionInvocationContextV1 = Omit<
+  ApplicationAdmissionContextV1,
+  'delivery'
+>;
+
 export interface CreateApplicationAdmissionContextV1Options<
   TPrincipal extends ApplicationPrincipal = ApplicationPrincipal,
 > {
@@ -67,6 +78,26 @@ export interface ApplicationAdmissionExecutionProvenanceV1 {
   readonly cancellation?: ApplicationAdmissionContextV1['cancellation'];
   readonly authorizationReceipt?: ApplicationAuthorizationReceipt;
   readonly delivery?: ApplicationAdmissionContextV1['delivery'];
+}
+
+export interface CreateApplicationExecutionPrincipalV1Options {
+  readonly application: string;
+  readonly executionKind: ApplicationExecutionKind;
+  readonly executionId: string;
+  readonly attempt: number;
+  readonly workloadIdentity: ApplicationIdentityReference;
+  readonly serviceIdentity?: ApplicationIdentityReference;
+  readonly executionContext?: ApplicationExecutionPrincipal['executionContext'];
+  readonly causalPrincipal?: ApplicationCausalPrincipalContext;
+  readonly envelopes: readonly ApplicationWorkloadAuthorityEnvelope[];
+  readonly trustedContextDigest: string;
+  readonly audience: readonly string[];
+  readonly catalogRevision: string;
+  readonly authorityRevision: string;
+  readonly deadline: string;
+  readonly cancellationRevision: string;
+  readonly authenticationMethod?: string;
+  readonly admittedAt?: string;
 }
 
 export class ApplicationAdmissionContextV1Error extends TypeError {
@@ -86,6 +117,162 @@ export class ApplicationAdmissionContextV1Error extends TypeError {
     super(`${message} at ${path}.`);
     this.name = new.target.name;
   }
+}
+
+/**
+ * Constructs the one framework execution principal shared by managed
+ * execution adapters. The caller must first verify its provider-specific
+ * delivery evidence; this boundary then binds that delivery to compiler-owned
+ * workload identity, revisions, authority envelopes, deadline, cancellation,
+ * and causal attribution without granting ambient operation authority.
+ */
+export function createApplicationExecutionPrincipalV1(
+  options: CreateApplicationExecutionPrincipalV1Options,
+): ApplicationExecutionPrincipal {
+  const application = nonEmpty(options.application, 'Execution application');
+  const executionId = nonEmpty(options.executionId, 'Execution ID');
+  if (!executionKinds.includes(`|${options.executionKind}|`)) {
+    throw new TypeError('Execution kind is unsupported.');
+  }
+  if (!Number.isSafeInteger(options.attempt) || options.attempt < 1) {
+    throw new TypeError('Execution attempt must be a positive safe integer.');
+  }
+  const workloadIdentity = validateIdentity(
+    options.workloadIdentity,
+    'workload',
+    'Execution workload identity',
+  );
+  const serviceIdentity = options.serviceIdentity === undefined
+    ? undefined
+    : validateIdentity(
+        options.serviceIdentity,
+        'service',
+        'Execution service identity',
+      );
+  const catalogRevision = nonEmpty(
+    options.catalogRevision,
+    'Execution catalog revision',
+  );
+  const authorityRevision = nonEmpty(
+    options.authorityRevision,
+    'Execution authority revision',
+  );
+  const trustedContextDigest = nonEmpty(
+    options.trustedContextDigest,
+    'Execution trusted-context digest',
+  );
+  const cancellationRevision = nonEmpty(
+    options.cancellationRevision,
+    'Execution cancellation revision',
+  );
+  const deadline = timestamp(options.deadline, 'Execution deadline');
+  const admittedAt = timestamp(
+    options.admittedAt ?? new Date().toISOString(),
+    'Execution admittedAt',
+  );
+  if (Date.parse(deadline) < Date.parse(admittedAt)) {
+    throw new TypeError('Execution deadline precedes admission.');
+  }
+  if (options.executionContext) {
+    if (
+      options.executionContext.kind !== options.executionKind
+      || options.executionContext.kind !== 'agent'
+      || !options.executionContext.threadId.trim()
+      || !options.executionContext.runId.trim()
+    ) {
+      throw new TypeError(
+        'Execution context must match its managed execution kind and contain stable identifiers.',
+      );
+    }
+  }
+  const audience = uniqueStrings(options.audience, 'Execution audience');
+  const causalPrincipal = options.causalPrincipal
+    ? Object.freeze({
+        id: nonEmpty(options.causalPrincipal.id, 'Execution causal principal ID'),
+        identity: validateIdentity(
+          options.causalPrincipal.identity,
+          undefined,
+          'Execution causal principal identity',
+        ),
+        grantIds: uniqueStrings(
+          options.causalPrincipal.grantIds,
+          'Execution causal grant',
+          true,
+        ),
+      })
+    : Object.freeze({
+        id: workloadIdentity.id,
+        identity: workloadIdentity,
+        grantIds: Object.freeze([] as string[]),
+      });
+  const envelopeIds = new Set<string>();
+  const bindingIds = new Set<string>();
+  const bindings = options.envelopes.flatMap((envelope) => {
+    const id = nonEmpty(envelope.id, 'Execution workload envelope ID');
+    if (envelopeIds.has(id)) {
+      throw new TypeError(`Execution received duplicate workload envelope ${id}.`);
+    }
+    envelopeIds.add(id);
+    if (envelope.catalogRevision !== catalogRevision) {
+      throw new TypeError(
+        `Workload envelope ${id} references catalog ${envelope.catalogRevision}, not ${catalogRevision}.`,
+      );
+    }
+    if (!sameIdentity(envelope.workloadIdentity, workloadIdentity)) {
+      throw new TypeError(
+        `Workload envelope ${id} belongs to ${envelope.workloadIdentity.id}, not ${workloadIdentity.id}.`,
+      );
+    }
+    if (!sameOptionalIdentity(envelope.serviceIdentity, serviceIdentity)) {
+      throw new TypeError(
+        `Workload envelope ${id} service identity does not match this execution.`,
+      );
+    }
+    for (const envelopeAudience of envelope.audiences) {
+      if (!audience.includes(envelopeAudience)) {
+        throw new TypeError(
+          `Workload envelope ${id} audience ${envelopeAudience} is absent from this execution.`,
+        );
+      }
+    }
+    if (!envelope.binding) return [];
+    if (bindingIds.has(envelope.binding.id)) {
+      throw new TypeError(
+        `Execution received duplicate workload binding ${envelope.binding.id}.`,
+      );
+    }
+    bindingIds.add(envelope.binding.id);
+    return [envelope.binding];
+  });
+  const identity = serviceIdentity ?? workloadIdentity;
+  return Object.freeze({
+    id: `principal:${application}:execution:${options.executionKind}:${executionId}:${options.attempt}`,
+    identity,
+    kind: 'execution',
+    executionKind: options.executionKind,
+    executionId,
+    attempt: options.attempt,
+    workloadIdentity,
+    ...(serviceIdentity ? { serviceIdentity } : {}),
+    ...(options.executionContext
+      ? { executionContext: Object.freeze({ ...options.executionContext }) }
+      : {}),
+    causalPrincipalId: causalPrincipal.id,
+    causalPrincipal: causalPrincipal.identity,
+    causalGrantIds: causalPrincipal.grantIds,
+    authenticationMethod:
+      options.authenticationMethod?.trim() || 'workload-identity',
+    audience,
+    trustedContextDigest,
+    catalogRevision,
+    authorityRevision,
+    admittedAt,
+    deadline,
+    expiresAt: deadline,
+    cancellationRevision,
+    bindings: Object.freeze(bindings),
+    effectiveAuthority: Object.freeze([]),
+  });
 }
 
 /**
@@ -290,12 +477,82 @@ export function applicationAdmissionIdentityView(
 
 export function applicationAdmissionInvocationView(
   context: ApplicationAdmissionContextV1,
-): Omit<ApplicationAdmissionContextV1, 'delivery'> {
+): ApplicationAdmissionInvocationContextV1 {
   const { delivery: _delivery, ...view } = context;
   return Object.freeze(view);
 }
 
 const admissionTransports = '|actor|broker|control-plane|direct|framework|http|mcp|schedule|webhook|workflow|';
+const executionKinds = '|agent|task|workflow|processor|reconcile|';
+
+function nonEmpty(value: unknown, name: string): string {
+  if (typeof value !== 'string' || !value.trim()) {
+    throw new TypeError(`${name} is required.`);
+  }
+  return value.trim();
+}
+
+function timestamp(value: unknown, name: string): string {
+  const candidate = nonEmpty(value, name);
+  const parsed = new Date(candidate);
+  if (!Number.isFinite(parsed.getTime())) {
+    throw new TypeError(`${name} must be an ISO timestamp.`);
+  }
+  return parsed.toISOString();
+}
+
+function uniqueStrings(
+  values: readonly string[],
+  name: string,
+  allowEmpty = false,
+): readonly string[] {
+  if (!Array.isArray(values) || (!allowEmpty && values.length === 0)) {
+    throw new TypeError(`${name} must contain at least one value.`);
+  }
+  const normalized = values.map((value) => nonEmpty(value, name));
+  if (new Set(normalized).size !== normalized.length) {
+    throw new TypeError(`${name} contains duplicate values.`);
+  }
+  return Object.freeze(normalized);
+}
+
+function validateIdentity(
+  value: ApplicationIdentityReference,
+  expectedKind: ApplicationIdentityReference['kind'] | undefined,
+  name: string,
+): ApplicationIdentityReference {
+  if (!value || typeof value !== 'object') {
+    throw new TypeError(`${name} is required.`);
+  }
+  const identity = Object.freeze({
+    id: nonEmpty(value.id, `${name} ID`),
+    kind: nonEmpty(value.kind, `${name} kind`) as ApplicationIdentityReference['kind'],
+    issuer: nonEmpty(value.issuer, `${name} issuer`),
+    subject: nonEmpty(value.subject, `${name} subject`),
+  });
+  if (expectedKind && identity.kind !== expectedKind) {
+    throw new TypeError(`${name} must have kind ${expectedKind}.`);
+  }
+  return identity;
+}
+
+function sameIdentity(
+  left: ApplicationIdentityReference,
+  right: ApplicationIdentityReference,
+): boolean {
+  return left.id === right.id
+    && left.kind === right.kind
+    && left.issuer === right.issuer
+    && left.subject === right.subject;
+}
+
+function sameOptionalIdentity(
+  left: ApplicationIdentityReference | undefined,
+  right: ApplicationIdentityReference | undefined,
+): boolean {
+  if (!left || !right) return left === right;
+  return sameIdentity(left, right);
+}
 
 function validatePrincipal(value: unknown, path: string): ApplicationPrincipal {
   const principal = record(value, path) as unknown as ApplicationPrincipal;

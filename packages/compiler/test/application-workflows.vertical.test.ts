@@ -309,6 +309,24 @@ export const workflowProof = platform.composition;
         'const causalPrincipal = workflowCausalPrincipal(context)',
       );
       expect(generatedSource).toContain(
+        'createApplicationExecutionPrincipalV1',
+      );
+      expect(generatedSource).toContain(
+        'validateApplicationAdmissionContextV1WithoutReceipt',
+      );
+      expect(generatedSource).toContain(
+        'const admitted = await canonicalTaskAdmission(',
+      );
+      expect(generatedSource).toContain(
+        'const admitted = await canonicalWorkflowAdmission(',
+      );
+      expect(generatedSource).toContain(
+        "context.stepRunId?.() ?? context.workflowRunId?.() ?? 'unknown'",
+      );
+      expect(generatedSource).toContain(
+        'admission: applicationAdmissionInvocationView(context)',
+      );
+      expect(generatedSource).toContain(
         '[applicationWorkflowCausalPrincipalMetadata]',
       );
       expect(source).toContain('system:serviceaccount:');
@@ -373,6 +391,15 @@ export const workflowProof = platform.composition;
           { name: 'APPLIK8S_STRUCTURED_GENERATION_SELECTION', value: '${schema.spec.profile}' },
           { name: 'APPLIK8S_STRUCTURED_GENERATION_ENDPOINT', value: '${schema.spec.profile == "external" ? schema.spec.generationEndpoint : ("")}' },
           { name: 'APPLIK8S_STRUCTURED_GENERATION_API_KEY', valueFrom: { secretKeyRef: { name: '${schema.spec.profile == "external" ? schema.spec.generationSecretName : ("applik8s-structured-generation-unused")}', key: '${schema.spec.profile == "external" ? "apiKey" : ("apiKey")}', optional: true } } },
+          expect.objectContaining({
+            name: 'APPLIK8S_INTERNAL_OPERATION_SECRET',
+            valueFrom: {
+              secretKeyRef: expect.objectContaining({
+                name: 'workflow-proof-internal-operation',
+                key: 'key',
+              }),
+            },
+          }),
         ]) })],
         volumes: [{ name: 'workflow-token', secret: { secretName: 'hatchet-worker', items: [{ key: 'HATCHET_CLIENT_TOKEN', path: 'token' }] } }],
       } } });

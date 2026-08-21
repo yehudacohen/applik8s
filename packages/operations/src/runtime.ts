@@ -16,7 +16,10 @@ import type {
   ApplicationWorkloadAuthorityEnvelope,
   JsonObject,
 } from '@applik8s/core';
-import { intersectApplicationScopes } from '@applik8s/core';
+import {
+  createApplicationExecutionPrincipalV1,
+  intersectApplicationScopes,
+} from '@applik8s/core';
 import {
   ApplicationAuthorityService,
   type ApplicationBreakGlassRoleRequest,
@@ -283,7 +286,6 @@ export class ApplicationOperationAuthorityRuntime {
     try {
       await this.#recordAuthorization(
         request.operationId,
-        request.inputDigest,
         request.transport,
         request.audience,
         authorization,
@@ -302,71 +304,35 @@ export class ApplicationOperationAuthorityRuntime {
   ): Promise<ApplicationExecutionPrincipal> {
     const catalog = await this.prepare();
     const authority = await this.#authorityRepository.snapshot();
-    if (!admission.executionId.trim() || !Number.isSafeInteger(admission.attempt) || admission.attempt < 1) {
-      throw new Error('Application execution admission requires a stable executionId and positive attempt.');
+    if (
+      (admission.causalPrincipalId && !admission.causalPrincipal)
+      || (!admission.causalPrincipalId && admission.causalPrincipal)
+    ) {
+      throw new Error(
+        'Application execution admission causal identity is incomplete.',
+      );
     }
-    if (!admission.workloadIdentity.id.trim() || admission.workloadIdentity.kind !== 'workload') {
-      throw new Error('Application execution admission requires one normalized workload identity.');
-    }
-    if (!admission.cancellationRevision.trim()) {
-      throw new Error('Application execution admission requires a cancellation revision.');
-    }
-    if (admission.executionContext) {
-      if (
-        admission.executionContext.kind !== admission.executionKind
-        || admission.executionContext.kind !== 'agent'
-        || !admission.executionContext.threadId.trim()
-        || !admission.executionContext.runId.trim()
-      ) {
-        throw new Error('Application execution admission context must match its managed execution kind and contain stable identifiers.');
-      }
-    }
-    const deadline = new Date(admission.deadline);
-    if (Number.isNaN(deadline.getTime())) {
-      throw new Error('Application execution admission deadline must be an ISO timestamp.');
-    }
-    const envelopeIds = new Set<string>();
-    for (const envelope of admission.envelopes) {
-      if (envelope.catalogRevision !== catalog.revision) {
-        throw new Error(`Workload envelope ${envelope.id} references catalog ${envelope.catalogRevision}, not active catalog ${catalog.revision}.`);
-      }
-      if (envelope.workloadIdentity.id !== admission.workloadIdentity.id) {
-        throw new Error(`Workload envelope ${envelope.id} belongs to ${envelope.workloadIdentity.id}, not ${admission.workloadIdentity.id}.`);
-      }
-      if (envelope.serviceIdentity?.id !== admission.serviceIdentity?.id) {
-        throw new Error(`Workload envelope ${envelope.id} service identity does not match this execution.`);
-      }
-      if (envelopeIds.has(envelope.id)) {
-        throw new Error(`Application execution admission received duplicate workload envelope ${envelope.id}.`);
-      }
-      envelopeIds.add(envelope.id);
-    }
-    const identity = admission.serviceIdentity ?? admission.workloadIdentity;
-    return {
-      id: `principal:${this.#application}:execution:${admission.executionKind}:${admission.executionId}:${admission.attempt}`,
-      identity,
-      kind: 'execution',
-      executionKind: admission.executionKind,
-      executionId: admission.executionId,
-      attempt: admission.attempt,
-      workloadIdentity: admission.workloadIdentity,
-      ...(admission.serviceIdentity ? { serviceIdentity: admission.serviceIdentity } : {}),
-      ...(admission.executionContext ? { executionContext: admission.executionContext } : {}),
-      ...(admission.causalPrincipalId ? { causalPrincipalId: admission.causalPrincipalId } : {}),
-      ...(admission.causalPrincipal ? { causalPrincipal: admission.causalPrincipal } : {}),
-      causalGrantIds: [...(admission.causalGrantIds ?? [])],
-      authenticationMethod: 'workload-identity',
-      audience: [...admission.audience],
-      trustedContextDigest: admission.trustedContextDigest,
+    const {
+      causalPrincipalId,
+      causalPrincipal,
+      causalGrantIds,
+      ...executionAdmission
+    } = admission;
+    return createApplicationExecutionPrincipalV1({
+      application: this.#application,
+      ...executionAdmission,
+      ...(causalPrincipalId && causalPrincipal
+        ? {
+            causalPrincipal: {
+              id: causalPrincipalId,
+              identity: causalPrincipal,
+              grantIds: causalGrantIds ?? [],
+            },
+          }
+        : {}),
       catalogRevision: catalog.revision,
       authorityRevision: authority.revision,
-      admittedAt: new Date().toISOString(),
-      deadline: deadline.toISOString(),
-      expiresAt: deadline.toISOString(),
-      cancellationRevision: admission.cancellationRevision,
-      bindings: admission.envelopes.flatMap((envelope) => envelope.binding ? [envelope.binding] : []),
-      effectiveAuthority: [],
-    };
+    });
   }
 
   async authorizeExecution(
@@ -427,7 +393,6 @@ export class ApplicationOperationAuthorityRuntime {
     if (!authorization.allowed) {
       await this.#recordAuthorization(
         request.envelope.operationId,
-        request.inputDigest,
         request.transport,
         request.audience,
         authorization,
@@ -471,7 +436,6 @@ export class ApplicationOperationAuthorityRuntime {
     };
     await this.#recordAuthorization(
       request.envelope.operationId,
-      request.inputDigest,
       request.transport,
       request.audience,
       { allowed: true, receipt },
@@ -720,7 +684,6 @@ export class ApplicationOperationAuthorityRuntime {
 
   async #recordAuthorization(
     operationId: ApplicationOperationId,
-    inputDigest: string,
     transport: ApplicationOperationTransport,
     audience: string,
     authorization:
@@ -767,7 +730,6 @@ export class ApplicationOperationAuthorityRuntime {
     const denied = executionDenied(code, message);
     await this.#recordAuthorization(
       request.envelope.operationId,
-      request.inputDigest,
       request.transport,
       request.audience,
       denied,

@@ -29,12 +29,15 @@ export interface ApplicationTaskOperationRuntimeContract {
   readonly idempotencyKey?: (input: object) => string;
 }
 
-export interface ApplicationTaskOperationPrincipal extends ApplicationAdmittedPrincipal {
+export type ApplicationTaskOperationPrincipal = (
+  | ApplicationAdmittedPrincipal
+  | ApplicationExecutionPrincipal
+) & {
   readonly trustedContext?: JsonObject;
   readonly causalPrincipalId?: string;
   readonly causalPrincipal?: ApplicationCausalPrincipalContext['identity'];
   readonly causalGrantIds?: readonly string[];
-}
+};
 
 export interface ApplicationTaskServicePrincipalInput {
   readonly id: string;
@@ -58,6 +61,8 @@ export interface CanonicalApplicationTaskPrincipalOptions {
 export interface ApplicationTaskOperationInvocation {
   readonly invocationId: string;
   readonly idempotencyKey: string;
+  /** Release-A compatibility defaults legacy task invocations to attempt one. */
+  readonly attempt?: number;
   readonly correlationId?: string;
   readonly causationId?: string;
   readonly traceparent?: string;
@@ -260,7 +265,19 @@ export function createApplicationTaskOperationRuntime(options: ApplicationTaskOp
         throw new Error('Application task operation runtime received workload envelopes without execution authority callbacks.');
       }
       const executionPrincipal = requiresAuthority
-        ? options.admitExecution?.({ principal, invocation, envelopes, trustedContextDigest: contextDigest })
+        ? principal.kind === 'execution'
+          ? Promise.resolve(validateTaskExecutionPrincipal(
+              principal,
+              invocation,
+              envelopes,
+              contextDigest,
+            ))
+          : options.admitExecution?.({
+              principal,
+              invocation,
+              envelopes,
+              trustedContextDigest: contextDigest,
+            })
         : undefined;
       const bound = Object.fromEntries(Object.entries(aliases).map(([alias, aliasBinding]) => {
         const commandId = typeof aliasBinding === 'string' ? aliasBinding : aliasBinding.commandId;
@@ -526,6 +543,64 @@ function validatePrincipal(principal: ApplicationTaskOperationPrincipal): void {
     throw new Error('Application task operation principal requires one canonical admitted principal.');
   }
   JSON.stringify(principal.trustedContext ?? {});
+}
+
+function validateTaskExecutionPrincipal(
+  principal: ApplicationExecutionPrincipal,
+  invocation: ApplicationTaskOperationInvocation,
+  envelopes: readonly ApplicationWorkloadAuthorityEnvelope[],
+  trustedContextDigest: string,
+): ApplicationExecutionPrincipal {
+  if (
+    principal.executionKind !== 'task'
+    || principal.executionId !== invocation.invocationId
+    || principal.attempt !== (invocation.attempt ?? 1)
+    || principal.trustedContextDigest !== trustedContextDigest
+    || (invocation.deadline !== undefined
+      && principal.deadline !== invocation.deadline)
+    || (invocation.cancellationRevision !== undefined
+      && principal.cancellationRevision !== invocation.cancellationRevision)
+  ) {
+    throw new Error(
+      'Application task operation execution principal does not match its canonical invocation.',
+    );
+  }
+  for (const envelope of envelopes) {
+    if (
+      envelope.catalogRevision !== principal.catalogRevision
+      || !sameIdentity(envelope.workloadIdentity, principal.workloadIdentity)
+      || !sameOptionalIdentity(
+        envelope.serviceIdentity,
+        principal.serviceIdentity,
+      )
+      || envelope.audiences.some(
+        (audience) => !principal.audience.includes(audience),
+      )
+    ) {
+      throw new Error(
+        `Application task operation envelope ${envelope.id} does not match its canonical execution principal.`,
+      );
+    }
+  }
+  return principal;
+}
+
+function sameIdentity(
+  left: ApplicationExecutionPrincipal['workloadIdentity'],
+  right: ApplicationExecutionPrincipal['workloadIdentity'],
+): boolean {
+  return left.id === right.id
+    && left.kind === right.kind
+    && left.issuer === right.issuer
+    && left.subject === right.subject;
+}
+
+function sameOptionalIdentity(
+  left: ApplicationExecutionPrincipal['serviceIdentity'],
+  right: ApplicationExecutionPrincipal['serviceIdentity'],
+): boolean {
+  if (!left || !right) return left === right;
+  return sameIdentity(left, right);
 }
 
 function stableCommandId(invocationId: string, alias: string, idempotencyKey: string): string {

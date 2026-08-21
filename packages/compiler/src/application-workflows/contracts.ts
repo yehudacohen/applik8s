@@ -308,10 +308,8 @@ export function workflowContract(
     workflows,
     capabilities: [...capabilities.values()].sort((left, right) => left.id.localeCompare(right.id)),
     ...(operationEffects ? { operationEffects } : {}),
-    ...((operationEffects || signalEffects) && operationCatalog ? { operationCatalog } : {}),
-    ...((operationEffects || signalEffects) && authorityManifest
-      ? { authorityManifest }
-      : {}),
+    ...(operationCatalog ? { operationCatalog } : {}),
+    ...(authorityManifest ? { authorityManifest } : {}),
     ...(queryEffects ? { queryEffects } : {}),
     ...(projectionEffects ? { projectionEffects } : {}),
 		...(objectEffects ? { objectEffects } : {}),

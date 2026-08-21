@@ -170,9 +170,13 @@ export function workflowResources(contract: WorkflowContract, name: string, imag
 }
 
 function workflowActorEnvironment(contract: WorkflowContract): readonly Record<string, unknown>[] {
-  if (!contract.actorEffects) return [];
   return [
-    { name: 'APPLIK8S_ACTOR_APPLICATION_ENDPOINT', value: contract.actorEffects.applicationEndpoint },
+    ...(contract.actorEffects
+      ? [{
+          name: 'APPLIK8S_ACTOR_APPLICATION_ENDPOINT',
+          value: contract.actorEffects.applicationEndpoint,
+        }]
+      : []),
     {
       name: 'APPLIK8S_INTERNAL_OPERATION_SECRET',
       valueFrom: {

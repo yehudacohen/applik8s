@@ -377,7 +377,7 @@ describe('task operation runtime', () => {
       causalGrantIds: [],
       authenticationMethod: 'workload-identity',
       audience: [workloadIdentity.id],
-      trustedContextDigest: 'sha256:context',
+      trustedContextDigest: 'b'.repeat(64),
       catalogRevision: 'catalog-1',
       authorityRevision: 'authority-1',
       admittedAt: '2026-07-29T00:00:00.000Z',
@@ -449,6 +449,11 @@ describe('task operation runtime', () => {
         signal: new AbortController().signal,
         deadline: executionPrincipal.deadline,
         cancellationRevision: executionPrincipal.cancellationRevision,
+        trustedContext: {
+          values: {},
+          digest: executionPrincipal.trustedContextDigest,
+          changeScopes: { global: 'c'.repeat(64) },
+        },
       },
     );
 
@@ -467,6 +472,34 @@ describe('task operation runtime', () => {
       workloadEnvelopeId: envelope.id,
       executionPrincipalId: executionPrincipal.id,
     });
+    const canonicalOperations = runtime.bind(
+      {
+        publish: {
+          commandId: 'Post.create.v1',
+          operationId: envelope.operationId,
+          boundKeys: [],
+          envelope,
+        },
+      },
+      executionPrincipal,
+      {
+        invocationId: executionPrincipal.executionId,
+        idempotencyKey: executionPrincipal.executionId,
+        attempt: executionPrincipal.attempt,
+        signal: new AbortController().signal,
+        deadline: executionPrincipal.deadline,
+        cancellationRevision: executionPrincipal.cancellationRevision,
+        trustedContext: {
+          values: {},
+          digest: executionPrincipal.trustedContextDigest,
+          changeScopes: { global: 'c'.repeat(64) },
+        },
+      },
+    );
+    await expect(canonicalOperations.publish?.({ id: 'post-1', body: 'hello' }))
+      .resolves.toEqual({ identity: 'post-1', accepted: true });
+    expect(admitExecution).toHaveBeenCalledOnce();
+    expect(authorizeExecution).toHaveBeenCalledTimes(2);
     await runtime.close();
   });
 
