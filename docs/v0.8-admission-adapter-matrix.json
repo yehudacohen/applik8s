@@ -60,11 +60,13 @@
         "packages/operations/src/runtime.ts",
         "packages/applik8s/src/task-operation-runtime.ts",
         "packages/applik8s/src/task-query-runtime.ts",
+        "packages/compiler/src/application-http/index.ts",
         "packages/compiler/src/application-workflows/source.ts",
-        "packages/compiler/src/application-reactive/index.ts"
+        "packages/compiler/src/application-reactive/index.ts",
+        "packages/runtime-hatchet/src/index.ts"
       ],
-      "regression": "bunx vitest run --maxWorkers=1 packages/core/test/runtime-integrity.vertical.test.ts packages/operations/test/postgres.vertical.test.ts packages/applik8s/test/task-operation-runtime.vertical.test.ts packages/applik8s/test/task-query-runtime.vertical.test.ts packages/compiler/test/application-reactive.vertical.test.ts; NODE_OPTIONS=--max-old-space-size=8192 bunx vitest run --maxWorkers=1 packages/compiler/test/application-workflows.vertical.test.ts",
-      "remaining": "workflow/task starts, resumes, operations, and signal issuance preserve canonical execution admission; broker-side signal action hydration now consumes canonical processor admission while task queries retain an intentionally bounded service projection; finish recovery, lost-response reattachment, and version/rejection telemetry before advancing the complete adapter"
+      "regression": "bunx vitest run --maxWorkers=1 packages/core/test/runtime-integrity.vertical.test.ts packages/operations/test/postgres.vertical.test.ts packages/applik8s/test/task-operation-runtime.vertical.test.ts packages/applik8s/test/task-query-runtime.vertical.test.ts packages/compiler/test/application-reactive.vertical.test.ts packages/compiler/test/application-http.vertical.test.ts packages/runtime-hatchet/test/runtime.vertical.test.ts; NODE_OPTIONS=--max-old-space-size=8192 bunx vitest run --maxWorkers=1 packages/compiler/test/application-workflows.vertical.test.ts",
+      "remaining": "workflow/task starts, resumes, operations, signal issuance, and typed HTTP gateway starts preserve canonical execution admission; broker-side signal action hydration consumes canonical processor admission while task queries retain an intentionally bounded service projection; add exact emitted-worker lost-response/restart evidence, finish cancellation recovery, and add version/rejection telemetry before advancing the complete adapter"
     },
     {
       "id": "schedule-occurrence",
