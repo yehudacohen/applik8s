@@ -20,13 +20,17 @@
     {
       "id": "verified-webhook-provider-callback",
       "transport": "webhook",
-      "state": "not-started",
+      "state": "implemented",
       "evidenceVerifier": "provider-specific signature and replay verifier",
       "principalSource": "bounded external service principal",
       "operationIdentity": "registered provider callback operation",
-      "owners": [],
-      "regression": null,
-      "remaining": "inventory maintained callbacks and implement adapters without treating caller fields as identity"
+      "owners": [
+        "packages/applik8s/src/application-http.ts",
+        "packages/compiler/src/application-http/index.ts",
+        "packages/billing-stripe/src/index.ts"
+      ],
+      "regression": "bunx vitest run --maxWorkers=1 packages/billing-stripe/test/stripe.vertical.test.ts packages/applik8s/test/application-http.vertical.test.ts packages/compiler/test/application-http.vertical.test.ts",
+      "remaining": "add provider-rejection/version telemetry and a live Stripe webhook receipt without weakening the provider-neutral raw-byte boundary"
     },
     {
       "id": "broker-delivery",
