@@ -1,0 +1,30 @@
+{
+  "name": "@applik8s/runtime-duckdb",
+  "version": "0.8.0",
+  "description": "DuckDB-backed local lakehouse publication and query runtime for Applik8s.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yehudacohen/applik8s.git",
+    "directory": "packages/runtime-duckdb"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@applik8s/applik8s": "0.8.0",
+    "@applik8s/sdk": "0.8.0",
+    "@duckdb/node-api": "1.5.5-r.4"
+  }
+}

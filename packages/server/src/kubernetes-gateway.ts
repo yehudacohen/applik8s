@@ -80,8 +80,8 @@ export interface Applik8sKubernetesGatewayOptions {
   readonly maxMultiplexSubscriptions?: number;
   readonly subscriptionLimits?: { readonly perPrincipal?: number; readonly total?: number };
   readonly kubeConfig?: KubeConfig;
-  readonly objects?: CustomObjectsApi;
-  readonly watch?: Watch;
+  readonly objects?: Applik8sResourceObjectClient;
+  readonly watch?: Applik8sResourceWatchClient;
   readonly readiness?: () => void | Promise<void>;
   /**
    * Receives the underlying failure after the public HTTP boundary has
@@ -92,6 +92,72 @@ export interface Applik8sKubernetesGatewayOptions {
     operation?: { readonly kind: 'command' | 'query'; readonly id?: string; readonly action?: string },
   ) => void;
   readonly now?: () => Date;
+}
+
+/**
+ * Minimal provider boundary consumed by the CRD command/query gateway.
+ * Kubernetes supplies this surface in production; the local target supplies a
+ * persistent resource authority with the same list/create/get/watch contract.
+ */
+export interface Applik8sResourceObjectClient {
+  listNamespacedCustomObject(request: {
+    readonly group: string;
+    readonly version: string;
+    readonly namespace: string;
+    readonly plural: string;
+    readonly allowWatchBookmarks: boolean;
+    readonly limit: number;
+    readonly _continue?: string;
+    readonly labelSelector?: string;
+    readonly fieldSelector?: string;
+  }): Promise<unknown>;
+  listClusterCustomObject(request: {
+    readonly group: string;
+    readonly version: string;
+    readonly plural: string;
+    readonly allowWatchBookmarks: boolean;
+    readonly limit: number;
+    readonly _continue?: string;
+    readonly labelSelector?: string;
+    readonly fieldSelector?: string;
+  }): Promise<unknown>;
+  createNamespacedCustomObject(request: {
+    readonly group: string;
+    readonly version: string;
+    readonly namespace: string;
+    readonly plural: string;
+    readonly body: object;
+    readonly fieldManager?: string;
+  }): Promise<unknown>;
+  createClusterCustomObject(request: {
+    readonly group: string;
+    readonly version: string;
+    readonly plural: string;
+    readonly body: object;
+    readonly fieldManager?: string;
+  }): Promise<unknown>;
+  getNamespacedCustomObject(request: {
+    readonly group: string;
+    readonly version: string;
+    readonly namespace: string;
+    readonly plural: string;
+    readonly name: string;
+  }): Promise<unknown>;
+  getClusterCustomObject(request: {
+    readonly group: string;
+    readonly version: string;
+    readonly plural: string;
+    readonly name: string;
+  }): Promise<unknown>;
+}
+
+export interface Applik8sResourceWatchClient {
+  watch(
+    path: string,
+    query: Readonly<Record<string, string | number | boolean | undefined>>,
+    callback: (phase: string, object: unknown) => void,
+    done: (error?: unknown) => void,
+  ): Promise<AbortController>;
 }
 
 export interface Applik8sKubernetesGateway {
@@ -169,8 +235,8 @@ export function createApplik8sKubernetesGateway(options: Applik8sKubernetesGatew
   const commands = uniqueById(options.commands ?? [], 'command');
   const queries = uniqueById(options.queries ?? [], 'query');
   const config = options.kubeConfig ?? defaultKubeConfig();
-  const objects = options.objects ?? config.makeApiClient(CustomObjectsApi);
-  const watch = options.watch ?? new Watch(config);
+  const objects: Applik8sResourceObjectClient = options.objects ?? config.makeApiClient(CustomObjectsApi);
+  const watch: Applik8sResourceWatchClient = options.watch ?? new Watch(config);
   const version = options.readiness ? undefined : config.makeApiClient(VersionApi);
   const subscriptions = subscriptionLimiter({
     perPrincipal: options.subscriptionLimits?.perPrincipal ?? 20,
@@ -539,7 +605,7 @@ async function* ssePayloads(reader: ReadableStreamDefaultReader<Uint8Array>, max
 }
 
 async function listSnapshot(
-  objects: CustomObjectsApi,
+  objects: Applik8sResourceObjectClient,
   query: Applik8sKubernetesQueryContract,
   context: Readonly<Record<string, unknown>>,
   input: unknown,
@@ -580,7 +646,7 @@ async function listSnapshot(
 }
 
 function kubernetesSubscriptionStream(options: {
-  readonly watch: Watch;
+  readonly watch: Applik8sResourceWatchClient;
   readonly query: Applik8sKubernetesQueryContract;
   readonly input: unknown;
   readonly context: Readonly<Record<string, unknown>>;
@@ -678,7 +744,7 @@ function kubernetesSubscriptionStream(options: {
 }
 
 async function listObjects(
-  objects: CustomObjectsApi,
+  objects: Applik8sResourceObjectClient,
   resource: Applik8sKubernetesResourceContract,
   namespace: string | undefined,
   options: { readonly limit: number; readonly continueToken?: string; readonly labelSelector?: string; readonly fieldSelector?: string },
@@ -709,7 +775,7 @@ async function listObjects(
   return response as KubernetesList;
 }
 
-async function createObject(objects: CustomObjectsApi, resource: Applik8sKubernetesResourceContract, namespace: string | undefined, body: object): Promise<KubernetesObject> {
+async function createObject(objects: Applik8sResourceObjectClient, resource: Applik8sKubernetesResourceContract, namespace: string | undefined, body: object): Promise<KubernetesObject> {
   const { group, version } = splitApiVersion(resource.apiVersion);
   const response = resource.scope === 'Namespaced'
     ? await objects.createNamespacedCustomObject({ group, version, namespace: requiredString(namespace, 'namespace'), plural: resource.plural, body, fieldManager: 'applik8s-application-host' })
@@ -717,7 +783,7 @@ async function createObject(objects: CustomObjectsApi, resource: Applik8sKuberne
   return response as KubernetesObject;
 }
 
-async function getObject(objects: CustomObjectsApi, resource: Applik8sKubernetesResourceContract, namespace: string | undefined, name: string): Promise<KubernetesObject> {
+async function getObject(objects: Applik8sResourceObjectClient, resource: Applik8sKubernetesResourceContract, namespace: string | undefined, name: string): Promise<KubernetesObject> {
   const { group, version } = splitApiVersion(resource.apiVersion);
   const response = resource.scope === 'Namespaced'
     ? await objects.getNamespacedCustomObject({ group, version, namespace: requiredString(namespace, 'namespace'), plural: resource.plural, name })

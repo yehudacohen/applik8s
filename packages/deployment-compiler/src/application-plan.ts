@@ -6,12 +6,14 @@ import {
   type ApplicationNativePlanRecord,
   type ApplicationPlan,
   type ApplicationPlanDiagnostic,
+  type ApplicationPlanEstimate,
   type ApplicationProviderGuaranteeManifest,
   type ApplicationSourceProvenance,
   applicationCanonicalIdentity,
   applicationGraphNodeIdentity,
   applicationProviderIdentity,
   applicationTargetIdentity,
+  deriveApplicationGraphFoundation,
   providerGuaranteeFor,
   sourceProvenance,
 } from '@applik8s/core';
@@ -39,6 +41,9 @@ export interface CompileApplicationPlanRequest {
  * deployment graphs. It performs no provider or lifecycle effect.
  */
 export function compileApplicationPlan(request: CompileApplicationPlanRequest): ApplicationPlan {
+  const foundation = deriveApplicationGraphFoundation(request.graph, {
+    ...(request.workspaceRoot ? { workspaceRoot: request.workspaceRoot } : {}),
+  });
   const application = applicationCanonicalIdentity({
     application: request.graph.metadata.name,
     kind: 'application',
@@ -96,11 +101,27 @@ export function compileApplicationPlan(request: CompileApplicationPlanRequest): 
       provenance: [graphProvenance],
     };
   });
+  const executions = semanticExecutions(request.graph, semanticIdentity, foundation.identities, request.workspaceRoot);
+  const authority = semanticAuthority(request.graph, semanticIdentity, request.workspaceRoot);
+  const dataFlows = semanticEdges.map((edge) => ({
+    id: recordId('data-flow', [edge.from, edge.relationship, edge.to]),
+    from: edge.from,
+    to: edge.to,
+    relationship: edge.relationship,
+    causal: causalRelationship(edge.relationship),
+    fact: edge.fact,
+    provenance: edge.provenance,
+  }));
+  const state = semanticState(request.graph, semanticIdentity, request.workspaceRoot);
+  const exposures = semanticExposures(request.graph, semanticIdentity, request.workspaceRoot);
+  const observability = semanticObservability(request.graph, semanticIdentity, request.workspaceRoot);
+  const estimates = semanticEstimates(request.graph, request.deployment, semanticIdentity, request.workspaceRoot);
 
   const guarantees = request.providerGuarantees ?? [];
   const diagnostics: ApplicationPlanDiagnostic[] = [];
   const resolvedProviderIdentities: ApplicationCanonicalIdentity[] = [];
   const resolutions = request.graph.providerRequirements.map((requirement) => {
+    const consumerNode = requiredNode(request.graph, requirement.consumer.nodeId);
     const binding = request.graph.providerBindings.find(({ requirement: id }) => id === requirement.id);
     const providerNode = binding
       ? request.graph.nodes.find((node): node is Extract<ApplicationGraphNode, { kind: 'provider' }> => node.kind === 'provider' && node.id === binding.provider.nodeId)
@@ -115,6 +136,14 @@ export function compileApplicationPlan(request: CompileApplicationPlanRequest): 
       : undefined;
     if (providerIdentity) resolvedProviderIdentities.push(providerIdentity);
     const manifest = providerIdentity ? providerGuaranteeFor(guarantees, providerIdentity.id) : undefined;
+    const requiredGuarantees = consumerNode.kind === 'actor'
+      ? Object.entries(consumerNode.definition.requirements)
+          .filter(([, required]) => required)
+          .map(([name]) => `actor-${name}`)
+      : [];
+    const missingRequiredGuarantees = manifest
+      ? requiredGuarantees.filter((id) => !manifest.guarantees.some((guarantee) => guarantee.id === id && (guarantee.disposition === 'guaranteed' || guarantee.disposition === 'bounded')))
+      : requiredGuarantees;
     const provenance = [
       providerNode ? nodeProvenance(providerNode, request.workspaceRoot) : nodeProvenance(requiredNode(request.graph, requirement.consumer.nodeId), request.workspaceRoot),
     ];
@@ -123,6 +152,8 @@ export function compileApplicationPlan(request: CompileApplicationPlanRequest): 
       : !manifest
         ? 'unresolved' as const
         : manifest.targets.includes(request.target)
+          && !manifest.guarantees.every(({ disposition: guaranteeDisposition }) => guaranteeDisposition === 'unsupported')
+          && missingRequiredGuarantees.length === 0
           ? 'supported' as const
           : 'incompatible' as const;
     if (disposition !== 'supported') {
@@ -133,7 +164,9 @@ export function compileApplicationPlan(request: CompileApplicationPlanRequest): 
           ? requirement.diagnostics.missing
           : !manifest
             ? `Provider ${providerNode.id} has no v0.8 guarantee manifest.`
-            : `Provider ${providerNode.id} is not qualified for target ${request.target}.`,
+            : missingRequiredGuarantees.length > 0
+              ? `Provider ${providerNode.id} cannot satisfy ${consumerNode.id}: missing ${missingRequiredGuarantees.join(', ')}.`
+              : `Provider ${providerNode.id} is not qualified for target ${request.target}.`,
         subjectId: requirement.id,
         provenance,
       });
@@ -144,16 +177,47 @@ export function compileApplicationPlan(request: CompileApplicationPlanRequest): 
       consumer: requiredIdentity(semanticIdentity, requirement.consumer.nodeId).id,
       capability: { interface: requirement.interface },
       ...(providerIdentity ? { provider: providerIdentity } : {}),
-      ...(providerNode ? { implementation: providerNode.implementation, version: providerNode.contract?.version ?? 'unknown' } : {}),
+      ...(providerNode ? {
+        implementation: manifest?.capability.implementation ?? providerNode.implementation,
+        version: manifest?.capability.version ?? providerNode.contract?.version ?? 'unknown',
+      } : {}),
       maturity: manifest?.maturity ?? 'experimental',
       disposition,
       guarantees: manifest?.guarantees.filter(({ disposition: guaranteeDisposition }) => guaranteeDisposition === 'guaranteed' || guaranteeDisposition === 'bounded').map(({ id }) => id) ?? [],
-      gaps: manifest?.guarantees.filter(({ disposition: guaranteeDisposition }) => guaranteeDisposition === 'unsupported').map(({ id }) => id) ?? ['provider-guarantees-unresolved'],
+      gaps: manifest
+        ? manifest.guarantees
+            .filter(({ id, disposition: guaranteeDisposition }) => guaranteeDisposition === 'unsupported' && (requiredGuarantees.length === 0 || requiredGuarantees.includes(id)))
+            .map(({ id }) => id)
+        : ['provider-guarantees-unresolved'],
       externalResponsibilities: manifest?.guarantees.filter(({ disposition: guaranteeDisposition }) => guaranteeDisposition === 'external').map(({ statement }) => statement) ?? [],
       fact: providerNode && manifest ? 'resolved' as const : 'unknown' as const,
       provenance,
     };
   });
+
+  for (const actor of request.graph.nodes.filter((node) => node.kind === 'actor')) {
+    const providerNode = request.graph.nodes.find((node) => node.kind === 'provider' && node.id === actor.runtime.nodeId);
+    if (!providerNode || providerNode.kind !== 'provider') continue;
+    const identity = applicationProviderIdentity({
+      application: request.graph.metadata.name,
+      capabilityInterface: providerNode.interface,
+      nodeId: providerNode.id,
+      parentId: application.id,
+    });
+    const manifest = providerGuaranteeFor(guarantees, identity.id);
+    for (const [capability, required] of Object.entries(actor.definition.requirements)) {
+      if (!required) continue;
+      const guarantee = manifest?.guarantees.find(({ id }) => id === `actor-${capability}`);
+      if (guarantee && guarantee.disposition !== 'unsupported') continue;
+      diagnostics.push({
+        severity: 'error',
+        code: 'PLAN_ACTOR_CAPABILITY_UNSUPPORTED',
+        message: `Actor ${actor.definition.id} requires ${capability}, but provider ${manifest?.capability.implementation ?? providerNode.implementation} does not guarantee it for ${request.target}.`,
+        subjectId: actor.id,
+        provenance: [nodeProvenance(actor, request.workspaceRoot), nodeProvenance(providerNode, request.workspaceRoot)],
+      });
+    }
+  }
 
   const physicalIdentity = new Map<string, ApplicationCanonicalIdentity>();
   const physicalNodes = request.deployment.nodes.map((node) => {
@@ -203,13 +267,19 @@ export function compileApplicationPlan(request: CompileApplicationPlanRequest): 
       target,
       ...semanticIdentity.values(),
       ...physicalIdentity.values(),
-      ...(request.graph.foundation?.identities ?? []),
+      ...foundation.identities,
       ...resolvedProviderIdentities,
     ]),
     semantic: {
       nodes: semanticNodes,
       edges: semanticEdges,
-      runtimeAccess: request.graph.foundation?.runtimeAccess ?? [],
+      executions,
+      authority,
+      dataFlows,
+      state,
+      exposures,
+      observability,
+      runtimeAccess: foundation.runtimeAccess,
     },
     resolution: { capabilities: resolutions },
     physical: {
@@ -218,9 +288,266 @@ export function compileApplicationPlan(request: CompileApplicationPlanRequest): 
       nativePlans: request.nativePlans ?? deploymentNativePlans(request, target, physicalNodes.map(({ deploymentNodeId }) => deploymentNodeId), graphProvenance),
     },
     diagnostics,
-    estimates: [],
+    estimates,
     evidence: [],
   };
+}
+
+function semanticExecutions(
+  graph: ApplicationGraph,
+  semanticIdentity: ReadonlyMap<string, ApplicationCanonicalIdentity>,
+  identities: readonly ApplicationCanonicalIdentity[],
+  workspaceRoot?: string,
+) {
+  return graph.nodes.flatMap((node) => {
+    const owner = requiredIdentity(semanticIdentity, node.id);
+    const execution = identities.find((identity) => identity.kind === 'execution-boundary' && identity.parentId === owner.id);
+    if (!execution) return [];
+    return [{
+      id: recordId('execution', [execution.id]),
+      identity: execution.id,
+      graphNodeId: node.id,
+      kind: node.kind,
+      scalingBoundary: executionScalingBoundary(node),
+      fact: 'derived' as const,
+      provenance: [nodeProvenance(node, workspaceRoot)],
+    }];
+  });
+}
+
+function semanticAuthority(
+  graph: ApplicationGraph,
+  semanticIdentity: ReadonlyMap<string, ApplicationCanonicalIdentity>,
+  workspaceRoot?: string,
+) {
+  return graph.nodes.flatMap((node) => {
+    if (node.kind !== 'authorityManifest') return [];
+    const provenance = [nodeProvenance(node, workspaceRoot)];
+    return node.manifest.grants.map((grant) => ({
+      id: recordId('authority', [requiredIdentity(semanticIdentity, node.id).id, grant.id]),
+      principal: grant.identity.id,
+      operationIds: [...grant.operationIds].sort(),
+      ...(grant.permissionId ? { permissionId: grant.permissionId } : {}),
+      scope: grant.scope,
+      fact: 'declared' as const,
+      provenance,
+    }));
+  });
+}
+
+function semanticState(
+  graph: ApplicationGraph,
+  semanticIdentity: ReadonlyMap<string, ApplicationCanonicalIdentity>,
+  workspaceRoot?: string,
+) {
+  return graph.nodes.flatMap((node) => {
+    const contract = stateContract(node);
+    if (!contract) return [];
+    const subject = requiredIdentity(semanticIdentity, node.id).id;
+    return [{
+      id: recordId('state', [subject]),
+      subject,
+      ...contract,
+      fact: contract.authority === 'unknown' ? 'unknown' as const : 'derived' as const,
+      provenance: [nodeProvenance(node, workspaceRoot)],
+    }];
+  });
+}
+
+function semanticExposures(
+  graph: ApplicationGraph,
+  semanticIdentity: ReadonlyMap<string, ApplicationCanonicalIdentity>,
+  workspaceRoot?: string,
+) {
+  return graph.nodes.flatMap((node) => {
+    const kind = node.kind === 'server' ? 'http' as const
+      : node.kind === 'gateway' ? 'gateway' as const
+        : node.kind === 'subscription' ? 'subscription' as const
+          : node.kind === 'exposure' ? 'external' as const
+            : undefined;
+    if (!kind) return [];
+    const subject = requiredIdentity(semanticIdentity, node.id).id;
+    const publicExposure = node.kind === 'server' ? Boolean(node.exposure)
+      : node.kind === 'exposure' ? true
+        : node.kind === 'gateway' || node.kind === 'subscription' ? 'unknown' as const
+          : false;
+    return [{
+      id: recordId('exposure', [subject, kind]),
+      subject,
+      kind,
+      public: publicExposure,
+      trustBoundary: node.kind === 'gateway' ? node.authentication
+        : node.kind === 'subscription' ? node.authorization
+          : node.kind === 'server' ? 'application-host'
+            : 'provider-managed',
+      fact: publicExposure === 'unknown' ? 'unknown' as const : 'derived' as const,
+      provenance: [nodeProvenance(node, workspaceRoot)],
+    }];
+  });
+}
+
+function semanticObservability(
+  graph: ApplicationGraph,
+  semanticIdentity: ReadonlyMap<string, ApplicationCanonicalIdentity>,
+  workspaceRoot?: string,
+) {
+  const provider = graph.nodes.find((node): node is Extract<ApplicationGraphNode, { kind: 'provider' }> =>
+    node.kind === 'provider' && node.interface === 'Observability');
+  const providerConfig = provider?.config && typeof provider.config === 'object'
+    ? Reflect.get(provider.config, 'observability')
+    : undefined;
+  const policy = providerConfig && typeof providerConfig === 'object'
+    ? Reflect.get(providerConfig, 'policy')
+    : undefined;
+  const retention = providerConfig && typeof providerConfig === 'object'
+    ? Reflect.get(providerConfig, 'retention')
+    : undefined;
+  const logs = policy && typeof policy === 'object' ? Reflect.get(policy, 'logs') : undefined;
+  const traces = policy && typeof policy === 'object' ? Reflect.get(policy, 'traces') : undefined;
+  const redaction = policy && typeof policy === 'object' ? Reflect.get(policy, 'redaction') : undefined;
+  const retentionSummary = retention && typeof retention === 'object'
+    ? `logs=${String(Reflect.get(retention, 'logs') ?? 'unknown')},traces=${String(Reflect.get(retention, 'traces') ?? 'unknown')},metrics=${String(Reflect.get(retention, 'metrics') ?? 'unknown')}`
+    : 'provider-resolved';
+  return graph.nodes.flatMap((node) => {
+    const explicitlyObservable = 'observability' in node && Boolean(node.observability);
+    const managedExecution = foundationExecutionNode(node);
+    if (!provider && !explicitlyObservable) return [];
+    if (!managedExecution && !explicitlyObservable) return [];
+    const subject = requiredIdentity(semanticIdentity, node.id).id;
+    return [{
+      id: recordId('observability', [subject]),
+      subject,
+      signals: managedExecution
+        ? ['traces', 'logs', 'metrics', 'events'] as const
+        : ['logs', 'metrics', 'events'] as const,
+      collector: provider?.implementation ?? 'provider-resolved',
+      export: provider?.implementation ?? 'provider-resolved',
+      retention: retentionSummary,
+      cardinality: 'bounded' as const,
+      ...(logs && typeof logs === 'object' && traces && typeof traces === 'object' ? {
+        sampling: {
+          traceHead: Number(Reflect.get(traces, 'headSample') ?? 0),
+          debugLogs: Number(Reflect.get(logs, 'debugSample') ?? 0),
+          alwaysSampleErrors: Reflect.get(traces, 'alwaysSampleErrors') === true,
+        },
+      } : {}),
+      ...(redaction && typeof redaction === 'object' && Array.isArray(Reflect.get(redaction, 'deniedFields')) ? {
+        redaction: { deniedFields: Reflect.get(redaction, 'deniedFields') as string[] },
+      } : {}),
+      fact: 'derived' as const,
+      provenance: [nodeProvenance(node, workspaceRoot)],
+    }];
+  });
+}
+
+function executionScalingBoundary(node: ApplicationGraphNode): 'singleton' | 'replicated' | 'provider-managed' | 'unknown' {
+  if (node.kind === 'server') return (node.deployment?.replicas ?? 1) > 1 ? 'replicated' : 'singleton';
+  if (
+    node.kind === 'workflowWorker'
+    || node.kind === 'workflowHandler'
+    || node.kind === 'aiAgent'
+    || node.kind === 'schedule'
+    || node.kind === 'lakehousePublication'
+    || node.kind === 'actor'
+  ) return 'provider-managed';
+  if (node.kind === 'operator' || node.kind === 'job') return 'singleton';
+  return 'unknown';
+}
+
+function stateContract(node: ApplicationGraphNode): { readonly authority: string; readonly consistency: string; readonly retention?: string; readonly recovery?: string } | undefined {
+  if (node.kind === 'model') return { authority: node.database.interface, consistency: node.common?.changes.authority ?? 'provider-defined', retention: node.runtime?.retention.mode ?? 'provider-defined', recovery: 'provider-backup-and-replay' };
+  if (node.kind === 'crd') return { authority: 'kubernetes-api', consistency: 'resource-version', recovery: 'control-plane-reconciliation' };
+  if (node.kind === 'stream') return { authority: node.authority, consistency: node.delivery, retention: `${node.retention.maxAgeSeconds}s`, recovery: node.replay };
+  if (node.kind === 'objectStore') return { authority: node.provider.interface, consistency: 'provider-defined', recovery: 'object-version-or-republish' };
+  if (node.kind === 'index' || node.kind === 'projection') return { authority: 'derived-projection', consistency: 'eventual', recovery: 'rebuild' };
+  if (node.kind === 'workflow' || node.kind === 'task') return { authority: 'workflow-engine', consistency: 'durable-history', recovery: 'history-replay' };
+  if (node.kind === 'schedule') return { authority: node.scheduler.interface, consistency: 'idempotent-occurrence-receipt', retention: 'provider-defined', recovery: 'prior-receipt-and-misfire-policy' };
+  if (node.kind === 'lakehousePublication') return { authority: node.dataset.interface, consistency: node.semantics.publication, retention: 'immutable-snapshots', recovery: 'frontier-replay-and-manifest-republish' };
+  if (node.kind === 'actor') return { authority: node.runtime.interface, consistency: node.semantics.serialization, retention: 'provider-defined', recovery: 'admission-receipt-state-and-outbox' };
+  if (node.kind === 'aggregate' || node.kind === 'counter') return { authority: 'provider-defined', consistency: 'atomic', recovery: 'source-rebuild' };
+  return undefined;
+}
+
+function semanticEstimates(
+  graph: ApplicationGraph,
+  deployment: ApplicationDeploymentGraph,
+  semanticIdentity: ReadonlyMap<string, ApplicationCanonicalIdentity>,
+  workspaceRoot?: string,
+): readonly ApplicationPlanEstimate[] {
+  const estimates: ApplicationPlanEstimate[] = [];
+  for (const node of graph.nodes) {
+    const subjectId = requiredIdentity(semanticIdentity, node.id).id;
+    const provenance = [nodeProvenance(node, workspaceRoot)];
+    if (node.kind === 'server') {
+      const replicas = node.deployment?.replicas;
+      estimates.push({
+        id: recordId('estimate', [subjectId, 'replicas']),
+        subjectId,
+        name: 'replicas',
+        ...(typeof replicas === 'number' ? { value: replicas } : {}),
+        unit: 'replicas',
+        costClass: typeof replicas === 'number' && replicas > 2 ? 'medium' as const : 'low' as const,
+        assumptions: ['desired replica count; provider autoscaling and placement may change observed capacity'],
+        fact: typeof replicas === 'number' ? 'estimated' as const : 'unknown' as const,
+        provenance,
+      });
+      continue;
+    }
+    if (node.kind === 'schedule') estimates.push({
+        id: recordId('estimate', [subjectId, 'schedule-cardinality']),
+        subjectId,
+        name: 'schedule-cardinality',
+        value: node.definition.requirements.cardinality,
+        unit: 'definitions',
+        costClass: node.definition.requirements.cardinality === 'high' ? 'medium' : 'low',
+        assumptions: [`configuration=${node.definition.configuration}`, `precision=${node.definition.requirements.precision}`, `maxCatchUp=${node.definition.maxCatchUp ?? 0}`],
+        fact: 'estimated',
+        provenance,
+      });
+    if (node.kind === 'lakehousePublication') estimates.push({
+        id: recordId('estimate', [subjectId, 'snapshot-storage']),
+        subjectId,
+        name: 'snapshot-storage',
+        unit: 'bytes',
+        costClass: 'unknown',
+        assumptions: ['depends on event volume, row encoding, partition cardinality, and provider compaction'],
+        fact: 'unknown',
+        provenance,
+      });
+    if (node.kind === 'actor') estimates.push({
+        id: recordId('estimate', [subjectId, 'active-actor-identities']),
+        subjectId,
+        name: 'active-actor-identities',
+        unit: 'identities',
+        costClass: 'unknown',
+        assumptions: ['depends on admitted actor keys, hibernation, state size, and provider placement'],
+        fact: 'unknown',
+        provenance,
+      });
+  }
+  const physical: ApplicationPlanEstimate[] = deployment.nodes.map((node) => ({
+    id: recordId('estimate', [`physical:${node.id}`, 'provider-cost']),
+    subjectId: `physical:${node.id}`,
+    name: 'provider-cost',
+    costClass: node.lifecycle.ownership === 'external' ? 'unknown' as const : 'low' as const,
+    assumptions: [`provider=${node.provider.interface}/${node.provider.implementation}`, `ownership=${node.lifecycle.ownership}`, 'provider price and target utilization are not observed during static planning'],
+    fact: 'unknown' as const,
+    provenance: [deploymentProvenance(node, graph, workspaceRoot)],
+  }));
+  return [...estimates, ...physical];
+}
+
+function foundationExecutionNode(node: ApplicationGraphNode): boolean {
+  return [
+    'server', 'operator', 'commandHandler', 'processor', 'taskHandler',
+    'workflowHandler', 'workflowWorker', 'aiAgent', 'mcpServer', 'mcpClient',
+    'query', 'gateway', 'streamProcessor', 'subscription', 'projection', 'job',
+    'schedule', 'lakehousePublication', 'actor',
+  ].includes(node.kind);
+}
+
+function causalRelationship(relationship: string): boolean {
+  return ['emits', 'invokes', 'handles', 'processes', 'projects', 'starts', 'signals', 'watches'].includes(relationship);
 }
 
 function deploymentNativePlans(
@@ -320,7 +647,8 @@ function targetAttributes(deployment: ApplicationDeploymentGraph, target: Compil
   return {
     connectionProvider: connection.provider,
     connectionDigest: connection.digest,
-    ...(target === 'kubernetes' ? { cluster: connection.cluster, strategy: deployment.metadata.strategy } : {}),
+    cluster: connection.cluster,
+    ...(target === 'kubernetes' ? { strategy: deployment.metadata.strategy } : {}),
   };
 }
 

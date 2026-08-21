@@ -27,21 +27,54 @@ interface BuildCommandOptions {
   readonly compositionName?: string;
   readonly connectionBindings?: string;
   readonly production?: boolean;
+  /** Internal local-supervisor compile mode; not exposed by the build CLI. */
+  readonly localDevelopment?: boolean;
+  /** Internal compiler target used to emit target-specific runtime artifacts. */
+  readonly executionTarget?: 'kubernetes' | 'local' | 'aws-local' | 'aws';
 }
 
 interface ApplicationDeployCliOptions
   extends Omit<ApplicationDeployCommandOptions, 'context'> {
   readonly context?: string;
+  readonly target?: 'kubernetes' | 'aws';
+  readonly environment?: string;
+  readonly region?: string;
+  readonly accountId?: string;
+  readonly availabilityZone?: readonly string[];
+  readonly hostedZone?: readonly string[];
+  readonly imageUri?: string;
+  readonly endpoint?: string;
+  readonly awsProfile?: string;
+}
+
+interface ApplicationPlanCliOptions extends ApplicationDeployCliOptions {
+  readonly target?: 'kubernetes' | 'aws';
+  readonly environment?: string;
+  readonly region?: string;
+  readonly accountId?: string;
+  readonly availabilityZone?: readonly string[];
+  readonly format?: 'text' | 'json' | 'graph';
+  readonly diff?: string;
 }
 
 interface ApplicationDeleteCliOptions
   extends Omit<ApplicationDeleteCommandOptions, 'context'> {
   readonly context?: string;
+  readonly target?: 'kubernetes' | 'aws';
+  readonly environment?: string;
+  readonly endpoint?: string;
+  readonly awsProfile?: string;
+  readonly imageUri?: string;
 }
 
 interface ApplicationStatusCliOptions
   extends Omit<ApplicationStatusCommandOptions, 'context'> {
   readonly context?: string;
+  readonly target?: 'kubernetes' | 'aws';
+  readonly environment?: string;
+  readonly endpoint?: string;
+  readonly awsProfile?: string;
+  readonly imageUri?: string;
 }
 
 interface ExplainCommandOptions {
@@ -61,6 +94,22 @@ interface DoctorCommandOptions {
 interface StartUpdateCommandOptions {
   readonly check?: boolean;
   readonly json?: boolean;
+}
+
+interface LocalDevelopmentCliOptions {
+  readonly target?: 'local' | 'aws-local';
+  readonly profile?: string;
+  readonly outDir?: string;
+  readonly compositionName?: string;
+  readonly status?: boolean;
+  readonly reset?: boolean;
+  readonly json?: boolean;
+  readonly portalPort?: number;
+  readonly portal?: boolean;
+  readonly agent?: boolean;
+  readonly agentPort?: number;
+  readonly agentExecutable?: string;
+  readonly allowDockerSocket?: boolean;
 }
 
 interface OperatorIdentityCommandOptions {
@@ -191,6 +240,36 @@ function createProgram(io: CliIo): Command {
     });
 
   program
+    .command('dev')
+    .description('Run the application graph locally with supervised processes and retained stateful providers.')
+    .argument('[entrypoint]', 'application entrypoint module; defaults to package.json applik8s.entrypoint')
+    .option('--target <target>', 'portable development target: local or aws-local', 'local')
+    .option('--profile <profile>', 'application provider profile; defaults to the configured instance profile')
+    .option('--out-dir <dir>', 'local compiler artifact directory', '.applik8s/local-build')
+    .option('--composition-name <name>', 'application composition export name')
+    .option('--status', 'read local supervisor state without starting the application')
+    .option('--reset', 'remove stopped local processes, containers, credentials, and retained volumes')
+    .option('--json', 'print machine-readable status')
+    .option('--portal-port <port>', 'independent Builder portal loopback port', parseIntegerOption, 4388)
+    .option('--no-portal', 'disable the independent Builder portal for this invocation')
+    .option('--agent', 'enable the reviewed local OpenCode Builder preview')
+    .option('--agent-port <port>', 'private OpenCode loopback port', parseIntegerOption, 4389)
+    .option('--agent-executable <path>', 'OpenCode executable used by the local Builder', 'opencode')
+    .option('--allow-docker-socket', 'grant aws-local MiniStack access to the host Docker socket for real database/compute data planes')
+    .action(async (entrypoint: string | undefined, options: LocalDevelopmentCliOptions) => {
+      if (options.target !== undefined && options.target !== 'local' && options.target !== 'aws-local') {
+        throw new Error(`applik8s dev --target must be "local" or "aws-local", received ${JSON.stringify(options.target)}.`);
+      }
+      await loadApplicationEnvironmentFile(io.cwd);
+      const configuration = await readApplicationProjectConfiguration(io.cwd);
+      const resolvedEntrypoint = resolveApplicationEntrypoint(entrypoint, configuration);
+      // static-import-exception: local supervision and Docker/process adapters load only for the selected dev command.
+      const { runLocalDevelopmentCommand } = await import('./local-development-command.js');
+      const code = await runLocalDevelopmentCommand(resolvedEntrypoint, options, io, { runBuild });
+      if (code !== 0) throw new CommanderError(code, 'applik8s.dev.failed', 'Local development failed.');
+    });
+
+  program
     .command('build')
     .description('Compile an operator or application entrypoint into Applik8s artifacts.')
     .argument('<entrypoint>', 'operator or application entrypoint module')
@@ -207,8 +286,16 @@ function createProgram(io: CliIo): Command {
 
   program
     .command('plan')
-    .description('Compile and preview the graph-native Alchemy and TypeKro deployment without applying effects.')
+    .description('Compile and preview one graph-native target plan without applying effects.')
     .argument('[entrypoint]', 'application entrypoint module; defaults to package.json applik8s.entrypoint')
+    .option('--target <target>', 'deployment target: kubernetes or aws', 'kubernetes')
+    .option('--environment <environment>', 'stable deployment environment identity')
+    .option('--region <region>', 'AWS region; defaults to AWS_REGION')
+    .option('--account-id <accountId>', '12-digit AWS account id; defaults to APPLIK8S_AWS_ACCOUNT_ID')
+    .option('--availability-zone <zone>', 'explicit AWS availability zone (repeat at least twice)', collectOption, [])
+    .option('--hosted-zone <suffix=zoneId>', 'Route53 hosted-zone binding for managed exposure (repeatable)', collectOption, [])
+    .option('--format <format>', 'plan rendering: text, json, or graph', 'text')
+    .option('--diff <path>', 'compare with a previous canonical plan artifact')
     .option('--context <context>', 'explicit kubeconfig context; defaults to APPLIK8S_CONTEXT or package configuration')
     .option('--strategy <strategy>', 'root TypeKro deployment strategy: kro or direct', 'kro')
     .option('--out-dir <dir>', 'output directory')
@@ -222,19 +309,61 @@ function createProgram(io: CliIo): Command {
       collectOption,
       [],
     )
-    .action(async (entrypoint: string | undefined, options: ApplicationDeployCliOptions) => {
+    .action(async (entrypoint: string | undefined, options: ApplicationPlanCliOptions) => {
+      if (options.target === 'aws') {
+        const configuration = await readApplicationProjectConfiguration(io.cwd);
+        const resolvedEntrypoint = resolveApplicationEntrypoint(entrypoint, configuration);
+        const environment = options.environment?.trim();
+        const region = options.region?.trim() || process.env.AWS_REGION?.trim();
+        const accountId = options.accountId?.trim() || process.env.APPLIK8S_AWS_ACCOUNT_ID?.trim();
+        if (!environment) throw new Error('applik8s plan --target aws requires --environment.');
+        if (!region) throw new Error('applik8s plan --target aws requires --region or AWS_REGION.');
+        if (!accountId) throw new Error('applik8s plan --target aws requires --account-id or APPLIK8S_AWS_ACCOUNT_ID.');
+        if (options.format !== 'text' && options.format !== 'json' && options.format !== 'graph') throw new Error(`Unknown AWS plan format ${JSON.stringify(options.format)}.`);
+        await loadApplicationEnvironmentFile(io.cwd);
+        const hostedZones = resolveAwsHostedZones(options.hostedZone, process.env.APPLIK8S_AWS_HOSTED_ZONES);
+        // static-import-exception: target-selected AWS planning must not load Kubernetes deployment machinery.
+        const { runApplicationTargetPlan } = await import('./application-target-plan-command.js');
+        const code = await runApplicationTargetPlan(resolvedEntrypoint, {
+          target: 'aws', environment, region, accountId,
+          ...(options.availabilityZone?.length ? { availabilityZones: options.availabilityZone } : {}),
+          ...(Object.keys(hostedZones).length > 0 ? { hostedZones } : {}),
+          outDir: options.outDir ?? '.applik8s/plans',
+          compositionName: options.compositionName ?? configuration.compositionName ?? 'app',
+          ...(options.connectionBindings ? { connectionBindings: options.connectionBindings } : {}),
+          ...(options.skipAppBuild ? { skipAppBuild: true } : {}),
+          ...(options.skipImageBuild ? { skipImageBuild: true } : {}),
+          format: options.format,
+          ...(options.diff ? { diff: options.diff } : {}),
+        }, io, { runChild, runBuild });
+        if (code !== 0) throw new CommanderError(code, 'applik8s.plan.failed', 'Plan failed.');
+        return;
+      }
+      if (options.target !== undefined && options.target !== 'kubernetes') throw new Error(`applik8s plan --target must be "kubernetes" or "aws", received ${JSON.stringify(options.target)}.`);
+      if (options.format !== 'text' && options.format !== 'json' && options.format !== 'graph') throw new Error(`Unknown Kubernetes plan format ${JSON.stringify(options.format)}.`);
       const resolved = await resolveDeployCommand(entrypoint, options, io);
       const code = await runDeploy(resolved.entrypoint, {
         ...resolved.options,
         planOnly: true,
+        planFormat: options.format,
+        ...(options.diff ? { planDiff: options.diff } : {}),
       }, io);
       if (code !== 0) throw new CommanderError(code, 'applik8s.plan.failed', 'Plan failed.');
     });
 
   program
     .command('deploy')
-    .description('Build, plan, and reconcile an Application through Alchemy and TypeKro.')
+    .description('Build, plan, and reconcile an Application through the target-selected Alchemy lifecycle.')
     .argument('[entrypoint]', 'application entrypoint module; defaults to package.json applik8s.entrypoint')
+    .option('--target <target>', 'deployment target: kubernetes or aws', 'kubernetes')
+    .option('--environment <environment>', 'stable deployment environment identity')
+    .option('--region <region>', 'AWS region; defaults to AWS_REGION')
+    .option('--account-id <accountId>', '12-digit AWS account id; defaults to APPLIK8S_AWS_ACCOUNT_ID')
+    .option('--availability-zone <zone>', 'explicit AWS availability zone (repeat at least twice)', collectOption, [])
+    .option('--hosted-zone <suffix=zoneId>', 'Route53 hosted-zone binding for managed exposure (repeatable)', collectOption, [])
+    .option('--image-uri <uri>', 'immutable ApplicationHost image repository@sha256:... for AWS')
+    .option('--endpoint <url>', 'explicit AWS-compatible endpoint; intended for qualified aws-local use')
+    .option('--aws-profile <profile>', 'AWS credential profile')
     .option('--context <context>', 'explicit kubeconfig context; defaults to APPLIK8S_CONTEXT or package configuration')
     .option('--strategy <strategy>', 'root TypeKro deployment strategy: kro or direct', 'kro')
     .option('--out-dir <dir>', 'output directory')
@@ -260,6 +389,31 @@ function createProgram(io: CliIo): Command {
     )
     .option('--runtime-entrypoint <path>', 'internal prebuilt application module used by the Node deployment host')
     .action(async (entrypoint: string | undefined, options: ApplicationDeployCliOptions) => {
+      if (options.target === 'aws') {
+        const configuration = await readApplicationProjectConfiguration(io.cwd);
+        const resolvedEntrypoint = resolveApplicationEntrypoint(entrypoint, configuration);
+        const aws = resolveAwsDeploymentOptions(options);
+        await loadApplicationEnvironmentFile(io.cwd);
+        const hostedZones = resolveAwsHostedZones(options.hostedZone, process.env.APPLIK8S_AWS_HOSTED_ZONES);
+        // static-import-exception: selected AWS deployment must not initialize Kubernetes machinery.
+        const { runApplicationAwsDeploy } = await import('./application-aws-command.js');
+        const code = await runApplicationAwsDeploy(resolvedEntrypoint, {
+          target: 'aws', ...aws,
+          ...(options.availabilityZone?.length ? { availabilityZones: options.availabilityZone } : {}),
+          ...(Object.keys(hostedZones).length > 0 ? { hostedZones } : {}),
+          outDir: options.outDir ?? '.applik8s/plans',
+          compositionName: options.compositionName ?? configuration.compositionName ?? 'app',
+          ...(options.connectionBindings ? { connectionBindings: options.connectionBindings } : {}),
+          ...(options.skipAppBuild ? { skipAppBuild: true } : {}),
+          ...(options.imageUri ? { imageUri: options.imageUri } : {}),
+          ...(options.endpoint ? { endpoint: options.endpoint } : {}),
+          ...(options.awsProfile ? { awsProfile: options.awsProfile } : {}),
+          ...(options.planOnly ? { planOnly: true } : {}),
+        }, io, { runChild, runBuild });
+        if (code !== 0) throw new CommanderError(code, 'applik8s.deploy.failed', 'AWS deploy failed.');
+        return;
+      }
+      if (options.target !== undefined && options.target !== 'kubernetes') throw new Error(`applik8s deploy --target must be "kubernetes" or "aws", received ${JSON.stringify(options.target)}.`);
       const resolved = await resolveDeployCommand(entrypoint, options, io);
       const code = await runDeploy(resolved.entrypoint, resolved.options, io);
       if (code !== 0) throw new CommanderError(code, 'applik8s.deploy.failed', 'Deploy failed.');
@@ -267,8 +421,13 @@ function createProgram(io: CliIo): Command {
 
   program
     .command('status')
-    .description('Observe the persisted Alchemy plan and authoritative TypeKro Application status.')
+    .description('Observe authoritative target state through the persisted Alchemy lifecycle.')
     .argument('[entrypoint]', 'application entrypoint module; defaults to package.json applik8s.entrypoint')
+    .option('--target <target>', 'deployment target: kubernetes or aws', 'kubernetes')
+    .option('--environment <environment>', 'stable AWS deployment environment identity')
+    .option('--endpoint <url>', 'explicit AWS-compatible endpoint')
+    .option('--aws-profile <profile>', 'AWS credential profile')
+    .option('--image-uri <uri>', 'immutable image identity used by the stored AWS deployment')
     .option('--context <context>', 'explicit kubeconfig context; defaults to APPLIK8S_CONTEXT or package configuration')
     .option('--out-dir <dir>', 'existing deployment artifact directory')
     .option('--composition-name <name>', 'TypeKro composition export name')
@@ -276,6 +435,15 @@ function createProgram(io: CliIo): Command {
     .option('--control-plane-namespace <namespace>', 'namespace containing the root Application instance')
     .option('--json', 'print the shared machine-readable status contract')
     .action(async (entrypoint: string | undefined, options: ApplicationStatusCliOptions) => {
+      if (options.target === 'aws') {
+        const environment = requireAwsEnvironment(options.environment);
+        // static-import-exception: selected AWS status must not initialize Kubernetes machinery.
+        const { runApplicationAwsStatus } = await import('./application-aws-command.js');
+        const code = await runApplicationAwsStatus({ environment, outDir: options.outDir ?? '.applik8s/plans', ...(options.endpoint ? { endpoint: options.endpoint } : {}), ...(options.awsProfile ? { awsProfile: options.awsProfile } : {}), ...(options.imageUri ? { imageUri: options.imageUri } : {}), ...(options.json ? { json: true } : {}) }, io);
+        if (code !== 0) throw new CommanderError(code, 'applik8s.status.absent', 'AWS application is absent.');
+        return;
+      }
+      if (options.target !== undefined && options.target !== 'kubernetes') throw new Error(`applik8s status --target must be "kubernetes" or "aws", received ${JSON.stringify(options.target)}.`);
       const resolved = await resolveStatusCommand(entrypoint, options, io);
       const code = await runStatus(resolved.entrypoint, resolved.options, io);
       if (code !== 0) throw new CommanderError(code, 'applik8s.status.failed', 'Status failed.');
@@ -283,14 +451,28 @@ function createProgram(io: CliIo): Command {
 
   program
     .command('destroy')
-    .description('Destroy the scoped Alchemy Stack and its TypeKro application lifecycle.')
+    .description('Destroy the scoped Alchemy Stack through its target lifecycle authority.')
     .argument('[entrypoint]', 'application entrypoint module; defaults to package.json applik8s.entrypoint')
+    .option('--target <target>', 'deployment target: kubernetes or aws', 'kubernetes')
+    .option('--environment <environment>', 'stable AWS deployment environment identity')
+    .option('--endpoint <url>', 'explicit AWS-compatible endpoint')
+    .option('--aws-profile <profile>', 'AWS credential profile')
+    .option('--image-uri <uri>', 'immutable image identity used by the stored AWS deployment')
     .option('--context <context>', 'explicit kubeconfig context; defaults to APPLIK8S_CONTEXT or package configuration')
     .option('--out-dir <dir>', 'existing deployment artifact directory')
     .option('--composition-name <name>', 'TypeKro composition export name')
     .option('--instance-name <name>', 'instance name when selection is ambiguous')
     .option('--control-plane-namespace <namespace>', 'namespace containing the root Application instance')
     .action(async (entrypoint: string | undefined, options: ApplicationDeleteCliOptions) => {
+      if (options.target === 'aws') {
+        const environment = requireAwsEnvironment(options.environment);
+        // static-import-exception: selected AWS destruction must not initialize Kubernetes machinery.
+        const { runApplicationAwsDestroy } = await import('./application-aws-command.js');
+        const code = await runApplicationAwsDestroy({ environment, outDir: options.outDir ?? '.applik8s/plans', ...(options.endpoint ? { endpoint: options.endpoint } : {}), ...(options.awsProfile ? { awsProfile: options.awsProfile } : {}), ...(options.imageUri ? { imageUri: options.imageUri } : {}) }, io);
+        if (code !== 0) throw new CommanderError(code, 'applik8s.destroy.failed', 'AWS destroy failed.');
+        return;
+      }
+      if (options.target !== undefined && options.target !== 'kubernetes') throw new Error(`applik8s destroy --target must be "kubernetes" or "aws", received ${JSON.stringify(options.target)}.`);
       const resolved = await resolveDeleteCommand(entrypoint, options, io);
       const code = await runDelete(resolved.entrypoint, resolved.options, io);
       if (code !== 0) throw new CommanderError(code, 'applik8s.destroy.failed', 'Destroy failed.');
@@ -380,6 +562,25 @@ async function resolveDeployCommand(
         : {}),
     },
   };
+}
+
+function resolveAwsDeploymentOptions(options: ApplicationDeployCliOptions): {
+  readonly environment: string;
+  readonly region: string;
+  readonly accountId: string;
+} {
+  const environment = requireAwsEnvironment(options.environment);
+  const region = options.region?.trim() || process.env.AWS_REGION?.trim();
+  const accountId = options.accountId?.trim() || process.env.APPLIK8S_AWS_ACCOUNT_ID?.trim();
+  if (!region) throw new Error('applik8s deploy --target aws requires --region or AWS_REGION.');
+  if (!accountId) throw new Error('applik8s deploy --target aws requires --account-id or APPLIK8S_AWS_ACCOUNT_ID.');
+  return { environment, region, accountId };
+}
+
+function requireAwsEnvironment(value: string | undefined): string {
+  const environment = value?.trim();
+  if (!environment) throw new Error('AWS lifecycle commands require --environment.');
+  return environment;
 }
 
 async function resolveDeleteCommand(
@@ -681,6 +882,41 @@ async function fileExists(path: string): Promise<boolean> {
 
 function collectOption(value: string, previous: readonly string[]): string[] {
   return [...previous, value];
+}
+
+function resolveAwsHostedZones(
+  commandLine: readonly string[] | undefined,
+  environmentJson: string | undefined,
+): Readonly<Record<string, string>> {
+  let environment: Readonly<Record<string, unknown>> = {};
+  if (environmentJson?.trim()) {
+    const parsed: unknown = JSON.parse(environmentJson);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error('APPLIK8S_AWS_HOSTED_ZONES must be a JSON object mapping DNS suffixes to Route53 zone IDs.');
+    }
+    environment = parsed as Readonly<Record<string, unknown>>;
+  }
+  const entries: [string, string][] = Object.entries(environment).map(([suffix, zoneId]) => {
+    if (typeof zoneId !== 'string') throw new Error(`APPLIK8S_AWS_HOSTED_ZONES value for ${suffix} must be a string.`);
+    return [suffix, zoneId];
+  });
+  for (const binding of commandLine ?? []) {
+    const separator = binding.indexOf('=');
+    if (separator <= 0 || separator === binding.length - 1) throw new Error(`AWS hosted-zone binding ${JSON.stringify(binding)} must use <dns-suffix=zone-id>.`);
+    entries.push([binding.slice(0, separator), binding.slice(separator + 1)]);
+  }
+  return Object.fromEntries(entries.map(([suffix, zoneId]) => {
+    const normalizedSuffix = suffix.trim().toLowerCase().replace(/\.$/u, '');
+    const normalizedZoneId = zoneId.trim();
+    if (!normalizedSuffix || !/^Z[A-Z0-9]+$/u.test(normalizedZoneId)) throw new Error(`AWS hosted-zone binding ${JSON.stringify(`${suffix}=${zoneId}`)} is invalid.`);
+    return [normalizedSuffix, normalizedZoneId];
+  }));
+}
+
+function parseIntegerOption(value: string): number {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed)) throw new Error(`Expected an integer option, received ${JSON.stringify(value)}.`);
+  return parsed;
 }
 
 function defaultIo(): CliIo {

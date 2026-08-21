@@ -34,3 +34,21 @@ export {
   applicationAlchemyState,
   applicationAlchemyStateService,
 } from "./state.js";
+export {
+  ApplicationAwsTarget,
+  type ApplicationAwsDeployment,
+  type ApplicationAwsDeploymentOptions,
+  type ApplicationAwsTargetDriver,
+  type ApplicationAwsTargetState,
+  type AwsCliTargetDriverOptions,
+  createApplicationAwsDeployment,
+  createAwsCliTargetDriver,
+} from "./aws-deployment.js";
+export {
+  type ApplicationAwsCloudFormationTemplate,
+  type ApplicationAwsTemplateOptions,
+  applicationAwsOutputKey,
+  applicationAwsStackName,
+  directAwsResource,
+  synthesizeApplicationAwsCloudFormationTemplate,
+} from "./aws-cloudformation.js";

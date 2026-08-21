@@ -1,6 +1,6 @@
 {
   "name": "@applik8s/server",
-  "version": "0.7.1",
+  "version": "0.8.0",
   "description": "Framework-neutral request scoping and Kubernetes gateway runtime for Applik8s web applications.",
   "license": "Apache-2.0",
   "type": "module",
@@ -16,9 +16,9 @@
     "directory": "packages/server"
   },
   "dependencies": {
-    "@applik8s/client": "0.7.1",
-    "@applik8s/core": "0.7.1",
-    "@applik8s/sdk": "0.7.1",
+    "@applik8s/client": "0.8.0",
+    "@applik8s/core": "0.8.0",
+    "@applik8s/sdk": "0.8.0",
     "@kubernetes/client-node": "^1.3.0"
   },
   "exports": {
@@ -31,6 +31,26 @@
       "types": "./dist/kubernetes-gateway.d.ts",
       "import": "./dist/kubernetes-gateway.js",
       "default": "./dist/kubernetes-gateway.js"
+    },
+    "./local-resource": {
+      "types": "./dist/local-resource.d.ts",
+      "import": "./dist/local-resource.js",
+      "default": "./dist/local-resource.js"
+    },
+    "./local-resource-authority": {
+      "types": "./dist/local-resource-authority.d.ts",
+      "import": "./dist/local-resource-authority.js",
+      "default": "./dist/local-resource-authority.js"
+    },
+    "./local-resource-authority-process": {
+      "types": "./dist/local-resource-authority-process.d.ts",
+      "import": "./dist/local-resource-authority-process.js",
+      "default": "./dist/local-resource-authority-process.js"
+    },
+    "./local-operator-runtime": {
+      "types": "./dist/local-operator-runtime.d.ts",
+      "import": "./dist/local-operator-runtime.js",
+      "default": "./dist/local-operator-runtime.js"
     }
   }
 }

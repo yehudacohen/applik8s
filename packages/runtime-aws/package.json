@@ -1,0 +1,50 @@
+{
+  "name": "@applik8s/runtime-aws",
+  "version": "0.8.0",
+  "description": "AWS runtime bindings for secrets, events, schedules, and lakehouse queries in Applik8s.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "files": ["dist"],
+  "publishConfig": { "access": "public" },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yehudacohen/applik8s.git",
+    "directory": "packages/runtime-aws"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./bootstrap": {
+      "types": "./dist/bootstrap.d.ts",
+      "import": "./dist/bootstrap.js",
+      "default": "./dist/bootstrap.js"
+    },
+    "./kinesis": {
+      "types": "./dist/kinesis.d.ts",
+      "import": "./dist/kinesis.js",
+      "default": "./dist/kinesis.js"
+    },
+    "./lakehouse": {
+      "types": "./dist/lakehouse.d.ts",
+      "import": "./dist/lakehouse.js",
+      "default": "./dist/lakehouse.js"
+    }
+  },
+  "dependencies": {
+    "@applik8s/applik8s": "0.8.0",
+    "@applik8s/core": "0.8.0",
+    "@applik8s/sdk": "0.8.0",
+    "@aws-sdk/client-athena": "3.1113.0",
+    "@aws-sdk/client-glue": "3.1113.0",
+    "@aws-sdk/client-kinesis": "3.1113.0",
+    "@aws-sdk/client-dynamodb": "3.1113.0",
+    "@aws-sdk/client-s3": "3.1113.0",
+    "@aws-sdk/client-scheduler": "3.1113.0",
+    "@aws-sdk/client-secrets-manager": "3.1113.0",
+    "@aws-sdk/client-sqs": "3.1113.0",
+    "postgres": "^3.4.7"
+  }
+}

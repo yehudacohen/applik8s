@@ -2,8 +2,10 @@
 import { dirname, join, resolve } from 'node:path';
 import { access, readFile } from 'node:fs/promises';
 import {
+  diffApplicationPlans,
   planApplicationProfileTransitions,
   type ApplicationProfileTransitionPlan,
+  validateApplicationPlan,
 } from '@applik8s/core';
 import type { DeploymentJsonObject } from '@applik8s/deployment-contract';
 import {
@@ -46,6 +48,11 @@ import {
   recordApplicationDeployEvidence,
   recordApplicationPlanEvidence,
 } from './application-deployment-evidence.js';
+import {
+  readPriorApplicationPlan,
+  renderApplicationPlanDiff,
+  renderCanonicalApplicationPlan,
+} from './application-plan-rendering.js';
 
 export async function runApplicationDeploy(
   entrypoint: string,
@@ -102,6 +109,7 @@ export async function runApplicationDeploy(
     options.acknowledge ?? [],
   ));
   io.stdout(`Application deployment graph: ${emitted.nodeCount} nodes, ${emitted.artifactCount} artifacts, ${emitted.digest}`);
+  io.stdout(`Canonical application plan: ${emitted.applicationPlanPath}`);
   io.stdout(`Profile transition plan: ${emitted.profileTransition.mode}, ${emitted.profileTransition.entries.length} provider transition(s)`);
   for (const entry of emitted.profileTransition.entries) {
     io.stdout(
@@ -139,6 +147,19 @@ export async function runApplicationDeploy(
   io.stdout(`Alchemy plan: ${plan.changes.length} resources, ${effectful.length} changes, ${plan.declarationCount} TypeKro declarations`);
   for (const change of effectful) io.stdout(`  ${change.action} ${change.type} ${change.id}`);
   if (options.planOnly) {
+    const applicationPlan = JSON.parse(await readFile(emitted.applicationPlanPath, 'utf8')) as Parameters<typeof validateApplicationPlan>[0];
+    const applicationPlanValidation = validateApplicationPlan(applicationPlan);
+    if (!applicationPlanValidation.valid) {
+      for (const diagnostic of applicationPlanValidation.diagnostics) {
+        io.stderr(`${diagnostic.code}: ${diagnostic.message}`);
+      }
+      throw new Error('Canonical ApplicationPlan is not deployable; resolve its structured diagnostics before applying effects.');
+    }
+    io.stdout(renderCanonicalApplicationPlan(applicationPlan, options.planFormat ?? 'text'));
+    if (options.planDiff) {
+      const previous = await readPriorApplicationPlan(resolve(io.cwd, options.planDiff));
+      io.stdout(renderApplicationPlanDiff(diffApplicationPlans(previous, applicationPlan)));
+    }
     await runPhase('alchemy-plan', io, async () => {
       const graph = await readApplicationDeploymentGraph(emitted.path);
       await recordApplicationPlanEvidence({
@@ -278,6 +299,7 @@ async function emitDeploymentGraph(
   readonly digest: string;
   readonly nodeCount: number;
   readonly artifactCount: number;
+  readonly applicationPlanPath: string;
   readonly profileTransition: ApplicationProfileTransitionPlan;
 }> {
   const bundle = JSON.parse(await readFile(bundlePath, 'utf8')) as {
@@ -326,6 +348,7 @@ async function emitDeploymentGraph(
     digest: emitted.digest,
     nodeCount: emitted.graph.nodes.length,
     artifactCount: emitted.artifactCount,
+    applicationPlanPath: emitted.applicationPlanPath,
     profileTransition,
   };
 }

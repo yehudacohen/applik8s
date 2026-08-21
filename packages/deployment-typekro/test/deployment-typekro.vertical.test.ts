@@ -5,6 +5,7 @@ import {
   type ApplicationKubernetesCompositionDeploymentNode,
   digestApplicationDeploymentValue,
 } from "@applik8s/deployment-contract";
+import { compileApplicationDeploymentGraph } from "@applik8s/deployment-compiler";
 import { type } from "arktype";
 import {
   createResource,
@@ -976,6 +977,120 @@ function graphWithEnvoyAIGateway(): ApplicationDeploymentGraph {
   };
 }
 
+function graphWithV08KubernetesProviders(): ApplicationDeploymentGraph {
+  const connectionDigest = digestApplicationDeploymentValue({
+    provider: "kubernetes",
+    cluster: "orbstack",
+  });
+  return compileApplicationDeploymentGraph({
+    graph: {
+      apiVersion: "applik8s.appGraph/v1alpha1",
+      kind: "ApplicationGraph",
+      metadata: { name: "adapter", namespace: "adapter-test" },
+      nodes: [
+        {
+          id: "provider.observability",
+          kind: "provider",
+          name: "Observability",
+          stability: "stable",
+          interface: "Observability",
+          implementation: "clickstack",
+          config: {
+            observability: {
+              kind: "clickstack",
+              namespace: "adapter-test",
+              storageSize: "10Gi",
+              metadataStorageSize: "5Gi",
+              policy: {},
+              retention: {},
+            },
+          },
+        },
+        {
+          id: "provider.actors",
+          kind: "provider",
+          name: "ActorRuntime",
+          stability: "stable",
+          interface: "ActorRuntime",
+          implementation: "celld-actors",
+          config: {
+            actorRuntime: {
+              kind: "celld-actors",
+              namespace: "adapter-test",
+              replicas: 2,
+              stateStore: {
+                kind: "s3",
+                bucket: "adapter-actors",
+                region: "us-east-1",
+                endpoint: "http://s3.adapter-test.svc.cluster.local:9000",
+                credentialsSecret: {
+                  apiVersion: "v1",
+                  kind: "Secret",
+                  name: "adapter-actor-state",
+                  namespace: "adapter-test",
+                },
+              },
+            },
+          },
+        },
+      ],
+      edges: [],
+      providerRequirements: [],
+      providerBindings: [],
+      compatibility: {
+        stablePublicApis: [],
+        documentedInternalContracts: [],
+        experimentalSurfaces: [],
+        postV3Surfaces: [],
+        labels: [],
+      },
+    },
+    target: "kubernetes",
+    sourceGraphDigest: digestApplicationDeploymentValue({ app: "adapter" }),
+    compilerVersion: "test",
+    identity: {
+      connection: {
+        provider: "kubernetes",
+        cluster: "orbstack",
+        digest: connectionDigest,
+      },
+      application: "adapter",
+      controlPlaneNamespace: "applik8s-system",
+      instance: "adapter",
+      profile: "test",
+    },
+    strategy: "direct",
+    installationSpec: { name: "adapter" },
+    artifacts: [{
+      id: "artifact.celld-runtime",
+      artifactType: "generatedRuntime",
+      name: "celld-actor-runtime",
+      sourceDigest: digestApplicationDeploymentValue({ worker: "adapter" }),
+      sourceDescriptor: {
+        kind: "generated-runtime",
+        contextPath: "/tmp/adapter-celld",
+      },
+      logicalReference: "applik8s/adapter-celld-runtime:source-test",
+    }],
+    materializedComposition: {
+      resources: [{
+        id: "adapterHttpService",
+        template: {
+          apiVersion: "v1",
+          kind: "Service",
+          metadata: {
+            name: "adapter-api",
+            namespace: "adapter-test",
+            labels: { "app.kubernetes.io/component": "typed-http" },
+          },
+          spec: { ports: [{ name: "http", port: 8080, targetPort: "http" }] },
+        },
+      }],
+      status: {},
+    },
+  }).graph;
+}
+
 function materializedGraph(
   strategy: "direct" | "kro",
 ): ApplicationDeploymentGraph {
@@ -1490,6 +1605,97 @@ describe("TypeKro deployment adapter", () => {
     // the claim can bind. The Deployment and PVC must therefore be created in
     // the same readiness layer, with Kubernetes coordinating their binding.
     expect(workloadDeclaration?.dependsOn).not.toContain(claimDeclaration?.id);
+  });
+
+  it("binds v0.8 ClickStack and ClickHouse providers in both direct and KRO modes", async () => {
+    const deploymentGraph = graphWithV08KubernetesProviders();
+    const direct = bindApplicationTypeKroDirectNodes(deploymentGraph, {
+      namespace: "adapter-test",
+      waitForReady: false,
+    });
+    const operator = direct["direct.provider.observability.clickhouse-operator"];
+    const clickhouse = direct["direct.provider.observability.clickhouse"];
+    const clickstack = direct["direct.provider.observability.clickstack"];
+
+    expect(operator?.compositionId).toBe("clickhouse-operator-bootstrap");
+    expect(clickhouse?.compositionId).toBe("applik8s-clickstack-clickhouse");
+    expect(clickstack?.compositionId).toBe("applik8s-clickstack");
+    expect(JSON.stringify(clickhouse?.plan())).toContain("ClickHouseInstallation");
+    expect(JSON.stringify(clickstack?.plan())).toContain("otlpHttpEndpoint");
+
+    for (const binding of [operator, clickhouse, clickstack]) {
+      const directDeclarations = await binding?.declarations("direct");
+      const kroDeclarations = await binding?.declarations("kro");
+      expect(directDeclarations?.length).toBeGreaterThan(0);
+      expect(kroDeclarations?.length).toBeGreaterThan(0);
+    }
+    expect(JSON.stringify(await clickstack?.declarations("kro"))).toContain(
+      "typekroArtifactBindings",
+    );
+  });
+
+  it("binds the compiler-generated Celld Worker fleet without embedding credentials", async () => {
+    const deploymentGraph = graphWithV08KubernetesProviders();
+    const direct = bindApplicationTypeKroDirectNodes(deploymentGraph, {
+      namespace: "adapter-test",
+      waitForReady: false,
+    });
+    const binding = direct["direct.provider.actors.celld"];
+    expect(binding?.compositionId).toBe("applik8s-celld-actors");
+
+    const plan = JSON.stringify(binding?.plan());
+    expect(plan).toContain("StatefulSet");
+    expect(plan).toContain("Job");
+    expect(plan).toContain("NetworkPolicy");
+    expect(plan).toContain("internal-listen");
+    expect(plan).toContain("celld-peer");
+    expect(plan).toContain("8081");
+    expect(plan).toContain("artifact.celld-runtime");
+    expect(plan).toContain(
+      "http://adapter-api.adapter-test.svc.cluster.local:8080",
+    );
+    expect(plan).not.toContain("authorization\":\"");
+
+    const directDeclarations = await binding?.declarations("direct");
+    const kroDeclarations = await binding?.declarations("kro");
+    expect(directDeclarations?.some(({ props }) =>
+      props.resource.kind === "StatefulSet"
+    )).toBe(true);
+    expect(directDeclarations?.some(({ props }) =>
+      props.resource.kind === "Job"
+    )).toBe(true);
+    const fleet = directDeclarations?.find(({ props }) =>
+      props.resource.kind === "StatefulSet"
+    )?.props.resource;
+    expect(fleet?.spec).toMatchObject({
+      template: {
+        spec: {
+          securityContext: {
+            runAsNonRoot: true,
+            runAsUser: 65532,
+            runAsGroup: 65532,
+            fsGroup: 65532,
+            fsGroupChangePolicy: "OnRootMismatch",
+          },
+        },
+      },
+    });
+    expect(kroDeclarations?.length).toBeGreaterThan(0);
+    expect(
+      directDeclarations?.flatMap(({ artifactOutputUses }) => artifactOutputUses ?? []),
+    ).toContainEqual({
+      requirementId: "artifact.celld-runtime",
+      output: "immutableReference",
+      sensitive: false,
+    });
+    expect(
+      directDeclarations?.flatMap(({ artifactOutputUses }) => artifactOutputUses ?? []),
+    ).not.toContainEqual(expect.objectContaining({
+      requirementId: "external.provider.actors.celld-authorization",
+    }));
+    expect(JSON.stringify(directDeclarations)).toContain(
+      "adapter-actors-authorization",
+    );
   });
 
   it("binds the dedicated Rook operator and platform as retained singletons before its application claim", async () => {

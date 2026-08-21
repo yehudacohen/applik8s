@@ -1,4 +1,4 @@
-import type { ApplicationGraph, ApplicationProviderNode } from "@applik8s/core";
+import type { ApplicationDeploymentTargetKind, ApplicationGraph, ApplicationProviderNode } from "@applik8s/core";
 import type {
   ApplicationDeploymentConnectionIdentity,
   ApplicationDeploymentEdge,
@@ -8,9 +8,14 @@ import type {
   ApplicationDeploymentStrategy,
   DeploymentJsonObject,
 } from "@applik8s/deployment-contract";
+import type { ApplicationRuntimeAccessPlan } from './runtime-access-plan.js';
 
 export interface CompileApplicationDeploymentGraphRequest {
   readonly graph: ApplicationGraph;
+  /** Workspace root used to canonicalize authored source provenance. */
+  readonly workspaceRoot?: string;
+  /** Explicit physical target. When omitted, legacy callers derive it from the non-secret connection provider. */
+  readonly target?: ApplicationDeploymentTargetKind;
   readonly sourceGraphDigest: string;
   readonly compilerVersion: string;
   readonly identity: {
@@ -94,11 +99,21 @@ export interface ApplicationArtifactRequirement {
 
 export interface ApplicationDeploymentPlanningContext {
   readonly graph: ApplicationGraph;
+  readonly target: ApplicationDeploymentTargetKind;
   readonly connection: ApplicationDeploymentConnectionIdentity;
   readonly instance: string;
   readonly profile: string;
   readonly strategy: ApplicationDeploymentStrategy;
   readonly installationSpec: DeploymentJsonObject;
+  /**
+   * Compiler-authored Kubernetes resources for this exact application
+   * instance. Provider contributors may inspect stable resource identities
+   * and ports, but must not mutate or independently deploy these resources.
+   */
+  readonly materializedComposition?: {
+    readonly resources: readonly DeploymentJsonObject[];
+    readonly status: DeploymentJsonObject;
+  };
 }
 
 export interface ApplicationDeploymentContribution {
@@ -135,4 +150,6 @@ export interface ApplicationDeploymentContributor {
 export interface CompileApplicationDeploymentGraphResult {
   readonly graph: ApplicationDeploymentGraph;
   readonly contributorKeys: readonly string[];
+  /** Source-attributed, target-specific least-privilege grants for every managed execution. */
+  readonly runtimeAccess: ApplicationRuntimeAccessPlan;
 }

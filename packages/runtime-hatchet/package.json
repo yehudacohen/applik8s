@@ -1,6 +1,6 @@
 {
   "name": "@applik8s/runtime-hatchet",
-  "version": "0.7.1",
+  "version": "0.8.0",
   "description": "Hatchet workflow runtime for Applik8s workloads.",
   "license": "Apache-2.0",
   "type": "module",
@@ -23,7 +23,7 @@
     }
   },
   "dependencies": {
-    "@applik8s/applik8s": "0.7.1",
+    "@applik8s/applik8s": "0.8.0",
     "@hatchet-dev/typescript-sdk": "1.24.3"
   }
 }

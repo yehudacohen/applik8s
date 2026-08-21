@@ -11,14 +11,22 @@ import {
   type PublicFactoryOptions,
 } from "typekro";
 import { ClusterConfigSchema, cluster } from "typekro/cnpg";
+import {
+  clickHouseCluster,
+  clickhouseOperatorBootstrap,
+  type ClickHouseClusterSpec,
+} from "typekro/clickhouse";
+import { makeClickstackBootstrap } from "typekro/clickstack";
 import { makeEnvoyAIGateway } from "typekro/envoy-ai-gateway";
 import {
   customResourceDefinition as kubernetesCustomResourceDefinition,
   deployment as kubernetesDeployment,
+  job as kubernetesJob,
   namespace as kubernetesNamespace,
   networkPolicy as kubernetesNetworkPolicy,
   persistentVolumeClaim as kubernetesPersistentVolumeClaim,
   service as kubernetesService,
+  statefulSet as kubernetesStatefulSet,
 } from "typekro/kubernetes";
 import { natsBootstrap } from "typekro/nats";
 import { hatchetInstallation } from "typekro/hatchet";
@@ -46,6 +54,7 @@ import {
   typeKroArtifactRequirements,
   type TypeKroPlannableComposition,
 } from "./binding.js";
+import { artifactOutput } from "typekro/experimental/planning";
 import {
   artifactSubstitutionIndex,
   transformMaterializedValue,
@@ -72,6 +81,33 @@ interface LocalS3Spec {
   readonly storage: {
     readonly size: string;
     readonly storageClassName?: string;
+  };
+}
+
+interface CelldActorRuntimeSpec {
+  readonly name: string;
+  readonly namespace: string;
+  readonly replicas: number;
+  readonly bucket: string;
+  readonly region: string;
+  readonly endpoint?: string;
+  readonly credentialsSecretName: string;
+  readonly accessKeyIdKey: string;
+  readonly secretAccessKeyKey: string;
+  readonly authorizationSecretName: string;
+  readonly authorizationSecretKey: string;
+  readonly connectionSigningSecretKey: string;
+  readonly ingressControllerNamespace: string;
+  readonly applicationEndpoint: string;
+}
+
+interface ClickStackInstanceSpec {
+  readonly name: string;
+  readonly namespace: string;
+  readonly clickhouse: {
+    readonly nativePort: number;
+    readonly httpPort: number;
+    readonly database: string;
   };
 }
 
@@ -110,6 +146,50 @@ const LocalS3SpecSchema = type({
     size: "string",
     "storageClassName?": "string",
   },
+});
+const CelldActorRuntimeSpecSchema = type({
+  name: "string > 0",
+  namespace: "string > 0",
+  replicas: "1 <= number.integer <= 20",
+  bucket: "string > 0",
+  region: "string > 0",
+  "endpoint?": "string > 0",
+  credentialsSecretName: "string > 0",
+  accessKeyIdKey: "string > 0",
+  secretAccessKeyKey: "string > 0",
+  authorizationSecretName: "string > 0",
+  authorizationSecretKey: "string > 0",
+  connectionSigningSecretKey: "string > 0",
+  ingressControllerNamespace: "string > 0",
+  applicationEndpoint: "string > 0",
+});
+const ClickStackInstanceSpecSchema = type({
+  name: "string > 0",
+  namespace: "string > 0",
+  clickhouse: {
+    nativePort: "1 <= number.integer <= 65535",
+    httpPort: "1 <= number.integer <= 65535",
+    database: "string > 0",
+  },
+});
+const ClickStackClickHouseSpecSchema = type({
+  name: "string > 0",
+  namespace: "string > 0",
+  version: "string > 0",
+  "clusterName?": "string > 0",
+  storage: {
+    size: "string > 0",
+    "storageClassName?": "string > 0",
+  },
+  "podResources?": {
+    "requests?": { "cpu?": "string", "memory?": "string" },
+    "limits?": { "cpu?": "string", "memory?": "string" },
+  },
+});
+const ClickStackStatusSchema = type({
+  ready: "boolean",
+  otlpHttpEndpoint: "string",
+  uiUrl: "string",
 });
 
 const applicationNamespaceProvider =
@@ -414,7 +494,229 @@ const applicationLocalS3Provider =
       ready: workload.status.readyReplicas >= workload.spec.replicas,
     };
   },
-);
+  );
+
+const applicationClickStackClickHouseProvider =
+  providerComposition<ClickHouseClusterSpec>(
+    {
+      name: "applik8s-clickstack-clickhouse",
+      kind: "ApplicationClickStackClickHouse",
+      spec: ClickStackClickHouseSpecSchema,
+      status: type({ ready: "boolean", host: "string" }),
+    },
+    (spec) => {
+      const installation = clickHouseCluster(spec);
+      return {
+        ready: installation.status.ready,
+        host: installation.status.clickhouse.host,
+      };
+    },
+  );
+
+function applicationClickStackProvider(
+  build: Readonly<Record<string, unknown>>,
+  clickhouseRequirementId: string,
+) {
+  const clickstack = makeClickstackBootstrap(build as never);
+  return providerComposition<ClickStackInstanceSpec>(
+    {
+      name: "applik8s-clickstack",
+      kind: "ApplicationClickStack",
+      spec: ClickStackInstanceSpecSchema,
+      status: ClickStackStatusSchema,
+    },
+    (spec) => {
+      const stack = clickstack({
+        name: spec.name,
+        namespace: spec.namespace,
+        clickhouse: {
+          host: artifactOutput(clickhouseRequirementId, "host"),
+          nativePort: spec.clickhouse.nativePort,
+          httpPort: spec.clickhouse.httpPort,
+          database: spec.clickhouse.database,
+        },
+      } as never);
+      return {
+        ready: stack.status.ready,
+        otlpHttpEndpoint: stack.status.gateway.otlpHttpEndpoint,
+        uiUrl: stack.status.ui.url,
+      };
+    },
+  );
+}
+
+function applicationCelldActorRuntimeProvider(
+  imageRequirementId: string,
+) {
+  return (
+  providerComposition<CelldActorRuntimeSpec>(
+    {
+      name: "applik8s-celld-actors",
+      kind: "ApplicationCelldActors",
+      spec: CelldActorRuntimeSpecSchema,
+      status: type({ ready: "boolean", endpoint: "string" }),
+    },
+    (spec) => {
+      const labels = {
+        "app.kubernetes.io/name": "celld",
+        "app.kubernetes.io/instance": spec.name,
+        "app.kubernetes.io/component": "actor-runtime",
+        "app.kubernetes.io/managed-by": "applik8s",
+      };
+      const image = artifactOutput(imageRequirementId, "immutableReference");
+      const headlessName = `${spec.name}-peers`;
+      const storageEnvironment = [
+        {
+          name: "AWS_ACCESS_KEY_ID",
+          valueFrom: { secretKeyRef: { name: spec.credentialsSecretName, key: spec.accessKeyIdKey } },
+        },
+        {
+          name: "AWS_SECRET_ACCESS_KEY",
+          valueFrom: { secretKeyRef: { name: spec.credentialsSecretName, key: spec.secretAccessKeyKey } },
+        },
+        { name: "AWS_REGION", value: spec.region },
+        { name: "AWS_DEFAULT_REGION", value: spec.region },
+        ...(spec.endpoint ? [{ name: "S3_ENDPOINT", value: spec.endpoint }] : []),
+      ];
+      const authorizationEnvironment = [
+        {
+          name: "CELLD_VAR_APPLIK8S_ACTOR_AUTHORIZATION",
+          valueFrom: { secretKeyRef: { name: spec.authorizationSecretName, key: spec.authorizationSecretKey } },
+        },
+        {
+          name: "CELLD_VAR_APPLIK8S_ACTOR_APPLICATION_AUTHORIZATION",
+          valueFrom: { secretKeyRef: { name: spec.authorizationSecretName, key: spec.authorizationSecretKey } },
+        },
+        {
+          name: "CELLD_VAR_APPLIK8S_ACTOR_CONNECTION_SIGNING_KEY",
+          valueFrom: { secretKeyRef: { name: spec.authorizationSecretName, key: spec.connectionSigningSecretKey } },
+        },
+        { name: "CELLD_VAR_APPLIK8S_ACTOR_APPLICATION_ENDPOINT", value: spec.applicationEndpoint },
+      ];
+      const deployer = kubernetesJob({
+        id: "workerDeployment",
+        metadata: { name: `${spec.name}-worker-deployment`, namespace: spec.namespace, labels },
+        spec: {
+          backoffLimit: 4,
+          ttlSecondsAfterFinished: 3_600,
+          template: {
+            metadata: { labels },
+            spec: {
+              restartPolicy: "OnFailure",
+              automountServiceAccountToken: false,
+              containers: [{
+                name: "deploy",
+                image,
+                imagePullPolicy: "IfNotPresent",
+                command: ["celld"],
+                args: [
+                  "deploy", "/app", "--bucket", `s3://${spec.bucket}`,
+                  ...(spec.endpoint ? ["--endpoint", spec.endpoint] : []),
+                  "--region", spec.region,
+                ],
+                env: [...storageEnvironment, ...authorizationEnvironment],
+                securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: ["ALL"] } },
+                resources: { requests: { cpu: "50m", memory: "128Mi" }, limits: { cpu: "1", memory: "1Gi" } },
+              }],
+            },
+          },
+        },
+      });
+      kubernetesService({
+        id: "peerService",
+        metadata: { name: headlessName, namespace: spec.namespace, labels },
+        spec: { clusterIP: "None", publishNotReadyAddresses: true, selector: labels, ports: [{ name: "celld-peer", port: 8081, targetPort: "celld-peer" }] },
+      });
+      const workload = kubernetesStatefulSet({
+        id: "fleet",
+        metadata: { name: spec.name, namespace: spec.namespace, labels },
+        spec: {
+          replicas: spec.replicas,
+          serviceName: headlessName,
+          podManagementPolicy: "Parallel",
+          selector: { matchLabels: labels },
+          template: {
+            metadata: { labels },
+            spec: {
+              automountServiceAccountToken: false,
+              terminationGracePeriodSeconds: 60,
+              securityContext: {
+                runAsNonRoot: true,
+                runAsUser: 65532,
+                runAsGroup: 65532,
+                fsGroup: 65532,
+                fsGroupChangePolicy: "OnRootMismatch",
+                seccompProfile: { type: "RuntimeDefault" },
+              },
+              containers: [{
+                name: "celld",
+                image,
+                imagePullPolicy: "IfNotPresent",
+                command: ["celld"],
+                args: [
+                  "--bucket", `s3://${spec.bucket}`,
+                  "--listen", "0.0.0.0:8080",
+                  "--internal-listen", "0.0.0.0:8081",
+                  "--region", spec.region,
+                  ...(spec.endpoint ? ["--endpoint", spec.endpoint] : []),
+                ],
+                env: [
+                  ...storageEnvironment,
+                  ...authorizationEnvironment,
+                  { name: "CELLD_ADDR", value: "0.0.0.0:8080" },
+                  { name: "POD_NAME", valueFrom: { fieldRef: { fieldPath: "metadata.name" } } },
+                  { name: "CELLD_ADVERTISE", value: `$(POD_NAME).${headlessName}.${spec.namespace}.svc.cluster.local:8081` },
+                  { name: "CELLD_WATCH", value: "/var/lib/celld/state" },
+                ],
+                ports: [
+                  { name: "celld", containerPort: 8080 },
+                  { name: "celld-peer", containerPort: 8081 },
+                ],
+                readinessProbe: { httpGet: { path: "/healthz", port: "celld" }, initialDelaySeconds: 3, periodSeconds: 3, failureThreshold: 40 },
+                livenessProbe: { tcpSocket: { port: "celld" }, initialDelaySeconds: 20, periodSeconds: 10, failureThreshold: 6 },
+                volumeMounts: [{ name: "runtime", mountPath: "/var/lib/celld" }],
+                securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: ["ALL"] } },
+                resources: { requests: { cpu: "100m", memory: "256Mi" }, limits: { cpu: "2", memory: "2Gi" } },
+              }],
+              volumes: [{ name: "runtime", emptyDir: {} }],
+            },
+          },
+        },
+      });
+      workload.dependsOn(deployer);
+      kubernetesService({
+        id: "clientService",
+        metadata: { name: spec.name, namespace: spec.namespace, labels },
+        spec: { type: "ClusterIP", selector: labels, ports: [{ name: "http", port: 8080, targetPort: "celld" }] },
+      });
+      kubernetesNetworkPolicy({
+        id: "networkPolicy",
+        metadata: { name: `${spec.name}-private`, namespace: spec.namespace, labels },
+        spec: {
+          podSelector: { matchLabels: labels },
+          policyTypes: ["Ingress"],
+          ingress: [
+            {
+              _from: [
+                { namespaceSelector: { matchLabels: { "kubernetes.io/metadata.name": spec.namespace } } },
+                { namespaceSelector: { matchLabels: { "kubernetes.io/metadata.name": spec.ingressControllerNamespace } } },
+              ],
+              ports: [{ protocol: "TCP", port: 8080 }],
+            },
+            {
+              _from: [{ namespaceSelector: { matchLabels: { "kubernetes.io/metadata.name": spec.namespace } } }],
+              ports: [{ protocol: "TCP", port: 8081 }],
+            },
+          ],
+        },
+      });
+      return {
+        ready: workload.status.readyReplicas >= spec.replicas,
+        endpoint: `http://${spec.name}.${spec.namespace}.svc.cluster.local:8080`,
+      };
+    },
+  ));
+}
 
 /**
  * Bind every graph-declared direct provider boundary to the matching pinned
@@ -565,6 +867,52 @@ export function bindApplicationTypeKroDirectNodes(
           options,
         );
         break;
+      case "clickhouse-operator-bootstrap":
+        bindings[node.id] = bindTypeKroComposition(
+          clickhouseOperatorBootstrap,
+          configuration as never,
+          options,
+        );
+        break;
+      case "applik8s-clickstack-clickhouse":
+        bindings[node.id] = bindTypeKroComposition(
+          applicationClickStackClickHouseProvider,
+          configuration as never,
+          options,
+        );
+        break;
+      case "applik8s-clickstack": {
+        const build = requiredObject(configuration, "build");
+        const instance = requiredObject(sourceConfiguration, "instance");
+        const clickhouse = requiredObject(instance, "clickhouse");
+        bindings[node.id] = bindTypeKroComposition(
+          applicationClickStackProvider(
+            build,
+            requiredOutputProducer(graph, node.id, "host"),
+          ),
+          {
+            ...instance,
+            clickhouse: withoutKey(clickhouse, "host"),
+          } as never,
+          options,
+        );
+        break;
+      }
+      case "applik8s-celld-actors": {
+        const imageRequirementId = requiredOutputProducer(
+          graph,
+          node.id,
+          "immutableReference",
+        );
+        bindings[node.id] = bindTypeKroComposition(
+          applicationCelldActorRuntimeProvider(
+            imageRequirementId,
+          ),
+          withoutKey(configuration, "image") as never,
+          options,
+        );
+        break;
+      }
       case "ory-identity-stack":
         bindings[node.id] = bindTypeKroComposition(
           oryIdentityStack,
@@ -642,10 +990,10 @@ function directInstanceName(
   node: ApplicationKubernetesDirectDeploymentNode,
   configuration: DeploymentJsonObject,
 ): string {
-  const value = configuration.name;
+  const value = configuration.name ?? optionalObjectValue(configuration.instance)?.name;
   if (typeof value !== "string" || !value.trim()) {
     throw new Error(
-      `TypeKro direct deployment node ${node.id} requires a concrete configuration.name.`,
+      `TypeKro direct deployment node ${node.id} requires a concrete configuration.name or configuration.instance.name.`,
     );
   }
   return value;
@@ -658,6 +1006,32 @@ function withoutKey(
   return Object.fromEntries(
     Object.entries(value).filter(([candidate]) => candidate !== key),
   ) as DeploymentJsonObject;
+}
+
+function optionalObjectValue(value: unknown): DeploymentJsonObject | undefined {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as DeploymentJsonObject
+    : undefined;
+}
+
+function requiredOutputProducer(
+  graph: ApplicationDeploymentGraph,
+  consumerId: string,
+  output: string,
+): string {
+  const producers = graph.edges
+    .filter((edge) =>
+      edge.to === consumerId
+      && edge.relationship === "requiresOutput"
+      && edge.output === output
+    )
+    .map((edge) => edge.from);
+  if (producers.length !== 1) {
+    throw new Error(
+      `TypeKro direct deployment node ${consumerId} requires exactly one ${output} producer; found ${producers.length}.`,
+    );
+  }
+  return producers[0]!;
 }
 
 function requiredObject(

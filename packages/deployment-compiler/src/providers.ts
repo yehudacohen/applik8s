@@ -7,6 +7,7 @@ import {
   type ApplicationKubernetesDirectDeploymentNode,
   type DeploymentJsonObject,
   type DeploymentJsonValue,
+  applicationDeploymentOutputReference,
   digestApplicationDeploymentValue,
 } from "@applik8s/deployment-contract";
 import type {
@@ -32,6 +33,7 @@ const builtinProviderRegistrations: readonly BuiltinProviderRegistration[] = [
   { interface: "AI", implementation: "ai-deterministic", execution: "runtime-only" },
   { interface: "AI", implementation: "envoy-ai-gateway", execution: "external-controller" },
   { interface: "ApplicationHost", implementation: "kubernetes-application-host", execution: "root-composition" },
+  { interface: "ApplicationHost", implementation: "managed-application-host", execution: "root-composition" },
   { interface: "Authorization", implementation: "application-authorization", execution: "runtime-only" },
   { interface: "Certificate", implementation: "cert-manager", execution: "root-composition" },
   { interface: "Certificate", implementation: "custom", execution: "runtime-only" },
@@ -51,8 +53,10 @@ const builtinProviderRegistrations: readonly BuiltinProviderRegistration[] = [
   { interface: "TransactionalDatabase", implementation: "postgres", execution: "root-composition" },
   { interface: "ObjectStorage", implementation: "kubernetes-configmap-objects", execution: "runtime-only" },
   { interface: "ObjectStorage", implementation: "s3", execution: "root-composition" },
-  { interface: "NotificationDelivery", implementation: "local", execution: "runtime-only" },
+  { interface: "NotificationDelivery", implementation: "local-inspectable", execution: "runtime-only" },
   { interface: "NotificationDelivery", implementation: "smtp", execution: "runtime-only" },
+  { interface: "PaymentProvider", implementation: "local-simulated", execution: "runtime-only" },
+  { interface: "PaymentProvider", implementation: "stripe", execution: "runtime-only" },
   { interface: "AnalyticalDatabase", implementation: "clickhouse", execution: "root-composition" },
   { interface: "Queue", implementation: "kubernetes-configmap-queue", execution: "runtime-only" },
   { interface: "IdentityProvider", implementation: "identity-provider", execution: "runtime-only" },
@@ -64,6 +68,23 @@ const builtinProviderRegistrations: readonly BuiltinProviderRegistration[] = [
   { interface: "StructuredGeneration", implementation: "structured-generation-deterministic", execution: "runtime-only" },
   { interface: "StructuredGeneration", implementation: "structured-generation-http", execution: "runtime-only" },
   { interface: "WorkflowEngine", implementation: "hatchet", execution: "direct-provider" },
+  { interface: "Scheduler", implementation: "target-selected", execution: "runtime-only" },
+  { interface: "Scheduler", implementation: "local-scheduler", execution: "runtime-only" },
+  { interface: "Scheduler", implementation: "kubernetes-cronjob-scheduler", execution: "root-composition" },
+  { interface: "Scheduler", implementation: "hatchet-scheduler", execution: "direct-provider" },
+  { interface: "Scheduler", implementation: "eventbridge-scheduler", execution: "external-controller" },
+  { interface: "ActorRuntime", implementation: "target-selected", execution: "runtime-only" },
+  { interface: "ActorRuntime", implementation: "deterministic-local-actors", execution: "runtime-only" },
+  { interface: "ActorRuntime", implementation: "celld-actors", execution: "direct-provider" },
+  { interface: "ActorRuntime", implementation: "rivet-actors", execution: "external-controller" },
+  { interface: "Observability", implementation: "local-otel", execution: "direct-provider" },
+  { interface: "Observability", implementation: "clickstack", execution: "direct-provider" },
+  { interface: "Observability", implementation: "cloudwatch", execution: "external-controller" },
+  { interface: "Observability", implementation: "otlp", execution: "runtime-only" },
+  { interface: "LakehouseDataset", implementation: "duckdb-dataset", execution: "runtime-only" },
+  { interface: "LakehouseDataset", implementation: "s3-dataset", execution: "external-controller" },
+  { interface: "LakehouseQuery", implementation: "duckdb-queries", execution: "runtime-only" },
+  { interface: "LakehouseQuery", implementation: "athena-queries", execution: "external-controller" },
 ];
 
 /**
@@ -79,10 +100,13 @@ export function builtinApplicationDeploymentContributors(): readonly Application
       provider: ApplicationProviderNode,
       context: ApplicationDeploymentPlanningContext,
     ): ApplicationDeploymentContribution {
-      const providerDirect = providerDirectContribution(provider, context);
+      const concreteProvider = targetSelectedProvider(provider, context);
+      const providerDirect = context.target === "kubernetes"
+        ? providerDirectContribution(concreteProvider, context)
+        : { nodes: [], edges: [] };
       const nodes = [
         ...(registration.interface === "ContainerRegistry"
-          ? managedHarborNodes(provider, context)
+          ? managedHarborNodes(concreteProvider, context)
           : []),
         ...providerDirect.nodes,
       ];
@@ -90,11 +114,124 @@ export function builtinApplicationDeploymentContributors(): readonly Application
         nodes,
         edges: providerDirect.edges,
         compositionFragments: [
-          providerFragment(provider, context, registration.execution),
+          providerFragment(
+            concreteProvider,
+            context,
+            providerExecution(concreteProvider.interface, concreteProvider.implementation),
+          ),
         ],
       };
     },
   }));
+}
+
+function targetSelectedProvider(
+  provider: ApplicationProviderNode,
+  context: ApplicationDeploymentPlanningContext,
+): ApplicationProviderNode {
+  if (provider.implementation !== "target-selected") return provider;
+  if (provider.interface === "Scheduler") {
+    return {
+      ...provider,
+      implementation:
+        context.target === "local"
+          ? "local-scheduler"
+          : context.target === "aws" || context.target === "aws-local"
+            ? "eventbridge-scheduler"
+            : "kubernetes-cronjob-scheduler",
+    };
+  }
+  if (provider.interface === "ActorRuntime") {
+    const implementation =
+      context.target === "local" || context.target === "aws-local"
+        ? "deterministic-local-actors"
+        : "celld-actors";
+    const actorRuntime = context.target === "kubernetes"
+      ? inferredKubernetesCelldConfiguration(context)
+      : { kind: implementation };
+    return {
+      ...provider,
+      implementation,
+      config: {
+        ...(provider.config ?? {}),
+        actorRuntime,
+      },
+    };
+  }
+  if (provider.interface === "EventLog") {
+    const implementation = context.target === "aws" || context.target === "aws-local"
+      ? "kinesis"
+      : "nats-jetstream";
+    return {
+      ...provider,
+      implementation,
+      config: {
+        ...(provider.config ?? {}),
+        ...(implementation === "nats-jetstream"
+          ? {
+              kind: implementation,
+              name: `${safeProviderNodeId(context.graph.metadata.name)}-events`,
+              namespace: applicationNamespace(context),
+              provision: true,
+              stream: "APPLIK8S_EVENTS",
+              subjectPrefix: "applik8s",
+              replicas: 1,
+              storageSize: "8Gi",
+            }
+          : { kind: implementation }),
+      },
+    };
+  }
+  throw new Error(
+    `Application provider ${provider.id} uses target-selected without a maintained ${context.target} mapping.`,
+  );
+}
+
+/**
+ * The default actor runtime is a semantic choice, not an instruction for an
+ * application author to wire Celld's implementation details. On Kubernetes,
+ * reuse the application's selected S3-compatible ObjectStorage authority as
+ * the actor state store. This keeps one lifecycle owner and preserves the
+ * provider-neutral `application.actor(...)` source surface.
+ */
+function inferredKubernetesCelldConfiguration(
+  context: ApplicationDeploymentPlanningContext,
+): DeploymentJsonObject {
+  const candidates = context.graph.nodes.filter(
+    (candidate): candidate is ApplicationProviderNode =>
+      candidate.kind === "provider"
+      && candidate.interface === "ObjectStorage"
+      && !optionalObject(candidate.config?.qualification),
+  );
+  if (candidates.length !== 1) {
+    throw new Error(
+      `Target-selected ActorRuntime on Kubernetes requires exactly one unqualified ObjectStorage provider; found ${candidates.length}. `
+      + "Bind one S3-compatible application ObjectStorage capability or select ActorRuntime.celld(...) explicitly.",
+    );
+  }
+  const storageProvider = resolveApplicationProviderForTarget(
+    candidates[0]!,
+    context,
+  );
+  const storage = nestedObject(storageProvider.config, "objectStorage")
+    ?? storageProvider.config
+    ?? {};
+  if (storageProvider.implementation !== "s3" || storage.kind !== "s3") {
+    throw new Error(
+      `Target-selected ActorRuntime on Kubernetes requires S3-compatible ObjectStorage, but ${candidates[0]!.id} selected ${storageProvider.implementation}. `
+      + "Select an S3 provider or bind ActorRuntime explicitly.",
+    );
+  }
+  const credentials = optionalObject(storage.credentialsSecret);
+  if (!credentials || !optionalString(credentials.name)) {
+    throw new Error(
+      `Target-selected ActorRuntime cannot derive reference-only credentials from ${candidates[0]!.id}; the selected S3 provider must expose credentialsSecret.`,
+    );
+  }
+  return compactJson({
+    kind: "celld-actors",
+    stateStore: storage,
+  });
 }
 
 /**
@@ -115,8 +252,10 @@ export function applicationProviderSelectionDeploymentContributor(
       provider: ApplicationProviderNode,
       context: ApplicationDeploymentPlanningContext,
     ): ApplicationDeploymentContribution {
-      const selected = selectedProfileProvider(provider, context);
-      const providerDirect = providerDirectContribution(selected, context);
+      const selected = resolveApplicationProviderForTarget(provider, context);
+      const providerDirect = context.target === "kubernetes"
+        ? providerDirectContribution(selected, context)
+        : { nodes: [], edges: [] };
       return {
         nodes: [
           ...(selected.interface === "ContainerRegistry"
@@ -208,6 +347,70 @@ function selectedProfileProvider(
   };
 }
 
+/** Resolves framework-owned target/profile indirections before a target adapter lowers a provider. */
+export function resolveApplicationProviderForTarget(
+  provider: ApplicationProviderNode,
+  context: ApplicationDeploymentPlanningContext,
+): ApplicationProviderNode {
+  const profiled = provider.implementation === 'application-provider-selection'
+    || providerHasProfileBranches(provider)
+    ? selectedProfileProvider(provider, context)
+    : provider;
+  const targeted = profiled.implementation === 'application-target-provider-selection'
+    ? selectedTargetProvider(profiled, context)
+    : profiled;
+  return targetSelectedProvider(targeted, context);
+}
+
+function providerHasProfileBranches(provider: ApplicationProviderNode): boolean {
+  const profile = optionalObject(provider.config?.profile);
+  return Array.isArray(profile?.branches) && profile.branches.length > 0;
+}
+
+function selectedTargetProvider(
+  provider: ApplicationProviderNode,
+  context: ApplicationDeploymentPlanningContext,
+): ApplicationProviderNode {
+  const configurationKey = providerGraphConfigurationKey(provider.interface);
+  const nestedConfiguration = configurationKey
+    ? optionalObject(provider.config?.[configurationKey])
+    : undefined;
+  const nestedTargetSelection = nestedConfiguration?.kind === 'application-target-provider-selection'
+    ? nestedConfiguration
+    : undefined;
+  const targetSelection = optionalObject(provider.config?.targetSelection)
+    ?? nestedTargetSelection;
+  const targets = optionalObject(targetSelection?.targets);
+  const selected = optionalObject(
+    targets?.[context.target]
+      ?? (context.target === 'aws-local' ? targets?.aws : undefined),
+  );
+  if (!selected) {
+    throw new Error(
+      `Application provider ${provider.id} has no deployment implementation for target ${context.target}. Add .${context.target === 'aws-local' ? 'awsLocal(...) or .aws(...)' : `${context.target}(...)`}.`,
+    );
+  }
+  const implementation = requiredString(
+    selected.implementation ?? selected.kind,
+    `Application provider ${provider.id} target ${context.target} implementation`,
+  );
+  const configuration = optionalObject(selected.configuration) ?? selected;
+  const key = providerGraphConfigurationKey(provider.interface);
+  const { targetSelection: _targetSelection, ...baseConfig } = provider.config ?? {};
+  const normalizedBaseConfig = nestedTargetSelection && configurationKey
+    ? Object.fromEntries(Object.entries(baseConfig).filter(([candidate]) => candidate !== configurationKey))
+    : baseConfig;
+  return {
+    ...provider,
+    implementation,
+    config: {
+      ...normalizedBaseConfig,
+      provider: implementation,
+      ...(key ? { [key]: configuration } : configuration),
+    },
+  };
+}
+
 function mergeProviderBranchConfiguration(
   base: DeploymentJsonObject,
   branch: DeploymentJsonObject,
@@ -268,6 +471,16 @@ function providerGraphConfigurationKey(
       return "indexStore";
     case "ObjectStorage":
       return "objectStorage";
+    case "Scheduler":
+      return "scheduler";
+    case "ActorRuntime":
+      return "actorRuntime";
+    case "Observability":
+      return "observability";
+    case "LakehouseDataset":
+      return "lakehouseDataset";
+    case "LakehouseQuery":
+      return "lakehouseQuery";
     case "Search":
       return "search";
     case "TransactionalDatabase":
@@ -490,7 +703,324 @@ function providerDirectContribution(
   ) {
     return envoyAIGatewayDirectContribution(provider, context);
   }
+  if (
+    provider.interface === "Observability"
+    && provider.implementation === "clickstack"
+  ) {
+    return clickStackDirectContribution(provider, context);
+  }
+  if (
+    provider.interface === "ActorRuntime"
+    && provider.implementation === "celld-actors"
+  ) {
+    return celldActorRuntimeDirectContribution(provider, context);
+  }
   return { nodes: [], edges: [] };
+}
+
+function clickStackDirectContribution(
+  provider: ApplicationProviderNode,
+  context: ApplicationDeploymentPlanningContext,
+): ProviderDirectContribution {
+  const config = nestedObject(provider.config, "observability") ?? {};
+  const namespace = optionalString(config.namespace) ?? applicationNamespace(context);
+  const name = `${safeProviderNodeId(context.graph.metadata.name)}-observability`;
+  const operatorNodeId = `direct.${provider.id}.clickhouse-operator`;
+  const clusterNodeId = `direct.${provider.id}.clickhouse`;
+  const stackNodeId = `direct.${provider.id}.clickstack`;
+  const storageSize = optionalString(config.storageSize) ?? "10Gi";
+  const storageClassName = optionalString(config.storageClassName);
+  const operator = directNode({
+    id: operatorNodeId,
+    provider,
+    context,
+    compositionId: "clickhouse-operator-bootstrap",
+    reason: "Install the cluster-scoped Altinity ClickHouse operator as retained shared infrastructure before the observability data plane.",
+    namespace: "clickhouse-system",
+    configuration: { name: "clickhouse-operator", namespace: "clickhouse-system", shared: true },
+    ownership: "shared",
+    deletion: "retain",
+  });
+  const clusterBase = directNode({
+    id: clusterNodeId,
+    provider,
+    context,
+    compositionId: "applik8s-clickstack-clickhouse",
+    reason: "Own the single-node ClickHouse authority used exclusively by the maintained ClickStack observability provider.",
+    namespace,
+    configuration: compactJson({
+      name: `${name}-clickhouse`,
+      namespace,
+      version: "25.7.6",
+      storage: { size: storageSize, ...(storageClassName ? { storageClassName } : {}) },
+    }),
+    ownership: "application",
+    deletion: "delete",
+  });
+  const cluster: ApplicationKubernetesDirectDeploymentNode = {
+    ...clusterBase,
+    outputs: [
+      ...clusterBase.outputs,
+      { name: "host", type: "string", sensitivity: "public", persistence: "state" },
+    ],
+  };
+  const stackBase = directNode({
+    id: stackNodeId,
+    provider,
+    context,
+    compositionId: "applik8s-clickstack",
+    reason: "Install ClickStack/HyperDX and its OTLP gateway through TypeKro against the provider-owned ClickHouse authority.",
+    namespace,
+    configuration: compactJson({
+      build: {
+        mongo: {
+          mode: "internal",
+          storage: { size: optionalString(config.metadataStorageSize) ?? "5Gi", ...(storageClassName ? { storageClassName } : {}) },
+        },
+      },
+      instance: {
+        name,
+        namespace,
+        clickhouse: {
+          host: applicationDeploymentOutputReference(clusterNodeId, "host"),
+          nativePort: 9000,
+          httpPort: 8123,
+          database: "default",
+        },
+      },
+    }),
+    ownership: "application",
+    deletion: "delete",
+  });
+  const stack: ApplicationKubernetesDirectDeploymentNode = {
+    ...stackBase,
+    outputs: [
+      ...stackBase.outputs,
+      { name: "otlpHttpEndpoint", type: "string", sensitivity: "public", persistence: "state" },
+      { name: "uiUrl", type: "string", sensitivity: "public", persistence: "state" },
+    ],
+  };
+  return {
+    nodes: [operator, cluster, stack],
+    edges: [
+      { from: operatorNodeId, to: clusterNodeId, relationship: "requiresReady" },
+      { from: clusterNodeId, to: stackNodeId, relationship: "requiresOutput", output: "host" },
+      { from: stackNodeId, to: "kubernetes.application", relationship: "requiresOutput", output: "otlpHttpEndpoint" },
+    ],
+  };
+}
+
+function celldActorRuntimeDirectContribution(
+  provider: ApplicationProviderNode,
+  context: ApplicationDeploymentPlanningContext,
+): ProviderDirectContribution {
+  const config = nestedObject(provider.config, "actorRuntime") ?? {};
+  const namespace = optionalString(config.namespace) ?? applicationNamespace(context);
+  const stateStoreBinding = optionalObject(config.stateStore);
+  const stateStore = optionalObject(stateStoreBinding?.implementation) ?? stateStoreBinding;
+  if (!stateStore || stateStore.kind !== "s3") {
+    throw new Error("ActorRuntime.celld(...) on Kubernetes requires an S3-compatible stateStore provider.");
+  }
+  const credentials = optionalObject(stateStore.credentialsSecret);
+  if (!credentials || !optionalString(credentials.name)) {
+    throw new Error("ActorRuntime.celld(...) on Kubernetes requires stateStore.credentialsSecret so the fleet never receives inline credentials.");
+  }
+  const name = `${safeProviderNodeId(context.graph.metadata.name)}-actors`;
+  const publicRealtime = context.graph.nodes.some((node) =>
+    node.kind === "actor"
+    && node.publication?.boundary === "entrypoint-export"
+    && node.definition.requirements.realtimeConnections
+  );
+  const exposureProvider = context.graph.nodes.find((node): node is ApplicationProviderNode =>
+    node.kind === "provider" && node.interface === "HttpExposure"
+  );
+  const ingressControllerNamespace = optionalString(
+    nestedObject(exposureProvider?.config, "httpExposure")?.controllerNamespace,
+  );
+  if (publicRealtime && !ingressControllerNamespace) {
+    throw new Error(
+      "Published realtime actors on Kubernetes require HttpExposure.ingress({ controllerNamespace }) so the actor NetworkPolicy can admit only the selected ingress controller.",
+    );
+  }
+  if (publicRealtime && namespace !== applicationNamespace(context)) {
+    throw new Error(
+      "Published realtime actors must share the application namespace so the application Ingress can route to the Celld Service without a cross-namespace backend.",
+    );
+  }
+  const nodeId = `direct.${provider.id}.celld`;
+  const authorizationId = `external.${provider.id}.celld-authorization`;
+  const authorizationName = `${name}-authorization`;
+  const authorization = generatedSecretProviderNode({
+    id: authorizationId,
+    provider,
+    context,
+    namespace,
+    name: authorizationName,
+    values: {
+      authorization: { kind: "random", bytes: 48, encoding: "base64url" },
+      connectionSigningKey: { kind: "random", bytes: 48, encoding: "base64url" },
+    },
+    consumers: [nodeId, "kubernetes.application"],
+    deletion: "delete",
+  });
+  const base = directNode({
+    id: nodeId,
+    provider,
+    context,
+    compositionId: "applik8s-celld-actors",
+    reason: "Deploy the compiler-generated Celld Worker, private fleet, conditional-write object-store authority, and ingress as one TypeKro lifecycle boundary.",
+    namespace,
+    configuration: compactJson({
+      name,
+      namespace,
+      image: applicationDeploymentOutputReference("artifact.celld-runtime", "immutableReference"),
+      replicas: optionalInteger(config.replicas) ?? 1,
+      bucket: requiredString(stateStore.bucket, "Celld state-store bucket"),
+      region: requiredString(stateStore.region, "Celld state-store region"),
+      ...(optionalString(stateStore.endpoint) ? { endpoint: optionalString(stateStore.endpoint) } : {}),
+      credentialsSecretName: requiredString(credentials.name, "Celld state-store credentials Secret name"),
+      accessKeyIdKey: optionalString(stateStore.accessKeyIdKey) ?? "AWS_ACCESS_KEY_ID",
+      secretAccessKeyKey: optionalString(stateStore.secretAccessKeyKey) ?? "AWS_SECRET_ACCESS_KEY",
+      authorizationSecretName: authorizationName,
+      authorizationSecretKey: "authorization",
+      connectionSigningSecretKey: "connectionSigningKey",
+      ingressControllerNamespace: ingressControllerNamespace ?? namespace,
+      applicationEndpoint: kubernetesApplicationEndpoint(context),
+    }),
+    ownership: "application",
+    deletion: "delete",
+  });
+  const fleet: ApplicationKubernetesDirectDeploymentNode = {
+    ...base,
+    outputs: [...base.outputs, { name: "endpoint", type: "string", sensitivity: "public", persistence: "state" }],
+  };
+  const stateStoreDependency = celldStateStoreDeploymentDependency(
+    stateStore,
+    context,
+  );
+  const endpointReference = applicationDeploymentOutputReference(
+    nodeId,
+    "endpoint",
+  );
+  const rootConsumesEndpoint = JSON.stringify(
+    context.materializedComposition?.resources ?? [],
+  ).includes(endpointReference);
+  return {
+    nodes: [authorization, fleet],
+    edges: [
+      ...(stateStoreDependency
+        ? [{
+            from: stateStoreDependency,
+            to: nodeId,
+            relationship: "requiresReady" as const,
+          }]
+        : []),
+      { from: "artifact.celld-runtime", to: nodeId, relationship: "requiresOutput", output: "immutableReference" },
+      { from: authorizationId, to: nodeId, relationship: "requiresReady" },
+      rootConsumesEndpoint
+        ? { from: nodeId, to: "kubernetes.application", relationship: "requiresOutput", output: "endpoint" }
+        : { from: nodeId, to: "kubernetes.application", relationship: "requiresReady" },
+    ],
+  };
+}
+
+/**
+ * Recover the lifecycle owner behind ActorRuntime.celld({ stateStore }).
+ *
+ * Application source may pass either a provider binding or its selected S3
+ * implementation. Both intentionally serialize as provider-neutral data in
+ * ApplicationGraph, so deployment lowering joins them by the exact storage
+ * authority rather than exposing a TypeKro-specific dependency token to user
+ * code. Externally owned S3 has no deployment node and therefore needs no
+ * ordering edge.
+ */
+function celldStateStoreDeploymentDependency(
+  stateStore: Readonly<Record<string, unknown>>,
+  context: ApplicationDeploymentPlanningContext,
+): string | undefined {
+  const matches = context.graph.nodes.flatMap((candidate) => {
+    if (candidate.kind !== "provider" || candidate.interface !== "ObjectStorage") {
+      return [];
+    }
+    const resolved = resolveApplicationProviderForTarget(candidate, context);
+    const storage = nestedObject(resolved.config, "objectStorage")
+      ?? resolved.config
+      ?? {};
+    if (!sameCelldStateStore(storage, stateStore)) return [];
+    const provisioning = optionalObject(storage.provisioning);
+    if (
+      storage.kind !== "s3"
+      || storage.ownership !== "direct-provisioned"
+      || provisioning?.enabled === false
+    ) {
+      return [];
+    }
+    if (provisioning?.kind === "local-s3") {
+      return [`direct.${candidate.id}.local-s3`];
+    }
+    return [`direct.${candidate.id}.claim`];
+  });
+  const unique = [...new Set(matches)];
+  if (unique.length > 1) {
+    throw new Error(
+      `ActorRuntime.celld(...) stateStore matches more than one application-owned ObjectStorage deployment: ${unique.join(", ")}. Bind one exact storage authority.`,
+    );
+  }
+  return unique[0];
+}
+
+function sameCelldStateStore(
+  candidate: Readonly<Record<string, unknown>>,
+  required: Readonly<Record<string, unknown>>,
+): boolean {
+  if (candidate.kind !== "s3" || required.kind !== "s3") return false;
+  const candidateCredentials = optionalObject(candidate.credentialsSecret);
+  const requiredCredentials = optionalObject(required.credentialsSecret);
+  return optionalString(candidate.bucket) === optionalString(required.bucket)
+    && optionalString(candidate.region) === optionalString(required.region)
+    && optionalString(candidate.endpoint) === optionalString(required.endpoint)
+    && optionalString(candidateCredentials?.name)
+      === optionalString(requiredCredentials?.name)
+    && optionalString(candidateCredentials?.namespace)
+      === optionalString(requiredCredentials?.namespace);
+}
+
+function kubernetesApplicationEndpoint(
+  context: ApplicationDeploymentPlanningContext,
+): string {
+  const candidates = (context.materializedComposition?.resources ?? [])
+    .map((resource) => optionalObject(resource.template) ?? optionalObject(resource.externalRef))
+    .filter((resource): resource is DeploymentJsonObject => resource !== undefined)
+    .filter((resource) => {
+      if (resource.apiVersion !== "v1" || resource.kind !== "Service") return false;
+      const labels = optionalObject(optionalObject(resource.metadata)?.labels);
+      return labels?.["app.kubernetes.io/component"] === "typed-http";
+    });
+  if (candidates.length !== 1) {
+    throw new Error(
+      `ActorRuntime.celld(...) requires exactly one compiler-generated typed HTTP Service; found ${candidates.length}. `
+      + "Expose one application HTTP server before selecting the Kubernetes Celld runtime.",
+    );
+  }
+  const service = candidates[0]!;
+  const metadata = optionalObject(service.metadata);
+  const serviceName = requiredString(metadata?.name, "Celld application Service name");
+  const serviceNamespace = requiredString(
+    metadata?.namespace ?? context.graph.metadata.namespace,
+    "Celld application Service namespace",
+  );
+  const serviceSpec = optionalObject(service.spec);
+  const ports = Array.isArray(serviceSpec?.ports) ? serviceSpec.ports : [];
+  const httpPort = ports
+    .map((port) => optionalObject(port))
+    .find((port) => port?.name === "http") ?? optionalObject(ports[0]);
+  const port = optionalInteger(httpPort?.port);
+  if (!port) {
+    throw new Error(
+      `ActorRuntime.celld(...) could not derive an HTTP port from Service ${serviceNamespace}/${serviceName}.`,
+    );
+  }
+  return `http://${serviceName}.${serviceNamespace}.svc.cluster.local:${port}`;
 }
 
 function eventLogDirectContribution(

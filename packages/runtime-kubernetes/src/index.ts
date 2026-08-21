@@ -3,6 +3,8 @@ import type { ResourceObject, ResourceReadList, WatchEvent } from '@applik8s/cor
 import type { KubeConfig } from '@kubernetes/client-node';
 import type { ApplicationInstallationReference, ApplicationInstallationTransport, ApplicationInstallationWatchOptions } from '@applik8s/applik8s';
 
+export * from './schedule.js';
+
 export interface KubernetesApplicationInstallationTransportOptions {
   readonly apiVersion: string;
   readonly kind: string;

@@ -37,6 +37,11 @@ const compileRequest = {
   ...(options.operatorName ? { operatorName: options.operatorName } : {}),
   ...(options.compositionName ? { compositionName: options.compositionName } : {}),
   ...(typeKro ? { operationCatalogPolicy: options.production ? 'production' : 'development' } : {}),
+  ...(options.executionTarget
+    ? { executionTarget: options.executionTarget }
+    : options.localDevelopment
+      ? { executionTarget: 'local' }
+      : {}),
   runtimeVersionRange: '^0.1.0',
   handlerAbiVersion: 'applik8s.handler/v1alpha1',
   adapter: 'wasmComponent',

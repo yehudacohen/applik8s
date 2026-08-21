@@ -4,6 +4,7 @@ import {
   applicationCanonicalIdentity,
   applicationProviderIdentity,
   diffApplicationPlans,
+  renderApplicationPlanGraph,
   renderApplicationPlanText,
   serializeApplicationPlan,
   serializeApplicationPlanContent,
@@ -2341,6 +2342,14 @@ describe("Application deployment compiler", () => {
     const second = compile("2026-08-19T12:05:00.000Z");
 
     expect(first.semantic.nodes).toHaveLength(graph.nodes.length);
+    expect(first.semantic).toMatchObject({
+      executions: [],
+      authority: [],
+      dataFlows: [],
+      state: [],
+      exposures: [],
+      observability: [],
+    });
     expect(first.resolution.capabilities).toEqual([
       expect.objectContaining({ disposition: "supported", maturity: "stable", guarantees: ["transaction-boundary"] }),
     ]);
@@ -2349,6 +2358,8 @@ describe("Application deployment compiler", () => {
     expect(serializeApplicationPlan(first)).not.toBe(serializeApplicationPlan(second));
     expect(serializeApplicationPlanContent(first)).toBe(serializeApplicationPlanContent(second));
     expect(renderApplicationPlanText(first)).toContain("Providers: 1 resolved, 0 unresolved/incompatible");
+    expect(renderApplicationPlanGraph(first)).toContain('flowchart LR');
+    expect(renderApplicationPlanGraph(first)).toContain('provider: postgres');
     expect(diffApplicationPlans(first, {
       ...first,
       resolution: {
@@ -2356,6 +2367,37 @@ describe("Application deployment compiler", () => {
       },
     }).entries).toEqual([
       expect.objectContaining({ category: "maturity", change: "changed" }),
+    ]);
+    const [firstSemanticNode] = first.semantic.nodes;
+    if (!firstSemanticNode) throw new Error("ApplicationPlan fixture has no semantic node.");
+    expect(diffApplicationPlans(first, {
+      ...first,
+      semantic: {
+        ...first.semantic,
+        nodes: first.semantic.nodes.map((node) => node.id === firstSemanticNode.id
+          ? { ...node, provenance: [{ ...node.provenance[0]!, module: "src/moved.ts" }] }
+          : node),
+      },
+    }).entries).toEqual([
+      expect.objectContaining({ category: "provenance", change: "changed", severity: "info" }),
+    ]);
+    expect(diffApplicationPlans(first, {
+      ...first,
+      semantic: {
+        ...first.semantic,
+        runtimeAccess: [{
+          apiVersion: "applik8s.runtimeAccess/v1alpha1",
+          id: "runtime-access:new",
+          consumer: { nodeId: firstSemanticNode.graphNodeId, executionIdentity: firstSemanticNode.id },
+          target: { capabilityId: "ObjectStorage:exports", operation: "object.write", scope: { kind: "prefix", resourceId: "exports", prefix: "reports/" } },
+          origin: "inferred",
+          provenance: firstSemanticNode.provenance,
+          sensitivity: "internal",
+          enforcement: "required",
+        }],
+      },
+    }).entries).toEqual([
+      expect.objectContaining({ category: "runtime-access", change: "added", severity: "warning" }),
     ]);
     const unresolved = compileApplicationPlan({
       graph,
@@ -2381,6 +2423,8 @@ describe("Application deployment compiler", () => {
     expect(validateApplicationPlan(leaked).diagnostics).toEqual([
       expect.objectContaining({ code: "PLAN_SENSITIVE_DATA" }),
     ]);
+    expect(() => serializeApplicationPlan(leaked)).toThrow(/PLAN_SENSITIVE_DATA/u);
+    expect(() => serializeApplicationPlanContent(leaked)).toThrow(/PLAN_SENSITIVE_DATA/u);
   });
 });
 

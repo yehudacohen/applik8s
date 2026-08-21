@@ -1,31 +1,13 @@
 import { connect, type ConsumerMessages, type JsMsg, type NatsConnection, type JetStreamClient, StringCodec } from 'nats';
 import type { ApplicationMessageEnvelope } from '@applik8s/applik8s/dsl';
 import type { ApplicationModelCommandDeliveryOptions } from '@applik8s/applik8s';
+import type { ApplicationCommandProcessorBinding, RunningApplicationCommandProcessor } from '@applik8s/applik8s/processor-runtime';
 import type { ApplicationAuthorizationReceipt } from '@applik8s/core';
 import { validateApplicationAuthorizationReceipt } from '@applik8s/core';
 import { isDurableCommandRejectedError } from '@applik8s/applik8s/processor-runtime';
 import { consumeWithBoundedConcurrency } from './bounded-concurrency.js';
 
-export interface ApplicationCommandProcessorBinding {
-  readonly bindingId: string;
-  readonly contract: { readonly name: string; readonly version: string };
-  execute(input: object, delivery: ApplicationModelCommandDeliveryOptions): Promise<unknown>;
-  revalidateAuthorization?(
-    receipt: ApplicationAuthorizationReceipt,
-    boundary: 'execution',
-    delivery: ApplicationModelCommandDeliveryOptions,
-  ): Promise<{ readonly allowed: true } | { readonly allowed: false; readonly code: string; readonly message: string }>;
-  /**
-   * Releases the catalog pin only after a protected command reaches a durable
-   * terminal result. Failure is retryable and therefore happens before ack.
-   */
-  releaseAuthorization?(
-    receipt: ApplicationAuthorizationReceipt,
-    envelopeId: string,
-  ): Promise<void>;
-  /** Compiler-generated durable terminal-result recorder. */
-  recordTerminalFailure?(input: object, delivery: ApplicationModelCommandDeliveryOptions, failure: { readonly code: 'processing_failed' | 'authorization_denied'; readonly attempts: number }): Promise<void>;
-}
+export type { ApplicationCommandProcessorBinding } from '@applik8s/applik8s/processor-runtime';
 
 export interface JetStreamCommandProcessorOptions {
   readonly servers: readonly string[];
@@ -45,10 +27,7 @@ export interface JetStreamCommandProcessorOptions {
   readonly logger?: (record: Readonly<Record<string, unknown>>) => void;
 }
 
-export interface RunningJetStreamCommandProcessor {
-  readonly closed: Promise<void>;
-  drain(): Promise<void>;
-}
+export type RunningJetStreamCommandProcessor = RunningApplicationCommandProcessor;
 
 const codec = StringCodec();
 const bindingIndexes = new WeakMap<readonly ApplicationCommandProcessorBinding[], ReadonlyMap<string, ApplicationCommandProcessorBinding>>();

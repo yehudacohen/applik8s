@@ -14,6 +14,10 @@ export interface ApplicationDeployCommandOptions {
   readonly skipAppBuild?: boolean;
   readonly skipImageBuild?: boolean;
   readonly planOnly?: boolean;
+  /** Canonical ApplicationPlan rendering selected by `applik8s plan`. */
+  readonly planFormat?: 'text' | 'json' | 'graph';
+  /** Previous canonical ApplicationPlan used for a categorized plan diff. */
+  readonly planDiff?: string;
   /** Replace the generated ApplicationHost through a TypeKro dev aspect. */
   readonly development?: boolean;
   /**
@@ -54,6 +58,7 @@ export interface ApplicationDeploymentCommandRuntime {
       readonly compositionName?: string;
       readonly connectionBindings?: string;
       readonly production?: boolean;
+      readonly executionTarget?: 'kubernetes' | 'local' | 'aws-local' | 'aws';
     },
     io: ApplicationDeploymentCommandIo,
   ): Promise<number>;

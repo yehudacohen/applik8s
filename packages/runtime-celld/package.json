@@ -1,0 +1,32 @@
+{
+  "name": "@applik8s/runtime-celld",
+  "version": "0.8.0",
+  "description": "celld-backed distributed durable actor runtime for Applik8s.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "files": ["dist"],
+  "publishConfig": { "access": "public" },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yehudacohen/applik8s.git",
+    "directory": "packages/runtime-celld"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./worker": {
+      "types": "./dist/worker.d.ts",
+      "import": "./dist/worker.js",
+      "default": "./dist/worker.js"
+    }
+  },
+  "dependencies": {
+    "@applik8s/applik8s": "0.8.0",
+    "@applik8s/core": "0.8.0",
+    "@applik8s/deployment-contract": "0.8.0",
+    "@applik8s/sdk": "0.8.0"
+  }
+}

@@ -27,17 +27,22 @@ import type {
   CompileApplicationDeploymentGraphRequest,
   CompileApplicationDeploymentGraphResult,
 } from "./types.js";
+import { compileApplicationRuntimeAccessPlan } from './runtime-access-plan.js';
 
 export function compileApplicationDeploymentGraph(
   request: CompileApplicationDeploymentGraphRequest,
 ): CompileApplicationDeploymentGraphResult {
   const context: ApplicationDeploymentPlanningContext = {
     graph: request.graph,
+    target: request.target ?? deploymentTargetFromConnection(request.identity.connection.provider),
     connection: request.identity.connection,
     instance: request.identity.instance,
     profile: request.identity.profile,
     strategy: request.strategy,
     installationSpec: request.installationSpec,
+    ...(request.materializedComposition
+      ? { materializedComposition: request.materializedComposition }
+      : {}),
   };
   const contributors = contributorRegistryWithBuiltins(request.contributors ?? []);
   const contributions: ApplicationDeploymentContribution[] = [];
@@ -48,7 +53,7 @@ export function compileApplicationDeploymentGraph(
     const contributor = hasProfileProviderBranches(provider)
       ? applicationProviderSelectionDeploymentContributor(provider.interface)
       : contributors.get(key)
-        ?? (provider.implementation === "application-provider-selection"
+        ?? (provider.implementation === "application-provider-selection" || provider.implementation === "application-target-provider-selection"
           ? applicationProviderSelectionDeploymentContributor(provider.interface)
           : undefined);
     if (!contributor) {
@@ -69,6 +74,9 @@ export function compileApplicationDeploymentGraph(
   const contributionNodes = contributions.flatMap(
     (contribution) => contribution.nodes,
   );
+  const contributionEdges = contributions.flatMap(
+    (contribution) => contribution.edges,
+  );
   const infrastructureNodes = applicationInfrastructureNodes(
     request,
     contributionNodes,
@@ -78,13 +86,21 @@ export function compileApplicationDeploymentGraph(
       .map((artifact) => artifact.spec.sourceDescriptor.baseArtifactId)
       .filter((id): id is string => typeof id === "string" && id.length > 0),
   );
+  const directlyConsumedArtifactIds = new Set(
+    contributionEdges.flatMap((edge) =>
+      edge.relationship === "requiresOutput"
+      && edge.to !== "kubernetes.application"
+      && artifactNodes.some((artifact) => artifact.id === edge.from)
+        ? [edge.from]
+        : []
+    ),
+  );
   const rootArtifacts = artifactNodes.filter(
-    (artifact) => !baseArtifactIds.has(artifact.id),
+    (artifact) =>
+      !baseArtifactIds.has(artifact.id)
+      && !directlyConsumedArtifactIds.has(artifact.id),
   );
   const root = rootCompositionNode(request, rootArtifacts, fragments);
-  const contributionEdges = contributions.flatMap(
-    (contribution) => contribution.edges,
-  );
   const deploymentNodes = [
     ...artifactNodes,
     ...contributionNodes,
@@ -112,6 +128,16 @@ export function compileApplicationDeploymentGraph(
       ...contributionEdges,
       ...[...contributionNodes, ...infrastructureNodes]
         .filter((node) => node.id !== root.id)
+        // A contributor-authored root edge is the semantic authority for both
+        // ordering and output consumption. Adding a generic requiresReady
+        // edge beside it is redundant, and becomes an invalid duplicate when
+        // the contributor deliberately selects requiresReady.
+        .filter(
+          (node) =>
+            !contributionEdges.some(
+              (edge) => edge.from === node.id && edge.to === root.id,
+            ),
+        )
         // A generated Secret consumed by another deployment node reaches the
         // root transitively through that consumer. Adding a second, synthetic
         // output edge to the root invents an artifact requirement that the
@@ -164,7 +190,20 @@ export function compileApplicationDeploymentGraph(
   return {
     graph,
     contributorKeys: [...contributorKeys].sort(compareStrings),
+    runtimeAccess: compileApplicationRuntimeAccessPlan({
+      graph: request.graph,
+      target: context.target,
+      ...(request.workspaceRoot ? { workspaceRoot: request.workspaceRoot } : {}),
+      namespace: request.graph.metadata.namespace && typeof request.graph.metadata.namespace === 'string'
+        ? request.graph.metadata.namespace
+        : request.identity.instance,
+    }),
   };
+}
+
+function deploymentTargetFromConnection(provider: string): "local" | "aws-local" | "aws" | "kubernetes" {
+  if (provider === "local" || provider === "aws-local" || provider === "aws") return provider;
+  return "kubernetes";
 }
 
 /**
