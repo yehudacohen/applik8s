@@ -1,7 +1,8 @@
-import { createHmac, timingSafeEqual } from 'node:crypto';
 import type { ApplicationCommandProgress, ApplicationCommandSubmission } from '@applik8s/client';
-import { type ApplicationAuthorizationReceipt, type ApplicationOperationTransport, type ApplicationPrincipal, type ApplicationRequestAdmission, type JsonObject, type JsonValue, validateApplicationAuthorizationReceipt } from '@applik8s/core';
+import { type ApplicationAuthorizationReceipt, type ApplicationOperationTransport, type ApplicationPrincipal, type ApplicationRequestAdmission, canonicalJsonV1String, canonicalJsonV1Value, type JsonObject, type JsonValue, validateApplicationAuthorizationReceipt } from '@applik8s/core';
 import type { ApplicationInternalOperationInvocation } from '@applik8s/operations';
+import { nodeKeyedDigestBase64Url } from '@applik8s/runtime/node-integrity';
+import { createRollingSignedEnvelopeCodec, type RollingSignedEnvelopeCodec, signedEnvelopeUtf8Key, staticSignedEnvelopeKeyProvider } from '@applik8s/runtime/signed-envelope';
 import { normalizeSchema } from '@applik8s/sdk/schema-runtime';
 import { applicationOperationInputDigest } from './application-operation-runtime.js';
 import type { ApplicationQueryPrincipal } from './application-queries.js';
@@ -148,6 +149,27 @@ export function createApplicationCommandGateway<TPrincipal extends ApplicationQu
   const now = options.now ?? (() => new Date());
   const cursorTtlSeconds = options.cursorTtlSeconds ?? 15 * 60;
   const maxRequestBytes = options.maxRequestBytes ?? 1024 * 1024;
+  if (cursorTtlSeconds < 30 || cursorTtlSeconds > 24 * 60 * 60) {
+    throw new Error('Application command gateway cursor lifetime must be between 30 seconds and 24 hours.');
+  }
+  const cursorKey = signedEnvelopeUtf8Key(options.cursorSecret);
+  const cursorCodec = createRollingSignedEnvelopeCodec<ProgressCursor, ProgressCursor>({
+    purpose: 'applik8s.command-cursor/v1',
+    keys: staticSignedEnvelopeKeyProvider({
+      current: { id: 'command-cursor-current', key: cursorKey },
+    }),
+    now: () => now().getTime(),
+    maximumLifetimeMs: cursorTtlSeconds * 1_000,
+    maximumEncodedBytes: 64 * 1_024,
+    validatePayload: validateProgressCursor,
+    writer: 'legacy',
+    legacy: {
+      key: cursorKey,
+      validatePayload: validateProgressCursor,
+      toCurrent: (payload) => payload,
+      fromCurrent: (payload) => canonicalJsonV1Value(payload),
+    },
+  });
   return {
     async handle(request) {
       const route = commandRoute(request);
@@ -259,7 +281,7 @@ export function createApplicationCommandGateway<TPrincipal extends ApplicationQu
             }
             throw error;
           }
-          const cursor = encodeCursor(options.cursorSecret, {
+          const cursorPayload: ProgressCursor = {
             version: authorizationReceipt ? 3 : 2,
             command: command.id,
             commandId,
@@ -270,12 +292,13 @@ export function createApplicationCommandGateway<TPrincipal extends ApplicationQu
             contextBinding: cursorBinding(options.cursorSecret, 'context', contextDigest),
             ...(authorizationReceipt ? commandReceiptCursorFields(options.cursorSecret, authorizationReceipt) : {}),
             expiresAt: now().getTime() + cursorTtlSeconds * 1000,
-          });
+          };
+          const cursor = await encodeCursor(cursorCodec, cursorPayload);
           const submission: ApplicationCommandSubmission = { protocol: 'applik8s.command/v1alpha1', command: command.id, commandId, correlationId, transport: 'acknowledged', durableResult: 'pending', progressCursor: cursor, workflow: 'notStarted', reconciliation: 'notObserved' };
           return json(submission, 202);
         }
         const encoded = requiredString(body.value.cursor, 'cursor');
-        const cursor = decodeCursor(options.cursorSecret, encoded, now().getTime());
+        const cursor = await decodeCursor(cursorCodec, encoded, now().getTime());
         const contextDigest = applicationAdmittedContextDigest({ values: admission.trustedContext, digestSecret: contextSecret });
         const principal = await options.admitPrincipal?.({
           admission,
@@ -637,12 +660,7 @@ function sameCommandAdmissionReceipt(left: unknown, right: unknown): boolean {
 }
 
 function stableCommandAdmissionJson(value: unknown): string {
-  if (value === null || typeof value !== 'object') return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map(stableCommandAdmissionJson).join(',')}]`;
-  return `{${Object.entries(value)
-    .sort(([left], [right]) => left.localeCompare(right))
-    .map(([key, item]) => `${JSON.stringify(key)}:${stableCommandAdmissionJson(item)}`)
-    .join(',')}}`;
+  return canonicalJsonV1String(value);
 }
 
 function assertCommandAuthorizationReceipt(
@@ -739,10 +757,57 @@ function assertCommandReceiptCursor(
   }
 }
 
-function encodeCursor(secret: string, payload: ProgressCursor): string { const body = Buffer.from(JSON.stringify(payload)).toString('base64url'); return `${body}.${createHmac('sha256', secret).update(body).digest('base64url')}`; }
-function cursorBinding(secret: string, domain: 'principal' | 'authorization' | 'context' | 'receipt', value: string): string { return createHmac('sha256', secret).update(`applik8s.command-cursor.${domain}\0`).update(value).digest('base64url'); }
-// typecast: the signed cursor is decoded only after its HMAC, version, and expiry invariants are checked.
-function decodeCursor(secret: string, value: string, now: number): ProgressCursor { const [body, signature, extra] = value.split('.'); if (!body || !signature || extra) throw new Error('Application command cursor is invalid.'); const expected = createHmac('sha256', secret).update(body).digest(); const supplied = Buffer.from(signature, 'base64url'); if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) throw new Error('Application command cursor is invalid.'); const cursor = JSON.parse(Buffer.from(body, 'base64url').toString('utf8')) as ProgressCursor; if ((cursor.version !== 2 && cursor.version !== 3) || cursor.expiresAt < now || !cursor.command || !cursor.commandId || !cursor.correlationId || !/^sha256:[a-f0-9]{64}$/.test(cursor.durableScope) || !opaqueCursorField(cursor.principalBinding) || !opaqueCursorField(cursor.authorizationBinding) || !opaqueCursorField(cursor.contextBinding) || (cursor.version === 3 && (!opaqueCursorField(cursor.receiptBinding) || typeof cursor.operationId !== 'string' || typeof cursor.operationVersion !== 'string' || typeof cursor.catalogRevision !== 'string' || typeof cursor.authorityRevision !== 'string'))) throw new Error('Application command cursor is invalid or expired.'); return cursor; }
+function encodeCursor(codec: RollingSignedEnvelopeCodec<ProgressCursor>, payload: ProgressCursor): Promise<string> {
+  return codec.sign(payload, { expiresAt: payload.expiresAt });
+}
+
+function cursorBinding(secret: string, domain: 'principal' | 'authorization' | 'context' | 'receipt', value: string): string {
+  return nodeKeyedDigestBase64Url({
+    key: secret,
+    purpose: `applik8s.command-cursor.${domain}`,
+    value,
+  });
+}
+
+async function decodeCursor(codec: RollingSignedEnvelopeCodec<ProgressCursor>, value: string, now: number): Promise<ProgressCursor> {
+  let cursor: ProgressCursor;
+  try {
+    cursor = await codec.verify(value);
+  } catch {
+    throw new Error('Application command cursor is invalid.');
+  }
+  if (cursor.expiresAt < now) throw new Error('Application command cursor is invalid or expired.');
+  return cursor;
+}
+
+function validateProgressCursor(value: JsonValue): ProgressCursor {
+  if (!isJsonObject(value)
+    || (value.version !== 2 && value.version !== 3)
+    || typeof value.command !== 'string'
+    || typeof value.commandId !== 'string'
+    || typeof value.correlationId !== 'string'
+    || typeof value.durableScope !== 'string'
+    || !/^sha256:[a-f0-9]{64}$/.test(value.durableScope)
+    || !opaqueCursorField(value.principalBinding)
+    || !opaqueCursorField(value.authorizationBinding)
+    || !opaqueCursorField(value.contextBinding)
+    || !Number.isSafeInteger(value.expiresAt)
+    || Number(value.expiresAt) < 0
+    || (value.version === 3 && (
+      !opaqueCursorField(value.receiptBinding)
+      || typeof value.operationId !== 'string'
+      || typeof value.operationVersion !== 'string'
+      || typeof value.catalogRevision !== 'string'
+      || typeof value.authorityRevision !== 'string'
+    ))) {
+    throw new TypeError('Application command cursor contract is invalid.');
+  }
+  return value as unknown as ProgressCursor;
+}
+
+function isJsonObject(value: JsonValue): value is Readonly<Record<string, JsonValue>> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
 function opaqueCursorField(value: unknown): value is string { return typeof value === 'string' && /^[A-Za-z0-9_-]{43}$/.test(value); }
 
 // typecast-boundary: parsed JSON is proven to be a non-array object before the record-shaped body is returned.

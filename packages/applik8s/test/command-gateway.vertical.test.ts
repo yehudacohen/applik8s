@@ -1,5 +1,8 @@
 // typecast-file-boundary: test doubles model untyped PostgreSQL and protocol boundaries exercised by runtime validation.
+import { createHmac } from 'node:crypto';
 import { createApplicationCommandGateway } from '@applik8s/applik8s';
+import { canonicalJsonV1Value } from '@applik8s/core';
+import { createSignedEnvelopeCodec, signedEnvelopeUtf8Key, staticSignedEnvelopeKeyProvider } from '@applik8s/runtime/signed-envelope';
 import { describe, expect, it, vi } from 'vitest';
 import { applicationCommandPrincipal, applicationCommandTrustedContext } from '../src/command-principal.js';
 import { applicationCommandScope } from '../src/command-runtime-contract.js';
@@ -23,6 +26,17 @@ describe('authenticated command gateway', () => {
     const second = applicationCommandScope('binding', 'Card', 'card-1', 'once', 'b'.repeat(64));
     expect(first).not.toBe(second);
     expect(first).toMatch(/^sha256:/);
+  });
+
+  it('bounds command cursor lifetime at the framework boundary', () => {
+    expect(() => createApplicationCommandGateway({
+      commands: [],
+      authenticate: async () => testApplicationAdmission('user-1'),
+      authorize: async () => true,
+      cursorSecret: 'a-secure-test-secret-with-at-least-32-characters',
+      cursorTtlSeconds: 24 * 60 * 60 + 1,
+      eventLogPublisher: { async publish() { throw new Error('unused'); }, async drain() {} },
+    })).toThrow(/between 30 seconds and 24 hours/);
   });
 
   it('executes signed MCP placement invocations through the durable command processor', async () => {
@@ -197,6 +211,12 @@ describe('authenticated command gateway', () => {
     expect(submission.durableResult).toBe('pending');
     expect(submission.progressCursor).not.toContain('organization-1');
     const cursorBody = JSON.parse(Buffer.from(submission.progressCursor.split('.')[0] ?? '', 'base64url').toString('utf8')) as Record<string, unknown>;
+    const [encodedBody, encodedSignature] = submission.progressCursor.split('.');
+    expect(encodedSignature).toBe(
+      createHmac('sha256', 'a-secure-test-secret-with-at-least-32-characters')
+        .update(encodedBody ?? '')
+        .digest('base64url'),
+    );
     expect(cursorBody).toMatchObject({ version: 2, command: 'cards.rename.v1', durableScope: expect.stringMatching(/^sha256:/) });
     expect(cursorBody).not.toHaveProperty('principalId');
     expect(cursorBody).not.toHaveProperty('authorizationVersion');
@@ -241,6 +261,25 @@ describe('authenticated command gateway', () => {
 
     const progressResponse = await gateway.handle(new Request('https://catalog.test/commands/cards.rename.v1/progress', { method: 'POST', body: JSON.stringify({ cursor: submission.progressCursor }) }));
     await expect(progressResponse?.json()).resolves.toMatchObject({ durableResult: 'succeeded', output: { changed: true }, modelRevision: 'revision-2', reconciliation: 'ready' });
+    const issuedAt = Date.parse('2026-07-15T00:00:00.000Z');
+    const v1Codec = createSignedEnvelopeCodec({
+      purpose: 'applik8s.command-cursor/v1',
+      keys: staticSignedEnvelopeKeyProvider({
+        current: {
+          id: 'command-cursor-current',
+          key: signedEnvelopeUtf8Key('a-secure-test-secret-with-at-least-32-characters'),
+        },
+      }),
+      now: () => issuedAt,
+      maximumLifetimeMs: 15 * 60_000,
+      validatePayload(value) { return value; },
+    });
+    const v1Cursor = await v1Codec.sign(canonicalJsonV1Value(cursorBody), {
+      issuedAt,
+      expiresAt: Number(cursorBody.expiresAt),
+    });
+    const v1Progress = await gateway.handle(new Request('https://catalog.test/commands/cards.rename.v1/progress', { method: 'POST', body: JSON.stringify({ cursor: v1Cursor }) }));
+    await expect(v1Progress?.json()).resolves.toMatchObject({ durableResult: 'succeeded', output: { changed: true } });
     expect(unsafe).toHaveBeenCalledWith(expect.stringContaining('applik8s_command_results'), [expect.stringMatching(/^sha256:/)]);
     await gateway.close();
   });
