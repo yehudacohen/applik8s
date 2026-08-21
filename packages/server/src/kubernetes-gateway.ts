@@ -1,31 +1,26 @@
 // typecast-file-boundary: Kubernetes custom objects and generated JSON-schema contracts are validated at the public gateway boundary.
-import { createHash } from 'node:crypto';
-import { CustomObjectsApi, KubeConfig, VersionApi, Watch } from '@kubernetes/client-node';
-import { normalizeSchema } from '@applik8s/sdk/schema-runtime';
+import { createHash, randomUUID } from 'node:crypto';
 import type { ApplicationCommandProgress, ApplicationCommandSubmission, ApplicationQueryEvent, ApplicationQueryMultiplexFrame, ApplicationQuerySnapshot } from '@applik8s/client';
-import { canonicalJsonV1Value, type JsonObject, type JsonValue } from '@applik8s/core';
+import {
+  type ApplicationAdmissionContextV1,
+  type ApplicationRequestAdmission,
+  canonicalJsonV1Value,
+  createApplicationAdmissionContextV1,
+  type JsonObject,
+  type JsonValue,
+  withApplicationAdmissionTraceV1,
+} from '@applik8s/core';
 import { nodeLegacyHmacBase64Url } from '@applik8s/runtime/node-integrity';
 import {
   createRollingSignedEnvelopeCodec,
+  type RollingSignedEnvelopeCodec,
   signedEnvelopeUtf8Key,
   staticSignedEnvelopeKeyProvider,
-  type RollingSignedEnvelopeCodec,
 } from '@applik8s/runtime/signed-envelope';
+import { normalizeSchema } from '@applik8s/sdk/schema-runtime';
+import { CustomObjectsApi, KubeConfig, VersionApi, Watch } from '@kubernetes/client-node';
 
-export interface Applik8sGatewayAdmission {
-  readonly principal: {
-    readonly id: string;
-    /** Canonical operation-authority revision on framework-admitted principals. */
-    readonly authorityRevision?: string;
-    readonly claims?: Readonly<Record<string, unknown>>;
-  };
-  readonly trustedContext: Readonly<Record<string, unknown>>;
-  /**
-   * Compatibility shape for identity adapters that have not yet promoted the
-   * policy revision onto the canonical principal.
-   */
-  readonly authorizationVersion?: string;
-}
+export type Applik8sGatewayAdmission = ApplicationRequestAdmission;
 
 export interface Applik8sKubernetesResourceContract {
   readonly apiVersion: string;
@@ -75,7 +70,7 @@ export interface Applik8sKubernetesQueryContract {
 export interface Applik8sKubernetesGatewayOptions {
   readonly authenticate: (
     request: Request,
-    operation?: { readonly kind: 'command' | 'query'; readonly id: string; readonly input: unknown },
+    operation?: { readonly kind: 'command' | 'query'; readonly id: string; readonly action: string; readonly input: unknown },
   ) => Applik8sGatewayAdmission | Promise<Applik8sGatewayAdmission>;
   readonly cursorSecret: string;
   readonly commands?: readonly Applik8sKubernetesCreateContract[];
@@ -339,14 +334,14 @@ export function createApplik8sKubernetesGateway(options: Applik8sKubernetesGatew
 
   async function submitCommand(request: Request, command: Applik8sKubernetesCreateContract, body: Readonly<Record<string, unknown>>): Promise<Response> {
     const input = validateObject(command.inputSchema, body.input, `${command.id}.input`);
-    const admission = await admit(options.authenticate, request, { kind: 'command', id: command.id, input });
-    if (!await command.authorize({ principal: admission.principal, context: admission.trustedContext, input })) {
+    const admission = await admit(options.authenticate, request, { kind: 'command', id: command.id, action: 'submit', input });
+    if (!await command.authorize({ principal: admission.principal, context: admission.trustedContext.values, input })) {
       throw new Error(`Application command ${command.id} is not authorized.`);
     }
     const commandId = requiredString(body.commandId, 'commandId');
     const idempotencyKey = requiredString(body.idempotencyKey, 'idempotencyKey');
-    const contextDigest = admittedContextDigest(options.cursorSecret, admission.trustedContext);
-    const placement = command.place({ context: admission.trustedContext, input });
+    const contextDigest = admittedContextDigest(options.cursorSecret, admission.trustedContext.values);
+    const placement = command.place({ context: admission.trustedContext.values, input });
     const namespace = command.resource.scope === 'Namespaced'
       ? allowedNamespace(requiredString(placement.namespace, 'placement.namespace'), command.allowedNamespaces, command.id)
       : undefined;
@@ -384,7 +379,7 @@ export function createApplik8sKubernetesGateway(options: Applik8sKubernetesGatew
       commandId,
       principalId: admission.principal.id,
       contextDigest,
-      authorizationVersion: admission.authorizationVersion,
+      authorizationVersion: admission.authorityRevision,
       ...(namespace ? { namespace } : {}),
       name,
       expiresAt: now().getTime() + cursorTtlSeconds * 1_000,
@@ -405,7 +400,7 @@ export function createApplik8sKubernetesGateway(options: Applik8sKubernetesGatew
 
   async function commandProgress(request: Request, command: Applik8sKubernetesCreateContract, body: Readonly<Record<string, unknown>>): Promise<Response> {
     const encoded = requiredString(body.cursor, 'cursor');
-    const admission = await admit(options.authenticate, request, { kind: 'command', id: command.id, input: { cursor: encoded } });
+    const admission = await admit(options.authenticate, request, { kind: 'command', id: command.id, action: 'progress', input: { cursor: encoded } });
     const cursor = await verifyCursor(cursorCodec, encoded, now().getTime());
     if (cursor.kind !== 'kubernetes-command' || cursor.command !== command.id) throw new Error('Application command cursor is invalid.');
     assertCursorIdentity(cursor, admission, options.cursorSecret);
@@ -428,14 +423,14 @@ export function createApplik8sKubernetesGateway(options: Applik8sKubernetesGatew
 
   async function querySnapshot(request: Request, query: Applik8sKubernetesQueryContract, body: Readonly<Record<string, unknown>>): Promise<Response> {
     const input = validateUnknown(query.inputSchema, body.input, `${query.id}.input`);
-    const admission = await admit(options.authenticate, request, { kind: 'query', id: query.id, input });
-    if (!await query.authorize({ principal: admission.principal, context: admission.trustedContext, input })) {
+    const admission = await admit(options.authenticate, request, { kind: 'query', id: query.id, action: 'snapshot', input });
+    if (!await query.authorize({ principal: admission.principal, context: admission.trustedContext.values, input })) {
       throw new Error(`Application query ${query.id} is not authorized.`);
     }
-    const result = await withTimeout(listSnapshot(objects, query, admission.trustedContext, input), query.budgets.timeoutMs, `Application query ${query.id} exceeded its execution budget.`);
+    const result = await withTimeout(listSnapshot(objects, query, admission.trustedContext.values, input), query.budgets.timeoutMs, `Application query ${query.id} exceeded its execution budget.`);
     const output = validateUnknown(query.outputSchema, result.value, `${query.id}.output`);
     enforceOutputBudgets(query, output);
-    const contextDigest = admittedContextDigest(options.cursorSecret, admission.trustedContext);
+    const contextDigest = admittedContextDigest(options.cursorSecret, admission.trustedContext.values);
     const inputKey = stableInputKey(input);
     const cursor = await signCursor(cursorCodec, {
       version: 1,
@@ -444,7 +439,7 @@ export function createApplik8sKubernetesGateway(options: Applik8sKubernetesGatew
       inputKey,
       principalId: admission.principal.id,
       contextDigest,
-      authorizationVersion: admission.authorizationVersion,
+      authorizationVersion: admission.authorityRevision,
       resourceVersion: result.resourceVersion,
       sequence: 0,
       expiresAt: now().getTime() + cursorTtlSeconds * 1_000,
@@ -464,8 +459,8 @@ export function createApplik8sKubernetesGateway(options: Applik8sKubernetesGatew
 
   async function querySubscription(request: Request, query: Applik8sKubernetesQueryContract, body: Readonly<Record<string, unknown>>): Promise<Response> {
     const input = validateUnknown(query.inputSchema, body.input, `${query.id}.input`);
-    const admission = await admit(options.authenticate, request, { kind: 'query', id: query.id, input });
-    if (!await query.authorize({ principal: admission.principal, context: admission.trustedContext, input })) {
+    const admission = await admit(options.authenticate, request, { kind: 'query', id: query.id, action: 'subscribe', input });
+    if (!await query.authorize({ principal: admission.principal, context: admission.trustedContext.values, input })) {
       throw new Error(`Application query ${query.id} is not authorized.`);
     }
     const cursor = await verifyCursor(cursorCodec, requiredString(body.cursor, 'cursor'), now().getTime());
@@ -478,7 +473,7 @@ export function createApplik8sKubernetesGateway(options: Applik8sKubernetesGatew
       watch,
       query,
       input,
-      context: admission.trustedContext,
+      context: admission.trustedContext.values,
       cursor,
       cursorCodec,
       ttlSeconds: cursorTtlSeconds,
@@ -635,7 +630,7 @@ async function* ssePayloads(reader: ReadableStreamDefaultReader<Uint8Array>, max
 async function listSnapshot(
   objects: Applik8sResourceObjectClient,
   query: Applik8sKubernetesQueryContract,
-  context: Readonly<Record<string, unknown>>,
+  context: Readonly<Record<string, JsonValue>>,
   input: unknown,
 ): Promise<{ readonly value: readonly unknown[]; readonly resourceVersion: string }> {
   const namespace = query.resource.scope === 'Namespaced'
@@ -677,7 +672,7 @@ function kubernetesSubscriptionStream(options: {
   readonly watch: Applik8sResourceWatchClient;
   readonly query: Applik8sKubernetesQueryContract;
   readonly input: unknown;
-  readonly context: Readonly<Record<string, unknown>>;
+  readonly context: Readonly<Record<string, JsonValue>>;
   readonly cursor: QueryCursor;
   readonly cursorCodec: RollingSignedEnvelopeCodec<GatewayCursor>;
   readonly ttlSeconds: number;
@@ -854,15 +849,22 @@ function defaultKubeConfig(): KubeConfig {
 async function admit(
   authenticate: Applik8sKubernetesGatewayOptions['authenticate'],
   request: Request,
-  operation: { readonly kind: 'command' | 'query'; readonly id: string; readonly input: unknown },
-): Promise<Applik8sGatewayAdmission & { readonly authorizationVersion: string }> {
+  operation: { readonly kind: 'command' | 'query'; readonly id: string; readonly action: string; readonly input: unknown },
+): Promise<ApplicationAdmissionContextV1> {
   const admission = await authenticate(request, operation);
-  const authorizationVersion = admission?.authorizationVersion
-    ?? admission?.principal?.authorityRevision;
-  if (!admission?.principal?.id || !authorizationVersion || !admission.trustedContext || typeof admission.trustedContext !== 'object') {
-    throw new Error('Applik8s request identity provider returned an incomplete admission.');
-  }
-  return { ...admission, authorizationVersion };
+  const traceparent = request.headers.get('traceparent') ?? undefined;
+  const tracestate = request.headers.get('tracestate') ?? undefined;
+  const context = createApplicationAdmissionContextV1({
+    admission,
+    operation: {
+      id: `applik8s://${operation.kind === 'command' ? 'commands' : 'queries'}/${operation.id}/${operation.action}`,
+      transport: 'http',
+    },
+    correlationId: request.headers.get('x-request-id')?.trim() || randomUUID(),
+  });
+  return traceparent
+    ? withApplicationAdmissionTraceV1(context, { traceparent, ...(tracestate ? { tracestate } : {}) })
+    : context;
 }
 
 function validateObject(schema: JsonObject, value: unknown, name: string): object {
@@ -916,11 +918,11 @@ function admittedContextDigest(secret: string, context: Readonly<Record<string, 
   return nodeLegacyHmacBase64Url({ key: secret, value: stableJson(context) });
 }
 
-function assertCursorIdentity(cursor: GatewayCursor, admission: Applik8sGatewayAdmission, secret: string): void {
+function assertCursorIdentity(cursor: GatewayCursor, admission: ApplicationAdmissionContextV1, secret: string): void {
   if (
     cursor.principalId !== admission.principal.id
-    || cursor.authorizationVersion !== admission.authorizationVersion
-    || cursor.contextDigest !== admittedContextDigest(secret, admission.trustedContext)
+    || cursor.authorizationVersion !== admission.authorityRevision
+    || cursor.contextDigest !== admittedContextDigest(secret, admission.trustedContext.values)
   ) throw new Error('Application cursor identity is invalid.');
 }
 

@@ -2287,7 +2287,7 @@ const streamGateway = createApplicationStreamSubscriptionGateway({
     const trustedContext = admitted.trustedContext ?? {};
     const contextDigest = applicationAdmittedContextDigest({ values: trustedContext, digestSecret: contextSecret });
     const principal = ${operationCatalog && hasOperationAuthority ? 'await admitGatewayPrincipal(admitted, contextDigest)' : 'admitted.principal'};
-    return { principal, contextDigest };
+    return { principal, trustedContext, contextDigest };
   },
   ${operationCatalog && hasOperationAuthority ? `authorizeOperation: async ({ subscription, identity, inputDigest, trustedContextDigest }) => {
     const contract = ({ ${operationContracts} })[subscription.name];

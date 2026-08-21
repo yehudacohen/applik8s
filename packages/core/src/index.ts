@@ -4,7 +4,9 @@ export {
   applicationAdmissionContextVersion,
   applicationAdmissionIdentityView,
   applicationAdmissionInvocationView,
+  createApplicationAdmissionContextV1,
   validateApplicationAdmissionContextV1,
+  withApplicationAdmissionTraceV1,
 } from './application-admission.js';
 export type * from './application-explain.js';
 export { explainApplicationGraph } from './application-explain.js';

@@ -202,7 +202,7 @@ function fixture(source: { read(after: number, limit: number): Promise<Applicati
       authorize: async () => options.authorize ?? true,
       open: () => source,
     }],
-    authenticate: async () => ({ principal: testApplicationPrincipal(options.principalId ?? 'user-1', { authorityRevision: options.principalAuthorityRevision ?? 'membership-1' }), contextDigest: 'context-private' }),
+    authenticate: async () => ({ principal: testApplicationPrincipal(options.principalId ?? 'user-1', { authorityRevision: options.principalAuthorityRevision ?? 'membership-1' }), trustedContext: {}, contextDigest: 'context-private' }),
     ...(options.authorityRevision ? {
       authorizeOperation: async ({ identity, inputDigest, trustedContextDigest }) => streamReceipt(
         identity.principal.id,

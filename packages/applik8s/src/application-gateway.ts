@@ -79,6 +79,7 @@ export function createApplicationFetchGateway(options: ApplicationFetchGatewayOp
           const admission = await admitted(options.identity, request);
           return {
             principal: admission.principal,
+            trustedContext: admission.trustedContext,
             contextDigest: applicationAdmittedContextDigest({
               values: applicationRequestContextValues(admission.principal, admission.principal.authorityRevision, admission.trustedContext),
               digestSecret: options.cursorSecret,

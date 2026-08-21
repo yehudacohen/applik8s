@@ -1,7 +1,9 @@
 // typecast-file-boundary: authenticated subscription requests and provider-neutral cursor payloads are validated before typed stream delivery.
+import { randomUUID } from 'node:crypto';
 import {
   type ApplicationAuthorizationReceipt,
   canonicalJsonV1Value,
+  createApplicationAdmissionContextV1,
   type JsonValue,
   validateApplicationAuthorizationReceipt,
 } from '@applik8s/core';
@@ -21,6 +23,7 @@ import { createApplicationSubscriptionLimiter } from './query-gateway.js';
 
 export interface ApplicationStreamSubscriptionIdentity<TPrincipal extends ApplicationQueryPrincipal = ApplicationQueryPrincipal> {
   readonly principal: TPrincipal;
+  readonly trustedContext: Readonly<Record<string, JsonValue>>;
   /** Opaque HMAC digest of provider-admitted context; raw context never enters cursors or stream SQL. */
   readonly contextDigest: string;
 }
@@ -188,7 +191,7 @@ export function createApplicationStreamSubscriptionGateway<TPrincipal extends Ap
       const subscription = subscriptions.get(route.subscription);
       if (!subscription) return json({ error: 'not_found' }, 404);
       try {
-        const identity = await admitted(options, request);
+        const identity = await admitted(options, request, subscription, route.operation);
         if (!await subscription.authorize(identity.principal)) {
           options.audit?.({ event: 'denied', subscription: subscription.name, principal: identity.principal.id });
           return json({ error: 'forbidden' }, 403);
@@ -227,7 +230,7 @@ export function createApplicationStreamSubscriptionGateway<TPrincipal extends Ap
             options.audit?.({ event: 'opened', subscription: subscription.name, principal: identity.principal.id });
             try {
               while (!session.signal.aborted && now().getTime() - startedAt < maxSessionMs) {
-                const currentIdentity = await admitted(options, request);
+                const currentIdentity = await admitted(options, request, subscription, 'subscribe');
                 const currentReceipt = await authorizeStreamOperation(options, 'subscription-resume', subscription, currentIdentity);
                 if (!sameIdentityScope(identity, currentIdentity)
                   || !sameAuthorizationScope(identity, currentIdentity, receipt, currentReceipt)
@@ -283,10 +286,27 @@ function streamRoute(request: Request): { readonly subscription: string; readonl
   return { subscription: decodeURIComponent(parts[1] ?? ''), operation: parts[2] };
 }
 
-async function admitted<TPrincipal extends ApplicationQueryPrincipal>(options: ApplicationStreamSubscriptionGatewayOptions<TPrincipal>, request: Request): Promise<ApplicationStreamSubscriptionIdentity<TPrincipal>> {
+async function admitted<TPrincipal extends ApplicationQueryPrincipal>(
+  options: ApplicationStreamSubscriptionGatewayOptions<TPrincipal>,
+  request: Request,
+  subscription: ApplicationStreamSubscriptionRuntimeBinding<TPrincipal>,
+  action: 'replay' | 'subscribe',
+): Promise<ApplicationStreamSubscriptionIdentity<TPrincipal>> {
   const identity = await options.authenticate(request);
-  if (!identity.principal.id || !identity.principal.authorityRevision || !identity.contextDigest) throw new Error('Application stream subscription identity is incomplete.');
-  return identity;
+  if (!identity.contextDigest) throw new Error('Application stream subscription identity is incomplete.');
+  const admission = createApplicationAdmissionContextV1({
+    admission: { principal: identity.principal, trustedContext: identity.trustedContext },
+    operation: {
+      id: `applik8s://streams/${subscription.name}/${action}`,
+      transport: 'http',
+    },
+    correlationId: request.headers.get('x-request-id')?.trim() || randomUUID(),
+  });
+  return {
+    ...identity,
+    principal: admission.principal as TPrincipal,
+    trustedContext: admission.trustedContext.values,
+  };
 }
 
 async function cursorForRequest<TPrincipal extends ApplicationQueryPrincipal>(

@@ -577,7 +577,7 @@ describe('v0.6 authenticated query gateway', () => {
         authorize: async () => true,
         open: () => ({ async read() { return { items: [], nextSequence: 0, exhausted: true, retentionFloor: 0 }; } }),
       }],
-      authenticate: async () => ({ principal: identity.principal, contextDigest: 'opaque-context-digest' }),
+      authenticate: async () => ({ principal: identity.principal, trustedContext: identity.admittedContext.values, contextDigest: 'opaque-context-digest' }),
       cursorSecret: 'cursor-signing-secret-cursor-signing-secret',
       subscriptionLimiter: limiter,
     });

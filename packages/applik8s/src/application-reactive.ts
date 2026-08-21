@@ -10,6 +10,7 @@ import { applicationOperationId } from '@applik8s/core';
 import type { SchemaInput } from '@applik8s/sdk';
 import { normalizeSchema } from '@applik8s/sdk';
 import type { ApplicationDatabaseBinding } from './application.js';
+import { applicationActorDependencyBindings } from './application-actor-dependencies.js';
 import {
   expandApplicationCallbackDependencies,
   type SerializedApplicationCallback,
@@ -31,7 +32,6 @@ import type { ApplicationAnalyticalDatabaseProvider, ApplicationIdentityProvider
 import { applicationAnalyticalDatabaseImplementation, applicationIndexBackend, applicationObjectStorageImplementation, applicationProviderImplementationName, applicationProviderQualificationFor, applicationProviderSelectionFor, applicationTransactionalDatabaseImplementation, defaultApplicationIndexProvider, IndexStore, isApplicationAnalyticalDatabaseProvider, isApplicationIdentityProvider, isClickHouseAnalyticalDatabaseProvider, isPostgresAnalyticalDatabaseProvider } from './application-providers.js';
 import type { ApplicationQueryBinding, ApplicationQueryPrincipal } from './application-queries.js';
 import { applicationQueryBindingForOperation } from './application-queries.js';
-import { applicationActorDependencyBindings } from './application-actor-dependencies.js';
 import { applicationTypeKroGraphValue, applicationTypeKroSerializedValue, applicationTypeKroString } from './application-typekro-values.js';
 import { type ApplicationTaskBinding, type ApplicationWorkflowBinding, type ApplicationWorkflowState, applicationGeneratedDependencyAlias, recordApplicationWorkflowEngine } from './application-workflows.js';
 import { applicationRelationalModelOptionsFor } from './drizzle.js';
@@ -477,10 +477,8 @@ export interface ApplicationGatewayOptions {
   };
 }
 
-export interface ApplicationGatewayAdmission {
-  readonly principal: ApplicationQueryPrincipal;
-  readonly trustedContext: Readonly<Record<string, JsonValue>>;
-}
+/** Authenticated request admission shared by every HTTP/reactive gateway. */
+export type ApplicationGatewayAdmission = import('@applik8s/core').ApplicationRequestAdmission;
 
 export interface ApplicationGatewayBinding {
   readonly kind: 'applicationGateway';

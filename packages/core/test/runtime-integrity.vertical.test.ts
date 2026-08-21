@@ -9,11 +9,13 @@ import {
   canonicalJsonV1Bytes,
   canonicalJsonV1String,
   canonicalJsonV1Value,
+  createApplicationAdmissionContextV1,
   SignedEnvelopeV1ValidationError,
   signedEnvelopeAlgorithm,
   signedEnvelopeVersion,
   validateApplicationAdmissionContextV1,
   validateSignedEnvelopeV1Protected,
+  withApplicationAdmissionTraceV1,
 } from '@applik8s/core';
 import { describe, expect, it } from 'vitest';
 
@@ -176,6 +178,26 @@ describe('Admission Context v1', () => {
     });
     expect(applicationAdmissionInvocationView(admitted)).not.toHaveProperty('delivery');
     expect(Object.isFrozen(admitted)).toBe(true);
+  });
+
+  it('constructs the canonical context only from authenticated request admission and transport provenance', () => {
+    const admitted = createApplicationAdmissionContextV1({
+      admission: {
+        principal,
+        trustedContext: context.trustedContext.values,
+      },
+      operation: context.operation,
+      correlationId: context.correlationId,
+    });
+    expect(withApplicationAdmissionTraceV1(admitted, context.trace)).toEqual({
+      apiVersion: context.apiVersion,
+      principal: context.principal,
+      authorityRevision: context.authorityRevision,
+      trustedContext: context.trustedContext,
+      operation: context.operation,
+      correlationId: context.correlationId,
+      trace: context.trace,
+    });
   });
 
   it.each([

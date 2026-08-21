@@ -1,8 +1,10 @@
 import type {
   ApplicationAuthorizationReceipt,
   ApplicationPrincipal,
+  ApplicationRequestAdmission,
 } from './application-operation-authority.js';
 import { validateApplicationAuthorizationReceipt } from './application-operation-authority.js';
+import { canonicalJsonV1Value } from './canonical-json.js';
 import type { JsonObject, JsonValue } from './common.js';
 
 export const applicationAdmissionContextVersion = 'applik8s.admission/v1' as const;
@@ -49,6 +51,12 @@ export interface ApplicationAdmissionContextV1 {
   };
 }
 
+export interface CreateApplicationAdmissionContextV1Options {
+  readonly admission: ApplicationRequestAdmission;
+  readonly operation: ApplicationAdmissionContextV1['operation'];
+  readonly correlationId: string;
+}
+
 export class ApplicationAdmissionContextV1Error extends TypeError {
   constructor(
     readonly code:
@@ -64,8 +72,69 @@ export class ApplicationAdmissionContextV1Error extends TypeError {
     message: string,
   ) {
     super(`${message} at ${path}.`);
-    this.name = 'ApplicationAdmissionContextV1Error';
+    this.name = new.target.name;
   }
+}
+
+/**
+ * The one construction boundary for framework admission. Transport adapters
+ * verify their own evidence, then supply an authenticated request admission and
+ * transport provenance here. Execution families receive only narrowed views of
+ * the validated result.
+ */
+export function createApplicationAdmissionContextV1(
+  options: CreateApplicationAdmissionContextV1Options,
+): ApplicationAdmissionContextV1 {
+  if (!options.admission || typeof options.admission !== 'object') {
+    throw new TypeError('Admission is required.');
+  }
+  const principal = options.admission.principal;
+  if (!principal || typeof principal !== 'object') {
+    throw new TypeError('Admission principal is required.');
+  }
+  for (const field of ['id', 'kind', 'trustedContextDigest', 'authorityRevision'] as const) {
+    if (typeof Reflect.get(principal, field) !== 'string' || !String(Reflect.get(principal, field)).trim()) {
+      throw new TypeError(`Admission principal ${field} is invalid.`);
+    }
+  }
+  const canonicalTrustedContext = canonicalJsonV1Value(options.admission.trustedContext);
+  if (!canonicalTrustedContext || typeof canonicalTrustedContext !== 'object' || Array.isArray(canonicalTrustedContext)) {
+    throw new TypeError('Admission trusted context must be JSON.');
+  }
+  // typecast-boundary: Canonical JSON normalization and the array rejection
+  // above establish the JsonObject branch.
+  const trustedContextValues = canonicalTrustedContext as JsonObject;
+  const operation = options.operation;
+  if (!operation?.id?.startsWith('applik8s://')
+    || !admissionTransports.includes(`|${operation.transport}|`)) {
+    throw new TypeError('Admission operation is invalid.');
+  }
+  if (!options.correlationId?.trim()) {
+    throw new TypeError('Admission correlationId is required.');
+  }
+  return Object.freeze({
+    apiVersion: applicationAdmissionContextVersion,
+    principal,
+    authorityRevision: principal.authorityRevision,
+    trustedContext: Object.freeze({
+      values: trustedContextValues,
+      digest: principal.trustedContextDigest,
+    }),
+    operation,
+    correlationId: options.correlationId,
+  });
+}
+
+/** Adds validated W3C trace provenance without widening the base constructor. */
+export function withApplicationAdmissionTraceV1(
+  context: ApplicationAdmissionContextV1,
+  trace: ApplicationAdmissionContextV1['trace'],
+): ApplicationAdmissionContextV1 {
+  if (!trace || !/^00-[\da-f]{32}-[\da-f]{16}-[\da-f]{2}$/u.test(trace.traceparent)
+    || (trace.tracestate !== undefined && !trace.tracestate.trim())) {
+    throw new TypeError('Admission trace is invalid.');
+  }
+  return Object.freeze({ ...context, trace: Object.freeze({ ...trace }) });
 }
 
 export function validateApplicationAdmissionContextV1(
@@ -76,12 +145,7 @@ export function validateApplicationAdmissionContextV1(
   if (input.apiVersion !== applicationAdmissionContextVersion) {
     throw admissionError('ADMISSION_VERSION_INVALID', '$.apiVersion', 'Admission context version is unsupported');
   }
-  const principal = record(input.principal, '$.principal') as unknown as ApplicationPrincipal;
-  for (const field of ['id', 'kind', 'trustedContextDigest', 'authorityRevision'] as const) {
-    if (typeof Reflect.get(principal, field) !== 'string' || !String(Reflect.get(principal, field)).trim()) {
-      throw admissionError('ADMISSION_IDENTITY_INVALID', `$.principal.${field}`, `Admission principal ${field} is invalid`);
-    }
-  }
+  const principal = validatePrincipal(input.principal, '$.principal');
   const authorityRevision = requiredString(input.authorityRevision, '$.authorityRevision');
   if (principal.authorityRevision !== authorityRevision) {
     throw admissionError('ADMISSION_AUTHORITY_MISMATCH', '$.authorityRevision', 'Admission authority revision does not match the principal');
@@ -92,15 +156,7 @@ export function validateApplicationAdmissionContextV1(
   if (principal.trustedContextDigest !== trustedContextDigest) {
     throw admissionError('ADMISSION_AUTHORITY_MISMATCH', '$.trustedContext.digest', 'Admission trusted-context digest does not match the principal');
   }
-  const operationInput = record(input.operation, '$.operation');
-  const operationId = requiredString(operationInput.id, '$.operation.id');
-  if (!operationId.startsWith('applik8s://')) {
-    throw admissionError('ADMISSION_OPERATION_INVALID', '$.operation.id', 'Admission operation identity is invalid');
-  }
-  const transport = requiredString(operationInput.transport, '$.operation.transport');
-  if (!admissionTransports.has(transport as ApplicationAdmissionTransportV1)) {
-    throw admissionError('ADMISSION_OPERATION_INVALID', '$.operation.transport', 'Admission transport is unsupported');
-  }
+  const operation = validateOperation(input.operation);
   const correlationId = requiredString(input.correlationId, '$.correlationId');
   const causationId = optionalString(input.causationId, '$.causationId');
   const deadline = optionalTimestamp(input.deadline, '$.deadline');
@@ -118,18 +174,7 @@ export function validateApplicationAdmissionContextV1(
     ? undefined
     : input.authorizationReceipt as ApplicationAuthorizationReceipt;
   if (authorizationReceipt) {
-    const diagnostics = validateApplicationAuthorizationReceipt(authorizationReceipt);
-    if (diagnostics.length > 0) {
-      throw admissionError('ADMISSION_RECEIPT_INVALID', '$.authorizationReceipt', diagnostics[0]?.message ?? 'Admission receipt is invalid');
-    }
-    if (
-      authorizationReceipt.principal.id !== principal.id
-      || authorizationReceipt.authorityRevision !== authorityRevision
-      || authorizationReceipt.trustedContextDigest !== trustedContextDigest
-      || authorizationReceipt.operationId !== operationId
-    ) {
-      throw admissionError('ADMISSION_RECEIPT_INVALID', '$.authorizationReceipt', 'Admission receipt does not match the canonical context');
-    }
+    validateReceipt(authorizationReceipt, principal, operation.id);
   }
   return Object.freeze({
     apiVersion: applicationAdmissionContextVersion,
@@ -137,7 +182,7 @@ export function validateApplicationAdmissionContextV1(
     authorityRevision,
     trustedContext: Object.freeze({ values: trustedContextValues, digest: trustedContextDigest }),
     ...(authorizationReceipt ? { authorizationReceipt } : {}),
-    operation: Object.freeze({ id: operationId, transport: transport as ApplicationAdmissionTransportV1 }),
+    operation,
     correlationId,
     ...(causationId ? { causationId } : {}),
     ...(deadline ? { deadline } : {}),
@@ -165,18 +210,49 @@ export function applicationAdmissionInvocationView(
   return Object.freeze(view);
 }
 
-const admissionTransports = new Set<ApplicationAdmissionTransportV1>([
-  'actor',
-  'broker',
-  'control-plane',
-  'direct',
-  'framework',
-  'http',
-  'mcp',
-  'schedule',
-  'webhook',
-  'workflow',
-]);
+const admissionTransports = '|actor|broker|control-plane|direct|framework|http|mcp|schedule|webhook|workflow|';
+
+function validatePrincipal(value: unknown, path: string): ApplicationPrincipal {
+  const principal = record(value, path) as unknown as ApplicationPrincipal;
+  for (const field of ['id', 'kind', 'trustedContextDigest', 'authorityRevision'] as const) {
+    if (typeof Reflect.get(principal, field) !== 'string' || !String(Reflect.get(principal, field)).trim()) {
+      throw admissionError('ADMISSION_IDENTITY_INVALID', `${path}.${field}`, `Admission principal ${field} is invalid`);
+    }
+  }
+  return principal;
+}
+
+function validateOperation(value: unknown): ApplicationAdmissionContextV1['operation'] {
+  const operation = record(value, '$.operation');
+  const id = requiredString(operation.id, '$.operation.id');
+  if (!id.startsWith('applik8s://')) {
+    throw admissionError('ADMISSION_OPERATION_INVALID', '$.operation.id', 'Admission operation identity is invalid');
+  }
+  const transport = requiredString(operation.transport, '$.operation.transport');
+  if (!admissionTransports.includes(`|${transport}|`)) {
+    throw admissionError('ADMISSION_OPERATION_INVALID', '$.operation.transport', 'Admission transport is unsupported');
+  }
+  return Object.freeze({ id, transport: transport as ApplicationAdmissionTransportV1 });
+}
+
+function validateReceipt(
+  receipt: ApplicationAuthorizationReceipt,
+  principal: ApplicationPrincipal,
+  operationId: string,
+): void {
+  const diagnostics = validateApplicationAuthorizationReceipt(receipt);
+  if (diagnostics.length > 0) {
+    throw admissionError('ADMISSION_RECEIPT_INVALID', '$.authorizationReceipt', diagnostics[0]?.message ?? 'Admission receipt is invalid');
+  }
+  if (
+    receipt.principal.id !== principal.id
+    || receipt.authorityRevision !== principal.authorityRevision
+    || receipt.trustedContextDigest !== principal.trustedContextDigest
+    || receipt.operationId !== operationId
+  ) {
+    throw admissionError('ADMISSION_RECEIPT_INVALID', '$.authorizationReceipt', 'Admission receipt does not match the canonical context');
+  }
+}
 
 function validateCancellation(value: unknown): NonNullable<ApplicationAdmissionContextV1['cancellation']> {
   const input = record(value, '$.cancellation');
@@ -188,7 +264,7 @@ function validateCancellation(value: unknown): NonNullable<ApplicationAdmissionC
 function validateTrace(value: unknown): NonNullable<ApplicationAdmissionContextV1['trace']> {
   const input = record(value, '$.trace');
   const traceparent = requiredString(input.traceparent, '$.trace.traceparent');
-  if (!/^00-[a-f0-9]{32}-[a-f0-9]{16}-[a-f0-9]{2}$/u.test(traceparent)) {
+  if (!/^00-[\da-f]{32}-[\da-f]{16}-[\da-f]{2}$/u.test(traceparent)) {
     throw admissionError('ADMISSION_TRACE_INVALID', '$.trace.traceparent', 'Admission traceparent is invalid');
   }
   const tracestate = optionalString(input.tracestate, '$.trace.tracestate');

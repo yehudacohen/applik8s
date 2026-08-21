@@ -1,5 +1,5 @@
 // typecast-file-boundary: focused runtime tests use structural Kubernetes client doubles for only the methods exercised by the gateway.
-import type { CustomObjectsApi, Watch } from '@kubernetes/client-node';
+
 import type { JsonValue } from '@applik8s/core';
 import {
   createSignedEnvelopeCodec,
@@ -7,7 +7,9 @@ import {
   staticSignedEnvelopeKeyProvider,
   verifyLegacyCompactHmacJson,
 } from '@applik8s/runtime/signed-envelope';
+import type { CustomObjectsApi, Watch } from '@kubernetes/client-node';
 import { describe, expect, it } from 'vitest';
+import { testApplicationAdmission } from '../../../test-support/application-principal.js';
 import { createApplik8sKubernetesGateway } from '../src/kubernetes-gateway.js';
 
 const secret = 'test-cursor-secret-that-is-longer-than-thirty-two-bytes';
@@ -41,8 +43,8 @@ describe('generated Kubernetes application gateway', () => {
       },
     } as unknown as CustomObjectsApi;
     const gateway = createApplik8sKubernetesGateway({
-      authenticate: async () => ({
-        principal: { id: 'demo', authorityRevision: 'canonical-authority-v1' },
+      authenticate: async () => testApplicationAdmission('demo', {
+        authorityRevision: 'canonical-authority-v1',
         trustedContext: { guestbook: 'tenant-a', namespace: 'guestbook', role: 'author' },
       }),
       cursorSecret: secret,
@@ -169,9 +171,8 @@ describe('generated Kubernetes application gateway', () => {
     } as unknown as Watch;
     let authorizationVersion = 'demo-v1';
     const gateway = createApplik8sKubernetesGateway({
-      authenticate: async () => ({
-        principal: { id: 'demo' },
-        authorizationVersion,
+      authenticate: async () => testApplicationAdmission('demo', {
+        authorityRevision: authorizationVersion,
         trustedContext: { guestbook: 'tenant-a', namespace: 'guestbook', role: 'author' },
       }),
       cursorSecret: secret,
@@ -369,9 +370,8 @@ async function signedEnvelopeV1KubernetesCursor(payload: JsonValue): Promise<str
 }
 
 function identity(guestbook: string) {
-  return async () => ({
-    principal: { id: 'demo' },
-    authorizationVersion: 'demo-v1',
+  return async () => testApplicationAdmission('demo', {
+    authorityRevision: 'demo-v1',
     trustedContext: { guestbook, namespace: 'guestbook', role: 'author' },
   });
 }

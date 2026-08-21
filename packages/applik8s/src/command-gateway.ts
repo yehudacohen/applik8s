@@ -1,5 +1,5 @@
 import type { ApplicationCommandProgress, ApplicationCommandSubmission } from '@applik8s/client';
-import { type ApplicationAuthorizationReceipt, type ApplicationOperationTransport, type ApplicationPrincipal, type ApplicationRequestAdmission, canonicalJsonV1String, canonicalJsonV1Value, type JsonObject, type JsonValue, validateApplicationAuthorizationReceipt } from '@applik8s/core';
+import { type ApplicationAdmissionContextV1, type ApplicationAuthorizationReceipt, type ApplicationOperationTransport, type ApplicationPrincipal, type ApplicationRequestAdmission, canonicalJsonV1String, canonicalJsonV1Value, createApplicationAdmissionContextV1, type JsonObject, type JsonValue, validateApplicationAuthorizationReceipt, withApplicationAdmissionTraceV1 } from '@applik8s/core';
 import type { ApplicationInternalOperationInvocation } from '@applik8s/operations';
 import { nodeKeyedDigestBase64Url } from '@applik8s/runtime/node-integrity';
 import { createRollingSignedEnvelopeCodec, type RollingSignedEnvelopeCodec, signedEnvelopeUtf8Key, staticSignedEnvelopeKeyProvider } from '@applik8s/runtime/signed-envelope';
@@ -180,32 +180,36 @@ export function createApplicationCommandGateway<TPrincipal extends ApplicationQu
       const command = commands.get(route.command);
       if (!command) return json({ error: 'not_found' }, 404);
       try {
-        const admission = await admitted(options, request);
+        const requestAdmission = await admitted(options, request);
         if (route.operation === 'submit') {
           const input = validateCommandInput(command, body.value.input);
+          const commandId = requiredString(body.value.commandId, 'commandId');
+          const idempotencyKey = requiredString(body.value.idempotencyKey, 'idempotencyKey');
+          const contextDigest = applicationAdmittedContextDigest({ values: requestAdmission.trustedContext, digestSecret: contextSecret });
+          const principal = await options.admitPrincipal?.({
+            admission: requestAdmission,
+            command,
+            trustedContextDigest: contextDigest,
+          }) ?? requestAdmission.principal;
+          const admission = commandAdmissionContext(request, command, 'submit', commandId, {
+            principal,
+            trustedContext: requestAdmission.trustedContext,
+          });
           if (options.authorize && !await options.authorize({
             principal: admission.principal as TPrincipal,
-            authorizationVersion: admission.principal.authorityRevision,
-            trustedContext: admission.trustedContext,
+            authorizationVersion: requestAdmission.principal.authorityRevision,
+            trustedContext: admission.trustedContext.values,
             command: command.id,
             input,
           })) return json({ error: 'forbidden' }, 403);
-          const commandId = requiredString(body.value.commandId, 'commandId');
-          const idempotencyKey = requiredString(body.value.idempotencyKey, 'idempotencyKey');
           // typecast: command key callbacks are registered only from the public scalar/composite command-key contract.
           const targetKey = canonicalApplicationCommandKey(command.key(input, {
             principal: admission.principal,
-            authorizationVersion: admission.principal.authorityRevision,
-            trustedContext: admission.trustedContext,
+            authorizationVersion: requestAdmission.principal.authorityRevision,
+            trustedContext: admission.trustedContext.values,
           }, commandId) as string | number | boolean | Readonly<Record<string, string | number | boolean>>);
           const correlationId = commandId;
-          const contextDigest = applicationAdmittedContextDigest({ values: admission.trustedContext, digestSecret: contextSecret });
-          const principal = await options.admitPrincipal?.({
-            admission,
-            command,
-            trustedContextDigest: contextDigest,
-          }) ?? admission.principal;
-          const durableContext = applicationRequestContextValues(principal, principal.authorityRevision, admission.trustedContext);
+          const durableContext = applicationRequestContextValues(principal, principal.authorityRevision, admission.trustedContext.values);
           const routedIdempotencyKey = command.idempotencyKey?.(input) ?? idempotencyKey;
           const durableScope = applicationCommandScope(command.bindingId, command.model, targetKey, routedIdempotencyKey, contextDigest);
           const inputDigest = applicationOperationInputDigest(input);
@@ -219,8 +223,8 @@ export function createApplicationCommandGateway<TPrincipal extends ApplicationQu
               // identity-scoped capabilities (for example an object upload
               // completion receipt); the returned authorization receipt
               // remains pinned to the latter through `principal`.
-              authorizationVersion: admission.principal.authorityRevision,
-              trustedContext: admission.trustedContext,
+              authorizationVersion: requestAdmission.principal.authorityRevision,
+              trustedContext: admission.trustedContext.values,
               command,
               input,
               commandId,
@@ -299,12 +303,17 @@ export function createApplicationCommandGateway<TPrincipal extends ApplicationQu
         }
         const encoded = requiredString(body.value.cursor, 'cursor');
         const cursor = await decodeCursor(cursorCodec, encoded, now().getTime());
-        const contextDigest = applicationAdmittedContextDigest({ values: admission.trustedContext, digestSecret: contextSecret });
-        const principal = await options.admitPrincipal?.({
-          admission,
+        const contextDigest = applicationAdmittedContextDigest({ values: requestAdmission.trustedContext, digestSecret: contextSecret });
+        const narrowedPrincipal = await options.admitPrincipal?.({
+          admission: requestAdmission,
           command,
           trustedContextDigest: contextDigest,
-        }) ?? admission.principal;
+        }) ?? requestAdmission.principal;
+        const admission = commandAdmissionContext(request, command, 'progress', cursor.correlationId, {
+          principal: narrowedPrincipal,
+          trustedContext: requestAdmission.trustedContext,
+        });
+        const principal = admission.principal as TPrincipal;
         if (cursor.command !== command.id
           || cursor.principalBinding !== cursorBinding(options.cursorSecret, 'principal', principal.id)
           // Receipt-backed commands are revalidated against current authority
@@ -527,9 +536,29 @@ function commandRoute(request: Request): { readonly command: string; readonly op
 }
 
 async function admitted<TPrincipal extends ApplicationQueryPrincipal>(options: ApplicationCommandGatewayOptions<TPrincipal>, request: Request): Promise<ApplicationGatewayAdmission> {
-  const admission = await options.authenticate(request);
-  if (!admission.principal.id || !admission.principal.authorityRevision || !admission.trustedContext || typeof admission.trustedContext !== 'object') throw new Error('Application command gateway identity provider returned an incomplete admission.');
-  return admission;
+  return options.authenticate(request);
+}
+
+function commandAdmissionContext(
+  request: Request,
+  command: ApplicationGatewayCommandRuntimeContract,
+  action: 'submit' | 'progress',
+  correlationId: string,
+  admission: ApplicationRequestAdmission,
+): ApplicationAdmissionContextV1 {
+  const traceparent = request.headers.get('traceparent') ?? undefined;
+  const tracestate = request.headers.get('tracestate') ?? undefined;
+  const context = createApplicationAdmissionContextV1({
+    admission,
+    operation: {
+      id: command.operationId ?? `applik8s://commands/${command.id}/${action}`,
+      transport: 'http',
+    },
+    correlationId,
+  });
+  return traceparent
+    ? withApplicationAdmissionTraceV1(context, { traceparent, ...(tracestate ? { tracestate } : {}) })
+    : context;
 }
 
 function validateCommandInput(command: ApplicationGatewayCommandRuntimeContract, value: unknown): object {
