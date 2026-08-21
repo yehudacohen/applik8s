@@ -47,11 +47,15 @@
       "principalSource": "framework execution principal preserving causal lineage",
       "operationIdentity": "registered workflow or task operation",
       "owners": [
+        "packages/core/src/application-admission.ts",
+        "packages/operations/src/runtime.ts",
+        "packages/applik8s/src/task-operation-runtime.ts",
         "packages/applik8s/src/task-query-runtime.ts",
+        "packages/compiler/src/application-workflows/source.ts",
         "packages/compiler/src/application-reactive/index.ts"
       ],
-      "regression": "bunx vitest run --maxWorkers=1 packages/applik8s/test/task-query-runtime.vertical.test.ts packages/compiler/test/application-reactive.vertical.test.ts",
-      "remaining": "task-query delivery now dual-writes and validates canonical admission under an exact service principal; integrate workflow starts, resumes, task operations, signals, cancellation, and reattachment before advancing the complete adapter"
+      "regression": "bunx vitest run --maxWorkers=1 packages/core/test/runtime-integrity.vertical.test.ts packages/operations/test/postgres.vertical.test.ts packages/applik8s/test/task-operation-runtime.vertical.test.ts packages/applik8s/test/task-query-runtime.vertical.test.ts packages/compiler/test/application-reactive.vertical.test.ts; NODE_OPTIONS=--max-old-space-size=8192 bunx vitest run --maxWorkers=1 packages/compiler/test/application-workflows.vertical.test.ts",
+      "remaining": "workflow/task starts and resumes plus task operations now construct one framework-admitted execution principal while task queries retain an intentionally bounded service projection; integrate signal action delivery, cancellation propagation and recovery, lost-response reattachment, and version/rejection telemetry before advancing the complete adapter"
     },
     {
       "id": "schedule-occurrence",
