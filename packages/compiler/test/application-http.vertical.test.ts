@@ -281,6 +281,22 @@ describe('generated function-native HTTP worker', () => {
     expect(generatedEntrypoint).toContain(
       "from '@applik8s/runtime-nats/event-log'",
     );
+    expect(generatedEntrypoint).toContain(
+      'validateApplicationAdmissionContextV1WithoutReceipt',
+    );
+    expect(generatedEntrypoint).toContain(
+      'validateApplicationAdmissionContextV1({',
+    );
+    expect(generatedEntrypoint).toContain(
+      "transport: webhookEvent ? 'webhook' : 'http'",
+    );
+    expect(generatedEntrypoint).toContain(
+      'admission: applicationAdmissionInvocationView(baseAdmission)',
+    );
+    expect(generatedEntrypoint).toContain(
+      '.update(canonicalJsonV1String(input))',
+    );
+    expect(generatedEntrypoint).not.toContain('.update(JSON.stringify(input))');
     expect(generatedEntrypoint).not.toContain(
       "from '@applik8s/runtime-aws/kinesis'",
     );

@@ -441,6 +441,7 @@ import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
 import postgres from 'postgres';
 import { installApplicationOperationRuntimeResolver } from '@applik8s/client';
+import { applicationAdmissionInvocationView, canonicalJsonV1String, createApplicationAdmissionContextV1, validateApplicationAdmissionContextV1, validateApplicationAdmissionContextV1WithoutReceipt, withApplicationAdmissionExecutionV1 } from '@applik8s/core';
 import { createApplicationOperationAuthorityRuntime } from '@applik8s/operations';
 import { normalizeSchema } from '@applik8s/sdk/schema-runtime';
 ${hasOperations
@@ -674,7 +675,11 @@ async function invokeRoute(route, params, request, url, runtimeProtocol) {
   }
   const trustedContextDigest = webhookEvent
     ? 'sha256:' + createHash('sha256')
-        .update(contract.application + '\\0' + route.id + '\\0' + String(webhookEvent.id))
+        .update(canonicalJsonV1String({
+          application: contract.application,
+          route: route.id,
+          providerEventId: String(webhookEvent.id),
+        }))
         .digest('hex')
     : undefined;
   const admission = webhookEvent
@@ -727,22 +732,56 @@ async function invokeRoute(route, params, request, url, runtimeProtocol) {
     params,
     query: Object.freeze(Object.fromEntries(url.searchParams)),
   });
-  const context = Object.freeze({
-    principal,
-    trustedContext: Object.freeze({ ...admission.trustedContext }),
-    ...(normalizedRequestOrigin(request) ? {
-      requestOrigin: normalizedRequestOrigin(request),
-    } : {}),
-    signal: request.signal,
-  });
-  const applicationPolicyAllowed = route.authorize
-    ? await route.authorize(requestValue, context)
-    : true;
   const idempotencyKey = webhookEvent
     ? 'provider-event:' + String(webhookEvent.id)
     : requestIdempotencyKey(request);
+  const invocationId = 'http_' + createHash('sha256')
+    .update(canonicalJsonV1String({
+      application: contract.application,
+      server: contract.serverId,
+      route: route.id,
+      principal: principal.id,
+      trustedContextDigest: principal.trustedContextDigest,
+      idempotencyKey,
+    }))
+    .digest('hex');
+  const baseAdmission = validateApplicationAdmissionContextV1WithoutReceipt(
+    withApplicationAdmissionExecutionV1(
+      createApplicationAdmissionContextV1({
+        admission: {
+          principal,
+          trustedContext: admission.trustedContext,
+        },
+        operation: {
+          id: route.operation.id,
+          transport: webhookEvent ? 'webhook' : 'http',
+        },
+        correlationId: invocationId,
+      }),
+      webhookEvent
+        ? {
+            causationId: String(webhookEvent.id),
+            delivery: {
+              id: String(webhookEvent.id),
+              source: 'webhook:' + contract.serverId + ':' + route.id,
+            },
+          }
+        : {},
+    ),
+  );
+  const requestOrigin = normalizedRequestOrigin(request);
+  const authorizationContext = Object.freeze({
+    admission: applicationAdmissionInvocationView(baseAdmission),
+    principal,
+    trustedContext: Object.freeze({ ...admission.trustedContext }),
+    ...(requestOrigin ? { requestOrigin } : {}),
+    signal: request.signal,
+  });
+  const applicationPolicyAllowed = route.authorize
+    ? await route.authorize(requestValue, authorizationContext)
+    : true;
   const inputDigest = 'sha256:' + createHash('sha256')
-    .update(JSON.stringify(input))
+    .update(canonicalJsonV1String(input))
     .digest('hex');
   const routeReceipt = await operationAuthority.authorize({
     principal,
@@ -760,10 +799,15 @@ async function invokeRoute(route, params, request, url, runtimeProtocol) {
     applicationPolicyAllowed: applicationPolicyAllowed === true,
   });
   if (!routeReceipt.allowed) throw new HttpFailure(403, 'authorization_denied');
-  const invocationId = 'http_' + createHash('sha256')
-    .update(contract.application + '\\0' + contract.serverId + '\\0' + route.id + '\\0'
-      + principal.id + '\\0' + principal.trustedContextDigest + '\\0' + idempotencyKey)
-    .digest('hex');
+  const context = Object.freeze({
+    ...authorizationContext,
+    admission: applicationAdmissionInvocationView(
+      validateApplicationAdmissionContextV1({
+        ...baseAdmission,
+        authorizationReceipt: routeReceipt.receipt,
+      }),
+    ),
+  });
   const operationBindings = commandRuntime
     ? commandRuntime.bind(
         route.operationAliases,

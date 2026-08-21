@@ -7,6 +7,7 @@ import {
   observeApplicationOperationAuthority,
 } from '@applik8s/client';
 import type {
+  ApplicationAdmissionInvocationContextV1,
   ApplicationOperationAuthorityGraphContract,
   ApplicationPrincipal,
   JsonObject,
@@ -61,6 +62,8 @@ export interface ApplicationHttpWebhookRequest {
 }
 
 export interface ApplicationHttpContext {
+  /** Canonical framework admission for this exact route invocation. */
+  readonly admission: ApplicationAdmissionInvocationContextV1;
   readonly principal: ApplicationPrincipal;
   readonly trustedContext: Readonly<Record<string, JsonValue>>;
   /**
