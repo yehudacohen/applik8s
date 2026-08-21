@@ -150,18 +150,26 @@ describe('portable Signed Envelope v1 runtime', () => {
       maximumLifetimeMs: 60_000,
       writer: 'legacy',
       validatePayload(value) {
-        if (!value || typeof value !== 'object' || Array.isArray(value) || typeof value.cursor !== 'string') {
+        if (!value || typeof value !== 'object' || Array.isArray(value)) {
           throw new TypeError('cursor is invalid');
         }
-        return { cursor: value.cursor };
+        const record = value as Record<string, unknown>;
+        if (typeof record.cursor !== 'string') {
+          throw new TypeError('cursor is invalid');
+        }
+        return { cursor: record.cursor };
       },
       legacy: {
         key: current.key,
         validatePayload(value) {
-          if (!value || typeof value !== 'object' || Array.isArray(value) || typeof value.cursor !== 'string') {
+          if (!value || typeof value !== 'object' || Array.isArray(value)) {
             throw new TypeError('legacy cursor is invalid');
           }
-          return { cursor: value.cursor };
+          const record = value as Record<string, unknown>;
+          if (typeof record.cursor !== 'string') {
+            throw new TypeError('legacy cursor is invalid');
+          }
+          return { cursor: record.cursor };
         },
         toCurrent: (value) => value,
         fromCurrent: (value) => ({ cursor: value.cursor }),
@@ -187,18 +195,26 @@ describe('portable Signed Envelope v1 runtime', () => {
       now: () => issuedAt,
       writer: 'legacy',
       validatePayload(value) {
-        if (!value || typeof value !== 'object' || Array.isArray(value) || typeof value.cursor !== 'string') {
+        if (!value || typeof value !== 'object' || Array.isArray(value)) {
           throw new TypeError('current cursor is invalid');
         }
-        return { cursor: value.cursor };
+        const record = value as Record<string, unknown>;
+        if (typeof record.cursor !== 'string') {
+          throw new TypeError('current cursor is invalid');
+        }
+        return { cursor: record.cursor };
       },
       legacy: {
         key: current.key,
         validatePayload(value) {
-          if (!value || typeof value !== 'object' || Array.isArray(value) || typeof value.legacy !== 'string') {
+          if (!value || typeof value !== 'object' || Array.isArray(value)) {
             throw new TypeError('legacy cursor is invalid');
           }
-          return { legacy: value.legacy };
+          const record = value as Record<string, unknown>;
+          if (typeof record.legacy !== 'string') {
+            throw new TypeError('legacy cursor is invalid');
+          }
+          return { legacy: record.legacy };
         },
         toCurrent: () => ({ cursor: 42 } as unknown as CursorPayload),
         fromCurrent: (value) => ({ legacy: value.cursor }),

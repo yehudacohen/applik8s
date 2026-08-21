@@ -1,3 +1,4 @@
+// runtime-integrity: external-protocol-crypto=stripe-signature-v1
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import type {
   ApplicationPaymentProvider,

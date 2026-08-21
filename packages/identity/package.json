@@ -33,6 +33,7 @@
     }
   },
   "dependencies": {
-    "@applik8s/core": "0.8.0"
+    "@applik8s/core": "0.8.0",
+    "@applik8s/runtime": "0.8.0"
   }
 }

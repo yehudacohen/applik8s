@@ -1,9 +1,10 @@
 // typecast-file-boundary: OAuth persistence and token payloads are schema-checked before typed runtime use.
-import { createHash, createHmac, randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import type {
   ApplicationOAuthAuthorizationFlowPrincipal,
   ApplicationPrincipal,
 } from '@applik8s/core';
+import { nodeKeyedDigestBase64Url } from '@applik8s/runtime/node-integrity';
 import type { ApplicationIdentityFlowBinding } from './contracts.js';
 import type {
   ApplicationOAuthAuthorizationFlowAdmissionContext,
@@ -322,11 +323,11 @@ export class ApplicationOAuthAuthorizationFlowService
   }
 
   #digest(kind: string, value: string): string {
-    return createHmac('sha256', this.#bindingSecret)
-      .update(kind)
-      .update('\0')
-      .update(requiredString(value, `${kind} binding`))
-      .digest('base64url');
+    return nodeKeyedDigestBase64Url({
+      key: this.#bindingSecret,
+      purpose: kind,
+      value: requiredString(value, `${kind} binding`),
+    });
   }
 }
 

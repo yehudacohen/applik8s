@@ -1,10 +1,11 @@
 // typecast-file-boundary: Database driver rows are schema-validated before being exposed through typed relational runtime contracts.
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { createHmac, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { and, eq, getTableColumns, type InferInsertModel, type InferSelectModel, sql } from 'drizzle-orm';
 import type { AnyPgTable } from 'drizzle-orm/pg-core';
 import type { PostgresJsDatabase } from 'drizzle-orm/postgres-js';
-import type { JsonValue } from '@applik8s/core';
+import { canonicalJsonV1String, type JsonValue } from '@applik8s/core';
+import { nodeLegacyHmacHex } from '@applik8s/runtime/node-integrity';
 import type { ApplicationDatabaseBinding } from './application.js';
 import { applicationModelFacet, getRequiredDrizzleApplicationModelFacet } from './native-model-runtime.js';
 import type { ApplicationModelSnapshot, PromotedDrizzleTable } from './native-models.js';
@@ -450,7 +451,10 @@ function contextDigest(admitted: ApplicationAdmittedContext): string {
   const providerContext = Object.fromEntries(
     Object.entries(admitted.values).filter(([name]) => !name.startsWith('applik8s.dev/')),
   );
-  return createHmac('sha256', admitted.digestSecret).update(stableJson(providerContext)).digest('hex');
+  return nodeLegacyHmacHex({
+    key: admitted.digestSecret,
+    value: canonicalJsonV1String(providerContext),
+  });
 }
 
 function relationalTrustedContext(
@@ -461,10 +465,10 @@ function relationalTrustedContext(
       ([name]) => !name.startsWith('applik8s.dev/'),
     ),
   );
-  // typecast-boundary: stableJson rejects non-JSON values before the admitted
+  // typecast-boundary: Canonical JSON v1 rejects non-JSON values before the admitted
   // provider context is exposed to application code.
   return Object.freeze(
-    JSON.parse(stableJson(providerContext)) as Record<string, JsonValue>,
+    JSON.parse(canonicalJsonV1String(providerContext)) as Record<string, JsonValue>,
   );
 }
 
@@ -528,16 +532,17 @@ function relationalReadChangeScopeDigests(
  */
 export function applicationRelationalChangeScopes(admitted: ApplicationAdmittedContext): ApplicationRelationalChangeScopes {
   const scopes: Record<string, string> = {
-    global: createHmac('sha256', admitted.digestSecret).update('applik8s.relational-change-scope.global.v1').digest('hex'),
+    global: nodeLegacyHmacHex({
+      key: admitted.digestSecret,
+      value: 'applik8s.relational-change-scope.global.v1',
+    }),
   };
   for (const [name, value] of Object.entries(admitted.values)) {
     if (name.startsWith('applik8s.dev/')) continue;
-    scopes[`context:${name}`] = createHmac('sha256', admitted.digestSecret)
-      .update('applik8s.relational-change-scope.context.v1\0')
-      .update(name)
-      .update('\0')
-      .update(stableJson(value))
-      .digest('hex');
+    scopes[`context:${name}`] = nodeLegacyHmacHex({
+      key: admitted.digestSecret,
+      value: `applik8s.relational-change-scope.context.v1\0${name}\0${canonicalJsonV1String(value)}`,
+    });
   }
   return Object.freeze(scopes);
 }
@@ -551,12 +556,6 @@ export function applicationRelationalChangeScopeDigest(scopes: ApplicationRelati
       : 'Application relational change scopes do not contain a validated global scope.');
   }
   return digest;
-}
-
-function stableJson(value: unknown): string {
-  if (value === null || typeof value !== 'object') return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
-  return `{${Object.entries(value).sort(([left], [right]) => left.localeCompare(right)).map(([key, entry]) => `${JSON.stringify(key)}:${stableJson(entry)}`).join(',')}}`;
 }
 
 function numericResult(rows: unknown, field: string): number {

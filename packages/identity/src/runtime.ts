@@ -1,9 +1,10 @@
 // typecast-file-boundary: Identity storage and signed payloads are validated before typed runtime contracts are reconstructed.
-import { createHash, createHmac, randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import type {
   ApplicationPreAuthenticationFlowPrincipal,
   ApplicationPrincipal,
 } from '@applik8s/core';
+import { nodeKeyedDigestBase64Url } from '@applik8s/runtime/node-integrity';
 import type {
   ApplicationIdentityAdmissionReceipt,
   ApplicationIdentityFlowAdmissionContext,
@@ -515,11 +516,11 @@ export class ApplicationPreAuthenticationFlowService
   }
 
   #digest(kind: string, value: string): string {
-    return createHmac('sha256', this.#bindingSecret)
-      .update(kind)
-      .update('\0')
-      .update(requiredString(value, `${kind} binding`))
-      .digest('base64url');
+    return nodeKeyedDigestBase64Url({
+      key: this.#bindingSecret,
+      purpose: kind,
+      value: requiredString(value, `${kind} binding`),
+    });
   }
 }
 

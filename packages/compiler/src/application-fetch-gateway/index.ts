@@ -273,7 +273,7 @@ export function generatedApplicationFetchGatewayModules(
 				: ["import { normalizeSchema } from '@applik8s/sdk';"]),
 		);
 	if (actors.length > 0 || lakehousePublications.length > 0 || schedules.length > 0)
-		imports.push("import { timingSafeEqual } from 'node:crypto';");
+		imports.push("import { nodeConstantTimeTextEqual } from '@applik8s/runtime/node-integrity';");
 	if (observability.length > 0)
 		imports.push(
 			"import { installApplicationTelemetryRuntimeResolver, runApplicationTelemetryBoundary } from '@applik8s/applik8s';",
@@ -1191,9 +1191,10 @@ ${actors.length > 0 || lakehousePublications.length > 0 || schedules.length > 0 
   const authorization = request.headers.get('authorization') ?? '';
   const prefix = 'Bearer ';
   if (!authorization.startsWith(prefix)) return false;
-  const supplied = Buffer.from(authorization.slice(prefix.length));
-  const expected = Buffer.from(requiredEnv('APPLIK8S_INTERNAL_OPERATION_SECRET'));
-  return supplied.length === expected.length && timingSafeEqual(supplied, expected);
+  return nodeConstantTimeTextEqual(
+    authorization.slice(prefix.length),
+    requiredEnv('APPLIK8S_INTERNAL_OPERATION_SECRET'),
+  );
 }` : ""}
 const applicationSchedules = [${scheduleSources.join(",\n")}];
 const fixedSchedules = applicationSchedules.filter((entry) => entry.definition.configuration === 'fixed');

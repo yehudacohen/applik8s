@@ -1,8 +1,9 @@
 // typecast-file-boundary: persisted local resource JSON is validated before entering the in-memory authority.
-import { randomUUID, timingSafeEqual } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { createServer, type Server } from 'node:http';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
+import { nodeConstantTimeTextEqual } from '@applik8s/runtime/node-integrity';
 
 export interface Applik8sLocalResourceAuthorityOptions {
   readonly statePath: string;
@@ -381,9 +382,7 @@ function emptyState(): StoredState {
 
 function authorized(value: string | undefined, token: string): boolean {
   const candidate = value?.startsWith('Bearer ') ? value.slice(7) : '';
-  const left = Buffer.from(candidate);
-  const right = Buffer.from(token);
-  return left.length === right.length && timingSafeEqual(left, right);
+  return nodeConstantTimeTextEqual(candidate, token);
 }
 
 function json(response: import('node:http').ServerResponse, code: number, body: unknown): void {

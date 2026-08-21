@@ -8,6 +8,9 @@ const allowedCryptoOwners = new Set([
   'packages/runtime/src/node-integrity.ts',
   'packages/runtime/src/signed-envelope.ts',
 ]);
+const externalProtocolCryptoOwners = new Map([
+  ['packages/billing-stripe/src/index.ts', 'stripe-signature-v1'],
+]);
 const canonicalOwners = new Set([
   'packages/core/src/canonical-json.ts',
 ]);
@@ -16,8 +19,16 @@ for (const maintainedRoot of maintainedRoots) {
   for (const file of await sourceFiles(join(root, maintainedRoot))) {
     const path = relative(root, file);
     const source = await readFile(file, 'utf8');
-    const externalProtocolCrypto = /runtime-integrity:\s*external-protocol-crypto/u.test(source);
-    if (!allowedCryptoOwners.has(path) && !externalProtocolCrypto && /\b(?:createHmac|timingSafeEqual)\b/u.test(source)) {
+    const externalProtocolCrypto = source.match(
+      /runtime-integrity:\s*external-protocol-crypto=([a-z0-9-]+)/u,
+    )?.[1];
+    const expectedExternalProtocol = externalProtocolCryptoOwners.get(path);
+    if (externalProtocolCrypto && externalProtocolCrypto !== expectedExternalProtocol) {
+      findings.push(`${path} claims an unregistered external cryptographic protocol ${externalProtocolCrypto}.`);
+    }
+    const registeredExternalProtocol = expectedExternalProtocol !== undefined
+      && externalProtocolCrypto === expectedExternalProtocol;
+    if (!allowedCryptoOwners.has(path) && !registeredExternalProtocol && /\b(?:createHmac|timingSafeEqual)\b/u.test(source)) {
       findings.push(`${path} contains a private cryptographic-envelope primitive.`);
     }
     if (!canonicalOwners.has(path) && /\bfunction\s+(?:canonicalJson|stableStringify)\s*\(/u.test(source)) {
