@@ -1,6 +1,8 @@
 // typecast-file-boundary: subscription gateway fixtures decode deliberately erased transport events through the validated public protocol boundary.
+import { createHmac } from 'node:crypto';
 import { type ApplicationReplayPage, createApplicationAuthorizedReplayableStream, createApplicationStreamSubscriptionGateway } from '@applik8s/applik8s';
-import type { ApplicationAuthorizationReceipt } from '@applik8s/core';
+import { type ApplicationAuthorizationReceipt, canonicalJsonV1Value } from '@applik8s/core';
+import { createSignedEnvelopeCodec, signedEnvelopeUtf8Key, staticSignedEnvelopeKeyProvider } from '@applik8s/runtime/signed-envelope';
 import { describe, expect, test, vi } from 'vitest';
 import { testApplicationPrincipal } from '../../../test-support/application-principal.js';
 
@@ -68,6 +70,12 @@ describe('authenticated public stream subscriptions', () => {
     const cursorBody = JSON.parse(
       Buffer.from(replay.cursor.split('.')[0] ?? '', 'base64url').toString('utf8'),
     ) as Record<string, unknown>;
+    const [encodedBody, encodedSignature] = replay.cursor.split('.');
+    expect(encodedSignature).toBe(
+      createHmac('sha256', cursorSecret)
+        .update(encodedBody ?? '')
+        .digest('base64url'),
+    );
     expect(cursorBody).toMatchObject({ version: 2, subscription: 'card-events' });
     expect(cursorBody).not.toHaveProperty('principalId');
     expect(cursorBody).not.toHaveProperty('authorizationVersion');
@@ -81,6 +89,33 @@ describe('authenticated public stream subscriptions', () => {
     const resumed = await gateway.handle(request('/streams/card-events/replay', { cursor: replay.cursor }));
     expect(resumed?.status).toBe(200);
     expect(read).toHaveBeenLastCalledWith(1, 100);
+
+    const currentTime = Date.now();
+    const v1Codec = createSignedEnvelopeCodec({
+      purpose: 'applik8s.stream-cursor/v1',
+      keys: staticSignedEnvelopeKeyProvider({
+        current: {
+          id: 'stream-cursor-current',
+          key: signedEnvelopeUtf8Key(cursorSecret),
+        },
+      }),
+      now: () => currentTime,
+      maximumLifetimeMs: 15 * 60_000,
+      validatePayload(value) { return value; },
+    });
+    const v1Cursor = await v1Codec.sign(canonicalJsonV1Value(cursorBody), {
+      issuedAt: currentTime,
+      expiresAt: Number(cursorBody.expiresAt),
+    });
+    const v1Resumed = await gateway.handle(request('/streams/card-events/replay', { cursor: v1Cursor }));
+    expect(v1Resumed?.status).toBe(200);
+    expect(read).toHaveBeenLastCalledWith(1, 100);
+  });
+
+  test('bounds stream cursor lifetime at the framework boundary', () => {
+    expect(() => fixture({
+      async read() { return { items: [], nextSequence: 0, exhausted: true, retentionFloor: 0 }; },
+    }, { cursorTtlSeconds: 24 * 60 * 60 + 1 })).toThrow(/cursor, session, or page bounds/);
   });
 
   test('fails closed on retention gaps, cursor transfer, and changed authorization', async () => {
@@ -143,7 +178,7 @@ function event(sequence: number, id: string) {
   };
 }
 
-function fixture(source: { read(after: number, limit: number): Promise<ApplicationReplayPage<object>>; close?(): Promise<void> }, options: { readonly principalId?: string; readonly authorize?: boolean; readonly authorityRevision?: string; readonly principalAuthorityRevision?: string } = {}) {
+function fixture(source: { read(after: number, limit: number): Promise<ApplicationReplayPage<object>>; close?(): Promise<void> }, options: { readonly principalId?: string; readonly authorize?: boolean; readonly authorityRevision?: string; readonly principalAuthorityRevision?: string; readonly cursorTtlSeconds?: number } = {}) {
   return createApplicationStreamSubscriptionGateway({
     subscriptions: [{
       name: 'card-events',
@@ -177,6 +212,7 @@ function fixture(source: { read(after: number, limit: number): Promise<Applicati
       ),
     } : {}),
     cursorSecret,
+    ...(options.cursorTtlSeconds === undefined ? {} : { cursorTtlSeconds: options.cursorTtlSeconds }),
   });
 }
 

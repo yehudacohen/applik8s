@@ -1,9 +1,17 @@
 // typecast-file-boundary: authenticated subscription requests and provider-neutral cursor payloads are validated before typed stream delivery.
-import { createHmac, timingSafeEqual } from 'node:crypto';
 import {
   type ApplicationAuthorizationReceipt,
+  canonicalJsonV1Value,
+  type JsonValue,
   validateApplicationAuthorizationReceipt,
 } from '@applik8s/core';
+import { nodeKeyedDigestBase64Url } from '@applik8s/runtime/node-integrity';
+import {
+  createRollingSignedEnvelopeCodec,
+  type RollingSignedEnvelopeCodec,
+  signedEnvelopeUtf8Key,
+  staticSignedEnvelopeKeyProvider,
+} from '@applik8s/runtime/signed-envelope';
 import { applicationOperationInputDigest } from './application-operation-runtime.js';
 import type { ApplicationQueryPrincipal } from './application-queries.js';
 import type { ApplicationStreamBinding } from './application-reactive.js';
@@ -150,7 +158,25 @@ export function createApplicationStreamSubscriptionGateway<TPrincipal extends Ap
   const sleep = options.sleep ?? abortableSleep;
   const limits = { perPrincipal: options.subscriptionLimits?.perPrincipal ?? 20, total: options.subscriptionLimits?.total ?? 1_000 };
   const limiter = options.subscriptionLimiter ?? createApplicationSubscriptionLimiter(limits);
-  if (cursorTtlSeconds < 30 || pollIntervalMs < 10 || heartbeatMs < pollIntervalMs || maxSessionMs < heartbeatMs || pageSize < 1 || pageSize > 1_000) throw new Error('Application stream subscription polling, heartbeat, cursor, session, or page bounds are invalid.');
+  if (cursorTtlSeconds < 30 || cursorTtlSeconds > 24 * 60 * 60 || pollIntervalMs < 10 || heartbeatMs < pollIntervalMs || maxSessionMs < heartbeatMs || pageSize < 1 || pageSize > 1_000) throw new Error('Application stream subscription polling, heartbeat, cursor, session, or page bounds are invalid.');
+  const cursorKey = signedEnvelopeUtf8Key(options.cursorSecret);
+  const cursorCodec = createRollingSignedEnvelopeCodec<StreamCursor, StreamCursor>({
+    purpose: 'applik8s.stream-cursor/v1',
+    keys: staticSignedEnvelopeKeyProvider({
+      current: { id: 'stream-cursor-current', key: cursorKey },
+    }),
+    now: () => now().getTime(),
+    maximumLifetimeMs: cursorTtlSeconds * 1_000,
+    maximumEncodedBytes: 64 * 1_024,
+    validatePayload: validateStreamCursor,
+    writer: 'legacy',
+    legacy: {
+      key: cursorKey,
+      validatePayload: validateStreamCursor,
+      toCurrent: (payload) => payload,
+      fromCurrent: (payload) => canonicalJsonV1Value(payload),
+    },
+  });
 
   return {
     async handle(request) {
@@ -168,7 +194,7 @@ export function createApplicationStreamSubscriptionGateway<TPrincipal extends Ap
           return json({ error: 'forbidden' }, 403);
         }
         const receipt = await authorizeStreamOperation(options, 'admission', subscription, identity);
-        const cursor = cursorForRequest(options.cursorSecret, subscription.name, identity, receipt, body.value.cursor, now().getTime(), cursorTtlSeconds);
+        const cursor = await cursorForRequest(cursorCodec, options.cursorSecret, subscription.name, identity, receipt, body.value.cursor, now().getTime(), cursorTtlSeconds);
         if (route.operation === 'replay') {
           const requestedLimit = body.value.limit === undefined ? pageSize : Number(body.value.limit);
           if (!Number.isSafeInteger(requestedLimit) || requestedLimit < 1 || requestedLimit > pageSize) return json({ error: 'invalid_limit' }, 400);
@@ -182,7 +208,7 @@ export function createApplicationStreamSubscriptionGateway<TPrincipal extends Ap
             }
             const next = advanceCursor(cursor, page.nextSequence, now().getTime(), cursorTtlSeconds);
             options.audit?.({ event: 'replay', subscription: subscription.name, principal: identity.principal.id });
-            return json({ protocol: 'applik8s.stream/v1alpha1', kind: 'replay', subscription: subscription.name, items: page.items, cursor: encodeCursor(options.cursorSecret, next), exhausted: page.exhausted, retentionFloor: page.retentionFloor }, 200);
+            return json({ protocol: 'applik8s.stream/v1alpha1', kind: 'replay', subscription: subscription.name, items: page.items, cursor: await encodeCursor(cursorCodec, next), exhausted: page.exhausted, retentionFloor: page.retentionFloor }, 200);
           } finally {
             await source.close?.();
           }
@@ -218,12 +244,12 @@ export function createApplicationStreamSubscriptionGateway<TPrincipal extends Ap
                 }
                 if (page.items.length > 0) {
                   current = advanceCursor(current, page.nextSequence, now().getTime(), cursorTtlSeconds);
-                  enqueue(controller, encoder, 'events', { protocol: 'applik8s.stream/v1alpha1', kind: 'events', subscription: subscription.name, items: page.items, cursor: encodeCursor(options.cursorSecret, current) });
+                  enqueue(controller, encoder, 'events', { protocol: 'applik8s.stream/v1alpha1', kind: 'events', subscription: subscription.name, items: page.items, cursor: await encodeCursor(cursorCodec, current) });
                   heartbeatAt = now().getTime();
                   if (!page.exhausted) continue;
                 } else if (now().getTime() - heartbeatAt >= heartbeatMs) {
                   current = advanceCursor(current, current.sequence, now().getTime(), cursorTtlSeconds);
-                  enqueue(controller, encoder, 'keepalive', { protocol: 'applik8s.stream/v1alpha1', kind: 'keepalive', subscription: subscription.name, cursor: encodeCursor(options.cursorSecret, current) });
+                  enqueue(controller, encoder, 'keepalive', { protocol: 'applik8s.stream/v1alpha1', kind: 'keepalive', subscription: subscription.name, cursor: await encodeCursor(cursorCodec, current) });
                   heartbeatAt = now().getTime();
                 }
                 await sleep(pollIntervalMs, session.signal);
@@ -263,7 +289,8 @@ async function admitted<TPrincipal extends ApplicationQueryPrincipal>(options: A
   return identity;
 }
 
-function cursorForRequest<TPrincipal extends ApplicationQueryPrincipal>(
+async function cursorForRequest<TPrincipal extends ApplicationQueryPrincipal>(
+  codec: RollingSignedEnvelopeCodec<StreamCursor>,
   secret: string,
   subscription: string,
   identity: ApplicationStreamSubscriptionIdentity<TPrincipal>,
@@ -271,11 +298,11 @@ function cursorForRequest<TPrincipal extends ApplicationQueryPrincipal>(
   value: unknown,
   now: number,
   ttlSeconds: number,
-): StreamCursor {
+): Promise<StreamCursor> {
   const bindings = streamCursorBindings(secret, identity, receipt);
   if (value === undefined || value === null || value === '') return { version: 2, subscription, ...bindings, sequence: 0, expiresAt: now + ttlSeconds * 1_000 };
   if (typeof value !== 'string') throw new Error('Application stream cursor must be a string.');
-  const cursor = decodeCursor(secret, value, now);
+  const cursor = await decodeCursor(codec, value, now);
   if (cursor.subscription !== subscription || !sameCursorBindings(cursor, bindings)) throw new Error('Application stream cursor identity is invalid.');
   return cursor;
 }
@@ -369,12 +396,52 @@ function sameAuthorizationScope<TPrincipal extends ApplicationQueryPrincipal>(
 }
 
 function streamBinding(secret: string, domain: 'application' | 'authorization' | 'context' | 'principal', value: string): string {
-  return createHmac('sha256', secret).update(`applik8s.stream-cursor.${domain}\0`).update(value).digest('base64url');
+  return nodeKeyedDigestBase64Url({
+    key: secret,
+    purpose: `applik8s.stream-cursor.${domain}`,
+    value,
+  });
 }
 
-function encodeCursor(secret: string, cursor: StreamCursor): string { const body = Buffer.from(JSON.stringify(cursor)).toString('base64url'); return `${body}.${createHmac('sha256', secret).update(body).digest('base64url')}`; }
-// typecast: the signed cursor is decoded only after HMAC verification and scoped sequence/expiry checks.
-function decodeCursor(secret: string, value: string, now: number): StreamCursor { const [body, signature, extra] = value.split('.'); if (!body || !signature || extra) throw new Error('Application stream cursor is invalid.'); const expected = createHmac('sha256', secret).update(body).digest(); const supplied = Buffer.from(signature, 'base64url'); if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) throw new Error('Application stream cursor is invalid.'); const parsed: unknown = JSON.parse(Buffer.from(body, 'base64url').toString('utf8')); if (!parsed || typeof parsed !== 'object') throw new Error('Application stream cursor is invalid.'); const cursor = parsed as StreamCursor; if (cursor.version !== 2 || !Number.isSafeInteger(cursor.sequence) || cursor.sequence < 0 || cursor.expiresAt < now) throw new Error('Application stream cursor is invalid or expired.'); return cursor; }
+function encodeCursor(codec: RollingSignedEnvelopeCodec<StreamCursor>, cursor: StreamCursor): Promise<string> {
+  return codec.sign(cursor, { expiresAt: cursor.expiresAt });
+}
+
+async function decodeCursor(codec: RollingSignedEnvelopeCodec<StreamCursor>, value: string, now: number): Promise<StreamCursor> {
+  let cursor: StreamCursor;
+  try {
+    cursor = await codec.verify(value);
+  } catch {
+    throw new Error('Application stream cursor is invalid.');
+  }
+  if (cursor.expiresAt < now) throw new Error('Application stream cursor is invalid or expired.');
+  return cursor;
+}
+
+function validateStreamCursor(value: JsonValue): StreamCursor {
+  if (!isJsonObject(value)
+    || value.version !== 2
+    || typeof value.subscription !== 'string'
+    || typeof value.principalBinding !== 'string'
+    || typeof value.authorizationBinding !== 'string'
+    || typeof value.contextBinding !== 'string'
+    || !Number.isSafeInteger(value.sequence)
+    || Number(value.sequence) < 0
+    || !Number.isSafeInteger(value.expiresAt)
+    || Number(value.expiresAt) < 0) {
+    throw new TypeError('Application stream cursor contract is invalid.');
+  }
+  for (const field of ['applicationBinding', 'operationId', 'operationVersion', 'catalogRevision', 'authorityRevision'] as const) {
+    if (value[field] !== undefined && typeof value[field] !== 'string') {
+      throw new TypeError(`Application stream cursor ${field} is invalid.`);
+    }
+  }
+  return value as unknown as StreamCursor;
+}
+
+function isJsonObject(value: JsonValue): value is Readonly<Record<string, JsonValue>> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
 
 function enqueue(controller: ReadableStreamDefaultController<Uint8Array>, encoder: TextEncoder, event: string, value: unknown): void { controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(value)}\n\n`)); }
 async function abortableSleep(ms: number, signal?: AbortSignal): Promise<void> { if (signal?.aborted) return; await new Promise<void>((resolve) => { const timeout = setTimeout(done, ms); const abort = () => done(); function done() { clearTimeout(timeout); signal?.removeEventListener('abort', abort); resolve(); } signal?.addEventListener('abort', abort, { once: true }); }); }

@@ -116,6 +116,23 @@
       "decoderRemovalRelease": "0.10.0-earliest-after-zero-legacy-telemetry"
     },
     {
+      "id": "application-stream-cursor-migration",
+      "kind": "signed-envelope-payload",
+      "wireVersion": "pre-v0.8-stream-cursor-v2",
+      "targetWireVersion": "applik8s.signed-envelope/v1",
+      "payloadVersion": "applik8s.stream-cursor/v2",
+      "state": "implemented",
+      "owner": "@applik8s/applik8s",
+      "writers": ["0.8.x:legacy-stream-cursor-over-canonical-json-v1"],
+      "readers": ["0.8.x", "pre-v0.8-stream-cursor-v2"],
+      "maximumLifetime": "0.8-default-15m-and-maximum-24h; pre-v0.8-configured-expiry-had-no-framework-maximum",
+      "purposeOrKeyNamespace": "applik8s.stream-cursor/v1",
+      "migrationPhase": "release-a-reads-legacy-and-v1-writes-legacy",
+      "telemetry": "pending-envelope-version-and-rejection-metrics",
+      "rollbackSafeThrough": "0.7.x-readers-accept-all-0.8.x-output",
+      "decoderRemovalRelease": "0.10.0-earliest-after-zero-legacy-telemetry"
+    },
+    {
       "id": "application-admission-v1",
       "kind": "admission-context",
       "wireVersion": "applik8s.admission/v1",
