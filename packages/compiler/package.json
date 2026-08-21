@@ -40,6 +40,7 @@
     "@applik8s/deployment-compiler": "0.8.0",
     "@applik8s/deployment-contract": "0.8.0",
     "@applik8s/runtime-contract": "0.8.0",
+    "@applik8s/runtime": "0.8.0",
     "@applik8s/runtime-s3": "0.8.0",
     "@applik8s/runtime-aws": "0.8.0",
     "@applik8s/runtime-celld": "0.8.0",

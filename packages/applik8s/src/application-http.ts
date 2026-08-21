@@ -14,13 +14,19 @@ import type {
   JsonValue,
 } from '@applik8s/core';
 import type { SchemaInput } from '@applik8s/sdk';
+import type { ApplicationServerOptions } from './application-builder.js';
 import {
   type ExpandedApplicationCallbackDependencies,
   expandApplicationCallbackDependencies,
   serializeApplicationCallback,
 } from './application-callback.js';
-import type { ApplicationServerOptions } from './application-builder.js';
 import { declaredSchema } from './application-workflow-serialization.js';
+import { applicationGeneratedDependencyAlias } from './application-workflows.js';
+
+interface ApplicationHttpWorkflowBinding {
+  readonly kind: 'applicationTask' | 'applicationWorkflow';
+  readonly definition: { readonly id: string };
+}
 
 export interface ApplicationHttpOptions
   extends Pick<
@@ -184,6 +190,10 @@ export interface ApplicationHttpRouteDeclaration {
   }>;
   /** @internal Semantic dependencies retained until transaction inference. */
   readonly handlerDependencyGraph: ExpandedApplicationCallbackDependencies;
+  /** @internal Durable workflow leaves reconstructed by the generated worker. */
+  readonly workflowBindings: Readonly<
+    Record<string, ApplicationHttpWorkflowBinding>
+  >;
   /** @internal Original function identity retained only until compilation. */
   readonly handler: ApplicationHttpHandler<object, object>;
   authority?: ApplicationOperationAuthorityGraphContract;
@@ -210,6 +220,14 @@ export function createApplicationHttpServer(
         contract.output,
         `app.http(${serverName}).${name}.output`,
       );
+      const handlerDependencies = expandApplicationCallbackDependencies({
+        calls: [handler, ...(contract.__generatedCalls ?? [])],
+        bindings: contract.__generatedBindings,
+        awaited: contract.__generatedAwaitedCalls,
+      });
+      const workflowBindings = applicationHttpWorkflowBindings(
+        handlerDependencies,
+      );
       const serializedHandler = serializeApplicationCallback({
         registrar: 'app.http',
         argumentIndex: 3,
@@ -217,11 +235,9 @@ export function createApplicationHttpServer(
         label: `HTTP route ${serverName}.${name}`,
         callback: handler as (...args: never[]) => unknown,
         allowDeferredResolution: true,
-      });
-      const handlerDependencies = expandApplicationCallbackDependencies({
-        calls: [handler, ...(contract.__generatedCalls ?? [])],
-        bindings: contract.__generatedBindings,
-        awaited: contract.__generatedAwaitedCalls,
+        injectedIdentifiers: applicationHttpInjectedIdentifiers(
+          workflowBindings,
+        ),
       });
       const serializedAuthorize = contract.authorize
         ? serializeApplicationCallback({
@@ -268,6 +284,7 @@ export function createApplicationHttpServer(
             }
           : {}),
         handlerDependencyGraph: handlerDependencies,
+        workflowBindings,
       };
       const operation = createApplicationRuntimeOperation<
         TInput,
@@ -314,14 +331,6 @@ export function createApplicationHttpServer(
         contract.output,
         `app.http(${serverName}).${name}.output`,
       );
-      const serializedHandler = serializeApplicationCallback({
-        registrar: 'app.http.webhook',
-        argumentIndex: 3,
-        property: 'handler',
-        label: `HTTP webhook ${serverName}.${name}`,
-        callback: handler as (...args: never[]) => unknown,
-        allowDeferredResolution: true,
-      });
       const serializedAuthentication = serializeApplicationCallback({
         registrar: 'app.http.webhook',
         argumentIndex: 2,
@@ -338,6 +347,20 @@ export function createApplicationHttpServer(
         ],
         bindings: contract.__generatedBindings,
         awaited: contract.__generatedAwaitedCalls,
+      });
+      const workflowBindings = applicationHttpWorkflowBindings(
+        handlerDependencies,
+      );
+      const serializedHandler = serializeApplicationCallback({
+        registrar: 'app.http.webhook',
+        argumentIndex: 3,
+        property: 'handler',
+        label: `HTTP webhook ${serverName}.${name}`,
+        callback: handler as (...args: never[]) => unknown,
+        allowDeferredResolution: true,
+        injectedIdentifiers: applicationHttpInjectedIdentifiers(
+          workflowBindings,
+        ),
       });
       const authority: ApplicationOperationAuthorityGraphContract = {
         classification: 'public',
@@ -382,6 +405,7 @@ export function createApplicationHttpServer(
             readonly id: string;
           }>,
         handlerDependencyGraph: handlerDependencies,
+        workflowBindings,
         authority,
       };
       const operation = createApplicationRuntimeOperation<TEvent, TOutput>({
@@ -404,6 +428,47 @@ export function createApplicationHttpServer(
       return operation;
     },
   });
+}
+
+function applicationHttpWorkflowBindings(
+  dependencies: ExpandedApplicationCallbackDependencies,
+): Readonly<Record<string, ApplicationHttpWorkflowBinding>> {
+  const inferred = dependencies.calls.filter(isApplicationHttpWorkflowBinding);
+  return Object.fromEntries(
+    inferred.flatMap((binding) => {
+      const identifiers = Object.entries(dependencies.bindings)
+        .filter(
+          ([identifier, candidate]) =>
+            candidate === binding && !/^generatedCall\d+$/.test(identifier),
+        )
+        .map(([identifier]) => identifier);
+      return (identifiers.length > 0
+        ? identifiers
+        : [applicationGeneratedDependencyAlias(binding.definition.id)])
+        .map((identifier) => [identifier, binding] as const);
+    }),
+  );
+}
+
+function isApplicationHttpWorkflowBinding(
+  value: unknown,
+): value is ApplicationHttpWorkflowBinding {
+  return typeof value === 'function'
+    && (
+      Reflect.get(value, 'kind') === 'applicationTask'
+      || Reflect.get(value, 'kind') === 'applicationWorkflow'
+    );
+}
+
+function applicationHttpInjectedIdentifiers(
+  bindings: Readonly<Record<string, ApplicationHttpWorkflowBinding>>,
+): readonly string[] {
+  return Object.keys(bindings)
+    .flatMap((identifier) => [identifier, identifier.split('.')[0] ?? identifier])
+    .filter(
+      (identifier, index, identifiers) =>
+        identifier.length > 0 && identifiers.indexOf(identifier) === index,
+    );
 }
 
 function applyWebhookOperationAuthority<TInput, TOutput>(

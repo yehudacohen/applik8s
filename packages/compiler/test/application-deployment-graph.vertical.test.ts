@@ -10,7 +10,11 @@ import { afterEach, describe, expect, it } from "vitest";
 // typecast-file-boundary: Test fixtures preserve literal discriminants while
 // exercising compiler shadow emission without loading the compiler's
 // worker-backed bundling entrypoints into Bun's test process.
-import { emitApplicationDeploymentGraph, withPublishedActorIngressRoutes } from "../src/application-deployment-graph.js";
+import {
+  applicationGeneratedSecretRequirements,
+  emitApplicationDeploymentGraph,
+  withPublishedActorIngressRoutes,
+} from "../src/application-deployment-graph.js";
 
 const temporaryDirectories: string[] = [];
 const artifactDigest = `sha256:${"a".repeat(64)}`;
@@ -23,6 +27,61 @@ afterEach(async () => {
 });
 
 describe("compiler deployment graph emission", () => {
+  it("binds the internal-operation Secret to typed HTTP workflow gateway callers", async () => {
+    const directory = await mkdtemp(
+      join(process.env.TMPDIR ?? "/tmp", "applik8s-http-workflow-secret-"),
+    );
+    temporaryDirectories.push(directory);
+    const bundlePath = join(directory, "typekro-bundle.json");
+    await writeFile(bundlePath, JSON.stringify({ spec: {} }));
+    const graph = {
+      apiVersion: "applik8s.applicationGraph/v1alpha1",
+      kind: "ApplicationGraph",
+      metadata: { name: "workflow-http", namespace: "workflow-http" },
+      nodes: [
+        {
+          id: "server.public-api",
+          kind: "server",
+          name: "public-api",
+          routes: [{
+            id: "start",
+            method: "POST",
+            path: "/start",
+            functionNative: {
+              workflowBindings: [{
+                identifier: "provision",
+                target: { nodeId: "workflow.tenant.provision.v1" },
+              }],
+            },
+          }],
+        },
+        {
+          id: "workflow-worker.main",
+          kind: "workflowWorker",
+          name: "main",
+        },
+      ],
+      edges: [],
+      providerRequirements: [],
+      providerBindings: [],
+    } as unknown as ApplicationGraph;
+
+    const requirements = await applicationGeneratedSecretRequirements(
+      bundlePath,
+      graph.metadata.namespace,
+      graph,
+      {},
+    );
+
+    expect(requirements).toContainEqual(
+      expect.objectContaining({
+        namespace: "workflow-http",
+        name: "workflow-http-internal-operation",
+        consumers: ["server.public-api", "workflow-worker.main"],
+      }),
+    );
+  });
+
   it("routes only the public actor protocol through the application Ingress", () => {
     const graph = publicRealtimeActorGraph();
     const resources = withPublishedActorIngressRoutes([{

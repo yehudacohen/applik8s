@@ -6,20 +6,29 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { cpus, platform } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
-import { type } from '@applik8s/applik8s/dsl';
 import {
-  createMemoryApplicationSignalStore,
-  runApplicationStreamBatchProcessor,
   type ApplicationFrozenStreamBatchGroup,
   type ApplicationSignalDefinition,
+  type ApplicationStreamDeliveryAdmitter,
   type ApplicationStreamEnvelope,
   type ApplicationStreamProcessorStore,
+  createMemoryApplicationSignalStore,
+  runApplicationStreamBatchProcessor,
 } from '@applik8s/applik8s';
+import { type } from '@applik8s/applik8s/dsl';
 import type {
   ApplicationIdentityReference,
   ApplicationOperationCatalog,
   ApplicationOperationDescriptor,
   ApplicationPrincipal,
+} from '@applik8s/core';
+import {
+  applicationAdmissionInvocationView,
+  applicationCausalPrincipalContext,
+  createApplicationAdmissionContextV1,
+  createApplicationExecutionPrincipalV1,
+  validateApplicationAdmissionContextV1WithoutReceipt,
+  withApplicationAdmissionExecutionV1,
 } from '@applik8s/core';
 import {
   ApplicationAuthorityService,
@@ -336,6 +345,7 @@ async function benchmarkFrozenBatches(count: number) {
       },
     },
     store: state.store,
+    admit: benchmarkStreamDeliveryAdmission,
     handle: async () => undefined,
     retry: {
       maxAttempts: 1,
@@ -365,6 +375,73 @@ async function benchmarkFrozenBatches(count: number) {
     maxItems: 125,
     rssGrowthBytes: Math.max(0, process.memoryUsage().rss - memoryBefore),
   };
+}
+
+function benchmarkStreamDeliveryAdmission({
+  envelope,
+  attempt,
+  signal,
+}: Parameters<ApplicationStreamDeliveryAdmitter>[0]): ReturnType<ApplicationStreamDeliveryAdmitter> {
+  if (signal.aborted) throw new Error('Benchmark stream delivery was aborted.');
+  const workloadIdentity = {
+    id: 'identity:benchmark:workload:frozen-batch-processor',
+    kind: 'workload' as const,
+    issuer: 'applik8s://benchmark',
+    subject: 'frozen-batch-processor',
+  };
+  const causalPrincipal = envelope.principal
+    ? applicationCausalPrincipalContext(envelope.principal)
+    : {
+        id: workloadIdentity.id,
+        identity: workloadIdentity,
+        grantIds: [],
+      };
+  const executionId = `benchmark-frozen-batch:${envelope.id}`;
+  const deadline = new Date(Date.now() + 60_000).toISOString();
+  const cancellationRevision = `active:${executionId}`;
+  const trustedContextDigest =
+    envelope.contextDigest
+    ?? envelope.principal?.trustedContextDigest
+    ?? 'benchmark-context';
+  const principal = createApplicationExecutionPrincipalV1({
+    application: 'benchmark-v07',
+    executionKind: 'processor',
+    executionId,
+    attempt,
+    workloadIdentity,
+    causalPrincipal,
+    envelopes: [],
+    trustedContextDigest,
+    audience: ['benchmark-frozen-batch'],
+    catalogRevision: 'benchmark-v07',
+    authorityRevision: 'benchmark-v07',
+    deadline,
+    cancellationRevision,
+    authenticationMethod: 'benchmark-stream-delivery',
+  });
+  return applicationAdmissionInvocationView(
+    validateApplicationAdmissionContextV1WithoutReceipt(
+      withApplicationAdmissionExecutionV1(
+        createApplicationAdmissionContextV1({
+          admission: {
+            principal,
+            trustedContext: envelope.trustedContext ?? {},
+          },
+          operation: {
+            id: 'applik8s://processors/benchmark-frozen-batch/operations/deliver',
+            transport: 'broker',
+          },
+          correlationId: envelope.id,
+        }),
+        {
+          causationId: envelope.id,
+          deadline,
+          cancellation: { revision: cancellationRevision },
+          delivery: { id: envelope.id, source: 'benchmark-stream' },
+        },
+      ),
+    ),
+  );
 }
 
 function memoryBatchStore(): {

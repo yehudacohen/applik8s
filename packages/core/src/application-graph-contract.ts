@@ -1,4 +1,11 @@
 // typecast-file-boundary: graph contract internals validate every discriminator and JSON contract before restoring the portable ApplicationGraph union.
+
+import {
+  type ApplicationCanonicalIdentity,
+  type ApplicationRuntimeAccessRequirement,
+  type ApplicationSourceProvenance,
+  validateApplicationFoundation,
+} from './application-foundation.js';
 import type {
   ApplicationHandlerDependencies,
   ApplicationKubernetesCreateAuthorityContract,
@@ -13,12 +20,6 @@ import type {
   ApplicationScopeExpression,
   ApplicationStaticAuthorityManifest,
 } from './application-operation-authority.js';
-import {
-  type ApplicationCanonicalIdentity,
-  type ApplicationRuntimeAccessRequirement,
-  type ApplicationSourceProvenance,
-  validateApplicationFoundation,
-} from './application-foundation.js';
 import type { ApiVersion, Condition, Diagnostic, JsonObject, KubernetesName, NamespaceName, ObjectRef, ResourceScope, SourceLocation } from './common.js';
 import type { PermissionRule } from './resource.js';
 
@@ -2027,6 +2028,23 @@ export interface ApplicationFunctionNativeHttpRouteContract {
     readonly identifier: string;
     readonly provider: ApplicationProviderRef;
   }[];
+  /** Durable workflow/task handles captured from the ordinary route closure. */
+  readonly workflowBindings?: readonly {
+    readonly identifier: string;
+    readonly target: ApplicationGraphNodeRef;
+    readonly contract: {
+      readonly name: string;
+      readonly version: string;
+      readonly input: ApplicationMessageContractSchema;
+      readonly output: ApplicationMessageContractSchema;
+      readonly signals: readonly {
+        readonly name: string;
+        readonly schema: ApplicationMessageContractSchema;
+      }[];
+    };
+  }[];
+  /** Selected runtime authority for the captured durable handles. */
+  readonly workflowEngine?: ApplicationProviderRef<'WorkflowEngine'>;
   readonly transaction?: ApplicationFunctionNativeTransactionContract;
   readonly idempotency: {
     readonly source: 'http-idempotency-key';

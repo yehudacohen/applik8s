@@ -9,14 +9,14 @@ import {
   compileApplicationOperationCatalog,
   compileApplicationWorkloadAuthority,
 } from '../src/application-operations/index.js';
+import { workflowContract } from '../src/application-workflows/contracts.js';
+import { workflowResources } from '../src/application-workflows/resources.js';
 import {
   generatedWorkerSource,
   handlerModuleFile,
   nestedCallbackBindingsSource,
   taskServicePrincipalInput,
 } from '../src/application-workflows/source.js';
-import { workflowContract } from '../src/application-workflows/contracts.js';
-import { workflowResources } from '../src/application-workflows/resources.js';
 import { compileTypeKroComposition, discoverApplicationGraph } from '../src/pipeline/index.js';
 
 describe('v0.5 generated workflow lowering', () => {
@@ -291,7 +291,28 @@ export const workflowProof = platform.composition;
       expect(source).toContain('AuthenticationV1Api');
       expect(source).toContain('createTokenReview');
       expect(source).toContain('applik8s.workflow-run-reference/v1alpha1');
-      expect(source).toContain('aes-256-gcm');
+      expect(source).not.toContain('aes-256-gcm');
+      expect(generatedSource).toContain(
+        "purpose: 'applik8s.workflow-run-reference/v1alpha1'",
+      );
+      expect(generatedSource).toContain('gatewayRunReference.sign');
+      expect(generatedSource).toContain('gatewayRunReference.verify');
+      expect(generatedSource).toContain('value.caller !== expectedCaller');
+      expect(generatedSource).toContain(
+        "purpose: 'applik8s.workflow-gateway-admission/v1'",
+      );
+      expect(generatedSource).toContain('gatewayAdmission.verify');
+      expect(generatedSource).toContain('admission-required');
+      expect(generatedSource).toContain('admission-invalid');
+      expect(generatedSource).toContain('admission-transport-invalid');
+      expect(generatedSource).toContain('gatewayCallerContracts');
+      expect(generatedSource).toContain(
+        "audiences: ['https://kubernetes.default.svc']",
+      );
+      expect(generatedSource).toContain(
+        'applicationCausalPrincipalContext',
+      );
+      expect(generatedSource).toContain("url.pathname === '/readyz'");
       expect(source).toContain('{key:e.idempotencyKey}');
       expect(generatedSource).toContain(
         'const { idempotencyKey: _parentIdempotencyKey, ...inherited } = parent ?? {}',

@@ -1,12 +1,79 @@
 // typecast-file-boundary: tests inspect heterogeneous generated Kubernetes
 // resources after discriminating their runtime metadata and graph kinds.
-import { app, applicationGraphFor } from '@applik8s/applik8s';
+import {
+  app,
+  applicationGraphFor,
+  WorkflowEngine,
+  workflow,
+} from '@applik8s/applik8s';
 import { type } from '@applik8s/applik8s/dsl';
 import { bindApplicationCallableDependencies } from '@applik8s/applik8s/internal/provider-runtime';
 import { pgTable, text } from 'drizzle-orm/pg-core';
 import { describe, expect, it } from 'vitest';
 
 describe('function-native HTTP authoring', () => {
+  it('captures durable workflow calls as generated route bindings', () => {
+    const application = app('typed-http-workflow', {
+      namespace: 'typed-http-workflow',
+    });
+    application.provide(
+      WorkflowEngine,
+      WorkflowEngine.hatchet({ namespace: 'typed-http-workflow' }),
+    );
+    const Provision = workflow('tenant.provision.v1', {
+      input: type({ tenantId: 'string' }),
+      output: type({ accepted: 'boolean' }),
+    });
+    const provision = application.workflow(
+      Provision,
+      { retries: 1 },
+      async () => ({ accepted: true }),
+    );
+    const api = application.http('public-api');
+    api.post(
+      'provision-tenant',
+      '/tenants/provision',
+      {
+        input: type({ tenantId: 'string' }),
+        output: type({ accepted: 'boolean' }),
+        __generatedCalls: [provision],
+        __generatedBindings: { provision },
+      },
+      async ({ input }) =>
+        provision(input, { idempotencyKey: input.tenantId }),
+    ).public();
+
+    const graph = applicationGraphFor(application.composition);
+    const server = graph?.nodes.find(
+      (node) => node.kind === 'server' && node.name === 'public-api',
+    );
+    expect(server?.kind === 'server' ? server.routes[0] : undefined)
+      .toMatchObject({
+        functionNative: {
+          workflowBindings: [{
+            identifier: 'provision',
+            target: { nodeId: 'workflow.tenant.provision.v1' },
+            contract: {
+              name: 'tenant.provision',
+              version: 'v1',
+              input: expect.any(Object),
+              output: expect.any(Object),
+              signals: [],
+            },
+          }],
+          workflowEngine: {
+            interface: 'WorkflowEngine',
+            nodeId: 'provider.workflow-engine',
+          },
+        },
+      });
+    expect(graph?.edges).toContainEqual({
+      from: { nodeId: 'server.public-api' },
+      to: { nodeId: 'workflow.tenant.provision.v1' },
+      relationship: 'dependsOn',
+    });
+  });
+
   it('collects typed routes once and lowers their boundary into the application graph', async () => {
     const application = app('typed-http', { namespace: 'typed-http' });
     const api = application.http('public-api', { replicas: 2 });

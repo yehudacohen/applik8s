@@ -7,15 +7,15 @@ import { type ApplicationGraph, serializeApplicationPlan } from "@applik8s/core"
 import {
   type ApplicationArtifactRequirement,
   type ApplicationGeneratedSecretRequirement,
+  applicationProviderGuaranteesForGraph,
   compileApplicationDeploymentGraph,
   compileApplicationPlan,
-  applicationProviderGuaranteesForGraph,
 } from "@applik8s/deployment-compiler";
 import {
   type ApplicationDeploymentGraph,
   type ApplicationDeploymentStrategy,
-  type DeploymentJsonObject,
   applicationDeploymentOutputReference,
+  type DeploymentJsonObject,
   digestApplicationDeploymentGraph,
   digestApplicationDeploymentValue,
   serializeApplicationDeploymentGraph,
@@ -539,7 +539,7 @@ function deploymentRelevantProfileTransition(
     : transition;
 }
 
-async function applicationGeneratedSecretRequirements(
+export async function applicationGeneratedSecretRequirements(
   bundlePath: string,
   resolvedApplicationNamespace: string | undefined,
   graph: ApplicationGraph,
@@ -610,7 +610,17 @@ async function applicationGeneratedSecretRequirements(
     || node.kind === "actor"
     || node.kind === "lakehousePublication"
     || node.kind === "workflowWorker");
-  if (mcpServers.length > 0 || agents.length > 0 || internalCallbacks.length > 0) {
+  const workflowGatewayServers = graph.nodes.filter((node) =>
+    node.kind === "server"
+    && Array.isArray(node.routes)
+    && node.routes.some((route) =>
+      (route.functionNative?.workflowBindings?.length ?? 0) > 0));
+  if (
+    mcpServers.length > 0
+    || agents.length > 0
+    || internalCallbacks.length > 0
+    || workflowGatewayServers.length > 0
+  ) {
     const namespace = stringValue(
       resolvedApplicationNamespace ?? graph.metadata.namespace ?? "default",
       "Application MCP namespace",
@@ -639,6 +649,7 @@ async function applicationGeneratedSecretRequirements(
         ...mcpServers.map((server) => server.id),
         ...agents.map((agent) => agent.id),
         ...internalCallbacks.map((node) => node.id),
+        ...workflowGatewayServers.map((server) => server.id),
         ...gatewayConsumers,
       ].sort(),
     });

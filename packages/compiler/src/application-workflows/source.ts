@@ -6,8 +6,8 @@ import type { ApplicationStreamNode, ApplicationTaskHandlerNode, ApplicationWork
 import type { Plugin } from 'esbuild';
 import { generatedCallbackFactoryModule } from '../application-callback-module.js';
 import {
-  generatedApplicationEventLogPublisherSource,
   type ApplicationRuntimeExecutionTarget,
+  generatedApplicationEventLogPublisherSource,
 } from '../application-event-log-runtime-source.js';
 import { applicationSignalGrantPermissionId } from '../application-operations/index.js';
 import { structuredGenerationSelection, type WorkflowContract, type WorkflowFunctionNativeTransactionContract, type WorkflowOperationAliasContract, type WorkflowTaskObjectContract, type WorkflowTaskProjectionContract } from './contracts.js';
@@ -286,9 +286,9 @@ import { applicationOperationInputDigest } from '@applik8s/applik8s/operation-ru
     ? `import { applicationPostgresModelReadClients, createApplicationFunctionNativeEventHandle, editApplicationNativeModelObject, executeFunctionNativePostgresModelEdit, findApplicationNativeModelObjects, getApplicationNativeModelObject, requireApplicationNativeModelObject, withApplicationNativeModelReadClients, withApplicationNativeModelTransactionRuntime } from '@applik8s/applik8s/stream-worker-runtime';`
     : '';
   const gatewayImports = contract.gatewayCallers.length > 0
-    ? `import { createCipheriv, createDecipheriv, createHash as createNodeHash, randomBytes } from 'node:crypto';
-import { AuthenticationV1Api, KubeConfig } from '@kubernetes/client-node';
-import { createHatchetWorkflowRuntimeFromClient, observeHatchetWorkflowRun } from '@applik8s/runtime-hatchet';`
+    ? `import { AuthenticationV1Api, KubeConfig } from '@kubernetes/client-node';
+import { createHatchetWorkflowRuntimeFromClient, observeHatchetWorkflowRun } from '@applik8s/runtime-hatchet';
+import { createSignedEnvelopeCodec, signedEnvelopeUtf8Key, staticSignedEnvelopeKeyProvider } from '@applik8s/runtime';`
     : '';
   const capabilityInitializers = generatedWorkflowCapabilities(contract);
   const operationInitializer = generatedWorkflowOperationRuntime(
@@ -307,7 +307,7 @@ import { createHatchetWorkflowRuntimeFromClient, observeHatchetWorkflowRun } fro
 	import { readFile } from 'node:fs/promises';
 	import { connect as connectTcp } from 'node:net';
 	import { HatchetClient } from '@hatchet-dev/typescript-sdk/v1/index.js';
-	import { applicationAdmissionInvocationView, canonicalJsonV1String, createApplicationAdmissionContextV1, createApplicationExecutionPrincipalV1, validateApplicationAdmissionContextV1WithoutReceipt, withApplicationAdmissionExecutionV1, withApplicationAdmissionTraceV1 } from '@applik8s/core';
+	import { applicationAdmissionInvocationView, applicationCausalPrincipalContext, canonicalJsonV1String, createApplicationAdmissionContextV1, createApplicationExecutionPrincipalV1, validateApplicationAdmissionContextV1, validateApplicationAdmissionContextV1WithoutReceipt, withApplicationAdmissionExecutionV1, withApplicationAdmissionTraceV1 } from '@applik8s/core';
 	import { nodeKeyedDigestHex } from '@applik8s/runtime/node-integrity';
 		import { installApplicationObjectStorageRuntimeResolver, installApplicationProjectionRuntimeResolver, installApplicationWorkflowRuntimeResolver } from '@applik8s/applik8s/workflow-runtime-resolvers';
 import { applicationWorkflowCausalPrincipalMetadata } from '@applik8s/applik8s/workflow-runtime';
@@ -877,29 +877,90 @@ function generatedWorkflowGateway(contract: WorkflowContract): string {
     ...contract.tasks.map(({ task }) => [task.name, task.contract.input.jsonSchema]),
     ...contract.workflows.map(({ workflow }) => [workflow.name, workflow.contract.input.jsonSchema]),
   ].filter(([id]) => allowedContracts.includes(String(id))));
-  const callerSpecifications = contract.gatewayCallers.map((caller) => ({
-    namespace: caller.namespace.startsWith('${')
+  const callerContracts = new Map<string, Set<string>>();
+  for (const caller of contract.gatewayCallers) {
+    const namespace = caller.namespace.startsWith('${')
       ? '__APPLIK8S_RUNTIME_NAMESPACE__'
-      : caller.namespace,
-    serviceAccount: caller.serviceAccount,
-  }));
+      : caller.namespace;
+    const identity = `${namespace}/${caller.serviceAccount}`;
+    const contracts = callerContracts.get(identity) ?? new Set<string>();
+    for (const declaredContract of caller.contracts) {
+      contracts.add(declaredContract);
+    }
+    callerContracts.set(identity, contracts);
+  }
+  const callerSpecifications = [...callerContracts.entries()]
+    .map(([identity, contracts]) => {
+      const separator = identity.indexOf('/');
+      return {
+        namespace: identity.slice(0, separator),
+        serviceAccount: identity.slice(separator + 1),
+        contracts: [...contracts].sort(),
+      };
+    })
+    .sort((left, right) =>
+      `${left.namespace}/${left.serviceAccount}`.localeCompare(
+        `${right.namespace}/${right.serviceAccount}`,
+      ));
   return `
 const gatewayContracts = new Set(${JSON.stringify(allowedContracts)});
 const gatewayInputSchemas = ${JSON.stringify(inputSchemas)};
 const gatewayRuntimeNamespace = requiredEnv('APPLIK8S_WORKFLOW_NAMESPACE');
-const gatewayCallers = new Set(${JSON.stringify(callerSpecifications)}.map((caller) =>
+const gatewayCallerContracts = new Map(${JSON.stringify(callerSpecifications)}.map((caller) => [
   'system:serviceaccount:'
     + (caller.namespace === '__APPLIK8S_RUNTIME_NAMESPACE__' ? gatewayRuntimeNamespace : caller.namespace)
-    + ':' + caller.serviceAccount
-));
+    + ':' + caller.serviceAccount,
+  new Set(caller.contracts),
+]));
 const gatewayKubeConfig = new KubeConfig();
 gatewayKubeConfig.loadFromCluster();
 const gatewayAuthentication = gatewayKubeConfig.makeApiClient(AuthenticationV1Api);
 const gatewayRuntime = createHatchetWorkflowRuntimeFromClient(hatchet);
-const gatewaySealingKey = createNodeHash('sha256')
-  .update('applik8s.workflow-gateway/v1alpha1\\0')
-  .update(requiredEnv('HATCHET_CLIENT_TOKEN'))
-  .digest();
+const gatewayAdmission = createSignedEnvelopeCodec({
+  purpose: 'applik8s.workflow-gateway-admission/v1',
+  keys: staticSignedEnvelopeKeyProvider({
+    current: {
+      id: 'application-internal-operation',
+      key: signedEnvelopeUtf8Key(
+        requiredEnv('APPLIK8S_INTERNAL_OPERATION_SECRET'),
+      ),
+    },
+  }),
+  validatePayload: value => validateApplicationAdmissionContextV1(value),
+  maximumEncodedBytes: 32_768,
+  maximumLifetimeMs: 60_000,
+});
+const gatewayRunReference = createSignedEnvelopeCodec({
+  purpose: 'applik8s.workflow-run-reference/v1alpha1',
+  keys: staticSignedEnvelopeKeyProvider({
+    current: {
+      id: 'application-internal-operation',
+      key: signedEnvelopeUtf8Key(
+        requiredEnv('APPLIK8S_INTERNAL_OPERATION_SECRET'),
+      ),
+    },
+  }),
+  validatePayload: value => {
+    if (
+      !value
+      || typeof value !== 'object'
+      || Array.isArray(value)
+      || value.protocol !== 'applik8s.workflow-run-reference/v1alpha1'
+      || typeof value.contract !== 'string'
+      || typeof value.runId !== 'string'
+      || typeof value.admittedAt !== 'string'
+      || typeof value.caller !== 'string'
+    ) throw new TypeError('invalid-reference');
+    return Object.freeze({
+      protocol: value.protocol,
+      contract: value.contract,
+      runId: value.runId,
+      admittedAt: value.admittedAt,
+      caller: value.caller,
+    });
+  },
+  maximumEncodedBytes: 8_192,
+});
 
 function gatewayJson(response, status, value) {
   response.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store' });
@@ -923,35 +984,33 @@ async function authenticateGatewayRequest(request) {
   const token = authorization.slice('Bearer '.length).trim();
   if (!token) throw new Error('unauthorized');
   const review = await gatewayAuthentication.createTokenReview({
-    body: { apiVersion: 'authentication.k8s.io/v1', kind: 'TokenReview', spec: { token } },
+    body: {
+      apiVersion: 'authentication.k8s.io/v1',
+      kind: 'TokenReview',
+      spec: {
+        token,
+        audiences: ['https://kubernetes.default.svc'],
+      },
+    },
   });
   const username = review.status?.authenticated === true ? review.status.user?.username : undefined;
-  if (typeof username !== 'string' || !gatewayCallers.has(username)) throw new Error('unauthorized');
+  if (typeof username !== 'string' || !gatewayCallerContracts.has(username)) throw new Error('unauthorized');
   return username;
 }
 function sealGatewayReference(value) {
-  const iv = randomBytes(12);
-  const cipher = createCipheriv('aes-256-gcm', gatewaySealingKey, iv);
-  const ciphertext = Buffer.concat([
-    cipher.update(JSON.stringify({ protocol: 'applik8s.workflow-run-reference/v1alpha1', ...value }), 'utf8'),
-    cipher.final(),
-  ]);
-  return Buffer.concat([iv, cipher.getAuthTag(), ciphertext]).toString('base64url');
+  return gatewayRunReference.sign({
+    protocol: 'applik8s.workflow-run-reference/v1alpha1',
+    ...value,
+  });
 }
-function openGatewayReference(reference, expectedContract) {
-  const bytes = Buffer.from(reference, 'base64url');
-  if (bytes.length < 29) throw new Error('invalid-reference');
-  const decipher = createDecipheriv('aes-256-gcm', gatewaySealingKey, bytes.subarray(0, 12));
-  decipher.setAuthTag(bytes.subarray(12, 28));
-  const value = JSON.parse(Buffer.concat([
-    decipher.update(bytes.subarray(28)),
-    decipher.final(),
-  ]).toString('utf8'));
+async function openGatewayReference(reference, expectedContract, expectedCaller) {
+  const value = (await gatewayRunReference.verify(reference)).payload;
   if (
     value?.protocol !== 'applik8s.workflow-run-reference/v1alpha1'
     || value.contract !== expectedContract
     || typeof value.runId !== 'string'
     || typeof value.admittedAt !== 'string'
+    || value.caller !== expectedCaller
   ) throw new Error('invalid-reference');
   return value;
 }
@@ -960,12 +1019,19 @@ async function handleGatewayRequest(request, response) {
     if (!ready || stopping) return gatewayJson(response, 503, { error: 'workflow-gateway-unavailable' });
     const gatewayCaller = await authenticateGatewayRequest(request);
     const url = new URL(request.url ?? '/', 'http://workflow-gateway.invalid');
+    if (request.method === 'GET' && url.pathname === '/readyz') {
+      return gatewayJson(response, 200, { ready: true });
+    }
     const parts = url.pathname.split('/').filter(Boolean).map(decodeURIComponent);
     if (parts[0] !== 'v1' || parts[1] !== 'workflows' || parts[3] !== 'runs') {
       return gatewayJson(response, 404, { error: 'not-found' });
     }
     const contract = parts[2];
-    if (!contract || !gatewayContracts.has(contract)) return gatewayJson(response, 403, { error: 'contract-not-authorized' });
+    if (
+      !contract
+      || !gatewayContracts.has(contract)
+      || !gatewayCallerContracts.get(gatewayCaller)?.has(contract)
+    ) return gatewayJson(response, 403, { error: 'contract-not-authorized' });
     if (request.method === 'POST' && parts.length === 4) {
       const idempotencyKey = request.headers['idempotency-key'];
       if (typeof idempotencyKey !== 'string' || !idempotencyKey.trim()) {
@@ -975,31 +1041,60 @@ async function handleGatewayRequest(request, response) {
       const input = body.input;
       if (!input || typeof input !== 'object' || Array.isArray(input)) return gatewayJson(response, 400, { error: 'invalid-input' });
       const validInput = validate(gatewayInputSchemas[contract], input, contract + '.input');
-      const metadata = body.metadata && typeof body.metadata === 'object' && !Array.isArray(body.metadata)
+      const requestedMetadata = body.metadata && typeof body.metadata === 'object' && !Array.isArray(body.metadata)
         ? body.metadata
         : {};
+      if (typeof body.admission !== 'string') {
+        return gatewayJson(response, 400, { error: 'admission-required' });
+      }
+      let sourceAdmission;
+      try {
+        sourceAdmission = (await gatewayAdmission.verify(body.admission)).payload;
+      } catch {
+        return gatewayJson(response, 403, { error: 'admission-invalid' });
+      }
+      if (
+        sourceAdmission.operation.transport !== 'http'
+        && sourceAdmission.operation.transport !== 'webhook'
+      ) {
+        return gatewayJson(response, 403, { error: 'admission-transport-invalid' });
+      }
+      const causalPrincipal = applicationCausalPrincipalContext(
+        sourceAdmission.principal,
+      );
       const run = await gatewayRuntime.start(contract, validInput, {
-        ...metadata,
+        ...(typeof requestedMetadata.tenant === 'string'
+          ? { tenant: requestedMetadata.tenant }
+          : {}),
+        ...(['low', 'medium', 'high'].includes(requestedMetadata.priority)
+          ? { priority: requestedMetadata.priority }
+          : {}),
         idempotencyKey,
-        [applicationWorkflowCausalPrincipalMetadata]: {
-          id: gatewayCaller,
-          identity: {
-            id: 'identity:kubernetes:serviceaccount:' + gatewayCaller.slice('system:serviceaccount:'.length),
-            kind: 'service',
-            issuer: 'kubernetes',
-            subject: gatewayCaller,
-          },
-          grantIds: [],
-        },
+        correlationId: sourceAdmission.correlationId,
+        causationId: sourceAdmission.correlationId,
+        ...(sourceAdmission.trace?.traceparent
+          ? { traceparent: sourceAdmission.trace.traceparent }
+          : {}),
+        trustedContext: sourceAdmission.trustedContext,
+        [applicationWorkflowCausalPrincipalMetadata]: causalPrincipal,
       });
       const admittedAt = new Date().toISOString();
       return gatewayJson(response, 202, {
-        id: sealGatewayReference({ contract, runId: run.id, admittedAt }),
+        id: await sealGatewayReference({
+          contract,
+          runId: run.id,
+          admittedAt,
+          caller: gatewayCaller,
+        }),
         admittedAt,
       });
     }
     if (parts.length === 5 && (request.method === 'GET' || request.method === 'DELETE')) {
-      const reference = openGatewayReference(parts[4], contract);
+      const reference = await openGatewayReference(
+        parts[4],
+        contract,
+        gatewayCaller,
+      );
       if (request.method === 'GET') {
         return gatewayJson(response, 200, await observeHatchetWorkflowRun(
           hatchet,

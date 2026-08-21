@@ -180,6 +180,61 @@ describe('Hatchet recurring schedule convergence', () => {
 });
 
 describe('Hatchet provider credential boundary', () => {
+  it('reattaches after a lost start response without admitting a second effect', async () => {
+    const admitted = new Map<string, string>();
+    let effects = 0;
+    let loseFirstResponse = true;
+    const client = {
+      runNoWait: vi.fn(async (
+        _contract: string,
+        _input: object,
+        options?: { readonly childKey?: string },
+      ) => {
+        const childKey = options?.childKey;
+        if (!childKey) throw new Error('missing child key');
+        let runId = admitted.get(childKey);
+        if (!runId) {
+          effects += 1;
+          runId = `run-${effects}`;
+          admitted.set(childKey, runId);
+        }
+        if (loseFirstResponse) {
+          loseFirstResponse = false;
+          throw Object.assign(new Error('response lost after admission'), {
+            response: { status: 503 },
+          });
+        }
+        return { runId };
+      }),
+      runs: { get: vi.fn(), cancel: vi.fn() },
+    };
+    // typecast: the fake deliberately models only the Hatchet start surface.
+    const runtime = createHatchetWorkflowRuntimeFromClient(client as never);
+    const metadata = {
+      idempotencyKey: 'http-request:tenant.provision.v1:tenant-1',
+    };
+
+    await expect(
+      runtime.start(
+        'tenant.provision.v1',
+        { tenantId: 'tenant-1' },
+        metadata,
+      ),
+    ).rejects.toMatchObject({ name: 'HatchetProviderError', status: 503 });
+    await expect(
+      runtime.start(
+        'tenant.provision.v1',
+        { tenantId: 'tenant-1' },
+        metadata,
+      ),
+    ).resolves.toMatchObject({ id: 'run-1' });
+
+    expect(effects).toBe(1);
+    expect(client.runNoWait).toHaveBeenCalledTimes(2);
+    expect(client.runNoWait.mock.calls.map((call) => call[2]?.childKey))
+      .toEqual([metadata.idempotencyKey, metadata.idempotencyKey]);
+  });
+
   it('resolves a fresh provider client for each newly-started operation', async () => {
     const clients = [
       {

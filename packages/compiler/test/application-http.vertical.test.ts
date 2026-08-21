@@ -2,12 +2,14 @@
 // Kubernetes resources after checking their artifact and kind discriminants.
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import {
   app,
   applicationGraphFor,
   EventLog,
   IdentityProvider,
+  WorkflowEngine,
+  workflow,
 } from '@applik8s/applik8s';
 import { type } from '@applik8s/applik8s/dsl';
 import { pgTable, text } from 'drizzle-orm/pg-core';
@@ -18,6 +20,7 @@ import {
 } from '../src/application-http/index.js';
 import { applicationGraphJsonStringArray } from '../src/application-installation-values.js';
 import { compileApplicationOperationCatalog } from '../src/application-operations/index.js';
+import { applicationServerNamespace } from '../src/application-server-namespace.js';
 import { compileTypeKroComposition } from '../src/pipeline/index.js';
 
 const directories: string[] = [];
@@ -30,6 +33,72 @@ afterEach(async () => {
 });
 
 describe('generated function-native HTTP worker', () => {
+  it('uses the generated workload namespace as the private caller identity', () => {
+    const server = {
+      id: 'server.generated-caller',
+      kind: 'server' as const,
+      name: 'generated-caller',
+      stability: 'stable' as const,
+      routes: [],
+      resources: [],
+      indexes: [],
+      observability: {
+        health: {
+          mode: 'http' as const,
+          readinessPath: '/readyz',
+          livenessPath: '/healthz',
+        },
+        logs: {
+          format: 'json' as const,
+          component: 'generated-caller',
+          failureEvents: [],
+        },
+        metrics: { mode: 'none' as const, names: [] },
+        events: [],
+        sourceMaps: 'required' as const,
+        replayArtifacts: [],
+        diagnosticsArtifact: {
+          kind: 'routeDiagnostics' as const,
+          name: 'generated-caller-diagnostics',
+        },
+      },
+      generatedResources: [{
+        role: 'workload' as const,
+        graphNode: { nodeId: 'generated.server.generated-caller' },
+        resource: {
+          apiVersion: 'apps/v1',
+          kind: 'Deployment',
+          name: 'generated-caller',
+          namespace: 'generated-caller-system',
+        },
+        artifact: {
+          kind: 'kubernetesManifest' as const,
+          name: 'generated-caller',
+        },
+      }],
+    };
+    const graph = {
+      apiVersion: 'applik8s.appGraph/v1alpha1' as const,
+      kind: 'ApplicationGraph' as const,
+      metadata: { name: 'generated-caller' },
+      nodes: [server],
+      edges: [],
+      providerRequirements: [],
+      providerBindings: [],
+      compatibility: {
+        stablePublicApis: [],
+        documentedInternalContracts: [],
+        experimentalSurfaces: [],
+        postV3Surfaces: [],
+        labels: [],
+      },
+    };
+
+    expect(applicationServerNamespace(graph, server)).toBe(
+      'generated-caller-system',
+    );
+  });
+
   it('lowers profile selectors into live TypeKro workload values', () => {
     expect(
       applicationHttpProfileEnvironment({
@@ -82,12 +151,45 @@ describe('generated function-native HTTP worker', () => {
         servers: ['nats://events.generated-http.svc:4222'],
       },
     );
+    application.provide(
+      WorkflowEngine,
+      WorkflowEngine.hatchet({
+        namespace: 'generated-http',
+        workerTokenSecret: {
+          apiVersion: 'v1',
+          kind: 'Secret',
+          name: 'generated-http-workflow-token',
+          namespace: 'generated-http',
+        },
+      }),
+    );
     const Database = application.database.postgres('main', {
       schema: { posts },
     });
     const Post = application.model(posts, { name: 'Post', database: Database });
     Post.create.public();
     const api = application.http('public-api', { replicas: 2 });
+    const Provision = workflow('tenant.provision.v1', {
+      input: type({ tenantId: 'string' }),
+      output: type({ accepted: 'boolean' }),
+    });
+    const provision = application.workflow(
+      Provision,
+      { retries: 1 },
+      async () => ({ accepted: true }),
+    );
+    api.post(
+      'provision-tenant',
+      '/tenants/provision',
+      {
+        input: type({ tenantId: 'string' }),
+        output: type({ accepted: 'boolean' }),
+        __generatedCalls: [provision],
+        __generatedBindings: { provision },
+      },
+      async ({ input }) =>
+        provision(input, { idempotencyKey: input.tenantId }),
+    ).public();
     const createPost = api.post(
       'create-post',
       '/posts',
@@ -221,6 +323,7 @@ describe('generated function-native HTTP worker', () => {
       serverId: 'server.public-api',
       sizeBytes: expect.any(Number),
     });
+    expect(artifacts[0]?.sizeBytes).toBeLessThan(625_000);
     expect(artifacts[0]!.resources.map((resource) => resource.kind)).toEqual([
       'ServiceAccount',
       'Service',
@@ -261,6 +364,14 @@ describe('generated function-native HTTP worker', () => {
     expect(
       Object.keys(metafile.inputs ?? {}).some((path) =>
         path.endsWith('/task-operation-runtime.ts')),
+    ).toBe(true);
+    expect(
+      Object.keys(metafile.inputs ?? {}).some((path) =>
+        path.endsWith('/runtime-hatchet/src/index.ts')),
+    ).toBe(false);
+    expect(
+      Object.keys(metafile.inputs ?? {}).some((path) =>
+        path.endsWith('/runtime/src/signed-envelope.ts')),
     ).toBe(true);
     expect(source).toContain('applik8s://models/Post/operations/create');
     expect(source).toContain('Post.create');
@@ -304,6 +415,27 @@ describe('generated function-native HTTP worker', () => {
       /"Billing":\s*\{\s*"Subscription":\s*\{\s*"find":\s*modelHandle\("Post"\)\["find"\]/u,
     );
     expect(generatedEntrypoint).toContain('"Catalog": modelHandle("Post")');
+    expect(generatedEntrypoint).toContain(
+      '"provision": workflowHandle("workflow", "tenant.provision.v1"',
+    );
+    expect(generatedEntrypoint).toContain('directWorkflowScope.run');
+    expect(generatedEntrypoint).toContain('occurrences: new Map()');
+    expect(generatedEntrypoint).toContain('failure.retryable = false');
+    expect(generatedEntrypoint).toContain(
+      'if (error?.retryable === false) throw error',
+    );
+    expect(generatedEntrypoint).toContain(
+      "context.invocationId + ':' + contractName + ':'",
+    );
+    expect(generatedEntrypoint).toContain(
+      'correlationId:\n      metadata?.correlationId ?? context.admission.correlationId',
+    );
+    expect(generatedEntrypoint).not.toContain(
+      'withApplicationWorkflowCausalPrincipal({',
+    );
+    expect(generatedEntrypoint).toContain(
+      "purpose: 'applik8s.workflow-gateway-admission/v1'",
+    );
     expect(generatedEntrypoint).toMatch(
       /"Post":\s*\{\s*"find":\s*modelHandle\("Post"\)\["find"\]/u,
     );
@@ -339,7 +471,27 @@ describe('generated function-native HTTP worker', () => {
       'APPLIK8S_HTTP_CONTEXT_SECRET',
       'APPLIK8S_NATS_SERVERS',
       'APPLIK8S_DATABASE_MAIN_URL',
+      'APPLIK8S_WORKFLOW_GATEWAY_TOKEN_FILE',
+      'APPLIK8S_INTERNAL_OPERATION_SECRET',
     ]));
+    expect(Reflect.get(containers[0] as object, 'volumeMounts')).toEqual([
+      expect.objectContaining({
+        name: 'workflow-gateway-token',
+        readOnly: true,
+      }),
+    ]);
+    expect(Reflect.get(podSpec as object, 'volumes')).toEqual([
+      expect.objectContaining({
+        name: 'workflow-gateway-token',
+        projected: expect.objectContaining({
+          sources: [expect.objectContaining({
+            serviceAccountToken: expect.objectContaining({
+              audience: 'https://kubernetes.default.svc',
+            }),
+          })],
+        }),
+      }),
+    ]);
     const natsServers = Array.isArray(environment)
       ? environment.find(
           (entry) => Reflect.get(entry, 'name') === 'APPLIK8S_NATS_SERVERS',
@@ -388,7 +540,7 @@ describe('generated function-native HTTP worker', () => {
       'create table pipeline_http_posts (id text primary key, body text not null, revision text not null default \'\');\n',
     );
     await writeFile(entrypoint, `
-import { EventLog, IdentityProvider, app } from '@applik8s/applik8s';
+import { EventLog, IdentityProvider, WorkflowEngine, app, workflow } from '@applik8s/applik8s';
 import { type } from '@applik8s/applik8s/dsl';
 import { pgTable, text } from 'drizzle-orm/pg-core';
 
@@ -413,6 +565,15 @@ application.provide(EventLog, {
   provision: false,
   servers: ['nats://events.pipeline-http.svc:4222'],
 });
+application.provide(WorkflowEngine, WorkflowEngine.hatchet({
+  namespace: 'pipeline-http',
+  workerTokenSecret: {
+    apiVersion: 'v1',
+    kind: 'Secret',
+    name: 'pipeline-http-workflow-token',
+    namespace: 'pipeline-http',
+  },
+}));
 const Database = application.database.postgres('main', {
   schema: { posts },
   migrations: { path: './migrations' },
@@ -420,6 +581,22 @@ const Database = application.database.postgres('main', {
 const Post = application.model(posts, { name: 'Post', database: Database });
 Post.create.public();
 const api = application.http('public-api', { replicas: 2 });
+const Provision = workflow('tenant.provision.v1', {
+  input: type({ tenantId: 'string' }),
+  output: type({ accepted: 'boolean' }),
+});
+const provision = application.workflow(
+  Provision,
+  { retries: 1 },
+  async () => ({ accepted: true }),
+);
+const provisionTenant = api.post('provision-tenant', '/tenants/provision', {
+  input: type({ tenantId: 'string' }),
+  output: type({ accepted: 'boolean' }),
+}, async ({ input }) => provision(input, {
+  idempotencyKey: input.tenantId,
+}));
+provisionTenant.public();
 const createPost = api.post('create-post', '/posts', {
   input: type({ id: 'string', body: 'string' }),
   output: type({
@@ -456,6 +633,38 @@ export const pipelineHttpStack = application.composition;
     expect(result.ok, result.ok ? undefined : result.error.message).toBe(true);
     if (!result.ok) return;
     expect(result.value.artifacts.httpArtifacts).toHaveLength(1);
+    expect(result.value.artifacts.workflowArtifacts).toHaveLength(1);
+    const workflowArtifact = result.value.artifacts.workflowArtifacts[0];
+    expect(workflowArtifact?.resources.some((resource) =>
+      resource.kind === 'Service'
+      && Array.isArray(resource.spec?.ports)
+      && resource.spec.ports.some((port) =>
+        Reflect.get(port as object, 'name') === 'gateway'))).toBe(true);
+    expect(workflowArtifact?.resources.some((resource) =>
+      resource.kind === 'NetworkPolicy'
+      && JSON.stringify(resource).includes('public-api'))).toBe(true);
+    const workflowGeneratedSource = workflowArtifact
+      ? await readFile(
+          join(
+            dirname(workflowArtifact.sourcePath),
+            'workflow-worker.generated.ts',
+          ),
+          'utf8',
+        )
+      : '';
+    expect(
+      workflowGeneratedSource,
+    ).toContain(
+      '{"namespace":"pipeline-http","serviceAccount":"public-api","contracts":["tenant.provision.v1"]}',
+    );
+    expect(workflowGeneratedSource).toContain('gatewayCallerContracts');
+    expect(workflowGeneratedSource).toContain(
+      "audiences: ['https://kubernetes.default.svc']",
+    );
+    expect(workflowGeneratedSource).toContain(
+      '!gatewayCallerContracts.get(gatewayCaller)?.has(contract)',
+    );
+    expect(workflowGeneratedSource).toContain('admission-invalid');
     const resources = result.value.artifacts.resources.filter((resource) =>
       resource.metadata?.name === 'public-api'
       || resource.metadata?.name === 'public-api-source');

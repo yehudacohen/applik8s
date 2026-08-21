@@ -6,6 +6,7 @@ import { join, resolve } from 'node:path';
 import type {
   ApplicationGraph,
   ApplicationHandlerDependencies,
+  ApplicationMessageContractSchema,
   ApplicationModelNode,
   ApplicationOperationCatalog,
   ApplicationProviderNode,
@@ -20,19 +21,20 @@ import {
   type GeneratedApplicationContainerArtifact,
 } from '../application-containers/index.js';
 import {
-  applicationStaticAuthorityManifest,
-  compileApplicationOperationCatalog,
-} from '../application-operations/index.js';
+  type ApplicationRuntimeExecutionTarget,
+  generatedApplicationEventLogPublisherSource,
+} from '../application-event-log-runtime-source.js';
 import {
   applicationGraphInterpolate,
   applicationGraphJsonStringArray,
   applicationGraphStringValue,
 } from '../application-installation-values.js';
-import { applik8sWorkspaceSourcePlugin } from '../bundling/index.js';
 import {
-  generatedApplicationEventLogPublisherSource,
-  type ApplicationRuntimeExecutionTarget,
-} from '../application-event-log-runtime-source.js';
+  applicationStaticAuthorityManifest,
+  compileApplicationOperationCatalog,
+} from '../application-operations/index.js';
+import { applicationServerNamespace } from '../application-server-namespace.js';
+import { applik8sWorkspaceSourcePlugin } from '../bundling/index.js';
 
 const DEFAULT_GENERATED_HTTP_RUNTIME_IMAGE =
   'node:22-alpine@sha256:16e22a550f3863206a3f701448c45f7912c6896a62de43add43bb9c86130c3e2';
@@ -74,6 +76,24 @@ interface HttpOperationBinding {
   };
 }
 
+interface HttpWorkflowBinding {
+  readonly identifier: string;
+  readonly target: Extract<
+    ApplicationGraph['nodes'][number],
+    { readonly kind: 'task' | 'workflow' }
+  >;
+  readonly contract: {
+    readonly name: string;
+    readonly version: string;
+    readonly input: ApplicationMessageContractSchema;
+    readonly output: ApplicationMessageContractSchema;
+    readonly signals: readonly {
+      readonly name: string;
+      readonly schema: ApplicationMessageContractSchema;
+    }[];
+  };
+}
+
 interface HttpRouteCompilerContract {
   readonly route: ApplicationRouteContract & {
     readonly functionNative: NonNullable<
@@ -82,6 +102,7 @@ interface HttpRouteCompilerContract {
   };
   readonly operation: ApplicationOperationCatalog['operations'][number];
   readonly operationBindings: readonly HttpOperationBinding[];
+  readonly workflowBindings: readonly HttpWorkflowBinding[];
 }
 
 interface HttpServerCompilerContract {
@@ -91,6 +112,7 @@ interface HttpServerCompilerContract {
   readonly identity: ApplicationProviderNode;
   readonly identityConfig: Readonly<Record<string, unknown>>;
   readonly eventLog?: ApplicationProviderNode;
+  readonly workflowEngine?: ApplicationProviderNode;
   readonly operationCatalog: ApplicationOperationCatalog;
   readonly executionTarget: ApplicationRuntimeExecutionTarget;
   readonly namespace: string;
@@ -209,7 +231,39 @@ function applicationHttpCompilerContract(
           },
         };
       });
-    return { route: { ...route, functionNative: route.functionNative }, operation, operationBindings };
+    const workflowBindings = (route.functionNative.workflowBindings ?? [])
+      .map((binding): HttpWorkflowBinding => {
+        const target = nodes.get(binding.target.nodeId);
+        if (target?.kind !== 'task' && target?.kind !== 'workflow') {
+          throw new Error(
+            `Generated typed HTTP route ${server.id}.${route.id} workflow ${binding.identifier} references missing task/workflow ${binding.target.nodeId}.`,
+          );
+        }
+        if (
+          target.contract.name !== binding.contract.name
+          || target.contract.version !== binding.contract.version
+          || JSON.stringify(target.contract.input) !== JSON.stringify(binding.contract.input)
+          || JSON.stringify(target.contract.output) !== JSON.stringify(binding.contract.output)
+          || JSON.stringify(
+            target.kind === 'workflow' ? target.contract.signals : [],
+          ) !== JSON.stringify(binding.contract.signals)
+        ) {
+          throw new Error(
+            `Generated typed HTTP route ${server.id}.${route.id} workflow ${binding.identifier} contract drifted from ${binding.target.nodeId}.`,
+          );
+        }
+        return {
+          identifier: binding.identifier,
+          target,
+          contract: binding.contract,
+        };
+      });
+    return {
+      route: { ...route, functionNative: route.functionNative },
+      operation,
+      operationBindings,
+      workflowBindings,
+    };
   });
   const operationHandlers = new Set(
     routes.flatMap((route) =>
@@ -218,11 +272,35 @@ function applicationHttpCompilerContract(
   const eventLog = operationHandlers.size > 0
     ? applicationHttpEventLog(graph, operationHandlers, server.id)
     : undefined;
-  const namespace =
-    server.deployment?.namespace
-    ?? graph.metadata.namespace
-    ?? generatedServerNamespace(server)
-    ?? 'default';
+  const workflowEngineIds = new Set(
+    routes.flatMap((route) =>
+      route.workflowBindings.length > 0
+        ? [route.route.functionNative.workflowEngine?.nodeId ?? '']
+        : []),
+  );
+  let workflowEngine: ApplicationProviderNode | undefined;
+  if (workflowEngineIds.size > 0) {
+    if (workflowEngineIds.size !== 1 || workflowEngineIds.has('')) {
+      throw new Error(
+        `Generated typed HTTP server ${server.id} workflow routes require one WorkflowEngine provider.`,
+      );
+    }
+    const [workflowEngineId] = workflowEngineIds;
+    const provider = workflowEngineId
+      ? nodes.get(workflowEngineId)
+      : undefined;
+    if (
+      provider?.kind !== 'provider'
+      || provider.interface !== 'WorkflowEngine'
+      || provider.implementation !== 'hatchet'
+    ) {
+      throw new Error(
+        `Generated typed HTTP server ${server.id} durable workflows require the selected Hatchet WorkflowEngine adapter.`,
+      );
+    }
+    workflowEngine = provider;
+  }
+  const namespace = applicationServerNamespace(graph, server);
   return {
     graph,
     server,
@@ -231,6 +309,7 @@ function applicationHttpCompilerContract(
     identityConfig,
     executionTarget,
     ...(eventLog ? { eventLog } : {}),
+    ...(workflowEngine ? { workflowEngine } : {}),
     operationCatalog,
     namespace,
     replicas: server.deployment?.replicas ?? 1,
@@ -340,6 +419,8 @@ async function emitHttpServer(
           method: route.route.method,
           path: route.route.path,
           operations: route.operationBindings.map((binding) => binding.operationId),
+          workflows: route.workflowBindings.map((binding) =>
+            `${binding.contract.name}.${binding.contract.version}`),
         })),
         runtime: {
           entrypoint: sourcePath,
@@ -385,6 +466,16 @@ ${route.route.functionNative.webhookAuthentication
   const hasOperations = contract.routes.some(
     (route) => route.operationBindings.length > 0,
   );
+  const hasWorkflows = contract.routes.some(
+    (route) => route.workflowBindings.length > 0,
+  );
+  const workflowGateways = [...new Set(contract.routes.flatMap((route) =>
+    route.workflowBindings.map((binding) =>
+      applicationHttpWorkflowGateway(
+        contract.graph,
+        binding,
+        contract.namespace,
+      ).endpoint)))].sort();
   const eventLogPublisher = hasOperations
     ? generatedApplicationEventLogPublisherSource({
         executionTarget: contract.executionTarget,
@@ -450,6 +541,9 @@ ${hasOperations
 ${hasTransactions
     ? "import { applicationPostgresModelReadClients, applicationRelationalChangeScopes, applicationRequestContextValues, createApplicationFunctionNativeEventHandle, editApplicationNativeModelObject, executeFunctionNativePostgresModelEdit, findApplicationNativeModelObjects, getApplicationNativeModelObject, requireApplicationNativeModelObject, withApplicationNativeModelReadClients, withApplicationNativeModelTransactionRuntime } from '@applik8s/applik8s/stream-worker-runtime';"
     : ''}
+${hasWorkflows
+    ? "import { readFile } from 'node:fs/promises';\nimport { createSignedEnvelopeCodec, signedEnvelopeUtf8Key, staticSignedEnvelopeKeyProvider } from '@applik8s/runtime';"
+    : ''}
 import { callback as authenticate } from './identity.generated.js';
 ${routeImports}
 
@@ -463,6 +557,7 @@ const contract = ${JSON.stringify({
     operationCatalog: contract.operationCatalog,
   })};
 const routes = [${routeDefinitions}];
+const workflowGateways = Object.freeze(${JSON.stringify(workflowGateways)});
 const routeMatchers = routes.map(route => ({
   route,
   segments: route.path.split('/').filter(Boolean),
@@ -487,6 +582,312 @@ const operationAuthority = createApplicationOperationAuthorityRuntime({
 });
 const directOperationScope = new AsyncLocalStorage();
 installApplicationOperationRuntimeResolver(() => directOperationScope.getStore());
+${hasWorkflows ? `const directWorkflowScope = new AsyncLocalStorage();
+const workflowGatewayAdmission = createSignedEnvelopeCodec({
+  purpose: 'applik8s.workflow-gateway-admission/v1',
+  keys: staticSignedEnvelopeKeyProvider({
+    current: {
+      id: 'application-internal-operation',
+      key: signedEnvelopeUtf8Key(
+        requiredEnv('APPLIK8S_INTERNAL_OPERATION_SECRET'),
+      ),
+    },
+  }),
+  validatePayload: value => validateApplicationAdmissionContextV1(value),
+  maximumEncodedBytes: 32_768,
+  maximumLifetimeMs: 60_000,
+});
+function workflowMetadata(context, contractName, input, metadata) {
+  const callerKey = metadata?.idempotencyKey;
+  const inputKey = createHash('sha256')
+    .update(canonicalJsonV1String(input))
+    .digest('hex');
+  const occurrence = (context.occurrences.get(contractName) ?? 0) + 1;
+  context.occurrences.set(contractName, occurrence);
+  return {
+    ...metadata,
+    idempotencyKey:
+      context.invocationId + ':' + contractName + ':'
+        + (callerKey || inputKey + ':' + occurrence),
+    correlationId:
+      metadata?.correlationId ?? context.admission.correlationId,
+    causationId: metadata?.causationId ?? context.invocationId,
+    ...(metadata?.traceparent || context.admission.trace?.traceparent
+      ? {
+          traceparent:
+            metadata?.traceparent ?? context.admission.trace.traceparent,
+        }
+      : {}),
+    trustedContext: {
+      values: context.admission.trustedContext.values,
+      digest: context.admission.trustedContext.digest,
+    },
+  };
+}
+async function workflowGatewayToken() {
+  const value = (await readFile(
+    requiredEnv('APPLIK8S_WORKFLOW_GATEWAY_TOKEN_FILE'),
+    'utf8',
+  )).trim();
+  if (!value) throw new Error('Workflow gateway service-account token is empty.');
+  return value;
+}
+async function workflowGatewayRequest(endpoint, path, options = {}) {
+  const maximumAttempts = options.idempotencyKey ? 3 : 1;
+  let lastFailure;
+  for (let attempt = 1; attempt <= maximumAttempts; attempt += 1) {
+    const signal = options.signal
+      ? AbortSignal.any([options.signal, AbortSignal.timeout(options.timeoutMs ?? 15_000)])
+      : AbortSignal.timeout(options.timeoutMs ?? 15_000);
+    try {
+      const response = await fetch(endpoint + path, {
+        method: options.method ?? 'GET',
+        headers: {
+          accept: 'application/json',
+          authorization: 'Bearer ' + await workflowGatewayToken(),
+          ...(options.body ? { 'content-type': 'application/json' } : {}),
+          ...(options.idempotencyKey
+            ? { 'idempotency-key': options.idempotencyKey }
+            : {}),
+        },
+        ...(options.body ? { body: JSON.stringify(options.body) } : {}),
+        signal,
+      });
+      const value = await response.json().catch(() => ({}));
+      if (response.ok) return value;
+      const retryable = [502, 503, 504].includes(response.status);
+      if (!retryable || attempt === maximumAttempts) {
+        const failure = new Error(
+          'Workflow gateway request failed with HTTP ' + response.status
+            + ': ' + String(value?.error ?? 'request-failed'),
+        );
+        failure.retryable = false;
+        throw failure;
+      }
+      lastFailure = new Error('Workflow gateway temporarily unavailable.');
+    } catch (error) {
+      if (options.signal?.aborted) throw options.signal.reason ?? error;
+      if (error?.retryable === false) throw error;
+      lastFailure = error;
+      if (attempt === maximumAttempts) throw error;
+    }
+    await new Promise(resolve => setTimeout(resolve, Math.min(1_000, attempt * 100)));
+  }
+  throw lastFailure ?? new Error('Workflow gateway request failed.');
+}
+function workflowGatewayObservation(value, reference) {
+  if (!value || typeof value !== 'object' || typeof value.phase !== 'string') {
+    throw new Error('Workflow gateway returned an invalid observation.');
+  }
+  return Object.freeze({ ...value, reference });
+}
+async function waitForWorkflowGatewayResult(providerRun, options = {}) {
+  const startedAt = Date.now();
+  const timeoutMs = Math.min(options.timeoutMs ?? 30_000, 30_000);
+  while (true) {
+    if (options.signal?.aborted) {
+      throw options.signal.reason ?? new Error('Workflow result observation was cancelled.');
+    }
+    const observation = await providerRun.observe({
+      ...options,
+      timeoutMs: Math.min(timeoutMs, 15_000),
+    });
+    if (observation.phase === 'Succeeded') return observation.result;
+    if (['Failed', 'Cancelled', 'TimedOut'].includes(observation.phase)) {
+      throw new Error(
+        observation.error?.message
+          ?? 'Workflow completed in terminal phase ' + observation.phase + '.',
+      );
+    }
+    if (Date.now() - startedAt >= timeoutMs) {
+      throw new Error('Workflow result observation timed out.');
+    }
+    await new Promise(resolve =>
+      setTimeout(resolve, Math.min(options.pollIntervalMs ?? 250, 2_000)));
+  }
+}
+async function startWorkflowGatewayRun(
+  endpoint,
+  contractName,
+  input,
+  metadata,
+  context,
+) {
+  const value = await workflowGatewayRequest(
+    endpoint,
+    '/v1/workflows/' + encodeURIComponent(contractName) + '/runs',
+    {
+      method: 'POST',
+      body: {
+        input,
+        metadata,
+        admission: await workflowGatewayAdmission.sign(
+          context.admission,
+          { expiresInMs: 60_000 },
+        ),
+      },
+      idempotencyKey: metadata.idempotencyKey,
+      signal: context.signal,
+    },
+  );
+  if (
+    !value
+    || typeof value !== 'object'
+    || typeof value.id !== 'string'
+    || typeof value.admittedAt !== 'string'
+  ) {
+    throw new Error('Workflow gateway returned an invalid run reference.');
+  }
+  const reference = Object.freeze({
+    provider: 'workflow',
+    workflow: contractName,
+    run: value.id,
+  });
+  const providerRun = {
+    id: value.id,
+    __idempotencyKey: metadata.idempotencyKey,
+    result: options => waitForWorkflowGatewayResult(providerRun, options),
+    observe: options => workflowGatewayRequest(
+      endpoint,
+      '/v1/workflows/' + encodeURIComponent(contractName)
+        + '/runs/' + encodeURIComponent(value.id),
+      { ...options, signal: options?.signal ?? context.signal },
+    ).then(observation => workflowGatewayObservation(observation, reference)),
+    cancel: options => workflowGatewayRequest(
+      endpoint,
+      '/v1/workflows/' + encodeURIComponent(contractName)
+        + '/runs/' + encodeURIComponent(value.id),
+      {
+        method: 'DELETE',
+        idempotencyKey: 'cancel:' + value.id,
+        ...options,
+        signal: options?.signal ?? context.signal,
+      },
+    ).then(() => undefined),
+  };
+  return Object.freeze(providerRun);
+}
+function workflowRun(providerRun, contractName, revision, outputSchema) {
+  const reference = Object.freeze({
+    provider: 'workflow',
+    workflow: contractName,
+    run: providerRun.id,
+  });
+  return Object.freeze({
+    id: providerRun.id,
+    reference,
+    workflowRevision: revision,
+    ...(providerRun.__idempotencyKey
+      ? { __idempotencyKey: providerRun.__idempotencyKey }
+      : {}),
+    result: async options => validate(
+      outputSchema,
+      await providerRun.result(options),
+      contractName + '.output',
+    ),
+    cancel: options => providerRun.cancel(options),
+    ...(providerRun.__cancelReference
+      ? {
+          __cancelReference: (runId, options) =>
+            providerRun.__cancelReference(runId, options),
+        }
+      : {}),
+    async observe(options) {
+      if (!providerRun.observe) {
+        throw new Error(
+          'Workflow provider cannot observe ' + contractName + ' run ' + providerRun.id + '.',
+        );
+      }
+      return Object.freeze({
+        ...(await providerRun.observe(options)),
+        reference,
+        workflowRevision: revision,
+      });
+    },
+  });
+}
+function workflowHandle(kind, contractName, revision, inputSchema, outputSchema, signals, endpoint) {
+  const requireContext = () => {
+    const context = directWorkflowScope.getStore();
+    if (!context) {
+      throw new Error(
+        'Typed HTTP workflow escaped its authenticated request scope.',
+      );
+    }
+    return context;
+  };
+  const validatedInput = input =>
+    validate(inputSchema, input, contractName + '.input');
+  const run = async (input, metadata, resultOptions) => {
+    const context = requireContext();
+    const value = validatedInput(input);
+    const providerRun = await startWorkflowGatewayRun(
+      endpoint,
+      contractName,
+      value,
+      workflowMetadata(context, contractName, value, metadata),
+      context,
+    );
+    return validate(
+      outputSchema,
+      await providerRun.result({
+        ...resultOptions,
+        signal: context.signal,
+        timeoutMs: Math.min(resultOptions?.timeoutMs ?? 30_000, 30_000),
+      }),
+      contractName + '.output',
+    );
+  };
+  return Object.assign(run, {
+    kind: kind === 'task' ? 'applicationTask' : 'applicationWorkflow',
+    definition: Object.freeze({
+      id: contractName,
+      name: contractName,
+      version: revision,
+    }),
+    run,
+    async start(input, metadata) {
+      const context = requireContext();
+      const value = validatedInput(input);
+      const providerRun = await startWorkflowGatewayRun(
+        endpoint,
+        contractName,
+        value,
+        workflowMetadata(context, contractName, value, metadata),
+        context,
+      );
+      return workflowRun(providerRun, contractName, revision, outputSchema);
+    },
+    schedule(_input, _at, _metadata) {
+      throw new Error(
+        'Workflow ' + contractName + '.schedule(...) is not available from an HTTP handler; declare the schedule in the application graph.',
+      );
+    },
+    reconcile(_schedule, _metadata) {
+      throw new Error(
+        'Workflow ' + contractName + '.reconcile(...) is not available from an HTTP handler; declare the schedule in the application graph.',
+      );
+    },
+    signal(runId, name, payload, metadata) {
+      const context = requireContext();
+      const signalSchema = signals[name];
+      if (!signalSchema) {
+        throw new Error(
+          'Workflow ' + contractName + ' does not declare signal ' + JSON.stringify(name) + '.',
+        );
+      }
+      validate(
+        signalSchema,
+        payload,
+        contractName + '.signals.' + name,
+      );
+      throw new Error(
+        'Legacy workflow-run signal ' + name + ' for ' + contractName
+          + ' is not exposed through the HTTP workflow gateway; publish a typed signal event.',
+      );
+    },
+  });
+}` : ''}
 ${hasOperations
     ? `${eventLogPublisher!.declarationSource}
 const commandRuntime = createApplicationTaskOperationRuntime({
@@ -834,7 +1235,12 @@ async function invokeRoute(route, params, request, url, runtimeProtocol) {
   };
   const invoke = () => directOperationScope.run(
     execute,
-    () => handler(requestValue, context),
+    () => ${hasWorkflows ? `directWorkflowScope.run({
+      invocationId,
+      admission: context.admission,
+      signal: request.signal,
+      occurrences: new Map(),
+    }, () => handler(requestValue, context))` : 'handler(requestValue, context)'},
   );
   const invokeWithModelReads = route.transaction
     ? async () => withApplicationNativeModelReadClients(
@@ -974,6 +1380,9 @@ async function initialize() {
   while (!stopping && !ready) {
     try {
       await operationAuthority.prepare();
+      ${hasWorkflows
+        ? "await Promise.all(workflowGateways.map(endpoint => workflowGatewayRequest(endpoint, '/readyz', { timeoutMs: 5_000 })));"
+        : ''}
       initializationError = undefined;
       ready = true;
     } catch (error) {
@@ -1014,6 +1423,18 @@ function applicationHttpRouteBindingsSource(
       target: binding.operationId,
     });
   }
+  for (const binding of route.workflowBindings) {
+    const gateway = applicationHttpWorkflowGateway(
+      graph,
+      binding,
+      applicationHttpServerNamespace(graph, route),
+    );
+    entries.push({
+      path: binding.identifier,
+      value: `workflowHandle(${JSON.stringify(binding.target.kind)}, ${JSON.stringify(`${binding.contract.name}.${binding.contract.version}`)}, ${JSON.stringify(binding.contract.version)}, ${JSON.stringify(binding.contract.input.jsonSchema)}, ${JSON.stringify(binding.contract.output.jsonSchema)}, ${JSON.stringify(Object.fromEntries(binding.contract.signals.map((signal) => [signal.name, signal.schema.jsonSchema])))}, ${JSON.stringify(gateway.endpoint)})`,
+      target: binding.target.id,
+    });
+  }
   const nodes = new Map(graph.nodes.map((node) => [node.id, node]));
   for (const binding of route.route.functionNative.transaction?.modelBindings ?? []) {
     const model = nodes.get(binding.model.nodeId);
@@ -1050,6 +1471,63 @@ function applicationHttpRouteBindingsSource(
   return nestedBindingsSource(entries, `HTTP route ${route.route.id}`);
 }
 
+function applicationHttpServerNamespace(
+  graph: ApplicationGraph,
+  route: HttpRouteCompilerContract,
+): string {
+  const server = graph.nodes.find(
+    (node) => node.kind === 'server'
+      && node.id === route.operation.placement.nodeId,
+  );
+  return server?.kind === 'server'
+    ? applicationServerNamespace(graph, server)
+    : graph.metadata.namespace ?? 'default';
+}
+
+function applicationHttpWorkflowGateway(
+  graph: ApplicationGraph,
+  binding: HttpWorkflowBinding,
+  callerNamespace: string,
+): { readonly endpoint: string } {
+  const nodes = new Map(graph.nodes.map((node) => [node.id, node]));
+  const handlers = graph.nodes.filter((node) =>
+    (binding.target.kind === 'workflow'
+      ? node.kind === 'workflowHandler'
+        && node.workflow.nodeId === binding.target.id
+      : node.kind === 'taskHandler'
+        && node.task.nodeId === binding.target.id));
+  const handlerIds = new Set(handlers.map((handler) => handler.id));
+  const workers = graph.nodes.filter((node) =>
+    node.kind === 'workflowWorker'
+      && node.handlers.some((handler) => handlerIds.has(handler.nodeId)));
+  if (workers.length !== 1) {
+    throw new Error(
+      `Generated typed HTTP workflow ${binding.target.id} must resolve to exactly one workflow worker; found ${workers.length}.`,
+    );
+  }
+  const worker = workers[0];
+  if (!worker || worker.kind !== 'workflowWorker') {
+    throw new Error(
+      `Generated typed HTTP workflow ${binding.target.id} has no workflow worker.`,
+    );
+  }
+  const provider = nodes.get(worker.workflowEngine.nodeId);
+  const providerNamespace = provider?.kind === 'provider'
+    ? applicationGraphStringValue(provider.config?.namespace)
+    : undefined;
+  const workerNamespace = providerNamespace
+    ?? graph.metadata.namespace
+    ?? callerNamespace;
+  if (workerNamespace !== callerNamespace) {
+    throw new Error(
+      `Generated typed HTTP workflow ${binding.target.id} is in namespace ${workerNamespace}, but its HTTP caller is in ${callerNamespace}; private workflow gateways require a shared namespace.`,
+    );
+  }
+  return {
+    endpoint: `http://${kubernetesName(worker.name)}:${worker.deployment.healthPort + 1}`,
+  };
+}
+
 function applicationHttpRouteBindingRoots(
   route: HttpRouteCompilerContract,
 ): readonly string[] {
@@ -1063,6 +1541,7 @@ function applicationHttpRouteBindingPaths(
 ): readonly string[] {
   return [
     ...route.operationBindings.map((binding) => binding.identifier),
+    ...route.workflowBindings.map((binding) => binding.identifier),
     ...(route.route.functionNative.transaction?.modelBindings ?? []).map(
       (binding) => binding.identifier,
     ),
@@ -1137,6 +1616,28 @@ function generatedHttpResources(
     'app.kubernetes.io/managed-by': 'applik8s',
   };
   const metadata = { name, namespace: contract.namespace, labels };
+  const workflowVolumeMounts = contract.workflowEngine
+    ? [{
+        name: 'workflow-gateway-token',
+        mountPath: '/var/run/secrets/applik8s/workflow-gateway',
+        readOnly: true,
+      }]
+    : [];
+  const workflowVolumes = contract.workflowEngine
+    ? [{
+        name: 'workflow-gateway-token',
+        projected: {
+          defaultMode: 0o400,
+          sources: [{
+            serviceAccountToken: {
+              path: 'token',
+              expirationSeconds: 3_600,
+              audience: 'https://kubernetes.default.svc',
+            },
+          }],
+        },
+      }]
+    : [];
   const environment = [
     { name: 'NODE_ENV', value: 'production' },
     { name: 'NODE_OPTIONS', value: '--enable-source-maps' },
@@ -1155,6 +1656,7 @@ function generatedHttpResources(
     ...applicationHttpProfileEnvironment(contract.identityConfig),
     ...applicationHttpDatabaseEnvironment(contract),
     ...applicationHttpEventLogEnvironment(contract.eventLog),
+    ...applicationHttpWorkflowEnvironment(contract),
   ];
   return [
     { apiVersion: 'v1', kind: 'ServiceAccount', metadata },
@@ -1200,6 +1702,9 @@ function generatedHttpResources(
               imagePullPolicy: 'IfNotPresent',
               ports: [{ name: 'http', containerPort: contract.containerPort }],
               env: environment,
+              ...(workflowVolumeMounts.length > 0
+                ? { volumeMounts: workflowVolumeMounts }
+                : {}),
               readinessProbe: {
                 httpGet: { path: '/readyz', port: 'http' },
                 initialDelaySeconds: 1,
@@ -1221,8 +1726,31 @@ function generatedHttpResources(
                 capabilities: { drop: ['ALL'] },
               },
             }],
+            ...(workflowVolumes.length > 0 ? { volumes: workflowVolumes } : {}),
             securityContext: { seccompProfile: { type: 'RuntimeDefault' } },
           },
+        },
+      },
+    },
+  ];
+}
+
+function applicationHttpWorkflowEnvironment(
+  contract: HttpServerCompilerContract,
+): readonly Record<string, unknown>[] {
+  if (!contract.workflowEngine) return [];
+  return [
+    {
+      name: 'APPLIK8S_WORKFLOW_GATEWAY_TOKEN_FILE',
+      value: '/var/run/secrets/applik8s/workflow-gateway/token',
+    },
+    {
+      name: 'APPLIK8S_INTERNAL_OPERATION_SECRET',
+      valueFrom: {
+        secretKeyRef: {
+          name: `${kubernetesName(contract.graph.metadata.name)}-internal-operation`,
+          key: 'key',
+          optional: false,
         },
       },
     },
@@ -1577,16 +2105,6 @@ function uniqueOperationBindings(
   }
   return [...bindings.values()].sort((left, right) =>
     left.operationId.localeCompare(right.operationId));
-}
-
-function generatedServerNamespace(server: ApplicationServerNode): string | undefined {
-  const resource = server.generatedResources?.find(
-    (candidate) => candidate.role === 'workload',
-  )?.resource;
-  return resource && 'namespace' in resource
-    && typeof resource.namespace === 'string'
-    ? resource.namespace
-    : undefined;
 }
 
 function bindingRoot(identifier: string): string {
