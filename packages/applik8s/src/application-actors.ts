@@ -1,14 +1,18 @@
 // typecast-file-boundary: Actor protocol members are schema-validated before their generic erased dispatch representation is used.
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { randomUUID } from 'node:crypto';
-import { applicationOperationId, validateApplicationAuthorizationReceipt, type ApplicationActorNode, type ApplicationAuthorizationReceipt } from '@applik8s/core';
-import { decorateApplicationMutationOperation, observeApplicationOperationAuthority, type ApplicationMutationOperation } from '@applik8s/client';
+import { type ApplicationMutationOperation, decorateApplicationMutationOperation, observeApplicationOperationAuthority } from '@applik8s/client';
+import { type ApplicationActorNode, type ApplicationAuthorizationReceipt, applicationOperationId, validateApplicationAuthorizationReceipt } from '@applik8s/core';
 import { sha256Hex } from '@applik8s/deployment-contract';
 import type { SchemaInput } from '@applik8s/sdk';
-import { serializeApplicationCallback } from './application-callback.js';
+import {
+  expandApplicationCallbackDependencies,
+  serializeApplicationCallback,
+} from './application-callback.js';
 import { applicationProviderGraphNodeId } from './application-identifiers.js';
 import { withApplicationManagedEffects } from './application-managed-effects.js';
 import { applicationOperationInputDigest } from './application-operation-runtime.js';
+import { applicationCallableProviderDependencies } from './application-provider-dependencies.js';
 import { runApplicationTelemetryBoundary } from './application-telemetry-runtime.js';
 import { declaredSchema, validateMessage } from './application-workflow-serialization.js';
 
@@ -660,7 +664,26 @@ export function createApplicationActor<TState extends object, const TProtocol ex
     ...(initialize ? { initialize } : {}),
     handlers,
   });
-  const graphNode = (): ApplicationActorNode => ({
+  const graphNode = (): ApplicationActorNode => {
+    const dependencyBindings = Object.fromEntries(
+      [
+        ...(initialize ? [['initialize', initialize] as const] : []),
+        ...[...handlers].map(([member, callback]) => [member, callback] as const),
+      ].flatMap(([member, callback]) => {
+        const expanded = expandApplicationCallbackDependencies({ calls: [callback] });
+        return [
+          ...Object.entries(expanded.bindings).map(([identifier, value]) => [
+            `${member}:${identifier}`,
+            value,
+          ] as const),
+          [`${member}:generatedActorProviderDependencies`, callback] as const,
+        ];
+      }),
+    );
+    const providerBindings = applicationCallableProviderDependencies(
+      dependencyBindings,
+    );
+    return ({
     id: `actor.${id}`,
     kind: 'actor',
     name: id,
@@ -712,13 +735,15 @@ export function createApplicationActor<TState extends object, const TProtocol ex
       requirements: actorCapabilityRequirements(runtimeProtocol),
     },
     runtime: { interface: 'ActorRuntime', nodeId: applicationProviderGraphNodeId('ActorRuntime') },
+    ...(providerBindings.length > 0 ? { providerBindings } : {}),
     handlers: [...handlers].map(([member, callback]) => ({
       member,
       callback: serializeApplicationCallback({ registrar: 'actor', argumentIndex: 1, property: member, label: `Actor ${id}.${member}`, callback: callback as (...args: never[]) => unknown, allowDeferredResolution: true }),
     })),
     ...(initialize ? { initialize: serializeApplicationCallback({ registrar: 'actor', argumentIndex: 1, property: 'initialize', label: `Actor ${id}.initialize`, callback: initialize as (...args: never[]) => unknown, allowDeferredResolution: true }) } : {}),
     semantics: { serialization: 'fullTurnPerIdentity', admission: 'idempotentReceipt', references: 'inertAddress' },
-  });
+    });
+  };
   const target: Record<string, unknown> = {
     kind: 'applicationActor', id, key: options.key, state: stateDefinition.schema, protocol: options.protocol,
     get graphNode() { return Object.freeze(graphNode()); },

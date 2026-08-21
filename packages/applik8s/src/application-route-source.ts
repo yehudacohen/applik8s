@@ -3,6 +3,7 @@ import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { JsonObject } from '@applik8s/core';
 import { normalizeBundledImportAccess } from './application-callback-source-equivalence.js';
+import { applicationProviderGraphNodeId, kubernetesNameSegment } from './application-identifiers.js';
 import { blockCommentEnd, escapeRegExp, isDeclarationIdentifier, isRegexLiteralStart, lineCommentEnd, matchingDelimiter, nextNonWhitespace, previousNonWhitespace, quotedSourceEnd, regexLiteralEnd, splitTopLevelArguments, templateSourceEnd, transpileApplicationCallbackExpression, transpileApplicationRouteModuleForDependencies, unique } from './application-route-source-utilities.js';
 
 export { matchingDelimiter, normalizeSerializableFunctionSource, splitTopLevelArguments, transpileApplicationCallbackExpression } from './application-route-source-utilities.js';
@@ -122,6 +123,18 @@ interface ApplicationRouteTopLevelBinding {
   readonly position: number;
 }
 
+interface ApplicationRouteProviderSetup {
+  readonly providerIdentifier: string;
+  readonly source: string;
+  readonly analysisSource: string;
+  readonly position: number;
+}
+
+interface ApplicationRouteTopLevelBindings {
+  readonly bindings: ReadonlyMap<string, ApplicationRouteTopLevelBinding>;
+  readonly providerSetups: readonly ApplicationRouteProviderSetup[];
+}
+
 export function analyzeApplicationServerRouteSource(source: string): ApplicationServerRouteSourceAnalysis {
   // Vite's SSR loader rewrites imported bindings through generated namespace
   // objects. Those names are bundler implementation details, not authored
@@ -214,7 +227,12 @@ export function serializedCallbackClosureMessage(options: {
   return `${options.label}${route}${location} references module-scope identifier(s) that are not available inside the generated runtime: ${options.identifiers.join(', ')}. ${guidance}`;
 }
 
-export function applicationRouteSourceDependencies(route: ApplicationRouteSourceRoute, unsupported: readonly string[], bindingNames: ReadonlySet<string>): ApplicationRouteSourceDependencies | undefined {
+export function applicationRouteSourceDependencies(
+  route: ApplicationRouteSourceRoute,
+  unsupported: readonly string[],
+  bindingNames: ReadonlySet<string>,
+  providerNodeIds: readonly string[] = [],
+): ApplicationRouteSourceDependencies | undefined {
   if (unsupported.length === 0) {
     return undefined;
   }
@@ -227,15 +245,30 @@ export function applicationRouteSourceDependencies(route: ApplicationRouteSource
     ...(typeof discoveryEntrypoint === 'string' && existsSync(discoveryEntrypoint) ? [discoveryEntrypoint] : []),
   ]);
   for (const candidateFile of candidateFiles) {
-    const resolved = resolveApplicationRouteSourceDependencies(candidateFile, unsupported, bindingNames);
+    const resolved = resolveApplicationRouteSourceDependencies(
+      candidateFile,
+      unsupported,
+      bindingNames,
+      providerNodeIds,
+    );
     if (resolved) return resolved;
   }
   throw new Error(serializedCallbackClosureMessage({ label: 'app.server', route, identifiers: unsupported, sourceLocation: route.handlerSourceLocation }));
 }
 
-function resolveApplicationRouteSourceDependencies(file: string, unsupported: readonly string[], bindingNames: ReadonlySet<string>): ApplicationRouteSourceDependencies | undefined {
+function resolveApplicationRouteSourceDependencies(
+  file: string,
+  unsupported: readonly string[],
+  bindingNames: ReadonlySet<string>,
+  providerNodeIds: readonly string[],
+): ApplicationRouteSourceDependencies | undefined {
   const fileSource = readFileSync(file, 'utf8');
-  const topLevelBindings = applicationRouteTopLevelBindings(fileSource, bindingNames, file);
+  const topLevel = applicationRouteTopLevelBindings(
+    fileSource,
+    bindingNames,
+    file,
+  );
+  const topLevelBindings = topLevel.bindings;
   const included = new Map<string, ApplicationRouteTopLevelBinding>();
   const unresolved = new Set<string>();
   const queue = [...unsupported];
@@ -284,9 +317,60 @@ function resolveApplicationRouteSourceDependencies(file: string, unsupported: re
     }
     return undefined;
   }
+  const providerSetups = selectedApplicationProviderSetups(
+    topLevel.providerSetups,
+    topLevelBindings,
+    providerNodeIds,
+  );
+  for (const setup of providerSetups) {
+    const nested = unsupportedRouteFreeIdentifiers(
+      analyzeApplicationServerRouteSource(setup.analysisSource),
+      bindingNames,
+    );
+    for (const name of nested) {
+      includeApplicationRouteBinding(
+        name,
+        topLevelBindings,
+        included,
+        unresolved,
+        bindingNames,
+      );
+    }
+  }
+  if (unresolved.size > 0) {
+    if (process.env.APPLIK8S_DEBUG_CALLBACK_DEPENDENCIES === '1') {
+      console.error(JSON.stringify({
+        component: 'application-provider-setup-dependencies',
+        file,
+        providerNodeIds,
+        setups: providerSetups.map((setup) => setup.source),
+        unresolved: [...unresolved],
+      }));
+    }
+    return undefined;
+  }
   const ordered = [...new Map([...included.values()].map((binding) => [`${binding.kind}:${binding.position}:${binding.source}`, binding])).values()].sort((left, right) => left.position - right.position);
   const imports = ordered.filter((binding) => binding.kind === 'import').map((binding) => binding.source);
-  const declarations = ordered.filter((binding) => binding.kind === 'declaration').map((binding) => binding.source);
+  const setupPrerequisites = applicationRouteSetupPrerequisites(
+    providerSetups,
+    topLevelBindings,
+    included,
+    bindingNames,
+  );
+  const prerequisiteNames = new Set(setupPrerequisites.map((binding) => binding.name));
+  const declarations = [
+    ...setupPrerequisites.map((binding) => binding.source),
+    ...providerSetups
+      .sort((left, right) => left.position - right.position)
+      .map((setup) => setup.source),
+    ...ordered
+      .filter(
+        (binding) =>
+          binding.kind === 'declaration'
+          && !prerequisiteNames.has(binding.name),
+      )
+      .map((binding) => binding.source),
+  ];
   const analysisDeclarations = applicationRouteAnalysisBindings(
     unsupported,
     bindingNames,
@@ -297,6 +381,136 @@ function resolveApplicationRouteSourceDependencies(file: string, unsupported: re
     analysisSource: analysisDeclarations.join('\n\n'),
     resolveDir: dirname(file),
   };
+}
+
+function includeApplicationRouteBinding(
+  name: string,
+  topLevelBindings: ReadonlyMap<string, ApplicationRouteTopLevelBinding>,
+  included: Map<string, ApplicationRouteTopLevelBinding>,
+  unresolved: Set<string>,
+  bindingNames: ReadonlySet<string>,
+): void {
+  if (
+    !name
+    || bindingNames.has(name)
+    || included.has(name)
+    || routeKeywords.has(name)
+    || unresolved.has(name)
+  ) return;
+  const binding = topLevelBindings.get(name);
+  if (!binding) {
+    unresolved.add(name);
+    return;
+  }
+  included.set(name, binding);
+  if (binding.kind !== 'declaration') return;
+  const nested = unsupportedRouteFreeIdentifiers(
+    analyzeApplicationServerRouteSource(binding.analysisSource),
+    new Set([...bindingNames, ...included.keys()]),
+  );
+  for (const nestedName of nested) {
+    includeApplicationRouteBinding(
+      nestedName,
+      topLevelBindings,
+      included,
+      unresolved,
+      bindingNames,
+    );
+  }
+}
+
+function selectedApplicationProviderSetups(
+  setups: readonly ApplicationRouteProviderSetup[],
+  bindings: ReadonlyMap<string, ApplicationRouteTopLevelBinding>,
+  providerNodeIds: readonly string[],
+): ApplicationRouteProviderSetup[] {
+  if (providerNodeIds.length === 0) return [];
+  const selected = setups.filter((setup) => {
+    const candidates = applicationProviderSetupNodeIds(setup, bindings);
+    return candidates.some((candidate) => providerNodeIds.includes(candidate))
+      || providerNodeIds.some((nodeId) =>
+        candidates.some((candidate) => nodeId.startsWith(`${candidate}.`)));
+  });
+  if (selected.length > 0) return selected;
+  // An imported provider token does not necessarily expose its version and
+  // qualification in the application source. A single setup remains
+  // unambiguous and is safer to replay than silently constructing an injected
+  // handle without its exhaustive profile authority.
+  return setups.length === 1 ? [...setups] : [];
+}
+
+function applicationProviderSetupNodeIds(
+  setup: ApplicationRouteProviderSetup,
+  bindings: ReadonlyMap<string, ApplicationRouteTopLevelBinding>,
+): readonly string[] {
+  const binding = bindings.get(setup.providerIdentifier);
+  const source = binding?.source ?? '';
+  const providerInterface = source.match(/\binterface\s*:\s*['"]([A-Z][A-Za-z0-9]*)['"]/)?.[1]
+    ?? importedProviderInterface(source, setup.providerIdentifier)
+    ?? (/Provider$/.test(setup.providerIdentifier)
+      ? setup.providerIdentifier
+      : undefined);
+  if (!providerInterface) return [];
+  const compatibilityRevision = source.match(/\bversion\s*:\s*['"](v[0-9][A-Za-z0-9]*)['"]/)?.[1];
+  const qualification = source.match(/\.\s*named\s*\(\s*['"]([^'"]+)['"]\s*\)/)?.[1];
+  if (compatibilityRevision && qualification) {
+    return [applicationProviderGraphNodeId(providerInterface, {
+      compatibilityRevision,
+      name: qualification,
+    })];
+  }
+  return [`provider.${kubernetesNameSegment(providerInterface)}`];
+}
+
+function importedProviderInterface(
+  source: string,
+  localName: string,
+): string | undefined {
+  const named = source.match(/\{([^}]*)\}/)?.[1];
+  if (!named) return undefined;
+  for (const entry of named.split(',')) {
+    const match = entry.trim().match(
+      /^([A-Za-z_$][\w$]*)(?:\s+as\s+([A-Za-z_$][\w$]*))?$/,
+    );
+    if (!match) continue;
+    const imported = match[1];
+    const local = match[2] ?? imported;
+    if (local === localName && imported?.endsWith('Provider')) return imported;
+  }
+  return undefined;
+}
+
+function applicationRouteSetupPrerequisites(
+  setups: readonly ApplicationRouteProviderSetup[],
+  bindings: ReadonlyMap<string, ApplicationRouteTopLevelBinding>,
+  included: ReadonlyMap<string, ApplicationRouteTopLevelBinding>,
+  bindingNames: ReadonlySet<string>,
+): ApplicationRouteTopLevelBinding[] {
+  const ordered: ApplicationRouteTopLevelBinding[] = [];
+  const emitted = new Set<string>();
+  const visiting = new Set<string>();
+  const visit = (name: string): void => {
+    if (emitted.has(name) || visiting.has(name) || bindingNames.has(name)) return;
+    const binding = bindings.get(name);
+    if (binding?.kind !== 'declaration' || !included.has(name)) return;
+    visiting.add(name);
+    const nested = unsupportedRouteFreeIdentifiers(
+      analyzeApplicationServerRouteSource(binding.analysisSource),
+      new Set([...bindingNames, name]),
+    );
+    for (const dependency of nested) visit(dependency);
+    visiting.delete(name);
+    emitted.add(name);
+    ordered.push(binding);
+  };
+  for (const setup of setups) {
+    const nested = unsupportedRouteFreeIdentifiers(
+      analyzeApplicationServerRouteSource(setup.analysisSource),
+      bindingNames,
+    );
+    for (const dependency of nested) visit(dependency);
+  }
+  return ordered;
 }
 
 function applicationRouteAnalysisBindings(
@@ -484,7 +698,11 @@ function routeFreeIdentifiers(source: string, declared: ReadonlySet<string>): re
   return [...unsupported].sort();
 }
 
-function applicationRouteTopLevelBindings(source: string, bindingNames: ReadonlySet<string>, file: string): ReadonlyMap<string, ApplicationRouteTopLevelBinding> {
+function applicationRouteTopLevelBindings(
+  source: string,
+  bindingNames: ReadonlySet<string>,
+  file: string,
+): ApplicationRouteTopLevelBindings {
   // Parse the transpiled module rather than individual declaration substrings.
   // A substring scanner cannot reliably distinguish a function body from an
   // object default (`options = {}`) or an object-shaped return type. Module-
@@ -492,61 +710,78 @@ function applicationRouteTopLevelBindings(source: string, bindingNames: Readonly
   // imports/declarations for the generated runtime dependency bundle.
   source = transpileApplicationRouteModuleForDependencies(source, file);
   const bindings = new Map<string, ApplicationRouteTopLevelBinding>();
+  const providerSetups: ApplicationRouteProviderSetup[] = [];
   let index = 0;
-  let depth = 0;
   while (index < source.length) {
-    const character = source[index] ?? '';
-    if (character === '\'' || character === '"') {
-      index = quotedSourceEnd(source, index, character);
+    index = topLevelStatementStart(source, index);
+    if (index >= source.length) break;
+    const importBinding = topLevelImportBindingAt(source, index);
+    if (importBinding) {
+      for (const name of importBinding.names) {
+        bindings.set(name, { name, source: importBinding.source, analysisSource: importBinding.source, kind: 'import', position: index });
+      }
+      index = importBinding.end;
       continue;
     }
-    if (character === '`') {
-      index = templateSourceEnd(source, index);
+    const declaration = topLevelDeclarationBindingAt(source, index, bindingNames);
+    if (declaration) {
+      for (const name of declaration.names) {
+        bindings.set(name, { name, source: declaration.source, analysisSource: declaration.source, kind: 'declaration', position: index });
+      }
+      index = declaration.end;
       continue;
     }
-    if (character === '/' && source[index + 1] === '/') {
+    const providerSetup = topLevelApplicationProviderSetupAt(source, index);
+    if (providerSetup) providerSetups.push(providerSetup);
+    const end = statementSourceEnd(source, index);
+    index = end > index ? end : index + 1;
+  }
+  return { bindings, providerSetups };
+}
+
+function topLevelStatementStart(source: string, start: number): number {
+  let index = start;
+  while (index < source.length) {
+    if (/\s/.test(source[index] ?? '')) {
+      index += 1;
+      continue;
+    }
+    if (source[index] === '/' && source[index + 1] === '/') {
       index = lineCommentEnd(source, index);
       continue;
     }
-    if (character === '/' && source[index + 1] === '*') {
+    if (source[index] === '/' && source[index + 1] === '*') {
       index = blockCommentEnd(source, index);
       continue;
     }
-    if (character === '/' && isRegexLiteralStart(source, index)) {
-      index = regexLiteralEnd(source, index);
-      continue;
-    }
-    if (character === '{') {
-      depth += 1;
-      index += 1;
-      continue;
-    }
-    if (character === '}') {
-      depth = Math.max(0, depth - 1);
-      index += 1;
-      continue;
-    }
-    if (depth === 0) {
-      const importBinding = topLevelImportBindingAt(source, index);
-      if (importBinding) {
-        for (const name of importBinding.names) {
-          bindings.set(name, { name, source: importBinding.source, analysisSource: importBinding.source, kind: 'import', position: index });
-        }
-        index = importBinding.end;
-        continue;
-      }
-      const declaration = topLevelDeclarationBindingAt(source, index, bindingNames);
-      if (declaration) {
-        for (const name of declaration.names) {
-          bindings.set(name, { name, source: declaration.source, analysisSource: declaration.source, kind: 'declaration', position: index });
-        }
-        index = declaration.end;
-        continue;
-      }
-    }
-    index += 1;
+    break;
   }
-  return bindings;
+  return index;
+}
+
+function topLevelApplicationProviderSetupAt(
+  source: string,
+  index: number,
+): ApplicationRouteProviderSetup | undefined {
+  if (!/[A-Za-z_$]/.test(source[index] ?? '')) return undefined;
+  if (/[A-Za-z0-9_$]/.test(source[index - 1] ?? '')) return undefined;
+  const end = statementSourceEnd(source, index);
+  if (end <= index) return undefined;
+  const statement = source.slice(index, end).trim();
+  const exhaustiveProvision = /\.\s*provide\s*\(/.test(statement)
+    && /\.\s*exhaustive\s*\(/.test(statement);
+  const profileOverride = /\.\s*override\s*\(/.test(statement);
+  if (!exhaustiveProvision && !profileOverride) return undefined;
+  const providerIdentifier = statement.match(
+    /\.\s*(?:provide|override)\s*\(\s*([A-Za-z_$][\w$]*)/,
+  )?.[1];
+  if (!providerIdentifier) return undefined;
+  return {
+    providerIdentifier,
+    source: statement,
+    analysisSource: statement,
+    position: index,
+  };
 }
 
 function topLevelImportBindingAt(source: string, index: number): { readonly names: readonly string[]; readonly source: string; readonly end: number } | undefined {
@@ -866,6 +1101,7 @@ function declaredRouteIdentifiers(source: string): ReadonlySet<string> {
       addParameterIdentifiers(declared, source.slice(open + 1, close));
     }
   }
+  addObjectMethodRouteIdentifiers(declared, source);
   for (const match of source.matchAll(/\bcatch\s*\(\s*([A-Za-z_$][\w$]*)\s*\)/g)) {
     declared.add(match[1] ?? '');
   }
@@ -875,6 +1111,33 @@ function declaredRouteIdentifiers(source: string): ReadonlySet<string> {
   addClassRouteIdentifiers(declared, source);
   declared.delete('');
   return declared;
+}
+
+function addObjectMethodRouteIdentifiers(
+  declared: Set<string>,
+  source: string,
+): void {
+  for (const match of source.matchAll(
+    /(?:^|[,{])\s*(?:async\s+)?(?:get\s+|set\s+)?([A-Za-z_$][\w$]*)\s*\(/gm,
+  )) {
+    const open = source.indexOf('(', match.index ?? 0);
+    const close = open >= 0
+      ? matchingDelimiter(source, open, '(', ')')
+      : undefined;
+    if (
+      open < 0
+      || close === undefined
+      || source[nextNonWhitespaceIndex(source, close + 1)] !== '{'
+    ) continue;
+    if (match[1]) declared.add(match[1]);
+    addParameterIdentifiers(declared, source.slice(open + 1, close));
+  }
+}
+
+function nextNonWhitespaceIndex(source: string, start: number): number {
+  let index = start;
+  while (index < source.length && /\s/.test(source[index] ?? '')) index += 1;
+  return index;
 }
 
 function addClassRouteIdentifiers(

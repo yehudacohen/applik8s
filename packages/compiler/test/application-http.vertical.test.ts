@@ -681,4 +681,122 @@ export const pipelineHttpStack = application.composition;
       'app.kubernetes.io/component': 'typed-http',
     });
   }, 120_000);
+
+  it('compiles an injected provider operation without application runtime glue', async () => {
+    const directory = await mkdtemp(
+      join(process.cwd(), '.tmp-applik8s-provider-http-'),
+    );
+    directories.push(directory);
+    const entrypoint = join(directory, 'entrypoint.ts');
+    await mkdir(join(directory, 'migrations'));
+    await writeFile(
+      join(directory, 'migrations', '0000_provider_records.sql'),
+      'create table provider_records (id text primary key);\n',
+    );
+    const providerPackage = join(
+      directory,
+      'node_modules',
+      '@fixture',
+      'acquisition',
+    );
+    await mkdir(providerPackage, { recursive: true });
+    await writeFile(
+      join(providerPackage, 'package.json'),
+      JSON.stringify({
+        name: '@fixture/acquisition',
+        version: '1.0.0',
+        type: 'module',
+        exports: './index.js',
+      }),
+    );
+    await writeFile(join(providerPackage, 'index.js'), `
+import { defineApplicationProvider } from '@applik8s/applik8s';
+export const AcquisitionProvider = defineApplicationProvider({
+  interface: 'AcquisitionProvider',
+  version: 'v1alpha1',
+  accepts: candidate => candidate?.kind === 'acquisition' && typeof candidate.acquire === 'function',
+}).named('primary');
+export function installAcquisition(application) {
+  const provider = application.inject(AcquisitionProvider);
+  return Object.freeze({ acquire: provider.acquire });
+}
+`);
+    await writeFile(entrypoint, `
+import { IdentityProvider, app } from '@applik8s/applik8s';
+import { type } from '@applik8s/applik8s/dsl';
+import { pgTable, text } from 'drizzle-orm/pg-core';
+import { AcquisitionProvider, installAcquisition } from '@fixture/acquisition';
+
+const application = app('provider-http', {
+  namespace: 'provider-http',
+  spec: type({ profile: "'starter' | 'dedicated'" }),
+  status: type({ ready: 'boolean' }),
+});
+application.provide(IdentityProvider, IdentityProvider.deterministic({
+  mode: 'starter',
+  application: 'provider-http',
+  subject: 'alice',
+  audience: ['provider-http'],
+  catalogRevision: 'catalog-v1',
+  authorityRevision: 'authority-v1',
+}));
+const records = pgTable('provider_records', { id: text('id').primaryKey() });
+const database = application.database.postgres('main', {
+  schema: { records },
+  migrations: { path: './migrations' },
+});
+application.model(records, { name: 'ProviderRecord', database });
+const implementation = source => ({
+  kind: 'acquisition',
+  source,
+  async acquire(input) { return { value: this.source + ':' + input.id }; },
+});
+application.profile(application.installation.spec, 'profile')
+  .provide(AcquisitionProvider)
+  .starter(() => implementation('starter'))
+  .dedicated(() => implementation('dedicated'))
+  .exhaustive();
+const { acquire } = installAcquisition(application);
+const api = application.http('public-api');
+api.post('acquire', '/acquire', {
+  input: type({ id: 'string' }),
+  output: type({ value: 'string' }),
+}, async ({ input }) => acquire(input)).public();
+export const providerHttpStack = application.composition;
+`);
+
+    const result = await compileTypeKroComposition({
+      entrypoint,
+      compositionName: 'providerHttpStack',
+      outDir: join(directory, 'dist'),
+      runtimeVersionRange: '^0.8.0',
+      handlerAbiVersion: 'applik8s.handler/v1alpha1',
+      adapter: 'wasmComponent',
+      portability: {
+        deterministicBuild: true,
+        allowEnvironmentAccess: false,
+        allowFilesystemAccess: false,
+        allowNetworkAccess: false,
+        allowedHostImports: [],
+        sourceMaps: {
+          emit: true,
+          includeSourceContent: false,
+          redactPaths: false,
+        },
+      },
+    });
+
+    expect(result.ok, result.ok ? undefined : result.error.message).toBe(true);
+    if (!result.ok) return;
+    const artifact = result.value.artifacts.httpArtifacts[0];
+    if (!artifact) throw new Error('Expected a generated provider HTTP worker.');
+    const source = await readFile(artifact.sourcePath, 'utf8');
+    expect(source).toContain('APPLIK8S_PROFILE_VARIANT');
+    expect(source).toContain('Injected provider');
+    expect(source).toContain('dedicated');
+    const deployment = artifact.resources.find(
+      (resource) => resource.kind === 'Deployment',
+    );
+    expect(JSON.stringify(deployment)).toContain('APPLIK8S_PROFILE_VARIANT');
+  }, 120_000);
 });

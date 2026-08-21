@@ -16,13 +16,24 @@ export function applicationWorkloadProviderNodeIds(node: ApplicationGraphNode | 
     case 'taskHandler': return [
       node.workflowEngine.nodeId,
       ...(node.capabilities ?? []).map(({ nodeId }) => nodeId),
+      ...(node.providerBindings ?? []).map(({ provider }) => provider.nodeId),
     ];
     case 'workflowHandler':
     case 'workflowWorker': return [node.workflowEngine.nodeId];
-    case 'schedule': return [node.scheduler.nodeId];
+    case 'schedule': return [
+      node.scheduler.nodeId,
+      ...(node.providerBindings ?? []).map(({ provider }) => provider.nodeId),
+    ];
     case 'lakehousePublication': return [node.dataset.nodeId, ...(node.eventLog ? [node.eventLog.nodeId] : [])];
-    case 'actor': return [node.runtime.nodeId];
-    case 'aiAgent': return [node.inference.nodeId, node.state.nodeId];
+    case 'actor': return [
+      node.runtime.nodeId,
+      ...(node.providerBindings ?? []).map(({ provider }) => provider.nodeId),
+    ];
+    case 'aiAgent': return [
+      node.inference.nodeId,
+      node.state.nodeId,
+      ...(node.providerBindings ?? []).map(({ provider }) => provider.nodeId),
+    ];
     case 'query': return node.search ? [node.search.provider.nodeId] : [];
     case 'streamProcessor': return [
       ...(node.providerBindings ?? []).map(({ provider }) => provider.nodeId),

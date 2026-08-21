@@ -17,21 +17,21 @@ import type {
 } from '@applik8s/core';
 import { applicationOperationId } from '@applik8s/core';
 import {
+  type ApplicationRuntimeEndpointDependency,
   applicationOptionalDeploymentOutputReference,
   applicationRuntimeEndpointEnvironmentName,
-  type ApplicationRuntimeEndpointDependency,
 } from '@applik8s/deployment-contract';
 import { build } from 'esbuild';
+import {
+  applicationActorInvocationBoundary,
+  generatedApplicationActorInvocationClientSource,
+} from '../application-actor-invocation.js';
 import { generatedCallbackFactoryModule } from '../application-callback-module.js';
 import {
   emitGeneratedApplicationContainer,
   type GeneratedApplicationContainerArtifact,
 } from '../application-containers/index.js';
 import { applicationGraphStringValue } from '../application-installation-values.js';
-import {
-  applicationActorInvocationBoundary,
-  generatedApplicationActorInvocationClientSource,
-} from '../application-actor-invocation.js';
 import {
   type ApplicationOperationPlacementReceiver,
   compileApplicationOperationPlacementReceiver,
@@ -74,6 +74,8 @@ interface ApplicationAgentCompilerContract {
   readonly agent: ApplicationAIAgentNode;
   readonly provider: ApplicationProviderNode;
   readonly providerConfig: JsonObject;
+  readonly callableProviders: readonly ApplicationProviderNode[];
+  readonly callableProviderProfileSelector?: string;
   readonly operationCatalog: ApplicationOperationCatalog;
   readonly tools: readonly {
     readonly operation: ApplicationOperationDescriptor;
@@ -171,6 +173,26 @@ function applicationAgentCompilerContract(
       `Application agent ${agent.id} resolved AI provider ${provider.id} without a portable provider configuration.`,
     );
   }
+  const callableProviders = (agent.providerBindings ?? []).map((binding) => {
+    const callableProvider = graph.nodes.find(
+      (node): node is ApplicationProviderNode =>
+        node.kind === 'provider' && node.id === binding.provider.nodeId,
+    );
+    if (
+      !callableProvider
+      || callableProvider.interface !== binding.provider.interface
+    ) {
+      throw new Error(
+        `Application agent ${agent.id} references missing callable provider ${binding.provider.nodeId}.`,
+      );
+    }
+    return callableProvider;
+  }).filter(
+    (candidate, index, providers) =>
+      providers.findIndex((provider) => provider.id === candidate.id) === index,
+  );
+  const callableProviderProfileSelector =
+    applicationCallableProviderProfileSelector(agent, callableProviders);
   const operations = new Map(
     operationCatalog.operations.map((operation) => [operation.id, operation]),
   );
@@ -325,6 +347,10 @@ function applicationAgentCompilerContract(
     agent,
     provider,
     providerConfig,
+    callableProviders,
+    ...(callableProviderProfileSelector
+      ? { callableProviderProfileSelector }
+      : {}),
     operationCatalog,
     tools,
     operations: directOperations,
@@ -1707,6 +1733,11 @@ function generatedAgentResources(
     deploymentProvider,
     contract.agent.model.name,
   );
+  const profileSelector = compatibleAgentProfileSelector(
+    contract.agent,
+    applicationAgentProfileSelector(deploymentProvider),
+    contract.callableProviderProfileSelector,
+  );
   const labels = {
     'app.kubernetes.io/name': name,
     'app.kubernetes.io/component': 'ai-agent',
@@ -1770,12 +1801,10 @@ function generatedAgentResources(
                   { name: 'NODE_ENV', value: 'production' },
                   { name: 'NODE_OPTIONS', value: '--enable-source-maps' },
                   { name: 'APPLIK8S_DEPLOYMENT_TARGET', value: 'kubernetes' },
-                  ...(applicationAgentProfileSelector(deploymentProvider)
+                  ...(profileSelector
                     ? [{
                         name: 'APPLIK8S_PROFILE_VARIANT',
-                        value: applicationAgentProfileSelector(
-                          deploymentProvider,
-                        ),
+                        value: profileSelector,
                       }]
                     : []),
                   ...(applicationAgentHasManagedEnvoy(
@@ -2061,6 +2090,56 @@ function applicationAgentProfileSelector(provider: JsonObject): string | undefin
     );
   }
   return `\${schema.spec.${match[1]}}`;
+}
+
+function applicationCallableProviderProfileSelector(
+  agent: ApplicationAIAgentNode,
+  providers: readonly ApplicationProviderNode[],
+): string | undefined {
+  const selectors = new Set(
+    providers.flatMap((provider) => {
+      const profile = isJsonObject(provider.config?.profile)
+        ? provider.config.profile
+        : undefined;
+      const selectedBy = profile && typeof profile.selectedBy === 'string'
+        ? profile.selectedBy.trim()
+        : '';
+      if (!selectedBy) return [];
+      const expression = selectedBy.startsWith('${') && selectedBy.endsWith('}')
+        ? selectedBy.slice(2, -1)
+        : selectedBy;
+      const match = /^schema\.spec\.([A-Za-z_][A-Za-z0-9_.]*)$/u.exec(expression);
+      if (!match?.[1]) {
+        throw new Error(
+          `Application agent ${agent.id} callable provider ${provider.id} selector ${JSON.stringify(selectedBy)} cannot be lowered to a workload profile binding.`,
+        );
+      }
+      return [`\${schema.spec.${match[1]}}`];
+    }),
+  );
+  if (selectors.size > 1) {
+    throw new Error(
+      `Application agent ${agent.id} reaches callable providers selected by incompatible profiles: ${[...selectors].sort().join(', ')}.`,
+    );
+  }
+  return [...selectors][0];
+}
+
+function compatibleAgentProfileSelector(
+  agent: ApplicationAIAgentNode,
+  inferenceSelector: string | undefined,
+  callableSelector: string | undefined,
+): string | undefined {
+  if (
+    inferenceSelector
+    && callableSelector
+    && inferenceSelector !== callableSelector
+  ) {
+    throw new Error(
+      `Application agent ${agent.id} inference and callable providers use incompatible profile selectors ${JSON.stringify(inferenceSelector)} and ${JSON.stringify(callableSelector)}.`,
+    );
+  }
+  return inferenceSelector ?? callableSelector;
 }
 
 function applicationAgentProviderForTarget(

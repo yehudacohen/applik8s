@@ -1,6 +1,9 @@
 // typecast-file-boundary: Serialized callback metadata is reflected from user closures and validated at this compiler boundary.
 import { applicationCallbackSourceMatchesRuntime } from './application-callback-source-equivalence.js';
-import { applicationCallableRuntimeFor } from './application-provider-dependencies.js';
+import {
+  applicationCallableProviderDependencies,
+  applicationCallableRuntimeFor,
+} from './application-provider-dependencies.js';
 import {
   type ApplicationRouteSourceLocation,
   analyzeApplicationServerRouteSource,
@@ -330,8 +333,13 @@ export function serializeApplicationCallback(options: {
       handlerSource: source,
       handlerSourceKind: extracted ? 'source' : 'functionToString',
       ...(durableLocation ? { handlerSourceLocation: durableLocation } : {}),
-    }, unsupported, injectedIdentifiers);
+    }, unsupported, injectedIdentifiers, applicationCallbackProviderNodeIds(
+      options.callback,
+    ));
   } catch (error) {
+    if (process.env.APPLIK8S_DEBUG_CALLBACK_DEPENDENCIES === '1') {
+      console.error(error);
+    }
     if (!options.allowDeferredResolution) throw error;
   }
   if (unsupported.length > 0 && !dependencies && !options.allowDeferredResolution) {
@@ -347,6 +355,18 @@ export function serializeApplicationCallback(options: {
   entries.set(cacheKey, serialized);
   callbackCache.set(options.callback, entries);
   return serialized;
+}
+
+function applicationCallbackProviderNodeIds(
+  callback: (...args: never[]) => unknown,
+): readonly string[] {
+  const dependencies = expandApplicationCallbackDependencies({
+    calls: [callback],
+  });
+  return [...new Set(
+    applicationCallableProviderDependencies(dependencies.bindings)
+      .map((dependency) => dependency.provider.nodeId),
+  )].sort();
 }
 
 /**

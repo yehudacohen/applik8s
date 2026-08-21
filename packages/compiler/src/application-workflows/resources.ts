@@ -48,6 +48,38 @@ function workflowCapabilityEnvironment(contract: WorkflowContract): readonly Rec
   });
 }
 
+function workflowCallableProviderEnvironment(
+  contract: WorkflowContract,
+): readonly Record<string, unknown>[] {
+  const selectors = new Set(
+    (contract.callableProviders ?? []).flatMap((provider) => {
+      const profile = objectConfig(provider.config?.profile);
+      const selector = stringConfig(profile.selectedBy);
+      return selector ? [workflowProfileSelectorValue(selector)] : [];
+    }),
+  );
+  if (selectors.size > 1) {
+    throw new Error(
+      `Workflow worker ${contract.worker.id} reaches callable providers selected by incompatible profiles: ${[...selectors].sort().join(', ')}.`,
+    );
+  }
+  const [selector] = selectors;
+  return selector
+    ? [{ name: 'APPLIK8S_PROFILE_VARIANT', value: selector }]
+    : [];
+}
+
+function workflowProfileSelectorValue(selector: string): string {
+  const normalized = selector.trim();
+  const expression = /^\$\{(.+)\}$/u.exec(normalized)?.[1] ?? normalized;
+  if (!/^schema\.spec(?:\.[A-Za-z_][A-Za-z0-9_]*)+$/u.test(expression)) {
+    throw new Error(
+      `Workflow callable provider profile selector ${JSON.stringify(selector)} cannot be lowered to a workload environment binding.`,
+    );
+  }
+  return `\${${expression}}`;
+}
+
 export function workflowResources(contract: WorkflowContract, name: string, image: string, digest: string, _ownsProvider: boolean): GeneratedApplicationWorkflowResource[] {
   const labels = { 'app.kubernetes.io/name': name, 'app.kubernetes.io/component': 'workflow-worker', 'applik8s.dev/graph': contract.graphName };
   const gatewayEnabled = contract.gatewayCallers.length > 0;
@@ -92,6 +124,7 @@ export function workflowResources(contract: WorkflowContract, name: string, imag
                 valueFrom: { fieldRef: { fieldPath: 'metadata.namespace' } },
               }] : []),
               ...workflowConnectionEnvironment,
+              ...workflowCallableProviderEnvironment(contract),
               ...workflowCapabilityEnvironment(contract),
               ...workflowOperationEnvironment(contract),
               ...workflowQueryEnvironment(contract),

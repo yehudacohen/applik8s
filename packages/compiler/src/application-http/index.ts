@@ -111,6 +111,7 @@ interface HttpServerCompilerContract {
   readonly routes: readonly HttpRouteCompilerContract[];
   readonly identity: ApplicationProviderNode;
   readonly identityConfig: Readonly<Record<string, unknown>>;
+  readonly providerProfileSelector?: string;
   readonly eventLog?: ApplicationProviderNode;
   readonly workflowEngine?: ApplicationProviderNode;
   readonly operationCatalog: ApplicationOperationCatalog;
@@ -301,12 +302,37 @@ function applicationHttpCompilerContract(
     workflowEngine = provider;
   }
   const namespace = applicationServerNamespace(graph, server);
+  const providerProfileSelectors = new Set(
+    routes.flatMap((route) =>
+      (route.route.functionNative.providerBindings ?? []).flatMap((binding) => {
+        const provider = nodes.get(binding.provider.nodeId);
+        if (
+          provider?.kind !== 'provider'
+          || provider.interface !== binding.provider.interface
+        ) {
+          throw new Error(
+            `Generated typed HTTP route ${server.id}.${route.route.id} references missing provider ${binding.provider.nodeId}.`,
+          );
+        }
+        const profile = objectValue(provider.config?.profile);
+        const selector = stringValue(profile.selectedBy);
+        return selector ? [applicationHttpProfileSelectorValue(selector)] : [];
+      }),
+    ),
+  );
+  if (providerProfileSelectors.size > 1) {
+    throw new Error(
+      `Generated typed HTTP server ${server.id} reaches providers selected by incompatible profiles: ${[...providerProfileSelectors].sort().join(', ')}.`,
+    );
+  }
+  const [providerProfileSelector] = providerProfileSelectors;
   return {
     graph,
     server,
     routes,
     identity,
     identityConfig,
+    ...(providerProfileSelector ? { providerProfileSelector } : {}),
     executionTarget,
     ...(eventLog ? { eventLog } : {}),
     ...(workflowEngine ? { workflowEngine } : {}),
@@ -1653,7 +1679,10 @@ function generatedHttpResources(
         },
       },
     },
-    ...applicationHttpProfileEnvironment(contract.identityConfig),
+    ...applicationHttpProfileEnvironment(
+      contract.identityConfig,
+      contract.providerProfileSelector,
+    ),
     ...applicationHttpDatabaseEnvironment(contract),
     ...applicationHttpEventLogEnvironment(contract.eventLog),
     ...applicationHttpWorkflowEnvironment(contract),
@@ -1928,9 +1957,23 @@ function applicationHttpEventLogEnvironment(
 
 export function applicationHttpProfileEnvironment(
   identity: Readonly<Record<string, unknown>>,
+  providerSelector?: string,
 ): readonly Record<string, unknown>[] {
   const profile = objectValue(identity.authenticationProfile);
-  const selector = stringValue(profile.selector);
+  const rawIdentitySelector = stringValue(profile.selector);
+  const identitySelector = rawIdentitySelector
+    ? applicationHttpProfileSelectorValue(rawIdentitySelector)
+    : undefined;
+  if (
+    identitySelector
+    && providerSelector
+    && identitySelector !== providerSelector
+  ) {
+    throw new Error(
+      `Generated typed HTTP identity and provider profiles use incompatible selectors ${JSON.stringify(identitySelector)} and ${JSON.stringify(providerSelector)}.`,
+    );
+  }
+  const selector = identitySelector ?? providerSelector;
   if (!selector) return [];
   if (/^\$\{.+\}$/u.test(selector)) {
     return [{ name: 'APPLIK8S_PROFILE_VARIANT', value: selector }];
@@ -1945,8 +1988,18 @@ export function applicationHttpProfileEnvironment(
   }
   return [{
     name: 'APPLIK8S_PROFILE_VARIANT',
-    value: `\${${selector}}`,
+    value: applicationHttpProfileSelectorValue(selector),
   }];
+}
+
+function applicationHttpProfileSelectorValue(selector: string): string {
+  const normalized = selector.trim();
+  if (/^\$\{.+\}$/u.test(normalized)) return normalized;
+  const schemaPath = /^schema\.spec\.[A-Za-z_][A-Za-z0-9_.]*$/u.exec(
+    normalized,
+  );
+  if (!schemaPath) return normalized;
+  return `\${${normalized}}`;
 }
 
 async function writeIdentityModule(

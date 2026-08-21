@@ -97,6 +97,7 @@ import {
   createApplicationProfileRuntime,
 } from './application-profiles.js';
 import { applicationCallableProviderDependencies } from './application-provider-dependencies.js';
+import { createApplicationQualifiedProviderBinding } from './application-provider-handle.js';
 import type { ApplicationAnalyticalDatabaseProvider, ApplicationDefaults, ApplicationDefaultsBinding, ApplicationHostBinding, ApplicationHostProvider, ApplicationHttpExposureProvider, ApplicationIndexBackend, ApplicationPostgresTransactionalDatabaseOptions, ApplicationProviderBinding, ApplicationProviderDeploymentTarget, ApplicationProviderState, ApplicationProviderToken, ApplicationQualifiedProviderToken, ApplicationTargetProviderSelectionValue, ApplicationTransactionalDatabaseProvider, ApplicationValkeyIndexBackend } from './application-providers.js';
 import { ActorRuntime, ApplicationHost, applicationAnalyticalDatabaseImplementation, applicationCertificateImplementation, applicationDnsPublicationImplementation, applicationEventLogImplementation, applicationHostBinding, applicationHttpExposureImplementation, applicationIndexBackend, applicationObjectStorageImplementation, applicationPostgresClusterSpec, applicationProviderQualificationFor, applicationProviderSelectionFor, applicationProviderSelectionSatisfies, applicationProviderTokenName, applicationSearchProviderImplementation, applicationTargetProviderSelectionFor, applicationTransactionalDatabaseImplementation, applyApplicationProvider, defaultApplicationEventLogProvider, defaultApplicationIndexBackend, defaultApplicationIndexProvider, defaultApplicationProviders, IndexStore, isApplicationProviderSelection, isApplicationQualifiedProviderToken, isValkeyIndexDefault, TransactionalDatabase } from './application-providers.js';
 import { type ApplicationCallableQueryBinding, type ApplicationQueryBinding, type ApplicationQueryOptions, type ApplicationQueryPrincipal, type ApplicationQuerySourceBinding, applicationQueryBindingForOperation, registerApplicationModelView, registerApplicationQuery } from './application-queries.js';
@@ -1894,12 +1895,10 @@ function createKubernetesApplicationBuilder<TSpec extends KroCompatibleType = Re
             previewContext.state,
             contract,
           );
-          const binding: ApplicationQualifiedProviderBinding<
-            typeof implementation
-          > = Object.freeze({
+          const binding = createApplicationQualifiedProviderBinding({
             kind: 'applicationProvider',
             token,
-              implementation: normalizedImplementation,
+            implementation: normalizedImplementation,
             qualification: token.qualification,
             profile: contract,
           });
@@ -4390,12 +4389,20 @@ function createApplicationContext<TSpec extends KroCompatibleType, TStatus exten
       }
       const binding = createApplicationActor(id, options);
       const record = () => {
-        addApplicationGraphNode(state, binding.graphNode);
+        const actorNode = binding.graphNode;
+        addApplicationGraphNode(state, actorNode);
+        for (const provider of actorNode.providerBindings ?? []) {
+          addApplicationGraphEdge(state, {
+            from: { nodeId: provider.provider.nodeId },
+            to: { nodeId: actorNode.id },
+            relationship: 'provides',
+          });
+        }
         const requirementId = `requirement.actor.${id}.event-log`;
         addApplicationProviderRequirement(state, {
           id: requirementId,
           interface: 'EventLog',
-          consumer: { nodeId: binding.graphNode.id },
+          consumer: { nodeId: actorNode.id },
           required: true,
           purpose: 'eventLog',
           diagnostics: {

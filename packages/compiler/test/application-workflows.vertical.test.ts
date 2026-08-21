@@ -98,12 +98,56 @@ describe('v0.5 generated workflow lowering', () => {
         join(dir, 'migrations/0001_records.sql'),
         'CREATE TABLE workflow_native_records (id text PRIMARY KEY, body text NOT NULL);\n',
       );
+      const providerPackage = join(
+        dir,
+        'node_modules',
+        '@fixture',
+        'acquisition',
+      );
+      await mkdir(providerPackage, { recursive: true });
+      await writeFile(
+        join(providerPackage, 'package.json'),
+        JSON.stringify({
+          name: '@fixture/acquisition',
+          version: '1.0.0',
+          type: 'module',
+          exports: './index.js',
+        }),
+      );
+      await writeFile(join(providerPackage, 'index.js'), `
+import { defineApplicationProvider } from '@applik8s/applik8s';
+export const AcquisitionProvider = defineApplicationProvider({
+  interface: 'AcquisitionProvider',
+  version: 'v1alpha1',
+  accepts: candidate => candidate?.kind === 'acquisition' && typeof candidate.acquire === 'function',
+}).named('primary');
+export function installAcquisition(application) {
+  const provider = application.inject(AcquisitionProvider);
+  return Object.freeze({ acquire: provider.acquire });
+}
+`);
       await writeFile(entrypoint, `
 import { app, event, WorkflowEngine } from '@applik8s/applik8s';
 import { type } from '@applik8s/applik8s/dsl';
 import { pgTable, text } from 'drizzle-orm/pg-core';
-const platform = app('workflow-model-edit', { namespace: 'workflow-model-edit' });
+import { AcquisitionProvider, installAcquisition } from '@fixture/acquisition';
+const platform = app('workflow-model-edit', {
+  namespace: 'workflow-model-edit',
+  spec: type({ profile: "'starter' | 'dedicated'" }),
+  status: type({ ready: 'boolean' }),
+});
 platform.provide(WorkflowEngine, WorkflowEngine.hatchet({ provision: false, namespace: 'workflow-model-edit', hostPort: 'hatchet:7070', apiUrl: 'http://hatchet:8080', workerTokenSecret: { apiVersion: 'v1', kind: 'Secret', name: 'hatchet-worker', namespace: 'workflow-model-edit' } }));
+const acquisition = source => ({
+  kind: 'acquisition',
+  source,
+  async acquire(input) { return { body: this.source + ':' + input.id }; },
+});
+platform.profile(platform.installation.spec, 'profile')
+  .provide(AcquisitionProvider)
+  .starter(() => acquisition('starter'))
+  .dedicated(() => acquisition('dedicated'))
+  .exhaustive();
+const { acquire } = installAcquisition(platform);
 const records = pgTable('workflow_native_records', { id: text('id').primaryKey(), body: text('body').notNull() });
 const database = platform.database.postgres('records', { schema: { records }, migrations: { path: './migrations' } });
 const RecordModel = platform.model(records, { name: 'Record', database });
@@ -119,7 +163,8 @@ platform.workflow('records.edit.v1', {
   input: type({ id: 'string', body: 'string' }),
   output: type({ id: 'string' }),
 }, async input => {
-  await persistRecord(input.id, input.body);
+  const acquired = await acquire({ id: input.id });
+  await persistRecord(input.id, acquired.body);
   return { id: input.id };
 });
 export const workflowModelEdit = platform.composition;
@@ -161,6 +206,11 @@ export const workflowModelEdit = platform.composition;
             outbox: [{ nodeId: 'event.records.changed.v1' }],
             idempotency: 'durable-task-invocation',
           }),
+          providerBindings: [expect.objectContaining({
+            provider: expect.objectContaining({
+              interface: 'AcquisitionProvider',
+            }),
+          })],
         }),
       ]));
       const artifact = result.value.artifacts.workflowArtifacts[0];
@@ -194,6 +244,13 @@ export const workflowModelEdit = platform.composition;
         'functionNativeTaskBindings("task-handler.records.edit.v1.step")["RecordChanged"]',
       );
       expect(generatedSource).toContain('durableId');
+      expect(source).toContain('Injected provider');
+      const deployment = artifact?.resources.find(
+        (resource) => resource.kind === 'Deployment',
+      );
+      expect(JSON.stringify(deployment)).toContain(
+        'APPLIK8S_PROFILE_VARIANT',
+      );
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

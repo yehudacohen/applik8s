@@ -151,6 +151,37 @@ class DeliveryError extends Error {
     );
   });
 
+  it('replays only the exhaustive profile setup required by an injected provider operation', () => {
+    const dependencies = applicationRouteSourceDependencies({
+      id: 'provider-operation',
+      method: 'POST',
+      path: '/provider/acquire',
+      handlerSource: 'async input => acquire(input)',
+      handlerSourceKind: 'source',
+      handlerSourceLocation: {
+        file: new URL(
+          './fixtures/application-provider-callback-dependencies.ts',
+          import.meta.url,
+        ).pathname,
+        line: 74,
+        column: 1,
+      },
+    }, ['acquire'], new Set(), [
+      'provider.primary-provider.v1alpha1.active',
+    ]);
+
+    const source = dependencies?.source ?? '';
+    expect(source).toContain("const deployment = application.profile(application.installation.spec, \"profile\")");
+    expect(source).toContain('.provide(PrimaryProvider)');
+    expect(source).toContain("primaryImplementation(\"dedicated\")");
+    expect(source).toContain('const primary = application.inject(PrimaryProvider)');
+    expect(source.indexOf('.provide(PrimaryProvider)')).toBeLessThan(
+      source.indexOf('application.inject(PrimaryProvider)'),
+    );
+    expect(source).not.toContain('.provide(SecondaryProvider)');
+    expect(source).not.toContain('secondary-dedicated');
+  });
+
   it('extracts function-valued properties nested inside registrar options', () => {
     const extracted = sourceRegistrar.register({
       deployment: {

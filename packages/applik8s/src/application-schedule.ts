@@ -10,8 +10,12 @@ import {
 } from '@applik8s/core';
 import { sha256Hex } from '@applik8s/deployment-contract';
 import type { SchemaInput } from '@applik8s/sdk';
-import { serializeApplicationCallback } from './application-callback.js';
+import {
+  expandApplicationCallbackDependencies,
+  serializeApplicationCallback,
+} from './application-callback.js';
 import { applicationProviderGraphNodeId } from './application-identifiers.js';
+import { applicationCallableProviderDependencies } from './application-provider-dependencies.js';
 import type {
   ApplicationQualifiedProviderToken,
   ApplicationSchedulerProvider,
@@ -290,6 +294,14 @@ export function createApplicationSchedule<TInput extends object, TResult>(
   const runtimeHandler: ApplicationScheduleHandler<TInput, TResult> = fixed
     ? async (_input, context) => (handler as (context: ApplicationScheduleContext) => TResult | Promise<TResult>)(context)
     : handler as ApplicationScheduleHandler<TInput, TResult>;
+  const inferredDependencies = expandApplicationCallbackDependencies({
+    calls: [handler, ...(options.__generatedCalls ?? [])],
+    bindings: options.__generatedBindings,
+  });
+  const providerBindings = applicationCallableProviderDependencies({
+    ...inferredDependencies.bindings,
+    generatedScheduleProviderDependencies: handler,
+  });
   const serialized = serializeApplicationCallback({
     registrar: 'schedule',
     argumentIndex: 1,
@@ -338,6 +350,7 @@ export function createApplicationSchedule<TInput extends object, TResult>(
       requirements: normalized.requirements,
     },
     scheduler: { interface: 'Scheduler' as const, nodeId: schedulerNodeId },
+    ...(providerBindings.length > 0 ? { providerBindings } : {}),
     handler: serialized,
     functionNative: true,
   });

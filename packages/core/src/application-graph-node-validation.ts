@@ -131,17 +131,32 @@ export function applicationProviderRefsForNode(node: ApplicationGraphNode): read
     case 'processor':
       return node.eventLog ? [node.eventLog] : [];
     case 'taskHandler':
+      return [
+        node.workflowEngine,
+        ...(node.capabilities ?? []),
+        ...(node.providerBindings ?? []).map(({ provider }) => provider),
+      ];
     case 'workflowHandler':
     case 'workflowWorker':
       return [node.workflowEngine];
     case 'schedule':
-      return [node.scheduler];
+      return [
+        node.scheduler,
+        ...(node.providerBindings ?? []).map(({ provider }) => provider),
+      ];
     case 'lakehousePublication':
       return [node.dataset];
     case 'actor':
-      return [node.runtime];
+      return [
+        node.runtime,
+        ...(node.providerBindings ?? []).map(({ provider }) => provider),
+      ];
     case 'aiAgent':
-      return [node.inference, node.state];
+      return [
+        node.inference,
+        node.state,
+        ...(node.providerBindings ?? []).map(({ provider }) => provider),
+      ];
     case 'projection':
       return [node.provider];
     case 'objectStore':

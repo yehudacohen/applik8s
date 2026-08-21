@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { discoverApplicationGraphWithExports } from '../src/pipeline/index.js';
 import { generatedApplicationFetchGatewayModules } from '../src/application-fetch-gateway/index.js';
+import { discoverApplicationGraphWithExports } from '../src/pipeline/index.js';
 
 describe('v0.8 function-native schedule discovery', () => {
   it('publishes reachable schedules with qualified scheduler dependencies', async () => {
@@ -14,11 +14,22 @@ describe('v0.8 function-native schedule discovery', () => {
       { name: 'Cleanup', id: 'evidence.cleanup.v1' },
       { name: 'PollSource', id: 'source.poll.v1' },
     ]);
+    expect(discovered.value.actorExports).toEqual([
+      { name: 'Workspace', actorId: 'workspace.v1' },
+    ]);
     expect(discovered.value.graph.nodes).toEqual(expect.arrayContaining([
       expect.objectContaining({
         id: 'schedule.evidence.cleanup.v1',
         kind: 'schedule',
         scheduler: { interface: 'Scheduler', nodeId: 'provider.scheduler' },
+        providerBindings: [
+          expect.objectContaining({
+            provider: expect.objectContaining({
+              interface: 'AcquisitionProvider',
+              nodeId: 'provider.acquisition-provider.v1alpha1.primary',
+            }),
+          }),
+        ],
       }),
       expect.objectContaining({
         id: 'schedule.source.poll.v1',
@@ -38,11 +49,33 @@ describe('v0.8 function-native schedule discovery', () => {
         kind: 'provider',
         implementation: 'hatchet-scheduler',
       }),
+      expect.objectContaining({
+        id: 'actor.workspace.v1',
+        kind: 'actor',
+        providerBindings: [
+          expect.objectContaining({
+            provider: expect.objectContaining({
+              interface: 'AcquisitionProvider',
+              nodeId: 'provider.acquisition-provider.v1alpha1.primary',
+            }),
+          }),
+        ],
+      }),
     ]));
     expect(discovered.value.graph.providerRequirements).toEqual(expect.arrayContaining([
       expect.objectContaining({ consumer: { nodeId: 'schedule.evidence.cleanup.v1' }, interface: 'Scheduler' }),
       expect.objectContaining({ consumer: { nodeId: 'schedule.source.poll.v1' }, interface: 'Scheduler' }),
     ]));
+    expect(discovered.value.graph.edges).toContainEqual({
+      from: { nodeId: 'provider.acquisition-provider.v1alpha1.primary' },
+      to: { nodeId: 'schedule.evidence.cleanup.v1' },
+      relationship: 'provides',
+    });
+    expect(discovered.value.graph.edges).toContainEqual({
+      from: { nodeId: 'provider.acquisition-provider.v1alpha1.primary' },
+      to: { nodeId: 'actor.workspace.v1' },
+      relationship: 'provides',
+    });
     const gateway = generatedApplicationFetchGatewayModules(discovered.value.graph);
     expect(gateway?.files['gateway.generated.ts']).toContain("installLocalApplicationScheduleRuntime");
     expect(gateway?.files['gateway.generated.ts']).toContain("APPLIK8S_DEPLOYMENT_TARGET === 'local'");
@@ -51,5 +84,10 @@ describe('v0.8 function-native schedule discovery', () => {
     expect(gateway?.files['gateway.generated.ts']).toContain("requiredEnv('APPLIK8S_SCHEDULE_DATABASE_URL')");
     expect(gateway?.files['gateway.generated.ts']).toContain('evidence.cleanup.v1');
     expect(gateway?.files['gateway.generated.ts']).not.toContain('source.poll.v1');
+    const generatedSources = Object.values(gateway?.files ?? {}).join('\n');
+    expect(generatedSources).toContain('const acquire = acquisition.acquire');
+    expect(generatedSources).toContain('.profile(');
+    expect(generatedSources).toContain('platform.installation.spec');
+    expect(generatedSources).toContain('binding.on["acquire"]');
   }, 60_000);
 });

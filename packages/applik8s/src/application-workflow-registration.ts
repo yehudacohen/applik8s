@@ -1,19 +1,21 @@
 // typecast-file-boundary: Workflow registration preserves generic schema inference while normalizing validated graph metadata at the registration boundary.
 import { createHash } from 'node:crypto';
-import { getApplicationOperationContract, type ApplicationOperationLike, isApplicationBoundOperation, isApplicationScopedOperation } from '@applik8s/client';
+import { type ApplicationOperationLike, getApplicationOperationContract, isApplicationBoundOperation, isApplicationScopedOperation } from '@applik8s/client';
 import { type ApplicationOperationInvocationDependency, type ApplicationProviderRuntimeContract, type ApplicationResourceRef, applicationOperationId } from '@applik8s/core';
 import {
   expandApplicationCallbackDependencies,
   serializeApplicationCallback,
 } from './application-callback.js';
-import { addApplicationGraphEdge, addApplicationGraphNode, addApplicationProviderBinding, addApplicationProviderRequirement } from './application-graph-state.js';
 import { inferApplicationFunctionNativeTransaction } from './application-function-native-transactions.js';
-import { type ApplicationProviderSelectionValue, type ApplicationProviderToken, type ApplicationWorkflowEngineProvider, applicationProviderImplementationName, applicationWorkflowEngineImplementation, isApplicationProviderSelection } from './application-providers.js';
-import { applicationQueryBindingForOperation } from './application-queries.js';
+import { addApplicationGraphEdge, addApplicationGraphNode, addApplicationProviderBinding, addApplicationProviderRequirement } from './application-graph-state.js';
 import type { ApplicationObjectStoreBinding } from './application-object-storage.js';
 import { applicationProjectionRebuildTarget } from './application-projection-binding.js';
+import { applicationCallableProviderDependencies } from './application-provider-dependencies.js';
+import { type ApplicationProviderSelectionValue, type ApplicationProviderToken, type ApplicationWorkflowEngineProvider, applicationProviderImplementationName, applicationWorkflowEngineImplementation, isApplicationProviderSelection } from './application-providers.js';
+import { applicationQueryBindingForOperation } from './application-queries.js';
 import type { ApplicationSignalDefinition } from './application-signals.js';
 import { applicationTypeKroGraphValue, applicationTypeKroString } from './application-typekro-values.js';
+import type { ApplicationWorkflowTaskDefinition as TaskDefinition } from './application-workflow-internal.js';
 import { declaredSchema, durableContract, functionExpression, requiredSchema, schemaRecord, validateMessage, workflowHandlerSerialization } from './application-workflow-serialization.js';
 import type {
   ApplicationTaskBinding,
@@ -34,7 +36,6 @@ import type {
 } from './application-workflow-types.js';
 import { applicationWorkflowJsonObject as jsonObject, applicationWorkflowKubernetesName as kubernetesName, positiveApplicationWorkflowInteger as positiveInteger, positiveApplicationWorkflowGraphInteger as positiveIntegerGraphValue, positiveApplicationWorkflowNumber as positiveNumber, applicationWorkflowAlias as validAlias, applicationWorkflowCron as validCron } from './application-workflow-values.js';
 import type { WorkflowDefinition } from './dsl.js';
-import type { ApplicationWorkflowTaskDefinition as TaskDefinition } from './application-workflow-internal.js';
 import { applicationModelCommandBindingForOperation } from './native-models.js';
 import { type ApplicationStructuredGenerationProvider, isApplicationStructuredGenerationProvider, StructuredGeneration } from './structured-generation.js';
 import {
@@ -152,6 +153,9 @@ export function registerApplicationTask<
     calls: options.__generatedCalls,
     bindings: options.__generatedBindings,
   });
+  const providerBindings = applicationCallableProviderDependencies(
+    inferredDependencies.bindings,
+  );
   const functionNativeTransaction = inferApplicationFunctionNativeTransaction(
     state,
     `Application task ${definition.id}`,
@@ -189,6 +193,7 @@ export function registerApplicationTask<
     ...projections.map(({ alias }) => alias),
     ...objects.map(({ alias }) => alias),
     ...actors.map(({ alias }) => alias),
+    ...providerBindings.map(({ identifier }) => identifier),
     ...signalBindings.map(({ alias }) => alias),
     ...(signalBindings.length > 0 ? ['workflow'] : []),
     ...(functionNativeTransaction?.modelBindings ?? [])
@@ -233,6 +238,7 @@ export function registerApplicationTask<
     workflowEngine: workflowEngineRef(),
     ...(options.identity ? { serviceIdentity: options.identity.identity } : {}),
     ...(capabilities.length > 0 ? { capabilities: capabilities.map(({ reference }) => reference) } : {}),
+    ...(providerBindings.length > 0 ? { providerBindings } : {}),
     ...(operations.length > 0 ? { operations } : {}),
     ...(queries.length > 0 ? { queries } : {}),
     ...(projections.length > 0 ? { projections } : {}),
@@ -270,6 +276,13 @@ export function registerApplicationTask<
   state.workflowHandlerGroups.set(handlerNodeId, workflowWorkerGroup(engine, options.worker));
   addApplicationGraphEdge(state, { from: { nodeId: handlerNodeId }, to: { nodeId: taskNodeId }, relationship: 'owns' });
   for (const capability of capabilities) addApplicationGraphEdge(state, { from: capability.reference, to: { nodeId: handlerNodeId }, relationship: 'provides' });
+  for (const provider of providerBindings) {
+    addApplicationGraphEdge(state, {
+      from: { nodeId: provider.provider.nodeId },
+      to: { nodeId: handlerNodeId },
+      relationship: 'provides',
+    });
+  }
   if (functionNativeTransaction) {
     for (const model of functionNativeTransaction.models) {
       addApplicationGraphEdge(state, {

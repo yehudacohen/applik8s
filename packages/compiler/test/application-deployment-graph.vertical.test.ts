@@ -12,6 +12,7 @@ import { afterEach, describe, expect, it } from "vitest";
 // worker-backed bundling entrypoints into Bun's test process.
 import {
   applicationGeneratedSecretRequirements,
+  applicationProviderConsumerWorkloads,
   emitApplicationDeploymentGraph,
   withPublishedActorIngressRoutes,
 } from "../src/application-deployment-graph.js";
@@ -27,6 +28,82 @@ afterEach(async () => {
 });
 
 describe("compiler deployment graph emission", () => {
+  it("maps callable provider use to the exact generated execution workloads", () => {
+    const provider = "provider.acquisition-provider.v1alpha1.primary";
+    const graph = {
+      ...applicationGraph(),
+      metadata: { name: "placement", namespace: "placement" },
+      nodes: [
+        {
+          id: "provider.ApplicationHost",
+          kind: "provider",
+          interface: "ApplicationHost",
+          config: { host: { name: "placement-app" } },
+        },
+        {
+          id: "provider.Scheduler",
+          kind: "provider",
+          interface: "Scheduler",
+          config: {},
+        },
+        {
+          id: "provider.Scheduler.qualified",
+          kind: "provider",
+          interface: "Scheduler",
+          config: { qualification: { name: "external" } },
+        },
+        { id: provider, kind: "provider", interface: "AcquisitionProvider" },
+        { id: "server.public", kind: "server", name: "public" },
+        { id: "streamProcessor.events", kind: "streamProcessor", name: "events" },
+        {
+          id: "workflowWorker.jobs",
+          kind: "workflowWorker",
+          name: "jobs",
+          handlers: [{ nodeId: "taskHandler.acquire" }],
+        },
+        { id: "taskHandler.acquire", kind: "taskHandler", name: "acquire" },
+        { id: "aiAgent.researcher", kind: "aiAgent", name: "researcher" },
+        { id: "aiAgent.unrelated", kind: "aiAgent", name: "unrelated" },
+        { id: "actor.workspace", kind: "actor", name: "workspace" },
+        {
+          id: "schedule.local",
+          kind: "schedule",
+          name: "local",
+          scheduler: { nodeId: "provider.Scheduler" },
+        },
+        {
+          id: "schedule.external",
+          kind: "schedule",
+          name: "external",
+          scheduler: { nodeId: "provider.Scheduler.qualified" },
+        },
+      ],
+      edges: [
+        "server.public",
+        "streamProcessor.events",
+        "taskHandler.acquire",
+        "aiAgent.researcher",
+        "actor.workspace",
+        "schedule.local",
+        "schedule.external",
+      ].map((nodeId) => ({
+        from: { nodeId: provider },
+        to: { nodeId },
+        relationship: "provides" as const,
+      })),
+    } as unknown as ApplicationGraph;
+
+    expect([
+      ...applicationProviderConsumerWorkloads(graph, new Set([provider])),
+    ].sort()).toEqual([
+      "jobs",
+      "placement-app",
+      "placement-events",
+      "public",
+      "researcher",
+    ]);
+  });
+
   it("binds the internal-operation Secret to typed HTTP workflow gateway callers", async () => {
     const directory = await mkdtemp(
       join(process.env.TMPDIR ?? "/tmp", "applik8s-http-workflow-secret-"),

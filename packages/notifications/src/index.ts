@@ -13,7 +13,6 @@ import {
   bindApplicationProviderDependencies,
 } from '@applik8s/applik8s/internal/provider-runtime';
 import type { AnyPgTable } from 'drizzle-orm/pg-core';
-import { deliverApplicationNotification } from './runtime.js';
 import {
   applicationNotificationRequests,
   applicationNotificationSchema,
@@ -250,44 +249,6 @@ export function createApplicationNotificationRequestCallable(
   };
 }
 
-async function deliverRequestedNotification(created: {
-  readonly value: Record<string, unknown>;
-}) {
-  const request = deliveryInputFromRequest(created.value);
-  const currentAttempts = numberField(created.value, 'attempts');
-  await notificationRequests.update({
-    identity: request.id,
-    patch: {
-      state: 'delivering',
-      attempts: currentAttempts + 1,
-      lastError: null,
-    },
-  });
-  try {
-    const receipt = await deliverApplicationNotification(request);
-    await notificationRequests.update({
-      identity: request.id,
-      patch: {
-        state: receipt.state,
-        provider: receipt.provider,
-        providerMessageId: receipt.messageId,
-        acceptedAt: receipt.observedAt,
-        lastError: null,
-      },
-    });
-  } catch (error) {
-    await notificationRequests.update({
-      identity: request.id,
-      patch: {
-        state: error instanceof ApplicationNotificationDeliveryError
-          ? error.outcome
-          : 'failed',
-        lastError: boundedDeliveryError(error),
-      },
-    });
-    throw error;
-  }
-}
 function installNotifications(
   application: Pick<KubernetesApplicationBuilder, 'inject'>,
 ) {
@@ -295,8 +256,46 @@ function installNotifications(
     NotificationDelivery.named('transactional'),
   );
   const requests = notificationRequests;
+  async function deliverRequestedNotification(created: {
+    readonly value: Record<string, unknown>;
+  }) {
+    const request = deliveryInputFromRequest(created.value);
+    const currentAttempts = numberField(created.value, 'attempts');
+    await requests.update({
+      identity: request.id,
+      patch: {
+        state: 'delivering',
+        attempts: currentAttempts + 1,
+        lastError: null,
+      },
+    });
+    try {
+      const receipt = await delivery.deliver(request);
+      await requests.update({
+        identity: request.id,
+        patch: {
+          state: receipt.state,
+          provider: receipt.provider,
+          providerMessageId: receipt.messageId,
+          acceptedAt: receipt.observedAt,
+          lastError: null,
+        },
+      });
+    } catch (error) {
+      await requests.update({
+        identity: request.id,
+        patch: {
+          state: error instanceof ApplicationNotificationDeliveryError
+            ? error.outcome
+            : 'failed',
+          lastError: boundedDeliveryError(error),
+        },
+      });
+      throw error;
+    }
+  }
   bindApplicationProviderDependencies(deliverRequestedNotification, [
-    NotificationDelivery.named('transactional'),
+    delivery,
   ]);
   // The table gains its promoted operation methods during module
   // installation. Attach maintained-callable metadata only after promotion so

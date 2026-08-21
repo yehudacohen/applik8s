@@ -727,6 +727,11 @@ export interface ApplicationTaskHandlerNode extends ApplicationGraphNodeBase<'ta
   readonly serviceIdentity?: ApplicationIdentityReference;
   /** Runtime capabilities explicitly injected into this external-effect task. */
   readonly capabilities?: readonly ApplicationProviderRef[];
+  /** Function-native provider operations captured directly by the task closure. */
+  readonly providerBindings?: readonly {
+    readonly identifier: string;
+    readonly provider: ApplicationProviderRef;
+  }[];
   /**
    * Durable model mutations explicitly injected into this task. The generated
    * worker may submit only these command bindings; all execution still passes
@@ -898,6 +903,11 @@ export interface ApplicationScheduleNode extends ApplicationGraphNodeBase<'sched
     };
   };
   readonly scheduler: ApplicationProviderRef<'Scheduler'>;
+  /** Function-native provider operations captured directly by the scheduled closure. */
+  readonly providerBindings?: readonly {
+    readonly identifier: string;
+    readonly provider: ApplicationProviderRef;
+  }[];
   readonly handler: ApplicationSerializedCallbackContract;
   readonly functionNative: true;
 }
@@ -970,6 +980,11 @@ export interface ApplicationActorNode extends ApplicationGraphNodeBase<'actor'> 
     readonly requirements: ApplicationActorCapabilityRequirements;
   };
   readonly runtime: ApplicationProviderRef<'ActorRuntime'>;
+  /** Function-native provider operations captured by actor turn handlers. */
+  readonly providerBindings?: readonly {
+    readonly identifier: string;
+    readonly provider: ApplicationProviderRef;
+  }[];
   readonly handlers: readonly {
     readonly member: string;
     readonly callback: ApplicationSerializedCallbackContract;
@@ -1025,6 +1040,11 @@ export interface ApplicationAIAgentNode extends ApplicationGraphNodeBase<'aiAgen
   readonly inference: ApplicationProviderRef<'AI'>;
   /** Durable authority for conversations, invocations, attempts, and usage. */
   readonly state: ApplicationProviderRef<'TransactionalDatabase'>;
+  /** Function-native provider operations captured by the agent execution closure. */
+  readonly providerBindings?: readonly {
+    readonly identifier: string;
+    readonly provider: ApplicationProviderRef;
+  }[];
   readonly instructions:
     | { readonly kind: 'static'; readonly value: string }
     | {

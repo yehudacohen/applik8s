@@ -59,6 +59,18 @@ describe('generated application AI agents', () => {
         member: 'record',
         memberKind: 'command',
       }],
+      providerBindings: [{
+        identifier: expect.any(String),
+        provider: {
+          interface: 'AcquisitionProvider',
+          nodeId: 'provider.acquisition-provider.v1alpha1.primary',
+        },
+      }],
+    });
+    expect(discovered.value.graph.edges).toContainEqual({
+      from: { nodeId: 'provider.acquisition-provider.v1alpha1.primary' },
+      to: { nodeId: 'aiAgent.researcher' },
+      relationship: 'provides',
     });
     const catalog = compileApplicationOperationCatalog(discovered.value.graph);
     const authority = compileApplicationWorkloadAuthority(
@@ -79,12 +91,17 @@ describe('generated application AI agents', () => {
       join(dirname(artifact.sourcePath), 'agent.generated.ts'),
       'utf8',
     );
+    const handler = await readFile(
+      join(dirname(artifact.sourcePath), 'handler.generated.ts'),
+      'utf8',
+    );
     expect(generated).toContain('invokeApplicationActorBinding');
     expect(generated).toContain('/__applik8s/v1/internal/actors/invoke');
     expect(generated).toContain('"actor":"research-session.v1"');
     expect(generated).toContain('principal: context.principal');
     expect(generated).toContain("transport: 'direct'");
     expect(generated).toContain('workloadAuthorityId: binding.workloadAuthority.id');
+    expect(handler).toContain('const acquire = acquisition.acquire');
     expect(generated).not.toContain("id: 'agent:' + context.invocationId");
     expect(authority).toContainEqual(expect.objectContaining({
       operationId: 'applik8s://actors/research-session.v1/operations/record',
@@ -92,6 +109,12 @@ describe('generated application AI agents', () => {
     }));
     expect(JSON.stringify(artifact.resources)).toContain(
       'APPLIK8S_ACTOR_APPLICATION_ENDPOINT',
+    );
+    expect(JSON.stringify(artifact.resources)).toContain(
+      'APPLIK8S_PROFILE_VARIANT',
+    );
+    expect(JSON.stringify(artifact.resources)).toContain(
+      '${schema.spec.profile}',
     );
   }, 60_000);
 

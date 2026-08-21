@@ -135,6 +135,24 @@ export function decorateApplicationCallbackArguments(
   }
   const registrar = node.expression.name.text;
   if (
+    isApplicationActorHandlerRegistrar(node.expression.expression, file)
+    && node.arguments.length === 1
+    && isApplicationCallbackExpression(node.arguments[0] as ts.Expression)
+  ) {
+    return node.arguments.map((argument, index) => {
+      const visited = ts.visitNode(argument, visit) as ts.Expression;
+      return index === 0
+        ? decorateApplicationCallbackExpression(
+            visited,
+            file,
+            sourceFile,
+            'Actor.on',
+            registrar,
+          )
+        : visited;
+    });
+  }
+  if (
     (registrar === 'post' || registrar === 'webhook')
     && isApplicationHttpPostRegistrar(node.expression.expression, file)
     && node.arguments.length === 4
@@ -560,6 +578,41 @@ function isResourceReconcileRegistrar(expression: ts.Expression): boolean {
   return expression.name.text === 'context'
     && ts.isPropertyAccessExpression(expression.expression)
     && expression.expression.name.text === 'on';
+}
+
+function isApplicationActorHandlerRegistrar(
+  expression: ts.Expression,
+  file: ts.SourceFile,
+): boolean {
+  if (
+    !ts.isPropertyAccessExpression(expression)
+    || expression.name.text !== 'on'
+    || !ts.isIdentifier(expression.expression)
+  ) {
+    return false;
+  }
+  const bindingName = expression.expression.text;
+  for (const statement of file.statements) {
+    if (!ts.isVariableStatement(statement)) continue;
+    for (const declaration of statement.declarationList.declarations) {
+      if (
+        !ts.isIdentifier(declaration.name)
+        || declaration.name.text !== bindingName
+        || !declaration.initializer
+        || !ts.isCallExpression(declaration.initializer)
+      ) {
+        continue;
+      }
+      const factory = declaration.initializer.expression;
+      if (ts.isIdentifier(factory) && factory.text === 'createApplicationActor') {
+        return true;
+      }
+      if (ts.isPropertyAccessExpression(factory) && factory.name.text === 'actor') {
+        return true;
+      }
+    }
+  }
+  return false;
 }
 
 interface DirectApplicationCallAnalysis {

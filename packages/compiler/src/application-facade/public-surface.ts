@@ -1,7 +1,6 @@
 // typecast-file-boundary: provider callback metadata is decoded from the
 // validated ApplicationGraph before constructing one compiler-owned gateway.
 import {
-  applicationOperationId,
   type ApplicationGatewayNode,
   type ApplicationGraph,
   type ApplicationGraphEdge,
@@ -10,6 +9,7 @@ import {
   type ApplicationProviderNode,
   type ApplicationScheduleNode,
   type ApplicationSerializedCallbackContract,
+  applicationOperationId,
   normalizeApplicationGraph,
 } from '@applik8s/core';
 
@@ -366,6 +366,29 @@ function applicationGraphWithEntrypointSchedules(
       });
     } else if (provider.kind !== 'provider' || provider.interface !== 'Scheduler') {
       throw new Error(`Entrypoint schedule ${schedule.definition.id} requires Scheduler provider ${schedule.scheduler.nodeId}.`);
+    }
+    for (const binding of schedule.providerBindings ?? []) {
+      const callableProvider = nodes.get(binding.provider.nodeId);
+      if (
+        callableProvider?.kind !== 'provider'
+        || callableProvider.interface !== binding.provider.interface
+      ) {
+        throw new Error(
+          `Entrypoint schedule ${schedule.definition.id} references missing callable provider ${binding.provider.nodeId}.`,
+        );
+      }
+      if (!edges.some(
+        (edge) =>
+          edge.from.nodeId === callableProvider.id
+          && edge.to.nodeId === schedule.id
+          && edge.relationship === 'provides',
+      )) {
+        edges.push({
+          from: { nodeId: callableProvider.id },
+          to: { nodeId: schedule.id },
+          relationship: 'provides',
+        });
+      }
     }
     const requirementId = `requirement.${schedule.id}.scheduler`;
     if (!requirementIds.has(requirementId)) {

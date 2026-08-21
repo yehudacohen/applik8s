@@ -9,7 +9,6 @@ import {
 import {
   bindApplicationCallableDependencies,
   bindApplicationProviderDependencies,
-  resolveApplicationProviderRuntimeImplementation,
 } from '@applik8s/applik8s/internal/provider-runtime';
 import type { AnyPgTable } from 'drizzle-orm/pg-core';
 import {
@@ -26,8 +25,8 @@ import {
   applicationSubscriptions,
 } from './schema.js';
 
-export * from './schema.js';
 export * from './contracts.js';
+export * from './schema.js';
 
 export type PaymentMode = 'simulated' | 'live';
 export type BillingChangeTiming = 'immediate' | 'periodEnd';
@@ -470,7 +469,7 @@ function installBilling(
   }
 
   async function startCheckout(input: BillingCheckoutInput) {
-    const provider = resolveApplicationProviderRuntimeImplementation(payments);
+    const provider = payments;
     const customer = await scopedBillingCustomer(
       input.principalScope,
       provider.provider,
@@ -493,7 +492,7 @@ function installBilling(
   }
 
   async function openBillingPortal(input: BillingPortalInput) {
-    const provider = resolveApplicationProviderRuntimeImplementation(payments);
+    const provider = payments;
     const customer = await scopedBillingCustomer(
       input.principalScope,
       provider.provider,
@@ -508,7 +507,7 @@ function installBilling(
   async function previewSubscriptionChange(
     input: BillingSubscriptionChangeInput,
   ) {
-    const provider = resolveApplicationProviderRuntimeImplementation(payments);
+    const provider = payments;
     const subscription = await scopedBillingSubscription(
       input.principalScope,
       provider.provider,
@@ -527,7 +526,7 @@ function installBilling(
   }
 
   async function changeSubscription(input: BillingSubscriptionChangeInput) {
-    const provider = resolveApplicationProviderRuntimeImplementation(payments);
+    const provider = payments;
     const subscription = await scopedBillingSubscription(
       input.principalScope,
       provider.provider,
@@ -548,7 +547,7 @@ function installBilling(
   async function cancelSubscription(
     input: BillingSubscriptionCancellationInput,
   ) {
-    const provider = resolveApplicationProviderRuntimeImplementation(payments);
+    const provider = payments;
     const subscription = await scopedBillingSubscription(
       input.principalScope,
       provider.provider,
@@ -565,7 +564,7 @@ function installBilling(
   async function resumeSubscription(
     input: BillingSubscriptionResumeInput,
   ) {
-    const provider = resolveApplicationProviderRuntimeImplementation(payments);
+    const provider = payments;
     const subscription = await scopedBillingSubscription(
       input.principalScope,
       provider.provider,
@@ -580,7 +579,7 @@ function installBilling(
   }
 
   async function reportUsage(input: BillingMeteredUsageInput) {
-    const provider = resolveApplicationProviderRuntimeImplementation(payments);
+    const provider = payments;
     const customer = await scopedBillingCustomer(
       input.principalScope,
       provider.provider,
@@ -597,7 +596,7 @@ function installBilling(
 
   async function verifyWebhook(input: PaymentWebhookInput) {
     return requireBillingProviderMethod(
-      resolveApplicationProviderRuntimeImplementation(payments),
+      payments,
       'verifyWebhook',
     )(input);
   }

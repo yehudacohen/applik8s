@@ -37,6 +37,7 @@ export interface WorkflowContract {
   readonly tasks: readonly { readonly handler: ApplicationTaskHandlerNode; readonly task: ApplicationTaskNode }[];
   readonly workflows: readonly { readonly handler: ApplicationWorkflowHandlerNode; readonly workflow: ApplicationWorkflowNode }[];
   readonly capabilities: readonly ApplicationProviderNode[];
+  readonly callableProviders?: readonly ApplicationProviderNode[];
   readonly operationEffects?: WorkflowOperationEffectsContract;
   readonly operationCatalog?: ApplicationOperationCatalog;
   readonly authorityManifest?: ApplicationStaticAuthorityManifest;
@@ -208,6 +209,7 @@ export function workflowContract(
   const tasks: { handler: ApplicationTaskHandlerNode; task: ApplicationTaskNode }[] = [];
   const workflows: { handler: ApplicationWorkflowHandlerNode; workflow: ApplicationWorkflowNode }[] = [];
   const capabilities = new Map<string, ApplicationProviderNode>();
+  const callableProviders = new Map<string, ApplicationProviderNode>();
   for (const reference of worker.handlers) {
     const handler = nodes.get(reference.nodeId);
     if (handler?.kind === 'taskHandler') {
@@ -217,6 +219,18 @@ export function workflowContract(
         const capability = nodes.get(reference.nodeId);
         if (capability?.kind !== 'provider' || capability.interface !== reference.interface) throw new Error(`Workflow task handler ${handler.id} references missing capability provider ${reference.nodeId}.`);
         capabilities.set(capability.id, capability);
+      }
+      for (const binding of handler.providerBindings ?? []) {
+        const callableProvider = nodes.get(binding.provider.nodeId);
+        if (
+          callableProvider?.kind !== 'provider'
+          || callableProvider.interface !== binding.provider.interface
+        ) {
+          throw new Error(
+            `Workflow task handler ${handler.id} references missing callable provider ${binding.provider.nodeId}.`,
+          );
+        }
+        callableProviders.set(callableProvider.id, callableProvider);
       }
       tasks.push({ handler, task });
     } else if (handler?.kind === 'workflowHandler') {
@@ -307,6 +321,8 @@ export function workflowContract(
     tasks,
     workflows,
     capabilities: [...capabilities.values()].sort((left, right) => left.id.localeCompare(right.id)),
+    callableProviders: [...callableProviders.values()].sort((left, right) =>
+      left.id.localeCompare(right.id)),
     ...(operationEffects ? { operationEffects } : {}),
     ...(operationCatalog ? { operationCatalog } : {}),
     ...(authorityManifest ? { authorityManifest } : {}),

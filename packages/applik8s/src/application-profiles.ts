@@ -36,13 +36,27 @@ export interface ApplicationProfileBranchOptions {
   readonly transitions?: readonly ApplicationProfileTransitionContract[];
 }
 
-export interface ApplicationQualifiedProviderBinding<TImplementation = unknown> {
+export interface ApplicationQualifiedProviderBindingMetadata<TImplementation = unknown> {
   readonly kind: 'applicationProvider';
   readonly token: ApplicationQualifiedProviderToken<TImplementation>;
   readonly implementation: TImplementation;
   readonly qualification: ApplicationProviderQualification;
   readonly profile: ApplicationProfileProviderSelectionContract;
 }
+
+/**
+ * A lazy provider handle. Public implementation members are callable/readable
+ * while graph metadata remains available to Applik8s planning.
+ */
+export type ApplicationQualifiedProviderBinding<TImplementation = unknown> =
+  ApplicationQualifiedProviderBindingMetadata<TImplementation>
+  & Pick<
+    TImplementation,
+    Exclude<
+      keyof TImplementation,
+      keyof ApplicationQualifiedProviderBindingMetadata<TImplementation>
+    >
+  >;
 
 interface ApplicationProfileBranch<TImplementation> {
   readonly implementation: TImplementation;

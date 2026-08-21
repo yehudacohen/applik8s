@@ -251,6 +251,18 @@ function withInstallationRuntimeBindings(
     graph,
     "NotificationDelivery",
   );
+  const profiledProviderIds = new Set(
+    graph.nodes.flatMap((node) =>
+      node.kind === "provider"
+      && optionalString(optionalObject(node.config?.profile)?.selectedBy) !== undefined
+        ? [node.id]
+        : []
+    ),
+  );
+  const profiledConsumers = applicationProviderConsumerWorkloads(
+    graph,
+    profiledProviderIds,
+  );
   const observability = graph.nodes.find((node) =>
     node.kind === "provider"
     && node.interface === "Observability"
@@ -278,15 +290,22 @@ function withInstallationRuntimeBindings(
     if (!template || !isApplicationRuntimeDeployment(template)) {
       return resource;
     }
-    const workloadName = stringValue(
-      objectValue(template.metadata, "provider consumer Deployment metadata").name,
-      "provider consumer Deployment name",
-    );
+    const workloadName = optionalString(
+      objectValue(
+        template.metadata,
+        "provider consumer Deployment metadata",
+      ).name,
+    ) ?? (applicationRuntimeComponent(template) === "application-host"
+      ? applicationHostWorkloadName(graph)
+      : undefined);
+    if (!workloadName) return resource;
     const environment: Array<
       DeploymentJsonObject & { readonly name: string }
     > = [
       ...universalEnvironment,
-      ...(paymentConsumers.has(workloadName) || notificationConsumers.has(workloadName)
+      ...(profiledConsumers.has(workloadName)
+        || paymentConsumers.has(workloadName)
+        || notificationConsumers.has(workloadName)
         ? [{ name: "APPLIK8S_PROFILE_VARIANT", value: profile }]
         : []),
       ...(actorRuntime && applicationRuntimeComponent(template) === "typed-http"
@@ -329,7 +348,13 @@ function withInstallationRuntimeBindings(
         value,
         "payment consumer Deployment container",
       );
-      if (container.name !== "http" && container.name !== "runtime") {
+      if (
+        container.name !== "application"
+        && container.name !== "agent"
+        && container.name !== "http"
+        && container.name !== "runtime"
+        && container.name !== "worker"
+      ) {
         return container;
       }
       const existing = arrayValue(container.env).map((entry) =>
@@ -473,12 +498,21 @@ function providerConsumerWorkloads(
         ? [node.id]
         : []),
   );
+  return applicationProviderConsumerWorkloads(graph, providers);
+}
+
+/** @internal Exact generated workloads that consume any named provider. */
+export function applicationProviderConsumerWorkloads(
+  graph: ApplicationGraph,
+  providers: ReadonlySet<string>,
+): ReadonlySet<string> {
   const consumerIds = new Set(
     graph.edges.flatMap((edge) =>
       edge.relationship === "provides" && providers.has(edge.from.nodeId)
         ? [edge.to.nodeId]
         : []),
   );
+  const applicationHostName = applicationHostWorkloadName(graph);
   return new Set(
     graph.nodes.flatMap((node) => {
       if (!consumerIds.has(node.id)) return [];
@@ -486,8 +520,41 @@ function providerConsumerWorkloads(
       if (node.kind === "streamProcessor") {
         return [kubernetesName(`${graph.metadata.name}-${node.name}`)];
       }
+      if (node.kind === "aiAgent") return [kubernetesName(node.name)];
+      if (node.kind === "taskHandler") {
+        return graph.nodes.flatMap((candidate) =>
+          candidate.kind === "workflowWorker"
+          && candidate.handlers.some(({ nodeId }) => nodeId === node.id)
+            ? [kubernetesName(candidate.name)]
+            : []
+        );
+      }
+      if (node.kind === "actor" && applicationHostName) {
+        return [applicationHostName];
+      }
+      if (node.kind === "schedule" && applicationHostName) {
+        const scheduler = graph.nodes.find(
+          (candidate) => candidate.id === node.scheduler.nodeId,
+        );
+        return scheduler?.kind === "provider" && !scheduler.config?.qualification
+          ? [applicationHostName]
+          : [];
+      }
       return [];
     }),
+  );
+}
+
+function applicationHostWorkloadName(
+  graph: ApplicationGraph,
+): string | undefined {
+  const applicationHost = graph.nodes.find(
+    (node) => node.kind === "provider" && node.interface === "ApplicationHost",
+  );
+  if (applicationHost?.kind !== "provider") return undefined;
+  const config = optionalObject(applicationHost.config?.host);
+  return kubernetesName(
+    optionalString(config?.name) ?? `${graph.metadata.name}-web`,
   );
 }
 
@@ -497,9 +564,11 @@ function isApplicationRuntimeDeployment(resource: DeploymentJsonObject): boolean
   const labels = optionalObject(metadata?.labels);
   const component = labels?.["app.kubernetes.io/component"];
   return component === "typed-http"
+    || component === "application-host"
     || component === "stream-processor"
     || component === "workflow-worker"
     || component === "reactive-runtime"
+    || component === "ai-agent"
     || component === "agent-runtime"
     || component === "mcp-runtime";
 }

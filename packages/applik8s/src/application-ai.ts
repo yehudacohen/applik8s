@@ -21,11 +21,8 @@ import {
   applicationOperationId,
 } from '@applik8s/core';
 import type { SchemaInput } from '@applik8s/sdk';
-import type { ApplicationServiceIdentityBinding } from './application-authority.js';
-import { applicationQueryBindingForOperation } from './application-queries.js';
 import { applicationActorDependencyBindings } from './application-actor-dependencies.js';
-import { applicationModelCommandBindingForOperation } from './native-models.js';
-import type { ApplicationTrustedContext } from './trusted-context.js';
+import type { ApplicationServiceIdentityBinding } from './application-authority.js';
 import {
   expandApplicationCallbackDependencies,
   serializeApplicationCallback,
@@ -38,7 +35,11 @@ import {
   addApplicationProviderRequirement,
 } from './application-graph-state.js';
 import { applicationProviderGraphNodeId, kubernetesNameSegment } from './application-identifiers.js';
+import { applicationCallableProviderDependencies } from './application-provider-dependencies.js';
+import { applicationQueryBindingForOperation } from './application-queries.js';
 import { declaredSchema } from './application-workflow-serialization.js';
+import { applicationModelCommandBindingForOperation } from './native-models.js';
+import type { ApplicationTrustedContext } from './trusted-context.js';
 
 export interface ApplicationAgentDeploymentOptions {
   readonly replicas?: number;
@@ -134,6 +135,14 @@ export function registerApplicationAgent<
     throw new Error(`Application agent ${normalizedName} requires a serializable execution closure.`);
   }
 
+  const handlerDependencies = expandApplicationCallbackDependencies({
+    calls: [handler, ...(options.__generatedCalls ?? [])],
+    bindings: options.__generatedBindings,
+  });
+  const providerBindings = applicationCallableProviderDependencies({
+    ...handlerDependencies.bindings,
+    generatedAgentProviderDependencies: handler,
+  });
   const serializedHandler = serializeApplicationCallback({
     registrar: 'agent',
     argumentIndex: 2,
@@ -141,10 +150,6 @@ export function registerApplicationAgent<
     label: `Application agent ${normalizedName} handler`,
     callback: handler as (...args: never[]) => unknown,
     allowDeferredResolution: true,
-  });
-  const handlerDependencies = expandApplicationCallbackDependencies({
-    calls: options.__generatedCalls,
-    bindings: options.__generatedBindings,
   });
   const queries = applicationAgentQueries(
     normalizedName,
@@ -211,6 +216,7 @@ export function registerApplicationAgent<
       interface: 'TransactionalDatabase',
       nodeId: stateProviderNodeId,
     },
+    ...(providerBindings.length > 0 ? { providerBindings } : {}),
     instructions,
     tools,
     ...(operations.length > 0 ? { operations } : {}),
@@ -278,6 +284,13 @@ export function registerApplicationAgent<
     to: { nodeId },
     relationship: 'provides',
   });
+  for (const provider of providerBindings) {
+    addApplicationGraphEdge(state, {
+      from: { nodeId: provider.provider.nodeId },
+      to: { nodeId },
+      relationship: 'provides',
+    });
+  }
   for (const tool of tools) {
     if (tool.graphNode) {
       addApplicationGraphEdge(state, {
