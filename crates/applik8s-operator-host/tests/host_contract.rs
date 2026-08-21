@@ -2241,6 +2241,66 @@ fn validates_runtime_version_compatibility_against_manifest_requirement() {
 }
 
 #[test]
+fn validates_and_hydrates_the_versioned_guest_host_identity_envelope() {
+    let mut bundle = routing_bundle();
+    bundle.manifest["spec"]["capabilities"] = serde_json::json!({
+        "Search": { "name": "Search", "kind": "http", "endpoint": "https://search.example" }
+    });
+    bundle.manifest["spec"]["runtimeIdentity"] = serde_json::json!({
+        "apiVersion": "applik8s.operatorRuntimeIdentity/v1alpha1",
+        "application": "applik8s://applications/image-pipeline/application/image-pipeline",
+        "artifact": "applik8s://applications/image-pipeline/artifacts/worker",
+        "bundleDigest": format!("sha256:{}", "a".repeat(64)),
+        "runtimeAccess": {
+            "version": "v1alpha1",
+            "digest": format!("sha256:{}", "b".repeat(64)),
+            "requirementIds": ["access:search"]
+        },
+        "handlers": [{
+            "handlerId": "ImageJob.reconcile.0",
+            "operation": "applik8s://resources/ImageJob/operations/reconcile",
+            "execution": "applik8s://applications/image-pipeline/execution-boundaries/image-job",
+            "capabilityIds": ["Search"],
+            "effectIds": ["kubernetes.plan"]
+        }]
+    });
+    let digest = format!("sha256:{}", "a".repeat(64));
+    let envelope = bundle
+        .runtime_identity_envelope(
+            &HandlerRoute {
+                handler_id: "ImageJob.reconcile.0".to_string(),
+                event: "reconcile".to_string(),
+            },
+            "attempt-1",
+            &digest,
+        )
+        .expect("identity contract is valid")
+        .expect("identity envelope is present");
+    assert_eq!(
+        envelope
+            .pointer("/runtimeAccess/requirementIds/0")
+            .and_then(serde_json::Value::as_str),
+        Some("access:search")
+    );
+    assert_eq!(
+        envelope.get("attempt").and_then(serde_json::Value::as_str),
+        Some("attempt-1")
+    );
+
+    let stale = bundle.runtime_identity_envelope(
+        &HandlerRoute {
+            handler_id: "ImageJob.reconcile.0".to_string(),
+            event: "reconcile".to_string(),
+        },
+        "attempt-2",
+        &format!("sha256:{}", "c".repeat(64)),
+    );
+    assert!(
+        matches!(stale, Err(OperatorHostError::InvalidRuntimeIdentity(message)) if message.contains("does not match"))
+    );
+}
+
+#[test]
 fn rejects_missing_invalid_or_unsupported_manifest_versions() {
     let missing = LoadedOperatorBundle {
         manifest: serde_json::json!({

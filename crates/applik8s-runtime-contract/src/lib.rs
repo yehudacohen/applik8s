@@ -185,6 +185,44 @@ pub struct RuntimeInvocationMetadata {
     pub bundle_digest: String,
     pub runtime_version: String,
     pub started_at: String,
+    pub identity_envelope: Option<GuestHostIdentityEnvelope>,
+}
+
+#[derive(Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct GuestHostIdentityEnvelope {
+    pub api_version: String,
+    pub application: String,
+    pub operation: String,
+    pub execution: String,
+    pub artifact: String,
+    pub attempt: String,
+    pub runtime_access: GuestHostRuntimeAccessEnvelope,
+    pub capability_ids: Vec<String>,
+    pub effect_ids: Vec<String>,
+    pub causal_principal_id: Option<String>,
+    pub authorization_receipt_ids: Vec<String>,
+    pub telemetry: Option<GuestHostTelemetryEnvelope>,
+}
+
+#[derive(Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct GuestHostTelemetryEnvelope {
+    pub api_version: String,
+    pub traceparent: String,
+    pub tracestate: String,
+    pub baggage: std::collections::BTreeMap<String, String>,
+    pub invocation: String,
+    pub sampling: String,
+    pub binding_digest: String,
+}
+
+#[derive(Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct GuestHostRuntimeAccessEnvelope {
+    pub version: String,
+    pub digest: String,
+    pub requirement_ids: Vec<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize, PartialEq)]

@@ -1,5 +1,5 @@
 // typecast-file-boundary: compiler catalog fixtures intentionally assemble erased graph contracts to exercise normalization and rejection paths.
-import type { ApplicationGraph } from '@applik8s/core';
+import type { ApplicationGraph, ApplicationMessageContractSchema, JsonObject } from '@applik8s/core';
 import { describe, expect, it } from 'vitest';
 import { compileApplicationOperationCatalog, compileApplicationWorkloadAuthority } from '../src/application-operations/index.js';
 
@@ -1017,5 +1017,74 @@ describe('application operation catalog compilation', () => {
         output: expect.objectContaining({ schema: output.jsonSchema }),
       }),
     ]);
+  });
+
+  it('catalogs every inbound actor member with exact target identity and session-derived realtime authority', () => {
+    const schema = (properties: JsonObject = {}): ApplicationMessageContractSchema => ({
+      kind: 'declared' as const,
+      runtime: 'arktype' as const,
+      jsonSchema: { type: 'object', properties, required: Object.keys(properties), additionalProperties: false },
+    });
+    const classified = {
+      classification: 'public' as const,
+      permissionIds: [],
+      grantable: false,
+      delegable: false,
+      scope: { kind: 'all' as const },
+    };
+    const base = graph('public');
+    const catalog = compileApplicationOperationCatalog({
+      ...base,
+      nodes: [{
+        id: 'actor.workspace.v1',
+        kind: 'actor',
+        name: 'workspace.v1',
+        stability: 'experimental',
+        definition: {
+          id: 'workspace.v1',
+          key: schema({ key: { type: 'string' } }),
+          state: schema({ title: { type: 'string' } }),
+          stateVersion: 1,
+          migrationDigest: 'sha256:none',
+          migrations: [],
+          protocol: [
+            { name: 'rename', kind: 'command', input: schema({ title: { type: 'string' } }), output: schema({ revision: { type: 'number' } }), authority: classified },
+            { name: 'observe', kind: 'message', input: schema({ at: { type: 'string' } }), authority: classified },
+            { name: 'connect', kind: 'connection', input: schema({ client: { type: 'string' } }), authority: classified },
+            { name: 'cursor', kind: 'connectionMessage', input: schema({ position: { type: 'number' } }) },
+            { name: 'disconnect', kind: 'disconnection', input: schema({ reason: { type: 'string' } }) },
+            { name: 'broadcast', kind: 'broadcast', input: schema({ value: { type: 'string' } }) },
+            { name: 'expire', kind: 'alarm', input: schema({ revision: { type: 'number' } }), authority: classified },
+          ],
+          requirements: {
+            durableState: true,
+            serializedTurns: true,
+            transactionalOutbox: true,
+            durableAlarms: true,
+            realtimeConnections: true,
+            connectionLeases: true,
+            realtimeMessages: true,
+            realtimeBroadcast: true,
+          },
+        },
+        runtime: { interface: 'ActorRuntime', nodeId: 'provider.actor-runtime' },
+        handlers: [],
+        semantics: { serialization: 'fullTurnPerIdentity', admission: 'idempotentReceipt', references: 'inertAddress' },
+      }],
+    }, { requireClassified: true });
+
+    expect(catalog.operations.map(({ id, kind }) => ({ id, kind }))).toEqual([
+      { id: 'applik8s://actors/workspace.v1/operations/connect', kind: 'actor.connection' },
+      { id: 'applik8s://actors/workspace.v1/operations/cursor', kind: 'actor.connection-message' },
+      { id: 'applik8s://actors/workspace.v1/operations/disconnect', kind: 'actor.disconnection' },
+      { id: 'applik8s://actors/workspace.v1/operations/expire', kind: 'actor.alarm' },
+      { id: 'applik8s://actors/workspace.v1/operations/observe', kind: 'actor.message' },
+      { id: 'applik8s://actors/workspace.v1/operations/rename', kind: 'actor.command' },
+    ]);
+    expect(catalog.operations.find(({ name }) => name === 'cursor')).toMatchObject({
+      authority: { classification: 'application-policy', transports: ['http'] },
+      placement: { runtime: 'actor-runtime' },
+    });
+    expect(catalog.operations.find(({ name }) => name === 'rename')?.target?.identity.schema).toEqual(schema({ key: { type: 'string' } }).jsonSchema);
   });
 });

@@ -1,6 +1,9 @@
 // typecast-file-boundary: Query schemas and model handles are validated before their generic types are restored at the public binding boundary.
 import {
+  type ApplicationOperationArguments,
   type ApplicationOperationAuthorizationContract,
+  type ApplicationOperationContract,
+  type ApplicationQueryInvocation,
   type ApplicationQueryOperation,
   createApplicationQueryOperation,
   observeApplicationOperationAuthority,
@@ -470,6 +473,17 @@ export interface ApplicationQueryBinding<
   ): Promise<TOutput>;
 }
 
+/** Authoring query binding: server execution metadata plus direct client invocation. */
+export interface ApplicationCallableQueryBinding<
+  TInput = unknown,
+  TOutput = unknown,
+  TPrincipal extends ApplicationQueryPrincipal = ApplicationQueryPrincipal,
+  TSource extends ApplicationQuerySourceBinding | undefined = undefined,
+> extends ApplicationQueryBinding<TInput, TOutput, TPrincipal, TSource> {
+  (...args: ApplicationOperationArguments<TInput>): ApplicationQueryInvocation<TOutput>;
+  readonly operation: ApplicationOperationContract;
+}
+
 const applicationQueryOperationBindings = new WeakMap<object, ApplicationQueryBinding>();
 interface ApplicationQueryAuthorityState {
   current?: ApplicationOperationAuthorizationContract;
@@ -508,7 +522,7 @@ export function registerApplicationQuery<
   state: ApplicationGraphState,
   id: string,
   options: ApplicationQueryOptions<TInput, TOutput, TPrincipal, TSource>,
-): ApplicationQueryBinding<TInput, TOutput, TPrincipal, TSource> {
+): ApplicationCallableQueryBinding<TInput, TOutput, TPrincipal, TSource> {
   const authorityState = options.__authorityState ?? authorityStateFor(options);
   authorityState.current ??= applicationQueryPolicyAuthority();
   const parsed = parseVersionedQueryId(id);
@@ -597,6 +611,13 @@ export function registerApplicationQuery<
     authorization: 'application-defined',
     ...(authorityState.current ? { authority: authorityState.current } : {}),
     trustedContext: (options.context ?? []).map((context) => context.name).sort(),
+    ...((options.context?.length ?? 0) > 0
+      ? {
+          trustedContextSchemas: Object.fromEntries(
+            (options.context ?? []).map((context) => [context.name, context.contract.jsonSchema]),
+          ),
+        }
+      : {}),
     budgets,
     snapshotResume: database || kubernetes ? 'resumableInvalidation' : 'resetOnly',
     incremental: 'invalidation-requery',
@@ -621,7 +642,23 @@ export function registerApplicationQuery<
     ...(handler.unresolved ? { handlerUnresolved: handler.unresolved } : {}),
   });
   for (const read of reads) addApplicationGraphEdge(state, { from: { nodeId }, to: read.model, relationship: 'reads' });
-  return {
+  const execution = createApplicationQueryOperation<TInput, TOutput>({
+    apiVersion: 'applik8s.operation/v1alpha1',
+    kind: 'applicationOperation',
+    id,
+    model: 'Application',
+    name: parsed.name,
+    operation: 'query',
+    transport: 'query',
+    ...(authorityState.current ? { authority: authorityState.current } : {}),
+  }, undefined, { input: options.input, output: options.output });
+  const callable = ((...args: ApplicationOperationArguments<TInput>) => execution(...args));
+  Object.defineProperty(callable, 'operation', {
+    get: () => execution.operation,
+    enumerable: false,
+    configurable: false,
+  });
+  const properties = {
     kind: 'applicationQuery',
     id,
     name: parsed.name,
@@ -634,10 +671,15 @@ export function registerApplicationQuery<
     trustedContext: options.context ?? [],
     reads: normalizedDependencies,
     budgets,
-    async authorize(principal, input, context = {}) {
+    async authorize(principal: TPrincipal, input: TInput, context: Readonly<Record<string, unknown>> = {}) {
       return options.authorize({ principal, context, input });
     },
-    async run(context, principal, input, runtimeSource) {
+    async run(
+      context: ApplicationRelationalContext,
+      principal: TPrincipal,
+      input: TInput,
+      runtimeSource?: ApplicationProjectionQuerySource<object>,
+    ) {
       if (!options.run)
         throw new Error(`Application query ${id} executes through its Kubernetes snapshot/watch authority.`);
       if (source && !runtimeSource)
@@ -663,6 +705,17 @@ export function registerApplicationQuery<
       } as ApplicationQueryRunRequest<TInput, TPrincipal, TSource>);
     },
   };
+  for (const [property, value] of Object.entries(properties)) {
+    Object.defineProperty(callable, property, {
+      value,
+      enumerable: true,
+      configurable: false,
+      writable: false,
+    });
+  }
+  const binding = callable as unknown as ApplicationCallableQueryBinding<TInput, TOutput, TPrincipal, TSource>;
+  applicationQueryOperationBindings.set(binding, binding as ApplicationQueryBinding);
+  return binding;
 }
 
 export function registerApplicationModelView<

@@ -7,15 +7,59 @@ import { describe, expect, it } from 'vitest';
 import {
   applicationStaticAuthorityManifest,
   compileApplicationOperationCatalog,
+  compileApplicationWorkloadAuthority,
 } from '../src/application-operations/index.js';
 import {
+  generatedWorkerSource,
   handlerModuleFile,
   nestedCallbackBindingsSource,
   taskServicePrincipalInput,
 } from '../src/application-workflows/source.js';
+import { workflowContract } from '../src/application-workflows/contracts.js';
+import { workflowResources } from '../src/application-workflows/resources.js';
 import { compileTypeKroComposition, discoverApplicationGraph } from '../src/pipeline/index.js';
 
 describe('v0.5 generated workflow lowering', () => {
+  it('hydrates direct actor calls through the authenticated application boundary', () => {
+    const schema = { kind: 'declared', runtime: 'jsonSchema', jsonSchema: { type: 'object' } } as const;
+    const graph = {
+      apiVersion: 'applik8s.applicationGraph/v1alpha1',
+      kind: 'ApplicationGraph',
+      metadata: { name: 'actor-workflow-source', namespace: 'actor-workflow-source' },
+      nodes: [
+        { id: 'provider.workflow-engine', kind: 'provider', name: 'WorkflowEngine', stability: 'stable', interface: 'WorkflowEngine', implementation: 'hatchet', config: { provision: false, namespace: 'actor-workflow-source', hostPort: 'hatchet:7070', apiUrl: 'http://hatchet:8080', workerTokenSecret: { name: 'hatchet-worker' } } },
+        { id: 'provider.application-host', kind: 'provider', name: 'ApplicationHost', stability: 'stable', interface: 'ApplicationHost', implementation: 'managed-application-host', config: { host: { kind: 'managed-application-host', name: 'actor-workflow-app', namespace: 'actor-workflow-source', port: 3000 } } },
+        { id: 'actor.activity.v1', kind: 'actor', name: 'activity.v1', stability: 'experimental', definition: { id: 'activity.v1', key: schema, state: schema, stateVersion: 1, migrationDigest: 'sha256:test', migrations: [], protocol: [{ name: 'snapshot', kind: 'command', input: schema, output: schema }], requirements: { durableState: true, serializedTurns: true, transactionalOutbox: true, durableAlarms: false, realtimeConnections: false, connectionLeases: false, realtimeMessages: false, realtimeBroadcast: false } }, runtime: { interface: 'ActorRuntime', nodeId: 'provider.actor-runtime' }, handlers: [], semantics: { serialization: 'fullTurnPerIdentity', admission: 'idempotentReceipt', references: 'inertAddress' } },
+        { id: 'task.activity.digest.v1.step', kind: 'task', name: 'activity.digest.v1.step', stability: 'stable', contract: { name: 'activity.digest.v1.step', version: 'v1', input: schema, output: schema, errors: [] } },
+        { id: 'task-handler.activity.digest.v1.step', kind: 'taskHandler', name: 'activity.digest.v1.step', stability: 'stable', task: { nodeId: 'task.activity.digest.v1.step' }, workflowEngine: { interface: 'WorkflowEngine', nodeId: 'provider.workflow-engine' }, actors: [{ alias: 'Activity.snapshot', actor: { nodeId: 'actor.activity.v1' }, member: 'snapshot', memberKind: 'command' }], retry: { mode: 'boundedExponentialBackoff', maxAttempts: 4, initialDelayMs: 1000, maxDelayMs: 60000, factor: 2 }, executionTimeoutSeconds: 60, scheduleTimeoutSeconds: 300, idempotency: { required: true, keySource: 'invocation', guarantee: 'atLeastOnceRetrySafe' }, effectBoundary: 'externalEffectsAllowed', handlerSource: 'async input => Activity.snapshot(input.id, {})' },
+        { id: 'workflow-worker.actor', kind: 'workflowWorker', name: 'actor-worker', stability: 'stable', handlers: [{ nodeId: 'task-handler.activity.digest.v1.step' }], workflowEngine: { interface: 'WorkflowEngine', nodeId: 'provider.workflow-engine' }, runtime: 'node', lifecycle: 'longLived', deployment: { replicas: 1, taskSlots: 16, durableSlots: 16, gracefulShutdownSeconds: 30, healthPort: 8001, egress: 'allowAll', scaling: { mode: 'fixed' } } },
+      ],
+      edges: [], providerRequirements: [], providerBindings: [],
+    } as unknown as ApplicationGraph;
+    const worker = graph.nodes.find((node) => node.kind === 'workflowWorker');
+    if (worker?.kind !== 'workflowWorker') throw new Error('Expected workflow worker.');
+    const operationCatalog = compileApplicationOperationCatalog(graph);
+    const contract = workflowContract(
+      graph,
+      worker,
+      operationCatalog,
+      compileApplicationWorkloadAuthority(graph, operationCatalog),
+    );
+    const source = generatedWorkerSource(contract);
+    const resources = workflowResources(contract, 'actor-worker', 'actor-worker:test', 'sha256:test', false);
+    expect(contract.actorEffects?.actors).toHaveLength(1);
+    expect(source).toContain('/__applik8s/v1/internal/actors/invoke');
+    expect(source).toContain("transport: 'workflow'");
+    expect(source).toContain('principal,');
+    expect(source).toContain('APPLIK8S_ACTOR_APPLICATION_ENDPOINT');
+    expect(source).toContain('workloadAuthorityId: workloadAuthority.id');
+    expect(source).not.toContain("id: 'workflow-task:' + execution.invocationId");
+    const deployment = resources.find((resource) => resource.kind === 'Deployment');
+    expect(deployment?.spec).toMatchObject({ template: { spec: { containers: [expect.objectContaining({ env: expect.arrayContaining([
+      { name: 'APPLIK8S_ACTOR_APPLICATION_ENDPOINT', value: 'http://actor-workflow-app.actor-workflow-source.svc:3000' },
+      expect.objectContaining({ name: 'APPLIK8S_INTERNAL_OPERATION_SECRET' }),
+    ]) })] } } });
+  });
   it('lowers a task service identity by its authored subject exactly once', () => {
     expect(taskServicePrincipalInput({
       id: 'identity:workflow-model-edit:service:record-editor',

@@ -5,6 +5,7 @@ import type {
 } from '@applik8s/core';
 import type { GeneratedApplicationAgentArtifact } from '../application-agents/index.js';
 import type { GeneratedApplicationHttpArtifact } from '../application-http/index.js';
+import type { GeneratedApplicationLakehousePublisherArtifact } from '../application-lakehouse-publishers/index.js';
 import type { GeneratedApplicationMcpArtifact } from '../application-mcp/index.js';
 import type { GeneratedApplicationMigrationArtifact } from '../application-migrations/index.js';
 import type { GeneratedApplicationProcessorArtifact } from '../application-processors/index.js';
@@ -45,6 +46,7 @@ export interface TypeKroCompositionBundleManifest extends JsonObject {
     };
     readonly migrations?: readonly TypeKroCompositionMigrationArtifactReference[];
     readonly processors?: readonly TypeKroCompositionProcessorArtifactReference[];
+    readonly lakehousePublishers?: readonly TypeKroCompositionLakehousePublisherArtifactReference[];
     readonly workflows?: readonly TypeKroCompositionWorkflowArtifactReference[];
     readonly reactive?: readonly TypeKroCompositionReactiveArtifactReference[];
     readonly mcp?: readonly TypeKroCompositionMcpArtifactReference[];
@@ -61,24 +63,41 @@ export interface TypeKroCompositionOperatorArtifactReference extends JsonObject 
 
 export interface TypeKroCompositionProcessorArtifactReference extends JsonObject {
   readonly name: string;
+  readonly nodeId: string;
   readonly manifest: string;
   readonly source: string;
   readonly digest: string;
   readonly sizeBytes: number;
   readonly container: TypeKroCompositionContainerArtifactReference;
+}
+
+export interface TypeKroCompositionLakehousePublisherArtifactReference extends JsonObject {
+  readonly name: string;
+  readonly nodeId: string;
+  readonly manifest: string;
+  readonly source: string;
+  readonly digest: string;
+  readonly sizeBytes: number;
+  readonly container: TypeKroCompositionContainerArtifactReference;
+  readonly localSource: string;
+  readonly localDigest: string;
+  readonly localSizeBytes: number;
 }
 
 export interface TypeKroCompositionWorkflowArtifactReference extends JsonObject {
   readonly name: string;
+  readonly nodeId: string;
   readonly manifest: string;
   readonly source: string;
   readonly digest: string;
   readonly sizeBytes: number;
   readonly container: TypeKroCompositionContainerArtifactReference;
+  readonly runtimeEndpoints?: readonly TypeKroCompositionRuntimeEndpointReference[];
 }
 
 export interface TypeKroCompositionReactiveArtifactReference extends JsonObject {
   readonly name: string;
+  readonly nodeId: string;
   readonly kind:
     | 'queryGateway'
     | 'projectionWorker'
@@ -93,11 +112,13 @@ export interface TypeKroCompositionReactiveArtifactReference extends JsonObject 
 
 export interface TypeKroCompositionAgentArtifactReference extends JsonObject {
   readonly name: string;
+  readonly nodeId: string;
   readonly manifest: string;
   readonly source: string;
   readonly digest: string;
   readonly sizeBytes: number;
   readonly container: TypeKroCompositionContainerArtifactReference;
+  readonly runtimeEndpoints?: readonly TypeKroCompositionRuntimeEndpointReference[];
 }
 
 export interface TypeKroCompositionHttpArtifactReference extends JsonObject {
@@ -118,6 +139,12 @@ export interface TypeKroCompositionMcpArtifactReference extends JsonObject {
   readonly digest: string;
   readonly sizeBytes: number;
   readonly container: TypeKroCompositionContainerArtifactReference;
+  readonly runtimeEndpoints?: readonly TypeKroCompositionRuntimeEndpointReference[];
+}
+
+export interface TypeKroCompositionRuntimeEndpointReference extends JsonObject {
+  readonly nodeId: string;
+  readonly environmentName: string;
 }
 
 export interface TypeKroCompositionContainerArtifactReference extends JsonObject {
@@ -158,6 +185,7 @@ export interface TypeKroCompositionArtifacts {
   readonly mcpArtifacts: readonly GeneratedApplicationMcpArtifact[];
   readonly migrationArtifacts: readonly GeneratedApplicationMigrationArtifact[];
   readonly processorArtifacts: readonly GeneratedApplicationProcessorArtifact[];
+  readonly lakehousePublisherArtifacts: readonly GeneratedApplicationLakehousePublisherArtifact[];
   readonly workflowArtifacts: readonly GeneratedApplicationWorkflowArtifact[];
   readonly reactiveArtifacts: readonly GeneratedApplicationReactiveArtifact[];
   readonly operatorArtifacts: readonly TypeKroCompositionOperatorArtifacts[];

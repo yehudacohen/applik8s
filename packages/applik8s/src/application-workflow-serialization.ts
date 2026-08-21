@@ -1,6 +1,6 @@
 // typecast-file-boundary: Workflow schema and callback serialization converts validated authoring-time contracts into portable graph metadata.
 import type { ApplicationExpressionContract, ApplicationMessageContractSchema } from '@applik8s/core';
-import { normalizeSchema, type SchemaInput } from '@applik8s/sdk';
+import type { SchemaInput } from '@applik8s/sdk';
 import { instrumentedApplicationCallbackSource } from './application-callback.js';
 import { applicationCallbackSourceMatchesRuntime } from './application-callback-source-equivalence.js';
 import {
@@ -14,7 +14,8 @@ import {
 } from './application-route-source.js';
 import type { ApplicationWorkflowTaskDefinition as TaskDefinition } from './application-workflow-internal.js';
 import type { WorkflowDefinition } from './dsl.js';
-import { validateRuntimeMessage } from './runtime-schema-validation.js';
+import { declaredSchema } from './application-schema-runtime.js';
+export { declaredSchema, validateMessage } from './application-schema-runtime.js';
 
 const workflowHandlerSerializationCache = new WeakMap<(...args: never[]) => unknown, Map<string, {
 	readonly source: string;
@@ -38,16 +39,6 @@ export function durableContract<TInput extends object, TOutput extends object>(
     output: declaredSchema(definition.output, `${definition.id}.output`),
     errors: Object.keys(definition.errors).sort().map((name) => ({ name, schema: declaredSchema(requiredSchema(schemaRecord(definition.errors), name, `${definition.id}.errors`), `${definition.id}.errors.${name}`) })),
   };
-}
-
-export function declaredSchema<T extends object>(input: SchemaInput<T>, name: string): ApplicationMessageContractSchema {
-  const emitted = normalizeSchema(input, name).emitJsonSchema();
-  if (!emitted.ok) throw new Error(`applik8s-workflow-schema-unsupported: ${name}: ${emitted.error.message}`);
-  return { kind: 'declared', runtime: 'arktype', jsonSchema: emitted.value.schema };
-}
-
-export function validateMessage<T extends object>(schema: SchemaInput<T>, value: unknown, name: string): T {
-  return validateRuntimeMessage(schema, value, name);
 }
 
 export function workflowHandlerSerialization(

@@ -45,10 +45,10 @@ describe('generated ApplicationHost', () => {
       ),
     ).toEqual([expect.objectContaining({
       id: 'provider.ApplicationHost',
-      implementation: 'kubernetes-application-host',
+      implementation: 'managed-application-host',
       config: {
         host: {
-          kind: 'kubernetes-application-host',
+          kind: 'managed-application-host',
           name: 'guestbook-app',
           namespace: 'guestbook',
           replicas: 1,
@@ -277,6 +277,51 @@ describe('generated ApplicationHost', () => {
           },
         }]),
       })] } } },
+    });
+  });
+
+  it('materializes fixed schedules as bounded CronJobs and wires dynamic schedule authority into the host', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'applik8s-host-schedules-'));
+    await mkdir(join(root, '.applik8s/web-artifacts'), { recursive: true });
+    await mkdir(join(root, 'dist/server/server'), { recursive: true });
+    const source = 'console.log("schedules");\n';
+    await writeFile(join(root, 'dist/server/server/index.mjs'), source);
+    await writeFile(join(root, '.applik8s/web-artifacts/server.json'), JSON.stringify({
+      apiVersion: 'applik8s.webArtifact/v1alpha1', application: 'src/application.ts', output: 'dist/server', target: 'server',
+      digest: `sha256:${'9'.repeat(64)}`, entrypoint: 'server/index.mjs',
+      artifacts: [{ path: 'server/index.mjs', bytes: source.length, digest: createHash('sha256').update(source).digest('hex') }],
+    }));
+    const base = hostGraph();
+    const graph: ApplicationGraph = {
+      ...base,
+      nodes: [...base.nodes, {
+        id: 'provider.scheduler', kind: 'provider', name: 'Scheduler', stability: 'stable', interface: 'Scheduler', implementation: 'target-selected', config: {},
+      }, {
+        id: 'model.Note', kind: 'model', name: 'Note', stability: 'stable', native: 'relational', source: { kind: 'drizzle', tableName: 'notes', exportName: 'notes' },
+        schema: { kind: 'declared', runtime: 'arktype', jsonSchema: { type: 'object' } }, relationships: [], operations: [], events: [],
+        database: { interface: 'TransactionalDatabase', nodeId: 'provider.database' },
+        runtime: { connectionEnvName: 'DATABASE_URL', database: 'app', secretName: 'guestbook-db-app', secretKey: 'uri' },
+      }, {
+        id: 'schedule.cleanup.v1', kind: 'schedule', name: 'cleanup.v1', stability: 'stable', scheduler: { interface: 'Scheduler', nodeId: 'provider.scheduler' },
+        definition: { id: 'cleanup.v1', configuration: 'fixed', every: '15m', timezone: 'UTC', overlap: 'skip', misfires: 'latest', retry: { maxAttempts: 4, maximumAgeSeconds: 3600 }, requirements: { configuration: 'fixed', cardinality: 'bounded', precision: 'minute' } },
+        handler: { source: 'async () => undefined' }, functionNative: true,
+      }] as ApplicationGraph['nodes'],
+    };
+    const resources = await emitGeneratedApplicationHost({ graph, entrypoint: join(root, 'src/application.ts'), outDir: join(root, 'host') });
+    expect(resources.map(({ kind }) => kind)).toContain('CronJob');
+    expect(resources.find(({ kind }) => kind === 'CronJob')).toMatchObject({
+      metadata: { namespace: 'guestbook' },
+      spec: { schedule: '*/15 * * * *', timeZone: 'UTC', concurrencyPolicy: 'Forbid', jobTemplate: { spec: { backoffLimit: 3 } } },
+    });
+    expect(JSON.stringify(resources.find(({ kind }) => kind === 'CronJob'))).toContain('/__applik8s/v1/internal/schedules/occurrences');
+    expect(resources.find(({ kind }) => kind === 'Deployment')).toMatchObject({
+      spec: { template: { spec: { containers: [expect.objectContaining({ env: expect.arrayContaining([
+        { name: 'APPLIK8S_INTERNAL_OPERATION_SECRET', valueFrom: { secretKeyRef: { name: 'guestbook-internal-operation', key: 'key' } } },
+        { name: 'APPLIK8S_SCHEDULE_DATABASE_URL', valueFrom: { secretKeyRef: { name: 'guestbook-db-app', key: 'uri', optional: false } } },
+      ]) })] } } },
+    });
+    expect(resources.find(({ kind }) => kind === 'Role')).toMatchObject({
+      rules: expect.arrayContaining([{ apiGroups: ['batch'], resources: ['cronjobs'], verbs: ['create', 'delete', 'get', 'update'] }]),
     });
   });
 

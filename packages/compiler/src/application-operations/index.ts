@@ -34,13 +34,37 @@ export function compileApplicationWorkloadAuthority(
     throw new Error(`Operation catalog ${catalog.application} does not belong to ${graph.metadata.name}.`);
   }
   const operations = new Map(catalog.operations.map((operation) => [operation.id, operation]));
+  const actorOperation = (reference: { readonly actor: { readonly nodeId: string }; readonly member: string }, owner: string) => {
+    const actor = graph.nodes.find((node) => node.id === reference.actor.nodeId);
+    if (actor?.kind !== 'actor') throw new Error(`${owner} references unavailable actor ${reference.actor.nodeId}.`);
+    const operationId = applicationOperationId({ domain: 'actors', owner: actor.definition.id, operation: reference.member });
+    const operation = operations.get(operationId);
+    if (!operation) throw new Error(`${owner} references unavailable actor operation ${operationId}.`);
+    return operation;
+  };
   const taskEnvelopes = graph.nodes
     .filter((node) => node.kind === 'taskHandler')
-    .flatMap((handler) => (handler.operations ?? []).map((dependency) => {
-      const operation = operations.get(dependency.authority.operationId);
+    .flatMap((handler) => [
+      ...(handler.operations ?? []).map((dependency) => ({
+        alias: dependency.alias,
+        operation: operations.get(dependency.authority.operationId),
+        restrictions: dependency.authority.restrictions,
+        binding: dependency.authority.binding,
+      })),
+      ...(handler.actors ?? []).map((dependency) => {
+        const operation = actorOperation(dependency, `Task handler ${handler.id} actor ${dependency.alias}`);
+        return {
+          alias: dependency.alias,
+          operation,
+          restrictions: { target: operation.authority.defaultScope, predicates: [] },
+          binding: undefined,
+        };
+      }),
+    ].map((dependency) => {
+      const operation = dependency.operation;
       if (!operation) {
         throw new Error(
-          `Task handler ${handler.id} workload authority references unavailable operation ${dependency.authority.operationId}.`,
+          `Task handler ${handler.id} workload authority references an unavailable operation.`,
         );
       }
       const workloadIdentity = {
@@ -50,7 +74,9 @@ export function compileApplicationWorkloadAuthority(
         subject: handler.id,
       };
       const serviceIdentity = handler.serviceIdentity;
-      const restrictedTransport = dependency.authority.restrictions.transport;
+      const restrictedTransport = 'transport' in dependency.restrictions
+        ? dependency.restrictions.transport
+        : undefined;
       if (
         restrictedTransport?.kind === 'transport'
         && restrictedTransport.transport !== 'workflow'
@@ -72,15 +98,16 @@ export function compileApplicationWorkloadAuthority(
           application: graph.metadata.name,
           handler: handler.id,
           alias: dependency.alias,
-          authority: dependency.authority,
+          operationId: operation.id,
+          restrictions: dependency.restrictions,
           catalogRevision: catalog.revision,
         }).slice('sha256:'.length)}`,
         workloadIdentity,
         ...(serviceIdentity ? { serviceIdentity } : {}),
         operationId: operation.id,
         catalogRevision: catalog.revision,
-        restrictions: dependency.authority.restrictions,
-        ...(dependency.authority.binding ? { binding: dependency.authority.binding } : {}),
+        restrictions: dependency.restrictions,
+        ...(dependency.binding ? { binding: dependency.binding } : {}),
         inputSchemaDigest: operation.input.digest,
         audiences: operation.authority.audiences ?? [workloadIdentity.id],
         transports,
@@ -94,6 +121,7 @@ export function compileApplicationWorkloadAuthority(
       const declared = new Map<string, {
         readonly operationId: ApplicationOperationDescriptor['id'];
         readonly authority?: ApplicationOperationAuthorityGraphContract;
+        readonly transport?: 'direct';
       }>();
       for (const tool of agent.tools) {
         declared.set(tool.operationId, {
@@ -105,6 +133,11 @@ export function compileApplicationWorkloadAuthority(
         if (!declared.has(dependency.operationId)) {
           declared.set(dependency.operationId, { operationId: dependency.operationId });
         }
+      }
+      for (const dependency of agent.actors ?? []) {
+        const operation = actorOperation(dependency, `AI agent ${agent.id} actor ${dependency.alias}`);
+        const existing = declared.get(operation.id);
+        declared.set(operation.id, { operationId: operation.id, ...(existing?.authority ? { authority: existing.authority } : {}), transport: 'direct' });
       }
       return [...declared.values()].map((dependency) => {
       const operation = operations.get(dependency.operationId);
@@ -119,8 +152,10 @@ export function compileApplicationWorkloadAuthority(
         issuer: `applik8s://${graph.metadata.name}`,
         subject: agent.id,
       };
-      const transports = operation.authority.transports
-        ?? [...new Set(operation.transports.map((transport) => transport.transport))];
+      const transports = dependency.transport
+        ? [dependency.transport]
+        : operation.authority.transports
+          ?? [...new Set(operation.transports.map((transport) => transport.transport))];
       return {
         apiVersion: 'applik8s.workloadAuthority/v1alpha1' as const,
         id: `workload-authority:${digestJson({
@@ -128,6 +163,7 @@ export function compileApplicationWorkloadAuthority(
           agent: agent.id,
           operationId: dependency.operationId,
           authority: dependency.authority ?? operation.authority,
+          transport: dependency.transport,
           catalogRevision: catalog.revision,
         }).slice('sha256:'.length)}`,
         workloadIdentity,
@@ -160,8 +196,74 @@ export function compileApplicationWorkloadAuthority(
       };
       });
     });
-  return [...taskEnvelopes, ...agentEnvelopes]
+  const processorEnvelopes = graph.nodes
+    .filter((node) => node.kind === 'streamProcessor')
+    .flatMap((processor) => {
+      const actorDependencies = (processor.actorBindings ?? []).map((dependency) => ({
+        dependency,
+        operation: actorOperation(
+          dependency,
+          `Stream processor ${processor.id} actor ${dependency.identifier}`,
+        ),
+      }));
+      const serviceIdentity = inferredProcessorActorServiceIdentity(
+        graph,
+        actorDependencies.map(({ operation }) => operation.id),
+        processor.id,
+      );
+      return actorDependencies.map(({ dependency, operation }) => {
+      const workloadIdentity = {
+        id: `identity:${graph.metadata.name}:workload:${processor.id}`,
+        kind: 'workload' as const,
+        issuer: `applik8s://${graph.metadata.name}`,
+        subject: processor.id,
+      };
+      return {
+        apiVersion: 'applik8s.workloadAuthority/v1alpha1' as const,
+        id: `workload-authority:${digestJson({ application: graph.metadata.name, processor: processor.id, operationId: operation.id, catalogRevision: catalog.revision }).slice('sha256:'.length)}`,
+        workloadIdentity,
+        ...(serviceIdentity ? { serviceIdentity } : {}),
+        operationId: operation.id,
+        catalogRevision: catalog.revision,
+        restrictions: { target: operation.authority.defaultScope, predicates: [] },
+        inputSchemaDigest: operation.input.digest,
+        audiences: operation.authority.audiences ?? [workloadIdentity.id],
+        transports: ['event'] as const,
+        delegation: 'forbidden' as const,
+        impersonation: 'forbidden' as const,
+      };
+      });
+    });
+  return [...taskEnvelopes, ...agentEnvelopes, ...processorEnvelopes]
     .sort((left, right) => left.id.localeCompare(right.id));
+}
+
+function inferredProcessorActorServiceIdentity(
+  graph: ApplicationGraph,
+  operationIds: readonly ApplicationOperationDescriptor['id'][],
+  processorId: string,
+) {
+  if (operationIds.length === 0) return undefined;
+  const manifest = applicationStaticAuthorityManifest(graph);
+  if (!manifest) return undefined;
+  const required = new Set(operationIds);
+  const candidates = manifest.identities.filter((identity) =>
+    identity.kind === 'service'
+    && identity.subject !== 'application-authority'
+    && (() => {
+      const granted = new Set(
+        manifest.grants
+          .filter((grant) => grant.identity.id === identity.id)
+          .flatMap((grant) => grant.operationIds),
+      );
+      return [...required].every((operationId) => granted.has(operationId));
+    })());
+  if (candidates.length > 1) {
+    throw new Error(
+      `Stream processor ${processorId} has ambiguous service authority for actor operations: ${candidates.map((identity) => identity.id).join(', ')}.`,
+    );
+  }
+  return candidates[0];
 }
 
 function staticAgentToolScope(
@@ -211,6 +313,7 @@ export function compileApplicationOperationCatalog(
       })),
     ]),
     ...signalOperations(graph),
+    ...actorOperations(graph),
     ...agentLocalOperations(graph),
     ...graph.nodes.filter((node) => node.kind === 'subscription').map((subscription) => subscriptionOperation(graph, subscription)),
     ...graph.nodes.filter((node) => node.kind === 'server').flatMap((server) =>
@@ -249,6 +352,74 @@ export function compileApplicationOperationCatalog(
     }
   }
   return catalog;
+}
+
+function actorOperations(
+  graph: ApplicationGraph,
+): readonly ApplicationOperationDescriptor[] {
+  return graph.nodes
+    .filter((node) => node.kind === 'actor')
+    .flatMap((actor) => actor.definition.protocol.flatMap((member): readonly ApplicationOperationDescriptor[] => {
+      if (member.kind === 'broadcast') return [];
+      const kind: Extract<ApplicationOperationKind, `actor.${string}`> = member.kind === 'command'
+        ? 'actor.command'
+        : member.kind === 'message'
+          ? 'actor.message'
+          : member.kind === 'connectionMessage'
+            ? 'actor.connection-message'
+            : member.kind === 'connection'
+              ? 'actor.connection'
+              : member.kind === 'disconnection'
+                ? 'actor.disconnection'
+                : 'actor.alarm';
+      const transport = member.kind === 'command' || member.kind === 'message'
+        ? ['direct', 'http', 'workflow', 'event'] as const
+        : member.kind === 'alarm'
+          ? ['direct', 'workflow', 'event', 'control-plane'] as const
+        : member.kind === 'connection' || member.kind === 'connectionMessage'
+          ? ['http'] as const
+          : ['control-plane'] as const;
+      const authority = member.kind === 'connectionMessage' || member.kind === 'disconnection'
+        ? {
+            classification: 'application-policy' as const,
+            permissionIds: [],
+            grantable: false,
+            delegable: false,
+            scope: { kind: 'all' as const },
+            transports: [...transport],
+          }
+        : member.authority;
+      return [{
+        apiVersion: 'applik8s.operation/v1alpha1',
+        id: applicationOperationId({ domain: 'actors', owner: actor.definition.id, operation: member.name }),
+        version: 'v1',
+        name: member.name,
+        kind,
+        input: schemaDescriptor(member.input ?? emptySchema()),
+        output: schemaDescriptor(member.output ?? emptySchema()),
+        errors: {},
+        target: {
+          model: actor.definition.id,
+          identity: schemaDescriptor(actor.definition.key),
+        },
+        authority: operationAuthority(authority, member.kind === 'alarm'
+          ? ['enqueue', 'execution']
+          : member.kind === 'connectionMessage' || member.kind === 'disconnection'
+            ? ['execution']
+            : ['admission', 'execution', 'result-read']),
+        transports: transport.map((candidate) => ({
+          id: `${actor.id}.${member.name}.${candidate}`,
+          transport: candidate,
+          server: member.kind === 'connection' || member.kind === 'connectionMessage'
+            ? 'application-actor-connection-gateway'
+            : 'application-actor-runtime',
+        })),
+        placement: { nodeId: actor.id, runtime: 'actor-runtime' },
+        effects: member.kind === 'connectionMessage'
+          ? ['ephemeral-broadcast-only']
+          : ['serialized-actor-turn'],
+      }];
+    }));
 }
 
 function agentLocalOperations(

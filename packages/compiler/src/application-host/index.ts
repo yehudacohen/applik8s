@@ -70,10 +70,10 @@ export async function applicationGraphWithInferredApplicationHost(
     name: 'ApplicationHost',
     stability: 'stable',
     interface: 'ApplicationHost',
-    implementation: 'kubernetes-application-host',
+    implementation: 'managed-application-host',
     config: {
       host: {
-        kind: 'kubernetes-application-host',
+        kind: 'managed-application-host',
         name,
         namespace: graph.metadata.namespace ?? 'default',
         replicas: 1,
@@ -97,7 +97,7 @@ export async function emitGeneratedApplicationHost(options: {
   );
   if (!host) return [];
   const config = objectValue(host.config?.host);
-  if (stringValue(config.kind) !== 'kubernetes-application-host') {
+  if (!['managed-application-host', 'kubernetes-application-host'].includes(stringValue(config.kind) ?? '')) {
     throw new Error(`ApplicationHost provider ${host.id} uses unsupported implementation ${JSON.stringify(config.kind)}.`);
   }
   const manifestPath = await findStartArtifactManifest(dirname(resolve(options.entrypoint)));
@@ -142,6 +142,10 @@ export async function emitGeneratedApplicationHost(options: {
   const identityDatabaseEnvironment =
     applicationHostIdentityDatabaseEnvironment(options.graph, namespace);
   const internalOperationEnvironment = applicationHostInternalOperationEnvironment(
+    options.graph,
+    namespace,
+  );
+  const scheduleDatabaseEnvironment = applicationHostScheduleDatabaseEnvironment(
     options.graph,
     namespace,
   );
@@ -228,10 +232,12 @@ export async function emitGeneratedApplicationHost(options: {
               env: [
                 { name: 'PORT', value: String(port) },
                 { name: 'APPLIK8S_APPLICATION_NAME', value: options.graph.metadata.name },
+				{ name: 'APPLIK8S_DEPLOYMENT_TARGET', value: 'kubernetes' },
                 { name: 'APPLIK8S_NAMESPACE', value: namespace },
                 { name: 'APPLIK8S_WEB_ARTIFACT_DIGEST', value: manifest.digest },
                 { name: 'APPLIK8S_CURSOR_SECRET', valueFrom: { secretKeyRef: { name: cursorSecretName, key: cursorSecretKey } } },
                 ...internalOperationEnvironment,
+                ...scheduleDatabaseEnvironment,
                 ...identityDatabaseEnvironment,
                 ...objectStorageEnvironment,
               ],
@@ -273,7 +279,110 @@ export async function emitGeneratedApplicationHost(options: {
       spec: { minAvailable: 1, selector: { matchLabels: labels } },
     });
   }
+  emitted.push(...applicationHostFixedScheduleResources({
+    graph: options.graph,
+    namespace,
+    hostName: name,
+    image,
+    imagePullPolicy,
+    internalOperationSecretName: `${kubernetesName(options.graph.metadata.name)}-internal-operation`,
+    port,
+  }));
   return emitted;
+}
+
+function applicationHostFixedScheduleResources(options: {
+  readonly graph: ApplicationGraph;
+  readonly namespace: string;
+  readonly hostName: string;
+  readonly image: string;
+  readonly imagePullPolicy: string;
+  readonly internalOperationSecretName: string;
+  readonly port: number;
+}): readonly GeneratedApplicationHostResource[] {
+  const schedules = options.graph.nodes.filter((node): node is Extract<ApplicationGraph['nodes'][number], { kind: 'schedule' }> => {
+    if (node.kind !== 'schedule' || node.definition.configuration !== 'fixed') return false;
+    const provider = options.graph.nodes.find((candidate) => candidate.id === node.scheduler.nodeId);
+    return provider?.kind === 'provider'
+      && (provider.implementation === 'target-selected' || provider.implementation === 'kubernetes-cronjob-scheduler');
+  });
+  return schedules.map((node) => {
+    const name = kubernetesName(`schedule-${node.definition.id}-${createHash('sha256').update(node.definition.id).digest('hex').slice(0, 10)}`);
+    const labels = {
+      'app.kubernetes.io/name': options.graph.metadata.name,
+      'app.kubernetes.io/component': 'schedule',
+      'applik8s.dev/schedule-definition': kubernetesLabel(node.definition.id),
+    };
+    const admission = {
+      schemaVersion: 'applik8s.scheduleAdmission/v1alpha1',
+      applicationId: options.graph.metadata.name,
+      environmentId: options.namespace,
+      definitionId: node.definition.id,
+      instanceId: 'fixed',
+      ...(node.definition.at ? { deleteAfterCompletion: true, providerResourceName: name } : {}),
+    };
+    const source = "const base=JSON.parse(process.env.APPLIK8S_SCHEDULE_ADMISSION);const now=new Date().toISOString();const response=await fetch(process.env.APPLIK8S_SCHEDULE_ENDPOINT,{method:'POST',headers:{'content-type':'application/json','authorization':'Bearer '+process.env.APPLIK8S_INTERNAL_OPERATION_SECRET},body:JSON.stringify({...base,scheduledAt:now,admittedAt:now,attempt:1,schedulerExecutionId:process.env.APPLIK8S_JOB_NAME})});if(!response.ok){console.error(await response.text());process.exit(1)};console.log(await response.text());";
+    return {
+      apiVersion: 'batch/v1',
+      kind: 'CronJob',
+      metadata: { name, namespace: options.namespace, labels, annotations: { 'applik8s.dev/schedule-definition': node.definition.id } },
+      spec: {
+        schedule: kubernetesScheduleCron(node.definition),
+        timeZone: node.definition.timezone,
+        concurrencyPolicy: node.definition.overlap === 'skip' ? 'Forbid' : 'Allow',
+        startingDeadlineSeconds: Math.min(node.definition.retry.maximumAgeSeconds, 2_147_483_647),
+        successfulJobsHistoryLimit: 1,
+        failedJobsHistoryLimit: 3,
+        jobTemplate: {
+          metadata: { labels },
+          spec: {
+            backoffLimit: Math.max(0, node.definition.retry.maxAttempts - 1),
+            ttlSecondsAfterFinished: 3_600,
+            template: {
+              metadata: { labels },
+              spec: {
+                restartPolicy: 'Never',
+                containers: [{
+                  name: 'schedule-admission',
+                  image: options.image,
+                  imagePullPolicy: options.imagePullPolicy,
+                  command: ['node', '--input-type=module', '--eval', source],
+                  env: [
+                    { name: 'APPLIK8S_SCHEDULE_ENDPOINT', value: `http://${options.hostName}.${options.namespace}.svc:${options.port}/__applik8s/v1/internal/schedules/occurrences` },
+                    { name: 'APPLIK8S_SCHEDULE_ADMISSION', value: JSON.stringify(admission) },
+                    { name: 'APPLIK8S_JOB_NAME', valueFrom: { fieldRef: { fieldPath: "metadata.labels['batch.kubernetes.io/job-name']" } } },
+                    { name: 'APPLIK8S_INTERNAL_OPERATION_SECRET', valueFrom: { secretKeyRef: { name: options.internalOperationSecretName, key: 'key' } } },
+                  ],
+                  resources: { requests: { cpu: '10m', memory: '32Mi' }, limits: { memory: '64Mi' } },
+                  securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, runAsNonRoot: true, capabilities: { drop: ['ALL'] } },
+                }],
+              },
+            },
+          },
+        },
+      },
+    };
+  });
+}
+
+function kubernetesScheduleCron(definition: Extract<ApplicationGraph['nodes'][number], { kind: 'schedule' }>['definition']): string {
+  if (definition.cron) return definition.cron;
+  if (definition.every) {
+    const match = /^(\d+)(m|h|d)$/u.exec(definition.every);
+    if (!match) throw new Error(`Kubernetes CronJob schedule ${definition.id} requires minute-or-coarser cadence; received ${definition.every}.`);
+    const amount = Number(match[1]);
+    if (match[2] === 'm') return amount === 1 ? '* * * * *' : `*/${amount} * * * *`;
+    if (match[2] === 'h') return amount === 1 ? '0 * * * *' : `0 */${amount} * * *`;
+    return amount === 1 ? '0 0 * * *' : `0 0 */${amount} * *`;
+  }
+  if (!definition.at) throw new Error(`Kubernetes schedule ${definition.id} has no cadence.`);
+  const at = new Date(definition.at);
+  if (!Number.isFinite(at.getTime())) throw new Error(`Kubernetes schedule ${definition.id} has invalid timestamp ${definition.at}.`);
+  return `${at.getUTCMinutes()} ${at.getUTCHours()} ${at.getUTCDate()} ${at.getUTCMonth() + 1} *`;
+}
+
+function kubernetesLabel(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9._-]+/gu, '-').replace(/^[^a-z0-9]+|[^a-z0-9]+$/gu, '').slice(0, 63) || 'schedule';
 }
 
 function applicationHostIdentityDatabaseEnvironment(
@@ -369,7 +478,11 @@ function applicationHostInternalOperationEnvironment(
   hostNamespace: string,
 ): readonly Readonly<Record<string, unknown>>[] {
   const needsInternalOperations = graph.nodes.some(
-    (node) => node.kind === 'aiAgent' || node.kind === 'mcpServer',
+    (node) => node.kind === 'aiAgent'
+      || node.kind === 'mcpServer'
+      || node.kind === 'schedule'
+      || node.kind === 'actor'
+      || node.kind === 'lakehousePublication',
   );
   if (!needsInternalOperations) return [];
   const applicationNamespace = applicationGraphStringValue(graph.metadata.namespace) ?? 'default';
@@ -386,6 +499,35 @@ function applicationHostInternalOperationEnvironment(
         key: 'key',
       },
     },
+  }];
+}
+
+function applicationHostScheduleDatabaseEnvironment(
+  graph: ApplicationGraph,
+  hostNamespace: string,
+): readonly Readonly<Record<string, unknown>>[] {
+  if (!graph.nodes.some((node) => node.kind === 'schedule')) return [];
+  const runtimes = new Map<string, { readonly secretName: string; readonly secretNamespace?: string; readonly secretKey: string }>();
+  for (const node of graph.nodes) {
+    if (node.kind !== 'model' || !node.runtime) continue;
+    const runtime = {
+      secretName: node.runtime.secretName,
+      ...(node.runtime.secretNamespace ? { secretNamespace: node.runtime.secretNamespace } : {}),
+      secretKey: node.runtime.secretKey,
+    };
+    runtimes.set(JSON.stringify(runtime), runtime);
+  }
+  if (runtimes.size !== 1) {
+    throw new Error(`ApplicationHost Kubernetes Scheduler requires exactly one PostgreSQL runtime authority; found ${runtimes.size}. Bind scheduled application state to one TransactionalDatabase.`);
+  }
+  const runtime = [...runtimes.values()][0]!;
+  const secretNamespace = runtime.secretNamespace ?? hostNamespace;
+  if (secretNamespace !== hostNamespace) {
+    throw new Error(`ApplicationHost Kubernetes Scheduler Secret ${runtime.secretName} is in ${secretNamespace}, but the host runs in ${hostNamespace}.`);
+  }
+  return [{
+    name: 'APPLIK8S_SCHEDULE_DATABASE_URL',
+    valueFrom: { secretKeyRef: { name: runtime.secretName, key: runtime.secretKey, optional: false } },
   }];
 }
 
@@ -433,6 +575,12 @@ function applicationHostRules(graph: ApplicationGraph): readonly Readonly<Record
   for (const node of graph.nodes) {
     if (node.kind === 'crd' && node.create) addRule(node.resource.apiVersion, node.resource.plural, ['create', 'get']);
     if (node.kind === 'query' && node.kubernetes && !remoteQueries.has(node.id)) addRule(node.kubernetes.resource.apiVersion, node.kubernetes.resource.plural, ['get', 'list', 'watch']);
+    if (node.kind === 'schedule') {
+      const provider = graph.nodes.find((candidate) => candidate.id === node.scheduler.nodeId);
+      if (provider?.kind === 'provider' && (provider.implementation === 'target-selected' || provider.implementation === 'kubernetes-cronjob-scheduler')) {
+        addRule('batch/v1', 'cronjobs', ['create', 'delete', 'get', 'update']);
+      }
+    }
   }
   return [...groups.entries()]
     .sort(([left], [right]) => left.localeCompare(right))
@@ -519,4 +667,10 @@ function stringValue(value: unknown): string | undefined {
 
 function positiveInteger(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : undefined;
+}
+
+function kubernetesName(value: string): string {
+  const normalized = value.toLowerCase().replace(/[^a-z0-9-]+/gu, '-').replace(/^-+|-+$/gu, '').slice(0, 63).replace(/-+$/gu, '');
+  if (!normalized) throw new Error(`Kubernetes resource name ${JSON.stringify(value)} is invalid.`);
+  return normalized;
 }

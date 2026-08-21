@@ -10,7 +10,17 @@ import { Cel } from 'typekro';
 import type { OryIdentityStackConfig, OryPlatformStackConfig } from 'typekro/ory';
 import { applicationTypeKroExpressionValue, applicationTypeKroString } from './application-typekro-values.js';
 import { applicationQualifiableProviderToken } from './application-provider-qualification.js';
+import {
+  createApplicationSchedule,
+  type ApplicationScheduleRegistrar,
+} from './application-schedule.js';
 import { isApplicationStructuredGenerationProvider, StructuredGeneration } from './structured-generation.js';
+import {
+  createApplicationLakehouseDatasetQuery,
+  createApplicationLakehouseQuery,
+  type ApplicationLakehouseDatasetQueryContract,
+  type ApplicationLakehouseQueryRegistrar,
+} from './application-lakehouse.js';
 
 export type { ApplicationStructuredGenerationDeterministicProvider, ApplicationStructuredGenerationHttpProvider, ApplicationStructuredGenerationProvider, ApplicationStructuredGenerationProviderToken } from './structured-generation.js';
 export { isApplicationStructuredGenerationProvider, StructuredGeneration } from './structured-generation.js';
@@ -179,6 +189,188 @@ export interface ApplicationHatchetWorkflowEngineProvider {
 }
 
 export type ApplicationWorkflowEngineProvider = ApplicationHatchetWorkflowEngineProvider;
+
+export interface ApplicationLocalSchedulerProvider {
+  readonly kind: 'local-scheduler';
+  readonly clock?: 'system' | 'controlled';
+  readonly persistence?: 'memory' | 'application-database';
+}
+
+export interface ApplicationKubernetesCronJobSchedulerProvider {
+  readonly kind: 'kubernetes-cronjob-scheduler';
+  readonly namespace?: string;
+  readonly maximumDefinitions?: number;
+}
+
+export interface ApplicationHatchetSchedulerProvider {
+  readonly kind: 'hatchet-scheduler';
+  readonly workflowEngine?: ApplicationHatchetWorkflowEngineProvider;
+}
+
+export interface ApplicationEventBridgeSchedulerProvider {
+  readonly kind: 'eventbridge-scheduler';
+  readonly groupName?: string;
+  readonly roleArn?: string;
+}
+
+export type ApplicationSchedulerProvider =
+  | ApplicationLocalSchedulerProvider
+  | ApplicationKubernetesCronJobSchedulerProvider
+  | ApplicationHatchetSchedulerProvider
+  | ApplicationEventBridgeSchedulerProvider;
+
+export interface ApplicationLocalActorRuntimeProvider {
+  readonly kind: 'deterministic-local-actors';
+  readonly persistence?: 'memory' | 'application-database';
+}
+
+export interface ApplicationCelldActorRuntimeProvider {
+  readonly kind: 'celld-actors';
+  readonly namespace?: string;
+  readonly stateStore: ApplicationObjectStorageProvider | ApplicationProviderBinding<ApplicationObjectStorageProvider>;
+  readonly replicas?: number;
+}
+
+export interface ApplicationRivetActorRuntimeProvider {
+  readonly kind: 'rivet-actors';
+  readonly endpoint: string;
+  readonly credentials?: ApplicationResourceRef;
+}
+
+export type ApplicationActorRuntimeProvider =
+  | ApplicationLocalActorRuntimeProvider
+  | ApplicationCelldActorRuntimeProvider
+  | ApplicationRivetActorRuntimeProvider;
+
+export interface ApplicationTelemetryPolicy {
+  readonly apiVersion: 'applik8s.telemetryPolicy/v1alpha1';
+  readonly logs: {
+    readonly level: 'debug' | 'info' | 'warn' | 'error';
+    readonly overrides: Readonly<Record<string, 'debug' | 'info' | 'warn' | 'error'>>;
+    readonly debugSample: number;
+  };
+  readonly metrics: {
+    readonly intervalSeconds: number;
+    readonly cardinalityBudget: 'bounded';
+  };
+  readonly traces: {
+    readonly headSample: number;
+    readonly alwaysSampleErrors: boolean;
+    readonly tailSample?: { readonly latencyGreaterThanSeconds: number };
+  };
+  readonly baggage: {
+    readonly allowedKeys: readonly string[];
+    readonly maximumBytes: number;
+  };
+  readonly redaction: {
+    readonly deniedFields: readonly string[];
+  };
+}
+
+export interface ApplicationTelemetryPolicyOptions {
+  readonly logs?: {
+    readonly level?: ApplicationTelemetryPolicy['logs']['level'];
+    readonly overrides?: Readonly<Record<string, ApplicationTelemetryPolicy['logs']['level']>>;
+    readonly sample?: { readonly debug?: number };
+  };
+  readonly metrics?: {
+    readonly interval?: string;
+    readonly cardinalityBudget?: 'bounded';
+  };
+  readonly traces?: {
+    readonly headSample?: number;
+    readonly alwaysSampleErrors?: boolean;
+    readonly tailSample?: { readonly latency: string };
+  };
+  readonly baggage?: {
+    readonly allowedKeys?: readonly string[];
+    readonly maximumBytes?: number;
+  };
+  readonly redaction?: {
+    readonly deniedFields?: readonly string[];
+  };
+}
+
+interface ApplicationObservabilityProviderBase {
+  readonly policy: ApplicationTelemetryPolicy;
+  readonly retention: {
+    readonly logs: string;
+    readonly traces: string;
+    readonly metrics: string;
+  };
+}
+
+export interface ApplicationLocalObservabilityProvider extends ApplicationObservabilityProviderBase {
+  readonly kind: 'local-otel';
+  readonly endpoint?: string;
+}
+
+export interface ApplicationClickStackObservabilityProvider extends ApplicationObservabilityProviderBase {
+  readonly kind: 'clickstack';
+  readonly namespace?: string;
+  readonly storageSize?: string;
+}
+
+export interface ApplicationCloudWatchObservabilityProvider extends ApplicationObservabilityProviderBase {
+  readonly kind: 'cloudwatch';
+  readonly region?: string;
+}
+
+export interface ApplicationOtlpObservabilityProvider extends ApplicationObservabilityProviderBase {
+  readonly kind: 'otlp';
+  readonly endpoint: string;
+  readonly authentication?: ApplicationResourceRef;
+}
+
+export type ApplicationObservabilityProvider =
+  | ApplicationLocalObservabilityProvider
+  | ApplicationClickStackObservabilityProvider
+  | ApplicationCloudWatchObservabilityProvider
+  | ApplicationOtlpObservabilityProvider;
+
+export interface ApplicationDuckDbLakehouseDatasetProvider {
+  readonly kind: 'duckdb-dataset';
+  readonly root?: string;
+  /** Environment variable containing the cursor signing secret. Secret values never enter the graph. */
+  readonly cursorSecretEnvironment?: string;
+  readonly schemaRevision?: string;
+  /** Maximum immutable delta files before the next publication compacts the logical snapshot. */
+  readonly maximumObjectsPerSnapshot?: number;
+  /** Number of published snapshot manifests retained as queryable history. */
+  readonly retainedSnapshots?: number;
+}
+
+export interface ApplicationS3LakehouseDatasetProvider {
+  readonly kind: 's3-dataset';
+  readonly bucket: string;
+  readonly prefix?: string;
+  readonly region: string;
+  readonly catalog: string;
+  readonly schemaRevision?: string;
+  readonly cursorSecretEnvironment?: string;
+  readonly maximumObjectsPerSnapshot?: number;
+  readonly retainedSnapshots?: number;
+}
+
+export interface ApplicationDuckDbLakehouseQueryProvider {
+  readonly kind: 'duckdb-queries';
+  readonly maximumConcurrentQueries?: number;
+  readonly maximumRows?: number;
+  readonly maximumScannedBytes?: number;
+}
+
+export interface ApplicationAthenaLakehouseQueryProvider {
+  readonly kind: 'athena-queries';
+  readonly workgroup: string;
+  readonly region: string;
+  readonly resultLocation: string;
+  readonly maximumConcurrentQueries?: number;
+  readonly maximumRows?: number;
+  readonly maximumScannedBytes?: number;
+}
+
+export type ApplicationLakehouseDatasetProvider = ApplicationDuckDbLakehouseDatasetProvider | ApplicationS3LakehouseDatasetProvider;
+export type ApplicationLakehouseQueryProvider = ApplicationDuckDbLakehouseQueryProvider | ApplicationAthenaLakehouseQueryProvider;
 
 export interface ApplicationClickHouseAnalyticalDatabaseProvider {
   readonly kind: 'clickhouse';
@@ -449,7 +641,21 @@ export interface ApplicationKubernetesHostProvider {
   };
 }
 
-export type ApplicationHostProvider = ApplicationKubernetesHostProvider;
+/** Provider-neutral host placement lowered by the selected deployment target. */
+export interface ApplicationManagedHostProvider {
+  readonly kind: 'managed-application-host';
+  readonly namespace?: string;
+  readonly name?: string;
+  /** Immutable target image reference. Omit for a compiler-owned artifact. */
+  readonly image?: string;
+  readonly replicas?: number;
+  readonly port?: number;
+  readonly resources?: ApplicationKubernetesHostProvider['resources'];
+}
+
+export type ApplicationHostProvider =
+  | ApplicationManagedHostProvider
+  | ApplicationKubernetesHostProvider;
 
 export type ApplicationPostgresTransactionalDatabaseOptions = Omit<ApplicationPostgresTransactionalDatabaseProvider, 'kind'>;
 
@@ -687,6 +893,8 @@ export type ApplicationSearchProvider =
 export interface ApplicationIngressHttpExposureProvider {
   readonly kind: 'ingress';
   readonly ingressClassName?: string;
+  /** Namespace containing the ingress controller that may reach authenticated framework backends. */
+  readonly controllerNamespace?: string;
 }
 
 /**
@@ -831,6 +1039,67 @@ export interface ApplicationWorkflowEngineProviderToken extends ApplicationQuali
   hatchet(options?: Omit<ApplicationHatchetWorkflowEngineProvider, 'kind'>): ApplicationHatchetWorkflowEngineProvider;
 }
 
+export interface ApplicationQualifiedSchedulerProviderToken<TName extends string = string>
+  extends ApplicationQualifiedProviderToken<ApplicationSchedulerProvider, TName> {
+  readonly schedule: ApplicationScheduleRegistrar;
+}
+
+export interface ApplicationSchedulerProviderToken extends ApplicationQualifiableProviderToken<ApplicationSchedulerProvider> {
+  named<const TName extends string>(name: TName): ApplicationQualifiedSchedulerProviderToken<TName>;
+  readonly schedule: ApplicationScheduleRegistrar;
+  local(options?: Omit<ApplicationLocalSchedulerProvider, 'kind'>): ApplicationLocalSchedulerProvider;
+  cronJob(options?: Omit<ApplicationKubernetesCronJobSchedulerProvider, 'kind'>): ApplicationKubernetesCronJobSchedulerProvider;
+  hatchet(options?: Omit<ApplicationHatchetSchedulerProvider, 'kind'>): ApplicationHatchetSchedulerProvider;
+  eventBridge(options?: Omit<ApplicationEventBridgeSchedulerProvider, 'kind'>): ApplicationEventBridgeSchedulerProvider;
+}
+
+export interface ApplicationActorRuntimeProviderToken extends ApplicationQualifiableProviderToken<ApplicationActorRuntimeProvider> {
+  local(options?: Omit<ApplicationLocalActorRuntimeProvider, 'kind'>): ApplicationLocalActorRuntimeProvider;
+  celld(options: Omit<ApplicationCelldActorRuntimeProvider, 'kind'>): ApplicationCelldActorRuntimeProvider;
+  rivet(options: Omit<ApplicationRivetActorRuntimeProvider, 'kind'>): ApplicationRivetActorRuntimeProvider;
+}
+
+export interface ApplicationObservabilityProviderToken extends ApplicationQualifiableProviderToken<ApplicationObservabilityProvider> {
+  local(options?: Partial<Omit<ApplicationLocalObservabilityProvider, 'kind' | 'policy' | 'retention'>> & { readonly policy?: ApplicationTelemetryPolicy; readonly retention?: Partial<ApplicationObservabilityProviderBase['retention']> }): ApplicationLocalObservabilityProvider;
+  clickStack(options: Omit<ApplicationClickStackObservabilityProvider, 'kind' | 'policy' | 'retention'> & { readonly policy?: ApplicationTelemetryPolicy; readonly retention?: Partial<ApplicationObservabilityProviderBase['retention']> }): ApplicationClickStackObservabilityProvider;
+  cloudWatch(options: Omit<ApplicationCloudWatchObservabilityProvider, 'kind' | 'policy' | 'retention'> & { readonly policy?: ApplicationTelemetryPolicy; readonly retention?: Partial<ApplicationObservabilityProviderBase['retention']> }): ApplicationCloudWatchObservabilityProvider;
+  otlp(options: Omit<ApplicationOtlpObservabilityProvider, 'kind' | 'policy' | 'retention'> & { readonly policy?: ApplicationTelemetryPolicy; readonly retention?: Partial<ApplicationObservabilityProviderBase['retention']> }): ApplicationOtlpObservabilityProvider;
+}
+
+export interface ApplicationQualifiedLakehouseDatasetProviderToken<TName extends string = string>
+  extends ApplicationQualifiedProviderToken<ApplicationLakehouseDatasetProvider, TName> {
+  query<TInput extends object, TOutput extends object>(
+    contract: ApplicationLakehouseDatasetQueryContract<TInput, TOutput>,
+    handler: (input: TInput) => TOutput | Promise<TOutput>,
+  ): (input: TInput) => Promise<TOutput>;
+}
+
+export interface ApplicationLakehouseDatasetProviderToken extends ApplicationQualifiableProviderToken<ApplicationLakehouseDatasetProvider> {
+  named<const TName extends string>(name: TName): ApplicationQualifiedLakehouseDatasetProviderToken<TName>;
+  query<TInput extends object, TOutput extends object>(
+    this: ApplicationQualifiedLakehouseDatasetProviderToken,
+    contract: ApplicationLakehouseDatasetQueryContract<TInput, TOutput>,
+    handler: (input: TInput) => TOutput | Promise<TOutput>,
+  ): (input: TInput) => Promise<TOutput>;
+}
+
+export interface ApplicationQualifiedLakehouseQueryProviderToken<TName extends string = string>
+  extends ApplicationQualifiedProviderToken<ApplicationLakehouseQueryProvider, TName> {
+  readonly query: ApplicationLakehouseQueryRegistrar;
+}
+
+export interface ApplicationLakehouseQueryProviderToken extends ApplicationQualifiableProviderToken<ApplicationLakehouseQueryProvider> {
+  named<const TName extends string>(name: TName): ApplicationQualifiedLakehouseQueryProviderToken<TName>;
+  readonly query: ApplicationLakehouseQueryRegistrar;
+}
+
+export interface ApplicationLakehouseConstructors {
+  duckdbDataset(options?: Omit<ApplicationDuckDbLakehouseDatasetProvider, 'kind'>): ApplicationDuckDbLakehouseDatasetProvider;
+  s3Dataset(options: Omit<ApplicationS3LakehouseDatasetProvider, 'kind'>): ApplicationS3LakehouseDatasetProvider;
+  duckdbQueries(options?: Omit<ApplicationDuckDbLakehouseQueryProvider, 'kind'>): ApplicationDuckDbLakehouseQueryProvider;
+  athenaQueries(options: Omit<ApplicationAthenaLakehouseQueryProvider, 'kind'>): ApplicationAthenaLakehouseQueryProvider;
+}
+
 export interface ApplicationAnalyticalDatabaseProviderToken extends ApplicationQualifiableProviderToken<ApplicationAnalyticalDatabaseProvider> {
   /** @deprecated Use Analytics.clickHouse(...). Removed at 1.0. */
   clickhouse(options?: Omit<ApplicationClickHouseAnalyticalDatabaseProvider, 'kind'>): ApplicationClickHouseAnalyticalDatabaseProvider;
@@ -872,6 +1141,7 @@ export interface ApplicationObjectStorageProviderToken extends ApplicationQualif
 }
 
 export interface ApplicationHostProviderToken extends ApplicationQualifiableProviderToken<ApplicationHostProvider> {
+  managed(options?: Omit<ApplicationManagedHostProvider, 'kind'>): ApplicationManagedHostProvider;
   kubernetes(options?: Omit<ApplicationKubernetesHostProvider, 'kind'>): ApplicationKubernetesHostProvider;
 }
 
@@ -1201,6 +1471,9 @@ export const HttpExposure: ApplicationHttpExposureProviderToken = applicationQua
   description: 'Default app-scoped HTTP exposure provider.',
   contract: builtInProviderContract('HttpExposure', ['httpRouting']),
   ingress(options = {}) {
+    if (options.controllerNamespace !== undefined && !options.controllerNamespace.trim()) {
+      throw new Error('HttpExposure.ingress({ controllerNamespace }) must not be empty when provided.');
+    }
     return { kind: 'ingress', ...options };
   },
   nodePort(options) {
@@ -1251,6 +1524,214 @@ export const WorkflowEngine: ApplicationWorkflowEngineProviderToken = applicatio
     return { kind: 'hatchet', ...options };
   },
 });
+
+export const Scheduler: ApplicationSchedulerProviderToken = applicationQualifiableProviderToken({
+  name: 'Scheduler',
+  description: 'Provider-neutral fixed, dynamic, and one-time function-native scheduling.',
+  contract: {
+    apiVersion: 'applik8s.provider/v1alpha1',
+    interface: 'Scheduler',
+    version: 'v1alpha1',
+    requirements: ['idempotentOccurrenceAdmission', 'revisionedDesiredState', 'boundedMisfires'],
+    guarantees: ['stableDefinitionIdentity', 'stableOccurrenceIdentity', 'overlapPolicy', 'causalPropagation'],
+  },
+  accepts: isApplicationSchedulerProvider,
+  schedule(
+    this: ApplicationSchedulerProviderToken | ApplicationQualifiedProviderToken<ApplicationSchedulerProvider>,
+    options: unknown,
+    handler: unknown,
+  ) {
+    return createApplicationSchedule(this, options as never, handler as never) as never;
+  },
+  local(options = {}) {
+    return { kind: 'local-scheduler', clock: 'system', persistence: 'application-database', ...options };
+  },
+  cronJob(options = {}) {
+    return { kind: 'kubernetes-cronjob-scheduler', maximumDefinitions: 100, ...options };
+  },
+  hatchet(options = {}) {
+    return { kind: 'hatchet-scheduler', ...options };
+  },
+  eventBridge(options = {}) {
+    return { kind: 'eventbridge-scheduler', ...options };
+  },
+});
+
+export const ActorRuntime: ApplicationActorRuntimeProviderToken = applicationQualifiableProviderToken({
+  name: 'ActorRuntime',
+  description: 'Provider-neutral durable identity-addressed actor execution.',
+  contract: {
+    apiVersion: 'applik8s.provider/v1alpha1',
+    interface: 'ActorRuntime',
+    version: 'v1alpha1',
+    requirements: ['serializedTurns', 'idempotentAdmission', 'durableState', 'inertReferences'],
+    guarantees: ['perIdentityOrdering', 'priorResultRecovery', 'causalPropagation'],
+  },
+  accepts: isApplicationActorRuntimeProvider,
+  local(options = {}) {
+    return { kind: 'deterministic-local-actors', persistence: 'application-database', ...options };
+  },
+  celld(options) {
+    return { kind: 'celld-actors', ...options };
+  },
+  rivet(options) {
+    if (!/^https:\/\//u.test(options.endpoint)) throw new Error('ActorRuntime.rivet(...) requires an HTTPS endpoint.');
+    return { kind: 'rivet-actors', ...options };
+  },
+});
+
+export function telemetryPolicy(options: ApplicationTelemetryPolicyOptions = {}): ApplicationTelemetryPolicy {
+  const probability = (value: number | undefined, fallback: number, label: string): number => {
+    const result = value ?? fallback;
+    if (!Number.isFinite(result) || result < 0 || result > 1) throw new Error(`${label} must be between 0 and 1.`);
+    return result;
+  };
+  const durationSeconds = (value: string, label: string): number => {
+    const match = /^(\d+)(ms|s|m|h|d)$/u.exec(value.trim());
+    if (!match) throw new Error(`${label} must use a bounded duration such as 500ms, 30s, 5m, 2h, or 1d.`);
+    const amount = Number(match[1]);
+    const multiplier = match[2] === 'ms' ? 0.001 : match[2] === 's' ? 1 : match[2] === 'm' ? 60 : match[2] === 'h' ? 3_600 : 86_400;
+    const result = amount * multiplier;
+    if (!Number.isFinite(result) || result <= 0) throw new Error(`${label} must be positive.`);
+    return result;
+  };
+  const allowedKeys = [...new Set(options.baggage?.allowedKeys ?? [])].sort();
+  for (const key of allowedKeys) {
+    if (!/^[a-z][a-z0-9_.-]{0,62}$/u.test(key)) throw new Error(`Telemetry baggage key ${JSON.stringify(key)} is not a bounded stable identifier.`);
+  }
+  const maximumBytes = options.baggage?.maximumBytes ?? 2_048;
+  if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 0 || maximumBytes > 8_192) {
+    throw new Error('Telemetry baggage maximumBytes must be an integer between 0 and 8192.');
+  }
+  return Object.freeze({
+    apiVersion: 'applik8s.telemetryPolicy/v1alpha1' as const,
+    logs: {
+      level: options.logs?.level ?? 'info',
+      overrides: Object.freeze({ ...(options.logs?.overrides ?? {}) }),
+      debugSample: probability(options.logs?.sample?.debug, 0.1, 'Telemetry debug sampling'),
+    },
+    metrics: {
+      intervalSeconds: durationSeconds(options.metrics?.interval ?? '30s', 'Telemetry metrics interval'),
+      cardinalityBudget: options.metrics?.cardinalityBudget ?? 'bounded',
+    },
+    traces: {
+      headSample: probability(options.traces?.headSample, 0.1, 'Telemetry trace head sampling'),
+      alwaysSampleErrors: options.traces?.alwaysSampleErrors ?? true,
+      ...(options.traces?.tailSample ? {
+        tailSample: { latencyGreaterThanSeconds: durationSeconds(options.traces.tailSample.latency.replace(/^>/u, ''), 'Telemetry tail-sampling latency') },
+      } : {}),
+    },
+    baggage: { allowedKeys, maximumBytes },
+    redaction: {
+      deniedFields: [...new Set(options.redaction?.deniedFields ?? ['authorization', 'cookie', 'password', 'secret', 'token'])].sort(),
+    },
+  });
+}
+
+const defaultTelemetryPolicy = telemetryPolicy();
+const defaultTelemetryRetention = Object.freeze({ logs: '7d', traces: '7d', metrics: '30d' });
+
+function observabilityRetention(value?: Partial<ApplicationObservabilityProviderBase['retention']>): ApplicationObservabilityProviderBase['retention'] {
+  const retention = { ...defaultTelemetryRetention, ...value };
+  for (const [signal, duration] of Object.entries(retention)) {
+    if (!/^\d+[smhd]$/u.test(duration) || Number.parseInt(duration, 10) < 1) throw new Error(`Observability ${signal} retention must be a positive duration.`);
+  }
+  return Object.freeze(retention);
+}
+
+export const Observability: ApplicationObservabilityProviderToken = applicationQualifiableProviderToken({
+  name: 'Observability',
+  description: 'Provider-neutral OpenTelemetry traces, structured logs, metrics, and managed collector topology.',
+  contract: {
+    apiVersion: 'applik8s.provider/v1alpha1',
+    interface: 'Observability',
+    version: 'v1alpha1',
+    requirements: ['w3cTraceContext', 'structuredLogs', 'boundedMetrics', 'redaction', 'failureIsolation'],
+    guarantees: ['canonicalIdentityCorrelation', 'boundedBaggage', 'providerReportedDegradation'],
+  },
+  accepts: isApplicationObservabilityProvider,
+  local(options = {}) {
+    return { kind: 'local-otel', policy: options.policy ?? defaultTelemetryPolicy, retention: observabilityRetention(options.retention), ...(options.endpoint ? { endpoint: options.endpoint } : {}) };
+  },
+  clickStack(options) {
+    return { kind: 'clickstack', ...options, policy: options.policy ?? defaultTelemetryPolicy, retention: observabilityRetention(options.retention) };
+  },
+  cloudWatch(options) {
+    return { kind: 'cloudwatch', ...options, policy: options.policy ?? defaultTelemetryPolicy, retention: observabilityRetention(options.retention) };
+  },
+  otlp(options) {
+    if (!/^https?:\/\//u.test(options.endpoint)) throw new Error('Observability.otlp(...) requires an absolute HTTP(S) endpoint.');
+    return { kind: 'otlp', ...options, policy: options.policy ?? defaultTelemetryPolicy, retention: observabilityRetention(options.retention) };
+  },
+});
+
+export const LakehouseDataset: ApplicationLakehouseDatasetProviderToken = applicationQualifiableProviderToken({
+  name: 'LakehouseDataset',
+  description: 'Provider-neutral immutable snapshot dataset publication.',
+  contract: {
+    apiVersion: 'applik8s.provider/v1alpha1',
+    interface: 'LakehouseDataset',
+    version: 'v1alpha1',
+    requirements: ['immutableObjects', 'atomicManifestPublication', 'schemaRevision', 'frontierIdempotency'],
+    guarantees: ['publishedSnapshotConsistency', 'manifestIntegrity', 'explicitEvolution'],
+  },
+  accepts: isApplicationLakehouseDatasetProvider,
+  query<TInput extends object, TOutput extends object>(this: ApplicationQualifiedLakehouseDatasetProviderToken, contract: ApplicationLakehouseDatasetQueryContract<TInput, TOutput>, handler: (input: TInput) => TOutput | Promise<TOutput>) {
+    return createApplicationLakehouseDatasetQuery(this, contract, handler);
+  },
+});
+
+export const LakehouseQuery: ApplicationLakehouseQueryProviderToken = applicationQualifiableProviderToken({
+  name: 'LakehouseQuery',
+  description: 'Provider-neutral asynchronous queries pinned to one published dataset snapshot.',
+  contract: {
+    apiVersion: 'applik8s.provider/v1alpha1',
+    interface: 'LakehouseQuery',
+    version: 'v1alpha1',
+    requirements: ['snapshotPinning', 'boundedPagination', 'timeout', 'cancellation'],
+    guarantees: ['signedSnapshotCursor', 'terminalReceipt', 'scanEvidence'],
+  },
+  accepts: isApplicationLakehouseQueryProvider,
+  query(this: ApplicationQualifiedLakehouseQueryProviderToken, request: unknown) {
+    return createApplicationLakehouseQuery(this, request as never) as never;
+  },
+});
+
+export const Lakehouse: ApplicationLakehouseConstructors = Object.freeze({
+  duckdbDataset(options = {}) {
+    assertLakehouseDatasetOptions(options);
+    return { kind: 'duckdb-dataset' as const, ...options };
+  },
+  s3Dataset(options: Omit<ApplicationS3LakehouseDatasetProvider, 'kind'>) {
+    assertLakehouseDatasetOptions(options);
+    return { kind: 's3-dataset' as const, ...options };
+  },
+  duckdbQueries(options = {}) { return { kind: 'duckdb-queries' as const, ...options }; },
+  athenaQueries(options: Omit<ApplicationAthenaLakehouseQueryProvider, 'kind'>) { return { kind: 'athena-queries' as const, ...options }; },
+});
+
+function assertLakehouseDatasetOptions(options: {
+  readonly cursorSecretEnvironment?: string;
+  readonly schemaRevision?: string;
+  readonly maximumObjectsPerSnapshot?: number;
+  readonly retainedSnapshots?: number;
+}): void {
+  if (options.cursorSecretEnvironment !== undefined
+    && !/^[A-Za-z_][A-Za-z0-9_]*$/u.test(options.cursorSecretEnvironment)) {
+    throw new Error('Lakehouse dataset cursorSecretEnvironment must be an environment variable name.');
+  }
+  if (options.schemaRevision !== undefined && !options.schemaRevision.trim()) {
+    throw new Error('Lakehouse dataset schemaRevision must not be empty.');
+  }
+  for (const [name, value, maximum] of [
+    ['maximumObjectsPerSnapshot', options.maximumObjectsPerSnapshot, 10_000],
+    ['retainedSnapshots', options.retainedSnapshots, 100_000],
+  ] as const) {
+    if (value !== undefined && (!Number.isSafeInteger(value) || value < 1 || value > maximum)) {
+      throw new Error(`Lakehouse dataset ${name} must be an integer from 1 through ${maximum}.`);
+    }
+  }
+}
 
 export const AnalyticalDatabase: ApplicationAnalyticalDatabaseProviderToken = applicationQualifiableProviderToken({
   name: 'AnalyticalDatabase',
@@ -1406,21 +1887,32 @@ export const ContainerRegistry: ApplicationContainerRegistryProviderToken = appl
   },
 });
 
+function assertApplicationHostOptions(
+  factoryName: 'ApplicationHost.managed' | 'ApplicationHost.kubernetes',
+  options: Omit<ApplicationManagedHostProvider, 'kind'> | Omit<ApplicationKubernetesHostProvider, 'kind'>,
+): void {
+  if (options.replicas !== undefined && !applicationTypeKroExpressionValue(options.replicas) && (!Number.isInteger(options.replicas) || options.replicas < 1)) {
+    throw new Error(`${factoryName}({ replicas }) requires a positive integer.`);
+  }
+  if (options.port !== undefined && (!Number.isInteger(options.port) || options.port < 1 || options.port > 65535)) {
+    throw new Error(`${factoryName}({ port }) requires a valid TCP port.`);
+  }
+  if (options.image !== undefined && !options.image.trim()) {
+    throw new Error(`${factoryName}({ image }) must not be empty.`);
+  }
+}
+
 export const ApplicationHost: ApplicationHostProviderToken = applicationQualifiableProviderToken({
   name: 'ApplicationHost',
   description: 'Immutable application artifact hosting and runtime lifecycle.',
   contract: builtInProviderContract('ApplicationHost', ['immutableArtifact', 'readiness', 'gracefulShutdown', 'serviceDiscovery']),
-  accepts: isKubernetesApplicationHostProvider,
+  accepts: isApplicationHostProvider,
+  managed(options = {}) {
+    assertApplicationHostOptions('ApplicationHost.managed', options);
+    return { kind: 'managed-application-host', ...options };
+  },
   kubernetes(options = {}) {
-    if (options.replicas !== undefined && !applicationTypeKroExpressionValue(options.replicas) && (!Number.isInteger(options.replicas) || options.replicas < 1)) {
-      throw new Error('ApplicationHost.kubernetes({ replicas }) requires a positive integer.');
-    }
-    if (options.port !== undefined && (!Number.isInteger(options.port) || options.port < 1 || options.port > 65535)) {
-      throw new Error('ApplicationHost.kubernetes({ port }) requires a valid TCP port.');
-    }
-    if (options.image !== undefined && !options.image.trim()) {
-      throw new Error('ApplicationHost.kubernetes({ image }) must not be empty.');
-    }
+    assertApplicationHostOptions('ApplicationHost.kubernetes', options);
     if (options.cursorSecret?.name !== undefined && !options.cursorSecret.name.trim()) {
       throw new Error('ApplicationHost.kubernetes({ cursorSecret.name }) must not be empty.');
     }
@@ -1578,7 +2070,7 @@ function builtInProviderContract(providerInterface: string, guarantees: readonly
 }
 
 // typecast: provider registry names are literal public API keys used for app.provide(...) inference.
-export const providers = { IndexStore, Search, TransactionalDatabase, AnalyticalDatabase, CounterStore, EventSource, EventLog, Secret, Queue, ObjectStorage, HttpExposure, Certificate, DnsPublication, CredentialStore, WorkflowEngine, ApplicationHost, ContainerRegistry, IdentityProvider, OAuthAuthorizationServer, Authorization, StructuredGeneration } as const;
+export const providers = { IndexStore, Search, TransactionalDatabase, AnalyticalDatabase, CounterStore, EventSource, EventLog, Secret, Queue, ObjectStorage, HttpExposure, Certificate, DnsPublication, CredentialStore, WorkflowEngine, Scheduler, ActorRuntime, Observability, LakehouseDataset, LakehouseQuery, ApplicationHost, ContainerRegistry, IdentityProvider, OAuthAuthorizationServer, Authorization, StructuredGeneration } as const;
 
 export function applicationTypedProviderContract(name: string | undefined): ApplicationTypedProviderContract | undefined {
   if (!name) return undefined;
@@ -1645,6 +2137,52 @@ export const defaultApplicationProviders: {
 
 export function isHatchetWorkflowEngineProvider(value: unknown): value is ApplicationHatchetWorkflowEngineProvider {
   return Boolean(value && typeof value === 'object' && Reflect.get(value, 'kind') === 'hatchet');
+}
+
+export function isApplicationSchedulerProvider(value: unknown): value is ApplicationSchedulerProvider {
+  if (!value || typeof value !== 'object') return false;
+  return [
+    'local-scheduler',
+    'kubernetes-cronjob-scheduler',
+    'hatchet-scheduler',
+    'eventbridge-scheduler',
+  ].includes(String(Reflect.get(value, 'kind')));
+}
+
+export function isApplicationActorRuntimeProvider(value: unknown): value is ApplicationActorRuntimeProvider {
+  if (!value || typeof value !== 'object') return false;
+  const kind = Reflect.get(value, 'kind');
+  if (kind === 'deterministic-local-actors') return true;
+  if (kind === 'celld-actors') return Boolean(Reflect.get(value, 'stateStore'));
+  return kind === 'rivet-actors' && typeof Reflect.get(value, 'endpoint') === 'string' && /^https:\/\//u.test(String(Reflect.get(value, 'endpoint')));
+}
+
+export function isApplicationObservabilityProvider(value: unknown): value is ApplicationObservabilityProvider {
+  if (!value || typeof value !== 'object') return false;
+  const kind = Reflect.get(value, 'kind');
+  const policy = Reflect.get(value, 'policy');
+  const retention = Reflect.get(value, 'retention');
+  if (!['local-otel', 'clickstack', 'cloudwatch', 'otlp'].includes(String(kind))
+    || !policy || typeof policy !== 'object'
+    || Reflect.get(policy, 'apiVersion') !== 'applik8s.telemetryPolicy/v1alpha1'
+    || !retention || typeof retention !== 'object') return false;
+  return kind !== 'otlp' || (typeof Reflect.get(value, 'endpoint') === 'string' && /^https?:\/\//u.test(String(Reflect.get(value, 'endpoint'))));
+}
+
+export function isApplicationLakehouseDatasetProvider(value: unknown): value is ApplicationLakehouseDatasetProvider {
+  if (!value || typeof value !== 'object') return false;
+  const kind = Reflect.get(value, 'kind');
+  return kind === 'duckdb-dataset'
+    || (kind === 's3-dataset'
+      && ['bucket', 'region', 'catalog'].every((field) => typeof Reflect.get(value, field) === 'string' && String(Reflect.get(value, field)).trim()));
+}
+
+export function isApplicationLakehouseQueryProvider(value: unknown): value is ApplicationLakehouseQueryProvider {
+  if (!value || typeof value !== 'object') return false;
+  const kind = Reflect.get(value, 'kind');
+  return kind === 'duckdb-queries'
+    || (kind === 'athena-queries'
+      && ['workgroup', 'region', 'resultLocation'].every((field) => typeof Reflect.get(value, field) === 'string' && String(Reflect.get(value, field)).trim()));
 }
 
 export function isClickHouseAnalyticalDatabaseProvider(value: unknown): value is ApplicationClickHouseAnalyticalDatabaseProvider {
@@ -1857,9 +2395,19 @@ export function applicationClickHouseAnalyticalDatabaseImplementation(
     value,
   );
   if (!selection) return undefined;
+  const kubernetesSelection = {
+    ...selection,
+    cases: Object.fromEntries(
+      Object.entries(selection.cases).map(([variant, candidate]) => [
+        variant,
+        applicationKubernetesAnalyticalDatabaseCandidate(candidate),
+      ]),
+    ),
+    default: applicationKubernetesAnalyticalDatabaseCandidate(selection.default),
+  } satisfies ApplicationProviderSelectionValue<unknown>;
   const candidates = [
-    ...Object.values(selection.cases),
-    selection.default,
+    ...Object.values(kubernetesSelection.cases),
+    kubernetesSelection.default,
   ];
   const clickHouse = candidates.find(isClickHouseAnalyticalDatabaseProvider);
   if (!clickHouse) return undefined;
@@ -1870,19 +2418,24 @@ export function applicationClickHouseAnalyticalDatabaseImplementation(
     provision: false,
   };
   return applicationSelectedClickHouseProvider({
-    ...selection,
+    ...kubernetesSelection,
     cases: Object.fromEntries(
-      Object.entries(selection.cases).map(([variant, candidate]) => [
+      Object.entries(kubernetesSelection.cases).map(([variant, candidate]) => [
         variant,
         isClickHouseAnalyticalDatabaseProvider(candidate)
           ? candidate
           : disabled,
       ]),
     ),
-    default: isClickHouseAnalyticalDatabaseProvider(selection.default)
-      ? selection.default
+    default: isClickHouseAnalyticalDatabaseProvider(kubernetesSelection.default)
+      ? kubernetesSelection.default
       : disabled,
   });
+}
+
+function applicationKubernetesAnalyticalDatabaseCandidate(value: unknown): unknown {
+  const targeted = applicationTargetProviderSelectionFor<ApplicationAnalyticalDatabaseProvider>(value);
+  return targeted?.targets.kubernetes ?? value;
 }
 
 export function applicationWorkflowEngineImplementation(state: ApplicationProviderState): ApplicationWorkflowEngineProvider {
@@ -2024,6 +2577,30 @@ export function applyApplicationProvider<TImplementation>(state: ApplicationProv
       state.providers.extensions['WorkflowEngine@v1alpha1'] = implementation;
       return;
     }
+    if (applicationProviderTokensMatch(token, Scheduler)) {
+      if (candidates.some((candidate) => !isApplicationSchedulerProvider(candidate))) {
+        throw new Error('Application profile Scheduler branches must each satisfy the scheduler contract.');
+      }
+      if (!state.providers.extensions) state.providers.extensions = {};
+      state.providers.extensions['Scheduler@v1alpha1'] = implementation;
+      return;
+    }
+    if (applicationProviderTokensMatch(token, ActorRuntime)) {
+      if (candidates.some((candidate) => !isApplicationActorRuntimeProvider(candidate))) {
+        throw new Error('Application profile ActorRuntime branches must each satisfy the durable actor provider contract.');
+      }
+      if (!state.providers.extensions) state.providers.extensions = {};
+      state.providers.extensions['ActorRuntime@v1alpha1'] = implementation;
+      return;
+    }
+    if (applicationProviderTokensMatch(token, Observability)) {
+      if (candidates.some((candidate) => !isApplicationObservabilityProvider(candidate))) {
+        throw new Error('Application profile Observability branches must each satisfy the OpenTelemetry provider contract.');
+      }
+      if (!state.providers.extensions) state.providers.extensions = {};
+      state.providers.extensions['Observability@v1alpha1'] = implementation;
+      return;
+    }
     if (applicationProviderTokensMatch(token, IdentityProvider)) {
       if (candidates.some((candidate) => !isApplicationIdentityProvider(candidate))) {
         throw new Error(
@@ -2111,9 +2688,33 @@ export function applyApplicationProvider<TImplementation>(state: ApplicationProv
     state.providers.extensions['WorkflowEngine@v1alpha1'] = implementation;
     return;
   }
+  if (applicationProviderTokensMatch(token, Scheduler)) {
+    if (!isApplicationSchedulerProvider(implementation)) {
+      throw new Error('app.provide(Scheduler, ...) requires Scheduler.local(), .cronJob(), .hatchet(), or .eventBridge().');
+    }
+    if (!state.providers.extensions) state.providers.extensions = {};
+    state.providers.extensions['Scheduler@v1alpha1'] = implementation;
+    return;
+  }
+  if (applicationProviderTokensMatch(token, ActorRuntime)) {
+    if (!isApplicationActorRuntimeProvider(implementation)) {
+      throw new Error('app.provide(ActorRuntime, ...) requires ActorRuntime.local(), .celld(...), or .rivet(...).');
+    }
+    if (!state.providers.extensions) state.providers.extensions = {};
+    state.providers.extensions['ActorRuntime@v1alpha1'] = implementation;
+    return;
+  }
+  if (applicationProviderTokensMatch(token, Observability)) {
+    if (!isApplicationObservabilityProvider(implementation)) {
+      throw new Error('app.provide(Observability, ...) requires Observability.local(), .clickStack(...), .cloudWatch(...), or .otlp(...).');
+    }
+    if (!state.providers.extensions) state.providers.extensions = {};
+    state.providers.extensions['Observability@v1alpha1'] = implementation;
+    return;
+  }
   if (applicationProviderTokensMatch(token, ApplicationHost)) {
-    if (!isKubernetesApplicationHostProvider(implementation)) {
-      throw new Error('app.provide(ApplicationHost, ...) currently supports ApplicationHost.kubernetes(...).');
+    if (!isApplicationHostProvider(implementation)) {
+      throw new Error('app.provide(ApplicationHost, ...) requires ApplicationHost.managed(...) or ApplicationHost.kubernetes(...).');
     }
     if (!state.providers.extensions) state.providers.extensions = {};
     state.providers.extensions['ApplicationHost@v1alpha1'] = implementation;
@@ -2188,6 +2789,35 @@ export interface ApplicationProviderSelectionValue<TImplementation = unknown> {
   readonly default: TImplementation;
 }
 
+export type ApplicationProviderDeploymentTarget = 'local' | 'aws-local' | 'aws' | 'kubernetes';
+
+/** Provider implementations selected only by deployment target, never by domain code. */
+export interface ApplicationTargetProviderSelectionValue<TImplementation = unknown> {
+  readonly kind: 'application-target-provider-selection';
+  readonly targets: Readonly<Partial<Record<ApplicationProviderDeploymentTarget, TImplementation>>>;
+}
+
+export function isApplicationTargetProviderSelection(value: unknown): value is ApplicationTargetProviderSelectionValue {
+  return Boolean(
+    value
+    && typeof value === 'object'
+    && Reflect.get(value, 'kind') === 'application-target-provider-selection'
+    && Reflect.get(value, 'targets')
+    && typeof Reflect.get(value, 'targets') === 'object',
+  );
+}
+
+export function applicationTargetProviderSelectionFor<TImplementation>(
+  value: unknown,
+): ApplicationTargetProviderSelectionValue<TImplementation> | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  if (isApplicationTargetProviderSelection(value)) return value as ApplicationTargetProviderSelectionValue<TImplementation>;
+  if (Reflect.get(value, 'kind') === 'applicationProvider') {
+    return applicationTargetProviderSelectionFor<TImplementation>(Reflect.get(value, 'implementation'));
+  }
+  return undefined;
+}
+
 const applicationProviderSelectionMetadata = Symbol.for(
   'Applik8s.ApplicationProviderSelection',
 );
@@ -2260,11 +2890,17 @@ export function applicationProviderSelectionSatisfies<TImplementation>(
   value: unknown,
   accepts: (implementation: unknown) => implementation is TImplementation,
 ): boolean {
+  if (isApplicationTargetProviderSelection(value)) {
+    const candidates = Object.values(value.targets);
+    return candidates.length > 0 && candidates.every((candidate) =>
+      accepts(candidate) || applicationProviderSelectionSatisfies(candidate, accepts));
+  }
   if (!isApplicationProviderSelection(value)) return false;
   return [
     ...Object.values(value.cases),
     value.default,
-  ].every((candidate) => accepts(candidate));
+  ].every((candidate) =>
+    accepts(candidate) || applicationProviderSelectionSatisfies(candidate, accepts));
 }
 
 function applicationProviderStateField(tokenName: string | undefined): 'counters' | 'events' | 'eventLogs' | 'secrets' | 'queues' | 'objects' | 'credentials' | undefined {
@@ -3253,7 +3889,7 @@ export function applicationProviderTokenName(token: ApplicationProviderToken<unk
 }
 
 export function applicationProviderInterface(tokenName: string | undefined): ApplicationProviderInterfaceKind | undefined {
-  if (tokenName === 'IndexStore' || tokenName === 'Search' || tokenName === 'TransactionalDatabase' || tokenName === 'AnalyticalDatabase' || tokenName === 'CounterStore' || tokenName === 'EventSource' || tokenName === 'EventLog' || tokenName === 'Secret' || tokenName === 'Queue' || tokenName === 'ObjectStorage' || tokenName === 'HttpExposure' || tokenName === 'Certificate' || tokenName === 'DnsPublication' || tokenName === 'CredentialStore' || tokenName === 'WorkflowEngine' || tokenName === 'ApplicationHost' || tokenName === 'ContainerRegistry' || tokenName === 'IdentityProvider' || tokenName === 'OAuthAuthorizationServer' || tokenName === 'Authorization' || tokenName === 'StructuredGeneration') {
+  if (tokenName === 'IndexStore' || tokenName === 'Search' || tokenName === 'TransactionalDatabase' || tokenName === 'AnalyticalDatabase' || tokenName === 'CounterStore' || tokenName === 'EventSource' || tokenName === 'EventLog' || tokenName === 'Secret' || tokenName === 'Queue' || tokenName === 'ObjectStorage' || tokenName === 'HttpExposure' || tokenName === 'Certificate' || tokenName === 'DnsPublication' || tokenName === 'CredentialStore' || tokenName === 'WorkflowEngine' || tokenName === 'Scheduler' || tokenName === 'ActorRuntime' || tokenName === 'Observability' || tokenName === 'LakehouseDataset' || tokenName === 'LakehouseQuery' || tokenName === 'ApplicationHost' || tokenName === 'ContainerRegistry' || tokenName === 'IdentityProvider' || tokenName === 'OAuthAuthorizationServer' || tokenName === 'Authorization' || tokenName === 'StructuredGeneration') {
     return tokenName;
   }
   return undefined;
@@ -3351,6 +3987,14 @@ export function isApplicationAuthorizationProvider(value: unknown): value is App
 
 export function isKubernetesApplicationHostProvider(value: unknown): value is ApplicationKubernetesHostProvider {
   return Boolean(value && typeof value === 'object' && Reflect.get(value, 'kind') === 'kubernetes-application-host');
+}
+
+export function isApplicationHostProvider(value: unknown): value is ApplicationHostProvider {
+  return Boolean(
+    value
+    && typeof value === 'object'
+    && ['managed-application-host', 'kubernetes-application-host'].includes(String(Reflect.get(value, 'kind'))),
+  );
 }
 
 export function isApplicationContainerRegistryProvider(value: unknown): value is ApplicationContainerRegistryProvider {

@@ -9,6 +9,7 @@ import type {
   ApplicationProviderQualification,
   ApplicationQualifiedProviderToken,
 } from './application-providers.js';
+import { applicationProviderSelectionSatisfies } from './application-providers.js';
 import { applicationTypeKroExpressionValue } from './application-typekro-values.js';
 
 export type ApplicationProfileStringKey<T> = Extract<keyof T, string>;
@@ -481,7 +482,9 @@ function assertProviderImplementation<TImplementation>(
   token: ApplicationQualifiedProviderToken<TImplementation>,
   implementation: TImplementation,
 ): void {
-  if (token.accepts && !token.accepts(implementation)) {
+  if (token.accepts
+    && !token.accepts(implementation)
+    && !applicationProviderSelectionSatisfies(implementation, token.accepts)) {
     throw new Error(
       `Application profile provider ${token.qualification.key} does not satisfy ${token.name}.`,
     );
@@ -586,6 +589,7 @@ function applicationProfileTransitions(
 function providerImplementationIdentity(value: unknown): string {
   if (!value || typeof value !== 'object') return typeof value;
   const kind = Reflect.get(value, 'kind');
+  if (kind === 'application-target-provider-selection') return kind;
   const name = Reflect.get(value, 'name');
   return [kind, name]
     .filter((part): part is string => typeof part === 'string' && part.length > 0)

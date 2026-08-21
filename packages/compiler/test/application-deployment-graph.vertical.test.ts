@@ -10,7 +10,7 @@ import { afterEach, describe, expect, it } from "vitest";
 // typecast-file-boundary: Test fixtures preserve literal discriminants while
 // exercising compiler shadow emission without loading the compiler's
 // worker-backed bundling entrypoints into Bun's test process.
-import { emitApplicationDeploymentGraph } from "../src/application-deployment-graph.js";
+import { emitApplicationDeploymentGraph, withPublishedActorIngressRoutes } from "../src/application-deployment-graph.js";
 
 const temporaryDirectories: string[] = [];
 const artifactDigest = `sha256:${"a".repeat(64)}`;
@@ -23,6 +23,100 @@ afterEach(async () => {
 });
 
 describe("compiler deployment graph emission", () => {
+  it("routes only the public actor protocol through the application Ingress", () => {
+    const graph = publicRealtimeActorGraph();
+    const resources = withPublishedActorIngressRoutes([{
+      id: "applicationIngress",
+      template: {
+        apiVersion: "networking.k8s.io/v1",
+        kind: "Ingress",
+        metadata: { name: "actor-proof-ingress", namespace: "actor-proof" },
+        spec: { rules: [{ host: "actor-proof.localhost", http: { paths: [{ path: "/", pathType: "Prefix", backend: { service: { name: "actor-proof-http", port: { number: 3000 } } } }] } }] },
+      },
+    }], graph, graph.nodes.find((node) => node.kind === "provider" && node.interface === "ActorRuntime") as never);
+    expect(resources[0]?.template).toMatchObject({
+      spec: { rules: [{ http: { paths: [
+        { path: "/__applik8s/v1/actors", backend: { service: { name: "actor-proof-actors", port: { number: 8080 } } } },
+        { path: "/", backend: { service: { name: "actor-proof-http" } } },
+      ] } }] },
+    });
+    expect(() => withPublishedActorIngressRoutes([], graph, graph.nodes.find((node) => node.kind === "provider" && node.interface === "ActorRuntime") as never)).toThrow(/generated Ingress/u);
+  });
+
+  it("ships celld deploy's required esbuild binary in the generated runtime image", async () => {
+    const directory = await mkdtemp(
+      join(process.env.TMPDIR ?? "/tmp", "applik8s-celld-artifact-"),
+    );
+    temporaryDirectories.push(directory);
+    const bundlePath = join(directory, "typekro-bundle.json");
+    await writeFile(bundlePath, JSON.stringify({ spec: {} }));
+    await writeFile(
+      join(directory, "resources.json"),
+      JSON.stringify([{
+        apiVersion: "kro.run/v1alpha1",
+        kind: "ResourceGraphDefinition",
+        metadata: { name: "actor-proof" },
+        spec: {
+          schema: { apiVersion: "v1alpha1", kind: "ActorProof", spec: { name: "string" }, status: { ready: "boolean" } },
+          resources: [{
+            id: "actorProofHttp",
+            template: {
+              apiVersion: "v1",
+              kind: "Service",
+              metadata: { name: "actor-proof-api", namespace: "actor-proof", labels: { "app.kubernetes.io/component": "typed-http" } },
+              spec: { ports: [{ name: "http", port: 8080, targetPort: "http" }] },
+            },
+          }],
+        },
+      }]),
+    );
+
+    const emitted = await emitApplicationDeploymentGraph({
+      bundlePath,
+      projectRoot: directory,
+      graph: celldApplicationGraph(),
+      sourceGraphDigest,
+      compilerVersion: "0.8.0",
+      context: "orbstack",
+      controlPlaneNamespace: "actor-proof",
+      instance: "actor-proof",
+      profile: "test",
+      strategy: "direct",
+      installationSpec: { name: "actor-proof", namespace: "actor-proof" },
+    });
+    const artifact = emitted.graph.nodes.find(({ id }) => id === "artifact.celld-runtime");
+    expect(artifact?.kind).toBe("artifact");
+    if (!artifact || artifact.kind !== "artifact") throw new Error("celld artifact was not emitted");
+    const dockerfilePath = String(artifact.spec.sourceDescriptor.dockerfilePath);
+    const dockerfile = await readFile(dockerfilePath, "utf8");
+    expect(dockerfile).toContain("AS esbuild");
+    expect(dockerfile).toContain("npm install --global --ignore-scripts=false esbuild@0.28.1");
+    expect(dockerfile).toContain("COPY --from=esbuild --chmod=0555");
+    expect(dockerfile.trimEnd()).toMatch(/USER 65532:65532$/u);
+    expect(emitted.graph.edges).toContainEqual({
+      from: "artifact.celld-runtime",
+      to: "direct.provider.ActorRuntime.celld",
+      relationship: "requiresOutput",
+      output: "immutableReference",
+    });
+    expect(emitted.graph.edges).not.toContainEqual({
+      from: "artifact.celld-runtime",
+      to: "kubernetes.application",
+      relationship: "requiresOutput",
+      output: "immutableReference",
+    });
+    expect(emitted.graph.edges).toContainEqual({
+      from: "external.provider.ActorRuntime.celld-authorization",
+      to: "direct.provider.ActorRuntime.celld",
+      relationship: "requiresReady",
+    });
+    expect(emitted.graph.edges).toContainEqual({
+      from: "direct.provider.ActorRuntime.celld",
+      to: "kubernetes.application",
+      relationship: "requiresReady",
+    });
+  });
+
   it("keeps production-capable host credential values outside portable state", async () => {
     const directory = await mkdtemp(
       join(process.env.TMPDIR ?? "/tmp", "applik8s-host-environment-"),
@@ -542,6 +636,94 @@ function paymentApplicationGraph(): ApplicationGraph {
         relationship: "provides",
       },
     ],
+  };
+}
+
+function celldApplicationGraph(): ApplicationGraph {
+  return {
+    ...applicationGraph(),
+    metadata: { name: "actor-proof", namespace: "actor-proof" },
+    nodes: [{
+      id: "provider.ActorRuntime",
+      kind: "provider",
+      name: "ActorRuntime",
+      stability: "experimental",
+      interface: "ActorRuntime",
+      implementation: "celld-actors",
+      config: {
+        actorRuntime: {
+          kind: "celld-actors",
+          replicas: 1,
+          stateStore: {
+            kind: "s3",
+            bucket: "actor-proof-state",
+            region: "us-east-1",
+            endpoint: "http://rook-ceph-rgw-applik8s-object-store.applik8s-rook-ceph.svc.cluster.local",
+            forcePathStyle: true,
+            credentialsSecret: {
+              apiVersion: "v1",
+              kind: "Secret",
+              name: "actor-proof-state",
+              namespace: "actor-proof",
+            },
+          },
+        },
+      },
+    }],
+  };
+}
+
+function publicRealtimeActorGraph(): ApplicationGraph {
+  const graph = celldApplicationGraph();
+  return {
+    ...graph,
+    nodes: [
+      ...graph.nodes,
+      {
+        id: "provider.HttpExposure",
+        kind: "provider",
+        name: "HttpExposure",
+        stability: "stable",
+        interface: "HttpExposure",
+        implementation: "ingress",
+        config: { httpExposure: { kind: "ingress", ingressClassName: "nginx", controllerNamespace: "ingress-nginx" } },
+      },
+      {
+        id: "exposure.actor-proof",
+        kind: "exposure",
+        name: "actor-proof",
+        stability: "stable",
+        provider: { interface: "HttpExposure", nodeId: "provider.HttpExposure" },
+        service: "actor-proof-http",
+        hostnames: ["actor-proof.localhost"],
+        tlsIntent: { mode: "disabled" },
+        dnsIntent: { mode: "disabled" },
+        publicUrl: "http://actor-proof.localhost",
+        transport: { kind: "ingress", ingressClassName: "nginx" },
+        readiness: { ingress: "resourceApplied", service: "notRequested", loadBalancer: "statusObserved", certificate: "notRequested", dns: "notRequested", publicUrl: "derived" },
+        generatedResources: [{ role: "exposure", graphNode: { nodeId: "exposure.actor-proof" }, resource: { apiVersion: "networking.k8s.io/v1", kind: "Ingress", name: "actor-proof-ingress", namespace: "actor-proof" }, artifact: { kind: "kubernetesManifest", name: "actor-proof-ingress" } }],
+      },
+      {
+        id: "actor.workspace.v1",
+        kind: "actor",
+        name: "workspace.v1",
+        stability: "experimental",
+        definition: {
+          id: "workspace.v1",
+          key: { kind: "applicationSchema", source: "string", fingerprint: "key" },
+          state: { kind: "applicationSchema", source: "{ revision: number }", fingerprint: "state" },
+          stateVersion: 1,
+          migrationDigest: "none",
+          migrations: [],
+          protocol: [{ name: "connect", kind: "connection", input: { kind: "applicationSchema", source: "{}", fingerprint: "connect" } }],
+          requirements: { durableState: true, serializedTurns: true, transactionalOutbox: true, durableAlarms: false, realtimeConnections: true, connectionLeases: true, realtimeMessages: false, realtimeBroadcast: false },
+        },
+        runtime: { interface: "ActorRuntime", nodeId: "provider.ActorRuntime" },
+        handlers: [],
+        semantics: { serialization: "fullTurnPerIdentity", admission: "idempotentReceipt", references: "inertAddress" },
+        publication: { boundary: "entrypoint-export" },
+      },
+    ] as ApplicationGraph["nodes"],
   };
 }
 

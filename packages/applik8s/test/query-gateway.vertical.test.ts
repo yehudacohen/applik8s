@@ -92,7 +92,28 @@ describe('v0.6 authenticated query gateway', () => {
     const graph = applicationGraphFor(catalog.composition);
     expect(graph?.nodes.find((node) => node.kind === 'query')).toMatchObject({
       authority: expect.objectContaining({ classification: 'application-policy' }),
+      trustedContextSchemas: {
+        organizationId: expect.objectContaining({ type: 'string' }),
+      },
     });
+  });
+
+  test('exposes a direct function-native query invocation without losing its server binding', () => {
+    const { query } = queryFixture();
+    const invocation = query({ limit: 5 });
+    expect(invocation.operation).toMatchObject({
+      id: 'cards.list.v1',
+      operation: 'query',
+      transport: 'query',
+    });
+    expect(invocation.input).toEqual({ limit: 5 });
+    expect(query.kind).toBe('applicationQuery');
+    expect(query.operation).toMatchObject({
+      id: 'cards.list.v1',
+      operation: 'query',
+      transport: 'query',
+    });
+    expect(typeof invocation.useQuery).toBe('function');
   });
 
   test('binds the app declaration directly to an authenticated Request/Response runtime', async () => {

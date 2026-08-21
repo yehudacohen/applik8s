@@ -92,6 +92,25 @@ export function decorateApplicationCallbackArguments(
     }
     return argumentsWithCallbacks;
   }
+  if (
+    ts.isIdentifier(node.expression)
+    && node.expression.text === 'schedule'
+    && node.arguments.length === 2
+    && isApplicationCallbackExpression(node.arguments[1] as ts.Expression)
+  ) {
+    return node.arguments.map((argument, index) => {
+      const visited = ts.visitNode(argument, visit) as ts.Expression;
+      return index === 1
+        ? decorateApplicationCallbackExpression(
+            visited,
+            file,
+            sourceFile,
+            'schedule',
+            'handler',
+          )
+        : visited;
+    });
+  }
   if (!ts.isPropertyAccessExpression(node.expression)) return undefined;
   if (
     node.expression.name.text === 'from' &&
@@ -251,6 +270,7 @@ export function decorateApplicationCallbackArguments(
     || registrar === 'process'
     || registrar === 'onEvent'
     || registrar === 'onBatch'
+    || registrar === 'schedule'
     || registrar === 'agent'
     || registrar === 'beforeCommit'
     || functionNativeLifecycleRegistrar
@@ -260,6 +280,8 @@ export function decorateApplicationCallbackArguments(
       const visited = ts.visitNode(argument, visit) as ts.Expression;
       const callbackIndex = registrar === 'onEvent' || registrar === 'onBatch' || registrar === 'process' || registrar === 'beforeCommit'
         ? node.arguments.length - 1
+        : registrar === 'schedule'
+          ? 1
         : functionNativeLifecycleRegistrar
           ? node.arguments.length - 1
         : registrar === 'workflow'
@@ -272,6 +294,8 @@ export function decorateApplicationCallbackArguments(
             sourceFile,
             registrar === 'process' || registrar === 'onEvent' || registrar === 'onBatch'
               ? `stream.${registrar}`
+              : registrar === 'schedule'
+                ? 'schedule'
               : functionNativeLifecycleRegistrar
                 ? `Model.on.${registrar}`
                 : registrar,
@@ -295,6 +319,8 @@ export function decorateApplicationCallbackArguments(
         }
       : registrar === 'onEvent' || registrar === 'onBatch'
         ? { options: node.arguments.length === 1 ? -1 : 0, callback: node.arguments.length - 1 }
+      : registrar === 'schedule'
+        ? { options: 0, callback: 1 }
       : registrar === 'beforeCommit'
           ? { options: 0, callback: 1 }
         : functionNativeLifecycleRegistrar
@@ -453,6 +479,31 @@ export function decorateApplicationCallbackArguments(
         : visited;
     });
   }
+  if (
+    registrar === 'publish'
+    && node.arguments.length === 3
+    && isApplicationCallbackExpression(node.arguments[2] as ts.Expression)
+  ) {
+    return node.arguments.map((argument, index) => {
+      const visited = ts.visitNode(argument, visit) as ts.Expression;
+      return index === 2
+        ? decorateApplicationCallbackExpression(visited, file, sourceFile, 'event.publish', 'transform')
+        : visited;
+    });
+  }
+  if (
+    registrar === 'partitionBy'
+    && node.arguments.length === 1
+    && isApplicationCallbackExpression(node.arguments[0] as ts.Expression)
+  ) {
+    return [decorateApplicationCallbackExpression(
+      ts.visitNode(node.arguments[0] as ts.Expression, visit) as ts.Expression,
+      file,
+      sourceFile,
+      'lakehouse.partitionBy',
+      'partition',
+    )];
+  }
   const properties = applicationCallbackProperties[registrar];
   if (!properties) return undefined;
   const optionsIndex = node.arguments.length === 1 ? 0 : 1;
@@ -589,6 +640,12 @@ export function applicationCallbackDependencyMetadataStatementsByName(
       ]);
     });
     const ownedStatements: ts.Statement[] = [
+      applicationCallbackDeclarationSourceStatement(
+        callback,
+        name,
+        callable,
+        sourceFile,
+      ),
       ts.factory.createExpressionStatement(
         ts.factory.createCallExpression(
           ts.factory.createPropertyAccessExpression(
@@ -649,6 +706,46 @@ export function applicationCallbackDependencyMetadataStatementsByName(
     statements.set(name, ownedStatements);
   }
   return statements;
+}
+
+function applicationCallbackDeclarationSourceStatement(
+  callback: ts.Identifier,
+  name: string,
+  callable: AnalyzableApplicationCallback,
+  sourceFile: string,
+): ts.Statement {
+  const position = callable.getSourceFile().getLineAndCharacterOfPosition(
+    callable.getStart(callable.getSourceFile()),
+  );
+  return ts.factory.createExpressionStatement(
+    ts.factory.createCallExpression(
+      ts.factory.createPropertyAccessExpression(
+        ts.factory.createIdentifier('Object'),
+        'defineProperty',
+      ),
+      undefined,
+      [
+        callback,
+        ts.factory.createCallExpression(
+          ts.factory.createPropertyAccessExpression(
+            ts.factory.createIdentifier('Symbol'),
+            'for',
+          ),
+          undefined,
+          [ts.factory.createStringLiteral('applik8s.applicationCallbackDeclarationSource')],
+        ),
+        ts.factory.createObjectLiteralExpression([
+          ts.factory.createPropertyAssignment('configurable', ts.factory.createTrue()),
+          ts.factory.createPropertyAssignment('value', ts.factory.createObjectLiteralExpression([
+            ts.factory.createPropertyAssignment('file', ts.factory.createStringLiteral(sourceFile)),
+            ts.factory.createPropertyAssignment('line', ts.factory.createNumericLiteral(position.line + 1)),
+            ts.factory.createPropertyAssignment('column', ts.factory.createNumericLiteral(position.character + 1)),
+            ts.factory.createPropertyAssignment('name', ts.factory.createStringLiteral(name)),
+          ])),
+        ]),
+      ],
+    ),
+  );
 }
 
 function applicationFunctionOperationMetadata(

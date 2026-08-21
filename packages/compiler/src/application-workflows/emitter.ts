@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { build } from 'esbuild';
 import { emitGeneratedApplicationContainer } from '../application-containers/index.js';
 import { applik8sWorkspaceSourcePlugin } from '../bundling/index.js';
+import type { ApplicationRuntimeExecutionTarget } from '../application-event-log-runtime-source.js';
 import type { WorkflowContract } from './contracts.js';
 import { workflowResources } from './resources.js';
 import {
@@ -19,7 +20,12 @@ import {
 import type { GeneratedApplicationWorkflowArtifact } from './types.js';
 import { kubernetesName, stringConfig } from './utilities.js';
 
-export async function emitWorkflowWorker(contract: WorkflowContract, outDir: string, ownsProvider: boolean): Promise<GeneratedApplicationWorkflowArtifact> {
+export async function emitWorkflowWorker(
+  contract: WorkflowContract,
+  outDir: string,
+  ownsProvider: boolean,
+  executionTarget: ApplicationRuntimeExecutionTarget = 'kubernetes',
+): Promise<GeneratedApplicationWorkflowArtifact> {
   const name = kubernetesName(contract.worker.name);
   const workerDir = join(outDir, name);
   const generatedEntrypoint = join(workerDir, 'workflow-worker.generated.ts');
@@ -29,13 +35,29 @@ export async function emitWorkflowWorker(contract: WorkflowContract, outDir: str
   const metafilePath = join(workerDir, 'workflow-worker.esbuild-meta.json');
   await mkdir(workerDir, { recursive: true });
   for (const handler of [...contract.tasks.map((entry) => entry.handler), ...contract.workflows.map((entry) => entry.handler)]) {
-    await writeFile(join(workerDir, handlerModuleFile(handler.id)), generatedHandlerModule(handler));
+    const capabilityNames = handler.kind === 'taskHandler'
+      ? (handler.capabilities ?? []).map((reference) => {
+          const provider = contract.capabilities.find(
+            (candidate) => candidate.id === reference.nodeId,
+          );
+          if (!provider) {
+            throw new Error(
+              `Workflow handler ${handler.id} references unavailable capability ${reference.nodeId}.`,
+            );
+          }
+          return provider.interface;
+        })
+      : [];
+    await writeFile(
+      join(workerDir, handlerModuleFile(handler.id)),
+      generatedHandlerModule(handler, capabilityNames),
+    );
     if (handler.kind === 'taskHandler' && handler.operationPrincipalSource) {
       await writeFile(join(workerDir, operationPrincipalModuleFile(handler.id)), generatedOperationPrincipalModule(handler));
     }
   }
   for (const effect of uniqueWorkflowProjectionEffects(contract)) await writeWorkflowProjectionCallbackModules(workerDir, effect);
-  await writeFile(generatedEntrypoint, generatedWorkerSource(contract));
+  await writeFile(generatedEntrypoint, generatedWorkerSource(contract, executionTarget));
   const result = await build({
     entryPoints: [generatedEntrypoint],
     outfile: sourcePath,
@@ -68,6 +90,10 @@ export async function emitWorkflowWorker(contract: WorkflowContract, outDir: str
     sourceDigest: digest,
   });
   const resources = workflowResources(contract, name, container.image, digest, ownsProvider);
+  const runtimeEndpoints = [...new Map((contract.queryEffects?.queries ?? []).map(({ gateway, endpointEnvironmentName }) => [
+    endpointEnvironmentName,
+    { nodeId: gateway.id, environmentName: endpointEnvironmentName },
+  ])).values()].sort((left, right) => left.environmentName.localeCompare(right.environmentName));
   const manifest = {
     apiVersion: 'applik8s.workflow/v1alpha1',
     kind: 'GeneratedWorkflowWorker',
@@ -78,6 +104,7 @@ export async function emitWorkflowWorker(contract: WorkflowContract, outDir: str
       provider: { interface: 'WorkflowEngine', implementation: 'hatchet', version: stringConfig(contract.providerConfig.serverVersion) },
       tasks: contract.tasks.map(({ task }) => task.id),
       workflows: contract.workflows.map(({ workflow }) => workflow.id),
+      runtimeEndpoints,
       runtime: { entrypoint: sourcePath, sourceMap: sourceMapPath, digest, sizeBytes, distribution: 'ociImage', packageManagerAtStartup: false, image: container.image, baseImage: container.baseImage, hatchetHeartbeat: 'inProcessPinnedSdkAdapter' },
       container,
       guarantees: { tasks: 'atLeastOnceRetrySafe', workflows: 'durableHistory', externalEffects: 'tasksOnly', operationalAuthority: 'hatchetPostgres', canonicalAuthority: 'applik8sModelTransactions' },
@@ -86,5 +113,5 @@ export async function emitWorkflowWorker(contract: WorkflowContract, outDir: str
   };
   await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
   await writeFile(metafilePath, `${JSON.stringify(result.metafile, null, 2)}\n`);
-  return { name, sourcePath, sourceMapPath, manifestPath, metafilePath, digest, sizeBytes, container, resources };
+  return { name, workerId: contract.worker.id, sourcePath, sourceMapPath, manifestPath, metafilePath, digest, sizeBytes, container, resources, runtimeEndpoints };
 }

@@ -15,8 +15,11 @@ import type {
   ApplicationWorkloadAuthorityEnvelope,
   JsonObject,
 } from '@applik8s/core';
+import { applicationOperationId } from '@applik8s/core';
 import {
   applicationOptionalDeploymentOutputReference,
+  applicationRuntimeEndpointEnvironmentName,
+  type ApplicationRuntimeEndpointDependency,
 } from '@applik8s/deployment-contract';
 import { build } from 'esbuild';
 import { generatedCallbackFactoryModule } from '../application-callback-module.js';
@@ -25,6 +28,10 @@ import {
   type GeneratedApplicationContainerArtifact,
 } from '../application-containers/index.js';
 import { applicationGraphStringValue } from '../application-installation-values.js';
+import {
+  applicationActorInvocationBoundary,
+  generatedApplicationActorInvocationClientSource,
+} from '../application-actor-invocation.js';
 import {
   type ApplicationOperationPlacementReceiver,
   compileApplicationOperationPlacementReceiver,
@@ -41,6 +48,7 @@ const DEFAULT_GENERATED_AGENT_RUNTIME_IMAGE =
 
 export interface GeneratedApplicationAgentArtifact {
   readonly name: string;
+  readonly agentId: string;
   readonly sourcePath: string;
   readonly sourceMapPath: string;
   readonly manifestPath: string;
@@ -49,6 +57,7 @@ export interface GeneratedApplicationAgentArtifact {
   readonly sizeBytes: number;
   readonly container: GeneratedApplicationContainerArtifact;
   readonly resources: readonly GeneratedApplicationAgentResource[];
+  readonly runtimeEndpoints: readonly ApplicationRuntimeEndpointDependency[];
 }
 
 export interface GeneratedApplicationAgentResource {
@@ -88,7 +97,18 @@ interface ApplicationAgentCompilerContract {
       readonly cursorSecret: NonNullable<ApplicationGatewayNode['cursorSecret']>;
     };
     readonly endpoint: string;
+    readonly endpointBaseUrl: string;
+    readonly endpointPath: string;
+    readonly endpointEnvironmentName: string;
   }[];
+  readonly actors: readonly {
+    readonly alias: string;
+    readonly actor: string;
+    readonly member: string;
+    readonly memberKind: 'command' | 'message' | 'alarm';
+    readonly workloadAuthority: ApplicationWorkloadAuthorityEnvelope;
+  }[];
+  readonly actorApplicationEndpoint?: string;
   readonly queryCursorSecret?: { readonly name: string; readonly key: string };
   readonly namespace: string;
   readonly state: NonNullable<ApplicationModelNode['runtime']>;
@@ -262,6 +282,37 @@ function applicationAgentCompilerContract(
   const conversationAccess = conversationRuntime?.nativeRelational?.access;
   const namespace = graph.metadata.namespace ?? stringValue(providerConfig.namespace) ?? 'default';
   const queryRuntime = applicationAgentQueryRuntime(graph, agent, namespace);
+  const actors = (agent.actors ?? []).map((binding) => {
+    const actor = graph.nodes.find((candidate) => candidate.id === binding.actor.nodeId);
+    if (actor?.kind !== 'actor') {
+      throw new Error(`Application agent ${agent.id} actor ${binding.alias} references missing actor ${binding.actor.nodeId}.`);
+    }
+    const member = actor.definition.protocol.find((candidate) => candidate.name === binding.member);
+    if (!member || member.kind !== binding.memberKind) {
+      throw new Error(`Application agent ${agent.id} actor ${binding.alias} references incompatible member ${actor.definition.id}.${binding.member}.`);
+    }
+    const operationId = applicationOperationId({
+      domain: 'actors',
+      owner: actor.definition.id,
+      operation: binding.member,
+    });
+    const authority = envelopes.get(operationId);
+    if (!authority) {
+      throw new Error(
+        `Application agent ${agent.id} actor ${binding.alias} has no workload-authority envelope for ${operationId}.`,
+      );
+    }
+    return {
+      alias: binding.alias,
+      actor: actor.definition.id,
+      member: binding.member,
+      memberKind: binding.memberKind,
+      workloadAuthority: authority,
+    };
+  });
+  const actorApplicationEndpoint = actors.length > 0
+    ? applicationActorInvocationBoundary(graph, namespace, `Application agent ${agent.id}`).endpoint
+    : undefined;
   const usage = graph.nodes.find(
     (node): node is ApplicationModelNode & { readonly runtime: ApplicationModelRuntimeContract } =>
       node.kind === 'model'
@@ -278,6 +329,8 @@ function applicationAgentCompilerContract(
     tools,
     operations: directOperations,
     queries: queryRuntime.queries,
+    actors,
+    ...(actorApplicationEndpoint ? { actorApplicationEndpoint } : {}),
     ...(queryRuntime.cursorSecret
       ? { queryCursorSecret: queryRuntime.cursorSecret }
       : {}),
@@ -367,6 +420,9 @@ function applicationAgentQueryRuntime(
       query,
       gateway,
       endpoint: `http://${serviceName}:${gateway.deployment.port}${route}`,
+      endpointBaseUrl: `http://${serviceName}:${gateway.deployment.port}`,
+      endpointPath: route,
+      endpointEnvironmentName: applicationRuntimeEndpointEnvironmentName(gateway.id),
     });
   }
   if (cursorSecrets.size !== 1) {
@@ -402,6 +458,7 @@ async function emitAgent(
         : {}),
       injectedIdentifiers: contract.queries
         .map(({ alias }) => alias.split('.')[0] ?? alias)
+        .concat(contract.actors.map(({ alias }) => alias.split('.')[0] ?? alias))
         .filter(
           (identifier, index, values) =>
             /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(identifier)
@@ -469,6 +526,11 @@ async function emitAgent(
     sourceDigest: digest,
   });
   const resources = generatedAgentResources(contract, container.image, digest);
+  const runtimeEndpoints = uniqueRuntimeEndpoints([
+    ...contract.tools.flatMap((tool) => tool.receiver ? [{ nodeId: tool.receiver.nodeId, environmentName: tool.receiver.environmentName }] : []),
+    ...contract.operations.map(({ receiver }) => ({ nodeId: receiver.nodeId, environmentName: receiver.environmentName })),
+    ...contract.queries.map(({ gateway, endpointEnvironmentName }) => ({ nodeId: gateway.id, environmentName: endpointEnvironmentName })),
+  ]);
   await writeFile(
     manifestPath,
     `${JSON.stringify(
@@ -482,6 +544,7 @@ async function emitAgent(
           model: contract.agent.model,
           compatibility: contract.agent.compatibility,
           operationCatalogRevision: contract.operationCatalog.revision,
+          runtimeEndpoints,
           tools: contract.tools.map((tool) => ({
             operationId: tool.operation.id,
             transport: tool.transport,
@@ -512,6 +575,7 @@ async function emitAgent(
   await writeFile(metafilePath, `${JSON.stringify(result.metafile, null, 2)}\n`);
   return {
     name,
+    agentId: contract.agent.id,
     sourcePath,
     sourceMapPath,
     manifestPath,
@@ -520,20 +584,32 @@ async function emitAgent(
     sizeBytes,
     container,
     resources,
+    runtimeEndpoints,
   };
+}
+
+function uniqueRuntimeEndpoints(
+  endpoints: readonly ApplicationRuntimeEndpointDependency[],
+): readonly ApplicationRuntimeEndpointDependency[] {
+  return [...new Map(endpoints.map((endpoint) => [endpoint.environmentName, endpoint])).values()]
+    .sort((left, right) => left.environmentName.localeCompare(right.environmentName));
 }
 
 function generatedAgentSource(contract: ApplicationAgentCompilerContract): string {
   const instructions = contract.agent.instructions.kind === 'static'
     ? JSON.stringify(contract.agent.instructions.value)
     : 'instructions';
-  const workloadIdentity = contract.tools[0]?.workloadAuthority.workloadIdentity;
+  const workloadIdentity = [
+    ...contract.tools,
+    ...contract.operations,
+    ...contract.actors,
+  ][0]?.workloadAuthority.workloadIdentity;
   if (!workloadIdentity) {
     throw new Error(`Application agent ${contract.agent.id} has no workload identity.`);
   }
   const audiences = [
     ...new Set(
-      [...contract.tools, ...contract.operations].flatMap((dependency) => dependency.workloadAuthority.audiences),
+      [...contract.tools, ...contract.operations, ...contract.actors].flatMap((dependency) => dependency.workloadAuthority.audiences),
     ),
   ].sort();
   const routeEntries = [...contract.tools, ...contract.operations].filter(
@@ -541,7 +617,9 @@ function generatedAgentSource(contract: ApplicationAgentCompilerContract): strin
       Boolean(tool.receiver),
   ).map((tool) =>
     `[${JSON.stringify(tool.operation.id)}, ${JSON.stringify({
-      url: tool.receiver.url,
+      baseUrl: tool.receiver.baseUrl,
+      path: tool.receiver.path,
+      environmentName: tool.receiver.environmentName,
       maximumResponseBytes: 10_485_760,
     })}]`,
   ).join(',\n');
@@ -587,16 +665,20 @@ const contract = ${JSON.stringify({
     ...(contract.usage ? { usage: contract.usage } : {}),
     tools: contract.tools,
     operations: contract.operations,
-    queries: contract.queries.map(({ alias, query, gateway, endpoint }) => ({
+    queries: contract.queries.map(({ alias, query, gateway, endpoint, endpointBaseUrl, endpointPath, endpointEnvironmentName }) => ({
       alias,
       id: query.publicId ?? `${query.name}.${query.version}`,
       audience: gateway.id,
       endpoint,
+      endpointBaseUrl,
+      endpointPath,
+      endpointEnvironmentName,
       inputSchema: query.input.jsonSchema,
       outputSchema: query.output.jsonSchema,
       timeoutMs: query.budgets.timeoutMs,
       maxResultBytes: query.budgets.maxResultBytes,
     })),
+    actors: contract.actors,
     budgets: contract.agent.budgets,
     executionPolicy: contract.agent.executionPolicy,
     deployment: contract.agent.deployment,
@@ -606,6 +688,11 @@ function requiredEnv(name) {
   const value = process.env[name];
   if (!value) throw new Error('Missing required environment variable ' + name);
   return value;
+}
+function runtimeEndpoint(baseUrl, environmentName, path = '') {
+  let selected = process.env[environmentName] || baseUrl;
+  while (selected.endsWith('/')) selected = selected.slice(0, -1);
+  return selected + path;
 }
 function applicationAgentDurableScope(principal, trustedContext) {
   const contextName = contract.scope?.kind === 'trustedContext'
@@ -620,12 +707,20 @@ function applicationAgentDurableScope(principal, trustedContext) {
   }
   return applicationAIConversationPrincipalScope(principal, trustedContext ?? {});
 }
-function selectedProfileValue(value) {
-  if (value?.kind !== 'application-provider-selection') return value;
-  const variant = requiredEnv('APPLIK8S_PROFILE_VARIANT');
-  const selected = value.cases?.[variant] ?? value.default;
-  if (!selected || typeof selected !== 'object') {
-    throw new Error('The active profile has no AI provider configuration.');
+function selectedProviderValue(value) {
+  let selected = value;
+  while (selected?.kind === 'application-provider-selection'
+    || selected?.kind === 'application-target-provider-selection') {
+    if (selected.kind === 'application-provider-selection') {
+      const variant = requiredEnv('APPLIK8S_PROFILE_VARIANT');
+      selected = selected.cases?.[variant] ?? selected.default;
+    } else {
+      const target = requiredEnv('APPLIK8S_DEPLOYMENT_TARGET');
+      selected = selected.targets?.[target];
+    }
+    if (!selected || typeof selected !== 'object') {
+      throw new Error('The active profile and deployment target have no AI provider configuration.');
+    }
   }
   return selected;
 }
@@ -652,15 +747,23 @@ function materializeInstallationValue(value) {
     Object.entries(value).map(([key, nested]) => [key, materializeInstallationValue(nested)]),
   );
 }
-const selectedProvider = materializeInstallationValue(selectedProfileValue(contract.provider));
-const selectedRoute = materializeInstallationValue(selectedProfileValue(contract.route));
+const selectedProvider = materializeInstallationValue(selectedProviderValue(contract.provider));
+const selectedRoute = materializeInstallationValue(selectedProviderValue(contract.route));
 const selectedModelRoute = selectedProvider?.models?.[contract.model.name];
 const selectedBackend = Array.isArray(selectedModelRoute?.backends)
   ? selectedModelRoute.backends[0]
   : undefined;
-const agentQueryRuntime = contract.queries.length > 0
+const runtimeQueries = contract.queries.map((query) => ({
+  ...query,
+  endpoint: runtimeEndpoint(
+    query.endpointBaseUrl,
+    query.endpointEnvironmentName,
+    query.endpointPath,
+  ),
+}));
+const agentQueryRuntime = runtimeQueries.length > 0
   ? createApplicationTaskQueryRuntime({
-      queries: contract.queries,
+      queries: runtimeQueries,
       cursorSecret: requiredEnv('APPLIK8S_AGENT_QUERY_CONTEXT_SECRET'),
     })
   : undefined;
@@ -686,6 +789,7 @@ function focusedAgentBindings(flat) {
 }
 const handler = (request, context) => {
   let directOperationOrdinal = 0;
+  let directActorOrdinal = 0;
   const runtime = Object.freeze({
     execute(operation, input) {
       const descriptor = directOperations.get(operation.id);
@@ -706,8 +810,7 @@ const handler = (request, context) => {
       });
     },
   });
-  return directOperationScope.run(runtime, () => createHandler(
-    focusedAgentBindings(agentQueryRuntime?.bind(
+  const queryBindings = agentQueryRuntime?.bind(
       Object.fromEntries(contract.queries.map((query) => [query.alias, query.id])),
       {
         id: contract.serviceIdentity.id,
@@ -721,9 +824,40 @@ const handler = (request, context) => {
         correlationId: context.runId,
         causationId: context.invocationId,
       },
-    ) ?? {}),
+    ) ?? {};
+  const actorBindings = Object.fromEntries(contract.actors.map((binding) => [binding.alias, async (key, ...args) => {
+    const alarm = binding.memberKind === 'alarm';
+    const at = alarm ? args[0] : undefined;
+    const input = alarm ? args[1] : args[0];
+    const options = alarm ? args[2] : args[1];
+    const invocationOrdinal = directActorOrdinal++;
+    const idempotencyKey = 'agent:' + context.attemptId + ':' + invocationOrdinal + ':' + binding.actor + ':' + binding.member;
+    const audience = binding.workloadAuthority.audiences[0];
+    if (!audience) throw new Error('Actor workload authority has no audience for ' + binding.actor + '.' + binding.member);
+    return invokeApplicationActorBinding(
+      binding,
+      key,
+      input,
+      alarm ? { ...options, scheduledAt: at instanceof Date ? at.toISOString() : at } : options,
+      {
+        idempotencyKey,
+        envelope: {
+          principal: context.principal,
+          causalPrincipal: { id: context.principal.causalPrincipalId ?? context.principal.id },
+          trustedContextDigest: context.principal.trustedContextDigest,
+          transport: 'direct',
+          audience,
+          workloadAuthorityId: binding.workloadAuthority.id,
+        },
+      },
+      context.signal,
+    );
+  }]));
+  return directOperationScope.run(runtime, () => createHandler(
+    focusedAgentBindings({ ...queryBindings, ...actorBindings }),
   )(request, context));
 };
+${generatedApplicationActorInvocationClientSource()}
 function requiredProviderString(value, label) {
   if (typeof value !== 'string' || !value.trim()) {
     throw new Error('Selected AI provider is missing ' + label + '.');
@@ -838,10 +972,10 @@ async function recordUsageFact(reservation, usage) {
 ${localToolRuntime}
 const placementRoutes = new Map([${routeEntries}]);
 const workloadEnvelopes = [...new Map(
-  [...contract.tools, ...contract.operations].map((dependency) => [
-    dependency.operation.id,
-    dependency.workloadAuthority,
-  ]),
+  [
+    ...[...contract.tools, ...contract.operations].map((dependency) => [dependency.operation.id, dependency.workloadAuthority]),
+    ...contract.actors.map((dependency) => [dependency.workloadAuthority.operationId, dependency.workloadAuthority]),
+  ],
 ).values()];
 const invokeOperation = createApplicationAIOperationExecutor({
   authority: operationAuthority,
@@ -863,7 +997,7 @@ const invokeOperation = createApplicationAIOperationExecutor({
       }
       const route = placementRoutes.get(operation.id);
       if (!route) throw new Error('AI operation has no compiled placement route.');
-      const response = await fetch(route.url, {
+      const response = await fetch(runtimeEndpoint(route.baseUrl, route.environmentName, route.path), {
         method: 'POST',
         headers: {
           'content-type': 'application/json',
@@ -987,7 +1121,7 @@ const handle = createApplicationAIAgentRequestHandler({
           ...invocation.causalGrantIds,
         ]),
       ],
-      envelopes: contract.tools.map((tool) => tool.workloadAuthority),
+      envelopes: workloadEnvelopes,
       trustedContextDigest: invocation.admission.principal.trustedContextDigest,
       audience: invocation.audience,
       deadline: invocation.expiresAt,
@@ -1560,8 +1694,12 @@ function generatedAgentResources(
   digest: string,
 ): readonly GeneratedApplicationAgentResource[] {
   const name = kubernetesName(contract.agent.name);
-  const credentialSecret = applicationAgentCredentialSecret(
+  const deploymentProvider = applicationAgentProviderForTarget(
     contract.providerConfig,
+    'kubernetes',
+  );
+  const credentialSecret = applicationAgentCredentialSecret(
+    deploymentProvider,
     contract.agent.model.name,
   );
   const labels = {
@@ -1626,16 +1764,17 @@ function generatedAgentResources(
                 env: [
                   { name: 'NODE_ENV', value: 'production' },
                   { name: 'NODE_OPTIONS', value: '--enable-source-maps' },
-                  ...(applicationAgentProfileSelector(contract.providerConfig)
+                  { name: 'APPLIK8S_DEPLOYMENT_TARGET', value: 'kubernetes' },
+                  ...(applicationAgentProfileSelector(deploymentProvider)
                     ? [{
                         name: 'APPLIK8S_PROFILE_VARIANT',
                         value: applicationAgentProfileSelector(
-                          contract.providerConfig,
+                          deploymentProvider,
                         ),
                       }]
                     : []),
                   ...(applicationAgentHasManagedEnvoy(
-                    contract.providerConfig,
+                    deploymentProvider,
                   )
                     ? [{
                         name: 'APPLIK8S_AI_GATEWAY_MANAGED_URL',
@@ -1681,6 +1820,12 @@ function generatedAgentResources(
                       },
                     },
                   },
+                  ...(contract.actorApplicationEndpoint
+                    ? [{
+                        name: 'APPLIK8S_ACTOR_APPLICATION_ENDPOINT',
+                        value: contract.actorApplicationEndpoint,
+                      }]
+                    : []),
                   ...(contract.queryCursorSecret
                     ? [{
                         name: 'APPLIK8S_AGENT_QUERY_CONTEXT_SECRET',
@@ -1786,6 +1931,28 @@ function applicationAgentRoute(
   agent: ApplicationAIAgentNode,
   provider: JsonObject,
 ): JsonObject {
+  if (provider.kind === 'application-target-provider-selection') {
+    const targets = isJsonObject(provider.targets) ? provider.targets : {};
+    const routes = Object.fromEntries(
+      Object.entries(targets).map(([target, candidate]) => {
+        if (!isJsonObject(candidate)) {
+          throw new Error(
+            `Application agent ${agent.id} target ${target} has no portable AI provider configuration.`,
+          );
+        }
+        return [target, applicationAgentRoute(agent, candidate)];
+      }),
+    );
+    if (Object.keys(routes).length === 0) {
+      throw new Error(
+        `Application agent ${agent.id} AI provider selection has no deployment-target branches.`,
+      );
+    }
+    return {
+      kind: 'application-target-provider-selection',
+      targets: routes,
+    };
+  }
   if (provider.kind === 'application-provider-selection') {
     const selector = stringValue(provider.selector);
     if (!selector) {
@@ -1889,6 +2056,40 @@ function applicationAgentProfileSelector(provider: JsonObject): string | undefin
     );
   }
   return `\${schema.spec.${match[1]}}`;
+}
+
+function applicationAgentProviderForTarget(
+  provider: JsonObject,
+  target: 'local' | 'aws-local' | 'aws' | 'kubernetes',
+): JsonObject {
+  if (provider.kind === 'application-target-provider-selection') {
+    const targets = isJsonObject(provider.targets) ? provider.targets : {};
+    const selected = targets[target];
+    if (!isJsonObject(selected)) {
+      throw new Error(
+        `Application AI provider has no ${target} deployment-target branch.`,
+      );
+    }
+    return applicationAgentProviderForTarget(selected, target);
+  }
+  if (provider.kind !== 'application-provider-selection') return provider;
+  const cases = isJsonObject(provider.cases) ? provider.cases : {};
+  return {
+    ...provider,
+    cases: Object.fromEntries(
+      Object.entries(cases).map(([variant, candidate]) => {
+        if (!isJsonObject(candidate)) {
+          throw new Error(
+            `Application AI profile ${variant} has no portable provider configuration.`,
+          );
+        }
+        return [variant, applicationAgentProviderForTarget(candidate, target)];
+      }),
+    ),
+    ...(isJsonObject(provider.default)
+      ? { default: applicationAgentProviderForTarget(provider.default, target) }
+      : {}),
+  };
 }
 
 function applicationAgentHasManagedEnvoy(provider: JsonObject): boolean {

@@ -173,6 +173,51 @@ export interface ApplicationRuntimeAccessRequirement {
   readonly enforcement: 'required' | 'best-effort' | 'application-only';
 }
 
+export function applicationRuntimeAccessRequirement(input: Omit<ApplicationRuntimeAccessRequirement, 'apiVersion' | 'id'>): ApplicationRuntimeAccessRequirement {
+  const provenance = [...input.provenance].sort((left, right) => left.id.localeCompare(right.id));
+  const id = `runtime-access:${lengthPrefixed([
+    input.consumer.nodeId,
+    input.consumer.executionIdentity,
+    input.consumer.artifactId ?? '',
+    input.target.capabilityId,
+    input.target.qualification ?? '',
+    input.target.operation,
+    stableFoundationJson(input.target.scope),
+    input.origin,
+    input.sensitivity,
+    input.enforcement,
+  ])}`;
+  return {
+    ...input,
+    apiVersion: 'applik8s.runtimeAccess/v1alpha1',
+    id,
+    provenance,
+  };
+}
+
+/** Unions identical semantic access while retaining all source provenance. */
+export function mergeApplicationRuntimeAccessRequirements(
+  requirements: readonly ApplicationRuntimeAccessRequirement[],
+): readonly ApplicationRuntimeAccessRequirement[] {
+  const merged = new Map<string, ApplicationRuntimeAccessRequirement>();
+  for (const requirement of requirements) {
+    const normalized = applicationRuntimeAccessRequirement(requirement);
+    const previous = merged.get(normalized.id);
+    if (!previous) {
+      merged.set(normalized.id, normalized);
+      continue;
+    }
+    const provenance = new Map(
+      [...previous.provenance, ...normalized.provenance].map((entry) => [entry.id, entry]),
+    );
+    merged.set(normalized.id, {
+      ...normalized,
+      provenance: [...provenance.values()].sort((left, right) => left.id.localeCompare(right.id)),
+    });
+  }
+  return [...merged.values()].sort((left, right) => left.id.localeCompare(right.id));
+}
+
 export interface ApplicationNativePlanRecord {
   readonly apiVersion: 'applik8s.nativePlan/v1alpha1';
   readonly id: string;
@@ -203,6 +248,17 @@ export interface ApplicationGuestHostIdentityEnvelope {
   readonly effectIds: readonly string[];
   readonly causalPrincipalId?: string;
   readonly authorizationReceiptIds: readonly string[];
+  readonly telemetry?: ApplicationGuestHostTelemetryEnvelope;
+}
+
+export interface ApplicationGuestHostTelemetryEnvelope {
+  readonly apiVersion: 'applik8s.telemetryCarrier/v1alpha1';
+  readonly traceparent: string;
+  readonly tracestate: string;
+  readonly baggage: Readonly<Record<string, string>>;
+  readonly invocation: 'live' | 'retry' | 'replay';
+  readonly sampling: 'sampled' | 'not-sampled';
+  readonly bindingDigest: string;
 }
 
 export interface ApplicationFoundationDiagnostic {
@@ -414,7 +470,16 @@ export function validateApplicationFoundation(input: {
   }
   for (const envelope of input.guestHostEnvelopes ?? []) {
     const references = [envelope.application, envelope.operation, envelope.execution, envelope.artifact];
-    if (references.some((reference) => !identities.has(reference)) || !envelope.attempt || !envelope.runtimeAccess.digest.startsWith('sha256:') || envelope.runtimeAccess.requirementIds.some((id) => !accessIds.has(id))) {
+    const telemetry = envelope.telemetry;
+    const invalidTelemetry = telemetry !== undefined && (
+      telemetry.apiVersion !== 'applik8s.telemetryCarrier/v1alpha1'
+      || !/^00-[a-f0-9]{32}-[a-f0-9]{16}-(?:00|01)$/u.test(telemetry.traceparent)
+      || telemetry.tracestate.length > 512
+      || !/^sha256:[a-f0-9]{64}$/u.test(telemetry.bindingDigest)
+      || Object.keys(telemetry.baggage).length > 32
+      || new TextEncoder().encode(JSON.stringify(telemetry.baggage)).byteLength > 8_192
+    );
+    if (references.some((reference) => !identities.has(reference)) || !envelope.attempt || !envelope.runtimeAccess.digest.startsWith('sha256:') || envelope.runtimeAccess.requirementIds.some((id) => !accessIds.has(id)) || invalidTelemetry) {
       diagnostics.push(diagnostic('FOUNDATION_GUEST_HOST_ENVELOPE_INVALID', `Guest/host identity envelope for ${envelope.execution} has unknown identities or an invalid access digest.`, envelope.execution));
     }
   }
@@ -437,6 +502,16 @@ function identityPath(kind: ApplicationCanonicalIdentityKind): string {
 
 function lengthPrefixed(parts: readonly string[]): string {
   return parts.map((part) => `${part.length}:${part}`).join('|');
+}
+
+function stableFoundationJson(value: unknown): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableFoundationJson).join(',')}]`;
+  return `{${Object.entries(value)
+    .filter(([, entry]) => entry !== undefined)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, entry]) => `${JSON.stringify(key)}:${stableFoundationJson(entry)}`)
+    .join(',')}}`;
 }
 
 function assertIdentityPart(value: string, label: string): void {

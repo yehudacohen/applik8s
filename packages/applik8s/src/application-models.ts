@@ -16,7 +16,7 @@ import { analyzeApplicationServerRouteSource, applicationCommandSourceViolations
 import { applicationTypeKroGraphValue, applicationTypeKroJsonStringArray, applicationTypeKroSerializedValue, applicationTypeKroString, applicationTypeKroValueIdentity } from './application-typekro-values.js';
 import type { ApplicationCommandPrincipal } from './command-principal.js';
 import { type CommandDefinition, type EntityDefinition, type EventDefinition, event } from './dsl.js';
-import type { ApplicationEventLogPublisher, EventLogPublishAcknowledgement } from './event-log-runtime.js';
+import { createApplicationEventLogPublisherFromEnvironment, type ApplicationEventLogPublisher, type EventLogPublishAcknowledgement } from './event-log-runtime.js';
 import type { PostgresModelCommandResult } from './model-command-postgres-runtime.js';
 import { canonicalApplicationCommandKey, executePostgresModelCommand } from './model-command-postgres-runtime.js';
 import { applicationModelCommandBindingForOperation, applicationModelFacet, type DrizzleAnalyticalApplicationModelFacet, type DrizzleApplicationModelFacet, getApplicationModelFacet, nativeApplicationModelBindingFor } from './native-models.js';
@@ -1130,12 +1130,9 @@ export function recordApplicationModelCommandGraph<
     async send(input, delivery) {
       validateApplicationMessage(command.input, input, `${command.id}.input`);
       const key = targetKey(input, undefined, delivery.id);
-      // static-import-exception: provider adapters are optional and load only when this NATS-backed command binding is invoked.
-      publisher ??= import('@applik8s/runtime-nats/event-log').then(({ createJetStreamEventLog }) => createJetStreamEventLog({
-        servers,
-        stream: eventLog.stream ?? 'APPLIK8S_EVENTS',
-        subjectPrefix,
+      publisher ??= Promise.resolve(createApplicationEventLogPublisherFromEnvironment({
         connectionName: `${processorName}-binding`,
+        nats: { servers, stream: eventLog.stream ?? 'APPLIK8S_EVENTS', subjectPrefix },
       }));
       const acknowledgement = await (await publisher).publish({
         id: delivery.id,

@@ -8,6 +8,7 @@ import {
   applicationExecutionBoundaryIdentity,
   applicationGraphNodeIdentity,
   applicationOperationIdentity,
+  deriveApplicationGraphFoundation,
   normalizeApplicationGraph,
   sourceProvenance,
   validateApplicationGraph,
@@ -187,5 +188,109 @@ describe('v0.8 canonical foundation', () => {
     }).map(({ message }) => message)).toContain(
       'Application runtime-access requirement access:index-note:search.write references missing consumer node missing.',
     );
+  });
+
+  it('derives exact execution identities and source-attributed access from typed graph relationships', () => {
+    const graph: ApplicationGraph = {
+      apiVersion: 'applik8s.appGraph/v1alpha1',
+      kind: 'ApplicationGraph',
+      metadata: { name: 'notes', sourceLocation: { file: 'src/app.ts', line: 1, column: 1 } },
+      nodes: [
+        {
+          id: 'operator.notes',
+          kind: 'operator',
+          name: 'notes',
+          stability: 'stable',
+          sourceLocation: { file: 'src/operator.ts', line: 10, column: 3 },
+          resources: [],
+          watches: [],
+        },
+        {
+          id: 'secret.signing',
+          kind: 'secret',
+          name: 'signing',
+          stability: 'stable',
+          provider: 'Secret',
+          ownership: 'external',
+          key: 'current',
+          redaction: 'required',
+          generatedResources: [],
+        },
+      ],
+      edges: [{ from: { nodeId: 'operator.notes' }, to: { nodeId: 'secret.signing' }, relationship: 'reads' }],
+      providerRequirements: [],
+      providerBindings: [],
+      compatibility: {
+        stablePublicApis: [],
+        documentedInternalContracts: [],
+        experimentalSurfaces: [],
+        postV3Surfaces: [],
+        labels: [],
+      },
+    };
+    const foundation = deriveApplicationGraphFoundation(graph);
+    const requirement = foundation.runtimeAccess.find(({ target }) => target.operation === 'secret.read');
+    expect(requirement).toMatchObject({
+      consumer: { nodeId: 'operator.notes' },
+      target: {
+        capabilityId: 'secret.signing',
+        operation: 'secret.read',
+        scope: { kind: 'resource', resourceId: 'secret.signing' },
+      },
+      origin: 'inferred',
+      sensitivity: 'credential',
+    });
+    expect(requirement?.consumer.executionIdentity).toContain('/execution-boundaries/');
+    expect(requirement?.provenance[0]).toMatchObject({
+      module: 'src/operator.ts',
+      symbol: 'notes',
+      location: { file: 'src/operator.ts', line: 10, column: 3 },
+    });
+    expect(foundation.runtimeAccess.some(({ target }) => target.operation === 'telemetry.write')).toBe(true);
+    expect(validateApplicationFoundation({
+      identities: foundation.identities,
+      provenance: foundation.provenance,
+      runtimeAccess: foundation.runtimeAccess,
+    })).toEqual([]);
+  });
+
+  it('isolates schedule admission and telemetry access to a schedule-runner execution identity', () => {
+    const graph: ApplicationGraph = {
+      apiVersion: 'applik8s.appGraph/v1alpha1',
+      kind: 'ApplicationGraph',
+      metadata: { name: 'scheduled-notes' },
+      nodes: [
+        {
+          id: 'schedule.notes.compact.v1',
+          kind: 'schedule',
+          name: 'notes.compact.v1',
+          stability: 'stable',
+          definition: {
+            id: 'notes.compact.v1', configuration: 'fixed', cron: '0 3 * * *', timezone: 'UTC', overlap: 'skip', misfires: 'latest',
+            retry: { maxAttempts: 4, maximumAgeSeconds: 21_600 },
+            requirements: { configuration: 'fixed', cardinality: 'bounded', precision: 'minute' },
+          },
+          scheduler: { interface: 'Scheduler', nodeId: 'provider.scheduler' },
+          handler: { source: 'async () => undefined' },
+          functionNative: true,
+          sourceLocation: { file: 'src/schedules.ts', line: 4, column: 1 },
+        },
+        { id: 'provider.scheduler', kind: 'provider', name: 'Scheduler', stability: 'stable', interface: 'Scheduler', implementation: 'deterministic-local' },
+      ],
+      edges: [{ from: { nodeId: 'schedule.notes.compact.v1' }, to: { nodeId: 'provider.scheduler' }, relationship: 'dependsOn' }],
+      providerRequirements: [{
+        id: 'requirement.schedule.notes.compact.v1.scheduler', interface: 'Scheduler', consumer: { nodeId: 'schedule.notes.compact.v1' },
+        provider: { interface: 'Scheduler', nodeId: 'provider.scheduler' }, required: true, purpose: 'scheduler',
+        diagnostics: { missing: 'missing', ambiguous: 'ambiguous' },
+      }],
+      providerBindings: [{ requirement: 'requirement.schedule.notes.compact.v1.scheduler', provider: { interface: 'Scheduler', nodeId: 'provider.scheduler' }, generatedResources: [], runtime: {} }],
+      compatibility: { stablePublicApis: [], documentedInternalContracts: [], experimentalSurfaces: [], postV3Surfaces: [], labels: [] },
+    };
+    const foundation = deriveApplicationGraphFoundation(graph);
+    const scheduleAccess = foundation.runtimeAccess.filter(({ consumer }) => consumer.nodeId === 'schedule.notes.compact.v1');
+    expect(scheduleAccess.map(({ target }) => target.operation).sort()).toEqual(['connection.use', 'schedule.admit', 'telemetry.write']);
+    expect(new Set(scheduleAccess.map(({ consumer }) => consumer.executionIdentity)).size).toBe(1);
+    expect(scheduleAccess[0]?.consumer.executionIdentity).toContain('schedule-runner');
+    expect(scheduleAccess.every(({ provenance: [entry] }) => entry?.module === 'src/schedules.ts')).toBe(true);
   });
 });

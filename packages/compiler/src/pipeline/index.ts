@@ -16,6 +16,7 @@ import { emitGeneratedApplicationAgents } from '../application-agents/index.js';
 import { applicationGraphWithEntrypointPublicSurface } from '../application-facade/public-surface.js';
 import { applicationGraphWithInferredApplicationHost } from '../application-host/index.js';
 import { emitGeneratedApplicationHttpServers } from '../application-http/index.js';
+import { emitGeneratedApplicationLakehousePublishers } from '../application-lakehouse-publishers/index.js';
 import { emitGeneratedApplicationMcpServers } from '../application-mcp/index.js';
 import { emitGeneratedApplicationMigrations } from '../application-migrations/index.js';
 import { compileApplicationOperationCatalog, compileApplicationWorkloadAuthority } from '../application-operations/index.js';
@@ -69,6 +70,7 @@ import type {
   TypeKroCompositionArtifacts,
   TypeKroCompositionBundleManifest,
   TypeKroCompositionResource,
+  TypeKroCompositionRuntimeEndpointReference,
 } from './typekro-artifact-contracts.js';
 import { planTypeKroEmission, typeKroResourceFingerprint } from './typekro-emission-plan.js';
 import { typeKroSingletonOwnerInstances } from './typekro-singleton-instances.js';
@@ -81,6 +83,7 @@ export type {
   TypeKroCompositionBundleManifest,
   TypeKroCompositionContainerArtifactReference,
   TypeKroCompositionHttpArtifactReference,
+  TypeKroCompositionLakehousePublisherArtifactReference,
   TypeKroCompositionMcpArtifactReference,
   TypeKroCompositionMigrationArtifactReference,
   TypeKroCompositionOperatorArtifactReference,
@@ -142,6 +145,8 @@ export interface CompileOperatorPipeline {
 export interface CompileTypeKroCompositionRequest extends CompileOperatorRequest {
   readonly compositionName?: string;
   readonly operationCatalogPolicy?: 'development' | 'production';
+  /** Local execution emits runnable boundaries without Kubernetes host artifacts. */
+  readonly executionTarget?: 'kubernetes' | 'local' | 'aws-local' | 'aws';
   readonly operatorKubernetesConnectionBindings?: Readonly<Record<string, NonNullable<CompileOptions['kubernetesConnectionBindings']>>>;
 }
 
@@ -164,6 +169,9 @@ export interface DiscoveredApplicationGraph {
   readonly signalExports: readonly { readonly name: string; readonly signalId: string }[];
   readonly agentExports: readonly { readonly name: string; readonly agentName: string }[];
   readonly objectStoreExports: readonly { readonly name: string; readonly objectStoreName: string }[];
+  readonly scheduleExports: readonly { readonly name: string; readonly id: string }[];
+  readonly lakehousePublicationExports: readonly { readonly name: string; readonly id: string }[];
+  readonly actorExports: readonly { readonly name: string; readonly actorId: string }[];
 }
 
 export async function discoverApplicationGraphWithExports(
@@ -186,6 +194,9 @@ export async function discoverApplicationGraphWithExports(
       signalIds: discovered.value.applicationSignals.map(
         (signal) => signal.signalId,
       ),
+      schedules: discovered.value.applicationSchedules.map((schedule) => schedule.graphNode),
+      lakehousePublications: discovered.value.applicationLakehousePublications.map((publication) => publication.graphNode),
+      actorIds: discovered.value.applicationActors.map((actor) => actor.actorId),
     });
     return {
       ok: true,
@@ -196,6 +207,9 @@ export async function discoverApplicationGraphWithExports(
         signalExports: discovered.value.applicationSignals,
         agentExports: discovered.value.applicationAgents,
         objectStoreExports: discovered.value.applicationObjectStores,
+        scheduleExports: discovered.value.applicationSchedules.map(({ name, id }) => ({ name, id })),
+        lakehousePublicationExports: discovered.value.applicationLakehousePublications.map(({ name, graphNode }) => ({ name, id: graphNode.id })),
+        actorExports: discovered.value.applicationActors,
       },
     };
   }
@@ -215,6 +229,7 @@ interface EmitTypeKroCompositionArtifactsRequest {
   readonly applicationGraph?: ApplicationGraph;
   readonly applicationInstallation?: ApplicationInstallationArtifactContract;
   readonly operationCatalogPolicy?: 'development' | 'production';
+  readonly executionTarget?: 'kubernetes' | 'local' | 'aws-local' | 'aws';
 }
 
 const defaultStages: readonly CompilerPipelineStageName[] = [
@@ -326,6 +341,12 @@ export async function compileTypeKroComposition(request: CompileTypeKroCompositi
             signalIds: discovered.value.applicationSignals.map(
               (signal) => signal.signalId,
             ),
+            schedules: discovered.value.applicationSchedules.map(
+              (schedule) => schedule.graphNode,
+            ),
+            lakehousePublications: discovered.value.applicationLakehousePublications.map(
+              (publication) => publication.graphNode,
+            ),
           },
         ),
         request.entrypoint,
@@ -346,6 +367,7 @@ export async function compileTypeKroComposition(request: CompileTypeKroCompositi
     ...(applicationGraph ? { applicationGraph } : {}),
     ...(applicationInstallation ? { applicationInstallation } : {}),
     ...(request.operationCatalogPolicy ? { operationCatalogPolicy: request.operationCatalogPolicy } : {}),
+    ...(request.executionTarget ? { executionTarget: request.executionTarget } : {}),
     ...(composition.value.name ? { exportName: composition.value.name } : {}),
   });
   if (!artifacts.ok) {
@@ -386,6 +408,7 @@ async function emitTypeKroCompositionArtifacts(request: EmitTypeKroCompositionAr
           graph: request.applicationGraph,
           ...(operationCatalog ? { operationCatalog } : {}),
           outDir: join(request.outDir, 'http'),
+          executionTarget: request.executionTarget ?? 'kubernetes',
         })
       : [];
     const migrationArtifacts = request.applicationGraph
@@ -399,7 +422,10 @@ async function emitTypeKroCompositionArtifacts(request: EmitTypeKroCompositionAr
         })
       : [];
     const processorArtifacts = request.applicationGraph
-      ? await emitGeneratedApplicationProcessors({ graph: request.applicationGraph, ...(operationCatalog ? { operationCatalog } : {}), outDir: join(request.outDir, 'processors'), entrypoint: request.entrypoint })
+      ? await emitGeneratedApplicationProcessors({ graph: request.applicationGraph, ...(operationCatalog ? { operationCatalog } : {}), outDir: join(request.outDir, 'processors'), entrypoint: request.entrypoint, executionTarget: request.executionTarget ?? 'kubernetes' })
+      : [];
+    const lakehousePublisherArtifacts = request.applicationGraph
+      ? await emitGeneratedApplicationLakehousePublishers({ graph: request.applicationGraph, outDir: join(request.outDir, 'lakehouse-publishers'), executionTarget: request.executionTarget ?? 'kubernetes' })
       : [];
     const workflowArtifacts = request.applicationGraph
       ? await emitGeneratedApplicationWorkflows({
@@ -409,16 +435,18 @@ async function emitTypeKroCompositionArtifacts(request: EmitTypeKroCompositionAr
           operatorManifests: request.operatorCompiles.map((compiled) => compiled.manifest),
           outDir: join(request.outDir, 'workflows'),
           entrypoint: request.entrypoint,
+          executionTarget: request.executionTarget ?? 'kubernetes',
         })
       : [];
     const reactiveArtifacts = request.applicationGraph
-      ? await emitGeneratedApplicationReactive({ graph: request.applicationGraph, ...(operationCatalog ? { operationCatalog } : {}), outDir: join(request.outDir, 'reactive'), entrypoint: request.entrypoint })
+      ? await emitGeneratedApplicationReactive({ graph: request.applicationGraph, ...(operationCatalog ? { operationCatalog } : {}), outDir: join(request.outDir, 'reactive'), entrypoint: request.entrypoint, executionTarget: request.executionTarget ?? 'kubernetes' })
       : [];
-    const hostResources = request.applicationGraph
+    const hostResources = request.applicationGraph && (request.executionTarget === undefined || request.executionTarget === 'kubernetes')
       ? await generatedApplicationHostResources({ graph: request.applicationGraph, entrypoint: request.entrypoint, outDir: join(request.outDir, 'application-host') })
       : [];
     // typecast: generated processor resources are concrete Kubernetes JSON objects and are validated by the same serialization path as composition resources.
     const processorResources = processorArtifacts.flatMap((artifact) => artifact.resources) as unknown as readonly TypeKroCompositionResource[];
+    const lakehousePublisherResources = lakehousePublisherArtifacts.flatMap((artifact) => artifact.resources) as unknown as readonly TypeKroCompositionResource[];
     // typecast: generated migration resources are concrete Kubernetes JSON objects and use the shared TypeKro serialization path.
     const migrationResources = migrationArtifacts.flatMap((artifact) => artifact.resources) as unknown as readonly TypeKroCompositionResource[];
     // typecast: generated workflow resources are concrete Kubernetes JSON objects and pass through the shared TypeKro serialization path.
@@ -444,7 +472,7 @@ async function emitTypeKroCompositionArtifacts(request: EmitTypeKroCompositionAr
       (artifact) => artifact.resources,
     ) as unknown as readonly TypeKroCompositionResource[];
     // typecast: generated host resources are concrete Kubernetes JSON objects and share the TypeKro emission contract.
-    const generatedResources = [...migrationResources, ...processorResources, ...workflowResources, ...reactiveResources, ...mcpResources, ...agentResources, ...httpResources, ...hostResources as unknown as readonly TypeKroCompositionResource[]];
+    const generatedResources = [...migrationResources, ...processorResources, ...lakehousePublisherResources, ...workflowResources, ...reactiveResources, ...mcpResources, ...agentResources, ...httpResources, ...hostResources as unknown as readonly TypeKroCompositionResource[]];
     const baseFactoryArtifacts = typeKroFactoryArtifacts(request.composition, request.applicationGraph?.metadata, request.applicationInstallation);
     const factoryArtifacts = request.applicationGraph
       ? injectGeneratedResourcesIntoApplicationRgd(baseFactoryArtifacts, generatedResources, request.applicationGraph.metadata.name, request.applicationInstallation, request.applicationGraph)
@@ -546,11 +574,12 @@ async function emitTypeKroCompositionArtifacts(request: EmitTypeKroCompositionAr
           manifest: compiled.artifacts.manifestJsonPath,
           outDir: dirname(compiled.artifacts.manifestJsonPath),
         })),
-        ...(processorArtifacts.length > 0 ? { processors: processorArtifacts.map((artifact) => ({ name: artifact.name, manifest: artifact.manifestPath, source: artifact.sourcePath, digest: artifact.digest, sizeBytes: artifact.sizeBytes, container: typeKroContainerArtifactReference(artifact.container) })) } : {}),
-        ...(workflowArtifacts.length > 0 ? { workflows: workflowArtifacts.map((artifact) => ({ name: artifact.name, manifest: artifact.manifestPath, source: artifact.sourcePath, digest: artifact.digest, sizeBytes: artifact.sizeBytes, container: typeKroContainerArtifactReference(artifact.container) })) } : {}),
-        ...(reactiveArtifacts.length > 0 ? { reactive: reactiveArtifacts.map((artifact) => ({ name: artifact.name, kind: artifact.kind, manifest: artifact.manifestPath, source: artifact.sourcePath, digest: artifact.digest, sizeBytes: artifact.sizeBytes, container: typeKroContainerArtifactReference(artifact.container) })) } : {}),
-        ...(mcpArtifacts.length > 0 ? { mcp: mcpArtifacts.map((artifact) => ({ name: artifact.name, serverId: artifact.serverId, manifest: artifact.manifestPath, source: artifact.sourcePath, digest: artifact.digest, sizeBytes: artifact.sizeBytes, container: typeKroContainerArtifactReference(artifact.container) })) } : {}),
-        ...(agentArtifacts.length > 0 ? { agents: agentArtifacts.map((artifact) => ({ name: artifact.name, manifest: artifact.manifestPath, source: artifact.sourcePath, digest: artifact.digest, sizeBytes: artifact.sizeBytes, container: typeKroContainerArtifactReference(artifact.container) })) } : {}),
+        ...(processorArtifacts.length > 0 ? { processors: processorArtifacts.map((artifact) => ({ name: artifact.name, nodeId: artifact.processorId, manifest: artifact.manifestPath, source: artifact.sourcePath, digest: artifact.digest, sizeBytes: artifact.sizeBytes, container: typeKroContainerArtifactReference(artifact.container) })) } : {}),
+        ...(lakehousePublisherArtifacts.length > 0 ? { lakehousePublishers: lakehousePublisherArtifacts.map((artifact) => ({ name: artifact.name, nodeId: artifact.publicationId, manifest: artifact.manifestPath, source: artifact.sourcePath, digest: artifact.digest, sizeBytes: artifact.sizeBytes, localSource: artifact.localSourcePath, localDigest: artifact.localDigest, localSizeBytes: artifact.localSizeBytes, container: typeKroContainerArtifactReference(artifact.container) })) } : {}),
+        ...(workflowArtifacts.length > 0 ? { workflows: workflowArtifacts.map((artifact) => ({ name: artifact.name, nodeId: artifact.workerId, manifest: artifact.manifestPath, source: artifact.sourcePath, digest: artifact.digest, sizeBytes: artifact.sizeBytes, container: typeKroContainerArtifactReference(artifact.container), ...(artifact.runtimeEndpoints.length ? { runtimeEndpoints: typeKroRuntimeEndpointReferences(artifact.runtimeEndpoints) } : {}) })) } : {}),
+        ...(reactiveArtifacts.length > 0 ? { reactive: reactiveArtifacts.map((artifact) => ({ name: artifact.name, nodeId: artifact.nodeId, kind: artifact.kind, manifest: artifact.manifestPath, source: artifact.sourcePath, digest: artifact.digest, sizeBytes: artifact.sizeBytes, container: typeKroContainerArtifactReference(artifact.container) })) } : {}),
+        ...(mcpArtifacts.length > 0 ? { mcp: mcpArtifacts.map((artifact) => ({ name: artifact.name, serverId: artifact.serverId, manifest: artifact.manifestPath, source: artifact.sourcePath, digest: artifact.digest, sizeBytes: artifact.sizeBytes, container: typeKroContainerArtifactReference(artifact.container), ...(artifact.runtimeEndpoints.length ? { runtimeEndpoints: typeKroRuntimeEndpointReferences(artifact.runtimeEndpoints) } : {}) })) } : {}),
+        ...(agentArtifacts.length > 0 ? { agents: agentArtifacts.map((artifact) => ({ name: artifact.name, nodeId: artifact.agentId, manifest: artifact.manifestPath, source: artifact.sourcePath, digest: artifact.digest, sizeBytes: artifact.sizeBytes, container: typeKroContainerArtifactReference(artifact.container), ...(artifact.runtimeEndpoints.length ? { runtimeEndpoints: typeKroRuntimeEndpointReferences(artifact.runtimeEndpoints) } : {}) })) } : {}),
         ...(httpArtifacts.length > 0 ? { http: httpArtifacts.map((artifact) => ({ name: artifact.name, serverId: artifact.serverId, manifest: artifact.manifestPath, source: artifact.sourcePath, digest: artifact.digest, sizeBytes: artifact.sizeBytes, container: typeKroContainerArtifactReference(artifact.container) })) } : {}),
       },
     };
@@ -605,6 +634,7 @@ async function emitTypeKroCompositionArtifacts(request: EmitTypeKroCompositionAr
         mcpArtifacts,
         migrationArtifacts,
         processorArtifacts,
+        lakehousePublisherArtifacts,
         workflowArtifacts,
         reactiveArtifacts,
         operatorArtifacts: request.operatorCompiles.map((compiled) => ({
@@ -1133,6 +1163,11 @@ class MinimalCompileOperatorPipeline implements CompileOperatorPipeline {
   stages(): readonly CompilerPipelineStageName[] {
     return defaultStages;
   }
+}
+function typeKroRuntimeEndpointReferences(
+  endpoints: readonly { readonly nodeId: string; readonly environmentName: string }[],
+): readonly TypeKroCompositionRuntimeEndpointReference[] {
+  return endpoints.map(({ nodeId, environmentName }) => ({ nodeId, environmentName }));
 }
 function error<T = never>(code: Diagnostic['code'], message: string): Result<T> {
   return { ok: false, error: { code, message, severity: 'error', context: {}, recovery: { summary: message } } };

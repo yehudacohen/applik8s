@@ -5,6 +5,7 @@ import type { EffectPolicy, HandlerRegistrationForResources, SecondaryWatchRegis
 import type { DomainDataPolicy } from './lifecycle.js';
 import type { AnyKubernetesReadResourceDefinition, AnyResourceDefinition, DeleteResult, LabelSelector, PermissionRule } from './resource.js';
 import type { RuntimeAdapterRequirement, RuntimeConfig } from './runtime.js';
+import type { ApplicationGuestHostIdentityEnvelope } from './application-foundation.js';
 import type { RuntimePayloadSchemaDigests } from './schema.js';
 
 export interface OperatorDefinition<TCapabilities extends CapabilityClientSet = CapabilityClientSet, TResources extends Readonly<Record<string, AnyResourceDefinition<TCapabilities>>> = Readonly<Record<string, AnyResourceDefinition<TCapabilities>>>> { readonly name: OperatorName; readonly resources: TResources; readonly reads?: Readonly<Record<string, AnyKubernetesReadResourceDefinition>>; readonly handlers: readonly HandlerRegistrationForResources<TResources, TCapabilities>[]; readonly secondaryWatches?: readonly SecondaryWatchRegistration[]; readonly capabilities?: Readonly<Record<keyof TCapabilities & string, CapabilityDescriptor>>; readonly permissions?: readonly PermissionRule[]; readonly deployment?: OperatorDeploymentOptions; readonly runtime?: RuntimeConfig; readonly trustLevel: HandlerTrustLevel; readonly effects?: EffectPolicy; readonly lifecycle?: OperatorLifecycleContract; }
@@ -25,7 +26,21 @@ export interface OperatorDeploymentOptions {
 }
 export interface OperatorManifest { readonly apiVersion: OperatorManifestVersion; readonly kind: 'OperatorBundle'; readonly metadata: OperatorManifestMetadata; readonly spec: OperatorManifestSpec; }
 export interface OperatorManifestMetadata { readonly name: OperatorName; readonly labels?: Readonly<Record<string, string>>; readonly annotations?: Readonly<Record<string, string>>; }
-export interface OperatorManifestSpec { readonly handlerAbi: HandlerAbiVersion; readonly payloadSchemaDigests: RuntimePayloadSchemaDigests; readonly requiresRuntime: SemverRange; readonly handlerArtifact: HandlerArtifact; readonly adapterRequirements?: RuntimeAdapterRequirement; readonly handlerExports: readonly HandlerExport[]; readonly ownedCrds: readonly OwnedCrd[]; readonly readResources?: readonly ReadResource[]; readonly watches: readonly WatchRegistration[]; readonly secondaryWatches?: readonly SecondaryWatchRegistration[]; readonly permissions: readonly PermissionRule[]; readonly capabilities?: Readonly<Record<string, CapabilityDescriptor>>; /** Installation overlay; never part of handler input or portable bundle authoring. */ readonly kubernetesConnectionBindings?: Readonly<Record<string, KubernetesConnectionBinding>>; readonly security: OperatorSecurityContract; readonly lifecycle: OperatorLifecycleContract; readonly runtime?: RuntimeConfig; readonly container?: ContainerRecipe; readonly bundle: BundleMetadata; }
+export interface OperatorManifestSpec { readonly handlerAbi: HandlerAbiVersion; readonly payloadSchemaDigests: RuntimePayloadSchemaDigests; readonly requiresRuntime: SemverRange; readonly handlerArtifact: HandlerArtifact; readonly adapterRequirements?: RuntimeAdapterRequirement; readonly handlerExports: readonly HandlerExport[]; readonly ownedCrds: readonly OwnedCrd[]; readonly readResources?: readonly ReadResource[]; readonly watches: readonly WatchRegistration[]; readonly secondaryWatches?: readonly SecondaryWatchRegistration[]; readonly permissions: readonly PermissionRule[]; readonly capabilities?: Readonly<Record<string, CapabilityDescriptor>>; /** Installation overlay; never part of handler input or portable bundle authoring. */ readonly kubernetesConnectionBindings?: Readonly<Record<string, KubernetesConnectionBinding>>; readonly security: OperatorSecurityContract; readonly lifecycle: OperatorLifecycleContract; readonly runtime?: RuntimeConfig; readonly runtimeIdentity?: OperatorRuntimeIdentityContract; readonly container?: ContainerRecipe; readonly bundle: BundleMetadata; }
+export interface OperatorRuntimeIdentityContract {
+  readonly apiVersion: 'applik8s.operatorRuntimeIdentity/v1alpha1';
+  readonly application: ApplicationGuestHostIdentityEnvelope['application'];
+  readonly artifact: ApplicationGuestHostIdentityEnvelope['artifact'];
+  readonly bundleDigest: Sha256Digest;
+  readonly runtimeAccess: ApplicationGuestHostIdentityEnvelope['runtimeAccess'];
+  readonly handlers: readonly {
+    readonly handlerId: import('./common.js').HandlerId;
+    readonly operation: ApplicationGuestHostIdentityEnvelope['operation'];
+    readonly execution: ApplicationGuestHostIdentityEnvelope['execution'];
+    readonly capabilityIds: readonly string[];
+    readonly effectIds: readonly string[];
+  }[];
+}
 export interface HandlerArtifact { readonly kind: 'wasm-component'; readonly path: string; readonly digest: Sha256Digest; }
 export interface HandlerExport { readonly handlerId: import('./common.js').HandlerId; readonly exportName: string; readonly resource: ResourceTypeRef; readonly event: HandlerEventType; readonly finalizers?: readonly string[]; }
 export interface ResourceTypeRef { readonly apiVersion: import('./common.js').ApiVersion; readonly kind: Kind; }

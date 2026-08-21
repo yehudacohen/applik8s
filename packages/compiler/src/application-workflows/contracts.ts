@@ -21,6 +21,7 @@ import type {
   ApplicationWorkflowWorkerNode,
   ApplicationWorkloadAuthorityEnvelope,
 } from '@applik8s/core';
+import { applicationRuntimeEndpointEnvironmentName } from '@applik8s/deployment-contract';
 import ts from 'typescript';
 import { applicationGraphStringValue } from '../application-installation-values.js';
 import { kubernetesName, objectConfig, stringConfig } from './utilities.js';
@@ -41,7 +42,8 @@ export interface WorkflowContract {
   readonly authorityManifest?: ApplicationStaticAuthorityManifest;
   readonly queryEffects?: WorkflowQueryEffectsContract;
   readonly projectionEffects?: WorkflowProjectionEffectsContract;
-	readonly objectEffects?: WorkflowObjectEffectsContract;
+  readonly objectEffects?: WorkflowObjectEffectsContract;
+  readonly actorEffects?: WorkflowActorEffectsContract;
   readonly signalEffects?: WorkflowSignalEffectsContract;
   readonly functionNativeTransactions?: readonly WorkflowFunctionNativeTransactionContract[];
   readonly namespace: string;
@@ -113,6 +115,9 @@ interface WorkflowTaskQueryContract {
   readonly query: ApplicationQueryNode;
   readonly gateway: ApplicationGatewayNode & { readonly deployment: NonNullable<ApplicationGatewayNode['deployment']>; readonly cursorSecret: NonNullable<ApplicationGatewayNode['cursorSecret']> };
   readonly endpoint: string;
+  readonly endpointBaseUrl: string;
+  readonly endpointPath: string;
+  readonly endpointEnvironmentName: string;
 }
 
 interface WorkflowQueryEffectsContract {
@@ -151,6 +156,21 @@ export interface WorkflowTaskObjectContract {
 interface WorkflowObjectEffectsContract {
 	readonly objects: readonly WorkflowTaskObjectContract[];
 	readonly aliases: Readonly<Record<string, Readonly<Record<string, string>>>>;
+}
+
+export interface WorkflowTaskActorContract {
+  readonly taskHandlerId: string;
+  readonly alias: string;
+  readonly actor: Extract<ApplicationGraph['nodes'][number], { readonly kind: 'actor' }>;
+  readonly member: string;
+  readonly memberKind: 'command' | 'message' | 'alarm';
+  readonly workloadAuthority: ApplicationWorkloadAuthorityEnvelope;
+}
+
+interface WorkflowActorEffectsContract {
+  readonly actors: readonly WorkflowTaskActorContract[];
+  readonly aliases: Readonly<Record<string, Readonly<Record<string, string>>>>;
+  readonly applicationEndpoint: string;
 }
 
 export interface WorkflowSignalContract {
@@ -230,6 +250,14 @@ export function workflowContract(
   );
   const projectionEffects = workflowProjectionEffects(nodes, tasks, namespace, worker);
 	const objectEffects = workflowObjectEffects(nodes, tasks, namespace, worker);
+  const actorEffects = workflowActorEffects(
+    graph,
+    nodes,
+    tasks,
+    namespace,
+    worker,
+    workloadAuthority,
+  );
   const signalEffects = workflowSignalEffects(
     nodes,
     [
@@ -287,6 +315,7 @@ export function workflowContract(
     ...(queryEffects ? { queryEffects } : {}),
     ...(projectionEffects ? { projectionEffects } : {}),
 		...(objectEffects ? { objectEffects } : {}),
+    ...(actorEffects ? { actorEffects } : {}),
     ...(signalEffects ? { signalEffects } : {}),
     ...(functionNativeTransactions.length > 0
       ? { functionNativeTransactions }
@@ -303,6 +332,51 @@ export function workflowContract(
         `${right.namespace}/${right.serviceAccount}/${right.operator}`,
       )),
   };
+}
+
+function workflowActorEffects(
+  graph: ApplicationGraph,
+  nodes: ReadonlyMap<string, ApplicationGraph['nodes'][number]>,
+  tasks: readonly { readonly handler: ApplicationTaskHandlerNode; readonly task: ApplicationTaskNode }[],
+  namespace: string,
+  worker: ApplicationWorkflowWorkerNode,
+  workloadAuthority: readonly ApplicationWorkloadAuthorityEnvelope[],
+): WorkflowActorEffectsContract | undefined {
+  const actors: WorkflowTaskActorContract[] = [];
+  const aliases: Record<string, Record<string, string>> = {};
+  for (const { handler } of tasks) {
+    const taskAliases: Record<string, string> = {};
+    for (const reference of handler.actors ?? []) {
+      const actor = nodes.get(reference.actor.nodeId);
+      if (actor?.kind !== 'actor') throw new Error(`Workflow task ${handler.id} actor ${reference.alias} references missing actor ${reference.actor.nodeId}.`);
+      const member = actor.definition.protocol.find((candidate) => candidate.name === reference.member);
+      if (!member || member.kind !== reference.memberKind) throw new Error(`Workflow task ${handler.id} actor ${reference.alias} references incompatible member ${actor.definition.id}.${reference.member}.`);
+      const operationId = `applik8s://actors/${actor.definition.id}/operations/${reference.member}`;
+      const envelope = workloadAuthority.find((candidate) =>
+        candidate.workloadIdentity.subject === handler.id
+        && candidate.operationId === operationId);
+      if (!envelope) throw new Error(`Workflow task ${handler.id} actor ${reference.alias} has no workload-authority envelope for ${operationId}.`);
+      actors.push({
+        taskHandlerId: handler.id,
+        alias: reference.alias,
+        actor,
+        member: reference.member,
+        memberKind: reference.memberKind,
+        workloadAuthority: envelope,
+      });
+      taskAliases[reference.alias] = `${actor.definition.id}\0${reference.member}\0${reference.memberKind}`;
+    }
+    if (Object.keys(taskAliases).length > 0) aliases[handler.id] = taskAliases;
+  }
+  if (actors.length === 0) return undefined;
+  const host = graph.nodes.find((node): node is ApplicationProviderNode<'ApplicationHost'> => node.kind === 'provider' && node.interface === 'ApplicationHost');
+  if (!host) throw new Error(`Workflow worker ${worker.id} calls actors but the application has no ApplicationHost for the authenticated actor invocation boundary.`);
+  const config = objectConfig(host.config?.host);
+  const hostNamespace = applicationGraphStringValue(config.namespace) || namespace;
+  if (hostNamespace !== namespace) throw new Error(`Workflow worker ${worker.id} actor invocation host is in ${hostNamespace}, but the worker is in ${namespace}.`);
+  const name = kubernetesName(stringConfig(config.name) || `${graph.metadata.name}-app`);
+  const port = typeof config.port === 'number' && Number.isInteger(config.port) && config.port > 0 ? config.port : 3000;
+  return { actors, aliases, applicationEndpoint: `http://${name}.${namespace}.svc:${port}` };
 }
 
 function workflowFunctionNativeTransactions(
@@ -576,7 +650,16 @@ function workflowQueryEffects(
       // Generated task workers and query gateways are required to share a
       // namespace, so the short service name also works when that namespace is
       // an installation-time expression rather than a compiler-time literal.
-      queries.push({ taskHandlerId: handler.id, alias: reference.alias, query, gateway, endpoint: `http://${serviceName}:${candidate.deployment.port}${route}` });
+      queries.push({
+        taskHandlerId: handler.id,
+        alias: reference.alias,
+        query,
+        gateway,
+        endpoint: `http://${serviceName}:${candidate.deployment.port}${route}`,
+        endpointBaseUrl: `http://${serviceName}:${candidate.deployment.port}`,
+        endpointPath: route,
+        endpointEnvironmentName: applicationRuntimeEndpointEnvironmentName(gateway.id),
+      });
       taskAliases[reference.alias] = publicId;
     }
     aliases[handler.id] = taskAliases;

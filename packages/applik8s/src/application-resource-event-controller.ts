@@ -35,10 +35,8 @@ export function createApplicationResourceEventOperatorController<TSpec extends o
   const deployment = authoredDeployment.namespace
     ? { ...authoredDeployment, namespace: applicationTypeKroString(authoredDeployment.namespace) }
     : authoredDeployment;
-  // typecast: the operator owns a heterogeneous registration array; each entry still retains its resource-specific runtime metadata.
-  const registrations: HandlerRegistration<object, object>[] = (
-    registrationsInput as readonly HandlerRegistration<object, object>[]
-  ).map((registration) => withApplicationResourceControllerAuthority(resource, registration));
+  const registrations = registrationsInput.map((registration) =>
+    withApplicationResourceControllerAuthority(resource, registration));
   const callbacks = [...callbacksInput];
   const operatorName = name ?? `${kubernetesNameSegment(resource.kind)}-controller`;
   // applicationTypeKroString deliberately returns a string-shaped branded CEL
@@ -72,10 +70,23 @@ export function createApplicationResourceEventOperatorController<TSpec extends o
   });
   const deployed = operator(deployment);
   return {
-    operator,
-    deployed,
+    // typecast: the public controller binding deliberately erases the one
+    // captured resource's spec/status generics after sdk.operator has checked
+    // its typed handler/resource relationship.
+    operator: operator as unknown as ApplicationResourceEventOperatorController['operator'],
+    deployed: deployed as unknown as ApplicationResourceEventOperatorController['deployed'],
     add(registration, callback) {
-      registrations.push(withApplicationResourceControllerAuthority(resource, registration));
+      if (registration.resource.apiVersion !== resource.apiVersion
+        || registration.resource.kind !== resource.kind) {
+        throw new Error(`Application resource controller ${operatorName} cannot accept a handler for ${registration.resource.apiVersion}/${registration.resource.kind}.`);
+      }
+      // typecast: the runtime identity check above proves this registration
+      // belongs to the one resource whose spec/status generics this controller
+      // captured when it was created.
+      registrations.push(withApplicationResourceControllerAuthority(
+        resource,
+        registration as unknown as HandlerRegistration<TSpec, TStatus>,
+      ));
       callbacks.push(callback);
       const refreshed = resourceWorkflowGatewayCapabilities(callbacks, namespace, serviceAccount, operatorName);
       for (const capability of Object.keys(capabilities)) delete capabilities[capability];

@@ -27,6 +27,9 @@ export interface EntrypointExports {
   readonly applicationSignals: readonly EntrypointApplicationSignalExport[];
   readonly applicationAgents: readonly EntrypointApplicationAgentExport[];
   readonly applicationObjectStores: readonly EntrypointApplicationObjectStoreExport[];
+  readonly applicationSchedules: readonly EntrypointApplicationScheduleExport[];
+  readonly applicationLakehousePublications: readonly EntrypointApplicationLakehousePublicationExport[];
+  readonly applicationActors: readonly EntrypointApplicationActorExport[];
 }
 
 export interface EntrypointApplicationOperationExport {
@@ -52,6 +55,22 @@ export interface EntrypointApplicationAgentExport {
 export interface EntrypointApplicationObjectStoreExport {
   readonly name: string;
   readonly objectStoreName: string;
+}
+
+export interface EntrypointApplicationScheduleExport {
+  readonly name: string;
+  readonly id: string;
+  readonly graphNode: import('@applik8s/core').ApplicationScheduleNode;
+}
+
+export interface EntrypointApplicationLakehousePublicationExport {
+  readonly name: string;
+  readonly graphNode: import('@applik8s/core').ApplicationLakehousePublicationNode;
+}
+
+export interface EntrypointApplicationActorExport {
+  readonly name: string;
+  readonly actorId: string;
 }
 
 export interface TypeKroCompositionExport {
@@ -137,6 +156,24 @@ export async function discoverEntrypointExports(entrypoint: string): Promise<Res
         return objectStoreName ? [{ name, objectStoreName }] : [];
       })
       .sort((left, right) => left.name.localeCompare(right.name));
+    const applicationSchedules = Object.entries(imported)
+      .flatMap(([name, value]) => {
+        const schedule = exportedApplicationSchedule(value);
+        return schedule ? [{ name, ...schedule }] : [];
+      })
+      .sort((left, right) => left.name.localeCompare(right.name));
+    const applicationLakehousePublications = Object.entries(imported)
+      .flatMap(([name, value]) => {
+        const graphNode = exportedApplicationLakehousePublication(value);
+        return graphNode ? [{ name, graphNode }] : [];
+      })
+      .sort((left, right) => left.name.localeCompare(right.name));
+    const applicationActors = Object.entries(imported)
+      .flatMap(([name, value]) => {
+        const actorId = exportedApplicationActorId(value);
+        return actorId ? [{ name, actorId }] : [];
+      })
+      .sort((left, right) => left.name.localeCompare(right.name));
     return {
       ok: true,
       value: {
@@ -147,6 +184,9 @@ export async function discoverEntrypointExports(entrypoint: string): Promise<Res
         applicationSignals,
         applicationAgents,
         applicationObjectStores,
+        applicationSchedules,
+        applicationLakehousePublications,
+        applicationActors,
       },
     };
   } catch (cause) {
@@ -154,6 +194,44 @@ export async function discoverEntrypointExports(entrypoint: string): Promise<Res
   } finally {
     deferTemporaryDirectoryCleanup(bundleRoot);
   }
+}
+
+function exportedApplicationActorId(value: unknown): string | undefined {
+  if ((typeof value !== 'object' && typeof value !== 'function') || value === null) return undefined;
+  if (Reflect.get(value, 'kind') !== 'applicationActor') return undefined;
+  const id = Reflect.get(value, 'id');
+  const graphNode = Reflect.get(value, 'graphNode');
+  return typeof id === 'string'
+    && id.trim().length > 0
+    && graphNode !== null
+    && typeof graphNode === 'object'
+    && Reflect.get(graphNode, 'kind') === 'actor'
+    ? id
+    : undefined;
+}
+
+function exportedApplicationLakehousePublication(value: unknown): import('@applik8s/core').ApplicationLakehousePublicationNode | undefined {
+  if (!value || typeof value !== 'object' || Reflect.get(value, 'kind') !== 'applicationLakehousePublication') return undefined;
+  const graphNode = Reflect.get(value, 'graphNode');
+  return graphNode && typeof graphNode === 'object' && Reflect.get(graphNode, 'kind') === 'lakehousePublication'
+    ? graphNode as import('@applik8s/core').ApplicationLakehousePublicationNode
+    : undefined;
+}
+
+function exportedApplicationSchedule(value: unknown): {
+  readonly id: string;
+  readonly graphNode: import('@applik8s/core').ApplicationScheduleNode;
+} | undefined {
+  if (typeof value !== 'function' || Reflect.get(value, 'kind') !== 'applicationSchedule') return undefined;
+  const definition = Reflect.get(value, 'definition');
+  const graphNode = Reflect.get(value, 'graphNode');
+  if (!definition || typeof definition !== 'object' || !graphNode || typeof graphNode !== 'object') return undefined;
+  const id = Reflect.get(definition, 'id');
+  if (typeof id !== 'string' || Reflect.get(graphNode, 'kind') !== 'schedule') return undefined;
+  return {
+    id,
+    graphNode: graphNode as import('@applik8s/core').ApplicationScheduleNode,
+  };
 }
 
 function exportedApplicationOperationId(value: unknown): string | undefined {

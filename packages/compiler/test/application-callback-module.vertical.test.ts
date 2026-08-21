@@ -161,6 +161,27 @@ describe('generated callback capability bindings', () => {
     expect(source).not.toContain('module("documents"');
   });
 
+  it('narrows the public DSL schema re-export to ArkType in deployed callbacks', () => {
+    const source = generatedCallbackFactoryModule({
+      source: 'async input => Payload.assert(input)',
+      dependencies: {
+        source: `
+          import { event, type as defineType } from '@applik8s/applik8s/dsl';
+          const Payload = defineType({ id: 'string' });
+          const unused = event('unused.v1', Payload);
+        `,
+        resolveDir: '/workspace/application',
+      },
+      injectedIdentifiers: [],
+      exportName: 'createCallback',
+    });
+
+    expect(source).toContain("import { type as defineType } from \"arktype\"");
+    expect(source).not.toContain('@applik8s/applik8s/dsl');
+    expect(source).not.toContain('event');
+    expect(source).not.toContain('unused');
+  });
+
   it('continues to fail closed for an executable helper collision', () => {
     expect(() =>
       generatedCallbackFactoryModule({

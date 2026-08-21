@@ -1,5 +1,6 @@
 // typecast-file-boundary: profile conformance fixtures intentionally materialize schema-derived and invalid provider selections across erased branches.
 import {
+  type ApplicationAnalyticalDatabaseProvider,
   AnalyticalDatabase,
   Analytics,
   ApplicationHost,
@@ -26,6 +27,7 @@ import {
   WorkflowEngine,
 } from '@applik8s/applik8s';
 import {
+  applicationClickHouseAnalyticalDatabaseImplementation,
   applicationEventLogImplementation,
   applicationWorkflowEngineImplementation,
 } from '../src/application-providers';
@@ -67,6 +69,67 @@ function graphExpression(value: unknown): string {
 }
 
 describe('application deployment profiles', () => {
+  it('composes profile and target provider selection without source casts or duplicate registration', () => {
+    const application = app('profile-target-matrix', {
+      spec: Installation,
+      status: type({ ready: 'boolean' }),
+    });
+    const DatabaseProvider = TransactionalDatabase.named('primary');
+    const AnalyticsProvider = AnalyticalDatabase.named('primary');
+    const deployment = application.profile(application.installation.spec, 'profile');
+    deployment
+      .provide(DatabaseProvider)
+      .starter(() => TransactionalDatabase.postgres({ name: 'app', namespace: 'app', database: 'app' }))
+      .dedicated(() => TransactionalDatabase.postgres({ name: 'app', namespace: 'app', database: 'app' }))
+      .external(() => TransactionalDatabase.postgres({ name: 'app', namespace: 'app', database: 'app' }))
+      .exhaustive();
+    const database = application.inject(DatabaseProvider);
+    const targetAnalytics = () => application.selectTarget<ApplicationAnalyticalDatabaseProvider>({
+      local: () => Analytics.clickHouse({ name: 'analytics' }),
+      aws: () => Analytics.postgres({ database, schema: 'analytics' }),
+      kubernetes: () => Analytics.clickHouse({ name: 'analytics' }),
+    });
+    deployment
+      .provide(AnalyticsProvider)
+      .starter(targetAnalytics)
+      .dedicated(targetAnalytics)
+      .external(targetAnalytics)
+      .exhaustive();
+    const clickHouse = applicationClickHouseAnalyticalDatabaseImplementation(
+      application.inject(AnalyticsProvider),
+    );
+
+    const provider = applicationGraphFor(application.composition)?.nodes.find(
+      (node) => node.id === 'provider.analytical-database.v1alpha1.primary',
+    );
+    expect(provider).toMatchObject({
+      implementation: 'application-provider-selection',
+      config: {
+        profile: {
+          branches: expect.arrayContaining([
+            expect.objectContaining({
+              variant: 'starter',
+              implementation: 'application-target-provider-selection',
+              config: expect.objectContaining({
+                kind: 'application-target-provider-selection',
+                targets: expect.objectContaining({
+                  local: expect.objectContaining({ kind: 'clickhouse' }),
+                  aws: expect.objectContaining({ kind: 'postgres-analytics' }),
+                }),
+              }),
+            }),
+          ]),
+        },
+      },
+    });
+    expect(clickHouse).toMatchObject({
+      kind: 'clickhouse',
+      name: 'analytics',
+    });
+    expect(clickHouse?.enabled).not.toBe(false);
+    expect(clickHouse?.provision).not.toBe(false);
+  });
+
   it('qualifies extension providers through the same exhaustive profile API', () => {
     const application = app('profile-structured-generation', {
       spec: Installation,
@@ -708,6 +771,30 @@ describe('application deployment profiles', () => {
         aliasOf: 'provider.object-storage.v1alpha1.media',
       },
     });
+  });
+
+  it('treats a qualified provider and its application-default alias as one authority', () => {
+    const application = app('profile-default-consumer', {
+      namespace: 'profile-default-consumer',
+      spec: Installation,
+      status: type({ ready: 'boolean' }),
+    });
+    const PrimaryEvents = EventLog.named('primary');
+    const primaryEvents = application.provide(PrimaryEvents, {
+      kind: 'nats-jetstream', name: 'primary-events', provision: true,
+      stream: 'PRIMARY_EVENTS', subjectPrefix: 'primary',
+    });
+    application.defaults({ eventLog: primaryEvents });
+    const activity = application.actor('workspace-activity.v1', {
+      key: type('string'),
+      state: type({ revision: 'number.integer >= 0' }),
+      protocol: {},
+    });
+    activity.on.initialize(() => ({ revision: 0 }));
+
+    const graph = applicationGraphFor(application.composition);
+    expect(graph).toBeDefined();
+    expect(validateApplicationGraph(graph as NonNullable<typeof graph>)).toEqual([]);
   });
 
   it('preserves profile-selected generated workload database connections', () => {

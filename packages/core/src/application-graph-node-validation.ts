@@ -134,6 +134,12 @@ export function applicationProviderRefsForNode(node: ApplicationGraphNode): read
     case 'workflowHandler':
     case 'workflowWorker':
       return [node.workflowEngine];
+    case 'schedule':
+      return [node.scheduler];
+    case 'lakehousePublication':
+      return [node.dataset];
+    case 'actor':
+      return [node.runtime];
     case 'aiAgent':
       return [node.inference, node.state];
     case 'projection':

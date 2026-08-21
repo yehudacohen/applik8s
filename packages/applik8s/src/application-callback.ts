@@ -1,3 +1,4 @@
+// typecast-file-boundary: Serialized callback metadata is reflected from user closures and validated at this compiler boundary.
 import { applicationCallbackSourceMatchesRuntime } from './application-callback-source-equivalence.js';
 import { applicationCallableRuntimeFor } from './application-provider-dependencies.js';
 import {
@@ -28,6 +29,8 @@ export interface InstrumentedApplicationCallbackSource {
   readonly source?: string;
   /** Framework-generated self-contained source that has already crossed the closure boundary. */
   readonly generated?: boolean;
+  readonly registrar?: string;
+  readonly property?: string;
 }
 
 export interface InstrumentedApplicationCallbackDependency {
@@ -45,6 +48,11 @@ export interface ExpandedApplicationCallbackDependencies {
     readonly identifier: string;
     readonly runtime: 'notifications.request.v1';
     readonly dependencies: readonly string[];
+  }[];
+  readonly provenance: readonly {
+    readonly identifier: string;
+    readonly helperPath: readonly string[];
+    readonly source?: InstrumentedApplicationCallbackSource;
   }[];
 }
 
@@ -64,6 +72,11 @@ export function expandApplicationCallbackDependencies(options: {
   readonly awaited?: Readonly<Record<string, unknown>> | undefined;
 }): ExpandedApplicationCallbackDependencies {
   const leaves: InstrumentedApplicationCallbackDependency[] = [];
+  const provenance: {
+    readonly identifier: string;
+    readonly helperPath: readonly string[];
+    readonly source?: InstrumentedApplicationCallbackSource;
+  }[] = [];
   const callables: {
     readonly identifier: string;
     readonly runtime: 'notifications.request.v1';
@@ -98,7 +111,16 @@ export function expandApplicationCallbackDependencies(options: {
   const visit = (
     dependency: InstrumentedApplicationCallbackDependency,
     inheritedAwaited: boolean,
+    helperPath: readonly string[],
   ): void => {
+    const declarationSource = instrumentedApplicationCallbackDeclarationSource(dependency.value);
+    if (declarationSource) {
+      provenance.push({
+        identifier: dependency.identifier,
+        helperPath,
+        source: declarationSource,
+      });
+    }
     const metadata = instrumentedApplicationCallbackDependencies(
       dependency.value,
     );
@@ -106,6 +128,14 @@ export function expandApplicationCallbackDependencies(options: {
       leaves.push({
         ...dependency,
         awaited: dependency.awaited || inheritedAwaited,
+      });
+      const source = declarationSource ?? ((typeof dependency.value === 'function')
+        ? instrumentedApplicationCallbackSource(dependency.value as (...args: never[]) => unknown)
+        : undefined);
+      provenance.push({
+        identifier: dependency.identifier,
+        helperPath,
+        ...(source ? { source } : {}),
       });
       return;
     }
@@ -127,11 +157,12 @@ export function expandApplicationCallbackDependencies(options: {
       visit(
         nested,
         nested.awaited || (inheritedAwaited && nested.returned),
+        [...helperPath, nested.identifier],
       );
     }
     visiting.delete(dependency.value);
   };
-  for (const root of roots) visit(root, root.awaited);
+  for (const root of roots) visit(root, root.awaited, [root.identifier]);
 
   const calls: unknown[] = [];
   const bindings: Record<string, unknown> = {};
@@ -165,6 +196,32 @@ export function expandApplicationCallbackDependencies(options: {
           ) === index,
       ),
     ),
+    provenance: Object.freeze(
+      provenance
+        .filter((entry, index, entries) =>
+          entries.findIndex((candidate) =>
+            candidate.identifier === entry.identifier
+            && candidate.helperPath.join('\0') === entry.helperPath.join('\0')) === index)
+        .sort((left, right) =>
+          left.helperPath.join('\0').localeCompare(right.helperPath.join('\0'))),
+    ),
+  };
+}
+
+function instrumentedApplicationCallbackDeclarationSource(value: unknown): InstrumentedApplicationCallbackSource | undefined {
+  if (typeof value !== 'function') return undefined;
+  const metadata = Reflect.get(value, Symbol.for('applik8s.applicationCallbackDeclarationSource'));
+  if (!metadata || typeof metadata !== 'object') return undefined;
+  const file = Reflect.get(metadata, 'file');
+  const line = Reflect.get(metadata, 'line');
+  const column = Reflect.get(metadata, 'column');
+  const name = Reflect.get(metadata, 'name');
+  if (typeof file !== 'string' || !Number.isSafeInteger(line) || !Number.isSafeInteger(column)) return undefined;
+  return {
+    file,
+    line: Number(line),
+    column: Number(column),
+    ...(typeof name === 'string' ? { name } : {}),
   };
 }
 
@@ -318,6 +375,17 @@ export function instrumentedApplicationCallbackSource(callback: (...args: never[
   const name = Reflect.get(value, 'name');
   const source = Reflect.get(value, 'source');
   const generated = Reflect.get(value, 'generated');
+  const registrar = Reflect.get(value, 'registrar');
+  const property = Reflect.get(value, 'property');
   if (typeof file !== 'string' || !Number.isSafeInteger(line) || !Number.isSafeInteger(column)) return undefined;
-  return { file, line: Number(line), column: Number(column), ...(typeof name === 'string' ? { name } : {}), ...(typeof source === 'string' ? { source } : {}), ...(generated === true ? { generated: true } : {}) };
+  return {
+    file,
+    line: Number(line),
+    column: Number(column),
+    ...(typeof name === 'string' ? { name } : {}),
+    ...(typeof source === 'string' ? { source } : {}),
+    ...(generated === true ? { generated: true } : {}),
+    ...(typeof registrar === 'string' ? { registrar } : {}),
+    ...(typeof property === 'string' ? { property } : {}),
+  };
 }

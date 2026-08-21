@@ -29,9 +29,8 @@ export function generatedCallbackFactoryModule(
         options.dependencies.resolveDir,
       )
     : '';
-  const focusedDependencySource = focusedCallbackDependencySource(
-    rawDependencySource,
-    options.source,
+  const focusedDependencySource = rewriteCallbackRuntimeImports(
+    focusedCallbackDependencySource(rawDependencySource, options.source),
   );
   const preservedRoots = preservedInjectedImportRoots(
     `${options.source}\n${focusedDependencySource}`,
@@ -71,6 +70,79 @@ ${dependencyModule.locals}
 return (${options.source});
 }
 `;
+}
+
+/**
+ * Authoring entrypoints may deliberately re-export small handler-safe values.
+ * Generated callbacks bind those values to their narrow runtime authority
+ * rather than bundling the entire authoring module (and its infrastructure
+ * dependencies) into a deployed worker.
+ */
+function rewriteCallbackRuntimeImports(source: string): string {
+  if (!source.includes("@applik8s/applik8s/dsl")) return source;
+  const file = ts.createSourceFile(
+    'applik8s-callback-runtime-imports.ts',
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TS,
+  );
+  const statements: ts.Statement[] = [];
+  for (const statement of file.statements) {
+    if (
+      !ts.isImportDeclaration(statement)
+      || !ts.isStringLiteral(statement.moduleSpecifier)
+      || statement.moduleSpecifier.text !== '@applik8s/applik8s/dsl'
+      || !statement.importClause?.namedBindings
+      || !ts.isNamedImports(statement.importClause.namedBindings)
+    ) {
+      statements.push(statement);
+      continue;
+    }
+    const arktype = statement.importClause.namedBindings.elements.filter(
+      (element) => (element.propertyName?.text ?? element.name.text) === 'type',
+    );
+    const remaining = statement.importClause.namedBindings.elements.filter(
+      (element) => (element.propertyName?.text ?? element.name.text) !== 'type',
+    );
+    if (arktype.length > 0) {
+      statements.push(ts.factory.createImportDeclaration(
+        undefined,
+        ts.factory.createImportClause(
+          false,
+          undefined,
+          ts.factory.createNamedImports(arktype),
+        ),
+        ts.factory.createStringLiteral('arktype'),
+      ));
+    }
+    if (remaining.length > 0 || statement.importClause.name) {
+      statements.push(ts.factory.updateImportDeclaration(
+        statement,
+        statement.modifiers,
+        ts.factory.updateImportClause(
+          statement.importClause,
+          statement.importClause.isTypeOnly,
+          statement.importClause.name,
+          remaining.length > 0
+            ? ts.factory.updateNamedImports(
+                statement.importClause.namedBindings,
+                remaining,
+              )
+            : undefined,
+        ),
+        statement.moduleSpecifier,
+        statement.attributes,
+      ));
+    }
+  }
+  return ts.createPrinter({ newLine: ts.NewLineKind.LineFeed })
+    .printList(
+      ts.ListFormat.MultiLine,
+      ts.factory.createNodeArray(statements),
+      file,
+    )
+    .trim();
 }
 
 const capturedBindingMergeSource = `function __applik8sMergeCapturedBinding(captured, injected) {

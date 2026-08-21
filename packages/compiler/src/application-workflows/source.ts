@@ -5,6 +5,10 @@ import { join, resolve } from 'node:path';
 import type { ApplicationStreamNode, ApplicationTaskHandlerNode, ApplicationWorkflowHandlerNode } from '@applik8s/core';
 import type { Plugin } from 'esbuild';
 import { generatedCallbackFactoryModule } from '../application-callback-module.js';
+import {
+  generatedApplicationEventLogPublisherSource,
+  type ApplicationRuntimeExecutionTarget,
+} from '../application-event-log-runtime-source.js';
 import { applicationSignalGrantPermissionId } from '../application-operations/index.js';
 import { structuredGenerationSelection, type WorkflowContract, type WorkflowFunctionNativeTransactionContract, type WorkflowOperationAliasContract, type WorkflowTaskObjectContract, type WorkflowTaskProjectionContract } from './contracts.js';
 import { jsName, kubernetesName, numberConfig, objectConfig, stringConfig, workflowObjectEnabledEnvironment } from './utilities.js';
@@ -57,7 +61,10 @@ function workflowOperationAliasesSource(
   return `{ ${entries.join(', ')} }`;
 }
 
-export function generatedWorkerSource(contract: WorkflowContract): string {
+export function generatedWorkerSource(
+  contract: WorkflowContract,
+  executionTarget: ApplicationRuntimeExecutionTarget = 'kubernetes',
+): string {
   const handlers = [...contract.tasks.map((entry) => entry.handler), ...contract.workflows.map((entry) => entry.handler)];
   const handlerImports = handlers
     .map((handler) => `import { createHandler as ${handlerVariable(handler.id)} } from ${JSON.stringify(`./${handlerModuleFile(handler.id)}`)};`)
@@ -72,7 +79,25 @@ export function generatedWorkerSource(contract: WorkflowContract): string {
     const operations = contract.operationEffects?.aliases[handler.id] ?? {};
     const queries = contract.queryEffects?.aliases[handler.id] ?? {};
     const projections = contract.projectionEffects?.aliases[handler.id] ?? {};
-		const objects = contract.objectEffects?.aliases[handler.id] ?? {};
+    const objects = contract.objectEffects?.aliases[handler.id] ?? {};
+    const actorBindings = handler.actors ?? [];
+    const actorEffects = contract.actorEffects?.actors.filter(
+      (candidate) => candidate.taskHandlerId === handler.id,
+    ) ?? [];
+    const capabilityBindings = (handler.capabilities ?? []).map((reference) => {
+      const provider = contract.capabilities.find(
+        (candidate) => candidate.id === reference.nodeId,
+      );
+      if (!provider) {
+        throw new Error(
+          `Workflow handler ${handler.id} references unavailable capability ${reference.nodeId}.`,
+        );
+      }
+      return {
+        path: provider.interface,
+        value: `Object.freeze({ name: ${JSON.stringify(provider.interface)} })`,
+      };
+    });
     const principal = handler.serviceIdentity
       ? JSON.stringify(taskServicePrincipalInput(
           handler.serviceIdentity,
@@ -80,11 +105,14 @@ export function generatedWorkerSource(contract: WorkflowContract): string {
         ))
       : handler.operationPrincipalSource
         ? `${operationPrincipalVariable(handler.id)}(validInput)`
+        : actorBindings.length > 0
+          ? JSON.stringify({ id: `workflow-task:${task.name}`, authorizationVersion: 'v1' })
         : 'undefined';
     const functionNativeTransaction = contract.functionNativeTransactions?.find(
       (transaction) => transaction.taskHandlerId === handler.id,
     );
     const directBindings = nestedCallbackBindingsSource([
+      ...capabilityBindings,
       ...(handler.operations ?? []).map((binding) => ({
         path: binding.alias,
         value: `execution.operations[${JSON.stringify(binding.alias)}]`,
@@ -100,6 +128,17 @@ export function generatedWorkerSource(contract: WorkflowContract): string {
       ...(handler.objects ?? []).map((binding) => ({
         path: binding.alias,
         value: `execution.objects[${JSON.stringify(binding.alias)}]`,
+      })),
+      ...actorBindings.map((binding) => ({
+        path: binding.alias,
+        value: (() => {
+          const effect = actorEffects.find((candidate) => candidate.alias === binding.alias);
+          if (!effect) throw new Error(`Workflow task ${handler.id} actor ${binding.alias} has no compiled actor effect.`);
+          const envelope = JSON.stringify(effect.workloadAuthority);
+          return binding.memberKind === 'alarm'
+            ? `(key, at, input, options) => invokeApplicationActorMember(execution, principal, ${JSON.stringify(task.name)}, ${JSON.stringify(binding.actor.nodeId.replace(/^actor\./u, ''))}, ${JSON.stringify(binding.member)}, ${JSON.stringify(binding.memberKind)}, ${envelope}, key, input, { ...options, scheduledAt: at instanceof Date ? at.toISOString() : at })`
+            : `(key, input, options) => invokeApplicationActorMember(execution, principal, ${JSON.stringify(task.name)}, ${JSON.stringify(binding.actor.nodeId.replace(/^actor\./u, ''))}, ${JSON.stringify(binding.member)}, ${JSON.stringify(binding.memberKind)}, ${envelope}, key, input, options)`;
+        })(),
       })),
       ...(handler.signalBindings ?? []).map((binding) => ({
         path: binding.alias,
@@ -205,10 +244,17 @@ const ${jsName(workflow.id)} = hatchet.durableTask({
   const capabilityImports = contract.capabilities.length > 0
     ? `import { createDeterministicStructuredGenerationCapability, createHttpStructuredGenerationCapability } from '@applik8s/applik8s/structured-generation-runtime';`
     : '';
-  const operationImports = contract.operationEffects || contract.signalEffects
-    ? `${contract.operationEffects ? "import { canonicalApplicationTaskServicePrincipal, createApplicationTaskOperationRuntime } from '@applik8s/applik8s/task-operation-runtime';\n" : ''}import { createApplicationOperationAuthorityRuntime } from '@applik8s/operations';
+  const eventLogPublisher = contract.operationEffects
+    ? generatedApplicationEventLogPublisherSource({
+        executionTarget,
+        variableName: 'applicationEventLogPublisher',
+        connectionName: `applik8s-workflow-${contract.worker.name}`,
+      })
+    : undefined;
+  const operationImports = contract.operationEffects || contract.signalEffects || contract.actorEffects
+    ? `${contract.operationEffects || contract.actorEffects ? `import { canonicalApplicationTaskServicePrincipal${contract.operationEffects ? ', createApplicationTaskOperationRuntime' : ''} } from '@applik8s/applik8s/task-operation-runtime';\n` : ''}${contract.operationEffects || contract.signalEffects ? `import { createApplicationOperationAuthorityRuntime } from '@applik8s/operations';
 import postgres from 'postgres';
-${contract.operationEffects ? "import { createJetStreamEventLog } from '@applik8s/runtime-nats/event-log';" : ''}`
+${eventLogPublisher?.importSource ?? ''}` : ''}`
     : '';
   const queryImports = contract.queryEffects
     ? `import { createApplicationTaskQueryRuntime } from '@applik8s/applik8s/task-query-runtime';`
@@ -232,7 +278,10 @@ import { AuthenticationV1Api, KubeConfig } from '@kubernetes/client-node';
 import { createHatchetWorkflowRuntimeFromClient, observeHatchetWorkflowRun } from '@applik8s/runtime-hatchet';`
     : '';
   const capabilityInitializers = generatedWorkflowCapabilities(contract);
-  const operationInitializer = generatedWorkflowOperationRuntime(contract);
+  const operationInitializer = generatedWorkflowOperationRuntime(
+    contract,
+    eventLogPublisher?.declarationSource,
+  );
   const queryInitializer = generatedWorkflowQueryRuntime(contract);
   const projectionInitializer = generatedWorkflowProjectionRuntime(contract);
 	const objectInitializer = generatedWorkflowObjectRuntime(contract);
@@ -369,6 +418,11 @@ function requiredEnv(name) {
   if (!value) throw new Error('Missing required workflow runtime environment variable ' + name);
   return value;
 }
+function runtimeEndpoint(baseUrl, environmentName, path) {
+  let selected = process.env[environmentName] || baseUrl;
+  while (selected.endsWith('/')) selected = selected.slice(0, -1);
+  return selected + path;
+}
 async function observeWorkflowExecution(execution, workflowName, state, reason) {
   if (!operationAuthority) return;
   await operationAuthority.observe({
@@ -421,9 +475,9 @@ async function observeWorkflowRuntime(state, reason) {
 }
 
 async function canonicalTaskPrincipal(principal, context) {
-  if (!principal || !operationAuthority) return principal;
+  if (!principal) return principal;
   const invocationId = String(context.workflowRunId?.() ?? context.stepRunId?.() ?? 'unknown');
-  const authorityRevision = await operationAuthority.authorityRevision();
+  const authorityRevision = operationAuthority ? await operationAuthority.authorityRevision() : 'internal-actor-runtime-v1';
   const causalPrincipal = workflowCausalPrincipal(context);
   return canonicalApplicationTaskServicePrincipal(principal, {
     application: ${JSON.stringify(contract.graphName)},
@@ -431,9 +485,53 @@ async function canonicalTaskPrincipal(principal, context) {
     catalogRevision: ${JSON.stringify(contract.operationCatalog?.revision ?? 'no-operation-catalog')},
     authorityRevision,
     invocationId,
-    contextSecret: requiredEnv('APPLIK8S_TASK_OPERATION_CONTEXT_SECRET'),
+    contextSecret: requiredEnv(operationAuthority ? 'APPLIK8S_TASK_OPERATION_CONTEXT_SECRET' : 'APPLIK8S_INTERNAL_OPERATION_SECRET'),
     ...(causalPrincipal ? { causalPrincipal } : {}),
   });
+}
+
+async function invokeApplicationActorMember(execution, principal, taskName, actor, member, memberKind, workloadAuthority, key, input, options = {}) {
+  if (!principal || typeof principal.id !== 'string' || !principal.trustedContextDigest) {
+    throw new Error('Workflow task ' + taskName + ' has no framework-derived actor principal.');
+  }
+  const audience = workloadAuthority.audiences[0];
+  if (!audience) throw new Error('Workflow task ' + taskName + ' actor ' + actor + '.' + member + ' has no workload-authority audience.');
+  const endpoint = requiredEnv('APPLIK8S_ACTOR_APPLICATION_ENDPOINT').replace(/\\/+$/u, '') + '/__applik8s/v1/internal/actors/invoke';
+  const response = await fetch(endpoint, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      authorization: 'Bearer ' + requiredEnv('APPLIK8S_INTERNAL_OPERATION_SECRET'),
+    },
+    body: JSON.stringify({
+      actor,
+      member,
+      memberKind,
+      key,
+      input,
+      idempotencyKey: options.idempotencyKey ?? execution.idempotencyKey,
+      ...(options.scheduledAt ? { scheduledAt: options.scheduledAt } : {}),
+      authority: {
+        principal,
+        causalPrincipal: { id: principal.causalPrincipalId ?? principal.id },
+        trustedContextDigest: principal.trustedContextDigest,
+        transport: 'workflow',
+        audience,
+        workloadAuthorityId: workloadAuthority.id,
+        execution: {
+          kind: 'task',
+          id: execution.invocationId,
+          attempt: execution.attempt,
+          deadline: execution.deadline,
+          cancellationRevision: execution.cancellationRevision,
+        },
+      },
+    }),
+    signal: execution.signal,
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error('Actor ' + actor + '.' + member + ' failed with HTTP ' + response.status + ': ' + JSON.stringify(body));
+  return memberKind === 'command' ? body.result : body.receipt;
 }
 
 function workflowCausalPrincipal(context) {
@@ -1339,13 +1437,18 @@ function functionNativeEventDefinition(
   };
 }
 
-export function generatedHandlerModule(handler: ApplicationTaskHandlerNode | ApplicationWorkflowHandlerNode): string {
+export function generatedHandlerModule(
+  handler: ApplicationTaskHandlerNode | ApplicationWorkflowHandlerNode,
+  capabilityNames: readonly string[] = [],
+): string {
   const injectedIdentifiers = (handler.kind === 'taskHandler'
     ? [
+        ...capabilityNames,
         ...(handler.operations ?? []).map((binding) => binding.alias),
         ...(handler.queries ?? []).map((binding) => binding.alias),
         ...(handler.projections ?? []).map((binding) => binding.alias),
         ...(handler.objects ?? []).map((binding) => binding.alias),
+        ...(handler.actors ?? []).map((binding) => binding.alias),
         ...(handler.signalBindings ?? []).map((binding) => binding.alias),
         ...((handler.signalBindings?.length ?? 0) > 0 ? ['workflow'] : []),
         ...(handler.functionNativeTransaction?.modelBindings ?? []).map(
@@ -1438,7 +1541,10 @@ export function generatedOperationPrincipalModule(handler: ApplicationTaskHandle
   return `${dependencies}${dependencies ? '\n\n' : ''}export const principal = (${handler.operationPrincipalSource});\n`;
 }
 
-function generatedWorkflowOperationRuntime(contract: WorkflowContract): string {
+function generatedWorkflowOperationRuntime(
+  contract: WorkflowContract,
+  eventLogPublisherSource?: string,
+): string {
   const effects = contract.operationEffects;
   if (!effects && !contract.signalEffects) {
     return 'const operationRuntime = undefined;\nconst operationAuthoritySql = undefined;\nconst operationAuthority = undefined;';
@@ -1500,9 +1606,15 @@ const operationRuntime = undefined;`;
   if (databaseEnvironments.size !== 1) {
     throw new Error(`Workflow worker ${contract.worker.id} protected operations and signals span multiple authority databases.`);
   }
+  if (!eventLogPublisherSource) {
+    throw new Error(
+      `Workflow worker ${contract.worker.id} operations have no target-native event-log publisher.`,
+    );
+  }
   const authorityDatabaseEnvironment = [...databaseEnvironments][0]!;
   const commands = operations.map(({ handler, command, model }) => `{ id: ${JSON.stringify(`${command.contract.name}.${command.contract.version}`)}, bindingId: ${JSON.stringify(handler.name)}, model: ${JSON.stringify(model.name)}, inputSchema: ${JSON.stringify(command.contract.input.jsonSchema)}, databaseUrl: requiredEnv(${JSON.stringify(model.runtime.connectionEnvName)}), key: (${handler.key.source})${handler.idempotencyKey ? `, idempotencyKey: (${handler.idempotencyKey.source})` : ''} }`).join(',\n');
-  return `const operationAuthoritySql = postgres(requiredEnv(${JSON.stringify(authorityDatabaseEnvironment)}), { max: 6, idle_timeout: 20, connect_timeout: 10, prepare: false });
+  return `${eventLogPublisherSource}
+const operationAuthoritySql = postgres(requiredEnv(${JSON.stringify(authorityDatabaseEnvironment)}), { max: 6, idle_timeout: 20, connect_timeout: 10, prepare: false });
 const operationAuthority = createApplicationOperationAuthorityRuntime({
   sql: operationAuthoritySql,
   application: ${JSON.stringify(contract.graphName)},
@@ -1513,7 +1625,7 @@ await operationAuthority.prepare();
 const operationRuntime = createApplicationTaskOperationRuntime({
   commands: [${commands}],
   cursorSecret: requiredEnv('APPLIK8S_TASK_OPERATION_CONTEXT_SECRET'),
-  eventLogPublisher: createJetStreamEventLog({ servers: JSON.parse(requiredEnv('APPLIK8S_NATS_SERVERS')), stream: requiredEnv('APPLIK8S_NATS_STREAM'), subjectPrefix: requiredEnv('APPLIK8S_NATS_SUBJECT_PREFIX'), connectionName: ${JSON.stringify(`applik8s-workflow-${contract.worker.name}`)}, ...(process.env.APPLIK8S_NATS_TOKEN ? { token: process.env.APPLIK8S_NATS_TOKEN } : {}), ...(process.env.APPLIK8S_NATS_USER ? { user: process.env.APPLIK8S_NATS_USER, pass: process.env.APPLIK8S_NATS_PASSWORD ?? '' } : {}) }),
+  eventLogPublisher: applicationEventLogPublisher,
   admitExecution: ({ principal, invocation, envelopes, trustedContextDigest }) => {
     const envelope = envelopes[0];
     if (!envelope) throw new Error('Application task execution has no workload authority envelope.');
@@ -1553,7 +1665,7 @@ const operationRuntime = createApplicationTaskOperationRuntime({
 function generatedWorkflowQueryRuntime(contract: WorkflowContract): string {
   const effects = contract.queryEffects;
   if (!effects) return 'const queryRuntime = undefined;';
-  const queries = effects.queries.map(({ query, gateway, endpoint }) => `{ id: ${JSON.stringify(query.publicId ?? `${query.name}.${query.version}`)}, audience: ${JSON.stringify(gateway.id)}, endpoint: ${JSON.stringify(endpoint)}, inputSchema: ${JSON.stringify(query.input.jsonSchema)}, outputSchema: ${JSON.stringify(query.output.jsonSchema)}, timeoutMs: ${query.budgets.timeoutMs}, maxResultBytes: ${query.budgets.maxResultBytes} }`).join(',\n');
+  const queries = effects.queries.map(({ query, gateway, endpointBaseUrl, endpointPath, endpointEnvironmentName }) => `{ id: ${JSON.stringify(query.publicId ?? `${query.name}.${query.version}`)}, audience: ${JSON.stringify(gateway.id)}, endpoint: runtimeEndpoint(${JSON.stringify(endpointBaseUrl)}, ${JSON.stringify(endpointEnvironmentName)}, ${JSON.stringify(endpointPath)}), inputSchema: ${JSON.stringify(query.input.jsonSchema)}, outputSchema: ${JSON.stringify(query.output.jsonSchema)}, timeoutMs: ${query.budgets.timeoutMs}, maxResultBytes: ${query.budgets.maxResultBytes} }`).join(',\n');
   return `const queryRuntime = createApplicationTaskQueryRuntime({
   queries: [${queries}],
   cursorSecret: requiredEnv('APPLIK8S_TASK_QUERY_CONTEXT_SECRET'),

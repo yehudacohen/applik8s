@@ -1,4 +1,6 @@
 export type { HttpApplicationCommandTransportOptions } from './command-http-transport.js';
+export type * from './actors.js';
+export { createApplicationActorClient } from './actors.js';
 export { createHttpApplicationCommandTransport } from './command-http-transport.js';
 export type * from './command-store.js';
 export { ApplicationCommandClient, ApplicationCommandFailedError, ApplicationCommandRejectedError, createApplicationClientId, waitForApplicationCommand } from './command-store.js';

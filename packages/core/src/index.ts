@@ -8,15 +8,23 @@ export {
   applicationGraphNodeIdentity,
   applicationOperationIdentity,
   applicationProviderIdentity,
+  applicationRuntimeAccessRequirement,
   applicationTargetIdentity,
+  mergeApplicationRuntimeAccessRequirements,
   sourceProvenance,
   validateApplicationFoundation,
 } from './application-foundation.js';
+export type * from './application-graph-foundation.js';
+export {
+  deriveApplicationGraphFoundation,
+  withDerivedApplicationGraphFoundation,
+} from './application-graph-foundation.js';
 export type * from './application-plan.js';
 export {
   diffApplicationPlans,
   normalizeApplicationPlan,
   providerGuaranteeFor,
+  renderApplicationPlanGraph,
   renderApplicationPlanText,
   serializeApplicationPlan,
   serializeApplicationPlanContent,

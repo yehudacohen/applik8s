@@ -40,6 +40,7 @@ import {
   applicationProviderImplementationName,
   applicationProviderInterface,
   applicationProviderSelectionFor,
+  applicationTargetProviderSelectionFor,
   applicationTypedProviderContract,
   isIngressHttpExposureProvider,
   isNodePortHttpExposureProvider,
@@ -581,6 +582,7 @@ export function recordApplicationProviderGraph(
       })
     : undefined;
   const nodeId = applicationProviderGraphNodeId(providerInterface, qualification);
+  const targetSelection = applicationTargetProviderSelectionFor(implementation);
   addApplicationGraphNode(state, {
     id: nodeId,
     kind: 'provider',
@@ -604,6 +606,17 @@ export function recordApplicationProviderGraph(
       ...(qualification
         ? { qualification: qualification as unknown as JsonValue }
         : {}),
+      ...(targetSelection ? {
+        targetSelection: applicationTypeKroGraphValue({
+          targets: Object.fromEntries(Object.entries(targetSelection.targets).map(([target, branch]) => [
+            target,
+            {
+              implementation: applicationProviderImplementationName(branch),
+              configuration: branch,
+            },
+          ])),
+        }) as JsonValue,
+      } : {}),
       ...(identityProviderAuthentication || identityProviderHttp ? {
         identity: {
           ...(identityProviderAuthentication as JsonObject | undefined),
@@ -629,6 +642,28 @@ export function recordApplicationProviderGraph(
           ...(oauthAuthorizationDecision.unresolved ? { decisionUnresolved: oauthAuthorizationDecision.unresolved } : {}),
         }) as JsonValue,
       } : {}),
+      ...(tokenName === 'Observability' ? {
+        // Preserve the complete provider-native contract. Deployment-owned
+        // fields such as ClickStack namespace/storage are just as material as
+        // the runtime policy and retention contract; dropping them here made
+        // an apparently valid provider selection impossible to lower.
+        observability: applicationTypeKroGraphValue(implementation) as JsonValue,
+      } : {}),
+      ...(tokenName === 'HttpExposure' && implementation && typeof implementation === 'object'
+        ? { httpExposure: applicationTypeKroGraphValue(implementation) as JsonValue }
+        : {}),
+      ...(providerInterface === 'Scheduler' && !targetSelection && implementation && typeof implementation === 'object'
+        ? { scheduler: applicationTypeKroGraphValue(implementation) as JsonValue }
+        : {}),
+      ...(providerInterface === 'ActorRuntime' && !targetSelection && implementation && typeof implementation === 'object'
+        ? { actorRuntime: applicationTypeKroGraphValue(implementation) as JsonValue }
+        : {}),
+      ...(providerInterface === 'LakehouseDataset' && !targetSelection && implementation && typeof implementation === 'object'
+        ? { lakehouseDataset: applicationTypeKroGraphValue(implementation) as JsonValue }
+        : {}),
+      ...(providerInterface === 'LakehouseQuery' && !targetSelection && implementation && typeof implementation === 'object'
+        ? { lakehouseQuery: applicationTypeKroGraphValue(implementation) as JsonValue }
+        : {}),
       ...((tokenName === 'IdentityProvider' || tokenName === 'OAuthAuthorizationServer')
         && selectedApplicationProviderProperty(implementation, 'infrastructure') !== undefined
         ? {
@@ -637,31 +672,32 @@ export function recordApplicationProviderGraph(
             ) as JsonValue,
           }
         : {}),
-      ...(tokenName === 'ApplicationHost' && implementation && typeof implementation === 'object'
+      ...(tokenName === 'ApplicationHost' && !targetSelection && implementation && typeof implementation === 'object'
         ? { host: applicationTypeKroGraphValue(implementation) as JsonValue }
         : {}),
-      ...(providerInterface === 'TransactionalDatabase' && implementation && typeof implementation === 'object'
+      ...(providerInterface === 'TransactionalDatabase' && !targetSelection && implementation && typeof implementation === 'object'
         ? { transactionalDatabase: applicationTypeKroGraphValue(implementation) as JsonValue }
         : {}),
-      ...(tokenName === 'ContainerRegistry' && implementation && typeof implementation === 'object'
+      ...(tokenName === 'ContainerRegistry' && !targetSelection && implementation && typeof implementation === 'object'
         ? { containerRegistry: applicationTypeKroGraphValue(implementation) as JsonValue }
         : {}),
-      ...(tokenName === 'IndexStore' && implementation && typeof implementation === 'object'
+      ...(tokenName === 'IndexStore' && !targetSelection && implementation && typeof implementation === 'object'
         ? { indexStore: applicationTypeKroGraphValue(implementation) as JsonValue }
         : {}),
-      ...(tokenName === 'ObjectStorage' && implementation && typeof implementation === 'object' && Reflect.get(implementation, 'kind') === 's3'
+      ...(tokenName === 'ObjectStorage' && !targetSelection && implementation && typeof implementation === 'object' && Reflect.get(implementation, 'kind') === 's3'
         ? { objectStorage: applicationTypeKroGraphValue(implementation) as JsonValue }
         : {}),
-      ...(providerInterface === 'AnalyticalDatabase' && implementation && typeof implementation === 'object'
+      ...(providerInterface === 'AnalyticalDatabase' && !targetSelection && implementation && typeof implementation === 'object'
         ? { analyticalDatabase: applicationTypeKroGraphValue(implementation) as JsonValue }
         : {}),
-      ...(providerInterface === 'Search' && implementation && typeof implementation === 'object'
+      ...(providerInterface === 'Search' && !targetSelection && implementation && typeof implementation === 'object'
         ? { search: applicationTypeKroGraphValue(implementation) as JsonValue }
         : {}),
-      ...(providerInterface === 'AI' && implementation && typeof implementation === 'object'
+      ...(providerInterface === 'AI' && !targetSelection && implementation && typeof implementation === 'object'
         ? { ai: applicationTypeKroGraphValue(implementation) as JsonValue }
         : {}),
       ...((providerInterface === 'EventLog' || providerInterface === 'WorkflowEngine')
+        && !targetSelection
         && implementation
         && typeof implementation === 'object'
         && Reflect.get(implementation, 'kind') !== 'application-provider-selection'

@@ -31,6 +31,7 @@ import type { ApplicationAnalyticalDatabaseProvider, ApplicationIdentityProvider
 import { applicationAnalyticalDatabaseImplementation, applicationIndexBackend, applicationObjectStorageImplementation, applicationProviderImplementationName, applicationProviderQualificationFor, applicationProviderSelectionFor, applicationTransactionalDatabaseImplementation, defaultApplicationIndexProvider, IndexStore, isApplicationAnalyticalDatabaseProvider, isApplicationIdentityProvider, isClickHouseAnalyticalDatabaseProvider, isPostgresAnalyticalDatabaseProvider } from './application-providers.js';
 import type { ApplicationQueryBinding, ApplicationQueryPrincipal } from './application-queries.js';
 import { applicationQueryBindingForOperation } from './application-queries.js';
+import { applicationActorDependencyBindings } from './application-actor-dependencies.js';
 import { applicationTypeKroGraphValue, applicationTypeKroSerializedValue, applicationTypeKroString } from './application-typekro-values.js';
 import { type ApplicationTaskBinding, type ApplicationWorkflowBinding, type ApplicationWorkflowState, applicationGeneratedDependencyAlias, recordApplicationWorkflowEngine } from './application-workflows.js';
 import { applicationRelationalModelOptionsFor } from './drizzle.js';
@@ -1230,6 +1231,16 @@ function registerApplicationStreamProcessorInternal<
     name,
     inferred.bindings,
   );
+  const actorBindings = applicationActorDependencyBindings(
+    state,
+    `Application stream processor ${name}`,
+    inferred,
+  ).map(({ alias, actor, member, memberKind }) => ({
+    identifier: alias,
+    actor,
+    member,
+    memberKind,
+  }));
   const awaitedValues = new Set(Object.values(inferred.awaited));
   const unawaitedOperations = Object.entries(inferred.bindings)
     .filter(([, value]) => applicationModelCommandBindingForOperation(value))
@@ -1283,6 +1294,7 @@ function registerApplicationStreamProcessorInternal<
       .map(({ identifier }) => identifier),
     ...operationBindings.map(({ identifier }) => identifier),
     ...queryBindings.map(({ identifier }) => identifier),
+    ...actorBindings.map(({ identifier }) => identifier),
   ]
     .flatMap((identifier) => [
       identifier,
@@ -1316,6 +1328,7 @@ function registerApplicationStreamProcessorInternal<
     ...(functionNativeTransaction ? { functionNativeTransaction } : {}),
     ...(operationBindings.length > 0 ? { operationBindings } : {}),
     ...(queryBindings.length > 0 ? { queryBindings } : {}),
+    ...(actorBindings.length > 0 ? { actorBindings } : {}),
     ...(inferred.callables.length > 0
       ? { callableBindings: inferred.callables }
       : {}),
@@ -1363,6 +1376,13 @@ function registerApplicationStreamProcessorInternal<
       from: { nodeId },
       to: query.query,
       relationship: 'reads',
+    });
+  }
+  for (const actor of actorBindings) {
+    addApplicationGraphEdge(state, {
+      from: { nodeId },
+      to: actor.actor,
+      relationship: 'dependsOn',
     });
   }
   for (const provider of providerBindings) {
@@ -2124,7 +2144,11 @@ function isApplicationProfiledCallback(
 }
 
 function isApplicationQueryBinding(value: unknown): value is ApplicationQueryBinding {
-  return Boolean(value && typeof value === 'object' && Reflect.get(value, 'kind') === 'applicationQuery');
+  return Boolean(
+    value
+    && (typeof value === 'object' || typeof value === 'function')
+    && Reflect.get(value, 'kind') === 'applicationQuery',
+  );
 }
 
 function isApplicationModelCommandBinding(value: unknown): value is ApplicationModelCommandBinding {

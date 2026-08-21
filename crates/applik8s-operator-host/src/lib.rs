@@ -419,6 +419,8 @@ pub enum OperatorHostError {
     InvalidRuntimeAdapterRequirement(String),
     #[error("operator bundle runtime configuration is invalid: {0}")]
     InvalidRuntimeConfig(String),
+    #[error("operator bundle runtime identity is invalid: {0}")]
+    InvalidRuntimeIdentity(String),
     #[error("operation plan requires undeclared RBAC permission: {0}")]
     UndeclaredPermission(String),
     #[error("handler {handler_id} attempted to mutate undeclared finalizer {finalizer}")]
@@ -832,19 +834,36 @@ impl OperatorHost {
             )
             .await;
         }
+        let mut runtime_metadata = serde_json::json!({
+            "operatorName": operator_name,
+            "reconcileId": reconcile_id,
+            "bundleDigest": bundle_digest,
+            "runtimeVersion": self.config.runtime_version.as_str(),
+            "startedAt": reconcile_started_at_timestamp
+        });
+        if let Some(identity_envelope) =
+            bundle.runtime_identity_envelope(&handler_route, &reconcile_id, bundle_digest)?
+        {
+            let mut identity_envelope = identity_envelope;
+            identity_envelope
+                .as_object_mut()
+                .expect("runtime identity envelope is an object")
+                .insert(
+                    "telemetry".to_string(),
+                    guest_host_telemetry_envelope(&reconcile_span, &reconcile_id, bundle_digest),
+                );
+            runtime_metadata
+                .as_object_mut()
+                .expect("runtime metadata is an object")
+                .insert("identityEnvelope".to_string(), identity_envelope);
+        }
         let input = serde_json::json!({
             "abiVersion": SUPPORTED_HANDLER_ABI,
             "handlerId": handler_route.handler_id,
             "event": handler_route.event,
             "object": object_json.clone(),
             "capabilities": bundle.manifest.pointer("/spec/capabilities").cloned().unwrap_or_else(|| serde_json::json!({})),
-            "runtime": {
-                "operatorName": operator_name,
-                "reconcileId": reconcile_id,
-                "bundleDigest": bundle_digest,
-                "runtimeVersion": self.config.runtime_version.as_str(),
-                "startedAt": reconcile_started_at_timestamp
-            }
+            "runtime": runtime_metadata
         });
         let handler_timeout = bundle.handler_timeout()?;
         let source_map_path = handler_source_map_path(&bundle.manifest);
@@ -1610,6 +1629,51 @@ fn start_reconcile_otel_span(start_event: &Value) -> BoxedSpan {
     }
     span.add_event("applik8s.reconcile.started", Vec::new());
     span
+}
+
+fn guest_host_telemetry_envelope(span: &BoxedSpan, attempt: &str, binding_digest: &str) -> Value {
+    let context = span.span_context();
+    let (trace_id, span_id, sampled) = if context.is_valid() {
+        (
+            context.trace_id().to_string(),
+            context.span_id().to_string(),
+            context.is_sampled(),
+        )
+    } else {
+        (
+            deterministic_telemetry_hex(attempt, 32),
+            deterministic_telemetry_hex(&format!("span:{attempt}"), 16),
+            false,
+        )
+    };
+    serde_json::json!({
+        "apiVersion": "applik8s.telemetryCarrier/v1alpha1",
+        "traceparent": format!("00-{trace_id}-{span_id}-{}", if sampled { "01" } else { "00" }),
+        "tracestate": "",
+        "baggage": {},
+        "invocation": "live",
+        "sampling": if sampled { "sampled" } else { "not-sampled" },
+        "bindingDigest": binding_digest,
+    })
+}
+
+fn deterministic_telemetry_hex(value: &str, length: usize) -> String {
+    let mut output = String::with_capacity(length);
+    let mut seed = 0xcbf29ce484222325u64;
+    while output.len() < length {
+        let mut hash = seed;
+        for byte in value.as_bytes() {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x100000001b3);
+        }
+        output.push_str(&format!("{hash:016x}"));
+        seed = seed.rotate_left(13) ^ hash ^ 0x9e3779b97f4a7c15;
+    }
+    output.truncate(length);
+    if output.chars().all(|character| character == '0') {
+        output.replace_range(length - 1..length, "1");
+    }
+    output
 }
 
 fn record_reconcile_otel_phase(span: &mut BoxedSpan, phase: &'static str) {
@@ -3162,6 +3226,103 @@ impl LoadedOperatorBundle {
         Ok(deduplicate_resource_watches(
             self.manifest_resource_watches()?,
         ))
+    }
+
+    pub fn runtime_identity_envelope(
+        &self,
+        handler: &HandlerRoute,
+        attempt: &str,
+        deployed_bundle_digest: &str,
+    ) -> Result<Option<Value>, OperatorHostError> {
+        let Some(contract) = self.manifest.pointer("/spec/runtimeIdentity") else {
+            return Ok(None);
+        };
+        if contract.get("apiVersion").and_then(Value::as_str)
+            != Some("applik8s.operatorRuntimeIdentity/v1alpha1")
+        {
+            return Err(OperatorHostError::InvalidRuntimeIdentity(
+                "spec.runtimeIdentity.apiVersion must be applik8s.operatorRuntimeIdentity/v1alpha1"
+                    .to_string(),
+            ));
+        }
+        let declared_bundle_digest = runtime_identity_string(contract, "bundleDigest")?;
+        if declared_bundle_digest != deployed_bundle_digest {
+            return Err(OperatorHostError::InvalidRuntimeIdentity(format!(
+                "runtime identity bundle digest {declared_bundle_digest} does not match deployed bundle {deployed_bundle_digest}"
+            )));
+        }
+        let application = required_runtime_identity_uri(contract, "application")?;
+        let artifact = required_runtime_identity_uri(contract, "artifact")?;
+        let runtime_access = contract.get("runtimeAccess").ok_or_else(|| {
+            OperatorHostError::InvalidRuntimeIdentity(
+                "spec.runtimeIdentity.runtimeAccess is required".to_string(),
+            )
+        })?;
+        if runtime_access.get("version").and_then(Value::as_str) != Some("v1alpha1") {
+            return Err(OperatorHostError::InvalidRuntimeIdentity(
+                "spec.runtimeIdentity.runtimeAccess.version must be v1alpha1".to_string(),
+            ));
+        }
+        let access_digest = runtime_identity_string(runtime_access, "digest")?;
+        if !is_sha256_digest(&access_digest) {
+            return Err(OperatorHostError::InvalidRuntimeIdentity(
+                "spec.runtimeIdentity.runtimeAccess.digest must be a full sha256 digest"
+                    .to_string(),
+            ));
+        }
+        let requirement_ids = required_string_array(runtime_access, "requirementIds")?;
+        let handlers = contract
+            .get("handlers")
+            .and_then(Value::as_array)
+            .ok_or_else(|| {
+                OperatorHostError::InvalidRuntimeIdentity(
+                    "spec.runtimeIdentity.handlers must be an array".to_string(),
+                )
+            })?;
+        let binding = handlers
+            .iter()
+            .find(|candidate| {
+                candidate.get("handlerId").and_then(Value::as_str)
+                    == Some(handler.handler_id.as_str())
+            })
+            .ok_or_else(|| {
+                OperatorHostError::InvalidRuntimeIdentity(format!(
+                    "handler {} has no runtime identity binding",
+                    handler.handler_id
+                ))
+            })?;
+        let operation = required_runtime_identity_uri(binding, "operation")?;
+        let execution = required_runtime_identity_uri(binding, "execution")?;
+        let capability_ids = required_string_array(binding, "capabilityIds")?;
+        let effect_ids = required_string_array(binding, "effectIds")?;
+        let capabilities = self
+            .manifest
+            .pointer("/spec/capabilities")
+            .and_then(Value::as_object);
+        for capability in &capability_ids {
+            if !capabilities.is_some_and(|entries| entries.contains_key(capability)) {
+                return Err(OperatorHostError::InvalidRuntimeIdentity(format!(
+                    "handler {} runtime identity references undeclared capability {capability}",
+                    handler.handler_id
+                )));
+            }
+        }
+        Ok(Some(serde_json::json!({
+            "apiVersion": "applik8s.guestHostIdentity/v1alpha1",
+            "application": application,
+            "operation": operation,
+            "execution": execution,
+            "artifact": artifact,
+            "attempt": attempt,
+            "runtimeAccess": {
+                "version": "v1alpha1",
+                "digest": access_digest,
+                "requirementIds": requirement_ids,
+            },
+            "capabilityIds": capability_ids,
+            "effectIds": effect_ids,
+            "authorizationReceiptIds": [],
+        })))
     }
 
     pub fn object_matches_runtime_watch(
@@ -6539,6 +6700,61 @@ fn required_string(value: &Value, field: &str) -> Result<String, OperatorHostErr
         .ok_or_else(|| OperatorHostError::InvalidOwnedCrd(format!("missing {field}")))
 }
 
+fn runtime_identity_string(value: &Value, field: &str) -> Result<String, OperatorHostError> {
+    value
+        .get(field)
+        .and_then(Value::as_str)
+        .filter(|entry| !entry.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| {
+            OperatorHostError::InvalidRuntimeIdentity(format!(
+                "runtime identity field {field} must be a non-empty string"
+            ))
+        })
+}
+
+fn required_runtime_identity_uri(value: &Value, field: &str) -> Result<String, OperatorHostError> {
+    let identity = runtime_identity_string(value, field)?;
+    if !identity.starts_with("applik8s://") {
+        return Err(OperatorHostError::InvalidRuntimeIdentity(format!(
+            "runtime identity field {field} must be a canonical applik8s:// identity"
+        )));
+    }
+    Ok(identity)
+}
+
+fn required_string_array(value: &Value, field: &str) -> Result<Vec<String>, OperatorHostError> {
+    value
+        .get(field)
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            OperatorHostError::InvalidRuntimeIdentity(format!(
+                "runtime identity field {field} must be an array"
+            ))
+        })?
+        .iter()
+        .map(|entry| {
+            entry
+                .as_str()
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+                .ok_or_else(|| {
+                    OperatorHostError::InvalidRuntimeIdentity(format!(
+                        "runtime identity field {field} must contain only non-empty strings"
+                    ))
+                })
+        })
+        .collect()
+}
+
+fn is_sha256_digest(value: &str) -> bool {
+    value.len() == 71
+        && value.starts_with("sha256:")
+        && value[7..]
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+}
+
 fn api_resource_for_watch(watch: &OwnedResourceWatch) -> Result<ApiResource, OperatorHostError> {
     let (group, version) = split_api_version(&watch.api_version)?;
     let gvk = GroupVersionKind::gvk(&group, &version, &watch.kind);
@@ -6735,6 +6951,40 @@ fn action_for_plan(plan: &applik8s_runtime_contract::NormalizedOperationPlan) ->
 mod connection_tests {
     use super::*;
     use crate::kubernetes_connection::KubernetesEndpointPolicy;
+
+    #[test]
+    fn guest_host_telemetry_carrier_is_versioned_bounded_and_w3c_shaped() {
+        let tracer = global::tracer("applik8s.telemetry-contract-test");
+        let span = tracer.start("test");
+        let digest = format!("sha256:{}", "a".repeat(64));
+        let carrier = guest_host_telemetry_envelope(&span, "attempt-1", &digest);
+        let traceparent = carrier
+            .get("traceparent")
+            .and_then(Value::as_str)
+            .expect("traceparent is present");
+        let fields = traceparent.split('-').collect::<Vec<_>>();
+        assert_eq!(fields.len(), 4);
+        assert_eq!(fields[0], "00");
+        assert_eq!(fields[1].len(), 32);
+        assert_eq!(fields[2].len(), 16);
+        assert!(matches!(fields[3], "00" | "01"));
+        assert!(fields[1..=2].iter().all(|field| {
+            field
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        }));
+        assert_eq!(
+            carrier.get("bindingDigest").and_then(Value::as_str),
+            Some(digest.as_str())
+        );
+        assert_eq!(
+            carrier
+                .pointer("/baggage")
+                .and_then(Value::as_object)
+                .map(|value| value.len()),
+            Some(0)
+        );
+    }
 
     #[test]
     fn pod_namespace_is_authoritative_over_a_manifest_template_namespace() {

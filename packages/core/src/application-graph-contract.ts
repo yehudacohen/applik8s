@@ -84,6 +84,9 @@ export type ApplicationGraphNodeKind =
   | 'workflow'
   | 'workflowHandler'
   | 'workflowWorker'
+  | 'schedule'
+  | 'lakehousePublication'
+  | 'actor'
   | 'aiAgent'
   | 'mcpServer'
   | 'mcpClient'
@@ -122,6 +125,9 @@ export const applicationGraphNodeKinds = [
   'workflow',
   'workflowHandler',
   'workflowWorker',
+  'schedule',
+  'lakehousePublication',
+  'actor',
   'aiAgent',
   'mcpServer',
   'mcpClient',
@@ -157,6 +163,11 @@ export type ApplicationBuiltInProviderInterfaceKind =
   | 'DnsPublication'
   | 'CredentialStore'
   | 'WorkflowEngine'
+  | 'Scheduler'
+  | 'Observability'
+  | 'LakehouseDataset'
+  | 'LakehouseQuery'
+  | 'ActorRuntime'
   | 'AnalyticalDatabase'
   | 'ApplicationHost'
   | 'ContainerRegistry'
@@ -185,6 +196,11 @@ export const applicationProviderInterfaceKinds = [
   'DnsPublication',
   'CredentialStore',
   'WorkflowEngine',
+  'Scheduler',
+  'Observability',
+  'LakehouseDataset',
+  'LakehouseQuery',
+  'ActorRuntime',
   'AnalyticalDatabase',
   'ApplicationHost',
   'ContainerRegistry',
@@ -268,6 +284,9 @@ export type ApplicationGraphNode =
   | ApplicationWorkflowNode
   | ApplicationWorkflowHandlerNode
   | ApplicationWorkflowWorkerNode
+  | ApplicationScheduleNode
+  | ApplicationLakehousePublicationNode
+  | ApplicationActorNode
   | ApplicationAIAgentNode
   | ApplicationMcpServerNode
   | ApplicationMcpClientNode
@@ -742,6 +761,13 @@ export interface ApplicationTaskHandlerNode extends ApplicationGraphNodeBase<'ta
 		readonly alias: string;
 		readonly store: ApplicationGraphNodeRef;
 	}[];
+  /** Exact actor protocol members captured by this durable effect closure. */
+  readonly actors?: readonly {
+    readonly alias: string;
+    readonly actor: ApplicationGraphNodeRef;
+    readonly member: string;
+    readonly memberKind: 'command' | 'message' | 'alarm';
+  }[];
   /** Function-native signal contracts captured by this durable task closure. */
   readonly signalBindings?: readonly {
     readonly alias: string;
@@ -839,6 +865,126 @@ export interface ApplicationWorkflowWorkerNode extends ApplicationGraphNodeBase<
   readonly generatedResources?: readonly ApplicationGeneratedResourceContract[];
 }
 
+export type ApplicationScheduleOverlapPolicy = 'allow' | 'skip';
+export type ApplicationScheduleMisfirePolicy = 'skip' | 'latest' | 'all-bounded';
+
+/**
+ * Provider-neutral definition of one function-native scheduled closure.
+ * Provider schedule identities and target resources are derived from this
+ * semantic node and never become part of the application-facing API.
+ */
+export interface ApplicationScheduleNode extends ApplicationGraphNodeBase<'schedule'> {
+  readonly definition: {
+    readonly id: string;
+    readonly configuration: 'fixed' | 'dynamic';
+    readonly input?: ApplicationMessageContractSchema;
+    readonly cron?: string;
+    readonly every?: string;
+    readonly at?: string;
+    readonly timezone: string;
+    readonly overlap: ApplicationScheduleOverlapPolicy;
+    readonly overlapBy?: ApplicationSerializedCallbackContract;
+    readonly misfires: ApplicationScheduleMisfirePolicy;
+    readonly maxCatchUp?: number;
+    readonly retry: {
+      readonly maxAttempts: number;
+      readonly maximumAgeSeconds: number;
+    };
+    readonly requirements: {
+      readonly configuration: 'fixed' | 'dynamic';
+      readonly cardinality: 'bounded' | 'high';
+      readonly precision: 'minute' | 'second';
+    };
+  };
+  readonly scheduler: ApplicationProviderRef<'Scheduler'>;
+  readonly handler: ApplicationSerializedCallbackContract;
+  readonly functionNative: true;
+}
+
+/** One event-to-immutable-snapshot publication derived from ordinary typed application code. */
+export interface ApplicationLakehousePublicationNode extends ApplicationGraphNodeBase<'lakehousePublication'> {
+  readonly sourceEventId: string;
+  readonly sourceContract: {
+    readonly name: string;
+    readonly version: string;
+  };
+  /** Runtime source contract used by generated publishers to re-admit event payloads. */
+  readonly source: ApplicationMessageContractSchema;
+  /**
+   * Event-log authority selected when the exported publication is attached to
+   * an application graph. Author-time publication handles intentionally omit
+   * this framework-owned binding; executable graphs must contain it.
+   */
+  readonly eventLog?: ApplicationProviderRef<'EventLog'>;
+  readonly dataset: ApplicationProviderRef<'LakehouseDataset'>;
+  readonly row: ApplicationMessageContractSchema;
+  readonly transform: ApplicationSerializedCallbackContract;
+  readonly partition?: ApplicationSerializedCallbackContract;
+  readonly semantics: {
+    readonly publication: 'atomicManifest';
+    readonly frontier: 'sourceEvent';
+    readonly schemaEvolution: 'explicitRevision';
+  };
+}
+
+export type ApplicationActorProtocolKind =
+  | 'command'
+  | 'message'
+  | 'connectionMessage'
+  | 'connection'
+  | 'disconnection'
+  | 'broadcast'
+  | 'alarm';
+
+export interface ApplicationActorCapabilityRequirements {
+  readonly durableState: true;
+  readonly serializedTurns: true;
+  readonly transactionalOutbox: boolean;
+  readonly durableAlarms: boolean;
+  readonly realtimeConnections: boolean;
+  readonly connectionLeases: boolean;
+  readonly realtimeMessages: boolean;
+  readonly realtimeBroadcast: boolean;
+}
+
+/** Provider-neutral actor declaration; provider placement never enters application source. */
+export interface ApplicationActorNode extends ApplicationGraphNodeBase<'actor'> {
+  readonly definition: {
+    readonly id: string;
+    readonly key: ApplicationMessageContractSchema;
+    readonly state: ApplicationMessageContractSchema;
+    readonly stateVersion: number;
+    readonly migrationDigest: string;
+    readonly migrations: readonly {
+      readonly from: number;
+      readonly callback: ApplicationSerializedCallbackContract;
+    }[];
+    readonly protocol: readonly {
+      readonly name: string;
+      readonly kind: ApplicationActorProtocolKind;
+      readonly input?: ApplicationMessageContractSchema;
+      readonly output?: ApplicationMessageContractSchema;
+      readonly authority?: ApplicationOperationAuthorityGraphContract;
+    }[];
+    readonly requirements: ApplicationActorCapabilityRequirements;
+  };
+  readonly runtime: ApplicationProviderRef<'ActorRuntime'>;
+  readonly handlers: readonly {
+    readonly member: string;
+    readonly callback: ApplicationSerializedCallbackContract;
+  }[];
+  readonly initialize?: ApplicationSerializedCallbackContract;
+  readonly semantics: {
+    readonly serialization: 'fullTurnPerIdentity';
+    readonly admission: 'idempotentReceipt';
+    readonly references: 'inertAddress';
+  };
+  /** Explicit entrypoint export boundary; absent actors remain server-only. */
+  readonly publication?: {
+    readonly boundary: 'entrypoint-export';
+  };
+}
+
 /**
  * Portable execution plan for one server-side AI agent. Framework-specific
  * adapter objects are resolved at runtime and never serialized into the graph.
@@ -930,6 +1076,13 @@ export interface ApplicationAIAgentNode extends ApplicationGraphNodeBase<'aiAgen
   readonly queries?: readonly {
     readonly alias: string;
     readonly query: ApplicationGraphNodeRef;
+  }[];
+  /** Exact actor protocol members captured by the agent execution closure. */
+  readonly actors?: readonly {
+    readonly alias: string;
+    readonly actor: ApplicationGraphNodeRef;
+    readonly member: string;
+    readonly memberKind: 'command' | 'message' | 'alarm';
   }[];
   readonly responseSchemaDigest?: string;
   readonly budgets: {
@@ -1057,6 +1210,8 @@ export interface ApplicationQueryNode extends ApplicationGraphNodeBase<'query'> 
   readonly authorization: 'application-defined';
   readonly authority?: ApplicationOperationAuthorityGraphContract;
   readonly trustedContext: readonly string[];
+  /** Serializable admission schemas for every query context, independent of database RLS scope. */
+  readonly trustedContextSchemas?: Readonly<Record<string, JsonObject>>;
   readonly budgets: {
     readonly timeoutMs: number;
     readonly maxResultBytes: number;
@@ -3166,8 +3321,17 @@ function validateApplicationV03RuntimeReleasePolicyContract(name: string, policy
 }
 
 export function resolveApplicationGraphProviderRequirement<TInterface extends ApplicationProviderInterfaceKind>(graph: ApplicationGraph, requirement: ApplicationProviderRequirement<TInterface>): ApplicationProviderResolution<TInterface> {
-  const providers = graph.nodes.filter((node): node is ApplicationProviderNode<TInterface> => node.kind === 'provider' && node.interface === requirement.interface);
+  const declaredProviders = graph.nodes.filter((node): node is ApplicationProviderNode<TInterface> => node.kind === 'provider' && node.interface === requirement.interface);
   const providerById = new Map(graph.nodes.filter((node): node is ApplicationProviderNode => node.kind === 'provider').map((provider) => [provider.id, provider]));
+  // An application default may intentionally alias one qualified provider. It
+  // is a second lookup spelling, not a second provider authority. Collapse
+  // those aliases before implicit requirement resolution so a qualified
+  // provider can become the seamless application default without making
+  // downstream framework consumers (actors, publishers, gateways) ambiguous.
+  const providers = uniqueCanonicalApplicationProviderCandidates(
+    declaredProviders,
+    providerById,
+  );
   const nodeIds = new Set(graph.nodes.map((node) => node.id));
   if (!nodeIds.has(requirement.consumer.nodeId)) {
     return applicationProviderResolutionFailure('invalidConsumer', requirement, [], [applicationProviderBindingDiagnostic(`Application provider requirement ${requirement.id} references missing consumer ${requirement.consumer.nodeId}.`)]);
@@ -3192,6 +3356,27 @@ export function resolveApplicationGraphProviderRequirement<TInterface extends Ap
     return applicationProviderResolutionFailure('missing', requirement, [], [applicationProviderBindingDiagnostic(requirement.diagnostics.missing)]);
   }
   return { status: 'resolved', requirement, provider, diagnostics: [] };
+}
+
+function uniqueCanonicalApplicationProviderCandidates<
+  TInterface extends ApplicationProviderInterfaceKind,
+>(
+  providers: readonly ApplicationProviderNode<TInterface>[],
+  providerById: ReadonlyMap<string, ApplicationProviderNode>,
+): readonly ApplicationProviderNode<TInterface>[] {
+  const canonical = new Map<string, ApplicationProviderNode<TInterface>>();
+  for (const provider of providers) {
+    let current: ApplicationProviderNode = provider;
+    const visited = new Set<string>([provider.id]);
+    while (typeof current.config?.aliasOf === 'string') {
+      const target = providerById.get(current.config.aliasOf);
+      if (!target || target.interface !== provider.interface || visited.has(target.id)) break;
+      visited.add(target.id);
+      current = target;
+    }
+    canonical.set(current.id, current as ApplicationProviderNode<TInterface>);
+  }
+  return [...canonical.values()];
 }
 
 function applicationProviderResolutionFailure<TInterface extends ApplicationProviderInterfaceKind>(status: ApplicationProviderResolutionFailure<TInterface>['status'], requirement: ApplicationProviderRequirement<TInterface>, candidates: readonly ApplicationProviderNode<TInterface>[], diagnostics: readonly Diagnostic[]): ApplicationProviderResolutionFailure<TInterface> {
@@ -3240,6 +3425,12 @@ function applicationGraphNodeStructureDiagnostics(node: ApplicationGraphNode, gr
       return applicationWorkflowHandlerNodeStructureDiagnostics(node, graph);
     case 'workflowWorker':
       return applicationWorkflowWorkerNodeStructureDiagnostics(node, graph);
+    case 'schedule':
+      return applicationScheduleNodeStructureDiagnostics(node);
+    case 'lakehousePublication':
+      return applicationLakehousePublicationNodeStructureDiagnostics(node);
+    case 'actor':
+      return applicationActorNodeStructureDiagnostics(node);
     case 'aiAgent':
       return applicationAIAgentNodeStructureDiagnostics(node, graph);
     case 'mcpServer':
@@ -3292,6 +3483,16 @@ function applicationGraphNodeStructureDiagnostics(node: ApplicationGraphNode, gr
 				taskAliases.add(task.alias);
 				if (target?.kind !== 'task' && target?.kind !== 'workflow') messages.push(`Application stream processor ${node.id} workflow ${task.alias} must target a declared task or workflow.`);
 			}
+      const actorAliases = new Set<string>();
+      for (const binding of node.actorBindings ?? []) {
+        if (!binding.identifier.trim() || actorAliases.has(binding.identifier)) messages.push(`Application stream processor ${node.id} actor bindings must have unique non-empty identifiers.`);
+        actorAliases.add(binding.identifier);
+        const actor = graph.nodes.find((candidate) => candidate.id === binding.actor.nodeId);
+        const member = actor?.kind === 'actor'
+          ? actor.definition.protocol.find((candidate) => candidate.name === binding.member)
+          : undefined;
+        if (actor?.kind !== 'actor' || !member || member.kind !== binding.memberKind) messages.push(`Application stream processor ${node.id} actor ${binding.identifier} must reference matching ${binding.memberKind} member ${binding.member}.`);
+      }
       if ((node.schedules?.length ?? 0) + (node.tasks?.length ?? 0) > 0) {
         const provider = graph.nodes.find((candidate) => candidate.id === node.workflowEngine?.nodeId);
 				if (provider?.kind !== 'provider' || provider.interface !== 'WorkflowEngine') messages.push(`Application stream processor ${node.id} durable task and schedule targets require one WorkflowEngine provider.`);
@@ -3310,6 +3511,88 @@ function applicationGraphNodeStructureDiagnostics(node: ApplicationGraphNode, gr
     default:
       return [];
   }
+}
+
+function applicationLakehousePublicationNodeStructureDiagnostics(
+  node: ApplicationLakehousePublicationNode,
+): readonly Diagnostic[] {
+  const messages: string[] = [];
+  if (!node.sourceEventId.trim()) messages.push(`Lakehouse publication ${node.id} requires a stable source event identity.`);
+  if (!node.transform.source.trim()) messages.push(`Lakehouse publication ${node.id} must retain its serializable transform.`);
+  if (node.partition && !node.partition.source.trim()) messages.push(`Lakehouse publication ${node.id} must retain its serializable partition function.`);
+  return messages.map(applicationGraphStructureDiagnostic);
+}
+
+function applicationScheduleNodeStructureDiagnostics(
+  node: ApplicationScheduleNode,
+): readonly Diagnostic[] {
+  const messages: string[] = [];
+  if (!node.definition.id.trim()) {
+    messages.push(`Application schedule ${node.id} must declare a stable definition id.`);
+  }
+  const cadenceCount = [
+    node.definition.cron,
+    node.definition.every,
+    node.definition.at,
+  ].filter((value) => value !== undefined).length;
+  if (node.definition.configuration === 'fixed' && cadenceCount !== 1) {
+    messages.push(`Fixed application schedule ${node.id} must declare exactly one of cron, every, or at.`);
+  }
+  if (node.definition.configuration === 'dynamic' && cadenceCount !== 0) {
+    messages.push(`Dynamic application schedule ${node.id} must receive cadence from each configured instance.`);
+  }
+  if (node.definition.configuration === 'dynamic' && !node.definition.input) {
+    messages.push(`Dynamic application schedule ${node.id} must declare an input schema.`);
+  }
+  if (!node.definition.timezone.trim()) {
+    messages.push(`Application schedule ${node.id} must declare a timezone.`);
+  }
+  if (!node.handler.source.trim()) {
+    messages.push(`Application schedule ${node.id} must retain a serializable handler closure.`);
+  }
+  if (!Number.isSafeInteger(node.definition.retry.maxAttempts) || node.definition.retry.maxAttempts < 1) {
+    messages.push(`Application schedule ${node.id} retry maxAttempts must be a positive integer.`);
+  }
+  if (!Number.isSafeInteger(node.definition.retry.maximumAgeSeconds) || node.definition.retry.maximumAgeSeconds < 1) {
+    messages.push(`Application schedule ${node.id} retry maximumAgeSeconds must be a positive integer.`);
+  }
+  if (
+    node.definition.misfires === 'all-bounded'
+    && (!Number.isSafeInteger(node.definition.maxCatchUp) || (node.definition.maxCatchUp ?? 0) < 1)
+  ) {
+    messages.push(`Application schedule ${node.id} all-bounded misfires require a positive maxCatchUp.`);
+  }
+  return messages.map(applicationGraphStructureDiagnostic);
+}
+
+function applicationActorNodeStructureDiagnostics(
+  node: ApplicationActorNode,
+): readonly Diagnostic[] {
+  const messages: string[] = [];
+  if (!node.definition.id.trim()) messages.push(`Application actor ${node.id} must declare a stable definition id.`);
+  if (!Number.isSafeInteger(node.definition.stateVersion) || node.definition.stateVersion < 1) messages.push(`Application actor ${node.id} state version must be a positive integer.`);
+  if (!node.definition.migrationDigest.trim()) messages.push(`Application actor ${node.id} must declare a stable migration digest.`);
+  const migrationSources = new Set<number>();
+  for (const migration of node.definition.migrations) {
+    if (!Number.isSafeInteger(migration.from) || migration.from < 1 || migration.from >= node.definition.stateVersion) messages.push(`Application actor ${node.id} migration source ${migration.from} is outside its prior state revisions.`);
+    if (migrationSources.has(migration.from)) messages.push(`Application actor ${node.id} declares migration ${migration.from} more than once.`);
+    migrationSources.add(migration.from);
+  }
+  const members = new Set<string>();
+  for (const member of node.definition.protocol) {
+    if (members.has(member.name)) messages.push(`Application actor ${node.id} declares protocol member ${member.name} more than once.`);
+    members.add(member.name);
+    if (member.kind === 'command' && (!member.input || !member.output)) messages.push(`Application actor command ${node.id}.${member.name} requires input and output schemas.`);
+    if (member.kind !== 'broadcast' && member.kind !== 'connection' && member.kind !== 'disconnection' && !member.input) messages.push(`Application actor member ${node.id}.${member.name} requires an input schema.`);
+  }
+  const registered = new Set(node.handlers.map((handler) => handler.member));
+  for (const member of node.definition.protocol) {
+    if (member.kind !== 'broadcast' && member.kind !== 'connection' && member.kind !== 'disconnection' && !registered.has(member.name)) {
+      messages.push(`Application actor ${node.id}.${member.name} requires exactly one handler.`);
+    }
+  }
+  if (!node.initialize) messages.push(`Application actor ${node.id} requires an initialize handler.`);
+  return messages.map(applicationGraphStructureDiagnostic);
 }
 
 function applicationMcpServerNodeStructureDiagnostics(
@@ -3507,6 +3790,20 @@ function applicationAIAgentNodeStructureDiagnostics(
         && grant.operationIds.includes(operation.operationId));
     if (!staticallyGranted) {
       messages.push(`Application AI agent ${node.id} function-native operation ${operation.operationId} requires an explicit service-identity grant.`);
+    }
+  }
+  const actorAliases = new Set<string>();
+  for (const binding of node.actors ?? []) {
+    if (!binding.alias.trim() || actorAliases.has(binding.alias)) {
+      messages.push(`Application AI agent ${node.id} actor aliases must be non-empty and unique.`);
+    }
+    actorAliases.add(binding.alias);
+    const actor = graph.nodes.find((candidate) => candidate.id === binding.actor.nodeId);
+    const member = actor?.kind === 'actor'
+      ? actor.definition.protocol.find((candidate) => candidate.name === binding.member)
+      : undefined;
+    if (actor?.kind !== 'actor' || !member || member.kind !== binding.memberKind) {
+      messages.push(`Application AI agent ${node.id} actor ${binding.alias} must reference matching ${binding.memberKind} member ${binding.member}.`);
     }
   }
   if ((typeof node.deployment.replicas === 'number' && node.deployment.replicas < 1)
@@ -3752,6 +4049,18 @@ function applicationTaskHandlerNodeStructureDiagnostics(node: ApplicationTaskHan
 		objectAliases.add(object.alias);
 		if (nodes.get(object.store.nodeId)?.kind !== 'objectStore') diagnostics.push(applicationGraphStructureDiagnostic(`Application task handler ${node.id} object ${object.alias} must reference an object store.`));
 	}
+  const actorAliases = new Set<string>();
+  for (const binding of node.actors ?? []) {
+    if (!binding.alias.trim() || actorAliases.has(binding.alias)) diagnostics.push(applicationGraphStructureDiagnostic(`Application task handler ${node.id} actor aliases must be non-empty and unique.`));
+    actorAliases.add(binding.alias);
+    const actor = nodes.get(binding.actor.nodeId);
+    if (actor?.kind !== 'actor') {
+      diagnostics.push(applicationGraphStructureDiagnostic(`Application task handler ${node.id} actor ${binding.alias} must reference an actor node.`));
+      continue;
+    }
+    const member = actor.definition.protocol.find((candidate) => candidate.name === binding.member);
+    if (!member || member.kind !== binding.memberKind) diagnostics.push(applicationGraphStructureDiagnostic(`Application task handler ${node.id} actor ${binding.alias} must reference the matching ${binding.memberKind} member ${binding.member}.`));
+  }
   const signalAliases = new Set<string>();
   for (const binding of node.signalBindings ?? []) {
     if (!binding.alias.trim() || signalAliases.has(binding.alias)) diagnostics.push(applicationGraphStructureDiagnostic(`Application task handler ${node.id} signal aliases must be non-empty and unique.`));

@@ -29,6 +29,10 @@ import {
   applicationGraphStringValue,
 } from '../application-installation-values.js';
 import { applik8sWorkspaceSourcePlugin } from '../bundling/index.js';
+import {
+  generatedApplicationEventLogPublisherSource,
+  type ApplicationRuntimeExecutionTarget,
+} from '../application-event-log-runtime-source.js';
 
 const DEFAULT_GENERATED_HTTP_RUNTIME_IMAGE =
   'node:22-alpine@sha256:16e22a550f3863206a3f701448c45f7912c6896a62de43add43bb9c86130c3e2';
@@ -88,6 +92,7 @@ interface HttpServerCompilerContract {
   readonly identityConfig: Readonly<Record<string, unknown>>;
   readonly eventLog?: ApplicationProviderNode;
   readonly operationCatalog: ApplicationOperationCatalog;
+  readonly executionTarget: ApplicationRuntimeExecutionTarget;
   readonly namespace: string;
   readonly replicas: number;
   readonly servicePort: number;
@@ -103,6 +108,7 @@ export async function emitGeneratedApplicationHttpServers(options: {
   readonly graph: ApplicationGraph;
   readonly operationCatalog?: ApplicationOperationCatalog;
   readonly outDir: string;
+  readonly executionTarget?: ApplicationRuntimeExecutionTarget;
 }): Promise<readonly GeneratedApplicationHttpArtifact[]> {
   const servers = options.graph.nodes.filter(
     (node): node is ApplicationServerNode =>
@@ -120,6 +126,7 @@ export async function emitGeneratedApplicationHttpServers(options: {
           options.graph,
           server,
           operationCatalog,
+          options.executionTarget ?? 'kubernetes',
         ),
         options.outDir,
       )),
@@ -130,6 +137,7 @@ function applicationHttpCompilerContract(
   graph: ApplicationGraph,
   server: ApplicationServerNode,
   operationCatalog: ApplicationOperationCatalog,
+  executionTarget: ApplicationRuntimeExecutionTarget,
 ): HttpServerCompilerContract {
   if (server.routes.some((route) => !route.functionNative)) {
     throw new Error(
@@ -221,6 +229,7 @@ function applicationHttpCompilerContract(
     routes,
     identity,
     identityConfig,
+    executionTarget,
     ...(eventLog ? { eventLog } : {}),
     operationCatalog,
     namespace,
@@ -376,6 +385,13 @@ ${route.route.functionNative.webhookAuthentication
   const hasOperations = contract.routes.some(
     (route) => route.operationBindings.length > 0,
   );
+  const eventLogPublisher = hasOperations
+    ? generatedApplicationEventLogPublisherSource({
+        executionTarget: contract.executionTarget,
+        variableName: 'applicationEventLogPublisher',
+        connectionName: `applik8s-http-${contract.server.name}`,
+      })
+    : undefined;
   const commandContracts = uniqueOperationBindings(contract.routes).map(
     (binding) => `{
       id: ${JSON.stringify(`${binding.command.contract.name}.${binding.command.contract.version}`)},
@@ -428,7 +444,7 @@ import { installApplicationOperationRuntimeResolver } from '@applik8s/client';
 import { createApplicationOperationAuthorityRuntime } from '@applik8s/operations';
 import { normalizeSchema } from '@applik8s/sdk/schema-runtime';
 ${hasOperations
-    ? "import { createJetStreamEventLog } from '@applik8s/runtime-nats';\nimport { createApplicationTaskOperationRuntime } from '@applik8s/applik8s/task-operation-runtime';"
+    ? `${eventLogPublisher!.importSource}\nimport { createApplicationTaskOperationRuntime } from '@applik8s/applik8s/task-operation-runtime';`
     : ''}
 ${hasTransactions
     ? "import { applicationPostgresModelReadClients, applicationRelationalChangeScopes, applicationRequestContextValues, createApplicationFunctionNativeEventHandle, editApplicationNativeModelObject, executeFunctionNativePostgresModelEdit, findApplicationNativeModelObjects, getApplicationNativeModelObject, requireApplicationNativeModelObject, withApplicationNativeModelReadClients, withApplicationNativeModelTransactionRuntime } from '@applik8s/applik8s/stream-worker-runtime';"
@@ -471,19 +487,11 @@ const operationAuthority = createApplicationOperationAuthorityRuntime({
 const directOperationScope = new AsyncLocalStorage();
 installApplicationOperationRuntimeResolver(() => directOperationScope.getStore());
 ${hasOperations
-    ? `const commandRuntime = createApplicationTaskOperationRuntime({
+    ? `${eventLogPublisher!.declarationSource}
+const commandRuntime = createApplicationTaskOperationRuntime({
   commands: [${commandContracts}],
   cursorSecret: contextSecret,
-  eventLogPublisher: createJetStreamEventLog({
-    servers: JSON.parse(requiredEnv('APPLIK8S_NATS_SERVERS')),
-    stream: requiredEnv('APPLIK8S_NATS_STREAM'),
-    subjectPrefix: requiredEnv('APPLIK8S_NATS_SUBJECT_PREFIX'),
-    connectionName: 'applik8s-http-' + contract.serverName,
-    ...(process.env.APPLIK8S_NATS_TOKEN ? { token: process.env.APPLIK8S_NATS_TOKEN } : {}),
-    ...(process.env.APPLIK8S_NATS_USER
-      ? { user: process.env.APPLIK8S_NATS_USER, pass: process.env.APPLIK8S_NATS_PASSWORD ?? '' }
-      : {}),
-  }),
+  eventLogPublisher: applicationEventLogPublisher,
   authorizeOperation: ({ principal, operationId, target, inputDigest, trustedContextDigest, idempotencyKey, commandId, targetDigest }) =>
     operationAuthority.authorize({
       principal,

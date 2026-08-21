@@ -278,6 +278,12 @@ describe('generated function-native HTTP worker', () => {
       join(outDir, 'public-api', 'http.generated.ts'),
       'utf8',
     );
+    expect(generatedEntrypoint).toContain(
+      "from '@applik8s/runtime-nats/event-log'",
+    );
+    expect(generatedEntrypoint).not.toContain(
+      "from '@applik8s/runtime-aws/kinesis'",
+    );
     expect(generatedEntrypoint).toMatch(
       /"Billing":\s*\{\s*"Subscription":\s*\{\s*"find":\s*modelHandle\("Post"\)\["find"\]/u,
     );
@@ -328,6 +334,29 @@ describe('generated function-native HTTP worker', () => {
     );
     expect(Reflect.get(natsServers as object, 'value')).not.toContain(
       'applik8s-events',
+    );
+
+    const awsOutDir = await mkdtemp(
+      join(tmpdir(), 'applik8s-http-worker-aws-'),
+    );
+    directories.push(awsOutDir);
+    await emitGeneratedApplicationHttpServers({
+      graph: graphWithSelectedEventLog,
+      operationCatalog: compileApplicationOperationCatalog(
+        graphWithSelectedEventLog,
+      ),
+      outDir: awsOutDir,
+      executionTarget: 'aws',
+    });
+    const awsGeneratedEntrypoint = await readFile(
+      join(awsOutDir, 'public-api', 'http.generated.ts'),
+      'utf8',
+    );
+    expect(awsGeneratedEntrypoint).toContain(
+      "from '@applik8s/runtime-aws/kinesis'",
+    );
+    expect(awsGeneratedEntrypoint).not.toContain(
+      "from '@applik8s/runtime-nats/event-log'",
     );
   });
 

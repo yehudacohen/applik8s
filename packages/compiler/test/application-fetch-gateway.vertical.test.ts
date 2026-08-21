@@ -1,9 +1,15 @@
 import {
 	app,
 	applicationGraphFor,
+	actor,
 	command,
+	event,
 	IdentityProvider,
+	Lakehouse,
+	LakehouseDataset,
+	LakehouseQuery,
 	ObjectStorage,
+	Observability,
 } from "@applik8s/applik8s";
 import { entity, type } from "@applik8s/applik8s/dsl";
 import { AI } from "@applik8s/ai";
@@ -21,6 +27,166 @@ import { applicationGraphWithEntrypointPublicSurface } from "../src/application-
 import { generatedApplicationFetchGatewayModules } from "../src/application-fetch-gateway/index.js";
 
 describe("application host Fetch gateway", () => {
+	it("installs local and AWS lakehouse providers from one fluent target binding", () => {
+		const application = app("portable-lakehouse-host");
+		const History = LakehouseDataset.named("history");
+		const Queries = LakehouseQuery.named("history-queries");
+		application.provide(History)
+			.local(() => Lakehouse.duckdbDataset({ root: ".applik8s/state/history" }))
+			.aws(() => Lakehouse.s3Dataset({ bucket: "managed", prefix: "history", catalog: "history", region: "us-east-1" }));
+		application.provide(Queries)
+			.local(() => Lakehouse.duckdbQueries())
+			.aws(() => Lakehouse.athenaQueries({ workgroup: "history", region: "us-east-1", resultLocation: "s3://managed/results/" }));
+		const Changed = event("history.changed.v1", { payload: type({ id: "string", value: "number" }) });
+		const publication = Changed.publish(History, type({ id: "string", value: "number" }), (change, output) => output.append(change));
+		const base = applicationGraphFor(application.composition);
+		if (!base) throw new Error("Expected portable lakehouse graph.");
+		const graph = applicationGraphWithEntrypointPublicSurface(base, { operationIds: [], modelNames: [], lakehousePublications: [publication.graphNode] });
+		const source = generatedApplicationFetchGatewayModules(graph)?.files["gateway.generated.ts"] ?? "";
+		expect(source).toContain("createDuckDbApplicationLakehouseRuntime");
+		expect(source).toContain("createAwsApplicationLakehouseDatasetRuntime");
+		expect(source).toContain("createAwsApplicationLakehouseQueryRuntime");
+		expect(source).toContain('"targets":["local"]');
+		expect(source).toContain('"targets":["aws"]');
+		expect(source).toContain("process.env.APPLIK8S_DEPLOYMENT_TARGET === 'aws-local'");
+	});
+	it("installs one local DuckDB authority and internal event admission for typed lakehouse publications", () => {
+		const application = app("lakehouse-host");
+		const History = LakehouseDataset.named("history");
+		application.provide(
+			History,
+			Lakehouse.duckdbDataset({
+				root: ".applik8s/state/history",
+				cursorSecretEnvironment: "HISTORY_CURSOR_SECRET",
+				schemaRevision: "v2",
+			}),
+		);
+		const Changed = event("history.changed.v1", {
+			payload: type({ id: "string", value: "number" }),
+		});
+		const publication = Changed.publish(
+			History,
+			type({ id: "string", value: "number" }),
+			(change, output) => output.append(change),
+		);
+		const base = applicationGraphFor(application.composition);
+		if (!base) throw new Error("Expected lakehouse application graph.");
+		const graph = applicationGraphWithEntrypointPublicSurface(base, {
+			operationIds: [],
+			modelNames: [],
+			lakehousePublications: [publication.graphNode],
+		});
+		const source =
+			generatedApplicationFetchGatewayModules(graph)?.files[
+				"gateway.generated.ts"
+			] ?? "";
+		expect(source).toContain("createDuckDbApplicationLakehouseRuntime");
+		expect(source).toContain("installApplicationLakehousePublicationRuntimeResolver");
+		expect(source).toContain("/__applik8s/v1/internal/lakehouse/events");
+		expect(source).toContain('cursorKey: requiredEnv(dataset.cursorSecretEnvironment)');
+		expect(source).toContain('"cursorSecretEnvironment":"HISTORY_CURSOR_SECRET"');
+		expect(source).toContain('"schemaRevision":"v2"');
+	});
+
+	it("reconstructs actor definitions and installs the persistent local runtime automatically", () => {
+		const application = app("actor-host");
+		const Counter = application.actor("counter.v1", {
+			key: type("string"),
+			state: type({ count: "number.integer >= 0" }),
+			protocol: {
+				increment: actor.command({
+					input: type({ by: "number.integer > 0" }),
+					output: type({ count: "number.integer >= 0" }),
+				}),
+			},
+		});
+		Counter.on.initialize(() => ({ count: 0 }));
+		Counter.on.increment(async (current, input) => {
+			const state = await current.state();
+			const next = { count: state.count + input.by };
+			await current.setState(next);
+			return next;
+		});
+		const graph = applicationGraphFor(application.composition);
+		if (!graph) throw new Error("Expected actor application graph.");
+		const source = generatedApplicationFetchGatewayModules(graph)?.files["gateway.generated.ts"] ?? "";
+		expect(source).toContain("createPersistentLocalApplicationActorRuntime");
+		expect(source).toContain("installApplicationActorRuntimeResolver");
+		expect(source).toContain("runtimeActorKeySchema");
+		expect(source).toContain("/__applik8s/v1/internal/actors/invoke");
+		expect(source).toContain("authorizeInternalApplicationActor");
+		expect(source).toContain("operationAuthority.authorize");
+		expect(source).toContain("Invalid or expired internal actor execution principal");
+		expect(source).toContain('binding.on["increment"]');
+		expect(source).toContain(".applik8s/state/actors.json");
+	});
+
+	it("publishes only exported actors through signed canonical-authority admission", () => {
+		const application = app("actor-browser");
+		const authorityTable = pgTable("actor_authority", { id: text("id").primaryKey() });
+		const database = application.database.postgres("application", { schema: { authorityTable } });
+		application.model(authorityTable, { name: "ActorAuthority", database });
+		application.provide(IdentityProvider, IdentityProvider.deterministic(identityOptions("member")));
+		const Workspace = application.actor("workspace.v1", {
+			key: type("string"),
+			state: type({ title: "string" }),
+			protocol: {
+				rename: actor.command({ input: type({ title: "string" }), output: type({ title: "string" }) }),
+				observe: actor.message(type({ at: "string" })),
+				connect: actor.connection(type({ agent: "string" })),
+				cursor: actor.connectionMessage(type({ position: "number.integer >= 0" })),
+				disconnect: actor.disconnection(type({ agent: "string" })),
+				updated: actor.broadcast(type({ title: "string" })),
+			},
+		});
+		Workspace.rename.public();
+		Workspace.observe.send.public();
+		Workspace.connect.public();
+		Workspace.on.initialize(() => ({ title: "Untitled" }));
+		Workspace.on.rename(async (turn, input) => { await turn.setState(input); return input; });
+		Workspace.on.observe(() => undefined);
+		Workspace.on.cursor(() => undefined);
+		const base = applicationGraphFor(application.composition);
+		if (!base) throw new Error("Expected actor application graph.");
+		const graph = applicationGraphWithEntrypointPublicSurface(base, { operationIds: [], modelNames: [], actorIds: [Workspace.id] });
+		const actorExports = [{ name: "Workspace", actorId: Workspace.id }];
+		const source = generatedApplicationFetchGatewayModules(graph, { actorExports })?.files["gateway.generated.ts"] ?? "";
+		expect(source).toContain("signCelldActorConnectionTicket");
+		expect(source).toContain("authorizePublicApplicationActor");
+		expect(source).toContain("APPLIK8S_ACTOR_CONNECTION_SIGNING_KEY");
+		expect(source).toContain("publicActorWebSocketUrl(new URL(request.url).origin");
+		expect(source).not.toContain("APPLIK8S_ACTOR_PUBLIC_ENDPOINT");
+		expect(source).toContain("applik8s://actors/");
+		expect(source).toContain("operationAuthority.authorizeExecution");
+		expect(source).toContain("operationAuthority.revalidate");
+		expect(source).toContain("authorizeDeliveredApplicationActorRealtime");
+		expect(source).toContain("authorizationReceipt: admission.receipt");
+		expect(source).toContain("authorizationReceipt: authorization.receipt");
+		expect(source).toContain("validateApplicationAuthorizationReceipt(connectionReceipt)");
+		expect(source).toContain("transport: 'control-plane'");
+		expect(source).not.toContain("authorizationReceiptId: admission.receipt.id,");
+		expect(source).toContain("Actor alarm authority does not match the persisted target and input");
+		expect(source).toContain("installApplicationActorInvocationAuthorityResolver");
+		expect(source).not.toContain("connectionSigningKey:");
+		const manifest = applicationFacadeManifest(graph, { actorExports });
+		expect(manifest.actors).toEqual([expect.objectContaining({ id: "workspace.v1", exportNames: ["Workspace"] })]);
+		expect(generatedApplicationFacadeSource(manifest, "browser")).toContain("createApplicationActorClient");
+	});
+
+	it("automatically installs the selected OpenTelemetry runtime around HTTP boundaries", () => {
+		const application = app("observed", { namespace: "observed-system" });
+		application.provide(IdentityProvider, IdentityProvider.deterministic(identityOptions("member")));
+		application.provide(Observability, Observability.local());
+		const graph = applicationGraphFor(application.composition);
+		if (!graph) throw new Error("Expected observed application graph.");
+		const source = generatedApplicationFetchGatewayModules(graph)?.files["gateway.generated.ts"];
+		expect(source).toContain("startApplicationOpenTelemetryRuntime");
+		expect(source).toContain("OTEL_EXPORTER_OTLP_ENDPOINT");
+		expect(source).toContain("installApplicationTelemetryRuntimeResolver");
+		expect(source).toContain("runApplicationTelemetryBoundary");
+		expect(source).toContain("applicationGatewayCore.handle(request)");
+	});
+
 	it("publishes exported typed HTTP closures as direct browser callables while keeping sibling routes private", () => {
 		const assistant = app("assistant", { namespace: "assistant-system" });
 		assistant.provide(
@@ -85,7 +251,7 @@ describe("application host Fetch gateway", () => {
 			"applik8s://http/public-assistant/operations/internal",
 		);
 		expect(gateway).toContain(
-			'["webhook:/webhooks/provider","http://public-assistant.assistant-system.svc:80"]',
+			'["webhook:/webhooks/provider","http://public-assistant.assistant-system.svc:80","APPLIK8S_RUNTIME_ENDPOINT_',
 		);
 		expect(gateway).toContain(
 			"remoteRoutes.has('webhook:' + pathname)",
@@ -451,7 +617,7 @@ describe("application host Fetch gateway", () => {
 		const modules = generatedApplicationFetchGatewayModules(graph);
 		expect(modules).toBeDefined();
 		expect(modules?.files["gateway.generated.ts"]).toContain(
-			'["query:Post.timeline","http://chirp-web.chirp.svc:8080"]',
+			'["query:Post.timeline","http://chirp-web.chirp.svc:8080","APPLIK8S_RUNTIME_ENDPOINT_',
 		);
 		expect(modules?.files["gateway.generated.ts"]).toContain(
 			"url.pathname.slice('/__applik8s/v1'.length)",
@@ -526,10 +692,10 @@ describe("application host Fetch gateway", () => {
 				"gateway.generated.ts"
 			];
 		expect(source).toContain(
-			'["stream:review-requests","http://chirp-moderation.chirp.svc:8080"]',
+			'["stream:review-requests","http://chirp-moderation.chirp.svc:8080","APPLIK8S_RUNTIME_ENDPOINT_',
 		);
 		expect(source).toContain(
-			'["signal:review-decision.v1","http://chirp-moderation.chirp.svc:8080"]',
+			'["signal:review-decision.v1","http://chirp-moderation.chirp.svc:8080","APPLIK8S_RUNTIME_ENDPOINT_',
 		);
 		expect(source).toContain(
 			"if (parts[0] === 'signals' && parts[1])",
@@ -668,7 +834,7 @@ describe("application host Fetch gateway", () => {
 				"gateway.generated.ts"
 			];
 		expect(source).toContain(
-			'["query:ModerationPolicy.current","http://chirp-administration.chirp.svc:8080"]',
+			'["query:ModerationPolicy.current","http://chirp-administration.chirp.svc:8080","APPLIK8S_RUNTIME_ENDPOINT_',
 		);
 		expect(source).not.toContain("@applik8s/server/kubernetes-gateway");
 		expect(source).toContain("const localGateway = undefined;");
@@ -787,7 +953,7 @@ describe("application host Fetch gateway", () => {
 			"const runtimeNamespace = process.env.APPLIK8S_NAMESPACE",
 		);
 		expect(source).toContain(
-			'baseUrl.replaceAll("__APPLIK8S_RUNTIME_NAMESPACE__", runtimeNamespace)',
+			'selected.replaceAll("__APPLIK8S_RUNTIME_NAMESPACE__", runtimeNamespace)',
 		);
 		expect(source).not.toContain("__KUBERNETES_REF___schema___spec.name__");
 	});

@@ -6,6 +6,9 @@ import {
   emitApplicationManagedEvent,
   type ApplicationStagedEffectReference,
 } from './application-managed-effects-api.js';
+import type { ApplicationLakehousePublication } from './application-lakehouse.js';
+import { createApplicationLakehousePublication } from './application-lakehouse-publication.js';
+import type { ApplicationQualifiedProviderToken, ApplicationLakehouseDatasetProvider } from './application-providers.js';
 
 export { type };
 
@@ -58,6 +61,14 @@ export interface EventDefinition<TPayload extends object> {
   readonly version: string;
   readonly payload: SchemaInput<TPayload>;
   emit(payload: TPayload): ApplicationStagedEffectReference;
+}
+
+export interface PublishedEventDefinition<TPayload extends object> extends EventDefinition<TPayload> {
+  publish<TRow extends object>(
+    dataset: ApplicationQualifiedProviderToken<ApplicationLakehouseDatasetProvider>,
+    row: SchemaInput<TRow>,
+    transform: (event: TPayload, output: { append(row: TRow): TRow }) => TRow,
+  ): ApplicationLakehousePublication<TRow>;
 }
 
 const applicationEventEmitterSymbol = Symbol.for(
@@ -198,16 +209,19 @@ export function command<
 export function event<TPayload extends object>(
   id: string,
   options: { readonly payload: SchemaInput<TPayload> }
-): EventDefinition<TPayload> {
+): PublishedEventDefinition<TPayload> {
   const identity = applicationContractIdentity('event', id);
   const emit = (payload: TPayload) =>
     emitApplicationManagedEvent(definition, payload);
-  const definition: EventDefinition<TPayload> = {
+  const definition: PublishedEventDefinition<TPayload> = {
     kind: 'applik8sEvent',
     id,
     ...identity,
     payload: options.payload,
     emit,
+    publish(dataset, row, transform) {
+      return createApplicationLakehousePublication(definition, dataset, row, transform);
+    },
   };
   Object.defineProperty(emit, applicationEventEmitterSymbol, {
     value: definition,

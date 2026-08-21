@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 
-import type { AnyHandlerRegistration, AnyResourceDefinition, BundleArtifact, CapabilityDescriptor, CapabilityExecutionPolicy, CapabilityKind, ConcurrencyConfig, HandlerEventType, HandlerId, KubernetesConnectionBinding, OperatorDefinition, OperatorManifest, PermissionRule, ResourceWatchAddress, Result, RetryPolicy, RuntimePayloadSchemaDigests, SecretRef } from '@applik8s/core';
+import { applicationCanonicalIdentity, applicationExecutionBoundaryIdentity, applicationGraphNodeIdentity, applicationOperationId, applicationOperationIdentity, type AnyHandlerRegistration, type AnyResourceDefinition, type BundleArtifact, type CapabilityDescriptor, type CapabilityExecutionPolicy, type CapabilityKind, type ConcurrencyConfig, type HandlerEventType, type HandlerId, type KubernetesConnectionBinding, type OperatorDefinition, type OperatorManifest, type OperatorRuntimeIdentityContract, type PermissionRule, type ResourceWatchAddress, type Result, type RetryPolicy, type RuntimePayloadSchemaDigests, type SecretRef } from '@applik8s/core';
 import { canonicalRuntimeContract } from '@applik8s/runtime-contract';
 import type { ContainerRecipe } from '@applik8s/typetainer';
 import { DEFAULT_OPERATOR_HOST_IMAGE } from '../operator-host-image.js';
@@ -149,6 +149,14 @@ export function buildOperatorManifest(request: ManifestBuildRequest): Result<Ope
     readResources,
     payloadSchemaDigests: schemaDigests,
   });
+  const runtimeIdentity = operatorRuntimeIdentity({
+    operator: request.operator,
+    handlerExports,
+    handlerArtifactDigest: request.handlerArtifactDigest,
+    bundleDigest,
+    permissions,
+    capabilities,
+  });
   const container = implicitRuntimeContainer(request.operator.name, buildIdentityDigest, request.containerBuildContext ?? '.');
   const hostImports = canonicalHostImports();
   const portableManifest: OperatorManifest = {
@@ -193,6 +201,7 @@ export function buildOperatorManifest(request: ManifestBuildRequest): Result<Ope
       security: securityContract(request.operator, permissions, capabilities, request.portability),
       lifecycle: request.operator.lifecycle ?? defaultLifecycleContract(),
       ...(request.operator.runtime ? { runtime: request.operator.runtime } : {}),
+      runtimeIdentity,
       container,
       bundle: {
         digest: bundleDigest,
@@ -230,6 +239,82 @@ export function buildOperatorManifest(request: ManifestBuildRequest): Result<Ope
   }
 
   return { ok: true, value: manifest };
+}
+
+function operatorRuntimeIdentity(input: {
+  readonly operator: OperatorDefinition;
+  readonly handlerExports: OperatorManifest['spec']['handlerExports'];
+  readonly handlerArtifactDigest: string;
+  readonly bundleDigest: string;
+  readonly permissions: readonly PermissionRule[];
+  readonly capabilities: Readonly<Record<string, CapabilityDescriptor>>;
+}): OperatorRuntimeIdentityContract {
+  const application = applicationCanonicalIdentity({
+    application: input.operator.name,
+    kind: 'application',
+    semanticKey: input.operator.name,
+  });
+  const artifact = applicationCanonicalIdentity({
+    application: input.operator.name,
+    kind: 'artifact',
+    semanticKey: `wasm-component:${input.handlerArtifactDigest}`,
+    parentId: application.id,
+  });
+  const requirementIds = [
+    ...Object.keys(input.capabilities).sort().map((capability) => `capability:${capability}`),
+    ...input.permissions.map((permission) => `permission:${digestStableValue(permission).slice('sha256:'.length)}`).sort(),
+  ];
+  const capabilityIds = Object.keys(input.capabilities).sort();
+  return {
+    apiVersion: 'applik8s.operatorRuntimeIdentity/v1alpha1',
+    application: application.id,
+    artifact: artifact.id,
+    bundleDigest: input.bundleDigest,
+    runtimeAccess: {
+      version: 'v1alpha1',
+      digest: digestStableValue(requirementIds),
+      requirementIds,
+    },
+    handlers: input.handlerExports.map((handler) => {
+      const owner = applicationGraphNodeIdentity({
+        application: input.operator.name,
+        nodeKind: 'operator-handler',
+        nodeId: handler.handlerId,
+        parentId: application.id,
+      });
+      return {
+        handlerId: handler.handlerId,
+        operation: applicationOperationIdentity({
+          application: input.operator.name,
+          operationId: applicationOperationId({
+            domain: 'resources',
+            owner: `${handler.resource.kind}.${handler.handlerId}`,
+            operation: handler.event,
+          }),
+          parentId: owner.id,
+        }).id,
+        execution: applicationExecutionBoundaryIdentity({
+          application: input.operator.name,
+          boundaryKind: 'operator-handler',
+          ownerNodeId: handler.handlerId,
+          parentId: owner.id,
+        }).id,
+        capabilityIds,
+        effectIds: ['kubernetes.plan', 'status.patch', 'event.record', 'finalizer.manage', 'requeue'],
+      };
+    }).sort((left, right) => left.handlerId.localeCompare(right.handlerId)),
+  };
+}
+
+function digestStableValue(value: unknown): `sha256:${string}` {
+  return `sha256:${createHash('sha256').update(runtimeIdentityStableJson(value)).digest('hex')}`;
+}
+
+function runtimeIdentityStableJson(value: unknown): string {
+  if (value === undefined) return 'null';
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(runtimeIdentityStableJson).join(',')}]`;
+  return `{${Object.entries(value).filter(([, entry]) => entry !== undefined).sort(([left], [right]) => left.localeCompare(right)).map(([key, entry]) => `${JSON.stringify(key)}:${runtimeIdentityStableJson(entry)}`).join(',')}}`;
 }
 
 function secondaryWatchPermissions(watches: NonNullable<OperatorDefinition['secondaryWatches']>): PermissionRule[] {

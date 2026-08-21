@@ -90,6 +90,13 @@ export interface ApplicationStreamProcessorNode
 		readonly identifier: string;
 		readonly query: ApplicationGraphNodeRef;
 	}[];
+	/** Exact actor protocol members captured by this managed effect callback. */
+	readonly actorBindings?: readonly {
+		readonly identifier: string;
+		readonly actor: ApplicationGraphNodeRef;
+		readonly member: string;
+		readonly memberKind: "command" | "message" | "alarm";
+	}[];
 	/** Portable package-owned wrappers reconstructed from their admitted operation leaves. */
 	readonly callableBindings?: readonly {
 		readonly identifier: string;

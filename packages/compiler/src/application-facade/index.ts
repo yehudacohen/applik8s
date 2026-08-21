@@ -41,6 +41,19 @@ export interface ApplicationFacadeAgentManifest {
   readonly exportNames: readonly string[];
 }
 
+export interface ApplicationFacadeActorMemberManifest {
+  readonly name: string;
+  readonly kind: 'command' | 'message' | 'connectionMessage' | 'connection' | 'disconnection' | 'broadcast';
+  readonly input?: ApplicationMessageContractSchema;
+  readonly output?: ApplicationMessageContractSchema;
+}
+
+export interface ApplicationFacadeActorManifest {
+  readonly id: string;
+  readonly exportNames: readonly string[];
+  readonly members: readonly ApplicationFacadeActorMemberManifest[];
+}
+
 export interface ApplicationFacadeManifest {
   readonly apiVersion: 'applik8s.facade/v1alpha1';
   readonly application: string;
@@ -49,6 +62,7 @@ export interface ApplicationFacadeManifest {
   readonly objectStores: readonly ApplicationFacadeObjectStoreManifest[];
   readonly signals: readonly ApplicationFacadeSignalManifest[];
   readonly agents: readonly ApplicationFacadeAgentManifest[];
+  readonly actors: readonly ApplicationFacadeActorManifest[];
 }
 
 /** Produces the environment-neutral public operation manifest consumed by Vite and framework adapters. */
@@ -60,6 +74,7 @@ export function applicationFacadeManifest(
     readonly signalExports?: readonly { readonly name: string; readonly signalId: string }[];
     readonly agentExports?: readonly { readonly name: string; readonly agentName: string }[];
     readonly objectStoreExports?: readonly { readonly name: string; readonly objectStoreName: string }[];
+    readonly actorExports?: readonly { readonly name: string; readonly actorId: string }[];
   } = {},
 ): ApplicationFacadeManifest {
   const exportNamesByOperation = new Map<string, string[]>();
@@ -195,7 +210,7 @@ export function applicationFacadeManifest(
       operations: [...operations.values()].sort((left, right) => left.name.localeCompare(right.name)),
     }));
   const modelNames = new Set(modelManifests.map((model) => model.name));
-  const operations = graph.nodes
+  const routeOperations = graph.nodes
     .filter((node) => node.kind === 'server')
     .flatMap((server) =>
       server.routes.flatMap((route): ApplicationFacadeOperationManifest[] => {
@@ -224,6 +239,24 @@ export function applicationFacadeManifest(
         }];
       }),
     )
+    .sort((left, right) => left.id.localeCompare(right.id));
+  const queryOperations = graph.nodes
+    .flatMap((node): ApplicationFacadeOperationManifest[] => {
+      if (node.kind !== 'query' || node.modelOperation || !publicQueryNodeIds.has(node.id)) return [];
+      const id = node.publicId ?? `${node.name}.${node.version}`;
+      const exportNames = [...new Set(exportNamesByOperation.get(id) ?? [])];
+      return exportNames.length === 0 ? [] : [{
+        id,
+        name: node.name,
+        owner: 'Application',
+        operation: 'query',
+        transport: 'query',
+        input: node.input,
+        output: node.output,
+        exportNames,
+      }];
+    });
+  const operations = [...routeOperations, ...queryOperations]
     .sort((left, right) => left.id.localeCompare(right.id));
   const objectStores = graph.nodes
     .filter((node) => node.kind === 'objectStore')
@@ -316,6 +349,35 @@ export function applicationFacadeManifest(
       return exportNames.length > 0 ? [{ name: agent.name, exportNames }] : [];
     })
     .sort((left, right) => left.name.localeCompare(right.name));
+  const actorExports = new Map<string, string[]>();
+  for (const exported of options.actorExports ?? []) {
+    assertJavaScriptExportName(exported.name, `Application actor ${exported.actorId}`);
+    actorExports.set(exported.actorId, [
+      ...(actorExports.get(exported.actorId) ?? []),
+      exported.name,
+    ]);
+  }
+  const actors = graph.nodes
+    .filter((node): node is Extract<ApplicationGraph['nodes'][number], { readonly kind: 'actor' }> =>
+      node.kind === 'actor' && node.publication?.boundary === 'entrypoint-export')
+    .flatMap((actor): ApplicationFacadeActorManifest[] => {
+      const exportNames = [...new Set(actorExports.get(actor.definition.id) ?? [])];
+      if (exportNames.length === 0) return [];
+      return [{
+        id: actor.definition.id,
+        exportNames,
+        members: actor.definition.protocol.flatMap((member): ApplicationFacadeActorMemberManifest[] =>
+          member.kind === 'alarm'
+            ? []
+            : [{
+                name: member.name,
+                kind: member.kind,
+                ...(member.input ? { input: member.input } : {}),
+                ...(member.output ? { output: member.output } : {}),
+              }]),
+      }];
+    })
+    .sort((left, right) => left.id.localeCompare(right.id));
   return {
     apiVersion: 'applik8s.facade/v1alpha1',
     application: graph.metadata.name,
@@ -324,6 +386,7 @@ export function applicationFacadeManifest(
     objectStores,
     signals,
     agents,
+    actors,
   };
 }
 
@@ -336,8 +399,9 @@ export function generatedApplicationFacadeSource(
     readonly browserAdapterModule?: string;
   } = {},
 ): string {
-  const hasQueries = manifest.models.some((model) => model.operations.some((operation) => operation.transport === 'query'));
-  const imports = ['createApplicationMutationOperation', ...(manifest.objectStores.length + manifest.operations.length > 0 ? ['createApplicationRuntimeOperation'] : []), ...(manifest.signals.length > 0 ? ['createApplicationSignalOperation'] : []), ...(target === 'browser' && hasQueries ? ['createApplicationQueryOperation'] : []), ...(target === 'browser' && options.browserBaseUrl ? ['configureDefaultApplicationBrowserRuntime'] : [])];
+  const hasQueries = manifest.models.some((model) => model.operations.some((operation) => operation.transport === 'query'))
+    || manifest.operations.some((operation) => operation.transport === 'query');
+  const imports = ['createApplicationMutationOperation', ...(manifest.objectStores.length + manifest.operations.length > 0 ? ['createApplicationRuntimeOperation'] : []), ...(manifest.signals.length > 0 ? ['createApplicationSignalOperation'] : []), ...(manifest.actors.length > 0 ? ['createApplicationActorClient'] : []), ...(target === 'browser' && hasQueries ? ['createApplicationQueryOperation'] : []), ...(target === 'browser' && options.browserBaseUrl ? ['configureDefaultApplicationBrowserRuntime'] : [])];
   const lines = [
     ...(target === 'browser' && options.browserAdapterModule
       ? [`import ${JSON.stringify(options.browserAdapterModule)};`]
@@ -405,6 +469,15 @@ export function generatedApplicationFacadeSource(
     for (const exportName of agent.exportNames) {
       assertUniqueFacadeExport(emittedExports, exportName, `agent ${agent.name}`);
       lines.push(`export const ${exportName} = Object.freeze({ kind: 'applicationAgent', name: ${JSON.stringify(agent.name)} });`);
+    }
+  }
+  for (const actor of manifest.actors) {
+    const variable = javascriptExportName(`actor-${actor.id}`);
+    assertUniqueFacadeExport(emittedExports, variable, `actor ${actor.id} internal binding`);
+    lines.push(`const ${variable} = createApplicationActorClient(${JSON.stringify({ id: actor.id, members: actor.members.map(({ name, kind }) => ({ name, kind })) })}${target === 'browser' && options.browserBaseUrl ? `, { baseUrl: ${JSON.stringify(options.browserBaseUrl)} }` : ''});`);
+    for (const exportName of actor.exportNames) {
+      assertUniqueFacadeExport(emittedExports, exportName, `actor ${actor.id}`);
+      lines.push(`export const ${exportName} = ${variable};`);
     }
   }
   return `${lines.join('\n')}\n`;

@@ -2,6 +2,7 @@
 // erased graph needed to exercise compiler-owned browser publication.
 import type { ApplicationGraph, ApplicationGatewayNode } from '@applik8s/core';
 import { describe, expect, it } from 'vitest';
+import { applicationFacadeManifest, generatedApplicationFacadeSource } from '../src/application-facade/index.js';
 import { applicationGraphWithEntrypointPublicSurface } from '../src/application-facade/public-surface.js';
 
 describe('entrypoint-driven application public surface', () => {
@@ -252,6 +253,34 @@ describe('entrypoint-driven application public surface', () => {
         }),
       }),
     ]);
+  });
+
+  it('publishes exported standalone queries as direct browser handles', () => {
+    const authored = graph();
+    const modelQuery = authored.nodes.find((node) => node.id === 'query.Workspace.list');
+    if (!modelQuery || modelQuery.kind !== 'query') throw new Error('Expected query fixture.');
+    const { modelOperation: _modelOperation, ...standaloneQuery } = modelQuery;
+    const standalone = {
+      ...standaloneQuery,
+      id: 'query.workspace.activity.v1',
+      name: 'workspace.activity',
+      publicId: 'workspace.activity.v1',
+    };
+    const published = applicationGraphWithEntrypointPublicSurface({
+      ...authored,
+      nodes: [...authored.nodes, standalone],
+    }, { operationIds: ['workspace.activity.v1'], modelNames: [] });
+    const manifest = applicationFacadeManifest(published, {
+      operationExports: [{ name: 'WorkspaceActivitySnapshot', operationId: 'workspace.activity.v1' }],
+    });
+    expect(manifest.operations).toContainEqual(expect.objectContaining({
+      id: 'workspace.activity.v1',
+      transport: 'query',
+      exportNames: ['WorkspaceActivitySnapshot'],
+    }));
+    expect(generatedApplicationFacadeSource(manifest, 'browser')).toContain(
+      'export const WorkspaceActivitySnapshot = createApplicationQueryOperation',
+    );
   });
 });
 

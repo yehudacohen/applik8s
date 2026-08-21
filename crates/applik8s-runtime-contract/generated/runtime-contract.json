@@ -581,6 +581,143 @@
             },
             "startedAt": {
               "type": "string"
+            },
+            "identityEnvelope": {
+              "type": "object",
+              "properties": {
+                "apiVersion": {
+                  "const": "applik8s.guestHostIdentity/v1alpha1"
+                },
+                "application": {
+                  "type": "string",
+                  "pattern": "^applik8s://"
+                },
+                "operation": {
+                  "type": "string",
+                  "pattern": "^applik8s://"
+                },
+                "execution": {
+                  "type": "string",
+                  "pattern": "^applik8s://"
+                },
+                "artifact": {
+                  "type": "string",
+                  "pattern": "^applik8s://"
+                },
+                "attempt": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "runtimeAccess": {
+                  "type": "object",
+                  "properties": {
+                    "version": {
+                      "const": "v1alpha1"
+                    },
+                    "digest": {
+                      "type": "string",
+                      "pattern": "^sha256:[a-f0-9]{64}$"
+                    },
+                    "requirementIds": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "required": [
+                    "version",
+                    "digest",
+                    "requirementIds"
+                  ],
+                  "additionalProperties": false
+                },
+                "capabilityIds": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "effectIds": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "causalPrincipalId": {
+                  "type": "string"
+                },
+                "authorizationReceiptIds": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "telemetry": {
+                  "type": "object",
+                  "properties": {
+                    "apiVersion": {
+                      "const": "applik8s.telemetryCarrier/v1alpha1"
+                    },
+                    "traceparent": {
+                      "type": "string",
+                      "pattern": "^00-[a-f0-9]{32}-[a-f0-9]{16}-(?:00|01)$"
+                    },
+                    "tracestate": {
+                      "type": "string",
+                      "maxLength": 512
+                    },
+                    "baggage": {
+                      "type": "object",
+                      "maxProperties": 32,
+                      "additionalProperties": {
+                        "type": "string",
+                        "maxLength": 256
+                      }
+                    },
+                    "invocation": {
+                      "enum": [
+                        "live",
+                        "retry",
+                        "replay"
+                      ]
+                    },
+                    "sampling": {
+                      "enum": [
+                        "sampled",
+                        "not-sampled"
+                      ]
+                    },
+                    "bindingDigest": {
+                      "type": "string",
+                      "pattern": "^sha256:[a-f0-9]{64}$"
+                    }
+                  },
+                  "required": [
+                    "apiVersion",
+                    "traceparent",
+                    "tracestate",
+                    "baggage",
+                    "invocation",
+                    "sampling",
+                    "bindingDigest"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "required": [
+                "apiVersion",
+                "application",
+                "operation",
+                "execution",
+                "artifact",
+                "attempt",
+                "runtimeAccess",
+                "capabilityIds",
+                "effectIds",
+                "authorizationReceiptIds"
+              ],
+              "additionalProperties": false
             }
           },
           "required": [
@@ -1569,6 +1706,9 @@
               "type": "object"
             },
             "runtime": {
+              "type": "object"
+            },
+            "runtimeIdentity": {
               "type": "object"
             },
             "bundle": {

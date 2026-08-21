@@ -4,7 +4,7 @@ import { applicationGraphAllConditions, applicationGraphBooleanCondition, applic
 import { structuredGenerationSelectedScalar, structuredGenerationSelection, type WorkflowContract, type WorkflowTaskProjectionContract } from './contracts.js';
 import { uniqueWorkflowObjectEffects, uniqueWorkflowProjectionEffects } from './source.js';
 import type { GeneratedApplicationWorkflowResource } from './types.js';
-import { objectConfig, stringConfig, workflowObjectEnabledEnvironment } from './utilities.js';
+import { kubernetesName, objectConfig, stringConfig, workflowObjectEnabledEnvironment } from './utilities.js';
 
 const workflowTokenMountPath = '/var/run/secrets/applik8s/workflow-token';
 const workflowTokenFile = `${workflowTokenMountPath}/token`;
@@ -97,6 +97,7 @@ export function workflowResources(contract: WorkflowContract, name: string, imag
               ...workflowQueryEnvironment(contract),
               ...workflowProjectionEnvironment(contract),
 							...workflowObjectEnvironment(contract),
+              ...workflowActorEnvironment(contract),
               ...workflowSignalEnvironment(contract),
             ]),
             ports: [
@@ -165,6 +166,23 @@ export function workflowResources(contract: WorkflowContract, name: string, imag
   if (contract.worker.deployment.scaling.mode === 'kedaHatchetSlots') workloadResources.push(...workflowScalingResources(contract, name));
   return [
     ...conditionalWorkflowResources(workloadResources, applicationGraphBooleanCondition(contract.providerConfig.enabled)),
+  ];
+}
+
+function workflowActorEnvironment(contract: WorkflowContract): readonly Record<string, unknown>[] {
+  if (!contract.actorEffects) return [];
+  return [
+    { name: 'APPLIK8S_ACTOR_APPLICATION_ENDPOINT', value: contract.actorEffects.applicationEndpoint },
+    {
+      name: 'APPLIK8S_INTERNAL_OPERATION_SECRET',
+      valueFrom: {
+        secretKeyRef: {
+          name: `${kubernetesName(contract.graphName)}-internal-operation`,
+          key: 'key',
+          optional: false,
+        },
+      },
+    },
   ];
 }
 

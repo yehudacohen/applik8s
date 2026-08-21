@@ -4,17 +4,21 @@ import { resolve } from "node:path";
 import { applicationOperationId } from "@applik8s/core";
 import type {
 	ApplicationAIAgentNode,
+	ApplicationActorNode,
 	ApplicationCrdNode,
 	ApplicationGatewayNode,
 	ApplicationGraph,
+	ApplicationLakehousePublicationNode,
 	ApplicationObjectStoreNode,
 	ApplicationProfiledCallbackContract,
 	ApplicationProviderNode,
 	ApplicationQueryNode,
+	ApplicationScheduleNode,
 	ApplicationServerNode,
 	ApplicationSerializedCallbackContract,
 	ApplicationWorkloadAuthorityEnvelope,
 } from "@applik8s/core";
+import { applicationRuntimeEndpointEnvironmentName } from "@applik8s/deployment-contract";
 import { applicationGraphStringValue } from "../application-installation-values.js";
 import {
 	compileApplicationOperationCatalog,
@@ -26,6 +30,22 @@ const applicationRuntimeNamespaceMarker = "__APPLIK8S_RUNTIME_NAMESPACE__";
 export interface GeneratedApplicationFetchGatewayModules {
 	readonly entrypoint: string;
 	readonly files: Readonly<Record<string, string>>;
+}
+
+interface ApplicationLakehouseDatasetBinding {
+	readonly providerId: string;
+	readonly qualification: string;
+	readonly kind: "duckdb-dataset" | "s3-dataset";
+	readonly rowSchema: unknown;
+	readonly schemaRevision: string;
+	readonly root: string;
+	readonly cursorSecretEnvironment: string;
+	readonly maximumConcurrentQueries: number;
+	readonly targets?: readonly ("local" | "aws-local" | "aws" | "kubernetes")[];
+	readonly bucket?: string;
+	readonly prefix?: string;
+	readonly region?: string;
+	readonly catalog?: string;
 }
 
 /**
@@ -41,6 +61,10 @@ export function generatedApplicationFetchGatewayModules(
 		readonly modelExports?: readonly {
 			readonly name: string;
 			readonly modelName: string;
+		}[];
+		readonly actorExports?: readonly {
+			readonly name: string;
+			readonly actorId: string;
 		}[];
 	} = {},
 ): GeneratedApplicationFetchGatewayModules | undefined {
@@ -90,6 +114,33 @@ export function generatedApplicationFetchGatewayModules(
 	);
 	const agents = graph.nodes.filter(
 		(node): node is ApplicationAIAgentNode => node.kind === "aiAgent",
+	);
+	const schedules = graph.nodes.filter((node): node is ApplicationScheduleNode => {
+		if (node.kind !== "schedule") return false;
+		const provider = graph.nodes.find((candidate) => candidate.id === node.scheduler.nodeId);
+		return provider?.kind === "provider" && !provider.config?.qualification;
+	});
+	const actors = graph.nodes.filter(
+		(node): node is ApplicationActorNode => node.kind === "actor",
+	);
+	const publicActorIds = new Set((options.actorExports ?? []).map(({ actorId }) => actorId));
+	const publicActors = actors.filter((actor) =>
+		actor.publication?.boundary === "entrypoint-export" && publicActorIds.has(actor.definition.id),
+	);
+	const lakehousePublications = graph.nodes.filter(
+		(node): node is ApplicationLakehousePublicationNode =>
+			node.kind === "lakehousePublication",
+	);
+	const lakehouseDatasets = applicationLakehouseDatasets(
+		graph,
+		lakehousePublications,
+	);
+	const lakehouseQueries = applicationLakehouseQueries(graph);
+	const observability = graph.nodes.filter(
+		(node): node is ApplicationProviderNode =>
+			node.kind === "provider" &&
+			node.interface === "Observability" &&
+			!node.config?.qualification,
 	);
 	const agentTargets = applicationAgentGatewayTargets(graph, agents);
 	const remoteRoutes = mergeRemoteRouteContracts(
@@ -145,13 +196,17 @@ export function generatedApplicationFetchGatewayModules(
 		remoteGateways.length > 0 ||
 		remoteRoutes.routes.some(([route]) => route.startsWith("runtime:")) ||
 		objectStores.length > 0 ||
-		agents.length > 0;
+			agents.length > 0 ||
+			schedules.length > 0 ||
+			actors.length > 0 ||
+			lakehousePublications.length > 0;
 	const requiresApplicationIdentity =
 		queries.length > 0 ||
 		commands.length > 0 ||
 		remoteRoutes.routes.some(([route]) => route.startsWith("runtime:")) ||
 		objectStores.length > 0 ||
-		agents.length > 0;
+		agents.length > 0 ||
+		publicActors.length > 0;
 	if (!hasApplicationSurface && identity.length === 0) return undefined;
 	if (
 		(requiresApplicationIdentity || identityCandidates.length > 0) &&
@@ -160,11 +215,22 @@ export function generatedApplicationFetchGatewayModules(
 		throw new Error(
 			"Generated application Fetch gateway requires exactly one IdentityProvider provider.",
 		);
+	const hasManagedActorCallers = graph.nodes.some((node) =>
+		(node.kind === 'taskHandler' && (node.actors?.length ?? 0) > 0)
+		|| (node.kind === 'aiAgent' && (node.actors?.length ?? 0) > 0)
+		|| (node.kind === 'streamProcessor' && (node.actorBindings?.length ?? 0) > 0));
+	if ((publicActors.length > 0 || hasManagedActorCallers) && (!operationCatalog || !identityAuthorityDatabaseEnvironment)) {
+		throw new Error('Application actors require the canonical operation-authority database; actor admission cannot fall back to a shared internal credential.');
+	}
+	const actorWorkloadAuthority = actors.length > 0 && operationCatalog
+		? compileApplicationWorkloadAuthority(graph, operationCatalog)
+		: [];
 	const files: Record<string, string> = {};
 	const imports =
 		queries.length > 0 || commands.length > 0
 			? [
 					"import { createApplik8sKubernetesGateway } from '@applik8s/server/kubernetes-gateway';",
+					"import { createApplik8sLocalResourceClients } from '@applik8s/server/local-resource';",
 				]
 			: [];
 	if (hasRemoteQueries)
@@ -180,6 +246,39 @@ export function generatedApplicationFetchGatewayModules(
 		imports.push(
 			"import { createApplicationAIAgentGateway } from '@applik8s/runtime-ai';",
 		);
+	if (schedules.length > 0)
+		imports.push(
+			"import { executeApplicationScheduleAdmission, installApplicationScheduleRuntimeResolver, schedule } from '@applik8s/applik8s';",
+			"import { installLocalApplicationScheduleRuntime } from '@applik8s/applik8s/schedule-runtime-local';",
+			"import { createAwsApplicationScheduleRuntime, startAwsApplicationScheduleQueueRunner } from '@applik8s/runtime-aws';",
+			"import { createKubernetesApplicationScheduleRuntime, executeKubernetesApplicationScheduleAdmission } from '@applik8s/runtime-kubernetes';",
+		);
+	if (actors.length > 0)
+		imports.push(
+			"import { actor, actorState, createApplicationActor, executeApplicationActorAlarm, executeApplicationActorRealtime, installApplicationActorInvocationAuthorityResolver, installApplicationActorRuntimeResolver, validateApplicationAuthorizationReceipt, withApplicationActorTurnAuthority } from '@applik8s/applik8s';",
+			"import { applicationOperationInputDigest } from '@applik8s/applik8s/operation-runtime';",
+			"import { createPersistentLocalApplicationActorRuntime } from '@applik8s/applik8s/actor-runtime-local';",
+			"import { createApplicationEventLogPublisherFromEnvironment } from '@applik8s/applik8s/event-log-runtime';",
+			"import { createCelldApplicationActorRuntime, signCelldActorConnectionTicket } from '@applik8s/runtime-celld';",
+			"import { normalizeSchema } from '@applik8s/sdk';",
+		);
+	if (publicActors.length > 0) imports.push("import { randomUUID } from 'node:crypto';");
+	if (lakehousePublications.length > 0)
+		imports.push(
+			"import { event, executeApplicationLakehousePublication, installApplicationLakehousePublicationRuntimeResolver, installApplicationLakehouseQueryRuntimeResolver, LakehouseDataset } from '@applik8s/applik8s';",
+			"import { createDuckDbApplicationLakehouseRuntime } from '@applik8s/runtime-duckdb';",
+			"import { createAwsApplicationLakehouseDatasetRuntime, createAwsApplicationLakehouseQueryRuntime } from '@applik8s/runtime-aws';",
+			...(actors.length > 0
+				? []
+				: ["import { normalizeSchema } from '@applik8s/sdk';"]),
+		);
+	if (actors.length > 0 || lakehousePublications.length > 0 || schedules.length > 0)
+		imports.push("import { timingSafeEqual } from 'node:crypto';");
+	if (observability.length > 0)
+		imports.push(
+			"import { installApplicationTelemetryRuntimeResolver, runApplicationTelemetryBoundary } from '@applik8s/applik8s';",
+			"import { createApplicationOpenTelemetryRuntime, startApplicationOpenTelemetryRuntime } from '@applik8s/runtime-otel';",
+		);
 	if (identity.length === 1)
 		imports.push(
 			"import { createApplicationIdentitySessionHandler } from '@applik8s/identity/server';",
@@ -193,6 +292,116 @@ export function generatedApplicationFetchGatewayModules(
 	const identityConfig = objectConfig(
 		objectConfig(identity[0]?.config).identity,
 	);
+	const scheduleSources = schedules.map((scheduleNode) => {
+		const callback = graphCallback(files, imports, scheduleNode.id, "schedule", scheduleNode.handler);
+		const definition = scheduleNode.definition;
+		const options = {
+			id: definition.id,
+			...(definition.input
+				? {
+					input: {
+						kind: "jsonSchema",
+						ref: { kind: "jsonSchema", exportName: `${definition.id}.input` },
+						schema: definition.input.jsonSchema,
+					},
+				}
+				: {}),
+			...(definition.cron ? { cron: definition.cron } : {}),
+			...(definition.every ? { every: definition.every } : {}),
+			...(definition.at ? { at: definition.at } : {}),
+			timezone: definition.timezone,
+			overlap: definition.overlap,
+			misfires: definition.misfires,
+			...(definition.maxCatchUp ? { maxCatchUp: definition.maxCatchUp } : {}),
+			retry: { maxAttempts: definition.retry.maxAttempts, maximumAge: `${definition.retry.maximumAgeSeconds}s` },
+			requirements: definition.requirements,
+		};
+		return `schedule(${JSON.stringify(options)}, ${callback})`;
+	});
+	const scheduleHost = schedules.length > 0 ? applicationScheduleHost(graph) : undefined;
+	const actorSources = actors.map((actorNode) => {
+		const protocol = actorNode.definition.protocol.map((member) => {
+			const input = member.input
+				? `runtimeJsonSchema(${JSON.stringify(member.input.jsonSchema)}, ${JSON.stringify(`${actorNode.definition.id}.${member.name}.input`)})`
+				: undefined;
+			if (member.kind === "command") {
+				if (!input || !member.output) throw new Error(`Actor ${actorNode.id}.${member.name} has an incomplete command contract.`);
+				return `${JSON.stringify(member.name)}: actor.command({ input: ${input}, output: runtimeJsonSchema(${JSON.stringify(member.output.jsonSchema)}, ${JSON.stringify(`${actorNode.definition.id}.${member.name}.output`)}) })`;
+			}
+			if (!input) throw new Error(`Actor ${actorNode.id}.${member.name} has no input contract.`);
+			const memberConstructor = member.kind === "message"
+				? "message"
+				: member.kind === "alarm"
+					? "alarm"
+					: member.kind === "broadcast"
+						? "broadcast"
+						: member.kind === "connectionMessage"
+							? "connectionMessage"
+							: member.kind;
+			return `${JSON.stringify(member.name)}: actor.${memberConstructor}(${input})`;
+		});
+		const initialize = actorNode.initialize
+			? graphCallback(files, imports, actorNode.id, "actor-initialize", actorNode.initialize)
+			: undefined;
+		const registrations = actorNode.handlers.map(({ member, callback }) => {
+			const generated = graphCallback(files, imports, actorNode.id, `actor-${member}`, callback);
+			return `binding.on[${JSON.stringify(member)}](${generated});`;
+		});
+		const migrations = actorNode.definition.migrations.map(({ from, callback }) => {
+			const generated = graphCallback(files, imports, actorNode.id, `actor-state-migration-${from}`, callback);
+			return `${JSON.stringify(from)}: ${generated}`;
+		});
+		return `(() => {
+  const binding = createApplicationActor(${JSON.stringify(actorNode.definition.id)}, {
+    key: runtimeActorKeySchema(${JSON.stringify(actorNode.definition.key.jsonSchema)}, ${JSON.stringify(`${actorNode.definition.id}.key`)}),
+    state: actorState({
+      version: ${actorNode.definition.stateVersion},
+      schema: runtimeJsonSchema(${JSON.stringify(actorNode.definition.state.jsonSchema)}, ${JSON.stringify(`${actorNode.definition.id}.state`)}),
+      migrate: { ${migrations.join(", ")} },
+    }),
+    protocol: { ${protocol.join(", ")} },
+  });
+  ${initialize ? `binding.on.initialize(${initialize});` : ""}
+  ${registrations.join("\n  ")}
+  return binding;
+})()`;
+	});
+	const publicActorContracts = publicActors.map((actorNode) => ({
+		id: actorNode.definition.id,
+		protocolRevision: `sha256:${createHash("sha256").update(JSON.stringify({
+			stateVersion: actorNode.definition.stateVersion,
+			migrationDigest: actorNode.definition.migrationDigest,
+			protocol: actorNode.definition.protocol.map(({ name, kind, input, output }) => ({ name, kind, input: input?.jsonSchema, output: output?.jsonSchema })),
+		})).digest("hex")}`,
+		members: actorNode.definition.protocol.map(({ name, kind }) => ({ name, kind })),
+	}));
+	const lakehousePublicationSources = lakehousePublications.map((publication) => {
+		const dataset = lakehouseDatasets.find(({ providerId }) =>
+			providerId === publication.dataset.nodeId,
+		);
+		if (!dataset) {
+			throw new Error(
+				`Lakehouse publication ${publication.id} has no local dataset runtime contract.`,
+			);
+		}
+		const transform = graphCallback(
+			files,
+			imports,
+			publication.id,
+			"lakehouse-transform",
+			publication.transform,
+		);
+		const base = `event(${JSON.stringify(publication.sourceEventId)}, { payload: runtimeJsonSchema(${JSON.stringify(publication.source.jsonSchema)}, ${JSON.stringify(`${publication.sourceEventId}.payload`)}) }).publish(LakehouseDataset.named(${JSON.stringify(dataset.qualification)}), runtimeJsonSchema(${JSON.stringify(publication.row.jsonSchema)}, ${JSON.stringify(`${dataset.qualification}.row`)}), ${transform})`;
+		if (!publication.partition) return base;
+		const partition = graphCallback(
+			files,
+			imports,
+			publication.id,
+			"lakehouse-partition",
+			publication.partition,
+		);
+		return `(${base}).partitionBy(${partition})`;
+	});
 	const authenticationProfile = profiledCallbackConfig(
 		identityConfig.authenticationProfile,
 		"authentication",
@@ -402,6 +611,7 @@ export function generatedApplicationFetchGatewayModules(
 	const localGateway =
 		authenticate && (queries.length > 0 || commands.length > 0)
 			? `createApplik8sKubernetesGateway({
+  ...(localResourceClients ?? {}),
   authenticate: (request) => ${authenticate}(request),
   cursorSecret: requiredEnv('APPLIK8S_CURSOR_SECRET'),
   commands: [${commandSources.join(",\n")}],
@@ -425,7 +635,7 @@ const agentGateway =
 			? `createApplicationAIAgentGateway({
   application: ${JSON.stringify(graph.metadata.name)},
   secret: requiredEnv('APPLIK8S_INTERNAL_OPERATION_SECRET'),
-  targets: ${JSON.stringify(agentTargets)}.map((target) => ({ ...target, baseUrl: materializeRemoteBaseUrl(target.baseUrl) })),
+  targets: ${JSON.stringify(agentTargets)}.map((target) => ({ ...target, baseUrl: materializeRemoteBaseUrl(target.baseUrl, target.endpointEnvironmentName) })),
   authenticate: async (request) => {
     const admission = await ${authenticate}(request);
     return { ...admission, trustedContext: admission.trustedContext ?? {} };
@@ -452,6 +662,203 @@ function optionalEnv(name) {
   const value = process.env[name];
   return value && value.length > 0 ? value : undefined;
 }
+
+${actors.length > 0 || lakehousePublications.length > 0 ? `function runtimeJsonSchema(schema, exportName) {
+  return { kind: 'jsonSchema', ref: { kind: 'jsonSchema', exportName }, schema };
+}
+
+${actors.length > 0 ? `
+const actorWorkloadAuthority = new Map(${JSON.stringify(actorWorkloadAuthority.map((envelope) => [envelope.id, envelope]))});
+function runtimeActorKeySchema(schema, exportName) {
+  const normalized = normalizeSchema(runtimeJsonSchema(schema, exportName), exportName);
+  return {
+    json: schema,
+    assert(value) {
+      const result = normalized.validate(value);
+      if (!result.ok) throw new Error(result.error.message);
+      if (typeof result.value !== 'string' || result.value.length === 0) throw new Error(exportName + ' must be a non-empty string.');
+      return result.value;
+    },
+  };
+}
+
+function internalActorPrincipal(value) {
+  const principal = value?.principal;
+  if (!principal || typeof principal !== 'object'
+    || !['execution', 'service'].includes(principal.kind)
+    || typeof principal.id !== 'string' || !principal.id.trim()
+    || !principal.identity || typeof principal.identity !== 'object'
+    || typeof principal.identity.id !== 'string' || !principal.identity.id.trim()
+    || typeof principal.catalogRevision !== 'string' || !principal.catalogRevision.trim()
+    || typeof principal.authorityRevision !== 'string' || !principal.authorityRevision.trim()
+    || typeof principal.trustedContextDigest !== 'string' || !principal.trustedContextDigest.trim()
+    || !Array.isArray(principal.audience) || principal.audience.some((candidate) => typeof candidate !== 'string' || !candidate.trim())
+    || (principal.expiresAt !== undefined && (typeof principal.expiresAt !== 'string' || !Number.isFinite(Date.parse(principal.expiresAt)) || Date.now() >= Date.parse(principal.expiresAt)))) {
+    throw new Error('Invalid or expired internal actor execution principal.');
+  }
+  if (principal.kind === 'execution' && (
+    typeof principal.executionId !== 'string' || !principal.executionId.trim()
+    || typeof principal.executionKind !== 'string' || !principal.executionKind.trim()
+    || !principal.workloadIdentity || typeof principal.workloadIdentity !== 'object'
+    || typeof principal.workloadIdentity.id !== 'string' || !principal.workloadIdentity.id.trim()
+    || typeof principal.deadline !== 'string' || !Number.isFinite(Date.parse(principal.deadline))
+    || Date.now() >= Date.parse(principal.deadline)
+    || typeof principal.cancellationRevision !== 'string' || !principal.cancellationRevision.trim()
+  )) throw new Error('Invalid or expired internal actor execution principal.');
+  if (value.trustedContextDigest !== principal.trustedContextDigest) throw new Error('Internal actor trusted context does not match its principal.');
+  if (typeof value.audience !== 'string' || !value.audience.trim()
+    || (principal.kind === 'execution' && !principal.audience.includes(value.audience))) throw new Error('Invalid internal actor audience.');
+  if (!['direct', 'workflow', 'event'].includes(value.transport)) throw new Error('Invalid internal actor transport.');
+  return principal;
+}
+
+async function authorizeInternalApplicationActor(invocation, binding) {
+  let principal = internalActorPrincipal(invocation.authority);
+  const admittedKey = binding.reference(invocation.key).key;
+  const declared = binding.protocol[invocation.member]?.input;
+  if (!declared) throw new Error('Actor protocol member has no runtime input schema.');
+  const validation = normalizeSchema(declared, invocation.actor + '.' + invocation.member + '.input').validate(invocation.input);
+  if (!validation.ok) throw new Error(validation.error.message);
+  const admittedInput = validation.value;
+  const operationId = 'applik8s://actors/' + invocation.actor + '/operations/' + invocation.member;
+  const inputDigest = applicationOperationInputDigest(admittedInput);
+  const target = { kind: 'target', model: invocation.actor, identity: { key: admittedKey } };
+  const targetDigest = applicationOperationInputDigest(target);
+  const envelope = actorWorkloadAuthority.get(invocation.authority.workloadAuthorityId);
+  if (!envelope || envelope.operationId !== operationId) throw new Error('Internal actor invocation has no exact compiled workload authority.');
+  if (principal.kind !== 'execution') {
+    const execution = invocation.authority.execution;
+    if (!execution || typeof execution.id !== 'string' || !execution.id.trim()
+      || !Number.isSafeInteger(execution.attempt) || execution.attempt < 1
+      || typeof execution.deadline !== 'string' || !Number.isFinite(Date.parse(execution.deadline))
+      || typeof execution.cancellationRevision !== 'string' || !execution.cancellationRevision.trim()) {
+      throw new Error('Internal actor invocation has no complete managed execution identity.');
+    }
+    if (!envelope.serviceIdentity || principal.identity.id !== envelope.serviceIdentity.id) {
+      throw new Error('Internal actor service principal does not own the workload authority envelope.');
+    }
+    principal = await operationAuthority.admitExecutionPrincipal({
+      executionKind: execution.kind,
+      executionId: execution.id,
+      attempt: execution.attempt,
+      workloadIdentity: envelope.workloadIdentity,
+      serviceIdentity: envelope.serviceIdentity,
+      causalPrincipalId: principal.causalPrincipalId ?? principal.id,
+      causalPrincipal: principal.causalPrincipal ?? principal.identity,
+      causalGrantIds: principal.causalGrantIds ?? [],
+      envelopes: [envelope],
+      trustedContextDigest: principal.trustedContextDigest,
+      audience: [invocation.authority.audience],
+      deadline: execution.deadline,
+      cancellationRevision: execution.cancellationRevision,
+    });
+  }
+  const authorization = await operationAuthority.authorizeExecution({
+    principal,
+    envelope,
+    target,
+    audience: invocation.authority.audience,
+    transport: invocation.authority.transport,
+    inputDigest,
+    trustedContextDigest: principal.trustedContextDigest,
+    idempotencyKey: invocation.idempotencyKey,
+    targetDigest,
+    currentCancellationRevision: principal.cancellationRevision,
+  });
+  if (!authorization.allowed) return { response: new Response(JSON.stringify({ error: authorization.code, message: authorization.message }), { status: 403, headers: { 'content-type': 'application/json' } }) };
+  return {
+    key: admittedKey,
+    input: admittedInput,
+    authority: {
+      principal: { id: principal.id },
+      causalPrincipal: { id: principal.causalPrincipalId ?? principal.id },
+      authorizationReceipt: authorization.receipt,
+      trustedContextDigest: principal.trustedContextDigest,
+    },
+    authorizationReceiptId: authorization.receipt.id,
+  };
+}
+
+async function authorizeDeliveredApplicationActorAlarm(alarm, binding) {
+  const admittedKey = binding.reference(alarm.key).key;
+  const declared = binding.protocol[alarm.member]?.input;
+  if (!declared) throw new Error('Actor alarm has no runtime input schema.');
+  const validation = normalizeSchema(declared, alarm.actor + '.' + alarm.member + '.input').validate(alarm.input);
+  if (!validation.ok) throw new Error(validation.error.message);
+  const admittedInput = validation.value;
+  const authority = alarm.authority;
+  const receipt = authority?.authorizationReceipt;
+  const operationId = 'applik8s://actors/' + alarm.actor + '/operations/' + alarm.member;
+  const target = { kind: 'target', model: alarm.actor, identity: { key: admittedKey } };
+  if (!receipt || receipt.apiVersion !== 'applik8s.authorizationReceipt/v1alpha1'
+    || receipt.operationId !== operationId
+    || receipt.inputDigest !== applicationOperationInputDigest(admittedInput)
+    || applicationOperationInputDigest(receipt.target) !== applicationOperationInputDigest(target)
+    || receipt.trustedContextDigest !== authority.trustedContextDigest) {
+    throw new Error('Actor alarm authority does not match the persisted target and input.');
+  }
+  const revalidated = await operationAuthority.revalidate(
+    receipt,
+    'execution',
+    authority.trustedContextDigest,
+  );
+  if (!revalidated.allowed) throw new Error(revalidated.code + ': ' + revalidated.message);
+  return {
+    key: admittedKey,
+    input: admittedInput,
+    authority: {
+      principal: { id: receipt.principal.id },
+      causalPrincipal: authority.causalPrincipal,
+      authorizationReceipt: receipt,
+      trustedContextDigest: authority.trustedContextDigest,
+    },
+  };
+}
+
+async function authorizeDeliveredApplicationActorRealtime(admission, binding) {
+  const admittedKey = binding.reference(admission.key).key;
+  const declared = binding.protocol[admission.member]?.input;
+  if (!declared) throw new Error('Actor realtime member has no runtime input schema.');
+  const validation = normalizeSchema(declared, admission.actor + '.' + admission.member + '.input').validate(admission.input);
+  if (!validation.ok) throw new Error(validation.error.message);
+  const admittedInput = validation.value;
+  const connectionReceipt = admission.connection?.authorizationReceipt;
+  const trustedContextDigest = admission.connection?.trustedContextDigest;
+  if (!connectionReceipt || validateApplicationAuthorizationReceipt(connectionReceipt).length > 0
+    || connectionReceipt.trustedContextDigest !== trustedContextDigest
+    || connectionReceipt.principal.id !== admission.connection?.principal?.id) {
+    throw new Error('Actor realtime callback has no complete signed connection authority.');
+  }
+  const connectionRevalidation = await operationAuthority.revalidate(
+    connectionReceipt,
+    'execution',
+    trustedContextDigest,
+  );
+  if (!connectionRevalidation.allowed) throw new Error(connectionRevalidation.code + ': ' + connectionRevalidation.message);
+  const operationId = 'applik8s://actors/' + admission.actor + '/operations/' + admission.member;
+  const target = { kind: 'target', model: admission.actor, identity: { key: admittedKey } };
+  const authorization = await operationAuthority.authorize({
+    principal: connectionReceipt.principal,
+    operationId,
+    target,
+    audience: ${JSON.stringify(graph.metadata.name)},
+    transport: 'control-plane',
+    inputDigest: applicationOperationInputDigest(admittedInput),
+    trustedContextDigest,
+    targetDigest: applicationOperationInputDigest(target),
+  });
+  if (!authorization.allowed) throw new Error(authorization.code + ': ' + authorization.message);
+  return {
+    key: admittedKey,
+    input: admittedInput,
+    connection: {
+      ...admission.connection,
+      principal: { id: authorization.receipt.principal.id },
+      authorizationReceipt: authorization.receipt,
+      trustedContextDigest,
+    },
+  };
+}` : ""}` : ""}
 
 let installationSpec: unknown;
 function installationBoolean(value, label) {
@@ -544,19 +951,308 @@ ${authenticate ? `const applicationIdentitySession = createApplicationIdentitySe
   authenticate: (request) => ${operationCatalog && identityAuthorityDatabaseEnvironment ? "admitApplicationIdentity" : authenticate}(request),
 });` : ""}
 
+${queries.length > 0 || commands.length > 0 ? `const localResourceClients = process.env.APPLIK8S_LOCAL_RESOURCE_URL && process.env.APPLIK8S_LOCAL_RESOURCE_TOKEN
+  ? createApplik8sLocalResourceClients({
+      baseUrl: process.env.APPLIK8S_LOCAL_RESOURCE_URL,
+      token: process.env.APPLIK8S_LOCAL_RESOURCE_TOKEN,
+    })
+  : undefined;` : `const localResourceClients = undefined;`}
 const localGateway = ${localGateway};
 const objectGateway = ${objectGateway};
-const materializeRemoteBaseUrl = (baseUrl) => {
-  if (!baseUrl.includes(${JSON.stringify(applicationRuntimeNamespaceMarker)})) return baseUrl;
+const materializeRemoteBaseUrl = (baseUrl, endpointEnvironmentName) => {
+  const selected = process.env[endpointEnvironmentName] || baseUrl;
+  if (!selected.includes(${JSON.stringify(applicationRuntimeNamespaceMarker)})) return selected;
   if (!runtimeNamespace) throw new Error('Missing required environment variable APPLIK8S_NAMESPACE');
-  return baseUrl.replaceAll(${JSON.stringify(applicationRuntimeNamespaceMarker)}, runtimeNamespace);
+  return selected.replaceAll(${JSON.stringify(applicationRuntimeNamespaceMarker)}, runtimeNamespace);
 };
-const remoteRoutes = new Map(${JSON.stringify(remoteRoutes.routes)}.map(([route, baseUrl]) => [route, materializeRemoteBaseUrl(baseUrl)]));
-const remoteHealth = ${JSON.stringify(remoteRoutes.health)}.map(({ name, baseUrl, path }) => ({ name, baseUrl: materializeRemoteBaseUrl(baseUrl), path }));
+const remoteRoutes = new Map(${JSON.stringify(remoteRoutes.routes)}.map(([route, baseUrl, endpointEnvironmentName]) => [route, materializeRemoteBaseUrl(baseUrl, endpointEnvironmentName)]));
+const remoteHealth = ${JSON.stringify(remoteRoutes.health)}.map(({ name, baseUrl, endpointEnvironmentName, path }) => ({ name, baseUrl: materializeRemoteBaseUrl(baseUrl, endpointEnvironmentName), path }));
 const agentGateway = ${agentGateway};
-const agentHealth = ${JSON.stringify(agentTargets)}.map(({ name, baseUrl }) => ({ name: \`agent:\${name}\`, baseUrl: materializeRemoteBaseUrl(baseUrl) }));
+${observability.length > 0 ? `const applicationTelemetryOptions = {
+  application: process.env.APPLIK8S_APPLICATION_NAME ?? ${JSON.stringify(graph.metadata.name)},
+  environment: process.env.APPLIK8S_ENVIRONMENT_ID ?? 'default',
+  target: process.env.APPLIK8S_DEPLOYMENT_TARGET ?? 'unknown',
+};
+const applicationTelemetryEndpoint = optionalEnv('OTEL_EXPORTER_OTLP_ENDPOINT');
+const applicationTelemetrySession = applicationTelemetryEndpoint
+  ? await startApplicationOpenTelemetryRuntime({ ...applicationTelemetryOptions, endpoint: applicationTelemetryEndpoint })
+  : undefined;
+const applicationTelemetryRuntime = applicationTelemetrySession?.runtime
+  ?? createApplicationOpenTelemetryRuntime(applicationTelemetryOptions);
+const disposeApplicationTelemetryRuntime = installApplicationTelemetryRuntimeResolver(() => applicationTelemetryRuntime);
+void disposeApplicationTelemetryRuntime;
+void applicationTelemetrySession;` : ""}
+${actors.length > 0 ? `const applicationActors = [${actorSources.join(",\n")}];
+const applicationActorEventPublisher = createApplicationEventLogPublisherFromEnvironment({
+  connectionName: 'application-actor-outbox',
+});
+const deliverApplicationActorEvent = async (effect) => {
+  await applicationActorEventPublisher.publish({
+    id: effect.effectId,
+    contract: { name: effect.contract.name, version: effect.contract.version },
+    payload: effect.payload,
+    recordedAt: effect.recordedAt,
+    partitionKey: effect.partitionKey,
+    causationId: effect.operationId,
+  }, 'events');
+};
+const localActorRuntime = ['local', 'aws-local'].includes(process.env.APPLIK8S_DEPLOYMENT_TARGET ?? '') && ${actors.length > 0 ? 'true' : 'false'}
+  ? await createPersistentLocalApplicationActorRuntime({
+      path: optionalEnv('APPLIK8S_ACTOR_STATE_PATH') ?? '.applik8s/state/actors.json',
+      deliverEvent: deliverApplicationActorEvent,
+    })
+  : undefined;
+const celldActorEndpoint = optionalEnv('APPLIK8S_ACTOR_ENDPOINT');
+const celldActorRuntime = celldActorEndpoint
+  ? createCelldApplicationActorRuntime({
+      endpoint: celldActorEndpoint,
+      authorization: requiredEnv('APPLIK8S_ACTOR_AUTHORIZATION'),
+      deliverEvent: deliverApplicationActorEvent,
+    })
+  : undefined;
+if (!localActorRuntime && !celldActorRuntime) {
+  throw new Error('Actor application requires local actor state or APPLIK8S_ACTOR_ENDPOINT.');
+}
+const disposeLocalActorRuntime = installApplicationActorRuntimeResolver(() => localActorRuntime ?? celldActorRuntime);
+const applicationActorById = new Map(applicationActors.map((binding) => [binding.id, binding]));
+${operationCatalog ? `const disposeActorInvocationAuthority = installApplicationActorInvocationAuthorityResolver(async (request) => {
+  const sourceReceipt = request.current.authorizationReceipt;
+  if (!sourceReceipt || sourceReceipt.apiVersion !== 'applik8s.authorizationReceipt/v1alpha1') {
+    throw new Error('Nested actor effects require a complete canonical source receipt.');
+  }
+  const operationId = 'applik8s://actors/' + request.actor + '/operations/' + request.member;
+  const target = { kind: 'target', model: request.actor, identity: { key: request.key } };
+  const authorized = await operationAuthority.authorize({
+    principal: sourceReceipt.principal,
+    operationId,
+    target,
+    audience: sourceReceipt.audience,
+    transport: request.transport,
+    inputDigest: applicationOperationInputDigest(request.input),
+    trustedContextDigest: request.current.trustedContextDigest,
+    targetDigest: applicationOperationInputDigest(target),
+  });
+  if (!authorized.allowed) throw new Error(authorized.code + ': ' + authorized.message);
+  return {
+    principal: { id: authorized.receipt.principal.id },
+    causalPrincipal: request.current.causalPrincipal,
+    authorizationReceipt: authorized.receipt,
+    trustedContextDigest: request.current.trustedContextDigest,
+  };
+});
+void disposeActorInvocationAuthority;` : ''}
+${publicActors.length > 0 ? `const publicApplicationActorById = new Map(${JSON.stringify(publicActorContracts)}.map((contract) => [contract.id, contract]));
 
-export const gateway = {
+async function authorizePublicApplicationActor(request, actor, key, member, input, idempotencyKey) {
+  const contract = publicApplicationActorById.get(actor);
+  const binding = applicationActorById.get(actor);
+  const protocolMember = contract?.members.find((candidate) => candidate.name === member);
+  if (!contract || !binding || !protocolMember) return { response: new Response(JSON.stringify({ error: 'unknown_actor_operation' }), { status: 404, headers: { 'content-type': 'application/json' } }) };
+  let admittedKey;
+  let admittedInput;
+  try {
+    admittedKey = binding.reference(key).key;
+    const declared = binding.protocol[member]?.input;
+    if (!declared) throw new Error('Actor protocol member has no runtime input schema.');
+    const validation = normalizeSchema(declared, actor + '.' + member + '.input').validate(input);
+    if (!validation.ok) throw new Error(validation.error.message);
+    admittedInput = validation.value;
+  } catch (error) {
+    return { response: new Response(JSON.stringify({ error: 'invalid_actor_input', message: error instanceof Error ? error.message : String(error) }), { status: 400, headers: { 'content-type': 'application/json' } }) };
+  }
+  const admission = await admitApplicationIdentity(request);
+  const operationId = 'applik8s://actors/' + actor + '/operations/' + member;
+  const inputDigest = applicationOperationInputDigest(admittedInput);
+  const targetDigest = applicationOperationInputDigest({ actor, key: admittedKey });
+  const authorization = await operationAuthority.authorize({
+    principal: admission.principal,
+    operationId,
+    target: { kind: 'target', model: actor, identity: { key: admittedKey } },
+    audience: ${JSON.stringify(graph.metadata.name)},
+    transport: 'http',
+    inputDigest,
+    trustedContextDigest: admission.principal.trustedContextDigest,
+    idempotencyKey,
+    targetDigest,
+  });
+  if (!authorization.allowed) {
+    return { response: new Response(JSON.stringify({ error: authorization.code, message: authorization.message }), { status: 403, headers: { 'content-type': 'application/json' } }) };
+  }
+  return { contract, binding, protocolMember, key: admittedKey, input: admittedInput, principal: admission.principal, receipt: authorization.receipt };
+}
+
+function actorConnectionLeaseMilliseconds(value) {
+  const match = /^(\\d+)(ms|s|m)$/.exec(value ?? '60s');
+  if (!match) throw new Error('Actor connection lease must use ms, s, or m.');
+  const milliseconds = Number(match[1]) * (match[2] === 'ms' ? 1 : match[2] === 's' ? 1_000 : 60_000);
+  if (!Number.isSafeInteger(milliseconds) || milliseconds < 5_000 || milliseconds > 300_000) throw new Error('Actor connection lease must be from 5s through 5m.');
+  return milliseconds;
+}
+
+function publicActorWebSocketUrl(endpoint, actor, key, ticket) {
+  const url = new URL('/__applik8s/v1/actors/' + encodeURIComponent(actor) + '/' + encodeURIComponent(key) + '/connections', endpoint);
+  if (url.protocol === 'http:') url.protocol = 'ws:';
+  else if (url.protocol === 'https:') url.protocol = 'wss:';
+  if (url.protocol !== 'ws:' && url.protocol !== 'wss:') throw new Error('Actor connection origin must use HTTP(S) or WS(S).');
+  url.searchParams.set('ticket', ticket);
+  return url.toString();
+}` : `const publicApplicationActorById = new Map();`}
+void celldActorRuntime;
+const disposeActorRuntime = disposeLocalActorRuntime
+  ? disposeLocalActorRuntime
+  : undefined;
+void disposeActorRuntime;
+void applicationActors;` : ""}
+${lakehousePublications.length > 0 ? `const applicationLakehousePublications = [${lakehousePublicationSources.join(",\n")}];
+const localLakehouseRuntimeEntries = process.env.APPLIK8S_DEPLOYMENT_TARGET === 'local'
+  ? await Promise.all(${JSON.stringify(lakehouseDatasets)}.filter((dataset) => dataset.kind === 'duckdb-dataset' && (!dataset.targets || dataset.targets.includes('local'))).map(async (dataset) => [
+      dataset.qualification,
+      await createDuckDbApplicationLakehouseRuntime({
+        datasetId: dataset.qualification,
+        schemaRevision: dataset.schemaRevision,
+        schema: runtimeJsonSchema(dataset.rowSchema, dataset.qualification + '.row'),
+        cursorKey: requiredEnv(dataset.cursorSecretEnvironment),
+        root: dataset.root,
+        maximumConcurrentQueries: dataset.maximumConcurrentQueries,
+        maximumRows: ${JSON.stringify(lakehouseQueries)}.find((query) => query.qualification === dataset.qualification && query.kind === 'duckdb-queries' && (!query.targets || query.targets.includes('local')))?.maximumRows,
+        maximumScannedBytes: ${JSON.stringify(lakehouseQueries)}.find((query) => query.qualification === dataset.qualification && query.kind === 'duckdb-queries' && (!query.targets || query.targets.includes('local')))?.maximumScannedBytes,
+      }),
+    ]))
+  : [];
+const localLakehouseRuntimes = new Map(localLakehouseRuntimeEntries);
+const localLakehouseQueryRuntime = {
+  query(request) {
+    const qualification = request.dataset?.qualification?.name;
+    const runtime = qualification ? localLakehouseRuntimes.get(qualification) : undefined;
+    if (!runtime) throw new Error('No local DuckDB lakehouse runtime is installed for dataset ' + String(qualification ?? '<unqualified>') + '.');
+    return runtime.query(request);
+  },
+};
+const disposeLocalLakehousePublicationRuntime = localLakehouseRuntimes.size > 0
+  ? installApplicationLakehousePublicationRuntimeResolver((qualification) => localLakehouseRuntimes.get(qualification))
+  : undefined;
+const disposeLocalLakehouseQueryRuntime = localLakehouseRuntimes.size > 0
+  ? installApplicationLakehouseQueryRuntimeResolver(() => localLakehouseQueryRuntime)
+  : undefined;
+const awsLakehouseBindingOverrides = process.env.APPLIK8S_AWS_LAKEHOUSE_BINDINGS
+  ? JSON.parse(process.env.APPLIK8S_AWS_LAKEHOUSE_BINDINGS)
+  : { datasets: {}, queries: {} };
+const awsLakehouseRuntimeEntries = ['aws', 'aws-local', 'kubernetes'].includes(process.env.APPLIK8S_DEPLOYMENT_TARGET ?? '')
+  ? ${JSON.stringify(lakehouseDatasets)}.filter((dataset) => dataset.kind === 's3-dataset' && (!dataset.targets || dataset.targets.includes(process.env.APPLIK8S_DEPLOYMENT_TARGET) || (process.env.APPLIK8S_DEPLOYMENT_TARGET === 'aws-local' && dataset.targets.includes('aws')))).map((dataset) => {
+      const override = awsLakehouseBindingOverrides.datasets?.[dataset.qualification] ?? {};
+      const configuration = {
+        datasetId: dataset.qualification,
+        bucket: override.bucket ?? dataset.bucket,
+        prefix: override.prefix ?? dataset.prefix ?? ('lakehouse/' + dataset.qualification),
+        region: override.region ?? dataset.region ?? process.env.AWS_REGION,
+        catalogDatabase: override.catalogDatabase ?? dataset.catalog,
+        schemaRevision: dataset.schemaRevision,
+        schema: runtimeJsonSchema(dataset.rowSchema, dataset.qualification + '.row'),
+        cursorKey: requiredEnv(dataset.cursorSecretEnvironment),
+      };
+      return [dataset.qualification, { configuration, runtime: createAwsApplicationLakehouseDatasetRuntime(configuration) }];
+    })
+  : [];
+const awsLakehouseRuntimes = new Map(awsLakehouseRuntimeEntries);
+const awsLakehouseQueryRuntimes = ['aws', 'aws-local', 'kubernetes'].includes(process.env.APPLIK8S_DEPLOYMENT_TARGET ?? '')
+  ? new Map(${JSON.stringify(lakehouseQueries)}.filter((query) => query.kind === 'athena-queries' && (!query.targets || query.targets.includes(process.env.APPLIK8S_DEPLOYMENT_TARGET) || (process.env.APPLIK8S_DEPLOYMENT_TARGET === 'aws-local' && query.targets.includes('aws')))).map((query) => {
+      const override = awsLakehouseBindingOverrides.queries?.[query.qualification] ?? {};
+      return [query.qualification, createAwsApplicationLakehouseQueryRuntime({
+        workgroup: override.workgroup ?? query.workgroup,
+        region: override.region ?? query.region ?? process.env.AWS_REGION,
+        maximumConcurrentQueries: query.maximumConcurrentQueries,
+        maximumRows: query.maximumRows,
+        maximumScannedBytes: query.maximumScannedBytes,
+        datasets: Object.fromEntries([...awsLakehouseRuntimes].map(([name, entry]) => [name, entry.configuration])),
+      })];
+    }))
+  : new Map();
+const disposeAwsLakehousePublicationRuntime = awsLakehouseRuntimes.size > 0
+  ? installApplicationLakehousePublicationRuntimeResolver((qualification) => awsLakehouseRuntimes.get(qualification)?.runtime)
+  : undefined;
+const disposeAwsLakehouseQueryRuntime = awsLakehouseQueryRuntimes.size > 0
+  ? installApplicationLakehouseQueryRuntimeResolver((qualification) => awsLakehouseQueryRuntimes.get(qualification) ?? (awsLakehouseQueryRuntimes.size === 1 ? [...awsLakehouseQueryRuntimes.values()][0] : undefined))
+  : undefined;
+void disposeLocalLakehousePublicationRuntime;
+void disposeLocalLakehouseQueryRuntime;
+void disposeAwsLakehousePublicationRuntime;
+void disposeAwsLakehouseQueryRuntime;
+
+export async function executeApplicationLakehouseEvent(envelope) {
+  const eventId = envelope?.contract?.name && envelope?.contract?.version
+    ? envelope.contract.name + '.' + envelope.contract.version
+    : undefined;
+  if (!eventId || !envelope?.id) throw new Error('Lakehouse event admission requires an envelope id and versioned contract.');
+  const matching = applicationLakehousePublications.filter((publication) => publication.event.id === eventId);
+  if (matching.length === 0) throw new Error('No lakehouse publication consumes event ' + eventId + '.');
+  return Promise.all(matching.map((publication) => executeApplicationLakehousePublication(publication, envelope)));
+}` : ""}
+${actors.length > 0 || lakehousePublications.length > 0 || schedules.length > 0 ? `function authorizedInternalAdmission(request) {
+  const authorization = request.headers.get('authorization') ?? '';
+  const prefix = 'Bearer ';
+  if (!authorization.startsWith(prefix)) return false;
+  const supplied = Buffer.from(authorization.slice(prefix.length));
+  const expected = Buffer.from(requiredEnv('APPLIK8S_INTERNAL_OPERATION_SECRET'));
+  return supplied.length === expected.length && timingSafeEqual(supplied, expected);
+}` : ""}
+const applicationSchedules = [${scheduleSources.join(",\n")}];
+const fixedSchedules = applicationSchedules.filter((entry) => entry.definition.configuration === 'fixed');
+const localScheduleRuntime = process.env.APPLIK8S_DEPLOYMENT_TARGET === 'local' && applicationSchedules.length > 0
+  ? installLocalApplicationScheduleRuntime({
+      applicationId: ${JSON.stringify(graph.metadata.name)},
+      environmentId: process.env.APPLIK8S_ENVIRONMENT_ID ?? 'local',
+      schedules: fixedSchedules,
+      onError: (error) => console.error('Applik8s local schedule runtime failed', error),
+    })
+  : undefined;
+void localScheduleRuntime;
+const awsScheduleConfiguration = process.env.APPLIK8S_DEPLOYMENT_TARGET === 'aws' && applicationSchedules.length > 0
+  ? {
+      applicationId: process.env.APPLIK8S_APPLICATION_NAME ?? ${JSON.stringify(graph.metadata.name)},
+      environmentId: process.env.APPLIK8S_ENVIRONMENT_ID ?? 'default',
+      region: process.env.AWS_REGION,
+      queueUrl: process.env.APPLIK8S_AWS_SCHEDULE_QUEUE_URL ?? '',
+      queueArn: process.env.APPLIK8S_AWS_SCHEDULE_QUEUE_ARN ?? '',
+      groupName: process.env.APPLIK8S_AWS_SCHEDULE_GROUP ?? '',
+      executionRoleArn: process.env.APPLIK8S_AWS_SCHEDULE_ROLE_ARN ?? '',
+      databaseUrl: process.env.APPLIK8S_SCHEDULE_DATABASE_URL ?? '',
+    }
+  : undefined;
+const awsScheduleRuntime = awsScheduleConfiguration
+  ? createAwsApplicationScheduleRuntime(awsScheduleConfiguration)
+  : undefined;
+const disposeAwsScheduleRuntime = awsScheduleRuntime
+  ? installApplicationScheduleRuntimeResolver(() => awsScheduleRuntime)
+  : undefined;
+void disposeAwsScheduleRuntime;
+const awsScheduleRunner = awsScheduleConfiguration
+  ? startAwsApplicationScheduleQueueRunner({
+      configuration: awsScheduleConfiguration,
+      execute: async (admission, signal) => {
+        const handle = applicationSchedules.find((candidate) => candidate.definition.id === admission.definitionId);
+        if (!handle) throw new Error('AWS Scheduler admitted unknown definition ' + admission.definitionId + '.');
+        return executeApplicationScheduleAdmission(handle, admission, signal);
+      },
+      onError: (error) => console.error('Applik8s AWS schedule admission failed', error),
+    })
+  : undefined;
+void awsScheduleRunner;
+const kubernetesScheduleRuntime = process.env.APPLIK8S_DEPLOYMENT_TARGET === 'kubernetes' && applicationSchedules.length > 0
+  ? await createKubernetesApplicationScheduleRuntime({
+      applicationId: process.env.APPLIK8S_APPLICATION_NAME ?? ${JSON.stringify(graph.metadata.name)},
+      environmentId: process.env.APPLIK8S_ENVIRONMENT_ID ?? process.env.APPLIK8S_NAMESPACE ?? 'default',
+      namespace: process.env.APPLIK8S_NAMESPACE ?? ${JSON.stringify(scheduleHost?.namespace ?? graph.metadata.namespace ?? 'default')},
+      admissionEndpoint: ${JSON.stringify(scheduleHost?.admissionEndpoint ?? '')},
+      authorizationSecretName: ${JSON.stringify(`${kubernetesName(graph.metadata.name)}-internal-operation`)},
+    })
+  : undefined;
+const disposeKubernetesScheduleRuntime = kubernetesScheduleRuntime
+  ? installApplicationScheduleRuntimeResolver(() => kubernetesScheduleRuntime)
+  : undefined;
+void disposeKubernetesScheduleRuntime;
+const agentHealth = ${JSON.stringify(agentTargets)}.map(({ name, baseUrl, endpointEnvironmentName }) => ({ name: \`agent:\${name}\`, baseUrl: materializeRemoteBaseUrl(baseUrl, endpointEnvironmentName) }));
+
+const applicationGatewayCore = {
   async handle(request) {
     const url = new URL(request.url);
     if (url.pathname === '/__applik8s/v1/healthz') {
@@ -612,6 +1308,204 @@ export const gateway = {
       ]);
       return new Response(JSON.stringify({ ready, dependencies: remoteResults }), { status: ready ? 200 : 503, headers: { 'content-type': 'application/json' } });
     }
+    ${publicActors.length > 0 ? `const publicActorOperationMatch = /^\\/__applik8s\\/v1\\/actors\\/([^/]+)\\/([^/]+)\\/operations\\/([^/]+)$/.exec(url.pathname);
+    if (publicActorOperationMatch && request.method === 'POST') {
+      try {
+        const authorizationRequest = request.clone();
+        const actorId = decodeURIComponent(publicActorOperationMatch[1]);
+        const actorKey = decodeURIComponent(publicActorOperationMatch[2]);
+        const member = decodeURIComponent(publicActorOperationMatch[3]);
+        const body = await request.json();
+        const idempotencyKey = typeof body?.idempotencyKey === 'string' && body.idempotencyKey ? body.idempotencyKey : randomUUID();
+        const admission = await authorizePublicApplicationActor(authorizationRequest, actorId, actorKey, member, body?.input, idempotencyKey);
+        if (admission.response) return admission.response;
+        if (admission.protocolMember.kind !== 'command' && admission.protocolMember.kind !== 'message') {
+          return new Response(JSON.stringify({ error: 'actor_operation_transport_mismatch' }), { status: 409, headers: { 'content-type': 'application/json' } });
+        }
+        const callable = admission.binding[member];
+        const turnAuthority = {
+          principal: { id: admission.principal.id },
+          causalPrincipal: { id: admission.principal.kind === 'execution' && admission.principal.causalPrincipalId ? admission.principal.causalPrincipalId : admission.principal.id },
+          authorizationReceipt: admission.receipt,
+          trustedContextDigest: admission.principal.trustedContextDigest,
+        };
+        if (admission.protocolMember.kind === 'command') {
+          if (typeof callable !== 'function') throw new Error('Generated actor command is unavailable.');
+          const result = await withApplicationActorTurnAuthority(turnAuthority, () => callable(admission.key, admission.input, { idempotencyKey }));
+          return new Response(JSON.stringify({ result, authorizationReceiptId: admission.receipt.id }), { status: 200, headers: { 'content-type': 'application/json' } });
+        }
+        if (!callable || typeof callable.send !== 'function') throw new Error('Generated actor message is unavailable.');
+        const receipt = await withApplicationActorTurnAuthority(turnAuthority, () => callable.send(admission.key, admission.input, { idempotencyKey }));
+        return new Response(JSON.stringify({ receipt, authorizationReceiptId: admission.receipt.id }), { status: 202, headers: { 'content-type': 'application/json' } });
+      } catch (error) {
+        console.error('Applik8s public actor operation failed', error);
+        return new Response(JSON.stringify({ error: 'actor_operation_failed', message: error instanceof Error ? error.message : String(error) }), { status: 500, headers: { 'content-type': 'application/json' } });
+      }
+    }
+    const publicActorConnectionMatch = /^\\/__applik8s\\/v1\\/actors\\/([^/]+)\\/([^/]+)\\/connections$/.exec(url.pathname);
+    if (publicActorConnectionMatch && request.method === 'POST') {
+      try {
+        if (!celldActorRuntime) return new Response(JSON.stringify({ error: 'actor_realtime_provider_unavailable' }), { status: 503, headers: { 'content-type': 'application/json' } });
+        const authorizationRequest = request.clone();
+        const actorId = decodeURIComponent(publicActorConnectionMatch[1]);
+        const actorKey = decodeURIComponent(publicActorConnectionMatch[2]);
+        const body = await request.json();
+        const member = typeof body?.member === 'string' ? body.member : '';
+        const idempotencyKey = randomUUID();
+        const admission = await authorizePublicApplicationActor(authorizationRequest, actorId, actorKey, member, body?.input, idempotencyKey);
+        if (admission.response) return admission.response;
+        if (admission.protocolMember.kind !== 'connection') {
+          return new Response(JSON.stringify({ error: 'actor_connection_transport_mismatch' }), { status: 409, headers: { 'content-type': 'application/json' } });
+        }
+        const disconnectMember = typeof body?.disconnect?.member === 'string' ? body.disconnect.member : '';
+        const disconnectContract = admission.contract.members.find((candidate) => candidate.name === disconnectMember && candidate.kind === 'disconnection');
+        const disconnectSchema = admission.binding.protocol[disconnectMember]?.input;
+        if (!disconnectContract || !disconnectSchema) return new Response(JSON.stringify({ error: 'invalid_actor_disconnection_member' }), { status: 400, headers: { 'content-type': 'application/json' } });
+        const disconnectValidation = normalizeSchema(disconnectSchema, actorId + '.' + disconnectMember + '.input').validate(body?.disconnect?.input);
+        if (!disconnectValidation.ok) return new Response(JSON.stringify({ error: 'invalid_actor_disconnection_input', message: disconnectValidation.error.message }), { status: 400, headers: { 'content-type': 'application/json' } });
+        const leaseMilliseconds = actorConnectionLeaseMilliseconds(body?.lease);
+        const issuedAt = new Date();
+        const expiresAt = new Date(Math.min(issuedAt.getTime() + 60_000, admission.principal.expiresAt ? Date.parse(admission.principal.expiresAt) : Number.POSITIVE_INFINITY));
+        if (!Number.isFinite(expiresAt.getTime()) || expiresAt.getTime() <= issuedAt.getTime()) return new Response(JSON.stringify({ error: 'actor_connection_principal_expired' }), { status: 401, headers: { 'content-type': 'application/json' } });
+        const connectionId = randomUUID();
+        const ticket = await signCelldActorConnectionTicket({
+          schemaVersion: 'applik8s.actorConnectionTicket/v1alpha1',
+          actor: actorId,
+          key: admission.key,
+          connectionId,
+          connect: { member, input: admission.input },
+          disconnect: { member: disconnectMember, input: disconnectValidation.value },
+          protocolRevision: admission.contract.protocolRevision,
+          causalPrincipalId: admission.principal.kind === 'execution' && admission.principal.causalPrincipalId ? admission.principal.causalPrincipalId : admission.principal.id,
+          authorizationReceipt: admission.receipt,
+          trustedContextDigest: admission.principal.trustedContextDigest,
+          leaseMilliseconds,
+          nonce: randomUUID(),
+          issuedAt: issuedAt.toISOString(),
+          expiresAt: expiresAt.toISOString(),
+        }, requiredEnv('APPLIK8S_ACTOR_CONNECTION_SIGNING_KEY'));
+        return new Response(JSON.stringify({
+          connectionId,
+          url: publicActorWebSocketUrl(new URL(request.url).origin, actorId, admission.key, ticket),
+          expiresAt: expiresAt.toISOString(),
+        }), { status: 201, headers: { 'content-type': 'application/json', 'cache-control': 'no-store' } });
+      } catch (error) {
+        console.error('Applik8s public actor connection admission failed', error);
+        return new Response(JSON.stringify({ error: 'actor_connection_admission_failed', message: error instanceof Error ? error.message : String(error) }), { status: 500, headers: { 'content-type': 'application/json' } });
+      }
+    }` : ""}
+    ${lakehousePublications.length > 0 ? `if (url.pathname === '/__applik8s/v1/internal/lakehouse/events' && request.method === 'POST') {
+      if (!authorizedInternalAdmission(request)) return new Response(JSON.stringify({ error: 'forbidden' }), { status: 403, headers: { 'content-type': 'application/json' } });
+      try {
+        const manifests = await executeApplicationLakehouseEvent(await request.json());
+        return new Response(JSON.stringify({ accepted: true, snapshots: manifests.map(({ snapshotId }) => snapshotId) }), { status: 202, headers: { 'content-type': 'application/json' } });
+      } catch (error) {
+        console.error('Applik8s lakehouse publication admission failed', error);
+        return new Response(JSON.stringify({ error: 'lakehouse_publication_failed' }), { status: 500, headers: { 'content-type': 'application/json' } });
+      }
+    }` : ""}
+    ${schedules.length > 0 ? `if (url.pathname === '/__applik8s/v1/internal/schedules/occurrences' && request.method === 'POST') {
+      if (!authorizedInternalAdmission(request)) return new Response(JSON.stringify({ error: 'forbidden' }), { status: 403, headers: { 'content-type': 'application/json' } });
+      try {
+        const admission = await request.json();
+        const handle = applicationSchedules.find((candidate) => candidate.definition.id === admission?.definitionId);
+        if (!handle) return new Response(JSON.stringify({ error: 'unknown_schedule' }), { status: 404, headers: { 'content-type': 'application/json' } });
+        const receipt = await executeKubernetesApplicationScheduleAdmission({
+          databaseUrl: requiredEnv('APPLIK8S_SCHEDULE_DATABASE_URL'),
+          handle,
+          admission,
+          ...(admission.deleteAfterCompletion && admission.providerResourceName && kubernetesScheduleRuntime
+            ? { removeCompletedOneTime: () => kubernetesScheduleRuntime.removeResource(admission.providerResourceName) }
+            : {}),
+        });
+        return new Response(JSON.stringify({ accepted: receipt.state !== 'failed', receipt }), { status: receipt.state === 'failed' ? 500 : 200, headers: { 'content-type': 'application/json' } });
+      } catch (error) {
+        const busy = error?.code === 'SCHEDULE_OCCURRENCE_BUSY';
+        console.error('Applik8s Kubernetes schedule admission failed', error);
+        return new Response(JSON.stringify({ error: busy ? 'schedule_occurrence_busy' : 'schedule_admission_failed' }), { status: busy ? 409 : 500, headers: { 'content-type': 'application/json' } });
+      }
+    }` : ""}
+    ${actors.length > 0 ? `if (url.pathname === '/__applik8s/v1/internal/actors/alarms' && request.method === 'POST') {
+      if (!authorizedInternalAdmission(request)) return new Response(JSON.stringify({ error: 'forbidden' }), { status: 403, headers: { 'content-type': 'application/json' } });
+      try {
+        const alarm = await request.json();
+        const binding = applicationActorById.get(alarm?.actor);
+        if (!binding) return new Response(JSON.stringify({ error: 'unknown_actor' }), { status: 404, headers: { 'content-type': 'application/json' } });
+        const admission = await authorizeDeliveredApplicationActorAlarm(alarm, binding);
+        const receipt = await executeApplicationActorAlarm(binding, {
+          member: alarm.member,
+          key: admission.key,
+          input: admission.input,
+          idempotencyKey: alarm.idempotencyKey ?? alarm.alarmId,
+          authority: admission.authority,
+        });
+        return new Response(JSON.stringify({ accepted: true, receipt }), { status: 202, headers: { 'content-type': 'application/json' } });
+      } catch (error) {
+        console.error('Applik8s actor alarm admission failed', error);
+        return new Response(JSON.stringify({ error: 'actor_alarm_failed' }), { status: 500, headers: { 'content-type': 'application/json' } });
+      }
+    }` : ""}
+    ${actors.length > 0 ? `if (url.pathname === '/__applik8s/v1/internal/actors/invoke' && request.method === 'POST') {
+      if (!authorizedInternalAdmission(request)) return new Response(JSON.stringify({ error: 'forbidden' }), { status: 403, headers: { 'content-type': 'application/json' } });
+      try {
+        const invocation = await request.json();
+        const binding = applicationActorById.get(invocation?.actor);
+        if (!binding) return new Response(JSON.stringify({ error: 'unknown_actor' }), { status: 404, headers: { 'content-type': 'application/json' } });
+        const member = binding.protocol?.[invocation?.member];
+        const expectedKind = invocation?.memberKind === 'command'
+          ? 'actorCommand'
+          : invocation?.memberKind === 'message'
+            ? 'actorMessage'
+            : invocation?.memberKind === 'alarm'
+              ? 'actorAlarm'
+              : undefined;
+        if (!expectedKind || member?.kind !== expectedKind) return new Response(JSON.stringify({ error: 'actor_operation_transport_mismatch' }), { status: 409, headers: { 'content-type': 'application/json' } });
+        if (typeof invocation?.idempotencyKey !== 'string' || !invocation.idempotencyKey.trim()) return new Response(JSON.stringify({ error: 'actor_idempotency_key_required' }), { status: 400, headers: { 'content-type': 'application/json' } });
+        const admission = await authorizeInternalApplicationActor(invocation, binding);
+        if (admission.response) return admission.response;
+        if (expectedKind === 'actorCommand') {
+          const callable = binding[invocation.member];
+          if (typeof callable !== 'function') throw new Error('Generated actor command is unavailable.');
+          const result = await withApplicationActorTurnAuthority(admission.authority, () => callable(admission.key, admission.input, { idempotencyKey: invocation.idempotencyKey }));
+          return new Response(JSON.stringify({ result, authorizationReceiptId: admission.authorizationReceiptId }), { status: 200, headers: { 'content-type': 'application/json' } });
+        }
+        if (expectedKind === 'actorMessage') {
+          const callable = binding[invocation.member];
+          if (!callable || typeof callable.send !== 'function') throw new Error('Generated actor message is unavailable.');
+          const receipt = await withApplicationActorTurnAuthority(admission.authority, () => callable.send(admission.key, admission.input, { idempotencyKey: invocation.idempotencyKey }));
+          return new Response(JSON.stringify({ receipt, authorizationReceiptId: admission.authorizationReceiptId }), { status: 202, headers: { 'content-type': 'application/json' } });
+        }
+        if (typeof invocation.scheduledAt !== 'string' || !Number.isFinite(Date.parse(invocation.scheduledAt))) return new Response(JSON.stringify({ error: 'invalid_actor_alarm_timestamp' }), { status: 400, headers: { 'content-type': 'application/json' } });
+        const alarm = binding.alarms?.[invocation.member];
+        if (!alarm || typeof alarm.schedule !== 'function') throw new Error('Generated actor alarm is unavailable.');
+        const receipt = await withApplicationActorTurnAuthority(admission.authority, () => alarm.schedule(admission.key, invocation.scheduledAt, admission.input, { idempotencyKey: invocation.idempotencyKey }));
+        return new Response(JSON.stringify({ receipt, authorizationReceiptId: admission.authorizationReceiptId }), { status: 202, headers: { 'content-type': 'application/json' } });
+      } catch (error) {
+        console.error('Applik8s internal actor invocation failed', error);
+        return new Response(JSON.stringify({ error: 'actor_invocation_failed', message: error instanceof Error ? error.message : String(error) }), { status: 500, headers: { 'content-type': 'application/json' } });
+      }
+    }` : ""}
+    ${actors.length > 0 ? `if (url.pathname === '/__applik8s/v1/internal/actors/realtime' && request.method === 'POST') {
+      if (!authorizedInternalAdmission(request)) return new Response(JSON.stringify({ error: 'forbidden' }), { status: 403, headers: { 'content-type': 'application/json' } });
+      try {
+        const admission = await request.json();
+        const binding = applicationActorById.get(admission?.actor);
+        if (!binding) return new Response(JSON.stringify({ error: 'unknown_actor' }), { status: 404, headers: { 'content-type': 'application/json' } });
+        const authorized = await authorizeDeliveredApplicationActorRealtime(admission, binding);
+        const receipt = await executeApplicationActorRealtime(binding, {
+          kind: admission.kind,
+          member: admission.member,
+          key: authorized.key,
+          input: authorized.input,
+          connection: authorized.connection,
+          idempotencyKey: admission.idempotencyKey,
+        });
+        return new Response(JSON.stringify({ accepted: true, receipt }), { status: 202, headers: { 'content-type': 'application/json' } });
+      } catch (error) {
+        console.error('Applik8s actor realtime admission failed', error);
+        return new Response(JSON.stringify({ error: 'actor_realtime_failed' }), { status: 500, headers: { 'content-type': 'application/json' } });
+      }
+    }` : ""}
     ${authenticate ? `if (url.pathname === '/__applik8s/v1/identity/session' && request.method === 'GET') {
       return applicationIdentitySession(request);
     }` : ""}
@@ -645,6 +1539,22 @@ export const gateway = {
   },
 };
 
+export const gateway = ${observability.length > 0 ? `{
+  handle(request) {
+    const url = new URL(request.url);
+    const route = applicationGatewayRoute(url.pathname) ?? (url.pathname.startsWith('/__applik8s/') ? 'framework' : 'unmatched');
+    const boundaryKind = route.startsWith('query:') ? 'query'
+      : route.startsWith('command:') || route.startsWith('runtime:') || route.startsWith('object:') ? 'operation'
+      : route.startsWith('webhook:') || route.startsWith('stream:') || route.startsWith('signal:') ? 'event'
+      : 'http';
+    return runApplicationTelemetryBoundary({
+      kind: boundaryKind,
+      identity: route === 'unmatched' || route === 'framework' ? request.method + ' ' + route : route,
+      attributes: { 'http.request.method': request.method, 'url.path': url.pathname.slice(0, 512) },
+    }, () => applicationGatewayCore.handle(request));
+  },
+}` : "applicationGatewayCore"};
+
 function applicationGatewayRoute(pathname) {
   if (remoteRoutes.has('webhook:' + pathname)) return 'webhook:' + pathname;
   const parts = pathname.split('/').filter(Boolean);
@@ -674,11 +1584,11 @@ function applicationRemoteGatewayRoutes(
 	graph: ApplicationGraph,
 	gateways: readonly ApplicationGatewayNode[],
 ): {
-	readonly routes: readonly (readonly [string, string])[];
+	readonly routes: readonly (readonly [string, string, string])[];
 	readonly health: readonly ApplicationRemoteHealthContract[];
 } {
 	const nodes = new Map(graph.nodes.map((node) => [node.id, node]));
-	const routes = new Map<string, string>();
+	const routes = new Map<string, { readonly baseUrl: string; readonly endpointEnvironmentName: string }>();
 	const health: ApplicationRemoteHealthContract[] = [];
 	for (const gateway of gateways) {
 		if (!gateway.deployment)
@@ -691,7 +1601,8 @@ function applicationRemoteGatewayRoutes(
 			gateway.id,
 		);
 		const baseUrl = `http://${service}.${namespace}.svc:${gateway.deployment.port}`;
-		health.push({ name: gateway.name, baseUrl, path: "/ready" });
+		const endpointEnvironmentName = applicationRuntimeEndpointEnvironmentName(gateway.id);
+		health.push({ name: gateway.name, baseUrl, endpointEnvironmentName, path: "/ready" });
 		for (const query of gateway.queries) {
 			const node = nodes.get(query.nodeId);
 			if (node?.kind !== "query")
@@ -730,7 +1641,7 @@ function applicationRemoteGatewayRoutes(
 		}
 	}
 	return {
-		routes: [...routes.entries()].sort(([left], [right]) =>
+		routes: [...routes.entries()].map(([route, target]) => [route, target.baseUrl, target.endpointEnvironmentName] as const).sort(([left], [right]) =>
 			left.localeCompare(right),
 		),
 		health: health.sort((left, right) => left.name.localeCompare(right.name)),
@@ -738,21 +1649,21 @@ function applicationRemoteGatewayRoutes(
 
 	function add(route: string, baseUrl: string, owner: string): void {
 		const existing = routes.get(route);
-		if (existing && existing !== baseUrl)
+		if (existing && existing.baseUrl !== baseUrl)
 			throw new Error(
 				`Generated application route ${route} is exposed by multiple gateways, including ${owner}.`,
 			);
-		routes.set(route, baseUrl);
+		routes.set(route, { baseUrl, endpointEnvironmentName: applicationRuntimeEndpointEnvironmentName(owner) });
 	}
 }
 
 function applicationPublishedHttpRoutes(
 	graph: ApplicationGraph,
 ): {
-	readonly routes: readonly (readonly [string, string])[];
+	readonly routes: readonly (readonly [string, string, string])[];
 	readonly health: readonly ApplicationRemoteHealthContract[];
 } {
-	const routes: (readonly [string, string])[] = [];
+	const routes: (readonly [string, string, string])[] = [];
 	const health = new Map<
 		string,
 		ApplicationRemoteHealthContract
@@ -774,14 +1685,16 @@ function applicationPublishedHttpRoutes(
 			server.id,
 		);
 		const baseUrl = `http://${kubernetesName(server.name)}.${namespace}.svc:${server.deployment?.port ?? 80}`;
+		const endpointEnvironmentName = applicationRuntimeEndpointEnvironmentName(server.id);
 		health.set(server.id, {
 			name: `http:${server.name}`,
 			baseUrl,
+			endpointEnvironmentName,
 			path: "/readyz",
 		});
 		for (const route of exposed) {
 			if (route.functionNative?.webhookAuthentication) {
-				routes.push([`webhook:${route.path}`, baseUrl]);
+				routes.push([`webhook:${route.path}`, baseUrl, endpointEnvironmentName]);
 				continue;
 			}
 			const id = applicationOperationId({
@@ -789,7 +1702,7 @@ function applicationPublishedHttpRoutes(
 				owner: server.name,
 				operation: route.id,
 			});
-			routes.push([`runtime:${id}`, baseUrl]);
+			routes.push([`runtime:${id}`, baseUrl, endpointEnvironmentName]);
 		}
 	}
 	return {
@@ -802,31 +1715,31 @@ function applicationPublishedHttpRoutes(
 
 function mergeRemoteRouteContracts(
 	...contracts: readonly {
-		readonly routes: readonly (readonly [string, string])[];
+		readonly routes: readonly (readonly [string, string, string])[];
 		readonly health: readonly ApplicationRemoteHealthContract[];
 	}[]
 ): {
-	readonly routes: readonly (readonly [string, string])[];
+	readonly routes: readonly (readonly [string, string, string])[];
 	readonly health: readonly ApplicationRemoteHealthContract[];
 } {
-	const routes = new Map<string, string>();
+	const routes = new Map<string, { readonly baseUrl: string; readonly endpointEnvironmentName: string }>();
 	const health = new Map<string, ApplicationRemoteHealthContract>();
 	for (const contract of contracts) {
-		for (const [route, baseUrl] of contract.routes) {
+		for (const [route, baseUrl, endpointEnvironmentName] of contract.routes) {
 			const existing = routes.get(route);
-			if (existing && existing !== baseUrl) {
+			if (existing && (existing.baseUrl !== baseUrl || existing.endpointEnvironmentName !== endpointEnvironmentName)) {
 				throw new Error(
 					`Generated application route ${route} resolves to both ${existing} and ${baseUrl}.`,
 				);
 			}
-			routes.set(route, baseUrl);
+			routes.set(route, { baseUrl, endpointEnvironmentName });
 		}
 		for (const dependency of contract.health) {
 			health.set(`${dependency.name}\0${dependency.baseUrl}`, dependency);
 		}
 	}
 	return {
-		routes: [...routes.entries()].sort(([left], [right]) =>
+		routes: [...routes.entries()].map(([route, target]) => [route, target.baseUrl, target.endpointEnvironmentName] as const).sort(([left], [right]) =>
 			left.localeCompare(right),
 		),
 		health: [...health.values()].sort((left, right) =>
@@ -840,6 +1753,7 @@ function mergeRemoteRouteContracts(
 interface ApplicationRemoteHealthContract {
 	readonly name: string;
 	readonly baseUrl: string;
+	readonly endpointEnvironmentName: string;
 	readonly path: "/ready" | "/readyz";
 }
 
@@ -882,6 +1796,7 @@ function applicationAgentGatewayTargets(
 	readonly name: string;
 	readonly nodeId: string;
 	readonly baseUrl: string;
+	readonly endpointEnvironmentName: string;
 	readonly workloadIdentityId: string;
 	readonly serviceIdentityId: string;
 	readonly audience: readonly string[];
@@ -918,6 +1833,7 @@ function applicationAgentGatewayTargets(
 				name: agent.name,
 				nodeId: agent.id,
 				baseUrl: `http://${kubernetesName(agent.name)}.${namespace}.svc:${agent.deployment.port}`,
+				endpointEnvironmentName: applicationRuntimeEndpointEnvironmentName(agent.id),
 				workloadIdentityId: [...workloadIdentities][0]!,
 				serviceIdentityId: agent.serviceIdentity.id,
 				audience: [
@@ -1008,6 +1924,22 @@ function kubernetesName(value: string): string {
 			`Generated application service name ${JSON.stringify(value)} is invalid.`,
 		);
 	return normalized;
+}
+
+function applicationScheduleHost(graph: ApplicationGraph): { readonly namespace: string; readonly admissionEndpoint: string } {
+	const provider = graph.nodes.find((node): node is ApplicationProviderNode =>
+		node.kind === "provider" && node.interface === "ApplicationHost" && !node.config?.qualification,
+	);
+	const host = objectConfig(provider?.config?.host);
+	const namespace = applicationGraphStringValue(host.namespace)
+		?? applicationGraphStringValue(graph.metadata.namespace)
+		?? "default";
+	const name = kubernetesName(stringConfig(host.name) || `${graph.metadata.name}-app`);
+	const port = typeof host.port === "number" && Number.isSafeInteger(host.port) && host.port > 0 ? host.port : 3000;
+	return {
+		namespace,
+		admissionEndpoint: `http://${name}.${namespace}.svc:${port}/__applik8s/v1/internal/schedules/occurrences`,
+	};
 }
 
 function objectStoreGatewaySource(store: ApplicationObjectStoreNode): string {
@@ -1132,6 +2064,159 @@ function objectConfig(value: unknown): Readonly<Record<string, unknown>> {
 		// typecast: the object/array guard establishes the compiler-owned JSON configuration record boundary.
 		? (value as Readonly<Record<string, unknown>>)
 		: {};
+}
+
+function applicationLakehouseDatasets(
+	graph: ApplicationGraph,
+	publications: readonly ApplicationLakehousePublicationNode[],
+): readonly ApplicationLakehouseDatasetBinding[] {
+	const datasets = new Map<string, ApplicationLakehouseDatasetBinding>();
+	for (const publication of publications) {
+		const provider = graph.nodes.find(
+			(candidate): candidate is ApplicationProviderNode =>
+				candidate.kind === "provider" && candidate.id === publication.dataset.nodeId,
+		);
+		if (!provider || provider.interface !== "LakehouseDataset") {
+			throw new Error(
+				`Lakehouse publication ${publication.id} references missing LakehouseDataset provider ${publication.dataset.nodeId}.`,
+			);
+		}
+		const qualification = stringConfig(
+			objectConfig(provider.config?.qualification).name,
+		);
+		if (!qualification) {
+			throw new Error(
+				`Lakehouse publication ${publication.id} requires a named LakehouseDataset provider.`,
+			);
+		}
+			const configurations = applicationProviderRuntimeConfigurations(provider, "lakehouseDataset");
+			if (configurations.length === 0) throw new Error(`Generated Fetch gateway cannot materialize LakehouseDataset ${qualification} without a target provider branch.`);
+			for (const selected of configurations) {
+			const configuration = selected.configuration;
+			const kind = stringConfig(configuration.kind);
+			if (kind !== "duckdb-dataset" && kind !== "s3-dataset") throw new Error(`Generated Fetch gateway cannot materialize LakehouseDataset ${qualification} from provider ${kind || "<unknown>"}.`);
+		const cursorSecretEnvironment =
+			stringConfig(configuration.cursorSecretEnvironment) ||
+			"APPLIK8S_CURSOR_SECRET";
+		if (!/^[A-Za-z_][A-Za-z0-9_]*$/u.test(cursorSecretEnvironment)) {
+			throw new Error(
+				`LakehouseDataset ${qualification} cursorSecretEnvironment is not an environment variable name.`,
+			);
+		}
+		const maximumConcurrentQueriesValue =
+			typeof configuration.maximumConcurrentQueries === "number"
+				? configuration.maximumConcurrentQueries
+				: 4;
+		if (
+			!Number.isSafeInteger(maximumConcurrentQueriesValue) ||
+			maximumConcurrentQueriesValue < 1
+		) {
+			throw new Error(
+				`LakehouseDataset ${qualification} maximumConcurrentQueries must be a positive integer.`,
+			);
+		}
+		const rowSchema = publication.row.jsonSchema;
+			const key = `${provider.id}:${kind}:${JSON.stringify(configuration)}`;
+			const existing = datasets.get(key);
+			if (existing) {
+			if (JSON.stringify(existing.rowSchema) !== JSON.stringify(rowSchema)) {
+				throw new Error(
+					`LakehouseDataset ${qualification} receives incompatible row schemas from multiple publications.`,
+				);
+			}
+			continue;
+		}
+				datasets.set(key, {
+			providerId: provider.id,
+			qualification,
+			kind,
+			rowSchema,
+			schemaRevision: stringConfig(configuration.schemaRevision) || "v1",
+			root:
+				stringConfig(configuration.root) ||
+				`.applik8s/state/lakehouse/${qualification.replace(/[^a-z0-9._-]+/giu, "-")}`,
+			cursorSecretEnvironment,
+				maximumConcurrentQueries: maximumConcurrentQueriesValue,
+				...(selected.targets ? { targets: selected.targets } : {}),
+			...(kind === "s3-dataset" ? {
+				bucket: stringConfig(configuration.bucket),
+				prefix: stringConfig(configuration.prefix) || `lakehouse/${qualification}`,
+				region: stringConfig(configuration.region),
+				catalog: stringConfig(configuration.catalog),
+			} : {}),
+			});
+			}
+		}
+		return [...datasets.values()].sort((left, right) =>
+			left.qualification.localeCompare(right.qualification) || left.kind.localeCompare(right.kind),
+		);
+}
+
+function applicationLakehouseQueries(graph: ApplicationGraph): readonly {
+	readonly qualification: string;
+	readonly kind: string;
+	readonly workgroup?: string;
+	readonly region?: string;
+	readonly resultLocation?: string;
+	readonly maximumConcurrentQueries: number;
+	readonly maximumRows?: number;
+	readonly maximumScannedBytes?: number;
+	readonly targets?: readonly ("local" | "aws-local" | "aws" | "kubernetes")[];
+}[] {
+	return graph.nodes.flatMap((provider) => {
+		if (provider.kind !== "provider" || provider.interface !== "LakehouseQuery") return [];
+		const qualification = stringConfig(objectConfig(provider.config?.qualification).name);
+		if (!qualification) return [];
+			return applicationProviderRuntimeConfigurations(provider, "lakehouseQuery").map(({ configuration: query, targets }) => {
+			const maximum = typeof query.maximumConcurrentQueries === "number" && Number.isSafeInteger(query.maximumConcurrentQueries) && query.maximumConcurrentQueries > 0
+			? query.maximumConcurrentQueries
+			: 4;
+			const maximumRows = typeof query.maximumRows === "number" && Number.isSafeInteger(query.maximumRows) && query.maximumRows > 0
+				? query.maximumRows
+				: undefined;
+			const maximumScannedBytes = typeof query.maximumScannedBytes === "number" && Number.isSafeInteger(query.maximumScannedBytes) && query.maximumScannedBytes > 0
+				? query.maximumScannedBytes
+				: undefined;
+			return {
+			qualification,
+			kind: stringConfig(query.kind),
+			...(stringConfig(query.workgroup) ? { workgroup: stringConfig(query.workgroup) } : {}),
+			...(stringConfig(query.region) ? { region: stringConfig(query.region) } : {}),
+			...(stringConfig(query.resultLocation) ? { resultLocation: stringConfig(query.resultLocation) } : {}),
+				maximumConcurrentQueries: maximum,
+				...(maximumRows ? { maximumRows } : {}),
+				...(maximumScannedBytes ? { maximumScannedBytes } : {}),
+				...(targets ? { targets } : {}),
+			};
+			});
+		}).sort((left, right) => left.qualification.localeCompare(right.qualification));
+}
+
+function applicationProviderRuntimeConfigurations(
+	provider: ApplicationProviderNode,
+	configurationKey: string,
+): readonly {
+	readonly configuration: Readonly<Record<string, unknown>>;
+	readonly targets?: readonly ("local" | "aws-local" | "aws" | "kubernetes")[];
+}[] {
+	const targetSelection = objectConfig(provider.config?.targetSelection);
+	const targets = objectConfig(targetSelection.targets);
+	if (Object.keys(targets).length === 0) return [{ configuration: objectConfig(provider.config?.[configurationKey]) }];
+	const byConfiguration = new Map<string, { configuration: Readonly<Record<string, unknown>>; targets: Array<"local" | "aws-local" | "aws" | "kubernetes"> }>();
+	for (const [target, rawBranch] of Object.entries(targets)) {
+		if (!isApplicationDeploymentTarget(target)) continue;
+		const branch = objectConfig(rawBranch);
+		const configuration = objectConfig(branch.configuration);
+		const identity = JSON.stringify(configuration);
+		const prior = byConfiguration.get(identity);
+		if (prior) prior.targets.push(target);
+		else byConfiguration.set(identity, { configuration, targets: [target] });
+	}
+	return [...byConfiguration.values()];
+}
+
+function isApplicationDeploymentTarget(value: string): value is "local" | "aws-local" | "aws" | "kubernetes" {
+	return value === "local" || value === "aws-local" || value === "aws" || value === "kubernetes";
 }
 
 function stringConfig(value: unknown): string {

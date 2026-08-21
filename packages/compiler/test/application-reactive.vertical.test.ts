@@ -95,6 +95,25 @@ describe('generated v0.6 reactive workloads', () => {
     expect(generated).toContain('"Child": Object.freeze({ ...Child, "create": callbackBinding_');
     expect(generated).toMatch(/const callbackBinding_[a-f0-9]{12}Contract = /u);
     expect(generated).toMatch(/context\.send\(callbackBinding_[a-f0-9]{12}Contract,/u);
+    expect(generated).toContain("from '@applik8s/runtime-nats/event-log'");
+    expect(generated).not.toContain("from '@applik8s/runtime-aws/kinesis'");
+
+    const awsArtifacts = await emitGeneratedApplicationProcessors({
+      graph,
+      outDir: await mkdtemp(join(tmpdir(), 'applik8s-dotted-outbox-aws-')),
+      entrypoint: import.meta.filename,
+      executionTarget: 'aws',
+    });
+    const awsArtifact = awsArtifacts.find((candidate) =>
+      candidate.name === 'compiler-parent-commands',
+    );
+    const awsGenerated = await readFile(
+      join(dirname(awsArtifact?.sourcePath ?? ''), 'processor.generated.ts'),
+      'utf8',
+    );
+    expect(awsGenerated).toContain("from '@applik8s/runtime-aws/kinesis'");
+    expect(awsGenerated).not.toContain("from '@applik8s/runtime-nats/event-log'");
+    expect(awsGenerated).not.toContain("from '@applik8s/runtime-nats/command-processor'");
   }, 120_000);
 
   it('generates bounded collision-resistant container names for long workload identities', () => {
@@ -448,6 +467,47 @@ describe('generated v0.6 reactive workloads', () => {
     });
     const nodes = [
       {
+        id: 'provider.application-host',
+        kind: 'provider',
+        name: 'application-host',
+        stability: 'stable',
+        interface: 'ApplicationHost',
+        implementation: 'managed-application-host',
+        config: { host: { name: 'reactive-test-app', namespace: 'catalog', port: 3_000 } },
+      },
+      {
+        id: 'actor.workspace.v1',
+        kind: 'actor',
+        name: 'workspace.v1',
+        stability: 'experimental',
+        definition: {
+          id: 'workspace.v1',
+          key: schema({ type: 'string' }),
+          state: schema({ type: 'object', properties: { count: { type: 'number' } }, required: ['count'] }),
+          stateVersion: 1,
+          migrationDigest: 'sha256:none',
+          migrations: [],
+          protocol: [{
+            name: 'observe',
+            kind: 'message',
+            input: schema({ type: 'object', properties: { postId: { type: 'string' } }, required: ['postId'] }),
+          }],
+          requirements: {
+            durableState: true,
+            serializedTurns: true,
+            transactionalOutbox: true,
+            durableAlarms: false,
+            realtimeConnections: false,
+            connectionLeases: false,
+            realtimeMessages: false,
+            realtimeBroadcast: false,
+          },
+        },
+        runtime: { interface: 'ActorRuntime', nodeId: 'provider.actor-runtime' },
+        handlers: [],
+        semantics: { serialization: 'fullTurnPerIdentity', admission: 'idempotentReceipt', references: 'inertAddress' },
+      },
+      {
         id: 'model.post',
         kind: 'model',
         name: 'Post',
@@ -531,7 +591,7 @@ describe('generated v0.6 reactive workloads', () => {
         stability: 'stable',
         source: { nodeId: 'stream.posts.requested.v1' },
         database,
-        handlerSource: 'async event => Post.edit(event.postId, async post => { const account = await Account.require(post.accountId); await post.update({ state: account.value.state }); await PendingPosts({}); PostChanged.emit({ postId: event.postId }); })',
+        handlerSource: 'async event => Post.edit(event.postId, async post => { const account = await Account.require(post.accountId); await post.update({ state: account.value.state }); await PendingPosts({}); await Workspace.observe.send(event.postId, { postId: event.postId }); PostChanged.emit({ postId: event.postId }); })',
         functionNativeTransaction: {
           primaryModel: { nodeId: 'model.post' },
           models: [{ nodeId: 'model.account' }, { nodeId: 'model.post' }],
@@ -551,6 +611,12 @@ describe('generated v0.6 reactive workloads', () => {
             query: { nodeId: 'query.posts.pending.v1' },
           },
         ],
+        actorBindings: [{
+          identifier: 'Workspace.observe.send',
+          actor: { nodeId: 'actor.workspace.v1' },
+          member: 'observe',
+          memberKind: 'message',
+        }],
         delivery: 'at-least-once',
         invocation: 'event',
         idempotency: 'source-event-id',
@@ -599,6 +665,14 @@ describe('generated v0.6 reactive workloads', () => {
     expect(generated).toContain('delivery.context');
     expect(generated).toContain('createApplicationFunctionNativeEventHandle');
     expect(generated).toContain('currentFunctionNativePostgresDatabase()');
+    expect(generated).toContain('invokeApplicationActorBinding');
+    expect(generated).toContain('processorActors(authoredContext)');
+    expect(generated).toContain('/__applik8s/v1/internal/actors/invoke');
+    expect(generated).toContain("transport: 'event'");
+    expect(generated).toContain('principal,');
+    expect(generated).toContain('workloadAuthorityId:');
+    expect(generated).not.toContain("id: 'processor:' + principal.executionId");
+    expect(JSON.stringify(artifact?.resources)).toContain('APPLIK8S_ACTOR_APPLICATION_ENDPOINT');
     expect(generated).toContain(
       'const runtimeDatabase = activeDatabase ?? processorQueryDb;',
     );
@@ -622,7 +696,9 @@ describe('generated v0.6 reactive workloads', () => {
       parentId: text('parent_id').notNull(),
       revision: text('revision').notNull(),
     });
-    const application = app('cross-authority-lifecycle');
+    const application = app('cross-authority-lifecycle', {
+      namespace: 'cross-authority-lifecycle',
+    });
     const primary = application.database.postgres('primary', {
       schema: { parents },
     });
@@ -666,7 +742,9 @@ describe('generated v0.6 reactive workloads', () => {
       state: text('state').notNull(),
       revision: text('revision').notNull(),
     });
-    const application = app('processor-service-authority');
+    const application = app('processor-service-authority', {
+      namespace: 'processor-service-authority',
+    });
     const Database = application.database.postgres('application', {
       schema: { records },
     });
@@ -993,6 +1071,8 @@ describe('generated v0.6 reactive workloads', () => {
     expect(source).toContain('generated-stream-subscription-proof');
     expect(source).toContain('applik8s.stream/v1alpha1');
     expect(generatedSource).toContain('async function admitRequest(request)');
+    expect(generatedSource).toContain("from '@applik8s/runtime-nats/event-log'");
+    expect(generatedSource).not.toContain("from '@applik8s/runtime-aws/kinesis'");
     expect(generatedSource).toContain('async function admitQuery(request, query, input)');
     expect(generatedSource).toContain('authenticate: admitRequest');
     expect(generatedSource).toContain('createApplicationOperationAuthorityRuntime');
@@ -1063,6 +1143,19 @@ describe('generated v0.6 reactive workloads', () => {
     expect(queryCallbackSources.join('\n')).not.toContain('authoring-only');
     expect(source).toMatch(/reads:\[\{\$model:\{name:"Card"\}\},\{\$model:\{name:"Set"\}\}\]/);
     expect(artifact?.sizeBytes).toBeLessThan(reactiveRuntimeBundleBudgetBytes);
+
+    const [awsArtifact] = await emitGeneratedApplicationReactive({
+      graph,
+      outDir: await mkdtemp(join(tmpdir(), 'applik8s-reactive-gateway-aws-')),
+      entrypoint: import.meta.filename,
+      executionTarget: 'aws',
+    });
+    const awsGeneratedSource = await readFile(
+      join(dirname(awsArtifact?.sourcePath ?? ''), 'gateway.generated.ts'),
+      'utf8',
+    );
+    expect(awsGeneratedSource).toContain("from '@applik8s/runtime-aws/kinesis'");
+    expect(awsGeneratedSource).not.toContain("from '@applik8s/runtime-nats/event-log'");
   });
 
   it('generates an exact-instance signal gateway and filters issuance SSE before delivery', async () => {
@@ -1886,6 +1979,45 @@ describe('generated v0.6 reactive workloads', () => {
     const selectedArtifacts = await emitGeneratedApplicationReactive({ graph: reactiveGraph([selectedProvider, model, stream, projection, query, gateway] as unknown as ApplicationGraphNode[]), outDir: await mkdtemp(join(tmpdir(), 'applik8s-selected-analytical-query-')), entrypoint: import.meta.filename });
     const selectedDeployment = selectedArtifacts.find((artifact) => artifact.kind === 'queryGateway')?.resources.find((resource) => resource.kind === 'Deployment');
     expect(JSON.stringify(selectedDeployment)).toContain('"value":"${schema.spec.providers.analytics.database}"');
+
+    const profileAndTargetProvider = {
+      ...provider,
+      implementation: 'application-provider-selection',
+      config: {
+        analyticalDatabase: {
+          kind: 'application-provider-selection',
+          selector: 'schema.spec.profile',
+          cases: {
+            dedicated: {
+              kind: 'application-target-provider-selection',
+              targets: {
+                local: { kind: 'clickhouse', name: 'local-analytics' },
+                aws: { kind: 'postgres-analytics' },
+                kubernetes: { kind: 'clickhouse', name: 'cluster-analytics', namespace: 'catalog', database: 'history' },
+              },
+            },
+          },
+          default: {
+            kind: 'application-target-provider-selection',
+            targets: {
+              local: { kind: 'clickhouse', name: 'local-analytics' },
+              aws: { kind: 'postgres-analytics' },
+              kubernetes: { kind: 'clickhouse', name: 'starter-analytics', namespace: 'catalog', database: 'history' },
+            },
+          },
+        },
+      },
+    } as const;
+    const profileAndTargetArtifacts = await emitGeneratedApplicationReactive({
+      graph: reactiveGraph([profileAndTargetProvider, model, stream, projection, query, gateway] as unknown as ApplicationGraphNode[]),
+      outDir: await mkdtemp(join(tmpdir(), 'applik8s-profile-target-analytical-query-')),
+      entrypoint: import.meta.filename,
+    });
+    const profileAndTargetDeployment = profileAndTargetArtifacts.find((artifact) => artifact.kind === 'queryGateway')?.resources.find((resource) => resource.kind === 'Deployment');
+    const serializedProfileAndTargetDeployment = JSON.stringify(profileAndTargetDeployment);
+    expect(serializedProfileAndTargetDeployment).toContain('cluster-analytics');
+    expect(serializedProfileAndTargetDeployment).toContain('starter-analytics');
+    expect(serializedProfileAndTargetDeployment).not.toContain('postgres-analytics');
   });
 });
 

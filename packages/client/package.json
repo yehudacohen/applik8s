@@ -1,6 +1,6 @@
 {
   "name": "@applik8s/client",
-  "version": "0.7.1",
+  "version": "0.8.0",
   "description": "Browser-safe query, snapshot, resume, and external-store client for Applik8s applications.",
   "license": "Apache-2.0",
   "type": "module",
@@ -23,6 +23,6 @@
     }
   },
   "dependencies": {
-    "@applik8s/core": "0.7.1"
+    "@applik8s/core": "0.8.0"
   }
 }

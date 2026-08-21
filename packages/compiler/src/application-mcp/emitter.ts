@@ -9,6 +9,7 @@ import type {
   ApplicationProviderNode,
   ApplicationReactiveDatabaseRuntimeContract,
 } from '@applik8s/core';
+import type { ApplicationRuntimeEndpointDependency } from '@applik8s/deployment-contract';
 import { build } from 'esbuild';
 import {
   emitGeneratedApplicationContainer,
@@ -46,6 +47,7 @@ export interface GeneratedApplicationMcpArtifact {
   readonly sizeBytes: number;
   readonly container: GeneratedApplicationContainerArtifact;
   readonly resources: readonly GeneratedApplicationMcpResource[];
+  readonly runtimeEndpoints: readonly ApplicationRuntimeEndpointDependency[];
 }
 
 interface ApplicationMcpCompilerContract {
@@ -182,6 +184,10 @@ async function emitMcpServer(
     sourceDigest: digest,
   });
   const resources = generatedMcpResources(contract, name, container.image, digest);
+  const runtimeEndpoints = [...new Map(contract.routes.map(({ receiver }) => [
+    receiver.environmentName,
+    { nodeId: receiver.nodeId, environmentName: receiver.environmentName },
+  ])).values()].sort((left, right) => left.environmentName.localeCompare(right.environmentName));
   await writeFile(manifestPath, `${JSON.stringify({
     apiVersion: 'applik8s.mcpArtifact/v1alpha1',
     kind: 'GeneratedApplicationMcpServer',
@@ -192,6 +198,7 @@ async function emitMcpServer(
       protocolRevision: contract.server.protocol.preferred,
       operationCatalogRevision: contract.catalog.revision,
       routes: contract.routes,
+      runtimeEndpoints,
       digest,
       sizeBytes,
       distribution: 'ociImage',
@@ -217,6 +224,7 @@ async function emitMcpServer(
     sizeBytes,
     container,
     resources,
+    runtimeEndpoints,
   };
 }
 
@@ -226,7 +234,9 @@ function generatedMcpSource(contract: ApplicationMcpCompilerContract): string {
     .digest('hex')}`;
   const routeEntries = contract.routes.map((route) =>
     `[${JSON.stringify(route.operationId)}, ${JSON.stringify({
-      url: route.receiver.url,
+      baseUrl: route.receiver.baseUrl,
+      path: route.receiver.path,
+      environmentName: route.receiver.environmentName,
       maximumRequestBytes: contract.server.transport.maximumRequestBytes,
       maximumResponseBytes: contract.server.transport.maximumResponseBytes,
     })}]`,
@@ -240,6 +250,7 @@ import { createPostgresApplicationMcpStores } from '@applik8s/mcp/postgres';
 import { createApplicationOperationAuthorityRuntime } from '@applik8s/operations';
 
 function requiredEnv(name) { const value = process.env[name]; if (!value) throw new Error('Missing required environment variable ' + name); return value; }
+function runtimeEndpoint(baseUrl, environmentName, path) { let selected = process.env[environmentName] || baseUrl; while (selected.endsWith('/')) selected = selected.slice(0, -1); return selected + path; }
 const sql = postgres(requiredEnv(${JSON.stringify(contract.database.connectionEnvName)}), { max: 12, idle_timeout: 20, connect_timeout: 10, prepare: false });
 const catalog = ${JSON.stringify(contract.catalog)};
 const authority = createApplicationOperationAuthorityRuntime({
@@ -278,7 +289,7 @@ const executor = createApplicationMcpPlacementExecutor({
     async dispatch({ operation, arguments: input, invocationToken, signal }) {
       const route = routes.get(operation.id);
       if (!route) throw new Error('MCP operation has no compiled placement route.');
-      const response = await fetch(route.url, {
+      const response = await fetch(runtimeEndpoint(route.baseUrl, route.environmentName, route.path), {
         method: 'POST',
         headers: {
           'content-type': 'application/json',

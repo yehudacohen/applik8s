@@ -1,7 +1,9 @@
 import type { GeneratedApplicationContainerArtifact } from '../application-containers/index.js';
+import type { ApplicationRuntimeEndpointDependency } from '@applik8s/deployment-contract';
 
 export interface GeneratedApplicationWorkflowArtifact {
   readonly name: string;
+  readonly workerId: string;
   readonly sourcePath: string;
   readonly sourceMapPath: string;
   readonly manifestPath: string;
@@ -10,6 +12,7 @@ export interface GeneratedApplicationWorkflowArtifact {
   readonly sizeBytes: number;
   readonly container: GeneratedApplicationContainerArtifact;
   readonly resources: readonly GeneratedApplicationWorkflowResource[];
+  readonly runtimeEndpoints: readonly ApplicationRuntimeEndpointDependency[];
 }
 
 export interface GeneratedApplicationWorkflowResource {

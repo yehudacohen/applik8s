@@ -169,6 +169,7 @@ export function registerApplicationTask<
     { ...directDependencies.projections, ...(options.projections ?? {}) },
   );
 	const objects = recordTaskObjects(handlerNodeId, { ...directDependencies.objects, ...(options.objects ?? {}) });
+  const actors = recordTaskActors(state, handlerNodeId, directDependencies.actors);
   if (options.identity && options.principal) {
     throw new Error(`Task ${definition.id} must use canonical options.identity or deprecated options.principal, not both.`);
   }
@@ -187,6 +188,7 @@ export function registerApplicationTask<
     ...queries.map(({ alias }) => alias),
     ...projections.map(({ alias }) => alias),
     ...objects.map(({ alias }) => alias),
+    ...actors.map(({ alias }) => alias),
     ...signalBindings.map(({ alias }) => alias),
     ...(signalBindings.length > 0 ? ['workflow'] : []),
     ...(functionNativeTransaction?.modelBindings ?? [])
@@ -235,6 +237,7 @@ export function registerApplicationTask<
     ...(queries.length > 0 ? { queries } : {}),
     ...(projections.length > 0 ? { projections } : {}),
 		...(objects.length > 0 ? { objects } : {}),
+    ...(actors.length > 0 ? { actors } : {}),
     ...(signalBindings.length > 0 ? { signalBindings } : {}),
     ...(functionNativeTransaction ? { functionNativeTransaction } : {}),
     ...(operationPrincipal ? {
@@ -293,6 +296,7 @@ export function registerApplicationTask<
 		addApplicationGraphEdge(state, { from: { nodeId: handlerNodeId }, to: object.store, relationship: 'reads' });
 		addApplicationGraphEdge(state, { from: { nodeId: handlerNodeId }, to: object.store, relationship: 'writes' });
 	}
+  for (const actor of actors) addApplicationGraphEdge(state, { from: { nodeId: handlerNodeId }, to: actor.actor, relationship: 'dependsOn' });
   recordWorkflowWorker(state, engine, options.worker);
   return withWorkflowGatewayMetadata(
     taskBinding(definition, options, () => applicationWorkflowEngineImplementation(state)),
@@ -300,6 +304,28 @@ export function registerApplicationTask<
     engine,
     options.worker,
   );
+}
+
+function recordTaskActors(
+  state: ApplicationWorkflowState,
+  consumerNodeId: string,
+  actors: Readonly<Record<string, { readonly actorId: string; readonly member: string }>>,
+): readonly {
+  readonly alias: string;
+  readonly actor: { readonly nodeId: string };
+  readonly member: string;
+  readonly memberKind: 'command' | 'message' | 'alarm';
+}[] {
+  return Object.entries(actors).sort(([left], [right]) => left.localeCompare(right)).map(([alias, binding]) => {
+    if (!alias.trim()) throw new Error(`Task ${consumerNodeId} actor aliases must not be empty.`);
+    const actor = state.graphNodes.find((candidate) => candidate.kind === 'actor' && candidate.definition.id === binding.actorId);
+    if (actor?.kind !== 'actor') throw new Error(`Task ${consumerNodeId} actor ${alias} references undeclared actor ${binding.actorId}. Declare the actor before the workflow.`);
+    const member = actor.definition.protocol.find((candidate) => candidate.name === binding.member);
+    if (!member || (member.kind !== 'command' && member.kind !== 'message' && member.kind !== 'alarm')) {
+      throw new Error(`Task ${consumerNodeId} actor ${alias} references unsupported actor member ${binding.actorId}.${binding.member}. Durable tasks may call commands, send messages, or schedule alarms.`);
+    }
+    return { alias, actor: { nodeId: actor.id }, member: binding.member, memberKind: member.kind };
+  });
 }
 
 function recordTaskObjects(
@@ -359,11 +385,13 @@ function normalizeTaskDirectDependencies(
   readonly queries: ApplicationTaskQueries;
   readonly projections: ApplicationTaskProjections;
   readonly objects: ApplicationTaskObjectStores;
+  readonly actors: Readonly<Record<string, { readonly actorId: string; readonly member: string }>>;
 } {
   const operations: Record<string, ApplicationTaskOperationDependency> = {};
   const queries: Record<string, ApplicationOperationLike> = {};
   const projections: Record<string, import('./application-workflow-types.js').ApplicationTaskProjectionTarget> = {};
   const objects: Record<string, ApplicationObjectStoreBinding> = {};
+  const actors: Record<string, { readonly actorId: string; readonly member: string }> = {};
   const expanded = expandApplicationCallbackDependencies({
     calls: generatedCalls,
     bindings: generatedBindings,
@@ -390,6 +418,11 @@ function normalizeTaskDirectDependencies(
     }
     const contract = getApplicationOperationContract(operation);
     if (!contract) throw new Error('Direct workflow authority accepts only application operation or query handles.');
+    const actor = applicationActorOperation(contract);
+    if (actor) {
+      for (const identifier of identifiersFor(operation, `${actor.actorId}.${actor.member}`)) actors[identifier] = actor;
+      continue;
+    }
     for (const identifier of identifiersFor(operation, contract.id)) {
       operations[identifier] = dependency;
     }
@@ -438,13 +471,32 @@ function normalizeTaskDirectDependencies(
         queries[identifier] = candidate as ApplicationOperationLike;
       }
     }
+    const actor = applicationActorOperation(contractForCandidate(candidate));
+    if (actor) {
+      for (const identifier of identifiersFor(candidate, `${actor.actorId}.${actor.member}`)) actors[identifier] = actor;
+    }
   }
   return {
     operations: Object.freeze(operations),
     queries: Object.freeze(queries),
     projections: Object.freeze(projections),
     objects: Object.freeze(objects),
+    actors: Object.freeze(actors),
   };
+}
+
+function contractForCandidate(candidate: unknown): ReturnType<typeof getApplicationOperationContract> {
+  return typeof candidate === 'function'
+    ? getApplicationOperationContract(candidate as unknown as ApplicationOperationLike)
+    : undefined;
+}
+
+function applicationActorOperation(
+  contract: ReturnType<typeof getApplicationOperationContract>,
+): { readonly actorId: string; readonly member: string } | undefined {
+  if (!contract || contract.transport !== 'runtime') return undefined;
+  const match = /^applik8s:\/\/actors\/([^/]+)\/operations\/([^/]+)$/u.exec(contract.id);
+  return match?.[1] && match[2] ? { actorId: match[1], member: match[2] } : undefined;
 }
 
 function recordTaskQueries(

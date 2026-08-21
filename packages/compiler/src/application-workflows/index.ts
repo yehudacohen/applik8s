@@ -18,6 +18,7 @@ export async function emitGeneratedApplicationWorkflows(options: {
   readonly operationCatalog?: ApplicationOperationCatalog;
   readonly workloadAuthority?: readonly ApplicationWorkloadAuthorityEnvelope[];
   readonly operatorManifests?: readonly OperatorManifest[];
+  readonly executionTarget?: 'kubernetes' | 'local' | 'aws-local' | 'aws';
 }): Promise<readonly GeneratedApplicationWorkflowArtifact[]> {
   const operationCatalog = options.operationCatalog ?? compileApplicationOperationCatalog(options.graph);
   const workloadAuthority = options.workloadAuthority
@@ -51,7 +52,12 @@ export async function emitGeneratedApplicationWorkflows(options: {
     );
     const ownsProvider = !provisionedProviders.has(contract.provider.id);
     provisionedProviders.add(contract.provider.id);
-    artifacts.push(await emitWorkflowWorker(contract, options.outDir, ownsProvider));
+    artifacts.push(await emitWorkflowWorker(
+      contract,
+      options.outDir,
+      ownsProvider,
+      options.executionTarget ?? 'kubernetes',
+    ));
   }
   return artifacts;
 }

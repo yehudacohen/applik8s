@@ -15,6 +15,7 @@ const DEFAULT_GENERATED_PROCESSOR_RUNTIME_IMAGE = 'node:22-alpine@sha256:16e22a5
 
 export interface GeneratedApplicationProcessorArtifact {
   readonly name: string;
+  readonly processorId: string;
   readonly sourcePath: string;
   readonly sourceMapPath: string;
   readonly manifestPath: string;
@@ -38,6 +39,7 @@ export async function emitGeneratedApplicationProcessors(options: {
   readonly operationCatalog?: ApplicationOperationCatalog;
   readonly outDir: string;
   readonly entrypoint: string;
+  readonly executionTarget?: 'kubernetes' | 'local' | 'aws-local' | 'aws';
 }): Promise<readonly GeneratedApplicationProcessorArtifact[]> {
   const operationCatalog = options.operationCatalog ?? compileApplicationOperationCatalog(options.graph);
   const processors = options.graph.nodes.filter((node): node is ApplicationProcessorNode => node.kind === 'processor');
@@ -49,12 +51,12 @@ export async function emitGeneratedApplicationProcessors(options: {
     const eventLogId = processor.eventLog?.nodeId ?? '';
     const ownsStream = !emittedEventLogStreams.has(eventLogId);
     if (eventLogId) emittedEventLogStreams.add(eventLogId);
-    artifacts.push(await emitProcessor(options.graph, processor, operationCatalog, options.outDir, ownsStream));
+    artifacts.push(await emitProcessor(options.graph, processor, operationCatalog, options.outDir, ownsStream, options.executionTarget ?? 'kubernetes'));
   }
   return artifacts;
 }
 
-async function emitProcessor(graph: ApplicationGraph, processor: ApplicationProcessorNode, operationCatalog: ApplicationOperationCatalog, outDir: string, ownsStream: boolean): Promise<GeneratedApplicationProcessorArtifact> {
+async function emitProcessor(graph: ApplicationGraph, processor: ApplicationProcessorNode, operationCatalog: ApplicationOperationCatalog, outDir: string, ownsStream: boolean, executionTarget: 'kubernetes' | 'local' | 'aws-local' | 'aws'): Promise<GeneratedApplicationProcessorArtifact> {
   const name = kubernetesName(processor.name);
   const processorDir = join(outDir, name);
   const generatedEntrypoint = join(processorDir, 'processor.generated.ts');
@@ -81,7 +83,7 @@ async function emitProcessor(graph: ApplicationGraph, processor: ApplicationProc
         writeEventPartitionModule(processorDir, partition)),
     ],
   );
-  await writeFile(generatedEntrypoint, generatedProcessorSource(contract));
+  await writeFile(generatedEntrypoint, generatedProcessorSource(contract, executionTarget));
   const result = await build({
     entryPoints: [generatedEntrypoint],
     outfile: sourcePath,
@@ -133,7 +135,7 @@ async function emitProcessor(graph: ApplicationGraph, processor: ApplicationProc
   };
   await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
   await writeFile(metafilePath, `${JSON.stringify(result.metafile, null, 2)}\n`);
-  return { name, sourcePath, sourceMapPath, manifestPath, metafilePath, digest, sizeBytes, container, resources };
+  return { name, processorId: processor.id, sourcePath, sourceMapPath, manifestPath, metafilePath, digest, sizeBytes, container, resources };
 }
 
 interface ProcessorContract {
@@ -337,7 +339,8 @@ function processorContract(graph: ApplicationGraph, processor: ApplicationProces
   };
 }
 
-function generatedProcessorSource(contract: ProcessorContract): string {
+function generatedProcessorSource(contract: ProcessorContract, executionTarget: 'kubernetes' | 'local' | 'aws-local' | 'aws'): string {
+  const aws = executionTarget === 'aws' || executionTarget === 'aws-local';
   const partitionImports = uniqueEventPartitions(contract)
     .map(
       (partition) =>
@@ -358,17 +361,22 @@ import { rm, writeFile } from 'node:fs/promises';
 import postgres from 'postgres';
 import { canonicalApplicationCommandKey, cleanupPostgresCommandData, executePostgresModelCommand, observePostgresOutboxLag, recordPostgresModelCommandTerminalFailure, relayPostgresCommandOutbox, relayPostgresEventOutbox, runApplicationModelBeforeCommit } from '@applik8s/applik8s/processor-runtime';
 import { createApplicationOperationAuthorityRuntime } from '@applik8s/operations';
-import { createJetStreamEventLog } from '@applik8s/runtime-nats/event-log';
-import { startJetStreamCommandProcessor } from '@applik8s/runtime-nats/command-processor';
+${aws
+  ? "import { createKinesisEventLog, startKinesisCommandProcessor } from '@applik8s/runtime-aws/kinesis';"
+  : "import { createJetStreamEventLog } from '@applik8s/runtime-nats/event-log';\nimport { startJetStreamCommandProcessor } from '@applik8s/runtime-nats/command-processor';"}
 ${callbackImports}
 ${partitionImports}
 
 function requiredEnv(name) { const value = process.env[name]; if (!value) throw new Error('Missing required environment variable ' + name); return value; }
 function requiredIntegerEnv(name, minimum, maximum) { const value = Number(requiredEnv(name)); if (!Number.isInteger(value) || value < minimum || value > maximum) throw new Error(name + ' must be an integer between ' + minimum + ' and ' + maximum + '.'); return value; }
-const eventLogServers = JSON.parse(requiredEnv('APPLIK8S_NATS_SERVERS'));
+const eventTransport = ${JSON.stringify(aws ? 'kinesis' : 'nats')};
+${aws
+  ? "const eventLogStream = requiredEnv('APPLIK8S_KINESIS_STREAM');\nconst eventLogConsumer = requiredEnv('APPLIK8S_KINESIS_CONSUMER');"
+  : `const eventLogServers = JSON.parse(requiredEnv('APPLIK8S_NATS_SERVERS'));
 if (!Array.isArray(eventLogServers) || eventLogServers.some((server) => typeof server !== 'string' || server.length === 0)) throw new Error('APPLIK8S_NATS_SERVERS must be a JSON array of non-empty URLs.');
 const eventLogStream = requiredEnv('APPLIK8S_NATS_STREAM');
 const eventLogSubjectPrefix = requiredEnv('APPLIK8S_NATS_SUBJECT_PREFIX');
+const eventLogConsumer = ${JSON.stringify(contract.consumer)};`}
 const processorConcurrency = requiredIntegerEnv('APPLIK8S_PROCESSOR_CONCURRENCY', 1, 64);
 const operationAuthoritySql = postgres(requiredEnv('DATABASE_URL'), { max: Math.max(4, processorConcurrency + 2), idle_timeout: 20, connect_timeout: 10, prepare: false });
 const operationAuthority = createApplicationOperationAuthorityRuntime({
@@ -386,7 +394,7 @@ async function observeCommandProcessor(state, reason) {
     authority: 'provider',
     state,
     ...(reason ? { reason } : {}),
-    source: 'jetstream-command-processor',
+    source: eventTransport + '-command-processor',
     evidence: {
       consumer: ${JSON.stringify(contract.consumer)},
       concurrency: processorConcurrency,
@@ -427,16 +435,22 @@ async function retryStartup(dependency, operation, timeoutMs = 600_000) {
 
 await retryStartup('PostgreSQL operation authority', () => operationAuthority.prepare());
 await retryStartup('PostgreSQL', () => observePostgresOutboxLag(process.env.DATABASE_URL));
-const eventLog = await retryStartup('JetStream event log', async () => {
-  const candidate = createJetStreamEventLog({
-    servers: eventLogServers,
-    stream: eventLogStream,
-    subjectPrefix: eventLogSubjectPrefix,
-    connectionName: ${JSON.stringify(`applik8s-${contract.consumer}-outbox`)},
-    token: process.env.APPLIK8S_NATS_TOKEN,
-    user: process.env.APPLIK8S_NATS_USER,
-    pass: process.env.APPLIK8S_NATS_PASSWORD,
-  });
+const eventLog = await retryStartup(eventTransport + ' event log', async () => {
+  const candidate = ${aws
+    ? `createKinesisEventLog({
+        streamName: eventLogStream,
+        checkpointTable: requiredEnv('APPLIK8S_KINESIS_CHECKPOINT_TABLE'),
+        region: process.env.AWS_REGION ?? process.env.AWS_DEFAULT_REGION,
+      })`
+    : `createJetStreamEventLog({
+        servers: eventLogServers,
+        stream: eventLogStream,
+        subjectPrefix: eventLogSubjectPrefix,
+        connectionName: ${JSON.stringify(`applik8s-${contract.consumer}-outbox`)},
+        token: process.env.APPLIK8S_NATS_TOKEN,
+        user: process.env.APPLIK8S_NATS_USER,
+        pass: process.env.APPLIK8S_NATS_PASSWORD,
+      })`};
   try {
     await candidate.verify();
     return candidate;
@@ -445,19 +459,29 @@ const eventLog = await retryStartup('JetStream event log', async () => {
     throw error;
   }
 });
-const processor = await retryStartup('JetStream command consumer', () => startJetStreamCommandProcessor({
-  servers: eventLogServers,
-  stream: eventLogStream,
-  consumer: ${JSON.stringify(contract.consumer)},
-  subjectPrefix: eventLogSubjectPrefix,
-  bindings,
-  concurrency: processorConcurrency,
-  databaseUrl: process.env.DATABASE_URL,
-  token: process.env.APPLIK8S_NATS_TOKEN,
-  user: process.env.APPLIK8S_NATS_USER,
-  pass: process.env.APPLIK8S_NATS_PASSWORD,
-  logger: (record) => console.log(JSON.stringify(record)),
-}));
+const processor = await retryStartup(eventTransport + ' command consumer', () => ${aws
+  ? `startKinesisCommandProcessor({
+      streamName: eventLogStream,
+      checkpointTable: requiredEnv('APPLIK8S_KINESIS_CHECKPOINT_TABLE'),
+      consumer: eventLogConsumer,
+      bindings,
+      databaseUrl: process.env.DATABASE_URL,
+      region: process.env.AWS_REGION ?? process.env.AWS_DEFAULT_REGION,
+      logger: (record) => console.log(JSON.stringify(record)),
+    })`
+  : `startJetStreamCommandProcessor({
+      servers: eventLogServers,
+      stream: eventLogStream,
+      consumer: eventLogConsumer,
+      subjectPrefix: eventLogSubjectPrefix,
+      bindings,
+      concurrency: processorConcurrency,
+      databaseUrl: process.env.DATABASE_URL,
+      token: process.env.APPLIK8S_NATS_TOKEN,
+      user: process.env.APPLIK8S_NATS_USER,
+      pass: process.env.APPLIK8S_NATS_PASSWORD,
+      logger: (record) => console.log(JSON.stringify(record)),
+    })`});
 await observeCommandProcessor('running');
 let relayStopping = false;
 let lastCleanupAt = 0;

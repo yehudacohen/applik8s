@@ -533,6 +533,20 @@ export function handle(input: string) { return JSON.stringify({ input, recognize
         handlerId: 'ImageJob.statusChanged.0',
         event: 'statusChanged',
       }));
+      expect(manifest.value.spec.runtimeIdentity).toMatchObject({
+        apiVersion: 'applik8s.operatorRuntimeIdentity/v1alpha1',
+        bundleDigest: manifest.value.spec.bundle.digest,
+        runtimeAccess: {
+          version: 'v1alpha1',
+          digest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+          requirementIds: expect.any(Array),
+        },
+        handlers: [expect.objectContaining({
+          handlerId: 'ImageJob.statusChanged.0',
+          operation: expect.stringMatching(/^applik8s:\/\//),
+          execution: expect.stringMatching(/^applik8s:\/\//),
+        })],
+      });
       expect(manifest.value.spec.watches).toContainEqual(expect.objectContaining({
         apiVersion: 'media.applik8s.dev/v1alpha1',
         kind: 'ImageJob',

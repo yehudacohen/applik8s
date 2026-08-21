@@ -39,7 +39,82 @@ export interface ApplicationPlan {
 export interface ApplicationSemanticPlan {
   readonly nodes: readonly ApplicationSemanticPlanNode[];
   readonly edges: readonly ApplicationSemanticPlanEdge[];
+  readonly executions: readonly ApplicationPlanExecution[];
+  readonly authority: readonly ApplicationPlanAuthorityGrant[];
+  readonly dataFlows: readonly ApplicationPlanDataFlow[];
+  readonly state: readonly ApplicationPlanStateAuthority[];
+  readonly exposures: readonly ApplicationPlanExposure[];
+  readonly observability: readonly ApplicationPlanObservability[];
   readonly runtimeAccess: readonly ApplicationRuntimeAccessRequirement[];
+}
+
+export interface ApplicationPlanExecution {
+  readonly id: string;
+  readonly identity: ApplicationCanonicalIdentity['id'];
+  readonly graphNodeId: string;
+  readonly kind: string;
+  readonly scalingBoundary: 'singleton' | 'replicated' | 'provider-managed' | 'unknown';
+  readonly fact: 'declared' | 'derived';
+  readonly provenance: readonly ApplicationSourceProvenance[];
+}
+
+export interface ApplicationPlanAuthorityGrant {
+  readonly id: string;
+  readonly principal: string;
+  readonly operationIds: readonly string[];
+  readonly permissionId?: string;
+  readonly scope: unknown;
+  readonly fact: 'declared' | 'derived';
+  readonly provenance: readonly ApplicationSourceProvenance[];
+}
+
+export interface ApplicationPlanDataFlow {
+  readonly id: string;
+  readonly from: ApplicationCanonicalIdentity['id'];
+  readonly to: ApplicationCanonicalIdentity['id'];
+  readonly relationship: string;
+  readonly causal: boolean;
+  readonly fact: 'declared' | 'derived';
+  readonly provenance: readonly ApplicationSourceProvenance[];
+}
+
+export interface ApplicationPlanStateAuthority {
+  readonly id: string;
+  readonly subject: ApplicationCanonicalIdentity['id'];
+  readonly authority: string;
+  readonly consistency: string;
+  readonly retention?: string;
+  readonly recovery?: string;
+  readonly fact: 'declared' | 'derived' | 'unknown';
+  readonly provenance: readonly ApplicationSourceProvenance[];
+}
+
+export interface ApplicationPlanExposure {
+  readonly id: string;
+  readonly subject: ApplicationCanonicalIdentity['id'];
+  readonly kind: 'http' | 'gateway' | 'subscription' | 'external';
+  readonly public: boolean | 'unknown';
+  readonly trustBoundary: string;
+  readonly fact: 'declared' | 'derived' | 'unknown';
+  readonly provenance: readonly ApplicationSourceProvenance[];
+}
+
+export interface ApplicationPlanObservability {
+  readonly id: string;
+  readonly subject: ApplicationCanonicalIdentity['id'];
+  readonly signals: readonly ('traces' | 'logs' | 'metrics' | 'events')[];
+  readonly collector: string;
+  readonly export: string;
+  readonly retention: string;
+  readonly cardinality: 'bounded' | 'unbounded' | 'unknown';
+  readonly sampling?: {
+    readonly traceHead: number;
+    readonly debugLogs: number;
+    readonly alwaysSampleErrors: boolean;
+  };
+  readonly redaction?: { readonly deniedFields: readonly string[] };
+  readonly fact: 'declared' | 'derived' | 'unknown';
+  readonly provenance: readonly ApplicationSourceProvenance[];
 }
 
 export interface ApplicationSemanticPlanNode {
@@ -148,14 +223,20 @@ export interface ApplicationPlanValidationResult {
 
 export type ApplicationPlanDiffCategory =
   | 'semantic'
+  | 'authority'
+  | 'data-flow'
+  | 'runtime-access'
   | 'provider'
   | 'physical'
   | 'security'
   | 'state'
   | 'exposure'
+  | 'lifecycle'
+  | 'observability'
   | 'maturity'
   | 'cost'
-  | 'estimate';
+  | 'estimate'
+  | 'provenance';
 
 export interface ApplicationPlanDiffEntry {
   readonly id: string;
@@ -180,6 +261,12 @@ export function normalizeApplicationPlan(plan: ApplicationPlan): ApplicationPlan
     semantic: {
       nodes: sorted(plan.semantic.nodes),
       edges: sorted(plan.semantic.edges),
+      executions: sorted(plan.semantic.executions),
+      authority: sorted(plan.semantic.authority),
+      dataFlows: sorted(plan.semantic.dataFlows),
+      state: sorted(plan.semantic.state),
+      exposures: sorted(plan.semantic.exposures),
+      observability: sorted(plan.semantic.observability),
       runtimeAccess: sorted(plan.semantic.runtimeAccess),
     },
     resolution: { capabilities: sorted(plan.resolution.capabilities) },
@@ -195,11 +282,13 @@ export function normalizeApplicationPlan(plan: ApplicationPlan): ApplicationPlan
 }
 
 export function serializeApplicationPlan(plan: ApplicationPlan): string {
+  assertNoSensitivePlanData(plan);
   return `${stableJson(normalizeApplicationPlan(plan))}\n`;
 }
 
 /** Canonical identity material excludes generation and evidence timestamps. */
 export function serializeApplicationPlanContent(plan: ApplicationPlan): string {
+  assertNoSensitivePlanData(plan);
   const normalized = normalizeApplicationPlan(plan);
   return `${stableJson({
     ...normalized,
@@ -215,6 +304,9 @@ export function renderApplicationPlanText(plan: ApplicationPlan): string {
     `Application: ${normalized.application.application}`,
     `Target: ${normalized.target.target} (${normalized.target.profile})`,
     `Semantic: ${normalized.semantic.nodes.length} nodes, ${normalized.semantic.edges.length} edges`,
+    `Execution: ${normalized.semantic.executions.length} identities`,
+    `Authority: ${normalized.semantic.authority.length} grants`,
+    `Data flow: ${normalized.semantic.dataFlows.length} flows, ${normalized.semantic.state.length} state authorities`,
     `Providers: ${normalized.resolution.capabilities.length - unresolved.length} resolved, ${unresolved.length} unresolved/incompatible`,
     `Physical: ${normalized.physical.nodes.length} nodes, ${normalized.physical.nativePlans.length} native plan records`,
     `Runtime access: ${normalized.semantic.runtimeAccess.length} requirements`,
@@ -274,9 +366,14 @@ export function validateApplicationPlan(plan: ApplicationPlan): ApplicationPlanV
 export function diffApplicationPlans(before: ApplicationPlan, after: ApplicationPlan): ApplicationPlanDiff {
   const entries = [
     ...diffRecords('semantic', before.semantic.nodes, after.semantic.nodes),
+    ...securitySensitiveDiff('authority', before.semantic.authority, after.semantic.authority),
+    ...diffRecords('data-flow', before.semantic.dataFlows, after.semantic.dataFlows),
+    ...diffRecords('state', before.semantic.state, after.semantic.state),
+    ...securitySensitiveDiff('exposure', before.semantic.exposures, after.semantic.exposures),
+    ...diffRecords('observability', before.semantic.observability, after.semantic.observability),
     ...diffProviderRecords(before.resolution.capabilities, after.resolution.capabilities),
-    ...diffRecords('physical', before.physical.nodes, after.physical.nodes),
-    ...diffRecords('security', before.semantic.runtimeAccess, after.semantic.runtimeAccess),
+    ...diffPhysicalRecords(before.physical.nodes, after.physical.nodes),
+    ...securitySensitiveDiff('runtime-access', before.semantic.runtimeAccess, after.semantic.runtimeAccess),
     ...diffRecords('estimate', before.estimates, after.estimates),
   ].sort((left, right) => compare(left.id, right.id));
   return {
@@ -285,6 +382,35 @@ export function diffApplicationPlans(before: ApplicationPlan, after: Application
     toTarget: after.target.identity.id,
     entries,
   };
+}
+
+function securitySensitiveDiff(
+  category: 'authority' | 'exposure' | 'runtime-access',
+  before: readonly { readonly id: string }[],
+  after: readonly { readonly id: string }[],
+): ApplicationPlanDiffEntry[] {
+  return diffRecords(category, before, after).map((entry) => ({
+    ...entry,
+    severity: entry.change === 'removed' ? 'info' : 'warning',
+  }));
+}
+
+export function renderApplicationPlanGraph(plan: ApplicationPlan): string {
+  const normalized = normalizeApplicationPlan(plan);
+  const lines = ['flowchart LR'];
+  for (const node of normalized.semantic.nodes) {
+    lines.push(`  ${graphIdentifier(node.id)}[${JSON.stringify(`${node.kind}: ${node.name}`)}]`);
+  }
+  for (const edge of normalized.semantic.edges) {
+    lines.push(`  ${graphIdentifier(edge.from)} -->|${JSON.stringify(edge.relationship)}| ${graphIdentifier(edge.to)}`);
+  }
+  for (const resolution of normalized.resolution.capabilities) {
+    if (!resolution.provider) continue;
+    const provider = graphIdentifier(resolution.provider.id);
+    lines.push(`  ${provider}[${JSON.stringify(`provider: ${resolution.implementation ?? resolution.capability.interface}`)}]`);
+    lines.push(`  ${graphIdentifier(resolution.consumer)} -.->|${JSON.stringify(resolution.capability.interface)}| ${provider}`);
+  }
+  return `${lines.join('\n')}\n`;
 }
 
 function diffProviderRecords(
@@ -304,6 +430,21 @@ function diffProviderRecords(
   });
 }
 
+function diffPhysicalRecords(
+  before: readonly ApplicationPhysicalPlanNode[],
+  after: readonly ApplicationPhysicalPlanNode[],
+): ApplicationPlanDiffEntry[] {
+  return diffRecords('physical', before, after).map((entry) => {
+    if (entry.change !== 'changed' || !entry.before || !entry.after) return entry;
+    const previous = entry.before as ApplicationPhysicalPlanNode;
+    const next = entry.after as ApplicationPhysicalPlanNode;
+    if (stableJson(previous.lifecycle) !== stableJson(next.lifecycle)) {
+      return { ...entry, category: 'lifecycle', severity: next.lifecycle.intent === 'delete' || next.lifecycle.intent === 'replace' ? 'destructive' : 'warning' };
+    }
+    return entry;
+  });
+}
+
 export function providerGuaranteeFor(
   manifests: readonly ApplicationProviderGuaranteeManifest[],
   providerId: ApplicationCanonicalIdentity['id'],
@@ -320,9 +461,25 @@ function diffRecords(category: ApplicationPlanDiffCategory, before: readonly { r
     const next = right.get(id);
     if (!previous) entries.push({ id, category, change: 'added', severity: category === 'security' ? 'warning' : 'info', after: next });
     else if (!next) entries.push({ id, category, change: 'removed', severity: category === 'physical' ? 'destructive' : 'warning', before: previous });
-    else if (stableJson(previous) !== stableJson(next)) entries.push({ id, category, change: 'changed', severity: category === 'physical' ? 'warning' : 'info', before: previous, after: next });
+    else if (stableJson(previous) !== stableJson(next)) {
+      const previousWithoutProvenance = withoutProvenance(previous);
+      const nextWithoutProvenance = withoutProvenance(next);
+      entries.push({
+        id,
+        category: stableJson(previousWithoutProvenance) === stableJson(nextWithoutProvenance) ? 'provenance' : category,
+        change: 'changed',
+        severity: category === 'physical' ? 'warning' : 'info',
+        before: previous,
+        after: next,
+      });
+    }
   }
   return entries;
+}
+
+function withoutProvenance<T extends { readonly id: string }>(record: T): Omit<T, 'provenance'> {
+  const { provenance: _provenance, ...rest } = record as T & { readonly provenance?: unknown };
+  return rest;
 }
 
 function sorted<T extends { readonly id: string }>(entries: readonly T[]): readonly T[] {
@@ -348,10 +505,25 @@ function containsSensitiveValue(value: unknown, key = ''): boolean {
   return false;
 }
 
+function assertNoSensitivePlanData(plan: ApplicationPlan): void {
+  if (containsSensitiveValue(plan)) {
+    throw new Error('PLAN_SENSITIVE_DATA: Application plan contains a credential-shaped key or value and cannot be serialized.');
+  }
+}
+
 function planDiagnostic(severity: ApplicationPlanDiagnostic['severity'], code: string, message: string, subjectId?: string, provenance: readonly ApplicationSourceProvenance[] = []): ApplicationPlanDiagnostic {
   return { severity, code, message, ...(subjectId ? { subjectId } : {}), provenance };
 }
 
 function compare(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function graphIdentifier(value: string): string {
+  let hash = 2166136261;
+  for (const code of new TextEncoder().encode(value)) {
+    hash ^= code;
+    hash = Math.imul(hash, 16777619);
+  }
+  return `n${(hash >>> 0).toString(16)}`;
 }

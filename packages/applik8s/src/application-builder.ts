@@ -25,6 +25,7 @@ import {
   type ApplicationAgentOptions,
   registerApplicationAgent,
 } from './application-ai.js';
+import { createApplicationActor, observeApplicationActorDefinition, replayApplicationActorDefinition, type ApplicationActorHandle, type ApplicationActorKeySchema, type ApplicationActorProtocol, type ApplicationActorProtocolShape, type ApplicationActorStateInput } from './application-actors.js';
 import { expandApplicationCallbackDependencies } from './application-callback.js';
 import { emitApplicationAnalyticalDatabaseResources } from './application-analytical-database-resources.js';
 import {
@@ -37,7 +38,7 @@ import { type ApplicationResourceControllerOptions, type ApplicationResourceCont
 import { type ApplicationGeneratedJobResourceState, type ApplicationJobBinding, type ApplicationJobOptions, type ApplicationScheduleOptions, emitApplicationGeneratedJob, emitApplicationModelMigrationResources } from './application-generated-job-resources.js';
 import type { ApplicationServerRuntimeIndex } from './application-generated-runtime-sources.js';
 import { generatedApplicationAggregateSource, generatedValkeyIndexerSource } from './application-generated-runtime-sources.js';
-import { type ApplicationGraphState, addApplicationGraphEdge, addApplicationGraphNode, applicationGraphFromState, isApplicationGraph } from './application-graph-state.js';
+import { type ApplicationGraphState, addApplicationGraphEdge, addApplicationGraphNode, addApplicationProviderRequirement, applicationGraphFromState, isApplicationGraph } from './application-graph-state.js';
 import {
   type ApplicationHttpOptions,
   type ApplicationHttpHandler,
@@ -100,9 +101,9 @@ import {
   applicationProfileVariantsFromSchema,
   createApplicationProfileRuntime,
 } from './application-profiles.js';
-import type { ApplicationAnalyticalDatabaseProvider, ApplicationDefaults, ApplicationDefaultsBinding, ApplicationHostBinding, ApplicationHostProvider, ApplicationHttpExposureProvider, ApplicationIndexBackend, ApplicationPostgresTransactionalDatabaseOptions, ApplicationProviderBinding, ApplicationProviderState, ApplicationProviderToken, ApplicationQualifiedProviderToken, ApplicationTransactionalDatabaseProvider, ApplicationValkeyIndexBackend } from './application-providers.js';
-import { ApplicationHost, applicationAnalyticalDatabaseImplementation, applicationCertificateImplementation, applicationDnsPublicationImplementation, applicationEventLogImplementation, applicationHostBinding, applicationHttpExposureImplementation, applicationIndexBackend, applicationObjectStorageImplementation, applicationPostgresClusterSpec, applicationProviderQualificationFor, applicationProviderSelectionFor, applicationProviderSelectionSatisfies, applicationProviderTokenName, applicationSearchProviderImplementation, applicationTransactionalDatabaseImplementation, applyApplicationProvider, defaultApplicationEventLogProvider, defaultApplicationIndexBackend, defaultApplicationIndexProvider, defaultApplicationProviders, IndexStore, isApplicationProviderSelection, isApplicationQualifiedProviderToken, isValkeyIndexDefault, TransactionalDatabase } from './application-providers.js';
-import { type ApplicationQueryBinding, type ApplicationQueryOptions, type ApplicationQueryPrincipal, type ApplicationQuerySourceBinding, applicationQueryBindingForOperation, registerApplicationModelView, registerApplicationQuery } from './application-queries.js';
+import type { ApplicationAnalyticalDatabaseProvider, ApplicationDefaults, ApplicationDefaultsBinding, ApplicationHostBinding, ApplicationHostProvider, ApplicationHttpExposureProvider, ApplicationIndexBackend, ApplicationPostgresTransactionalDatabaseOptions, ApplicationProviderBinding, ApplicationProviderDeploymentTarget, ApplicationProviderState, ApplicationProviderToken, ApplicationQualifiedProviderToken, ApplicationTargetProviderSelectionValue, ApplicationTransactionalDatabaseProvider, ApplicationValkeyIndexBackend } from './application-providers.js';
+import { ActorRuntime, ApplicationHost, applicationAnalyticalDatabaseImplementation, applicationCertificateImplementation, applicationDnsPublicationImplementation, applicationEventLogImplementation, applicationHostBinding, applicationHttpExposureImplementation, applicationIndexBackend, applicationObjectStorageImplementation, applicationPostgresClusterSpec, applicationProviderQualificationFor, applicationProviderSelectionFor, applicationProviderSelectionSatisfies, applicationProviderTokenName, applicationSearchProviderImplementation, applicationTargetProviderSelectionFor, applicationTransactionalDatabaseImplementation, applyApplicationProvider, defaultApplicationEventLogProvider, defaultApplicationIndexBackend, defaultApplicationIndexProvider, defaultApplicationProviders, IndexStore, isApplicationProviderSelection, isApplicationQualifiedProviderToken, isValkeyIndexDefault, TransactionalDatabase } from './application-providers.js';
+import { type ApplicationCallableQueryBinding, type ApplicationQueryBinding, type ApplicationQueryOptions, type ApplicationQueryPrincipal, type ApplicationQuerySourceBinding, applicationQueryBindingForOperation, registerApplicationModelView, registerApplicationQuery } from './application-queries.js';
 import { type ApplicationAnalyticalProjectionBinding, type ApplicationAnalyticalProjectionOptions, type ApplicationGatewayBinding, type ApplicationGatewayOptions, type ApplicationOnlineProjectionBinding, type ApplicationOnlineProjectionDraft, type ApplicationOnlineProjectionOptions, type ApplicationOnlineProjectionRetentionPolicy, type ApplicationOnlineProjectionTransform, type ApplicationProjectionOptions, type ApplicationProjectionOutput, type ApplicationProjectionRebuildModel, type ApplicationProjectionRebuildScope, type ApplicationProjectionTransform, type ApplicationStreamBatchHandler, type ApplicationStreamBatchOptions, type ApplicationStreamBinding, type ApplicationStreamOptions, type ApplicationStreamProcessHandler, type ApplicationStreamProcessOptions, type ApplicationSubscriptionBinding, type ApplicationSubscriptionOptions, registerApplicationGateway, registerApplicationProjection, registerApplicationStream, registerApplicationStreamBatchProcessor, registerApplicationStreamProcessor, registerApplicationSubscription } from './application-reactive.js';
 import {
   applicationSignalAuthorityFacets,
@@ -161,8 +162,15 @@ export { installApplicationObjectStorageRuntimeResolver } from './application-ob
 export { installApplicationProjectionRuntimeResolver } from './application-projection-binding.js';
 export type { ApplicationProcessorOptions } from './application-processor-policy.js';
 export type { ApplicationProfile, ApplicationProfileBranchOptions, ApplicationProfileVariant, ApplicationProfileVariantOverride, ApplicationQualifiedProviderBinding } from './application-profiles.js';
-export type { ApplicationAnalyticalDatabaseProvider, ApplicationAnalyticalDatabaseProviderToken, ApplicationAnalyticsConstructors, ApplicationAuthorizationDecision, ApplicationAuthorizationProvider, ApplicationAuthorizationProviderToken, ApplicationAuthorizationRequest, ApplicationCertificateProvider, ApplicationCertificateProviderToken, ApplicationCertManagerCertificateProvider, ApplicationClickHouseAnalyticalDatabaseProvider, ApplicationContainerRegistryCredentialSecret, ApplicationContainerRegistryEndpoint, ApplicationContainerRegistryProvider, ApplicationContainerRegistryProviderToken, ApplicationContainerRegistrySecretRef, ApplicationContainerRegistryTls, ApplicationCounterStoreProvider, ApplicationCredentialStoreProvider, ApplicationDatabaseConstructors, ApplicationDefaults, ApplicationDefaultsBinding, ApplicationDnsPublicationProvider, ApplicationDnsPublicationProviderToken, ApplicationEventLogProvider, ApplicationEventSourceProvider, ApplicationExternalClickHouseConnection, ApplicationExternalClickHouseOptions, ApplicationExternalDnsPublicationProvider, ApplicationExternalPostgresDatabaseOptions, ApplicationGeneratedTransactionalDatabaseMigrationJobOptions, ApplicationHarborContainerRegistryOptions, ApplicationHarborContainerRegistryProvider, ApplicationHarborProjectManagement, ApplicationHatchetWorkflowEngineProvider, ApplicationHostBinding, ApplicationHostProvider, ApplicationHostProviderToken, ApplicationHttpExposureProvider, ApplicationHttpExposureProviderToken, ApplicationIdentityInfrastructure, ApplicationIdentityProvider, ApplicationIdentityProviderToken, ApplicationIndexBackend, ApplicationIndexStoreProviderToken, ApplicationIngressHttpExposureProvider, ApplicationKubernetesConfigMapObjectStorageProvider, ApplicationKubernetesConfigMapQueueProvider, ApplicationKubernetesCredentialStoreProvider, ApplicationKubernetesHostProvider, ApplicationKubernetesResourceCounterStoreProvider, ApplicationKubernetesSecretProvider, ApplicationKubernetesWatchEventSourceProvider, ApplicationNatsJetStreamEventLogProvider, ApplicationNodePortHttpExposureProvider, ApplicationOAuthAuthorizationServerProvider, ApplicationOAuthAuthorizationServerProviderToken, ApplicationObjectStorageProvider, ApplicationOciContainerRegistryProvider, ApplicationOpenSearchProvider, ApplicationOrbstackContainerRegistryProvider, ApplicationPostgresAnalyticalDatabaseProvider, ApplicationPostgresBackupPolicy, ApplicationPostgresClusterSpec, ApplicationPostgresReadinessPolicy, ApplicationPostgresSearchProvider, ApplicationPostgresTransactionalDatabaseOptions, ApplicationPostgresTransactionalDatabaseProvider, ApplicationProviderBinding, ApplicationProviderQualification, ApplicationProviderToken, ApplicationQualifiableProviderToken, ApplicationQualifiedProviderToken, ApplicationQueueProvider, ApplicationRequestAdmission, ApplicationSearchCapability, ApplicationSearchProvider, ApplicationSearchProviderToken, ApplicationSecretProvider, ApplicationStructuredGenerationDeterministicProvider, ApplicationStructuredGenerationHttpProvider, ApplicationStructuredGenerationProvider, ApplicationStructuredGenerationProviderToken, ApplicationTransactionalDatabaseMigrationPolicy, ApplicationTransactionalDatabaseProvider, ApplicationTransactionalDatabaseProviderToken, ApplicationTypedProviderContract, ApplicationValkeyIndexBackend, ApplicationWorkflowEngineProvider, ApplicationWorkflowEngineProviderToken } from './application-providers.js';
-export { AnalyticalDatabase, Analytics, ApplicationHost, Authorization, Certificate, ContainerRegistry, CounterStore, CredentialStore, Database, DnsPublication, defaultApplicationEventLogProvider, defaultApplicationProviders, defaultApplicationWorkflowEngineProvider, defineApplicationProvider, EventLog, EventSource, HttpExposure, IdentityProvider, IndexStore, OAuthAuthorizationServer, ObjectStorage, providers, Queue, Search, Secret, StructuredGeneration, TransactionalDatabase, WorkflowEngine } from './application-providers.js';
+export type { ApplicationAnalyticalDatabaseProvider, ApplicationAnalyticalDatabaseProviderToken, ApplicationAnalyticsConstructors, ApplicationAuthorizationDecision, ApplicationAuthorizationProvider, ApplicationAuthorizationProviderToken, ApplicationAuthorizationRequest, ApplicationCertificateProvider, ApplicationCertificateProviderToken, ApplicationCertManagerCertificateProvider, ApplicationClickHouseAnalyticalDatabaseProvider, ApplicationClickStackObservabilityProvider, ApplicationCloudWatchObservabilityProvider, ApplicationContainerRegistryCredentialSecret, ApplicationContainerRegistryEndpoint, ApplicationContainerRegistryProvider, ApplicationContainerRegistryProviderToken, ApplicationContainerRegistrySecretRef, ApplicationContainerRegistryTls, ApplicationCounterStoreProvider, ApplicationCredentialStoreProvider, ApplicationDatabaseConstructors, ApplicationDefaults, ApplicationDefaultsBinding, ApplicationDnsPublicationProvider, ApplicationDnsPublicationProviderToken, ApplicationEventBridgeSchedulerProvider, ApplicationEventLogProvider, ApplicationEventSourceProvider, ApplicationExternalClickHouseConnection, ApplicationExternalClickHouseOptions, ApplicationExternalDnsPublicationProvider, ApplicationExternalPostgresDatabaseOptions, ApplicationGeneratedTransactionalDatabaseMigrationJobOptions, ApplicationHarborContainerRegistryOptions, ApplicationHarborContainerRegistryProvider, ApplicationHarborProjectManagement, ApplicationHatchetSchedulerProvider, ApplicationHatchetWorkflowEngineProvider, ApplicationHostBinding, ApplicationHostProvider, ApplicationHostProviderToken, ApplicationHttpExposureProvider, ApplicationHttpExposureProviderToken, ApplicationIdentityInfrastructure, ApplicationIdentityProvider, ApplicationIdentityProviderToken, ApplicationIndexBackend, ApplicationIndexStoreProviderToken, ApplicationIngressHttpExposureProvider, ApplicationKubernetesConfigMapObjectStorageProvider, ApplicationKubernetesConfigMapQueueProvider, ApplicationKubernetesCredentialStoreProvider, ApplicationKubernetesCronJobSchedulerProvider, ApplicationKubernetesHostProvider, ApplicationKubernetesResourceCounterStoreProvider, ApplicationKubernetesSecretProvider, ApplicationKubernetesWatchEventSourceProvider, ApplicationLocalObservabilityProvider, ApplicationLocalSchedulerProvider, ApplicationManagedHostProvider, ApplicationNatsJetStreamEventLogProvider, ApplicationNodePortHttpExposureProvider, ApplicationOAuthAuthorizationServerProvider, ApplicationOAuthAuthorizationServerProviderToken, ApplicationObjectStorageProvider, ApplicationObservabilityProvider, ApplicationObservabilityProviderToken, ApplicationOciContainerRegistryProvider, ApplicationOpenSearchProvider, ApplicationOrbstackContainerRegistryProvider, ApplicationOtlpObservabilityProvider, ApplicationPostgresAnalyticalDatabaseProvider, ApplicationPostgresBackupPolicy, ApplicationPostgresClusterSpec, ApplicationPostgresReadinessPolicy, ApplicationPostgresSearchProvider, ApplicationPostgresTransactionalDatabaseOptions, ApplicationPostgresTransactionalDatabaseProvider, ApplicationProviderBinding, ApplicationProviderQualification, ApplicationProviderToken, ApplicationQualifiableProviderToken, ApplicationQualifiedProviderToken, ApplicationQueueProvider, ApplicationRequestAdmission, ApplicationSchedulerProvider, ApplicationSchedulerProviderToken, ApplicationSearchCapability, ApplicationSearchProvider, ApplicationSearchProviderToken, ApplicationSecretProvider, ApplicationStructuredGenerationDeterministicProvider, ApplicationStructuredGenerationHttpProvider, ApplicationStructuredGenerationProvider, ApplicationStructuredGenerationProviderToken, ApplicationTelemetryPolicy, ApplicationTelemetryPolicyOptions, ApplicationTransactionalDatabaseMigrationPolicy, ApplicationTransactionalDatabaseProvider, ApplicationTransactionalDatabaseProviderToken, ApplicationTypedProviderContract, ApplicationValkeyIndexBackend, ApplicationWorkflowEngineProvider, ApplicationWorkflowEngineProviderToken } from './application-providers.js';
+export { ActorRuntime, AnalyticalDatabase, Analytics, ApplicationHost, Authorization, Certificate, ContainerRegistry, CounterStore, CredentialStore, Database, DnsPublication, defaultApplicationEventLogProvider, defaultApplicationProviders, defaultApplicationWorkflowEngineProvider, defineApplicationProvider, EventLog, EventSource, HttpExposure, IdentityProvider, IndexStore, Lakehouse, LakehouseDataset, LakehouseQuery, OAuthAuthorizationServer, ObjectStorage, Observability, providers, Queue, Scheduler, Search, Secret, StructuredGeneration, telemetryPolicy, TransactionalDatabase, WorkflowEngine } from './application-providers.js';
+export type { ApplicationLakehouseComparisonExpression, ApplicationLakehouseDatasetQueryContract, ApplicationLakehouseFieldExpression, ApplicationLakehouseFilterExpression, ApplicationLakehouseLogicalExpression, ApplicationLakehouseManifest, ApplicationLakehouseOrder, ApplicationLakehouseOrderExpression, ApplicationLakehousePredicate, ApplicationLakehousePublication, ApplicationLakehousePublicationRuntime, ApplicationLakehouseQueryFailureReceipt, ApplicationLakehouseQueryReceipt, ApplicationLakehouseQueryRequest, ApplicationLakehouseQueryResult, ApplicationLakehouseQueryRuntime, ApplicationLakehouseQueryTerminalState, ApplicationLakehouseRowExpression, ApplicationLakehouseScalar, ApplicationLakehouseSchemaCompatibility, CompiledApplicationLakehouseQuery, DeterministicApplicationLakehouseRuntime } from './application-lakehouse.js';
+export type { ApplicationAthenaLakehouseQueryProvider, ApplicationDuckDbLakehouseDatasetProvider, ApplicationDuckDbLakehouseQueryProvider, ApplicationLakehouseDatasetProvider, ApplicationLakehouseDatasetProviderToken, ApplicationLakehouseQueryProvider, ApplicationLakehouseQueryProviderToken, ApplicationQualifiedLakehouseDatasetProviderToken, ApplicationS3LakehouseDatasetProvider } from './application-providers.js';
+export type { ApplicationActorRuntimeProvider, ApplicationActorRuntimeProviderToken, ApplicationCelldActorRuntimeProvider, ApplicationLocalActorRuntimeProvider, ApplicationRivetActorRuntimeProvider } from './application-providers.js';
+export { applicationLakehouseQueryIdentity, ApplicationLakehouseQueryTerminalError, applicationLakehouseQueryTerminalError, classifyApplicationLakehouseSchemaEvolution, compareApplicationLakehouseRows, compileApplicationLakehouseQuery, createDeterministicApplicationLakehouseRuntime, evaluateApplicationLakehouseFilter, executeApplicationLakehousePublication, installApplicationLakehousePublicationRuntimeResolver, installApplicationLakehouseQueryRuntimeResolver } from './application-lakehouse.js';
+export type { ApplicationEventConsumerBinding, RunningApplicationEventConsumer } from './event-log-runtime.js';
+export type { ApplicationTelemetryBoundary, ApplicationTelemetryRuntime } from './application-telemetry-runtime.js';
+export { installApplicationTelemetryRuntimeResolver, runApplicationTelemetryBoundary } from './application-telemetry-runtime.js';
 export type { ApplicationKubernetesModelSelection, ApplicationKubernetesModelSelectionContext, ApplicationKubernetesModelViewContract, ApplicationKubernetesModelViewImplementation, ApplicationKubernetesModelViewOptions, ApplicationKubernetesModelViewSchemaContract, ApplicationModelViewContext, ApplicationModelViewContract, ApplicationModelViewImplementation, ApplicationModelViewOptions, ApplicationOnlineProjectionQueryBinding, ApplicationOnlineQueryRuntimeSource, ApplicationOnlineQuerySource, ApplicationQueryAuthorizationRequest, ApplicationQuerySourceBinding } from './application-queries.js';
 export type { ApplicationAnalyticalProjectionBinding, ApplicationAnalyticalProjectionOptions, ApplicationEventBatch, ApplicationEventEnvelope, ApplicationGatewayAdmission, ApplicationGatewayBinding, ApplicationGatewayOptions, ApplicationOnlineProjectionBinding, ApplicationOnlineProjectionOptions, ApplicationProjectionBinding, ApplicationProjectionOptions, ApplicationStreamBatchContext, ApplicationStreamBatchHandler, ApplicationStreamBatchOptions, ApplicationStreamBinding, ApplicationStreamOptions, ApplicationStreamProcessContext, ApplicationStreamProcessHandler, ApplicationStreamProcessOptions, ApplicationStreamProcessorBinding, ApplicationStreamScheduleFunctions, ApplicationStreamScheduleTargets, ApplicationStreamTaskFunctions, ApplicationStreamTaskTargets, ApplicationSubscriptionBinding, ApplicationSubscriptionOptions } from './application-reactive.js';
 export type { ApplicationMatchedSignalOutcome, ApplicationSignal, ApplicationSignalActionInput, ApplicationSignalActionName, ApplicationSignalActionOptions, ApplicationSignalActionResult, ApplicationSignalActor, ApplicationSignalAuthorizationReceiptReference, ApplicationSignalBinding, ApplicationSignalClientSubscription, ApplicationSignalClientSubscriptionOptions, ApplicationSignalContract, ApplicationSignalDecision, ApplicationSignalDefinition, ApplicationSignalEmitOptions, ApplicationSignalIdentity, ApplicationSignalIssuance, ApplicationSignalOutcome, ApplicationSignalReference, ApplicationSignalSubjectSelector } from './application-signals.js';
@@ -210,7 +218,8 @@ function isSingleStepWorkflowOptions(options: object): boolean {
       ),
     ].some(
       (value) =>
-        applicationNativeModelMethodDependencyFor(value)?.access === 'write',
+        applicationNativeModelMethodDependencyFor(value)?.access === 'write'
+        || getApplicationOperationContract(value as never)?.id.startsWith('applik8s://actors/') === true,
     )
     || (
       generatedBindings
@@ -319,6 +328,17 @@ export interface ApplicationWorkflowRegistrar {
   ): Promise<ApplicationSignalDecision<TDefinition>>;
 }
 
+/** Fluent target-only provider selection; branch factories stay inert during discovery. */
+export interface ApplicationTargetProviderBinding<TImplementation> {
+  readonly kind: 'applicationProvider';
+  readonly token: ApplicationProviderToken<TImplementation>;
+  readonly implementation: ApplicationTargetProviderSelectionValue<TImplementation>;
+  local(factory: () => TImplementation): ApplicationTargetProviderBinding<TImplementation>;
+  awsLocal(factory: () => TImplementation): ApplicationTargetProviderBinding<TImplementation>;
+  aws(factory: () => TImplementation): ApplicationTargetProviderBinding<TImplementation>;
+  kubernetes(factory: () => TImplementation): ApplicationTargetProviderBinding<TImplementation>;
+}
+
 export interface KubernetesApplicationScope extends ApplicationAuthorityRegistrar {
   readonly api: ApplicationServerRegistrar & Record<string, ApplicationServerBinding>;
   readonly http: ApplicationHttpRegistrar;
@@ -335,6 +355,10 @@ export interface KubernetesApplicationScope extends ApplicationAuthorityRegistra
     options: ApplicationAgentOptions,
     handler: ApplicationAgentHandler<TRequest, TResult>,
   ): ApplicationAgentBinding<TName, TRequest, TResult>;
+  actor<TState extends object, const TProtocol extends ApplicationActorProtocolShape>(
+    id: string,
+    options: { readonly key: ApplicationActorKeySchema; readonly state: ApplicationActorStateInput<TState>; readonly protocol: TProtocol },
+  ): ApplicationActorHandle<TState, TProtocol>;
   operator<TBinding>(operator: (options: OperatorDeploymentOptions) => TBinding, options: OperatorDeploymentOptions): TBinding;
   resource<TSpec extends object, TStatus extends object = Record<string, never>>(name: string, options: ApplicationResourceOptions<TSpec, TStatus>): ResourceDefinition<TSpec, TStatus>;
   crd<TSpec extends object, TStatus extends object = Record<string, never>>(name: string, options: ApplicationNamedCrdOptions<TSpec, TStatus>): PromotedKubernetesResource<TSpec, TStatus>;
@@ -351,7 +375,7 @@ export interface KubernetesApplicationScope extends ApplicationAuthorityRegistra
     options: ApplicationSearchRootOptions,
     ...fields: TFields
   ): ApplicationSearchIndexBinding<ApplicationSearchDocument<TFields>>;
-  query<TInput, TOutput, TPrincipal extends ApplicationQueryPrincipal = ApplicationQueryPrincipal, TSource extends ApplicationQuerySourceBinding | undefined = undefined>(id: string, options: ApplicationQueryOptions<TInput, TOutput, TPrincipal, TSource>): ApplicationQueryBinding<TInput, TOutput, TPrincipal, TSource>;
+  query<TInput, TOutput, TPrincipal extends ApplicationQueryPrincipal = ApplicationQueryPrincipal, TSource extends ApplicationQuerySourceBinding | undefined = undefined>(id: string, options: ApplicationQueryOptions<TInput, TOutput, TPrincipal, TSource>): ApplicationCallableQueryBinding<TInput, TOutput, TPrincipal, TSource>;
   stream<TPayload extends object, TPrincipal extends ApplicationQueryPrincipal = ApplicationQueryPrincipal>(definition: StreamDefinition<TPayload> | EventDefinition<TPayload>, options: ApplicationStreamOptions<TPayload, TPrincipal>): ApplicationStreamBinding<TPayload, TPrincipal>;
   subscription<TPrincipal extends ApplicationQueryPrincipal = ApplicationQueryPrincipal>(name: string, options: ApplicationSubscriptionOptions<TPrincipal>): ApplicationSubscriptionBinding<TPrincipal>;
   projection<TPayload extends object, TRow extends object>(name: string, options: ApplicationAnalyticalProjectionOptions<TPayload, TRow>): ApplicationAnalyticalProjectionBinding<TPayload, TRow>;
@@ -370,6 +394,7 @@ export interface KubernetesApplicationScope extends ApplicationAuthorityRegistra
   job(name: string, options?: ApplicationJobOptions): ApplicationJobBinding;
   schedule(name: string, options?: ApplicationScheduleOptions): ApplicationJobBinding;
   defaults(defaults: ApplicationDefaults): ApplicationDefaultsBinding;
+  provide<TImplementation>(token: ApplicationProviderToken<TImplementation>): ApplicationTargetProviderBinding<TImplementation>;
   provide<TImplementation>(token: ApplicationProviderToken<TImplementation>, implementation: TImplementation | ApplicationProviderBinding<TImplementation>): ApplicationProviderBinding<TImplementation>;
   aggregate<TStats extends object, TEvent extends object>(name: string, options: ApplicationAggregateOptions<TStats, TEvent>): ApplicationAggregateBinding<TStats, TEvent>;
   readonly workflow: ApplicationWorkflowRegistrar;
@@ -386,6 +411,15 @@ export interface KubernetesApplicationScope extends ApplicationAuthorityRegistra
   selectProvider<TImplementation>(
     input: string,
     cases: Readonly<Record<string, TImplementation>> & { readonly default: TImplementation },
+  ): TImplementation;
+  /** Compose deployment-target selection inside another typed provider selection such as a profile branch. */
+  selectTarget<TImplementation>(
+    targets: Readonly<{
+      readonly local?: () => TImplementation;
+      readonly awsLocal?: () => TImplementation;
+      readonly aws?: () => TImplementation;
+      readonly kubernetes?: () => TImplementation;
+    }>,
   ): TImplementation;
   /** Select between two scalar graph values from a typed installation condition. */
   when<TOutput extends ApplicationGraphScalar>(
@@ -1039,7 +1073,7 @@ function bindApplicationResourceEvents<TSpec extends object, TStatus extends obj
         if (!controllerState.controller) {
           controllerState.controller = createApplicationResourceEventOperatorController(
             resource,
-            [registration as HandlerRegistration<TSpec, TStatus>],
+            [registration as unknown as HandlerRegistration<TSpec, TStatus>],
             [callback],
             controllerState.options,
           );
@@ -2327,7 +2361,7 @@ function createKubernetesApplicationBuilder<TSpec extends KroCompatibleType = Re
       invalidate();
       return binding;
     },
-    query<TInput, TOutput, TPrincipal extends ApplicationQueryPrincipal = ApplicationQueryPrincipal, TSource extends ApplicationQuerySourceBinding | undefined = undefined>(id: string, queryOptions: ApplicationQueryOptions<TInput, TOutput, TPrincipal, TSource>): ApplicationQueryBinding<TInput, TOutput, TPrincipal, TSource> {
+    query<TInput, TOutput, TPrincipal extends ApplicationQueryPrincipal = ApplicationQueryPrincipal, TSource extends ApplicationQuerySourceBinding | undefined = undefined>(id: string, queryOptions: ApplicationQueryOptions<TInput, TOutput, TPrincipal, TSource>): ApplicationCallableQueryBinding<TInput, TOutput, TPrincipal, TSource> {
       const binding = preview.query(id, queryOptions);
       replays.push((scope) => {
         scope.query(id, queryOptions);
@@ -2555,6 +2589,25 @@ function createKubernetesApplicationBuilder<TSpec extends KroCompatibleType = Re
       invalidate();
       return binding;
     },
+    actor<TState extends object, const TProtocol extends ApplicationActorProtocolShape>(
+      actorId: string,
+      actorOptions: { readonly key: ApplicationActorKeySchema; readonly state: ApplicationActorStateInput<TState>; readonly protocol: TProtocol },
+    ): ApplicationActorHandle<TState, TProtocol> {
+      const binding = preview.actor<TState, TProtocol>(actorId, actorOptions);
+      let replayed: ApplicationActorHandle<TState, TProtocol> | undefined;
+      replays.push((scope) => {
+        replayed = scope.actor<TState, TProtocol>(actorId, actorOptions);
+      });
+      behaviorReplays.push(() => {
+        if (!replayed) throw new Error(`Application actor ${actorId} replay declaration did not run before its handlers.`);
+        replayApplicationActorDefinition(
+          binding as unknown as ApplicationActorHandle<object, ApplicationActorProtocol>,
+          replayed as unknown as ApplicationActorHandle<object, ApplicationActorProtocol>,
+        );
+      });
+      invalidate();
+      return binding;
+    },
     defaults(defaults: ApplicationDefaults): ApplicationDefaultsBinding {
       const binding = preview.defaults(defaults);
       replays.push((scope) => {
@@ -2563,7 +2616,22 @@ function createKubernetesApplicationBuilder<TSpec extends KroCompatibleType = Re
       invalidate();
       return binding;
     },
-    provide<TImplementation>(token: ApplicationProviderToken<TImplementation>, implementation: TImplementation | ApplicationProviderBinding<TImplementation>): ApplicationProviderBinding<TImplementation> {
+    provide: (<TImplementation>(token: ApplicationProviderToken<TImplementation>, implementation?: TImplementation | ApplicationProviderBinding<TImplementation>): ApplicationProviderBinding<TImplementation> | ApplicationTargetProviderBinding<TImplementation> => {
+      if (implementation === undefined) {
+        const previewBinding = preview.provide(token);
+        const branches: Array<{ readonly target: ApplicationProviderDeploymentTarget; readonly factory: () => TImplementation }> = [];
+        replays.push((scope) => {
+          const replay = scope.provide(token);
+          for (const branch of branches) targetProviderMethod(replay, branch.target)(branch.factory);
+        });
+        const binding = targetProviderReplayBinding(previewBinding, (target, factory) => {
+          branches.push({ target, factory });
+          targetProviderMethod(previewBinding, target)(factory);
+          invalidate();
+        });
+        invalidate();
+        return binding;
+      }
       const normalizedImplementation = (
         (token as unknown) === ApplicationHost
         && defaultNamespace
@@ -2579,7 +2647,7 @@ function createKubernetesApplicationBuilder<TSpec extends KroCompatibleType = Re
       });
       invalidate();
       return binding;
-    },
+    }) as KubernetesApplicationScope['provide'],
     aggregate<TStats extends object, TEvent extends object>(aggregateName: string, aggregateOptions: ApplicationAggregateOptions<TStats, TEvent>): ApplicationAggregateBinding<TStats, TEvent> {
       const binding = preview.aggregate(aggregateName, aggregateOptions);
       replays.push((scope) => {
@@ -2758,6 +2826,14 @@ function createKubernetesApplicationBuilder<TSpec extends KroCompatibleType = Re
     // typed as the selected scalar, matching the public graph DSL contract.
     select: applicationGraphSelect as KubernetesApplicationScope['select'],
     selectProvider: applicationGraphProviderSelection as KubernetesApplicationScope['selectProvider'],
+    selectTarget: ((factories) => {
+      const targets = Object.fromEntries(Object.entries(factories).map(([target, factory]) => {
+        if (typeof factory !== 'function') throw new Error(`app.selectTarget(...) branch ${target} requires a provider factory.`);
+        return [target === 'awsLocal' ? 'aws-local' : target, factory()];
+      }));
+      if (Object.keys(targets).length === 0) throw new Error('app.selectTarget(...) requires at least one deployment-target branch.');
+      return { kind: 'application-target-provider-selection', targets } as unknown;
+    }) as KubernetesApplicationScope['selectTarget'],
     when: applicationGraphWhen as KubernetesApplicationScope['when'],
     any: applicationGraphAny,
     all: applicationGraphAll,
@@ -3639,15 +3715,40 @@ function createApplicationContext<TSpec extends KroCompatibleType, TStatus exten
     }
     return { kind: 'applicationDefaults', defaults };
   };
-  const provide = <TImplementation>(token: ApplicationProviderToken<TImplementation>, implementation: TImplementation | ApplicationProviderBinding<TImplementation>): ApplicationProviderBinding<TImplementation> => {
+  const provideImplementation = <TImplementation>(token: ApplicationProviderToken<TImplementation>, implementation?: TImplementation | ApplicationProviderBinding<TImplementation>): ApplicationProviderBinding<TImplementation> | ApplicationTargetProviderBinding<TImplementation> => {
     const qualification = applicationProviderQualificationFor(token);
+    if (implementation === undefined) {
+      if (!isApplicationQualifiedProviderToken(token)) {
+        throw new Error(`app.provide(${applicationProviderTokenName(token)}) target branches require a qualified capability created with .named(...).`);
+      }
+      return createApplicationTargetProviderBinding<TImplementation>(token, (selection) => {
+        if (token.accepts && !applicationProviderSelectionSatisfies(selection, token.accepts)) {
+          throw new Error(`app.provide(${token.qualification.key}) target branch does not satisfy ${token.name}.`);
+        }
+        recordApplicationProviderGraph(
+          state,
+          applicationProviderTokenName(token),
+          'targetSelected',
+          selection,
+          token.contract,
+          qualification,
+        );
+      });
+    }
+    const concreteImplementation = (
+      implementation
+      && typeof implementation === 'object'
+      && Reflect.get(implementation, 'kind') === 'applicationProvider'
+      ? Reflect.get(implementation, 'implementation')
+      : implementation
+    ) as TImplementation;
     if (!isApplicationQualifiedProviderToken(token)) {
-      applyApplicationProvider(state, token, implementation);
+      applyApplicationProvider(state, token, concreteImplementation);
     } else if (
       token.accepts
-      && !token.accepts(implementation)
+      && !token.accepts(concreteImplementation)
       && !applicationProviderSelectionSatisfies(
-        implementation,
+        concreteImplementation,
         token.accepts,
       )
     ) {
@@ -3656,23 +3757,18 @@ function createApplicationContext<TSpec extends KroCompatibleType, TStatus exten
       );
     }
     if ((token as unknown) === IndexStore) {
-      emitProvidedApplicationIndexStore(state, definition.name, undefined, implementation);
+      emitProvidedApplicationIndexStore(state, definition.name, undefined, concreteImplementation);
     }
     if (applicationProviderTokenName(token) === 'AnalyticalDatabase') {
-      emitApplicationAnalyticalDatabaseResources(state, implementation);
+      emitApplicationAnalyticalDatabaseResources(state, concreteImplementation);
     }
     const recordedImplementation =
       (applicationProviderTokenName(token) === 'IndexStore'
-        ? applicationIndexBackend(implementation)
+        ? applicationIndexBackend(concreteImplementation)
         : undefined)
-      ?? applicationProviderSelectionFor(implementation)
-      ?? (
-          implementation
-          && typeof implementation === 'object'
-          && Reflect.get(implementation, 'kind') === 'applicationProvider'
-          ? Reflect.get(implementation, 'implementation')
-          : implementation
-        );
+      ?? applicationProviderSelectionFor(concreteImplementation)
+      ?? applicationTargetProviderSelectionFor(concreteImplementation)
+      ?? concreteImplementation;
     recordApplicationProviderGraph(
       state,
       applicationProviderTokenName(token),
@@ -3684,13 +3780,13 @@ function createApplicationContext<TSpec extends KroCompatibleType, TStatus exten
         ? undefined
         : applicationQualifiedProviderAliasNodeId(
             applicationProviderTokenName(token),
-            implementation,
+            concreteImplementation,
           ),
     );
     if ((token as unknown) === ApplicationHost) {
       return applicationHostBinding(
         ApplicationHost,
-        implementation as unknown as ApplicationHostProvider,
+        concreteImplementation as unknown as ApplicationHostProvider,
         definition.name,
       ) as ApplicationProviderBinding<TImplementation>;
     }
@@ -3700,6 +3796,7 @@ function createApplicationContext<TSpec extends KroCompatibleType, TStatus exten
       implementation: recordedImplementation,
     } as ApplicationProviderBinding<TImplementation>;
   };
+  const provide = provideImplementation as KubernetesApplicationScope['provide'];
   const storage: ApplicationStorageRegistrar = {
     postgres(name, options = {}) {
       const provider = TransactionalDatabase.postgres(applicationStoragePostgresOptions(name, options));
@@ -3873,7 +3970,7 @@ function createApplicationContext<TSpec extends KroCompatibleType, TStatus exten
     }
     const controller = createApplicationResourceEventOperatorController(
       resource,
-      registrations as HandlerRegistration<TSpec, TStatus>[],
+      registrations as unknown as HandlerRegistration<TSpec, TStatus>[],
       callbacks,
       options,
     );
@@ -4239,6 +4336,33 @@ function createApplicationContext<TSpec extends KroCompatibleType, TStatus exten
     agent(name, options, handler) {
       return registerApplicationAgent(state, name, options, handler);
     },
+    actor(id, options) {
+      if (!state.graphNodes.some((node) => node.kind === 'provider' && node.id === applicationProviderGraphNodeId('ActorRuntime'))) {
+        recordApplicationProviderGraph(state, 'ActorRuntime', 'targetDefault', { kind: 'target-selected' }, ActorRuntime.contract);
+      }
+      const binding = createApplicationActor(id, options);
+      const record = () => {
+        addApplicationGraphNode(state, binding.graphNode);
+        const requirementId = `requirement.actor.${id}.event-log`;
+        addApplicationProviderRequirement(state, {
+          id: requirementId,
+          interface: 'EventLog',
+          consumer: { nodeId: binding.graphNode.id },
+          required: true,
+          purpose: 'eventLog',
+          diagnostics: {
+            missing: `Actor ${id} requires one EventLog provider for committed outbox delivery.`,
+            ambiguous: `Actor ${id} resolves more than one EventLog provider. Bind exactly one provider explicitly.`,
+          },
+        });
+      };
+      record();
+      observeApplicationActorDefinition(
+        binding as unknown as ApplicationActorHandle<object, ApplicationActorProtocol>,
+        record,
+      );
+      return binding;
+    },
     workflow: ((definitionOrId: WorkflowDefinition<object, object, Readonly<Record<string, object>>, Readonly<Record<string, object>>> | string, contractOrOptions: object, optionsOrHandler: object | ((...args: never[]) => unknown), maybeHandler?: (...args: never[]) => unknown) => {
       const functionNative = typeof definitionOrId === 'string';
       const definition = functionNative
@@ -4269,6 +4393,14 @@ function createApplicationContext<TSpec extends KroCompatibleType, TStatus exten
     // typed as the selected scalar, matching the public graph DSL contract.
     select: applicationGraphSelect as KubernetesApplicationScope['select'],
     selectProvider: applicationGraphProviderSelection as KubernetesApplicationScope['selectProvider'],
+    selectTarget: ((factories) => {
+      const targets = Object.fromEntries(Object.entries(factories).map(([target, factory]) => {
+        if (typeof factory !== 'function') throw new Error(`app.selectTarget(...) branch ${target} requires a provider factory.`);
+        return [target === 'awsLocal' ? 'aws-local' : target, factory()];
+      }));
+      if (Object.keys(targets).length === 0) throw new Error('app.selectTarget(...) requires at least one deployment-target branch.');
+      return { kind: 'application-target-provider-selection', targets } as unknown;
+    }) as KubernetesApplicationScope['selectTarget'],
     when: applicationGraphWhen as KubernetesApplicationScope['when'],
     any: applicationGraphAny,
     all: applicationGraphAll,
@@ -4412,6 +4544,62 @@ function applicationGraphProviderSelection<TImplementation>(
     cases: branches,
     default: fallback,
   } as unknown as TImplementation;
+}
+
+function createApplicationTargetProviderBinding<TImplementation>(
+  token: ApplicationProviderToken<TImplementation>,
+  onChange: (selection: ApplicationTargetProviderSelectionValue<TImplementation>) => void,
+): ApplicationTargetProviderBinding<TImplementation> {
+  const targets: Partial<Record<ApplicationProviderDeploymentTarget, TImplementation>> = {};
+  let binding: ApplicationTargetProviderBinding<TImplementation>;
+  const select = (target: ApplicationProviderDeploymentTarget, factory: () => TImplementation): ApplicationTargetProviderBinding<TImplementation> => {
+    if (typeof factory !== 'function') throw new Error(`app.provide(...).${target}(...) requires a provider factory.`);
+    const implementation = factory();
+    targets[target] = implementation;
+    onChange({ kind: 'application-target-provider-selection', targets: { ...targets } });
+    return binding;
+  };
+  binding = {
+    kind: 'applicationProvider',
+    token,
+    get implementation() {
+      return { kind: 'application-target-provider-selection' as const, targets: { ...targets } };
+    },
+    local(factory) { return select('local', factory); },
+    awsLocal(factory) { return select('aws-local', factory); },
+    aws(factory) { return select('aws', factory); },
+    kubernetes(factory) { return select('kubernetes', factory); },
+  };
+  return binding;
+}
+
+function targetProviderMethod<TImplementation>(
+  binding: ApplicationTargetProviderBinding<TImplementation>,
+  target: ApplicationProviderDeploymentTarget,
+): (factory: () => TImplementation) => ApplicationTargetProviderBinding<TImplementation> {
+  if (target === 'aws-local') return binding.awsLocal.bind(binding);
+  return binding[target].bind(binding);
+}
+
+function targetProviderReplayBinding<TImplementation>(
+  preview: ApplicationTargetProviderBinding<TImplementation>,
+  onBranch: (target: ApplicationProviderDeploymentTarget, factory: () => TImplementation) => void,
+): ApplicationTargetProviderBinding<TImplementation> {
+  let binding: ApplicationTargetProviderBinding<TImplementation>;
+  const branch = (target: ApplicationProviderDeploymentTarget, factory: () => TImplementation) => {
+    onBranch(target, factory);
+    return binding;
+  };
+  binding = {
+    kind: 'applicationProvider',
+    token: preview.token,
+    get implementation() { return preview.implementation; },
+    local(factory) { return branch('local', factory); },
+    awsLocal(factory) { return branch('aws-local', factory); },
+    aws(factory) { return branch('aws', factory); },
+    kubernetes(factory) { return branch('kubernetes', factory); },
+  };
+  return binding;
 }
 
 function recordApplicationProfileSelectionGraph(

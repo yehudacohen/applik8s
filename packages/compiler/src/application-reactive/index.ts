@@ -8,6 +8,10 @@ import type { ApplicationAIAgentNode, ApplicationCommandHandlerNode, Application
 import { build } from 'esbuild';
 import ts from 'typescript';
 import { generatedCallbackFactoryModule } from '../application-callback-module.js';
+import {
+  applicationActorInvocationBoundary,
+  generatedApplicationActorInvocationClientSource,
+} from '../application-actor-invocation.js';
 import type { GeneratedApplicationContainerArtifact } from '../application-containers/index.js';
 import { emitGeneratedApplicationContainer } from '../application-containers/index.js';
 import { applicationGraphAllConditions, applicationGraphBooleanCondition, applicationGraphJsonStringArray, applicationGraphNumberValue, applicationGraphServiceHost, applicationGraphStringValue } from '../application-installation-values.js';
@@ -16,6 +20,7 @@ import { compileApplicationMcpPlacementRoutes, compileApplicationOperationPlacem
 import { applicationObjectStorageEnvironment } from '../application-object-storage-environment.js';
 import { applicationStaticAuthorityManifest, compileApplicationOperationCatalog, compileApplicationWorkloadAuthority } from '../application-operations/index.js';
 import { applik8sWorkspaceSourcePlugin } from '../bundling/index.js';
+import { generatedApplicationEventLogPublisherSource } from '../application-event-log-runtime-source.js';
 
 const DEFAULT_NODE_IMAGE = 'node:22-alpine@sha256:16e22a550f3863206a3f701448c45f7912c6896a62de43add43bb9c86130c3e2';
 
@@ -33,6 +38,7 @@ export interface GeneratedApplicationReactiveResource {
 
 export interface GeneratedApplicationReactiveArtifact {
   readonly name: string;
+  readonly nodeId: string;
   readonly kind:
     | 'queryGateway'
     | 'projectionWorker'
@@ -184,8 +190,18 @@ interface ApplicationInternalPlacementRoute {
 }
 
 /** Lowers deployable v0.6 query gateways and analytical/online projections into immutable Node workloads. */
-export async function emitGeneratedApplicationReactive(options: { readonly graph: ApplicationGraph; readonly operationCatalog?: ApplicationOperationCatalog; readonly outDir: string; readonly entrypoint: string }): Promise<readonly GeneratedApplicationReactiveArtifact[]> {
+export async function emitGeneratedApplicationReactive(options: {
+  readonly graph: ApplicationGraph;
+  readonly operationCatalog?: ApplicationOperationCatalog;
+  readonly outDir: string;
+  readonly entrypoint: string;
+  readonly executionTarget?: 'kubernetes' | 'local' | 'aws-local' | 'aws';
+}): Promise<readonly GeneratedApplicationReactiveArtifact[]> {
   const operationCatalog = options.operationCatalog ?? compileApplicationOperationCatalog(options.graph);
+  const workloadAuthority = compileApplicationWorkloadAuthority(
+    options.graph,
+    operationCatalog,
+  );
   const mcpRoutes = compileApplicationMcpPlacementRoutes(
     options.graph,
     operationCatalog,
@@ -195,7 +211,7 @@ export async function emitGeneratedApplicationReactive(options: { readonly graph
     ...compileApplicationAgentPlacementRoutes(
       options.graph,
       operationCatalog,
-      compileApplicationWorkloadAuthority(options.graph, operationCatalog),
+      workloadAuthority,
     ),
   ];
   const gateways = options.graph.nodes.filter((node): node is ApplicationGatewayNode => node.kind === 'gateway' && node.materialization === 'generatedDeployment');
@@ -213,6 +229,7 @@ export async function emitGeneratedApplicationReactive(options: { readonly graph
         (route) => route.receiver.nodeId === gateway.id,
       ),
       options.outDir,
+      options.executionTarget ?? 'kubernetes',
     ))),
     ...await Promise.all(projections.map((projection) => emitProjection(options.graph, projection, options.outDir))),
     ...await Promise.all(searchProjections.map((projection) => emitSearchProjection(options.graph, projection, options.outDir))),
@@ -221,6 +238,7 @@ export async function emitGeneratedApplicationReactive(options: { readonly graph
         options.graph,
         processor,
         operationCatalog,
+        workloadAuthority,
         options.outDir,
       ))),
   ].sort((left, right) => left.name.localeCompare(right.name));
@@ -330,6 +348,7 @@ async function emitGateway(
   operationCatalog: ApplicationOperationCatalog,
   internalPlacementRoutes: readonly ApplicationInternalPlacementRoute[],
   outDir: string,
+  executionTarget: 'kubernetes' | 'local' | 'aws-local' | 'aws',
 ): Promise<GeneratedApplicationReactiveArtifact> {
   if (
     !gateway.deployment
@@ -490,9 +509,10 @@ async function emitGateway(
     operationCatalog,
     eventLog,
     internalPlacementRoutes,
+    executionTarget,
   ));
   return bundleReactive({
-    graphName: graph.metadata.name, name, kind: 'queryGateway', namespace: gatewayNamespace,
+    graphName: graph.metadata.name, name, nodeId: gateway.id, kind: 'queryGateway', namespace: gatewayNamespace,
     image: gateway.deployment.image || DEFAULT_NODE_IMAGE,
     replicas: applicationGraphNumberValue(gateway.deployment.replicas) ?? 1,
     port: gateway.deployment.port, entrypoint, artifactDir,
@@ -544,6 +564,7 @@ async function emitProjection(graph: ApplicationGraph, projection: ApplicationPr
   return bundleReactive({
     graphName: graph.metadata.name,
     name,
+    nodeId: projection.id,
     kind: 'projectionWorker',
     namespace,
     image: DEFAULT_NODE_IMAGE,
@@ -588,7 +609,7 @@ async function emitOnlineProjection(
   const entrypoint = join(artifactDir, 'projection.generated.ts');
   await writeFile(entrypoint, generatedValkeyProjectionSource(graph.metadata.name, projection, stream, config));
   const environment = onlineProjectionEnvironment(stream, authentication, config, graph.metadata.name);
-  return bundleReactive({ graphName: graph.metadata.name, name, kind: 'projectionWorker', namespace, image: DEFAULT_NODE_IMAGE, replicas: 1, port: 8080, entrypoint, artifactDir, env: environment });
+  return bundleReactive({ graphName: graph.metadata.name, name, nodeId: projection.id, kind: 'projectionWorker', namespace, image: DEFAULT_NODE_IMAGE, replicas: 1, port: 8080, entrypoint, artifactDir, env: environment });
 }
 
 async function emitSearchProjection(
@@ -617,6 +638,7 @@ async function emitSearchProjection(
   return bundleReactive({
     graphName: graph.metadata.name,
     name,
+    nodeId: work.contract.index.id,
     kind: 'searchProjectionWorker',
     namespace: work.namespace,
     image: DEFAULT_NODE_IMAGE,
@@ -636,6 +658,7 @@ async function emitStreamProcessor(
   graph: ApplicationGraph,
   processor: ApplicationStreamProcessorNode,
   operationCatalog: ApplicationOperationCatalog,
+  workloadAuthority: readonly ApplicationWorkloadAuthorityEnvelope[],
   outDir: string,
 ): Promise<GeneratedApplicationReactiveArtifact> {
   assertResolved(processor.id, 'handler', processor.handlerUnresolved);
@@ -652,6 +675,13 @@ async function emitStreamProcessor(
     operationCatalog,
   );
   const queries = streamProcessorQueryContracts(graph, processor);
+  const actorApplicationEndpoint = (processor.actorBindings?.length ?? 0) > 0
+    ? applicationActorInvocationBoundary(
+        graph,
+        namespace,
+        `Generated stream processor ${processor.id}`,
+      ).endpoint
+    : undefined;
   const serviceIdentity = inferredStreamProcessorServiceIdentity(
     graph,
     processor,
@@ -696,6 +726,7 @@ async function emitStreamProcessor(
       operations,
       queries,
       serviceIdentity,
+      workloadAuthority,
     ),
   );
   const includeWhen = applicationGraphAllConditions(processor.enabled, workflow?.provider.config?.enabled);
@@ -703,6 +734,7 @@ async function emitStreamProcessor(
   return bundleReactive({
     graphName: graph.metadata.name,
     name,
+    nodeId: processor.id,
     kind: 'streamProcessorWorker',
     namespace,
     image: DEFAULT_NODE_IMAGE,
@@ -731,6 +763,24 @@ async function emitStreamProcessor(
           },
         },
       }] : []),
+      ...(actorApplicationEndpoint
+        ? [
+            {
+              name: 'APPLIK8S_ACTOR_APPLICATION_ENDPOINT',
+              value: actorApplicationEndpoint,
+            },
+            {
+              name: 'APPLIK8S_INTERNAL_OPERATION_SECRET',
+              valueFrom: {
+                secretKeyRef: {
+                  name: `${kubernetesName(graph.metadata.name)}-internal-operation`,
+                  key: 'key',
+                  optional: false,
+                },
+              },
+            },
+          ]
+        : []),
     ],
     ...(workflow ? { workflowToken: streamProcessorWorkflowCredential(workflow) } : {}),
     ...(includeWhen !== undefined ? { includeWhen } : {}),
@@ -861,6 +911,13 @@ function inferredStreamProcessorServiceIdentity(
 ): ApplicationIdentityReference | undefined {
   const requiredOperationIds = new Set<string>([
     ...(processor.operationBindings ?? []).map((binding) => binding.operationId),
+    ...(processor.actorBindings ?? []).map((binding) => {
+      const actor = graph.nodes.find((candidate) => candidate.id === binding.actor.nodeId);
+      if (actor?.kind !== 'actor') {
+        throw new Error(`Generated stream processor ${processor.id} references missing actor ${binding.actor.nodeId}.`);
+      }
+      return `applik8s://actors/${actor.definition.id}/operations/${binding.member}`;
+    }),
     ...(processor.queryBindings ?? []).map((binding) => {
       const operation = operationCatalog.operations.find(
         (candidate) => candidate.placement.nodeId === binding.query.nodeId,
@@ -925,7 +982,7 @@ function streamProcessorWorkflowContract(graph: ApplicationGraph, processor: App
   return { provider, schedules, tasks };
 }
 
-async function bundleReactive(options: { readonly graphName: string; readonly name: string; readonly kind: GeneratedApplicationReactiveArtifact['kind']; readonly namespace: string; readonly image: string; readonly replicas: number | string; readonly port: number; readonly entrypoint: string; readonly artifactDir: string; readonly env: readonly Record<string, unknown>[]; readonly includeWhen?: string; readonly permissions?: readonly GatewayKubernetesPermission[]; readonly workflowToken?: { readonly secretName: string; readonly key: string }; readonly caCertificates?: readonly ReactiveCaCertificate[] }): Promise<GeneratedApplicationReactiveArtifact> {
+async function bundleReactive(options: { readonly graphName: string; readonly name: string; readonly nodeId: string; readonly kind: GeneratedApplicationReactiveArtifact['kind']; readonly namespace: string; readonly image: string; readonly replicas: number | string; readonly port: number; readonly entrypoint: string; readonly artifactDir: string; readonly env: readonly Record<string, unknown>[]; readonly includeWhen?: string; readonly permissions?: readonly GatewayKubernetesPermission[]; readonly workflowToken?: { readonly secretName: string; readonly key: string }; readonly caCertificates?: readonly ReactiveCaCertificate[] }): Promise<GeneratedApplicationReactiveArtifact> {
   const sourcePath = join(options.artifactDir, 'runtime.mjs');
   const sourceMapPath = `${sourcePath}.map`;
   const metafilePath = join(options.artifactDir, 'runtime.esbuild-meta.json');
@@ -959,7 +1016,7 @@ async function bundleReactive(options: { readonly graphName: string; readonly na
         : 'GeneratedStreamProcessorWorker';
   await writeFile(manifestPath, `${JSON.stringify({ apiVersion: 'applik8s.reactive/v1alpha1', kind: manifestKind, metadata: { name: options.name }, spec: { graph: options.graphName, digest, sizeBytes, distribution: 'ociImage', image: container.image, baseImage: container.baseImage, container, namespace: options.namespace, resources: resources.map((resource) => ({ apiVersion: resource.apiVersion, kind: resource.kind, metadata: resource.metadata })) } }, null, 2)}\n`);
   await writeFile(metafilePath, `${JSON.stringify(result.metafile, null, 2)}\n`);
-  return { name: options.name, kind: options.kind, sourcePath, sourceMapPath, manifestPath, metafilePath, digest, sizeBytes, container, resources };
+  return { name: options.name, nodeId: options.nodeId, kind: options.kind, sourcePath, sourceMapPath, manifestPath, metafilePath, digest, sizeBytes, container, resources };
 }
 
 function generatedGatewaySource(
@@ -971,6 +1028,7 @@ function generatedGatewaySource(
   operationCatalog: ApplicationOperationCatalog,
   eventLog: ApplicationProviderNode | undefined,
   internalPlacementRoutes: readonly ApplicationInternalPlacementRoute[],
+  executionTarget: 'kubernetes' | 'local' | 'aws-local' | 'aws',
 ): string {
   const gatewayNamespace = applicationGraphStringValue(gateway.deployment?.namespace) ?? 'default';
   const relationalQueries = queries.filter((query) => !query.kubernetes);
@@ -987,6 +1045,13 @@ function generatedGatewaySource(
     ...subscriptions,
     ...capabilityProjectionStreams,
   ]);
+  const eventLogPublisher = commands.length === 0
+    ? undefined
+    : generatedApplicationEventLogPublisherSource({
+        executionTarget,
+        variableName: 'applicationEventLogPublisher',
+        connectionName: 'applik8s-query-command-gateway',
+      });
   const imports = [
     "import { createServer } from 'node:http';",
     "import postgres from 'postgres';",
@@ -1003,7 +1068,7 @@ function generatedGatewaySource(
           "import { createOpenSearchApplicationSearchRuntime } from '@applik8s/runtime-opensearch';",
         ]
       : []),
-    ...(commands.length > 0 ? ["import { createApplicationCommandGateway } from '@applik8s/applik8s/command-gateway-runtime';", "import { createJetStreamEventLog } from '@applik8s/runtime-nats/event-log';"] : []),
+    ...(commands.length > 0 ? ["import { createApplicationCommandGateway } from '@applik8s/applik8s/command-gateway-runtime';", eventLogPublisher!.importSource] : []),
     ...(gatewayAuthorityDatabaseEnvironment(queries, commands, subscriptions)
       ? [
           "import { gunzipSync } from 'node:zlib';",
@@ -1022,7 +1087,10 @@ function generatedGatewaySource(
           "import { createApplicationAuthorizedReplayableStream } from '@applik8s/applik8s/subscription-runtime';",
         ]
       : []),
-    ...(kubernetesQueries.length > 0 ? ["import { createApplik8sKubernetesGateway } from '@applik8s/server/kubernetes-gateway';"] : []),
+    ...(kubernetesQueries.length > 0 ? [
+      "import { createApplik8sKubernetesGateway } from '@applik8s/server/kubernetes-gateway';",
+      "import { createApplik8sLocalResourceClients } from '@applik8s/server/local-resource';",
+    ] : []),
     "import { callback as authenticateRequest } from './authentication.generated.js';",
     ...(gateway.identityReadinessSource || gateway.identityReadinessProfile
       ? ["import { callback as verifyIdentityReadiness } from './identity-readiness.generated.js';"]
@@ -1152,6 +1220,7 @@ function schema(json, name) { const normalized = normalizeSchema({ kind: 'jsonSc
 function strictSchema(json, name) { const normalized = normalizeSchema({ kind: 'jsonSchema', ref: { kind: 'jsonSchema', uri: 'generated:' + name }, schema: json }, name); return (value) => { const result = normalized.validate(value); if (!result.ok) throw new Error(name + ' validation failed.'); return result.value; }; }
 const cursorSecret = requiredEnv('APPLIK8S_CURSOR_SECRET');
 const contextSecret = requiredEnv('APPLIK8S_CONTEXT_SECRET');
+${eventLogPublisher?.declarationSource ?? ''}
 ${databaseDeclarations}
 ${onlineSourceDeclarations}
 ${analyticalSourceDeclarations}
@@ -1210,7 +1279,14 @@ const gateway = queries.length > 0 ? createApplicationQueryGateway({
   },` : ''}
   context: (identity) => createApplicationRelationalContext({ databases: [${databases.map((database) => `{ binding: ${databaseVariable(database.name)}Binding, db: ${databaseVariable(database.name)}Db }`).join(', ')}], admittedContext: identity.admittedContext }),
 }) : undefined;
+${kubernetesQueries.length > 0 ? `const localResourceClients = process.env.APPLIK8S_LOCAL_RESOURCE_URL && process.env.APPLIK8S_LOCAL_RESOURCE_TOKEN
+  ? createApplik8sLocalResourceClients({
+      baseUrl: process.env.APPLIK8S_LOCAL_RESOURCE_URL,
+      token: process.env.APPLIK8S_LOCAL_RESOURCE_TOKEN,
+    })
+  : undefined;` : `const localResourceClients = undefined;`}
 const kubernetesGateway = ${kubernetesQueries.length > 0 ? `createApplik8sKubernetesGateway({
+  ...(localResourceClients ?? {}),
   authenticate: async (request, operation) => operation?.kind === 'query' ? admitQuery(request, operation, operation.input) : admitRequest(request),
   cursorSecret,
   queries: [${kubernetesQueryDeclarations}],
@@ -1352,9 +1428,10 @@ function generatedQueryBinding(query: ApplicationQueryNode, modelNames: readonly
   const database = query.database;
   if (!database) throw new Error(`Generated query ${query.id} has no database runtime.`);
   const contexts = query.trustedContext.map((name) => {
-    const access = database.access?.context === name ? database.access : undefined;
-    if (!access) throw new Error(`Generated query ${query.id} trusted context ${name} has no serializable database access schema.`);
-    return `{ kind: 'applicationTrustedContext', name: ${JSON.stringify(name)}, schema: schema(${JSON.stringify(access.contextSchema)}, ${JSON.stringify(name)}), contract: { source: 'identity-provider', trust: 'server-admitted', jsonSchema: ${JSON.stringify(access.contextSchema)} } }`;
+    const contextSchema = query.trustedContextSchemas?.[name]
+      ?? (database.access?.context === name ? database.access.contextSchema : undefined);
+    if (!contextSchema) throw new Error(`Generated query ${query.id} trusted context ${name} has no serializable admission schema.`);
+    return `{ kind: 'applicationTrustedContext', name: ${JSON.stringify(name)}, schema: schema(${JSON.stringify(contextSchema)}, ${JSON.stringify(name)}), contract: { source: 'identity-provider', trust: 'server-admitted', jsonSchema: ${JSON.stringify(contextSchema)} } }`;
   });
   const callbackInvocation = query.handlerInvocation === 'input-context'
     ? `${callbackVariable(query.id, 'run')}(input, Object.assign(context, { principal${projectionSource ? ', source' : ''} }))`
@@ -1561,10 +1638,12 @@ function generatedSearchQueryBinding(
     );
   }
   const id = query.publicId ?? `${query.name}.${query.version}`;
-  const access = database.access;
-  const contexts = access
-    ? [`{ kind: 'applicationTrustedContext', name: ${JSON.stringify(access.context)}, schema: schema(${JSON.stringify(access.contextSchema)}, ${JSON.stringify(access.context)}), contract: { source: 'identity-provider', trust: 'server-admitted', jsonSchema: ${JSON.stringify(access.contextSchema)} } }`]
-    : [];
+  const contexts = query.trustedContext.map((name) => {
+    const contextSchema = query.trustedContextSchemas?.[name]
+      ?? (database.access?.context === name ? database.access.contextSchema : undefined);
+    if (!contextSchema) throw new Error(`Generated search query ${query.id} trusted context ${name} has no serializable admission schema.`);
+    return `{ kind: 'applicationTrustedContext', name: ${JSON.stringify(name)}, schema: schema(${JSON.stringify(contextSchema)}, ${JSON.stringify(name)}), contract: { source: 'identity-provider', trust: 'server-admitted', jsonSchema: ${JSON.stringify(contextSchema)} } }`;
+  });
   const authorizationWhere = searchAuthorizationWhere(contract, database);
   return `{ kind: 'applicationQuery', id: ${JSON.stringify(id)}, name: ${JSON.stringify(query.name)}, version: ${JSON.stringify(query.version)}, input: schema(${JSON.stringify(query.input.jsonSchema)}, ${JSON.stringify(`${id}.input`)}), output: schema(${JSON.stringify(query.output.jsonSchema)}, ${JSON.stringify(`${id}.output`)}), database: ${databaseVariable(database.name)}Binding, sourceRuntime: ${sourceRuntime}, trustedContext: [${contexts.join(', ')}], reads: ${JSON.stringify(modelNames.map((name) => ({ $model: { name } })))}, budgets: ${JSON.stringify(query.budgets)}, authorize: async () => true, run: async (context, principal, input, source) => source.execute(input, { principalId: principal.id, contextDigest: applicationAdmittedContextDigest(context.admittedContext), authorizationVersion: principal.authorityRevision, where: ${authorizationWhere} }) }`;
 }
@@ -1873,21 +1952,24 @@ function normalizeSelectedClickHouseCandidate(
   defaultNamespace: string,
   subject: string,
 ): Readonly<Record<string, unknown>> {
-  if (candidate.kind !== 'clickhouse') {
+  const targetCandidate = candidate.kind === 'application-target-provider-selection'
+    ? objectConfig(objectConfig(candidate.targets).kubernetes)
+    : candidate;
+  if (targetCandidate.kind !== 'clickhouse') {
     throw new Error(`${subject} must be a ClickHouse provider.`);
   }
-  const name = candidate.name ?? 'applik8s-analytics';
-  const namespace = candidate.namespace ?? defaultNamespace;
+  const name = targetCandidate.name ?? 'applik8s-analytics';
+  const namespace = targetCandidate.namespace ?? defaultNamespace;
   return {
-    ...candidate,
-    enabled: candidate.enabled ?? true,
+    ...targetCandidate,
+    enabled: targetCandidate.enabled ?? true,
     name,
     namespace,
-    provision: candidate.provision ?? true,
+    provision: targetCandidate.provision ?? true,
     endpoint:
-      candidate.endpoint
+      targetCandidate.endpoint
       ?? `http://clickhouse-${String(name)}.${String(namespace)}.svc.cluster.local:8123`,
-    database: candidate.database ?? 'default',
+    database: targetCandidate.database ?? 'default',
   };
 }
 
@@ -1988,7 +2070,7 @@ function generatedCommandGateway(
     operationAuthority.releaseEnvelope(receipt, commandId),
   cursorSecret,
   contextSecret,
-  eventLogPublisher: createJetStreamEventLog({ servers: JSON.parse(requiredEnv('APPLIK8S_NATS_SERVERS')), stream: requiredEnv('APPLIK8S_NATS_STREAM'), subjectPrefix: requiredEnv('APPLIK8S_NATS_SUBJECT_PREFIX'), connectionName: ${JSON.stringify('applik8s-query-command-gateway')}, ...(process.env.APPLIK8S_NATS_TOKEN ? { token: process.env.APPLIK8S_NATS_TOKEN } : {}), ...(process.env.APPLIK8S_NATS_USER ? { user: process.env.APPLIK8S_NATS_USER, pass: process.env.APPLIK8S_NATS_PASSWORD ?? '' } : {}) }),
+  eventLogPublisher: applicationEventLogPublisher,
 });`;
 }
 
@@ -2517,6 +2599,7 @@ function generatedStreamProcessorSource(
   operations: readonly StreamProcessorOperationContract[],
   queries: readonly StreamProcessorQueryContract[],
   serviceIdentity: ApplicationIdentityReference | undefined,
+  workloadAuthority: readonly ApplicationWorkloadAuthorityEnvelope[],
 ): string {
   const usesObjectStorage = streamProcessorUsesObjectStorage(processor);
   const objectStorageImports = usesObjectStorage
@@ -2616,12 +2699,20 @@ function directWorkflowRuntime(context) { const requireContract = (contract) => 
     processor,
     queries,
     serviceIdentity,
+    workloadAuthority.filter((candidate) =>
+      candidate.workloadIdentity.subject === processor.id),
+  );
+  const actorDeclarations = generatedStreamProcessorActors(
+    processor,
+    queries.length > 0,
+    workloadAuthority,
   );
   const authoredHandlerInvocation =
     generatedStreamProcessorAuthoredHandlerInvocation(
       Boolean(workflow),
       hasFunctionNativeRuntime,
       queries.length > 0,
+      (processor.actorBindings?.length ?? 0) > 0,
     );
   const runtimeFunction = processor.invocation === 'batch'
     ? 'runApplicationStreamBatchProcessor'
@@ -2671,6 +2762,7 @@ const processorMaxAckPending = requiredIntegerEnv('APPLIK8S_PROCESSOR_MAX_ACK_PE
 ${workflowDeclarations}
 ${executionPrincipal}
 ${queryDeclarations}
+${actorDeclarations}
 ${functionNativeDeclarations}
 ${authoredHandlerInvocation}
 let ready = false; let stopping = false; let lastError; let checkpoint = 0; let processed = 0; let deadLettered = 0; let lastSuccessfulCycleAt = 0;
@@ -3279,6 +3371,7 @@ function generatedStreamProcessorExecutionPrincipal(
   processor: ApplicationStreamProcessorNode,
   queries: readonly StreamProcessorQueryContract[],
   serviceIdentity: ApplicationIdentityReference | undefined,
+  workloadAuthority: readonly ApplicationWorkloadAuthorityEnvelope[],
 ): string {
   const bindings = queries.map((binding) => ({
     kind: 'query' as const,
@@ -3293,13 +3386,18 @@ function generatedStreamProcessorExecutionPrincipal(
   const service = serviceIdentity
     ? `serviceIdentity: Object.freeze(${JSON.stringify(serviceIdentity)}),`
     : '';
+  const actorAudiences = [...new Set(workloadAuthority.flatMap((envelope) => envelope.audiences))];
+  const actorWorkloadIdentity = workloadAuthority[0]?.workloadIdentity;
+  if (workloadAuthority.some((envelope) => envelope.workloadIdentity.id !== actorWorkloadIdentity?.id)) {
+    throw new Error(`Generated stream processor ${processor.id} resolves multiple workload identities.`);
+  }
   return `
 function processorExecutionPrincipal(context) {
   const source = context.principal;
   const event = context.event;
   const sourceId = event?.id ?? context.batch?.id;
   if (!sourceId) throw new Error('applik8s-processor-execution-principal-required');
-  const workloadIdentity = Object.freeze({ id: ${JSON.stringify(`workload:${processor.id}`)}, kind: 'workload', issuer: ${JSON.stringify(`applik8s://${graph.metadata.name}`)}, subject: ${JSON.stringify(processor.id)} });
+  const workloadIdentity = Object.freeze(${JSON.stringify(actorWorkloadIdentity ?? { id: `identity:${graph.metadata.name}:workload:${processor.id}`, kind: 'workload', issuer: `applik8s://${graph.metadata.name}`, subject: processor.id })});
   const causal = source
     ? applicationCausalPrincipalContext(source)
     : Object.freeze({ id: workloadIdentity.id, identity: workloadIdentity, grantIds: Object.freeze([]) });
@@ -3317,9 +3415,9 @@ function processorExecutionPrincipal(context) {
     causalPrincipal: causal.identity,
     causalGrantIds: Object.freeze([...causal.grantIds]),
     authenticationMethod: 'applik8s-stream-processor/v1',
-    audience: Object.freeze([${JSON.stringify(processor.id)}]),
+    audience: Object.freeze(${JSON.stringify([...new Set([processor.id, ...actorAudiences])])}),
     trustedContextDigest: event?.contextDigest ?? source?.trustedContextDigest ?? 'batch:' + sourceId,
-    catalogRevision: source?.catalogRevision ?? ${JSON.stringify(`static:${graph.metadata.name}`)},
+    catalogRevision: ${JSON.stringify(workloadAuthority[0]?.catalogRevision ?? `static:${graph.metadata.name}`)},
     authorityRevision: source?.authorityRevision ?? ${JSON.stringify(`static:${graph.metadata.name}:${processor.id}`)},
     admittedAt: new Date().toISOString(),
     deadline: new Date(Date.now() + ${processor.budgets.timeoutMs}).toISOString(),
@@ -3442,29 +3540,108 @@ function generatedStreamProcessorAuthoredHandlerInvocation(
   workflow: boolean,
   functionNative: boolean,
   queries: boolean,
+  actors: boolean,
 ): string {
   const bindings = functionNative
     ? 'functionNativeBindings'
     : 'Object.freeze({})';
-  if (!workflow && !queries) {
+  if (!workflow && !queries && !actors) {
     return `const handleAuthoredEvent = createHandleEvent(${bindings});
 const invokeAuthoredHandler = (input, context) => handleAuthoredEvent(input, processorAuthoredContext(context));
 ${functionNative ? '' : 'const invokeHandler = invokeAuthoredHandler;'}`;
   }
   if (!workflow) {
-    return `const invokeAuthoredHandler = (input, context) => createHandleEvent(mergeProcessorBindings(${bindings}, processorQueries(context)))(input, processorAuthoredContext(context));
+    return `const invokeAuthoredHandler = (input, context) => { const authoredContext = processorAuthoredContext(context); return createHandleEvent(mergeProcessorBindings(${bindings}${queries ? ', processorQueries(authoredContext)' : ''}${actors ? ', processorActors(authoredContext)' : ''}))(input, authoredContext); };
 ${functionNative ? '' : 'const invokeHandler = invokeAuthoredHandler;'}`;
   }
   return `const invokeAuthoredHandler = (input, context) => {
   const authoredContext = processorAuthoredContext(context);
   const workflows = processorWorkflows(authoredContext);
-  const handleEvent = createHandleEvent(${queries ? `mergeProcessorBindings(${bindings}, processorQueries(authoredContext), workflows)` : `{ ...${bindings}, ...workflows }`});
+  const handleEvent = createHandleEvent(mergeProcessorBindings(${bindings}${queries ? ', processorQueries(authoredContext)' : ''}${actors ? ', processorActors(authoredContext)' : ''}, workflows));
   return directWorkflowScope.run(
     directWorkflowRuntime(authoredContext),
     () => handleEvent(input, { ...authoredContext, schedules, workflows, tasks: workflows }),
   );
 };
 ${functionNative ? '' : 'const invokeHandler = invokeAuthoredHandler;'}`;
+}
+
+function generatedStreamProcessorActors(
+  processor: ApplicationStreamProcessorNode,
+  mergeAlreadyDeclared: boolean,
+  workloadAuthority: readonly ApplicationWorkloadAuthorityEnvelope[],
+): string {
+  const bindings = processor.actorBindings ?? [];
+  if (bindings.length === 0) return 'const processorActors = () => Object.freeze({});';
+  const entries = bindings.map((binding) => {
+    const actorId = binding.actor.nodeId.replace(/^actor\./u, '');
+    const operationId = `applik8s://actors/${actorId}/operations/${binding.member}`;
+    const authority = workloadAuthority.find((candidate) =>
+      candidate.workloadIdentity.subject === processor.id
+      && candidate.operationId === operationId);
+    if (!authority) throw new Error(`Generated stream processor ${processor.id} actor ${binding.identifier} has no workload-authority envelope for ${operationId}.`);
+    const audience = authority.audiences[0];
+    if (!audience) throw new Error(`Generated stream processor ${processor.id} actor ${binding.identifier} has no workload-authority audience.`);
+    return {
+    path: binding.identifier,
+    value: `(key, ...args) => {
+      const alarm = ${JSON.stringify(binding.memberKind)} === 'alarm';
+      const at = alarm ? args[0] : undefined;
+      const input = alarm ? args[1] : args[0];
+      const options = alarm ? args[2] : args[1];
+      const ordinal = actorOrdinal++;
+      const principal = processorExecutionPrincipal(context);
+      return invokeApplicationActorBinding(
+        ${JSON.stringify({
+          actor: actorId,
+          member: binding.member,
+          memberKind: binding.memberKind,
+        })},
+        key,
+        input,
+        alarm ? { ...options, scheduledAt: at instanceof Date ? at.toISOString() : at } : options,
+        {
+          idempotencyKey: context.idempotencyKey + ':actor:' + ordinal + ':' + ${JSON.stringify(binding.member)},
+          envelope: {
+            principal,
+            causalPrincipal: { id: principal.causalPrincipalId ?? principal.id },
+            trustedContextDigest: principal.trustedContextDigest,
+            transport: 'event',
+            audience: ${JSON.stringify(audience)},
+            workloadAuthorityId: ${JSON.stringify(authority.id)},
+          },
+        },
+        context.signal,
+      );
+    }`,
+  };
+  });
+  return `${mergeAlreadyDeclared ? '' : processorBindingMergeSource()}
+${generatedApplicationActorInvocationClientSource()}
+function processorActors(context) {
+  let actorOrdinal = 0;
+  return ${nestedCallbackObjectSource(entries)};
+}`;
+}
+
+function processorBindingMergeSource(): string {
+  return `function mergeProcessorBindings(...sources) {
+  const output = {};
+  const merge = (target, source, path = []) => {
+    for (const [key, value] of Object.entries(source)) {
+      const previous = target[key];
+      if (previous === undefined) { target[key] = value; continue; }
+      if (previous && value && typeof previous === 'object' && typeof value === 'object' && !Array.isArray(previous) && !Array.isArray(value)) {
+        merge(previous, value, [...path, key]);
+        continue;
+      }
+      if (previous !== value) throw new Error('Processor runtime binding collision at ' + [...path, key].join('.'));
+    }
+    return target;
+  };
+  for (const source of sources) merge(output, source);
+  return Object.freeze(output);
+}`;
 }
 
 function functionNativeModelRuntimeBindings(

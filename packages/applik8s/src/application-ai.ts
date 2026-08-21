@@ -23,6 +23,7 @@ import {
 import type { SchemaInput } from '@applik8s/sdk';
 import type { ApplicationServiceIdentityBinding } from './application-authority.js';
 import { applicationQueryBindingForOperation } from './application-queries.js';
+import { applicationActorDependencyBindings } from './application-actor-dependencies.js';
 import { applicationModelCommandBindingForOperation } from './native-models.js';
 import type { ApplicationTrustedContext } from './trusted-context.js';
 import {
@@ -154,6 +155,11 @@ export function registerApplicationAgent<
     normalizedName,
     handlerDependencies,
   );
+  const actors = applicationActorDependencyBindings(
+    state,
+    `Application agent ${normalizedName}`,
+    handlerDependencies,
+  );
   const instructions = typeof options.instructions === 'string'
     ? staticInstructions(normalizedName, options.instructions)
     : closureInstructions(normalizedName, options.instructions);
@@ -209,6 +215,14 @@ export function registerApplicationAgent<
     tools,
     ...(operations.length > 0 ? { operations } : {}),
     ...(queries.length > 0 ? { queries } : {}),
+    ...(actors.length > 0 ? {
+      actors: actors.map(({ alias, actor, member, memberKind }) => ({
+        alias,
+        actor,
+        member,
+        memberKind,
+      })),
+    } : {}),
     ...(options.responseSchemaDigest
       ? { responseSchemaDigest: nonEmpty(options.responseSchemaDigest, 'response schema digest') }
       : {}),
@@ -302,6 +316,13 @@ export function registerApplicationAgent<
       from: { nodeId },
       to: operation.handler,
       relationship: 'writes',
+    });
+  }
+  for (const actor of actors) {
+    addApplicationGraphEdge(state, {
+      from: { nodeId },
+      to: actor.actor,
+      relationship: 'dependsOn',
     });
   }
   addApplicationProviderRequirement(state, {

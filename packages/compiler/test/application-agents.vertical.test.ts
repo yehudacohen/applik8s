@@ -35,6 +35,66 @@ afterEach(async () => {
 });
 
 describe('generated application AI agents', () => {
+  it('hydrates exact direct actor calls through the authenticated application boundary', async () => {
+    const fixture = new URL(
+      './fixtures/v08-agent-actor-app.ts',
+      import.meta.url,
+    ).pathname;
+    const discovered = await discoverApplicationGraphWithExports(
+      fixture,
+      'agentActorProof',
+    );
+    expect(
+      discovered.ok,
+      discovered.ok ? undefined : discovered.error.message,
+    ).toBe(true);
+    if (!discovered.ok) return;
+    const agent = discovered.value.graph.nodes.find(
+      (node) => node.kind === 'aiAgent',
+    );
+    expect(agent).toMatchObject({
+      actors: [{
+        alias: 'ResearchSession.record',
+        actor: { nodeId: 'actor.research-session.v1' },
+        member: 'record',
+        memberKind: 'command',
+      }],
+    });
+    const catalog = compileApplicationOperationCatalog(discovered.value.graph);
+    const authority = compileApplicationWorkloadAuthority(
+      discovered.value.graph,
+      catalog,
+    );
+    const outDir = await mkdtemp(join(tmpdir(), 'applik8s-agent-actor-'));
+    temporaryDirectories.push(outDir);
+    const [artifact] = await emitGeneratedApplicationAgents({
+      graph: discovered.value.graph,
+      operationCatalog: catalog,
+      workloadAuthority: authority,
+      outDir,
+      entrypoint: fixture,
+    });
+    if (!artifact) throw new Error('Expected one generated actor-aware agent.');
+    const generated = await readFile(
+      join(dirname(artifact.sourcePath), 'agent.generated.ts'),
+      'utf8',
+    );
+    expect(generated).toContain('invokeApplicationActorBinding');
+    expect(generated).toContain('/__applik8s/v1/internal/actors/invoke');
+    expect(generated).toContain('"actor":"research-session.v1"');
+    expect(generated).toContain('principal: context.principal');
+    expect(generated).toContain("transport: 'direct'");
+    expect(generated).toContain('workloadAuthorityId: binding.workloadAuthority.id');
+    expect(generated).not.toContain("id: 'agent:' + context.invocationId");
+    expect(authority).toContainEqual(expect.objectContaining({
+      operationId: 'applik8s://actors/research-session.v1/operations/record',
+      transports: ['direct'],
+    }));
+    expect(JSON.stringify(artifact.resources)).toContain(
+      'APPLIK8S_ACTOR_APPLICATION_ENDPOINT',
+    );
+  }, 60_000);
+
   it('injects direct query handles without importing the authoring graph into the agent runtime', async () => {
     const fixture = new URL(
       './fixtures/v07-agent-query-app.ts',

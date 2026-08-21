@@ -1,5 +1,5 @@
 // typecast-file-boundary: workflow fixtures inspect compiler-owned metadata and deliberately restore their declared generic binding shapes.
-import { app, applicationGraphFor, event, IndexStore, ObjectStorage, StructuredGeneration as StructuredGenerationProvider, setApplicationWorkflowRuntimeFactory, WorkflowEngine, workflow } from '@applik8s/applik8s';
+import { actor, app, applicationGraphFor, event, IndexStore, ObjectStorage, StructuredGeneration as StructuredGenerationProvider, setApplicationWorkflowRuntimeFactory, WorkflowEngine, workflow } from '@applik8s/applik8s';
 import { type } from '@applik8s/applik8s/dsl';
 import { StructuredGeneration } from '@applik8s/applik8s/structured-generation';
 import { validateApplicationGraphStructure } from '@applik8s/core';
@@ -98,6 +98,54 @@ describe('v0.5 durable task and workflow contracts', () => {
         taskBindings: [{ alias: 'run', task: { nodeId: 'task.tenant.provision-workflow.v1.step' } }],
       }),
     ]));
+  });
+
+  it('captures exact actor protocol calls as durable task dependencies', () => {
+    const platform = app('actor-workflow');
+    const Activity = platform.actor('activity.v1', {
+      key: type('string'),
+      state: type({ count: 'number.integer >= 0' }),
+      protocol: {
+        snapshot: actor.command({ input: type({}), output: type({ count: 'number.integer >= 0' }) }),
+        record: actor.message(type({ at: 'string' })),
+        expire: actor.alarm(type({ revision: 'number.integer >= 0' })),
+      },
+    });
+    Activity.on.initialize(() => ({ count: 0 }));
+    Activity.on.snapshot(async current => current.state());
+    Activity.on.record(async () => undefined);
+    Activity.on.expire(async () => undefined);
+    platform.workflow(
+      'activity.digest.v1',
+      { input: type({ id: 'string' }), output: type({ count: 'number.integer >= 0' }) },
+      {
+        __generatedCalls: [Activity.snapshot, Activity.record.send, Activity.alarms.expire.schedule],
+        __generatedBindings: {
+          'Activity.snapshot': Activity.snapshot,
+          'Activity.record.send': Activity.record.send,
+          'Activity.alarms.expire.schedule': Activity.alarms.expire.schedule,
+        },
+      },
+      async () => ({ count: 0 }),
+    );
+
+    const graph = applicationGraphFor(platform.composition);
+    expect(graph?.nodes).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: 'taskHandler',
+        name: 'activity.digest.v1.step',
+        actors: [
+          { alias: 'Activity.alarms.expire.schedule', actor: { nodeId: 'actor.activity.v1' }, member: 'expire', memberKind: 'alarm' },
+          { alias: 'Activity.record.send', actor: { nodeId: 'actor.activity.v1' }, member: 'record', memberKind: 'message' },
+          { alias: 'Activity.snapshot', actor: { nodeId: 'actor.activity.v1' }, member: 'snapshot', memberKind: 'command' },
+        ],
+      }),
+    ]));
+    expect(graph?.edges).toEqual(expect.arrayContaining([
+      { from: { nodeId: 'task-handler.activity.digest.v1.step' }, to: { nodeId: 'actor.activity.v1' }, relationship: 'dependsOn' },
+    ]));
+    if (!graph) throw new Error('Expected actor workflow graph.');
+    expect(validateApplicationGraphStructure(graph)).toEqual([]);
   });
 
   it('infers one atomic model transaction for a durable workflow step', () => {

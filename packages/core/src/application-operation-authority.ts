@@ -32,6 +32,12 @@ export type ApplicationOperationKind =
   | 'signal.issue'
   | 'signal.issuance.read'
   | 'signal.action'
+  | 'actor.command'
+  | 'actor.message'
+  | 'actor.connection-message'
+  | 'actor.connection'
+  | 'actor.disconnection'
+  | 'actor.alarm'
   | 'task'
   | 'http.route'
   | 'http.raw'
@@ -114,7 +120,7 @@ export interface ApplicationOperationDescriptor {
   readonly transports: readonly ApplicationOperationTransportBinding[];
   readonly placement: {
     readonly nodeId: string;
-    readonly runtime: 'server' | 'command-processor' | 'workflow-worker' | 'event-processor' | 'agent-worker' | 'operator';
+    readonly runtime: 'server' | 'command-processor' | 'workflow-worker' | 'event-processor' | 'agent-worker' | 'actor-runtime' | 'operator';
   };
   readonly effects?: readonly string[];
   readonly emittedEvents?: readonly string[];
@@ -788,7 +794,7 @@ export function intersectApplicationScopes(...expressions: readonly ApplicationS
 }
 
 export function applicationOperationId(parts: {
-  readonly domain: 'models' | 'resources' | 'queries' | 'search' | 'workflows' | 'tasks' | 'signals' | 'http' | 'mcp';
+  readonly domain: 'models' | 'resources' | 'queries' | 'search' | 'workflows' | 'tasks' | 'signals' | 'actors' | 'http' | 'mcp';
   readonly owner: string;
   readonly operation: string;
 }): ApplicationOperationId {

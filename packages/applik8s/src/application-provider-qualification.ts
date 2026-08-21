@@ -1,3 +1,4 @@
+// typecast-file-boundary: Provider qualifications rehydrate immutable graph records after discriminant validation.
 import type {
   ApplicationProviderImplementation,
   ApplicationProviderToken,
@@ -58,6 +59,16 @@ export function applicationQualifiableProviderToken<
           key,
         },
       };
+      for (const method of ['schedule', 'query'] as const) {
+        const implementation = Reflect.get(token, method);
+        if (typeof implementation !== 'function') continue;
+        Object.defineProperty(result, method, {
+          enumerable: true,
+          configurable: false,
+          writable: false,
+          value: implementation,
+        });
+      }
       return Object.freeze(result);
     },
     enumerable: false,

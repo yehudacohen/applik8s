@@ -9,6 +9,28 @@ import {
 } from '../src/pipeline/entrypoint-discovery.js';
 
 describe('application callback discovery instrumentation', () => {
+  it('instruments direct function-native schedules and preserves captured handles for module bundling', () => {
+    const source = `
+export const WorkspaceDigest = schedule(
+  { id: 'workspace.digest.v1', every: '1h' },
+  async context => WorkspaceActivity.record.send(
+    'platform',
+    { occurredAt: context.scheduledAt },
+  ),
+);
+`;
+    const instrumented = instrumentApplicationCallbackRegistrations(
+      source,
+      '/workspace/src/schedules.ts',
+    );
+
+    expect(instrumented).toContain('registrar: "schedule"');
+    expect(instrumented).toContain('property: "handler"');
+    expect(instrumented).toContain(
+      'source: "async context => WorkspaceActivity.record.send',
+    );
+  });
+
   it('captures direct operations from app.http handlers without a dependency map', () => {
     const source = `
 const api = application.http("public-api");
@@ -719,6 +741,11 @@ Post.on.create({}, async created => {
     expect(instrumentedHandlers).toContain(
       '"applik8s.applicationCallbackDependencies"',
     );
+    expect(instrumentedHandlers).toContain(
+      '"applik8s.applicationCallbackDeclarationSource"',
+    );
+    expect(instrumentedHandlers).toContain('recursive-application-callback/handlers.ts');
+    expect(instrumentedHandlers).toContain('name: "createAccount"');
     expect(instrumentedHandlers).toContain('value: AccountChanged');
     expect(instrumentedHandlers).toContain('value: stageCredential');
     expect(instrumentedNested).toContain('value: CreateCredentialLink');

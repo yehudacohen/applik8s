@@ -1,5 +1,5 @@
 // typecast-file-boundary: reactive vertical fixtures inspect erased graph metadata after checking node identities and discriminators.
-import { AnalyticalDatabase, ApplicationHost, app, applicationGraphFor, Certificate, DnsPublication, event, HttpExposure, IdentityProvider, IndexStore, stream, WorkflowEngine, workflow } from '@applik8s/applik8s';
+import { actor, AnalyticalDatabase, ApplicationHost, app, applicationGraphFor, Certificate, DnsPublication, event, HttpExposure, IdentityProvider, IndexStore, stream, WorkflowEngine, workflow } from '@applik8s/applik8s';
 import { bindApplicationCallableDependencies } from '@applik8s/applik8s/internal/provider-runtime';
 import { validateApplicationGraph, validateApplicationGraphCompatibilityPolicy } from '@applik8s/core';
 import { type } from 'arktype';
@@ -15,7 +15,7 @@ const AccountChanged = stream('accounts.changed.v1', {
 describe('v0.6 streams, subscriptions, and projections', () => {
   it('binds an immutable Kubernetes application host with hydrateable service facts', () => {
     const guestbook = app('hosted-guestbook', { namespace: 'guestbook' });
-    const host = guestbook.provide(ApplicationHost, ApplicationHost.kubernetes({ replicas: 2, port: 3000 }));
+    const host = guestbook.provide(ApplicationHost, ApplicationHost.managed({ replicas: 2, port: 3000 }));
     const exposure = guestbook.expose('web', {
       service: host,
       hostnames: ['guestbook.localhost'],
@@ -32,8 +32,8 @@ describe('v0.6 streams, subscriptions, and projections', () => {
     expect(exposure).toMatchObject({ publicUrl: 'http://guestbook.localhost', resourceName: 'web-ingress' });
     const graph = applicationGraphFor(guestbook.composition);
     expect(graph?.nodes.find((node) => node.kind === 'provider' && node.interface === 'ApplicationHost')).toMatchObject({
-      implementation: 'kubernetes-application-host',
-      config: { host: { kind: 'kubernetes-application-host', replicas: 2, port: 3000 } },
+      implementation: 'managed-application-host',
+      config: { host: { kind: 'managed-application-host', replicas: 2, port: 3000 } },
     });
   });
 
@@ -402,6 +402,53 @@ describe('v0.6 streams, subscriptions, and projections', () => {
     });
   });
 
+  it('preserves source-attributed helper paths across recursive callback dependencies', () => {
+    const leaf = async () => undefined;
+    const nested = async () => leaf();
+    const root = async () => nested();
+    const declarationSource = Symbol.for('applik8s.applicationCallbackDeclarationSource');
+    const dependencies = Symbol.for('applik8s.applicationCallbackDependencies');
+
+    Object.defineProperty(leaf, declarationSource, {
+      value: { file: '/workspace/src/model.ts', line: 19, column: 3, name: 'createRecord' },
+    });
+    Object.defineProperty(nested, declarationSource, {
+      value: { file: '/workspace/src/helpers.ts', line: 11, column: 1, name: 'persistRecord' },
+    });
+    Object.defineProperty(root, declarationSource, {
+      value: { file: '/workspace/src/handlers.ts', line: 7, column: 1, name: 'handleRecord' },
+    });
+    Object.defineProperty(nested, dependencies, {
+      value: [{ identifier: 'Record.create', value: leaf, awaited: true, returned: true }],
+    });
+    Object.defineProperty(root, dependencies, {
+      value: [{ identifier: 'persistRecord', value: nested, awaited: true, returned: true }],
+    });
+
+    const expanded = expandApplicationCallbackDependencies({
+      bindings: { handleRecord: root },
+    });
+
+    expect(expanded.bindings['Record.create']).toBe(leaf);
+    expect(expanded.provenance).toEqual([
+      {
+        identifier: 'handleRecord',
+        helperPath: ['handleRecord'],
+        source: { file: '/workspace/src/handlers.ts', line: 7, column: 1, name: 'handleRecord' },
+      },
+      {
+        identifier: 'persistRecord',
+        helperPath: ['handleRecord', 'persistRecord'],
+        source: { file: '/workspace/src/helpers.ts', line: 11, column: 1, name: 'persistRecord' },
+      },
+      {
+        identifier: 'Record.create',
+        helperPath: ['handleRecord', 'persistRecord', 'Record.create'],
+        source: { file: '/workspace/src/model.ts', line: 19, column: 3, name: 'createRecord' },
+      },
+    ]);
+  });
+
   it('records directly called relational views as bounded processor query dependencies', () => {
     const records = pgTable('processor_view_records', {
       id: text('id').primaryKey(),
@@ -436,6 +483,48 @@ describe('v0.6 streams, subscriptions, and projections', () => {
       queryBindings: [{
         identifier: 'RecordExists',
         query: { nodeId: 'query.Record.recordExists' },
+      }],
+    });
+  });
+
+  it('records exact direct actor members as bounded processor dependencies', () => {
+    const records = pgTable('processor_actor_records', {
+      id: text('id').primaryKey(),
+      revision: text('revision').notNull(),
+    });
+    const application = app('processor-actor-capture');
+    const Workspace = application.actor('workspace.v1', {
+      key: type('string'),
+      state: type({ count: 'number.integer >= 0' }),
+      protocol: {
+        observe: actor.message(type({ recordId: 'string' })),
+      },
+    });
+    Workspace.on.initialize(() => ({ count: 0 }));
+    Workspace.on.observe(async (turn) => {
+      const current = await turn.state();
+      await turn.setState({ count: current.count + 1 });
+    });
+    const database = application.database.postgres('main', {
+      schema: { records },
+    });
+    const Record = application.model(records, { name: 'Record', database });
+    Record.on.create({
+      processor: { replicas: 1, concurrency: 1 },
+      __generatedBindings: { 'Workspace.observe.send': Workspace.observe.send },
+    }, async function observeCreatedRecord(event) {
+      await Workspace.observe.send(event.identity, { recordId: event.identity });
+    });
+
+    const processor = applicationGraphFor(application.composition)?.nodes.find(
+      (node) => node.kind === 'streamProcessor' && node.name === 'observe-created-record-create',
+    );
+    expect(processor).toMatchObject({
+      actorBindings: [{
+        identifier: 'Workspace.observe.send',
+        actor: { nodeId: 'actor.workspace.v1' },
+        member: 'observe',
+        memberKind: 'message',
       }],
     });
   });

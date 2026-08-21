@@ -3,6 +3,7 @@ import type { CanonicalHandlerAbiFunctionName, CanonicalHandlerAbiVersion, Diagn
 import type { HandlerResult, NormalizedOperationPlan, Operation } from './operation-plan.js';
 import type { ResourceObject } from './resource.js';
 import type { RuntimePayloadSchemaDigests, RuntimePayloadSchemas } from './schema.js';
+import type { ApplicationGuestHostIdentityEnvelope } from './application-foundation.js';
 
 export interface RuntimeConfig { readonly leaderElection: LeaderElectionConfig; readonly concurrency: ConcurrencyConfig; readonly rateLimit: RateLimitConfig; readonly health: HealthCheckConfig; readonly metrics: MetricsConfig; readonly handlerTimeoutSeconds?: number; readonly replayArtifacts?: ReplayArtifactConfig; }
 export interface RuntimeAdapterCapabilities { readonly kind: RuntimeAdapterKind; readonly wasmComponentModel: true; readonly hostImports: readonly string[]; readonly javascript?: JavaScriptRuntimeCapabilities; }
@@ -26,7 +27,7 @@ export interface OperationFailure { readonly operation: Operation; readonly erro
 
 export interface HandlerInput<TSpec extends object = JsonObject, TStatus extends object = JsonObject> { readonly abiVersion: import('./common.js').HandlerAbiVersion; readonly handlerId: HandlerId; readonly event: HandlerEventType; readonly object: ResourceObject<TSpec, TStatus>; readonly previous?: ResourceObject<TSpec, TStatus>; readonly observed?: ObservedState; readonly config?: JsonObject; readonly capabilities?: Readonly<Record<string, CapabilityDescriptor>>; readonly runtime: RuntimeInvocationMetadata; }
 export interface ObservedState { readonly relatedObjects: readonly import('./resource.js').AnyKubernetesObject[]; readonly resourceVersion?: string; }
-export interface RuntimeInvocationMetadata { readonly operatorName: OperatorName; readonly reconcileId: ReconcileId; readonly bundleDigest: Sha256Digest; readonly runtimeVersion: string; readonly startedAt: Timestamp; }
+export interface RuntimeInvocationMetadata { readonly operatorName: OperatorName; readonly reconcileId: ReconcileId; readonly bundleDigest: Sha256Digest; readonly runtimeVersion: string; readonly startedAt: Timestamp; readonly identityEnvelope?: ApplicationGuestHostIdentityEnvelope; }
 
 export interface HandlerAbiDefinition { readonly abiVersion: import('./common.js').HandlerAbiVersion; readonly witPackage: string; readonly world: string; readonly resultEncoding: HandlerAbiResultEncoding; readonly wireFormat: HandlerWireFormat; readonly hostImports: readonly HandlerAbiFunction[]; readonly guestExports: readonly HandlerAbiFunction[]; readonly payloadSchemas: RuntimePayloadSchemas; readonly execution: HandlerAbiExecutionPolicy; readonly canonical: CanonicalHandlerAbiContract; }
 export interface CanonicalHandlerAbiSource { readonly abiVersion: CanonicalHandlerAbiVersion; readonly definition: HandlerAbiDefinition; readonly payloadSchemas: RuntimePayloadSchemas; readonly payloadSchemaDigests: RuntimePayloadSchemaDigests; readonly sourceModule: string; readonly generatedWitPath?: string; }

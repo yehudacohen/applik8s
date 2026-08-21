@@ -7,6 +7,7 @@ import type {
   ApplicationOperationDescriptor,
   ApplicationQueryNode,
 } from '@applik8s/core';
+import { applicationRuntimeEndpointEnvironmentName } from '@applik8s/deployment-contract';
 import { applicationGraphNumberValue, applicationGraphStringValue } from '../application-installation-values.js';
 
 export interface ApplicationMcpPlacementRoute {
@@ -27,6 +28,8 @@ export interface ApplicationOperationPlacementReceiver {
   readonly namespace: string;
   readonly port: number;
   readonly path: '/__applik8s/internal/v1/operations';
+  readonly baseUrl: string;
+  readonly environmentName: string;
   readonly url: string;
 }
 
@@ -145,6 +148,7 @@ export function compileApplicationOperationPlacementReceiver(
     `${graph.metadata.name}-${receiver.name}`,
   );
   const path = '/__applik8s/internal/v1/operations' as const;
+  const baseUrl = `http://${serviceName}.${namespace}.svc:${port}`;
   return {
     nodeId: receiver.id,
     kind: 'generatedGateway',
@@ -152,7 +156,9 @@ export function compileApplicationOperationPlacementReceiver(
     namespace,
     port,
     path,
-    url: `http://${serviceName}.${namespace}.svc:${port}${path}`,
+    baseUrl,
+    environmentName: applicationRuntimeEndpointEnvironmentName(receiver.id),
+    url: `${baseUrl}${path}`,
   };
 }
 
