@@ -31,13 +31,18 @@
     {
       "id": "broker-delivery",
       "transport": "broker",
-      "state": "not-started",
-      "evidenceVerifier": "framework event envelope and consumer delivery metadata",
+      "state": "implemented",
+      "evidenceVerifier": "PostgreSQL outbox authority, framework event envelope, and processor delivery attempt",
       "principalSource": "bounded processor service or inherited causal execution principal",
       "operationIdentity": "registered processor and event contract",
-      "owners": [],
-      "regression": null,
-      "remaining": "integrate stream processors and batch deliveries"
+      "owners": [
+        "packages/core/src/application-admission.ts",
+        "packages/operations/src/runtime.ts",
+        "packages/applik8s/src/stream-processor-runtime.ts",
+        "packages/compiler/src/application-reactive/index.ts"
+      ],
+      "regression": "bunx vitest run --maxWorkers=1 packages/applik8s/test/stream-processor-runtime.vertical.test.ts packages/applik8s/test/signal-runtime.vertical.test.ts; NODE_OPTIONS=--max-old-space-size=8192 bunx vitest run --maxWorkers=1 packages/compiler/test/application-reactive.vertical.test.ts",
+      "remaining": "add rejection/version telemetry and an emitted-worker PostgreSQL retry, restart, and cleanup receipt before live-qualified product claims"
     },
     {
       "id": "workflow-task-delivery",
@@ -55,7 +60,7 @@
         "packages/compiler/src/application-reactive/index.ts"
       ],
       "regression": "bunx vitest run --maxWorkers=1 packages/core/test/runtime-integrity.vertical.test.ts packages/operations/test/postgres.vertical.test.ts packages/applik8s/test/task-operation-runtime.vertical.test.ts packages/applik8s/test/task-query-runtime.vertical.test.ts packages/compiler/test/application-reactive.vertical.test.ts; NODE_OPTIONS=--max-old-space-size=8192 bunx vitest run --maxWorkers=1 packages/compiler/test/application-workflows.vertical.test.ts",
-      "remaining": "workflow/task starts and resumes plus task operations now construct one framework-admitted execution principal while task queries retain an intentionally bounded service projection; integrate signal action delivery, cancellation propagation and recovery, lost-response reattachment, and version/rejection telemetry before advancing the complete adapter"
+      "remaining": "workflow/task starts, resumes, operations, and signal issuance preserve canonical execution admission; broker-side signal action hydration now consumes canonical processor admission while task queries retain an intentionally bounded service projection; finish recovery, lost-response reattachment, and version/rejection telemetry before advancing the complete adapter"
     },
     {
       "id": "schedule-occurrence",
