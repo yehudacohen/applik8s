@@ -212,7 +212,15 @@
       "readers": ["0.8.x"],
       "maximumLifetime": "bounded-by-admitted-execution",
       "purposeOrKeyNamespace": "transport-adapter-specific-evidence",
-      "migrationPhase": "ingress-adapter-adoption-not-yet-integrated",
+      "migrationPhase": "request-gateway-cohort-implemented-remaining-ingress-adapters-pending",
+      "adoptedBy": [
+        "request-identity-provider",
+        "application-fetch-gateway",
+        "application-command-gateway",
+        "application-query-gateway",
+        "application-stream-subscription-gateway",
+        "kubernetes-application-gateway"
+      ],
       "telemetry": "runtime-integrity-admission-version-and-transport",
       "rollbackSafeThrough": "pending-ingress-parity-evidence",
       "decoderRemovalRelease": null

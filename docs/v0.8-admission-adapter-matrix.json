@@ -1,0 +1,87 @@
+{
+  "schemaVersion": 1,
+  "release": "0.8.0",
+  "status": "active",
+  "adapters": [
+    {
+      "id": "authenticated-http-browser-sse",
+      "transport": "http",
+      "state": "implemented",
+      "evidenceVerifier": "ApplicationIdentityProvider.admit(request)",
+      "principalSource": "authenticated request admission, optionally narrowed by operation authority",
+      "operationIdentity": "exact command, query, stream, or Kubernetes gateway operation and action",
+      "owners": [
+        "@applik8s/applik8s application Fetch, command, query, and stream gateways",
+        "@applik8s/server Kubernetes application gateway"
+      ],
+      "regression": "bunx vitest run --maxWorkers=1 packages/core/test/runtime-integrity.vertical.test.ts packages/server/test/kubernetes-gateway.vertical.test.ts packages/applik8s/test/command-gateway.vertical.test.ts packages/applik8s/test/query-gateway.vertical.test.ts packages/applik8s/test/stream-subscription-gateway.vertical.test.ts packages/applik8s/test/application-gateway.vertical.test.ts packages/compiler/test/application-reactive.vertical.test.ts",
+      "remaining": "add table-driven cross-gateway parity and private-shape source detection"
+    },
+    {
+      "id": "verified-webhook-provider-callback",
+      "transport": "webhook",
+      "state": "not-started",
+      "evidenceVerifier": "provider-specific signature and replay verifier",
+      "principalSource": "bounded external service principal",
+      "operationIdentity": "registered provider callback operation",
+      "owners": [],
+      "regression": null,
+      "remaining": "inventory maintained callbacks and implement adapters without treating caller fields as identity"
+    },
+    {
+      "id": "broker-delivery",
+      "transport": "broker",
+      "state": "not-started",
+      "evidenceVerifier": "framework event envelope and consumer delivery metadata",
+      "principalSource": "bounded processor service or inherited causal execution principal",
+      "operationIdentity": "registered processor and event contract",
+      "owners": [],
+      "regression": null,
+      "remaining": "integrate stream processors and batch deliveries"
+    },
+    {
+      "id": "workflow-task-delivery",
+      "transport": "workflow",
+      "state": "not-started",
+      "evidenceVerifier": "workflow engine run or task delivery evidence",
+      "principalSource": "framework execution principal preserving causal lineage",
+      "operationIdentity": "registered workflow or task operation",
+      "owners": [],
+      "regression": null,
+      "remaining": "integrate workflow starts, resumes, tasks, signals, cancellation, and reattachment"
+    },
+    {
+      "id": "schedule-occurrence",
+      "transport": "schedule",
+      "state": "not-started",
+      "evidenceVerifier": "schedule definition, occurrence identity, and scheduler delivery",
+      "principalSource": "bounded scheduler service principal; never the configuring human principal",
+      "operationIdentity": "schedule definition and occurrence target",
+      "owners": [],
+      "regression": null,
+      "remaining": "integrate local, Kubernetes, Hatchet, and EventBridge schedule providers"
+    },
+    {
+      "id": "actor-call-alarm",
+      "transport": "actor",
+      "state": "not-started",
+      "evidenceVerifier": "actor call ticket, connection authority, or persisted alarm authority",
+      "principalSource": "narrowed caller execution principal or bounded actor alarm service principal",
+      "operationIdentity": "actor command, message, connection event, or alarm",
+      "owners": [],
+      "regression": null,
+      "remaining": "integrate actor calls and alarm persistence without conflating alarms with schedules"
+    },
+    {
+      "id": "agent-ai-execution",
+      "transport": "framework",
+      "state": "not-started",
+      "evidenceVerifier": "registered agent execution and internal AI attempt evidence",
+      "principalSource": "framework execution principal preserving original causal attribution",
+      "operationIdentity": "registered agent, tool, model, and attempt operation",
+      "owners": [],
+      "regression": null,
+      "remaining": "integrate agent workers, tool calls, and AI provider attempts"
+    }
+  ]
+}
