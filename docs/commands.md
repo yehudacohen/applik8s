@@ -140,3 +140,52 @@ application.provide(WorkflowEngine, hatchetProvider);
 
 The application graph records provider contract versions, requirements, guarantees, implementation
 identity, and compatibility surface.
+
+Callable provider packages also declare their generated-runtime boundary once.
+Applications still only provide the implementation and call the injected method;
+they never wire environment variables, Secret keys, readiness metadata, or a
+provider SDK into each handler:
+
+```ts
+export const AcquisitionProvider = defineApplicationProvider<Acquisition>({
+  interface: "AcquisitionProvider",
+  version: "v1alpha1",
+  runtime: {
+    bind(implementation) {
+      return {
+        env: { ACQUISITION_ENDPOINT: implementation.endpoint },
+        secretEnv: {
+          ACQUISITION_TOKEN: {
+            secret: implementation.credentialSecret,
+            key: "token",
+          },
+        },
+        readiness: {
+          dependencies: [implementation.credentialSecret],
+          condition: "the selected provider credential is projected",
+        },
+      };
+    },
+    operations: {
+      acquire: {
+        module: "@example/acquisition/runtime",
+        export: "acquire",
+        access: {
+          kind: "provider",
+          operations: ["connection.use", "network.connect"],
+        },
+      },
+    },
+  },
+  accepts: isAcquisition,
+}).named("primary");
+
+const acquisition = application.inject(AcquisitionProvider);
+await acquisition.acquire(input);
+```
+
+`runtime.bind` runs while the graph is authored and may return only public
+runtime configuration, resource references, and readiness metadata. The
+compiler emits the public static operation export and projects Secret values
+only into workloads that actually call it. Profile and deployment-target
+selection remain graph data and are lowered by the framework.

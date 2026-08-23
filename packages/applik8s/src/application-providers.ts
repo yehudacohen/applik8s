@@ -1,5 +1,5 @@
 // typecast-file-boundary: provider constructors validate structural runtime input before restoring provider-specific discriminated contracts.
-import { type ApplicationCallableProviderRuntimeOperation, type ApplicationMigrationContract, type ApplicationProviderInterfaceKind, type ApplicationProviderRuntimeContract, type ApplicationResourceRef, isApplicationRuntimeAccessOperation } from '@applik8s/core';
+import { type ApplicationCallableProviderRuntimeBinding, type ApplicationCallableProviderRuntimeOperation, type ApplicationMigrationContract, type ApplicationProviderInterfaceKind, type ApplicationProviderRuntimeContract, type ApplicationResourceRef, isApplicationRuntimeAccessOperation } from '@applik8s/core';
 import type {
   ApplicationDeterministicIdentityOptions,
   ApplicationOAuthAuthorizationFlowRecord,
@@ -959,6 +959,25 @@ export interface ApplicationCallableProviderRuntimeContract {
   readonly operations: Readonly<
     Record<string, ApplicationCallableProviderRuntimeOperation>
   >;
+  /**
+   * Maps one selected provider implementation to public runtime configuration,
+   * Secret references, and readiness metadata. The callback runs only while
+   * authoring the graph; generated workers receive the normalized data and the
+   * statically declared operation export, never this callback or the provider
+   * implementation object.
+   */
+  readonly bind?: (
+    implementation: unknown,
+  ) => ApplicationProviderRuntimeContract;
+}
+
+export interface ApplicationCallableProviderRuntimeDefinition<TImplementation> {
+  readonly operations: Readonly<
+    Record<string, ApplicationCallableProviderRuntimeOperation>
+  >;
+  readonly bind?: (
+    implementation: TImplementation,
+  ) => ApplicationProviderRuntimeContract;
 }
 
 export interface ApplicationProviderQualification<TName extends string = string> {
@@ -1004,7 +1023,7 @@ export function defineApplicationProvider<TImplementation>(options: {
   readonly description?: string;
   readonly requirements?: readonly string[];
   readonly guarantees?: readonly string[];
-  readonly runtime?: ApplicationCallableProviderRuntimeContract;
+  readonly runtime?: ApplicationCallableProviderRuntimeDefinition<TImplementation>;
   readonly accepts: (implementation: unknown) => implementation is TImplementation;
 }): ApplicationQualifiableProviderToken<TImplementation> {
   if (!/^[A-Z][A-Za-z0-9]*$/.test(options.interface)) throw new Error(`Application provider interface ${JSON.stringify(options.interface)} must be a stable UpperCamelCase identifier.`);
@@ -1021,9 +1040,9 @@ export function defineApplicationProvider<TImplementation>(options: {
   });
 }
 
-function normalizeApplicationCallableProviderRuntime(
+function normalizeApplicationCallableProviderRuntime<TImplementation>(
   providerInterface: string,
-  runtime: ApplicationCallableProviderRuntimeContract,
+  runtime: ApplicationCallableProviderRuntimeDefinition<TImplementation>,
 ): ApplicationCallableProviderRuntimeContract {
   const operations = Object.fromEntries(
     Object.entries(runtime.operations).map(([member, operation]) => {
@@ -1067,7 +1086,183 @@ function normalizeApplicationCallableProviderRuntime(
       `Application provider ${providerInterface} callable runtime must declare at least one operation.`,
     );
   }
-  return Object.freeze({ operations: Object.freeze(operations) });
+  return Object.freeze({
+    operations: Object.freeze(operations),
+    ...(runtime.bind
+      ? {
+          bind(implementation: unknown) {
+            return normalizeApplicationProviderRuntimeBinding(
+              providerInterface,
+              runtime.bind?.(implementation as TImplementation) ?? {},
+            );
+          },
+        }
+      : {}),
+  });
+}
+
+function normalizeApplicationProviderRuntimeBinding(
+  providerInterface: string,
+  runtime: ApplicationProviderRuntimeContract,
+): ApplicationProviderRuntimeContract {
+  const env = runtime.env
+    ? Object.fromEntries(
+        Object.entries(runtime.env).map(([name, value]) => {
+          assertApplicationProviderEnvironmentName(providerInterface, name);
+          if (typeof value !== 'string' && !isApplicationRuntimeGraphValue(value)) {
+            throw new Error(
+              `Application provider ${providerInterface} runtime environment ${name} must be a string or installation expression.`,
+            );
+          }
+          return [name, value];
+        }),
+      )
+    : undefined;
+  const secretEnv = runtime.secretEnv
+    ? Object.fromEntries(
+        Object.entries(runtime.secretEnv).map(([name, binding]) => {
+          assertApplicationProviderEnvironmentName(providerInterface, name);
+          if (!binding || typeof binding !== 'object') {
+            throw new Error(
+              `Application provider ${providerInterface} secret environment ${name} must declare a Secret reference and key.`,
+            );
+          }
+          if (!binding.secret || typeof binding.secret !== 'object') {
+            throw new Error(
+              `Application provider ${providerInterface} secret environment ${name} must declare a Secret reference.`,
+            );
+          }
+          const secretKind = Reflect.get(binding.secret, 'kind');
+          const secretName = Reflect.get(binding.secret, 'name');
+          if (secretKind !== 'Secret') {
+            throw new Error(
+              `Application provider ${providerInterface} secret environment ${name} must reference a Kubernetes Secret.`,
+            );
+          }
+          if (
+            (typeof secretName !== 'string' || !secretName.trim())
+            && !isApplicationRuntimeGraphValue(secretName)
+          ) {
+            throw new Error(
+              `Application provider ${providerInterface} secret environment ${name} requires a non-empty Secret name or installation expression.`,
+            );
+          }
+          if (typeof binding.key !== 'string' || !binding.key.trim()) {
+            throw new Error(
+              `Application provider ${providerInterface} secret environment ${name} requires a non-empty Secret key.`,
+            );
+          }
+          return [name, Object.freeze({
+            secret: Object.freeze({ ...binding.secret }),
+            key: binding.key,
+            ...(binding.optional === true ? { optional: true } : {}),
+          })];
+        }),
+      )
+    : undefined;
+  const duplicate = Object.keys(env ?? {}).find((name) => secretEnv?.[name]);
+  if (duplicate) {
+    throw new Error(
+      `Application provider ${providerInterface} runtime environment ${duplicate} cannot be both public configuration and a Secret binding.`,
+    );
+  }
+  return Object.freeze({
+    ...(env && Object.keys(env).length > 0 ? { env: Object.freeze(env) } : {}),
+    ...(secretEnv && Object.keys(secretEnv).length > 0
+      ? { secretEnv: Object.freeze(secretEnv) }
+      : {}),
+    ...(runtime.secretRefs
+      ? { secretRefs: Object.freeze(runtime.secretRefs.map((secret) => Object.freeze({ ...secret }))) }
+      : {}),
+    ...(runtime.volumeMounts
+      ? { volumeMounts: Object.freeze([...runtime.volumeMounts]) }
+      : {}),
+    ...(runtime.permissions
+      ? { permissions: Object.freeze([...runtime.permissions]) }
+      : {}),
+    ...(runtime.readiness
+      ? {
+          readiness: Object.freeze({
+            ...runtime.readiness,
+            dependencies: Object.freeze(
+              runtime.readiness.dependencies.map((dependency) =>
+                Object.freeze({ ...dependency }),
+              ),
+            ),
+          }),
+        }
+      : {}),
+    ...(runtime.metadataLinks
+      ? { metadataLinks: Object.freeze([...runtime.metadataLinks]) }
+      : {}),
+  });
+}
+
+function assertApplicationProviderEnvironmentName(
+  providerInterface: string,
+  name: string,
+): void {
+  if (!/^[A-Z_][A-Z0-9_]*$/u.test(name)) {
+    throw new Error(
+      `Application provider ${providerInterface} runtime environment name ${JSON.stringify(name)} must use uppercase environment-variable syntax.`,
+    );
+  }
+}
+
+function isApplicationRuntimeGraphValue(value: unknown): boolean {
+  return Boolean(
+    value
+      && (typeof value === 'object' || typeof value === 'function'),
+  );
+}
+
+/** @internal Normalized provider runtime data retained through profile/target selection. */
+export function applicationCallableProviderRuntimeBinding<TImplementation>(
+  token: ApplicationProviderToken<TImplementation>,
+  implementation: TImplementation,
+): ApplicationCallableProviderRuntimeBinding | undefined {
+  const bind = token.callableRuntime?.bind;
+  if (!bind) return undefined;
+  return callableProviderRuntimeBindingForImplementation(
+    bind as (value: unknown) => ApplicationProviderRuntimeContract,
+    implementation,
+  );
+}
+
+function callableProviderRuntimeBindingForImplementation(
+  bind: (implementation: unknown) => ApplicationProviderRuntimeContract,
+  implementation: unknown,
+): ApplicationCallableProviderRuntimeBinding {
+  const profile = applicationProviderSelectionFor(implementation);
+  if (profile) {
+    return Object.freeze({
+      kind: 'profileSelection',
+      selector: profile.selector,
+      cases: Object.freeze(Object.fromEntries(
+        Object.entries(profile.cases).map(([variant, candidate]) => [
+          variant,
+          callableProviderRuntimeBindingForImplementation(bind, candidate),
+        ]),
+      )),
+      default: callableProviderRuntimeBindingForImplementation(
+        bind,
+        profile.default,
+      ),
+    });
+  }
+  const target = applicationTargetProviderSelectionFor(implementation);
+  if (target) {
+    return Object.freeze({
+      kind: 'targetSelection',
+      targets: Object.freeze(Object.fromEntries(
+        Object.entries(target.targets).map(([name, candidate]) => [
+          name,
+          callableProviderRuntimeBindingForImplementation(bind, candidate),
+        ]),
+      )),
+    });
+  }
+  return Object.freeze({ kind: 'runtime', runtime: bind(implementation) });
 }
 
 function normalizeApplicationCallableProviderOperationAccess(

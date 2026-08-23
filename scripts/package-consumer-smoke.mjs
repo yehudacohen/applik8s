@@ -340,6 +340,22 @@ export const AcquisitionProvider = defineApplicationProvider({
   interface: 'AcquisitionProvider',
   version: 'v1alpha1',
   runtime: {
+    bind(implementation) {
+      return {
+        env: { ACQUISITION_SOURCE: implementation.source },
+        secretEnv: {
+          ACQUISITION_TOKEN: {
+            secret: implementation.credentialSecret,
+            key: 'token',
+          },
+        },
+        readiness: {
+          dependencies: [implementation.credentialSecret],
+          condition: 'the selected acquisition credential is projected',
+          timeoutSeconds: 30,
+        },
+      };
+    },
     operations: {
       acquire: {
         module: '@fixture/acquisition/runtime',
@@ -352,6 +368,7 @@ export const AcquisitionProvider = defineApplicationProvider({
     },
   },
   accepts: candidate => candidate?.kind === 'acquisition'
+    && candidate.credentialSecret?.kind === 'Secret'
     && typeof candidate.acquire === 'function',
 }).named('primary');
 export const acquisition = module('acquisition', application => {
@@ -380,6 +397,13 @@ application.provide(
 );
 const implementation = source => ({
   kind: 'acquisition',
+  source,
+  credentialSecret: {
+    apiVersion: 'v1',
+    kind: 'Secret',
+    name: 'acquisition-' + source,
+    namespace: 'packed-actor-provider',
+  },
   async acquire(input) { return { value: source + ':' + input.id }; },
 });
 application.profile(application.installation.spec, 'profile')
@@ -547,6 +571,13 @@ application.provide(
 );
 const implementation = source => ({
   kind: 'acquisition',
+  source,
+  credentialSecret: {
+    apiVersion: 'v1',
+    kind: 'Secret',
+    name: 'acquisition-' + source,
+    namespace: 'packed-workflow-provider',
+  },
   async acquire(input) { return { value: source + ':' + input.id }; },
 });
 application.profile(application.installation.spec, 'profile')
@@ -594,6 +625,17 @@ const discovered = await discoverApplicationGraphWithExports(
 );
 if (!discovered.ok) throw discovered.error;
 const graph = discovered.value.graph;
+const provider = graph.nodes.find(node =>
+  node.kind === 'provider'
+  && node.id === 'provider.acquisition-provider.v1alpha1.primary'
+);
+if (
+  provider?.config?.callableRuntime?.kind !== 'profileSelection'
+  || provider.config.callableRuntime.cases?.starter?.runtime?.secretEnv
+    ?.ACQUISITION_TOKEN?.secret?.name !== 'acquisition-starter'
+  || provider.config.callableRuntime.cases?.dedicated?.runtime?.readiness
+    ?.condition !== 'the selected acquisition credential is projected'
+) throw new Error('Packed workflow provider runtime configuration did not survive discovery.');
 const handler = graph.nodes.find(node =>
   node.kind === 'taskHandler'
   && node.providerBindings?.some(binding => binding.operation?.member === 'acquire')
@@ -676,6 +718,20 @@ if (
   || generatedFiles.includes('application.profile')
   || generatedFiles.includes('application.provide')
 ) throw new Error('Packed generated workflow worker did not hydrate only the public provider operation.');
+const workflowDeployment = artifact.resources.find(resource =>
+  resource.kind === 'Deployment'
+  && resource.metadata?.labels?.['app.kubernetes.io/component'] === 'workflow-worker'
+);
+const workflowDeploymentJson = JSON.stringify(workflowDeployment);
+if (
+  !workflowDeploymentJson.includes('ACQUISITION_SOURCE')
+  || !workflowDeploymentJson.includes('ACQUISITION_TOKEN')
+  || !workflowDeploymentJson.includes('acquisition-starter')
+  || !workflowDeploymentJson.includes('acquisition-dedicated')
+) throw new Error('Packed workflow provider configuration and credentials were not placed on the consuming worker.');
+if (artifact.resources.filter(resource =>
+  JSON.stringify(resource).includes('ACQUISITION_TOKEN')
+).length !== 1) throw new Error('Packed workflow provider credentials reached an unrelated resource.');
 `,
   );
   await execFileAsync(process.execPath, [packedWorkflowProofPath], {

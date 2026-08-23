@@ -3,6 +3,7 @@
 
 import {
   app,
+  applicationGraphFor,
   defineApplicationProvider,
 } from '@applik8s/applik8s';
 import {
@@ -70,12 +71,33 @@ describe('managed provider runtime selection', () => {
     interface AcquisitionProviderImplementation {
       readonly kind: 'acquisition';
       readonly source: string;
+      readonly credentialSecret: {
+        readonly apiVersion: 'v1';
+        readonly kind: 'Secret';
+        readonly name: string;
+      };
       acquire(input: { readonly id: string }): Promise<string>;
     }
     const AcquisitionProvider = defineApplicationProvider<AcquisitionProviderImplementation>({
       interface: 'AcquisitionProvider',
       version: 'v1alpha1',
       runtime: {
+        bind(implementation) {
+          return {
+            env: { ACQUISITION_SOURCE: implementation.source },
+            secretEnv: {
+              ACQUISITION_TOKEN: {
+                secret: implementation.credentialSecret,
+                key: 'token',
+              },
+            },
+            readiness: {
+              dependencies: [implementation.credentialSecret],
+              condition: 'the selected acquisition credential is projected',
+              timeoutSeconds: 30,
+            },
+          };
+        },
         operations: {
           acquire: {
             module: '@fixture/acquisition/runtime',
@@ -101,6 +123,11 @@ describe('managed provider runtime selection', () => {
     const implementation = (source: string): AcquisitionProviderImplementation => ({
       kind: 'acquisition',
       source,
+      credentialSecret: {
+        apiVersion: 'v1',
+        kind: 'Secret',
+        name: `acquisition-${source}`,
+      },
       async acquire(input) {
         return `${this.source}:${input.id}`;
       },
@@ -151,6 +178,47 @@ describe('managed provider runtime selection', () => {
         },
       }),
     ]);
+    const graph = applicationGraphFor(application.composition);
+    const providerNode = graph?.nodes.find(
+      (node) =>
+        node.kind === 'provider'
+        && node.interface === 'AcquisitionProvider',
+    );
+    if (providerNode?.kind !== 'provider') {
+      throw new Error('Expected the callable AcquisitionProvider graph node.');
+    }
+    expect(providerNode?.config?.callableRuntime).toEqual({
+      kind: 'profileSelection',
+      selector: 'schema.spec.profile',
+      cases: {
+        starter: expect.objectContaining({
+          kind: 'runtime',
+          runtime: expect.objectContaining({
+            env: { ACQUISITION_SOURCE: 'starter' },
+            secretEnv: {
+              ACQUISITION_TOKEN: {
+                secret: {
+                  apiVersion: 'v1',
+                  kind: 'Secret',
+                  name: 'acquisition-starter',
+                },
+                key: 'token',
+              },
+            },
+            readiness: expect.objectContaining({
+              condition: 'the selected acquisition credential is projected',
+            }),
+          }),
+        }),
+        dedicated: expect.objectContaining({
+          kind: 'runtime',
+          runtime: expect.objectContaining({
+            env: { ACQUISITION_SOURCE: 'dedicated' },
+          }),
+        }),
+      },
+      default: expect.objectContaining({ kind: 'runtime' }),
+    });
   });
 
   it('rejects callable runtime entries that are not public static package exports', () => {

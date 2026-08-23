@@ -409,6 +409,22 @@ export const AcquisitionProvider = defineApplicationProvider({
   interface: 'AcquisitionProvider',
   version: 'v1alpha1',
   runtime: {
+    bind(implementation) {
+      return {
+        env: { ACQUISITION_SOURCE: implementation.source },
+        secretEnv: {
+          ACQUISITION_TOKEN: {
+            secret: implementation.credentialSecret,
+            key: 'token',
+          },
+        },
+        readiness: {
+          dependencies: [implementation.credentialSecret],
+          condition: 'the selected acquisition credential is projected',
+          timeoutSeconds: 30,
+        },
+      };
+    },
     operations: {
       acquire: {
         module: '@fixture/acquisition/runtime',
@@ -420,7 +436,9 @@ export const AcquisitionProvider = defineApplicationProvider({
       },
     },
   },
-  accepts: candidate => candidate?.kind === 'acquisition' && typeof candidate.acquire === 'function',
+  accepts: candidate => candidate?.kind === 'acquisition'
+    && candidate.credentialSecret?.kind === 'Secret'
+    && typeof candidate.acquire === 'function',
 }).named('primary');
 export const acquisition = module('acquisition', application => {
   const provider = application.inject(AcquisitionProvider);
@@ -441,6 +459,12 @@ platform.provide(WorkflowEngine, WorkflowEngine.hatchet({ provision: false, name
 const acquisitionImplementation = source => ({
   kind: 'acquisition',
   source,
+  credentialSecret: {
+    apiVersion: 'v1',
+    kind: 'Secret',
+    name: 'acquisition-' + source,
+    namespace: 'workflow-model-edit',
+  },
   async acquire(input) { return { body: this.source + ':' + input.id }; },
 });
 platform.profile(platform.installation.spec, 'profile')
@@ -514,6 +538,37 @@ export const workflowModelEdit = platform.composition;
       expect(provider?.id).toBe(
         'provider.acquisition-provider.v1alpha1.primary',
       );
+      expect(provider?.config?.callableRuntime).toMatchObject({
+        kind: 'profileSelection',
+        selector: 'schema.spec.profile',
+        cases: {
+          starter: {
+            kind: 'runtime',
+            runtime: {
+              env: { ACQUISITION_SOURCE: 'starter' },
+              secretEnv: {
+                ACQUISITION_TOKEN: {
+                  secret: expect.objectContaining({
+                    kind: 'Secret',
+                    name: 'acquisition-starter',
+                  }),
+                  key: 'token',
+                },
+              },
+              readiness: expect.objectContaining({
+                condition: 'the selected acquisition credential is projected',
+                timeoutSeconds: 30,
+              }),
+            },
+          },
+          dedicated: {
+            kind: 'runtime',
+            runtime: expect.objectContaining({
+              env: { ACQUISITION_SOURCE: 'dedicated' },
+            }),
+          },
+        },
+      });
       expect(worker?.name).toBe('applik8s-hatchet');
       expect(
         [...applicationProviderConsumerWorkloads(
@@ -666,9 +721,18 @@ export const workflowModelEdit = platform.composition;
       const deployment = artifact?.resources.find(
         (resource) => resource.kind === 'Deployment',
       );
-      expect(JSON.stringify(deployment)).toContain(
+      const deploymentJson = JSON.stringify(deployment);
+      expect(deploymentJson).toContain(
         'APPLIK8S_PROFILE_VARIANT',
       );
+      expect(deploymentJson).toContain('ACQUISITION_SOURCE');
+      expect(deploymentJson).toContain('ACQUISITION_TOKEN');
+      expect(deploymentJson).toContain('acquisition-starter');
+      expect(deploymentJson).toContain('acquisition-dedicated');
+      expect(
+        artifact?.resources.filter((resource) =>
+          JSON.stringify(resource).includes('ACQUISITION_TOKEN')),
+      ).toHaveLength(1);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

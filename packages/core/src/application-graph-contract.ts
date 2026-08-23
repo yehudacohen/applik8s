@@ -1648,12 +1648,46 @@ export interface ApplicationProviderResolutionFailure<TInterface extends Applica
 
 export interface ApplicationProviderRuntimeContract {
   readonly env?: Readonly<Record<string, string>>;
+  /**
+   * Secret-backed environment bindings required by a managed provider
+   * runtime. The graph contains only Secret identity and key metadata; Secret
+   * values remain target-owned and must never enter application artifacts.
+   */
+  readonly secretEnv?: Readonly<Record<string, {
+    readonly secret: ApplicationResourceRef;
+    readonly key: string;
+    readonly optional?: boolean;
+  }>>;
   readonly secretRefs?: readonly ApplicationResourceRef[];
   readonly volumeMounts?: readonly string[];
   readonly permissions?: readonly PermissionRule[];
   readonly readiness?: ApplicationProviderReadinessContract;
   readonly metadataLinks?: readonly ApplicationGraphMetadataLink[];
 }
+
+/**
+ * Authoring-time provider runtime binding after provider/profile/target
+ * selection has been made explicit. This is graph data, never an executable
+ * provider client or a credential value.
+ */
+export type ApplicationCallableProviderRuntimeBinding =
+  | {
+      readonly kind: 'runtime';
+      readonly runtime: ApplicationProviderRuntimeContract;
+    }
+  | {
+      readonly kind: 'profileSelection';
+      readonly selector: string;
+      readonly cases: Readonly<Record<string, ApplicationCallableProviderRuntimeBinding>>;
+      readonly default: ApplicationCallableProviderRuntimeBinding;
+    }
+  | {
+      readonly kind: 'targetSelection';
+      readonly targets: Readonly<Partial<Record<
+        'local' | 'aws-local' | 'aws' | 'kubernetes',
+        ApplicationCallableProviderRuntimeBinding
+      >>>;
+    };
 
 export interface ApplicationProviderReadinessContract {
   readonly dependencies: readonly ApplicationResourceRef[];

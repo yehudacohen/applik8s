@@ -1,5 +1,6 @@
 // typecast-file-boundary: provider configuration is validated by constructors and JSON-normalized before graph projection.
 import type {
+  ApplicationCallableProviderRuntimeBinding,
   ApplicationExposureReadinessContract,
   ApplicationGeneratedResourceContract,
   JsonObject,
@@ -556,6 +557,7 @@ export function recordApplicationProviderGraph(
   typedContract?: ApplicationTypedProviderContract,
   qualification?: ApplicationProviderQualification,
   aliasOf?: string | null,
+  callableRuntime?: ApplicationCallableProviderRuntimeBinding,
 ): void {
   const resolvedContract = typedContract ?? applicationTypedProviderContract(tokenName);
   const providerInterface = applicationProviderInterface(tokenName) ?? resolvedContract?.interface;
@@ -605,6 +607,13 @@ export function recordApplicationProviderGraph(
       ...(aliasOf !== undefined ? { aliasOf } : {}),
       ...(qualification
         ? { qualification: qualification as unknown as JsonValue }
+        : {}),
+      ...(callableRuntime
+        ? {
+            callableRuntime: applicationTypeKroGraphValue(
+              callableRuntime,
+            ) as JsonValue,
+          }
         : {}),
       ...(targetSelection ? {
         targetSelection: applicationTypeKroGraphValue({

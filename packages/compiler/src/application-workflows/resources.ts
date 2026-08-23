@@ -1,5 +1,6 @@
 // typecast-file-boundary: Workflow resource lowering maps validated contracts and installation expressions into Kubernetes manifest shapes.
 import { createHash } from 'node:crypto';
+import { applicationCallableProviderEnvironment } from '../application-callable-provider-runtime.js';
 import { applicationGraphAllConditions, applicationGraphBooleanCondition, applicationGraphJsonStringArray, applicationGraphStringValue } from '../application-installation-values.js';
 import { structuredGenerationSelectedScalar, structuredGenerationSelection, type WorkflowContract, type WorkflowTaskProjectionContract } from './contracts.js';
 import { uniqueWorkflowObjectEffects, uniqueWorkflowProjectionEffects } from './source.js';
@@ -125,6 +126,10 @@ export function workflowResources(contract: WorkflowContract, name: string, imag
               }] : []),
               ...workflowConnectionEnvironment,
               ...workflowCallableProviderEnvironment(contract),
+              ...applicationCallableProviderEnvironment(
+                contract.callableProviders ?? [],
+                { target: 'kubernetes', namespace: contract.namespace },
+              ),
               ...workflowCapabilityEnvironment(contract),
               ...workflowOperationEnvironment(contract),
               ...workflowQueryEnvironment(contract),
