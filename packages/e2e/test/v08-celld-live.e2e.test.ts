@@ -12,23 +12,28 @@ import {
   actor,
   app,
   executeApplicationActorAlarm,
+  executeApplicationActorRealtime,
   installApplicationActorRuntimeResolver,
   type,
   withApplicationActorTurnAuthority,
 } from '@applik8s/applik8s';
 import { emitApplicationDeploymentGraph } from '@applik8s/compiler';
 import type { ApplicationGraph } from '@applik8s/core';
-import { createCelldApplicationActorRuntime } from '@applik8s/runtime-celld';
-import { afterAll, describe, expect, test } from 'vitest';
+import {
+  createCelldApplicationActorRuntime,
+  signCelldActorConnectionTicket,
+} from '@applik8s/runtime-celld';
+import { afterEach, describe, expect, test } from 'vitest';
 import { createActorLiveAuthority } from './actor-live-authority.js';
 
 const live = process.env.APPLIK8S_E2E_CELLD === '1' ? describe : describe.skip;
+const realtimeTest = process.env.APPLIK8S_E2E_CELLD_REALTIME === '1' ? test : test.skip;
 const run = promisify(execFile);
 const celldImage = 'ghcr.io/denoland/celld@sha256:7a4380721b6400073f2a26afe70a828410169f658d31b5ef61383e648ca0c530';
 const seaweedImage = 'docker.io/chrislusf/seaweedfs@sha256:f898c91e42d7da5f4bb13f1efd424ff03ba85b420312eb929708a384e8a8b03d';
 const cleanupActions: Array<() => Promise<void>> = [];
 
-afterAll(async () => {
+afterEach(async () => {
   const failures: string[] = [];
   while (cleanupActions.length > 0) {
     try { await cleanupActions.pop()?.(); } catch (cause) { failures.push(errorMessage(cause)); }
@@ -115,7 +120,7 @@ live('v0.8 distributed celld actor qualification', () => {
     let activeRuntime = createCelldApplicationActorRuntime({ endpoint: 'http://127.0.0.1:1', authorization });
     const uninstallRuntime = installApplicationActorRuntimeResolver(() => activeRuntime);
     cleanupActions.push(async () => { uninstallRuntime(); });
-    const callback = await actorCallbackServer(Counter as never, applicationAuthorization);
+    const callback = await actorCallbackServer({ alarm: Counter as never }, applicationAuthorization);
     cleanupActions.push(() => closeServer(callback.server));
 
     await startCelldNode({ name: nodeA, network, image, bucket, storage, authorization, applicationAuthorization, connectionSigningKey, applicationPort: callback.port });
@@ -179,6 +184,198 @@ live('v0.8 distributed celld actor qualification', () => {
       { count: 5, expired: true },
       60_000,
     );
+
+    const diagnosis = await diagnoseCelldFleet({
+      network,
+      image,
+      bucket,
+      storage,
+      timeout: 90_000,
+    });
+    expect(diagnosis).not.toMatch(/unreachable|malformed|incompatible|failed/iu);
+  }, 900_000);
+
+  realtimeTest('maintains hibernatable WebSocket semantics and reconnects after node loss', async () => {
+    const suffix = `${process.pid}-${randomUUID().slice(0, 8)}`.toLowerCase();
+    const network = `applik8s-v08-realtime-${suffix}`;
+    const storage = `${network}-storage`;
+    const nodeA = `${network}-a`;
+    const nodeB = `${network}-b`;
+    const image = `applik8s-v08-realtime-runtime:${suffix}`;
+    const bucket = `applik8s-v08-realtime-${suffix}`;
+    const authorization = `actor-authority-${randomUUID()}-${randomUUID()}`;
+    const applicationAuthorization = `application-authority-${randomUUID()}-${randomUUID()}`;
+    const connectionSigningKey = `connection-signing-${randomUUID()}-${randomUUID()}`;
+    const application = `celld-realtime-${suffix}`;
+    const directory = await mkdtemp(join(tmpdir(), 'applik8s-v08-celld-realtime-'));
+    cleanupActions.push(() => rm(directory, { recursive: true, force: true }));
+
+    const artifact = await generatedCelldArtifact(directory);
+    await preflightCelldDockerLifecycle({
+      network,
+      image,
+      containers: [storage, nodeA, nodeB],
+    });
+    await docker(['network', 'create', network]);
+    cleanupActions.push(() => removeDockerNetwork(network));
+    cleanupActions.push(() => removeDockerImage(image));
+    for (const container of [storage, nodeA, nodeB]) {
+      cleanupActions.push(() => removeDockerContainer(container));
+    }
+
+    await docker([
+      'build', '--tag', image, '--file',
+      String(artifact.sourceDescriptor.dockerfilePath),
+      String(artifact.sourceDescriptor.contextPath),
+    ], 300_000);
+    await docker([
+      'run', '--detach', '--name', storage, '--network', network,
+      '-p', '127.0.0.1::8333', '-e', `S3_BUCKET=${bucket}`,
+      seaweedImage, 'mini', '-dir=/data', `-bucket=${bucket}`,
+    ]);
+    const storagePort = await publishedPort(storage, 8333);
+    await waitForHttp(`http://127.0.0.1:${storagePort}/`, 90_000, () => true);
+    await createS3Bucket(`http://127.0.0.1:${storagePort}`, bucket);
+    await docker([
+      'run', '--rm', '--network', network,
+      ...storageEnvironment(), image,
+      'deploy', '/app', '--bucket', `s3://${bucket}`,
+      '--endpoint', `http://${storage}:8333`, '--region', 'us-east-1',
+    ], 180_000);
+
+    const Workspace = app(application).actor(`${application}-workspace.v1`, {
+      key: type('string'),
+      state: type({ title: 'string' }),
+      protocol: {
+        read: actor.command({ input: type({}), output: type({ title: 'string' }) }),
+        connect: actor.connection(type({ agent: 'string' })),
+        cursor: actor.connectionMessage(type({ position: 'number.integer >= 0' })),
+        disconnect: actor.disconnection(type({ agent: 'string' })),
+        cursorPublished: actor.broadcast(type({ position: 'number.integer >= 0' })),
+      },
+    });
+    Workspace.on.initialize(() => ({ title: 'Untitled' }));
+    Workspace.on.read(turn => turn.state());
+    Workspace.on.cursor(async (turn, _connection, input) => {
+      await turn.broadcast.cursorPublished({ position: input.position });
+    });
+    const disconnections: string[] = [];
+    Workspace.on.disconnect((_turn, connection) => {
+      disconnections.push(`${connection.id}:${connection.disconnectionReason ?? 'unknown'}`);
+    });
+    const callback = await actorCallbackServer(
+      { realtime: Workspace as never, application },
+      applicationAuthorization,
+    );
+    cleanupActions.push(() => closeServer(callback.server));
+    await startCelldNode({
+      name: nodeA, network, image, bucket, storage, authorization,
+      applicationAuthorization, connectionSigningKey, applicationPort: callback.port,
+    });
+    await startCelldNode({
+      name: nodeB, network, image, bucket, storage, authorization,
+      applicationAuthorization, connectionSigningKey, applicationPort: callback.port,
+    });
+    const portA = await publishedPort(nodeA, 8080);
+    const portB = await publishedPort(nodeB, 8080);
+    await Promise.all([
+      waitForHttp(`http://127.0.0.1:${portA}/healthz`, 90_000),
+      waitForHttp(`http://127.0.0.1:${portB}/healthz`, 90_000),
+    ]);
+
+    let activeRuntime = createCelldApplicationActorRuntime({
+      endpoint: `http://127.0.0.1:${portA}`,
+      authorization,
+      leaseDuration: '10s',
+      heartbeatInterval: '2s',
+      admissionTimeout: '45s',
+    });
+    const uninstallRuntime = installApplicationActorRuntimeResolver(() => activeRuntime);
+    cleanupActions.push(async () => { uninstallRuntime(); });
+    const admitted = <T>(member: string, input: object, callbackValue: () => Promise<T>) =>
+      withApplicationActorTurnAuthority(
+        createActorLiveAuthority(application, Workspace.id, member, 'workspace-one', input),
+        callbackValue,
+      );
+
+    const firstConnectionId = `connection-a-${randomUUID()}`;
+    const first = await openActorWebSocket({
+      port: portA,
+      actor: Workspace.id,
+      key: 'workspace-one',
+      ticket: await actorConnectionTicket({
+        application,
+        actor: Workspace.id,
+        key: 'workspace-one',
+        connectionId: firstConnectionId,
+        signingKey: connectionSigningKey,
+        leaseMilliseconds: 5_000,
+      }),
+    });
+    cleanupActions.push(() => first.close());
+    try {
+      await first.sendAndExpect('cursor', { position: 1 }, 'cursor-a-1', 1);
+      await delay(1_500);
+      await first.sendAndExpect('cursor', { position: 2 }, 'cursor-a-2', 2);
+    } catch (cause) {
+      throw new Error(`${errorMessage(cause)} Callback errors: ${JSON.stringify(callback.errors())}`);
+    }
+
+    await docker(['stop', '--time', '0', nodeA], 30_000);
+    await first.waitForClose(30_000);
+    activeRuntime = createCelldApplicationActorRuntime({
+      endpoint: `http://127.0.0.1:${portB}`,
+      authorization,
+      leaseDuration: '10s',
+      heartbeatInterval: '2s',
+      admissionTimeout: '60s',
+      retryDelay: '250ms',
+    });
+    await expectEventually(
+      () => admitted('read', {}, () => Workspace.read('workspace-one', {}, {
+        idempotencyKey: `realtime-relocation-${randomUUID()}`,
+      })),
+      { title: 'Untitled' },
+      90_000,
+    );
+
+    const secondConnectionId = `connection-b-${randomUUID()}`;
+    const second = await openActorWebSocket({
+      port: portB,
+      actor: Workspace.id,
+      key: 'workspace-one',
+      ticket: await actorConnectionTicket({
+        application,
+        actor: Workspace.id,
+        key: 'workspace-one',
+        connectionId: secondConnectionId,
+        signingKey: connectionSigningKey,
+        leaseMilliseconds: 30_000,
+      }),
+    });
+    cleanupActions.push(() => second.close());
+    try {
+      await second.sendAndExpect('cursor', { position: 3 }, 'cursor-b-1', 3);
+    } catch (cause) {
+      throw new Error(`${errorMessage(cause)} Callback errors: ${JSON.stringify(callback.errors())}`);
+    }
+    await expectEventually(
+      async () => disconnections.some((value) =>
+        value === `${firstConnectionId}:lease-expired`),
+      true,
+      30_000,
+    );
+    await second.closeGracefully('disconnect', { agent: 'browser' });
+    await expectEventually(
+      async () => disconnections.filter((value) =>
+        value === `${secondConnectionId}:closed`).length,
+      1,
+      30_000,
+    );
+    expect(disconnections.filter((value) =>
+      value.startsWith(`${firstConnectionId}:`))).toEqual([
+      `${firstConnectionId}:lease-expired`,
+    ]);
 
     const diagnosis = await diagnoseCelldFleet({
       network,
@@ -292,15 +489,21 @@ async function publishedPort(container: string, port: number): Promise<number> {
   return Number(match[1]);
 }
 
-async function actorCallbackServer(actorHandle: Parameters<typeof executeApplicationActorAlarm>[0], authorization: string): Promise<{
+async function actorCallbackServer(options: {
+  readonly alarm?: Parameters<typeof executeApplicationActorAlarm>[0];
+  readonly realtime?: Parameters<typeof executeApplicationActorRealtime>[0];
+  readonly application?: string;
+}, authorization: string): Promise<{
   readonly server: Server;
   readonly port: number;
   deliveries(): number;
+  errors(): readonly string[];
 }> {
   let deliveryCount = 0;
+  const callbackErrors: string[] = [];
   const server = createServer(async (request, response) => {
     try {
-      if (request.method !== 'POST' || request.url !== '/__applik8s/v1/internal/actors/alarms') {
+      if (request.method !== 'POST') {
         response.writeHead(404).end();
         return;
       }
@@ -310,28 +513,64 @@ async function actorCallbackServer(actorHandle: Parameters<typeof executeApplica
       }
       const chunks: Buffer[] = [];
       for await (const chunk of request) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-      const alarm = JSON.parse(Buffer.concat(chunks).toString('utf8')) as {
+      const body = JSON.parse(Buffer.concat(chunks).toString('utf8')) as {
         readonly actor?: string;
         readonly key?: string;
         readonly member?: string;
         readonly input?: object;
         readonly idempotencyKey?: string;
         readonly authority?: ApplicationActorTurnAuthority;
+        readonly kind?: 'connection' | 'connectionMessage' | 'disconnection';
+        readonly connection?: Parameters<typeof executeApplicationActorRealtime>[1]['connection'];
       };
-      if (alarm.actor !== actorHandle.id || !alarm.key || !alarm.member || !alarm.input || !alarm.idempotencyKey || !alarm.authority) {
-        throw new Error('celld alarm callback was incomplete.');
+      if (request.url === '/__applik8s/v1/internal/actors/alarms' && options.alarm) {
+        if (body.actor !== options.alarm.id || !body.key || !body.member || !body.input || !body.idempotencyKey || !body.authority) {
+          throw new Error('celld alarm callback was incomplete.');
+        }
+        await executeApplicationActorAlarm(options.alarm, {
+          member: body.member,
+          key: body.key,
+          input: body.input,
+          idempotencyKey: body.idempotencyKey,
+          authority: body.authority,
+        });
+      } else if (request.url === '/__applik8s/v1/internal/actors/realtime' && options.realtime && options.application) {
+        if (body.actor !== options.realtime.id || !body.kind || !body.key || !body.member || !body.input || !body.idempotencyKey || !body.connection) {
+          throw new Error('celld realtime callback was incomplete.');
+        }
+        const authority = createActorLiveAuthority(
+          options.application,
+          options.realtime.id,
+          body.member,
+          body.key,
+          body.input,
+        );
+        const receipt = await executeApplicationActorRealtime(options.realtime, {
+          kind: body.kind,
+          member: body.member,
+          key: body.key,
+          input: body.input,
+          connection: {
+            ...body.connection,
+            principal: authority.principal,
+            authorizationReceipt: authority.authorizationReceipt,
+            trustedContextDigest: authority.trustedContextDigest,
+          },
+          idempotencyKey: body.idempotencyKey,
+        });
+        response.writeHead(202, { 'content-type': 'application/json' })
+          .end(JSON.stringify({ accepted: true, receipt }));
+        return;
+      } else {
+        response.writeHead(404).end();
+        return;
       }
-      await executeApplicationActorAlarm(actorHandle, {
-        member: alarm.member,
-        key: alarm.key,
-        input: alarm.input,
-        idempotencyKey: alarm.idempotencyKey,
-        authority: alarm.authority,
-      });
       deliveryCount += 1;
       response.writeHead(202, { 'content-type': 'application/json' }).end('{"accepted":true}');
     } catch (cause) {
-      response.writeHead(500, { 'content-type': 'application/json' }).end(JSON.stringify({ error: errorMessage(cause) }));
+      const message = errorMessage(cause);
+      callbackErrors.push(message);
+      response.writeHead(500, { 'content-type': 'application/json' }).end(JSON.stringify({ error: message }));
     }
   });
   await new Promise<void>((resolveListen, rejectListen) => {
@@ -340,7 +579,181 @@ async function actorCallbackServer(actorHandle: Parameters<typeof executeApplica
   });
   const address = server.address();
   if (!address || typeof address === 'string') throw new Error('Actor callback server did not bind a TCP port.');
-  return { server, port: address.port, deliveries: () => deliveryCount };
+  return {
+    server,
+    port: address.port,
+    deliveries: () => deliveryCount,
+    errors: () => [...callbackErrors],
+  };
+}
+
+async function actorConnectionTicket(options: {
+  readonly application: string;
+  readonly actor: string;
+  readonly key: string;
+  readonly connectionId: string;
+  readonly signingKey: string;
+  readonly leaseMilliseconds: number;
+}): Promise<string> {
+  const connectInput = { agent: 'browser' };
+  const authority = createActorLiveAuthority(
+    options.application,
+    options.actor,
+    'connect',
+    options.key,
+    connectInput,
+  );
+  const issuedAt = new Date();
+  return signCelldActorConnectionTicket({
+    schemaVersion: 'applik8s.actorConnectionTicket/v1alpha1',
+    actor: options.actor,
+    key: options.key,
+    connectionId: options.connectionId,
+    connect: { member: 'connect', input: connectInput },
+    disconnect: { member: 'disconnect', input: connectInput },
+    protocolRevision: 'sha256:celld-realtime-live-protocol',
+    causalPrincipalId: authority.causalPrincipal.id,
+    authorizationReceipt: authority.authorizationReceipt,
+    trustedContextDigest: authority.trustedContextDigest,
+    leaseMilliseconds: options.leaseMilliseconds,
+    nonce: randomUUID(),
+    issuedAt: issuedAt.toISOString(),
+    expiresAt: new Date(issuedAt.getTime() + 60_000).toISOString(),
+  }, options.signingKey);
+}
+
+interface LiveActorWebSocket {
+  sendAndExpect(
+    member: string,
+    input: object,
+    messageId: string,
+    expectedPosition: number,
+  ): Promise<void>;
+  closeGracefully(member: string, input: object): Promise<void>;
+  waitForClose(timeout: number): Promise<void>;
+  close(): Promise<void>;
+}
+
+async function openActorWebSocket(options: {
+  readonly port: number;
+  readonly actor: string;
+  readonly key: string;
+  readonly ticket: string;
+}): Promise<LiveActorWebSocket> {
+  const url = new URL(
+    `/__applik8s/v1/actors/${encodeURIComponent(options.actor)}/${encodeURIComponent(options.key)}/connections`,
+    `ws://127.0.0.1:${options.port}`,
+  );
+  url.searchParams.set('ticket', options.ticket);
+  const socket = new WebSocket(url);
+  const frames: Array<Readonly<Record<string, unknown>>> = [];
+  let closed = false;
+  let closeResolve!: () => void;
+  const closePromise = new Promise<void>((resolve) => { closeResolve = resolve; });
+  socket.addEventListener('message', (event) => {
+    const data = Reflect.get(event as object, 'data');
+    if (typeof data !== 'string') return;
+    const parsed: unknown = JSON.parse(data);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      frames.push(parsed as Readonly<Record<string, unknown>>);
+    }
+  });
+  socket.addEventListener('close', () => {
+    closed = true;
+    closeResolve();
+  });
+  await new Promise<void>((resolve, reject) => {
+    const timeout = setTimeout(
+      () => reject(new Error(`Timed out opening actor WebSocket ${url.origin}.`)),
+      30_000,
+    );
+    socket.addEventListener('open', () => {
+      clearTimeout(timeout);
+      resolve();
+    });
+    socket.addEventListener('error', () => {
+      clearTimeout(timeout);
+      reject(new Error(`Actor WebSocket ${url.origin} failed during admission.`));
+    });
+  });
+  return {
+    async sendAndExpect(member, input, messageId, expectedPosition) {
+      const start = frames.length;
+      socket.send(JSON.stringify({ type: 'message', member, messageId, input }));
+      try {
+        await expectEventually(async () => {
+          const current = frames.slice(start);
+          const broadcast = current.find((frame) =>
+            frame.type === 'broadcast'
+            && frame.member === 'cursorPublished'
+            && nestedFrameNumber(frame, 'value', 'position') === expectedPosition);
+          const delivery = current.find((frame) =>
+            frame.type === 'delivery'
+            && frame.messageId === messageId);
+          const broadcastRevision = broadcast
+            ? nestedFrameNumber(broadcast, 'receipt', 'revision')
+            : undefined;
+          const deliveryRevision = delivery
+            ? nestedFrameNumber(delivery, 'receipt', 'revision')
+            : undefined;
+          return Boolean(
+            broadcast
+            && delivery
+            && typeof broadcastRevision === 'number'
+            && broadcastRevision >= 1
+            && broadcastRevision === deliveryRevision,
+          );
+        }, true, 30_000);
+      } catch (cause) {
+        throw new Error(
+          `Actor WebSocket message ${messageId} did not produce its broadcast and delivery frames. `
+          + `Observed frames: ${JSON.stringify(frames.slice(start))}. ${errorMessage(cause)}`,
+        );
+      }
+    },
+    async closeGracefully(member, input) {
+      if (closed) return;
+      socket.send(JSON.stringify({ type: 'close', member, input }));
+      await boundedPromise(closePromise, 30_000, 'graceful actor WebSocket close');
+    },
+    waitForClose(timeout) {
+      return boundedPromise(closePromise, timeout, 'actor WebSocket close');
+    },
+    async close() {
+      if (closed) return;
+      socket.close(1000, 'live test cleanup');
+      await boundedPromise(closePromise, 5_000, 'actor WebSocket cleanup');
+    },
+  };
+}
+
+function nestedFrameNumber(
+  frame: Readonly<Record<string, unknown>>,
+  parent: string,
+  field: string,
+): number | undefined {
+  const value = frame[parent];
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const candidate = Reflect.get(value, field);
+  return typeof candidate === 'number' ? candidate : undefined;
+}
+
+async function boundedPromise<T>(
+  promise: Promise<T>,
+  timeout: number,
+  label: string,
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error(`Timed out waiting for ${label}.`)), timeout);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 async function waitForHttp(url: string, timeout: number, accepted: (response: Response) => boolean = response => response.ok): Promise<void> {
