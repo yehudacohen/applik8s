@@ -1,0 +1,140 @@
+{
+  "schemaVersion": 1,
+  "release": "0.8.0",
+  "status": "active",
+  "dispositions": [
+    "canonical-owner",
+    "canonical-consumer",
+    "registered-compatibility-adapter",
+    "explicit-domain-adapter",
+    "pending-migration",
+    "rejected"
+  ],
+  "sources": [
+    {
+      "id": "command-gateway-envelope",
+      "mechanism": "signed-envelope",
+      "path": "packages/applik8s/src/command-gateway.ts",
+      "owner": "@applik8s/applik8s",
+      "disposition": "registered-compatibility-adapter",
+      "canonicalOwner": "@applik8s/runtime/signed-envelope",
+      "formatRegistryEntry": "application-command-cursor-migration",
+      "evidence": "packages/applik8s/test/command-gateway.vertical.test.ts",
+      "remaining": "Advance the registered command cursor migration through the format registry and remove the legacy writer only at its recorded removal release."
+    },
+    {
+      "id": "query-gateway-envelope",
+      "mechanism": "signed-envelope",
+      "path": "packages/applik8s/src/query-gateway.ts",
+      "owner": "@applik8s/applik8s",
+      "disposition": "registered-compatibility-adapter",
+      "canonicalOwner": "@applik8s/runtime/signed-envelope",
+      "formatRegistryEntry": "application-query-cursor-migration",
+      "evidence": "packages/applik8s/test/query-gateway.vertical.test.ts",
+      "remaining": "Advance the registered query cursor migration through the format registry and remove the legacy writer only at its recorded removal release."
+    },
+    {
+      "id": "stream-gateway-envelope",
+      "mechanism": "signed-envelope",
+      "path": "packages/applik8s/src/stream-subscription-gateway.ts",
+      "owner": "@applik8s/applik8s",
+      "disposition": "registered-compatibility-adapter",
+      "canonicalOwner": "@applik8s/runtime/signed-envelope",
+      "formatRegistryEntry": "application-stream-cursor-migration",
+      "evidence": "packages/applik8s/test/stream-subscription-gateway.vertical.test.ts",
+      "remaining": "Advance the registered stream cursor migration through the format registry and remove the legacy writer only at its recorded removal release."
+    },
+    {
+      "id": "task-query-envelope",
+      "mechanism": "signed-envelope-and-admission",
+      "path": "packages/applik8s/src/task-query-runtime.ts",
+      "owner": "@applik8s/applik8s",
+      "disposition": "registered-compatibility-adapter",
+      "canonicalOwner": "@applik8s/runtime/signed-envelope",
+      "formatRegistryEntry": "task-query-admission-migration",
+      "evidence": "packages/applik8s/test/task-query-runtime.vertical.test.ts",
+      "remaining": "Complete the bounded dual-reader migration and remove the registered legacy admission shape only after its telemetry and rollback window close."
+    },
+    {
+      "id": "object-storage-envelope",
+      "mechanism": "signed-envelope",
+      "path": "packages/applik8s/src/application-object-storage-gateway.ts",
+      "owner": "@applik8s/applik8s",
+      "disposition": "registered-compatibility-adapter",
+      "canonicalOwner": "@applik8s/runtime/signed-envelope",
+      "formatRegistryEntry": "application-object-intent-migration",
+      "evidence": "packages/applik8s/test/application-object-storage-gateway.vertical.test.ts",
+      "remaining": "Advance the registered object-intent migration through the format registry and remove the legacy writer only at its recorded removal release."
+    },
+    {
+      "id": "deterministic-search-normalization",
+      "mechanism": "canonical-json",
+      "path": "packages/applik8s/src/search-runtime.ts",
+      "owner": "@applik8s/applik8s",
+      "disposition": "pending-migration",
+      "canonicalOwner": "@applik8s/core/canonical-json",
+      "evidence": "packages/applik8s/test/search-runtime.vertical.test.ts",
+      "remaining": "Replace the provider-local stable JSON normalizer with the named search Canonical JSON v1 policy while preserving provider continuation semantics."
+    },
+    {
+      "id": "postgres-search-normalization",
+      "mechanism": "canonical-json",
+      "path": "packages/applik8s/src/search-runtime-postgres.ts",
+      "owner": "@applik8s/applik8s",
+      "disposition": "pending-migration",
+      "canonicalOwner": "@applik8s/core/canonical-json",
+      "evidence": "packages/applik8s/test/search-runtime-postgres.vertical.test.ts",
+      "remaining": "Replace the PostgreSQL provider-local normalizer with the same named search policy and retain only typed PostgreSQL continuation state."
+    },
+    {
+      "id": "opensearch-normalization",
+      "mechanism": "canonical-json-provider-adapter",
+      "path": "packages/runtime-opensearch/src/index.ts",
+      "owner": "@applik8s/runtime-opensearch",
+      "disposition": "explicit-domain-adapter",
+      "canonicalOwner": "@applik8s/core/canonical-json",
+      "evidence": "packages/runtime-opensearch/test/runtime.vertical.test.ts",
+      "remaining": "Register the OpenSearch value adapter as a named Canonical JSON policy input and prove provider-differential cursor behavior before declaring the search cohort closed."
+    },
+    {
+      "id": "application-graph-serialization",
+      "mechanism": "canonical-json-reference-adapter",
+      "path": "packages/core/src/application-graph-serialization.ts",
+      "owner": "@applik8s/core",
+      "disposition": "pending-migration",
+      "canonicalOwner": "@applik8s/core/canonical-json",
+      "evidence": "packages/applik8s/test/native-model-application.vertical.test.ts",
+      "remaining": "Express graph references through an explicit Canonical JSON v1 adapter and preserve the released graph digest through a compatibility fixture."
+    },
+    {
+      "id": "deployment-contract-serialization",
+      "mechanism": "canonical-json",
+      "path": "packages/deployment-contract/src/serialization.ts",
+      "owner": "@applik8s/deployment-contract",
+      "disposition": "pending-migration",
+      "canonicalOwner": "@applik8s/core/canonical-json",
+      "evidence": "packages/deployment-contract/test/deployment-graph.vertical.test.ts",
+      "remaining": "Move deployment-contract bytes to a named Canonical JSON v1 policy and prove retained artifact compatibility."
+    },
+    {
+      "id": "compiler-manifest-serialization",
+      "mechanism": "canonical-json",
+      "path": "packages/compiler/src/manifest/index.ts",
+      "owner": "@applik8s/compiler",
+      "disposition": "pending-migration",
+      "canonicalOwner": "@applik8s/core/canonical-json",
+      "evidence": "packages/compiler/test/compiler-artifacts.vertical.test.ts",
+      "remaining": "Remove the remaining runtime-identity private serializer after its named policy and bundle digest compatibility fixture land."
+    },
+    {
+      "id": "client-store-serialization",
+      "mechanism": "canonical-json",
+      "path": "packages/client/src/store.ts",
+      "owner": "@applik8s/client",
+      "disposition": "pending-migration",
+      "canonicalOwner": "@applik8s/core/canonical-json",
+      "evidence": "packages/client/test/store.vertical.test.ts",
+      "remaining": "Use the named client-store Canonical JSON v1 policy and prove browser and Node snapshot-key parity."
+    }
+  ]
+}

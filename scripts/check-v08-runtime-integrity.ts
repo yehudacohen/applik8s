@@ -33,6 +33,28 @@ const expectedAdmissionAdapters = new Set([
   'actor-call-alarm',
   'agent-ai-execution',
 ]);
+const expectedInventoryPaths = new Set([
+  'packages/applik8s/src/command-gateway.ts',
+  'packages/applik8s/src/query-gateway.ts',
+  'packages/applik8s/src/stream-subscription-gateway.ts',
+  'packages/applik8s/src/task-query-runtime.ts',
+  'packages/applik8s/src/application-object-storage-gateway.ts',
+  'packages/applik8s/src/search-runtime.ts',
+  'packages/applik8s/src/search-runtime-postgres.ts',
+  'packages/runtime-opensearch/src/index.ts',
+  'packages/core/src/application-graph-serialization.ts',
+  'packages/deployment-contract/src/serialization.ts',
+  'packages/compiler/src/manifest/index.ts',
+  'packages/client/src/store.ts',
+]);
+const inventoryDispositions = new Set([
+  'canonical-owner',
+  'canonical-consumer',
+  'registered-compatibility-adapter',
+  'explicit-domain-adapter',
+  'pending-migration',
+  'rejected',
+]);
 
 for (const maintainedRoot of maintainedRoots) {
   for (const file of await sourceFiles(join(root, maintainedRoot))) {
@@ -87,6 +109,74 @@ for (const adapter of adapters) {
   if (adapter.state === 'implemented'
     && ((adapter.owners?.length ?? 0) === 0 || !adapter.regression?.trim())) {
     findings.push(`Implemented admission adapter ${adapter.id} lacks owners or executable regression evidence.`);
+  }
+}
+
+const sourceInventory = JSON.parse(
+  await readFile(join(root, 'docs/v0.8-runtime-integrity-source-inventory.json'), 'utf8'),
+) as {
+  readonly sources?: readonly {
+    readonly id?: string;
+    readonly path?: string;
+    readonly canonicalOwner?: string;
+    readonly disposition?: string;
+    readonly formatRegistryEntry?: string;
+    readonly evidence?: string | null;
+    readonly remaining?: string | null;
+  }[];
+};
+const inventorySources = sourceInventory.sources ?? [];
+const formatRegistry = JSON.parse(
+  await readFile(join(root, 'docs/v0.8-format-registry.json'), 'utf8'),
+) as { readonly entries?: readonly { readonly id?: string }[] };
+const formatRegistryIds = new Set((formatRegistry.entries ?? []).map((entry) => entry.id));
+const inventoryIds = new Set<string>();
+const inventoryPaths = new Set<string>();
+for (const source of inventorySources) {
+  if (!source.id || inventoryIds.has(source.id)) {
+    findings.push(`Runtime Integrity source inventory contains a duplicate or missing identity ${source.id ?? '<missing>'}.`);
+  } else {
+    inventoryIds.add(source.id);
+  }
+  if (!source.path || inventoryPaths.has(source.path)) {
+    findings.push(`Runtime Integrity source inventory contains a duplicate or missing path ${source.path ?? '<missing>'}.`);
+  } else {
+    inventoryPaths.add(source.path);
+    try {
+      await readFile(join(root, source.path));
+    } catch {
+      findings.push(`Runtime Integrity source inventory path does not exist: ${source.path}.`);
+    }
+  }
+  if (!inventoryDispositions.has(source.disposition ?? '')) {
+    findings.push(`Runtime Integrity source ${source.id ?? '<missing>'} has unknown disposition ${source.disposition ?? '<missing>'}.`);
+  }
+  if (!source.canonicalOwner?.trim()) {
+    findings.push(`Runtime Integrity source ${source.id ?? '<missing>'} lacks a canonical owner.`);
+  }
+  if (!source.evidence?.trim()) {
+    findings.push(`Runtime Integrity source ${source.id ?? '<missing>'} lacks an evidence path.`);
+  } else {
+    try {
+      await readFile(join(root, source.evidence));
+    } catch {
+      findings.push(`Runtime Integrity source ${source.id ?? '<missing>'} evidence path does not exist: ${source.evidence}.`);
+    }
+  }
+  if (source.disposition === 'registered-compatibility-adapter'
+    && (!source.formatRegistryEntry || !formatRegistryIds.has(source.formatRegistryEntry))) {
+    findings.push(`Runtime Integrity compatibility source ${source.id ?? '<missing>'} is not backed by a format-registry entry.`);
+  }
+  if ((source.disposition === 'pending-migration'
+      || source.disposition === 'registered-compatibility-adapter'
+      || source.disposition === 'explicit-domain-adapter')
+    && !source.remaining?.trim()) {
+    findings.push(`Runtime Integrity source ${source.id ?? '<missing>'} has unfinished disposition ${source.disposition} without explicit remaining work.`);
+  }
+}
+for (const path of expectedInventoryPaths) {
+  if (!inventoryPaths.has(path)) {
+    findings.push(`Runtime Integrity source inventory is missing known released-source path ${path}.`);
   }
 }
 
