@@ -82,6 +82,22 @@ describe('generated workflow-only schedule control', () => {
         },
         functionNative: true,
       },
+      {
+        id: 'schedule.delayed-digest', kind: 'schedule', name: 'delayed-digest', stability: 'stable',
+        definition: {
+          id: 'delayed-digest', configuration: 'fixed', at: '2026-08-23T04:30:00.000Z', timezone: 'UTC', overlap: 'skip', misfires: 'latest',
+          maximumLatenessSeconds: 300, retry: { maxAttempts: 4, maximumAgeSeconds: 3_600 },
+          requirements: { configuration: 'fixed', cardinality: 'bounded', precision: 'minute' },
+        },
+        scheduler: { interface: 'Scheduler', nodeId: 'provider.scheduler' },
+        state: { interface: 'TransactionalDatabase', nodeId: 'provider.transactional-database' },
+        target: {
+          kind: 'durableStart', durable: { kind: 'workflow', nodeId: 'workflow.digest.v1' },
+          contract: { name: 'digest', version: 'v1', input: schema({ type: 'object' }) },
+          input: { kind: 'literal', value: { reason: 'delayed' } },
+        },
+        functionNative: true,
+      },
     ] as unknown as ApplicationGraphNode[]);
     const [artifact] = await emitGeneratedApplicationReactive({
       graph,
@@ -101,6 +117,7 @@ describe('generated workflow-only schedule control', () => {
       'Role',
       'RoleBinding',
       'Service',
+      'CronJob',
       'CronJob',
     ]);
     const deployment = artifact?.resources.find((resource) => resource.kind === 'Deployment');
@@ -130,6 +147,29 @@ describe('generated workflow-only schedule control', () => {
       apiGroups: ['batch'],
       resources: ['cronjobs'],
       verbs: ['create', 'delete', 'get', 'list', 'patch', 'update', 'watch'],
+    });
+    const oneTimeCronJob = artifact?.resources
+      .filter((resource) => resource.kind === 'CronJob')
+      .find((resource) => (resource.metadata.annotations as Readonly<Record<string, string>> | undefined)?.['applik8s.dev/schedule-definition'] === 'delayed-digest');
+    const oneTimeSpec = oneTimeCronJob?.spec as {
+      readonly jobTemplate: {
+        readonly spec: {
+          readonly template: {
+            readonly spec: {
+              readonly containers: readonly [{
+                readonly env: readonly { readonly name: string; readonly value?: string }[];
+              }];
+            };
+          };
+        };
+      };
+    } | undefined;
+    const oneTimeAdmission = oneTimeSpec?.jobTemplate.spec.template.spec.containers[0]?.env
+      .find((entry: { readonly name?: string }) => entry.name === 'APPLIK8S_SCHEDULE_ADMISSION')?.value;
+    expect(JSON.parse(String(oneTimeAdmission))).toMatchObject({
+      definitionId: 'delayed-digest',
+      deleteAfterCompletion: true,
+      providerResourceName: oneTimeCronJob?.metadata.name,
     });
     const source = await readFile(artifact?.sourcePath ?? '', 'utf8');
     const generated = await readFile(join(dirname(artifact?.sourcePath ?? ''), 'gateway.generated.ts'), 'utf8');
