@@ -71,7 +71,7 @@
       "kind": "admission-record",
       "wireVersion": "applik8s.actorTurnAuthority/v1alpha1",
       "canonicalContextVersion": "applik8s.admission/v1",
-      "state": "in-progress",
+      "state": "implemented",
       "owner": "@applik8s/applik8s",
       "writers": [
         "0.8.x:legacy-mirror-fields-plus-canonical-admission-context"
@@ -83,7 +83,7 @@
       "maximumLifetime": "actor-alarm-retention-and-retry-window",
       "purposeOrKeyNamespace": "application-actor-turn-authority",
       "migrationPhase": "release-a-reads-complete-legacy-and-dual-write-reads-canonical",
-      "telemetry": "pending-context-version-legacy-read-parity-rejection-and-alarm-recovery-metrics",
+      "telemetry": "applik8s.actor.authority.decode{format,context,outcome}; applik8s.actor.authority.legacy_read{context}; redacted applik8s.actor.authority.rejected lifecycle event; deterministic Release-A retained-alarm recovery regression",
       "rollbackSafeThrough": "0.7.x-readers-retain-every-required-legacy-mirror-field",
       "decoderRemovalRelease": "0.10.0-earliest-after-zero-legacy-read-telemetry-and-expired-retained-alarms"
     },
