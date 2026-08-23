@@ -24,21 +24,21 @@
     },
     {
       "id": "static-workflow-cron",
-      "state": "in-progress",
+      "state": "implemented",
       "disposition": "lower-to-shared-definition",
-      "notes": "Hosted applications lower workflow cron through the shared schedule graph and authorize the ApplicationHost caller. Workflow-only applications still need a generated non-web schedule control worker before this source can be called implemented."
+      "notes": "Hosted applications lower workflow cron through the shared schedule graph and authorize the ApplicationHost caller. Workflow-only applications emit a focused schedule-control worker, exact workflow-gateway authorization, and target-specific fixed-schedule resources; qualified external schedules are excluded. Generated-worker live Hatchet evidence remains provider qualification rather than source-contract evidence."
     },
     {
       "id": "delayed-workflow-start",
-      "state": "in-progress",
+      "state": "implemented",
       "disposition": "lower-durable-future-start-to-one-occurrence",
-      "notes": "Hosted durable future starts lower to a shared one-time schedule occurrence. Workflow-only applications still need the generated non-web schedule control worker and live Hatchet occurrence evidence."
+      "notes": "Hosted and workflow-only durable future starts lower to a shared one-time occurrence through the managed application or focused schedule-control boundary. Exact live Hatchet occurrence and provider-resource cleanup remain provider qualification evidence."
     },
     {
       "id": "dynamic-reconcile-schedule",
-      "state": "in-progress",
+      "state": "implemented",
       "disposition": "framework-convergence-operation",
-      "notes": "Function-native dynamic schedules converge through the shared graph and persist canonical desired state before provider projection. Legacy workflow-only reconciliation still needs migration to the generated control worker."
+      "notes": "Function-native dynamic schedules converge through the shared graph, persist canonical desired state before provider projection, and are served by either the managed application host or the generated workflow-only schedule-control worker. Generated-worker restart/live lifecycle remains provider qualification evidence."
     },
     {
       "id": "stream-processor-schedule",
@@ -96,7 +96,7 @@
         "history-and-observability": "postgres-receipt-and-otel",
         "lifecycle-and-drift": "restart-recoverable-postgres-projection-state-plus-uid-leased-resource-lifecycle"
       },
-      "remaining": "Bounded instance ceiling enforcement plus exact scheduled-time, duplicate occurrence, and retry receipt evidence. OrbStack now proves PostgreSQL-authority restart recovery, create/no-op, drift repair, UID-preserving update, disable, idempotent delete, and owned cleanup."
+      "remaining": "Bounded instance ceiling enforcement plus exact scheduled-time, duplicate occurrence, retry receipt, and generated schedule-control worker lifecycle evidence. OrbStack now proves PostgreSQL-authority restart recovery, create/no-op, drift repair, UID-preserving update, disable, idempotent delete, and owned cleanup."
     },
     {
       "id": "hatchet-shared",
