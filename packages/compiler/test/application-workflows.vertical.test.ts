@@ -499,7 +499,7 @@ platform.workflow('records.edit.v1', {
 });
 export const workflowModelEdit = platform.composition;
 `);
-      const result = await compileTypeKroComposition({
+      const compilation = {
         entrypoint,
         compositionName: 'workflowModelEdit',
         outDir: join(dir, 'dist'),
@@ -518,9 +518,22 @@ export const workflowModelEdit = platform.composition;
             redactPaths: false,
           },
         },
-      });
+      } as const;
+      const result = await compileTypeKroComposition(compilation);
       expect(result.ok, result.ok ? undefined : result.error.message).toBe(true);
       if (!result.ok) return;
+      const repeated = await compileTypeKroComposition({
+        ...compilation,
+        outDir: join(dir, 'dist-repeat'),
+      });
+      expect(
+        repeated.ok,
+        repeated.ok ? undefined : repeated.error.message,
+      ).toBe(true);
+      if (!repeated.ok) return;
+      expect(repeated.value.artifacts.workflowArtifacts[0]?.digest).toBe(
+        result.value.artifacts.workflowArtifacts[0]?.digest,
+      );
       const graph = JSON.parse(
         await readFile(
           result.value.artifacts.applicationGraphJsonPath ?? '',
@@ -640,6 +653,19 @@ export const workflowModelEdit = platform.composition;
         join(dirname(artifact?.sourcePath ?? ''), 'workflow-worker.generated.ts'),
         'utf8',
       );
+      const repeatedArtifact = repeated.value.artifacts.workflowArtifacts[0];
+      expect(
+        await readFile(repeatedArtifact?.sourcePath ?? '', 'utf8'),
+      ).toBe(source);
+      expect(
+        await readFile(
+          join(
+            dirname(repeatedArtifact?.sourcePath ?? ''),
+            'workflow-worker.generated.ts',
+          ),
+          'utf8',
+        ),
+      ).toBe(generatedSource);
       expect(source).toContain('applik8s_command_results');
       expect(source).toContain('records.changed.v1');
       expect(generatedSource).toContain('executeFunctionNativePostgresModelEdit');
