@@ -52,14 +52,19 @@ live('v0.8 distributed celld actor qualification', () => {
     const directory = await mkdtemp(join(tmpdir(), 'applik8s-v08-celld-live-'));
     cleanupActions.push(() => rm(directory, { recursive: true, force: true }));
 
+    const artifact = await generatedCelldArtifact(directory);
+    await preflightCelldDockerLifecycle({
+      network,
+      image,
+      containers: [storage, nodeA, nodeB, nodeC],
+    });
     await docker(['network', 'create', network]);
-    cleanupActions.push(() => docker(['network', 'rm', network]).then(() => undefined));
-    cleanupActions.push(() => docker(['image', 'rm', '--force', image]).then(() => undefined).catch(() => undefined));
+    cleanupActions.push(() => removeDockerNetwork(network));
+    cleanupActions.push(() => removeDockerImage(image));
     for (const container of [storage, nodeA, nodeB, nodeC]) {
-      cleanupActions.push(() => docker(['rm', '--force', container]).then(() => undefined).catch(() => undefined));
+      cleanupActions.push(() => removeDockerContainer(container));
     }
 
-    const artifact = await generatedCelldArtifact(directory);
     await docker(['build', '--tag', image, '--file', String(artifact.sourceDescriptor.dockerfilePath), String(artifact.sourceDescriptor.contextPath)], 300_000);
     expect(await docker(['image', 'inspect', image, '--format', '{{.RepoDigests}}'])).toBeDefined();
 
@@ -222,7 +227,7 @@ async function generatedCelldArtifact(directory: string) {
     installationSpec: { name: 'celld-live', namespace: 'celld-live' },
   });
   const artifact = emitted.graph.nodes.find(({ id }) => id === 'artifact.celld-runtime');
-  if (!artifact || artifact.kind !== 'artifact') throw new Error('The compiler did not emit the celld runtime artifact.');
+  if (artifact?.kind !== 'artifact') throw new Error('The compiler did not emit the celld runtime artifact.');
   const dockerfile = await readFile(String(artifact.spec.sourceDescriptor.dockerfilePath), 'utf8');
   expect(dockerfile).toContain(celldImage);
   expect(dockerfile).toContain('esbuild@0.28.1');
@@ -432,6 +437,77 @@ function actorLiveAuthority(
 async function docker(args: readonly string[], timeout = 120_000): Promise<string> {
   const { stdout } = await run('docker', [...args], { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024, timeout });
   return stdout.trim();
+}
+
+async function preflightCelldDockerLifecycle(options: {
+  readonly network: string;
+  readonly image: string;
+  readonly containers: readonly string[];
+}): Promise<void> {
+  await docker(['version', '--format', '{{.Server.Version}}'], 30_000);
+  await run('aws', ['--version'], {
+    encoding: 'utf8',
+    maxBuffer: 1024 * 1024,
+    timeout: 30_000,
+  });
+  for (const sourceImage of [celldImage, seaweedImage]) {
+    if (!await dockerResourceExists(['image', 'inspect', sourceImage])) {
+      await docker(['pull', sourceImage], 300_000);
+    }
+    if (!await dockerResourceExists(['image', 'inspect', sourceImage])) {
+      throw new Error(`celld live preflight could not resolve pinned image ${sourceImage}.`);
+    }
+  }
+  if (await dockerResourceExists(['network', 'inspect', options.network])) {
+    throw new Error(`celld live preflight found conflicting Docker network ${options.network}.`);
+  }
+  if (await dockerResourceExists(['image', 'inspect', options.image])) {
+    throw new Error(`celld live preflight found conflicting generated image ${options.image}.`);
+  }
+  for (const container of options.containers) {
+    if (await dockerResourceExists(['container', 'inspect', container])) {
+      throw new Error(`celld live preflight found conflicting container ${container}.`);
+    }
+  }
+}
+
+async function removeDockerContainer(name: string): Promise<void> {
+  if (await dockerResourceExists(['container', 'inspect', name])) {
+    await docker(['rm', '--force', name], 60_000);
+  }
+  if (await dockerResourceExists(['container', 'inspect', name])) {
+    throw new Error(`celld live cleanup retained container ${name}.`);
+  }
+}
+
+async function removeDockerImage(name: string): Promise<void> {
+  if (await dockerResourceExists(['image', 'inspect', name])) {
+    await docker(['image', 'rm', '--force', name], 60_000);
+  }
+  if (await dockerResourceExists(['image', 'inspect', name])) {
+    throw new Error(`celld live cleanup retained image ${name}.`);
+  }
+}
+
+async function removeDockerNetwork(name: string): Promise<void> {
+  if (await dockerResourceExists(['network', 'inspect', name])) {
+    await docker(['network', 'rm', name], 60_000);
+  }
+  if (await dockerResourceExists(['network', 'inspect', name])) {
+    throw new Error(`celld live cleanup retained network ${name}.`);
+  }
+}
+
+async function dockerResourceExists(args: readonly string[]): Promise<boolean> {
+  try {
+    await docker(args, 30_000);
+    return true;
+  } catch (cause) {
+    if (/No such (?:container|image|network|object)|not found/iu.test(errorMessage(cause))) {
+      return false;
+    }
+    throw cause;
+  }
 }
 
 async function createS3Bucket(endpoint: string, bucket: string): Promise<void> {
