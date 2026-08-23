@@ -1,6 +1,6 @@
 // typecast-file-boundary: live Kubernetes observations are narrowed only after
 // exact namespace, kind, readiness, and actor-protocol assertions.
-import { spawn, type ChildProcess } from 'node:child_process';
+import { type ChildProcess, spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -10,20 +10,23 @@ import {
   app,
   installApplicationActorRuntimeResolver,
   type,
+  withApplicationActorTurnAuthority,
 } from '@applik8s/applik8s';
 import { emitApplicationDeploymentGraph } from '@applik8s/compiler';
 import type { ApplicationGraph } from '@applik8s/core';
 import {
-  createApplicationAlchemyGraphDeployment,
   type ApplicationAlchemyDeployment,
+  createApplicationAlchemyGraphDeployment,
 } from '@applik8s/deployment-alchemy';
 import type { ApplicationTypeKroCompositionSource } from '@applik8s/deployment-typekro';
 import { createCelldApplicationActorRuntime } from '@applik8s/runtime-celld';
 import { kubernetesComposition } from 'typekro';
 import { expect, it } from 'vitest';
+import { createActorLiveAuthority } from './actor-live-authority.js';
 import {
   assertExpectedKubectlContext,
   describeLive,
+  docker,
   kubectl,
   sleep,
 } from './live-e2e-helpers.js';
@@ -45,8 +48,11 @@ describeLive('v0.8 Celld Kubernetes/TypeKro lifecycle on OrbStack', () => {
     let uninstallRuntime: (() => void) | undefined;
     const builtImages = new Set<string>();
     let destroyed = false;
+    let testFailure: unknown;
+    const cleanupErrors: string[] = [];
 
     try {
+      await preflightActorKubernetesLifecycle(namespace);
       const initialGraph = await emitActorLifecycleGraph({
         application,
         namespace,
@@ -99,7 +105,7 @@ describeLive('v0.8 Celld Kubernetes/TypeKro lifecycle on OrbStack', () => {
       );
       portForward = await startPortForward(
         namespace,
-        `service/${application}-actors`,
+        `pod/${application}-actors-0`,
         8080,
       );
       await waitForHttp(`${portForward.endpoint}/healthz`, 60_000);
@@ -126,6 +132,20 @@ describeLive('v0.8 Celld Kubernetes/TypeKro lifecycle on OrbStack', () => {
         return { count };
       });
       Counter.on.read(turn => turn.state());
+      const admitted = <T>(
+        member: string,
+        input: object,
+        callback: () => Promise<T>,
+      ) => withApplicationActorTurnAuthority(
+        createActorLiveAuthority(
+          application,
+          Counter.id,
+          member,
+          'workspace-a',
+          input,
+        ),
+        callback,
+      );
       uninstallRuntime = installApplicationActorRuntimeResolver(() =>
         createCelldApplicationActorRuntime({
           endpoint: portForward?.endpoint ?? 'http://127.0.0.1:1',
@@ -136,21 +156,31 @@ describeLive('v0.8 Celld Kubernetes/TypeKro lifecycle on OrbStack', () => {
           retryDelay: '250ms',
         }));
 
-      await expect(Counter.increment('workspace-a', { by: 2 }, {
-        idempotencyKey: 'initial-increment',
-      })).resolves.toEqual({ count: 2 });
-      await expect(Counter.increment('workspace-a', { by: 2 }, {
-        idempotencyKey: 'initial-increment',
-      })).resolves.toEqual({ count: 2 });
+      await expect(admitted('increment', { by: 2 }, () =>
+        Counter.increment('workspace-a', { by: 2 }, {
+          idempotencyKey: 'initial-increment',
+        }))).resolves.toEqual({ count: 2 });
+      await expect(admitted('increment', { by: 2 }, () =>
+        Counter.increment('workspace-a', { by: 2 }, {
+          idempotencyKey: 'initial-increment',
+        }))).resolves.toEqual({ count: 2 });
 
       await kubectl([
         'delete', 'pod', `${application}-actors-0`, '--namespace', namespace,
         '--wait=true', '--timeout=120s',
       ]);
+      await portForward.close();
+      portForward = await startPortForward(
+        namespace,
+        `pod/${application}-actors-1`,
+        8080,
+      );
+      await waitForHttp(`${portForward.endpoint}/healthz`, 60_000);
       await expectEventually(
-        () => Counter.increment('workspace-a', { by: 3 }, {
-          idempotencyKey: 'after-pod-loss',
-        }),
+        () => admitted('increment', { by: 3 }, () =>
+          Counter.increment('workspace-a', { by: 3 }, {
+            idempotencyKey: 'after-pod-loss',
+          })),
         { count: 5 },
         120_000,
       );
@@ -189,46 +219,81 @@ describeLive('v0.8 Celld Kubernetes/TypeKro lifecycle on OrbStack', () => {
         240_000,
         'one-node Celld rolling update',
       );
+      await portForward.close();
+      portForward = await startPortForward(
+        namespace,
+        `pod/${application}-actors-0`,
+        8080,
+      );
+      await waitForHttp(`${portForward.endpoint}/healthz`, 60_000);
       await expectEventually(
-        () => Counter.read('workspace-a', {}, {
-          idempotencyKey: `read-after-rollout-${randomUUID()}`,
-        }),
+        () => admitted('read', {}, () =>
+          Counter.read('workspace-a', {}, {
+            idempotencyKey: `read-after-rollout-${randomUUID()}`,
+          })),
         { count: 5 },
         120_000,
       );
 
+      // Failure injection is intentionally out-of-band; ordinary lifecycle
+      // creation and deletion remain exclusively owned by Alchemy/TypeKro.
       await kubectl([
-        'patch', `statefulset/${application}-actors`, '--namespace', namespace,
-        '--type=merge', '--patch', JSON.stringify({ spec: { replicas: 2 } }),
+        'delete', `networkpolicy/${application}-actors-private`, '--namespace', namespace,
+        '--wait=true', '--timeout=120s',
       ]);
       const driftPlan = await deployment.plan();
       expect(driftPlan.changes.some(({ action }) => action === 'update')).toBe(true);
       await deployment.apply();
-      await waitForJson(
-        ['get', `statefulset/${application}-actors`, '--namespace', namespace, '--output=json'],
-        value => nestedNumber(value, 'spec', 'replicas') === 1,
-        180_000,
-        'Celld StatefulSet drift repair',
+      await expectKubernetesResource(
+        namespace,
+        'networkpolicy',
+        `${application}-actors-private`,
       );
 
       await deployment.destroy();
-      destroyed = true;
       await waitForAbsent('namespace', namespace, 300_000);
+      destroyed = true;
       expect((await kubectl([
         'get', 'statefulset,job,service,networkpolicy,pvc,secret',
         '--namespace', namespace, '--ignore-not-found=true', '--output=name',
       ])).stdout.trim()).toBe('');
+    } catch (cause) {
+      testFailure = cause;
     } finally {
       uninstallRuntime?.();
-      if (portForward) await portForward.close();
+      if (portForward) {
+        try { await portForward.close(); } catch (cause) {
+          cleanupErrors.push(`port-forward: ${errorMessage(cause)}`);
+        }
+      }
       if (deployment && !destroyed) {
-        await deployment.destroy().catch(() => undefined);
+        try {
+          await deployment.destroy();
+          await waitForAbsent('namespace', namespace, 300_000);
+          destroyed = true;
+        } catch (cause) {
+          cleanupErrors.push(`deployment destroy: ${errorMessage(cause)}`);
+        }
       }
       for (const image of builtImages) {
-        await removeDockerImage(image);
+        try { await removeDockerImage(image); } catch (cause) {
+          cleanupErrors.push(`image ${image}: ${errorMessage(cause)}`);
+        }
       }
-      await rm(projectRoot, { recursive: true, force: true });
+      try { await rm(projectRoot, { recursive: true, force: true }); } catch (cause) {
+        cleanupErrors.push(`temporary directory: ${errorMessage(cause)}`);
+      }
     }
+    if (cleanupErrors.length > 0) {
+      throw new AggregateError(
+        [
+          ...(testFailure === undefined ? [] : [testFailure]),
+          ...cleanupErrors.map((message) => new Error(message)),
+        ],
+        `Celld Kubernetes cleanup failed:\n${cleanupErrors.join('\n')}`,
+      );
+    }
+    if (testFailure !== undefined) throw testFailure;
   }, 1_200_000);
 });
 
@@ -565,13 +630,80 @@ function nestedNumber(
 }
 
 async function removeDockerImage(reference: string): Promise<void> {
-  await new Promise<void>(resolve => {
-    const child = spawn('docker', ['image', 'rm', '--force', reference], {
-      stdio: 'ignore',
-    });
-    child.once('exit', () => resolve());
-    child.once('error', () => resolve());
-  });
+  if (await dockerImageExists(reference)) {
+    await docker(['image', 'rm', '--force', reference], process.cwd());
+  }
+  if (await dockerImageExists(reference)) {
+    throw new Error(`Docker retained generated image ${reference}.`);
+  }
+}
+
+async function preflightActorKubernetesLifecycle(namespace: string): Promise<void> {
+  await docker(['version', '--format', '{{.Server.Version}}'], process.cwd());
+  const existingNamespace = (await kubectl([
+    'get', `namespace/${namespace}`, '--ignore-not-found=true', '--output=name',
+  ])).stdout.trim();
+  if (existingNamespace) {
+    throw new Error(`Celld Kubernetes preflight found conflicting ${existingNamespace}.`);
+  }
+  const nodes = JSON.parse((await kubectl(['get', 'nodes', '--output=json'])).stdout) as {
+    readonly items?: readonly {
+      readonly status?: {
+        readonly conditions?: readonly {
+          readonly type?: string;
+          readonly status?: string;
+        }[];
+      };
+    }[];
+  };
+  if (!nodes.items?.some((node) =>
+    node.status?.conditions?.some((condition) =>
+      condition.type === 'Ready' && condition.status === 'True'))) {
+    throw new Error('Celld Kubernetes preflight found no Ready node.');
+  }
+  const storageClasses = JSON.parse((await kubectl([
+    'get', 'storageclass', '--output=json',
+  ])).stdout) as {
+    readonly items?: readonly {
+      readonly metadata?: {
+        readonly annotations?: Readonly<Record<string, string>>;
+      };
+    }[];
+  };
+  if (!storageClasses.items?.some(({ metadata }) =>
+    metadata?.annotations?.['storageclass.kubernetes.io/is-default-class'] === 'true'
+    || metadata?.annotations?.['storageclass.beta.kubernetes.io/is-default-class'] === 'true')) {
+    throw new Error('Celld Kubernetes preflight requires one default StorageClass.');
+  }
+  for (const resource of [
+    'namespaces',
+    'deployments.apps',
+    'statefulsets.apps',
+    'jobs.batch',
+    'persistentvolumeclaims',
+    'services',
+    'secrets',
+    'networkpolicies.networking.k8s.io',
+  ]) {
+    const allowed = (await kubectl(['auth', 'can-i', 'create', resource])).stdout.trim();
+    if (allowed !== 'yes') {
+      throw new Error(`Celld Kubernetes preflight cannot create ${resource}.`);
+    }
+  }
+}
+
+async function dockerImageExists(reference: string): Promise<boolean> {
+  try {
+    await docker(['image', 'inspect', reference], process.cwd());
+    return true;
+  } catch (cause) {
+    if (/No such image|not found/iu.test(errorMessage(cause))) return false;
+    throw cause;
+  }
+}
+
+function errorMessage(cause: unknown): string {
+  return cause instanceof Error ? cause.message : String(cause);
 }
 
 function actorLifecycleKind(application: string): string {

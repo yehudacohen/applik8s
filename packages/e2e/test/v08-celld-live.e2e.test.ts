@@ -1,26 +1,26 @@
 // typecast-file-boundary: Docker and celld HTTP responses are admitted only
 // after exact process, protocol, and actor-result assertions in this live gate.
 import { execFile } from 'node:child_process';
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { createServer, type Server } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import {
+  type ApplicationActorTurnAuthority,
   actor,
   app,
   executeApplicationActorAlarm,
   installApplicationActorRuntimeResolver,
   type,
   withApplicationActorTurnAuthority,
-  type ApplicationActorTurnAuthority,
-  type ApplicationAuthorizationReceipt,
 } from '@applik8s/applik8s';
 import { emitApplicationDeploymentGraph } from '@applik8s/compiler';
 import type { ApplicationGraph } from '@applik8s/core';
 import { createCelldApplicationActorRuntime } from '@applik8s/runtime-celld';
 import { afterAll, describe, expect, test } from 'vitest';
+import { createActorLiveAuthority } from './actor-live-authority.js';
 
 const live = process.env.APPLIK8S_E2E_CELLD === '1' ? describe : describe.skip;
 const run = promisify(execFile);
@@ -110,7 +110,7 @@ live('v0.8 distributed celld actor qualification', () => {
       if (current.count === input.expectedCount) await turn.setState({ ...current, expired: true });
     });
     const admitted = <T>(member: string, key: string, input: object, callback: () => Promise<T>) =>
-      withApplicationActorTurnAuthority(actorLiveAuthority(`celld-live-${suffix}`, Counter.id, member, key, input), callback);
+      withApplicationActorTurnAuthority(createActorLiveAuthority(`celld-live-${suffix}`, Counter.id, member, key, input), callback);
 
     let activeRuntime = createCelldApplicationActorRuntime({ endpoint: 'http://127.0.0.1:1', authorization });
     const uninstallRuntime = installApplicationActorRuntimeResolver(() => activeRuntime);
@@ -180,11 +180,13 @@ live('v0.8 distributed celld actor qualification', () => {
       60_000,
     );
 
-    const diagnosis = await docker([
-      'run', '--rm', '--network', network, ...storageEnvironment(), image,
-      'diagnose', '--bucket', `s3://${bucket}`,
-      '--endpoint', `http://${storage}:8333`, '--region', 'us-east-1',
-    ], 60_000);
+    const diagnosis = await diagnoseCelldFleet({
+      network,
+      image,
+      bucket,
+      storage,
+      timeout: 90_000,
+    });
     expect(diagnosis).not.toMatch(/unreachable|malformed|incompatible|failed/iu);
   }, 900_000);
 });
@@ -355,6 +357,31 @@ async function waitForHttp(url: string, timeout: number, accepted: (response: Re
   throw new Error(`Timed out waiting for ${url}: ${latest}`);
 }
 
+async function diagnoseCelldFleet(options: {
+  readonly network: string;
+  readonly image: string;
+  readonly bucket: string;
+  readonly storage: string;
+  readonly timeout: number;
+}): Promise<string> {
+  const deadline = Date.now() + options.timeout;
+  let latest: unknown = new Error('fleet diagnosis was not attempted');
+  while (Date.now() < deadline) {
+    try {
+      return await docker([
+        'run', '--rm', '--network', options.network,
+        ...storageEnvironment(), options.image,
+        'diagnose', '--bucket', `s3://${options.bucket}`,
+        '--endpoint', `http://${options.storage}:8333`, '--region', 'us-east-1',
+      ], 60_000);
+    } catch (cause) {
+      latest = cause;
+    }
+    await delay(1_000);
+  }
+  throw new Error(`Timed out waiting for celld fleet convergence: ${errorMessage(latest)}`);
+}
+
 async function expectEventually<T>(operation: () => Promise<T>, expected: T, timeout: number): Promise<void> {
   const deadline = Date.now() + timeout;
   let latest: unknown;
@@ -372,66 +399,6 @@ async function expectEventually<T>(operation: () => Promise<T>, expected: T, tim
 async function closeServer(server: Server): Promise<void> {
   if (!server.listening) return;
   await new Promise<void>((resolveClose, rejectClose) => server.close(error => error ? rejectClose(error) : resolveClose()));
-}
-
-function actorLiveAuthority(
-  application: string,
-  actorId: string,
-  member: string,
-  key: string,
-  input: object,
-): ApplicationActorTurnAuthority & { readonly authorizationReceipt: ApplicationAuthorizationReceipt } {
-  const operationId = `applik8s://actors/${actorId}/operations/${member}` as const;
-  const trustedContextDigest = 'sha256:celld-live-context';
-  const catalogRevision = 'sha256:celld-live-catalog';
-  const authorityRevision = 'sha256:celld-live-authority';
-  const admittedAt = new Date().toISOString();
-  const canonical = (value: unknown): string => {
-    if (value === undefined) return 'null';
-    if (value === null || typeof value !== 'object') return JSON.stringify(value);
-    if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`;
-    return `{${Object.entries(value)
-      .filter(([, entry]) => entry !== undefined)
-      .sort(([left], [right]) => left.localeCompare(right))
-      .map(([name, entry]) => `${JSON.stringify(name)}:${canonical(entry)}`)
-      .join(',')}}`;
-  };
-  const inputDigest = `sha256:${createHash('sha256').update(canonical(input)).digest('hex')}`;
-  const principal = {
-    id: 'principal:celld-live',
-    identity: { id: 'identity:celld-live', kind: 'human' as const, issuer: 'applik8s-e2e', subject: 'celld-live' },
-    kind: 'human' as const,
-    authenticationMethod: 'e2e',
-    audience: [application],
-    trustedContextDigest,
-    catalogRevision,
-    authorityRevision,
-    admittedAt,
-  };
-  return {
-    principal: { id: principal.id },
-    causalPrincipal: { id: principal.id },
-    trustedContextDigest,
-    authorizationReceipt: {
-      apiVersion: 'applik8s.authorizationReceipt/v1alpha1',
-      id: `receipt:${member}:${randomUUID()}`,
-      application,
-      operationId,
-      operationVersion: 'v1',
-      catalogRevision,
-      authorityRevision,
-      principal,
-      trustedContextDigest,
-      matchedPermissionIds: ['permission:celld-live'],
-      matchedGrantIds: ['grant:celld-live'],
-      inputDigest,
-      target: { kind: 'target', model: actorId, identity: { key } },
-      scopeEvidence: [{ kind: 'all' }],
-      audience: application,
-      transport: member === 'expire' ? 'control-plane' : 'direct',
-      admittedAt,
-    },
-  };
 }
 
 async function docker(args: readonly string[], timeout = 120_000): Promise<string> {
