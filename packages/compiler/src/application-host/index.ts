@@ -145,7 +145,7 @@ export async function emitGeneratedApplicationHost(options: {
     options.graph,
     namespace,
   );
-  const scheduleDatabaseEnvironment = applicationHostScheduleDatabaseEnvironment(
+  const scheduleDatabaseEnvironment = applicationScheduleDatabaseEnvironment(
     options.graph,
     namespace,
   );
@@ -241,7 +241,7 @@ export async function emitGeneratedApplicationHost(options: {
                 { name: 'APPLIK8S_CURSOR_SECRET', valueFrom: { secretKeyRef: { name: cursorSecretName, key: cursorSecretKey } } },
                 ...internalOperationEnvironment,
                 ...scheduleDatabaseEnvironment,
-                ...applicationHostWorkflowScheduleEnvironment(options.graph),
+                ...applicationWorkflowScheduleEnvironment(options.graph),
                 ...identityDatabaseEnvironment,
                 ...objectStorageEnvironment,
               ],
@@ -309,7 +309,7 @@ export async function emitGeneratedApplicationHost(options: {
       spec: { minAvailable: 1, selector: { matchLabels: labels } },
     });
   }
-  emitted.push(...applicationHostFixedScheduleResources({
+  emitted.push(...applicationKubernetesFixedScheduleResources({
     graph: options.graph,
     namespace,
     hostName: name,
@@ -321,7 +321,7 @@ export async function emitGeneratedApplicationHost(options: {
   return emitted;
 }
 
-function applicationHostFixedScheduleResources(options: {
+export function applicationKubernetesFixedScheduleResources(options: {
   readonly graph: ApplicationGraph;
   readonly namespace: string;
   readonly hostName: string;
@@ -334,6 +334,7 @@ function applicationHostFixedScheduleResources(options: {
     if (node.kind !== 'schedule' || node.definition.configuration !== 'fixed') return false;
     const provider = options.graph.nodes.find((candidate) => candidate.id === node.scheduler.nodeId);
     return provider?.kind === 'provider'
+      && !provider.config?.qualification
       && (provider.implementation === 'target-selected' || provider.implementation === 'kubernetes-cronjob-scheduler');
   });
   return schedules.map((node) => {
@@ -532,7 +533,7 @@ function applicationHostInternalOperationEnvironment(
   }];
 }
 
-function applicationHostWorkflowScheduleEnvironment(
+export function applicationWorkflowScheduleEnvironment(
   graph: ApplicationGraph,
 ): readonly Readonly<Record<string, unknown>>[] {
   return graph.nodes.some(
@@ -545,7 +546,7 @@ function applicationHostWorkflowScheduleEnvironment(
     : [];
 }
 
-function applicationHostScheduleDatabaseEnvironment(
+export function applicationScheduleDatabaseEnvironment(
   graph: ApplicationGraph,
   hostNamespace: string,
 ): readonly Readonly<Record<string, unknown>>[] {

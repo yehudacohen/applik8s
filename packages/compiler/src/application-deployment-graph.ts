@@ -513,6 +513,10 @@ export function applicationProviderConsumerWorkloads(
         : []),
   );
   const applicationHostName = applicationHostWorkloadName(graph);
+  const scheduleControlName = applicationHostName
+    ?? (graph.nodes.some((node) => node.kind === "schedule")
+      ? kubernetesName(`${graph.metadata.name}-schedule-control`)
+      : undefined);
   return new Set(
     graph.nodes.flatMap((node) => {
       if (!consumerIds.has(node.id)) return [];
@@ -532,12 +536,12 @@ export function applicationProviderConsumerWorkloads(
       if (node.kind === "actor" && applicationHostName) {
         return [applicationHostName];
       }
-      if (node.kind === "schedule" && applicationHostName) {
+      if (node.kind === "schedule" && scheduleControlName) {
         const scheduler = graph.nodes.find(
           (candidate) => candidate.id === node.scheduler.nodeId,
         );
         return scheduler?.kind === "provider" && !scheduler.config?.qualification
-          ? [applicationHostName]
+          ? [scheduleControlName]
           : [];
       }
       return [];
@@ -565,6 +569,7 @@ function isApplicationRuntimeDeployment(resource: DeploymentJsonObject): boolean
   const component = labels?.["app.kubernetes.io/component"];
   return component === "typed-http"
     || component === "application-host"
+    || component === "schedule-control"
     || component === "stream-processor"
     || component === "workflow-worker"
     || component === "reactive-runtime"

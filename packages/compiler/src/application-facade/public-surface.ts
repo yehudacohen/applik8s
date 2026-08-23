@@ -51,7 +51,6 @@ export function applicationGraphWithEntrypointPublicSurface(
   const graphWithWorkflowSchedules = applicationGraphWithWorkflowSchedules(
     graph,
     surface.durables ?? [],
-    surface.hosted === true,
   );
   const graphWithSchedules = applicationGraphWithEntrypointSchedules(
     graphWithWorkflowSchedules.graph,
@@ -232,21 +231,10 @@ export function applicationGraphWithEntrypointPublicSurface(
 function applicationGraphWithWorkflowSchedules(
   graph: ApplicationGraph,
   exported: readonly { readonly kind: 'workflow' | 'task'; readonly id: string }[],
-  hosted: boolean,
 ): {
   readonly graph: ApplicationGraph;
   readonly schedules: readonly ApplicationScheduleNode[];
 } {
-  // Dynamic workflow/task schedule configuration is currently served by the
-  // generated ApplicationHost control boundary. Do not add an undeployable
-  // Scheduler requirement to workflow-only graphs: those continue through the
-  // compatibility runtime until the dedicated non-web schedule control worker
-  // is lowered. The compile pipeline infers the host before this pass for Start
-  // applications, so the supported golden path still receives the shared graph.
-  const hasApplicationHost = graph.nodes.some(
-    (node) => node.kind === 'provider' && node.interface === 'ApplicationHost',
-  );
-  if (!hosted && !hasApplicationHost) return { graph, schedules: [] };
   const durableNodeIds = reachableDurableScheduleTargets(graph, exported);
   const schedules: ApplicationScheduleNode[] = [];
   const nodes = graph.nodes.map((node) => {

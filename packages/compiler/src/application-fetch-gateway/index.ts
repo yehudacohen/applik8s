@@ -1,10 +1,9 @@
 // typecast-file-boundary: Generated graph nodes are discriminated by kind before compiler-specific fields are materialized.
 import { createHash } from "node:crypto";
 import { resolve } from "node:path";
-import { applicationOperationId } from "@applik8s/core";
 import type {
-	ApplicationAIAgentNode,
 	ApplicationActorNode,
+	ApplicationAIAgentNode,
 	ApplicationCrdNode,
 	ApplicationGatewayNode,
 	ApplicationGraph,
@@ -14,10 +13,11 @@ import type {
 	ApplicationProviderNode,
 	ApplicationQueryNode,
 	ApplicationScheduleNode,
-	ApplicationServerNode,
 	ApplicationSerializedCallbackContract,
+	ApplicationServerNode,
 	ApplicationWorkloadAuthorityEnvelope,
 } from "@applik8s/core";
+import { applicationOperationId } from "@applik8s/core";
 import { applicationRuntimeEndpointEnvironmentName } from "@applik8s/deployment-contract";
 import { applicationGraphStringValue } from "../application-installation-values.js";
 import {
@@ -30,6 +30,24 @@ const applicationRuntimeNamespaceMarker = "__APPLIK8S_RUNTIME_NAMESPACE__";
 export interface GeneratedApplicationFetchGatewayModules {
 	readonly entrypoint: string;
 	readonly files: Readonly<Record<string, string>>;
+}
+
+export interface GeneratedApplicationFetchGatewayOptions {
+	readonly modelExports?: readonly {
+		readonly name: string;
+		readonly modelName: string;
+	}[];
+	readonly actorExports?: readonly {
+		readonly name: string;
+		readonly actorId: string;
+	}[];
+	/** Emits only the schedule-control surface for a non-web application. */
+	readonly surface?: "all" | "schedules";
+	readonly scheduleHost?: {
+		readonly name: string;
+		readonly namespace: string;
+		readonly port: number;
+	};
 }
 
 interface ApplicationLakehouseDatasetBinding {
@@ -57,17 +75,9 @@ interface ApplicationLakehouseDatasetBinding {
  */
 export function generatedApplicationFetchGatewayModules(
 	graph: ApplicationGraph,
-	options: {
-		readonly modelExports?: readonly {
-			readonly name: string;
-			readonly modelName: string;
-		}[];
-		readonly actorExports?: readonly {
-			readonly name: string;
-			readonly actorId: string;
-		}[];
-	} = {},
+	options: GeneratedApplicationFetchGatewayOptions = {},
 ): GeneratedApplicationFetchGatewayModules | undefined {
+	const schedulesOnly = options.surface === "schedules";
 	const exportedModels = new Set(
 		(options.modelExports ?? []).map((model) => model.modelName),
 	);
@@ -86,7 +96,7 @@ export function generatedApplicationFetchGatewayModules(
 			node.kind === "command" ? [[node.id, node] as const] : [],
 		),
 	);
-	const remoteGateways = graph.nodes.filter(
+	const remoteGateways = schedulesOnly ? [] : graph.nodes.filter(
 		(node): node is ApplicationGatewayNode =>
 			node.kind === "gateway" &&
 			node.materialization === "generatedDeployment" &&
@@ -98,21 +108,21 @@ export function generatedApplicationFetchGatewayModules(
 						: false;
 				})),
 	);
-	const objectStores = graph.nodes.filter(
+	const objectStores = schedulesOnly ? [] : graph.nodes.filter(
 		(node): node is ApplicationObjectStoreNode => node.kind === "objectStore",
 	);
-	const objectStorageProviderNames = graph.nodes.flatMap((node) =>
+	const objectStorageProviderNames = schedulesOnly ? [] : graph.nodes.flatMap((node) =>
 		node.kind === "provider" && node.interface === "ObjectStorage"
 			&& !node.config?.qualification
 			? [node.name]
 			: [],
 	);
-	const gatewayObservationSubjects = graph.nodes.flatMap((node) =>
+	const gatewayObservationSubjects = schedulesOnly ? [] : graph.nodes.flatMap((node) =>
 		node.kind === "gateway" || node.kind === "server" || node.kind === "exposure"
 			? [node.name]
 			: [],
 	);
-	const agents = graph.nodes.filter(
+	const agents = schedulesOnly ? [] : graph.nodes.filter(
 		(node): node is ApplicationAIAgentNode => node.kind === "aiAgent",
 	);
 	const schedules = graph.nodes.filter((node): node is ApplicationScheduleNode => {
@@ -124,14 +134,14 @@ export function generatedApplicationFetchGatewayModules(
 		(schedule): schedule is ApplicationScheduleNode & { readonly target: NonNullable<ApplicationScheduleNode["target"]> } =>
 			schedule.target?.kind === "durableStart",
 	);
-	const actors = graph.nodes.filter(
+	const actors = schedulesOnly ? [] : graph.nodes.filter(
 		(node): node is ApplicationActorNode => node.kind === "actor",
 	);
 	const publicActorIds = new Set((options.actorExports ?? []).map(({ actorId }) => actorId));
 	const publicActors = actors.filter((actor) =>
 		actor.publication?.boundary === "entrypoint-export" && publicActorIds.has(actor.definition.id),
 	);
-	const lakehousePublications = graph.nodes.filter(
+	const lakehousePublications = schedulesOnly ? [] : graph.nodes.filter(
 		(node): node is ApplicationLakehousePublicationNode =>
 			node.kind === "lakehousePublication",
 	);
@@ -140,17 +150,19 @@ export function generatedApplicationFetchGatewayModules(
 		lakehousePublications,
 	);
 	const lakehouseQueries = applicationLakehouseQueries(graph);
-	const observability = graph.nodes.filter(
+	const observability = schedulesOnly ? [] : graph.nodes.filter(
 		(node): node is ApplicationProviderNode =>
 			node.kind === "provider" &&
 			node.interface === "Observability" &&
 			!node.config?.qualification,
 	);
 	const agentTargets = applicationAgentGatewayTargets(graph, agents);
-	const remoteRoutes = mergeRemoteRouteContracts(
-		applicationRemoteGatewayRoutes(graph, remoteGateways),
-		applicationPublishedHttpRoutes(graph),
-	);
+	const remoteRoutes = schedulesOnly
+		? { routes: [], health: [] }
+		: mergeRemoteRouteContracts(
+			applicationRemoteGatewayRoutes(graph, remoteGateways),
+			applicationPublishedHttpRoutes(graph),
+		);
 	const hasRemoteQueries = remoteRoutes.routes.some(([route]) =>
 		route.startsWith("query:"),
 	);
@@ -159,19 +171,19 @@ export function generatedApplicationFetchGatewayModules(
 	// a duplicate local Kubernetes gateway in the web host would both bypass the
 	// declared workload boundary and pull the Kubernetes SDK into an otherwise
 	// lean SSR image even though the route is always forwarded first.
-	const queries = graph.nodes.filter(
+	const queries = schedulesOnly ? [] : graph.nodes.filter(
 		(node): node is ApplicationQueryNode =>
 			node.kind === "query" &&
 			Boolean(node.kubernetes) &&
 			!routed.has(`query:${node.publicId ?? `${node.name}.${node.version}`}`),
 	);
-	const commands = graph.nodes.filter(
+	const commands = schedulesOnly ? [] : graph.nodes.filter(
 		(node): node is ApplicationCrdNode =>
 			node.kind === "crd" &&
 			Boolean(node.create) &&
 			!routed.has(`command:${node.name}.create`),
 	);
-	const identityCandidates = graph.nodes.filter(
+	const identityCandidates = schedulesOnly ? [] : graph.nodes.filter(
 		(node): node is ApplicationProviderNode =>
 			node.kind === "provider" && node.interface === "IdentityProvider",
 	);
@@ -183,8 +195,9 @@ export function generatedApplicationFetchGatewayModules(
 	const identity = identityCandidates.filter(
 		(node) => !node.config?.qualification,
 	);
-	const identityAuthorityDatabaseEnvironment =
-		applicationFetchGatewayIdentityAuthorityDatabaseEnvironment(graph);
+	const identityAuthorityDatabaseEnvironment = schedulesOnly
+		? undefined
+		: applicationFetchGatewayIdentityAuthorityDatabaseEnvironment(graph);
 	const operationCatalog = identityAuthorityDatabaseEnvironment
 		? compileApplicationOperationCatalog(graph)
 		: undefined;
@@ -219,7 +232,7 @@ export function generatedApplicationFetchGatewayModules(
 		throw new Error(
 			"Generated application Fetch gateway requires exactly one IdentityProvider provider.",
 		);
-	const hasManagedActorCallers = graph.nodes.some((node) =>
+	const hasManagedActorCallers = !schedulesOnly && graph.nodes.some((node) =>
 		(node.kind === 'taskHandler' && (node.actors?.length ?? 0) > 0)
 		|| (node.kind === 'aiAgent' && (node.actors?.length ?? 0) > 0)
 		|| (node.kind === 'streamProcessor' && (node.actorBindings?.length ?? 0) > 0));
@@ -311,7 +324,11 @@ export function generatedApplicationFetchGatewayModules(
 				? (() => {
 					const target = {
 						contract: `${scheduleNode.target.contract.name}.${scheduleNode.target.contract.version}`,
-						endpoint: applicationScheduleWorkflowGatewayEndpoint(graph, scheduleNode),
+						endpoint: applicationScheduleWorkflowGatewayEndpoint(
+							graph,
+							scheduleNode,
+							options.scheduleHost,
+						),
 					};
 					if (scheduleNode.target.input.kind === "literal") {
 						return `async (context) => startScheduledWorkflow(${JSON.stringify({
@@ -332,7 +349,7 @@ export function generatedApplicationFetchGatewayModules(
 					definition.overlapBy,
 				)
 			: undefined;
-		const options = {
+		const scheduleOptions = {
 			id: definition.id,
 			...(definition.input
 				? {
@@ -355,11 +372,13 @@ export function generatedApplicationFetchGatewayModules(
 			requirements: definition.requirements,
 		};
 		const optionsSource = overlapBy
-			? `{ ...${JSON.stringify(options)}, overlapBy: ${overlapBy} }`
-			: JSON.stringify(options);
+			? `{ ...${JSON.stringify(scheduleOptions)}, overlapBy: ${overlapBy} }`
+			: JSON.stringify(scheduleOptions);
 		return `schedule(${optionsSource}, ${callback})`;
 	});
-	const scheduleHost = schedules.length > 0 ? applicationScheduleHost(graph) : undefined;
+	const scheduleHost = schedules.length > 0
+		? applicationScheduleHost(graph, options.scheduleHost)
+		: undefined;
 	const actorSources = actors.map((actorNode) => {
 		const protocol = actorNode.definition.protocol.map((member) => {
 			const input = member.input
@@ -1331,7 +1350,7 @@ const scheduleAdmissionRunner = Object.freeze({
 });
 const fixedSchedules = applicationSchedules.filter((entry) => entry.definition.configuration === 'fixed');
 const localScheduleRuntime = process.env.APPLIK8S_DEPLOYMENT_TARGET === 'local' && applicationSchedules.length > 0
-  ? installLocalApplicationScheduleRuntime({
+  ? await installLocalApplicationScheduleRuntime({
       applicationId: ${JSON.stringify(graph.metadata.name)},
       environmentId: process.env.APPLIK8S_ENVIRONMENT_ID ?? 'local',
       schedules: fixedSchedules,
@@ -1361,7 +1380,7 @@ const disposeAwsScheduleRuntime = awsScheduleRuntime
   : undefined;
 void disposeAwsScheduleRuntime;
 const awsScheduleRunner = awsScheduleConfiguration
-  ? startAwsApplicationScheduleQueueRunner({
+  ? await startAwsApplicationScheduleQueueRunner({
       configuration: awsScheduleConfiguration,
       execute: async (admission, signal) => {
         const handle = applicationSchedules.find((candidate) => candidate.definition.id === admission.definitionId);
@@ -1714,6 +1733,16 @@ function forwardRemoteRequest(request, remoteBaseUrl) {
 }
 
 export const handleApplik8sRequest = (request) => gateway.handle(request);
+${schedules.length > 0 ? `export async function closeApplik8sGateway() {
+  disposeAwsScheduleRuntime?.();
+  disposeKubernetesScheduleRuntime?.();
+  await Promise.all([
+    ...(localScheduleRuntime ? [localScheduleRuntime.stop()] : []),
+    ...(awsScheduleRunner ? [awsScheduleRunner.stop()] : []),
+    ...(awsScheduleRuntime ? [awsScheduleRuntime.close()] : []),
+    ...(kubernetesScheduleRuntime ? [kubernetesScheduleRuntime.close()] : []),
+  ]);
+}` : "export async function closeApplik8sGateway() {}"}
 `;
 	return { entrypoint: "gateway.generated.ts", files };
 }
@@ -2064,7 +2093,20 @@ function kubernetesName(value: string): string {
 	return normalized;
 }
 
-function applicationScheduleHost(graph: ApplicationGraph): { readonly namespace: string; readonly admissionEndpoint: string } {
+function applicationScheduleHost(
+	graph: ApplicationGraph,
+	override?: {
+		readonly name: string;
+		readonly namespace: string;
+		readonly port: number;
+	},
+): { readonly namespace: string; readonly admissionEndpoint: string } {
+	if (override) {
+		return {
+			namespace: override.namespace,
+			admissionEndpoint: `http://${kubernetesName(override.name)}.${override.namespace}.svc:${override.port}/__applik8s/v1/internal/schedules/occurrences`,
+		};
+	}
 	const provider = graph.nodes.find((node): node is ApplicationProviderNode =>
 		node.kind === "provider" && node.interface === "ApplicationHost" && !node.config?.qualification,
 	);
@@ -2083,6 +2125,11 @@ function applicationScheduleHost(graph: ApplicationGraph): { readonly namespace:
 function applicationScheduleWorkflowGatewayEndpoint(
 	graph: ApplicationGraph,
 	schedule: ApplicationScheduleNode,
+	hostOverride?: {
+		readonly name: string;
+		readonly namespace: string;
+		readonly port: number;
+	},
 ): string {
 	if (schedule.target?.kind !== "durableStart") {
 		throw new Error(`Schedule ${schedule.definition.id} has no workflow execution target.`);
@@ -2112,11 +2159,11 @@ function applicationScheduleWorkflowGatewayEndpoint(
 	const providerNamespace = provider?.kind === "provider"
 		? applicationGraphStringValue(provider.config?.namespace)
 		: undefined;
-	const namespace = providerNamespace
-		?? applicationScheduleHost(graph).namespace;
-	if (namespace !== applicationScheduleHost(graph).namespace) {
+	const host = applicationScheduleHost(graph, hostOverride);
+	const namespace = providerNamespace ?? host.namespace;
+	if (namespace !== host.namespace) {
 		throw new Error(
-			`Schedule ${schedule.definition.id} runs in ${applicationScheduleHost(graph).namespace}, but workflow ${targetId} runs in ${namespace}; the private workflow gateway requires a shared namespace.`,
+			`Schedule ${schedule.definition.id} runs in ${host.namespace}, but workflow ${targetId} runs in ${namespace}; the private workflow gateway requires a shared namespace.`,
 		);
 	}
 	return `http://${kubernetesName(worker.name)}.${namespace}.svc:${worker.deployment.healthPort + 1}`;

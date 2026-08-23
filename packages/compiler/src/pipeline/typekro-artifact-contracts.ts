@@ -102,7 +102,8 @@ export interface TypeKroCompositionReactiveArtifactReference extends JsonObject 
     | 'queryGateway'
     | 'projectionWorker'
     | 'searchProjectionWorker'
-    | 'streamProcessorWorker';
+    | 'streamProcessorWorker'
+    | 'scheduleControlWorker';
   readonly manifest: string;
   readonly source: string;
   readonly digest: string;

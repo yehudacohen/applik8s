@@ -10,6 +10,7 @@ import {
   compileApplicationWorkloadAuthority,
 } from '../src/application-operations/index.js';
 import { workflowContract } from '../src/application-workflows/contracts.js';
+import { applicationScheduleWorkflowGatewayCallers } from '../src/application-workflows/index.js';
 import { workflowResources } from '../src/application-workflows/resources.js';
 import {
   generatedWorkerSource,
@@ -17,7 +18,6 @@ import {
   nestedCallbackBindingsSource,
   taskServicePrincipalInput,
 } from '../src/application-workflows/source.js';
-import { applicationScheduleWorkflowGatewayCallers } from '../src/application-workflows/index.js';
 import { compileTypeKroComposition, discoverApplicationGraph } from '../src/pipeline/index.js';
 
 describe('v0.5 generated workflow lowering', () => {
@@ -33,6 +33,10 @@ describe('v0.5 generated workflow lowering', () => {
         {
           id: 'provider.workflow-engine', kind: 'provider', name: 'WorkflowEngine', stability: 'stable',
           interface: 'WorkflowEngine', implementation: 'hatchet', config: { namespace: 'workflow-system' },
+        },
+        {
+          id: 'provider.scheduler', kind: 'provider', name: 'Scheduler', stability: 'stable',
+          interface: 'Scheduler', implementation: 'kubernetes-cronjob-scheduler', config: {},
         },
         {
           id: 'workflow.daily.v1', kind: 'workflow', name: 'daily.v1', stability: 'stable',
@@ -88,6 +92,111 @@ describe('v0.5 generated workflow lowering', () => {
     expect(source).toContain("sourceAdmission.operation.transport !== 'schedule'");
     expect(source).toContain('{"namespace":"workflow-system","serviceAccount":"schedule-caller","contracts":["daily.v1"]}');
     expect(source).toContain('daily.v1');
+  });
+
+  it('authorizes a dedicated schedule-control worker when no web host exists', () => {
+    const graph = {
+      metadata: { name: 'scheduled-workflows', namespace: 'workflow-system' },
+      nodes: [
+        {
+          id: 'provider.workflow-engine', kind: 'provider', name: 'WorkflowEngine', stability: 'stable',
+          interface: 'WorkflowEngine', implementation: 'hatchet', config: { namespace: 'workflow-system' },
+        },
+        {
+          id: 'provider.scheduler', kind: 'provider', name: 'Scheduler', stability: 'stable',
+          interface: 'Scheduler', implementation: 'kubernetes-cronjob-scheduler', config: {},
+        },
+        {
+          id: 'workflow.daily.v1', kind: 'workflow', name: 'daily.v1', stability: 'stable',
+          contract: { name: 'daily', version: 'v1', input: { jsonSchema: { type: 'object' } }, output: { jsonSchema: { type: 'object' } }, errors: [], signals: [] },
+          triggers: { crons: [] },
+        },
+        {
+          id: 'workflow-handler.daily.v1', kind: 'workflowHandler', name: 'daily.v1', stability: 'stable',
+          workflow: { nodeId: 'workflow.daily.v1' }, workflowEngine: { interface: 'WorkflowEngine', nodeId: 'provider.workflow-engine' },
+          tasks: [], childWorkflows: [], taskBindings: [], childWorkflowBindings: [], handlerSource: 'async input => input',
+          orchestrationBoundary: 'durableEffectsThroughTasks', deterministicOperations: ['task'], sourceAnalysis: 'closedWorkflowAllowlist',
+        },
+        {
+          id: 'workflow-worker.scheduled', kind: 'workflowWorker', name: 'scheduled-worker', stability: 'stable',
+          handlers: [{ nodeId: 'workflow-handler.daily.v1' }],
+          workflowEngine: { interface: 'WorkflowEngine', nodeId: 'provider.workflow-engine' }, runtime: 'node', lifecycle: 'longLived',
+          deployment: { replicas: 1, taskSlots: 4, durableSlots: 4, gracefulShutdownSeconds: 30, healthPort: 8080, egress: 'allowAll', scaling: { mode: 'fixed' } },
+        },
+        {
+          id: 'schedule.daily', kind: 'schedule', name: 'daily', stability: 'stable',
+          definition: { id: 'daily', configuration: 'fixed', cron: '0 4 * * *', timezone: 'UTC', overlap: 'skip', misfires: 'latest', maximumLatenessSeconds: 300, retry: { maxAttempts: 4, maximumAgeSeconds: 3600 }, requirements: { configuration: 'fixed', cardinality: 'bounded', precision: 'minute' } },
+          scheduler: { interface: 'Scheduler', nodeId: 'provider.scheduler' },
+          state: { interface: 'TransactionalDatabase', nodeId: 'provider.TransactionalDatabase' },
+          target: { kind: 'durableStart', durable: { kind: 'workflow', nodeId: 'workflow.daily.v1' }, contract: { name: 'daily', version: 'v1', input: { jsonSchema: { type: 'object' } } }, input: { kind: 'literal', value: {} } },
+          functionNative: true,
+        },
+      ],
+      edges: [], providerRequirements: [], providerBindings: [],
+    } as unknown as ApplicationGraph;
+    const worker = graph.nodes.find((node) => node.kind === 'workflowWorker');
+    if (worker?.kind !== 'workflowWorker') throw new Error('Expected workflow worker.');
+
+    const callers = applicationScheduleWorkflowGatewayCallers(graph, worker);
+    expect(callers).toEqual([{
+      operator: 'scheduled-workflows-schedule-control',
+      namespace: 'workflow-system',
+      serviceAccount: 'scheduled-workflows-schedule-control',
+      contracts: ['daily.v1'],
+    }]);
+    const source = generatedWorkerSource(
+      workflowContract(graph, worker, undefined, [], callers),
+    );
+    expect(source).toContain(
+      '{"namespace":"workflow-system","serviceAccount":"scheduled-workflows-schedule-control","contracts":["daily.v1"]}',
+    );
+    expect(source).not.toContain('private.v1');
+  });
+
+  it('does not authorize a phantom schedule-control caller for externally qualified schedules', () => {
+    const graph = {
+      metadata: { name: 'external-schedules', namespace: 'workflow-system' },
+      nodes: [
+        {
+          id: 'provider.workflow-engine', kind: 'provider', name: 'WorkflowEngine', stability: 'stable',
+          interface: 'WorkflowEngine', implementation: 'hatchet', config: { namespace: 'workflow-system' },
+        },
+        {
+          id: 'provider.scheduler', kind: 'provider', name: 'Scheduler', stability: 'stable',
+          interface: 'Scheduler', implementation: 'target-selected',
+          config: { qualification: { name: 'external' } },
+        },
+        {
+          id: 'workflow.daily.v1', kind: 'workflow', name: 'daily.v1', stability: 'stable',
+          contract: { name: 'daily', version: 'v1', input: { jsonSchema: { type: 'object' } }, output: { jsonSchema: { type: 'object' } }, errors: [], signals: [] },
+          triggers: { crons: [] },
+        },
+        {
+          id: 'workflow-handler.daily.v1', kind: 'workflowHandler', name: 'daily.v1', stability: 'stable',
+          workflow: { nodeId: 'workflow.daily.v1' }, workflowEngine: { interface: 'WorkflowEngine', nodeId: 'provider.workflow-engine' },
+          tasks: [], childWorkflows: [], taskBindings: [], childWorkflowBindings: [], handlerSource: 'async input => input',
+          orchestrationBoundary: 'durableEffectsThroughTasks', deterministicOperations: ['task'], sourceAnalysis: 'closedWorkflowAllowlist',
+        },
+        {
+          id: 'workflow-worker.scheduled', kind: 'workflowWorker', name: 'scheduled-worker', stability: 'stable',
+          handlers: [{ nodeId: 'workflow-handler.daily.v1' }],
+          workflowEngine: { interface: 'WorkflowEngine', nodeId: 'provider.workflow-engine' }, runtime: 'node', lifecycle: 'longLived',
+          deployment: { replicas: 1, taskSlots: 4, durableSlots: 4, gracefulShutdownSeconds: 30, healthPort: 8080, egress: 'allowAll', scaling: { mode: 'fixed' } },
+        },
+        {
+          id: 'schedule.daily', kind: 'schedule', name: 'daily', stability: 'stable',
+          definition: { id: 'daily', configuration: 'fixed', cron: '0 4 * * *', timezone: 'UTC', overlap: 'skip', misfires: 'latest', maximumLatenessSeconds: 300, retry: { maxAttempts: 4, maximumAgeSeconds: 3600 }, requirements: { configuration: 'fixed', cardinality: 'bounded', precision: 'minute' } },
+          scheduler: { interface: 'Scheduler', nodeId: 'provider.scheduler' },
+          state: { interface: 'TransactionalDatabase', nodeId: 'provider.TransactionalDatabase' },
+          target: { kind: 'durableStart', durable: { kind: 'workflow', nodeId: 'workflow.daily.v1' }, contract: { name: 'daily', version: 'v1', input: { jsonSchema: { type: 'object' } } }, input: { kind: 'literal', value: {} } },
+          functionNative: true,
+        },
+      ],
+      edges: [], providerRequirements: [], providerBindings: [],
+    } as unknown as ApplicationGraph;
+    const worker = graph.nodes.find((node) => node.kind === 'workflowWorker');
+    if (worker?.kind !== 'workflowWorker') throw new Error('Expected workflow worker.');
+    expect(applicationScheduleWorkflowGatewayCallers(graph, worker)).toEqual([]);
   });
 
   it('hydrates direct actor calls through the authenticated application boundary', () => {

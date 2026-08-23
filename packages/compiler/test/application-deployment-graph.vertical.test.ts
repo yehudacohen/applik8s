@@ -104,6 +104,50 @@ describe("compiler deployment graph emission", () => {
     ]);
   });
 
+  it("maps workflow-only schedule consumers to the dedicated control worker", () => {
+    const provider = "provider.schedule-state";
+    const graph = {
+      ...applicationGraph(),
+      metadata: { name: "scheduled-jobs", namespace: "jobs" },
+      nodes: [
+        {
+          id: "provider.Scheduler",
+          kind: "provider",
+          interface: "Scheduler",
+          config: {},
+        },
+        {
+          id: "provider.Scheduler.external",
+          kind: "provider",
+          interface: "Scheduler",
+          config: { qualification: { name: "external" } },
+        },
+        { id: provider, kind: "provider", interface: "TransactionalDatabase" },
+        {
+          id: "schedule.local",
+          kind: "schedule",
+          name: "local",
+          scheduler: { nodeId: "provider.Scheduler" },
+        },
+        {
+          id: "schedule.external",
+          kind: "schedule",
+          name: "external",
+          scheduler: { nodeId: "provider.Scheduler.external" },
+        },
+      ],
+      edges: ["schedule.local", "schedule.external"].map((nodeId) => ({
+        from: { nodeId: provider },
+        to: { nodeId },
+        relationship: "provides" as const,
+      })),
+    } as unknown as ApplicationGraph;
+
+    expect([
+      ...applicationProviderConsumerWorkloads(graph, new Set([provider])),
+    ]).toEqual(["scheduled-jobs-schedule-control"]);
+  });
+
   it("binds the internal-operation Secret to typed HTTP workflow gateway callers", async () => {
     const directory = await mkdtemp(
       join(process.env.TMPDIR ?? "/tmp", "applik8s-http-workflow-secret-"),

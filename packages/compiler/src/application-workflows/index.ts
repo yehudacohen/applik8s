@@ -103,6 +103,8 @@ export function applicationScheduleWorkflowGatewayCallers(
   }
   const contracts = [...new Set(graph.nodes.flatMap((node) => {
     if (node.kind !== 'schedule' || node.target?.kind !== 'durableStart') return [];
+    const scheduler = nodes.get(node.scheduler.nodeId);
+    if (scheduler?.kind !== 'provider' || scheduler.config?.qualification) return [];
     const contract = workerTargets.get(node.target.durable.nodeId);
     return contract ? [contract] : [];
   }))].sort();
@@ -113,10 +115,21 @@ export function applicationScheduleWorkflowGatewayCallers(
         && node.interface === 'ApplicationHost'
         && !node.config?.qualification,
   );
-  if (hosts.length !== 1) {
+  if (hosts.length > 1) {
     throw new Error(
-      `Scheduled workflows require exactly one unqualified ApplicationHost caller; found ${hosts.length}.`,
+      `Scheduled workflows require at most one unqualified ApplicationHost caller; found ${hosts.length}.`,
     );
+  }
+  if (hosts.length === 0) {
+    const provider = nodes.get(worker.workflowEngine.nodeId);
+    const providerConfig = provider?.kind === 'provider'
+      ? objectConfig(provider.config)
+      : {};
+    const name = kubernetesName(`${graph.metadata.name}-schedule-control`);
+    const namespace = applicationGraphStringValue(providerConfig.namespace)
+      ?? graph.metadata.namespace
+      ?? 'default';
+    return [{ operator: name, namespace, serviceAccount: name, contracts }];
   }
   const hostConfig = objectConfig(hosts[0]?.config?.host);
   const name = applicationGraphStringValue(hostConfig.name)

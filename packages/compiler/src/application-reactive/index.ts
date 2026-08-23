@@ -15,6 +15,12 @@ import { generatedCallbackFactoryModule } from '../application-callback-module.j
 import type { GeneratedApplicationContainerArtifact } from '../application-containers/index.js';
 import { emitGeneratedApplicationContainer } from '../application-containers/index.js';
 import { generatedApplicationEventLogPublisherSource } from '../application-event-log-runtime-source.js';
+import { generatedApplicationFetchGatewayModules } from '../application-fetch-gateway/index.js';
+import {
+  applicationKubernetesFixedScheduleResources,
+  applicationScheduleDatabaseEnvironment,
+  applicationWorkflowScheduleEnvironment,
+} from '../application-host/index.js';
 import { applicationGraphAllConditions, applicationGraphBooleanCondition, applicationGraphJsonStringArray, applicationGraphNumberValue, applicationGraphServiceHost, applicationGraphStringValue } from '../application-installation-values.js';
 import type { ApplicationOperationPlacementReceiver } from '../application-mcp/index.js';
 import { compileApplicationMcpPlacementRoutes, compileApplicationOperationPlacementReceiver } from '../application-mcp/index.js';
@@ -43,7 +49,8 @@ export interface GeneratedApplicationReactiveArtifact {
     | 'queryGateway'
     | 'projectionWorker'
     | 'searchProjectionWorker'
-    | 'streamProcessorWorker';
+    | 'streamProcessorWorker'
+    | 'scheduleControlWorker';
   readonly sourcePath: string;
   readonly sourceMapPath: string;
   readonly manifestPath: string;
@@ -71,7 +78,8 @@ export function consolidateGeneratedApplicationReactiveResources(options: {
   if (!Number.isInteger(maxContainersPerPod) || maxContainersPerPod < 1 || maxContainersPerPod > 16) {
     throw new Error('Reactive worker co-location requires maxContainersPerPod to be an integer between 1 and 16.');
   }
-  const gateways = options.artifacts.filter((artifact) => artifact.kind === 'queryGateway');
+  const gateways = options.artifacts.filter((artifact) =>
+    artifact.kind === 'queryGateway' || artifact.kind === 'scheduleControlWorker');
   const dedicated = gateways
     .filter(reactiveArtifactOwnsRbac)
     .flatMap((artifact) => artifact.resources);
@@ -88,7 +96,8 @@ export function consolidateGeneratedApplicationReactiveResources(options: {
       ? chunk[0]!.resources
       : consolidatedReactiveGatewayResources(options.graphName, chunk));
   });
-  const groups = reactiveArtifactGroups(options.artifacts.filter((entry) => entry.kind !== 'queryGateway'));
+  const groups = reactiveArtifactGroups(options.artifacts.filter((entry) =>
+    entry.kind !== 'queryGateway' && entry.kind !== 'scheduleControlWorker'));
   const consolidatedWorkers = [...groups.values()]
     .flatMap((group) => {
       const sorted = [...group].sort((left, right) => left.name.localeCompare(right.name));
@@ -176,6 +185,38 @@ interface GatewayKubernetesPermission {
   readonly resource: string;
   readonly scope: 'Namespaced' | 'Cluster';
   readonly namespace?: string;
+  readonly verbs?: readonly string[];
+}
+
+interface ReactiveProjectedServiceAccountToken {
+  readonly name: string;
+  readonly mountPath: string;
+  readonly path: string;
+  readonly audience: string;
+  readonly expirationSeconds?: number;
+}
+
+interface BundleReactiveOptions {
+  readonly graphName: string;
+  readonly name: string;
+  readonly nodeId: string;
+  readonly kind: GeneratedApplicationReactiveArtifact['kind'];
+  readonly namespace: string;
+  readonly image: string;
+  readonly replicas: number | string;
+  readonly port: number;
+  readonly entrypoint: string;
+  readonly artifactDir: string;
+  readonly env: readonly Record<string, unknown>[];
+  readonly includeWhen?: string;
+  readonly permissions?: readonly GatewayKubernetesPermission[];
+  readonly workflowToken?: { readonly secretName: string; readonly key: string };
+  readonly serviceAccountToken?: ReactiveProjectedServiceAccountToken;
+  readonly caCertificates?: readonly ReactiveCaCertificate[];
+  readonly extraResources?: (
+    image: string,
+    digest: string,
+  ) => readonly GeneratedApplicationReactiveResource[];
 }
 
 interface ReactiveCaCertificate {
@@ -218,7 +259,8 @@ export async function emitGeneratedApplicationReactive(options: {
   const projections = options.graph.nodes.filter((node): node is ApplicationProjectionNode => node.kind === 'projection');
   const streamProcessors = options.graph.nodes.filter((node): node is ApplicationStreamProcessorNode => node.kind === 'streamProcessor');
   const searchProjections = searchProjectionWorkItems(options.graph, gateways);
-  if (gateways.length === 0 && projections.length === 0 && streamProcessors.length === 0 && searchProjections.length === 0) return [];
+  const scheduleControl = applicationNeedsScheduleControl(options.graph);
+  if (gateways.length === 0 && projections.length === 0 && streamProcessors.length === 0 && searchProjections.length === 0 && !scheduleControl) return [];
   await mkdir(options.outDir, { recursive: true });
   return [
     ...await Promise.all(gateways.map((gateway) => emitGateway(
@@ -241,7 +283,214 @@ export async function emitGeneratedApplicationReactive(options: {
         workloadAuthority,
         options.outDir,
       ))),
+    ...(scheduleControl
+      ? [await emitScheduleControl(
+          options.graph,
+          options.outDir,
+          options.executionTarget ?? 'kubernetes',
+        )]
+      : []),
   ].sort((left, right) => left.name.localeCompare(right.name));
+}
+
+function applicationNeedsScheduleControl(graph: ApplicationGraph): boolean {
+  if (graph.nodes.some((node) =>
+    node.kind === 'provider'
+      && node.interface === 'ApplicationHost'
+      && !node.config?.qualification)) return false;
+  const nodes = new Map(graph.nodes.map((node) => [node.id, node]));
+  return graph.nodes.some((node) => {
+    if (node.kind !== 'schedule') return false;
+    const provider = nodes.get(node.scheduler.nodeId);
+    return provider?.kind === 'provider' && !provider.config?.qualification;
+  });
+}
+
+async function emitScheduleControl(
+  graph: ApplicationGraph,
+  outDir: string,
+  executionTarget: 'kubernetes' | 'local' | 'aws-local' | 'aws',
+): Promise<GeneratedApplicationReactiveArtifact> {
+  const name = kubernetesName(`${graph.metadata.name}-schedule-control`);
+  const namespace = applicationGraphStringValue(graph.metadata.namespace) ?? 'default';
+  const port = 8080;
+  const artifactDir = join(outDir, name);
+  const generated = generatedApplicationFetchGatewayModules(graph, {
+    surface: 'schedules',
+    scheduleHost: { name, namespace, port },
+  });
+  if (!generated) {
+    throw new Error(
+      `Application ${graph.metadata.name} requires schedule control, but no unqualified schedule surface was generated.`,
+    );
+  }
+  await mkdir(artifactDir, { recursive: true });
+  await Promise.all(Object.entries(generated.files).map(async ([path, source]) => {
+    const target = join(artifactDir, path);
+    await mkdir(dirname(target), { recursive: true });
+    await writeFile(target, source);
+  }));
+  const entrypoint = join(artifactDir, 'schedule-control.generated.ts');
+  await writeFile(entrypoint, generatedScheduleControlSource());
+  const durableWorkflowAccess = graph.nodes.some(
+    (node) => node.kind === 'schedule' && node.target?.kind === 'durableStart',
+  );
+  const permissions: readonly GatewayKubernetesPermission[] = executionTarget === 'kubernetes'
+    ? [{
+        apiGroup: 'batch',
+        resource: 'cronjobs',
+        scope: 'Namespaced',
+        namespace,
+        verbs: ['create', 'delete', 'get', 'list', 'patch', 'update', 'watch'],
+      }]
+    : [];
+  return bundleReactive({
+    graphName: graph.metadata.name,
+    name,
+    nodeId: `schedule-control.${graph.metadata.name}`,
+    kind: 'scheduleControlWorker',
+    namespace,
+    image: DEFAULT_NODE_IMAGE,
+    replicas: 1,
+    port,
+    entrypoint,
+    artifactDir,
+    env: [
+      { name: 'APPLIK8S_HTTP_PORT', value: String(port) },
+      { name: 'APPLIK8S_APPLICATION_NAME', value: graph.metadata.name },
+      { name: 'APPLIK8S_DEPLOYMENT_TARGET', value: executionTarget },
+      { name: 'APPLIK8S_ENVIRONMENT_ID', value: namespace },
+      { name: 'APPLIK8S_NAMESPACE', value: namespace },
+      {
+        name: 'APPLIK8S_INTERNAL_OPERATION_SECRET',
+        valueFrom: {
+          secretKeyRef: {
+            name: `${kubernetesName(graph.metadata.name)}-internal-operation`,
+            key: 'key',
+            optional: false,
+          },
+        },
+      },
+      ...applicationScheduleDatabaseEnvironment(graph, namespace),
+      ...applicationWorkflowScheduleEnvironment(graph),
+    ],
+    permissions,
+    ...(durableWorkflowAccess
+      ? {
+          serviceAccountToken: {
+            name: 'workflow-gateway-token',
+            mountPath: '/var/run/secrets/applik8s/workflow-gateway',
+            path: 'token',
+            audience: 'https://kubernetes.default.svc',
+            expirationSeconds: 3_600,
+          },
+        }
+      : {}),
+    ...(executionTarget === 'kubernetes'
+      ? {
+          extraResources: (image) => applicationKubernetesFixedScheduleResources({
+            graph,
+            namespace,
+            hostName: name,
+            image,
+            imagePullPolicy: 'IfNotPresent',
+            internalOperationSecretName: `${kubernetesName(graph.metadata.name)}-internal-operation`,
+            port,
+          }),
+        }
+      : {}),
+  });
+}
+
+function generatedScheduleControlSource(): string {
+  return `import { createServer } from 'node:http';
+import { closeApplik8sGateway, handleApplik8sRequest } from './gateway.generated.js';
+
+const maximumBodyBytes = 1_048_576;
+let stopping = false;
+
+const server = createServer(async (incoming, outgoing) => {
+  const controller = new AbortController();
+  const abort = () => controller.abort(new Error('Schedule-control request disconnected.'));
+  incoming.once('aborted', abort);
+  outgoing.once('close', abort);
+  try {
+    if (stopping && incoming.url !== '/live') {
+      await writeWebResponse(outgoing, new Response(JSON.stringify({ ready: false, stopping: true }), {
+        status: 503,
+        headers: { 'content-type': 'application/json' },
+      }));
+      return;
+    }
+    const request = await webRequest(incoming, controller.signal);
+    const url = new URL(request.url);
+    if (url.pathname === '/live') url.pathname = '/__applik8s/v1/healthz';
+    if (url.pathname === '/ready') url.pathname = '/__applik8s/v1/readyz';
+    await writeWebResponse(outgoing, await handleApplik8sRequest(new Request(url, request)));
+  } catch (error) {
+    if (!controller.signal.aborted) {
+      console.error('Applik8s schedule-control request failed', error);
+      if (!outgoing.headersSent) outgoing.writeHead(500, { 'content-type': 'application/json' });
+      outgoing.end(JSON.stringify({ error: 'schedule_control_failed' }));
+    }
+  } finally {
+    incoming.removeListener('aborted', abort);
+    outgoing.removeListener('close', abort);
+  }
+});
+
+server.listen(Number(process.env.APPLIK8S_HTTP_PORT ?? '8080'), '0.0.0.0');
+
+async function webRequest(incoming, signal) {
+  const chunks = [];
+  let size = 0;
+  if (incoming.method !== 'GET' && incoming.method !== 'HEAD') {
+    for await (const chunk of incoming) {
+      size += chunk.length;
+      if (size > maximumBodyBytes) throw new Error('Schedule-control request body exceeds 1 MiB.');
+      chunks.push(chunk);
+    }
+  }
+  const body = chunks.length > 0 ? Buffer.concat(chunks) : undefined;
+  return new Request('http://' + (incoming.headers.host ?? 'localhost') + (incoming.url ?? '/'), {
+    method: incoming.method,
+    headers: Object.entries(incoming.headers).flatMap(([key, value]) =>
+      Array.isArray(value) ? value.map((item) => [key, item]) : value === undefined ? [] : [[key, value]]),
+    signal,
+    ...(body ? { body, duplex: 'half' } : {}),
+  });
+}
+
+async function writeWebResponse(outgoing, response) {
+  outgoing.writeHead(response.status, Object.fromEntries(response.headers));
+  if (!response.body) {
+    outgoing.end();
+    return;
+  }
+  const reader = response.body.getReader();
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (!outgoing.write(Buffer.from(value))) {
+      await new Promise((resolve) => outgoing.once('drain', resolve));
+    }
+  }
+  outgoing.end();
+}
+
+async function shutdown() {
+  if (stopping) return;
+  stopping = true;
+  const force = setTimeout(() => server.closeAllConnections?.(), 15_000);
+  force.unref?.();
+  await new Promise((resolve) => server.close(resolve));
+  clearTimeout(force);
+  await closeApplik8sGateway();
+}
+
+process.once('SIGTERM', () => { void shutdown().catch((error) => { console.error(error); process.exitCode = 1; }); });
+process.once('SIGINT', () => { void shutdown().catch((error) => { console.error(error); process.exitCode = 1; }); });
+`;
 }
 
 function compileApplicationAgentPlacementRoutes(
@@ -982,7 +1231,7 @@ function streamProcessorWorkflowContract(graph: ApplicationGraph, processor: App
   return { provider, schedules, tasks };
 }
 
-async function bundleReactive(options: { readonly graphName: string; readonly name: string; readonly nodeId: string; readonly kind: GeneratedApplicationReactiveArtifact['kind']; readonly namespace: string; readonly image: string; readonly replicas: number | string; readonly port: number; readonly entrypoint: string; readonly artifactDir: string; readonly env: readonly Record<string, unknown>[]; readonly includeWhen?: string; readonly permissions?: readonly GatewayKubernetesPermission[]; readonly workflowToken?: { readonly secretName: string; readonly key: string }; readonly caCertificates?: readonly ReactiveCaCertificate[] }): Promise<GeneratedApplicationReactiveArtifact> {
+async function bundleReactive(options: BundleReactiveOptions): Promise<GeneratedApplicationReactiveArtifact> {
   const sourcePath = join(options.artifactDir, 'runtime.mjs');
   const sourceMapPath = `${sourcePath}.map`;
   const metafilePath = join(options.artifactDir, 'runtime.esbuild-meta.json');
@@ -1006,14 +1255,19 @@ async function bundleReactive(options: { readonly graphName: string; readonly na
     baseImage: options.image,
     sourceDigest: digest,
   });
-  const resources = reactiveResources(options, container.image, digest);
+  const resources = [
+    ...reactiveResources(options, container.image, digest),
+    ...(options.extraResources?.(container.image, digest) ?? []),
+  ];
   const manifestKind = options.kind === 'queryGateway'
     ? 'GeneratedQueryGateway'
     : options.kind === 'projectionWorker'
       ? 'GeneratedProjectionWorker'
       : options.kind === 'searchProjectionWorker'
         ? 'GeneratedSearchProjectionWorker'
-        : 'GeneratedStreamProcessorWorker';
+        : options.kind === 'scheduleControlWorker'
+          ? 'GeneratedScheduleControlWorker'
+          : 'GeneratedStreamProcessorWorker';
   await writeFile(manifestPath, `${JSON.stringify({ apiVersion: 'applik8s.reactive/v1alpha1', kind: manifestKind, metadata: { name: options.name }, spec: { graph: options.graphName, digest, sizeBytes, distribution: 'ociImage', image: container.image, baseImage: container.baseImage, container, namespace: options.namespace, resources: resources.map((resource) => ({ apiVersion: resource.apiVersion, kind: resource.kind, metadata: resource.metadata })) } }, null, 2)}\n`);
   await writeFile(metafilePath, `${JSON.stringify(result.metafile, null, 2)}\n`);
   return { name: options.name, nodeId: options.nodeId, kind: options.kind, sourcePath, sourceMapPath, manifestPath, metafilePath, digest, sizeBytes, container, resources };
@@ -4773,9 +5027,11 @@ function arrayValue(value: unknown): unknown[] {
   return Array.isArray(value) ? value : [];
 }
 
-function reactiveResources(options: { readonly graphName: string; readonly name: string; readonly kind: GeneratedApplicationReactiveArtifact['kind']; readonly namespace: string; readonly image: string; readonly replicas: number | string; readonly port: number; readonly env: readonly Record<string, unknown>[]; readonly includeWhen?: string; readonly permissions?: readonly GatewayKubernetesPermission[]; readonly workflowToken?: { readonly secretName: string; readonly key: string }; readonly caCertificates?: readonly ReactiveCaCertificate[] }, image: string, digest: string): GeneratedApplicationReactiveResource[] {
+function reactiveResources(options: BundleReactiveOptions, image: string, digest: string): GeneratedApplicationReactiveResource[] {
   const component = options.kind === 'queryGateway'
     ? 'query-gateway'
+    : options.kind === 'scheduleControlWorker'
+      ? 'schedule-control'
     : options.kind === 'projectionWorker'
       ? 'projection-worker'
       : options.kind === 'searchProjectionWorker'
@@ -4791,7 +5047,7 @@ function reactiveResources(options: { readonly graphName: string; readonly name:
   // Projection and stream workers currently have one checkpoint authority and
   // must not overlap generations. HTTP gateways can roll without surge so a
   // bounded cluster never needs spare pod capacity merely to apply an update.
-  const strategy = options.kind === 'queryGateway'
+  const strategy = options.kind === 'queryGateway' || options.kind === 'scheduleControlWorker'
     ? { type: 'RollingUpdate', rollingUpdate: { maxUnavailable: 1, maxSurge: 0 } }
     : { type: 'Recreate' };
   const permissions = options.permissions ?? [];
@@ -4809,6 +5065,13 @@ function reactiveResources(options: { readonly graphName: string; readonly name:
     ...(options.workflowToken
       ? [{ name: 'workflow-token', mountPath: '/var/run/secrets/applik8s/workflow-token', readOnly: true }]
       : []),
+    ...(options.serviceAccountToken
+      ? [{
+          name: options.serviceAccountToken.name,
+          mountPath: options.serviceAccountToken.mountPath,
+          readOnly: true,
+        }]
+      : []),
     ...(certificate && caVolumeName
       ? [{ name: caVolumeName, mountPath: '/var/run/secrets/applik8s/search-ca', readOnly: true }]
       : []),
@@ -4816,6 +5079,21 @@ function reactiveResources(options: { readonly graphName: string; readonly name:
   const volumes = [
     ...(options.workflowToken
       ? [{ name: 'workflow-token', secret: { secretName: options.workflowToken.secretName, items: [{ key: options.workflowToken.key, path: 'token' }] } }]
+      : []),
+    ...(options.serviceAccountToken
+      ? [{
+          name: options.serviceAccountToken.name,
+          projected: {
+            defaultMode: 0o400,
+            sources: [{
+              serviceAccountToken: {
+                path: options.serviceAccountToken.path,
+                audience: options.serviceAccountToken.audience,
+                expirationSeconds: options.serviceAccountToken.expirationSeconds ?? 3_600,
+              },
+            }],
+          },
+        }]
       : []),
     ...(certificate && caVolumeName
       ? [{
@@ -4837,13 +5115,14 @@ function reactiveResources(options: { readonly graphName: string; readonly name:
         }]
       : []),
   ];
+  const ownsServiceAccount = permissions.length > 0 || Boolean(options.serviceAccountToken);
   const resources: GeneratedApplicationReactiveResource[] = [
-    ...(permissions.length > 0 ? [{ apiVersion: 'v1', kind: 'ServiceAccount', metadata: metadata(options.name) }] : []),
-    { apiVersion: 'apps/v1', kind: 'Deployment', metadata: metadata(options.name), spec: { replicas: options.replicas, selector: { matchLabels: labels }, strategy, template: { metadata: { labels, annotations: { 'applik8s.dev/digest': digest } }, spec: { ...(permissions.length > 0 ? { serviceAccountName: options.name } : {}), terminationGracePeriodSeconds: 30, containers: [{ name: 'runtime', image, imagePullPolicy: 'IfNotPresent', command: ['node', '/app/runtime.mjs'], env: environment, ...(volumeMounts.length > 0 ? { volumeMounts } : {}), ports: [{ name: 'http', containerPort: options.port }], readinessProbe: { httpGet: { path: '/ready', port: 'http' }, periodSeconds: 5, failureThreshold: 6 }, livenessProbe: { httpGet: { path: '/live', port: 'http' }, periodSeconds: 10, failureThreshold: 6 }, resources: { requests: { cpu: '100m', memory: '128Mi' }, limits: { cpu: '1', memory: '512Mi' } } }], ...(volumes.length > 0 ? { volumes } : {}) } } } },
+    ...(ownsServiceAccount ? [{ apiVersion: 'v1', kind: 'ServiceAccount', metadata: metadata(options.name) }] : []),
+    { apiVersion: 'apps/v1', kind: 'Deployment', metadata: metadata(options.name), spec: { replicas: options.replicas, selector: { matchLabels: labels }, strategy, template: { metadata: { labels, annotations: { 'applik8s.dev/digest': digest } }, spec: { ...(ownsServiceAccount ? { serviceAccountName: options.name } : {}), terminationGracePeriodSeconds: 30, containers: [{ name: 'runtime', image, imagePullPolicy: 'IfNotPresent', command: ['node', '/app/runtime.mjs'], env: environment, ...(volumeMounts.length > 0 ? { volumeMounts } : {}), ports: [{ name: 'http', containerPort: options.port }], readinessProbe: { httpGet: { path: '/ready', port: 'http' }, periodSeconds: 5, failureThreshold: 6 }, livenessProbe: { httpGet: { path: '/live', port: 'http' }, periodSeconds: 10, failureThreshold: 6 }, resources: { requests: { cpu: '100m', memory: '128Mi' }, limits: { cpu: '1', memory: '512Mi' } } }], ...(volumes.length > 0 ? { volumes } : {}) } } } },
     { apiVersion: 'networking.k8s.io/v1', kind: 'NetworkPolicy', metadata: metadata(options.name), spec: { podSelector: { matchLabels: labels }, policyTypes: ['Ingress'], ingress: [{ ports: [{ protocol: 'TCP', port: options.port }] }] } },
   ];
   resources.push(...gatewayKubernetesRbacResources(options, permissions, labels));
-  if (options.kind === 'queryGateway') resources.push({ apiVersion: 'v1', kind: 'Service', metadata: metadata(options.name), spec: { selector: labels, ports: [{ name: 'http', port: options.port, targetPort: 'http' }] } });
+  if (options.kind === 'queryGateway' || options.kind === 'scheduleControlWorker') resources.push({ apiVersion: 'v1', kind: 'Service', metadata: metadata(options.name), spec: { selector: labels, ports: [{ name: 'http', port: options.port, targetPort: 'http' }] } });
   if (typeof options.replicas === 'number' && options.replicas > 1) resources.push({ apiVersion: 'policy/v1', kind: 'PodDisruptionBudget', metadata: metadata(options.name), spec: { minAvailable: 1, selector: { matchLabels: labels } } });
   if (typeof options.replicas === 'string') resources.push({ apiVersion: 'policy/v1', kind: 'PodDisruptionBudget', metadata: metadata(options.name), spec: { maxUnavailable: reactiveMaxUnavailable(options.replicas), selector: { matchLabels: labels } } });
   return resources;
@@ -4912,11 +5191,18 @@ function kubernetesPermissionRules(permissions: readonly GatewayKubernetesPermis
   const grouped = new Map<string, { apiGroups: string[]; resources: string[]; verbs: string[] }>();
   for (const permission of permissions) {
     const key = permission.apiGroup;
-    const rule = grouped.get(key) ?? { apiGroups: [permission.apiGroup], resources: [], verbs: ['get', 'list', 'watch'] };
+    const rule = grouped.get(key) ?? { apiGroups: [permission.apiGroup], resources: [], verbs: [] };
     if (!rule.resources.includes(permission.resource)) rule.resources.push(permission.resource);
+    for (const verb of permission.verbs ?? ['get', 'list', 'watch']) {
+      if (!rule.verbs.includes(verb)) rule.verbs.push(verb);
+    }
     grouped.set(key, rule);
   }
-  return [...grouped.values()].map((rule) => ({ ...rule, resources: rule.resources.sort() }));
+  return [...grouped.values()].map((rule) => ({
+    ...rule,
+    resources: rule.resources.sort(),
+    verbs: rule.verbs.sort(),
+  }));
 }
 
 function reactiveMaxUnavailable(replicas: string): string {

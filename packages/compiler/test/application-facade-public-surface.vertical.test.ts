@@ -1,10 +1,10 @@
 // typecast-file-boundary: the fixture intentionally assembles the smallest
 // erased graph needed to exercise compiler-owned browser publication.
-import { type ApplicationGraph, type ApplicationGatewayNode, validateApplicationGraphStructure } from '@applik8s/core';
+import { type ApplicationGatewayNode, type ApplicationGraph, validateApplicationGraphStructure } from '@applik8s/core';
 import { describe, expect, it } from 'vitest';
 import { applicationFacadeManifest, generatedApplicationFacadeSource } from '../src/application-facade/index.js';
-import { generatedApplicationFetchGatewayModules } from '../src/application-fetch-gateway/index.js';
 import { applicationGraphWithEntrypointPublicSurface } from '../src/application-facade/public-surface.js';
+import { generatedApplicationFetchGatewayModules } from '../src/application-fetch-gateway/index.js';
 
 describe('entrypoint-driven application public surface', () => {
   it('publishes an exported model command family and view through one compiler-owned gateway', () => {
@@ -408,6 +408,37 @@ describe('entrypoint-driven application public surface', () => {
       ]),
     );
     expect(published.nodes.some((node) => node.id === 'provider.TransactionalDatabase')).toBe(false);
+  });
+
+  it('lowers workflow schedules even when the application has no web host', () => {
+    const authored = workflowScheduleGraph();
+    const published = applicationGraphWithEntrypointPublicSurface({
+      ...authored,
+      nodes: authored.nodes.filter((node) =>
+        node.kind !== 'provider' || node.interface !== 'ApplicationHost'),
+    } as ApplicationGraph, {
+      operationIds: [],
+      modelNames: [],
+      durables: [{ kind: 'workflow', id: 'tenant.onboarding.v1' }],
+    });
+
+    expect(published.nodes).toContainEqual(expect.objectContaining({
+      id: 'schedule.workflow-start.tenant.onboarding.v1',
+      kind: 'schedule',
+      definition: expect.objectContaining({ configuration: 'dynamic' }),
+    }));
+    expect(published.nodes).toContainEqual(expect.objectContaining({
+      kind: 'schedule',
+      definition: expect.objectContaining({
+        configuration: 'fixed',
+        cron: '0 4 * * *',
+      }),
+      target: expect.objectContaining({
+        kind: 'durableStart',
+        durable: { kind: 'workflow', nodeId: 'workflow.tenant.onboarding.v1' },
+      }),
+    }));
+    expect(validateApplicationGraphStructure(published)).toEqual([]);
   });
 });
 
