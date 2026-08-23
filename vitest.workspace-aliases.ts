@@ -28,6 +28,7 @@ export function workspaceAliases(): Record<string, string> {
     '@applik8s/applik8s/schedule-runtime-local': fileURLToPath(new URL('./packages/applik8s/src/application-schedule-local-runtime.ts', import.meta.url)),
     '@applik8s/applik8s/schedule-state-runtime': fileURLToPath(new URL('./packages/applik8s/src/application-schedule-state-runtime.ts', import.meta.url)),
     '@applik8s/applik8s/actor-runtime-local': fileURLToPath(new URL('./packages/applik8s/src/application-actor-local-runtime.ts', import.meta.url)),
+    '@applik8s/applik8s/actor-authority-runtime': fileURLToPath(new URL('./packages/applik8s/src/application-actor-authority-runtime.ts', import.meta.url)),
     '@applik8s/applik8s/factories/simple': fileURLToPath(new URL('./packages/applik8s/src/factories/simple.ts', import.meta.url)),
     '@applik8s/applik8s/factories': fileURLToPath(new URL('./packages/applik8s/src/factories.ts', import.meta.url)),
     '@applik8s/applik8s/operator': fileURLToPath(new URL('./packages/applik8s/src/operator.ts', import.meta.url)),

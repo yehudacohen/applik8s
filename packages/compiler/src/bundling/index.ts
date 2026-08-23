@@ -238,6 +238,7 @@ export function applik8sWorkspaceSourcePlugin(): Plugin {
     ['@applik8s/applik8s/workflow-runtime', resolve(workspaceRoot, 'packages/applik8s/src/workflow-runtime.ts')],
     ['@applik8s/applik8s/workflow-gateway-binding', resolve(workspaceRoot, 'packages/applik8s/src/workflow-gateway-binding.ts')],
     ['@applik8s/applik8s/schedule-state-runtime', resolve(workspaceRoot, 'packages/applik8s/src/application-schedule-state-runtime.ts')],
+    ['@applik8s/applik8s/actor-authority-runtime', resolve(workspaceRoot, 'packages/applik8s/src/application-actor-authority-runtime.ts')],
     ['@applik8s/runtime-hatchet', resolve(workspaceRoot, 'packages/runtime-hatchet/src/index.ts')],
     ['@applik8s/runtime-nats/event-log', resolve(workspaceRoot, 'packages/runtime-nats/src/event-log.ts')],
     ['@applik8s/runtime-nats/command-processor', resolve(workspaceRoot, 'packages/runtime-nats/src/command-processor.ts')],

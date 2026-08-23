@@ -447,7 +447,20 @@ describe('celld actor runtime', () => {
     });
     const [entry] = service.cells.values();
     expect(entry?.storage.alarmTime).toBe(Date.parse('2026-09-01T00:00:00.000Z'));
-    expect([...entry?.storage.values.values() ?? []]).toContainEqual(expect.objectContaining({ authority: alarmAuthority }));
+    expect([...entry?.storage.values.values() ?? []]).toContainEqual(
+      expect.objectContaining({
+        authority: expect.objectContaining({
+          admission: expect.objectContaining({
+            apiVersion: 'applik8s.admission/v1',
+            operation: {
+              id: alarmAuthority.authorizationReceipt.operationId,
+              transport: 'actor',
+            },
+          }),
+          causalPrincipal: alarmAuthority.causalPrincipal,
+        }),
+      }),
+    );
     await expect(Counter.alarms.wake.cancel('one')).resolves.toMatchObject({ state: 'cancelled' });
     expect(entry?.storage.alarmTime).toBeNull();
   });

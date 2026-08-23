@@ -2,13 +2,32 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { randomUUID } from 'node:crypto';
 import { type ApplicationMutationOperation, decorateApplicationMutationOperation, observeApplicationOperationAuthority } from '@applik8s/client';
-import { type ApplicationActorNode, type ApplicationAuthorizationReceipt, applicationOperationId, validateApplicationAuthorizationReceipt } from '@applik8s/core';
+import {
+  type ApplicationActorNode,
+  type ApplicationAuthorizationReceipt,
+  type ApplicationPrincipal,
+  applicationOperationId,
+  validateApplicationAuthorizationReceipt,
+} from '@applik8s/core';
 import { sha256Hex } from '@applik8s/deployment-contract';
 import type { SchemaInput } from '@applik8s/sdk';
 import {
   expandApplicationCallbackDependencies,
   serializeApplicationCallback,
 } from './application-callback.js';
+import {
+  type ApplicationActorTurnAuthority,
+  createApplicationActorTurnAuthority,
+  normalizeApplicationActorTurnAuthority,
+} from './application-actor-authority-runtime.js';
+export type {
+  ApplicationActorTurnAuthority,
+  CreateApplicationActorTurnAuthorityOptions,
+} from './application-actor-authority-runtime.js';
+export {
+  createApplicationActorTurnAuthority,
+  normalizeApplicationActorTurnAuthority,
+} from './application-actor-authority-runtime.js';
 import { applicationProviderGraphNodeId } from './application-identifiers.js';
 import { withApplicationManagedEffects } from './application-managed-effects.js';
 import { applicationOperationInputDigest } from './application-operation-runtime.js';
@@ -389,13 +408,6 @@ export interface ApplicationActorRuntimeInvocation<TState extends object> {
   readonly authority?: ApplicationActorTurnAuthority;
 }
 
-export interface ApplicationActorTurnAuthority {
-  readonly principal: { readonly id: string };
-  readonly causalPrincipal: { readonly id: string };
-  readonly authorizationReceipt: ApplicationAuthorizationReceipt | { readonly id: string; readonly authorityRevision: string };
-  readonly trustedContextDigest: string;
-}
-
 export interface ApplicationActorInvocationAuthorityRequest {
   readonly actor: string;
   readonly member: string;
@@ -463,7 +475,10 @@ export function withApplicationActorTurnAuthority<T>(
   authority: ApplicationActorTurnAuthority,
   callback: () => T,
 ): T {
-  return actorAuthority.run(authority, callback);
+  return actorAuthority.run(
+    normalizeApplicationActorTurnAuthority(authority),
+    callback,
+  );
 }
 
 export class ApplicationActorCallCycleError extends Error {
@@ -518,14 +533,15 @@ async function invokeApplicationActorRuntime<TState extends object>(
 export async function resolveApplicationActorInvocationAuthority(
   request: ApplicationActorInvocationAuthorityRequest,
 ): Promise<ApplicationActorTurnAuthority> {
+  const current = normalizeApplicationActorTurnAuthority(request.current);
   const operationId = applicationOperationId({
     domain: 'actors',
     owner: request.actor,
     operation: request.member,
   });
-  const receipt = request.current.authorizationReceipt;
+  const receipt = current.authorizationReceipt;
   if ('operationId' in receipt && receipt.operationId === operationId) {
-    return request.current;
+    return current;
   }
   if (!actorInvocationAuthorityResolver) {
     if ('operationId' in receipt) {
@@ -533,9 +549,11 @@ export async function resolveApplicationActorInvocationAuthority(
         `Actor ${request.actor}.${request.member} requires target-specific authority, but no actor authority resolver is installed.`,
       );
     }
-    return request.current;
+    return current;
   }
-  return actorInvocationAuthorityResolver(request);
+  return normalizeApplicationActorTurnAuthority(
+    await actorInvocationAuthorityResolver({ ...request, current }),
+  );
 }
 
 /**
@@ -1043,12 +1061,7 @@ export function createDeterministicApplicationActorRuntime(options: {
           invoke() {
             throw new Error('Actor turns cannot synchronously stage command results; use a typed actor call or durable workflow.');
           },
-          }, async () => withApplicationActorTurnAuthority({
-            principal: { id: `actor:${request.definition.id}:${stableDigest(request.key).slice(0, 24)}` },
-            causalPrincipal: authority.causalPrincipal,
-            authorizationReceipt: authority.authorizationReceipt,
-            trustedContextDigest: authority.trustedContextDigest,
-          }, () => Reflect.apply(handler, undefined, request.connection
+          }, async () => withApplicationActorTurnAuthority(authority, () => Reflect.apply(handler, undefined, request.connection
             ? [actor, request.connection, request.input]
             : [actor, request.input]))));
         const committed = {
@@ -1215,23 +1228,54 @@ function validateActorConnectionContext(
 
 function actorTurnAuthority<TState extends object>(
   request: ApplicationActorRuntimeInvocation<TState>,
-  operationId: string,
+  correlationId: string,
 ): ApplicationActorTurnAuthority {
-  if (request.authority) return request.authority;
+  const operationId = applicationOperationId({
+    domain: 'actors',
+    owner: request.definition.id,
+    operation: request.member,
+  });
+  if (request.authority) {
+    return normalizeApplicationActorTurnAuthority(request.authority);
+  }
   if (request.connection) {
-    return {
-      principal: request.connection.principal,
+    return createApplicationActorTurnAuthority({
+      admission: {
+        principal: request.connection.authorizationReceipt.principal,
+        trustedContext: {},
+      },
+      operationId,
+      correlationId: request.connection.id,
       causalPrincipal: request.connection.causalPrincipal,
       authorizationReceipt: request.connection.authorizationReceipt,
-      trustedContextDigest: request.connection.trustedContextDigest,
-    };
+      ...(request.connection.authorizationReceipt.expiresAt
+        ? { deadline: request.connection.authorizationReceipt.expiresAt }
+        : {}),
+    });
   }
-  return {
-    principal: { id: 'applik8s:application' },
-    causalPrincipal: { id: 'applik8s:application' },
-    authorizationReceipt: { id: `internal:${operationId}`, authorityRevision: 'application-runtime' },
-    trustedContextDigest: stableDigest({ authority: 'application-runtime' }),
-  };
+  const trustedContextDigest = stableDigest({ authority: 'application-runtime' });
+  const principal: ApplicationPrincipal = Object.freeze({
+    id: 'applik8s:application',
+    identity: Object.freeze({
+      id: 'applik8s:application',
+      kind: 'service',
+      issuer: 'applik8s:local-actor-runtime',
+      subject: 'application',
+    }),
+    kind: 'service',
+    authenticationMethod: 'local-actor-runtime',
+    audience: Object.freeze(['application-runtime']),
+    trustedContextDigest,
+    catalogRevision: 'application-runtime',
+    authorityRevision: 'application-runtime',
+    admittedAt: new Date(0).toISOString(),
+  });
+  return createApplicationActorTurnAuthority({
+    admission: { principal, trustedContext: {} },
+    operationId,
+    correlationId: `local-actor:${request.idempotencyKey ?? correlationId}`,
+    causalPrincipal: { id: principal.id },
+  });
 }
 
 function actorReceiptKey(scope: string, operationId: string): string {

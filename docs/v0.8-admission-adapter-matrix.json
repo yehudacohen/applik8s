@@ -87,13 +87,18 @@
     {
       "id": "actor-call-alarm",
       "transport": "actor",
-      "state": "not-started",
+      "state": "in-progress",
       "evidenceVerifier": "actor call ticket, connection authority, or persisted alarm authority",
-      "principalSource": "narrowed caller execution principal or bounded actor alarm service principal",
+      "principalSource": "canonical caller admission for direct turns; bounded actor execution and alarm-service principals remain an AC-1 requirement",
       "operationIdentity": "actor command, message, connection event, or alarm",
-      "owners": [],
-      "regression": null,
-      "remaining": "integrate actor calls and alarm persistence without conflating alarms with schedules"
+      "owners": [
+        "packages/applik8s/src/application-actor-authority-runtime.ts",
+        "packages/applik8s/src/application-actors.ts",
+        "packages/runtime-celld/src/index.ts",
+        "packages/runtime-celld/src/worker.ts"
+      ],
+      "regression": "NODE_OPTIONS=--max-old-space-size=8192 bunx vitest run --maxWorkers=1 packages/applik8s/test/application-actor-authority-runtime.vertical.test.ts packages/applik8s/test/application-actors.vertical.test.ts packages/runtime-celld/test/runtime-celld.vertical.test.ts",
+      "remaining": "checkpoint the canonical durable authority envelope and legacy normalization; then implement bounded actor execution and alarm-service principals, nested-call/cancellation/causal semantics, durable recovery, rejection telemetry, and provider lifecycle evidence without treating alarms as schedules"
     },
     {
       "id": "agent-ai-execution",

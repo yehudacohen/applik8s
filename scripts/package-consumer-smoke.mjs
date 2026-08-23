@@ -28,6 +28,7 @@ const publicEntrypoints = [
   '@applik8s/applik8s/schedule-runtime-local',
   '@applik8s/applik8s/schedule-state-runtime',
   '@applik8s/applik8s/actor-runtime-local',
+  '@applik8s/applik8s/actor-authority-runtime',
   '@applik8s/applik8s/postgres-runtime-contract',
   '@applik8s/applik8s/search-runtime',
   '@applik8s/applik8s/dns',

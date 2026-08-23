@@ -67,6 +67,27 @@
       "decoderRemovalRelease": null
     },
     {
+      "id": "application-actor-turn-authority-release-a",
+      "kind": "admission-record",
+      "wireVersion": "applik8s.actorTurnAuthority/v1alpha1",
+      "canonicalContextVersion": "applik8s.admission/v1",
+      "state": "in-progress",
+      "owner": "@applik8s/applik8s",
+      "writers": [
+        "0.8.x:legacy-mirror-fields-plus-canonical-admission-context"
+      ],
+      "readers": [
+        "0.8.x:canonical-or-complete-v0.7-legacy-authority",
+        "0.7.x:legacy-mirror-fields-ignore-canonical-context"
+      ],
+      "maximumLifetime": "actor-alarm-retention-and-retry-window",
+      "purposeOrKeyNamespace": "application-actor-turn-authority",
+      "migrationPhase": "release-a-reads-complete-legacy-and-dual-write-reads-canonical",
+      "telemetry": "pending-context-version-legacy-read-parity-rejection-and-alarm-recovery-metrics",
+      "rollbackSafeThrough": "0.7.x-readers-retain-every-required-legacy-mirror-field",
+      "decoderRemovalRelease": "0.10.0-earliest-after-zero-legacy-read-telemetry-and-expired-retained-alarms"
+    },
+    {
       "id": "task-query-admission-migration",
       "kind": "signed-envelope-payload",
       "wireVersion": "pre-v0.8-compact-hmac-json",

@@ -10,6 +10,7 @@ import {
   type ApplicationActorRuntimeInvocation,
   type ApplicationActorTurn,
   type ApplicationActorTurnAuthority,
+  normalizeApplicationActorTurnAuthority,
   resolveApplicationActorInvocationAuthority,
   withApplicationActorTurnAuthority,
 } from '@applik8s/applik8s';
@@ -234,10 +235,11 @@ export function createCelldApplicationActorRuntime(
               throw new Error('Actor turns cannot synchronously stage command results; use a typed actor call or durable workflow.');
             },
           }, async () => withApplicationActorTurnAuthority({
-            principal: { id: `actor:${call.definition.id}:${sha256Hex(call.key).slice(0, 24)}` },
+            principal: authority.principal,
             causalPrincipal: authority.causalPrincipal,
             authorizationReceipt: authority.authorizationReceipt,
             trustedContextDigest: authority.trustedContextDigest,
+            ...(authority.admission ? { admission: authority.admission } : {}),
           }, () => Reflect.apply(handler, undefined, call.connection
             ? [turn, call.connection, call.input]
             : [turn, call.input]))),
@@ -326,14 +328,16 @@ function celldActorTurnAuthority(
   call: ApplicationActorRuntimeInvocation<object>,
   operationId: string,
 ): ApplicationActorTurnAuthority {
-  if (call.authority) return call.authority;
+  if (call.authority) {
+    return normalizeApplicationActorTurnAuthority(call.authority);
+  }
   if (call.connection) {
-    return {
+    return normalizeApplicationActorTurnAuthority({
       principal: call.connection.principal,
       causalPrincipal: call.connection.causalPrincipal,
       authorizationReceipt: call.connection.authorizationReceipt,
       trustedContextDigest: call.connection.trustedContextDigest,
-    };
+    });
   }
   throw new Error(`celld actor operation ${operationId} requires framework-admitted turn authority.`);
 }

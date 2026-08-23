@@ -194,6 +194,28 @@ for (const required of [
   }
 }
 
+const actorAuthorityRuntime = await readFile(
+  join(root, 'packages/applik8s/src/application-actor-authority-runtime.ts'),
+  'utf8',
+);
+if (
+  !actorAuthorityRuntime.includes('readonly admission?: ApplicationAdmissionInvocationContextV1')
+  || !actorAuthorityRuntime.includes('createApplicationAdmissionContextV1')
+  || !actorAuthorityRuntime.includes('validateApplicationAdmissionContextV1')
+) {
+  findings.push('Actor turn authority does not use the canonical Release-A admission adapter.');
+}
+const celldWorker = await readFile(
+  join(root, 'packages/runtime-celld/src/worker.ts'),
+  'utf8',
+);
+if (
+  !celldWorker.includes("from '@applik8s/applik8s/actor-authority-runtime'")
+  || !celldWorker.includes('normalizeApplicationActorTurnAuthority(')
+) {
+  findings.push('celld actor alarms do not validate canonical persisted authority through the focused runtime boundary.');
+}
+
 if (findings.length > 0) {
   throw new Error(`v0.8 Runtime Integrity gate failed:\n${findings.map((finding) => `- ${finding}`).join('\n')}`);
 }

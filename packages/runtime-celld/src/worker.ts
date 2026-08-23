@@ -1,7 +1,10 @@
 // typecast-file-boundary: Worker fetch payloads are decoded from untyped JSON and checked by the actor runtime protocol.
 /** celld/Cloudflare-compatible authority for the Applik8s actor protocol. */
 import { type CelldActorConnectionTicketClaims, verifyCelldActorConnectionTicket } from './connection-ticket.js';
-import type { ApplicationActorTurnAuthority } from '@applik8s/applik8s';
+import {
+  type ApplicationActorTurnAuthority,
+  normalizeApplicationActorTurnAuthority,
+} from '@applik8s/applik8s/actor-authority-runtime';
 import { validateApplicationAuthorizationReceipt, type ApplicationAuthorizationReceipt } from '@applik8s/core';
 
 interface DurableObjectIdLike { toString(): string }
@@ -900,7 +903,9 @@ function requiredActorTurnAuthority(value: unknown, label: string): ApplicationA
   requiredString(receipt.authorityRevision, `${label}.authorizationReceipt.authorityRevision`);
   requiredString(receipt.operationId, `${label}.authorizationReceipt.operationId`);
   requiredString(authority.trustedContextDigest, `${label}.trustedContextDigest`);
-  return structuredClone(authority) as unknown as ApplicationActorTurnAuthority;
+  return normalizeApplicationActorTurnAuthority(
+    structuredClone(authority) as unknown as ApplicationActorTurnAuthority,
+  );
 }
 
 function requiredActorAuthorizationReceipt(value: unknown, label: string): ApplicationAuthorizationReceipt {

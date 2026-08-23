@@ -181,6 +181,11 @@
       "import": "./dist/application-actor-local-runtime.js",
       "default": "./dist/application-actor-local-runtime.js"
     },
+    "./actor-authority-runtime": {
+      "types": "./dist/application-actor-authority-runtime.d.ts",
+      "import": "./dist/application-actor-authority-runtime.js",
+      "default": "./dist/application-actor-authority-runtime.js"
+    },
     "./internal/managed-effects": {
       "types": "./dist/application-managed-effects.d.ts",
       "import": "./dist/application-managed-effects.js",
