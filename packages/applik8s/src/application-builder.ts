@@ -189,7 +189,7 @@ export interface ApplicationInfrastructureOptions {
 function isSingleStepWorkflowOptions(options: object): boolean {
   const generatedCalls = Reflect.get(options, '__generatedCalls');
   const generatedBindings = Reflect.get(options, '__generatedBindings');
-  const expandedGeneratedCalls = Array.isArray(generatedCalls)
+  const expandedDependencies = Array.isArray(generatedCalls)
     ? expandApplicationCallbackDependencies({
         calls: generatedCalls,
         ...(generatedBindings && typeof generatedBindings === 'object'
@@ -197,8 +197,9 @@ function isSingleStepWorkflowOptions(options: object): boolean {
               bindings: generatedBindings as Readonly<Record<string, unknown>>,
             }
           : {}),
-      }).calls
-    : [];
+      })
+    : undefined;
+  const expandedGeneratedCalls = expandedDependencies?.calls ?? [];
   if (
     expandedGeneratedCalls.some(
       (value) =>
@@ -209,7 +210,14 @@ function isSingleStepWorkflowOptions(options: object): boolean {
     return false;
   }
   if (
-    [
+    // Callable provider implementations are runtime-managed and may perform
+    // external effects. They cannot execute in deterministic workflow history,
+    // so a provider-only function-native workflow needs the same durable task
+    // boundary as model writes and actor calls.
+    (expandedDependencies?.providerBindings.some(
+      (binding) => binding.operation !== undefined,
+    ) ?? false)
+    || [
       ...expandedGeneratedCalls,
       ...(
         generatedBindings && typeof generatedBindings === 'object'

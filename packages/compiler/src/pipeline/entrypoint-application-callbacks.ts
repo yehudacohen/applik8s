@@ -1004,12 +1004,17 @@ function directApplicationCallAnalysis(
       ts.isIdentifier(callback)
       && applicationCallbackIsImported(callback.text, file)
     ) {
-      const position = file.getLineAndCharacterOfPosition(callback.getStart(file));
-      if (importedApplicationCallbackProvenance(callback, file, sourceFile)) {
+      const importedProvenance = importedApplicationCallbackProvenance(
+        callback,
+        file,
+        sourceFile,
+      );
+      if (importedProvenance) {
         return { calls: [callback], awaited: [], returned: [] };
       }
+      const position = importedApplicationBindingPosition(callback.text, file);
       throw new Error(
-        `${registrar} callback ${callback.getText(file)} at ${sourceFile}:${position.line + 1}:${position.character + 1} cannot be analyzed for application dependencies. Import it from a statically resolvable local module, declare it inline or in the same file, or provide an explicit authority envelope.`,
+        `${registrar} callback ${callback.getText(file) || callback.text} at ${sourceFile}:${position.line + 1}:${position.character + 1} cannot be analyzed for application dependencies. Import it from a statically resolvable local module, declare it inline or in the same file, or provide an explicit authority envelope.`,
       );
     }
     return { calls: [], awaited: [], returned: [] };
@@ -1171,6 +1176,32 @@ function directApplicationCallAnalysis(
     awaited: [...awaited.values()],
     returned: [...returned.values()],
   };
+}
+
+function importedApplicationBindingPosition(
+  name: string,
+  file: ts.SourceFile,
+): ts.LineAndCharacter {
+  for (const statement of file.statements) {
+    if (!ts.isImportDeclaration(statement) || !statement.importClause) continue;
+    const clause = statement.importClause;
+    if (clause.name?.text === name) {
+      return file.getLineAndCharacterOfPosition(clause.name.getStart(file));
+    }
+    const bindings = clause.namedBindings;
+    if (bindings && ts.isNamespaceImport(bindings) && bindings.name.text === name) {
+      return file.getLineAndCharacterOfPosition(bindings.name.getStart(file));
+    }
+    if (bindings && ts.isNamedImports(bindings)) {
+      const element = bindings.elements.find(
+        (candidate) => candidate.name.text === name,
+      );
+      if (element) {
+        return file.getLineAndCharacterOfPosition(element.name.getStart(file));
+      }
+    }
+  }
+  return { line: 0, character: 0 };
 }
 
 function collectFunctionLocalApplicationBindings(

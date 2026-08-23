@@ -10,14 +10,13 @@ import { inferApplicationFunctionNativeTransaction } from './application-functio
 import { addApplicationGraphEdge, addApplicationGraphNode, addApplicationProviderBinding, addApplicationProviderRequirement } from './application-graph-state.js';
 import type { ApplicationObjectStoreBinding } from './application-object-storage.js';
 import { applicationProjectionRebuildTarget } from './application-projection-binding.js';
-import { applicationCallableProviderDependencies } from './application-provider-dependencies.js';
-import { type ApplicationProviderSelectionValue, type ApplicationProviderToken, type ApplicationWorkflowEngineProvider, Scheduler, applicationProviderImplementationName, applicationWorkflowEngineImplementation, isApplicationProviderSelection } from './application-providers.js';
+import { type ApplicationProviderSelectionValue, type ApplicationProviderToken, type ApplicationWorkflowEngineProvider, applicationProviderImplementationName, applicationWorkflowEngineImplementation, isApplicationProviderSelection, Scheduler } from './application-providers.js';
 import { applicationQueryBindingForOperation } from './application-queries.js';
-import type { ApplicationSignalDefinition } from './application-signals.js';
 import {
-  createApplicationSchedule,
   type ApplicationScheduleHandle,
+  createApplicationSchedule,
 } from './application-schedule.js';
+import type { ApplicationSignalDefinition } from './application-signals.js';
 import { applicationTypeKroGraphValue, applicationTypeKroString } from './application-typekro-values.js';
 import type { ApplicationWorkflowTaskDefinition as TaskDefinition } from './application-workflow-internal.js';
 import { declaredSchema, durableContract, functionExpression, requiredSchema, schemaRecord, validateMessage, workflowHandlerSerialization } from './application-workflow-serialization.js';
@@ -155,12 +154,24 @@ export function registerApplicationTask<
     options.__generatedBindings,
   );
   const inferredDependencies = expandApplicationCallbackDependencies({
-    calls: options.__generatedCalls,
+    // The callback itself may be supplied by a clean external module whose
+    // compiler-authored dependency metadata is the only portable path to its
+    // private helper/provider leaves. Treat it as a root just like stream and
+    // actor handlers; generated callsite bindings remain an additional source,
+    // not the authority for recursive closure discovery.
+    calls: [handler, ...(options.__generatedCalls ?? [])],
     bindings: options.__generatedBindings,
   });
-  const providerBindings = applicationCallableProviderDependencies(
-    inferredDependencies.bindings,
-  );
+  const providerBindings = inferredDependencies.providerBindings
+    .filter(
+      (binding) =>
+        binding.operation !== undefined
+        || !inferredDependencies.providerBindings.some(
+          (candidate) =>
+            candidate.operation !== undefined
+            && candidate.provider.nodeId === binding.provider.nodeId,
+        ),
+    );
   const functionNativeTransaction = inferApplicationFunctionNativeTransaction(
     state,
     `Application task ${definition.id}`,

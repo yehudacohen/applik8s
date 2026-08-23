@@ -1,8 +1,8 @@
 // typecast-file-boundary: workflow fixtures inspect compiler-owned metadata and deliberately restore their declared generic binding shapes.
-import { actor, app, applicationGraphFor, applicationScheduleInvocationAdmission, event, IndexStore, installApplicationScheduleRuntimeResolver, ObjectStorage, StructuredGeneration as StructuredGenerationProvider, setApplicationWorkflowRuntimeFactory, WorkflowEngine, workflow } from '@applik8s/applik8s';
-import { installApplicationInvocationAdmissionResolver } from '@applik8s/client';
+import { actor, app, applicationGraphFor, applicationScheduleInvocationAdmission, defineApplicationProvider, event, IndexStore, installApplicationScheduleRuntimeResolver, ObjectStorage, StructuredGeneration as StructuredGenerationProvider, setApplicationWorkflowRuntimeFactory, WorkflowEngine, workflow } from '@applik8s/applik8s';
 import { type } from '@applik8s/applik8s/dsl';
 import { StructuredGeneration } from '@applik8s/applik8s/structured-generation';
+import { installApplicationInvocationAdmissionResolver } from '@applik8s/client';
 import {
   applicationAdmissionInvocationView,
   createApplicationAdmissionContextV1,
@@ -102,6 +102,95 @@ describe('v0.5 durable task and workflow contracts', () => {
         kind: 'workflowHandler',
         name: 'tenant.provision-workflow.v1',
         taskBindings: [{ alias: 'run', task: { nodeId: 'task.tenant.provision-workflow.v1.step' } }],
+      }),
+    ]));
+  });
+
+  it('lowers a provider-only function-native workflow into a durable task boundary', () => {
+    interface AcquisitionImplementation {
+      readonly kind: 'acquisition';
+      acquire(input: { readonly id: string }): Promise<{ readonly value: string }>;
+    }
+    const AcquisitionProvider = defineApplicationProvider<AcquisitionImplementation>({
+      interface: 'AcquisitionProvider',
+      version: 'v1alpha1',
+      runtime: {
+        operations: {
+          acquire: {
+            module: '@fixture/acquisition/runtime',
+            export: 'acquireItem',
+            access: {
+              kind: 'provider',
+              operations: ['connection.use', 'network.connect'],
+            },
+          },
+        },
+      },
+      accepts: (candidate): candidate is AcquisitionImplementation =>
+        candidate !== null
+        && typeof candidate === 'object'
+        && Reflect.get(candidate, 'kind') === 'acquisition'
+        && typeof Reflect.get(candidate, 'acquire') === 'function',
+    }).named('primary');
+    const platform = app('provider-only-workflow', {
+      spec: type({ profile: "'starter' | 'dedicated'" }),
+      status: type({ ready: 'boolean' }),
+    });
+    platform
+      .profile(platform.installation.spec, 'profile')
+      .provide(AcquisitionProvider)
+      .starter(() => ({
+        kind: 'acquisition',
+        async acquire({ id }) {
+          return { value: id };
+        },
+      }))
+      .dedicated(() => ({
+        kind: 'acquisition',
+        async acquire({ id }) {
+          return { value: id };
+        },
+      }))
+      .exhaustive();
+    const provider = platform.inject(AcquisitionProvider);
+    platform.workflow(
+      'acquisition.refresh.v1',
+      {
+        input: type({ id: 'string' }),
+        output: type({ value: 'string' }),
+      },
+      {
+        __generatedCalls: [provider.acquire],
+        __generatedBindings: {
+          'provider.acquire': provider.acquire,
+        },
+      },
+      async ({ id }) => provider.acquire({ id }),
+    );
+
+    const graph = applicationGraphFor(platform.composition);
+    expect(graph?.nodes).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: 'taskHandler',
+        name: 'acquisition.refresh.v1.step',
+        providerBindings: [expect.objectContaining({
+          identifier: 'provider.acquire',
+          operation: expect.objectContaining({
+            member: 'acquire',
+            runtime: expect.objectContaining({
+              module: '@fixture/acquisition/runtime',
+              export: 'acquireItem',
+            }),
+          }),
+        })],
+      }),
+      expect.objectContaining({
+        kind: 'workflowHandler',
+        name: 'acquisition.refresh.v1',
+        taskBindings: [{
+          alias: 'run',
+          task: { nodeId: 'task.acquisition.refresh.v1.step' },
+        }],
       }),
     ]));
   });

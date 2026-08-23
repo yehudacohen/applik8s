@@ -2,9 +2,18 @@
 import { createHash } from 'node:crypto';
 import { writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
-import type { ApplicationStreamNode, ApplicationTaskHandlerNode, ApplicationWorkflowHandlerNode } from '@applik8s/core';
+import type {
+  ApplicationCallableProviderBinding,
+  ApplicationCallableProviderRuntimeOperation,
+  ApplicationStreamNode,
+  ApplicationTaskHandlerNode,
+  ApplicationWorkflowHandlerNode,
+} from '@applik8s/core';
 import type { Plugin } from 'esbuild';
-import { generatedCallbackFactoryModule } from '../application-callback-module.js';
+import {
+  capturedApplicationInjectFacade,
+  generatedCallbackFactoryModule,
+} from '../application-callback-module.js';
 import {
   type ApplicationRuntimeExecutionTarget,
   generatedApplicationEventLogPublisherSource,
@@ -72,6 +81,13 @@ export function generatedWorkerSource(
       ? [`import { principal as ${operationPrincipalVariable(handler.id)} } from ${JSON.stringify(`./${operationPrincipalModuleFile(handler.id)}`)};`]
       : []))
     .concat(uniqueWorkflowProjectionEffects(contract).flatMap((effect) => workflowProjectionCallbackImports(effect)))
+    .concat(contract.tasks.flatMap(({ handler }) =>
+      workflowTaskProviderRuntimeOperations(handler).map(
+        ({ runtime, variable }) =>
+          `import { ${runtime.export} as ${variable} } from ${JSON.stringify(runtime.module)};`,
+      )))
+    .filter((statement, index, statements) =>
+      statements.indexOf(statement) === index)
     .join('\n');
   const taskDeclarations = contract.tasks.map(({ handler, task }) => {
     const errors = Object.fromEntries(task.contract.errors.map((error) => [error.name, error.schema.jsonSchema]));
@@ -123,8 +139,15 @@ export function generatedWorkerSource(
     const functionNativeTransaction = contract.functionNativeTransactions?.find(
       (transaction) => transaction.taskHandlerId === handler.id,
     );
+    const providerOperationBindings = workflowTaskProviderRuntimeOperations(
+      handler,
+    );
     const directBindings = nestedCallbackBindingsSource([
       ...capabilityBindings,
+      ...providerOperationBindings.map(({ binding, variable }) => ({
+        path: binding.identifier,
+        value: variable,
+      })),
       ...(handler.operations ?? []).map((binding) => ({
         path: binding.alias,
         value: `execution.operations[${JSON.stringify(binding.alias)}]`,
@@ -1658,9 +1681,19 @@ export function generatedHandlerModule(
   handler: ApplicationTaskHandlerNode | ApplicationWorkflowHandlerNode,
   capabilityNames: readonly string[] = [],
 ): string {
+  const providerOperations = handler.kind === 'taskHandler'
+    ? workflowTaskProviderRuntimeOperations(handler)
+    : [];
+  const providerBindingPaths = providerOperations.map(
+    ({ binding }) => binding.identifier,
+  );
+  const providerBindingRoots = providerBindingPaths
+    .map((identifier) => identifier.split('.')[0])
+    .filter((identifier): identifier is string => Boolean(identifier));
   const injectedIdentifiers = (handler.kind === 'taskHandler'
     ? [
         ...capabilityNames,
+        ...providerBindingRoots,
         ...(handler.operations ?? []).map((binding) => binding.alias),
         ...(handler.queries ?? []).map((binding) => binding.alias),
         ...(handler.projections ?? []).map((binding) => binding.alias),
@@ -1687,13 +1720,76 @@ export function generatedHandlerModule(
         /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(identifier)
         && values.indexOf(identifier) === index,
     );
+  const replacedCapturedIdentifiers = providerBindingRoots.filter(
+    (identifier, index, values) =>
+      values.indexOf(identifier) === index
+      && capturedApplicationInjectFacade(
+        handler.handlerDependencies?.source,
+        identifier,
+      ),
+  );
   return generatedCallbackFactoryModule({
     source: handler.handlerSource,
     ...(handler.handlerDependencies
       ? { dependencies: handler.handlerDependencies }
       : {}),
     injectedIdentifiers,
+    injectedBindingPaths: [
+      ...injectedIdentifiers,
+      ...providerBindingPaths,
+    ],
+    replacedCapturedIdentifiers,
     exportName: 'createHandler',
+  });
+}
+
+interface WorkflowTaskProviderRuntimeOperation {
+  readonly binding: ApplicationCallableProviderBinding;
+  readonly runtime: ApplicationCallableProviderRuntimeOperation;
+  readonly variable: string;
+}
+
+function workflowTaskProviderRuntimeOperations(
+  handler: ApplicationTaskHandlerNode,
+): readonly WorkflowTaskProviderRuntimeOperation[] {
+  return (handler.providerBindings ?? []).flatMap((binding) => {
+    if (!binding.operation) return [];
+    const runtime = binding.operation.runtime;
+    if (!runtime) {
+      throw new Error(
+        `Workflow task ${handler.id} provider binding ${binding.identifier} has no public static runtime operation. Define the operation in the provider runtime contract; generated workflow workers never replay authoring-time provider selection.`,
+      );
+    }
+    if (
+      !/^(?:@[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._/-]*|[a-z0-9][a-z0-9._/-]*)$/u.test(
+        runtime.module,
+      )
+      || runtime.module.includes('..')
+      || !/^[A-Za-z_$][A-Za-z0-9_$]*$/u.test(runtime.export)
+    ) {
+      throw new Error(
+        `Workflow task ${handler.id} provider binding ${binding.identifier} has an invalid public runtime export ${runtime.module}#${runtime.export}.`,
+      );
+    }
+    const segments = binding.identifier.split('.');
+    if (
+      segments.length === 0
+      || segments.some(
+        (segment) => !/^[A-Za-z_$][A-Za-z0-9_$]*$/u.test(segment),
+      )
+    ) {
+      throw new Error(
+        `Workflow task ${handler.id} provider binding ${binding.identifier} is not a static JavaScript binding path.`,
+      );
+    }
+    return [{
+      binding,
+      runtime,
+      variable: `providerOperation_${createHash('sha256')
+        .update(`${runtime.module}\0${runtime.export}`)
+        .digest('hex')
+        .slice(0, 12)}`,
+    }];
   });
 }
 
@@ -1713,7 +1809,9 @@ export function nestedCallbackBindingsSource(
         (segment) => !/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(segment),
       )
     ) {
-      continue;
+      throw new Error(
+        `Generated callback binding path ${JSON.stringify(entry.path)} is not a static JavaScript binding path.`,
+      );
     }
     const [root, ...rest] = segments;
     if (!root) continue;
@@ -1721,12 +1819,29 @@ export function nestedCallbackBindingsSource(
       children: new Map<string, BindingTree>(),
     };
     let leaf = current;
+    const traversed = [root];
     for (const segment of rest) {
+      if (leaf.direct !== undefined) {
+        throw new Error(
+          `Generated callback binding ${entry.path} conflicts with callable binding ${traversed.join('.')}. A runtime binding cannot be both a callable leaf and a namespace.`,
+        );
+      }
       const child = leaf.children.get(segment) ?? {
         children: new Map<string, BindingTree>(),
       };
       leaf.children.set(segment, child);
       leaf = child;
+      traversed.push(segment);
+    }
+    if (leaf.children.size > 0) {
+      throw new Error(
+        `Generated callback binding ${entry.path} conflicts with nested runtime bindings. A runtime binding cannot be both a callable leaf and a namespace.`,
+      );
+    }
+    if (leaf.direct !== undefined && leaf.direct !== entry.value) {
+      throw new Error(
+        `Generated callback binding ${entry.path} resolves to multiple runtime values.`,
+      );
     }
     leaf.direct = entry.value;
     roots.set(root, current);
@@ -1737,6 +1852,7 @@ export function nestedCallbackBindingsSource(
       return node.direct;
     }
     const nested = [...node.children.entries()]
+      .sort(([left], [right]) => left.localeCompare(right))
       .map(
         ([property, child]) =>
           `${JSON.stringify(property)}: ${source(child)}`,
@@ -1744,9 +1860,9 @@ export function nestedCallbackBindingsSource(
       .join(', ');
     return `{ ${nested} }`;
   };
-  const properties = [...roots.entries()].map(
-    ([root, value]) => `${JSON.stringify(root)}: ${source(value)}`,
-  );
+  const properties = [...roots.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([root, value]) => `${JSON.stringify(root)}: ${source(value)}`);
   return `{ ${properties.join(', ')} }`;
 }
 

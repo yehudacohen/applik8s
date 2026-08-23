@@ -516,6 +516,178 @@ if (
   });
   console.log('Package consumer smoke: packed external actor provider hydration passed.');
 
+  const packedWorkflowApplicationPath = join(
+    consumerDir,
+    'packed-workflow-provider.mjs',
+  );
+  await writeFile(
+    packedWorkflowApplicationPath,
+    `import { app, WorkflowEngine } from '@applik8s/applik8s';
+import { type } from '@applik8s/applik8s/dsl';
+import { AcquisitionProvider, acquisition } from '@fixture/acquisition';
+const application = app('packed-workflow-provider', {
+  namespace: 'packed-workflow-provider',
+  spec: type({ profile: "'starter' | 'dedicated'" }),
+  status: type({ ready: 'boolean' }),
+});
+application.provide(
+  WorkflowEngine,
+  WorkflowEngine.hatchet({
+    provision: false,
+    namespace: 'packed-workflow-provider',
+    hostPort: 'hatchet:7070',
+    apiUrl: 'http://hatchet:8080',
+    workerTokenSecret: {
+      apiVersion: 'v1',
+      kind: 'Secret',
+      name: 'hatchet-worker',
+      namespace: 'packed-workflow-provider',
+    },
+  }),
+);
+const implementation = source => ({
+  kind: 'acquisition',
+  async acquire(input) { return { value: source + ':' + input.id }; },
+});
+application.profile(application.installation.spec, 'profile')
+  .provide(AcquisitionProvider)
+  .starter(() => implementation('starter'))
+  .dedicated(() => implementation('dedicated'))
+  .exhaustive();
+const { acquire } = application.include(acquisition);
+const directProvider = application.inject(AcquisitionProvider);
+async function acquireThroughHelper(id) {
+  return acquire({ id });
+}
+application.workflow(
+  'acquisition.refresh.v1',
+  {
+    input: type({ id: 'string' }),
+    output: type({ value: 'string' }),
+  },
+  async input => {
+    const helper = await acquireThroughHelper(input.id);
+    const direct = await directProvider.acquire({ id: input.id });
+    return { value: helper.value + '|' + direct.value };
+  },
+);
+export const workflowProviderStack = application.composition;
+`,
+  );
+  const packedWorkflowProofPath = join(
+    consumerDir,
+    'packed-workflow-proof.mjs',
+  );
+  await writeFile(
+    packedWorkflowProofPath,
+    `import { readdir, readFile } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
+import { deriveApplicationGraphFoundation } from '@applik8s/core';
+import {
+  compileTypeKroComposition,
+  discoverApplicationGraphWithExports,
+} from '@applik8s/compiler';
+const applicationPath = ${JSON.stringify(packedWorkflowApplicationPath)};
+const discovered = await discoverApplicationGraphWithExports(
+  applicationPath,
+  'workflowProviderStack',
+);
+if (!discovered.ok) throw discovered.error;
+const graph = discovered.value.graph;
+const handler = graph.nodes.find(node =>
+  node.kind === 'taskHandler'
+  && node.providerBindings?.some(binding => binding.operation?.member === 'acquire')
+);
+if (!handler) throw new Error(
+  'Packed workflow task provider metadata is missing: '
+  + JSON.stringify(
+    graph.nodes
+      .filter(node => node.kind === 'taskHandler')
+      .map(node => ({ id: node.id, providerBindings: node.providerBindings })),
+  ),
+);
+for (const identifier of ['acquire', 'directProvider.acquire']) {
+  const runtime = handler.providerBindings.find(binding =>
+    binding.identifier === identifier
+  )?.operation?.runtime;
+  if (
+    runtime?.module !== '@fixture/acquisition/runtime'
+    || runtime.export !== 'acquireItem'
+  ) throw new Error('Packed workflow provider operation ' + identifier + ' did not survive discovery.');
+}
+const providerId = 'provider.acquisition-provider.v1alpha1.primary';
+const foundation = deriveApplicationGraphFoundation(graph, {
+  workspaceRoot: ${JSON.stringify(consumerDir)},
+});
+const access = foundation.runtimeAccess
+  .filter(requirement => requirement.target.capabilityId === providerId);
+if (
+  access.some(requirement => requirement.consumer.nodeId !== handler.id)
+  || access.map(requirement => requirement.target.operation).sort().join(',')
+    !== 'connection.use,network.connect'
+) throw new Error('Packed workflow provider access was not placed exactly.');
+const worker = graph.nodes.find(node =>
+  node.kind === 'workflowWorker'
+  && node.handlers.some(reference => reference.nodeId === handler.id)
+);
+if (!worker || worker.name !== 'applik8s-hatchet') {
+  throw new Error('Packed workflow provider did not map to its one consuming worker.');
+}
+const compiled = await compileTypeKroComposition({
+  entrypoint: applicationPath,
+  compositionName: 'workflowProviderStack',
+  outDir: join(${JSON.stringify(consumerDir)}, 'packed-workflow-build'),
+  runtimeVersionRange: '^0.7.0',
+  handlerAbiVersion: 'applik8s.handler/v1alpha1',
+  adapter: 'wasmComponent',
+  portability: {
+    deterministicBuild: true,
+    allowEnvironmentAccess: false,
+    allowFilesystemAccess: false,
+    allowNetworkAccess: true,
+    allowedHostImports: [],
+    sourceMaps: {
+      emit: true,
+      includeSourceContent: false,
+      redactPaths: false,
+    },
+  },
+});
+if (!compiled.ok) throw compiled.error;
+const artifact = compiled.value.artifacts.workflowArtifacts[0];
+if (!artifact) throw new Error('Packed workflow artifact is missing.');
+const generated = await readFile(
+  join(dirname(artifact.sourcePath), 'workflow-worker.generated.ts'),
+  'utf8',
+);
+const generatedDirectory = dirname(artifact.sourcePath);
+const generatedHandlers = await Promise.all(
+  (await readdir(generatedDirectory))
+    .filter(name => name.startsWith('handler-') && name.endsWith('.generated.ts'))
+    .map(name => readFile(join(generatedDirectory, name), 'utf8')),
+);
+const generatedFiles = [generated, ...generatedHandlers].join('\\n');
+if (
+  !generatedFiles.includes('@fixture/acquisition/runtime')
+  || !generatedFiles.includes('acquireThroughHelper')
+  || !generatedFiles.includes('"directProvider": { "acquire": providerOperation_')
+  || generatedFiles.includes('@applik8s/applik8s/internal/provider-runtime')
+  || generatedFiles.includes('application.inject')
+  || generatedFiles.includes('application.profile')
+  || generatedFiles.includes('application.provide')
+) throw new Error('Packed generated workflow worker did not hydrate only the public provider operation.');
+`,
+  );
+  await execFileAsync(process.execPath, [packedWorkflowProofPath], {
+    cwd: consumerDir,
+    env: {
+      ...process.env,
+      NODE_OPTIONS: '--max-old-space-size=8192',
+    },
+    maxBuffer: 20 * 1024 * 1024,
+  });
+  console.log('Package consumer smoke: packed external workflow provider hydration passed.');
+
   const operatorPath = join(consumerDir, 'operator.ts');
   const outDir = join(consumerDir, 'dist');
   await writeFile(operatorPath, `import { sdk } from '@applik8s/sdk';

@@ -2,8 +2,12 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import type { ApplicationGraph } from '@applik8s/core';
+import {
+  type ApplicationGraph,
+  deriveApplicationGraphFoundation,
+} from '@applik8s/core';
 import { describe, expect, it } from 'vitest';
+import { applicationProviderConsumerWorkloads } from '../src/application-deployment-graph.js';
 import {
   applicationStaticAuthorityManifest,
   compileApplicationOperationCatalog,
@@ -13,6 +17,7 @@ import { workflowContract } from '../src/application-workflows/contracts.js';
 import { applicationScheduleWorkflowGatewayCallers } from '../src/application-workflows/index.js';
 import { workflowResources } from '../src/application-workflows/resources.js';
 import {
+  generatedHandlerModule,
   generatedWorkerSource,
   handlerModuleFile,
   nestedCallbackBindingsSource,
@@ -266,12 +271,109 @@ describe('v0.5 generated workflow lowering', () => {
     ).toBe(
       '{ "Artifacts": { "Artifact": { "create": execution.operations["Artifacts.Artifact.create"] } }, "ResearchReview": { "update": execution.operations["ResearchReview.update"] } }',
     );
+    expect(
+      nestedCallbackBindingsSource([
+        { path: 'Zulu.invoke', value: 'zulu' },
+        { path: 'Alpha.invoke', value: 'alpha' },
+      ]),
+    ).toBe('{ "Alpha": { "invoke": alpha }, "Zulu": { "invoke": zulu } }');
+    expect(() =>
+      nestedCallbackBindingsSource([
+        { path: 'Provider', value: 'provider' },
+        { path: 'Provider.acquire', value: 'acquire' },
+      ])).toThrow(/both a callable leaf and a namespace/);
+    expect(() =>
+      nestedCallbackBindingsSource([
+        { path: 'Provider.acquire', value: 'first' },
+        { path: 'Provider.acquire', value: 'second' },
+      ])).toThrow(/resolves to multiple runtime values/);
+  });
+
+  it('executes extracted and direct workflow provider bindings through the generated callback factory', async () => {
+    const runtime = {
+      module: '@fixture/acquisition/runtime',
+      export: 'acquireItem',
+      access: {
+        kind: 'provider' as const,
+        operations: ['connection.use' as const, 'network.connect' as const],
+      },
+    };
+    const source = generatedHandlerModule({
+      id: 'task-handler.provider.v1.step',
+      kind: 'taskHandler',
+      name: 'provider.v1.step',
+      stability: 'stable',
+      task: { nodeId: 'task.provider.v1.step' },
+      workflowEngine: {
+        interface: 'WorkflowEngine',
+        nodeId: 'provider.workflow-engine',
+      },
+      providerBindings: [
+        {
+          identifier: 'acquire',
+          provider: {
+            interface: 'AcquisitionProvider',
+            nodeId: 'provider.acquisition',
+          },
+          operation: { member: 'acquire', runtime },
+        },
+        {
+          identifier: 'directProvider.acquire',
+          provider: {
+            interface: 'AcquisitionProvider',
+            nodeId: 'provider.acquisition',
+          },
+          operation: { member: 'acquire', runtime },
+        },
+      ],
+      retry: {
+        mode: 'boundedExponentialBackoff',
+        maxAttempts: 4,
+        initialDelayMs: 1_000,
+        maxDelayMs: 60_000,
+        factor: 2,
+      },
+      executionTimeoutSeconds: 60,
+      scheduleTimeoutSeconds: 300,
+      idempotency: {
+        required: true,
+        keySource: 'invocation',
+        guarantee: 'atLeastOnceRetrySafe',
+      },
+      effectBoundary: 'externalEffectsAllowed',
+      handlerSource: `async input => {
+        const helper = await acquire({ id: input.id });
+        const direct = await directProvider.acquire({ id: input.id });
+        return { value: helper.value + '|' + direct.value };
+      }`,
+    });
+    const createHandler = Function(
+      `${source.replace(
+        'export function createHandler',
+        'function createHandler',
+      )}\nreturn createHandler;`,
+    )() as (bindings: Readonly<Record<string, unknown>>) => (
+      input: { readonly id: string }
+    ) => Promise<{ readonly value: string }>;
+    const handler = createHandler({
+      acquire: async ({ id }: { readonly id: string }) => ({
+        value: `helper:${id}`,
+      }),
+      directProvider: {
+        acquire: async ({ id }: { readonly id: string }) => ({
+          value: `direct:${id}`,
+        }),
+      },
+    });
+    await expect(handler({ id: 'item-1' })).resolves.toEqual({
+      value: 'helper:item-1|direct:item-1',
+    });
   });
 
   it('bundles ordinary Model.edit and Event.emit calls into the durable task transaction kernel', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'applik8s-workflow-model-edit-'));
     try {
-      const entrypoint = join(dir, 'application.ts');
+      const entrypoint = join(dir, 'application.mjs');
       await mkdir(join(dir, 'migrations'));
       await writeFile(
         join(dir, 'migrations/0001_records.sql'),
@@ -290,48 +392,72 @@ describe('v0.5 generated workflow lowering', () => {
           name: '@fixture/acquisition',
           version: '1.0.0',
           type: 'module',
-          exports: './index.js',
+          exports: {
+            '.': './index.js',
+            './runtime': './runtime.js',
+          },
         }),
       );
+      await writeFile(join(providerPackage, 'runtime.js'), `
+export async function acquireItem(input) {
+  return { body: 'runtime:' + input.id };
+}
+`);
       await writeFile(join(providerPackage, 'index.js'), `
-import { defineApplicationProvider } from '@applik8s/applik8s';
+import { defineApplicationProvider, module } from '@applik8s/applik8s';
 export const AcquisitionProvider = defineApplicationProvider({
   interface: 'AcquisitionProvider',
   version: 'v1alpha1',
+  runtime: {
+    operations: {
+      acquire: {
+        module: '@fixture/acquisition/runtime',
+        export: 'acquireItem',
+        access: {
+          kind: 'provider',
+          operations: ['connection.use', 'network.connect'],
+        },
+      },
+    },
+  },
   accepts: candidate => candidate?.kind === 'acquisition' && typeof candidate.acquire === 'function',
 }).named('primary');
-export function installAcquisition(application) {
+export const acquisition = module('acquisition', application => {
   const provider = application.inject(AcquisitionProvider);
   return Object.freeze({ acquire: provider.acquire });
-}
+});
 `);
       await writeFile(entrypoint, `
 import { app, event, WorkflowEngine } from '@applik8s/applik8s';
 import { type } from '@applik8s/applik8s/dsl';
 import { pgTable, text } from 'drizzle-orm/pg-core';
-import { AcquisitionProvider, installAcquisition } from '@fixture/acquisition';
+import { AcquisitionProvider, acquisition } from '@fixture/acquisition';
 const platform = app('workflow-model-edit', {
   namespace: 'workflow-model-edit',
   spec: type({ profile: "'starter' | 'dedicated'" }),
   status: type({ ready: 'boolean' }),
 });
 platform.provide(WorkflowEngine, WorkflowEngine.hatchet({ provision: false, namespace: 'workflow-model-edit', hostPort: 'hatchet:7070', apiUrl: 'http://hatchet:8080', workerTokenSecret: { apiVersion: 'v1', kind: 'Secret', name: 'hatchet-worker', namespace: 'workflow-model-edit' } }));
-const acquisition = source => ({
+const acquisitionImplementation = source => ({
   kind: 'acquisition',
   source,
   async acquire(input) { return { body: this.source + ':' + input.id }; },
 });
 platform.profile(platform.installation.spec, 'profile')
   .provide(AcquisitionProvider)
-  .starter(() => acquisition('starter'))
-  .dedicated(() => acquisition('dedicated'))
+  .starter(() => acquisitionImplementation('starter'))
+  .dedicated(() => acquisitionImplementation('dedicated'))
   .exhaustive();
-const { acquire } = installAcquisition(platform);
+const { acquire } = platform.include(acquisition);
 const records = pgTable('workflow_native_records', { id: text('id').primaryKey(), body: text('body').notNull() });
 const database = platform.database.postgres('records', { schema: { records }, migrations: { path: './migrations' } });
 const RecordModel = platform.model(records, { name: 'Record', database });
 const RecordChanged = event('records.changed.v1', { payload: type({ id: 'string', body: 'string' }) });
-async function persistRecord(id: string, body: string) {
+const directProvider = platform.inject(AcquisitionProvider);
+async function acquireThroughHelper(id) {
+  return acquire({ id });
+}
+async function persistRecord(id, body) {
   await RecordModel.edit(id, async record => {
     await RecordModel.require(id);
     await record.update({ body });
@@ -342,8 +468,9 @@ platform.workflow('records.edit.v1', {
   input: type({ id: 'string', body: 'string' }),
   output: type({ id: 'string' }),
 }, async input => {
-  const acquired = await acquire({ id: input.id });
-  await persistRecord(input.id, acquired.body);
+  const acquired = await acquireThroughHelper(input.id);
+  const direct = await directProvider.acquire({ id: input.id });
+  await persistRecord(input.id, acquired.body + '|' + direct.body);
   return { id: input.id };
 });
 export const workflowModelEdit = platform.composition;
@@ -376,6 +503,53 @@ export const workflowModelEdit = platform.composition;
           'utf8',
         ),
       );
+      const provider = graph.nodes.find(
+        (node: { kind?: string; interface?: string }) =>
+          node.kind === 'provider'
+          && node.interface === 'AcquisitionProvider',
+      );
+      const worker = graph.nodes.find(
+        (node: { kind?: string }) => node.kind === 'workflowWorker',
+      );
+      expect(provider?.id).toBe(
+        'provider.acquisition-provider.v1alpha1.primary',
+      );
+      expect(worker?.name).toBe('applik8s-hatchet');
+      expect(
+        [...applicationProviderConsumerWorkloads(
+          graph,
+          new Set([provider?.id ?? 'missing-provider']),
+        )],
+      ).toEqual(['applik8s-hatchet']);
+      const providerAccess = deriveApplicationGraphFoundation(graph, {
+        workspaceRoot: dir,
+      })
+        .runtimeAccess
+        .filter(
+          (requirement) =>
+            requirement.target.capabilityId === provider?.id,
+        );
+      expect(providerAccess).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          consumer: expect.objectContaining({
+            nodeId: 'task-handler.records.edit.v1.step',
+          }),
+          target: expect.objectContaining({ operation: 'connection.use' }),
+        }),
+        expect.objectContaining({
+          consumer: expect.objectContaining({
+            nodeId: 'task-handler.records.edit.v1.step',
+          }),
+          target: expect.objectContaining({ operation: 'network.connect' }),
+        }),
+      ]));
+      expect(
+        providerAccess.every(
+          (requirement) =>
+            requirement.consumer.nodeId
+            === 'task-handler.records.edit.v1.step',
+        ),
+      ).toBe(true);
       expect(graph.nodes).toEqual(expect.arrayContaining([
         expect.objectContaining({
           kind: 'taskHandler',
@@ -386,6 +560,19 @@ export const workflowModelEdit = platform.composition;
             idempotency: 'durable-task-invocation',
           }),
           providerBindings: [expect.objectContaining({
+            identifier: 'acquire',
+            provider: expect.objectContaining({
+              interface: 'AcquisitionProvider',
+            }),
+            operation: expect.objectContaining({
+              member: 'acquire',
+              runtime: expect.objectContaining({
+                module: '@fixture/acquisition/runtime',
+                export: 'acquireItem',
+              }),
+            }),
+          }), expect.objectContaining({
+            identifier: 'directProvider.acquire',
             provider: expect.objectContaining({
               interface: 'AcquisitionProvider',
             }),
@@ -423,7 +610,59 @@ export const workflowModelEdit = platform.composition;
         'functionNativeTaskBindings("task-handler.records.edit.v1.step")["RecordChanged"]',
       );
       expect(generatedSource).toContain('durableId');
-      expect(source).toContain('Injected provider');
+      expect(generatedSource).toContain('@fixture/acquisition/runtime');
+      expect(generatedSource).toContain('acquireItem');
+      expect(generatedSource).toContain('"acquire": providerOperation_');
+      expect(generatedSource).toContain(
+        '"directProvider": { "acquire": providerOperation_',
+      );
+      expect(generatedSource).not.toContain('application.inject');
+      expect(generatedSource).not.toContain('application.profile');
+      expect(generatedSource).not.toContain('application.provide');
+      expect(generatedSource).not.toContain(
+        '@applik8s/applik8s/internal/provider-runtime',
+      );
+      expect(source).toContain('runtime:');
+
+      const workerNode = graph.nodes.find(
+        (node: { kind?: string }) => node.kind === 'workflowWorker',
+      );
+      if (!workerNode) throw new Error('Expected generated workflow worker.');
+      const missingRuntimeGraph = structuredClone(graph);
+      const missingRuntimeHandler = missingRuntimeGraph.nodes.find(
+        (node: { id?: string }) =>
+          node.id === 'task-handler.records.edit.v1.step',
+      );
+      const missingRuntimeBinding = missingRuntimeHandler?.providerBindings?.find(
+        (binding: { identifier?: string }) => binding.identifier === 'acquire',
+      );
+      if (!missingRuntimeBinding?.operation) {
+        throw new Error('Expected callable provider binding.');
+      }
+      delete missingRuntimeBinding.operation.runtime;
+      expect(() =>
+        generatedWorkerSource(workflowContract(
+          missingRuntimeGraph,
+          workerNode,
+        ))).toThrow(/has no public static runtime operation/);
+
+      const privateRuntimeGraph = structuredClone(graph);
+      const privateRuntimeHandler = privateRuntimeGraph.nodes.find(
+        (node: { id?: string }) =>
+          node.id === 'task-handler.records.edit.v1.step',
+      );
+      const privateRuntimeBinding = privateRuntimeHandler?.providerBindings?.find(
+        (binding: { identifier?: string }) => binding.identifier === 'acquire',
+      );
+      if (!privateRuntimeBinding?.operation?.runtime) {
+        throw new Error('Expected provider runtime operation.');
+      }
+      privateRuntimeBinding.operation.runtime.module = '../private-runtime.js';
+      expect(() =>
+        generatedWorkerSource(workflowContract(
+          privateRuntimeGraph,
+          workerNode,
+        ))).toThrow(/invalid public runtime export/);
       const deployment = artifact?.resources.find(
         (resource) => resource.kind === 'Deployment',
       );

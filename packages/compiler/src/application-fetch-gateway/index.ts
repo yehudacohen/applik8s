@@ -1,7 +1,6 @@
 // typecast-file-boundary: Generated graph nodes are discriminated by kind before compiler-specific fields are materialized.
 import { createHash } from "node:crypto";
 import { resolve } from "node:path";
-import ts from "typescript";
 import type {
 	ApplicationActorNode,
 	ApplicationAIAgentNode,
@@ -21,7 +20,10 @@ import type {
 } from "@applik8s/core";
 import { applicationOperationId } from "@applik8s/core";
 import { applicationRuntimeEndpointEnvironmentName } from "@applik8s/deployment-contract";
-import { generatedCallbackFactoryModule } from "../application-callback-module.js";
+import {
+	capturedApplicationInjectFacade,
+	generatedCallbackFactoryModule,
+} from "../application-callback-module.js";
 import { applicationGraphStringValue } from "../application-installation-values.js";
 import {
 	compileApplicationOperationCatalog,
@@ -2390,71 +2392,6 @@ function graphActorCallback(
 		`import { createCallback as ${factory} } from './${file.replace(/\.ts$/, ".js")}';`,
 	);
 	return `${factory}(${nestedActorProviderBindingsSource(injected)})`;
-}
-
-function capturedApplicationInjectFacade(
-	source: string | undefined,
-	identifier: string,
-): boolean {
-	if (!source?.trim()) return false;
-	const file = ts.createSourceFile(
-		"application-actor-provider-capture.ts",
-		source,
-		ts.ScriptTarget.Latest,
-		true,
-		ts.ScriptKind.TS,
-	);
-	const appFactories = new Set<string>();
-	for (const statement of file.statements) {
-		if (
-			!ts.isImportDeclaration(statement)
-			|| !ts.isStringLiteral(statement.moduleSpecifier)
-			|| statement.moduleSpecifier.text !== "@applik8s/applik8s"
-			|| !statement.importClause?.namedBindings
-			|| !ts.isNamedImports(statement.importClause.namedBindings)
-		) continue;
-		for (const element of statement.importClause.namedBindings.elements) {
-			if ((element.propertyName?.text ?? element.name.text) === "app") {
-				appFactories.add(element.name.text);
-			}
-		}
-	}
-	const applicationBindings = new Set<string>();
-	forEachVariableDeclaration(file, (declaration) => {
-		if (
-			ts.isIdentifier(declaration.name)
-			&& declaration.initializer
-			&& ts.isCallExpression(declaration.initializer)
-			&& ts.isIdentifier(declaration.initializer.expression)
-			&& appFactories.has(declaration.initializer.expression.text)
-		) applicationBindings.add(declaration.name.text);
-	});
-	let matched = false;
-	forEachVariableDeclaration(file, (declaration) => {
-		if (
-			matched
-			|| !ts.isIdentifier(declaration.name)
-			|| declaration.name.text !== identifier
-			|| !declaration.initializer
-			|| !ts.isCallExpression(declaration.initializer)
-			|| !ts.isPropertyAccessExpression(declaration.initializer.expression)
-			|| declaration.initializer.expression.name.text !== "inject"
-			|| !ts.isIdentifier(declaration.initializer.expression.expression)
-		) return;
-		matched = applicationBindings.has(
-			declaration.initializer.expression.expression.text,
-		);
-	});
-	return matched;
-}
-
-function forEachVariableDeclaration(
-	node: ts.Node,
-	visitDeclaration: (declaration: ts.VariableDeclaration) => void,
-): void {
-	if (ts.isVariableDeclaration(node)) visitDeclaration(node);
-	ts.forEachChild(node, (child) =>
-		forEachVariableDeclaration(child, visitDeclaration));
 }
 
 function actorProviderOperationBinding(
