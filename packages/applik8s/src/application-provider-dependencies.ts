@@ -1,4 +1,7 @@
-import type { ApplicationProviderRef } from '@applik8s/core';
+import type {
+  ApplicationCallableProviderRuntimeOperation,
+  ApplicationProviderRef,
+} from '@applik8s/core';
 import { applicationProviderGraphNodeId } from './application-identifiers.js';
 import type { ApplicationProviderBinding } from './application-providers.js';
 import {
@@ -14,6 +17,9 @@ const applicationProviderDependenciesSymbol = Symbol.for(
 );
 const applicationCallbackDependenciesSymbol = Symbol.for(
   'applik8s.applicationCallbackDependencies',
+);
+const applicationProviderOperationSymbol = Symbol.for(
+  'applik8s.applicationProviderOperation',
 );
 
 export interface ApplicationMaintainedCallableDependency {
@@ -150,6 +156,60 @@ export function bindApplicationProviderDependencies<
   return callable;
 }
 
+export interface ApplicationProviderOperationMetadata {
+  readonly member: string;
+  readonly runtime?: ApplicationCallableProviderRuntimeOperation;
+}
+
+/** @internal Attaches the stable provider member/runtime identity to a bound operation. */
+export function bindApplicationProviderOperation<
+  TCallable extends CallableFunction,
+>(
+  callable: TCallable,
+  operation: ApplicationProviderOperationMetadata,
+): TCallable {
+  Object.defineProperty(callable, applicationProviderOperationSymbol, {
+    configurable: false,
+    enumerable: false,
+    writable: false,
+    value: Object.freeze({
+      member: operation.member,
+      ...(operation.runtime
+        ? { runtime: Object.freeze({ ...operation.runtime }) }
+        : {}),
+    }),
+  });
+  return callable;
+}
+
+/** @internal Compiler-visible identity for an extracted provider operation. */
+export function applicationProviderOperationFor(
+  value: unknown,
+): ApplicationProviderOperationMetadata | undefined {
+  if (typeof value !== 'function') return undefined;
+  const operation = Reflect.get(value, applicationProviderOperationSymbol);
+  if (!operation || typeof operation !== 'object') return undefined;
+  const member = Reflect.get(operation, 'member');
+  const runtime = Reflect.get(operation, 'runtime');
+  if (typeof member !== 'string') return undefined;
+  if (runtime === undefined) return { member };
+  if (
+    !runtime
+    || typeof runtime !== 'object'
+    || typeof Reflect.get(runtime, 'module') !== 'string'
+    || typeof Reflect.get(runtime, 'export') !== 'string'
+  ) {
+    return undefined;
+  }
+  return {
+    member,
+    runtime: {
+      module: String(Reflect.get(runtime, 'module')),
+      export: String(Reflect.get(runtime, 'export')),
+    },
+  };
+}
+
 /** @internal Compiler dependency discovery. */
 export function applicationProviderDependenciesFor(
   value: unknown,
@@ -169,6 +229,7 @@ export function applicationProviderDependenciesFor(
 export interface ApplicationCallableProviderDependency {
   readonly identifier: string;
   readonly provider: ApplicationProviderRef;
+  readonly operation?: ApplicationProviderOperationMetadata;
 }
 
 /**
@@ -184,6 +245,7 @@ export function applicationCallableProviderDependencies(
 ): readonly ApplicationCallableProviderDependency[] {
   const discovered: ApplicationCallableProviderDependency[] = [];
   for (const [identifier, callable] of Object.entries(bindings)) {
+    const operation = applicationProviderOperationFor(callable);
     if (isApplicationObjectStoreBinding(callable)) {
       discovered.push({
         identifier,
@@ -213,6 +275,7 @@ export function applicationCallableProviderDependencies(
           nodeId: applicationProviderGraphNodeId(tokenName, qualification),
           ...(qualification ? { qualification } : {}),
         },
+        ...(operation ? { operation } : {}),
       });
     }
   }
@@ -222,7 +285,12 @@ export function applicationCallableProviderDependencies(
         dependencies.findIndex(
           (candidate) =>
             candidate.identifier === dependency.identifier
-            && candidate.provider.nodeId === dependency.provider.nodeId,
+            && candidate.provider.nodeId === dependency.provider.nodeId
+            && candidate.operation?.member === dependency.operation?.member
+            && candidate.operation?.runtime?.module
+              === dependency.operation?.runtime?.module
+            && candidate.operation?.runtime?.export
+              === dependency.operation?.runtime?.export
         ) === index,
     )
     .sort((left, right) =>

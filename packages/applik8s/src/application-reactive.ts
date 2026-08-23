@@ -1259,11 +1259,23 @@ function registerApplicationStreamProcessorInternal<
     );
   }
   const functionNativeTransaction = discoveredTransaction;
-  const providerBindings = applicationCallableProviderDependencies(
-    {
-      ...inferred.bindings,
+  const providerBindings = [
+    ...inferred.providerBindings,
+    ...applicationCallableProviderDependencies({
       generatedHandlerProviderDependencies: handler,
-    },
+    }),
+  ].filter(
+    (binding, index, bindings) =>
+      bindings.findIndex(
+        (candidate) =>
+          candidate.identifier === binding.identifier
+          && candidate.provider.nodeId === binding.provider.nodeId
+          && candidate.operation?.member === binding.operation?.member
+          && candidate.operation?.runtime?.module
+            === binding.operation?.runtime?.module
+          && candidate.operation?.runtime?.export
+            === binding.operation?.runtime?.export,
+      ) === index,
   );
   const inferredTasks = Object.fromEntries(
     inferred.calls
@@ -1297,6 +1309,7 @@ function registerApplicationStreamProcessorInternal<
     ...operationBindings.map(({ identifier }) => identifier),
     ...queryBindings.map(({ identifier }) => identifier),
     ...actorBindings.map(({ identifier }) => identifier),
+    ...providerBindings.map(({ identifier }) => identifier),
   ]
     .flatMap((identifier) => [
       identifier,

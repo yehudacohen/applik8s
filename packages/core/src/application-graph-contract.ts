@@ -728,10 +728,7 @@ export interface ApplicationTaskHandlerNode extends ApplicationGraphNodeBase<'ta
   /** Runtime capabilities explicitly injected into this external-effect task. */
   readonly capabilities?: readonly ApplicationProviderRef[];
   /** Function-native provider operations captured directly by the task closure. */
-  readonly providerBindings?: readonly {
-    readonly identifier: string;
-    readonly provider: ApplicationProviderRef;
-  }[];
+  readonly providerBindings?: readonly ApplicationCallableProviderBinding[];
   /**
    * Durable model mutations explicitly injected into this task. The generated
    * worker may submit only these command bindings; all execution still passes
@@ -907,10 +904,7 @@ export interface ApplicationScheduleNode extends ApplicationGraphNodeBase<'sched
   /** Canonical desired-state, management-receipt, and occurrence authority. */
   readonly state: ApplicationProviderRef<'TransactionalDatabase'>;
   /** Function-native provider operations captured directly by the scheduled closure. */
-  readonly providerBindings?: readonly {
-    readonly identifier: string;
-    readonly provider: ApplicationProviderRef;
-  }[];
+  readonly providerBindings?: readonly ApplicationCallableProviderBinding[];
   /**
    * Ordinary function-native schedule execution. Exactly one of `handler` or
    * `target` is present. Targeted schedules deliberately keep the downstream
@@ -1002,10 +996,7 @@ export interface ApplicationActorNode extends ApplicationGraphNodeBase<'actor'> 
   };
   readonly runtime: ApplicationProviderRef<'ActorRuntime'>;
   /** Function-native provider operations captured by actor turn handlers. */
-  readonly providerBindings?: readonly {
-    readonly identifier: string;
-    readonly provider: ApplicationProviderRef;
-  }[];
+  readonly providerBindings?: readonly ApplicationCallableProviderBinding[];
   readonly handlers: readonly {
     readonly member: string;
     readonly callback: ApplicationSerializedCallbackContract;
@@ -1062,10 +1053,7 @@ export interface ApplicationAIAgentNode extends ApplicationGraphNodeBase<'aiAgen
   /** Durable authority for conversations, invocations, attempts, and usage. */
   readonly state: ApplicationProviderRef<'TransactionalDatabase'>;
   /** Function-native provider operations captured by the agent execution closure. */
-  readonly providerBindings?: readonly {
-    readonly identifier: string;
-    readonly provider: ApplicationProviderRef;
-  }[];
+  readonly providerBindings?: readonly ApplicationCallableProviderBinding[];
   readonly instructions:
     | { readonly kind: 'static'; readonly value: string }
     | {
@@ -2065,10 +2053,7 @@ export interface ApplicationFunctionNativeHttpRouteContract {
     readonly handler: ApplicationGraphNodeRef;
   }[];
   /** Provider capabilities inferred through ordinary maintained-module calls. */
-  readonly providerBindings?: readonly {
-    readonly identifier: string;
-    readonly provider: ApplicationProviderRef;
-  }[];
+  readonly providerBindings?: readonly ApplicationCallableProviderBinding[];
   /** Durable workflow/task handles captured from the ordinary route closure. */
   readonly workflowBindings?: readonly {
     readonly identifier: string;
@@ -2112,6 +2097,29 @@ export type ApplicationRouteDiagnosticField = 'routeId' | 'method' | 'path' | 'm
 export interface ApplicationProviderRef<TInterface extends ApplicationProviderInterfaceKind = ApplicationProviderInterfaceKind> {
   readonly interface: TInterface;
   readonly nodeId: string;
+}
+
+/**
+ * Public generated-runtime entrypoint for one callable provider operation.
+ * The compiler emits a static ESM import from this contract; no provider
+ * package receives compiler namespace privilege or a runtime dynamic-import
+ * escape hatch.
+ */
+export interface ApplicationCallableProviderRuntimeOperation {
+  readonly module: string;
+  readonly export: string;
+}
+
+/** Exact provider operation captured by an ordinary managed closure. */
+export interface ApplicationCallableProviderBinding {
+  /** Authored lexical binding path. A one-segment path is an extracted function. */
+  readonly identifier: string;
+  readonly provider: ApplicationProviderRef;
+  /** Absent only for placement-only compatibility metadata. */
+  readonly operation?: {
+    readonly member: string;
+    readonly runtime?: ApplicationCallableProviderRuntimeOperation;
+  };
 }
 
 export type ApplicationWatchScope =

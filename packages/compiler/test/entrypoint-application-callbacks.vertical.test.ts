@@ -631,6 +631,65 @@ Account.update.beforeCommit({ history: true }, updateAccount);
     );
   });
 
+  it('preserves lexical provider and model dependencies for callbacks installed inside a factory', () => {
+    const source = `
+function deliveryInputFromRequest(value) {
+  return { destination: value.destination, body: value.body };
+}
+
+function boundedDeliveryError(error) {
+  return error instanceof Error ? error.message.slice(0, 200) : 'delivery failed';
+}
+
+export function installNotifications(application) {
+  const delivery = application.inject(NotificationDelivery.named('transactional'));
+  const requests = NotificationRequest;
+
+  async function deliverRequestedNotification(created) {
+    const request = deliveryInputFromRequest(created.value);
+    await requests.update({
+      identity: created.value.id,
+      patch: { state: 'delivering' },
+    });
+    try {
+      await delivery.deliver(request);
+    } catch (error) {
+      await requests.update({
+        identity: created.value.id,
+        patch: { state: 'failed', lastError: boundedDeliveryError(error) },
+      });
+    }
+  }
+
+  requests.on.create({}, deliverRequestedNotification);
+}
+`;
+
+    const instrumented = instrumentApplicationCallbackRegistrations(
+      source,
+      '/workspace/packages/notifications/src/index.ts',
+      true,
+      'src/index.ts',
+      true,
+    );
+
+    expect(instrumented).toContain(
+      'source: "async function deliverRequestedNotification(created)',
+    );
+    expect(instrumented).toContain(
+      'identifier: "requests.update", value: requests.update, awaited: true',
+    );
+    expect(instrumented).toContain(
+      'identifier: "delivery.deliver", value: delivery.deliver, awaited: true',
+    );
+    expect(instrumented).not.toContain(
+      'identifier: "deliveryInputFromRequest", value: deliveryInputFromRequest',
+    );
+    expect(instrumented).not.toContain(
+      'identifier: "boundedDeliveryError", value: boundedDeliveryError',
+    );
+  });
+
   it('recursively captures capability leaves through same-file helpers', () => {
     const source = `
 function stageCredential(credentialId, accountId) {
@@ -656,6 +715,28 @@ Account.create.beforeCommit({ history: true }, async account => {
       '__generatedCalls: [AccountChanged, CreateCredentialLink]',
     );
     expect(instrumented).not.toContain('__generatedCalls: [publishAccount]');
+  });
+
+  it('terminates recursive helper traversal while retaining capability leaves', () => {
+    const source = `
+function publishBatch(items, index = 0) {
+  if (index >= items.length) return;
+  AccountChanged.emit({ accountId: items[index].id });
+  publishBatch(items, index + 1);
+}
+
+Account.create.beforeCommit({ history: true }, async account => {
+  publishBatch([account]);
+});
+`;
+
+    const instrumented = instrumentApplicationCallbackRegistrations(
+      source,
+      '/workspace/src/accounts.ts',
+    );
+
+    expect(instrumented).toContain('__generatedCalls: [AccountChanged]');
+    expect(instrumented).not.toContain('value: publishBatch');
   });
 
   it('does not capture parameters of recursively analyzed helpers', () => {

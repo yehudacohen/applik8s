@@ -1,7 +1,7 @@
 // typecast-file-boundary: live Kubernetes JSON is narrowed after kind and metadata assertions.
 import { randomUUID } from 'node:crypto';
 import { createKubernetesApplicationScheduleRuntime } from '@applik8s/runtime-kubernetes';
-import { createPostgresApplicationScheduleStateAuthority } from '@applik8s/runtime-postgres';
+import { createPostgresApplicationScheduleStateAuthority } from '@applik8s/runtime-postgres/schedule-state';
 import { afterAll, beforeAll, expect, it } from 'vitest';
 import postgres from 'postgres';
 import {

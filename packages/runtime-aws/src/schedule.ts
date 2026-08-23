@@ -17,7 +17,7 @@ import {
 } from '@aws-sdk/client-sqs'
 import { applicationScheduleImmediateInvocationAdmission, applicationScheduleOccurrenceId, applicationScheduleProjectedDesiredState, type ApplicationScheduleAdmissionRunner, type ApplicationScheduleConvergenceResult, type ApplicationScheduleDefinitionContract, type ApplicationScheduleInstance, type ApplicationScheduleManagementReceipt, type ApplicationScheduleStateAuthority } from '@applik8s/applik8s'
 import { type ApplicationAdmissionInvocationContextV1, canonicalJsonCompatibleV1Policy, canonicalJsonV1String } from '@applik8s/core'
-import { createPostgresApplicationScheduleStateAuthority } from '@applik8s/runtime-postgres'
+import { createPostgresApplicationScheduleStateAuthority } from '@applik8s/runtime-postgres/schedule-state'
 import postgres, { type Sql } from 'postgres'
 
 export interface AwsApplicationScheduleAdmission {

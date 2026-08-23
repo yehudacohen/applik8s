@@ -18,7 +18,7 @@ import {
   type ApplicationScheduleStateAuthority,
 } from '@applik8s/applik8s';
 import type { ApplicationAdmissionInvocationContextV1 } from '@applik8s/core';
-import { createPostgresApplicationScheduleStateAuthority } from '@applik8s/runtime-postgres';
+import { createPostgresApplicationScheduleStateAuthority } from '@applik8s/runtime-postgres/schedule-state';
 import type { BatchV1Api, KubeConfig, V1CronJob } from '@kubernetes/client-node';
 import postgres, { type Sql } from 'postgres';
 

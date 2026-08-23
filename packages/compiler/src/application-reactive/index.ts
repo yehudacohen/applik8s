@@ -4,7 +4,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { gzipSync } from 'node:zlib';
-import type { ApplicationAIAgentNode, ApplicationCommandHandlerNode, ApplicationCommandNode, ApplicationGatewayNode, ApplicationGraph, ApplicationHandlerDependencies, ApplicationIdentityReference, ApplicationIndexNode, ApplicationModelNode, ApplicationOperationCatalog, ApplicationProfiledCallbackContract, ApplicationProjectionNode, ApplicationProviderNode, ApplicationQueryNode, ApplicationReactiveDatabaseRuntimeContract, ApplicationSearchIndexPlan, ApplicationSerializedCallbackContract, ApplicationStreamNode, ApplicationStreamProcessorNode, ApplicationSubscriptionNode, ApplicationWorkloadAuthorityEnvelope, JsonObject } from '@applik8s/core';
+import type { ApplicationAIAgentNode, ApplicationCallableProviderBinding, ApplicationCallableProviderRuntimeOperation, ApplicationCommandHandlerNode, ApplicationCommandNode, ApplicationGatewayNode, ApplicationGraph, ApplicationHandlerDependencies, ApplicationIdentityReference, ApplicationIndexNode, ApplicationModelNode, ApplicationOperationCatalog, ApplicationProfiledCallbackContract, ApplicationProjectionNode, ApplicationProviderNode, ApplicationQueryNode, ApplicationReactiveDatabaseRuntimeContract, ApplicationSearchIndexPlan, ApplicationSerializedCallbackContract, ApplicationStreamNode, ApplicationStreamProcessorNode, ApplicationSubscriptionNode, ApplicationWorkloadAuthorityEnvelope, JsonObject } from '@applik8s/core';
 import { build } from 'esbuild';
 import ts from 'typescript';
 import {
@@ -1042,6 +1042,61 @@ function streamProcessorUsesObjectStorage(
   return (processor.providerBindings ?? []).some(
     (binding) => binding.provider.interface === 'ObjectStorage',
   );
+}
+
+interface StreamProcessorProviderRuntimeOperation {
+  readonly binding: ApplicationCallableProviderBinding;
+  readonly runtime: ApplicationCallableProviderRuntimeOperation;
+  readonly variable: string;
+}
+
+function streamProcessorProviderRuntimeOperations(
+  processor: ApplicationStreamProcessorNode,
+): readonly StreamProcessorProviderRuntimeOperation[] {
+  return (processor.providerBindings ?? []).flatMap((binding) => {
+    if (!binding.operation) return [];
+    const runtime = binding.operation.runtime;
+    if (!runtime) {
+      throw new Error(
+        `Stream processor ${processor.id} provider operation ${binding.provider.interface}.${binding.operation.member} has no portable generated-worker runtime. Declare it on defineApplicationProvider({ runtime: { operations: ... } }).`,
+      );
+    }
+    if (
+      !/^(?:@[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._/-]*|[a-z0-9][a-z0-9._/-]*)$/u.test(
+        runtime.module,
+      )
+      || runtime.module.includes('..')
+      || !/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(runtime.export)
+    ) {
+      throw new Error(
+        `Stream processor ${processor.id} provider operation ${binding.identifier} has an invalid public runtime export ${runtime.module}#${runtime.export}.`,
+      );
+    }
+    return [{
+      binding,
+      runtime,
+      variable: `providerOperation_${createHash('sha256')
+        .update(`${runtime.module}\0${runtime.export}`)
+        .digest('hex')
+        .slice(0, 12)}`,
+    }];
+  });
+}
+
+function streamProcessorProviderRuntimeImports(
+  processor: ApplicationStreamProcessorNode,
+): readonly string[] {
+  return streamProcessorProviderRuntimeOperations(processor)
+    .filter(
+      (operation, index, operations) =>
+        operations.findIndex(
+          (candidate) => candidate.variable === operation.variable,
+        ) === index,
+    )
+    .map(
+      ({ runtime, variable }) =>
+        `import { ${runtime.export} as ${variable} } from ${JSON.stringify(runtime.module)};`,
+    );
 }
 
 interface StreamProcessorQueryContract {
@@ -2896,13 +2951,20 @@ installApplicationObjectStorageRuntimeResolver((binding) => {
   const admissionImport = "import { applicationAdmissionInvocationView, applicationCausalPrincipalContext, createApplicationAdmissionContextV1, validateApplicationAdmissionContextV1WithoutReceipt, withApplicationAdmissionExecutionV1 } from '@applik8s/core';";
   const postgresImport = "import postgres from 'postgres';";
   const authorityImport = "import { createApplicationOperationAuthorityRuntime } from '@applik8s/operations';";
-  const hasFunctionNativeRuntime = Boolean(
+  const hasTransactionalFunctionNativeRuntime = Boolean(
     processor.functionNativeTransaction || operations.length > 0,
+  );
+  const hasFunctionNativeBindings = Boolean(
+    hasTransactionalFunctionNativeRuntime
+    || (processor.callableBindings?.length ?? 0) > 0
+    || (processor.providerBindings ?? []).some(
+      (binding) => binding.operation?.runtime,
+    ),
   );
   const queryImports = queries.length > 0
     ? `import { drizzle } from 'drizzle-orm/postgres-js';
 import { normalizeSchema as normalizeQuerySchema } from '@applik8s/sdk/schema-runtime';
-${hasFunctionNativeRuntime ? '' : "import { applicationCommandPrincipalValues } from '@applik8s/applik8s/stream-worker-runtime';"}
+${hasTransactionalFunctionNativeRuntime ? '' : "import { applicationCommandPrincipalValues } from '@applik8s/applik8s/stream-worker-runtime';"}
 import { createApplicationRelationalContext, withApplicationDatabaseRuntimeResolver } from '@applik8s/applik8s/query-runtime';`
     : '';
   const queryCallbackImports = [...new Map(
@@ -2911,14 +2973,17 @@ import { createApplicationRelationalContext, withApplicationDatabaseRuntimeResol
     `import { callback as ${callbackVariable(query.id, 'authorize')} } from './${callbackName(query.id, 'authorize')}.generated.js';`,
     `import { callback as ${callbackVariable(query.id, 'run')} } from './${callbackName(query.id, 'run')}.generated.js';`,
   ]).join('\n');
-  const functionNativeImport = hasFunctionNativeRuntime
+  const functionNativeImport = hasTransactionalFunctionNativeRuntime
     ? "import { applicationCommandPrincipalValues, applicationPostgresModelReadClients, createApplicationFunctionNativeEventHandle, createApplicationFunctionNativeOperationHandle, currentFunctionNativePostgresDatabase, currentFunctionNativePostgresTransaction, editApplicationNativeModelObject, executeFunctionNativePostgresModelEdit, executeFunctionNativePostgresTransaction, findApplicationNativeModelObjects, getApplicationNativeModelObject, requireApplicationNativeModelObject, withApplicationNativeModelReadClients, withApplicationNativeModelTransactionRuntime } from '@applik8s/applik8s/stream-worker-runtime';\nimport { runApplicationModelBeforeCommit } from '@applik8s/applik8s/processor-runtime';"
     : '';
-  const callableImports = (processor.callableBindings ?? []).some(
-    (binding) => binding.runtime === 'notifications.request.v1',
-  )
-    ? "import { createApplicationNotificationRequestCallable } from '@applik8s/notifications';"
-    : '';
+  const callableImports = [
+    ...((processor.callableBindings ?? []).some(
+      (binding) => binding.runtime === 'notifications.request.v1',
+    )
+      ? ["import { createApplicationNotificationRequestCallable } from '@applik8s/notifications';"]
+      : []),
+    ...streamProcessorProviderRuntimeImports(processor),
+  ].join('\n');
   const workflowDeclarations = workflow ? `
 const workflowRuntime = createHatchetWorkflowRuntime({ kind: 'hatchet', tls: process.env.HATCHET_CLIENT_TLS_STRATEGY === 'tls' });
 const directWorkflowScope = new AsyncLocalStorage();
@@ -2954,7 +3019,7 @@ function directWorkflowRuntime(context) { const requireContract = (contract) => 
     graph,
     processor,
     queries,
-    hasFunctionNativeRuntime,
+    hasTransactionalFunctionNativeRuntime,
   );
   const executionPrincipal = generatedStreamProcessorExecutionPrincipal(
     graph,
@@ -2971,7 +3036,8 @@ function directWorkflowRuntime(context) { const requireContract = (contract) => 
   const authoredHandlerInvocation =
     generatedStreamProcessorAuthoredHandlerInvocation(
       Boolean(workflow),
-      hasFunctionNativeRuntime,
+      hasFunctionNativeBindings,
+      hasTransactionalFunctionNativeRuntime,
       queries.length > 0,
       (processor.actorBindings?.length ?? 0) > 0,
     );
@@ -3054,7 +3120,14 @@ function generatedFunctionNativeStreamTransaction(
 ): string {
   const transaction = processor.functionNativeTransaction;
   if (!transaction && operations.length === 0) {
-    return 'const functionNativeBindings = Object.freeze({});';
+    const hasPortableBindings =
+      (processor.callableBindings?.length ?? 0) > 0
+      || streamProcessorProviderRuntimeOperations(processor).length > 0;
+    if (!hasPortableBindings) {
+      return 'const functionNativeBindings = Object.freeze({});';
+    }
+    return `const functionNativeLeafBindings = Object.freeze(${streamProcessorCallbackBindingsSource(graph, processor, operations)});
+${streamProcessorCallableBindingsSource(processor)}`;
   }
   const nodes = graphNodes(graph);
   const executableOperations = uniqueStreamProcessorRuntimeOperations(
@@ -3536,9 +3609,12 @@ function streamProcessorCallbackBindingsSource(
         readonly schema: JsonObject;
       };
       readonly operations: Map<string, StreamProcessorOperationContract>;
+      readonly providerRootOperation?: string;
+      readonly providerOperations: Map<string, string>;
   }
   const emptyRootBinding = (): StreamCallbackRootBinding => ({
     operations: new Map<string, StreamProcessorOperationContract>(),
+    providerOperations: new Map<string, string>(),
   });
   const roots = new Map<string, StreamCallbackRootBinding>();
   for (const { identifier, model } of functionNativeModelRuntimeBindings(
@@ -3610,9 +3686,81 @@ function streamProcessorCallbackBindingsSource(
     existing.operations.set(operationPath, operation);
     roots.set(root, existing);
   }
+  for (const providerOperation of streamProcessorProviderRuntimeOperations(
+    processor,
+  )) {
+    const providerBinding = providerOperation.binding;
+    const segments = providerBinding.identifier.split('.');
+    if (segments.some(
+      (segment) => !/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(segment),
+    )) {
+      throw new Error(
+        `Stream processor ${processor.id} provider binding ${providerBinding.identifier} must identify a callable operation through a serializable property path.`,
+      );
+    }
+    const provider = graph.nodes.find(
+      (node): node is ApplicationProviderNode =>
+        node.kind === 'provider' && node.id === providerBinding.provider.nodeId,
+    );
+    if (!provider || provider.interface !== providerBinding.provider.interface) {
+      throw new Error(
+        `Stream processor ${processor.id} provider binding ${providerBinding.identifier} references missing provider ${providerBinding.provider.nodeId}.`,
+      );
+    }
+    if (providerBinding.operation?.member.length === 0) {
+      throw new Error(
+        `Stream processor ${processor.id} provider binding ${providerBinding.identifier} has no stable provider member.`,
+      );
+    }
+    const root = functionNativeCallbackBindingRoot(
+      providerBinding.identifier,
+      processor.id,
+    );
+    const existing = roots.get(root) ?? emptyRootBinding();
+    const operationPath = segments.slice(1).join('.');
+    if (segments.length === 1) {
+      if (
+        existing.model
+        || existing.event
+        || existing.operations.size > 0
+        || existing.providerOperations.size > 0
+        || (existing.providerRootOperation
+          && existing.providerRootOperation !== providerOperation.variable)
+      ) {
+        throw new Error(
+          `Stream processor ${processor.id} callback root ${root} is ambiguous between an extracted provider operation and another runtime binding.`,
+        );
+      }
+      roots.set(root, {
+        ...existing,
+        providerRootOperation: providerOperation.variable,
+      });
+      continue;
+    }
+    if (
+      existing.providerRootOperation
+      || existing.event
+      || existing.operations.has(operationPath)
+    ) {
+      throw new Error(
+        `Stream processor ${processor.id} callback root ${root}.${operationPath} is ambiguous between provider and application runtime bindings.`,
+      );
+    }
+    const previous = existing.providerOperations.get(operationPath);
+    if (previous && previous !== providerOperation.variable) {
+      throw new Error(
+        `Stream processor ${processor.id} provider binding ${providerBinding.identifier} is ambiguous.`,
+      );
+    }
+    existing.providerOperations.set(operationPath, providerOperation.variable);
+    roots.set(root, existing);
+  }
   return `{ ${[...roots.entries()]
     .sort(([left], [right]) => left.localeCompare(right))
     .map(([root, binding]) => {
+      if (binding.providerRootOperation) {
+        return `${JSON.stringify(root)}: ${binding.providerRootOperation}`;
+      }
       if (binding.event) {
         return `${JSON.stringify(root)}: createApplicationFunctionNativeEventHandle(${JSON.stringify(`${binding.event.name}.${binding.event.version}`)}, { payload: schema(${JSON.stringify(binding.event.schema)}) })`;
       }
@@ -3623,11 +3771,20 @@ function streamProcessorCallbackBindingsSource(
           value: `createApplicationFunctionNativeOperationHandle({ operation: ${JSON.stringify(operation.operation)}, command: { id: ${JSON.stringify(`${operation.command.contract.name}.${operation.command.contract.version}`)} }, key: (${operation.handler.key.source})${operation.handler.idempotencyKey ? `, idempotencyKey: (${operation.handler.idempotencyKey.source})` : ''} })`,
         }));
       const operationObject = nestedCallbackObjectSource(operationEntries);
+      const providerOperationEntries = [...binding.providerOperations.entries()]
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([path, value]) => ({ path, value }));
+      const providerOperationObject = nestedCallbackObjectSource(
+        providerOperationEntries,
+      );
       const properties = [
         ...(binding.model
           ? [`...functionNativeModelHandle(${JSON.stringify(binding.model.name)})`]
           : []),
         ...(operationEntries.length > 0 ? [`...(${operationObject})`] : []),
+        ...(providerOperationEntries.length > 0
+          ? [`...(${providerOperationObject})`]
+          : []),
       ];
       return `${JSON.stringify(root)}: Object.freeze({ ${properties.join(', ')} })`;
     })
@@ -3833,21 +3990,22 @@ function processorQueries(context) { return ${nestedCallbackObjectSource(callbac
 
 function generatedStreamProcessorAuthoredHandlerInvocation(
   workflow: boolean,
-  functionNative: boolean,
+  functionNativeBindings: boolean,
+  transactionalFunctionNative: boolean,
   queries: boolean,
   actors: boolean,
 ): string {
-  const bindings = functionNative
+  const bindings = functionNativeBindings
     ? 'functionNativeBindings'
     : 'Object.freeze({})';
   if (!workflow && !queries && !actors) {
     return `const handleAuthoredEvent = createHandleEvent(${bindings});
 const invokeAuthoredHandler = (input, context) => handleAuthoredEvent(input, processorAuthoredContext(context));
-${functionNative ? '' : 'const invokeHandler = invokeAuthoredHandler;'}`;
+${transactionalFunctionNative ? '' : 'const invokeHandler = invokeAuthoredHandler;'}`;
   }
   if (!workflow) {
     return `const invokeAuthoredHandler = (input, context) => { const authoredContext = processorAuthoredContext(context); return createHandleEvent(mergeProcessorBindings(${bindings}${queries ? ', processorQueries(authoredContext)' : ''}${actors ? ', processorActors(authoredContext)' : ''}))(input, authoredContext); };
-${functionNative ? '' : 'const invokeHandler = invokeAuthoredHandler;'}`;
+${transactionalFunctionNative ? '' : 'const invokeHandler = invokeAuthoredHandler;'}`;
   }
   return `const invokeAuthoredHandler = (input, context) => {
   const authoredContext = processorAuthoredContext(context);
@@ -3858,7 +4016,7 @@ ${functionNative ? '' : 'const invokeHandler = invokeAuthoredHandler;'}`;
     () => handleEvent(input, { ...authoredContext, schedules, workflows, tasks: workflows }),
   );
 };
-${functionNative ? '' : 'const invokeHandler = invokeAuthoredHandler;'}`;
+${transactionalFunctionNative ? '' : 'const invokeHandler = invokeAuthoredHandler;'}`;
 }
 
 function generatedStreamProcessorActors(
@@ -4197,6 +4355,9 @@ async function writeStreamHandlerModule(
     ),
     ...queries.map((binding) => binding.identifier),
     ...(processor.callableBindings ?? []).map(
+      (binding) => binding.identifier,
+    ),
+    ...(processor.providerBindings ?? []).map(
       (binding) => binding.identifier,
     ),
   ]

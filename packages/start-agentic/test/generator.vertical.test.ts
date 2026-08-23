@@ -1285,6 +1285,7 @@ describe('Agentic Start generator', () => {
         : undefined, JSON.stringify(notificationProcessor)).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
+            identifier: 'delivery.deliver',
             provider: expect.objectContaining({
               nodeId: notificationProvider?.id,
             }),
@@ -1292,11 +1293,15 @@ describe('Agentic Start generator', () => {
         ]),
       );
       expect(notificationProcessor?.kind === 'streamProcessor'
+        ? notificationProcessor.handlerUnresolved
+        : undefined, JSON.stringify(notificationProcessor)).toBeUndefined();
+      expect(notificationProcessor?.kind === 'streamProcessor'
         ? notificationProcessor.operationBindings
         : undefined).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
-            identifier: 'NotificationRequest.update',
+            identifier: 'requests.update',
+            runtimeOperationId: 'NotificationRequest.update',
             operation: expect.objectContaining({
               model: 'NotificationRequest',
               operation: 'update',
@@ -1812,10 +1817,13 @@ describe('Agentic Start generator', () => {
         'const functionNativeOperations = Object.freeze([Object.freeze({',
       );
       expect(notificationWorkerSource).toContain(
-        '"NotificationRequest": Object.freeze({ ...({ "update": createApplicationFunctionNativeOperationHandle',
+        '"requests": Object.freeze({ ...({ "update": createApplicationFunctionNativeOperationHandle',
       );
-      expect(notificationWorkerSource).toContain(
-        '"notificationRequests": Object.freeze({ ...({ "update": createApplicationFunctionNativeOperationHandle',
+      expect(notificationWorkerSource).toMatch(
+        /import \{ deliverApplicationNotification as providerOperation_[a-f0-9]{12} \} from "@applik8s\/notifications\/runtime";/u,
+      );
+      expect(notificationWorkerSource).toMatch(
+        /"delivery": Object\.freeze\(\{ \.\.\.\(\{ "deliver": providerOperation_[a-f0-9]{12} \}\) \}\)/u,
       );
       const nestedOperationSource = notificationWorkerSource.slice(
         notificationWorkerSource.indexOf('const functionNativeOperations'),

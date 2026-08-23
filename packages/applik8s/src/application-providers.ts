@@ -1,5 +1,5 @@
 // typecast-file-boundary: provider constructors validate structural runtime input before restoring provider-specific discriminated contracts.
-import type { ApplicationMigrationContract, ApplicationProviderInterfaceKind, ApplicationProviderRuntimeContract, ApplicationResourceRef } from '@applik8s/core';
+import type { ApplicationCallableProviderRuntimeOperation, ApplicationMigrationContract, ApplicationProviderInterfaceKind, ApplicationProviderRuntimeContract, ApplicationResourceRef } from '@applik8s/core';
 import type {
   ApplicationDeterministicIdentityOptions,
   ApplicationOAuthAuthorizationFlowRecord,
@@ -949,8 +949,16 @@ export interface ApplicationProviderToken<TImplementation = unknown> {
   readonly name: string;
   readonly description?: string;
   readonly contract?: ApplicationTypedProviderContract;
+  readonly callableRuntime?: ApplicationCallableProviderRuntimeContract;
   readonly accepts?: (implementation: unknown) => implementation is TImplementation;
   readonly __implementation?: TImplementation;
+}
+
+/** Static runtime exports available to managed closures for this provider. */
+export interface ApplicationCallableProviderRuntimeContract {
+  readonly operations: Readonly<
+    Record<string, ApplicationCallableProviderRuntimeOperation>
+  >;
 }
 
 export interface ApplicationProviderQualification<TName extends string = string> {
@@ -996,16 +1004,64 @@ export function defineApplicationProvider<TImplementation>(options: {
   readonly description?: string;
   readonly requirements?: readonly string[];
   readonly guarantees?: readonly string[];
+  readonly runtime?: ApplicationCallableProviderRuntimeContract;
   readonly accepts: (implementation: unknown) => implementation is TImplementation;
 }): ApplicationQualifiableProviderToken<TImplementation> {
   if (!/^[A-Z][A-Za-z0-9]*$/.test(options.interface)) throw new Error(`Application provider interface ${JSON.stringify(options.interface)} must be a stable UpperCamelCase identifier.`);
   if (!/^v[1-9][0-9]*(?:(?:alpha|beta)[1-9][0-9]*)?$/.test(options.version)) throw new Error(`Application provider interface ${options.interface} must declare an explicit version such as v1 or v1alpha1.`);
+  const callableRuntime = options.runtime
+    ? normalizeApplicationCallableProviderRuntime(options.interface, options.runtime)
+    : undefined;
   return applicationQualifiableProviderToken({
     name: options.interface,
     ...(options.description ? { description: options.description } : {}),
     contract: { apiVersion: 'applik8s.provider/v1alpha1', interface: options.interface, version: options.version, requirements: [...(options.requirements ?? [])], guarantees: [...(options.guarantees ?? [])] },
+    ...(callableRuntime ? { callableRuntime } : {}),
     accepts: options.accepts,
   });
+}
+
+function normalizeApplicationCallableProviderRuntime(
+  providerInterface: string,
+  runtime: ApplicationCallableProviderRuntimeContract,
+): ApplicationCallableProviderRuntimeContract {
+  const operations = Object.fromEntries(
+    Object.entries(runtime.operations).map(([member, operation]) => {
+      if (!/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(member)) {
+        throw new Error(
+          `Application provider ${providerInterface} runtime member ${JSON.stringify(member)} must be a JavaScript identifier.`,
+        );
+      }
+      if (
+        !/^(?:@[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._/-]*|[a-z0-9][a-z0-9._/-]*)$/u.test(
+          operation.module,
+        )
+        || operation.module.includes('..')
+      ) {
+        throw new Error(
+          `Application provider ${providerInterface}.${member} runtime module ${JSON.stringify(operation.module)} must be a public bare-package export.`,
+        );
+      }
+      if (!/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(operation.export)) {
+        throw new Error(
+          `Application provider ${providerInterface}.${member} runtime export ${JSON.stringify(operation.export)} must be a named JavaScript export.`,
+        );
+      }
+      return [
+        member,
+        Object.freeze({
+          module: operation.module,
+          export: operation.export,
+        }),
+      ];
+    }),
+  );
+  if (Object.keys(operations).length === 0) {
+    throw new Error(
+      `Application provider ${providerInterface} callable runtime must declare at least one operation.`,
+    );
+  }
+  return Object.freeze({ operations: Object.freeze(operations) });
 }
 
 export interface ApplicationTransactionalDatabaseProviderToken extends ApplicationQualifiableProviderToken<ApplicationTransactionalDatabaseProvider> {

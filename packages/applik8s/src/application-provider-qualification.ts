@@ -39,6 +39,9 @@ export function applicationQualifiableProviderToken<
         name: token.name,
         ...(token.description ? { description: token.description } : {}),
         ...(token.contract ? { contract: token.contract } : {}),
+        ...(token.callableRuntime
+          ? { callableRuntime: token.callableRuntime }
+          : {}),
         ...(accepts
           ? {
               accepts: (

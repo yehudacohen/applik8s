@@ -117,6 +117,14 @@ export const NotificationDelivery =
       'provider receipts retain the application idempotency key',
       'identity-provider courier flows remain independently owned',
     ],
+    runtime: {
+      operations: {
+        deliver: {
+          module: '@applik8s/notifications/runtime',
+          export: 'deliverApplicationNotification',
+        },
+      },
+    },
     accepts(value): value is ApplicationNotificationDeliveryProvider {
       return Boolean(
         value

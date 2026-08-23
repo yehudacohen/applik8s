@@ -75,6 +75,14 @@ describe('managed provider runtime selection', () => {
     const AcquisitionProvider = defineApplicationProvider<AcquisitionProviderImplementation>({
       interface: 'AcquisitionProvider',
       version: 'v1alpha1',
+      runtime: {
+        operations: {
+          acquire: {
+            module: '@fixture/acquisition/runtime',
+            export: 'acquireItem',
+          },
+        },
+      },
       accepts: (candidate): candidate is AcquisitionProviderImplementation =>
         candidate !== null
         && typeof candidate === 'object'
@@ -126,7 +134,42 @@ describe('managed provider runtime selection', () => {
           interface: 'AcquisitionProvider',
           qualification: expect.objectContaining({ name: 'primary' }),
         }),
+        operation: {
+          member: 'acquire',
+          runtime: {
+            module: '@fixture/acquisition/runtime',
+            export: 'acquireItem',
+          },
+        },
       }),
     ]);
+  });
+
+  it('rejects callable runtime entries that are not public static package exports', () => {
+    const accepts = (_candidate: unknown): _candidate is { run(): void } => true;
+    expect(() =>
+      defineApplicationProvider({
+        interface: 'UnsafeProvider',
+        version: 'v1alpha1',
+        runtime: {
+          operations: {
+            run: { module: '../private-runtime.js', export: 'run' },
+          },
+        },
+        accepts,
+      }),
+    ).toThrow(/public bare-package export/);
+    expect(() =>
+      defineApplicationProvider({
+        interface: 'UnsafeProvider',
+        version: 'v1alpha1',
+        runtime: {
+          operations: {
+            run: { module: '@fixture/provider/runtime', export: 'default-value' },
+          },
+        },
+        accepts,
+      }),
+    ).toThrow(/named JavaScript export/);
   });
 });

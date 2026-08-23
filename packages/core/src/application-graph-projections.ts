@@ -1,5 +1,6 @@
 import type {
 	ApplicationGeneratedResourceContract,
+	ApplicationCallableProviderBinding,
 	ApplicationGraphNodeBase,
 	ApplicationGraphNodeRef,
 	ApplicationMessageContractSchema,
@@ -104,10 +105,7 @@ export interface ApplicationStreamProcessorNode
 		readonly dependencies: readonly string[];
 	}[];
 	/** Provider capabilities inferred through ordinary maintained-module calls. */
-	readonly providerBindings?: readonly {
-		readonly identifier: string;
-		readonly provider: ApplicationProviderRef;
-	}[];
+	readonly providerBindings?: readonly ApplicationCallableProviderBinding[];
 	/** Recurring workflow/task schedules explicitly available to this effect handler. */
 	readonly schedules?: readonly {
 		readonly alias: string;

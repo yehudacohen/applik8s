@@ -1032,7 +1032,7 @@ function directApplicationCallAnalysis(
   const mutableModuleState = ignoreMutableModuleState
     ? topLevelMutableApplicationBindings(file)
     : new Set<string>();
-  const resolvingHelpers = new Set<string>();
+  const resolvingHelpers = new Set<AnalyzableApplicationCallback>();
 
   function visit(node: ts.Node): void {
     if (ts.isVariableDeclaration(node)) collectBindingNames(node.name, localNames);
@@ -1129,16 +1129,14 @@ function directApplicationCallAnalysis(
         const helper = helperName
           ? topLevelCallables.get(helperName)
           : undefined;
-        if (helper && helperName) {
-          if (resolvingHelpers.has(helperName)) {
-            const position = file.getLineAndCharacterOfPosition(
-              candidate.getStart(file),
-            );
-            throw new Error(
-              `${registrar} callback helper graph at ${sourceFile}:${position.line + 1}:${position.character + 1} contains a cycle through ${helperName}.`,
-            );
+        if (helper) {
+          if (resolvingHelpers.has(helper)) {
+            // A recursive edge does not introduce another dependency. The
+            // active traversal continues after this call and retains every
+            // capability leaf reached by the recursive helper graph.
+            return;
           }
-          resolvingHelpers.add(helperName);
+          resolvingHelpers.add(helper);
           const helperLocals = new Set<string>();
           for (const parameter of helper.parameters) {
             collectBindingNames(parameter.name, helperLocals);
@@ -1153,7 +1151,7 @@ function directApplicationCallAnalysis(
             visit(helper.body);
           } finally {
             for (const name of addedHelperLocals) localNames.delete(name);
-            resolvingHelpers.delete(helperName);
+            resolvingHelpers.delete(helper);
           }
           return;
         }
@@ -1253,30 +1251,130 @@ function analyzableApplicationCallback(
 ): AnalyzableApplicationCallback | undefined {
   if (ts.isArrowFunction(callback) || ts.isFunctionExpression(callback)) return callback;
   if (!ts.isIdentifier(callback)) return undefined;
-  for (const statement of file.statements) {
-    if (
-      ts.isFunctionDeclaration(statement)
-      && statement.name?.text === callback.text
-      && statement.body
-    ) {
-      return statement as ts.FunctionDeclaration & { readonly body: ts.Block };
-    }
-    if (!ts.isVariableStatement(statement)) continue;
-    for (const declaration of statement.declarationList.declarations) {
+  return lexicalApplicationCallbackResolution(callback, file)?.callback;
+}
+
+interface LexicalApplicationCallbackResolution {
+  readonly callback: AnalyzableApplicationCallback;
+  readonly declaration: ts.Statement;
+}
+
+/**
+ * Resolves a named callback according to its authored lexical scope. Maintained
+ * packages commonly install callbacks from inside a configuration function so
+ * they can close over injected provider handles. Treating declarations as
+ * source-file-global loses those bindings and makes otherwise ordinary
+ * TypeScript impossible to serialize.
+ */
+function lexicalApplicationCallbackResolution(
+  expression: ts.Identifier,
+  file: ts.SourceFile,
+): LexicalApplicationCallbackResolution | undefined {
+  let current: ts.Node | undefined = expression.parent;
+  while (current) {
+    if (ts.isBlock(current) || ts.isSourceFile(current) || ts.isModuleBlock(current)) {
+      if (ts.isBlock(current) && ts.isFunctionLike(current.parent)) {
+        const owner = current.parent;
+        if (
+          owner.parameters.some((parameter) =>
+            bindingNameContains(parameter.name, expression.text))
+          || (owner.name && ts.isIdentifier(owner.name) && owner.name.text === expression.text)
+        ) {
+          return undefined;
+        }
+      }
       if (
-        ts.isIdentifier(declaration.name)
-        && declaration.name.text === callback.text
-        && declaration.initializer
-        && (
-          ts.isArrowFunction(declaration.initializer)
-          || ts.isFunctionExpression(declaration.initializer)
+        ts.isBlock(current)
+        && ts.isCatchClause(current.parent)
+        && current.parent.variableDeclaration
+        && bindingNameContains(
+          current.parent.variableDeclaration.name,
+          expression.text,
         )
       ) {
-        return declaration.initializer;
+        return undefined;
+      }
+      const resolution = callbackResolutionFromStatements(
+        current.statements,
+        expression.text,
+      );
+      if (resolution === 'shadowed') return undefined;
+      if (resolution) return resolution;
+    }
+    current = current.parent;
+  }
+
+  // Factory-created nodes used by a few internal transformation paths may not
+  // retain parent pointers. Preserve the established source-file behavior for
+  // those nodes without weakening lexical shadowing for authored nodes.
+  const fallback = callbackResolutionFromStatements(file.statements, expression.text);
+  return fallback === 'shadowed' ? undefined : fallback;
+}
+
+function callbackResolutionFromStatements(
+  statements: readonly ts.Statement[],
+  name: string,
+): LexicalApplicationCallbackResolution | 'shadowed' | undefined {
+  for (const statement of statements) {
+    if (ts.isFunctionDeclaration(statement) && statement.name?.text === name) {
+      return statement.body
+        ? {
+            callback: statement as ts.FunctionDeclaration & { readonly body: ts.Block },
+            declaration: statement,
+          }
+        : 'shadowed';
+    }
+    if (ts.isVariableStatement(statement)) {
+      for (const declaration of statement.declarationList.declarations) {
+        if (!bindingNameContains(declaration.name, name)) continue;
+        if (
+          ts.isIdentifier(declaration.name)
+          && declaration.initializer
+          && (
+            ts.isArrowFunction(declaration.initializer)
+            || ts.isFunctionExpression(declaration.initializer)
+          )
+        ) {
+          return { callback: declaration.initializer, declaration: statement };
+        }
+        return 'shadowed';
+      }
+    }
+    if (
+      (ts.isClassDeclaration(statement)
+        || ts.isEnumDeclaration(statement)
+        || ts.isModuleDeclaration(statement))
+      && statement.name
+      && ts.isIdentifier(statement.name)
+      && statement.name.text === name
+    ) {
+      return 'shadowed';
+    }
+    if (ts.isImportDeclaration(statement) && statement.importClause) {
+      const clause = statement.importClause;
+      if (
+        clause.name?.text === name
+        || (clause.namedBindings && ts.isNamespaceImport(clause.namedBindings)
+          && clause.namedBindings.name.text === name)
+        || (clause.namedBindings && ts.isNamedImports(clause.namedBindings)
+          && clause.namedBindings.elements.some((element) => element.name.text === name))
+      ) {
+        return 'shadowed';
       }
     }
   }
   return undefined;
+}
+
+function bindingNameContains(
+  binding: ts.BindingName,
+  name: string,
+): boolean {
+  if (ts.isIdentifier(binding)) return binding.text === name;
+  return binding.elements.some(
+    (element) => !ts.isOmittedExpression(element)
+      && bindingNameContains(element.name, name),
+  );
 }
 
 function applicationCallbackIsImported(
@@ -1536,10 +1634,19 @@ function decorateApplicationCallbackExpression(
   const metadataFile = provenance?.file ?? sourceFile;
   const position = provenance?.position ?? file.getLineAndCharacterOfPosition(expression.getStart(file));
   const candidate = ts.factory.createIdentifier('__applik8sApplicationCallback');
-  const dependencyAnalysis =
-    ts.isArrowFunction(expression) || ts.isFunctionExpression(expression)
-      ? directApplicationCallAnalysis(expression, file, sourceFile, registrar)
-      : undefined;
+  const localResolution = ts.isIdentifier(expression)
+    ? lexicalApplicationCallbackResolution(expression, file)
+    : undefined;
+  const requiresCallsiteDependencyMetadata =
+    ts.isArrowFunction(expression)
+    || ts.isFunctionExpression(expression)
+    || Boolean(
+      localResolution
+      && !file.statements.includes(localResolution.declaration),
+    );
+  const dependencyAnalysis = requiresCallsiteDependencyMetadata
+    ? directApplicationCallAnalysis(expression, file, sourceFile, registrar)
+    : undefined;
   const originalSource =
     explicitSource ??
     provenance?.source ??
@@ -1686,9 +1793,9 @@ function localApplicationCallbackProvenance(
   sourceFile: string,
 ): ApplicationCallbackProvenance | undefined {
   if (!ts.isIdentifier(expression)) return undefined;
-  const declaration = file.statements.find((statement) =>
-    runtimeCallbackDeclarationNames(statement).includes(expression.text));
-  if (!declaration) return undefined;
+  const resolution = lexicalApplicationCallbackResolution(expression, file);
+  if (!resolution) return undefined;
+  const declaration = resolution.declaration;
   const source = callbackDeclarationExpression(declaration, expression.text, file);
   return {
     file: sourceFile,

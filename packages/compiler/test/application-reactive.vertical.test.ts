@@ -349,6 +349,195 @@ describe('generated v0.6 reactive workloads', () => {
     expect(generated).not.toContain('runApplicationStreamProcessor({');
   });
 
+  it('hydrates an extracted external provider operation from its portable runtime contract', async () => {
+    const graph = reactiveGraph([
+      {
+        id: 'provider.acquisition-provider.v1alpha1.primary',
+        kind: 'provider',
+        name: 'AcquisitionProvider',
+        stability: 'stable',
+        interface: 'AcquisitionProvider',
+        implementation: 'fixture',
+        config: {},
+      },
+      {
+        id: 'stream.items.requested.v1',
+        kind: 'stream',
+        name: 'items.requested',
+        version: 'v1',
+        stability: 'stable',
+        payload: schema({
+          type: 'object',
+          properties: { id: { type: 'string' } },
+          required: ['id'],
+        }),
+        authority: 'postgres-outbox',
+        delivery: 'at-least-once',
+        replay: 'supported',
+        retention: { maxAgeSeconds: 86_400 },
+        partitioning: 'declared',
+        compatibility: 'versioned-schema',
+        authorization: 'application-defined',
+        database,
+        partitionSource: '(event) => event.id',
+        authorizationSource: '() => true',
+      },
+      {
+        id: 'streamProcessor.acquire-item',
+        kind: 'streamProcessor',
+        name: 'acquire-item',
+        stability: 'stable',
+        source: { nodeId: 'stream.items.requested.v1' },
+        database,
+        handlerSource: 'async event => acquire(event)',
+        providerBindings: [{
+          identifier: 'acquire',
+          provider: {
+            interface: 'AcquisitionProvider',
+            nodeId: 'provider.acquisition-provider.v1alpha1.primary',
+          },
+          operation: {
+            member: 'acquire',
+            runtime: {
+              module: '@applik8s/notifications/runtime',
+              export: 'deliverApplicationNotification',
+            },
+          },
+        }],
+        delivery: 'at-least-once',
+        invocation: 'event',
+        idempotency: 'source-event-id',
+        checkpoint: 'postgres',
+        failure: 'deadLetter',
+        retry: {
+          mode: 'boundedExponentialBackoff',
+          maxAttempts: 5,
+          initialDelayMs: 100,
+          maxDelayMs: 5_000,
+          factor: 2,
+        },
+        deployment: {
+          image: 'node:22-alpine',
+          replicas: 1,
+          concurrency: 1,
+          maxAckPending: 64,
+          healthPort: 8_080,
+          gracefulShutdownSeconds: 30,
+          resources: {},
+          scaling: { mode: 'fixed' },
+        },
+        budgets: { timeoutMs: 30_000, maxInputBytes: 256_000 },
+      },
+    ] as unknown as ApplicationGraphNode[]);
+    const [artifact] = await emitGeneratedApplicationReactive({
+      graph,
+      outDir: await mkdtemp(join(tmpdir(), 'applik8s-callable-provider-')),
+      entrypoint: import.meta.filename,
+    });
+    const directory = dirname(artifact?.sourcePath ?? '');
+    const generated = await readFile(
+      join(directory, 'stream-processor.generated.ts'),
+      'utf8',
+    );
+    const callback = await readFile(
+      join(directory, 'handle.generated.ts'),
+      'utf8',
+    );
+
+    expect(generated).toMatch(
+      /import \{ deliverApplicationNotification as providerOperation_[a-f0-9]{12} \} from "@applik8s\/notifications\/runtime";/u,
+    );
+    expect(generated).toMatch(
+      /const functionNativeLeafBindings = Object\.freeze\(\{ "acquire": providerOperation_[a-f0-9]{12} \}\);/u,
+    );
+    expect(generated).toContain(
+      'const invokeHandler = invokeAuthoredHandler;',
+    );
+    expect(callback).toContain(
+      'const acquire = __applik8sBindings["acquire"]',
+    );
+  }, 120_000);
+
+  it('fails closed when a captured provider operation has no portable worker runtime', async () => {
+    const graph = reactiveGraph([
+      {
+        id: 'provider.acquisition-provider.v1alpha1.primary',
+        kind: 'provider',
+        name: 'AcquisitionProvider',
+        stability: 'stable',
+        interface: 'AcquisitionProvider',
+        implementation: 'fixture',
+        config: {},
+      },
+      {
+        id: 'stream.items.requested.v1',
+        kind: 'stream',
+        name: 'items.requested',
+        version: 'v1',
+        stability: 'stable',
+        payload: schema({ type: 'object' }),
+        authority: 'postgres-outbox',
+        delivery: 'at-least-once',
+        replay: 'supported',
+        retention: { maxAgeSeconds: 86_400 },
+        partitioning: 'declared',
+        compatibility: 'versioned-schema',
+        authorization: 'application-defined',
+        database,
+        partitionSource: '() => "all"',
+        authorizationSource: '() => true',
+      },
+      {
+        id: 'streamProcessor.acquire-item',
+        kind: 'streamProcessor',
+        name: 'acquire-item',
+        stability: 'stable',
+        source: { nodeId: 'stream.items.requested.v1' },
+        database,
+        handlerSource: 'async event => acquisition.acquire(event)',
+        providerBindings: [{
+          identifier: 'acquisition.acquire',
+          provider: {
+            interface: 'AcquisitionProvider',
+            nodeId: 'provider.acquisition-provider.v1alpha1.primary',
+          },
+          operation: { member: 'acquire' },
+        }],
+        delivery: 'at-least-once',
+        invocation: 'event',
+        idempotency: 'source-event-id',
+        checkpoint: 'postgres',
+        failure: 'pause',
+        retry: {
+          mode: 'boundedExponentialBackoff',
+          maxAttempts: 1,
+          initialDelayMs: 100,
+          maxDelayMs: 100,
+          factor: 2,
+        },
+        deployment: {
+          image: 'node:22-alpine',
+          replicas: 1,
+          concurrency: 1,
+          maxAckPending: 1,
+          healthPort: 8_080,
+          gracefulShutdownSeconds: 30,
+          resources: {},
+          scaling: { mode: 'fixed' },
+        },
+        budgets: { timeoutMs: 30_000, maxInputBytes: 256_000 },
+      },
+    ] as unknown as ApplicationGraphNode[]);
+
+    await expect(
+      emitGeneratedApplicationReactive({
+        graph,
+        outDir: await mkdtemp(join(tmpdir(), 'applik8s-callable-provider-missing-runtime-')),
+        entrypoint: import.meta.filename,
+      }),
+    ).rejects.toThrow(/has no portable generated-worker runtime/);
+  });
+
   it('hydrates an inferred object-store handle inside a managed stream processor', async () => {
     const graph = reactiveGraph([
       {

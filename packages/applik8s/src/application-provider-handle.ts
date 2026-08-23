@@ -1,9 +1,11 @@
+// typecast-file-boundary: The provider proxy preserves the public generic implementation while Reflect confines dynamic member access to its validated runtime selection.
 import type {
   ApplicationQualifiedProviderBinding,
   ApplicationQualifiedProviderBindingMetadata,
 } from './application-profiles.js';
 import {
   bindApplicationProviderDependencies,
+  bindApplicationProviderOperation,
 } from './application-provider-dependencies.js';
 import {
   ApplicationProviderRuntimeSelectionError,
@@ -67,6 +69,15 @@ export function createApplicationQualifiedProviderBinding<TImplementation>(
           value: `${metadata.qualification.name}_${String(property)}`,
         });
         bindApplicationProviderDependencies(operation, [handle]);
+        bindApplicationProviderOperation(operation, {
+          member: String(property),
+          ...(metadata.token.callableRuntime?.operations[String(property)]
+            ? {
+                runtime:
+                  metadata.token.callableRuntime.operations[String(property)],
+              }
+            : {}),
+        });
         operationCache.set(property, operation);
         return operation;
       }

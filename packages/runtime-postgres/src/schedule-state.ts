@@ -6,7 +6,7 @@ import {
 	type ApplicationScheduleManagementReceipt,
 	type ApplicationScheduleStateAuthority,
 	type ApplicationScheduleStateRecord,
-} from '@applik8s/applik8s';
+} from '@applik8s/applik8s/schedule-state-runtime';
 import postgres, { type Sql, type TransactionSql } from 'postgres';
 
 export interface PostgresApplicationScheduleStateAuthorityOptions {

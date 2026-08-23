@@ -26,6 +26,7 @@ const publicEntrypoints = [
   '@applik8s/applik8s/event-log-runtime',
   '@applik8s/applik8s/lakehouse-runtime',
   '@applik8s/applik8s/schedule-runtime-local',
+  '@applik8s/applik8s/schedule-state-runtime',
   '@applik8s/applik8s/actor-runtime-local',
   '@applik8s/applik8s/postgres-runtime-contract',
   '@applik8s/applik8s/search-runtime',
@@ -93,6 +94,7 @@ const publicEntrypoints = [
   '@applik8s/runtime-nats/command-processor',
   '@applik8s/runtime-kubernetes',
   '@applik8s/runtime-postgres',
+  '@applik8s/runtime-postgres/schedule-state',
   '@applik8s/runtime-aws',
   '@applik8s/runtime-aws/bootstrap',
   '@applik8s/runtime-aws/kinesis',
@@ -119,6 +121,22 @@ const workDir = await mkdtemp(join(tmpdir(), 'applik8s-package-consumer-'));
 const packDir = join(workDir, 'packs');
 const consumerModules = join(workDir, 'consumer', 'node_modules');
 const externalPackages = new Map();
+const generatedRuntimeFiles = [
+  '@applik8s/applik8s/dist/stream-worker-runtime.js',
+  '@applik8s/applik8s/dist/workflow-runtime.js',
+  '@applik8s/applik8s/dist/workflow-runtime-resolvers.js',
+  '@applik8s/runtime-hatchet/dist/index.js',
+];
+
+function assertGeneratedRuntimeFiles(stage) {
+  const missing = generatedRuntimeFiles.filter((path) =>
+    !existsSync(join(consumerModules, ...path.split('/'))));
+  if (missing.length > 0) {
+    throw new Error(
+      `Package consumer smoke lost generated-worker runtime files after ${stage}: ${missing.join(', ')}`,
+    );
+  }
+}
 
 async function assertDirectRuntimeDependencies(packageDir, manifest) {
   const distDir = join(packageDir, 'dist');
@@ -184,6 +202,7 @@ try {
     await execFileAsync('tar', ['-xzf', join(packDir, packResult.filename), '-C', packageInstallDir, '--strip-components=1']);
   }
   console.log(`Package consumer smoke: packed and unpacked ${packageDirs.length} packages.`);
+  assertGeneratedRuntimeFiles('package unpack');
 
   const consumerDir = join(workDir, 'consumer');
   for (const dependency of [
@@ -384,6 +403,7 @@ export function getRouter() {
       );
     },
   });
+  assertGeneratedRuntimeFiles('Agentic Start generation');
   const generatedDoctorHelp = await execFileAsync(
     'bun',
     ['run', 'doctor', '--help'],
@@ -397,6 +417,7 @@ export function getRouter() {
       'Packed Agentic Start could not resolve its declared @applik8s/cli executable from a generated package script.',
     );
   }
+  assertGeneratedRuntimeFiles('generated doctor command');
   await execFileAsync(
     join(root, 'node_modules', '.bin', 'drizzle-kit'),
     ['generate', '--config', 'drizzle.config.ts'],
@@ -413,6 +434,7 @@ export function getRouter() {
       'Packed Agentic Start migration generation reported success without emitting SQL.',
     );
   }
+  assertGeneratedRuntimeFiles('generated migration command');
   const packedServerSource = 'export default {};\n';
   const packedServerArtifacts = [{
     path: 'server/index.mjs',
@@ -451,6 +473,7 @@ export function getRouter() {
   ) {
     throw new Error('Packed Agentic Start did not materialize its maintained agent and model modules.');
   }
+  assertGeneratedRuntimeFiles('packed Agentic Start discovery');
   const compiledAgenticStart = await compileTypeKroComposition({
     entrypoint: packedAgenticEntrypoint,
     compositionName: 'application',
@@ -471,6 +494,7 @@ export function getRouter() {
       },
     },
   });
+  assertGeneratedRuntimeFiles('packed Agentic Start compilation');
   if (!compiledAgenticStart.ok) {
     throw new Error(`Packed Agentic Start compilation failed: ${compiledAgenticStart.error.message}`);
   }
@@ -606,5 +630,9 @@ export function getRouter() {
   // Generated builds may close file handles a few milliseconds after their
   // child process exits on macOS. Retry recursive cleanup so teardown cannot
   // mask the actual package-consumer result with a transient ENOTEMPTY.
-  await rm(workDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  if (process.env.APPLIK8S_KEEP_PACKAGE_CONSUMER === '1') {
+    console.error(`Package consumer smoke retained diagnostic workspace: ${workDir}`);
+  } else {
+    await rm(workDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  }
 }

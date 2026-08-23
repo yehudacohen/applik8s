@@ -1,6 +1,7 @@
 // typecast-file-boundary: Serialized callback metadata is reflected from user closures and validated at this compiler boundary.
 import { applicationCallbackSourceMatchesRuntime } from './application-callback-source-equivalence.js';
 import {
+  type ApplicationCallableProviderDependency,
   applicationCallableProviderDependencies,
   applicationCallableRuntimeFor,
 } from './application-provider-dependencies.js';
@@ -52,6 +53,8 @@ export interface ExpandedApplicationCallbackDependencies {
     readonly runtime: 'notifications.request.v1';
     readonly dependencies: readonly string[];
   }[];
+  /** Exact provider-operation aliases observed before helper expansion. */
+  readonly providerBindings: readonly ApplicationCallableProviderDependency[];
   readonly provenance: readonly {
     readonly identifier: string;
     readonly helperPath: readonly string[];
@@ -85,6 +88,7 @@ export function expandApplicationCallbackDependencies(options: {
     readonly runtime: 'notifications.request.v1';
     readonly dependencies: readonly string[];
   }[] = [];
+  const providerBindings: ApplicationCallableProviderDependency[] = [];
   const roots: InstrumentedApplicationCallbackDependency[] = [];
   const boundValues = new Set(Object.values(options.bindings ?? {}));
   for (const [identifier, value] of Object.entries(options.bindings ?? {})) {
@@ -116,6 +120,11 @@ export function expandApplicationCallbackDependencies(options: {
     inheritedAwaited: boolean,
     helperPath: readonly string[],
   ): void => {
+    providerBindings.push(
+      ...applicationCallableProviderDependencies({
+        [dependency.identifier]: dependency.value,
+      }),
+    );
     const declarationSource = instrumentedApplicationCallbackDeclarationSource(dependency.value);
     if (declarationSource) {
       provenance.push({
@@ -196,6 +205,21 @@ export function expandApplicationCallbackDependencies(options: {
             (other) =>
               other.identifier === candidate.identifier
               && other.runtime === candidate.runtime,
+          ) === index,
+      ),
+    ),
+    providerBindings: Object.freeze(
+      providerBindings.filter(
+        (binding, index, bindings) =>
+          bindings.findIndex(
+            (candidate) =>
+              candidate.identifier === binding.identifier
+              && candidate.provider.nodeId === binding.provider.nodeId
+              && candidate.operation?.member === binding.operation?.member
+              && candidate.operation?.runtime?.module
+                === binding.operation?.runtime?.module
+              && candidate.operation?.runtime?.export
+                === binding.operation?.runtime?.export,
           ) === index,
       ),
     ),
