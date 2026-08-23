@@ -122,6 +122,10 @@ export const NotificationDelivery =
         deliver: {
           module: '@applik8s/notifications/runtime',
           export: 'deliverApplicationNotification',
+          access: {
+            kind: 'provider',
+            operations: ['connection.use', 'network.connect'],
+          },
         },
       },
     },

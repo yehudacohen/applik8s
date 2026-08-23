@@ -1,6 +1,7 @@
-import type {
-  ApplicationCallableProviderRuntimeOperation,
-  ApplicationProviderRef,
+import {
+  type ApplicationCallableProviderRuntimeOperation,
+  type ApplicationProviderRef,
+  isApplicationRuntimeAccessOperation,
 } from '@applik8s/core';
 import { applicationProviderGraphNodeId } from './application-identifiers.js';
 import type { ApplicationProviderBinding } from './application-providers.js';
@@ -193,11 +194,28 @@ export function applicationProviderOperationFor(
   const runtime = Reflect.get(operation, 'runtime');
   if (typeof member !== 'string') return undefined;
   if (runtime === undefined) return { member };
+  const access = runtime && typeof runtime === 'object'
+    ? Reflect.get(runtime, 'access')
+    : undefined;
+  const accessOperations = access && typeof access === 'object'
+    ? Reflect.get(access, 'operations')
+    : undefined;
   if (
     !runtime
     || typeof runtime !== 'object'
     || typeof Reflect.get(runtime, 'module') !== 'string'
     || typeof Reflect.get(runtime, 'export') !== 'string'
+    || !(
+      access === 'none'
+      || (
+        access
+        && typeof access === 'object'
+        && Reflect.get(access, 'kind') === 'provider'
+        && Array.isArray(accessOperations)
+        && accessOperations.length > 0
+        && accessOperations.every(isApplicationRuntimeAccessOperation)
+      )
+    )
   ) {
     return undefined;
   }
@@ -206,6 +224,12 @@ export function applicationProviderOperationFor(
     runtime: {
       module: String(Reflect.get(runtime, 'module')),
       export: String(Reflect.get(runtime, 'export')),
+      access: access === 'none'
+        ? 'none'
+        : {
+            kind: 'provider',
+            operations: [...accessOperations],
+          },
     },
   };
 }

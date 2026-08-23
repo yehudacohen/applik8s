@@ -1,9 +1,11 @@
 // typecast-file-boundary: Generated graph nodes are discriminated by kind before compiler-specific fields are materialized.
 import { createHash } from "node:crypto";
 import { resolve } from "node:path";
+import ts from "typescript";
 import type {
 	ApplicationActorNode,
 	ApplicationAIAgentNode,
+	ApplicationCallableProviderBinding,
 	ApplicationCrdNode,
 	ApplicationGatewayNode,
 	ApplicationGraph,
@@ -19,6 +21,7 @@ import type {
 } from "@applik8s/core";
 import { applicationOperationId } from "@applik8s/core";
 import { applicationRuntimeEndpointEnvironmentName } from "@applik8s/deployment-contract";
+import { generatedCallbackFactoryModule } from "../application-callback-module.js";
 import { applicationGraphStringValue } from "../application-installation-values.js";
 import {
 	compileApplicationOperationCatalog,
@@ -402,10 +405,24 @@ export function generatedApplicationFetchGatewayModules(
 			return `${JSON.stringify(member.name)}: actor.${memberConstructor}(${input})`;
 		});
 		const initialize = actorNode.initialize
-			? graphCallback(files, imports, actorNode.id, "actor-initialize", actorNode.initialize)
+			? graphActorCallback(
+					files,
+					imports,
+					actorNode,
+					"initialize",
+					"actor-initialize",
+					actorNode.initialize,
+				)
 			: undefined;
 		const registrations = actorNode.handlers.map(({ member, callback }) => {
-			const generated = graphCallback(files, imports, actorNode.id, `actor-${member}`, callback);
+			const generated = graphActorCallback(
+				files,
+				imports,
+				actorNode,
+				member,
+				`actor-${member}`,
+				callback,
+			);
 			return `binding.on[${JSON.stringify(member)}](${generated});`;
 		});
 		const migrations = actorNode.definition.migrations.map(({ from, callback }) => {
@@ -2323,6 +2340,200 @@ function objectStoreGatewaySource(store: ApplicationObjectStoreNode): string {
     browser: ${JSON.stringify(store.browserAccess)},
     runtime: createS3ApplicationObjectStorageRuntime({ store: ${JSON.stringify(store.name)}, provider: objectStorageProvider() }),
   }`;
+}
+
+function graphActorCallback(
+	files: Record<string, string>,
+	imports: string[],
+	actor: ApplicationActorNode,
+	member: string,
+	role: string,
+	callback: ApplicationSerializedCallbackContract,
+): string {
+	const prefix = `${member}:`;
+	const providerBindings = (actor.providerBindings ?? [])
+		.filter((binding) => binding.identifier.startsWith(prefix))
+		.map((binding) => ({
+			...binding,
+			identifier: binding.identifier.slice(prefix.length),
+		}));
+	if (providerBindings.length === 0) {
+		return graphCallback(files, imports, actor.id, role, callback);
+	}
+	const injected = providerBindings.map((binding) =>
+		actorProviderOperationBinding(imports, actor, member, binding));
+	const injectedIdentifiers = injected
+		.map(({ path }) => path.split('.')[0])
+		.filter((identifier): identifier is string => Boolean(identifier))
+		.filter((identifier, index, values) => values.indexOf(identifier) === index);
+	const replacedCapturedIdentifiers = injectedIdentifiers.filter((identifier) =>
+		injected.some(({ path }) => path === identifier)
+		|| capturedApplicationInjectFacade(
+			callback.dependencies?.source,
+			identifier,
+		));
+	const digest = createHash("sha256")
+		.update(`${actor.id}:${role}`)
+		.digest("hex")
+		.slice(0, 12);
+	const file = `${role}-${digest}.generated.ts`;
+	const factory = `createCallback_${role.replace(/[^A-Za-z0-9_$]+/g, "_")}_${digest}`;
+	files[file] = generatedCallbackFactoryModule({
+		source: callback.source,
+		...(callback.dependencies ? { dependencies: callback.dependencies } : {}),
+		injectedIdentifiers,
+		injectedBindingPaths: injected.map(({ path }) => path),
+		replacedCapturedIdentifiers,
+		exportName: "createCallback",
+	});
+	imports.push(
+		`import { createCallback as ${factory} } from './${file.replace(/\.ts$/, ".js")}';`,
+	);
+	return `${factory}(${nestedActorProviderBindingsSource(injected)})`;
+}
+
+function capturedApplicationInjectFacade(
+	source: string | undefined,
+	identifier: string,
+): boolean {
+	if (!source?.trim()) return false;
+	const file = ts.createSourceFile(
+		"application-actor-provider-capture.ts",
+		source,
+		ts.ScriptTarget.Latest,
+		true,
+		ts.ScriptKind.TS,
+	);
+	const appFactories = new Set<string>();
+	for (const statement of file.statements) {
+		if (
+			!ts.isImportDeclaration(statement)
+			|| !ts.isStringLiteral(statement.moduleSpecifier)
+			|| statement.moduleSpecifier.text !== "@applik8s/applik8s"
+			|| !statement.importClause?.namedBindings
+			|| !ts.isNamedImports(statement.importClause.namedBindings)
+		) continue;
+		for (const element of statement.importClause.namedBindings.elements) {
+			if ((element.propertyName?.text ?? element.name.text) === "app") {
+				appFactories.add(element.name.text);
+			}
+		}
+	}
+	const applicationBindings = new Set<string>();
+	forEachVariableDeclaration(file, (declaration) => {
+		if (
+			ts.isIdentifier(declaration.name)
+			&& declaration.initializer
+			&& ts.isCallExpression(declaration.initializer)
+			&& ts.isIdentifier(declaration.initializer.expression)
+			&& appFactories.has(declaration.initializer.expression.text)
+		) applicationBindings.add(declaration.name.text);
+	});
+	let matched = false;
+	forEachVariableDeclaration(file, (declaration) => {
+		if (
+			matched
+			|| !ts.isIdentifier(declaration.name)
+			|| declaration.name.text !== identifier
+			|| !declaration.initializer
+			|| !ts.isCallExpression(declaration.initializer)
+			|| !ts.isPropertyAccessExpression(declaration.initializer.expression)
+			|| declaration.initializer.expression.name.text !== "inject"
+			|| !ts.isIdentifier(declaration.initializer.expression.expression)
+		) return;
+		matched = applicationBindings.has(
+			declaration.initializer.expression.expression.text,
+		);
+	});
+	return matched;
+}
+
+function forEachVariableDeclaration(
+	node: ts.Node,
+	visitDeclaration: (declaration: ts.VariableDeclaration) => void,
+): void {
+	if (ts.isVariableDeclaration(node)) visitDeclaration(node);
+	ts.forEachChild(node, (child) =>
+		forEachVariableDeclaration(child, visitDeclaration));
+}
+
+function actorProviderOperationBinding(
+	imports: string[],
+	actor: ApplicationActorNode,
+	member: string,
+	binding: ApplicationCallableProviderBinding,
+): { readonly path: string; readonly value: string } {
+	const runtime = binding.operation?.runtime;
+	if (!binding.operation || !runtime) {
+		throw new Error(
+			`Application actor ${actor.definition.id}.${member} provider binding ${binding.identifier} has no public static runtime operation. Define the operation in the provider runtime contract; generated actor workers never replay authoring-time provider selection.`,
+		);
+	}
+	if (
+		!/^(?:@[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._/-]*|[a-z0-9][a-z0-9._/-]*)$/u.test(
+			runtime.module,
+		)
+		|| runtime.module.includes('..')
+		|| !/^[A-Za-z_$][A-Za-z0-9_$]*$/u.test(runtime.export)
+	) {
+		throw new Error(
+			`Application actor ${actor.definition.id}.${member} provider binding ${binding.identifier} has an invalid public runtime export ${runtime.module}#${runtime.export}.`,
+		);
+	}
+	const segments = binding.identifier.split('.');
+	if (
+		segments.length === 0
+		|| segments.some((segment) => !/^[A-Za-z_$][A-Za-z0-9_$]*$/u.test(segment))
+	) {
+		throw new Error(
+			`Application actor ${actor.definition.id}.${member} provider binding ${binding.identifier} is not a static JavaScript binding path.`,
+		);
+	}
+	const variable = `providerOperation_${createHash("sha256")
+		.update(`${runtime.module}:${runtime.export}`)
+		.digest("hex")
+		.slice(0, 12)}`;
+	const statement = `import { ${runtime.export} as ${variable} } from ${JSON.stringify(runtime.module)};`;
+	if (!imports.includes(statement)) imports.push(statement);
+	return { path: binding.identifier, value: variable };
+}
+
+function nestedActorProviderBindingsSource(
+	entries: readonly { readonly path: string; readonly value: string }[],
+): string {
+	interface BindingTree {
+		direct?: string;
+		readonly children: Map<string, BindingTree>;
+	}
+	const roots = new Map<string, BindingTree>();
+	for (const entry of entries) {
+		const segments = entry.path.split('.');
+		let siblings = roots;
+		let node: BindingTree | undefined;
+		for (const segment of segments) {
+			node = siblings.get(segment);
+			if (!node) {
+				node = { children: new Map() };
+				siblings.set(segment, node);
+			}
+			siblings = node.children;
+		}
+		if (!node) throw new Error(`Actor provider binding ${entry.path} is empty.`);
+		if (node.direct && node.direct !== entry.value) {
+			throw new Error(`Actor provider binding ${entry.path} resolves to multiple runtime operations.`);
+		}
+		node.direct = entry.value;
+	}
+	return render(roots);
+
+	function render(nodes: ReadonlyMap<string, BindingTree>): string {
+		return `{ ${[...nodes.entries()].map(([key, node]) => {
+			if (node.direct && node.children.size > 0) {
+				throw new Error(`Actor provider binding ${key} is both a callable and an object namespace.`);
+			}
+			return `${JSON.stringify(key)}: ${node.direct ?? render(node.children)}`;
+		}).join(', ')} }`;
+	}
 }
 
 function graphCallback(

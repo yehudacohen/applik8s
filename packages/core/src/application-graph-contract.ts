@@ -2,6 +2,7 @@
 
 import {
   type ApplicationCanonicalIdentity,
+  type ApplicationRuntimeAccessOperation,
   type ApplicationRuntimeAccessRequirement,
   type ApplicationSourceProvenance,
   validateApplicationFoundation,
@@ -2116,6 +2117,17 @@ export interface ApplicationProviderRef<TInterface extends ApplicationProviderIn
 export interface ApplicationCallableProviderRuntimeOperation {
   readonly module: string;
   readonly export: string;
+  /**
+   * Provider-authored semantic infrastructure access for this operation.
+   * `none` is explicit: an omitted declaration is never interpreted as broad
+   * ambient access by a generated worker.
+   */
+  readonly access:
+    | 'none'
+    | {
+        readonly kind: 'provider';
+        readonly operations: readonly ApplicationRuntimeAccessOperation[];
+      };
 }
 
 /** Exact provider operation captured by an ordinary managed closure. */

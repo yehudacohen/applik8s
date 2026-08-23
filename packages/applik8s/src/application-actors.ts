@@ -36,7 +36,6 @@ export {
 import { applicationProviderGraphNodeId } from './application-identifiers.js';
 import { withApplicationManagedEffects } from './application-managed-effects.js';
 import { applicationOperationInputDigest } from './application-operation-runtime.js';
-import { applicationCallableProviderDependencies } from './application-provider-dependencies.js';
 import { runApplicationTelemetryBoundary } from './application-telemetry-runtime.js';
 import { declaredSchema, validateMessage } from './application-workflow-serialization.js';
 
@@ -768,24 +767,36 @@ export function createApplicationActor<TState extends object, const TProtocol ex
     handlers,
   });
   const graphNode = (): ApplicationActorNode => {
-    const dependencyBindings = Object.fromEntries(
-      [
-        ...(initialize ? [['initialize', initialize] as const] : []),
-        ...[...handlers].map(([member, callback]) => [member, callback] as const),
-      ].flatMap(([member, callback]) => {
-        const expanded = expandApplicationCallbackDependencies({ calls: [callback] });
-        return [
-          ...Object.entries(expanded.bindings).map(([identifier, value]) => [
-            `${member}:${identifier}`,
-            value,
-          ] as const),
-          [`${member}:generatedActorProviderDependencies`, callback] as const,
-        ];
-      }),
-    );
-    const providerBindings = applicationCallableProviderDependencies(
-      dependencyBindings,
-    );
+    const capturedProviderBindings = [
+      ...(initialize ? [['initialize', initialize] as const] : []),
+      ...[...handlers].map(([member, callback]) => [member, callback] as const),
+    ].flatMap(([member, callback]) =>
+      expandApplicationCallbackDependencies({ calls: [callback] })
+        .providerBindings
+        .map((binding) => ({
+          ...binding,
+          identifier: `${member}:${binding.identifier}`,
+        })));
+    const providerBindings = capturedProviderBindings
+      .filter((binding) => binding.operation !== undefined
+        || !capturedProviderBindings.some((candidate) =>
+          candidate.operation !== undefined
+          && candidate.provider.nodeId === binding.provider.nodeId
+          && candidate.identifier.split(':', 1)[0]
+            === binding.identifier.split(':', 1)[0]))
+      .filter((binding, index, bindings) =>
+        bindings.findIndex((candidate) =>
+          candidate.identifier === binding.identifier
+          && candidate.provider.nodeId === binding.provider.nodeId
+          && candidate.operation?.member === binding.operation?.member
+          && candidate.operation?.runtime?.module
+            === binding.operation?.runtime?.module
+          && candidate.operation?.runtime?.export
+            === binding.operation?.runtime?.export) === index)
+      .sort((left, right) =>
+        `${left.identifier}:${left.provider.nodeId}`.localeCompare(
+          `${right.identifier}:${right.provider.nodeId}`,
+        ));
     return ({
     id: `actor.${id}`,
     kind: 'actor',

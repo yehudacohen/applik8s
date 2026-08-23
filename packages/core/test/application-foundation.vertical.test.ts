@@ -11,8 +11,8 @@ import {
   deriveApplicationGraphFoundation,
   normalizeApplicationGraph,
   sourceProvenance,
-  validateApplicationGraph,
   validateApplicationFoundation,
+  validateApplicationGraph,
 } from '../src/index.js';
 
 const application = applicationCanonicalIdentity({
@@ -139,6 +139,24 @@ describe('v0.8 canonical foundation', () => {
       module: '/tmp/private.ts',
       symbol: 'privateHandler',
     })).toThrow(/workspace-relative/);
+  });
+
+  it('rejects access operations outside the versioned vocabulary', () => {
+    const invalid = {
+      ...access({ kind: 'resource', resourceId: 'SearchIndex:notes' }),
+      target: {
+        capabilityId: 'Search:primary',
+        operation: 'provider.escape',
+        scope: { kind: 'resource', resourceId: 'SearchIndex:notes' },
+      },
+    } as unknown as ApplicationRuntimeAccessRequirement;
+    expect(validateApplicationFoundation({
+      identities: [application, handler, execution],
+      provenance: [provenance],
+      runtimeAccess: [invalid],
+    }).map(({ code }) => code)).toEqual([
+      'FOUNDATION_RUNTIME_ACCESS_INVALID',
+    ]);
   });
 
   it('retains foundation analysis in the one canonical ApplicationGraph and validates its consumer boundary', () => {

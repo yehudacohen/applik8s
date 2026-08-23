@@ -1,5 +1,5 @@
 // typecast-file-boundary: provider constructors validate structural runtime input before restoring provider-specific discriminated contracts.
-import type { ApplicationCallableProviderRuntimeOperation, ApplicationMigrationContract, ApplicationProviderInterfaceKind, ApplicationProviderRuntimeContract, ApplicationResourceRef } from '@applik8s/core';
+import { type ApplicationCallableProviderRuntimeOperation, type ApplicationMigrationContract, type ApplicationProviderInterfaceKind, type ApplicationProviderRuntimeContract, type ApplicationResourceRef, isApplicationRuntimeAccessOperation } from '@applik8s/core';
 import type {
   ApplicationDeterministicIdentityOptions,
   ApplicationOAuthAuthorizationFlowRecord,
@@ -8,19 +8,19 @@ import type {
 import { createDeterministicApplicationAdmission } from '@applik8s/identity';
 import { Cel } from 'typekro';
 import type { OryIdentityStackConfig, OryPlatformStackConfig } from 'typekro/ory';
-import { applicationTypeKroExpressionValue, applicationTypeKroString } from './application-typekro-values.js';
-import { applicationQualifiableProviderToken } from './application-provider-qualification.js';
 import {
-  createApplicationSchedule,
-  type ApplicationScheduleRegistrar,
-} from './application-schedule.js';
-import { isApplicationStructuredGenerationProvider, StructuredGeneration } from './structured-generation.js';
-import {
-  createApplicationLakehouseDatasetQuery,
-  createApplicationLakehouseQuery,
   type ApplicationLakehouseDatasetQueryContract,
   type ApplicationLakehouseQueryRegistrar,
+  createApplicationLakehouseDatasetQuery,
+  createApplicationLakehouseQuery,
 } from './application-lakehouse.js';
+import { applicationQualifiableProviderToken } from './application-provider-qualification.js';
+import {
+  type ApplicationScheduleRegistrar,
+  createApplicationSchedule,
+} from './application-schedule.js';
+import { applicationTypeKroExpressionValue, applicationTypeKroString } from './application-typekro-values.js';
+import { isApplicationStructuredGenerationProvider, StructuredGeneration } from './structured-generation.js';
 
 export type { ApplicationStructuredGenerationDeterministicProvider, ApplicationStructuredGenerationHttpProvider, ApplicationStructuredGenerationProvider, ApplicationStructuredGenerationProviderToken } from './structured-generation.js';
 export { isApplicationStructuredGenerationProvider, StructuredGeneration } from './structured-generation.js';
@@ -1047,11 +1047,17 @@ function normalizeApplicationCallableProviderRuntime(
           `Application provider ${providerInterface}.${member} runtime export ${JSON.stringify(operation.export)} must be a named JavaScript export.`,
         );
       }
+      const access = normalizeApplicationCallableProviderOperationAccess(
+        providerInterface,
+        member,
+        operation.access,
+      );
       return [
         member,
         Object.freeze({
           module: operation.module,
           export: operation.export,
+          access,
         }),
       ];
     }),
@@ -1062,6 +1068,36 @@ function normalizeApplicationCallableProviderRuntime(
     );
   }
   return Object.freeze({ operations: Object.freeze(operations) });
+}
+
+function normalizeApplicationCallableProviderOperationAccess(
+  providerInterface: string,
+  member: string,
+  access: ApplicationCallableProviderRuntimeOperation['access'],
+): ApplicationCallableProviderRuntimeOperation['access'] {
+  if (access === 'none') return access;
+  if (
+    !access
+    || access.kind !== 'provider'
+    || !Array.isArray(access.operations)
+    || access.operations.length === 0
+  ) {
+    throw new Error(
+      `Application provider ${providerInterface}.${member} runtime access must be 'none' or a non-empty provider operation list.`,
+    );
+  }
+  const operations = [...new Set(access.operations)];
+  for (const operation of operations) {
+    if (!isApplicationRuntimeAccessOperation(operation)) {
+      throw new Error(
+        `Application provider ${providerInterface}.${member} runtime access operation ${JSON.stringify(operation)} is not part of the versioned runtime-access vocabulary.`,
+      );
+    }
+  }
+  return Object.freeze({
+    kind: 'provider',
+    operations: Object.freeze(operations),
+  });
 }
 
 export interface ApplicationTransactionalDatabaseProviderToken extends ApplicationQualifiableProviderToken<ApplicationTransactionalDatabaseProvider> {

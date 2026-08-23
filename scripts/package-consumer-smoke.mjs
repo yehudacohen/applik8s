@@ -308,6 +308,214 @@ if (Card !== cards || native?.runtime?.storageShape !== 'native-relational' || n
   await execFileAsync(process.execPath, [v06Path], { cwd: consumerDir });
   console.log('Package consumer smoke: packed v0.6 native model/query/exposure graph passed.');
 
+  const actorProviderPackage = join(
+    consumerModules,
+    '@fixture',
+    'acquisition',
+  );
+  await mkdir(actorProviderPackage, { recursive: true });
+  await writeFile(
+    join(actorProviderPackage, 'package.json'),
+    `${JSON.stringify({
+      name: '@fixture/acquisition',
+      version: '1.0.0',
+      type: 'module',
+      exports: {
+        '.': './index.js',
+        './runtime': './runtime.js',
+      },
+    })}\n`,
+  );
+  await writeFile(
+    join(actorProviderPackage, 'runtime.js'),
+    `export async function acquireItem(input) {
+  return { value: 'packed-runtime:' + input.id };
+}
+`,
+  );
+  await writeFile(
+    join(actorProviderPackage, 'index.js'),
+    `import { defineApplicationProvider, module } from '@applik8s/applik8s';
+export const AcquisitionProvider = defineApplicationProvider({
+  interface: 'AcquisitionProvider',
+  version: 'v1alpha1',
+  runtime: {
+    operations: {
+      acquire: {
+        module: '@fixture/acquisition/runtime',
+        export: 'acquireItem',
+        access: {
+          kind: 'provider',
+          operations: ['connection.use', 'network.connect'],
+        },
+      },
+    },
+  },
+  accepts: candidate => candidate?.kind === 'acquisition'
+    && typeof candidate.acquire === 'function',
+}).named('primary');
+export const acquisition = module('acquisition', application => {
+  const provider = application.inject(AcquisitionProvider);
+  return { acquire: provider.acquire };
+});
+`,
+  );
+  const packedActorApplicationPath = join(
+    consumerDir,
+    'packed-actor-provider.mjs',
+  );
+  await writeFile(
+    packedActorApplicationPath,
+    `import { actor, app, ApplicationHost } from '@applik8s/applik8s';
+import { type } from '@applik8s/applik8s/dsl';
+import { AcquisitionProvider, acquisition } from '@fixture/acquisition';
+const application = app('packed-actor-provider', {
+  namespace: 'packed-actor-provider',
+  spec: type({ profile: "'starter' | 'dedicated'" }),
+  status: type({ ready: 'boolean' }),
+});
+application.provide(
+  ApplicationHost,
+  ApplicationHost.managed({ replicas: 1, port: 3_000 }),
+);
+const implementation = source => ({
+  kind: 'acquisition',
+  async acquire(input) { return { value: source + ':' + input.id }; },
+});
+application.profile(application.installation.spec, 'profile')
+  .provide(AcquisitionProvider)
+  .starter(() => implementation('starter'))
+  .dedicated(() => implementation('dedicated'))
+  .exhaustive();
+const { acquire } = application.include(acquisition);
+const directProvider = application.inject(AcquisitionProvider);
+async function acquireThroughHelper(id) {
+  return acquire({ id });
+}
+const Workspace = application.actor('workspace.v1', {
+  key: type('string'),
+  state: type({ value: 'string' }),
+  protocol: {
+    refresh: actor.command({
+      input: type({ id: 'string' }),
+      output: type({ value: 'string' }),
+    }),
+    directRefresh: actor.command({
+      input: type({ id: 'string' }),
+      output: type({ value: 'string' }),
+    }),
+  },
+});
+Workspace.on.initialize(() => ({ value: '' }));
+Workspace.on.refresh(async (turn, input) => {
+  const acquired = await acquireThroughHelper(input.id);
+  await turn.setState({ value: acquired.value });
+  return { value: acquired.value };
+});
+Workspace.on.directRefresh(async (turn, input) => {
+  const acquired = await directProvider.acquire({ id: input.id });
+  await turn.setState({ value: acquired.value });
+  return { value: acquired.value };
+});
+export const actorProviderStack = application.composition;
+`,
+  );
+  const packedActorProofPath = join(consumerDir, 'packed-actor-proof.mjs');
+  await writeFile(
+    packedActorProofPath,
+    `import { deriveApplicationGraphFoundation } from '@applik8s/core';
+import {
+  discoverApplicationGraphWithExports,
+  generatedApplicationFetchGatewayModules,
+} from '@applik8s/compiler';
+const discovered = await discoverApplicationGraphWithExports(
+  ${JSON.stringify(packedActorApplicationPath)},
+  'actorProviderStack',
+);
+if (!discovered.ok) throw discovered.error;
+const actorNode = discovered.value.graph.nodes.find(node => node.kind === 'actor');
+const operation = actorNode?.providerBindings?.find(binding => binding.operation?.member === 'acquire')?.operation?.runtime;
+if (
+  operation?.module !== '@fixture/acquisition/runtime'
+  || operation.export !== 'acquireItem'
+  || operation.access?.kind !== 'provider'
+  || operation.access.operations.join(',') !== 'connection.use,network.connect'
+) throw new Error('Packed external actor provider metadata did not survive discovery.');
+if (!actorNode.providerBindings.some(binding =>
+  binding.identifier === 'directRefresh:directProvider.acquire'
+  && binding.operation?.member === 'acquire'
+)) throw new Error('Packed direct actor provider call did not survive discovery.');
+const foundation = deriveApplicationGraphFoundation(discovered.value.graph, {
+  workspaceRoot: ${JSON.stringify(consumerDir)},
+});
+const actorAccess = foundation.runtimeAccess
+  .filter(access =>
+    access.consumer.nodeId === 'actor.workspace.v1'
+    && access.target.capabilityId === 'provider.acquisition-provider.v1alpha1.primary'
+  )
+  .map(access => access.target.operation)
+  .sort();
+if (actorAccess.join(',') !== 'connection.use,network.connect') {
+  throw new Error('Packed external actor provider access was not placed exactly.');
+}
+const modules = generatedApplicationFetchGatewayModules(discovered.value.graph);
+const generatedFiles = Object.values(modules?.files ?? {}).join('\\n');
+if (
+  !generatedFiles.includes('@fixture/acquisition/runtime')
+  || !generatedFiles.includes('acquireThroughHelper')
+  || generatedFiles.includes('@applik8s/applik8s/internal/provider-runtime')
+  || generatedFiles.includes('application.inject')
+  || generatedFiles.includes('application.profile')
+  || generatedFiles.includes('application.provide')
+) throw new Error('Packed generated actor worker did not hydrate the public provider operation.');
+const callbackModule = Object.entries(modules?.files ?? {})
+  .find(([name]) => name.startsWith('actor-refresh-'))?.[1];
+if (!callbackModule) throw new Error('Packed generated actor callback module is missing.');
+const createCallback = Function(
+  callbackModule.replace('export function createCallback', 'function createCallback')
+    + '\\nreturn createCallback;',
+)();
+const states = [];
+const callback = createCallback({
+  acquire: async ({ id }) => ({ value: 'packed-runtime:' + id }),
+});
+const result = await callback({
+  async setState(state) { states.push(state); },
+}, { id: 'item-1' });
+if (
+  result?.value !== 'packed-runtime:item-1'
+  || states.length !== 1
+  || states[0]?.value !== 'packed-runtime:item-1'
+) throw new Error('Packed generated actor callback did not execute through the hydrated provider operation.');
+const directCallbackModule = Object.entries(modules?.files ?? {})
+  .find(([name]) => name.startsWith('actor-directRefresh-'))?.[1];
+if (!directCallbackModule) throw new Error('Packed generated direct actor callback module is missing.');
+const createDirectCallback = Function(
+  directCallbackModule.replace('export function createCallback', 'function createCallback')
+    + '\\nreturn createCallback;',
+)();
+const directStates = [];
+const directCallback = createDirectCallback({
+  directProvider: {
+    acquire: async ({ id }) => ({ value: 'packed-direct-runtime:' + id }),
+  },
+});
+const directResult = await directCallback({
+  async setState(state) { directStates.push(state); },
+}, { id: 'item-2' });
+if (
+  directResult?.value !== 'packed-direct-runtime:item-2'
+  || directStates.length !== 1
+  || directStates[0]?.value !== 'packed-direct-runtime:item-2'
+) throw new Error('Packed generated direct actor provider callback did not execute.');
+`,
+  );
+  await execFileAsync(process.execPath, [packedActorProofPath], {
+    cwd: consumerDir,
+    maxBuffer: 20 * 1024 * 1024,
+  });
+  console.log('Package consumer smoke: packed external actor provider hydration passed.');
+
   const operatorPath = join(consumerDir, 'operator.ts');
   const outDir = join(consumerDir, 'dist');
   await writeFile(operatorPath, `import { sdk } from '@applik8s/sdk';

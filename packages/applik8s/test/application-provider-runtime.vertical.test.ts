@@ -80,6 +80,10 @@ describe('managed provider runtime selection', () => {
           acquire: {
             module: '@fixture/acquisition/runtime',
             export: 'acquireItem',
+            access: {
+              kind: 'provider',
+              operations: ['connection.use', 'network.connect'],
+            },
           },
         },
       },
@@ -139,6 +143,10 @@ describe('managed provider runtime selection', () => {
           runtime: {
             module: '@fixture/acquisition/runtime',
             export: 'acquireItem',
+            access: {
+              kind: 'provider',
+              operations: ['connection.use', 'network.connect'],
+            },
           },
         },
       }),
@@ -153,7 +161,11 @@ describe('managed provider runtime selection', () => {
         version: 'v1alpha1',
         runtime: {
           operations: {
-            run: { module: '../private-runtime.js', export: 'run' },
+            run: {
+              module: '../private-runtime.js',
+              export: 'run',
+              access: 'none',
+            },
           },
         },
         accepts,
@@ -165,11 +177,53 @@ describe('managed provider runtime selection', () => {
         version: 'v1alpha1',
         runtime: {
           operations: {
-            run: { module: '@fixture/provider/runtime', export: 'default-value' },
+            run: {
+              module: '@fixture/provider/runtime',
+              export: 'default-value',
+              access: 'none',
+            },
           },
         },
         accepts,
       }),
     ).toThrow(/named JavaScript export/);
+  });
+
+  it('requires every callable runtime operation to declare bounded access semantics', () => {
+    expect(() =>
+      defineApplicationProvider({
+        interface: 'UnboundedProvider',
+        version: 'v1alpha1',
+        runtime: {
+          operations: {
+            // typecast: adversarial fixture crosses the erased public boundary.
+            run: {
+              module: '@fixture/provider/runtime',
+              export: 'run',
+            } as never,
+          },
+        },
+        accepts: (_candidate): _candidate is { run(): void } => true,
+      }),
+    ).toThrow(/runtime access must be 'none' or a non-empty provider operation list/);
+    expect(() =>
+      defineApplicationProvider({
+        interface: 'UnboundedProvider',
+        version: 'v1alpha1',
+        runtime: {
+          operations: {
+            run: {
+              module: '@fixture/provider/runtime',
+              export: 'run',
+              access: {
+                kind: 'provider',
+                operations: ['provider.escape'],
+              },
+            } as never,
+          },
+        },
+        accepts: (_candidate): _candidate is { run(): void } => true,
+      }),
+    ).toThrow(/not part of the versioned runtime-access vocabulary/);
   });
 });

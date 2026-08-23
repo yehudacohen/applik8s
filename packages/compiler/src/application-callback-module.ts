@@ -8,6 +8,13 @@ export interface GeneratedCallbackFactoryModuleOptions {
   readonly injectedIdentifiers: readonly string[];
   /** Exact admitted leaves; roots may still expose ordinary maintained functions. */
   readonly injectedBindingPaths?: readonly string[];
+  /**
+   * Injected roots whose captured declaration has already been proven to be
+   * the authoring-time facade for the admitted runtime binding. These roots
+   * are excluded while slicing the dependency module so their application
+   * setup is not replayed in a worker.
+   */
+  readonly replacedCapturedIdentifiers?: readonly string[];
   readonly exportName: string;
 }
 
@@ -29,8 +36,23 @@ export function generatedCallbackFactoryModule(
         options.dependencies.resolveDir,
       )
     : '';
+  const replacedCapturedIdentifiers = new Set(
+    options.replacedCapturedIdentifiers ?? [],
+  );
+  for (const identifier of replacedCapturedIdentifiers) {
+    assertIdentifier(identifier, 'replaced captured callback binding');
+    if (!injectedIdentifiers.includes(identifier)) {
+      throw new Error(
+        `Replaced captured callback binding ${identifier} is not an injected runtime binding.`,
+      );
+    }
+  }
   const focusedDependencySource = rewriteCallbackRuntimeImports(
-    focusedCallbackDependencySource(rawDependencySource, options.source),
+    focusedCallbackDependencySource(
+      rawDependencySource,
+      options.source,
+      replacedCapturedIdentifiers,
+    ),
   );
   const preservedRoots = preservedInjectedImportRoots(
     `${options.source}\n${focusedDependencySource}`,
@@ -307,6 +329,7 @@ function propertyAccessPath(expression: ts.Expression): string | undefined {
 function focusedCallbackDependencySource(
   source: string,
   callbackSource: string,
+  replacedCapturedIdentifiers: ReadonlySet<string> = new Set(),
 ): string {
   if (!source.trim()) return source;
   const file = ts.createSourceFile(
@@ -320,7 +343,11 @@ function focusedCallbackDependencySource(
     statement,
     bindings: statementBindingNames(statement),
   }));
-  const required = new Set(referencedIdentifiers(callbackSource));
+  const required = new Set(
+    referencedIdentifiers(callbackSource).filter(
+      (identifier) => !replacedCapturedIdentifiers.has(identifier),
+    ),
+  );
   const retained = new Set<ts.Statement>();
   let changed = true;
   while (changed) {
@@ -335,7 +362,10 @@ function focusedCallbackDependencySource(
       }
       retained.add(entry.statement);
       for (const identifier of referencedIdentifiers(entry.statement.getText(file))) {
-        if (!required.has(identifier)) {
+        if (
+          !replacedCapturedIdentifiers.has(identifier)
+          && !required.has(identifier)
+        ) {
           required.add(identifier);
           changed = true;
         }

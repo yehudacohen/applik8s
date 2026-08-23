@@ -196,6 +196,32 @@ describe('generated callback capability bindings', () => {
     ).toThrow(/cannot bind helper/);
   });
 
+  it('removes a provenance-proven authoring facade without replaying its setup', () => {
+    const source = generatedCallbackFactoryModule({
+      source: 'async input => helper(input)',
+      dependencies: {
+        source: `
+          const application = createApplication();
+          const { acquire } = application.include(acquisition);
+          async function helper(input) {
+            return acquire(input);
+          }
+        `,
+        resolveDir: '/workspace/application',
+      },
+      injectedIdentifiers: ['acquire'],
+      replacedCapturedIdentifiers: ['acquire'],
+      exportName: 'createCallback',
+    });
+
+    expect(source).toContain('function helper');
+    expect(source).toContain(
+      'const acquire = __applik8sBindings["acquire"]',
+    );
+    expect(source).not.toContain('application.include');
+    expect(source).not.toContain('createApplication');
+  });
+
   it('fails closed when a retained dependency tries to reconstruct an application handle', () => {
     expect(() =>
       generatedCallbackFactoryModule({

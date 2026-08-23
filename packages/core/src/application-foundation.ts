@@ -1,6 +1,7 @@
 // typecast-file-boundary: Public discriminants and canonical URI identities are constructed only after the module validates their bounded string inputs.
-import type { SourceLocation } from './common.js';
+
 import type { ApplicationOperationId } from './application-operation-authority.js';
+import type { SourceLocation } from './common.js';
 
 export const applicationFoundationApiVersion = 'applik8s.foundation/v1alpha1' as const;
 
@@ -144,6 +145,53 @@ export type ApplicationRuntimeAccessOperation =
   | 'kubernetes.delete'
   | 'network.connect'
   | 'telemetry.write';
+
+const applicationRuntimeAccessOperations = new Set<string>([
+  'model.read',
+  'model.write',
+  'model.delete',
+  'object.list',
+  'object.read',
+  'object.write',
+  'object.delete',
+  'event.subscribe',
+  'event.publish',
+  'queue.consume',
+  'queue.publish',
+  'workflow.invoke',
+  'workflow.admin',
+  'schedule.configure',
+  'schedule.unschedule',
+  'schedule.admit',
+  'schedule.invoke',
+  'actor.invoke',
+  'actor.connect',
+  'actor.broadcast',
+  'actor.admin',
+  'ai.invoke',
+  'search.read',
+  'search.write',
+  'secret.read',
+  'connection.use',
+  'kubernetes.get',
+  'kubernetes.list',
+  'kubernetes.watch',
+  'kubernetes.create',
+  'kubernetes.patch',
+  'kubernetes.status',
+  'kubernetes.finalize',
+  'kubernetes.delete',
+  'network.connect',
+  'telemetry.write',
+]);
+
+/** Runtime boundary for the versioned provider-neutral access vocabulary. */
+export function isApplicationRuntimeAccessOperation(
+  value: unknown,
+): value is ApplicationRuntimeAccessOperation {
+  return typeof value === 'string'
+    && applicationRuntimeAccessOperations.has(value);
+}
 
 export type ApplicationRuntimeAccessScope =
   | { readonly kind: 'capability'; readonly capabilityId: string }
@@ -458,7 +506,7 @@ export function validateApplicationFoundation(input: {
   }
   const accessIds = new Set<string>();
   for (const requirement of input.runtimeAccess ?? []) {
-    if (!requirement.id || accessIds.has(requirement.id) || !requirement.consumer.nodeId || !identities.has(requirement.consumer.executionIdentity) || identities.get(requirement.consumer.executionIdentity)?.kind !== 'execution-boundary' || !requirement.target.capabilityId || requirement.provenance.length === 0 || containsWildcard(requirement.target.scope)) {
+    if (!requirement.id || accessIds.has(requirement.id) || !requirement.consumer.nodeId || !identities.has(requirement.consumer.executionIdentity) || identities.get(requirement.consumer.executionIdentity)?.kind !== 'execution-boundary' || !requirement.target.capabilityId || !isApplicationRuntimeAccessOperation(requirement.target.operation) || requirement.provenance.length === 0 || containsWildcard(requirement.target.scope)) {
       diagnostics.push(diagnostic('FOUNDATION_RUNTIME_ACCESS_INVALID', `Runtime-access requirement ${requirement.id || '<empty>'} is ambiguous, unattributed, duplicated, or wildcarded.`, requirement.id));
     }
     accessIds.add(requirement.id);

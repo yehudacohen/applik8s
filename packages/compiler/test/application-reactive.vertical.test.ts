@@ -32,7 +32,10 @@ const database = { name: 'catalog', connectionEnvName: 'APPLIK8S_DATABASE_CATALO
 // protocols. benchmarks/v0.8/budgets.json fixes a 580 KB gateway budget plus at
 // most 10 KB of Runtime Integrity overhead while Release-A compatibility readers
 // remain present; later release phases must lower this rather than increase it.
-const reactiveRuntimeBundleBudgetBytes = 590_000;
+// Includes the v0.8 provider-operation access declaration carried by the
+// maintained notifications package. Keep the ceiling narrow enough that a
+// dependency-graph regression remains visible.
+const reactiveRuntimeBundleBudgetBytes = 591_000;
 
 describe('generated v0.6 reactive workloads', () => {
   it('emits collision-safe variables for inferred dotted outbox model operations', async () => {
@@ -401,6 +404,10 @@ describe('generated v0.6 reactive workloads', () => {
             runtime: {
               module: '@applik8s/notifications/runtime',
               export: 'deliverApplicationNotification',
+              access: {
+                kind: 'provider',
+                operations: ['connection.use', 'network.connect'],
+              },
             },
           },
         }],

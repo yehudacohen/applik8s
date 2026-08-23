@@ -1,12 +1,5 @@
 // typecast-file-boundary: Portable graph nodes are recognized from unknown authored objects by explicit discriminants.
-import type { SourceLocation } from './common.js';
-import type {
-  ApplicationGraph,
-  ApplicationGraphFoundationContract,
-  ApplicationGraphNode,
-  ApplicationGraphNodeKind,
-  ApplicationGraphNodeRef,
-} from './application-graph-contract.js';
+
 import {
   type ApplicationCanonicalIdentity,
   type ApplicationRuntimeAccessOperation,
@@ -21,6 +14,15 @@ import {
   mergeApplicationRuntimeAccessRequirements,
   sourceProvenance,
 } from './application-foundation.js';
+import type {
+  ApplicationCallableProviderBinding,
+  ApplicationGraph,
+  ApplicationGraphFoundationContract,
+  ApplicationGraphNode,
+  ApplicationGraphNodeKind,
+  ApplicationGraphNodeRef,
+} from './application-graph-contract.js';
+import type { SourceLocation } from './common.js';
 
 export interface DeriveApplicationGraphFoundationOptions {
   /** Required when compiler discovery retained absolute authored paths. */
@@ -126,6 +128,18 @@ export function deriveApplicationGraphFoundation(
 
   for (const node of graph.nodes) {
     if (!executionIdentities.has(node.id)) continue;
+    for (const binding of callableProviderBindings(node)) {
+      const access = binding.operation?.runtime?.access;
+      if (!access || access === 'none') continue;
+      for (const operation of access.operations) {
+        add(
+          node,
+          operation,
+          binding.provider.nodeId,
+          resourceScope(binding.provider),
+        );
+      }
+    }
     for (const requirement of graph.providerRequirements.filter(({ consumer }) => consumer.nodeId === node.id)) {
       add(node, 'connection.use', requirement.interface, {
         kind: 'capability',
@@ -146,6 +160,15 @@ export function deriveApplicationGraphFoundation(
       ...requirements,
     ]),
   };
+}
+
+function callableProviderBindings(
+  node: ApplicationGraphNode,
+): readonly ApplicationCallableProviderBinding[] {
+  if (!('providerBindings' in node) || !Array.isArray(node.providerBindings)) {
+    return [];
+  }
+  return node.providerBindings;
 }
 
 export function withDerivedApplicationGraphFoundation(

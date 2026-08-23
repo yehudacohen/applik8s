@@ -325,6 +325,8 @@ describe("compiler deployment graph emission", () => {
                   apiVersion: "apps/v1",
                   kind: "Deployment",
                   metadata: {
+                    name: "notes-app",
+                    namespace: "notes-system",
                     labels: {
                       "app.kubernetes.io/component": "application-host",
                     },
@@ -445,9 +447,10 @@ describe("compiler deployment graph emission", () => {
           node.kind === "externalProvider"
           && node.spec.resourceType === "kubernetesGeneratedSecret",
       ),
-    // Inference, both Stripe credentials, and the typed HTTP context key are
-    // all represented as generated-secret effects rather than portable values.
-    ).toHaveLength(5);
+    // Inference, both Stripe credentials, the typed HTTP context key, and the
+    // actor-host authorization are generated-secret effects rather than
+    // portable values.
+    ).toHaveLength(6);
     const host = emitted.graph.nodes
       .find((node) => node.id === "kubernetes.application");
     const materialized = host?.kind === "kubernetesComposition"
@@ -507,7 +510,30 @@ describe("compiler deployment graph emission", () => {
         expect.objectContaining({ name: "APPLIK8S_NOTIFICATION_SMTP_PASSWORD" }),
       ]));
     expect(deploymentEnvironment(resources, "notes-unrelated")).toEqual([]);
-    expect(deploymentEnvironment(resources, "application-host")).toEqual([]);
+    expect(deploymentEnvironment(resources, "notes-app")).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: "APPLIK8S_NOTIFICATION_DELIVERY_KIND",
+          value: "smtp",
+        }),
+        expect.objectContaining({
+          name: "APPLIK8S_NOTIFICATION_SMTP_USERNAME",
+          valueFrom: {
+            secretKeyRef: { name: "notes-notifications", key: "username" },
+          },
+        }),
+        expect.objectContaining({
+          name: "APPLIK8S_NOTIFICATION_SMTP_PASSWORD",
+          valueFrom: {
+            secretKeyRef: { name: "notes-notifications", key: "password" },
+          },
+        }),
+      ]),
+    );
+    expect(deploymentEnvironment(resources, "notes-app"))
+      .not.toEqual(expect.arrayContaining([
+        expect.objectContaining({ name: "APPLIK8S_PAYMENT_API_KEY" }),
+      ]));
   });
 
   it("shadow-emits deterministic deployment data without preparing artifacts", async () => {
@@ -746,6 +772,31 @@ function paymentApplicationGraph(): ApplicationGraph {
     // complete producer contracts separately.
     nodes: [
       {
+        id: "provider.ApplicationHost",
+        kind: "provider",
+        name: "ApplicationHost",
+        stability: "stable",
+        interface: "ApplicationHost",
+        implementation: "managed-application-host",
+        config: {
+          host: {
+            kind: "managed-application-host",
+            name: "notes-app",
+            namespace: "notes-system",
+            port: 3000,
+          },
+        },
+      },
+      {
+        id: "provider.actor-runtime",
+        kind: "provider",
+        name: "ActorRuntime",
+        stability: "experimental",
+        interface: "ActorRuntime",
+        implementation: "deterministic-local-actors",
+        config: {},
+      },
+      {
         id: "provider.payment-provider.v1alpha1.primary",
         kind: "provider",
         name: "PaymentProvider",
@@ -794,6 +845,41 @@ function paymentApplicationGraph(): ApplicationGraph {
         name: "deliver-requested-notification-create",
         stability: "stable",
       },
+      {
+        id: "actor.workspace.v1",
+        kind: "actor",
+        name: "workspace.v1",
+        stability: "experimental",
+        definition: {
+          id: "workspace.v1",
+          key: { kind: "applicationSchema", source: "string", fingerprint: "key" },
+          state: { kind: "applicationSchema", source: "{ value: string }", fingerprint: "state" },
+          stateVersion: 1,
+          migrationDigest: "sha256:none",
+          migrations: [],
+          protocol: [],
+          requirements: {
+            durableState: true,
+            serializedTurns: true,
+            transactionalOutbox: true,
+            durableAlarms: false,
+            realtimeConnections: false,
+            connectionLeases: false,
+            realtimeMessages: false,
+            realtimeBroadcast: false,
+          },
+        },
+        runtime: {
+          interface: "ActorRuntime",
+          nodeId: "provider.actor-runtime",
+        },
+        handlers: [],
+        semantics: {
+          serialization: "fullTurnPerIdentity",
+          admission: "idempotentReceipt",
+          references: "inertAddress",
+        },
+      },
     ] as unknown as ApplicationGraph["nodes"],
     edges: [
       {
@@ -808,6 +894,13 @@ function paymentApplicationGraph(): ApplicationGraph {
         to: {
           nodeId: "streamProcessor.deliver-requested-notification-create",
         },
+        relationship: "provides",
+      },
+      {
+        from: {
+          nodeId: "provider.notification-delivery.v1alpha1.transactional",
+        },
+        to: { nodeId: "actor.workspace.v1" },
         relationship: "provides",
       },
       {

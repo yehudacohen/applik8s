@@ -23,6 +23,7 @@ export {
   applicationProviderIdentity,
   applicationRuntimeAccessRequirement,
   applicationTargetIdentity,
+  isApplicationRuntimeAccessOperation,
   mergeApplicationRuntimeAccessRequirements,
   sourceProvenance,
   validateApplicationFoundation,
