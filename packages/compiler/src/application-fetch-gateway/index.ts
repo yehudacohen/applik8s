@@ -280,7 +280,8 @@ export function generatedApplicationFetchGatewayModules(
 		);
 	if (actors.length > 0)
 		imports.push(
-			"import { actor, actorState, createApplicationActor, executeApplicationActorAlarm, executeApplicationActorRealtime, installApplicationActorInvocationAuthorityResolver, installApplicationActorRuntimeResolver, validateApplicationAuthorizationReceipt, withApplicationActorTurnAuthority } from '@applik8s/applik8s';",
+			"import { actor, actorState, createApplicationActor, createApplicationActorTurnAuthority, executeApplicationActorAlarm, executeApplicationActorRealtime, installApplicationActorInvocationAuthorityResolver, installApplicationActorRuntimeResolver, validateApplicationAuthorizationReceipt, withApplicationActorTurnAuthority } from '@applik8s/applik8s';",
+			"import { applicationCausalPrincipalContext } from '@applik8s/core';",
 			"import { applicationOperationInputDigest } from '@applik8s/applik8s/operation-runtime';",
 			"import { createPersistentLocalApplicationActorRuntime } from '@applik8s/applik8s/actor-runtime-local';",
 			"import { createApplicationEventLogPublisherFromEnvironment } from '@applik8s/applik8s/event-log-runtime';",
@@ -952,12 +953,7 @@ async function authorizeDeliveredApplicationActorAlarm(alarm, binding) {
   return {
     key: admittedKey,
     input: admittedInput,
-    authority: {
-      principal: { id: receipt.principal.id },
-      causalPrincipal: authority.causalPrincipal,
-      authorizationReceipt: receipt,
-      trustedContextDigest: authority.trustedContextDigest,
-    },
+    authority,
   };
 }
 
@@ -1161,30 +1157,178 @@ if (!localActorRuntime && !celldActorRuntime) {
 }
 const disposeLocalActorRuntime = installApplicationActorRuntimeResolver(() => localActorRuntime ?? celldActorRuntime);
 const applicationActorById = new Map(applicationActors.map((binding) => [binding.id, binding]));
-${operationCatalog ? `const disposeActorInvocationAuthority = installApplicationActorInvocationAuthorityResolver(async (request) => {
-  const sourceReceipt = request.current.authorizationReceipt;
-  if (!sourceReceipt || sourceReceipt.apiVersion !== 'applik8s.authorizationReceipt/v1alpha1') {
-    throw new Error('Nested actor effects require a complete canonical source receipt.');
+${operationCatalog ? `function actorWorkloadEnvelopes(actor, member) {
+  const subject = 'actor.' + actor + ':' + member;
+  return [...actorWorkloadAuthority.values()].filter((envelope) => envelope.workloadIdentity.subject === subject);
+}
+
+function actorWorkloadEnvelope(principal, operationId, transport) {
+  return [...actorWorkloadAuthority.values()].find((envelope) =>
+    envelope.workloadIdentity.id === principal.workloadIdentity.id
+    && envelope.operationId === operationId
+    && envelope.transports.includes(transport));
+}
+
+function actorReceiptMatches(receipt, operationId, target, inputDigest) {
+  return receipt.operationId === operationId
+    && receipt.inputDigest === inputDigest
+    && applicationOperationInputDigest(receipt.target) === applicationOperationInputDigest(target);
+}
+
+function boundedActorDeadline(request, sourcePrincipal) {
+  if (request.phase === 'enqueue') {
+    const scheduledAt = Date.parse(request.scheduledAt ?? '');
+    if (!Number.isFinite(scheduledAt)) throw new Error('Actor alarm enqueue requires a valid scheduledAt.');
+    const deadline = Math.max(
+      scheduledAt + 24 * 60 * 60_000,
+      Date.now() + 5 * 60_000,
+    );
+    return new Date(deadline).toISOString();
   }
-  const operationId = 'applik8s://actors/' + request.actor + '/operations/' + request.member;
-  const target = { kind: 'target', model: request.actor, identity: { key: request.key } };
+  const sourceDeadline = sourcePrincipal.kind === 'execution'
+    ? sourcePrincipal.deadline
+    : sourcePrincipal.expiresAt;
+  const maximum = Date.now() + 5 * 60_000;
+  const deadline = sourceDeadline ? Math.min(maximum, Date.parse(sourceDeadline)) : maximum;
+  if (!Number.isFinite(deadline) || deadline <= Date.now()) throw new Error('Actor source authority expired before turn admission.');
+  return new Date(deadline).toISOString();
+}
+
+async function authorizeActorSource(request, sourcePrincipal, sourceReceipt, operationId, target, inputDigest) {
+  if (actorReceiptMatches(sourceReceipt, operationId, target, inputDigest)) {
+    const revalidated = await operationAuthority.revalidate(sourceReceipt, 'execution', request.current.trustedContextDigest);
+    if (!revalidated.allowed) throw new Error(revalidated.code + ': ' + revalidated.message);
+    return sourceReceipt;
+  }
+  if (sourcePrincipal.kind === 'execution') {
+    const envelope = actorWorkloadEnvelope(sourcePrincipal, operationId, request.transport);
+    if (!envelope) {
+      throw new Error('Actor execution has no exact compiled authority for ' + operationId + ' over ' + request.transport + '.');
+    }
+    const authorized = await operationAuthority.authorizeExecution({
+      principal: sourcePrincipal,
+      envelope,
+      target,
+      audience: ${JSON.stringify(graph.metadata.name)},
+      transport: request.transport,
+      inputDigest,
+      trustedContextDigest: request.current.trustedContextDigest,
+      currentCancellationRevision: sourcePrincipal.cancellationRevision,
+      ...(request.idempotencyKey ? { idempotencyKey: request.idempotencyKey } : {}),
+      targetDigest: applicationOperationInputDigest(target),
+    });
+    if (!authorized.allowed) throw new Error(authorized.code + ': ' + authorized.message);
+    return authorized.receipt;
+  }
   const authorized = await operationAuthority.authorize({
-    principal: sourceReceipt.principal,
+    principal: sourcePrincipal,
     operationId,
     target,
-    audience: sourceReceipt.audience,
+    audience: ${JSON.stringify(graph.metadata.name)},
     transport: request.transport,
-    inputDigest: applicationOperationInputDigest(request.input),
+    inputDigest,
     trustedContextDigest: request.current.trustedContextDigest,
+    ...(request.idempotencyKey ? { idempotencyKey: request.idempotencyKey } : {}),
     targetDigest: applicationOperationInputDigest(target),
   });
   if (!authorized.allowed) throw new Error(authorized.code + ': ' + authorized.message);
-  return {
-    principal: { id: authorized.receipt.principal.id },
-    causalPrincipal: request.current.causalPrincipal,
-    authorizationReceipt: authorized.receipt,
+  return authorized.receipt;
+}
+
+const disposeActorInvocationAuthority = installApplicationActorInvocationAuthorityResolver(async (request) => {
+  const sourceAdmission = request.current.admission;
+  const sourceReceipt = sourceAdmission?.authorizationReceipt;
+  if (!sourceAdmission || !sourceReceipt
+    || sourceReceipt.apiVersion !== 'applik8s.authorizationReceipt/v1alpha1'
+    || validateApplicationAuthorizationReceipt(sourceReceipt).length > 0
+    || sourceReceipt.principal.id !== sourceAdmission.principal.id
+    || sourceReceipt.trustedContextDigest !== request.current.trustedContextDigest) {
+    throw new Error('Actor effects require a complete canonical source admission and receipt.');
+  }
+  const operationId = 'applik8s://actors/' + request.actor + '/operations/' + request.member;
+  const target = { kind: 'target', model: request.actor, identity: { key: request.key } };
+  const inputDigest = applicationOperationInputDigest(request.input);
+  const sourcePrincipal = sourceAdmission.principal;
+  const sourceAuthorizationReceipt = await authorizeActorSource(
+    request,
+    sourcePrincipal,
+    sourceReceipt,
+    operationId,
+    target,
+    inputDigest,
+  );
+  const envelopes = actorWorkloadEnvelopes(request.actor, request.member);
+  const selfEnvelope = envelopes.find((envelope) =>
+    envelope.operationId === operationId && envelope.transports.includes('direct'));
+  if (!selfEnvelope || envelopes.length === 0) {
+    throw new Error('Actor ' + request.actor + '.' + request.member + ' has no compiled execution authority.');
+  }
+  const causal = applicationCausalPrincipalContext(sourcePrincipal);
+  const keyDigest = applicationOperationInputDigest({ key: request.key });
+  const turnId = 'actor_' + applicationOperationInputDigest({
+    actor: request.actor,
+    member: request.member,
+    keyDigest,
+    inputDigest,
+    idempotencyKey: request.idempotencyKey ?? sourceAuthorizationReceipt.id,
+    phase: request.phase,
+    scheduledAt: request.scheduledAt,
+  });
+  const deadline = boundedActorDeadline(request, sourcePrincipal);
+  const cancellationRevision = request.phase === 'enqueue'
+    ? 'active:actor-alarm:' + turnId
+    : sourceAdmission.cancellation?.revision
+      ?? (sourcePrincipal.kind === 'execution'
+        ? sourcePrincipal.cancellationRevision
+        : 'active:actor:' + turnId);
+  const executionPrincipal = await operationAuthority.admitExecutionPrincipal({
+    executionKind: 'actor',
+    executionId: turnId,
+    attempt: 1,
+    workloadIdentity: selfEnvelope.workloadIdentity,
+    executionContext: {
+      kind: 'actor',
+      actor: request.actor,
+      member: request.member,
+      keyDigest,
+      turnId,
+    },
+    causalPrincipalId: causal.id,
+    causalPrincipal: causal.identity,
+    causalGrantIds: causal.grantIds,
+    envelopes,
     trustedContextDigest: request.current.trustedContextDigest,
-  };
+    audience: [${JSON.stringify(graph.metadata.name)}],
+    deadline,
+    cancellationRevision,
+  });
+  const actorAuthorization = await operationAuthority.authorizeExecution({
+    principal: executionPrincipal,
+    envelope: selfEnvelope,
+    target,
+    audience: ${JSON.stringify(graph.metadata.name)},
+    transport: 'direct',
+    inputDigest,
+    trustedContextDigest: request.current.trustedContextDigest,
+    currentCancellationRevision: cancellationRevision,
+    ...(request.idempotencyKey ? { idempotencyKey: request.idempotencyKey } : {}),
+    targetDigest: applicationOperationInputDigest(target),
+    applicationPolicyAllowed: true,
+  });
+  if (!actorAuthorization.allowed) throw new Error(actorAuthorization.code + ': ' + actorAuthorization.message);
+  return createApplicationActorTurnAuthority({
+    admission: {
+      principal: actorAuthorization.principal,
+      trustedContext: sourceAdmission.trustedContext.values,
+    },
+    operationId,
+    correlationId: turnId,
+    causationId: sourceAdmission.correlationId,
+    deadline,
+    cancellation: { revision: cancellationRevision },
+    causalPrincipal: { id: causal.id },
+    authorizationReceipt: actorAuthorization.receipt,
+  });
 });
 void disposeActorInvocationAuthority;` : ''}
 ${publicActors.length > 0 ? `const publicApplicationActorById = new Map(${JSON.stringify(publicActorContracts)}.map((contract) => [contract.id, contract]));

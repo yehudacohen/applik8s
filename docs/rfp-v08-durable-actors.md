@@ -486,6 +486,13 @@ Cron and fleet-wide work uses the function-native scheduling contract defined by
 Actor alarms remain identity-scoped, transactional actor effects and do not select or expose the
 application's qualified `Scheduler` provider.
 
+Alarm replacement and cancellation occur inside an admitted actor turn through
+`actor.alarms.<name>.schedule(...)` and `actor.alarms.<name>.cancel()`. The public actor handle does
+not expose a provider-direct `Actor.alarms.<name>.cancel(key)` escape hatch. An application that
+needs an externally callable cancellation declares an ordinary typed actor command, authorizes that
+command, and performs the bound cancellation from its handler. This keeps cancellation serialized
+with the actor identity, operation-authorized, and provider-neutral.
+
 ## Realtime connections and presence
 
 Realtime behavior is optional protocol surface, not a baseline property of every actor. Declaring

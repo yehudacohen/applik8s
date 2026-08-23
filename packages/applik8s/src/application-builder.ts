@@ -19,7 +19,8 @@ import { Cel, externalRef } from 'typekro';
 import { cluster as typeKroCnpgCluster, scheduledBackup as typeKroCnpgScheduledBackup } from 'typekro/cnpg';
 import { configMap as typeKroConfigMap, deployment as typeKroDeployment, role as typeKroRole, roleBinding as typeKroRoleBinding, service as typeKroService, serviceAccount as typeKroServiceAccount } from 'typekro/kubernetes';
 import { valkey as typeKroValkey } from 'typekro/valkey';
-import { type ApplicationActorHandle, type ApplicationActorKeySchema, type ApplicationActorProtocol, type ApplicationActorProtocolShape, type ApplicationActorStateInput, createApplicationActor, observeApplicationActorDefinition, replayApplicationActorDefinition } from './application-actors.js';
+import { applicationActorDependencyBindings } from './application-actor-dependencies.js';
+import { type ApplicationActorHandle, type ApplicationActorKeySchema, type ApplicationActorProtocol, type ApplicationActorProtocolShape, type ApplicationActorStateInput, applicationActorHandlerCallbackDependencies, createApplicationActor, observeApplicationActorDefinition, replayApplicationActorDefinition } from './application-actors.js';
 import {
   type ApplicationAgentBinding,
   type ApplicationAgentHandler,
@@ -4389,7 +4390,25 @@ function createApplicationContext<TSpec extends KroCompatibleType, TStatus exten
       }
       const binding = createApplicationActor(id, options);
       const record = () => {
-        const actorNode = binding.graphNode;
+        const actorBindings = applicationActorHandlerCallbackDependencies(
+          binding as unknown as ApplicationActorHandle<object, ApplicationActorProtocol>,
+        ).flatMap(({ member, dependencies }) =>
+          applicationActorDependencyBindings(
+            state,
+            `Application actor ${id}.${member}`,
+            dependencies,
+          ).map((dependency) => ({
+            handler: member,
+            alias: dependency.alias,
+            actor: dependency.actor,
+            member: dependency.member,
+            memberKind: dependency.memberKind,
+          })),
+        );
+        const actorNode = {
+          ...binding.graphNode,
+          ...(actorBindings.length > 0 ? { actorBindings } : {}),
+        };
         addApplicationGraphNode(state, actorNode);
         for (const provider of actorNode.providerBindings ?? []) {
           addApplicationGraphEdge(state, {

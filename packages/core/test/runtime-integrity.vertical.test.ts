@@ -303,6 +303,52 @@ describe('Admission Context v1', () => {
     });
   });
 
+  it('requires complete framework-derived coordinates for actor execution principals', () => {
+    const workloadIdentity = {
+      id: 'identity:demo:workload:actor.workspace',
+      kind: 'workload' as const,
+      issuer: 'applik8s://demo',
+      subject: 'actor.workspace',
+    };
+    const actorOptions = {
+      application: 'demo',
+      executionKind: 'actor' as const,
+      executionId: 'actor-turn-1',
+      attempt: 1,
+      workloadIdentity,
+      envelopes: [],
+      trustedContextDigest: 'sha256:context',
+      audience: ['actor-runtime'],
+      catalogRevision: 'catalog-v1',
+      authorityRevision: 'authority-v1',
+      admittedAt: '2026-08-21T12:00:00.000Z',
+      deadline: '2026-08-21T12:01:00.000Z',
+      cancellationRevision: 'cancel-v1',
+    };
+
+    expect(() => createApplicationExecutionPrincipalV1(actorOptions))
+      .toThrow(/Actor execution requires stable actor/u);
+    expect(createApplicationExecutionPrincipalV1({
+      ...actorOptions,
+      executionContext: {
+        kind: 'actor',
+        actor: 'workspace.v1',
+        member: 'rename',
+        keyDigest: 'sha256:key',
+        turnId: 'turn-1',
+      },
+    })).toMatchObject({
+      executionKind: 'actor',
+      executionContext: {
+        kind: 'actor',
+        actor: 'workspace.v1',
+        member: 'rename',
+        keyDigest: 'sha256:key',
+        turnId: 'turn-1',
+      },
+    });
+  });
+
   it('fails closed when execution envelopes drift from compiler-owned identity or revision', () => {
     const workloadIdentity = {
       id: 'identity:demo:workload:task.publish',

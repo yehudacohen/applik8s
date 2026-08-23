@@ -1,17 +1,17 @@
 // typecast-file-boundary: Celld actor requests and persisted records cross a provider wire boundary and are validated before dispatch.
 import { randomUUID } from 'node:crypto';
 import {
-  type ApplicationActorOutboxEvent,
-  runApplicationTelemetryBoundary,
   type ApplicationActorAdmissionReceipt,
   type ApplicationActorAlarmReceipt,
   type ApplicationActorBroadcastReceipt,
+  type ApplicationActorOutboxEvent,
   type ApplicationActorRuntime,
   type ApplicationActorRuntimeInvocation,
   type ApplicationActorTurn,
   type ApplicationActorTurnAuthority,
   normalizeApplicationActorTurnAuthority,
   resolveApplicationActorInvocationAuthority,
+  runApplicationTelemetryBoundary,
   withApplicationActorTurnAuthority,
 } from '@applik8s/applik8s';
 import { withApplicationManagedEffects } from '@applik8s/applik8s/internal/managed-effects';
@@ -177,7 +177,7 @@ export function createCelldApplicationActorRuntime(
                   const scheduledAt = celldActorAlarmTimestamp(at, call.definition.id, name);
                   const alarmId = celldActorAlarmId(call.definition.id, name, call.key);
                   const admittedInput = validate(member.input, input, `${call.definition.id}.${name}.input`);
-                  const alarmAuthority = await resolveApplicationActorInvocationAuthority({ actor: call.definition.id, member: name, memberKind: member.kind, key: call.key, input: admittedInput, transport: 'control-plane', current: authority });
+                  const alarmAuthority = await resolveApplicationActorInvocationAuthority({ actor: call.definition.id, member: name, memberKind: member.kind, key: call.key, input: admittedInput, transport: 'control-plane', phase: 'enqueue', scheduledAt, ...(invocation.idempotencyKey ? { idempotencyKey: invocation.idempotencyKey } : {}), current: authority });
                   alarms.push({ kind: 'schedule', alarmId, member: name, input: admittedInput, scheduledAt, authority: alarmAuthority, ...(invocation.idempotencyKey ? { idempotencyKey: invocation.idempotencyKey } : {}) });
                   return { alarmId, actor: call.definition.id, key: call.key, member: name, scheduledAt, state: 'scheduled' as const };
                 },
@@ -464,5 +464,6 @@ function stableJson(value: unknown): string {
     .map(([key, entry]) => `${JSON.stringify(key)}:${stableJson(entry)}`).join(',')}}`;
   throw new Error(`celld actor values must be JSON-serializable; received ${typeof value}.`);
 }
+
 export type { CelldActorConnectionTicketClaims } from './connection-ticket.js';
 export { CelldActorConnectionTicketError, signCelldActorConnectionTicket, verifyCelldActorConnectionTicket } from './connection-ticket.js';

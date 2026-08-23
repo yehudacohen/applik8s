@@ -173,12 +173,26 @@ export function createApplicationExecutionPrincipalV1(
   if (Date.parse(deadline) < Date.parse(admittedAt)) {
     throw new TypeError('Execution deadline precedes admission.');
   }
+  if (options.executionKind === 'actor' && options.executionContext?.kind !== 'actor') {
+    throw new TypeError(
+      'Actor execution requires stable actor, member, key-digest, and turn identifiers.',
+    );
+  }
   if (options.executionContext) {
+    if (options.executionContext.kind !== options.executionKind) {
+      throw new TypeError(
+        'Execution context must match its managed execution kind and contain stable identifiers.',
+      );
+    }
     if (
-      options.executionContext.kind !== options.executionKind
-      || options.executionContext.kind !== 'agent'
-      || !options.executionContext.threadId.trim()
-      || !options.executionContext.runId.trim()
+      (options.executionContext.kind === 'agent'
+        && (!options.executionContext.threadId.trim()
+          || !options.executionContext.runId.trim()))
+      || (options.executionContext.kind === 'actor'
+        && (!options.executionContext.actor.trim()
+          || !options.executionContext.member.trim()
+          || !options.executionContext.keyDigest.trim()
+          || !options.executionContext.turnId.trim()))
     ) {
       throw new TypeError(
         'Execution context must match its managed execution kind and contain stable identifiers.',
@@ -483,7 +497,7 @@ export function applicationAdmissionInvocationView(
 }
 
 const admissionTransports = '|actor|broker|control-plane|direct|framework|http|mcp|schedule|webhook|workflow|';
-const executionKinds = '|agent|task|workflow|processor|reconcile|';
+const executionKinds = '|actor|agent|task|workflow|processor|reconcile|';
 
 function nonEmpty(value: unknown, name: string): string {
   if (typeof value !== 'string' || !value.trim()) {

@@ -5,21 +5,25 @@ import { type ApplicationMutationOperation, decorateApplicationMutationOperation
 import {
   type ApplicationActorNode,
   type ApplicationAuthorizationReceipt,
+  type ApplicationExecutionPrincipal,
   type ApplicationPrincipal,
+  applicationCausalPrincipalContext,
   applicationOperationId,
+  createApplicationExecutionPrincipalV1,
   validateApplicationAuthorizationReceipt,
 } from '@applik8s/core';
 import { sha256Hex } from '@applik8s/deployment-contract';
 import type { SchemaInput } from '@applik8s/sdk';
 import {
-  expandApplicationCallbackDependencies,
-  serializeApplicationCallback,
-} from './application-callback.js';
-import {
   type ApplicationActorTurnAuthority,
   createApplicationActorTurnAuthority,
   normalizeApplicationActorTurnAuthority,
 } from './application-actor-authority-runtime.js';
+import {
+  expandApplicationCallbackDependencies,
+  serializeApplicationCallback,
+} from './application-callback.js';
+
 export type {
   ApplicationActorTurnAuthority,
   CreateApplicationActorTurnAuthorityOptions,
@@ -28,6 +32,7 @@ export {
   createApplicationActorTurnAuthority,
   normalizeApplicationActorTurnAuthority,
 } from './application-actor-authority-runtime.js';
+
 import { applicationProviderGraphNodeId } from './application-identifiers.js';
 import { withApplicationManagedEffects } from './application-managed-effects.js';
 import { applicationOperationInputDigest } from './application-operation-runtime.js';
@@ -279,7 +284,6 @@ type ApplicationActorHandlers<TState extends object, TProtocol extends Applicati
 type ApplicationActorAlarms<TProtocol extends ApplicationActorProtocolShape> = {
   [TName in keyof TProtocol as TProtocol[TName] extends { readonly kind: 'actorAlarm' } ? TName : never]: {
     readonly schedule: ApplicationActorAlarmScheduleCall<ActorInput<TProtocol[TName]>>;
-    cancel(key: string): Promise<ApplicationActorAlarmReceipt>;
   };
 };
 
@@ -397,6 +401,23 @@ export function observeApplicationActorDefinition(
   return () => observers.delete(observer);
 }
 
+/** @internal Compiler graph capture for actor-to-actor workload authority. */
+export function applicationActorHandlerCallbackDependencies(
+  actor: ApplicationActorHandle<object, ApplicationActorProtocol>,
+): readonly {
+  readonly member: string;
+  readonly dependencies: ReturnType<typeof expandApplicationCallbackDependencies>;
+}[] {
+  const readDefinition = actorDefinitionRuntimeByHandle.get(actor);
+  if (!readDefinition) throw new Error(`Actor ${actor.id} has no definition metadata.`);
+  return [...readDefinition().handlers]
+    .map(([member, callback]) => ({
+      member,
+      dependencies: expandApplicationCallbackDependencies({ calls: [callback] }),
+    }))
+    .sort((left, right) => left.member.localeCompare(right.member));
+}
+
 export interface ApplicationActorRuntimeInvocation<TState extends object> {
   readonly definition: ActorDefinitionRuntime<TState>;
   readonly member: string;
@@ -415,6 +436,10 @@ export interface ApplicationActorInvocationAuthorityRequest {
   readonly key: string;
   readonly input: object;
   readonly transport: 'direct' | 'control-plane';
+  /** Invocation mints a fresh actor execution; enqueue persists caller authority for later delivery. */
+  readonly phase: 'invoke' | 'enqueue';
+  readonly scheduledAt?: string;
+  readonly idempotencyKey?: string;
   readonly current: ApplicationActorTurnAuthority;
 }
 
@@ -468,7 +493,11 @@ interface ApplicationActorCallFrame {
 }
 
 const actorCallStack = new AsyncLocalStorage<readonly ApplicationActorCallFrame[]>();
-const actorAuthority = new AsyncLocalStorage<ApplicationActorTurnAuthority>();
+interface ApplicationActorAuthorityScope {
+  readonly authority: ApplicationActorTurnAuthority;
+  nextInvocationSequence: number;
+}
+const actorAuthority = new AsyncLocalStorage<ApplicationActorAuthorityScope>();
 
 /** Compiler/runtime-only admission seam; client payloads can never populate this authority. */
 export function withApplicationActorTurnAuthority<T>(
@@ -476,7 +505,10 @@ export function withApplicationActorTurnAuthority<T>(
   callback: () => T,
 ): T {
   return actorAuthority.run(
-    normalizeApplicationActorTurnAuthority(authority),
+    {
+      authority: normalizeApplicationActorTurnAuthority(authority),
+      nextInvocationSequence: 0,
+    },
     callback,
   );
 }
@@ -510,7 +542,13 @@ async function invokeApplicationActorRuntime<TState extends object>(
   };
   const cycleAt = stack.findIndex(({ actor, keyDigest }) => actor === frame.actor && keyDigest === frame.keyDigest);
   if (cycleAt >= 0) throw new ApplicationActorCallCycleError([...stack.slice(cycleAt), frame]);
-  const currentAuthority = request.authority ?? actorAuthority.getStore();
+  const authorityScope = actorAuthority.getStore();
+  const idempotencyKey = managedActorInvocationIdempotencyKey(request, authorityScope);
+  const currentAuthority = request.authority
+    ?? authorityScope?.authority
+    ?? (request.connection
+      ? actorConnectionSourceAuthority(request, request.connection)
+      : undefined);
   const authority = currentAuthority
     ? await resolveApplicationActorInvocationAuthority(
         {
@@ -520,36 +558,76 @@ async function invokeApplicationActorRuntime<TState extends object>(
           key: request.key,
           input: request.input,
           transport: 'direct',
+          phase: 'invoke',
+          ...(idempotencyKey ? { idempotencyKey } : {}),
           current: currentAuthority,
         },
       )
     : undefined;
   return actorCallStack.run([...stack, frame], () => actorRuntime().invoke({
     ...request,
+    ...(idempotencyKey ? { idempotencyKey } : {}),
     ...(authority ? { authority } : {}),
   }));
+}
+
+function managedActorInvocationIdempotencyKey<TState extends object>(
+  request: ApplicationActorRuntimeInvocation<TState>,
+  scope: ApplicationActorAuthorityScope | undefined,
+): string | undefined {
+  const explicit = request.idempotencyKey?.trim();
+  if (explicit) return explicit;
+  if (!scope) return undefined;
+  const sequence = scope.nextInvocationSequence++;
+  return `actor_call_${stableDigest({
+    source: scope.authority.admission?.correlationId
+      ?? scope.authority.authorizationReceipt.id,
+    sequence,
+    actor: request.definition.id,
+    member: request.member,
+    keyDigest: actorKeyDigest(request.key),
+    input: request.input,
+  }).slice('sha256:'.length)}`;
+}
+
+function actorConnectionSourceAuthority<TState extends object>(
+  request: ApplicationActorRuntimeInvocation<TState>,
+  connection: ApplicationActorConnectionContext,
+): ApplicationActorTurnAuthority {
+  const operationId = applicationOperationId({
+    domain: 'actors',
+    owner: request.definition.id,
+    operation: request.member,
+  });
+  return createApplicationActorTurnAuthority({
+    admission: {
+      principal: connection.authorizationReceipt.principal,
+      trustedContext: {},
+    },
+    operationId,
+    correlationId: connection.id,
+    causalPrincipal: connection.causalPrincipal,
+    authorizationReceipt: connection.authorizationReceipt,
+    ...(connection.authorizationReceipt.expiresAt
+      ? { deadline: connection.authorizationReceipt.expiresAt }
+      : {}),
+  });
 }
 
 export async function resolveApplicationActorInvocationAuthority(
   request: ApplicationActorInvocationAuthorityRequest,
 ): Promise<ApplicationActorTurnAuthority> {
   const current = normalizeApplicationActorTurnAuthority(request.current);
-  const operationId = applicationOperationId({
-    domain: 'actors',
-    owner: request.actor,
-    operation: request.member,
-  });
-  const receipt = current.authorizationReceipt;
-  if ('operationId' in receipt && receipt.operationId === operationId) {
+  if (request.phase === 'invoke' && isExactActorExecution(current, request)) {
     return current;
   }
   if (!actorInvocationAuthorityResolver) {
-    if ('operationId' in receipt) {
-      throw new Error(
-        `Actor ${request.actor}.${request.member} requires target-specific authority, but no actor authority resolver is installed.`,
-      );
-    }
-    return current;
+    // A provider test harness or externally admitted alarm may already carry
+    // the complete signed durable receipt. Without an authority runtime there
+    // is no legitimate signer with which to replace it at enqueue time.
+    if (request.phase === 'enqueue'
+      && 'apiVersion' in current.authorizationReceipt) return current;
+    return localActorExecutionAuthority(request, current);
   }
   return normalizeApplicationActorTurnAuthority(
     await actorInvocationAuthorityResolver({ ...request, current }),
@@ -590,7 +668,14 @@ export async function executeApplicationActorAlarm(
       `${handle.id}.${request.member}.input`,
     ),
     idempotencyKey: request.idempotencyKey,
-    ...(request.authority ? { authority: request.authority } : {}),
+    ...(request.authority
+      ? {
+          authority: normalizeApplicationActorTurnAuthority(
+            request.authority,
+            { context: 'alarm-delivery' },
+          ),
+        }
+      : {}),
   });
   return result.receipt;
 }
@@ -819,9 +904,9 @@ export function createApplicationActor<TState extends object, const TProtocol ex
           const scheduledAt = actorAlarmTimestamp(at, id, name);
           const keyValue = validateActorKey(options.key, key, `${id}.key`);
           const inputValue = validateMessage(member.input, input, `${id}.${name}.input`);
-          const currentAuthority = actorAuthority.getStore();
+          const currentAuthority = actorAuthority.getStore()?.authority;
           const authority = currentAuthority
-            ? await resolveApplicationActorInvocationAuthority({ actor: id, member: name, memberKind: member.kind, key: keyValue, input: inputValue, transport: 'control-plane', current: currentAuthority })
+            ? await resolveApplicationActorInvocationAuthority({ actor: id, member: name, memberKind: member.kind, key: keyValue, input: inputValue, transport: 'control-plane', phase: 'enqueue', scheduledAt, ...(invocation.idempotencyKey ? { idempotencyKey: invocation.idempotencyKey } : {}), current: currentAuthority })
             : undefined;
           return actorRuntime().scheduleAlarm({ definition: definition(), member: name, key: keyValue, input: inputValue, scheduledAt, ...invocation, ...(authority ? { authority } : {}) });
         };
@@ -837,10 +922,7 @@ export function createApplicationActor<TState extends object, const TProtocol ex
     });
     memberOperations.set(name, operation as unknown as ApplicationActorAuthorityFacet<{ readonly key: string }>);
     observeApplicationOperationAuthority(operation, () => { for (const observer of observers) observer(); });
-    return [[name, {
-        schedule: operation,
-        cancel: (key: string) => actorRuntime().cancelAlarm(id, name, validateActorKey(options.key, key, `${id}.key`)),
-      }]];
+    return [[name, { schedule: operation }]];
   }));
   target.hydrate = (reference: ApplicationActorReference) => {
     if (reference.apiVersion !== 'applik8s.actorReference/v1alpha1' || reference.actor !== id) throw new Error(`Actor reference does not address ${id}.`);
@@ -1020,7 +1102,7 @@ export function createDeterministicApplicationActorRuntime(options: {
                 const scheduledAt = actorAlarmTimestamp(at, request.definition.id, name);
                 const alarmId = actorAlarmId(request.definition.id, name, request.key);
                 const admittedInput = validateMessage(member.input, input, `${request.definition.id}.${name}.input`);
-                const alarmAuthority = await resolveApplicationActorInvocationAuthority({ actor: request.definition.id, member: name, memberKind: member.kind, key: request.key, input: admittedInput, transport: 'control-plane', current: authority });
+                const alarmAuthority = await resolveApplicationActorInvocationAuthority({ actor: request.definition.id, member: name, memberKind: member.kind, key: request.key, input: admittedInput, transport: 'control-plane', phase: 'enqueue', scheduledAt, ...(invocation.idempotencyKey ? { idempotencyKey: invocation.idempotencyKey } : {}), current: authority });
                 stagedAlarms.push({ kind: 'schedule', alarmId, member: name, input: admittedInput, scheduledAt, authority: alarmAuthority, ...(invocation.idempotencyKey ? { idempotencyKey: invocation.idempotencyKey } : {}) });
                 return { alarmId, actor: request.definition.id, key: request.key, member: name, scheduledAt, state: 'scheduled' as const };
               },
@@ -1239,19 +1321,18 @@ function actorTurnAuthority<TState extends object>(
     return normalizeApplicationActorTurnAuthority(request.authority);
   }
   if (request.connection) {
-    return createApplicationActorTurnAuthority({
-      admission: {
-        principal: request.connection.authorizationReceipt.principal,
-        trustedContext: {},
-      },
-      operationId,
-      correlationId: request.connection.id,
-      causalPrincipal: request.connection.causalPrincipal,
-      authorizationReceipt: request.connection.authorizationReceipt,
-      ...(request.connection.authorizationReceipt.expiresAt
-        ? { deadline: request.connection.authorizationReceipt.expiresAt }
-        : {}),
-    });
+    const source = actorConnectionSourceAuthority(request, request.connection);
+    return localActorExecutionAuthority({
+      actor: request.definition.id,
+      member: request.member,
+      memberKind: request.memberKind,
+      key: request.key,
+      input: request.input,
+      transport: 'direct',
+      phase: 'invoke',
+      ...(request.idempotencyKey ? { idempotencyKey: request.idempotencyKey } : {}),
+      current: source,
+    }, source);
   }
   const trustedContextDigest = stableDigest({ authority: 'application-runtime' });
   const principal: ApplicationPrincipal = Object.freeze({
@@ -1270,16 +1351,158 @@ function actorTurnAuthority<TState extends object>(
     authorityRevision: 'application-runtime',
     admittedAt: new Date(0).toISOString(),
   });
-  return createApplicationActorTurnAuthority({
+  const source = createApplicationActorTurnAuthority({
     admission: { principal, trustedContext: {} },
     operationId,
-    correlationId: `local-actor:${request.idempotencyKey ?? correlationId}`,
+    correlationId: `local-actor-source:${request.idempotencyKey ?? correlationId}`,
     causalPrincipal: { id: principal.id },
+  });
+  return localActorExecutionAuthority({
+    actor: request.definition.id,
+    member: request.member,
+    memberKind: request.memberKind,
+    key: request.key,
+    input: request.input,
+    transport: 'direct',
+    phase: 'invoke',
+    ...(request.idempotencyKey ? { idempotencyKey: request.idempotencyKey } : {}),
+    current: source,
+  }, source);
+}
+
+function isExactActorExecution(
+  authority: ApplicationActorTurnAuthority,
+  request: ApplicationActorInvocationAuthorityRequest,
+): boolean {
+  const principal = authority.admission?.principal;
+  const context = principal?.kind === 'execution'
+    ? principal.executionContext
+    : undefined;
+  const receipt = authority.admission?.authorizationReceipt;
+  const operationId = applicationOperationId({
+    domain: 'actors',
+    owner: request.actor,
+    operation: request.member,
+  });
+  const completeReceiptMatches = !receipt || (
+    receipt.operationId === operationId
+    && receipt.inputDigest === applicationOperationInputDigest(request.input)
+    && applicationOperationInputDigest(receipt.target) === applicationOperationInputDigest({
+      kind: 'target',
+      model: request.actor,
+      identity: { key: request.key },
+    })
+  );
+  return completeReceiptMatches
+    && principal?.kind === 'execution'
+    && principal.executionKind === 'actor'
+    && context?.kind === 'actor'
+    && context.actor === request.actor
+    && context.member === request.member
+    && context.keyDigest === actorKeyDigest(request.key)
+    && authority.admission?.operation.id === operationId;
+}
+
+function localActorExecutionAuthority(
+  request: ApplicationActorInvocationAuthorityRequest,
+  source: ApplicationActorTurnAuthority,
+): ApplicationActorTurnAuthority {
+  const sourcePrincipal = source.admission?.principal;
+  if (!sourcePrincipal) {
+    throw new Error(`Actor ${request.actor}.${request.member} source authority has no canonical principal.`);
+  }
+  const operationId = applicationOperationId({
+    domain: 'actors',
+    owner: request.actor,
+    operation: request.member,
+  });
+  const keyDigest = actorKeyDigest(request.key);
+  const turnId = request.idempotencyKey?.trim()
+    || `turn_${stableDigest({
+      operationId,
+      keyDigest,
+      input: request.input,
+      correlationId: source.admission?.correlationId,
+    })}`;
+  const now = Date.now();
+  const deadline = request.phase === 'enqueue'
+    ? (() => {
+        const scheduledAt = request.scheduledAt ? Date.parse(request.scheduledAt) : Number.NaN;
+        if (!Number.isFinite(scheduledAt)) {
+          throw new Error(`Actor ${request.actor}.${request.member} alarm enqueue requires a valid scheduledAt.`);
+        }
+        const alarmDeadline = Math.max(
+          scheduledAt + 24 * 60 * 60_000,
+          now + 5 * 60_000,
+        );
+        return new Date(alarmDeadline).toISOString();
+      })()
+    : (() => {
+        const sourceDeadline = source.admission?.deadline
+          ?? (sourcePrincipal.kind === 'execution'
+            ? sourcePrincipal.deadline
+            : sourcePrincipal.expiresAt);
+        const parsedSourceDeadline = sourceDeadline
+          ? Date.parse(sourceDeadline)
+          : Number.POSITIVE_INFINITY;
+        if (!Number.isFinite(parsedSourceDeadline) && sourceDeadline) {
+          throw new Error(`Actor ${request.actor}.${request.member} source deadline is invalid.`);
+        }
+        return new Date(Math.min(now + 5 * 60_000, parsedSourceDeadline)).toISOString();
+      })();
+  const workloadIdentity = Object.freeze({
+    id: `identity:local-actor-runtime:workload:actor.${request.actor}:${request.member}`,
+    kind: 'workload' as const,
+    issuer: 'applik8s:local-actor-runtime',
+    subject: `actor.${request.actor}:${request.member}`,
+  });
+  const principal: ApplicationExecutionPrincipal = createApplicationExecutionPrincipalV1({
+    application: 'local-actor-runtime',
+    executionKind: 'actor',
+    executionId: turnId,
+    attempt: 1,
+    workloadIdentity,
+    executionContext: {
+      kind: 'actor',
+      actor: request.actor,
+      member: request.member,
+      keyDigest,
+      turnId,
+    },
+    causalPrincipal: applicationCausalPrincipalContext(sourcePrincipal),
+    envelopes: [],
+    trustedContextDigest: source.trustedContextDigest,
+    audience: sourcePrincipal.audience.length > 0
+      ? sourcePrincipal.audience
+      : ['application-runtime'],
+    catalogRevision: sourcePrincipal.catalogRevision,
+    authorityRevision: sourcePrincipal.authorityRevision,
+    deadline,
+    cancellationRevision: source.admission?.cancellation?.revision
+      ?? (sourcePrincipal.kind === 'execution'
+        ? sourcePrincipal.cancellationRevision
+        : `active:${turnId}`),
+  });
+  return createApplicationActorTurnAuthority({
+    admission: {
+      principal,
+      trustedContext: source.admission?.trustedContext.values ?? {},
+    },
+    operationId,
+    correlationId: `actor:${turnId}`,
+    causationId: source.admission?.correlationId,
+    deadline,
+    cancellation: { revision: principal.cancellationRevision },
+    causalPrincipal: { id: principal.causalPrincipalId ?? principal.id },
   });
 }
 
 function actorReceiptKey(scope: string, operationId: string): string {
   return `${scope}\u0000${operationId}`;
+}
+
+function actorKeyDigest(key: string): string {
+  return applicationOperationInputDigest({ key });
 }
 
 function actorAlarmId(actor: string, member: string, key: string): string {

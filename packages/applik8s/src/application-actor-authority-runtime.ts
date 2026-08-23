@@ -9,6 +9,10 @@ import {
   validateApplicationAuthorizationReceipt,
   withApplicationAdmissionExecutionV1,
 } from '@applik8s/core';
+import {
+  countApplicationTelemetry,
+  logApplicationTelemetry,
+} from './application-telemetry-runtime.js';
 
 /** Canonical and Release-A-compatible authority carried by one actor turn. */
 export interface ApplicationActorTurnAuthority {
@@ -65,18 +69,60 @@ export function createApplicationActorTurnAuthority(
  */
 export function normalizeApplicationActorTurnAuthority(
   value: ApplicationActorTurnAuthority,
+  options: {
+    readonly context?: 'turn' | 'alarm-delivery' | 'durable-read';
+  } = {},
 ): ApplicationActorTurnAuthority {
-  if (value.admission) {
-    const admission = value.admission.authorizationReceipt
-      ? validateApplicationAdmissionContextV1(value.admission)
-      : validateApplicationAdmissionContextV1WithoutReceipt(value.admission);
-    const normalized = actorAuthorityFromAdmission(
-      applicationAdmissionInvocationView(admission),
-      value.causalPrincipal,
-    );
-    assertActorAuthorityMirrors(value, normalized);
+  const format = value.admission ? 'canonical-v1' : 'release-a-legacy';
+  const context = options.context ?? 'turn';
+  try {
+    const normalized = value.admission
+      ? normalizeCanonicalActorAuthority(value)
+      : normalizeLegacyActorAuthority(value);
+    countApplicationTelemetry('applik8s.actor.authority.decode', 1, {
+      format,
+      context,
+      outcome: 'accepted',
+    });
+    if (format === 'release-a-legacy') {
+      countApplicationTelemetry('applik8s.actor.authority.legacy_read', 1, {
+        context,
+      });
+    }
     return normalized;
+  } catch (error) {
+    countApplicationTelemetry('applik8s.actor.authority.decode', 1, {
+      format,
+      context,
+      outcome: 'rejected',
+    });
+    logApplicationTelemetry('warn', 'applik8s.actor.authority.rejected', {
+      format,
+      context,
+      error: error instanceof Error ? error.name : 'unknown',
+    });
+    throw error;
   }
+}
+
+function normalizeCanonicalActorAuthority(
+  value: ApplicationActorTurnAuthority,
+): ApplicationActorTurnAuthority {
+  if (!value.admission) throw new Error('Canonical actor authority is missing admission.');
+  const admission = value.admission.authorizationReceipt
+    ? validateApplicationAdmissionContextV1(value.admission)
+    : validateApplicationAdmissionContextV1WithoutReceipt(value.admission);
+  const normalized = actorAuthorityFromAdmission(
+    applicationAdmissionInvocationView(admission),
+    value.causalPrincipal,
+  );
+  assertActorAuthorityMirrors(value, normalized);
+  return normalized;
+}
+
+function normalizeLegacyActorAuthority(
+  value: ApplicationActorTurnAuthority,
+): ApplicationActorTurnAuthority {
   const receipt = value.authorizationReceipt;
   if (
     !('apiVersion' in receipt)
@@ -118,6 +164,15 @@ function actorAuthorityFromAdmission(
   admission: ApplicationAdmissionInvocationContextV1,
   causalPrincipal: { readonly id: string },
 ): ApplicationActorTurnAuthority {
+  if (
+    admission.principal.kind === 'execution'
+    && admission.principal.executionKind === 'actor'
+    && admission.cancellation?.revision !== admission.principal.cancellationRevision
+  ) {
+    throw new Error(
+      'Actor execution admission does not match its cancellation fence revision.',
+    );
+  }
   const receipt = admission.authorizationReceipt;
   return Object.freeze({
     admission,

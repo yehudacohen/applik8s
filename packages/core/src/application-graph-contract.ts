@@ -997,6 +997,14 @@ export interface ApplicationActorNode extends ApplicationGraphNodeBase<'actor'> 
   readonly runtime: ApplicationProviderRef<'ActorRuntime'>;
   /** Function-native provider operations captured by actor turn handlers. */
   readonly providerBindings?: readonly ApplicationCallableProviderBinding[];
+  /** Exact actor operations captured by each serialized actor turn handler. */
+  readonly actorBindings?: readonly {
+    readonly handler: string;
+    readonly alias: string;
+    readonly actor: ApplicationGraphNodeRef;
+    readonly member: string;
+    readonly memberKind: 'command' | 'message' | 'alarm';
+  }[];
   readonly handlers: readonly {
     readonly member: string;
     readonly callback: ApplicationSerializedCallbackContract;
@@ -3685,6 +3693,14 @@ function applicationActorNodeStructureDiagnostics(
   for (const member of node.definition.protocol) {
     if (member.kind !== 'broadcast' && member.kind !== 'connection' && member.kind !== 'disconnection' && !registered.has(member.name)) {
       messages.push(`Application actor ${node.id}.${member.name} requires exactly one handler.`);
+    }
+  }
+  for (const binding of node.actorBindings ?? []) {
+    if (!registered.has(binding.handler)) {
+      messages.push(`Application actor ${node.id} dependency ${binding.alias} references unknown handler ${binding.handler}.`);
+    }
+    if (!binding.actor.nodeId.trim() || !binding.member.trim() || !binding.alias.trim()) {
+      messages.push(`Application actor ${node.id}.${binding.handler} has an incomplete actor dependency.`);
     }
   }
   if (!node.initialize) messages.push(`Application actor ${node.id} requires an initialize handler.`);

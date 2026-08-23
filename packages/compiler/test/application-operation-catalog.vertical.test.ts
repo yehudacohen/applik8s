@@ -1033,7 +1033,7 @@ describe('application operation catalog compilation', () => {
       scope: { kind: 'all' as const },
     };
     const base = graph('public');
-    const catalog = compileApplicationOperationCatalog({
+    const actorGraph: ApplicationGraph = {
       ...base,
       nodes: [{
         id: 'actor.workspace.v1',
@@ -1068,10 +1068,23 @@ describe('application operation catalog compilation', () => {
           },
         },
         runtime: { interface: 'ActorRuntime', nodeId: 'provider.actor-runtime' },
-        handlers: [],
+        actorBindings: [{
+          handler: 'rename',
+          alias: 'sendObservation',
+          actor: { nodeId: 'actor.workspace.v1' },
+          member: 'observe',
+          memberKind: 'message',
+        }],
+        handlers: [
+          { member: 'rename', callback: { source: 'async () => ({ revision: 1 })' } },
+          { member: 'observe', callback: { source: 'async () => undefined' } },
+          { member: 'cursor', callback: { source: 'async () => undefined' } },
+          { member: 'expire', callback: { source: 'async () => undefined' } },
+        ],
         semantics: { serialization: 'fullTurnPerIdentity', admission: 'idempotentReceipt', references: 'inertAddress' },
       }],
-    }, { requireClassified: true });
+    };
+    const catalog = compileApplicationOperationCatalog(actorGraph, { requireClassified: true });
 
     expect(catalog.operations.map(({ id, kind }) => ({ id, kind }))).toEqual([
       { id: 'applik8s://actors/workspace.v1/operations/connect', kind: 'actor.connection' },
@@ -1086,5 +1099,23 @@ describe('application operation catalog compilation', () => {
       placement: { runtime: 'actor-runtime' },
     });
     expect(catalog.operations.find(({ name }) => name === 'rename')?.target?.identity.schema).toEqual(schema({ key: { type: 'string' } }).jsonSchema);
+    const workloadAuthority = compileApplicationWorkloadAuthority(actorGraph, catalog);
+    expect(workloadAuthority.filter(({ workloadIdentity }) =>
+      workloadIdentity.subject === 'actor.workspace.v1:rename')).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          operationId: 'applik8s://actors/workspace.v1/operations/rename',
+          transports: ['direct'],
+        }),
+        expect.objectContaining({
+          operationId: 'applik8s://actors/workspace.v1/operations/observe',
+          transports: ['direct'],
+        }),
+        expect.objectContaining({
+          operationId: 'applik8s://actors/workspace.v1/operations/expire',
+          transports: ['control-plane'],
+        }),
+      ]),
+    );
   });
 });

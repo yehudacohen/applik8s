@@ -8,15 +8,15 @@ import {
   app,
   applicationGraphFor,
   createDeterministicApplicationActorRuntime,
-  executeApplicationActorRealtime,
   event,
+  executeApplicationActorRealtime,
   installApplicationActorRuntimeResolver,
   type,
 } from '@applik8s/applik8s';
 import { createPersistentLocalApplicationActorRuntime } from '@applik8s/applik8s/actor-runtime-local';
-import { applicationOperationInputDigest } from '../src/application-operation-runtime.js';
-import { validateApplicationGraphStructure, type ApplicationAuthorizationReceipt } from '@applik8s/core';
+import { type ApplicationAuthorizationReceipt, validateApplicationGraphStructure } from '@applik8s/core';
 import { afterEach, describe, expect, it } from 'vitest';
+import { applicationOperationInputDigest } from '../src/application-operation-runtime.js';
 
 const disposers: Array<() => void> = [];
 afterEach(() => { while (disposers.length > 0) disposers.pop()?.(); });
@@ -89,7 +89,9 @@ describe('v0.8 durable identity-addressed actors', () => {
     await expect(executeApplicationActorRealtime(Workspace as never, {
       kind: 'connection', member: 'connect', key: 'workspace-1', input: { agent: 'browser' }, connection: connection('connect', { agent: 'browser' }), idempotencyKey: 'connect-1',
     })).resolves.toMatchObject({ member: 'connect', revision: 1 });
-    expect(observed).toEqual(['user-1:user-1:receipt-1:user-1:user-1:browser']);
+    expect(observed).toEqual([
+      'principal:local-actor-runtime:execution:actor:connect-1:1:user-1:internal:actor:connect-1:user-1:user-1:browser',
+    ]);
     await expect(executeApplicationActorRealtime(Workspace as never, {
       kind: 'connectionMessage', member: 'cursor', key: 'workspace-1', input: { position: 7, mutate: false }, connection: connection('connect', { agent: 'browser' }), idempotencyKey: 'cursor-wrong-authority',
     })).rejects.toThrow(/mismatched or expired realtime authority/u);
@@ -139,7 +141,8 @@ describe('v0.8 durable identity-addressed actors', () => {
       if (state.revision === input.expectedRevision) await workspace.setState({ revision: state.revision + 1, title: 'Expired' });
     });
 
-    const graph = applicationGraphFor(application.composition)!;
+    const graph = applicationGraphFor(application.composition);
+    if (!graph) throw new Error('Expected actor application graph.');
     expect(graph.nodes).toEqual(expect.arrayContaining([
       expect.objectContaining({
         id: 'actor.workspace.v1',
@@ -234,6 +237,63 @@ describe('v0.8 durable identity-addressed actors', () => {
     expect(runtime.broadcasts('persistent-counter.v1', 'one')).toHaveLength(2);
   });
 
+  it('recovers and executes a retained Release-A alarm authority after runtime restart', async () => {
+    const application = app('retained-alarm-authority-fixture');
+    const Counter = application.actor('retained-alarm.v1', {
+      key: type('string'),
+      state: type({ count: 'number.integer >= 0' }),
+      protocol: {
+        read: actor.command({
+          input: type({}),
+          output: type({ count: 'number.integer >= 0' }),
+        }),
+        wake: actor.alarm(type({ by: 'number.integer > 0' })),
+      },
+    });
+    Counter.on.initialize(() => ({ count: 0 }));
+    Counter.on.read(async turn => turn.state());
+    Counter.on.wake(async (turn, input) => {
+      const state = await turn.state();
+      await turn.setState({ count: state.count + input.by });
+    });
+    let runtime = createDeterministicApplicationActorRuntime();
+    disposers.push(installApplicationActorRuntimeResolver(() => runtime));
+    await Counter.alarms.wake.schedule(
+      'one',
+      '2026-09-03T00:00:00.000Z',
+      { by: 3 },
+      { idempotencyKey: 'retained-wake' },
+    );
+    const retained = runtime.snapshot();
+    const receipt = actorReceipt(
+      'retained-alarm-authority-fixture',
+      'retained-alarm.v1',
+      'wake',
+      'one',
+      { by: 3 },
+    );
+    runtime = createDeterministicApplicationActorRuntime({
+      snapshot: {
+        ...retained,
+        alarms: retained.alarms.map(alarm => ({
+          ...alarm,
+          authority: {
+            principal: { id: receipt.principal.id },
+            causalPrincipal: { id: receipt.principal.id },
+            authorizationReceipt: receipt,
+            trustedContextDigest: receipt.trustedContextDigest,
+          },
+        })),
+      },
+    });
+
+    await Counter.read('one', {}, { idempotencyKey: 'register-definition' });
+    await expect(runtime.tick(new Date('2026-09-03T00:00:00.000Z')))
+      .resolves.toEqual([expect.objectContaining({ member: 'wake', revision: 2 })]);
+    expect(runtime.inspect('retained-alarm.v1', 'one')?.state).toEqual({ count: 3 });
+    expect(runtime.snapshot().alarms).toEqual([]);
+  });
+
   it('commits ordinary events with actor state and replays the durable outbox after delivery interruption', async () => {
     const Changed = event('counter.changed.v1', {
       payload: type({ counterId: 'string', count: 'number.integer >= 0' }),
@@ -308,20 +368,53 @@ describe('v0.8 durable identity-addressed actors', () => {
     disposers.push(installApplicationActorRuntimeResolver(() => runtime));
     Peer.on.initialize(() => ({ value: 0 }));
     Other.on.initialize(() => ({ value: 0 }));
-    Peer.on.enter(async (turn, input) => {
+    const peerEnter = async (turn: Parameters<Parameters<typeof Peer.on.enter>[0]>[0], input: { readonly cycle: boolean }) => {
       if (input.cycle) return Other.enter('one', { cycle: true }, { idempotencyKey: `${turn.operationId}:other` });
       const state = await turn.state();
       await turn.alarms.wake.schedule('2026-08-22T00:00:00.000Z', { by: 1 });
       await turn.setState({ value: state.value + 1 });
       return { value: state.value + 1 };
+    };
+    Object.defineProperty(peerEnter, Symbol.for('applik8s.applicationCallbackDependencies'), {
+      value: [{ identifier: 'OtherEnter', value: Other.enter, awaited: true, returned: true }],
     });
-    Other.on.enter(async (_turn, input) => input.cycle
+    Peer.on.enter(peerEnter);
+    const otherEnter = async (_turn: Parameters<Parameters<typeof Other.on.enter>[0]>[0], input: { readonly cycle: boolean }) => input.cycle
       ? Peer.enter('one', { cycle: false }, { idempotencyKey: 'cycle-back' })
-      : { value: 0 });
+      : { value: 0 };
+    Object.defineProperty(otherEnter, Symbol.for('applik8s.applicationCallbackDependencies'), {
+      value: [{ identifier: 'PeerEnter', value: Peer.enter, awaited: true, returned: true }],
+    });
+    Other.on.enter(otherEnter);
     Peer.on.wake(async (turn, input) => {
       const state = await turn.state();
       await turn.setState({ value: state.value + input.by });
     });
+
+    expect(applicationGraphFor(application)?.nodes).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: 'actor.peer.v1',
+        actorBindings: expect.arrayContaining([
+          expect.objectContaining({
+            handler: 'enter',
+            actor: { nodeId: 'actor.other.v1' },
+            member: 'enter',
+            memberKind: 'command',
+          }),
+        ]),
+      }),
+      expect.objectContaining({
+        id: 'actor.other.v1',
+        actorBindings: expect.arrayContaining([
+          expect.objectContaining({
+            handler: 'enter',
+            actor: { nodeId: 'actor.peer.v1' },
+            member: 'enter',
+            memberKind: 'command',
+          }),
+        ]),
+      }),
+    ]));
 
     await expect(Peer.enter('one', { cycle: false }, { idempotencyKey: 'shared' })).resolves.toEqual({ value: 1 });
     await expect(Peer.enter('one', { cycle: true }, { idempotencyKey: 'shared' })).rejects.toMatchObject({ code: 'ACTOR_IDEMPOTENCY_CONFLICT' });
@@ -336,6 +429,62 @@ describe('v0.8 durable identity-addressed actors', () => {
     await runtime.tick(new Date('2026-08-22T00:00:00.000Z'));
     expect(runtime.inspect('peer.v1', 'one')?.state).toEqual({ value: 2 });
     expect(runtime.inspect('peer.v1', 'two')?.state).toEqual({ value: 2 });
+  });
+
+  it('derives stable nested-call identities and preserves causal lineage across distinct actor principals', async () => {
+    const application = app('actor-nested-authority-fixture');
+    const Target = application.actor('nested-target.v1', {
+      key: type('string'),
+      state: type({ count: 'number.integer >= 0' }),
+      protocol: {
+        increment: actor.command({
+          input: type({ by: 'number.integer > 0' }),
+          output: type({ count: 'number.integer >= 0' }),
+        }),
+      },
+    });
+    const Source = application.actor('nested-source.v1', {
+      key: type('string'),
+      state: type({ calls: 'number.integer >= 0' }),
+      protocol: {
+        run: actor.command({
+          input: type({}),
+          output: type({ count: 'number.integer >= 0' }),
+        }),
+      },
+    });
+    const runtime = createDeterministicApplicationActorRuntime();
+    disposers.push(installApplicationActorRuntimeResolver(() => runtime));
+    const lineage: Array<{ readonly actor: string; readonly principal: string; readonly causal: string }> = [];
+    Target.on.initialize(() => ({ count: 0 }));
+    Target.on.increment(async (turn, input) => {
+      lineage.push({ actor: 'target', principal: turn.principal.id, causal: turn.causalPrincipal.id });
+      const state = await turn.state();
+      const next = { count: state.count + input.by };
+      await turn.setState(next);
+      return next;
+    });
+    Source.on.initialize(() => ({ calls: 0 }));
+    Source.on.run(async (turn) => {
+      lineage.push({ actor: 'source', principal: turn.principal.id, causal: turn.causalPrincipal.id });
+      const state = await turn.state();
+      await turn.setState({ calls: state.calls + 1 });
+      return Target.increment('target', { by: 1 });
+    });
+
+    await expect(Source.run('source', {}, { idempotencyKey: 'source-run-1' }))
+      .resolves.toEqual({ count: 1 });
+    await expect(Source.run('source', {}, { idempotencyKey: 'source-run-1' }))
+      .resolves.toEqual({ count: 1 });
+    expect(lineage).toHaveLength(2);
+    expect(lineage[0]?.principal).not.toBe(lineage[1]?.principal);
+    expect(lineage[0]?.causal).toBe(lineage[1]?.causal);
+    expect(runtime.snapshot().receipts).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        scope: 'nested-target.v1:target:increment',
+        operationId: expect.stringMatching(/^actor_call_/u),
+      }),
+    ]));
   });
 
   it('migrates persisted state exactly forward, resumes after failure, and rejects rollback', async () => {

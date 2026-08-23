@@ -1,12 +1,17 @@
-import { describe, expect, it } from 'vitest';
-import type {
-  ApplicationAuthorizationReceipt,
-  ApplicationPrincipal,
+import { afterEach, describe, expect, it } from 'vitest';
+import {
+  type ApplicationAuthorizationReceipt,
+  type ApplicationPrincipal,
+  createApplicationExecutionPrincipalV1,
 } from '@applik8s/core';
 import {
   createApplicationActorTurnAuthority,
   normalizeApplicationActorTurnAuthority,
 } from '../src/application-actor-authority-runtime.js';
+import { installApplicationTelemetryRuntimeResolver } from '../src/application-telemetry-runtime.js';
+
+const disposers: Array<() => void> = [];
+afterEach(() => { while (disposers.length > 0) disposers.pop()?.(); });
 
 describe('canonical actor turn authority', () => {
   it('constructs one canonical actor admission while preserving causal lineage', () => {
@@ -89,6 +94,118 @@ describe('canonical actor turn authority', () => {
       ...authority,
       principal: { id: 'principal:forged' },
     })).toThrow(/compatibility fields/u);
+  });
+
+  it('records canonical, legacy alarm-recovery, and rejected decode evidence without payloads', () => {
+    const counts: Array<{ readonly metric: string; readonly attributes?: Readonly<Record<string, string | number | boolean>> }> = [];
+    const logs: Array<{ readonly event: string; readonly fields?: Readonly<Record<string, unknown>> }> = [];
+    disposers.push(installApplicationTelemetryRuntimeResolver(() => ({
+      run: async (_boundary, execute) => execute(),
+      log(_severity, event, fields) {
+        logs.push(fields === undefined ? { event } : { event, fields });
+      },
+      count(metric, _value, attributes) {
+        counts.push(attributes === undefined ? { metric } : { metric, attributes });
+      },
+    })));
+    const principal = testPrincipal();
+    const receipt = testReceipt(principal);
+    const legacy = {
+      principal: { id: principal.id },
+      causalPrincipal: { id: 'principal:human' },
+      authorizationReceipt: receipt,
+      trustedContextDigest: principal.trustedContextDigest,
+    } as const;
+
+    const recovered = normalizeApplicationActorTurnAuthority(legacy, {
+      context: 'alarm-delivery',
+    });
+    normalizeApplicationActorTurnAuthority(recovered);
+    expect(() => normalizeApplicationActorTurnAuthority({
+      ...legacy,
+      principal: { id: 'principal:forged' },
+    }, { context: 'durable-read' })).toThrow(/does not match/u);
+
+    expect(counts).toEqual(expect.arrayContaining([
+      {
+        metric: 'applik8s.actor.authority.legacy_read',
+        attributes: { context: 'alarm-delivery' },
+      },
+      {
+        metric: 'applik8s.actor.authority.decode',
+        attributes: {
+          format: 'canonical-v1',
+          context: 'turn',
+          outcome: 'accepted',
+        },
+      },
+      {
+        metric: 'applik8s.actor.authority.decode',
+        attributes: {
+          format: 'release-a-legacy',
+          context: 'durable-read',
+          outcome: 'rejected',
+        },
+      },
+    ]));
+    expect(logs).toEqual([{
+      event: 'applik8s.actor.authority.rejected',
+      fields: {
+        format: 'release-a-legacy',
+        context: 'durable-read',
+        error: 'Error',
+      },
+    }]);
+  });
+
+  it('fails closed when recovered actor execution authority carries a stale cancellation fence', () => {
+    const workloadIdentity = {
+      id: 'identity:actor-test:workload:actor.workspace.v1:rename',
+      kind: 'workload' as const,
+      issuer: 'applik8s://actor-test',
+      subject: 'actor.workspace.v1:rename',
+    };
+    const principal = createApplicationExecutionPrincipalV1({
+      application: 'actor-test',
+      executionKind: 'actor',
+      executionId: 'turn-one',
+      attempt: 1,
+      workloadIdentity,
+      executionContext: {
+        kind: 'actor',
+        actor: 'workspace.v1',
+        member: 'rename',
+        keyDigest: 'sha256:key',
+        turnId: 'turn-one',
+      },
+      envelopes: [],
+      trustedContextDigest: 'sha256:actor-context',
+      audience: ['actor-test'],
+      catalogRevision: 'catalog-one',
+      authorityRevision: 'authority-one',
+      admittedAt: '2026-08-23T00:00:00.000Z',
+      deadline: '2026-08-23T00:05:00.000Z',
+      cancellationRevision: 'active:turn-one',
+    });
+
+    expect(() => createApplicationActorTurnAuthority({
+      admission: { principal, trustedContext: {} },
+      operationId: 'applik8s://actors/workspace.v1/operations/rename',
+      correlationId: 'turn-one',
+      causalPrincipal: { id: principal.causalPrincipalId ?? principal.id },
+      cancellation: { revision: 'cancelled:turn-one' },
+    })).toThrow(/cancellation fence revision/u);
+    expect(createApplicationActorTurnAuthority({
+      admission: { principal, trustedContext: {} },
+      operationId: 'applik8s://actors/workspace.v1/operations/rename',
+      correlationId: 'turn-one',
+      causalPrincipal: { id: principal.causalPrincipalId ?? principal.id },
+      cancellation: { revision: principal.cancellationRevision },
+    })).toMatchObject({
+      admission: {
+        cancellation: { revision: 'active:turn-one' },
+      },
+    });
   });
 });
 

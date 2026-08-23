@@ -13,15 +13,39 @@ export interface ApplicationTelemetryRuntime {
 
 const telemetryRuntimeResolvers: Array<() => ApplicationTelemetryRuntime | undefined> = [];
 
+function currentApplicationTelemetryRuntime(): ApplicationTelemetryRuntime | undefined {
+  for (let index = telemetryRuntimeResolvers.length - 1; index >= 0; index -= 1) {
+    const runtime = telemetryRuntimeResolvers[index]?.();
+    if (runtime) return runtime;
+  }
+  return undefined;
+}
+
 export function installApplicationTelemetryRuntimeResolver(resolver: () => ApplicationTelemetryRuntime | undefined): () => void {
   telemetryRuntimeResolvers.push(resolver);
   return () => { const index = telemetryRuntimeResolvers.lastIndexOf(resolver); if (index >= 0) telemetryRuntimeResolvers.splice(index, 1); };
 }
 
 export async function runApplicationTelemetryBoundary<TResult>(boundary: ApplicationTelemetryBoundary, execute: () => Promise<TResult>): Promise<TResult> {
-  for (let index = telemetryRuntimeResolvers.length - 1; index >= 0; index -= 1) {
-    const runtime = telemetryRuntimeResolvers[index]?.();
-    if (runtime) return runtime.run(boundary, execute);
-  }
+  const runtime = currentApplicationTelemetryRuntime();
+  if (runtime) return runtime.run(boundary, execute);
   return execute();
+}
+
+/** @internal Records bounded framework compatibility evidence without exposing provider telemetry to application code. */
+export function countApplicationTelemetry(
+  metric: string,
+  value = 1,
+  attributes?: Readonly<Record<string, string | number | boolean>>,
+): void {
+  currentApplicationTelemetryRuntime()?.count(metric, value, attributes);
+}
+
+/** @internal Records a redacted framework lifecycle event through the selected telemetry runtime. */
+export function logApplicationTelemetry(
+  severity: 'debug' | 'info' | 'warn' | 'error',
+  event: string,
+  fields?: Readonly<Record<string, unknown>>,
+): void {
+  currentApplicationTelemetryRuntime()?.log(severity, event, fields);
 }

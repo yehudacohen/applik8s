@@ -186,7 +186,13 @@ export interface ApplicationIdentityReference {
   readonly subject: string;
 }
 
-export type ApplicationExecutionKind = 'agent' | 'task' | 'workflow' | 'processor' | 'reconcile';
+export type ApplicationExecutionKind =
+  | 'actor'
+  | 'agent'
+  | 'task'
+  | 'workflow'
+  | 'processor'
+  | 'reconcile';
 
 /** Identity kinds admitted directly from evidence without a framework-managed principal contract. */
 export type ApplicationAdmittedIdentityKind = Exclude<
@@ -269,6 +275,14 @@ export interface ApplicationExecutionPrincipal extends ApplicationPrincipalBase 
 }
 
 export type ApplicationExecutionContext =
+  | {
+      readonly kind: 'actor';
+      readonly actor: string;
+      readonly member: string;
+      /** Redacted stable actor-key identity; the principal never carries the raw key. */
+      readonly keyDigest: string;
+      readonly turnId: string;
+    }
   | {
       readonly kind: 'agent';
       readonly threadId: string;

@@ -215,30 +215,109 @@ export function compileApplicationWorkloadAuthority(
         actorDependencies.map(({ operation }) => operation.id),
         processor.id,
       );
-      return actorDependencies.map(({ dependency, operation }) => {
-      const workloadIdentity = {
-        id: `identity:${graph.metadata.name}:workload:${processor.id}`,
-        kind: 'workload' as const,
-        issuer: `applik8s://${graph.metadata.name}`,
-        subject: processor.id,
-      };
-      return {
-        apiVersion: 'applik8s.workloadAuthority/v1alpha1' as const,
-        id: `workload-authority:${digestJson({ application: graph.metadata.name, processor: processor.id, operationId: operation.id, catalogRevision: catalog.revision }).slice('sha256:'.length)}`,
-        workloadIdentity,
-        ...(serviceIdentity ? { serviceIdentity } : {}),
-        operationId: operation.id,
-        catalogRevision: catalog.revision,
-        restrictions: { target: operation.authority.defaultScope, predicates: [] },
-        inputSchemaDigest: operation.input.digest,
-        audiences: operation.authority.audiences ?? [workloadIdentity.id],
-        transports: ['event'] as const,
-        delegation: 'forbidden' as const,
-        impersonation: 'forbidden' as const,
-      };
+      return actorDependencies.map(({ operation }) => {
+        const workloadIdentity = {
+          id: `identity:${graph.metadata.name}:workload:${processor.id}`,
+          kind: 'workload' as const,
+          issuer: `applik8s://${graph.metadata.name}`,
+          subject: processor.id,
+        };
+        return {
+          apiVersion: 'applik8s.workloadAuthority/v1alpha1' as const,
+          id: `workload-authority:${digestJson({ application: graph.metadata.name, processor: processor.id, operationId: operation.id, catalogRevision: catalog.revision }).slice('sha256:'.length)}`,
+          workloadIdentity,
+          ...(serviceIdentity ? { serviceIdentity } : {}),
+          operationId: operation.id,
+          catalogRevision: catalog.revision,
+          restrictions: { target: operation.authority.defaultScope, predicates: [] },
+          inputSchemaDigest: operation.input.digest,
+          audiences: operation.authority.audiences ?? [workloadIdentity.id],
+          transports: ['event'] as const,
+          delegation: 'forbidden' as const,
+          impersonation: 'forbidden' as const,
+        };
       });
     });
-  return [...taskEnvelopes, ...agentEnvelopes, ...processorEnvelopes]
+  const actorEnvelopes = graph.nodes
+    .filter((node) => node.kind === 'actor')
+    .flatMap((actor) => actor.handlers.flatMap((handler) => {
+      const workloadIdentity = {
+        id: `identity:${graph.metadata.name}:workload:${actor.id}:${handler.member}`,
+        kind: 'workload' as const,
+        issuer: `applik8s://${graph.metadata.name}`,
+        subject: `${actor.id}:${handler.member}`,
+      };
+      const ownOperationId = applicationOperationId({
+        domain: 'actors',
+        owner: actor.definition.id,
+        operation: handler.member,
+      });
+      const ownOperation = operations.get(ownOperationId);
+      if (!ownOperation) {
+        throw new Error(
+          `Application actor ${actor.definition.id}.${handler.member} has no compiled operation ${ownOperationId}.`,
+        );
+      }
+      const dependencies = [
+        {
+          alias: '$turn',
+          operation: ownOperation,
+          transport: 'direct' as const,
+        },
+        ...(actor.actorBindings ?? [])
+          .filter((binding) => binding.handler === handler.member)
+          .map((binding) => ({
+            alias: binding.alias,
+            operation: actorOperation(
+              { actor: binding.actor, member: binding.member },
+              `Application actor ${actor.definition.id}.${handler.member} dependency ${binding.alias}`,
+            ),
+            transport: binding.memberKind === 'alarm'
+              ? 'control-plane' as const
+              : 'direct' as const,
+          })),
+        ...actor.definition.protocol
+          .filter((member) => member.kind === 'alarm')
+          .map((member) => ({
+            alias: `$alarm:${member.name}`,
+            operation: actorOperation(
+              { actor: { nodeId: actor.id }, member: member.name },
+              `Application actor ${actor.definition.id}.${handler.member} bound alarm ${member.name}`,
+            ),
+            transport: 'control-plane' as const,
+          })),
+      ];
+      return dependencies.map(({ alias, operation, transport }) => ({
+        apiVersion: 'applik8s.workloadAuthority/v1alpha1' as const,
+        id: `workload-authority:${digestJson({
+          application: graph.metadata.name,
+          actor: actor.definition.id,
+          handler: handler.member,
+          alias,
+          operationId: operation.id,
+          transport,
+          catalogRevision: catalog.revision,
+        }).slice('sha256:'.length)}`,
+        workloadIdentity,
+        operationId: operation.id,
+        catalogRevision: catalog.revision,
+        restrictions: {
+          target: operation.authority.defaultScope,
+          predicates: [],
+        },
+        inputSchemaDigest: operation.input.digest,
+        audiences: [graph.metadata.name],
+        transports: [transport],
+        delegation: 'forbidden' as const,
+        impersonation: 'forbidden' as const,
+      }));
+    }));
+  return [
+    ...taskEnvelopes,
+    ...agentEnvelopes,
+    ...processorEnvelopes,
+    ...actorEnvelopes,
+  ]
     .sort((left, right) => left.id.localeCompare(right.id));
 }
 

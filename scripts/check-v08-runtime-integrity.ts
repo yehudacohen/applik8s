@@ -215,6 +215,35 @@ if (
 ) {
   findings.push('celld actor alarms do not validate canonical persisted authority through the focused runtime boundary.');
 }
+const actorRuntime = await readFile(
+  join(root, 'packages/applik8s/src/application-actors.ts'),
+  'utf8',
+);
+const actorAdmission = await readFile(
+  join(root, 'packages/core/src/application-admission.ts'),
+  'utf8',
+);
+const generatedGateway = await readFile(
+  join(root, 'packages/compiler/src/application-fetch-gateway/index.ts'),
+  'utf8',
+);
+for (const [source, requirement] of [
+  [actorAdmission, "const executionKinds = '|actor|agent|task|workflow|processor|reconcile|'"],
+  [actorRuntime, 'managedActorInvocationIdempotencyKey'],
+  [actorRuntime, "phase: 'enqueue'"],
+  [actorAuthorityRuntime, 'applik8s.actor.authority.legacy_read'],
+  [actorAuthorityRuntime, 'cancellation fence revision'],
+  [generatedGateway, 'actorWorkloadEnvelopes'],
+  [generatedGateway, "executionKind: 'actor'"],
+  [generatedGateway, 'boundedActorDeadline'],
+] as const) {
+  if (!source.includes(requirement)) {
+    findings.push(`Actor AC-1 source gate is missing ${requirement}.`);
+  }
+}
+if (/cancel:\s*\(key:\s*string\)/u.test(actorRuntime)) {
+  findings.push('Actor public alarms expose provider-direct cancellation instead of bound operation-authorized cancellation.');
+}
 
 if (findings.length > 0) {
   throw new Error(`v0.8 Runtime Integrity gate failed:\n${findings.map((finding) => `- ${finding}`).join('\n')}`);

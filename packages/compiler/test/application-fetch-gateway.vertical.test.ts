@@ -1,8 +1,8 @@
+import { AI } from "@applik8s/ai";
 import {
+	actor,
 	app,
 	applicationGraphFor,
-	actor,
-	command,
 	event,
 	IdentityProvider,
 	Lakehouse,
@@ -12,10 +12,9 @@ import {
 	Observability,
 } from "@applik8s/applik8s";
 import { entity, type } from "@applik8s/applik8s/dsl";
-import { AI } from "@applik8s/ai";
 import {
-	createDeterministicApplicationAdmission,
 	type ApplicationDeterministicIdentityOptions,
+	createDeterministicApplicationAdmission,
 } from "@applik8s/identity";
 import { pgTable, text } from "drizzle-orm/pg-core";
 import { describe, expect, it } from "vitest";
@@ -167,6 +166,12 @@ describe("application host Fetch gateway", () => {
 		expect(source).not.toContain("authorizationReceiptId: admission.receipt.id,");
 		expect(source).toContain("Actor alarm authority does not match the persisted target and input");
 		expect(source).toContain("installApplicationActorInvocationAuthorityResolver");
+		expect(source).toContain("applicationCausalPrincipalContext");
+		expect(source).toContain("actorWorkloadEnvelopes");
+		expect(source).toContain("executionKind: 'actor'");
+		expect(source).toContain("principal: actorAuthorization.principal");
+		expect(source).toContain("request.phase === 'enqueue'");
+		expect(source).toContain("return createApplicationActorTurnAuthority({");
 		expect(source).not.toContain("connectionSigningKey:");
 		const manifest = applicationFacadeManifest(graph, { actorExports });
 		expect(manifest.actors).toEqual([expect.objectContaining({ id: "workspace.v1", exportNames: ["Workspace"] })]);

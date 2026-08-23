@@ -435,9 +435,16 @@ describe('celld actor runtime', () => {
     const application = app('celld-alarm-fixture');
     const Counter = application.actor('counter-alarm.v1', {
       key: type('string'), state: type({ count: 'number.integer >= 0' }),
-      protocol: { wake: actor.alarm(type({ by: 'number.integer > 0' })) },
+      protocol: {
+        cancelWake: actor.command({ input: type({}), output: type({ cancelled: 'boolean' }) }),
+        wake: actor.alarm(type({ by: 'number.integer > 0' })),
+      },
     });
     Counter.on.initialize(() => ({ count: 0 }));
+    Counter.on.cancelWake(async (turn) => {
+      await turn.alarms.wake.cancel();
+      return { cancelled: true };
+    });
     Counter.on.wake(async () => {});
     const runtime = createCelldApplicationActorRuntime({ endpoint: 'http://celld.test/', authorization: service.authorization, fetch: service.fetch as typeof fetch });
     disposers.push(installApplicationActorRuntimeResolver(() => runtime));
@@ -461,7 +468,10 @@ describe('celld actor runtime', () => {
         }),
       }),
     );
-    await expect(Counter.alarms.wake.cancel('one')).resolves.toMatchObject({ state: 'cancelled' });
+    await expect(withApplicationActorTurnAuthority(
+      turnAuthority('celld-alarm-fixture', 'counter-alarm.v1', 'cancelWake', { input: {} }),
+      () => Counter.cancelWake('one', {}, { idempotencyKey: 'cancel-wake-1' }),
+    )).resolves.toEqual({ cancelled: true });
     expect(entry?.storage.alarmTime).toBeNull();
   });
 
@@ -489,7 +499,11 @@ describe('celld actor runtime', () => {
     const commandAuthority = turnAuthority('celld-bound-alarm-fixture', 'bound-alarm.v1', 'change');
     const alarmAuthority = turnAuthority('celld-bound-alarm-fixture', 'bound-alarm.v1', 'wake');
     disposers.push(installApplicationActorInvocationAuthorityResolver(async (request) => {
-      expect(request.member).toBe('wake');
+      if (request.member === 'change') {
+        expect(request.phase).toBe('invoke');
+        return request.current;
+      }
+      expect(request).toMatchObject({ member: 'wake', phase: 'enqueue' });
       return alarmAuthority;
     }));
 
