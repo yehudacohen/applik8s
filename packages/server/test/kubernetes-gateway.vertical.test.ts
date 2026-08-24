@@ -29,6 +29,7 @@ const inputSchema = {
 describe('generated Kubernetes application gateway', () => {
   it('authorizes and idempotently creates a model before returning its authoritative snapshot', async () => {
     let stored: KubernetesObject | undefined;
+    let commandAdmission: unknown;
     const objects = {
       async createNamespacedCustomObject(request: { readonly body: KubernetesObject }) {
         stored = {
@@ -57,7 +58,10 @@ describe('generated Kubernetes application gateway', () => {
         resource,
         inputSchema,
         allowedNamespaces: ['guestbook'],
-        authorize: ({ context, input }) => context.guestbook === field(input, 'guestbook'),
+        authorize: ({ admission, context, input }) => {
+          commandAdmission = admission;
+          return context.guestbook === field(input, 'guestbook');
+        },
         place: ({ context }) => ({ namespace: String(context.namespace), generateName: 'entry-', labels: { tenant: String(context.guestbook) } }),
       }],
     });
@@ -65,6 +69,9 @@ describe('generated Kubernetes application gateway', () => {
       input: { guestbook: 'tenant-a', message: 'hello' },
       commandId: 'command-1',
       idempotencyKey: 'once',
+    }, {
+      'x-request-id': 'kubernetes-command-1',
+      traceparent: '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01',
     }));
     expect(submission.status).toBe(200);
     const accepted = await submission.json() as { readonly durableResult: string; readonly progressCursor: string };
@@ -78,6 +85,11 @@ describe('generated Kubernetes application gateway', () => {
         annotations: { 'applik8s.dev/command-id': 'command-1' },
       },
       spec: { guestbook: 'tenant-a', message: 'hello' },
+    });
+    expect(commandAdmission).toMatchObject({
+      correlationId: 'kubernetes-command-1',
+      operation: { id: 'applik8s://commands/GuestBookEntry.create/submit', transport: 'http' },
+      trace: { traceparent: '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01' },
     });
 
     const progress = await gateway.handle(post('/__applik8s/v1/commands/GuestBookEntry.create/progress', {
@@ -376,10 +388,10 @@ function identity(guestbook: string) {
   });
 }
 
-function post(path: string, body: unknown): Request {
+function post(path: string, body: unknown, headers?: Readonly<Record<string, string>>): Request {
   return new Request(`http://example.test${path}`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', ...headers },
     body: JSON.stringify(body),
   });
 }

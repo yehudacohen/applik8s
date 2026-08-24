@@ -59,9 +59,13 @@ describe('authenticated public stream subscriptions', () => {
       exhausted: true,
       retentionFloor: 0,
     }));
-    const gateway = fixture({ read, close });
+    let admittedIdentity: Parameters<Parameters<typeof createApplicationStreamSubscriptionGateway>[0]['subscriptions'][number]['open']>[0] | undefined;
+    const gateway = fixture({ read, close }, { observeIdentity: (identity) => { admittedIdentity = identity; } });
 
-    const response = await gateway.handle(request('/streams/card-events/replay', {}));
+    const response = await gateway.handle(request('/streams/card-events/replay', {}, {
+      'x-request-id': 'stream-request-1',
+      traceparent: '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01',
+    }));
     expect(response?.status).toBe(200);
     // typecast: the test decodes only the public replay fields asserted below.
     const replay = await response?.json() as { readonly cursor: string; readonly items: readonly unknown[] };
@@ -85,6 +89,11 @@ describe('authenticated public stream subscriptions', () => {
     expect(JSON.stringify(cursorBody)).not.toContain('context-private');
     expect(read).toHaveBeenCalledWith(0, 100);
     expect(close).toHaveBeenCalledOnce();
+    expect(admittedIdentity?.admission).toMatchObject({
+      correlationId: 'stream-request-1',
+      operation: { id: 'applik8s://streams/card-events/replay', transport: 'http' },
+      trace: { traceparent: '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01' },
+    });
 
     const resumed = await gateway.handle(request('/streams/card-events/replay', { cursor: replay.cursor }));
     expect(resumed?.status).toBe(200);
@@ -178,7 +187,7 @@ function event(sequence: number, id: string) {
   };
 }
 
-function fixture(source: { read(after: number, limit: number): Promise<ApplicationReplayPage<object>>; close?(): Promise<void> }, options: { readonly principalId?: string; readonly authorize?: boolean; readonly authorityRevision?: string; readonly principalAuthorityRevision?: string; readonly cursorTtlSeconds?: number } = {}) {
+function fixture(source: { read(after: number, limit: number): Promise<ApplicationReplayPage<object>>; close?(): Promise<void> }, options: { readonly principalId?: string; readonly authorize?: boolean; readonly authorityRevision?: string; readonly principalAuthorityRevision?: string; readonly cursorTtlSeconds?: number; readonly observeIdentity?: (identity: Parameters<Parameters<typeof createApplicationStreamSubscriptionGateway>[0]['subscriptions'][number]['open']>[0]) => void } = {}) {
   return createApplicationStreamSubscriptionGateway({
     subscriptions: [{
       name: 'card-events',
@@ -200,7 +209,10 @@ function fixture(source: { read(after: number, limit: number): Promise<Applicati
         process: () => { throw new Error('not used by replay fixture'); },
       },
       authorize: async () => options.authorize ?? true,
-      open: () => source,
+      open: (identity) => {
+        options.observeIdentity?.(identity);
+        return source;
+      },
     }],
     authenticate: async () => ({ principal: testApplicationPrincipal(options.principalId ?? 'user-1', { authorityRevision: options.principalAuthorityRevision ?? 'membership-1' }), trustedContext: {}, contextDigest: 'context-private' }),
     ...(options.authorityRevision ? {
@@ -216,7 +228,7 @@ function fixture(source: { read(after: number, limit: number): Promise<Applicati
   });
 }
 
-function request(path: string, body: object): Request { return new Request(`https://catalog.test${path}`, { method: 'POST', body: JSON.stringify(body) }); }
+function request(path: string, body: object, headers?: HeadersInit): Request { return new Request(`https://catalog.test${path}`, { method: 'POST', ...(headers ? { headers } : {}), body: JSON.stringify(body) }); }
 
 function streamReceipt(
   principalId: string,

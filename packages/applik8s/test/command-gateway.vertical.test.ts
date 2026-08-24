@@ -4,10 +4,10 @@ import { createApplicationCommandGateway } from '@applik8s/applik8s';
 import { canonicalJsonV1Value, createApplicationAdmissionContextV1, withApplicationAdmissionExecutionV1 } from '@applik8s/core';
 import { createSignedEnvelopeCodec, signedEnvelopeUtf8Key, staticSignedEnvelopeKeyProvider } from '@applik8s/runtime/signed-envelope';
 import { describe, expect, it, vi } from 'vitest';
+import { testApplicationAdmission, testApplicationPrincipal } from '../../../test-support/application-principal.js';
 import { applicationCommandPrincipal, applicationCommandTrustedContext } from '../src/command-principal.js';
 import { applicationCommandScope } from '../src/command-runtime-contract.js';
 import { applicationRelationalChangeScopes } from '../src/relational-runtime.js';
-import { testApplicationAdmission, testApplicationPrincipal } from '../../../test-support/application-principal.js';
 
 function transactionalSql(unsafe: (statement: string, parameters: readonly unknown[]) => Promise<readonly Record<string, unknown>[]>) {
   return {
@@ -432,6 +432,10 @@ describe('authenticated command gateway', () => {
 
     const response = await gateway.handle(new Request('https://catalog.test/commands/cards.rename.v1/submit', {
       method: 'POST',
+      headers: {
+        'x-request-id': 'command-request-1',
+        traceparent: '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01',
+      },
       body: JSON.stringify({
         input: { cardId: 'card-1' },
         commandId: 'command-authorized',
@@ -441,6 +445,11 @@ describe('authenticated command gateway', () => {
 
     expect(response?.status).toBe(202);
     expect(authorizeOperation).toHaveBeenCalledWith(expect.objectContaining({
+      admission: expect.objectContaining({
+        correlationId: 'command-authorized',
+        operation: { id: 'applik8s://models/Card/operations/rename', transport: 'http' },
+        trace: { traceparent: '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01' },
+      }),
       authorizationVersion: 'identity-admission-7',
       principal: expect.objectContaining({ authorityRevision: 'authority-1' }),
     }));

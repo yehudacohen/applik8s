@@ -1,9 +1,11 @@
 // typecast-file-boundary: authenticated subscription requests and provider-neutral cursor payloads are validated before typed stream delivery.
 import { randomUUID } from 'node:crypto';
 import {
+  type ApplicationAdmissionInvocationContextV1,
   type ApplicationAuthorizationReceipt,
+  applicationAdmissionInvocationView,
   canonicalJsonV1Value,
-  createApplicationAdmissionContextV1,
+  createApplicationRequestAdmissionContextV1,
   type JsonValue,
   validateApplicationAuthorizationReceipt,
 } from '@applik8s/core';
@@ -26,6 +28,8 @@ export interface ApplicationStreamSubscriptionIdentity<TPrincipal extends Applic
   readonly trustedContext: Readonly<Record<string, JsonValue>>;
   /** Opaque HMAC digest of provider-admitted context; raw context never enters cursors or stream SQL. */
   readonly contextDigest: string;
+  /** Canonical framework admission after request evidence has been verified. */
+  readonly admission?: ApplicationAdmissionInvocationContextV1;
 }
 
 export interface ApplicationStreamSubscriptionRuntimeBinding<TPrincipal extends ApplicationQueryPrincipal = ApplicationQueryPrincipal> {
@@ -294,18 +298,24 @@ async function admitted<TPrincipal extends ApplicationQueryPrincipal>(
 ): Promise<ApplicationStreamSubscriptionIdentity<TPrincipal>> {
   const identity = await options.authenticate(request);
   if (!identity.contextDigest) throw new Error('Application stream subscription identity is incomplete.');
-  const admission = createApplicationAdmissionContextV1({
+  const traceparent = request.headers.get('traceparent') ?? undefined;
+  const tracestate = request.headers.get('tracestate') ?? undefined;
+  const admission = createApplicationRequestAdmissionContextV1({
     admission: { principal: identity.principal, trustedContext: identity.trustedContext },
     operation: {
       id: `applik8s://streams/${subscription.name}/${action}`,
       transport: 'http',
     },
     correlationId: request.headers.get('x-request-id')?.trim() || randomUUID(),
+    ...(traceparent
+      ? { trace: { traceparent, ...(tracestate ? { tracestate } : {}) } }
+      : {}),
   });
   return {
     ...identity,
     principal: admission.principal as TPrincipal,
     trustedContext: admission.trustedContext.values,
+    admission: applicationAdmissionInvocationView(admission),
   };
 }
 

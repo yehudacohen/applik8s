@@ -3,12 +3,13 @@ import { createHash, randomUUID } from 'node:crypto';
 import type { ApplicationCommandProgress, ApplicationCommandSubmission, ApplicationQueryEvent, ApplicationQueryMultiplexFrame, ApplicationQuerySnapshot } from '@applik8s/client';
 import {
   type ApplicationAdmissionContextV1,
+  type ApplicationAdmissionInvocationContextV1,
   type ApplicationRequestAdmission,
+  applicationAdmissionInvocationView,
   canonicalJsonV1Value,
-  createApplicationAdmissionContextV1,
+  createApplicationRequestAdmissionContextV1,
   type JsonObject,
   type JsonValue,
-  withApplicationAdmissionTraceV1,
 } from '@applik8s/core';
 import { nodeLegacyHmacBase64Url } from '@applik8s/runtime/node-integrity';
 import {
@@ -36,7 +37,7 @@ export interface Applik8sKubernetesCreateContract {
   readonly inputSchema: JsonObject;
   /** Namespaces the generated service account is intentionally allowed to address. */
   readonly allowedNamespaces?: readonly string[];
-  authorize(request: { readonly principal: Applik8sGatewayAdmission['principal']; readonly context: Applik8sGatewayAdmission['trustedContext']; readonly input: object }): boolean | Promise<boolean>;
+  authorize(request: { readonly admission: ApplicationAdmissionInvocationContextV1; readonly principal: Applik8sGatewayAdmission['principal']; readonly context: Applik8sGatewayAdmission['trustedContext']; readonly input: object }): boolean | Promise<boolean>;
   place(request: { readonly context: Applik8sGatewayAdmission['trustedContext']; readonly input: object }): {
     readonly namespace?: string;
     readonly name?: string;
@@ -56,7 +57,7 @@ export interface Applik8sKubernetesQueryContract {
   readonly bounds: { readonly pageSize: number; readonly maxPages: number; readonly maxItems: number };
   /** Namespaces the generated service account is intentionally allowed to address. */
   readonly allowedNamespaces?: readonly string[];
-  authorize(request: { readonly principal: Applik8sGatewayAdmission['principal']; readonly context: Applik8sGatewayAdmission['trustedContext']; readonly input: unknown }): boolean | Promise<boolean>;
+  authorize(request: { readonly admission: ApplicationAdmissionInvocationContextV1; readonly principal: Applik8sGatewayAdmission['principal']; readonly context: Applik8sGatewayAdmission['trustedContext']; readonly input: unknown }): boolean | Promise<boolean>;
   namespace?(request: { readonly context: Applik8sGatewayAdmission['trustedContext']; readonly input: unknown }): string;
   readonly fixedNamespace?: string;
   labelSelector?(request: { readonly context: Applik8sGatewayAdmission['trustedContext']; readonly input: unknown }): string | undefined;
@@ -335,7 +336,7 @@ export function createApplik8sKubernetesGateway(options: Applik8sKubernetesGatew
   async function submitCommand(request: Request, command: Applik8sKubernetesCreateContract, body: Readonly<Record<string, unknown>>): Promise<Response> {
     const input = validateObject(command.inputSchema, body.input, `${command.id}.input`);
     const admission = await admit(options.authenticate, request, { kind: 'command', id: command.id, action: 'submit', input });
-    if (!await command.authorize({ principal: admission.principal, context: admission.trustedContext.values, input })) {
+    if (!await command.authorize({ admission: applicationAdmissionInvocationView(admission), principal: admission.principal, context: admission.trustedContext.values, input })) {
       throw new Error(`Application command ${command.id} is not authorized.`);
     }
     const commandId = requiredString(body.commandId, 'commandId');
@@ -424,7 +425,7 @@ export function createApplik8sKubernetesGateway(options: Applik8sKubernetesGatew
   async function querySnapshot(request: Request, query: Applik8sKubernetesQueryContract, body: Readonly<Record<string, unknown>>): Promise<Response> {
     const input = validateUnknown(query.inputSchema, body.input, `${query.id}.input`);
     const admission = await admit(options.authenticate, request, { kind: 'query', id: query.id, action: 'snapshot', input });
-    if (!await query.authorize({ principal: admission.principal, context: admission.trustedContext.values, input })) {
+    if (!await query.authorize({ admission: applicationAdmissionInvocationView(admission), principal: admission.principal, context: admission.trustedContext.values, input })) {
       throw new Error(`Application query ${query.id} is not authorized.`);
     }
     const result = await withTimeout(listSnapshot(objects, query, admission.trustedContext.values, input), query.budgets.timeoutMs, `Application query ${query.id} exceeded its execution budget.`);
@@ -460,7 +461,7 @@ export function createApplik8sKubernetesGateway(options: Applik8sKubernetesGatew
   async function querySubscription(request: Request, query: Applik8sKubernetesQueryContract, body: Readonly<Record<string, unknown>>): Promise<Response> {
     const input = validateUnknown(query.inputSchema, body.input, `${query.id}.input`);
     const admission = await admit(options.authenticate, request, { kind: 'query', id: query.id, action: 'subscribe', input });
-    if (!await query.authorize({ principal: admission.principal, context: admission.trustedContext.values, input })) {
+    if (!await query.authorize({ admission: applicationAdmissionInvocationView(admission), principal: admission.principal, context: admission.trustedContext.values, input })) {
       throw new Error(`Application query ${query.id} is not authorized.`);
     }
     const cursor = await verifyCursor(cursorCodec, requiredString(body.cursor, 'cursor'), now().getTime());
@@ -854,17 +855,17 @@ async function admit(
   const admission = await authenticate(request, operation);
   const traceparent = request.headers.get('traceparent') ?? undefined;
   const tracestate = request.headers.get('tracestate') ?? undefined;
-  const context = createApplicationAdmissionContextV1({
+  return createApplicationRequestAdmissionContextV1({
     admission,
     operation: {
       id: `applik8s://${operation.kind === 'command' ? 'commands' : 'queries'}/${operation.id}/${operation.action}`,
       transport: 'http',
     },
     correlationId: request.headers.get('x-request-id')?.trim() || randomUUID(),
+    ...(traceparent
+      ? { trace: { traceparent, ...(tracestate ? { tracestate } : {}) } }
+      : {}),
   });
-  return traceparent
-    ? withApplicationAdmissionTraceV1(context, { traceparent, ...(tracestate ? { tracestate } : {}) })
-    : context;
 }
 
 function validateObject(schema: JsonObject, value: unknown, name: string): object {

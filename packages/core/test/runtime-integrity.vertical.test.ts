@@ -12,6 +12,7 @@ import {
   canonicalJsonV1Value,
   createApplicationAdmissionContextV1,
   createApplicationExecutionPrincipalV1,
+  createApplicationRequestAdmissionContextV1,
   SignedEnvelopeV1ValidationError,
   serializeApplicationGraph,
   signedEnvelopeAlgorithm,
@@ -246,6 +247,52 @@ describe('Admission Context v1', () => {
       correlationId: context.correlationId,
       trace: context.trace,
     });
+  });
+
+  it.each([
+    ['command', 'applik8s://commands/document.create.v1/submit'],
+    ['query', 'applik8s://queries/documents.list.v1/snapshot'],
+    ['stream', 'applik8s://streams/document-events/subscribe'],
+    ['kubernetes', 'applik8s://commands/Document.create'],
+  ])('keeps %s request ingress on one authority, context, operation, and trace contract', (_gateway, operationId) => {
+    const admitted = createApplicationRequestAdmissionContextV1({
+      admission: {
+        principal,
+        trustedContext: context.trustedContext.values,
+      },
+      operation: { id: operationId, transport: 'http' },
+      correlationId: 'request-parity-1',
+      trace: context.trace,
+    });
+    expect(admitted).toMatchObject({
+      apiVersion: applicationAdmissionContextVersion,
+      principal,
+      authorityRevision: principal.authorityRevision,
+      trustedContext: context.trustedContext,
+      operation: { id: operationId, transport: 'http' },
+      correlationId: 'request-parity-1',
+      trace: context.trace,
+    });
+  });
+
+  it('rejects malformed request provenance before any narrowed gateway view is created', () => {
+    expect(() => createApplicationRequestAdmissionContextV1({
+      admission: {
+        principal: { ...principal, authorityRevision: '' },
+        trustedContext: context.trustedContext.values,
+      },
+      operation: { id: 'applik8s://queries/documents.list.v1/snapshot', transport: 'http' },
+      correlationId: 'request-parity-1',
+    })).toThrow(/authorityRevision/u);
+    expect(() => createApplicationRequestAdmissionContextV1({
+      admission: {
+        principal,
+        trustedContext: context.trustedContext.values,
+      },
+      operation: { id: 'applik8s://queries/documents.list.v1/snapshot', transport: 'http' },
+      correlationId: 'request-parity-1',
+      trace: { traceparent: 'invalid' },
+    })).toThrow(/trace/u);
   });
 
   it.each([

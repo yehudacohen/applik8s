@@ -1,5 +1,5 @@
 import type { ApplicationCommandProgress, ApplicationCommandSubmission } from '@applik8s/client';
-import { type ApplicationAdmissionContextV1, type ApplicationAuthorizationReceipt, type ApplicationOperationTransport, type ApplicationPrincipal, type ApplicationRequestAdmission, canonicalJsonV1String, canonicalJsonV1Value, createApplicationAdmissionContextV1, type JsonObject, type JsonValue, validateApplicationAuthorizationReceipt, withApplicationAdmissionTraceV1 } from '@applik8s/core';
+import { type ApplicationAdmissionContextV1, type ApplicationAdmissionInvocationContextV1, type ApplicationAuthorizationReceipt, type ApplicationOperationTransport, type ApplicationPrincipal, type ApplicationRequestAdmission, applicationAdmissionInvocationView, canonicalJsonV1String, canonicalJsonV1Value, createApplicationRequestAdmissionContextV1, type JsonObject, type JsonValue, validateApplicationAuthorizationReceipt } from '@applik8s/core';
 import type { ApplicationInternalOperationInvocation } from '@applik8s/operations';
 import { nodeKeyedDigestBase64Url } from '@applik8s/runtime/node-integrity';
 import { createRollingSignedEnvelopeCodec, type RollingSignedEnvelopeCodec, signedEnvelopeUtf8Key, staticSignedEnvelopeKeyProvider } from '@applik8s/runtime/signed-envelope';
@@ -51,6 +51,7 @@ export interface ApplicationCommandGatewayOptions<TPrincipal extends Application
     readonly input: unknown;
   }) => boolean | Promise<boolean>;
   readonly authorizeOperation?: (request: {
+    readonly admission: ApplicationAdmissionInvocationContextV1;
     readonly principal: ApplicationPrincipal;
     readonly authorizationVersion: string;
     readonly trustedContext: Readonly<Record<string, JsonValue>>;
@@ -216,6 +217,7 @@ export function createApplicationCommandGateway<TPrincipal extends ApplicationQu
           let authorizationReceipt: ApplicationAuthorizationReceipt | undefined;
           if (options.authorizeOperation) {
             const authorization = await options.authorizeOperation({
+              admission: applicationAdmissionInvocationView(admission),
               principal,
               // Identity-provider admission revision and canonical operation
               // authority revision are separate trust domains. Domain
@@ -548,17 +550,17 @@ function commandAdmissionContext(
 ): ApplicationAdmissionContextV1 {
   const traceparent = request.headers.get('traceparent') ?? undefined;
   const tracestate = request.headers.get('tracestate') ?? undefined;
-  const context = createApplicationAdmissionContextV1({
+  return createApplicationRequestAdmissionContextV1({
     admission,
     operation: {
       id: command.operationId ?? `applik8s://commands/${command.id}/${action}`,
       transport: 'http',
     },
     correlationId,
+    ...(traceparent
+      ? { trace: { traceparent, ...(tracestate ? { tracestate } : {}) } }
+      : {}),
   });
-  return traceparent
-    ? withApplicationAdmissionTraceV1(context, { traceparent, ...(tracestate ? { tracestate } : {}) })
-    : context;
 }
 
 function validateCommandInput(command: ApplicationGatewayCommandRuntimeContract, value: unknown): object {

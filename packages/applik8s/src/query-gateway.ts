@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { type ApplicationQueryEvent, type ApplicationQueryMultiplexErrorFrame, type ApplicationQueryMultiplexFrame, type ApplicationQueryMultiplexSubscription, type ApplicationQuerySnapshot, queryInputKey } from '@applik8s/client';
-import { type ApplicationAuthorizationReceipt, canonicalJsonV1Value, createApplicationAdmissionContextV1, type JsonValue, validateApplicationAuthorizationReceipt } from '@applik8s/core';
+import { type ApplicationAdmissionInvocationContextV1, type ApplicationAuthorizationReceipt, applicationAdmissionInvocationView, canonicalJsonV1Value, createApplicationRequestAdmissionContextV1, type JsonValue, validateApplicationAuthorizationReceipt } from '@applik8s/core';
 import type { ApplicationInternalOperationInvocation } from '@applik8s/operations';
 import { nodeKeyedDigestBase64Url } from '@applik8s/runtime/node-integrity';
 import { createRollingSignedEnvelopeCodec, type RollingSignedEnvelopeCodec, signedEnvelopeUtf8Key, staticSignedEnvelopeKeyProvider } from '@applik8s/runtime/signed-envelope';
@@ -14,6 +14,8 @@ import { validateTrustedContextValue } from './trusted-context.js';
 export interface ApplicationGatewayIdentity<TPrincipal extends ApplicationQueryPrincipal = ApplicationQueryPrincipal> {
   readonly principal: TPrincipal;
   readonly admittedContext: ApplicationAdmittedContext;
+  /** Canonical framework admission after request evidence has been verified. */
+  readonly admission?: ApplicationAdmissionInvocationContextV1;
 }
 
 export interface ApplicationQueryGatewayOptions<TRequest, TPrincipal extends ApplicationQueryPrincipal = ApplicationQueryPrincipal> {
@@ -718,7 +720,13 @@ async function admittedIdentity<TRequest, TPrincipal extends ApplicationQueryPri
   action: 'snapshot' | 'subscribe',
 ): Promise<ApplicationGatewayIdentity<TPrincipal>> {
   const identity = await options.authenticate(request, query, input);
-  const admission = createApplicationAdmissionContextV1({
+  const traceparent = request instanceof Request
+    ? request.headers.get('traceparent') ?? undefined
+    : undefined;
+  const tracestate = request instanceof Request
+    ? request.headers.get('tracestate') ?? undefined
+    : undefined;
+  const admission = createApplicationRequestAdmissionContextV1({
     admission: {
       principal: identity.principal,
       // typecast-boundary: the canonical admission constructor validates every
@@ -732,6 +740,9 @@ async function admittedIdentity<TRequest, TPrincipal extends ApplicationQueryPri
     correlationId: request instanceof Request
       ? request.headers.get('x-request-id')?.trim() || randomUUID()
       : randomUUID(),
+    ...(traceparent
+      ? { trace: { traceparent, ...(tracestate ? { tracestate } : {}) } }
+      : {}),
   });
   for (const context of query.trustedContext) {
     const value = admission.trustedContext.values[context.name];
@@ -747,6 +758,7 @@ async function admittedIdentity<TRequest, TPrincipal extends ApplicationQueryPri
       ...identity.admittedContext,
       values: admission.trustedContext.values,
     },
+    admission: applicationAdmissionInvocationView(admission),
   };
 }
 

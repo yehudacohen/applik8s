@@ -6,6 +6,7 @@ export {
   applicationAdmissionInvocationView,
   createApplicationAdmissionContextV1,
   createApplicationExecutionPrincipalV1,
+  createApplicationRequestAdmissionContextV1,
   validateApplicationAdmissionContextV1,
   validateApplicationAdmissionContextV1WithoutReceipt,
   withApplicationAdmissionExecutionV1,

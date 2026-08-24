@@ -72,6 +72,13 @@ export interface CreateApplicationAdmissionContextV1Options<
   readonly correlationId: string;
 }
 
+export interface CreateApplicationRequestAdmissionContextV1Options<
+  TPrincipal extends ApplicationPrincipal = ApplicationPrincipal,
+> extends CreateApplicationAdmissionContextV1Options<TPrincipal> {
+  /** Verified W3C request trace provenance, when the transport supplied it. */
+  readonly trace?: ApplicationAdmissionContextV1['trace'];
+}
+
 export interface ApplicationAdmissionExecutionProvenanceV1 {
   readonly causationId?: string;
   readonly deadline?: string;
@@ -338,6 +345,23 @@ export function createApplicationAdmissionContextV1<
     operation,
     correlationId: options.correlationId,
   });
+}
+
+/**
+ * Shared request-ingress construction boundary. HTTP, browser/SSE, and
+ * Kubernetes adapters authenticate their own transport evidence, then use this
+ * helper so identity, authority, trusted context, operation identity,
+ * correlation, and trace provenance cannot drift between gateways.
+ */
+export function createApplicationRequestAdmissionContextV1<
+  TPrincipal extends ApplicationPrincipal,
+>(
+  options: CreateApplicationRequestAdmissionContextV1Options<TPrincipal>,
+): ApplicationAdmissionContextV1 & { readonly principal: TPrincipal } {
+  const context = createApplicationAdmissionContextV1(options);
+  return options.trace
+    ? withApplicationAdmissionTraceV1(context, options.trace)
+    : context;
 }
 
 /** Adds validated W3C trace provenance without widening the base constructor. */

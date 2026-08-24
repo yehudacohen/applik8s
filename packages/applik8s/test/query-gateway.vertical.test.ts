@@ -1,6 +1,6 @@
 // typecast-file-boundary: gateway fixtures emulate heterogeneous query and database results validated by the runtime.
 import { createHmac } from 'node:crypto';
-import type { ApplicationModelChange, ApplicationOnlineQueryRuntimeSource, ApplicationOnlineQuerySource, ApplicationQueryBinding, ApplicationRelationalContext } from '@applik8s/applik8s';
+import type { ApplicationGatewayIdentity, ApplicationModelChange, ApplicationOnlineQueryRuntimeSource, ApplicationOnlineQuerySource, ApplicationQueryBinding, ApplicationRelationalContext } from '@applik8s/applik8s';
 import { app, applicationGraphFor, createApplicationQueryGateway, createApplicationQueryGatewayHttpHandler, createApplicationStreamSubscriptionGateway, createApplicationSubscriptionLimiter, postgres, trustedContext } from '@applik8s/applik8s';
 import { type } from '@applik8s/applik8s/dsl';
 import { type ApplicationAuthorizationReceipt, canonicalJsonV1Value, createApplicationAdmissionContextV1, withApplicationAdmissionExecutionV1 } from '@applik8s/core';
@@ -120,14 +120,32 @@ describe('v0.6 authenticated query gateway', () => {
 
   test('binds the app declaration directly to an authenticated Request/Response runtime', async () => {
     const { catalog, query } = queryFixture();
+    let admittedIdentity: ApplicationGatewayIdentity | undefined;
     const handler = catalog.gateway('public', { queries: [query] }).httpHandler({
       authenticate: async () => ({ principal: testApplicationPrincipal('allowed', { authorityRevision: 'permissions-1' }), admittedContext: { values: { organizationId: 'organization-1' }, digestSecret: 'context-digest-secret-context-digest-secret' } }),
-      context: () => fakeContext(),
+      context: (identity) => {
+        admittedIdentity = identity;
+        return fakeContext();
+      },
       cursorSecret: 'cursor-signing-secret-cursor-signing-secret',
     });
-    const response = await handler(new Request('https://catalog.test/queries/cards.list.v1/snapshot', { method: 'POST', body: JSON.stringify({ input: { limit: 5 } }) }));
+    const response = await handler(new Request('https://catalog.test/queries/cards.list.v1/snapshot', {
+      method: 'POST',
+      headers: {
+        'x-request-id': 'query-request-1',
+        traceparent: '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01',
+      },
+      body: JSON.stringify({ input: { limit: 5 } }),
+    }));
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({ kind: 'snapshot', query: 'cards.list.v1' });
+    expect(admittedIdentity?.admission).toMatchObject({
+      authorityRevision: 'permissions-1',
+      correlationId: 'query-request-1',
+      operation: { id: 'applik8s://queries/cards.list.v1/snapshot', transport: 'http' },
+      trace: { traceparent: '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01' },
+      trustedContext: { values: { organizationId: 'organization-1' } },
+    });
   });
 
   test('bounds query cursor lifetime at the framework boundary', () => {

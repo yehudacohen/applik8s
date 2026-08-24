@@ -33,6 +33,12 @@ const expectedAdmissionAdapters = new Set([
   'actor-call-alarm',
   'agent-ai-execution',
 ]);
+const requestAdmissionConsumers = new Set([
+  'packages/applik8s/src/command-gateway.ts',
+  'packages/applik8s/src/query-gateway.ts',
+  'packages/applik8s/src/stream-subscription-gateway.ts',
+  'packages/server/src/kubernetes-gateway.ts',
+]);
 const expectedInventoryPaths = new Set([
   'packages/applik8s/src/command-gateway.ts',
   'packages/applik8s/src/query-gateway.ts',
@@ -189,6 +195,16 @@ for (const source of inventorySources) {
 for (const path of expectedInventoryPaths) {
   if (!inventoryPaths.has(path)) {
     findings.push(`Runtime Integrity source inventory is missing known released-source path ${path}.`);
+  }
+}
+
+for (const path of requestAdmissionConsumers) {
+  const source = await readFile(join(root, path), 'utf8');
+  if (!source.includes('createApplicationRequestAdmissionContextV1(')) {
+    findings.push(`${path} bypasses the canonical request-ingress admission constructor.`);
+  }
+  if (source.includes('createApplicationAdmissionContextV1(')) {
+    findings.push(`${path} retains a private request-ingress admission construction path.`);
   }
 }
 
