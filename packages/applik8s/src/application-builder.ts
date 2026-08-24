@@ -133,7 +133,7 @@ import {
 import type { ApplicationGeneratedJobStatusProjectionState, ApplicationStatusReconcilerAppResourceTarget } from './application-status-reconciler.js';
 import { emitApplicationGeneratedJobStatusReconcilers } from './application-status-reconciler.js';
 import { applicationTypeKroExpressionValue, applicationTypeKroGraphValue, applicationTypeKroString, applicationTypeKroValueIdentity, applicationValueDefault, applyApplicationTypeKroIncludeWhen } from './application-typekro-values.js';
-import type { ApplicationTaskHandler, ApplicationTaskObjectStores, ApplicationTaskOperations, ApplicationTaskOptions, ApplicationTaskProjections, ApplicationTaskQueries, ApplicationTaskReference, ApplicationWorkflowBinding, ApplicationWorkflowHandler, ApplicationWorkflowOptions, ApplicationWorkflowReference } from './application-workflows.js';
+import type { ApplicationTaskHandler, ApplicationTaskObjectStores, ApplicationTaskOperations, ApplicationTaskOptions, ApplicationTaskProjections, ApplicationTaskProviderAccounting, ApplicationTaskQueries, ApplicationTaskReference, ApplicationWorkflowBinding, ApplicationWorkflowHandler, ApplicationWorkflowOptions, ApplicationWorkflowReference } from './application-workflows.js';
 import { type ApplicationWorkflowState, recordApplicationWorkflowEngine, registerApplicationSingleStepWorkflow, registerApplicationWorkflow } from './application-workflows.js';
 import {
   applicationRelationalModelOptionsFor,
@@ -178,7 +178,7 @@ export type { ApplicationMatchedSignalOutcome, ApplicationSignal, ApplicationSig
 export { installApplicationWorkflowSignalRuntimeResolver } from './application-signals.js';
 export type { ApplicationTelemetryBoundary, ApplicationTelemetryRuntime } from './application-telemetry-runtime.js';
 export { installApplicationTelemetryRuntimeResolver, runApplicationTelemetryBoundary } from './application-telemetry-runtime.js';
-export type { ApplicationDurableErrorDescriptor, ApplicationDurableErrorUnion, ApplicationTaskBinding, ApplicationTaskContext, ApplicationTaskHandler, ApplicationTaskObjectFunctions, ApplicationTaskObjectStores, ApplicationTaskOperationFunctions, ApplicationTaskOperations, ApplicationTaskOptions, ApplicationTaskProjectionFunctions, ApplicationTaskProjections, ApplicationTaskProjectionTarget, ApplicationTaskQueries, ApplicationTaskQueryFunctions, ApplicationTaskReference, ApplicationTaskServicePrincipal, ApplicationWorkflowBinding, ApplicationWorkflowContext, ApplicationWorkflowExecutionFailure, ApplicationWorkflowExecutionObservation, ApplicationWorkflowExecutionReference, ApplicationWorkflowHandler, ApplicationWorkflowOptions, ApplicationWorkflowPhase, ApplicationWorkflowReference, ApplicationWorkflowResultOptions, ApplicationWorkflowRun, ApplicationWorkflowWorkerOptions } from './application-workflows.js';
+export type { ApplicationDurableErrorDescriptor, ApplicationDurableErrorUnion, ApplicationTaskBinding, ApplicationTaskContext, ApplicationTaskHandler, ApplicationTaskObjectFunctions, ApplicationTaskObjectStores, ApplicationTaskOperationFunctions, ApplicationTaskOperations, ApplicationTaskOptions, ApplicationTaskProjectionFunctions, ApplicationTaskProjections, ApplicationTaskProjectionTarget, ApplicationTaskProviderAccounting, ApplicationTaskProviderAccountingFunctions, ApplicationTaskQueries, ApplicationTaskQueryFunctions, ApplicationTaskReference, ApplicationTaskServicePrincipal, ApplicationWorkflowBinding, ApplicationWorkflowContext, ApplicationWorkflowExecutionFailure, ApplicationWorkflowExecutionObservation, ApplicationWorkflowExecutionReference, ApplicationWorkflowHandler, ApplicationWorkflowOptions, ApplicationWorkflowPhase, ApplicationWorkflowReference, ApplicationWorkflowResultOptions, ApplicationWorkflowRun, ApplicationWorkflowWorkerOptions } from './application-workflows.js';
 export { ApplicationDurableError, installApplicationWorkflowRuntimeResolver, isApplicationDurableError } from './application-workflows.js';
 export type { ApplicationEventConsumerBinding, RunningApplicationEventConsumer } from './event-log-runtime.js';
 export type { ApplicationKubernetesCreatePlacement, ApplicationKubernetesCreatePolicy, ApplicationKubernetesCreateRequest, ApplicationModelBeforeCommitHandler, ApplicationModelBeforeCommitOptions, ApplicationModelCreateEvent, ApplicationModelCreateEventHandler, ApplicationModelDeleteEvent, ApplicationModelDeleteEventHandler, ApplicationModelDeleteInput, ApplicationModelEvent, ApplicationModelEventKind, ApplicationModelLifecycleRegistrar, ApplicationModelMutationOperation, ApplicationModelUpdateEvent, ApplicationModelUpdateEventHandler, ApplicationModelUpdateInput, DrizzleAnalyticalApplicationModelFacet, ModelEvent, PromotedAnalyticalDrizzleTable } from './native-models.js';
@@ -253,6 +253,7 @@ function isSingleStepWorkflowOptions(options: object): boolean {
     'queries',
     'projections',
     'objects',
+    'providerAccounting',
     'identity',
     'principal',
   ].some((key) => key in options);
@@ -280,10 +281,11 @@ export interface ApplicationWorkflowRegistrar {
     TQueries extends ApplicationTaskQueries = Readonly<Record<never, never>>,
     TProjections extends ApplicationTaskProjections = Readonly<Record<never, never>>,
     TObjects extends ApplicationTaskObjectStores = Readonly<Record<never, never>>,
+    TAccounting extends ApplicationTaskProviderAccounting = Readonly<Record<never, never>>,
   >(
     definition: WorkflowDefinition<TInput, TOutput, TErrors, TSignals>,
-    options: ApplicationTaskOptions<TInput, TOperations, TQueries, TProjections, TObjects>,
-    handler: ApplicationTaskHandler<TInput, TOutput, TErrors, TOperations, TQueries, TProjections, TObjects>,
+    options: ApplicationTaskOptions<TInput, TOperations, TQueries, TProjections, TObjects, TAccounting>,
+    handler: ApplicationTaskHandler<TInput, TOutput, TErrors, TOperations, TQueries, TProjections, TObjects, TAccounting>,
   ): ApplicationWorkflowBinding<TInput, TOutput, TErrors, TSignals>;
   <
     TInput extends object,
@@ -319,11 +321,12 @@ export interface ApplicationWorkflowRegistrar {
     TQueries extends ApplicationTaskQueries = Readonly<Record<never, never>>,
     TProjections extends ApplicationTaskProjections = Readonly<Record<never, never>>,
     TObjects extends ApplicationTaskObjectStores = Readonly<Record<never, never>>,
+    TAccounting extends ApplicationTaskProviderAccounting = Readonly<Record<never, never>>,
   >(
     id: string,
     contract: ApplicationWorkflowContract<TInput, TOutput, TErrors, TSignals>,
-    options: ApplicationTaskOptions<TInput, TOperations, TQueries, TProjections, TObjects>,
-    handler: ApplicationTaskHandler<TInput, TOutput, TErrors, TOperations, TQueries, TProjections, TObjects>,
+    options: ApplicationTaskOptions<TInput, TOperations, TQueries, TProjections, TObjects, TAccounting>,
+    handler: ApplicationTaskHandler<TInput, TOutput, TErrors, TOperations, TQueries, TProjections, TObjects, TAccounting>,
   ): ApplicationWorkflowBinding<TInput, TOutput, TErrors, TSignals>;
   signal<
     TInput extends object,
@@ -813,6 +816,11 @@ export interface ApplicationServerRoute {
     readonly providerBindings?: NonNullable<
       import('@applik8s/core').ApplicationFunctionNativeHttpRouteContract[
         'providerBindings'
+      ]
+    >;
+    readonly objectBindings?: NonNullable<
+      import('@applik8s/core').ApplicationFunctionNativeHttpRouteContract[
+        'objectBindings'
       ]
     >;
     readonly workflowBindings?: NonNullable<
@@ -3326,6 +3334,24 @@ function applicationFunctionNativeHttpServerRoute(
             && candidate.provider.nodeId === binding.provider.nodeId,
         ),
     );
+  const objectBindings = route.handlerDependencyGraph.providerBindings
+    .flatMap((binding) =>
+      binding.placement === 'objectStore' && binding.objectStore
+        ? [{ identifier: binding.identifier, store: binding.objectStore }]
+        : [])
+    .filter(
+      (binding, index, bindings) =>
+        !/^generatedCall\d+$/.test(binding.identifier)
+        && bindings.findIndex(
+          (candidate) =>
+            candidate.identifier === binding.identifier
+            && candidate.store.nodeId === binding.store.nodeId,
+        ) === index,
+    )
+    .sort((left, right) =>
+      `${left.identifier}:${left.store.nodeId}`.localeCompare(
+        `${right.identifier}:${right.store.nodeId}`,
+      ));
   const workflowBindings = Object.entries(route.workflowBindings)
     .sort(([left], [right]) => left.localeCompare(right))
     .map(([identifier, target]) => {
@@ -3382,6 +3408,7 @@ function applicationFunctionNativeHttpServerRoute(
       output: route.output,
       ...(operationBindings.length > 0 ? { operationBindings } : {}),
       ...(providerBindings.length > 0 ? { providerBindings } : {}),
+      ...(objectBindings.length > 0 ? { objectBindings } : {}),
       ...(workflowBindings.length > 0
         ? {
             workflowBindings,
@@ -5381,6 +5408,12 @@ function recordApplicationServerGraph(state: ApplicationScopeState, name: string
                       route.functionNative.providerBindings,
                   }
                 : {}),
+              ...(route.functionNative.objectBindings
+                ? {
+                    objectBindings:
+                      route.functionNative.objectBindings,
+                  }
+                : {}),
               ...(route.functionNative.workflowBindings
                 ? {
                     workflowBindings:
@@ -5433,6 +5466,15 @@ function recordApplicationServerGraph(state: ApplicationScopeState, name: string
       from: { nodeId: provider.provider.nodeId },
       to: { nodeId },
       relationship: 'provides',
+    });
+  }
+  for (const object of routes.flatMap(
+    (route) => route.functionNative?.objectBindings ?? [],
+  )) {
+    addApplicationGraphEdge(state, {
+      from: { nodeId },
+      to: object.store,
+      relationship: 'reads',
     });
   }
   for (const workflow of routes.flatMap(

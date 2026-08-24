@@ -402,6 +402,16 @@ ordering, missing-target, revision, recovery, and effect-boundary semantics.
 ## v0.7 Durable workflows and managed closures
 
 `workflow(...)` is the sole public durable-execution declaration.
+
+External-effect tasks may declare `providerAccounting: { alias:
+Usage.providerAccounting }` together with `identity`. The typed capability is
+then available at `context.providerAccounting.alias`. Its begin, uncertainty,
+terminal, reconciliation, adjustment, and scoped-read methods are backed by
+compiler-owned PostgreSQL authority. The retained partition is the exact
+server-admitted `trustedContext.values.principalScope` (or the admitted
+principal ID for personal work when that field is absent), never the rotatable
+transport digest or workspace role; see `docs/workflows.md` for the security
+and hashing boundary.
 Function-native calls to ordinary operations, queries, providers, and child
 workflows become compiler-owned retryable steps; applications do not declare a
 task catalog or invoke `context.task(...)`. Workflow handles support direct

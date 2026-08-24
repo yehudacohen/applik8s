@@ -1,18 +1,50 @@
 import {
   type ApplicationModelCommandContext,
   type ApplicationRelationalModel,
-  type PromotedDrizzleTable,
+  defineApplicationProviderAccountingBinding,
   module,
+  type PromotedDrizzleTable,
 } from '@applik8s/applik8s';
 import {
   applicationEntitlements,
+  applicationProviderCalls,
+  applicationProviderCostRecords,
   applicationUsageFacts,
   applicationUsageSchema,
 } from './schema.js';
+import type { ApplicationProviderCallAccountingHandle } from './provider-accounting.js';
 
+export * from './provider-accounting-api.js';
 export * from './schema.js';
 
 function installUsage() {
+  const rejectProviderCallMutation = async () => {
+    throw new Error(
+      'Provider calls are writable only through the provider-accounting authority.',
+    );
+  };
+  const rejectProviderCostMutation = async () => {
+    throw new Error(
+      'Provider cost records are writable only through the provider-accounting authority.',
+    );
+  };
+  applicationProviderCalls.create.beforeCommit({}, rejectProviderCallMutation);
+  applicationProviderCalls.update.beforeCommit({}, rejectProviderCallMutation);
+  applicationProviderCalls.delete.beforeCommit({}, rejectProviderCallMutation);
+  applicationProviderCostRecords.create.beforeCommit(
+    {},
+    rejectProviderCostMutation,
+  );
+  applicationProviderCostRecords.update.beforeCommit({}, async () => {
+    throw new Error(
+      'Provider cost records are writable only through the provider-accounting authority.',
+    );
+  });
+  applicationProviderCostRecords.delete.beforeCommit({}, async () => {
+    throw new Error(
+      'Provider cost records are writable only through the provider-accounting authority.',
+    );
+  });
   return {
     // app.include() registers this schema before installation.
     // typecast: preserve the promoted model facets on the same Drizzle values.
@@ -23,6 +55,22 @@ function installUsage() {
     Entitlement: applicationEntitlements as PromotedDrizzleTable<
       typeof applicationEntitlements
     >,
+    // typecast: app.include() promotes these accounting tables to the same registered relational-model facets.
+    ProviderCall: applicationProviderCalls as ApplicationRelationalModel<
+      typeof applicationProviderCalls
+    >,
+    ProviderCostRecord:
+      // typecast: app.include() preserves the registered cost model facets on this Drizzle table.
+      applicationProviderCostRecords as ApplicationRelationalModel<
+        typeof applicationProviderCostRecords
+      >,
+    providerAccounting: defineApplicationProviderAccountingBinding<ApplicationProviderCallAccountingHandle>(
+      'usage.provider-accounting',
+      {
+        call: applicationProviderCalls,
+        cost: applicationProviderCostRecords,
+      },
+    ),
   };
 }
 

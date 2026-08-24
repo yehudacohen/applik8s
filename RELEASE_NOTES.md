@@ -2,6 +2,17 @@
 
 ## v0.8.0
 
+Workflow tasks can now declare the maintained Usage module's
+`usage.providerAccounting` handle. The compiler injects a provider-neutral,
+scope-bound accounting capability backed by the task's selected PostgreSQL
+authority, so retries preserve one provider-call identity without exposing raw
+store construction to application code.
+
+Function-native HTTP routes now retain captured object-store bindings in the
+public application graph and dependency edges. Deployment planning can prove
+the route's object-storage access and place credentials without rediscovering
+serialized callback internals.
+
 - Release automation now separates cluster-free local qualification from
   target-live actor qualification and requires a v0.8-specific exact-commit
   evidence packet. The packet independently binds real AWS, Cilium-enforced

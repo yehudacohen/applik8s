@@ -49,6 +49,7 @@ export interface WorkflowContract {
   readonly queryEffects?: WorkflowQueryEffectsContract;
   readonly projectionEffects?: WorkflowProjectionEffectsContract;
   readonly objectEffects?: WorkflowObjectEffectsContract;
+  readonly providerAccountingEffects?: WorkflowProviderAccountingEffectsContract;
   readonly privateProviderEffects?: WorkflowPrivateProviderEffectsContract;
   readonly actorEffects?: WorkflowActorEffectsContract;
   readonly signalEffects?: WorkflowSignalEffectsContract;
@@ -217,6 +218,19 @@ interface WorkflowObjectEffectsContract {
 	readonly aliases: Readonly<Record<string, Readonly<Record<string, WorkflowTaskObjectAliasContract>>>>;
 }
 
+export interface WorkflowProviderAccountingContract {
+  readonly taskHandlerId: string;
+  readonly alias: string;
+  readonly name: string;
+  readonly callModel: ApplicationModelNode & { readonly runtime: NonNullable<ApplicationModelNode['runtime']> };
+  readonly costModel: ApplicationModelNode & { readonly runtime: NonNullable<ApplicationModelNode['runtime']> };
+}
+
+interface WorkflowProviderAccountingEffectsContract {
+  readonly bindings: readonly WorkflowProviderAccountingContract[];
+  readonly aliases: Readonly<Record<string, Readonly<Record<string, string>>>>;
+}
+
 export interface WorkflowTaskActorContract {
   readonly taskHandlerId: string;
   readonly alias: string;
@@ -348,6 +362,7 @@ export function workflowContract(
   );
   const projectionEffects = workflowProjectionEffects(nodes, tasks, namespace, worker);
 	const objectEffects = workflowObjectEffects(nodes, tasks, namespace, worker);
+  const providerAccountingEffects = workflowProviderAccountingEffects(nodes, tasks, worker);
   const privateProviderEffects = workflowPrivateProviderEffects(
     nodes,
     tasks,
@@ -422,6 +437,7 @@ export function workflowContract(
     ...(queryEffects ? { queryEffects } : {}),
     ...(projectionEffects ? { projectionEffects } : {}),
 		...(objectEffects ? { objectEffects } : {}),
+    ...(providerAccountingEffects ? { providerAccountingEffects } : {}),
     ...(privateProviderEffects ? { privateProviderEffects } : {}),
     ...(actorEffects ? { actorEffects } : {}),
     ...(signalEffects ? { signalEffects } : {}),
@@ -835,6 +851,41 @@ function selectedPrivateProviderPostgresConfig(
     );
   }
   return objectConfig(cases[variant]);
+}
+
+function workflowProviderAccountingEffects(
+  nodes: ReadonlyMap<string, ApplicationGraph['nodes'][number]>,
+  tasks: readonly { readonly handler: ApplicationTaskHandlerNode; readonly task: ApplicationTaskNode }[],
+  worker: ApplicationWorkflowWorkerNode,
+): WorkflowProviderAccountingEffectsContract | undefined {
+  const bindings: WorkflowProviderAccountingContract[] = [];
+  const aliases: Record<string, Record<string, string>> = {};
+  for (const { handler } of tasks) {
+    const taskAliases: Record<string, string> = {};
+    for (const reference of handler.providerAccounting ?? []) {
+      const callModel = nodes.get(reference.callModel.nodeId);
+      const costModel = nodes.get(reference.costModel.nodeId);
+      if (callModel?.kind !== 'model' || !callModel.runtime || costModel?.kind !== 'model' || !costModel.runtime) {
+        throw new Error(`Workflow task ${handler.id} provider accounting ${reference.alias} requires two PostgreSQL models.`);
+      }
+      if (callModel.runtime.connectionEnvName !== costModel.runtime.connectionEnvName) {
+        throw new Error(`Workflow task ${handler.id} provider accounting ${reference.alias} spans multiple database authorities.`);
+      }
+      bindings.push({
+        taskHandlerId: handler.id,
+        alias: reference.alias,
+        name: reference.name,
+        callModel: { ...callModel, runtime: callModel.runtime },
+        costModel: { ...costModel, runtime: costModel.runtime },
+      });
+      taskAliases[reference.alias] = reference.name;
+    }
+    aliases[handler.id] = taskAliases;
+  }
+  if (bindings.length === 0) return undefined;
+  const databases = new Set(bindings.map(({ callModel }) => callModel.runtime.connectionEnvName));
+  if (databases.size !== 1) throw new Error(`Workflow worker ${worker.id} provider accounting handles require one PostgreSQL authority.`);
+  return { bindings, aliases };
 }
 
 function workflowProjectionEffects(

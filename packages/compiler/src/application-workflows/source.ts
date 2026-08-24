@@ -128,6 +128,7 @@ export function generatedWorkerSource(
     const queries = contract.queryEffects?.aliases[handler.id] ?? {};
     const projections = contract.projectionEffects?.aliases[handler.id] ?? {};
     const objects = contract.objectEffects?.aliases[handler.id] ?? {};
+    const providerAccounting = contract.providerAccountingEffects?.aliases[handler.id] ?? {};
     const childBindings = Object.fromEntries(
       (handler.childWorkflowBindings ?? []).map((binding) => [
         binding.alias,
@@ -265,7 +266,7 @@ const ${jsName(task.id)} = hatchet.${durableSignalTask ? 'durableTask' : 'task'}
     const validInput = validate(${JSON.stringify(task.contract.input.jsonSchema)}, delivery.input, ${JSON.stringify(`${task.name}.input`)});
     const admitted = await canonicalTaskAdmission(${principal}, context, ${JSON.stringify(handler.id)}, ${JSON.stringify(task.name)}, ${JSON.stringify(authorityEnvelopes)}, ${handler.executionTimeoutSeconds}, delivery.metadata);
     const principal = admitted.principal;
-    const execution = taskContext(context, ${JSON.stringify(task.name)}, ${JSON.stringify({ contractId: task.contract.name, contractVersion: task.contract.version, handlerId: handler.id, workerId: contract.worker.id })}, ${JSON.stringify(errors)}, ${JSON.stringify(capabilities)}, ${workflowOperationAliasesSource(operations)}, ${JSON.stringify(queries)}, ${JSON.stringify(projections)}, ${JSON.stringify(objects)}, principal, admitted.servicePrincipal, admitted.execution, validInput);
+    const execution = taskContext(context, ${JSON.stringify(task.name)}, ${JSON.stringify({ contractId: task.contract.name, contractVersion: task.contract.version, handlerId: handler.id, workerId: contract.worker.id })}, ${JSON.stringify(errors)}, ${JSON.stringify(capabilities)}, ${workflowOperationAliasesSource(operations)}, ${JSON.stringify(queries)}, ${JSON.stringify(projections)}, ${JSON.stringify(objects)}, ${JSON.stringify(providerAccounting)}, principal, admitted.servicePrincipal, admitted.execution, validInput);
     const taskWorkflowRuntime = directWorkflowRuntime(context, execution, {}, ${JSON.stringify(childBindings)}, declarations, true);
     const workflowSignals = workflowSignalApi(context, execution);
     const authoredHandler = ${handlerVariable(handler.id)}(${directBindings});
@@ -375,6 +376,11 @@ ${contract.nativeAI ? "import postgres from 'postgres';" : ''}`;
 	const objectImports = contract.objectEffects
 		? `import { createS3ApplicationObjectStorageRuntime } from '@applik8s/runtime-s3';`
 		: '';
+  const providerAccountingImports = contract.providerAccountingEffects
+    ? `import { bindApplicationProviderCallAccounting } from '@applik8s/usage/provider-accounting-runtime';
+import { createPostgresApplicationProviderCallAccounting } from '@applik8s/usage/provider-accounting-postgres-runtime';
+${contract.operationEffects || contract.signalEffects || contract.nativeAI ? '' : "import postgres from 'postgres';"}`
+    : '';
   const signalImports = contract.signalEffects
     ? `import { createApplicationWorkflowSignalRuntime, createPostgresApplicationSignalStore, runApplicationSignalOutboxRelay } from '@applik8s/applik8s/signal-runtime';
 import { applicationOperationInputDigest } from '@applik8s/applik8s/operation-runtime';`
@@ -388,7 +394,7 @@ import { createHatchetWorkflowRuntimeFromClient, observeHatchetWorkflowRun } fro
 import { createSignedEnvelopeCodec, signedEnvelopeUtf8Key, staticSignedEnvelopeKeyProvider } from '@applik8s/runtime';`
     : '';
   const privateProviderImports = contract.privateProviderEffects
-    && !(contract.operationEffects || contract.signalEffects || contract.nativeAI)
+    && !(contract.operationEffects || contract.signalEffects || contract.nativeAI || contract.providerAccountingEffects)
     ? `import postgres from 'postgres';`
     : '';
   const capabilityInitializers = generatedWorkflowCapabilities(contract);
@@ -400,6 +406,7 @@ import { createSignedEnvelopeCodec, signedEnvelopeUtf8Key, staticSignedEnvelopeK
   const queryInitializer = generatedWorkflowQueryRuntime(contract);
   const projectionInitializer = generatedWorkflowProjectionRuntime(contract);
 	const objectInitializer = generatedWorkflowObjectRuntime(contract);
+  const providerAccountingInitializer = generatedWorkflowProviderAccountingRuntime(contract);
   const signalInitializer = generatedWorkflowSignalRuntime(contract);
   const functionNativeOperationInitializer =
     generatedWorkflowFunctionNativeOperations(contract);
@@ -429,6 +436,7 @@ ${operationImports}
 ${queryImports}
 ${projectionImports}
 ${objectImports}
+${providerAccountingImports}
 ${signalImports}
 ${functionNativeImports}
 ${gatewayImports}
@@ -461,6 +469,7 @@ ${operationInitializer}
 ${queryInitializer}
 ${projectionInitializer}
 ${objectInitializer}
+${providerAccountingInitializer}
 ${signalInitializer}
 ${functionNativeOperationInitializer}
 ${functionNativeInitializer}
@@ -944,7 +953,7 @@ function declaredFailure(contractName, errorSchemas, name, payload) {
   const validPayload = validate(schema, payload, contractName + '.errors.' + name);
   throw new Error('applik8s-durable-error:' + JSON.stringify({ name, payload: validPayload }));
 }
-function taskContext(_context, contractName, task, errorSchemas, declaredCapabilities, declaredOperations, declaredQueries, declaredProjections, declaredObjects, principal, queryPrincipal, base, executionSource) {
+function taskContext(_context, contractName, task, errorSchemas, declaredCapabilities, declaredOperations, declaredQueries, declaredProjections, declaredObjects, declaredProviderAccounting, principal, queryPrincipal, base, executionSource) {
   const capabilityBindings = createApplicationTaskCapabilityBindings(
     capabilities,
     declaredCapabilities,
@@ -982,6 +991,16 @@ function taskContext(_context, contractName, task, errorSchemas, declaredCapabil
 			if (!runtime) throw new Error('Task ' + contractName + ' attempted to use undeclared object store ' + JSON.stringify(alias));
 			return [alias, Object.freeze(Object.fromEntries(declaration.operations.map((operation) => [operation, runtime[operation]])))];
 		}))),
+    providerAccounting: Object.freeze(Object.fromEntries(Object.entries(declaredProviderAccounting).map(([alias, id]) => {
+      const store = providerAccountingStores[id];
+      if (!store) throw new Error('Task ' + contractName + ' attempted to use undeclared provider accounting ' + JSON.stringify(alias));
+      if (!principal) throw new Error('Task ' + contractName + ' provider accounting requires an admitted service principal.');
+      return [alias, bindApplicationProviderCallAccounting(store, {
+        principal,
+        ...(base.trustedContext ? { trustedContext: base.trustedContext } : {}),
+        now: () => new Date().toISOString(),
+      })];
+    }))),
     use: (token) => {
       const name = token?.name;
       if (typeof name !== 'string') throw new Error('Task ' + contractName + ' attempted to use undeclared capability ' + JSON.stringify(name));
@@ -2287,6 +2306,21 @@ export function uniqueWorkflowObjectEffects(contract: WorkflowContract): readonl
 		result.set(effect.store.id, effect);
 	}
 	return [...result.values()].sort((left, right) => left.store.id.localeCompare(right.store.id));
+}
+
+function generatedWorkflowProviderAccountingRuntime(contract: WorkflowContract): string {
+  const bindings = contract.providerAccountingEffects?.bindings ?? [];
+  if (bindings.length === 0) return 'const providerAccountingStores = Object.freeze({});';
+  const byName = new Map(bindings.map((binding) => [binding.name, binding]));
+  const entries = [...byName.values()].sort((left, right) => left.name.localeCompare(right.name));
+  const environments = new Set(entries.map(({ callModel }) => callModel.runtime.connectionEnvName));
+  if (environments.size !== 1) throw new Error(`Workflow worker ${contract.worker.id} provider accounting requires one PostgreSQL authority.`);
+  const environment = entries[0]?.callModel.runtime.connectionEnvName;
+  if (!environment) return 'const providerAccountingStores = Object.freeze({});';
+  return `const providerAccountingSql = postgres(requiredEnv(${JSON.stringify(environment)}), { max: ${Math.max(2, contract.worker.deployment.taskSlots)} });
+const providerAccountingStores = Object.freeze({
+${entries.map(({ name }) => `  ${JSON.stringify(name)}: createPostgresApplicationProviderCallAccounting({ sql: providerAccountingSql }),`).join('\n')}
+});`;
 }
 
 function generatedWorkflowFunctionNativeOperations(

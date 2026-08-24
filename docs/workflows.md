@@ -12,6 +12,61 @@ signals.
 
 Hatchet is the first `WorkflowEngine` implementation. Applik8s provisions its pinned chart with an external CNPG database in PostgreSQL-only mode, with RabbitMQ disabled. Hatchet owns operational workflow history. PostgreSQL models and v0.4 command transactions remain canonical application state.
 
+## Provider-call accounting
+
+Applications that include `@applik8s/usage` can inject its accounting authority
+into an external-effect task:
+
+```ts
+platform.workflow(Acquire, {
+  identity: AcquisitionWorker,
+  providerAccounting: { providers: Usage.providerAccounting },
+}, async (input, context) => {
+  const plan = {
+    providerCallId: input.attemptId,
+    operationRef: `acquisition:${input.attemptId}`,
+    provider: 'primary',
+    capability: 'acquire',
+    reservationRef: input.reservationRef,
+  };
+  return context.providerAccounting.providers.begin({
+    ...plan,
+    canonicalRequestHash: applicationProviderCallPlanHashV1(plan),
+  });
+});
+```
+
+The compiler injects the handle; application code never supplies database
+credentials, `principalScope`, or timestamps. Canonical hashes cover the
+pre-scope semantic payload and exclude only that operation's idempotency
+identity. The runtime derives domain-separated storage identities from the
+server-admitted `trustedContext.values.principalScope`, owns event time, and
+scope-checks reads and mutations. Generated PostgreSQL transactions serialize
+retries and atomically link call-state transitions to immutable cost rows.
+
+The trusted-context envelope's HMAC digest proves transport integrity and may
+change when its server secret rotates. It is deliberately not a storage
+partition identity. Neither volatile workspace roles, issuer metadata, nor
+authority revisions participate in the accounting partition. Changing the
+admitted personal/workspace `principalScope` changes scope; when that optional
+field is absent, accounting follows the maintained personal-work convention
+and uses the admitted principal ID. A present malformed scope fails closed.
+
+Cost rows enforce composite `(principal_scope, provider_call_ref)` foreign
+keys to their call and same-scope self-foreign keys for reconciliation. The
+reverse terminal/provisional references are deliberately transaction-enforced:
+the call row exists before its cost evidence, while the supported Drizzle
+foreign-key builder cannot emit a deferred cyclic constraint. The runtime
+inserts and verifies every immutable cost row before publishing its reference
+on the locked call projection; any missing/conflicting insert aborts before the
+call update. A deterministic PostgreSQL-store regression exercises that
+failure boundary. A future migration may add deferred reverse constraints when
+the schema toolchain can model them without handwritten migration drift.
+
+`@applik8s/usage/provider-accounting-runtime` and
+`provider-accounting-postgres-runtime` are generated-worker entrypoints, not
+application authoring APIs.
+
 ## Effect boundary
 
 Durable orchestration may coordinate captured managed closures and child

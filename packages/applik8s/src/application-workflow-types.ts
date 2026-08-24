@@ -19,6 +19,7 @@ import type { ApplicationGraphState } from './application-graph-state.js';
 import type { ApplicationObjectReference, ApplicationObjectStoreBinding, ApplicationTaskObjectStoreBinding } from './application-object-storage.js';
 import type { ApplicationProviderState, ApplicationProviderToken } from './application-providers.js';
 import type { ApplicationOnlineProjectionBinding } from './application-reactive.js';
+import type { ApplicationProviderAccountingBinding } from './application-provider-accounting.js';
 import type { WorkflowDefinition } from './dsl.js';
 import type { ApplicationWorkflowTaskDefinition as TaskDefinition } from './application-workflow-internal.js';
 import type { ApplicationOnlineProjectionRebuildResult } from './projection-rebuild-runtime.js';
@@ -40,6 +41,9 @@ export type ApplicationTaskQueries = Readonly<Record<string, ApplicationOperatio
 export type ApplicationTaskProjections = Readonly<Record<string, ApplicationTaskProjectionTarget>>;
 export type ApplicationTaskObjectStores = Readonly<
   Record<string, ApplicationTaskObjectStoreBinding>
+>;
+export type ApplicationTaskProviderAccounting = Readonly<
+  Record<string, ApplicationProviderAccountingBinding<unknown>>
 >;
 
 export interface ApplicationTaskProjectionTarget {
@@ -95,12 +99,22 @@ export type ApplicationTaskObjectFunctions<TObjects extends ApplicationTaskObjec
 		: never;
 };
 
+export type ApplicationTaskProviderAccountingFunctions<
+  TAccounting extends ApplicationTaskProviderAccounting,
+> = {
+  readonly [TAlias in keyof TAccounting]-?:
+    TAccounting[TAlias] extends ApplicationProviderAccountingBinding<infer TCapability>
+      ? TCapability
+      : never;
+};
+
 export interface ApplicationTaskContext<
   TErrors extends Readonly<Record<string, object>> = Readonly<Record<never, never>>,
   TOperations extends ApplicationTaskOperations = Readonly<Record<never, never>>,
   TQueries extends ApplicationTaskQueries = Readonly<Record<never, never>>,
   TProjections extends ApplicationTaskProjections = Readonly<Record<never, never>>,
 	TObjects extends ApplicationTaskObjectStores = Readonly<Record<never, never>>,
+  TAccounting extends ApplicationTaskProviderAccounting = Readonly<Record<never, never>>,
 > {
   /** Framework-admitted execution identity and immutable invocation provenance. */
   readonly admission: ApplicationAdmissionInvocationContextV1;
@@ -120,6 +134,8 @@ export interface ApplicationTaskContext<
   readonly projections: ApplicationTaskProjectionFunctions<TProjections>;
 	/** Bounded server-side object stores explicitly injected into this task. */
   readonly objects: ApplicationTaskObjectFunctions<TObjects>;
+  /** Provider-call and immutable provider-cost journal scoped to this admitted task. */
+  readonly providerAccounting: ApplicationTaskProviderAccountingFunctions<TAccounting>;
   use(token: ApplicationAIProviderToken): ApplicationTanStackTaskCapability;
   use(token: ApplicationStructuredGenerationProviderToken): ApplicationStructuredGenerationCapability;
   fail<TName extends keyof TErrors & string>(name: TName, payload: TErrors[TName]): never;
@@ -156,7 +172,8 @@ export type ApplicationTaskHandler<
   TQueries extends ApplicationTaskQueries = Readonly<Record<never, never>>,
   TProjections extends ApplicationTaskProjections = Readonly<Record<never, never>>,
 	TObjects extends ApplicationTaskObjectStores = Readonly<Record<never, never>>,
-> = (input: TInput, context: ApplicationTaskContext<TErrors, TOperations, TQueries, TProjections, TObjects>) => TOutput | Promise<TOutput>;
+  TAccounting extends ApplicationTaskProviderAccounting = Readonly<Record<never, never>>,
+> = (input: TInput, context: ApplicationTaskContext<TErrors, TOperations, TQueries, TProjections, TObjects, TAccounting>) => TOutput | Promise<TOutput>;
 
 export type ApplicationWorkflowHandler<
   TInput extends object,
@@ -173,6 +190,7 @@ export interface ApplicationTaskOptions<
   TQueries extends ApplicationTaskQueries = Readonly<Record<never, never>>,
   TProjections extends ApplicationTaskProjections = Readonly<Record<never, never>>,
 	TObjects extends ApplicationTaskObjectStores = Readonly<Record<never, never>>,
+  TAccounting extends ApplicationTaskProviderAccounting = Readonly<Record<never, never>>,
 > {
   readonly retries?: number;
   readonly retryBackoff?: { readonly factor?: number; readonly maxSeconds?: number };
@@ -194,6 +212,8 @@ export interface ApplicationTaskOptions<
   readonly projections?: TProjections;
 	/** Bounded object stores made available as context.objects.<alias>. */
   readonly objects?: TObjects;
+  /** Compiler-lowered provider-call accounting handles. Requires options.identity. */
+  readonly providerAccounting?: TAccounting;
   /** Canonical logical identity for this task's declared operation/query dependencies. */
   readonly identity?: ApplicationServiceIdentityBinding;
   /**

@@ -26,6 +26,60 @@ import {
 import { compileTypeKroComposition, discoverApplicationGraph } from '../src/pipeline/index.js';
 
 describe('v0.5 generated workflow lowering', () => {
+  it('lowers provider accounting into an admitted function-native workflow handle', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'applik8s-provider-accounting-'));
+    try {
+      const entrypoint = join(dir, 'application.ts');
+      await mkdir(join(dir, 'migrations'));
+      await writeFile(join(dir, 'migrations/0001_usage.sql'), '-- @applik8s/usage schema fixture\nSELECT 1;\n');
+      await writeFile(entrypoint, `
+import { app, workflow, WorkflowEngine } from '@applik8s/applik8s';
+import { type } from '@applik8s/applik8s/dsl';
+import { applicationProviderCallPlanHashV1, usage } from '@applik8s/usage';
+const platform = app('provider-accounting-proof', { namespace: 'provider-accounting-proof' });
+platform.provide(WorkflowEngine, WorkflowEngine.hatchet({ provision: false, namespace: 'provider-accounting-proof', hostPort: 'hatchet:7070', apiUrl: 'http://hatchet:8080', workerTokenSecret: { apiVersion: 'v1', kind: 'Secret', name: 'hatchet-worker', namespace: 'provider-accounting-proof' } }));
+platform.database.postgres('application', { schema: {}, migrations: { path: './migrations' } });
+const Usage = platform.include(usage);
+const Worker = platform.serviceIdentity('provider-worker');
+const Run = workflow('provider.run.v1', { input: type({ id: 'string' }), output: type({ ref: 'string' }) });
+platform.workflow(Run, { identity: Worker, providerAccounting: { providers: Usage.providerAccounting } }, async (input, context) => {
+  const plan = { providerCallId: input.id, operationRef: 'operation:' + input.id, provider: 'primary', capability: 'acquire', reservationRef: 'reservation:' + input.id };
+  const call = await context.providerAccounting.providers.begin({ ...plan, canonicalRequestHash: applicationProviderCallPlanHashV1(plan) });
+  return { ref: call.ref };
+});
+export const providerAccountingProof = platform.composition;
+`);
+      const result = await compileTypeKroComposition({
+        entrypoint,
+        compositionName: 'providerAccountingProof',
+        outDir: join(dir, 'dist'),
+        runtimeVersionRange: '^0.8.0',
+        handlerAbiVersion: 'applik8s.handler/v1alpha1',
+        adapter: 'wasmComponent',
+        portability: { deterministicBuild: true, allowEnvironmentAccess: false, allowFilesystemAccess: false, allowNetworkAccess: true, allowedHostImports: [], sourceMaps: { emit: true, includeSourceContent: false, redactPaths: false } },
+      });
+      expect(result.ok, result.ok ? undefined : result.error.message).toBe(true);
+      if (!result.ok) return;
+      const artifact = result.value.artifacts.workflowArtifacts[0];
+      const generatedSource = await readFile(join(dirname(artifact?.sourcePath ?? ''), 'workflow-worker.generated.ts'), 'utf8');
+      expect(generatedSource).toContain("from '@applik8s/usage/provider-accounting-runtime'");
+      expect(generatedSource).toContain('bindApplicationProviderCallAccounting(store');
+      expect(generatedSource).toContain('provider accounting requires an admitted service principal');
+      expect(generatedSource).toContain('createPostgresApplicationProviderCallAccounting');
+      const deployment = result.value.artifacts.resources.find((resource) => resource.kind === 'Deployment' && resource.metadata.name === artifact?.name);
+      const deploymentSpec = requiredObject(deployment?.spec, 'deployment spec');
+      const template = requiredObject(Reflect.get(deploymentSpec, 'template'), 'deployment pod template');
+      const podSpec = requiredObject(Reflect.get(template, 'spec'), 'deployment pod spec');
+      const containers = Reflect.get(podSpec, 'containers');
+      if (!Array.isArray(containers)) throw new Error('Expected deployment containers.');
+      const firstContainer = requiredObject(containers[0], 'workflow container');
+      const environment = Reflect.get(firstContainer, 'env');
+      expect(Array.isArray(environment) && environment.some((entry) => Reflect.get(entry, 'name') === 'APPLIK8S_DATABASE_APPLICATION_URL')).toBe(true);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }, 240_000);
+
   it('hydrates one handler-safe native AI capability for an admitted durable task', () => {
     const graph = {
       metadata: { name: 'native-ai-workflow', namespace: 'workflow-system' },
@@ -1867,4 +1921,9 @@ function firstMetafileImportPath(
     }
   }
   return undefined;
+}
+
+function requiredObject(value: unknown, label: string): object {
+  if (!value || typeof value !== 'object') throw new Error(`Expected ${label}.`);
+  return value;
 }

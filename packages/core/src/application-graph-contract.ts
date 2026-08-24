@@ -790,6 +790,13 @@ export interface ApplicationTaskHandlerNode extends ApplicationGraphNodeBase<'ta
     readonly member: string;
     readonly memberKind: 'command' | 'message' | 'alarm';
   }[];
+  /** Compiler-owned provider-call/cost journal handles. */
+  readonly providerAccounting?: readonly {
+    readonly alias: string;
+    readonly name: string;
+    readonly callModel: ApplicationGraphNodeRef;
+    readonly costModel: ApplicationGraphNodeRef;
+  }[];
   /** Function-native signal contracts captured by this durable task closure. */
   readonly signalBindings?: readonly {
     readonly alias: string;
@@ -2122,6 +2129,11 @@ export interface ApplicationFunctionNativeHttpRouteContract {
   }[];
   /** Provider capabilities inferred through ordinary maintained-module calls. */
   readonly providerBindings?: readonly ApplicationCallableProviderBinding[];
+  /** Object-store handles captured by the route closure, retained for authority/evidence inspection. */
+  readonly objectBindings?: readonly {
+    readonly identifier: string;
+    readonly store: ApplicationGraphNodeRef;
+  }[];
   /** Durable workflow/task handles captured from the ordinary route closure. */
   readonly workflowBindings?: readonly {
     readonly identifier: string;
@@ -4325,6 +4337,13 @@ function applicationTaskHandlerNodeStructureDiagnostics(node: ApplicationTaskHan
     const member = actor.definition.protocol.find((candidate) => candidate.name === binding.member);
     if (!member || member.kind !== binding.memberKind) diagnostics.push(applicationGraphStructureDiagnostic(`Application task handler ${node.id} actor ${binding.alias} must reference the matching ${binding.memberKind} member ${binding.member}.`));
   }
+  const accountingAliases = new Set<string>();
+  for (const accounting of node.providerAccounting ?? []) {
+    if (!accounting.alias.trim() || accountingAliases.has(accounting.alias)) diagnostics.push(applicationGraphStructureDiagnostic(`Application task handler ${node.id} provider accounting aliases must be non-empty and unique.`));
+    accountingAliases.add(accounting.alias);
+    if (!accounting.name.trim()) diagnostics.push(applicationGraphStructureDiagnostic(`Application task handler ${node.id} provider accounting ${accounting.alias} must retain a stable name.`));
+    if (nodes.get(accounting.callModel.nodeId)?.kind !== 'model' || nodes.get(accounting.costModel.nodeId)?.kind !== 'model') diagnostics.push(applicationGraphStructureDiagnostic(`Application task handler ${node.id} provider accounting ${accounting.alias} must reference registered call and cost models.`));
+  }
   const signalAliases = new Set<string>();
   for (const binding of node.signalBindings ?? []) {
     if (!binding.alias.trim() || signalAliases.has(binding.alias)) diagnostics.push(applicationGraphStructureDiagnostic(`Application task handler ${node.id} signal aliases must be non-empty and unique.`));
@@ -4332,7 +4351,7 @@ function applicationTaskHandlerNodeStructureDiagnostics(node: ApplicationTaskHan
     if (!binding.id.trim() || !binding.name.trim() || !/^v[1-9][0-9]*$/.test(binding.version)) diagnostics.push(applicationGraphStructureDiagnostic(`Application task handler ${node.id} signal ${binding.alias} must retain a stable versioned contract identity.`));
     if (binding.actions.length === 0 || new Set(binding.actions.map((action) => action.name)).size !== binding.actions.length) diagnostics.push(applicationGraphStructureDiagnostic(`Application task handler ${node.id} signal ${binding.alias} must declare unique terminal actions.`));
   }
-  const effectCount = (node.operations?.length ?? 0) + (node.queries?.length ?? 0);
+  const effectCount = (node.operations?.length ?? 0) + (node.queries?.length ?? 0) + (node.actors?.length ?? 0) + (node.providerAccounting?.length ?? 0);
   if (
     effectCount > 0
     && !node.serviceIdentity
@@ -4347,7 +4366,7 @@ function applicationTaskHandlerNodeStructureDiagnostics(node: ApplicationTaskHan
     && (node.serviceIdentity || node.operationPrincipalSource)
   ) {
     diagnostics.push(applicationGraphStructureDiagnostic(
-      `Application task handler ${node.id} declares a service principal without durable operations or authenticated queries.`,
+      `Application task handler ${node.id} declares a service principal without durable operations, authenticated queries, actor invocations, or provider accounting.`,
     ));
   }
   if (!node.handlerSource.trim()) diagnostics.push(applicationGraphStructureDiagnostic(`Application task handler ${node.id} must retain handler source for generated worker lowering.`));

@@ -27,6 +27,7 @@ import type {
   ApplicationTaskBinding,
   ApplicationTaskHandler,
   ApplicationTaskObjectStores,
+  ApplicationTaskProviderAccounting,
   ApplicationTaskOperationDependency,
   ApplicationTaskOperations,
   ApplicationTaskOptions,
@@ -42,7 +43,7 @@ import type {
 } from './application-workflow-types.js';
 import { applicationWorkflowJsonObject as jsonObject, applicationWorkflowKubernetesName as kubernetesName, positiveApplicationWorkflowInteger as positiveInteger, positiveApplicationWorkflowGraphInteger as positiveIntegerGraphValue, positiveApplicationWorkflowNumber as positiveNumber, applicationWorkflowAlias as validAlias, applicationWorkflowCron as validCron } from './application-workflow-values.js';
 import type { WorkflowDefinition } from './dsl.js';
-import { applicationModelCommandBindingForOperation } from './native-models.js';
+import { applicationModelCommandBindingForOperation, nativeApplicationModelBindingFor } from './native-models.js';
 import { type ApplicationStructuredGenerationProvider, isApplicationStructuredGenerationProvider, StructuredGeneration } from './structured-generation.js';
 import {
   type ApplicationWorkflowExecutionReference,
@@ -63,6 +64,8 @@ export type {
   ApplicationTaskHandler,
   ApplicationTaskObjectFunctions,
   ApplicationTaskObjectStores,
+  ApplicationTaskProviderAccounting,
+  ApplicationTaskProviderAccountingFunctions,
   ApplicationTaskOperationDependency,
   ApplicationTaskOperationFunctions,
   ApplicationTaskOperations,
@@ -135,11 +138,12 @@ export function registerApplicationTask<
   TQueries extends ApplicationTaskQueries,
   TProjections extends ApplicationTaskProjections,
 	TObjects extends ApplicationTaskObjectStores,
+  TAccounting extends ApplicationTaskProviderAccounting,
 >(
   state: ApplicationWorkflowState,
   definition: TaskDefinition<TInput, TOutput, TErrors>,
-  options: ApplicationTaskOptions<TInput, TOperations, TQueries, TProjections, TObjects>,
-  handler: ApplicationTaskHandler<TInput, TOutput, TErrors, TOperations, TQueries, TProjections, TObjects>,
+  options: ApplicationTaskOptions<TInput, TOperations, TQueries, TProjections, TObjects, TAccounting>,
+  handler: ApplicationTaskHandler<TInput, TOutput, TErrors, TOperations, TQueries, TProjections, TObjects, TAccounting>,
   serializationOptions: {
     readonly callsiteRegistrar?: 'task' | 'workflow';
     readonly callsiteArgumentIndexes?: readonly number[];
@@ -203,14 +207,15 @@ export function registerApplicationTask<
   );
 	const objects = recordTaskObjects(handlerNodeId, { ...directDependencies.objects, ...(options.objects ?? {}) });
   const actors = recordTaskActors(state, handlerNodeId, directDependencies.actors);
+  const providerAccounting = recordTaskProviderAccounting(handlerNodeId, options.providerAccounting ?? {});
   if (options.identity && options.principal) {
     throw new Error(`Task ${definition.id} must use canonical options.identity or deprecated options.principal, not both.`);
   }
-  if (operations.length + queries.length > 0 && !options.identity && !options.principal) {
-    throw new Error(`Task ${definition.id} declares authenticated operations or queries and requires options.identity.`);
+  if (operations.length + queries.length + actors.length + providerAccounting.length > 0 && !options.identity && !options.principal) {
+    throw new Error(`Task ${definition.id} declares authenticated operations, queries, actor invocations, or provider accounting and requires options.identity.`);
   }
-  if (operations.length + queries.length === 0 && (options.identity || options.principal)) {
-    throw new Error(`Task ${definition.id} declares an execution identity without any authenticated operations or queries.`);
+  if (operations.length + queries.length + actors.length + providerAccounting.length === 0 && (options.identity || options.principal)) {
+    throw new Error(`Task ${definition.id} declares an execution identity without any authenticated operation, query, actor invocation, or provider-accounting handle.`);
   }
   const operationPrincipal = options.principal ? serializeApplicationCallback({
     registrar: 'task', argumentIndex: 1, property: 'principal', label: `Task ${definition.id} operation principal`,
@@ -222,6 +227,7 @@ export function registerApplicationTask<
     ...projections.map(({ alias }) => alias),
     ...objects.map(({ alias }) => alias),
     ...actors.map(({ alias }) => alias),
+    ...providerAccounting.map(({ alias }) => alias),
     ...providerBindings.map(({ identifier }) => identifier),
     ...childWorkflowBindings.map(({ alias }) => alias),
     ...signalBindings.map(({ alias }) => alias),
@@ -282,6 +288,7 @@ export function registerApplicationTask<
     ...(projections.length > 0 ? { projections } : {}),
 		...(objects.length > 0 ? { objects } : {}),
     ...(actors.length > 0 ? { actors } : {}),
+    ...(providerAccounting.length > 0 ? { providerAccounting } : {}),
     ...(signalBindings.length > 0 ? { signalBindings } : {}),
     ...(functionNativeTransaction ? { functionNativeTransaction } : {}),
     ...(operationPrincipal ? {
@@ -359,6 +366,10 @@ export function registerApplicationTask<
 		}
 	}
   for (const actor of actors) addApplicationGraphEdge(state, { from: { nodeId: handlerNodeId }, to: actor.actor, relationship: 'dependsOn' });
+  for (const accounting of providerAccounting) {
+    addApplicationGraphEdge(state, { from: { nodeId: handlerNodeId }, to: accounting.callModel, relationship: 'writes' });
+    addApplicationGraphEdge(state, { from: { nodeId: handlerNodeId }, to: accounting.costModel, relationship: 'writes' });
+  }
   recordWorkflowWorker(state, engine, options.worker);
   return withWorkflowGatewayMetadata(
     taskBinding(definition, options, () => applicationWorkflowEngineImplementation(state)),
@@ -388,6 +399,32 @@ function recordTaskActors(
     }
     return { alias, actor: { nodeId: actor.id }, member: binding.member, memberKind: member.kind };
   });
+}
+
+function recordTaskProviderAccounting(
+  consumerNodeId: string,
+  bindings: ApplicationTaskProviderAccounting,
+): readonly {
+  readonly alias: string;
+  readonly name: string;
+  readonly callModel: { readonly nodeId: string };
+  readonly costModel: { readonly nodeId: string };
+}[] {
+  return Object.entries(bindings)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([alias, binding]) => {
+      if (!alias.trim()) throw new Error(`Task ${consumerNodeId} provider accounting aliases must not be empty.`);
+      if (binding.kind !== 'applicationProviderAccounting') throw new Error(`Task ${consumerNodeId} provider accounting ${alias} has an invalid binding.`);
+      const call = nativeApplicationModelBindingFor(binding.callModel);
+      const cost = nativeApplicationModelBindingFor(binding.costModel);
+      if (!call || !cost) throw new Error(`Task ${consumerNodeId} provider accounting ${alias} models must be registered through app.model(...).`);
+      return {
+        alias,
+        name: binding.name,
+        callModel: { nodeId: `model.${kubernetesName(call.name)}` },
+        costModel: { nodeId: `model.${kubernetesName(cost.name)}` },
+      };
+    });
 }
 
 function recordTaskObjects(
@@ -1031,11 +1068,12 @@ export function registerApplicationSingleStepWorkflow<
   TQueries extends ApplicationTaskQueries,
   TProjections extends ApplicationTaskProjections,
   TObjects extends ApplicationTaskObjectStores,
+  TAccounting extends ApplicationTaskProviderAccounting,
 >(
   state: ApplicationWorkflowState,
   definition: WorkflowDefinition<TInput, TOutput, TErrors, TSignals>,
-  options: ApplicationTaskOptions<TInput, TOperations, TQueries, TProjections, TObjects>,
-  handler: ApplicationTaskHandler<TInput, TOutput, TErrors, TOperations, TQueries, TProjections, TObjects>,
+  options: ApplicationTaskOptions<TInput, TOperations, TQueries, TProjections, TObjects, TAccounting>,
+  handler: ApplicationTaskHandler<TInput, TOutput, TErrors, TOperations, TQueries, TProjections, TObjects, TAccounting>,
 ): ApplicationWorkflowBinding<TInput, TOutput, TErrors, TSignals> {
   if (Object.keys(definition.signals).length > 0) {
     throw new Error(

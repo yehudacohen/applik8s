@@ -25,6 +25,21 @@
       "types": "./dist/schema.d.ts",
       "import": "./dist/schema.js",
       "default": "./dist/schema.js"
+    },
+    "./provider-accounting": {
+      "types": "./dist/provider-accounting-api.d.ts",
+      "import": "./dist/provider-accounting-api.js",
+      "default": "./dist/provider-accounting-api.js"
+    },
+    "./provider-accounting-runtime": {
+      "types": "./dist/provider-accounting.d.ts",
+      "import": "./dist/provider-accounting.js",
+      "default": "./dist/provider-accounting.js"
+    },
+    "./provider-accounting-postgres-runtime": {
+      "types": "./dist/provider-accounting-postgres.d.ts",
+      "import": "./dist/provider-accounting-postgres.js",
+      "default": "./dist/provider-accounting-postgres.js"
     }
   },
   "dependencies": {

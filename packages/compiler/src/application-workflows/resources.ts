@@ -147,6 +147,7 @@ export function workflowResources(contract: WorkflowContract, name: string, imag
 							...workflowObjectEnvironment(contract),
               ...workflowActorEnvironment(contract),
               ...workflowSignalEnvironment(contract),
+              ...workflowProviderAccountingEnvironment(contract),
               ...privateProviderResources.environment,
             ]),
             ...(privateProviderResources.mounts.length > 0
@@ -471,6 +472,23 @@ function workflowSignalEnvironment(
       },
     },
   ];
+}
+
+function workflowProviderAccountingEnvironment(
+  contract: WorkflowContract,
+): readonly Record<string, unknown>[] {
+  const databases = new Map(
+    (contract.providerAccountingEffects?.bindings ?? []).map(({ callModel }) => [
+      callModel.runtime.connectionEnvName,
+      callModel.runtime,
+    ]),
+  );
+  return [...databases.values()].map((database) => ({
+    name: database.connectionEnvName,
+    valueFrom: {
+      secretKeyRef: { name: database.secretName, key: database.secretKey },
+    },
+  }));
 }
 
 function workflowObjectEnvironment(contract: WorkflowContract): readonly Record<string, unknown>[] {
