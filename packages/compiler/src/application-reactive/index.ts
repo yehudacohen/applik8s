@@ -5,6 +5,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { gzipSync } from 'node:zlib';
 import type { ApplicationAIAgentNode, ApplicationCallableProviderBinding, ApplicationCallableProviderRuntimeOperation, ApplicationCommandHandlerNode, ApplicationCommandNode, ApplicationGatewayNode, ApplicationGraph, ApplicationHandlerDependencies, ApplicationIdentityReference, ApplicationIndexNode, ApplicationModelNode, ApplicationOperationCatalog, ApplicationProfiledCallbackContract, ApplicationProjectionNode, ApplicationProviderNode, ApplicationQueryNode, ApplicationReactiveDatabaseRuntimeContract, ApplicationSearchIndexPlan, ApplicationSerializedCallbackContract, ApplicationStreamNode, ApplicationStreamProcessorNode, ApplicationSubscriptionNode, ApplicationWorkloadAuthorityEnvelope, JsonObject } from '@applik8s/core';
+import type { ApplicationFrameworkCredentialDependency } from '@applik8s/deployment-contract';
 import { build } from 'esbuild';
 import ts from 'typescript';
 import {
@@ -17,6 +18,7 @@ import type { GeneratedApplicationContainerArtifact } from '../application-conta
 import { emitGeneratedApplicationContainer } from '../application-containers/index.js';
 import { generatedApplicationEventLogPublisherSource } from '../application-event-log-runtime-source.js';
 import { generatedApplicationFetchGatewayModules } from '../application-fetch-gateway/index.js';
+import { applicationFrameworkCredentialDependencies } from '../application-framework-credentials.js';
 import {
   applicationKubernetesFixedScheduleResources,
   applicationScheduleDatabaseEnvironment,
@@ -60,6 +62,7 @@ export interface GeneratedApplicationReactiveArtifact {
   readonly sizeBytes: number;
   readonly container: GeneratedApplicationContainerArtifact;
   readonly resources: readonly GeneratedApplicationReactiveResource[];
+  readonly frameworkCredentials: readonly ApplicationFrameworkCredentialDependency[];
 }
 
 const DEFAULT_REACTIVE_WORKER_CONTAINERS_PER_POD = 8;
@@ -1355,7 +1358,8 @@ async function bundleReactive(options: BundleReactiveOptions): Promise<Generated
           : 'GeneratedStreamProcessorWorker';
   await writeFile(manifestPath, `${JSON.stringify({ apiVersion: 'applik8s.reactive/v1alpha1', kind: manifestKind, metadata: { name: options.name }, spec: { graph: options.graphName, digest, sizeBytes, distribution: 'ociImage', image: container.image, baseImage: container.baseImage, container, namespace: options.namespace, resources: resources.map((resource) => ({ apiVersion: resource.apiVersion, kind: resource.kind, metadata: resource.metadata })) } }, null, 2)}\n`);
   await writeFile(metafilePath, `${JSON.stringify(result.metafile, null, 2)}\n`);
-  return { name: options.name, nodeId: options.nodeId, kind: options.kind, sourcePath, sourceMapPath, manifestPath, metafilePath, digest, sizeBytes, container, resources };
+  const frameworkCredentials = applicationFrameworkCredentialDependencies(source);
+  return { name: options.name, nodeId: options.nodeId, kind: options.kind, sourcePath, sourceMapPath, manifestPath, metafilePath, digest, sizeBytes, container, resources, frameworkCredentials };
 }
 
 function generatedGatewaySource(

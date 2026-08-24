@@ -22,6 +22,7 @@ export {
 } from "./output-reference.js";
 export type * from './runtime-artifact.js';
 export {
+  applicationFrameworkCredentialEnvironmentIsValid,
   applicationRuntimeArtifactId,
   applicationRuntimeEndpointEnvironmentName,
   validateApplicationRuntimeArtifact,

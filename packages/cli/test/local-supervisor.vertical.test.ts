@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { LocalSupervisorPlan } from '@applik8s/deployment-contract';
 import { describe, expect, it } from 'vitest';
-import { readLocalRuntimeArtifacts } from '../src/local-development-command.js';
+import { readLocalApplicationHostFrameworkCredentials, readLocalRuntimeArtifacts } from '../src/local-development-command.js';
 import {
   type LocalSupervisorDriver,
   startLocalSupervisor,
@@ -74,6 +74,71 @@ describe('local supervisor', () => {
     await expect(readLocalRuntimeArtifacts(manifest, root, 'local')).rejects.toThrow(/localSource and localDigest together/u);
     await writeFile(manifest, JSON.stringify(bundle({ localDigest: 'sha256:not-a-digest' })));
     await expect(readLocalRuntimeArtifacts(manifest, root, 'local')).rejects.toThrow(/invalid local runtime artifact/u);
+  });
+
+  it('admits only closed, unique framework credential dependencies from compiler bundles', async () => {
+    const root = await mkdtemp(join(process.env.TMPDIR ?? '/tmp', 'applik8s-runtime-credentials-'));
+    const source = join(root, 'agent.mjs');
+    const contents = 'export const ready = true;\n';
+    await writeFile(source, contents);
+    const digest = `sha256:${createHash('sha256').update(contents).digest('hex')}`;
+    const manifest = join(root, 'typekro-composition.json');
+    const bundle = (frameworkCredentials: unknown) => ({
+      apiVersion: 'applik8s.dev/v1alpha1',
+      kind: 'TypeKroCompositionBundle',
+      spec: { agents: [{ name: 'assistant', nodeId: 'agent.assistant', source, digest, frameworkCredentials }] },
+    });
+    await writeFile(manifest, JSON.stringify(bundle([
+      { kind: 'agent-query-context', environmentName: 'APPLIK8S_AGENT_QUERY_CONTEXT_SECRET' },
+      { kind: 'internal-operation', environmentName: 'APPLIK8S_INTERNAL_OPERATION_SECRET' },
+    ])));
+    await expect(readLocalRuntimeArtifacts(manifest, root)).resolves.toEqual([
+      expect.objectContaining({
+        role: 'agent',
+        frameworkCredentials: [
+          { kind: 'agent-query-context', environmentName: 'APPLIK8S_AGENT_QUERY_CONTEXT_SECRET' },
+          { kind: 'internal-operation', environmentName: 'APPLIK8S_INTERNAL_OPERATION_SECRET' },
+        ],
+      }),
+    ]);
+
+    await writeFile(manifest, JSON.stringify(bundle([
+      { kind: 'ambient-root', environmentName: 'AWS_SECRET_ACCESS_KEY' },
+    ])));
+    await expect(readLocalRuntimeArtifacts(manifest, root)).rejects.toThrow(/frameworkCredentials\[0\].*invalid/u);
+
+    await writeFile(manifest, JSON.stringify(bundle([
+      { kind: 'internal-operation', environmentName: 'AWS_SECRET_ACCESS_KEY' },
+    ])));
+    await expect(readLocalRuntimeArtifacts(manifest, root)).rejects.toThrow(/noncanonical environment name/u);
+
+    await writeFile(manifest, JSON.stringify(bundle([
+      { kind: 'context', environmentName: 'APPLIK8S_CONTEXT_SECRET' },
+      { kind: 'cursor', environmentName: 'APPLIK8S_CONTEXT_SECRET' },
+    ])));
+    await expect(readLocalRuntimeArtifacts(manifest, root)).rejects.toThrow(/repeats an environment name/u);
+  });
+
+  it('hydrates the application host credential contract independently of sibling runtimes', async () => {
+    const root = await mkdtemp(join(process.env.TMPDIR ?? '/tmp', 'applik8s-host-credentials-'));
+    const manifest = join(root, 'typekro-composition.json');
+    await writeFile(manifest, JSON.stringify({
+      apiVersion: 'applik8s.dev/v1alpha1',
+      kind: 'TypeKroCompositionBundle',
+      spec: {
+        applicationHost: {
+          nodeId: 'provider.ApplicationHost',
+          frameworkCredentials: [
+            { kind: 'cursor', environmentName: 'APPLIK8S_CURSOR_SECRET' },
+            { kind: 'internal-operation', environmentName: 'APPLIK8S_INTERNAL_OPERATION_SECRET' },
+          ],
+        },
+      },
+    }));
+    await expect(readLocalApplicationHostFrameworkCredentials(manifest)).resolves.toEqual([
+      { kind: 'cursor', environmentName: 'APPLIK8S_CURSOR_SECRET' },
+      { kind: 'internal-operation', environmentName: 'APPLIK8S_INTERNAL_OPERATION_SECRET' },
+    ]);
   });
 
   it('admits and normalizes compiler-owned container recipes for target planning', async () => {

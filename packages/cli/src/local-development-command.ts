@@ -9,7 +9,7 @@ import { applicationGeneratedSecretRequirements } from '@applik8s/compiler';
 import { type ApplicationGraph, type ApplicationPlan, serializeApplicationPlan } from '@applik8s/core';
 import { type ApplicationAwsDeployment, applicationAwsOutputKey, createApplicationAwsDeployment } from '@applik8s/deployment-alchemy';
 import { type ApplicationLocalRuntimeArtifact, awsLocalOutputBindingId, awsLocalRuntimeBindingId, compileApplicationAwsDeploymentPlan, compileLocalApplicationPlan, compileLocalSupervisorPlan } from '@applik8s/deployment-compiler';
-import { type ApplicationAwsDeploymentPlan, type DeploymentJsonObject, type LocalSupervisorTarget, serializeApplicationAwsDeploymentPlan, serializeLocalSupervisorPlan, validateApplicationAwsDeploymentPlan, validateLocalSupervisorPlan } from '@applik8s/deployment-contract';
+import { type ApplicationAwsDeploymentPlan, type DeploymentJsonObject, type LocalSupervisorTarget, serializeApplicationAwsDeploymentPlan, serializeLocalSupervisorPlan, validateApplicationAwsDeploymentPlan, validateApplicationRuntimeArtifact, validateLocalSupervisorPlan } from '@applik8s/deployment-contract';
 import { OpenCodeAgentProvider } from '@applik8s/dev/agent/opencode';
 import { createDevelopmentDaemon, type DevelopmentApplicationEvidence, type DevelopmentDaemonState } from '@applik8s/dev/server';
 import { parse as parseYaml } from 'yaml';
@@ -146,6 +146,7 @@ export async function runLocalDevelopmentCommand(
       resolve(io.cwd, outDir),
       target,
     );
+    const applicationHostFrameworkCredentials = await readLocalApplicationHostFrameworkCredentials(bundlePath);
     const installationSpec = await configuredInstallationSpec(
       configuration.instance ? resolve(io.cwd, configuration.instance) : undefined,
     );
@@ -170,6 +171,7 @@ export async function runLocalDevelopmentCommand(
       projectDigest,
       projectDirectory: applicationPackage.directory,
       runtimeArtifacts,
+      applicationHostFrameworkCredentials,
       generatedSecrets,
       localResourceAuthorityModule: fileURLToPath(import.meta.resolve('@applik8s/server/local-resource-authority-process')),
       ...(installationSpec ? { installationSpec } : {}),
@@ -416,6 +418,7 @@ interface LocalRuntimeBundleEntry {
   readonly localDigest?: string;
   readonly container?: ApplicationLocalRuntimeArtifact['container'];
   readonly runtimeEndpoints?: ApplicationLocalRuntimeArtifact['runtimeEndpoints'];
+  readonly frameworkCredentials?: ApplicationLocalRuntimeArtifact['frameworkCredentials'];
 }
 
 /**
@@ -471,7 +474,7 @@ export async function readLocalRuntimeArtifacts(
       const identity = `${role}:${entry.nodeId}`;
       if (identities.has(identity)) throw new Error(`Compiler bundle ${manifestPath} repeats runtime artifact ${identity}.`);
       identities.add(identity);
-      artifacts.push({
+      const artifact: ApplicationLocalRuntimeArtifact = {
         name: entry.name,
         nodeId: entry.nodeId,
         role,
@@ -479,7 +482,13 @@ export async function readLocalRuntimeArtifacts(
         digest: actualDigest,
         ...(container ? { container } : {}),
         ...(entry.runtimeEndpoints?.length ? { runtimeEndpoints: entry.runtimeEndpoints } : {}),
-      });
+        ...(entry.frameworkCredentials?.length ? { frameworkCredentials: entry.frameworkCredentials } : {}),
+      };
+      const artifactErrors = validateApplicationRuntimeArtifact(artifact);
+      if (artifactErrors.length > 0) {
+        throw new Error(`Compiler bundle entry spec.${field}[${index}] is invalid: ${artifactErrors.join('; ')}.`);
+      }
+      artifacts.push(artifact);
     }
   }
   const rawOperators = spec.operators;
@@ -508,6 +517,27 @@ export async function readLocalRuntimeArtifacts(
     }
   }
   return artifacts.sort((left, right) => `${left.role}:${left.nodeId}`.localeCompare(`${right.role}:${right.nodeId}`));
+}
+
+export async function readLocalApplicationHostFrameworkCredentials(
+  manifestPath: string,
+): Promise<NonNullable<ApplicationLocalRuntimeArtifact['frameworkCredentials']>> {
+  const manifest = jsonRecord(JSON.parse(await readFile(manifestPath, 'utf8')));
+  if (manifest?.apiVersion !== 'applik8s.dev/v1alpha1' || manifest.kind !== 'TypeKroCompositionBundle') {
+    throw new Error(`Compiler bundle ${manifestPath} has an unsupported schema.`);
+  }
+  const spec = jsonRecord(manifest.spec);
+  if (!spec) throw new Error(`Compiler bundle ${manifestPath} has no spec object.`);
+  if (spec.applicationHost === undefined) return [];
+  const host = jsonRecord(spec.applicationHost);
+  if (!host || typeof host.nodeId !== 'string' || !host.nodeId.trim()) {
+    throw new Error(`Compiler bundle ${manifestPath} field spec.applicationHost is incomplete or invalid.`);
+  }
+  return localRuntimeFrameworkCredentialDependencies(
+    host.frameworkCredentials,
+    'applicationHost',
+    0,
+  );
 }
 
 function localRuntimeBundleEntry(value: unknown, field: string, index: number): LocalRuntimeBundleEntry {
@@ -539,8 +569,43 @@ function localRuntimeBundleEntry(value: unknown, field: string, index: number): 
     ...(entry.runtimeEndpoints !== undefined
       ? { runtimeEndpoints: localRuntimeEndpointDependencies(entry.runtimeEndpoints, field, index) }
       : {}),
+    ...(entry.frameworkCredentials !== undefined
+      ? { frameworkCredentials: localRuntimeFrameworkCredentialDependencies(entry.frameworkCredentials, field, index) }
+      : {}),
     ...(entry.container ? { container: localRuntimeContainerArtifact(entry.container, field, index) } : {}),
   };
+}
+
+function localRuntimeFrameworkCredentialDependencies(
+  value: unknown,
+  field: string,
+  index: number,
+): NonNullable<ApplicationLocalRuntimeArtifact['frameworkCredentials']> {
+  if (!Array.isArray(value)) throw new Error(`Compiler bundle entry spec.${field}[${index}].frameworkCredentials must be an array.`);
+  const supported = new Set([
+    'agent-query-context',
+    'context',
+    'cursor',
+    'http-context',
+    'internal-operation',
+    'local-resource',
+    'task-operation-context',
+    'task-query-context',
+  ]);
+  const credentials = value.map((candidate, credentialIndex) => {
+    const credential = jsonRecord(candidate);
+    if (!credential || typeof credential.kind !== 'string' || !supported.has(credential.kind) || typeof credential.environmentName !== 'string' || !/^[A-Za-z_][A-Za-z0-9_]*$/u.test(credential.environmentName)) {
+      throw new Error(`Compiler bundle entry spec.${field}[${index}].frameworkCredentials[${credentialIndex}] is incomplete or invalid.`);
+    }
+    return {
+      kind: credential.kind as NonNullable<ApplicationLocalRuntimeArtifact['frameworkCredentials']>[number]['kind'],
+      environmentName: credential.environmentName,
+    };
+  });
+  if (new Set(credentials.map(({ environmentName }) => environmentName)).size !== credentials.length) {
+    throw new Error(`Compiler bundle entry spec.${field}[${index}].frameworkCredentials repeats an environment name.`);
+  }
+  return credentials;
 }
 
 function localRuntimeEndpointDependencies(

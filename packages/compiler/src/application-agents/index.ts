@@ -19,6 +19,7 @@ import type {
 } from '@applik8s/core';
 import { applicationOperationId } from '@applik8s/core';
 import {
+  type ApplicationFrameworkCredentialDependency,
   type ApplicationRuntimeEndpointDependency,
   applicationOptionalDeploymentOutputReference,
   applicationRuntimeEndpointEnvironmentName,
@@ -34,6 +35,7 @@ import {
   emitGeneratedApplicationContainer,
   type GeneratedApplicationContainerArtifact,
 } from '../application-containers/index.js';
+import { applicationFrameworkCredentialDependencies } from '../application-framework-credentials.js';
 import { applicationGraphStringValue } from '../application-installation-values.js';
 import {
   type ApplicationOperationPlacementReceiver,
@@ -61,6 +63,7 @@ export interface GeneratedApplicationAgentArtifact {
   readonly container: GeneratedApplicationContainerArtifact;
   readonly resources: readonly GeneratedApplicationAgentResource[];
   readonly runtimeEndpoints: readonly ApplicationRuntimeEndpointDependency[];
+  readonly frameworkCredentials: readonly ApplicationFrameworkCredentialDependency[];
 }
 
 export interface GeneratedApplicationAgentResource {
@@ -581,6 +584,7 @@ async function emitAgent(
     ...contract.operations.map(({ receiver }) => ({ nodeId: receiver.nodeId, environmentName: receiver.environmentName })),
     ...contract.queries.map(({ gateway, endpointEnvironmentName }) => ({ nodeId: gateway.id, environmentName: endpointEnvironmentName })),
   ]);
+  const frameworkCredentials = applicationFrameworkCredentialDependencies(source);
   await writeFile(
     manifestPath,
     `${JSON.stringify(
@@ -635,6 +639,7 @@ async function emitAgent(
     container,
     resources,
     runtimeEndpoints,
+    frameworkCredentials,
   };
 }
 

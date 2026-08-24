@@ -8,10 +8,34 @@ import type { ApplicationGraph } from '@applik8s/core';
 import { describe, expect, it } from 'vitest';
 import {
   applicationGraphWithInferredApplicationHost,
+  applicationHostFrameworkCredentialDependencies,
   emitGeneratedApplicationHost,
 } from '../src/application-host/index.js';
 
 describe('generated ApplicationHost', () => {
+  it('declares only the framework credentials consumed by the authored host', () => {
+    expect(applicationHostFrameworkCredentialDependencies(hostGraph())).toEqual([
+      { kind: 'cursor', environmentName: 'APPLIK8S_CURSOR_SECRET' },
+    ]);
+    expect(applicationHostFrameworkCredentialDependencies({
+      ...hostGraph(),
+      nodes: [
+        ...hostGraph().nodes,
+        {
+          id: 'schedule.digest',
+          kind: 'schedule',
+          name: 'digest',
+          stability: 'stable',
+          parameters: { kind: 'fixed', every: '1h' },
+          handler: { source: 'async () => undefined' },
+        },
+      ],
+    } as ApplicationGraph)).toEqual([
+      { kind: 'cursor', environmentName: 'APPLIK8S_CURSOR_SECRET' },
+      { kind: 'internal-operation', environmentName: 'APPLIK8S_INTERNAL_OPERATION_SECRET' },
+    ]);
+  });
+
   it('infers one host from a built Start server artifact without overriding an authored host', async () => {
     const root = await mkdtemp(join(tmpdir(), 'applik8s-host-inference-'));
     await mkdir(join(root, '.applik8s/web-artifacts'), { recursive: true });

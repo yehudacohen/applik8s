@@ -3,8 +3,9 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { build } from 'esbuild';
 import { emitGeneratedApplicationContainer } from '../application-containers/index.js';
-import { applik8sWorkspaceSourcePlugin } from '../bundling/index.js';
 import type { ApplicationRuntimeExecutionTarget } from '../application-event-log-runtime-source.js';
+import { applicationFrameworkCredentialDependencies } from '../application-framework-credentials.js';
+import { applik8sWorkspaceSourcePlugin } from '../bundling/index.js';
 import type { WorkflowContract } from './contracts.js';
 import { workflowResources } from './resources.js';
 import {
@@ -113,5 +114,6 @@ export async function emitWorkflowWorker(
   };
   await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
   await writeFile(metafilePath, `${JSON.stringify(result.metafile, null, 2)}\n`);
-  return { name, workerId: contract.worker.id, sourcePath, sourceMapPath, manifestPath, metafilePath, digest, sizeBytes, container, resources, runtimeEndpoints };
+  const frameworkCredentials = applicationFrameworkCredentialDependencies(source);
+  return { name, workerId: contract.worker.id, sourcePath, sourceMapPath, manifestPath, metafilePath, digest, sizeBytes, container, resources, runtimeEndpoints, frameworkCredentials };
 }

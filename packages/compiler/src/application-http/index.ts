@@ -16,6 +16,7 @@ import type {
   ApplicationServerNode,
   JsonObject,
 } from '@applik8s/core';
+import type { ApplicationFrameworkCredentialDependency } from '@applik8s/deployment-contract';
 import { build } from 'esbuild';
 import { applicationCallableProviderEnvironment } from '../application-callable-provider-runtime.js';
 import { generatedCallbackFactoryModule } from '../application-callback-module.js';
@@ -27,6 +28,7 @@ import {
   type ApplicationRuntimeExecutionTarget,
   generatedApplicationEventLogPublisherSource,
 } from '../application-event-log-runtime-source.js';
+import { applicationFrameworkCredentialDependencies } from '../application-framework-credentials.js';
 import {
   applicationGraphInterpolate,
   applicationGraphJsonStringArray,
@@ -53,6 +55,7 @@ export interface GeneratedApplicationHttpArtifact {
   readonly sizeBytes: number;
   readonly container: GeneratedApplicationContainerArtifact;
   readonly resources: readonly GeneratedApplicationHttpResource[];
+  readonly frameworkCredentials: readonly ApplicationFrameworkCredentialDependency[];
 }
 
 export interface GeneratedApplicationHttpResource {
@@ -461,6 +464,7 @@ async function emitHttpServer(
     sourceDigest: digest,
   });
   const resources = generatedHttpResources(contract, container.image, digest);
+  const frameworkCredentials = applicationFrameworkCredentialDependencies(source);
   await writeFile(
     manifestPath,
     `${JSON.stringify({
@@ -506,6 +510,7 @@ async function emitHttpServer(
     sizeBytes,
     container,
     resources,
+    frameworkCredentials,
   };
 }
 

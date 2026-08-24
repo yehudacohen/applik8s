@@ -52,6 +52,7 @@ export interface TypeKroCompositionBundleManifest extends JsonObject {
     readonly mcp?: readonly TypeKroCompositionMcpArtifactReference[];
     readonly agents?: readonly TypeKroCompositionAgentArtifactReference[];
     readonly http?: readonly TypeKroCompositionHttpArtifactReference[];
+    readonly applicationHost?: TypeKroCompositionApplicationHostArtifactReference;
   };
 }
 
@@ -59,6 +60,11 @@ export interface TypeKroCompositionOperatorArtifactReference extends JsonObject 
   readonly name: string;
   readonly manifest: string;
   readonly outDir: string;
+}
+
+export interface TypeKroCompositionApplicationHostArtifactReference extends JsonObject {
+  readonly nodeId: string;
+  readonly frameworkCredentials: readonly TypeKroCompositionFrameworkCredentialReference[];
 }
 
 export interface TypeKroCompositionProcessorArtifactReference extends JsonObject {
@@ -69,6 +75,7 @@ export interface TypeKroCompositionProcessorArtifactReference extends JsonObject
   readonly digest: string;
   readonly sizeBytes: number;
   readonly container: TypeKroCompositionContainerArtifactReference;
+  readonly frameworkCredentials?: readonly TypeKroCompositionFrameworkCredentialReference[];
 }
 
 export interface TypeKroCompositionLakehousePublisherArtifactReference extends JsonObject {
@@ -82,6 +89,7 @@ export interface TypeKroCompositionLakehousePublisherArtifactReference extends J
   readonly localSource: string;
   readonly localDigest: string;
   readonly localSizeBytes: number;
+  readonly frameworkCredentials?: readonly TypeKroCompositionFrameworkCredentialReference[];
 }
 
 export interface TypeKroCompositionWorkflowArtifactReference extends JsonObject {
@@ -93,6 +101,7 @@ export interface TypeKroCompositionWorkflowArtifactReference extends JsonObject 
   readonly sizeBytes: number;
   readonly container: TypeKroCompositionContainerArtifactReference;
   readonly runtimeEndpoints?: readonly TypeKroCompositionRuntimeEndpointReference[];
+  readonly frameworkCredentials?: readonly TypeKroCompositionFrameworkCredentialReference[];
 }
 
 export interface TypeKroCompositionReactiveArtifactReference extends JsonObject {
@@ -109,6 +118,7 @@ export interface TypeKroCompositionReactiveArtifactReference extends JsonObject 
   readonly digest: string;
   readonly sizeBytes: number;
   readonly container: TypeKroCompositionContainerArtifactReference;
+  readonly frameworkCredentials?: readonly TypeKroCompositionFrameworkCredentialReference[];
 }
 
 export interface TypeKroCompositionAgentArtifactReference extends JsonObject {
@@ -120,6 +130,7 @@ export interface TypeKroCompositionAgentArtifactReference extends JsonObject {
   readonly sizeBytes: number;
   readonly container: TypeKroCompositionContainerArtifactReference;
   readonly runtimeEndpoints?: readonly TypeKroCompositionRuntimeEndpointReference[];
+  readonly frameworkCredentials?: readonly TypeKroCompositionFrameworkCredentialReference[];
 }
 
 export interface TypeKroCompositionHttpArtifactReference extends JsonObject {
@@ -130,6 +141,7 @@ export interface TypeKroCompositionHttpArtifactReference extends JsonObject {
   readonly digest: string;
   readonly sizeBytes: number;
   readonly container: TypeKroCompositionContainerArtifactReference;
+  readonly frameworkCredentials?: readonly TypeKroCompositionFrameworkCredentialReference[];
 }
 
 export interface TypeKroCompositionMcpArtifactReference extends JsonObject {
@@ -141,6 +153,20 @@ export interface TypeKroCompositionMcpArtifactReference extends JsonObject {
   readonly sizeBytes: number;
   readonly container: TypeKroCompositionContainerArtifactReference;
   readonly runtimeEndpoints?: readonly TypeKroCompositionRuntimeEndpointReference[];
+  readonly frameworkCredentials?: readonly TypeKroCompositionFrameworkCredentialReference[];
+}
+
+export interface TypeKroCompositionFrameworkCredentialReference extends JsonObject {
+  readonly kind:
+    | 'agent-query-context'
+    | 'context'
+    | 'cursor'
+    | 'http-context'
+    | 'internal-operation'
+    | 'local-resource'
+    | 'task-operation-context'
+    | 'task-query-context';
+  readonly environmentName: string;
 }
 
 export interface TypeKroCompositionRuntimeEndpointReference extends JsonObject {

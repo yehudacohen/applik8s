@@ -2,10 +2,12 @@ import { createHash } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { ApplicationCommandHandlerNode, ApplicationCommandNode, ApplicationEventNode, ApplicationGraph, ApplicationHandlerDependencies, ApplicationModelNode, ApplicationOperationCatalog, ApplicationProcessorNode, ApplicationProviderNode, ApplicationStaticAuthorityManifest, ApplicationStreamNode } from '@applik8s/core';
+import type { ApplicationFrameworkCredentialDependency } from '@applik8s/deployment-contract';
 import { build } from 'esbuild';
 import { generatedCallbackFactoryModule } from '../application-callback-module.js';
 import type { GeneratedApplicationContainerArtifact } from '../application-containers/index.js';
 import { emitGeneratedApplicationContainer } from '../application-containers/index.js';
+import { applicationFrameworkCredentialDependencies } from '../application-framework-credentials.js';
 import { applicationGraphBooleanCondition, applicationGraphInterpolate, applicationGraphJsonStringArray, applicationGraphStringValue } from '../application-installation-values.js';
 import { applicationStaticAuthorityManifest, compileApplicationOperationCatalog } from '../application-operations/index.js';
 import { applik8sWorkspaceSourcePlugin } from '../bundling/index.js';
@@ -24,6 +26,7 @@ export interface GeneratedApplicationProcessorArtifact {
   readonly sizeBytes: number;
   readonly container: GeneratedApplicationContainerArtifact;
   readonly resources: readonly GeneratedApplicationProcessorResource[];
+  readonly frameworkCredentials: readonly ApplicationFrameworkCredentialDependency[];
 }
 
 export interface GeneratedApplicationProcessorResource {
@@ -135,7 +138,8 @@ async function emitProcessor(graph: ApplicationGraph, processor: ApplicationProc
   };
   await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
   await writeFile(metafilePath, `${JSON.stringify(result.metafile, null, 2)}\n`);
-  return { name, processorId: processor.id, sourcePath, sourceMapPath, manifestPath, metafilePath, digest, sizeBytes, container, resources };
+  const frameworkCredentials = applicationFrameworkCredentialDependencies(source);
+  return { name, processorId: processor.id, sourcePath, sourceMapPath, manifestPath, metafilePath, digest, sizeBytes, container, resources, frameworkCredentials };
 }
 
 interface ProcessorContract {

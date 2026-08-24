@@ -11,10 +11,11 @@ import type {
   Result,
 } from '@applik8s/core';
 import { applicationGraphArtifactFileName, applicationOperationCatalogArtifactFileName, applicationWorkloadAuthorityArtifactFileName, serializeApplicationGraph, validateApplicationGraph } from '@applik8s/core';
+import type { ApplicationFrameworkCredentialDependency } from '@applik8s/deployment-contract';
 import { parseAllDocuments, stringify } from 'yaml';
 import { emitGeneratedApplicationAgents } from '../application-agents/index.js';
 import { applicationGraphWithEntrypointPublicSurface } from '../application-facade/public-surface.js';
-import { applicationGraphWithInferredApplicationHost } from '../application-host/index.js';
+import { applicationGraphWithInferredApplicationHost, applicationHostFrameworkCredentialDependencies } from '../application-host/index.js';
 import { emitGeneratedApplicationHttpServers } from '../application-http/index.js';
 import { emitGeneratedApplicationLakehousePublishers } from '../application-lakehouse-publishers/index.js';
 import { emitGeneratedApplicationMcpServers } from '../application-mcp/index.js';
@@ -69,6 +70,7 @@ import { generatedDispatcherEntrypoint } from './static-dispatcher.js';
 import type {
   TypeKroCompositionArtifacts,
   TypeKroCompositionBundleManifest,
+  TypeKroCompositionFrameworkCredentialReference,
   TypeKroCompositionResource,
   TypeKroCompositionRuntimeEndpointReference,
 } from './typekro-artifact-contracts.js';
@@ -454,6 +456,12 @@ async function emitTypeKroCompositionArtifacts(request: EmitTypeKroCompositionAr
     const hostResources = request.applicationGraph && (request.executionTarget === undefined || request.executionTarget === 'kubernetes')
       ? await generatedApplicationHostResources({ graph: request.applicationGraph, entrypoint: request.entrypoint, outDir: join(request.outDir, 'application-host') })
       : [];
+    const applicationHost = request.applicationGraph?.nodes.find(
+      (node) => node.kind === 'provider' && node.interface === 'ApplicationHost',
+    );
+    const applicationHostFrameworkCredentials = request.applicationGraph && applicationHost
+      ? applicationHostFrameworkCredentialDependencies(request.applicationGraph)
+      : [];
     // typecast: generated processor resources are concrete Kubernetes JSON objects and are validated by the same serialization path as composition resources.
     const processorResources = processorArtifacts.flatMap((artifact) => artifact.resources) as unknown as readonly TypeKroCompositionResource[];
     const lakehousePublisherResources = lakehousePublisherArtifacts.flatMap((artifact) => artifact.resources) as unknown as readonly TypeKroCompositionResource[];
@@ -584,13 +592,19 @@ async function emitTypeKroCompositionArtifacts(request: EmitTypeKroCompositionAr
           manifest: compiled.artifacts.manifestJsonPath,
           outDir: dirname(compiled.artifacts.manifestJsonPath),
         })),
-        ...(processorArtifacts.length > 0 ? { processors: processorArtifacts.map((artifact) => ({ name: artifact.name, nodeId: artifact.processorId, manifest: artifact.manifestPath, source: artifact.sourcePath, digest: artifact.digest, sizeBytes: artifact.sizeBytes, container: typeKroContainerArtifactReference(artifact.container) })) } : {}),
-        ...(lakehousePublisherArtifacts.length > 0 ? { lakehousePublishers: lakehousePublisherArtifacts.map((artifact) => ({ name: artifact.name, nodeId: artifact.publicationId, manifest: artifact.manifestPath, source: artifact.sourcePath, digest: artifact.digest, sizeBytes: artifact.sizeBytes, localSource: artifact.localSourcePath, localDigest: artifact.localDigest, localSizeBytes: artifact.localSizeBytes, container: typeKroContainerArtifactReference(artifact.container) })) } : {}),
-        ...(workflowArtifacts.length > 0 ? { workflows: workflowArtifacts.map((artifact) => ({ name: artifact.name, nodeId: artifact.workerId, manifest: artifact.manifestPath, source: artifact.sourcePath, digest: artifact.digest, sizeBytes: artifact.sizeBytes, container: typeKroContainerArtifactReference(artifact.container), ...(artifact.runtimeEndpoints.length ? { runtimeEndpoints: typeKroRuntimeEndpointReferences(artifact.runtimeEndpoints) } : {}) })) } : {}),
-        ...(reactiveArtifacts.length > 0 ? { reactive: reactiveArtifacts.map((artifact) => ({ name: artifact.name, nodeId: artifact.nodeId, kind: artifact.kind, manifest: artifact.manifestPath, source: artifact.sourcePath, digest: artifact.digest, sizeBytes: artifact.sizeBytes, container: typeKroContainerArtifactReference(artifact.container) })) } : {}),
-        ...(mcpArtifacts.length > 0 ? { mcp: mcpArtifacts.map((artifact) => ({ name: artifact.name, serverId: artifact.serverId, manifest: artifact.manifestPath, source: artifact.sourcePath, digest: artifact.digest, sizeBytes: artifact.sizeBytes, container: typeKroContainerArtifactReference(artifact.container), ...(artifact.runtimeEndpoints.length ? { runtimeEndpoints: typeKroRuntimeEndpointReferences(artifact.runtimeEndpoints) } : {}) })) } : {}),
-        ...(agentArtifacts.length > 0 ? { agents: agentArtifacts.map((artifact) => ({ name: artifact.name, nodeId: artifact.agentId, manifest: artifact.manifestPath, source: artifact.sourcePath, digest: artifact.digest, sizeBytes: artifact.sizeBytes, container: typeKroContainerArtifactReference(artifact.container), ...(artifact.runtimeEndpoints.length ? { runtimeEndpoints: typeKroRuntimeEndpointReferences(artifact.runtimeEndpoints) } : {}) })) } : {}),
-        ...(httpArtifacts.length > 0 ? { http: httpArtifacts.map((artifact) => ({ name: artifact.name, serverId: artifact.serverId, manifest: artifact.manifestPath, source: artifact.sourcePath, digest: artifact.digest, sizeBytes: artifact.sizeBytes, container: typeKroContainerArtifactReference(artifact.container) })) } : {}),
+        ...(processorArtifacts.length > 0 ? { processors: processorArtifacts.map((artifact) => ({ name: artifact.name, nodeId: artifact.processorId, manifest: artifact.manifestPath, source: artifact.sourcePath, digest: artifact.digest, sizeBytes: artifact.sizeBytes, container: typeKroContainerArtifactReference(artifact.container), ...typeKroFrameworkCredentialReferences(artifact.frameworkCredentials) })) } : {}),
+        ...(lakehousePublisherArtifacts.length > 0 ? { lakehousePublishers: lakehousePublisherArtifacts.map((artifact) => ({ name: artifact.name, nodeId: artifact.publicationId, manifest: artifact.manifestPath, source: artifact.sourcePath, digest: artifact.digest, sizeBytes: artifact.sizeBytes, localSource: artifact.localSourcePath, localDigest: artifact.localDigest, localSizeBytes: artifact.localSizeBytes, container: typeKroContainerArtifactReference(artifact.container), ...typeKroFrameworkCredentialReferences(artifact.frameworkCredentials) })) } : {}),
+        ...(workflowArtifacts.length > 0 ? { workflows: workflowArtifacts.map((artifact) => ({ name: artifact.name, nodeId: artifact.workerId, manifest: artifact.manifestPath, source: artifact.sourcePath, digest: artifact.digest, sizeBytes: artifact.sizeBytes, container: typeKroContainerArtifactReference(artifact.container), ...(artifact.runtimeEndpoints.length ? { runtimeEndpoints: typeKroRuntimeEndpointReferences(artifact.runtimeEndpoints) } : {}), ...typeKroFrameworkCredentialReferences(artifact.frameworkCredentials) })) } : {}),
+        ...(reactiveArtifacts.length > 0 ? { reactive: reactiveArtifacts.map((artifact) => ({ name: artifact.name, nodeId: artifact.nodeId, kind: artifact.kind, manifest: artifact.manifestPath, source: artifact.sourcePath, digest: artifact.digest, sizeBytes: artifact.sizeBytes, container: typeKroContainerArtifactReference(artifact.container), ...typeKroFrameworkCredentialReferences(artifact.frameworkCredentials) })) } : {}),
+        ...(mcpArtifacts.length > 0 ? { mcp: mcpArtifacts.map((artifact) => ({ name: artifact.name, serverId: artifact.serverId, manifest: artifact.manifestPath, source: artifact.sourcePath, digest: artifact.digest, sizeBytes: artifact.sizeBytes, container: typeKroContainerArtifactReference(artifact.container), ...(artifact.runtimeEndpoints.length ? { runtimeEndpoints: typeKroRuntimeEndpointReferences(artifact.runtimeEndpoints) } : {}), ...typeKroFrameworkCredentialReferences(artifact.frameworkCredentials) })) } : {}),
+        ...(agentArtifacts.length > 0 ? { agents: agentArtifacts.map((artifact) => ({ name: artifact.name, nodeId: artifact.agentId, manifest: artifact.manifestPath, source: artifact.sourcePath, digest: artifact.digest, sizeBytes: artifact.sizeBytes, container: typeKroContainerArtifactReference(artifact.container), ...(artifact.runtimeEndpoints.length ? { runtimeEndpoints: typeKroRuntimeEndpointReferences(artifact.runtimeEndpoints) } : {}), ...typeKroFrameworkCredentialReferences(artifact.frameworkCredentials) })) } : {}),
+        ...(httpArtifacts.length > 0 ? { http: httpArtifacts.map((artifact) => ({ name: artifact.name, serverId: artifact.serverId, manifest: artifact.manifestPath, source: artifact.sourcePath, digest: artifact.digest, sizeBytes: artifact.sizeBytes, container: typeKroContainerArtifactReference(artifact.container), ...typeKroFrameworkCredentialReferences(artifact.frameworkCredentials) })) } : {}),
+        ...(applicationHost ? {
+          applicationHost: {
+            nodeId: applicationHost.id,
+            frameworkCredentials: applicationHostFrameworkCredentials.map(({ kind, environmentName }) => ({ kind, environmentName })),
+          },
+        } : {}),
       },
     };
 
@@ -1178,6 +1192,13 @@ function typeKroRuntimeEndpointReferences(
   endpoints: readonly { readonly nodeId: string; readonly environmentName: string }[],
 ): readonly TypeKroCompositionRuntimeEndpointReference[] {
   return endpoints.map(({ nodeId, environmentName }) => ({ nodeId, environmentName }));
+}
+function typeKroFrameworkCredentialReferences(
+  credentials: readonly ApplicationFrameworkCredentialDependency[],
+): { readonly frameworkCredentials?: readonly TypeKroCompositionFrameworkCredentialReference[] } {
+  return credentials.length > 0
+    ? { frameworkCredentials: credentials.map(({ kind, environmentName }) => ({ kind, environmentName })) }
+    : {};
 }
 function error<T = never>(code: Diagnostic['code'], message: string): Result<T> {
   return { ok: false, error: { code, message, severity: 'error', context: {}, recovery: { summary: message } } };

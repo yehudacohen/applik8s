@@ -15,6 +15,7 @@ import type {
   ApplicationAwsPlanResource,
   ApplicationDeploymentGraph,
   ApplicationDeploymentNode,
+  ApplicationFrameworkCredentialDependency,
   ApplicationRuntimeArtifact,
   LocalSupervisorBinding,
   LocalSupervisorContainer,
@@ -48,6 +49,8 @@ export interface CompileLocalSupervisorPlanRequest {
   readonly webCommand?: { readonly command: string; readonly args: readonly string[] };
   /** Compiler-emitted Node entrypoints that run the graph's background boundaries locally. */
   readonly runtimeArtifacts?: readonly ApplicationLocalRuntimeArtifact[];
+  /** Compiler-authored exact framework credentials for the application web host. */
+  readonly applicationHostFrameworkCredentials: readonly ApplicationFrameworkCredentialDependency[];
   /** Resolved package entrypoint used for the local CRD/operator authority process. */
   readonly localResourceAuthorityModule?: string;
   /** Explicit trust grant required for MiniStack's real RDS/ECS/ElastiCache data planes. */
@@ -142,7 +145,10 @@ export function compileLocalSupervisorPlan(request: CompileLocalSupervisorPlanRe
     bindings.push(...hostEnvironmentCredentials.bindings);
   }
 
-  const frameworkCredentials = localFrameworkCredentialAuthority(request.graph, request.runtimeArtifacts ?? []);
+  const frameworkCredentials = localFrameworkCredentialAuthority(
+    request.runtimeArtifacts ?? [],
+    request.applicationHostFrameworkCredentials,
+  );
   if (frameworkCredentials) {
     resources.push(frameworkCredentials.resource);
     bindings.push(...frameworkCredentials.bindings);
@@ -216,6 +222,7 @@ export function compileLocalSupervisorPlan(request: CompileLocalSupervisorPlanRe
       workloadProviders,
       bindings,
       diagnostics,
+      artifact.frameworkCredentials ?? [],
     );
     const portBinding = `port:${artifactId}:http`;
     const process: LocalSupervisorProcess = {
@@ -297,6 +304,12 @@ export function compileLocalSupervisorPlan(request: CompileLocalSupervisorPlanRe
       workloadProviders,
       bindings,
       diagnostics,
+      [
+        ...request.applicationHostFrameworkCredentials,
+        ...(operatorArtifacts.length > 0
+          ? [{ kind: 'local-resource' as const, environmentName: 'APPLIK8S_LOCAL_RESOURCE_TOKEN' }]
+          : []),
+      ],
     );
     const sourceFile = server?.sourceLocation?.file ?? managedHost?.sourceLocation?.file;
     const observabilityProvider = workloadProviders.find(({ interface: providerInterface }) => providerInterface === 'Observability');
@@ -752,21 +765,22 @@ function awsCompatibleInterface(value: string): boolean {
 }
 
 function localFrameworkCredentialAuthority(
-  graph: ApplicationGraph,
   artifacts: readonly ApplicationLocalRuntimeArtifact[],
+  applicationHostCredentials: readonly ApplicationFrameworkCredentialDependency[],
 ): { readonly resource: LocalSupervisorResource; readonly bindings: readonly LocalSupervisorBinding[] } | undefined {
-  if (artifacts.length === 0 && !graph.nodes.some(({ kind }) => kind === 'gateway' || kind === 'server' || kind === 'mcpServer')) return undefined;
+  const credentials = new Map<string, ApplicationFrameworkCredentialDependency>();
+  for (const credential of artifacts.flatMap(({ frameworkCredentials }) => frameworkCredentials ?? [])) {
+    credentials.set(credential.kind, credential);
+  }
+  for (const credential of applicationHostCredentials) credentials.set(credential.kind, credential);
+  if (artifacts.some(({ role }) => role === 'operator')) {
+    credentials.set('local-resource', {
+      kind: 'local-resource',
+      environmentName: 'APPLIK8S_LOCAL_RESOURCE_TOKEN',
+    });
+  }
+  if (credentials.size === 0) return undefined;
   const id = 'authority:framework-credentials';
-  const names = [
-    'agent-query-context',
-    'context',
-    'cursor',
-    'http-context',
-    'internal-operation',
-    'local-resource',
-    'task-operation-context',
-    'task-query-context',
-  ];
   return {
     resource: {
       id,
@@ -778,7 +792,7 @@ function localFrameworkCredentialAuthority(
       health: { kind: 'external', timeoutMs: 1_000 },
       provenance: { graphNodeId: 'framework.credentials' },
     },
-    bindings: names.map((name) => ({ id: `credential:framework:${name}`, owner: id, kind: 'credential' as const, sensitivity: 'sensitive' as const })),
+    bindings: [...credentials.keys()].sort().map((name) => ({ id: `credential:framework:${name}`, owner: id, kind: 'credential' as const, sensitivity: 'sensitive' as const })),
   };
 }
 
@@ -1037,6 +1051,7 @@ function localRuntimeEnvironment(
   providers: readonly ApplicationProviderNode[],
   declaredBindings: readonly LocalSupervisorBinding[],
   diagnostics: LocalSupervisorDiagnostic[],
+  frameworkCredentials: readonly ApplicationFrameworkCredentialDependency[],
 ): readonly LocalSupervisorProcess['environment'][number][] {
   const environment: LocalSupervisorProcess['environment'][number][] = [];
   const add = (name: string, entry: { readonly binding: string } | { readonly template: readonly LocalSupervisorEnvironmentSegment[] }): void => {
@@ -1182,17 +1197,8 @@ function localRuntimeEnvironment(
     add('AWS_ACCESS_KEY_ID', { binding: `credential:${objects.id}:access-key` });
     add('AWS_SECRET_ACCESS_KEY', { binding: `credential:${objects.id}:secret-key` });
   }
-  for (const [environmentName, credentialName] of [
-    ['APPLIK8S_AGENT_QUERY_CONTEXT_SECRET', 'agent-query-context'],
-    ['APPLIK8S_CONTEXT_SECRET', 'context'],
-    ['APPLIK8S_CURSOR_SECRET', 'cursor'],
-    ['APPLIK8S_HTTP_CONTEXT_SECRET', 'http-context'],
-    ['APPLIK8S_INTERNAL_OPERATION_SECRET', 'internal-operation'],
-    ['APPLIK8S_LOCAL_RESOURCE_TOKEN', 'local-resource'],
-    ['APPLIK8S_TASK_OPERATION_CONTEXT_SECRET', 'task-operation-context'],
-    ['APPLIK8S_TASK_QUERY_CONTEXT_SECRET', 'task-query-context'],
-  ] as const) {
-    if (bindingExists(`credential:framework:${credentialName}`)) add(environmentName, { binding: `credential:framework:${credentialName}` });
+  for (const { environmentName, kind } of frameworkCredentials) {
+    if (bindingExists(`credential:framework:${kind}`)) add(environmentName, { binding: `credential:framework:${kind}` });
   }
   if (bindingExists('endpoint:runtime:local-resource-authority:http')) add('APPLIK8S_LOCAL_RESOURCE_URL', { binding: 'endpoint:runtime:local-resource-authority:http' });
   add('APPLIK8S_INSTALLATION_SPEC', { binding: `literal:${stableJson(request.installationSpec ?? { name: request.graph.metadata.name, profile: request.profile })}` });

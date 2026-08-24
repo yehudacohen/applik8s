@@ -9,12 +9,13 @@ import type {
   ApplicationProviderNode,
   ApplicationReactiveDatabaseRuntimeContract,
 } from '@applik8s/core';
-import type { ApplicationRuntimeEndpointDependency } from '@applik8s/deployment-contract';
+import type { ApplicationFrameworkCredentialDependency, ApplicationRuntimeEndpointDependency } from '@applik8s/deployment-contract';
 import { build } from 'esbuild';
 import {
   emitGeneratedApplicationContainer,
   type GeneratedApplicationContainerArtifact,
 } from '../application-containers/index.js';
+import { applicationFrameworkCredentialDependencies } from '../application-framework-credentials.js';
 import { applicationGraphStringValue } from '../application-installation-values.js';
 import {
   applicationStaticAuthorityManifest,
@@ -48,6 +49,7 @@ export interface GeneratedApplicationMcpArtifact {
   readonly container: GeneratedApplicationContainerArtifact;
   readonly resources: readonly GeneratedApplicationMcpResource[];
   readonly runtimeEndpoints: readonly ApplicationRuntimeEndpointDependency[];
+  readonly frameworkCredentials: readonly ApplicationFrameworkCredentialDependency[];
 }
 
 interface ApplicationMcpCompilerContract {
@@ -184,6 +186,7 @@ async function emitMcpServer(
     sourceDigest: digest,
   });
   const resources = generatedMcpResources(contract, name, container.image, digest);
+  const frameworkCredentials = applicationFrameworkCredentialDependencies(source);
   const runtimeEndpoints = [...new Map(contract.routes.map(({ receiver }) => [
     receiver.environmentName,
     { nodeId: receiver.nodeId, environmentName: receiver.environmentName },
@@ -225,6 +228,7 @@ async function emitMcpServer(
     container,
     resources,
     runtimeEndpoints,
+    frameworkCredentials,
   };
 }
 

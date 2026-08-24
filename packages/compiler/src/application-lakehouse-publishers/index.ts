@@ -3,9 +3,11 @@ import { createHash } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { ApplicationGraph, ApplicationLakehousePublicationNode, ApplicationProviderNode } from '@applik8s/core';
+import type { ApplicationFrameworkCredentialDependency } from '@applik8s/deployment-contract';
 import { build } from 'esbuild';
 import { generatedCallbackFactoryModule } from '../application-callback-module.js';
 import { emitGeneratedApplicationContainer, type GeneratedApplicationContainerArtifact } from '../application-containers/index.js';
+import { applicationFrameworkCredentialDependencies } from '../application-framework-credentials.js';
 import { applicationGraphBooleanCondition, applicationGraphInterpolate, applicationGraphJsonStringArray, applicationGraphStringValue } from '../application-installation-values.js';
 import { applik8sWorkspaceSourcePlugin } from '../bundling/index.js';
 
@@ -25,6 +27,7 @@ export interface GeneratedApplicationLakehousePublisherArtifact {
   readonly sizeBytes: number;
   readonly container: GeneratedApplicationContainerArtifact;
   readonly resources: readonly GeneratedApplicationLakehousePublisherResource[];
+  readonly frameworkCredentials: readonly ApplicationFrameworkCredentialDependency[];
 }
 
 export interface GeneratedApplicationLakehousePublisherResource {
@@ -169,7 +172,11 @@ async function emitPublisher(
       guarantees: { delivery: 'atLeastOnce', checkpoint: 'afterManifestReceipt', logicalDeduplication: 'source-frontier' },
     },
   }, null, 2)}\n`);
-  return { name: contract.consumer, publicationId: contract.publication.id, sourcePath, sourceMapPath, localSourcePath, localSourceMapPath, localDigest, localSizeBytes: localSource.byteLength, manifestPath, digest, sizeBytes: source.byteLength, container, resources };
+  const frameworkCredentials = applicationFrameworkCredentialDependencies(
+    source.toString('utf8'),
+    Object.fromEntries(contract.datasets.map(({ cursorSecretEnvironment }) => [cursorSecretEnvironment, 'cursor' as const])),
+  );
+  return { name: contract.consumer, publicationId: contract.publication.id, sourcePath, sourceMapPath, localSourcePath, localSourceMapPath, localDigest, localSizeBytes: localSource.byteLength, manifestPath, digest, sizeBytes: source.byteLength, container, resources, frameworkCredentials };
 }
 
 function publisherSource(

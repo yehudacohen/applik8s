@@ -1,5 +1,5 @@
+import type { ApplicationFrameworkCredentialDependency, ApplicationRuntimeEndpointDependency } from '@applik8s/deployment-contract';
 import type { GeneratedApplicationContainerArtifact } from '../application-containers/index.js';
-import type { ApplicationRuntimeEndpointDependency } from '@applik8s/deployment-contract';
 
 export interface GeneratedApplicationWorkflowArtifact {
   readonly name: string;
@@ -13,6 +13,7 @@ export interface GeneratedApplicationWorkflowArtifact {
   readonly container: GeneratedApplicationContainerArtifact;
   readonly resources: readonly GeneratedApplicationWorkflowResource[];
   readonly runtimeEndpoints: readonly ApplicationRuntimeEndpointDependency[];
+  readonly frameworkCredentials: readonly ApplicationFrameworkCredentialDependency[];
 }
 
 export interface GeneratedApplicationWorkflowResource {

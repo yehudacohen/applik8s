@@ -9,6 +9,7 @@ import {
   type JsonObject,
   normalizeApplicationGraph,
 } from '@applik8s/core';
+import type { ApplicationFrameworkCredentialDependency } from '@applik8s/deployment-contract';
 import { applicationCallableProviderEnvironment } from '../application-callable-provider-runtime.js';
 import { applicationGraphNumberValue, applicationGraphStringValue } from '../application-installation-values.js';
 import { applicationObjectStorageEnvironment } from '../application-object-storage-environment.js';
@@ -361,6 +362,29 @@ export async function emitGeneratedApplicationHost(options: {
   return emitted;
 }
 
+/** Exact framework credentials consumed by the authored web/server host. */
+export function applicationHostFrameworkCredentialDependencies(
+  graph: ApplicationGraph,
+): readonly ApplicationFrameworkCredentialDependency[] {
+  const credentials: ApplicationFrameworkCredentialDependency[] = [{
+    kind: 'cursor',
+    environmentName: 'APPLIK8S_CURSOR_SECRET',
+  }];
+  if (graph.nodes.some(
+    (node) => node.kind === 'aiAgent'
+      || node.kind === 'mcpServer'
+      || node.kind === 'schedule'
+      || node.kind === 'actor'
+      || node.kind === 'lakehousePublication',
+  )) {
+    credentials.push({
+      kind: 'internal-operation',
+      environmentName: 'APPLIK8S_INTERNAL_OPERATION_SECRET',
+    });
+  }
+  return credentials;
+}
+
 function applicationHostCallableProviders(
   graph: ApplicationGraph,
 ): readonly ApplicationProviderNode[] {
@@ -590,13 +614,8 @@ function applicationHostInternalOperationEnvironment(
   graph: ApplicationGraph,
   hostNamespace: string,
 ): readonly Readonly<Record<string, unknown>>[] {
-  const needsInternalOperations = graph.nodes.some(
-    (node) => node.kind === 'aiAgent'
-      || node.kind === 'mcpServer'
-      || node.kind === 'schedule'
-      || node.kind === 'actor'
-      || node.kind === 'lakehousePublication',
-  );
+  const needsInternalOperations = applicationHostFrameworkCredentialDependencies(graph)
+    .some(({ kind }) => kind === 'internal-operation');
   if (!needsInternalOperations) return [];
   const applicationNamespace = applicationGraphStringValue(graph.metadata.namespace) ?? 'default';
   if (applicationNamespace !== hostNamespace) {

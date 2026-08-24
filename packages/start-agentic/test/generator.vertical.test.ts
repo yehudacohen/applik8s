@@ -1414,6 +1414,7 @@ describe('Agentic Start generator', () => {
         target: 'local',
         profile: 'starter',
         projectDigest: `sha256:${'9'.repeat(64)}`,
+        applicationHostFrameworkCredentials: [],
         projectDirectory: target,
       });
       expect(

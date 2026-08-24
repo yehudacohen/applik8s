@@ -2,7 +2,18 @@
 import { type ApplicationGraph, validateApplicationPlan } from '@applik8s/core';
 import { applicationRuntimeEndpointEnvironmentName, serializeLocalSupervisorPlan, validateLocalSupervisorPlan } from '@applik8s/deployment-contract';
 import { describe, expect, it } from 'vitest';
-import { compileLocalApplicationPlan, compileLocalSupervisorPlan } from '../src/index.js';
+import { compileLocalApplicationPlan, compileLocalSupervisorPlan as compileLocalSupervisorPlanBase } from '../src/index.js';
+
+type LocalPlanRequest = Parameters<typeof compileLocalSupervisorPlanBase>[0];
+function compileLocalSupervisorPlan(
+  request: Omit<LocalPlanRequest, 'applicationHostFrameworkCredentials'>
+    & Partial<Pick<LocalPlanRequest, 'applicationHostFrameworkCredentials'>>,
+) {
+  return compileLocalSupervisorPlanBase({
+    applicationHostFrameworkCredentials: [],
+    ...request,
+  });
+}
 
 describe('local supervisor plan compiler', () => {
   it('lowers a profile-selected stateful graph deterministically without secret values', () => {
@@ -22,7 +33,6 @@ describe('local supervisor plan compiler', () => {
         id: 'runtime:processor:processor.events', kind: 'process', command: 'node', args: ['/workspace/app/.applik8s/build/processor.mjs'],
         environment: expect.arrayContaining([
           expect.objectContaining({ name: 'APPLIK8S_NATS_SERVERS' }),
-          { name: 'APPLIK8S_CONTEXT_SECRET', binding: 'credential:framework:context' },
         ]),
       }),
     ]));
@@ -35,6 +45,7 @@ describe('local supervisor plan compiler', () => {
     const encoded = serializeLocalSupervisorPlan(first);
     expect(encoded).not.toContain('password-value');
     expect(encoded).not.toContain('secret-value');
+    expect(encoded).not.toContain('credential:framework:');
     expect(encoded).toContain('credential:provider.database:password');
 
     const applicationPlan = compileLocalApplicationPlan({ graph, supervisor: first, workspaceRoot: '/workspace/app' });
@@ -368,6 +379,64 @@ describe('local supervisor plan compiler', () => {
     expect(JSON.stringify(caller)).not.toContain(applicationRuntimeEndpointEnvironmentName('gateway.unrelated'));
   });
 
+  it('projects exact framework credentials to their declaring runtime and denies sibling credentials', () => {
+    const plan = compileLocalSupervisorPlan({
+      graph: applicationGraph(),
+      target: 'local',
+      profile: 'starter',
+      projectDigest: 'sha256:project',
+      applicationHostFrameworkCredentials: [
+        { kind: 'cursor', environmentName: 'APPLIK8S_CURSOR_SECRET' },
+      ],
+      runtimeArtifacts: [
+        {
+          nodeId: 'agent.writer', name: 'writer', role: 'agent', source: '/workspace/agent.mjs', digest: `sha256:${'a'.repeat(64)}`,
+          frameworkCredentials: [
+            { kind: 'agent-query-context', environmentName: 'APPLIK8S_AGENT_QUERY_CONTEXT_SECRET' },
+            { kind: 'internal-operation', environmentName: 'APPLIK8S_INTERNAL_OPERATION_SECRET' },
+          ],
+        },
+        {
+          nodeId: 'server.api', name: 'api', role: 'http', source: '/workspace/http.mjs', digest: `sha256:${'b'.repeat(64)}`,
+          frameworkCredentials: [
+            { kind: 'http-context', environmentName: 'APPLIK8S_HTTP_CONTEXT_SECRET' },
+            { kind: 'internal-operation', environmentName: 'APPLIK8S_INTERNAL_OPERATION_SECRET' },
+          ],
+        },
+      ],
+    });
+    expect(validateLocalSupervisorPlan(plan)).toEqual({ valid: true, diagnostics: [] });
+    const agent = plan.resources.find(({ id }) => id === 'runtime:agent:agent.writer');
+    const http = plan.resources.find(({ id }) => id === 'runtime:http:server.api');
+    const host = plan.resources.find(({ id }) => id === 'process:server.web');
+    expect(agent).toMatchObject({
+      kind: 'process',
+      environment: expect.arrayContaining([
+        { name: 'APPLIK8S_AGENT_QUERY_CONTEXT_SECRET', binding: 'credential:framework:agent-query-context' },
+        { name: 'APPLIK8S_INTERNAL_OPERATION_SECRET', binding: 'credential:framework:internal-operation' },
+      ]),
+    });
+    expect(http).toMatchObject({
+      kind: 'process',
+      environment: expect.arrayContaining([
+        { name: 'APPLIK8S_HTTP_CONTEXT_SECRET', binding: 'credential:framework:http-context' },
+        { name: 'APPLIK8S_INTERNAL_OPERATION_SECRET', binding: 'credential:framework:internal-operation' },
+      ]),
+    });
+    expect(JSON.stringify(agent)).not.toContain('APPLIK8S_HTTP_CONTEXT_SECRET');
+    expect(JSON.stringify(http)).not.toContain('APPLIK8S_AGENT_QUERY_CONTEXT_SECRET');
+    expect(host).toMatchObject({
+      kind: 'process',
+      environment: expect.arrayContaining([
+        { name: 'APPLIK8S_CURSOR_SECRET', binding: 'credential:framework:cursor' },
+      ]),
+    });
+    expect(JSON.stringify(host)).not.toContain('APPLIK8S_AGENT_QUERY_CONTEXT_SECRET');
+    expect(JSON.stringify(host)).not.toContain('APPLIK8S_HTTP_CONTEXT_SECRET');
+    expect(serializeLocalSupervisorPlan(plan)).not.toContain('task-query-context');
+    expect(serializeLocalSupervisorPlan(plan)).not.toContain('task-operation-context');
+  });
+
   it('routes durable workflow actor calls through the one local application host', () => {
     const base = applicationGraph();
     const graph = {
@@ -390,7 +459,10 @@ describe('local supervisor plan compiler', () => {
       target: 'local',
       profile: 'starter',
       projectDigest: 'sha256:project',
-      runtimeArtifacts: [{ nodeId: 'workflow-worker.activity', name: 'activity', role: 'workflow', source: '/workspace/workflow.mjs', digest: `sha256:${'a'.repeat(64)}` }],
+      runtimeArtifacts: [{
+        nodeId: 'workflow-worker.activity', name: 'activity', role: 'workflow', source: '/workspace/workflow.mjs', digest: `sha256:${'a'.repeat(64)}`,
+        frameworkCredentials: [{ kind: 'internal-operation', environmentName: 'APPLIK8S_INTERNAL_OPERATION_SECRET' }],
+      }],
     });
     const worker = plan.resources.find(({ id }) => id === 'runtime:workflow:workflow-worker.activity');
     expect(worker).toMatchObject({

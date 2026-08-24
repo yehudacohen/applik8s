@@ -1,11 +1,11 @@
 // typecast-file-boundary: Parameterized acceptance fixtures retain literal application identities and installation profile discriminants.
 import { resolve } from 'node:path';
 import { discoverApplicationGraph } from '@applik8s/compiler';
-import { serializeApplicationPlanContent, type ApplicationGraph, validateApplicationPlan } from '@applik8s/core';
+import { type ApplicationGraph, serializeApplicationPlanContent, validateApplicationPlan } from '@applik8s/core';
 import { beforeAll, describe, expect, it } from 'vitest';
 import {
-  compileApplicationAwsDeploymentPlan,
   compileApplicationAwsApplicationPlan,
+  compileApplicationAwsDeploymentPlan,
   compileLocalApplicationPlan,
   compileLocalSupervisorPlan,
 } from '../src/index.js';
@@ -30,6 +30,7 @@ describe.each([
       target: 'local',
       profile: 'starter',
       projectDigest: `sha256:${'1'.repeat(64)}`,
+      applicationHostFrameworkCredentials: [],
       projectDirectory: process.cwd(),
       installationSpec,
     });
@@ -67,6 +68,7 @@ describe.each([
       target: 'local',
       profile: 'starter',
       projectDigest: `sha256:${'1'.repeat(64)}`,
+      applicationHostFrameworkCredentials: [],
       projectDirectory: process.cwd(),
       installationSpec,
     });
