@@ -12,8 +12,13 @@ import {
   workflow,
 } from '@applik8s/applik8s';
 import { type } from '@applik8s/applik8s/dsl';
+import {
+  type ApplicationGraph,
+  deriveApplicationGraphFoundation,
+} from '@applik8s/core';
 import { pgTable, text } from 'drizzle-orm/pg-core';
 import { afterEach, describe, expect, it } from 'vitest';
+import { applicationProviderConsumerWorkloads } from '../src/application-deployment-graph.js';
 import {
   applicationHttpProfileEnvironment,
   emitGeneratedApplicationHttpServers,
@@ -706,26 +711,68 @@ export const pipelineHttpStack = application.composition;
         name: '@fixture/acquisition',
         version: '1.0.0',
         type: 'module',
-        exports: './index.js',
+        exports: {
+          '.': './index.js',
+          './runtime': './runtime.js',
+        },
       }),
     );
+    await writeFile(join(providerPackage, 'runtime.js'), `
+export async function acquireItem(input) {
+  return { value: (process.env.ACQUISITION_SOURCE || 'missing') + ':' + input.id };
+}
+`);
     await writeFile(join(providerPackage, 'index.js'), `
-import { defineApplicationProvider } from '@applik8s/applik8s';
+import { defineApplicationProvider, module } from '@applik8s/applik8s';
 export const AcquisitionProvider = defineApplicationProvider({
   interface: 'AcquisitionProvider',
   version: 'v1alpha1',
-  accepts: candidate => candidate?.kind === 'acquisition' && typeof candidate.acquire === 'function',
+  runtime: {
+    bind(implementation) {
+      return {
+        env: { ACQUISITION_SOURCE: implementation.source },
+        secretEnv: {
+          ACQUISITION_TOKEN: {
+            secret: implementation.credentialSecret,
+            key: 'token',
+          },
+        },
+        readiness: {
+          dependencies: [implementation.credentialSecret],
+          condition: 'the selected acquisition credential is projected',
+          timeoutSeconds: 30,
+        },
+      };
+    },
+    operations: {
+      acquire: {
+        module: '@fixture/acquisition/runtime',
+        export: 'acquireItem',
+        access: {
+          kind: 'provider',
+          operations: ['connection.use', 'network.connect'],
+        },
+      },
+    },
+  },
+  accepts: candidate => candidate?.kind === 'acquisition'
+    && candidate.credentialSecret?.kind === 'Secret'
+    && typeof candidate.acquire === 'function',
 }).named('primary');
-export function installAcquisition(application) {
+export const acquisition = module('acquisition', application => {
   const provider = application.inject(AcquisitionProvider);
-  return Object.freeze({ acquire: provider.acquire });
-}
+  const acquire = provider.acquire;
+  async function acquireThroughHelper(input) {
+    return acquire(input);
+  }
+  return Object.freeze({ acquire, acquireThroughHelper });
+});
 `);
     await writeFile(entrypoint, `
 import { IdentityProvider, app } from '@applik8s/applik8s';
 import { type } from '@applik8s/applik8s/dsl';
 import { pgTable, text } from 'drizzle-orm/pg-core';
-import { AcquisitionProvider, installAcquisition } from '@fixture/acquisition';
+import { AcquisitionProvider, acquisition } from '@fixture/acquisition';
 
 const application = app('provider-http', {
   namespace: 'provider-http',
@@ -746,26 +793,46 @@ const database = application.database.postgres('main', {
   migrations: { path: './migrations' },
 });
 application.model(records, { name: 'ProviderRecord', database });
-const implementation = source => ({
+const implementation = (source, secretName) => ({
   kind: 'acquisition',
   source,
+  credentialSecret: {
+    apiVersion: 'v1',
+    kind: 'Secret',
+    name: secretName,
+    namespace: 'provider-http',
+  },
   async acquire(input) { return { value: this.source + ':' + input.id }; },
 });
 application.profile(application.installation.spec, 'profile')
   .provide(AcquisitionProvider)
-  .starter(() => implementation('starter'))
-  .dedicated(() => implementation('dedicated'))
+  .starter(() => implementation('starter', 'acquisition-starter'))
+  .dedicated(() => implementation('dedicated', 'acquisition-dedicated'))
   .exhaustive();
-const { acquire } = installAcquisition(application);
+const provider = application.inject(AcquisitionProvider);
+const { acquire, acquireThroughHelper } = acquisition(application);
 const api = application.http('public-api');
-api.post('acquire', '/acquire', {
+api.post('acquire-direct', '/acquire/direct', {
+  input: type({ id: 'string' }),
+  output: type({ value: 'string' }),
+}, async ({ input }) => provider.acquire(input)).public();
+api.post('acquire-extracted', '/acquire/extracted', {
   input: type({ id: 'string' }),
   output: type({ value: 'string' }),
 }, async ({ input }) => acquire(input)).public();
+api.post('acquire-helper', '/acquire/helper', {
+  input: type({ id: 'string' }),
+  output: type({ value: 'string' }),
+}, async ({ input }) => acquireThroughHelper(input)).public();
+const health = application.http('health-api');
+health.post('health', '/health', {
+  input: type({}),
+  output: type({ ok: 'boolean' }),
+}, async () => ({ ok: true })).public();
 export const providerHttpStack = application.composition;
 `);
 
-    const result = await compileTypeKroComposition({
+    const compilation = {
       entrypoint,
       compositionName: 'providerHttpStack',
       outDir: join(directory, 'dist'),
@@ -784,19 +851,201 @@ export const providerHttpStack = application.composition;
           redactPaths: false,
         },
       },
-    });
+    } as const;
+    const result = await compileTypeKroComposition(compilation);
 
     expect(result.ok, result.ok ? undefined : result.error.message).toBe(true);
     if (!result.ok) return;
-    const artifact = result.value.artifacts.httpArtifacts[0];
+    const artifact = result.value.artifacts.httpArtifacts.find(
+      (candidate) => candidate.serverId === 'server.public-api',
+    );
     if (!artifact) throw new Error('Expected a generated provider HTTP worker.');
     const source = await readFile(artifact.sourcePath, 'utf8');
     expect(source).toContain('APPLIK8S_PROFILE_VARIANT');
-    expect(source).toContain('Injected provider');
+    expect(source).toContain('acquireItem');
     expect(source).toContain('dedicated');
     const deployment = artifact.resources.find(
       (resource) => resource.kind === 'Deployment',
     );
-    expect(JSON.stringify(deployment)).toContain('APPLIK8S_PROFILE_VARIANT');
+    const deploymentSource = JSON.stringify(deployment);
+    expect(deploymentSource).toContain('APPLIK8S_PROFILE_VARIANT');
+    expect(deploymentSource).toContain('ACQUISITION_SOURCE');
+    expect(deploymentSource).toContain('ACQUISITION_TOKEN');
+    expect(deploymentSource).toContain('acquisition-starter');
+    const unrelated = result.value.artifacts.httpArtifacts.find(
+      (candidate) => candidate.serverId === 'server.health-api',
+    );
+    expect(JSON.stringify(unrelated?.resources ?? [])).not.toContain(
+      'ACQUISITION_TOKEN',
+    );
+    const graph = JSON.parse(
+      await readFile(
+        result.value.artifacts.applicationGraphJsonPath ?? '',
+        'utf8',
+      ),
+    ) as ApplicationGraph;
+    const providerNode = graph.nodes.find(
+      (node) => node.kind === 'provider'
+        && node.interface === 'AcquisitionProvider',
+    );
+    expect(providerNode?.kind).toBe('provider');
+    if (providerNode?.kind !== 'provider') return;
+    expect(providerNode.config?.callableRuntime).toMatchObject({
+      kind: 'profileSelection',
+      cases: {
+        starter: {
+          runtime: {
+            env: { ACQUISITION_SOURCE: 'starter' },
+            secretEnv: {
+              ACQUISITION_TOKEN: {
+                secret: expect.objectContaining({
+                  kind: 'Secret',
+                  name: 'acquisition-starter',
+                }),
+                key: 'token',
+              },
+            },
+            readiness: expect.objectContaining({
+              condition: 'the selected acquisition credential is projected',
+              timeoutSeconds: 30,
+            }),
+          },
+        },
+      },
+    });
+    expect(
+      [...applicationProviderConsumerWorkloads(
+        graph,
+        new Set([providerNode.id]),
+      )],
+    ).toEqual(['public-api']);
+    const serverNode = graph.nodes.find(
+      (node) => node.kind === 'server' && node.id === 'server.public-api',
+    );
+    expect(
+      serverNode?.kind === 'server'
+        ? serverNode.routes.flatMap(
+            (route) => route.functionNative?.providerBindings ?? [],
+          )
+        : [],
+    ).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        provider: expect.objectContaining({ nodeId: providerNode.id }),
+        operation: expect.objectContaining({
+          runtime: expect.objectContaining({
+            access: expect.objectContaining({
+              operations: expect.arrayContaining([
+                'connection.use',
+                'network.connect',
+              ]),
+            }),
+          }),
+        }),
+      }),
+    ]));
+    const access = deriveApplicationGraphFoundation(graph)
+      .runtimeAccess.filter(
+        (requirement) =>
+          requirement.target.capabilityId === providerNode.id,
+      );
+    expect(access).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        consumer: expect.objectContaining({ nodeId: 'server.public-api' }),
+        target: expect.objectContaining({ operation: 'connection.use' }),
+      }),
+      expect.objectContaining({
+        consumer: expect.objectContaining({ nodeId: 'server.public-api' }),
+        target: expect.objectContaining({ operation: 'network.connect' }),
+      }),
+    ]));
+    expect(
+      access.every(
+        (requirement) => requirement.consumer.nodeId === 'server.public-api',
+      ),
+    ).toBe(true);
+    const repeated = await compileTypeKroComposition({
+      ...compilation,
+      outDir: join(directory, 'dist-repeat'),
+    });
+    expect(repeated.ok, repeated.ok ? undefined : repeated.error.message).toBe(true);
+    if (!repeated.ok) return;
+    const repeatedArtifact = repeated.value.artifacts.httpArtifacts.find(
+      (candidate) => candidate.serverId === 'server.public-api',
+    );
+    expect(repeatedArtifact?.digest).toBe(artifact.digest);
+    expect(await readFile(repeatedArtifact?.sourcePath ?? '', 'utf8')).toBe(source);
+    const missingRuntimeGraph = {
+      ...graph,
+      nodes: graph.nodes.filter(
+        (node) => node.id !== 'server.health-api',
+      ).map((node) =>
+        node.kind !== 'server' || node.id !== 'server.public-api'
+          ? node
+          : {
+              ...node,
+              routes: node.routes.map((route) => ({
+                ...route,
+                ...(route.functionNative
+                  ? {
+                      functionNative: {
+                        ...route.functionNative,
+                        providerBindings:
+                          route.functionNative.providerBindings?.map(
+                            (binding) => ({
+                              ...binding,
+                              ...(binding.operation
+                                ? {
+                                    operation: {
+                                      member: binding.operation.member,
+                                    },
+                                  }
+                                : {}),
+                            }),
+                          ),
+                      },
+                    }
+                  : {}),
+              })),
+            }),
+      edges: graph.edges.filter(
+        (edge) => edge.from.nodeId !== 'server.health-api'
+          && edge.to.nodeId !== 'server.health-api',
+      ),
+    } as ApplicationGraph;
+    await expect(
+      emitGeneratedApplicationHttpServers({
+        graph: missingRuntimeGraph,
+        outDir: join(directory, 'missing-runtime'),
+      }),
+    ).rejects.toThrow(/has no public static runtime operation/);
+    const placementOnlyGraph = {
+      ...missingRuntimeGraph,
+      nodes: missingRuntimeGraph.nodes.map((node) =>
+        node.kind !== 'server'
+          ? node
+          : {
+              ...node,
+              routes: node.routes.map((route) => ({
+                ...route,
+                ...(route.functionNative
+                  ? {
+                      functionNative: {
+                        ...route.functionNative,
+                        providerBindings:
+                          route.functionNative.providerBindings?.map(
+                            ({ operation: _operation, ...binding }) => binding,
+                          ),
+                      },
+                    }
+                  : {}),
+              })),
+            }),
+    } as ApplicationGraph;
+    await expect(
+      emitGeneratedApplicationHttpServers({
+        graph: placementOnlyGraph,
+        outDir: join(directory, 'placement-only'),
+      }),
+    ).rejects.toThrow(/has no callable operation metadata/);
   }, 120_000);
 });

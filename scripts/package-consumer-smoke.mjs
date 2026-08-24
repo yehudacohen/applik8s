@@ -744,6 +744,195 @@ if (artifact.resources.filter(resource =>
   });
   console.log('Package consumer smoke: packed external workflow provider hydration passed.');
 
+  const packedHttpMigrations = join(consumerDir, 'packed-http-migrations');
+  await mkdir(packedHttpMigrations, { recursive: true });
+  await writeFile(
+    join(packedHttpMigrations, '0000_records.sql'),
+    'create table packed_http_records (id text primary key);\n',
+  );
+  const packedHttpApplicationPath = join(
+    consumerDir,
+    'packed-http-provider.mjs',
+  );
+  await writeFile(
+    packedHttpApplicationPath,
+    `import { app, IdentityProvider } from '@applik8s/applik8s';
+import { type } from '@applik8s/applik8s/dsl';
+import { pgTable, text } from 'drizzle-orm/pg-core';
+import { AcquisitionProvider, acquisition } from '@fixture/acquisition';
+const application = app('packed-http-provider', {
+  namespace: 'packed-http-provider',
+  spec: type({ profile: "'starter' | 'dedicated'" }),
+  status: type({ ready: 'boolean' }),
+});
+application.provide(IdentityProvider, IdentityProvider.deterministic({
+  mode: 'starter',
+  application: 'packed-http-provider',
+  subject: 'alice',
+  audience: ['packed-http-provider'],
+  catalogRevision: 'catalog-v1',
+  authorityRevision: 'authority-v1',
+}));
+const records = pgTable('packed_http_records', { id: text('id').primaryKey() });
+const database = application.database.postgres('main', {
+  schema: { records },
+  migrations: { path: './packed-http-migrations' },
+});
+application.model(records, { name: 'PackedHttpRecord', database });
+const implementation = source => ({
+  kind: 'acquisition',
+  source,
+  credentialSecret: {
+    apiVersion: 'v1',
+    kind: 'Secret',
+    name: 'acquisition-' + source,
+    namespace: 'packed-http-provider',
+  },
+  async acquire(input) { return { value: source + ':' + input.id }; },
+});
+application.profile(application.installation.spec, 'profile')
+  .provide(AcquisitionProvider)
+  .starter(() => implementation('starter'))
+  .dedicated(() => implementation('dedicated'))
+  .exhaustive();
+const directProvider = application.inject(AcquisitionProvider);
+const { acquire } = application.include(acquisition);
+async function acquireThroughHelper(id) {
+  return acquire({ id });
+}
+const api = application.http('public-api');
+api.post('direct', '/direct', {
+  input: type({ id: 'string' }),
+  output: type({ value: 'string' }),
+}, async ({ input }) => directProvider.acquire(input)).public();
+api.post('extracted', '/extracted', {
+  input: type({ id: 'string' }),
+  output: type({ value: 'string' }),
+}, async ({ input }) => acquire(input)).public();
+api.post('helper', '/helper', {
+  input: type({ id: 'string' }),
+  output: type({ value: 'string' }),
+}, async ({ input }) => acquireThroughHelper(input.id)).public();
+const unrelated = application.http('unrelated-api');
+unrelated.post('health', '/health', {
+  input: type({}),
+  output: type({ ok: 'boolean' }),
+}, async () => ({ ok: true })).public();
+export const httpProviderStack = application.composition;
+`,
+  );
+  const packedHttpProofPath = join(consumerDir, 'packed-http-proof.mjs');
+  await writeFile(
+    packedHttpProofPath,
+    `import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { deriveApplicationGraphFoundation } from '@applik8s/core';
+import {
+  compileTypeKroComposition,
+  discoverApplicationGraphWithExports,
+} from '@applik8s/compiler';
+const applicationPath = ${JSON.stringify(packedHttpApplicationPath)};
+const discovered = await discoverApplicationGraphWithExports(
+  applicationPath,
+  'httpProviderStack',
+);
+if (!discovered.ok) throw discovered.error;
+const graph = discovered.value.graph;
+const providerId = 'provider.acquisition-provider.v1alpha1.primary';
+const server = graph.nodes.find(node =>
+  node.kind === 'server' && node.id === 'server.public-api'
+);
+if (!server) throw new Error('Packed HTTP provider server is missing.');
+const operationBindings = server.routes.flatMap(route =>
+  route.functionNative?.providerBindings ?? []
+).filter(binding => binding.operation?.member === 'acquire');
+for (const identifier of ['acquire', 'directProvider.acquire']) {
+  const runtime = operationBindings.find(binding =>
+    binding.identifier === identifier
+  )?.operation?.runtime;
+  if (
+    runtime?.module !== '@fixture/acquisition/runtime'
+    || runtime.export !== 'acquireItem'
+  ) throw new Error('Packed HTTP provider operation ' + identifier + ' did not survive discovery.');
+}
+const access = deriveApplicationGraphFoundation(graph, {
+  workspaceRoot: ${JSON.stringify(consumerDir)},
+}).runtimeAccess.filter(requirement =>
+  requirement.target.capabilityId === providerId
+);
+if (
+  access.some(requirement => requirement.consumer.nodeId !== 'server.public-api')
+  || access.map(requirement => requirement.target.operation).sort().join(',')
+    !== 'connection.use,network.connect'
+) throw new Error('Packed HTTP provider access was not placed exactly.');
+const compiled = await compileTypeKroComposition({
+  entrypoint: applicationPath,
+  compositionName: 'httpProviderStack',
+  outDir: join(${JSON.stringify(consumerDir)}, 'packed-http-build'),
+  runtimeVersionRange: '^0.8.0',
+  handlerAbiVersion: 'applik8s.handler/v1alpha1',
+  adapter: 'wasmComponent',
+  portability: {
+    deterministicBuild: true,
+    allowEnvironmentAccess: false,
+    allowFilesystemAccess: false,
+    allowNetworkAccess: true,
+    allowedHostImports: [],
+    sourceMaps: {
+      emit: true,
+      includeSourceContent: false,
+      redactPaths: false,
+    },
+  },
+});
+if (!compiled.ok) throw compiled.error;
+const artifact = compiled.value.artifacts.httpArtifacts.find(candidate =>
+  candidate.serverId === 'server.public-api'
+);
+const unrelated = compiled.value.artifacts.httpArtifacts.find(candidate =>
+  candidate.serverId === 'server.unrelated-api'
+);
+if (!artifact || !unrelated) throw new Error('Packed HTTP artifacts are missing.');
+const source = [
+  await readFile(artifact.sourcePath, 'utf8'),
+  await readFile(join(
+    artifact.sourcePath.slice(0, artifact.sourcePath.lastIndexOf('/')),
+    'http.generated.ts',
+  ), 'utf8'),
+].join('\\n');
+if (
+  !source.includes('@fixture/acquisition/runtime')
+  || !source.includes('acquireThroughHelper')
+  || source.includes('@applik8s/applik8s/internal/provider-runtime')
+  || source.includes('application.inject')
+  || source.includes('application.profile')
+  || source.includes('application.provide')
+) throw new Error('Packed generated HTTP worker did not hydrate only the public provider operation.');
+const deployment = artifact.resources.find(resource =>
+  resource.kind === 'Deployment'
+);
+const deploymentJson = JSON.stringify(deployment);
+if (
+  !deploymentJson.includes('ACQUISITION_SOURCE')
+  || !deploymentJson.includes('ACQUISITION_TOKEN')
+  || !deploymentJson.includes('acquisition-starter')
+  || !deploymentJson.includes('acquisition-dedicated')
+) throw new Error('Packed HTTP provider runtime configuration was not placed on its consumer.');
+if (JSON.stringify(unrelated.resources).includes('ACQUISITION_TOKEN')) {
+  throw new Error('Packed HTTP provider credentials reached an unrelated server.');
+}
+`,
+  );
+  await execFileAsync(process.execPath, [packedHttpProofPath], {
+    cwd: consumerDir,
+    env: {
+      ...process.env,
+      NODE_OPTIONS: '--max-old-space-size=8192',
+    },
+    maxBuffer: 20 * 1024 * 1024,
+  });
+  console.log('Package consumer smoke: packed external HTTP provider hydration passed.');
+
   const operatorPath = join(consumerDir, 'operator.ts');
   const outDir = join(consumerDir, 'dist');
   await writeFile(operatorPath, `import { sdk } from '@applik8s/sdk';

@@ -165,6 +165,11 @@ export function deriveApplicationGraphFoundation(
 function callableProviderBindings(
   node: ApplicationGraphNode,
 ): readonly ApplicationCallableProviderBinding[] {
+  if (node.kind === 'server') {
+    return node.routes.flatMap(
+      (route) => route.functionNative?.providerBindings ?? [],
+    );
+  }
   if (!('providerBindings' in node) || !Array.isArray(node.providerBindings)) {
     return [];
   }

@@ -4,6 +4,8 @@ import { createHash } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import type {
+  ApplicationCallableProviderBinding,
+  ApplicationCallableProviderRuntimeOperation,
   ApplicationGraph,
   ApplicationHandlerDependencies,
   ApplicationMessageContractSchema,
@@ -15,6 +17,7 @@ import type {
   JsonObject,
 } from '@applik8s/core';
 import { build } from 'esbuild';
+import { applicationCallableProviderEnvironment } from '../application-callable-provider-runtime.js';
 import { generatedCallbackFactoryModule } from '../application-callback-module.js';
 import {
   emitGeneratedApplicationContainer,
@@ -112,6 +115,7 @@ interface HttpServerCompilerContract {
   readonly identity: ApplicationProviderNode;
   readonly identityConfig: Readonly<Record<string, unknown>>;
   readonly providerProfileSelector?: string;
+  readonly callableProviders: readonly ApplicationProviderNode[];
   readonly eventLog?: ApplicationProviderNode;
   readonly workflowEngine?: ApplicationProviderNode;
   readonly operationCatalog: ApplicationOperationCatalog;
@@ -326,6 +330,21 @@ function applicationHttpCompilerContract(
     );
   }
   const [providerProfileSelector] = providerProfileSelectors;
+  const callableProviders = new Map<string, ApplicationProviderNode>();
+  for (const route of routes) {
+    for (const binding of route.route.functionNative.providerBindings ?? []) {
+      const provider = nodes.get(binding.provider.nodeId);
+      if (
+        provider?.kind !== 'provider'
+        || provider.interface !== binding.provider.interface
+      ) {
+        throw new Error(
+          `Generated typed HTTP route ${server.id}.${route.route.id} references missing provider ${binding.provider.nodeId}.`,
+        );
+      }
+      callableProviders.set(provider.id, provider);
+    }
+  }
   return {
     graph,
     server,
@@ -333,6 +352,9 @@ function applicationHttpCompilerContract(
     identity,
     identityConfig,
     ...(providerProfileSelector ? { providerProfileSelector } : {}),
+    callableProviders: [...callableProviders.values()].sort((left, right) =>
+      left.id.localeCompare(right.id),
+    ),
     executionTarget,
     ...(eventLog ? { eventLog } : {}),
     ...(workflowEngine ? { workflowEngine } : {}),
@@ -364,6 +386,11 @@ async function emitHttpServer(
   await writeIdentityModule(artifactDir, contract.identityConfig);
   for (const [index, route] of contract.routes.entries()) {
     const roots = applicationHttpRouteBindingRoots(route);
+    const providerBindingRoots = httpProviderRuntimeOperations(route)
+      .map(({ binding }) => bindingRoot(binding.identifier))
+      .filter((identifier, rootIndex, identifiers) =>
+        identifiers.indexOf(identifier) === rootIndex
+      );
     await writeFile(
       join(artifactDir, `route-${index}.generated.ts`),
       generatedCallbackFactoryModule({
@@ -373,6 +400,11 @@ async function emitHttpServer(
           : {}),
         injectedIdentifiers: roots,
         injectedBindingPaths: applicationHttpRouteBindingPaths(route),
+        // The graph has already admitted these exact provider-operation leaves
+        // and their public static runtime exports. Replaying their authoring-
+        // time facades would re-run provide/profile/include setup in the HTTP
+        // image, so the generated runtime binding is the sole authority.
+        replacedCapturedIdentifiers: providerBindingRoots,
         exportName: 'createHandler',
       }),
     );
@@ -478,6 +510,12 @@ async function emitHttpServer(
 }
 
 function generatedHttpSource(contract: HttpServerCompilerContract): string {
+  const providerRuntimeImports = uniqueHttpProviderRuntimeOperations(
+    contract.routes,
+  ).map(
+    ({ runtime, variable }) =>
+      `import { ${runtime.export} as ${variable} } from ${JSON.stringify(runtime.module)};`,
+  ).join('\n');
   const routeImports = contract.routes.map((route, index) =>
     `import { createHandler as createHandler${index} } from './route-${index}.generated.js';
 ${route.route.functionNative.authorize
@@ -572,6 +610,7 @@ ${hasWorkflows
     : ''}
 import { callback as authenticate } from './identity.generated.js';
 ${routeImports}
+${providerRuntimeImports}
 
 const contract = ${JSON.stringify({
     application: contract.graph.metadata.name,
@@ -1463,6 +1502,13 @@ function applicationHttpRouteBindingsSource(
       target: binding.target.id,
     });
   }
+  for (const operation of httpProviderRuntimeOperations(route)) {
+    entries.push({
+      path: operation.binding.identifier,
+      value: operation.variable,
+      target: operation.binding.provider.nodeId,
+    });
+  }
   const nodes = new Map(graph.nodes.map((node) => [node.id, node]));
   for (const binding of route.route.functionNative.transaction?.modelBindings ?? []) {
     const model = nodes.get(binding.model.nodeId);
@@ -1570,6 +1616,9 @@ function applicationHttpRouteBindingPaths(
   return [
     ...route.operationBindings.map((binding) => binding.identifier),
     ...route.workflowBindings.map((binding) => binding.identifier),
+    ...(route.route.functionNative.providerBindings ?? []).map(
+      (binding) => binding.identifier,
+    ),
     ...(route.route.functionNative.transaction?.modelBindings ?? []).map(
       (binding) => binding.identifier,
     ),
@@ -1577,6 +1626,89 @@ function applicationHttpRouteBindingPaths(
       (binding) => binding.identifier,
     ),
   ];
+}
+
+interface HttpProviderRuntimeOperation {
+  readonly binding: ApplicationCallableProviderBinding;
+  readonly runtime: ApplicationCallableProviderRuntimeOperation;
+  readonly variable: string;
+}
+
+function httpProviderRuntimeOperations(
+  route: HttpRouteCompilerContract,
+): readonly HttpProviderRuntimeOperation[] {
+  return (route.route.functionNative.providerBindings ?? []).flatMap((binding) => {
+    if (!binding.operation) {
+      throw new Error(
+        `Typed HTTP route ${route.route.id} provider binding ${binding.identifier} has no callable operation metadata. Provider placement without an exact operation cannot hydrate a generated HTTP worker.`,
+      );
+    }
+    const runtime = binding.operation.runtime;
+    if (!runtime) {
+      throw new Error(
+        `Typed HTTP route ${route.route.id} provider binding ${binding.identifier} has no public static runtime operation. Define the operation in the provider runtime contract; generated HTTP workers never replay authoring-time provider selection.`,
+      );
+    }
+    if (
+      !/^(?:@[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._/-]*|[a-z0-9][a-z0-9._/-]*)$/u.test(
+        runtime.module,
+      )
+      || runtime.module.includes('..')
+      || !/^[A-Za-z_$][A-Za-z0-9_$]*$/u.test(runtime.export)
+    ) {
+      throw new Error(
+        `Typed HTTP route ${route.route.id} provider binding ${binding.identifier} has an invalid public runtime export ${runtime.module}#${runtime.export}.`,
+      );
+    }
+    const segments = binding.identifier.split('.');
+    if (
+      segments.length === 0
+      || segments.some(
+        (segment) => !/^[A-Za-z_$][A-Za-z0-9_$]*$/u.test(segment),
+      )
+    ) {
+      throw new Error(
+        `Typed HTTP route ${route.route.id} provider binding ${binding.identifier} is not a static JavaScript binding path.`,
+      );
+    }
+    return [{
+      binding,
+      runtime,
+      variable: `providerOperation_${createHash('sha256')
+        .update(`${runtime.module}\0${runtime.export}`)
+        .digest('hex')
+        .slice(0, 12)}`,
+    }];
+  });
+}
+
+function uniqueHttpProviderRuntimeOperations(
+  routes: readonly HttpRouteCompilerContract[],
+): readonly HttpProviderRuntimeOperation[] {
+  return routes.flatMap(httpProviderRuntimeOperations).filter(
+    (operation, index, operations) =>
+      operations.findIndex(
+        (candidate) => candidate.variable === operation.variable,
+      ) === index,
+  );
+}
+
+function uniqueHttpEnvironment(
+  entries: readonly Readonly<Record<string, unknown>>[],
+): readonly Readonly<Record<string, unknown>>[] {
+  const result = new Map<string, Readonly<Record<string, unknown>>>();
+  for (const entry of entries) {
+    const name = String(entry.name ?? '');
+    if (!name) throw new Error('Generated typed HTTP environment entry has no name.');
+    const previous = result.get(name);
+    if (previous && JSON.stringify(previous) !== JSON.stringify(entry)) {
+      throw new Error(
+        `Generated typed HTTP workload declares conflicting environment ${name}.`,
+      );
+    }
+    result.set(name, entry);
+  }
+  return [...result.values()];
 }
 
 function generatedHttpTransactionContract(
@@ -1666,7 +1798,7 @@ function generatedHttpResources(
         },
       }]
     : [];
-  const environment = [
+  const environment = uniqueHttpEnvironment([
     { name: 'NODE_ENV', value: 'production' },
     { name: 'NODE_OPTIONS', value: '--enable-source-maps' },
     { name: 'APPLIK8S_APPLICATION_NAME', value: contract.graph.metadata.name },
@@ -1688,7 +1820,11 @@ function generatedHttpResources(
     ...applicationHttpDatabaseEnvironment(contract),
     ...applicationHttpEventLogEnvironment(contract.eventLog),
     ...applicationHttpWorkflowEnvironment(contract),
-  ];
+    ...applicationCallableProviderEnvironment(
+      contract.callableProviders,
+      { target: contract.executionTarget, namespace: contract.namespace },
+    ),
+  ]);
   return [
     { apiVersion: 'v1', kind: 'ServiceAccount', metadata },
     {

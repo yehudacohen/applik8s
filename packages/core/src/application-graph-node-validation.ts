@@ -123,7 +123,14 @@ export function applicationProviderRefsForNode(node: ApplicationGraphNode): read
     case 'model':
       return [node.database, node.materialization.provider];
     case 'server':
-      return node.exposure ? [node.exposure] : [];
+      return [
+        ...(node.exposure ? [node.exposure] : []),
+        ...node.routes.flatMap(
+          (route) => route.functionNative?.providerBindings?.map(
+            ({ provider }) => provider,
+          ) ?? [],
+        ),
+      ];
     case 'index':
       return [node.provider];
     case 'counter':

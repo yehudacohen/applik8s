@@ -97,7 +97,6 @@ import {
   applicationProfileVariantsFromSchema,
   createApplicationProfileRuntime,
 } from './application-profiles.js';
-import { applicationCallableProviderDependencies } from './application-provider-dependencies.js';
 import { createApplicationQualifiedProviderBinding } from './application-provider-handle.js';
 import type { ApplicationAnalyticalDatabaseProvider, ApplicationDefaults, ApplicationDefaultsBinding, ApplicationHostBinding, ApplicationHostProvider, ApplicationHttpExposureProvider, ApplicationIndexBackend, ApplicationPostgresTransactionalDatabaseOptions, ApplicationProviderBinding, ApplicationProviderDeploymentTarget, ApplicationProviderState, ApplicationProviderToken, ApplicationQualifiedProviderToken, ApplicationTargetProviderSelectionValue, ApplicationTransactionalDatabaseProvider, ApplicationValkeyIndexBackend } from './application-providers.js';
 import { ActorRuntime, ApplicationHost, applicationAnalyticalDatabaseImplementation, applicationCallableProviderRuntimeBinding, applicationCertificateImplementation, applicationDnsPublicationImplementation, applicationEventLogImplementation, applicationHostBinding, applicationHttpExposureImplementation, applicationIndexBackend, applicationObjectStorageImplementation, applicationPostgresClusterSpec, applicationProviderQualificationFor, applicationProviderSelectionFor, applicationProviderSelectionSatisfies, applicationProviderTokenName, applicationSearchProviderImplementation, applicationTargetProviderSelectionFor, applicationTransactionalDatabaseImplementation, applyApplicationProvider, defaultApplicationEventLogProvider, defaultApplicationIndexBackend, defaultApplicationIndexProvider, defaultApplicationProviders, IndexStore, isApplicationProviderSelection, isApplicationQualifiedProviderToken, isValkeyIndexDefault, TransactionalDatabase } from './application-providers.js';
@@ -3274,9 +3273,16 @@ function applicationFunctionNativeHttpServerRoute(
     `${left.identifier}:${left.operationId}`.localeCompare(
       `${right.identifier}:${right.operationId}`,
     ));
-  const providerBindings = applicationCallableProviderDependencies(
-    route.handlerDependencyGraph.bindings,
-  );
+  const providerBindings = route.handlerDependencyGraph.providerBindings
+    .filter(
+      (binding) =>
+        binding.operation !== undefined
+        || !route.handlerDependencyGraph.providerBindings.some(
+          (candidate) =>
+            candidate.operation !== undefined
+            && candidate.provider.nodeId === binding.provider.nodeId,
+        ),
+    );
   const workflowBindings = Object.entries(route.workflowBindings)
     .sort(([left], [right]) => left.localeCompare(right))
     .map(([identifier, target]) => {

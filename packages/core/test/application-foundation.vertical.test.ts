@@ -1,5 +1,6 @@
 // typecast-file-boundary: Adversarial fixtures intentionally cross erased JSON and template-literal identity boundaries to exercise fail-closed validation.
 import { describe, expect, it } from 'vitest';
+import { applicationProviderRefsForNode } from '../src/application-graph-node-validation.js';
 import {
   type ApplicationGraph,
   type ApplicationGuestHostIdentityEnvelope,
@@ -270,6 +271,135 @@ describe('v0.8 canonical foundation', () => {
       provenance: foundation.provenance,
       runtimeAccess: foundation.runtimeAccess,
     })).toEqual([]);
+  });
+
+  it('derives callable-provider access from function-native HTTP routes', () => {
+    const providerId = 'provider.acquisition-provider.v1alpha1.primary';
+    const graph = {
+      apiVersion: 'applik8s.appGraph/v1alpha1',
+      kind: 'ApplicationGraph',
+      metadata: { name: 'provider-http' },
+      nodes: [
+        {
+          id: providerId,
+          kind: 'provider',
+          name: 'AcquisitionProvider',
+          stability: 'stable',
+          interface: 'AcquisitionProvider',
+          implementation: 'profile',
+        },
+        {
+          id: 'server.public-api',
+          kind: 'server',
+          name: 'public-api',
+          stability: 'stable',
+          routes: [{
+            id: 'acquire',
+            method: 'POST',
+            path: '/acquire',
+            handler: { source: 'async input => input' },
+            diagnostics: {
+              routeFailureEvent: 'applik8s-server-route-failure',
+              actionFailureEvent: 'applik8s-route-action-failure',
+              failurePolicy: 'failClosed',
+              partialEffects: 'unknownAfterActionStarted',
+              sourceMaps: 'required',
+              includes: [
+                'routeId',
+                'method',
+                'path',
+                'module',
+                'sourceLocation',
+                'bundleInputs',
+                'action',
+                'diagnostic',
+                'stack',
+              ],
+            },
+            functionNative: {
+              input: { jsonSchema: { type: 'object' } },
+              output: { jsonSchema: { type: 'object' } },
+              handler: { source: 'async input => input' },
+              providerBindings: [{
+                identifier: 'provider.acquire',
+                provider: {
+                  interface: 'AcquisitionProvider',
+                  nodeId: providerId,
+                },
+                operation: {
+                  member: 'acquire',
+                  runtime: {
+                    module: '@fixture/acquisition/runtime',
+                    export: 'acquireItem',
+                    access: {
+                      kind: 'provider',
+                      operations: ['connection.use', 'network.connect'],
+                    },
+                  },
+                },
+              }],
+              idempotency: {
+                source: 'http-idempotency-key',
+                contextScoped: true,
+              },
+              requestBoundary: {
+                durableValues: 'schema-normalized-only',
+                rawRequestCapture: 'rejected',
+                principal: 'framework-authenticated',
+              },
+            },
+          }],
+          resources: [],
+          indexes: [],
+          observability: {
+            health: {
+              mode: 'http',
+              readinessPath: '/readyz',
+              livenessPath: '/healthz',
+            },
+            logs: {
+              format: 'json',
+              component: 'public-api',
+              failureEvents: [],
+            },
+            metrics: { mode: 'none', names: [] },
+            events: [],
+            sourceMaps: 'required',
+            replayArtifacts: [],
+            diagnosticsArtifact: {
+              kind: 'routeDiagnostics',
+              name: 'public-api-diagnostics',
+            },
+          },
+        },
+      ],
+      edges: [],
+      providerRequirements: [],
+      providerBindings: [],
+      compatibility: {
+        stablePublicApis: [],
+        documentedInternalContracts: [],
+        experimentalSurfaces: [],
+        postV3Surfaces: [],
+        labels: [],
+      },
+    } as ApplicationGraph;
+    const requirements = deriveApplicationGraphFoundation(graph).runtimeAccess
+      .filter((requirement) => requirement.target.capabilityId === providerId);
+    expect(requirements.map(({ target }) => target.operation).sort()).toEqual([
+      'connection.use',
+      'network.connect',
+    ]);
+    expect(
+      requirements.every(
+        ({ consumer }) => consumer.nodeId === 'server.public-api',
+      ),
+    ).toBe(true);
+    const server = graph.nodes.find((node) => node.kind === 'server');
+    expect(server && applicationProviderRefsForNode(server)).toContainEqual({
+      interface: 'AcquisitionProvider',
+      nodeId: providerId,
+    });
   });
 
   it('isolates schedule admission and telemetry access to a schedule-runner execution identity', () => {
