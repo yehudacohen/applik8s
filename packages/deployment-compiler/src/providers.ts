@@ -14,6 +14,7 @@ import type {
   ApplicationDeploymentContribution,
   ApplicationDeploymentContributor,
   ApplicationDeploymentPlanningContext,
+  ApplicationDeploymentRuntimeAccessTarget,
   ApplicationTypeKroFragmentDescriptor,
 } from "./types.js";
 
@@ -113,6 +114,7 @@ export function builtinApplicationDeploymentContributors(): readonly Application
       return {
         nodes,
         edges: providerDirect.edges,
+        ...(providerDirect.runtimeAccessTargets ? { runtimeAccessTargets: providerDirect.runtimeAccessTargets } : {}),
         compositionFragments: [
           providerFragment(
             concreteProvider,
@@ -264,6 +266,7 @@ export function applicationProviderSelectionDeploymentContributor(
           ...providerDirect.nodes,
         ],
         edges: providerDirect.edges,
+        ...(providerDirect.runtimeAccessTargets ? { runtimeAccessTargets: providerDirect.runtimeAccessTargets } : {}),
         compositionFragments: [
           providerFragment(
             selected,
@@ -647,6 +650,7 @@ function providerExecution(
 interface ProviderDirectContribution {
   readonly nodes: readonly ApplicationDeploymentNode[];
   readonly edges: readonly ApplicationDeploymentEdge[];
+  readonly runtimeAccessTargets?: readonly ApplicationDeploymentRuntimeAccessTarget[];
 }
 
 function providerDirectContribution(
@@ -969,6 +973,19 @@ function celldActorRuntimeDirectContribution(
         ? { from: nodeId, to: "kubernetes.application", relationship: "requiresOutput", output: "endpoint" }
         : { from: nodeId, to: "kubernetes.application", relationship: "requiresReady" },
     ],
+    runtimeAccessTargets: [{
+      capabilityId: provider.id,
+      target: "kubernetes",
+      namespace,
+      serviceName: name,
+      podSelector: {
+        "app.kubernetes.io/name": "celld",
+        "app.kubernetes.io/instance": name,
+        "app.kubernetes.io/component": "actor-runtime",
+      },
+      protocol: "TCP",
+      port: 8080,
+    }],
   };
 }
 
@@ -1124,6 +1141,15 @@ function eventLogDirectContribution(
       }),
     ],
     edges: [],
+    runtimeAccessTargets: [{
+      capabilityId: provider.id,
+      target: "kubernetes",
+      namespace,
+      serviceName: name,
+      podSelector: { "app.kubernetes.io/instance": name },
+      protocol: "TCP",
+      port: 4222,
+    }],
   };
 }
 
@@ -1417,7 +1443,10 @@ function envoyAIGatewayDirectContribution(
       relationship: "requiresReady",
     });
   }
-  return { nodes, edges };
+  return {
+    nodes,
+    edges,
+  };
 }
 
 /**
@@ -2085,7 +2114,19 @@ function workflowDirectContribution(
       relationship: "requiresReady",
     });
   }
-  return { nodes, edges };
+  return {
+    nodes,
+    edges,
+    runtimeAccessTargets: [{
+      capabilityId: provider.id,
+      target: "kubernetes",
+      namespace,
+      serviceName: "hatchet-engine",
+      podSelector: { "app.kubernetes.io/instance": "hatchet" },
+      protocol: "TCP",
+      port: 7070,
+    }],
+  };
 }
 
 function workflowGeneratedSecretNode(options: {
@@ -2304,7 +2345,22 @@ function valkeyDirectContribution(
       relationship: "installsApi",
     });
   }
-  return { nodes, edges };
+  return {
+    nodes,
+    edges,
+    runtimeAccessTargets: [{
+      capabilityId: provider.id,
+      target: "kubernetes",
+      namespace,
+      serviceName: name,
+      podSelector: {
+        "app.kubernetes.io/name": "valkey",
+        "app.kubernetes.io/instance": name,
+      },
+      protocol: "TCP",
+      port: 6379,
+    }],
+  };
 }
 
 function postgresDirectContribution(
@@ -2362,6 +2418,15 @@ function postgresDirectContribution(
       }),
     ],
     edges: [],
+    runtimeAccessTargets: [{
+      capabilityId: provider.id,
+      target: "kubernetes",
+      namespace,
+      serviceName: `${name}-rw`,
+      podSelector: { "cnpg.io/cluster": name },
+      protocol: "TCP",
+      port: 5432,
+    }],
   };
 }
 

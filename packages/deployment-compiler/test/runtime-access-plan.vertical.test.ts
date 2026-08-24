@@ -338,11 +338,19 @@ describe('v0.8 runtime-access lowering', () => {
     const original = compiled.workloads[0];
     if (!original?.aws) throw new Error('Expected one AWS workload fixture.');
     const networkConnections = ['provider.database'];
+    const privatePeers = [{
+      peerIdentity: 'peer.database',
+      capabilityId: 'provider.database',
+      requirementIds: [original.requirementIds[0]!],
+      protocol: 'TCP' as const,
+      port: 5432,
+      endpoint: { target: 'aws' as const, resourceId: 'provider.database' },
+    }];
     const plan = {
       ...compiled,
       workloads: [{
         ...original,
-        aws: { ...original.aws, networkConnections },
+        aws: { ...original.aws, privatePeers, networkConnections },
       }],
     };
     const runtime = awsParityResource('runtime.objects', 'ecs', 'fargate-worker', {
@@ -507,6 +515,35 @@ describe('v0.8 runtime-access lowering', () => {
         evidenceLevel: 'none',
       },
     }));
+    const kubernetes = compileApplicationRuntimeAccessPlan({
+      graph,
+      target: 'kubernetes',
+      targetResources: {
+        'provider.acquisition': {
+          networkNamespace: 'acquisition-system',
+          networkServiceName: 'acquisition-api',
+          networkPodSelector: { 'app.kubernetes.io/name': 'acquisition' },
+          networkProtocol: 'TCP',
+          networkPort: 8443,
+        },
+      },
+    });
+    expect(kubernetes.executions[0]?.kubernetes?.privatePeers).toEqual([
+      expect.objectContaining({
+        capabilityId: 'provider.acquisition',
+        protocol: 'TCP',
+        port: 8443,
+        endpoint: {
+          target: 'kubernetes',
+          namespace: 'acquisition-system',
+          serviceName: 'acquisition-api',
+          podSelector: { 'app.kubernetes.io/name': 'acquisition' },
+        },
+      }),
+    ]);
+    expect(kubernetes.executions[0]?.kubernetes?.networkConnections).toEqual([
+      'acquisition-system/acquisition-api',
+    ]);
   });
 });
 

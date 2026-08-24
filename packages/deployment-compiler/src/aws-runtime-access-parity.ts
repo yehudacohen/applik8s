@@ -64,7 +64,8 @@ export function validateAwsRuntimeAccessParity(
     const widenedStatements = [...actualStatements].filter((atom) => !expectedStatements.has(atom));
     if (missingStatements.length > 0) finding('RUNTIME_ACCESS_IAM_MISSING', `AWS workload ${workload.workloadIdentity} IAM role omits ${missingStatements.length} required action/resource/condition grant(s).`);
     if (widenedStatements.length > 0) finding('RUNTIME_ACCESS_IAM_WIDENED', `AWS workload ${workload.workloadIdentity} IAM role contains ${widenedStatements.length} grant(s) outside its enforcement envelope.`);
-    const expectedNetwork = new Set(workload.aws.networkConnections);
+    const expectedNetwork = new Set(workload.aws.privatePeers.flatMap(({ endpoint }) =>
+      endpoint.target === 'aws' || endpoint.target === 'aws-local' ? [endpoint.resourceId] : []));
     const actualNetwork = new Set(edges.filter((edge) => edge.relationship === 'networkAccess' && edge.output === 'runtime-egress' && edge.to === resource.id).map(({ from }) => from));
     const missingNetwork = [...expectedNetwork].filter((target) => !actualNetwork.has(target));
     const widenedNetwork = [...actualNetwork].filter((target) => !expectedNetwork.has(target));

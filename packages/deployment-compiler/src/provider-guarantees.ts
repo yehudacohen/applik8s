@@ -330,6 +330,7 @@ const awsProviders: Readonly<Record<string, readonly string[]>> = {
   Observability: ['cloudwatch', 'otlp'],
   LakehouseDataset: ['s3-dataset'],
   LakehouseQuery: ['athena-queries'],
+  WorkflowEngine: ['hatchet'],
   ActorRuntime: ['celld-actors', 'deterministic-local-actors'],
 };
 
@@ -345,6 +346,7 @@ const kubernetesProviders: Readonly<Record<string, readonly string[]>> = {
   DnsPublication: ['external-dns'],
   Certificate: ['cert-manager'],
   Scheduler: ['kubernetes-cronjob-scheduler', 'hatchet-scheduler'],
+  WorkflowEngine: ['hatchet'],
   Observability: ['clickstack', 'otlp'],
   ActorRuntime: ['celld-actors'],
 };

@@ -21,6 +21,7 @@ import {
   type ApplicationRuntimeAccessKubernetesRule,
   type ApplicationRuntimeAccessPlan,
   type ApplicationRuntimeAccessPlanDiagnostic,
+  type ApplicationRuntimeAccessPrivatePeer,
   type ApplicationRuntimeAccessRequirementLowering,
   type ApplicationRuntimeAccessWorkloadPlan,
   applicationRuntimeAccessPlanDigest,
@@ -165,10 +166,9 @@ export function compileApplicationRuntimeAccessPlan(options: {
       if (statements.length === 0 && requiresAwsStatement(requirement, options.graph, options.targetResources)) diagnostics.push({ severity: 'error', code: 'RUNTIME_ACCESS_TARGET_UNRESOLVED', message: `Runtime-access requirement ${requirement.id} cannot be lowered to an exact AWS policy resource.`, requirementId: requirement.id });
       return statements;
     }) : [];
-    const networkConnections = requirements
-      .flatMap((requirement) => runtimeNetworkCapability(requirement, options.graph, options.targetResources))
-      .filter((value, index, values) => values.indexOf(value) === index)
-      .sort();
+    const privatePeers = mergePrivatePeers(requirements.flatMap((requirement) =>
+      runtimePrivatePeer(requirement, options.target, options.graph, options.targetResources)));
+    const networkConnections = privatePeerConnections(privatePeers);
     const credentialProjections = mergeCredentialProjections(requirements
       .filter(({ target }) => target.operation === 'secret.read')
       .map(({ target }) => target.scope.kind === 'resource'
@@ -178,6 +178,7 @@ export function compileApplicationRuntimeAccessPlan(options: {
       ? {
           serviceAccountName: collisionResistantKubernetesName(`${options.graph.metadata.name}-${nodeId}`, executionIdentity),
           bindings: mergeKubernetesBindings(kubernetesEntries),
+          privatePeers,
           networkConnections,
           credentialProjections,
         }
@@ -186,6 +187,7 @@ export function compileApplicationRuntimeAccessPlan(options: {
       ? {
           roleName: collisionResistantAwsRoleName(`${options.graph.metadata.name}-${nodeId}`, executionIdentity),
           statements: mergeAwsStatements(awsStatements),
+          privatePeers,
           networkConnections,
         }
       : undefined;
@@ -194,6 +196,7 @@ export function compileApplicationRuntimeAccessPlan(options: {
       options.target,
       Boolean(kubernetesEntries.some(({ requirementId }) => requirementId === requirement.id)),
       awsStatementsForRequirement(requirement, options.graph, options.targetResources).length > 0,
+      privatePeers.some((peer) => peer.requirementIds.includes(requirement.id)),
       requiresKubernetesRule(requirement),
       requiresAwsStatement(requirement, options.graph, options.targetResources),
       providerAccessGuarantee(requirement, options.graph, providerGuarantees),
@@ -252,17 +255,24 @@ function compileWorkloadPlans(
           resource: placement.kubernetes.resource,
           serviceAccountName: placement.kubernetes.serviceAccountName,
           bindings: mergePlannedKubernetesBindings(members.flatMap((member) => member.kubernetes?.bindings ?? [])),
-          networkConnections: uniqueStrings(members.flatMap((member) => member.kubernetes?.networkConnections ?? [])),
+          privatePeers: mergePrivatePeers(members.flatMap((member) => member.kubernetes?.privatePeers ?? [])),
+          networkConnections: privatePeerConnections(mergePrivatePeers(members.flatMap((member) => member.kubernetes?.privatePeers ?? []))),
           credentialProjections: mergeCredentialProjections(members.flatMap((member) => member.kubernetes?.credentialProjections ?? [])),
         }
       : undefined;
     const aws = (target === 'aws' || target === 'aws-local') && placement.aws
-      ? {
+      ? (() => {
+          const privatePeers = mergePrivatePeers(members
+            .flatMap((member) => member.aws?.privatePeers ?? [])
+            .filter(({ endpoint }) => endpoint.target === 'kubernetes' || endpoint.resourceId !== placement.aws?.resourceId));
+          return {
           resourceId: placement.aws.resourceId,
           roleName: placement.aws.roleName,
           statements: mergeAwsStatements(members.flatMap((member) => member.aws?.statements ?? [])),
-          networkConnections: uniqueStrings(members.flatMap((member) => member.aws?.networkConnections ?? [])),
-        }
+          privatePeers,
+          networkConnections: privatePeerConnections(privatePeers),
+          };
+        })()
       : undefined;
     const policy = {
       ...(kubernetes ? { kubernetes } : {}),
@@ -464,23 +474,79 @@ function awsStatementsForRequirement(
   return [];
 }
 
-function runtimeNetworkCapability(
+function runtimePrivatePeer(
   requirement: ApplicationRuntimeAccessRequirement,
+  targetKind: ApplicationRuntimeAccessPlan['target'],
   graph: ApplicationGraph,
   targetResources?: Readonly<Record<string, Readonly<Record<string, unknown>>>>,
-): readonly string[] {
+): readonly ApplicationRuntimeAccessPrivatePeer[] {
   const provider = providerForRequirement(requirement, graph);
   const target = targetResources?.[requirement.target.capabilityId]
     ?? (provider ? targetResources?.[provider.id] : undefined);
-  const physical = stringValue(target?.networkResourceId);
   if (target?.networkMode === 'embedded') return [];
-  if (requirement.target.operation === 'network.connect' || requirement.target.operation === 'connection.use') {
-    return [physical ?? requirement.target.capabilityId];
+  const needsConnection = requirement.target.operation === 'network.connect'
+    || requirement.target.operation === 'connection.use'
+    || ((requirement.target.operation === 'model.read'
+      || requirement.target.operation === 'model.write'
+      || requirement.target.operation === 'model.delete')
+      && provider?.interface === 'TransactionalDatabase');
+  if (!needsConnection || targetKind === 'local' || !target) return [];
+  const port = numberValue(target.networkPort);
+  const protocol = target.networkProtocol === 'UDP' ? 'UDP' : target.networkProtocol === 'TCP' || target.networkProtocol === undefined ? 'TCP' : undefined;
+  if (!port || !Number.isInteger(port) || port < 1 || port > 65_535 || !protocol) return [];
+  const capabilityId = provider?.id ?? requirement.target.capabilityId;
+  const endpoint = targetKind === 'kubernetes'
+    ? (() => {
+        const namespace = stringValue(target.networkNamespace);
+        const serviceName = stringValue(target.networkServiceName);
+        const podSelector = stringRecord(target.networkPodSelector);
+        return namespace && serviceName && podSelector && Object.keys(podSelector).length > 0
+          ? { target: 'kubernetes' as const, namespace, serviceName, podSelector }
+          : undefined;
+      })()
+    : targetKind === 'aws' || targetKind === 'aws-local'
+      ? (() => {
+          const resourceId = stringValue(target.networkResourceId);
+          return resourceId ? { target: targetKind, resourceId } as const : undefined;
+        })()
+      : undefined;
+  if (!endpoint) return [];
+  const identityContent = { capabilityId, protocol, port, endpoint };
+  return [{
+    peerIdentity: `peer.${sha256Hex(canonicalJsonV1String(identityContent)).slice(0, 24)}`,
+    capabilityId,
+    requirementIds: [requirement.id],
+    protocol,
+    port,
+    endpoint,
+  }];
+}
+
+function mergePrivatePeers(
+  peers: readonly ApplicationRuntimeAccessPrivatePeer[],
+): readonly ApplicationRuntimeAccessPrivatePeer[] {
+  const merged = new Map<string, ApplicationRuntimeAccessPrivatePeer>();
+  for (const peer of peers) {
+    const identity = canonicalJsonV1String({
+      peerIdentity: peer.peerIdentity,
+      capabilityId: peer.capabilityId,
+      protocol: peer.protocol,
+      port: peer.port,
+      endpoint: peer.endpoint,
+    });
+    const current = merged.get(identity);
+    merged.set(identity, {
+      ...peer,
+      requirementIds: uniqueStrings([...(current?.requirementIds ?? []), ...peer.requirementIds]),
+    });
   }
-  if (requirement.target.operation === 'model.read' || requirement.target.operation === 'model.write' || requirement.target.operation === 'model.delete') {
-    return provider?.interface === 'TransactionalDatabase' ? [physical ?? provider.id] : [];
-  }
-  return [];
+  return [...merged.values()].sort(compareCanonical);
+}
+
+function privatePeerConnections(peers: readonly ApplicationRuntimeAccessPrivatePeer[]): readonly string[] {
+  return uniqueStrings(peers.map(({ endpoint }) => endpoint.target === 'kubernetes'
+    ? `${endpoint.namespace}/${endpoint.serviceName}`
+    : endpoint.resourceId));
 }
 
 function providerForRequirement(requirement: ApplicationRuntimeAccessRequirement, graph: ApplicationGraph): ApplicationProviderNode | undefined {
@@ -718,6 +784,7 @@ function requirementLowering(
   target: ApplicationRuntimeAccessPlan['target'],
   hasKubernetesRule: boolean,
   hasAwsStatement: boolean,
+  hasPrivatePeer: boolean,
   requiresKubernetesEnforcement: boolean,
   requiresAwsEnforcement: boolean,
   providerGuarantee: ApplicationRuntimeAccessRequirementLowering['providerGuarantee'],
@@ -734,18 +801,26 @@ function requirementLowering(
   if (target === 'local') return lowering(requirement, 'capability', ['local-binding'], providerGuarantee);
   if (target === 'kubernetes') {
     if (hasKubernetesRule) {
-      return lowering(requirement, 'exact', requirement.target.operation === 'secret.read'
-        ? ['kubernetes-rbac', 'kubernetes-secret-projection']
-        : ['kubernetes-rbac'], providerGuarantee);
+      return lowering(requirement, 'exact', [
+        'kubernetes-rbac',
+        ...(requirement.target.operation === 'secret.read' ? ['kubernetes-secret-projection' as const] : []),
+        ...(hasPrivatePeer ? ['kubernetes-network' as const] : []),
+      ], providerGuarantee);
+    }
+    if (hasPrivatePeer) {
+      return lowering(requirement, 'exact', ['kubernetes-network'], providerGuarantee);
     }
     if (requirement.target.operation === 'network.connect' || requirement.target.operation === 'connection.use') {
-      return lowering(requirement, 'capability', ['kubernetes-network'], providerGuarantee);
+      return lowering(requirement, 'unsupported', [], providerGuarantee);
     }
     return lowering(requirement, requiresKubernetesEnforcement ? 'unsupported' : 'capability', [], providerGuarantee);
   }
-  if (hasAwsStatement) return lowering(requirement, 'exact', ['aws-iam'], providerGuarantee);
+  if (hasAwsStatement || hasPrivatePeer) return lowering(requirement, 'exact', [
+    ...(hasAwsStatement ? ['aws-iam' as const] : []),
+    ...(hasPrivatePeer ? ['aws-network' as const] : []),
+  ], providerGuarantee);
   if (requirement.target.operation === 'network.connect' || requirement.target.operation === 'connection.use') {
-    return lowering(requirement, 'capability', ['aws-network'], providerGuarantee);
+    return lowering(requirement, 'unsupported', [], providerGuarantee);
   }
   return lowering(requirement, requiresAwsEnforcement ? 'unsupported' : 'capability', [], providerGuarantee);
 }
@@ -823,6 +898,14 @@ function containsWildcard(requirement: ApplicationRuntimeAccessRequirement): boo
 function resourceId(requirement: ApplicationRuntimeAccessRequirement): string | undefined { const scope = requirement.target.scope; return 'resourceId' in scope ? scope.resourceId : undefined; }
 function apiGroup(apiVersion: string): string { return apiVersion.includes('/') ? apiVersion.split('/')[0] ?? '' : ''; }
 function stringValue(value: unknown): string | undefined { return typeof value === 'string' ? value : undefined; }
+function numberValue(value: unknown): number | undefined { return typeof value === 'number' && Number.isFinite(value) ? value : undefined; }
+function stringRecord(value: unknown): Readonly<Record<string, string>> | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const entries = Object.entries(value);
+  return entries.every(([, entry]) => typeof entry === 'string')
+    ? Object.fromEntries(entries) as Readonly<Record<string, string>>
+    : undefined;
+}
 function boundedKubernetesName(value: string): string {
   const normalized = value.toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '') || 'applik8s-runtime';
   if (normalized.length <= 63) return normalized;

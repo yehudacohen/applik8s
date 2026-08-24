@@ -32,6 +32,8 @@ export interface ApplicationRuntimeAccessWorkloadPlan {
     };
     readonly serviceAccountName: string;
     readonly bindings: readonly ApplicationRuntimeAccessKubernetesBinding[];
+    readonly privatePeers: readonly ApplicationRuntimeAccessPrivatePeer[];
+    /** @deprecated Derived compatibility projection; privatePeers is authoritative. */
     readonly networkConnections: readonly string[];
     readonly credentialProjections: readonly ApplicationRuntimeAccessCredentialProjection[];
   };
@@ -39,6 +41,8 @@ export interface ApplicationRuntimeAccessWorkloadPlan {
     readonly resourceId: string;
     readonly roleName: string;
     readonly statements: readonly ApplicationRuntimeAccessAwsStatement[];
+    readonly privatePeers: readonly ApplicationRuntimeAccessPrivatePeer[];
+    /** @deprecated Derived compatibility projection; privatePeers is authoritative. */
     readonly networkConnections: readonly string[];
   };
 }
@@ -54,14 +58,38 @@ export interface ApplicationRuntimeAccessExecutionPlan {
   readonly kubernetes?: {
     readonly serviceAccountName: string;
     readonly bindings: readonly ApplicationRuntimeAccessKubernetesBinding[];
+    readonly privatePeers: readonly ApplicationRuntimeAccessPrivatePeer[];
+    /** @deprecated Derived compatibility projection; privatePeers is authoritative. */
     readonly networkConnections: readonly string[];
     readonly credentialProjections: readonly ApplicationRuntimeAccessCredentialProjection[];
   };
   readonly aws?: {
     readonly roleName: string;
     readonly statements: readonly ApplicationRuntimeAccessAwsStatement[];
+    readonly privatePeers: readonly ApplicationRuntimeAccessPrivatePeer[];
+    /** @deprecated Derived compatibility projection; privatePeers is authoritative. */
     readonly networkConnections: readonly string[];
   };
+}
+
+/** One exact private data-plane connection justified by semantic requirements. */
+export interface ApplicationRuntimeAccessPrivatePeer {
+  readonly peerIdentity: string;
+  readonly capabilityId: string;
+  readonly requirementIds: readonly string[];
+  readonly protocol: 'TCP' | 'UDP';
+  readonly port: number;
+  readonly endpoint:
+    | {
+        readonly target: 'kubernetes';
+        readonly namespace: string;
+        readonly serviceName: string;
+        readonly podSelector: Readonly<Record<string, string>>;
+      }
+    | {
+        readonly target: 'aws' | 'aws-local';
+        readonly resourceId: string;
+      };
 }
 
 export interface ApplicationRuntimeAccessRequirementLowering {
@@ -194,6 +222,18 @@ export function validateApplicationRuntimeAccessPlan(
     if (execution.aws && plan.target !== 'aws' && plan.target !== 'aws-local') errors.push(`execution ${execution.executionIdentity} carries AWS policy for ${plan.target}`);
     if (plan.target === 'kubernetes' && !execution.kubernetes) errors.push(`execution ${execution.executionIdentity} has no Kubernetes enforcement policy`);
     if ((plan.target === 'aws' || plan.target === 'aws-local') && !execution.aws) errors.push(`execution ${execution.executionIdentity} has no AWS enforcement policy`);
+    validatePrivatePeers(
+      execution.kubernetes?.privatePeers ?? execution.aws?.privatePeers,
+      plan.target,
+      execution.requirementIds,
+      `execution ${execution.executionIdentity}`,
+      errors,
+    );
+    validateDerivedNetworkConnections(
+      execution.kubernetes ?? execution.aws,
+      `execution ${execution.executionIdentity}`,
+      errors,
+    );
     const policy = {
       local: execution.local,
       ...(execution.kubernetes ? { kubernetes: execution.kubernetes } : {}),
@@ -234,6 +274,18 @@ export function validateApplicationRuntimeAccessPlan(
     if (workload.aws && plan.target !== 'aws' && plan.target !== 'aws-local') errors.push(`workload ${workload.workloadIdentity} carries AWS policy for ${plan.target}`);
     if (plan.target === 'kubernetes' && !workload.kubernetes) errors.push(`workload ${workload.workloadIdentity} has no Kubernetes enforcement policy`);
     if ((plan.target === 'aws' || plan.target === 'aws-local') && !workload.aws) errors.push(`workload ${workload.workloadIdentity} has no AWS enforcement policy`);
+    validatePrivatePeers(
+      workload.kubernetes?.privatePeers ?? workload.aws?.privatePeers,
+      plan.target,
+      workload.requirementIds,
+      `workload ${workload.workloadIdentity}`,
+      errors,
+    );
+    validateDerivedNetworkConnections(
+      workload.kubernetes ?? workload.aws,
+      `workload ${workload.workloadIdentity}`,
+      errors,
+    );
     const policy = {
       ...(workload.kubernetes ? { kubernetes: workload.kubernetes } : {}),
       ...(workload.aws ? { aws: workload.aws } : {}),
@@ -269,4 +321,66 @@ function containsWildcard(value: unknown): boolean {
   if (value === '*') return true;
   if (Array.isArray(value)) return value.some(containsWildcard);
   return Boolean(value && typeof value === 'object' && Object.values(value).some(containsWildcard));
+}
+
+function validatePrivatePeers(
+  peers: readonly ApplicationRuntimeAccessPrivatePeer[] | undefined,
+  target: ApplicationRuntimeAccessPlan['target'],
+  ownedRequirementIds: readonly string[],
+  owner: string,
+  errors: string[],
+): void {
+  if (!Array.isArray(peers)) {
+    if (target !== 'local') errors.push(`${owner} has no privatePeers collection`);
+    return;
+  }
+  const identities = new Set<string>();
+  const owned = new Set(ownedRequirementIds);
+  for (const peer of peers) {
+    if (!record(peer) || typeof peer.peerIdentity !== 'string' || !peer.peerIdentity.trim()) {
+      errors.push(`${owner} contains a malformed private peer`);
+      continue;
+    }
+    if (identities.has(peer.peerIdentity)) errors.push(`${owner} repeats private peer ${peer.peerIdentity}`);
+    identities.add(peer.peerIdentity);
+    if (typeof peer.capabilityId !== 'string' || !peer.capabilityId.trim()) errors.push(`${owner} private peer ${peer.peerIdentity} has no capabilityId`);
+    if (peer.protocol !== 'TCP' && peer.protocol !== 'UDP') errors.push(`${owner} private peer ${peer.peerIdentity} has an invalid protocol`);
+    if (typeof peer.port !== 'number' || !Number.isInteger(peer.port) || peer.port < 1 || peer.port > 65_535) errors.push(`${owner} private peer ${peer.peerIdentity} has an invalid port`);
+    if (!Array.isArray(peer.requirementIds) || peer.requirementIds.length === 0 || new Set(peer.requirementIds).size !== peer.requirementIds.length) {
+      errors.push(`${owner} private peer ${peer.peerIdentity} has malformed requirementIds`);
+    } else if (peer.requirementIds.some((requirementId) => !owned.has(requirementId))) {
+      errors.push(`${owner} private peer ${peer.peerIdentity} references a requirement outside its owner`);
+    }
+    if (!record(peer.endpoint) || peer.endpoint.target !== target) {
+      errors.push(`${owner} private peer ${peer.peerIdentity} has an endpoint for the wrong target`);
+      continue;
+    }
+    if (peer.endpoint.target === 'kubernetes') {
+      if (!peer.endpoint.namespace || !peer.endpoint.serviceName || !record(peer.endpoint.podSelector) || Object.keys(peer.endpoint.podSelector).length === 0 || containsWildcard(peer.endpoint.podSelector)) {
+        errors.push(`${owner} private peer ${peer.peerIdentity} has an invalid Kubernetes endpoint identity`);
+      }
+    } else if (!peer.endpoint.resourceId) {
+      errors.push(`${owner} private peer ${peer.peerIdentity} has no AWS resource identity`);
+    }
+  }
+}
+
+function validateDerivedNetworkConnections(
+  policy: { readonly privatePeers: readonly ApplicationRuntimeAccessPrivatePeer[]; readonly networkConnections: readonly string[] } | undefined,
+  owner: string,
+  errors: string[],
+): void {
+  if (!policy || !Array.isArray(policy.privatePeers) || !Array.isArray(policy.networkConnections)) return;
+  const expected = [...new Set(policy.privatePeers.flatMap(({ endpoint }) => {
+    if (!record(endpoint)) return [];
+    if (endpoint.target === 'kubernetes' && typeof endpoint.namespace === 'string' && typeof endpoint.serviceName === 'string') {
+      return [`${endpoint.namespace}/${endpoint.serviceName}`];
+    }
+    if ((endpoint.target === 'aws' || endpoint.target === 'aws-local') && typeof endpoint.resourceId === 'string') return [endpoint.resourceId];
+    return [];
+  }))].sort();
+  const actual = [...policy.networkConnections].sort();
+  if (canonicalJsonV1String(actual) !== canonicalJsonV1String(expected)) {
+    errors.push(`${owner} networkConnections do not match its authoritative privatePeers`);
+  }
 }

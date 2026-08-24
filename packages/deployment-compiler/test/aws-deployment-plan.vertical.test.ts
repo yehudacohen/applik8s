@@ -379,6 +379,27 @@ describe('v0.8 AWS deployment planning', () => {
         ...base.edges,
         { from: { nodeId: workflowProvider.id }, to: { nodeId: 'server.web' }, relationship: 'provides' },
       ],
+      providerRequirements: [
+        ...base.providerRequirements,
+        {
+          id: 'requirement.workflow.server',
+          interface: 'WorkflowEngine',
+          consumer: { nodeId: 'server.web' },
+          provider: { interface: 'WorkflowEngine', nodeId: workflowProvider.id },
+          required: true,
+          purpose: 'durable workflow invocation',
+          diagnostics: { missing: 'missing workflow engine', ambiguous: 'ambiguous workflow engine' },
+        },
+      ],
+      providerBindings: [
+        ...base.providerBindings,
+        {
+          requirement: 'requirement.workflow.server',
+          provider: { interface: 'WorkflowEngine', nodeId: workflowProvider.id },
+          generatedResources: [],
+          runtime: {},
+        },
+      ],
     };
     const plan = compileApplicationAwsDeploymentPlan({
       graph,
@@ -407,6 +428,17 @@ describe('v0.8 AWS deployment planning', () => {
     ]));
     const host = plan.resources.find(({ resourceType, semanticNodeId }) => resourceType === 'fargate-service' && semanticNodeId === 'server.web');
     expect(host?.configuration.workflowEngineResourceIds).toEqual([engine?.id]);
+    const hostAccess = plan.runtimeAccess.workloads.find(({ aws }) => aws?.resourceId === host?.id)?.aws;
+    expect(hostAccess?.privatePeers).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        capabilityId: workflowProvider.id,
+        protocol: 'TCP',
+        port: 7077,
+        endpoint: { target: 'aws', resourceId: engine?.id },
+        requirementIds: expect.arrayContaining([expect.any(String)]),
+      }),
+    ]));
+    expect(hostAccess?.networkConnections).toEqual(expect.arrayContaining([engine?.id]));
     expect(plan.edges).toEqual(expect.arrayContaining([
       { from: `provider.${workflowProvider.id}.credentials`, to: `provider.${workflowProvider.id}.database`, relationship: 'requiresReady' },
       { from: `provider.${workflowProvider.id}.database`, to: engine?.id, relationship: 'requiresReady' },

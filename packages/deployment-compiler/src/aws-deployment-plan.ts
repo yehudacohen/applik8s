@@ -1031,9 +1031,9 @@ function resolveAwsHostedZone(hostname: string, hostedZones: Readonly<Record<str
 function awsProviderResources(provider: ApplicationProviderNode, request: CompileApplicationAwsDeploymentPlanRequest, name: (suffix: string, limit?: number) => string): readonly ApplicationAwsPlanResource[] | undefined {
   const config = providerConfig(provider);
   const semantic = provider.id;
-  if (provider.interface === 'TransactionalDatabase' && ['postgres', 'rds-postgresql'].includes(provider.implementation)) return [resource(`provider.${semantic}`, 'rds', 'postgresql-instance', name(`postgres-${hash(semantic, 8)}`), { engineVersion: stringValue(config.engineVersion) ?? '17', storageGiB: numberValue(config.storageGiB) ?? 20, multiAz: request.environment === 'production', encrypted: true, deletionProtection: request.environment === 'production' }, semantic, 'private', ['endpoint', 'port', 'secretArn'])];
+  if (provider.interface === 'TransactionalDatabase' && ['postgres', 'rds-postgresql'].includes(provider.implementation)) return [resource(`provider.${semantic}`, 'rds', 'postgresql-instance', name(`postgres-${hash(semantic, 8)}`), { engineVersion: stringValue(config.engineVersion) ?? '17', port: 5432, storageGiB: numberValue(config.storageGiB) ?? 20, multiAz: request.environment === 'production', encrypted: true, deletionProtection: request.environment === 'production' }, semantic, 'private', ['endpoint', 'port', 'secretArn'])];
   if (provider.interface === 'AnalyticalDatabase' && provider.implementation === 'postgres-analytics') return [];
-  if (provider.interface === 'IndexStore' && ['valkey', 'elasticache-valkey'].includes(provider.implementation)) return [resource(`provider.${semantic}`, 'elasticache', 'valkey-replication-group', name(`valkey-${hash(semantic, 8)}`), { engine: 'valkey', encryptedAtRest: true, encryptedInTransit: true, replicas: request.environment === 'production' ? 2 : 1 }, semantic, 'private', ['endpoint', 'port', 'secretArn'])];
+  if (provider.interface === 'IndexStore' && ['valkey', 'elasticache-valkey'].includes(provider.implementation)) return [resource(`provider.${semantic}`, 'elasticache', 'valkey-replication-group', name(`valkey-${hash(semantic, 8)}`), { engine: 'valkey', port: 6379, encryptedAtRest: true, encryptedInTransit: true, replicas: request.environment === 'production' ? 2 : 1 }, semantic, 'private', ['endpoint', 'port', 'secretArn'])];
   if (provider.interface === 'ObjectStorage' && ['s3', 'kubernetes-configmap-objects'].includes(provider.implementation)) return [resource(`provider.${semantic}`, 's3', 'bucket', bucketName(request, semantic), { versioning: true, publicAccessBlock: true, encryption: 'AES256', forceDestroy: false, prefix: stringValue(config.prefix) ?? '' }, semantic, 'none', ['bucketName', 'bucketArn'])];
   if (provider.interface === 'Queue' && ['sqs', 'kubernetes-configmap-queue'].includes(provider.implementation)) return [resource(`provider.${semantic}`, 'sqs', 'queue', name(`queue-${hash(semantic, 8)}`), { encrypted: true, visibilityTimeoutSeconds: 300 }, semantic, 'private', ['queueArn', 'queueUrl'])];
   if ((provider.interface === 'EventSource' || provider.interface === 'EventLog') && ['kinesis', 'kubernetes-watch', 'nats-jetstream'].includes(provider.implementation)) return [resource(`provider.${semantic}`, 'kinesis', 'stream', name(`stream-${hash(semantic, 8)}`), { mode: 'ON_DEMAND', retentionHours: 24, encrypted: true }, semantic, 'private', ['streamArn', 'streamName'])];
@@ -1236,6 +1236,16 @@ function awsRuntimeAccessBindings(
       if (database) bindings[provider.id] = {
         secretArn: `output://${database.id}/secretArn`,
         networkResourceId: database.id,
+        networkProtocol: 'TCP',
+        networkPort: numberValue(database.configuration.port) ?? 5432,
+      };
+    }
+    else if (provider.interface === 'IndexStore') {
+      const indexStore = candidates.find(({ service, resourceType }) => service === 'elasticache' && resourceType === 'valkey-replication-group');
+      if (indexStore) bindings[provider.id] = {
+        networkResourceId: indexStore.id,
+        networkProtocol: 'TCP',
+        networkPort: numberValue(indexStore.configuration.port) ?? 6379,
       };
     }
     else if (provider.interface === 'Scheduler') {
@@ -1253,12 +1263,23 @@ function awsRuntimeAccessBindings(
       const state = resources.get(`${base}.state`);
       const authorization = resources.get(`${base}.authorization`);
       const connectionSigning = resources.get(`${base}.connection-signing`);
-      if (state && authorization && connectionSigning) bindings[provider.id] = {
+      const runtime = resources.get(base);
+      if (state && authorization && connectionSigning && runtime) bindings[provider.id] = {
         runtimeKind: 'celld-actors',
-        networkMode: 'embedded',
+        networkResourceId: runtime.id,
+        networkProtocol: 'TCP',
+        networkPort: numberValue(runtime.configuration.port) ?? 8080,
         stateBucketArn: `arn:aws:s3:::${state.physicalName}`,
         authorizationSecretArn: `output://${authorization.id}/secretArn`,
         connectionSigningSecretArn: `output://${connectionSigning.id}/secretArn`,
+      };
+    }
+    else if (provider.interface === 'WorkflowEngine' && provider.implementation === 'hatchet') {
+      const runtime = resources.get(`provider.${provider.id}`);
+      if (runtime) bindings[provider.id] = {
+        networkResourceId: runtime.id,
+        networkProtocol: 'TCP',
+        networkPort: numberValue(runtime.configuration.grpcPort) ?? 7077,
       };
     }
     else if (provider.interface === 'Secret' || provider.interface === 'CredentialStore') bindings[provider.id] = { secretArn: `output://provider.${provider.id}/secretArn` };

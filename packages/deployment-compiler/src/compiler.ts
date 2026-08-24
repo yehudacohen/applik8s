@@ -115,6 +115,7 @@ export function compileApplicationDeploymentGraph(
     ...applicationGraphGeneratedSecrets(request),
     ...(request.generatedSecrets ?? []),
   ]);
+  const runtimeAccessTargets = runtimeAccessTargetResources(contributions);
   const runtimeAccess = compileApplicationRuntimeAccessPlan({
     graph: request.graph,
     target: context.target,
@@ -124,6 +125,7 @@ export function compileApplicationDeploymentGraph(
     namespace: request.graph.metadata.namespace && typeof request.graph.metadata.namespace === 'string'
       ? request.graph.metadata.namespace
       : request.identity.instance,
+    targetResources: runtimeAccessTargets,
     credentialRequirements: generatedSecretRequirements.flatMap((secret) =>
       runtimeCredentialConsumerNodeIds(request.graph, secret.consumers).map((consumerNodeId) => ({
         consumerNodeId,
@@ -237,6 +239,27 @@ export function compileApplicationDeploymentGraph(
     contributorKeys: [...contributorKeys].sort(compareStrings),
     runtimeAccess,
   };
+}
+
+function runtimeAccessTargetResources(
+  contributions: readonly ApplicationDeploymentContribution[],
+): Readonly<Record<string, Readonly<Record<string, unknown>>>> {
+  const targets = new Map<string, Readonly<Record<string, unknown>>>();
+  for (const target of contributions.flatMap((contribution) => contribution.runtimeAccessTargets ?? [])) {
+    const value = {
+      networkNamespace: target.namespace,
+      networkServiceName: target.serviceName,
+      networkPodSelector: target.podSelector,
+      networkProtocol: target.protocol,
+      networkPort: target.port,
+    };
+    const previous = targets.get(target.capabilityId);
+    if (previous && JSON.stringify(previous) !== JSON.stringify(value)) {
+      throw new Error(`Runtime-access target ${target.capabilityId} has conflicting provider-owned endpoint identities.`);
+    }
+    targets.set(target.capabilityId, value);
+  }
+  return Object.fromEntries(targets);
 }
 
 function kubernetesRuntimeAccessWorkloadPlacements(

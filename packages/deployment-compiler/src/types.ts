@@ -122,6 +122,18 @@ export interface ApplicationDeploymentContribution {
   readonly nodes: readonly ApplicationDeploymentNode[];
   readonly edges: readonly ApplicationDeploymentEdge[];
   readonly compositionFragments: readonly ApplicationTypeKroFragmentDescriptor[];
+  /** Exact private data-plane identity supplied by the lifecycle-owning provider adapter. */
+  readonly runtimeAccessTargets?: readonly ApplicationDeploymentRuntimeAccessTarget[];
+}
+
+export interface ApplicationDeploymentRuntimeAccessTarget {
+  readonly capabilityId: string;
+  readonly target: 'kubernetes';
+  readonly namespace: string;
+  readonly serviceName: string;
+  readonly podSelector: Readonly<Record<string, string>>;
+  readonly protocol: 'TCP' | 'UDP';
+  readonly port: number;
 }
 
 export interface ApplicationTypeKroFragmentDescriptor extends DeploymentJsonObject {
