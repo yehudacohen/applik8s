@@ -42,6 +42,7 @@ const publicEntrypoints = [
   '@applik8s/tanstack-start/server',
   '@applik8s/tanstack-start/vite',
   '@applik8s/core',
+  '@applik8s/core/canonical-json',
   '@applik8s/ai',
   '@applik8s/ai-tanstack',
   '@applik8s/approvals',

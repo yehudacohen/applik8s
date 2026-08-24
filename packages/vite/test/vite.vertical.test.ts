@@ -165,6 +165,26 @@ describe('framework-neutral Applik8s Vite integration', () => {
     expect(serverArtifact).toMatchObject({ apiVersion: 'applik8s.webArtifact/v1alpha1', target: 'server' });
     expect(JSON.parse(await readFile(join(fixtureRoot, '.applik8s/web-artifacts/browser.json'), 'utf8'))).toEqual(artifact);
     await expect(plugin.generateBundle({}, {
+      'assets/app.js': {
+        type: 'chunk',
+        fileName: 'assets/app.js',
+        code: '',
+        modules: {
+          [`${fixtureRoot}/node_modules/@applik8s/core/dist/canonical-json.js`]: {},
+        },
+      },
+    })).resolves.toBeUndefined();
+    await expect(plugin.generateBundle({}, {
+      'assets/app.js': {
+        type: 'chunk',
+        fileName: 'assets/app.js',
+        code: '',
+        modules: {
+          [`${fixtureRoot}/node_modules/@applik8s/core/dist/index.js`]: {},
+        },
+      },
+    })).rejects.toThrow(/server-only package @applik8s\/core/);
+    await expect(plugin.generateBundle({}, {
       'assets/app.js': { type: 'chunk', fileName: 'assets/app.js', code: '', modules: { [`${fixtureRoot}/node_modules/@kubernetes/client-node/dist/index.js`]: {} } },
     })).rejects.toThrow(/browser dependency-zone violation/);
     await expect(plugin.generateBundle({}, {

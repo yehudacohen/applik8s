@@ -32,7 +32,10 @@
         "compiler-selector-adapter",
         "application-graph-artifacts",
         "application-deployment-contracts",
-        "typekro-deployment-evidence"
+        "typekro-deployment-evidence",
+        "operator-runtime-identity",
+        "operator-manifest-payload-schemas",
+        "application-query-input-keys"
       ],
       "telemetry": "runtime-integrity-format-version",
       "rollbackSafeThrough": "pending-mixed-version-evidence",

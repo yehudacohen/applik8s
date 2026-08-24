@@ -19,6 +19,8 @@ import {
   emitOperatorKubernetesYaml,
   emitRuntimeContractArtifact,
   emitWasmComponentArtifact,
+  operatorManifestPayloadCanonicalJsonV1Policy,
+  operatorRuntimeIdentityCanonicalJsonV1Policy,
   validateOperatorManifest,
 } from '../src/index.js';
 
@@ -529,11 +531,14 @@ export function handle(input: string) { return JSON.stringify({ input, recognize
 
     expect(manifest.ok).toBe(true);
     if (manifest.ok) {
+      const runtimeIdentity = manifest.value.spec.runtimeIdentity;
+      expect(runtimeIdentity).toBeDefined();
+      if (!runtimeIdentity) throw new Error('Expected compiler runtime identity.');
       expect(manifest.value.spec.handlerExports).toContainEqual(expect.objectContaining({
         handlerId: 'ImageJob.statusChanged.0',
         event: 'statusChanged',
       }));
-      expect(manifest.value.spec.runtimeIdentity).toMatchObject({
+      expect(runtimeIdentity).toMatchObject({
         apiVersion: 'applik8s.operatorRuntimeIdentity/v1alpha1',
         bundleDigest: manifest.value.spec.bundle.digest,
         runtimeAccess: {
@@ -546,6 +551,29 @@ export function handle(input: string) { return JSON.stringify({ input, recognize
           operation: expect.stringMatching(/^applik8s:\/\//),
           execution: expect.stringMatching(/^applik8s:\/\//),
         })],
+      });
+      expect(operatorRuntimeIdentityCanonicalJsonV1Policy.name).toBe(
+        'operator-runtime-identity',
+      );
+      expect(operatorManifestPayloadCanonicalJsonV1Policy.name).toBe(
+        'operator-manifest-payload-schema',
+      );
+      expect(runtimeIdentity.runtimeAccess).toEqual({
+        version: 'v1alpha1',
+        digest: 'sha256:220f62e277dd079bfb490db4c453f608c2d9b96563eeb7e41bc5ef22f26c44b6',
+        requirementIds: [
+          'permission:057ac986a1dcd9de0a6d9d0f460ba875716557b1d3bdc687b4e62ef6b4a75e18',
+          'permission:8628b95a0a8f553007c6a361be437341049c7506ce73eafe49f8ba0491167e60',
+          'permission:9cccaa8b950dd7495c54bab0607790c35f4e335cb205880728ed26d9cea3dcab',
+        ],
+      });
+      expect(manifest.value.spec.payloadSchemaDigests).toEqual({
+        handlerInput: 'sha256:11b38400005b447a4086b4c38470fc927470d9f58738e035095d725e3145b6f5',
+        normalizedOperationPlan: 'sha256:0443f019d60a14c9a2d483f0f0f1b241d68b9553c78bdcf1cd0e23e4b9de86e7',
+        operatorManifest: 'sha256:0535b6580b6987670d3f21a4611e8e2ebc49c4cc4bb79df31beddf4bf704c70c',
+        handlerError: 'sha256:d32b7ebac603179818d4932a654cf10871206b9391958c26d2323f7bd0ac3010',
+        capabilityRequest: 'sha256:111249eca6fd2d7c56703beedba7dd20d877ad0f4bab9f8ebfe789f04e278895',
+        capabilityResponse: 'sha256:5a969c5a7d522cdfd73e3c38e4af0bab0c36798776cd3efcf24c9d5f6c997ffe',
       });
       expect(manifest.value.spec.watches).toContainEqual(expect.objectContaining({
         apiVersion: 'media.applik8s.dev/v1alpha1',

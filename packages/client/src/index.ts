@@ -43,4 +43,10 @@ export { createApplicationSignalOperation } from './signals.js';
 export type { HttpApplicationRuntimeTransportOptions } from './runtime-http-transport.js';
 export { createHttpApplicationRuntimeTransport } from './runtime-http-transport.js';
 export type * from './store.js';
-export { ApplicationQueryClient, queryCacheKey, queryInputKey } from './store.js';
+export {
+  adaptApplicationQueryInputCanonicalJsonV1,
+  ApplicationQueryClient,
+  applicationQueryInputCanonicalJsonV1Policy,
+  queryCacheKey,
+  queryInputKey,
+} from './store.js';

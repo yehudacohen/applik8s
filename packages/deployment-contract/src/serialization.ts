@@ -3,7 +3,7 @@ import {
   canonicalJsonCompatibleV1Policy,
   canonicalJsonV1String,
   canonicalJsonV1Value,
-} from "@applik8s/core";
+} from "@applik8s/core/canonical-json";
 import type {
   ApplicationDeploymentEdge,
   ApplicationDeploymentGraph,

@@ -68,6 +68,7 @@
       "@applik8s/mcp/server": ["packages/mcp/src/server.ts"],
       "@applik8s/mcp/postgres": ["packages/mcp/src/postgres.ts"],
       "@applik8s/core": ["packages/core/src/index.ts"],
+      "@applik8s/core/canonical-json": ["packages/core/src/canonical-json.ts"],
       "@applik8s/deployment-contract": ["packages/deployment-contract/src/index.ts"],
       "@applik8s/deployment-compiler": ["packages/deployment-compiler/src/index.ts"],
       "@applik8s/deployment-typekro": ["packages/deployment-typekro/src/index.ts"],

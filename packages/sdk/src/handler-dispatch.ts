@@ -51,7 +51,7 @@ import type {
 import {
   canonicalJsonCompatibleV1Policy,
   canonicalJsonV1String,
-} from '@applik8s/core';
+} from '@applik8s/core/canonical-json';
 import { isRunnableHandlerRegistration, type RunnableHandlerRegistration } from './runtime.js';
 
 export interface HandlerDispatchHostImports {

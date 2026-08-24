@@ -31,8 +31,8 @@ const rules: readonly BoundaryRule[] = [
   },
   {
     roots: ['packages/deployment-contract/src'],
-    forbidden: [/^node:/, /^@applik8s\//, /^@kubernetes\//, /^alchemy(?:\/|$)/, /^typekro(?:\/|$)/],
-    rationale: 'Deployment contracts must remain portable data with no runtime, provider, Kubernetes, TypeKro, or Alchemy dependency.',
+    forbidden: [/^node:/, /^@applik8s\/(?!core\/canonical-json$)/, /^@kubernetes\//, /^alchemy(?:\/|$)/, /^typekro(?:\/|$)/],
+    rationale: 'Deployment contracts may consume the focused portable Canonical JSON byte algebra, but no runtime, provider, Kubernetes, TypeKro, or Alchemy dependency.',
   },
   {
     roots: ['packages/deployment-compiler/src'],

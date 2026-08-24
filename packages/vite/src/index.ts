@@ -523,6 +523,12 @@ function isForbiddenBrowserModule(
 ): boolean {
   const normalized = moduleId.replaceAll('\\', '/');
   if (
+    forbidden === '@applik8s/core'
+    && isBrowserSafeCoreModule(normalized)
+  ) {
+    return false;
+  }
+  if (
     normalized.includes(`/node_modules/${forbidden}/`)
     || normalized.includes(`/${forbidden}/`)
   ) {
@@ -531,6 +537,11 @@ function isForbiddenBrowserModule(
   if (!forbidden.startsWith('@applik8s/')) return false;
   const workspacePackage = forbidden.slice('@applik8s/'.length);
   return normalized.includes(`/packages/${workspacePackage}/`);
+}
+
+function isBrowserSafeCoreModule(moduleId: string): boolean {
+  return /\/node_modules\/@applik8s\/core\/dist\/canonical-json\.js(?:[?#].*)?$/u.test(moduleId)
+    || /\/packages\/core\/src\/canonical-json\.ts(?:[?#].*)?$/u.test(moduleId);
 }
 
 function outputContent(file: ViteOutputLike): string | Uint8Array {

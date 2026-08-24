@@ -2,7 +2,11 @@
 
 import { describe, expect, test } from 'vitest';
 import type { ApplicationQueryEvent, ApplicationQuerySnapshot, ApplicationQueryTransport } from '../src/protocol.js';
-import { ApplicationQueryClient, queryInputKey } from '../src/store.js';
+import {
+  ApplicationQueryClient,
+  applicationQueryInputCanonicalJsonV1Policy,
+  queryInputKey,
+} from '../src/store.js';
 
 class FakeTransport implements ApplicationQueryTransport {
   readonly snapshots: { query: string; input: unknown }[] = [];
@@ -21,6 +25,18 @@ class FakeTransport implements ApplicationQueryTransport {
 }
 
 describe('browser-safe application query client', () => {
+  test('derives retained snapshot keys identically through Web and Node byte paths', () => {
+    const input = { z: 2, a: [1, 'é'] };
+    const retained = 'eyJhIjpbMSwiw6kiXSwieiI6Mn0';
+    expect(applicationQueryInputCanonicalJsonV1Policy.name).toBe('application-query-input');
+    expect(queryInputKey(input)).toBe(retained);
+    expect(Buffer.from('{"a":[1,"é"],"z":2}', 'utf8').toString('base64url')).toBe(retained);
+    expect(queryInputKey({ optional: undefined, a: 1 })).toBe(
+      'eyJhIjoxLCJvcHRpb25hbCI6bnVsbH0',
+    );
+    expect(() => queryInputKey({ createdAt: new Date(0) })).toThrow(/cannot represent/);
+  });
+
   test('hydrates an SSR snapshot without a duplicate fetch and resumes from its cursor', async () => {
     const transport = new FakeTransport();
     const client = new ApplicationQueryClient(transport);

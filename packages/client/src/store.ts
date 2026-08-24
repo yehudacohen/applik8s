@@ -1,4 +1,14 @@
+import {
+  canonicalJsonStrictV1Policy,
+  canonicalJsonV1String,
+  type CanonicalJsonV1Policy,
+} from '@applik8s/core/canonical-json';
 import type { ApplicationQueryEvent, ApplicationQuerySnapshot, ApplicationQueryTransport } from './protocol.js';
+
+export const applicationQueryInputCanonicalJsonV1Policy: CanonicalJsonV1Policy = Object.freeze({
+  ...canonicalJsonStrictV1Policy,
+  name: 'application-query-input',
+});
 
 export interface ApplicationQueryState<TValue = unknown> {
   readonly phase: 'idle' | 'loading' | 'ready' | 'reconnecting' | 'error';
@@ -283,18 +293,47 @@ function snapshotTimestamp(snapshot: ApplicationQuerySnapshot): number {
 }
 
 export function queryInputKey(input: unknown): string {
-  return base64Url(stableJson(input));
+  return base64Url(canonicalJsonV1String(
+    adaptApplicationQueryInputCanonicalJsonV1(input),
+    applicationQueryInputCanonicalJsonV1Policy,
+  ));
 }
 
 export function queryCacheKey(query: string, input: unknown): string {
   return `${query}:${queryInputKey(input)}`;
 }
 
-function stableJson(value: unknown): string {
-  if (value === undefined) return 'null';
-  if (value === null || typeof value !== 'object') return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
-  return `{${Object.entries(value).sort(([left], [right]) => left.localeCompare(right)).map(([key, entry]) => `${JSON.stringify(key)}:${stableJson(entry)}`).join(',')}}`;
+/**
+ * Preserve the released query-key convention that treats an explicit
+ * `undefined` as `null`, while allowing Canonical JSON v1 to reject every
+ * other non-portable runtime value.
+ */
+export function adaptApplicationQueryInputCanonicalJsonV1(value: unknown): unknown {
+  return adaptQueryInputValue(value, new WeakMap<object, object>());
+}
+
+function adaptQueryInputValue(
+  value: unknown,
+  seen: WeakMap<object, object>,
+): unknown {
+  if (value === undefined) return null;
+  if (value === null || typeof value !== 'object') return value;
+  const previous = seen.get(value);
+  if (previous) return previous;
+  if (Array.isArray(value)) {
+    const adapted: unknown[] = [];
+    seen.set(value, adapted);
+    for (const entry of value) adapted.push(adaptQueryInputValue(entry, seen));
+    return adapted;
+  }
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) return value;
+  const adapted: Record<string, unknown> = {};
+  seen.set(value, adapted);
+  for (const [key, entry] of Object.entries(value)) {
+    adapted[key] = adaptQueryInputValue(entry, seen);
+  }
+  return adapted;
 }
 
 function base64Url(value: string): string {

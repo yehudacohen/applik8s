@@ -160,6 +160,9 @@ for (const source of inventorySources) {
     if (!consumerSource.includes('canonicalJsonV1String')) {
       findings.push(`Runtime Integrity canonical consumer ${source.id ?? '<missing>'} does not call Canonical JSON v1.`);
     }
+    if (/\bfunction\s+(?:canonicalJson|runtimeIdentityStableJson|stableJson|stableJsonStringify)\s*\(/u.test(consumerSource)) {
+      findings.push(`Runtime Integrity canonical consumer ${source.id ?? '<missing>'} retains a private canonical JSON implementation.`);
+    }
   }
   if (!source.evidence?.trim()) {
     findings.push(`Runtime Integrity source ${source.id ?? '<missing>'} lacks an evidence path.`);

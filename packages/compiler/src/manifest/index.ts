@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 
-import { applicationCanonicalIdentity, applicationExecutionBoundaryIdentity, applicationGraphNodeIdentity, applicationOperationId, applicationOperationIdentity, canonicalJsonCompatibleV1Policy, canonicalJsonV1String, type AnyHandlerRegistration, type AnyResourceDefinition, type BundleArtifact, type CapabilityDescriptor, type CapabilityExecutionPolicy, type CapabilityKind, type ConcurrencyConfig, type HandlerEventType, type HandlerId, type KubernetesConnectionBinding, type OperatorDefinition, type OperatorManifest, type OperatorRuntimeIdentityContract, type PermissionRule, type ResourceWatchAddress, type Result, type RetryPolicy, type RuntimePayloadSchemaDigests, type SecretRef } from '@applik8s/core';
+import { applicationCanonicalIdentity, applicationExecutionBoundaryIdentity, applicationGraphNodeIdentity, applicationOperationId, applicationOperationIdentity, type AnyHandlerRegistration, type AnyResourceDefinition, type BundleArtifact, type CapabilityDescriptor, type CapabilityExecutionPolicy, type CapabilityKind, type ConcurrencyConfig, type HandlerEventType, type HandlerId, type KubernetesConnectionBinding, type OperatorDefinition, type OperatorManifest, type OperatorRuntimeIdentityContract, type PermissionRule, type ResourceWatchAddress, type Result, type RetryPolicy, type RuntimePayloadSchemaDigests, type SecretRef } from '@applik8s/core';
+import { canonicalJsonCompatibleV1Policy, canonicalJsonStrictV1Policy, canonicalJsonV1String, type CanonicalJsonV1Policy } from '@applik8s/core/canonical-json';
 import { canonicalRuntimeContract } from '@applik8s/runtime-contract';
 import type { ContainerRecipe } from '@applik8s/typetainer';
 import { DEFAULT_OPERATOR_HOST_IMAGE } from '../operator-host-image.js';
@@ -10,6 +11,16 @@ import { validateOperatorManifest } from './validation.js';
 export { validateOperatorManifest } from './validation.js';
 
 const APPLICATION_RUNTIME_NAMESPACE_MARKER = '__APPLIK8S_RUNTIME_NAMESPACE__';
+
+export const operatorRuntimeIdentityCanonicalJsonV1Policy: CanonicalJsonV1Policy = Object.freeze({
+  ...canonicalJsonCompatibleV1Policy,
+  name: 'operator-runtime-identity',
+});
+
+export const operatorManifestPayloadCanonicalJsonV1Policy: CanonicalJsonV1Policy = Object.freeze({
+  ...canonicalJsonStrictV1Policy,
+  name: 'operator-manifest-payload-schema',
+});
 
 export interface ManifestBuildRequest {
   readonly operator: OperatorDefinition;
@@ -307,14 +318,9 @@ function operatorRuntimeIdentity(input: {
 }
 
 function digestStableValue(value: unknown): `sha256:${string}` {
-  return `sha256:${createHash('sha256').update(runtimeIdentityStableJson(value)).digest('hex')}`;
-}
-
-function runtimeIdentityStableJson(value: unknown): string {
-  if (value === undefined) return 'null';
-  if (value === null || typeof value !== 'object') return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map(runtimeIdentityStableJson).join(',')}]`;
-  return `{${Object.entries(value).filter(([, entry]) => entry !== undefined).sort(([left], [right]) => left.localeCompare(right)).map(([key, entry]) => `${JSON.stringify(key)}:${runtimeIdentityStableJson(entry)}`).join(',')}}`;
+  return `sha256:${createHash('sha256').update(
+    canonicalJsonV1String(value, operatorRuntimeIdentityCanonicalJsonV1Policy),
+  ).digest('hex')}`;
 }
 
 function secondaryWatchPermissions(watches: NonNullable<OperatorDefinition['secondaryWatches']>): PermissionRule[] {
@@ -1322,22 +1328,12 @@ function unique<T>(values: readonly T[]): readonly T[] {
 }
 
 function digestJson(value: unknown): string {
-  return digestText(stableJson(value));
+  return digestText(canonicalJsonV1String(
+    value,
+    operatorManifestPayloadCanonicalJsonV1Policy,
+  ));
 }
 
 function digestText(value: string): string {
   return `sha256:${createHash('sha256').update(value).digest('hex')}`;
-}
-
-function stableJson(value: unknown): string {
-  if (value === null || typeof value !== 'object') {
-    return JSON.stringify(value);
-  }
-  if (Array.isArray(value)) {
-    return `[${value.map((item) => stableJson(item)).join(',')}]`;
-  }
-  return `{${Object.entries(value)
-    .sort(([left], [right]) => left.localeCompare(right))
-    .map(([key, item]) => `${JSON.stringify(key)}:${stableJson(item)}`)
-    .join(',')}}`;
 }

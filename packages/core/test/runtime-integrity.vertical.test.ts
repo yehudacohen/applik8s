@@ -1,11 +1,9 @@
 import {
   ApplicationAdmissionContextV1Error,
   type ApplicationGraph,
-  adaptApplicationGraphCanonicalJsonV1,
   applicationAdmissionContextVersion,
   applicationAdmissionIdentityView,
   applicationAdmissionInvocationView,
-  applicationGraphCanonicalJsonV1Policy,
   CanonicalJsonV1Error,
   canonicalJsonCompatibleV1Policy,
   canonicalJsonStrictV1Policy,
@@ -24,6 +22,10 @@ import {
   withApplicationAdmissionTraceV1,
 } from '@applik8s/core';
 import { describe, expect, it } from 'vitest';
+import {
+  adaptApplicationGraphCanonicalJsonV1,
+  applicationGraphCanonicalJsonV1Policy,
+} from '../src/application-graph-serialization.js';
 
 describe('Canonical JSON v1', () => {
   it('produces stable UTF-8 bytes with lexical keys and normalized negative zero', () => {

@@ -104,7 +104,7 @@
       "disposition": "canonical-consumer",
       "canonicalOwner": "@applik8s/core/canonical-json",
       "evidence": "packages/core/test/runtime-integrity.vertical.test.ts",
-      "remaining": "Retained bytes are exact for the compatibility fixture; future reference kinds must enter through the exported application-graph Canonical JSON v1 adapter rather than private serialization."
+      "remaining": "Retained bytes are exact for the compatibility fixture; future reference kinds must enter through the application-graph-owned Canonical JSON v1 adapter rather than private serialization or the public core barrel."
     },
     {
       "id": "deployment-contract-serialization",
@@ -131,20 +131,20 @@
       "mechanism": "canonical-json",
       "path": "packages/compiler/src/manifest/index.ts",
       "owner": "@applik8s/compiler",
-      "disposition": "pending-migration",
+      "disposition": "canonical-consumer",
       "canonicalOwner": "@applik8s/core/canonical-json",
       "evidence": "packages/compiler/test/compiler-artifacts.vertical.test.ts",
-      "remaining": "Remove the remaining runtime-identity private serializer after its named policy and bundle digest compatibility fixture land."
+      "remaining": "Runtime identity and payload-schema digests have exact retained fixtures; any future compiler reference value requires an explicit adapter before Canonical JSON v1."
     },
     {
       "id": "client-store-serialization",
       "mechanism": "canonical-json",
       "path": "packages/client/src/store.ts",
       "owner": "@applik8s/client",
-      "disposition": "pending-migration",
+      "disposition": "canonical-consumer",
       "canonicalOwner": "@applik8s/core/canonical-json",
       "evidence": "packages/client/test/store.vertical.test.ts",
-      "remaining": "Use the named client-store Canonical JSON v1 policy and prove browser and Node snapshot-key parity."
+      "remaining": "The explicit query-input adapter preserves released undefined-as-null keys; Web and Node byte paths share exact retained fixtures and unsupported runtime objects fail closed."
     }
   ]
 }

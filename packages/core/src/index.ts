@@ -34,10 +34,6 @@ export {
   deriveApplicationGraphFoundation,
   withDerivedApplicationGraphFoundation,
 } from './application-graph-foundation.js';
-export {
-  adaptApplicationGraphCanonicalJsonV1,
-  applicationGraphCanonicalJsonV1Policy,
-} from './application-graph-serialization.js';
 export type * from './application-operation-authority.js';
 export {
   applicationCausalPrincipalContext,

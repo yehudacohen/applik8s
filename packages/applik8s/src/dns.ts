@@ -34,7 +34,7 @@ import type {
 import {
   canonicalJsonCompatibleV1Policy,
   canonicalJsonV1String,
-} from '@applik8s/core';
+} from '@applik8s/core/canonical-json';
 import { sdk } from '@applik8s/sdk';
 
 export type {
