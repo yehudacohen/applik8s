@@ -836,6 +836,7 @@ function emptyRuntimeAccessPlan(
     target: 'kubernetes' as const,
     sourceGraphDigest: sourceGraphDigest as `sha256:${string}`,
     executions: [],
+    workloads: [],
     diagnostics: [],
   };
   return { ...content, digest: applicationRuntimeAccessPlanDigest(content) };

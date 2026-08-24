@@ -1,7 +1,12 @@
 // typecast-file-boundary: Runtime-access fixtures assemble exact graph discriminants to exercise ambiguity and least-privilege lowering.
 import { type ApplicationGraph, applicationRuntimeAccessRequirement, deriveApplicationGraphFoundation } from '@applik8s/core';
+import type { ApplicationAwsPlanResource, DeploymentJsonObject } from '@applik8s/deployment-contract';
 import { describe, expect, it } from 'vitest';
-import { compileApplicationRuntimeAccessPlan } from '../src/index.js';
+import {
+  compileApplicationRuntimeAccessPlan,
+  validateAwsRuntimeAccessParity,
+  validateKubernetesRuntimeAccessParity,
+} from '../src/index.js';
 
 describe('v0.8 runtime-access lowering', () => {
   it('preserves an embedding compiler source identity without changing policy semantics', () => {
@@ -19,28 +24,54 @@ describe('v0.8 runtime-access lowering', () => {
     expect(embedded.digest).not.toBe(standalone.digest);
   });
 
-  it('issues exact local grants and resource-name-bounded Kubernetes Secret access per execution identity', () => {
+  it('keeps projected Kubernetes credentials out of API RBAC while retaining their exact Secret identity', () => {
     const graph = accessGraph();
     const local = compileApplicationRuntimeAccessPlan({ graph, target: 'local' });
     expect(local.diagnostics).toEqual([]);
     expect(local.executions).toHaveLength(1);
     expect(local.executions[0]).toMatchObject({
       nodeId: 'operator.notes',
-      local: { grants: expect.arrayContaining([expect.objectContaining({ operation: 'secret.read', scope: { kind: 'resource', resourceId: 'secret.signing' } })]) },
+      local: { grants: expect.arrayContaining([expect.objectContaining({ operation: 'secret.read', scope: { kind: 'resource', resourceId: 'secret.signing', keys: ['key'] } })]) },
     });
     const kubernetes = compileApplicationRuntimeAccessPlan({ graph, target: 'kubernetes', namespace: 'notes' });
     expect(kubernetes.diagnostics).toEqual([]);
     expect(kubernetes.executions[0]?.kubernetes).toMatchObject({
       serviceAccountName: expect.stringMatching(/^notes-operator-notes-[a-f0-9]{10}$/u),
-      bindings: [{
-        kind: 'Role',
-        namespace: 'notes',
-        rules: [{ apiGroups: [''], resources: ['secrets'], resourceNames: ['signing'], verbs: ['get'] }],
-      }],
-      credentialResources: ['secret.signing'],
+      bindings: [],
+      credentialProjections: [{ resourceId: 'secret.signing', keys: ['key'] }],
       networkConnections: [],
     });
     expect(kubernetes.digest).toMatch(/^sha256:[a-f0-9]{64}$/u);
+  });
+
+  it('records the actual workload identity and deliberate execution-policy union', () => {
+    const graph = accessGraph();
+    const plan = compileApplicationRuntimeAccessPlan({
+      graph,
+      target: 'kubernetes',
+      namespace: 'notes',
+      workloadPlacements: [{
+        workloadIdentity: 'apps/v1:Deployment:notes:notes-operator',
+        artifactIds: ['artifact.operator.notes'],
+        executionNodeIds: ['operator.notes'],
+        kubernetes: {
+          resource: { apiVersion: 'apps/v1', kind: 'Deployment', namespace: 'notes', name: 'notes-operator' },
+          serviceAccountName: 'notes-runtime',
+        },
+      }],
+    });
+    expect(plan.workloads).toEqual([expect.objectContaining({
+      workloadIdentity: 'apps/v1:Deployment:notes:notes-operator',
+      artifactIds: ['artifact.operator.notes'],
+      executionIdentities: [plan.executions[0]?.executionIdentity],
+      requirementIds: plan.executions[0]?.requirementIds,
+      kubernetes: expect.objectContaining({
+        serviceAccountName: 'notes-runtime',
+        bindings: plan.executions[0]?.kubernetes?.bindings,
+        credentialProjections: [{ resourceId: 'secret.signing', keys: ['key'] }],
+      }),
+    })]);
+    expect(plan.workloads[0]?.policyDigest).toMatch(/^sha256:[a-f0-9]{64}$/u);
   });
 
   it('lowers object access to an exact AWS bucket prefix and fails closed when the bucket is unresolved', () => {
@@ -70,14 +101,24 @@ describe('v0.8 runtime-access lowering', () => {
     const aws = compileApplicationRuntimeAccessPlan({
       graph,
       target: 'aws',
-      targetResources: { 'provider.events': { streamArn: 'arn:aws:kinesis:us-east-1:123456789012:stream/events' } },
+      targetResources: {
+        'provider.events': { streamArn: 'arn:aws:kinesis:us-east-1:123456789012:stream/events' },
+        'framework.processor-checkpoints': { tableArn: 'arn:aws:dynamodb:us-east-1:123456789012:table/checkpoints' },
+      },
     });
     expect(aws.diagnostics).toEqual([]);
-    expect(aws.executions[0]?.aws?.statements).toEqual([{
-      effect: 'Allow',
-      actions: ['kinesis:DescribeStreamSummary', 'kinesis:GetRecords', 'kinesis:GetShardIterator', 'kinesis:ListShards', 'kinesis:PutRecord', 'kinesis:PutRecords'],
-      resources: ['arn:aws:kinesis:us-east-1:123456789012:stream/events'],
-    }]);
+    expect(aws.executions[0]?.aws?.statements).toEqual(expect.arrayContaining([
+      {
+        effect: 'Allow',
+        actions: ['kinesis:DescribeStreamSummary', 'kinesis:GetRecords', 'kinesis:GetShardIterator', 'kinesis:ListShards', 'kinesis:PutRecord', 'kinesis:PutRecords'],
+        resources: ['arn:aws:kinesis:us-east-1:123456789012:stream/events'],
+      },
+      {
+        effect: 'Allow',
+        actions: ['dynamodb:GetItem', 'dynamodb:Query', 'dynamodb:UpdateItem'],
+        resources: ['arn:aws:dynamodb:us-east-1:123456789012:table/checkpoints'],
+      },
+    ]));
   });
 
   it('does not invent Kinesis authority for a database-backed application stream', () => {
@@ -103,7 +144,7 @@ describe('v0.8 runtime-access lowering', () => {
         'provider.events-b': { streamArn: 'arn:aws:kinesis:us-east-1:123456789012:stream/b' },
       },
     });
-    expect(aws.diagnostics).toHaveLength(2);
+    expect(aws.diagnostics).toHaveLength(3);
     expect(aws.diagnostics).toEqual(expect.arrayContaining([
       expect.objectContaining({ severity: 'error', code: 'RUNTIME_ACCESS_TARGET_UNRESOLVED' }),
     ]));
@@ -132,6 +173,205 @@ describe('v0.8 runtime-access lowering', () => {
         namespace: 'team-b',
         rules: [{ apiGroups: ['example.dev'], resources: ['widgets'], verbs: ['get', 'list', 'watch'] }],
       }),
+    ]);
+  });
+
+  it('fails pre-mutation parity when Kubernetes RBAC is removed, widened, or bound to the wrong workload', () => {
+    const plan = compileApplicationRuntimeAccessPlan({
+      graph: kubernetesScopeGraph(),
+      target: 'kubernetes',
+      namespace: 'control-plane',
+      workloadPlacements: [{
+        workloadIdentity: 'apps/v1:Deployment:control-plane:scopes',
+        artifactIds: ['artifact.operator.scopes'],
+        executionNodeIds: ['operator.scopes'],
+        kubernetes: {
+          resource: { apiVersion: 'apps/v1', kind: 'Deployment', namespace: 'control-plane', name: 'scopes' },
+          serviceAccountName: 'scopes',
+        },
+      }],
+    });
+    const resources = kubernetesParityResources();
+    expect(validateKubernetesRuntimeAccessParity(plan, resources)).toEqual([]);
+
+    expect(validateKubernetesRuntimeAccessParity(
+      plan,
+      resources.filter((resource) => resource.kind !== 'ClusterRoleBinding'),
+    )).toEqual([expect.objectContaining({
+      code: 'RUNTIME_ACCESS_RBAC_MISSING',
+      workloadIdentity: 'apps/v1:Deployment:control-plane:scopes',
+      executionIdentities: plan.workloads[0]?.executionIdentities,
+      requirementIds: plan.workloads[0]?.requirementIds,
+    })]);
+
+    const widened = resources.map((resource) => resource.kind === 'ClusterRole'
+      ? { ...resource, rules: [{ apiGroups: ['example.dev'], resources: ['clusterwidgets'], verbs: ['get', 'delete'] }] }
+      : resource);
+    expect(validateKubernetesRuntimeAccessParity(plan, widened)).toEqual([
+      expect.objectContaining({ code: 'RUNTIME_ACCESS_RBAC_WIDENED' }),
+    ]);
+
+    const misbound = resources.map((resource) => resource.kind === 'RoleBinding'
+      ? { ...resource, subjects: [{ kind: 'ServiceAccount', name: 'other', namespace: 'control-plane' }] }
+      : resource);
+    expect(validateKubernetesRuntimeAccessParity(plan, misbound)).toEqual([
+      expect.objectContaining({ code: 'RUNTIME_ACCESS_RBAC_MISSING' }),
+    ]);
+  });
+
+  it('fails pre-mutation parity when a Kubernetes Secret projection omits or widens an exact key', () => {
+    const compiled = compileApplicationRuntimeAccessPlan({
+      graph: accessGraph(),
+      target: 'kubernetes',
+      namespace: 'notes',
+      workloadPlacements: [{
+        workloadIdentity: 'apps/v1:Deployment:notes:notes',
+        artifactIds: ['artifact.operator.notes'],
+        executionNodeIds: ['operator.notes'],
+        kubernetes: {
+          resource: { apiVersion: 'apps/v1', kind: 'Deployment', namespace: 'notes', name: 'notes' },
+          serviceAccountName: 'notes',
+        },
+      }],
+    });
+    const plan = {
+      ...compiled,
+      workloads: compiled.workloads.map((workload) => workload.kubernetes
+        ? {
+            ...workload,
+            kubernetes: {
+              ...workload.kubernetes,
+              credentialProjections: [{ resourceId: 'v1/Secret/notes/signing', keys: ['current'] }],
+            },
+          }
+        : workload),
+    };
+    const deployment = (key: string) => ({
+      apiVersion: 'apps/v1',
+      kind: 'Deployment',
+      metadata: { name: 'notes', namespace: 'notes' },
+      spec: { template: { spec: {
+        serviceAccountName: 'notes',
+        containers: [{ name: 'operator', image: 'operator:test', env: [{ name: 'SIGNING', valueFrom: { secretKeyRef: { name: 'signing', key } } }] }],
+      } } },
+    });
+
+    expect(validateKubernetesRuntimeAccessParity(plan, [deployment('current')])).toEqual([]);
+    expect(validateKubernetesRuntimeAccessParity(plan, [deployment('previous')])).toEqual([
+      expect.objectContaining({ code: 'RUNTIME_ACCESS_CREDENTIAL_MISSING' }),
+      expect.objectContaining({ code: 'RUNTIME_ACCESS_CREDENTIAL_WIDENED' }),
+    ]);
+  });
+
+  it('fails pre-mutation parity when an AWS role grant is removed, widened, or attached to the wrong workload', () => {
+    const compiled = compileApplicationRuntimeAccessPlan({
+      graph: awsObjectAccessGraph('application-objects'),
+      target: 'aws',
+      workloadPlacements: [{
+        workloadIdentity: 'ecs:runtime.objects',
+        artifactIds: ['artifact.operator.objects'],
+        executionNodeIds: ['operator.objects'],
+        aws: { resourceId: 'runtime.objects', roleName: 'objects-runtime' },
+      }],
+    });
+    const workload = compiled.workloads[0];
+    if (!workload?.aws) throw new Error('Expected one AWS workload fixture.');
+    const runtime = awsParityResource('runtime.objects', 'ecs', 'fargate-worker', {
+      runtimeRoleResourceId: 'runtime.role',
+    });
+    const role = awsParityResource('runtime.role', 'iam', 'role', {
+      statements: workload.aws.statements,
+      workloadIdentity: workload.workloadIdentity,
+      executionIdentities: workload.executionIdentities,
+      requirementIds: workload.requirementIds,
+    }, workload.aws.roleName);
+    const resources = [runtime, role];
+    const edges = [{ from: role.id, to: runtime.id, relationship: 'assumesRole' as const }];
+    expect(validateAwsRuntimeAccessParity(compiled, resources, edges)).toEqual([]);
+
+    expect(validateAwsRuntimeAccessParity(compiled, [
+      runtime,
+      awsParityResource('runtime.role', 'iam', 'role', {
+        statements: [],
+        workloadIdentity: workload.workloadIdentity,
+        executionIdentities: workload.executionIdentities,
+        requirementIds: workload.requirementIds,
+      }, workload.aws.roleName),
+    ], edges)).toEqual([expect.objectContaining({
+      code: 'RUNTIME_ACCESS_IAM_MISSING',
+      workloadIdentity: workload.workloadIdentity,
+      executionIdentities: workload.executionIdentities,
+      requirementIds: workload.requirementIds,
+    })]);
+
+    const widenedStatement = {
+      effect: 'Allow' as const,
+      actions: ['s3:*'],
+      resources: ['arn:aws:s3:::application-objects/*'],
+    };
+    expect(validateAwsRuntimeAccessParity(compiled, [
+      runtime,
+      awsParityResource('runtime.role', 'iam', 'role', {
+        statements: [...workload.aws.statements, widenedStatement],
+        workloadIdentity: workload.workloadIdentity,
+        executionIdentities: workload.executionIdentities,
+        requirementIds: workload.requirementIds,
+      }, workload.aws.roleName),
+    ], edges)).toEqual([expect.objectContaining({ code: 'RUNTIME_ACCESS_IAM_WIDENED' })]);
+
+    expect(validateAwsRuntimeAccessParity(compiled, resources, [
+      { from: role.id, to: 'another-runtime', relationship: 'assumesRole' },
+    ])).toEqual([expect.objectContaining({ code: 'RUNTIME_ACCESS_ROLE_MISBOUND' })]);
+  });
+
+  it('fails pre-mutation parity when an AWS private-peer edge is removed or widened', () => {
+    const compiled = compileApplicationRuntimeAccessPlan({
+      graph: awsObjectAccessGraph('application-objects'),
+      target: 'aws',
+      workloadPlacements: [{
+        workloadIdentity: 'ecs:runtime.objects',
+        artifactIds: ['artifact.operator.objects'],
+        executionNodeIds: ['operator.objects'],
+        aws: { resourceId: 'runtime.objects', roleName: 'objects-runtime' },
+      }],
+    });
+    const original = compiled.workloads[0];
+    if (!original?.aws) throw new Error('Expected one AWS workload fixture.');
+    const networkConnections = ['provider.database'];
+    const plan = {
+      ...compiled,
+      workloads: [{
+        ...original,
+        aws: { ...original.aws, networkConnections },
+      }],
+    };
+    const runtime = awsParityResource('runtime.objects', 'ecs', 'fargate-worker', {
+      runtimeRoleResourceId: 'runtime.role',
+    });
+    const role = awsParityResource('runtime.role', 'iam', 'role', {
+      statements: original.aws.statements,
+      workloadIdentity: original.workloadIdentity,
+      executionIdentities: original.executionIdentities,
+      requirementIds: original.requirementIds,
+    }, original.aws.roleName);
+    const resources = [
+      runtime,
+      role,
+      awsParityResource('provider.database', 'rds', 'postgresql-instance'),
+      awsParityResource('provider.unrelated', 'rds', 'postgresql-instance'),
+    ];
+    const roleEdge = { from: role.id, to: runtime.id, relationship: 'assumesRole' as const };
+    const expectedNetwork = { from: 'provider.database', to: runtime.id, relationship: 'networkAccess' as const, output: 'runtime-egress' };
+    expect(validateAwsRuntimeAccessParity(plan, resources, [roleEdge, expectedNetwork])).toEqual([]);
+    expect(validateAwsRuntimeAccessParity(plan, resources, [roleEdge])).toEqual([
+      expect.objectContaining({ code: 'RUNTIME_ACCESS_NETWORK_MISSING' }),
+    ]);
+    expect(validateAwsRuntimeAccessParity(plan, resources, [
+      roleEdge,
+      expectedNetwork,
+      { from: 'provider.unrelated', to: runtime.id, relationship: 'networkAccess', output: 'runtime-egress' },
+    ])).toEqual([
+      expect.objectContaining({ code: 'RUNTIME_ACCESS_NETWORK_WIDENED' }),
     ]);
   });
 
@@ -311,6 +551,47 @@ function kubernetesScopeGraph(): ApplicationGraph {
   };
 }
 
+function kubernetesParityResources(): readonly Readonly<Record<string, unknown>>[] {
+  const role = (namespace: string) => ({
+    apiVersion: 'rbac.authorization.k8s.io/v1',
+    kind: 'Role',
+    metadata: { name: 'scopes', namespace },
+    rules: [{ apiGroups: ['example.dev'], resources: ['widgets'], verbs: ['get', 'list', 'watch'] }],
+  });
+  const roleBinding = (namespace: string) => ({
+    apiVersion: 'rbac.authorization.k8s.io/v1',
+    kind: 'RoleBinding',
+    metadata: { name: 'scopes', namespace },
+    roleRef: { apiGroup: 'rbac.authorization.k8s.io', kind: 'Role', name: 'scopes' },
+    subjects: [{ kind: 'ServiceAccount', name: 'scopes', namespace: 'control-plane' }],
+  });
+  return [
+    {
+      apiVersion: 'apps/v1',
+      kind: 'Deployment',
+      metadata: { name: 'scopes', namespace: 'control-plane' },
+      spec: { template: { spec: { serviceAccountName: 'scopes', containers: [{ name: 'operator', image: 'operator:test' }] } } },
+    },
+    role('team-a'),
+    role('team-b'),
+    roleBinding('team-a'),
+    roleBinding('team-b'),
+    {
+      apiVersion: 'rbac.authorization.k8s.io/v1',
+      kind: 'ClusterRole',
+      metadata: { name: 'scopes' },
+      rules: [{ apiGroups: ['example.dev'], resources: ['clusterwidgets'], verbs: ['get'] }],
+    },
+    {
+      apiVersion: 'rbac.authorization.k8s.io/v1',
+      kind: 'ClusterRoleBinding',
+      metadata: { name: 'scopes' },
+      roleRef: { apiGroup: 'rbac.authorization.k8s.io', kind: 'ClusterRole', name: 'scopes' },
+      subjects: [{ kind: 'ServiceAccount', name: 'scopes', namespace: 'control-plane' }],
+    },
+  ];
+}
+
 function collisionGraph(): ApplicationGraph {
   return {
     ...emptyGraph('collisions'),
@@ -384,5 +665,25 @@ function awsObjectAccessGraph(bucket: string | undefined): ApplicationGraph {
     edges: [{ from: { nodeId: 'operator.objects' }, to: { nodeId: 'objectStore.attachments' }, relationship: 'writes' }],
     providerRequirements: [], providerBindings: [],
     compatibility: { stablePublicApis: [], documentedInternalContracts: [], experimentalSurfaces: [], postV3Surfaces: [], labels: [] },
+  };
+}
+
+function awsParityResource(
+  id: string,
+  service: 'ecs' | 'iam' | 'rds',
+  resourceType: string,
+  configuration: Readonly<Record<string, unknown>> = {},
+  physicalName = id.replace(/[^a-z0-9-]/gu, '-'),
+): ApplicationAwsPlanResource {
+  return {
+    id,
+    service,
+    resourceType,
+    physicalName,
+    lifecycle: { ownership: 'application' as const, deletion: 'delete' as const, adoption: 'createOnly' as const },
+    network: service === 'iam' ? 'control-plane' as const : 'private' as const,
+    configuration: configuration as DeploymentJsonObject,
+    outputs: [],
+    provenance: {},
   };
 }

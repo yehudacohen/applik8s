@@ -45,6 +45,7 @@ const benchmarkRuntimeAccessContent = {
   target: 'local' as const,
   sourceGraphDigest: benchmarkSourceGraphDigest,
   executions: [],
+  workloads: [],
   diagnostics: [],
 };
 const deploymentGraph = {

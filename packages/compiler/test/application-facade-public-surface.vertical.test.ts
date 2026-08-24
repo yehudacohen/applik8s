@@ -99,6 +99,68 @@ describe('entrypoint-driven application public surface', () => {
     });
   });
 
+  it('records an exported native CRD create route as exact public-gateway authority', () => {
+    const authored = graph();
+    const result = applicationGraphWithEntrypointPublicSurface({
+      ...authored,
+      nodes: [
+        ...authored.nodes.filter((node) => node.id !== 'model.Workspace'),
+        {
+          id: 'model.Workspace',
+          kind: 'crd',
+          name: 'Workspace',
+          stability: 'stable',
+          resource: {
+            apiVersion: 'example.test/v1',
+            kind: 'Workspace',
+            plural: 'workspaces',
+            scope: 'Namespaced',
+          },
+          materialization: 'kubernetes-crd',
+          create: { authorizationSource: '() => true', placementSource: '() => ({ namespace: "default" })' },
+          common: {
+            operations: [{
+              name: 'create',
+              operation: 'create',
+              transport: 'command',
+              publicId: 'Workspace.create',
+              authorization: 'application-defined',
+              authority: {
+                classification: 'assigned', permissionIds: ['workspace:create'], grantable: false, delegable: false, scope: { kind: 'all' },
+              },
+            }],
+          },
+        },
+        {
+          id: 'gateway.authored',
+          kind: 'gateway',
+          name: 'authored',
+          stability: 'stable',
+          visibility: 'public',
+          queries: [{ nodeId: 'query.Workspace.list' }],
+          commands: [],
+          subscriptions: [],
+        },
+      ],
+    } as unknown as ApplicationGraph, {
+      operationIds: [],
+      modelNames: ['Workspace'],
+    });
+
+    expect(result.nodes).toContainEqual(expect.objectContaining({
+      id: 'permission.gateway.authored.native-model-operations',
+      kind: 'permission',
+      owner: { nodeId: 'gateway.authored' },
+      mode: 'inferred',
+      rules: [{
+        apiGroups: ['example.test'],
+        resources: ['workspaces'],
+        verbs: ['create'],
+        scope: 'Namespaced',
+      }],
+    }));
+  });
+
   it('does not publish models that the entrypoint keeps private', () => {
     const authored = graph();
     const result = applicationGraphWithEntrypointPublicSurface(authored, {

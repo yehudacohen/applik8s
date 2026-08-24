@@ -165,7 +165,7 @@ describe("ApplicationDeploymentGraph", () => {
           serviceAccountName: 'invalid',
           bindings: [],
           networkConnections: [],
-          credentialResources: [],
+          credentialProjections: [],
         },
       }],
       diagnostics: [null],
@@ -407,6 +407,7 @@ function validGraph(): ApplicationDeploymentGraph {
     target: 'kubernetes' as const,
     sourceGraphDigest: digest,
     executions: [],
+    workloads: [],
     diagnostics: [],
   };
   const artifact: ApplicationDeploymentNode = {

@@ -520,7 +520,10 @@ function addCelldFleet(
   const discovery = `${id}Discovery`;
   const securityGroup = `${id}SecurityGroup`;
   const executionRole = `${id}ExecutionRole`;
-  const taskRole = `${id}TaskRole`;
+  const runtimeRoleResourceId = optionalString(entry.configuration.runtimeRoleResourceId);
+  const runtimeRole = runtimeRoleResourceId ? required(plan, runtimeRoleResourceId) : undefined;
+  const generatedTaskRole = `${id}TaskRole`;
+  const taskRole = runtimeRole ? logical.get(runtimeRole.id)! : generatedTaskRole;
   const task = `${id}TaskDefinition`;
   const deploymentTask = `${id}DeploymentTaskDefinition`;
   const namespaceName = internalDnsName(plan);
@@ -560,17 +563,24 @@ function addCelldFleet(
   resources[executionRole] = resource("AWS::IAM::Role", {
     AssumeRolePolicyDocument: assumeRolePolicy("ecs-tasks.amazonaws.com"),
     ManagedPolicyArns: ["arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"],
-    Tags: tags(plan, entry),
-  });
-  resources[taskRole] = resource("AWS::IAM::Role", {
-    AssumeRolePolicyDocument: assumeRolePolicy("ecs-tasks.amazonaws.com"),
-    Policies: [{ PolicyName: "celld-fleet-bucket", PolicyDocument: { Version: "2012-10-17", Statement: [{
+    Policies: [{ PolicyName: "applik8s-celld-runtime-secrets", PolicyDocument: { Version: "2012-10-17", Statement: [{
       Effect: "Allow",
-      Action: ["s3:GetObject", "s3:PutObject", "s3:DeleteObject", "s3:ListBucket", "s3:GetBucketLocation"],
-      Resource: [getAtt(logical.get(state.id)!, "Arn"), { "Fn::Sub": [`${"${BucketArn}"}/*`, { BucketArn: getAtt(logical.get(state.id)!, "Arn") }] }],
+      Action: ["secretsmanager:GetSecretValue"],
+      Resource: [ref(logical.get(authorization.id)!), ref(logical.get(connectionSigning.id)!)],
     }] } }],
     Tags: tags(plan, entry),
   });
+  if (!runtimeRole) {
+    resources[generatedTaskRole] = resource("AWS::IAM::Role", {
+      AssumeRolePolicyDocument: assumeRolePolicy("ecs-tasks.amazonaws.com"),
+      Policies: [{ PolicyName: "celld-fleet-bucket", PolicyDocument: { Version: "2012-10-17", Statement: [{
+        Effect: "Allow",
+        Action: ["s3:GetObject", "s3:PutObject", "s3:DeleteObject", "s3:ListBucket", "s3:GetBucketLocation"],
+        Resource: [getAtt(logical.get(state.id)!, "Arn"), { "Fn::Sub": [`${"${BucketArn}"}/*`, { BucketArn: getAtt(logical.get(state.id)!, "Arn") }] }],
+      }] } }],
+      Tags: tags(plan, entry),
+    });
+  }
   resources[deploymentTask] = resource("AWS::ECS::TaskDefinition", {
     Family: `${entry.physicalName}-deployment`,
     RequiresCompatibilities: ["FARGATE"],

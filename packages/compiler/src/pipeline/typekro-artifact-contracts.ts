@@ -70,6 +70,7 @@ export interface TypeKroCompositionApplicationHostArtifactReference extends Json
 export interface TypeKroCompositionProcessorArtifactReference extends JsonObject {
   readonly name: string;
   readonly nodeId: string;
+  readonly executionNodeIds?: readonly string[];
   readonly manifest: string;
   readonly source: string;
   readonly digest: string;
@@ -81,6 +82,7 @@ export interface TypeKroCompositionProcessorArtifactReference extends JsonObject
 export interface TypeKroCompositionLakehousePublisherArtifactReference extends JsonObject {
   readonly name: string;
   readonly nodeId: string;
+  readonly executionNodeIds?: readonly string[];
   readonly manifest: string;
   readonly source: string;
   readonly digest: string;
@@ -95,6 +97,7 @@ export interface TypeKroCompositionLakehousePublisherArtifactReference extends J
 export interface TypeKroCompositionWorkflowArtifactReference extends JsonObject {
   readonly name: string;
   readonly nodeId: string;
+  readonly executionNodeIds?: readonly string[];
   readonly manifest: string;
   readonly source: string;
   readonly digest: string;
@@ -107,6 +110,7 @@ export interface TypeKroCompositionWorkflowArtifactReference extends JsonObject 
 export interface TypeKroCompositionReactiveArtifactReference extends JsonObject {
   readonly name: string;
   readonly nodeId: string;
+  readonly executionNodeIds?: readonly string[];
   readonly kind:
     | 'queryGateway'
     | 'projectionWorker'
@@ -124,6 +128,7 @@ export interface TypeKroCompositionReactiveArtifactReference extends JsonObject 
 export interface TypeKroCompositionAgentArtifactReference extends JsonObject {
   readonly name: string;
   readonly nodeId: string;
+  readonly executionNodeIds?: readonly string[];
   readonly manifest: string;
   readonly source: string;
   readonly digest: string;
@@ -136,6 +141,7 @@ export interface TypeKroCompositionAgentArtifactReference extends JsonObject {
 export interface TypeKroCompositionHttpArtifactReference extends JsonObject {
   readonly name: string;
   readonly serverId: string;
+  readonly executionNodeIds?: readonly string[];
   readonly manifest: string;
   readonly source: string;
   readonly digest: string;
@@ -147,6 +153,7 @@ export interface TypeKroCompositionHttpArtifactReference extends JsonObject {
 export interface TypeKroCompositionMcpArtifactReference extends JsonObject {
   readonly name: string;
   readonly serverId: string;
+  readonly executionNodeIds?: readonly string[];
   readonly manifest: string;
   readonly source: string;
   readonly digest: string;

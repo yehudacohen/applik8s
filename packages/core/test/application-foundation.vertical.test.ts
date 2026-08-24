@@ -421,7 +421,7 @@ describe('v0.8 canonical foundation', () => {
       target: {
         capabilityId: 'v1/Secret/providers/acquisition-token',
         operation: 'secret.read',
-        scope: { kind: 'resource', resourceId: 'v1/Secret/providers/acquisition-token' },
+        scope: { kind: 'resource', resourceId: 'v1/Secret/providers/acquisition-token', keys: ['token'] },
       },
       origin: 'framework',
       sensitivity: 'credential',
@@ -434,6 +434,72 @@ describe('v0.8 canonical foundation', () => {
       interface: 'AcquisitionProvider',
       nodeId: providerId,
     });
+  });
+
+  it('derives exact Kubernetes list-watch verbs from the native query contract', () => {
+    const graph = {
+      apiVersion: 'applik8s.appGraph/v1alpha1',
+      kind: 'ApplicationGraph',
+      metadata: { name: 'native-query' },
+      nodes: [{
+        id: 'query.Workspace.list',
+        kind: 'query',
+        name: 'Workspace.list',
+        stability: 'stable',
+        version: 'v1',
+        reads: [{ model: { nodeId: 'crd.Workspace' } }],
+        kubernetes: {
+          kind: 'kubernetes-list-watch',
+          model: { nodeId: 'crd.Workspace' },
+          resource: {
+            apiVersion: 'example.test/v1',
+            kind: 'Workspace',
+            plural: 'workspaces',
+            scope: 'Namespaced',
+          },
+        },
+      }, {
+        id: 'crd.Workspace',
+        kind: 'crd',
+        name: 'Workspace',
+        stability: 'stable',
+        resource: {
+          apiVersion: 'example.test/v1',
+          kind: 'Workspace',
+          plural: 'workspaces',
+          scope: 'Namespaced',
+        },
+      }],
+      edges: [],
+      providerRequirements: [],
+      providerBindings: [],
+      compatibility: {
+        stablePublicApis: [], documentedInternalContracts: [], experimentalSurfaces: [], postV3Surfaces: [], labels: [],
+      },
+    } as unknown as ApplicationGraph;
+
+    const requirements = deriveApplicationGraphFoundation(graph).runtimeAccess
+      .filter(({ consumer, target }) =>
+        consumer.nodeId === 'query.Workspace.list'
+        && target.scope.kind === 'kubernetes');
+
+    expect(requirements.map(({ target }) => ({
+      operation: target.operation,
+      scope: target.scope,
+    }))).toEqual([
+      {
+        operation: 'kubernetes.get',
+        scope: { kind: 'kubernetes', apiGroup: 'example.test', resource: 'workspaces', scope: 'Namespaced', verbs: ['get'] },
+      },
+      {
+        operation: 'kubernetes.list',
+        scope: { kind: 'kubernetes', apiGroup: 'example.test', resource: 'workspaces', scope: 'Namespaced', verbs: ['list'] },
+      },
+      {
+        operation: 'kubernetes.watch',
+        scope: { kind: 'kubernetes', apiGroup: 'example.test', resource: 'workspaces', scope: 'Namespaced', verbs: ['watch'] },
+      },
+    ]);
   });
 
   it('isolates schedule admission and telemetry access to a schedule-runner execution identity', () => {
@@ -471,7 +537,7 @@ describe('v0.8 canonical foundation', () => {
     };
     const foundation = deriveApplicationGraphFoundation(graph);
     const scheduleAccess = foundation.runtimeAccess.filter(({ consumer }) => consumer.nodeId === 'schedule.notes.compact.v1');
-    expect(scheduleAccess.map(({ target }) => target.operation).sort()).toEqual(['connection.use', 'schedule.admit', 'telemetry.write']);
+    expect(scheduleAccess.map(({ target }) => target.operation).sort()).toEqual(['connection.use', 'connection.use', 'schedule.admit', 'telemetry.write']);
     expect(new Set(scheduleAccess.map(({ consumer }) => consumer.executionIdentity)).size).toBe(1);
     expect(scheduleAccess[0]?.consumer.executionIdentity).toContain('schedule-runner');
     expect(scheduleAccess.every(({ provenance: [entry] }) => entry?.module === 'src/schedules.ts')).toBe(true);

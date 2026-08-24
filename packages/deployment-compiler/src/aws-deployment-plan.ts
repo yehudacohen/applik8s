@@ -26,7 +26,11 @@ import {
 } from '@applik8s/deployment-contract';
 import { assertApplicationScheduleProviderCompatibility } from './provider-guarantees.js';
 import { resolveApplicationProviderForTarget } from './providers.js';
-import { compileApplicationRuntimeAccessPlan } from './runtime-access-plan.js';
+import { validateAwsRuntimeAccessParity } from './aws-runtime-access-parity.js';
+import {
+  type ApplicationRuntimeAccessWorkloadPlacement,
+  compileApplicationRuntimeAccessPlan,
+} from './runtime-access-plan.js';
 import { applicationWorkloadProviderNodeIds } from './workload-provider-references.js';
 
 const awsHatchetImage = 'ghcr.io/hatchet-dev/hatchet/hatchet-lite@sha256:5405c7f3991e85b7490b4e9fd7187bf5699f7cdd5b6e0c9a751751164b801aa9';
@@ -254,22 +258,78 @@ export function compileApplicationAwsDeploymentPlan(request: CompileApplicationA
       : checkpoint);
   }
 
+  const schedules = request.graph.nodes.filter((node) => node.kind === 'schedule');
+  lowerAwsScheduleFoundation(request, resources, add, connect, name, schedules);
+  const runtimeBindings = awsRuntimeBindings(request.graph, resources);
+  const managedHosts = selectedProviders.filter(({ interface: providerInterface }) => providerInterface === 'ApplicationHost');
+  const serverHosts = managedHosts.length > 0
+    ? []
+    : request.graph.nodes.filter((candidate): candidate is Extract<ApplicationGraphNode, { kind: 'server' }> =>
+      candidate.kind === 'server'
+      && !runtimeArtifacts.some((artifact) => artifact.role === 'http' && artifact.nodeId === candidate.id));
+  const applicationHosts = request.includeApplicationHosts === false
+    ? []
+    : [
+        ...serverHosts.map((node) => ({ id: node.id, replicas: typeof node.deployment?.replicas === 'number' ? node.deployment.replicas : 1, port: node.deployment?.port ?? 3000 })),
+        ...managedHosts.map((provider) => {
+          const config = providerConfig(provider);
+          return { id: provider.id, replicas: numberValue(config.replicas) ?? 1, port: numberValue(config.port) ?? 3000 };
+        }),
+      ];
+  if (applicationHosts.length > 1) {
+    diagnostics.push({ severity: 'error', code: 'AWS_CONFIGURATION_UNRESOLVED', message: `AWS target requires one ApplicationHost; found ${applicationHosts.length}.` });
+  }
+  const workloadPlacements = awsRuntimeAccessWorkloadPlacements(
+    request,
+    runtimeArtifacts,
+    applicationHosts.map(({ id }) => id),
+    schedules.map(({ id }) => id),
+    name,
+  );
+  const includedExecutionNodeIds = request.includeApplicationHosts === false
+    ? [...new Set(workloadPlacements.flatMap(({ executionNodeIds }) => executionNodeIds))].sort()
+    : undefined;
+
   const runtimeAccess = compileApplicationRuntimeAccessPlan({
     graph: request.graph,
     target: request.target ?? 'aws',
     profile: request.profile ?? request.environment,
     ...(request.workspaceRoot ? { workspaceRoot: request.workspaceRoot } : {}),
     targetResources: awsRuntimeAccessBindings(request.graph, resources, request),
+    workloadPlacements,
+    ...(includedExecutionNodeIds ? { includedExecutionNodeIds } : {}),
   });
   for (const diagnostic of runtimeAccess.diagnostics) diagnostics.push({ severity: diagnostic.severity, code: 'AWS_RUNTIME_ACCESS_UNRESOLVED', message: diagnostic.message, subjectId: diagnostic.requirementId });
-  for (const execution of runtimeAccess.executions) {
-    if (!execution.aws) continue;
-    add(resource(`runtime-role.${hash(execution.executionIdentity, 16)}`, 'iam', 'role', execution.aws.roleName, {
-      assumeService: 'ecs-tasks.amazonaws.com', statements: deploymentJson(execution.aws.statements),
-      executionIdentity: execution.executionIdentity, networkConnections: execution.aws.networkConnections,
-    }, execution.nodeId, 'control-plane', ['roleArn']));
+  const runtimeRolesByWorkloadResourceId = new Map<string, ApplicationAwsPlanResource>();
+  for (const workload of runtimeAccess.workloads) {
+    if (!workload.aws) continue;
+    const role = resource(`runtime-role.${hash(workload.workloadIdentity, 16)}`, 'iam', 'role', workload.aws.roleName, {
+      assumeService: 'ecs-tasks.amazonaws.com',
+      statements: deploymentJson(workload.aws.statements),
+      workloadIdentity: workload.workloadIdentity,
+      executionIdentities: workload.executionIdentities,
+      requirementIds: workload.requirementIds,
+      networkConnections: workload.aws.networkConnections,
+    }, workload.executionIdentities.length === 1
+      ? runtimeAccess.executions.find(({ executionIdentity }) => executionIdentity === workload.executionIdentities[0])?.nodeId
+      : undefined, 'control-plane', ['roleArn']);
+    add(role);
+    runtimeRolesByWorkloadResourceId.set(workload.aws.resourceId, role);
   }
-  let runtimeBindings = awsRuntimeBindings(request.graph, resources);
+  for (const workload of runtimeAccess.workloads) {
+    if (!workload.aws) continue;
+    const runtimeResource = resources.get(workload.aws.resourceId);
+    const role = runtimeRolesByWorkloadResourceId.get(workload.aws.resourceId);
+    if (!runtimeResource || !role || runtimeResource.service !== 'ecs') continue;
+    resources.set(runtimeResource.id, {
+      ...runtimeResource,
+      configuration: { ...runtimeResource.configuration, runtimeRoleResourceId: role.id },
+    });
+    connect({ from: role.id, to: runtimeResource.id, relationship: 'assumesRole' });
+    for (const targetResourceId of workload.aws.networkConnections) {
+      if (resources.has(targetResourceId)) connect({ from: targetResourceId, to: runtimeResource.id, relationship: 'networkAccess', output: 'runtime-egress' });
+    }
+  }
 
   for (const artifact of runtimeArtifacts) {
     const artifactId = applicationRuntimeArtifactId(artifact);
@@ -304,7 +364,8 @@ export function compileApplicationAwsDeploymentPlan(request: CompileApplicationA
     });
     const runtimePhysicalName = name(`${artifact.role}-${hash(artifactId, 10)}`);
     const discoveryNamespaceName = String(resources.get('foundation.discovery')?.configuration.namespaceName ?? 'applik8s.internal');
-    let role = [...resources.values()].find(({ service, resourceType, semanticNodeId }) => service === 'iam' && resourceType === 'role' && semanticNodeId === artifact.nodeId);
+    const role = runtimeRolesByWorkloadResourceId.get(id);
+    const workloadAccess = runtimeAccess.workloads.find((workload) => workload.aws?.resourceId === id)?.aws;
     const processor = artifact.role === 'processor'
       ? request.graph.nodes.find((node): node is ApplicationProcessorNode => node.id === artifact.nodeId && node.kind === 'processor')
       : undefined;
@@ -337,7 +398,7 @@ export function compileApplicationAwsDeploymentPlan(request: CompileApplicationA
       ...databaseEnvironmentNamesForWorkload(artifact.nodeId, request.graph, request.workspaceRoot),
       ...(runtimeConfiguration.scheduleAccess === true ? ['APPLIK8S_SCHEDULE_DATABASE_URL'] : []),
     ])].sort();
-    const databaseBindings = databaseEnvironmentNames.flatMap((environmentName) => {
+    for (const environmentName of databaseEnvironmentNames) {
       const binding = runtimeBindings.find((candidate) => candidate.environmentName === environmentName);
       if (!binding) {
         diagnostics.push({
@@ -346,38 +407,7 @@ export function compileApplicationAwsDeploymentPlan(request: CompileApplicationA
           message: `AWS runtime artifact ${artifactId} requires database binding ${environmentName}, but no exact RDS authority was planned.`,
           subjectId: artifact.nodeId,
         });
-        return [];
       }
-      return [binding];
-    });
-    const additionalStatements: DeploymentJsonObject[] = [
-      ...((artifact.role === 'processor' || artifact.role === 'lakehouse') && checkpoint ? [{
-        effect: 'Allow',
-        actions: ['dynamodb:GetItem', 'dynamodb:Query', 'dynamodb:UpdateItem'],
-        resources: [`arn:aws:dynamodb:${request.region}:${request.accountId}:table/${checkpoint.physicalName}`],
-      }] : []),
-      ...databaseBindings.map((binding) => ({
-        effect: 'Allow',
-        actions: ['secretsmanager:GetSecretValue'],
-        resources: [`output://${binding.resourceId}/secretArn`],
-      })),
-      ...(runtimeConfiguration.scheduleAccess === true ? scheduleRuntimeStatements(resources, request) : []),
-    ];
-    if (additionalStatements.length > 0 && role) {
-      const statements = Array.isArray(role.configuration.statements) ? role.configuration.statements : [];
-      role = {
-        ...role,
-        configuration: {
-          ...role.configuration,
-          statements: [...statements, ...additionalStatements],
-        },
-      };
-      resources.set(role.id, role);
-    } else if (additionalStatements.length > 0) {
-      role = resource(`runtime-role.artifact-${hash(artifactId, 16)}`, 'iam', 'role', name(`runtime-${hash(artifactId, 10)}`), {
-        assumeService: 'ecs-tasks.amazonaws.com', statements: additionalStatements,
-      }, artifact.nodeId, 'control-plane', ['roleArn']);
-      add(role);
     }
     const desiredCount = runtimeArtifactReplicaCount(artifact.nodeId, request.graph);
     add(resource(id, 'ecs', placement.kind === 'service' ? 'fargate-runtime-service' : 'fargate-worker', runtimePhysicalName, {
@@ -415,7 +445,13 @@ export function compileApplicationAwsDeploymentPlan(request: CompileApplicationA
     connect({ from: 'foundation.registry', to: id, relationship: 'requiresReady' });
     connect({ from: 'foundation.compute', to: id, relationship: 'requiresReady' });
     connect({ from: 'foundation.logs', to: id, relationship: 'requiresReady' });
-    connect({ from: 'foundation.security-group.application', to: id, relationship: 'networkAccess' });
+    for (const targetResourceId of workloadAccess?.networkConnections ?? []) {
+      if (!resources.has(targetResourceId)) {
+        diagnostics.push({ severity: 'error', code: 'AWS_RUNTIME_ACCESS_UNRESOLVED', message: `AWS workload ${id} requires unresolved network target ${targetResourceId}.`, subjectId: artifact.nodeId });
+      } else {
+        connect({ from: targetResourceId, to: id, relationship: 'networkAccess', output: 'runtime-egress' });
+      }
+    }
     if (placement.kind === 'service') connect({ from: 'foundation.discovery', to: id, relationship: 'requiresReady' });
     for (const endpoint of runtimeEndpointBindings) {
       if (String(endpoint.resourceId) !== id) connect({ from: String(endpoint.resourceId), to: id, relationship: 'requiresReady' });
@@ -425,74 +461,6 @@ export function compileApplicationAwsDeploymentPlan(request: CompileApplicationA
     if (checkpoint) connect({ from: checkpoint.id, to: id, relationship: 'requiresReady' });
   }
 
-  const schedules = request.graph.nodes.filter((node) => node.kind === 'schedule');
-  if (schedules.length > 0) {
-    const existingPostgres = [...resources.values()].find(({ service, resourceType }) => service === 'rds' && resourceType === 'postgresql-instance');
-    if (!existingPostgres) {
-      add(resource('scheduler.receipts', 'rds', 'postgresql-instance', name('schedule-receipts'), {
-        engineVersion: '17', storageGiB: 20, multiAz: request.environment === 'production', encrypted: true,
-        deletionProtection: request.environment === 'production',
-      }, undefined, 'private', ['endpoint', 'port', 'secretArn']));
-      connect({ from: 'foundation.subnet.private.1', to: 'scheduler.receipts', relationship: 'networkAccess' });
-      connect({ from: 'foundation.subnet.private.2', to: 'scheduler.receipts', relationship: 'networkAccess' });
-      connect({ from: 'foundation.security-group.application', to: 'scheduler.receipts', relationship: 'networkAccess' });
-    }
-    add(resource('scheduler.group', 'eventbridge-scheduler', 'schedule-group', name('schedules'), {}, undefined, 'none', ['groupArn']));
-    add(resource('scheduler.admission', 'sqs', 'queue', name('schedule-admission'), { visibilityTimeoutSeconds: 300, receiveWaitTimeSeconds: 20, encrypted: true }, undefined, 'private', ['queueArn', 'queueUrl']));
-    add(resource('scheduler.dead-letter', 'sqs', 'queue', name('schedule-dlq'), { encrypted: true, retentionSeconds: 1_209_600 }, undefined, 'private', ['queueArn', 'queueUrl']));
-    add(resource('scheduler.execution-role', 'iam', 'role', name('scheduler-execution'), {
-      assumeService: 'scheduler.amazonaws.com',
-      statements: [{
-        effect: 'Allow', actions: ['sqs:SendMessage'], resources: [
-          `arn:aws:sqs:${request.region}:${request.accountId}:${resources.get('scheduler.admission')!.physicalName}`,
-          `arn:aws:sqs:${request.region}:${request.accountId}:${resources.get('scheduler.dead-letter')!.physicalName}`,
-        ],
-      }],
-    }, undefined, 'control-plane', ['roleArn']));
-    connect({ from: 'scheduler.dead-letter', to: 'scheduler.admission', relationship: 'requiresReady' });
-    connect({ from: 'scheduler.admission', to: 'scheduler.execution-role', relationship: 'requiresReady' });
-    connect({ from: 'scheduler.dead-letter', to: 'scheduler.execution-role', relationship: 'requiresReady' });
-    for (const schedule of schedules.filter(({ definition }) => definition.configuration === 'fixed')) {
-      const id = `schedule.${hash(schedule.definition.id, 20)}`;
-      add(resource(id, 'eventbridge-scheduler', 'schedule', name(`schedule-${hash(schedule.definition.id, 10)}`), {
-        definitionId: schedule.definition.id,
-        overlap: schedule.definition.overlap,
-        expression: awsScheduleExpression(schedule.definition),
-        timezone: schedule.definition.timezone,
-        misfires: schedule.definition.misfires,
-        maximumLatenessSeconds: schedule.definition.maximumLatenessSeconds,
-        ...(schedule.definition.maximumCatchUp !== undefined
-          ? { maximumCatchUp: schedule.definition.maximumCatchUp }
-          : {}),
-        maximumRetryAttempts: Math.min(185, Math.max(0, schedule.definition.retry.maxAttempts - 1)),
-        maximumEventAgeSeconds: Math.min(86_400, Math.max(60, schedule.definition.retry.maximumAgeSeconds)),
-        targetQueue: 'scheduler.admission', deadLetterQueue: 'scheduler.dead-letter',
-      }, schedule.id, 'none', ['scheduleArn']));
-      connect({ from: 'scheduler.group', to: id, relationship: 'requiresReady' });
-      connect({ from: 'scheduler.admission', to: id, relationship: 'requiresOutput', output: 'queueArn' });
-      connect({ from: 'scheduler.dead-letter', to: id, relationship: 'requiresOutput', output: 'queueArn' });
-    }
-  }
-  runtimeBindings = awsRuntimeBindings(request.graph, resources);
-
-  const managedHosts = selectedProviders.filter(({ interface: providerInterface }) => providerInterface === 'ApplicationHost');
-  const serverHosts = managedHosts.length > 0
-    ? []
-    : request.graph.nodes.filter((candidate): candidate is Extract<ApplicationGraphNode, { kind: 'server' }> =>
-      candidate.kind === 'server'
-      && !runtimeArtifacts.some((artifact) => artifact.role === 'http' && artifact.nodeId === candidate.id));
-  const applicationHosts = request.includeApplicationHosts === false
-    ? []
-    : [
-        ...serverHosts.map((node) => ({ id: node.id, replicas: typeof node.deployment?.replicas === 'number' ? node.deployment.replicas : 1, port: node.deployment?.port ?? 3000 })),
-        ...managedHosts.map((provider) => {
-          const config = providerConfig(provider);
-          return { id: provider.id, replicas: numberValue(config.replicas) ?? 1, port: numberValue(config.port) ?? 3000 };
-        }),
-      ];
-  if (applicationHosts.length > 1) {
-    diagnostics.push({ severity: 'error', code: 'AWS_CONFIGURATION_UNRESOLVED', message: `AWS target requires one ApplicationHost; found ${applicationHosts.length}.` });
-  }
   for (const host of applicationHosts) {
     const id = `application-host.${hash(host.id, 16)}`;
     const runtimeConfiguration = {
@@ -515,28 +483,12 @@ export function compileApplicationAwsDeploymentPlan(request: CompileApplicationA
       ...databaseEnvironmentNamesForWorkload(host.id, request.graph, request.workspaceRoot),
       ...(runtimeConfiguration.scheduleAccess === true ? ['APPLIK8S_SCHEDULE_DATABASE_URL'] : []),
     ])].sort();
-    const hostBindings = databaseEnvironmentNames.map((environmentName) => {
+    for (const environmentName of databaseEnvironmentNames) {
       const binding = runtimeBindings.find((candidate) => candidate.environmentName === environmentName);
       if (!binding) throw new Error(`AWS application host ${host.id} requires database binding ${environmentName}, but no exact RDS authority was planned.`);
-      return binding;
-    });
-    let role = [...resources.values()].find(({ service, resourceType, semanticNodeId }) => service === 'iam' && resourceType === 'role' && semanticNodeId === host.id);
-    const hostStatements: DeploymentJsonObject[] = [
-      ...hostBindings.map((binding) => ({ effect: 'Allow', actions: ['secretsmanager:GetSecretValue'], resources: [`output://${binding.resourceId}/secretArn`] })),
-      ...(runtimeConfiguration.scheduleAccess === true ? scheduleRuntimeStatements(resources, request) : []),
-    ];
-    if (hostStatements.length > 0) {
-      if (role) {
-        const statements = Array.isArray(role.configuration.statements) ? role.configuration.statements : [];
-        role = { ...role, configuration: { ...role.configuration, statements: [...statements, ...hostStatements] } };
-        resources.set(role.id, role);
-      } else {
-        role = resource(`runtime-role.host-${hash(host.id, 16)}`, 'iam', 'role', name(`runtime-${hash(host.id, 10)}`), {
-          assumeService: 'ecs-tasks.amazonaws.com', statements: hostStatements,
-        }, host.id, 'control-plane', ['roleArn']);
-        add(role);
-      }
     }
+    const role = runtimeRolesByWorkloadResourceId.get(id);
+    const workloadAccess = runtimeAccess.workloads.find((workload) => workload.aws?.resourceId === id)?.aws;
     add(resource(id, 'ecs', 'fargate-service', name(`service-${hash(host.id, 10)}`), {
       artifactRepository: 'foundation.registry', cluster: 'foundation.compute',
       desiredCount: host.replicas,
@@ -553,7 +505,13 @@ export function compileApplicationAwsDeploymentPlan(request: CompileApplicationA
     connect({ from: 'foundation.registry', to: id, relationship: 'requiresReady' });
     connect({ from: 'foundation.compute', to: id, relationship: 'requiresReady' });
     connect({ from: 'foundation.logs', to: id, relationship: 'requiresReady' });
-    connect({ from: 'foundation.security-group.application', to: id, relationship: 'networkAccess' });
+    for (const targetResourceId of workloadAccess?.networkConnections ?? []) {
+      if (!resources.has(targetResourceId)) {
+        diagnostics.push({ severity: 'error', code: 'AWS_RUNTIME_ACCESS_UNRESOLVED', message: `AWS application host ${host.id} requires unresolved network target ${targetResourceId}.`, subjectId: host.id });
+      } else {
+        connect({ from: targetResourceId, to: id, relationship: 'networkAccess', output: 'runtime-egress' });
+      }
+    }
     if (role) connect({ from: role.id, to: id, relationship: 'assumesRole' });
     for (const endpoint of runtimeEndpointBindings) connect({ from: String(endpoint.resourceId), to: id, relationship: 'requiresReady' });
   }
@@ -584,6 +542,9 @@ export function compileApplicationAwsDeploymentPlan(request: CompileApplicationA
     }
   }
 
+  for (const finding of validateAwsRuntimeAccessParity(runtimeAccess, [...resources.values()], edges)) {
+    diagnostics.push({ severity: 'error', code: 'AWS_RUNTIME_ACCESS_UNRESOLVED', message: `[${finding.code}] ${finding.message}`, subjectId: finding.workloadIdentity });
+  }
   const plan = normalizeApplicationAwsDeploymentPlan({
     apiVersion: 'applik8s.awsPlan/v1alpha1', application: request.graph.metadata.name,
     environment: request.environment, region: request.region, accountId: request.accountId,
@@ -825,30 +786,119 @@ function workloadObjectStorageBindings(
     .map(([purpose, resourceId]) => ({ purpose, resourceId }));
 }
 
-function scheduleRuntimeStatements(
+function lowerAwsScheduleFoundation(
+  request: CompileApplicationAwsDeploymentPlanRequest,
   resources: ReadonlyMap<string, ApplicationAwsPlanResource>,
-  request: Pick<CompileApplicationAwsDeploymentPlanRequest, 'region' | 'accountId'>,
-): readonly DeploymentJsonObject[] {
-  const queue = resources.get('scheduler.admission');
-  const group = resources.get('scheduler.group');
-  const executionRole = resources.get('scheduler.execution-role');
-  if (!queue || !group || !executionRole) throw new Error('AWS schedule runtime access requires the admission queue, schedule group, and execution role.');
-  return [
-    {
-      effect: 'Allow',
-      actions: ['sqs:ChangeMessageVisibility', 'sqs:DeleteMessage', 'sqs:GetQueueAttributes', 'sqs:ReceiveMessage'],
-      resources: [`arn:aws:sqs:${request.region}:${request.accountId}:${queue.physicalName}`],
+  add: (entry: ApplicationAwsPlanResource) => void,
+  connect: (edge: ApplicationAwsPlanEdge) => void,
+  name: (suffix: string, limit?: number) => string,
+  schedules: readonly Extract<ApplicationGraphNode, { kind: 'schedule' }>[],
+): void {
+  if (schedules.length === 0) return;
+  const existingPostgres = [...resources.values()].find(({ service, resourceType }) => service === 'rds' && resourceType === 'postgresql-instance');
+  if (!existingPostgres) {
+    add(resource('scheduler.receipts', 'rds', 'postgresql-instance', name('schedule-receipts'), {
+      engineVersion: '17', storageGiB: 20, multiAz: request.environment === 'production', encrypted: true,
+      deletionProtection: request.environment === 'production',
+    }, undefined, 'private', ['endpoint', 'port', 'secretArn']));
+    connect({ from: 'foundation.subnet.private.1', to: 'scheduler.receipts', relationship: 'networkAccess' });
+    connect({ from: 'foundation.subnet.private.2', to: 'scheduler.receipts', relationship: 'networkAccess' });
+    connect({ from: 'foundation.security-group.application', to: 'scheduler.receipts', relationship: 'networkAccess' });
+  }
+  add(resource('scheduler.group', 'eventbridge-scheduler', 'schedule-group', name('schedules'), {}, undefined, 'none', ['groupArn']));
+  add(resource('scheduler.admission', 'sqs', 'queue', name('schedule-admission'), { visibilityTimeoutSeconds: 300, receiveWaitTimeSeconds: 20, encrypted: true }, undefined, 'private', ['queueArn', 'queueUrl']));
+  add(resource('scheduler.dead-letter', 'sqs', 'queue', name('schedule-dlq'), { encrypted: true, retentionSeconds: 1_209_600 }, undefined, 'private', ['queueArn', 'queueUrl']));
+  add(resource('scheduler.execution-role', 'iam', 'role', name('scheduler-execution'), {
+    assumeService: 'scheduler.amazonaws.com',
+    statements: [{
+      effect: 'Allow', actions: ['sqs:SendMessage'], resources: [
+        `arn:aws:sqs:${request.region}:${request.accountId}:${resources.get('scheduler.admission')!.physicalName}`,
+        `arn:aws:sqs:${request.region}:${request.accountId}:${resources.get('scheduler.dead-letter')!.physicalName}`,
+      ],
+    }],
+  }, undefined, 'control-plane', ['roleArn']));
+  connect({ from: 'scheduler.dead-letter', to: 'scheduler.admission', relationship: 'requiresReady' });
+  connect({ from: 'scheduler.admission', to: 'scheduler.execution-role', relationship: 'requiresReady' });
+  connect({ from: 'scheduler.dead-letter', to: 'scheduler.execution-role', relationship: 'requiresReady' });
+  for (const schedule of schedules.filter(({ definition }) => definition.configuration === 'fixed')) {
+    const id = `schedule.${hash(schedule.definition.id, 20)}`;
+    add(resource(id, 'eventbridge-scheduler', 'schedule', name(`schedule-${hash(schedule.definition.id, 10)}`), {
+      definitionId: schedule.definition.id,
+      overlap: schedule.definition.overlap,
+      expression: awsScheduleExpression(schedule.definition),
+      timezone: schedule.definition.timezone,
+      misfires: schedule.definition.misfires,
+      maximumLatenessSeconds: schedule.definition.maximumLatenessSeconds,
+      ...(schedule.definition.maximumCatchUp !== undefined
+        ? { maximumCatchUp: schedule.definition.maximumCatchUp }
+        : {}),
+      maximumRetryAttempts: Math.min(185, Math.max(0, schedule.definition.retry.maxAttempts - 1)),
+      maximumEventAgeSeconds: Math.min(86_400, Math.max(60, schedule.definition.retry.maximumAgeSeconds)),
+      targetQueue: 'scheduler.admission', deadLetterQueue: 'scheduler.dead-letter',
+    }, schedule.id, 'none', ['scheduleArn']));
+    connect({ from: 'scheduler.group', to: id, relationship: 'requiresReady' });
+    connect({ from: 'scheduler.admission', to: id, relationship: 'requiresOutput', output: 'queueArn' });
+    connect({ from: 'scheduler.dead-letter', to: id, relationship: 'requiresOutput', output: 'queueArn' });
+  }
+}
+
+function awsRuntimeAccessWorkloadPlacements(
+  request: CompileApplicationAwsDeploymentPlanRequest,
+  runtimeArtifacts: readonly ApplicationRuntimeArtifact[],
+  applicationHostNodeIds: readonly string[],
+  scheduleNodeIds: readonly string[],
+  name: (suffix: string, limit?: number) => string,
+): readonly ApplicationRuntimeAccessWorkloadPlacement[] {
+  const artifactPlacements = runtimeArtifacts.flatMap((artifact): readonly ApplicationRuntimeAccessWorkloadPlacement[] => {
+    if (artifact.role === 'operator') return [];
+    const artifactId = applicationRuntimeArtifactId(artifact);
+    const resourceId = `runtime-artifact.${hash(artifactId, 20)}`;
+    const executionNodeIds = artifact.executionNodeIds?.length
+      ? [...artifact.executionNodeIds].sort()
+      : [...workloadNodeIds(artifact.nodeId, request.graph, request.workspaceRoot)].sort();
+    return [{
+      workloadIdentity: `aws:ecs:${resourceId}`,
+      artifactIds: [artifactId],
+      executionNodeIds,
+      aws: {
+        resourceId,
+        roleName: name(`runtime-${hash(`aws:ecs:${resourceId}`, 12)}`, 64),
+      },
+    }];
+  });
+  const hostPlacements = applicationHostNodeIds.map((nodeId): ApplicationRuntimeAccessWorkloadPlacement => {
+    const resourceId = `application-host.${hash(nodeId, 16)}`;
+    const executionNodeIds = new Set(workloadNodeIds(nodeId, request.graph, request.workspaceRoot));
+    for (const scheduleNodeId of scheduleNodeIds) executionNodeIds.add(scheduleNodeId);
+    return {
+      workloadIdentity: `aws:ecs:${resourceId}`,
+      artifactIds: ['application-host'],
+      executionNodeIds: [...executionNodeIds].sort(),
+      aws: {
+        resourceId,
+        roleName: name(`runtime-${hash(`aws:ecs:${resourceId}`, 12)}`, 64),
+      },
+    };
+  });
+  const actorPlacements = request.graph.nodes
+    .filter((node): node is Extract<ApplicationGraphNode, { kind: 'actor' }> => node.kind === 'actor')
+    .reduce((placements, actor) => {
+      const resourceId = `provider.${actor.runtime.nodeId}`;
+      const existing = placements.get(resourceId) ?? new Set<string>();
+      existing.add(actor.id);
+      placements.set(resourceId, existing);
+      return placements;
+    }, new Map<string, Set<string>>());
+  const providerPlacements = [...actorPlacements].map(([resourceId, executionNodeIds]): ApplicationRuntimeAccessWorkloadPlacement => ({
+    workloadIdentity: `aws:ecs:${resourceId}`,
+    artifactIds: [`provider-runtime:${resourceId}`],
+    executionNodeIds: [...executionNodeIds].sort(),
+    aws: {
+      resourceId,
+      roleName: name(`runtime-${hash(`aws:ecs:${resourceId}`, 12)}`, 64),
     },
-    {
-      effect: 'Allow',
-      actions: ['scheduler:CreateSchedule', 'scheduler:DeleteSchedule', 'scheduler:GetSchedule', 'scheduler:UpdateSchedule'],
-      resources: [`arn:aws:scheduler:${request.region}:${request.accountId}:schedule/${group.physicalName}/*`],
-    },
-    {
-      effect: 'Allow', actions: ['iam:PassRole'], resources: [`output://${executionRole.id}/roleArn`],
-      conditions: { StringEquals: { 'iam:PassedToService': 'scheduler.amazonaws.com' } },
-    },
-  ];
+  }));
+  return [...artifactPlacements, ...hostPlacements, ...providerPlacements].sort((left, right) => left.workloadIdentity.localeCompare(right.workloadIdentity));
 }
 
 function awsRuntimeBindings(
@@ -1178,15 +1228,49 @@ function awsRuntimeAccessBindings(
     });
     const candidates = [...resources.values()].filter(({ semanticNodeId }) => semanticNodeId === provider.id);
     const primary = candidates.find(({ resourceType }) => ['bucket', 'lakehouse-dataset', 'queue', 'stream'].includes(resourceType));
-    if (primary?.resourceType === 'bucket' || primary?.resourceType === 'lakehouse-dataset') bindings[provider.id] = { bucket: primary.physicalName, prefix: primary.configuration.prefix };
-    else if (primary?.resourceType === 'queue') bindings[provider.id] = { queueArn: `arn:aws:sqs:${request.region}:${request.accountId}:${primary.physicalName}` };
-    else if (primary?.resourceType === 'stream') bindings[provider.id] = { streamArn: `arn:aws:kinesis:${request.region}:${request.accountId}:stream/${primary.physicalName}` };
+    if ((provider.interface === 'ObjectStorage' || provider.interface === 'LakehouseDataset') && (primary?.resourceType === 'bucket' || primary?.resourceType === 'lakehouse-dataset')) bindings[provider.id] = { bucket: primary.physicalName, prefix: primary.configuration.prefix };
+    else if (provider.interface === 'Queue' && primary?.resourceType === 'queue') bindings[provider.id] = { queueArn: `arn:aws:sqs:${request.region}:${request.accountId}:${primary.physicalName}` };
+    else if ((provider.interface === 'EventLog' || provider.interface === 'EventSource') && primary?.resourceType === 'stream') bindings[provider.id] = { streamArn: `arn:aws:kinesis:${request.region}:${request.accountId}:stream/${primary.physicalName}` };
+    else if (provider.interface === 'TransactionalDatabase') {
+      const database = candidates.find(({ service, resourceType }) => service === 'rds' && resourceType === 'postgresql-instance');
+      if (database) bindings[provider.id] = {
+        secretArn: `output://${database.id}/secretArn`,
+        networkResourceId: database.id,
+      };
+    }
+    else if (provider.interface === 'Scheduler') {
+      const queue = resources.get('scheduler.admission');
+      const group = resources.get('scheduler.group');
+      const executionRole = resources.get('scheduler.execution-role');
+      if (queue && group && executionRole) bindings[provider.id] = {
+        queueArn: `arn:aws:sqs:${request.region}:${request.accountId}:${queue.physicalName}`,
+        scheduleArn: `arn:aws:scheduler:${request.region}:${request.accountId}:schedule/${group.physicalName}/*`,
+        executionRoleArn: `output://${executionRole.id}/roleArn`,
+      };
+    }
+    else if (provider.interface === 'ActorRuntime' && provider.implementation === 'celld-actors') {
+      const base = `provider.${provider.id}`;
+      const state = resources.get(`${base}.state`);
+      const authorization = resources.get(`${base}.authorization`);
+      const connectionSigning = resources.get(`${base}.connection-signing`);
+      if (state && authorization && connectionSigning) bindings[provider.id] = {
+        runtimeKind: 'celld-actors',
+        networkMode: 'embedded',
+        stateBucketArn: `arn:aws:s3:::${state.physicalName}`,
+        authorizationSecretArn: `output://${authorization.id}/secretArn`,
+        connectionSigningSecretArn: `output://${connectionSigning.id}/secretArn`,
+      };
+    }
     else if (provider.interface === 'Secret' || provider.interface === 'CredentialStore') bindings[provider.id] = { secretArn: `output://provider.${provider.id}/secretArn` };
     else if (provider.interface === 'Observability') bindings[provider.id] = { logGroupArn: `arn:aws:logs:${request.region}:${request.accountId}:log-group:/applik8s/${graph.metadata.name}/${request.environment}:*`, traceDestinationArn: `arn:aws:xray:${request.region}:${request.accountId}:group/Default` };
   }
   for (const secret of [...resources.values()].filter(({ service, resourceType, semanticNodeId }) => service === 'secrets-manager' && resourceType === 'secret-authority' && semanticNodeId)) {
-    bindings[secret.semanticNodeId!] = { secretArn: `output://${secret.id}/secretArn` };
+    if (!bindings[secret.semanticNodeId!]) bindings[secret.semanticNodeId!] = { secretArn: `output://${secret.id}/secretArn` };
   }
+  const checkpoint = resources.get('framework.kinesis-checkpoints');
+  if (checkpoint) bindings['framework.processor-checkpoints'] = {
+    tableArn: `arn:aws:dynamodb:${request.region}:${request.accountId}:table/${checkpoint.physicalName}`,
+  };
   return bindings;
 }
 

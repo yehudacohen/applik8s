@@ -161,6 +161,7 @@ export interface ApplicationDeploymentLifecycle {
 export interface ApplicationArtifactNodeSpec extends DeploymentJsonObject {
   readonly artifactType: "containerImage" | "wasmComponent" | "migration" | "generatedRuntime";
   readonly sourceDescriptor: DeploymentJsonObject;
+  readonly executionNodeIds?: readonly string[];
 }
 
 export interface ApplicationExternalProviderNodeSpec extends DeploymentJsonObject {

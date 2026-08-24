@@ -134,6 +134,7 @@ export type ApplicationRuntimeAccessOperation =
   | 'search.read'
   | 'search.write'
   | 'secret.read'
+  | 'checkpoint.use'
   | 'connection.use'
   | 'kubernetes.get'
   | 'kubernetes.list'
@@ -172,6 +173,7 @@ const applicationRuntimeAccessOperations = new Set<string>([
   'search.read',
   'search.write',
   'secret.read',
+  'checkpoint.use',
   'connection.use',
   'kubernetes.get',
   'kubernetes.list',
@@ -195,7 +197,12 @@ export function isApplicationRuntimeAccessOperation(
 
 export type ApplicationRuntimeAccessScope =
   | { readonly kind: 'capability'; readonly capabilityId: string }
-  | { readonly kind: 'resource'; readonly resourceId: string }
+  | {
+      readonly kind: 'resource';
+      readonly resourceId: string;
+      /** Exact credential keys when this resource scope names a Secret projection. */
+      readonly keys?: readonly string[];
+    }
   | { readonly kind: 'prefix'; readonly resourceId: string; readonly prefix: string }
   | { readonly kind: 'namespace'; readonly namespace: string; readonly resourceKinds?: readonly string[] }
   | { readonly kind: 'selector'; readonly resourceId: string; readonly labels: Readonly<Record<string, string>> }
@@ -206,6 +213,8 @@ export type ApplicationRuntimeAccessScope =
       readonly scope: 'Namespaced' | 'Cluster';
       readonly namespaces?: readonly string[];
       readonly resourceNames?: readonly string[];
+      /** Exact Kubernetes verbs retained when a semantic operation groups subresource behavior. */
+      readonly verbs?: readonly string[];
     }
   | { readonly kind: 'external'; readonly responsibility: string };
 

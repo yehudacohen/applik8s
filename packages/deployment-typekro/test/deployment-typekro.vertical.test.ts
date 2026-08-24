@@ -242,7 +242,7 @@ function emptyRuntimeAccessPlan(
   target: ApplicationRuntimeAccessPlan['target'],
   sourceGraphDigest: `sha256:${string}`,
 ): ApplicationRuntimeAccessPlan {
-  const content = { apiVersion: 'applik8s.runtimeAccessPlan/v1alpha1' as const, application, target, sourceGraphDigest, executions: [], diagnostics: [] };
+  const content = { apiVersion: 'applik8s.runtimeAccessPlan/v1alpha1' as const, application, target, sourceGraphDigest, executions: [], workloads: [], diagnostics: [] };
   return { ...content, digest: applicationRuntimeAccessPlanDigest(content) };
 }
 

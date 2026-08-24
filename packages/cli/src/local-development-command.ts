@@ -414,6 +414,7 @@ interface LocalRuntimeBundleEntry {
   readonly nodeId: string;
   readonly source: string;
   readonly digest: string;
+  readonly executionNodeIds?: readonly string[];
   readonly localSource?: string;
   readonly localDigest?: string;
   readonly container?: ApplicationLocalRuntimeArtifact['container'];
@@ -480,6 +481,7 @@ export async function readLocalRuntimeArtifacts(
         role,
         source,
         digest: actualDigest,
+        ...(entry.executionNodeIds?.length ? { executionNodeIds: entry.executionNodeIds } : {}),
         ...(container ? { container } : {}),
         ...(entry.runtimeEndpoints?.length ? { runtimeEndpoints: entry.runtimeEndpoints } : {}),
         ...(entry.frameworkCredentials?.length ? { frameworkCredentials: entry.frameworkCredentials } : {}),
@@ -565,6 +567,9 @@ function localRuntimeBundleEntry(value: unknown, field: string, index: number): 
     nodeId,
     source: entry.source,
     digest: entry.digest,
+    ...(entry.executionNodeIds !== undefined
+      ? { executionNodeIds: localRuntimeExecutionNodeIds(entry.executionNodeIds, field, index) }
+      : {}),
     ...(hasLocalSource ? { localSource: entry.localSource as string, localDigest: entry.localDigest as string } : {}),
     ...(entry.runtimeEndpoints !== undefined
       ? { runtimeEndpoints: localRuntimeEndpointDependencies(entry.runtimeEndpoints, field, index) }
@@ -574,6 +579,16 @@ function localRuntimeBundleEntry(value: unknown, field: string, index: number): 
       : {}),
     ...(entry.container ? { container: localRuntimeContainerArtifact(entry.container, field, index) } : {}),
   };
+}
+
+function localRuntimeExecutionNodeIds(value: unknown, field: string, index: number): readonly string[] {
+  if (!Array.isArray(value) || value.some((nodeId) => typeof nodeId !== 'string' || !nodeId.trim())) {
+    throw new Error(`Compiler bundle entry spec.${field}[${index}].executionNodeIds must be an array of non-empty strings.`);
+  }
+  if (new Set(value).size !== value.length) {
+    throw new Error(`Compiler bundle entry spec.${field}[${index}].executionNodeIds repeats a semantic node identity.`);
+  }
+  return [...value].sort() as string[];
 }
 
 function localRuntimeFrameworkCredentialDependencies(

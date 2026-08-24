@@ -563,6 +563,7 @@ describe("AWS Alchemy target", () => {
       statements: [
         { effect: "Allow", actions: ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:ChangeMessageVisibility", "sqs:GetQueueAttributes"], resources: ["arn:aws:sqs:us-east-1:123456789012:demo-schedule-admission"] },
         { effect: "Allow", actions: ["scheduler:CreateSchedule", "scheduler:UpdateSchedule", "scheduler:DeleteSchedule", "scheduler:GetSchedule"], resources: ["arn:aws:scheduler:us-east-1:123456789012:schedule/demo-schedules/*"] },
+        { effect: "Allow", actions: ["iam:PassRole"], resources: ["output://scheduler.execution-role/roleArn"], conditions: { StringEquals: { "iam:PassedToService": ["scheduler.amazonaws.com"] } } },
       ],
     }, ["roleArn"]);
     const schedulerExecutionRole = planResource("scheduler.execution-role", "iam", "role", "demo-scheduler-execution", undefined, {
@@ -613,6 +614,7 @@ describe("AWS Alchemy target", () => {
     expect(serialized).toContain("APPLIK8S_AWS_SCHEDULE_QUEUE_URL");
     expect(serialized).toContain("sqs:ReceiveMessage");
     expect(serialized).toContain("scheduler:CreateSchedule");
+    expect(serialized).toContain('"iam:PassedToService":["scheduler.amazonaws.com"]');
     expect(serialized).not.toContain('"Action":["sqs:*"]');
   });
 
@@ -711,6 +713,7 @@ function fixturePlan(): ApplicationAwsDeploymentPlan {
     target: 'aws' as const,
     sourceGraphDigest: `sha256:${'c'.repeat(64)}` as const,
     executions: [],
+    workloads: [],
     diagnostics: [],
   };
   return normalizeApplicationAwsDeploymentPlan({

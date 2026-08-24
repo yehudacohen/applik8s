@@ -1034,11 +1034,15 @@ async function applicationArtifactRequirements(
         ...(operatorHost ? { baseArtifactId: operatorHost.id } : {}),
       },
       logicalReference: `${stringValue(image.repository, `${name} image repository`)}:${stringValue(image.tag, `${name} image tag`)}`,
+      ...artifactSemanticPlacement(graph, graph.nodes.find((node) =>
+        node.kind === "operator"
+        && (node.id === name || node.id.endsWith(`.${name}`) || kubernetesName(node.name) === name))?.id),
     });
   }
   for (const [collection, artifactClass] of [
     ["migrations", "migration"],
     ["processors", "processor"],
+    ["lakehousePublishers", "lakehouse-publisher"],
     ["workflows", "workflow"],
     ["reactive", "reactive"],
     ["mcp", "mcp"],
@@ -1060,6 +1064,11 @@ async function applicationArtifactRequirements(
         container.image,
         `${name} logical image`,
       );
+      const semanticNodeId = optionalString(entry.nodeId) ?? optionalString(entry.serverId);
+      const explicitExecutionNodeIds = optionalStringArray(
+        entry.executionNodeIds,
+        `${name} executionNodeIds`,
+      );
       artifacts.push({
         id: artifactId(artifactClass, name),
         artifactType:
@@ -1079,6 +1088,12 @@ async function applicationArtifactRequirements(
           command: jsonArray(container.command, `${name} command`),
         },
         logicalReference,
+        ...(explicitExecutionNodeIds
+          ? {
+              ...(semanticNodeId ? { semanticNodeId } : {}),
+              executionNodeIds: explicitExecutionNodeIds,
+            }
+          : artifactSemanticPlacement(graph, semanticNodeId, optionalString(entry.kind))),
       });
     }
   }
@@ -1107,6 +1122,7 @@ async function applicationArtifactRequirements(
       },
       logicalReference,
       semanticNodeId: "provider.application-host",
+      executionNodeIds: applicationHostExecutionNodeIds(graph),
     });
   }
   const ids = new Set<string>();
@@ -1117,6 +1133,42 @@ async function applicationArtifactRequirements(
     ids.add(artifact.id);
   }
   return artifacts.sort((left, right) => left.id.localeCompare(right.id));
+}
+
+function applicationHostExecutionNodeIds(graph: ApplicationGraph): readonly string[] {
+  const members = new Set<string>();
+  for (const node of graph.nodes) {
+    if (node.kind !== "gateway") continue;
+    members.add(node.id);
+    for (const query of node.queries) members.add(query.nodeId);
+    for (const subscription of node.subscriptions) members.add(subscription.nodeId);
+  }
+  return [...members].sort();
+}
+
+function artifactSemanticPlacement(
+  graph: ApplicationGraph,
+  semanticNodeId: string | undefined,
+  artifactKind?: string,
+): Pick<ApplicationArtifactRequirement, "semanticNodeId" | "executionNodeIds"> | Record<string, never> {
+  if (artifactKind === "scheduleControlWorker") {
+    const executionNodeIds = graph.nodes
+      .filter((node) => node.kind === "schedule")
+      .map(({ id }) => id)
+      .sort();
+    return executionNodeIds.length > 0 ? { executionNodeIds } : {};
+  }
+  if (!semanticNodeId) return {};
+  const node = graph.nodes.find(({ id }) => id === semanticNodeId);
+  if (!node) return { semanticNodeId, executionNodeIds: [semanticNodeId] };
+  const members = new Set<string>([semanticNodeId]);
+  if (node.kind === "processor" || node.kind === "workflowWorker") {
+    for (const handler of node.handlers) members.add(handler.nodeId);
+  } else if (node.kind === "gateway") {
+    for (const query of node.queries) members.add(query.nodeId);
+    for (const subscription of node.subscriptions) members.add(subscription.nodeId);
+  }
+  return { semanticNodeId, executionNodeIds: [...members].sort() };
 }
 
 function applicationRequiresCelldArtifact(graph: ApplicationGraph): boolean {
@@ -1317,6 +1369,18 @@ function stringValue(value: unknown, label: string): string {
 
 function optionalString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value : undefined;
+}
+
+function optionalStringArray(value: unknown, label: string): readonly string[] | undefined {
+  if (value === undefined) return undefined;
+  if (
+    !Array.isArray(value)
+    || value.some((entry) => typeof entry !== "string" || !entry.trim())
+    || new Set(value).size !== value.length
+  ) {
+    throw new Error(`${label} must contain unique non-empty strings.`);
+  }
+  return [...value].sort();
 }
 
 function digestValue(value: unknown, label: string): string {

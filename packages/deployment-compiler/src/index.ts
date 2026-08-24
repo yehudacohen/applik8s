@@ -6,6 +6,10 @@ export type { ApplicationLocalRuntimeArtifact, CompileLocalSupervisorPlanRequest
 export { applicationProviderGuaranteesForGraph, applicationScheduleProviderCompatibilityFindings, assertApplicationScheduleProviderCompatibility } from './provider-guarantees.js';
 export type { ApplicationProviderGuaranteeRegistryRequest, ApplicationScheduleProviderCompatibilityFinding } from './provider-guarantees.js';
 export { compileApplicationRuntimeAccessPlan } from './runtime-access-plan.js';
+export { validateKubernetesRuntimeAccessParity } from './kubernetes-runtime-access-parity.js';
+export type { KubernetesRuntimeAccessParityFinding } from './kubernetes-runtime-access-parity.js';
+export { validateAwsRuntimeAccessParity } from './aws-runtime-access-parity.js';
+export type { AwsRuntimeAccessParityFinding } from './aws-runtime-access-parity.js';
 export type {
   ApplicationRuntimeAccessExecutionPlan,
   ApplicationRuntimeAccessKubernetesBinding,

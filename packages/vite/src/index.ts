@@ -541,6 +541,7 @@ function isForbiddenBrowserModule(
 
 function isBrowserSafeCoreModule(moduleId: string): boolean {
   return /\/node_modules\/@applik8s\/core\/dist\/canonical-json\.js(?:[?#].*)?$/u.test(moduleId)
+    || /\/packages\/core\/dist\/canonical-json\.js(?:[?#].*)?$/u.test(moduleId)
     || /\/packages\/core\/src\/canonical-json\.ts(?:[?#].*)?$/u.test(moduleId);
 }
 

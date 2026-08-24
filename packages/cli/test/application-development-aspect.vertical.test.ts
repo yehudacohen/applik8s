@@ -158,6 +158,7 @@ function deploymentGraph(): ApplicationDeploymentGraph {
     target: 'kubernetes' as const,
     sourceGraphDigest: `sha256:${'b'.repeat(64)}` as const,
     executions: [],
+    workloads: [],
     diagnostics: [],
   };
   return {

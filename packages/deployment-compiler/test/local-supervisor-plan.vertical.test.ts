@@ -495,6 +495,9 @@ describe('local supervisor plan compiler', () => {
     expect(validateLocalSupervisorPlan(plan)).toEqual({ valid: true, diagnostics: [] });
     const host = plan.resources.find(({ id }) => id === 'process:server.web');
     expect(host?.kind).toBe('process');
+    expect(plan.diagnostics).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'AWS_RUNTIME_ACCESS_UNRESOLVED' }),
+    ]));
     const serialized = JSON.stringify(host);
     expect(serialized).toContain('APPLIK8S_OBJECT_STORAGE_BUCKET');
     expect(serialized).toContain('aws-output:provider.provider.documents:bucketName');

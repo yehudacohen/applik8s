@@ -80,6 +80,7 @@ describe('application deployment observation', () => {
       target: 'kubernetes' as const,
       sourceGraphDigest: `sha256:${'c'.repeat(64)}` as const,
       executions: [],
+      workloads: [],
       diagnostics: [],
     };
     const base: Omit<ApplicationKubernetesDirectDeploymentNode, 'lifecycle'> = {

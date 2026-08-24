@@ -145,8 +145,12 @@ export function deriveApplicationGraphFoundation(
       }
     }
     for (const secret of runtimeSecrets) {
-      const identity = applicationResourceIdentity(secret);
-      add(node, 'secret.read', identity, { kind: 'resource', resourceId: identity }, 'framework');
+      const identity = applicationResourceIdentity(secret.ref);
+      add(node, 'secret.read', identity, {
+        kind: 'resource',
+        resourceId: identity,
+        ...(secret.keys.length > 0 ? { keys: secret.keys } : {}),
+      }, 'framework');
     }
     for (const requirement of graph.providerRequirements.filter(({ consumer }) => consumer.nodeId === node.id)) {
       add(node, 'connection.use', requirement.interface, {
@@ -204,7 +208,7 @@ function callableProviderBindings(
 function providerRuntimeSecretRefs(
   node: ApplicationGraphNode,
   graph: ApplicationGraph,
-): readonly ApplicationResourceRef[] {
+): readonly { readonly ref: ApplicationResourceRef; readonly keys: readonly string[] }[] {
   const providerIds = new Set(callableProviderBindings(node).map(({ provider }) => provider.nodeId));
   if (providerIds.size === 0) return [];
   const requirementIds = new Set(graph.providerRequirements
@@ -217,11 +221,20 @@ function providerRuntimeSecretRefs(
   const refs = graph.providerBindings
     .filter(({ requirement }) => requirementIds.has(requirement))
     .flatMap(({ runtime }) => [
-      ...(runtime.secretRefs ?? []),
-      ...Object.values(runtime.secretEnv ?? {}).map(({ secret }) => secret),
+      ...(runtime.secretRefs ?? []).map((ref) => ({ ref, keys: [] as readonly string[] })),
+      ...Object.values(runtime.secretEnv ?? {}).map(({ secret: ref, key }) => ({ ref, keys: [key] })),
     ]);
-  const unique = new Map(refs.map((ref) => [applicationResourceIdentity(ref), ref]));
-  return [...unique.values()].sort((left, right) => applicationResourceIdentity(left).localeCompare(applicationResourceIdentity(right)));
+  const unique = new Map<string, { ref: ApplicationResourceRef; keys: Set<string>; whole: boolean }>();
+  for (const entry of refs) {
+    const identity = applicationResourceIdentity(entry.ref);
+    const current = unique.get(identity) ?? { ref: entry.ref, keys: new Set<string>(), whole: false };
+    if (entry.keys.length === 0) current.whole = true;
+    for (const key of entry.keys) current.keys.add(key);
+    unique.set(identity, current);
+  }
+  return [...unique.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([, entry]) => ({ ref: entry.ref, keys: entry.whole ? [] : [...entry.keys].sort() }));
 }
 
 function applicationResourceIdentity(ref: ApplicationResourceRef): string {
@@ -288,6 +301,24 @@ function addNodeSpecificRequirements(
   }
   if (node.kind === 'query') {
     for (const read of node.reads) add(node, 'model.read', read.model.nodeId, resourceScope(read.model));
+    if (node.kubernetes?.kind === 'kubernetes-list-watch') {
+      const apiGroup = apiGroupForVersion(node.kubernetes.resource.apiVersion);
+      const resource = node.kubernetes.resource.plural;
+      const scope = node.kubernetes.resource.scope;
+      for (const [operation, verb] of [
+        ['kubernetes.get', 'get'],
+        ['kubernetes.list', 'list'],
+        ['kubernetes.watch', 'watch'],
+      ] as const) {
+        add(node, operation, `kubernetes:${apiGroup}:${resource}`, {
+          kind: 'kubernetes',
+          apiGroup,
+          resource,
+          scope,
+          verbs: [verb],
+        });
+      }
+    }
     if (node.search) add(node, 'search.read', node.search.index.nodeId, resourceScope(node.search.index));
     return;
   }
@@ -306,7 +337,7 @@ function addNodeSpecificRequirements(
         node.cursorSecret.namespace ?? '',
         node.cursorSecret.name ?? '',
       ].join('/');
-      add(node, 'secret.read', secretId, { kind: 'resource', resourceId: secretId }, 'framework');
+      add(node, 'secret.read', secretId, { kind: 'resource', resourceId: secretId, keys: [node.cursorSecret.key] }, 'framework');
     }
     return;
   }
@@ -330,6 +361,10 @@ function addNodeSpecificRequirements(
       add(node, 'event.subscribe', 'EventLog', { kind: 'capability', capabilityId: 'EventLog' }, 'framework');
       add(node, 'event.publish', 'EventLog', { kind: 'capability', capabilityId: 'EventLog' }, 'framework');
     }
+    add(node, 'checkpoint.use', 'framework.processor-checkpoints', {
+      kind: 'resource',
+      resourceId: 'framework.processor-checkpoints',
+    }, 'framework');
     return;
   }
   if (node.kind === 'workflowWorker') {
@@ -350,6 +385,7 @@ function addNodeSpecificRequirements(
   }
   if (node.kind === 'schedule') {
     add(node, 'schedule.admit', node.scheduler.nodeId, resourceScope(node.scheduler), 'framework');
+    add(node, 'connection.use', node.state.nodeId, resourceScope(node.state), 'framework');
     add(node, 'telemetry.write', 'Telemetry', { kind: 'capability', capabilityId: 'Telemetry' }, 'framework');
     return;
   }
@@ -362,6 +398,10 @@ function addNodeSpecificRequirements(
       'framework',
     );
     add(node, 'object.write', node.dataset.nodeId, resourceScope(node.dataset), 'framework');
+    add(node, 'checkpoint.use', 'framework.processor-checkpoints', {
+      kind: 'resource',
+      resourceId: 'framework.processor-checkpoints',
+    }, 'framework');
     add(node, 'telemetry.write', 'Telemetry', { kind: 'capability', capabilityId: 'Telemetry' }, 'framework');
     return;
   }
@@ -388,7 +428,11 @@ function accessForEdge(
   const scope = { kind: 'resource' as const, resourceId: target.id };
   if (relationship === 'reads' || relationship === 'queries' || relationship === 'hydrates') {
     if (target.kind === 'objectStore') return { operation: 'object.read', capabilityId: target.id, scope };
-    if (target.kind === 'secret') return { operation: 'secret.read', capabilityId: target.id, scope };
+    if (target.kind === 'secret') return {
+      operation: 'secret.read',
+      capabilityId: target.id,
+      scope: { ...scope, keys: [target.key] },
+    };
     if (target.kind === 'index' || target.kind === 'projection') return { operation: 'search.read', capabilityId: target.id, scope };
     return { operation: 'model.read', capabilityId: target.id, scope };
   }
@@ -475,11 +519,13 @@ function kubernetesAccessForPermissionRule(
             ...(Array.isArray(rule.namespaces) ? { namespaces: [...rule.namespaces].sort() } : {}),
             ...(rule.resourceNames ? { resourceNames: [...rule.resourceNames].sort() } : {}),
           };
-      for (const operation of kubernetesOperationsForVerbs(rule.verbs, subresource)) {
+      for (const [operation, operationVerbs] of kubernetesOperationsForVerbs(rule.verbs, subresource)) {
         accesses.push({
           operation,
           capabilityId: `kubernetes:${apiGroup}:${resource}`,
-          scope,
+          scope: scope.kind === 'kubernetes'
+            ? { ...scope, verbs: operationVerbs }
+            : scope,
         });
       }
     }
@@ -490,23 +536,30 @@ function kubernetesAccessForPermissionRule(
 function kubernetesOperationsForVerbs(
   verbs: readonly string[],
   subresource: string | undefined,
-): readonly ApplicationRuntimeAccessOperation[] {
-  const operations = new Set<ApplicationRuntimeAccessOperation>();
+): readonly (readonly [ApplicationRuntimeAccessOperation, readonly string[]])[] {
+  const operations = new Map<ApplicationRuntimeAccessOperation, Set<string>>();
   for (const verb of verbs) {
-    if (verb === 'get') operations.add('kubernetes.get');
-    else if (verb === 'list') operations.add('kubernetes.list');
-    else if (verb === 'watch') operations.add('kubernetes.watch');
-    else if (verb === 'create') operations.add('kubernetes.create');
-    else if (verb === 'delete' || verb === 'deletecollection') operations.add('kubernetes.delete');
+    let operation: ApplicationRuntimeAccessOperation | undefined;
+    if (verb === 'get') operation = 'kubernetes.get';
+    else if (verb === 'list') operation = 'kubernetes.list';
+    else if (verb === 'watch') operation = 'kubernetes.watch';
+    else if (verb === 'create') operation = 'kubernetes.create';
+    else if (verb === 'delete' || verb === 'deletecollection') operation = 'kubernetes.delete';
     else if (verb === 'patch' || verb === 'update') {
-      operations.add(subresource === 'status'
+      operation = subresource === 'status'
         ? 'kubernetes.status'
         : subresource === 'finalizers'
           ? 'kubernetes.finalize'
-          : 'kubernetes.patch');
+          : 'kubernetes.patch';
     }
+    if (!operation) continue;
+    const values = operations.get(operation) ?? new Set<string>();
+    values.add(verb);
+    operations.set(operation, values);
   }
-  return [...operations].sort();
+  return [...operations.entries()]
+    .map(([operation, values]) => [operation, [...values].sort()] as const)
+    .sort(([left], [right]) => left.localeCompare(right));
 }
 
 function apiGroupForVersion(apiVersion: string): string {

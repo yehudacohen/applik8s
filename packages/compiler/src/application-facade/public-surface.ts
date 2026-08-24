@@ -73,6 +73,7 @@ export function applicationGraphWithEntrypointPublicSurface(
     graphWithPublishedHttp,
     exportedActorIds,
   );
+  const exportedModels = new Set(surface.modelNames);
   const gateways = graphWithPublishedActors.nodes.filter(
     (node): node is ApplicationGatewayNode => node.kind === 'gateway',
   );
@@ -107,7 +108,11 @@ export function applicationGraphWithEntrypointPublicSurface(
   );
   if (publicGateways.length > 0) {
     if (subscriptions.length === 0) {
-      return graphWithPublishedActors;
+      return applicationGraphWithNativeModelGatewayPermissions(
+        graphWithPublishedActors,
+        publicGateways,
+        exportedModels,
+      );
     }
     if (publicGateways.length !== 1) {
       throw new Error(
@@ -124,7 +129,7 @@ export function applicationGraphWithEntrypointPublicSurface(
       ...publicGateway,
       subscriptions: [...publicGateway.subscriptions, ...subscriptions],
     };
-    return normalizeApplicationGraph({
+    return applicationGraphWithNativeModelGatewayPermissions(normalizeApplicationGraph({
       ...graphWithPublishedActors,
       nodes: graphWithPublishedActors.nodes.map((node) =>
         node.id === publicGateway.id ? publishedGateway : node),
@@ -132,9 +137,8 @@ export function applicationGraphWithEntrypointPublicSurface(
         ...graphWithPublishedActors.edges,
         ...gatewayEdges(publicGateway.id, [], [], subscriptions),
       ],
-    });
+    }), [publishedGateway], exportedModels);
   }
-  const exportedModels = new Set(surface.modelNames);
   const nodes = new Map(graphWithPublishedActors.nodes.map((node) => [node.id, node]));
 
   for (const node of graphWithPublishedActors.nodes) {
@@ -211,12 +215,84 @@ export function applicationGraphWithEntrypointPublicSurface(
     commands,
     subscriptions,
   );
-  return normalizeApplicationGraph({
+  return applicationGraphWithNativeModelGatewayPermissions(normalizeApplicationGraph({
     ...graphWithPublishedActors,
     nodes: [...graphWithPublishedActors.nodes, gateway],
     edges: [
       ...graphWithPublishedActors.edges,
       ...gatewayEdges(gateway.id, queries, commands, subscriptions),
+    ],
+  }), [gateway], exportedModels);
+}
+
+/**
+ * Native CRD create routes execute in the public application host rather than
+ * through a separately generated command handler. Preserve that source-level
+ * fact in the canonical graph as an exact permission owned by the one public
+ * gateway, so target access planning never needs to reverse-engineer emitted
+ * RBAC. Multiple public gateways are deliberately rejected because assigning
+ * the native route to all of them would silently widen authority.
+ */
+function applicationGraphWithNativeModelGatewayPermissions(
+  graph: ApplicationGraph,
+  publicGateways: readonly ApplicationGatewayNode[],
+  exportedModels: ReadonlySet<string>,
+): ApplicationGraph {
+  const resources = graph.nodes.flatMap((node) => {
+    if (
+      node.kind !== 'crd'
+      || !node.create
+      || !exportedModels.has(node.name)
+      || !(node.common?.operations ?? []).some((operation) =>
+        operation.operation === 'create'
+        && operation.transport === 'command'
+        && operation.authorization !== 'undeclared')
+    ) return [];
+    const apiGroup = node.resource.apiVersion.includes('/')
+      ? node.resource.apiVersion.split('/')[0] ?? ''
+      : '';
+    return [{ apiGroup, plural: node.resource.plural, scope: node.resource.scope }];
+  });
+  if (resources.length === 0) return graph;
+  if (publicGateways.length !== 1) {
+    throw new Error(
+      `Application ${graph.metadata.name} exports native Kubernetes create operations but has ${publicGateways.length} public gateways; the write authority boundary is ambiguous.`,
+    );
+  }
+  const gateway = publicGateways[0];
+  if (!gateway) return graph;
+  const permissionId = `permission.${gateway.id}.native-model-operations`;
+  if (graph.nodes.some(({ id }) => id === permissionId)) return graph;
+  const rules = [...new Map(resources.map((resource) => [
+    `${resource.apiGroup}/${resource.plural}/${resource.scope}`,
+    {
+      apiGroups: [resource.apiGroup],
+      resources: [resource.plural],
+      verbs: ['create'],
+      scope: resource.scope,
+    },
+  ])).values()];
+  return normalizeApplicationGraph({
+    ...graph,
+    nodes: [
+      ...graph.nodes,
+      {
+        id: permissionId,
+        kind: 'permission',
+        name: `${gateway.name}-native-model-operations`,
+        stability: 'internal',
+        owner: { nodeId: gateway.id },
+        mode: 'inferred',
+        rules,
+      },
+    ],
+    edges: [
+      ...graph.edges,
+      {
+        from: { nodeId: permissionId },
+        to: { nodeId: gateway.id },
+        relationship: 'writes',
+      },
     ],
   });
 }

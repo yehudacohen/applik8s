@@ -18,7 +18,11 @@ import {
   applicationProviderSelectionDeploymentContributor,
   builtinApplicationDeploymentContributors,
 } from "./providers.js";
-import { compileApplicationRuntimeAccessPlan } from './runtime-access-plan.js';
+import {
+  type ApplicationRuntimeAccessWorkloadPlacement,
+  compileApplicationRuntimeAccessPlan,
+} from './runtime-access-plan.js';
+import { validateKubernetesRuntimeAccessParity } from './kubernetes-runtime-access-parity.js';
 import type {
   ApplicationArtifactRequirement,
   ApplicationDeploymentContribution,
@@ -107,6 +111,10 @@ export function compileApplicationDeploymentGraph(
       && !directlyConsumedArtifactIds.has(artifact.id),
   );
   const root = rootCompositionNode(request, rootArtifacts, fragments);
+  const generatedSecretRequirements = dedupeGeneratedSecrets([
+    ...applicationGraphGeneratedSecrets(request),
+    ...(request.generatedSecrets ?? []),
+  ]);
   const runtimeAccess = compileApplicationRuntimeAccessPlan({
     graph: request.graph,
     target: context.target,
@@ -116,7 +124,27 @@ export function compileApplicationDeploymentGraph(
     namespace: request.graph.metadata.namespace && typeof request.graph.metadata.namespace === 'string'
       ? request.graph.metadata.namespace
       : request.identity.instance,
+    credentialRequirements: generatedSecretRequirements.flatMap((secret) =>
+      runtimeCredentialConsumerNodeIds(request.graph, secret.consumers).map((consumerNodeId) => ({
+        consumerNodeId,
+        resourceId: `v1/Secret/${secret.namespace}/${secret.name}`,
+        keys: Object.keys(secret.values).sort(),
+      }))),
+    workloadPlacements: kubernetesRuntimeAccessWorkloadPlacements(request, artifactNodes),
   });
+  if (context.target === 'kubernetes' && request.materializedComposition) {
+    const parityFindings = validateKubernetesRuntimeAccessParity(
+      runtimeAccess,
+      request.materializedComposition.resources,
+    );
+    if (parityFindings.length > 0) {
+      throw new Error(
+        `Kubernetes runtime-access materialization does not match the canonical enforcement envelope:\n${parityFindings
+          .map((finding) => `- [${finding.code}] ${finding.message}`)
+          .join('\n')}`,
+      );
+    }
+  }
   const deploymentNodes = [
     ...artifactNodes,
     ...contributionNodes,
@@ -209,6 +237,73 @@ export function compileApplicationDeploymentGraph(
     contributorKeys: [...contributorKeys].sort(compareStrings),
     runtimeAccess,
   };
+}
+
+function kubernetesRuntimeAccessWorkloadPlacements(
+  request: CompileApplicationDeploymentGraphRequest,
+  artifacts: readonly ApplicationArtifactDeploymentNode[],
+): readonly ApplicationRuntimeAccessWorkloadPlacement[] {
+  if ((request.target ?? deploymentTargetFromConnection(request.identity.connection.provider)) !== 'kubernetes') return [];
+  const byImage = new Map<string, ApplicationArtifactDeploymentNode>();
+  for (const artifact of artifacts) {
+    const logicalReference = artifact.spec.sourceDescriptor.logicalReference;
+    if (typeof logicalReference === 'string' && logicalReference) byImage.set(logicalReference, artifact);
+  }
+  return (request.materializedComposition?.resources ?? []).flatMap((resourceRecord) => {
+    const resource = portableRecord(resourceRecord.template) ?? resourceRecord;
+    const kind = resource.kind;
+    if (kind !== 'Deployment' && kind !== 'Job' && kind !== 'CronJob') return [];
+    const workloadKind: 'Deployment' | 'Job' | 'CronJob' = kind;
+    const metadata = portableRecord(resource.metadata);
+    const name = typeof metadata?.name === 'string' ? metadata.name : undefined;
+    const namespace = typeof metadata?.namespace === 'string'
+      ? metadata.namespace
+      : request.graph.metadata.namespace && typeof request.graph.metadata.namespace === 'string'
+        ? request.graph.metadata.namespace
+        : request.identity.instance;
+    const template = kubernetesPodTemplate(resource, workloadKind);
+    if (!name || !template) return [];
+    const podSpec = portableRecord(template.spec);
+    const images = Array.isArray(podSpec?.containers)
+      ? podSpec.containers.flatMap((container) => {
+          const value = portableRecord(container)?.image;
+          return typeof value === 'string' ? [value] : [];
+        })
+      : [];
+    const matchedArtifacts = images.flatMap((image) => {
+      const artifact = byImage.get(image);
+      return artifact ? [artifact] : [];
+    });
+    const executionNodeIds = [...new Set(matchedArtifacts.flatMap((artifact) => artifact.spec.executionNodeIds ?? []))].sort();
+    if (executionNodeIds.length === 0) return [];
+    const apiVersion = typeof resource.apiVersion === 'string' ? resource.apiVersion : 'v1';
+    return [{
+      workloadIdentity: `${apiVersion}:${workloadKind}:${namespace}:${name}`,
+      artifactIds: [...new Set(matchedArtifacts.map(({ id }) => id))].sort(),
+      executionNodeIds,
+      kubernetes: {
+        resource: { apiVersion, kind: workloadKind, namespace, name },
+        serviceAccountName: typeof podSpec?.serviceAccountName === 'string' && podSpec.serviceAccountName
+          ? podSpec.serviceAccountName
+          : 'default',
+      },
+    }];
+  });
+}
+
+function kubernetesPodTemplate(
+  resource: Readonly<Record<string, unknown>>,
+  kind: 'Deployment' | 'Job' | 'CronJob',
+): Readonly<Record<string, unknown>> | undefined {
+  const spec = portableRecord(resource.spec);
+  if (kind === 'CronJob') return portableRecord(portableRecord(portableRecord(spec?.jobTemplate)?.spec)?.template);
+  return portableRecord(spec?.template);
+}
+
+function portableRecord(value: unknown): Readonly<Record<string, unknown>> | undefined {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Readonly<Record<string, unknown>>
+    : undefined;
 }
 
 function requiredSourceGraphDigest(value: string): `sha256:${string}` {
@@ -521,6 +616,33 @@ function applicationGraphGeneratedSecrets(
   return [...gatewaySecrets, ...contextSecrets];
 }
 
+function runtimeCredentialConsumerNodeIds(
+  graph: CompileApplicationDeploymentGraphRequest['graph'],
+  consumers: readonly string[],
+): readonly string[] {
+  const executionNodeIds = new Set<string>();
+  const nodesById = new Map(graph.nodes.map((node) => [node.id, node]));
+  for (const consumer of consumers) {
+    const direct = nodesById.get(consumer);
+    if (direct && direct.kind !== 'provider') {
+      executionNodeIds.add(direct.id);
+      continue;
+    }
+    const providers = direct
+      ? [direct]
+      : graph.nodes.filter((node): node is ApplicationProviderNode =>
+          node.kind === 'provider' && consumer.startsWith(`provider.${node.interface}.`));
+    for (const provider of providers) {
+      for (const edge of graph.edges) {
+        if (edge.relationship === 'provides' && edge.from.nodeId === provider.id && nodesById.has(edge.to.nodeId)) {
+          executionNodeIds.add(edge.to.nodeId);
+        }
+      }
+    }
+  }
+  return [...executionNodeIds].sort();
+}
+
 function dedupeGeneratedSecrets(
   requirements: readonly ApplicationGeneratedSecretRequirement[],
 ): readonly ApplicationGeneratedSecretRequirement[] {
@@ -747,6 +869,9 @@ function artifactNode(
     },
     spec: {
       artifactType: artifact.artifactType,
+      ...(artifact.executionNodeIds?.length
+        ? { executionNodeIds: [...artifact.executionNodeIds].sort(compareStrings) }
+        : {}),
       sourceDescriptor: {
         ...artifact.sourceDescriptor,
         name: artifact.name,

@@ -1441,7 +1441,14 @@ export const commandStack = platform.composition;
         expect.objectContaining({ kind: 'commandHandler', ordering: 'concurrent', missing: 'route', missingRoute: 'fallback-account', transaction: expect.objectContaining({ commands: [{ nodeId: 'command.account.reindex.v1' }] }), retention: { replayWindowSeconds: 604_800, auditWindowSeconds: 2_592_000, publishedOutboxWindowSeconds: 86_400, cleanupIntervalSeconds: 300, cleanupBatchSize: 1_000 } }),
         expect.objectContaining({ kind: 'processor', name: 'Account-commands', generatedResources: expect.arrayContaining([expect.objectContaining({ resource: expect.objectContaining({ kind: 'Consumer' }) }), expect.objectContaining({ role: 'policy', resource: expect.objectContaining({ kind: 'NetworkPolicy' }) })]) }),
       ]));
-      expect(successful.value.artifacts.manifest.spec.processors).toEqual([expect.objectContaining({ name: 'account-commands', digest: artifact?.digest, sizeBytes: artifact?.sizeBytes })]);
+      const processorNode = graph.nodes.find((node: { readonly kind: string }) => node.kind === 'processor');
+      const handlerNode = graph.nodes.find((node: { readonly kind: string }) => node.kind === 'commandHandler');
+      expect(successful.value.artifacts.manifest.spec.processors).toEqual([expect.objectContaining({
+        name: 'account-commands',
+        digest: artifact?.digest,
+        sizeBytes: artifact?.sizeBytes,
+        executionNodeIds: [handlerNode?.id, processorNode?.id].sort(),
+      })]);
       }
     } finally {
       await rm(dir, { recursive: true, force: true });

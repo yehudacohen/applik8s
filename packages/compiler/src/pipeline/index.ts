@@ -334,7 +334,7 @@ export async function compileTypeKroComposition(request: CompileTypeKroCompositi
   }
   const authoredApplicationGraph =
     applicationGraphForComposition(composition.value);
-  const applicationGraph = authoredApplicationGraph
+  const publicApplicationGraph = authoredApplicationGraph
     ? applicationGraphWithEntrypointPublicSurface(
         await applicationGraphWithInferredApplicationHost(
           authoredApplicationGraph,
@@ -363,6 +363,9 @@ export async function compileTypeKroComposition(request: CompileTypeKroCompositi
           ),
         },
       )
+    : undefined;
+  const applicationGraph = publicApplicationGraph
+    ? applicationGraphWithCompiledOperatorPermissions(publicApplicationGraph, operatorCompiles)
     : undefined;
   const applicationInstallation = applicationInstallationForComposition(composition.value);
   if (applicationGraph) {
@@ -394,6 +397,67 @@ export async function compileTypeKroComposition(request: CompileTypeKroCompositi
       diagnostics: operatorCompiles.flatMap((compiled) => compiled.diagnostics),
     },
   };
+}
+
+function applicationGraphWithCompiledOperatorPermissions(
+  graph: ApplicationGraph,
+  compiles: readonly CompileResult[],
+): ApplicationGraph {
+  const nodes = [...graph.nodes];
+  const edges = [...graph.edges];
+  for (const compiled of compiles) {
+    const operator = graph.nodes.find((node) =>
+      node.kind === 'operator'
+      && (node.name === compiled.manifest.metadata.name || node.id.endsWith(`.${compiled.manifest.metadata.name}`)));
+    if (!operator) continue;
+    const existingRules = graph.nodes.flatMap((node) =>
+      node.kind === 'permission' && node.owner.nodeId === operator.id
+        ? node.rules
+        : []);
+    const inferredRules = compiled.manifest.spec.permissions.flatMap((rule) => {
+      const coveredVerbs = new Set(existingRules
+        .filter((candidate) => permissionRuleIdentity(candidate) === permissionRuleIdentity(rule))
+        .flatMap(({ verbs }) => verbs));
+      const verbs = rule.verbs.filter((verb) => !coveredVerbs.has(verb)).sort();
+      return verbs.length > 0 ? [{
+        apiGroups: [...rule.apiGroups].sort(),
+        resources: [...rule.resources].sort(),
+        verbs,
+        ...(rule.resourceNames ? { resourceNames: [...rule.resourceNames].sort() } : {}),
+        ...(rule.scope ? { scope: rule.scope } : {}),
+        ...(rule.namespaces ? { namespaces: rule.namespaces === 'all' ? 'all' as const : [...rule.namespaces].sort() } : {}),
+      }] : [];
+    });
+    if (inferredRules.length === 0) continue;
+    const permissionId = `permission.${compiled.manifest.metadata.name}-compiler-inferred`;
+    nodes.push({
+      id: permissionId,
+      kind: 'permission',
+      name: `${compiled.manifest.metadata.name}-compiler-inferred`,
+      stability: 'experimental',
+      owner: { nodeId: operator.id },
+      mode: 'inferred',
+      rules: inferredRules,
+    });
+    edges.push({ from: { nodeId: permissionId }, to: { nodeId: operator.id }, relationship: 'writes' });
+  }
+  return { ...graph, nodes, edges };
+}
+
+function permissionRuleIdentity(rule: {
+  readonly apiGroups: readonly string[];
+  readonly resources: readonly string[];
+  readonly resourceNames?: readonly string[];
+  readonly scope?: string;
+  readonly namespaces?: readonly string[] | 'all';
+}): string {
+  return JSON.stringify({
+    apiGroups: [...rule.apiGroups].sort(),
+    resources: [...rule.resources].sort(),
+    ...(rule.resourceNames ? { resourceNames: [...rule.resourceNames].sort() } : {}),
+    ...(rule.scope ? { scope: rule.scope } : {}),
+    ...(rule.namespaces ? { namespaces: rule.namespaces === 'all' ? 'all' : [...rule.namespaces].sort() } : {}),
+  });
 }
 
 async function emitTypeKroCompositionArtifacts(request: EmitTypeKroCompositionArtifactsRequest): Promise<Result<TypeKroCompositionArtifacts>> {
@@ -592,13 +656,13 @@ async function emitTypeKroCompositionArtifacts(request: EmitTypeKroCompositionAr
           manifest: compiled.artifacts.manifestJsonPath,
           outDir: dirname(compiled.artifacts.manifestJsonPath),
         })),
-        ...(processorArtifacts.length > 0 ? { processors: processorArtifacts.map((artifact) => ({ name: artifact.name, nodeId: artifact.processorId, manifest: artifact.manifestPath, source: artifact.sourcePath, digest: artifact.digest, sizeBytes: artifact.sizeBytes, container: typeKroContainerArtifactReference(artifact.container), ...typeKroFrameworkCredentialReferences(artifact.frameworkCredentials) })) } : {}),
-        ...(lakehousePublisherArtifacts.length > 0 ? { lakehousePublishers: lakehousePublisherArtifacts.map((artifact) => ({ name: artifact.name, nodeId: artifact.publicationId, manifest: artifact.manifestPath, source: artifact.sourcePath, digest: artifact.digest, sizeBytes: artifact.sizeBytes, localSource: artifact.localSourcePath, localDigest: artifact.localDigest, localSizeBytes: artifact.localSizeBytes, container: typeKroContainerArtifactReference(artifact.container), ...typeKroFrameworkCredentialReferences(artifact.frameworkCredentials) })) } : {}),
-        ...(workflowArtifacts.length > 0 ? { workflows: workflowArtifacts.map((artifact) => ({ name: artifact.name, nodeId: artifact.workerId, manifest: artifact.manifestPath, source: artifact.sourcePath, digest: artifact.digest, sizeBytes: artifact.sizeBytes, container: typeKroContainerArtifactReference(artifact.container), ...(artifact.runtimeEndpoints.length ? { runtimeEndpoints: typeKroRuntimeEndpointReferences(artifact.runtimeEndpoints) } : {}), ...typeKroFrameworkCredentialReferences(artifact.frameworkCredentials) })) } : {}),
-        ...(reactiveArtifacts.length > 0 ? { reactive: reactiveArtifacts.map((artifact) => ({ name: artifact.name, nodeId: artifact.nodeId, kind: artifact.kind, manifest: artifact.manifestPath, source: artifact.sourcePath, digest: artifact.digest, sizeBytes: artifact.sizeBytes, container: typeKroContainerArtifactReference(artifact.container), ...typeKroFrameworkCredentialReferences(artifact.frameworkCredentials) })) } : {}),
-        ...(mcpArtifacts.length > 0 ? { mcp: mcpArtifacts.map((artifact) => ({ name: artifact.name, serverId: artifact.serverId, manifest: artifact.manifestPath, source: artifact.sourcePath, digest: artifact.digest, sizeBytes: artifact.sizeBytes, container: typeKroContainerArtifactReference(artifact.container), ...(artifact.runtimeEndpoints.length ? { runtimeEndpoints: typeKroRuntimeEndpointReferences(artifact.runtimeEndpoints) } : {}), ...typeKroFrameworkCredentialReferences(artifact.frameworkCredentials) })) } : {}),
-        ...(agentArtifacts.length > 0 ? { agents: agentArtifacts.map((artifact) => ({ name: artifact.name, nodeId: artifact.agentId, manifest: artifact.manifestPath, source: artifact.sourcePath, digest: artifact.digest, sizeBytes: artifact.sizeBytes, container: typeKroContainerArtifactReference(artifact.container), ...(artifact.runtimeEndpoints.length ? { runtimeEndpoints: typeKroRuntimeEndpointReferences(artifact.runtimeEndpoints) } : {}), ...typeKroFrameworkCredentialReferences(artifact.frameworkCredentials) })) } : {}),
-        ...(httpArtifacts.length > 0 ? { http: httpArtifacts.map((artifact) => ({ name: artifact.name, serverId: artifact.serverId, manifest: artifact.manifestPath, source: artifact.sourcePath, digest: artifact.digest, sizeBytes: artifact.sizeBytes, container: typeKroContainerArtifactReference(artifact.container), ...typeKroFrameworkCredentialReferences(artifact.frameworkCredentials) })) } : {}),
+        ...(processorArtifacts.length > 0 ? { processors: processorArtifacts.map((artifact) => ({ name: artifact.name, nodeId: artifact.processorId, ...typeKroExecutionNodeReferences(request.applicationGraph, artifact.processorId), manifest: artifact.manifestPath, source: artifact.sourcePath, digest: artifact.digest, sizeBytes: artifact.sizeBytes, container: typeKroContainerArtifactReference(artifact.container), ...typeKroFrameworkCredentialReferences(artifact.frameworkCredentials) })) } : {}),
+        ...(lakehousePublisherArtifacts.length > 0 ? { lakehousePublishers: lakehousePublisherArtifacts.map((artifact) => ({ name: artifact.name, nodeId: artifact.publicationId, ...typeKroExecutionNodeReferences(request.applicationGraph, artifact.publicationId), manifest: artifact.manifestPath, source: artifact.sourcePath, digest: artifact.digest, sizeBytes: artifact.sizeBytes, localSource: artifact.localSourcePath, localDigest: artifact.localDigest, localSizeBytes: artifact.localSizeBytes, container: typeKroContainerArtifactReference(artifact.container), ...typeKroFrameworkCredentialReferences(artifact.frameworkCredentials) })) } : {}),
+        ...(workflowArtifacts.length > 0 ? { workflows: workflowArtifacts.map((artifact) => ({ name: artifact.name, nodeId: artifact.workerId, ...typeKroExecutionNodeReferences(request.applicationGraph, artifact.workerId), manifest: artifact.manifestPath, source: artifact.sourcePath, digest: artifact.digest, sizeBytes: artifact.sizeBytes, container: typeKroContainerArtifactReference(artifact.container), ...(artifact.runtimeEndpoints.length ? { runtimeEndpoints: typeKroRuntimeEndpointReferences(artifact.runtimeEndpoints) } : {}), ...typeKroFrameworkCredentialReferences(artifact.frameworkCredentials) })) } : {}),
+        ...(reactiveArtifacts.length > 0 ? { reactive: reactiveArtifacts.map((artifact) => ({ name: artifact.name, nodeId: artifact.nodeId, kind: artifact.kind, ...typeKroExecutionNodeReferences(request.applicationGraph, artifact.nodeId, artifact.kind), manifest: artifact.manifestPath, source: artifact.sourcePath, digest: artifact.digest, sizeBytes: artifact.sizeBytes, container: typeKroContainerArtifactReference(artifact.container), ...typeKroFrameworkCredentialReferences(artifact.frameworkCredentials) })) } : {}),
+        ...(mcpArtifacts.length > 0 ? { mcp: mcpArtifacts.map((artifact) => ({ name: artifact.name, serverId: artifact.serverId, ...typeKroExecutionNodeReferences(request.applicationGraph, artifact.serverId), manifest: artifact.manifestPath, source: artifact.sourcePath, digest: artifact.digest, sizeBytes: artifact.sizeBytes, container: typeKroContainerArtifactReference(artifact.container), ...(artifact.runtimeEndpoints.length ? { runtimeEndpoints: typeKroRuntimeEndpointReferences(artifact.runtimeEndpoints) } : {}), ...typeKroFrameworkCredentialReferences(artifact.frameworkCredentials) })) } : {}),
+        ...(agentArtifacts.length > 0 ? { agents: agentArtifacts.map((artifact) => ({ name: artifact.name, nodeId: artifact.agentId, ...typeKroExecutionNodeReferences(request.applicationGraph, artifact.agentId), manifest: artifact.manifestPath, source: artifact.sourcePath, digest: artifact.digest, sizeBytes: artifact.sizeBytes, container: typeKroContainerArtifactReference(artifact.container), ...(artifact.runtimeEndpoints.length ? { runtimeEndpoints: typeKroRuntimeEndpointReferences(artifact.runtimeEndpoints) } : {}), ...typeKroFrameworkCredentialReferences(artifact.frameworkCredentials) })) } : {}),
+        ...(httpArtifacts.length > 0 ? { http: httpArtifacts.map((artifact) => ({ name: artifact.name, serverId: artifact.serverId, ...typeKroExecutionNodeReferences(request.applicationGraph, artifact.serverId), manifest: artifact.manifestPath, source: artifact.sourcePath, digest: artifact.digest, sizeBytes: artifact.sizeBytes, container: typeKroContainerArtifactReference(artifact.container), ...typeKroFrameworkCredentialReferences(artifact.frameworkCredentials) })) } : {}),
         ...(applicationHost ? {
           applicationHost: {
             nodeId: applicationHost.id,
@@ -1199,6 +1263,27 @@ function typeKroFrameworkCredentialReferences(
   return credentials.length > 0
     ? { frameworkCredentials: credentials.map(({ kind, environmentName }) => ({ kind, environmentName })) }
     : {};
+}
+function typeKroExecutionNodeReferences(
+  graph: ApplicationGraph | undefined,
+  nodeId: string,
+  artifactKind?: string,
+): { readonly executionNodeIds?: readonly string[] } {
+  if (!graph) return {};
+  if (artifactKind === 'scheduleControlWorker') {
+    const executionNodeIds = graph.nodes.filter(({ kind }) => kind === 'schedule').map(({ id }) => id).sort();
+    return executionNodeIds.length > 0 ? { executionNodeIds } : {};
+  }
+  const node = graph.nodes.find(({ id }) => id === nodeId);
+  if (!node) return {};
+  const executionNodeIds = new Set<string>([nodeId]);
+  if (node.kind === 'processor' || node.kind === 'workflowWorker') {
+    for (const handler of node.handlers) executionNodeIds.add(handler.nodeId);
+  } else if (node.kind === 'gateway') {
+    for (const query of node.queries) executionNodeIds.add(query.nodeId);
+    for (const subscription of node.subscriptions) executionNodeIds.add(subscription.nodeId);
+  }
+  return { executionNodeIds: [...executionNodeIds].sort() };
 }
 function error<T = never>(code: Diagnostic['code'], message: string): Result<T> {
   return { ok: false, error: { code, message, severity: 'error', context: {}, recovery: { summary: message } } };

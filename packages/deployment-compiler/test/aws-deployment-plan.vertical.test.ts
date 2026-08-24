@@ -34,11 +34,12 @@ describe('v0.8 AWS deployment planning', () => {
       expect.objectContaining({ id: 'scheduler.dead-letter', service: 'sqs', resourceType: 'queue' }),
       expect.objectContaining({ id: 'scheduler.execution-role', service: 'iam', resourceType: 'role' }),
       expect.objectContaining({ service: 'eventbridge-scheduler', resourceType: 'schedule' }),
-      expect.objectContaining({ service: 'iam', resourceType: 'role', semanticNodeId: 'operator.documents' }),
+      expect.objectContaining({ service: 'iam', resourceType: 'role' }),
       expect.objectContaining({ service: 'ecs', resourceType: 'fargate-service', semanticNodeId: 'server.web' }),
     ]));
 
-    const role = first.resources.find((resource) => resource.service === 'iam' && resource.semanticNodeId === 'operator.documents');
+    const host = first.resources.find(({ resourceType }) => resourceType === 'fargate-service');
+    const role = first.resources.find((resource) => resource.id === host?.configuration.runtimeRoleResourceId);
     expect(role?.configuration.statements).toEqual(expect.arrayContaining([
       expect.objectContaining({
         actions: ['s3:AbortMultipartUpload', 's3:PutObject'],
@@ -52,12 +53,15 @@ describe('v0.8 AWS deployment planning', () => {
     ]));
     const fixedSchedule = first.resources.find(({ service, resourceType }) => service === 'eventbridge-scheduler' && resourceType === 'schedule');
     expect(fixedSchedule?.configuration).toMatchObject({ maximumRetryAttempts: 2, maximumEventAgeSeconds: 3600 });
-    const host = first.resources.find(({ resourceType }) => resourceType === 'fargate-service');
     expect(host?.configuration).toMatchObject({ scheduleAccess: true, runtimeBindingEnvironmentNames: expect.arrayContaining(['APPLIK8S_SCHEDULE_DATABASE_URL']) });
     const hostRole = first.resources.find(({ id }) => id === host?.configuration.runtimeRoleResourceId);
     expect(hostRole?.configuration.statements).toEqual(expect.arrayContaining([
       expect.objectContaining({ actions: expect.arrayContaining(['sqs:ReceiveMessage']), resources: [expect.stringMatching(/:documents-production-schedule-admission$/u)] }),
-      expect.objectContaining({ actions: ['iam:PassRole'], resources: ['output://scheduler.execution-role/roleArn'] }),
+      expect.objectContaining({
+        actions: ['iam:PassRole'],
+        resources: ['output://scheduler.execution-role/roleArn'],
+        conditions: { StringEquals: { 'iam:PassedToService': ['scheduler.amazonaws.com'] } },
+      }),
     ]));
   });
 
@@ -266,7 +270,7 @@ describe('v0.8 AWS deployment planning', () => {
       container: expect.objectContaining({ contextPath: '.applik8s/compiled/processors/documents/container' }),
     })]);
     const worker = plan.resources.find(({ resourceType }) => resourceType === 'fargate-worker');
-    const role = plan.resources.find(({ service, resourceType, semanticNodeId }) => service === 'iam' && resourceType === 'role' && semanticNodeId === artifact.nodeId);
+    const role = plan.resources.find(({ id }) => id === worker?.configuration.runtimeRoleResourceId);
     expect(worker).toMatchObject({
       service: 'ecs',
       semanticNodeId: artifact.nodeId,
@@ -302,6 +306,7 @@ describe('v0.8 AWS deployment planning', () => {
     const graph = awsGraph();
     const artifact = {
       nodeId: 'server.web', name: 'typed-http', role: 'http' as const,
+      executionNodeIds: ['server.web', 'schedule.cleanup'],
       source: '/workspace/application/.applik8s/compiled/http/web/runtime.mjs',
       digest: `sha256:${'c'.repeat(64)}` as const,
       container: {
@@ -342,7 +347,7 @@ describe('v0.8 AWS deployment planning', () => {
     });
     const endpointEnvironmentName = applicationRuntimeEndpointEnvironmentName(receiver.id);
     const runtimeArtifacts = [
-      { nodeId: receiver.id, name: 'receiver', role: 'http' as const, source: '/workspace/receiver.mjs', digest: `sha256:${'a'.repeat(64)}` as const, container: container('receiver', 'b') },
+      { nodeId: receiver.id, name: 'receiver', role: 'http' as const, source: '/workspace/receiver.mjs', digest: `sha256:${'a'.repeat(64)}` as const, container: container('receiver', 'b'), executionNodeIds: [receiver.id, 'schedule.cleanup'] },
       {
         nodeId: callerNode.id, name: 'caller', role: 'http' as const, source: '/workspace/caller.mjs', digest: `sha256:${'c'.repeat(64)}` as const, container: container('caller', 'd'),
         runtimeEndpoints: [{ nodeId: receiver.id, environmentName: endpointEnvironmentName }],
@@ -427,7 +432,6 @@ function awsGraph(): ApplicationGraph {
         materialization: { mode: 'providerBacked', provider: { interface: 'TransactionalDatabase', nodeId: 'provider.TransactionalDatabase' }, backingResources: [], connection: {}, runtimeBoundary: { serializedCallbacks: 'generatedRuntimeClient', scriptExecution: 'scriptRuntimeClient' }, reconciliation: { ownership: 'application', schemaDrift: 'failClosed', deletionPolicy: 'retain' } },
         runtime: { name: 'Document', tableName: 'documents', provider: 'postgres', database: 'documents', clusterName: 'documents', secretName: 'documents-app', secretKey: 'uri', connectionEnvName: 'APPLIK8S_DATABASE_DOCUMENTS_URL', constraints: [], indexes: [], retention: { mode: 'retain' } },
       },
-      { id: 'operator.documents', kind: 'operator', name: 'documents', stability: 'stable', resources: [], watches: [], sourceLocation: { file: 'src/operator.ts', line: 1, column: 1 } },
       {
         id: 'objectStore.documents', kind: 'objectStore', name: 'documents', stability: 'stable',
         provider: { interface: 'ObjectStorage', nodeId: 'provider.ObjectStorage' }, objectMode: 'immutable', maxObjectBytes: 1024,
@@ -455,7 +459,7 @@ function awsGraph(): ApplicationGraph {
       },
     ],
     edges: [
-      { from: { nodeId: 'operator.documents' }, to: { nodeId: 'objectStore.documents' }, relationship: 'writes' },
+      { from: { nodeId: 'server.web' }, to: { nodeId: 'objectStore.documents' }, relationship: 'writes' },
       { from: { nodeId: 'server.web' }, to: { nodeId: 'provider.TransactionalDatabase' }, relationship: 'reads' },
     ],
     providerRequirements: [], providerBindings: [],

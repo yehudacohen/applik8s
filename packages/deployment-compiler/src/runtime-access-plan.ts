@@ -6,9 +6,12 @@ import {
   type ApplicationProviderNode,
   type ApplicationRuntimeAccessRequirement,
   applicationCanonicalIdentity,
+  applicationGraphNodeIdentity,
   applicationProviderIdentity,
+  applicationRuntimeAccessRequirement,
   canonicalJsonV1String,
   deriveApplicationGraphFoundation,
+  mergeApplicationRuntimeAccessRequirements,
   serializeApplicationGraph,
 } from '@applik8s/core';
 import {
@@ -19,6 +22,7 @@ import {
   type ApplicationRuntimeAccessPlan,
   type ApplicationRuntimeAccessPlanDiagnostic,
   type ApplicationRuntimeAccessRequirementLowering,
+  type ApplicationRuntimeAccessWorkloadPlan,
   applicationRuntimeAccessPlanDigest,
   sha256Hex,
 } from '@applik8s/deployment-contract';
@@ -31,7 +35,34 @@ export type {
   ApplicationRuntimeAccessPlan,
   ApplicationRuntimeAccessPlanDiagnostic,
   ApplicationRuntimeAccessRequirementLowering,
+  ApplicationRuntimeAccessWorkloadPlan,
 } from '@applik8s/deployment-contract';
+
+export interface ApplicationRuntimeAccessWorkloadPlacement {
+  readonly workloadIdentity: string;
+  readonly artifactIds: readonly string[];
+  readonly executionNodeIds: readonly string[];
+  readonly kubernetes?: {
+    readonly resource: {
+      readonly apiVersion: string;
+      readonly kind: 'Deployment' | 'Job' | 'CronJob';
+      readonly namespace: string;
+      readonly name: string;
+    };
+    readonly serviceAccountName: string;
+  };
+  readonly aws?: {
+    readonly resourceId: string;
+    readonly roleName: string;
+  };
+}
+
+/** Target-selected credential projection that becomes canonical semantic access before materialization. */
+export interface ApplicationRuntimeAccessCredentialRequirement {
+  readonly consumerNodeId: string;
+  readonly resourceId: string;
+  readonly keys: readonly string[];
+}
 
 /** Pure lowering from source-attributed semantic requirements to exact target grants. */
 export function compileApplicationRuntimeAccessPlan(options: {
@@ -52,11 +83,61 @@ export function compileApplicationRuntimeAccessPlan(options: {
   readonly targetResources?: Readonly<Record<string, Readonly<Record<string, unknown>>>>;
   /** Stronger target-live manifests may replace the compiler baseline. */
   readonly providerGuarantees?: readonly ApplicationProviderGuaranteeManifest[];
+  /** Compiler-proven placement of executable semantic nodes into target workloads. */
+  readonly workloadPlacements?: readonly ApplicationRuntimeAccessWorkloadPlacement[];
+  /**
+   * Exact execution-node subset owned by a composed physical subplan. This is
+   * intentionally narrower than a target compatibility filter: callers may use
+   * it only when another plan (for example the local supervisor around an
+   * AWS-local provider plane) owns the omitted execution boundaries.
+   */
+  readonly includedExecutionNodeIds?: readonly string[];
+  /** Provider/profile-selected credentials required by exact semantic consumers. */
+  readonly credentialRequirements?: readonly ApplicationRuntimeAccessCredentialRequirement[];
 }): ApplicationRuntimeAccessPlan {
   const foundation = deriveApplicationGraphFoundation(options.graph, options.workspaceRoot ? { workspaceRoot: options.workspaceRoot } : {});
+  const includedExecutionNodeIds = options.includedExecutionNodeIds
+    ? new Set(options.includedExecutionNodeIds)
+    : undefined;
+  const runtimeRequirements = mergeApplicationRuntimeAccessRequirements([
+    ...foundation.runtimeAccess.filter(({ consumer }) =>
+      !includedExecutionNodeIds || includedExecutionNodeIds.has(consumer.nodeId)),
+    ...(options.credentialRequirements ?? [])
+      .filter(({ consumerNodeId }) =>
+        !includedExecutionNodeIds || includedExecutionNodeIds.has(consumerNodeId))
+      .map((credential) => {
+        const consumerNode = options.graph.nodes.find(({ id }) => id === credential.consumerNodeId);
+        const nodeIdentity = consumerNode
+          ? applicationGraphNodeIdentity({
+              application: options.graph.metadata.name,
+              nodeKind: consumerNode.kind,
+              nodeId: consumerNode.id,
+            })
+          : undefined;
+        const executionIdentity = nodeIdentity
+          ? foundation.identities.find((identity) => identity.kind === 'execution-boundary' && identity.parentId === nodeIdentity.id)
+          : undefined;
+        const sourceRequirement = foundation.runtimeAccess.find(({ consumer }) => consumer.nodeId === credential.consumerNodeId);
+        if (!executionIdentity || !sourceRequirement) {
+          throw new Error(`Credential ${credential.resourceId} names non-executable consumer ${credential.consumerNodeId}.`);
+        }
+        return applicationRuntimeAccessRequirement({
+          consumer: { nodeId: credential.consumerNodeId, executionIdentity: executionIdentity.id },
+          target: {
+            capabilityId: 'Secret',
+            operation: 'secret.read',
+            scope: { kind: 'resource', resourceId: credential.resourceId, keys: [...credential.keys].sort() },
+          },
+          origin: 'provider-required',
+          provenance: sourceRequirement.provenance,
+          sensitivity: 'credential',
+          enforcement: 'required',
+        });
+      }),
+  ]);
   const diagnostics: ApplicationRuntimeAccessPlanDiagnostic[] = [];
   const byExecution = new Map<string, ApplicationRuntimeAccessRequirement[]>();
-  for (const requirement of foundation.runtimeAccess) {
+  for (const requirement of runtimeRequirements) {
     if (containsWildcard(requirement)) {
       diagnostics.push({ severity: 'error', code: 'RUNTIME_ACCESS_WILDCARD_FORBIDDEN', message: `Runtime-access requirement ${requirement.id} contains a wildcard scope.`, requirementId: requirement.id });
       continue;
@@ -65,7 +146,7 @@ export function compileApplicationRuntimeAccessPlan(options: {
     values.push(requirement);
     byExecution.set(requirement.consumer.executionIdentity, values);
   }
-  diagnostics.push(...explicitAccessDiagnostics(foundation.runtimeAccess));
+  diagnostics.push(...explicitAccessDiagnostics(runtimeRequirements));
   const providerGuarantees = options.providerGuarantees ?? applicationProviderGuaranteesForGraph({
     graph: options.graph,
     target: options.target,
@@ -80,26 +161,25 @@ export function compileApplicationRuntimeAccessPlan(options: {
       return entries;
     }) : [];
     const awsStatements = options.target === 'aws' || options.target === 'aws-local' ? requirements.flatMap((requirement) => {
-      const statement = awsStatement(requirement, options.graph, options.targetResources);
-      if (!statement && requiresAwsStatement(requirement, options.graph)) diagnostics.push({ severity: 'error', code: 'RUNTIME_ACCESS_TARGET_UNRESOLVED', message: `Runtime-access requirement ${requirement.id} cannot be lowered to an exact AWS policy resource.`, requirementId: requirement.id });
-      return statement ? [statement] : [];
+      const statements = awsStatementsForRequirement(requirement, options.graph, options.targetResources);
+      if (statements.length === 0 && requiresAwsStatement(requirement, options.graph, options.targetResources)) diagnostics.push({ severity: 'error', code: 'RUNTIME_ACCESS_TARGET_UNRESOLVED', message: `Runtime-access requirement ${requirement.id} cannot be lowered to an exact AWS policy resource.`, requirementId: requirement.id });
+      return statements;
     }) : [];
     const networkConnections = requirements
-      .filter(({ target }) => target.operation === 'network.connect' || target.operation === 'connection.use')
-      .map(({ target }) => target.capabilityId)
+      .flatMap((requirement) => runtimeNetworkCapability(requirement, options.graph, options.targetResources))
       .filter((value, index, values) => values.indexOf(value) === index)
       .sort();
-    const credentialResources = requirements
+    const credentialProjections = mergeCredentialProjections(requirements
       .filter(({ target }) => target.operation === 'secret.read')
-      .map(({ target }) => target.scope.kind === 'resource' ? target.scope.resourceId : target.capabilityId)
-      .filter((value, index, values) => values.indexOf(value) === index)
-      .sort();
+      .map(({ target }) => target.scope.kind === 'resource'
+        ? { resourceId: target.scope.resourceId, keys: target.scope.keys ?? [] }
+        : { resourceId: target.capabilityId, keys: [] }));
     const kubernetes = options.target === 'kubernetes'
       ? {
           serviceAccountName: collisionResistantKubernetesName(`${options.graph.metadata.name}-${nodeId}`, executionIdentity),
           bindings: mergeKubernetesBindings(kubernetesEntries),
           networkConnections,
-          credentialResources,
+          credentialProjections,
         }
       : undefined;
     const aws = options.target === 'aws' || options.target === 'aws-local'
@@ -113,9 +193,9 @@ export function compileApplicationRuntimeAccessPlan(options: {
       requirement,
       options.target,
       Boolean(kubernetesEntries.some(({ requirementId }) => requirementId === requirement.id)),
-      Boolean(awsStatement(requirement, options.graph, options.targetResources)),
+      awsStatementsForRequirement(requirement, options.graph, options.targetResources).length > 0,
       requiresKubernetesRule(requirement),
-      requiresAwsStatement(requirement, options.graph),
+      requiresAwsStatement(requirement, options.graph, options.targetResources),
       providerAccessGuarantee(requirement, options.graph, providerGuarantees),
     ));
     for (const lowering of lowerings) {
@@ -143,17 +223,130 @@ export function compileApplicationRuntimeAccessPlan(options: {
       ...policy,
     };
   });
+  const workloads = compileWorkloadPlans(options.workloadPlacements ?? [], executions, options.target);
   const sourceGraphDigest = options.sourceGraphDigest
     ?? (`sha256:${sha256Hex(serializeApplicationGraph(options.graph))}` as const);
-  const content = { application: options.graph.metadata.name, target: options.target, sourceGraphDigest, executions, diagnostics };
+  const content = { application: options.graph.metadata.name, target: options.target, sourceGraphDigest, executions, workloads, diagnostics };
   return { apiVersion: 'applik8s.runtimeAccessPlan/v1alpha1', ...content, digest: applicationRuntimeAccessPlanDigest({ apiVersion: 'applik8s.runtimeAccessPlan/v1alpha1', ...content }) };
 }
 
-function awsStatement(
+function compileWorkloadPlans(
+  placements: readonly ApplicationRuntimeAccessWorkloadPlacement[],
+  executions: readonly ApplicationRuntimeAccessExecutionPlan[],
+  target: ApplicationRuntimeAccessPlan['target'],
+): readonly ApplicationRuntimeAccessWorkloadPlan[] {
+  const executionsByNode = new Map<string, ApplicationRuntimeAccessExecutionPlan[]>();
+  for (const execution of executions) {
+    const values = executionsByNode.get(execution.nodeId) ?? [];
+    values.push(execution);
+    executionsByNode.set(execution.nodeId, values);
+  }
+  return placements.map((placement): ApplicationRuntimeAccessWorkloadPlan => {
+    const members = placement.executionNodeIds
+      .flatMap((nodeId) => executionsByNode.get(nodeId) ?? [])
+      .sort((left, right) => left.executionIdentity.localeCompare(right.executionIdentity));
+    const executionIdentities = [...new Set(members.map(({ executionIdentity }) => executionIdentity))].sort();
+    const requirementIds = [...new Set(members.flatMap(({ requirementIds }) => requirementIds))].sort();
+    const kubernetes = target === 'kubernetes' && placement.kubernetes
+      ? {
+          resource: placement.kubernetes.resource,
+          serviceAccountName: placement.kubernetes.serviceAccountName,
+          bindings: mergePlannedKubernetesBindings(members.flatMap((member) => member.kubernetes?.bindings ?? [])),
+          networkConnections: uniqueStrings(members.flatMap((member) => member.kubernetes?.networkConnections ?? [])),
+          credentialProjections: mergeCredentialProjections(members.flatMap((member) => member.kubernetes?.credentialProjections ?? [])),
+        }
+      : undefined;
+    const aws = (target === 'aws' || target === 'aws-local') && placement.aws
+      ? {
+          resourceId: placement.aws.resourceId,
+          roleName: placement.aws.roleName,
+          statements: mergeAwsStatements(members.flatMap((member) => member.aws?.statements ?? [])),
+          networkConnections: uniqueStrings(members.flatMap((member) => member.aws?.networkConnections ?? [])),
+        }
+      : undefined;
+    const policy = {
+      ...(kubernetes ? { kubernetes } : {}),
+      ...(aws ? { aws } : {}),
+    };
+    return {
+      workloadIdentity: placement.workloadIdentity,
+      artifactIds: uniqueStrings(placement.artifactIds),
+      executionIdentities,
+      requirementIds,
+      policyDigest: `sha256:${sha256Hex(canonicalJsonV1String(policy))}`,
+      ...(kubernetes ? { kubernetes } : {}),
+      ...(aws ? { aws } : {}),
+    };
+  }).sort((left, right) => left.workloadIdentity.localeCompare(right.workloadIdentity));
+}
+
+function mergePlannedKubernetesBindings(
+  bindings: readonly ApplicationRuntimeAccessKubernetesBinding[],
+): readonly ApplicationRuntimeAccessKubernetesBinding[] {
+  const values = new Map<string, {
+    readonly kind: ApplicationRuntimeAccessKubernetesBinding['kind'];
+    readonly namespace?: string;
+    readonly rules: Map<string, ApplicationRuntimeAccessKubernetesRule>;
+    readonly requirementIds: Set<string>;
+  }>();
+  for (const binding of bindings) {
+    const key = canonicalJsonV1String({ kind: binding.kind, ...(binding.namespace ? { namespace: binding.namespace } : {}) });
+    const current = values.get(key) ?? {
+      kind: binding.kind,
+      ...(binding.namespace ? { namespace: binding.namespace } : {}),
+      rules: new Map<string, ApplicationRuntimeAccessKubernetesRule>(),
+      requirementIds: new Set<string>(),
+    };
+    for (const rule of binding.rules) {
+      const ruleKey = canonicalJsonV1String({
+        apiGroups: rule.apiGroups,
+        resources: rule.resources,
+        resourceNames: rule.resourceNames ?? [],
+      });
+      const previous = current.rules.get(ruleKey);
+      current.rules.set(ruleKey, {
+        ...rule,
+        verbs: uniqueStrings([...(previous?.verbs ?? []), ...rule.verbs]),
+      });
+    }
+    for (const requirementId of binding.requirementIds) current.requirementIds.add(requirementId);
+    values.set(key, current);
+  }
+  return [...values.values()].map((binding) => ({
+    kind: binding.kind,
+    ...(binding.namespace ? { namespace: binding.namespace } : {}),
+    rules: [...binding.rules.values()].sort(compareCanonical),
+    requirementIds: [...binding.requirementIds].sort(),
+  })).sort(compareCanonical);
+}
+
+function uniqueStrings(values: readonly string[]): readonly string[] {
+  return [...new Set(values)].sort();
+}
+
+function mergeCredentialProjections(
+  projections: readonly { readonly resourceId: string; readonly keys: readonly string[] }[],
+): readonly { readonly resourceId: string; readonly keys: readonly string[] }[] {
+  const values = new Map<string, { readonly keys: Set<string>; whole: boolean }>();
+  for (const projection of projections) {
+    const current = values.get(projection.resourceId) ?? { keys: new Set<string>(), whole: false };
+    if (projection.keys.length === 0) current.whole = true;
+    for (const key of projection.keys) current.keys.add(key);
+    values.set(projection.resourceId, current);
+  }
+  return [...values.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([resourceId, value]) => ({
+      resourceId,
+      keys: value.whole ? [] : [...value.keys].sort(),
+    }));
+}
+
+function awsStatementsForRequirement(
   requirement: ApplicationRuntimeAccessRequirement,
   graph: ApplicationGraph,
   targetResources?: Readonly<Record<string, Readonly<Record<string, unknown>>>>,
-): ApplicationRuntimeAccessAwsStatement | undefined {
+): readonly ApplicationRuntimeAccessAwsStatement[] {
   const provider = providerForRequirement(requirement, graph);
   const scopedTarget = targetResources?.[requirement.target.capabilityId]
     ?? (requirement.target.scope.kind === 'resource' ? targetResources?.[requirement.target.scope.resourceId] : undefined);
@@ -167,7 +360,7 @@ function awsStatement(
     // authored prefix without teaching the application about AWS identity.
     const storage = { ...(objectValue(config?.objectStorage) ?? {}), ...(config ?? {}) };
     const bucket = stringValue(storage?.bucket);
-    if (!bucket) return undefined;
+    if (!bucket) return [];
     const prefix = requirement.target.scope.kind === 'prefix' ? requirement.target.scope.prefix.replace(/^\/+|\/+$/gu, '') : stringValue(storage?.prefix)?.replace(/^\/+|\/+$/gu, '');
     const bucketArn = `arn:aws:s3:::${bucket}`;
     const objectArn = `${bucketArn}/${prefix ? `${prefix}/` : ''}*`;
@@ -178,28 +371,85 @@ function awsStatement(
         : operation === 'object.delete'
           ? ['s3:DeleteObject']
           : ['s3:AbortMultipartUpload', 's3:PutObject'];
-    return {
+    return [{
       effect: 'Allow',
       actions,
       resources: operation === 'object.list' ? [bucketArn] : [objectArn],
       ...(operation === 'object.list' && prefix ? {
         conditions: { StringLike: { 's3:prefix': [`${prefix}/*`, prefix] } },
       } : {}),
-    };
+    }];
   }
   if ((operation === 'queue.consume' || operation === 'queue.publish') && provider?.interface === 'Queue') {
     const arn = exactArn(config, ['queueArn', 'arn']);
-    if (!arn) return undefined;
-    return { effect: 'Allow', actions: operation === 'queue.consume' ? ['sqs:ChangeMessageVisibility', 'sqs:DeleteMessage', 'sqs:GetQueueAttributes', 'sqs:ReceiveMessage'] : ['sqs:SendMessage'], resources: [arn] };
+    if (!arn) return [];
+    return [{ effect: 'Allow', actions: operation === 'queue.consume' ? ['sqs:ChangeMessageVisibility', 'sqs:DeleteMessage', 'sqs:GetQueueAttributes', 'sqs:ReceiveMessage'] : ['sqs:SendMessage'], resources: [arn] }];
   }
   if ((operation === 'event.publish' || operation === 'event.subscribe') && (provider?.interface === 'EventSource' || provider?.interface === 'EventLog')) {
     const arn = exactArn(config, ['streamArn', 'arn']);
-    if (!arn) return undefined;
-    return { effect: 'Allow', actions: operation === 'event.publish' ? ['kinesis:PutRecord', 'kinesis:PutRecords'] : ['kinesis:DescribeStreamSummary', 'kinesis:GetRecords', 'kinesis:GetShardIterator', 'kinesis:ListShards'], resources: [arn] };
+    if (!arn) return [];
+    return [{ effect: 'Allow', actions: operation === 'event.publish' ? ['kinesis:PutRecord', 'kinesis:PutRecords'] : ['kinesis:DescribeStreamSummary', 'kinesis:GetRecords', 'kinesis:GetShardIterator', 'kinesis:ListShards'], resources: [arn] }];
   }
   if (operation === 'secret.read') {
     const arn = exactArn(config, ['secretArn', 'arn']) ?? exactArn(graphNodeConfig(requirement, graph), ['secretArn', 'arn']);
-    return arn ? { effect: 'Allow', actions: ['secretsmanager:GetSecretValue'], resources: [arn] } : undefined;
+    return arn ? [{ effect: 'Allow', actions: ['secretsmanager:GetSecretValue'], resources: [arn] }] : [];
+  }
+  if (
+    (operation === 'model.read' || operation === 'model.write' || operation === 'model.delete' || operation === 'connection.use')
+    && (provider?.interface === 'TransactionalDatabase' || exactArn(config, ['secretArn']))
+  ) {
+    const arn = exactArn(config, ['secretArn']);
+    return arn ? [{ effect: 'Allow', actions: ['secretsmanager:GetSecretValue'], resources: [arn] }] : [];
+  }
+  if (operation === 'connection.use' && stringValue(config?.runtimeKind) === 'celld-actors') {
+    const stateBucketArn = exactArn(config, ['stateBucketArn']);
+    const authorizationSecretArn = exactArn(config, ['authorizationSecretArn']);
+    const connectionSigningSecretArn = exactArn(config, ['connectionSigningSecretArn']);
+    if (!stateBucketArn || !authorizationSecretArn || !connectionSigningSecretArn) return [];
+    return [
+      {
+        effect: 'Allow',
+        actions: ['s3:DeleteObject', 's3:GetBucketLocation', 's3:GetObject', 's3:ListBucket', 's3:PutObject'],
+        resources: [stateBucketArn, `${stateBucketArn}/*`],
+      },
+      {
+        effect: 'Allow',
+        actions: ['secretsmanager:GetSecretValue'],
+        resources: [authorizationSecretArn, connectionSigningSecretArn],
+      },
+    ];
+  }
+  if (operation === 'checkpoint.use') {
+    const tableArn = exactArn(config, ['tableArn']);
+    return tableArn ? [{
+      effect: 'Allow',
+      actions: ['dynamodb:GetItem', 'dynamodb:Query', 'dynamodb:UpdateItem'],
+      resources: [tableArn],
+    }] : [];
+  }
+  if (operation === 'schedule.admit') {
+    const queueArn = exactArn(config, ['queueArn']);
+    const scheduleArn = exactArn(config, ['scheduleArn']);
+    const executionRoleArn = exactArn(config, ['executionRoleArn']);
+    if (!queueArn || !scheduleArn || !executionRoleArn) return [];
+    return [
+      {
+        effect: 'Allow',
+        actions: ['sqs:ChangeMessageVisibility', 'sqs:DeleteMessage', 'sqs:GetQueueAttributes', 'sqs:ReceiveMessage'],
+        resources: [queueArn],
+      },
+      {
+        effect: 'Allow',
+        actions: ['scheduler:CreateSchedule', 'scheduler:DeleteSchedule', 'scheduler:GetSchedule', 'scheduler:UpdateSchedule'],
+        resources: [scheduleArn],
+      },
+      {
+        effect: 'Allow',
+        actions: ['iam:PassRole'],
+        resources: [executionRoleArn],
+        conditions: { StringEquals: { 'iam:PassedToService': ['scheduler.amazonaws.com'] } },
+      },
+    ];
   }
   const observability = operation === 'telemetry.write'
     ? graph.nodes.find((node): node is ApplicationProviderNode => node.kind === 'provider' && node.interface === 'Observability')
@@ -208,16 +458,39 @@ function awsStatement(
     const observabilityConfig = { ...(observability.config ?? {}), ...(targetResources?.[observability.id] ?? {}) };
     const logGroupArn = exactArn(observabilityConfig, ['logGroupArn']);
     const traceDestinationArn = exactArn(observabilityConfig, ['traceDestinationArn']);
-    if (!logGroupArn && !traceDestinationArn) return undefined;
-    return { effect: 'Allow', actions: [...(logGroupArn ? ['logs:CreateLogStream', 'logs:PutLogEvents'] : []), ...(traceDestinationArn ? ['xray:PutTelemetryRecords', 'xray:PutTraceSegments'] : [])].sort(), resources: [logGroupArn, traceDestinationArn].filter((value): value is string => Boolean(value)).sort() };
+    if (!logGroupArn && !traceDestinationArn) return [];
+    return [{ effect: 'Allow', actions: [...(logGroupArn ? ['logs:CreateLogStream', 'logs:PutLogEvents'] : []), ...(traceDestinationArn ? ['xray:PutTelemetryRecords', 'xray:PutTraceSegments'] : [])].sort(), resources: [logGroupArn, traceDestinationArn].filter((value): value is string => Boolean(value)).sort() }];
   }
-  return undefined;
+  return [];
+}
+
+function runtimeNetworkCapability(
+  requirement: ApplicationRuntimeAccessRequirement,
+  graph: ApplicationGraph,
+  targetResources?: Readonly<Record<string, Readonly<Record<string, unknown>>>>,
+): readonly string[] {
+  const provider = providerForRequirement(requirement, graph);
+  const target = targetResources?.[requirement.target.capabilityId]
+    ?? (provider ? targetResources?.[provider.id] : undefined);
+  const physical = stringValue(target?.networkResourceId);
+  if (target?.networkMode === 'embedded') return [];
+  if (requirement.target.operation === 'network.connect' || requirement.target.operation === 'connection.use') {
+    return [physical ?? requirement.target.capabilityId];
+  }
+  if (requirement.target.operation === 'model.read' || requirement.target.operation === 'model.write' || requirement.target.operation === 'model.delete') {
+    return provider?.interface === 'TransactionalDatabase' ? [physical ?? provider.id] : [];
+  }
+  return [];
 }
 
 function providerForRequirement(requirement: ApplicationRuntimeAccessRequirement, graph: ApplicationGraph): ApplicationProviderNode | undefined {
   const target = graph.nodes.find(({ id }) => id === requirement.target.capabilityId || id === resourceId(requirement));
   if (target?.kind === 'provider') return target;
-  const targetProvider = target && 'provider' in target ? target.provider : undefined;
+  const targetProvider = target && 'provider' in target
+    ? target.provider
+    : target?.kind === 'model'
+      ? target.database
+      : undefined;
   if (targetProvider && typeof targetProvider === 'object' && 'nodeId' in targetProvider) {
     const provider = graph.nodes.find(({ id }) => id === targetProvider.nodeId);
     return provider?.kind === 'provider' ? provider : undefined;
@@ -276,7 +549,11 @@ function exactArn(config: Readonly<Record<string, unknown>> | undefined, fields:
   return undefined;
 }
 
-function requiresAwsStatement(requirement: ApplicationRuntimeAccessRequirement, graph: ApplicationGraph): boolean {
+function requiresAwsStatement(
+  requirement: ApplicationRuntimeAccessRequirement,
+  graph: ApplicationGraph,
+  targetResources?: Readonly<Record<string, Readonly<Record<string, unknown>>>>,
+): boolean {
   if (requirement.target.operation === 'event.subscribe' || requirement.target.operation === 'event.publish') {
     // An event capability may be a database/outbox-backed application stream.
     // Only an explicitly bound EventLog maps to a target IAM data plane. An
@@ -285,7 +562,22 @@ function requiresAwsStatement(requirement: ApplicationRuntimeAccessRequirement, 
     return providerForRequirement(requirement, graph)?.interface === 'EventLog'
       || owningProviderRequirements(requirement, graph).some(({ interface: providerInterface }) => providerInterface === 'EventLog');
   }
-  return ['object.list', 'object.read', 'object.write', 'object.delete', 'queue.consume', 'queue.publish', 'secret.read'].includes(requirement.target.operation);
+  if (requirement.target.operation === 'connection.use') {
+    const provider = providerForRequirement(requirement, graph);
+    const config = targetResources?.[requirement.target.capabilityId]
+      ?? (provider ? targetResources?.[provider.id] : undefined);
+    return provider?.interface === 'TransactionalDatabase'
+      || config?.runtimeKind === 'celld-actors'
+      || Boolean(exactArn(config, ['secretArn', 'tableArn']));
+  }
+  if (requirement.target.operation === 'model.read' || requirement.target.operation === 'model.write' || requirement.target.operation === 'model.delete') {
+    return providerForRequirement(requirement, graph)?.interface === 'TransactionalDatabase';
+  }
+  return [
+    'object.list', 'object.read', 'object.write', 'object.delete',
+    'queue.consume', 'queue.publish', 'secret.read',
+    'checkpoint.use', 'schedule.admit',
+  ].includes(requirement.target.operation);
 }
 
 function owningProviderRequirements(
@@ -331,7 +623,7 @@ function kubernetesBindings(
     const rule = {
       apiGroups: [scope.apiGroup],
       resources: [scope.resource],
-      verbs: verbs(requirement.target.operation),
+      verbs: scope.verbs ?? verbs(requirement.target.operation),
       ...(scope.resourceNames ? { resourceNames: [...scope.resourceNames].sort() } : {}),
     };
     if (scope.scope === 'Cluster') return [{ kind: 'ClusterRole', rule, requirementId: requirement.id }];
@@ -344,31 +636,11 @@ function kubernetesBindings(
       ? [{ kind: 'ClusterRole', rule, requirementId: requirement.id }]
       : [{ kind: 'Role', namespace: defaultNamespace, rule, requirementId: requirement.id }];
   }
-  if (target?.kind === 'secret' && requirement.target.operation === 'secret.read') {
-    const resource = target.generatedResources.find(({ role }) => role === 'secret')?.resource;
-    const name = resource?.name ?? target.name;
-    const namespace = resource?.namespace ?? defaultNamespace;
-    return [{
-      kind: 'Role',
-      namespace,
-      requirementId: requirement.id,
-      rule: { apiGroups: [''], resources: ['secrets'], verbs: ['get'], resourceNames: [name] },
-    }];
-  }
-  const secret = secretIdentity(requirement);
-  if (secret && requirement.target.operation === 'secret.read') {
-    return [{
-      kind: 'Role',
-      namespace: secret.namespace ?? defaultNamespace,
-      requirementId: requirement.id,
-      rule: { apiGroups: [''], resources: ['secrets'], verbs: ['get'], resourceNames: [secret.name] },
-    }];
-  }
   return [];
 }
 
 function requiresKubernetesRule(requirement: ApplicationRuntimeAccessRequirement): boolean {
-  return requirement.target.operation.startsWith('kubernetes.') || requirement.target.operation === 'secret.read';
+  return requirement.target.operation.startsWith('kubernetes.');
 }
 
 function verbs(operation: ApplicationRuntimeAccessRequirement['target']['operation']): readonly string[] {

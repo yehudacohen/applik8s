@@ -12,7 +12,35 @@ export interface ApplicationRuntimeAccessPlan {
   readonly sourceGraphDigest: `sha256:${string}`;
   readonly digest: `sha256:${string}`;
   readonly executions: readonly ApplicationRuntimeAccessExecutionPlan[];
+  /** Physical placements, including every deliberate union of executions. */
+  readonly workloads: readonly ApplicationRuntimeAccessWorkloadPlan[];
   readonly diagnostics: readonly ApplicationRuntimeAccessPlanDiagnostic[];
+}
+
+export interface ApplicationRuntimeAccessWorkloadPlan {
+  readonly workloadIdentity: string;
+  readonly artifactIds: readonly string[];
+  readonly executionIdentities: readonly string[];
+  readonly requirementIds: readonly string[];
+  readonly policyDigest: `sha256:${string}`;
+  readonly kubernetes?: {
+    readonly resource: {
+      readonly apiVersion: string;
+      readonly kind: 'Deployment' | 'Job' | 'CronJob';
+      readonly namespace: string;
+      readonly name: string;
+    };
+    readonly serviceAccountName: string;
+    readonly bindings: readonly ApplicationRuntimeAccessKubernetesBinding[];
+    readonly networkConnections: readonly string[];
+    readonly credentialProjections: readonly ApplicationRuntimeAccessCredentialProjection[];
+  };
+  readonly aws?: {
+    readonly resourceId: string;
+    readonly roleName: string;
+    readonly statements: readonly ApplicationRuntimeAccessAwsStatement[];
+    readonly networkConnections: readonly string[];
+  };
 }
 
 export interface ApplicationRuntimeAccessExecutionPlan {
@@ -27,7 +55,7 @@ export interface ApplicationRuntimeAccessExecutionPlan {
     readonly serviceAccountName: string;
     readonly bindings: readonly ApplicationRuntimeAccessKubernetesBinding[];
     readonly networkConnections: readonly string[];
-    readonly credentialResources: readonly string[];
+    readonly credentialProjections: readonly ApplicationRuntimeAccessCredentialProjection[];
   };
   readonly aws?: {
     readonly roleName: string;
@@ -49,6 +77,12 @@ export interface ApplicationRuntimeAccessRequirementLowering {
     readonly disposition: 'guaranteed' | 'bounded' | 'unsupported' | 'external' | 'unresolved';
     readonly evidenceLevel: ApplicationProviderGuaranteeManifest['evidenceLevel'] | 'none';
   };
+}
+
+export interface ApplicationRuntimeAccessCredentialProjection {
+  readonly resourceId: string;
+  /** Empty means the complete Secret is projected; otherwise the exact keys. */
+  readonly keys: readonly string[];
 }
 
 export type ApplicationRuntimeAccessMechanism =
@@ -113,10 +147,12 @@ export function validateApplicationRuntimeAccessPlan(
   if (typeof value.sourceGraphDigest !== 'string' || !/^sha256:[a-f0-9]{64}$/u.test(value.sourceGraphDigest)) errors.push('sourceGraphDigest must be a lowercase sha256 identity');
   if (typeof value.digest !== 'string' || !/^sha256:[a-f0-9]{64}$/u.test(value.digest)) errors.push('digest must be a lowercase sha256 identity');
   if (!Array.isArray(value.executions)) errors.push('executions must be an array');
+  if (!Array.isArray(value.workloads)) errors.push('workloads must be an array');
   if (!Array.isArray(value.diagnostics)) errors.push('diagnostics must be an array');
   if (errors.length > 0) return errors;
   const plan = value as unknown as ApplicationRuntimeAccessPlan;
   const executionIds = new Set<string>();
+  const executionsById = new Map<string, ApplicationRuntimeAccessExecutionPlan>();
   const ownedRequirementIds = new Set<string>();
   for (const execution of plan.executions) {
     if (!record(execution)) {
@@ -125,6 +161,7 @@ export function validateApplicationRuntimeAccessPlan(
     }
     if (!execution.executionIdentity || executionIds.has(execution.executionIdentity)) errors.push(`execution identity ${execution.executionIdentity || '<empty>'} is empty or duplicated`);
     executionIds.add(execution.executionIdentity);
+    executionsById.set(execution.executionIdentity, execution);
     if (typeof execution.nodeId !== 'string' || !execution.nodeId.trim()) errors.push(`execution ${execution.executionIdentity} has no nodeId`);
     if (!/^sha256:[a-f0-9]{64}$/u.test(execution.policyDigest)) errors.push(`execution ${execution.executionIdentity} has an invalid policyDigest`);
     if (!Array.isArray(execution.requirementIds) || !Array.isArray(execution.requirements) || !Array.isArray(execution.lowerings)) {
@@ -164,6 +201,50 @@ export function validateApplicationRuntimeAccessPlan(
     };
     const expectedPolicyDigest = `sha256:${sha256Hex(canonicalJsonV1String(policy))}`;
     if (execution.policyDigest !== expectedPolicyDigest) errors.push(`execution ${execution.executionIdentity} policyDigest does not match its enforcement policy`);
+  }
+  const workloadIds = new Set<string>();
+  const placedExecutionIds = new Set<string>();
+  for (const workload of plan.workloads) {
+    if (!record(workload)) {
+      errors.push('workload entries must be objects');
+      continue;
+    }
+    if (typeof workload.workloadIdentity !== 'string' || !workload.workloadIdentity || workloadIds.has(workload.workloadIdentity)) {
+      errors.push(`workload identity ${String(workload.workloadIdentity || '<empty>')} is empty or duplicated`);
+      continue;
+    }
+    workloadIds.add(workload.workloadIdentity);
+    if (!Array.isArray(workload.artifactIds) || new Set(workload.artifactIds).size !== workload.artifactIds.length) errors.push(`workload ${workload.workloadIdentity} has malformed or duplicate artifact IDs`);
+    if (!Array.isArray(workload.executionIdentities) || new Set(workload.executionIdentities).size !== workload.executionIdentities.length) errors.push(`workload ${workload.workloadIdentity} has malformed or duplicate execution identities`);
+    if (!Array.isArray(workload.requirementIds) || new Set(workload.requirementIds).size !== workload.requirementIds.length) errors.push(`workload ${workload.workloadIdentity} has malformed or duplicate requirement IDs`);
+    const members = Array.isArray(workload.executionIdentities)
+      ? workload.executionIdentities.flatMap((identity) => {
+          const execution = executionsById.get(identity);
+          if (!execution) {
+            errors.push(`workload ${workload.workloadIdentity} references unknown execution ${identity}`);
+            return [];
+          }
+          placedExecutionIds.add(identity);
+          return [execution];
+        })
+      : [];
+    const expectedRequirementIds = [...new Set(members.flatMap(({ requirementIds }) => requirementIds))].sort();
+    if (canonicalJsonV1String([...(workload.requirementIds ?? [])].sort()) !== canonicalJsonV1String(expectedRequirementIds)) errors.push(`workload ${workload.workloadIdentity} requirementIds do not match its execution union`);
+    if (workload.kubernetes && plan.target !== 'kubernetes') errors.push(`workload ${workload.workloadIdentity} carries Kubernetes policy for ${plan.target}`);
+    if (workload.aws && plan.target !== 'aws' && plan.target !== 'aws-local') errors.push(`workload ${workload.workloadIdentity} carries AWS policy for ${plan.target}`);
+    if (plan.target === 'kubernetes' && !workload.kubernetes) errors.push(`workload ${workload.workloadIdentity} has no Kubernetes enforcement policy`);
+    if ((plan.target === 'aws' || plan.target === 'aws-local') && !workload.aws) errors.push(`workload ${workload.workloadIdentity} has no AWS enforcement policy`);
+    const policy = {
+      ...(workload.kubernetes ? { kubernetes: workload.kubernetes } : {}),
+      ...(workload.aws ? { aws: workload.aws } : {}),
+    };
+    const expectedPolicyDigest = `sha256:${sha256Hex(canonicalJsonV1String(policy))}`;
+    if (workload.policyDigest !== expectedPolicyDigest) errors.push(`workload ${workload.workloadIdentity} policyDigest does not match its enforcement union`);
+  }
+  if (options.requireResolved && (plan.target === 'kubernetes' || plan.target === 'aws' || plan.target === 'aws-local')) {
+    for (const execution of plan.executions) {
+      if (execution.requirementIds.length > 0 && !placedExecutionIds.has(execution.executionIdentity)) errors.push(`execution ${execution.executionIdentity} is not assigned to a physical workload`);
+    }
   }
   for (const diagnostic of plan.diagnostics) {
     if (!record(diagnostic) || (diagnostic.severity !== 'error' && diagnostic.severity !== 'warning')) {

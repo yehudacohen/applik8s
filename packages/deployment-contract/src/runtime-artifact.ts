@@ -39,6 +39,12 @@ export interface ApplicationRuntimeArtifact {
   readonly role: ApplicationRuntimeArtifactRole;
   readonly source: string;
   readonly digest: `sha256:${string}`;
+  /**
+   * Executable semantic nodes deliberately co-located in this artifact.
+   * Target compilers persist the resulting union on the physical workload;
+   * an omitted list is resolved from the canonical graph for legacy bundles.
+   */
+  readonly executionNodeIds?: readonly string[];
   readonly manifest?: string;
   readonly container?: ApplicationRuntimeContainerArtifact;
   /**
@@ -92,6 +98,10 @@ export function applicationFrameworkCredentialEnvironmentIsValid(
 export function validateApplicationRuntimeArtifact(artifact: ApplicationRuntimeArtifact): readonly string[] {
   const errors: string[] = [];
   if (!artifact.name.trim() || !artifact.nodeId.trim()) errors.push('name and nodeId must be non-empty');
+  if (artifact.executionNodeIds && (
+    artifact.executionNodeIds.some((nodeId) => !nodeId.trim())
+    || new Set(artifact.executionNodeIds).size !== artifact.executionNodeIds.length
+  )) errors.push('executionNodeIds must contain unique non-empty semantic node identities');
   if (!/^sha256:[a-f0-9]{64}$/u.test(artifact.digest)) errors.push('digest must be a lowercase sha256 identity');
   if (artifact.container) {
     if (!/^sha256:[a-f0-9]{64}$/u.test(artifact.container.sourceDigest)) errors.push('container.sourceDigest must be a lowercase sha256 identity');

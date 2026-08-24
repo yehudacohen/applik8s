@@ -303,7 +303,35 @@ describe("compiler deployment graph emission", () => {
     );
     temporaryDirectories.push(directory);
     const bundlePath = join(directory, "typekro-bundle.json");
-    await writeFile(bundlePath, JSON.stringify({ spec: {} }));
+    const syntheticContainer = (name: string, image: string) => ({
+      image,
+      contextPath: join(directory, name),
+      dockerfilePath: join(directory, name, "Dockerfile"),
+      baseImage: "node:22",
+      command: ["node", `/app/${name}.mjs`],
+      sourceDigest: artifactDigest,
+    });
+    await writeFile(bundlePath, JSON.stringify({ spec: {
+      http: [{
+        name: "billing",
+        serverId: "server.billing",
+        executionNodeIds: ["server.billing"],
+        digest: artifactDigest,
+        container: syntheticContainer("billing", "applik8s.local/billing:synthetic"),
+      }],
+      reactive: ([
+        ["deliver-billable-usage-create", "streamProcessor.deliver-billable-usage-create"],
+        ["deliver-requested-notification-create", "streamProcessor.deliver-requested-notification-create"],
+        ["unrelated", "streamProcessor.unrelated"],
+      ] as const).map(([name, nodeId]) => ({
+        name,
+        nodeId,
+        executionNodeIds: [nodeId],
+        kind: "streamProcessorWorker",
+        digest: artifactDigest,
+        container: syntheticContainer(name, `applik8s.local/${name}:synthetic`),
+      })),
+    } }));
     await writeFile(
       join(directory, "resources.json"),
       JSON.stringify([
@@ -351,24 +379,29 @@ describe("compiler deployment graph emission", () => {
                 "billing",
                 "typed-http",
                 "http",
+                "applik8s.local/billing:synthetic",
+                [{ name: "APPLIK8S_CONTEXT_SECRET", valueFrom: { secretKeyRef: { name: "notes-context", key: "key" } } }],
               ),
               generatedDeployment(
                 "usageProcessor",
                 "notes-deliver-billable-usage-create",
                 "stream-processor",
                 "runtime",
+                "applik8s.local/deliver-billable-usage-create:synthetic",
               ),
               generatedDeployment(
                 "notificationProcessor",
                 "notes-deliver-requested-notification-create",
                 "stream-processor",
                 "runtime",
+                "applik8s.local/deliver-requested-notification-create:synthetic",
               ),
               generatedDeployment(
                 "unrelatedProcessor",
                 "notes-unrelated",
                 "stream-processor",
                 "runtime",
+                "applik8s.local/unrelated:synthetic",
               ),
             ],
           },
@@ -447,10 +480,9 @@ describe("compiler deployment graph emission", () => {
           node.kind === "externalProvider"
           && node.spec.resourceType === "kubernetesGeneratedSecret",
       ),
-    // Inference, both Stripe credentials, the typed HTTP context key, and the
-    // actor-host authorization are generated-secret effects rather than
-    // portable values.
-    ).toHaveLength(6);
+    // Inference, payments, notifications, and typed HTTP context credentials
+    // are generated-secret effects rather than portable values.
+    ).toHaveLength(5);
     const host = emitted.graph.nodes
       .find((node) => node.id === "kubernetes.application");
     const materialized = host?.kind === "kubernetesComposition"
@@ -510,30 +542,7 @@ describe("compiler deployment graph emission", () => {
         expect.objectContaining({ name: "APPLIK8S_NOTIFICATION_SMTP_PASSWORD" }),
       ]));
     expect(deploymentEnvironment(resources, "notes-unrelated")).toEqual([]);
-    expect(deploymentEnvironment(resources, "notes-app")).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          name: "APPLIK8S_NOTIFICATION_DELIVERY_KIND",
-          value: "smtp",
-        }),
-        expect.objectContaining({
-          name: "APPLIK8S_NOTIFICATION_SMTP_USERNAME",
-          valueFrom: {
-            secretKeyRef: { name: "notes-notifications", key: "username" },
-          },
-        }),
-        expect.objectContaining({
-          name: "APPLIK8S_NOTIFICATION_SMTP_PASSWORD",
-          valueFrom: {
-            secretKeyRef: { name: "notes-notifications", key: "password" },
-          },
-        }),
-      ]),
-    );
-    expect(deploymentEnvironment(resources, "notes-app"))
-      .not.toEqual(expect.arrayContaining([
-        expect.objectContaining({ name: "APPLIK8S_PAYMENT_API_KEY" }),
-      ]));
+    expect(deploymentEnvironment(resources, "notes-app")).toEqual([]);
   });
 
   it("shadow-emits deterministic deployment data without preparing artifacts", async () => {
@@ -788,15 +797,6 @@ function paymentApplicationGraph(): ApplicationGraph {
         },
       },
       {
-        id: "provider.actor-runtime",
-        kind: "provider",
-        name: "ActorRuntime",
-        stability: "experimental",
-        interface: "ActorRuntime",
-        implementation: "deterministic-local-actors",
-        config: {},
-      },
-      {
         id: "provider.payment-provider.v1alpha1.primary",
         kind: "provider",
         name: "PaymentProvider",
@@ -846,41 +846,6 @@ function paymentApplicationGraph(): ApplicationGraph {
         name: "deliver-requested-notification-create",
         stability: "stable",
       },
-      {
-        id: "actor.workspace.v1",
-        kind: "actor",
-        name: "workspace.v1",
-        stability: "experimental",
-        definition: {
-          id: "workspace.v1",
-          key: { kind: "applicationSchema", source: "string", fingerprint: "key" },
-          state: { kind: "applicationSchema", source: "{ value: string }", fingerprint: "state" },
-          stateVersion: 1,
-          migrationDigest: "sha256:none",
-          migrations: [],
-          protocol: [],
-          requirements: {
-            durableState: true,
-            serializedTurns: true,
-            transactionalOutbox: true,
-            durableAlarms: false,
-            realtimeConnections: false,
-            connectionLeases: false,
-            realtimeMessages: false,
-            realtimeBroadcast: false,
-          },
-        },
-        runtime: {
-          interface: "ActorRuntime",
-          nodeId: "provider.actor-runtime",
-        },
-        handlers: [],
-        semantics: {
-          serialization: "fullTurnPerIdentity",
-          admission: "idempotentReceipt",
-          references: "inertAddress",
-        },
-      },
     ] as unknown as ApplicationGraph["nodes"],
     edges: [
       {
@@ -895,13 +860,6 @@ function paymentApplicationGraph(): ApplicationGraph {
         to: {
           nodeId: "streamProcessor.deliver-requested-notification-create",
         },
-        relationship: "provides",
-      },
-      {
-        from: {
-          nodeId: "provider.notification-delivery.v1alpha1.transactional",
-        },
-        to: { nodeId: "actor.workspace.v1" },
         relationship: "provides",
       },
       {
@@ -1006,6 +964,8 @@ function generatedDeployment(
   name: string,
   component: string,
   containerName: string,
+  image = "immutable",
+  environment: readonly Record<string, unknown>[] = [],
 ) {
   return {
     id,
@@ -1025,8 +985,8 @@ function generatedDeployment(
           spec: {
             containers: [{
               name: containerName,
-              image: "immutable",
-              env: [],
+              image,
+              env: environment,
             }],
           },
         },

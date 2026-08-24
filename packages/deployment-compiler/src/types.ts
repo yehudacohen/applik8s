@@ -94,6 +94,8 @@ export interface ApplicationArtifactRequirement {
   readonly sourceDigest: string;
   readonly sourceDescriptor: DeploymentJsonObject;
   readonly semanticNodeId?: string;
+  /** Semantic execution nodes whose code is placed in this artifact. */
+  readonly executionNodeIds?: readonly string[];
   readonly logicalReference?: string;
 }
 

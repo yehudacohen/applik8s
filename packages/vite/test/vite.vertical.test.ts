@@ -180,6 +180,16 @@ describe('framework-neutral Applik8s Vite integration', () => {
         fileName: 'assets/app.js',
         code: '',
         modules: {
+          [join(fixtureRoot, '../../../core/dist/canonical-json.js')]: {},
+        },
+      },
+    })).resolves.toBeUndefined();
+    await expect(plugin.generateBundle({}, {
+      'assets/app.js': {
+        type: 'chunk',
+        fileName: 'assets/app.js',
+        code: '',
+        modules: {
           [`${fixtureRoot}/node_modules/@applik8s/core/dist/index.js`]: {},
         },
       },

@@ -12,6 +12,7 @@ import {
   validateApplicationPlan,
 } from "@applik8s/core";
 import {
+  type DeploymentJsonObject,
   digestApplicationDeploymentGraph,
   validateApplicationDeploymentGraph,
 } from "@applik8s/deployment-contract";
@@ -173,7 +174,7 @@ describe("Application deployment compiler", () => {
   it("keeps generated Hatchet credentials out of the artifact surface", () => {
     const base = applicationGraph();
     const result = compileApplicationDeploymentGraph({
-      ...request(),
+      ...runtimeWorkloadRequest(request(), 'schedule-control', ['schedule.source.poll.v1']),
       graph: {
         ...base,
         nodes: [
@@ -311,7 +312,7 @@ describe("Application deployment compiler", () => {
   it("lowers a qualified Hatchet Scheduler to one owned shared-provider installation", () => {
     const base = applicationGraph();
     const result = compileApplicationDeploymentGraph({
-      ...request(),
+      ...runtimeWorkloadRequest(request(), 'schedule-control', ['schedule.source.poll.v1']),
       graph: {
         ...base,
         nodes: [
@@ -362,7 +363,7 @@ describe("Application deployment compiler", () => {
   it("reuses the shared Hatchet WorkflowEngine when a Scheduler has no private engine", () => {
     const base = applicationGraph();
     const result = compileApplicationDeploymentGraph({
-      ...request(),
+      ...runtimeWorkloadRequest(request(), 'schedule-control', ['schedule.source.poll.v1']),
       graph: {
         ...base,
         nodes: [
@@ -600,7 +601,15 @@ describe("Application deployment compiler", () => {
     } as unknown as ApplicationGraph;
 
     const result = compileApplicationDeploymentGraph({
-      ...request(),
+      ...runtimeWorkloadRequest(request(), 'guestbook-workflows', [
+        'workflow-worker.guestbook-workflows',
+        'task-handler.update-document',
+      ], [{
+        name: "APPLIK8S_APPLICATION_CONTEXT_KEY",
+        valueFrom: {
+          secretKeyRef: { name: "guestbook-context", key: "key" },
+        },
+      }]),
       graph,
     });
     const context = result.graph.nodes.find(
@@ -2635,6 +2644,43 @@ function request() {
         logicalReference: "applik8s/guestbook-web:source",
       },
     ],
+  };
+}
+
+function runtimeWorkloadRequest<T extends ReturnType<typeof request>>(
+  base: T,
+  name: string,
+  executionNodeIds: readonly string[],
+  env: readonly DeploymentJsonObject[] = [],
+) {
+  const image = `applik8s/${name}:source`;
+  return {
+    ...base,
+    artifacts: [
+      ...base.artifacts,
+      {
+        id: `artifact.${name}`,
+        artifactType: 'containerImage' as const,
+        name,
+        sourceDigest: sourceGraphDigest,
+        sourceDescriptor: { context: `./${name}` },
+        logicalReference: image,
+        executionNodeIds,
+      },
+    ],
+    materializedComposition: {
+      resources: [{
+        apiVersion: 'apps/v1',
+        kind: 'Deployment',
+        metadata: { name, namespace: 'guestbook' },
+        spec: {
+          template: {
+            spec: { containers: [{ name: 'runtime', image, env }] },
+          },
+        },
+      }],
+      status: {},
+    },
   };
 }
 
