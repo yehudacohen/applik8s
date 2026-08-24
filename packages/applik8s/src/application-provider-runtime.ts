@@ -7,6 +7,7 @@ import {
 export {
   bindApplicationCallableDependencies,
   bindApplicationProviderDependencies,
+  bindApplicationProviderOperation,
 } from './application-provider-dependencies.js';
 
 export class ApplicationProviderRuntimeSelectionError extends Error {

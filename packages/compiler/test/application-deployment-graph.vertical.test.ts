@@ -817,6 +817,7 @@ function paymentApplicationGraph(): ApplicationGraph {
         kind: "server",
         name: "billing",
         stability: "stable",
+        routes: [],
       },
       {
         id: "streamProcessor.deliver-billable-usage-create",

@@ -16,6 +16,7 @@ import type {
   SubscriptionChangePreview,
   SubscriptionChangeResult,
 } from '@applik8s/billing';
+import { bindApplicationPaymentProviderRuntime } from '@applik8s/billing/runtime-contract';
 
 export interface PaymentSecretReference {
   readonly name: string;
@@ -112,7 +113,7 @@ export const StripePayments = Object.freeze({
     const request = options.fetch ?? fetch;
     const clock = options.clock ?? (() => new Date());
     const tolerance = options.webhookToleranceSeconds ?? 300;
-    return Object.freeze({
+    const provider: ApplicationPaymentProvider = {
       provider: 'stripe',
       kind: 'stripe',
       mode: 'live',
@@ -379,7 +380,39 @@ export const StripePayments = Object.freeze({
         }
         return stripeEvent(decoded);
       },
-    });
+    };
+    if (options.fetch || options.clock) return Object.freeze(provider);
+    return Object.freeze(bindApplicationPaymentProviderRuntime(provider, {
+      env: {
+        APPLIK8S_PAYMENT_PROVIDER_KIND: 'stripe',
+        APPLIK8S_PAYMENT_ENDPOINT: endpoint,
+        APPLIK8S_PAYMENT_WEBHOOK_TOLERANCE_SECONDS: String(tolerance),
+      },
+      secretEnv: {
+        APPLIK8S_PAYMENT_API_KEY: {
+          secret: {
+            apiVersion: 'v1',
+            kind: 'Secret',
+            name: options.secrets.apiKey.name,
+            ...(options.secrets.apiKey.namespace
+              ? { namespace: options.secrets.apiKey.namespace }
+              : {}),
+          },
+          key: options.secrets.apiKey.key ?? 'apiKey',
+        },
+        APPLIK8S_PAYMENT_WEBHOOK_SECRET: {
+          secret: {
+            apiVersion: 'v1',
+            kind: 'Secret',
+            name: options.secrets.webhookSecret.name,
+            ...(options.secrets.webhookSecret.namespace
+              ? { namespace: options.secrets.webhookSecret.namespace }
+              : {}),
+          },
+          key: options.secrets.webhookSecret.key ?? 'webhookSecret',
+        },
+      },
+    }));
   },
 });
 

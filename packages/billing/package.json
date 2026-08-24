@@ -25,11 +25,30 @@
       "types": "./dist/schema.d.ts",
       "import": "./dist/schema.js",
       "default": "./dist/schema.js"
+    },
+    "./runtime": {
+      "types": "./dist/runtime.d.ts",
+      "import": "./dist/runtime.js",
+      "default": "./dist/runtime.js"
+    },
+    "./runtime-contract": {
+      "types": "./dist/runtime-contract.d.ts",
+      "import": "./dist/runtime-contract.js",
+      "default": "./dist/runtime-contract.js"
     }
   },
   "dependencies": {
     "@applik8s/applik8s": "0.8.0",
+    "@applik8s/core": "0.8.0",
     "arktype": "2.2.1",
     "drizzle-orm": "^0.45.1"
+  },
+  "peerDependencies": {
+    "@applik8s/billing-stripe": "0.8.0"
+  },
+  "peerDependenciesMeta": {
+    "@applik8s/billing-stripe": {
+      "optional": true
+    }
   }
 }

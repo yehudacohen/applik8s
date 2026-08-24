@@ -31,6 +31,8 @@
       "@applik8s/integrations": ["packages/integrations/src/index.ts"],
       "@applik8s/integrations/schema": ["packages/integrations/src/schema.ts"],
       "@applik8s/billing": ["packages/billing/src/index.ts"],
+      "@applik8s/billing/runtime": ["packages/billing/src/runtime.ts"],
+      "@applik8s/billing/runtime-contract": ["packages/billing/src/runtime-contract.ts"],
       "@applik8s/billing-stripe": ["packages/billing-stripe/src/index.ts"],
       "@applik8s/notifications": ["packages/notifications/src/index.ts"],
       "@applik8s/notifications/runtime": ["packages/notifications/src/runtime.ts"],

@@ -100,6 +100,7 @@ describe("provider-neutral application object stores", () => {
 				interface: "ObjectStorage",
 				nodeId: "provider.object-storage",
 			},
+			placement: "objectStore",
 		}]);
 	});
 

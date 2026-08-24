@@ -1147,9 +1147,12 @@ function normalizeApplicationProviderRuntimeBinding(
               `Application provider ${providerInterface} secret environment ${name} requires a non-empty Secret name or installation expression.`,
             );
           }
-          if (typeof binding.key !== 'string' || !binding.key.trim()) {
+          if (
+            (typeof binding.key !== 'string' || !binding.key.trim())
+            && !isApplicationRuntimeGraphValue(binding.key)
+          ) {
             throw new Error(
-              `Application provider ${providerInterface} secret environment ${name} requires a non-empty Secret key.`,
+              `Application provider ${providerInterface} secret environment ${name} requires a non-empty Secret key or installation expression.`,
             );
           }
           return [name, Object.freeze({

@@ -253,6 +253,7 @@ export function applicationProviderDependenciesFor(
 export interface ApplicationCallableProviderDependency {
   readonly identifier: string;
   readonly provider: ApplicationProviderRef;
+  readonly placement?: 'objectStore' | 'providerDependency';
   readonly operation?: ApplicationProviderOperationMetadata;
 }
 
@@ -277,6 +278,7 @@ export function applicationCallableProviderDependencies(
           interface: 'ObjectStorage',
           nodeId: applicationProviderGraphNodeId('ObjectStorage'),
         },
+        placement: 'objectStore',
       });
     }
     const dependencies = [
@@ -299,6 +301,7 @@ export function applicationCallableProviderDependencies(
           nodeId: applicationProviderGraphNodeId(tokenName, qualification),
           ...(qualification ? { qualification } : {}),
         },
+        ...(!operation ? { placement: 'providerDependency' as const } : {}),
         ...(operation ? { operation } : {}),
       });
     }
@@ -310,6 +313,7 @@ export function applicationCallableProviderDependencies(
           (candidate) =>
             candidate.identifier === dependency.identifier
             && candidate.provider.nodeId === dependency.provider.nodeId
+            && candidate.placement === dependency.placement
             && candidate.operation?.member === dependency.operation?.member
             && candidate.operation?.runtime?.module
               === dependency.operation?.runtime?.module

@@ -1616,9 +1616,9 @@ function applicationHttpRouteBindingPaths(
   return [
     ...route.operationBindings.map((binding) => binding.identifier),
     ...route.workflowBindings.map((binding) => binding.identifier),
-    ...(route.route.functionNative.providerBindings ?? []).map(
-      (binding) => binding.identifier,
-    ),
+    ...(route.route.functionNative.providerBindings ?? [])
+      .filter((binding) => binding.operation !== undefined)
+      .map((binding) => binding.identifier),
     ...(route.route.functionNative.transaction?.modelBindings ?? []).map(
       (binding) => binding.identifier,
     ),
@@ -1639,6 +1639,10 @@ function httpProviderRuntimeOperations(
 ): readonly HttpProviderRuntimeOperation[] {
   return (route.route.functionNative.providerBindings ?? []).flatMap((binding) => {
     if (!binding.operation) {
+      if (
+        binding.placement === 'objectStore'
+        && binding.provider.interface === 'ObjectStorage'
+      ) return [];
       throw new Error(
         `Typed HTTP route ${route.route.id} provider binding ${binding.identifier} has no callable operation metadata. Provider placement without an exact operation cannot hydrate a generated HTTP worker.`,
       );

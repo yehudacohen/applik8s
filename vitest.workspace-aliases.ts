@@ -61,6 +61,8 @@ export function workspaceAliases(): Record<string, string> {
     '@applik8s/knowledge': fileURLToPath(new URL('./packages/knowledge/src/index.ts', import.meta.url)),
     '@applik8s/integrations/schema': fileURLToPath(new URL('./packages/integrations/src/schema.ts', import.meta.url)),
     '@applik8s/integrations': fileURLToPath(new URL('./packages/integrations/src/index.ts', import.meta.url)),
+    '@applik8s/billing/runtime-contract': fileURLToPath(new URL('./packages/billing/src/runtime-contract.ts', import.meta.url)),
+    '@applik8s/billing/runtime': fileURLToPath(new URL('./packages/billing/src/runtime.ts', import.meta.url)),
     '@applik8s/billing': fileURLToPath(new URL('./packages/billing/src/index.ts', import.meta.url)),
     '@applik8s/billing-stripe': fileURLToPath(new URL('./packages/billing-stripe/src/index.ts', import.meta.url)),
     '@applik8s/notifications': fileURLToPath(new URL('./packages/notifications/src/index.ts', import.meta.url)),

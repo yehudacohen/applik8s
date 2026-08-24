@@ -9,8 +9,13 @@ import {
 import {
   bindApplicationCallableDependencies,
   bindApplicationProviderDependencies,
+  bindApplicationProviderOperation,
 } from '@applik8s/applik8s/internal/provider-runtime';
 import type { AnyPgTable } from 'drizzle-orm/pg-core';
+import {
+  applicationPaymentProviderRuntime,
+  bindApplicationPaymentProviderRuntime,
+} from './runtime-contract.js';
 import {
   applicationBillingCatalogEntitlements,
   applicationBillingCatalogPrices,
@@ -234,6 +239,88 @@ export const PaymentProvider =
       'provider credentials never enter browser contracts',
       'subscription facts remain provider-neutral',
     ],
+    runtime: {
+      operations: {
+        identity: {
+          module: '@applik8s/billing/runtime',
+          export: 'identifyPaymentProvider',
+          access: 'none',
+        },
+        startCheckout: {
+          module: '@applik8s/billing/runtime',
+          export: 'startPaymentCheckout',
+          access: {
+            kind: 'provider',
+            operations: ['secret.read', 'network.connect'],
+          },
+        },
+        openPortal: {
+          module: '@applik8s/billing/runtime',
+          export: 'openPaymentPortal',
+          access: {
+            kind: 'provider',
+            operations: ['secret.read', 'network.connect'],
+          },
+        },
+        previewSubscriptionChange: {
+          module: '@applik8s/billing/runtime',
+          export: 'previewPaymentSubscriptionChange',
+          access: {
+            kind: 'provider',
+            operations: ['secret.read', 'network.connect'],
+          },
+        },
+        changeSubscription: {
+          module: '@applik8s/billing/runtime',
+          export: 'changePaymentSubscription',
+          access: {
+            kind: 'provider',
+            operations: ['secret.read', 'network.connect'],
+          },
+        },
+        cancelSubscription: {
+          module: '@applik8s/billing/runtime',
+          export: 'cancelPaymentSubscription',
+          access: {
+            kind: 'provider',
+            operations: ['secret.read', 'network.connect'],
+          },
+        },
+        resumeSubscription: {
+          module: '@applik8s/billing/runtime',
+          export: 'resumePaymentSubscription',
+          access: {
+            kind: 'provider',
+            operations: ['secret.read', 'network.connect'],
+          },
+        },
+        reportUsage: {
+          module: '@applik8s/billing/runtime',
+          export: 'reportPaymentUsage',
+          access: {
+            kind: 'provider',
+            operations: ['secret.read', 'network.connect'],
+          },
+        },
+        verifyWebhook: {
+          module: '@applik8s/billing/runtime',
+          export: 'verifyPaymentWebhook',
+          access: {
+            kind: 'provider',
+            operations: ['secret.read'],
+          },
+        },
+      },
+      bind(implementation) {
+        const runtime = applicationPaymentProviderRuntime(implementation);
+        if (!runtime) {
+          throw new Error(
+            `Payment provider ${implementation.kind} has no portable managed-worker runtime binding.`,
+          );
+        }
+        return runtime;
+      },
+    },
     accepts(value): value is ApplicationPaymentProvider {
       return Boolean(
         value
@@ -260,7 +347,7 @@ export const LocalPayments = Object.freeze({
   ): ApplicationPaymentProvider {
     const origin = options.origin ?? 'http://127.0.0.1:3000';
     const clock = options.clock ?? (() => new Date());
-    return Object.freeze({
+    const provider: ApplicationPaymentProvider = {
       provider: 'local',
       kind: 'local-simulated',
       mode: 'simulated',
@@ -364,7 +451,14 @@ export const LocalPayments = Object.freeze({
           acceptedAt: clock().toISOString(),
         };
       },
-    });
+    };
+    if (options.clock) return Object.freeze(provider);
+    return Object.freeze(bindApplicationPaymentProviderRuntime(provider, {
+      env: {
+        APPLIK8S_PAYMENT_PROVIDER_KIND: 'local',
+        APPLIK8S_PAYMENT_ORIGIN: origin,
+      },
+    }));
   },
 });
 
@@ -375,6 +469,20 @@ function installBilling(
   const subscriptions = promotedBillingModel(applicationSubscriptions);
   const customers = promotedBillingModel(applicationBillingCustomers);
   const paymentEvents = promotedBillingModel(applicationPaymentEvents);
+  async function paymentProviderIdentity(): Promise<string> {
+    return payments.provider;
+  }
+  const identityRuntime = PaymentProvider.callableRuntime?.operations.identity;
+  if (!identityRuntime) {
+    throw new Error(
+      'PaymentProvider identity runtime operation is not registered.',
+    );
+  }
+  bindApplicationProviderDependencies(paymentProviderIdentity, [payments]);
+  bindApplicationProviderOperation(paymentProviderIdentity, {
+    member: 'identity',
+    runtime: identityRuntime,
+  });
 
   async function scopedBillingCustomer(
     principalScope: string,
@@ -470,9 +578,10 @@ function installBilling(
 
   async function startCheckout(input: BillingCheckoutInput) {
     const provider = payments;
+    const providerIdentity = await paymentProviderIdentity();
     const customer = await scopedBillingCustomer(
       input.principalScope,
-      provider.provider,
+      providerIdentity,
       false,
     );
     const checkout = await provider.startCheckout({
@@ -493,9 +602,10 @@ function installBilling(
 
   async function openBillingPortal(input: BillingPortalInput) {
     const provider = payments;
+    const providerIdentity = await paymentProviderIdentity();
     const customer = await scopedBillingCustomer(
       input.principalScope,
-      provider.provider,
+      providerIdentity,
       true,
     );
     return provider.openPortal({
@@ -508,9 +618,10 @@ function installBilling(
     input: BillingSubscriptionChangeInput,
   ) {
     const provider = payments;
+    const providerIdentity = await paymentProviderIdentity();
     const subscription = await scopedBillingSubscription(
       input.principalScope,
-      provider.provider,
+      providerIdentity,
     );
     return requireBillingProviderMethod(
       provider,
@@ -527,9 +638,10 @@ function installBilling(
 
   async function changeSubscription(input: BillingSubscriptionChangeInput) {
     const provider = payments;
+    const providerIdentity = await paymentProviderIdentity();
     const subscription = await scopedBillingSubscription(
       input.principalScope,
-      provider.provider,
+      providerIdentity,
     );
     return requireBillingProviderMethod(
       provider,
@@ -548,9 +660,10 @@ function installBilling(
     input: BillingSubscriptionCancellationInput,
   ) {
     const provider = payments;
+    const providerIdentity = await paymentProviderIdentity();
     const subscription = await scopedBillingSubscription(
       input.principalScope,
-      provider.provider,
+      providerIdentity,
     );
     return requireBillingProviderMethod(
       provider,
@@ -565,9 +678,10 @@ function installBilling(
     input: BillingSubscriptionResumeInput,
   ) {
     const provider = payments;
+    const providerIdentity = await paymentProviderIdentity();
     const subscription = await scopedBillingSubscription(
       input.principalScope,
-      provider.provider,
+      providerIdentity,
     );
     return requireBillingProviderMethod(
       provider,
@@ -580,9 +694,10 @@ function installBilling(
 
   async function reportUsage(input: BillingMeteredUsageInput) {
     const provider = payments;
+    const providerIdentity = await paymentProviderIdentity();
     const customer = await scopedBillingCustomer(
       input.principalScope,
-      provider.provider,
+      providerIdentity,
       true,
     );
     return requireBillingProviderMethod(
@@ -603,37 +718,57 @@ function installBilling(
 
   const maintainedDependencies = <TCallable extends CallableFunction>(
     callable: TCallable,
+    providerOperations: readonly (keyof ApplicationPaymentProvider)[],
     dependencies: readonly { readonly identifier: string; readonly value: unknown }[],
   ) => {
-    bindApplicationProviderDependencies(callable, [payments]);
     bindApplicationCallableDependencies(callable, [
-      { identifier: 'payments', value: payments },
+      ...providerOperations.map((operation) => ({
+        identifier: `payments.${String(operation)}`,
+        value: payments[operation],
+      })),
+      ...(providerOperations.includes('verifyWebhook')
+        ? []
+        : [{
+            identifier: 'paymentProviderIdentity',
+            value: paymentProviderIdentity,
+          }]),
       ...dependencies,
     ]);
   };
-  maintainedDependencies(startCheckout, [
+  maintainedDependencies(startCheckout, ['startCheckout'], [
     { identifier: 'BillingCustomer.find', value: customers.find },
     { identifier: 'BillingCustomer.get', value: customers.get },
     { identifier: 'BillingCustomer.create', value: customers.create },
   ]);
-  maintainedDependencies(openBillingPortal, [
+  maintainedDependencies(openBillingPortal, ['openPortal'], [
     { identifier: 'BillingCustomer.find', value: customers.find },
   ]);
-  for (const callable of [
+  maintainedDependencies(
     previewSubscriptionChange,
+    ['previewSubscriptionChange'],
+    [{ identifier: 'Subscription.find', value: subscriptions.find }],
+  );
+  maintainedDependencies(
     changeSubscription,
+    ['changeSubscription'],
+    [{ identifier: 'Subscription.find', value: subscriptions.find }],
+  );
+  maintainedDependencies(
     cancelSubscription,
+    ['cancelSubscription'],
+    [{ identifier: 'Subscription.find', value: subscriptions.find }],
+  );
+  maintainedDependencies(
     resumeSubscription,
-  ]) {
-    maintainedDependencies(callable, [
-      { identifier: 'Subscription.find', value: subscriptions.find },
-    ]);
-  }
-  maintainedDependencies(reportUsage, [
+    ['resumeSubscription'],
+    [{ identifier: 'Subscription.find', value: subscriptions.find }],
+  );
+  maintainedDependencies(reportUsage, ['reportUsage'], [
     { identifier: 'BillingCustomer.find', value: customers.find },
   ]);
   maintainedDependencies(
     verifyWebhook,
+    ['verifyWebhook'],
     [],
   );
 

@@ -215,6 +215,7 @@ export function expandApplicationCallbackDependencies(options: {
             (candidate) =>
               candidate.identifier === binding.identifier
               && candidate.provider.nodeId === binding.provider.nodeId
+              && candidate.placement === binding.placement
               && candidate.operation?.member === binding.operation?.member
               && candidate.operation?.runtime?.module
                 === binding.operation?.runtime?.module

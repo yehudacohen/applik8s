@@ -2169,7 +2169,13 @@ export interface ApplicationCallableProviderBinding {
   /** Authored lexical binding path. A one-segment path is an extracted function. */
   readonly identifier: string;
   readonly provider: ApplicationProviderRef;
-  /** Absent only for placement-only compatibility metadata. */
+  /**
+   * Explicit provenance for a non-callable placement dependency. Generated
+   * workers may omit only resource-backed placement bindings; an ordinary
+   * provider dependency without an exact operation remains invalid.
+   */
+  readonly placement?: 'objectStore' | 'providerDependency';
+  /** Absent only when `placement` records non-callable dependency provenance. */
   readonly operation?: {
     readonly member: string;
     readonly runtime?: ApplicationCallableProviderRuntimeOperation;

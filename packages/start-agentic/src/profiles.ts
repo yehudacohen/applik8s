@@ -15,11 +15,11 @@ import {
   Database,
   EventLog,
   IdentityProvider,
+  type KubernetesApplicationBuilder,
+  type KubernetesApplicationScope,
   Lakehouse,
   LakehouseDataset,
   LakehouseQuery,
-  type KubernetesApplicationBuilder,
-  type KubernetesApplicationScope,
   module,
   ObjectStorage,
   Observability,
@@ -29,26 +29,20 @@ import {
   trustedContext,
   WorkflowEngine,
 } from '@applik8s/applik8s';
-import type { JsonValue } from '@applik8s/core';
-import { type } from 'arktype';
 import {
   type ApplicationPaymentProvider,
-  type BillingUsageReportInput,
   LocalPayments,
-  type PaymentCheckoutInput,
-  type PaymentPortalInput,
   PaymentProvider,
-  type PaymentWebhookInput,
-  type SubscriptionCancellationInput,
-  type SubscriptionChangeInput,
 } from '@applik8s/billing';
 import { StripePayments } from '@applik8s/billing-stripe';
+import type { JsonValue } from '@applik8s/core';
 import {
   type ApplicationNotificationDeliveryProvider,
   LocalNotificationDelivery,
   NotificationDelivery,
 } from '@applik8s/notifications';
 import { SmtpNotificationDelivery } from '@applik8s/notifications-smtp';
+import { type } from 'arktype';
 
 export interface AgenticExternalDatabase {
   readonly clusterName: string;
@@ -1264,9 +1258,6 @@ function agenticStripePayments(
   spec: AgenticStripePayments,
   context: AgenticProfileContext,
 ): ApplicationPaymentProvider {
-  if (typeof spec.secretName !== 'string') {
-    return agenticRuntimeStripePayments(context.namespace);
-  }
   const namespace = context.namespace;
   return StripePayments.fromSecret({
     ...(spec.endpoint ? { endpoint: spec.endpoint } : {}),
@@ -1288,79 +1279,6 @@ function agenticStripePayments(
       // static-import-exception: the runtime boundary must remain out of application discovery.
       const runtime = await import('@applik8s/start-agentic/payments-runtime');
       return runtime.resolveAgenticPaymentSecret(reference);
-    },
-  });
-}
-
-function agenticRuntimeStripePayments(
-  namespace: string,
-): ApplicationPaymentProvider {
-  const runtime = async (): Promise<ApplicationPaymentProvider> => {
-    // Payment configuration is concrete only inside admitted server execution.
-    // static-import-exception: this server-only boundary must stay out of application discovery.
-    const module = await import('@applik8s/start-agentic/payments-runtime');
-    return module.loadAgenticRuntimeStripePayments(namespace);
-  };
-  return Object.freeze({
-    provider: 'stripe',
-    kind: 'stripe',
-    mode: 'live',
-    capabilities: {
-      checkout: true,
-      portal: true,
-      subscriptionChanges: true,
-      scheduledChanges: false,
-      meteredUsage: true,
-    },
-    async startCheckout(input: PaymentCheckoutInput) {
-      return (await runtime()).startCheckout(input);
-    },
-    async openPortal(input: PaymentPortalInput) {
-      return (await runtime()).openPortal(input);
-    },
-    async previewSubscriptionChange(input: SubscriptionChangeInput) {
-      const provider = await runtime();
-      if (!provider.previewSubscriptionChange) {
-        throw new Error('Stripe payment provider cannot preview subscription changes.');
-      }
-      return provider.previewSubscriptionChange(input);
-    },
-    async changeSubscription(input: SubscriptionChangeInput) {
-      const provider = await runtime();
-      if (!provider.changeSubscription) {
-        throw new Error('Stripe payment provider cannot change subscriptions.');
-      }
-      return provider.changeSubscription(input);
-    },
-    async cancelSubscription(input: SubscriptionCancellationInput) {
-      const provider = await runtime();
-      if (!provider.cancelSubscription) {
-        throw new Error('Stripe payment provider cannot cancel subscriptions.');
-      }
-      return provider.cancelSubscription(input);
-    },
-    async resumeSubscription(
-      input: Omit<SubscriptionCancellationInput, 'timing'>,
-    ) {
-      const provider = await runtime();
-      if (!provider.resumeSubscription) {
-        throw new Error('Stripe payment provider cannot resume subscriptions.');
-      }
-      return provider.resumeSubscription(input);
-    },
-    async reportUsage(input: BillingUsageReportInput) {
-      const provider = await runtime();
-      if (!provider.reportUsage) {
-        throw new Error('Stripe payment provider cannot report metered usage.');
-      }
-      return provider.reportUsage(input);
-    },
-    async verifyWebhook(input: PaymentWebhookInput) {
-      const provider = await runtime();
-      if (!provider.verifyWebhook) {
-        throw new Error('Stripe payment provider cannot verify webhooks.');
-      }
-      return provider.verifyWebhook(input);
     },
   });
 }
