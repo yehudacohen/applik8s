@@ -1,5 +1,5 @@
 // typecast-file-boundary: Literal graph fixtures exercise the public local-target compiler contract.
-import { validateApplicationPlan, type ApplicationGraph } from '@applik8s/core';
+import { type ApplicationGraph, validateApplicationPlan } from '@applik8s/core';
 import { applicationRuntimeEndpointEnvironmentName, serializeLocalSupervisorPlan, validateLocalSupervisorPlan } from '@applik8s/deployment-contract';
 import { describe, expect, it } from 'vitest';
 import { compileLocalApplicationPlan, compileLocalSupervisorPlan } from '../src/index.js';
@@ -70,6 +70,84 @@ describe('local supervisor plan compiler', () => {
       }),
     ]));
     expect(serializeLocalSupervisorPlan(plan)).not.toContain('HATCHET_CLIENT_TOKEN=');
+  });
+
+  it('places a qualified Hatchet Scheduler and canonical occurrence authority on the local ApplicationHost', () => {
+    const base = applicationGraph();
+    const schedulerId = 'provider.scheduler.v1alpha1.hosted';
+    const graph: ApplicationGraph = {
+      ...base,
+      nodes: [
+        ...base.nodes,
+        {
+          id: schedulerId,
+          kind: 'provider',
+          name: 'Scheduler',
+          stability: 'stable',
+          interface: 'Scheduler',
+          implementation: 'hatchet-scheduler',
+          config: {
+            qualification: { capability: 'Scheduler', name: 'hosted', compatibilityRevision: 'v1alpha1' },
+            scheduler: {
+              kind: 'hatchet-scheduler',
+              workflowEngine: { kind: 'hatchet', name: 'hosted-hatchet' },
+            },
+          },
+        },
+        {
+          id: 'schedule.cleanup',
+          kind: 'schedule',
+          name: 'cleanup',
+          stability: 'experimental',
+          definition: {
+            id: 'cleanup.v1',
+            configuration: 'fixed',
+            cron: '0 3 * * *',
+            timezone: 'UTC',
+            overlap: 'skip',
+            misfires: 'latest',
+            maximumLatenessSeconds: 300,
+            retry: { maxAttempts: 3, maximumAgeSeconds: 300 },
+            requirements: { configuration: 'fixed', cardinality: 'bounded', precision: 'minute' },
+          },
+          scheduler: { interface: 'Scheduler', nodeId: schedulerId },
+          state: { interface: 'TransactionalDatabase', nodeId: 'provider.database' },
+          handler: { source: 'async () => undefined' },
+          functionNative: true,
+        },
+      ],
+      edges: [
+        ...base.edges,
+        { from: { nodeId: schedulerId }, to: { nodeId: 'schedule.cleanup' }, relationship: 'provides' },
+        { from: { nodeId: 'provider.database' }, to: { nodeId: 'schedule.cleanup' }, relationship: 'provides' },
+      ],
+    };
+    const plan = compileLocalSupervisorPlan({
+      graph,
+      target: 'local',
+      profile: 'starter',
+      projectDigest: 'sha256:project',
+    });
+
+    expect(validateLocalSupervisorPlan(plan)).toEqual({ valid: true, diagnostics: [] });
+    expect(plan.resources).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: `provider:${schedulerId}`, image: 'ghcr.io/hatchet-dev/hatchet/hatchet-lite:v0.94.10' }),
+      expect.objectContaining({ id: `provider:${schedulerId}.database`, image: 'postgres:17-alpine' }),
+    ]));
+    const host = plan.resources.find(({ id }) => id === 'process:server.web');
+    expect(host).toMatchObject({
+      kind: 'process',
+      dependsOn: expect.arrayContaining([
+        `provider:${schedulerId}`,
+        `provider:${schedulerId}.database`,
+      ]),
+      environment: expect.arrayContaining([
+        expect.objectContaining({ name: 'APPLIK8S_SCHEDULE_DATABASE_URL' }),
+        expect.objectContaining({ name: expect.stringMatching(/^APPLIK8S_HATCHET_SCHEDULER_TOKEN_[A-F0-9]{12}$/u) }),
+        expect.objectContaining({ name: expect.stringMatching(/^APPLIK8S_HATCHET_SCHEDULER_HOST_[A-F0-9]{12}$/u) }),
+        expect.objectContaining({ name: expect.stringMatching(/^APPLIK8S_HATCHET_SCHEDULER_API_[A-F0-9]{12}$/u) }),
+      ]),
+    });
   });
 
   it('treats typed HTTP servers as runtime endpoints behind one managed application host', () => {

@@ -8,6 +8,7 @@ import {
   type ApplicationScheduleNode,
   applicationCanonicalIdentity,
   applicationProviderIdentity,
+  exactFiveFieldCronForInterval,
 } from '@applik8s/core';
 
 export interface ApplicationProviderGuaranteeRegistryRequest {
@@ -19,11 +20,13 @@ export interface ApplicationProviderGuaranteeRegistryRequest {
 export interface ApplicationScheduleProviderCompatibilityFinding {
   readonly code:
     | 'SCHEDULE_CARDINALITY_UNSUPPORTED'
+    | 'SCHEDULE_CADENCE_UNREPRESENTABLE'
     | 'SCHEDULE_LATENESS_UNSUPPORTED'
     | 'SCHEDULE_MISFIRE_UNSUPPORTED'
     | 'SCHEDULE_PRECISION_UNSUPPORTED'
     | 'SCHEDULE_PROVIDER_UNIMPLEMENTED'
-    | 'SCHEDULE_PROVIDER_UNRESOLVED';
+    | 'SCHEDULE_PROVIDER_UNRESOLVED'
+    | 'SCHEDULE_TIMEZONE_UNSUPPORTED';
   readonly scheduleId: string;
   readonly providerId: string;
   readonly implementation: string;
@@ -209,7 +212,7 @@ const localProviders: Readonly<Record<string, readonly string[]>> = {
   ObjectStorage: ['s3'],
   AnalyticalDatabase: ['clickhouse'],
   ApplicationHost: ['local-process'],
-  Scheduler: ['local-scheduler'],
+  Scheduler: ['local-scheduler', 'hatchet-scheduler'],
   Observability: ['local-otel', 'otlp'],
   LakehouseDataset: ['duckdb-dataset'],
   LakehouseQuery: ['duckdb-queries'],
@@ -309,7 +312,7 @@ function scheduleGuarantees(
     bounded('schedule-overlap', 'ordering-partitioning', 'Overlap is enforced by the framework occurrence authority.', findingCodes.has('SCHEDULE_PROVIDER_UNIMPLEMENTED')),
     bounded('schedule-misfire', 'replay-retention-acknowledgement-duplicates', 'Misfire and catch-up behavior matches the authored schedule policy.', findingCodes.has('SCHEDULE_MISFIRE_UNSUPPORTED')),
     bounded('schedule-lateness', 'limits', 'The provider preserves the authored maximum lateness window.', findingCodes.has('SCHEDULE_LATENESS_UNSUPPORTED')),
-    bounded('schedule-precision', 'limits', 'Cadence precision is preserved by the selected provider.', findingCodes.has('SCHEDULE_PRECISION_UNSUPPORTED')),
+    bounded('schedule-precision', 'limits', 'Cadence precision and timezone semantics are preserved by the selected provider.', findingCodes.has('SCHEDULE_PRECISION_UNSUPPORTED') || findingCodes.has('SCHEDULE_CADENCE_UNREPRESENTABLE') || findingCodes.has('SCHEDULE_TIMEZONE_UNSUPPORTED')),
     bounded('schedule-cardinality', 'limits', 'Configured schedule cardinality fits the selected provider topology.', findingCodes.has('SCHEDULE_CARDINALITY_UNSUPPORTED')),
     bounded('schedule-retry-dead-letter', 'replay-retention-acknowledgement-duplicates', 'Retries retain occurrence identity and terminal failures reach a declared dead-letter authority.'),
     bounded('schedule-lifecycle', 'lifecycle', 'Schedule create, update, pause, removal, and drift use one lifecycle owner.', findingCodes.has('SCHEDULE_PROVIDER_UNIMPLEMENTED')),
@@ -345,14 +348,14 @@ function scheduleProviderFindings(
       implementation,
       target,
     } as const;
-    if (implementation === 'hatchet-scheduler') {
+    if (implementation === 'hatchet-scheduler' && (target === 'aws' || target === 'aws-local')) {
       return [{
         ...details,
         code: 'SCHEDULE_PROVIDER_UNIMPLEMENTED' as const,
-        message: `Schedule ${schedule.definition.id} selects hatchet-scheduler, whose general function-native lowering is not implemented yet.`,
+        message: `Schedule ${schedule.definition.id} selects hatchet-scheduler, whose maintained provider projection is qualified only for local and Kubernetes targets.`,
       }];
     }
-    if (!['local-scheduler', 'eventbridge-scheduler', 'kubernetes-cronjob-scheduler'].includes(implementation)) {
+    if (!['local-scheduler', 'eventbridge-scheduler', 'kubernetes-cronjob-scheduler', 'hatchet-scheduler'].includes(implementation)) {
       return [{
         ...details,
         code: 'SCHEDULE_PROVIDER_UNIMPLEMENTED' as const,
@@ -360,6 +363,27 @@ function scheduleProviderFindings(
       }];
     }
     const findings: ApplicationScheduleProviderCompatibilityFinding[] = [];
+    if ((implementation === 'kubernetes-cronjob-scheduler' || implementation === 'hatchet-scheduler')
+      && schedule.definition.every) {
+      try {
+        exactFiveFieldCronForInterval(schedule.definition.every);
+      } catch {
+        findings.push({
+          ...details,
+          code: 'SCHEDULE_CADENCE_UNREPRESENTABLE',
+          message: `Schedule ${schedule.definition.id} uses fixed interval ${schedule.definition.every}, which ${implementation} cannot preserve with one five-field cron expression. Use an explicit calendar cron or select a fixed-interval provider.`,
+        });
+      }
+    }
+    if (implementation === 'hatchet-scheduler'
+      && schedule.definition.cron
+      && schedule.definition.timezone !== 'UTC') {
+      findings.push({
+        ...details,
+        code: 'SCHEDULE_TIMEZONE_UNSUPPORTED',
+        message: `Schedule ${schedule.definition.id} uses calendar timezone ${schedule.definition.timezone}, but the maintained Hatchet cron API accepts no timezone. Select UTC or a timezone-capable provider.`,
+      });
+    }
     if (implementation !== 'local-scheduler' && schedule.definition.requirements.precision === 'second') {
       findings.push({
         ...details,

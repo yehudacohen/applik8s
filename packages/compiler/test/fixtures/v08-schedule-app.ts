@@ -143,6 +143,7 @@ export const PollSource = SourcePolling.schedule(
   async ({ sourceBindingId }, context) => ({
     sourceBindingId,
     occurrenceId: context.occurrenceId,
+    acquisition: await acquire({ id: sourceBindingId }),
   }),
 );
 

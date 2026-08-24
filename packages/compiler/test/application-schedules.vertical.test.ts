@@ -47,6 +47,15 @@ describe('v0.8 function-native schedule discovery', () => {
           interface: 'Scheduler',
           nodeId: 'provider.scheduler.v1alpha1.source-polling',
         },
+        providerBindings: [
+          expect.objectContaining({
+            provider: expect.objectContaining({
+              interface: 'AcquisitionProvider',
+              nodeId: 'provider.acquisition-provider.v1alpha1.primary',
+            }),
+            operation: expect.objectContaining({ member: 'acquire' }),
+          }),
+        ],
       }),
 			expect.objectContaining({
 				id: 'schedule.source.default-poll.v1',
@@ -101,7 +110,11 @@ describe('v0.8 function-native schedule discovery', () => {
     expect(gateway?.files['gateway.generated.ts']).toContain('/__applik8s/v1/internal/schedules/occurrences');
     expect(gateway?.files['gateway.generated.ts']).toContain("requiredEnv('APPLIK8S_SCHEDULE_DATABASE_URL')");
     expect(gateway?.files['gateway.generated.ts']).toContain('evidence.cleanup.v1');
-    expect(gateway?.files['gateway.generated.ts']).not.toContain('source.poll.v1');
+    expect(gateway?.files['gateway.generated.ts']).toContain('source.poll.v1');
+    expect(gateway?.files['gateway.generated.ts']).toContain('createHatchetApplicationScheduleRuntime');
+    expect(gateway?.files['gateway.generated.ts']).toContain('provider.scheduler.v1alpha1.source-polling');
+    expect(gateway?.files['gateway.generated.ts']).toContain('hatchetScheduleRuntimes.get(schedulerNodeId)');
+    expect(gateway?.files['gateway.generated.ts']).toContain("schedulerNodeId === 'provider.scheduler'");
     const generatedSources = Object.values(gateway?.files ?? {}).join('\n');
     expect(generatedSources).toContain('overlapBy: callback_schedule_overlap_key_');
     expect(generatedSources).toContain('sourceBindingId');

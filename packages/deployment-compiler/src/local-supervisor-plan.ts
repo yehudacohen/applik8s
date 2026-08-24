@@ -1,13 +1,13 @@
 // typecast-file-boundary: Provider profile records are validated as bounded JSON before local target selection.
-import { applicationRuntimeEndpointEnvironmentName, sha256Hex } from '@applik8s/deployment-contract';
+
 import {
   type ApplicationGraph,
   type ApplicationGraphNode,
   type ApplicationPlan,
   type ApplicationProviderNode,
-  type JsonObject,
   applicationCanonicalIdentity,
   applicationTargetIdentity,
+  type JsonObject,
   sourceProvenance,
 } from '@applik8s/core';
 import type {
@@ -25,6 +25,7 @@ import type {
   LocalSupervisorResource,
   LocalSupervisorTarget,
 } from '@applik8s/deployment-contract';
+import { applicationRuntimeEndpointEnvironmentName, sha256Hex } from '@applik8s/deployment-contract';
 import { compileApplicationPlan } from './application-plan.js';
 import { compileApplicationAwsDeploymentPlan } from './aws-deployment-plan.js';
 import { applicationProviderGuaranteesForGraph, assertApplicationScheduleProviderCompatibility } from './provider-guarantees.js';
@@ -113,7 +114,12 @@ export function compileLocalSupervisorPlan(request: CompileLocalSupervisorPlanRe
     const provider = selectedProvider(source, request, diagnostics);
     if (!provider) continue;
     selectedProviders.push(provider);
-    const lowered = localProviderResource(provider, request.target, request.projectDirectory ?? '.');
+    const lowered = localProviderResource(
+      provider,
+      request.target,
+      request.projectDirectory ?? '.',
+      request.graph,
+    );
     if (lowered.diagnostic) diagnostics.push(lowered.diagnostic);
     const loweredResources = lowered.resources ?? (lowered.resource ? [lowered.resource] : []);
     if (loweredResources.length === 0) continue;
@@ -505,6 +511,7 @@ function localProviderResource(
   provider: ApplicationProviderNode,
   target: LocalSupervisorTarget,
   cwd: string,
+  graph: ApplicationGraph,
 ): { readonly resource?: LocalSupervisorResource; readonly resources?: readonly LocalSupervisorResource[]; readonly bindings: readonly LocalSupervisorBinding[]; readonly diagnostic?: LocalSupervisorDiagnostic } {
   const id = `provider:${provider.id}`;
   const common = {
@@ -571,6 +578,36 @@ function localProviderResource(
       resource: { ...common, kind: 'external', provider: 'otlp', responsibility: 'The caller owns availability, authentication, retention, and deletion of the OTLP endpoint.', health: { kind: 'external', timeoutMs: 30_000 } },
       bindings: [otlp],
     };
+  }
+  if (provider.interface === 'Scheduler' && provider.implementation === 'hatchet-scheduler') {
+    const scheduler = jsonObject(provider.config?.scheduler);
+    if (scheduler?.kind !== 'hatchet-scheduler') {
+      return {
+        bindings: [],
+        diagnostic: {
+          severity: 'error',
+          code: 'LOCAL_PROVIDER_UNRESOLVED',
+          message: `Scheduler provider ${provider.id} has no Hatchet scheduler configuration.`,
+          subjectId: provider.id,
+        },
+      };
+    }
+    const explicitWorkflowEngine = jsonObject(scheduler.workflowEngine);
+    const sharedWorkflowEngine = graph.nodes.find(
+      (node): node is ApplicationProviderNode =>
+        node.kind === 'provider'
+        && node.interface === 'WorkflowEngine'
+        && node.implementation === 'hatchet'
+        && !node.config?.qualification,
+    );
+    if (!explicitWorkflowEngine && sharedWorkflowEngine) return { bindings: [] };
+    return localProviderResource({
+      ...provider,
+      name: 'WorkflowEngine',
+      interface: 'WorkflowEngine',
+      implementation: 'hatchet',
+      config: { kind: 'hatchet', ...(explicitWorkflowEngine ?? {}) },
+    }, target, cwd, graph);
   }
   if (provider.interface === 'WorkflowEngine' && provider.implementation === 'hatchet') {
     const databaseId = `${id}.database`;
@@ -940,9 +977,25 @@ function localRuntimeEnvironment(
   if (primaryDatabase) {
     const model = postgresModels.find((candidate) => candidate.database.nodeId === primaryDatabase.id);
     const existing = model?.runtime?.connectionEnvName ? environment.find(({ name }) => name === model.runtime?.connectionEnvName) : undefined;
-    if (existing && 'template' in existing) {
-      add('DATABASE_URL', { template: existing.template });
-      add('APPLIK8S_SIGNAL_DATABASE_URL', { template: existing.template });
+    const password = `credential:${primaryDatabase.id}:password`;
+    const endpoint = `endpoint:${primaryDatabase.id}:postgres`;
+    const databaseTemplate = existing && 'template' in existing
+      ? existing.template
+      : bindingExists(password) && bindingExists(endpoint)
+        ? [
+            { kind: 'literal' as const, value: 'postgresql://applik8s:' },
+            { kind: 'binding' as const, binding: password },
+            { kind: 'literal' as const, value: '@' },
+            { kind: 'binding' as const, binding: endpoint, transform: 'authority' as const },
+            { kind: 'literal' as const, value: '/applik8s' },
+          ]
+        : undefined;
+    if (databaseTemplate) {
+      add('DATABASE_URL', { template: databaseTemplate });
+      add('APPLIK8S_SIGNAL_DATABASE_URL', { template: databaseTemplate });
+      if (providers.some(({ interface: providerInterface }) => providerInterface === 'Scheduler')) {
+        add('APPLIK8S_SCHEDULE_DATABASE_URL', { template: databaseTemplate });
+      }
     }
   }
   const processor = request.graph.nodes.find((node): node is Extract<ApplicationGraphNode, { kind: 'processor' }> => node.kind === 'processor');
@@ -961,6 +1014,28 @@ function localRuntimeEnvironment(
     add('HATCHET_CLIENT_HOST_PORT', { binding: `endpoint:${workflows.id}:grpc` });
     add('HATCHET_CLIENT_API_URL', { binding: `endpoint:${workflows.id}:api` });
     add('HATCHET_CLIENT_TLS_STRATEGY', { binding: 'literal:none' });
+  }
+  const qualifiedHatchetSchedulers = providers.filter((candidate) =>
+    candidate.interface === 'Scheduler'
+    && candidate.implementation === 'hatchet-scheduler');
+  for (const scheduler of qualifiedHatchetSchedulers) {
+    const schedulerConfig = jsonObject(scheduler.config?.scheduler) ?? {};
+    const explicitWorkflowEngine = jsonObject(schedulerConfig.workflowEngine);
+    const owner = !explicitWorkflowEngine && workflows ? workflows : scheduler;
+    if (!bindingExists(`workflow:${owner.id}:worker-token`)) continue;
+    const suffix = sha256Hex(scheduler.id).slice(0, 12).toUpperCase();
+    add(`APPLIK8S_HATCHET_SCHEDULER_TOKEN_${suffix}`, {
+      binding: `workflow:${owner.id}:worker-token`,
+    });
+    add(`APPLIK8S_HATCHET_SCHEDULER_HOST_${suffix}`, {
+      binding: `endpoint:${owner.id}:grpc`,
+    });
+    add(`APPLIK8S_HATCHET_SCHEDULER_API_${suffix}`, {
+      binding: `endpoint:${owner.id}:api`,
+    });
+    add(`APPLIK8S_HATCHET_SCHEDULER_TLS_${suffix}`, {
+      binding: 'literal:none',
+    });
   }
   const index = provider('IndexStore');
   if (index && bindingExists(`endpoint:${index.id}:valkey`)) {
@@ -1027,6 +1102,16 @@ function localProvidersForWorkload(
   if (!nodes.has(workloadNodeId)) return [];
   const closure = new Set<string>([workloadNodeId]);
   const queue = [workloadNodeId];
+  const workload = nodes.get(workloadNodeId);
+  const hostsApplicationSchedules = workload?.kind === 'server'
+    || (workload?.kind === 'provider' && workload.interface === 'ApplicationHost');
+  if (hostsApplicationSchedules) {
+    for (const node of graph.nodes) {
+      if (node.kind !== 'schedule' || closure.has(node.id)) continue;
+      closure.add(node.id);
+      queue.push(node.id);
+    }
+  }
   while (queue.length > 0) {
     const source = queue.shift()!;
     for (const edge of graph.edges) {

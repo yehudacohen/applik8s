@@ -5,9 +5,9 @@ import {
   type ApplicationDeploymentNode,
   type ApplicationExternalProviderDeploymentNode,
   type ApplicationKubernetesDirectDeploymentNode,
+  applicationDeploymentOutputReference,
   type DeploymentJsonObject,
   type DeploymentJsonValue,
-  applicationDeploymentOutputReference,
   digestApplicationDeploymentValue,
 } from "@applik8s/deployment-contract";
 import type {
@@ -690,6 +690,54 @@ function providerDirectContribution(
     provider.implementation === "hatchet"
   ) {
     return workflowDirectContribution(provider, context);
+  }
+  if (
+    provider.interface === "Scheduler"
+    && provider.implementation === "hatchet-scheduler"
+  ) {
+    const scheduler = nestedObject(provider.config, "scheduler");
+    if (scheduler?.kind !== "hatchet-scheduler") {
+      throw new Error(
+        `Scheduler provider ${provider.id} is classified as hatchet-scheduler but has no matching scheduler configuration.`,
+      );
+    }
+    const explicitWorkflowEngine = optionalObject(scheduler.workflowEngine);
+    const sharedWorkflowEngine = context.graph.nodes.find(
+      (node): node is ApplicationProviderNode =>
+        node.kind === "provider"
+        && node.interface === "WorkflowEngine"
+        && node.implementation === "hatchet"
+        && !node.config?.qualification,
+    );
+    if (!explicitWorkflowEngine && sharedWorkflowEngine) {
+      // The Scheduler consumes the already-owned shared Hatchet installation.
+      // A second semantic owner would emit colliding chart resources and make
+      // deletion of either provider destructive to the other.
+      return { nodes: [], edges: [] };
+    }
+    const workflowConfig = compactJson({
+      kind: "hatchet",
+      ...(explicitWorkflowEngine ?? {}),
+    });
+    if (sharedWorkflowEngine) {
+      const sharedNamespace = optionalString(sharedWorkflowEngine.config?.namespace)
+        ?? applicationNamespace(context);
+      const schedulerNamespace = optionalString(workflowConfig.namespace)
+        ?? applicationNamespace(context);
+      if (sharedNamespace === schedulerNamespace) {
+        throw new Error(
+          `Scheduler provider ${provider.id} declares a private Hatchet engine in ${schedulerNamespace}, where shared WorkflowEngine ${sharedWorkflowEngine.id} already owns Hatchet's fixed service identities. Omit scheduler.workflowEngine to share it or choose a separate namespace.`,
+        );
+      }
+    }
+    const syntheticWorkflowProvider: ApplicationProviderNode = {
+      ...provider,
+      name: "WorkflowEngine",
+      interface: "WorkflowEngine",
+      implementation: "hatchet",
+      config: workflowConfig,
+    };
+    return workflowDirectContribution(syntheticWorkflowProvider, context);
   }
   if (
     provider.interface === "Search" &&

@@ -297,6 +297,12 @@ describe('generated ApplicationHost', () => {
       nodes: [...base.nodes, {
         id: 'provider.scheduler', kind: 'provider', name: 'Scheduler', stability: 'stable', interface: 'Scheduler', implementation: 'target-selected', config: {},
       }, {
+        id: 'provider.scheduler.v1alpha1.hosted', kind: 'provider', name: 'Scheduler', stability: 'stable', interface: 'Scheduler', implementation: 'hatchet-scheduler',
+        config: {
+          qualification: { capability: 'Scheduler', name: 'hosted', compatibilityRevision: 'v1alpha1' },
+          scheduler: { kind: 'hatchet-scheduler', workflowEngine: { kind: 'hatchet', namespace: 'guestbook' } },
+        },
+      }, {
         id: 'provider.database', kind: 'provider', name: 'PrimaryDatabase', stability: 'stable', interface: 'TransactionalDatabase', implementation: 'postgres',
         config: { transactionalDatabase: { kind: 'postgres', clusterName: 'guestbook-db', namespace: 'guestbook' } },
       }, {
@@ -316,11 +322,15 @@ describe('generated ApplicationHost', () => {
       }, {
         id: 'schedule.cleanup.v1', kind: 'schedule', name: 'cleanup.v1', stability: 'stable', scheduler: { interface: 'Scheduler', nodeId: 'provider.scheduler' }, state: { interface: 'TransactionalDatabase', nodeId: 'provider.TransactionalDatabase' },
         providerBindings: [{ identifier: 'acquire', provider: { interface: 'AcquisitionProvider', nodeId: 'provider.acquisition-provider.v1alpha1.primary' }, operation: { member: 'acquire', runtime: { module: '@fixture/acquisition/runtime', export: 'acquireItem', access: { kind: 'provider', operations: ['connection.use', 'network.connect'] } } } }],
-        definition: { id: 'cleanup.v1', configuration: 'fixed', every: '15m', timezone: 'UTC', overlap: 'skip', misfires: 'latest', maximumLatenessSeconds: 300, retry: { maxAttempts: 4, maximumAgeSeconds: 3600 }, requirements: { configuration: 'fixed', cardinality: 'bounded', precision: 'minute' } },
+        definition: { id: 'cleanup.v1', configuration: 'fixed', every: '15m', timezone: 'America/New_York', overlap: 'skip', misfires: 'latest', maximumLatenessSeconds: 300, retry: { maxAttempts: 4, maximumAgeSeconds: 3600 }, requirements: { configuration: 'fixed', cardinality: 'bounded', precision: 'minute' } },
         target: {
           kind: 'durableStart', durable: { kind: 'workflow', nodeId: 'workflow.cleanup.v1' },
           contract: { name: 'cleanup', version: 'v1', input: { jsonSchema: { type: 'object' } } }, input: { kind: 'literal', value: {} },
         }, functionNative: true,
+      }, {
+        id: 'schedule.poll-source.v1', kind: 'schedule', name: 'poll-source.v1', stability: 'stable', scheduler: { interface: 'Scheduler', nodeId: 'provider.scheduler.v1alpha1.hosted' }, state: { interface: 'TransactionalDatabase', nodeId: 'provider.TransactionalDatabase' },
+        definition: { id: 'poll-source.v1', configuration: 'dynamic', timezone: 'UTC', overlap: 'skip', misfires: 'latest', maximumLatenessSeconds: 300, retry: { maxAttempts: 4, maximumAgeSeconds: 3600 }, requirements: { configuration: 'dynamic', cardinality: 'high', precision: 'minute' } },
+        handler: { source: 'async () => undefined' }, functionNative: true,
       }] as ApplicationGraph['nodes'],
       edges: [...base.edges, {
         from: { nodeId: 'provider.acquisition-provider.v1alpha1.primary' },
@@ -352,15 +362,22 @@ describe('generated ApplicationHost', () => {
       { name: 'APPLIK8S_INTERNAL_OPERATION_SECRET', valueFrom: { secretKeyRef: { name: 'guestbook-internal-operation', key: 'key' } } },
       { name: 'APPLIK8S_SCHEDULE_DATABASE_URL', valueFrom: { secretKeyRef: { name: 'guestbook-db-app', key: 'uri', optional: false } } },
       { name: 'APPLIK8S_WORKFLOW_GATEWAY_TOKEN_FILE', value: '/var/run/secrets/applik8s/workflow-gateway/token' },
+      expect.objectContaining({ name: expect.stringMatching(/^APPLIK8S_HATCHET_SCHEDULER_HOST_/u), value: 'hatchet-engine.guestbook.svc:7070' }),
+      expect.objectContaining({ name: expect.stringMatching(/^APPLIK8S_HATCHET_SCHEDULER_API_/u), value: 'http://hatchet-api.guestbook.svc:8080' }),
+      expect.objectContaining({ name: expect.stringMatching(/^APPLIK8S_HATCHET_SCHEDULER_TLS_/u), value: 'none' }),
       { name: 'ACQUISITION_SOURCE', value: 'dedicated' },
       { name: 'ACQUISITION_TOKEN', valueFrom: { secretKeyRef: { name: 'acquisition-dedicated', key: 'token' } } },
     ]));
-    expect(podSpec?.containers?.[0]?.volumeMounts).toEqual([{
+    expect(podSpec?.containers?.[0]?.volumeMounts).toEqual(expect.arrayContaining([{
       name: 'workflow-gateway-token',
       mountPath: '/var/run/secrets/applik8s/workflow-gateway',
       readOnly: true,
-    }]);
-    expect(podSpec?.volumes).toEqual([expect.objectContaining({
+    }, expect.objectContaining({
+      name: expect.stringMatching(/^scheduler-token-/u),
+      mountPath: expect.stringMatching(/^\/var\/run\/secrets\/applik8s\/schedulers\//u),
+      readOnly: true,
+    })]));
+    expect(podSpec?.volumes).toEqual(expect.arrayContaining([expect.objectContaining({
       name: 'workflow-gateway-token',
       projected: expect.objectContaining({
         sources: [expect.objectContaining({
@@ -370,7 +387,10 @@ describe('generated ApplicationHost', () => {
           }),
         })],
       }),
-    })]);
+    }), expect.objectContaining({
+      name: expect.stringMatching(/^scheduler-token-/u),
+      secret: { secretName: 'hatchet-client-config', items: [{ key: 'HATCHET_CLIENT_TOKEN', path: 'token' }] },
+    })]));
     expect(resources.find(({ kind }) => kind === 'Role')).toMatchObject({
       rules: expect.arrayContaining([{ apiGroups: ['batch'], resources: ['cronjobs'], verbs: ['create', 'delete', 'get', 'update'] }]),
     });

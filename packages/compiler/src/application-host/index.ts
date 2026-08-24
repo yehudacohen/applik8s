@@ -5,12 +5,14 @@ import { dirname, join, resolve } from 'node:path';
 import {
   type ApplicationGraph,
   type ApplicationProviderNode,
+  exactFiveFieldCronForInterval,
   type JsonObject,
   normalizeApplicationGraph,
 } from '@applik8s/core';
 import { applicationCallableProviderEnvironment } from '../application-callable-provider-runtime.js';
 import { applicationGraphNumberValue, applicationGraphStringValue } from '../application-installation-values.js';
 import { applicationObjectStorageEnvironment } from '../application-object-storage-environment.js';
+import { applicationHatchetScheduleBindings } from '../application-schedule-hatchet.js';
 
 export interface GeneratedApplicationHostResource {
   readonly apiVersion: string;
@@ -153,6 +155,57 @@ export async function emitGeneratedApplicationHost(options: {
   const workflowScheduleAccess = options.graph.nodes.some(
     (node) => node.kind === 'schedule' && node.target?.kind === 'durableStart',
   );
+  const hatchetScheduleBindings = applicationHatchetScheduleBindings(options.graph);
+  for (const binding of hatchetScheduleBindings) {
+    if (binding.namespace !== namespace) {
+      throw new Error(
+        `ApplicationHost Hatchet Scheduler ${binding.providerId} is in ${binding.namespace}, but the host runs in ${namespace}. Keep the provider token with its execution boundary or configure an explicit host-local credential projection.`,
+      );
+    }
+  }
+  const hatchetScheduleEnvironment = hatchetScheduleBindings.flatMap((binding) => [
+    { name: binding.hostPortEnvironment, value: binding.hostPort },
+    { name: binding.apiUrlEnvironment, value: binding.apiUrl },
+    { name: binding.tlsEnvironment, value: binding.tlsStrategy },
+  ]);
+  const applicationHostVolumeMounts = [
+    ...(workflowScheduleAccess
+      ? [{
+          name: 'workflow-gateway-token',
+          mountPath: '/var/run/secrets/applik8s/workflow-gateway',
+          readOnly: true,
+        }]
+      : []),
+    ...hatchetScheduleBindings.map((binding) => ({
+      name: binding.tokenMountName,
+      mountPath: binding.tokenMountPath,
+      readOnly: true,
+    })),
+  ];
+  const applicationHostVolumes = [
+    ...(workflowScheduleAccess
+      ? [{
+          name: 'workflow-gateway-token',
+          projected: {
+            defaultMode: 0o400,
+            sources: [{
+              serviceAccountToken: {
+                path: 'token',
+                expirationSeconds: 3_600,
+                audience: 'https://kubernetes.default.svc',
+              },
+            }],
+          },
+        }]
+      : []),
+    ...hatchetScheduleBindings.map((binding) => ({
+      name: binding.tokenMountName,
+      secret: {
+        secretName: binding.workerTokenSecret,
+        items: [{ key: binding.tokenKey, path: 'token' }],
+      },
+    })),
+  ];
   const callableProviderEnvironment = applicationCallableProviderEnvironment(
     applicationHostCallableProviders(options.graph),
     { target: 'kubernetes', namespace },
@@ -247,18 +300,13 @@ export async function emitGeneratedApplicationHost(options: {
                 ...internalOperationEnvironment,
                 ...scheduleDatabaseEnvironment,
                 ...applicationWorkflowScheduleEnvironment(options.graph),
+                ...hatchetScheduleEnvironment,
                 ...identityDatabaseEnvironment,
                 ...objectStorageEnvironment,
                 ...callableProviderEnvironment,
               ]),
-              ...(workflowScheduleAccess
-                ? {
-                    volumeMounts: [{
-                      name: 'workflow-gateway-token',
-                      mountPath: '/var/run/secrets/applik8s/workflow-gateway',
-                      readOnly: true,
-                    }],
-                  }
+              ...(applicationHostVolumeMounts.length > 0
+                ? { volumeMounts: applicationHostVolumeMounts }
                 : {}),
               ports: [{ name: 'http', containerPort: port }],
               startupProbe: { httpGet: { path: '/__applik8s/v1/healthz', port: 'http' }, periodSeconds: 2, failureThreshold: 30 },
@@ -266,22 +314,8 @@ export async function emitGeneratedApplicationHost(options: {
               livenessProbe: { httpGet: { path: '/__applik8s/v1/healthz', port: 'http' }, periodSeconds: 10, failureThreshold: 6 },
               resources: resourceRequirements,
             }],
-            ...(workflowScheduleAccess
-              ? {
-                  volumes: [{
-                    name: 'workflow-gateway-token',
-                    projected: {
-                      defaultMode: 0o400,
-                      sources: [{
-                        serviceAccountToken: {
-                          path: 'token',
-                          expirationSeconds: 3_600,
-                          audience: 'https://kubernetes.default.svc',
-                        },
-                      }],
-                    },
-                  }],
-                }
+            ...(applicationHostVolumes.length > 0
+              ? { volumes: applicationHostVolumes }
               : {}),
           },
         },
@@ -337,9 +371,7 @@ function applicationHostCallableProviders(
       const scheduler = graph.nodes.find(
         (candidate) => candidate.id === node.scheduler.nodeId,
       );
-      return scheduler?.kind === 'provider' && !scheduler.config?.qualification
-        ? [node.id]
-        : [];
+      return scheduler?.kind === 'provider' ? [node.id] : [];
     }),
   );
   const providerIds = new Set(
@@ -414,7 +446,7 @@ export function applicationKubernetesFixedScheduleResources(options: {
       metadata: { name, namespace: options.namespace, labels, annotations: { 'applik8s.dev/schedule-definition': node.definition.id } },
       spec: {
         schedule: kubernetesScheduleCron(node.definition),
-        timeZone: node.definition.timezone,
+        timeZone: node.definition.cron ? node.definition.timezone : 'UTC',
         concurrencyPolicy: node.definition.overlap === 'skip' ? 'Forbid' : 'Allow',
         startingDeadlineSeconds: Math.min(node.definition.retry.maximumAgeSeconds, 2_147_483_647),
         successfulJobsHistoryLimit: 1,
@@ -454,12 +486,7 @@ export function applicationKubernetesFixedScheduleResources(options: {
 function kubernetesScheduleCron(definition: Extract<ApplicationGraph['nodes'][number], { kind: 'schedule' }>['definition']): string {
   if (definition.cron) return definition.cron;
   if (definition.every) {
-    const match = /^(\d+)(m|h|d)$/u.exec(definition.every);
-    if (!match) throw new Error(`Kubernetes CronJob schedule ${definition.id} requires minute-or-coarser cadence; received ${definition.every}.`);
-    const amount = Number(match[1]);
-    if (match[2] === 'm') return amount === 1 ? '* * * * *' : `*/${amount} * * * *`;
-    if (match[2] === 'h') return amount === 1 ? '0 * * * *' : `0 */${amount} * * *`;
-    return amount === 1 ? '0 0 * * *' : `0 0 */${amount} * *`;
+    return exactFiveFieldCronForInterval(definition.every);
   }
   if (!definition.at) throw new Error(`Kubernetes schedule ${definition.id} has no cadence.`);
   const at = new Date(definition.at);

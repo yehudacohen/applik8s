@@ -1,6 +1,7 @@
 // typecast-file-boundary: Test fixtures preserve literal discriminants while exercising the public portable compiler and plan contracts.
 import {
   type ApplicationGraph,
+  type ApplicationScheduleNode,
   applicationCanonicalIdentity,
   applicationProviderIdentity,
   diffApplicationPlans,
@@ -305,6 +306,103 @@ describe("Application deployment compiler", () => {
         },
       },
     });
+  });
+
+  it("lowers a qualified Hatchet Scheduler to one owned shared-provider installation", () => {
+    const base = applicationGraph();
+    const result = compileApplicationDeploymentGraph({
+      ...request(),
+      graph: {
+        ...base,
+        nodes: [
+          ...base.nodes,
+          {
+            id: "provider.scheduler.v1alpha1.source-polling",
+            kind: "provider",
+            name: "Scheduler",
+            stability: "stable",
+            interface: "Scheduler",
+            implementation: "hatchet-scheduler",
+            config: {
+              qualification: {
+                capability: "Scheduler",
+                name: "source-polling",
+                compatibilityRevision: "v1alpha1",
+              },
+              scheduler: {
+                kind: "hatchet-scheduler",
+                workflowEngine: {
+                  kind: "hatchet",
+                  name: "guestbook-scheduler",
+                  namespace: "guestbook",
+                  provision: true,
+                },
+              },
+            },
+          },
+          scheduleNode("provider.scheduler.v1alpha1.source-polling"),
+        ],
+      },
+    });
+    expect(result.graph.nodes).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: "direct.provider.scheduler.v1alpha1.source-polling.hatchet",
+        kind: "kubernetesDirect",
+        spec: expect.objectContaining({
+          compositionId: "hatchet-installation",
+          configuration: expect.objectContaining({
+            name: "guestbook-scheduler",
+            namespace: "guestbook",
+          }),
+        }),
+      }),
+    ]));
+  });
+
+  it("reuses the shared Hatchet WorkflowEngine when a Scheduler has no private engine", () => {
+    const base = applicationGraph();
+    const result = compileApplicationDeploymentGraph({
+      ...request(),
+      graph: {
+        ...base,
+        nodes: [
+          ...base.nodes,
+          {
+            id: "provider.workflow-engine",
+            kind: "provider",
+            name: "WorkflowEngine",
+            stability: "stable",
+            interface: "WorkflowEngine",
+            implementation: "hatchet",
+            config: { kind: "hatchet", name: "shared-hatchet", namespace: "guestbook" },
+          },
+          {
+            id: "provider.scheduler.v1alpha1.source-polling",
+            kind: "provider",
+            name: "Scheduler",
+            stability: "stable",
+            interface: "Scheduler",
+            implementation: "hatchet-scheduler",
+            config: {
+              qualification: {
+                capability: "Scheduler",
+                name: "source-polling",
+                compatibilityRevision: "v1alpha1",
+              },
+              scheduler: { kind: "hatchet-scheduler" },
+            },
+          },
+          scheduleNode("provider.scheduler.v1alpha1.source-polling"),
+        ],
+      },
+    });
+    expect(result.graph.nodes.filter((node) =>
+      node.kind === "kubernetesDirect"
+      && node.spec.compositionId === "hatchet-installation"))
+      .toHaveLength(1);
+    expect(result.graph.nodes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "direct.provider.workflow-engine.hatchet" }),
+    ]));
   });
 
   it("lowers compiler-owned CRDs into retained API prerequisites before the application", () => {
@@ -2485,5 +2583,33 @@ function applicationGraph(): ApplicationGraph {
       postV3Surfaces: [],
       labels: [],
     },
+  };
+}
+
+function scheduleNode(providerId: string): ApplicationScheduleNode {
+  return {
+    id: "schedule.source.poll.v1",
+    kind: "schedule",
+    name: "source.poll.v1",
+    stability: "stable",
+    definition: {
+      id: "source.poll.v1",
+      configuration: "dynamic",
+      input: {
+        kind: "declared",
+        runtime: "arktype",
+        jsonSchema: { type: "object", properties: { sourceId: { type: "string" } }, required: ["sourceId"] },
+      },
+      timezone: "UTC",
+      overlap: "skip",
+      misfires: "latest",
+      maximumLatenessSeconds: 300,
+      retry: { maxAttempts: 4, maximumAgeSeconds: 21_600 },
+      requirements: { configuration: "dynamic", cardinality: "high", precision: "minute" },
+    },
+    scheduler: { interface: "Scheduler", nodeId: providerId },
+    state: { interface: "TransactionalDatabase", nodeId: "provider.transactional-database" },
+    handler: { source: "async () => undefined" },
+    functionNative: true,
   };
 }

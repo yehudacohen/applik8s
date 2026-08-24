@@ -82,6 +82,41 @@ describe('v0.8 provider guarantee manifests', () => {
 		]))
 	})
 
+	it.each(['kubernetes', 'local'] as const)('rejects inexact fixed intervals before %s provider mutation', (target) => {
+		const source = graph()
+		const implementation = target === 'kubernetes' ? 'kubernetes-cronjob-scheduler' : 'hatchet-scheduler'
+		const scheduler = { ...provider('Scheduler', implementation), id: `provider.scheduler.${implementation}` }
+		const schedule = scheduleNode(scheduler.id, { every: '90m' })
+		expect(applicationScheduleProviderCompatibilityFindings({
+			graph: { ...source, nodes: [...source.nodes, scheduler, schedule] },
+			target,
+		})).toEqual(expect.arrayContaining([
+			expect.objectContaining({ code: 'SCHEDULE_CADENCE_UNREPRESENTABLE' }),
+		]))
+		const manifest = applicationProviderGuaranteesForGraph({
+			graph: { ...source, nodes: [...source.nodes, scheduler, schedule] },
+			target,
+		}).find(({ limitations }) => limitations.some((message) => message.includes('90m')))
+		expect(manifest?.guarantees).toEqual(expect.arrayContaining([
+			expect.objectContaining({ id: 'schedule-precision', disposition: 'unsupported' }),
+		]))
+	})
+
+	it('rejects Hatchet calendar cron outside UTC before provider mutation', () => {
+		const source = graph()
+		const scheduler = {
+			...provider('Scheduler', 'hatchet-scheduler'),
+			id: 'provider.scheduler.v1alpha1.hosted',
+		}
+		const schedule = scheduleNode(scheduler.id, { timezone: 'America/New_York' })
+		expect(applicationScheduleProviderCompatibilityFindings({
+			graph: { ...source, nodes: [...source.nodes, scheduler, schedule] },
+			target: 'kubernetes',
+		})).toEqual(expect.arrayContaining([
+			expect.objectContaining({ code: 'SCHEDULE_TIMEZONE_UNSUPPORTED' }),
+		]))
+	})
+
 	it('records exact schedule guarantees for compatible target-selected providers', () => {
 		const source = graph()
 		const scheduler = source.nodes.find((node): node is ApplicationProviderNode =>
@@ -95,6 +130,30 @@ describe('v0.8 provider guarantee manifests', () => {
 			expect.objectContaining({ id: 'schedule-retry-dead-letter', disposition: 'bounded' }),
 		]))
 		expect(scheduleManifest?.limitations).not.toEqual(expect.arrayContaining([expect.stringMatching(/cannot preserve/u)]))
+	})
+
+	it('qualifies high-cardinality Hatchet schedules while retaining portable limits', () => {
+		const source = graph()
+		const scheduler = {
+			...provider('Scheduler', 'hatchet-scheduler'),
+			id: 'provider.scheduler.v1alpha1.hosted',
+			config: {
+				qualification: { capability: 'Scheduler', name: 'hosted', compatibilityRevision: 'v1alpha1' },
+				scheduler: { kind: 'hatchet-scheduler' },
+			},
+		}
+		const compatible = {
+			...source,
+			nodes: [...source.nodes, scheduler, scheduleNode(scheduler.id, { cardinality: 'high' })],
+		}
+		expect(applicationScheduleProviderCompatibilityFindings({ graph: compatible, target: 'kubernetes' }))
+			.toEqual([])
+		const manifest = applicationProviderGuaranteesForGraph({ graph: compatible, target: 'kubernetes' })
+			.find(({ capability }) => capability.interface === 'Scheduler' && capability.implementation === 'hatchet-scheduler')
+		expect(manifest?.guarantees).toEqual(expect.arrayContaining([
+			expect.objectContaining({ id: 'schedule-cardinality', disposition: 'bounded' }),
+			expect.objectContaining({ id: 'schedule-lifecycle', disposition: 'bounded' }),
+		]))
 	})
 })
 
@@ -135,6 +194,8 @@ function scheduleNode(
 		readonly cardinality?: 'bounded' | 'high'
 		readonly precision?: 'minute' | 'second'
 		readonly misfires?: 'skip' | 'latest' | 'all-bounded'
+		readonly every?: string
+		readonly timezone?: string
 	} = {},
 ): ApplicationScheduleNode {
 	return {
@@ -145,8 +206,8 @@ function scheduleNode(
 		definition: {
 			id: 'test.v1',
 			configuration: 'fixed',
-			cron: '* * * * *',
-			timezone: 'UTC',
+			...(overrides.every ? { every: overrides.every } : { cron: '* * * * *' }),
+			timezone: overrides.timezone ?? 'UTC',
 			overlap: 'skip',
 			misfires: overrides.misfires ?? 'latest',
 			maximumLatenessSeconds: 300,

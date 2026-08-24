@@ -95,6 +95,7 @@ const publicEntrypoints = [
   '@applik8s/runtime-nats/command-processor',
   '@applik8s/runtime-kubernetes',
   '@applik8s/runtime-postgres',
+  '@applik8s/runtime-postgres/schedule-occurrence',
   '@applik8s/runtime-postgres/schedule-state',
   '@applik8s/runtime-aws',
   '@applik8s/runtime-aws/bootstrap',
@@ -976,9 +977,9 @@ if (JSON.stringify(unrelated.resources).includes('ACQUISITION_TOKEN')) {
     packedScheduleApplicationPath,
     `import {
   ApplicationHost,
+  Scheduler,
   TransactionalDatabase,
   app,
-  schedule,
 } from '@applik8s/applik8s';
 import { type } from '@applik8s/applik8s/dsl';
 import { AcquisitionProvider, acquisition } from '@fixture/acquisition';
@@ -1022,10 +1023,19 @@ application.profile(application.installation.spec, 'profile')
   .exhaustive();
 const { acquire } = application.include(acquisition);
 const directProvider = application.inject(AcquisitionProvider);
+const HostedScheduler = Scheduler.named('hosted');
+application.provide(HostedScheduler, Scheduler.hatchet({
+  workflowEngine: {
+    kind: 'hatchet',
+    name: 'packed-schedule-hatchet',
+    namespace: 'packed-schedule-provider',
+    tls: false,
+  },
+}));
 async function acquireThroughHelper(id) {
   return acquire({ id });
 }
-export const Cleanup = schedule({
+export const Cleanup = HostedScheduler.schedule({
   id: 'packed.cleanup.v1',
   cron: '0 3 * * *',
   timezone: 'UTC',
@@ -1053,6 +1063,7 @@ export const scheduleProviderStack = application.composition;
     `import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { deriveApplicationGraphFoundation } from '@applik8s/core';
+import { compileApplicationDeploymentGraph } from '@applik8s/deployment-compiler';
 import {
   compileTypeKroComposition,
   discoverApplicationGraphWithExports,
@@ -1069,6 +1080,9 @@ const schedule = graph.nodes.find(node =>
   node.kind === 'schedule' && node.definition.id === 'packed.cleanup.v1'
 );
 if (!schedule) throw new Error('Packed provider schedule is missing.');
+if (schedule.scheduler?.nodeId !== 'provider.scheduler.v1alpha1.hosted') {
+  throw new Error('Packed provider schedule lost its qualified Hatchet Scheduler identity.');
+}
 const operations = schedule.providerBindings?.filter(binding =>
   binding.operation?.member === 'acquire'
 ) ?? [];
@@ -1097,6 +1111,9 @@ if (!generated) throw new Error('Packed schedule control source is missing.');
 const source = Object.values(generated.files).join('\\n');
 if (
   !source.includes('@fixture/acquisition/runtime')
+  || !source.includes('@applik8s/runtime-hatchet')
+  || !source.includes('createHatchetApplicationScheduleRuntime')
+  || !source.includes('provider.scheduler.v1alpha1.hosted')
   || !source.includes('acquireThroughHelper')
   || source.includes('@applik8s/applik8s/internal/provider-runtime')
   || source.includes('application.inject')
@@ -1128,16 +1145,50 @@ const compiled = await compileTypeKroComposition({
   },
 });
 if (!compiled.ok) throw compiled.error;
+const deployment = compileApplicationDeploymentGraph({
+  graph,
+  sourceGraphDigest: 'sha256:' + 'a'.repeat(64),
+  compilerVersion: '0.8.0',
+  identity: {
+    connection: {
+      provider: 'kubernetes',
+      cluster: 'packed-consumer',
+      digest: 'sha256:' + 'b'.repeat(64),
+    },
+    application: 'packed-schedule-provider',
+    controlPlaneNamespace: 'applik8s-system',
+    instance: 'packed-schedule-provider',
+    profile: 'starter',
+  },
+  strategy: 'kro',
+  installationSpec: { name: 'packed-schedule-provider', profile: 'starter' },
+  artifacts: [],
+});
+const hatchetInstallation = deployment.graph.nodes.find(node =>
+  node.kind === 'kubernetesDirect'
+  && node.spec?.compositionId === 'hatchet-installation'
+);
+if (
+  !hatchetInstallation
+  || hatchetInstallation.spec.configuration?.name !== 'packed-schedule-hatchet'
+  || !deployment.graph.edges.some(edge =>
+    edge.from === hatchetInstallation.id
+    && edge.to === 'kubernetes.application'
+    && edge.relationship === 'requiresReady'
+  )
+) throw new Error('Packed qualified Scheduler did not lower to ordered Hatchet infrastructure.');
 const resources = compiled.value.artifacts.resources;
 const deploymentJson = JSON.stringify(resources);
 if (
   !deploymentJson.includes('application-host')
+  || !deploymentJson.includes('hatchet')
   || !deploymentJson.includes('ACQUISITION_SOURCE')
   || !deploymentJson.includes('ACQUISITION_TOKEN')
   || !deploymentJson.includes('acquisition-starter')
   || !deploymentJson.includes('acquisition-dedicated')
 ) throw new Error('Packed schedule provider configuration was not placed on its application host: ' + JSON.stringify({
   applicationHost: deploymentJson.includes('application-host'),
+  hatchet: deploymentJson.includes('hatchet'),
   source: deploymentJson.includes('ACQUISITION_SOURCE'),
   token: deploymentJson.includes('ACQUISITION_TOKEN'),
   starter: deploymentJson.includes('acquisition-starter'),
