@@ -53,8 +53,8 @@ const applicationBeforeCommitSourceCache = new WeakMap<
 import { getTableColumns, getTableName } from 'drizzle-orm';
 import type { AnyPgTable } from 'drizzle-orm/pg-core';
 import {
-  isApplicationCausalPrincipalDefault,
   isApplicationAuthenticatedPrincipalDefault,
+  isApplicationCausalPrincipalDefault,
   isApplicationRandomUuidDefault,
 } from './drizzle.js';
 
@@ -526,6 +526,17 @@ function applicationNativeMutationOptions<TInput extends object, TValue extends 
     bindings: policy?.__generatedModelBindings,
     awaited: policy?.__generatedAwaitedCalls,
   });
+  const providerEffects = inferred.providerBindings.filter(
+    (binding) => binding.operation !== undefined,
+  );
+  if (providerEffects.length > 0) {
+    throw new Error(
+      `beforeCommit cannot call external provider operation(s) ${providerEffects
+        .map((binding) => `${binding.identifier} (${binding.provider.interface}.${binding.operation?.member ?? '<unknown>'})`)
+        .sort()
+        .join(', ')}. beforeCommit is transaction-local; stage an event or command in the transaction outbox and perform the external effect from Stream.onEvent(...), Stream.onBatch(...), a task, or a workflow.`,
+    );
+  }
   for (const [identifier, candidate] of Object.entries(
     inferred.awaited,
   )) {

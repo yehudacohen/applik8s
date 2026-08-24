@@ -1,5 +1,5 @@
 // typecast-file-boundary: negative fixtures cross overload boundaries deliberately to assert fail-closed diagnostics.
-import { type ApplicationModelCreateEvent, app, applicationGraphFor, applicationModelFacet, type ModelEvent, postgres, trustedContext } from '@applik8s/applik8s';
+import { type ApplicationModelCreateEvent, app, applicationGraphFor, applicationModelFacet, defineApplicationProvider, type ModelEvent, postgres, trustedContext } from '@applik8s/applik8s';
 import {
   authenticatedPrincipalId,
   causalPrincipalId,
@@ -7,6 +7,11 @@ import {
   model as relationalModel,
 } from '@applik8s/applik8s/drizzle';
 import { command, entity, event, type } from '@applik8s/applik8s/dsl';
+import {
+  bindApplicationCallableDependencies,
+  bindApplicationProviderDependencies,
+  bindApplicationProviderOperation,
+} from '@applik8s/applik8s/internal/provider-runtime';
 import { type ApplicationCommandNode, type JsonValue, serializeApplicationGraph, validateApplicationGraphStructure } from '@applik8s/core';
 import { eq, relations } from 'drizzle-orm';
 import { pgTable, text, uuid } from 'drizzle-orm/pg-core';
@@ -540,9 +545,7 @@ describe('v0.6 app-scoped native model promotion', () => {
     const Database = catalog.database.postgres('catalog', { schema });
     const Card = catalog.model(schema.cards, { name: 'Card', database: Database });
     const minified = Object.defineProperty(
-      async function (input: { limit: number }) {
-        return [{ id: String(input.limit), name: 'card' }];
-      },
+      async (input: { limit: number }) => [{ id: String(input.limit), name: 'card' }],
       'name',
       { value: '' },
     );
@@ -917,6 +920,62 @@ describe('v0.6 app-scoped native model promotion', () => {
         async () => undefined,
       )).toThrow(
       'beforeCommit cannot await staged application command models.AwaitedChild.create.v1 through CreateChild(...)',
+    );
+  });
+
+  test('rejects external provider effects captured transitively by beforeCommit', () => {
+    const records = pgTable('before_commit_provider_records', {
+      id: text('id').primaryKey(),
+      revision: text('revision').notNull(),
+    });
+    const application = app('before-commit-provider-effect');
+    const Database = application.database.postgres('catalog', {
+      schema: { records },
+    });
+    const Record = application.model(records, {
+      name: 'BeforeCommitProviderRecord',
+      database: Database,
+    });
+    const AcquisitionProvider = defineApplicationProvider({
+      interface: 'BeforeCommitAcquisitionProvider',
+      version: 'v1alpha1',
+      accepts: (candidate): candidate is { readonly kind: 'acquisition' } =>
+        Boolean(candidate && typeof candidate === 'object' && Reflect.get(candidate, 'kind') === 'acquisition'),
+    }).named('primary');
+    const acquire = bindApplicationProviderOperation(
+      bindApplicationProviderDependencies(
+        async (_input: { readonly id: string }) => ({ value: 'unused' }),
+        [AcquisitionProvider],
+      ),
+      {
+        member: 'acquire',
+        runtime: {
+          module: '@fixture/acquisition/runtime',
+          export: 'acquireItem',
+          access: {
+            kind: 'provider',
+            operations: ['connection.use', 'network.connect'],
+          },
+        },
+      },
+    );
+    const acquireThroughHelper = bindApplicationCallableDependencies(
+      async (id: string) => acquire({ id }),
+      [{ identifier: 'acquire', value: acquire }],
+    );
+    const policy = bindApplicationCallableDependencies(
+      async (model: { readonly identity: string }) => {
+        await acquireThroughHelper(model.identity);
+      },
+      [{ identifier: 'acquireThroughHelper', value: acquireThroughHelper }],
+    );
+
+    expect(() =>
+      Record.create.beforeCommit(
+        { history: true, __generatedCalls: [policy] },
+        policy as never,
+      )).toThrow(
+      /beforeCommit cannot call external provider operation.*acquire.*BeforeCommitAcquisitionProvider\.acquire.*transaction-local.*Stream\.onEvent/s,
     );
   });
 

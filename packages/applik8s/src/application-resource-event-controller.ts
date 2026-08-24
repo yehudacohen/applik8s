@@ -39,6 +39,7 @@ export function createApplicationResourceEventOperatorController<TSpec extends o
     withApplicationResourceControllerAuthority(resource, registration));
   const callbacks = [...callbacksInput];
   const operatorName = name ?? `${kubernetesNameSegment(resource.kind)}-controller`;
+  assertPortableResourceControllerProviderOperations(operatorName, callbacks);
   // applicationTypeKroString deliberately returns a string-shaped branded CEL
   // value in graph mode. Preserve that value as the shared deployment and
   // gateway namespace instead of dropping it via a typeof check.
@@ -80,6 +81,10 @@ export function createApplicationResourceEventOperatorController<TSpec extends o
         || registration.resource.kind !== resource.kind) {
         throw new Error(`Application resource controller ${operatorName} cannot accept a handler for ${registration.resource.apiVersion}/${registration.resource.kind}.`);
       }
+      assertPortableResourceControllerProviderOperations(
+        operatorName,
+        [...callbacks, callback],
+      );
       // typecast: the runtime identity check above proves this registration
       // belongs to the one resource whose spec/status generics this controller
       // captured when it was created.
@@ -93,6 +98,22 @@ export function createApplicationResourceEventOperatorController<TSpec extends o
       Object.assign(capabilities, refreshed);
     },
   };
+}
+
+function assertPortableResourceControllerProviderOperations(
+  operatorName: string,
+  callbacks: readonly unknown[],
+): void {
+  const effects = expandApplicationCallbackDependencies({ calls: callbacks })
+    .providerBindings
+    .filter((binding) => binding.operation !== undefined);
+  if (effects.length === 0) return;
+  throw new Error(
+    `Resource controller ${operatorName} cannot call provider operation(s) ${effects
+      .map((binding) => `${binding.identifier} (${binding.provider.interface}.${binding.operation?.member ?? '<unknown>'})`)
+      .sort()
+      .join(', ')} from Resource.on.reconcile(...) yet. Resource handlers execute as componentized WASM and callable providers require a declared host-mediated provider operation; ambient credentials or Node runtime imports are never embedded. Emit an application event for Stream.onEvent(...), or invoke a task/workflow until the host-mediated provider bridge is available.`,
+  );
 }
 
 /**

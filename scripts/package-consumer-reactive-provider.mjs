@@ -205,7 +205,7 @@ for (const processor of effectProcessors) {
     await readFile(artifact.sourcePath, 'utf8'),
     await readFile(join(dirname(artifact.sourcePath), 'stream-processor.generated.ts'), 'utf8'),
     await readFile(join(dirname(artifact.sourcePath), 'handle.generated.ts'), 'utf8'),
-  ].join('\n');
+  ].join('\\n');
   if (
     !source.includes('@fixture/acquisition/runtime')
     || !source.includes('acquireEveryWay')
@@ -242,4 +242,130 @@ if (JSON.stringify(observerArtifact.resources).includes('ACQUISITION_TOKEN')) {
   console.log(
     'Package consumer smoke: packed external onEvent/onBatch/model-lifecycle provider hydration passed.',
   );
+
+  const beforeCommitPath = join(
+    consumerDir,
+    'packed-before-commit-provider-rejection.mjs',
+  );
+  await writeFile(
+    beforeCommitPath,
+    packedProviderBoundaryApplication({ boundary: 'beforeCommit' }),
+  );
+  const reconcilerPath = join(
+    consumerDir,
+    'packed-resource-reconciler-provider-rejection.mjs',
+  );
+  await writeFile(
+    reconcilerPath,
+    packedProviderBoundaryApplication({ boundary: 'reconciler' }),
+  );
+  const boundaryProofPath = join(
+    consumerDir,
+    'packed-provider-boundary-proof.mjs',
+  );
+  await writeFile(
+    boundaryProofPath,
+    `import { discoverApplicationGraphWithExports } from '@applik8s/compiler';
+async function expectFailure(entrypoint, compositionName, expected) {
+  const discovered = await discoverApplicationGraphWithExports(
+    entrypoint,
+    compositionName,
+  );
+  if (discovered.ok) {
+    throw new Error('Expected provider boundary discovery to fail: ' + compositionName);
+  }
+  const message = discovered.error instanceof Error
+    ? discovered.error.message
+    : JSON.stringify(discovered.error);
+  if (!expected.every(fragment => message.includes(fragment))) {
+    throw new Error('Provider boundary diagnostic lost required context: ' + message);
+  }
+}
+await expectFailure(
+  ${JSON.stringify(beforeCommitPath)},
+  'beforeCommitProviderStack',
+  ['beforeCommit cannot call external provider operation', 'transaction-local', 'Stream.onEvent'],
+);
+await expectFailure(
+  ${JSON.stringify(reconcilerPath)},
+  'reconcilerProviderStack',
+  ['Resource controller', 'componentized WASM', 'host-mediated provider operation', 'Stream.onEvent'],
+);
+`,
+  );
+  await execFileAsync(process.execPath, [boundaryProofPath], {
+    cwd: consumerDir,
+    env: {
+      ...process.env,
+      NODE_OPTIONS: '--max-old-space-size=8192',
+    },
+    maxBuffer: 20 * 1024 * 1024,
+  });
+  console.log(
+    'Package consumer smoke: packed beforeCommit and WASM reconciler provider boundaries failed closed.',
+  );
+}
+
+function packedProviderBoundaryApplication(options) {
+  const setup = `import { app } from '@applik8s/applik8s';
+import { type } from '@applik8s/applik8s/dsl';
+import { pgTable, text } from 'drizzle-orm/pg-core';
+import { AcquisitionProvider, acquisition } from '@fixture/acquisition';
+const application = app('packed-provider-boundary', {
+  namespace: 'packed-provider-boundary',
+  spec: type({ profile: "'starter' | 'dedicated'" }),
+  status: type({ ready: 'boolean' }),
+});
+const implementation = source => ({
+  kind: 'acquisition',
+  source,
+  credentialSecret: {
+    apiVersion: 'v1',
+    kind: 'Secret',
+    name: 'acquisition-' + source,
+    namespace: 'packed-provider-boundary',
+  },
+  async acquire(input) { return { value: source + ':' + input.id }; },
+});
+application.profile(application.installation.spec, 'profile')
+  .provide(AcquisitionProvider)
+  .starter(() => implementation('starter'))
+  .dedicated(() => implementation('dedicated'))
+  .exhaustive();
+const { acquire } = application.include(acquisition);
+async function acquireThroughHelper(id) {
+  return acquire({ id });
+}
+`;
+  if (options.boundary === 'beforeCommit') {
+    return `${setup}
+const records = pgTable('packed_provider_boundary_records', {
+  id: text('id').primaryKey(),
+  revision: text('revision').notNull(),
+});
+const database = application.database.postgres('main', {
+  schema: { records },
+});
+const Record = application.model(records, {
+  name: 'PackedProviderBoundaryRecord',
+  database,
+});
+Record.create.beforeCommit({ history: true }, async record => {
+  await acquireThroughHelper(record.identity);
+});
+export const beforeCommitProviderStack = application.composition;
+`;
+  }
+  return `${setup}
+const Widget = application.resource('Widget', {
+  apiVersion: 'widgets.example/v1alpha1',
+  spec: type({ id: 'string' }),
+  status: type({ 'phase?': 'string' }),
+  controller: { name: 'packed-widget-controller' },
+});
+Widget.on.reconcile(async widget => {
+  await acquireThroughHelper(widget.spec.id);
+});
+export const reconcilerProviderStack = application.composition;
+`;
 }

@@ -1,6 +1,11 @@
 import { type } from 'arktype';
 import { describe, expect, it } from 'vitest';
-import { app, sdk } from '../src/index.js';
+import {
+  bindApplicationCallableDependencies,
+  bindApplicationProviderDependencies,
+  bindApplicationProviderOperation,
+} from '../src/application-provider-runtime.js';
+import { app, defineApplicationProvider, sdk } from '../src/index.js';
 
 describe('application-native Kubernetes lifecycle handlers', () => {
   it('groups resource-owned events into one inferred operator and preserves finalizer metadata', () => {
@@ -101,5 +106,55 @@ describe('application-native Kubernetes lifecycle handlers', () => {
         verbs: ['patch', 'update'],
       },
     ]);
+  });
+
+  it('fails closed when a resource reconciler captures a provider operation that lacks a host-mediated WASM bridge', () => {
+    const application = app('provider-reconciler', {
+      namespace: 'provider-reconciler',
+    });
+    const Widget = application.resource('Widget', {
+      apiVersion: 'widgets.example/v1alpha1',
+      spec: type({ id: 'string' }),
+      status: type({ 'phase?': 'string' }),
+      controller: { name: 'widgets-controller' },
+    });
+    const AcquisitionProvider = defineApplicationProvider({
+      interface: 'ReconcilerAcquisitionProvider',
+      version: 'v1alpha1',
+      accepts: (candidate): candidate is { readonly kind: 'acquisition' } =>
+        Boolean(candidate && typeof candidate === 'object' && Reflect.get(candidate, 'kind') === 'acquisition'),
+    }).named('primary');
+    const acquire = bindApplicationProviderOperation(
+      bindApplicationProviderDependencies(
+        async (_input: { readonly id: string }) => ({ value: 'unused' }),
+        [AcquisitionProvider],
+      ),
+      {
+        member: 'acquire',
+        runtime: {
+          module: '@fixture/acquisition/runtime',
+          export: 'acquireItem',
+          access: {
+            kind: 'provider',
+            operations: ['connection.use', 'network.connect'],
+          },
+        },
+      },
+    );
+    const acquireThroughHelper = bindApplicationCallableDependencies(
+      async (id: string) => acquire({ id }),
+      [{ identifier: 'acquire', value: acquire }],
+    );
+    const reconcile = bindApplicationCallableDependencies(
+      async (widget: { readonly spec: { readonly id: string } }) => {
+        await acquireThroughHelper(widget.spec.id);
+      },
+      [{ identifier: 'acquireThroughHelper', value: acquireThroughHelper }],
+    );
+
+    expect(() => Widget.on.reconcile(reconcile as never)).toThrow(
+      /Resource controller widgets-controller cannot call provider operation.*acquire.*ReconcilerAcquisitionProvider\.acquire.*componentized WASM.*host-mediated provider operation.*Stream\.onEvent/s,
+    );
+    expect(application.operatorInstalls).toHaveLength(0);
   });
 });
