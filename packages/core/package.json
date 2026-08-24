@@ -25,6 +25,11 @@
       "types": "./dist/canonical-json.d.ts",
       "import": "./dist/canonical-json.js",
       "default": "./dist/canonical-json.js"
+    },
+    "./admission": {
+      "types": "./dist/application-admission.d.ts",
+      "import": "./dist/application-admission.js",
+      "default": "./dist/application-admission.js"
     }
   }
 }

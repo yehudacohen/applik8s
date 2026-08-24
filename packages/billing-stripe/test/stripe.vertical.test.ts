@@ -55,6 +55,22 @@ describe('Stripe payment adapter', () => {
       body,
       headers: { 'stripe-signature': `t=${timestamp},v1=${'0'.repeat(64)}` },
     })).rejects.toThrow('signature is invalid');
+    await expect(provider.verifyWebhook?.({
+      body: new TextEncoder().encode(
+        new TextDecoder().decode(body).replace('workspace:one', 'workspace:two'),
+      ),
+      headers: { 'stripe-signature': `t=${timestamp},v1=${signature}` },
+    })).rejects.toThrow('signature is invalid');
+    const staleTimestamp = timestamp - 301;
+    const staleSignature = createHmac('sha256', 'webhook-secret')
+      .update(`${staleTimestamp}.${new TextDecoder().decode(body)}`)
+      .digest('hex');
+    await expect(provider.verifyWebhook?.({
+      body,
+      headers: {
+        'stripe-signature': `t=${staleTimestamp},v1=${staleSignature}`,
+      },
+    })).rejects.toThrow('outside the accepted timestamp window');
   });
 
   it('passes idempotency and secret-derived credentials only on the server request', async () => {

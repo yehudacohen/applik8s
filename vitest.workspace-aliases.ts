@@ -91,6 +91,7 @@ export function workspaceAliases(): Record<string, string> {
     '@applik8s/mcp/client': fileURLToPath(new URL('./packages/mcp/src/client.ts', import.meta.url)),
     '@applik8s/mcp/server': fileURLToPath(new URL('./packages/mcp/src/server.ts', import.meta.url)),
     '@applik8s/mcp': fileURLToPath(new URL('./packages/mcp/src/index.ts', import.meta.url)),
+    '@applik8s/core/admission': fileURLToPath(new URL('./packages/core/src/application-admission.ts', import.meta.url)),
     '@applik8s/core/canonical-json': fileURLToPath(new URL('./packages/core/src/canonical-json.ts', import.meta.url)),
     '@applik8s/core': fileURLToPath(new URL('./packages/core/src/index.ts', import.meta.url)),
     '@applik8s/deployment-contract': fileURLToPath(new URL('./packages/deployment-contract/src/index.ts', import.meta.url)),

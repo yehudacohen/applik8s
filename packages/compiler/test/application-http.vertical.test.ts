@@ -361,11 +361,19 @@ describe('generated function-native HTTP worker', () => {
     expect(source).toContain('applik8s.runtime/v1alpha1');
     expect(source).toContain('invalid_runtime_envelope');
     expect(source).toContain('provider-signed-webhook');
+    expect(source).toContain('applik8s.admission-observation/v1');
+    expect(source).toContain('applik8s-http-admission');
+    expect(source).toContain('createApplicationAdmissionObservationV1');
+    expect(source).toContain('applicationAdmissionRejectionCodeV1');
+    expect(source).toContain('transport:"webhook"');
     expect(source).toContain('webhook_authentication_failed');
     expect(source).toContain('webhook_event_unsupported');
     expect(source).toContain('webhook_payload_invalid');
     expect(source).toContain('x-provider-signature');
     expect(source).toContain('provider-event:');
+    expect(source).not.toMatch(
+      /applik8s-http-admission[^\n]*(?:body|headers|principal|trustedContext|signature|message)/u,
+    );
     expect(
       Object.keys(metafile.inputs ?? {}).some((path) =>
         path.endsWith('/task-operation-runtime.ts')),

@@ -22,6 +22,11 @@ import {
   validateSignedEnvelopeV1Protected,
   withApplicationAdmissionTraceV1,
 } from '@applik8s/core';
+import {
+  applicationAdmissionObservationVersion,
+  applicationAdmissionRejectionCodeV1,
+  createApplicationAdmissionObservationV1,
+} from '@applik8s/core/admission';
 import { describe, expect, it } from 'vitest';
 import {
   adaptApplicationGraphCanonicalJsonV1,
@@ -247,6 +252,88 @@ describe('Admission Context v1', () => {
       correlationId: context.correlationId,
       trace: context.trace,
     });
+  });
+
+  it('emits one bounded admission observation without capability-bearing evidence', () => {
+    const admitted = createApplicationAdmissionContextV1({
+      admission: {
+        principal,
+        trustedContext: {
+          organizationId: 'organization-1',
+          secret: 'must-not-be-observed',
+        },
+      },
+      operation: {
+        id: 'applik8s://webhooks/stripe/operations/receive',
+        transport: 'webhook',
+      },
+      correlationId: 'provider-event-1',
+    });
+    const observation = createApplicationAdmissionObservationV1({
+      state: 'admitted',
+      boundary: 'request',
+      admission: admitted,
+    });
+    expect(observation).toEqual({
+      apiVersion: applicationAdmissionObservationVersion,
+      state: 'admitted',
+      boundary: 'request',
+      admissionVersion: applicationAdmissionContextVersion,
+      transport: 'webhook',
+      compatibilityPath: 'canonical',
+    });
+    expect(JSON.stringify(observation)).not.toMatch(
+      /organization|secret|principal|receipt|payload|signature|message/u,
+    );
+    expect(Object.isFrozen(observation)).toBe(true);
+  });
+
+  it('classifies admission rejection without retaining arbitrary failure detail', () => {
+    const error = Object.assign(
+      new Error('signature=raw-secret; payload={"customer":"private"}'),
+      { code: 'APPLIK8S_WEBHOOK_AUTHENTICATION_FAILED' },
+    );
+    const observation = createApplicationAdmissionObservationV1({
+      state: 'rejected',
+      boundary: 'request',
+      transport: 'webhook',
+      rejectionCode: applicationAdmissionRejectionCodeV1(error),
+    });
+    expect(observation).toEqual({
+      apiVersion: applicationAdmissionObservationVersion,
+      state: 'rejected',
+      boundary: 'request',
+      admissionVersion: applicationAdmissionContextVersion,
+      transport: 'webhook',
+      compatibilityPath: 'canonical',
+      rejectionCode: 'APPLIK8S_WEBHOOK_AUTHENTICATION_FAILED',
+    });
+    expect(JSON.stringify(observation)).not.toContain('raw-secret');
+    expect(applicationAdmissionRejectionCodeV1({
+      code: 'invalid and user controlled',
+      message: 'payload-secret',
+    })).toBe('AdmissionRejected');
+  });
+
+  it('fails closed when an admitted observation has no validated context or changes transport', () => {
+    expect(() => createApplicationAdmissionObservationV1({
+      state: 'admitted',
+      boundary: 'delivery',
+      transport: 'broker',
+    })).toThrow(/validated admission context/u);
+    expect(() => createApplicationAdmissionObservationV1({
+      state: 'admitted',
+      boundary: 'request',
+      admission: createApplicationAdmissionContextV1({
+        admission: { principal, trustedContext: {} },
+        operation: {
+          id: 'applik8s://webhooks/stripe/operations/receive',
+          transport: 'webhook',
+        },
+        correlationId: 'provider-event-1',
+      }),
+      transport: 'broker',
+    })).toThrow(/does not match context/u);
   });
 
   it.each([

@@ -1561,7 +1561,7 @@ async function handleMixedQueryMultiplex(request) {
   return `${imports}
 
 function requiredEnv(name) { const value = process.env[name]; if (!value) throw new Error('Missing required environment variable ' + name); return value; }
-function requiredIntegerEnv(name, minimum, maximum) { const value = Number(requiredEnv(name)); if (!Number.isInteger(value) || value < minimum || value > maximum) throw new Error(name + ' must be an integer between ' + minimum + ' and ' + maximum + '.'); return value; }
+function requiredIntegerEnv(name, minimum, maximum) { const value = Number(requiredEnv(name)); if (!Number.isInteger(value) || value < minimum || value > maximum) throw new RangeError(name + ' must be ' + minimum + '..' + maximum); return value; }
 function schema(json, name) { const normalized = normalizeSchema({ kind: 'jsonSchema', ref: { kind: 'jsonSchema', uri: 'generated:' + name }, schema: json }, name); const validate = (value) => { const result = normalized.validate(value); return result.ok ? result.value : { summary: result.error.message }; }; validate.toJsonSchema = () => json; return validate; }
 function strictSchema(json, name) { const normalized = normalizeSchema({ kind: 'jsonSchema', ref: { kind: 'jsonSchema', uri: 'generated:' + name }, schema: json }, name); return (value) => { const result = normalized.validate(value); if (!result.ok) throw new Error(name + ' validation failed.'); return result.value; }; }
 const cursorSecret = requiredEnv('APPLIK8S_CURSOR_SECRET');
@@ -1589,7 +1589,7 @@ ${authorityDatabaseEnvironment ? `async function admitGatewayPrincipal(admission
 }` : ''}
 const queries = [${queryDeclarations}];
 const subscriptionLimiter = createApplicationSubscriptionLimiter(${JSON.stringify(gateway.subscriptionLimits)});
-async function admitRequest(request) { const admitted = await authenticateRequest(request); if (!admitted || typeof admitted !== 'object') throw new Error('Gateway authentication returned no admission.'); return admitted; }
+async function admitRequest(request) { const admitted = await authenticateRequest(request); if (!admitted || typeof admitted !== 'object') throw new Error('Gateway authentication failed.'); return admitted; }
 async function admitQuery(request, query, input) { ${acceptsTaskQueryAdmission
   ? `const internal = await verifyApplicationTaskQueryAdmission({ request, cursorSecret, audience: ${JSON.stringify(gateway.id)}, query: query.id, input }); return internal ?? admitRequest(request);`
   : 'return admitRequest(request);'} }
@@ -1662,8 +1662,8 @@ const server = createServer(async (incoming, outgoing) => { const requestControl
 server.listen(Number(process.env.APPLIK8S_HTTP_PORT ?? '${gateway.deployment?.port ?? 8080}'), '0.0.0.0');
 async function monitorDependencies() { while (!stopping) { try { await Promise.all([${providerReadinessChecks.join(', ')}]); const degraded = (await Promise.all([${[...onlineSources, ...analyticalSources].map((contract) => `recoverableProjectionReadiness(() => ${projectionQuerySourceVariable(contract.query.id)}.revision())`).join(', ')}])).filter(Boolean); await Promise.all([${searchReadinessChecks.join(', ')}]); ready = true; lastDependencyError = undefined; degradedDependencyError = degraded[0]; } catch (error) { ready = false; lastDependencyError = providerReadinessError(error); degradedDependencyError = undefined; if (!stopping) console.error(lastDependencyError); } await abortableSleep(5000, dependencyMonitor.signal); } }
 const dependencyMonitorTask = monitorDependencies();
-async function readinessCheck(boundary, check) { try { return await check(); } catch (error) { throw new Error('Application provider ' + boundary + ' readiness failed.', { cause: error }); } }
-function providerReadinessError(error) { if (!(error instanceof Error)) return 'Application provider readiness failed closed.'; const cause = error.cause; return cause === undefined || cause === error ? error.message : error.message + ' ' + providerReadinessError(cause); }
+async function readinessCheck(boundary, check) { try { return await check(); } catch (error) { throw new Error('Provider ' + boundary + ' not ready.', { cause: error }); } }
+function providerReadinessError(error) { if (!(error instanceof Error)) return 'Provider readiness failed.'; const cause = error.cause; return cause === undefined || cause === error ? error.message : error.message + ' ' + providerReadinessError(cause); }
 async function recoverableProjectionReadiness(check) { try { await check(); } catch (error) { if (!isRecoverableProjectionReadinessError(error)) throw error; return error instanceof Error ? error.message : String(error); } }
 function isRecoverableProjectionReadinessError(error) { if (!error || typeof error !== 'object') return false; const code = Reflect.get(error, 'code'); return code === 'APPLIK8S_ONLINE_PROJECTION_UNAVAILABLE' || code === 'APPLIK8S_ANALYTICAL_PROJECTION_NOT_CONFIGURED'; }
 function abortableSleep(ms, signal) { if (signal.aborted) return Promise.resolve(); return new Promise((resolve) => { const timeout = setTimeout(done, ms); const abort = () => done(); function done() { clearTimeout(timeout); signal.removeEventListener('abort', abort); resolve(); } signal.addEventListener('abort', abort, { once: true }); }); }
@@ -2978,7 +2978,7 @@ installApplicationObjectStorageRuntimeResolver((binding) => {
 `
     : '';
   const workflowImport = workflow ? "import { AsyncLocalStorage } from 'node:async_hooks';\nimport { applicationWorkflowCausalPrincipalMetadata } from '@applik8s/applik8s/workflow-runtime';\nimport { installApplicationWorkflowRuntimeResolver } from '@applik8s/applik8s/workflow-runtime-resolvers';\nimport { createHatchetWorkflowRuntime } from '@applik8s/runtime-hatchet';\nimport { normalizeSchema } from '@applik8s/sdk/schema-runtime';" : '';
-  const admissionImport = "import { applicationAdmissionInvocationView, applicationCausalPrincipalContext, createApplicationAdmissionContextV1, validateApplicationAdmissionContextV1WithoutReceipt, withApplicationAdmissionExecutionV1 } from '@applik8s/core';";
+  const admissionImport = "import { applicationAdmissionInvocationView, applicationCausalPrincipalContext, createApplicationAdmissionContextV1, validateApplicationAdmissionContextV1WithoutReceipt, withApplicationAdmissionExecutionV1 } from '@applik8s/core';\nimport { applicationAdmissionRejectionCodeV1, createApplicationAdmissionObservationV1 } from '@applik8s/core/admission';";
   const postgresImport = "import postgres from 'postgres';";
   const authorityImport = "import { createApplicationOperationAuthorityRuntime } from '@applik8s/operations';";
   const hasTransactionalFunctionNativeRuntime = Boolean(
@@ -3104,7 +3104,7 @@ ${objectStorageImports}
 import { createCallback as createHandleEvent } from './handle.generated.js';
 ${queryCallbackImports}
 function requiredEnv(name) { const value = process.env[name]; if (!value) throw new Error('Missing required environment variable ' + name); return value; }
-function requiredIntegerEnv(name, minimum, maximum) { const value = Number(requiredEnv(name)); if (!Number.isInteger(value) || value < minimum || value > maximum) throw new Error(name + ' must be an integer between ' + minimum + ' and ' + maximum + '.'); return value; }
+function requiredIntegerEnv(name, minimum, maximum) { const value = Number(requiredEnv(name)); if (!Number.isInteger(value) || value < minimum || value > maximum) throw new RangeError(name + ' must be ' + minimum + '..' + maximum); return value; }
 function schema(json) { return { kind: 'jsonSchema', ref: { kind: 'jsonSchema', uri: 'generated:stream-processor' }, schema: json }; }
 const database = ${databaseBindingSource(stream.database)};
 const stream = { kind: 'applicationStream', definition: { kind: 'stream', id: ${JSON.stringify(`${stream.name}.${stream.version}`)}, name: ${JSON.stringify(stream.name)}, version: ${JSON.stringify(stream.version)}, payload: schema(${JSON.stringify(stream.payload.jsonSchema)}) }, retention: ${JSON.stringify(stream.retention)}, authority: 'postgres-outbox', replay: 'supported', database, partition: () => { throw new Error('Processor replay never repartitions persisted events.'); }, authorize: async () => false };
@@ -3845,10 +3845,56 @@ function generatedStreamProcessorExecutionPrincipal(
     ? 'return Object.freeze({ ...context });'
     : 'return Object.freeze({ ...context, principal: processorExecutionPrincipal(context) });';
   return `
-async function processorAdmission({ envelope, attempt, signal }) {
-  if (signal.aborted) throw new Error('applik8s-processor-delivery-cancelled');
+const processorAdmissionOperationId = ${JSON.stringify(`applik8s://processors/${encodeURIComponent(processor.id)}/operations/deliver`)};
+let processorAdmissionObservationState;
+let processorAdmissionObservationAt = 0;
+async function observeProcessorAdmission(state, admission, error) {
+  const observationTime = Date.now();
+  if (state === processorAdmissionObservationState && observationTime - processorAdmissionObservationAt < 30_000) return;
+  processorAdmissionObservationState = state;
+  processorAdmissionObservationAt = observationTime;
+  const evidence = createApplicationAdmissionObservationV1({
+    state,
+    boundary: 'delivery',
+    ...(admission ? { admission } : { transport: 'broker' }),
+    ...(error ? { rejectionCode: applicationAdmissionRejectionCodeV1(error) } : {}),
+  });
+  console.info(JSON.stringify({ event: 'applik8s-processor-admission', ...evidence }));
+  const observedAt = new Date();
+  try {
+    await processorOperationAuthority.observe({
+      id: ${JSON.stringify(`processor-admission:${processor.id}`)},
+      domain: 'eventConsumer',
+      subject: processorAdmissionOperationId,
+      authority: 'canonical',
+      state: state === 'admitted' ? 'ready' : 'failed',
+      ...(evidence.rejectionCode ? { reason: evidence.rejectionCode } : {}),
+      source: 'applik8s-processor-admission',
+      evidence,
+      observedAt: observedAt.toISOString(),
+      expiresAt: new Date(observedAt.getTime() + 90_000).toISOString(),
+    });
+  } catch (observationError) {
+    console.error(JSON.stringify({
+      event: 'applik8s-processor-admission-observation-failed',
+      error: applicationAdmissionRejectionCodeV1(observationError),
+    }));
+  }
+}
+async function processorAdmission(request) {
+  try {
+    const admission = await processorAdmissionUnchecked(request);
+    await observeProcessorAdmission('admitted', admission);
+    return admission;
+  } catch (error) {
+    await observeProcessorAdmission('rejected', undefined, error);
+    throw error;
+  }
+}
+async function processorAdmissionUnchecked({ envelope, attempt, signal }) {
+  if (signal.aborted) throw Object.assign(new Error('Processor delivery was cancelled.'), { code: 'APPLIK8S_PROCESSOR_DELIVERY_CANCELLED' });
   const trustedContextDigest = envelope.contextDigest ?? envelope.principal?.trustedContextDigest;
-  if (!trustedContextDigest) throw new Error('applik8s-processor-trusted-context-required');
+  if (!trustedContextDigest) throw Object.assign(new Error('Processor delivery requires trusted context.'), { code: 'APPLIK8S_PROCESSOR_TRUSTED_CONTEXT_REQUIRED' });
   const workloadIdentity = Object.freeze(${JSON.stringify(workloadIdentity)});
   const causal = envelope.principal
     ? applicationCausalPrincipalContext(envelope.principal)
@@ -3872,13 +3918,13 @@ async function processorAdmission({ envelope, attempt, signal }) {
     cancellationRevision,
     authenticationMethod: 'applik8s-postgres-stream-delivery/v1',
   });
-  if (signal.aborted) throw new Error('applik8s-processor-delivery-cancelled');
+  if (signal.aborted) throw Object.assign(new Error('Processor delivery was cancelled.'), { code: 'APPLIK8S_PROCESSOR_DELIVERY_CANCELLED' });
   const context = validateApplicationAdmissionContextV1WithoutReceipt(
     withApplicationAdmissionExecutionV1(
       createApplicationAdmissionContextV1({
         admission: { principal, trustedContext: envelope.trustedContext ?? {} },
         operation: {
-          id: ${JSON.stringify(`applik8s://processors/${encodeURIComponent(processor.id)}/operations/deliver`)},
+          id: processorAdmissionOperationId,
           transport: 'broker',
         },
         correlationId: envelope.id,

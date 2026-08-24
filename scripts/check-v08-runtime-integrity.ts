@@ -39,6 +39,11 @@ const requestAdmissionConsumers = new Set([
   'packages/applik8s/src/stream-subscription-gateway.ts',
   'packages/server/src/kubernetes-gateway.ts',
 ]);
+const admissionObservationConsumers = new Set([
+  'packages/compiler/src/application-http/index.ts',
+  'packages/compiler/src/application-reactive/index.ts',
+  'packages/compiler/src/application-workflows/source.ts',
+]);
 const expectedInventoryPaths = new Set([
   'packages/applik8s/src/command-gateway.ts',
   'packages/applik8s/src/query-gateway.ts',
@@ -205,6 +210,16 @@ for (const path of requestAdmissionConsumers) {
   }
   if (source.includes('createApplicationAdmissionContextV1(')) {
     findings.push(`${path} retains a private request-ingress admission construction path.`);
+  }
+}
+
+for (const path of admissionObservationConsumers) {
+  const source = await readFile(join(root, path), 'utf8');
+  if (!source.includes('createApplicationAdmissionObservationV1')) {
+    findings.push(`${path} bypasses the canonical admission observation shape.`);
+  }
+  if (!source.includes('applicationAdmissionRejectionCodeV1')) {
+    findings.push(`${path} retains an unbounded admission rejection classifier.`);
   }
 }
 

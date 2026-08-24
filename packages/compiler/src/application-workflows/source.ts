@@ -331,6 +331,7 @@ import { createSignedEnvelopeCodec, signedEnvelopeUtf8Key, staticSignedEnvelopeK
 	import { connect as connectTcp } from 'node:net';
 	import { HatchetClient } from '@hatchet-dev/typescript-sdk/v1/index.js';
 	import { applicationAdmissionInvocationView, applicationCausalPrincipalContext, canonicalJsonV1String, createApplicationAdmissionContextV1, createApplicationExecutionPrincipalV1, validateApplicationAdmissionContextV1, validateApplicationAdmissionContextV1WithoutReceipt, withApplicationAdmissionExecutionV1, withApplicationAdmissionTraceV1 } from '@applik8s/core';
+	import { applicationAdmissionRejectionCodeV1, createApplicationAdmissionObservationV1 } from '@applik8s/core/admission';
 	import { nodeKeyedDigestHex } from '@applik8s/runtime/node-integrity';
 		import { installApplicationObjectStorageRuntimeResolver, installApplicationProjectionRuntimeResolver, installApplicationWorkflowRuntimeResolver } from '@applik8s/applik8s/workflow-runtime-resolvers';
 import { applicationWorkflowCausalPrincipalMetadata } from '@applik8s/applik8s/workflow-runtime';
@@ -514,27 +515,18 @@ async function observeWorkflowRuntime(state, reason) {
 }
 
 function workflowAdmissionRejectionCode(error) {
-  const code = error && typeof error === 'object' && typeof error.code === 'string'
-    ? error.code
-    : undefined;
-  if (code && /^[A-Z][A-Z0-9_]{0,63}$/u.test(code)) return code;
-  if (error instanceof Error && /^[A-Za-z][A-Za-z0-9]{0,63}$/u.test(error.name)) {
-    return error.name;
-  }
-  return 'AdmissionRejected';
+  return applicationAdmissionRejectionCodeV1(error);
 }
 
 async function observeWorkflowAdmission(options, state, admission, reason) {
-  const evidence = {
-    admissionVersion: admission?.apiVersion ?? 'applik8s.admission/v1',
-    executionKind: options.executionKind,
-    transport: admission?.operation?.transport ?? 'workflow',
-    compatibilityPath: 'canonical',
-  };
+  const evidence = createApplicationAdmissionObservationV1({
+    state,
+    boundary: 'execution',
+    ...(admission ? { admission } : { transport: 'workflow' }),
+    ...(reason ? { rejectionCode: reason } : {}),
+  });
   console.info(JSON.stringify({
     event: 'applik8s-workflow-admission',
-    state,
-    ...(reason ? { reason } : {}),
     ...evidence,
   }));
   if (!operationAuthority) return;

@@ -918,7 +918,13 @@ export const workflowProof = platform.composition;
         "event: 'applik8s-workflow-admission'",
       );
       expect(generatedSource).toContain(
-        "compatibilityPath: 'canonical'",
+        'createApplicationAdmissionObservationV1',
+      );
+      expect(generatedSource).toContain(
+        'applicationAdmissionRejectionCodeV1',
+      );
+      expect(generatedSource).toContain(
+        "boundary: 'execution'",
       );
       expect(generatedSource).toContain(
         "authority: 'canonical'",

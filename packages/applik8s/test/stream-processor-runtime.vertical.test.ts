@@ -353,6 +353,54 @@ describe('durable replay stream processor runtime', () => {
     expect(paused.checkpoint()).toBe(0);
   });
 
+  it('never invokes the handler when broker delivery provenance is substituted', async () => {
+    const checkpoints = store();
+    const substituted = {
+      ...envelope(1),
+      contextDigest: 'substituted-context',
+      trustedContext: { tenantId: 'tenant-2', secret: 'must-not-cross' },
+    };
+    const source = {
+      async read(): Promise<ApplicationReplayPage<{ postId: string }>> {
+        return {
+          items: [substituted],
+          nextSequence: 1,
+          exhausted: true,
+          retentionFloor: 0,
+        };
+      },
+    };
+    let handled = false;
+    await expect(runApplicationStreamProcessor({
+      processor: 'timeline',
+      streamName: 'posts.published.v1',
+      source,
+      store: checkpoints.value,
+      admit: async (request) => {
+        if (request.envelope.contextDigest !== 'a'.repeat(64)) {
+          throw Object.assign(
+            new Error('trustedContext=must-not-be-observed'),
+            { code: 'ADMISSION_CONTEXT_INVALID' },
+          );
+        }
+        return admitStreamDelivery(request);
+      },
+      handle: async () => {
+        handled = true;
+      },
+      concurrency: 1,
+      retry: { maxAttempts: 1, initialDelayMs: 1, maxDelayMs: 1, factor: 2 },
+      failure: 'pause',
+      timeoutMs: 1_000,
+      maxInputBytes: 1_000,
+    })).rejects.toMatchObject({
+      name: 'ApplicationStreamProcessorPausedError',
+      detail: 'Admission rejected: ADMISSION_CONTEXT_INVALID',
+    });
+    expect(handled).toBe(false);
+    expect(checkpoints.checkpoint()).toBe(0);
+  });
+
   it('rehydrates inert event payloads for every admitted delivery attempt', async () => {
     const checkpoints = store();
     const inert = envelope(1);

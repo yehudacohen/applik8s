@@ -597,6 +597,7 @@ import { createServer } from 'node:http';
 import postgres from 'postgres';
 import { installApplicationInvocationAdmissionResolver, installApplicationOperationRuntimeResolver } from '@applik8s/client';
 import { applicationAdmissionInvocationView, canonicalJsonV1String, createApplicationAdmissionContextV1, validateApplicationAdmissionContextV1, validateApplicationAdmissionContextV1WithoutReceipt, withApplicationAdmissionExecutionV1 } from '@applik8s/core';
+import { applicationAdmissionRejectionCodeV1, createApplicationAdmissionObservationV1 } from '@applik8s/core/admission';
 import { createApplicationOperationAuthorityRuntime } from '@applik8s/operations';
 import { normalizeSchema } from '@applik8s/sdk/schema-runtime';
 ${hasOperations
@@ -1017,6 +1018,35 @@ class HttpFailure extends Error {
     this.code = code;
   }
 }
+async function observeHttpAdmission(route, state, admission, error) {
+  const evidence = createApplicationAdmissionObservationV1({
+    state,
+    boundary: 'request',
+    ...(admission ? { admission } : { transport: 'webhook' }),
+    ...(error ? { rejectionCode: applicationAdmissionRejectionCodeV1(error) } : {}),
+  });
+  console.info(JSON.stringify({ event: 'applik8s-http-admission', ...evidence }));
+  const observedAt = new Date();
+  try {
+    await operationAuthority.observe({
+      id: 'http-admission:' + route.id,
+      domain: 'gateway',
+      subject: route.operation.id,
+      authority: 'canonical',
+      state: state === 'admitted' ? 'ready' : 'failed',
+      ...(evidence.rejectionCode ? { reason: evidence.rejectionCode } : {}),
+      source: 'applik8s-http-admission',
+      evidence,
+      observedAt: observedAt.toISOString(),
+      expiresAt: new Date(observedAt.getTime() + 90_000).toISOString(),
+    });
+  } catch (observationError) {
+    console.error(JSON.stringify({
+      event: 'applik8s-http-admission-observation-failed',
+      error: applicationAdmissionRejectionCodeV1(observationError),
+    }));
+  }
+}
 const mutationWindows = new Map();
 const maximumMutationWindows = 10_000;
 function enforceMutationRateLimit(route, principal) {
@@ -1123,6 +1153,7 @@ async function invokeRoute(route, params, request, url, runtimeProtocol) {
         signal: request.signal,
       }));
     } catch (error) {
+      await observeHttpAdmission(route, 'rejected', undefined, error);
       const code = error && typeof error === 'object'
         ? Reflect.get(error, 'code')
         : undefined;
@@ -1236,6 +1267,9 @@ async function invokeRoute(route, params, request, url, runtimeProtocol) {
         : {},
     ),
   );
+  if (webhookEvent) {
+    await observeHttpAdmission(route, 'admitted', baseAdmission);
+  }
   const requestOrigin = normalizedRequestOrigin(request);
   const authorizationContext = Object.freeze({
     admission: applicationAdmissionInvocationView(baseAdmission),

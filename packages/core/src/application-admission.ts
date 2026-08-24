@@ -13,6 +13,8 @@ import { canonicalJsonV1Value } from './canonical-json.js';
 import type { JsonObject, JsonValue } from './common.js';
 
 export const applicationAdmissionContextVersion = 'applik8s.admission/v1' as const;
+export const applicationAdmissionObservationVersion =
+  'applik8s.admission-observation/v1' as const;
 
 export type ApplicationAdmissionTransportV1 =
   | 'actor'
@@ -61,6 +63,33 @@ export type ApplicationAdmissionInvocationContextV1 = Omit<
   ApplicationAdmissionContextV1,
   'delivery'
 >;
+
+/**
+ * Bounded, provider-neutral evidence emitted by an admission boundary.
+ *
+ * This is intentionally not an audit record and contains no principal,
+ * trusted context, payload, signature, receipt, identifier, or exception
+ * message. Provider adapters retain responsibility for verifying their own
+ * transport evidence before an `admitted` observation can be constructed.
+ */
+export interface ApplicationAdmissionObservationV1 {
+  readonly apiVersion: typeof applicationAdmissionObservationVersion;
+  readonly state: 'admitted' | 'rejected';
+  readonly boundary: 'delivery' | 'execution' | 'request';
+  readonly admissionVersion: typeof applicationAdmissionContextVersion;
+  readonly transport: ApplicationAdmissionTransportV1;
+  readonly compatibilityPath: 'canonical' | 'legacy';
+  readonly rejectionCode?: string;
+}
+
+export interface CreateApplicationAdmissionObservationV1Options {
+  readonly state: ApplicationAdmissionObservationV1['state'];
+  readonly boundary: ApplicationAdmissionObservationV1['boundary'];
+  readonly admission?: Pick<ApplicationAdmissionContextV1, 'apiVersion' | 'operation'>;
+  readonly transport?: ApplicationAdmissionTransportV1;
+  readonly compatibilityPath?: ApplicationAdmissionObservationV1['compatibilityPath'];
+  readonly rejectionCode?: string;
+}
 
 export interface CreateApplicationAdmissionContextV1Options<
   TPrincipal extends ApplicationPrincipal = ApplicationPrincipal,
@@ -124,6 +153,89 @@ export class ApplicationAdmissionContextV1Error extends TypeError {
     super(`${message} at ${path}.`);
     this.name = new.target.name;
   }
+}
+
+/**
+ * Reduces an arbitrary failure to a bounded class suitable for admission
+ * health evidence. Error messages are never included because provider errors
+ * can contain raw payloads, signatures, identities, or trusted context.
+ */
+export function applicationAdmissionRejectionCodeV1(error: unknown): string {
+  const code = error && typeof error === 'object'
+    ? Reflect.get(error, 'code')
+    : undefined;
+  if (typeof code === 'string' && /^[A-Z][A-Z0-9_]{0,63}$/u.test(code)) {
+    return code;
+  }
+  if (
+    error instanceof Error
+    && /^[A-Za-z][A-Za-z0-9]{0,63}$/u.test(error.name)
+  ) {
+    return error.name;
+  }
+  return 'AdmissionRejected';
+}
+
+/** Constructs the only public admission-health evidence shape. */
+export function createApplicationAdmissionObservationV1(
+  options: CreateApplicationAdmissionObservationV1Options,
+): ApplicationAdmissionObservationV1 {
+  const compatibilityPath = options.compatibilityPath ?? 'canonical';
+  if (compatibilityPath !== 'canonical' && compatibilityPath !== 'legacy') {
+    throw new TypeError('Admission observation compatibility path is invalid.');
+  }
+  if (
+    options.boundary !== 'delivery'
+    && options.boundary !== 'execution'
+    && options.boundary !== 'request'
+  ) {
+    throw new TypeError('Admission observation boundary is invalid.');
+  }
+  if (options.state !== 'admitted' && options.state !== 'rejected') {
+    throw new TypeError('Admission observation state is invalid.');
+  }
+  if (options.state === 'admitted' && !options.admission) {
+    throw new TypeError(
+      'An admitted observation requires a validated admission context.',
+    );
+  }
+  if (
+    options.admission
+    && options.admission.apiVersion !== applicationAdmissionContextVersion
+  ) {
+    throw new TypeError('Admission observation context version is invalid.');
+  }
+  const transport = options.admission?.operation.transport ?? options.transport;
+  if (!transport || !admissionTransports.includes(`|${transport}|`)) {
+    throw new TypeError('Admission observation transport is invalid.');
+  }
+  if (
+    options.admission
+    && options.transport
+    && options.transport !== options.admission.operation.transport
+  ) {
+    throw new TypeError('Admission observation transport does not match context.');
+  }
+  if (options.state === 'admitted' && options.rejectionCode) {
+    throw new TypeError('An admitted observation cannot contain a rejection code.');
+  }
+  if (
+    options.rejectionCode
+    && !/^(?:[A-Z][A-Z0-9_]{0,63}|[A-Za-z][A-Za-z0-9]{0,63})$/u.test(
+      options.rejectionCode,
+    )
+  ) {
+    throw new TypeError('Admission observation rejection code is invalid.');
+  }
+  return Object.freeze({
+    apiVersion: applicationAdmissionObservationVersion,
+    state: options.state,
+    boundary: options.boundary,
+    admissionVersion: applicationAdmissionContextVersion,
+    transport,
+    compatibilityPath,
+    ...(options.rejectionCode ? { rejectionCode: options.rejectionCode } : {}),
+  });
 }
 
 /**

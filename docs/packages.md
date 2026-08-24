@@ -10,7 +10,7 @@ provider, runtime, deployment, or tooling boundaries.
 | Package | Use it for |
 | --- | --- |
 | `@applik8s/applik8s` | Full application authoring: models, resources, events, workflows, providers, HTTP, and TypeKro composition. |
-| `@applik8s/core` | Dependency-light shared contracts used by packages and tooling. Most applications do not import it directly. |
+| `@applik8s/core` | Dependency-light shared contracts used by packages and tooling. Most applications do not import it directly. Focused runtime consumers use `/canonical-json` for canonical bytes or `/admission` for validated admission and redacted observation primitives without pulling the umbrella surface. |
 | `@applik8s/sdk` | Focused Kubernetes operator and CRD authoring, including handler-safe imports. |
 | `@applik8s/ai` | Provider-neutral logical models, agents, attempt records, usage, and AI contracts. |
 | `@applik8s/identity` | Provider-neutral identity, session, admission, OAuth, and recovery contracts. |

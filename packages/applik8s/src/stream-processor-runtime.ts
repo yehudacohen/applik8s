@@ -2,6 +2,7 @@
 
 import { createHash } from 'node:crypto';
 import type { ApplicationAdmissionInvocationContextV1 } from '@applik8s/core';
+import { applicationAdmissionRejectionCodeV1 } from '@applik8s/core/admission';
 import type { ApplicationEventBatch, ApplicationStreamBatchContext, ApplicationStreamProcessContext } from './application-reactive.js';
 import type { ApplicationPostgresSql } from './postgres-runtime-contract.js';
 import { createApplicationPostgresSql } from './postgres-runtime-loader.js';
@@ -655,6 +656,12 @@ function applicationStreamProcessorErrorMessage(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
   if (!error || typeof error !== 'object') return message;
   const code = Reflect.get(error, 'code');
+  if (
+    typeof code === 'string'
+    && (code.startsWith('ADMISSION_') || code.startsWith('APPLIK8S_PROCESSOR_'))
+  ) {
+    return `Admission rejected: ${applicationAdmissionRejectionCodeV1(error)}`;
+  }
   const rejection = Reflect.get(error, 'rejection');
   if (
     code !== 'applik8s-command-rejected'

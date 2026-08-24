@@ -336,7 +336,17 @@ describe('generated v0.6 reactive workloads', () => {
     expect(generated).toContain('await source.close().catch(() => undefined)');
     expect(generated).toContain('lastSuccessfulCycleAt');
     expect(generated).toContain('async function processorAdmission');
+    expect(generated).toContain('async function processorAdmissionUnchecked');
     expect(generated).toContain('admit: processorAdmission');
+    expect(generated).toContain('createApplicationAdmissionObservationV1');
+    expect(generated).toContain('applicationAdmissionRejectionCodeV1');
+    expect(generated).toContain("event: 'applik8s-processor-admission'");
+    expect(generated).toContain('processorAdmissionObservationAt < 30_000');
+    expect(generated).toContain("boundary: 'delivery'");
+    expect(generated).toContain("transport: 'broker'");
+    expect(generated).not.toMatch(
+      /applik8s-processor-admission[^\n]*(?:envelope|payload|principal|trustedContext|message)/u,
+    );
     expect(generated).toContain("transport: 'broker'");
     expect(generated).toContain(
       'processorOperationAuthority.admitExecutionPrincipal',
