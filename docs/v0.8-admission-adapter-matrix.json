@@ -21,7 +21,7 @@
       "id": "verified-webhook-provider-callback",
       "transport": "webhook",
       "state": "implemented",
-      "evidenceVerifier": "provider-specific signature and replay verifier",
+      "evidenceVerifier": "provider-specific raw-byte signature and timestamp-window verifier followed by canonical provider-event identity",
       "principalSource": "bounded external service principal",
       "operationIdentity": "registered provider callback operation",
       "owners": [
@@ -30,7 +30,7 @@
         "packages/billing-stripe/src/index.ts"
       ],
       "regression": "bunx vitest run --maxWorkers=1 packages/billing-stripe/test/stripe.vertical.test.ts packages/applik8s/test/application-http.vertical.test.ts packages/compiler/test/application-http.vertical.test.ts",
-      "remaining": "add provider-rejection/version telemetry and a live Stripe webhook receipt without weakening the provider-neutral raw-byte boundary"
+      "remaining": "shared bounded admission observations, stale-timestamp and signed-body substitution negatives, canonical provider-event idempotency, and source enforcement are integrated at 8a07641; obtain a live Stripe webhook receipt without weakening the provider-neutral raw-byte boundary"
     },
     {
       "id": "broker-delivery",
@@ -46,7 +46,7 @@
         "packages/compiler/src/application-reactive/index.ts"
       ],
       "regression": "bunx vitest run --maxWorkers=1 packages/applik8s/test/stream-processor-runtime.vertical.test.ts packages/applik8s/test/signal-runtime.vertical.test.ts; NODE_OPTIONS=--max-old-space-size=8192 bunx vitest run --maxWorkers=1 packages/compiler/test/application-reactive.vertical.test.ts",
-      "remaining": "add rejection/version telemetry and an emitted-worker PostgreSQL retry, restart, and cleanup receipt before live-qualified product claims"
+      "remaining": "shared bounded admission observations, fail-closed provenance substitution, redacted processor errors, stable current-state sampling, and source enforcement are integrated at 8a07641; obtain an emitted-worker PostgreSQL retry, restart, and cleanup receipt before live-qualified product claims"
     },
     {
       "id": "workflow-task-delivery",
@@ -66,7 +66,7 @@
         "packages/runtime-hatchet/src/index.ts"
       ],
       "regression": "bunx vitest run --maxWorkers=1 packages/core/test/runtime-integrity.vertical.test.ts packages/operations/test/postgres.vertical.test.ts packages/applik8s/test/task-operation-runtime.vertical.test.ts packages/applik8s/test/task-query-runtime.vertical.test.ts packages/compiler/test/application-reactive.vertical.test.ts packages/compiler/test/application-http.vertical.test.ts packages/runtime-hatchet/test/runtime.vertical.test.ts; NODE_OPTIONS=--max-old-space-size=8192 bunx vitest run --maxWorkers=1 packages/compiler/test/application-workflows.vertical.test.ts",
-      "remaining": "workflow/task starts, resumes, operations, signal issuance, and typed HTTP gateway starts preserve canonical execution admission; the exact generated HTTP worker retries a destroyed post-admission response with one durable identity and one effect; generated workers emit bounded admission version/transport/compatibility/rejection observations without raw messages, and reattached cancellation retains one run and one effect at 77bb297; real Hatchet lifecycle evidence remains before advancing the complete adapter"
+      "remaining": "workflow/task starts, resumes, operations, signal issuance, and typed HTTP gateway starts preserve canonical execution admission; the exact generated HTTP worker retries a destroyed post-admission response with one durable identity and one effect; generated workers use the shared bounded admission observation schema without raw messages, and reattached cancellation retains one run and one effect at 77bb297 and 8a07641; real Hatchet lifecycle evidence remains before live qualification"
     },
     {
       "id": "schedule-occurrence",
