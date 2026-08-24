@@ -15,7 +15,7 @@
         "@applik8s/server Kubernetes application gateway"
       ],
       "regression": "bunx vitest run --maxWorkers=1 packages/core/test/runtime-integrity.vertical.test.ts packages/server/test/kubernetes-gateway.vertical.test.ts packages/applik8s/test/command-gateway.vertical.test.ts packages/applik8s/test/query-gateway.vertical.test.ts packages/applik8s/test/stream-subscription-gateway.vertical.test.ts packages/applik8s/test/application-gateway.vertical.test.ts packages/compiler/test/application-reactive.vertical.test.ts",
-      "remaining": "add table-driven cross-gateway parity and private-shape source detection"
+      "remaining": "cross-gateway request parity, narrowed admission views, trace propagation, and private-shape source enforcement are integrated at f7d0df1; add redacted admission-version and rejection-reason telemetry before release qualification"
     },
     {
       "id": "verified-webhook-provider-callback",

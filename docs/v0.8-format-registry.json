@@ -239,7 +239,7 @@
       "readers": ["0.8.x"],
       "maximumLifetime": "bounded-by-admitted-execution",
       "purposeOrKeyNamespace": "transport-adapter-specific-evidence",
-      "migrationPhase": "request-gateway-cohort-implemented-remaining-ingress-adapters-pending",
+      "migrationPhase": "request-gateway-cohort-integrated-remaining-execution-ingress-adapters-pending",
       "adoptedBy": [
         "request-identity-provider",
         "application-fetch-gateway",
@@ -254,7 +254,7 @@
         "durable-ai-attempt-evidence"
       ],
       "telemetry": "runtime-integrity-admission-version-and-transport",
-      "rollbackSafeThrough": "pending-ingress-parity-evidence",
+      "rollbackSafeThrough": "request-ingress-parity-proven-execution-ingress-parity-pending",
       "decoderRemovalRelease": null
     },
     {
