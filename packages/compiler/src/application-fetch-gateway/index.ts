@@ -292,6 +292,7 @@ export function generatedApplicationFetchGatewayModules(
 	if (schedules.length > 0)
 		imports.push(
 			"import { executeApplicationScheduleAdmission, installApplicationScheduleRuntimeResolver, schedule } from '@applik8s/applik8s';",
+			"import { applicationAdmissionRejectionCodeV1, createApplicationAdmissionObservationV1 } from '@applik8s/core/admission';",
 			"import { installApplicationInvocationAdmissionResolver } from '@applik8s/client';",
 			"import { installLocalApplicationScheduleRuntime } from '@applik8s/applik8s/schedule-runtime-local';",
 			"import { createAwsApplicationScheduleRuntime, startAwsApplicationScheduleQueueRunner } from '@applik8s/runtime-aws';",
@@ -1536,8 +1537,46 @@ const defaultApplicationScheduleBindings = applicationScheduleBindings.filter((e
 const defaultApplicationSchedules = defaultApplicationScheduleBindings.map((entry) => entry.handle);
 const scheduleInvocationScope = new AsyncLocalStorage();
 installApplicationInvocationAdmissionResolver(() => scheduleInvocationScope.getStore());
+let scheduleAdmissionObservationState;
+let scheduleAdmissionObservationAt = 0;
+async function observeScheduleAdmission(state, admission, error) {
+  const observationTime = Date.now();
+  if (state === scheduleAdmissionObservationState && observationTime - scheduleAdmissionObservationAt < 30_000) return;
+  scheduleAdmissionObservationState = state;
+  scheduleAdmissionObservationAt = observationTime;
+  const evidence = createApplicationAdmissionObservationV1({
+    state,
+    boundary: 'execution',
+    ...(admission ? { admission } : { transport: 'schedule' }),
+    ...(error ? { rejectionCode: applicationAdmissionRejectionCodeV1(error) } : {}),
+  });
+  console.info(JSON.stringify({ event: 'applik8s-schedule-admission', ...evidence }));
+  ${operationCatalog && identityAuthorityDatabaseEnvironment ? `const observedAt = new Date();
+  try {
+    await operationAuthority.observe({
+      id: 'schedule-admission',
+      domain: 'workflow',
+      subject: admission?.operation?.id ?? 'applik8s://schedules/admission',
+      authority: 'canonical',
+      state: state === 'admitted' ? 'ready' : 'failed',
+      ...(evidence.rejectionCode ? { reason: evidence.rejectionCode } : {}),
+      source: 'applik8s-schedule-admission',
+      evidence,
+      observedAt: observedAt.toISOString(),
+      expiresAt: new Date(observedAt.getTime() + 90_000).toISOString(),
+    });
+  } catch (observationError) {
+    console.error(JSON.stringify({
+      event: 'applik8s-schedule-admission-observation-failed',
+      error: applicationAdmissionRejectionCodeV1(observationError),
+    }));
+  }` : ''}
+}
 const scheduleAdmissionRunner = Object.freeze({
-  run: (admission, invoke) => scheduleInvocationScope.run(admission, invoke),
+  async run(admission, invoke) {
+    await observeScheduleAdmission('admitted', admission);
+    return scheduleInvocationScope.run(admission, invoke);
+  },
 });
 const fixedSchedules = defaultApplicationSchedules.filter((entry) => entry.definition.configuration === 'fixed');
 const localScheduleRuntime = process.env.APPLIK8S_DEPLOYMENT_TARGET === 'local' && defaultApplicationSchedules.length > 0
@@ -1579,7 +1618,13 @@ const awsScheduleRunner = awsScheduleConfiguration
         if (!handle) throw new Error('AWS Scheduler admitted unknown definition ' + admission.definitionId + '.');
         return executeApplicationScheduleAdmission(handle, admission, signal, scheduleAdmissionRunner);
       },
-      onError: (error) => console.error('Applik8s AWS schedule admission failed', error),
+      onError: (error) => {
+        void observeScheduleAdmission('rejected', undefined, error);
+        console.error(JSON.stringify({
+          event: 'applik8s-aws-schedule-admission-failed',
+          error: applicationAdmissionRejectionCodeV1(error),
+        }));
+      },
     })
   : undefined;
 void awsScheduleRunner;
@@ -1790,11 +1835,14 @@ const applicationGatewayCore = {
       }
     }` : ""}
     ${schedules.length > 0 ? `if (url.pathname === '/__applik8s/v1/internal/schedules/occurrences' && request.method === 'POST') {
-      if (!authorizedInternalAdmission(request)) return new Response(JSON.stringify({ error: 'forbidden' }), { status: 403, headers: { 'content-type': 'application/json' } });
+      if (!authorizedInternalAdmission(request)) {
+        await observeScheduleAdmission('rejected', undefined, Object.assign(new Error('Schedule internal authorization was rejected.'), { code: 'SCHEDULE_INTERNAL_AUTHORIZATION_REJECTED' }));
+        return new Response(JSON.stringify({ error: 'forbidden' }), { status: 403, headers: { 'content-type': 'application/json' } });
+      }
       try {
         const admission = await request.json();
         const handle = applicationSchedules.find((candidate) => candidate.definition.id === admission?.definitionId);
-        if (!handle) return new Response(JSON.stringify({ error: 'unknown_schedule' }), { status: 404, headers: { 'content-type': 'application/json' } });
+        if (!handle) throw Object.assign(new Error('Schedule admission references an unknown definition.'), { code: 'SCHEDULE_DEFINITION_UNKNOWN', status: 404 });
         const receipt = await executeKubernetesApplicationScheduleAdmission({
           databaseUrl: requiredEnv('APPLIK8S_SCHEDULE_DATABASE_URL'),
           handle,
@@ -1807,8 +1855,13 @@ const applicationGatewayCore = {
         return new Response(JSON.stringify({ accepted: receipt.state !== 'failed', receipt }), { status: receipt.state === 'failed' ? 500 : 200, headers: { 'content-type': 'application/json' } });
       } catch (error) {
         const busy = error?.code === 'SCHEDULE_OCCURRENCE_BUSY';
-        console.error('Applik8s Kubernetes schedule admission failed', error);
-        return new Response(JSON.stringify({ error: busy ? 'schedule_occurrence_busy' : 'schedule_admission_failed' }), { status: busy ? 409 : 500, headers: { 'content-type': 'application/json' } });
+        const unknown = error?.code === 'SCHEDULE_DEFINITION_UNKNOWN';
+        await observeScheduleAdmission('rejected', undefined, error);
+        console.error(JSON.stringify({
+          event: 'applik8s-kubernetes-schedule-admission-failed',
+          error: applicationAdmissionRejectionCodeV1(error),
+        }));
+        return new Response(JSON.stringify({ error: busy ? 'schedule_occurrence_busy' : unknown ? 'unknown_schedule' : 'schedule_admission_failed' }), { status: busy ? 409 : unknown ? 404 : 500, headers: { 'content-type': 'application/json' } });
       }
     }` : ""}
     ${actors.length > 0 ? `if (url.pathname === '/__applik8s/v1/internal/actors/alarms' && request.method === 'POST') {

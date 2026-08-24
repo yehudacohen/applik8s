@@ -40,6 +40,9 @@ const requestAdmissionConsumers = new Set([
   'packages/server/src/kubernetes-gateway.ts',
 ]);
 const admissionObservationConsumers = new Set([
+  'packages/applik8s/src/application-actor-authority-runtime.ts',
+  'packages/compiler/src/application-agents/index.ts',
+  'packages/compiler/src/application-fetch-gateway/index.ts',
   'packages/compiler/src/application-http/index.ts',
   'packages/compiler/src/application-reactive/index.ts',
   'packages/compiler/src/application-workflows/source.ts',

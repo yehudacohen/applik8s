@@ -694,6 +694,7 @@ import { installApplicationInvocationAdmissionResolver, installApplicationOperat
 import { createApplicationAIAttemptRuntime } from '@applik8s/ai';
 import { applicationAIConversationPrincipalScope, createApplicationAIAgentConversationPersistence, createApplicationTanStackConversationPersistence, createPostgresApplicationConversationStore } from '@applik8s/conversations/runtime';
 import { applicationCausalPrincipalContext, validateApplicationAdmissionContextV1 } from '@applik8s/core';
+import { applicationAdmissionRejectionCodeV1, createApplicationAdmissionObservationV1 } from '@applik8s/core/admission';
 import { createApplicationOperationAuthorityRuntime, decodeApplicationExecutionAdmission } from '@applik8s/operations';
 import { createApplicationAIAgentRequestHandler, createApplicationAIOperationExecutor, createPostgresApplicationAIAttemptStore } from '@applik8s/runtime-ai';
 import { createApplicationTaskQueryRuntime } from '@applik8s/applik8s/task-query-runtime';
@@ -964,6 +965,41 @@ const operationAuthority = createApplicationOperationAuthorityRuntime({
   catalog: ${JSON.stringify(contract.operationCatalog)},
   ${applicationStaticAuthorityManifest(contract.graph) ? `authorityManifest: ${JSON.stringify(applicationStaticAuthorityManifest(contract.graph))},` : ''}
 });
+let agentAdmissionObservationState;
+let agentAdmissionObservationAt = 0;
+async function observeAgentAdmission(state, admission, error) {
+  const observationTime = Date.now();
+  if (state === agentAdmissionObservationState && observationTime - agentAdmissionObservationAt < 30_000) return;
+  agentAdmissionObservationState = state;
+  agentAdmissionObservationAt = observationTime;
+  const evidence = createApplicationAdmissionObservationV1({
+    state,
+    boundary: 'execution',
+    ...(admission ? { admission } : { transport: 'framework' }),
+    ...(error ? { rejectionCode: applicationAdmissionRejectionCodeV1(error) } : {}),
+  });
+  console.info(JSON.stringify({ event: 'applik8s-agent-admission', ...evidence }));
+  const observedAt = new Date();
+  try {
+    await operationAuthority.observe({
+      id: 'agent-admission:' + contract.nodeId,
+      domain: 'ai',
+      subject: contract.name,
+      authority: 'canonical',
+      state: state === 'admitted' ? 'ready' : 'failed',
+      ...(evidence.rejectionCode ? { reason: evidence.rejectionCode } : {}),
+      source: 'applik8s-agent-admission',
+      evidence,
+      observedAt: observedAt.toISOString(),
+      expiresAt: new Date(observedAt.getTime() + 90_000).toISOString(),
+    });
+  } catch (observationError) {
+    console.error(JSON.stringify({
+      event: 'applik8s-agent-admission-observation-failed',
+      error: applicationAdmissionRejectionCodeV1(observationError),
+    }));
+  }
+}
 function quotedIdentifier(value) {
   return '"' + String(value).replaceAll('"', '""') + '"';
 }
@@ -1148,53 +1184,53 @@ const handle = createApplicationAIAgentRequestHandler({
   timeoutMs: contract.budgets.timeoutMs,
   maximumConcurrency: contract.deployment.maximumConcurrency,
   async admit(request, body) {
-    const token = request.headers.get('x-applik8s-execution-admission');
-    if (!token) throw new Error('Agent execution admission is required.');
-    const invocation = decodeApplicationExecutionAdmission(
-      requiredEnv('APPLIK8S_INTERNAL_OPERATION_SECRET'),
-      token,
-      {
+    try {
+      const token = request.headers.get('x-applik8s-execution-admission');
+      if (!token) throw Object.assign(new Error('Agent execution admission is required.'), { code: 'AGENT_EXECUTION_ADMISSION_REQUIRED' });
+      const invocation = decodeApplicationExecutionAdmission(
+        requiredEnv('APPLIK8S_INTERNAL_OPERATION_SECRET'),
+        token,
+        {
+          executionKind: 'agent',
+          workloadIdentityId: ${JSON.stringify(workloadIdentity.id)},
+          serviceIdentityId: ${JSON.stringify(contract.agent.serviceIdentity.id)},
+          audience: ${JSON.stringify(audiences)},
+          binding: {
+            agentId: contract.nodeId,
+            threadId: body.threadId,
+            runId: body.runId,
+          },
+        },
+      );
+      const causalPrincipal = applicationCausalPrincipalContext(
+        invocation.context.principal,
+      );
+      const principal = await operationAuthority.admitExecutionPrincipal({
         executionKind: 'agent',
-        workloadIdentityId: ${JSON.stringify(workloadIdentity.id)},
-        serviceIdentityId: ${JSON.stringify(contract.agent.serviceIdentity.id)},
-        audience: ${JSON.stringify(audiences)},
-        binding: {
-          agentId: contract.nodeId,
+        executionId: invocation.executionId,
+        attempt: invocation.attempt,
+        workloadIdentity: ${JSON.stringify(workloadIdentity)},
+        serviceIdentity: contract.serviceIdentity,
+        executionContext: {
+          kind: 'agent',
           threadId: body.threadId,
           runId: body.runId,
         },
-      },
-    );
-    const causalPrincipal = applicationCausalPrincipalContext(
-      invocation.context.principal,
-    );
-    const principal = await operationAuthority.admitExecutionPrincipal({
-      executionKind: 'agent',
-      executionId: invocation.executionId,
-      attempt: invocation.attempt,
-      workloadIdentity: ${JSON.stringify(workloadIdentity)},
-      serviceIdentity: contract.serviceIdentity,
-      executionContext: {
-        kind: 'agent',
-        threadId: body.threadId,
-        runId: body.runId,
-      },
-      causalPrincipalId: causalPrincipal.id,
-      causalPrincipal: causalPrincipal.identity,
-      causalGrantIds: [
-        ...new Set([
-          ...causalPrincipal.grantIds,
-          ...invocation.causalGrantIds,
-        ]),
-      ],
-      envelopes: workloadEnvelopes,
-      trustedContextDigest: invocation.context.trustedContext.digest,
-      audience: invocation.audience,
-      deadline: invocation.expiresAt,
-      cancellationRevision: invocation.cancellationRevision,
-    });
-    return {
-      context: validateApplicationAdmissionContextV1({
+        causalPrincipalId: causalPrincipal.id,
+        causalPrincipal: causalPrincipal.identity,
+        causalGrantIds: [
+          ...new Set([
+            ...causalPrincipal.grantIds,
+            ...invocation.causalGrantIds,
+          ]),
+        ],
+        envelopes: workloadEnvelopes,
+        trustedContextDigest: invocation.context.trustedContext.digest,
+        audience: invocation.audience,
+        deadline: invocation.expiresAt,
+        cancellationRevision: invocation.cancellationRevision,
+      });
+      const context = validateApplicationAdmissionContextV1({
         ...invocation.context,
         principal,
         authorityRevision: principal.authorityRevision,
@@ -1202,8 +1238,13 @@ const handle = createApplicationAIAgentRequestHandler({
           values: invocation.context.trustedContext.values,
           digest: principal.trustedContextDigest,
         },
-      }),
-    };
+      });
+      await observeAgentAdmission('admitted', context);
+      return { context };
+    } catch (error) {
+      await observeAgentAdmission('rejected', undefined, error);
+      throw error;
+    }
   },
   async reserveAttempt({ principal, admission, trustedContext, threadId, runId, logicalModel, request }) {
     const invocationId = 'invocation_' + createHash('sha256')

@@ -10,6 +10,10 @@ import {
   withApplicationAdmissionExecutionV1,
 } from '@applik8s/core';
 import {
+  applicationAdmissionRejectionCodeV1,
+  createApplicationAdmissionObservationV1,
+} from '@applik8s/core/admission';
+import {
   countApplicationTelemetry,
   logApplicationTelemetry,
 } from './application-telemetry-runtime.js';
@@ -89,6 +93,16 @@ export function normalizeApplicationActorTurnAuthority(
         context,
       });
     }
+    if (!normalized.admission) {
+      throw new Error('Normalized actor authority is missing canonical admission.');
+    }
+    logApplicationTelemetry('info', 'applik8s.actor.admission',
+      { ...createApplicationAdmissionObservationV1({
+        state: 'admitted',
+        boundary: 'execution',
+        admission: normalized.admission,
+        compatibilityPath: format === 'release-a-legacy' ? 'legacy' : 'canonical',
+      }) });
     return normalized;
   } catch (error) {
     countApplicationTelemetry('applik8s.actor.authority.decode', 1, {
@@ -96,11 +110,14 @@ export function normalizeApplicationActorTurnAuthority(
       context,
       outcome: 'rejected',
     });
-    logApplicationTelemetry('warn', 'applik8s.actor.authority.rejected', {
-      format,
-      context,
-      error: error instanceof Error ? error.name : 'unknown',
-    });
+    logApplicationTelemetry('warn', 'applik8s.actor.admission',
+      { ...createApplicationAdmissionObservationV1({
+        state: 'rejected',
+        boundary: 'execution',
+        transport: 'actor',
+        compatibilityPath: format === 'release-a-legacy' ? 'legacy' : 'canonical',
+        rejectionCode: applicationAdmissionRejectionCodeV1(error),
+      }) });
     throw error;
   }
 }

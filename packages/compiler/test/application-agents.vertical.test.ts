@@ -1005,6 +1005,10 @@ export const providerAgentStack = application.composition;
     expect(normalizedSource).toContain('x-applik8s-execution-admission');
     expect(normalizedSource).toContain('x-applik8s-internal-invocation');
     expect(normalizedSource).toContain('applik8s-ai-operation-placement-error');
+    expect(normalizedSource).toContain('createApplicationAdmissionObservationV1');
+    expect(normalizedSource).toContain('applik8s-agent-admission');
+    expect(normalizedSource).toContain('transport:"framework"');
+    expect(normalizedSource).not.toContain('evidence: { admission }');
     expect(normalizedSource).toContain(
       'Agent execution admission is required.',
     );

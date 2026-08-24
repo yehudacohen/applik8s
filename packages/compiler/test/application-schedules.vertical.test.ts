@@ -107,6 +107,10 @@ describe('v0.8 function-native schedule discovery', () => {
     expect(gateway?.files['gateway.generated.ts']).toContain('createKubernetesApplicationScheduleRuntime');
     expect(gateway?.files['gateway.generated.ts']).toContain('installApplicationInvocationAdmissionResolver');
     expect(gateway?.files['gateway.generated.ts']).toContain('admissionRunner: scheduleAdmissionRunner');
+    expect(gateway?.files['gateway.generated.ts']).toContain('createApplicationAdmissionObservationV1');
+    expect(gateway?.files['gateway.generated.ts']).toContain("event: 'applik8s-schedule-admission'");
+    expect(gateway?.files['gateway.generated.ts']).toContain("transport: 'schedule'");
+    expect(gateway?.files['gateway.generated.ts']).not.toContain('evidence: { admission }');
     expect(gateway?.files['gateway.generated.ts']).toContain('/__applik8s/v1/internal/schedules/occurrences');
     expect(gateway?.files['gateway.generated.ts']).toContain("requiredEnv('APPLIK8S_SCHEDULE_DATABASE_URL')");
     expect(gateway?.files['gateway.generated.ts']).toContain('evidence.cleanup.v1');

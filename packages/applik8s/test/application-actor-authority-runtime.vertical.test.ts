@@ -148,14 +148,42 @@ describe('canonical actor turn authority', () => {
         },
       },
     ]));
-    expect(logs).toEqual([{
-      event: 'applik8s.actor.authority.rejected',
-      fields: {
-        format: 'release-a-legacy',
-        context: 'durable-read',
-        error: 'Error',
+    expect(logs).toEqual([
+      {
+        event: 'applik8s.actor.admission',
+        fields: {
+          apiVersion: 'applik8s.admission-observation/v1',
+          state: 'admitted',
+          boundary: 'execution',
+          admissionVersion: 'applik8s.admission/v1',
+          transport: 'actor',
+          compatibilityPath: 'legacy',
+        },
       },
-    }]);
+      {
+        event: 'applik8s.actor.admission',
+        fields: {
+          apiVersion: 'applik8s.admission-observation/v1',
+          state: 'admitted',
+          boundary: 'execution',
+          admissionVersion: 'applik8s.admission/v1',
+          transport: 'actor',
+          compatibilityPath: 'canonical',
+        },
+      },
+      {
+        event: 'applik8s.actor.admission',
+        fields: {
+          apiVersion: 'applik8s.admission-observation/v1',
+          state: 'rejected',
+          boundary: 'execution',
+          admissionVersion: 'applik8s.admission/v1',
+          transport: 'actor',
+          compatibilityPath: 'legacy',
+          rejectionCode: 'Error',
+        },
+      },
+    ]);
   });
 
   it('fails closed when recovered actor execution authority carries a stale cancellation fence', () => {
