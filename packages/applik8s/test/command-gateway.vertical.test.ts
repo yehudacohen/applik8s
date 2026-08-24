@@ -211,6 +211,7 @@ describe('authenticated command gateway', () => {
 
   it('separates transport acknowledgement from durable result and scopes opaque progress to admission', async () => {
     const contextSecret = 'an-application-wide-context-secret-with-32-characters';
+    const observations: unknown[] = [];
     const publish = vi.fn(async () => ({ stream: 'APPLIK8S_EVENTS', sequence: 1, duplicate: false, subject: 'applik8s.commands.cards.rename.v1.card-1', messageId: 'command-1' }));
     const unsafe = vi.fn(async () => [{ output: { changed: true }, error: null, model_revision: 'revision-2' }]);
     const gateway = createApplicationCommandGateway({
@@ -224,11 +225,20 @@ describe('authenticated command gateway', () => {
       contextSecret,
       eventLogPublisher: { publish, async drain() {} },
       now: () => new Date('2026-07-15T00:00:00.000Z'),
+      observeAdmission: (observation) => { observations.push(observation); },
     });
     const submissionResponse = await gateway.handle(new Request('https://catalog.test/commands/cards.rename.v1/submit', { method: 'POST', body: JSON.stringify({ input: { cardId: 'card-1' }, commandId: 'command-1', idempotencyKey: 'rename-once' }) }));
     expect(submissionResponse?.status).toBe(202);
     const submission = await submissionResponse?.json() as { readonly progressCursor: string; readonly durableResult: string };
     expect(submission.durableResult).toBe('pending');
+    expect(observations).toContainEqual({
+      apiVersion: 'applik8s.admission-observation/v1',
+      state: 'admitted',
+      boundary: 'request',
+      admissionVersion: 'applik8s.admission/v1',
+      transport: 'http',
+      compatibilityPath: 'canonical',
+    });
     expect(submission.progressCursor).not.toContain('organization-1');
     const cursorBody = JSON.parse(Buffer.from(submission.progressCursor.split('.')[0] ?? '', 'base64url').toString('utf8')) as Record<string, unknown>;
     const [encodedBody, encodedSignature] = submission.progressCursor.split('.');

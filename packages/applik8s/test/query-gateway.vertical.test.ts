@@ -311,6 +311,7 @@ describe('v0.6 authenticated query gateway', () => {
 
   test('returns a validated bounded snapshot and resumes an intervening relevant change', async () => {
     const { query } = queryFixture();
+    const observations: unknown[] = [];
     const context = fakeContext([{ items: [{ sequence: 6, model: 'Card', operation: 'invalidate', contextDigest: 'digest', recordedAt: '2026-07-15T12:00:01.000Z' }], retentionFloor: 1 }]);
     const gateway = createApplicationQueryGateway({
       queries: [query as ApplicationQueryBinding<unknown, unknown>],
@@ -319,9 +320,18 @@ describe('v0.6 authenticated query gateway', () => {
       cursorSecret: 'cursor-signing-secret-cursor-signing-secret',
       now: () => new Date('2026-07-15T12:00:00.000Z'),
       sleep: async () => undefined,
+      observeAdmission: (observation) => { observations.push(observation); },
     });
     const snapshot = await gateway.snapshot<{ readonly id: string; readonly name: string }[]>({}, query.id, { limit: 5 });
     expect(snapshot).toMatchObject({ kind: 'snapshot', query: 'cards.list.v1', value: [{ id: 'card-1', name: 'First' }], capability: 'resumableInvalidation' });
+    expect(observations).toContainEqual({
+      apiVersion: 'applik8s.admission-observation/v1',
+      state: 'admitted',
+      boundary: 'request',
+      admissionVersion: 'applik8s.admission/v1',
+      transport: 'http',
+      compatibilityPath: 'canonical',
+    });
     expect(snapshot.cursor).not.toContain('organization-1');
     const cursorBody = JSON.parse(Buffer.from(snapshot.cursor.split('.')[0] ?? '', 'base64url').toString('utf8')) as Record<string, unknown>;
     const [encodedBody, encodedSignature] = snapshot.cursor.split('.');

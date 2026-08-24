@@ -11,6 +11,11 @@ import {
   type JsonObject,
   type JsonValue,
 } from '@applik8s/core';
+import {
+  applicationAdmissionRejectionCodeV1,
+  deliverApplicationAdmissionObservationV1,
+  type ApplicationAdmissionObserverV1,
+} from '@applik8s/core/admission';
 import { nodeLegacyHmacBase64Url } from '@applik8s/runtime/node-integrity';
 import {
   createRollingSignedEnvelopeCodec,
@@ -86,6 +91,8 @@ export interface Applik8sKubernetesGatewayOptions {
   readonly objects?: Applik8sResourceObjectClient;
   readonly watch?: Applik8sResourceWatchClient;
   readonly readiness?: () => void | Promise<void>;
+  /** Framework-owned bounded evidence sink; failures never alter the gateway result. */
+  readonly observeAdmission?: ApplicationAdmissionObserverV1;
   /**
    * Receives the underlying failure after the public HTTP boundary has
    * classified it. Diagnostics must never alter the protocol response.
@@ -335,7 +342,7 @@ export function createApplik8sKubernetesGateway(options: Applik8sKubernetesGatew
 
   async function submitCommand(request: Request, command: Applik8sKubernetesCreateContract, body: Readonly<Record<string, unknown>>): Promise<Response> {
     const input = validateObject(command.inputSchema, body.input, `${command.id}.input`);
-    const admission = await admit(options.authenticate, request, { kind: 'command', id: command.id, action: 'submit', input });
+    const admission = await admit(options, request, { kind: 'command', id: command.id, action: 'submit', input });
     if (!await command.authorize({ admission: applicationAdmissionInvocationView(admission), principal: admission.principal, context: admission.trustedContext.values, input })) {
       throw new Error(`Application command ${command.id} is not authorized.`);
     }
@@ -401,7 +408,7 @@ export function createApplik8sKubernetesGateway(options: Applik8sKubernetesGatew
 
   async function commandProgress(request: Request, command: Applik8sKubernetesCreateContract, body: Readonly<Record<string, unknown>>): Promise<Response> {
     const encoded = requiredString(body.cursor, 'cursor');
-    const admission = await admit(options.authenticate, request, { kind: 'command', id: command.id, action: 'progress', input: { cursor: encoded } });
+    const admission = await admit(options, request, { kind: 'command', id: command.id, action: 'progress', input: { cursor: encoded } });
     const cursor = await verifyCursor(cursorCodec, encoded, now().getTime());
     if (cursor.kind !== 'kubernetes-command' || cursor.command !== command.id) throw new Error('Application command cursor is invalid.');
     assertCursorIdentity(cursor, admission, options.cursorSecret);
@@ -424,7 +431,7 @@ export function createApplik8sKubernetesGateway(options: Applik8sKubernetesGatew
 
   async function querySnapshot(request: Request, query: Applik8sKubernetesQueryContract, body: Readonly<Record<string, unknown>>): Promise<Response> {
     const input = validateUnknown(query.inputSchema, body.input, `${query.id}.input`);
-    const admission = await admit(options.authenticate, request, { kind: 'query', id: query.id, action: 'snapshot', input });
+    const admission = await admit(options, request, { kind: 'query', id: query.id, action: 'snapshot', input });
     if (!await query.authorize({ admission: applicationAdmissionInvocationView(admission), principal: admission.principal, context: admission.trustedContext.values, input })) {
       throw new Error(`Application query ${query.id} is not authorized.`);
     }
@@ -460,7 +467,7 @@ export function createApplik8sKubernetesGateway(options: Applik8sKubernetesGatew
 
   async function querySubscription(request: Request, query: Applik8sKubernetesQueryContract, body: Readonly<Record<string, unknown>>): Promise<Response> {
     const input = validateUnknown(query.inputSchema, body.input, `${query.id}.input`);
-    const admission = await admit(options.authenticate, request, { kind: 'query', id: query.id, action: 'subscribe', input });
+    const admission = await admit(options, request, { kind: 'query', id: query.id, action: 'subscribe', input });
     if (!await query.authorize({ admission: applicationAdmissionInvocationView(admission), principal: admission.principal, context: admission.trustedContext.values, input })) {
       throw new Error(`Application query ${query.id} is not authorized.`);
     }
@@ -848,24 +855,40 @@ function defaultKubeConfig(): KubeConfig {
 }
 
 async function admit(
-  authenticate: Applik8sKubernetesGatewayOptions['authenticate'],
+  options: Applik8sKubernetesGatewayOptions,
   request: Request,
   operation: { readonly kind: 'command' | 'query'; readonly id: string; readonly action: string; readonly input: unknown },
 ): Promise<ApplicationAdmissionContextV1> {
-  const admission = await authenticate(request, operation);
-  const traceparent = request.headers.get('traceparent') ?? undefined;
-  const tracestate = request.headers.get('tracestate') ?? undefined;
-  return createApplicationRequestAdmissionContextV1({
-    admission,
-    operation: {
-      id: `applik8s://${operation.kind === 'command' ? 'commands' : 'queries'}/${operation.id}/${operation.action}`,
+  try {
+    const admission = await options.authenticate(request, operation);
+    const traceparent = request.headers.get('traceparent') ?? undefined;
+    const tracestate = request.headers.get('tracestate') ?? undefined;
+    const context = createApplicationRequestAdmissionContextV1({
+      admission,
+      operation: {
+        id: `applik8s://${operation.kind === 'command' ? 'commands' : 'queries'}/${operation.id}/${operation.action}`,
+        transport: 'http',
+      },
+      correlationId: request.headers.get('x-request-id')?.trim() || randomUUID(),
+      ...(traceparent
+        ? { trace: { traceparent, ...(tracestate ? { tracestate } : {}) } }
+        : {}),
+    });
+    await deliverApplicationAdmissionObservationV1(options.observeAdmission, {
+      state: 'admitted',
+      boundary: 'request',
+      admission: context,
+    });
+    return context;
+  } catch (error) {
+    await deliverApplicationAdmissionObservationV1(options.observeAdmission, {
+      state: 'rejected',
+      boundary: 'request',
       transport: 'http',
-    },
-    correlationId: request.headers.get('x-request-id')?.trim() || randomUUID(),
-    ...(traceparent
-      ? { trace: { traceparent, ...(tracestate ? { tracestate } : {}) } }
-      : {}),
-  });
+      rejectionCode: applicationAdmissionRejectionCodeV1(error),
+    });
+    throw error;
+  }
 }
 
 function validateObject(schema: JsonObject, value: unknown, name: string): object {

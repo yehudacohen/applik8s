@@ -9,6 +9,11 @@ import {
   type JsonValue,
   validateApplicationAuthorizationReceipt,
 } from '@applik8s/core';
+import {
+  applicationAdmissionRejectionCodeV1,
+  deliverApplicationAdmissionObservationV1,
+  type ApplicationAdmissionObserverV1,
+} from '@applik8s/core/admission';
 import { nodeKeyedDigestBase64Url } from '@applik8s/runtime/node-integrity';
 import {
   createRollingSignedEnvelopeCodec,
@@ -54,6 +59,8 @@ export interface ApplicationStreamSubscriptionGatewayOptions<TPrincipal extends 
   readonly now?: () => Date;
   readonly sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
   readonly audit?: (record: { readonly event: 'replay' | 'opened' | 'closed' | 'reset' | 'denied'; readonly subscription: string; readonly principal: string; readonly reason?: string }) => void;
+  /** Framework-owned bounded evidence sink; failures never alter the stream result. */
+  readonly observeAdmission?: ApplicationAdmissionObserverV1;
   readonly authorizeOperation?: (request: {
     readonly boundary: 'admission' | 'subscription-resume';
     readonly subscription: ApplicationStreamSubscriptionRuntimeBinding<TPrincipal>;
@@ -296,27 +303,42 @@ async function admitted<TPrincipal extends ApplicationQueryPrincipal>(
   subscription: ApplicationStreamSubscriptionRuntimeBinding<TPrincipal>,
   action: 'replay' | 'subscribe',
 ): Promise<ApplicationStreamSubscriptionIdentity<TPrincipal>> {
-  const identity = await options.authenticate(request);
-  if (!identity.contextDigest) throw new Error('Application stream subscription identity is incomplete.');
-  const traceparent = request.headers.get('traceparent') ?? undefined;
-  const tracestate = request.headers.get('tracestate') ?? undefined;
-  const admission = createApplicationRequestAdmissionContextV1({
-    admission: { principal: identity.principal, trustedContext: identity.trustedContext },
-    operation: {
-      id: `applik8s://streams/${subscription.name}/${action}`,
+  try {
+    const identity = await options.authenticate(request);
+    if (!identity.contextDigest) throw new Error('Application stream subscription identity is incomplete.');
+    const traceparent = request.headers.get('traceparent') ?? undefined;
+    const tracestate = request.headers.get('tracestate') ?? undefined;
+    const admission = createApplicationRequestAdmissionContextV1({
+      admission: { principal: identity.principal, trustedContext: identity.trustedContext },
+      operation: {
+        id: `applik8s://streams/${subscription.name}/${action}`,
+        transport: 'http',
+      },
+      correlationId: request.headers.get('x-request-id')?.trim() || randomUUID(),
+      ...(traceparent
+        ? { trace: { traceparent, ...(tracestate ? { tracestate } : {}) } }
+        : {}),
+    });
+    await deliverApplicationAdmissionObservationV1(options.observeAdmission, {
+      state: 'admitted',
+      boundary: 'request',
+      admission,
+    });
+    return {
+      ...identity,
+      principal: admission.principal as TPrincipal,
+      trustedContext: admission.trustedContext.values,
+      admission: applicationAdmissionInvocationView(admission),
+    };
+  } catch (error) {
+    await deliverApplicationAdmissionObservationV1(options.observeAdmission, {
+      state: 'rejected',
+      boundary: 'request',
       transport: 'http',
-    },
-    correlationId: request.headers.get('x-request-id')?.trim() || randomUUID(),
-    ...(traceparent
-      ? { trace: { traceparent, ...(tracestate ? { tracestate } : {}) } }
-      : {}),
-  });
-  return {
-    ...identity,
-    principal: admission.principal as TPrincipal,
-    trustedContext: admission.trustedContext.values,
-    admission: applicationAdmissionInvocationView(admission),
-  };
+      rejectionCode: applicationAdmissionRejectionCodeV1(error),
+    });
+    throw error;
+  }
 }
 
 async function cursorForRequest<TPrincipal extends ApplicationQueryPrincipal>(

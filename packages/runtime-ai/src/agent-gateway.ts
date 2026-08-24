@@ -2,11 +2,17 @@
 import { createHash } from 'node:crypto';
 import {
   applicationCausalPrincipalContext,
+  type ApplicationAdmissionContextV1,
   type ApplicationRequestAdmission,
   createApplicationAdmissionContextV1,
   withApplicationAdmissionExecutionV1,
   withApplicationAdmissionTraceV1,
 } from '@applik8s/core';
+import {
+  applicationAdmissionRejectionCodeV1,
+  deliverApplicationAdmissionObservationV1,
+  type ApplicationAdmissionObserverV1,
+} from '@applik8s/core/admission';
 import {
   applicationExecutionAdmissionProtocol,
   encodeApplicationExecutionAdmission,
@@ -43,6 +49,8 @@ export interface ApplicationAIAgentGatewayOptions {
   readonly now?: () => Date;
   readonly maximumRequestBytes?: number;
   readonly maximumAdmissionLifetimeMs?: number;
+  /** Framework-owned bounded evidence sink; failures never alter the agent result. */
+  readonly observeAdmission?: ApplicationAdmissionObserverV1;
   /** Server-side diagnostic sink; responses remain deliberately sanitized. */
   readonly onError?: (error: unknown) => void;
 }
@@ -92,21 +100,16 @@ export function createApplicationAIAgentGateway(
             stable(url.searchParams.get('agent'), 'agent'),
           );
           const runId = `hydrate:${threadId}`;
-          const admission = await options.authenticate(authenticationRequest);
-          assertAdmission(admission, application);
-          if (!await options.authorize({ admission, target, threadId, runId })) {
-            return json({ error: 'forbidden' }, 403);
-          }
-          const token = executionAdmission({
-            application,
-            admission,
+          const token = await admittedExecution({
+            options,
+            authenticationRequest,
+            incoming,
             target,
             threadId,
             runId,
+            application,
             now,
             maximumLifetimeMs,
-            secret: options.secret,
-            request: incoming,
           });
           return await request(new Request(
             new URL(`/__applik8s/v1/ai/chat?threadId=${encodeURIComponent(threadId)}`, target.baseUrl),
@@ -128,26 +131,16 @@ export function createApplicationAIAgentGateway(
         const threadId = stable(body.threadId, 'threadId');
         const runId = stable(body.runId, 'runId');
         const target = selectedTarget(targets, body);
-        const admission = await options.authenticate(authenticationRequest);
-        assertAdmission(admission, application);
-        if (!await options.authorize({
-          admission,
+        const token = await admittedExecution({
+          options,
+          authenticationRequest,
+          incoming,
           target,
           threadId,
           runId,
-        })) {
-          return json({ error: 'forbidden' }, 403);
-        }
-        const token = executionAdmission({
           application,
-          admission,
-          target,
-          threadId,
-          runId,
           now,
           maximumLifetimeMs,
-          secret: options.secret,
-          request: incoming,
         });
         const timeout = AbortSignal.timeout(target.timeoutMs);
         try {
@@ -251,6 +244,56 @@ function selectedTargetFromName(
   return target;
 }
 
+async function admittedExecution(input: {
+  readonly options: ApplicationAIAgentGatewayOptions;
+  readonly authenticationRequest: Request;
+  readonly incoming: Request;
+  readonly target: ApplicationAIAgentGatewayTarget;
+  readonly threadId: string;
+  readonly runId: string;
+  readonly application: string;
+  readonly now: () => Date;
+  readonly maximumLifetimeMs: number;
+}): Promise<string> {
+  try {
+    const admission = await input.options.authenticate(input.authenticationRequest);
+    assertAdmission(admission, input.application);
+    if (!await input.options.authorize({
+      admission,
+      target: input.target,
+      threadId: input.threadId,
+      runId: input.runId,
+    })) {
+      throw gatewayError('forbidden', 403, 'The principal cannot invoke this agent.');
+    }
+    const execution = executionAdmission({
+      application: input.application,
+      admission,
+      target: input.target,
+      threadId: input.threadId,
+      runId: input.runId,
+      now: input.now,
+      maximumLifetimeMs: input.maximumLifetimeMs,
+      secret: input.options.secret,
+      request: input.incoming,
+    });
+    await deliverApplicationAdmissionObservationV1(input.options.observeAdmission, {
+      state: 'admitted',
+      boundary: 'request',
+      admission: execution.requestContext,
+    });
+    return execution.token;
+  } catch (error) {
+    await deliverApplicationAdmissionObservationV1(input.options.observeAdmission, {
+      state: 'rejected',
+      boundary: 'request',
+      transport: 'http',
+      rejectionCode: applicationAdmissionRejectionCodeV1(error),
+    });
+    throw error;
+  }
+}
+
 function executionAdmission(input: {
   readonly application: string;
   readonly admission: ApplicationRequestAdmission;
@@ -261,7 +304,7 @@ function executionAdmission(input: {
   readonly maximumLifetimeMs: number;
   readonly secret: string;
   readonly request: Request;
-}): string {
+}): { readonly token: string; readonly requestContext: ApplicationAdmissionContextV1 } {
   const issuedAt = input.now();
   const principalExpiry = input.admission.principal.expiresAt
     ? Date.parse(input.admission.principal.expiresAt)
@@ -296,10 +339,19 @@ function executionAdmission(input: {
   ) ?? input.runId;
   const traceparent = stableHeader(input.request.headers.get('traceparent'));
   const tracestate = stableHeader(input.request.headers.get('tracestate'));
+  const operationId = `applik8s://agent/${input.target.nodeId}/execute`;
+  const requestContext = createApplicationAdmissionContextV1({
+    admission: input.admission,
+    operation: {
+      id: operationId,
+      transport: 'http',
+    },
+    correlationId,
+  });
   const baseContext = createApplicationAdmissionContextV1({
     admission: input.admission,
     operation: {
-      id: `applik8s://agent/${input.target.nodeId}/execute`,
+      id: operationId,
       transport: 'framework',
     },
     correlationId,
@@ -319,27 +371,30 @@ function executionAdmission(input: {
       source: 'applik8s://agent-gateway',
     },
   });
-  return encodeApplicationExecutionAdmission(input.secret, {
-    apiVersion: applicationExecutionAdmissionProtocol,
-    id,
-    executionKind: 'agent',
-    executionId,
-    attempt: 1,
-    workloadIdentityId: input.target.workloadIdentityId,
-    serviceIdentityId: input.target.serviceIdentityId,
-    context,
-    admission: input.admission,
-    audience: input.target.audience,
-    causalGrantIds: [...causalPrincipal.grantIds],
-    cancellationRevision,
-    binding: {
-      agentId: input.target.nodeId,
-      threadId: input.threadId,
-      runId: input.runId,
-    },
-    issuedAt: issuedAt.toISOString(),
-    expiresAt: new Date(expiresAt).toISOString(),
-  });
+  return {
+    token: encodeApplicationExecutionAdmission(input.secret, {
+      apiVersion: applicationExecutionAdmissionProtocol,
+      id,
+      executionKind: 'agent',
+      executionId,
+      attempt: 1,
+      workloadIdentityId: input.target.workloadIdentityId,
+      serviceIdentityId: input.target.serviceIdentityId,
+      context,
+      admission: input.admission,
+      audience: input.target.audience,
+      causalGrantIds: [...causalPrincipal.grantIds],
+      cancellationRevision,
+      binding: {
+        agentId: input.target.nodeId,
+        threadId: input.threadId,
+        runId: input.runId,
+      },
+      issuedAt: issuedAt.toISOString(),
+      expiresAt: new Date(expiresAt).toISOString(),
+    }),
+    requestContext,
+  };
 }
 
 function stableHeader(value: string | null): string | undefined {
@@ -501,6 +556,7 @@ function boundedInteger(
 
 type ApplicationAIAgentGatewayErrorCode =
   | 'agent_unavailable'
+  | 'forbidden'
   | 'invalid_request'
   | 'request_cancelled'
   | 'request_too_large'

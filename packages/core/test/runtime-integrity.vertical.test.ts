@@ -26,6 +26,7 @@ import {
   applicationAdmissionObservationVersion,
   applicationAdmissionRejectionCodeV1,
   createApplicationAdmissionObservationV1,
+  deliverApplicationAdmissionObservationV1,
 } from '@applik8s/core/admission';
 import { describe, expect, it } from 'vitest';
 import {
@@ -313,6 +314,44 @@ describe('Admission Context v1', () => {
       code: 'invalid and user controlled',
       message: 'payload-secret',
     })).toBe('AdmissionRejected');
+  });
+
+  it('keeps observer failures outside the admission result', async () => {
+    const delivered: unknown[] = [];
+    expect(await deliverApplicationAdmissionObservationV1(
+      (observation) => { delivered.push(observation); },
+      {
+        state: 'rejected',
+        boundary: 'request',
+        transport: 'http',
+        rejectionCode: 'AUTHORITY_REJECTED',
+      },
+    )).toEqual({ delivered: true });
+    expect(delivered).toEqual([{
+      apiVersion: applicationAdmissionObservationVersion,
+      state: 'rejected',
+      boundary: 'request',
+      admissionVersion: applicationAdmissionContextVersion,
+      transport: 'http',
+      compatibilityPath: 'canonical',
+      rejectionCode: 'AUTHORITY_REJECTED',
+    }]);
+    expect(await deliverApplicationAdmissionObservationV1(
+      () => {
+        throw Object.assign(new Error('raw provider detail'), {
+          code: 'OBSERVATION_UNAVAILABLE',
+        });
+      },
+      {
+        state: 'rejected',
+        boundary: 'request',
+        transport: 'http',
+        rejectionCode: 'AUTHORITY_REJECTED',
+      },
+    )).toEqual({
+      delivered: false,
+      failureCode: 'OBSERVATION_UNAVAILABLE',
+    });
   });
 
   it('fails closed when an admitted observation has no validated context or changes transport', () => {

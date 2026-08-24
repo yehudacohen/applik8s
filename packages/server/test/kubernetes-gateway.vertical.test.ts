@@ -30,6 +30,7 @@ describe('generated Kubernetes application gateway', () => {
   it('authorizes and idempotently creates a model before returning its authoritative snapshot', async () => {
     let stored: KubernetesObject | undefined;
     let commandAdmission: unknown;
+    const observations: unknown[] = [];
     const objects = {
       async createNamespacedCustomObject(request: { readonly body: KubernetesObject }) {
         stored = {
@@ -52,6 +53,7 @@ describe('generated Kubernetes application gateway', () => {
       objects,
       watch: inertWatch(),
       readiness: () => undefined,
+      observeAdmission: (observation) => { observations.push(observation); },
       commands: [{
         id: 'GuestBookEntry.create',
         model: 'GuestBookEntry',
@@ -90,6 +92,14 @@ describe('generated Kubernetes application gateway', () => {
       correlationId: 'kubernetes-command-1',
       operation: { id: 'applik8s://commands/GuestBookEntry.create/submit', transport: 'http' },
       trace: { traceparent: '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01' },
+    });
+    expect(observations).toContainEqual({
+      apiVersion: 'applik8s.admission-observation/v1',
+      state: 'admitted',
+      boundary: 'request',
+      admissionVersion: 'applik8s.admission/v1',
+      transport: 'http',
+      compatibilityPath: 'canonical',
     });
 
     const progress = await gateway.handle(post('/__applik8s/v1/commands/GuestBookEntry.create/progress', {

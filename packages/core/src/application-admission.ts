@@ -82,6 +82,16 @@ export interface ApplicationAdmissionObservationV1 {
   readonly rejectionCode?: string;
 }
 
+export type ApplicationAdmissionObserverV1 = (
+  observation: ApplicationAdmissionObservationV1,
+) => void | Promise<void>;
+
+export interface ApplicationAdmissionObservationDeliveryV1 {
+  readonly delivered: boolean;
+  /** Bounded observer failure class; admission itself is never changed. */
+  readonly failureCode?: string;
+}
+
 export interface CreateApplicationAdmissionObservationV1Options {
   readonly state: ApplicationAdmissionObservationV1['state'];
   readonly boundary: ApplicationAdmissionObservationV1['boundary'];
@@ -236,6 +246,27 @@ export function createApplicationAdmissionObservationV1(
     compatibilityPath,
     ...(options.rejectionCode ? { rejectionCode: options.rejectionCode } : {}),
   });
+}
+
+/**
+ * Delivers bounded admission evidence without allowing an observability sink
+ * to alter the admitted or rejected protocol result.
+ */
+export async function deliverApplicationAdmissionObservationV1(
+  observer: ApplicationAdmissionObserverV1 | undefined,
+  options: CreateApplicationAdmissionObservationV1Options,
+): Promise<ApplicationAdmissionObservationDeliveryV1> {
+  if (!observer) return Object.freeze({ delivered: false });
+  const observation = createApplicationAdmissionObservationV1(options);
+  try {
+    await observer(observation);
+    return Object.freeze({ delivered: true });
+  } catch (error) {
+    return Object.freeze({
+      delivered: false,
+      failureCode: applicationAdmissionRejectionCodeV1(error),
+    });
+  }
 }
 
 /**

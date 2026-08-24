@@ -9,6 +9,7 @@ import { testApplicationAdmission } from '../../../test-support/application-prin
 describe('authenticated application object-storage gateway', () => {
   it('issues principal-scoped intents and verifies the complete upload/download path', async () => {
     const objects = new Map<string, ApplicationObjectMetadata & { readonly body: Uint8Array }>();
+    const observations: unknown[] = [];
     const signUpload = vi.fn();
     const runtime: ApplicationObjectStorageRuntime = {
       async put(request) {
@@ -34,6 +35,7 @@ describe('authenticated application object-storage gateway', () => {
         },
       },
       cursorSecret: 'object-intent-secret-that-is-at-least-thirty-two-bytes',
+      observeAdmission: (observation) => { observations.push(observation); },
       objects: [{
         name: 'attachments', enabled: true, mode: 'immutable', maxObjectBytes: 32,
         contentTypes: ['text/plain'], browser: { upload: 'signed', download: 'signed', downloadAccess: 'owner', ttlSeconds: 600 }, runtime,
@@ -45,6 +47,14 @@ describe('authenticated application object-storage gateway', () => {
       input: { contentType: 'text/plain', size: body.byteLength, sha256 },
     }, 'alice'));
     expect(intentResponse.status).toBe(200);
+    expect(observations).toContainEqual({
+      apiVersion: 'applik8s.admission-observation/v1',
+      state: 'admitted',
+      boundary: 'request',
+      admissionVersion: 'applik8s.admission/v1',
+      transport: 'http',
+      compatibilityPath: 'canonical',
+    });
     const intent = runtimeResult(await intentResponse.json());
     expect(intent).toMatchObject({ method: 'PUT', object: { store: 'attachments' } });
     expect(String(intent.object.key)).toMatch(/^[a-f0-9]{32}\/[0-9a-f-]+$/);

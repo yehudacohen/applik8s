@@ -60,7 +60,11 @@ describe('authenticated public stream subscriptions', () => {
       retentionFloor: 0,
     }));
     let admittedIdentity: Parameters<Parameters<typeof createApplicationStreamSubscriptionGateway>[0]['subscriptions'][number]['open']>[0] | undefined;
-    const gateway = fixture({ read, close }, { observeIdentity: (identity) => { admittedIdentity = identity; } });
+    const observations: unknown[] = [];
+    const gateway = fixture({ read, close }, {
+      observeIdentity: (identity) => { admittedIdentity = identity; },
+      observeAdmission: (observation) => { observations.push(observation); },
+    });
 
     const response = await gateway.handle(request('/streams/card-events/replay', {}, {
       'x-request-id': 'stream-request-1',
@@ -93,6 +97,14 @@ describe('authenticated public stream subscriptions', () => {
       correlationId: 'stream-request-1',
       operation: { id: 'applik8s://streams/card-events/replay', transport: 'http' },
       trace: { traceparent: '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01' },
+    });
+    expect(observations).toContainEqual({
+      apiVersion: 'applik8s.admission-observation/v1',
+      state: 'admitted',
+      boundary: 'request',
+      admissionVersion: 'applik8s.admission/v1',
+      transport: 'http',
+      compatibilityPath: 'canonical',
     });
 
     const resumed = await gateway.handle(request('/streams/card-events/replay', { cursor: replay.cursor }));
@@ -187,7 +199,7 @@ function event(sequence: number, id: string) {
   };
 }
 
-function fixture(source: { read(after: number, limit: number): Promise<ApplicationReplayPage<object>>; close?(): Promise<void> }, options: { readonly principalId?: string; readonly authorize?: boolean; readonly authorityRevision?: string; readonly principalAuthorityRevision?: string; readonly cursorTtlSeconds?: number; readonly observeIdentity?: (identity: Parameters<Parameters<typeof createApplicationStreamSubscriptionGateway>[0]['subscriptions'][number]['open']>[0]) => void } = {}) {
+function fixture(source: { read(after: number, limit: number): Promise<ApplicationReplayPage<object>>; close?(): Promise<void> }, options: { readonly principalId?: string; readonly authorize?: boolean; readonly authorityRevision?: string; readonly principalAuthorityRevision?: string; readonly cursorTtlSeconds?: number; readonly observeIdentity?: (identity: Parameters<Parameters<typeof createApplicationStreamSubscriptionGateway>[0]['subscriptions'][number]['open']>[0]) => void; readonly observeAdmission?: Parameters<typeof createApplicationStreamSubscriptionGateway>[0]['observeAdmission'] } = {}) {
   return createApplicationStreamSubscriptionGateway({
     subscriptions: [{
       name: 'card-events',
@@ -224,6 +236,7 @@ function fixture(source: { read(after: number, limit: number): Promise<Applicati
       ),
     } : {}),
     cursorSecret,
+    ...(options.observeAdmission ? { observeAdmission: options.observeAdmission } : {}),
     ...(options.cursorTtlSeconds === undefined ? {} : { cursorTtlSeconds: options.cursorTtlSeconds }),
   });
 }

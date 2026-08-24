@@ -26,6 +26,7 @@ const target: ApplicationAIAgentGatewayTarget = {
 describe('application AI agent gateway', () => {
   it('authenticates, authorizes, signs an exact run admission, and strips browser credentials', async () => {
     const forwarded: Request[] = [];
+    const observations: unknown[] = [];
     const authenticate = vi.fn(async (request: Request) => {
       expect(request.headers.get('authorization')).toBe('Bearer browser-token');
       expect(request.headers.get('cookie')).toBe('session=browser-cookie');
@@ -38,6 +39,10 @@ describe('application AI agent gateway', () => {
       targets: [target],
       authenticate,
       authorize,
+      observeAdmission: (observation) => {
+        observations.push(observation);
+        throw new Error('observer detail must not alter the agent response');
+      },
       now: () => new Date('2026-07-30T12:00:00.000Z'),
       fetch: Object.assign(async (
         input: RequestInfo | URL,
@@ -79,6 +84,14 @@ describe('application AI agent gateway', () => {
     ));
 
     expect(response?.status).toBe(200);
+    expect(observations).toEqual([{
+      apiVersion: 'applik8s.admission-observation/v1',
+      state: 'admitted',
+      boundary: 'request',
+      admissionVersion: 'applik8s.admission/v1',
+      transport: 'http',
+      compatibilityPath: 'canonical',
+    }]);
     expect(authenticate).toHaveBeenCalledOnce();
     expect(authorize).toHaveBeenCalledWith({
       admission: admission(),
@@ -273,6 +286,7 @@ describe('application AI agent gateway', () => {
   it('reports internal admission failures while keeping the public response sanitized', async () => {
     const failure = new Error('identity provider detail');
     const onError = vi.fn();
+    const observations: unknown[] = [];
     const gateway = createApplicationAIAgentGateway({
       application: 'research',
       secret,
@@ -281,12 +295,23 @@ describe('application AI agent gateway', () => {
         throw failure;
       },
       authorize: async () => true,
+      observeAdmission: (observation) => { observations.push(observation); },
       onError,
     });
     const response = await gateway.handle(agentRequest());
     expect(response?.status).toBe(401);
     expect(await response?.json()).toEqual({ error: 'unauthorized' });
     expect(onError).toHaveBeenCalledWith(failure);
+    expect(observations).toEqual([{
+      apiVersion: 'applik8s.admission-observation/v1',
+      state: 'rejected',
+      boundary: 'request',
+      admissionVersion: 'applik8s.admission/v1',
+      transport: 'http',
+      compatibilityPath: 'canonical',
+      rejectionCode: 'Error',
+    }]);
+    expect(JSON.stringify(observations)).not.toContain('identity provider detail');
   });
 
   it('bounds agent dispatch and distinguishes timeout from provider failure', async () => {

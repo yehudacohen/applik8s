@@ -1,6 +1,11 @@
 // typecast-file-boundary: HTTP and object-store payloads are validated before conversion at this protocol adapter boundary.
 import { createHash, randomUUID } from 'node:crypto';
-import { canonicalJsonV1Value, type JsonValue } from '@applik8s/core';
+import { canonicalJsonV1Value, createApplicationRequestAdmissionContextV1, type JsonValue } from '@applik8s/core';
+import {
+  applicationAdmissionRejectionCodeV1,
+  deliverApplicationAdmissionObservationV1,
+  type ApplicationAdmissionObserverV1,
+} from '@applik8s/core/admission';
 import { nodeKeyedDigestHex } from '@applik8s/runtime/node-integrity';
 import { createRollingSignedEnvelopeCodec, type RollingSignedEnvelopeCodec, signedEnvelopeUtf8Key, staticSignedEnvelopeKeyProvider } from '@applik8s/runtime/signed-envelope';
 import type { ApplicationObjectStorageRuntime, ApplicationSignedObjectIntent, ApplicationVerifiedObjectCompletion } from './application-object-storage.js';
@@ -28,6 +33,8 @@ export interface ApplicationObjectStorageGatewayOptions {
   readonly basePath?: string;
   readonly now?: () => Date;
   readonly id?: () => string;
+  /** Framework-owned bounded evidence sink; failures never alter object operations. */
+  readonly observeAdmission?: ApplicationAdmissionObserverV1;
 }
 
 export interface ApplicationObjectStorageGateway {
@@ -127,7 +134,7 @@ export function createApplicationObjectStorageGateway(options: ApplicationObject
     const store = stores.get(parsed[1]);
     if (!store) return json({ error: 'not_found' }, 404);
     if (store.enabled === false) return json({ error: 'object_store_not_configured', store: store.name }, 503);
-    const admission = await authenticate(request);
+    const admission = await authenticate(request, `applik8s://objects/${store.name}/${parsed[2]}`);
     if (admission instanceof Response) return admission;
     const body = await readJsonObject(request, 64 * 1024).catch((error) => error instanceof Error ? error : new Error(String(error)));
     if (body instanceof Error) return json({ error: 'invalid_request', message: body.message }, 400);
@@ -211,7 +218,7 @@ export function createApplicationObjectStorageGateway(options: ApplicationObject
     if ((action === 'upload' && request.method !== 'PUT') || (action === 'download' && request.method !== 'GET')) {
       return json({ error: 'method_not_allowed' }, 405, { allow: action === 'upload' ? 'PUT' : 'GET' });
     }
-    const admission = await authenticate(request);
+    const admission = await authenticate(request, `applik8s://objects/${store.name}/${action}`);
     if (admission instanceof Response) return admission;
     const token = await verifyToken(tokenValue);
     if (!token || token.action !== action || token.store !== store.name || token.expiresAt <= now().getTime()
@@ -255,14 +262,36 @@ export function createApplicationObjectStorageGateway(options: ApplicationObject
     }
   }
 
-  async function authenticate(request: Request): Promise<ApplicationRequestAdmission | Response> {
+  async function authenticate(request: Request, operationId: string): Promise<ApplicationRequestAdmission | Response> {
     try {
       const admission = await options.identity.authenticate(request);
       if (!admission?.principal?.id || !admission.principal.authorityRevision || !admission.trustedContext || typeof admission.trustedContext !== 'object') {
-        return json({ error: 'unauthorized' }, 401);
+        throw new Error('Application object gateway identity admission is incomplete.');
       }
-      return admission;
-    } catch {
+      const traceparent = request.headers.get('traceparent') ?? undefined;
+      const tracestate = request.headers.get('tracestate') ?? undefined;
+      const context = createApplicationRequestAdmissionContextV1({
+        admission,
+        operation: { id: operationId, transport: 'http' },
+        correlationId: request.headers.get('x-request-id')?.trim() || id(),
+        ...(traceparent ? { trace: { traceparent, ...(tracestate ? { tracestate } : {}) } } : {}),
+      });
+      await deliverApplicationAdmissionObservationV1(options.observeAdmission, {
+        state: 'admitted',
+        boundary: 'request',
+        admission: context,
+      });
+      return {
+        principal: context.principal,
+        trustedContext: context.trustedContext.values,
+      };
+    } catch (error) {
+      await deliverApplicationAdmissionObservationV1(options.observeAdmission, {
+        state: 'rejected',
+        boundary: 'request',
+        transport: 'http',
+        rejectionCode: applicationAdmissionRejectionCodeV1(error),
+      });
       return json({ error: 'unauthorized' }, 401);
     }
   }

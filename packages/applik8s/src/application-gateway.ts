@@ -1,4 +1,5 @@
 import { type ApplicationObjectStoreGatewayBinding, createApplicationObjectStorageGateway } from './application-object-storage-gateway.js';
+import type { ApplicationAdmissionObserverV1 } from '@applik8s/core/admission';
 import type { ApplicationIdentityProvider } from './application-providers.js';
 import type { ApplicationCommandGatewayOptions } from './command-gateway.js';
 import { createApplicationCommandGateway } from './command-gateway.js';
@@ -19,6 +20,8 @@ export interface ApplicationFetchGatewayOptions {
   readonly objects?: readonly ApplicationObjectStoreGatewayBinding[];
   readonly subscriptionLimits?: { readonly perPrincipal?: number; readonly total?: number };
   readonly ready?: readonly (() => void | Promise<void>)[];
+  /** Framework-owned bounded evidence sink shared by every mounted request gateway. */
+  readonly observeAdmission?: ApplicationAdmissionObserverV1;
 }
 
 export interface ApplicationFetchGateway {
@@ -48,6 +51,9 @@ export function createApplicationFetchGateway(options: ApplicationFetchGatewayOp
         cursorSecret: options.cursorSecret,
         subscriptionLimiter: limiter,
         subscriptionLimits: limits,
+        ...((options.query.observeAdmission ?? options.observeAdmission)
+          ? { observeAdmission: options.query.observeAdmission ?? options.observeAdmission }
+          : {}),
         authenticate: async (request: Request) => {
           const admission = await admitted(options.identity, request);
           return {
@@ -67,6 +73,9 @@ export function createApplicationFetchGateway(options: ApplicationFetchGatewayOp
     ? createApplicationCommandGateway({
         ...options.command,
         cursorSecret: options.cursorSecret,
+        ...((options.command.observeAdmission ?? options.observeAdmission)
+          ? { observeAdmission: options.command.observeAdmission ?? options.observeAdmission }
+          : {}),
         authenticate: (request) => admitted(options.identity, request),
       })
     : undefined;
@@ -75,6 +84,9 @@ export function createApplicationFetchGateway(options: ApplicationFetchGatewayOp
         ...options.streams,
         cursorSecret: options.cursorSecret,
         subscriptionLimiter: limiter,
+        ...((options.streams.observeAdmission ?? options.observeAdmission)
+          ? { observeAdmission: options.streams.observeAdmission ?? options.observeAdmission }
+          : {}),
         authenticate: async (request) => {
           const admission = await admitted(options.identity, request);
           return {
@@ -89,7 +101,13 @@ export function createApplicationFetchGateway(options: ApplicationFetchGatewayOp
       })
     : undefined;
   const objectGateway = options.objects?.length
-    ? createApplicationObjectStorageGateway({ identity: options.identity, cursorSecret: options.cursorSecret, stores: options.objects, basePath })
+    ? createApplicationObjectStorageGateway({
+        identity: options.identity,
+        cursorSecret: options.cursorSecret,
+        stores: options.objects,
+        basePath,
+        ...(options.observeAdmission ? { observeAdmission: options.observeAdmission } : {}),
+      })
     : undefined;
   let stopping = false;
 

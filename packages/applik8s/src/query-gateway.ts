@@ -1,6 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import { type ApplicationQueryEvent, type ApplicationQueryMultiplexErrorFrame, type ApplicationQueryMultiplexFrame, type ApplicationQueryMultiplexSubscription, type ApplicationQuerySnapshot, queryInputKey } from '@applik8s/client';
 import { type ApplicationAdmissionInvocationContextV1, type ApplicationAuthorizationReceipt, applicationAdmissionInvocationView, canonicalJsonV1Value, createApplicationRequestAdmissionContextV1, type JsonValue, validateApplicationAuthorizationReceipt } from '@applik8s/core';
+import {
+  applicationAdmissionRejectionCodeV1,
+  deliverApplicationAdmissionObservationV1,
+  type ApplicationAdmissionObserverV1,
+} from '@applik8s/core/admission';
 import type { ApplicationInternalOperationInvocation } from '@applik8s/operations';
 import { nodeKeyedDigestBase64Url } from '@applik8s/runtime/node-integrity';
 import { createRollingSignedEnvelopeCodec, type RollingSignedEnvelopeCodec, signedEnvelopeUtf8Key, staticSignedEnvelopeKeyProvider } from '@applik8s/runtime/signed-envelope';
@@ -33,6 +38,8 @@ export interface ApplicationQueryGatewayOptions<TRequest, TPrincipal extends App
   readonly subscriptionLimits?: { readonly perPrincipal?: number; readonly total?: number };
   readonly subscriptionLimiter?: ApplicationSubscriptionLimiter;
   readonly audit?: (record: ApplicationQueryGatewayAuditRecord) => void;
+  /** Framework-owned bounded evidence sink; failures never alter the query result. */
+  readonly observeAdmission?: ApplicationAdmissionObserverV1;
   /**
    * Canonical operation-authority boundary. Generated production gateways
    * provide this in addition to the query's domain predicate; the returned
@@ -719,47 +726,62 @@ async function admittedIdentity<TRequest, TPrincipal extends ApplicationQueryPri
   input: unknown,
   action: 'snapshot' | 'subscribe',
 ): Promise<ApplicationGatewayIdentity<TPrincipal>> {
-  const identity = await options.authenticate(request, query, input);
-  const traceparent = request instanceof Request
-    ? request.headers.get('traceparent') ?? undefined
-    : undefined;
-  const tracestate = request instanceof Request
-    ? request.headers.get('tracestate') ?? undefined
-    : undefined;
-  const admission = createApplicationRequestAdmissionContextV1({
-    admission: {
-      principal: identity.principal,
-      // typecast-boundary: the canonical admission constructor validates every
-      // value before exposing the normalized context.
-      trustedContext: identity.admittedContext.values as Readonly<Record<string, JsonValue>>,
-    },
-    operation: {
-      id: `applik8s://queries/${query.id}/${action}`,
+  try {
+    const identity = await options.authenticate(request, query, input);
+    const traceparent = request instanceof Request
+      ? request.headers.get('traceparent') ?? undefined
+      : undefined;
+    const tracestate = request instanceof Request
+      ? request.headers.get('tracestate') ?? undefined
+      : undefined;
+    const admission = createApplicationRequestAdmissionContextV1({
+      admission: {
+        principal: identity.principal,
+        // typecast-boundary: the canonical admission constructor validates every
+        // value before exposing the normalized context.
+        trustedContext: identity.admittedContext.values as Readonly<Record<string, JsonValue>>,
+      },
+      operation: {
+        id: `applik8s://queries/${query.id}/${action}`,
+        transport: 'http',
+      },
+      correlationId: request instanceof Request
+        ? request.headers.get('x-request-id')?.trim() || randomUUID()
+        : randomUUID(),
+      ...(traceparent
+        ? { trace: { traceparent, ...(tracestate ? { tracestate } : {}) } }
+        : {}),
+    });
+    for (const context of query.trustedContext) {
+      const value = admission.trustedContext.values[context.name];
+      if (value === undefined) throw new Error(`Application query ${query.id} requires trusted context ${context.name}, but the identity/application provider did not establish it.`);
+      validateTrustedContextValue(context, value);
+    }
+    await deliverApplicationAdmissionObservationV1(options.observeAdmission, {
+      state: 'admitted',
+      boundary: 'request',
+      admission,
+    });
+    return {
+      ...identity,
+      // typecast-boundary: validation above preserves the caller's principal
+      // subtype while normalizing it through the canonical admission contract.
+      principal: admission.principal as TPrincipal,
+      admittedContext: {
+        ...identity.admittedContext,
+        values: admission.trustedContext.values,
+      },
+      admission: applicationAdmissionInvocationView(admission),
+    };
+  } catch (error) {
+    await deliverApplicationAdmissionObservationV1(options.observeAdmission, {
+      state: 'rejected',
+      boundary: 'request',
       transport: 'http',
-    },
-    correlationId: request instanceof Request
-      ? request.headers.get('x-request-id')?.trim() || randomUUID()
-      : randomUUID(),
-    ...(traceparent
-      ? { trace: { traceparent, ...(tracestate ? { tracestate } : {}) } }
-      : {}),
-  });
-  for (const context of query.trustedContext) {
-    const value = admission.trustedContext.values[context.name];
-    if (value === undefined) throw new Error(`Application query ${query.id} requires trusted context ${context.name}, but the identity/application provider did not establish it.`);
-    validateTrustedContextValue(context, value);
+      rejectionCode: applicationAdmissionRejectionCodeV1(error),
+    });
+    throw error;
   }
-  return {
-    ...identity,
-    // typecast-boundary: validation above preserves the caller's principal
-    // subtype while normalizing it through the canonical admission contract.
-    principal: admission.principal as TPrincipal,
-    admittedContext: {
-      ...identity.admittedContext,
-      values: admission.trustedContext.values,
-    },
-    admission: applicationAdmissionInvocationView(admission),
-  };
 }
 
 function requiredQuery<TPrincipal extends ApplicationQueryPrincipal>(queries: ReadonlyMap<string, ApplicationQueryBinding<unknown, unknown, TPrincipal>>, id: string): ApplicationQueryBinding<unknown, unknown, TPrincipal> {

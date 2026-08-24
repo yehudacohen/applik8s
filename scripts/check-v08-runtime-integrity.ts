@@ -40,12 +40,18 @@ const requestAdmissionConsumers = new Set([
   'packages/server/src/kubernetes-gateway.ts',
 ]);
 const admissionObservationConsumers = new Set([
+  'packages/applik8s/src/application-object-storage-gateway.ts',
   'packages/applik8s/src/application-actor-authority-runtime.ts',
+  'packages/applik8s/src/command-gateway.ts',
+  'packages/applik8s/src/query-gateway.ts',
+  'packages/applik8s/src/stream-subscription-gateway.ts',
   'packages/compiler/src/application-agents/index.ts',
   'packages/compiler/src/application-fetch-gateway/index.ts',
   'packages/compiler/src/application-http/index.ts',
   'packages/compiler/src/application-reactive/index.ts',
   'packages/compiler/src/application-workflows/source.ts',
+  'packages/runtime-ai/src/agent-gateway.ts',
+  'packages/server/src/kubernetes-gateway.ts',
 ]);
 const expectedInventoryPaths = new Set([
   'packages/applik8s/src/command-gateway.ts',
@@ -218,7 +224,10 @@ for (const path of requestAdmissionConsumers) {
 
 for (const path of admissionObservationConsumers) {
   const source = await readFile(join(root, path), 'utf8');
-  if (!source.includes('createApplicationAdmissionObservationV1')) {
+  if (
+    !source.includes('createApplicationAdmissionObservationV1')
+    && !source.includes('deliverApplicationAdmissionObservationV1')
+  ) {
     findings.push(`${path} bypasses the canonical admission observation shape.`);
   }
   if (!source.includes('applicationAdmissionRejectionCodeV1')) {

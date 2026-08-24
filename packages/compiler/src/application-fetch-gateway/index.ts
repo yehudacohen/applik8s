@@ -289,10 +289,19 @@ export function generatedApplicationFetchGatewayModules(
 		imports.push(
 			"import { createApplicationAIAgentGateway } from '@applik8s/runtime-ai';",
 		);
+	if (
+		queries.length > 0 ||
+		commands.length > 0 ||
+		objectStores.length > 0 ||
+		agents.length > 0 ||
+		schedules.length > 0
+	)
+		imports.push(
+			"import { applicationAdmissionRejectionCodeV1, createApplicationAdmissionObservationV1 } from '@applik8s/core/admission';",
+		);
 	if (schedules.length > 0)
 		imports.push(
 			"import { executeApplicationScheduleAdmission, installApplicationScheduleRuntimeResolver, schedule } from '@applik8s/applik8s';",
-			"import { applicationAdmissionRejectionCodeV1, createApplicationAdmissionObservationV1 } from '@applik8s/core/admission';",
 			"import { installApplicationInvocationAdmissionResolver } from '@applik8s/client';",
 			"import { installLocalApplicationScheduleRuntime } from '@applik8s/applik8s/schedule-runtime-local';",
 			"import { createAwsApplicationScheduleRuntime, startAwsApplicationScheduleQueueRunner } from '@applik8s/runtime-aws';",
@@ -714,12 +723,13 @@ export function generatedApplicationFetchGatewayModules(
       place: (request) => ${place}(request),
     }`;
 	});
-	const localGateway =
+const localGateway =
 		authenticate && (queries.length > 0 || commands.length > 0)
 			? `createApplik8sKubernetesGateway({
   ...(localResourceClients ?? {}),
   authenticate: (request) => ${authenticate}(request),
   cursorSecret: requiredEnv('APPLIK8S_CURSOR_SECRET'),
+  observeAdmission: observeRequestAdmission,
   commands: [${commandSources.join(",\n")}],
   queries: [${querySources.join(",\n")}],
   onError: (error, operation) => console.error('Applik8s Kubernetes application-host request failed', {
@@ -733,6 +743,7 @@ export function generatedApplicationFetchGatewayModules(
 			? `createApplicationFetchGateway({
   identity: { kind: 'identity-provider', authenticate: (request) => ${authenticate}(request) },
   cursorSecret: requiredEnv('APPLIK8S_CURSOR_SECRET'),
+  observeAdmission: observeRequestAdmission,
   objects: [${objectStores.map(objectStoreGatewaySource).join(",\n")}],
 })`
 			: "undefined";
@@ -750,6 +761,7 @@ const agentGateway =
   // remains independently constrained by service grants, workload envelopes,
   // and the per-run ExecutionPrincipal admitted by the agent runtime.
   authorize: ({ admission }) => admission.principal.audience.includes(${JSON.stringify(graph.metadata.name)}),
+  observeAdmission: observeRequestAdmission,
   onError: (error) => console.error('Applik8s AI agent gateway admission failed', {
     name: error instanceof Error ? error.name : 'Error',
     message: error instanceof Error ? error.message : String(error),
@@ -1134,6 +1146,34 @@ async function admitApplicationIdentity(request) {
     principal: admittedPrincipal,
   };
 }` : `async function observeApplicationCapability() {}`}
+const requestAdmissionObservationState = new Map();
+async function observeRequestAdmission(observation) {
+  const observationTime = Date.now();
+  const previous = requestAdmissionObservationState.get(observation.transport);
+  if (previous?.state === observation.state && observationTime - previous.at < 30_000) return;
+  requestAdmissionObservationState.set(observation.transport, { state: observation.state, at: observationTime });
+  console.info(JSON.stringify({ event: 'applik8s-request-admission', ...observation }));
+  ${operationCatalog && identityAuthorityDatabaseEnvironment ? `const observedAt = new Date(observationTime);
+  try {
+    await operationAuthority.observe({
+      id: 'request-admission:' + observation.transport,
+      domain: 'gateway',
+      subject: 'applik8s://request-admission/' + observation.transport,
+      authority: 'canonical',
+      state: observation.state === 'admitted' ? 'ready' : 'failed',
+      ...(observation.rejectionCode ? { reason: observation.rejectionCode } : {}),
+      source: 'applik8s-request-admission',
+      evidence: observation,
+      observedAt: observedAt.toISOString(),
+      expiresAt: new Date(observationTime + 90_000).toISOString(),
+    });
+  } catch (observationError) {
+    console.error(JSON.stringify({
+      event: 'applik8s-request-admission-observation-failed',
+      error: applicationAdmissionRejectionCodeV1(observationError),
+    }));
+  }` : ''}
+}
 ${authenticate ? `const applicationIdentitySession = createApplicationIdentitySessionHandler({
   authenticate: (request) => ${operationCatalog && identityAuthorityDatabaseEnvironment ? "admitApplicationIdentity" : authenticate}(request),
 });` : ""}

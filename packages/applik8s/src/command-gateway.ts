@@ -1,5 +1,10 @@
 import type { ApplicationCommandProgress, ApplicationCommandSubmission } from '@applik8s/client';
 import { type ApplicationAdmissionContextV1, type ApplicationAdmissionInvocationContextV1, type ApplicationAuthorizationReceipt, type ApplicationOperationTransport, type ApplicationPrincipal, type ApplicationRequestAdmission, applicationAdmissionInvocationView, canonicalJsonV1String, canonicalJsonV1Value, createApplicationRequestAdmissionContextV1, type JsonObject, type JsonValue, validateApplicationAuthorizationReceipt } from '@applik8s/core';
+import {
+  applicationAdmissionRejectionCodeV1,
+  deliverApplicationAdmissionObservationV1,
+  type ApplicationAdmissionObserverV1,
+} from '@applik8s/core/admission';
 import type { ApplicationInternalOperationInvocation } from '@applik8s/operations';
 import { nodeKeyedDigestBase64Url } from '@applik8s/runtime/node-integrity';
 import { createRollingSignedEnvelopeCodec, type RollingSignedEnvelopeCodec, signedEnvelopeUtf8Key, staticSignedEnvelopeKeyProvider } from '@applik8s/runtime/signed-envelope';
@@ -93,6 +98,8 @@ export interface ApplicationCommandGatewayOptions<TPrincipal extends Application
   readonly cursorTtlSeconds?: number;
   readonly maxRequestBytes?: number;
   readonly now?: () => Date;
+  /** Framework-owned bounded evidence sink; failures never alter the command result. */
+  readonly observeAdmission?: ApplicationAdmissionObserverV1;
 }
 
 export interface ApplicationCommandGateway {
@@ -192,7 +199,7 @@ export function createApplicationCommandGateway<TPrincipal extends ApplicationQu
             command,
             trustedContextDigest: contextDigest,
           }) ?? requestAdmission.principal;
-          const admission = commandAdmissionContext(request, command, 'submit', commandId, {
+          const admission = await commandAdmissionContext(options, request, command, 'submit', commandId, {
             principal,
             trustedContext: requestAdmission.trustedContext,
           });
@@ -311,7 +318,7 @@ export function createApplicationCommandGateway<TPrincipal extends ApplicationQu
           command,
           trustedContextDigest: contextDigest,
         }) ?? requestAdmission.principal;
-        const admission = commandAdmissionContext(request, command, 'progress', cursor.correlationId, {
+        const admission = await commandAdmissionContext(options, request, command, 'progress', cursor.correlationId, {
           principal: narrowedPrincipal,
           trustedContext: requestAdmission.trustedContext,
         });
@@ -538,29 +545,56 @@ function commandRoute(request: Request): { readonly command: string; readonly op
 }
 
 async function admitted<TPrincipal extends ApplicationQueryPrincipal>(options: ApplicationCommandGatewayOptions<TPrincipal>, request: Request): Promise<ApplicationGatewayAdmission> {
-  return options.authenticate(request);
+  try {
+    return await options.authenticate(request);
+  } catch (error) {
+    await deliverApplicationAdmissionObservationV1(options.observeAdmission, {
+      state: 'rejected',
+      boundary: 'request',
+      transport: 'http',
+      rejectionCode: applicationAdmissionRejectionCodeV1(error),
+    });
+    throw error;
+  }
 }
 
-function commandAdmissionContext(
+async function commandAdmissionContext<TPrincipal extends ApplicationQueryPrincipal>(
+  options: ApplicationCommandGatewayOptions<TPrincipal>,
   request: Request,
   command: ApplicationGatewayCommandRuntimeContract,
   action: 'submit' | 'progress',
   correlationId: string,
   admission: ApplicationRequestAdmission,
-): ApplicationAdmissionContextV1 {
-  const traceparent = request.headers.get('traceparent') ?? undefined;
-  const tracestate = request.headers.get('tracestate') ?? undefined;
-  return createApplicationRequestAdmissionContextV1({
-    admission,
-    operation: {
-      id: command.operationId ?? `applik8s://commands/${command.id}/${action}`,
+): Promise<ApplicationAdmissionContextV1> {
+  try {
+    const traceparent = request.headers.get('traceparent') ?? undefined;
+    const tracestate = request.headers.get('tracestate') ?? undefined;
+    const context = createApplicationRequestAdmissionContextV1({
+      admission,
+      operation: {
+        id: command.operationId ?? `applik8s://commands/${command.id}/${action}`,
+        transport: 'http',
+      },
+      correlationId,
+      ...(traceparent
+        ? { trace: { traceparent, ...(tracestate ? { tracestate } : {}) } }
+        : {}),
+    });
+    await deliverApplicationAdmissionObservationV1(options.observeAdmission, {
+      state: 'admitted',
+      boundary: 'request',
+      admission: context,
+    });
+    return context;
+  } catch (error) {
+    await deliverApplicationAdmissionObservationV1(options.observeAdmission, {
+      state: 'rejected',
+      boundary: 'request',
       transport: 'http',
-    },
-    correlationId,
-    ...(traceparent
-      ? { trace: { traceparent, ...(tracestate ? { tracestate } : {}) } }
-      : {}),
-  });
+      rejectionCode: applicationAdmissionRejectionCodeV1(error),
+    });
+    throw error;
+  }
 }
 
 function validateCommandInput(command: ApplicationGatewayCommandRuntimeContract, value: unknown): object {

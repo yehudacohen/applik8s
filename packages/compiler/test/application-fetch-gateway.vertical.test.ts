@@ -786,6 +786,10 @@ describe("application host Fetch gateway", () => {
 		expect(source).toContain(
 			"agentGateway.handle(request.clone())",
 		);
+		expect(source).toContain("observeAdmission: observeRequestAdmission");
+		expect(source).toContain("id: 'request-admission:' + observation.transport");
+		expect(source).toContain("authority: 'canonical'");
+		expect(source).toContain("expiresAt: new Date(observationTime + 90_000).toISOString()");
 		expect(source).toContain(
 			"path: '/readyz'",
 		);
