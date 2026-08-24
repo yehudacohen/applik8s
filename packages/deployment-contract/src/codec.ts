@@ -55,7 +55,7 @@ export function decodeApplicationDeploymentGraph(
 
 function validateGraphShape(value: unknown, diagnostics: string[]): void {
   if (!record(value, "$", diagnostics)) return;
-  exactKeys(value, "$", ["apiVersion", "kind", "metadata", "nodes", "edges"], [], diagnostics);
+  exactKeys(value, "$", ["apiVersion", "kind", "metadata", "runtimeAccess", "nodes", "edges"], [], diagnostics);
   literal(
     value.apiVersion,
     "applik8s.deploymentGraph/v1alpha1",
@@ -64,6 +64,7 @@ function validateGraphShape(value: unknown, diagnostics: string[]): void {
   );
   literal(value.kind, "ApplicationDeploymentGraph", "$.kind", diagnostics);
   validateMetadata(value.metadata, diagnostics);
+  jsonValue(value.runtimeAccess, '$.runtimeAccess', diagnostics);
   if (array(value.nodes, "$.nodes", diagnostics)) {
     for (const [index, node] of value.nodes.entries()) {
       validateNode(node, `$.nodes[${index}]`, diagnostics);

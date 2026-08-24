@@ -1,10 +1,12 @@
-import type { DeploymentJsonObject } from './types.js';
-import { sha256Hex } from './serialization.js';
+import type { ApplicationRuntimeAccessPlan } from './runtime-access.js';
+import { validateApplicationRuntimeAccessPlan } from './runtime-access.js';
 import {
+  type ApplicationRuntimeArtifact,
   applicationRuntimeArtifactId,
   validateApplicationRuntimeArtifact,
-  type ApplicationRuntimeArtifact,
 } from './runtime-artifact.js';
+import { sha256Hex } from './serialization.js';
+import type { DeploymentJsonObject } from './types.js';
 
 export interface ApplicationAwsDeploymentPlan {
   readonly apiVersion: 'applik8s.awsPlan/v1alpha1';
@@ -13,6 +15,8 @@ export interface ApplicationAwsDeploymentPlan {
   readonly region: string;
   readonly accountId?: string;
   readonly lifecycleAuthority: 'alchemy';
+  /** Canonical pre-mutation IAM/network/credential enforcement contract. */
+  readonly runtimeAccess: ApplicationRuntimeAccessPlan;
   readonly resources: readonly ApplicationAwsPlanResource[];
   readonly runtimeArtifacts: readonly ApplicationRuntimeArtifact[];
   readonly runtimeBindings: readonly ApplicationAwsRuntimeBinding[];
@@ -109,6 +113,12 @@ export function normalizeApplicationAwsDeploymentPlan(plan: ApplicationAwsDeploy
 
 export function validateApplicationAwsDeploymentPlan(plan: ApplicationAwsDeploymentPlan): readonly ApplicationAwsPlanDiagnostic[] {
   const diagnostics: ApplicationAwsPlanDiagnostic[] = [...plan.diagnostics];
+  for (const error of validateApplicationRuntimeAccessPlan(plan.runtimeAccess, { requireResolved: true })) {
+    diagnostics.push({ severity: 'error', code: 'AWS_RUNTIME_ACCESS_UNRESOLVED', message: `AWS runtime-access envelope ${error}.` });
+  }
+  if (plan.runtimeAccess.target !== 'aws' && plan.runtimeAccess.target !== 'aws-local') {
+    diagnostics.push({ severity: 'error', code: 'AWS_RUNTIME_ACCESS_UNRESOLVED', message: `AWS plan carries ${plan.runtimeAccess.target} runtime-access policy.` });
+  }
   const resources = new Map<string, ApplicationAwsPlanResource>();
   for (const resource of plan.resources) {
     if (!resource.id || resources.has(resource.id)) diagnostics.push({ severity: 'error', code: 'AWS_CONFIGURATION_UNRESOLVED', message: `AWS resource identity ${resource.id || '<empty>'} is empty or duplicated.`, subjectId: resource.id });

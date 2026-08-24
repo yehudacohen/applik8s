@@ -6,6 +6,7 @@ import {
   applicationDeploymentCanonicalJsonV1Policy,
   applicationDeploymentOutputReference,
   applicationOptionalDeploymentOutputReference,
+  applicationRuntimeAccessPlanDigest,
   decodeApplicationDeploymentGraph,
   digestApplicationDeploymentGraph,
   digestApplicationDeploymentValue,
@@ -13,10 +14,11 @@ import {
   parseApplicationDeploymentOutputReference,
   serializeApplicationDeploymentGraph,
   validateApplicationDeploymentGraph,
+  validateApplicationRuntimeAccessPlan,
 } from "../src/index.js";
 
-const digest = `sha256:${"a".repeat(64)}`;
-const connectionDigest = `sha256:${"b".repeat(64)}`;
+const digest = `sha256:${"a".repeat(64)}` as const;
+const connectionDigest = `sha256:${"b".repeat(64)}` as const;
 
 describe("ApplicationDeploymentGraph", () => {
   it("round-trips required and profile-optional deployment output references", () => {
@@ -104,6 +106,77 @@ describe("ApplicationDeploymentGraph", () => {
         serializeApplicationDeploymentGraph(graph),
       ),
     ).toEqual(normalizeApplicationDeploymentGraph(graph));
+  });
+
+  it("rejects a missing, mismatched, or recomputed runtime-access envelope", () => {
+    const graph = validGraph();
+    expect(() => decodeApplicationDeploymentGraph({
+      ...graph,
+      runtimeAccess: undefined,
+    })).toThrow(ApplicationDeploymentGraphDecodeError);
+
+    const wrongTarget = {
+      ...graph.runtimeAccess,
+      target: 'aws' as const,
+    };
+    const wrongTargetWithDigest = {
+      ...wrongTarget,
+      digest: applicationRuntimeAccessPlanDigest(wrongTarget),
+    };
+    expect(validateApplicationDeploymentGraph({
+      ...graph,
+      runtimeAccess: wrongTargetWithDigest,
+    }).diagnostics).toContainEqual(expect.objectContaining({
+      code: 'DEPLOYMENT_GRAPH_INVALID',
+      message: expect.stringContaining('targets aws'),
+    }));
+
+    expect(validateApplicationDeploymentGraph({
+      ...graph,
+      runtimeAccess: {
+        ...graph.runtimeAccess,
+        sourceGraphDigest: `sha256:${'c'.repeat(64)}`,
+      },
+    }).diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: 'DEPLOYMENT_GRAPH_INVALID',
+        message: expect.stringContaining('digest does not match'),
+      }),
+      expect.objectContaining({
+        code: 'DEPLOYMENT_GRAPH_INVALID',
+        message: expect.stringContaining('sourceGraphDigest does not match'),
+      }),
+    ]));
+  });
+
+  it("reports malformed runtime-access entries without throwing from validation", () => {
+    const graph = validGraph();
+    const malformed = {
+      ...graph.runtimeAccess,
+      executions: [{
+        executionIdentity: 'execution.invalid',
+        nodeId: 'node.invalid',
+        requirementIds: ['requirement.invalid'],
+        requirements: [null],
+        lowerings: [null],
+        policyDigest: `sha256:${'a'.repeat(64)}`,
+        local: { grants: [] },
+        kubernetes: {
+          serviceAccountName: 'invalid',
+          bindings: [],
+          networkConnections: [],
+          credentialResources: [],
+        },
+      }],
+      diagnostics: [null],
+    };
+    expect(() => validateApplicationRuntimeAccessPlan(malformed)).not.toThrow();
+    expect(validateApplicationRuntimeAccessPlan(malformed)).toEqual(expect.arrayContaining([
+      expect.stringContaining('malformed requirement'),
+      expect.stringContaining('malformed lowering'),
+      expect.stringContaining('malformed diagnostic'),
+      expect.stringContaining('digest does not match'),
+    ]));
   });
 
   it("retains profile transition acknowledgements in the deployment plan identity", () => {
@@ -328,6 +401,14 @@ describe("ApplicationDeploymentGraph", () => {
 });
 
 function validGraph(): ApplicationDeploymentGraph {
+  const runtimeAccessContent = {
+    apiVersion: 'applik8s.runtimeAccessPlan/v1alpha1' as const,
+    application: 'guestbook',
+    target: 'kubernetes' as const,
+    sourceGraphDigest: digest,
+    executions: [],
+    diagnostics: [],
+  };
   const artifact: ApplicationDeploymentNode = {
     id: "artifact.web",
     kind: "artifact",
@@ -419,6 +500,10 @@ function validGraph(): ApplicationDeploymentGraph {
       strategy: "kro",
       sourceGraphDigest: digest,
       compilerVersion: "0.6.0",
+    },
+    runtimeAccess: {
+      ...runtimeAccessContent,
+      digest: applicationRuntimeAccessPlanDigest(runtimeAccessContent),
     },
     nodes: [artifact, composition],
     edges: [

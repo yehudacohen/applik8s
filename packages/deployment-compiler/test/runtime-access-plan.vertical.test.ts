@@ -1,9 +1,24 @@
 // typecast-file-boundary: Runtime-access fixtures assemble exact graph discriminants to exercise ambiguity and least-privilege lowering.
-import { applicationRuntimeAccessRequirement, deriveApplicationGraphFoundation, type ApplicationGraph } from '@applik8s/core';
+import { type ApplicationGraph, applicationRuntimeAccessRequirement, deriveApplicationGraphFoundation } from '@applik8s/core';
 import { describe, expect, it } from 'vitest';
 import { compileApplicationRuntimeAccessPlan } from '../src/index.js';
 
 describe('v0.8 runtime-access lowering', () => {
+  it('preserves an embedding compiler source identity without changing policy semantics', () => {
+    const graph = accessGraph();
+    const sourceGraphDigest = `sha256:${'f'.repeat(64)}` as const;
+    const embedded = compileApplicationRuntimeAccessPlan({
+      graph,
+      target: 'kubernetes',
+      namespace: 'notes',
+      sourceGraphDigest,
+    });
+    const standalone = compileApplicationRuntimeAccessPlan({ graph, target: 'kubernetes', namespace: 'notes' });
+    expect(embedded.sourceGraphDigest).toBe(sourceGraphDigest);
+    expect(embedded.executions).toEqual(standalone.executions);
+    expect(embedded.digest).not.toBe(standalone.digest);
+  });
+
   it('issues exact local grants and resource-name-bounded Kubernetes Secret access per execution identity', () => {
     const graph = accessGraph();
     const local = compileApplicationRuntimeAccessPlan({ graph, target: 'local' });

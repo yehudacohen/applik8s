@@ -52,10 +52,10 @@ export function applicationProviderGuaranteesForGraph(
     .filter((node): node is ApplicationProviderNode => node.kind === 'provider')
     .map((provider) => {
       const implementation = selectedImplementation(provider, request.profile, request.target, request.graph);
-      const support = providerSupport(provider.interface, implementation, request.target);
-			const scheduleFindings = provider.interface === 'Scheduler'
-				? scheduleProviderFindings(request.graph, provider, implementation, request.target)
-				: [];
+      const support = providerSupport(provider, implementation, request.target);
+      const scheduleFindings = provider.interface === 'Scheduler'
+        ? scheduleProviderFindings(request.graph, provider, implementation, request.target)
+        : [];
       return {
         apiVersion: 'applik8s.providerGuarantees/v1alpha1',
         provider: applicationProviderIdentity({
@@ -73,8 +73,8 @@ export function applicationProviderGuaranteesForGraph(
         maturity: support ? providerMaturity(request.target, provider.stability) : 'experimental',
         guarantees: baselineGuarantees(provider, request.target, implementation, support, request.graph),
         limitations: support
-					? [...targetLimitations(request.target), ...scheduleFindings.map(({ message }) => message)]
-					: [`${provider.interface}/${implementation} has no qualified ${request.target} lowering.`],
+          ? [...targetLimitations(request.target), ...scheduleFindings.map(({ message }) => message)]
+          : [`${provider.interface}/${implementation} has no qualified ${request.target} lowering.`],
         evidenceLevel: request.target === 'local' && support ? 'static' : 'none',
       } satisfies ApplicationProviderGuaranteeManifest;
     });
@@ -237,7 +237,25 @@ const targetImplementationAliases: Readonly<Record<ApplicationDeploymentTargetKi
   kubernetes: {},
 };
 
-function providerSupport(capability: string, implementation: string, target: ApplicationDeploymentTargetKind): boolean {
+function providerSupport(
+  provider: ApplicationProviderNode,
+  implementation: string,
+  target: ApplicationDeploymentTargetKind,
+): boolean {
+  const capability = provider.interface;
+  // A callable provider is not an infrastructure implementation that needs a
+  // bespoke target contributor. Its compiler-retained runtime binding gives
+  // the generated local/Kubernetes workload exact configuration, Secret
+  // references, readiness dependencies, operations, and access requirements.
+  // Treat that generic framework-managed path as bounded only on targets where
+  // those projections are maintained. AWS stays fail-closed until the same
+  // binding is proven through its task-role and secret materializer.
+  if (
+    (target === 'local' || target === 'kubernetes')
+    && hasFrameworkManagedCallableRuntime(provider.config?.callableRuntime, target)
+  ) {
+    return true;
+  }
   if (target === 'local') return Boolean(localProviders[capability]?.includes(implementation));
   if (target === 'aws-local' || target === 'aws') return Boolean(awsProviders[capability]?.includes(implementation));
   if (target === 'kubernetes' && kubernetesProviders[capability]) {
@@ -246,6 +264,30 @@ function providerSupport(capability: string, implementation: string, target: App
   // Absence from the maintained registry is not evidence of target support.
   // Provider packages may supply a stronger live-backed manifest, but this
   // compiler baseline must fail closed rather than inventing compatibility.
+  return false;
+}
+
+function hasFrameworkManagedCallableRuntime(
+  candidate: unknown,
+  target: 'local' | 'kubernetes',
+): boolean {
+  const binding = objectValue(candidate);
+  if (!binding || typeof binding.kind !== 'string') return false;
+  if (binding.kind === 'runtime') {
+    return Object.hasOwn(binding, 'runtime') && objectValue(binding.runtime) !== undefined;
+  }
+  if (binding.kind === 'targetSelection') {
+    const targets = objectValue(binding.targets);
+    return hasFrameworkManagedCallableRuntime(targets?.[target], target);
+  }
+  if (binding.kind === 'profileSelection') {
+    const branches = objectValue(binding.cases);
+    const values = branches ? Object.values(branches) : [];
+    return typeof binding.selector === 'string'
+      && values.length > 0
+      && values.every((value) => hasFrameworkManagedCallableRuntime(value, target))
+      && hasFrameworkManagedCallableRuntime(binding.default, target);
+  }
   return false;
 }
 
@@ -335,9 +377,9 @@ function baselineGuarantees(
     ...(provider.interface === 'ActorRuntime'
       ? actorGuarantees(provider, target, supported)
       : []),
-		...(provider.interface === 'Scheduler'
-			? scheduleGuarantees(graph, provider, implementation, target, supported)
-			: []),
+    ...(provider.interface === 'Scheduler'
+      ? scheduleGuarantees(graph, provider, implementation, target, supported)
+      : []),
   ];
 }
 

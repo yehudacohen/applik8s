@@ -1,8 +1,8 @@
+import { type ApplicationKubernetesDirectDeploymentNode, applicationRuntimeAccessPlanDigest } from '@applik8s/deployment-contract';
 import { describe, expect, it } from 'vitest';
-import type { ApplicationKubernetesDirectDeploymentNode } from '@applik8s/deployment-contract';
 import {
-  applicationOwnedDeletionNamespaces,
   applicationInstanceSpec,
+  applicationOwnedDeletionNamespaces,
   kubernetesStatusCode,
   type ObservedApplicationInstance,
 } from '../src/application-deployment-observer.js';
@@ -74,6 +74,14 @@ describe('application deployment observation', () => {
   });
 
   it('derives only application-owned delete namespaces for authoritative destroy receipts', () => {
+    const runtimeAccessContent = {
+      apiVersion: 'applik8s.runtimeAccessPlan/v1alpha1' as const,
+      application: 'application',
+      target: 'kubernetes' as const,
+      sourceGraphDigest: `sha256:${'c'.repeat(64)}` as const,
+      executions: [],
+      diagnostics: [],
+    };
     const base: Omit<ApplicationKubernetesDirectDeploymentNode, 'lifecycle'> = {
       id: 'direct.namespace.workload',
       kind: 'kubernetesDirect',
@@ -115,6 +123,7 @@ describe('application deployment observation', () => {
         sourceGraphDigest: `sha256:${'c'.repeat(64)}`,
         compilerVersion: 'test',
       },
+      runtimeAccess: { ...runtimeAccessContent, digest: applicationRuntimeAccessPlanDigest(runtimeAccessContent) },
       nodes: [
         {
           ...base,

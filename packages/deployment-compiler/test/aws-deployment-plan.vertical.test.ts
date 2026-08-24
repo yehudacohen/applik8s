@@ -45,7 +45,7 @@ describe('v0.8 AWS deployment planning', () => {
         resources: [expect.stringMatching(/^arn:aws:s3:::[a-z0-9-]+\/tenants\/\*$/u)],
       }),
     ]));
-    expect(JSON.stringify(role)).not.toContain('\"resources\":[\"*\"]');
+    expect(JSON.stringify(role)).not.toContain('"resources":["*"]');
     expect(first.runtimeBindings).toEqual(expect.arrayContaining([
       expect.objectContaining({ kind: 'postgresUrl', environmentName: 'APPLIK8S_DATABASE_DOCUMENTS_URL', resourceId: 'provider.provider.TransactionalDatabase', database: 'documents' }),
       expect.objectContaining({ kind: 'postgresUrl', environmentName: 'APPLIK8S_SCHEDULE_DATABASE_URL', resourceId: 'provider.provider.TransactionalDatabase', database: 'postgres' }),

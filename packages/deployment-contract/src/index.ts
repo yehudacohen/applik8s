@@ -20,6 +20,11 @@ export {
   applicationOptionalDeploymentOutputReference,
   parseApplicationDeploymentOutputReference,
 } from "./output-reference.js";
+export type * from './runtime-access.js';
+export {
+  applicationRuntimeAccessPlanDigest,
+  validateApplicationRuntimeAccessPlan,
+} from './runtime-access.js';
 export type * from './runtime-artifact.js';
 export {
   applicationFrameworkCredentialEnvironmentIsValid,

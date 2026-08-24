@@ -23,7 +23,10 @@ import {
   compileApplicationAwsDeploymentPlan,
   compileApplicationPlan,
 } from '@applik8s/deployment-compiler';
-import type { ApplicationDeploymentGraph } from '@applik8s/deployment-contract';
+import {
+  type ApplicationDeploymentGraph,
+  applicationRuntimeAccessPlanDigest,
+} from '@applik8s/deployment-contract';
 import { createApplicationOpenTelemetryRuntime } from '@applik8s/runtime-otel';
 
 const execFileAsync = promisify(execFile);
@@ -35,9 +38,22 @@ const semanticGraph = {
   apiVersion: 'applik8s.appGraph/v1alpha1', kind: 'ApplicationGraph', metadata: { name: 'v08-benchmark' }, nodes: [], edges: [], providerRequirements: [], providerBindings: [],
   compatibility: { stablePublicApis: [], documentedInternalContracts: [], experimentalSurfaces: [], postV3Surfaces: [], labels: [] },
 } satisfies ApplicationGraph;
+const benchmarkSourceGraphDigest = `sha256:${'b'.repeat(64)}` as const;
+const benchmarkRuntimeAccessContent = {
+  apiVersion: 'applik8s.runtimeAccessPlan/v1alpha1' as const,
+  application: 'v08-benchmark',
+  target: 'local' as const,
+  sourceGraphDigest: benchmarkSourceGraphDigest,
+  executions: [],
+  diagnostics: [],
+};
 const deploymentGraph = {
   apiVersion: 'applik8s.deploymentGraph/v1alpha1', kind: 'ApplicationDeploymentGraph',
-  metadata: { identity: { connection: { provider: 'local', cluster: 'local', digest: `sha256:${'a'.repeat(64)}` }, application: 'v08-benchmark', controlPlaneNamespace: 'local', instance: 'benchmark', profile: 'starter' }, mode: 'fresh', strategy: 'direct', sourceGraphDigest: `sha256:${'b'.repeat(64)}`, compilerVersion: '0.8.0' },
+  metadata: { identity: { connection: { provider: 'local', cluster: 'local', digest: `sha256:${'a'.repeat(64)}` }, application: 'v08-benchmark', controlPlaneNamespace: 'local', instance: 'benchmark', profile: 'starter' }, mode: 'fresh', strategy: 'direct', sourceGraphDigest: benchmarkSourceGraphDigest, compilerVersion: '0.8.0' },
+  runtimeAccess: {
+    ...benchmarkRuntimeAccessContent,
+    digest: applicationRuntimeAccessPlanDigest(benchmarkRuntimeAccessContent),
+  },
   nodes: [], edges: [],
 } satisfies ApplicationDeploymentGraph;
 

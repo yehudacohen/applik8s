@@ -1,3 +1,5 @@
+import type { ApplicationRuntimeAccessPlan } from './runtime-access.js';
+
 /** Portable JSON accepted by the deployment graph. */
 export type DeploymentJsonPrimitive = string | number | boolean | null;
 export type DeploymentJsonValue =
@@ -16,6 +18,8 @@ export interface ApplicationDeploymentGraph {
   readonly apiVersion: ApplicationDeploymentGraphVersion;
   readonly kind: "ApplicationDeploymentGraph";
   readonly metadata: ApplicationDeploymentGraphMetadata;
+  /** Canonical pre-mutation access contract that every target resource must implement. */
+  readonly runtimeAccess: ApplicationRuntimeAccessPlan;
   readonly nodes: readonly ApplicationDeploymentNode[];
   readonly edges: readonly ApplicationDeploymentEdge[];
 }

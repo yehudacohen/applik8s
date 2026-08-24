@@ -3,22 +3,23 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  type ApplicationAwsDeploymentPlan,
+  type ApplicationAwsPlanResource,
+  applicationRuntimeAccessPlanDigest,
   applicationRuntimeEndpointEnvironmentName,
   normalizeApplicationAwsDeploymentPlan,
   serializeApplicationAwsDeploymentPlan,
   validateApplicationAwsDeploymentPlan,
-  type ApplicationAwsDeploymentPlan,
-  type ApplicationAwsPlanResource,
 } from "@applik8s/deployment-contract";
 import { afterEach, describe, expect, test } from "vitest";
 import {
-  applicationAwsStackName,
+  type ApplicationAwsTargetDriver,
+  type ApplicationAwsTargetState,
   applicationAwsOutputKey,
+  applicationAwsStackName,
   createApplicationAwsDeployment,
   createAwsCliTargetDriver,
   synthesizeApplicationAwsCloudFormationTemplate,
-  type ApplicationAwsTargetDriver,
-  type ApplicationAwsTargetState,
 } from "../src/index.js";
 
 const temporary: string[] = [];
@@ -704,6 +705,14 @@ function fixturePlan(): ApplicationAwsDeploymentPlan {
     planResource("foundation.discovery", "service-discovery", "private-dns-namespace", "demo-internal", undefined, { namespaceName: "demo.internal", vpcResourceId: "foundation.network" }, ["namespaceId", "namespaceArn"]),
     planResource("application-host.web", "ecs", "fargate-service", "demo-web", "server.web", { desiredCount: 1, port: 3000, healthPath: "/-/healthz" }, ["serviceArn", "endpoint"]),
   ];
+  const runtimeAccessContent = {
+    apiVersion: 'applik8s.runtimeAccessPlan/v1alpha1' as const,
+    application: 'demo',
+    target: 'aws' as const,
+    sourceGraphDigest: `sha256:${'c'.repeat(64)}` as const,
+    executions: [],
+    diagnostics: [],
+  };
   return normalizeApplicationAwsDeploymentPlan({
     apiVersion: "applik8s.awsPlan/v1alpha1",
     application: "demo",
@@ -711,6 +720,7 @@ function fixturePlan(): ApplicationAwsDeploymentPlan {
     region: "us-east-1",
     accountId: "123456789012",
     lifecycleAuthority: "alchemy",
+    runtimeAccess: { ...runtimeAccessContent, digest: applicationRuntimeAccessPlanDigest(runtimeAccessContent) },
     resources,
     runtimeArtifacts: [],
     runtimeBindings: [],

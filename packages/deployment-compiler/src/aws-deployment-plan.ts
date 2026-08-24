@@ -1,23 +1,33 @@
 // typecast-file-boundary: Portable graph configuration is discriminated and normalized into the target AWS plan here.
-import { sha256Hex } from '@applik8s/deployment-contract';
-import { deriveApplicationGraphFoundation, type ApplicationCommandHandlerNode, type ApplicationGraph, type ApplicationGraphNode, type ApplicationLakehousePublicationNode, type ApplicationModelNode, type ApplicationProcessorNode, type ApplicationProviderNode } from '@applik8s/core';
+
 import {
-  applicationRuntimeArtifactId,
-  applicationRuntimeEndpointEnvironmentName,
+  type ApplicationCommandHandlerNode,
+  type ApplicationGraph,
+  type ApplicationGraphNode,
+  type ApplicationLakehousePublicationNode,
+  type ApplicationModelNode,
+  type ApplicationProcessorNode,
+  type ApplicationProviderNode,
+  deriveApplicationGraphFoundation,
+} from '@applik8s/core';
+import {
   type ApplicationAwsDeploymentPlan,
   type ApplicationAwsPlanEdge,
   type ApplicationAwsPlanResource,
   type ApplicationAwsService,
   type ApplicationRuntimeArtifact,
+  applicationRuntimeArtifactId,
+  applicationRuntimeEndpointEnvironmentName,
   type DeploymentJsonObject,
   type DeploymentJsonValue,
   normalizeApplicationAwsDeploymentPlan,
+  sha256Hex,
   validateApplicationAwsDeploymentPlan,
 } from '@applik8s/deployment-contract';
-import { compileApplicationRuntimeAccessPlan } from './runtime-access-plan.js';
-import { resolveApplicationProviderForTarget } from './providers.js';
-import { applicationWorkloadProviderNodeIds } from './workload-provider-references.js';
 import { assertApplicationScheduleProviderCompatibility } from './provider-guarantees.js';
+import { resolveApplicationProviderForTarget } from './providers.js';
+import { compileApplicationRuntimeAccessPlan } from './runtime-access-plan.js';
+import { applicationWorkloadProviderNodeIds } from './workload-provider-references.js';
 
 const awsHatchetImage = 'ghcr.io/hatchet-dev/hatchet/hatchet-lite@sha256:5405c7f3991e85b7490b4e9fd7187bf5699f7cdd5b6e0c9a751751164b801aa9';
 const awsHatchetTenantId = '707d0855-80ab-4e1f-a156-f1c4546cbf52';
@@ -577,7 +587,7 @@ export function compileApplicationAwsDeploymentPlan(request: CompileApplicationA
   const plan = normalizeApplicationAwsDeploymentPlan({
     apiVersion: 'applik8s.awsPlan/v1alpha1', application: request.graph.metadata.name,
     environment: request.environment, region: request.region, accountId: request.accountId,
-    lifecycleAuthority: 'alchemy', resources: [...resources.values()], runtimeArtifacts, runtimeBindings, edges, diagnostics,
+    lifecycleAuthority: 'alchemy', runtimeAccess, resources: [...resources.values()], runtimeArtifacts, runtimeBindings, edges, diagnostics,
     digest: `sha256:${'0'.repeat(64)}`,
   });
   const validation = validateApplicationAwsDeploymentPlan(plan);

@@ -1,3 +1,4 @@
+import { validateApplicationRuntimeAccessPlan } from './runtime-access.js';
 import type {
   ApplicationDeploymentDiagnostic,
   ApplicationDeploymentDiagnosticCode,
@@ -23,6 +24,7 @@ export function validateApplicationDeploymentGraph(
 ): ApplicationDeploymentValidationResult {
   const diagnostics: ApplicationDeploymentDiagnostic[] = [];
   validateEnvelope(graph, diagnostics);
+  validateRuntimeAccess(graph, diagnostics);
   const nodes = validateNodes(graph, diagnostics);
   validateEdges(graph, nodes, diagnostics);
   validateSingletons(graph.nodes, diagnostics);
@@ -31,6 +33,26 @@ export function validateApplicationDeploymentGraph(
     valid: !diagnostics.some((diagnostic) => diagnostic.severity === "error"),
     diagnostics,
   };
+}
+
+function validateRuntimeAccess(
+  graph: ApplicationDeploymentGraph,
+  diagnostics: ApplicationDeploymentDiagnostic[],
+): void {
+  for (const error of validateApplicationRuntimeAccessPlan(graph.runtimeAccess, { requireResolved: true })) {
+    diagnostics.push(diagnostic('DEPLOYMENT_GRAPH_INVALID', `Runtime-access envelope ${error}.`));
+  }
+  const target = graph.metadata.identity.connection.provider === 'local'
+    || graph.metadata.identity.connection.provider === 'aws-local'
+    || graph.metadata.identity.connection.provider === 'aws'
+    ? graph.metadata.identity.connection.provider
+    : 'kubernetes';
+  if (graph.runtimeAccess.target !== target) {
+    diagnostics.push(diagnostic('DEPLOYMENT_GRAPH_INVALID', `Runtime-access envelope targets ${graph.runtimeAccess.target}, but the deployment connection targets ${target}.`));
+  }
+  if (graph.runtimeAccess.sourceGraphDigest !== graph.metadata.sourceGraphDigest) {
+    diagnostics.push(diagnostic('DEPLOYMENT_GRAPH_INVALID', 'Runtime-access envelope sourceGraphDigest does not match the deployment graph.'));
+  }
 }
 
 function validateEnvelope(

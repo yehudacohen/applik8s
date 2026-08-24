@@ -1,5 +1,5 @@
 // typecast-file-boundary: Runtime-access extraction narrows portable graph records after capability and node-kind checks.
-import { sha256Hex } from '@applik8s/deployment-contract';
+
 import {
   type ApplicationGraph,
   type ApplicationProviderGuaranteeManifest,
@@ -11,88 +11,40 @@ import {
   deriveApplicationGraphFoundation,
   serializeApplicationGraph,
 } from '@applik8s/core';
+import {
+  type ApplicationRuntimeAccessAwsStatement,
+  type ApplicationRuntimeAccessExecutionPlan,
+  type ApplicationRuntimeAccessKubernetesBinding,
+  type ApplicationRuntimeAccessKubernetesRule,
+  type ApplicationRuntimeAccessPlan,
+  type ApplicationRuntimeAccessPlanDiagnostic,
+  type ApplicationRuntimeAccessRequirementLowering,
+  applicationRuntimeAccessPlanDigest,
+  sha256Hex,
+} from '@applik8s/deployment-contract';
 import { applicationProviderGuaranteesForGraph } from './provider-guarantees.js';
 
-export interface ApplicationRuntimeAccessPlan {
-  readonly apiVersion: 'applik8s.runtimeAccessPlan/v1alpha1';
-  readonly application: string;
-  readonly target: 'local' | 'aws-local' | 'aws' | 'kubernetes';
-  readonly sourceGraphDigest: `sha256:${string}`;
-  readonly digest: `sha256:${string}`;
-  readonly executions: readonly ApplicationRuntimeAccessExecutionPlan[];
-  readonly diagnostics: readonly ApplicationRuntimeAccessPlanDiagnostic[];
-}
-
-export interface ApplicationRuntimeAccessExecutionPlan {
-  readonly executionIdentity: string;
-  readonly nodeId: string;
-  readonly requirementIds: readonly string[];
-  readonly requirements: readonly ApplicationRuntimeAccessRequirement[];
-  readonly policyDigest: `sha256:${string}`;
-  readonly lowerings: readonly ApplicationRuntimeAccessRequirementLowering[];
-  readonly local: { readonly grants: readonly ApplicationRuntimeAccessRequirement['target'][] };
-  readonly kubernetes?: {
-    readonly serviceAccountName: string;
-    readonly bindings: readonly ApplicationRuntimeAccessKubernetesBinding[];
-    readonly networkConnections: readonly string[];
-    readonly credentialResources: readonly string[];
-  };
-  readonly aws?: { readonly roleName: string; readonly statements: readonly ApplicationRuntimeAccessAwsStatement[]; readonly networkConnections: readonly string[] };
-}
-
-export interface ApplicationRuntimeAccessRequirementLowering {
-  readonly requirementId: string;
-  readonly operation: ApplicationRuntimeAccessRequirement['target']['operation'];
-  readonly capabilityId: string;
-  readonly origin: ApplicationRuntimeAccessRequirement['origin'];
-  readonly fidelity: 'exact' | 'capability' | 'application-only' | 'external' | 'unsupported';
-  readonly mechanisms: readonly ('local-binding' | 'kubernetes-rbac' | 'kubernetes-network' | 'kubernetes-secret-projection' | 'aws-iam' | 'aws-network' | 'external-contract' | 'application-authorization')[];
-  readonly provenanceIds: readonly string[];
-  readonly providerGuarantee?: {
-    readonly providerId: string;
-    readonly disposition: 'guaranteed' | 'bounded' | 'unsupported' | 'external' | 'unresolved';
-    readonly evidenceLevel: ApplicationProviderGuaranteeManifest['evidenceLevel'] | 'none';
-  };
-}
-
-export interface ApplicationRuntimeAccessKubernetesBinding {
-  readonly kind: 'Role' | 'ClusterRole';
-  readonly namespace?: string;
-  readonly rules: readonly ApplicationRuntimeAccessKubernetesRule[];
-  readonly requirementIds: readonly string[];
-}
-
-export interface ApplicationRuntimeAccessAwsStatement {
-  readonly effect: 'Allow';
-  readonly actions: readonly string[];
-  readonly resources: readonly string[];
-  readonly conditions?: Readonly<Record<string, Readonly<Record<string, readonly string[]>>>>;
-}
-
-export interface ApplicationRuntimeAccessKubernetesRule {
-  readonly apiGroups: readonly string[];
-  readonly resources: readonly string[];
-  readonly verbs: readonly string[];
-  readonly resourceNames?: readonly string[];
-}
-
-export interface ApplicationRuntimeAccessPlanDiagnostic {
-  readonly severity: 'error' | 'warning';
-  readonly code:
-    | 'RUNTIME_ACCESS_EXPLICIT_REDUNDANT'
-    | 'RUNTIME_ACCESS_EXPLICIT_UNUSED'
-    | 'RUNTIME_ACCESS_EXPLICIT_WIDENING'
-    | 'RUNTIME_ACCESS_PROVIDER_GUARANTEE_UNSUPPORTED'
-    | 'RUNTIME_ACCESS_TARGET_UNRESOLVED'
-    | 'RUNTIME_ACCESS_WILDCARD_FORBIDDEN';
-  readonly message: string;
-  readonly requirementId: string;
-}
+export type {
+  ApplicationRuntimeAccessExecutionPlan,
+  ApplicationRuntimeAccessKubernetesBinding,
+  ApplicationRuntimeAccessKubernetesRule,
+  ApplicationRuntimeAccessPlan,
+  ApplicationRuntimeAccessPlanDiagnostic,
+  ApplicationRuntimeAccessRequirementLowering,
+} from '@applik8s/deployment-contract';
 
 /** Pure lowering from source-attributed semantic requirements to exact target grants. */
 export function compileApplicationRuntimeAccessPlan(options: {
   readonly graph: ApplicationGraph;
   readonly target: ApplicationRuntimeAccessPlan['target'];
+  /**
+   * Digest of the compiler-owned source graph artifact when this plan is
+   * embedded in another portable deployment artifact. Installation-value
+   * resolution may produce a concrete graph whose bytes differ from that
+   * source artifact, so callers at that boundary must preserve the source
+   * artifact identity rather than silently inventing a second one.
+   */
+  readonly sourceGraphDigest?: `sha256:${string}`;
   readonly namespace?: string;
   readonly profile?: string;
   readonly workspaceRoot?: string;
@@ -191,9 +143,10 @@ export function compileApplicationRuntimeAccessPlan(options: {
       ...policy,
     };
   });
-  const sourceGraphDigest = `sha256:${sha256Hex(serializeApplicationGraph(options.graph))}` as const;
+  const sourceGraphDigest = options.sourceGraphDigest
+    ?? (`sha256:${sha256Hex(serializeApplicationGraph(options.graph))}` as const);
   const content = { application: options.graph.metadata.name, target: options.target, sourceGraphDigest, executions, diagnostics };
-  return { apiVersion: 'applik8s.runtimeAccessPlan/v1alpha1', ...content, digest: `sha256:${sha256Hex(canonicalJsonV1String(content))}` };
+  return { apiVersion: 'applik8s.runtimeAccessPlan/v1alpha1', ...content, digest: applicationRuntimeAccessPlanDigest({ apiVersion: 'applik8s.runtimeAccessPlan/v1alpha1', ...content }) };
 }
 
 function awsStatement(

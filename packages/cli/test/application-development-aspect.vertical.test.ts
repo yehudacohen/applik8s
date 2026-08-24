@@ -1,6 +1,6 @@
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { ApplicationDeploymentGraph } from '@applik8s/deployment-contract';
+import { type ApplicationDeploymentGraph, applicationRuntimeAccessPlanDigest } from '@applik8s/deployment-contract';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   applicationDevelopmentAspects,
@@ -152,6 +152,14 @@ describe('Application development TypeKro aspect', () => {
 });
 
 function deploymentGraph(): ApplicationDeploymentGraph {
+  const runtimeAccessContent = {
+    apiVersion: 'applik8s.runtimeAccessPlan/v1alpha1' as const,
+    application: 'developer-test',
+    target: 'kubernetes' as const,
+    sourceGraphDigest: `sha256:${'b'.repeat(64)}` as const,
+    executions: [],
+    diagnostics: [],
+  };
   return {
     apiVersion: 'applik8s.deploymentGraph/v1alpha1',
     kind: 'ApplicationDeploymentGraph',
@@ -172,6 +180,7 @@ function deploymentGraph(): ApplicationDeploymentGraph {
       sourceGraphDigest: `sha256:${'b'.repeat(64)}`,
       compilerVersion: 'test',
     },
+    runtimeAccess: { ...runtimeAccessContent, digest: applicationRuntimeAccessPlanDigest(runtimeAccessContent) },
     nodes: [
       {
         id: 'artifact.application-host.web',

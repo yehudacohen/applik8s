@@ -3,6 +3,8 @@ import { join } from "node:path";
 import {
   type ApplicationDeploymentGraph,
   type ApplicationKubernetesDirectDeploymentNode,
+  type ApplicationRuntimeAccessPlan,
+  applicationRuntimeAccessPlanDigest,
   digestApplicationDeploymentGraph,
   digestApplicationDeploymentValue,
 } from "@applik8s/deployment-contract";
@@ -682,6 +684,7 @@ function deploymentGraph(): ApplicationDeploymentGraph {
     provider: "kubernetes",
     cluster: "orbstack",
   });
+  const sourceGraphDigest = digestApplicationDeploymentValue({ app: "alchemy-plan" }) as `sha256:${string}`;
   return {
     apiVersion: "applik8s.deploymentGraph/v1alpha1",
     kind: "ApplicationDeploymentGraph",
@@ -699,11 +702,10 @@ function deploymentGraph(): ApplicationDeploymentGraph {
       },
       mode: "fresh",
       strategy: "direct",
-      sourceGraphDigest: digestApplicationDeploymentValue({
-        app: "alchemy-plan",
-      }),
+      sourceGraphDigest,
       compilerVersion: "test",
     },
+    runtimeAccess: emptyRuntimeAccessPlan('alchemy-plan', 'kubernetes', sourceGraphDigest),
     nodes: [
       {
         id: "kubernetes.application",
@@ -742,4 +744,13 @@ function deploymentGraph(): ApplicationDeploymentGraph {
     ],
     edges: [],
   };
+}
+
+function emptyRuntimeAccessPlan(
+  application: string,
+  target: ApplicationRuntimeAccessPlan['target'],
+  sourceGraphDigest: `sha256:${string}`,
+): ApplicationRuntimeAccessPlan {
+  const content = { apiVersion: 'applik8s.runtimeAccessPlan/v1alpha1' as const, application, target, sourceGraphDigest, executions: [], diagnostics: [] };
+  return { ...content, digest: applicationRuntimeAccessPlanDigest(content) };
 }

@@ -30,6 +30,80 @@ describe('v0.8 provider guarantee manifests', () => {
     expect(manifest?.guarantees.every(({ disposition }) => disposition === 'unsupported')).toBe(true)
   })
 
+  it.each(['local', 'kubernetes'] as const)(
+    'qualifies a structurally valid framework-managed callable provider on %s',
+    (target) => {
+      const callable = {
+        ...provider('AcquisitionProvider', 'fixture-http'),
+        config: {
+          callableRuntime: {
+            kind: 'profileSelection',
+            selector: 'schema.spec.profile',
+            cases: {
+              starter: {
+                kind: 'targetSelection',
+                targets: {
+                  local: { kind: 'runtime', runtime: {} },
+                  kubernetes: { kind: 'runtime', runtime: { secretEnv: {} } },
+                },
+              },
+            },
+            default: {
+              kind: 'targetSelection',
+              targets: {
+                local: { kind: 'runtime', runtime: { env: {} } },
+                kubernetes: { kind: 'runtime', runtime: { readiness: { dependencies: [] } } },
+              },
+            },
+          },
+        },
+      } satisfies ApplicationProviderNode
+      const [manifest] = applicationProviderGuaranteesForGraph({
+        graph: { ...graph(), nodes: [callable] },
+        target,
+      })
+      expect(manifest?.guarantees).toEqual(expect.arrayContaining([
+        expect.objectContaining({ id: 'runtime-access', disposition: 'bounded' }),
+      ]))
+      expect(manifest?.limitations).not.toEqual(expect.arrayContaining([
+        expect.stringMatching(/no qualified/u),
+      ]))
+    },
+  )
+
+  it('fails closed for malformed, target-missing, and AWS callable provider bindings', () => {
+    const candidates = [
+      { callableRuntime: {} },
+      {
+        callableRuntime: {
+          kind: 'targetSelection',
+          targets: { local: { kind: 'runtime', runtime: {} } },
+        },
+      },
+    ] as const
+    for (const [index, config] of candidates.entries()) {
+      const callable = {
+        ...provider('AcquisitionProvider', `fixture-${index}`),
+        config,
+      } satisfies ApplicationProviderNode
+      const kubernetes = applicationProviderGuaranteesForGraph({
+        graph: { ...graph(), nodes: [callable] },
+        target: 'kubernetes',
+      })[0]
+      expect(kubernetes?.guarantees.every(({ disposition }) => disposition === 'unsupported')).toBe(true)
+    }
+
+    const callable = {
+      ...provider('AcquisitionProvider', 'fixture-aws'),
+      config: { callableRuntime: { kind: 'runtime', runtime: {} } },
+    } satisfies ApplicationProviderNode
+    const aws = applicationProviderGuaranteesForGraph({
+      graph: { ...graph(), nodes: [callable] },
+      target: 'aws',
+    })[0]
+    expect(aws?.guarantees.every(({ disposition }) => disposition === 'unsupported')).toBe(true)
+  })
+
   it.each(['aws', 'kubernetes'] as const)('records the complete qualified celld actor contract on %s', (target) => {
     const actorProvider = provider('ActorRuntime', 'celld-actors')
     const [manifest] = applicationProviderGuaranteesForGraph({

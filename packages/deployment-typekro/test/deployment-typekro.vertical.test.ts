@@ -5,6 +5,8 @@ import {
   type ApplicationDeploymentGraph,
   type ApplicationExternalProviderDeploymentNode,
   type ApplicationKubernetesCompositionDeploymentNode,
+  type ApplicationRuntimeAccessPlan,
+  applicationRuntimeAccessPlanDigest,
   digestApplicationDeploymentValue,
 } from "@applik8s/deployment-contract";
 import { type } from "arktype";
@@ -173,6 +175,7 @@ function graph(strategy: "direct" | "kro"): ApplicationDeploymentGraph {
     provider: "kubernetes",
     cluster: "orbstack",
   });
+  const sourceGraphDigest = digestApplicationDeploymentValue({ app: "adapter-app" }) as `sha256:${string}`;
   return {
     apiVersion: "applik8s.deploymentGraph/v1alpha1",
     kind: "ApplicationDeploymentGraph",
@@ -190,9 +193,10 @@ function graph(strategy: "direct" | "kro"): ApplicationDeploymentGraph {
       },
       mode: "fresh",
       strategy,
-      sourceGraphDigest: digestApplicationDeploymentValue({ app: "adapter-app" }),
+      sourceGraphDigest,
       compilerVersion: "test",
     },
+    runtimeAccess: emptyRuntimeAccessPlan('adapter-app', 'kubernetes', sourceGraphDigest),
     nodes: [
       {
         id: "kubernetes.application",
@@ -231,6 +235,15 @@ function graph(strategy: "direct" | "kro"): ApplicationDeploymentGraph {
     ],
     edges: [],
   };
+}
+
+function emptyRuntimeAccessPlan(
+  application: string,
+  target: ApplicationRuntimeAccessPlan['target'],
+  sourceGraphDigest: `sha256:${string}`,
+): ApplicationRuntimeAccessPlan {
+  const content = { apiVersion: 'applik8s.runtimeAccessPlan/v1alpha1' as const, application, target, sourceGraphDigest, executions: [], diagnostics: [] };
+  return { ...content, digest: applicationRuntimeAccessPlanDigest(content) };
 }
 
 function graphWithLocalS3(): ApplicationDeploymentGraph {

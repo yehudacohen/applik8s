@@ -13,10 +13,12 @@ import {
   digestApplicationDeploymentValue,
   validateApplicationDeploymentGraph,
 } from "@applik8s/deployment-contract";
+import { assertApplicationScheduleProviderCompatibility } from './provider-guarantees.js';
 import {
   applicationProviderSelectionDeploymentContributor,
   builtinApplicationDeploymentContributors,
 } from "./providers.js";
+import { compileApplicationRuntimeAccessPlan } from './runtime-access-plan.js';
 import type {
   ApplicationArtifactRequirement,
   ApplicationDeploymentContribution,
@@ -27,8 +29,6 @@ import type {
   CompileApplicationDeploymentGraphRequest,
   CompileApplicationDeploymentGraphResult,
 } from "./types.js";
-import { compileApplicationRuntimeAccessPlan } from './runtime-access-plan.js';
-import { assertApplicationScheduleProviderCompatibility } from './provider-guarantees.js';
 
 export function compileApplicationDeploymentGraph(
   request: CompileApplicationDeploymentGraphRequest,
@@ -107,6 +107,16 @@ export function compileApplicationDeploymentGraph(
       && !directlyConsumedArtifactIds.has(artifact.id),
   );
   const root = rootCompositionNode(request, rootArtifacts, fragments);
+  const runtimeAccess = compileApplicationRuntimeAccessPlan({
+    graph: request.graph,
+    target: context.target,
+    sourceGraphDigest: requiredSourceGraphDigest(request.sourceGraphDigest),
+    profile: context.profile,
+    ...(request.workspaceRoot ? { workspaceRoot: request.workspaceRoot } : {}),
+    namespace: request.graph.metadata.namespace && typeof request.graph.metadata.namespace === 'string'
+      ? request.graph.metadata.namespace
+      : request.identity.instance,
+  });
   const deploymentNodes = [
     ...artifactNodes,
     ...contributionNodes,
@@ -126,6 +136,7 @@ export function compileApplicationDeploymentGraph(
         ? { profileTransition: request.profileTransition }
         : {}),
     },
+    runtimeAccess,
     nodes: deploymentNodes,
     edges: [
       ...rootArtifacts.flatMap((artifact) => artifactEdges(artifact, root)),
@@ -196,16 +207,17 @@ export function compileApplicationDeploymentGraph(
   return {
     graph,
     contributorKeys: [...contributorKeys].sort(compareStrings),
-    runtimeAccess: compileApplicationRuntimeAccessPlan({
-      graph: request.graph,
-      target: context.target,
-      profile: context.profile,
-      ...(request.workspaceRoot ? { workspaceRoot: request.workspaceRoot } : {}),
-      namespace: request.graph.metadata.namespace && typeof request.graph.metadata.namespace === 'string'
-        ? request.graph.metadata.namespace
-        : request.identity.instance,
-    }),
+    runtimeAccess,
   };
+}
+
+function requiredSourceGraphDigest(value: string): `sha256:${string}` {
+  if (!/^sha256:[a-f0-9]{64}$/u.test(value)) {
+    throw new Error(
+      "Application deployment sourceGraphDigest must be a full lowercase sha256 digest.",
+    );
+  }
+  return value as `sha256:${string}`;
 }
 
 function deploymentTargetFromConnection(provider: string): "local" | "aws-local" | "aws" | "kubernetes" {

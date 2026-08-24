@@ -31,6 +31,7 @@ import { compileApplicationPlan } from './application-plan.js';
 import { compileApplicationAwsDeploymentPlan } from './aws-deployment-plan.js';
 import { applicationProviderGuaranteesForGraph, assertApplicationScheduleProviderCompatibility } from './provider-guarantees.js';
 import { resolveApplicationProviderForTarget } from './providers.js';
+import { compileApplicationRuntimeAccessPlan } from './runtime-access-plan.js';
 import type { ApplicationGeneratedSecretRequirement } from './types.js';
 import { applicationWorkloadDependencyNodeIds, applicationWorkloadProviderNodeIds } from './workload-provider-references.js';
 
@@ -397,7 +398,13 @@ export function compileLocalApplicationPlan(input: {
   readonly supervisor: LocalSupervisorPlan;
   readonly workspaceRoot?: string;
 }): ApplicationPlan {
-  const sourceDigest = sha256(stableJson(input.graph));
+  const runtimeAccess = compileApplicationRuntimeAccessPlan({
+    graph: input.graph,
+    target: input.supervisor.target,
+    profile: input.supervisor.profile,
+    ...(input.workspaceRoot ? { workspaceRoot: input.workspaceRoot } : {}),
+  });
+  const sourceDigest = runtimeAccess.sourceGraphDigest;
   const connectionDigest = sha256(`${input.supervisor.target}\0${input.supervisor.projectDigest}`);
   const deploymentNodes = input.supervisor.resources.map((resource): ApplicationDeploymentNode => {
     const outputs = input.supervisor.bindings
@@ -464,6 +471,7 @@ export function compileLocalApplicationPlan(input: {
       sourceGraphDigest: sourceDigest,
       compilerVersion: '0.8.0',
     },
+    runtimeAccess,
     nodes: deploymentNodes,
     edges: deploymentEdges,
   };

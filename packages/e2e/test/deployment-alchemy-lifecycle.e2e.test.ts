@@ -4,6 +4,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import {
   type ApplicationDeploymentGraph,
+  applicationRuntimeAccessPlanDigest,
   digestApplicationDeploymentValue,
 } from "@applik8s/deployment-contract";
 import {
@@ -522,6 +523,7 @@ function lifecycleGraph(options: {
     version: options.version,
     configName: options.configName ?? `${options.application}-config`,
   };
+  const sourceGraphDigest = digestApplicationDeploymentValue(configuration);
   return {
     apiVersion: "applik8s.deploymentGraph/v1alpha1",
     kind: "ApplicationDeploymentGraph",
@@ -539,9 +541,10 @@ function lifecycleGraph(options: {
       },
       mode: "fresh",
       strategy: options.strategy,
-      sourceGraphDigest: digestApplicationDeploymentValue(configuration),
+      sourceGraphDigest,
       compilerVersion: "v0.7-lifecycle-qualification",
     },
+    runtimeAccess: emptyRuntimeAccessPlan(options.application, sourceGraphDigest),
     nodes: [
       {
         id: "direct.namespace.workload",
@@ -658,6 +661,12 @@ function secretLifecycleGraph(options: {
     name: "qualification",
     version: "v1",
   };
+  const sourceGraphDigest = digestApplicationDeploymentValue({
+    ...rootConfiguration,
+    nodeId: options.nodeId,
+    name: options.name,
+    deletion: options.deletion,
+  });
   return {
     apiVersion: "applik8s.deploymentGraph/v1alpha1",
     kind: "ApplicationDeploymentGraph",
@@ -675,14 +684,10 @@ function secretLifecycleGraph(options: {
       },
       mode: "fresh",
       strategy: "direct",
-      sourceGraphDigest: digestApplicationDeploymentValue({
-        ...rootConfiguration,
-        nodeId: options.nodeId,
-        name: options.name,
-        deletion: options.deletion,
-      }),
+      sourceGraphDigest,
       compilerVersion: "v0.7-lifecycle-qualification",
     },
+    runtimeAccess: emptyRuntimeAccessPlan(options.application, sourceGraphDigest),
     nodes: [
       {
         id: options.nodeId,
@@ -816,6 +821,24 @@ function secretLifecycleGraph(options: {
       },
     ],
   };
+}
+
+function emptyRuntimeAccessPlan(
+  application: string,
+  sourceGraphDigest: string,
+): ApplicationDeploymentGraph['runtimeAccess'] {
+  if (!/^sha256:[a-f0-9]{64}$/u.test(sourceGraphDigest)) {
+    throw new Error('Lifecycle fixture source graph digest is invalid.');
+  }
+  const content = {
+    apiVersion: 'applik8s.runtimeAccessPlan/v1alpha1' as const,
+    application,
+    target: 'kubernetes' as const,
+    sourceGraphDigest: sourceGraphDigest as `sha256:${string}`,
+    executions: [],
+    diagnostics: [],
+  };
+  return { ...content, digest: applicationRuntimeAccessPlanDigest(content) };
 }
 
 async function expectConfig(namespace: string, version: string): Promise<void> {

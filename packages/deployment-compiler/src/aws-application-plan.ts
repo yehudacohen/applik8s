@@ -2,19 +2,19 @@
 // provider-neutral physical-plan input without exposing AWS objects to domain
 // source or making this adapter a lifecycle owner.
 import {
-  applicationCanonicalIdentity,
-  applicationTargetIdentity,
-  sourceProvenance,
   type ApplicationGraph,
   type ApplicationNativePlanRecord,
   type ApplicationPlan,
+  applicationCanonicalIdentity,
+  applicationTargetIdentity,
+  sourceProvenance,
 } from '@applik8s/core';
 import {
-  digestApplicationDeploymentValue,
   type ApplicationAwsDeploymentPlan,
   type ApplicationDeploymentEdge,
   type ApplicationDeploymentGraph,
   type ApplicationDeploymentNode,
+  digestApplicationDeploymentValue,
 } from '@applik8s/deployment-contract';
 import { compileApplicationPlan } from './application-plan.js';
 import { applicationProviderGuaranteesForGraph } from './provider-guarantees.js';
@@ -38,7 +38,7 @@ export function compileApplicationAwsApplicationPlan(
     accountId: request.aws.accountId ?? 'unresolved',
     region: request.aws.region,
   });
-  const sourceGraphDigest = digestApplicationDeploymentValue(request.graph);
+  const sourceGraphDigest = request.aws.runtimeAccess.sourceGraphDigest;
   const deployment: ApplicationDeploymentGraph = {
     apiVersion: 'applik8s.deploymentGraph/v1alpha1',
     kind: 'ApplicationDeploymentGraph',
@@ -59,6 +59,7 @@ export function compileApplicationAwsApplicationPlan(
       sourceGraphDigest,
       compilerVersion: '0.8.0',
     },
+    runtimeAccess: request.aws.runtimeAccess,
     nodes: request.aws.resources.map((resource): ApplicationDeploymentNode => ({
       id: resource.id,
       kind: 'externalProvider',
