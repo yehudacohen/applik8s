@@ -14,7 +14,7 @@
       "owner": "compiler-foundation",
       "maturity": "stable",
       "command": "bun run check:v08:graph-provenance",
-      "implemented": false,
+      "implemented": true,
       "cadence": ["per-pr", "nightly"],
       "environments": ["compiler-fixtures", "componentized-wasm-host"],
       "evidence": ["canonical-node-identity", "recursive-closure-discovery", "source-provenance", "execution-boundary-attribution", "stable-source-movement", "ambiguity-rejection", "sensitive-data-absence"]
@@ -83,7 +83,7 @@
       "owner": "application-plan",
       "maturity": "stable",
       "command": "bun run check:v08:application-plan",
-      "implemented": false,
+      "implemented": true,
       "cadence": ["per-pr", "nightly", "release-candidate"],
       "environments": ["local", "real-aws", "kubernetes"],
       "evidence": ["stable-artifact", "source-provenance", "native-plan-composition", "deterministic-diff", "sensitive-data-absence"]
