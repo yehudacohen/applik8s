@@ -513,6 +513,53 @@ async function observeWorkflowRuntime(state, reason) {
   ]);
 }
 
+function workflowAdmissionRejectionCode(error) {
+  const code = error && typeof error === 'object' && typeof error.code === 'string'
+    ? error.code
+    : undefined;
+  if (code && /^[A-Z][A-Z0-9_]{0,63}$/u.test(code)) return code;
+  if (error instanceof Error && /^[A-Za-z][A-Za-z0-9]{0,63}$/u.test(error.name)) {
+    return error.name;
+  }
+  return 'AdmissionRejected';
+}
+
+async function observeWorkflowAdmission(options, state, admission, reason) {
+  const evidence = {
+    admissionVersion: admission?.apiVersion ?? 'applik8s.admission/v1',
+    executionKind: options.executionKind,
+    transport: admission?.operation?.transport ?? 'workflow',
+    compatibilityPath: 'canonical',
+  };
+  console.info(JSON.stringify({
+    event: 'applik8s-workflow-admission',
+    state,
+    ...(reason ? { reason } : {}),
+    ...evidence,
+  }));
+  if (!operationAuthority) return;
+  const observedAt = new Date();
+  try {
+    await operationAuthority.observe({
+      id: 'workflow-admission:' + options.executionKind + ':' + options.handlerId,
+      domain: 'workflow',
+      subject: options.operationId,
+      authority: 'canonical',
+      state: state === 'admitted' ? 'ready' : 'failed',
+      ...(reason ? { reason } : {}),
+      source: 'applik8s-workflow-admission',
+      evidence,
+      observedAt: observedAt.toISOString(),
+      expiresAt: new Date(observedAt.getTime() + 90_000).toISOString(),
+    });
+  } catch (error) {
+    console.error(JSON.stringify({
+      event: 'applik8s-workflow-admission-observation-failed',
+      error: workflowAdmissionRejectionCode(error),
+    }));
+  }
+}
+
 function canonicalTaskAdmission(principal, context, handlerId, contractName, envelopes, timeoutSeconds) {
   return canonicalManagedAdmission({
     context,
@@ -537,6 +584,26 @@ function canonicalWorkflowAdmission(context, handlerId, contractName) {
 }
 
 async function canonicalManagedAdmission(options) {
+  try {
+    const admitted = await canonicalManagedAdmissionUnchecked(options);
+    await observeWorkflowAdmission(
+      options,
+      'admitted',
+      admitted.execution.admission,
+    );
+    return admitted;
+  } catch (error) {
+    await observeWorkflowAdmission(
+      options,
+      'rejected',
+      undefined,
+      workflowAdmissionRejectionCode(error),
+    );
+    throw error;
+  }
+}
+
+async function canonicalManagedAdmissionUnchecked(options) {
   const raw = metadata(options.context, options.executionKind);
   const authorityRevision = operationAuthority
     ? await operationAuthority.authorityRevision()
@@ -1136,7 +1203,7 @@ async function handleGatewayRequest(request, response) {
     const unauthorized = error instanceof Error && error.message === 'unauthorized';
     console.error(JSON.stringify({
       event: 'applik8s-workflow-gateway-rejected',
-      error: unauthorized ? 'unauthorized' : error instanceof Error ? error.message.slice(0, 256) : 'unknown',
+      error: unauthorized ? 'unauthorized' : workflowAdmissionRejectionCode(error),
     }));
     return gatewayJson(response, unauthorized ? 401 : 400, { error: unauthorized ? 'unauthorized' : 'request-rejected' });
   }

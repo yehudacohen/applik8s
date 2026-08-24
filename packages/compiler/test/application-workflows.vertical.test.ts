@@ -878,7 +878,9 @@ export const workflowProof = platform.composition;
         'applicationCausalPrincipalContext',
       );
       expect(generatedSource).toContain("url.pathname === '/readyz'");
-      expect(source).toContain('{key:e.idempotencyKey}');
+      expect(generatedSource).toContain(
+        'options?.idempotencyKey ? { key: options.idempotencyKey } : {}',
+      );
       expect(generatedSource).toContain(
         'const { idempotencyKey: _parentIdempotencyKey, ...inherited } = parent ?? {}',
       );
@@ -911,6 +913,24 @@ export const workflowProof = platform.composition;
       );
       expect(generatedSource).toContain(
         'admission: applicationAdmissionInvocationView(context)',
+      );
+      expect(generatedSource).toContain(
+        "event: 'applik8s-workflow-admission'",
+      );
+      expect(generatedSource).toContain(
+        "compatibilityPath: 'canonical'",
+      );
+      expect(generatedSource).toContain(
+        "authority: 'canonical'",
+      );
+      expect(generatedSource).toContain(
+        "state === 'admitted' ? 'ready' : 'failed'",
+      );
+      expect(generatedSource).toContain(
+        'workflowAdmissionRejectionCode(error)',
+      );
+      expect(generatedSource).not.toContain(
+        'error.message.slice(0, 256)',
       );
       expect(generatedSource).toContain(
         '[applicationWorkflowCausalPrincipalMetadata]',

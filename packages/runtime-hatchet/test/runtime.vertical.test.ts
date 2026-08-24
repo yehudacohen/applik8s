@@ -206,7 +206,7 @@ describe('Hatchet provider credential boundary', () => {
         }
         return { runId };
       }),
-      runs: { get: vi.fn(), cancel: vi.fn() },
+      runs: { get: vi.fn(), cancel: vi.fn(async () => undefined) },
     };
     // typecast: the fake deliberately models only the Hatchet start surface.
     const runtime = createHatchetWorkflowRuntimeFromClient(client as never);
@@ -221,18 +221,22 @@ describe('Hatchet provider credential boundary', () => {
         metadata,
       ),
     ).rejects.toMatchObject({ name: 'HatchetProviderError', status: 503 });
-    await expect(
-      runtime.start(
-        'tenant.provision.v1',
-        { tenantId: 'tenant-1' },
-        metadata,
-      ),
-    ).resolves.toMatchObject({ id: 'run-1' });
+    const reattached = await runtime.start(
+      'tenant.provision.v1',
+      { tenantId: 'tenant-1' },
+      metadata,
+    );
+    expect(reattached).toMatchObject({ id: 'run-1' });
+    await reattached.cancel();
+    await reattached.cancel();
 
     expect(effects).toBe(1);
     expect(client.runNoWait).toHaveBeenCalledTimes(2);
     expect(client.runNoWait.mock.calls.map((call) => call[2]?.childKey))
       .toEqual([metadata.idempotencyKey, metadata.idempotencyKey]);
+    expect(client.runs.cancel).toHaveBeenCalledTimes(2);
+    expect(client.runs.cancel).toHaveBeenNthCalledWith(1, { ids: ['run-1'] });
+    expect(client.runs.cancel).toHaveBeenNthCalledWith(2, { ids: ['run-1'] });
   });
 
   it('resolves a fresh provider client for each newly-started operation', async () => {
