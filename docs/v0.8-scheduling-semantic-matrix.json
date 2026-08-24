@@ -100,22 +100,22 @@
     },
     {
       "id": "hatchet-shared",
-      "state": "in-progress",
+      "state": "implemented",
       "target": "kubernetes",
       "capabilities": {
-        "definition-identity": "workflow-contract-only",
-        "instance-revision-convergence": "workflow-cron-only",
-        "occurrence-identity": "missing-shared-schedule-contract",
-        "canonical-admission": "missing-shared-schedule-contract",
-        "time-and-timezone": "provider-cron-only",
-        "overlap": "missing-shared-schedule-contract",
-        "misfire-and-catch-up": "missing-shared-schedule-contract",
-        "retry-and-dead-letter": "workflow-provider-specific",
-        "pause-update-cancel": "workflow-cron-only",
-        "history-and-observability": "workflow-provider-specific",
-        "lifecycle-and-drift": "workflow-cron-convergence"
+        "definition-identity": "framework-definition-plus-qualified-scheduler-identity",
+        "instance-revision-convergence": "postgres-canonical-desired-state-plus-hatchet-projection",
+        "occurrence-identity": "framework-postgres-receipt-authority",
+        "canonical-admission": "framework-scheduler-service-on-application-host",
+        "time-and-timezone": "hatchet-five-field-utc-cron-minute-precision-and-exact-one-time-instant-with-inexact-fixed-intervals-or-non-utc-calendar-cron-rejected",
+        "overlap": "postgres-advisory-lock-and-lease-authority",
+        "misfire-and-catch-up": "skip-or-latest-at-canonical-admission-all-bounded-rejected",
+        "retry-and-dead-letter": "hatchet-task-retry-with-canonical-terminal-receipt-no-external-dlq",
+        "pause-update-cancel": "canonical-revision-fencing-plus-hatchet-create-update-disable-delete",
+        "history-and-observability": "postgres-receipt-plus-hatchet-run-history-and-otel-boundary",
+        "lifecycle-and-drift": "restart-recoverable-postgres-projection-state-and-bounded-provider-duplicate-repair"
       },
-      "remaining": "Lower general function-native schedule definitions into a generated Hatchet workflow while retaining framework occurrence authority."
+      "remaining": "Deterministic integration, clean packed consumption, and OrbStack PostgreSQL occurrence recovery are implemented. Real Hatchet installed through TypeKro/Alchemy still needs fixed/dynamic/one-time firing, update, disable, deletion, provider interruption, drift repair, and leak-free teardown evidence before live qualification."
     },
     {
       "id": "eventbridge-scheduler",
