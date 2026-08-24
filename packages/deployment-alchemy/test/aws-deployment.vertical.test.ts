@@ -45,6 +45,50 @@ describe("AWS Alchemy target", () => {
     expect(JSON.stringify(foundation)).not.toContain("AWS::ECS::TaskDefinition");
   });
 
+  test("renders exact runtime security-group rules and attaches workload and target identities", () => {
+    const base = fixturePlan();
+    const workloadGroup = planResource('runtime-network.workload.web', 'ec2', 'security-group', 'demo-runtime-web', undefined, {
+      description: 'Exact runtime egress for web', runtimeAccessKind: 'workload', workloadIdentity: 'ecs:web',
+      workloadResourceId: 'application-host.web', policyDigest: `sha256:${'a'.repeat(64)}`, egressMode: 'explicit', ingressRules: [],
+      egressRules: [
+        { kind: 'securityGroup', protocol: 'tcp', port: 5432, targetResourceId: 'provider.database', targetSecurityGroupResourceId: 'runtime-network.target.database', peerIdentity: 'peer.database' },
+        { kind: 'cidr', protocol: 'tcp', port: 53, cidr: '10.64.0.2/32', egressIdentity: 'dns.tcp' },
+        { kind: 'cidr', protocol: 'udp', port: 53, cidr: '10.64.0.2/32', egressIdentity: 'dns.udp' },
+      ],
+    }, ['securityGroupId']);
+    const targetGroup = planResource('runtime-network.target.database', 'ec2', 'security-group', 'demo-target-database', undefined, {
+      description: 'Exact database ingress', runtimeAccessKind: 'target', targetResourceId: 'provider.database', egressMode: 'explicit', egressRules: [],
+      ingressRules: [{ kind: 'securityGroup', protocol: 'tcp', port: 5432, sourceWorkloadIdentity: 'ecs:web', sourceSecurityGroupResourceId: workloadGroup.id, peerIdentity: 'peer.database' }],
+    }, ['securityGroupId']);
+    const database = planResource('provider.database', 'rds', 'postgresql-instance', 'demo-database', 'provider.database', {
+      port: 5432, runtimeAccessSecurityGroupResourceId: targetGroup.id,
+    }, ['endpoint', 'port', 'secretArn']);
+    const plan = normalizeApplicationAwsDeploymentPlan({
+      ...base,
+      resources: [
+        ...base.resources.filter(({ id }) => id !== 'application-host.web'),
+        { ...base.resources.find(({ id }) => id === 'application-host.web')!, configuration: { ...base.resources.find(({ id }) => id === 'application-host.web')!.configuration, runtimeAccessSecurityGroupResourceId: workloadGroup.id } },
+        workloadGroup,
+        targetGroup,
+        database,
+      ],
+    });
+    const template = synthesizeApplicationAwsCloudFormationTemplate(plan, { imageUri: `demo@sha256:${'a'.repeat(64)}` });
+    const values = Object.values(template.Resources);
+    expect(values.filter(({ Type }) => Type === 'AWS::EC2::SecurityGroupEgress')).toHaveLength(3);
+    expect(values.filter(({ Type }) => Type === 'AWS::EC2::SecurityGroupIngress')).toEqual(expect.arrayContaining([
+      expect.objectContaining({ Properties: expect.objectContaining({ IpProtocol: 'tcp', FromPort: 5432, ToPort: 5432 }) }),
+    ]));
+    const service = values.find(({ Type }) => Type === 'AWS::ECS::Service');
+    const databaseInstance = values.find(({ Type }) => Type === 'AWS::RDS::DBInstance');
+    expect(JSON.stringify(service?.Properties)).toContain('RuntimeNetworkWorkloadWeb');
+    expect(JSON.stringify(databaseInstance?.Properties)).toContain('RuntimeNetworkTargetDatabase');
+    const exactGroups = values.filter(({ Type, Properties }) => Type === 'AWS::EC2::SecurityGroup'
+      && JSON.stringify(Properties).includes('Exact'));
+    expect(exactGroups).toHaveLength(2);
+    expect(exactGroups.every(({ Properties }) => JSON.stringify(Properties).includes('"SecurityGroupEgress":[]'))).toBe(true);
+  });
+
   test("materializes exposure-scoped ACM validation and Route53 aliases without placeholder provider values", () => {
     const base = fixturePlan();
     const loadBalancer = planResource('provider.HttpExposure', 'elastic-load-balancing', 'application-load-balancer', 'demo-alb', 'provider.HttpExposure', {

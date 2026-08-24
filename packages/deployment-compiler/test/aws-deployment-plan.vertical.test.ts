@@ -1,8 +1,8 @@
 // typecast-file-boundary: Test fixtures intentionally construct partial portable graphs at the compiler input boundary.
 import type { ApplicationGraph } from '@applik8s/core';
-import { applicationRuntimeEndpointEnvironmentName, validateApplicationAwsDeploymentPlan } from '@applik8s/deployment-contract';
+import { applicationRuntimeEndpointEnvironmentName, type DeploymentJsonObject, validateApplicationAwsDeploymentPlan } from '@applik8s/deployment-contract';
 import { describe, expect, it } from 'vitest';
-import { compileApplicationAwsDeploymentPlan } from '../src/index.js';
+import { compileApplicationAwsDeploymentPlan, validateAwsRuntimeAccessParity } from '../src/index.js';
 
 describe('v0.8 AWS deployment planning', () => {
   it('lowers one semantic graph into a deterministic, exact-access Alchemy plan without mutating it', () => {
@@ -75,6 +75,101 @@ describe('v0.8 AWS deployment planning', () => {
     expect(plan.diagnostics).toEqual([
       expect.objectContaining({ severity: 'error', code: 'AWS_PROVIDER_INCOMPATIBLE', subjectId: 'provider.Search' }),
     ]);
+  });
+
+  it('materializes exact per-workload and per-target security groups for a database-only runtime', () => {
+    const base = awsGraph();
+    const graph: ApplicationGraph = {
+      ...base,
+      nodes: base.nodes.filter((node) => [
+        'provider.TransactionalDatabase',
+        'provider.HttpExposure',
+        'model.document',
+        'server.web',
+      ].includes(node.id)),
+      edges: base.edges.filter((edge) => edge.from.nodeId === 'server.web' && edge.to.nodeId === 'provider.TransactionalDatabase'),
+      providerRequirements: [],
+      providerBindings: [],
+    };
+    const plan = compileApplicationAwsDeploymentPlan({
+      graph,
+      environment: 'review',
+      region: 'us-east-1',
+      accountId: '123456789012',
+    });
+    expect(plan.diagnostics).toEqual([]);
+    const host = plan.resources.find(({ resourceType }) => resourceType === 'fargate-service');
+    const database = plan.resources.find(({ service }) => service === 'rds');
+    const workloadGroup = plan.resources.find(({ id }) => id === host?.configuration.runtimeAccessSecurityGroupResourceId);
+    const targetGroup = plan.resources.find(({ id }) => id === database?.configuration.runtimeAccessSecurityGroupResourceId);
+    expect(workloadGroup).toMatchObject({
+      service: 'ec2',
+      resourceType: 'security-group',
+      configuration: {
+        runtimeAccessKind: 'workload',
+        workloadResourceId: host?.id,
+        egressMode: 'explicit',
+        egressRules: expect.arrayContaining([
+          expect.objectContaining({ kind: 'securityGroup', protocol: 'tcp', port: 5432, targetResourceId: database?.id }),
+          expect.objectContaining({ kind: 'cidr', protocol: 'tcp', port: 53, cidr: '10.64.0.2/32' }),
+          expect.objectContaining({ kind: 'cidr', protocol: 'udp', port: 53, cidr: '10.64.0.2/32' }),
+        ]),
+      },
+    });
+    expect(targetGroup).toMatchObject({
+      service: 'ec2',
+      resourceType: 'security-group',
+      configuration: {
+        runtimeAccessKind: 'target',
+        targetResourceId: database?.id,
+        egressMode: 'explicit',
+        ingressRules: [expect.objectContaining({
+          kind: 'securityGroup',
+          protocol: 'tcp',
+          port: 5432,
+          sourceSecurityGroupResourceId: workloadGroup?.id,
+        })],
+      },
+    });
+    expect(host?.configuration.runtimeAccessSecurityGroupResourceId).not.toBe('foundation.security-group.application');
+    expect(database?.configuration.runtimeAccessSecurityGroupResourceId).not.toBe('foundation.security-group.application');
+    expect(validateAwsRuntimeAccessParity(plan.runtimeAccess, plan.resources, plan.edges)).toEqual([]);
+    expect(validateAwsRuntimeAccessParity(
+      plan.runtimeAccess,
+      plan.resources.filter(({ id }) => id !== workloadGroup?.id),
+      plan.edges,
+    )).toEqual(expect.arrayContaining([expect.objectContaining({ code: 'RUNTIME_ACCESS_NETWORK_MISSING' })]));
+    const mutateWorkloadRules = (mutate: (rule: DeploymentJsonObject) => DeploymentJsonObject) => plan.resources.map((entry) => entry.id === workloadGroup?.id
+      ? {
+          ...entry,
+          configuration: {
+            ...entry.configuration,
+            egressRules: (entry.configuration.egressRules as DeploymentJsonObject[]).map(mutate),
+          },
+        }
+      : entry);
+    expect(validateAwsRuntimeAccessParity(plan.runtimeAccess, mutateWorkloadRules((rule) => rule.targetResourceId === database?.id ? { ...rule, port: 5433 } : rule), plan.edges))
+      .toEqual(expect.arrayContaining([expect.objectContaining({ code: 'RUNTIME_ACCESS_NETWORK_WRONG_PORT' })]));
+    expect(validateAwsRuntimeAccessParity(plan.runtimeAccess, mutateWorkloadRules((rule) => rule.targetResourceId === database?.id ? { ...rule, protocol: 'udp' } : rule), plan.edges))
+      .toEqual(expect.arrayContaining([expect.objectContaining({ code: 'RUNTIME_ACCESS_NETWORK_WRONG_PROTOCOL' })]));
+    expect(validateAwsRuntimeAccessParity(plan.runtimeAccess, plan.resources.map((entry) => entry.id === workloadGroup?.id
+      ? { ...entry, configuration: { ...entry.configuration, policyDigest: `sha256:${'0'.repeat(64)}` } }
+      : entry), plan.edges))
+      .toEqual(expect.arrayContaining([expect.objectContaining({ code: 'RUNTIME_ACCESS_NETWORK_MISBOUND' })]));
+    expect(validateAwsRuntimeAccessParity(plan.runtimeAccess, mutateWorkloadRules((rule) => rule.targetResourceId === database?.id
+      ? { ...rule, targetSecurityGroupResourceId: 'foundation.security-group.application' }
+      : rule), plan.edges))
+      .toEqual(expect.arrayContaining([expect.objectContaining({ code: 'RUNTIME_ACCESS_NETWORK_MISBOUND' })]));
+    expect(validateAwsRuntimeAccessParity(plan.runtimeAccess, plan.resources.map((entry) => entry.id === workloadGroup?.id
+      ? {
+          ...entry,
+          configuration: {
+            ...entry.configuration,
+            egressRules: [...(entry.configuration.egressRules as DeploymentJsonObject[]), { kind: 'cidr', protocol: 'tcp', port: 443, cidr: '0.0.0.0/0' }],
+          },
+        }
+      : entry), plan.edges))
+      .toEqual(expect.arrayContaining([expect.objectContaining({ code: 'RUNTIME_ACCESS_NETWORK_WIDENED' })]));
   });
 
   it('does not install service discovery for an external aws-local host with no in-target services', () => {

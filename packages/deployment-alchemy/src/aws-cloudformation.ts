@@ -70,15 +70,19 @@ export function synthesizeApplicationAwsCloudFormationTemplate(
         }, [logical.get(network.id)!]);
         if (entry.id.includes(".public.")) addPublicSubnetRoute(resources, entry, id);
         break;
-      case "ec2:security-group":
+      case "ec2:security-group": {
         if (!network) throw new Error(`AWS security group ${entry.id} requires foundation.network.`);
+        const explicitEgress = stringConfig(entry, "egressMode", "unqualified-all") === "explicit";
         resources[id] = resource("AWS::EC2::SecurityGroup", {
           GroupDescription: stringConfig(entry, "description"),
           VpcId: ref(logical.get(network.id)!),
-          SecurityGroupEgress: [{ IpProtocol: "-1", CidrIp: "0.0.0.0/0" }],
+          SecurityGroupIngress: [],
+          SecurityGroupEgress: explicitEgress ? [] : [{ IpProtocol: "-1", CidrIp: "0.0.0.0/0" }],
           Tags: tags(plan, entry),
         }, [logical.get(network.id)!]);
+        addRuntimeSecurityGroupRules(resources, entry, id, logical);
         break;
+      }
       case "ecr:repository":
         resources[id] = resource("AWS::ECR::Repository", {
           RepositoryName: entry.physicalName,
@@ -138,7 +142,7 @@ export function synthesizeApplicationAwsCloudFormationTemplate(
         break;
       case "rds:postgresql-instance":
         if (!securityGroup) throw new Error(`AWS PostgreSQL ${entry.id} requires foundation.security-group.application.`);
-        addPostgres(resources, plan, entry, id, logical, privateSubnets, securityGroup);
+        addPostgres(resources, plan, entry, id, logical, privateSubnets, securityGroupForEntry(plan, entry, securityGroup));
         break;
       case "efs:shared-filesystem":
         if (!securityGroup) throw new Error(`AWS filesystem ${entry.id} requires foundation.security-group.application.`);
@@ -247,11 +251,11 @@ export function synthesizeApplicationAwsCloudFormationTemplate(
         break;
       case "ecs:fargate-service":
         if (!securityGroup) throw new Error(`AWS application service ${entry.id} requires foundation.security-group.application.`);
-        addApplicationService(resources, plan, entry, id, logical, privateSubnets, securityGroup, options);
+        addApplicationService(resources, plan, entry, id, logical, privateSubnets, securityGroupForEntry(plan, entry, securityGroup), options);
         break;
       case "ecs:fargate-worker":
         if (!securityGroup) throw new Error(`AWS runtime worker ${entry.id} requires foundation.security-group.application.`);
-        addRuntimeWorker(resources, plan, entry, id, logical, privateSubnets, securityGroup, options);
+        addRuntimeWorker(resources, plan, entry, id, logical, privateSubnets, securityGroupForEntry(plan, entry, securityGroup), options);
         outputs[applicationAwsOutputKey(entry.id, "imageUri")] = {
           Description: `${entry.id}.imageUri`,
           Value: requiredArtifactImage(entry, options),
@@ -259,7 +263,7 @@ export function synthesizeApplicationAwsCloudFormationTemplate(
         break;
       case "ecs:fargate-runtime-service":
         if (!securityGroup) throw new Error(`AWS runtime service ${entry.id} requires foundation.security-group.application.`);
-        addRuntimeService(resources, plan, entry, id, logical, privateSubnets, securityGroup, options);
+        addRuntimeService(resources, plan, entry, id, logical, privateSubnets, securityGroupForEntry(plan, entry, securityGroup), options);
         outputs[applicationAwsOutputKey(entry.id, "imageUri")] = {
           Description: `${entry.id}.imageUri`,
           Value: requiredArtifactImage(entry, options),
@@ -388,6 +392,49 @@ function addRuntimeWorker(
     Tags: tags(plan, entry),
   }, [logical.get(cluster.id)!, task, logical.get(securityGroup.id)!, ...privateSubnets.map((subnet) => logical.get(subnet.id)!)]);
   addEcsServiceAutoscaling(resources, entry, id, logical.get(cluster.id)!);
+}
+
+function addRuntimeSecurityGroupRules(
+  resources: Record<string, DeploymentJsonObject>,
+  entry: ApplicationAwsPlanResource,
+  id: string,
+  logical: ReadonlyMap<string, string>,
+): void {
+  for (const [index, rule] of arrayObjects(entry.configuration.egressRules).entries()) {
+    const protocol = optionalString(rule.protocol);
+    const port = typeof rule.port === "number" && Number.isInteger(rule.port) ? rule.port : undefined;
+    if (!protocol || !port || port < 1 || port > 65_535) throw new Error(`AWS security group ${entry.id} has an invalid egress rule at index ${index}.`);
+    const targetSecurityGroupResourceId = optionalString(rule.targetSecurityGroupResourceId);
+    const cidr = optionalString(rule.cidr);
+    if (Boolean(targetSecurityGroupResourceId) === Boolean(cidr)) throw new Error(`AWS security group ${entry.id} egress rule ${index} must name exactly one destination.`);
+    const targetLogicalId = targetSecurityGroupResourceId ? logical.get(targetSecurityGroupResourceId) : undefined;
+    if (targetSecurityGroupResourceId && !targetLogicalId) throw new Error(`AWS security group ${entry.id} egress rule ${index} names missing group ${targetSecurityGroupResourceId}.`);
+    resources[`${id}RuntimeEgress${index + 1}`] = resource("AWS::EC2::SecurityGroupEgress", {
+      GroupId: ref(id),
+      IpProtocol: protocol,
+      FromPort: port,
+      ToPort: port,
+      ...(targetLogicalId ? { DestinationSecurityGroupId: ref(targetLogicalId) } : { CidrIp: cidr ?? "" }),
+      Description: optionalString(rule.peerIdentity) ?? optionalString(rule.egressIdentity) ?? `Applik8s runtime egress ${index + 1}`,
+    }, [id, ...(targetLogicalId ? [targetLogicalId] : [])]);
+  }
+  for (const [index, rule] of arrayObjects(entry.configuration.ingressRules).entries()) {
+    const protocol = optionalString(rule.protocol);
+    const port = typeof rule.port === "number" && Number.isInteger(rule.port) ? rule.port : undefined;
+    const sourceSecurityGroupResourceId = optionalString(rule.sourceSecurityGroupResourceId);
+    const sourceLogicalId = sourceSecurityGroupResourceId ? logical.get(sourceSecurityGroupResourceId) : undefined;
+    if (!protocol || !port || port < 1 || port > 65_535 || !sourceSecurityGroupResourceId || !sourceLogicalId) {
+      throw new Error(`AWS security group ${entry.id} has an invalid ingress rule at index ${index}.`);
+    }
+    resources[`${id}RuntimeIngress${index + 1}`] = resource("AWS::EC2::SecurityGroupIngress", {
+      GroupId: ref(id),
+      IpProtocol: protocol,
+      FromPort: port,
+      ToPort: port,
+      SourceSecurityGroupId: ref(sourceLogicalId),
+      Description: optionalString(rule.peerIdentity) ?? `Applik8s runtime ingress ${index + 1}`,
+    }, [id, sourceLogicalId]);
+  }
 }
 
 function addRuntimeService(
@@ -1672,6 +1719,13 @@ function assumeRolePolicy(service: string): DeploymentJsonObject {
 function ref(id: string): DeploymentJsonObject { return { Ref: id }; }
 function getAtt(id: string, attribute: string): DeploymentJsonObject { return { "Fn::GetAtt": [id, attribute] }; }
 function required(plan: ApplicationAwsDeploymentPlan, id: string): ApplicationAwsPlanResource { const found = plan.resources.find((resource) => resource.id === id); if (!found) throw new Error(`AWS plan is missing required resource ${id}.`); return found; }
+function securityGroupForEntry(plan: ApplicationAwsDeploymentPlan, entry: ApplicationAwsPlanResource, fallback: ApplicationAwsPlanResource): ApplicationAwsPlanResource {
+  const resourceId = optionalString(entry.configuration.runtimeAccessSecurityGroupResourceId);
+  if (!resourceId) return fallback;
+  const group = required(plan, resourceId);
+  if (group.service !== "ec2" || group.resourceType !== "security-group") throw new Error(`AWS resource ${entry.id} names non-security-group ${resourceId}.`);
+  return group;
+}
 function stringConfig(entry: ApplicationAwsPlanResource, key: string, fallback?: string): string { const value = entry.configuration[key]; if (typeof value === "string" && value.trim()) return value; if (fallback !== undefined) return fallback; throw new Error(`AWS resource ${entry.id} requires string configuration ${key}.`); }
 function numberConfig(entry: ApplicationAwsPlanResource, key: string, fallback: number): number { const value = entry.configuration[key]; return typeof value === "number" && Number.isFinite(value) ? value : fallback; }
 function booleanConfig(entry: ApplicationAwsPlanResource, key: string, fallback: boolean): boolean { const value = entry.configuration[key]; return typeof value === "boolean" ? value : fallback; }

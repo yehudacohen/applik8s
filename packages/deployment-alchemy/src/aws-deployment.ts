@@ -822,8 +822,9 @@ async function reconcileAthena(command: AwsCommand, plan: ApplicationAwsDeployme
 async function reconcileElastiCache(command: AwsCommand, plan: ApplicationAwsDeploymentPlan, entry: ApplicationAwsPlanResource, foundationOutputs: Readonly<Record<string, string>>, signal?: AbortSignal): Promise<Readonly<Record<string, string | number>>> {
   const subnetGroup = `${entry.physicalName}-subnets`;
   const subnetIds = [1, 2].map((index) => foundationOutputs[applicationAwsOutputKey(`foundation.subnet.private.${index}`, "subnetId")]).filter((value): value is string => Boolean(value));
-  const securityGroupId = foundationOutputs[applicationAwsOutputKey("foundation.security-group.application", "securityGroupId")];
-  if (subnetIds.length < 2 || !securityGroupId) throw new Error(`ElastiCache ${entry.physicalName} requires the two private subnet outputs and application security group.`);
+  const securityGroupResourceId = stringValue(entry.configuration.runtimeAccessSecurityGroupResourceId) ?? "foundation.security-group.application";
+  const securityGroupId = foundationOutputs[applicationAwsOutputKey(securityGroupResourceId, "securityGroupId")];
+  if (subnetIds.length < 2 || !securityGroupId) throw new Error(`ElastiCache ${entry.physicalName} requires the two private subnet outputs and security group ${securityGroupResourceId}.`);
   const subnetExists = await command(["elasticache", "describe-cache-subnet-groups", "--cache-subnet-group-name", subnetGroup], signal).then(() => true).catch((cause) => notFound(cause) ? false : Promise.reject(cause));
   if (subnetExists) {
     await command(["elasticache", "modify-cache-subnet-group", "--cache-subnet-group-name", subnetGroup, "--subnet-ids", ...subnetIds], signal);
@@ -863,6 +864,11 @@ async function reconcileElastiCache(command: AwsCommand, plan: ApplicationAwsDep
     ], signal);
     await command(["elasticache", "wait", "replication-group-available", "--replication-group-id", entry.physicalName], signal).catch(() => undefined);
     response = parseJson(await command(["elasticache", "describe-replication-groups", "--replication-group-id", entry.physicalName], signal));
+  } else {
+    await command([
+      "elasticache", "modify-replication-group", "--replication-group-id", entry.physicalName,
+      "--security-group-ids", securityGroupId, "--apply-immediately",
+    ], signal);
   }
   const group = objectValue(arrayValue(response.ReplicationGroups)[0]);
   const endpoint = objectValue(group?.NodeGroups ? objectValue(arrayValue(group.NodeGroups)[0])?.PrimaryEndpoint : undefined);

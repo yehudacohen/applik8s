@@ -16,6 +16,7 @@ import {
   type ApplicationAwsPlanResource,
   type ApplicationAwsService,
   type ApplicationRuntimeArtifact,
+  type ApplicationRuntimeAccessPlan,
   type ApplicationRuntimeAccessBootstrapEgress,
   applicationRuntimeArtifactId,
   applicationRuntimeEndpointEnvironmentName,
@@ -31,7 +32,7 @@ import {
   applicationProviderRuntimeAccessTargets,
   resolveApplicationProviderForTarget,
 } from './providers.js';
-import { validateAwsRuntimeAccessParity } from './aws-runtime-access-parity.js';
+import { isAwsRuntimeAccessSecurityGroupQualified, validateAwsRuntimeAccessParity } from './aws-runtime-access-parity.js';
 import {
   type ApplicationRuntimeAccessWorkloadPlacement,
   compileApplicationRuntimeAccessPlan,
@@ -113,7 +114,12 @@ export function compileApplicationAwsDeploymentPlan(request: CompileApplicationA
         connect({ from: 'foundation.network', to: id, relationship: 'requiresReady' });
       }
     }
-    add(resource('foundation.security-group.application', 'ec2', 'security-group', name('application'), { description: 'Ingress is granted only from target groups or explicit peers.' }, undefined, 'private', ['securityGroupId']));
+    add(resource('foundation.security-group.application', 'ec2', 'security-group', name('application'), {
+      description: 'Unqualified provider-owned and external-transport workloads only.',
+      egressMode: 'unqualified-all',
+      ingressRules: [],
+      egressRules: [],
+    }, undefined, 'private', ['securityGroupId']));
     connect({ from: 'foundation.network', to: 'foundation.security-group.application', relationship: 'requiresReady' });
   }
   const requiresServiceDiscovery = request.graph.nodes.some((node) =>
@@ -308,6 +314,25 @@ export function compileApplicationAwsDeploymentPlan(request: CompileApplicationA
     ...(includedExecutionNodeIds ? { includedExecutionNodeIds } : {}),
   });
   for (const diagnostic of runtimeAccess.diagnostics) diagnostics.push({ severity: diagnostic.severity, code: 'AWS_RUNTIME_ACCESS_UNRESOLVED', message: diagnostic.message, subjectId: diagnostic.requirementId });
+  const runtimeNetwork = materializeQualifiedAwsRuntimeNetwork({
+    runtimeAccess,
+    resources,
+    target: request.target ?? 'aws',
+    name,
+  });
+  for (const entry of runtimeNetwork.resources) {
+    add(entry);
+    connect({ from: 'foundation.network', to: entry.id, relationship: 'requiresReady' });
+  }
+  for (const [targetResourceId, securityGroupResourceId] of runtimeNetwork.targetSecurityGroups) {
+    const targetResource = resources.get(targetResourceId);
+    if (!targetResource) continue;
+    resources.set(targetResourceId, {
+      ...targetResource,
+      configuration: { ...targetResource.configuration, runtimeAccessSecurityGroupResourceId: securityGroupResourceId },
+    });
+    connect({ from: securityGroupResourceId, to: targetResourceId, relationship: 'requiresReady' });
+  }
   const runtimeRolesByWorkloadResourceId = new Map<string, ApplicationAwsPlanResource>();
   for (const workload of runtimeAccess.workloads) {
     if (!workload.aws) continue;
@@ -331,7 +356,13 @@ export function compileApplicationAwsDeploymentPlan(request: CompileApplicationA
     if (!runtimeResource || !role || runtimeResource.service !== 'ecs') continue;
     resources.set(runtimeResource.id, {
       ...runtimeResource,
-      configuration: { ...runtimeResource.configuration, runtimeRoleResourceId: role.id },
+      configuration: {
+        ...runtimeResource.configuration,
+        runtimeRoleResourceId: role.id,
+        ...(runtimeNetwork.workloadSecurityGroups.get(runtimeResource.id)
+          ? { runtimeAccessSecurityGroupResourceId: runtimeNetwork.workloadSecurityGroups.get(runtimeResource.id)! }
+          : {}),
+      },
     });
     connect({ from: role.id, to: runtimeResource.id, relationship: 'assumesRole' });
     for (const targetResourceId of workload.aws.networkConnections) {
@@ -430,6 +461,9 @@ export function compileApplicationAwsDeploymentPlan(request: CompileApplicationA
       cluster: 'foundation.compute',
       privateSubnets: ['foundation.subnet.private.1', 'foundation.subnet.private.2'],
       ...(role ? { runtimeRoleResourceId: role.id } : {}),
+      ...(runtimeNetwork.workloadSecurityGroups.get(id)
+        ? { runtimeAccessSecurityGroupResourceId: runtimeNetwork.workloadSecurityGroups.get(id)! }
+        : {}),
       runtimeBindingEnvironmentNames: databaseEnvironmentNames,
       runtimeEndpointBindings,
       ...runtimeConfiguration,
@@ -506,6 +540,9 @@ export function compileApplicationAwsDeploymentPlan(request: CompileApplicationA
       port: host.port, healthPath: '/-/healthz', deploymentCircuitBreaker: true,
       privateSubnets: ['foundation.subnet.private.1', 'foundation.subnet.private.2'],
       ...(role ? { runtimeRoleResourceId: role.id } : {}),
+      ...(runtimeNetwork.workloadSecurityGroups.get(id)
+        ? { runtimeAccessSecurityGroupResourceId: runtimeNetwork.workloadSecurityGroups.get(id)! }
+        : {}),
       runtimeBindingEnvironmentNames: databaseEnvironmentNames,
       runtimeEndpointBindings,
       ...runtimeConfiguration,
@@ -1328,6 +1365,116 @@ function awsDnsBootstrapEgress(
     port: 53,
     endpoint,
   }));
+}
+
+interface MaterializedAwsRuntimeNetwork {
+  readonly resources: readonly ApplicationAwsPlanResource[];
+  readonly workloadSecurityGroups: ReadonlyMap<string, string>;
+  readonly targetSecurityGroups: ReadonlyMap<string, string>;
+}
+
+/**
+ * Materializes only network envelopes that AWS Security Groups can enforce
+ * exactly. AWS API calls and public/FQDN transports remain on the explicitly
+ * unqualified legacy boundary until a VPC-endpoint or FQDN-capable extension
+ * owns their destination identity.
+ */
+function materializeQualifiedAwsRuntimeNetwork(options: {
+  readonly runtimeAccess: ApplicationRuntimeAccessPlan;
+  readonly resources: ReadonlyMap<string, ApplicationAwsPlanResource>;
+  readonly target: 'aws' | 'aws-local';
+  readonly name: (suffix: string, limit?: number) => string;
+}): MaterializedAwsRuntimeNetwork {
+  const workloadSecurityGroups = new Map<string, string>();
+  const targetSecurityGroups = new Map<string, string>();
+  const targetIngress = new Map<string, DeploymentJsonObject[]>();
+  const workloadResources: ApplicationAwsPlanResource[] = [];
+
+  for (const workload of options.runtimeAccess.workloads) {
+    if (!workload.aws || !isAwsRuntimeAccessSecurityGroupQualified(workload.aws, options.resources, options.target)) continue;
+    const workloadSecurityGroupId = `runtime-network.workload.${hash(workload.workloadIdentity, 16)}`;
+    workloadSecurityGroups.set(workload.aws.resourceId, workloadSecurityGroupId);
+    const egressRules: DeploymentJsonObject[] = [];
+    for (const peer of workload.aws.privatePeers) {
+      if (peer.endpoint.target !== options.target) continue;
+      const targetSecurityGroupId = targetSecurityGroups.get(peer.endpoint.resourceId)
+        ?? `runtime-network.target.${hash(peer.endpoint.resourceId, 16)}`;
+      targetSecurityGroups.set(peer.endpoint.resourceId, targetSecurityGroupId);
+      egressRules.push({
+        kind: 'securityGroup',
+        protocol: peer.protocol.toLowerCase(),
+        port: peer.port,
+        targetResourceId: peer.endpoint.resourceId,
+        targetSecurityGroupResourceId: targetSecurityGroupId,
+        peerIdentity: peer.peerIdentity,
+        requirementIds: [...peer.requirementIds],
+      });
+      const ingress = targetIngress.get(peer.endpoint.resourceId) ?? [];
+      ingress.push({
+        kind: 'securityGroup',
+        protocol: peer.protocol.toLowerCase(),
+        port: peer.port,
+        sourceWorkloadIdentity: workload.workloadIdentity,
+        sourceSecurityGroupResourceId: workloadSecurityGroupId,
+        peerIdentity: peer.peerIdentity,
+        requirementIds: [...peer.requirementIds],
+      });
+      targetIngress.set(peer.endpoint.resourceId, ingress);
+    }
+    for (const bootstrap of workload.aws.bootstrapEgress) {
+      if (bootstrap.endpoint.target !== options.target) continue;
+      egressRules.push({
+        kind: 'cidr',
+        protocol: bootstrap.protocol.toLowerCase(),
+        port: bootstrap.port,
+        cidr: bootstrap.endpoint.cidr,
+        egressIdentity: bootstrap.egressIdentity,
+        purpose: bootstrap.purpose,
+      });
+    }
+    workloadResources.push(resource(
+      workloadSecurityGroupId,
+      'ec2',
+      'security-group',
+      options.name(`runtime-${hash(workload.workloadIdentity, 10)}`),
+      {
+        description: `Exact runtime egress for ${workload.workloadIdentity}`,
+        runtimeAccessKind: 'workload',
+        workloadIdentity: workload.workloadIdentity,
+        workloadResourceId: workload.aws.resourceId,
+        policyDigest: workload.policyDigest,
+        egressMode: 'explicit',
+        egressRules,
+        ingressRules: [],
+      },
+      undefined,
+      'private',
+      ['securityGroupId'],
+    ));
+  }
+
+  const targetResources = [...targetSecurityGroups.entries()].map(([targetResourceId, securityGroupId]) => resource(
+    securityGroupId,
+    'ec2',
+    'security-group',
+    options.name(`target-${hash(targetResourceId, 10)}`),
+    {
+      description: `Exact runtime ingress for ${targetResourceId}`,
+      runtimeAccessKind: 'target',
+      targetResourceId,
+      egressMode: 'explicit',
+      egressRules: [],
+      ingressRules: deploymentJson(targetIngress.get(targetResourceId) ?? []),
+    },
+    options.resources.get(targetResourceId)?.semanticNodeId,
+    'private',
+    ['securityGroupId'],
+  ));
+  return {
+    resources: [...workloadResources, ...targetResources],
+    workloadSecurityGroups,
+    targetSecurityGroups,
+  };
 }
 
 function runtimeSecretEnvironmentName(secretIdentity: string, graph: ApplicationGraph): string {
