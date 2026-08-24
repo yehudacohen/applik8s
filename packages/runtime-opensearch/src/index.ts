@@ -1,8 +1,5 @@
 // typecast-file-boundary: OpenSearch responses and projection payloads are validated against compiled index contracts before typed reconstruction.
-import {
-  createHash,
-  randomUUID,
-} from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import type {
   ApplicationSearchAdmissionScope,
   ApplicationSearchChangePage,
@@ -20,6 +17,7 @@ import type {
   ApplicationSearchRuntimeField,
   ApplicationSearchRuntimeFields,
   ApplicationSearchSnapshotSource,
+  JsonValue,
 } from '@applik8s/applik8s';
 import {
   ApplicationSearchCursorError,
@@ -28,11 +26,9 @@ import {
 } from '@applik8s/applik8s';
 import { createApplicationSearchCursorCodec } from '@applik8s/applik8s/search-cursor-codec';
 import {
-  canonicalJsonStrictV1Policy,
-  canonicalJsonV1String,
-  canonicalJsonV1Value,
-  type JsonValue,
-} from '@applik8s/core';
+  applicationSearchCanonicalJsonV1Value,
+  applicationSearchDigest,
+} from '@applik8s/applik8s/search-integrity';
 
 const STATE_DOCUMENT_ID = '__applik8s_search_state';
 const INTERNAL_KIND_FIELD = '__applik8s_kind';
@@ -759,7 +755,7 @@ export async function createOpenSearchApplicationSearchRuntime<
             `change ${state.inFlight.changeId} is still being published`,
           );
         }
-        const queryDigest = digest({
+        const queryDigest = applicationSearchDigest({
           text: request.text ?? '',
           where: request.where ?? {},
           facets: request.facets?.map(({ name }) => name) ?? [],
@@ -842,7 +838,7 @@ export async function createOpenSearchApplicationSearchRuntime<
         const sourceProjectionRevision =
           hits.length === 0
             ? options.sourceProjectionRevision ?? ''
-            : digest(
+            : applicationSearchDigest(
                 hits.map((hit) =>
                   String(hit._source?.sourceProjectionRevision ?? ''),
                 ),
@@ -1713,7 +1709,7 @@ async function validateGeneration<TDocument extends object>(
     }
     return {
       count: values.length,
-      checksum: digest(
+      checksum: applicationSearchDigest(
         values.map(({ id, source }) => ({
           id,
           document: source.document,
@@ -2104,7 +2100,7 @@ function validateChange(change: ApplicationSearchCommittedChange): void {
 }
 
 function canonicalSearchAfter(value: readonly unknown[]): readonly JsonValue[] {
-  const normalized = canonicalJsonV1Value(value, canonicalJsonStrictV1Policy);
+  const normalized = applicationSearchCanonicalJsonV1Value(value);
   if (!Array.isArray(normalized)) {
     throw new ApplicationSearchCursorError('OpenSearch continuation is not a JSON array.');
   }
@@ -2123,7 +2119,7 @@ function openSearchAliasName(
   if (!normalizedPrefix) {
     throw new Error('OpenSearch indexPrefix must contain a safe name.');
   }
-  return `${normalizedPrefix}-${digest({
+  return `${normalizedPrefix}-${applicationSearchDigest({
     logicalIndex,
     indexRevision,
   }).slice(0, 20)}`.slice(0, 180);
@@ -2135,7 +2131,7 @@ function physicalIndexName(alias: string, generation: string): string {
     .replace(/[^a-z0-9_-]+/gu, '-')
     .replace(/^-+|-+$/gu, '')
     .slice(0, 40);
-  return `${alias}-${normalized}-${digest(generation).slice(0, 12)}`;
+  return `${alias}-${normalized}-${applicationSearchDigest(generation).slice(0, 12)}`;
 }
 
 function documentId(identity: string): string {
@@ -2146,33 +2142,6 @@ function changeDocumentId(position: number): string {
   return `change:${position}`;
 }
 
-function digest(value: unknown): string {
-  return createHash('sha256')
-    .update(openSearchCanonicalJson(value))
-    .digest('hex');
-}
-
-function openSearchCanonicalJson(value: unknown): string {
-  return canonicalJsonV1String(openSearchCanonicalValue(value));
-}
-
-function openSearchCanonicalValue(value: unknown): JsonValue {
-  if (value instanceof Date) return value.toISOString();
-  if (value === null || typeof value === 'string' || typeof value === 'boolean') {
-    return value;
-  }
-  if (typeof value === 'number') return value;
-  if (Array.isArray(value)) return value.map(openSearchCanonicalValue);
-  if (value && typeof value === 'object') {
-    return Object.fromEntries(
-      Object.entries(value).map(([key, candidate]) => [
-        key,
-        openSearchCanonicalValue(candidate),
-      ]),
-    );
-  }
-  throw new TypeError(`OpenSearch canonical values cannot encode ${typeof value}.`);
-}
 
 function normalizeValue(value: unknown): unknown {
   return value instanceof Date ? value.toISOString() : value;

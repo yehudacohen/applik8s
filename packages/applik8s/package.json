@@ -96,6 +96,11 @@
       "import": "./dist/search-cursor-codec.js",
       "default": "./dist/search-cursor-codec.js"
     },
+    "./search-integrity": {
+      "types": "./dist/search-integrity.d.ts",
+      "import": "./dist/search-integrity.js",
+      "default": "./dist/search-integrity.js"
+    },
     "./command-gateway-runtime": {
       "types": "./dist/command-gateway-runtime.d.ts",
       "import": "./dist/command-gateway-runtime.js",

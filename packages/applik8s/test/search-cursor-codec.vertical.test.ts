@@ -60,6 +60,29 @@ describe('shared application search cursor codec', () => {
       });
   });
 
+  it('accepts a registered pre-canonical query digest only when the caller supplies it', async () => {
+    const legacyQueryDigest = 'legacy-date-query';
+    const token = legacyToken({
+      protocol: 'applik8s.search-cursor/v1alpha1',
+      ...common,
+      queryDigest: legacyQueryDigest,
+      offset: 20,
+    });
+    const codec = createApplicationSearchCursorCodec({ secret, now: () => now });
+    await expect(codec.decode(token, {
+      ...common,
+      legacyQueryDigests: [legacyQueryDigest],
+      continuationKind: 'offset',
+    })).resolves.toMatchObject({
+      queryDigest: legacyQueryDigest,
+      continuation: { kind: 'offset', offset: 20 },
+    });
+    await expect(codec.decode(token, {
+      ...common,
+      continuationKind: 'offset',
+    })).rejects.toBeInstanceOf(ApplicationSearchCursorError);
+  });
+
   it('reads Signed Envelope v1 with the same semantics and rejects provider substitution', async () => {
     const codec = createApplicationSearchCursorCodec({
       secret,

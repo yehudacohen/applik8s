@@ -120,6 +120,7 @@ const sourceInventory = JSON.parse(
     readonly id?: string;
     readonly path?: string;
     readonly canonicalOwner?: string;
+    readonly canonicalSourceMarker?: string;
     readonly disposition?: string;
     readonly formatRegistryEntry?: string;
     readonly evidence?: string | null;
@@ -157,8 +158,9 @@ for (const source of inventorySources) {
   }
   if (source.disposition === 'canonical-consumer') {
     const consumerSource = await readFile(join(root, source.path ?? ''), 'utf8');
-    if (!consumerSource.includes('canonicalJsonV1String')) {
-      findings.push(`Runtime Integrity canonical consumer ${source.id ?? '<missing>'} does not call Canonical JSON v1.`);
+    const canonicalSourceMarker = source.canonicalSourceMarker ?? 'canonicalJsonV1String';
+    if (!consumerSource.includes(canonicalSourceMarker)) {
+      findings.push(`Runtime Integrity canonical consumer ${source.id ?? '<missing>'} does not use ${canonicalSourceMarker}.`);
     }
     if (/\bfunction\s+(?:canonicalJson|runtimeIdentityStableJson|stableJson|stableJsonStringify)\s*\(/u.test(consumerSource)) {
       findings.push(`Runtime Integrity canonical consumer ${source.id ?? '<missing>'} retains a private canonical JSON implementation.`);

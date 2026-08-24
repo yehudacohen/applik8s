@@ -1,11 +1,12 @@
 // typecast-file-boundary: provider-neutral search projections validate schemas, frontier identities, and document shapes before restoring model generics.
-import { createHash } from 'node:crypto';
 import type {
   ApplicationSearchComparison,
   ApplicationSearchRequest,
   ApplicationSearchResult,
 } from './application-search.js';
 import { createApplicationSearchCursorCodec } from './search-cursor-codec.js';
+import { applicationSearchDigest } from './search-integrity.js';
+import { applicationSearchLegacyOffsetDigestV07 } from './search-integrity-legacy-v07.js';
 
 export { ApplicationSearchCursorError } from './search-cursor-codec.js';
 
@@ -599,13 +600,15 @@ export function createDeterministicApplicationSearchRuntime<
       validateSearchRequest(request, options.fields);
       validateAdmission(admission, options.fields);
       const generation = currentGeneration();
-      const queryDigest = digest({
+      const queryIdentity = {
         text: request.text ?? '',
         where: request.where ?? {},
         facets: request.facets?.map(({ name }) => name) ?? [],
         orderBy: request.orderBy ?? [],
         limit: request.limit ?? 20,
-      });
+      };
+      const queryDigest = applicationSearchDigest(queryIdentity);
+      const legacyQueryDigest = applicationSearchLegacyOffsetDigestV07(queryIdentity);
       const cursor = request.cursor
         ? await cursorCodec.decode(request.cursor, {
             logicalIndex: options.logicalIndex,
@@ -616,6 +619,9 @@ export function createDeterministicApplicationSearchRuntime<
             contextDigest: admission.contextDigest,
             authorizationVersion: admission.authorizationVersion,
             queryDigest,
+            ...(legacyQueryDigest === queryDigest
+              ? {}
+              : { legacyQueryDigests: [legacyQueryDigest] }),
             continuationKind: 'offset',
           })
         : undefined;
@@ -679,7 +685,7 @@ export function createDeterministicApplicationSearchRuntime<
       const sourceProjectionRevision =
         page.length === 0
           ? options.sourceProjectionRevision ?? ''
-          : digest(
+          : applicationSearchDigest(
               page.map(({ sourceProjectionRevision: revision }) => revision),
             );
       return {
@@ -969,7 +975,7 @@ function facetBuckets<TDocument extends object>(
     const value = Reflect.get(document, field);
     const values = Array.isArray(value) ? value : [value];
     for (const candidate of values) {
-      const key = digest(candidate);
+      const key = applicationSearchDigest(candidate);
       const existing = counts.get(key);
       if (existing) existing.count += 1;
       else counts.set(key, { value: candidate, count: 1 });
@@ -996,7 +1002,7 @@ function validationEvidence<TDocument extends object>(
   );
   return {
     count: entries.length,
-    checksum: digest(
+    checksum: applicationSearchDigest(
       entries.map(([id, value]) => ({
         id,
         document: value.document,
@@ -1041,23 +1047,4 @@ function assertIdentifier(value: string, name: string): void {
       `Search ${name} must be a stable non-empty identifier.`,
     );
   }
-}
-
-function digest(value: unknown): string {
-  return createHash('sha256')
-    .update(stableJson(value))
-    .digest('hex');
-}
-
-function stableJson(value: unknown): string {
-  if (Array.isArray(value)) {
-    return `[${value.map(stableJson).join(',')}]`;
-  }
-  if (value && typeof value === 'object') {
-    return `{${Object.entries(value)
-      .sort(([left], [right]) => left.localeCompare(right))
-      .map(([key, nested]) => `${JSON.stringify(key)}:${stableJson(nested)}`)
-      .join(',')}}`;
-  }
-  return JSON.stringify(value);
 }

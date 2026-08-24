@@ -67,34 +67,59 @@
       "remaining": "Advance the registered object-intent migration through the format registry and remove the legacy writer only at its recorded removal release."
     },
     {
+      "id": "application-search-integrity",
+      "mechanism": "canonical-json-domain-adapter",
+      "path": "packages/applik8s/src/search-integrity.ts",
+      "owner": "@applik8s/applik8s",
+      "disposition": "canonical-consumer",
+      "canonicalOwner": "@applik8s/core/canonical-json",
+      "canonicalSourceMarker": "canonicalJsonV1String",
+      "evidence": "packages/applik8s/test/search-integrity.vertical.test.ts",
+      "remaining": "The named search-value policy owns Date-to-ISO adaptation and rejects every other unsupported runtime value before provider hashing."
+    },
+    {
+      "id": "application-search-offset-digest-v07",
+      "mechanism": "canonical-json-compatibility-adapter",
+      "path": "packages/applik8s/src/search-integrity-legacy-v07.ts",
+      "owner": "@applik8s/applik8s",
+      "disposition": "registered-compatibility-adapter",
+      "canonicalOwner": "@applik8s/applik8s/search-integrity",
+      "formatRegistryEntry": "application-search-cursor-migration",
+      "evidence": "packages/applik8s/test/search-cursor-codec.vertical.test.ts",
+      "remaining": "Release A accepts the pre-v0.8 offset-provider query digest only as an explicitly supplied alternate; remove with the registered legacy search cursor reader in 0.10.0 or later."
+    },
+    {
       "id": "deterministic-search-normalization",
       "mechanism": "canonical-json",
       "path": "packages/applik8s/src/search-runtime.ts",
       "owner": "@applik8s/applik8s",
-      "disposition": "pending-migration",
-      "canonicalOwner": "@applik8s/core/canonical-json",
+      "disposition": "canonical-consumer",
+      "canonicalOwner": "@applik8s/applik8s/search-integrity",
+      "canonicalSourceMarker": "applicationSearchDigest",
       "evidence": "packages/applik8s/test/search-runtime.vertical.test.ts",
-      "remaining": "Replace the provider-local stable JSON normalizer with the named search Canonical JSON v1 policy while preserving provider continuation semantics."
+      "remaining": "Plain JSON digest bytes remain exact; Date values now converge on ISO strings and unsupported values fail closed while offset continuation remains provider-specific."
     },
     {
       "id": "postgres-search-normalization",
       "mechanism": "canonical-json",
       "path": "packages/applik8s/src/search-runtime-postgres.ts",
       "owner": "@applik8s/applik8s",
-      "disposition": "pending-migration",
-      "canonicalOwner": "@applik8s/core/canonical-json",
+      "disposition": "canonical-consumer",
+      "canonicalOwner": "@applik8s/applik8s/search-integrity",
+      "canonicalSourceMarker": "applicationSearchDigest",
       "evidence": "packages/applik8s/test/search-runtime-postgres.vertical.test.ts",
-      "remaining": "Replace the PostgreSQL provider-local normalizer with the same named search policy and retain only typed PostgreSQL continuation state."
+      "remaining": "PostgreSQL consumes the shared search digest contract while retaining its typed SQL filtering and offset continuation."
     },
     {
       "id": "opensearch-normalization",
       "mechanism": "canonical-json-provider-adapter",
       "path": "packages/runtime-opensearch/src/index.ts",
       "owner": "@applik8s/runtime-opensearch",
-      "disposition": "explicit-domain-adapter",
-      "canonicalOwner": "@applik8s/core/canonical-json",
+      "disposition": "canonical-consumer",
+      "canonicalOwner": "@applik8s/applik8s/search-integrity",
+      "canonicalSourceMarker": "applicationSearchDigest",
       "evidence": "packages/runtime-opensearch/test/runtime.vertical.test.ts",
-      "remaining": "Register the OpenSearch value adapter as a named Canonical JSON policy input and prove provider-differential cursor behavior before declaring the search cohort closed."
+      "remaining": "OpenSearch uses the same named Date/value adapter and digest as deterministic/PostgreSQL while retaining ordered search_after continuation."
     },
     {
       "id": "application-graph-serialization",

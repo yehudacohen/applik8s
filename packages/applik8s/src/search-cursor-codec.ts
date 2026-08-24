@@ -48,6 +48,7 @@ export interface ApplicationSearchCursorExpected {
   readonly contextDigest: string;
   readonly authorizationVersion: string;
   readonly queryDigest: string;
+  readonly legacyQueryDigests?: readonly string[];
   readonly continuationKind: ApplicationSearchCursorContinuation['kind'];
 }
 
@@ -265,8 +266,15 @@ function validateExpected(
   cursor: ApplicationSearchCursor,
   expected: ApplicationSearchCursorExpected,
 ): void {
-  const { continuationKind, ...common } = expected;
+  const { continuationKind, legacyQueryDigests = [], ...common } = expected;
   for (const [key, expectedValue] of Object.entries(common)) {
+    if (
+      key === 'queryDigest'
+      && typeof Reflect.get(cursor, key) === 'string'
+      && legacyQueryDigests.includes(Reflect.get(cursor, key) as string)
+    ) {
+      continue;
+    }
     if (Reflect.get(cursor, key) !== expectedValue) {
       throw new ApplicationSearchCursorError(
         `Search cursor ${key} does not match the current admitted query.`,
