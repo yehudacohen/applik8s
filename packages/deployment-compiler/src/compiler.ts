@@ -199,6 +199,7 @@ export function compileApplicationDeploymentGraph(
     runtimeAccess: compileApplicationRuntimeAccessPlan({
       graph: request.graph,
       target: context.target,
+      profile: context.profile,
       ...(request.workspaceRoot ? { workspaceRoot: request.workspaceRoot } : {}),
       namespace: request.graph.metadata.namespace && typeof request.graph.metadata.namespace === 'string'
         ? request.graph.metadata.namespace

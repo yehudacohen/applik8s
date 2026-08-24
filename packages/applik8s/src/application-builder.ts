@@ -741,6 +741,8 @@ export interface ApplicationKubernetesRbacRule {
   readonly resources: readonly string[];
   readonly verbs: readonly string[];
   readonly resourceNames?: readonly string[];
+  readonly scope?: 'Namespaced' | 'Cluster';
+  readonly namespaces?: readonly string[] | 'all';
 }
 
 export interface ApplicationServerVolume {
@@ -5190,6 +5192,8 @@ function recordApplicationOperatorGraph(state: ApplicationScopeState, operator: 
         resources: [...rule.resources],
         verbs: [...rule.verbs],
         ...(rule.resourceNames ? { resourceNames: [...rule.resourceNames] } : {}),
+        ...(rule.scope ? { scope: rule.scope } : {}),
+        ...(rule.namespaces ? { namespaces: rule.namespaces === 'all' ? 'all' as const : [...rule.namespaces] } : {}),
       })),
     });
     addApplicationGraphEdge(state, { from: { nodeId: permissionNodeId }, to: { nodeId }, relationship: 'writes' });
@@ -5793,6 +5797,13 @@ function emitApplicationServerResources(name: string, options: ApplicationServer
     cache: options.cache ?? [],
     explicit: options.permissions ?? [],
   });
+  const unsupportedPermission = serverPermissions.find((rule) =>
+    rule.scope === 'Cluster'
+    || rule.namespaces === 'all'
+    || Array.isArray(rule.namespaces) && rule.namespaces.some((target) => target !== (namespace ?? 'default')));
+  if (unsupportedPermission) {
+    throw new Error(`app.server ${name} requires cluster-scoped or cross-namespace Kubernetes access. The current application-server materializer only owns namespace-local Roles; select a workload boundary with an explicit cluster/cross-namespace access lowerer instead of silently emitting ineffective RBAC.`);
+  }
   const env = {
     NODE_OPTIONS: '--enable-source-maps',
     APPLIK8S_SERVER_NAMESPACE: namespace ?? 'default',

@@ -199,6 +199,14 @@ export type ApplicationRuntimeAccessScope =
   | { readonly kind: 'prefix'; readonly resourceId: string; readonly prefix: string }
   | { readonly kind: 'namespace'; readonly namespace: string; readonly resourceKinds?: readonly string[] }
   | { readonly kind: 'selector'; readonly resourceId: string; readonly labels: Readonly<Record<string, string>> }
+  | {
+      readonly kind: 'kubernetes';
+      readonly apiGroup: string;
+      readonly resource: string;
+      readonly scope: 'Namespaced' | 'Cluster';
+      readonly namespaces?: readonly string[];
+      readonly resourceNames?: readonly string[];
+    }
   | { readonly kind: 'external'; readonly responsibility: string };
 
 export interface ApplicationRuntimeAccessRequirement {

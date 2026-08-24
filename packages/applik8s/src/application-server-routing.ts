@@ -187,20 +187,21 @@ function resourceOperationsInSource(analysis: ApplicationServerRouteSourceAnalys
   return (Object.keys(resourceOperationVerbs) as ApplicationServerResourceOperation[]).filter((operation) => routeAnalysisCallsMethod(analysis, bindingName, operation));
 }
 
-function resourceOperationPermission(resource: Pick<AnyResourceDefinition, 'apiVersion' | 'plural'>, operation: ApplicationServerResourceOperation): ApplicationKubernetesRbacRule {
-  return { apiGroups: [apiGroupForApiVersion(resource.apiVersion)], resources: [resource.plural], verbs: resourceOperationVerbs[operation] };
+function resourceOperationPermission(resource: Pick<AnyResourceDefinition, 'apiVersion' | 'plural' | 'scope'>, operation: ApplicationServerResourceOperation): ApplicationKubernetesRbacRule {
+  return { apiGroups: [apiGroupForApiVersion(resource.apiVersion)], resources: [resource.plural], verbs: resourceOperationVerbs[operation], scope: resource.scope };
 }
 
 export function mergeApplicationKubernetesRbacRules(permissions: readonly ApplicationKubernetesRbacRule[]): readonly ApplicationKubernetesRbacRule[] {
-  const merged = new Map<string, { apiGroups: string[]; resources: string[]; verbs: string[]; resourceNames?: string[] }>();
+  const merged = new Map<string, { apiGroups: string[]; resources: string[]; verbs: string[]; resourceNames?: string[]; scope?: 'Namespaced' | 'Cluster'; namespaces?: readonly string[] | 'all' }>();
   for (const permission of permissions) {
     const apiGroups = [...permission.apiGroups].sort();
     const resources = [...permission.resources].sort();
     const resourceNames = permission.resourceNames ? [...permission.resourceNames].sort() : undefined;
-    const key = JSON.stringify({ apiGroups, resources, resourceNames });
+    const namespaces = permission.namespaces === 'all' ? 'all' as const : permission.namespaces ? [...permission.namespaces].sort() : undefined;
+    const key = JSON.stringify({ apiGroups, resources, resourceNames, scope: permission.scope, namespaces });
     const existing = merged.get(key);
     if (existing) existing.verbs = unique([...existing.verbs, ...permission.verbs]);
-    else merged.set(key, { apiGroups, resources, verbs: unique([...permission.verbs]), ...(resourceNames ? { resourceNames } : {}) });
+    else merged.set(key, { apiGroups, resources, verbs: unique([...permission.verbs]), ...(resourceNames ? { resourceNames } : {}), ...(permission.scope ? { scope: permission.scope } : {}), ...(namespaces ? { namespaces } : {}) });
   }
   return [...merged.values()];
 }

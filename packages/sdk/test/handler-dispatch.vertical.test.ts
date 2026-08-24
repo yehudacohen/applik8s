@@ -70,27 +70,49 @@ describe('generated handler dispatcher', () => {
       status: statusSchema,
     });
 
-    expect(ImageJob.permissions.read()).toEqual({ apiGroups: ['media.applik8s.dev'], resources: ['imagejobs'], verbs: ['get', 'list'] });
-    expect(ImageJob.permissions.watch()).toEqual({ apiGroups: ['media.applik8s.dev'], resources: ['imagejobs'], verbs: ['get', 'list', 'watch'] });
-    expect(ImageJob.permissions.apply()).toEqual({ apiGroups: ['media.applik8s.dev'], resources: ['imagejobs'], verbs: ['create', 'update', 'patch'] });
-    expect(ImageJob.permissions.patch()).toEqual({ apiGroups: ['media.applik8s.dev'], resources: ['imagejobs'], verbs: ['patch'] });
-    expect(ImageJob.permissions.patchStatus()).toEqual({ apiGroups: ['media.applik8s.dev'], resources: ['imagejobs/status'], verbs: ['get', 'patch', 'update'] });
-    expect(ImageJob.permissions.delete()).toEqual({ apiGroups: ['media.applik8s.dev'], resources: ['imagejobs'], verbs: ['delete'] });
-    expect(ImageJob.permissions.finalize()).toEqual({ apiGroups: ['media.applik8s.dev'], resources: ['imagejobs/finalizers'], verbs: ['patch', 'update'] });
+    expect(ImageJob.permissions.read()).toEqual({ apiGroups: ['media.applik8s.dev'], resources: ['imagejobs'], verbs: ['get', 'list'], scope: 'Namespaced' });
+    expect(ImageJob.permissions.watch()).toEqual({ apiGroups: ['media.applik8s.dev'], resources: ['imagejobs'], verbs: ['get', 'list', 'watch'], scope: 'Namespaced' });
+    expect(ImageJob.permissions.apply()).toEqual({ apiGroups: ['media.applik8s.dev'], resources: ['imagejobs'], verbs: ['create', 'update', 'patch'], scope: 'Namespaced' });
+    expect(ImageJob.permissions.patch()).toEqual({ apiGroups: ['media.applik8s.dev'], resources: ['imagejobs'], verbs: ['patch'], scope: 'Namespaced' });
+    expect(ImageJob.permissions.patchStatus()).toEqual({ apiGroups: ['media.applik8s.dev'], resources: ['imagejobs/status'], verbs: ['get', 'patch', 'update'], scope: 'Namespaced' });
+    expect(ImageJob.permissions.delete()).toEqual({ apiGroups: ['media.applik8s.dev'], resources: ['imagejobs'], verbs: ['delete'], scope: 'Namespaced' });
+    expect(ImageJob.permissions.finalize()).toEqual({ apiGroups: ['media.applik8s.dev'], resources: ['imagejobs/finalizers'], verbs: ['patch', 'update'], scope: 'Namespaced' });
     expect(ImageJob.permissions.manage()).toEqual([
-      { apiGroups: ['media.applik8s.dev'], resources: ['imagejobs'], verbs: ['get', 'list', 'watch', 'create', 'update', 'patch', 'delete'] },
-      { apiGroups: ['media.applik8s.dev'], resources: ['imagejobs/status'], verbs: ['get', 'patch', 'update'] },
-      { apiGroups: ['media.applik8s.dev'], resources: ['imagejobs/finalizers'], verbs: ['patch', 'update'] },
+      { apiGroups: ['media.applik8s.dev'], resources: ['imagejobs'], verbs: ['get', 'list', 'watch', 'create', 'update', 'patch', 'delete'], scope: 'Namespaced' },
+      { apiGroups: ['media.applik8s.dev'], resources: ['imagejobs/status'], verbs: ['get', 'patch', 'update'], scope: 'Namespaced' },
+      { apiGroups: ['media.applik8s.dev'], resources: ['imagejobs/finalizers'], verbs: ['patch', 'update'], scope: 'Namespaced' },
     ]);
-    expect(sdk.permissions.k8s.ConfigMap.apply()).toEqual({ apiGroups: [''], resources: ['configmaps'], verbs: ['get', 'create', 'update', 'patch'] });
+    expect(sdk.permissions.k8s.ConfigMap.apply()).toEqual({ apiGroups: [''], resources: ['configmaps'], verbs: ['get', 'create', 'update', 'patch'], scope: 'Namespaced' });
     expect(sdk.permissions.k8s.Deployment.manage()).toEqual([
-      { apiGroups: ['apps'], resources: ['deployments'], verbs: ['get', 'list', 'watch', 'create', 'update', 'patch', 'delete'] },
-      { apiGroups: ['apps'], resources: ['deployments/status'], verbs: ['get', 'patch', 'update'] },
-      { apiGroups: ['apps'], resources: ['deployments/finalizers'], verbs: ['patch', 'update'] },
+      { apiGroups: ['apps'], resources: ['deployments'], verbs: ['get', 'list', 'watch', 'create', 'update', 'patch', 'delete'], scope: 'Namespaced' },
+      { apiGroups: ['apps'], resources: ['deployments/status'], verbs: ['get', 'patch', 'update'], scope: 'Namespaced' },
+      { apiGroups: ['apps'], resources: ['deployments/finalizers'], verbs: ['patch', 'update'], scope: 'Namespaced' },
     ]);
-    expect(sdk.permissions.k8s.Deployment.patchStatus()).toEqual({ apiGroups: ['apps'], resources: ['deployments/status'], verbs: ['get', 'patch', 'update'] });
-    expect(sdk.permissions.k8s.Deployment.finalize()).toEqual({ apiGroups: ['apps'], resources: ['deployments/finalizers'], verbs: ['patch', 'update'] });
-    expect(sdk.permissions.events.write()).toEqual({ apiGroups: [''], resources: ['events'], verbs: ['create', 'patch', 'update'] });
+    expect(sdk.permissions.k8s.Deployment.patchStatus()).toEqual({ apiGroups: ['apps'], resources: ['deployments/status'], verbs: ['get', 'patch', 'update'], scope: 'Namespaced' });
+    expect(sdk.permissions.k8s.Deployment.finalize()).toEqual({ apiGroups: ['apps'], resources: ['deployments/finalizers'], verbs: ['patch', 'update'], scope: 'Namespaced' });
+    expect(sdk.permissions.events.write()).toEqual({ apiGroups: [''], resources: ['events'], verbs: ['create', 'patch', 'update'], scope: 'Namespaced' });
+  });
+
+  it('preserves cluster scope in generated CRD permission bundles', () => {
+    const GlobalPolicy = sdk.crd<ImageSpec, ImageStatus>({
+      apiVersion: 'policy.applik8s.dev/v1alpha1',
+      kind: 'GlobalPolicy',
+      scope: 'Cluster',
+      spec: specSchema,
+      status: statusSchema,
+    });
+
+    expect(GlobalPolicy.permissions.read()).toEqual({
+      apiGroups: ['policy.applik8s.dev'],
+      resources: ['globalpolicies'],
+      verbs: ['get', 'list'],
+      scope: 'Cluster',
+    });
+    expect(GlobalPolicy.permissions.manage()).toEqual(expect.arrayContaining([
+      expect.objectContaining({ resources: ['globalpolicies'], scope: 'Cluster' }),
+      expect.objectContaining({ resources: ['globalpolicies/status'], scope: 'Cluster' }),
+      expect.objectContaining({ resources: ['globalpolicies/finalizers'], scope: 'Cluster' }),
+    ]));
   });
 
   it('exposes declared capabilities but denies live capability execution without a host import', async () => {

@@ -1,5 +1,5 @@
 // typecast-file-boundary: Runtime-access fixtures assemble exact graph discriminants to exercise ambiguity and least-privilege lowering.
-import type { ApplicationGraph } from '@applik8s/core';
+import { applicationRuntimeAccessRequirement, deriveApplicationGraphFoundation, type ApplicationGraph } from '@applik8s/core';
 import { describe, expect, it } from 'vitest';
 import { compileApplicationRuntimeAccessPlan } from '../src/index.js';
 
@@ -15,10 +15,15 @@ describe('v0.8 runtime-access lowering', () => {
     });
     const kubernetes = compileApplicationRuntimeAccessPlan({ graph, target: 'kubernetes', namespace: 'notes' });
     expect(kubernetes.diagnostics).toEqual([]);
-    expect(kubernetes.executions[0]?.kubernetes).toEqual({
-      serviceAccountName: 'notes-operator-notes',
-      namespace: 'notes',
-      rules: [{ apiGroups: [''], resources: ['secrets'], resourceNames: ['signing'], verbs: ['get'] }],
+    expect(kubernetes.executions[0]?.kubernetes).toMatchObject({
+      serviceAccountName: expect.stringMatching(/^notes-operator-notes-[a-f0-9]{10}$/u),
+      bindings: [{
+        kind: 'Role',
+        namespace: 'notes',
+        rules: [{ apiGroups: [''], resources: ['secrets'], resourceNames: ['signing'], verbs: ['get'] }],
+      }],
+      credentialResources: ['secret.signing'],
+      networkConnections: [],
     });
     expect(kubernetes.digest).toMatch(/^sha256:[a-f0-9]{64}$/u);
   });
@@ -28,7 +33,7 @@ describe('v0.8 runtime-access lowering', () => {
     const aws = compileApplicationRuntimeAccessPlan({ graph, target: 'aws' });
     expect(aws.diagnostics).toEqual([]);
     expect(aws.executions[0]?.aws).toMatchObject({
-      roleName: 'objects-operator.objects',
+      roleName: expect.stringMatching(/^objects-operator\.objects-[a-f0-9]{10}$/u),
       statements: [
         {
           effect: 'Allow',
@@ -89,7 +94,223 @@ describe('v0.8 runtime-access lowering', () => {
     ]));
     expect(aws.executions[0]?.aws?.statements).toEqual([]);
   });
+
+  it('separates cross-namespace Roles from cluster-scoped access without broadening either', () => {
+    const plan = compileApplicationRuntimeAccessPlan({
+      graph: kubernetesScopeGraph(),
+      target: 'kubernetes',
+      namespace: 'control-plane',
+    });
+    expect(plan.diagnostics).toEqual([]);
+    expect(plan.executions[0]?.kubernetes?.bindings).toEqual([
+      expect.objectContaining({
+        kind: 'ClusterRole',
+        rules: [{ apiGroups: ['example.dev'], resources: ['clusterwidgets'], verbs: ['get'] }],
+      }),
+      expect.objectContaining({
+        kind: 'Role',
+        namespace: 'team-a',
+        rules: [{ apiGroups: ['example.dev'], resources: ['widgets'], verbs: ['get', 'list', 'watch'] }],
+      }),
+      expect.objectContaining({
+        kind: 'Role',
+        namespace: 'team-b',
+        rules: [{ apiGroups: ['example.dev'], resources: ['widgets'], verbs: ['get', 'list', 'watch'] }],
+      }),
+    ]);
+  });
+
+  it('uses collision-resistant workload identities after Kubernetes/AWS normalization', () => {
+    const graph = collisionGraph();
+    const kubernetes = compileApplicationRuntimeAccessPlan({ graph, target: 'kubernetes' });
+    const aws = compileApplicationRuntimeAccessPlan({ graph, target: 'aws' });
+    expect(new Set(kubernetes.executions.map(({ kubernetes: plan }) => plan?.serviceAccountName)).size).toBe(2);
+    expect(new Set(aws.executions.map(({ aws: plan }) => plan?.roleName)).size).toBe(2);
+  });
+
+  it('rejects wildcard Kubernetes resources rather than emitting broad RBAC', () => {
+    const graph = kubernetesScopeGraph();
+    const permission = graph.nodes.find((node) => node.kind === 'permission');
+    if (!permission || permission.kind !== 'permission') throw new Error('Expected permission fixture.');
+    const broad: ApplicationGraph = {
+      ...graph,
+      nodes: graph.nodes.map((node) => node.id === permission.id
+        ? { ...permission, rules: [{ apiGroups: ['example.dev'], resources: ['*'], verbs: ['get'] }] }
+        : node),
+    };
+    const plan = compileApplicationRuntimeAccessPlan({ graph: broad, target: 'kubernetes' });
+    expect(plan.diagnostics).toContainEqual(expect.objectContaining({ code: 'RUNTIME_ACCESS_WILDCARD_FORBIDDEN' }));
+    expect(plan.executions.flatMap(({ kubernetes }) => kubernetes?.bindings ?? [])).toEqual([]);
+  });
+
+  it('explains redundant, widened, and unused explicit access without losing source provenance', () => {
+    const graph = accessGraph();
+    const derived = deriveApplicationGraphFoundation(graph);
+    const inferred = derived.runtimeAccess.find(({ target }) => target.operation === 'secret.read');
+    if (!inferred) throw new Error('Expected inferred Secret access.');
+    const explicit = (operation: typeof inferred.target.operation, scope: typeof inferred.target.scope) => applicationRuntimeAccessRequirement({
+      ...inferred,
+      target: { ...inferred.target, operation, scope },
+      origin: 'explicit',
+    });
+    const withExplicit: ApplicationGraph = {
+      ...graph,
+      foundation: {
+        ...derived,
+        runtimeAccess: [
+          explicit('secret.read', inferred.target.scope),
+          explicit('secret.read', { kind: 'namespace', namespace: 'other' }),
+          explicit('object.delete', { kind: 'external', responsibility: 'security-team' }),
+        ],
+      },
+    };
+    const plan = compileApplicationRuntimeAccessPlan({ graph: withExplicit, target: 'local' });
+    expect(plan.diagnostics.map(({ code }) => code)).toEqual(expect.arrayContaining([
+      'RUNTIME_ACCESS_EXPLICIT_UNUSED',
+      'RUNTIME_ACCESS_EXPLICIT_WIDENING',
+      'RUNTIME_ACCESS_EXPLICIT_REDUNDANT',
+    ]));
+    expect(plan.diagnostics).toHaveLength(3);
+    expect(plan.executions[0]?.requirements.every(({ provenance }) => provenance.length > 0)).toBe(true);
+    expect(plan.sourceGraphDigest).toMatch(/^sha256:[a-f0-9]{64}$/u);
+    expect(plan.executions[0]?.policyDigest).toMatch(/^sha256:[a-f0-9]{64}$/u);
+  });
+
+  it('fails closed when the selected provider has no target runtime-access guarantee', () => {
+    const graph: ApplicationGraph = {
+      ...emptyGraph('provider-access'),
+      nodes: [
+        {
+          id: 'provider.acquisition',
+          kind: 'provider',
+          name: 'AcquisitionProvider',
+          stability: 'stable',
+          interface: 'AcquisitionProvider',
+          implementation: 'custom-http',
+        },
+        {
+          id: 'server.api',
+          kind: 'server',
+          name: 'api',
+          stability: 'stable',
+          routes: [{
+            id: 'acquire',
+            method: 'POST',
+            path: '/acquire',
+            diagnostics: routeDiagnostics(),
+            functionNative: {
+              input: declaredSchema(),
+              output: declaredSchema(),
+              handler: { source: 'async input => input' },
+              providerBindings: [{
+                identifier: 'Acquisition.acquire',
+                provider: { interface: 'AcquisitionProvider', nodeId: 'provider.acquisition' },
+                operation: {
+                  member: 'acquire',
+                  runtime: {
+                    module: '@fixture/acquisition',
+                    export: 'acquire',
+                    access: { kind: 'provider', operations: ['connection.use'] },
+                  },
+                },
+              }],
+              idempotency: { source: 'http-idempotency-key', contextScoped: true },
+              requestBoundary: { durableValues: 'schema-normalized-only', rawRequestCapture: 'rejected', principal: 'framework-authenticated' },
+            },
+          }],
+          resources: [],
+          indexes: [],
+          observability: serverObservability(),
+        },
+      ],
+      providerRequirements: [{
+        id: 'requirement.acquisition',
+        interface: 'AcquisitionProvider',
+        consumer: { nodeId: 'server.api' },
+        provider: { interface: 'AcquisitionProvider', nodeId: 'provider.acquisition' },
+        required: true,
+        purpose: 'acquisition',
+        diagnostics: { missing: 'missing', ambiguous: 'ambiguous' },
+      }],
+      providerBindings: [{
+        requirement: 'requirement.acquisition',
+        provider: { interface: 'AcquisitionProvider', nodeId: 'provider.acquisition' },
+        generatedResources: [],
+        runtime: {},
+      }],
+    };
+    const plan = compileApplicationRuntimeAccessPlan({ graph, target: 'local' });
+    expect(plan.diagnostics).toContainEqual(expect.objectContaining({
+      code: 'RUNTIME_ACCESS_PROVIDER_GUARANTEE_UNSUPPORTED',
+    }));
+    expect(plan.executions[0]?.lowerings).toContainEqual(expect.objectContaining({
+      operation: 'connection.use',
+      fidelity: 'unsupported',
+      providerGuarantee: {
+        providerId: 'provider.acquisition',
+        disposition: 'unsupported',
+        evidenceLevel: 'none',
+      },
+    }));
+  });
 });
+
+function routeDiagnostics() {
+  return {
+    routeFailureEvent: 'applik8s-server-route-failure' as const,
+    actionFailureEvent: 'applik8s-route-action-failure' as const,
+    failurePolicy: 'failClosed' as const,
+    partialEffects: 'unknownAfterActionStarted' as const,
+    sourceMaps: 'required' as const,
+    includes: ['routeId', 'method', 'path', 'module', 'sourceLocation', 'bundleInputs', 'action', 'diagnostic', 'stack'] as const,
+  };
+}
+
+function serverObservability() {
+  return {
+    health: { mode: 'http' as const, readinessPath: '/readyz', livenessPath: '/healthz' },
+    logs: { format: 'json' as const, component: 'api', failureEvents: [] },
+    metrics: { mode: 'none' as const, names: [] },
+    events: [],
+    sourceMaps: 'required' as const,
+    replayArtifacts: [],
+    diagnosticsArtifact: { kind: 'routeDiagnostics' as const, name: 'api-diagnostics' },
+  };
+}
+
+function kubernetesScopeGraph(): ApplicationGraph {
+  return {
+    ...emptyGraph('scopes'),
+    nodes: [
+      { id: 'operator.scopes', kind: 'operator', name: 'scopes', stability: 'stable', resources: [], watches: [] },
+      { id: 'crd.widgets', kind: 'crd', name: 'Widget', stability: 'stable', materialization: 'kubernetes-crd', resource: { apiVersion: 'example.dev/v1', kind: 'Widget', plural: 'widgets', scope: 'Namespaced' } },
+      { id: 'crd.clusterwidgets', kind: 'crd', name: 'ClusterWidget', stability: 'stable', materialization: 'kubernetes-crd', resource: { apiVersion: 'example.dev/v1', kind: 'ClusterWidget', plural: 'clusterwidgets', scope: 'Cluster' } },
+      {
+        id: 'permission.scopes', kind: 'permission', name: 'scopes', stability: 'stable', owner: { nodeId: 'operator.scopes' }, mode: 'inferred',
+        rules: [
+          { apiGroups: ['example.dev'], resources: ['widgets'], verbs: ['get', 'list', 'watch'], namespaces: ['team-b', 'team-a'] },
+          { apiGroups: ['example.dev'], resources: ['clusterwidgets'], verbs: ['get'] },
+        ],
+      },
+    ],
+  };
+}
+
+function collisionGraph(): ApplicationGraph {
+  return {
+    ...emptyGraph('collisions'),
+    nodes: [
+      { id: 'operator.a_b', kind: 'operator', name: 'a_b', stability: 'stable', resources: [], watches: [] },
+      { id: 'operator.a-b', kind: 'operator', name: 'a-b', stability: 'stable', resources: [], watches: [] },
+      { id: 'secret.one', kind: 'secret', name: 'one', stability: 'stable', provider: 'Secret', ownership: 'external', key: 'value', redaction: 'required', generatedResources: [] },
+      { id: 'secret.two', kind: 'secret', name: 'two', stability: 'stable', provider: 'Secret', ownership: 'external', key: 'value', redaction: 'required', generatedResources: [] },
+    ],
+    edges: [
+      { from: { nodeId: 'operator.a_b' }, to: { nodeId: 'secret.one' }, relationship: 'reads' },
+      { from: { nodeId: 'operator.a-b' }, to: { nodeId: 'secret.two' }, relationship: 'reads' },
+    ],
+  };
+}
 
 function eventAccessGraph(providerIds: readonly string[]): ApplicationGraph {
   return {

@@ -333,7 +333,7 @@ describe('v0.8 canonical foundation', () => {
                     export: 'acquireItem',
                     access: {
                       kind: 'provider',
-                      operations: ['connection.use', 'network.connect'],
+                      operations: ['connection.use', 'network.connect', 'secret.read'],
                     },
                   },
                 },
@@ -374,8 +374,28 @@ describe('v0.8 canonical foundation', () => {
         },
       ],
       edges: [],
-      providerRequirements: [],
-      providerBindings: [],
+      providerRequirements: [{
+        id: 'requirement.server.public-api.acquisition',
+        interface: 'AcquisitionProvider',
+        consumer: { nodeId: 'server.public-api' },
+        provider: { interface: 'AcquisitionProvider', nodeId: providerId },
+        required: true,
+        purpose: 'acquisition',
+        diagnostics: { missing: 'missing acquisition provider', ambiguous: 'ambiguous acquisition provider' },
+      }],
+      providerBindings: [{
+        requirement: 'requirement.server.public-api.acquisition',
+        provider: { interface: 'AcquisitionProvider', nodeId: providerId },
+        generatedResources: [],
+        runtime: {
+          secretEnv: {
+            ACQUISITION_TOKEN: {
+              secret: { apiVersion: 'v1', kind: 'Secret', namespace: 'providers', name: 'acquisition-token' },
+              key: 'token',
+            },
+          },
+        },
+      }],
       compatibility: {
         stablePublicApis: [],
         documentedInternalContracts: [],
@@ -384,7 +404,8 @@ describe('v0.8 canonical foundation', () => {
         labels: [],
       },
     } as ApplicationGraph;
-    const requirements = deriveApplicationGraphFoundation(graph).runtimeAccess
+    const foundation = deriveApplicationGraphFoundation(graph);
+    const requirements = foundation.runtimeAccess
       .filter((requirement) => requirement.target.capabilityId === providerId);
     expect(requirements.map(({ target }) => target.operation).sort()).toEqual([
       'connection.use',
@@ -395,6 +416,19 @@ describe('v0.8 canonical foundation', () => {
         ({ consumer }) => consumer.nodeId === 'server.public-api',
       ),
     ).toBe(true);
+    expect(foundation.runtimeAccess).toContainEqual(expect.objectContaining({
+      consumer: expect.objectContaining({ nodeId: 'server.public-api' }),
+      target: {
+        capabilityId: 'v1/Secret/providers/acquisition-token',
+        operation: 'secret.read',
+        scope: { kind: 'resource', resourceId: 'v1/Secret/providers/acquisition-token' },
+      },
+      origin: 'framework',
+      sensitivity: 'credential',
+    }));
+    expect(foundation.runtimeAccess).not.toContainEqual(expect.objectContaining({
+      target: { capabilityId: providerId, operation: 'secret.read', scope: expect.anything() },
+    }));
     const server = graph.nodes.find((node) => node.kind === 'server');
     expect(server && applicationProviderRefsForNode(server)).toContainEqual({
       interface: 'AcquisitionProvider',

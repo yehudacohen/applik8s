@@ -21,6 +21,7 @@ import type {
   ApplicationGraphNode,
   ApplicationGraphNodeKind,
   ApplicationGraphNodeRef,
+  ApplicationResourceRef,
 } from './application-graph-contract.js';
 import type { SourceLocation } from './common.js';
 
@@ -104,9 +105,10 @@ export function deriveApplicationGraphFoundation(
     capabilityId: string,
     scope: ApplicationRuntimeAccessScope,
     origin: ApplicationRuntimeAccessRequirement['origin'] = 'inferred',
+    provenanceNode: ApplicationGraphNode = consumer,
   ): void => {
     const execution = executionIdentities.get(consumer.id);
-    const provenance = provenanceByNode.get(consumer.id);
+    const provenance = provenanceByNode.get(provenanceNode.id);
     if (!execution || !provenance) return;
     requirements.push(applicationRuntimeAccessRequirement({
       consumer: { nodeId: consumer.id, executionIdentity: execution.id },
@@ -128,10 +130,12 @@ export function deriveApplicationGraphFoundation(
 
   for (const node of graph.nodes) {
     if (!executionIdentities.has(node.id)) continue;
+    const runtimeSecrets = providerRuntimeSecretRefs(node, graph);
     for (const binding of callableProviderBindings(node)) {
       const access = binding.operation?.runtime?.access;
       if (!access || access === 'none') continue;
       for (const operation of access.operations) {
+        if (operation === 'secret.read' && runtimeSecrets.length > 0) continue;
         add(
           node,
           operation,
@@ -140,6 +144,10 @@ export function deriveApplicationGraphFoundation(
         );
       }
     }
+    for (const secret of runtimeSecrets) {
+      const identity = applicationResourceIdentity(secret);
+      add(node, 'secret.read', identity, { kind: 'resource', resourceId: identity }, 'framework');
+    }
     for (const requirement of graph.providerRequirements.filter(({ consumer }) => consumer.nodeId === node.id)) {
       add(node, 'connection.use', requirement.interface, {
         kind: 'capability',
@@ -147,6 +155,23 @@ export function deriveApplicationGraphFoundation(
       }, 'framework');
     }
     addNodeSpecificRequirements(node, graph, add);
+  }
+
+  for (const permission of graph.nodes.filter((node) => node.kind === 'permission')) {
+    const owner = nodeFor(graph, permission.owner);
+    if (!owner || !executionIdentities.has(owner.id)) continue;
+    for (const rule of permission.rules) {
+      for (const access of kubernetesAccessForPermissionRule(rule, graph)) {
+        add(
+          owner,
+          access.operation,
+          access.capabilityId,
+          access.scope,
+          permission.mode === 'inferred' ? 'inferred' : 'explicit',
+          permission,
+        );
+      }
+    }
   }
 
   return {
@@ -174,6 +199,33 @@ function callableProviderBindings(
     return [];
   }
   return node.providerBindings;
+}
+
+function providerRuntimeSecretRefs(
+  node: ApplicationGraphNode,
+  graph: ApplicationGraph,
+): readonly ApplicationResourceRef[] {
+  const providerIds = new Set(callableProviderBindings(node).map(({ provider }) => provider.nodeId));
+  if (providerIds.size === 0) return [];
+  const requirementIds = new Set(graph.providerRequirements
+    .filter(({ consumer }) => consumer.nodeId === node.id)
+    .filter((requirement) => {
+      const binding = graph.providerBindings.find(({ requirement: id }) => id === requirement.id);
+      return providerIds.has(binding?.provider.nodeId ?? requirement.provider?.nodeId ?? '');
+    })
+    .map(({ id }) => id));
+  const refs = graph.providerBindings
+    .filter(({ requirement }) => requirementIds.has(requirement))
+    .flatMap(({ runtime }) => [
+      ...(runtime.secretRefs ?? []),
+      ...Object.values(runtime.secretEnv ?? {}).map(({ secret }) => secret),
+    ]);
+  const unique = new Map(refs.map((ref) => [applicationResourceIdentity(ref), ref]));
+  return [...unique.values()].sort((left, right) => applicationResourceIdentity(left).localeCompare(applicationResourceIdentity(right)));
+}
+
+function applicationResourceIdentity(ref: ApplicationResourceRef): string {
+  return [ref.apiVersion, ref.kind, ref.namespace ?? '', ref.name ?? ''].join('/');
 }
 
 export function withDerivedApplicationGraphFoundation(
@@ -286,6 +338,13 @@ function addNodeSpecificRequirements(
     return;
   }
   if (node.kind === 'operator') {
+    for (const contract of node.watchContracts ?? []) {
+      for (const rule of contract.permissions) {
+        for (const access of kubernetesAccessForPermissionRule(rule, graph)) {
+          add(node, access.operation, access.capabilityId, access.scope, 'framework');
+        }
+      }
+    }
     add(node, 'telemetry.write', 'Telemetry', { kind: 'capability', capabilityId: 'Telemetry' }, 'framework');
     return;
   }
@@ -381,6 +440,77 @@ function nodeFor(graph: ApplicationGraph, ref: ApplicationGraphNodeRef): Applica
 
 function resourceScope(ref: { readonly nodeId: string }): ApplicationRuntimeAccessScope {
   return { kind: 'resource', resourceId: ref.nodeId };
+}
+
+function kubernetesAccessForPermissionRule(
+  rule: import('./resource.js').PermissionRule,
+  graph: ApplicationGraph,
+): readonly {
+  readonly operation: ApplicationRuntimeAccessOperation;
+  readonly capabilityId: string;
+  readonly scope: ApplicationRuntimeAccessScope;
+}[] {
+  const accesses: {
+    operation: ApplicationRuntimeAccessOperation;
+    capabilityId: string;
+    scope: ApplicationRuntimeAccessScope;
+  }[] = [];
+  for (const apiGroup of rule.apiGroups) {
+    for (const resource of rule.resources) {
+      const [plural, subresource] = resource.split('/', 2);
+      const declared = graph.nodes.find((node): node is Extract<ApplicationGraphNode, { readonly kind: 'crd' }> => node.kind === 'crd'
+        && apiGroupForVersion(node.resource.apiVersion) === apiGroup
+        && node.resource.plural === plural);
+      const scope = rule.namespaces === 'all'
+        ? { kind: 'namespace' as const, namespace: '*', resourceKinds: [resource] }
+        : {
+            kind: 'kubernetes' as const,
+            apiGroup,
+            resource,
+            // Legacy raw PermissionRule values predate explicit scope metadata and
+            // historically lowered to namespace-local RBAC. Preserve that least-
+            // privilege default; cluster-scoped typed resources now carry their
+            // scope explicitly and therefore never depend on this fallback.
+            scope: rule.scope ?? declared?.resource.scope ?? 'Namespaced' as const,
+            ...(Array.isArray(rule.namespaces) ? { namespaces: [...rule.namespaces].sort() } : {}),
+            ...(rule.resourceNames ? { resourceNames: [...rule.resourceNames].sort() } : {}),
+          };
+      for (const operation of kubernetesOperationsForVerbs(rule.verbs, subresource)) {
+        accesses.push({
+          operation,
+          capabilityId: `kubernetes:${apiGroup}:${resource}`,
+          scope,
+        });
+      }
+    }
+  }
+  return accesses;
+}
+
+function kubernetesOperationsForVerbs(
+  verbs: readonly string[],
+  subresource: string | undefined,
+): readonly ApplicationRuntimeAccessOperation[] {
+  const operations = new Set<ApplicationRuntimeAccessOperation>();
+  for (const verb of verbs) {
+    if (verb === 'get') operations.add('kubernetes.get');
+    else if (verb === 'list') operations.add('kubernetes.list');
+    else if (verb === 'watch') operations.add('kubernetes.watch');
+    else if (verb === 'create') operations.add('kubernetes.create');
+    else if (verb === 'delete' || verb === 'deletecollection') operations.add('kubernetes.delete');
+    else if (verb === 'patch' || verb === 'update') {
+      operations.add(subresource === 'status'
+        ? 'kubernetes.status'
+        : subresource === 'finalizers'
+          ? 'kubernetes.finalize'
+          : 'kubernetes.patch');
+    }
+  }
+  return [...operations].sort();
+}
+
+function apiGroupForVersion(apiVersion: string): string {
+  return apiVersion.includes('/') ? apiVersion.split('/')[0] ?? '' : '';
 }
 
 function executionBoundaryKind(node: ApplicationGraphNode): string {

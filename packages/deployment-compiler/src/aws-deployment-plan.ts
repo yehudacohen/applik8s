@@ -247,6 +247,7 @@ export function compileApplicationAwsDeploymentPlan(request: CompileApplicationA
   const runtimeAccess = compileApplicationRuntimeAccessPlan({
     graph: request.graph,
     target: request.target ?? 'aws',
+    profile: request.profile ?? request.environment,
     ...(request.workspaceRoot ? { workspaceRoot: request.workspaceRoot } : {}),
     targetResources: awsRuntimeAccessBindings(request.graph, resources, request),
   });

@@ -169,7 +169,7 @@ export function crd<TSpec extends object, TStatus extends object>(options: CrdOp
     statusSubresource: Boolean(status),
     ...(options.additionalPrinterColumns ? { additionalPrinterColumns: options.additionalPrinterColumns } : {}),
     versions: [version],
-    permissions: permissionFactory(options.apiVersion, plural),
+    permissions: permissionFactory(options.apiVersion, plural, scope),
     on,
     eventMetadata: [],
     instance: factory,
@@ -204,7 +204,7 @@ function kubernetesReadResource<TSpec extends object = object, TStatus extends o
     scope: options.scope ?? 'Namespaced',
     access: options.access ?? 'local',
     ...(options.namespaces ? { namespaces: options.namespaces } : {}),
-    permissions: { read: () => permissionFactory(options.apiVersion, plural).read() },
+    permissions: { read: () => permissionFactory(options.apiVersion, plural, options.scope ?? 'Namespaced').read() },
   };
 }
 
@@ -448,26 +448,27 @@ function withDefaultNamespace<TSpec extends object>(input: CrdInstanceInput<TSpe
   return { ...input, namespace: defaultNamespace };
 }
 
-function permissionFactory(apiVersion: string, plural: string) {
+function permissionFactory(apiVersion: string, plural: string, scope: import('@applik8s/core').ResourceScope) {
   const apiGroup = apiVersion.includes('/') ? apiVersion.split('/')[0] ?? '' : '';
-  const rule = (verbs: readonly string[]): PermissionRule => ({ apiGroups: [apiGroup], resources: [plural], verbs });
+  const rule = (verbs: readonly string[]): PermissionRule => ({ apiGroups: [apiGroup], resources: [plural], verbs, scope });
   return {
     watch: () => rule(['get', 'list', 'watch']),
     read: () => rule(['get', 'list']),
     apply: () => rule(['create', 'update', 'patch']),
     patch: () => rule(['patch']),
-    patchStatus: () => ({ apiGroups: [apiGroup], resources: [`${plural}/status`], verbs: ['get', 'patch', 'update'] }),
+    patchStatus: () => ({ apiGroups: [apiGroup], resources: [`${plural}/status`], verbs: ['get', 'patch', 'update'], scope }),
     delete: () => rule(['delete']),
-    finalize: () => ({ apiGroups: [apiGroup], resources: [`${plural}/finalizers`], verbs: ['patch', 'update'] }),
+    finalize: () => ({ apiGroups: [apiGroup], resources: [`${plural}/finalizers`], verbs: ['patch', 'update'], scope }),
     manage: () => [
-      { apiGroups: [apiGroup], resources: [plural], verbs: ['get', 'list', 'watch', 'create', 'update', 'patch', 'delete'] },
-      { apiGroups: [apiGroup], resources: [`${plural}/status`], verbs: ['get', 'patch', 'update'] },
-      { apiGroups: [apiGroup], resources: [`${plural}/finalizers`], verbs: ['patch', 'update'] },
+      { apiGroups: [apiGroup], resources: [plural], verbs: ['get', 'list', 'watch', 'create', 'update', 'patch', 'delete'], scope },
+      { apiGroups: [apiGroup], resources: [`${plural}/status`], verbs: ['get', 'patch', 'update'], scope },
+      { apiGroups: [apiGroup], resources: [`${plural}/finalizers`], verbs: ['patch', 'update'], scope },
     ],
   };
 }
 
 function builtInPermissions() {
+  const scope = 'Namespaced' as const;
   return {
     k8s: {
       ConfigMap: builtInResourcePermissions('', 'configmaps'),
@@ -478,25 +479,26 @@ function builtInPermissions() {
       Job: builtInResourcePermissions('batch', 'jobs'),
     },
     events: {
-      write: () => ({ apiGroups: [''], resources: ['events'], verbs: ['create', 'patch', 'update'] }),
+      write: () => ({ apiGroups: [''], resources: ['events'], verbs: ['create', 'patch', 'update'], scope }),
     },
   };
 }
 
 function builtInResourcePermissions(apiGroup: string, resource: string) {
-  const rule = (verbs: readonly string[]): PermissionRule => ({ apiGroups: [apiGroup], resources: [resource], verbs });
+  const scope = 'Namespaced' as const;
+  const rule = (verbs: readonly string[]): PermissionRule => ({ apiGroups: [apiGroup], resources: [resource], verbs, scope });
   return {
     read: () => rule(['get', 'list']),
     watch: () => rule(['get', 'list', 'watch']),
     apply: () => rule(['get', 'create', 'update', 'patch']),
     patch: () => rule(['get', 'patch']),
-    patchStatus: () => ({ apiGroups: [apiGroup], resources: [`${resource}/status`], verbs: ['get', 'patch', 'update'] }),
+    patchStatus: () => ({ apiGroups: [apiGroup], resources: [`${resource}/status`], verbs: ['get', 'patch', 'update'], scope }),
     delete: () => rule(['get', 'delete']),
-    finalize: () => ({ apiGroups: [apiGroup], resources: [`${resource}/finalizers`], verbs: ['patch', 'update'] }),
+    finalize: () => ({ apiGroups: [apiGroup], resources: [`${resource}/finalizers`], verbs: ['patch', 'update'], scope }),
     manage: () => [
       rule(['get', 'list', 'watch', 'create', 'update', 'patch', 'delete']),
-      { apiGroups: [apiGroup], resources: [`${resource}/status`], verbs: ['get', 'patch', 'update'] },
-      { apiGroups: [apiGroup], resources: [`${resource}/finalizers`], verbs: ['patch', 'update'] },
+      { apiGroups: [apiGroup], resources: [`${resource}/status`], verbs: ['get', 'patch', 'update'], scope },
+      { apiGroups: [apiGroup], resources: [`${resource}/finalizers`], verbs: ['patch', 'update'], scope },
     ],
   };
 }

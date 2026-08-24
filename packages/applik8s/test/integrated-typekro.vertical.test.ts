@@ -2456,6 +2456,29 @@ describe('integrated TypeKro package surface', () => {
     });
   });
 
+  it('fails closed instead of emitting a namespace Role for cluster-scoped app.server access', () => {
+    const GlobalNote = sdk.crd({
+      apiVersion: 'notes.applik8s.dev/v1alpha1',
+      kind: 'GlobalNote',
+      scope: 'Cluster',
+      spec: type({ message: 'string' }),
+      status: type({ phase: 'string?' }),
+    });
+
+    expect(() => sdk.kubernetesComposition({
+      name: 'notes-app-cluster-rbac',
+      apiVersion: 'notes.applik8s.dev/v1alpha1',
+      kind: 'NotesAppClusterRbac',
+      spec: type({}),
+      status: type({ ready: 'boolean' }),
+    }, (_spec, app) => {
+      app.server('web', { namespace: 'notes', resources: { GlobalNote } }, (server) => {
+        server.get('/global-notes', async () => GlobalNote.query({ limit: 20 }));
+      });
+      return { ready: true };
+    })).toThrow(/requires cluster-scoped or cross-namespace Kubernetes access/);
+  });
+
   it('buffers app.server counter increments while inferring create get patch RBAC', () => {
     const PageViewBucket = sdk.crd({
       apiVersion: 'notes.applik8s.dev/v1alpha1',
