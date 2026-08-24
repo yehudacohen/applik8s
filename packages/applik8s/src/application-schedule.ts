@@ -1,12 +1,12 @@
 // typecast-file-boundary: Schedule contracts erase user schemas for transport and validate every admission before dispatch.
 
+import { requireApplicationInvocationAdmission } from '@applik8s/client';
 import type {
   ApplicationAdmissionInvocationContextV1,
   ApplicationRequestAdmission,
   ApplicationScheduleNode,
   JsonObject,
 } from '@applik8s/core';
-import { requireApplicationInvocationAdmission } from '@applik8s/client';
 import {
 	applicationAdmissionInvocationView,
   canonicalJsonCompatibleV1Policy,
@@ -23,22 +23,21 @@ import {
   serializeApplicationCallback,
 } from './application-callback.js';
 import { applicationProviderGraphNodeId } from './application-identifiers.js';
-import { applicationCallableProviderDependencies } from './application-provider-dependencies.js';
 import type {
   ApplicationQualifiedProviderToken,
   ApplicationSchedulerProvider,
   ApplicationSchedulerProviderToken,
 } from './application-providers.js';
 import { Scheduler } from './application-providers.js';
+import {
+	applicationScheduleDesiredStateDigest,
+	applicationScheduleDesiredStateRecord,
+} from './application-schedule-state-runtime.js';
 import { runApplicationTelemetryBoundary } from './application-telemetry-runtime.js';
 import {
   declaredSchema,
   validateMessage,
 } from './application-workflow-serialization.js';
-import {
-	applicationScheduleDesiredStateDigest,
-	applicationScheduleDesiredStateRecord,
-} from './application-schedule-state-runtime.js';
 
 export {
 	applicationScheduleDesiredStateDigest,
@@ -522,10 +521,16 @@ export function createApplicationSchedule<TInput extends object, TResult>(
     calls: [handler, ...(options.__generatedCalls ?? [])],
     bindings: options.__generatedBindings,
   });
-  const providerBindings = applicationCallableProviderDependencies({
-    ...inferredDependencies.bindings,
-    generatedScheduleProviderDependencies: handler,
-  });
+  const capturedProviderBindings = inferredDependencies.providerBindings;
+  const providerBindings = capturedProviderBindings.filter(
+    (binding) =>
+      binding.operation !== undefined
+      || !capturedProviderBindings.some(
+        (candidate) =>
+          candidate.operation !== undefined
+          && candidate.provider.nodeId === binding.provider.nodeId,
+      ),
+  );
   const serialized = serializeApplicationCallback({
     registrar: 'schedule',
     argumentIndex: 1,

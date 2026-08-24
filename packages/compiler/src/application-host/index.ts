@@ -8,6 +8,7 @@ import {
   type JsonObject,
   normalizeApplicationGraph,
 } from '@applik8s/core';
+import { applicationCallableProviderEnvironment } from '../application-callable-provider-runtime.js';
 import { applicationGraphNumberValue, applicationGraphStringValue } from '../application-installation-values.js';
 import { applicationObjectStorageEnvironment } from '../application-object-storage-environment.js';
 
@@ -152,6 +153,10 @@ export async function emitGeneratedApplicationHost(options: {
   const workflowScheduleAccess = options.graph.nodes.some(
     (node) => node.kind === 'schedule' && node.target?.kind === 'durableStart',
   );
+  const callableProviderEnvironment = applicationCallableProviderEnvironment(
+    applicationHostCallableProviders(options.graph),
+    { target: 'kubernetes', namespace },
+  );
   const artifactRoot = resolve(applicationArtifactRoot(manifestPath), manifest.output);
   const contextRoot = resolve(options.outDir, 'context');
   await rm(contextRoot, { recursive: true, force: true });
@@ -232,7 +237,7 @@ export async function emitGeneratedApplicationHost(options: {
               image,
               imagePullPolicy,
               command: ['node', `/app/${manifest.entrypoint}`],
-              env: [
+              env: uniqueApplicationHostEnvironment([
                 { name: 'PORT', value: String(port) },
                 { name: 'APPLIK8S_APPLICATION_NAME', value: options.graph.metadata.name },
 				{ name: 'APPLIK8S_DEPLOYMENT_TARGET', value: 'kubernetes' },
@@ -244,7 +249,8 @@ export async function emitGeneratedApplicationHost(options: {
                 ...applicationWorkflowScheduleEnvironment(options.graph),
                 ...identityDatabaseEnvironment,
                 ...objectStorageEnvironment,
-              ],
+                ...callableProviderEnvironment,
+              ]),
               ...(workflowScheduleAccess
                 ? {
                     volumeMounts: [{
@@ -319,6 +325,55 @@ export async function emitGeneratedApplicationHost(options: {
     port,
   }));
   return emitted;
+}
+
+function applicationHostCallableProviders(
+  graph: ApplicationGraph,
+): readonly ApplicationProviderNode[] {
+  const consumers = new Set(
+    graph.nodes.flatMap((node) => {
+      if (node.kind === 'actor') return [node.id];
+      if (node.kind !== 'schedule') return [];
+      const scheduler = graph.nodes.find(
+        (candidate) => candidate.id === node.scheduler.nodeId,
+      );
+      return scheduler?.kind === 'provider' && !scheduler.config?.qualification
+        ? [node.id]
+        : [];
+    }),
+  );
+  const providerIds = new Set(
+    graph.edges.flatMap((edge) =>
+      edge.relationship === 'provides' && consumers.has(edge.to.nodeId)
+        ? [edge.from.nodeId]
+        : []),
+  );
+  return graph.nodes.filter(
+    (node): node is ApplicationProviderNode =>
+      node.kind === 'provider'
+      && providerIds.has(node.id)
+      && node.config?.callableRuntime !== undefined,
+  );
+}
+
+function uniqueApplicationHostEnvironment(
+  entries: readonly Readonly<Record<string, unknown>>[],
+): readonly Readonly<Record<string, unknown>>[] {
+  const result = new Map<string, Readonly<Record<string, unknown>>>();
+  for (const entry of entries) {
+    const name = stringValue(entry.name);
+    if (!name) {
+      throw new Error('ApplicationHost environment entry has no name.');
+    }
+    const previous = result.get(name);
+    if (previous && JSON.stringify(previous) !== JSON.stringify(entry)) {
+      throw new Error(
+        `ApplicationHost declares conflicting environment ${name}.`,
+      );
+    }
+    result.set(name, entry);
+  }
+  return [...result.values()];
 }
 
 export function applicationKubernetesFixedScheduleResources(options: {

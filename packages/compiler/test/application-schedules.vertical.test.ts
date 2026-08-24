@@ -1,3 +1,4 @@
+import type { ApplicationGraph } from '@applik8s/core';
 import { describe, expect, it } from 'vitest';
 import { generatedApplicationFetchGatewayModules } from '../src/application-fetch-gateway/index.js';
 import { discoverApplicationGraphWithExports } from '../src/pipeline/index.js';
@@ -28,6 +29,13 @@ describe('v0.8 function-native schedule discovery', () => {
             provider: expect.objectContaining({
               interface: 'AcquisitionProvider',
               nodeId: 'provider.acquisition-provider.v1alpha1.primary',
+            }),
+            operation: expect.objectContaining({
+              member: 'acquire',
+              runtime: expect.objectContaining({
+                module: '@fixture/acquisition/runtime',
+                export: 'acquireItem',
+              }),
             }),
           }),
         ],
@@ -95,11 +103,47 @@ describe('v0.8 function-native schedule discovery', () => {
     expect(gateway?.files['gateway.generated.ts']).toContain('evidence.cleanup.v1');
     expect(gateway?.files['gateway.generated.ts']).not.toContain('source.poll.v1');
     const generatedSources = Object.values(gateway?.files ?? {}).join('\n');
-		expect(generatedSources).toContain('overlapBy: callback_schedule_overlap_key_');
-		expect(generatedSources).toContain('sourceBindingId');
-    expect(generatedSources).toContain('const acquire = acquisition.acquire');
-    expect(generatedSources).toContain('.profile(');
-    expect(generatedSources).toContain('platform.installation.spec');
+    expect(generatedSources).toContain('overlapBy: callback_schedule_overlap_key_');
+    expect(generatedSources).toContain('sourceBindingId');
+    expect(generatedSources).toContain('@fixture/acquisition/runtime');
+    expect(generatedSources).toContain('acquireItem');
+    expect(generatedSources).not.toContain('.profile(');
+    expect(generatedSources).not.toContain('.provide(');
+    expect(generatedSources).not.toContain('.inject(');
+    expect(generatedSources).not.toContain('platform.installation.spec');
     expect(generatedSources).toContain('binding.on["acquire"]');
+    // typecast: negative graph fixture removes runtime metadata after validation.
+    const missingRuntimeGraph = {
+      ...discovered.value.graph,
+      nodes: discovered.value.graph.nodes.map((node) =>
+        node.kind !== 'schedule' || node.id !== 'schedule.evidence.cleanup.v1'
+          ? node
+          : {
+              ...node,
+              providerBindings: node.providerBindings?.map((binding) => ({
+                ...binding,
+                ...(binding.operation
+                  ? { operation: { member: binding.operation.member } }
+                  : {}),
+              })),
+            }),
+    } as ApplicationGraph;
+    expect(() => generatedApplicationFetchGatewayModules(missingRuntimeGraph))
+      .toThrow(/Application schedule evidence\.cleanup\.v1 provider binding acquire has no public static runtime operation/);
+    // typecast: negative graph fixture removes the operation after validation.
+    const operationLessGraph = {
+      ...missingRuntimeGraph,
+      nodes: missingRuntimeGraph.nodes.map((node) =>
+        node.kind !== 'schedule' || node.id !== 'schedule.evidence.cleanup.v1'
+          ? node
+          : {
+              ...node,
+              providerBindings: node.providerBindings?.map(
+                ({ operation: _operation, ...binding }) => binding,
+              ),
+            }),
+    } as ApplicationGraph;
+    expect(() => generatedApplicationFetchGatewayModules(operationLessGraph))
+      .toThrow(/Application schedule evidence\.cleanup\.v1 provider binding acquire has no public static runtime operation/);
   }, 60_000);
 });

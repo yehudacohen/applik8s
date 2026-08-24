@@ -7,12 +7,49 @@ const platform = app('schedule-proof', {
 });
 const AcquisitionProvider = defineApplicationProvider<{
   readonly kind: 'acquisition';
+  readonly source: string;
+  readonly credentialSecret: {
+    readonly apiVersion: 'v1';
+    readonly kind: 'Secret';
+    readonly name: string;
+    readonly namespace: string;
+  };
   acquire(input: { readonly id: string }): Promise<{ readonly value: string }>;
 }>({
   interface: 'AcquisitionProvider',
   version: 'v1alpha1',
+  runtime: {
+    bind(implementation) {
+      return {
+        env: { ACQUISITION_SOURCE: implementation.source },
+        secretEnv: {
+          ACQUISITION_TOKEN: {
+            secret: implementation.credentialSecret,
+            key: 'token',
+          },
+        },
+      };
+    },
+    operations: {
+      acquire: {
+        module: '@fixture/acquisition/runtime',
+        export: 'acquireItem',
+        access: {
+          kind: 'provider',
+          operations: ['connection.use', 'network.connect'],
+        },
+      },
+    },
+  },
   accepts: (candidate): candidate is {
     readonly kind: 'acquisition';
+    readonly source: string;
+    readonly credentialSecret: {
+      readonly apiVersion: 'v1';
+      readonly kind: 'Secret';
+      readonly name: string;
+      readonly namespace: string;
+    };
     acquire(input: { readonly id: string }): Promise<{ readonly value: string }>;
   } => candidate !== null
     && typeof candidate === 'object'
@@ -24,10 +61,24 @@ platform
   .provide(AcquisitionProvider)
   .starter(() => ({
     kind: 'acquisition',
+    source: 'starter',
+    credentialSecret: {
+      apiVersion: 'v1',
+      kind: 'Secret',
+      name: 'acquisition-starter',
+      namespace: 'schedule-proof',
+    },
     async acquire({ id }) { return { value: `starter:${id}` }; },
   }))
   .dedicated(() => ({
     kind: 'acquisition',
+    source: 'dedicated',
+    credentialSecret: {
+      apiVersion: 'v1',
+      kind: 'Secret',
+      name: 'acquisition-dedicated',
+      namespace: 'schedule-proof',
+    },
     async acquire({ id }) { return { value: `dedicated:${id}` }; },
   }))
   .exhaustive();

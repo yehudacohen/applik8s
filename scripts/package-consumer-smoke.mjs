@@ -933,6 +933,238 @@ if (JSON.stringify(unrelated.resources).includes('ACQUISITION_TOKEN')) {
   });
   console.log('Package consumer smoke: packed external HTTP provider hydration passed.');
 
+  const packedScheduleDirectory = join(consumerDir, 'packed-schedule-provider');
+  await mkdir(
+    join(packedScheduleDirectory, '.applik8s', 'web-artifacts'),
+    { recursive: true },
+  );
+  await mkdir(
+    join(packedScheduleDirectory, 'dist', 'server'),
+    { recursive: true },
+  );
+  const packedScheduleServer = 'console.log("packed schedule host");\n';
+  await writeFile(
+    join(packedScheduleDirectory, 'dist', 'server', 'index.mjs'),
+    packedScheduleServer,
+  );
+  await writeFile(
+    join(
+      packedScheduleDirectory,
+      '.applik8s',
+      'web-artifacts',
+      'server.json',
+    ),
+    `${JSON.stringify({
+      apiVersion: 'applik8s.webArtifact/v1alpha1',
+      application: 'application.mjs',
+      output: 'dist/server',
+      target: 'server',
+      digest: `sha256:${createHash('sha256').update(packedScheduleServer).digest('hex')}`,
+      entrypoint: 'index.mjs',
+      artifacts: [{
+        path: 'index.mjs',
+        bytes: Buffer.byteLength(packedScheduleServer),
+        digest: createHash('sha256').update(packedScheduleServer).digest('hex'),
+      }],
+    })}\n`,
+  );
+  const packedScheduleApplicationPath = join(
+    packedScheduleDirectory,
+    'application.mjs',
+  );
+  await writeFile(
+    packedScheduleApplicationPath,
+    `import {
+  ApplicationHost,
+  TransactionalDatabase,
+  app,
+  schedule,
+} from '@applik8s/applik8s';
+import { type } from '@applik8s/applik8s/dsl';
+import { AcquisitionProvider, acquisition } from '@fixture/acquisition';
+const application = app('packed-schedule-provider', {
+  namespace: 'packed-schedule-provider',
+  spec: type({ profile: "'starter' | 'dedicated'" }),
+  status: type({ ready: 'boolean' }),
+});
+application.provide(
+  ApplicationHost,
+  ApplicationHost.managed({
+    name: 'packed-schedule-provider',
+    namespace: 'packed-schedule-provider',
+    replicas: 1,
+    port: 3000,
+  }),
+);
+application.provide(
+  TransactionalDatabase,
+  TransactionalDatabase.postgres({
+    name: 'packed-schedule-db',
+    namespace: 'packed-schedule-provider',
+    database: 'application',
+  }),
+);
+const implementation = source => ({
+  kind: 'acquisition',
+  source,
+  credentialSecret: {
+    apiVersion: 'v1',
+    kind: 'Secret',
+    name: 'acquisition-' + source,
+    namespace: 'packed-schedule-provider',
+  },
+  async acquire(input) { return { value: source + ':' + input.id }; },
+});
+application.profile(application.installation.spec, 'profile')
+  .provide(AcquisitionProvider)
+  .starter(() => implementation('starter'))
+  .dedicated(() => implementation('dedicated'))
+  .exhaustive();
+const { acquire } = application.include(acquisition);
+const directProvider = application.inject(AcquisitionProvider);
+async function acquireThroughHelper(id) {
+  return acquire({ id });
+}
+export const Cleanup = schedule({
+  id: 'packed.cleanup.v1',
+  cron: '0 3 * * *',
+  timezone: 'UTC',
+}, async context => {
+  const direct = await directProvider.acquire({
+    id: context.occurrenceId + '-direct',
+  });
+  const extracted = await acquire({
+    id: context.occurrenceId + '-extracted',
+  });
+  const helper = await acquireThroughHelper(
+    context.occurrenceId + '-helper',
+  );
+  return [direct.value, extracted.value, helper.value].join(',');
+});
+export const scheduleProviderStack = application.composition;
+`,
+  );
+  const packedScheduleProofPath = join(
+    packedScheduleDirectory,
+    'proof.mjs',
+  );
+  await writeFile(
+    packedScheduleProofPath,
+    `import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { deriveApplicationGraphFoundation } from '@applik8s/core';
+import {
+  compileTypeKroComposition,
+  discoverApplicationGraphWithExports,
+  generatedApplicationFetchGatewayModules,
+} from '@applik8s/compiler';
+const applicationPath = ${JSON.stringify(packedScheduleApplicationPath)};
+const discovered = await discoverApplicationGraphWithExports(
+  applicationPath,
+  'scheduleProviderStack',
+);
+if (!discovered.ok) throw discovered.error;
+const graph = discovered.value.graph;
+const schedule = graph.nodes.find(node =>
+  node.kind === 'schedule' && node.definition.id === 'packed.cleanup.v1'
+);
+if (!schedule) throw new Error('Packed provider schedule is missing.');
+const operations = schedule.providerBindings?.filter(binding =>
+  binding.operation?.member === 'acquire'
+) ?? [];
+for (const identifier of ['acquire', 'directProvider.acquire']) {
+  const runtime = operations.find(binding =>
+    binding.identifier === identifier
+  )?.operation?.runtime;
+  if (
+    runtime?.module !== '@fixture/acquisition/runtime'
+    || runtime.export !== 'acquireItem'
+  ) throw new Error('Packed schedule provider operation ' + identifier + ' did not survive discovery.');
+}
+const providerId = 'provider.acquisition-provider.v1alpha1.primary';
+const access = deriveApplicationGraphFoundation(graph, {
+  workspaceRoot: ${JSON.stringify(consumerDir)},
+}).runtimeAccess.filter(requirement =>
+  requirement.target.capabilityId === providerId
+);
+if (
+  access.some(requirement => requirement.consumer.nodeId !== schedule.id)
+  || access.map(requirement => requirement.target.operation).sort().join(',')
+    !== 'connection.use,network.connect'
+) throw new Error('Packed schedule provider access was not placed exactly.');
+const generated = generatedApplicationFetchGatewayModules(graph);
+if (!generated) throw new Error('Packed schedule control source is missing.');
+const source = Object.values(generated.files).join('\\n');
+if (
+  !source.includes('@fixture/acquisition/runtime')
+  || !source.includes('acquireThroughHelper')
+  || source.includes('@applik8s/applik8s/internal/provider-runtime')
+  || source.includes('application.inject')
+  || source.includes('application.profile')
+  || source.includes('application.provide')
+) throw new Error('Packed schedule control did not hydrate only the public provider operation.');
+const repeated = generatedApplicationFetchGatewayModules(graph);
+if (JSON.stringify(repeated) !== JSON.stringify(generated)) {
+  throw new Error('Packed schedule control generation is not deterministic.');
+}
+const compiled = await compileTypeKroComposition({
+  entrypoint: applicationPath,
+  compositionName: 'scheduleProviderStack',
+  outDir: join(${JSON.stringify(packedScheduleDirectory)}, 'build'),
+  runtimeVersionRange: '^0.8.0',
+  handlerAbiVersion: 'applik8s.handler/v1alpha1',
+  adapter: 'wasmComponent',
+  portability: {
+    deterministicBuild: true,
+    allowEnvironmentAccess: false,
+    allowFilesystemAccess: false,
+    allowNetworkAccess: true,
+    allowedHostImports: [],
+    sourceMaps: {
+      emit: true,
+      includeSourceContent: false,
+      redactPaths: false,
+    },
+  },
+});
+if (!compiled.ok) throw compiled.error;
+const resources = compiled.value.artifacts.resources;
+const deploymentJson = JSON.stringify(resources);
+if (
+  !deploymentJson.includes('application-host')
+  || !deploymentJson.includes('ACQUISITION_SOURCE')
+  || !deploymentJson.includes('ACQUISITION_TOKEN')
+  || !deploymentJson.includes('acquisition-starter')
+  || !deploymentJson.includes('acquisition-dedicated')
+) throw new Error('Packed schedule provider configuration was not placed on its application host: ' + JSON.stringify({
+  applicationHost: deploymentJson.includes('application-host'),
+  source: deploymentJson.includes('ACQUISITION_SOURCE'),
+  token: deploymentJson.includes('ACQUISITION_TOKEN'),
+  starter: deploymentJson.includes('acquisition-starter'),
+  dedicated: deploymentJson.includes('acquisition-dedicated'),
+}));
+if ((deploymentJson.match(/ACQUISITION_TOKEN/g) ?? []).length !== 1) {
+  throw new Error('Packed schedule provider credentials reached an unrelated resource.');
+}
+await readFile(join(
+  ${JSON.stringify(packedScheduleDirectory)},
+  'build',
+  'typekro',
+  'application-host',
+  'application-host.json',
+), 'utf8');
+`,
+  );
+  await execFileAsync(process.execPath, [packedScheduleProofPath], {
+    cwd: packedScheduleDirectory,
+    env: {
+      ...process.env,
+      NODE_OPTIONS: '--max-old-space-size=8192',
+    },
+    maxBuffer: 20 * 1024 * 1024,
+  });
+  console.log('Package consumer smoke: packed external schedule provider hydration passed.');
+
   const packedAgentMigrations = join(consumerDir, 'packed-agent-migrations');
   await mkdir(packedAgentMigrations, { recursive: true });
   await writeFile(

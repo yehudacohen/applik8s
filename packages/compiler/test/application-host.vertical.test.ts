@@ -303,18 +303,30 @@ describe('generated ApplicationHost', () => {
         id: 'provider.TransactionalDatabase', kind: 'provider', name: 'TransactionalDatabase', stability: 'stable', interface: 'TransactionalDatabase', implementation: 'application-provider-selection',
         config: { aliasOf: 'provider.database' },
       }, {
+        id: 'provider.acquisition-provider.v1alpha1.primary', kind: 'provider', name: 'AcquisitionProvider', stability: 'stable', interface: 'AcquisitionProvider', implementation: 'fixture',
+        config: { callableRuntime: { kind: 'runtime', runtime: {
+          env: { ACQUISITION_SOURCE: 'dedicated' },
+          secretEnv: { ACQUISITION_TOKEN: { secret: { apiVersion: 'v1', kind: 'Secret', name: 'acquisition-dedicated', namespace: 'guestbook' }, key: 'token' } },
+        } } },
+      }, {
         id: 'model.Note', kind: 'model', name: 'Note', stability: 'stable', native: 'relational', source: { kind: 'drizzle', tableName: 'notes', exportName: 'notes' },
         schema: { kind: 'declared', runtime: 'arktype', jsonSchema: { type: 'object' } }, relationships: [], operations: [], events: [],
         database: { interface: 'TransactionalDatabase', nodeId: 'provider.database' },
         runtime: { connectionEnvName: 'DATABASE_URL', database: 'app', secretName: 'guestbook-db-app', secretKey: 'uri' },
       }, {
         id: 'schedule.cleanup.v1', kind: 'schedule', name: 'cleanup.v1', stability: 'stable', scheduler: { interface: 'Scheduler', nodeId: 'provider.scheduler' }, state: { interface: 'TransactionalDatabase', nodeId: 'provider.TransactionalDatabase' },
+        providerBindings: [{ identifier: 'acquire', provider: { interface: 'AcquisitionProvider', nodeId: 'provider.acquisition-provider.v1alpha1.primary' }, operation: { member: 'acquire', runtime: { module: '@fixture/acquisition/runtime', export: 'acquireItem', access: { kind: 'provider', operations: ['connection.use', 'network.connect'] } } } }],
         definition: { id: 'cleanup.v1', configuration: 'fixed', every: '15m', timezone: 'UTC', overlap: 'skip', misfires: 'latest', maximumLatenessSeconds: 300, retry: { maxAttempts: 4, maximumAgeSeconds: 3600 }, requirements: { configuration: 'fixed', cardinality: 'bounded', precision: 'minute' } },
         target: {
           kind: 'durableStart', durable: { kind: 'workflow', nodeId: 'workflow.cleanup.v1' },
           contract: { name: 'cleanup', version: 'v1', input: { jsonSchema: { type: 'object' } } }, input: { kind: 'literal', value: {} },
         }, functionNative: true,
       }] as ApplicationGraph['nodes'],
+      edges: [...base.edges, {
+        from: { nodeId: 'provider.acquisition-provider.v1alpha1.primary' },
+        to: { nodeId: 'schedule.cleanup.v1' },
+        relationship: 'provides',
+      }],
     };
     const resources = await emitGeneratedApplicationHost({ graph, entrypoint: join(root, 'src/application.ts'), outDir: join(root, 'host') });
     expect(resources.map(({ kind }) => kind)).toContain('CronJob');
@@ -340,6 +352,8 @@ describe('generated ApplicationHost', () => {
       { name: 'APPLIK8S_INTERNAL_OPERATION_SECRET', valueFrom: { secretKeyRef: { name: 'guestbook-internal-operation', key: 'key' } } },
       { name: 'APPLIK8S_SCHEDULE_DATABASE_URL', valueFrom: { secretKeyRef: { name: 'guestbook-db-app', key: 'uri', optional: false } } },
       { name: 'APPLIK8S_WORKFLOW_GATEWAY_TOKEN_FILE', value: '/var/run/secrets/applik8s/workflow-gateway/token' },
+      { name: 'ACQUISITION_SOURCE', value: 'dedicated' },
+      { name: 'ACQUISITION_TOKEN', valueFrom: { secretKeyRef: { name: 'acquisition-dedicated', key: 'token' } } },
     ]));
     expect(podSpec?.containers?.[0]?.volumeMounts).toEqual([{
       name: 'workflow-gateway-token',

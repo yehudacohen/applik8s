@@ -325,7 +325,7 @@ export function generatedApplicationFetchGatewayModules(
 	);
 	const scheduleSources = schedules.map((scheduleNode) => {
 		const callback = scheduleNode.handler
-			? graphCallback(files, imports, scheduleNode.id, "schedule", scheduleNode.handler)
+			? graphScheduleCallback(files, imports, scheduleNode, scheduleNode.handler)
 			: scheduleNode.target?.kind === "durableStart"
 				? (() => {
 					const target = {
@@ -2362,8 +2362,56 @@ function graphActorCallback(
 	if (providerBindings.length === 0) {
 		return graphCallback(files, imports, actor.id, role, callback);
 	}
+	return graphManagedProviderCallback(
+		files,
+		imports,
+		actor.id,
+		role,
+		callback,
+		providerBindings,
+		`Application actor ${actor.definition.id}.${member}`,
+	);
+}
+
+function graphScheduleCallback(
+	files: Record<string, string>,
+	imports: string[],
+	schedule: ApplicationScheduleNode,
+	callback: ApplicationSerializedCallbackContract,
+): string {
+	const providerBindings = (schedule.providerBindings ?? []).filter(
+		(binding) =>
+			binding.operation !== undefined
+			|| !(
+				binding.placement === 'objectStore'
+				&& binding.provider.interface === 'ObjectStorage'
+			),
+	);
+	if (providerBindings.length === 0) {
+		return graphCallback(files, imports, schedule.id, 'schedule', callback);
+	}
+	return graphManagedProviderCallback(
+		files,
+		imports,
+		schedule.id,
+		'schedule',
+		callback,
+		providerBindings,
+		`Application schedule ${schedule.definition.id}`,
+	);
+}
+
+function graphManagedProviderCallback(
+	files: Record<string, string>,
+	imports: string[],
+	owner: string,
+	role: string,
+	callback: ApplicationSerializedCallbackContract,
+	providerBindings: readonly ApplicationCallableProviderBinding[],
+	label: string,
+): string {
 	const injected = providerBindings.map((binding) =>
-		actorProviderOperationBinding(imports, actor, member, binding));
+		providerOperationBinding(imports, label, binding));
 	const injectedIdentifiers = injected
 		.map(({ path }) => path.split('.')[0])
 		.filter((identifier): identifier is string => Boolean(identifier))
@@ -2375,7 +2423,7 @@ function graphActorCallback(
 			identifier,
 		));
 	const digest = createHash("sha256")
-		.update(`${actor.id}:${role}`)
+		.update(`${owner}:${role}`)
 		.digest("hex")
 		.slice(0, 12);
 	const file = `${role}-${digest}.generated.ts`;
@@ -2391,19 +2439,18 @@ function graphActorCallback(
 	imports.push(
 		`import { createCallback as ${factory} } from './${file.replace(/\.ts$/, ".js")}';`,
 	);
-	return `${factory}(${nestedActorProviderBindingsSource(injected)})`;
+	return `${factory}(${nestedProviderBindingsSource(injected, label)})`;
 }
 
-function actorProviderOperationBinding(
+function providerOperationBinding(
 	imports: string[],
-	actor: ApplicationActorNode,
-	member: string,
+	label: string,
 	binding: ApplicationCallableProviderBinding,
 ): { readonly path: string; readonly value: string } {
 	const runtime = binding.operation?.runtime;
 	if (!binding.operation || !runtime) {
 		throw new Error(
-			`Application actor ${actor.definition.id}.${member} provider binding ${binding.identifier} has no public static runtime operation. Define the operation in the provider runtime contract; generated actor workers never replay authoring-time provider selection.`,
+			`${label} provider binding ${binding.identifier} has no public static runtime operation. Define the operation in the provider runtime contract; generated workers never replay authoring-time provider selection.`,
 		);
 	}
 	if (
@@ -2414,7 +2461,7 @@ function actorProviderOperationBinding(
 		|| !/^[A-Za-z_$][A-Za-z0-9_$]*$/u.test(runtime.export)
 	) {
 		throw new Error(
-			`Application actor ${actor.definition.id}.${member} provider binding ${binding.identifier} has an invalid public runtime export ${runtime.module}#${runtime.export}.`,
+			`${label} provider binding ${binding.identifier} has an invalid public runtime export ${runtime.module}#${runtime.export}.`,
 		);
 	}
 	const segments = binding.identifier.split('.');
@@ -2423,7 +2470,7 @@ function actorProviderOperationBinding(
 		|| segments.some((segment) => !/^[A-Za-z_$][A-Za-z0-9_$]*$/u.test(segment))
 	) {
 		throw new Error(
-			`Application actor ${actor.definition.id}.${member} provider binding ${binding.identifier} is not a static JavaScript binding path.`,
+			`${label} provider binding ${binding.identifier} is not a static JavaScript binding path.`,
 		);
 	}
 	const variable = `providerOperation_${createHash("sha256")
@@ -2435,8 +2482,9 @@ function actorProviderOperationBinding(
 	return { path: binding.identifier, value: variable };
 }
 
-function nestedActorProviderBindingsSource(
+function nestedProviderBindingsSource(
 	entries: readonly { readonly path: string; readonly value: string }[],
+	label: string,
 ): string {
 	interface BindingTree {
 		direct?: string;
@@ -2455,9 +2503,9 @@ function nestedActorProviderBindingsSource(
 			}
 			siblings = node.children;
 		}
-		if (!node) throw new Error(`Actor provider binding ${entry.path} is empty.`);
+		if (!node) throw new Error(`${label} provider binding ${entry.path} is empty.`);
 		if (node.direct && node.direct !== entry.value) {
-			throw new Error(`Actor provider binding ${entry.path} resolves to multiple runtime operations.`);
+			throw new Error(`${label} provider binding ${entry.path} resolves to multiple runtime operations.`);
 		}
 		node.direct = entry.value;
 	}
@@ -2466,7 +2514,7 @@ function nestedActorProviderBindingsSource(
 	function render(nodes: ReadonlyMap<string, BindingTree>): string {
 		return `{ ${[...nodes.entries()].map(([key, node]) => {
 			if (node.direct && node.children.size > 0) {
-				throw new Error(`Actor provider binding ${key} is both a callable and an object namespace.`);
+				throw new Error(`${label} provider binding ${key} is both a callable and an object namespace.`);
 			}
 			return `${JSON.stringify(key)}: ${node.direct ?? render(node.children)}`;
 		}).join(', ')} }`;
