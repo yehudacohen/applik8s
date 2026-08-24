@@ -75,9 +75,15 @@ export interface LocalSupervisorBinding {
   readonly id: string;
   readonly owner: string;
   /** targetOutput is resolved by a target lifecycle adapter after its owner is healthy. */
-  readonly kind: 'endpoint' | 'credential' | 'port' | 'volume' | 'targetOutput';
+  readonly kind: 'endpoint' | 'credential' | 'hostEnvironment' | 'port' | 'volume' | 'targetOutput';
   readonly sensitivity: 'public' | 'sensitive';
   readonly value?: string | number;
+  /**
+   * Exact operation-host variable supplying a declared credential. The value
+   * is resolved only while the supervisor starts a consumer and is never
+   * serialized into the plan, state, or generated credential store.
+   */
+  readonly sourceEnvironment?: string;
   /** Controls endpoint presentation to consumers without changing health semantics. */
   readonly format?: 'url' | 'authority';
 }
@@ -111,6 +117,19 @@ export function validateLocalSupervisorPlan(plan: LocalSupervisorPlan): LocalSup
     bindingIds.add(binding.id);
     if (!resourceIds.has(binding.owner)) {
       diagnostics.push({ severity: 'error', code: 'LOCAL_PROVIDER_UNRESOLVED', message: `Local binding ${binding.id} references unknown owner ${binding.owner}.`, subjectId: binding.id });
+    }
+    if (binding.kind === 'hostEnvironment') {
+      if (binding.sensitivity !== 'sensitive') {
+        diagnostics.push({ severity: 'error', code: 'LOCAL_PROVIDER_UNRESOLVED', message: `Host-environment binding ${binding.id} must be sensitive.`, subjectId: binding.id });
+      }
+      if (!binding.sourceEnvironment || !/^[A-Za-z_][A-Za-z0-9_]*$/u.test(binding.sourceEnvironment)) {
+        diagnostics.push({ severity: 'error', code: 'LOCAL_PROVIDER_UNRESOLVED', message: `Host-environment binding ${binding.id} requires one valid source variable name.`, subjectId: binding.id });
+      }
+      if (binding.value !== undefined) {
+        diagnostics.push({ severity: 'error', code: 'LOCAL_PROVIDER_UNRESOLVED', message: `Host-environment binding ${binding.id} cannot embed a value in the plan.`, subjectId: binding.id });
+      }
+    } else if (binding.sourceEnvironment !== undefined) {
+      diagnostics.push({ severity: 'error', code: 'LOCAL_PROVIDER_UNRESOLVED', message: `Local binding ${binding.id} cannot declare sourceEnvironment unless its kind is hostEnvironment.`, subjectId: binding.id });
     }
   }
   for (const resource of plan.resources) {

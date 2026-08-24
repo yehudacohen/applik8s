@@ -1,24 +1,26 @@
 // typecast-file-boundary: Generated graph JSON and optional instance YAML are validated before local planning.
+
+import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { access, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { spawn } from 'node:child_process';
-import { serializeApplicationPlan, type ApplicationGraph, type ApplicationPlan } from '@applik8s/core';
-import { createDevelopmentDaemon, type DevelopmentApplicationEvidence, type DevelopmentDaemonState } from '@applik8s/dev/server';
+import { applicationGeneratedSecretRequirements } from '@applik8s/compiler';
+import { type ApplicationGraph, type ApplicationPlan, serializeApplicationPlan } from '@applik8s/core';
+import { type ApplicationAwsDeployment, applicationAwsOutputKey, createApplicationAwsDeployment } from '@applik8s/deployment-alchemy';
+import { type ApplicationLocalRuntimeArtifact, awsLocalOutputBindingId, awsLocalRuntimeBindingId, compileApplicationAwsDeploymentPlan, compileLocalApplicationPlan, compileLocalSupervisorPlan } from '@applik8s/deployment-compiler';
+import { type ApplicationAwsDeploymentPlan, type DeploymentJsonObject, type LocalSupervisorTarget, serializeApplicationAwsDeploymentPlan, serializeLocalSupervisorPlan, validateApplicationAwsDeploymentPlan, validateLocalSupervisorPlan } from '@applik8s/deployment-contract';
 import { OpenCodeAgentProvider } from '@applik8s/dev/agent/opencode';
-import { applicationAwsOutputKey, createApplicationAwsDeployment, type ApplicationAwsDeployment } from '@applik8s/deployment-alchemy';
-import { awsLocalOutputBindingId, awsLocalRuntimeBindingId, compileApplicationAwsDeploymentPlan, compileLocalApplicationPlan, compileLocalSupervisorPlan, type ApplicationLocalRuntimeArtifact } from '@applik8s/deployment-compiler';
-import { serializeApplicationAwsDeploymentPlan, serializeLocalSupervisorPlan, validateApplicationAwsDeploymentPlan, validateLocalSupervisorPlan, type ApplicationAwsDeploymentPlan, type DeploymentJsonObject, type LocalSupervisorTarget } from '@applik8s/deployment-contract';
+import { createDevelopmentDaemon, type DevelopmentApplicationEvidence, type DevelopmentDaemonState } from '@applik8s/dev/server';
 import { parse as parseYaml } from 'yaml';
 import { resolveApplicationBuildPackage, resolveApplicationProjectRoot } from './application-build-package.js';
 import { readApplicationProjectConfiguration } from './application-project-config.js';
 import {
+  type LocalSupervisorIo,
+  type LocalSupervisorOptions,
   readLocalSupervisorStatus,
   resetLocalSupervisor,
   startLocalSupervisor,
-  type LocalSupervisorIo,
-  type LocalSupervisorOptions,
 } from './local-supervisor.js';
 
 export interface LocalDevelopmentCommandOptions {
@@ -138,8 +140,9 @@ export async function runLocalDevelopmentCommand(
     }
     const graphPath = resolve(io.cwd, outDir, 'typekro', 'application-graph.json');
     const graph = await readApplicationGraph(graphPath);
+    const bundlePath = resolve(io.cwd, outDir, 'typekro', 'typekro-composition.json');
     const runtimeArtifacts = await readLocalRuntimeArtifacts(
-      resolve(io.cwd, outDir, 'typekro', 'typekro-composition.json'),
+      bundlePath,
       resolve(io.cwd, outDir),
       target,
     );
@@ -151,6 +154,14 @@ export async function runLocalDevelopmentCommand(
         ? installationSpec.profile
         : undefined)
       ?? 'starter';
+    const generatedSecrets = installationSpec
+      ? await applicationGeneratedSecretRequirements(
+          bundlePath,
+          graph.metadata.namespace,
+          graph,
+          installationSpec,
+        )
+      : [];
     const applicationPackage = await resolveApplicationBuildPackage(applicationEntrypoint);
     const plan = compileLocalSupervisorPlan({
       graph,
@@ -159,6 +170,7 @@ export async function runLocalDevelopmentCommand(
       projectDigest,
       projectDirectory: applicationPackage.directory,
       runtimeArtifacts,
+      generatedSecrets,
       localResourceAuthorityModule: fileURLToPath(import.meta.resolve('@applik8s/server/local-resource-authority-process')),
       ...(installationSpec ? { installationSpec } : {}),
       ...(options.allowDockerSocket ? { allowDockerSocket: true } : {}),

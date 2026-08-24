@@ -258,6 +258,86 @@ describe('local supervisor plan compiler', () => {
     expect(hostEnvironment).not.toContain('APPLIK8S_NATS_SERVERS');
   });
 
+  it('projects only declared host-environment credentials into the exact provider consumer', () => {
+    const base = applicationGraph();
+    const paymentProvider = {
+      id: 'provider.payments', kind: 'provider', name: 'payments', stability: 'stable',
+      interface: 'PaymentProvider', implementation: 'stripe',
+    } as const;
+    const graph = {
+      ...base,
+      nodes: [...base.nodes, paymentProvider],
+      edges: [
+        ...base.edges,
+        { from: { nodeId: 'server.web' }, to: { nodeId: paymentProvider.id }, relationship: 'dependsOn' },
+      ],
+      providerRequirements: [{
+        id: 'requirement.payments', interface: 'PaymentProvider', consumer: { nodeId: 'server.web' },
+        provider: { interface: 'PaymentProvider', nodeId: paymentProvider.id }, required: true,
+        purpose: 'payments', diagnostics: { missing: 'missing', ambiguous: 'ambiguous' },
+      }],
+      providerBindings: [{
+        requirement: 'requirement.payments',
+        provider: { interface: 'PaymentProvider', nodeId: paymentProvider.id },
+        generatedResources: [],
+        runtime: {
+          env: { APPLIK8S_PAYMENT_PROVIDER_KIND: 'stripe' },
+          secretEnv: {
+            APPLIK8S_PAYMENT_API_KEY: {
+              secret: { apiVersion: 'v1', kind: 'Secret', name: 'demo-payments', namespace: 'demo-system' },
+              key: 'apiKey',
+            },
+          },
+        },
+      }],
+    } as unknown as ApplicationGraph;
+    const plan = compileLocalSupervisorPlan({
+      graph,
+      target: 'local',
+      profile: 'starter',
+      projectDigest: 'sha256:project',
+      installationSpec: {
+        name: 'demo', profile: 'developer', providers: {
+          payments: {
+            secretName: 'demo-payments',
+            credentialSource: { kind: 'hostEnvironment', apiKeyVariable: 'DECLARED_STRIPE_KEY' },
+          },
+        },
+      },
+      generatedSecrets: [{
+        id: 'agentic-managed.payments',
+        namespace: 'demo-system',
+        name: 'demo-payments',
+        values: {
+          apiKey: { kind: 'hostEnvironment', name: 'DECLARED_STRIPE_KEY' },
+        },
+        consumers: [paymentProvider.id, 'server.web'],
+        referenceMode: 'staticIdentity',
+      }],
+      runtimeArtifacts: [{ nodeId: 'processor.events', name: 'events', role: 'processor', source: '/workspace/processor.mjs', digest: `sha256:${'a'.repeat(64)}` }],
+    });
+
+    expect(validateLocalSupervisorPlan(plan)).toEqual({ valid: true, diagnostics: [] });
+    const hostBinding = plan.bindings.find(({ kind }) => kind === 'hostEnvironment');
+    expect(hostBinding).toMatchObject({
+      owner: 'authority:host-environment',
+      sensitivity: 'sensitive',
+      sourceEnvironment: 'DECLARED_STRIPE_KEY',
+    });
+    expect(hostBinding).not.toHaveProperty('value');
+    const host = plan.resources.find(({ id }) => id === 'process:server.web');
+    const processor = plan.resources.find(({ id }) => id === 'runtime:processor:processor.events');
+    expect(host).toMatchObject({
+      kind: 'process',
+      environment: expect.arrayContaining([
+        { name: 'APPLIK8S_PAYMENT_PROVIDER_KIND', binding: 'literal:stripe' },
+        { name: 'APPLIK8S_PAYMENT_API_KEY', binding: hostBinding?.id },
+      ]),
+    });
+    expect(JSON.stringify(processor)).not.toContain('APPLIK8S_PAYMENT_API_KEY');
+    expect(serializeLocalSupervisorPlan(plan)).not.toContain('a-secret-value');
+  });
+
   it('hydrates only declared generated-runtime endpoints and orders the caller after its receiver', () => {
     const graph = applicationGraph();
     const endpointEnvironmentName = applicationRuntimeEndpointEnvironmentName('gateway.internal');

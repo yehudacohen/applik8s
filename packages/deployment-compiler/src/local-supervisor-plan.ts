@@ -30,6 +30,7 @@ import { compileApplicationPlan } from './application-plan.js';
 import { compileApplicationAwsDeploymentPlan } from './aws-deployment-plan.js';
 import { applicationProviderGuaranteesForGraph, assertApplicationScheduleProviderCompatibility } from './provider-guarantees.js';
 import { resolveApplicationProviderForTarget } from './providers.js';
+import type { ApplicationGeneratedSecretRequirement } from './types.js';
 import { applicationWorkloadDependencyNodeIds, applicationWorkloadProviderNodeIds } from './workload-provider-references.js';
 
 export interface CompileLocalSupervisorPlanRequest {
@@ -39,6 +40,11 @@ export interface CompileLocalSupervisorPlanRequest {
   readonly projectDigest: string;
   readonly projectDirectory?: string;
   readonly installationSpec?: JsonObject;
+  /**
+   * Compiler-derived credential requirements shared with production targets.
+   * Local planning consumes only hostEnvironment sources and never their values.
+   */
+  readonly generatedSecrets?: readonly ApplicationGeneratedSecretRequirement[];
   readonly webCommand?: { readonly command: string; readonly args: readonly string[] };
   /** Compiler-emitted Node entrypoints that run the graph's background boundaries locally. */
   readonly runtimeArtifacts?: readonly ApplicationLocalRuntimeArtifact[];
@@ -128,6 +134,14 @@ export function compileLocalSupervisorPlan(request: CompileLocalSupervisorPlanRe
     bindings.push(...lowered.bindings);
   }
 
+  const hostEnvironmentCredentials = localHostEnvironmentCredentialAuthority(
+    request.generatedSecrets ?? [],
+  );
+  if (hostEnvironmentCredentials) {
+    resources.push(hostEnvironmentCredentials.resource);
+    bindings.push(...hostEnvironmentCredentials.bindings);
+  }
+
   const frameworkCredentials = localFrameworkCredentialAuthority(request.graph, request.runtimeArtifacts ?? []);
   if (frameworkCredentials) {
     resources.push(frameworkCredentials.resource);
@@ -201,6 +215,7 @@ export function compileLocalSupervisorPlan(request: CompileLocalSupervisorPlanRe
       request,
       workloadProviders,
       bindings,
+      diagnostics,
     );
     const portBinding = `port:${artifactId}:http`;
     const process: LocalSupervisorProcess = {
@@ -281,6 +296,7 @@ export function compileLocalSupervisorPlan(request: CompileLocalSupervisorPlanRe
       request,
       workloadProviders,
       bindings,
+      diagnostics,
     );
     const sourceFile = server?.sourceLocation?.file ?? managedHost?.sourceLocation?.file;
     const observabilityProvider = workloadProviders.find(({ interface: providerInterface }) => providerInterface === 'Observability');
@@ -766,6 +782,81 @@ function localFrameworkCredentialAuthority(
   };
 }
 
+interface LocalHostEnvironmentCredential {
+  readonly secretName: string;
+  readonly key: string;
+  readonly sourceEnvironment: string;
+  readonly binding: string;
+}
+
+function localHostEnvironmentCredentialAuthority(
+  generatedSecrets: readonly ApplicationGeneratedSecretRequirement[],
+): {
+  readonly resource: LocalSupervisorResource;
+  readonly bindings: readonly LocalSupervisorBinding[];
+} | undefined {
+  const sources = localHostEnvironmentCredentials(generatedSecrets);
+  if (sources.length === 0) return undefined;
+  const id = 'authority:host-environment';
+  return {
+    resource: {
+      id,
+      kind: 'external',
+      provider: 'operation-host-environment',
+      responsibility: 'The operation host supplies only explicitly declared variable names. Values never enter the local plan, state, logs, or generated credential store.',
+      dependsOn: [],
+      lifecycle: { ownership: 'external', retention: 'external' },
+      health: { kind: 'external', timeoutMs: 1_000 },
+      provenance: { graphNodeId: 'framework.hostEnvironment' },
+    },
+    bindings: sources.map((source) => ({
+      id: source.binding,
+      owner: id,
+      kind: 'hostEnvironment',
+      sensitivity: 'sensitive',
+      sourceEnvironment: source.sourceEnvironment,
+    })),
+  };
+}
+
+function localHostEnvironmentCredentials(
+  generatedSecrets: readonly ApplicationGeneratedSecretRequirement[],
+): readonly LocalHostEnvironmentCredential[] {
+  const candidates: Array<Omit<LocalHostEnvironmentCredential, 'binding'>> = [];
+  for (const requirement of generatedSecrets) {
+    for (const [key, value] of Object.entries(requirement.values)) {
+      if (value.kind !== 'hostEnvironment') continue;
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/u.test(value.name)) {
+        throw new Error(`Generated Secret ${requirement.namespace}/${requirement.name}/${key} has invalid host environment variable ${value.name}.`);
+      }
+      candidates.push({
+        secretName: requirement.name,
+        key,
+        sourceEnvironment: value.name,
+      });
+    }
+  }
+  const bySecretKey = new Map<string, Omit<LocalHostEnvironmentCredential, 'binding'>>();
+  for (const candidate of candidates) {
+    const key = localSecretKey(candidate.secretName, candidate.key);
+    const prior = bySecretKey.get(key);
+    if (prior && prior.sourceEnvironment !== candidate.sourceEnvironment) {
+      throw new Error(`Local host environment maps Secret ${candidate.secretName}/${candidate.key} to both ${prior.sourceEnvironment} and ${candidate.sourceEnvironment}.`);
+    }
+    bySecretKey.set(key, candidate);
+  }
+  return [...bySecretKey.values()]
+    .map((candidate) => ({
+      ...candidate,
+      binding: `host-environment:${sha256Hex(`${candidate.secretName}\0${candidate.key}\0${candidate.sourceEnvironment}`).slice(0, 24)}`,
+    }))
+    .sort((left, right) => left.binding.localeCompare(right.binding));
+}
+
+function localSecretKey(secretName: string, key: string): string {
+  return `${secretName}\0${key}`;
+}
+
 function awsLocalRuntimeEnvironment(
   plan: ApplicationAwsDeploymentPlan,
   workloadNodeId: string,
@@ -945,6 +1036,7 @@ function localRuntimeEnvironment(
   request: CompileLocalSupervisorPlanRequest,
   providers: readonly ApplicationProviderNode[],
   declaredBindings: readonly LocalSupervisorBinding[],
+  diagnostics: LocalSupervisorDiagnostic[],
 ): readonly LocalSupervisorProcess['environment'][number][] {
   const environment: LocalSupervisorProcess['environment'][number][] = [];
   const add = (name: string, entry: { readonly binding: string } | { readonly template: readonly LocalSupervisorEnvironmentSegment[] }): void => {
@@ -954,6 +1046,33 @@ function localRuntimeEnvironment(
     providers.find((candidate) => candidate.id === preferredNodeId)
     ?? providers.find((candidate) => candidate.interface === providerInterface);
   const bindingExists = (id: string): boolean => declaredBindings.some((candidate) => candidate.id === id);
+  const providerIds = new Set(providers.map(({ id }) => id));
+  const hostCredentials = new Map(
+    localHostEnvironmentCredentials(request.generatedSecrets ?? [])
+      .map((credential) => [localSecretKey(credential.secretName, credential.key), credential]),
+  );
+  for (const binding of request.graph.providerBindings.filter(({ provider: providerRef }) => providerIds.has(providerRef.nodeId))) {
+    for (const [name, value] of Object.entries(binding.runtime.env ?? {})) {
+      if (typeof value === 'string' && !value.includes('${')) add(name, { binding: `literal:${value}` });
+    }
+    for (const [name, secretBinding] of Object.entries(binding.runtime.secretEnv ?? {})) {
+      const secretName = secretBinding.secret.name;
+      const key = secretBinding.key;
+      if (typeof secretName !== 'string' || typeof key !== 'string') {
+        diagnostics.push({
+          severity: 'error',
+          code: 'LOCAL_PROVIDER_UNRESOLVED',
+          message: `Local callable provider ${binding.provider.nodeId} has a non-concrete Secret binding for ${name}.`,
+          subjectId: binding.provider.nodeId,
+        });
+        continue;
+      }
+      const hostCredential = hostCredentials.get(localSecretKey(secretName, key));
+      if (hostCredential && bindingExists(hostCredential.binding)) {
+        add(name, { binding: hostCredential.binding });
+      }
+    }
+  }
   const databaseProviders = new Map<string, ApplicationProviderNode>();
   const postgresModels = request.graph.nodes.filter((node): node is Extract<ApplicationGraphNode, { kind: 'model' }> => node.kind === 'model' && node.runtime?.provider === 'postgres');
   for (const model of postgresModels) {

@@ -1,9 +1,10 @@
 // typecast-file-boundary: Persisted supervisor records and driver output are validated at this process boundary.
+
+import { spawn } from 'node:child_process';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { access, chmod, mkdir, open, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { createServer as createTcpServer, Socket, type Server as TcpServer } from 'node:net';
 import { join, resolve } from 'node:path';
-import { spawn } from 'node:child_process';
 import {
   digestLocalSupervisorPlan,
   type LocalSupervisorBinding,
@@ -45,6 +46,12 @@ export interface LocalSupervisorOptions {
   readonly stopOnAbort?: boolean;
   readonly allocatePort?: () => Promise<number>;
   readonly lifecycle?: LocalSupervisorLifecycle;
+  /**
+   * Operation-host environment used only to resolve explicitly declared
+   * hostEnvironment bindings and the minimal child toolchain environment.
+   * Defaults to process.env; undeclared names are never forwarded.
+   */
+  readonly hostEnvironment?: Readonly<Record<string, string | undefined>>;
 }
 
 export interface LocalSupervisorLifecycleContext {
@@ -96,11 +103,13 @@ export async function startLocalSupervisor(
   if (!validation.valid) {
     throw new Error(validation.diagnostics.map(({ code, message }) => `${code}: ${message}`).join('\n'));
   }
+  const hostEnvironment = options.hostEnvironment ?? process.env;
+  const hostEnvironmentValues = resolveHostEnvironmentBindings(plan, hostEnvironment);
   const stateDirectory = options.stateRoot
     ?? resolve(io.cwd, '.applik8s', 'local', plan.target, safePathSegment(plan.projectDigest));
   await mkdir(stateDirectory, { recursive: true });
   const lease = await acquireLocalSupervisorLease(stateDirectory);
-  const driver = options.driver ?? nodeLocalSupervisorDriver(io);
+  const driver = options.driver ?? nodeLocalSupervisorDriver(io, hostEnvironment);
   const statePath = join(stateDirectory, 'state.json');
   const secretsPath = join(stateDirectory, 'credentials.json');
   const prior = await readSupervisorState(statePath);
@@ -108,7 +117,7 @@ export async function startLocalSupervisor(
 
   const secretValues = await resolveSecretBindings(plan.bindings, secretsPath);
   const publicBindings = await resolvePublicBindings(plan, options.allocatePort ?? availablePort);
-  const allBindings: Record<string, string | number> = { ...publicBindings, ...secretValues };
+  const allBindings: Record<string, string | number> = { ...publicBindings, ...secretValues, ...hostEnvironmentValues };
   const started: LocalSupervisorDriverResource[] = [];
   const startedAt = new Date().toISOString();
   try {
@@ -259,13 +268,35 @@ async function resolveSecretBindings(bindings: readonly LocalSupervisorBinding[]
   return next;
 }
 
+function resolveHostEnvironmentBindings(
+  plan: LocalSupervisorPlan,
+  environment: Readonly<Record<string, string | undefined>>,
+): Record<string, string> {
+  const resolved: Record<string, string> = {};
+  const referenced = new Set(plan.resources.flatMap((resource) =>
+    resource.kind === 'external'
+      ? []
+      : resource.environment.flatMap((entry) => 'binding' in entry
+        ? [entry.binding]
+        : entry.template.flatMap((segment) => segment.kind === 'binding' ? [segment.binding] : []))));
+  for (const binding of plan.bindings.filter(({ kind, id }) => kind === 'hostEnvironment' && referenced.has(id))) {
+    const source = binding.sourceEnvironment;
+    const value = source ? environment[source] : undefined;
+    if (!source || typeof value !== 'string' || value.length === 0) {
+      throw new Error(`Required host environment variable ${source ?? '<invalid>'} for local binding ${binding.id} is unavailable.`);
+    }
+    resolved[binding.id] = value;
+  }
+  return resolved;
+}
+
 async function writeCredentialBindings(
   path: string,
   plan: LocalSupervisorPlan,
   bindings: Readonly<Record<string, string | number>>,
 ): Promise<void> {
   const sensitive = Object.fromEntries(plan.bindings
-    .filter(({ sensitivity }) => sensitivity === 'sensitive')
+    .filter(({ sensitivity, kind }) => sensitivity === 'sensitive' && kind !== 'hostEnvironment')
     .flatMap(({ id }) => typeof bindings[id] === 'string' ? [[id, bindings[id]]] : []));
   await writeFileAtomic(path, `${JSON.stringify(sensitive, null, 2)}\n`, 0o600);
 }
@@ -401,13 +432,20 @@ function topologicalLocalResources(resources: readonly LocalSupervisorResource[]
   return ordered;
 }
 
-function nodeLocalSupervisorDriver(io: LocalSupervisorIo): LocalSupervisorDriver {
+function nodeLocalSupervisorDriver(
+  io: LocalSupervisorIo,
+  hostEnvironment: Readonly<Record<string, string | undefined>> = process.env,
+): LocalSupervisorDriver {
   return {
     async startProcess(resource, environment) {
       const args = environment.PORT && resource.command === 'bun' && resource.args[0] === 'run'
         ? [...resource.args, '--port', environment.PORT]
         : [...resource.args];
-      const child = spawn(resource.command, args, { cwd: resource.cwd, env: { ...process.env, ...environment }, stdio: 'inherit' });
+      const child = spawn(resource.command, args, {
+        cwd: resource.cwd,
+        env: { ...localProcessToolchainEnvironment(hostEnvironment), ...environment },
+        stdio: 'inherit',
+      });
       if (!child.pid) throw new Error(`Local process ${resource.id} failed to start.`);
       return { resourceId: resource.id, runtimeId: String(child.pid), kind: 'process', pid: child.pid };
     },
@@ -463,6 +501,37 @@ function nodeLocalSupervisorDriver(io: LocalSupervisorIo): LocalSupervisorDriver
       throw new Error(`Local resource ${resource.id} did not become healthy within ${resource.health.timeoutMs}ms: ${errorMessage(last)}`);
     },
   };
+}
+
+const localProcessToolchainEnvironmentNames = [
+  'PATH',
+  'HOME',
+  'USER',
+  'LOGNAME',
+  'SHELL',
+  'TMPDIR',
+  'TMP',
+  'TEMP',
+  'LANG',
+  'LC_ALL',
+  'TZ',
+  'TERM',
+  'COLORTERM',
+  'NO_COLOR',
+  'FORCE_COLOR',
+  'SystemRoot',
+  'WINDIR',
+  'ComSpec',
+  'PATHEXT',
+] as const;
+
+function localProcessToolchainEnvironment(
+  environment: Readonly<Record<string, string | undefined>>,
+): Record<string, string> {
+  return Object.fromEntries(localProcessToolchainEnvironmentNames.flatMap((name) => {
+    const value = environment[name];
+    return typeof value === 'string' ? [[name, value]] : [];
+  }));
 }
 
 function healthEndpoint(resource: LocalSupervisorResource, bindings: Readonly<Record<string, string | number>>): string | undefined {

@@ -1,14 +1,14 @@
 // typecast-file-boundary: Supervisor fixtures preserve exact plan discriminants and inspect optional binding arrays after asserting their fixture shape.
 import { createHash } from 'node:crypto';
-import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { LocalSupervisorPlan } from '@applik8s/deployment-contract';
 import { describe, expect, it } from 'vitest';
+import { readLocalRuntimeArtifacts } from '../src/local-development-command.js';
 import {
   type LocalSupervisorDriver,
   startLocalSupervisor,
 } from '../src/local-supervisor.js';
-import { readLocalRuntimeArtifacts } from '../src/local-development-command.js';
 
 describe('local supervisor', () => {
   it('admits only digest-verified compiler runtime artifacts inside the build root', async () => {
@@ -163,7 +163,84 @@ describe('local supervisor', () => {
     await expect(startLocalSupervisor(plan(), io, { driver, stateRoot: join(root, 'state'), allocatePort: portBroker() })).rejects.toThrow('web failed health');
     expect(events).toEqual(expect.arrayContaining(['stop:runtime:web', 'stop:runtime:database']));
   });
+
+  it('forwards declared host credentials without leaking unrelated ambient variables or persisting values', async () => {
+    const root = await mkdtemp(join(process.env.TMPDIR ?? '/tmp', 'applik8s-local-environment-'));
+    const output = join(root, 'environment.json');
+    const io = { cwd: root, stdout() {}, stderr() {} };
+    const isolatedPlan = hostEnvironmentPlan(root, output);
+    const hostEnvironment = {
+      PATH: process.env.PATH,
+      HOME: process.env.HOME,
+      DECLARED_CREDENTIAL: 'declared-value',
+      UNDECLARED_CREDENTIAL: 'must-not-cross-boundary',
+    };
+
+    await expect(startLocalSupervisor(isolatedPlan, io, {
+      stateRoot: join(root, 'missing-state'),
+      hostEnvironment: { PATH: process.env.PATH, HOME: process.env.HOME },
+    })).rejects.toThrow(/DECLARED_CREDENTIAL.*unavailable/u);
+
+    const session = await startLocalSupervisor(isolatedPlan, io, {
+      stateRoot: join(root, 'state'),
+      hostEnvironment,
+    });
+    const observed = await readJsonEventually(output);
+    expect(observed).toEqual({ declared: 'declared-value', pathPresent: true });
+    expect(JSON.stringify(session.state)).not.toContain('declared-value');
+    expect(JSON.stringify(session.state)).not.toContain('must-not-cross-boundary');
+    const credentials = await readFile(join(root, 'state', 'credentials.json'), 'utf8');
+    expect(credentials).not.toContain('declared-value');
+    expect(credentials).not.toContain('must-not-cross-boundary');
+    await session.stop();
+  });
 });
+
+async function readJsonEventually(path: string): Promise<unknown> {
+  let last: unknown;
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    try {
+      return JSON.parse(await readFile(path, 'utf8'));
+    } catch (cause) {
+      last = cause;
+      await new Promise((resolveWait) => setTimeout(resolveWait, 10));
+    }
+  }
+  throw last;
+}
+
+function hostEnvironmentPlan(root: string, output: string): LocalSupervisorPlan {
+  return {
+    apiVersion: 'applik8s.localSupervisor/v1alpha1',
+    application: 'environment-isolation',
+    target: 'local',
+    profile: 'developer',
+    projectDigest: 'sha256:environment-isolation',
+    diagnostics: [],
+    bindings: [{
+      id: 'host-environment:declared',
+      owner: 'authority:host-environment',
+      kind: 'hostEnvironment',
+      sensitivity: 'sensitive',
+      sourceEnvironment: 'DECLARED_CREDENTIAL',
+    }],
+    resources: [
+      {
+        id: 'authority:host-environment', kind: 'external', provider: 'operation-host-environment', responsibility: 'test authority',
+        dependsOn: [], lifecycle: { ownership: 'external', retention: 'external' }, health: { kind: 'external', timeoutMs: 100 },
+        provenance: { graphNodeId: 'framework.hostEnvironment' },
+      },
+      {
+        id: 'probe', kind: 'process', command: process.execPath,
+        args: ['-e', `require('node:fs').writeFileSync(process.argv[1], JSON.stringify({ declared: process.env.DECLARED, leaked: process.env.UNDECLARED_CREDENTIAL, pathPresent: Boolean(process.env.PATH) })); setInterval(() => {}, 1000);`, output],
+        cwd: root,
+        environment: [{ name: 'DECLARED', binding: 'host-environment:declared' }],
+        watch: [], reloadGroup: 'probe', dependsOn: [], lifecycle: { ownership: 'application', retention: 'ephemeral' },
+        health: { kind: 'process', timeoutMs: 1_000 }, provenance: { graphNodeId: 'probe' },
+      },
+    ],
+  };
+}
 
 function fakeDriver(events: string[], failHealth?: string): LocalSupervisorDriver {
   return {
