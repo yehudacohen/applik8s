@@ -3,6 +3,7 @@ import { type ApplicationGraph, applicationRuntimeAccessRequirement, deriveAppli
 import type { ApplicationAwsPlanResource, DeploymentJsonObject } from '@applik8s/deployment-contract';
 import { describe, expect, it } from 'vitest';
 import {
+  compileApplicationDeploymentGraph,
   compileApplicationRuntimeAccessPlan,
   validateAwsRuntimeAccessParity,
   validateKubernetesRuntimeAccessParity,
@@ -56,6 +57,7 @@ describe('v0.8 runtime-access lowering', () => {
         executionNodeIds: ['operator.notes'],
         kubernetes: {
           resource: { apiVersion: 'apps/v1', kind: 'Deployment', namespace: 'notes', name: 'notes-operator' },
+          podSelector: { 'app.kubernetes.io/name': 'notes-operator' },
           serviceAccountName: 'notes-runtime',
         },
       }],
@@ -151,6 +153,121 @@ describe('v0.8 runtime-access lowering', () => {
     expect(aws.executions[0]?.aws?.statements).toEqual([]);
   });
 
+  it('classifies only an explicit provider-owned external endpoint as non-private egress', () => {
+    const graph = externalPaymentAccessGraph();
+    const plan = compileApplicationRuntimeAccessPlan({
+      graph,
+      target: 'kubernetes',
+      targetResources: {
+        'provider.payments': {
+          networkKind: 'external',
+          networkProtocol: 'TCP',
+          networkPort: 443,
+          networkExternalDestination: { kind: 'dnsName', hostname: 'api.stripe.com' },
+          networkExternalFidelity: 'port-only',
+        },
+      },
+    });
+    const externalRequirementIds = plan.executions[0]?.requirements
+      .filter(({ target }) => target.operation === 'network.connect' || target.operation === 'connection.use')
+      .map(({ id }) => id)
+      .sort();
+    expect(plan.executions[0]?.kubernetes).toMatchObject({
+      privatePeers: [],
+      bootstrapEgress: [],
+      externalEgress: [{
+        capabilityId: 'provider.payments',
+        protocol: 'TCP',
+        port: 443,
+        destination: { kind: 'dnsName', hostname: 'api.stripe.com' },
+        fidelity: 'port-only',
+        requirementIds: externalRequirementIds,
+      }],
+      networkConnections: [],
+    });
+    expect(plan.executions[0]?.lowerings).toContainEqual(expect.objectContaining({
+      operation: 'network.connect',
+      fidelity: 'external',
+      mechanisms: ['external-contract'],
+    }));
+
+    const opaque = compileApplicationRuntimeAccessPlan({
+      graph,
+      target: 'kubernetes',
+      targetResources: {
+        'provider.payments': {
+          networkKind: 'external',
+          networkProtocol: 'TCP',
+          networkExternalDestination: { kind: 'externalContract', responsibility: 'adapter-owned endpoint' },
+          networkExternalFidelity: 'not-introspectable',
+        },
+      },
+    });
+    expect(opaque.executions[0]?.kubernetes?.externalEgress).toEqual([
+      expect.objectContaining({
+        destination: { kind: 'externalContract', responsibility: 'adapter-owned endpoint' },
+        fidelity: 'not-introspectable',
+      }),
+    ]);
+    expect(JSON.stringify(opaque)).not.toContain('0.0.0.0/0');
+  });
+
+  it('derives Stripe external egress from the reviewed provider adapter rather than provider-config scanning', () => {
+    const graph = externalPaymentAccessGraph();
+    const result = compileApplicationDeploymentGraph({
+      graph,
+      sourceGraphDigest: `sha256:${'a'.repeat(64)}`,
+      compilerVersion: '0.8.0',
+      identity: {
+        connection: { provider: 'kubernetes', cluster: 'orbstack', digest: `sha256:${'b'.repeat(64)}` },
+        application: 'payments',
+        controlPlaneNamespace: 'applik8s-system',
+        instance: 'payments',
+        profile: 'dedicated',
+      },
+      strategy: 'kro',
+      installationSpec: { name: 'payments', profile: 'dedicated', providers: { payments: { secretName: 'payments' } } },
+      artifacts: [{
+        id: 'artifact.billing',
+        artifactType: 'containerImage',
+        name: 'billing',
+        sourceDigest: `sha256:${'c'.repeat(64)}`,
+        sourceDescriptor: { context: './billing' },
+        logicalReference: 'applik8s/payments-billing:source',
+        executionNodeIds: ['server.billing'],
+      }],
+      materializedComposition: {
+        resources: [{
+          apiVersion: 'apps/v1',
+          kind: 'Deployment',
+          metadata: { name: 'billing', namespace: 'payments' },
+          spec: { template: {
+            metadata: { labels: { 'app.kubernetes.io/name': 'billing' } },
+            spec: { containers: [{
+              name: 'billing',
+              image: 'applik8s/payments-billing:source',
+              env: [{ name: 'APPLIK8S_CONTEXT_KEY', valueFrom: { secretKeyRef: { name: 'payments-context', key: 'key' } } }],
+            }] },
+          } },
+        }],
+        status: {},
+      },
+    });
+    expect(result.runtimeAccess.executions[0]?.kubernetes?.externalEgress).toEqual([
+      expect.objectContaining({
+        capabilityId: 'provider.payments',
+        destination: { kind: 'dnsName', hostname: 'api.stripe.com' },
+        protocol: 'TCP',
+        port: 443,
+        fidelity: 'port-only',
+      }),
+    ]);
+    expect(result.runtimeAccess.executions[0]?.kubernetes?.bootstrapEgress).toEqual([
+      expect.objectContaining({ purpose: 'dns', protocol: 'TCP', port: 53 }),
+      expect.objectContaining({ purpose: 'dns', protocol: 'UDP', port: 53 }),
+    ]);
+  });
+
   it('separates cross-namespace Roles from cluster-scoped access without broadening either', () => {
     const plan = compileApplicationRuntimeAccessPlan({
       graph: kubernetesScopeGraph(),
@@ -187,6 +304,7 @@ describe('v0.8 runtime-access lowering', () => {
         executionNodeIds: ['operator.scopes'],
         kubernetes: {
           resource: { apiVersion: 'apps/v1', kind: 'Deployment', namespace: 'control-plane', name: 'scopes' },
+          podSelector: { 'app.kubernetes.io/name': 'scopes' },
           serviceAccountName: 'scopes',
         },
       }],
@@ -230,6 +348,7 @@ describe('v0.8 runtime-access lowering', () => {
         executionNodeIds: ['operator.notes'],
         kubernetes: {
           resource: { apiVersion: 'apps/v1', kind: 'Deployment', namespace: 'notes', name: 'notes' },
+          podSelector: { 'app.kubernetes.io/name': 'notes' },
           serviceAccountName: 'notes',
         },
       }],
@@ -567,6 +686,78 @@ function serverObservability() {
     sourceMaps: 'required' as const,
     replayArtifacts: [],
     diagnosticsArtifact: { kind: 'routeDiagnostics' as const, name: 'api-diagnostics' },
+  };
+}
+
+function externalPaymentAccessGraph(): ApplicationGraph {
+  return {
+    ...emptyGraph('payments'),
+    metadata: { name: 'payments', namespace: 'payments' },
+    nodes: [
+      {
+        id: 'provider.payments',
+        kind: 'provider',
+        name: 'payments',
+        stability: 'stable',
+        interface: 'PaymentProvider',
+        implementation: 'stripe',
+        config: {
+          callableRuntime: {
+            kind: 'runtime',
+            runtime: { module: '@applik8s/billing/runtime', export: 'startPaymentCheckout' },
+          },
+        },
+      },
+      {
+        id: 'server.billing',
+        kind: 'server',
+        name: 'billing',
+        stability: 'stable',
+        routes: [{
+          id: 'checkout',
+          method: 'POST',
+          path: '/checkout',
+          diagnostics: routeDiagnostics(),
+          functionNative: {
+            input: declaredSchema(),
+            output: declaredSchema(),
+            handler: { source: 'async input => input' },
+            providerBindings: [{
+              identifier: 'payments.startCheckout',
+              provider: { interface: 'PaymentProvider', nodeId: 'provider.payments' },
+              operation: {
+                member: 'startCheckout',
+                runtime: {
+                  module: '@applik8s/billing/runtime',
+                  export: 'startPaymentCheckout',
+                  access: { kind: 'provider', operations: ['network.connect'] },
+                },
+              },
+            }],
+            idempotency: { source: 'http-idempotency-key', contextScoped: true },
+            requestBoundary: { durableValues: 'schema-normalized-only', rawRequestCapture: 'rejected', principal: 'framework-authenticated' },
+          },
+        }],
+        resources: [],
+        indexes: [],
+        observability: serverObservability(),
+      },
+    ],
+    providerRequirements: [{
+      id: 'requirement.payments',
+      interface: 'PaymentProvider',
+      consumer: { nodeId: 'server.billing' },
+      provider: { interface: 'PaymentProvider', nodeId: 'provider.payments' },
+      required: true,
+      purpose: 'checkout',
+      diagnostics: { missing: 'missing', ambiguous: 'ambiguous' },
+    }],
+    providerBindings: [{
+      requirement: 'requirement.payments',
+      provider: { interface: 'PaymentProvider', nodeId: 'provider.payments' },
+      generatedResources: [],
+      runtime: {},
+    }],
   };
 }
 

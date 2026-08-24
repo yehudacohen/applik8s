@@ -15,6 +15,7 @@ import {
 } from "@applik8s/deployment-contract";
 import { assertApplicationScheduleProviderCompatibility } from './provider-guarantees.js';
 import {
+  applicationDeploymentRuntimeAccessTargetRecord,
   applicationProviderSelectionDeploymentContributor,
   builtinApplicationDeploymentContributors,
 } from "./providers.js";
@@ -126,6 +127,9 @@ export function compileApplicationDeploymentGraph(
       ? request.graph.metadata.namespace
       : request.identity.instance,
     targetResources: runtimeAccessTargets,
+    bootstrapEgress: request.runtimeAccessBootstrapEgress ?? (context.target === 'kubernetes'
+      ? kubernetesDnsBootstrapEgress()
+      : []),
     credentialRequirements: generatedSecretRequirements.flatMap((secret) =>
       runtimeCredentialConsumerNodeIds(request.graph, secret.consumers).map((consumerNodeId) => ({
         consumerNodeId,
@@ -241,18 +245,27 @@ export function compileApplicationDeploymentGraph(
   };
 }
 
+function kubernetesDnsBootstrapEgress() {
+  const endpoint = {
+    target: 'kubernetes' as const,
+    namespace: 'kube-system',
+    podSelector: { 'k8s-app': 'kube-dns' },
+  };
+  return (['TCP', 'UDP'] as const).map((protocol) => ({
+    egressIdentity: `bootstrap.kubernetes.dns.${protocol.toLowerCase()}`,
+    purpose: 'dns' as const,
+    protocol,
+    port: 53,
+    endpoint,
+  }));
+}
+
 function runtimeAccessTargetResources(
   contributions: readonly ApplicationDeploymentContribution[],
 ): Readonly<Record<string, Readonly<Record<string, unknown>>>> {
   const targets = new Map<string, Readonly<Record<string, unknown>>>();
   for (const target of contributions.flatMap((contribution) => contribution.runtimeAccessTargets ?? [])) {
-    const value = {
-      networkNamespace: target.namespace,
-      networkServiceName: target.serviceName,
-      networkPodSelector: target.podSelector,
-      networkProtocol: target.protocol,
-      networkPort: target.port,
-    };
+    const value = applicationDeploymentRuntimeAccessTargetRecord(target);
     const previous = targets.get(target.capabilityId);
     if (previous && JSON.stringify(previous) !== JSON.stringify(value)) {
       throw new Error(`Runtime-access target ${target.capabilityId} has conflicting provider-owned endpoint identities.`);
@@ -287,6 +300,8 @@ function kubernetesRuntimeAccessWorkloadPlacements(
     const template = kubernetesPodTemplate(resource, workloadKind);
     if (!name || !template) return [];
     const podSpec = portableRecord(template.spec);
+    const podSelector = portableStringRecord(portableRecord(template.metadata)?.labels);
+    if (!podSelector || Object.keys(podSelector).length === 0) return [];
     const images = Array.isArray(podSpec?.containers)
       ? podSpec.containers.flatMap((container) => {
           const value = portableRecord(container)?.image;
@@ -306,6 +321,7 @@ function kubernetesRuntimeAccessWorkloadPlacements(
       executionNodeIds,
       kubernetes: {
         resource: { apiVersion, kind: workloadKind, namespace, name },
+        podSelector,
         serviceAccountName: typeof podSpec?.serviceAccountName === 'string' && podSpec.serviceAccountName
           ? podSpec.serviceAccountName
           : 'default',
@@ -327,6 +343,12 @@ function portableRecord(value: unknown): Readonly<Record<string, unknown>> | und
   return value && typeof value === 'object' && !Array.isArray(value)
     ? value as Readonly<Record<string, unknown>>
     : undefined;
+}
+
+function portableStringRecord(value: unknown): Readonly<Record<string, string>> | undefined {
+  const record = portableRecord(value);
+  if (!record || Object.values(record).some((entry) => typeof entry !== 'string')) return undefined;
+  return record as Readonly<Record<string, string>>;
 }
 
 function requiredSourceGraphDigest(value: string): `sha256:${string}` {

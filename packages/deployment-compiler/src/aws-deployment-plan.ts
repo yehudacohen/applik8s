@@ -16,6 +16,7 @@ import {
   type ApplicationAwsPlanResource,
   type ApplicationAwsService,
   type ApplicationRuntimeArtifact,
+  type ApplicationRuntimeAccessBootstrapEgress,
   applicationRuntimeArtifactId,
   applicationRuntimeEndpointEnvironmentName,
   type DeploymentJsonObject,
@@ -25,7 +26,11 @@ import {
   validateApplicationAwsDeploymentPlan,
 } from '@applik8s/deployment-contract';
 import { assertApplicationScheduleProviderCompatibility } from './provider-guarantees.js';
-import { resolveApplicationProviderForTarget } from './providers.js';
+import {
+  applicationDeploymentRuntimeAccessTargetRecord,
+  applicationProviderRuntimeAccessTargets,
+  resolveApplicationProviderForTarget,
+} from './providers.js';
 import { validateAwsRuntimeAccessParity } from './aws-runtime-access-parity.js';
 import {
   type ApplicationRuntimeAccessWorkloadPlacement,
@@ -296,6 +301,9 @@ export function compileApplicationAwsDeploymentPlan(request: CompileApplicationA
     profile: request.profile ?? request.environment,
     ...(request.workspaceRoot ? { workspaceRoot: request.workspaceRoot } : {}),
     targetResources: awsRuntimeAccessBindings(request.graph, resources, request),
+    bootstrapEgress: resources.has('foundation.network')
+      ? awsDnsBootstrapEgress(request.target ?? 'aws')
+      : [],
     workloadPlacements,
     ...(includedExecutionNodeIds ? { includedExecutionNodeIds } : {}),
   });
@@ -1284,6 +1292,20 @@ function awsRuntimeAccessBindings(
     }
     else if (provider.interface === 'Secret' || provider.interface === 'CredentialStore') bindings[provider.id] = { secretArn: `output://provider.${provider.id}/secretArn` };
     else if (provider.interface === 'Observability') bindings[provider.id] = { logGroupArn: `arn:aws:logs:${request.region}:${request.accountId}:log-group:/applik8s/${graph.metadata.name}/${request.environment}:*`, traceDestinationArn: `arn:aws:xray:${request.region}:${request.accountId}:group/Default` };
+    for (const target of applicationProviderRuntimeAccessTargets(provider, {
+      graph,
+      target: request.target ?? 'aws',
+      connection: { provider: request.target ?? 'aws', cluster: `${request.accountId}/${request.region}`, digest: `sha256:${'0'.repeat(64)}` },
+      instance: request.environment,
+      profile: request.profile ?? request.environment,
+      strategy: 'direct',
+      installationSpec: request.installationSpec ?? {},
+    })) {
+      bindings[provider.id] = {
+        ...(bindings[provider.id] ?? {}),
+        ...applicationDeploymentRuntimeAccessTargetRecord(target),
+      };
+    }
   }
   for (const secret of [...resources.values()].filter(({ service, resourceType, semanticNodeId }) => service === 'secrets-manager' && resourceType === 'secret-authority' && semanticNodeId)) {
     if (!bindings[secret.semanticNodeId!]) bindings[secret.semanticNodeId!] = { secretArn: `output://${secret.id}/secretArn` };
@@ -1293,6 +1315,19 @@ function awsRuntimeAccessBindings(
     tableArn: `arn:aws:dynamodb:${request.region}:${request.accountId}:table/${checkpoint.physicalName}`,
   };
   return bindings;
+}
+
+function awsDnsBootstrapEgress(
+  target: 'aws' | 'aws-local',
+): readonly ApplicationRuntimeAccessBootstrapEgress[] {
+  const endpoint = { target, cidr: '10.64.0.2/32' };
+  return (['TCP', 'UDP'] as const).map((protocol) => ({
+    egressIdentity: `bootstrap.aws.dns.${protocol.toLowerCase()}`,
+    purpose: 'dns' as const,
+    protocol,
+    port: 53,
+    endpoint,
+  }));
 }
 
 function runtimeSecretEnvironmentName(secretIdentity: string, graph: ApplicationGraph): string {

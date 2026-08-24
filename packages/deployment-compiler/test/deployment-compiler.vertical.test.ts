@@ -2675,6 +2675,7 @@ function runtimeWorkloadRequest<T extends ReturnType<typeof request>>(
         metadata: { name, namespace: 'guestbook' },
         spec: {
           template: {
+            metadata: { labels: { 'app.kubernetes.io/name': name } },
             spec: { containers: [{ name: 'runtime', image, env }] },
           },
         },

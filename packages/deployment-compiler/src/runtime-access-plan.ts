@@ -16,6 +16,8 @@ import {
 } from '@applik8s/core';
 import {
   type ApplicationRuntimeAccessAwsStatement,
+  type ApplicationRuntimeAccessBootstrapEgress,
+  type ApplicationRuntimeAccessExternalEgress,
   type ApplicationRuntimeAccessExecutionPlan,
   type ApplicationRuntimeAccessKubernetesBinding,
   type ApplicationRuntimeAccessKubernetesRule,
@@ -50,6 +52,7 @@ export interface ApplicationRuntimeAccessWorkloadPlacement {
       readonly namespace: string;
       readonly name: string;
     };
+    readonly podSelector: Readonly<Record<string, string>>;
     readonly serviceAccountName: string;
   };
   readonly aws?: {
@@ -82,6 +85,8 @@ export function compileApplicationRuntimeAccessPlan(options: {
   readonly workspaceRoot?: string;
   /** Exact planned target identities keyed by semantic provider node id. */
   readonly targetResources?: Readonly<Record<string, Readonly<Record<string, unknown>>>>;
+  /** Target-owned bootstrap transports, such as the selected environment's DNS resolver. */
+  readonly bootstrapEgress?: readonly ApplicationRuntimeAccessBootstrapEgress[];
   /** Stronger target-live manifests may replace the compiler baseline. */
   readonly providerGuarantees?: readonly ApplicationProviderGuaranteeManifest[];
   /** Compiler-proven placement of executable semantic nodes into target workloads. */
@@ -168,6 +173,13 @@ export function compileApplicationRuntimeAccessPlan(options: {
     }) : [];
     const privatePeers = mergePrivatePeers(requirements.flatMap((requirement) =>
       runtimePrivatePeer(requirement, options.target, options.graph, options.targetResources)));
+    // Non-private egress is consumed only from explicit provider-adapter
+    // records. Arbitrary provider config is intentionally not inspected here.
+    const externalEgress = mergeExternalEgress(requirements.flatMap((requirement) =>
+      runtimeExternalEgress(requirement, options.graph, options.targetResources)));
+    const bootstrapEgress = privatePeers.length > 0 || externalEgress.length > 0
+      ? mergeBootstrapEgress(options.bootstrapEgress ?? [])
+      : [];
     const networkConnections = privatePeerConnections(privatePeers);
     const credentialProjections = mergeCredentialProjections(requirements
       .filter(({ target }) => target.operation === 'secret.read')
@@ -179,6 +191,8 @@ export function compileApplicationRuntimeAccessPlan(options: {
           serviceAccountName: collisionResistantKubernetesName(`${options.graph.metadata.name}-${nodeId}`, executionIdentity),
           bindings: mergeKubernetesBindings(kubernetesEntries),
           privatePeers,
+          bootstrapEgress,
+          externalEgress,
           networkConnections,
           credentialProjections,
         }
@@ -188,6 +202,8 @@ export function compileApplicationRuntimeAccessPlan(options: {
           roleName: collisionResistantAwsRoleName(`${options.graph.metadata.name}-${nodeId}`, executionIdentity),
           statements: mergeAwsStatements(awsStatements),
           privatePeers,
+          bootstrapEgress,
+          externalEgress,
           networkConnections,
         }
       : undefined;
@@ -197,6 +213,7 @@ export function compileApplicationRuntimeAccessPlan(options: {
       Boolean(kubernetesEntries.some(({ requirementId }) => requirementId === requirement.id)),
       awsStatementsForRequirement(requirement, options.graph, options.targetResources).length > 0,
       privatePeers.some((peer) => peer.requirementIds.includes(requirement.id)),
+      externalEgress.some((egress) => egress.requirementIds.includes(requirement.id)),
       requiresKubernetesRule(requirement),
       requiresAwsStatement(requirement, options.graph, options.targetResources),
       providerAccessGuarantee(requirement, options.graph, providerGuarantees),
@@ -251,14 +268,21 @@ function compileWorkloadPlans(
     const executionIdentities = [...new Set(members.map(({ executionIdentity }) => executionIdentity))].sort();
     const requirementIds = [...new Set(members.flatMap(({ requirementIds }) => requirementIds))].sort();
     const kubernetes = target === 'kubernetes' && placement.kubernetes
-      ? {
+      ? (() => {
+          const privatePeers = mergePrivatePeers(members.flatMap((member) => member.kubernetes?.privatePeers ?? []));
+          const externalEgress = mergeExternalEgress(members.flatMap((member) => member.kubernetes?.externalEgress ?? []));
+          return {
           resource: placement.kubernetes.resource,
+          podSelector: placement.kubernetes.podSelector,
           serviceAccountName: placement.kubernetes.serviceAccountName,
           bindings: mergePlannedKubernetesBindings(members.flatMap((member) => member.kubernetes?.bindings ?? [])),
-          privatePeers: mergePrivatePeers(members.flatMap((member) => member.kubernetes?.privatePeers ?? [])),
-          networkConnections: privatePeerConnections(mergePrivatePeers(members.flatMap((member) => member.kubernetes?.privatePeers ?? []))),
+          privatePeers,
+          bootstrapEgress: mergeBootstrapEgress(members.flatMap((member) => member.kubernetes?.bootstrapEgress ?? [])),
+          externalEgress,
+          networkConnections: privatePeerConnections(privatePeers),
           credentialProjections: mergeCredentialProjections(members.flatMap((member) => member.kubernetes?.credentialProjections ?? [])),
-        }
+          };
+        })()
       : undefined;
     const aws = (target === 'aws' || target === 'aws-local') && placement.aws
       ? (() => {
@@ -270,6 +294,8 @@ function compileWorkloadPlans(
           roleName: placement.aws.roleName,
           statements: mergeAwsStatements(members.flatMap((member) => member.aws?.statements ?? [])),
           privatePeers,
+          bootstrapEgress: mergeBootstrapEgress(members.flatMap((member) => member.aws?.bootstrapEgress ?? [])),
+          externalEgress: mergeExternalEgress(members.flatMap((member) => member.aws?.externalEgress ?? [])),
           networkConnections: privatePeerConnections(privatePeers),
           };
         })()
@@ -522,6 +548,46 @@ function runtimePrivatePeer(
   }];
 }
 
+function runtimeExternalEgress(
+  requirement: ApplicationRuntimeAccessRequirement,
+  graph: ApplicationGraph,
+  targetResources?: Readonly<Record<string, Readonly<Record<string, unknown>>>>,
+): readonly ApplicationRuntimeAccessExternalEgress[] {
+  const provider = providerForRequirement(requirement, graph);
+  const target = targetResources?.[requirement.target.capabilityId]
+    ?? (provider ? targetResources?.[provider.id] : undefined);
+  if (target?.networkKind !== 'external') return [];
+  if (requirement.target.operation !== 'network.connect' && requirement.target.operation !== 'connection.use') return [];
+  const protocol = target.networkProtocol === 'UDP'
+    ? 'UDP'
+    : target.networkProtocol === 'TCP' ? 'TCP' : undefined;
+  const port = target.networkPort === undefined ? undefined : numberValue(target.networkPort);
+  const fidelity = target.networkExternalFidelity === 'port-only'
+    ? 'port-only'
+    : target.networkExternalFidelity === 'not-introspectable'
+      ? 'not-introspectable'
+      : undefined;
+  const rawDestination = objectValue(target.networkExternalDestination);
+  const destination = rawDestination?.kind === 'dnsName' && typeof rawDestination.hostname === 'string' && rawDestination.hostname.length > 0
+    ? { kind: 'dnsName' as const, hostname: rawDestination.hostname }
+    : rawDestination?.kind === 'externalContract' && typeof rawDestination.responsibility === 'string' && rawDestination.responsibility.length > 0
+      ? { kind: 'externalContract' as const, responsibility: rawDestination.responsibility }
+      : undefined;
+  if (!protocol || !fidelity || !destination) return [];
+  if (port !== undefined && (!Number.isInteger(port) || port < 1 || port > 65_535)) return [];
+  const capabilityId = provider?.id ?? requirement.target.capabilityId;
+  const identityContent = { capabilityId, protocol, ...(port === undefined ? {} : { port }), destination, fidelity };
+  return [{
+    egressIdentity: `external.${sha256Hex(canonicalJsonV1String(identityContent)).slice(0, 24)}`,
+    capabilityId,
+    requirementIds: [requirement.id],
+    protocol,
+    ...(port === undefined ? {} : { port }),
+    destination,
+    fidelity,
+  }];
+}
+
 function mergePrivatePeers(
   peers: readonly ApplicationRuntimeAccessPrivatePeer[],
 ): readonly ApplicationRuntimeAccessPrivatePeer[] {
@@ -547,6 +613,26 @@ function privatePeerConnections(peers: readonly ApplicationRuntimeAccessPrivateP
   return uniqueStrings(peers.map(({ endpoint }) => endpoint.target === 'kubernetes'
     ? `${endpoint.namespace}/${endpoint.serviceName}`
     : endpoint.resourceId));
+}
+
+function mergeExternalEgress(
+  entries: readonly ApplicationRuntimeAccessExternalEgress[],
+): readonly ApplicationRuntimeAccessExternalEgress[] {
+  const merged = new Map<string, ApplicationRuntimeAccessExternalEgress>();
+  for (const entry of entries) {
+    const current = merged.get(entry.egressIdentity);
+    merged.set(entry.egressIdentity, {
+      ...entry,
+      requirementIds: uniqueStrings([...(current?.requirementIds ?? []), ...entry.requirementIds]),
+    });
+  }
+  return [...merged.values()].sort(compareCanonical);
+}
+
+function mergeBootstrapEgress(
+  entries: readonly ApplicationRuntimeAccessBootstrapEgress[],
+): readonly ApplicationRuntimeAccessBootstrapEgress[] {
+  return [...new Map(entries.map((entry) => [entry.egressIdentity, entry])).values()].sort(compareCanonical);
 }
 
 function providerForRequirement(requirement: ApplicationRuntimeAccessRequirement, graph: ApplicationGraph): ApplicationProviderNode | undefined {
@@ -785,6 +871,7 @@ function requirementLowering(
   hasKubernetesRule: boolean,
   hasAwsStatement: boolean,
   hasPrivatePeer: boolean,
+  hasExternalEgress: boolean,
   requiresKubernetesEnforcement: boolean,
   requiresAwsEnforcement: boolean,
   providerGuarantee: ApplicationRuntimeAccessRequirementLowering['providerGuarantee'],
@@ -810,6 +897,9 @@ function requirementLowering(
     if (hasPrivatePeer) {
       return lowering(requirement, 'exact', ['kubernetes-network'], providerGuarantee);
     }
+    if (hasExternalEgress) {
+      return lowering(requirement, 'external', ['external-contract'], providerGuarantee);
+    }
     if (requirement.target.operation === 'network.connect' || requirement.target.operation === 'connection.use') {
       return lowering(requirement, 'unsupported', [], providerGuarantee);
     }
@@ -819,6 +909,7 @@ function requirementLowering(
     ...(hasAwsStatement ? ['aws-iam' as const] : []),
     ...(hasPrivatePeer ? ['aws-network' as const] : []),
   ], providerGuarantee);
+  if (hasExternalEgress) return lowering(requirement, 'external', ['external-contract'], providerGuarantee);
   if (requirement.target.operation === 'network.connect' || requirement.target.operation === 'connection.use') {
     return lowering(requirement, 'unsupported', [], providerGuarantee);
   }

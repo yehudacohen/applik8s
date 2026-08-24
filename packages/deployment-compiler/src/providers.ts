@@ -105,6 +105,10 @@ export function builtinApplicationDeploymentContributors(): readonly Application
       const providerDirect = context.target === "kubernetes"
         ? providerDirectContribution(concreteProvider, context)
         : { nodes: [], edges: [] };
+      const runtimeAccessTargets = [
+        ...applicationProviderRuntimeAccessTargets(concreteProvider, context),
+        ...(providerDirect.runtimeAccessTargets ?? []),
+      ];
       const nodes = [
         ...(registration.interface === "ContainerRegistry"
           ? managedHarborNodes(concreteProvider, context)
@@ -114,7 +118,7 @@ export function builtinApplicationDeploymentContributors(): readonly Application
       return {
         nodes,
         edges: providerDirect.edges,
-        ...(providerDirect.runtimeAccessTargets ? { runtimeAccessTargets: providerDirect.runtimeAccessTargets } : {}),
+        ...(runtimeAccessTargets.length > 0 ? { runtimeAccessTargets } : {}),
         compositionFragments: [
           providerFragment(
             concreteProvider,
@@ -258,6 +262,10 @@ export function applicationProviderSelectionDeploymentContributor(
       const providerDirect = context.target === "kubernetes"
         ? providerDirectContribution(selected, context)
         : { nodes: [], edges: [] };
+      const runtimeAccessTargets = [
+        ...applicationProviderRuntimeAccessTargets(selected, context),
+        ...(providerDirect.runtimeAccessTargets ?? []),
+      ];
       return {
         nodes: [
           ...(selected.interface === "ContainerRegistry"
@@ -266,7 +274,7 @@ export function applicationProviderSelectionDeploymentContributor(
           ...providerDirect.nodes,
         ],
         edges: providerDirect.edges,
-        ...(providerDirect.runtimeAccessTargets ? { runtimeAccessTargets: providerDirect.runtimeAccessTargets } : {}),
+        ...(runtimeAccessTargets.length > 0 ? { runtimeAccessTargets } : {}),
         compositionFragments: [
           providerFragment(
             selected,
@@ -651,6 +659,125 @@ interface ProviderDirectContribution {
   readonly nodes: readonly ApplicationDeploymentNode[];
   readonly edges: readonly ApplicationDeploymentEdge[];
   readonly runtimeAccessTargets?: readonly ApplicationDeploymentRuntimeAccessTarget[];
+}
+
+/**
+ * Provider-owned non-private transports. The allowlist is deliberately
+ * implementation-specific: adding another external provider requires an
+ * adapter change and review instead of inheriting a config-shape heuristic.
+ */
+export function applicationProviderRuntimeAccessTargets(
+  provider: ApplicationProviderNode,
+  context: ApplicationDeploymentPlanningContext,
+): readonly ApplicationDeploymentRuntimeAccessTarget[] {
+  if (
+    provider.interface === 'StructuredGeneration'
+    && provider.implementation === 'structured-generation-http'
+  ) {
+    const inference = optionalObject(optionalObject(context.installationSpec.providers)?.inference);
+    const endpoint = optionalString(provider.config?.endpoint) ?? optionalString(inference?.endpoint);
+    return [externalHttpRuntimeAccessTarget({
+      capabilityId: provider.id,
+      endpoint,
+      responsibility: 'StructuredGeneration HTTP provider endpoint',
+    })];
+  }
+  if (provider.interface === 'PaymentProvider' && provider.implementation === 'stripe') {
+    return [externalHttpRuntimeAccessTarget({
+      capabilityId: provider.id,
+      endpoint: optionalString(provider.config?.endpoint) ?? 'https://api.stripe.com/v1',
+      responsibility: 'Stripe payment API endpoint',
+    })];
+  }
+  if (provider.interface === 'NotificationDelivery' && provider.implementation === 'smtp') {
+    const notifications = optionalObject(optionalObject(context.installationSpec.providers)?.notifications);
+    const host = optionalString(notifications?.host);
+    const configuredPort = notifications?.port;
+    const port = typeof configuredPort === 'number'
+      && Number.isInteger(configuredPort)
+      && configuredPort >= 1
+      && configuredPort <= 65_535
+      ? configuredPort
+      : notifications?.secure === true ? 465 : 587;
+    return [{
+      capabilityId: provider.id,
+      target: 'external',
+      protocol: 'TCP',
+      port,
+      destination: host
+        ? { kind: 'dnsName', hostname: host }
+        : { kind: 'externalContract', responsibility: 'SMTP delivery endpoint from the selected runtime configuration' },
+      fidelity: host ? 'port-only' : 'not-introspectable',
+    }];
+  }
+  if (provider.interface === 'Observability' && provider.implementation === 'otlp') {
+    const observability = optionalObject(provider.config?.observability) ?? provider.config;
+    return [externalHttpRuntimeAccessTarget({
+      capabilityId: provider.id,
+      endpoint: optionalString(observability?.endpoint),
+      responsibility: 'external OTLP collector endpoint',
+    })];
+  }
+  return [];
+}
+
+export function applicationDeploymentRuntimeAccessTargetRecord(
+  target: ApplicationDeploymentRuntimeAccessTarget,
+): Readonly<Record<string, unknown>> {
+  return target.target === 'kubernetes'
+    ? {
+        networkKind: 'privatePeer',
+        networkNamespace: target.namespace,
+        networkServiceName: target.serviceName,
+        networkPodSelector: target.podSelector,
+        networkProtocol: target.protocol,
+        networkPort: target.port,
+      }
+    : {
+        networkKind: 'external',
+        networkProtocol: target.protocol,
+        ...(target.port === undefined ? {} : { networkPort: target.port }),
+        networkExternalDestination: target.destination,
+        networkExternalFidelity: target.fidelity,
+      };
+}
+
+function externalHttpRuntimeAccessTarget(options: {
+  readonly capabilityId: string;
+  readonly endpoint: string | undefined;
+  readonly responsibility: string;
+}): ApplicationDeploymentRuntimeAccessTarget {
+  if (!options.endpoint) {
+    return {
+      capabilityId: options.capabilityId,
+      target: 'external',
+      protocol: 'TCP',
+      destination: { kind: 'externalContract', responsibility: options.responsibility },
+      fidelity: 'not-introspectable',
+    };
+  }
+  let endpoint: URL;
+  try {
+    endpoint = new URL(options.endpoint);
+  } catch {
+    throw new Error(`${options.responsibility} must be an absolute HTTP or HTTPS URL.`);
+  }
+  if (endpoint.protocol !== 'https:' && endpoint.protocol !== 'http:') {
+    throw new Error(`${options.responsibility} must use HTTP or HTTPS.`);
+  }
+  const explicitPort = endpoint.port ? Number(endpoint.port) : undefined;
+  const port = explicitPort ?? (endpoint.protocol === 'https:' ? 443 : 80);
+  if (!Number.isInteger(port) || port < 1 || port > 65_535) {
+    throw new Error(`${options.responsibility} contains an invalid port.`);
+  }
+  return {
+    capabilityId: options.capabilityId,
+    target: 'external',
+    protocol: 'TCP',
+    port,
+    destination: { kind: 'dnsName', hostname: endpoint.hostname },
+    fidelity: 'port-only',
+  };
 }
 
 function providerDirectContribution(

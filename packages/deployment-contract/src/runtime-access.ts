@@ -30,9 +30,13 @@ export interface ApplicationRuntimeAccessWorkloadPlan {
       readonly namespace: string;
       readonly name: string;
     };
+    /** Exact pod labels used by generated NetworkPolicy workload selection. */
+    readonly podSelector: Readonly<Record<string, string>>;
     readonly serviceAccountName: string;
     readonly bindings: readonly ApplicationRuntimeAccessKubernetesBinding[];
     readonly privatePeers: readonly ApplicationRuntimeAccessPrivatePeer[];
+    readonly bootstrapEgress: readonly ApplicationRuntimeAccessBootstrapEgress[];
+    readonly externalEgress: readonly ApplicationRuntimeAccessExternalEgress[];
     /** @deprecated Derived compatibility projection; privatePeers is authoritative. */
     readonly networkConnections: readonly string[];
     readonly credentialProjections: readonly ApplicationRuntimeAccessCredentialProjection[];
@@ -42,6 +46,8 @@ export interface ApplicationRuntimeAccessWorkloadPlan {
     readonly roleName: string;
     readonly statements: readonly ApplicationRuntimeAccessAwsStatement[];
     readonly privatePeers: readonly ApplicationRuntimeAccessPrivatePeer[];
+    readonly bootstrapEgress: readonly ApplicationRuntimeAccessBootstrapEgress[];
+    readonly externalEgress: readonly ApplicationRuntimeAccessExternalEgress[];
     /** @deprecated Derived compatibility projection; privatePeers is authoritative. */
     readonly networkConnections: readonly string[];
   };
@@ -59,6 +65,8 @@ export interface ApplicationRuntimeAccessExecutionPlan {
     readonly serviceAccountName: string;
     readonly bindings: readonly ApplicationRuntimeAccessKubernetesBinding[];
     readonly privatePeers: readonly ApplicationRuntimeAccessPrivatePeer[];
+    readonly bootstrapEgress: readonly ApplicationRuntimeAccessBootstrapEgress[];
+    readonly externalEgress: readonly ApplicationRuntimeAccessExternalEgress[];
     /** @deprecated Derived compatibility projection; privatePeers is authoritative. */
     readonly networkConnections: readonly string[];
     readonly credentialProjections: readonly ApplicationRuntimeAccessCredentialProjection[];
@@ -67,6 +75,8 @@ export interface ApplicationRuntimeAccessExecutionPlan {
     readonly roleName: string;
     readonly statements: readonly ApplicationRuntimeAccessAwsStatement[];
     readonly privatePeers: readonly ApplicationRuntimeAccessPrivatePeer[];
+    readonly bootstrapEgress: readonly ApplicationRuntimeAccessBootstrapEgress[];
+    readonly externalEgress: readonly ApplicationRuntimeAccessExternalEgress[];
     /** @deprecated Derived compatibility projection; privatePeers is authoritative. */
     readonly networkConnections: readonly string[];
   };
@@ -90,6 +100,37 @@ export interface ApplicationRuntimeAccessPrivatePeer {
         readonly target: 'aws' | 'aws-local';
         readonly resourceId: string;
       };
+}
+
+/** Framework-owned transport needed to reach a declared network authority. */
+export interface ApplicationRuntimeAccessBootstrapEgress {
+  readonly egressIdentity: string;
+  readonly purpose: 'dns';
+  readonly protocol: 'TCP' | 'UDP';
+  readonly port: number;
+  readonly endpoint:
+    | {
+        readonly target: 'kubernetes';
+        readonly namespace: string;
+        readonly podSelector: Readonly<Record<string, string>>;
+      }
+    | {
+        readonly target: 'aws' | 'aws-local';
+        readonly cidr: string;
+      };
+}
+
+/** Outbound provider transport whose destination policy is owned externally. */
+export interface ApplicationRuntimeAccessExternalEgress {
+  readonly egressIdentity: string;
+  readonly capabilityId: string;
+  readonly requirementIds: readonly string[];
+  readonly protocol: 'TCP' | 'UDP';
+  readonly port?: number;
+  readonly destination:
+    | { readonly kind: 'dnsName'; readonly hostname: string }
+    | { readonly kind: 'externalContract'; readonly responsibility: string };
+  readonly fidelity: 'port-only' | 'not-introspectable';
 }
 
 export interface ApplicationRuntimeAccessRequirementLowering {
@@ -234,6 +275,13 @@ export function validateApplicationRuntimeAccessPlan(
       `execution ${execution.executionIdentity}`,
       errors,
     );
+    validateNonPrivateEgress(
+      execution.kubernetes ?? execution.aws,
+      plan.target,
+      execution.requirementIds,
+      `execution ${execution.executionIdentity}`,
+      errors,
+    );
     const policy = {
       local: execution.local,
       ...(execution.kubernetes ? { kubernetes: execution.kubernetes } : {}),
@@ -283,6 +331,13 @@ export function validateApplicationRuntimeAccessPlan(
     );
     validateDerivedNetworkConnections(
       workload.kubernetes ?? workload.aws,
+      `workload ${workload.workloadIdentity}`,
+      errors,
+    );
+    validateNonPrivateEgress(
+      workload.kubernetes ?? workload.aws,
+      plan.target,
+      workload.requirementIds,
       `workload ${workload.workloadIdentity}`,
       errors,
     );
@@ -382,5 +437,68 @@ function validateDerivedNetworkConnections(
   const actual = [...policy.networkConnections].sort();
   if (canonicalJsonV1String(actual) !== canonicalJsonV1String(expected)) {
     errors.push(`${owner} networkConnections do not match its authoritative privatePeers`);
+  }
+}
+
+function validateNonPrivateEgress(
+  policy: {
+    readonly bootstrapEgress: readonly ApplicationRuntimeAccessBootstrapEgress[];
+    readonly externalEgress: readonly ApplicationRuntimeAccessExternalEgress[];
+  } | undefined,
+  target: ApplicationRuntimeAccessPlan['target'],
+  ownedRequirementIds: readonly string[],
+  owner: string,
+  errors: string[],
+): void {
+  if (!policy) return;
+  if (!Array.isArray(policy.bootstrapEgress) || !Array.isArray(policy.externalEgress)) {
+    errors.push(`${owner} has malformed non-private egress collections`);
+    return;
+  }
+  const bootstrapIdentities = new Set<string>();
+  for (const egress of policy.bootstrapEgress) {
+    if (!record(egress) || typeof egress.egressIdentity !== 'string' || !egress.egressIdentity || egress.purpose !== 'dns') {
+      errors.push(`${owner} contains malformed bootstrap egress`);
+      continue;
+    }
+    if (bootstrapIdentities.has(egress.egressIdentity)) errors.push(`${owner} repeats bootstrap egress ${egress.egressIdentity}`);
+    bootstrapIdentities.add(egress.egressIdentity);
+    if ((egress.protocol !== 'TCP' && egress.protocol !== 'UDP') || typeof egress.port !== 'number' || !Number.isInteger(egress.port) || egress.port < 1 || egress.port > 65_535) {
+      errors.push(`${owner} bootstrap egress ${egress.egressIdentity} has an invalid transport`);
+    }
+    if (!record(egress.endpoint) || egress.endpoint.target !== target) {
+      errors.push(`${owner} bootstrap egress ${egress.egressIdentity} targets the wrong environment`);
+    } else if (egress.endpoint.target === 'kubernetes') {
+      if (typeof egress.endpoint.namespace !== 'string' || !egress.endpoint.namespace) errors.push(`${owner} bootstrap egress ${egress.egressIdentity} has no Kubernetes namespace`);
+      if (!record(egress.endpoint.podSelector) || Object.keys(egress.endpoint.podSelector).length === 0 || Object.values(egress.endpoint.podSelector).some((value) => typeof value !== 'string' || !value)) {
+        errors.push(`${owner} bootstrap egress ${egress.egressIdentity} has no exact Kubernetes pod selector`);
+      }
+    } else if (typeof egress.endpoint.cidr !== 'string' || !egress.endpoint.cidr) {
+      errors.push(`${owner} bootstrap egress ${egress.egressIdentity} has no AWS resolver CIDR`);
+    }
+  }
+  const owned = new Set(ownedRequirementIds);
+  const externalIdentities = new Set<string>();
+  for (const egress of policy.externalEgress) {
+    if (!record(egress) || typeof egress.egressIdentity !== 'string' || !egress.egressIdentity || typeof egress.capabilityId !== 'string' || !egress.capabilityId) {
+      errors.push(`${owner} contains malformed external egress`);
+      continue;
+    }
+    if (externalIdentities.has(egress.egressIdentity)) errors.push(`${owner} repeats external egress ${egress.egressIdentity}`);
+    externalIdentities.add(egress.egressIdentity);
+    if (!Array.isArray(egress.requirementIds) || egress.requirementIds.length === 0 || egress.requirementIds.some((id) => typeof id !== 'string' || !owned.has(id))) {
+      errors.push(`${owner} external egress ${egress.egressIdentity} references requirements outside its owner`);
+    }
+    if (egress.protocol !== 'TCP' && egress.protocol !== 'UDP') errors.push(`${owner} external egress ${egress.egressIdentity} has an invalid protocol`);
+    if (egress.port !== undefined && (typeof egress.port !== 'number' || !Number.isInteger(egress.port) || egress.port < 1 || egress.port > 65_535)) errors.push(`${owner} external egress ${egress.egressIdentity} has an invalid port`);
+    if (egress.fidelity !== 'port-only' && egress.fidelity !== 'not-introspectable') errors.push(`${owner} external egress ${egress.egressIdentity} has an invalid fidelity`);
+    if (!record(egress.destination) || (egress.destination.kind !== 'dnsName' && egress.destination.kind !== 'externalContract')) {
+      errors.push(`${owner} external egress ${egress.egressIdentity} has an invalid destination`);
+    } else if (egress.destination.kind === 'dnsName') {
+      if (typeof egress.destination.hostname !== 'string' || !egress.destination.hostname || egress.destination.hostname.includes('*')) errors.push(`${owner} external egress ${egress.egressIdentity} has an invalid DNS name`);
+    } else if (typeof egress.destination.responsibility !== 'string' || !egress.destination.responsibility) {
+      errors.push(`${owner} external egress ${egress.egressIdentity} has no external responsibility`);
+    }
+    if (egress.fidelity === 'port-only' && egress.port === undefined) errors.push(`${owner} external egress ${egress.egressIdentity} claims port-only fidelity without a port`);
   }
 }

@@ -8,6 +8,7 @@ import type {
   ApplicationDeploymentStrategy,
   DeploymentJsonObject,
 } from "@applik8s/deployment-contract";
+import type { ApplicationRuntimeAccessBootstrapEgress } from '@applik8s/deployment-contract';
 import type { ApplicationRuntimeAccessPlan } from './runtime-access-plan.js';
 
 export interface CompileApplicationDeploymentGraphRequest {
@@ -43,6 +44,8 @@ export interface CompileApplicationDeploymentGraphRequest {
   readonly clusterApiPrerequisites?: readonly DeploymentJsonObject[];
   /** Generated runtime credentials whose values are created only by the operation host. */
   readonly generatedSecrets?: readonly ApplicationGeneratedSecretRequirement[];
+  /** Explicit target-owned resolver/bootstrap access; never application-authored provider authority. */
+  readonly runtimeAccessBootstrapEgress?: readonly ApplicationRuntimeAccessBootstrapEgress[];
   readonly contributors?: readonly ApplicationDeploymentContributor[];
 }
 
@@ -126,15 +129,30 @@ export interface ApplicationDeploymentContribution {
   readonly runtimeAccessTargets?: readonly ApplicationDeploymentRuntimeAccessTarget[];
 }
 
-export interface ApplicationDeploymentRuntimeAccessTarget {
-  readonly capabilityId: string;
-  readonly target: 'kubernetes';
-  readonly namespace: string;
-  readonly serviceName: string;
-  readonly podSelector: Readonly<Record<string, string>>;
-  readonly protocol: 'TCP' | 'UDP';
-  readonly port: number;
-}
+export type ApplicationDeploymentRuntimeAccessTarget =
+  | {
+      readonly capabilityId: string;
+      readonly target: 'kubernetes';
+      readonly namespace: string;
+      readonly serviceName: string;
+      readonly podSelector: Readonly<Record<string, string>>;
+      readonly protocol: 'TCP' | 'UDP';
+      readonly port: number;
+    }
+  | {
+      /**
+       * Explicit provider-owned external transport. This is never inferred by
+       * scanning arbitrary configuration or rendered workload environment.
+       */
+      readonly capabilityId: string;
+      readonly target: 'external';
+      readonly protocol: 'TCP' | 'UDP';
+      readonly port?: number;
+      readonly destination:
+        | { readonly kind: 'dnsName'; readonly hostname: string }
+        | { readonly kind: 'externalContract'; readonly responsibility: string };
+      readonly fidelity: 'port-only' | 'not-introspectable';
+    };
 
 export interface ApplicationTypeKroFragmentDescriptor extends DeploymentJsonObject {
   readonly id: string;
