@@ -1,12 +1,23 @@
+import {
+  type CanonicalJsonV1Policy,
+  canonicalJsonCompatibleV1Policy,
+  canonicalJsonV1String,
+  canonicalJsonV1Value,
+} from "@applik8s/core";
 import type {
   ApplicationDeploymentEdge,
   ApplicationDeploymentGraph,
   ApplicationDeploymentNode,
-  DeploymentJsonValue,
 } from "./types.js";
 
 // typecast-file-boundary: Canonical JSON normalization reconstructs the same
 // closed portable graph shapes while erasing insertion order and undefined values.
+
+/** Canonical JSON v1 policy for deployment graphs and deployment value digests. */
+export const applicationDeploymentCanonicalJsonV1Policy: CanonicalJsonV1Policy = Object.freeze({
+  ...canonicalJsonCompatibleV1Policy,
+  name: "application-deployment-contract",
+});
 
 export function normalizeApplicationDeploymentGraph(
   graph: ApplicationDeploymentGraph,
@@ -22,7 +33,10 @@ export function normalizeApplicationDeploymentGraph(
 export function serializeApplicationDeploymentGraph(
   graph: ApplicationDeploymentGraph,
 ): string {
-  return `${stableJsonStringify(normalizeApplicationDeploymentGraph(graph))}\n`;
+  return `${canonicalJsonV1String(
+    normalizeApplicationDeploymentGraph(graph),
+    applicationDeploymentCanonicalJsonV1Policy,
+  )}\n`;
 }
 
 export function digestApplicationDeploymentGraph(
@@ -32,7 +46,10 @@ export function digestApplicationDeploymentGraph(
 }
 
 export function digestApplicationDeploymentValue(value: unknown): string {
-  return `sha256:${sha256Hex(stableJsonStringify(normalizeJson(value)))}`;
+  return `sha256:${sha256Hex(canonicalJsonV1String(
+    value,
+    applicationDeploymentCanonicalJsonV1Policy,
+  ))}`;
 }
 
 function normalizeNode(node: ApplicationDeploymentNode): ApplicationDeploymentNode {
@@ -53,35 +70,10 @@ function normalizeEdge(edge: ApplicationDeploymentEdge): ApplicationDeploymentEd
 }
 
 function normalizeJson<T>(value: T): T {
-  if (Array.isArray(value)) {
-    return value.map((entry) => normalizeJson(entry)) as T;
-  }
-  if (value === null || typeof value !== "object") return value;
-  const result: Record<string, unknown> = {};
-  for (const [key, entry] of Object.entries(value).sort(([left], [right]) =>
-    compareStrings(left, right),
-  )) {
-    if (entry !== undefined) result[key] = normalizeJson(entry);
-  }
-  return result as T;
-}
-
-function stableJsonStringify(value: DeploymentJsonValue | unknown): string {
-  if (value === undefined) return "null";
-  if (value === null || typeof value !== "object") return JSON.stringify(value);
-  if (Array.isArray(value)) {
-    return `[${value.map(stableJsonStringify).join(",")}]`;
-  }
-  const entries = Object.entries(value).sort(([left], [right]) =>
-    compareStrings(left, right),
-  );
-  return `{${entries
-    .filter(([, entry]) => entry !== undefined)
-    .map(
-      ([key, entry]) =>
-        `${JSON.stringify(key)}:${stableJsonStringify(entry)}`,
-    )
-    .join(",")}}`;
+  return canonicalJsonV1Value(
+    value,
+    applicationDeploymentCanonicalJsonV1Policy,
+  ) as T;
 }
 
 function compareNodes(

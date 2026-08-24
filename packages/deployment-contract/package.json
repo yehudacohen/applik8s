@@ -15,6 +15,9 @@
     "url": "git+https://github.com/yehudacohen/applik8s.git",
     "directory": "packages/deployment-contract"
   },
+  "dependencies": {
+    "@applik8s/core": "0.8.0"
+  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",

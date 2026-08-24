@@ -428,6 +428,9 @@
     "packages/deployment-contract": {
       "name": "@applik8s/deployment-contract",
       "version": "0.8.0",
+      "dependencies": {
+        "@applik8s/core": "0.8.0",
+      },
     },
     "packages/deployment-provider-harbor": {
       "name": "@applik8s/deployment-provider-harbor",

@@ -1,8 +1,11 @@
 import {
   ApplicationAdmissionContextV1Error,
+  type ApplicationGraph,
+  adaptApplicationGraphCanonicalJsonV1,
   applicationAdmissionContextVersion,
   applicationAdmissionIdentityView,
   applicationAdmissionInvocationView,
+  applicationGraphCanonicalJsonV1Policy,
   CanonicalJsonV1Error,
   canonicalJsonCompatibleV1Policy,
   canonicalJsonStrictV1Policy,
@@ -12,6 +15,7 @@ import {
   createApplicationAdmissionContextV1,
   createApplicationExecutionPrincipalV1,
   SignedEnvelopeV1ValidationError,
+  serializeApplicationGraph,
   signedEnvelopeAlgorithm,
   signedEnvelopeVersion,
   validateApplicationAdmissionContextV1,
@@ -74,6 +78,46 @@ describe('Canonical JSON v1', () => {
     expect(() => canonicalJsonV1String({ value })).toThrowError(
       expect.objectContaining({ code, path: '$.value' }),
     );
+  });
+});
+
+describe('application graph Canonical JSON v1 adapter', () => {
+  it('preserves the retained graph artifact bytes under its named policy', () => {
+    const graph = {
+      apiVersion: 'applik8s.applicationGraph/v1alpha1',
+      kind: 'ApplicationGraph',
+      metadata: { name: 'fixture' },
+      nodes: [],
+      edges: [],
+      providerRequirements: [],
+      providerBindings: [],
+      compatibility: {
+        stablePublicApis: [],
+        documentedInternalContracts: [],
+        experimentalSurfaces: [],
+        postV3Surfaces: [],
+        labels: [],
+      },
+    } as unknown as ApplicationGraph;
+    expect(applicationGraphCanonicalJsonV1Policy.name).toBe('application-graph-artifact');
+    expect(serializeApplicationGraph(graph)).toBe(
+      '{"apiVersion":"applik8s.applicationGraph/v1alpha1","compatibility":{"documentedInternalContracts":[],"experimentalSurfaces":[],"labels":[],"postV3Surfaces":[],"stablePublicApis":[]},"edges":[],"kind":"ApplicationGraph","metadata":{"name":"fixture"},"nodes":[],"providerBindings":[],"providerRequirements":[]}\n',
+    );
+  });
+
+  it('adapts only the public TypeKro reference protocol before canonical validation', () => {
+    const reference = {
+      [Symbol.for('TypeKro.KubernetesRef')]: true,
+      resourceId: 'database',
+      fieldPath: 'status.endpoint',
+    };
+    expect(adaptApplicationGraphCanonicalJsonV1({ endpoint: reference })).toEqual({
+      endpoint: `\${database.status.endpoint}`,
+    });
+    expect(() => canonicalJsonV1String(
+      adaptApplicationGraphCanonicalJsonV1({ createdAt: new Date(0) }),
+      applicationGraphCanonicalJsonV1Policy,
+    )).toThrowError(CanonicalJsonV1Error);
   });
 });
 

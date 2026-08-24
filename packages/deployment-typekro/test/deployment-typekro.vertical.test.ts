@@ -1,11 +1,12 @@
 // typecast-file-boundary: Adapter tests inspect generated TypeKro resources only after asserting their resource kinds and shapes.
+
+import { compileApplicationDeploymentGraph } from "@applik8s/deployment-compiler";
 import {
   type ApplicationDeploymentGraph,
   type ApplicationExternalProviderDeploymentNode,
   type ApplicationKubernetesCompositionDeploymentNode,
   digestApplicationDeploymentValue,
 } from "@applik8s/deployment-contract";
-import { compileApplicationDeploymentGraph } from "@applik8s/deployment-compiler";
 import { type } from "arktype";
 import {
   createResource,
@@ -23,6 +24,7 @@ import { describe, expect, it } from "vitest";
 // exercising TypeKro adapter validation.
 import {
   adaptApplicationDeploymentToTypeKro,
+  adaptTypeKroDeploymentEvidenceCanonicalJsonV1,
   assembleApplicationTypeKroComposition,
   bindApplicationTypeKroDirectNodes,
   bindTypeKroComposition,
@@ -1376,6 +1378,42 @@ function materializedSourceComposition() {
 }
 
 describe("TypeKro deployment adapter", () => {
+  it("adapts only Alchemy's public Output protocol into canonical evidence", () => {
+    const output = Object.assign(() => undefined, {
+      [Symbol.for("alchemy/Expr")]: { kind: "LiteralExpr" },
+      [Symbol.for("nodejs.util.inspect.custom")]: () => "namespace.output",
+    });
+    expect(
+      adaptTypeKroDeploymentEvidenceCanonicalJsonV1({ namespace: output }),
+    ).toEqual({
+      namespace: {
+        apiVersion: "alchemy.output/v1alpha1",
+        expression: "namespace.output",
+      },
+    });
+    expect(() =>
+      digestApplicationDeploymentValue(
+        adaptTypeKroDeploymentEvidenceCanonicalJsonV1({
+          namespace: () => "not-an-output",
+        }),
+      ),
+    ).toThrow(/cannot represent function/);
+    const reference = Object.assign(() => undefined, {
+      [Symbol.for("TypeKro.KubernetesRef")]: true,
+      resourceId: "definition",
+      fieldPath: "metadata.namespace",
+    });
+    expect(
+      adaptTypeKroDeploymentEvidenceCanonicalJsonV1({ namespace: reference }),
+    ).toEqual({
+      namespace: {
+        apiVersion: "typekro.reference/v1alpha1",
+        resourceId: "definition",
+        fieldPath: "metadata.namespace",
+      },
+    });
+  });
+
   // typecast: preserve the two deployment strategy literals for parameterized coverage.
   for (const strategy of ["direct", "kro"] as const) {
     it(`lowers one ${strategy} composition through the released 0.33 declarations`, async () => {

@@ -44,6 +44,7 @@ const expectedInventoryPaths = new Set([
   'packages/runtime-opensearch/src/index.ts',
   'packages/core/src/application-graph-serialization.ts',
   'packages/deployment-contract/src/serialization.ts',
+  'packages/deployment-typekro/src/adapter.ts',
   'packages/compiler/src/manifest/index.ts',
   'packages/client/src/store.ts',
 ]);
@@ -153,6 +154,12 @@ for (const source of inventorySources) {
   }
   if (!source.canonicalOwner?.trim()) {
     findings.push(`Runtime Integrity source ${source.id ?? '<missing>'} lacks a canonical owner.`);
+  }
+  if (source.disposition === 'canonical-consumer') {
+    const consumerSource = await readFile(join(root, source.path ?? ''), 'utf8');
+    if (!consumerSource.includes('canonicalJsonV1String')) {
+      findings.push(`Runtime Integrity canonical consumer ${source.id ?? '<missing>'} does not call Canonical JSON v1.`);
+    }
   }
   if (!source.evidence?.trim()) {
     findings.push(`Runtime Integrity source ${source.id ?? '<missing>'} lacks an evidence path.`);

@@ -29,7 +29,10 @@
         "hatchet-schedule-inputs",
         "duckdb-row-comparison",
         "opensearch-digests",
-        "compiler-selector-adapter"
+        "compiler-selector-adapter",
+        "application-graph-artifacts",
+        "application-deployment-contracts",
+        "typekro-deployment-evidence"
       ],
       "telemetry": "runtime-integrity-format-version",
       "rollbackSafeThrough": "pending-mixed-version-evidence",

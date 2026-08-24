@@ -101,20 +101,30 @@
       "mechanism": "canonical-json-reference-adapter",
       "path": "packages/core/src/application-graph-serialization.ts",
       "owner": "@applik8s/core",
-      "disposition": "pending-migration",
+      "disposition": "canonical-consumer",
       "canonicalOwner": "@applik8s/core/canonical-json",
-      "evidence": "packages/applik8s/test/native-model-application.vertical.test.ts",
-      "remaining": "Express graph references through an explicit Canonical JSON v1 adapter and preserve the released graph digest through a compatibility fixture."
+      "evidence": "packages/core/test/runtime-integrity.vertical.test.ts",
+      "remaining": "Retained bytes are exact for the compatibility fixture; future reference kinds must enter through the exported application-graph Canonical JSON v1 adapter rather than private serialization."
     },
     {
       "id": "deployment-contract-serialization",
       "mechanism": "canonical-json",
       "path": "packages/deployment-contract/src/serialization.ts",
       "owner": "@applik8s/deployment-contract",
-      "disposition": "pending-migration",
+      "disposition": "canonical-consumer",
       "canonicalOwner": "@applik8s/core/canonical-json",
       "evidence": "packages/deployment-contract/test/deployment-graph.vertical.test.ts",
-      "remaining": "Move deployment-contract bytes to a named Canonical JSON v1 policy and prove retained artifact compatibility."
+      "remaining": "Retained graph and value bytes remain compatible; later deployment reference adapters must be explicit and must not reintroduce a package-local normalizer."
+    },
+    {
+      "id": "typekro-deployment-evidence-adapter",
+      "mechanism": "canonical-json-reference-adapter",
+      "path": "packages/deployment-typekro/src/adapter.ts",
+      "owner": "@applik8s/deployment-typekro",
+      "disposition": "explicit-domain-adapter",
+      "canonicalOwner": "@applik8s/core/canonical-json",
+      "evidence": "packages/deployment-typekro/test/deployment-typekro.vertical.test.ts",
+      "remaining": "Alchemy Outputs and TypeKro references are converted through their public protocols before deployment evidence reaches Canonical JSON v1; any new planning proxy must fail closed until explicitly adapted."
     },
     {
       "id": "compiler-manifest-serialization",

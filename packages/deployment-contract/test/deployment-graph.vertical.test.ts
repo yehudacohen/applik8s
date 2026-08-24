@@ -1,12 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
-  applicationDeploymentOutputReference,
-  applicationOptionalDeploymentOutputReference,
   type ApplicationDeploymentGraph,
   ApplicationDeploymentGraphDecodeError,
   type ApplicationDeploymentNode,
+  applicationDeploymentCanonicalJsonV1Policy,
+  applicationDeploymentOutputReference,
+  applicationOptionalDeploymentOutputReference,
   decodeApplicationDeploymentGraph,
   digestApplicationDeploymentGraph,
+  digestApplicationDeploymentValue,
   normalizeApplicationDeploymentGraph,
   parseApplicationDeploymentOutputReference,
   serializeApplicationDeploymentGraph,
@@ -64,6 +66,27 @@ describe("ApplicationDeploymentGraph", () => {
     );
     expect(digestApplicationDeploymentGraph(graph)).toMatch(
       /^sha256:[a-f0-9]{64}$/,
+    );
+    expect(applicationDeploymentCanonicalJsonV1Policy.name).toBe(
+      "application-deployment-contract",
+    );
+  });
+
+  it("preserves retained value digests while failing closed on non-JSON values", () => {
+    expect(
+      digestApplicationDeploymentValue({
+        z: undefined,
+        a: [3, undefined],
+        nested: { b: 2, a: 1 },
+      }),
+    ).toBe(
+      "sha256:b2c585edd6e83d51a4b4502e849e8d143d4df5f1665e036f627702cef12c9fa2",
+    );
+    expect(() => digestApplicationDeploymentValue({ value: Number.NaN })).toThrow(
+      /finite number/,
+    );
+    expect(() => digestApplicationDeploymentValue({ value: new Date(0) })).toThrow(
+      /cannot represent/,
     );
   });
 

@@ -1,9 +1,12 @@
-export { adaptApplicationDeploymentToTypeKro } from "./adapter.js";
+export {
+  adaptApplicationDeploymentToTypeKro,
+  adaptTypeKroDeploymentEvidenceCanonicalJsonV1,
+} from "./adapter.js";
 export {
   type BindTypeKroCompositionOptions,
-  type TypeKroArtifactRequirementBinding,
   bindTypeKroComposition,
   bindTypeKroCompositionWithSupportingDeclarations,
+  type TypeKroArtifactRequirementBinding,
   typeKroArtifactRequirements,
 } from "./binding.js";
 export {

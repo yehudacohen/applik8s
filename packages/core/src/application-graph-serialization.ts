@@ -6,6 +6,17 @@ import type {
   ApplicationProviderBindingContract,
   ApplicationProviderRequirement,
 } from './application-graph.js';
+import {
+  type CanonicalJsonV1Policy,
+  canonicalJsonCompatibleV1Policy,
+  canonicalJsonV1String,
+} from './canonical-json.js';
+
+/** Canonical JSON v1 policy for durable application-graph artifacts. */
+export const applicationGraphCanonicalJsonV1Policy: CanonicalJsonV1Policy = Object.freeze({
+  ...canonicalJsonCompatibleV1Policy,
+  name: 'application-graph-artifact',
+});
 
 /** Deterministic graph normalization is isolated from validation and provider resolution. */
 export function normalizeApplicationGraphArtifact(graph: ApplicationGraph): ApplicationGraph {
@@ -35,7 +46,19 @@ export function normalizeApplicationGraphArtifact(graph: ApplicationGraph): Appl
 }
 
 export function serializeNormalizedApplicationGraph(graph: ApplicationGraph): string {
-  return `${stableJsonStringify(normalizeApplicationGraphArtifact(graph))}\n`;
+  return `${canonicalJsonV1String(
+    adaptApplicationGraphCanonicalJsonV1(normalizeApplicationGraphArtifact(graph)),
+    applicationGraphCanonicalJsonV1Policy,
+  )}\n`;
+}
+
+/**
+ * Converts TypeKro's public reference protocol to the portable string markers
+ * owned by the application-graph wire contract. Every other value remains
+ * subject to Canonical JSON v1 validation.
+ */
+export function adaptApplicationGraphCanonicalJsonV1(value: unknown): unknown {
+  return adaptApplicationGraphValue(value, new WeakMap<object, object>());
 }
 
 function compareApplicationGraphNodes(left: ApplicationGraphNode, right: ApplicationGraphNode): number {
@@ -66,16 +89,29 @@ function compareStrings(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
 }
 
-function stableJsonStringify(value: unknown): string {
-  if (value === undefined) return 'null';
-  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+function adaptApplicationGraphValue(
+  value: unknown,
+  seen: WeakMap<object, object>,
+): unknown {
+  if (value === null || typeof value !== 'object') return value;
   const reference = serializedApplicationGraphReference(value);
-  if (reference !== undefined) return JSON.stringify(reference);
-  if (Array.isArray(value)) return `[${value.map(stableJsonStringify).join(',')}]`;
-  const entries = Object.entries(value)
-    .filter(([, entryValue]) => entryValue !== undefined)
-    .sort(([leftKey], [rightKey]) => compareStrings(leftKey, rightKey));
-  return `{${entries.map(([key, entryValue]) => `${JSON.stringify(key)}:${stableJsonStringify(entryValue)}`).join(',')}}`;
+  if (reference !== undefined) return reference;
+  const previous = seen.get(value);
+  if (previous) return previous;
+  if (Array.isArray(value)) {
+    const adapted: unknown[] = [];
+    seen.set(value, adapted);
+    for (const entry of value) adapted.push(adaptApplicationGraphValue(entry, seen));
+    return adapted;
+  }
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) return value;
+  const adapted: Record<string, unknown> = {};
+  seen.set(value, adapted);
+  for (const [key, entry] of Object.entries(value)) {
+    adapted[key] = adaptApplicationGraphValue(entry, seen);
+  }
+  return adapted;
 }
 
 /**

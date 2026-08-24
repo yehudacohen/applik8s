@@ -72,7 +72,9 @@ export async function adaptApplicationDeploymentToTypeKro(
     ...direct,
   ]);
   const materializationDigest = digestApplicationDeploymentValue(
-    declarations.map(declarationEvidence),
+    adaptTypeKroDeploymentEvidenceCanonicalJsonV1(
+      declarations.map(declarationEvidence),
+    ),
   );
   const evidence = {
     adapter: adapterCompatibility,
@@ -289,7 +291,9 @@ async function declarationGroup(
     spec: plan.spec,
     outputs: plan.outputs,
     declarationDigest: digestApplicationDeploymentValue(
-      declarations.map(declarationEvidence),
+      adaptTypeKroDeploymentEvidenceCanonicalJsonV1(
+        declarations.map(declarationEvidence),
+      ),
     ),
     semanticPlan,
   };
@@ -578,4 +582,75 @@ function declarationEvidence(
     })),
     artifactOutputUses: declaration.artifactOutputUses,
   };
+}
+
+/**
+ * Canonical deployment values deliberately reject executable functions.
+ * Alchemy Outputs are callable proxies, however, and TypeKro declarations can
+ * legitimately carry them until deployment. Convert only Alchemy's public
+ * expression protocol to inert evidence before it reaches Canonical JSON v1.
+ */
+export function adaptTypeKroDeploymentEvidenceCanonicalJsonV1(
+  value: unknown,
+): unknown {
+  return adaptTypeKroEvidenceValue(value, new WeakMap<object, object>());
+}
+
+function adaptTypeKroEvidenceValue(
+  value: unknown,
+  seen: WeakMap<object, object>,
+): unknown {
+  if (value === null || (typeof value !== "object" && typeof value !== "function")) {
+    return value;
+  }
+  const objectValue = value as object;
+  if (Reflect.get(objectValue, Symbol.for("TypeKro.KubernetesRef")) === true) {
+    const resourceId = Reflect.get(objectValue, "resourceId");
+    const fieldPath = Reflect.get(objectValue, "fieldPath");
+    if (
+      typeof resourceId !== "string" || resourceId.length === 0 ||
+      typeof fieldPath !== "string" || fieldPath.length === 0
+    ) {
+      throw new TypeError("TypeKro reference evidence has an invalid resource identity or field path.");
+    }
+    return {
+      apiVersion: "typekro.reference/v1alpha1",
+      resourceId,
+      fieldPath,
+    };
+  }
+  if (Reflect.has(objectValue, Symbol.for("alchemy/Expr"))) {
+    const render = Reflect.get(
+      objectValue,
+      Symbol.for("nodejs.util.inspect.custom"),
+    );
+    if (typeof render !== "function") {
+      throw new TypeError("Alchemy Output evidence does not expose a stable expression identity.");
+    }
+    const expression = Reflect.apply(render, objectValue, []);
+    if (typeof expression !== "string" || expression.length === 0) {
+      throw new TypeError("Alchemy Output evidence has an invalid expression identity.");
+    }
+    return {
+      apiVersion: "alchemy.output/v1alpha1",
+      expression,
+    };
+  }
+  if (typeof value === "function") return value;
+  const previous = seen.get(objectValue);
+  if (previous) return previous;
+  if (Array.isArray(value)) {
+    const adapted: unknown[] = [];
+    seen.set(objectValue, adapted);
+    for (const entry of value) adapted.push(adaptTypeKroEvidenceValue(entry, seen));
+    return adapted;
+  }
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) return value;
+  const adapted: Record<string, unknown> = {};
+  seen.set(objectValue, adapted);
+  for (const [key, entry] of Object.entries(value)) {
+    adapted[key] = adaptTypeKroEvidenceValue(entry, seen);
+  }
+  return adapted;
 }
