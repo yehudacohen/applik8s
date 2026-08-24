@@ -10,7 +10,12 @@ export interface KubernetesRuntimeAccessParityFinding {
     | 'RUNTIME_ACCESS_RBAC_MISSING'
     | 'RUNTIME_ACCESS_RBAC_WIDENED'
     | 'RUNTIME_ACCESS_CREDENTIAL_MISSING'
-    | 'RUNTIME_ACCESS_CREDENTIAL_WIDENED';
+    | 'RUNTIME_ACCESS_CREDENTIAL_WIDENED'
+    | 'RUNTIME_ACCESS_NETWORK_MISSING'
+    | 'RUNTIME_ACCESS_NETWORK_WIDENED'
+    | 'RUNTIME_ACCESS_NETWORK_WRONG_PORT'
+    | 'RUNTIME_ACCESS_NETWORK_WRONG_PROTOCOL'
+    | 'RUNTIME_ACCESS_NETWORK_MISBOUND';
   readonly workloadIdentity: string;
   readonly executionIdentities: readonly string[];
   readonly requirementIds: readonly string[];
@@ -86,8 +91,107 @@ export function validateKubernetesRuntimeAccessParity(
       findings.push(finding(workload, 'RUNTIME_ACCESS_CREDENTIAL_WIDENED',
         `Workload ${workload.workloadIdentity} receives undeclared Secret projections: ${widenedSecrets.join(', ')}.`));
     }
+
+    if (expected.privatePeers.length > 0 && expected.externalEgress.length === 0) {
+      findings.push(...networkPolicyFindings(workload, expected, manifests));
+    }
   }
   return findings;
+}
+
+function networkPolicyFindings(
+  workload: ApplicationRuntimeAccessPlan['workloads'][number],
+  expected: NonNullable<ApplicationRuntimeAccessPlan['workloads'][number]['kubernetes']>,
+  manifests: readonly Readonly<Record<string, unknown>>[],
+): readonly KubernetesRuntimeAccessParityFinding[] {
+  const policy = manifests.find((manifest) =>
+    manifest.apiVersion === 'networking.k8s.io/v1'
+    && manifest.kind === 'NetworkPolicy'
+    && stringValue(recordValue(recordValue(manifest.metadata)?.annotations)?.['applik8s.io/runtime-access-workload']) === workload.workloadIdentity);
+  if (!policy) {
+    return [finding(workload, 'RUNTIME_ACCESS_NETWORK_MISSING', `Workload ${workload.workloadIdentity} has no generated private-egress NetworkPolicy.`)];
+  }
+  const metadata = recordValue(policy.metadata);
+  const spec = recordValue(policy.spec);
+  const selector = stringRecord(recordValue(recordValue(spec?.podSelector)?.matchLabels));
+  if (
+    metadataNamespace(policy) !== expected.resource.namespace
+    || stableJson(selector ?? {}) !== stableJson(expected.podSelector)
+    || stringValue(recordValue(metadata?.annotations)?.['applik8s.io/runtime-access-policy-digest']) !== workload.policyDigest
+  ) {
+    return [finding(workload, 'RUNTIME_ACCESS_NETWORK_MISBOUND', `Workload ${workload.workloadIdentity} NetworkPolicy is bound to the wrong namespace, pods, or policy identity.`)];
+  }
+  const policyTypes = stringArray(spec?.policyTypes);
+  if (policyTypes.length !== 1 || policyTypes[0] !== 'Egress') {
+    return [finding(workload, 'RUNTIME_ACCESS_NETWORK_WIDENED', `Workload ${workload.workloadIdentity} NetworkPolicy changes the expected egress-only boundary.`)];
+  }
+  const expectedAtoms = [
+    ...expected.privatePeers.flatMap((peer) => peer.endpoint.target === 'kubernetes'
+      ? [networkAtom(peer.endpoint.namespace, peer.endpoint.podSelector, peer.protocol, peer.port)]
+      : []),
+    ...expected.bootstrapEgress.flatMap((bootstrap) => bootstrap.endpoint.target === 'kubernetes'
+      ? [networkAtom(bootstrap.endpoint.namespace, bootstrap.endpoint.podSelector, bootstrap.protocol, bootstrap.port)]
+      : []),
+  ].sort();
+  const parsed = networkPolicyAtoms(spec?.egress);
+  if (parsed.wildcard) {
+    return [finding(workload, 'RUNTIME_ACCESS_NETWORK_WIDENED', `Workload ${workload.workloadIdentity} NetworkPolicy contains an unbounded destination or port.`)];
+  }
+  const missing = difference(expectedAtoms, parsed.atoms);
+  const widened = difference(parsed.atoms, expectedAtoms);
+  if (missing.length === 0 && widened.length === 0) return [];
+  const expectedEndpoints = new Map(expectedAtoms.map((atom) => [networkEndpoint(atom), atom]));
+  for (const actual of parsed.atoms) {
+    const expectedAtom = expectedEndpoints.get(networkEndpoint(actual));
+    if (!expectedAtom || expectedAtom === actual) continue;
+    const expectedParts = expectedAtom.split('|');
+    const actualParts = actual.split('|');
+    if (expectedParts[2] !== actualParts[2]) {
+      return [finding(workload, 'RUNTIME_ACCESS_NETWORK_WRONG_PROTOCOL', `Workload ${workload.workloadIdentity} NetworkPolicy uses ${actualParts[2]} where ${expectedParts[2]} is required.`)];
+    }
+    if (expectedParts[3] !== actualParts[3]) {
+      return [finding(workload, 'RUNTIME_ACCESS_NETWORK_WRONG_PORT', `Workload ${workload.workloadIdentity} NetworkPolicy uses port ${actualParts[3]} where ${expectedParts[3]} is required.`)];
+    }
+  }
+  return [finding(workload, widened.length > 0 ? 'RUNTIME_ACCESS_NETWORK_WIDENED' : 'RUNTIME_ACCESS_NETWORK_MISSING',
+    `Workload ${workload.workloadIdentity} NetworkPolicy differs from its declared peers (missing: ${missing.join(', ') || '<none>'}; extra: ${widened.join(', ') || '<none>'}).`)];
+}
+
+function networkPolicyAtoms(value: unknown): { readonly atoms: readonly string[]; readonly wildcard: boolean } {
+  const atoms: string[] = [];
+  let wildcard = false;
+  for (const rawRule of arrayValue(value)) {
+    const rule = recordValue(rawRule);
+    const destinations = arrayValue(rule?.to);
+    const ports = arrayValue(rule?.ports);
+    if (destinations.length !== 1 || ports.length === 0) {
+      wildcard = true;
+      continue;
+    }
+    const destination = recordValue(destinations[0]);
+    const namespace = stringValue(recordValue(recordValue(destination?.namespaceSelector)?.matchLabels)?.['kubernetes.io/metadata.name']);
+    const selector = stringRecord(recordValue(recordValue(destination?.podSelector)?.matchLabels));
+    if (!namespace || !selector || Object.keys(selector).length === 0 || destination?.ipBlock !== undefined) {
+      wildcard = true;
+      continue;
+    }
+    for (const rawPort of ports) {
+      const port = recordValue(rawPort);
+      const protocol = port?.protocol === 'TCP' || port?.protocol === 'UDP' ? port.protocol : undefined;
+      const number = typeof port?.port === 'number' && Number.isInteger(port.port) ? port.port : undefined;
+      if (!protocol || number === undefined) wildcard = true;
+      else atoms.push(networkAtom(namespace, selector, protocol, number));
+    }
+  }
+  return { atoms: [...new Set(atoms)].sort(), wildcard };
+}
+
+function networkAtom(namespace: string, selector: Readonly<Record<string, string>>, protocol: 'TCP' | 'UDP', port: number): string {
+  return `${namespace}|${stableJson(selector)}|${protocol}|${port}`;
+}
+
+function networkEndpoint(atom: string): string {
+  return atom.split('|').slice(0, 2).join('|');
 }
 
 function finding(
@@ -242,6 +346,12 @@ function stringValue(value: unknown): string | undefined {
   return typeof value === 'string' && value ? value : undefined;
 }
 
+function stringRecord(value: unknown): Readonly<Record<string, string>> | undefined {
+  const record = recordValue(value);
+  if (!record || Object.values(record).some((entry) => typeof entry !== 'string')) return undefined;
+  return record as Readonly<Record<string, string>>;
+}
+
 function recordValue(value: unknown): Readonly<Record<string, unknown>> | undefined {
   return value && typeof value === 'object' && !Array.isArray(value)
     ? value as Readonly<Record<string, unknown>>
@@ -250,4 +360,13 @@ function recordValue(value: unknown): Readonly<Record<string, unknown>> | undefi
 
 function defined<T>(value: T | undefined): value is T {
   return value !== undefined;
+}
+
+function stableJson(value: unknown): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
+  return `{${Object.entries(value)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, entry]) => `${JSON.stringify(key)}:${stableJson(entry)}`)
+    .join(',')}}`;
 }

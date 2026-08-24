@@ -3,6 +3,7 @@ import { type ApplicationGraph, applicationRuntimeAccessRequirement, deriveAppli
 import type { ApplicationAwsPlanResource, DeploymentJsonObject } from '@applik8s/deployment-contract';
 import { describe, expect, it } from 'vitest';
 import {
+  type ApplicationDeploymentContributor,
   compileApplicationDeploymentGraph,
   compileApplicationRuntimeAccessPlan,
   validateAwsRuntimeAccessParity,
@@ -266,6 +267,123 @@ describe('v0.8 runtime-access lowering', () => {
       expect.objectContaining({ purpose: 'dns', protocol: 'TCP', port: 53 }),
       expect.objectContaining({ purpose: 'dns', protocol: 'UDP', port: 53 }),
     ]);
+  });
+
+  it('materializes an exact private-peer and DNS NetworkPolicy into the root composition', () => {
+    const graph = privateCallableProviderGraph();
+    const contributor: ApplicationDeploymentContributor = {
+      interface: 'AcquisitionProvider',
+      implementation: 'private-acquisition',
+      version: 1,
+      contribute(provider) {
+        return {
+          nodes: [],
+          edges: [],
+          compositionFragments: [],
+          runtimeAccessTargets: [{
+            capabilityId: provider.id,
+            target: 'kubernetes',
+            namespace: 'acquisition-system',
+            serviceName: 'acquisition-api',
+            podSelector: { 'app.kubernetes.io/name': 'acquisition-api' },
+            protocol: 'TCP',
+            port: 8443,
+          }],
+        };
+      },
+    };
+    const result = compileApplicationDeploymentGraph({
+      graph,
+      sourceGraphDigest: `sha256:${'d'.repeat(64)}`,
+      compilerVersion: '0.8.0',
+      identity: {
+        connection: { provider: 'kubernetes', cluster: 'orbstack', digest: `sha256:${'e'.repeat(64)}` },
+        application: 'acquisition',
+        controlPlaneNamespace: 'applik8s-system',
+        instance: 'acquisition',
+        profile: 'dedicated',
+      },
+      strategy: 'kro',
+      installationSpec: { name: 'acquisition', profile: 'dedicated' },
+      artifacts: [{
+        id: 'artifact.api',
+        artifactType: 'containerImage',
+        name: 'api',
+        sourceDigest: `sha256:${'f'.repeat(64)}`,
+        sourceDescriptor: { context: './api' },
+        logicalReference: 'applik8s/acquisition-api:source',
+        executionNodeIds: ['server.api'],
+      }],
+      materializedComposition: {
+        resources: [{
+          apiVersion: 'apps/v1',
+          kind: 'Deployment',
+          metadata: { name: 'api', namespace: 'acquisition' },
+          spec: { template: {
+            metadata: { labels: { 'app.kubernetes.io/name': 'api' } },
+            spec: { containers: [{
+              name: 'api',
+              image: 'applik8s/acquisition-api:source',
+              env: [{ name: 'APPLIK8S_CONTEXT_KEY', valueFrom: { secretKeyRef: { name: 'acquisition-context', key: 'key' } } }],
+            }] },
+          } },
+        }],
+        status: {},
+      },
+      contributors: [contributor],
+    });
+    const root = result.graph.nodes.find((node) => node.id === 'kubernetes.application');
+    if (!root || root.kind !== 'kubernetesComposition') throw new Error('Expected root composition.');
+    const networkPolicy = root.spec.materialized?.resources.find((resource) => resource.kind === 'NetworkPolicy');
+    expect(networkPolicy).toMatchObject({
+      apiVersion: 'networking.k8s.io/v1',
+      metadata: {
+        namespace: 'acquisition',
+        annotations: {
+          'applik8s.io/runtime-access-workload': 'apps/v1:Deployment:acquisition:api',
+        },
+      },
+      spec: {
+        podSelector: { matchLabels: { 'app.kubernetes.io/name': 'api' } },
+        policyTypes: ['Egress'],
+        egress: expect.arrayContaining([
+          {
+            to: [{
+              namespaceSelector: { matchLabels: { 'kubernetes.io/metadata.name': 'acquisition-system' } },
+              podSelector: { matchLabels: { 'app.kubernetes.io/name': 'acquisition-api' } },
+            }],
+            ports: [{ protocol: 'TCP', port: 8443 }],
+          },
+          expect.objectContaining({ ports: [{ protocol: 'TCP', port: 53 }] }),
+          expect.objectContaining({ ports: [{ protocol: 'UDP', port: 53 }] }),
+        ]),
+      },
+    });
+    expect(validateKubernetesRuntimeAccessParity(
+      result.runtimeAccess,
+      root.spec.materialized?.resources ?? [],
+    )).toEqual([]);
+    const resources = root.spec.materialized?.resources ?? [];
+    expect(validateKubernetesRuntimeAccessParity(
+      result.runtimeAccess,
+      resources.filter((resource) => resource.kind !== 'NetworkPolicy'),
+    )).toEqual([expect.objectContaining({ code: 'RUNTIME_ACCESS_NETWORK_MISSING' })]);
+    expect(validateKubernetesRuntimeAccessParity(result.runtimeAccess, mutateNetworkPolicy(resources, (policy) => {
+      const egress = policy.spec.egress as Array<{ ports: Array<{ protocol: string; port: number }> }>;
+      const peer = egress.find((rule) => rule.ports[0]?.port === 8443);
+      if (peer?.ports[0]) peer.ports[0].port = 9443;
+    }))).toEqual([expect.objectContaining({ code: 'RUNTIME_ACCESS_NETWORK_WRONG_PORT' })]);
+    expect(validateKubernetesRuntimeAccessParity(result.runtimeAccess, mutateNetworkPolicy(resources, (policy) => {
+      const egress = policy.spec.egress as Array<{ ports: Array<{ protocol: string; port: number }> }>;
+      const peer = egress.find((rule) => rule.ports[0]?.port === 8443);
+      if (peer?.ports[0]) peer.ports[0].protocol = 'UDP';
+    }))).toEqual([expect.objectContaining({ code: 'RUNTIME_ACCESS_NETWORK_WRONG_PROTOCOL' })]);
+    expect(validateKubernetesRuntimeAccessParity(result.runtimeAccess, mutateNetworkPolicy(resources, (policy) => {
+      policy.spec.egress = [...policy.spec.egress as unknown[], {}];
+    }))).toEqual([expect.objectContaining({ code: 'RUNTIME_ACCESS_NETWORK_WIDENED' })]);
+    expect(validateKubernetesRuntimeAccessParity(result.runtimeAccess, mutateNetworkPolicy(resources, (policy) => {
+      policy.metadata.namespace = 'wrong';
+    }))).toEqual([expect.objectContaining({ code: 'RUNTIME_ACCESS_NETWORK_MISBOUND' })]);
   });
 
   it('separates cross-namespace Roles from cluster-scoped access without broadening either', () => {
@@ -759,6 +877,89 @@ function externalPaymentAccessGraph(): ApplicationGraph {
       runtime: {},
     }],
   };
+}
+
+function privateCallableProviderGraph(): ApplicationGraph {
+  return {
+    ...emptyGraph('acquisition'),
+    metadata: { name: 'acquisition', namespace: 'acquisition' },
+    nodes: [
+      {
+        id: 'provider.acquisition',
+        kind: 'provider',
+        name: 'acquisition',
+        stability: 'stable',
+        interface: 'AcquisitionProvider',
+        implementation: 'private-acquisition',
+        config: {
+          callableRuntime: {
+            kind: 'runtime',
+            runtime: { module: '@fixture/acquisition', export: 'acquire' },
+          },
+        },
+      },
+      {
+        id: 'server.api',
+        kind: 'server',
+        name: 'api',
+        stability: 'stable',
+        routes: [{
+          id: 'acquire',
+          method: 'POST',
+          path: '/acquire',
+          diagnostics: routeDiagnostics(),
+          functionNative: {
+            input: declaredSchema(),
+            output: declaredSchema(),
+            handler: { source: 'async input => input' },
+            providerBindings: [{
+              identifier: 'acquisition.acquire',
+              provider: { interface: 'AcquisitionProvider', nodeId: 'provider.acquisition' },
+              operation: {
+                member: 'acquire',
+                runtime: {
+                  module: '@fixture/acquisition',
+                  export: 'acquire',
+                  access: { kind: 'provider', operations: ['connection.use'] },
+                },
+              },
+            }],
+            idempotency: { source: 'http-idempotency-key', contextScoped: true },
+            requestBoundary: { durableValues: 'schema-normalized-only', rawRequestCapture: 'rejected', principal: 'framework-authenticated' },
+          },
+        }],
+        resources: [],
+        indexes: [],
+        observability: serverObservability(),
+      },
+    ],
+    providerRequirements: [{
+      id: 'requirement.acquisition',
+      interface: 'AcquisitionProvider',
+      consumer: { nodeId: 'server.api' },
+      provider: { interface: 'AcquisitionProvider', nodeId: 'provider.acquisition' },
+      required: true,
+      purpose: 'acquisition',
+      diagnostics: { missing: 'missing', ambiguous: 'ambiguous' },
+    }],
+    providerBindings: [{
+      requirement: 'requirement.acquisition',
+      provider: { interface: 'AcquisitionProvider', nodeId: 'provider.acquisition' },
+      generatedResources: [],
+      runtime: {},
+    }],
+  };
+}
+
+function mutateNetworkPolicy(
+  resources: readonly DeploymentJsonObject[],
+  mutate: (policy: { metadata: Record<string, unknown>; spec: Record<string, unknown> }) => void,
+): readonly DeploymentJsonObject[] {
+  const cloned = JSON.parse(JSON.stringify(resources)) as DeploymentJsonObject[];
+  const policy = cloned.find((resource) => resource.kind === 'NetworkPolicy');
+  if (!policy || !policy.metadata || !policy.spec) throw new Error('Expected generated NetworkPolicy fixture.');
+  mutate(policy as unknown as { metadata: Record<string, unknown>; spec: Record<string, unknown> });
+  return cloned;
 }
 
 function kubernetesScopeGraph(): ApplicationGraph {

@@ -341,6 +341,16 @@ export function validateApplicationRuntimeAccessPlan(
       `workload ${workload.workloadIdentity}`,
       errors,
     );
+    if (
+      workload.kubernetes
+      && workload.kubernetes.privatePeers.length > 0
+      && workload.kubernetes.externalEgress.length === 0
+      && (!record(workload.kubernetes.podSelector)
+        || Object.keys(workload.kubernetes.podSelector).length === 0
+        || Object.values(workload.kubernetes.podSelector).some((value) => typeof value !== 'string' || !value))
+    ) {
+      errors.push(`workload ${workload.workloadIdentity} has private network authority without an exact pod selector`);
+    }
     const policy = {
       ...(workload.kubernetes ? { kubernetes: workload.kubernetes } : {}),
       ...(workload.aws ? { aws: workload.aws } : {}),

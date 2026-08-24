@@ -10,6 +10,7 @@ import {
   type ApplicationDeploymentInput,
   type ApplicationDeploymentNode,
   type ApplicationKubernetesCompositionDeploymentNode,
+  type DeploymentJsonObject,
   digestApplicationDeploymentValue,
   validateApplicationDeploymentGraph,
 } from "@applik8s/deployment-contract";
@@ -111,7 +112,6 @@ export function compileApplicationDeploymentGraph(
       !baseArtifactIds.has(artifact.id)
       && !directlyConsumedArtifactIds.has(artifact.id),
   );
-  const root = rootCompositionNode(request, rootArtifacts, fragments);
   const generatedSecretRequirements = dedupeGeneratedSecrets([
     ...applicationGraphGeneratedSecrets(request),
     ...(request.generatedSecrets ?? []),
@@ -138,10 +138,19 @@ export function compileApplicationDeploymentGraph(
       }))),
     workloadPlacements: kubernetesRuntimeAccessWorkloadPlacements(request, artifactNodes),
   });
+  const runtimeAccessNetworkPolicies = context.target === 'kubernetes'
+    ? kubernetesPrivateNetworkPolicies(runtimeAccess)
+    : [];
+  const materializedComposition = request.materializedComposition
+    ? {
+        ...request.materializedComposition,
+        resources: [...request.materializedComposition.resources, ...runtimeAccessNetworkPolicies],
+      }
+    : undefined;
   if (context.target === 'kubernetes' && request.materializedComposition) {
     const parityFindings = validateKubernetesRuntimeAccessParity(
       runtimeAccess,
-      request.materializedComposition.resources,
+      materializedComposition?.resources ?? [],
     );
     if (parityFindings.length > 0) {
       throw new Error(
@@ -151,6 +160,10 @@ export function compileApplicationDeploymentGraph(
       );
     }
   }
+  const root = rootCompositionNode({
+    ...request,
+    ...(materializedComposition ? { materializedComposition } : {}),
+  }, rootArtifacts, fragments);
   const deploymentNodes = [
     ...artifactNodes,
     ...contributionNodes,
@@ -258,6 +271,61 @@ function kubernetesDnsBootstrapEgress() {
     port: 53,
     endpoint,
   }));
+}
+
+/**
+ * Materialize only envelopes that standard NetworkPolicy can represent
+ * exactly. External DNS-name contracts remain visible in the plan but are not
+ * widened into public CIDRs; an FQDN-capable target extension must own those
+ * workloads before their deny boundary can be qualified.
+ */
+function kubernetesPrivateNetworkPolicies(
+  plan: ReturnType<typeof compileApplicationRuntimeAccessPlan>,
+): readonly DeploymentJsonObject[] {
+  return plan.workloads.flatMap((workload) => {
+    const policy = workload.kubernetes;
+    if (!policy || policy.privatePeers.length === 0 || policy.externalEgress.length > 0) return [];
+    const egress = [
+      ...policy.privatePeers.map((peer) => {
+        if (peer.endpoint.target !== 'kubernetes') throw new Error(`Kubernetes workload ${workload.workloadIdentity} contains a non-Kubernetes private peer.`);
+        return {
+          to: [{
+            namespaceSelector: { matchLabels: { 'kubernetes.io/metadata.name': peer.endpoint.namespace } },
+            podSelector: { matchLabels: peer.endpoint.podSelector },
+          }],
+          ports: [{ protocol: peer.protocol, port: peer.port }],
+        };
+      }),
+      ...policy.bootstrapEgress.map((bootstrap) => {
+        if (bootstrap.endpoint.target !== 'kubernetes') throw new Error(`Kubernetes workload ${workload.workloadIdentity} contains a non-Kubernetes bootstrap endpoint.`);
+        return {
+          to: [{
+            namespaceSelector: { matchLabels: { 'kubernetes.io/metadata.name': bootstrap.endpoint.namespace } },
+            podSelector: { matchLabels: bootstrap.endpoint.podSelector },
+          }],
+          ports: [{ protocol: bootstrap.protocol, port: bootstrap.port }],
+        };
+      }),
+    ];
+    const suffix = digestApplicationDeploymentValue(workload.workloadIdentity).slice('sha256:'.length, 'sha256:'.length + 12);
+    return [{
+      apiVersion: 'networking.k8s.io/v1',
+      kind: 'NetworkPolicy',
+      metadata: {
+        name: safeNodeId(`applik8s-egress-${suffix}`),
+        namespace: policy.resource.namespace,
+        annotations: {
+          'applik8s.io/runtime-access-workload': workload.workloadIdentity,
+          'applik8s.io/runtime-access-policy-digest': workload.policyDigest,
+        },
+      },
+      spec: {
+        podSelector: { matchLabels: policy.podSelector },
+        policyTypes: ['Egress'],
+        egress,
+      },
+    }];
+  });
 }
 
 function runtimeAccessTargetResources(
