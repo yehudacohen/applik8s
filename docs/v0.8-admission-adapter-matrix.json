@@ -81,8 +81,8 @@
 			"packages/runtime-aws/src/schedule.ts",
 			"packages/compiler/src/application-fetch-gateway/index.ts"
 		],
-		"regression": "bunx vitest run --maxWorkers=1 packages/applik8s/test/application-schedule.vertical.test.ts packages/applik8s/test/application-schedule-local-runtime.vertical.test.ts packages/runtime-kubernetes/test/schedule.vertical.test.ts packages/runtime-aws/test/schedule.vertical.test.ts packages/compiler/test/application-schedules.vertical.test.ts",
-		"remaining": "local, Kubernetes, and AWS paths now share canonical occurrence admission while immediate calls preserve caller lineage; complete Hatchet general schedule lowering, emitted-host rejection/version telemetry, and OrbStack plus real EventBridge lifecycle evidence"
+      "regression": "bunx vitest run --maxWorkers=1 packages/applik8s/test/application-schedule.vertical.test.ts packages/applik8s/test/application-schedule-local-runtime.vertical.test.ts packages/runtime-kubernetes/test/schedule.vertical.test.ts packages/runtime-aws/test/schedule.vertical.test.ts packages/compiler/test/application-schedules.vertical.test.ts",
+		"remaining": "local, Kubernetes, AWS, and Hatchet paths share canonical occurrence admission while immediate calls preserve caller lineage; generated hosts emit shared bounded observations with redacted failures at 1dc42f4; complete OrbStack and real EventBridge lifecycle evidence without conflating actor alarms with schedules"
     },
     {
       "id": "actor-call-alarm",
@@ -98,7 +98,7 @@
         "packages/runtime-celld/src/worker.ts"
       ],
       "regression": "NODE_OPTIONS=--max-old-space-size=8192 bunx vitest run --maxWorkers=1 packages/applik8s/test/application-actor-authority-runtime.vertical.test.ts packages/applik8s/test/application-actors.vertical.test.ts packages/runtime-celld/test/runtime-celld.vertical.test.ts",
-      "remaining": "AC-1 deterministic authority, nested-call idempotency and narrowing, command-authorized transactional alarm cancellation, cancellation fencing, causal lineage, Release-A retained-alarm recovery, redacted version/rejection telemetry, source gates, and clean packed consumption are implemented at b076ee7; AC-2 still requires distributed celld and Kubernetes relocation, restart, rollout, drift, and leak-free lifecycle qualification"
+      "remaining": "AC-1 deterministic authority, nested-call idempotency and narrowing, command-authorized transactional alarm cancellation, cancellation fencing, causal lineage, Release-A retained-alarm recovery, shared bounded version/rejection observations, source gates, and clean packed consumption are implemented at b076ee7 and 1dc42f4; AC-2 still requires distributed celld and Kubernetes relocation, restart, rollout, drift, and leak-free lifecycle qualification"
     },
     {
       "id": "agent-ai-execution",
@@ -115,7 +115,7 @@
         "@applik8s/ai durable attempt admission evidence"
       ],
       "regression": "bunx vitest run --maxWorkers=1 packages/operations/test/execution-admission-transport.vertical.test.ts packages/operations/test/internal-transport.vertical.test.ts packages/ai/test/runtime.vertical.test.ts packages/runtime-ai/test/agent-gateway.vertical.test.ts packages/runtime-ai/test/operation-executor.vertical.test.ts packages/runtime-ai/test/runtime.vertical.test.ts packages/compiler/test/application-agents.vertical.test.ts",
-      "remaining": "add aggregate matrix/source-gate enforcement and version/rejection telemetry"
+      "remaining": "generated agent execution admission, actor/tool bridges, and internal execution transport retain canonical authority while generated workers emit sampled shared bounded observations; aggregate source enforcement is integrated at 1dc42f4; live provider and restart qualification remains governed by its existing evidence rows"
     }
   ]
 }
