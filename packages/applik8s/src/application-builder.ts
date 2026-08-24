@@ -2411,7 +2411,7 @@ function createKubernetesApplicationBuilder<TSpec extends KroCompatibleType = Re
                   readonly map: (
                     snapshot: object,
                     rebuild: ApplicationProjectionRebuildScope<TPayload>,
-                  ) => TPayload | readonly TPayload[] | undefined | Promise<TPayload | readonly TPayload[] | undefined>;
+                  ) => TPayload | readonly TPayload[] | undefined;
                 }
               | undefined;
             const draft: ApplicationOnlineProjectionDraft<TPayload, object> = {
@@ -2423,7 +2423,7 @@ function createKubernetesApplicationBuilder<TSpec extends KroCompatibleType = Re
                   map: map as (
                     snapshot: object,
                     rebuild: ApplicationProjectionRebuildScope<TPayload>,
-                  ) => TPayload | readonly TPayload[] | undefined | Promise<TPayload | readonly TPayload[] | undefined>,
+                  ) => TPayload | readonly TPayload[] | undefined,
                 };
                 return draft;
               },

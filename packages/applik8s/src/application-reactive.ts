@@ -229,7 +229,7 @@ export interface ApplicationOnlineProjectionDraft<
     map: (
       snapshot: TNextSnapshot,
       rebuild: ApplicationProjectionRebuildScope<TPayload>,
-    ) => TPayload | readonly TPayload[] | undefined | Promise<TPayload | readonly TPayload[] | undefined>,
+    ) => TPayload | readonly TPayload[] | undefined,
   ): ApplicationOnlineProjectionDraft<TPayload, TValue, TNextSnapshot>;
   rebuildFromReplay(): ApplicationOnlineProjectionDraft<TPayload, TValue, TSnapshot>;
   retain(
@@ -692,7 +692,7 @@ function functionNativeOnlineProjection<TPayload extends object, TValue extends 
         readonly map: (
           snapshot: object,
           rebuild: ApplicationProjectionRebuildScope<TPayload>,
-        ) => TPayload | readonly TPayload[] | undefined | Promise<TPayload | readonly TPayload[] | undefined>;
+        ) => TPayload | readonly TPayload[] | undefined;
       }
     | undefined;
 
@@ -704,7 +704,7 @@ function functionNativeOnlineProjection<TPayload extends object, TValue extends 
         map: map as (
           snapshot: object,
           rebuild: ApplicationProjectionRebuildScope<TPayload>,
-        ) => TPayload | readonly TPayload[] | undefined | Promise<TPayload | readonly TPayload[] | undefined>,
+        ) => TPayload | readonly TPayload[] | undefined,
       };
       return draft;
     },
@@ -1078,12 +1078,11 @@ function functionNativeProjectionRebuildMap<TPayload extends object>(
   map: (
     snapshot: object,
     rebuild: ApplicationProjectionRebuildScope<TPayload>,
-  ) => TPayload | readonly TPayload[] | undefined | Promise<TPayload | readonly TPayload[] | undefined>,
-): (snapshot: object) => TPayload | readonly TPayload[] | Promise<TPayload | readonly TPayload[]> {
+  ) => TPayload | readonly TPayload[] | undefined,
+): (snapshot: object) => TPayload | readonly TPayload[] {
   assertApplicationProjectionCallbackPurity(
     `${name} rebuild`,
     map as (...args: never[]) => unknown,
-    { allowAsync: true },
   );
   const serialized = serializeApplicationCallback({
     registrar: 'project',
@@ -1094,15 +1093,19 @@ function functionNativeProjectionRebuildMap<TPayload extends object>(
     extractCallsite: false,
   });
   const functionName = `${name.replace(/-([a-z0-9])/g, (_match, value: string) => value.toUpperCase())}Rebuild`;
-  const source = `async function ${functionName}(snapshot) {
+  const source = `function ${functionName}(snapshot) {
     const map = (${serialized.source});
     const rebuild = Object.freeze({
       source: (payload) => payload,
       skip: () => undefined,
     });
-    return (await map(snapshot, rebuild)) ?? [];
+    const sources = map(snapshot, rebuild);
+    if (sources && typeof sources.then === "function") {
+      throw new Error("Projection rebuild transformations must be synchronous and deterministic.");
+    }
+    return sources ?? [];
   }`;
-  const callback = Function(`return (${source});`)() as (snapshot: object) => Promise<TPayload | readonly TPayload[]>;
+  const callback = Function(`return (${source});`)() as (snapshot: object) => TPayload | readonly TPayload[];
   Object.defineProperty(callback, Symbol.for('applik8s.applicationCallbackSource'), {
     value: {
       ...(serialized.location ?? {

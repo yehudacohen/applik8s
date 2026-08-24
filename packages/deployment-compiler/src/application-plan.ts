@@ -123,8 +123,9 @@ export function compileApplicationPlan(request: CompileApplicationPlanRequest): 
   const resolutions = request.graph.providerRequirements.map((requirement) => {
     const consumerNode = requiredNode(request.graph, requirement.consumer.nodeId);
     const binding = request.graph.providerBindings.find(({ requirement: id }) => id === requirement.id);
-    const providerNode = binding
-      ? request.graph.nodes.find((node): node is Extract<ApplicationGraphNode, { kind: 'provider' }> => node.kind === 'provider' && node.id === binding.provider.nodeId)
+    const providerReference = binding?.provider ?? requirement.provider;
+    const providerNode = providerReference
+      ? request.graph.nodes.find((node): node is Extract<ApplicationGraphNode, { kind: 'provider' }> => node.kind === 'provider' && node.id === providerReference.nodeId)
       : undefined;
     const providerIdentity = providerNode
       ? applicationProviderIdentity({
@@ -251,6 +252,7 @@ export function compileApplicationPlan(request: CompileApplicationPlanRequest): 
 
   return {
     schemaVersion: 'applik8s.applicationPlan/v1alpha1',
+    sourceGraphVersion: request.graph.apiVersion,
     application,
     target: {
       apiVersion: 'applik8s.target/v1alpha1',

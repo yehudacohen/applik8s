@@ -36,11 +36,12 @@ export function renderApplicationPlanDiff(
 ): string {
   return [
     `ApplicationPlan diff ${diff.fromTarget} -> ${diff.toTarget}`,
+    `  summary create=${diff.summary.create} update=${diff.summary.update} replace=${diff.summary.replace} delete=${diff.summary.delete} no-op=${diff.summary.noOp}`,
     ...(diff.entries.length === 0
       ? ['  no changes']
       : diff.entries.map(
           (entry) =>
-            `  ${entry.severity.toUpperCase().padEnd(11)} ${entry.change.padEnd(7)} ${entry.category.padEnd(15)} ${entry.id}`,
+            `  ${entry.severity.toUpperCase().padEnd(11)} ${entry.action.padEnd(7)} ${entry.category.padEnd(15)} ${entry.id}`,
         )),
   ].join('\n');
 }

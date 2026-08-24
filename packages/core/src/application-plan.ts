@@ -9,8 +9,10 @@ import type {
   ApplicationRuntimeAccessRequirement,
   ApplicationSourceProvenance,
 } from './application-foundation.js';
+import { canonicalJsonV1String } from './canonical-json.js';
 
 export type ApplicationPlanSchemaVersion = 'applik8s.applicationPlan/v1alpha1';
+export type ApplicationPlanSourceGraphVersion = 'applik8s.appGraph/v1alpha1';
 export type ApplicationPlanFactClass =
   | 'declared'
   | 'derived'
@@ -23,6 +25,7 @@ export type ApplicationPlanFactClass =
 
 export interface ApplicationPlan {
   readonly schemaVersion: ApplicationPlanSchemaVersion;
+  readonly sourceGraphVersion: ApplicationPlanSourceGraphVersion;
   readonly application: ApplicationCanonicalIdentity;
   readonly target: ApplicationDeploymentTargetDescriptor;
   readonly generatedAt: string;
@@ -223,6 +226,8 @@ export interface ApplicationPlanValidationResult {
 
 export type ApplicationPlanDiffCategory =
   | 'semantic'
+  | 'execution'
+  | 'dependency'
   | 'authority'
   | 'data-flow'
   | 'runtime-access'
@@ -236,12 +241,16 @@ export type ApplicationPlanDiffCategory =
   | 'maturity'
   | 'cost'
   | 'estimate'
+  | 'native-plan'
+  | 'diagnostic'
+  | 'evidence'
   | 'provenance';
 
 export interface ApplicationPlanDiffEntry {
   readonly id: string;
   readonly category: ApplicationPlanDiffCategory;
   readonly change: 'added' | 'removed' | 'changed';
+  readonly action: 'create' | 'update' | 'replace' | 'delete';
   readonly severity: 'info' | 'warning' | 'destructive';
   readonly before?: unknown;
   readonly after?: unknown;
@@ -251,7 +260,28 @@ export interface ApplicationPlanDiff {
   readonly schemaVersion: 'applik8s.applicationPlanDiff/v1alpha1';
   readonly fromTarget: ApplicationCanonicalIdentity['id'];
   readonly toTarget: ApplicationCanonicalIdentity['id'];
+  readonly sourceGraphVersion: ApplicationPlanSourceGraphVersion;
+  readonly summary: {
+    readonly create: number;
+    readonly update: number;
+    readonly replace: number;
+    readonly delete: number;
+    readonly noOp: number;
+  };
   readonly entries: readonly ApplicationPlanDiffEntry[];
+}
+
+export class ApplicationPlanComparisonError extends TypeError {
+  constructor(
+    readonly code:
+      | 'PLAN_COMPARISON_APPLICATION_MISMATCH'
+      | 'PLAN_COMPARISON_GRAPH_VERSION_INCOMPATIBLE'
+      | 'PLAN_COMPARISON_SCHEMA_INCOMPATIBLE',
+    message: string,
+  ) {
+    super(message);
+    this.name = 'ApplicationPlanComparisonError';
+  }
 }
 
 export function normalizeApplicationPlan(plan: ApplicationPlan): ApplicationPlan {
@@ -283,16 +313,16 @@ export function normalizeApplicationPlan(plan: ApplicationPlan): ApplicationPlan
 
 export function serializeApplicationPlan(plan: ApplicationPlan): string {
   assertNoSensitivePlanData(plan);
-  return `${stableJson(normalizeApplicationPlan(plan))}\n`;
+  return `${canonicalJsonV1String(normalizeApplicationPlan(plan))}\n`;
 }
 
 /** Canonical identity material excludes generation and evidence timestamps. */
 export function serializeApplicationPlanContent(plan: ApplicationPlan): string {
   assertNoSensitivePlanData(plan);
   const normalized = normalizeApplicationPlan(plan);
-  return `${stableJson({
-    ...normalized,
-    generatedAt: undefined,
+  const { generatedAt: _generatedAt, ...content } = normalized;
+  return `${canonicalJsonV1String({
+    ...content,
     evidence: normalized.evidence.map(({ observedAt: _observedAt, ...evidence }) => evidence),
   })}\n`;
 }
@@ -317,7 +347,10 @@ export function renderApplicationPlanText(plan: ApplicationPlan): string {
 
 export function validateApplicationPlan(plan: ApplicationPlan): ApplicationPlanValidationResult {
   const diagnostics: ApplicationPlanDiagnostic[] = [];
-  if (plan.schemaVersion !== 'applik8s.applicationPlan/v1alpha1' || plan.application.kind !== 'application' || plan.target.identity.kind !== 'target') {
+  if (plan.schemaVersion !== 'applik8s.applicationPlan/v1alpha1'
+    || plan.sourceGraphVersion !== 'applik8s.appGraph/v1alpha1'
+    || plan.application.kind !== 'application'
+    || plan.target.identity.kind !== 'target') {
     diagnostics.push(planDiagnostic('error', 'PLAN_ENVELOPE_INVALID', 'Application plan has an invalid schema, application identity, or target identity.'));
   }
   if (!/^sha256:[a-f0-9]{64}$/.test(plan.sourceDigest)) {
@@ -342,7 +375,24 @@ export function validateApplicationPlan(plan: ApplicationPlan): ApplicationPlanV
       diagnostics.push(planDiagnostic('error', 'PLAN_IDENTITY_MISSING', `Provider resolution ${resolution.id} has no canonical provider identity record.`, resolution.id, resolution.provenance));
     }
   }
-  for (const record of [...plan.semantic.nodes, ...plan.semantic.edges, ...plan.resolution.capabilities, ...plan.physical.nodes, ...plan.physical.edges, ...plan.physical.nativePlans, ...plan.estimates, ...plan.evidence]) {
+  for (const record of [
+    ...plan.semantic.nodes,
+    ...plan.semantic.edges,
+    ...plan.semantic.executions,
+    ...plan.semantic.authority,
+    ...plan.semantic.dataFlows,
+    ...plan.semantic.state,
+    ...plan.semantic.exposures,
+    ...plan.semantic.observability,
+    ...plan.semantic.runtimeAccess,
+    ...plan.resolution.capabilities,
+    ...plan.physical.nodes,
+    ...plan.physical.edges,
+    ...plan.physical.nativePlans,
+    ...diagnosticRecords(plan.diagnostics),
+    ...plan.estimates,
+    ...plan.evidence,
+  ]) {
     if (!record.id || ids.has(record.id)) diagnostics.push(planDiagnostic('error', 'PLAN_IDENTITY_COLLISION', `Application plan identity ${record.id || '<empty>'} is empty or duplicated.`, record.id));
     ids.add(record.id);
   }
@@ -359,13 +409,21 @@ export function validateApplicationPlan(plan: ApplicationPlan): ApplicationPlanV
   if (containsSensitiveValue(plan)) {
     diagnostics.push(planDiagnostic('error', 'PLAN_SENSITIVE_DATA', 'Application plan contains a credential-shaped key or value.'));
   }
+  try {
+    canonicalJsonV1String(normalizeApplicationPlan(plan));
+  } catch {
+    diagnostics.push(planDiagnostic('error', 'PLAN_CANONICAL_JSON_INVALID', 'Application plan contains a value outside Canonical JSON v1.'));
+  }
   diagnostics.push(...plan.diagnostics.filter(({ severity }) => severity === 'error'));
   return { valid: diagnostics.length === 0, diagnostics };
 }
 
 export function diffApplicationPlans(before: ApplicationPlan, after: ApplicationPlan): ApplicationPlanDiff {
+  assertComparablePlans(before, after);
   const entries = [
     ...diffRecords('semantic', before.semantic.nodes, after.semantic.nodes),
+    ...diffRecords('dependency', before.semantic.edges, after.semantic.edges),
+    ...diffRecords('execution', before.semantic.executions, after.semantic.executions),
     ...securitySensitiveDiff('authority', before.semantic.authority, after.semantic.authority),
     ...diffRecords('data-flow', before.semantic.dataFlows, after.semantic.dataFlows),
     ...diffRecords('state', before.semantic.state, after.semantic.state),
@@ -373,13 +431,30 @@ export function diffApplicationPlans(before: ApplicationPlan, after: Application
     ...diffRecords('observability', before.semantic.observability, after.semantic.observability),
     ...diffProviderRecords(before.resolution.capabilities, after.resolution.capabilities),
     ...diffPhysicalRecords(before.physical.nodes, after.physical.nodes),
+    ...diffRecords('dependency', before.physical.edges, after.physical.edges),
+    ...diffRecords('native-plan', before.physical.nativePlans, after.physical.nativePlans),
     ...securitySensitiveDiff('runtime-access', before.semantic.runtimeAccess, after.semantic.runtimeAccess),
+    ...diffRecords('diagnostic', diagnosticRecords(before.diagnostics), diagnosticRecords(after.diagnostics)),
     ...diffRecords('estimate', before.estimates, after.estimates),
+    ...diffRecords('evidence', before.evidence, after.evidence),
   ].sort((left, right) => compare(left.id, right.id));
+  const changedIds = new Set(entries.map(({ id }) => id));
+  const allIds = new Set([
+    ...planDiffRecordIds(before),
+    ...planDiffRecordIds(after),
+  ]);
   return {
     schemaVersion: 'applik8s.applicationPlanDiff/v1alpha1',
     fromTarget: before.target.identity.id,
     toTarget: after.target.identity.id,
+    sourceGraphVersion: before.sourceGraphVersion,
+    summary: {
+      create: entries.filter(({ action }) => action === 'create').length,
+      update: entries.filter(({ action }) => action === 'update').length,
+      replace: entries.filter(({ action }) => action === 'replace').length,
+      delete: entries.filter(({ action }) => action === 'delete').length,
+      noOp: [...allIds].filter((id) => !changedIds.has(id)).length,
+    },
     entries,
   };
 }
@@ -424,7 +499,7 @@ function diffProviderRecords(
     const next = entry.after as ApplicationProviderResolutionEntry;
     const { maturity: _previousMaturity, ...previousRest } = previous;
     const { maturity: _nextMaturity, ...nextRest } = next;
-    return stableJson(previousRest) === stableJson(nextRest)
+    return canonicalJsonV1String(previousRest) === canonicalJsonV1String(nextRest)
       ? { ...entry, category: 'maturity' }
       : entry;
   });
@@ -438,8 +513,13 @@ function diffPhysicalRecords(
     if (entry.change !== 'changed' || !entry.before || !entry.after) return entry;
     const previous = entry.before as ApplicationPhysicalPlanNode;
     const next = entry.after as ApplicationPhysicalPlanNode;
-    if (stableJson(previous.lifecycle) !== stableJson(next.lifecycle)) {
-      return { ...entry, category: 'lifecycle', severity: next.lifecycle.intent === 'delete' || next.lifecycle.intent === 'replace' ? 'destructive' : 'warning' };
+    if (canonicalJsonV1String(previous.lifecycle) !== canonicalJsonV1String(next.lifecycle)) {
+      return {
+        ...entry,
+        category: 'lifecycle',
+        action: next.lifecycle.intent === 'replace' ? 'replace' : entry.action,
+        severity: next.lifecycle.intent === 'delete' || next.lifecycle.intent === 'replace' ? 'destructive' : 'warning',
+      };
     }
     return entry;
   });
@@ -459,15 +539,16 @@ function diffRecords(category: ApplicationPlanDiffCategory, before: readonly { r
   for (const id of new Set([...left.keys(), ...right.keys()])) {
     const previous = left.get(id);
     const next = right.get(id);
-    if (!previous) entries.push({ id, category, change: 'added', severity: category === 'security' ? 'warning' : 'info', after: next });
-    else if (!next) entries.push({ id, category, change: 'removed', severity: category === 'physical' ? 'destructive' : 'warning', before: previous });
-    else if (stableJson(previous) !== stableJson(next)) {
+    if (!previous) entries.push({ id, category, change: 'added', action: 'create', severity: category === 'security' ? 'warning' : 'info', after: next });
+    else if (!next) entries.push({ id, category, change: 'removed', action: 'delete', severity: category === 'physical' ? 'destructive' : 'warning', before: previous });
+    else if (canonicalJsonV1String(previous) !== canonicalJsonV1String(next)) {
       const previousWithoutProvenance = withoutProvenance(previous);
       const nextWithoutProvenance = withoutProvenance(next);
       entries.push({
         id,
-        category: stableJson(previousWithoutProvenance) === stableJson(nextWithoutProvenance) ? 'provenance' : category,
+        category: canonicalJsonV1String(previousWithoutProvenance) === canonicalJsonV1String(nextWithoutProvenance) ? 'provenance' : category,
         change: 'changed',
+        action: 'update',
         severity: category === 'physical' ? 'warning' : 'info',
         before: previous,
         after: next,
@@ -486,23 +567,56 @@ function sorted<T extends { readonly id: string }>(entries: readonly T[]): reado
   return [...entries].sort((left, right) => compare(left.id, right.id));
 }
 
-function stableJson(value: unknown): string {
-  if (value === undefined) return 'null';
-  if (value === null || typeof value !== 'object') return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
-  return `{${Object.entries(value)
-    .filter(([, entry]) => entry !== undefined)
-    .sort(([left], [right]) => compare(left, right))
-    .map(([key, entry]) => `${JSON.stringify(key)}:${stableJson(entry)}`)
-    .join(',')}}`;
-}
-
 function containsSensitiveValue(value: unknown, key = ''): boolean {
-  if (/(?:password|bearer|private[-_]?key|secretValue|accessToken|apiKey)$/i.test(key)) return true;
+  if (/(?:password|bearer|private[-_]?key|secretValue|accessToken|apiKey|email|phone|socialSecurityNumber|ssn)$/i.test(key)) return true;
   if (typeof value === 'string') return /^(?:Bearer\s+|sk-[A-Za-z0-9]|AKIA[A-Z0-9])/.test(value);
   if (Array.isArray(value)) return value.some((entry) => containsSensitiveValue(entry));
   if (value && typeof value === 'object') return Object.entries(value).some(([entryKey, entry]) => containsSensitiveValue(entry, entryKey));
   return false;
+}
+
+function assertComparablePlans(before: ApplicationPlan, after: ApplicationPlan): void {
+  if (before.schemaVersion !== after.schemaVersion || before.schemaVersion !== 'applik8s.applicationPlan/v1alpha1') {
+    throw new ApplicationPlanComparisonError('PLAN_COMPARISON_SCHEMA_INCOMPATIBLE', `Cannot compare ApplicationPlan schemas ${before.schemaVersion} and ${after.schemaVersion}.`);
+  }
+  if (before.sourceGraphVersion !== after.sourceGraphVersion || before.sourceGraphVersion !== 'applik8s.appGraph/v1alpha1') {
+    throw new ApplicationPlanComparisonError('PLAN_COMPARISON_GRAPH_VERSION_INCOMPATIBLE', `Cannot compare application graph schemas ${before.sourceGraphVersion} and ${after.sourceGraphVersion}.`);
+  }
+  if (before.application.id !== after.application.id) {
+    throw new ApplicationPlanComparisonError('PLAN_COMPARISON_APPLICATION_MISMATCH', `Cannot compare plans for ${before.application.id} and ${after.application.id}.`);
+  }
+}
+
+function diagnosticRecords(diagnostics: readonly ApplicationPlanDiagnostic[]): readonly (ApplicationPlanDiagnostic & { readonly id: string })[] {
+  return diagnostics.map((diagnostic) => ({
+    ...diagnostic,
+    id: `diagnostic:${lengthPrefixed([diagnostic.code, diagnostic.subjectId ?? '', diagnostic.message])}`,
+  }));
+}
+
+function lengthPrefixed(parts: readonly string[]): string {
+  return parts.map((part) => `${part.length}:${part}`).join('|');
+}
+
+function planDiffRecordIds(plan: ApplicationPlan): readonly string[] {
+  return [
+    ...plan.semantic.nodes,
+    ...plan.semantic.edges,
+    ...plan.semantic.executions,
+    ...plan.semantic.authority,
+    ...plan.semantic.dataFlows,
+    ...plan.semantic.state,
+    ...plan.semantic.exposures,
+    ...plan.semantic.observability,
+    ...plan.semantic.runtimeAccess,
+    ...plan.resolution.capabilities,
+    ...plan.physical.nodes,
+    ...plan.physical.edges,
+    ...plan.physical.nativePlans,
+    ...diagnosticRecords(plan.diagnostics),
+    ...plan.estimates,
+    ...plan.evidence,
+  ].map(({ id }) => id);
 }
 
 function assertNoSensitivePlanData(plan: ApplicationPlan): void {

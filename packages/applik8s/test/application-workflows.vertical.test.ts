@@ -842,6 +842,11 @@ describe('v0.5 durable task and workflow contracts', () => {
     });
     if (!graph) throw new Error('Expected direct projection rebuild graph.');
     expect(validateApplicationGraphStructure(graph)).toEqual([]);
+    const projection = graph.nodes.find((node) => node.id === 'projection.direct-timeline');
+    expect(projection?.kind).toBe('projection');
+    if (!projection || projection.kind !== 'projection') throw new Error('Expected direct timeline projection.');
+    expect(projection.online?.rebuild.mapSource).toMatch(/^function directTimelineRebuild\(/u);
+    expect(projection.online?.rebuild.mapSource).not.toContain('async function');
   });
 
 	it('injects only explicitly declared bounded object stores into tasks', () => {

@@ -51,7 +51,7 @@ export function applicationProviderGuaranteesForGraph(
   return request.graph.nodes
     .filter((node): node is ApplicationProviderNode => node.kind === 'provider')
     .map((provider) => {
-      const implementation = selectedImplementation(provider, request.profile, request.target);
+      const implementation = selectedImplementation(provider, request.profile, request.target, request.graph);
       const support = providerSupport(provider.interface, implementation, request.target);
 			const scheduleFindings = provider.interface === 'Scheduler'
 				? scheduleProviderFindings(request.graph, provider, implementation, request.target)
@@ -120,7 +120,21 @@ export function assertApplicationScheduleProviderCompatibility(
     .join('\n')}`);
 }
 
-function selectedImplementation(provider: ApplicationProviderNode, profile: string | undefined, target: ApplicationDeploymentTargetKind): string {
+function selectedImplementation(
+  provider: ApplicationProviderNode,
+  profile: string | undefined,
+  target: ApplicationDeploymentTargetKind,
+  graph?: ApplicationGraph,
+  seen: ReadonlySet<string> = new Set(),
+): string {
+  if (seen.has(provider.id)) throw new Error(`Application provider alias cycle includes ${provider.id}.`);
+  const nextSeen = new Set(seen).add(provider.id);
+  const aliasOf = objectValue(provider.config)?.aliasOf;
+  if (typeof aliasOf === 'string' && graph) {
+    const aliased = graph.nodes.find((node): node is ApplicationProviderNode => node.kind === 'provider' && node.id === aliasOf);
+    if (!aliased) throw new Error(`Application provider ${provider.id} aliases missing provider ${aliasOf}.`);
+    return selectedImplementation(aliased, profile, target, graph, nextSeen);
+  }
   if (provider.interface === 'Scheduler' && provider.implementation === 'target-selected') {
     return target === 'local'
       ? 'local-scheduler'
@@ -137,12 +151,43 @@ function selectedImplementation(provider: ApplicationProviderNode, profile: stri
   }
   const targetAlias = targetImplementationAliases[target]?.[provider.interface]?.[provider.implementation];
   if (targetAlias) return targetAlias;
+  if (provider.implementation === 'application-target-provider-selection') {
+    return selectedTargetImplementation(provider.config, target) ?? provider.implementation;
+  }
   if (provider.implementation !== 'application-provider-selection' || !profile) return provider.implementation;
+  const directSelection = objectValue(provider.config);
+  if (directSelection?.kind === 'application-provider-selection') {
+    const cases = objectValue(directSelection.cases);
+    const selected = objectValue(cases?.[profile] ?? directSelection.default);
+    if (selected?.kind === 'application-target-provider-selection') {
+      return selectedTargetImplementation(selected, target) ?? provider.implementation;
+    }
+    if (typeof selected?.kind === 'string') return selected.kind;
+  }
   const profileConfig = objectValue(provider.config?.profile);
   const branch = (Array.isArray(profileConfig?.branches) ? profileConfig.branches : [])
     .map(objectValue)
     .find((candidate) => candidate?.variant === profile);
-  return typeof branch?.implementation === 'string' ? branch.implementation.split('/')[0] ?? branch.implementation : provider.implementation;
+  if (!branch || typeof branch.implementation !== 'string') return provider.implementation;
+  const implementation = branch.implementation.split('/')[0] ?? branch.implementation;
+  return implementation === 'application-target-provider-selection'
+    ? selectedTargetImplementation(objectValue(branch.config), target) ?? implementation
+    : implementation;
+}
+
+function selectedTargetImplementation(
+  config: Readonly<Record<string, unknown>> | undefined,
+  target: ApplicationDeploymentTargetKind,
+): string | undefined {
+  if (!config) return undefined;
+  const selection = config.kind === 'application-target-provider-selection'
+    ? config
+    : Object.values(config)
+        .map(objectValue)
+        .find((candidate) => candidate?.kind === 'application-target-provider-selection');
+  const targets = objectValue(selection?.targets);
+  const selected = objectValue(targets?.[target] ?? (target === 'aws-local' ? targets?.aws : undefined));
+  return typeof selected?.kind === 'string' ? selected.kind : undefined;
 }
 
 const targetImplementationAliases: Readonly<Record<ApplicationDeploymentTargetKind, Readonly<Record<string, Readonly<Record<string, string>>>>>> = {
@@ -211,6 +256,15 @@ const localProviders: Readonly<Record<string, readonly string[]>> = {
   EventSource: ['nats-jetstream'],
   ObjectStorage: ['s3'],
   AnalyticalDatabase: ['clickhouse'],
+  AI: ['ai-deterministic', 'envoy-ai-gateway'],
+  Authorization: ['application-authorization'],
+  IdentityProvider: ['identity-provider'],
+  NotificationDelivery: ['local-inspectable', 'smtp'],
+  OAuthAuthorizationServer: ['oauth-authorization-server'],
+  PaymentProvider: ['local-simulated', 'stripe'],
+  Search: ['opensearch', 'postgres-search'],
+  StructuredGeneration: ['structured-generation-deterministic', 'structured-generation-http'],
+  WorkflowEngine: ['hatchet'],
   ApplicationHost: ['local-process'],
   Scheduler: ['local-scheduler', 'hatchet-scheduler'],
   Observability: ['local-otel', 'otlp'],

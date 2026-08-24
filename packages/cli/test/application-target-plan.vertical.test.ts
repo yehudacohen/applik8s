@@ -45,6 +45,7 @@ describe('target-native planning', () => {
     const applicationPlan = JSON.parse(await readFile(join(cwd, '.plans', 'production.application-plan.json'), 'utf8'));
     expect(applicationPlan).toMatchObject({
       schemaVersion: 'applik8s.applicationPlan/v1alpha1',
+      sourceGraphVersion: 'applik8s.appGraph/v1alpha1',
       target: {
         target: 'aws',
         profile: 'production',

@@ -2439,6 +2439,7 @@ describe("Application deployment compiler", () => {
     const first = compile("2026-08-19T12:00:00.000Z");
     const second = compile("2026-08-19T12:05:00.000Z");
 
+    expect(first.sourceGraphVersion).toBe("applik8s.appGraph/v1alpha1");
     expect(first.semantic.nodes).toHaveLength(graph.nodes.length);
     expect(first.semantic).toMatchObject({
       executions: [],
@@ -2458,6 +2459,17 @@ describe("Application deployment compiler", () => {
     expect(renderApplicationPlanText(first)).toContain("Providers: 1 resolved, 0 unresolved/incompatible");
     expect(renderApplicationPlanGraph(first)).toContain('flowchart LR');
     expect(renderApplicationPlanGraph(first)).toContain('provider: postgres');
+    expect(diffApplicationPlans(first, second)).toMatchObject({
+      sourceGraphVersion: "applik8s.appGraph/v1alpha1",
+      summary: {
+        create: 0,
+        update: 0,
+        replace: 0,
+        delete: 0,
+        noOp: expect.any(Number),
+      },
+      entries: [],
+    });
     expect(diffApplicationPlans(first, {
       ...first,
       resolution: {
@@ -2523,6 +2535,75 @@ describe("Application deployment compiler", () => {
     ]);
     expect(() => serializeApplicationPlan(leaked)).toThrow(/PLAN_SENSITIVE_DATA/u);
     expect(() => serializeApplicationPlanContent(leaked)).toThrow(/PLAN_SENSITIVE_DATA/u);
+
+    const nativePlanChanged = {
+      ...first,
+      physical: {
+        ...first.physical,
+        nativePlans: [{ ...nativePlan, actions: ["replace" as const] }, ...otherNativePlans],
+      },
+    };
+    expect(diffApplicationPlans(first, nativePlanChanged)).toMatchObject({
+      summary: { update: 1 },
+      entries: [expect.objectContaining({
+        category: "native-plan",
+        change: "changed",
+        action: "update",
+      })],
+    });
+
+    const unsupportedCanonicalValue = {
+      ...first,
+      physical: {
+        ...first.physical,
+        nativePlans: [{
+          ...nativePlan,
+          // typecast: adversarial runtime input proves the public validator rejects non-JSON values.
+          summary: { ...nativePlan.summary, calculate: (() => "not-json") as never },
+        }, ...otherNativePlans],
+      },
+    };
+    expect(validateApplicationPlan(unsupportedCanonicalValue).diagnostics).toEqual([
+      expect.objectContaining({ code: "PLAN_CANONICAL_JSON_INVALID" }),
+    ]);
+
+    const pii = {
+      ...first,
+      physical: {
+        ...first.physical,
+        nativePlans: [{ ...nativePlan, summary: { ...nativePlan.summary, email: "private@example.test" } }, ...otherNativePlans],
+      },
+    };
+    expect(validateApplicationPlan(pii).diagnostics).toEqual([
+      expect.objectContaining({ code: "PLAN_SENSITIVE_DATA" }),
+    ]);
+
+    const repeatedDiagnosticCode = {
+      ...first,
+      diagnostics: [
+        { severity: "warning" as const, code: "PLAN_PROVIDER_LIMIT", message: "first bounded limit", subjectId: "provider.primary", provenance: [] },
+        { severity: "warning" as const, code: "PLAN_PROVIDER_LIMIT", message: "second bounded limit", subjectId: "provider.primary", provenance: [] },
+      ],
+    };
+    expect(validateApplicationPlan(repeatedDiagnosticCode).diagnostics).toEqual([]);
+    expect(diffApplicationPlans(first, repeatedDiagnosticCode).entries).toEqual([
+      expect.objectContaining({ category: "diagnostic", action: "create" }),
+      expect.objectContaining({ category: "diagnostic", action: "create" }),
+    ]);
+
+    expect(() => diffApplicationPlans(first, {
+      ...first,
+      // typecast: runtime readers can receive a newer graph schema despite the v1 compile-time literal.
+      sourceGraphVersion: "applik8s.appGraph/v2" as never,
+    })).toThrowError(expect.objectContaining({
+      code: "PLAN_COMPARISON_GRAPH_VERSION_INCOMPATIBLE",
+    }));
+    expect(() => diffApplicationPlans(first, {
+      ...first,
+      application: { ...first.application, id: "applik8s://applications/other" },
+    })).toThrowError(expect.objectContaining({
+      code: "PLAN_COMPARISON_APPLICATION_MISMATCH",
+    }));
   });
 });
 
