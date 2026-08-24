@@ -35,7 +35,6 @@ import {
   addApplicationProviderRequirement,
 } from './application-graph-state.js';
 import { applicationProviderGraphNodeId, kubernetesNameSegment } from './application-identifiers.js';
-import { applicationCallableProviderDependencies } from './application-provider-dependencies.js';
 import { applicationQueryBindingForOperation } from './application-queries.js';
 import { declaredSchema } from './application-workflow-serialization.js';
 import { applicationModelCommandBindingForOperation } from './native-models.js';
@@ -139,10 +138,16 @@ export function registerApplicationAgent<
     calls: [handler, ...(options.__generatedCalls ?? [])],
     bindings: options.__generatedBindings,
   });
-  const providerBindings = applicationCallableProviderDependencies({
-    ...handlerDependencies.bindings,
-    generatedAgentProviderDependencies: handler,
-  });
+  const capturedProviderBindings = handlerDependencies.providerBindings;
+  const providerBindings = capturedProviderBindings.filter(
+    (binding) =>
+      binding.operation !== undefined
+      || !capturedProviderBindings.some(
+        (candidate) =>
+          candidate.operation !== undefined
+          && candidate.provider.nodeId === binding.provider.nodeId,
+      ),
+  );
   const serializedHandler = serializeApplicationCallback({
     registrar: 'agent',
     argumentIndex: 2,

@@ -3,6 +3,8 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import type {
   ApplicationAIAgentNode,
+  ApplicationCallableProviderBinding,
+  ApplicationCallableProviderRuntimeOperation,
   ApplicationGatewayNode,
   ApplicationGraph,
   ApplicationHandlerDependencies,
@@ -26,6 +28,7 @@ import {
   applicationActorInvocationBoundary,
   generatedApplicationActorInvocationClientSource,
 } from '../application-actor-invocation.js';
+import { applicationCallableProviderEnvironment } from '../application-callable-provider-runtime.js';
 import { generatedCallbackFactoryModule } from '../application-callback-module.js';
 import {
   emitGeneratedApplicationContainer,
@@ -475,6 +478,20 @@ async function emitAgent(
   const manifestPath = join(agentDir, 'agent.manifest.json');
   const metafilePath = join(agentDir, 'agent.esbuild-meta.json');
   await mkdir(agentDir, { recursive: true });
+  const providerOperations = agentProviderRuntimeOperations(contract.agent);
+  const providerBindingPaths = providerOperations.map(
+    ({ binding }) => binding.identifier,
+  );
+  const providerBindingRoots = providerBindingPaths
+    .map((identifier) => identifier.split('.')[0])
+    .filter((identifier): identifier is string => Boolean(identifier))
+    .filter(
+      (identifier, index, identifiers) =>
+        identifiers.indexOf(identifier) === index,
+    );
+  const ordinaryBindingRoots = contract.queries
+    .map(({ alias }) => alias.split('.')[0] ?? alias)
+    .concat(contract.actors.map(({ alias }) => alias.split('.')[0] ?? alias));
   await writeFile(
     join(agentDir, 'handler.generated.ts'),
     generatedCallbackFactoryModule({
@@ -482,14 +499,21 @@ async function emitAgent(
       ...(contract.agent.handlerDependencies
         ? { dependencies: contract.agent.handlerDependencies }
         : {}),
-      injectedIdentifiers: contract.queries
-        .map(({ alias }) => alias.split('.')[0] ?? alias)
-        .concat(contract.actors.map(({ alias }) => alias.split('.')[0] ?? alias))
+      injectedIdentifiers: ordinaryBindingRoots
+        .concat(providerBindingRoots)
         .filter(
           (identifier, index, values) =>
             /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(identifier)
             && values.indexOf(identifier) === index,
         ),
+      injectedBindingPaths: [
+        ...ordinaryBindingRoots,
+        ...providerBindingPaths,
+      ],
+      // The semantic graph has already admitted these exact callable leaves.
+      // Replaying their captured provide/profile/inject module would execute
+      // application authoring setup inside the generated agent worker.
+      replacedCapturedIdentifiers: providerBindingRoots,
       exportName: 'createHandler',
     }),
   );
@@ -622,6 +646,13 @@ function uniqueRuntimeEndpoints(
 }
 
 function generatedAgentSource(contract: ApplicationAgentCompilerContract): string {
+  const providerOperations = agentProviderRuntimeOperations(contract.agent);
+  const providerRuntimeImports = uniqueAgentProviderRuntimeOperations(
+    contract.agent,
+  ).map(
+    ({ runtime, variable }) =>
+      `import { ${runtime.export} as ${variable} } from ${JSON.stringify(runtime.module)};`,
+  ).join('\n');
   const instructions = contract.agent.instructions.kind === 'static'
     ? JSON.stringify(contract.agent.instructions.value)
     : 'instructions';
@@ -667,6 +698,7 @@ import { createApplicationOperationAuthorityRuntime, decodeApplicationExecutionA
 import { createApplicationAIAgentRequestHandler, createApplicationAIOperationExecutor, createPostgresApplicationAIAttemptStore } from '@applik8s/runtime-ai';
 import { createApplicationTaskQueryRuntime } from '@applik8s/applik8s/task-query-runtime';
 import { createHandler } from './handler.generated.js';
+${providerRuntimeImports}
 ${localToolImports}
 ${contract.tools.some((tool) => tool.local)
     ? "import { normalizeSchema } from '@applik8s/sdk/schema-runtime';\nimport { applicationPostgresModelReadClients, applicationRequestContextValues, createApplicationFunctionNativeEventHandle, editApplicationNativeModelObject, executeFunctionNativePostgresModelEdit, findApplicationNativeModelObjects, getApplicationNativeModelObject, requireApplicationNativeModelObject, withApplicationNativeModelReadClients, withApplicationNativeModelTransactionRuntime } from '@applik8s/applik8s/stream-worker-runtime';"
@@ -802,6 +834,10 @@ const directOperations = new Map(
     [dependency.authoringOperationId, dependency.operation],
   ]),
 );
+const providerBindings = Object.freeze({
+${providerOperations.map(({ binding, variable }) =>
+    `  ${JSON.stringify(binding.identifier)}: ${variable},`).join('\n')}
+});
 function focusedAgentBindings(flat) {
   const bindings = {};
   for (const [path, value] of Object.entries(flat)) {
@@ -810,7 +846,12 @@ function focusedAgentBindings(flat) {
     for (const segment of segments.slice(0, -1)) {
       current = current[segment] ??= {};
     }
-    current[segments.at(-1)] = value;
+    const leaf = segments.at(-1);
+    if (!leaf) throw new Error('Agent runtime binding path is empty.');
+    if (Object.hasOwn(current, leaf)) {
+      throw new Error('Agent runtime binding collides at ' + path + '.');
+    }
+    current[leaf] = value;
   }
   return bindings;
 }
@@ -879,7 +920,7 @@ const handler = (request, context) => {
     );
   }]));
   return directOperationScope.run(runtime, () => createHandler(
-    focusedAgentBindings({ ...queryBindings, ...actorBindings }),
+    focusedAgentBindings({ ...providerBindings, ...queryBindings, ...actorBindings }),
   )(request, context));
 };
 ${generatedApplicationActorInvocationClientSource()}
@@ -1799,7 +1840,7 @@ function generatedAgentResources(
                     containerPort: contract.agent.deployment.port,
                   },
                 ],
-                env: [
+                env: uniqueAgentEnvironment([
                   { name: 'NODE_ENV', value: 'production' },
                   { name: 'NODE_OPTIONS', value: '--enable-source-maps' },
                   { name: 'APPLIK8S_DEPLOYMENT_TARGET', value: 'kubernetes' },
@@ -1874,7 +1915,11 @@ function generatedAgentResources(
                         },
                       }]
                     : []),
-                ],
+                  ...applicationCallableProviderEnvironment(
+                    contract.callableProviders,
+                    { target: 'kubernetes', namespace: contract.namespace },
+                  ),
+                ]),
                 readinessProbe: {
                   httpGet: {
                     path: '/readyz',
@@ -1911,6 +1956,93 @@ function generatedAgentResources(
       },
     },
   ];
+}
+
+interface AgentProviderRuntimeOperation {
+  readonly binding: ApplicationCallableProviderBinding;
+  readonly runtime: ApplicationCallableProviderRuntimeOperation;
+  readonly variable: string;
+}
+
+function agentProviderRuntimeOperations(
+  agent: ApplicationAIAgentNode,
+): readonly AgentProviderRuntimeOperation[] {
+  return (agent.providerBindings ?? []).flatMap((binding) => {
+    if (!binding.operation) {
+      if (
+        binding.placement === 'objectStore'
+        && binding.provider.interface === 'ObjectStorage'
+      ) return [];
+      throw new Error(
+        `Application agent ${agent.id} provider binding ${binding.identifier} has no callable operation metadata. Provider placement without an exact operation cannot hydrate a generated agent worker.`,
+      );
+    }
+    const runtime = binding.operation.runtime;
+    if (!runtime) {
+      throw new Error(
+        `Application agent ${agent.id} provider binding ${binding.identifier} has no public static runtime operation. Define the operation in the provider runtime contract; generated agent workers never replay authoring-time provider selection.`,
+      );
+    }
+    if (
+      !/^(?:@[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._/-]*|[a-z0-9][a-z0-9._/-]*)$/u.test(
+        runtime.module,
+      )
+      || runtime.module.includes('..')
+      || !/^[A-Za-z_$][A-Za-z0-9_$]*$/u.test(runtime.export)
+    ) {
+      throw new Error(
+        `Application agent ${agent.id} provider binding ${binding.identifier} has an invalid public runtime export ${runtime.module}#${runtime.export}.`,
+      );
+    }
+    const segments = binding.identifier.split('.');
+    if (
+      segments.length === 0
+      || segments.some(
+        (segment) => !/^[A-Za-z_$][A-Za-z0-9_$]*$/u.test(segment),
+      )
+    ) {
+      throw new Error(
+        `Application agent ${agent.id} provider binding ${binding.identifier} is not a static JavaScript binding path.`,
+      );
+    }
+    return [{
+      binding,
+      runtime,
+      variable: `providerOperation_${createHash('sha256')
+        .update(`${runtime.module}\0${runtime.export}`)
+        .digest('hex')
+        .slice(0, 12)}`,
+    }];
+  });
+}
+
+function uniqueAgentProviderRuntimeOperations(
+  agent: ApplicationAIAgentNode,
+): readonly AgentProviderRuntimeOperation[] {
+  return agentProviderRuntimeOperations(agent).filter(
+    (operation, index, operations) =>
+      operations.findIndex(
+        (candidate) => candidate.variable === operation.variable,
+      ) === index,
+  );
+}
+
+function uniqueAgentEnvironment(
+  entries: readonly Readonly<Record<string, unknown>>[],
+): readonly Readonly<Record<string, unknown>>[] {
+  const result = new Map<string, Readonly<Record<string, unknown>>>();
+  for (const entry of entries) {
+    const name = String(entry.name ?? '');
+    if (!name) throw new Error('Generated agent environment entry has no name.');
+    const previous = result.get(name);
+    if (previous && JSON.stringify(previous) !== JSON.stringify(entry)) {
+      throw new Error(
+        `Generated agent workload declares conflicting environment ${name}.`,
+      );
+    }
+    result.set(name, entry);
+  }
+  return [...result.values()];
 }
 
 async function writeCallbackModule(

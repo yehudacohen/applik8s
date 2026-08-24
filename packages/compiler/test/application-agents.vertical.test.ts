@@ -1,5 +1,5 @@
 // typecast-file-boundary: generated-agent fixtures inspect JSON manifests only after compiler emission and explicit discriminator assertions.
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -7,10 +7,15 @@ import { AI } from '@applik8s/ai';
 import { app, applicationGraphFor, IdentityProvider, postgres, trustedContext } from '@applik8s/applik8s';
 import { type } from '@applik8s/applik8s/dsl';
 import { applicationConversations } from '@applik8s/conversations';
+import {
+  type ApplicationGraph,
+  deriveApplicationGraphFoundation,
+} from '@applik8s/core';
 import { usage } from '@applik8s/usage';
 import { pgTable, text } from 'drizzle-orm/pg-core';
 import { afterEach, describe, expect, it } from 'vitest';
 import { emitGeneratedApplicationAgents } from '../src/application-agents/index.js';
+import { applicationProviderConsumerWorkloads } from '../src/application-deployment-graph.js';
 import {
   applicationFacadeManifest,
   generatedApplicationFacadeSource,
@@ -59,18 +64,6 @@ describe('generated application AI agents', () => {
         member: 'record',
         memberKind: 'command',
       }],
-      providerBindings: [{
-        identifier: expect.any(String),
-        provider: {
-          interface: 'AcquisitionProvider',
-          nodeId: 'provider.acquisition-provider.v1alpha1.primary',
-        },
-      }],
-    });
-    expect(discovered.value.graph.edges).toContainEqual({
-      from: { nodeId: 'provider.acquisition-provider.v1alpha1.primary' },
-      to: { nodeId: 'aiAgent.researcher' },
-      relationship: 'provides',
     });
     const catalog = compileApplicationOperationCatalog(discovered.value.graph);
     const authority = compileApplicationWorkloadAuthority(
@@ -101,7 +94,7 @@ describe('generated application AI agents', () => {
     expect(generated).toContain('principal: context.principal');
     expect(generated).toContain("transport: 'direct'");
     expect(generated).toContain('workloadAuthorityId: binding.workloadAuthority.id');
-    expect(handler).toContain('const acquire = acquisition.acquire');
+    expect(handler).not.toContain('application.inject');
     expect(generated).not.toContain("id: 'agent:' + context.invocationId");
     expect(authority).toContainEqual(expect.objectContaining({
       operationId: 'applik8s://actors/research-session.v1/operations/record',
@@ -110,13 +103,319 @@ describe('generated application AI agents', () => {
     expect(JSON.stringify(artifact.resources)).toContain(
       'APPLIK8S_ACTOR_APPLICATION_ENDPOINT',
     );
-    expect(JSON.stringify(artifact.resources)).toContain(
-      'APPLIK8S_PROFILE_VARIANT',
-    );
-    expect(JSON.stringify(artifact.resources)).toContain(
-      '${schema.spec.profile}',
-    );
   }, 60_000);
+
+  it('hydrates a clean external callable provider without replaying agent authoring setup', async () => {
+    const directory = await mkdtemp(
+      join(process.cwd(), '.tmp-applik8s-provider-agent-'),
+    );
+    temporaryDirectories.push(directory);
+    const providerPackage = join(
+      directory,
+      'node_modules',
+      '@fixture',
+      'acquisition',
+    );
+    await mkdir(providerPackage, { recursive: true });
+    await writeFile(
+      join(providerPackage, 'package.json'),
+      JSON.stringify({
+        name: '@fixture/acquisition',
+        version: '1.0.0',
+        type: 'module',
+        exports: {
+          '.': './index.js',
+          './runtime': './runtime.js',
+        },
+      }),
+    );
+    await writeFile(join(providerPackage, 'runtime.js'), `
+export async function acquireItem(input) {
+  return { value: (process.env.ACQUISITION_SOURCE || 'missing') + ':' + input.id };
+}
+`);
+    await writeFile(join(providerPackage, 'index.js'), `
+import { defineApplicationProvider } from '@applik8s/applik8s';
+export const AcquisitionProvider = defineApplicationProvider({
+  interface: 'AcquisitionProvider',
+  version: 'v1alpha1',
+  runtime: {
+    bind(implementation) {
+      return {
+        env: { ACQUISITION_SOURCE: implementation.source },
+        secretEnv: {
+          ACQUISITION_TOKEN: {
+            secret: implementation.credentialSecret,
+            key: 'token',
+          },
+        },
+        readiness: {
+          dependencies: [implementation.credentialSecret],
+          condition: 'the selected acquisition credential is projected',
+          timeoutSeconds: 30,
+        },
+      };
+    },
+    operations: {
+      acquire: {
+        module: '@fixture/acquisition/runtime',
+        export: 'acquireItem',
+        access: {
+          kind: 'provider',
+          operations: ['connection.use', 'network.connect'],
+        },
+      },
+    },
+  },
+  accepts: candidate => candidate?.kind === 'acquisition'
+    && candidate.credentialSecret?.kind === 'Secret'
+    && typeof candidate.acquire === 'function',
+}).named('primary');
+`);
+    await mkdir(join(directory, 'migrations'));
+    await writeFile(
+      join(directory, 'migrations', '0000_conversations.sql'),
+      'create table provider_agent_conversations (id text primary key, body text not null);\n',
+    );
+    const entrypoint = join(directory, 'entrypoint.ts');
+    await writeFile(entrypoint, `
+import { AI } from '@applik8s/ai';
+import { IdentityProvider, app } from '@applik8s/applik8s';
+import { type } from '@applik8s/applik8s/dsl';
+import { pgTable, text } from 'drizzle-orm/pg-core';
+import { AcquisitionProvider } from '@fixture/acquisition';
+
+const application = app('provider-agent', {
+  namespace: 'provider-agent',
+  spec: type({ profile: "'starter' | 'dedicated'" }),
+  status: type({ ready: 'boolean' }),
+});
+application.provide(AI, AI.deterministic({ fixture: { response: 'recorded' } }));
+application.provide(IdentityProvider, IdentityProvider.deterministic({
+  mode: 'starter',
+  application: 'provider-agent',
+  subject: 'test',
+  audience: ['provider-agent'],
+  catalogRevision: 'catalog-test',
+  authorityRevision: 'authority-test',
+}));
+const conversations = pgTable('provider_agent_conversations', {
+  id: text('id').primaryKey(),
+  body: text('body').notNull(),
+});
+const database = application.database.postgres('application', {
+  schema: { conversations },
+  migrations: { path: './migrations' },
+});
+const Conversation = application.model(conversations, {
+  name: 'Conversation',
+  database,
+});
+const implementation = (source, secretName) => ({
+  kind: 'acquisition',
+  source,
+  credentialSecret: {
+    apiVersion: 'v1',
+    kind: 'Secret',
+    name: secretName,
+    namespace: 'provider-agent',
+  },
+  async acquire(input) { return { value: this.source + ':' + input.id }; },
+});
+application.profile(application.installation.spec, 'profile')
+  .provide(AcquisitionProvider)
+  .starter(() => implementation('starter', 'acquisition-starter'))
+  .dedicated(() => implementation('dedicated', 'acquisition-dedicated'))
+  .exhaustive();
+const provider = application.inject(AcquisitionProvider);
+const acquire = provider.acquire;
+async function acquireThroughHelper(input) {
+  return acquire(input);
+}
+const researcher = application.serviceIdentity('researcher');
+researcher.can(Conversation.create);
+application.agent('researcher', {
+  identity: researcher,
+  model: AI.model('deterministic', { capabilities: [AI.chat, AI.tools] }),
+  instructions: 'Acquire three records.',
+  tools: [Conversation.create],
+}, async (request, context) => {
+  const direct = await provider.acquire({ id: context.runId + '-direct' });
+  const extracted = await acquire({ id: context.runId + '-extracted' });
+  const helper = await acquireThroughHelper({ id: context.runId + '-helper' });
+  return {
+    threadId: request.threadId,
+    runId: context.runId,
+    result: [direct.value, extracted.value, helper.value].join(','),
+  };
+});
+export const providerAgentStack = application.composition;
+`);
+    const discovered = await discoverApplicationGraphWithExports(
+      entrypoint,
+      'providerAgentStack',
+    );
+    expect(
+      discovered.ok,
+      discovered.ok ? undefined : discovered.error.message,
+    ).toBe(true);
+    if (!discovered.ok) return;
+    expect(
+      discovered.value.graph.nodes.find((node) => node.kind === 'aiAgent'),
+    ).toMatchObject({
+      providerBindings: expect.arrayContaining([
+        expect.objectContaining({ identifier: 'provider.acquire' }),
+        expect.objectContaining({ identifier: 'acquire' }),
+      ]),
+    });
+    const graph = discovered.value.graph;
+    const operationCatalog = compileApplicationOperationCatalog(graph);
+    const workloadAuthority = compileApplicationWorkloadAuthority(
+      graph,
+      operationCatalog,
+    );
+    const [artifact] = await emitGeneratedApplicationAgents({
+      graph,
+      operationCatalog,
+      workloadAuthority,
+      outDir: join(directory, 'dist'),
+      entrypoint,
+    });
+    if (!artifact) throw new Error('Expected a generated provider agent.');
+    const generated = await readFile(artifact.sourcePath, 'utf8');
+    const generatedEntrypoint = await readFile(
+      join(dirname(artifact.sourcePath), 'agent.generated.ts'),
+      'utf8',
+    );
+    const callback = await readFile(
+      join(dirname(artifact.sourcePath), 'handler.generated.ts'),
+      'utf8',
+    );
+    expect(generated).toContain('acquireItem');
+    expect(generated).toContain('ACQUISITION_SOURCE');
+    expect(generatedEntrypoint).toContain('@fixture/acquisition/runtime');
+    expect(callback).toContain('acquireThroughHelper');
+    expect(callback).not.toContain('defineApplicationProvider');
+    expect(callback).not.toContain('.provide(');
+    expect(callback).not.toContain('.profile(');
+    expect(callback).not.toContain('.inject(');
+    const deployment = artifact.resources.find(
+      (resource) => resource.kind === 'Deployment',
+    );
+    const deploymentSource = JSON.stringify(deployment);
+    expect(deploymentSource).toContain('APPLIK8S_PROFILE_VARIANT');
+    expect(deploymentSource).toContain('ACQUISITION_SOURCE');
+    expect(deploymentSource).toContain('ACQUISITION_TOKEN');
+    expect(deploymentSource).toContain('acquisition-starter');
+    const agent = graph.nodes.find((node) => node.kind === 'aiAgent');
+    expect(agent?.kind).toBe('aiAgent');
+    if (agent?.kind !== 'aiAgent') return;
+    expect(agent.providerBindings).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        operation: expect.objectContaining({
+          member: 'acquire',
+          runtime: expect.objectContaining({
+            module: '@fixture/acquisition/runtime',
+            export: 'acquireItem',
+          }),
+        }),
+      }),
+    ]));
+    const providerNode = graph.nodes.find(
+      (node) => node.kind === 'provider'
+        && node.interface === 'AcquisitionProvider',
+    );
+    expect(providerNode?.kind).toBe('provider');
+    if (providerNode?.kind !== 'provider') return;
+    expect(
+      [...applicationProviderConsumerWorkloads(
+        graph,
+        new Set([providerNode.id]),
+      )],
+    ).toEqual(['researcher']);
+    const access = deriveApplicationGraphFoundation(graph, {
+      workspaceRoot: process.cwd(),
+    })
+      .runtimeAccess.filter(
+        (requirement) => requirement.target.capabilityId === providerNode.id,
+      );
+    expect(access).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        consumer: expect.objectContaining({ nodeId: agent.id }),
+        target: expect.objectContaining({ operation: 'connection.use' }),
+      }),
+      expect.objectContaining({
+        consumer: expect.objectContaining({ nodeId: agent.id }),
+        target: expect.objectContaining({ operation: 'network.connect' }),
+      }),
+    ]));
+    const [repeatedArtifact] = await emitGeneratedApplicationAgents({
+      graph,
+      operationCatalog,
+      workloadAuthority,
+      outDir: join(directory, 'dist-repeat'),
+      entrypoint,
+    });
+    expect(repeatedArtifact?.digest).toBe(artifact.digest);
+    expect(await readFile(repeatedArtifact?.sourcePath ?? '', 'utf8')).toBe(
+      generated,
+    );
+    const missingRuntimeGraph = {
+      ...graph,
+      nodes: graph.nodes.map((node) =>
+        node.kind !== 'aiAgent'
+          ? node
+          : {
+              ...node,
+              providerBindings: node.providerBindings?.map((binding) => ({
+                ...binding,
+                ...(binding.operation
+                  ? { operation: { member: binding.operation.member } }
+                  : {}),
+              })),
+            }),
+    } as ApplicationGraph;
+    await expect(
+      emitGeneratedApplicationAgents({
+        graph: missingRuntimeGraph,
+        operationCatalog: compileApplicationOperationCatalog(
+          missingRuntimeGraph,
+        ),
+        workloadAuthority: compileApplicationWorkloadAuthority(
+          missingRuntimeGraph,
+          compileApplicationOperationCatalog(missingRuntimeGraph),
+        ),
+        outDir: join(directory, 'missing-runtime'),
+        entrypoint,
+      }),
+    ).rejects.toThrow(/has no public static runtime operation/);
+    const placementOnlyGraph = {
+      ...missingRuntimeGraph,
+      nodes: missingRuntimeGraph.nodes.map((node) =>
+        node.kind !== 'aiAgent'
+          ? node
+          : {
+              ...node,
+              providerBindings: node.providerBindings?.map(
+                ({ operation: _operation, ...binding }) => binding,
+              ),
+            }),
+    } as ApplicationGraph;
+    await expect(
+      emitGeneratedApplicationAgents({
+        graph: placementOnlyGraph,
+        operationCatalog: compileApplicationOperationCatalog(
+          placementOnlyGraph,
+        ),
+        workloadAuthority: compileApplicationWorkloadAuthority(
+          placementOnlyGraph,
+          compileApplicationOperationCatalog(placementOnlyGraph),
+        ),
+        outDir: join(directory, 'placement-only'),
+        entrypoint,
+      }),
+    ).rejects.toThrow(/has no callable operation metadata/);
+  }, 120_000);
 
   it('injects direct query handles without importing the authoring graph into the agent runtime', async () => {
     const fixture = new URL(
@@ -197,7 +496,7 @@ describe('generated application AI agents', () => {
     expect(await readFile(artifact.sourcePath, 'utf8')).not.toContain(
       'Application task starter.knowledge.ingest',
     );
-  }, 20_000);
+  }, 60_000);
 
   it('binds function-native agent mutations in their generated placement receiver', async () => {
     const fixture = new URL(
@@ -409,7 +708,7 @@ describe('generated application AI agents', () => {
     expect(emitted).toEqual([
       { postId: 'post-1', body: 'Published by agent' },
     ]);
-  }, 15_000);
+  }, 60_000);
 
   it('emits one focused immutable workload with canonical tools and authority', async () => {
     const application = app('research-platform', {

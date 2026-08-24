@@ -933,6 +933,185 @@ if (JSON.stringify(unrelated.resources).includes('ACQUISITION_TOKEN')) {
   });
   console.log('Package consumer smoke: packed external HTTP provider hydration passed.');
 
+  const packedAgentMigrations = join(consumerDir, 'packed-agent-migrations');
+  await mkdir(packedAgentMigrations, { recursive: true });
+  await writeFile(
+    join(packedAgentMigrations, '0000_conversations.sql'),
+    'create table packed_agent_conversations (id text primary key, body text not null);\n',
+  );
+  const packedAgentApplicationPath = join(
+    consumerDir,
+    'packed-agent-provider.mjs',
+  );
+  await writeFile(
+    packedAgentApplicationPath,
+    `import { AI } from '@applik8s/ai';
+import { app, IdentityProvider } from '@applik8s/applik8s';
+import { type } from '@applik8s/applik8s/dsl';
+import { pgTable, text } from 'drizzle-orm/pg-core';
+import { AcquisitionProvider } from '@fixture/acquisition';
+const application = app('packed-agent-provider', {
+  namespace: 'packed-agent-provider',
+  spec: type({ profile: "'starter' | 'dedicated'" }),
+  status: type({ ready: 'boolean' }),
+});
+application.provide(AI, AI.deterministic({ fixture: { response: 'recorded' } }));
+application.provide(IdentityProvider, IdentityProvider.deterministic({
+  mode: 'starter',
+  application: 'packed-agent-provider',
+  subject: 'test',
+  audience: ['packed-agent-provider'],
+  catalogRevision: 'catalog-test',
+  authorityRevision: 'authority-test',
+}));
+const conversations = pgTable('packed_agent_conversations', {
+  id: text('id').primaryKey(),
+  body: text('body').notNull(),
+});
+const database = application.database.postgres('application', {
+  schema: { conversations },
+  migrations: { path: './packed-agent-migrations' },
+});
+const Conversation = application.model(conversations, {
+  name: 'Conversation',
+  database,
+});
+const implementation = source => ({
+  kind: 'acquisition',
+  source,
+  credentialSecret: {
+    apiVersion: 'v1',
+    kind: 'Secret',
+    name: 'acquisition-' + source,
+    namespace: 'packed-agent-provider',
+  },
+  async acquire(input) { return { value: source + ':' + input.id }; },
+});
+application.profile(application.installation.spec, 'profile')
+  .provide(AcquisitionProvider)
+  .starter(() => implementation('starter'))
+  .dedicated(() => implementation('dedicated'))
+  .exhaustive();
+const directProvider = application.inject(AcquisitionProvider);
+const acquire = directProvider.acquire;
+async function acquireThroughHelper(id) {
+  return acquire({ id });
+}
+const researcher = application.serviceIdentity('researcher');
+researcher.can(Conversation.create);
+application.agent('researcher', {
+  identity: researcher,
+  model: AI.model('deterministic', { capabilities: [AI.chat, AI.tools] }),
+  instructions: 'Acquire three records.',
+  tools: [Conversation.create],
+}, async (request, context) => {
+  const direct = await directProvider.acquire({ id: context.runId + '-direct' });
+  const extracted = await acquire({ id: context.runId + '-extracted' });
+  const helper = await acquireThroughHelper(context.runId + '-helper');
+  return {
+    threadId: request.threadId,
+    runId: context.runId,
+    result: [direct.value, extracted.value, helper.value].join(','),
+  };
+});
+export const agentProviderStack = application.composition;
+`,
+  );
+  const packedAgentProofPath = join(consumerDir, 'packed-agent-proof.mjs');
+  await writeFile(
+    packedAgentProofPath,
+    `import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { deriveApplicationGraphFoundation } from '@applik8s/core';
+import {
+  compileApplicationOperationCatalog,
+  compileApplicationWorkloadAuthority,
+  discoverApplicationGraphWithExports,
+  emitGeneratedApplicationAgents,
+} from '@applik8s/compiler';
+const applicationPath = ${JSON.stringify(packedAgentApplicationPath)};
+const discovered = await discoverApplicationGraphWithExports(
+  applicationPath,
+  'agentProviderStack',
+);
+if (!discovered.ok) throw discovered.error;
+const graph = discovered.value.graph;
+const agent = graph.nodes.find(node => node.kind === 'aiAgent');
+if (!agent) throw new Error('Packed provider agent is missing.');
+const operations = agent.providerBindings?.filter(binding =>
+  binding.operation?.member === 'acquire'
+) ?? [];
+for (const identifier of ['acquire', 'directProvider.acquire']) {
+  const runtime = operations.find(binding =>
+    binding.identifier === identifier
+  )?.operation?.runtime;
+  if (
+    runtime?.module !== '@fixture/acquisition/runtime'
+    || runtime.export !== 'acquireItem'
+  ) throw new Error('Packed agent provider operation ' + identifier + ' did not survive discovery.');
+}
+const providerId = 'provider.acquisition-provider.v1alpha1.primary';
+const access = deriveApplicationGraphFoundation(graph, {
+  workspaceRoot: ${JSON.stringify(consumerDir)},
+}).runtimeAccess.filter(requirement =>
+  requirement.target.capabilityId === providerId
+);
+if (
+  access.some(requirement => requirement.consumer.nodeId !== agent.id)
+  || access.map(requirement => requirement.target.operation).sort().join(',')
+    !== 'connection.use,network.connect'
+) throw new Error('Packed agent provider access was not placed exactly.');
+const catalog = compileApplicationOperationCatalog(graph);
+const [artifact] = await emitGeneratedApplicationAgents({
+  graph,
+  operationCatalog: catalog,
+  workloadAuthority: compileApplicationWorkloadAuthority(graph, catalog),
+  outDir: join(${JSON.stringify(consumerDir)}, 'packed-agent-build'),
+  entrypoint: applicationPath,
+});
+if (!artifact) throw new Error('Packed provider agent artifact is missing.');
+const artifactDirectory = artifact.sourcePath.slice(
+  0,
+  artifact.sourcePath.lastIndexOf('/'),
+);
+const generated = [
+  await readFile(artifact.sourcePath, 'utf8'),
+  await readFile(join(artifactDirectory, 'agent.generated.ts'), 'utf8'),
+].join('\\n');
+const handler = await readFile(join(
+  artifactDirectory,
+  'handler.generated.ts',
+), 'utf8');
+if (
+  !generated.includes('@fixture/acquisition/runtime')
+  || !handler.includes('acquireThroughHelper')
+  || handler.includes('@applik8s/applik8s/internal/provider-runtime')
+  || handler.includes('application.inject')
+  || handler.includes('application.profile')
+  || handler.includes('application.provide')
+) throw new Error('Packed generated agent did not hydrate only the public provider operation.');
+const deployment = artifact.resources.find(resource =>
+  resource.kind === 'Deployment'
+);
+const deploymentJson = JSON.stringify(deployment);
+if (
+  !deploymentJson.includes('ACQUISITION_SOURCE')
+  || !deploymentJson.includes('ACQUISITION_TOKEN')
+  || !deploymentJson.includes('acquisition-starter')
+  || !deploymentJson.includes('acquisition-dedicated')
+) throw new Error('Packed agent provider runtime configuration was not placed on its consumer.');
+`,
+  );
+  await execFileAsync(process.execPath, [packedAgentProofPath], {
+    cwd: consumerDir,
+    env: {
+      ...process.env,
+      NODE_OPTIONS: '--max-old-space-size=8192',
+    },
+    maxBuffer: 20 * 1024 * 1024,
+  });
+  console.log('Package consumer smoke: packed external agent provider hydration passed.');
+
   const operatorPath = join(consumerDir, 'operator.ts');
   const outDir = join(consumerDir, 'dist');
   await writeFile(operatorPath, `import { sdk } from '@applik8s/sdk';
