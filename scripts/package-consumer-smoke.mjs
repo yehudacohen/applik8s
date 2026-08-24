@@ -7,6 +7,7 @@ import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import ts from 'typescript';
+import { runPackedReactiveProviderProof } from './package-consumer-reactive-provider.mjs';
 import { publishablePackageDirectories } from './publishable-packages.mjs';
 
 const execFileAsync = promisify(execFile);
@@ -744,6 +745,8 @@ if (artifact.resources.filter(resource =>
     maxBuffer: 20 * 1024 * 1024,
   });
   console.log('Package consumer smoke: packed external workflow provider hydration passed.');
+
+  await runPackedReactiveProviderProof({ consumerDir });
 
   const packedHttpMigrations = join(consumerDir, 'packed-http-migrations');
   await mkdir(packedHttpMigrations, { recursive: true });

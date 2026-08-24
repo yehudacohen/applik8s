@@ -947,6 +947,10 @@ function maskApplicationProjectionLiterals(source: string): string {
 function functionNativeProjectionMode<TPayload extends object, TValue extends object>(
   transform: ApplicationProjectionTransform<TPayload, TValue>,
 ): 'analytical' | 'online' {
+  assertApplicationProjectionCallbackPurity(
+    'function-native transform',
+    transform as (...args: never[]) => unknown,
+  );
   const serialized = serializeApplicationCallback({
     registrar: 'project',
     argumentIndex: 1,
@@ -1076,6 +1080,11 @@ function functionNativeProjectionRebuildMap<TPayload extends object>(
     rebuild: ApplicationProjectionRebuildScope<TPayload>,
   ) => TPayload | readonly TPayload[] | undefined | Promise<TPayload | readonly TPayload[] | undefined>,
 ): (snapshot: object) => TPayload | readonly TPayload[] | Promise<TPayload | readonly TPayload[]> {
+  assertApplicationProjectionCallbackPurity(
+    `${name} rebuild`,
+    map as (...args: never[]) => unknown,
+    { allowAsync: true },
+  );
   const serialized = serializeApplicationCallback({
     registrar: 'project',
     argumentIndex: 1,
@@ -1853,7 +1862,63 @@ function registerOnlineApplicationProjection<TPayload extends object, TRow exten
 }
 
 function serializeProjectionCallback(name: string, property: string, callback: (...args: never[]) => unknown) {
+  assertApplicationProjectionCallbackPurity(`${name} ${property}`, callback);
   return serializeApplicationCallback({ registrar: 'projection', argumentIndex: 1, property, label: `Application projection ${name} ${property}`, callback, allowDeferredResolution: true });
+}
+
+function assertApplicationProjectionCallbackPurity(
+  label: string,
+  callback: (...args: never[]) => unknown,
+  options: { readonly allowAsync?: boolean } = {},
+): void {
+  if (!options.allowAsync && callback.constructor.name === 'AsyncFunction') {
+    throw new Error(
+      `Application projection ${label} must be synchronous and pure. Move asynchronous work to Stream.onEvent(...) or Stream.onBatch(...).`,
+    );
+  }
+  const inferred = expandApplicationCallbackDependencies({ calls: [callback] });
+  const effects = new Set<string>();
+  for (const binding of inferred.providerBindings) {
+    effects.add(`${binding.identifier} (${binding.provider.interface})`);
+  }
+  for (const callable of inferred.callables) {
+    effects.add(`${callable.identifier} (${callable.runtime})`);
+  }
+  for (const [identifier, value] of Object.entries(inferred.bindings)) {
+    if (applicationModelCommandBindingForOperation(value)) {
+      effects.add(`${identifier} (model mutation)`);
+      continue;
+    }
+    if (applicationQueryBindingForOperation(value)) {
+      effects.add(`${identifier} (application query)`);
+      continue;
+    }
+    const operation = getApplicationOperationContract(value);
+    if (operation) {
+      effects.add(`${identifier} (${operation.id})`);
+      continue;
+    }
+    const kind = value && (typeof value === 'object' || typeof value === 'function')
+      ? Reflect.get(value, 'kind')
+      : undefined;
+    if (
+      kind === 'applicationTask'
+      || kind === 'applicationWorkflow'
+      || kind === 'applicationSchedule'
+      || kind === 'applicationActor'
+      || kind === 'applik8sCommand'
+      || kind === 'applik8sEvent'
+      || kind === 'applik8sTask'
+      || kind === 'applik8sWorkflow'
+    ) {
+      effects.add(`${identifier} (${String(kind)})`);
+    }
+  }
+  if (effects.size > 0) {
+    throw new Error(
+      `Application projection ${label} must be a pure source-to-write transformation and cannot capture application effects or provider handles: ${[...effects].sort().join(', ')}. Move effectful work to Stream.onEvent(...) or Stream.onBatch(...).`,
+    );
+  }
 }
 
 function sourceNodeRefForModel(state: ApplicationReactiveState, source: object, projection: string): { readonly nodeId: string } {

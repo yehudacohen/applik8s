@@ -1,5 +1,5 @@
 // typecast-file-boundary: reactive vertical fixtures inspect erased graph metadata after checking node identities and discriminators.
-import { actor, AnalyticalDatabase, ApplicationHost, app, applicationGraphFor, Certificate, DnsPublication, event, HttpExposure, IdentityProvider, IndexStore, stream, WorkflowEngine, workflow } from '@applik8s/applik8s';
+import { AnalyticalDatabase, ApplicationHost, actor, app, applicationGraphFor, Certificate, DnsPublication, defineApplicationProvider, event, HttpExposure, IdentityProvider, IndexStore, stream, WorkflowEngine, workflow } from '@applik8s/applik8s';
 import { bindApplicationCallableDependencies } from '@applik8s/applik8s/internal/provider-runtime';
 import { validateApplicationGraph, validateApplicationGraphCompatibilityPolicy } from '@applik8s/core';
 import { type } from 'arktype';
@@ -747,6 +747,99 @@ describe('v0.6 streams, subscriptions, and projections', () => {
         }),
       }),
     ]));
+  });
+
+  it('rejects async and transitively effectful projection transforms at registration', () => {
+    const application = app('pure-projection-contract', {
+      spec: type({ profile: "'starter' | 'dedicated'" }),
+      status: type({ ready: 'boolean' }),
+    });
+    const database = application.database.postgres('events', { schema: {} });
+    const changes = application.stream(AccountChanged, {
+      database,
+      retention: { maxAgeSeconds: 3_600 },
+      partitionBy: ({ accountId }) => accountId,
+      authorize: () => true,
+    });
+    const AcquisitionProvider = defineApplicationProvider({
+      interface: 'ProjectionAcquisitionProvider',
+      version: 'v1alpha1',
+      runtime: {
+        operations: {
+          acquire: {
+            module: '@fixture/acquisition/runtime',
+            export: 'acquireItem',
+            access: {
+              kind: 'provider',
+              operations: ['connection.use', 'network.connect'],
+            },
+          },
+        },
+      },
+      accepts: (candidate): candidate is {
+        readonly kind: 'projection-acquisition';
+        acquire(input: { readonly id: string }): Promise<{ readonly value: string }>;
+      } => Boolean(
+        candidate
+          && typeof candidate === 'object'
+          && Reflect.get(candidate, 'kind') === 'projection-acquisition'
+          && typeof Reflect.get(candidate, 'acquire') === 'function',
+      ),
+    }).named('primary');
+    application.profile(application.installation.spec, 'profile')
+      .provide(AcquisitionProvider)
+      .starter(() => ({
+        kind: 'projection-acquisition' as const,
+        async acquire({ id }: { readonly id: string }) {
+          return { value: id };
+        },
+      }))
+      .dedicated(() => ({
+        kind: 'projection-acquisition' as const,
+        async acquire({ id }: { readonly id: string }) {
+          return { value: `dedicated:${id}` };
+        },
+      }))
+      .exhaustive();
+    const provider = application.inject(AcquisitionProvider);
+    const acquire = provider.acquire;
+
+    async function acquireThroughHelper(id: string) {
+      return acquire({ id });
+    }
+    bindApplicationCallableDependencies(acquireThroughHelper, [
+      { identifier: 'acquire', value: acquire },
+    ]);
+    function effectfulProjection(
+      payload: { readonly accountId: string; readonly balance: number },
+      output: { append(value: { readonly accountId: string; readonly balance: number }): unknown },
+    ) {
+      void acquireThroughHelper(payload.accountId);
+      return output.append(payload);
+    }
+    bindApplicationCallableDependencies(effectfulProjection, [
+      { identifier: 'acquireThroughHelper', value: acquireThroughHelper },
+    ]);
+
+    expect(() => changes.project(
+      type({ accountId: 'string', balance: 'number' }),
+      // typecast: adversarial runtime test proves JavaScript consumers fail
+      // closed even when they bypass the projection write return signature.
+      effectfulProjection as never,
+    )).toThrow(/must be a pure source-to-write transformation.*acquire.*ProjectionAcquisitionProvider.*Stream\.onEvent/s);
+
+    async function asynchronousProjection(
+      payload: { readonly accountId: string; readonly balance: number },
+      output: { append(value: { readonly accountId: string; readonly balance: number }): unknown },
+    ) {
+      return output.append(payload);
+    }
+    expect(() => changes.project(
+      type({ accountId: 'string', balance: 'number' }),
+      // typecast: adversarial runtime test proves JavaScript consumers fail
+      // closed even when they bypass the synchronous TypeScript signature.
+      asynchronousProjection as never,
+    )).toThrow(/must be synchronous and pure.*Stream\.onEvent/s);
   });
 
   it('uses the broad default Valkey implementation and fails closed on a wrong capability or unsafe bounds', () => {

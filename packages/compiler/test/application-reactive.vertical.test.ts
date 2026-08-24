@@ -361,7 +361,25 @@ describe('generated v0.6 reactive workloads', () => {
         stability: 'stable',
         interface: 'AcquisitionProvider',
         implementation: 'fixture',
-        config: {},
+        config: {
+          callableRuntime: {
+            kind: 'runtime',
+            runtime: {
+              env: { ACQUISITION_SOURCE: 'fixture' },
+              secretEnv: {
+                ACQUISITION_TOKEN: {
+                  secret: {
+                    apiVersion: 'v1',
+                    kind: 'Secret',
+                    name: 'acquisition-token',
+                    namespace: 'catalog',
+                  },
+                  key: 'token',
+                },
+              },
+            },
+          },
+        },
       },
       {
         id: 'stream.items.requested.v1',
@@ -463,6 +481,28 @@ describe('generated v0.6 reactive workloads', () => {
     expect(callback).toContain(
       'const acquire = __applik8sBindings["acquire"]',
     );
+    expect(artifact?.resources.find((resource) => resource.kind === 'Deployment')).toMatchObject({
+      spec: {
+        template: {
+          spec: {
+            containers: [expect.objectContaining({
+              env: expect.arrayContaining([
+                { name: 'ACQUISITION_SOURCE', value: 'fixture' },
+                {
+                  name: 'ACQUISITION_TOKEN',
+                  valueFrom: {
+                    secretKeyRef: {
+                      name: 'acquisition-token',
+                      key: 'token',
+                    },
+                  },
+                },
+              ]),
+            })],
+          },
+        },
+      },
+    });
   }, 120_000);
 
   it('fails closed when a captured provider operation has no portable worker runtime', async () => {

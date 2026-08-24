@@ -11,6 +11,7 @@ import {
   applicationActorInvocationBoundary,
   generatedApplicationActorInvocationClientSource,
 } from '../application-actor-invocation.js';
+import { applicationCallableProviderEnvironment } from '../application-callable-provider-runtime.js';
 import { generatedCallbackFactoryModule } from '../application-callback-module.js';
 import type { GeneratedApplicationContainerArtifact } from '../application-containers/index.js';
 import { emitGeneratedApplicationContainer } from '../application-containers/index.js';
@@ -282,6 +283,7 @@ export async function emitGeneratedApplicationReactive(options: {
         operationCatalog,
         workloadAuthority,
         options.outDir,
+        options.executionTarget ?? 'kubernetes',
       ))),
     ...(scheduleControl
       ? [await emitScheduleControl(
@@ -909,6 +911,7 @@ async function emitStreamProcessor(
   operationCatalog: ApplicationOperationCatalog,
   workloadAuthority: readonly ApplicationWorkloadAuthorityEnvelope[],
   outDir: string,
+  executionTarget: 'kubernetes' | 'local' | 'aws-local' | 'aws',
 ): Promise<GeneratedApplicationReactiveArtifact> {
   assertResolved(processor.id, 'handler', processor.handlerUnresolved);
   const nodes = graphNodes(graph);
@@ -980,6 +983,7 @@ async function emitStreamProcessor(
   );
   const includeWhen = applicationGraphAllConditions(processor.enabled, workflow?.provider.config?.enabled);
   const usesObjectStorage = streamProcessorUsesObjectStorage(processor);
+  const callableProviders = streamProcessorCallableProviders(graph, processor);
   return bundleReactive({
     graphName: graph.metadata.name,
     name,
@@ -1003,6 +1007,10 @@ async function emitStreamProcessor(
           )
         : []),
       ...streamProcessorScheduleEnvironment(workflow),
+      ...applicationCallableProviderEnvironment(callableProviders, {
+        target: executionTarget,
+        namespace,
+      }),
       ...(queries.length > 0 ? [{
         name: 'APPLIK8S_CONTEXT_SECRET',
         valueFrom: {
@@ -1034,6 +1042,28 @@ async function emitStreamProcessor(
     ...(workflow ? { workflowToken: streamProcessorWorkflowCredential(workflow) } : {}),
     ...(includeWhen !== undefined ? { includeWhen } : {}),
   });
+}
+
+function streamProcessorCallableProviders(
+  graph: ApplicationGraph,
+  processor: ApplicationStreamProcessorNode,
+): readonly ApplicationProviderNode[] {
+  const providers = new Map<string, ApplicationProviderNode>();
+  for (const binding of processor.providerBindings ?? []) {
+    if (!binding.operation) continue;
+    const provider = graph.nodes.find(
+      (candidate): candidate is ApplicationProviderNode =>
+        candidate.kind === 'provider'
+        && candidate.id === binding.provider.nodeId,
+    );
+    if (!provider || provider.interface !== binding.provider.interface) {
+      throw new Error(
+        `Stream processor ${processor.id} provider binding ${binding.identifier} references missing provider ${binding.provider.nodeId}.`,
+      );
+    }
+    providers.set(provider.id, provider);
+  }
+  return [...providers.values()].sort((left, right) => left.id.localeCompare(right.id));
 }
 
 function streamProcessorUsesObjectStorage(
