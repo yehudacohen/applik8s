@@ -1,10 +1,6 @@
 // typecast-file-boundary: Kubernetes custom-object responses are narrowed by API version and kind before schedule execution.
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import {
-  applicationScheduleOccurrenceId,
-  applicationScheduleProjectedDesiredState,
-  applicationScheduleImmediateInvocationAdmission,
-  executeApplicationScheduleAdmission,
   type ApplicationScheduleAdmission,
   type ApplicationScheduleAdmissionRunner,
   type ApplicationScheduleConvergenceResult,
@@ -16,11 +12,20 @@ import {
   type ApplicationScheduleOccurrenceReceipt,
   type ApplicationScheduleRuntime,
   type ApplicationScheduleStateAuthority,
+  applicationScheduleImmediateInvocationAdmission,
+  applicationScheduleOccurrenceId,
+  applicationScheduleProjectedDesiredState,
 } from '@applik8s/applik8s';
-import type { ApplicationAdmissionInvocationContextV1 } from '@applik8s/core';
+import {
+  type ApplicationAdmissionInvocationContextV1,
+  exactFiveFieldCronForInterval,
+} from '@applik8s/core';
+import {
+  ApplicationScheduleOccurrenceBusyError,
+  executePostgresApplicationScheduleAdmission,
+} from '@applik8s/runtime-postgres/schedule-occurrence';
 import { createPostgresApplicationScheduleStateAuthority } from '@applik8s/runtime-postgres/schedule-state';
 import type { BatchV1Api, KubeConfig, V1CronJob } from '@kubernetes/client-node';
-import postgres, { type Sql } from 'postgres';
 
 const admissionImage = 'node:22-alpine@sha256:16e22a550f3863206a3f701448c45f7912c6896a62de43add43bb9c86130c3e2';
 
@@ -315,56 +320,20 @@ export interface KubernetesScheduleAdmissionAuthorityOptions<TInput extends obje
 export async function executeKubernetesApplicationScheduleAdmission<TInput extends object, TResult>(
   options: KubernetesScheduleAdmissionAuthorityOptions<TInput, TResult>,
 ): Promise<ApplicationScheduleOccurrenceReceipt<TResult>> {
-  const sql = postgres(required(options.databaseUrl, 'Kubernetes schedule PostgreSQL authority'), { max: 2 });
-  try {
-    await ensureAuthority(sql);
-    const occurrenceId = applicationScheduleOccurrenceId({
-      applicationId: options.admission.applicationId,
-      environmentId: options.admission.environmentId,
-      definitionId: options.admission.definitionId,
-      instanceId: options.admission.instanceId,
-      scheduledAt: options.admission.scheduledAt,
-      ...(options.admission.schedulerExecutionId ? { schedulerExecutionId: options.admission.schedulerExecutionId } : {}),
-    });
-    const overlapKey = options.handle.definition.overlapBy
-      ? options.handle.definition.overlapBy((options.admission.input ?? {}) as TInput)
-      : options.admission.instanceId;
-    const claim = await claimOccurrence(sql, {
-      occurrenceId,
-      definitionId: options.admission.definitionId,
-      overlapKey,
-      overlap: options.handle.definition.overlap,
-    });
-    if (claim.state === 'complete') return claim.receipt as ApplicationScheduleOccurrenceReceipt<TResult>;
-    if (claim.state === 'busy') throw new KubernetesScheduleOccurrenceBusyError(occurrenceId);
-    if (claim.state === 'skipped') return claim.receipt as ApplicationScheduleOccurrenceReceipt<TResult>;
-    const receipt = await executeApplicationScheduleAdmission(
-      options.handle,
-      options.admission,
-      options.signal,
-      options.admissionRunner,
-    );
-    if (receipt.state === 'succeeded' || receipt.state === 'skipped') {
-      if (!await completeOccurrence(sql, occurrenceId, claim.owner, receipt)) {
-        throw new Error(`Kubernetes schedule occurrence ${occurrenceId} lost its durable execution lease.`);
-      }
-      await options.removeCompletedOneTime?.();
-      return receipt;
-    }
-    await releaseOccurrence(sql, occurrenceId, claim.owner, receipt);
-    return receipt;
-  } finally {
-    await sql.end({ timeout: 5 });
-  }
+  return executePostgresApplicationScheduleAdmission({
+    databaseUrl: required(options.databaseUrl, 'Kubernetes schedule PostgreSQL authority'),
+    handle: options.handle,
+    admission: options.admission,
+    ...(options.signal ? { signal: options.signal } : {}),
+    ...(options.removeCompletedOneTime
+      ? { afterCompletion: options.removeCompletedOneTime }
+      : {}),
+    ...(options.admissionRunner ? { admissionRunner: options.admissionRunner } : {}),
+  });
 }
 
-export class KubernetesScheduleOccurrenceBusyError extends Error {
-  readonly code = 'SCHEDULE_OCCURRENCE_BUSY';
-  constructor(readonly occurrenceId: string) {
-    super(`Kubernetes schedule occurrence ${occurrenceId} is already executing under another lease.`);
-    this.name = 'KubernetesScheduleOccurrenceBusyError';
-  }
-}
+/** @deprecated Use the provider-neutral PostgreSQL occurrence error. */
+export { ApplicationScheduleOccurrenceBusyError as KubernetesScheduleOccurrenceBusyError };
 
 function cronJob<TInput extends object>(request: {
   readonly options: Pick<
@@ -402,7 +371,12 @@ function cronJob<TInput extends object>(request: {
     },
     spec: {
       schedule: kubernetesCron(request.instance, request.definition),
-      timeZone: request.instance.timezone ?? request.definition.timezone,
+      // `every` is elapsed-time cadence and `at` is an absolute instant. Their
+      // cron projections are calculated in UTC; applying a user calendar zone
+      // here would change the authored schedule around offsets and DST.
+      timeZone: request.instance.cron || request.definition.cron
+        ? request.instance.timezone ?? request.definition.timezone
+        : 'UTC',
       suspend: request.instance.enabled === false,
       concurrencyPolicy: request.definition.overlap === 'skip' ? 'Forbid' : 'Allow',
       failedJobsHistoryLimit: 3,
@@ -505,70 +479,13 @@ function kubernetesCron<TInput extends object>(instance: ApplicationScheduleInst
   if (cron) return cron;
   const every = instance.every ?? definition.every;
   if (every) {
-    const match = /^(\d+)(m|h|d)$/u.exec(every);
-    if (!match) throw new Error(`Kubernetes CronJob schedule ${definition.id} requires minute-or-coarser cadence; received ${every}.`);
-    const amount = Number(match[1]);
-    if (match[2] === 'm') return amount === 1 ? '* * * * *' : `*/${amount} * * * *`;
-    if (match[2] === 'h') return amount === 1 ? '0 * * * *' : `0 */${amount} * * *`;
-    return amount === 1 ? '0 0 * * *' : `0 0 */${amount} * *`;
+    return exactFiveFieldCronForInterval(every);
   }
   const at = instance.at ?? definition.at;
   if (!at) throw new Error(`Kubernetes schedule ${definition.id} has no cadence.`);
   const date = new Date(at);
   if (!Number.isFinite(date.getTime())) throw new Error(`Kubernetes schedule ${definition.id} has invalid one-time timestamp ${at}.`);
   return `${date.getUTCMinutes()} ${date.getUTCHours()} ${date.getUTCDate()} ${date.getUTCMonth() + 1} *`;
-}
-
-async function ensureAuthority(sql: Sql): Promise<void> {
-  await sql`CREATE TABLE IF NOT EXISTS applik8s_schedule_occurrences (
-    occurrence_id text PRIMARY KEY,
-    definition_id text NOT NULL,
-    overlap_key text NOT NULL,
-    state text NOT NULL CHECK (state IN ('running', 'succeeded', 'skipped')),
-    lease_owner text,
-    lease_until timestamptz,
-    receipt jsonb,
-    updated_at timestamptz NOT NULL DEFAULT now()
-  )`;
-  await sql`CREATE INDEX IF NOT EXISTS applik8s_schedule_occurrences_overlap ON applik8s_schedule_occurrences (definition_id, overlap_key, state, lease_until)`;
-}
-
-type Claim =
-  | { readonly state: 'claimed'; readonly owner: string }
-  | { readonly state: 'complete'; readonly receipt: unknown }
-  | { readonly state: 'skipped'; readonly receipt: unknown }
-  | { readonly state: 'busy' };
-
-async function claimOccurrence(sql: Sql, options: { readonly occurrenceId: string; readonly definitionId: string; readonly overlapKey: string; readonly overlap: 'allow' | 'skip' }): Promise<Claim> {
-  return sql.begin(async (transaction) => {
-    await transaction.unsafe('SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))', [options.definitionId, options.overlapKey]);
-    const prior = await transaction<{ state: string; receipt: unknown }[]>`SELECT state, receipt FROM applik8s_schedule_occurrences WHERE occurrence_id = ${options.occurrenceId}`;
-    if (prior[0]?.state === 'succeeded' || prior[0]?.state === 'skipped') return { state: 'complete', receipt: prior[0].receipt };
-    if (prior[0]?.state === 'running') {
-      const reclaimed = await transaction<{ occurrence_id: string }[]>`UPDATE applik8s_schedule_occurrences SET lease_owner = ${randomUUID()}, lease_until = now() + interval '5 minutes', updated_at = now() WHERE occurrence_id = ${options.occurrenceId} AND lease_until < now() RETURNING occurrence_id`;
-      if (reclaimed.length === 0) return { state: 'busy' };
-    }
-    if (options.overlap === 'skip') {
-      const active = await transaction<{ occurrence_id: string }[]>`SELECT occurrence_id FROM applik8s_schedule_occurrences WHERE definition_id = ${options.definitionId} AND overlap_key = ${options.overlapKey} AND state = 'running' AND lease_until >= now() AND occurrence_id <> ${options.occurrenceId} LIMIT 1`;
-      if (active.length > 0) {
-        const receipt = { occurrenceId: options.occurrenceId, definitionId: options.definitionId, instanceId: options.overlapKey, scheduledAt: new Date().toISOString(), state: 'skipped', attempts: 0 };
-        await transaction`INSERT INTO applik8s_schedule_occurrences (occurrence_id, definition_id, overlap_key, state, receipt) VALUES (${options.occurrenceId}, ${options.definitionId}, ${options.overlapKey}, 'skipped', ${transaction.json(receipt)}) ON CONFLICT (occurrence_id) DO NOTHING`;
-        return { state: 'skipped', receipt };
-      }
-    }
-    const owner = randomUUID();
-    await transaction`INSERT INTO applik8s_schedule_occurrences (occurrence_id, definition_id, overlap_key, state, lease_owner, lease_until) VALUES (${options.occurrenceId}, ${options.definitionId}, ${options.overlapKey}, 'running', ${owner}, now() + interval '5 minutes') ON CONFLICT (occurrence_id) DO UPDATE SET lease_owner = ${owner}, lease_until = now() + interval '5 minutes', updated_at = now() WHERE applik8s_schedule_occurrences.state = 'running'`;
-    return { state: 'claimed', owner };
-  });
-}
-
-async function completeOccurrence(sql: Sql, id: string, owner: string, receipt: unknown): Promise<boolean> {
-  const rows = await sql<{ occurrence_id: string }[]>`UPDATE applik8s_schedule_occurrences SET state = ${(receipt as { state: string }).state}, receipt = ${sql.json(JSON.parse(JSON.stringify(receipt)))}, lease_owner = NULL, lease_until = NULL, updated_at = now() WHERE occurrence_id = ${id} AND state = 'running' AND lease_owner = ${owner} RETURNING occurrence_id`;
-  return rows.length === 1;
-}
-
-async function releaseOccurrence(sql: Sql, id: string, owner: string, receipt: unknown): Promise<void> {
-  await sql`UPDATE applik8s_schedule_occurrences SET receipt = ${sql.json(JSON.parse(JSON.stringify(receipt)))}, lease_owner = NULL, lease_until = now(), updated_at = now() WHERE occurrence_id = ${id} AND state = 'running' AND lease_owner = ${owner}`;
 }
 
 function dynamicScheduleName(options: KubernetesApplicationScheduleRuntimeOptions, definitionId: string, instanceId: string): string {

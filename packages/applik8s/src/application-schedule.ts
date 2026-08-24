@@ -454,10 +454,14 @@ export interface ApplicationScheduleRegistrar {
   ): ApplicationScheduleHandle<TInput, TResult>;
 }
 
-const scheduleRuntimeResolvers: Array<() => ApplicationScheduleRuntime | undefined> = [];
+export type ApplicationScheduleRuntimeResolver = (
+  schedulerNodeId: string,
+) => ApplicationScheduleRuntime | undefined;
+
+const scheduleRuntimeResolvers: ApplicationScheduleRuntimeResolver[] = [];
 
 export function installApplicationScheduleRuntimeResolver(
-  resolver: () => ApplicationScheduleRuntime | undefined,
+  resolver: ApplicationScheduleRuntimeResolver,
 ): () => void {
   scheduleRuntimeResolvers.push(resolver);
   return () => {
@@ -466,9 +470,9 @@ export function installApplicationScheduleRuntimeResolver(
   };
 }
 
-function applicationScheduleRuntime(): ApplicationScheduleRuntime {
+function applicationScheduleRuntime(schedulerNodeId: string): ApplicationScheduleRuntime {
   for (let index = scheduleRuntimeResolvers.length - 1; index >= 0; index -= 1) {
-    const runtime = scheduleRuntimeResolvers[index]?.();
+    const runtime = scheduleRuntimeResolvers[index]?.(schedulerNodeId);
     if (runtime) return runtime;
   }
   const injected = Reflect.get(
@@ -476,11 +480,11 @@ function applicationScheduleRuntime(): ApplicationScheduleRuntime {
     Symbol.for('applik8s.scheduleRuntimeResolver'),
   );
   if (typeof injected === 'function') {
-    const runtime = injected();
+    const runtime = injected(schedulerNodeId);
     if (runtime) return runtime as ApplicationScheduleRuntime;
   }
   throw new Error(
-    'No Scheduler runtime is installed for this execution boundary. Compile the application for a qualified target or install a local scheduler resolver.',
+    `No Scheduler runtime is installed for ${schedulerNodeId}. Compile the application for a qualified target or install a matching scheduler resolver.`,
   );
 }
 
@@ -589,7 +593,7 @@ export function createApplicationSchedule<TInput extends object, TResult>(
     const validated = normalized.input
       ? validateMessage(normalized.input, input, `${normalized.id}.input`)
       : {} as TInput;
-    return applicationScheduleRuntime().invoke({
+    return applicationScheduleRuntime(schedulerNodeId).invoke({
       definition: normalized,
       input: validated,
       handler: runtimeHandler,
@@ -612,7 +616,7 @@ export function createApplicationSchedule<TInput extends object, TResult>(
         revision: normalizedInstance.revision,
         admission: requireApplicationInvocationAdmission(),
       });
-      const converged = await applicationScheduleRuntime().reconcile({
+      const converged = await applicationScheduleRuntime(schedulerNodeId).reconcile({
         definition: normalized,
         instance: normalizedInstance,
         handler: runtimeHandler,
@@ -629,7 +633,7 @@ export function createApplicationSchedule<TInput extends object, TResult>(
         revision: 'removed',
         admission: requireApplicationInvocationAdmission(),
       });
-      const converged = await applicationScheduleRuntime().remove(normalized.id, normalizedInstanceId, management);
+      const converged = await applicationScheduleRuntime(schedulerNodeId).remove(normalized.id, normalizedInstanceId, management);
       return { ...converged, management: converged.management ?? management };
     },
     [applicationScheduleHandlerSymbol]: runtimeHandler,

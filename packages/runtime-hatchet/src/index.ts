@@ -1,18 +1,29 @@
 // typecast-file-boundary: schema-validated application workflow values are converted to Hatchet's JSON transport types only at this provider adapter.
 import { readFileSync } from 'node:fs';
 import type { ApplicationHatchetWorkflowEngineProvider } from '@applik8s/applik8s';
-import {
-  type ApplicationWorkflowInvocationMetadata,
-  type ApplicationWorkflowResultOptions,
-  type ApplicationWorkflowRuntime,
-  type ApplicationWorkflowScheduleSpec,
+import type {
+  ApplicationWorkflowInvocationMetadata,
+  ApplicationWorkflowResultOptions,
+  ApplicationWorkflowRuntime,
+  ApplicationWorkflowScheduleSpec,
 } from '@applik8s/applik8s/workflow-runtime';
 import { HatchetClient, type JsonObject } from '@hatchet-dev/typescript-sdk/v1/index.js';
 import { applicationMetadata, hatchetRunOptions } from './workflow-runtime-hatchet-metadata.js';
-import { boundedHatchetOperation, defaultHatchetOperationTimeoutMs } from './workflow-runtime-hatchet-operation.js';
 import { observeHatchetWorkflowRun, waitForHatchetResult } from './workflow-runtime-hatchet-observation.js';
+import { boundedHatchetOperation, defaultHatchetOperationTimeoutMs } from './workflow-runtime-hatchet-operation.js';
 import { reconcileHatchetWorkflowSchedule } from './workflow-runtime-hatchet-schedule.js';
 
+export type {
+  HatchetApplicationScheduleClient,
+  HatchetApplicationScheduleDeliveryInput,
+  HatchetApplicationScheduleRuntime,
+  HatchetApplicationScheduleRuntimeOptions,
+} from './application-schedule.js';
+export {
+  createHatchetApplicationScheduleRuntime,
+  createHatchetApplicationScheduleRuntimeFromClient,
+  HatchetScheduleTimezoneCompatibilityError,
+} from './application-schedule.js';
 export {
   durableErrorFromMessage,
   observeHatchetWorkflowRun,

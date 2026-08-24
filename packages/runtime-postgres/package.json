@@ -25,6 +25,11 @@
       "types": "./dist/schedule-state.d.ts",
       "import": "./dist/schedule-state.js",
       "default": "./dist/schedule-state.js"
+    },
+    "./schedule-occurrence": {
+      "types": "./dist/schedule-occurrence.d.ts",
+      "import": "./dist/schedule-occurrence.js",
+      "default": "./dist/schedule-occurrence.js"
     }
   },
   "dependencies": {

@@ -1,11 +1,12 @@
 // typecast-file-boundary: Persisted schedule admissions are decoded and validated at this local-runtime boundary.
-import { access, chmod, mkdir, open, readFile, rename, unlink, writeFile } from 'node:fs/promises';
+
 import { randomUUID } from 'node:crypto';
+import { access, chmod, mkdir, open, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import {
+  type CanonicalJsonV1Policy,
   canonicalJsonCompatibleV1Policy,
   canonicalJsonV1String,
-  type CanonicalJsonV1Policy,
 } from '@applik8s/core';
 import {
   type ApplicationFixedScheduleHandle,
@@ -38,6 +39,8 @@ export const localApplicationScheduleCanonicalJsonPolicy: CanonicalJsonV1Policy 
  */
 export async function installLocalApplicationScheduleRuntime(options: {
   readonly applicationId: string;
+  /** Exact provider graph identity owned by this runtime. */
+  readonly schedulerNodeId?: string;
   readonly environmentId?: string;
   readonly schedules: readonly ApplicationFixedScheduleHandle<unknown>[];
   readonly statePath?: string;
@@ -65,7 +68,12 @@ export async function installLocalApplicationScheduleRuntime(options: {
     persist: store.persist,
     ...(options.admissionRunner ? { admissionRunner: options.admissionRunner } : {}),
   });
-  const disposeResolver = installApplicationScheduleRuntimeResolver(() => runtime);
+  const schedulerNodeId = options.schedulerNodeId ?? 'provider.scheduler';
+  const disposeResolver = installApplicationScheduleRuntimeResolver(
+    (requestedSchedulerNodeId) => requestedSchedulerNodeId === schedulerNodeId
+      ? runtime
+      : undefined,
+  );
   try {
     for (const schedule of [...options.schedules].sort((left, right) => left.definition.id.localeCompare(right.definition.id))) {
       await registerFixedApplicationSchedule(runtime, schedule);

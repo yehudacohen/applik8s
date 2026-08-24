@@ -114,6 +114,7 @@ export function workspaceAliases(): Record<string, string> {
     '@applik8s/runtime-nats/event-consumer': fileURLToPath(new URL('./packages/runtime-nats/src/event-consumer.ts', import.meta.url)),
     '@applik8s/runtime-nats': fileURLToPath(new URL('./packages/runtime-nats/src/index.ts', import.meta.url)),
     '@applik8s/runtime-kubernetes': fileURLToPath(new URL('./packages/runtime-kubernetes/src/index.ts', import.meta.url)),
+    '@applik8s/runtime-postgres/schedule-occurrence': fileURLToPath(new URL('./packages/runtime-postgres/src/schedule-occurrence.ts', import.meta.url)),
     '@applik8s/runtime-postgres/schedule-state': fileURLToPath(new URL('./packages/runtime-postgres/src/schedule-state.ts', import.meta.url)),
     '@applik8s/runtime-postgres': fileURLToPath(new URL('./packages/runtime-postgres/src/index.ts', import.meta.url)),
     '@applik8s/runtime-aws/kinesis': fileURLToPath(new URL('./packages/runtime-aws/src/kinesis.ts', import.meta.url)),

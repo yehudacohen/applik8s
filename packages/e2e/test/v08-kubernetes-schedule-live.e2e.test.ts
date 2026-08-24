@@ -1,9 +1,11 @@
 // typecast-file-boundary: live Kubernetes JSON is narrowed after kind and metadata assertions.
 import { randomUUID } from 'node:crypto';
+import { Scheduler, type } from '@applik8s/applik8s';
 import { createKubernetesApplicationScheduleRuntime } from '@applik8s/runtime-kubernetes';
+import { executePostgresApplicationScheduleAdmission } from '@applik8s/runtime-postgres/schedule-occurrence';
 import { createPostgresApplicationScheduleStateAuthority } from '@applik8s/runtime-postgres/schedule-state';
-import { afterAll, beforeAll, expect, it } from 'vitest';
 import postgres from 'postgres';
+import { afterAll, beforeAll, expect, it } from 'vitest';
 import {
 	assertExpectedKubectlContext,
 	describeLive,
@@ -247,6 +249,111 @@ describeLive('v0.8 Kubernetes Scheduler lifecycle on OrbStack', () => {
 			await runtime.close();
 		}
 	}, 180_000);
+
+	it('fences overlapping provider deliveries and returns the prior durable receipt after a lost response', async () => {
+		if (!databaseUrl)
+			throw new Error('PostgreSQL fixture was not initialized.');
+		let effects = 0;
+		let releaseFirst!: () => void;
+		let announceFirst!: () => void;
+		const firstStarted = new Promise<void>((resolve) => { announceFirst = resolve; });
+		const firstMayFinish = new Promise<void>((resolve) => { releaseFirst = resolve; });
+		const handle = Scheduler.named('hosted').schedule(
+			{
+				id: 'provider-occurrence.v1',
+				input: type({ tenantId: 'string' }),
+				overlapBy: ({ tenantId }) => tenantId,
+				overlap: 'skip',
+			},
+			async ({ tenantId }) => {
+				effects += 1;
+				announceFirst();
+				await firstMayFinish;
+				return { tenantId, effect: effects };
+			},
+		);
+		const firstScheduledAt = new Date(Date.now() - 60_000).toISOString();
+		const secondScheduledAt = new Date().toISOString();
+		const admission = (schedulerExecutionId: string, scheduledAt: string) => ({
+			schemaVersion: 'applik8s.scheduleAdmission/v1alpha1' as const,
+			applicationId,
+			environmentId: 'orbstack',
+			definitionId: handle.definition.id,
+			instanceId: 'tenant-a',
+			input: { tenantId: 'tenant-a' },
+			scheduledAt,
+			admittedAt: new Date().toISOString(),
+			attempt: 1,
+			schedulerExecutionId,
+		});
+		const firstAdmission = admission('provider-run-one', firstScheduledAt);
+		const first = executePostgresApplicationScheduleAdmission({
+			databaseUrl,
+			handle,
+			admission: firstAdmission,
+		});
+		await firstStarted;
+		await expect(executePostgresApplicationScheduleAdmission({
+			databaseUrl,
+			handle,
+			admission: admission('provider-run-two', secondScheduledAt),
+		})).resolves.toMatchObject({ state: 'skipped', attempts: 0 });
+		releaseFirst();
+		const completed = await first;
+		expect(completed).toMatchObject({ state: 'succeeded', result: { effect: 1 } });
+		await expect(executePostgresApplicationScheduleAdmission({
+			databaseUrl,
+			handle,
+			admission: firstAdmission,
+		})).resolves.toEqual(completed);
+		expect(effects).toBe(1);
+	}, 60_000);
+
+	it('persists the final failed attempt as a terminal receipt across provider redelivery', async () => {
+		if (!databaseUrl)
+			throw new Error('PostgreSQL fixture was not initialized.');
+		let effects = 0;
+		const handle = Scheduler.named('hosted').schedule(
+			{
+				id: 'terminal-provider-failure.v1',
+				input: type({}),
+				retry: { maxAttempts: 2, maximumAge: '1h' },
+			},
+			async () => {
+				effects += 1;
+				throw new Error('intentional terminal failure');
+			},
+		);
+		const scheduledAt = new Date(Date.now() - 60_000).toISOString();
+		const admission = {
+			schemaVersion: 'applik8s.scheduleAdmission/v1alpha1' as const,
+			applicationId,
+			environmentId: 'orbstack',
+			definitionId: handle.definition.id,
+			instanceId: 'fixed',
+			input: {},
+			scheduledAt,
+			admittedAt: new Date().toISOString(),
+			attempt: 2,
+			schedulerExecutionId: 'provider-final-attempt',
+		};
+		const failed = await executePostgresApplicationScheduleAdmission({
+			databaseUrl,
+			handle,
+			admission,
+		});
+		expect(failed).toMatchObject({
+			state: 'failed',
+			attempts: 2,
+			error: { message: 'intentional terminal failure' },
+		});
+		await expect(executePostgresApplicationScheduleAdmission({
+			databaseUrl,
+			handle,
+			admission: { ...admission, schedulerExecutionId: 'provider-redelivery' },
+		})).resolves.toEqual(failed);
+		expect(effects).toBe(1);
+	}, 60_000);
 });
 
 async function waitForPostgres(databaseUrl: string): Promise<void> {

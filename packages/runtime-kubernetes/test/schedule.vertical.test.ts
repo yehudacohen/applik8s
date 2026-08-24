@@ -1,6 +1,7 @@
 // typecast-file-boundary: Test doubles intentionally implement partial Kubernetes SDK APIs and custom-object payloads.
-import type { KubeConfig, V1CronJob } from '@kubernetes/client-node';
+
 import { createDeterministicApplicationScheduleStateAuthority } from '@applik8s/applik8s';
+import type { KubeConfig, V1CronJob } from '@kubernetes/client-node';
 import { describe, expect, test } from 'vitest';
 import {
   createKubernetesApplicationScheduleRuntime,
@@ -40,6 +41,38 @@ describe('Kubernetes function-native Scheduler', () => {
     });
     expect(JSON.stringify(cronJob)).toContain("batch.kubernetes.io/job-name");
     expect(JSON.stringify(cronJob)).toContain('APPLIK8S_INTERNAL_OPERATION_SECRET');
+  });
+
+  test('projects elapsed intervals and absolute instants in UTC without changing their meaning', () => {
+    const base = {
+      applicationId: 'demo',
+      environmentId: 'test',
+      namespace: 'demo',
+      image: 'demo@sha256:abc',
+      admissionEndpoint: 'http://demo.demo.svc/internal',
+      authorizationSecretName: 'demo-internal-operation',
+    } as const;
+    const contract = {
+      configuration: 'fixed' as const,
+      timezone: 'America/New_York',
+      overlap: 'skip' as const,
+      misfires: 'latest' as const,
+      maximumLatenessSeconds: 300,
+      retry: { maxAttempts: 4, maximumAgeSeconds: 3_600 },
+      requirements: { configuration: 'fixed' as const, cardinality: 'bounded' as const, precision: 'minute' as const },
+    };
+    const interval = kubernetesApplicationScheduleCronJob({
+      ...base,
+      name: 'schedule-interval',
+      definition: { ...contract, id: 'interval.v1', every: '2h' },
+    });
+    const oneTime = kubernetesApplicationScheduleCronJob({
+      ...base,
+      name: 'schedule-once',
+      definition: { ...contract, id: 'once.v1', at: '2026-11-01T05:30:00.000Z' },
+    });
+    expect(interval.spec).toMatchObject({ schedule: '0 */2 * * *', timeZone: 'UTC' });
+    expect(oneTime.spec).toMatchObject({ schedule: '30 5 1 11 *', timeZone: 'UTC' });
   });
 
   test('creates, noops, replaces, and removes dynamic CronJobs by revision', async () => {

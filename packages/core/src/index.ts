@@ -68,6 +68,10 @@ export {
   planApplicationProfileTransitions,
   profileTransitionAcknowledgement,
 } from './application-profile-transition.js';
+export {
+  ApplicationScheduleCronCompatibilityError,
+  exactFiveFieldCronForInterval,
+} from './application-schedule-cron.js';
 export type * from './application-start.js';
 export {
   applicationStartDefinitionApiVersion,
