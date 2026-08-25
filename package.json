@@ -159,7 +159,7 @@
     "test:v08:actors:celld-live": "APPLIK8S_E2E_CELLD=1 bunx vitest run --config vitest.e2e.config.ts --maxWorkers=1 packages/e2e/test/v08-celld-live.e2e.test.ts",
     "test:v08:actors:realtime-live": "APPLIK8S_E2E_CELLD=1 APPLIK8S_E2E_CELLD_REALTIME=1 bunx vitest run --config vitest.e2e.config.ts --maxWorkers=1 -t 'maintains hibernatable WebSocket semantics and reconnects after node loss' packages/e2e/test/v08-celld-live.e2e.test.ts",
     "test:v08:actors:kubernetes-live": "APPLIK8S_E2E_LIVE=1 APPLIK8S_E2E_CONTEXT=orbstack bunx vitest run --config vitest.e2e.config.ts --maxWorkers=1 packages/e2e/test/v08-celld-kubernetes-live.e2e.test.ts",
-    "test:v08:runtime-access:kubernetes-live": "APPLIK8S_E2E_LIVE=1 APPLIK8S_E2E_CONTEXT=orbstack bunx vitest run --config vitest.e2e.config.ts --maxWorkers=1 packages/e2e/test/v08-runtime-access-kubernetes-live.e2e.test.ts",
+    "test:v08:runtime-access:kubernetes-live": "APPLIK8S_E2E_LIVE=1 APPLIK8S_E2E_CONTEXT=${APPLIK8S_E2E_CONTEXT:-orbstack} bunx vitest run --config vitest.e2e.config.ts --maxWorkers=1 packages/e2e/test/v08-runtime-access-kubernetes-live.e2e.test.ts",
     "check:v08:aws:contracts": "bun run build:packages && bunx vitest run --maxWorkers=1 packages/deployment-compiler/test/aws-deployment-plan.vertical.test.ts packages/deployment-alchemy/test/aws-deployment.vertical.test.ts packages/runtime-aws/test/runtime.vertical.test.ts",
     "check:v08:aws-local": "bun run check:v08:aws:contracts && bun run test:v08:aws-local:ministack",
     "check:v08:aws": "bun run check:v08:aws:contracts && APPLIK8S_E2E_AWS=1 bunx vitest run --config vitest.e2e.config.ts --maxWorkers=1 packages/e2e/test/v08-aws-live.e2e.test.ts",

@@ -36,7 +36,7 @@ const nodeImage = 'node:22-alpine@sha256:16e22a550f3863206a3f701448c45f7912c6896
 const allowedFqdn = 'example.com';
 const deniedFqdn = 'example.org';
 
-describeLive('v0.8 Kubernetes runtime-access enforcement on OrbStack', () => {
+describeLive('v0.8 Kubernetes runtime-access enforcement', () => {
   it('enforces exact RBAC, Secret, private-peer, and FQDN access through the compiler-owned TypeKro/Alchemy lifecycle', async () => {
     await assertExpectedKubectlContext();
     const suffix = randomUUID().replaceAll('-', '').slice(0, 10);
