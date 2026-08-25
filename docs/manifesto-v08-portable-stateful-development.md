@@ -66,7 +66,7 @@ The accepted implementation order, checkpoint/reconciliation rules, Runtime Inte
 evidence discipline are maintained in
 [`v0.8-execution-plan.md`](v0.8-execution-plan.md). That plan sequences this manifesto and its RFPs; it
 does not weaken or replace their normative contracts. The copy/paste execution goal is maintained in
-[`v0.8-goal-prompt.md`](v0.8-goal-prompt.md).
+[`v0.8-goal.md`](v0.8-goal.md).
 
 | RFP | Owns | Must not own |
 | --- | --- | --- |
