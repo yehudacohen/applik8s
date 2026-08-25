@@ -323,7 +323,7 @@ export function generatedApplicationFetchGatewayModules(
 		);
 	if (actors.length > 0)
 		imports.push(
-			"import { actor, actorState, createApplicationActor, createApplicationActorTurnAuthority, executeApplicationActorAlarm, executeApplicationActorRealtime, installApplicationActorInvocationAuthorityResolver, installApplicationActorRuntimeResolver, validateApplicationAuthorizationReceipt, withApplicationActorTurnAuthority } from '@applik8s/applik8s';",
+			"import { actor, actorState, createApplicationActor, createApplicationActorTurnAuthority, executeApplicationActorAlarm, executeApplicationActorInvocation, executeApplicationActorRealtime, installApplicationActorInvocationAuthorityResolver, installApplicationActorRuntimeResolver, validateApplicationAuthorizationReceipt, withApplicationActorTurnAuthority } from '@applik8s/applik8s';",
 			"import { applicationCausalPrincipalContext } from '@applik8s/core';",
 			"import { applicationOperationInputDigest } from '@applik8s/applik8s/operation-runtime';",
 			"import { createPersistentLocalApplicationActorRuntime } from '@applik8s/applik8s/actor-runtime-local';",
@@ -1910,10 +1910,12 @@ const applicationGatewayCore = {
           input: admission.input,
           idempotencyKey: alarm.idempotencyKey ?? alarm.alarmId,
           authority: admission.authority,
+          ...(alarm.telemetry ? { telemetry: alarm.telemetry } : {}),
+          ...(alarm.attempt === undefined ? {} : { attempt: alarm.attempt }),
         });
         return new Response(JSON.stringify({ accepted: true, receipt }), { status: 202, headers: { 'content-type': 'application/json' } });
-      } catch (error) {
-        console.error('Applik8s actor alarm admission failed', error);
+      } catch {
+        console.error(JSON.stringify({ event: 'applik8s-actor-alarm-admission-failed', error: 'actor_alarm_failed' }));
         return new Response(JSON.stringify({ error: 'actor_alarm_failed' }), { status: 500, headers: { 'content-type': 'application/json' } });
       }
     }` : ""}
@@ -1935,26 +1937,24 @@ const applicationGatewayCore = {
         if (typeof invocation?.idempotencyKey !== 'string' || !invocation.idempotencyKey.trim()) return new Response(JSON.stringify({ error: 'actor_idempotency_key_required' }), { status: 400, headers: { 'content-type': 'application/json' } });
         const admission = await authorizeInternalApplicationActor(invocation, binding);
         if (admission.response) return admission.response;
-        if (expectedKind === 'actorCommand') {
-          const callable = binding[invocation.member];
-          if (typeof callable !== 'function') throw new Error('Generated actor command is unavailable.');
-          const result = await withApplicationActorTurnAuthority(admission.authority, () => callable(admission.key, admission.input, { idempotencyKey: invocation.idempotencyKey }));
-          return new Response(JSON.stringify({ result, authorizationReceiptId: admission.authorizationReceiptId }), { status: 200, headers: { 'content-type': 'application/json' } });
-        }
-        if (expectedKind === 'actorMessage') {
-          const callable = binding[invocation.member];
-          if (!callable || typeof callable.send !== 'function') throw new Error('Generated actor message is unavailable.');
-          const receipt = await withApplicationActorTurnAuthority(admission.authority, () => callable.send(admission.key, admission.input, { idempotencyKey: invocation.idempotencyKey }));
-          return new Response(JSON.stringify({ receipt, authorizationReceiptId: admission.authorizationReceiptId }), { status: 202, headers: { 'content-type': 'application/json' } });
-        }
-        if (typeof invocation.scheduledAt !== 'string' || !Number.isFinite(Date.parse(invocation.scheduledAt))) return new Response(JSON.stringify({ error: 'invalid_actor_alarm_timestamp' }), { status: 400, headers: { 'content-type': 'application/json' } });
-        const alarm = binding.alarms?.[invocation.member];
-        if (!alarm || typeof alarm.schedule !== 'function') throw new Error('Generated actor alarm is unavailable.');
-        const receipt = await withApplicationActorTurnAuthority(admission.authority, () => alarm.schedule(admission.key, invocation.scheduledAt, admission.input, { idempotencyKey: invocation.idempotencyKey }));
-        return new Response(JSON.stringify({ receipt, authorizationReceiptId: admission.authorizationReceiptId }), { status: 202, headers: { 'content-type': 'application/json' } });
-      } catch (error) {
-        console.error('Applik8s internal actor invocation failed', error);
-        return new Response(JSON.stringify({ error: 'actor_invocation_failed', message: error instanceof Error ? error.message : String(error) }), { status: 500, headers: { 'content-type': 'application/json' } });
+        if (expectedKind === 'actorAlarm' && (typeof invocation.scheduledAt !== 'string' || !Number.isFinite(Date.parse(invocation.scheduledAt)))) return new Response(JSON.stringify({ error: 'invalid_actor_alarm_timestamp' }), { status: 400, headers: { 'content-type': 'application/json' } });
+        const executed = await executeApplicationActorInvocation(binding, {
+          member: invocation.member,
+          memberKind: invocation.memberKind,
+          key: admission.key,
+          input: admission.input,
+          idempotencyKey: invocation.idempotencyKey,
+          ...(invocation.scheduledAt ? { scheduledAt: invocation.scheduledAt } : {}),
+          authority: admission.authority,
+          ...(invocation.telemetry ? { telemetry: invocation.telemetry } : {}),
+        });
+        return new Response(JSON.stringify({
+          ...(expectedKind === 'actorCommand' ? { result: executed.result } : { receipt: executed.receipt }),
+          authorizationReceiptId: admission.authorizationReceiptId,
+        }), { status: expectedKind === 'actorCommand' ? 200 : 202, headers: { 'content-type': 'application/json' } });
+      } catch {
+        console.error(JSON.stringify({ event: 'applik8s-internal-actor-invocation-failed', error: 'actor_invocation_failed' }));
+        return new Response(JSON.stringify({ error: 'actor_invocation_failed' }), { status: 500, headers: { 'content-type': 'application/json' } });
       }
     }` : ""}
     ${actors.length > 0 ? `if (url.pathname === '/__applik8s/v1/internal/actors/realtime' && request.method === 'POST') {
@@ -1973,8 +1973,8 @@ const applicationGatewayCore = {
           idempotencyKey: admission.idempotencyKey,
         });
         return new Response(JSON.stringify({ accepted: true, receipt }), { status: 202, headers: { 'content-type': 'application/json' } });
-      } catch (error) {
-        console.error('Applik8s actor realtime admission failed', error);
+      } catch {
+        console.error(JSON.stringify({ event: 'applik8s-actor-realtime-admission-failed', error: 'actor_realtime_failed' }));
         return new Response(JSON.stringify({ error: 'actor_realtime_failed' }), { status: 500, headers: { 'content-type': 'application/json' } });
       }
     }` : ""}

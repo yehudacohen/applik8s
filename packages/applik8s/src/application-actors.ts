@@ -7,10 +7,12 @@ import {
   type ApplicationAuthorizationReceipt,
   type ApplicationExecutionPrincipal,
   type ApplicationPrincipal,
+  type ApplicationTelemetryEnvelopeV1,
   applicationCausalPrincipalContext,
   applicationOperationId,
   createApplicationExecutionPrincipalV1,
   validateApplicationAuthorizationReceipt,
+  validateApplicationTelemetryEnvelopeV1,
 } from '@applik8s/core';
 import { sha256Hex } from '@applik8s/deployment-contract';
 import type { SchemaInput } from '@applik8s/sdk';
@@ -36,7 +38,10 @@ export {
 import { applicationProviderGraphNodeId } from './application-identifiers.js';
 import { withApplicationManagedEffects } from './application-managed-effects.js';
 import { applicationOperationInputDigest } from './application-operation-runtime.js';
-import { runApplicationTelemetryBoundary } from './application-telemetry-runtime.js';
+import {
+  captureApplicationTelemetryContext,
+  runApplicationTelemetryBoundary,
+} from './application-telemetry-runtime.js';
 import { declaredSchema, validateMessage } from './application-workflow-serialization.js';
 
 export interface ApplicationActorKeySchema {
@@ -426,6 +431,10 @@ export interface ApplicationActorRuntimeInvocation<TState extends object> {
   readonly connection?: ApplicationActorConnectionContext;
   readonly idempotencyKey?: string;
   readonly authority?: ApplicationActorTurnAuthority;
+  /** Framework-owned producer carrier for a remote or durable handoff. */
+  readonly telemetry?: ApplicationTelemetryEnvelopeV1;
+  /** One-based physical delivery attempt. Replays never create an attempt. */
+  readonly attempt?: number;
 }
 
 export interface ApplicationActorInvocationAuthorityRequest {
@@ -470,6 +479,7 @@ export interface ApplicationActorRuntime {
     readonly scheduledAt: string;
     readonly idempotencyKey?: string;
     readonly authority?: ApplicationActorTurnAuthority;
+    readonly telemetry?: ApplicationTelemetryEnvelopeV1;
   }): Promise<ApplicationActorAlarmReceipt>;
   cancelAlarm(actor: string, member: string, key: string): Promise<ApplicationActorAlarmReceipt>;
 }
@@ -563,10 +573,16 @@ async function invokeApplicationActorRuntime<TState extends object>(
         },
       )
     : undefined;
+  const telemetry = request.telemetry
+    ? validatedActorTelemetry(request.telemetry, 'runtime-invocation')
+    : undefined;
+  const attempt = actorAttempt(request.attempt, 'runtime-invocation');
   return actorCallStack.run([...stack, frame], () => actorRuntime().invoke({
     ...request,
     ...(idempotencyKey ? { idempotencyKey } : {}),
     ...(authority ? { authority } : {}),
+    ...(telemetry ? { telemetry } : {}),
+    attempt,
   }));
 }
 
@@ -647,6 +663,8 @@ export async function executeApplicationActorAlarm(
     readonly input: object;
     readonly idempotencyKey: string;
     readonly authority?: ApplicationActorTurnAuthority;
+    readonly telemetry?: ApplicationTelemetryEnvelopeV1;
+    readonly attempt?: number;
   },
 ): Promise<ApplicationActorAdmissionReceipt> {
   const readDefinition = actorDefinitionRuntimeByHandle.get(handle);
@@ -667,6 +685,12 @@ export async function executeApplicationActorAlarm(
       `${handle.id}.${request.member}.input`,
     ),
     idempotencyKey: request.idempotencyKey,
+    ...(request.telemetry
+      ? { telemetry: validatedActorTelemetry(request.telemetry, 'alarm-delivery') }
+      : {}),
+    ...(request.attempt === undefined
+      ? {}
+      : { attempt: actorAttempt(request.attempt, 'alarm-delivery') }),
     ...(request.authority
       ? {
           authority: normalizeApplicationActorTurnAuthority(
@@ -677,6 +701,113 @@ export async function executeApplicationActorAlarm(
       : {}),
   });
   return result.receipt;
+}
+
+/**
+ * Trusted transport seam for generated remote actor calls. It preserves the
+ * producer carrier without exposing telemetry controls on the authored actor
+ * handle and keeps alarm scheduling separate from alarm execution.
+ *
+ * @internal Generated gateway/runtime API.
+ */
+export async function executeApplicationActorInvocation(
+  handle: ApplicationActorHandle<object, ApplicationActorProtocol>,
+  request: {
+    readonly member: string;
+    readonly memberKind: 'command' | 'message' | 'alarm';
+    readonly key: string;
+    readonly input: object;
+    readonly idempotencyKey: string;
+    readonly scheduledAt?: string;
+    readonly authority: ApplicationActorTurnAuthority;
+    readonly telemetry?: ApplicationTelemetryEnvelopeV1;
+  },
+): Promise<{
+  readonly result?: object;
+  readonly receipt: ApplicationActorAdmissionReceipt | ApplicationActorAlarmReceipt;
+}> {
+  const readDefinition = actorDefinitionRuntimeByHandle.get(handle);
+  if (!readDefinition) throw new Error(`Actor ${handle.id} has no runtime definition.`);
+  const definition = readDefinition();
+  const member = definition.protocol[request.member];
+  const expectedKind = request.memberKind === 'command'
+    ? 'actorCommand'
+    : request.memberKind === 'message'
+      ? 'actorMessage'
+      : 'actorAlarm';
+  if (member?.kind !== expectedKind) {
+    throw new Error(`Actor ${handle.id}.${request.member} is not a declared ${request.memberKind} member.`);
+  }
+  const key = validateActorKey(handle.key, request.key, `${handle.id}.key`);
+  const input = validateMessage(member.input, request.input, `${handle.id}.${request.member}.input`);
+  const authority = normalizeApplicationActorTurnAuthority(request.authority);
+  const telemetry = request.telemetry
+    ? validatedActorTelemetry(request.telemetry, 'remote-turn')
+    : undefined;
+  if (expectedKind === 'actorAlarm') {
+    const scheduledAt = actorAlarmTimestamp(
+      request.scheduledAt ?? '',
+      handle.id,
+      request.member,
+    );
+    const admittedAuthority = await resolveApplicationActorInvocationAuthority({
+      actor: handle.id,
+      member: request.member,
+      memberKind: expectedKind,
+      key,
+      input,
+      transport: 'control-plane',
+      phase: 'enqueue',
+      scheduledAt,
+      idempotencyKey: request.idempotencyKey,
+      current: authority,
+    });
+    const receipt = await actorRuntime().scheduleAlarm({
+      definition,
+      member: request.member,
+      key,
+      input,
+      scheduledAt,
+      idempotencyKey: request.idempotencyKey,
+      authority: admittedAuthority,
+      ...(telemetry ? { telemetry } : {}),
+    });
+    return { receipt };
+  }
+  const result = await invokeApplicationActorRuntime({
+    definition,
+    member: request.member,
+    memberKind: expectedKind,
+    key,
+    input,
+    idempotencyKey: request.idempotencyKey,
+    authority,
+    ...(telemetry ? { telemetry } : {}),
+  });
+  return {
+    ...(result.result ? { result: result.result } : {}),
+    receipt: result.receipt,
+  };
+}
+
+function validatedActorTelemetry(
+  value: unknown,
+  context: string,
+): ApplicationTelemetryEnvelopeV1 {
+  try {
+    validateApplicationTelemetryEnvelopeV1(value);
+  } catch (cause) {
+    throw new Error(`Actor ${context} telemetry carrier is invalid.`, { cause });
+  }
+  return structuredClone(value);
+}
+
+function actorAttempt(value: number | undefined, context: string): number {
+  const attempt = value ?? 1;
+  if (!Number.isSafeInteger(attempt) || attempt < 1) {
+    throw new Error(`Actor ${context} attempt must be a positive safe integer.`);
+  }
+  return attempt;
 }
 
 /**
@@ -919,7 +1050,17 @@ export function createApplicationActor<TState extends object, const TProtocol ex
           const authority = currentAuthority
             ? await resolveApplicationActorInvocationAuthority({ actor: id, member: name, memberKind: member.kind, key: keyValue, input: inputValue, transport: 'control-plane', phase: 'enqueue', scheduledAt, ...(invocation.idempotencyKey ? { idempotencyKey: invocation.idempotencyKey } : {}), current: currentAuthority })
             : undefined;
-          return actorRuntime().scheduleAlarm({ definition: definition(), member: name, key: keyValue, input: inputValue, scheduledAt, ...invocation, ...(authority ? { authority } : {}) });
+          const telemetry = captureApplicationTelemetryContext();
+          return actorRuntime().scheduleAlarm({
+            definition: definition(),
+            member: name,
+            key: keyValue,
+            input: inputValue,
+            scheduledAt,
+            ...invocation,
+            ...(authority ? { authority } : {}),
+            ...(telemetry ? { telemetry } : {}),
+          });
         };
     const operation = decorateApplicationMutationOperation(schedule as never, {
       apiVersion: 'applik8s.operation/v1alpha1',
@@ -1023,7 +1164,18 @@ export interface ApplicationActorRuntimeSnapshot {
     readonly result?: object;
     readonly receipt: ApplicationActorAdmissionReceipt;
   }[];
-  readonly alarms: readonly { readonly alarmId: string; readonly actor: string; readonly member: string; readonly key: string; readonly input: object; readonly scheduledAt: string; readonly idempotencyKey?: string; readonly authority?: ApplicationActorTurnAuthority }[];
+  readonly alarms: readonly {
+    readonly alarmId: string;
+    readonly actor: string;
+    readonly member: string;
+    readonly key: string;
+    readonly input: object;
+    readonly scheduledAt: string;
+    readonly idempotencyKey?: string;
+    readonly authority?: ApplicationActorTurnAuthority;
+    readonly telemetry?: ApplicationTelemetryEnvelopeV1;
+    readonly attempts?: number;
+  }[];
   readonly broadcasts: readonly { readonly identity: string; readonly records: readonly { readonly member: string; readonly value: object; readonly receipt: ApplicationActorBroadcastReceipt }[] }[];
   readonly effects?: readonly ApplicationActorOutboxEvent[];
 }
@@ -1095,7 +1247,7 @@ export function createDeterministicApplicationActorRuntime(options: {
         const stagedBroadcasts: Array<{ member: string; value: object }> = [];
         const stagedEffects: Array<Omit<ApplicationActorOutboxEvent, 'effectId' | 'operationId' | 'recordedAt' | 'partitionKey'>> = [];
         const stagedAlarms: Array<
-          | { readonly kind: 'schedule'; readonly alarmId: string; readonly member: string; readonly input: object; readonly scheduledAt: string; readonly idempotencyKey?: string; readonly authority: ApplicationActorTurnAuthority }
+          | { readonly kind: 'schedule'; readonly alarmId: string; readonly member: string; readonly input: object; readonly scheduledAt: string; readonly idempotencyKey?: string; readonly authority: ApplicationActorTurnAuthority; readonly telemetry?: ApplicationTelemetryEnvelopeV1 }
           | { readonly kind: 'cancel'; readonly alarmId: string; readonly member: string }
         > = [];
         const authority = actorTurnAuthority(request, operationId);
@@ -1114,7 +1266,8 @@ export function createDeterministicApplicationActorRuntime(options: {
                 const alarmId = actorAlarmId(request.definition.id, name, request.key);
                 const admittedInput = validateMessage(member.input, input, `${request.definition.id}.${name}.input`);
                 const alarmAuthority = await resolveApplicationActorInvocationAuthority({ actor: request.definition.id, member: name, memberKind: member.kind, key: request.key, input: admittedInput, transport: 'control-plane', phase: 'enqueue', scheduledAt, ...(invocation.idempotencyKey ? { idempotencyKey: invocation.idempotencyKey } : {}), current: authority });
-                stagedAlarms.push({ kind: 'schedule', alarmId, member: name, input: admittedInput, scheduledAt, authority: alarmAuthority, ...(invocation.idempotencyKey ? { idempotencyKey: invocation.idempotencyKey } : {}) });
+                const telemetry = captureApplicationTelemetryContext();
+                stagedAlarms.push({ kind: 'schedule', alarmId, member: name, input: admittedInput, scheduledAt, authority: alarmAuthority, ...(invocation.idempotencyKey ? { idempotencyKey: invocation.idempotencyKey } : {}), ...(telemetry ? { telemetry } : {}) });
                 return { alarmId, actor: request.definition.id, key: request.key, member: name, scheduledAt, state: 'scheduled' as const };
               },
               cancel: async () => {
@@ -1138,7 +1291,19 @@ export function createDeterministicApplicationActorRuntime(options: {
           broadcast,
           alarms: boundAlarms,
         };
-        const result = await runApplicationTelemetryBoundary({ kind: 'actor', identity: `${request.definition.id}.${request.member}`, attributes: { 'applik8s.actor.key_digest': stableDigest(request.key).slice(0, 16) } }, async () => withApplicationManagedEffects({
+        const attempt = actorAttempt(request.attempt, 'deterministic-runtime');
+        const result = await runApplicationTelemetryBoundary({
+          kind: 'actor',
+          identity: `${request.definition.id}.${request.member}`,
+          actor: request.definition.id,
+          instance: operationId,
+          execution: operationId,
+          attempt,
+          invocation: attempt > 1 ? 'retry' : 'live',
+          relationship: request.telemetry ? 'asynchronous' : 'synchronous',
+          ...(request.telemetry ? { links: [request.telemetry] } : {}),
+          attributes: { 'applik8s.actor.key_digest': stableDigest(request.key).slice(0, 16) },
+        }, async () => withApplicationManagedEffects({
           commandId: operationId,
           routingContext: {},
           emit(contract, payload) {
@@ -1165,7 +1330,17 @@ export function createDeterministicApplicationActorRuntime(options: {
         states.set(identity, committed);
         for (const operation of stagedAlarms) {
           if (operation.kind === 'cancel') alarms.delete(operation.alarmId);
-          else alarms.set(operation.alarmId, { actor: request.definition.id, member: operation.member, key: request.key, input: operation.input, scheduledAt: operation.scheduledAt, authority: operation.authority, ...(operation.idempotencyKey ? { idempotencyKey: operation.idempotencyKey } : {}) });
+          else alarms.set(operation.alarmId, {
+            actor: request.definition.id,
+            member: operation.member,
+            key: request.key,
+            input: operation.input,
+            scheduledAt: operation.scheduledAt,
+            authority: operation.authority,
+            ...(operation.idempotencyKey ? { idempotencyKey: operation.idempotencyKey } : {}),
+            ...(operation.telemetry ? { telemetry: operation.telemetry } : {}),
+            attempts: 0,
+          });
         }
         if (stagedBroadcasts.length > 0) {
           const records = published.get(identity) ?? [];
@@ -1197,7 +1372,17 @@ export function createDeterministicApplicationActorRuntime(options: {
     async scheduleAlarm(request) {
       definitions.set(request.definition.id, request.definition as unknown as ActorDefinitionRuntime<object>);
       const alarmId = actorAlarmId(request.definition.id, request.member, request.key);
-      alarms.set(alarmId, { actor: request.definition.id, member: request.member, key: request.key, input: request.input, scheduledAt: request.scheduledAt, ...(request.idempotencyKey ? { idempotencyKey: request.idempotencyKey } : {}), ...(request.authority ? { authority: request.authority } : {}) });
+      alarms.set(alarmId, {
+        actor: request.definition.id,
+        member: request.member,
+        key: request.key,
+        input: request.input,
+        scheduledAt: request.scheduledAt,
+        ...(request.idempotencyKey ? { idempotencyKey: request.idempotencyKey } : {}),
+        ...(request.authority ? { authority: request.authority } : {}),
+        ...(request.telemetry ? { telemetry: validatedActorTelemetry(request.telemetry, 'alarm-schedule') } : {}),
+        attempts: 0,
+      });
       await persist();
       return { alarmId, actor: request.definition.id, key: request.key, member: request.member, scheduledAt: request.scheduledAt, state: 'scheduled' };
     },
@@ -1229,11 +1414,28 @@ export function createDeterministicApplicationActorRuntime(options: {
       const due = [...alarms.entries()].filter(([, alarm]) => Date.parse(alarm.scheduledAt) <= at.getTime()).sort((left, right) => left[1].scheduledAt.localeCompare(right[1].scheduledAt) || left[0].localeCompare(right[0]));
       const admitted: ApplicationActorAdmissionReceipt[] = [];
       for (const [alarmId, alarm] of due) {
-        alarms.delete(alarmId);
         const definition = definitions.get(alarm.actor);
         if (!definition) throw new Error(`Actor alarm ${alarmId} cannot resume until actor definition ${alarm.actor} is registered in this process.`);
-        const result = await this.invoke({ definition: definition as never, member: alarm.member, memberKind: 'actorAlarm', key: alarm.key, input: alarm.input, idempotencyKey: alarm.idempotencyKey ?? alarmId, ...(alarm.authority ? { authority: alarm.authority } : {}) });
-        admitted.push(result.receipt);
+        const attempt = (alarm.attempts ?? 0) + 1;
+        try {
+          const result = await this.invoke({
+            definition: definition as never,
+            member: alarm.member,
+            memberKind: 'actorAlarm',
+            key: alarm.key,
+            input: alarm.input,
+            idempotencyKey: alarm.idempotencyKey ?? alarmId,
+            ...(alarm.authority ? { authority: alarm.authority } : {}),
+            ...(alarm.telemetry ? { telemetry: alarm.telemetry } : {}),
+            attempt,
+          });
+          alarms.delete(alarmId);
+          admitted.push(result.receipt);
+        } catch (cause) {
+          alarms.set(alarmId, { ...alarm, attempts: attempt });
+          await persist();
+          throw cause;
+        }
       }
       await persist();
       return admitted;

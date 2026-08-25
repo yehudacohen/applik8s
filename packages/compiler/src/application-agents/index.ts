@@ -701,6 +701,7 @@ function generatedAgentSource(contract: ApplicationAgentCompilerContract): strin
   const telemetryImports = contract.observability
     ? generatedApplicationTelemetryImports({
         boundaryRunner: true,
+        carrierCapture: contract.actors.length > 0,
         providerOperationInstrumentation: providerOperations.length > 0,
       })
     : providerOperations.length > 0
@@ -950,6 +951,7 @@ const handler = (request, context) => {
         },
       },
       context.signal,
+      ${contract.observability ? 'captureApplicationTelemetryContext()' : 'undefined'},
     );
   }]));
   return directOperationScope.run(runtime, () => createHandler(

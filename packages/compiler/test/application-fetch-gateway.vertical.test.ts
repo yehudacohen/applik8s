@@ -113,6 +113,9 @@ describe("application host Fetch gateway", () => {
 		expect(source).toContain("installApplicationActorRuntimeResolver");
 		expect(source).toContain("runtimeActorKeySchema");
 		expect(source).toContain("/__applik8s/v1/internal/actors/invoke");
+		expect(source).toContain("executeApplicationActorInvocation");
+		expect(source).toContain("invocation.telemetry");
+		expect(source).toContain("alarm.attempt");
 		expect(source).toContain("authorizeInternalApplicationActor");
 		expect(source).toContain("operationAuthority.authorize");
 		expect(source).toContain("Invalid or expired internal actor execution principal");

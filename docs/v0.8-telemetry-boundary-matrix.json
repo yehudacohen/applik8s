@@ -15,14 +15,18 @@
     "packages/runtime-celld/src/index.ts"
   ],
   "carrierCaptureSourceFiles": [
+    "packages/applik8s/src/application-actors.ts",
     "packages/applik8s/src/application-workflow-registration.ts",
     "packages/applik8s/src/command-gateway.ts",
     "packages/applik8s/src/model-command-postgres-runtime.ts",
     "packages/applik8s/src/task-operation-runtime.ts",
     "packages/applik8s/src/workflow-gateway-binding.ts",
+    "packages/compiler/src/application-agents/index.ts",
     "packages/compiler/src/application-fetch-gateway/index.ts",
     "packages/compiler/src/application-http/index.ts",
-    "packages/compiler/src/application-workflows/source.ts"
+    "packages/compiler/src/application-reactive/index.ts",
+    "packages/compiler/src/application-workflows/source.ts",
+    "packages/runtime-celld/src/index.ts"
   ],
   "boundaries": [
     {
@@ -31,9 +35,12 @@
       "relationship": "mixed",
       "producer": "authorized actor call, connection, message, or persisted alarm admission",
       "consumer": "local actor runtime or celld actor turn",
-      "carrierPlacement": "synchronous calls inherit the active runtime; durable alarm and remote-turn carrier placement remains explicit follow-up work",
+      "carrierPlacement": "synchronous in-process calls inherit the active runtime; generated workflow, agent, and processor callers capture one producer carrier for remote turns; alarm scheduling persists that exact carrier atomically with authority and input in local snapshots or celld Durable Object state; every admitted delivery links the carrier and records its one-based physical attempt while receipt replay creates no business boundary",
       "owners": [
         "packages/applik8s/src/application-actors.ts",
+        "packages/compiler/src/application-actor-invocation.ts",
+        "packages/compiler/src/application-fetch-gateway/index.ts",
+        "packages/runtime-celld/src/worker.ts",
         "packages/runtime-celld/src/index.ts"
       ],
       "sourceMarkers": [
@@ -44,10 +51,18 @@
         {
           "path": "packages/runtime-celld/src/index.ts",
           "marker": "kind: 'actor'"
+        },
+        {
+          "path": "packages/runtime-celld/src/worker.ts",
+          "marker": "attempt: alarm.attempts + 1"
+        },
+        {
+          "path": "packages/compiler/src/application-actor-invocation.ts",
+          "marker": "...(telemetry ? { telemetry } : {})"
         }
       ],
-      "regression": "bunx vitest run --maxWorkers=1 packages/applik8s/test/application-actors.vertical.test.ts packages/runtime-celld/test/runtime-celld.vertical.test.ts",
-      "remaining": "Capture and persist the producer carrier for alarm and remote celld delivery, link each admitted attempt, distinguish retry/cancellation, and prove relocation/restart continuity."
+      "regression": "bunx vitest run --maxWorkers=1 packages/applik8s/test/application-actors.vertical.test.ts packages/runtime-celld/test/runtime-celld.vertical.test.ts packages/compiler/test/application-agents.vertical.test.ts packages/compiler/test/application-reactive.vertical.test.ts packages/compiler/test/application-workflows.vertical.test.ts packages/compiler/test/application-fetch-gateway.vertical.test.ts",
+      "remaining": "Prove the emitted gateway-to-celld path through live relocation and application-worker restart with collector-visible links; correlate explicit command-authorized alarm cancellation without misclassifying caller timeout as actor-turn cancellation."
     },
     {
       "kind": "agent",

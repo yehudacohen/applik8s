@@ -1,6 +1,7 @@
 // typecast-file-boundary: Test fixtures intentionally exercise untyped Celld storage and worker request boundaries.
 import { createHash } from 'node:crypto';
-import { type ApplicationActorTurnAuthority, type ApplicationAuthorizationReceipt, actor, actorState, app, event, executeApplicationActorRealtime, installApplicationActorInvocationAuthorityResolver, installApplicationActorRuntimeResolver, type, withApplicationActorTurnAuthority } from '@applik8s/applik8s';
+import { type ApplicationActorTurnAuthority, type ApplicationAuthorizationReceipt, actor, actorState, app, event, executeApplicationActorRealtime, installApplicationActorInvocationAuthorityResolver, installApplicationActorRuntimeResolver, installApplicationTelemetryRuntimeResolver, type, withApplicationActorTurnAuthority } from '@applik8s/applik8s';
+import { createApplicationTelemetryEnvelopeV1 } from '@applik8s/core';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createCelldApplicationActorRuntime, signCelldActorConnectionTicket, verifyCelldActorConnectionTicket } from '../src/index.js';
 import worker, { Applik8sActorCell, type CelldActorWorkerEnvironment } from '../src/worker.js';
@@ -473,6 +474,80 @@ describe('celld actor runtime', () => {
       () => Counter.cancelWake('one', {}, { idempotencyKey: 'cancel-wake-1' }),
     )).resolves.toEqual({ cancelled: true });
     expect(entry?.storage.alarmTime).toBeNull();
+  });
+
+  it('persists an alarm producer carrier and forwards one-based delivery attempts across retries', async () => {
+    const service = authority();
+    const Counter = app('celld-alarm-telemetry-fixture').actor('counter-alarm-telemetry.v1', {
+      key: type('string'),
+      state: type({ count: 'number.integer >= 0' }),
+      protocol: { wake: actor.alarm(type({ by: 'number.integer > 0' })) },
+    });
+    Counter.on.initialize(() => ({ count: 0 }));
+    Counter.on.wake(async () => {});
+    const carrier = createApplicationTelemetryEnvelopeV1({
+      traceparent: '00-0123456789abcdef0123456789abcdef-0123456789abcdef-01',
+      identity: {
+        application: 'celld-alarm-telemetry-fixture',
+        environment: 'test',
+        target: 'celld',
+        operation: 'schedule-wake',
+        execution: 'request-1',
+        attempt: 1,
+      },
+    });
+    const runtime = createCelldApplicationActorRuntime({
+      endpoint: 'http://celld.test/',
+      authorization: service.authorization,
+      fetch: service.fetch as typeof fetch,
+    });
+    disposers.push(
+      installApplicationActorRuntimeResolver(() => runtime),
+      installApplicationTelemetryRuntimeResolver(() => ({
+        async run(_boundary, execute) { return execute(); },
+        log() {},
+        count() {},
+        record() {},
+        capture: () => carrier,
+      })),
+    );
+    const alarmAuthority = turnAuthority(
+      'celld-alarm-telemetry-fixture',
+      'counter-alarm-telemetry.v1',
+      'wake',
+    );
+    await withApplicationActorTurnAuthority(alarmAuthority, () =>
+      Counter.alarms.wake.schedule(
+        'one',
+        '2000-01-01T00:00:00.000Z',
+        { by: 1 },
+        { idempotencyKey: 'wake-telemetry-1' },
+      ));
+    const [entry] = service.cells.values();
+    expect([...entry?.storage.values.values() ?? []]).toContainEqual(
+      expect.objectContaining({ telemetry: carrier, attempts: 0 }),
+    );
+    const deliveries: Array<Record<string, unknown>> = [];
+    service.setApplicationFetch(async (_input, init) => {
+      deliveries.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return deliveries.length === 1
+        ? new Response(JSON.stringify({ error: 'temporary' }), { status: 503 })
+        : new Response(JSON.stringify({ accepted: true }), { status: 202 });
+    });
+
+    await entry?.cell.alarm();
+    expect(deliveries).toEqual([
+      expect.objectContaining({ telemetry: carrier, attempt: 1, attempts: 0 }),
+    ]);
+    expect([...entry?.storage.values.values() ?? []]).toContainEqual(
+      expect.objectContaining({ telemetry: carrier, attempts: 1 }),
+    );
+    await entry?.cell.alarm();
+    expect(deliveries).toEqual([
+      expect.objectContaining({ telemetry: carrier, attempt: 1, attempts: 0 }),
+      expect.objectContaining({ telemetry: carrier, attempt: 2, attempts: 1 }),
+    ]);
+    expect([...entry?.storage.values.keys() ?? []].some(key => key.startsWith('applik8s:alarm:'))).toBe(false);
   });
 
   it('commits bound alarms atomically and discards them when the turn rolls back', async () => {

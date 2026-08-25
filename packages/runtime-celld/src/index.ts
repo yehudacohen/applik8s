@@ -9,6 +9,7 @@ import {
   type ApplicationActorRuntimeInvocation,
   type ApplicationActorTurn,
   type ApplicationActorTurnAuthority,
+  captureApplicationTelemetryContext,
   normalizeApplicationActorTurnAuthority,
   resolveApplicationActorInvocationAuthority,
   runApplicationTelemetryBoundary,
@@ -149,7 +150,7 @@ export function createCelldApplicationActorRuntime(
         }> = [];
         const effects: ApplicationActorOutboxEvent[] = [];
         const alarms: Array<
-          | { readonly kind: 'schedule'; readonly alarmId: string; readonly member: string; readonly input: object; readonly scheduledAt: string; readonly idempotencyKey?: string; readonly authority: ApplicationActorTurnAuthority }
+          | { readonly kind: 'schedule'; readonly alarmId: string; readonly member: string; readonly input: object; readonly scheduledAt: string; readonly idempotencyKey?: string; readonly authority: ApplicationActorTurnAuthority; readonly telemetry?: import('@applik8s/core').ApplicationTelemetryEnvelopeV1 }
           | { readonly kind: 'cancel'; readonly alarmId: string; readonly member: string }
         > = [];
         const broadcast = Object.fromEntries(Object.entries(call.definition.protocol).flatMap(([name, member]) =>
@@ -178,7 +179,8 @@ export function createCelldApplicationActorRuntime(
                   const alarmId = celldActorAlarmId(call.definition.id, name, call.key);
                   const admittedInput = validate(member.input, input, `${call.definition.id}.${name}.input`);
                   const alarmAuthority = await resolveApplicationActorInvocationAuthority({ actor: call.definition.id, member: name, memberKind: member.kind, key: call.key, input: admittedInput, transport: 'control-plane', phase: 'enqueue', scheduledAt, ...(invocation.idempotencyKey ? { idempotencyKey: invocation.idempotencyKey } : {}), current: authority });
-                  alarms.push({ kind: 'schedule', alarmId, member: name, input: admittedInput, scheduledAt, authority: alarmAuthority, ...(invocation.idempotencyKey ? { idempotencyKey: invocation.idempotencyKey } : {}) });
+                  const telemetry = captureApplicationTelemetryContext();
+                  alarms.push({ kind: 'schedule', alarmId, member: name, input: admittedInput, scheduledAt, authority: alarmAuthority, ...(invocation.idempotencyKey ? { idempotencyKey: invocation.idempotencyKey } : {}), ...(telemetry ? { telemetry } : {}) });
                   return { alarmId, actor: call.definition.id, key: call.key, member: name, scheduledAt, state: 'scheduled' as const };
                 },
                 cancel: async () => {
@@ -202,10 +204,18 @@ export function createCelldApplicationActorRuntime(
           broadcast,
           alarms: boundAlarms,
         };
+        const attempt = call.attempt ?? 1;
         const result = await runApplicationTelemetryBoundary(
           {
             kind: 'actor',
             identity: `${call.definition.id}.${call.member}`,
+            actor: call.definition.id,
+            instance: operationId,
+            execution: operationId,
+            attempt,
+            invocation: attempt > 1 ? 'retry' : 'live',
+            relationship: call.telemetry ? 'asynchronous' : 'synchronous',
+            ...(call.telemetry ? { links: [call.telemetry] } : {}),
             attributes: {
               'applik8s.actor.provider': 'celld',
               'applik8s.actor.key_digest': sha256Hex(call.key).slice(0, 16),
@@ -289,6 +299,7 @@ export function createCelldApplicationActorRuntime(
           scheduledAt: call.scheduledAt,
           idempotencyKey: call.idempotencyKey,
           authority: call.authority,
+          telemetry: call.telemetry,
         },
         [200],
       );

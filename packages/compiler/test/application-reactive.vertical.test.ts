@@ -925,6 +925,14 @@ describe('generated v0.6 reactive workloads', () => {
         },
         budgets: { timeoutMs: 30_000, maxInputBytes: 256_000 },
       },
+      {
+        id: 'provider.observability',
+        kind: 'provider',
+        name: 'Observability',
+        stability: 'stable',
+        interface: 'Observability',
+        implementation: 'local-otel',
+      },
     ] as unknown as ApplicationGraphNode[];
     const [artifact] = await emitGeneratedApplicationReactive({
       graph: reactiveGraph(nodes),
@@ -952,6 +960,8 @@ describe('generated v0.6 reactive workloads', () => {
     expect(generated).toContain('invokeApplicationActorBinding');
     expect(generated).toContain('processorActors(authoredContext)');
     expect(generated).toContain('/__applik8s/v1/internal/actors/invoke');
+    expect(generated).toContain('captureApplicationTelemetryContext()');
+    expect(generated).toContain('...(telemetry ? { telemetry } : {})');
     expect(generated).toContain("transport: 'event'");
     expect(generated).toContain('principal,');
     expect(generated).toContain('workloadAuthorityId:');

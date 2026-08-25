@@ -4,6 +4,7 @@ import {
   actor,
   app,
   IdentityProvider,
+  Observability,
 } from '@applik8s/applik8s';
 import { type } from '@applik8s/applik8s/dsl';
 import { pgTable, text } from 'drizzle-orm/pg-core';
@@ -14,6 +15,7 @@ const platform = app('agent-actor-proof', {
   status: type({ ready: 'boolean' }),
 });
 platform.provide(AI, AI.deterministic({ fixture: { response: 'recorded' } }));
+platform.provide(Observability, Observability.local());
 platform.provide(ApplicationHost, ApplicationHost.managed({ replicas: 1, port: 3_000 }));
 platform.provide(
   IdentityProvider,

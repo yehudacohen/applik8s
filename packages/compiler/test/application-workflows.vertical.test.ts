@@ -233,6 +233,8 @@ describe('v0.5 generated workflow lowering', () => {
     const resources = workflowResources(contract, 'actor-worker', 'actor-worker:test', 'sha256:test', false);
     expect(contract.actorEffects?.actors).toHaveLength(1);
     expect(source).toContain('/__applik8s/v1/internal/actors/invoke');
+    expect(source).toContain('const telemetry = captureApplicationTelemetryContext()');
+    expect(source).toContain('...(telemetry ? { telemetry } : {})');
     expect(source).toContain("transport: 'workflow'");
     expect(source).toContain('principal,');
     expect(source).toContain('APPLIK8S_ACTOR_APPLICATION_ENDPOINT');

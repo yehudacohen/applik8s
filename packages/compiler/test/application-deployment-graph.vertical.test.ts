@@ -244,7 +244,10 @@ describe("compiler deployment graph emission", () => {
               apiVersion: "v1",
               kind: "Service",
               metadata: { name: "actor-proof-api", namespace: "actor-proof", labels: { "app.kubernetes.io/component": "typed-http" } },
-              spec: { ports: [{ name: "http", port: 8080, targetPort: "http" }] },
+              spec: {
+                selector: { "app.kubernetes.io/component": "typed-http" },
+                ports: [{ name: "http", port: 8080, targetPort: "http" }],
+              },
             },
           }],
         },
@@ -982,6 +985,12 @@ function generatedDeployment(
       },
       spec: {
         template: {
+          metadata: {
+            labels: {
+              "app.kubernetes.io/name": name,
+              "app.kubernetes.io/component": component,
+            },
+          },
           spec: {
             containers: [{
               name: containerName,

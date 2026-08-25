@@ -44,7 +44,7 @@ export function applicationActorInvocationBoundary(
 
 /** Generated runtime helper shared by agents and reactive processors. */
 export function generatedApplicationActorInvocationClientSource(): string {
-  return `async function invokeApplicationActorBinding(binding, key, input, options, authority, signal) {
+  return `async function invokeApplicationActorBinding(binding, key, input, options, authority, signal, telemetry) {
   const endpoint = requiredEnv('APPLIK8S_ACTOR_APPLICATION_ENDPOINT').replace(/\\/+$/u, '') + '/__applik8s/v1/internal/actors/invoke';
   const invocation = options && typeof options === 'object' ? options : {};
   const response = await fetch(endpoint, {
@@ -62,6 +62,7 @@ export function generatedApplicationActorInvocationClientSource(): string {
       idempotencyKey: invocation.idempotencyKey ?? authority.idempotencyKey,
       ...(invocation.scheduledAt ? { scheduledAt: invocation.scheduledAt } : {}),
       authority: authority.envelope,
+      ...(telemetry ? { telemetry } : {}),
     }),
     signal,
   });

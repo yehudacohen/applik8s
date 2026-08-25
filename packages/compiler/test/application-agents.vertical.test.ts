@@ -26,7 +26,6 @@ import {
 } from '../src/application-operations/index.js';
 import {
   compileTypeKroComposition,
-  discoverApplicationGraph,
   discoverApplicationGraphWithExports,
 } from '../src/pipeline/index.js';
 
@@ -90,6 +89,8 @@ describe('generated application AI agents', () => {
     );
     expect(generated).toContain('invokeApplicationActorBinding');
     expect(generated).toContain('/__applik8s/v1/internal/actors/invoke');
+    expect(generated).toContain('captureApplicationTelemetryContext()');
+    expect(generated).toContain('...(telemetry ? { telemetry } : {})');
     expect(generated).toContain('"actor":"research-session.v1"');
     expect(generated).toContain('principal: context.principal');
     expect(generated).toContain("transport: 'direct'");

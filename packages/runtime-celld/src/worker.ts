@@ -1,11 +1,16 @@
 // typecast-file-boundary: Worker fetch payloads are decoded from untyped JSON and checked by the actor runtime protocol.
 /** celld/Cloudflare-compatible authority for the Applik8s actor protocol. */
-import { type CelldActorConnectionTicketClaims, verifyCelldActorConnectionTicket } from './connection-ticket.js';
 import {
   type ApplicationActorTurnAuthority,
   normalizeApplicationActorTurnAuthority,
 } from '@applik8s/applik8s/actor-authority-runtime';
-import { validateApplicationAuthorizationReceipt, type ApplicationAuthorizationReceipt } from '@applik8s/core';
+import {
+  type ApplicationAuthorizationReceipt,
+  type ApplicationTelemetryEnvelopeV1,
+  validateApplicationAuthorizationReceipt,
+  validateApplicationTelemetryEnvelopeV1,
+} from '@applik8s/core';
+import { type CelldActorConnectionTicketClaims, verifyCelldActorConnectionTicket } from './connection-ticket.js';
 
 interface DurableObjectIdLike { toString(): string }
 interface DurableObjectStubLike { fetch(request: Request): Promise<Response> }
@@ -101,6 +106,7 @@ interface ActorAlarm {
   readonly scheduledAt: string;
   readonly idempotencyKey?: string;
   readonly authority: ApplicationActorTurnAuthority;
+  readonly telemetry?: ApplicationTelemetryEnvelopeV1;
   readonly cancelled: boolean;
   readonly attempts: number;
 }
@@ -242,7 +248,7 @@ export class Applik8sActorCell {
           const current = await transaction.get<string[]>('applik8s:alarm-index') ?? [];
           await transaction.put('applik8s:alarm-index', current.filter((entry) => entry !== id));
         });
-      } catch (cause) {
+      } catch {
         const attempts = alarm.attempts + 1;
         await this.#state.storage.put(key, { ...alarm, attempts });
         const retryAt = now + Math.min(60_000, 1_000 * 2 ** Math.min(attempts, 6));
@@ -251,7 +257,7 @@ export class Applik8sActorCell {
           actor: identity.actor,
           member: alarm.member,
           attempts,
-          cause: cause instanceof Error ? cause.message : String(cause),
+          error: 'actor_alarm_delivery_failed',
         });
       }
     }
@@ -399,8 +405,9 @@ export class Applik8sActorCell {
     if (!Number.isFinite(scheduled)) return json({ error: 'invalid_scheduled_at' }, 400);
     const idempotencyKey = optionalString(body.idempotencyKey, 'idempotencyKey');
     const authority = requiredActorTurnAuthority(body.authority, 'authority');
+    const telemetry = optionalApplicationTelemetry(body.telemetry, 'telemetry');
     const alarmId = await semanticActorAlarmId(identity, member);
-    const alarm: ActorAlarm = { alarmId, ...identity, member, input, scheduledAt: new Date(scheduled).toISOString(), ...(idempotencyKey ? { idempotencyKey } : {}), authority, cancelled: false, attempts: 0 };
+    const alarm: ActorAlarm = { alarmId, ...identity, member, input, scheduledAt: new Date(scheduled).toISOString(), ...(idempotencyKey ? { idempotencyKey } : {}), authority, ...(telemetry ? { telemetry } : {}), cancelled: false, attempts: 0 };
     await this.#state.storage.transaction(async (transaction) => {
       await transaction.put(`${alarmPrefix}${alarmId}`, alarm);
       const index = await transaction.get<string[]>('applik8s:alarm-index') ?? [];
@@ -689,8 +696,8 @@ export class Applik8sActorCell {
     const endpoint = this.#environment.APPLIK8S_ACTOR_APPLICATION_ENDPOINT;
     const authorization = this.#environment.APPLIK8S_ACTOR_APPLICATION_AUTHORIZATION;
     if (!endpoint || !authorization) throw new Error('Actor application alarm callback endpoint is not configured.');
-    const response = await fetch(new URL('/__applik8s/v1/internal/actors/alarms', endpoint), {
-      method: 'POST', headers: { authorization: `Bearer ${authorization}`, 'content-type': 'application/json' }, body: JSON.stringify(alarm),
+    const response = await this.#fetch(new URL('/__applik8s/v1/internal/actors/alarms', endpoint), {
+      method: 'POST', headers: { authorization: `Bearer ${authorization}`, 'content-type': 'application/json' }, body: JSON.stringify({ ...alarm, attempt: alarm.attempts + 1 }),
     });
     if (!response.ok) throw new Error(`Actor alarm callback failed with HTTP ${response.status}.`);
   }
@@ -874,6 +881,7 @@ async function parseActorAlarmOperations(value: unknown, identity: ActorIdentity
     const input = requiredObject(operation.input, `alarms[${index}].input`);
     const idempotencyKey = optionalString(operation.idempotencyKey, `alarms[${index}].idempotencyKey`);
     const authority = requiredActorTurnAuthority(operation.authority, `alarms[${index}].authority`);
+    const telemetry = optionalApplicationTelemetry(operation.telemetry, `alarms[${index}].telemetry`);
     operations.push({
       kind,
       alarm: {
@@ -884,12 +892,26 @@ async function parseActorAlarmOperations(value: unknown, identity: ActorIdentity
         scheduledAt: new Date(scheduled).toISOString(),
         ...(idempotencyKey ? { idempotencyKey } : {}),
         authority,
+        ...(telemetry ? { telemetry } : {}),
         cancelled: false,
         attempts: 0,
       },
     });
   }
   return operations;
+}
+
+function optionalApplicationTelemetry(
+  value: unknown,
+  label: string,
+): ApplicationTelemetryEnvelopeV1 | undefined {
+  if (value === undefined) return undefined;
+  try {
+    validateApplicationTelemetryEnvelopeV1(value);
+  } catch (cause) {
+    throw new TypeError(`${label} is not a valid application telemetry carrier.`, { cause });
+  }
+  return structuredClone(value);
 }
 
 function requiredActorTurnAuthority(value: unknown, label: string): ApplicationActorTurnAuthority {

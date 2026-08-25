@@ -3069,6 +3069,7 @@ function directWorkflowRuntime(context) { const requireContract = (contract) => 
     processor,
     queries.length > 0,
     workloadAuthority,
+    observability,
   );
   const authoredHandlerInvocation =
     generatedStreamProcessorAuthoredHandlerInvocation(
@@ -3099,7 +3100,7 @@ import { applicationSignalAccessAllows, createApplicationSignalIssuanceDecoder, 
   );
   return `import { createServer } from 'node:http';
 import { createPostgresApplicationStream, createPostgresApplicationStreamProcessorStore, enforcePostgresApplicationStreamRetention, ${runtimeFunction} } from '@applik8s/applik8s/stream-worker-runtime';
-${observability || streamProcessorProviderRuntimeOperations(processor).length > 0 ? generatedApplicationTelemetryImports({ providerOperationInstrumentation: streamProcessorProviderRuntimeOperations(processor).length > 0, runtimeImplementation: observability }).join('\n') : ''}
+${observability || streamProcessorProviderRuntimeOperations(processor).length > 0 ? generatedApplicationTelemetryImports({ carrierCapture: observability && (processor.actorBindings?.length ?? 0) > 0, providerOperationInstrumentation: streamProcessorProviderRuntimeOperations(processor).length > 0, runtimeImplementation: observability }).join('\n') : ''}
 ${postgresImport}
 ${admissionImport}
 ${authorityImport}
@@ -4117,6 +4118,7 @@ function generatedStreamProcessorActors(
   processor: ApplicationStreamProcessorNode,
   mergeAlreadyDeclared: boolean,
   workloadAuthority: readonly ApplicationWorkloadAuthorityEnvelope[],
+  observability: boolean,
 ): string {
   const bindings = processor.actorBindings ?? [];
   if (bindings.length === 0) return 'const processorActors = () => Object.freeze({});';
@@ -4159,6 +4161,7 @@ function generatedStreamProcessorActors(
           },
         },
         context.signal,
+        ${observability ? 'captureApplicationTelemetryContext()' : 'undefined'},
       );
     }`,
   };

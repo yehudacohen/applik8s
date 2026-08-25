@@ -3,18 +3,22 @@ import { mkdtemp, readFile, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
+  type ApplicationTelemetryBoundary,
+  type ApplicationTelemetryRuntime,
   actor,
   actorState,
   app,
   applicationGraphFor,
   createDeterministicApplicationActorRuntime,
   event,
+  executeApplicationActorInvocation,
   executeApplicationActorRealtime,
   installApplicationActorRuntimeResolver,
+  installApplicationTelemetryRuntimeResolver,
   type,
 } from '@applik8s/applik8s';
 import { createPersistentLocalApplicationActorRuntime } from '@applik8s/applik8s/actor-runtime-local';
-import { type ApplicationAuthorizationReceipt, validateApplicationGraphStructure } from '@applik8s/core';
+import { type ApplicationAuthorizationReceipt, createApplicationTelemetryEnvelopeV1, validateApplicationGraphStructure } from '@applik8s/core';
 import { afterEach, describe, expect, it } from 'vitest';
 import { applicationOperationInputDigest } from '../src/application-operation-runtime.js';
 
@@ -291,6 +295,103 @@ describe('v0.8 durable identity-addressed actors', () => {
     await expect(runtime.tick(new Date('2026-09-03T00:00:00.000Z')))
       .resolves.toEqual([expect.objectContaining({ member: 'wake', revision: 2 })]);
     expect(runtime.inspect('retained-alarm.v1', 'one')?.state).toEqual({ count: 3 });
+    expect(runtime.snapshot().alarms).toEqual([]);
+  });
+
+  it('persists remote alarm telemetry, classifies physical retries, and suppresses replay spans', async () => {
+    const application = app('actor-alarm-telemetry-fixture');
+    const Counter = application.actor('telemetry-counter.v1', {
+      key: type('string'),
+      state: type({ count: 'number.integer >= 0' }),
+      protocol: {
+        wake: actor.alarm(type({ by: 'number.integer > 0' })),
+      },
+    });
+    Counter.on.initialize(() => ({ count: 0 }));
+    let handlerAttempts = 0;
+    Counter.on.wake(async (turn, input) => {
+      handlerAttempts += 1;
+      if (handlerAttempts === 1) throw new Error('transient alarm failure');
+      const state = await turn.state();
+      await turn.setState({ count: state.count + input.by });
+    });
+    const carrier = createApplicationTelemetryEnvelopeV1({
+      traceparent: '00-0123456789abcdef0123456789abcdef-0123456789abcdef-01',
+      identity: {
+        application: 'actor-alarm-telemetry-fixture',
+        environment: 'test',
+        target: 'local',
+        operation: 'schedule-wake',
+        execution: 'request-1',
+        attempt: 1,
+      },
+    });
+    const authorityReceipt = actorReceipt(
+      'actor-alarm-telemetry-fixture',
+      'telemetry-counter.v1',
+      'wake',
+      'one',
+      { by: 2 },
+    );
+    const authority = {
+      principal: { id: authorityReceipt.principal.id },
+      causalPrincipal: { id: authorityReceipt.principal.id },
+      authorizationReceipt: authorityReceipt,
+      trustedContextDigest: authorityReceipt.trustedContextDigest,
+    };
+    const boundaries: ApplicationTelemetryBoundary[] = [];
+    const telemetryRuntime: ApplicationTelemetryRuntime = {
+      async run(boundary, execute) {
+        boundaries.push(boundary);
+        return execute();
+      },
+      log() {},
+      count() {},
+      record() {},
+      capture() { return undefined; },
+    };
+    let runtime = createDeterministicApplicationActorRuntime();
+    disposers.push(
+      installApplicationActorRuntimeResolver(() => runtime),
+      installApplicationTelemetryRuntimeResolver(() => telemetryRuntime),
+    );
+    const schedule = () => executeApplicationActorInvocation(Counter as never, {
+      member: 'wake',
+      memberKind: 'alarm',
+      key: 'one',
+      input: { by: 2 },
+      scheduledAt: '2026-09-04T00:00:00.000Z',
+      idempotencyKey: 'wake-one',
+      authority,
+      telemetry: carrier,
+    });
+
+    await schedule();
+    const retained = runtime.snapshot();
+    expect(retained.alarms).toEqual([
+      expect.objectContaining({ telemetry: carrier, attempts: 0 }),
+    ]);
+    runtime = createDeterministicApplicationActorRuntime({ snapshot: retained });
+    await schedule();
+    await expect(runtime.tick(new Date('2026-09-04T00:00:00.000Z')))
+      .rejects.toThrow('transient alarm failure');
+    expect(runtime.snapshot().alarms).toEqual([
+      expect.objectContaining({ telemetry: carrier, attempts: 1 }),
+    ]);
+    await expect(runtime.tick(new Date('2026-09-04T00:00:00.000Z')))
+      .resolves.toEqual([expect.objectContaining({ member: 'wake', replayed: false })]);
+    expect(boundaries).toEqual([
+      expect.objectContaining({ kind: 'actor', attempt: 1, invocation: 'live', relationship: 'asynchronous', links: [carrier] }),
+      expect.objectContaining({ kind: 'actor', attempt: 2, invocation: 'retry', relationship: 'asynchronous', links: [carrier] }),
+    ]);
+    expect(runtime.inspect('telemetry-counter.v1', 'one')?.state).toEqual({ count: 2 });
+
+    // Re-issuing the same durable alarm models a crash after actor commit but
+    // before alarm deletion. The stored receipt wins without another attempt.
+    await schedule();
+    await expect(runtime.tick(new Date('2026-09-04T00:00:00.000Z')))
+      .resolves.toEqual([expect.objectContaining({ replayed: true })]);
+    expect(boundaries).toHaveLength(2);
     expect(runtime.snapshot().alarms).toEqual([]);
   });
 

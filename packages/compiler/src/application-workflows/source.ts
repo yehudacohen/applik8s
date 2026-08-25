@@ -726,6 +726,7 @@ async function invokeApplicationActorMember(execution, principal, taskName, acto
   }
   const audience = workloadAuthority.audiences[0];
   if (!audience) throw new Error('Workflow task ' + taskName + ' actor ' + actor + '.' + member + ' has no workload-authority audience.');
+  const telemetry = captureApplicationTelemetryContext();
   const endpoint = requiredEnv('APPLIK8S_ACTOR_APPLICATION_ENDPOINT').replace(/\\/+$/u, '') + '/__applik8s/v1/internal/actors/invoke';
   const response = await fetch(endpoint, {
     method: 'POST',
@@ -756,6 +757,7 @@ async function invokeApplicationActorMember(execution, principal, taskName, acto
           cancellationRevision: execution.cancellationRevision,
         },
       },
+      ...(telemetry ? { telemetry } : {}),
     }),
     signal: execution.signal,
   });
