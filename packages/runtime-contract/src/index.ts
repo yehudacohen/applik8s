@@ -36,6 +36,42 @@ const stringMapSchema: JsonSchema = {
   additionalProperties: { type: 'string' },
 };
 
+const telemetryIdentitySchema = objectSchema({
+  application: stableTelemetryIdentitySchema(),
+  environment: stableTelemetryIdentitySchema(),
+  target: stableTelemetryIdentitySchema(),
+  operation: stableTelemetryIdentitySchema(),
+  execution: stableTelemetryIdentitySchema(),
+  attempt: { type: 'integer', minimum: 1 },
+  service: stableTelemetryIdentitySchema(),
+  provider: stableTelemetryIdentitySchema(),
+  definition: stableTelemetryIdentitySchema(),
+  instance: stableTelemetryIdentitySchema(),
+  occurrence: stableTelemetryIdentitySchema(),
+  actor: stableTelemetryIdentitySchema(),
+  principalClass: enumSchema(['anonymous', 'human', 'service', 'system', 'unknown']),
+  causalPrincipalClass: enumSchema(['anonymous', 'human', 'service', 'system', 'unknown']),
+}, ['application', 'environment', 'target', 'operation', 'execution', 'attempt']);
+
+const telemetryEnvelopeSchema = objectSchema({
+  version: constSchema('applik8s.telemetry/v1alpha1'),
+  traceparent: { type: 'string', pattern: '^00-[a-f0-9]{32}-[a-f0-9]{16}-0[01]$' },
+  tracestate: { type: 'string', maxLength: 512 },
+  baggage: {
+    type: 'object',
+    maxProperties: 32,
+    propertyNames: { pattern: '^[a-z][a-z0-9_.-]{0,62}$' },
+    additionalProperties: { type: 'string', maxLength: 256 },
+  },
+  identity: telemetryIdentitySchema,
+  invocation: objectSchema({
+    kind: enumSchema(['cancellation', 'live', 'replay', 'retry']),
+    relationship: enumSchema(['asynchronous', 'synchronous']),
+    replaySuppressed: { type: 'boolean' },
+  }, ['kind', 'relationship', 'replaySuppressed']),
+  sampled: { type: 'boolean' },
+}, ['version', 'traceparent', 'baggage', 'identity', 'invocation', 'sampled']);
+
 const objectRefSchema: JsonSchema = objectSchema(
   {
     apiVersion: { type: 'string' },
@@ -212,15 +248,7 @@ export const runtimePayloadSchemas: Readonly<Record<string, JsonSchema>> = {
             effectIds: { type: 'array', items: { type: 'string' } },
             causalPrincipalId: { type: 'string' },
             authorizationReceiptIds: { type: 'array', items: { type: 'string' } },
-            telemetry: objectSchema({
-              apiVersion: constSchema('applik8s.telemetryCarrier/v1alpha1'),
-              traceparent: { type: 'string', pattern: '^00-[a-f0-9]{32}-[a-f0-9]{16}-(?:00|01)$' },
-              tracestate: { type: 'string', maxLength: 512 },
-              baggage: { type: 'object', maxProperties: 32, additionalProperties: { type: 'string', maxLength: 256 } },
-              invocation: enumSchema(['live', 'retry', 'replay']),
-              sampling: enumSchema(['sampled', 'not-sampled']),
-              bindingDigest: { type: 'string', pattern: '^sha256:[a-f0-9]{64}$' },
-            }, ['apiVersion', 'traceparent', 'tracestate', 'baggage', 'invocation', 'sampling', 'bindingDigest']),
+            telemetry: telemetryEnvelopeSchema,
           }, ['apiVersion', 'application', 'operation', 'execution', 'artifact', 'attempt', 'runtimeAccess', 'capabilityIds', 'effectIds', 'authorizationReceiptIds']),
         },
         ['operatorName', 'reconcileId', 'bundleDigest', 'runtimeVersion', 'startedAt']
@@ -409,6 +437,10 @@ function objectSchema(properties: Readonly<Record<string, JsonSchema>>, required
     required,
     additionalProperties: false,
   };
+}
+
+function stableTelemetryIdentitySchema(): JsonSchema {
+  return { type: 'string', pattern: '^[A-Za-z0-9][A-Za-z0-9._:/@%-]{0,255}$' };
 }
 
 function enumSchema(values: readonly string[]): JsonSchema {

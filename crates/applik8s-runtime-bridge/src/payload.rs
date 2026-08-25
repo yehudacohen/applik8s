@@ -7,7 +7,9 @@ use serde_json::Value;
 use crate::error::RuntimeBridgeError;
 
 pub fn validate_handler_input(payload: &Value) -> Result<(), RuntimeBridgeError> {
-    validate_payload_schema("handlerInput", payload).map_err(RuntimeBridgeError::InvalidPayload)
+    decode_handler_input(payload.clone())
+        .map(|_| ())
+        .map_err(RuntimeBridgeError::InvalidPayload)
 }
 
 pub fn validate_handler_output_plan(payload: &Value) -> Result<(), RuntimeBridgeError> {

@@ -90,22 +90,54 @@ fn generated_handler_input_schema_validates_payload_shape() {
             "reconcileId": "reconcile-1",
             "bundleDigest": VALID_DIGEST,
             "runtimeVersion": "0.1.0",
-            "startedAt": "2026-06-19T00:00:00Z"
+            "startedAt": "2026-06-19T00:00:00Z",
+            "identityEnvelope": canonical_identity_envelope()
         }
     });
 
     validate_payload_schema("handlerInput", &payload).expect("handler input validates");
-    let decoded = decode_handler_input(payload).expect("handler input decodes after validation");
+    let decoded =
+        decode_handler_input(payload.clone()).expect("handler input decodes after validation");
 
     assert_eq!(decoded.abi_version, ABI_VERSION);
     assert_eq!(decoded.event, HandlerEvent::Reconcile);
     assert_eq!(decoded.object.metadata.name, "hero-image");
+    assert_eq!(
+        decoded
+            .runtime
+            .identity_envelope
+            .as_ref()
+            .and_then(|identity| identity.telemetry.as_ref())
+            .map(|telemetry| telemetry.version.as_str()),
+        Some("applik8s.telemetry/v1alpha1")
+    );
 
     let invalid = serde_json::json!({
         "handlerId": "missing-required-fields"
     });
 
     assert!(validate_payload_schema("handlerInput", &invalid).is_err());
+
+    let mut substituted = payload.clone();
+    substituted["runtime"]["identityEnvelope"]["telemetry"]["identity"]["operation"] =
+        serde_json::json!("applik8s://operations/substituted");
+    assert!(
+        decode_handler_input(substituted)
+            .expect_err("well-shaped but substituted telemetry identity is rejected")
+            .contains("must match the outer")
+    );
+
+    let mut legacy = payload.clone();
+    legacy["runtime"]["identityEnvelope"]["telemetry"] = serde_json::json!({
+        "apiVersion": "applik8s.telemetryCarrier/v1alpha1",
+        "traceparent": "00-11111111111111111111111111111111-2222222222222222-01",
+        "tracestate": "",
+        "baggage": {},
+        "invocation": "live",
+        "sampling": "sampled",
+        "bindingDigest": VALID_DIGEST
+    });
+    assert!(validate_payload_schema("handlerInput", &legacy).is_err());
 
     let extra_field = serde_json::json!({
         "abiVersion": ABI_VERSION,
@@ -127,6 +159,45 @@ fn generated_handler_input_schema_validates_payload_shape() {
     });
 
     assert!(validate_payload_schema("handlerInput", &extra_field).is_err());
+}
+
+fn canonical_identity_envelope() -> serde_json::Value {
+    serde_json::json!({
+        "apiVersion": "applik8s.guestHostIdentity/v1alpha1",
+        "application": "applik8s://applications/image-pipeline/application/image-pipeline",
+        "operation": "applik8s://resources/ImageJob/operations/reconcile",
+        "execution": "applik8s://applications/image-pipeline/execution-boundaries/image-job",
+        "artifact": "applik8s://applications/image-pipeline/artifacts/worker",
+        "attempt": "reconcile-1",
+        "runtimeAccess": {
+            "version": "v1alpha1",
+            "digest": VALID_DIGEST,
+            "requirementIds": []
+        },
+        "capabilityIds": [],
+        "effectIds": ["kubernetes.plan"],
+        "authorizationReceiptIds": [],
+        "telemetry": {
+            "version": "applik8s.telemetry/v1alpha1",
+            "traceparent": "00-11111111111111111111111111111111-2222222222222222-01",
+            "baggage": {},
+            "identity": {
+                "application": "applik8s://applications/image-pipeline/application/image-pipeline",
+                "environment": "test",
+                "target": "kubernetes",
+                "operation": "applik8s://resources/ImageJob/operations/reconcile",
+                "execution": "applik8s://applications/image-pipeline/execution-boundaries/image-job",
+                "instance": "reconcile-1",
+                "attempt": 1
+            },
+            "invocation": {
+                "kind": "live",
+                "relationship": "synchronous",
+                "replaySuppressed": false
+            },
+            "sampled": true
+        }
+    })
 }
 
 #[test]

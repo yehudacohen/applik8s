@@ -99,6 +99,13 @@ for (const maintainedRoot of maintainedRoots) {
     if (!admissionShapeOwners.has(path)) {
       findings.push(...privateAdmissionShapes(path, source));
     }
+    if (!path.includes('/tests/') && (
+      source.includes('applik8s.telemetryCarrier/v1alpha1')
+      || source.includes('ApplicationGuestHostTelemetryEnvelope')
+      || source.includes('GuestHostTelemetryEnvelope')
+    )) {
+      findings.push(`${path} retains the superseded private guest/host telemetry carrier instead of applik8s.telemetry/v1alpha1.`);
+    }
   }
 }
 

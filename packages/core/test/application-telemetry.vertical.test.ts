@@ -71,6 +71,15 @@ describe('v0.8 telemetry semantic contract', () => {
     const sampled = createApplicationTelemetryEnvelopeV1({ traceparent, identity });
     expect(() => validateApplicationTelemetryEnvelopeV1({ ...sampled, sampled: false }))
       .toThrow(/sampling fields are invalid/u);
+    expect(createApplicationTelemetryEnvelopeV1({
+      traceparent,
+      identity,
+      invocation: { kind: 'replay' },
+    }).invocation.replaySuppressed).toBe(true);
+    expect(() => validateApplicationTelemetryEnvelopeV1({
+      ...sampled,
+      invocation: { ...sampled.invocation, replaySuppressed: true },
+    })).toThrow(/invocation and sampling fields are invalid/u);
   });
 
   it('redacts sensitive fields before any exporter and bounds recursive data', () => {

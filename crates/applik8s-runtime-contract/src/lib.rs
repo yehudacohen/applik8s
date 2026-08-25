@@ -62,7 +62,64 @@ pub fn validate_payload_schema(kind: &str, payload: &Value) -> Result<(), String
 
 pub fn decode_handler_input(payload: Value) -> Result<HandlerInput, String> {
     validate_payload_schema("handlerInput", &payload)?;
-    serde_json::from_value(payload).map_err(|error| error.to_string())
+    let input: HandlerInput = serde_json::from_value(payload).map_err(|error| error.to_string())?;
+    validate_handler_input_semantics(&input)?;
+    Ok(input)
+}
+
+fn validate_handler_input_semantics(input: &HandlerInput) -> Result<(), String> {
+    let Some(identity) = input.runtime.identity_envelope.as_ref() else {
+        return Ok(());
+    };
+    let Some(telemetry) = identity.telemetry.as_ref() else {
+        return Ok(());
+    };
+    if telemetry.identity.application != identity.application
+        || telemetry.identity.operation != identity.operation
+        || telemetry.identity.execution != identity.execution
+        || telemetry.identity.instance.as_deref() != Some(identity.attempt.as_str())
+        || telemetry.invocation.relationship != "synchronous"
+    {
+        return Err(
+            "guest/host telemetry identity must match the outer application, operation, execution, and attempt instance"
+                .to_string(),
+        );
+    }
+    let traceparent_sampled = telemetry.traceparent.ends_with("-01");
+    if telemetry.sampled != traceparent_sampled
+        || telemetry.invocation.replay_suppressed != (telemetry.invocation.kind == "replay")
+    {
+        return Err(
+            "guest/host telemetry sampling and replay flags must match their canonical carrier fields"
+                .to_string(),
+        );
+    }
+    if telemetry
+        .tracestate
+        .as_deref()
+        .is_some_and(contains_control_character)
+    {
+        return Err("guest/host telemetry tracestate contains a control character".to_string());
+    }
+    let baggage_bytes = telemetry
+        .baggage
+        .iter()
+        .map(|(key, value)| key.len() + 1 + value.len())
+        .sum::<usize>();
+    if baggage_bytes > 8_192
+        || telemetry.baggage.iter().any(|(key, value)| {
+            contains_control_character(key) || contains_control_character(value)
+        })
+    {
+        return Err("guest/host telemetry baggage is invalid or exceeds 8192 bytes".to_string());
+    }
+    Ok(())
+}
+
+fn contains_control_character(value: &str) -> bool {
+    value
+        .chars()
+        .any(|character| character <= '\u{1f}' || character == '\u{7f}')
 }
 
 pub fn decode_normalized_operation_plan(payload: Value) -> Result<NormalizedOperationPlan, String> {
@@ -202,19 +259,46 @@ pub struct GuestHostIdentityEnvelope {
     pub effect_ids: Vec<String>,
     pub causal_principal_id: Option<String>,
     pub authorization_receipt_ids: Vec<String>,
-    pub telemetry: Option<GuestHostTelemetryEnvelope>,
+    pub telemetry: Option<TelemetryEnvelopeV1>,
 }
 
 #[derive(Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub struct GuestHostTelemetryEnvelope {
-    pub api_version: String,
+pub struct TelemetryEnvelopeV1 {
+    pub version: String,
     pub traceparent: String,
-    pub tracestate: String,
+    pub tracestate: Option<String>,
     pub baggage: std::collections::BTreeMap<String, String>,
-    pub invocation: String,
-    pub sampling: String,
-    pub binding_digest: String,
+    pub identity: TelemetryIdentityV1,
+    pub invocation: TelemetryInvocationV1,
+    pub sampled: bool,
+}
+
+#[derive(Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TelemetryIdentityV1 {
+    pub application: String,
+    pub environment: String,
+    pub target: String,
+    pub operation: String,
+    pub execution: String,
+    pub attempt: u64,
+    pub service: Option<String>,
+    pub provider: Option<String>,
+    pub definition: Option<String>,
+    pub instance: Option<String>,
+    pub occurrence: Option<String>,
+    pub actor: Option<String>,
+    pub principal_class: Option<String>,
+    pub causal_principal_class: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TelemetryInvocationV1 {
+    pub kind: String,
+    pub relationship: String,
+    pub replay_suppressed: bool,
 }
 
 #[derive(Debug, Deserialize, Serialize, PartialEq, Eq)]

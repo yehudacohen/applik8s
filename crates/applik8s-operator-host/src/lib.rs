@@ -845,13 +845,12 @@ impl OperatorHost {
             bundle.runtime_identity_envelope(&handler_route, &reconcile_id, bundle_digest)?
         {
             let mut identity_envelope = identity_envelope;
+            let telemetry =
+                guest_host_telemetry_envelope(&reconcile_span, &identity_envelope, operator_name)?;
             identity_envelope
                 .as_object_mut()
                 .expect("runtime identity envelope is an object")
-                .insert(
-                    "telemetry".to_string(),
-                    guest_host_telemetry_envelope(&reconcile_span, &reconcile_id, bundle_digest),
-                );
+                .insert("telemetry".to_string(), telemetry);
             runtime_metadata
                 .as_object_mut()
                 .expect("runtime metadata is an object")
@@ -1631,7 +1630,26 @@ fn start_reconcile_otel_span(start_event: &Value) -> BoxedSpan {
     span
 }
 
-fn guest_host_telemetry_envelope(span: &BoxedSpan, attempt: &str, binding_digest: &str) -> Value {
+fn guest_host_telemetry_envelope(
+    span: &BoxedSpan,
+    identity_envelope: &Value,
+    service: &str,
+) -> Result<Value, OperatorHostError> {
+    let required_identity = |field: &str| {
+        identity_envelope
+            .get(field)
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                OperatorHostError::InvalidRuntimeIdentity(format!(
+                    "guest/host telemetry requires identity envelope field {field}"
+                ))
+            })
+    };
+    let application = required_identity("application")?;
+    let operation = required_identity("operation")?;
+    let execution = required_identity("execution")?;
+    let instance = required_identity("attempt")?;
     let context = span.span_context();
     let (trace_id, span_id, sampled) = if context.is_valid() {
         (
@@ -1641,20 +1659,36 @@ fn guest_host_telemetry_envelope(span: &BoxedSpan, attempt: &str, binding_digest
         )
     } else {
         (
-            deterministic_telemetry_hex(attempt, 32),
-            deterministic_telemetry_hex(&format!("span:{attempt}"), 16),
+            deterministic_telemetry_hex(instance, 32),
+            deterministic_telemetry_hex(&format!("span:{instance}"), 16),
             false,
         )
     };
-    serde_json::json!({
-        "apiVersion": "applik8s.telemetryCarrier/v1alpha1",
+    let environment = std::env::var("APPLIK8S_POD_NAMESPACE")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "kubernetes".to_string());
+    Ok(serde_json::json!({
+        "version": "applik8s.telemetry/v1alpha1",
         "traceparent": format!("00-{trace_id}-{span_id}-{}", if sampled { "01" } else { "00" }),
-        "tracestate": "",
         "baggage": {},
-        "invocation": "live",
-        "sampling": if sampled { "sampled" } else { "not-sampled" },
-        "bindingDigest": binding_digest,
-    })
+        "identity": {
+            "application": application,
+            "environment": environment,
+            "target": "kubernetes",
+            "operation": operation,
+            "execution": execution,
+            "attempt": 1,
+            "service": service,
+            "instance": instance,
+        },
+        "invocation": {
+            "kind": "live",
+            "relationship": "synchronous",
+            "replaySuppressed": false,
+        },
+        "sampled": sampled,
+    }))
 }
 
 fn deterministic_telemetry_hex(value: &str, length: usize) -> String {
@@ -6956,8 +6990,17 @@ mod connection_tests {
     fn guest_host_telemetry_carrier_is_versioned_bounded_and_w3c_shaped() {
         let tracer = global::tracer("applik8s.telemetry-contract-test");
         let span = tracer.start("test");
-        let digest = format!("sha256:{}", "a".repeat(64));
-        let carrier = guest_host_telemetry_envelope(&span, "attempt-1", &digest);
+        let carrier = guest_host_telemetry_envelope(
+            &span,
+            &serde_json::json!({
+                "application": "applik8s://applications/image-pipeline/application/image-pipeline",
+                "operation": "applik8s://resources/ImageJob/operations/reconcile",
+                "execution": "applik8s://applications/image-pipeline/execution-boundaries/image-job",
+                "attempt": "attempt-1",
+            }),
+            "image-pipeline",
+        )
+        .expect("validated identity produces a telemetry carrier");
         let traceparent = carrier
             .get("traceparent")
             .and_then(Value::as_str)
@@ -6974,8 +7017,46 @@ mod connection_tests {
                 .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
         }));
         assert_eq!(
-            carrier.get("bindingDigest").and_then(Value::as_str),
-            Some(digest.as_str())
+            carrier.get("version").and_then(Value::as_str),
+            Some("applik8s.telemetry/v1alpha1")
+        );
+        assert_eq!(
+            carrier
+                .pointer("/identity/application")
+                .and_then(Value::as_str),
+            Some("applik8s://applications/image-pipeline/application/image-pipeline")
+        );
+        assert_eq!(
+            carrier
+                .pointer("/identity/operation")
+                .and_then(Value::as_str),
+            Some("applik8s://resources/ImageJob/operations/reconcile")
+        );
+        assert_eq!(
+            carrier
+                .pointer("/identity/execution")
+                .and_then(Value::as_str),
+            Some("applik8s://applications/image-pipeline/execution-boundaries/image-job")
+        );
+        assert_eq!(
+            carrier
+                .pointer("/identity/instance")
+                .and_then(Value::as_str),
+            Some("attempt-1")
+        );
+        assert_eq!(
+            carrier.pointer("/identity/attempt").and_then(Value::as_u64),
+            Some(1)
+        );
+        assert_eq!(
+            carrier
+                .pointer("/invocation/relationship")
+                .and_then(Value::as_str),
+            Some("synchronous")
+        );
+        assert_eq!(
+            carrier.get("sampled").and_then(Value::as_bool),
+            Some(traceparent.ends_with("-01"))
         );
         assert_eq!(
             carrier

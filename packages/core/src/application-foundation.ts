@@ -1,6 +1,11 @@
 // typecast-file-boundary: Public discriminants and canonical URI identities are constructed only after the module validates their bounded string inputs.
 
 import type { ApplicationOperationId } from './application-operation-authority.js';
+import {
+  type ApplicationTelemetryEnvelopeV1,
+  applicationTelemetryEnvelopeVersion,
+  validateApplicationTelemetryEnvelopeV1,
+} from './application-telemetry.js';
 import type { SourceLocation } from './common.js';
 
 export const applicationFoundationApiVersion = 'applik8s.foundation/v1alpha1' as const;
@@ -313,17 +318,12 @@ export interface ApplicationGuestHostIdentityEnvelope {
   readonly effectIds: readonly string[];
   readonly causalPrincipalId?: string;
   readonly authorizationReceiptIds: readonly string[];
-  readonly telemetry?: ApplicationGuestHostTelemetryEnvelope;
-}
-
-export interface ApplicationGuestHostTelemetryEnvelope {
-  readonly apiVersion: 'applik8s.telemetryCarrier/v1alpha1';
-  readonly traceparent: string;
-  readonly tracestate: string;
-  readonly baggage: Readonly<Record<string, string>>;
-  readonly invocation: 'live' | 'retry' | 'replay';
-  readonly sampling: 'sampled' | 'not-sampled';
-  readonly bindingDigest: string;
+  /**
+   * The exact portable telemetry carrier used by every maintained runtime.
+   * This field is diagnostic evidence only; authority remains in the outer
+   * guest/host identity and runtime-access envelopes.
+   */
+  readonly telemetry?: ApplicationTelemetryEnvelopeV1;
 }
 
 export interface ApplicationFoundationDiagnostic {
@@ -536,15 +536,22 @@ export function validateApplicationFoundation(input: {
   for (const envelope of input.guestHostEnvelopes ?? []) {
     const references = [envelope.application, envelope.operation, envelope.execution, envelope.artifact];
     const telemetry = envelope.telemetry;
-    const invalidTelemetry = telemetry !== undefined && (
-      telemetry.apiVersion !== 'applik8s.telemetryCarrier/v1alpha1'
-      || !/^00-[a-f0-9]{32}-[a-f0-9]{16}-(?:00|01)$/u.test(telemetry.traceparent)
-      || telemetry.tracestate.length > 512
-      || !/^sha256:[a-f0-9]{64}$/u.test(telemetry.bindingDigest)
-      || Object.keys(telemetry.baggage).length > 32
-      || new TextEncoder().encode(JSON.stringify(telemetry.baggage)).byteLength > 8_192
-    );
-    if (references.some((reference) => !identities.has(reference)) || !envelope.attempt || !envelope.runtimeAccess.digest.startsWith('sha256:') || envelope.runtimeAccess.requirementIds.some((id) => !accessIds.has(id)) || invalidTelemetry) {
+    let invalidTelemetry = false;
+    if (telemetry !== undefined) {
+      try {
+        validateApplicationTelemetryEnvelopeV1(telemetry);
+        invalidTelemetry = telemetry.identity.application !== envelope.application
+          || telemetry.identity.operation !== envelope.operation
+          || telemetry.identity.execution !== envelope.execution
+          || telemetry.identity.instance !== envelope.attempt
+          || telemetry.invocation.relationship !== 'synchronous';
+      } catch {
+        invalidTelemetry = true;
+      }
+    }
+    if (invalidTelemetry) {
+      diagnostics.push(diagnostic('FOUNDATION_GUEST_HOST_ENVELOPE_INVALID', `Guest/host identity envelope for ${envelope.execution} does not carry a valid parity-bound ${applicationTelemetryEnvelopeVersion} carrier.`, envelope.execution));
+    } else if (references.some((reference) => !identities.has(reference)) || !envelope.attempt || !envelope.runtimeAccess.digest.startsWith('sha256:') || envelope.runtimeAccess.requirementIds.some((id) => !accessIds.has(id))) {
       diagnostics.push(diagnostic('FOUNDATION_GUEST_HOST_ENVELOPE_INVALID', `Guest/host identity envelope for ${envelope.execution} has unknown identities or an invalid access digest.`, envelope.execution));
     }
   }

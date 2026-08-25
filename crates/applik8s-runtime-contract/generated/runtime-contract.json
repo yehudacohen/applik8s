@@ -656,12 +656,12 @@
                 "telemetry": {
                   "type": "object",
                   "properties": {
-                    "apiVersion": {
-                      "const": "applik8s.telemetryCarrier/v1alpha1"
+                    "version": {
+                      "const": "applik8s.telemetry/v1alpha1"
                     },
                     "traceparent": {
                       "type": "string",
-                      "pattern": "^00-[a-f0-9]{32}-[a-f0-9]{16}-(?:00|01)$"
+                      "pattern": "^00-[a-f0-9]{32}-[a-f0-9]{16}-0[01]$"
                     },
                     "tracestate": {
                       "type": "string",
@@ -670,37 +670,133 @@
                     "baggage": {
                       "type": "object",
                       "maxProperties": 32,
+                      "propertyNames": {
+                        "pattern": "^[a-z][a-z0-9_.-]{0,62}$"
+                      },
                       "additionalProperties": {
                         "type": "string",
                         "maxLength": 256
                       }
                     },
+                    "identity": {
+                      "type": "object",
+                      "properties": {
+                        "application": {
+                          "type": "string",
+                          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/@%-]{0,255}$"
+                        },
+                        "environment": {
+                          "type": "string",
+                          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/@%-]{0,255}$"
+                        },
+                        "target": {
+                          "type": "string",
+                          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/@%-]{0,255}$"
+                        },
+                        "operation": {
+                          "type": "string",
+                          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/@%-]{0,255}$"
+                        },
+                        "execution": {
+                          "type": "string",
+                          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/@%-]{0,255}$"
+                        },
+                        "attempt": {
+                          "type": "integer",
+                          "minimum": 1
+                        },
+                        "service": {
+                          "type": "string",
+                          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/@%-]{0,255}$"
+                        },
+                        "provider": {
+                          "type": "string",
+                          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/@%-]{0,255}$"
+                        },
+                        "definition": {
+                          "type": "string",
+                          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/@%-]{0,255}$"
+                        },
+                        "instance": {
+                          "type": "string",
+                          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/@%-]{0,255}$"
+                        },
+                        "occurrence": {
+                          "type": "string",
+                          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/@%-]{0,255}$"
+                        },
+                        "actor": {
+                          "type": "string",
+                          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/@%-]{0,255}$"
+                        },
+                        "principalClass": {
+                          "enum": [
+                            "anonymous",
+                            "human",
+                            "service",
+                            "system",
+                            "unknown"
+                          ]
+                        },
+                        "causalPrincipalClass": {
+                          "enum": [
+                            "anonymous",
+                            "human",
+                            "service",
+                            "system",
+                            "unknown"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "application",
+                        "environment",
+                        "target",
+                        "operation",
+                        "execution",
+                        "attempt"
+                      ],
+                      "additionalProperties": false
+                    },
                     "invocation": {
-                      "enum": [
-                        "live",
-                        "retry",
-                        "replay"
-                      ]
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "enum": [
+                            "cancellation",
+                            "live",
+                            "replay",
+                            "retry"
+                          ]
+                        },
+                        "relationship": {
+                          "enum": [
+                            "asynchronous",
+                            "synchronous"
+                          ]
+                        },
+                        "replaySuppressed": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "relationship",
+                        "replaySuppressed"
+                      ],
+                      "additionalProperties": false
                     },
-                    "sampling": {
-                      "enum": [
-                        "sampled",
-                        "not-sampled"
-                      ]
-                    },
-                    "bindingDigest": {
-                      "type": "string",
-                      "pattern": "^sha256:[a-f0-9]{64}$"
+                    "sampled": {
+                      "type": "boolean"
                     }
                   },
                   "required": [
-                    "apiVersion",
+                    "version",
                     "traceparent",
-                    "tracestate",
                     "baggage",
+                    "identity",
                     "invocation",
-                    "sampling",
-                    "bindingDigest"
+                    "sampled"
                   ],
                   "additionalProperties": false
                 }

@@ -201,7 +201,8 @@ export function createApplicationTelemetryEnvelopeV1(
     invocation: Object.freeze({
       kind: options.invocation?.kind ?? "live",
       relationship: options.invocation?.relationship ?? "synchronous",
-      replaySuppressed: options.invocation?.replaySuppressed ?? false,
+      replaySuppressed: options.invocation?.replaySuppressed
+        ?? options.invocation?.kind === "replay",
     }),
     sampled: options.sampled ?? traceparentSampled(options.traceparent),
   };
@@ -227,7 +228,7 @@ export function validateApplicationTelemetryEnvelopeV1(
   }
   if (value.tracestate !== undefined && (
     typeof value.tracestate !== "string"
-    || value.tracestate.length > 512
+    || codePointLength(value.tracestate) > 512
     || containsControlCharacter(value.tracestate)
   )) {
     throw new ApplicationTelemetryContractError(
@@ -241,6 +242,7 @@ export function validateApplicationTelemetryEnvelopeV1(
     || !["cancellation", "live", "replay", "retry"].includes(String(value.invocation.kind))
     || !["asynchronous", "synchronous"].includes(String(value.invocation.relationship))
     || typeof value.invocation.replaySuppressed !== "boolean"
+    || value.invocation.replaySuppressed !== (value.invocation.kind === "replay")
     || typeof value.sampled !== "boolean"
     || value.sampled !== traceparentSampled(traceparent)) {
     throw new ApplicationTelemetryContractError(
@@ -339,7 +341,9 @@ function metric(
 }
 
 const traceparentPattern = /^00-[0-9a-f]{32}-[0-9a-f]{16}-0[01]$/u;
-const identityPattern = /^[A-Za-z0-9][A-Za-z0-9._:/@-]{0,255}$/u;
+// Canonical Applik8s identities are URI-shaped and therefore retain percent-
+// encoded semantic segments. Query/fragment characters remain excluded.
+const identityPattern = /^[A-Za-z0-9][A-Za-z0-9._:/@%-]{0,255}$/u;
 const baggageKeyPattern = /^[a-z][a-z0-9_.-]{0,62}$/u;
 const principalClasses = new Set<ApplicationTelemetryPrincipalClass>([
   "anonymous",
@@ -402,7 +406,7 @@ function validateBaggage(value: unknown): asserts value is Readonly<Record<strin
   for (const [key, entry] of Object.entries(value)) {
     if (!baggageKeyPattern.test(key)
       || typeof entry !== "string"
-      || entry.length > 256
+      || codePointLength(entry) > 256
       || containsControlCharacter(entry)) {
       throw new ApplicationTelemetryContractError(
         "TELEMETRY_BAGGAGE_INVALID",
@@ -429,6 +433,10 @@ function containsControlCharacter(value: string): boolean {
     if (codePoint !== undefined && (codePoint <= 31 || codePoint === 127)) return true;
   }
   return false;
+}
+
+function codePointLength(value: string): number {
+  return [...value].length;
 }
 
 function redactValue(

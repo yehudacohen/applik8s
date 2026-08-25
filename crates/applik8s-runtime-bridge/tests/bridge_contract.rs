@@ -54,7 +54,43 @@ fn valid_handler_input_payload() -> serde_json::Value {
             "reconcileId": "reconcile-1",
             "bundleDigest": VALID_DIGEST,
             "runtimeVersion": "0.1.0",
-            "startedAt": "2026-06-19T00:00:00Z"
+            "startedAt": "2026-06-19T00:00:00Z",
+            "identityEnvelope": {
+                "apiVersion": "applik8s.guestHostIdentity/v1alpha1",
+                "application": "applik8s://applications/image-pipeline/application/image-pipeline",
+                "operation": "applik8s://resources/ImageJob/operations/reconcile",
+                "execution": "applik8s://applications/image-pipeline/execution-boundaries/image-job",
+                "artifact": "applik8s://applications/image-pipeline/artifacts/worker",
+                "attempt": "reconcile-1",
+                "runtimeAccess": {
+                    "version": "v1alpha1",
+                    "digest": VALID_DIGEST,
+                    "requirementIds": []
+                },
+                "capabilityIds": [],
+                "effectIds": ["kubernetes.plan"],
+                "authorizationReceiptIds": [],
+                "telemetry": {
+                    "version": "applik8s.telemetry/v1alpha1",
+                    "traceparent": "00-11111111111111111111111111111111-2222222222222222-01",
+                    "baggage": {},
+                    "identity": {
+                        "application": "applik8s://applications/image-pipeline/application/image-pipeline",
+                        "environment": "test",
+                        "target": "kubernetes",
+                        "operation": "applik8s://resources/ImageJob/operations/reconcile",
+                        "execution": "applik8s://applications/image-pipeline/execution-boundaries/image-job",
+                        "instance": "reconcile-1",
+                        "attempt": 1
+                    },
+                    "invocation": {
+                        "kind": "live",
+                        "relationship": "synchronous",
+                        "replaySuppressed": false
+                    },
+                    "sampled": true
+                }
+            }
         }
     })
 }
@@ -255,8 +291,22 @@ fn componentized_handler_preserves_nested_status_fields_by_name() {
     fs::write(
         &js_path,
         r#"
-export function handle() {
-  return JSON.stringify({ operations: [{ kind: 'status', status: { volumes: [{ conditions: [{ type: 'Ready', status: 'True', observedGeneration: 17, lastTransitionTime: '2026-07-14T12:34:56Z' }] }] } }] });
+export function handle(inputJson) {
+  const input = JSON.parse(inputJson);
+  const telemetry = input.runtime.identityEnvelope.telemetry;
+  return JSON.stringify({ operations: [{ kind: 'status', status: {
+    volumes: [{ conditions: [{ type: 'Ready', status: 'True', observedGeneration: 17, lastTransitionTime: '2026-07-14T12:34:56Z' }] }],
+    telemetry: {
+      version: telemetry.version,
+      traceparent: telemetry.traceparent,
+      application: telemetry.identity.application,
+      operation: telemetry.identity.operation,
+      execution: telemetry.identity.execution,
+      instance: telemetry.identity.instance,
+      attempt: telemetry.identity.attempt,
+      sampled: telemetry.sampled
+    }
+  } }] });
 }
 "#,
     )
@@ -310,6 +360,29 @@ world handler {
     assert_eq!(condition["status"], "True");
     assert_eq!(condition["observedGeneration"], 17);
     assert_eq!(condition["lastTransitionTime"], "2026-07-14T12:34:56Z");
+    let telemetry = operation
+        .pointer("/status/telemetry")
+        .expect("canonical telemetry carrier crosses ComponentizeJS, WIT, Wasmtime, and Rust");
+    assert_eq!(telemetry["version"], "applik8s.telemetry/v1alpha1");
+    assert_eq!(
+        telemetry["traceparent"],
+        "00-11111111111111111111111111111111-2222222222222222-01"
+    );
+    assert_eq!(
+        telemetry["application"],
+        "applik8s://applications/image-pipeline/application/image-pipeline"
+    );
+    assert_eq!(
+        telemetry["operation"],
+        "applik8s://resources/ImageJob/operations/reconcile"
+    );
+    assert_eq!(
+        telemetry["execution"],
+        "applik8s://applications/image-pipeline/execution-boundaries/image-job"
+    );
+    assert_eq!(telemetry["instance"], "reconcile-1");
+    assert_eq!(telemetry["attempt"], 1);
+    assert_eq!(telemetry["sampled"], true);
 
     fs::remove_dir_all(&temp_dir).expect("test temp directory removes");
 }

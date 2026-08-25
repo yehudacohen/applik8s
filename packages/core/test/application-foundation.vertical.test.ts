@@ -83,6 +83,26 @@ function envelope(): ApplicationGuestHostIdentityEnvelope {
     effectIds: ['search.write'],
     causalPrincipalId: 'principal:user-1',
     authorizationReceiptIds: ['receipt-1'],
+    telemetry: {
+      version: 'applik8s.telemetry/v1alpha1',
+      traceparent: `00-${'1'.repeat(32)}-${'2'.repeat(16)}-01`,
+      baggage: {},
+      identity: {
+        application: application.id,
+        environment: 'test',
+        target: 'kubernetes',
+        operation: operation.id,
+        execution: execution.id,
+        instance: 'attempt-1',
+        attempt: 1,
+      },
+      invocation: {
+        kind: 'live',
+        relationship: 'synchronous',
+        replaySuppressed: false,
+      },
+      sampled: true,
+    },
   };
 }
 
@@ -110,6 +130,27 @@ describe('v0.8 canonical foundation', () => {
       runtimeAccess: [access({ kind: 'resource', resourceId: 'SearchIndex:notes' })],
       guestHostEnvelopes: [envelope()],
     })).toEqual([]);
+  });
+
+  it('rejects a guest telemetry carrier whose semantic identity diverges from its host envelope', () => {
+    const valid = envelope();
+    const telemetry = valid.telemetry;
+    if (!telemetry) throw new Error('Expected the fixture to carry telemetry.');
+    expect(validateApplicationFoundation({
+      identities: [application, handler, execution, operation, artifact],
+      provenance: [provenance],
+      runtimeAccess: [access({ kind: 'resource', resourceId: 'SearchIndex:notes' })],
+      guestHostEnvelopes: [{
+        ...valid,
+        telemetry: {
+          ...telemetry,
+          identity: {
+            ...telemetry.identity,
+            operation: 'applik8s://operations/substituted',
+          },
+        },
+      }],
+    }).map(({ code }) => code)).toContain('FOUNDATION_GUEST_HOST_ENVELOPE_INVALID');
   });
 
   it('fails closed on wildcard access, unknown execution identities, and machine-absolute provenance', () => {
