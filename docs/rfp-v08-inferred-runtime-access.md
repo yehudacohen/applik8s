@@ -421,6 +421,15 @@ enforce a semantic scope, the plan marks that limitation.
 AWS lowerers map requirements to least-privilege task roles, resource policies, security-group egress,
 database identities, broker policies, and exact Secrets Manager access.
 
+AWS API transport is modeled independently from IAM authority. A workload is privately network-qualified
+only when every required AWS API action has an explicit compatible VPC endpoint, every interface endpoint
+has an exact endpoint SecurityGroup admitting only the consuming workload SecurityGroups, and every gateway
+endpoint is reached through its service-managed prefix list. Framework-owned ECS image, log, object-layer,
+and Secret bootstrap transports are recorded separately from application operations. An unsupported service
+or missing endpoint leaves the workload unqualified; it is never translated into public/NAT or `0.0.0.0/0`
+egress. Endpoint policy and IAM remain separate enforcement layers, and exact task-role authorization is still
+required even when the network path is private.
+
 Examples include:
 
 - `object.read` -> `s3:GetObject` on the selected bucket/prefix;
@@ -444,6 +453,16 @@ Secret, and connection-only access remain distinct.
 Kubernetes RBAC is emitted per ServiceAccount/workload boundary where practical. Connection-only access
 does not invent management-cluster RBAC. NetworkPolicy and provider credentials remain separate
 enforcement mechanisms, both derived from the same graph where applicable.
+
+Standard `networking.k8s.io/v1` NetworkPolicy is used only for exact namespace/pod-selector/port peers. Exact
+external DNS-name egress requires a target-observed FQDN-capable provider. The maintained Cilium lowering is
+selected only when the target has an established `CiliumNetworkPolicy` v2 CRD, a fully ready Cilium agent
+fleet, and an explicitly enabled L7 proxy. It emits exact `toFQDNs.matchName` rules plus trusted cluster-DNS
+proxy rules required to populate Cilium's per-endpoint FQDN cache. The DNS proxy may observe arbitrary query
+names because DNS is framework bootstrap traffic; only declared exact FQDNs receive application data egress.
+Missing or unreadable target capability leaves the workload unqualified rather than widening it to a CIDR.
+This follows Cilium's documented requirement that `toFQDNs` be paired with an L7 DNS rule:
+<https://docs.cilium.io/en/stable/security/policy/layer7/#dns-policy-and-ip-discovery>.
 
 ### External providers
 
