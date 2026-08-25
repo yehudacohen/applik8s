@@ -34,6 +34,7 @@ import {
 	compileApplicationOperationCatalog,
 	compileApplicationWorkloadAuthority,
 } from "../application-operations/index.js";
+import { generatedApplicationProviderOperationValue } from "../application-provider-telemetry-source.js";
 import { applicationHatchetScheduleBindings } from "../application-schedule-hatchet.js";
 
 const applicationRuntimeNamespaceMarker = "__APPLIK8S_RUNTIME_NAMESPACE__";
@@ -182,6 +183,8 @@ export function generatedApplicationFetchGatewayModules(
 	);
 	const lakehouseQueries = applicationLakehouseQueries(graph);
 	const observability = !schedulesOnly && applicationGraphHasObservabilityRuntime(graph);
+	const hasCallableProviderOperations = [...actors, ...schedules].some((node) =>
+		(node.providerBindings ?? []).some((binding) => binding.operation));
 	const agentTargets = applicationAgentGatewayTargets(graph, agents);
 	const remoteRoutes = schedulesOnly
 		? { routes: [], health: [] }
@@ -340,10 +343,12 @@ export function generatedApplicationFetchGatewayModules(
 		);
 	if (actors.length > 0 || lakehousePublications.length > 0 || schedules.length > 0)
 		imports.push("import { nodeConstantTimeTextEqual } from '@applik8s/runtime/node-integrity';");
-	if (observability)
+	if (observability || hasCallableProviderOperations)
 		imports.push(...generatedApplicationTelemetryImports({
-			boundaryRunner: true,
+			boundaryRunner: observability,
 			carrierCapture: agents.length > 0,
+			providerOperationInstrumentation: hasCallableProviderOperations,
+			runtimeImplementation: observability,
 		}));
 	if (identity.length === 1)
 		imports.push(
@@ -2631,7 +2636,10 @@ function providerOperationBinding(
 		.slice(0, 12)}`;
 	const statement = `import { ${runtime.export} as ${variable} } from ${JSON.stringify(runtime.module)};`;
 	if (!imports.includes(statement)) imports.push(statement);
-	return { path: binding.identifier, value: variable };
+	return {
+		path: binding.identifier,
+		value: generatedApplicationProviderOperationValue(binding, variable),
+	};
 }
 
 function nestedProviderBindingsSource(

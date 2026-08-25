@@ -14,12 +14,16 @@ export function applicationGraphHasObservabilityRuntime(
 export function generatedApplicationTelemetryImports(options?: {
 	readonly boundaryRunner?: boolean;
 	readonly carrierCapture?: boolean;
+	readonly providerOperationInstrumentation?: boolean;
 	readonly runtimeImplementation?: boolean;
 }): readonly string[] {
 	const applik8sImports = [
 		"installApplicationTelemetryRuntimeResolver",
 		...(options?.boundaryRunner ? ["runApplicationTelemetryBoundary"] : []),
 		...(options?.carrierCapture ? ["captureApplicationTelemetryContext"] : []),
+		...(options?.providerOperationInstrumentation
+			? ["instrumentApplicationProviderOperation"]
+			: []),
 	];
 	return [
 		`import { ${applik8sImports.join(", ")} } from '@applik8s/applik8s/telemetry-runtime';`,

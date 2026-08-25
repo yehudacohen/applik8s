@@ -693,9 +693,11 @@ export const workflowModelEdit = platform.composition;
       expect(generatedSource).toContain('durableId');
       expect(generatedSource).toContain('@fixture/acquisition/runtime');
       expect(generatedSource).toContain('acquireItem');
-      expect(generatedSource).toContain('"acquire": providerOperation_');
+      expect(generatedSource).toContain('instrumentApplicationProviderOperation');
+      expect(generatedSource).toContain('"interface":"AcquisitionProvider"');
+      expect(generatedSource).toContain('"member":"acquire"');
       expect(generatedSource).toContain(
-        '"directProvider": { "acquire": providerOperation_',
+        '"directProvider": { "acquire": instrumentApplicationProviderOperation(',
       );
       expect(generatedSource).not.toContain('application.inject');
       expect(generatedSource).not.toContain('application.profile');

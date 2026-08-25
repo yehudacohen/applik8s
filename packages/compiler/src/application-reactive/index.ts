@@ -30,6 +30,7 @@ import { compileApplicationMcpPlacementRoutes, compileApplicationOperationPlacem
 import { applicationObjectStorageEnvironment } from '../application-object-storage-environment.js';
 import { applicationGraphHasObservabilityRuntime, generatedApplicationTelemetryImports, generatedApplicationTelemetryRuntimeSource } from '../application-observability-runtime-source.js';
 import { applicationStaticAuthorityManifest, compileApplicationOperationCatalog, compileApplicationWorkloadAuthority } from '../application-operations/index.js';
+import { generatedApplicationProviderOperationValue } from '../application-provider-telemetry-source.js';
 import { applik8sWorkspaceSourcePlugin } from '../bundling/index.js';
 
 const DEFAULT_NODE_IMAGE = 'node:22-alpine@sha256:16e22a550f3863206a3f701448c45f7912c6896a62de43add43bb9c86130c3e2';
@@ -3098,7 +3099,7 @@ import { applicationSignalAccessAllows, createApplicationSignalIssuanceDecoder, 
   );
   return `import { createServer } from 'node:http';
 import { createPostgresApplicationStream, createPostgresApplicationStreamProcessorStore, enforcePostgresApplicationStreamRetention, ${runtimeFunction} } from '@applik8s/applik8s/stream-worker-runtime';
-${observability ? generatedApplicationTelemetryImports().join('\n') : ''}
+${observability || streamProcessorProviderRuntimeOperations(processor).length > 0 ? generatedApplicationTelemetryImports({ providerOperationInstrumentation: streamProcessorProviderRuntimeOperations(processor).length > 0, runtimeImplementation: observability }).join('\n') : ''}
 ${postgresImport}
 ${admissionImport}
 ${authorityImport}
@@ -3771,7 +3772,10 @@ function streamProcessorCallbackBindingsSource(
       }
       roots.set(root, {
         ...existing,
-        providerRootOperation: providerOperation.variable,
+        providerRootOperation: generatedApplicationProviderOperationValue(
+          providerBinding,
+          providerOperation.variable,
+        ),
       });
       continue;
     }
@@ -3790,7 +3794,13 @@ function streamProcessorCallbackBindingsSource(
         `Stream processor ${processor.id} provider binding ${providerBinding.identifier} is ambiguous.`,
       );
     }
-    existing.providerOperations.set(operationPath, providerOperation.variable);
+    existing.providerOperations.set(
+      operationPath,
+      generatedApplicationProviderOperationValue(
+        providerBinding,
+        providerOperation.variable,
+      ),
+    );
     roots.set(root, existing);
   }
   return `{ ${[...roots.entries()]

@@ -502,8 +502,10 @@ describe('generated v0.6 reactive workloads', () => {
       /import \{ deliverApplicationNotification as providerOperation_[a-f0-9]{12} \} from "@applik8s\/notifications\/runtime";/u,
     );
     expect(generated).toMatch(
-      /const functionNativeLeafBindings = Object\.freeze\(\{ "acquire": providerOperation_[a-f0-9]{12} \}\);/u,
+      /const functionNativeLeafBindings = Object\.freeze\(\{ "acquire": instrumentApplicationProviderOperation\(/u,
     );
+    expect(generated).toContain('"interface":"AcquisitionProvider"');
+    expect(generated).toContain('"member":"acquire"');
     expect(generated).toContain(
       'const invokeHandler = invokeAuthoredHandler;',
     );

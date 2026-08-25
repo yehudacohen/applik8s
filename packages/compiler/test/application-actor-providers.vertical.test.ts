@@ -218,18 +218,17 @@ export const actorProviderStack = application.composition;
     expect(generatedFiles).toContain('@fixture/acquisition/runtime');
     expect(generatedFiles).toContain('acquireItem');
     expect(generatedFiles).toContain('acquireThroughHelper');
+    expect(gatewaySource).toContain('instrumentApplicationProviderOperation');
+    expect(gatewaySource).toContain('"interface":"AcquisitionProvider"');
+    expect(gatewaySource).toContain('"member":"acquire"');
     expect(generatedFiles).not.toContain(
       '@applik8s/applik8s/internal/provider-runtime',
     );
     expect(generatedFiles).not.toContain('application.inject');
     expect(generatedFiles).not.toContain('application.profile');
     expect(generatedFiles).not.toContain('application.provide');
-    expect(gatewaySource).toMatch(
-      /createCallback_actor_refresh_[a-f0-9]+\(\{ "acquire": providerOperation_[a-f0-9]+ \}\)/,
-    );
-    expect(gatewaySource).toMatch(
-      /createCallback_actor_directRefresh_[a-f0-9]+\(\{ "directProvider": \{ "acquire": providerOperation_[a-f0-9]+ \} \}\)/,
-    );
+    expect(gatewaySource).toContain('createCallback_actor_refresh_');
+    expect(gatewaySource).toContain('createCallback_actor_directRefresh_');
 
     const callbackModule = Object.entries(modules?.files ?? {}).find(
       ([name]) => name.startsWith('actor-refresh-'),

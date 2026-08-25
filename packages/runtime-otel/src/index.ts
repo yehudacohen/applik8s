@@ -1,20 +1,34 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
+import type {
+  ApplicationTelemetryBoundary,
+  ApplicationTelemetryRuntime,
+} from '@applik8s/applik8s';
 import {
-  context,
-  createTraceState,
-  metrics,
-  SpanStatusCode,
-  trace,
-  TraceFlags,
+  type ApplicationTelemetryEnvelopeV1,
+  type ApplicationTelemetryMetricName,
+  applicationTelemetryMetricDefinition,
+  createApplicationTelemetryEnvelopeV1,
+  defaultDeniedTelemetryFields,
+  redactApplicationTelemetryValue,
+  validateApplicationTelemetryEnvelopeV1,
+  validateApplicationTelemetryMetricAttributes,
+} from '@applik8s/core';
+import {
   type Attributes,
   type Counter,
+  context,
+  createTraceState,
   type Gauge,
   type Histogram,
   type Link,
   type Meter,
+  metrics,
   type Span,
   type SpanContext,
+  SpanStatusCode,
+  TraceFlags,
   type Tracer,
+  trace,
 } from '@opentelemetry/api';
 import { OTLPMetricExporter } from '@opentelemetry/exporter-metrics-otlp-http';
 import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http';
@@ -22,20 +36,6 @@ import { resourceFromAttributes } from '@opentelemetry/resources';
 import { PeriodicExportingMetricReader } from '@opentelemetry/sdk-metrics';
 import { NodeSDK } from '@opentelemetry/sdk-node';
 import { ParentBasedSampler, TraceIdRatioBasedSampler } from '@opentelemetry/sdk-trace-base';
-import {
-  applicationTelemetryMetricDefinition,
-  createApplicationTelemetryEnvelopeV1,
-  defaultDeniedTelemetryFields,
-  redactApplicationTelemetryValue,
-  validateApplicationTelemetryEnvelopeV1,
-  validateApplicationTelemetryMetricAttributes,
-  type ApplicationTelemetryEnvelopeV1,
-  type ApplicationTelemetryMetricName,
-} from '@applik8s/core';
-import type {
-  ApplicationTelemetryBoundary,
-  ApplicationTelemetryRuntime,
-} from '@applik8s/applik8s';
 
 export interface ApplicationOpenTelemetryRuntimeOptions {
   readonly application: string;
@@ -78,6 +78,12 @@ type RuntimeMetricInstrument =
   | { readonly kind: 'counter'; readonly instrument: Counter }
   | { readonly kind: 'gauge'; readonly instrument: Gauge }
   | { readonly kind: 'histogram'; readonly instrument: Histogram };
+
+function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
+  return value !== null
+    && (typeof value === 'object' || typeof value === 'function')
+    && typeof Reflect.get(value, 'then') === 'function';
+}
 
 const activeBoundary = new AsyncLocalStorage<ActiveTelemetryBoundary>();
 
@@ -159,11 +165,10 @@ export function createApplicationOpenTelemetryRuntime(
     }
   };
 
-  const runtime: ApplicationTelemetryRuntime = {
-    async run<TResult>(
-      boundary: ApplicationTelemetryBoundary,
-      execute: () => Promise<TResult>,
-    ): Promise<TResult> {
+  const runBoundary = <TResult>(
+    boundary: ApplicationTelemetryBoundary,
+    execute: () => TResult,
+  ): TResult => {
       const candidateParent = boundary.parent ?? activeBoundary.getStore()?.envelope;
       const inherited = candidateParent && validEnvelope(candidateParent)
         ? candidateParent
@@ -263,18 +268,19 @@ export function createApplicationOpenTelemetryRuntime(
       }
 
       const started = monotonicNow();
-      let result: 'error' | 'ok' = 'ok';
-      let caughtErrorType: string | undefined;
-      try {
-        return await activeBoundary.run({ envelope, span }, execute);
-      } catch (cause) {
-        result = 'error';
-        caughtErrorType = errorType(cause);
-        span.setStatus({ code: SpanStatusCode.ERROR });
-        span.setAttribute('error.type', caughtErrorType);
-        throw cause;
-      } finally {
-        if (result === 'ok') span.setStatus({ code: SpanStatusCode.OK });
+      let finished = false;
+      const finish = (result: 'error' | 'ok', cause?: unknown): void => {
+        if (finished) return;
+        finished = true;
+        const caughtErrorType = result === 'error' ? errorType(cause) : undefined;
+        try {
+          span.setStatus({
+            code: result === 'ok' ? SpanStatusCode.OK : SpanStatusCode.ERROR,
+          });
+          if (caughtErrorType) span.setAttribute('error.type', caughtErrorType);
+        } catch {
+          // Telemetry span failures cannot replace the business result.
+        }
         const attributes = {
           'applik8s.boundary.kind': boundary.kind,
           'applik8s.operation': boundary.identity,
@@ -321,8 +327,49 @@ export function createApplicationOpenTelemetryRuntime(
         } catch {
           // Metric contract or exporter failures cannot change the operation result.
         }
-        span.end();
+        try {
+          span.end();
+        } catch {
+          // Telemetry span failures cannot replace the business result.
+        }
+      };
+      try {
+        const result = activeBoundary.run({ envelope, span }, execute);
+        if (isPromiseLike(result)) {
+          // typecast: Promise settlement preserves the caller's original generic
+          // return type while keeping the span open through asynchronous work.
+          return Promise.resolve(result).then(
+            (value) => {
+              finish('ok');
+              return value;
+            },
+            (cause) => {
+              finish('error', cause);
+              throw cause;
+            },
+          ) as TResult;
+        }
+        finish('ok');
+        return result;
+      } catch (cause) {
+        finish('error', cause);
+        throw cause;
       }
+  };
+
+  const runtime: ApplicationTelemetryRuntime = {
+    run<TResult>(
+      boundary: ApplicationTelemetryBoundary,
+      execute: () => Promise<TResult>,
+    ): Promise<TResult> {
+      return runBoundary(boundary, execute);
+    },
+
+    runValue<TResult>(
+      boundary: ApplicationTelemetryBoundary,
+      execute: () => TResult,
+    ): TResult {
+      return runBoundary(boundary, execute);
     },
 
     log(severity, event, fields = {}) {

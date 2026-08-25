@@ -5,6 +5,7 @@ import {
   app,
   applicationGraphFor,
   defineApplicationProvider,
+  installApplicationTelemetryRuntimeResolver,
 } from '@applik8s/applik8s';
 import {
   ApplicationProviderRuntimeSelectionError,
@@ -13,8 +14,94 @@ import {
 import { type } from 'arktype';
 import { describe, expect, it } from 'vitest';
 import { applicationCallableProviderDependencies } from '../src/application-provider-dependencies';
+import type {
+  ApplicationTelemetryBoundary,
+  ApplicationTelemetryRuntime,
+} from '../src/application-telemetry-runtime.js';
 
 describe('managed provider runtime selection', () => {
+  it('records only actual provider calls and preserves synchronous, asynchronous, and failure semantics', async () => {
+    const failure = new Error('private provider credential failure');
+    interface FixtureProvider {
+      readonly kind: 'fixture';
+      sync(input: string): string;
+      async(input: string): Promise<string>;
+      fail(): never;
+    }
+    const FixtureProvider = defineApplicationProvider<FixtureProvider>({
+      interface: 'FixtureProvider',
+      version: 'v1alpha1',
+      runtime: {
+        operations: {
+          sync: { module: '@fixture/provider/runtime', export: 'sync', access: 'none' },
+          async: { module: '@fixture/provider/runtime', export: 'asyncValue', access: 'none' },
+          fail: { module: '@fixture/provider/runtime', export: 'fail', access: 'none' },
+        },
+      },
+      accepts: (candidate): candidate is FixtureProvider =>
+        candidate !== null
+        && typeof candidate === 'object'
+        && Reflect.get(candidate, 'kind') === 'fixture',
+    }).named('primary');
+    const application = app('provider-telemetry', {
+      spec: type({ profile: "'starter' | 'dedicated'" }),
+      status: type({ ready: 'boolean' }),
+    });
+    const implementation: FixtureProvider = {
+      kind: 'fixture',
+      sync: (input) => `sync:${input}`,
+      async: async (input) => `async:${input}`,
+      fail: () => { throw failure; },
+    };
+    application.profile(application.installation.spec, 'profile')
+      .provide(FixtureProvider)
+      .starter(() => implementation)
+      .dedicated(() => implementation)
+      .exhaustive();
+
+    const boundaries: ApplicationTelemetryBoundary[] = [];
+    const runtime: ApplicationTelemetryRuntime = {
+      async run(_boundary, execute) { return execute(); },
+      runValue(boundary, execute) {
+        boundaries.push(boundary);
+        return execute();
+      },
+      log() {},
+      count() {},
+      record() {},
+      capture() { return undefined; },
+    };
+    const dispose = installApplicationTelemetryRuntimeResolver(() => runtime);
+    const provider = application.inject(FixtureProvider);
+    const extracted = provider.sync;
+    const previousVariant = process.env.APPLIK8S_PROFILE_VARIANT;
+    process.env.APPLIK8S_PROFILE_VARIANT = 'starter';
+    try {
+      expect(extracted).toBe(provider.sync);
+      expect(extracted('one')).toBe('sync:one');
+      await expect(provider.async('two')).resolves.toBe('async:two');
+      expect(() => provider.fail()).toThrow(failure);
+      expect(boundaries).toEqual([
+        expect.objectContaining({
+          kind: 'provider',
+          identity: 'FixtureProvider.sync',
+          provider: 'provider.fixture-provider.v1alpha1.primary',
+          definition: 'sync',
+          relationship: 'synchronous',
+        }),
+        expect.objectContaining({ kind: 'provider', identity: 'FixtureProvider.async' }),
+        expect.objectContaining({ kind: 'provider', identity: 'FixtureProvider.fail' }),
+      ]);
+    } finally {
+      dispose();
+      if (previousVariant === undefined) {
+        delete process.env.APPLIK8S_PROFILE_VARIANT;
+      } else {
+        process.env.APPLIK8S_PROFILE_VARIANT = previousVariant;
+      }
+    }
+  });
+
   it('returns direct provider implementations unchanged', () => {
     const implementation = { kind: 'direct', invoke: () => 'direct' };
     expect(

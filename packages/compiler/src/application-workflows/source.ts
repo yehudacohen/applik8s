@@ -18,11 +18,12 @@ import {
   type ApplicationRuntimeExecutionTarget,
   generatedApplicationEventLogPublisherSource,
 } from '../application-event-log-runtime-source.js';
-import { applicationSignalGrantPermissionId } from '../application-operations/index.js';
 import {
   generatedApplicationTelemetryImports,
   generatedApplicationTelemetryRuntimeSource,
 } from '../application-observability-runtime-source.js';
+import { applicationSignalGrantPermissionId } from '../application-operations/index.js';
+import { generatedApplicationProviderOperationValue } from '../application-provider-telemetry-source.js';
 import { structuredGenerationSelection, type WorkflowContract, type WorkflowFunctionNativeTransactionContract, type WorkflowOperationAliasContract, type WorkflowTaskObjectContract, type WorkflowTaskProjectionContract } from './contracts.js';
 import { jsName, kubernetesName, numberConfig, objectConfig, stringConfig, workflowObjectEnabledEnvironment } from './utilities.js';
 
@@ -150,7 +151,7 @@ export function generatedWorkerSource(
       ...capabilityBindings,
       ...providerOperationBindings.map(({ binding, variable }) => ({
         path: binding.identifier,
-        value: variable,
+        value: generatedApplicationProviderOperationValue(binding, variable),
       })),
       ...(handler.operations ?? []).map((binding) => ({
         path: binding.alias,
@@ -345,7 +346,7 @@ import { createSignedEnvelopeCodec, signedEnvelopeUtf8Key, staticSignedEnvelopeK
 	import { nodeKeyedDigestHex } from '@applik8s/runtime/node-integrity';
 		import { installApplicationObjectStorageRuntimeResolver, installApplicationProjectionRuntimeResolver, installApplicationWorkflowRuntimeResolver } from '@applik8s/applik8s/workflow-runtime-resolvers';
 import { applicationWorkflowCausalPrincipalMetadata, applicationWorkflowTelemetryMetadata } from '@applik8s/applik8s/workflow-runtime';
-${generatedApplicationTelemetryImports({ boundaryRunner: true, carrierCapture: true, runtimeImplementation: contract.observability }).join('\n')}
+${generatedApplicationTelemetryImports({ boundaryRunner: true, carrierCapture: true, providerOperationInstrumentation: contract.tasks.some(({ handler }) => workflowTaskProviderRuntimeOperations(handler).length > 0), runtimeImplementation: contract.observability }).join('\n')}
 import { installApplicationInvocationAdmissionResolver, installApplicationOperationRuntimeResolver } from '@applik8s/client';
 import { normalizeSchema } from '@applik8s/sdk';
 ${capabilityImports}

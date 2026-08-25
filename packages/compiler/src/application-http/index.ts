@@ -43,6 +43,7 @@ import {
   applicationStaticAuthorityManifest,
   compileApplicationOperationCatalog,
 } from '../application-operations/index.js';
+import { generatedApplicationProviderOperationValue } from '../application-provider-telemetry-source.js';
 import { applicationServerNamespace } from '../application-server-namespace.js';
 import { applik8sWorkspaceSourcePlugin } from '../bundling/index.js';
 
@@ -611,7 +612,7 @@ import { applicationAdmissionInvocationView, canonicalJsonV1String, createApplic
 import { applicationAdmissionRejectionCodeV1, createApplicationAdmissionObservationV1 } from '@applik8s/core/admission';
 import { createApplicationOperationAuthorityRuntime } from '@applik8s/operations';
 import { normalizeSchema } from '@applik8s/sdk/schema-runtime';
-${generatedApplicationTelemetryImports({ boundaryRunner: true, carrierCapture: true, runtimeImplementation: observability }).join('\n')}
+${generatedApplicationTelemetryImports({ boundaryRunner: true, carrierCapture: true, providerOperationInstrumentation: uniqueHttpProviderRuntimeOperations(contract.routes).length > 0, runtimeImplementation: observability }).join('\n')}
 ${hasOperations
     ? `${eventLogPublisher!.importSource}\nimport { createApplicationTaskOperationRuntime } from '@applik8s/applik8s/task-operation-runtime';`
     : ''}
@@ -1566,7 +1567,10 @@ function applicationHttpRouteBindingsSource(
   for (const operation of httpProviderRuntimeOperations(route)) {
     entries.push({
       path: operation.binding.identifier,
-      value: operation.variable,
+      value: generatedApplicationProviderOperationValue(
+        operation.binding,
+        operation.variable,
+      ),
       target: operation.binding.provider.nodeId,
     });
   }

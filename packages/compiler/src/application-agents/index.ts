@@ -51,6 +51,7 @@ import {
   compileApplicationOperationCatalog,
   compileApplicationWorkloadAuthority,
 } from '../application-operations/index.js';
+import { generatedApplicationProviderOperationValue } from '../application-provider-telemetry-source.js';
 import { applik8sWorkspaceSourcePlugin } from '../bundling/index.js';
 
 const DEFAULT_GENERATED_AGENT_RUNTIME_IMAGE =
@@ -698,8 +699,16 @@ function generatedAgentSource(contract: ApplicationAgentCompilerContract): strin
       : []).join('\n');
   const localToolRuntime = generatedLocalAgentToolRuntime(contract);
   const telemetryImports = contract.observability
-    ? generatedApplicationTelemetryImports({ boundaryRunner: true })
-    : [];
+    ? generatedApplicationTelemetryImports({
+        boundaryRunner: true,
+        providerOperationInstrumentation: providerOperations.length > 0,
+      })
+    : providerOperations.length > 0
+      ? generatedApplicationTelemetryImports({
+          providerOperationInstrumentation: true,
+          runtimeImplementation: false,
+        })
+      : [];
   return `
 import { createHash } from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
@@ -860,7 +869,7 @@ const directOperations = new Map(
 );
 const providerBindings = Object.freeze({
 ${providerOperations.map(({ binding, variable }) =>
-    `  ${JSON.stringify(binding.identifier)}: ${variable},`).join('\n')}
+    `  ${JSON.stringify(binding.identifier)}: ${generatedApplicationProviderOperationValue(binding, variable)},`).join('\n')}
 });
 function focusedAgentBindings(flat) {
   const bindings = {};

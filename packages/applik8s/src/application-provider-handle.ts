@@ -1,4 +1,6 @@
 // typecast-file-boundary: The provider proxy preserves the public generic implementation while Reflect confines dynamic member access to its validated runtime selection.
+
+import { applicationProviderGraphNodeId } from './application-identifiers.js';
 import type {
   ApplicationQualifiedProviderBinding,
   ApplicationQualifiedProviderBindingMetadata,
@@ -15,6 +17,7 @@ import {
   type ApplicationProviderSelectionValue,
   applicationProviderSelectionFor,
 } from './application-providers.js';
+import { runApplicationProviderTelemetryBoundary } from './application-telemetry-runtime.js';
 
 /** @internal Creates the lazy, compiler-visible handle returned by application.inject(). */
 export function createApplicationQualifiedProviderBinding<TImplementation>(
@@ -62,7 +65,17 @@ export function createApplicationQualifiedProviderBinding<TImplementation>(
               `Injected provider ${metadata.qualification.key} does not implement ${String(property)}() for the selected profile.`,
             );
           }
-          return Reflect.apply(callable, implementation, args);
+          return runApplicationProviderTelemetryBoundary(
+            {
+              interface: metadata.token.base.name,
+              nodeId: applicationProviderGraphNodeId(
+                metadata.token.base.name,
+                metadata.qualification,
+              ),
+              member: String(property),
+            },
+            () => Reflect.apply(callable, implementation, args),
+          );
         };
         Object.defineProperty(operation, 'name', {
           configurable: true,

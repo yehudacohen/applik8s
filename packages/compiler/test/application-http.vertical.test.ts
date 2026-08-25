@@ -875,6 +875,9 @@ export const providerHttpStack = application.composition;
     const source = await readFile(artifact.sourcePath, 'utf8');
     expect(source).toContain('APPLIK8S_PROFILE_VARIANT');
     expect(source).toContain('acquireItem');
+    expect(source).toContain('instrumentApplicationProviderOperation');
+    expect(source).toMatch(/(?:"interface"|interface):"AcquisitionProvider"/u);
+    expect(source).toMatch(/(?:"member"|member):"acquire"/u);
     expect(source).toContain('dedicated');
     const deployment = artifact.resources.find(
       (resource) => resource.kind === 'Deployment',

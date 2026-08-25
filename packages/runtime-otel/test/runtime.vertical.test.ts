@@ -1,8 +1,9 @@
 // typecast-file-boundary: Test exporters expose OpenTelemetry's erased recording shapes for semantic assertions.
+
+import type { ApplicationTelemetryEnvelopeV1 } from '@applik8s/core';
 import { AggregationTemporality, InMemoryMetricExporter, MeterProvider, PeriodicExportingMetricReader } from '@opentelemetry/sdk-metrics';
 import { InMemorySpanExporter, SimpleSpanProcessor } from '@opentelemetry/sdk-trace-base';
 import { NodeTracerProvider } from '@opentelemetry/sdk-trace-node';
-import type { ApplicationTelemetryEnvelopeV1 } from '@applik8s/core';
 import { describe, expect, it } from 'vitest';
 import {
   applicationOtlpSignalEndpoint,
@@ -49,6 +50,48 @@ describe('OpenTelemetry runtime', () => {
     expect(consumer?.links).toHaveLength(1);
     expect(consumer?.links[0]?.context.traceId).toBe(request?.spanContext().traceId);
     expect(consumer?.links[0]?.context.spanId).toBe(request?.spanContext().spanId);
+    await provider.shutdown();
+  });
+
+  it('keeps synchronous and Promise provider attempts nested and redacts provider failures', async () => {
+    const exporter = new InMemorySpanExporter();
+    const provider = new NodeTracerProvider({ spanProcessors: [new SimpleSpanProcessor(exporter)] });
+    const runtime = createApplicationOpenTelemetryRuntime({
+      application: 'demo',
+      environment: 'test',
+      target: 'local',
+      tracer: provider.getTracer('test'),
+    });
+    const privateFailure = new Error('token sk-private must not escape');
+
+    await runtime.run({ kind: 'operation', identity: 'document.import' }, async () => {
+      expect(runtime.runValue?.({
+        kind: 'provider',
+        identity: 'AcquisitionProvider.acquire',
+        provider: 'provider.acquisition-provider.v1alpha1.primary',
+        relationship: 'synchronous',
+      }, () => 'sync-result')).toBe('sync-result');
+      await expect(runtime.runValue?.({
+        kind: 'provider',
+        identity: 'AcquisitionProvider.acquire',
+        provider: 'provider.acquisition-provider.v1alpha1.primary',
+        relationship: 'synchronous',
+      }, async () => { throw privateFailure; })).rejects.toBe(privateFailure);
+    });
+
+    const spans = exporter.getFinishedSpans();
+    const parent = spans.find(({ name }) => name === 'applik8s.operation.document.import');
+    const attempts = spans.filter(({ name }) =>
+      name === 'applik8s.provider.AcquisitionProvider.acquire');
+    expect(attempts).toHaveLength(2);
+    expect(attempts.every(({ parentSpanContext }) =>
+      parentSpanContext?.spanId === parent?.spanContext().spanId)).toBe(true);
+    expect(attempts[1]?.attributes).toMatchObject({ 'error.type': 'Error' });
+    expect(JSON.stringify(attempts.map(({ attributes, events, status }) => ({
+      attributes,
+      events,
+      status,
+    })))).not.toContain('sk-private');
     await provider.shutdown();
   });
 
