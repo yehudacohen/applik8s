@@ -1,14 +1,38 @@
+import type {
+  ApplicationTelemetryBoundaryKind,
+  ApplicationTelemetryEnvelopeV1,
+  ApplicationTelemetryInvocationKind,
+  ApplicationTelemetryMetricName,
+  ApplicationTelemetryPrincipalClass,
+} from '@applik8s/core';
+
 export interface ApplicationTelemetryBoundary {
-  readonly kind: 'actor' | 'schedule' | 'operation' | 'event' | 'workflow' | 'query' | 'http' | 'reconciler';
+  readonly kind: ApplicationTelemetryBoundaryKind;
   readonly identity: string;
   readonly attempt?: number;
+  readonly execution?: string;
+  readonly service?: string;
+  readonly provider?: string;
+  readonly definition?: string;
+  readonly instance?: string;
+  readonly occurrence?: string;
+  readonly actor?: string;
+  readonly principalClass?: ApplicationTelemetryPrincipalClass;
+  readonly causalPrincipalClass?: ApplicationTelemetryPrincipalClass;
+  readonly invocation?: ApplicationTelemetryInvocationKind;
+  readonly relationship?: 'asynchronous' | 'synchronous';
+  readonly parent?: ApplicationTelemetryEnvelopeV1;
+  readonly links?: readonly ApplicationTelemetryEnvelopeV1[];
+  readonly baggage?: Readonly<Record<string, string>>;
   readonly attributes?: Readonly<Record<string, string | number | boolean>>;
 }
 
 export interface ApplicationTelemetryRuntime {
   run<TResult>(boundary: ApplicationTelemetryBoundary, execute: () => Promise<TResult>): Promise<TResult>;
   log(severity: 'debug' | 'info' | 'warn' | 'error', event: string, fields?: Readonly<Record<string, unknown>>): void;
-  count(metric: string, value?: number, attributes?: Readonly<Record<string, string | number | boolean>>): void;
+  count(metric: ApplicationTelemetryMetricName, value?: number, attributes?: Readonly<Record<string, string | number | boolean>>): void;
+  record(metric: ApplicationTelemetryMetricName, value: number, attributes?: Readonly<Record<string, string | number | boolean>>): void;
+  capture(): ApplicationTelemetryEnvelopeV1 | undefined;
 }
 
 const telemetryRuntimeResolvers: Array<() => ApplicationTelemetryRuntime | undefined> = [];
@@ -32,13 +56,27 @@ export async function runApplicationTelemetryBoundary<TResult>(boundary: Applica
   return execute();
 }
 
+/** Captures the bounded, serialization-safe carrier for an explicit asynchronous handoff. */
+export function captureApplicationTelemetryContext(): ApplicationTelemetryEnvelopeV1 | undefined {
+  return currentApplicationTelemetryRuntime()?.capture();
+}
+
 /** @internal Records bounded framework compatibility evidence without exposing provider telemetry to application code. */
 export function countApplicationTelemetry(
-  metric: string,
+  metric: ApplicationTelemetryMetricName,
   value = 1,
   attributes?: Readonly<Record<string, string | number | boolean>>,
 ): void {
   currentApplicationTelemetryRuntime()?.count(metric, value, attributes);
+}
+
+/** @internal Records a value through the versioned metric catalog. */
+export function recordApplicationTelemetry(
+  metric: ApplicationTelemetryMetricName,
+  value: number,
+  attributes?: Readonly<Record<string, string | number | boolean>>,
+): void {
+  currentApplicationTelemetryRuntime()?.record(metric, value, attributes);
 }
 
 /** @internal Records a redacted framework lifecycle event through the selected telemetry runtime. */

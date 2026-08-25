@@ -106,8 +106,8 @@ const rules: readonly BoundaryRule[] = [
   },
   {
     roots: ['packages/runtime-otel/src'],
-    forbidden: [/^@applik8s\/(?!applik8s(?:\/|$))/, /^@kubernetes\//, /^typekro(?:\/|$)/, /^alchemy(?:\/|$)/],
-    rationale: 'The OpenTelemetry runtime may implement the provider-neutral telemetry contract but must not depend on compiler, deployment, Kubernetes, TypeKro, or Alchemy packages.',
+    forbidden: [/^@applik8s\/(?!applik8s(?:\/|$)|core(?:\/|$))/, /^@kubernetes\//, /^typekro(?:\/|$)/, /^alchemy(?:\/|$)/],
+    rationale: 'The OpenTelemetry runtime may implement the portable core telemetry contract but must not depend on compiler, deployment, Kubernetes, TypeKro, or Alchemy packages.',
   },
   {
     roots: ['packages/runtime-duckdb/src'],

@@ -107,6 +107,10 @@ describe('canonical actor turn authority', () => {
       count(metric, _value, attributes) {
         counts.push(attributes === undefined ? { metric } : { metric, attributes });
       },
+      record() {},
+      capture() {
+        return undefined;
+      },
     })));
     const principal = testPrincipal();
     const receipt = testReceipt(principal);

@@ -78,6 +78,19 @@ export {
   applicationStartDefinitionApiVersion,
   validateApplicationStartDefinition,
 } from './application-start.js';
+export type * from './application-telemetry.js';
+export {
+  ApplicationTelemetryContractError,
+  applicationTelemetryEnvelopeVersion,
+  applicationTelemetryMetricCatalog,
+  applicationTelemetryMetricDefinition,
+  applicationTelemetrySemanticVersion,
+  createApplicationTelemetryEnvelopeV1,
+  defaultDeniedTelemetryFields,
+  redactApplicationTelemetryValue,
+  validateApplicationTelemetryEnvelopeV1,
+  validateApplicationTelemetryMetricAttributes,
+} from './application-telemetry.js';
 export type * from './canonical-json.js';
 export {
   CanonicalJsonV1Error,
