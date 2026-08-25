@@ -191,17 +191,32 @@
     },
     {
       "kind": "provider",
-      "state": "not-started",
+      "state": "implemented",
       "relationship": "synchronous",
-      "producer": "managed application operation",
-      "consumer": "qualified provider implementation",
-      "carrierPlacement": "not yet implemented as a general provider boundary; lakehouse publication and query retain their domain event/query kinds",
+      "producer": "active semantic application operation",
+      "consumer": "one selected qualified provider operation invocation",
+      "carrierPlacement": "the framework opens one synchronous child only when the selected provider callable is physically invoked; provider discovery, qualification, placement, property access, and replay remain inert; direct application.inject() handles and compiler-hydrated static operations share the same boundary",
       "owners": [
-        "packages/applik8s/src/application-provider-runtime.ts"
+        "packages/applik8s/src/application-provider-handle.ts",
+        "packages/applik8s/src/application-telemetry-runtime.ts",
+        "packages/compiler/src/application-provider-telemetry-source.ts"
       ],
-      "sourceMarkers": [],
-      "regression": null,
-      "remaining": "Instrument provider calls only where a distinct provider attempt is semantically useful, retain the domain operation as parent, and prove credential-free redacted failures."
+      "sourceMarkers": [
+        {
+          "path": "packages/applik8s/src/application-provider-handle.ts",
+          "marker": "runApplicationProviderTelemetryBoundary"
+        },
+        {
+          "path": "packages/applik8s/src/application-telemetry-runtime.ts",
+          "marker": "kind: 'provider'"
+        },
+        {
+          "path": "packages/compiler/src/application-provider-telemetry-source.ts",
+          "marker": "instrumentApplicationProviderOperation"
+        }
+      ],
+      "regression": "bun run check:v08:provider-conformance && bun run check:v08:observability",
+      "remaining": "Prove a selected provider attempt in a real emitted worker and collector, including cancellation, timeout, retry, redacted terminal failure, and absence of arguments, results, credentials, and error messages."
     },
     {
       "kind": "query",
