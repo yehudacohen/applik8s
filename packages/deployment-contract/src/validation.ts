@@ -53,6 +53,20 @@ function validateRuntimeAccess(
   if (graph.runtimeAccess.sourceGraphDigest !== graph.metadata.sourceGraphDigest) {
     diagnostics.push(diagnostic('DEPLOYMENT_GRAPH_INVALID', 'Runtime-access envelope sourceGraphDigest does not match the deployment graph.'));
   }
+  for (const workload of graph.runtimeAccess.workloads) {
+    const materialization = workload.kubernetes?.materialization;
+    if (!materialization) continue;
+    if (materialization.authority === 'application-root') {
+      if (!graph.nodes.some(({ kind }) => kind === 'kubernetesComposition')) {
+        diagnostics.push(diagnostic('DEPLOYMENT_GRAPH_INVALID', `Runtime-access workload ${workload.workloadIdentity} names application-root materialization without a Kubernetes composition root.`));
+      }
+      continue;
+    }
+    const owner = graph.nodes.find(({ id }) => id === materialization.deploymentNodeId);
+    if (!owner || owner.kind !== 'kubernetesDirect') {
+      diagnostics.push(diagnostic('DEPLOYMENT_GRAPH_INVALID', `Runtime-access workload ${workload.workloadIdentity} names missing or non-direct provider materialization node ${materialization.deploymentNodeId}.`));
+    }
+  }
 }
 
 function validateEnvelope(

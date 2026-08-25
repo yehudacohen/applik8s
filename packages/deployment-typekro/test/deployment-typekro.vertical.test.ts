@@ -992,7 +992,9 @@ function graphWithEnvoyAIGateway(): ApplicationDeploymentGraph {
   };
 }
 
-function graphWithV08KubernetesProviders(): ApplicationDeploymentGraph {
+function graphWithV08KubernetesProviders(
+  options: { readonly observability?: boolean } = {},
+): ApplicationDeploymentGraph {
   const connectionDigest = digestApplicationDeploymentValue({
     provider: "kubernetes",
     cluster: "orbstack",
@@ -1003,7 +1005,7 @@ function graphWithV08KubernetesProviders(): ApplicationDeploymentGraph {
       kind: "ApplicationGraph",
       metadata: { name: "adapter", namespace: "adapter-test" },
       nodes: [
-        {
+        ...(options.observability === false ? [] : [{
           id: "provider.observability",
           kind: "provider",
           name: "Observability",
@@ -1020,7 +1022,7 @@ function graphWithV08KubernetesProviders(): ApplicationDeploymentGraph {
               retention: {},
             },
           },
-        },
+        } as const]),
         {
           id: "provider.actors",
           kind: "provider",
@@ -1046,6 +1048,38 @@ function graphWithV08KubernetesProviders(): ApplicationDeploymentGraph {
                 },
               },
             },
+          },
+        },
+        {
+          id: 'actor.workspace.v1',
+          kind: 'actor',
+          name: 'workspace.v1',
+          stability: 'experimental',
+          definition: {
+            id: 'workspace.v1',
+            key: { kind: 'declared', runtime: 'arktype', jsonSchema: { type: 'object', properties: {}, additionalProperties: false } },
+            state: { kind: 'declared', runtime: 'arktype', jsonSchema: { type: 'object', properties: {}, additionalProperties: false } },
+            stateVersion: 1,
+            migrationDigest: 'sha256:none',
+            migrations: [],
+            protocol: [],
+            requirements: {
+              durableState: true,
+              serializedTurns: true,
+              transactionalOutbox: true,
+              durableAlarms: false,
+              realtimeConnections: false,
+              connectionLeases: false,
+              realtimeMessages: false,
+              realtimeBroadcast: false,
+            },
+          },
+          runtime: { interface: 'ActorRuntime', nodeId: 'provider.actors' },
+          handlers: [],
+          semantics: {
+            serialization: 'fullTurnPerIdentity',
+            admission: 'idempotentReceipt',
+            references: 'inertAddress',
           },
         },
       ],
@@ -1098,7 +1132,10 @@ function graphWithV08KubernetesProviders(): ApplicationDeploymentGraph {
             namespace: "adapter-test",
             labels: { "app.kubernetes.io/component": "typed-http" },
           },
-          spec: { ports: [{ name: "http", port: 8080, targetPort: "http" }] },
+          spec: {
+            selector: { "app.kubernetes.io/component": "typed-http" },
+            ports: [{ name: "http", port: 8080, targetPort: "http" }],
+          },
         },
       }],
       status: {},
@@ -1686,7 +1723,39 @@ describe("TypeKro deployment adapter", () => {
   });
 
   it("binds the compiler-generated Celld Worker fleet without embedding credentials", async () => {
-    const deploymentGraph = graphWithV08KubernetesProviders();
+    const deploymentGraph = graphWithV08KubernetesProviders({ observability: false });
+    const providerWorkloads = deploymentGraph.runtimeAccess.workloads.filter(
+      ({ kubernetes }) => kubernetes?.materialization.authority === 'provider-direct'
+        && kubernetes.materialization.deploymentNodeId === 'direct.provider.actors.celld',
+    );
+    expect(providerWorkloads).toHaveLength(2);
+    expect(providerWorkloads).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kubernetes: expect.objectContaining({
+          resource: expect.objectContaining({ kind: 'Job', name: 'adapter-actors-worker-deployment' }),
+        }),
+      }),
+      expect.objectContaining({
+        executionIdentities: expect.arrayContaining([
+          expect.stringContaining('execution-boundaries'),
+        ]),
+        kubernetes: expect.objectContaining({
+          resource: expect.objectContaining({ kind: 'StatefulSet', name: 'adapter-actors' }),
+        }),
+      }),
+    ]));
+    const actorExecution = deploymentGraph.runtimeAccess.executions.find(
+      ({ nodeId }) => nodeId === 'actor.workspace.v1',
+    );
+    expect(actorExecution).toBeDefined();
+    expect(providerWorkloads.find(({ kubernetes }) =>
+      kubernetes?.resource.kind === 'StatefulSet')?.executionIdentities)
+      .toContain(actorExecution?.executionIdentity);
+    expect(providerWorkloads.flatMap(({ kubernetes }) =>
+      kubernetes?.credentialProjections ?? [])).toEqual(expect.arrayContaining([
+        { resourceId: 'v1/Secret/adapter-test/adapter-actor-state', keys: ['AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY'] },
+        { resourceId: 'v1/Secret/adapter-test/adapter-actors-authorization', keys: ['authorization', 'connectionSigningKey'] },
+      ]));
     const direct = bindApplicationTypeKroDirectNodes(deploymentGraph, {
       namespace: "adapter-test",
       waitForReady: false,
@@ -1747,6 +1816,40 @@ describe("TypeKro deployment adapter", () => {
     expect(JSON.stringify(directDeclarations)).toContain(
       "adapter-actors-authorization",
     );
+
+    const adapted = await adaptApplicationDeploymentToTypeKro({
+      graph: deploymentGraph,
+      root: bindTypeKroComposition(
+        composition('adapter'),
+        { name: 'adapter', image: 'nginx:1.27-alpine' },
+        {
+          factory: { namespace: 'adapter-test', waitForReady: false },
+          instanceNameOverride: 'adapter',
+        },
+      ),
+      direct,
+    });
+    expect(adapted.direct.find(({ deploymentNodeId }) =>
+      deploymentNodeId === 'direct.provider.actors.celld')).toBeDefined();
+
+    const missingFleet = {
+      ...binding!,
+      declarations: async (strategy: 'direct' | 'kro') =>
+        (await binding!.declarations(strategy)).filter(({ props }) =>
+          props.resource.kind !== 'StatefulSet'),
+    };
+    await expect(adaptApplicationDeploymentToTypeKro({
+      graph: deploymentGraph,
+      root: bindTypeKroComposition(
+        composition('adapter'),
+        { name: 'adapter', image: 'nginx:1.27-alpine' },
+        {
+          factory: { namespace: 'adapter-test', waitForReady: false },
+          instanceNameOverride: 'adapter',
+        },
+      ),
+      direct: { ...direct, 'direct.provider.actors.celld': missingFleet },
+    })).rejects.toThrow(/RUNTIME_ACCESS_WORKLOAD_MISSING/u);
   });
 
   it("binds the dedicated Rook operator and platform as retained singletons before its application claim", async () => {

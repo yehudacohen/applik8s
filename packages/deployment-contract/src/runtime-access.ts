@@ -26,10 +26,14 @@ export interface ApplicationRuntimeAccessWorkloadPlan {
   readonly kubernetes?: {
     readonly resource: {
       readonly apiVersion: string;
-      readonly kind: 'Deployment' | 'Job' | 'CronJob';
+      readonly kind: 'Deployment' | 'StatefulSet' | 'Job' | 'CronJob';
       readonly namespace: string;
       readonly name: string;
     };
+    /** Lifecycle boundary that must materialize this workload before mutation. */
+    readonly materialization:
+      | { readonly authority: 'application-root' }
+      | { readonly authority: 'provider-direct'; readonly deploymentNodeId: string };
     /** Exact pod labels used by generated NetworkPolicy workload selection. */
     readonly podSelector: Readonly<Record<string, string>>;
     readonly serviceAccountName: string;
@@ -319,6 +323,9 @@ export function validateApplicationRuntimeAccessPlan(
             errors.push(`workload ${workload.workloadIdentity} references unknown execution ${identity}`);
             return [];
           }
+          if (placedExecutionIds.has(identity)) {
+            errors.push(`execution ${identity} is assigned to more than one physical workload`);
+          }
           placedExecutionIds.add(identity);
           return [execution];
         })
@@ -329,6 +336,14 @@ export function validateApplicationRuntimeAccessPlan(
     if (workload.aws && plan.target !== 'aws' && plan.target !== 'aws-local') errors.push(`workload ${workload.workloadIdentity} carries AWS policy for ${plan.target}`);
     if (plan.target === 'kubernetes' && !workload.kubernetes) errors.push(`workload ${workload.workloadIdentity} has no Kubernetes enforcement policy`);
     if ((plan.target === 'aws' || plan.target === 'aws-local') && !workload.aws) errors.push(`workload ${workload.workloadIdentity} has no AWS enforcement policy`);
+    if (workload.kubernetes) {
+      const materialization = workload.kubernetes.materialization;
+      if (!record(materialization) || (materialization.authority !== 'application-root' && materialization.authority !== 'provider-direct')) {
+        errors.push(`workload ${workload.workloadIdentity} has no valid Kubernetes materialization authority`);
+      } else if (materialization.authority === 'provider-direct' && (typeof materialization.deploymentNodeId !== 'string' || !materialization.deploymentNodeId.trim())) {
+        errors.push(`workload ${workload.workloadIdentity} has no provider-direct deployment node identity`);
+      }
+    }
     validatePrivatePeers(
       workload.kubernetes?.privatePeers ?? workload.aws?.privatePeers,
       plan.target,

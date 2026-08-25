@@ -201,7 +201,10 @@ function context(target: 'local' | 'aws-local' | 'aws' | 'kubernetes') {
             name: 'proof-api', namespace: 'proof-system',
             labels: { 'app.kubernetes.io/component': 'typed-http' },
           },
-          spec: { ports: [{ name: 'http', port: 8080, targetPort: 'http' }] },
+          spec: {
+            selector: { 'app.kubernetes.io/component': 'typed-http' },
+            ports: [{ name: 'http', port: 8080, targetPort: 'http' }],
+          },
         },
       }],
       status: {},

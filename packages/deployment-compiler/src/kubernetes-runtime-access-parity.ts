@@ -30,6 +30,10 @@ export interface KubernetesRuntimeAccessParityFinding {
 export function validateKubernetesRuntimeAccessParity(
   plan: ApplicationRuntimeAccessPlan,
   resources: readonly unknown[],
+  options: {
+    readonly materializationAuthority?: 'application-root' | 'provider-direct';
+    readonly deploymentNodeId?: string;
+  } = {},
 ): readonly KubernetesRuntimeAccessParityFinding[] {
   if (plan.target !== 'kubernetes') return [];
   const manifests = resources
@@ -39,6 +43,15 @@ export function validateKubernetesRuntimeAccessParity(
   for (const workload of plan.workloads) {
     const expected = workload.kubernetes;
     if (!expected) continue;
+    if (
+      options.materializationAuthority
+      && expected.materialization.authority !== options.materializationAuthority
+    ) continue;
+    if (
+      options.deploymentNodeId
+      && (expected.materialization.authority !== 'provider-direct'
+        || expected.materialization.deploymentNodeId !== options.deploymentNodeId)
+    ) continue;
     const liveWorkload = manifests.find((manifest) =>
       manifest.apiVersion === expected.resource.apiVersion
       && manifest.kind === expected.resource.kind

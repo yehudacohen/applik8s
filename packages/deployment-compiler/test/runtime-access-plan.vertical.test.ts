@@ -58,6 +58,7 @@ describe('v0.8 runtime-access lowering', () => {
         executionNodeIds: ['operator.notes'],
         kubernetes: {
           resource: { apiVersion: 'apps/v1', kind: 'Deployment', namespace: 'notes', name: 'notes-operator' },
+          materialization: { authority: 'application-root' },
           podSelector: { 'app.kubernetes.io/name': 'notes-operator' },
           serviceAccountName: 'notes-runtime',
         },
@@ -422,6 +423,7 @@ describe('v0.8 runtime-access lowering', () => {
         executionNodeIds: ['operator.scopes'],
         kubernetes: {
           resource: { apiVersion: 'apps/v1', kind: 'Deployment', namespace: 'control-plane', name: 'scopes' },
+          materialization: { authority: 'application-root' },
           podSelector: { 'app.kubernetes.io/name': 'scopes' },
           serviceAccountName: 'scopes',
         },
@@ -466,6 +468,7 @@ describe('v0.8 runtime-access lowering', () => {
         executionNodeIds: ['operator.notes'],
         kubernetes: {
           resource: { apiVersion: 'apps/v1', kind: 'Deployment', namespace: 'notes', name: 'notes' },
+          materialization: { authority: 'application-root' },
           podSelector: { 'app.kubernetes.io/name': 'notes' },
           serviceAccountName: 'notes',
         },

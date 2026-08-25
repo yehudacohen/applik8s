@@ -1,3 +1,4 @@
+import { validateKubernetesRuntimeAccessParity } from '@applik8s/deployment-compiler';
 import {
   type ApplicationDeploymentGraph,
   type ApplicationDeploymentNode,
@@ -65,6 +66,8 @@ export async function adaptApplicationDeploymentToTypeKro(
     );
   }
 
+  assertProviderRuntimeAccessParity(request.graph, rootNode, direct);
+
   assertArtifactCoverage(request.graph, [root, ...direct]);
   assertGlobalDeclarationIdentity([root, ...direct]);
   const declarations = materializationDeclarations(request.graph, [
@@ -96,6 +99,37 @@ export async function adaptApplicationDeploymentToTypeKro(
     materializationDigest,
     evidenceDigest: digestApplicationDeploymentValue(evidence),
   };
+}
+
+function assertProviderRuntimeAccessParity(
+  graph: ApplicationDeploymentGraph,
+  rootNode: ApplicationDeploymentNode,
+  direct: readonly TypeKroDeclarationGroup[],
+): void {
+  const rootResources = rootNode.kind === 'kubernetesComposition'
+    ? rootNode.spec.materialized?.resources ?? []
+    : [];
+  const deploymentNodeIds = [...new Set(graph.runtimeAccess.workloads.flatMap(({ kubernetes }) =>
+    kubernetes?.materialization.authority === 'provider-direct'
+      ? [kubernetes.materialization.deploymentNodeId]
+      : []))].sort();
+  const findings = deploymentNodeIds.flatMap((deploymentNodeId) => {
+    const group = direct.find((candidate) => candidate.deploymentNodeId === deploymentNodeId);
+    const directResources = group?.declarations.map((declaration) =>
+      declaration.props.resource) ?? [];
+    return validateKubernetesRuntimeAccessParity(
+      graph.runtimeAccess,
+      [...rootResources, ...directResources],
+      { materializationAuthority: 'provider-direct', deploymentNodeId },
+    );
+  });
+  if (findings.length > 0) {
+    throw new Error(
+      `TypeKro provider runtime-access materialization does not match the canonical enforcement envelope:\n${findings
+        .map((finding) => `- [${finding.code}] ${finding.message}`)
+        .join('\n')}`,
+    );
+  }
 }
 
 function assertArtifactCoverage(

@@ -463,7 +463,8 @@
       "name": "@applik8s/deployment-typekro",
       "version": "0.8.0",
       "dependencies": {
-        "@applik8s/deployment-contract": "0.7.1",
+        "@applik8s/deployment-compiler": "0.8.0",
+        "@applik8s/deployment-contract": "0.8.0",
         "arktype": "2.2.1",
         "typekro": "0.33.7",
       },

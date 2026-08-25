@@ -1,5 +1,5 @@
 // typecast-file-boundary: Provider option records are validated by provider kind before deployment bindings are materialized.
-import type { ApplicationProviderNode } from "@applik8s/core";
+import type { ApplicationProviderNode, ApplicationRuntimeAccessRequirement } from "@applik8s/core";
 import {
   type ApplicationDeploymentEdge,
   type ApplicationDeploymentNode,
@@ -10,6 +10,8 @@ import {
   type DeploymentJsonValue,
   digestApplicationDeploymentValue,
 } from "@applik8s/deployment-contract";
+import { celldProviderRuntimeAccess } from './celld-runtime-access.js';
+import type { ApplicationRuntimeAccessWorkloadPlacement } from './runtime-access-plan.js';
 import type {
   ApplicationDeploymentContribution,
   ApplicationDeploymentContributor,
@@ -119,6 +121,12 @@ export function builtinApplicationDeploymentContributors(): readonly Application
         nodes,
         edges: providerDirect.edges,
         ...(runtimeAccessTargets.length > 0 ? { runtimeAccessTargets } : {}),
+        ...(providerDirect.runtimeAccessRequirements?.length
+          ? { runtimeAccessRequirements: providerDirect.runtimeAccessRequirements }
+          : {}),
+        ...(providerDirect.runtimeAccessWorkloads?.length
+          ? { runtimeAccessWorkloads: providerDirect.runtimeAccessWorkloads }
+          : {}),
         compositionFragments: [
           providerFragment(
             concreteProvider,
@@ -275,6 +283,12 @@ export function applicationProviderSelectionDeploymentContributor(
         ],
         edges: providerDirect.edges,
         ...(runtimeAccessTargets.length > 0 ? { runtimeAccessTargets } : {}),
+        ...(providerDirect.runtimeAccessRequirements?.length
+          ? { runtimeAccessRequirements: providerDirect.runtimeAccessRequirements }
+          : {}),
+        ...(providerDirect.runtimeAccessWorkloads?.length
+          ? { runtimeAccessWorkloads: providerDirect.runtimeAccessWorkloads }
+          : {}),
         compositionFragments: [
           providerFragment(
             selected,
@@ -659,6 +673,8 @@ interface ProviderDirectContribution {
   readonly nodes: readonly ApplicationDeploymentNode[];
   readonly edges: readonly ApplicationDeploymentEdge[];
   readonly runtimeAccessTargets?: readonly ApplicationDeploymentRuntimeAccessTarget[];
+  readonly runtimeAccessRequirements?: readonly ApplicationRuntimeAccessRequirement[];
+  readonly runtimeAccessWorkloads?: readonly ApplicationRuntimeAccessWorkloadPlacement[];
 }
 
 /**
@@ -1005,6 +1021,7 @@ function celldActorRuntimeDirectContribution(
     throw new Error("ActorRuntime.celld(...) on Kubernetes requires stateStore.credentialsSecret so the fleet never receives inline credentials.");
   }
   const name = `${safeProviderNodeId(context.graph.metadata.name)}-actors`;
+  const applicationService = kubernetesApplicationService(context);
   const publicRealtime = context.graph.nodes.some((node) =>
     node.kind === "actor"
     && node.publication?.boundary === "entrypoint-export"
@@ -1064,7 +1081,7 @@ function celldActorRuntimeDirectContribution(
       authorizationSecretKey: "authorization",
       connectionSigningSecretKey: "connectionSigningKey",
       ingressControllerNamespace: ingressControllerNamespace ?? namespace,
-      applicationEndpoint: kubernetesApplicationEndpoint(context),
+      applicationEndpoint: applicationService.endpoint,
     }),
     ownership: "application",
     deletion: "delete",
@@ -1084,6 +1101,31 @@ function celldActorRuntimeDirectContribution(
   const rootConsumesEndpoint = JSON.stringify(
     context.materializedComposition?.resources ?? [],
   ).includes(endpointReference);
+  const stateStoreEndpoint = optionalString(stateStore.endpoint);
+  const access = celldProviderRuntimeAccess({
+    provider,
+    context,
+    deploymentNodeId: nodeId,
+    name,
+    namespace,
+    ...(stateStoreEndpoint
+      ? { stateStoreEndpoint }
+      : {}),
+    stateStoreSecret: {
+      namespace: optionalString(credentials.namespace) ?? namespace,
+      name: requiredString(credentials.name, 'Celld state-store credentials Secret name'),
+      keys: [
+        optionalString(stateStore.accessKeyIdKey) ?? 'AWS_ACCESS_KEY_ID',
+        optionalString(stateStore.secretAccessKeyKey) ?? 'AWS_SECRET_ACCESS_KEY',
+      ],
+    },
+    authorizationSecret: {
+      namespace,
+      name: authorizationName,
+      keys: ['authorization', 'connectionSigningKey'],
+    },
+    applicationService,
+  });
   return {
     nodes: [authorization, fleet],
     edges: [
@@ -1100,19 +1142,9 @@ function celldActorRuntimeDirectContribution(
         ? { from: nodeId, to: "kubernetes.application", relationship: "requiresOutput", output: "endpoint" }
         : { from: nodeId, to: "kubernetes.application", relationship: "requiresReady" },
     ],
-    runtimeAccessTargets: [{
-      capabilityId: provider.id,
-      target: "kubernetes",
-      namespace,
-      serviceName: name,
-      podSelector: {
-        "app.kubernetes.io/name": "celld",
-        "app.kubernetes.io/instance": name,
-        "app.kubernetes.io/component": "actor-runtime",
-      },
-      protocol: "TCP",
-      port: 8080,
-    }],
+    runtimeAccessTargets: access.targets,
+    runtimeAccessRequirements: access.requirements,
+    runtimeAccessWorkloads: access.workloads,
   };
 }
 
@@ -1177,9 +1209,15 @@ function sameCelldStateStore(
       === optionalString(requiredCredentials?.namespace);
 }
 
-function kubernetesApplicationEndpoint(
+function kubernetesApplicationService(
   context: ApplicationDeploymentPlanningContext,
-): string {
+): {
+  readonly endpoint: string;
+  readonly namespace: string;
+  readonly name: string;
+  readonly port: number;
+  readonly podSelector: Readonly<Record<string, string>>;
+} {
   const candidates = (context.materializedComposition?.resources ?? [])
     .map((resource) => optionalObject(resource.template) ?? optionalObject(resource.externalRef))
     .filter((resource): resource is DeploymentJsonObject => resource !== undefined)
@@ -1212,7 +1250,23 @@ function kubernetesApplicationEndpoint(
       `ActorRuntime.celld(...) could not derive an HTTP port from Service ${serviceNamespace}/${serviceName}.`,
     );
   }
-  return `http://${serviceName}.${serviceNamespace}.svc.cluster.local:${port}`;
+  const podSelector = optionalObject(serviceSpec?.selector);
+  if (
+    !podSelector
+    || Object.keys(podSelector).length === 0
+    || Object.values(podSelector).some((value) => typeof value !== 'string' || !value)
+  ) {
+    throw new Error(
+      `ActorRuntime.celld(...) requires Service ${serviceNamespace}/${serviceName} to expose one exact string-valued pod selector.`,
+    );
+  }
+  return {
+    endpoint: `http://${serviceName}.${serviceNamespace}.svc.cluster.local:${port}`,
+    namespace: serviceNamespace,
+    name: serviceName,
+    port,
+    podSelector: podSelector as Readonly<Record<string, string>>,
+  };
 }
 
 function eventLogDirectContribution(

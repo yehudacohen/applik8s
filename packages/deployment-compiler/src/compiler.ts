@@ -14,6 +14,7 @@ import {
   digestApplicationDeploymentValue,
   validateApplicationDeploymentGraph,
 } from "@applik8s/deployment-contract";
+import { validateKubernetesRuntimeAccessParity } from './kubernetes-runtime-access-parity.js';
 import { assertApplicationScheduleProviderCompatibility } from './provider-guarantees.js';
 import {
   applicationDeploymentRuntimeAccessTargetRecord,
@@ -24,7 +25,6 @@ import {
   type ApplicationRuntimeAccessWorkloadPlacement,
   compileApplicationRuntimeAccessPlan,
 } from './runtime-access-plan.js';
-import { validateKubernetesRuntimeAccessParity } from './kubernetes-runtime-access-parity.js';
 import type {
   ApplicationArtifactRequirement,
   ApplicationDeploymentContribution,
@@ -136,7 +136,12 @@ export function compileApplicationDeploymentGraph(
         resourceId: `v1/Secret/${secret.namespace}/${secret.name}`,
         keys: Object.keys(secret.values).sort(),
       }))),
-    workloadPlacements: kubernetesRuntimeAccessWorkloadPlacements(request, artifactNodes),
+    additionalRequirements: contributions.flatMap((contribution) =>
+      contribution.runtimeAccessRequirements ?? []),
+    workloadPlacements: mergeRuntimeAccessWorkloadPlacements([
+      ...kubernetesRuntimeAccessWorkloadPlacements(request, artifactNodes),
+      ...contributions.flatMap((contribution) => contribution.runtimeAccessWorkloads ?? []),
+    ]),
   });
   const runtimeAccessNetworkPolicies = context.target === 'kubernetes'
     ? kubernetesPrivateNetworkPolicies(runtimeAccess)
@@ -151,6 +156,7 @@ export function compileApplicationDeploymentGraph(
     const parityFindings = validateKubernetesRuntimeAccessParity(
       runtimeAccess,
       materializedComposition?.resources ?? [],
+      { materializationAuthority: 'application-root' },
     );
     if (parityFindings.length > 0) {
       throw new Error(
@@ -389,6 +395,7 @@ function kubernetesRuntimeAccessWorkloadPlacements(
       executionNodeIds,
       kubernetes: {
         resource: { apiVersion, kind: workloadKind, namespace, name },
+        materialization: { authority: 'application-root' },
         podSelector,
         serviceAccountName: typeof podSpec?.serviceAccountName === 'string' && podSpec.serviceAccountName
           ? podSpec.serviceAccountName
@@ -396,6 +403,29 @@ function kubernetesRuntimeAccessWorkloadPlacements(
       },
     }];
   });
+}
+
+function mergeRuntimeAccessWorkloadPlacements(
+  placements: readonly ApplicationRuntimeAccessWorkloadPlacement[],
+): readonly ApplicationRuntimeAccessWorkloadPlacement[] {
+  const identities = new Map<string, ApplicationRuntimeAccessWorkloadPlacement>();
+  const executionOwners = new Map<string, string>();
+  for (const placement of placements) {
+    const previous = identities.get(placement.workloadIdentity);
+    if (previous) {
+      throw new Error(`Runtime-access workload identity ${placement.workloadIdentity} is declared more than once.`);
+    }
+    identities.set(placement.workloadIdentity, placement);
+    for (const nodeId of placement.executionNodeIds) {
+      const owner = executionOwners.get(nodeId);
+      if (owner && owner !== placement.workloadIdentity) {
+        throw new Error(`Runtime-access execution ${nodeId} is assigned to both ${owner} and ${placement.workloadIdentity}.`);
+      }
+      executionOwners.set(nodeId, placement.workloadIdentity);
+    }
+  }
+  return [...identities.values()].sort((left, right) =>
+    left.workloadIdentity.localeCompare(right.workloadIdentity));
 }
 
 function kubernetesPodTemplate(

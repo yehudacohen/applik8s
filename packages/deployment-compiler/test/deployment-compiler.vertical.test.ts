@@ -653,6 +653,42 @@ describe("Application deployment compiler", () => {
     ).toThrow("Duplicate application deployment contributor");
   });
 
+  it('rejects one execution identity assigned to two provider-owned workloads', () => {
+    const contributor: ApplicationDeploymentContributor = {
+      interface: 'TransactionalDatabase',
+      implementation: 'postgres',
+      version: 1,
+      contribute: () => ({
+        nodes: [],
+        edges: [],
+        compositionFragments: [],
+        runtimeAccessWorkloads: ['first', 'second'].map((name) => ({
+          workloadIdentity: `apps/v1:StatefulSet:guestbook:${name}`,
+          artifactIds: [],
+          executionNodeIds: ['provider-runtime.shared'],
+          kubernetes: {
+            resource: {
+              apiVersion: 'apps/v1',
+              kind: 'StatefulSet' as const,
+              namespace: 'guestbook',
+              name,
+            },
+            materialization: {
+              authority: 'provider-direct' as const,
+              deploymentNodeId: 'direct.provider.runtime',
+            },
+            podSelector: { 'app.kubernetes.io/name': name },
+            serviceAccountName: 'default',
+          },
+        })),
+      }),
+    };
+    expect(() => compileApplicationDeploymentGraph({
+      ...request(),
+      contributors: [contributor],
+    })).toThrow(/provider-runtime\.shared is assigned to both/u);
+  });
+
   it("fails closed when a provider has no exact deployment contributor", () => {
     const graph = applicationGraph();
     const provider = graph.nodes[0];

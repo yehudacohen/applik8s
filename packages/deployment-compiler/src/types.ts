@@ -1,4 +1,9 @@
-import type { ApplicationDeploymentTargetKind, ApplicationGraph, ApplicationProviderNode } from "@applik8s/core";
+import type {
+  ApplicationDeploymentTargetKind,
+  ApplicationGraph,
+  ApplicationProviderNode,
+  ApplicationRuntimeAccessRequirement,
+} from "@applik8s/core";
 import type {
   ApplicationDeploymentConnectionIdentity,
   ApplicationDeploymentEdge,
@@ -6,10 +11,13 @@ import type {
   ApplicationDeploymentGraphMode,
   ApplicationDeploymentNode,
   ApplicationDeploymentStrategy,
+  ApplicationRuntimeAccessBootstrapEgress,
   DeploymentJsonObject,
 } from "@applik8s/deployment-contract";
-import type { ApplicationRuntimeAccessBootstrapEgress } from '@applik8s/deployment-contract';
-import type { ApplicationRuntimeAccessPlan } from './runtime-access-plan.js';
+import type {
+  ApplicationRuntimeAccessPlan,
+  ApplicationRuntimeAccessWorkloadPlacement,
+} from "./runtime-access-plan.js";
 
 export interface CompileApplicationDeploymentGraphRequest {
   readonly graph: ApplicationGraph;
@@ -127,6 +135,10 @@ export interface ApplicationDeploymentContribution {
   readonly compositionFragments: readonly ApplicationTypeKroFragmentDescriptor[];
   /** Exact private data-plane identity supplied by the lifecycle-owning provider adapter. */
   readonly runtimeAccessTargets?: readonly ApplicationDeploymentRuntimeAccessTarget[];
+  /** Provider-owned execution requirements authored at the lifecycle adapter boundary. */
+  readonly runtimeAccessRequirements?: readonly ApplicationRuntimeAccessRequirement[];
+  /** Physical provider workloads that host semantic and/or provider-owned execution. */
+  readonly runtimeAccessWorkloads?: readonly ApplicationRuntimeAccessWorkloadPlacement[];
 }
 
 export type ApplicationDeploymentRuntimeAccessTarget =

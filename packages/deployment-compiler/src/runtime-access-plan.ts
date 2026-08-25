@@ -48,10 +48,13 @@ export interface ApplicationRuntimeAccessWorkloadPlacement {
   readonly kubernetes?: {
     readonly resource: {
       readonly apiVersion: string;
-      readonly kind: 'Deployment' | 'Job' | 'CronJob';
+      readonly kind: 'Deployment' | 'StatefulSet' | 'Job' | 'CronJob';
       readonly namespace: string;
       readonly name: string;
     };
+    readonly materialization:
+      | { readonly authority: 'application-root' }
+      | { readonly authority: 'provider-direct'; readonly deploymentNodeId: string };
     readonly podSelector: Readonly<Record<string, string>>;
     readonly serviceAccountName: string;
   };
@@ -101,6 +104,8 @@ export function compileApplicationRuntimeAccessPlan(options: {
   readonly includedExecutionNodeIds?: readonly string[];
   /** Provider/profile-selected credentials required by exact semantic consumers. */
   readonly credentialRequirements?: readonly ApplicationRuntimeAccessCredentialRequirement[];
+  /** Provider-authored execution requirements with canonical identities and provenance. */
+  readonly additionalRequirements?: readonly ApplicationRuntimeAccessRequirement[];
 }): ApplicationRuntimeAccessPlan {
   const foundation = deriveApplicationGraphFoundation(options.graph, options.workspaceRoot ? { workspaceRoot: options.workspaceRoot } : {});
   const includedExecutionNodeIds = options.includedExecutionNodeIds
@@ -108,6 +113,8 @@ export function compileApplicationRuntimeAccessPlan(options: {
     : undefined;
   const runtimeRequirements = mergeApplicationRuntimeAccessRequirements([
     ...foundation.runtimeAccess.filter(({ consumer }) =>
+      !includedExecutionNodeIds || includedExecutionNodeIds.has(consumer.nodeId)),
+    ...(options.additionalRequirements ?? []).filter(({ consumer }) =>
       !includedExecutionNodeIds || includedExecutionNodeIds.has(consumer.nodeId)),
     ...(options.credentialRequirements ?? [])
       .filter(({ consumerNodeId }) =>
@@ -278,6 +285,7 @@ function compileWorkloadPlans(
           const externalEgress = mergeExternalEgress(members.flatMap((member) => member.kubernetes?.externalEgress ?? []));
           return {
           resource: placement.kubernetes.resource,
+          materialization: placement.kubernetes.materialization,
           podSelector: placement.kubernetes.podSelector,
           serviceAccountName: placement.kubernetes.serviceAccountName,
           bindings: mergePlannedKubernetesBindings(members.flatMap((member) => member.kubernetes?.bindings ?? [])),
