@@ -769,7 +769,7 @@ export const workflowModelEdit = platform.composition;
     try {
       const entrypoint = join(dir, 'application.ts');
       await writeFile(entrypoint, `
-import { app, workflow, WorkflowEngine } from '@applik8s/applik8s';
+import { app, Observability, workflow, WorkflowEngine } from '@applik8s/applik8s';
 import { StructuredGeneration } from '@applik8s/applik8s/structured-generation';
 import { type } from '@applik8s/applik8s/dsl';
 const SendWelcome = workflow('tenant.send-welcome.v1', { input: type({ tenantId: 'string', requestId: 'string' }), output: type({ sent: 'boolean' }), errors: { providerUnavailable: type({ retryAfterSeconds: 'number' }) } });
@@ -785,6 +785,7 @@ const platform = app('workflow-proof', {
   status: type({ ready: 'boolean' }),
 });
 platform.provide(WorkflowEngine, WorkflowEngine.hatchet({ name: 'hatchet', namespace: 'workflow-proof', tenantId: 'tenant-id', workerTokenSecret: { apiVersion: 'v1', kind: 'Secret', name: 'hatchet-worker', namespace: 'workflow-proof' } }));
+platform.provide(Observability, Observability.local());
 platform.provide(StructuredGeneration, platform.selectProvider(platform.installation.spec.profile, {
   external: StructuredGeneration.http({ endpoint: platform.installation.spec.generationEndpoint, credentialSecret: { apiVersion: 'v1', kind: 'Secret', name: platform.installation.spec.generationSecretName, namespace: 'workflow-proof' } }),
   default: StructuredGeneration.deterministic({ output: { sent: true }, inputUnits: 1, outputUnits: 1 }),
@@ -934,6 +935,27 @@ export const workflowProof = platform.composition;
       );
       expect(generatedSource).toContain(
         'workflowAdmissionRejectionCode(error)',
+      );
+      expect(generatedSource).toContain(
+        'installApplicationTelemetryRuntimeResolver',
+      );
+      expect(generatedSource).toContain(
+        "workflowTelemetryBoundary(context, 'task'",
+      );
+      expect(generatedSource).toContain(
+        "workflowTelemetryBoundary(context, 'workflow'",
+      );
+      expect(generatedSource).toContain(
+        "invocation: execution.attempt > 1 ? 'retry' : 'live'",
+      );
+      expect(generatedSource).toContain(
+        'links: [execution.telemetry]',
+      );
+      expect(generatedSource).toContain(
+        'validateApplicationTelemetryEnvelopeV1',
+      );
+      expect(generatedSource).toContain(
+        'closeApplicationTelemetryRuntime()',
       );
       expect(generatedSource).not.toContain(
         'error.message.slice(0, 256)',

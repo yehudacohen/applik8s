@@ -13,12 +13,19 @@ export function applicationGraphHasObservabilityRuntime(
 
 export function generatedApplicationTelemetryImports(options?: {
 	readonly boundaryRunner?: boolean;
+	readonly carrierCapture?: boolean;
+	readonly runtimeImplementation?: boolean;
 }): readonly string[] {
+	const applik8sImports = [
+		"installApplicationTelemetryRuntimeResolver",
+		...(options?.boundaryRunner ? ["runApplicationTelemetryBoundary"] : []),
+		...(options?.carrierCapture ? ["captureApplicationTelemetryContext"] : []),
+	];
 	return [
-		options?.boundaryRunner
-			? "import { installApplicationTelemetryRuntimeResolver, runApplicationTelemetryBoundary } from '@applik8s/applik8s';"
-			: "import { installApplicationTelemetryRuntimeResolver } from '@applik8s/applik8s';",
-		"import { createApplicationOpenTelemetryRuntime, startApplicationOpenTelemetryRuntime } from '@applik8s/runtime-otel';",
+		`import { ${applik8sImports.join(", ")} } from '@applik8s/applik8s/telemetry-runtime';`,
+		...(options?.runtimeImplementation === false
+			? []
+			: ["import { createApplicationOpenTelemetryRuntime, startApplicationOpenTelemetryRuntime } from '@applik8s/runtime-otel';"]),
 	];
 }
 

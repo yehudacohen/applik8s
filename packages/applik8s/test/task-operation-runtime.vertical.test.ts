@@ -1,7 +1,8 @@
 // typecast-file-boundary: Task-operation tests intentionally construct protocol envelopes and provider fakes around runtime validation boundaries.
 
-import type { ApplicationAuthorizationReceipt, ApplicationExecutionPrincipal, ApplicationWorkloadAuthorityEnvelope, JsonValue } from '@applik8s/core';
+import { type ApplicationAuthorizationReceipt, type ApplicationExecutionPrincipal, type ApplicationWorkloadAuthorityEnvelope, createApplicationTelemetryEnvelopeV1, type JsonValue } from '@applik8s/core';
 import { describe, expect, it, vi } from 'vitest';
+import { installApplicationTelemetryRuntimeResolver } from '../src/application-telemetry-runtime.js';
 import { applicationCommandPrincipal, applicationCommandTrustedContext } from '../src/command-principal.js';
 import type { ApplicationPostgresSql } from '../src/postgres-runtime-contract.js';
 import {
@@ -112,6 +113,25 @@ describe('task operation runtime', () => {
 
   it('submits only declared commands with a fixed service principal and observes the canonical durable result', async () => {
     let published: Record<string, unknown> | undefined;
+    const telemetry = createApplicationTelemetryEnvelopeV1({
+      traceparent: '00-0123456789abcdef0123456789abcdef-0123456789abcdef-01',
+      identity: {
+        application: 'chirp',
+        environment: 'test',
+        target: 'local',
+        operation: 'task:publish-post',
+        execution: 'task:run-1',
+        attempt: 1,
+      },
+      invocation: { relationship: 'asynchronous' },
+    });
+    const restoreTelemetry = installApplicationTelemetryRuntimeResolver(() => ({
+      async run(_boundary, execute) { return execute(); },
+      log() {},
+      count() {},
+      record() {},
+      capture: () => telemetry,
+    }));
     const verify = vi.fn(async () => undefined);
     const drain = vi.fn(async () => undefined);
     const sql = { unsafe: vi.fn(async () => published ? [{ output: { identity: 'post-1', accepted: true }, error: null }] : []) } as unknown as ApplicationPostgresSql;
@@ -131,7 +151,8 @@ describe('task operation runtime', () => {
       },
       resultTimeoutMs: 2_000,
     });
-    const operations = runtime.bind(
+    try {
+      const operations = runtime.bind(
       { publish: 'Post.create.v1' },
       taskPrincipal('bot-1', 'policy-v1', { automationId: 'a-1' }),
       {
@@ -149,25 +170,29 @@ describe('task operation runtime', () => {
       },
     );
 
-    await expect(operations.publish?.({ id: 'post-1', body: 'hello' })).resolves.toEqual({ identity: 'post-1', accepted: true });
-    expect(verify).toHaveBeenCalledOnce();
-    const principal = applicationCommandPrincipal(Reflect.get(published ?? {}, 'trustedContext') as {
+      await expect(operations.publish?.({ id: 'post-1', body: 'hello' })).resolves.toEqual({ identity: 'post-1', accepted: true });
+      expect(verify).toHaveBeenCalledOnce();
+      const principal = applicationCommandPrincipal(Reflect.get(published ?? {}, 'trustedContext') as {
       readonly values: Readonly<Record<string, JsonValue>>;
     });
-    expect(principal).toMatchObject({ id: 'bot-1', authorityRevision: 'policy-v1' });
-    expect(Reflect.get(Reflect.get(published ?? {}, 'trustedContext') as object, 'digest')).toBe('b'.repeat(64));
-    expect(applicationCommandTrustedContext(
+      expect(principal).toMatchObject({ id: 'bot-1', authorityRevision: 'policy-v1' });
+      expect(Reflect.get(Reflect.get(published ?? {}, 'trustedContext') as object, 'digest')).toBe('b'.repeat(64));
+      expect(applicationCommandTrustedContext(
       Reflect.get(published ?? {}, 'trustedContext') as {
         readonly values: Readonly<Record<string, JsonValue>>;
       },
-    )).toEqual({ organizationId: 'org-1' });
-    expect(Reflect.get(Reflect.get(published ?? {}, 'trustedContext') as object, 'changeScopes')).toMatchObject({
+      )).toEqual({ organizationId: 'org-1' });
+      expect(Reflect.get(Reflect.get(published ?? {}, 'trustedContext') as object, 'changeScopes')).toMatchObject({
       global: 'c'.repeat(64),
       'context:organizationId': 'd'.repeat(64),
     });
-    expect(JSON.stringify(published)).not.toContain('a-stable-secret-containing-at-least-thirty-two-characters');
-    await runtime.close();
-    expect(drain).toHaveBeenCalledOnce();
+      expect(JSON.stringify(published)).not.toContain('a-stable-secret-containing-at-least-thirty-two-characters');
+      expect(Reflect.get(published ?? {}, 'telemetry')).toEqual(telemetry);
+      await runtime.close();
+      expect(drain).toHaveBeenCalledOnce();
+    } finally {
+      restoreTelemetry();
+    }
   });
 
   it('binds an authenticated request principal and its canonical receipt to a direct operation', async () => {

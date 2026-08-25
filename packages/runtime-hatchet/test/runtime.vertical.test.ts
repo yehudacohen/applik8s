@@ -1,11 +1,26 @@
 // typecast-file-boundary: Hatchet adapter tests construct SDK-shaped fakes and decoded task payloads to verify the provider boundary.
 import { ApplicationDurableError, ApplicationWorkflowObservationError } from '@applik8s/applik8s';
-import { applicationWorkflowCausalPrincipalMetadata } from '@applik8s/applik8s/workflow-runtime';
+import {
+  applicationWorkflowCausalPrincipalMetadata,
+  applicationWorkflowTelemetryMetadata,
+} from '@applik8s/applik8s/workflow-runtime';
+import { createApplicationTelemetryEnvelopeV1 } from '@applik8s/core';
 import { createHatchetWorkflowRuntimeFromClient, createHatchetWorkflowRuntimeFromClientFactory, durableErrorFromMessage, observeHatchetWorkflowRun, reconcileHatchetWorkflowSchedule, waitForHatchetResult } from '@applik8s/runtime-hatchet';
 import { describe, expect, it, vi } from 'vitest';
 import { applicationMetadata } from '../src/workflow-runtime-hatchet-metadata.js';
 
 describe('Hatchet workflow result observation', () => {
+  it('serializes the canonical producer carrier into bounded durable metadata', () => {
+    const telemetry = workflowTelemetry();
+    expect(applicationMetadata({
+      idempotencyKey: 'workflow-telemetry-1',
+      [applicationWorkflowTelemetryMetadata]: telemetry,
+    })).toMatchObject({
+      'applik8s.idempotency-key': 'workflow-telemetry-1',
+      'applik8s.telemetry': JSON.stringify(telemetry),
+    });
+  });
+
   it('durably serializes framework-owned causal attribution without adding an application option', () => {
     expect(applicationMetadata({
       idempotencyKey: 'workflow-1',
@@ -131,6 +146,20 @@ describe('Hatchet workflow result observation', () => {
   });
 });
 
+function workflowTelemetry() {
+  return createApplicationTelemetryEnvelopeV1({
+    traceparent: '00-0123456789abcdef0123456789abcdef-0123456789abcdef-01',
+    identity: {
+      application: 'workflow-test',
+      environment: 'test',
+      target: 'local',
+      operation: 'http:workflow-start',
+      execution: 'http:request-1',
+      attempt: 1,
+    },
+  });
+}
+
 describe('Hatchet recurring schedule convergence', () => {
   function fakeCron() {
     const rows: Array<{ metadata: { id: string }; name: string; cron: string; enabled: boolean; additionalMetadata?: Record<string, unknown> }> = [];
@@ -188,7 +217,10 @@ describe('Hatchet provider credential boundary', () => {
       runNoWait: vi.fn(async (
         _contract: string,
         _input: object,
-        options?: { readonly childKey?: string },
+        options?: {
+          readonly childKey?: string;
+          readonly additionalMetadata?: Readonly<Record<string, string>>;
+        },
       ) => {
         const childKey = options?.childKey;
         if (!childKey) throw new Error('missing child key');
@@ -212,6 +244,7 @@ describe('Hatchet provider credential boundary', () => {
     const runtime = createHatchetWorkflowRuntimeFromClient(client as never);
     const metadata = {
       idempotencyKey: 'http-request:tenant.provision.v1:tenant-1',
+      [applicationWorkflowTelemetryMetadata]: workflowTelemetry(),
     };
 
     await expect(
@@ -234,6 +267,11 @@ describe('Hatchet provider credential boundary', () => {
     expect(client.runNoWait).toHaveBeenCalledTimes(2);
     expect(client.runNoWait.mock.calls.map((call) => call[2]?.childKey))
       .toEqual([metadata.idempotencyKey, metadata.idempotencyKey]);
+    expect(client.runNoWait.mock.calls.map((call) => call[2]?.additionalMetadata?.['applik8s.telemetry']))
+      .toEqual([
+        JSON.stringify(metadata[applicationWorkflowTelemetryMetadata]),
+        JSON.stringify(metadata[applicationWorkflowTelemetryMetadata]),
+      ]);
     expect(client.runs.cancel).toHaveBeenCalledTimes(2);
     expect(client.runs.cancel).toHaveBeenNthCalledWith(1, { ids: ['run-1'] });
     expect(client.runs.cancel).toHaveBeenNthCalledWith(2, { ids: ['run-1'] });

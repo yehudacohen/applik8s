@@ -8,7 +8,11 @@ import type {
   ApplicationWorkflowRun,
   ApplicationWorkflowScheduleSpec,
 } from './workflow-runtime.js';
-import { applicationWorkflowRuntime } from './workflow-runtime.js';
+import { captureApplicationTelemetryContext } from './application-telemetry-runtime.js';
+import {
+  applicationWorkflowRuntime,
+  withApplicationWorkflowTelemetry,
+} from './workflow-runtime.js';
 
 interface GeneratedWorkflowGatewayBinding<
   TInput extends object = object,
@@ -68,6 +72,14 @@ export function createApplicationWorkflowGatewayBinding<
       kind: 'hatchet',
       tls: true,
     });
+  const telemetryMetadata = (
+    metadata: ApplicationWorkflowInvocationMetadata | undefined,
+  ) => {
+    const telemetry = captureApplicationTelemetryContext();
+    return telemetry
+      ? withApplicationWorkflowTelemetry(metadata, telemetry)
+      : metadata;
+  };
   const run = (
     input: TInput,
     metadata?: ApplicationWorkflowInvocationMetadata,
@@ -75,7 +87,7 @@ export function createApplicationWorkflowGatewayBinding<
   ) => runtime().then((selected) => selected.run<TInput, TOutput>(
     id,
     input,
-    metadata,
+    telemetryMetadata(metadata),
     result,
   ));
   return Object.assign(run, {
@@ -89,7 +101,7 @@ export function createApplicationWorkflowGatewayBinding<
       const providerRun = await (await runtime()).start<TInput, TOutput>(
         id,
         input,
-        metadata,
+        telemetryMetadata(metadata),
       );
       return workflowRun(providerRun, id, version);
     },
@@ -98,7 +110,7 @@ export function createApplicationWorkflowGatewayBinding<
       at: Date,
       metadata?: ApplicationWorkflowInvocationMetadata,
     ) {
-      return (await runtime()).schedule(id, input, at, metadata);
+      return (await runtime()).schedule(id, input, at, telemetryMetadata(metadata));
     },
     async reconcile(
       schedule: ApplicationWorkflowScheduleSpec<TInput>,
@@ -112,7 +124,7 @@ export function createApplicationWorkflowGatewayBinding<
       payload: object,
       metadata?: ApplicationWorkflowInvocationMetadata,
     ) {
-      await (await runtime()).signal(id, runId, name, payload, metadata);
+      await (await runtime()).signal(id, runId, name, payload, telemetryMetadata(metadata));
     },
   });
 }

@@ -171,6 +171,11 @@
       "import": "./dist/workflow-gateway-binding.js",
       "default": "./dist/workflow-gateway-binding.js"
     },
+    "./telemetry-runtime": {
+      "types": "./dist/application-telemetry-runtime.d.ts",
+      "import": "./dist/application-telemetry-runtime.js",
+      "default": "./dist/application-telemetry-runtime.js"
+    },
     "./schedule-runtime-local": {
       "types": "./dist/application-schedule-local-runtime.d.ts",
       "import": "./dist/application-schedule-local-runtime.js",

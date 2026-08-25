@@ -19,6 +19,10 @@ import {
   generatedApplicationEventLogPublisherSource,
 } from '../application-event-log-runtime-source.js';
 import { applicationSignalGrantPermissionId } from '../application-operations/index.js';
+import {
+  generatedApplicationTelemetryImports,
+  generatedApplicationTelemetryRuntimeSource,
+} from '../application-observability-runtime-source.js';
 import { structuredGenerationSelection, type WorkflowContract, type WorkflowFunctionNativeTransactionContract, type WorkflowOperationAliasContract, type WorkflowTaskObjectContract, type WorkflowTaskProjectionContract } from './contracts.js';
 import { jsName, kubernetesName, numberConfig, objectConfig, stringConfig, workflowObjectEnabledEnvironment } from './utilities.js';
 
@@ -206,7 +210,9 @@ const ${jsName(task.id)} = hatchet.${durableSignalTask ? 'durableTask' : 'task'}
   // retain their authored bounded execution timeout.
   executionTimeout: ${JSON.stringify(durableSignalTask ? '8760h' : `${handler.executionTimeoutSeconds}s`)},
   scheduleTimeout: ${JSON.stringify(`${handler.scheduleTimeoutSeconds}s`)},
-  fn: async (input, context) => {
+  fn: async (input, context) => runApplicationTelemetryBoundary(
+    workflowTelemetryBoundary(context, 'task', ${JSON.stringify(handler.id)}, ${JSON.stringify(task.name)}),
+    async () => {
     const validInput = validate(${JSON.stringify(task.contract.input.jsonSchema)}, input, ${JSON.stringify(`${task.name}.input`)});
     const admitted = await canonicalTaskAdmission(${principal}, context, ${JSON.stringify(handler.id)}, ${JSON.stringify(task.name)}, ${JSON.stringify(authorityEnvelopes)}, ${handler.executionTimeoutSeconds});
     const principal = admitted.principal;
@@ -215,7 +221,8 @@ const ${jsName(task.id)} = hatchet.${durableSignalTask ? 'durableTask' : 'task'}
     const authoredHandler = ${handlerVariable(handler.id)}(${directBindings});
 	    const output = await ${functionNativeRuntime}directOperationScope.run(directApplicationRuntime(execution), () => directObjectScope.run((binding) => execution.objects[binding.name], () => directProjectionScope.run((binding) => execution.projections[binding.name], () => authoredHandler(validInput, execution))))${functionNativeRuntimeClose};
     return validate(${JSON.stringify(task.contract.output.jsonSchema)}, output, ${JSON.stringify(`${task.name}.output`)});
-  },
+    },
+  ),
 });`;
   }).join('\n');
   const workflowDeclarations = contract.workflows.map(({ handler, workflow }) => {
@@ -247,7 +254,9 @@ const ${jsName(workflow.id)} = hatchet.durableTask({
   // consuming a worker. Effect tasks keep their independently bounded
   // executionTimeout values; this ceiling bounds only orchestration history.
   executionTimeout: '8760h',
-  fn: async (input, context) => {
+  fn: async (input, context) => runApplicationTelemetryBoundary(
+    workflowTelemetryBoundary(context, 'workflow', ${JSON.stringify(handler.id)}, ${JSON.stringify(workflow.name)}),
+    async () => {
     const validInput = validate(${JSON.stringify(workflow.contract.input.jsonSchema)}, input, ${JSON.stringify(`${workflow.name}.input`)});
     const admitted = await canonicalWorkflowAdmission(context, ${JSON.stringify(handler.id)}, ${JSON.stringify(workflow.name)});
     const execution = workflowContext(context, ${JSON.stringify(workflow.name)}, ${JSON.stringify(taskBindings)}, ${JSON.stringify(childBindings)}, ${JSON.stringify(errors)}, declarations, admitted);
@@ -269,7 +278,8 @@ const ${jsName(workflow.id)} = hatchet.durableTask({
       );
       throw error;
     }
-  },
+    },
+  ),
 });`;
   }).join('\n');
   const declarationNames = [...contract.tasks.map(({ task }) => jsName(task.id)), ...contract.workflows.map(({ workflow }) => jsName(workflow.id))];
@@ -330,11 +340,12 @@ import { createSignedEnvelopeCodec, signedEnvelopeUtf8Key, staticSignedEnvelopeK
 	import { readFile } from 'node:fs/promises';
 	import { connect as connectTcp } from 'node:net';
 	import { HatchetClient } from '@hatchet-dev/typescript-sdk/v1/index.js';
-	import { applicationAdmissionInvocationView, applicationCausalPrincipalContext, canonicalJsonV1String, createApplicationAdmissionContextV1, createApplicationExecutionPrincipalV1, validateApplicationAdmissionContextV1, validateApplicationAdmissionContextV1WithoutReceipt, withApplicationAdmissionExecutionV1, withApplicationAdmissionTraceV1 } from '@applik8s/core';
+	import { applicationAdmissionInvocationView, applicationCausalPrincipalContext, canonicalJsonV1String, createApplicationAdmissionContextV1, createApplicationExecutionPrincipalV1, validateApplicationAdmissionContextV1, validateApplicationAdmissionContextV1WithoutReceipt, validateApplicationTelemetryEnvelopeV1, withApplicationAdmissionExecutionV1, withApplicationAdmissionTraceV1 } from '@applik8s/core';
 	import { applicationAdmissionRejectionCodeV1, createApplicationAdmissionObservationV1 } from '@applik8s/core/admission';
 	import { nodeKeyedDigestHex } from '@applik8s/runtime/node-integrity';
 		import { installApplicationObjectStorageRuntimeResolver, installApplicationProjectionRuntimeResolver, installApplicationWorkflowRuntimeResolver } from '@applik8s/applik8s/workflow-runtime-resolvers';
-import { applicationWorkflowCausalPrincipalMetadata } from '@applik8s/applik8s/workflow-runtime';
+import { applicationWorkflowCausalPrincipalMetadata, applicationWorkflowTelemetryMetadata } from '@applik8s/applik8s/workflow-runtime';
+${generatedApplicationTelemetryImports({ boundaryRunner: true, carrierCapture: true, runtimeImplementation: contract.observability }).join('\n')}
 import { installApplicationInvocationAdmissionResolver, installApplicationOperationRuntimeResolver } from '@applik8s/client';
 import { normalizeSchema } from '@applik8s/sdk';
 ${capabilityImports}
@@ -353,6 +364,7 @@ if (process.argv.includes('--credential-preflight')) {
 }
 
 const hatchet = HatchetClient.init();
+${contract.observability ? generatedApplicationTelemetryRuntimeSource({ application: contract.graphName, service: `workflow-worker:${contract.worker.name}` }) : ''}
 const declarations = Object.create(null);
 	const directWorkflowScope = new AsyncLocalStorage();
 	const directOperationScope = new AsyncLocalStorage();
@@ -791,7 +803,31 @@ function metadata(context, executionKind = 'task') {
     if (!trustedContext || typeof trustedContext !== 'object' || !trustedContext.values || typeof trustedContext.digest !== 'string') throw new Error('applik8s-workflow-trusted-context-invalid');
   }
   const causalPrincipal = workflowCausalPrincipal(context);
-  return { invocationId, idempotencyKey: invocationId, attempt: Number(context.retryCount?.() ?? 0) + 1, correlationId: data?.['applik8s.correlation-id'], causationId: data?.['applik8s.causation-id'], traceparent: data?.traceparent, ...(trustedContext ? { trustedContext } : {}), ...(causalPrincipal ? { causalPrincipal } : {}), signal: context.abortController?.signal ?? new AbortController().signal };
+  const telemetry = workflowTelemetry(context);
+  return { invocationId, idempotencyKey: invocationId, attempt: Number(context.retryCount?.() ?? 0) + 1, correlationId: data?.['applik8s.correlation-id'], causationId: data?.['applik8s.causation-id'], traceparent: data?.traceparent, ...(trustedContext ? { trustedContext } : {}), ...(causalPrincipal ? { causalPrincipal } : {}), ...(telemetry ? { telemetry } : {}), signal: context.abortController?.signal ?? new AbortController().signal };
+}
+function workflowTelemetry(context) {
+  const data = typeof context.additionalMetadata === 'function' ? context.additionalMetadata() : {};
+  const serialized = data?.['applik8s.telemetry'];
+  if (!serialized) return undefined;
+  let telemetry;
+  try { telemetry = JSON.parse(serialized); } catch { throw new Error('applik8s-workflow-telemetry-invalid'); }
+  try { validateApplicationTelemetryEnvelopeV1(telemetry); } catch { throw new Error('applik8s-workflow-telemetry-invalid'); }
+  return Object.freeze(telemetry);
+}
+function workflowTelemetryBoundary(context, kind, handlerId, contractName) {
+  const execution = metadata(context, kind);
+  return {
+    kind,
+    identity: handlerId,
+    execution: kind + ':' + execution.invocationId,
+    definition: contractName,
+    instance: execution.invocationId,
+    attempt: execution.attempt,
+    invocation: execution.attempt > 1 ? 'retry' : 'live',
+    relationship: 'asynchronous',
+    ...(execution.telemetry ? { links: [execution.telemetry] } : {}),
+  };
 }
 function declaredFailure(contractName, errorSchemas, name, payload) {
   const schema = errorSchemas[name];
@@ -855,7 +891,8 @@ function childOptions(options) {
   // and lowers it to childKey internally. Passing childKey directly is
   // overwritten by the SDK and breaks replay identity after worker recovery.
   const causalPrincipal = options?.causalPrincipal;
-  return { ...(options?.idempotencyKey ? { key: options.idempotencyKey } : {}), ...(options ? { additionalMetadata: Object.fromEntries(Object.entries({ 'applik8s.idempotency-key': options.idempotencyKey, 'applik8s.tenant': options.tenant, 'applik8s.correlation-id': options.correlationId, 'applik8s.causation-id': options.causationId, traceparent: options.traceparent, 'applik8s.trusted-context': options.trustedContext ? JSON.stringify(options.trustedContext) : undefined, 'applik8s.causal-principal': causalPrincipal ? JSON.stringify(causalPrincipal) : undefined }).filter(([, value]) => typeof value === 'string')) } : {}) };
+  const telemetry = captureApplicationTelemetryContext() ?? options?.telemetry;
+  return { ...(options?.idempotencyKey ? { key: options.idempotencyKey } : {}), ...(options || telemetry ? { additionalMetadata: Object.fromEntries(Object.entries({ 'applik8s.idempotency-key': options?.idempotencyKey, 'applik8s.tenant': options?.tenant, 'applik8s.correlation-id': options?.correlationId, 'applik8s.causation-id': options?.causationId, traceparent: options?.traceparent, 'applik8s.trusted-context': options?.trustedContext ? JSON.stringify(options.trustedContext) : undefined, 'applik8s.causal-principal': causalPrincipal ? JSON.stringify(causalPrincipal) : undefined, 'applik8s.telemetry': telemetry ? JSON.stringify(telemetry) : undefined }).filter(([, value]) => typeof value === 'string')) } : {}) };
 }
 function childInvocationMetadata(parent, options) {
   // A parent's idempotency key identifies the parent invocation; it must not
@@ -945,6 +982,7 @@ async function shutdown() {
   if (signalStore) await signalStore.close();
   await Promise.all(projectionSources.map((source) => source.close()));
   if (gatewayServer) await new Promise((resolve) => gatewayServer.close(resolve));
+  ${contract.observability ? 'await closeApplicationTelemetryRuntime();' : ''}
   server.close();
 }
 
@@ -1162,6 +1200,12 @@ async function handleGatewayRequest(request, response) {
           : {}),
         trustedContext: sourceAdmission.trustedContext,
         [applicationWorkflowCausalPrincipalMetadata]: causalPrincipal,
+        ...(requestedMetadata.telemetry !== undefined
+          ? (() => {
+              validateApplicationTelemetryEnvelopeV1(requestedMetadata.telemetry);
+              return { [applicationWorkflowTelemetryMetadata]: requestedMetadata.telemetry };
+            })()
+          : {}),
       });
       const admittedAt = new Date().toISOString();
       return gatewayJson(response, 202, {

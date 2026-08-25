@@ -24,6 +24,7 @@ import type {
 import { applicationRuntimeEndpointEnvironmentName } from '@applik8s/deployment-contract';
 import ts from 'typescript';
 import { applicationGraphStringValue } from '../application-installation-values.js';
+import { applicationGraphHasObservabilityRuntime } from '../application-observability-runtime-source.js';
 import { kubernetesName, objectConfig, stringConfig } from './utilities.js';
 
 const DEFAULT_WORKER_IMAGE = 'node:22-alpine@sha256:16e22a550f3863206a3f701448c45f7912c6896a62de43add43bb9c86130c3e2';
@@ -31,6 +32,7 @@ const APPLICATION_RUNTIME_NAMESPACE_MARKER = '__APPLIK8S_RUNTIME_NAMESPACE__';
 
 export interface WorkflowContract {
   readonly graphName: string;
+  readonly observability: boolean;
   readonly worker: ApplicationWorkflowWorkerNode;
   readonly provider: ApplicationProviderNode;
   readonly providerConfig: Readonly<Record<string, unknown>>;
@@ -315,6 +317,7 @@ export function workflowContract(
   }
   return {
     graphName: graph.metadata.name,
+    observability: applicationGraphHasObservabilityRuntime(graph),
     worker,
     provider,
     providerConfig: config,

@@ -328,7 +328,11 @@ describe('generated function-native HTTP worker', () => {
       serverId: 'server.public-api',
       sizeBytes: expect.any(Number),
     });
-    expect(artifacts[0]?.sizeBytes).toBeLessThan(625_000);
+    // The managed worker now carries the selected OpenTelemetry SDK and OTLP
+    // exporters in its OCI image. Keep an explicit ceiling so provider/runtime
+    // growth remains visible while the v0.8 optimization lane establishes a
+    // durable per-family baseline.
+    expect(artifacts[0]?.sizeBytes).toBeLessThan(10_000_000);
     expect(artifacts[0]!.resources.map((resource) => resource.kind)).toEqual([
       'ServiceAccount',
       'Service',

@@ -35,6 +35,11 @@ import {
   applicationGraphStringValue,
 } from '../application-installation-values.js';
 import {
+  applicationGraphHasObservabilityRuntime,
+  generatedApplicationTelemetryImports,
+  generatedApplicationTelemetryRuntimeSource,
+} from '../application-observability-runtime-source.js';
+import {
   applicationStaticAuthorityManifest,
   compileApplicationOperationCatalog,
 } from '../application-operations/index.js';
@@ -515,6 +520,7 @@ async function emitHttpServer(
 }
 
 function generatedHttpSource(contract: HttpServerCompilerContract): string {
+  const observability = applicationGraphHasObservabilityRuntime(contract.graph);
   const providerRuntimeImports = uniqueHttpProviderRuntimeOperations(
     contract.routes,
   ).map(
@@ -605,6 +611,7 @@ import { applicationAdmissionInvocationView, canonicalJsonV1String, createApplic
 import { applicationAdmissionRejectionCodeV1, createApplicationAdmissionObservationV1 } from '@applik8s/core/admission';
 import { createApplicationOperationAuthorityRuntime } from '@applik8s/operations';
 import { normalizeSchema } from '@applik8s/sdk/schema-runtime';
+${generatedApplicationTelemetryImports({ boundaryRunner: true, carrierCapture: true, runtimeImplementation: observability }).join('\n')}
 ${hasOperations
     ? `${eventLogPublisher!.importSource}\nimport { createApplicationTaskOperationRuntime } from '@applik8s/applik8s/task-operation-runtime';`
     : ''}
@@ -627,6 +634,7 @@ const contract = ${JSON.stringify({
     mutationRateLimit: contract.mutationRateLimit,
     operationCatalog: contract.operationCatalog,
   })};
+${observability ? generatedApplicationTelemetryRuntimeSource({ application: contract.graph.metadata.name, service: `http-server:${contract.server.name}` }) : ''}
 const routes = [${routeDefinitions}];
 const workflowGateways = Object.freeze(${JSON.stringify(workflowGateways)});
 const routeMatchers = routes.map(route => ({
@@ -670,6 +678,7 @@ const workflowGatewayAdmission = createSignedEnvelopeCodec({
   maximumLifetimeMs: 60_000,
 });
 function workflowMetadata(context, contractName, input, metadata) {
+  const telemetry = captureApplicationTelemetryContext();
   const callerKey = metadata?.idempotencyKey;
   const inputKey = createHash('sha256')
     .update(canonicalJsonV1String(input))
@@ -694,6 +703,9 @@ function workflowMetadata(context, contractName, input, metadata) {
       values: context.admission.trustedContext.values,
       digest: context.admission.trustedContext.digest,
     },
+    ...(telemetry
+      ? { telemetry }
+      : {}),
   };
 }
 async function workflowGatewayToken() {
@@ -1373,8 +1385,17 @@ async function invokeRoute(route, params, request, url, runtimeProtocol) {
         invoke,
       )
     : invoke;
-  const result = route.transaction && route.transaction.mode !== 'read'
-    ? await withApplicationNativeModelTransactionRuntime(
+  const result = await runApplicationTelemetryBoundary({
+    kind: webhookEvent ? 'event' : 'http',
+    identity: route.id,
+    execution: (webhookEvent ? 'event:' : 'http:') + invocationId,
+    definition: route.operation.id,
+    instance: invocationId,
+    attempt: 1,
+    invocation: 'live',
+    relationship: 'synchronous',
+  }, async () => route.transaction && route.transaction.mode !== 'read'
+    ? withApplicationNativeModelTransactionRuntime(
         Object.freeze({
           edit: modelRequest => executeFunctionNativePostgresModelEdit({
             ...route.transaction,
@@ -1413,7 +1434,7 @@ async function invokeRoute(route, params, request, url, runtimeProtocol) {
         }),
         invokeWithModelReads,
       )
-    : await invokeWithModelReads();
+    : invokeWithModelReads());
   return validate(route.outputSchema, result, route.id + '.output');
 }
 
@@ -1511,6 +1532,7 @@ async function shutdown() {
   await new Promise(resolveClose => server.close(resolveClose));
   await commandRuntime?.close();
   await sql.end({ timeout: 5 });
+  ${observability ? 'await closeApplicationTelemetryRuntime();' : ''}
 }
 process.once('SIGTERM', () => { void shutdown(); });
 process.once('SIGINT', () => { void shutdown(); });

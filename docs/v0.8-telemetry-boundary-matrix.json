@@ -10,11 +10,18 @@
     "packages/applik8s/src/application-schedule.ts",
     "packages/applik8s/src/stream-processor-runtime.ts",
     "packages/compiler/src/application-fetch-gateway/index.ts",
+    "packages/compiler/src/application-http/index.ts",
+    "packages/compiler/src/application-workflows/source.ts",
     "packages/runtime-celld/src/index.ts"
   ],
   "carrierCaptureSourceFiles": [
+    "packages/applik8s/src/application-workflow-registration.ts",
     "packages/applik8s/src/command-gateway.ts",
-    "packages/applik8s/src/model-command-postgres-runtime.ts"
+    "packages/applik8s/src/model-command-postgres-runtime.ts",
+    "packages/applik8s/src/task-operation-runtime.ts",
+    "packages/applik8s/src/workflow-gateway-binding.ts",
+    "packages/compiler/src/application-http/index.ts",
+    "packages/compiler/src/application-workflows/source.ts"
   ],
   "boundaries": [
     {
@@ -89,19 +96,24 @@
       "kind": "http",
       "state": "implemented",
       "relationship": "synchronous",
-      "producer": "incoming Fetch request after route classification",
-      "consumer": "generated application gateway",
-      "carrierPlacement": "active runtime scope around the complete request gateway",
+      "producer": "incoming Fetch or generated typed-HTTP request after route classification",
+      "consumer": "generated application gateway or typed-HTTP worker",
+      "carrierPlacement": "active runtime scope around the complete request gateway; workflow starts capture the child carrier before private-gateway admission",
       "owners": [
-        "packages/compiler/src/application-fetch-gateway/index.ts"
+        "packages/compiler/src/application-fetch-gateway/index.ts",
+        "packages/compiler/src/application-http/index.ts"
       ],
       "sourceMarkers": [
         {
           "path": "packages/compiler/src/application-fetch-gateway/index.ts",
           "marker": ": 'http'"
+        },
+        {
+          "path": "packages/compiler/src/application-http/index.ts",
+          "marker": "kind: webhookEvent ? 'event' : 'http'"
         }
       ],
-      "regression": "bunx vitest run --maxWorkers=1 packages/compiler/test/application-fetch-gateway.vertical.test.ts",
+      "regression": "bunx vitest run --maxWorkers=1 packages/compiler/test/application-fetch-gateway.vertical.test.ts packages/compiler/test/application-http.vertical.test.ts",
       "remaining": "Prove a complete request-to-model-to-outbox causal vertical and redacted denial, timeout, and cancellation outcomes."
     },
     {
@@ -239,34 +251,46 @@
     },
     {
       "kind": "task",
-      "state": "not-started",
+      "state": "in-progress",
       "relationship": "asynchronous",
       "producer": "durable workflow step admission",
       "consumer": "task worker attempt",
-      "carrierPlacement": "not yet implemented",
+      "carrierPlacement": "generated task attempts validate the workflow producer carrier, create one asynchronous link with stable logical identity and explicit retry attempt, and propagate the active child carrier into task-emitted durable commands",
       "owners": [
         "packages/applik8s/src/task-operation-runtime.ts",
         "packages/compiler/src/application-workflows/source.ts",
-        "packages/runtime-hatchet/src/index.ts"
+        "packages/runtime-hatchet/src/workflow-runtime-hatchet-metadata.ts"
       ],
-      "sourceMarkers": [],
-      "regression": null,
-      "remaining": "Persist workflow producer context, link retries and reattachment attempts, and record cancellation without changing durable task authority."
+      "sourceMarkers": [
+        {
+          "path": "packages/compiler/src/application-workflows/source.ts",
+          "marker": "workflowTelemetryBoundary(context, 'task'"
+        }
+      ],
+      "regression": "bunx vitest run --maxWorkers=1 packages/applik8s/test/task-operation-runtime.vertical.test.ts packages/compiler/test/application-workflows.vertical.test.ts packages/runtime-hatchet/test/runtime.vertical.test.ts",
+      "remaining": "Prove live Hatchet worker restart and cancellation outcomes, durable replay suppression, and collector-visible attempt linkage without changing task authority."
     },
     {
       "kind": "workflow",
-      "state": "not-started",
+      "state": "in-progress",
       "relationship": "mixed",
       "producer": "function-native call, HTTP start, schedule, signal, or parent workflow",
       "consumer": "durable workflow run",
-      "carrierPlacement": "not yet implemented",
+      "carrierPlacement": "function-native calls and typed HTTP starts capture a validated producer carrier; Hatchet metadata persists it across a lost-response reattachment; generated workflow attempts restore it as one asynchronous link with stable instance and explicit attempt identity",
       "owners": [
+        "packages/applik8s/src/application-workflow-registration.ts",
+        "packages/applik8s/src/workflow-gateway-binding.ts",
         "packages/compiler/src/application-workflows/source.ts",
-        "packages/runtime-hatchet/src/index.ts"
+        "packages/runtime-hatchet/src/workflow-runtime-hatchet-metadata.ts"
       ],
-      "sourceMarkers": [],
-      "regression": null,
-      "remaining": "Capture caller context at start, link durable run and resumed attempts, preserve lost-response reattachment identity, and distinguish replay from live work."
+      "sourceMarkers": [
+        {
+          "path": "packages/compiler/src/application-workflows/source.ts",
+          "marker": "workflowTelemetryBoundary(context, 'workflow'"
+        }
+      ],
+      "regression": "bunx vitest run --maxWorkers=1 packages/applik8s/test/application-workflows.vertical.test.ts packages/compiler/test/application-workflows.vertical.test.ts packages/runtime-hatchet/test/runtime.vertical.test.ts",
+      "remaining": "Prove live workflow suspension/resumption, cancellation, and restart; distinguish provider replay from a live retry without fabricating a second logical business span."
     }
   ]
 }

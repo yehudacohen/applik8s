@@ -1,14 +1,16 @@
 // typecast-file-boundary: workflow fixtures inspect compiler-owned metadata and deliberately restore their declared generic binding shapes.
-import { actor, app, applicationGraphFor, applicationScheduleInvocationAdmission, defineApplicationProvider, event, IndexStore, installApplicationScheduleRuntimeResolver, ObjectStorage, StructuredGeneration as StructuredGenerationProvider, setApplicationWorkflowRuntimeFactory, WorkflowEngine, workflow } from '@applik8s/applik8s';
+import { actor, app, applicationGraphFor, applicationScheduleInvocationAdmission, defineApplicationProvider, event, IndexStore, installApplicationScheduleRuntimeResolver, installApplicationTelemetryRuntimeResolver, ObjectStorage, StructuredGeneration as StructuredGenerationProvider, setApplicationWorkflowRuntimeFactory, WorkflowEngine, workflow } from '@applik8s/applik8s';
 import { type } from '@applik8s/applik8s/dsl';
 import { StructuredGeneration } from '@applik8s/applik8s/structured-generation';
 import { installApplicationInvocationAdmissionResolver } from '@applik8s/client';
 import {
   applicationAdmissionInvocationView,
+  createApplicationTelemetryEnvelopeV1,
   createApplicationAdmissionContextV1,
   validateApplicationAdmissionContextV1WithoutReceipt,
   validateApplicationGraphStructure,
 } from '@applik8s/core';
+import { applicationWorkflowTelemetryMetadata } from '../src/workflow-runtime.js';
 import { pgTable, text } from 'drizzle-orm/pg-core';
 import { describe, expect, it } from 'vitest';
 import { testApplicationAdmission } from '../../../test-support/application-principal.js';
@@ -374,6 +376,24 @@ describe('v0.5 durable task and workflow contracts', () => {
 
   it('delegates app-bound handles to the selected runtime and preserves invocation metadata', async () => {
     const calls: unknown[] = [];
+    const telemetry = createApplicationTelemetryEnvelopeV1({
+      traceparent: '00-0123456789abcdef0123456789abcdef-0123456789abcdef-01',
+      identity: {
+        application: 'runtime-platform',
+        environment: 'test',
+        target: 'local',
+        operation: 'http:workflow-start',
+        execution: 'http:request-1',
+        attempt: 1,
+      },
+    });
+    const restoreTelemetry = installApplicationTelemetryRuntimeResolver(() => ({
+      async run(_boundary, execute) { return execute(); },
+      log() {},
+      count() {},
+      record() {},
+      capture: () => telemetry,
+    }));
     // typecast: the fake runtime returns the generic caller-selected output without coupling the fixture to one contract.
     const restore = setApplicationWorkflowRuntimeFactory(async () => ({
       async run(contract, input, metadata, result) {
@@ -381,7 +401,8 @@ describe('v0.5 durable task and workflow contracts', () => {
         // typecast: the generic fake returns the caller-selected test output.
         return { endpoint: 'https://tenant-a.example.test' } as never;
       },
-      async start() {
+      async start(contract, input, metadata) {
+        calls.push({ operation: 'start', contract, input, metadata });
         return { id: 'run-1', __idempotencyKey: 'request-2', async result() {
           // typecast: the generic fake returns the caller-selected test output.
           return { endpoint: 'unused' } as never;
@@ -420,10 +441,18 @@ describe('v0.5 durable task and workflow contracts', () => {
       expect(calls).toEqual([expect.objectContaining({
         operation: 'run',
         contract: 'tenant.provision.v1',
-        metadata: { correlationId: 'correlation-1' },
+        metadata: expect.objectContaining({ correlationId: 'correlation-1' }),
         result: { timeoutMs: 12_000 },
+      }), expect.objectContaining({
+        operation: 'start',
+        contract: 'tenant.provision.v1',
+        metadata: expect.objectContaining({ idempotencyKey: 'request-2' }),
       })]);
+      for (const call of calls) {
+        expect(Reflect.get(Reflect.get(call as object, 'metadata'), applicationWorkflowTelemetryMetadata)).toEqual(telemetry);
+      }
     } finally {
+      restoreTelemetry();
       restore();
     }
   });

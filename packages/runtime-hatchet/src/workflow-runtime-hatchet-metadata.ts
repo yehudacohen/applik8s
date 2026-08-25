@@ -1,7 +1,9 @@
 import {
   applicationWorkflowCausalPrincipalMetadata,
+  applicationWorkflowTelemetryMetadata,
   type ApplicationWorkflowInvocationMetadata,
 } from '@applik8s/applik8s/workflow-runtime';
+import { validateApplicationTelemetryEnvelopeV1 } from '@applik8s/core';
 import { Priority } from '@hatchet-dev/typescript-sdk/v1/index.js';
 
 export function hatchetRunOptions(
@@ -51,6 +53,14 @@ export function applicationMetadata(
       'Workflow causal principal exceeds the bounded 8192-byte durable metadata limit.',
     );
   }
+  const telemetry = metadata?.[applicationWorkflowTelemetryMetadata];
+  if (telemetry) validateApplicationTelemetryEnvelopeV1(telemetry);
+  const serializedTelemetry = telemetry ? JSON.stringify(telemetry) : undefined;
+  if (serializedTelemetry && Buffer.byteLength(serializedTelemetry) > 8_192) {
+    throw new Error(
+      'Workflow telemetry carrier exceeds the bounded 8192-byte durable metadata limit.',
+    );
+  }
   return Object.fromEntries(
     Object.entries({
       'applik8s.idempotency-key': metadata?.idempotencyKey,
@@ -60,6 +70,7 @@ export function applicationMetadata(
       traceparent: metadata?.traceparent,
       'applik8s.trusted-context': trustedContext,
       'applik8s.causal-principal': serializedCausalPrincipal,
+      'applik8s.telemetry': serializedTelemetry,
     }).filter(
       (entry): entry is [string, string] =>
         typeof entry[1] === 'string' && entry[1].length > 0,

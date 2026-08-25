@@ -11,6 +11,7 @@ import type {
   JsonValue,
 } from '@applik8s/core';
 import { normalizeSchema } from '@applik8s/sdk/schema-runtime';
+import { captureApplicationTelemetryContext } from './application-telemetry-runtime.js';
 import { applicationRequestContextValues } from './command-principal.js';
 import { applicationCommandScope, canonicalApplicationCommandKey } from './command-runtime-contract.js';
 import type { ApplicationEventLogPublisher } from './event-log-runtime.js';
@@ -351,6 +352,7 @@ export function createApplicationTaskOperationRuntime(options: ApplicationTaskOp
             throw error;
           });
           await verified;
+          const telemetry = captureApplicationTelemetryContext();
           await publisher.publish({
             id: commandId,
             contract: commandContract(command.id),
@@ -359,6 +361,7 @@ export function createApplicationTaskOperationRuntime(options: ApplicationTaskOp
             correlationId: invocation.correlationId ?? invocation.invocationId,
             ...(invocation.causationId ? { causationId: invocation.causationId } : {}),
             ...(invocation.traceparent ? { traceparent: invocation.traceparent } : {}),
+            ...(telemetry ? { telemetry } : {}),
             partitionKey: targetKey,
             routing: { binding: command.bindingId, targetKey, idempotencyKey },
             ...(commandOptions.expectedRevision ? { expectedRevision: commandOptions.expectedRevision } : {}),

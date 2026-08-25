@@ -18,6 +18,7 @@ import {
 } from './application-schedule.js';
 import type { ApplicationSignalDefinition } from './application-signals.js';
 import { applicationTypeKroGraphValue, applicationTypeKroString } from './application-typekro-values.js';
+import { captureApplicationTelemetryContext } from './application-telemetry-runtime.js';
 import type { ApplicationWorkflowTaskDefinition as TaskDefinition } from './application-workflow-internal.js';
 import { declaredSchema, durableContract, functionExpression, requiredSchema, schemaRecord, validateMessage, workflowHandlerSerialization } from './application-workflow-serialization.js';
 import type {
@@ -49,6 +50,7 @@ import {
   type ApplicationWorkflowScheduleSpec,
   applicationWorkflowRuntime,
   withApplicationWorkflowCausalPrincipal,
+  withApplicationWorkflowTelemetry,
 } from './workflow-runtime.js';
 
 
@@ -730,7 +732,10 @@ export function registerApplicationWorkflow<
   definition: WorkflowDefinition<TInput, TOutput, TErrors, TSignals>,
   options: ApplicationWorkflowOptions<TTasks, TWorkflows>,
   handler: ApplicationWorkflowHandler<TInput, TOutput, TErrors, TSignals, TTasks, TWorkflows>,
-  serializationOptions: { readonly extractCallsite?: boolean } = {},
+  serializationOptions: {
+    readonly extractCallsite?: boolean;
+    readonly idempotencyKey?: (input: TInput) => string;
+  } = {},
 ): ApplicationWorkflowBinding<TInput, TOutput, TErrors, TSignals> {
   const workflowNodeId = graphNodeId('workflow', definition.id);
   const handlerNodeId = graphNodeId('workflow-handler', definition.id);
@@ -912,7 +917,11 @@ export function registerApplicationWorkflow<
   for (const binding of workflowBindings) addApplicationGraphEdge(state, { from: { nodeId: handlerNodeId }, to: { nodeId: graphNodeId('workflow', binding.id) }, relationship: 'dependsOn' });
   recordWorkflowWorker(state, engine, options.worker);
   return withWorkflowGatewayMetadata(
-    workflowBinding(definition, () => applicationWorkflowEngineImplementation(state)),
+    workflowBinding(
+      definition,
+      () => applicationWorkflowEngineImplementation(state),
+      serializationOptions.idempotencyKey,
+    ),
     definition.id,
     engine,
     options.worker,
@@ -969,7 +978,12 @@ export function registerApplicationSingleStepWorkflow<
     definition,
     { tasks: { run: step }, ...(options.worker ? { worker: options.worker } : {}) },
     run,
-    { extractCallsite: false },
+    {
+      extractCallsite: false,
+      ...(options.idempotencyKey
+        ? { idempotencyKey: options.idempotencyKey }
+        : {}),
+    },
   );
 }
 
@@ -1192,7 +1206,7 @@ function taskBinding<TInput extends object, TOutput extends object, TErrors exte
     (await applicationWorkflowRuntime(engine())).run(
       definition.id,
       validateMessage(definition.input, input, `${definition.id}.input`),
-      invocationMetadata(input, metadata),
+      workflowTelemetryMetadata(invocationMetadata(input, metadata)),
       result,
     );
   return Object.assign(run, {
@@ -1203,7 +1217,7 @@ function taskBinding<TInput extends object, TOutput extends object, TErrors exte
       const providerRun = await (await applicationWorkflowRuntime(engine())).start<TInput, TOutput, TErrors>(
         definition.id,
         validateMessage(definition.input, input, `${definition.id}.input`),
-        invocationMetadata(input, metadata),
+        workflowTelemetryMetadata(invocationMetadata(input, metadata)),
       );
       return applicationWorkflowRun(providerRun, definition.id, definition.version);
     },
@@ -1232,13 +1246,24 @@ function taskBinding<TInput extends object, TOutput extends object, TErrors exte
   }) as ApplicationTaskBinding<TInput, TOutput, TErrors>;
 }
 
-function workflowBinding<TInput extends object, TOutput extends object, TErrors extends Readonly<Record<string, object>>, TSignals extends Readonly<Record<string, object>>>(definition: WorkflowDefinition<TInput, TOutput, TErrors, TSignals>, engine: () => ApplicationWorkflowEngineProvider): ApplicationWorkflowBinding<TInput, TOutput, TErrors, TSignals> {
+function workflowBinding<TInput extends object, TOutput extends object, TErrors extends Readonly<Record<string, object>>, TSignals extends Readonly<Record<string, object>>>(
+  definition: WorkflowDefinition<TInput, TOutput, TErrors, TSignals>,
+  engine: () => ApplicationWorkflowEngineProvider,
+  idempotencyKey?: (input: TInput) => string,
+): ApplicationWorkflowBinding<TInput, TOutput, TErrors, TSignals> {
   const startSchedule = durableStartSchedule('workflow', definition, engine);
+  const invocationMetadata = (
+    input: TInput,
+    metadata: ApplicationWorkflowInvocationMetadata | undefined,
+  ): ApplicationWorkflowInvocationMetadata | undefined => {
+    if (metadata?.idempotencyKey || !idempotencyKey) return metadata;
+    return { ...metadata, idempotencyKey: idempotencyKey(input) };
+  };
   const run = async (input: TInput, metadata?: ApplicationWorkflowInvocationMetadata, result?: ApplicationWorkflowResultOptions) =>
     (await applicationWorkflowRuntime(engine())).run(
       definition.id,
       validateMessage(definition.input, input, `${definition.id}.input`),
-      metadata,
+      workflowTelemetryMetadata(invocationMetadata(input, metadata)),
       result,
     );
   return Object.assign(run, {
@@ -1249,7 +1274,7 @@ function workflowBinding<TInput extends object, TOutput extends object, TErrors 
       const providerRun = await (await applicationWorkflowRuntime(engine())).start<TInput, TOutput, TErrors>(
         definition.id,
         validateMessage(definition.input, input, `${definition.id}.input`),
-        metadata,
+        workflowTelemetryMetadata(invocationMetadata(input, metadata)),
       );
       return applicationWorkflowRun(providerRun, definition.id, definition.version);
     },
@@ -1282,9 +1307,18 @@ function workflowBinding<TInput extends object, TOutput extends object, TErrors 
     ) {
       const schema = schemaRecord(definition.signals)[name];
       if (!schema) throw new Error(`Workflow ${definition.id} does not declare signal ${JSON.stringify(name)}.`);
-      await (await applicationWorkflowRuntime(engine())).signal(definition.id, runId, name, validateMessage(schema, payload, `${definition.id}.signals.${name}`), metadata);
+      await (await applicationWorkflowRuntime(engine())).signal(definition.id, runId, name, validateMessage(schema, payload, `${definition.id}.signals.${name}`), workflowTelemetryMetadata(metadata));
     },
   }) as ApplicationWorkflowBinding<TInput, TOutput, TErrors, TSignals>;
+}
+
+function workflowTelemetryMetadata(
+  metadata: ApplicationWorkflowInvocationMetadata | undefined,
+): ApplicationWorkflowInvocationMetadata | undefined {
+  const telemetry = captureApplicationTelemetryContext();
+  return telemetry
+    ? withApplicationWorkflowTelemetry(metadata, telemetry)
+    : metadata;
 }
 
 function applicationWorkflowRun<

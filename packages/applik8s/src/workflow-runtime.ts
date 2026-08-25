@@ -2,6 +2,7 @@
 import type {
   ApplicationCausalPrincipalContext,
   ApplicationPrincipal,
+  ApplicationTelemetryEnvelopeV1,
 } from '@applik8s/core';
 import { applicationCausalPrincipalContext } from '@applik8s/core';
 import type { ApplicationWorkflowEngineProvider } from './application-providers.js';
@@ -13,6 +14,11 @@ import type { ApplicationWorkflowEngineProvider } from './application-providers.
  */
 export const applicationWorkflowCausalPrincipalMetadata = Symbol.for(
   '@applik8s/workflow-causal-principal',
+);
+
+/** Framework-only canonical producer carrier persisted with durable workflow admission. */
+export const applicationWorkflowTelemetryMetadata = Symbol.for(
+  '@applik8s/workflow-telemetry',
 );
 
 export interface ApplicationWorkflowInvocationMetadata {
@@ -31,6 +37,9 @@ export interface ApplicationWorkflowInvocationMetadata {
   /** @internal Framework-owned causal attribution; application input cannot set it. */
   readonly [applicationWorkflowCausalPrincipalMetadata]?:
     ApplicationCausalPrincipalContext;
+  /** @internal Framework-owned producer context for durable asynchronous linkage. */
+  readonly [applicationWorkflowTelemetryMetadata]?:
+    ApplicationTelemetryEnvelopeV1;
 }
 
 /** @internal Attaches admitted causal attribution without exposing a public option. */
@@ -42,6 +51,17 @@ export function withApplicationWorkflowCausalPrincipal(
     ...(metadata ?? {}),
     [applicationWorkflowCausalPrincipalMetadata]:
       applicationCausalPrincipalContext(principal),
+  });
+}
+
+/** @internal Attaches one validated framework carrier without widening authored metadata. */
+export function withApplicationWorkflowTelemetry(
+  metadata: ApplicationWorkflowInvocationMetadata | undefined,
+  telemetry: ApplicationTelemetryEnvelopeV1,
+): ApplicationWorkflowInvocationMetadata {
+  return Object.freeze({
+    ...(metadata ?? {}),
+    [applicationWorkflowTelemetryMetadata]: telemetry,
   });
 }
 
