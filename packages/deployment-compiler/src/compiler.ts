@@ -295,7 +295,12 @@ function kubernetesRuntimeNetworkPolicies(
     const policy = workload.kubernetes;
     if (!policy || policy.networkEnforcement.kind === 'none' || policy.networkEnforcement.kind === 'unqualified') return [];
     if (policy.networkEnforcement.kind === 'cilium-network-policy') {
-      return [ciliumRuntimeNetworkPolicy(workload, policy)];
+      const suffix = digestApplicationDeploymentValue(workload.workloadIdentity)
+        .slice('sha256:'.length, 'sha256:'.length + 12);
+      return [{
+        id: `runtimeAccessEgress${suffix}`,
+        template: ciliumRuntimeNetworkPolicy(workload, policy),
+      }];
     }
     const egress = [
       ...policy.privatePeers.map((peer) => {
@@ -321,20 +326,23 @@ function kubernetesRuntimeNetworkPolicies(
     ];
     const suffix = digestApplicationDeploymentValue(workload.workloadIdentity).slice('sha256:'.length, 'sha256:'.length + 12);
     return [{
-      apiVersion: 'networking.k8s.io/v1',
-      kind: 'NetworkPolicy',
-      metadata: {
-        name: safeNodeId(`applik8s-egress-${suffix}`),
-        namespace: policy.resource.namespace,
-        annotations: {
-          'applik8s.io/runtime-access-workload': workload.workloadIdentity,
-          'applik8s.io/runtime-access-policy-digest': workload.policyDigest,
+      id: `runtimeAccessEgress${suffix}`,
+      template: {
+        apiVersion: 'networking.k8s.io/v1',
+        kind: 'NetworkPolicy',
+        metadata: {
+          name: safeNodeId(`applik8s-egress-${suffix}`),
+          namespace: policy.resource.namespace,
+          annotations: {
+            'applik8s.io/runtime-access-workload': workload.workloadIdentity,
+            'applik8s.io/runtime-access-policy-digest': workload.policyDigest,
+          },
         },
-      },
-      spec: {
-        podSelector: { matchLabels: policy.podSelector },
-        policyTypes: ['Egress'],
-        egress,
+        spec: {
+          podSelector: { matchLabels: policy.podSelector },
+          policyTypes: ['Egress'],
+          egress,
+        },
       },
     }];
   });
@@ -344,12 +352,9 @@ function ciliumRuntimeNetworkPolicy(
   workload: ReturnType<typeof compileApplicationRuntimeAccessPlan>['workloads'][number],
   policy: NonNullable<ReturnType<typeof compileApplicationRuntimeAccessPlan>['workloads'][number]['kubernetes']>,
 ): DeploymentJsonObject {
-  const kubernetesLabels = (selector: Readonly<Record<string, string>>) => Object.fromEntries(
-    Object.entries(selector).map(([key, value]) => [`k8s:${key}`, value]),
-  );
   const endpointLabels = (namespace: string, selector: Readonly<Record<string, string>>) => ({
     'k8s:io.kubernetes.pod.namespace': namespace,
-    ...kubernetesLabels(selector),
+    ...selector,
   });
   const toPorts = (protocol: 'TCP' | 'UDP', port: number, dnsProxy = false) => [{
     ports: [{ protocol, port: String(port) }],
@@ -393,7 +398,11 @@ function ciliumRuntimeNetworkPolicy(
       },
     },
     spec: {
-      endpointSelector: { matchLabels: kubernetesLabels(policy.podSelector) },
+      // CiliumNetworkPolicy selectors use ordinary Kubernetes pod-label keys.
+      // Only the synthetic cross-namespace identity label carries the k8s:
+      // source prefix. Prefixing authored pod labels makes the policy select no
+      // endpoints and silently leaves the workload's egress unrestricted.
+      endpointSelector: { matchLabels: policy.podSelector },
       egress,
     },
   };

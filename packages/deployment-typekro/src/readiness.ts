@@ -118,6 +118,14 @@ export function generatedResourceReadinessEvaluator(
   ) {
     return observedReadyConditionEvaluator as ReadinessEvaluator<unknown>;
   }
+  if (gvk === "cilium.io/v2/CiliumNetworkPolicy") {
+    // TypeKro's authored Cilium factory intentionally uses wall-clock age as
+    // a fallback. Compiler-generated policies instead need a portable strategy
+    // because their artifact records are executed by Alchemy independently of
+    // the authoring process. API observation is sufficient here: dataplane
+    // enforcement is qualified separately by the runtime-access live gate.
+    return observedResourceEvaluator as ReadinessEvaluator<unknown>;
+  }
   if (gvk === "batch/v1/Job") {
     return jobCompletionEvaluator as ReadinessEvaluator<unknown>;
   }

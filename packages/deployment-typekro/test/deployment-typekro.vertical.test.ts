@@ -1908,10 +1908,12 @@ describe("TypeKro deployment adapter", () => {
           "typekro.io/singleton-spec-fingerprint"
         ],
       ).toMatch(/^fnv64:[a-f0-9]{16}$/);
-      expect(declaration.props.artifactExecutionRecord).toBeTypeOf("string");
-      const record = decodeDirectArtifactExecutionRecord(
-        declaration.props.artifactExecutionRecord!,
-      );
+      const artifactExecutionRecord = declaration.props.artifactExecutionRecord;
+      expect(artifactExecutionRecord).toBeTypeOf("string");
+      if (typeof artifactExecutionRecord !== "string") {
+        throw new Error("Expected a direct artifact execution record.");
+      }
+      const record = decodeDirectArtifactExecutionRecord(artifactExecutionRecord);
       expect(JSON.stringify(record.artifact)).toContain(
         "typekro.io/singleton-spec-fingerprint",
       );
@@ -2441,6 +2443,21 @@ describe("TypeKro deployment adapter", () => {
             }),
           }),
         );
+        const ciliumPolicy = adapted.declarations.find(
+          (declaration) =>
+            declaration.props.resource.kind === "CiliumNetworkPolicy",
+        );
+        expect(ciliumPolicy?.props.artifactExecutionRecord).toBeTypeOf(
+          "string",
+        );
+        const ciliumRecord = decodeDirectArtifactExecutionRecord(
+          ciliumPolicy!.props.artifactExecutionRecord!,
+        );
+        expect(ciliumRecord.artifact.readiness.strategy).toEqual({
+          kind: "registered",
+          id: "applik8s.readiness.resource-observed",
+          revision: "1",
+        });
       }
     });
   }

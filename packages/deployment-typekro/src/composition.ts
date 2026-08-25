@@ -312,7 +312,15 @@ function createMaterializedTemplate(
     // manifests. The compiler's portable JSON manifest has already passed its
     // Kubernetes/TypeKro generation boundary; symbolic fields are intentionally
     // retained for TypeKro's planner rather than client-node's concrete types.
-    return factory({ ...desired, id } as never);
+    const resource = factory({ ...desired, id } as never);
+    const generatedReadiness = generatedResourceReadinessEvaluator(
+      apiVersion,
+      kind,
+    );
+    if (generatedReadiness) {
+      resource.withReadinessEvaluator(generatedReadiness);
+    }
+    return resource;
   }
   // typecast: the recursive portable walker preserves a validated Kubernetes
   // JSON object while TypeKro requires mutable SDK-shaped fields. typecast:

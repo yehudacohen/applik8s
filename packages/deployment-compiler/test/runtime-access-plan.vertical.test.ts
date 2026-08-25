@@ -294,7 +294,13 @@ describe('v0.8 runtime-access lowering', () => {
     });
     const root = cilium.graph.nodes.find((node) => node.id === 'kubernetes.application');
     if (root?.kind !== 'kubernetesComposition') throw new Error('Expected root composition.');
-    const policy = root.spec.materialized?.resources.find((resource) => resource.kind === 'CiliumNetworkPolicy');
+    const policyResource = root.spec.materialized?.resources.find((resource) =>
+      materializedManifest(resource).kind === 'CiliumNetworkPolicy');
+    const policy = policyResource ? materializedManifest(policyResource) : undefined;
+    expect(policyResource).toMatchObject({
+      id: expect.stringMatching(/^runtimeAccessEgress[0-9a-f]{12}$/),
+      template: { kind: 'CiliumNetworkPolicy' },
+    });
     expect(cilium.runtimeAccess.workloads[0]?.kubernetes?.networkEnforcement).toEqual({
       kind: 'cilium-network-policy',
       apiVersion: 'cilium.io/v2',
@@ -304,18 +310,18 @@ describe('v0.8 runtime-access lowering', () => {
       apiVersion: 'cilium.io/v2',
       metadata: { namespace: 'payments' },
       spec: {
-        endpointSelector: { matchLabels: { 'k8s:app.kubernetes.io/name': 'billing' } },
+        endpointSelector: { matchLabels: { 'app.kubernetes.io/name': 'billing' } },
         egress: expect.arrayContaining([
           {
             toFQDNs: [{ matchName: 'api.stripe.com' }],
             toPorts: [{ ports: [{ protocol: 'TCP', port: '443' }] }],
           },
           expect.objectContaining({
-            toEndpoints: [{ matchLabels: expect.objectContaining({ 'k8s:k8s-app': 'kube-dns' }) }],
+            toEndpoints: [{ matchLabels: expect.objectContaining({ 'k8s-app': 'kube-dns' }) }],
             toPorts: [{ ports: [{ protocol: 'TCP', port: '53' }], rules: { dns: [{ matchPattern: '*' }] } }],
           }),
           expect.objectContaining({
-            toEndpoints: [{ matchLabels: expect.objectContaining({ 'k8s:k8s-app': 'kube-dns' }) }],
+            toEndpoints: [{ matchLabels: expect.objectContaining({ 'k8s-app': 'kube-dns' }) }],
             toPorts: [{ ports: [{ protocol: 'UDP', port: '53' }], rules: { dns: [{ matchPattern: '*' }] } }],
           }),
         ]),
@@ -331,11 +337,13 @@ describe('v0.8 runtime-access lowering', () => {
     ) as DeploymentJsonObject;
     expect(validateKubernetesRuntimeAccessParity(
       cilium.runtimeAccess,
-      (root.spec.materialized?.resources ?? []).map((resource) => resource === policy ? policyWithoutDnsProxy : resource),
+      (root.spec.materialized?.resources ?? []).map((resource) =>
+        resource === policyResource ? { ...resource, template: policyWithoutDnsProxy } : resource),
     )).toEqual([expect.objectContaining({ code: 'RUNTIME_ACCESS_NETWORK_MISSING' })]);
     expect(validateKubernetesRuntimeAccessParity(
       cilium.runtimeAccess,
-      (root.spec.materialized?.resources ?? []).filter((resource) => resource.kind !== 'CiliumNetworkPolicy'),
+      (root.spec.materialized?.resources ?? []).filter((resource) =>
+        materializedManifest(resource).kind !== 'CiliumNetworkPolicy'),
     )).toEqual([expect.objectContaining({ code: 'RUNTIME_ACCESS_NETWORK_MISSING' })]);
   });
 
@@ -404,7 +412,15 @@ describe('v0.8 runtime-access lowering', () => {
     });
     const root = result.graph.nodes.find((node) => node.id === 'kubernetes.application');
     if (root?.kind !== 'kubernetesComposition') throw new Error('Expected root composition.');
-    const networkPolicy = root.spec.materialized?.resources.find((resource) => resource.kind === 'NetworkPolicy');
+    const networkPolicyResource = root.spec.materialized?.resources.find((resource) =>
+      materializedManifest(resource).kind === 'NetworkPolicy');
+    const networkPolicy = networkPolicyResource
+      ? materializedManifest(networkPolicyResource)
+      : undefined;
+    expect(networkPolicyResource).toMatchObject({
+      id: expect.stringMatching(/^runtimeAccessEgress[0-9a-f]{12}$/),
+      template: { kind: 'NetworkPolicy' },
+    });
     expect(networkPolicy).toMatchObject({
       apiVersion: 'networking.k8s.io/v1',
       metadata: {
@@ -436,7 +452,7 @@ describe('v0.8 runtime-access lowering', () => {
     const resources = root.spec.materialized?.resources ?? [];
     expect(validateKubernetesRuntimeAccessParity(
       result.runtimeAccess,
-      resources.filter((resource) => resource.kind !== 'NetworkPolicy'),
+      resources.filter((resource) => materializedManifest(resource).kind !== 'NetworkPolicy'),
     )).toEqual([expect.objectContaining({ code: 'RUNTIME_ACCESS_NETWORK_MISSING' })]);
     expect(validateKubernetesRuntimeAccessParity(result.runtimeAccess, mutateNetworkPolicy(resources, (policy) => {
       const egress = policy.spec.egress as Array<{ ports: Array<{ protocol: string; port: number }> }>;
@@ -1030,10 +1046,18 @@ function mutateNetworkPolicy(
   mutate: (policy: { metadata: Record<string, unknown>; spec: Record<string, unknown> }) => void,
 ): readonly DeploymentJsonObject[] {
   const cloned = JSON.parse(JSON.stringify(resources)) as DeploymentJsonObject[];
-  const policy = cloned.find((resource) => resource.kind === 'NetworkPolicy');
+  const resource = cloned.find((candidate) => materializedManifest(candidate).kind === 'NetworkPolicy');
+  const policy = resource ? materializedManifest(resource) : undefined;
   if (!policy?.metadata || !policy.spec) throw new Error('Expected generated NetworkPolicy fixture.');
   mutate(policy as unknown as { metadata: Record<string, unknown>; spec: Record<string, unknown> });
   return cloned;
+}
+
+function materializedManifest(resource: DeploymentJsonObject): DeploymentJsonObject {
+  const template = resource.template;
+  return template && typeof template === 'object' && !Array.isArray(template)
+    ? template as DeploymentJsonObject
+    : resource;
 }
 
 function kubernetesScopeGraph(): ApplicationGraph {
