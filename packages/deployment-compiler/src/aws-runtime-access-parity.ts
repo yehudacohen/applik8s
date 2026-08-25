@@ -10,6 +10,10 @@ export type AwsRuntimeAccessParityCode =
   | 'RUNTIME_ACCESS_WORKLOAD_MISSING'
   | 'RUNTIME_ACCESS_ROLE_MISSING'
   | 'RUNTIME_ACCESS_ROLE_MISBOUND'
+  | 'RUNTIME_ACCESS_EXECUTION_ROLE_MISSING'
+  | 'RUNTIME_ACCESS_EXECUTION_ROLE_MISBOUND'
+  | 'RUNTIME_ACCESS_BOOTSTRAP_IAM_MISSING'
+  | 'RUNTIME_ACCESS_BOOTSTRAP_IAM_WIDENED'
   | 'RUNTIME_ACCESS_IAM_MISSING'
   | 'RUNTIME_ACCESS_IAM_WIDENED'
   | 'RUNTIME_ACCESS_NETWORK_MISSING'
@@ -50,7 +54,7 @@ export function validateAwsRuntimeAccessParity(
       finding('RUNTIME_ACCESS_ROLE_MISSING', `AWS workload ${workload.workloadIdentity} is not attached to one planned IAM role.`);
       continue;
     }
-    const assumesRole = edges.filter((edge) => edge.relationship === 'assumesRole' && edge.to === resource.id);
+    const assumesRole = edges.filter((edge) => edge.relationship === 'assumesRole' && edge.to === resource.id && edge.output !== 'ecs-execution');
     if (
       assumesRole.length !== 1
       || assumesRole[0]?.from !== role.id
@@ -67,6 +71,32 @@ export function validateAwsRuntimeAccessParity(
     const widenedStatements = [...actualStatements].filter((atom) => !expectedStatements.has(atom));
     if (missingStatements.length > 0) finding('RUNTIME_ACCESS_IAM_MISSING', `AWS workload ${workload.workloadIdentity} IAM role omits ${missingStatements.length} required action/resource/condition grant(s).`);
     if (widenedStatements.length > 0) finding('RUNTIME_ACCESS_IAM_WIDENED', `AWS workload ${workload.workloadIdentity} IAM role contains ${widenedStatements.length} grant(s) outside its enforcement envelope.`);
+    if (workload.aws.executionRoleName) {
+      const executionRoleId = stringValue(resource.configuration.executionRoleResourceId);
+      const executionRole = executionRoleId ? resourcesById.get(executionRoleId) : undefined;
+      if (!executionRole || executionRole.service !== 'iam' || executionRole.resourceType !== 'role') {
+        finding('RUNTIME_ACCESS_EXECUTION_ROLE_MISSING', `AWS workload ${workload.workloadIdentity} is not attached to one planned ECS execution role.`);
+      } else {
+        const executionRoleEdges = edges.filter((edge) => edge.relationship === 'assumesRole' && edge.to === resource.id && edge.output === 'ecs-execution');
+        if (
+          executionRoleEdges.length !== 1
+          || executionRoleEdges[0]?.from !== executionRole.id
+          || executionRole.physicalName !== workload.aws.executionRoleName
+          || executionRole.configuration.rolePurpose !== 'ecs-execution'
+          || stringValue(executionRole.configuration.workloadIdentity) !== workload.workloadIdentity
+          || canonicalJsonV1String(stringArray(executionRole.configuration.executionIdentities)) !== canonicalJsonV1String(workload.executionIdentities)
+          || canonicalJsonV1String(stringArray(executionRole.configuration.requirementIds)) !== canonicalJsonV1String(workload.requirementIds)
+        ) {
+          finding('RUNTIME_ACCESS_EXECUTION_ROLE_MISBOUND', `AWS workload ${workload.workloadIdentity} ECS execution role is not bound to its exact workload/execution/requirement identity.`);
+        }
+        const expectedBootstrapStatements = statementAtoms(workload.aws.executionRoleStatements ?? []);
+        const actualBootstrapStatements = statementAtoms(statementArray(executionRole.configuration.statements));
+        const missingBootstrapStatements = [...expectedBootstrapStatements].filter((atom) => !actualBootstrapStatements.has(atom));
+        const widenedBootstrapStatements = [...actualBootstrapStatements].filter((atom) => !expectedBootstrapStatements.has(atom));
+        if (missingBootstrapStatements.length > 0) finding('RUNTIME_ACCESS_BOOTSTRAP_IAM_MISSING', `AWS workload ${workload.workloadIdentity} ECS execution role omits ${missingBootstrapStatements.length} declared Secret projection grant(s).`);
+        if (widenedBootstrapStatements.length > 0) finding('RUNTIME_ACCESS_BOOTSTRAP_IAM_WIDENED', `AWS workload ${workload.workloadIdentity} ECS execution role contains ${widenedBootstrapStatements.length} undeclared grant(s).`);
+      }
+    }
     const expectedNetwork = new Set(workload.aws.privatePeers.flatMap(({ endpoint }) =>
       endpoint.target === 'aws' || endpoint.target === 'aws-local' ? [endpoint.resourceId] : []));
     const actualNetwork = new Set(edges.filter((edge) => edge.relationship === 'networkAccess' && edge.output === 'runtime-egress' && edge.to === resource.id).map(({ from }) => from));

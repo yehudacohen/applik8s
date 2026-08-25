@@ -115,14 +115,26 @@ export function synthesizeApplicationAwsCloudFormationTemplate(
           Tags: tags(plan, entry),
         });
         break;
-      case "iam:role":
-        resources[id] = resource("AWS::IAM::Role", {
+      case "iam:role": {
+        const statements = cloudFormationPolicyStatements(entry, plan, logical);
+        resources[id] = resource("AWS::IAM::Role", compactObject({
           RoleName: entry.physicalName,
           AssumeRolePolicyDocument: assumeRolePolicy(stringConfig(entry, "assumeService", "ecs-tasks.amazonaws.com")),
-          Policies: [{ PolicyName: "applik8s-runtime-access", PolicyDocument: { Version: "2012-10-17", Statement: cloudFormationPolicyStatements(entry, plan, logical) } }],
+          ...(arrayStrings(entry.configuration.managedPolicyArns).length > 0
+            ? { ManagedPolicyArns: arrayStrings(entry.configuration.managedPolicyArns) }
+            : {}),
+          ...(statements.length > 0 ? {
+            Policies: [{
+              PolicyName: entry.configuration.rolePurpose === "ecs-execution"
+                ? "applik8s-runtime-bootstrap"
+                : "applik8s-runtime-access",
+              PolicyDocument: { Version: "2012-10-17", Statement: statements },
+            }],
+          } : {}),
           Tags: tags(plan, entry),
-        });
+        }));
         break;
+      }
       case "dynamodb:kinesis-checkpoint-table":
         resources[id] = resource("AWS::DynamoDB::Table", {
           TableName: entry.physicalName,
@@ -334,25 +346,16 @@ function addRuntimeWorker(
   const image = requiredArtifactImage(entry, options);
   const cluster = required(plan, "foundation.compute");
   const logs = required(plan, "foundation.logs");
-  const executionRole = `${id}ExecutionRole`;
+  const executionRoleResourceId = optionalString(entry.configuration.executionRoleResourceId);
+  const plannedExecutionRole = executionRoleResourceId ? required(plan, executionRoleResourceId) : undefined;
+  const executionRole = plannedExecutionRole ? logical.get(plannedExecutionRole.id)! : `${id}ExecutionRole`;
   const generatedTaskRole = `${id}TaskRole`;
   const task = `${id}TaskDefinition`;
   const runtimeRoleResourceId = optionalString(entry.configuration.runtimeRoleResourceId);
   const runtimeRole = runtimeRoleResourceId ? required(plan, runtimeRoleResourceId) : undefined;
-  resources[executionRole] = resource("AWS::IAM::Role", {
-    AssumeRolePolicyDocument: assumeRolePolicy("ecs-tasks.amazonaws.com"),
-    ManagedPolicyArns: ["arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"],
-    Policies: [{
-      PolicyName: "applik8s-runtime-secrets",
-      PolicyDocument: {
-        Version: "2012-10-17",
-        Statement: secretResourceArns(plan, logical, entry).length > 0
-          ? [{ Effect: "Allow", Action: ["secretsmanager:GetSecretValue"], Resource: secretResourceArns(plan, logical, entry) }]
-          : [{ Effect: "Deny", Action: ["secretsmanager:GetSecretValue"], Resource: ["*"] }],
-      },
-    }],
-    Tags: tags(plan, entry),
-  });
+  if (!plannedExecutionRole) {
+    resources[executionRole] = legacyExecutionRole(plan, entry, logical);
+  }
   if (!runtimeRole) {
     resources[generatedTaskRole] = resource("AWS::IAM::Role", {
       AssumeRolePolicyDocument: assumeRolePolicy("ecs-tasks.amazonaws.com"),
@@ -452,7 +455,9 @@ function addRuntimeService(
   const logs = required(plan, "foundation.logs");
   const namespace = required(plan, stringConfig(entry, "discoveryNamespaceResourceId"));
   const namespaceId = logical.get(namespace.id)!;
-  const executionRole = `${id}ExecutionRole`;
+  const executionRoleResourceId = optionalString(entry.configuration.executionRoleResourceId);
+  const plannedExecutionRole = executionRoleResourceId ? required(plan, executionRoleResourceId) : undefined;
+  const executionRole = plannedExecutionRole ? logical.get(plannedExecutionRole.id)! : `${id}ExecutionRole`;
   const generatedTaskRole = `${id}TaskRole`;
   const task = `${id}TaskDefinition`;
   const discovery = `${id}Discovery`;
@@ -461,20 +466,9 @@ function addRuntimeService(
   const healthPort = numberConfig(entry, "healthPort", port);
   const runtimeRoleResourceId = optionalString(entry.configuration.runtimeRoleResourceId);
   const runtimeRole = runtimeRoleResourceId ? required(plan, runtimeRoleResourceId) : undefined;
-  resources[executionRole] = resource("AWS::IAM::Role", {
-    AssumeRolePolicyDocument: assumeRolePolicy("ecs-tasks.amazonaws.com"),
-    ManagedPolicyArns: ["arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"],
-    Policies: [{
-      PolicyName: "applik8s-runtime-secrets",
-      PolicyDocument: {
-        Version: "2012-10-17",
-        Statement: secretResourceArns(plan, logical, entry).length > 0
-          ? [{ Effect: "Allow", Action: ["secretsmanager:GetSecretValue"], Resource: secretResourceArns(plan, logical, entry) }]
-          : [{ Effect: "Deny", Action: ["secretsmanager:GetSecretValue"], Resource: ["*"] }],
-      },
-    }],
-    Tags: tags(plan, entry),
-  });
+  if (!plannedExecutionRole) {
+    resources[executionRole] = legacyExecutionRole(plan, entry, logical);
+  }
   if (!runtimeRole) {
     resources[generatedTaskRole] = resource("AWS::IAM::Role", {
       AssumeRolePolicyDocument: assumeRolePolicy("ecs-tasks.amazonaws.com"),
@@ -1141,7 +1135,9 @@ function addApplicationService(resources: Record<string, DeploymentJsonObject>, 
   if (!options.imageUri?.trim()) throw new Error(`AWS application host ${entry.id} requires an immutable imageUri.`);
   const cluster = required(plan, "foundation.compute");
   const logs = required(plan, "foundation.logs");
-  const executionRole = `${id}ExecutionRole`;
+  const executionRoleResourceId = optionalString(entry.configuration.executionRoleResourceId);
+  const plannedExecutionRole = executionRoleResourceId ? required(plan, executionRoleResourceId) : undefined;
+  const executionRole = plannedExecutionRole ? logical.get(plannedExecutionRole.id)! : `${id}ExecutionRole`;
   const generatedTaskRole = `${id}TaskRole`;
   const task = `${id}TaskDefinition`;
   const runtimeRoleResourceId = optionalString(entry.configuration.runtimeRoleResourceId);
@@ -1168,20 +1164,9 @@ function addApplicationService(resources: Record<string, DeploymentJsonObject>, 
       SourceSecurityGroupId: ref(`${actorFleetId}SecurityGroup`),
     }, [logical.get(securityGroup.id)!, `${actorFleetId}SecurityGroup`]);
   }
-  resources[executionRole] = resource("AWS::IAM::Role", {
-    AssumeRolePolicyDocument: assumeRolePolicy("ecs-tasks.amazonaws.com"),
-    ManagedPolicyArns: ["arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"],
-    Policies: [{
-      PolicyName: "applik8s-runtime-secrets",
-      PolicyDocument: {
-        Version: "2012-10-17",
-        Statement: secretResourceArns(plan, logical, entry).length > 0
-          ? [{ Effect: "Allow", Action: ["secretsmanager:GetSecretValue"], Resource: secretResourceArns(plan, logical, entry) }]
-          : [{ Effect: "Deny", Action: ["secretsmanager:GetSecretValue"], Resource: ["*"] }],
-      },
-    }],
-    Tags: tags(plan, entry),
-  });
+  if (!plannedExecutionRole) {
+    resources[executionRole] = legacyExecutionRole(plan, entry, logical);
+  }
   if (!runtimeRole) {
     resources[generatedTaskRole] = resource("AWS::IAM::Role", {
       AssumeRolePolicyDocument: assumeRolePolicy("ecs-tasks.amazonaws.com"),
@@ -1361,8 +1346,7 @@ function applicationEnvironment(
       );
     }
   }
-  const runtimeBindingEnvironmentNames = new Set(arrayConfig(workload ?? emptyAwsPlanResource, "runtimeBindingEnvironmentNames").filter((value): value is string => typeof value === "string"));
-  const runtimeBindings = plan.runtimeBindings.filter(({ environmentName }) => runtimeBindingEnvironmentNames.has(environmentName));
+  const runtimeBindings = runtimeBindingsForWorkload(plan, workload ?? emptyAwsPlanResource);
   if (runtimeBindings.length > 0) {
     result.push({ Name: "NODE_OPTIONS", Value: "--import=@applik8s/runtime-aws/bootstrap" });
     for (const [index, binding] of runtimeBindings.entries()) {
@@ -1376,9 +1360,8 @@ function applicationEnvironment(
           getAtt(id, "Endpoint.Address"),
           `","port":`,
           getAtt(id, "Endpoint.Port"),
-          `,"secretArn":"`,
-          getAtt(id, "MasterUserSecret.SecretArn"),
-          `"}`,
+          `,"secretEnvironmentName":${JSON.stringify(runtimeBindingSecretEnvironmentName(index))}`,
+          `}`,
         ]] },
       });
     }
@@ -1490,6 +1473,17 @@ function objectStorageEnvironment(
 
 function applicationSecrets(plan: ApplicationAwsDeploymentPlan, logical: ReadonlyMap<string, string>, workload: ApplicationAwsPlanResource): readonly DeploymentJsonObject[] {
   const secrets: DeploymentJsonObject[] = [];
+  for (const [index, binding] of runtimeBindingsForWorkload(plan, workload).entries()) {
+    const resource = plan.resources.find(({ id }) => id === binding.resourceId);
+    const id = logical.get(binding.resourceId);
+    if (!resource || !id || resource.service !== "rds" || resource.resourceType !== "postgresql-instance") {
+      throw new Error(`AWS runtime binding ${binding.id} does not resolve to an RDS PostgreSQL resource.`);
+    }
+    secrets.push({
+      Name: runtimeBindingSecretEnvironmentName(index),
+      ValueFrom: getAtt(id, "MasterUserSecret.SecretArn"),
+    });
+  }
   const actorRuntimeIds = new Set(arrayConfig(workload, "actorRuntimeResourceIds").filter((value): value is string => typeof value === "string"));
   const actorFleet = plan.resources.find(({ id, service, resourceType }) => actorRuntimeIds.has(id) && service === "ecs" && resourceType === "celld-fleet");
   if (actorFleet) {
@@ -1527,8 +1521,45 @@ function applicationSecrets(plan: ApplicationAwsDeploymentPlan, logical: Readonl
   return secrets;
 }
 
+function runtimeBindingsForWorkload(
+  plan: ApplicationAwsDeploymentPlan,
+  workload: ApplicationAwsPlanResource,
+): readonly ApplicationAwsDeploymentPlan["runtimeBindings"][number][] {
+  const environmentNames = new Set(
+    arrayConfig(workload, "runtimeBindingEnvironmentNames")
+      .filter((value): value is string => typeof value === "string"),
+  );
+  return plan.runtimeBindings.filter(({ environmentName }) => environmentNames.has(environmentName));
+}
+
+function runtimeBindingSecretEnvironmentName(index: number): string {
+  return `APPLIK8S_AWS_RUNTIME_BINDING_SECRET_${index}`;
+}
+
 function secretResourceArns(plan: ApplicationAwsDeploymentPlan, logical: ReadonlyMap<string, string>, workload: ApplicationAwsPlanResource): readonly DeploymentJsonValue[] {
   return applicationSecrets(plan, logical, workload).flatMap((entry) => entry.ValueFrom ? [entry.ValueFrom] : []);
+}
+
+function legacyExecutionRole(
+  plan: ApplicationAwsDeploymentPlan,
+  workload: ApplicationAwsPlanResource,
+  logical: ReadonlyMap<string, string>,
+): DeploymentJsonObject {
+  const secretArns = secretResourceArns(plan, logical, workload);
+  return resource("AWS::IAM::Role", {
+    AssumeRolePolicyDocument: assumeRolePolicy("ecs-tasks.amazonaws.com"),
+    ManagedPolicyArns: ["arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"],
+    Policies: [{
+      PolicyName: "applik8s-runtime-secrets",
+      PolicyDocument: {
+        Version: "2012-10-17",
+        Statement: secretArns.length > 0
+          ? [{ Effect: "Allow", Action: ["secretsmanager:GetSecretValue"], Resource: secretArns }]
+          : [{ Effect: "Deny", Action: ["secretsmanager:GetSecretValue"], Resource: ["*"] }],
+      },
+    }],
+    Tags: tags(plan, workload),
+  });
 }
 
 function sensitiveOutputValue(entry: ApplicationAwsPlanResource, name: string, id: string): DeploymentJsonValue | undefined {

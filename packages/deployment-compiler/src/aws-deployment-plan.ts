@@ -15,9 +15,9 @@ import {
   type ApplicationAwsPlanEdge,
   type ApplicationAwsPlanResource,
   type ApplicationAwsService,
-  type ApplicationRuntimeArtifact,
-  type ApplicationRuntimeAccessPlan,
   type ApplicationRuntimeAccessBootstrapEgress,
+  type ApplicationRuntimeAccessPlan,
+  type ApplicationRuntimeArtifact,
   applicationRuntimeArtifactId,
   applicationRuntimeEndpointEnvironmentName,
   type DeploymentJsonObject,
@@ -26,13 +26,13 @@ import {
   sha256Hex,
   validateApplicationAwsDeploymentPlan,
 } from '@applik8s/deployment-contract';
+import { isAwsRuntimeAccessSecurityGroupQualified, validateAwsRuntimeAccessParity } from './aws-runtime-access-parity.js';
 import { assertApplicationScheduleProviderCompatibility } from './provider-guarantees.js';
 import {
   applicationDeploymentRuntimeAccessTargetRecord,
   applicationProviderRuntimeAccessTargets,
   resolveApplicationProviderForTarget,
 } from './providers.js';
-import { isAwsRuntimeAccessSecurityGroupQualified, validateAwsRuntimeAccessParity } from './aws-runtime-access-parity.js';
 import {
   type ApplicationRuntimeAccessWorkloadPlacement,
   compileApplicationRuntimeAccessPlan,
@@ -334,6 +334,7 @@ export function compileApplicationAwsDeploymentPlan(request: CompileApplicationA
     connect({ from: securityGroupResourceId, to: targetResourceId, relationship: 'requiresReady' });
   }
   const runtimeRolesByWorkloadResourceId = new Map<string, ApplicationAwsPlanResource>();
+  const executionRolesByWorkloadResourceId = new Map<string, ApplicationAwsPlanResource>();
   for (const workload of runtimeAccess.workloads) {
     if (!workload.aws) continue;
     const role = resource(`runtime-role.${hash(workload.workloadIdentity, 16)}`, 'iam', 'role', workload.aws.roleName, {
@@ -348,23 +349,39 @@ export function compileApplicationAwsDeploymentPlan(request: CompileApplicationA
       : undefined, 'control-plane', ['roleArn']);
     add(role);
     runtimeRolesByWorkloadResourceId.set(workload.aws.resourceId, role);
+    const executionRole = resource(`runtime-execution-role.${hash(workload.workloadIdentity, 16)}`, 'iam', 'role', workload.aws.executionRoleName ?? name(`bootstrap-${hash(workload.workloadIdentity, 12)}`, 64), {
+      assumeService: 'ecs-tasks.amazonaws.com',
+      managedPolicyArns: ['arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy'],
+      statements: deploymentJson(workload.aws.executionRoleStatements ?? []),
+      rolePurpose: 'ecs-execution',
+      workloadIdentity: workload.workloadIdentity,
+      executionIdentities: workload.executionIdentities,
+      requirementIds: workload.requirementIds,
+    }, workload.executionIdentities.length === 1
+      ? runtimeAccess.executions.find(({ executionIdentity }) => executionIdentity === workload.executionIdentities[0])?.nodeId
+      : undefined, 'control-plane', ['roleArn']);
+    add(executionRole);
+    executionRolesByWorkloadResourceId.set(workload.aws.resourceId, executionRole);
   }
   for (const workload of runtimeAccess.workloads) {
     if (!workload.aws) continue;
     const runtimeResource = resources.get(workload.aws.resourceId);
     const role = runtimeRolesByWorkloadResourceId.get(workload.aws.resourceId);
-    if (!runtimeResource || !role || runtimeResource.service !== 'ecs') continue;
+    const executionRole = executionRolesByWorkloadResourceId.get(workload.aws.resourceId);
+    if (!runtimeResource || !role || !executionRole || runtimeResource.service !== 'ecs') continue;
     resources.set(runtimeResource.id, {
       ...runtimeResource,
       configuration: {
         ...runtimeResource.configuration,
         runtimeRoleResourceId: role.id,
+        executionRoleResourceId: executionRole.id,
         ...(runtimeNetwork.workloadSecurityGroups.get(runtimeResource.id)
           ? { runtimeAccessSecurityGroupResourceId: runtimeNetwork.workloadSecurityGroups.get(runtimeResource.id)! }
           : {}),
       },
     });
     connect({ from: role.id, to: runtimeResource.id, relationship: 'assumesRole' });
+    connect({ from: executionRole.id, to: runtimeResource.id, relationship: 'assumesRole', output: 'ecs-execution' });
     for (const targetResourceId of workload.aws.networkConnections) {
       if (resources.has(targetResourceId)) connect({ from: targetResourceId, to: runtimeResource.id, relationship: 'networkAccess', output: 'runtime-egress' });
     }
@@ -404,6 +421,7 @@ export function compileApplicationAwsDeploymentPlan(request: CompileApplicationA
     const runtimePhysicalName = name(`${artifact.role}-${hash(artifactId, 10)}`);
     const discoveryNamespaceName = String(resources.get('foundation.discovery')?.configuration.namespaceName ?? 'applik8s.internal');
     const role = runtimeRolesByWorkloadResourceId.get(id);
+    const executionRole = executionRolesByWorkloadResourceId.get(id);
     const workloadAccess = runtimeAccess.workloads.find((workload) => workload.aws?.resourceId === id)?.aws;
     const processor = artifact.role === 'processor'
       ? request.graph.nodes.find((node): node is ApplicationProcessorNode => node.id === artifact.nodeId && node.kind === 'processor')
@@ -461,6 +479,7 @@ export function compileApplicationAwsDeploymentPlan(request: CompileApplicationA
       cluster: 'foundation.compute',
       privateSubnets: ['foundation.subnet.private.1', 'foundation.subnet.private.2'],
       ...(role ? { runtimeRoleResourceId: role.id } : {}),
+      ...(executionRole ? { executionRoleResourceId: executionRole.id } : {}),
       ...(runtimeNetwork.workloadSecurityGroups.get(id)
         ? { runtimeAccessSecurityGroupResourceId: runtimeNetwork.workloadSecurityGroups.get(id)! }
         : {}),
@@ -499,6 +518,7 @@ export function compileApplicationAwsDeploymentPlan(request: CompileApplicationA
       if (String(endpoint.resourceId) !== id) connect({ from: String(endpoint.resourceId), to: id, relationship: 'requiresReady' });
     }
     if (role) connect({ from: role.id, to: id, relationship: 'assumesRole' });
+    if (executionRole) connect({ from: executionRole.id, to: id, relationship: 'assumesRole', output: 'ecs-execution' });
     if (stream) connect({ from: stream.id, to: id, relationship: 'requiresReady' });
     if (checkpoint) connect({ from: checkpoint.id, to: id, relationship: 'requiresReady' });
   }
@@ -530,6 +550,7 @@ export function compileApplicationAwsDeploymentPlan(request: CompileApplicationA
       if (!binding) throw new Error(`AWS application host ${host.id} requires database binding ${environmentName}, but no exact RDS authority was planned.`);
     }
     const role = runtimeRolesByWorkloadResourceId.get(id);
+    const executionRole = executionRolesByWorkloadResourceId.get(id);
     const workloadAccess = runtimeAccess.workloads.find((workload) => workload.aws?.resourceId === id)?.aws;
     add(resource(id, 'ecs', 'fargate-service', name(`service-${hash(host.id, 10)}`), {
       artifactRepository: 'foundation.registry', cluster: 'foundation.compute',
@@ -540,6 +561,7 @@ export function compileApplicationAwsDeploymentPlan(request: CompileApplicationA
       port: host.port, healthPath: '/-/healthz', deploymentCircuitBreaker: true,
       privateSubnets: ['foundation.subnet.private.1', 'foundation.subnet.private.2'],
       ...(role ? { runtimeRoleResourceId: role.id } : {}),
+      ...(executionRole ? { executionRoleResourceId: executionRole.id } : {}),
       ...(runtimeNetwork.workloadSecurityGroups.get(id)
         ? { runtimeAccessSecurityGroupResourceId: runtimeNetwork.workloadSecurityGroups.get(id)! }
         : {}),
@@ -558,6 +580,7 @@ export function compileApplicationAwsDeploymentPlan(request: CompileApplicationA
       }
     }
     if (role) connect({ from: role.id, to: id, relationship: 'assumesRole' });
+    if (executionRole) connect({ from: executionRole.id, to: id, relationship: 'assumesRole', output: 'ecs-execution' });
     for (const endpoint of runtimeEndpointBindings) connect({ from: String(endpoint.resourceId), to: id, relationship: 'requiresReady' });
   }
 
@@ -908,6 +931,7 @@ function awsRuntimeAccessWorkloadPlacements(
       aws: {
         resourceId,
         roleName: name(`runtime-${hash(`aws:ecs:${resourceId}`, 12)}`, 64),
+        executionRoleName: name(`bootstrap-${hash(`aws:ecs:${resourceId}`, 12)}`, 64),
       },
     }];
   });
@@ -922,6 +946,7 @@ function awsRuntimeAccessWorkloadPlacements(
       aws: {
         resourceId,
         roleName: name(`runtime-${hash(`aws:ecs:${resourceId}`, 12)}`, 64),
+        executionRoleName: name(`bootstrap-${hash(`aws:ecs:${resourceId}`, 12)}`, 64),
       },
     };
   });
@@ -941,6 +966,7 @@ function awsRuntimeAccessWorkloadPlacements(
     aws: {
       resourceId,
       roleName: name(`runtime-${hash(`aws:ecs:${resourceId}`, 12)}`, 64),
+      executionRoleName: name(`bootstrap-${hash(`aws:ecs:${resourceId}`, 12)}`, 64),
     },
   }));
   return [...artifactPlacements, ...hostPlacements, ...providerPlacements].sort((left, right) => left.workloadIdentity.localeCompare(right.workloadIdentity));

@@ -1,20 +1,39 @@
 // typecast-file-boundary: Test doubles intentionally implement partial AWS SDK clients and response envelopes.
+
+import { type ApplicationLakehouseQueryRuntime, createDeterministicApplicationLakehouseRuntime, LakehouseDataset, type } from '@applik8s/applik8s';
+import type { ApplicationEventLogPublisher } from '@applik8s/applik8s/processor-runtime';
 import type { AthenaClient } from '@aws-sdk/client-athena';
 import type { GlueClient } from '@aws-sdk/client-glue';
 import type { S3Client } from '@aws-sdk/client-s3';
-import { createDeterministicApplicationLakehouseRuntime, LakehouseDataset, type, type ApplicationLakehouseQueryRuntime } from '@applik8s/applik8s';
-import type { ApplicationEventLogPublisher } from '@applik8s/applik8s/processor-runtime';
 import { describe, expect, it } from 'vitest';
 import { createAwsApplicationLakehouseDatasetRuntime, createAwsApplicationLakehouseQueryRuntime, createKinesisEventLog, handleKinesisCommandRecord, handleKinesisEventRecord, initializeApplicationAwsRuntimeBindings, startKinesisCommandProcessor } from '../src/index.js';
 
 describe('AWS runtime binding bootstrap', () => {
   it('hydrates exact authored database environment names without exposing the secret elsewhere', async () => {
     const environment: Record<string, string | undefined> = {
-      APPLIK8S_AWS_RUNTIME_BINDING_0: JSON.stringify({ kind: 'postgresUrl', environmentName: 'APPLIK8S_DATABASE_DOCUMENTS_URL', database: 'documents', host: 'db.internal', port: 5432, secretArn: 'arn:secret:database' }),
+      APPLIK8S_AWS_RUNTIME_BINDING_0: JSON.stringify({ kind: 'postgresUrl', environmentName: 'APPLIK8S_DATABASE_DOCUMENTS_URL', database: 'documents', host: 'db.internal', port: 5432, secretEnvironmentName: 'APPLIK8S_AWS_RUNTIME_BINDING_SECRET_0' }),
+      APPLIK8S_AWS_RUNTIME_BINDING_SECRET_0: JSON.stringify({ username: 'app user', password: 'p@ss/word' }),
     };
-    await expect(initializeApplicationAwsRuntimeBindings({ environment, readSecret: async () => JSON.stringify({ username: 'app user', password: 'p@ss/word' }) })).resolves.toEqual(['APPLIK8S_DATABASE_DOCUMENTS_URL']);
+    let reads = 0;
+    await expect(initializeApplicationAwsRuntimeBindings({ environment, readSecret: async () => { reads += 1; return '{}'; } })).resolves.toEqual(['APPLIK8S_DATABASE_DOCUMENTS_URL']);
     expect(environment.APPLIK8S_DATABASE_DOCUMENTS_URL).toBe('postgres://app%20user:p%40ss%2Fword@db.internal:5432/documents');
     expect(JSON.stringify(environment.APPLIK8S_AWS_RUNTIME_BINDING_0)).not.toContain('p@ss');
+    expect(reads).toBe(0);
+  });
+
+  it('fails closed when an ECS-projected secret is absent and preserves the legacy ARN migration path', async () => {
+    const projected = {
+      APPLIK8S_AWS_RUNTIME_BINDING_0: JSON.stringify({ kind: 'postgresUrl', environmentName: 'DATABASE_URL', database: 'app', host: 'db', port: 5432, secretEnvironmentName: 'APPLIK8S_AWS_RUNTIME_BINDING_SECRET_0' }),
+    };
+    await expect(initializeApplicationAwsRuntimeBindings({ environment: projected, readSecret: async () => '{}' })).rejects.toThrow(/missing projected secret/u);
+    const legacy: Record<string, string | undefined> = {
+      APPLIK8S_AWS_RUNTIME_BINDING_0: JSON.stringify({ kind: 'postgresUrl', environmentName: 'DATABASE_URL', database: 'app', host: 'db', port: 5432, secretArn: 'arn:legacy' }),
+    };
+    await expect(initializeApplicationAwsRuntimeBindings({ environment: legacy, readSecret: async (arn) => {
+      expect(arn).toBe('arn:legacy');
+      return JSON.stringify({ username: 'app', password: 'secret' });
+    } })).resolves.toEqual(['DATABASE_URL']);
+    expect(legacy.DATABASE_URL).toBe('postgres://app:secret@db:5432/app');
   });
 
   it('fails closed on malformed descriptors and never overwrites an explicit binding', async () => {
@@ -28,10 +47,11 @@ describe('AWS runtime binding bootstrap', () => {
 
   it('aliases the processor database only after its exact reference binding is hydrated', async () => {
     const environment: Record<string, string | undefined> = {
-      APPLIK8S_AWS_RUNTIME_BINDING_0: JSON.stringify({ kind: 'postgresUrl', environmentName: 'APPLIK8S_DATABASE_POSTS_URL', database: 'posts', host: 'db', port: 5432, secretArn: 'arn' }),
+      APPLIK8S_AWS_RUNTIME_BINDING_0: JSON.stringify({ kind: 'postgresUrl', environmentName: 'APPLIK8S_DATABASE_POSTS_URL', database: 'posts', host: 'db', port: 5432, secretEnvironmentName: 'APPLIK8S_AWS_RUNTIME_BINDING_SECRET_0' }),
+      APPLIK8S_AWS_RUNTIME_BINDING_SECRET_0: JSON.stringify({ username: 'app', password: 'secret' }),
       APPLIK8S_DATABASE_URL_BINDING: 'APPLIK8S_DATABASE_POSTS_URL',
     };
-    await initializeApplicationAwsRuntimeBindings({ environment, readSecret: async () => JSON.stringify({ username: 'app', password: 'secret' }) });
+    await initializeApplicationAwsRuntimeBindings({ environment });
     expect(environment.DATABASE_URL).toBe(environment.APPLIK8S_DATABASE_POSTS_URL);
     await expect(initializeApplicationAwsRuntimeBindings({ environment: { APPLIK8S_DATABASE_URL_BINDING: 'MISSING' }, readSecret: async () => '{}' })).rejects.toThrow(/references missing/u);
   });

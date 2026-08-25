@@ -1,9 +1,9 @@
 // typecast-file-boundary: AWS SDK response payloads are normalized into provider-neutral runtime values here.
 import { GetSecretValueCommand, SecretsManagerClient, type SecretsManagerClientConfig } from '@aws-sdk/client-secrets-manager';
 
-export * from './schedule.js';
-export * from './lakehouse.js';
 export * from './kinesis.js';
+export * from './lakehouse.js';
+export * from './schedule.js';
 
 export interface ApplicationAwsPostgresRuntimeBinding {
   readonly kind: 'postgresUrl';
@@ -11,7 +11,10 @@ export interface ApplicationAwsPostgresRuntimeBinding {
   readonly database: string;
   readonly host: string;
   readonly port: number;
-  readonly secretArn: string;
+  /** ECS-projected Secret JSON environment variable (the v0.8 path). */
+  readonly secretEnvironmentName?: string;
+  /** Legacy runtime-read source retained for rolling migration only. */
+  readonly secretArn?: string;
 }
 
 export interface ApplicationAwsRuntimeBindingBootstrapOptions {
@@ -25,15 +28,27 @@ export async function initializeApplicationAwsRuntimeBindings(
 ): Promise<readonly string[]> {
   const environment = options.environment ?? process.env;
   const descriptors = Object.entries(environment)
-    .filter(([name, value]) => name.startsWith('APPLIK8S_AWS_RUNTIME_BINDING_') && value)
+    .filter(([name, value]) => /^APPLIK8S_AWS_RUNTIME_BINDING_\d+$/u.test(name) && value)
     .sort(([left], [right]) => left.localeCompare(right))
-    .map(([name, value]) => parseBinding(name, value!));
-  const readSecret = options.readSecret ?? (descriptors.some(({ environmentName }) => !environment[environmentName]) ? awsSecretReader(environment) : undefined);
+    .map(([name, value]) => parseBinding(name, value ?? ''));
+  const readSecret = options.readSecret ?? (descriptors.some(({ environmentName, secretArn }) => !environment[environmentName] && secretArn) ? awsSecretReader(environment) : undefined);
   const initialized: string[] = [];
   for (const descriptor of descriptors) {
     if (environment[descriptor.environmentName]) continue;
-    if (!readSecret) throw new Error(`AWS runtime binding ${descriptor.environmentName} requires a secret reader.`);
-    const secret = parsePostgresSecret(await readSecret(descriptor.secretArn), descriptor.secretArn);
+    let source: string;
+    let sourceIdentity: string;
+    if (descriptor.secretEnvironmentName) {
+      sourceIdentity = descriptor.secretEnvironmentName;
+      const projected = environment[descriptor.secretEnvironmentName];
+      if (!projected) throw new Error(`AWS runtime binding ${descriptor.environmentName} is missing projected secret ${descriptor.secretEnvironmentName}.`);
+      source = projected;
+    } else if (descriptor.secretArn && readSecret) {
+      sourceIdentity = descriptor.secretArn;
+      source = await readSecret(descriptor.secretArn);
+    } else {
+      throw new Error(`AWS runtime binding ${descriptor.environmentName} requires a projected secret or legacy secret reader.`);
+    }
+    const secret = parsePostgresSecret(source, sourceIdentity);
     const database = encodeURIComponent(descriptor.database);
     environment[descriptor.environmentName] = `postgres://${encodeURIComponent(secret.username)}:${encodeURIComponent(secret.password)}@${hostForUrl(descriptor.host)}:${descriptor.port}/${database}`;
     initialized.push(descriptor.environmentName);
@@ -67,12 +82,23 @@ function parseBinding(name: string, value: string): ApplicationAwsPostgresRuntim
   try { candidate = JSON.parse(value); } catch { throw new Error(`AWS runtime binding ${name} is not valid JSON.`); }
   if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) throw new Error(`AWS runtime binding ${name} must be an object.`);
   const read = (field: string): unknown => Reflect.get(candidate as object, field);
-  if (read('kind') !== 'postgresUrl' || typeof read('environmentName') !== 'string' || !/^[A-Z_][A-Z0-9_]*$/u.test(String(read('environmentName'))) || typeof read('database') !== 'string' || typeof read('host') !== 'string' || typeof read('secretArn') !== 'string') {
+  const secretEnvironmentName = read('secretEnvironmentName');
+  const secretArn = read('secretArn');
+  const hasProjectedSecret = typeof secretEnvironmentName === 'string' && /^[A-Z_][A-Z0-9_]*$/u.test(secretEnvironmentName);
+  const hasLegacySecret = typeof secretArn === 'string' && Boolean(secretArn.trim());
+  if (read('kind') !== 'postgresUrl' || typeof read('environmentName') !== 'string' || !/^[A-Z_][A-Z0-9_]*$/u.test(String(read('environmentName'))) || typeof read('database') !== 'string' || typeof read('host') !== 'string' || hasProjectedSecret === hasLegacySecret) {
     throw new Error(`AWS runtime binding ${name} has an invalid PostgreSQL descriptor.`);
   }
   const port = Number(read('port'));
   if (!Number.isSafeInteger(port) || port < 1 || port > 65_535) throw new Error(`AWS runtime binding ${name} has an invalid PostgreSQL port.`);
-  return { kind: 'postgresUrl', environmentName: String(read('environmentName')), database: String(read('database')), host: String(read('host')), port, secretArn: String(read('secretArn')) };
+  return {
+    kind: 'postgresUrl',
+    environmentName: String(read('environmentName')),
+    database: String(read('database')),
+    host: String(read('host')),
+    port,
+    ...(hasProjectedSecret ? { secretEnvironmentName } : { secretArn: String(secretArn) }),
+  };
 }
 
 function parsePostgresSecret(value: string, arn: string): { readonly username: string; readonly password: string } {

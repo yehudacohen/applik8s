@@ -44,7 +44,10 @@ export interface ApplicationRuntimeAccessWorkloadPlan {
   readonly aws?: {
     readonly resourceId: string;
     readonly roleName: string;
+    /** ECS bootstrap role used only for compiler-declared Secret projection. */
+    readonly executionRoleName?: string;
     readonly statements: readonly ApplicationRuntimeAccessAwsStatement[];
+    readonly executionRoleStatements?: readonly ApplicationRuntimeAccessAwsStatement[];
     readonly privatePeers: readonly ApplicationRuntimeAccessPrivatePeer[];
     readonly bootstrapEgress: readonly ApplicationRuntimeAccessBootstrapEgress[];
     readonly externalEgress: readonly ApplicationRuntimeAccessExternalEgress[];
@@ -73,7 +76,10 @@ export interface ApplicationRuntimeAccessExecutionPlan {
   };
   readonly aws?: {
     readonly roleName: string;
+    /** ECS bootstrap role used only for compiler-declared Secret projection. */
+    readonly executionRoleName?: string;
     readonly statements: readonly ApplicationRuntimeAccessAwsStatement[];
+    readonly executionRoleStatements?: readonly ApplicationRuntimeAccessAwsStatement[];
     readonly privatePeers: readonly ApplicationRuntimeAccessPrivatePeer[];
     readonly bootstrapEgress: readonly ApplicationRuntimeAccessBootstrapEgress[];
     readonly externalEgress: readonly ApplicationRuntimeAccessExternalEgress[];
@@ -282,6 +288,7 @@ export function validateApplicationRuntimeAccessPlan(
       `execution ${execution.executionIdentity}`,
       errors,
     );
+    validateAwsExecutionRoles(execution.aws, `execution ${execution.executionIdentity}`, errors);
     const policy = {
       local: execution.local,
       ...(execution.kubernetes ? { kubernetes: execution.kubernetes } : {}),
@@ -341,6 +348,7 @@ export function validateApplicationRuntimeAccessPlan(
       `workload ${workload.workloadIdentity}`,
       errors,
     );
+    validateAwsExecutionRoles(workload.aws, `workload ${workload.workloadIdentity}`, errors);
     if (
       workload.kubernetes
       && workload.kubernetes.privatePeers.length > 0
@@ -510,5 +518,46 @@ function validateNonPrivateEgress(
       errors.push(`${owner} external egress ${egress.egressIdentity} has no external responsibility`);
     }
     if (egress.fidelity === 'port-only' && egress.port === undefined) errors.push(`${owner} external egress ${egress.egressIdentity} claims port-only fidelity without a port`);
+  }
+}
+
+function validateAwsExecutionRoles(
+  policy: {
+    readonly roleName: string;
+    readonly executionRoleName?: string;
+    readonly statements: readonly ApplicationRuntimeAccessAwsStatement[];
+    readonly executionRoleStatements?: readonly ApplicationRuntimeAccessAwsStatement[];
+  } | undefined,
+  owner: string,
+  errors: string[],
+): void {
+  if (!policy) return;
+  if (typeof policy.roleName !== 'string' || !policy.roleName.trim() || !Array.isArray(policy.statements)) {
+    errors.push(`${owner} has malformed AWS runtime-role policy`);
+    return;
+  }
+  const hasExecutionRoleName = typeof policy.executionRoleName === 'string' && Boolean(policy.executionRoleName.trim());
+  const executionRoleStatements = policy.executionRoleStatements;
+  const hasExecutionStatements = Array.isArray(executionRoleStatements);
+  if (hasExecutionRoleName !== hasExecutionStatements) {
+    errors.push(`${owner} must declare its ECS execution role name and statements together`);
+  }
+  const validateStatements = (statements: readonly ApplicationRuntimeAccessAwsStatement[], label: string): void => {
+    for (const statement of statements) {
+      if (!record(statement) || (statement.effect !== 'Allow' && statement.effect !== 'Deny') || !Array.isArray(statement.actions) || statement.actions.length === 0 || !Array.isArray(statement.resources) || statement.resources.length === 0) {
+        errors.push(`${owner} contains a malformed ${label} statement`);
+      }
+    }
+  };
+  validateStatements(policy.statements, 'runtime-role');
+  if (!hasExecutionStatements) return;
+  if (!executionRoleStatements) return;
+  const typedExecutionRoleStatements: readonly ApplicationRuntimeAccessAwsStatement[] = executionRoleStatements;
+  validateStatements(typedExecutionRoleStatements, 'execution-role');
+  if (policy.statements.some(({ actions }) => actions.includes('secretsmanager:GetSecretValue'))) {
+    errors.push(`${owner} leaves Secret projection authority on its application task role`);
+  }
+  if (typedExecutionRoleStatements.some(({ actions }) => actions.some((action) => action !== 'secretsmanager:GetSecretValue'))) {
+    errors.push(`${owner} grants non-bootstrap authority to its ECS execution role`);
   }
 }

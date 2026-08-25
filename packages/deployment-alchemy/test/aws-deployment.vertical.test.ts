@@ -190,12 +190,33 @@ describe("AWS Alchemy target", () => {
     expect(serialized).toContain('AWS::DynamoDB::Table');
     expect(serialized).toContain('APPLIK8S_KINESIS_CHECKPOINT_TABLE');
     expect(serialized).toContain('APPLIK8S_KINESIS_STREAM');
+    expect(serialized).toContain('APPLIK8S_AWS_RUNTIME_BINDING_SECRET_0');
+    expect(serialized).toContain('secretEnvironmentName');
+    expect(serialized).not.toContain('"secretArn":"');
     expect(serialized).toContain('dynamodb:UpdateItem');
     expect(serialized).toContain('kinesis:GetRecords');
     expect(serialized).not.toContain('"effect":"Allow"');
     expect(Object.values(template.Resources).filter((resource) => resource.Type === 'AWS::ECS::Service')).toHaveLength(2);
     expect(Object.values(template.Resources).filter((resource) => resource.Type === 'AWS::ApplicationAutoScaling::ScalableTarget')).toHaveLength(2);
     expect(Object.values(template.Resources).filter((resource) => resource.Type === 'AWS::ApplicationAutoScaling::ScalingPolicy')).toHaveLength(2);
+    const executionRoleEntry = Object.entries(template.Resources).find(([, resource]) => resource.Type === 'AWS::IAM::Role'
+      && resource.Properties
+      && typeof resource.Properties === 'object'
+      && !Array.isArray(resource.Properties)
+      && (resource.Properties as Record<string, unknown>).RoleName === 'demo-processor-bootstrap');
+    const workerTask = Object.values(template.Resources).find((resource) => resource.Type === 'AWS::ECS::TaskDefinition'
+      && JSON.stringify(resource.Properties).includes(image));
+    expect(executionRoleEntry?.[1]).toMatchObject({
+      Properties: {
+        ManagedPolicyArns: ['arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy'],
+        Policies: [{ PolicyName: 'applik8s-runtime-bootstrap' }],
+      },
+    });
+    expect(JSON.stringify(executionRoleEntry?.[1])).toContain('MasterUserSecret.SecretArn');
+    const workerTaskProperties = workerTask?.Properties && typeof workerTask.Properties === 'object' && !Array.isArray(workerTask.Properties)
+      ? workerTask.Properties as Record<string, unknown>
+      : undefined;
+    expect(workerTaskProperties?.ExecutionRoleArn).toEqual({ 'Fn::GetAtt': [executionRoleEntry?.[0], 'Arn'] });
   });
 
   test("lowers serving compiler artifacts as private discoverable ECS services with separate health and traffic ports", () => {
@@ -786,7 +807,13 @@ function fixturePlan(): ApplicationAwsDeploymentPlan {
 
 function runtimeArtifactFixturePlan(): ApplicationAwsDeploymentPlan {
   const plan = fixturePlan();
-  const database = planResource('provider.documents', 'rds', 'postgresql-instance', 'demo-documents', 'provider.documents', {}, ['endpoint', 'port', 'secretArn']);
+  const databaseBase = planResource('provider.documents', 'rds', 'postgresql-instance', 'demo-documents', 'provider.documents', {}, ['endpoint', 'port', 'secretArn']);
+  const database = {
+    ...databaseBase,
+    outputs: databaseBase.outputs.map((output) => output.name === 'secretArn'
+      ? { ...output, sensitivity: 'sensitive' as const, persistence: 'reference' as const }
+      : output),
+  };
   const stream = planResource('provider.events', 'kinesis', 'stream', 'demo-events', 'provider.events', { mode: 'ON_DEMAND', encrypted: true }, ['streamArn', 'streamName']);
   const checkpoints = planResource('framework.kinesis-checkpoints', 'dynamodb', 'kinesis-checkpoint-table', 'demo-kinesis-checkpoints', undefined, {
     partitionKey: 'consumerKey', sortKey: 'shardId', billingMode: 'PAY_PER_REQUEST', serverSideEncryption: true, pointInTimeRecovery: false,
@@ -797,15 +824,21 @@ function runtimeArtifactFixturePlan(): ApplicationAwsDeploymentPlan {
       { effect: 'Allow', actions: ['dynamodb:GetItem', 'dynamodb:UpdateItem'], resources: ['arn:aws:dynamodb:us-east-1:123456789012:table/demo-kinesis-checkpoints'] },
     ],
   }, ['roleArn']);
+  const executionRole = planResource('runtime-execution-role.processor-events', 'iam', 'role', 'demo-processor-bootstrap', 'processor.events', {
+    assumeService: 'ecs-tasks.amazonaws.com',
+    managedPolicyArns: ['arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy'],
+    rolePurpose: 'ecs-execution',
+    statements: [{ effect: 'Allow', actions: ['secretsmanager:GetSecretValue'], resources: ['output://provider.documents/secretArn'] }],
+  }, ['roleArn']);
   const worker = planResource('runtime-artifact.processor-events', 'ecs', 'fargate-worker', 'demo-events', 'processor.events', {
     artifactId: 'processor:processor.events', artifactDigest: `sha256:${'b'.repeat(64)}`, artifactSourceDigest: `sha256:${'c'.repeat(64)}`,
-    command: ['node', '/app/processor.mjs'], desiredCount: 1, runtimeRoleResourceId: role.id,
+    command: ['node', '/app/processor.mjs'], desiredCount: 1, runtimeRoleResourceId: role.id, executionRoleResourceId: executionRole.id,
     eventTransport: 'kinesis', eventStreamResourceId: stream.id, checkpointTableResourceId: checkpoints.id, consumer: 'processor:processor.events',
-    processorConcurrency: 1, databaseEnvironmentName: 'APPLIK8S_DATABASE_DOCUMENTS_URL',
+    processorConcurrency: 1, databaseEnvironmentName: 'APPLIK8S_DATABASE_DOCUMENTS_URL', runtimeBindingEnvironmentNames: ['APPLIK8S_DATABASE_DOCUMENTS_URL'],
   }, ['serviceArn']);
   return normalizeApplicationAwsDeploymentPlan({
     ...plan,
-    resources: [...plan.resources, database, stream, checkpoints, role, worker],
+    resources: [...plan.resources, database, stream, checkpoints, role, executionRole, worker],
     runtimeArtifacts: [{
       name: 'events', nodeId: 'processor.events', role: 'processor', source: '.applik8s/processor.mjs', digest: `sha256:${'b'.repeat(64)}`,
       container: {
@@ -820,6 +853,7 @@ function runtimeArtifactFixturePlan(): ApplicationAwsDeploymentPlan {
     edges: [
       ...plan.edges,
       { from: role.id, to: worker.id, relationship: 'assumesRole' },
+      { from: executionRole.id, to: worker.id, relationship: 'assumesRole', output: 'ecs-execution' },
       { from: stream.id, to: worker.id, relationship: 'requiresReady' },
       { from: checkpoints.id, to: worker.id, relationship: 'requiresReady' },
     ],

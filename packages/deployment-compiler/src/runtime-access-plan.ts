@@ -17,8 +17,8 @@ import {
 import {
   type ApplicationRuntimeAccessAwsStatement,
   type ApplicationRuntimeAccessBootstrapEgress,
-  type ApplicationRuntimeAccessExternalEgress,
   type ApplicationRuntimeAccessExecutionPlan,
+  type ApplicationRuntimeAccessExternalEgress,
   type ApplicationRuntimeAccessKubernetesBinding,
   type ApplicationRuntimeAccessKubernetesRule,
   type ApplicationRuntimeAccessPlan,
@@ -58,6 +58,7 @@ export interface ApplicationRuntimeAccessWorkloadPlacement {
   readonly aws?: {
     readonly resourceId: string;
     readonly roleName: string;
+    readonly executionRoleName?: string;
   };
 }
 
@@ -166,11 +167,13 @@ export function compileApplicationRuntimeAccessPlan(options: {
       if (entries.length === 0 && requiresKubernetesRule(requirement)) diagnostics.push({ severity: 'error', code: 'RUNTIME_ACCESS_TARGET_UNRESOLVED', message: `Runtime-access requirement ${requirement.id} cannot be lowered to an exact Kubernetes rule.`, requirementId: requirement.id });
       return entries;
     }) : [];
-    const awsStatements = options.target === 'aws' || options.target === 'aws-local' ? requirements.flatMap((requirement) => {
+    const allAwsStatements = options.target === 'aws' || options.target === 'aws-local' ? requirements.flatMap((requirement) => {
       const statements = awsStatementsForRequirement(requirement, options.graph, options.targetResources);
       if (statements.length === 0 && requiresAwsStatement(requirement, options.graph, options.targetResources)) diagnostics.push({ severity: 'error', code: 'RUNTIME_ACCESS_TARGET_UNRESOLVED', message: `Runtime-access requirement ${requirement.id} cannot be lowered to an exact AWS policy resource.`, requirementId: requirement.id });
       return statements;
     }) : [];
+    const awsStatements = allAwsStatements.flatMap((statement) => runtimeRoleStatement(statement));
+    const awsExecutionRoleStatements = allAwsStatements.flatMap((statement) => executionRoleStatement(statement));
     const privatePeers = mergePrivatePeers(requirements.flatMap((requirement) =>
       runtimePrivatePeer(requirement, options.target, options.graph, options.targetResources)));
     // Non-private egress is consumed only from explicit provider-adapter
@@ -200,7 +203,9 @@ export function compileApplicationRuntimeAccessPlan(options: {
     const aws = options.target === 'aws' || options.target === 'aws-local'
       ? {
           roleName: collisionResistantAwsRoleName(`${options.graph.metadata.name}-${nodeId}`, executionIdentity),
+          executionRoleName: collisionResistantAwsRoleName(`${options.graph.metadata.name}-${nodeId}-bootstrap`, executionIdentity),
           statements: mergeAwsStatements(awsStatements),
+          executionRoleStatements: mergeAwsStatements(awsExecutionRoleStatements),
           privatePeers,
           bootstrapEgress,
           externalEgress,
@@ -292,7 +297,9 @@ function compileWorkloadPlans(
           return {
           resourceId: placement.aws.resourceId,
           roleName: placement.aws.roleName,
+          ...(placement.aws.executionRoleName ? { executionRoleName: placement.aws.executionRoleName } : {}),
           statements: mergeAwsStatements(members.flatMap((member) => member.aws?.statements ?? [])),
+          executionRoleStatements: mergeAwsStatements(members.flatMap((member) => member.aws?.executionRoleStatements ?? [])),
           privatePeers,
           bootstrapEgress: mergeBootstrapEgress(members.flatMap((member) => member.aws?.bootstrapEgress ?? [])),
           externalEgress: mergeExternalEgress(members.flatMap((member) => member.aws?.externalEgress ?? [])),
@@ -755,6 +762,21 @@ function mergeAwsStatements(statements: readonly ApplicationRuntimeAccessAwsStat
     const parsed = JSON.parse(key) as { resources: string[]; conditions?: ApplicationRuntimeAccessAwsStatement['conditions'] };
     return { effect: 'Allow' as const, actions: [...actions].sort(), resources: parsed.resources, ...(parsed.conditions ? { conditions: parsed.conditions } : {}) };
   }).sort(compareCanonical);
+}
+
+function runtimeRoleStatement(
+  statement: ApplicationRuntimeAccessAwsStatement,
+): readonly ApplicationRuntimeAccessAwsStatement[] {
+  const actions = statement.actions.filter((action) => action !== 'secretsmanager:GetSecretValue');
+  return actions.length > 0 ? [{ ...statement, actions }] : [];
+}
+
+function executionRoleStatement(
+  statement: ApplicationRuntimeAccessAwsStatement,
+): readonly ApplicationRuntimeAccessAwsStatement[] {
+  return statement.actions.includes('secretsmanager:GetSecretValue')
+    ? [{ ...statement, actions: ['secretsmanager:GetSecretValue'] }]
+    : [];
 }
 
 interface KubernetesBindingEntry {

@@ -100,6 +100,7 @@ describe('v0.8 AWS deployment planning', () => {
     expect(plan.diagnostics).toEqual([]);
     const host = plan.resources.find(({ resourceType }) => resourceType === 'fargate-service');
     const database = plan.resources.find(({ service }) => service === 'rds');
+    const executionRole = plan.resources.find(({ id }) => id === host?.configuration.executionRoleResourceId);
     const workloadGroup = plan.resources.find(({ id }) => id === host?.configuration.runtimeAccessSecurityGroupResourceId);
     const targetGroup = plan.resources.find(({ id }) => id === database?.configuration.runtimeAccessSecurityGroupResourceId);
     expect(workloadGroup).toMatchObject({
@@ -133,7 +134,28 @@ describe('v0.8 AWS deployment planning', () => {
     });
     expect(host?.configuration.runtimeAccessSecurityGroupResourceId).not.toBe('foundation.security-group.application');
     expect(database?.configuration.runtimeAccessSecurityGroupResourceId).not.toBe('foundation.security-group.application');
+    expect(executionRole).toMatchObject({
+      service: 'iam',
+      resourceType: 'role',
+      configuration: {
+        rolePurpose: 'ecs-execution',
+        managedPolicyArns: ['arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy'],
+        statements: [{ effect: 'Allow', actions: ['secretsmanager:GetSecretValue'], resources: ['output://provider.provider.TransactionalDatabase/secretArn'] }],
+      },
+    });
     expect(validateAwsRuntimeAccessParity(plan.runtimeAccess, plan.resources, plan.edges)).toEqual([]);
+    expect(validateAwsRuntimeAccessParity(
+      plan.runtimeAccess,
+      plan.resources.filter(({ id }) => id !== executionRole?.id),
+      plan.edges,
+    )).toEqual(expect.arrayContaining([expect.objectContaining({ code: 'RUNTIME_ACCESS_EXECUTION_ROLE_MISSING' })]));
+    expect(validateAwsRuntimeAccessParity(
+      plan.runtimeAccess,
+      plan.resources.map((entry) => entry.id === executionRole?.id
+        ? { ...entry, configuration: { ...entry.configuration, statements: [] } }
+        : entry),
+      plan.edges,
+    )).toEqual(expect.arrayContaining([expect.objectContaining({ code: 'RUNTIME_ACCESS_BOOTSTRAP_IAM_MISSING' })]));
     expect(validateAwsRuntimeAccessParity(
       plan.runtimeAccess,
       plan.resources.filter(({ id }) => id !== workloadGroup?.id),
@@ -366,6 +388,7 @@ describe('v0.8 AWS deployment planning', () => {
     })]);
     const worker = plan.resources.find(({ resourceType }) => resourceType === 'fargate-worker');
     const role = plan.resources.find(({ id }) => id === worker?.configuration.runtimeRoleResourceId);
+    const executionRole = plan.resources.find(({ id }) => id === worker?.configuration.executionRoleResourceId);
     expect(worker).toMatchObject({
       service: 'ecs',
       semanticNodeId: artifact.nodeId,
@@ -390,11 +413,20 @@ describe('v0.8 AWS deployment planning', () => {
     expect(role?.configuration.statements).toEqual(expect.arrayContaining([
       expect.objectContaining({ actions: expect.arrayContaining(['kinesis:GetRecords', 'kinesis:PutRecord']) }),
       expect.objectContaining({ actions: ['dynamodb:GetItem', 'dynamodb:Query', 'dynamodb:UpdateItem'] }),
-      expect.objectContaining({ actions: ['secretsmanager:GetSecretValue'], resources: ['output://provider.provider.TransactionalDatabase/secretArn'] }),
     ]));
+    expect(JSON.stringify(role?.configuration.statements)).not.toContain('secretsmanager:GetSecretValue');
+    expect(executionRole).toMatchObject({
+      service: 'iam', resourceType: 'role',
+      configuration: {
+        rolePurpose: 'ecs-execution',
+        managedPolicyArns: ['arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy'],
+        statements: [expect.objectContaining({ actions: ['secretsmanager:GetSecretValue'], resources: ['output://provider.provider.TransactionalDatabase/secretArn'] })],
+      },
+    });
     expect(JSON.stringify(role)).not.toContain('provider.provider.AuditDatabase');
     expect(JSON.stringify(worker)).not.toContain('APPLIK8S_DATABASE_AUDIT_URL');
     expect(plan.edges).toContainEqual({ from: role?.id, to: worker?.id, relationship: 'assumesRole' });
+    expect(plan.edges).toContainEqual({ from: executionRole?.id, to: worker?.id, relationship: 'assumesRole', output: 'ecs-execution' });
   });
 
   it('places serving runtime artifacts behind private service discovery instead of treating them as background workers', () => {
