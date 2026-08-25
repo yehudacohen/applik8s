@@ -1,6 +1,14 @@
 // typecast-file-boundary: Test doubles intentionally implement partial AWS SDK clients and response envelopes.
 
-import { type ApplicationLakehouseQueryRuntime, createDeterministicApplicationLakehouseRuntime, LakehouseDataset, type } from '@applik8s/applik8s';
+import {
+  type ApplicationLakehouseQueryRuntime,
+  type ApplicationTelemetryBoundary,
+  type ApplicationTelemetryRuntime,
+  createDeterministicApplicationLakehouseRuntime,
+  installApplicationTelemetryRuntimeResolver,
+  LakehouseDataset,
+  type,
+} from '@applik8s/applik8s';
 import type { ApplicationEventLogPublisher } from '@applik8s/applik8s/processor-runtime';
 import { createApplicationTelemetryEnvelopeV1 } from '@applik8s/core';
 import type { AthenaClient } from '@aws-sdk/client-athena';
@@ -267,6 +275,13 @@ describe('AWS Kinesis event log and command processing', () => {
 
   it('replays a committed lakehouse publication when checkpointing is interrupted without duplicating rows', async () => {
     const order: string[] = [];
+    const boundaries: ApplicationTelemetryBoundary[] = [];
+    const telemetryRuntime: ApplicationTelemetryRuntime = {
+      async run(boundary, execute) { boundaries.push(boundary); return execute(); },
+      capture: () => undefined,
+      log() {}, count() {}, record() {},
+    };
+    const disposeTelemetry = installApplicationTelemetryRuntimeResolver(() => telemetryRuntime);
     let failCheckpoint = true;
     const checkpoints = new MemoryKinesisCheckpoints('owner', order, undefined, () => {
       if (failCheckpoint) {
@@ -287,15 +302,30 @@ describe('AWS Kinesis event log and command processing', () => {
         },
       }],
     } as const;
-    const record = { SequenceNumber: '77', PartitionKey: 'post-1', Data: new TextEncoder().encode(JSON.stringify({ ...commandEnvelope('post-1'), contract: { name: 'post.created', version: 'v1' }, channel: 'events' })) };
-    await expect(handleKinesisEventRecord(checkpoints, memoryEventLog(order), options, 'shard-0', 'owner', record, 2, new AbortController().signal)).rejects.toThrow(/checkpoint authority unavailable/u);
-    expect(lakehouse.current()?.rows).toEqual([{ id: 'post-1' }]);
-    expect(checkpoints.row.sequenceNumber).toBeUndefined();
+    const producer = telemetryCarrier('model:post-1');
+    const record = { SequenceNumber: '77', PartitionKey: 'post-1', Data: new TextEncoder().encode(JSON.stringify({ ...commandEnvelope('post-1'), contract: { name: 'post.created', version: 'v1' }, telemetry: producer, channel: 'events' })) };
+    try {
+      await expect(handleKinesisEventRecord(checkpoints, memoryEventLog(order), options, 'shard-0', 'owner', record, 2, new AbortController().signal)).rejects.toThrow(/checkpoint authority unavailable/u);
+      expect(lakehouse.current()?.rows).toEqual([{ id: 'post-1' }]);
+      expect(checkpoints.row.sequenceNumber).toBeUndefined();
 
-    await expect(handleKinesisEventRecord(checkpoints, memoryEventLog(order), options, 'shard-0', 'owner', record, 0, new AbortController().signal)).resolves.toBe('acked');
+      await expect(handleKinesisEventRecord(checkpoints, memoryEventLog(order), options, 'shard-0', 'owner', record, 0, new AbortController().signal)).resolves.toBe('acked');
+    } finally {
+      disposeTelemetry();
+    }
     expect(lakehouse.current()?.rows).toEqual([{ id: 'post-1' }]);
     expect(order).toEqual(['publish', 'publish', 'checkpoint']);
     expect(checkpoints.row.sequenceNumber).toBe('77');
+    expect(boundaries).toEqual([
+      expect.objectContaining({
+        kind: 'event', identity: 'lakehouse-history', attempt: 1,
+        invocation: 'live', relationship: 'asynchronous', links: [producer],
+      }),
+      expect.objectContaining({
+        kind: 'event', identity: 'lakehouse-history', attempt: 2,
+        invocation: 'retry', relationship: 'asynchronous', links: [producer],
+      }),
+    ]);
   });
 
   it('surfaces shard-loop failure through the processor lifecycle instead of silently losing supervision', async () => {

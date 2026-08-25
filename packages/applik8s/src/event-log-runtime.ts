@@ -1,3 +1,8 @@
+import {
+  type ApplicationTelemetryEnvelopeV1,
+  validateApplicationTelemetryEnvelopeV1,
+} from '@applik8s/core';
+import { runApplicationTelemetryBoundary } from './application-telemetry-runtime.js';
 import type { ApplicationMessageEnvelope } from './dsl.js';
 
 export interface EventLogPublishAcknowledgement {
@@ -35,6 +40,72 @@ export interface ApplicationEventConsumerBinding {
   readonly contract: { readonly name: string; readonly version: string };
   /** Resolve only after every authoritative side effect of this fact is durable. */
   execute(envelope: ApplicationMessageEnvelope<object>): Promise<unknown>;
+}
+
+export interface ApplicationEventDeliveryAttempt {
+  /** One-based physical delivery attempt, restored from the provider authority. */
+  readonly attempt: number;
+  readonly transport: 'jetstream' | 'kinesis';
+  /** Explicit replay is reserved for providers that can prove replay from durable state. */
+  readonly invocation?: 'live' | 'replay' | 'retry';
+}
+
+/**
+ * Executes one admitted broker delivery under the canonical event boundary.
+ *
+ * Transport adapters own durable attempt/checkpoint mechanics. This shared
+ * execution seam owns semantic event identity, validates the internal producer
+ * carrier, and prevents every provider from inventing a different trace shape.
+ * Invalid telemetry is discarded and can never fail or alter event delivery.
+ */
+export async function executeApplicationEventConsumerBinding(
+  binding: ApplicationEventConsumerBinding,
+  envelope: ApplicationMessageEnvelope<object>,
+  delivery: ApplicationEventDeliveryAttempt,
+): Promise<unknown> {
+  if (!Number.isSafeInteger(delivery.attempt) || delivery.attempt < 1) {
+    throw new Error('Application event delivery attempt must be a positive safe integer.');
+  }
+  const telemetry = applicationEventProducerTelemetry(envelope.telemetry);
+  const admittedEnvelope = telemetry || envelope.telemetry === undefined
+    ? envelope
+    : withoutApplicationEventTelemetry(envelope);
+  const contract = `${binding.contract.name}.${binding.contract.version}`;
+  return runApplicationTelemetryBoundary({
+    kind: 'event',
+    identity: binding.bindingId,
+    execution: `event:${binding.bindingId}:${envelope.id}`,
+    definition: contract,
+    instance: envelope.id,
+    occurrence: envelope.id,
+    attempt: delivery.attempt,
+    invocation: delivery.invocation ?? (delivery.attempt > 1 ? 'retry' : 'live'),
+    relationship: 'asynchronous',
+    links: telemetry ? [telemetry] : [],
+    attributes: {
+      'applik8s.event.contract': contract,
+      'applik8s.event.transport': delivery.transport,
+    },
+  }, () => binding.execute(admittedEnvelope));
+}
+
+function applicationEventProducerTelemetry(
+  value: unknown,
+): ApplicationTelemetryEnvelopeV1 | undefined {
+  if (value === undefined) return undefined;
+  try {
+    validateApplicationTelemetryEnvelopeV1(value);
+    return value;
+  } catch {
+    return undefined;
+  }
+}
+
+function withoutApplicationEventTelemetry(
+  envelope: ApplicationMessageEnvelope<object>,
+): ApplicationMessageEnvelope<object> {
+  const { telemetry: _telemetry, ...admitted } = envelope;
+  return admitted;
 }
 
 export interface RunningApplicationEventConsumer {

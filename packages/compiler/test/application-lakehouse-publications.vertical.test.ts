@@ -108,4 +108,35 @@ describe('v0.8 lakehouse publication discovery', () => {
     expect(Buffer.byteLength(awsBundle)).toBeLessThan(2 * 1024 * 1024);
     expect(Buffer.byteLength(localBundle)).toBeLessThan(512 * 1024);
   }, 60_000);
+
+  it('installs the selected telemetry runtime around the complete event-consumer lifecycle', async () => {
+    const discovered = await discoverApplicationGraphWithExports(
+      new URL('./fixtures/v08-observed-lakehouse-app.ts', import.meta.url).pathname,
+      'observedLakehouseProof',
+    );
+    expect(discovered.ok, discovered.ok ? undefined : discovered.error.message).toBe(true);
+    if (!discovered.ok) return;
+
+    const [artifact] = await emitGeneratedApplicationLakehousePublishers({
+      graph: discovered.value.graph,
+      outDir: await mkdtemp(join(tmpdir(), 'applik8s-observed-lakehouse-publisher-')),
+      executionTarget: 'kubernetes',
+    });
+    expect(artifact).toBeDefined();
+    if (!artifact) return;
+    const bundled = await readFile(artifact.sourcePath, 'utf8');
+    const generated = await readFile(
+      join(artifact.sourcePath, '..', 'publisher.cloud.generated.ts'),
+      'utf8',
+    );
+    expect(bundled).toContain('startApplicationOpenTelemetryRuntime');
+    expect(generated).toContain('installApplicationTelemetryRuntimeResolver');
+    expect(generated).toContain('closeApplicationTelemetryRuntime');
+    expect(generated).toContain("finally { await drain('runner-closed'); }");
+    expect(bundled).toContain('startJetStreamEventConsumer');
+    // This worker contains both the selected S3/Glue dataset adapter and the
+    // complete OTLP runtime. Keep a role-specific ceiling rather than reusing
+    // the smaller agent-only budget.
+    expect(Buffer.byteLength(bundled)).toBeLessThan(3 * 1024 * 1024);
+  }, 60_000);
 });

@@ -1,7 +1,7 @@
 // typecast-file-boundary: Kinesis and DynamoDB transport payloads are validated before conversion to provider-neutral command envelopes and checkpoint state.
 import { createHash, randomUUID } from 'node:crypto';
 import type { ApplicationMessageEnvelope, ApplicationModelCommandDeliveryOptions } from '@applik8s/applik8s';
-import type { ApplicationEventConsumerBinding, RunningApplicationEventConsumer } from '@applik8s/applik8s/event-log-runtime';
+import { type ApplicationEventConsumerBinding, executeApplicationEventConsumerBinding, type RunningApplicationEventConsumer } from '@applik8s/applik8s/event-log-runtime';
 import type { ApplicationCommandProcessorBinding, ApplicationEventLogPublisher, RunningApplicationCommandProcessor } from '@applik8s/applik8s/processor-runtime';
 import { isDurableCommandRejectedError } from '@applik8s/applik8s/processor-runtime';
 import type { ApplicationAuthorizationReceipt } from '@applik8s/core';
@@ -260,11 +260,18 @@ export async function handleKinesisEventRecord(
   for (;;) {
     signal.throwIfAborted();
     attempt += 1;
+    // Persist the physical attempt before executing application work. If the
+    // process or checkpoint write fails after the binding commits, the next
+    // worker resumes with a retry attempt instead of fabricating another live
+    // delivery for the same logical event.
+    await recordFailure(checkpoints, options, shardId, owner, record.SequenceNumber, attempt);
     try {
-      await binding.execute(decoded.envelope);
+      await executeApplicationEventConsumerBinding(binding, decoded.envelope, {
+        attempt,
+        transport: 'kinesis',
+      });
     } catch (cause) {
       if (attempt < Math.max(1, options.maxAttempts ?? 5)) {
-        await recordFailure(checkpoints, options, shardId, owner, record.SequenceNumber, attempt);
         await abortableDelay(retryDelay(attempt, options.retryDelayMs ?? 100, options.maxRetryDelayMs ?? 30_000), signal);
         if (signal.aborted) return 'retried';
         continue;

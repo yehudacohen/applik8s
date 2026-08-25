@@ -1,7 +1,8 @@
 // typecast-file-boundary: NATS payload bytes are restored only after envelope and declared event-schema validation.
-import { connect, type ConsumerMessages, type JetStreamClient, type JsMsg, type NatsConnection, StringCodec } from 'nats';
+
 import type { ApplicationMessageEnvelope } from '@applik8s/applik8s/dsl';
-import type { ApplicationEventConsumerBinding, RunningApplicationEventConsumer } from '@applik8s/applik8s/event-log-runtime';
+import { type ApplicationEventConsumerBinding, executeApplicationEventConsumerBinding, type RunningApplicationEventConsumer } from '@applik8s/applik8s/event-log-runtime';
+import { type ConsumerMessages, connect, type JetStreamClient, type JsMsg, type NatsConnection, StringCodec } from 'nats';
 import { consumeWithBoundedConcurrency } from './bounded-concurrency.js';
 
 export interface JetStreamEventConsumerOptions {
@@ -75,7 +76,10 @@ export async function handleJetStreamEventMessage(
   }
   const attempt = Math.max(1, message.info.deliveryCount);
   try {
-    await binding.execute(envelope);
+    await executeApplicationEventConsumerBinding(binding, envelope, {
+      attempt,
+      transport: 'jetstream',
+    });
     message.ack();
     log(options, 'applik8s-event-consumed', { messageId: envelope.id, binding: binding.bindingId, attempt });
     return 'acked';

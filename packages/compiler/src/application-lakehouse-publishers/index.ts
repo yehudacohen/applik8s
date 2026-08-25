@@ -9,6 +9,7 @@ import { generatedCallbackFactoryModule } from '../application-callback-module.j
 import { emitGeneratedApplicationContainer, type GeneratedApplicationContainerArtifact } from '../application-containers/index.js';
 import { applicationFrameworkCredentialDependencies } from '../application-framework-credentials.js';
 import { applicationGraphBooleanCondition, applicationGraphInterpolate, applicationGraphJsonStringArray, applicationGraphStringValue } from '../application-installation-values.js';
+import { applicationGraphHasObservabilityRuntime, generatedApplicationTelemetryImports, generatedApplicationTelemetryRuntimeSource } from '../application-observability-runtime-source.js';
 import { applik8sWorkspaceSourcePlugin } from '../bundling/index.js';
 
 const runtimeImage = 'node:22-alpine@sha256:16e22a550f3863206a3f701448c45f7912c6896a62de43add43bb9c86130c3e2';
@@ -66,6 +67,7 @@ interface PublisherContract {
   readonly streamReplicas: number;
   readonly subjectPrefix: string;
   readonly consumer: string;
+  readonly observability: boolean;
   readonly connectionSecret?: { readonly name: string; readonly authMode: 'token' | 'userPassword'; readonly tokenKey: string; readonly userKey: string; readonly passwordKey: string };
 }
 
@@ -195,6 +197,7 @@ ${runtimeTarget === 'local'
     ? "import { createAwsApplicationLakehouseDatasetRuntime } from '@applik8s/runtime-aws/lakehouse';\nimport { startKinesisEventConsumer } from '@applik8s/runtime-aws/kinesis';"
     : "import { createAwsApplicationLakehouseDatasetRuntime } from '@applik8s/runtime-aws/lakehouse';\nimport { startJetStreamEventConsumer } from '@applik8s/runtime-nats/event-consumer';"}
 import { normalizeSchema } from '@applik8s/sdk';
+${contract.observability ? generatedApplicationTelemetryImports({ runtimeImplementation: true }).join('\n') : ''}
 import { createCallback as createTransform } from './${transformModule}.js';
 ${partitionModule ? `import { createCallback as createPartition } from './${partitionModule}.js';` : ''}
 
@@ -239,6 +242,7 @@ const runtime = ${runtimeTarget === 'local' ? `selected.kind === 'duckdb-dataset
     })()
   : (() => { throw new Error('Cloud lakehouse publishers require an S3 dataset branch.'); })()`};
 const disposeRuntime = installApplicationLakehousePublicationRuntimeResolver((qualification) => qualification === ${JSON.stringify(contract.qualification)} ? runtime : undefined);
+${contract.observability ? generatedApplicationTelemetryRuntimeSource({ application: contract.graph.metadata.name, service: `lakehouse-publisher:${contract.consumer}` }) : ''}
 const binding = {
   bindingId: ${JSON.stringify(contract.consumer)},
   contract: ${JSON.stringify(publication.sourceContract)},
@@ -259,19 +263,24 @@ const heartbeat = '/tmp/applik8s-lakehouse-publisher-heartbeat';
 await writeFile('/tmp/applik8s-lakehouse-publisher-ready', 'ready\\n');
 await writeFile(heartbeat, String(Date.now()));
 const pulse = setInterval(() => { void writeFile(heartbeat, String(Date.now())); }, 10_000);
-let draining = false;
-async function drain(signal) {
-  if (draining) return;
-  draining = true;
+let drainPromise;
+function drain(signal) {
+  if (drainPromise) return drainPromise;
+  drainPromise = (async () => {
   clearInterval(pulse);
   await rm('/tmp/applik8s-lakehouse-publisher-ready', { force: true });
-  await runner.drain();
-  disposeRuntime();
+  let failure;
+  try { await runner.drain(); } catch (error) { failure = error; }
+  try { disposeRuntime(); } catch (error) { failure ??= error; }
+  ${contract.observability ? 'try { await closeApplicationTelemetryRuntime(); } catch (error) { failure ??= error; }' : ''}
   console.log(JSON.stringify({ event: 'applik8s-lakehouse-publisher-drained', signal }));
+  if (failure) throw failure;
+  })();
+  return drainPromise;
 }
 process.once('SIGTERM', () => void drain('SIGTERM'));
 process.once('SIGINT', () => void drain('SIGINT'));
-await runner.closed;
+try { await runner.closed; } finally { await drain('runner-closed'); }
 `;
 }
 
@@ -323,6 +332,7 @@ function publisherContract(
     streamReplicas: positiveInteger(eventConfig.replicas) ?? 1,
     subjectPrefix: applicationGraphStringValue(eventConfig.subjectPrefix) || 'applik8s',
     consumer: kubernetesName(`lakehouse-${publication.name}-${createHash('sha256').update(publication.id).digest('hex').slice(0, 8)}`),
+    observability: applicationGraphHasObservabilityRuntime(graph),
     ...(secret?.name ? { connectionSecret: { name: secret.name, authMode, tokenKey: stringValue(eventConfig.tokenKey) || 'token', userKey: stringValue(eventConfig.userKey) || 'user', passwordKey: stringValue(eventConfig.passwordKey) || 'password' } } : {}),
   };
 }

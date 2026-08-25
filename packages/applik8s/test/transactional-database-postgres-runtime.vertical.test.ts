@@ -14,12 +14,12 @@ import { type ApplicationRuntimeModelContract, applicationModelMigrationPrefligh
 import { generatedApplicationRuntimeModuleSource } from '../src/application-runtime-modules.js';
 import { type ApplicationTelemetryBoundary, type ApplicationTelemetryRuntime, installApplicationTelemetryRuntimeResolver } from '../src/application-telemetry-runtime.js';
 import { applicationRequestContextValues } from '../src/command-principal.js';
-import { command, event } from '../src/dsl.js';
+import { type ApplicationMessageEnvelope, command, event } from '../src/dsl.js';
 import { applicationPostgresModelReadClients, closePostgresModelCommandRuntime, executeFunctionNativePostgresModelEdit, executeFunctionNativePostgresTransaction, executePostgresModelCommand, type FunctionNativePostgresNestedOperation, isRetryablePostgresTransactionError, normalizePostgresNativeModelValue, type PostgresModelCommandEventDefinition, recordPostgresModelCommandTerminalFailure } from '../src/model-command-postgres-runtime.js';
 import { applicationModelCommandBindingForOperation, nativeApplicationModelBindingFor, nativeApplicationModelCommandRegistrar } from '../src/native-models.js';
 import { cleanupPostgresCommandData, observePostgresOutboxLag, relayPostgresCommandOutbox, relayPostgresEventOutbox } from '../src/postgres-outbox-runtime.js';
 import { applicationRelationalFrameworkMigrationSql } from '../src/relational-runtime.js';
-import { createApplicationFunctionNativeOperationHandle } from '../src/stream-worker-runtime.js';
+import { createApplicationFunctionNativeOperationHandle, runApplicationStreamProcessor } from '../src/stream-worker-runtime.js';
 import { closePostgresModelClients, createPostgresModelClient } from '../src/transactional-database-postgres-runtime.js';
 
 const liveDatabaseUrl = process.env.APPLIK8S_TRANSACTIONAL_DATABASE_SCRIPT_RUNTIME_DATABASE_URL;
@@ -481,6 +481,98 @@ describe.runIf(liveDatabaseUrl)('Postgres TransactionalDatabase script runtime l
     await expect(sql.unsafe('SELECT count(*)::int AS count FROM applik8s_event_outbox WHERE scope IN (SELECT scope FROM applik8s_command_inbox WHERE binding_id = $1)', [bindingId])).resolves.toMatchObject([{ count: 1 }]);
     await expect(sql.unsafe('SELECT partition_key FROM applik8s_event_outbox WHERE scope IN (SELECT scope FROM applik8s_command_inbox WHERE binding_id = $1)', [bindingId])).resolves.toEqual([{ partition_key: 'after' }]);
     await expect(sql.unsafe("SELECT envelope->'telemetry' AS telemetry FROM applik8s_event_outbox WHERE scope IN (SELECT scope FROM applik8s_command_inbox WHERE binding_id = $1)", [bindingId])).resolves.toEqual([{ telemetry: first.events[0]?.telemetry }]);
+
+    const publishedEvents: Array<ApplicationMessageEnvelope<object>> = [];
+    await expect(relayPostgresEventOutbox({
+      databaseUrl: liveDatabaseUrl,
+      eventLog: {
+        async publish(envelope) {
+          publishedEvents.push(envelope);
+          return { stream: 'events', sequence: 1, duplicate: false, subject: 'events.note.changed.v1', messageId: envelope.id };
+        },
+      },
+    })).resolves.toMatchObject({ selected: 1, published: 1, duplicates: 0 });
+    expect(publishedEvents).toEqual([expect.objectContaining({
+      id: first.events[0]?.id,
+      telemetry: first.events[0]?.telemetry,
+    })]);
+
+    const sourceEvent = publishedEvents[0];
+    const producerTelemetry = first.events[0]?.telemetry;
+    const sourceMessage = sourceEvent?.payload
+      ? Reflect.get(sourceEvent.payload, 'message')
+      : undefined;
+    if (!sourceEvent || !producerTelemetry || typeof sourceMessage !== 'string') {
+      throw new Error('The committed event and its producer carrier are required for processor propagation evidence.');
+    }
+    let processorCheckpoint = 0;
+    let processorInvocations = 0;
+    const disposeProcessorTelemetry = installApplicationTelemetryRuntimeResolver(
+      () => telemetryRuntime,
+    );
+    try {
+      await expect(runApplicationStreamProcessor({
+        processor: 'note-index',
+        streamName: 'note.changed.v1',
+        source: {
+          async read(afterSequence) {
+            return afterSequence >= 1
+              ? { items: [], nextSequence: 1, exhausted: true, retentionFloor: 0 }
+              : {
+                  items: [{
+                    id: String(sourceEvent.id),
+                    stream: { name: 'note.changed', version: 'v1' },
+                    sequence: 1,
+                    partitionKey: String(sourceEvent.partitionKey),
+                    recordedAt: String(sourceEvent.recordedAt),
+                    telemetry: producerTelemetry,
+                    payload: { message: sourceMessage },
+                  }],
+                  nextSequence: 1,
+                  exhausted: true,
+                  retentionFloor: 0,
+                };
+          },
+        },
+        store: {
+          async prepare() {},
+          async checkpoint() { return processorCheckpoint; },
+          async advance(_processor, _stream, sequence) { processorCheckpoint = sequence; },
+          async deadLetter() {},
+          async close() {},
+        },
+        // typecast: this causal-propagation fixture does not exercise admission;
+        // dedicated processor tests prove the canonical admitted context.
+        admit: async () => ({}) as never,
+        async handle() {
+          processorInvocations += 1;
+          if (processorInvocations === 1) throw new Error('retry the emitted worker once');
+        },
+        concurrency: 1,
+        retry: { maxAttempts: 2, initialDelayMs: 1, maxDelayMs: 1, factor: 2 },
+        failure: 'pause',
+        timeoutMs: 1_000,
+        maxInputBytes: 1_000,
+      })).resolves.toMatchObject({ processed: 1, checkpoint: 1, exhausted: true });
+    } finally {
+      disposeProcessorTelemetry();
+    }
+    expect(modelBoundaries).toHaveLength(3);
+    expect(modelBoundaries.slice(1)).toEqual([
+      expect.objectContaining({
+        kind: 'processor', identity: 'note-index',
+        execution: `processor:note-index:${String(sourceEvent.id)}`,
+        attempt: 1, invocation: 'live', relationship: 'asynchronous',
+        links: [producerTelemetry],
+      }),
+      expect.objectContaining({
+        kind: 'processor', identity: 'note-index',
+        execution: `processor:note-index:${String(sourceEvent.id)}`,
+        attempt: 2, invocation: 'retry', relationship: 'asynchronous',
+        links: [producerTelemetry],
+      }),
+    ]);
+    expect(processorInvocations).toBe(2);
 
     let createInvocations = 0;
     const createExistingExecution = {

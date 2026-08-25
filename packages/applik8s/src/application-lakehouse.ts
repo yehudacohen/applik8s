@@ -1,20 +1,20 @@
 // typecast-file-boundary: Lakehouse rows and cursors cross provider-neutral schema boundaries and are validated before materialization.
 import { createHash } from 'node:crypto';
-import { canonicalJsonV1Value, type ApplicationLakehousePublicationNode, type JsonValue } from '@applik8s/core';
+import { type ApplicationLakehousePublicationNode, canonicalJsonV1Value, type JsonValue } from '@applik8s/core';
 import {
   createRollingSignedEnvelopeCodec,
+  type RollingSignedEnvelopeCodec,
   signedEnvelopeUtf8Key,
   staticSignedEnvelopeKeyProvider,
-  type RollingSignedEnvelopeCodec,
 } from '@applik8s/runtime/signed-envelope';
 import type { SchemaInput } from '@applik8s/sdk';
-import type { ApplicationMessageEnvelope, EventDefinition } from './dsl.js';
 import type {
   ApplicationLakehouseQueryProvider,
   ApplicationQualifiedProviderToken,
 } from './application-providers.js';
 import { declaredSchema, validateMessage } from './application-schema-runtime.js';
 import { runApplicationTelemetryBoundary } from './application-telemetry-runtime.js';
+import type { ApplicationMessageEnvelope, EventDefinition } from './dsl.js';
 
 export interface QualifiedLakehouseDatasetRef {
   readonly name: string;
@@ -72,10 +72,11 @@ export async function executeApplicationLakehousePublication<TRow extends object
   for (let index = lakehousePublicationRuntimeResolvers.length - 1; index >= 0; index -= 1) {
     const runtime = lakehousePublicationRuntimeResolvers[index]?.(qualification) as unknown as ApplicationLakehousePublicationRuntime<TRow> | undefined;
     if (runtime) {
-      return runApplicationTelemetryBoundary(
-        { kind: 'event', identity: `lakehouse.publish.${qualification}`, attributes: { 'applik8s.event.id': envelope.id } },
-        () => runtime.append({ frontier: envelope.id, rows: [row], ...(partitions ? { partitions } : {}) }),
-      );
+      // The broker consumer owns the one retry-aware semantic event boundary.
+      // This function owns only idempotent publication into the selected
+      // dataset so direct calls and consumer retries cannot double-count the
+      // same event as nested business spans.
+      return runtime.append({ frontier: envelope.id, rows: [row], ...(partitions ? { partitions } : {}) });
     }
   }
   throw new Error(`No LakehouseDataset publication runtime is installed for qualified provider ${qualification}.`);

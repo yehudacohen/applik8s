@@ -1,7 +1,13 @@
 // typecast-file-boundary: Focused JetStream fixtures implement only the message and publisher surface exercised by the consumer.
+
+import {
+  type ApplicationTelemetryBoundary,
+  type ApplicationTelemetryRuntime,
+  installApplicationTelemetryRuntimeResolver,
+} from '@applik8s/applik8s';
+import { handleJetStreamEventMessage } from '@applik8s/runtime-nats/event-consumer';
 import { StringCodec } from 'nats';
 import { describe, expect, it, vi } from 'vitest';
-import { handleJetStreamEventMessage } from '@applik8s/runtime-nats/event-consumer';
 
 const codec = StringCodec();
 
@@ -34,6 +40,31 @@ describe('durable JetStream event consumer', () => {
     })).resolves.toBe('terminated');
     expect(published).toEqual([expect.objectContaining({ subject: 'applik8s.dead-letter.history', body: expect.objectContaining({ id: 'event-1:dead-letter' }) })]);
     expect(terminalOrder).toEqual(['term:applik8s event attempts exhausted']);
+  });
+
+  it('maps JetStream delivery count to the canonical event attempt', async () => {
+    const boundaries: ApplicationTelemetryBoundary[] = [];
+    const runtime: ApplicationTelemetryRuntime = {
+      async run(boundary, execute) { boundaries.push(boundary); return execute(); },
+      capture: () => undefined,
+      log() {}, count() {}, record() {},
+    };
+    const dispose = installApplicationTelemetryRuntimeResolver(() => runtime);
+    try {
+      await handleJetStreamEventMessage(fakeMessage(4, []) as never, publisher() as never, {
+        bindings: [{ bindingId: 'history', contract: { name: 'post.created', version: 'v1' }, async execute() {} }],
+        subjectPrefix: 'applik8s', maxAttempts: 5,
+      });
+    } finally {
+      dispose();
+    }
+    expect(boundaries).toEqual([
+      expect.objectContaining({
+        kind: 'event', identity: 'history', attempt: 4,
+        invocation: 'retry', relationship: 'asynchronous',
+        attributes: expect.objectContaining({ 'applik8s.event.transport': 'jetstream' }),
+      }),
+    ]);
   });
 });
 
