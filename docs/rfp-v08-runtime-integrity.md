@@ -56,6 +56,11 @@ The core algebra must specify:
 - byte/string conversion boundaries; and
 - deterministic diagnostics identifying the rejected path and active policy.
 
+Each named policy also declares bounded input size, nesting depth, collection
+size, and work limits. The implementation must reject adversarially deep or large
+values before unbounded recursion or allocation. Diagnostics identify the policy
+and safe structural path but never include sensitive values.
+
 Domains select a named, versioned policy. They may not copy and modify the
 algorithm. TypeKro/CEL references are encoded through explicit compiler or
 deployment adapters and cannot enter the platform-neutral core by duck typing.
@@ -76,6 +81,12 @@ Verification must enforce purpose before payload use, bound encoded size before
 parsing, validate payload shape, compare signatures without data-dependent early
 success, and return structured non-secret diagnostics. A decoder never tries a
 different purpose after failure.
+
+Shared codecs must pass malformed-input and property/fuzz corpora covering UTF-8,
+escaping, numeric edges, truncation, duplicate or ambiguous fields, nested
+collections, and adversarial framing. Errors, logs, traces, and metrics must not
+contain protected bytes, signatures, key material, credentials, or sensitive
+payload values.
 
 Commands, queries, subscriptions, tasks, object intents, search, celld tickets,
 and lakehouse cursors define separate payload schemas. Provider implementations
@@ -147,6 +158,8 @@ The `runtime-integrity` acceptance gate requires:
 - deterministic/PostgreSQL/OpenSearch search cursor parity;
 - mixed-version rolling migration evidence for every durable format;
 - admission parity across every ingress row above; and
+- repeated before/after latency, throughput, allocation, and bundle-size evidence
+  for migrated hot paths against explicit budgets; and
 - a source inventory proving maintained gateways/providers do not contain a
   private signing or canonicalization implementation.
 

@@ -5,6 +5,7 @@
   "carrier": "applik8s.telemetry/v1alpha1",
   "instrumentedSourceFiles": [
     "packages/applik8s/src/application-actors.ts",
+    "packages/applik8s/src/event-log-runtime.ts",
     "packages/applik8s/src/application-lakehouse.ts",
     "packages/applik8s/src/model-command-postgres-runtime.ts",
     "packages/applik8s/src/query-gateway.ts",
@@ -94,19 +95,21 @@
     },
     {
       "kind": "event",
-      "state": "in-progress",
+      "state": "implemented",
       "relationship": "mixed",
-      "producer": "HTTP webhook or stream ingress and transactional event outbox",
-      "consumer": "generated Fetch gateway or broker delivery worker",
-      "carrierPlacement": "HTTP ingress is instrumented; PostgreSQL model commands persist their child carrier atomically with event and command outboxes; JetStream and Kinesis command deliveries restore that exact producer carrier for each retry attempt",
+      "producer": "verified HTTP webhook, function-native issuance, or transactional event outbox",
+      "consumer": "generated Fetch gateway or admitted JetStream/Kinesis event-delivery worker",
+      "carrierPlacement": "verified HTTP ingress owns its external event boundary; transactional model execution captures its child carrier and persists it atomically with the event outbox; relay preserves that exact carrier; JetStream delivery count and the Kinesis checkpoint authority restore one-based physical attempts; the shared event executor validates and links the producer carrier, opens exactly one semantic event boundary per delivery, and drops malformed telemetry without changing business delivery; downstream processors own distinct linked processor attempts, while lakehouse publication remains an idempotent effect rather than a duplicate nested event span",
       "owners": [
         "packages/applik8s/src/model-command-postgres-runtime.ts",
-        "packages/applik8s/src/application-lakehouse.ts",
+        "packages/applik8s/src/event-log-runtime.ts",
         "packages/compiler/src/application-fetch-gateway/index.ts",
+        "packages/compiler/src/application-lakehouse-publishers/index.ts",
         "packages/compiler/src/application-reactive/index.ts",
         "packages/operations/src/runtime.ts",
         "packages/runtime-aws/src/kinesis.ts",
-        "packages/runtime-nats/src/command-processor.ts"
+        "packages/runtime-nats/src/command-processor.ts",
+        "packages/runtime-nats/src/event-consumer.ts"
       ],
       "sourceMarkers": [
         {
@@ -114,12 +117,24 @@
           "marker": "? 'event'"
         },
         {
-          "path": "packages/applik8s/src/application-lakehouse.ts",
-          "marker": "kind: 'event'"
+          "path": "packages/applik8s/src/event-log-runtime.ts",
+          "marker": "executeApplicationEventConsumerBinding"
+        },
+        {
+          "path": "packages/runtime-aws/src/kinesis.ts",
+          "marker": "transport: 'kinesis'"
+        },
+        {
+          "path": "packages/runtime-nats/src/event-consumer.ts",
+          "marker": "transport: 'jetstream'"
+        },
+        {
+          "path": "packages/compiler/src/application-lakehouse-publishers/index.ts",
+          "marker": "generatedApplicationTelemetryRuntimeSource"
         }
       ],
-      "regression": "bunx vitest run --maxWorkers=1 packages/applik8s/test/transactional-database-postgres-runtime.vertical.test.ts packages/runtime-nats/test/command-processor.vertical.test.ts packages/runtime-aws/test/runtime.vertical.test.ts packages/compiler/test/application-fetch-gateway.vertical.test.ts packages/compiler/test/application-reactive.vertical.test.ts",
-      "remaining": "Prove one emitted-worker causal vertical from authenticated HTTP through model commit, broker redelivery, and processor retry/replay without fabricating a second business span; extend the carrier to non-command event publishers and consumers."
+      "regression": "bunx vitest run --maxWorkers=1 packages/applik8s/test/event-log-runtime.vertical.test.ts packages/applik8s/test/application-lakehouse.vertical.test.ts packages/runtime-nats/test/event-consumer.vertical.test.ts packages/runtime-aws/test/runtime.vertical.test.ts packages/compiler/test/application-lakehouse-publications.vertical.test.ts && bash scripts/run-v08-observability-postgres-live.sh",
+      "remaining": "Qualify the generated application worker as a real process from authenticated HTTP through model commit, outbox relay, broker redelivery, and processor retry/replay with collector-visible linkage, restart continuity, redacted terminal outcomes, and verified cleanup. Deterministic and disposable-PostgreSQL evidence implements the carrier and attempt contract but does not claim a real JetStream/Kinesis backend lifecycle."
     },
     {
       "kind": "http",
