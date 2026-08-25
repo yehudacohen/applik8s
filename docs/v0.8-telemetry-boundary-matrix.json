@@ -20,6 +20,7 @@
     "packages/applik8s/src/model-command-postgres-runtime.ts",
     "packages/applik8s/src/task-operation-runtime.ts",
     "packages/applik8s/src/workflow-gateway-binding.ts",
+    "packages/compiler/src/application-fetch-gateway/index.ts",
     "packages/compiler/src/application-http/index.ts",
     "packages/compiler/src/application-workflows/source.ts"
   ],
@@ -50,18 +51,29 @@
     },
     {
       "kind": "agent",
-      "state": "not-started",
+      "state": "implemented",
       "relationship": "mixed",
       "producer": "authenticated agent invocation or parent managed execution",
       "consumer": "generated agent worker and tool loop",
-      "carrierPlacement": "not yet implemented",
+      "carrierPlacement": "the authenticated Fetch gateway captures and forwards one framework-owned bounded carrier; the logical invocation durably retains the first carrier; only physical dispatch attempts create one linked agent boundary with synchronous provider-attempt and tool-operation children; join and replay create no business boundaries",
       "owners": [
+        "packages/ai/src/runtime.ts",
         "packages/compiler/src/application-agents/index.ts",
+        "packages/runtime-ai/src/agent-gateway.ts",
         "packages/runtime-ai/src/index.ts"
       ],
-      "sourceMarkers": [],
-      "regression": null,
-      "remaining": "Instrument agent run and tool-call attempts without replacing the original causal principal; carry links through durable provider attempts."
+      "sourceMarkers": [
+        {
+          "path": "packages/compiler/src/application-agents/index.ts",
+          "marker": "telemetry: { run: runApplicationTelemetryBoundary }"
+        },
+        {
+          "path": "packages/runtime-ai/src/index.ts",
+          "marker": "kind: 'agent'"
+        }
+      ],
+      "regression": "bunx vitest run --maxWorkers=1 packages/ai/test/runtime.vertical.test.ts packages/runtime-ai/test/runtime.vertical.test.ts packages/runtime-ai/test/agent-gateway.vertical.test.ts packages/runtime-ai/test/operation-executor.vertical.test.ts packages/compiler/test/application-agents.vertical.test.ts packages/compiler/test/application-fetch-gateway.vertical.test.ts",
+      "remaining": "Prove a real provider/tool stream through emitted workers with restart, cancellation, redacted terminal outcomes, and collector-visible linkage; general callable-provider boundaries remain separate."
     },
     {
       "kind": "event",
