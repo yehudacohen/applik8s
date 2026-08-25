@@ -1,15 +1,17 @@
+import type { ApplicationCommandObservation } from '@applik8s/applik8s/dsl';
+import { DurableCommandRejectedError } from '@applik8s/applik8s/processor-runtime';
+import { createApplicationTelemetryEnvelopeV1 } from '@applik8s/core';
+import { consumeJetStreamCommandMessages, handleJetStreamCommandMessage } from '@applik8s/runtime-nats';
 import { StringCodec } from 'nats';
 import { describe, expect, it, vi } from 'vitest';
-import type { ApplicationCommandObservation } from '@applik8s/applik8s/dsl';
-import { consumeJetStreamCommandMessages, handleJetStreamCommandMessage } from '@applik8s/runtime-nats';
-import { DurableCommandRejectedError } from '@applik8s/applik8s/processor-runtime';
 
 const codec = StringCodec();
 
 describe('generated JetStream command processor runtime', () => {
   it('acks only after the selected materialized binding commits', async () => {
     const calls: string[] = [];
-    const message = fakeMessage(commandEnvelope(), 1, calls);
+    const telemetry = telemetryCarrier('command-ingress');
+    const message = fakeMessage({ ...commandEnvelope(), telemetry }, 1, calls);
     const execute = vi.fn(async () => { calls.push('commit'); });
 
     await expect(handleJetStreamCommandMessage(message, fakeJetStream(), {
@@ -17,7 +19,7 @@ describe('generated JetStream command processor runtime', () => {
       subjectPrefix: 'applik8s',
     })).resolves.toBe('acked');
 
-    expect(execute).toHaveBeenCalledWith({ accountId: 'account-1', displayName: 'Grace' }, expect.objectContaining({ id: 'message-1', attempt: 1, recordedAt: '2026-07-10T12:00:00.000Z', expectedRevision: 'revision-expected', targetKey: 'routed-account', idempotencyKey: 'outbox-request' }));
+    expect(execute).toHaveBeenCalledWith({ accountId: 'account-1', displayName: 'Grace' }, expect.objectContaining({ id: 'message-1', attempt: 1, recordedAt: '2026-07-10T12:00:00.000Z', expectedRevision: 'revision-expected', targetKey: 'routed-account', idempotencyKey: 'outbox-request', telemetry }));
     expect(calls).toEqual(['commit', 'ack']);
   });
 
@@ -213,6 +215,20 @@ function commandEnvelope(): object {
     expectedRevision: 'revision-expected',
     routing: { binding: 'Account-account.rename.v1', targetKey: 'routed-account', idempotencyKey: 'outbox-request' },
   };
+}
+
+function telemetryCarrier(execution: string) {
+  return createApplicationTelemetryEnvelopeV1({
+    traceparent: '00-0123456789abcdef0123456789abcdef-0123456789abcdef-01',
+    identity: {
+      application: 'catalog',
+      environment: 'test',
+      target: 'kubernetes',
+      operation: 'command:account.rename.v1',
+      execution,
+      attempt: 1,
+    },
+  });
 }
 
 function authorizationReceipt(): object {

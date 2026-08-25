@@ -28,6 +28,7 @@ import { applicationGraphAllConditions, applicationGraphBooleanCondition, applic
 import type { ApplicationOperationPlacementReceiver } from '../application-mcp/index.js';
 import { compileApplicationMcpPlacementRoutes, compileApplicationOperationPlacementReceiver } from '../application-mcp/index.js';
 import { applicationObjectStorageEnvironment } from '../application-object-storage-environment.js';
+import { applicationGraphHasObservabilityRuntime, generatedApplicationTelemetryImports, generatedApplicationTelemetryRuntimeSource } from '../application-observability-runtime-source.js';
 import { applicationStaticAuthorityManifest, compileApplicationOperationCatalog, compileApplicationWorkloadAuthority } from '../application-operations/index.js';
 import { applik8sWorkspaceSourcePlugin } from '../bundling/index.js';
 
@@ -2953,6 +2954,7 @@ function generatedStreamProcessorSource(
   serviceIdentity: ApplicationIdentityReference | undefined,
   workloadAuthority: readonly ApplicationWorkloadAuthorityEnvelope[],
 ): string {
+	const observability = applicationGraphHasObservabilityRuntime(graph);
   const usesObjectStorage = streamProcessorUsesObjectStorage(processor);
   const objectStorageImports = usesObjectStorage
     ? "import { installApplicationObjectStorageRuntimeResolver } from '@applik8s/applik8s/workflow-runtime-resolvers';\nimport { createS3ApplicationObjectStorageRuntime } from '@applik8s/runtime-s3';"
@@ -3096,6 +3098,7 @@ import { applicationSignalAccessAllows, createApplicationSignalIssuanceDecoder, 
   );
   return `import { createServer } from 'node:http';
 import { createPostgresApplicationStream, createPostgresApplicationStreamProcessorStore, enforcePostgresApplicationStreamRetention, ${runtimeFunction} } from '@applik8s/applik8s/stream-worker-runtime';
+${observability ? generatedApplicationTelemetryImports().join('\n') : ''}
 ${postgresImport}
 ${admissionImport}
 ${authorityImport}
@@ -3120,6 +3123,7 @@ const processorOperationAuthority = createApplicationOperationAuthorityRuntime({
   catalog: ${JSON.stringify(operationCatalog)},
   ${applicationStaticAuthorityManifest(graph) ? `authorityManifest: ${JSON.stringify(applicationStaticAuthorityManifest(graph))},` : ''}
 });
+${observability ? generatedApplicationTelemetryRuntimeSource({ application: graph.metadata.name, service: `stream-processor:${processor.name}` }) : ''}
 const createSource = () => createPostgresApplicationStream({ stream, databaseUrl, principal: { id: ${JSON.stringify(`applik8s:processor:${processor.name}`)} }, includeTrustedContext: true, internalConsumer: { kind: 'processor', name: ${JSON.stringify(processor.name)} } });
 let source = createSource();
 const store = createPostgresApplicationStreamProcessorStore({ databaseUrl });
@@ -3140,7 +3144,7 @@ server.listen(Number(process.env.APPLIK8S_HEALTH_PORT ?? '8080'), '0.0.0.0');
 async function loop() { while (!stopping) { try { const result = await ${runtimeFunction}({ processor: ${JSON.stringify(processor.name)}, streamName: ${JSON.stringify(`${stream.name}.${stream.version}`)}, source, store, handle: invokeHandler, admit: processorAdmission, ${signalRuntime.runtimeOption}${runtimeOptions}, retry: ${JSON.stringify(processor.retry)}, failure: ${JSON.stringify(processor.failure)}, timeoutMs: ${processor.budgets.timeoutMs}, maxInputBytes: ${processor.budgets.maxInputBytes} }); checkpoint = result.checkpoint; processed += result.processed; deadLettered += result.deadLettered; await enforcePostgresApplicationStreamRetention({ stream, databaseUrl, batchSize: 1000 }); lastError = undefined; ready = true; lastSuccessfulCycleAt = Date.now(); await abortableSleep(result.exhausted ? ${exhaustedWaitMs} : 10, loopController.signal); } catch (error) { lastError = error instanceof Error ? error.message : String(error); ready = false; await source.close().catch(() => undefined); if (!stopping) { source = createSource(); console.error(error); } await abortableSleep(5000, loopController.signal); } } }
 function abortableSleep(ms, signal) { if (signal.aborted) return Promise.resolve(); return new Promise((resolve) => { const timeout = setTimeout(done, ms); const abort = () => done(); function done() { clearTimeout(timeout); signal.removeEventListener('abort', abort); resolve(); } signal.addEventListener('abort', abort, { once: true }); }); }
 const loopTask = loop();
-async function shutdown() { if (stopping) return; stopping = true; ready = false; loopController.abort(); await new Promise((resolve) => server.close(resolve)); await loopTask; await Promise.all([source.close(), store.close(), processorAuthoritySql.end({ timeout: 5 })${queries.length > 0 ? ', processorQuerySql.end({ timeout: 5 })' : ''}${signalRuntime.shutdown}]); }
+async function shutdown() { if (stopping) return; stopping = true; ready = false; loopController.abort(); await new Promise((resolve) => server.close(resolve)); await loopTask; await Promise.all([source.close(), store.close(), processorAuthoritySql.end({ timeout: 5 })${queries.length > 0 ? ', processorQuerySql.end({ timeout: 5 })' : ''}${signalRuntime.shutdown}${observability ? ', closeApplicationTelemetryRuntime()' : ''}]); }
 process.once('SIGTERM', () => { void shutdown(); }); process.once('SIGINT', () => { void shutdown(); });
 await loopTask;
 `;

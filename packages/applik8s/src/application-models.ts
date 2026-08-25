@@ -16,7 +16,7 @@ import { analyzeApplicationServerRouteSource, applicationCommandSourceViolations
 import { applicationTypeKroGraphValue, applicationTypeKroJsonStringArray, applicationTypeKroSerializedValue, applicationTypeKroString, applicationTypeKroValueIdentity } from './application-typekro-values.js';
 import type { ApplicationCommandPrincipal } from './command-principal.js';
 import { type CommandDefinition, type EntityDefinition, type EventDefinition, event } from './dsl.js';
-import { createApplicationEventLogPublisherFromEnvironment, type ApplicationEventLogPublisher, type EventLogPublishAcknowledgement } from './event-log-runtime.js';
+import { type ApplicationEventLogPublisher, createApplicationEventLogPublisherFromEnvironment, type EventLogPublishAcknowledgement } from './event-log-runtime.js';
 import type { PostgresModelCommandResult } from './model-command-postgres-runtime.js';
 import { canonicalApplicationCommandKey, executePostgresModelCommand } from './model-command-postgres-runtime.js';
 import { applicationModelCommandBindingForOperation, applicationModelFacet, type DrizzleAnalyticalApplicationModelFacet, type DrizzleApplicationModelFacet, getApplicationModelFacet, nativeApplicationModelBindingFor } from './native-models.js';
@@ -209,6 +209,8 @@ export interface ApplicationModelCommandDeliveryOptions {
   readonly correlationId?: string;
   readonly causationId?: string;
   readonly traceparent?: string;
+  /** Bounded framework telemetry carrier restored from an internal durable envelope. */
+  readonly telemetry?: import('@applik8s/core').ApplicationTelemetryEnvelopeV1;
   readonly attempt?: number;
   readonly recordedAt?: string;
   readonly expectedRevision?: string;

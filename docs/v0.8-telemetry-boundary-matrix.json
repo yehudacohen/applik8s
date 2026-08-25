@@ -1,0 +1,272 @@
+{
+  "schemaVersion": 1,
+  "release": "0.8.0",
+  "status": "active",
+  "carrier": "applik8s.telemetry/v1alpha1",
+  "instrumentedSourceFiles": [
+    "packages/applik8s/src/application-actors.ts",
+    "packages/applik8s/src/application-lakehouse.ts",
+    "packages/applik8s/src/model-command-postgres-runtime.ts",
+    "packages/applik8s/src/application-schedule.ts",
+    "packages/applik8s/src/stream-processor-runtime.ts",
+    "packages/compiler/src/application-fetch-gateway/index.ts",
+    "packages/runtime-celld/src/index.ts"
+  ],
+  "carrierCaptureSourceFiles": [
+    "packages/applik8s/src/command-gateway.ts",
+    "packages/applik8s/src/model-command-postgres-runtime.ts"
+  ],
+  "boundaries": [
+    {
+      "kind": "actor",
+      "state": "implemented",
+      "relationship": "mixed",
+      "producer": "authorized actor call, connection, message, or persisted alarm admission",
+      "consumer": "local actor runtime or celld actor turn",
+      "carrierPlacement": "synchronous calls inherit the active runtime; durable alarm and remote-turn carrier placement remains explicit follow-up work",
+      "owners": [
+        "packages/applik8s/src/application-actors.ts",
+        "packages/runtime-celld/src/index.ts"
+      ],
+      "sourceMarkers": [
+        {
+          "path": "packages/applik8s/src/application-actors.ts",
+          "marker": "kind: 'actor'"
+        },
+        {
+          "path": "packages/runtime-celld/src/index.ts",
+          "marker": "kind: 'actor'"
+        }
+      ],
+      "regression": "bunx vitest run --maxWorkers=1 packages/applik8s/test/application-actors.vertical.test.ts packages/runtime-celld/test/runtime-celld.vertical.test.ts",
+      "remaining": "Capture and persist the producer carrier for alarm and remote celld delivery, link each admitted attempt, distinguish retry/cancellation, and prove relocation/restart continuity."
+    },
+    {
+      "kind": "agent",
+      "state": "not-started",
+      "relationship": "mixed",
+      "producer": "authenticated agent invocation or parent managed execution",
+      "consumer": "generated agent worker and tool loop",
+      "carrierPlacement": "not yet implemented",
+      "owners": [
+        "packages/compiler/src/application-agents/index.ts",
+        "packages/runtime-ai/src/index.ts"
+      ],
+      "sourceMarkers": [],
+      "regression": null,
+      "remaining": "Instrument agent run and tool-call attempts without replacing the original causal principal; carry links through durable provider attempts."
+    },
+    {
+      "kind": "event",
+      "state": "in-progress",
+      "relationship": "mixed",
+      "producer": "HTTP webhook or stream ingress and transactional event outbox",
+      "consumer": "generated Fetch gateway or broker delivery worker",
+      "carrierPlacement": "HTTP ingress is instrumented; PostgreSQL model commands persist their child carrier atomically with event and command outboxes; JetStream and Kinesis command deliveries restore that exact producer carrier for each retry attempt",
+      "owners": [
+        "packages/applik8s/src/model-command-postgres-runtime.ts",
+        "packages/applik8s/src/application-lakehouse.ts",
+        "packages/compiler/src/application-fetch-gateway/index.ts",
+        "packages/compiler/src/application-reactive/index.ts",
+        "packages/operations/src/runtime.ts",
+        "packages/runtime-aws/src/kinesis.ts",
+        "packages/runtime-nats/src/command-processor.ts"
+      ],
+      "sourceMarkers": [
+        {
+          "path": "packages/compiler/src/application-fetch-gateway/index.ts",
+          "marker": "? 'event'"
+        },
+        {
+          "path": "packages/applik8s/src/application-lakehouse.ts",
+          "marker": "kind: 'event'"
+        }
+      ],
+      "regression": "bunx vitest run --maxWorkers=1 packages/applik8s/test/transactional-database-postgres-runtime.vertical.test.ts packages/runtime-nats/test/command-processor.vertical.test.ts packages/runtime-aws/test/runtime.vertical.test.ts packages/compiler/test/application-fetch-gateway.vertical.test.ts packages/compiler/test/application-reactive.vertical.test.ts",
+      "remaining": "Prove one emitted-worker causal vertical from authenticated HTTP through model commit, broker redelivery, and processor retry/replay without fabricating a second business span; extend the carrier to non-command event publishers and consumers."
+    },
+    {
+      "kind": "http",
+      "state": "implemented",
+      "relationship": "synchronous",
+      "producer": "incoming Fetch request after route classification",
+      "consumer": "generated application gateway",
+      "carrierPlacement": "active runtime scope around the complete request gateway",
+      "owners": [
+        "packages/compiler/src/application-fetch-gateway/index.ts"
+      ],
+      "sourceMarkers": [
+        {
+          "path": "packages/compiler/src/application-fetch-gateway/index.ts",
+          "marker": ": 'http'"
+        }
+      ],
+      "regression": "bunx vitest run --maxWorkers=1 packages/compiler/test/application-fetch-gateway.vertical.test.ts",
+      "remaining": "Prove a complete request-to-model-to-outbox causal vertical and redacted denial, timeout, and cancellation outcomes."
+    },
+    {
+      "kind": "model",
+      "state": "in-progress",
+      "relationship": "mixed",
+      "producer": "managed transaction, durable command delivery, or nested operation",
+      "consumer": "native relational or Kubernetes model mutation",
+      "carrierPlacement": "PostgreSQL model command handlers use synchronous nesting or a durable producer link and capture their child carrier for transactional event and command outboxes",
+      "owners": [
+        "packages/applik8s/src/model-command-postgres-runtime.ts",
+        "packages/applik8s/src/native-models.ts",
+        "packages/operations/src/runtime.ts"
+      ],
+      "sourceMarkers": [
+        {
+          "path": "packages/applik8s/src/model-command-postgres-runtime.ts",
+          "marker": "kind: 'model'"
+        }
+      ],
+      "regression": "bash scripts/run-v08-observability-postgres-live.sh",
+      "remaining": "Extend the boundary through authoritative commit outcome, internal PostgreSQL retries, function-native transactions, and Kubernetes model mutations without emitting spans for durable replay."
+    },
+    {
+      "kind": "operation",
+      "state": "in-progress",
+      "relationship": "synchronous",
+      "producer": "authenticated command, object, or runtime request",
+      "consumer": "generated operation gateway and managed closure",
+      "carrierPlacement": "gateway ingress is instrumented; nested function-native operation execution is not exhaustively inventoried",
+      "owners": [
+        "packages/compiler/src/application-fetch-gateway/index.ts",
+        "packages/operations/src/runtime.ts"
+      ],
+      "sourceMarkers": [
+        {
+          "path": "packages/compiler/src/application-fetch-gateway/index.ts",
+          "marker": "? 'operation'"
+        }
+      ],
+      "regression": "bunx vitest run --maxWorkers=1 packages/compiler/test/application-fetch-gateway.vertical.test.ts packages/operations/test/postgres.vertical.test.ts",
+      "remaining": "Wrap every managed operation invocation, preserve extracted/helper call identity, and prove nested synchronous parentage."
+    },
+    {
+      "kind": "processor",
+      "state": "in-progress",
+      "relationship": "asynchronous",
+      "producer": "transactional outbox or broker event issuance",
+      "consumer": "stream processor attempt or frozen batch",
+      "carrierPlacement": "single-event and frozen-batch attempts link the internal stream envelope carriers with stable logical execution and explicit retry attempts; generated command and stream workers install the application-selected telemetry runtime and shut it down with the worker lifecycle",
+      "owners": [
+        "packages/applik8s/src/stream-processor-runtime.ts",
+        "packages/compiler/src/application-reactive/index.ts"
+      ],
+      "sourceMarkers": [
+        {
+          "path": "packages/applik8s/src/stream-processor-runtime.ts",
+          "marker": "kind: 'processor'"
+        }
+      ],
+      "regression": "bunx vitest run --maxWorkers=1 packages/applik8s/test/stream-processor-runtime.vertical.test.ts packages/applik8s/test/stream-runtime-postgres.vertical.test.ts",
+      "remaining": "Record delivery lag and redacted terminal outcomes, distinguish explicit replay, and prove emitted-worker PostgreSQL restart/cleanup continuity."
+    },
+    {
+      "kind": "provider",
+      "state": "not-started",
+      "relationship": "synchronous",
+      "producer": "managed application operation",
+      "consumer": "qualified provider implementation",
+      "carrierPlacement": "not yet implemented as a general provider boundary; lakehouse publication and query retain their domain event/query kinds",
+      "owners": [
+        "packages/applik8s/src/application-provider-runtime.ts"
+      ],
+      "sourceMarkers": [],
+      "regression": null,
+      "remaining": "Instrument provider calls only where a distinct provider attempt is semantically useful, retain the domain operation as parent, and prove credential-free redacted failures."
+    },
+    {
+      "kind": "query",
+      "state": "in-progress",
+      "relationship": "synchronous",
+      "producer": "authenticated query request or managed query invocation",
+      "consumer": "generated query gateway or qualified lakehouse query provider",
+      "carrierPlacement": "Fetch ingress and lakehouse query are instrumented; native model/search/query providers are not exhaustively covered",
+      "owners": [
+        "packages/applik8s/src/application-lakehouse.ts",
+        "packages/compiler/src/application-fetch-gateway/index.ts"
+      ],
+      "sourceMarkers": [
+        {
+          "path": "packages/applik8s/src/application-lakehouse.ts",
+          "marker": "kind: 'query'"
+        },
+        {
+          "path": "packages/compiler/src/application-fetch-gateway/index.ts",
+          "marker": "route.startsWith('query:') ? 'query'"
+        }
+      ],
+      "regression": "bunx vitest run --maxWorkers=1 packages/applik8s/test/application-lakehouse.vertical.test.ts packages/compiler/test/application-fetch-gateway.vertical.test.ts",
+      "remaining": "Instrument native relational, Kubernetes, search, reactive, and multiplexed query execution with one logical query identity."
+    },
+    {
+      "kind": "reconciler",
+      "state": "not-started",
+      "relationship": "asynchronous",
+      "producer": "Kubernetes watch or scheduled resync admission",
+      "consumer": "operator host and guest reconcile handler",
+      "carrierPlacement": "the host/guest carrier is canonical, but the reconcile family is not yet represented by the TypeScript boundary runtime",
+      "owners": [
+        "crates/applik8s-operator-host/src/main.rs",
+        "packages/compiler/src/application-kubernetes.ts"
+      ],
+      "sourceMarkers": [],
+      "regression": null,
+      "remaining": "Map the host-owned reconcile span into the maintained boundary inventory, link watch/resync causation, and record trap, stale, retry, and cancellation terminal outcomes."
+    },
+    {
+      "kind": "schedule",
+      "state": "implemented",
+      "relationship": "mixed",
+      "producer": "immediate caller or admitted provider occurrence",
+      "consumer": "function-native schedule handler",
+      "carrierPlacement": "active runtime scope around local and admitted schedule execution; durable provider carrier linkage still requires exact receipt evidence",
+      "owners": [
+        "packages/applik8s/src/application-schedule.ts"
+      ],
+      "sourceMarkers": [
+        {
+          "path": "packages/applik8s/src/application-schedule.ts",
+          "marker": "kind: 'schedule'"
+        }
+      ],
+      "regression": "bunx vitest run --maxWorkers=1 packages/applik8s/test/application-schedule.vertical.test.ts packages/applik8s/test/application-schedule-local-runtime.vertical.test.ts",
+      "remaining": "Persist exact producer context for future occurrences and prove retry, delayed delivery, provider scheduled time, cancellation, and replay semantics."
+    },
+    {
+      "kind": "task",
+      "state": "not-started",
+      "relationship": "asynchronous",
+      "producer": "durable workflow step admission",
+      "consumer": "task worker attempt",
+      "carrierPlacement": "not yet implemented",
+      "owners": [
+        "packages/applik8s/src/task-operation-runtime.ts",
+        "packages/compiler/src/application-workflows/source.ts",
+        "packages/runtime-hatchet/src/index.ts"
+      ],
+      "sourceMarkers": [],
+      "regression": null,
+      "remaining": "Persist workflow producer context, link retries and reattachment attempts, and record cancellation without changing durable task authority."
+    },
+    {
+      "kind": "workflow",
+      "state": "not-started",
+      "relationship": "mixed",
+      "producer": "function-native call, HTTP start, schedule, signal, or parent workflow",
+      "consumer": "durable workflow run",
+      "carrierPlacement": "not yet implemented",
+      "owners": [
+        "packages/compiler/src/application-workflows/source.ts",
+        "packages/runtime-hatchet/src/index.ts"
+      ],
+      "sourceMarkers": [],
+      "regression": null,
+      "remaining": "Capture caller context at start, link durable run and resumed attempts, preserve lost-response reattachment identity, and distinguish replay from live work."
+    }
+  ]
+}

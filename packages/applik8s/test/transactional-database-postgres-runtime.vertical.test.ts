@@ -1,6 +1,6 @@
 // typecast-file-boundary: PostgreSQL vertical fixtures decode controlled fake result rows into the same runtime shapes used by the adapter.
 
-import type { ApplicationExecutionPrincipal } from '@applik8s/core';
+import { type ApplicationExecutionPrincipal, createApplicationTelemetryEnvelopeV1 } from '@applik8s/core';
 import { type } from 'arktype';
 import { sql as drizzleSql } from 'drizzle-orm';
 import { pgTable, text } from 'drizzle-orm/pg-core';
@@ -12,6 +12,7 @@ import { withApplicationManagedEffects } from '../src/application-managed-effect
 import { runApplicationModelBeforeCommit } from '../src/application-model-policy.js';
 import { type ApplicationRuntimeModelContract, applicationModelMigrationPreflightSql, applicationModelMigrationSql } from '../src/application-models.js';
 import { generatedApplicationRuntimeModuleSource } from '../src/application-runtime-modules.js';
+import { type ApplicationTelemetryBoundary, type ApplicationTelemetryRuntime, installApplicationTelemetryRuntimeResolver } from '../src/application-telemetry-runtime.js';
 import { applicationRequestContextValues } from '../src/command-principal.js';
 import { command, event } from '../src/dsl.js';
 import { applicationPostgresModelReadClients, closePostgresModelCommandRuntime, executeFunctionNativePostgresModelEdit, executeFunctionNativePostgresTransaction, executePostgresModelCommand, type FunctionNativePostgresNestedOperation, isRetryablePostgresTransactionError, normalizePostgresNativeModelValue, type PostgresModelCommandEventDefinition, recordPostgresModelCommandTerminalFailure } from '../src/model-command-postgres-runtime.js';
@@ -429,7 +430,14 @@ describe.runIf(liveDatabaseUrl)('Postgres TransactionalDatabase script runtime l
         errors: { nameReserved: { type: 'object', properties: { reason: { type: 'string' } }, required: ['reason'], additionalProperties: false } },
       },
       model: commandModel,
-      message: { id: 'message-1', input: { message: 'after' }, targetKey: 'note-command-1', idempotencyKey: 'request-1', recordedAt: '2026-07-10T12:00:00.000Z' },
+      message: {
+        id: 'message-1',
+        input: { message: 'after' },
+        targetKey: 'note-command-1',
+        idempotencyKey: 'request-1',
+        recordedAt: '2026-07-10T12:00:00.000Z',
+        telemetry: telemetryCarrier('command:note.rename.v1', 'http:message-1'),
+      },
       history: true,
       outbox: [NoteChanged],
       databaseUrl: liveDatabaseUrl,
@@ -442,20 +450,37 @@ describe.runIf(liveDatabaseUrl)('Postgres TransactionalDatabase script runtime l
       },
     };
 
+    const modelBoundaries: ApplicationTelemetryBoundary[] = [];
+    const telemetryRuntime = recordingTelemetryRuntime(modelBoundaries);
+    const disposeTelemetry = installApplicationTelemetryRuntimeResolver(
+      () => telemetryRuntime,
+    );
     const first = await executePostgresModelCommand(execution);
     const duplicate = await executePostgresModelCommand(execution);
+    disposeTelemetry();
 
     expect(first).toMatchObject({ replayed: false, output: { previous: 'before', current: 'after' }, model: { spec: { message: 'after' } }, events: [expect.objectContaining({ contract: { name: 'note.changed', version: 'v1' }, causationId: 'message-1', recordedAt: '2026-07-10T12:00:00.000Z', partitionKey: 'after' })] });
     expect(duplicate).toMatchObject({ replayed: true, output: first.output, model: { spec: { message: 'after' } }, events: [] });
     expect(first.observation).toEqual({ commandId: 'message-1', correlationId: 'message-1', target: { model: 'ScriptCommandNote', key: 'note-command-1' }, phase: 'completed', replayed: false, resultRevision: first.model.revision, stateRevision: { authority: 'model', model: 'ScriptCommandNote', target: 'note-command-1', revision: first.model.revision } });
     expect(first.events[0]).toMatchObject({ stateRevision: first.observation.stateRevision });
+    expect(first.events[0]?.telemetry).toMatchObject({
+      identity: {
+        operation: bindingId,
+        execution: 'model:message-1',
+        attempt: 1,
+      },
+      invocation: { kind: 'live', relationship: 'asynchronous' },
+    });
+    expect(first.events[0]?.telemetry).not.toEqual(execution.message.telemetry);
     expect(duplicate.observation).toEqual({ ...first.observation, replayed: true });
+    expect(modelBoundaries).toHaveLength(1);
     expect(invocations).toBe(1);
     await expect(sql.unsafe('SELECT count(*)::int AS count FROM applik8s_command_inbox WHERE binding_id = $1', [bindingId])).resolves.toMatchObject([{ count: 1 }]);
     await expect(sql.unsafe('SELECT count(*)::int AS count FROM applik8s_model_transitions WHERE scope IN (SELECT scope FROM applik8s_command_inbox WHERE binding_id = $1)', [bindingId])).resolves.toMatchObject([{ count: 1 }]);
     await expect(sql.unsafe('SELECT count(*)::int AS count FROM applik8s_model_history WHERE scope IN (SELECT scope FROM applik8s_command_inbox WHERE binding_id = $1)', [bindingId])).resolves.toMatchObject([{ count: 1 }]);
     await expect(sql.unsafe('SELECT count(*)::int AS count FROM applik8s_event_outbox WHERE scope IN (SELECT scope FROM applik8s_command_inbox WHERE binding_id = $1)', [bindingId])).resolves.toMatchObject([{ count: 1 }]);
     await expect(sql.unsafe('SELECT partition_key FROM applik8s_event_outbox WHERE scope IN (SELECT scope FROM applik8s_command_inbox WHERE binding_id = $1)', [bindingId])).resolves.toEqual([{ partition_key: 'after' }]);
+    await expect(sql.unsafe("SELECT envelope->'telemetry' AS telemetry FROM applik8s_event_outbox WHERE scope IN (SELECT scope FROM applik8s_command_inbox WHERE binding_id = $1)", [bindingId])).resolves.toEqual([{ telemetry: first.events[0]?.telemetry }]);
 
     let createInvocations = 0;
     const createExistingExecution = {
@@ -1767,6 +1792,65 @@ describe.runIf(liveDatabaseUrl)('Postgres TransactionalDatabase script runtime l
     }
   });
 });
+
+function telemetryCarrier(operation: string, execution: string) {
+  return createApplicationTelemetryEnvelopeV1({
+    traceparent: '00-0123456789abcdef0123456789abcdef-0123456789abcdef-01',
+    identity: {
+      application: 'transactional-runtime',
+      environment: 'test',
+      target: 'local',
+      operation,
+      execution,
+      attempt: 1,
+    },
+  });
+}
+
+function recordingTelemetryRuntime(
+  boundaries: ApplicationTelemetryBoundary[],
+): ApplicationTelemetryRuntime {
+  let active: ReturnType<typeof telemetryCarrier> | undefined;
+  return {
+    async run<TResult>(
+      boundary: ApplicationTelemetryBoundary,
+      execute: () => Promise<TResult>,
+    ): Promise<TResult> {
+      boundaries.push(boundary);
+      const previous = active;
+      const producer = boundary.parent ?? previous;
+      const traceId = producer?.traceparent.slice(3, 35)
+        ?? 'fedcba9876543210fedcba9876543210';
+      active = createApplicationTelemetryEnvelopeV1({
+        traceparent: `00-${traceId}-${String(boundaries.length).padStart(16, '0')}-01`,
+        identity: {
+          application: producer?.identity.application ?? 'transactional-runtime',
+          environment: producer?.identity.environment ?? 'test',
+          target: producer?.identity.target ?? 'local',
+          operation: boundary.identity,
+          execution: boundary.execution ?? `${boundary.kind}:${boundary.identity}`,
+          attempt: boundary.attempt ?? 1,
+          ...(boundary.definition ? { definition: boundary.definition } : {}),
+          ...(boundary.instance ? { instance: boundary.instance } : {}),
+        },
+        invocation: {
+          kind: boundary.invocation ?? 'live',
+          relationship: boundary.relationship ?? 'synchronous',
+          replaySuppressed: boundary.invocation === 'replay',
+        },
+      });
+      try {
+        return await execute();
+      } finally {
+        active = previous;
+      }
+    },
+    capture: () => active,
+    log() {},
+    count() {},
+    record() {},
+  };
+}
 
 function scriptNoteModel(tableName: string, connectionEnvName = 'APPLIK8S_TRANSACTIONAL_DATABASE_SCRIPT_NOTE_DATABASE_URL'): ApplicationRuntimeModelContract {
   return {

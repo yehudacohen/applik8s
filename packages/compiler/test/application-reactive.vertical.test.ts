@@ -3,7 +3,7 @@ import { mkdtemp, readdir, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { gunzipSync } from 'node:zlib';
-import { app, applicationGraphFor, EventLog } from '@applik8s/applik8s';
+import { app, applicationGraphFor, EventLog, Observability } from '@applik8s/applik8s';
 import { bindApplicationCallableDependencies } from '@applik8s/applik8s/internal/provider-runtime';
 import type { ApplicationGraph, ApplicationGraphNode, JsonObject } from '@applik8s/core';
 import { pgTable, text } from 'drizzle-orm/pg-core';
@@ -31,11 +31,13 @@ const database = { name: 'catalog', connectionEnvName: 'APPLIK8S_DATABASE_CATALO
 // command, stream, search, object-intent, and canonical internal-operation
 // protocols. benchmarks/v0.8/budgets.json fixes a 580 KB gateway budget plus at
 // most 10 KB of Runtime Integrity overhead while Release-A compatibility readers
-// remain present; later release phases must lower this rather than increase it.
+// remain present. OB-1 reserves a separate 10 KB for capturing the canonical
+// telemetry carrier at durable command issuance; later release phases must lower
+// these bounded compatibility costs rather than increasing either allowance.
 // Includes the v0.8 provider-operation access declaration carried by the
 // maintained notifications package. Keep the ceiling narrow enough that a
 // dependency-graph regression remains visible.
-const reactiveRuntimeBundleBudgetBytes = 591_000;
+const reactiveRuntimeBundleBudgetBytes = 601_000;
 
 describe('generated v0.6 reactive workloads', () => {
   it('emits collision-safe variables for inferred dotted outbox model operations', async () => {
@@ -54,6 +56,7 @@ describe('generated v0.6 reactive workloads', () => {
       name: 'events',
       namespace: 'tests',
     });
+    application.provide(Observability, Observability.local());
     const Database = application.database.postgres('application', {
       schema: { parents, children },
     });
@@ -108,6 +111,10 @@ describe('generated v0.6 reactive workloads', () => {
     expect(generated).toMatch(/context\.send\(callbackBinding_[a-f0-9]{12}Contract,/u);
     expect(generated).toContain("from '@applik8s/runtime-nats/event-log'");
     expect(generated).not.toContain("from '@applik8s/runtime-aws/kinesis'");
+    expect(generated).toContain('startApplicationOpenTelemetryRuntime');
+    expect(generated).toContain('installApplicationTelemetryRuntimeResolver');
+    expect(generated).toContain('service: process.env.APPLIK8S_SERVICE_NAME ?? "command-processor:CompilerParent-commands"');
+    expect(generated).toContain('closeApplicationTelemetryRuntime()');
 
     const awsArtifacts = await emitGeneratedApplicationProcessors({
       graph,
@@ -311,6 +318,14 @@ describe('generated v0.6 reactive workloads', () => {
         },
         budgets: { timeoutMs: 30_000, maxInputBytes: 4 * 1_024 * 1_024 },
       },
+      {
+        id: 'provider.observability',
+        kind: 'provider',
+        name: 'Observability',
+        stability: 'stable',
+        interface: 'Observability',
+        implementation: 'local-otel',
+      },
     ] as unknown as ApplicationGraphNode[]);
     const outDir = await mkdtemp(join(tmpdir(), 'applik8s-batch-processor-'));
     const [artifact] = await emitGeneratedApplicationReactive({
@@ -343,6 +358,10 @@ describe('generated v0.6 reactive workloads', () => {
     expect(generated).toContain("event: 'applik8s-processor-admission'");
     expect(generated).toContain('processorAdmissionObservationAt < 30_000');
     expect(generated).toContain("boundary: 'delivery'");
+    expect(generated).toContain('startApplicationOpenTelemetryRuntime');
+    expect(generated).toContain('installApplicationTelemetryRuntimeResolver');
+    expect(generated).toContain('service: process.env.APPLIK8S_SERVICE_NAME ?? "stream-processor:bulk-index-posts"');
+    expect(generated).toContain('closeApplicationTelemetryRuntime()');
     expect(generated).toContain("transport: 'broker'");
     expect(generated).not.toMatch(
       /applik8s-processor-admission[^\n]*(?:envelope|payload|principal|trustedContext|message)/u,

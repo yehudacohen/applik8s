@@ -1,7 +1,7 @@
 // typecast-file-boundary: test doubles model untyped PostgreSQL and protocol boundaries exercised by runtime validation.
 import { createHmac } from 'node:crypto';
-import { createApplicationCommandGateway } from '@applik8s/applik8s';
-import { canonicalJsonV1Value, createApplicationAdmissionContextV1, withApplicationAdmissionExecutionV1 } from '@applik8s/core';
+import { type ApplicationTelemetryRuntime, createApplicationCommandGateway, installApplicationTelemetryRuntimeResolver } from '@applik8s/applik8s';
+import { canonicalJsonV1Value, createApplicationAdmissionContextV1, createApplicationTelemetryEnvelopeV1, withApplicationAdmissionExecutionV1 } from '@applik8s/core';
 import { createSignedEnvelopeCodec, signedEnvelopeUtf8Key, staticSignedEnvelopeKeyProvider } from '@applik8s/runtime/signed-envelope';
 import { describe, expect, it, vi } from 'vitest';
 import { testApplicationAdmission, testApplicationPrincipal } from '../../../test-support/application-principal.js';
@@ -37,6 +37,74 @@ describe('authenticated command gateway', () => {
       cursorTtlSeconds: 24 * 60 * 60 + 1,
       eventLogPublisher: { async publish() { throw new Error('unused'); }, async drain() {} },
     })).toThrow(/between 30 seconds and 24 hours/);
+  });
+
+  it('captures the active bounded telemetry carrier into the durable command envelope', async () => {
+    const producer = createApplicationTelemetryEnvelopeV1({
+      traceparent: '00-0123456789abcdef0123456789abcdef-0123456789abcdef-01',
+      identity: {
+        application: 'catalog',
+        environment: 'test',
+        target: 'local',
+        operation: 'http.command.cards.rename.v1',
+        execution: 'http:command-telemetry',
+        attempt: 1,
+      },
+    });
+    const runtime: ApplicationTelemetryRuntime = {
+      async run(_boundary, execute) { return execute(); },
+      log() {},
+      count() {},
+      record() {},
+      capture() { return producer; },
+    };
+    const dispose = installApplicationTelemetryRuntimeResolver(() => runtime);
+    const publish = vi.fn(async () => ({
+      stream: 'events',
+      sequence: 1,
+      duplicate: false,
+      subject: 'command',
+      messageId: 'command-telemetry',
+    }));
+    const gateway = createApplicationCommandGateway({
+      commands: [{
+        id: 'cards.rename.v1',
+        bindingId: 'Card-cards.rename.v1',
+        model: 'Card',
+        inputSchema: {
+          type: 'object',
+          properties: { cardId: { type: 'string' } },
+          required: ['cardId'],
+        },
+        databaseUrl: 'postgres://unused',
+        key: (input) => String(Reflect.get(input, 'cardId')),
+      }],
+      authenticate: async () => testApplicationAdmission('user-1'),
+      authorize: async () => true,
+      cursorSecret: 'a-secure-test-secret-with-at-least-32-characters',
+      eventLogPublisher: { publish, async drain() {} },
+    });
+    try {
+      const response = await gateway.handle(new Request(
+        'https://catalog.test/commands/cards.rename.v1/submit',
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            input: { cardId: 'card-1' },
+            commandId: 'command-telemetry',
+            idempotencyKey: 'rename-once',
+          }),
+        },
+      ));
+      expect(response?.status).toBe(202);
+      expect(publish).toHaveBeenCalledWith(
+        expect.objectContaining({ telemetry: producer }),
+        'commands',
+      );
+    } finally {
+      await gateway.close();
+      dispose();
+    }
   });
 
   it('executes signed MCP placement invocations through the durable command processor', async () => {

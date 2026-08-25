@@ -190,6 +190,8 @@ describe("application host Fetch gateway", () => {
 		expect(source).toContain("installApplicationTelemetryRuntimeResolver");
 		expect(source).toContain("runApplicationTelemetryBoundary");
 		expect(source).toContain("applicationGatewayCore.handle(request)");
+		expect(source).toContain('service: process.env.APPLIK8S_SERVICE_NAME ?? "application-fetch-gateway"');
+		expect(source).toContain("await closeApplicationTelemetryRuntime()");
 	});
 
 	it("publishes exported typed HTTP closures as direct browser callables while keeping sibling routes private", () => {

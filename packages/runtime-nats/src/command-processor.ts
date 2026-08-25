@@ -1,10 +1,10 @@
-import { connect, type ConsumerMessages, type JsMsg, type NatsConnection, type JetStreamClient, StringCodec } from 'nats';
-import type { ApplicationMessageEnvelope } from '@applik8s/applik8s/dsl';
 import type { ApplicationModelCommandDeliveryOptions } from '@applik8s/applik8s';
+import type { ApplicationMessageEnvelope } from '@applik8s/applik8s/dsl';
 import type { ApplicationCommandProcessorBinding, RunningApplicationCommandProcessor } from '@applik8s/applik8s/processor-runtime';
+import { isDurableCommandRejectedError } from '@applik8s/applik8s/processor-runtime';
 import type { ApplicationAuthorizationReceipt } from '@applik8s/core';
 import { validateApplicationAuthorizationReceipt } from '@applik8s/core';
-import { isDurableCommandRejectedError } from '@applik8s/applik8s/processor-runtime';
+import { type ConsumerMessages, connect, type JetStreamClient, type JsMsg, type NatsConnection, StringCodec } from 'nats';
 import { consumeWithBoundedConcurrency } from './bounded-concurrency.js';
 
 export type { ApplicationCommandProcessorBinding } from '@applik8s/applik8s/processor-runtime';
@@ -93,6 +93,7 @@ export async function handleJetStreamCommandMessage(
     ...(envelope.correlationId ? { correlationId: envelope.correlationId } : {}),
     ...(envelope.causationId ? { causationId: envelope.causationId } : {}),
     ...(envelope.traceparent ? { traceparent: envelope.traceparent } : {}),
+    ...(envelope.telemetry ? { telemetry: envelope.telemetry } : {}),
     attempt: deliveryCount,
     recordedAt: envelope.recordedAt,
     ...(envelope.expectedRevision ? { expectedRevision: envelope.expectedRevision } : {}),

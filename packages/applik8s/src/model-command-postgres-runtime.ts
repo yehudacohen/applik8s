@@ -2,7 +2,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { createHash } from 'node:crypto';
 import type { ApplicationMutationOperation } from '@applik8s/client';
-import type { ApplicationAuthorizationReceipt, ApplicationRetryPolicy, JsonObject, JsonValue } from '@applik8s/core';
+import type { ApplicationAuthorizationReceipt, ApplicationRetryPolicy, ApplicationTelemetryEnvelopeV1, JsonObject, JsonValue } from '@applik8s/core';
 import { normalizeSchema } from '@applik8s/sdk/schema-runtime';
 import { withApplicationManagedEffects } from './application-managed-effects.js';
 import {
@@ -10,6 +10,10 @@ import {
 } from './application-model-policy.js';
 import type { ApplicationModelCommandContext, ApplicationModelCommandHandler, ApplicationModelCommandParticipantClient, ApplicationModelCommandTarget, ApplicationModelObject, ApplicationModelPatch, ApplicationModelQueryOptions, ApplicationModelQueryPage, ApplicationModelRef, ApplicationRuntimeModelContract } from './application-models.js';
 import { applicationPublicStreamCommitScope } from './application-stream-commit.js';
+import {
+  captureApplicationTelemetryContext,
+  runApplicationTelemetryBoundary,
+} from './application-telemetry-runtime.js';
 import {
   applicationCommandCausalPrincipalId,
   applicationCommandPrincipal,
@@ -23,8 +27,8 @@ import type {
 } from './native-model-execution.js';
 import { withApplicationNativeModelClients } from './native-model-execution.js';
 import type { ApplicationPostgresSql, ApplicationPostgresTransactionSql } from './postgres-runtime-contract.js';
-import type { ApplicationDatabaseClient } from './relational-runtime.js';
 import { createApplicationPostgresSql } from './postgres-runtime-loader.js';
+import type { ApplicationDatabaseClient } from './relational-runtime.js';
 import { applicationRelationalChangeScopeDigest } from './relational-runtime.js';
 import { applicationModelChangeCommitScope } from './relational-runtime-contract.js';
 
@@ -39,6 +43,8 @@ export interface PostgresModelCommandMessage<TInput extends object> {
   readonly correlationId?: string;
   readonly causationId?: string;
   readonly traceparent?: string;
+  /** Bounded producer carrier restored from the durable command envelope. */
+  readonly telemetry?: ApplicationTelemetryEnvelopeV1;
   readonly attempt?: number;
   readonly recordedAt?: string;
   readonly expectedRevision?: string;
@@ -565,12 +571,29 @@ export async function executePostgresModelCommand<
       },
     };
     let output: TOutput;
+    let modelTelemetry: ApplicationTelemetryEnvelopeV1 | undefined;
     try {
-      output = await commandEffectBoundary.run(
-        true,
-        () => withApplicationNativeModelClients(
-          participantClients,
-          () => withApplicationManagedEffects(
+      output = await runApplicationTelemetryBoundary(
+        {
+          kind: 'model',
+          identity: execution.bindingId,
+          execution: `model:${execution.message.id}`,
+          definition: `${execution.command.name}.${execution.command.version}`,
+          instance: execution.message.id,
+          attempt: execution.message.attempt ?? 1,
+          invocation: (execution.message.attempt ?? 1) > 1 ? 'retry' : 'live',
+          relationship: execution.message.telemetry ? 'asynchronous' : 'synchronous',
+          ...(execution.message.telemetry
+            ? { parent: execution.message.telemetry }
+            : {}),
+        },
+        async () => {
+          modelTelemetry = captureApplicationTelemetryContext();
+          return commandEffectBoundary.run(
+            true,
+            () => withApplicationNativeModelClients(
+              participantClients,
+              () => withApplicationManagedEffects(
             {
               commandId: execution.message.id,
               routingContext: {
@@ -689,9 +712,11 @@ export async function executePostgresModelCommand<
                   }
                 : {}),
             },
-            () => execution.handler(target, execution.message.input, context),
-          ),
-        ),
+                () => execution.handler(target, execution.message.input, context),
+              ),
+            ),
+          );
+        },
       );
       validateJsonMessageSchema(execution.schemas?.output, output, `${execution.command.name}.${execution.command.version}.output`);
     } catch (error) {
@@ -837,6 +862,9 @@ export async function executePostgresModelCommand<
         correlationId: execution.message.correlationId ?? execution.message.id,
         causationId: execution.message.id,
         ...(execution.message.traceparent ? { traceparent: execution.message.traceparent } : {}),
+        ...(modelTelemetry ?? execution.message.telemetry
+          ? { telemetry: modelTelemetry ?? execution.message.telemetry }
+          : {}),
         ...(execution.message.context ? { trustedContext: execution.message.context } : {}),
         attempt: execution.message.attempt ?? 1,
         partitionKey,
@@ -862,6 +890,9 @@ export async function executePostgresModelCommand<
         correlationId: execution.message.correlationId ?? execution.message.id,
         causationId: execution.message.id,
         ...(execution.message.traceparent ? { traceparent: execution.message.traceparent } : {}),
+        ...(modelTelemetry ?? execution.message.telemetry
+          ? { telemetry: modelTelemetry ?? execution.message.telemetry }
+          : {}),
         ...(execution.message.context ? { trustedContext: execution.message.context } : {}),
         partitionKey: item.targetKey,
         routing: { targetKey: item.targetKey, idempotencyKey: item.idempotencyKey },

@@ -2,13 +2,13 @@ import { createHash } from 'node:crypto';
 import type { ApplicationAuthorizationReceipt, JsonValue } from '@applik8s/core';
 import type { SchemaInput } from '@applik8s/sdk';
 import { type } from 'arktype';
-import {
-  emitApplicationManagedEvent,
-  type ApplicationStagedEffectReference,
-} from './application-managed-effects-api.js';
 import type { ApplicationLakehousePublication } from './application-lakehouse.js';
 import { createApplicationLakehousePublication } from './application-lakehouse-publication.js';
-import type { ApplicationQualifiedProviderToken, ApplicationLakehouseDatasetProvider } from './application-providers.js';
+import {
+  type ApplicationStagedEffectReference,
+  emitApplicationManagedEvent,
+} from './application-managed-effects-api.js';
+import type { ApplicationLakehouseDatasetProvider, ApplicationQualifiedProviderToken } from './application-providers.js';
 
 export { type };
 
@@ -127,6 +127,8 @@ export interface ApplicationMessageEnvelope<TPayload extends object> {
   readonly correlationId?: string;
   readonly causationId?: string;
   readonly traceparent?: string;
+  /** Bounded framework telemetry carrier for an internal durable handoff. */
+  readonly telemetry?: import('@applik8s/core').ApplicationTelemetryEnvelopeV1;
   readonly attempt?: number;
   readonly partitionKey?: string;
   readonly routing?: Readonly<Record<string, string>>;

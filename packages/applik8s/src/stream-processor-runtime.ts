@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import type { ApplicationAdmissionInvocationContextV1 } from '@applik8s/core';
 import { applicationAdmissionRejectionCodeV1 } from '@applik8s/core/admission';
 import type { ApplicationEventBatch, ApplicationStreamBatchContext, ApplicationStreamProcessContext } from './application-reactive.js';
+import { runApplicationTelemetryBoundary } from './application-telemetry-runtime.js';
 import type { ApplicationPostgresSql } from './postgres-runtime-contract.js';
 import { createApplicationPostgresSql } from './postgres-runtime-loader.js';
 import type { ApplicationReplayableStream, ApplicationStreamEnvelope } from './projection-runtime-clickhouse.js';
@@ -500,56 +501,70 @@ async function processFrozenBatch<
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), options.timeoutMs);
     try {
-      const values = await Promise.all(frozen.events.map(async (event) => {
-        const admission = await options.admit({
-          envelope: event,
-          attempt,
-          signal: controller.signal,
-        });
+      await runApplicationTelemetryBoundary({
+        kind: 'processor',
+        identity: options.processor,
+        execution: `processor:${options.processor}:${frozen.id}`,
+        definition: options.processor,
+        instance: frozen.id,
+        occurrence: frozen.id,
+        attempt,
+        invocation: attempt > 1 ? 'retry' : 'live',
+        relationship: 'asynchronous',
+        links: frozen.events.flatMap((event) => event.telemetry ? [event.telemetry] : []),
+        attributes: { 'applik8s.stream': options.streamName, 'applik8s.batch.size': frozen.events.length },
+      }, async () => {
+        const values = await Promise.all(frozen.events.map(async (event) => {
+          const admission = await options.admit({
+            envelope: event,
+            attempt,
+            signal: controller.signal,
+          });
+          controller.signal.throwIfAborted();
+          return {
+            event,
+            admission,
+            value: await decodeStreamPayload(
+              options.decodePayload,
+              event.payload,
+              streamPayloadDecodeContext(event, controller.signal, admission),
+            ),
+          };
+        }));
         controller.signal.throwIfAborted();
-        return {
-          event,
-          admission,
-          value: await decodeStreamPayload(
-            options.decodePayload,
-            event.payload,
-            streamPayloadDecodeContext(event, controller.signal, admission),
-          ),
-        };
-      }));
-      controller.signal.throwIfAborted();
-      const batch = Object.freeze({
-        id: frozen.id,
-        events: Object.freeze(values.map(({ event, admission, value }) => Object.freeze({
-          admission,
-          id: event.id,
-          stream: event.stream,
-          sequence: event.sequence,
-          recordedAt: event.recordedAt,
-          partitionKey: event.partitionKey,
-          ...(event.contextDigest ? { contextDigest: event.contextDigest } : {}),
-          ...(event.changeScopes ? { changeScopes: event.changeScopes } : {}),
-          ...(event.principal ? { principal: event.principal } : {}),
-          trustedContext: Object.freeze({ ...(event.trustedContext ?? {}) }),
-          value,
-        }))),
-        ...(frozen.partition ? { partition: frozen.partition } : {}),
-        firstSequence: String(frozen.firstSequence),
-        lastSequence: String(frozen.lastSequence),
-      }) satisfies ApplicationEventBatch<TDecoded>;
-      await options.handle(batch, {
-        batch: {
+        const batch = Object.freeze({
           id: frozen.id,
+          events: Object.freeze(values.map(({ event, admission, value }) => Object.freeze({
+            admission,
+            id: event.id,
+            stream: event.stream,
+            sequence: event.sequence,
+            recordedAt: event.recordedAt,
+            partitionKey: event.partitionKey,
+            ...(event.contextDigest ? { contextDigest: event.contextDigest } : {}),
+            ...(event.changeScopes ? { changeScopes: event.changeScopes } : {}),
+            ...(event.principal ? { principal: event.principal } : {}),
+            trustedContext: Object.freeze({ ...(event.trustedContext ?? {}) }),
+            value,
+          }))),
           ...(frozen.partition ? { partition: frozen.partition } : {}),
           firstSequence: String(frozen.firstSequence),
           lastSequence: String(frozen.lastSequence),
-        },
-        schedules: Object.freeze({}),
-        workflows: Object.freeze({}),
-        tasks: Object.freeze({}),
-        idempotencyKey: frozen.id,
-        attempt,
-        signal: controller.signal,
+        }) satisfies ApplicationEventBatch<TDecoded>;
+        await options.handle(batch, {
+          batch: {
+            id: frozen.id,
+            ...(frozen.partition ? { partition: frozen.partition } : {}),
+            firstSequence: String(frozen.firstSequence),
+            lastSequence: String(frozen.lastSequence),
+          },
+          schedules: Object.freeze({}),
+          workflows: Object.freeze({}),
+          tasks: Object.freeze({}),
+          idempotencyKey: frozen.id,
+          attempt,
+          signal: controller.signal,
+        });
       });
       return { state: 'processed', eventId: frozen.id };
     } catch (error) {
@@ -600,39 +615,53 @@ async function processEnvelope<
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), options.timeoutMs);
     try {
-      const admission = await options.admit({
-        envelope,
+      await runApplicationTelemetryBoundary({
+        kind: 'processor',
+        identity: options.processor,
+        execution: `processor:${options.processor}:${envelope.id}`,
+        definition: options.processor,
+        instance: envelope.id,
+        occurrence: envelope.id,
         attempt,
-        signal: controller.signal,
+        invocation: attempt > 1 ? 'retry' : 'live',
+        relationship: 'asynchronous',
+        links: envelope.telemetry ? [envelope.telemetry] : [],
+        attributes: { 'applik8s.stream': options.streamName },
+      }, async () => {
+        const admission = await options.admit({
+          envelope,
+          attempt,
+          signal: controller.signal,
+        });
+        controller.signal.throwIfAborted();
+        const context: ApplicationStreamProcessContext = {
+          admission,
+          event: {
+            id: envelope.id,
+            stream: envelope.stream,
+            sequence: envelope.sequence,
+            recordedAt: envelope.recordedAt,
+            partitionKey: envelope.partitionKey,
+            ...(envelope.contextDigest ? { contextDigest: envelope.contextDigest } : {}),
+            ...(envelope.changeScopes ? { changeScopes: envelope.changeScopes } : {}),
+          },
+          ...(envelope.principal ? { principal: envelope.principal } : {}),
+          trustedContext: envelope.trustedContext ?? {},
+          schedules: Object.freeze({}),
+          workflows: Object.freeze({}),
+          tasks: Object.freeze({}),
+          idempotencyKey: envelope.id,
+          attempt,
+          signal: controller.signal,
+        };
+        const payload = await decodeStreamPayload(
+          options.decodePayload,
+          envelope.payload,
+          streamPayloadDecodeContext(envelope, controller.signal, admission),
+        );
+        controller.signal.throwIfAborted();
+        await options.handle(payload, context);
       });
-      controller.signal.throwIfAborted();
-      const context: ApplicationStreamProcessContext = {
-        admission,
-        event: {
-          id: envelope.id,
-          stream: envelope.stream,
-          sequence: envelope.sequence,
-          recordedAt: envelope.recordedAt,
-          partitionKey: envelope.partitionKey,
-          ...(envelope.contextDigest ? { contextDigest: envelope.contextDigest } : {}),
-          ...(envelope.changeScopes ? { changeScopes: envelope.changeScopes } : {}),
-        },
-        ...(envelope.principal ? { principal: envelope.principal } : {}),
-        trustedContext: envelope.trustedContext ?? {},
-        schedules: Object.freeze({}),
-        workflows: Object.freeze({}),
-        tasks: Object.freeze({}),
-        idempotencyKey: envelope.id,
-        attempt,
-        signal: controller.signal,
-      };
-      const payload = await decodeStreamPayload(
-        options.decodePayload,
-        envelope.payload,
-        streamPayloadDecodeContext(envelope, controller.signal, admission),
-      );
-      controller.signal.throwIfAborted();
-      await options.handle(payload, context);
       return { state: 'processed', eventId: envelope.id };
     } catch (error) {
       lastError = controller.signal.aborted

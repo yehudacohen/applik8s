@@ -26,6 +26,11 @@ import {
 } from "../application-callback-module.js";
 import { applicationGraphStringValue } from "../application-installation-values.js";
 import {
+	applicationGraphHasObservabilityRuntime,
+	generatedApplicationTelemetryImports,
+	generatedApplicationTelemetryRuntimeSource,
+} from "../application-observability-runtime-source.js";
+import {
 	compileApplicationOperationCatalog,
 	compileApplicationWorkloadAuthority,
 } from "../application-operations/index.js";
@@ -176,12 +181,7 @@ export function generatedApplicationFetchGatewayModules(
 		lakehousePublications,
 	);
 	const lakehouseQueries = applicationLakehouseQueries(graph);
-	const observability = schedulesOnly ? [] : graph.nodes.filter(
-		(node): node is ApplicationProviderNode =>
-			node.kind === "provider" &&
-			node.interface === "Observability" &&
-			!node.config?.qualification,
-	);
+	const observability = !schedulesOnly && applicationGraphHasObservabilityRuntime(graph);
 	const agentTargets = applicationAgentGatewayTargets(graph, agents);
 	const remoteRoutes = schedulesOnly
 		? { routes: [], health: [] }
@@ -340,11 +340,8 @@ export function generatedApplicationFetchGatewayModules(
 		);
 	if (actors.length > 0 || lakehousePublications.length > 0 || schedules.length > 0)
 		imports.push("import { nodeConstantTimeTextEqual } from '@applik8s/runtime/node-integrity';");
-	if (observability.length > 0)
-		imports.push(
-			"import { installApplicationTelemetryRuntimeResolver, runApplicationTelemetryBoundary } from '@applik8s/applik8s';",
-			"import { createApplicationOpenTelemetryRuntime, startApplicationOpenTelemetryRuntime } from '@applik8s/runtime-otel';",
-		);
+	if (observability)
+		imports.push(...generatedApplicationTelemetryImports({ boundaryRunner: true }));
 	if (identity.length === 1)
 		imports.push(
 			"import { createApplicationIdentitySessionHandler } from '@applik8s/identity/server';",
@@ -1195,20 +1192,7 @@ const materializeRemoteBaseUrl = (baseUrl, endpointEnvironmentName) => {
 const remoteRoutes = new Map(${JSON.stringify(remoteRoutes.routes)}.map(([route, baseUrl, endpointEnvironmentName]) => [route, materializeRemoteBaseUrl(baseUrl, endpointEnvironmentName)]));
 const remoteHealth = ${JSON.stringify(remoteRoutes.health)}.map(({ name, baseUrl, endpointEnvironmentName, path }) => ({ name, baseUrl: materializeRemoteBaseUrl(baseUrl, endpointEnvironmentName), path }));
 const agentGateway = ${agentGateway};
-${observability.length > 0 ? `const applicationTelemetryOptions = {
-  application: process.env.APPLIK8S_APPLICATION_NAME ?? ${JSON.stringify(graph.metadata.name)},
-  environment: process.env.APPLIK8S_ENVIRONMENT_ID ?? 'default',
-  target: process.env.APPLIK8S_DEPLOYMENT_TARGET ?? 'unknown',
-};
-const applicationTelemetryEndpoint = optionalEnv('OTEL_EXPORTER_OTLP_ENDPOINT');
-const applicationTelemetrySession = applicationTelemetryEndpoint
-  ? await startApplicationOpenTelemetryRuntime({ ...applicationTelemetryOptions, endpoint: applicationTelemetryEndpoint })
-  : undefined;
-const applicationTelemetryRuntime = applicationTelemetrySession?.runtime
-  ?? createApplicationOpenTelemetryRuntime(applicationTelemetryOptions);
-const disposeApplicationTelemetryRuntime = installApplicationTelemetryRuntimeResolver(() => applicationTelemetryRuntime);
-void disposeApplicationTelemetryRuntime;
-void applicationTelemetrySession;` : ""}
+${observability ? generatedApplicationTelemetryRuntimeSource({ application: graph.metadata.name, service: "application-fetch-gateway" }) : ""}
 ${actors.length > 0 ? `const applicationActors = [${actorSources.join(",\n")}];
 const applicationActorEventPublisher = createApplicationEventLogPublisherFromEnvironment({
   connectionName: 'application-actor-outbox',
@@ -2018,7 +2002,7 @@ const applicationGatewayCore = {
   },
 };
 
-export const gateway = ${observability.length > 0 ? `{
+export const gateway = ${observability ? `{
   handle(request) {
     const url = new URL(request.url);
     const route = applicationGatewayRoute(url.pathname) ?? (url.pathname.startsWith('/__applik8s/') ? 'framework' : 'unmatched');
@@ -2055,7 +2039,8 @@ function forwardRemoteRequest(request, remoteBaseUrl) {
 }
 
 export const handleApplik8sRequest = (request) => gateway.handle(request);
-${schedules.length > 0 ? `export async function closeApplik8sGateway() {
+${schedules.length > 0 || observability ? `export async function closeApplik8sGateway() {
+  ${schedules.length > 0 ? `
   disposeAwsScheduleRuntime?.();
   disposeKubernetesScheduleRuntime?.();
   disposeHatchetScheduleRuntime?.();
@@ -2066,6 +2051,8 @@ ${schedules.length > 0 ? `export async function closeApplik8sGateway() {
     ...(kubernetesScheduleRuntime ? [kubernetesScheduleRuntime.close()] : []),
     ...[...hatchetScheduleRuntimes.values()].map((runtime) => runtime.close()),
   ]);
+  ` : ""}
+  ${observability ? "await closeApplicationTelemetryRuntime();" : ""}
 }` : "export async function closeApplik8sGateway() {}"}
 `;
 	return { entrypoint: "gateway.generated.ts", files };

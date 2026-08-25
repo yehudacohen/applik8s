@@ -2,6 +2,7 @@
 
 import { type ApplicationLakehouseQueryRuntime, createDeterministicApplicationLakehouseRuntime, LakehouseDataset, type } from '@applik8s/applik8s';
 import type { ApplicationEventLogPublisher } from '@applik8s/applik8s/processor-runtime';
+import { createApplicationTelemetryEnvelopeV1 } from '@applik8s/core';
 import type { AthenaClient } from '@aws-sdk/client-athena';
 import type { GlueClient } from '@aws-sdk/client-glue';
 import type { S3Client } from '@aws-sdk/client-s3';
@@ -225,22 +226,25 @@ describe('AWS Kinesis event log and command processing', () => {
     const firstController = new AbortController();
     const checkpoints = new MemoryKinesisCheckpoints('owner', order, () => firstController.abort());
     const attempts: number[] = [];
+    const telemetry = telemetryCarrier('kinesis-command');
+    const carriers: unknown[] = [];
     const options = {
       streamName: 'application-events', checkpointTable: 'checkpoints', consumer: 'posts', maxAttempts: 3, retryDelayMs: 1,
       bindings: [{
         bindingId: 'posts.create', contract: { name: 'post.create', version: 'v1' },
-        async execute(_input: object, delivery: { readonly attempt?: number }) { attempts.push(delivery.attempt ?? 0); throw new Error('transient'); },
+        async execute(_input: object, delivery: { readonly attempt?: number; readonly telemetry?: unknown }) { attempts.push(delivery.attempt ?? 0); carriers.push(delivery.telemetry); throw new Error('transient'); },
         async recordTerminalFailure() { order.push('terminal'); },
       }],
     } as const;
     const eventLog = memoryEventLog(order);
-    const record = { SequenceNumber: '42', PartitionKey: 'retry', Data: new TextEncoder().encode(JSON.stringify({ ...commandEnvelope('retry'), channel: 'commands' })) };
+    const record = { SequenceNumber: '42', PartitionKey: 'retry', Data: new TextEncoder().encode(JSON.stringify({ ...commandEnvelope('retry'), telemetry, channel: 'commands' })) };
     await expect(handleKinesisCommandRecord(checkpoints, eventLog, options, 'shard-0', 'owner', record, 5, firstController.signal)).resolves.toBe('retried');
     expect(checkpoints.row.failureAttempts).toBe(1);
     expect(checkpoints.row.sequenceNumber).toBeUndefined();
 
     await expect(handleKinesisCommandRecord(checkpoints, eventLog, options, 'shard-0', 'owner', record, 0, new AbortController().signal)).resolves.toBe('terminated');
     expect(attempts).toEqual([1, 2, 3]);
+    expect(carriers).toEqual([telemetry, telemetry, telemetry]);
     expect(order.slice(-3)).toEqual(['dead-letter', 'terminal', 'checkpoint']);
     expect(checkpoints.row).toMatchObject({ sequenceNumber: '42', millisBehindLatest: 0 });
     expect(checkpoints.row.failureAttempts).toBeUndefined();
@@ -321,6 +325,20 @@ describe('AWS Kinesis event log and command processing', () => {
 
 function commandEnvelope(id: string) {
   return { id, contract: { name: 'post.create', version: 'v1' }, payload: { id }, recordedAt: '2026-08-20T12:00:00.000Z', partitionKey: id };
+}
+
+function telemetryCarrier(execution: string) {
+  return createApplicationTelemetryEnvelopeV1({
+    traceparent: '00-fedcba9876543210fedcba9876543210-fedcba9876543210-01',
+    identity: {
+      application: 'catalog',
+      environment: 'test',
+      target: 'aws',
+      operation: 'command:post.create.v1',
+      execution,
+      attempt: 1,
+    },
+  });
 }
 
 function memoryEventLog(order: string[]): ApplicationEventLogPublisher {

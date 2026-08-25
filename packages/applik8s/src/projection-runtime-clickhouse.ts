@@ -1,6 +1,6 @@
 // typecast-file-boundary: ClickHouse JSON wire values are validated and normalized at this analytical-database adapter boundary.
 
-import type { JsonValue } from '@applik8s/core';
+import type { ApplicationTelemetryEnvelopeV1, JsonValue } from '@applik8s/core';
 import type { SchemaInput } from '@applik8s/sdk';
 import { normalizeSchema } from '@applik8s/sdk/schema-runtime';
 import type {
@@ -27,6 +27,8 @@ export interface ApplicationStreamEnvelope<TPayload extends object = object> {
    * replay and subscription consumers never receive them.
    */
   readonly changeScopes?: Readonly<Record<string, string>>;
+  /** Internal-only producer carrier used to link an admitted asynchronous attempt. */
+  readonly telemetry?: ApplicationTelemetryEnvelopeV1;
   readonly payload: TPayload;
 }
 

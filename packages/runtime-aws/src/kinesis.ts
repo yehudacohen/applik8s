@@ -1,30 +1,30 @@
 // typecast-file-boundary: Kinesis and DynamoDB transport payloads are validated before conversion to provider-neutral command envelopes and checkpoint state.
 import { createHash, randomUUID } from 'node:crypto';
-import {
-  ConditionalCheckFailedException,
-  DynamoDBClient,
-  GetItemCommand,
-  QueryCommand,
-  UpdateItemCommand,
-  type AttributeValue,
-  type DynamoDBClientConfig,
-} from '@aws-sdk/client-dynamodb';
-import {
-  DescribeStreamSummaryCommand,
-  GetRecordsCommand,
-  GetShardIteratorCommand,
-  KinesisClient,
-  ListShardsCommand,
-  PutRecordCommand,
-  type KinesisClientConfig,
-  type _Record as KinesisRecord,
-} from '@aws-sdk/client-kinesis';
 import type { ApplicationMessageEnvelope, ApplicationModelCommandDeliveryOptions } from '@applik8s/applik8s';
 import type { ApplicationEventConsumerBinding, RunningApplicationEventConsumer } from '@applik8s/applik8s/event-log-runtime';
 import type { ApplicationCommandProcessorBinding, ApplicationEventLogPublisher, RunningApplicationCommandProcessor } from '@applik8s/applik8s/processor-runtime';
 import { isDurableCommandRejectedError } from '@applik8s/applik8s/processor-runtime';
 import type { ApplicationAuthorizationReceipt } from '@applik8s/core';
 import { validateApplicationAuthorizationReceipt } from '@applik8s/core';
+import {
+  type AttributeValue,
+  ConditionalCheckFailedException,
+  DynamoDBClient,
+  type DynamoDBClientConfig,
+  GetItemCommand,
+  QueryCommand,
+  UpdateItemCommand,
+} from '@aws-sdk/client-dynamodb';
+import {
+  DescribeStreamSummaryCommand,
+  GetRecordsCommand,
+  GetShardIteratorCommand,
+  KinesisClient,
+  type KinesisClientConfig,
+  type _Record as KinesisRecord,
+  ListShardsCommand,
+  PutRecordCommand,
+} from '@aws-sdk/client-kinesis';
 
 export interface KinesisEventLogOptions {
   readonly streamName: string;
@@ -386,6 +386,7 @@ async function executeEnvelope(
     ...(envelope.correlationId ? { correlationId: envelope.correlationId } : {}),
     ...(envelope.causationId ? { causationId: envelope.causationId } : {}),
     ...(envelope.traceparent ? { traceparent: envelope.traceparent } : {}),
+    ...(envelope.telemetry ? { telemetry: envelope.telemetry } : {}),
     attempt,
     recordedAt: envelope.recordedAt,
     ...(envelope.expectedRevision ? { expectedRevision: envelope.expectedRevision } : {}),

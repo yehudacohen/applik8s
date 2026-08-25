@@ -9,6 +9,7 @@ import type { GeneratedApplicationContainerArtifact } from '../application-conta
 import { emitGeneratedApplicationContainer } from '../application-containers/index.js';
 import { applicationFrameworkCredentialDependencies } from '../application-framework-credentials.js';
 import { applicationGraphBooleanCondition, applicationGraphInterpolate, applicationGraphJsonStringArray, applicationGraphStringValue } from '../application-installation-values.js';
+import { applicationGraphHasObservabilityRuntime, generatedApplicationTelemetryImports, generatedApplicationTelemetryRuntimeSource } from '../application-observability-runtime-source.js';
 import { applicationStaticAuthorityManifest, compileApplicationOperationCatalog } from '../application-operations/index.js';
 import { applik8sWorkspaceSourcePlugin } from '../bundling/index.js';
 import { generatedProcessorCapacity, generatedProcessorDisruptionResource, generatedProcessorPodScheduling } from './capacity.js';
@@ -144,6 +145,7 @@ async function emitProcessor(graph: ApplicationGraph, processor: ApplicationProc
 
 interface ProcessorContract {
   readonly graphName: string;
+  readonly observability: boolean;
   readonly operationCatalog: ApplicationOperationCatalog;
   readonly authorityManifest?: ApplicationStaticAuthorityManifest;
   readonly processor: ApplicationProcessorNode;
@@ -313,6 +315,7 @@ function processorContract(graph: ApplicationGraph, processor: ApplicationProces
   const streamProvision = applicationGraphBooleanCondition(config.provision);
   return {
     graphName: graph.metadata.name,
+    observability: applicationGraphHasObservabilityRuntime(graph),
     operationCatalog,
     ...(authorityManifest ? { authorityManifest } : {}),
     processor,
@@ -365,6 +368,7 @@ import { rm, writeFile } from 'node:fs/promises';
 import postgres from 'postgres';
 import { canonicalApplicationCommandKey, cleanupPostgresCommandData, executePostgresModelCommand, observePostgresOutboxLag, recordPostgresModelCommandTerminalFailure, relayPostgresCommandOutbox, relayPostgresEventOutbox, runApplicationModelBeforeCommit } from '@applik8s/applik8s/processor-runtime';
 import { createApplicationOperationAuthorityRuntime } from '@applik8s/operations';
+${contract.observability ? generatedApplicationTelemetryImports().join('\n') : ''}
 ${aws
   ? "import { createKinesisEventLog, startKinesisCommandProcessor } from '@applik8s/runtime-aws/kinesis';"
   : "import { createJetStreamEventLog } from '@applik8s/runtime-nats/event-log';\nimport { startJetStreamCommandProcessor } from '@applik8s/runtime-nats/command-processor';"}
@@ -389,6 +393,7 @@ const operationAuthority = createApplicationOperationAuthorityRuntime({
   catalog: ${JSON.stringify(contract.operationCatalog)},
   ${contract.authorityManifest ? `authorityManifest: ${JSON.stringify(contract.authorityManifest)},` : ''}
 });
+${contract.observability ? generatedApplicationTelemetryRuntimeSource({ application: contract.graphName, service: `command-processor:${contract.processor.name}` }) : ''}
 async function observeCommandProcessor(state, reason) {
   const observedAt = new Date();
   await operationAuthority.observe({
@@ -525,7 +530,7 @@ const drain = async (signal) => {
   await relayClosed;
   await eventLog.drain();
   await observeCommandProcessor('cancelled', signal);
-  await operationAuthoritySql.end({ timeout: 5 });
+  await Promise.all([operationAuthoritySql.end({ timeout: 5 })${contract.observability ? ', closeApplicationTelemetryRuntime()' : ''}]);
 };
 const terminate = (signal) => {
   void drain(signal).then(

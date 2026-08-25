@@ -1,5 +1,6 @@
 // typecast-file-boundary: PostgreSQL result rows are checked by the runtime contract before restoring stream event shapes.
 
+import { validateApplicationTelemetryEnvelopeV1 } from '@applik8s/core';
 import { normalizeSchema } from '@applik8s/sdk/schema-runtime';
 import type { ApplicationQueryPrincipal } from './application-queries.js';
 import type { ApplicationStreamBinding } from './application-reactive.js';
@@ -153,6 +154,9 @@ function streamEnvelope<TPayload extends object>(stream: ApplicationStreamBindin
   const principal = applicationCommandPrincipal(durableContext);
   const trustedContext = durableContext ? applicationCommandTrustedContext(durableContext) : undefined;
   const changeScopes = durableContext?.changeScopes;
+  const telemetry = includeTrustedContext
+    ? durableEnvelopeTelemetry(postgresStreamJsonValue(row.envelope))
+    : undefined;
   return {
     id: row.id,
     stream: { name: stream.definition.name, version: stream.definition.version },
@@ -163,8 +167,24 @@ function streamEnvelope<TPayload extends object>(stream: ApplicationStreamBindin
     ...(principal ? { principal } : {}),
     ...(trustedContext ? { trustedContext } : {}),
     ...(changeScopes ? { changeScopes } : {}),
+    ...(telemetry ? { telemetry } : {}),
     payload: payload.value,
   };
+}
+
+function durableEnvelopeTelemetry(
+  envelope: unknown,
+): import('@applik8s/core').ApplicationTelemetryEnvelopeV1 | undefined {
+  if (!envelope || typeof envelope !== 'object') return undefined;
+  const telemetry = Reflect.get(envelope, 'telemetry');
+  try {
+    validateApplicationTelemetryEnvelopeV1(telemetry);
+    return telemetry;
+  } catch {
+    // Telemetry evidence never becomes application delivery authority. An
+    // invalid carrier is dropped while the durable event remains consumable.
+    return undefined;
+  }
 }
 
 function postgresStreamJsonValue(value: unknown): unknown {

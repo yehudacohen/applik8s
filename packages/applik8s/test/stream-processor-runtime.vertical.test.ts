@@ -1,6 +1,6 @@
 // typecast-file-boundary: adversarial stream fixtures deliberately restore provider records and callback generics after explicit shape checks.
-import { type ApplicationEventBatch, type ApplicationFrozenStreamBatchGroup, type ApplicationReplayPage, type ApplicationStreamDeliveryAdmitter, ApplicationStreamProcessorPausedError, ApplicationStreamProcessorRetentionGapError, type ApplicationStreamProcessorStore, createPostgresApplicationStreamProcessorStore, runApplicationStreamBatchProcessor, runApplicationStreamProcessor } from '@applik8s/applik8s';
-import { applicationAdmissionInvocationView, applicationCausalPrincipalContext, createApplicationAdmissionContextV1, createApplicationExecutionPrincipalV1, validateApplicationAdmissionContextV1WithoutReceipt, withApplicationAdmissionExecutionV1 } from '@applik8s/core';
+import { type ApplicationEventBatch, type ApplicationFrozenStreamBatchGroup, type ApplicationReplayPage, type ApplicationStreamDeliveryAdmitter, ApplicationStreamProcessorPausedError, ApplicationStreamProcessorRetentionGapError, type ApplicationStreamProcessorStore, type ApplicationTelemetryBoundary, type ApplicationTelemetryRuntime, createPostgresApplicationStreamProcessorStore, installApplicationTelemetryRuntimeResolver, runApplicationStreamBatchProcessor, runApplicationStreamProcessor } from '@applik8s/applik8s';
+import { applicationAdmissionInvocationView, applicationCausalPrincipalContext, createApplicationAdmissionContextV1, createApplicationExecutionPrincipalV1, createApplicationTelemetryEnvelopeV1, validateApplicationAdmissionContextV1WithoutReceipt, withApplicationAdmissionExecutionV1 } from '@applik8s/core';
 import { describe, expect, it } from 'vitest';
 import { testApplicationPrincipal } from '../../../test-support/application-principal.js';
 import type { ApplicationPostgresSql, ApplicationPostgresTransactionSql } from '../src/postgres-runtime-contract.js';
@@ -20,6 +20,35 @@ function envelope(sequence: number) {
     principal: testApplicationPrincipal('author-1', { authorityRevision: 'authz-v1' }),
     trustedContext: { tenantId: 'tenant-1' },
     payload: { postId: `post-${sequence}` },
+  };
+}
+
+function telemetry(sequence: number) {
+  const span = sequence.toString(16).padStart(16, '0');
+  return createApplicationTelemetryEnvelopeV1({
+    traceparent: `00-0123456789abcdef0123456789abcdef-${span}-01`,
+    identity: {
+      application: 'test',
+      environment: 'test',
+      target: 'local',
+      operation: 'posts.publish',
+      execution: `publish:event-${sequence}`,
+      attempt: 1,
+      instance: `event-${sequence}`,
+    },
+  });
+}
+
+function recordingTelemetryRuntime(boundaries: ApplicationTelemetryBoundary[]): ApplicationTelemetryRuntime {
+  return {
+    async run(boundary, execute) {
+      boundaries.push(boundary);
+      return execute();
+    },
+    log() {},
+    count() {},
+    record() {},
+    capture() { return undefined; },
   };
 }
 
@@ -226,6 +255,129 @@ describe('durable replay stream processor runtime', () => {
       { idempotencyKey: 'event-2', version: 'v1', contextDigest: 'a'.repeat(64), globalChangeScope: 'b'.repeat(64), principal: 'author-1', tenant: 'tenant-1' },
     ]);
     expect(checkpoints.checkpoint()).toBe(2);
+  });
+
+  it('links every asynchronous processor attempt to the durable producer carrier and preserves retry identity', async () => {
+    const parent = telemetry(1);
+    const boundaries: ApplicationTelemetryBoundary[] = [];
+    const dispose = installApplicationTelemetryRuntimeResolver(
+      () => recordingTelemetryRuntime(boundaries),
+    );
+    const persisted = store();
+    let attempts = 0;
+    try {
+      await runApplicationStreamProcessor({
+        processor: 'timeline',
+        streamName: 'posts.published.v1',
+        source: {
+          async read() {
+            return {
+              items: [{ ...envelope(1), telemetry: parent }],
+              nextSequence: 1,
+              exhausted: true,
+              retentionFloor: 0,
+            };
+          },
+        },
+        store: persisted.value,
+        admit: admitStreamDelivery,
+        handle: async () => {
+          attempts += 1;
+          if (attempts === 1) throw new Error('retry once');
+        },
+        concurrency: 1,
+        retry: { maxAttempts: 2, initialDelayMs: 1, maxDelayMs: 1, factor: 2 },
+        failure: 'pause',
+        timeoutMs: 1_000,
+        maxInputBytes: 1_000,
+      });
+    } finally {
+      dispose();
+    }
+
+    expect(boundaries).toHaveLength(2);
+    expect(boundaries.map((boundary) => ({
+      kind: boundary.kind,
+      identity: boundary.identity,
+      execution: boundary.execution,
+      instance: boundary.instance,
+      attempt: boundary.attempt,
+      invocation: boundary.invocation,
+      relationship: boundary.relationship,
+      links: boundary.links,
+    }))).toEqual([
+      {
+        kind: 'processor',
+        identity: 'timeline',
+        execution: 'processor:timeline:event-1',
+        instance: 'event-1',
+        attempt: 1,
+        invocation: 'live',
+        relationship: 'asynchronous',
+        links: [parent],
+      },
+      {
+        kind: 'processor',
+        identity: 'timeline',
+        execution: 'processor:timeline:event-1',
+        instance: 'event-1',
+        attempt: 2,
+        invocation: 'retry',
+        relationship: 'asynchronous',
+        links: [parent],
+      },
+    ]);
+  });
+
+  it('retains bounded producer fan-in as links on one frozen batch attempt', async () => {
+    const parents = [telemetry(1), telemetry(2)] as const;
+    const boundaries: ApplicationTelemetryBoundary[] = [];
+    const dispose = installApplicationTelemetryRuntimeResolver(
+      () => recordingTelemetryRuntime(boundaries),
+    );
+    const persisted = batchStore();
+    try {
+      await runApplicationStreamBatchProcessor({
+        processor: 'timeline-batch',
+        streamName: 'posts.published.v1',
+        source: {
+          async read() {
+            return {
+              items: [
+                { ...envelope(1), telemetry: parents[0] },
+                { ...envelope(2), telemetry: parents[1] },
+              ],
+              nextSequence: 2,
+              exhausted: true,
+              retentionFloor: 0,
+            };
+          },
+        },
+        store: persisted.value,
+        admit: admitStreamDelivery,
+        handle: async () => {},
+        concurrency: 1,
+        retry: { maxAttempts: 1, initialDelayMs: 1, maxDelayMs: 1, factor: 2 },
+        failure: 'pause',
+        timeoutMs: 1_000,
+        maxInputBytes: 10_000,
+        maxItems: 10,
+        maxBytes: 5_000,
+        maxBatches: 1,
+      });
+    } finally {
+      dispose();
+    }
+
+    expect(boundaries).toHaveLength(1);
+    expect(boundaries[0]).toMatchObject({
+      kind: 'processor',
+      identity: 'timeline-batch',
+      attempt: 1,
+      invocation: 'live',
+      relationship: 'asynchronous',
+      links: parents,
+    });
   });
 
   it('preserves event order within each partition while processing independent partitions concurrently', async () => {

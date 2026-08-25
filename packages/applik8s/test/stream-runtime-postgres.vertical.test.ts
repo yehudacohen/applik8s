@@ -1,9 +1,10 @@
 // typecast-file-boundary: PostgreSQL stream doubles return untyped rows that the production runtime must validate.
 import { app, createPostgresApplicationStream, enforcePostgresApplicationStreamRetention } from '@applik8s/applik8s';
 import { stream, type } from '@applik8s/applik8s/dsl';
+import { createApplicationTelemetryEnvelopeV1 } from '@applik8s/core';
 import { describe, expect, test, vi } from 'vitest';
-import { applicationRequestContextValues } from '../src/command-principal.js';
 import { testApplicationPrincipal } from '../../../test-support/application-principal.js';
+import { applicationRequestContextValues } from '../src/command-principal.js';
 
 describe('PostgreSQL replayable application stream', () => {
   test('reads a bounded, context-scoped, schema-validated outbox page', async () => {
@@ -98,6 +99,65 @@ describe('PostgreSQL replayable application stream', () => {
       }],
     });
     expect(unsafe.mock.calls.find(([query]) => String(query).includes('SELECT id'))?.[0]).toContain(', envelope');
+  });
+
+  test('restores a valid producer carrier only for internal consumers and drops invalid telemetry without affecting delivery', async () => {
+    const catalog = app('stream-runtime-telemetry');
+    const database = catalog.database.postgres('catalog', { schema: {} });
+    const Changed = stream('cards.telemetry.v1', { payload: type({ cardId: 'string' }) });
+    const binding = catalog.stream(Changed, {
+      database,
+      retention: { maxAgeSeconds: 3600 },
+      partitionBy: (payload) => payload.cardId,
+      authorize: () => true,
+    });
+    const producer = createApplicationTelemetryEnvelopeV1({
+      traceparent: '00-0123456789abcdef0123456789abcdef-0123456789abcdef-01',
+      identity: {
+        application: 'stream-runtime-telemetry',
+        environment: 'test',
+        target: 'local',
+        operation: 'cards.create',
+        execution: 'model:card-1',
+        attempt: 1,
+      },
+    });
+    let telemetry: unknown = producer;
+    const unsafe = vi.fn(async (query: string) => query.includes('retention_floors')
+      ? [{ retention_floor: 0 }]
+      : [{
+          id: 'event-telemetry',
+          sequence: 1,
+          partition_key: 'card-1',
+          recorded_at: '2026-07-15T00:00:00.000Z',
+          context_digest: 'internal-digest',
+          payload: { cardId: 'card-1' },
+          envelope: { telemetry },
+        }]);
+    const internal = createPostgresApplicationStream({
+      stream: binding,
+      sql: transactionalSql(unsafe),
+      principal: testApplicationPrincipal('applik8s:processor:cards'),
+      includeTrustedContext: true,
+      internalConsumer: { kind: 'processor', name: 'cards' },
+    });
+
+    await expect(internal.read(0, 10)).resolves.toMatchObject({
+      items: [{ telemetry: producer }],
+    });
+    telemetry = { ...producer, traceparent: 'invalid' };
+    await expect(internal.read(0, 10)).resolves.toMatchObject({
+      items: [{ id: 'event-telemetry', payload: { cardId: 'card-1' } }],
+    });
+    expect((await internal.read(0, 10)).items[0]).not.toHaveProperty('telemetry');
+
+    const publicSource = createPostgresApplicationStream({
+      stream: binding,
+      sql: transactionalSql(unsafe),
+      principal: testApplicationPrincipal('allowed'),
+    });
+    telemetry = producer;
+    expect((await publicSource.read(0, 10)).items[0]).not.toHaveProperty('telemetry');
   });
 
   test('fails authorization before touching PostgreSQL', async () => {

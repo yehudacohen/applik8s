@@ -25,6 +25,7 @@
   },
   "bundles": {
     "maximumReactiveGatewayBytes": 580000,
-    "maximumRuntimeIntegrityOverheadBytes": 10000
+    "maximumRuntimeIntegrityOverheadBytes": 10000,
+    "maximumTelemetryCarrierOverheadBytes": 10000
   }
 }

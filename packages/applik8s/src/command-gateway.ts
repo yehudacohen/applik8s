@@ -1,9 +1,9 @@
 import type { ApplicationCommandProgress, ApplicationCommandSubmission } from '@applik8s/client';
 import { type ApplicationAdmissionContextV1, type ApplicationAdmissionInvocationContextV1, type ApplicationAuthorizationReceipt, type ApplicationOperationTransport, type ApplicationPrincipal, type ApplicationRequestAdmission, applicationAdmissionInvocationView, canonicalJsonV1String, canonicalJsonV1Value, createApplicationRequestAdmissionContextV1, type JsonObject, type JsonValue, validateApplicationAuthorizationReceipt } from '@applik8s/core';
 import {
+  type ApplicationAdmissionObserverV1,
   applicationAdmissionRejectionCodeV1,
   deliverApplicationAdmissionObservationV1,
-  type ApplicationAdmissionObserverV1,
 } from '@applik8s/core/admission';
 import type { ApplicationInternalOperationInvocation } from '@applik8s/operations';
 import { nodeKeyedDigestBase64Url } from '@applik8s/runtime/node-integrity';
@@ -12,6 +12,7 @@ import { normalizeSchema } from '@applik8s/sdk/schema-runtime';
 import { applicationOperationInputDigest } from './application-operation-runtime.js';
 import type { ApplicationQueryPrincipal } from './application-queries.js';
 import type { ApplicationGatewayAdmission } from './application-reactive.js';
+import { captureApplicationTelemetryContext } from './application-telemetry-runtime.js';
 import { applicationRequestContextValues } from './command-principal.js';
 import { applicationCommandScope, canonicalApplicationCommandKey } from './command-runtime-contract.js';
 import type { ApplicationEventLogPublisher } from './event-log-runtime.js';
@@ -261,12 +262,14 @@ export function createApplicationCommandGateway<TPrincipal extends ApplicationQu
               receipt: authorizationReceipt,
             });
           }
+          const telemetry = captureApplicationTelemetryContext();
           const envelope = {
             id: commandId,
             contract: commandContract(command.id),
             payload: input,
             recordedAt: now().toISOString(),
             correlationId,
+            ...(telemetry ? { telemetry } : {}),
             partitionKey: targetKey,
             routing: { binding: command.bindingId, targetKey, idempotencyKey: routedIdempotencyKey },
             ...(typeof body.value.expectedRevision === 'string' ? { expectedRevision: body.value.expectedRevision } : {}),
@@ -471,12 +474,14 @@ export function createApplicationCommandGateway<TPrincipal extends ApplicationQu
         principal.authorityRevision,
         trustedContext,
       );
+      const telemetry = captureApplicationTelemetryContext();
       await publisher.publish({
         id: commandId,
         contract: commandContract(command.id),
         payload: input,
         recordedAt: now().toISOString(),
         correlationId: commandId,
+        ...(telemetry ? { telemetry } : {}),
         partitionKey: targetKey,
         routing: {
           binding: command.bindingId,
