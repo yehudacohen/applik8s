@@ -7,6 +7,7 @@ import { type ApplicationGraph, serializeApplicationPlan } from "@applik8s/core"
 import {
   type ApplicationArtifactRequirement,
   type ApplicationGeneratedSecretRequirement,
+  type ApplicationKubernetesRuntimeAccessNetworkPolicyProvider,
   applicationProviderGuaranteesForGraph,
   compileApplicationDeploymentGraph,
   compileApplicationPlan,
@@ -43,6 +44,7 @@ export interface EmitApplicationDeploymentGraphRequest {
   readonly strategy: ApplicationDeploymentStrategy;
   readonly installationSpec: Readonly<Record<string, unknown>>;
   readonly profileTransition?: Readonly<Record<string, unknown>>;
+  readonly runtimeAccessKubernetesNetworkPolicyProvider?: ApplicationKubernetesRuntimeAccessNetworkPolicyProvider;
 }
 
 export interface EmittedApplicationDeploymentGraph {
@@ -121,6 +123,9 @@ export async function emitApplicationDeploymentGraph(
     },
     clusterApiPrerequisites: materialized.clusterApiPrerequisites,
     generatedSecrets,
+    ...(request.runtimeAccessKubernetesNetworkPolicyProvider
+      ? { runtimeAccessKubernetesNetworkPolicyProvider: request.runtimeAccessKubernetesNetworkPolicyProvider }
+      : {}),
   });
   const path = join(dirname(request.bundlePath), "application-deployment-graph.json");
   await writeFile(path, serializeApplicationDeploymentGraph(result.graph));
@@ -425,7 +430,7 @@ export function withPublishedActorIngressRoutes(
   let routed = 0;
   const output = resources.map((resource) => {
     const template = optionalObject(resource.template);
-    if (!template || template.apiVersion !== "networking.k8s.io/v1" || template.kind !== "Ingress") return resource;
+    if (template?.apiVersion !== "networking.k8s.io/v1" || template.kind !== "Ingress") return resource;
     const metadata = optionalObject(template.metadata);
     if (!metadata || typeof metadata.name !== "string" || !ingressNames.has(metadata.name)) return resource;
     const ingressNamespace = optionalString(metadata.namespace) ?? graph.metadata.namespace;

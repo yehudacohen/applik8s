@@ -105,11 +105,139 @@ export function validateKubernetesRuntimeAccessParity(
         `Workload ${workload.workloadIdentity} receives undeclared Secret projections: ${widenedSecrets.join(', ')}.`));
     }
 
-    if (expected.privatePeers.length > 0 && expected.externalEgress.length === 0) {
+    if (expected.networkEnforcement.kind === 'standard-network-policy') {
       findings.push(...networkPolicyFindings(workload, expected, manifests));
+    } else if (expected.networkEnforcement.kind === 'cilium-network-policy') {
+      findings.push(...ciliumNetworkPolicyFindings(workload, expected, manifests));
     }
   }
   return findings;
+}
+
+function ciliumNetworkPolicyFindings(
+  workload: ApplicationRuntimeAccessPlan['workloads'][number],
+  expected: NonNullable<ApplicationRuntimeAccessPlan['workloads'][number]['kubernetes']>,
+  manifests: readonly Readonly<Record<string, unknown>>[],
+): readonly KubernetesRuntimeAccessParityFinding[] {
+  const policy = manifests.find((manifest) =>
+    manifest.apiVersion === 'cilium.io/v2'
+    && manifest.kind === 'CiliumNetworkPolicy'
+    && stringValue(recordValue(recordValue(manifest.metadata)?.annotations)?.['applik8s.io/runtime-access-workload']) === workload.workloadIdentity);
+  if (!policy) return [finding(workload, 'RUNTIME_ACCESS_NETWORK_MISSING', `Workload ${workload.workloadIdentity} has no generated Cilium FQDN policy.`)];
+  const metadata = recordValue(policy.metadata);
+  const spec = recordValue(policy.spec);
+  const selector = plainKubernetesLabels(stringRecord(recordValue(recordValue(spec?.endpointSelector)?.matchLabels)));
+  if (
+    metadataNamespace(policy) !== expected.resource.namespace
+    || stableJson(selector ?? {}) !== stableJson(expected.podSelector)
+    || stringValue(recordValue(metadata?.annotations)?.['applik8s.io/runtime-access-policy-digest']) !== workload.policyDigest
+  ) {
+    return [finding(workload, 'RUNTIME_ACCESS_NETWORK_MISBOUND', `Workload ${workload.workloadIdentity} Cilium policy is bound to the wrong namespace, pods, or policy identity.`)];
+  }
+  const expectedAtoms = [
+    ...expected.privatePeers.flatMap((peer) => peer.endpoint.target === 'kubernetes'
+      ? [networkAtom(peer.endpoint.namespace, peer.endpoint.podSelector, peer.protocol, peer.port)]
+      : []),
+    ...expected.bootstrapEgress.flatMap((bootstrap) => bootstrap.endpoint.target === 'kubernetes'
+      ? [networkAtom(bootstrap.endpoint.namespace, bootstrap.endpoint.podSelector, bootstrap.protocol, bootstrap.port)]
+      : []),
+    ...expected.externalEgress.flatMap((external) => external.destination.kind === 'dnsName' && external.port !== undefined
+      ? [fqdnAtom(external.destination.hostname, external.protocol, external.port)]
+      : []),
+  ].sort();
+  const parsed = ciliumPolicyAtoms(spec?.egress);
+  if (parsed.wildcard) return [finding(workload, 'RUNTIME_ACCESS_NETWORK_WIDENED', `Workload ${workload.workloadIdentity} Cilium policy contains an unbounded destination or port.`)];
+  const expectedDnsProxyAtoms = expected.bootstrapEgress.flatMap((bootstrap) =>
+    bootstrap.endpoint.target === 'kubernetes' && bootstrap.purpose === 'dns'
+      ? [networkAtom(bootstrap.endpoint.namespace, bootstrap.endpoint.podSelector, bootstrap.protocol, bootstrap.port)]
+      : []);
+  const missingDnsProxyAtoms = difference(expectedDnsProxyAtoms, parsed.proxiedDnsAtoms);
+  if (expected.externalEgress.length > 0 && missingDnsProxyAtoms.length > 0) {
+    return [finding(workload, 'RUNTIME_ACCESS_NETWORK_MISSING', `Workload ${workload.workloadIdentity} Cilium FQDN policy does not proxy every declared DNS bootstrap transport.`)];
+  }
+  const missing = difference(expectedAtoms, parsed.atoms);
+  const widened = difference(parsed.atoms, expectedAtoms);
+  if (missing.length === 0 && widened.length === 0) return [];
+  return [finding(workload, widened.length > 0 ? 'RUNTIME_ACCESS_NETWORK_WIDENED' : 'RUNTIME_ACCESS_NETWORK_MISSING',
+    `Workload ${workload.workloadIdentity} Cilium policy differs from its declared peers (missing: ${missing.join(', ') || '<none>'}; extra: ${widened.join(', ') || '<none>'}).`)];
+}
+
+function ciliumPolicyAtoms(value: unknown): { readonly atoms: readonly string[]; readonly proxiedDnsAtoms: readonly string[]; readonly wildcard: boolean } {
+  const atoms: string[] = [];
+  const proxiedDnsAtoms: string[] = [];
+  let wildcard = false;
+  for (const rawRule of arrayValue(value)) {
+    const rule = recordValue(rawRule);
+    const endpoints = arrayValue(rule?.toEndpoints);
+    const fqdns = arrayValue(rule?.toFQDNs);
+    const ports = arrayValue(rule?.toPorts);
+    if ((endpoints.length === 1) === (fqdns.length === 1) || ports.length !== 1) {
+      wildcard = true;
+      continue;
+    }
+    const portBlock = recordValue(ports[0]);
+    const portEntries = arrayValue(portBlock?.ports);
+    const rules = recordValue(portBlock?.rules);
+    const dnsRules = arrayValue(rules?.dns);
+    if (portEntries.length === 0) {
+      wildcard = true;
+      continue;
+    }
+    for (const rawPort of portEntries) {
+      const port = recordValue(rawPort);
+      const protocol = port?.protocol === 'TCP' || port?.protocol === 'UDP' ? port.protocol : undefined;
+      const number = typeof port?.port === 'string' && /^\d+$/u.test(port.port) ? Number(port.port) : undefined;
+      if (!protocol || number === undefined || number < 1 || number > 65_535) {
+        wildcard = true;
+        continue;
+      }
+      if (endpoints.length === 1) {
+        const labels = stringRecord(recordValue(recordValue(endpoints[0])?.matchLabels));
+        const namespace = labels?.['k8s:io.kubernetes.pod.namespace'];
+        if (!labels || !namespace) {
+          wildcard = true;
+          continue;
+        }
+        const { "k8s:io.kubernetes.pod.namespace": _namespace, ...ciliumSelector } = labels;
+        const selector = plainKubernetesLabels(ciliumSelector) ?? {};
+        if (Object.keys(selector).length === 0) wildcard = true;
+        else {
+          const atom = networkAtom(namespace, selector, protocol, number);
+          atoms.push(atom);
+          if (dnsRules.length > 0) {
+            const exactDnsProxy = dnsRules.length === 1
+              && recordValue(dnsRules[0])?.matchPattern === '*'
+              && Object.keys(recordValue(dnsRules[0]) ?? {}).length === 1;
+            if (exactDnsProxy && namespace === 'kube-system' && selector['k8s-app'] === 'kube-dns' && number === 53) {
+              proxiedDnsAtoms.push(atom);
+            } else {
+              wildcard = true;
+            }
+          }
+        }
+      } else {
+        if (dnsRules.length > 0) wildcard = true;
+        const fqdn = recordValue(fqdns[0]);
+        const hostname = stringValue(fqdn?.matchName);
+        if (!hostname || fqdn?.matchPattern !== undefined || hostname.includes('*')) wildcard = true;
+        else atoms.push(fqdnAtom(hostname, protocol, number));
+      }
+    }
+  }
+  return {
+    atoms: [...new Set(atoms)].sort(),
+    proxiedDnsAtoms: [...new Set(proxiedDnsAtoms)].sort(),
+    wildcard,
+  };
+}
+
+function plainKubernetesLabels(labels: Readonly<Record<string, string>> | undefined): Readonly<Record<string, string>> | undefined {
+  if (!labels) return undefined;
+  return Object.fromEntries(Object.entries(labels).map(([key, value]) => [key.startsWith('k8s:') ? key.slice(4) : key, value]));
+}
+
+function fqdnAtom(hostname: string, protocol: 'TCP' | 'UDP', port: number): string {
+  return `fqdn:${hostname}|${protocol}|${port}`;
 }
 
 function networkPolicyFindings(

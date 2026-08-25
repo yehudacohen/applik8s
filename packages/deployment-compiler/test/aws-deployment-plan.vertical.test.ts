@@ -103,6 +103,8 @@ describe('v0.8 AWS deployment planning', () => {
     const executionRole = plan.resources.find(({ id }) => id === host?.configuration.executionRoleResourceId);
     const workloadGroup = plan.resources.find(({ id }) => id === host?.configuration.runtimeAccessSecurityGroupResourceId);
     const targetGroup = plan.resources.find(({ id }) => id === database?.configuration.runtimeAccessSecurityGroupResourceId);
+    const serviceEndpoints = plan.resources.filter(({ service, resourceType }) => service === 'ec2' && resourceType === 'vpc-endpoint');
+    const endpointServices = serviceEndpoints.map(({ configuration }) => configuration.endpointService).sort();
     expect(workloadGroup).toMatchObject({
       service: 'ec2',
       resourceType: 'security-group',
@@ -114,9 +116,18 @@ describe('v0.8 AWS deployment planning', () => {
           expect.objectContaining({ kind: 'securityGroup', protocol: 'tcp', port: 5432, targetResourceId: database?.id }),
           expect.objectContaining({ kind: 'cidr', protocol: 'tcp', port: 53, cidr: '10.64.0.2/32' }),
           expect.objectContaining({ kind: 'cidr', protocol: 'udp', port: 53, cidr: '10.64.0.2/32' }),
+          expect.objectContaining({ kind: 'securityGroup', protocol: 'tcp', port: 443, targetResourceId: expect.stringMatching(/^runtime-network\.aws-service\./u) }),
+          expect.objectContaining({ kind: 'prefixList', protocol: 'tcp', port: 443, targetResourceId: expect.stringMatching(/^runtime-network\.aws-service\./u) }),
         ]),
       },
     });
+    expect(endpointServices).toEqual(['ecr.api', 'ecr.dkr', 'logs', 's3', 'secretsmanager']);
+    expect(serviceEndpoints.find(({ configuration }) => configuration.endpointService === 's3')?.configuration)
+      .toMatchObject({ endpointType: 'gateway', routeTableScope: 'private' });
+    expect(serviceEndpoints
+      .filter(({ configuration }) => configuration.endpointType === 'interface')
+      .every(({ configuration }) => typeof configuration.securityGroupResourceId === 'string'))
+      .toBe(true);
     expect(targetGroup).toMatchObject({
       service: 'ec2',
       resourceType: 'security-group',
@@ -159,6 +170,12 @@ describe('v0.8 AWS deployment planning', () => {
     expect(validateAwsRuntimeAccessParity(
       plan.runtimeAccess,
       plan.resources.filter(({ id }) => id !== workloadGroup?.id),
+      plan.edges,
+    )).toEqual(expect.arrayContaining([expect.objectContaining({ code: 'RUNTIME_ACCESS_NETWORK_MISSING' })]));
+    const secretsEndpoint = serviceEndpoints.find(({ configuration }) => configuration.endpointService === 'secretsmanager');
+    expect(validateAwsRuntimeAccessParity(
+      plan.runtimeAccess,
+      plan.resources.filter(({ id }) => id !== secretsEndpoint?.id),
       plan.edges,
     )).toEqual(expect.arrayContaining([expect.objectContaining({ code: 'RUNTIME_ACCESS_NETWORK_MISSING' })]));
     const mutateWorkloadRules = (mutate: (rule: DeploymentJsonObject) => DeploymentJsonObject) => plan.resources.map((entry) => entry.id === workloadGroup?.id

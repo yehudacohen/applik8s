@@ -15,6 +15,7 @@ import {
   serializeApplicationGraph,
 } from '@applik8s/core';
 import {
+  type ApplicationRuntimeAccessAwsServiceEndpoint,
   type ApplicationRuntimeAccessAwsStatement,
   type ApplicationRuntimeAccessBootstrapEgress,
   type ApplicationRuntimeAccessExecutionPlan,
@@ -62,8 +63,12 @@ export interface ApplicationRuntimeAccessWorkloadPlacement {
     readonly resourceId: string;
     readonly roleName: string;
     readonly executionRoleName?: string;
+    /** Framework-owned service transports required before the container starts. */
+    readonly bootstrapServiceEndpoints?: readonly ApplicationRuntimeAccessAwsServiceEndpoint[];
   };
 }
+
+export type ApplicationKubernetesRuntimeAccessNetworkPolicyProvider = 'standard' | 'cilium';
 
 /** Target-selected credential projection that becomes canonical semantic access before materialization. */
 export interface ApplicationRuntimeAccessCredentialRequirement {
@@ -95,6 +100,8 @@ export function compileApplicationRuntimeAccessPlan(options: {
   readonly providerGuarantees?: readonly ApplicationProviderGuaranteeManifest[];
   /** Compiler-proven placement of executable semantic nodes into target workloads. */
   readonly workloadPlacements?: readonly ApplicationRuntimeAccessWorkloadPlacement[];
+  /** Explicitly observed/selected cluster enforcement capability. */
+  readonly kubernetesNetworkPolicyProvider?: ApplicationKubernetesRuntimeAccessNetworkPolicyProvider;
   /**
    * Exact execution-node subset owned by a composed physical subplan. This is
    * intentionally narrower than a target compatibility filter: callers may use
@@ -181,13 +188,20 @@ export function compileApplicationRuntimeAccessPlan(options: {
     }) : [];
     const awsStatements = allAwsStatements.flatMap((statement) => runtimeRoleStatement(statement));
     const awsExecutionRoleStatements = allAwsStatements.flatMap((statement) => executionRoleStatement(statement));
+    const serviceEndpoints = options.target === 'aws' || options.target === 'aws-local'
+      ? mergeAwsServiceEndpoints(requirements.flatMap((requirement) =>
+          awsServiceEndpointsForRequirement(
+            requirement,
+            awsStatementsForRequirement(requirement, options.graph, options.targetResources),
+          )))
+      : [];
     const privatePeers = mergePrivatePeers(requirements.flatMap((requirement) =>
       runtimePrivatePeer(requirement, options.target, options.graph, options.targetResources)));
     // Non-private egress is consumed only from explicit provider-adapter
     // records. Arbitrary provider config is intentionally not inspected here.
     const externalEgress = mergeExternalEgress(requirements.flatMap((requirement) =>
       runtimeExternalEgress(requirement, options.graph, options.targetResources)));
-    const bootstrapEgress = privatePeers.length > 0 || externalEgress.length > 0
+    const bootstrapEgress = privatePeers.length > 0 || externalEgress.length > 0 || serviceEndpoints.length > 0
       ? mergeBootstrapEgress(options.bootstrapEgress ?? [])
       : [];
     const networkConnections = privatePeerConnections(privatePeers);
@@ -216,6 +230,7 @@ export function compileApplicationRuntimeAccessPlan(options: {
           privatePeers,
           bootstrapEgress,
           externalEgress,
+          serviceEndpoints,
           networkConnections,
         }
       : undefined;
@@ -255,7 +270,13 @@ export function compileApplicationRuntimeAccessPlan(options: {
       ...policy,
     };
   });
-  const workloads = compileWorkloadPlans(options.workloadPlacements ?? [], executions, options.target);
+  const workloads = compileWorkloadPlans(
+    options.workloadPlacements ?? [],
+    executions,
+    options.target,
+    options.kubernetesNetworkPolicyProvider ?? 'standard',
+    options.bootstrapEgress ?? [],
+  );
   const sourceGraphDigest = options.sourceGraphDigest
     ?? (`sha256:${sha256Hex(serializeApplicationGraph(options.graph))}` as const);
   const content = { application: options.graph.metadata.name, target: options.target, sourceGraphDigest, executions, workloads, diagnostics };
@@ -266,6 +287,8 @@ function compileWorkloadPlans(
   placements: readonly ApplicationRuntimeAccessWorkloadPlacement[],
   executions: readonly ApplicationRuntimeAccessExecutionPlan[],
   target: ApplicationRuntimeAccessPlan['target'],
+  kubernetesNetworkPolicyProvider: ApplicationKubernetesRuntimeAccessNetworkPolicyProvider,
+  targetBootstrapEgress: readonly ApplicationRuntimeAccessBootstrapEgress[],
 ): readonly ApplicationRuntimeAccessWorkloadPlan[] {
   const executionsByNode = new Map<string, ApplicationRuntimeAccessExecutionPlan[]>();
   for (const execution of executions) {
@@ -292,6 +315,11 @@ function compileWorkloadPlans(
           privatePeers,
           bootstrapEgress: mergeBootstrapEgress(members.flatMap((member) => member.kubernetes?.bootstrapEgress ?? [])),
           externalEgress,
+          networkEnforcement: kubernetesNetworkEnforcement(
+            privatePeers,
+            externalEgress,
+            kubernetesNetworkPolicyProvider,
+          ),
           networkConnections: privatePeerConnections(privatePeers),
           credentialProjections: mergeCredentialProjections(members.flatMap((member) => member.kubernetes?.credentialProjections ?? [])),
           };
@@ -309,8 +337,20 @@ function compileWorkloadPlans(
           statements: mergeAwsStatements(members.flatMap((member) => member.aws?.statements ?? [])),
           executionRoleStatements: mergeAwsStatements(members.flatMap((member) => member.aws?.executionRoleStatements ?? [])),
           privatePeers,
-          bootstrapEgress: mergeBootstrapEgress(members.flatMap((member) => member.aws?.bootstrapEgress ?? [])),
+          bootstrapEgress: mergeBootstrapEgress([
+            ...members.flatMap((member) => member.aws?.bootstrapEgress ?? []),
+            ...(placement.aws.bootstrapServiceEndpoints?.length ? targetBootstrapEgress : []),
+          ]),
           externalEgress: mergeExternalEgress(members.flatMap((member) => member.aws?.externalEgress ?? [])),
+          serviceEndpoints: mergeAwsServiceEndpoints([
+            ...members.flatMap((member) => member.aws?.serviceEndpoints ?? []),
+            ...(placement.aws.bootstrapServiceEndpoints ?? []),
+            ...(placement.aws.bootstrapServiceEndpoints?.length
+              && members.some((member) => member.aws?.executionRoleStatements?.some((statement) =>
+                statement.actions.includes('secretsmanager:GetSecretValue')))
+              ? [awsBootstrapServiceEndpoint('secretsmanager', 'interface')]
+              : []),
+          ]),
           networkConnections: privatePeerConnections(privatePeers),
           };
         })()
@@ -329,6 +369,25 @@ function compileWorkloadPlans(
       ...(aws ? { aws } : {}),
     };
   }).sort((left, right) => left.workloadIdentity.localeCompare(right.workloadIdentity));
+}
+
+function kubernetesNetworkEnforcement(
+  privatePeers: readonly ApplicationRuntimeAccessPrivatePeer[],
+  externalEgress: readonly ApplicationRuntimeAccessExternalEgress[],
+  provider: ApplicationKubernetesRuntimeAccessNetworkPolicyProvider,
+): NonNullable<ApplicationRuntimeAccessWorkloadPlan['kubernetes']>['networkEnforcement'] {
+  if (privatePeers.length === 0 && externalEgress.length === 0) return { kind: 'none' };
+  if (externalEgress.length === 0) {
+    return { kind: 'standard-network-policy', apiVersion: 'networking.k8s.io/v1', fidelity: 'exact' };
+  }
+  const exactDns = externalEgress.every((egress) =>
+    egress.destination.kind === 'dnsName'
+    && egress.fidelity === 'port-only'
+    && egress.port !== undefined);
+  if (!exactDns) return { kind: 'unqualified', reason: 'external-destination-not-enforceable' };
+  return provider === 'cilium'
+    ? { kind: 'cilium-network-policy', apiVersion: 'cilium.io/v2', fidelity: 'exact' }
+    : { kind: 'unqualified', reason: 'fqdn-provider-unavailable' };
 }
 
 function mergePlannedKubernetesBindings(
@@ -644,6 +703,95 @@ function mergeExternalEgress(
   return [...merged.values()].sort(compareCanonical);
 }
 
+function awsServiceEndpointsForRequirement(
+  requirement: ApplicationRuntimeAccessRequirement,
+  statements: readonly ApplicationRuntimeAccessAwsStatement[],
+): readonly ApplicationRuntimeAccessAwsServiceEndpoint[] {
+  const services = new Map<string, 'interface' | 'gateway'>();
+  for (const statement of statements) {
+    for (const action of statement.actions) {
+      const service = awsVpcEndpointServiceForAction(action);
+      if (service) services.set(service.service, service.endpointType);
+    }
+  }
+  return [...services.entries()].map(([service, endpointType]) => ({
+    endpointIdentity: awsServiceEndpointIdentity(service, endpointType, 'runtime'),
+    service,
+    endpointType,
+    purpose: 'runtime' as const,
+    protocol: 'TCP' as const,
+    port: 443 as const,
+    requirementIds: [requirement.id],
+  }));
+}
+
+export function awsVpcEndpointServiceForAction(
+  action: string,
+): { readonly service: string; readonly endpointType: 'interface' | 'gateway' } | undefined {
+  const prefix = action.split(':', 1)[0]?.toLowerCase();
+  const service = prefix === 'kinesis'
+    ? 'kinesis-streams'
+    : prefix === 'scheduler'
+      ? 'scheduler'
+      : prefix === 's3'
+        ? 's3'
+        : prefix === 'dynamodb'
+          ? 'dynamodb'
+          : ['athena', 'ecr.api', 'ecr.dkr', 'events', 'glue', 'logs', 'secretsmanager', 'sqs', 'xray'].includes(prefix ?? '')
+            ? prefix
+            : undefined;
+  if (!service) return undefined;
+  return { service, endpointType: service === 's3' || service === 'dynamodb' ? 'gateway' : 'interface' };
+}
+
+function awsServiceEndpointIdentity(
+  service: string,
+  endpointType: 'interface' | 'gateway',
+  purpose: 'runtime' | 'ecs-bootstrap',
+): string {
+  return `aws-service.${sha256Hex(canonicalJsonV1String({ service, endpointType, purpose })).slice(0, 24)}`;
+}
+
+export function awsBootstrapServiceEndpoint(
+  service: string,
+  endpointType: 'interface' | 'gateway',
+): ApplicationRuntimeAccessAwsServiceEndpoint {
+  return {
+    endpointIdentity: awsServiceEndpointIdentity(service, endpointType, 'ecs-bootstrap'),
+    service,
+    endpointType,
+    purpose: 'ecs-bootstrap',
+    protocol: 'TCP',
+    port: 443,
+    requirementIds: [],
+  };
+}
+
+export function awsServiceEndpointResourceId(service: string): string {
+  return `runtime-network.aws-service.${sha256Hex(service).slice(0, 16)}`;
+}
+
+function mergeAwsServiceEndpoints(
+  endpoints: readonly ApplicationRuntimeAccessAwsServiceEndpoint[],
+): readonly ApplicationRuntimeAccessAwsServiceEndpoint[] {
+  const merged = new Map<string, ApplicationRuntimeAccessAwsServiceEndpoint>();
+  for (const endpoint of endpoints) {
+    const key = canonicalJsonV1String({
+      service: endpoint.service,
+      endpointType: endpoint.endpointType,
+      purpose: endpoint.purpose,
+      protocol: endpoint.protocol,
+      port: endpoint.port,
+    });
+    const current = merged.get(key);
+    merged.set(key, {
+      ...endpoint,
+      requirementIds: uniqueStrings([...(current?.requirementIds ?? []), ...endpoint.requirementIds]),
+    });
+  }
+  return [...merged.values()].sort(compareCanonical);
+}
+
 function mergeBootstrapEgress(
   entries: readonly ApplicationRuntimeAccessBootstrapEgress[],
 ): readonly ApplicationRuntimeAccessBootstrapEgress[] {
@@ -682,7 +830,8 @@ function owningExecutionNodeIds(nodeId: string, graph: ApplicationGraph): Readon
   const related = new Set([nodeId]);
   const pending = [nodeId];
   while (pending.length > 0) {
-    const child = pending.pop()!;
+    const child = pending.pop();
+    if (!child) continue;
     for (const edge of graph.edges) {
       if (edge.relationship !== 'owns' || edge.to.nodeId !== child || related.has(edge.from.nodeId)) continue;
       related.add(edge.from.nodeId);
@@ -989,18 +1138,6 @@ function providerAccessGuarantee(
     disposition: guarantee?.disposition ?? 'unresolved',
     evidenceLevel: manifest?.evidenceLevel ?? 'none',
   };
-}
-
-function secretIdentity(requirement: ApplicationRuntimeAccessRequirement): { readonly namespace?: string; readonly name: string } | undefined {
-  const identity = resourceId(requirement);
-  if (!identity) return undefined;
-  const parts = identity.split('/');
-  const secretIndex = parts.lastIndexOf('Secret');
-  if (secretIndex < 0) return undefined;
-  const name = parts[parts.length - 1];
-  if (!name || secretIndex === parts.length - 1) return undefined;
-  const namespace = parts.length - secretIndex >= 3 ? parts[parts.length - 2] : undefined;
-  return { name, ...(namespace ? { namespace } : {}) };
 }
 
 function containsWildcard(requirement: ApplicationRuntimeAccessRequirement): boolean {

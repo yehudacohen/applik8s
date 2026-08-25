@@ -15,6 +15,7 @@ import type {
   DeploymentJsonObject,
 } from "@applik8s/deployment-contract";
 import type {
+  ApplicationKubernetesRuntimeAccessNetworkPolicyProvider,
   ApplicationRuntimeAccessPlan,
   ApplicationRuntimeAccessWorkloadPlacement,
 } from "./runtime-access-plan.js";
@@ -54,6 +55,8 @@ export interface CompileApplicationDeploymentGraphRequest {
   readonly generatedSecrets?: readonly ApplicationGeneratedSecretRequirement[];
   /** Explicit target-owned resolver/bootstrap access; never application-authored provider authority. */
   readonly runtimeAccessBootstrapEgress?: readonly ApplicationRuntimeAccessBootstrapEgress[];
+  /** Explicit target capability; callers must not infer this from application configuration. */
+  readonly runtimeAccessKubernetesNetworkPolicyProvider?: ApplicationKubernetesRuntimeAccessNetworkPolicyProvider;
   readonly contributors?: readonly ApplicationDeploymentContributor[];
 }
 

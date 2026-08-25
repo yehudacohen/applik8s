@@ -47,6 +47,19 @@ describe("AWS Alchemy target", () => {
 
   test("renders exact runtime security-group rules and attaches workload and target identities", () => {
     const base = fixturePlan();
+    const ecrEndpointGroup = planResource('runtime-network.aws-service.ecr.security-group', 'ec2', 'security-group', 'demo-endpoint-ecr-access', undefined, {
+      description: 'PrivateLink ingress for ecr.api', runtimeAccessKind: 'service-endpoint', endpointService: 'ecr.api',
+      egressMode: 'explicit', egressRules: [],
+      ingressRules: [{ kind: 'securityGroup', protocol: 'tcp', port: 443, sourceWorkloadIdentity: 'ecs:web', sourceSecurityGroupResourceId: 'runtime-network.workload.web' }],
+    }, ['securityGroupId']);
+    const ecrEndpoint = planResource('runtime-network.aws-service.ecr', 'ec2', 'vpc-endpoint', 'demo-endpoint-ecr-api', undefined, {
+      endpointService: 'ecr.api', serviceName: 'com.amazonaws.us-east-1.ecr.api', endpointType: 'interface',
+      vpcResourceId: 'foundation.network', subnetScope: 'private', securityGroupResourceId: ecrEndpointGroup.id, privateDnsEnabled: true,
+    }, ['vpcEndpointId', 'dnsEntries']);
+    const s3Endpoint = planResource('runtime-network.aws-service.s3', 'ec2', 'vpc-endpoint', 'demo-endpoint-s3', undefined, {
+      endpointService: 's3', serviceName: 'com.amazonaws.us-east-1.s3', endpointType: 'gateway',
+      vpcResourceId: 'foundation.network', routeTableScope: 'private',
+    }, ['vpcEndpointId', 'prefixListId']);
     const workloadGroup = planResource('runtime-network.workload.web', 'ec2', 'security-group', 'demo-runtime-web', undefined, {
       description: 'Exact runtime egress for web', runtimeAccessKind: 'workload', workloadIdentity: 'ecs:web',
       workloadResourceId: 'application-host.web', policyDigest: `sha256:${'a'.repeat(64)}`, egressMode: 'explicit', ingressRules: [],
@@ -54,6 +67,8 @@ describe("AWS Alchemy target", () => {
         { kind: 'securityGroup', protocol: 'tcp', port: 5432, targetResourceId: 'provider.database', targetSecurityGroupResourceId: 'runtime-network.target.database', peerIdentity: 'peer.database' },
         { kind: 'cidr', protocol: 'tcp', port: 53, cidr: '10.64.0.2/32', egressIdentity: 'dns.tcp' },
         { kind: 'cidr', protocol: 'udp', port: 53, cidr: '10.64.0.2/32', egressIdentity: 'dns.udp' },
+        { kind: 'securityGroup', protocol: 'tcp', port: 443, targetResourceId: ecrEndpoint.id, targetSecurityGroupResourceId: ecrEndpointGroup.id, endpointIdentity: 'bootstrap.ecr' },
+        { kind: 'prefixList', protocol: 'tcp', port: 443, targetResourceId: s3Endpoint.id, endpointIdentity: 'bootstrap.s3' },
       ],
     }, ['securityGroupId']);
     const targetGroup = planResource('runtime-network.target.database', 'ec2', 'security-group', 'demo-target-database', undefined, {
@@ -70,12 +85,15 @@ describe("AWS Alchemy target", () => {
         { ...base.resources.find(({ id }) => id === 'application-host.web')!, configuration: { ...base.resources.find(({ id }) => id === 'application-host.web')!.configuration, runtimeAccessSecurityGroupResourceId: workloadGroup.id } },
         workloadGroup,
         targetGroup,
+        ecrEndpointGroup,
+        ecrEndpoint,
+        s3Endpoint,
         database,
       ],
     });
     const template = synthesizeApplicationAwsCloudFormationTemplate(plan, { imageUri: `demo@sha256:${'a'.repeat(64)}` });
     const values = Object.values(template.Resources);
-    expect(values.filter(({ Type }) => Type === 'AWS::EC2::SecurityGroupEgress')).toHaveLength(3);
+    expect(values.filter(({ Type }) => Type === 'AWS::EC2::SecurityGroupEgress')).toHaveLength(5);
     expect(values.filter(({ Type }) => Type === 'AWS::EC2::SecurityGroupIngress')).toEqual(expect.arrayContaining([
       expect.objectContaining({ Properties: expect.objectContaining({ IpProtocol: 'tcp', FromPort: 5432, ToPort: 5432 }) }),
     ]));
@@ -87,6 +105,12 @@ describe("AWS Alchemy target", () => {
       && JSON.stringify(Properties).includes('Exact'));
     expect(exactGroups).toHaveLength(2);
     expect(exactGroups.every(({ Properties }) => JSON.stringify(Properties).includes('"SecurityGroupEgress":[]'))).toBe(true);
+    expect(values.filter(({ Type }) => Type === 'AWS::EC2::VPCEndpoint')).toHaveLength(2);
+    expect(values).toEqual(expect.arrayContaining([
+      expect.objectContaining({ Type: 'AWS::EC2::VPCEndpoint', Properties: expect.objectContaining({ VpcEndpointType: 'Interface', PrivateDnsEnabled: true }) }),
+      expect.objectContaining({ Type: 'AWS::EC2::VPCEndpoint', Properties: expect.objectContaining({ VpcEndpointType: 'Gateway', RouteTableIds: expect.any(Array) }) }),
+      expect.objectContaining({ Type: 'AWS::EC2::SecurityGroupEgress', Properties: expect.objectContaining({ DestinationPrefixListId: expect.any(Object), FromPort: 443, ToPort: 443 }) }),
+    ]));
   });
 
   test("materializes exposure-scoped ACM validation and Route53 aliases without placeholder provider values", () => {

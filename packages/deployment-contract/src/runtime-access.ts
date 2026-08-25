@@ -41,6 +41,11 @@ export interface ApplicationRuntimeAccessWorkloadPlan {
     readonly privatePeers: readonly ApplicationRuntimeAccessPrivatePeer[];
     readonly bootstrapEgress: readonly ApplicationRuntimeAccessBootstrapEgress[];
     readonly externalEgress: readonly ApplicationRuntimeAccessExternalEgress[];
+    readonly networkEnforcement:
+      | { readonly kind: 'none' }
+      | { readonly kind: 'standard-network-policy'; readonly apiVersion: 'networking.k8s.io/v1'; readonly fidelity: 'exact' }
+      | { readonly kind: 'cilium-network-policy'; readonly apiVersion: 'cilium.io/v2'; readonly fidelity: 'exact' }
+      | { readonly kind: 'unqualified'; readonly reason: 'fqdn-provider-unavailable' | 'external-destination-not-enforceable' };
     /** @deprecated Derived compatibility projection; privatePeers is authoritative. */
     readonly networkConnections: readonly string[];
     readonly credentialProjections: readonly ApplicationRuntimeAccessCredentialProjection[];
@@ -55,6 +60,8 @@ export interface ApplicationRuntimeAccessWorkloadPlan {
     readonly privatePeers: readonly ApplicationRuntimeAccessPrivatePeer[];
     readonly bootstrapEgress: readonly ApplicationRuntimeAccessBootstrapEgress[];
     readonly externalEgress: readonly ApplicationRuntimeAccessExternalEgress[];
+    /** Exact private AWS service transports required by this workload. */
+    readonly serviceEndpoints: readonly ApplicationRuntimeAccessAwsServiceEndpoint[];
     /** @deprecated Derived compatibility projection; privatePeers is authoritative. */
     readonly networkConnections: readonly string[];
   };
@@ -87,6 +94,8 @@ export interface ApplicationRuntimeAccessExecutionPlan {
     readonly privatePeers: readonly ApplicationRuntimeAccessPrivatePeer[];
     readonly bootstrapEgress: readonly ApplicationRuntimeAccessBootstrapEgress[];
     readonly externalEgress: readonly ApplicationRuntimeAccessExternalEgress[];
+    /** Exact private AWS service transports required by this execution. */
+    readonly serviceEndpoints: readonly ApplicationRuntimeAccessAwsServiceEndpoint[];
     /** @deprecated Derived compatibility projection; privatePeers is authoritative. */
     readonly networkConnections: readonly string[];
   };
@@ -141,6 +150,22 @@ export interface ApplicationRuntimeAccessExternalEgress {
     | { readonly kind: 'dnsName'; readonly hostname: string }
     | { readonly kind: 'externalContract'; readonly responsibility: string };
   readonly fidelity: 'port-only' | 'not-introspectable';
+}
+
+/**
+ * One AWS API transport resolved to a VPC endpoint rather than public/NAT
+ * egress. IAM remains the operation authority; this record is the independent
+ * network destination authority.
+ */
+export interface ApplicationRuntimeAccessAwsServiceEndpoint {
+  readonly endpointIdentity: string;
+  readonly service: string;
+  readonly endpointType: 'interface' | 'gateway';
+  readonly purpose: 'runtime' | 'ecs-bootstrap';
+  readonly protocol: 'TCP';
+  readonly port: 443;
+  /** Empty only for framework-owned ECS bootstrap transports. */
+  readonly requirementIds: readonly string[];
 }
 
 export interface ApplicationRuntimeAccessRequirementLowering {
@@ -343,6 +368,16 @@ export function validateApplicationRuntimeAccessPlan(
       } else if (materialization.authority === 'provider-direct' && (typeof materialization.deploymentNodeId !== 'string' || !materialization.deploymentNodeId.trim())) {
         errors.push(`workload ${workload.workloadIdentity} has no provider-direct deployment node identity`);
       }
+      const networkEnforcement = workload.kubernetes.networkEnforcement;
+      if (!record(networkEnforcement) || !['none', 'standard-network-policy', 'cilium-network-policy', 'unqualified'].includes(String(networkEnforcement.kind))) {
+        errors.push(`workload ${workload.workloadIdentity} has no valid Kubernetes network enforcement disposition`);
+      } else if (networkEnforcement.kind === 'none' && (workload.kubernetes.privatePeers.length > 0 || workload.kubernetes.externalEgress.length > 0)) {
+        errors.push(`workload ${workload.workloadIdentity} claims no network enforcement despite declared egress`);
+      } else if (networkEnforcement.kind === 'standard-network-policy' && workload.kubernetes.externalEgress.length > 0) {
+        errors.push(`workload ${workload.workloadIdentity} claims standard NetworkPolicy can enforce external DNS egress`);
+      } else if (networkEnforcement.kind === 'cilium-network-policy' && workload.kubernetes.externalEgress.some((egress) => egress.destination.kind !== 'dnsName' || egress.port === undefined)) {
+        errors.push(`workload ${workload.workloadIdentity} claims Cilium enforcement for a non-exact DNS destination`);
+      }
     }
     validatePrivatePeers(
       workload.kubernetes?.privatePeers ?? workload.aws?.privatePeers,
@@ -366,8 +401,8 @@ export function validateApplicationRuntimeAccessPlan(
     validateAwsExecutionRoles(workload.aws, `workload ${workload.workloadIdentity}`, errors);
     if (
       workload.kubernetes
-      && workload.kubernetes.privatePeers.length > 0
-      && workload.kubernetes.externalEgress.length === 0
+      && workload.kubernetes.networkEnforcement.kind !== 'none'
+      && workload.kubernetes.networkEnforcement.kind !== 'unqualified'
       && (!record(workload.kubernetes.podSelector)
         || Object.keys(workload.kubernetes.podSelector).length === 0
         || Object.values(workload.kubernetes.podSelector).some((value) => typeof value !== 'string' || !value))
@@ -477,6 +512,7 @@ function validateNonPrivateEgress(
   policy: {
     readonly bootstrapEgress: readonly ApplicationRuntimeAccessBootstrapEgress[];
     readonly externalEgress: readonly ApplicationRuntimeAccessExternalEgress[];
+    readonly serviceEndpoints?: readonly ApplicationRuntimeAccessAwsServiceEndpoint[];
   } | undefined,
   target: ApplicationRuntimeAccessPlan['target'],
   ownedRequirementIds: readonly string[],
@@ -487,6 +523,9 @@ function validateNonPrivateEgress(
   if (!Array.isArray(policy.bootstrapEgress) || !Array.isArray(policy.externalEgress)) {
     errors.push(`${owner} has malformed non-private egress collections`);
     return;
+  }
+  if ((target === 'aws' || target === 'aws-local') && !Array.isArray(policy.serviceEndpoints)) {
+    errors.push(`${owner} has no AWS serviceEndpoints collection`);
   }
   const bootstrapIdentities = new Set<string>();
   for (const egress of policy.bootstrapEgress) {
@@ -533,6 +572,27 @@ function validateNonPrivateEgress(
       errors.push(`${owner} external egress ${egress.egressIdentity} has no external responsibility`);
     }
     if (egress.fidelity === 'port-only' && egress.port === undefined) errors.push(`${owner} external egress ${egress.egressIdentity} claims port-only fidelity without a port`);
+  }
+  const endpointIdentities = new Set<string>();
+  for (const endpoint of policy.serviceEndpoints ?? []) {
+    if (!record(endpoint) || typeof endpoint.endpointIdentity !== 'string' || !endpoint.endpointIdentity) {
+      errors.push(`${owner} contains malformed AWS service endpoint`);
+      continue;
+    }
+    if (endpointIdentities.has(endpoint.endpointIdentity)) errors.push(`${owner} repeats AWS service endpoint ${endpoint.endpointIdentity}`);
+    endpointIdentities.add(endpoint.endpointIdentity);
+    if (typeof endpoint.service !== 'string' || !/^[a-z0-9.-]+$/u.test(endpoint.service)) errors.push(`${owner} AWS service endpoint ${endpoint.endpointIdentity} has an invalid service`);
+    if (endpoint.endpointType !== 'interface' && endpoint.endpointType !== 'gateway') errors.push(`${owner} AWS service endpoint ${endpoint.endpointIdentity} has an invalid endpoint type`);
+    if (endpoint.purpose !== 'runtime' && endpoint.purpose !== 'ecs-bootstrap') errors.push(`${owner} AWS service endpoint ${endpoint.endpointIdentity} has an invalid purpose`);
+    if (endpoint.protocol !== 'TCP' || endpoint.port !== 443) errors.push(`${owner} AWS service endpoint ${endpoint.endpointIdentity} has an invalid transport`);
+    if (!Array.isArray(endpoint.requirementIds) || endpoint.requirementIds.some((id) => typeof id !== 'string' || !owned.has(id))) {
+      errors.push(`${owner} AWS service endpoint ${endpoint.endpointIdentity} references requirements outside its owner`);
+    }
+    if (endpoint.purpose === 'runtime' && endpoint.requirementIds.length === 0) errors.push(`${owner} AWS runtime service endpoint ${endpoint.endpointIdentity} has no source requirement`);
+    if (endpoint.purpose === 'ecs-bootstrap' && endpoint.requirementIds.length > 0) errors.push(`${owner} AWS bootstrap service endpoint ${endpoint.endpointIdentity} claims application requirements`);
+    if (endpoint.endpointType === 'gateway' && endpoint.service !== 's3' && endpoint.service !== 'dynamodb') {
+      errors.push(`${owner} AWS service endpoint ${endpoint.endpointIdentity} uses an unsupported gateway service`);
+    }
   }
 }
 

@@ -91,6 +91,16 @@ describe('v0.8 runtime-access lowering', () => {
           resources: ['arn:aws:s3:::application-objects/tenants/*'],
         },
       ],
+      serviceEndpoints: [expect.objectContaining({
+        service: 's3',
+        endpointType: 'gateway',
+        purpose: 'runtime',
+        protocol: 'TCP',
+        port: 443,
+        requirementIds: expect.arrayContaining([
+          expect.stringContaining('object.write'),
+        ]),
+      })],
     });
     expect(JSON.stringify(aws.executions[0]?.aws)).not.toContain('"Resource":"*"');
 
@@ -122,6 +132,10 @@ describe('v0.8 runtime-access lowering', () => {
         actions: ['dynamodb:GetItem', 'dynamodb:Query', 'dynamodb:UpdateItem'],
         resources: ['arn:aws:dynamodb:us-east-1:123456789012:table/checkpoints'],
       },
+    ]));
+    expect(aws.executions[0]?.aws?.serviceEndpoints).toEqual(expect.arrayContaining([
+      expect.objectContaining({ service: 'kinesis-streams', endpointType: 'interface', purpose: 'runtime' }),
+      expect.objectContaining({ service: 'dynamodb', endpointType: 'gateway', purpose: 'runtime' }),
     ]));
   });
 
@@ -216,7 +230,7 @@ describe('v0.8 runtime-access lowering', () => {
 
   it('derives Stripe external egress from the reviewed provider adapter rather than provider-config scanning', () => {
     const graph = externalPaymentAccessGraph();
-    const result = compileApplicationDeploymentGraph({
+    const request = {
       graph,
       sourceGraphDigest: `sha256:${'a'.repeat(64)}`,
       compilerVersion: '0.8.0',
@@ -254,7 +268,8 @@ describe('v0.8 runtime-access lowering', () => {
         }],
         status: {},
       },
-    });
+    } as const;
+    const result = compileApplicationDeploymentGraph(request);
     expect(result.runtimeAccess.executions[0]?.kubernetes?.externalEgress).toEqual([
       expect.objectContaining({
         capabilityId: 'provider.payments',
@@ -268,6 +283,60 @@ describe('v0.8 runtime-access lowering', () => {
       expect.objectContaining({ purpose: 'dns', protocol: 'TCP', port: 53 }),
       expect.objectContaining({ purpose: 'dns', protocol: 'UDP', port: 53 }),
     ]);
+    expect(result.runtimeAccess.workloads[0]?.kubernetes?.networkEnforcement).toEqual({
+      kind: 'unqualified',
+      reason: 'fqdn-provider-unavailable',
+    });
+
+    const cilium = compileApplicationDeploymentGraph({
+      ...request,
+      runtimeAccessKubernetesNetworkPolicyProvider: 'cilium',
+    });
+    const root = cilium.graph.nodes.find((node) => node.id === 'kubernetes.application');
+    if (root?.kind !== 'kubernetesComposition') throw new Error('Expected root composition.');
+    const policy = root.spec.materialized?.resources.find((resource) => resource.kind === 'CiliumNetworkPolicy');
+    expect(cilium.runtimeAccess.workloads[0]?.kubernetes?.networkEnforcement).toEqual({
+      kind: 'cilium-network-policy',
+      apiVersion: 'cilium.io/v2',
+      fidelity: 'exact',
+    });
+    expect(policy).toMatchObject({
+      apiVersion: 'cilium.io/v2',
+      metadata: { namespace: 'payments' },
+      spec: {
+        endpointSelector: { matchLabels: { 'k8s:app.kubernetes.io/name': 'billing' } },
+        egress: expect.arrayContaining([
+          {
+            toFQDNs: [{ matchName: 'api.stripe.com' }],
+            toPorts: [{ ports: [{ protocol: 'TCP', port: '443' }] }],
+          },
+          expect.objectContaining({
+            toEndpoints: [{ matchLabels: expect.objectContaining({ 'k8s:k8s-app': 'kube-dns' }) }],
+            toPorts: [{ ports: [{ protocol: 'TCP', port: '53' }], rules: { dns: [{ matchPattern: '*' }] } }],
+          }),
+          expect.objectContaining({
+            toEndpoints: [{ matchLabels: expect.objectContaining({ 'k8s:k8s-app': 'kube-dns' }) }],
+            toPorts: [{ ports: [{ protocol: 'UDP', port: '53' }], rules: { dns: [{ matchPattern: '*' }] } }],
+          }),
+        ]),
+      },
+    });
+    expect(validateKubernetesRuntimeAccessParity(
+      cilium.runtimeAccess,
+      root.spec.materialized?.resources ?? [],
+    )).toEqual([]);
+    const policyWithoutDnsProxy = JSON.parse(
+      JSON.stringify(policy),
+      (key, value) => key === 'rules' ? undefined : value,
+    ) as DeploymentJsonObject;
+    expect(validateKubernetesRuntimeAccessParity(
+      cilium.runtimeAccess,
+      (root.spec.materialized?.resources ?? []).map((resource) => resource === policy ? policyWithoutDnsProxy : resource),
+    )).toEqual([expect.objectContaining({ code: 'RUNTIME_ACCESS_NETWORK_MISSING' })]);
+    expect(validateKubernetesRuntimeAccessParity(
+      cilium.runtimeAccess,
+      (root.spec.materialized?.resources ?? []).filter((resource) => resource.kind !== 'CiliumNetworkPolicy'),
+    )).toEqual([expect.objectContaining({ code: 'RUNTIME_ACCESS_NETWORK_MISSING' })]);
   });
 
   it('materializes an exact private-peer and DNS NetworkPolicy into the root composition', () => {
@@ -334,7 +403,7 @@ describe('v0.8 runtime-access lowering', () => {
       contributors: [contributor],
     });
     const root = result.graph.nodes.find((node) => node.id === 'kubernetes.application');
-    if (!root || root.kind !== 'kubernetesComposition') throw new Error('Expected root composition.');
+    if (root?.kind !== 'kubernetesComposition') throw new Error('Expected root composition.');
     const networkPolicy = root.spec.materialized?.resources.find((resource) => resource.kind === 'NetworkPolicy');
     expect(networkPolicy).toMatchObject({
       apiVersion: 'networking.k8s.io/v1',
@@ -577,11 +646,13 @@ describe('v0.8 runtime-access lowering', () => {
     });
     const original = compiled.workloads[0];
     if (!original?.aws) throw new Error('Expected one AWS workload fixture.');
+    const requirementId = original.requirementIds[0];
+    if (!requirementId) throw new Error('Expected one AWS requirement fixture.');
     const networkConnections = ['provider.database'];
     const privatePeers = [{
       peerIdentity: 'peer.database',
       capabilityId: 'provider.database',
-      requirementIds: [original.requirementIds[0]!],
+      requirementIds: [requirementId],
       protocol: 'TCP' as const,
       port: 5432,
       endpoint: { target: 'aws' as const, resourceId: 'provider.database' },
@@ -634,7 +705,7 @@ describe('v0.8 runtime-access lowering', () => {
   it('rejects wildcard Kubernetes resources rather than emitting broad RBAC', () => {
     const graph = kubernetesScopeGraph();
     const permission = graph.nodes.find((node) => node.kind === 'permission');
-    if (!permission || permission.kind !== 'permission') throw new Error('Expected permission fixture.');
+    if (permission?.kind !== 'permission') throw new Error('Expected permission fixture.');
     const broad: ApplicationGraph = {
       ...graph,
       nodes: graph.nodes.map((node) => node.id === permission.id
@@ -960,7 +1031,7 @@ function mutateNetworkPolicy(
 ): readonly DeploymentJsonObject[] {
   const cloned = JSON.parse(JSON.stringify(resources)) as DeploymentJsonObject[];
   const policy = cloned.find((resource) => resource.kind === 'NetworkPolicy');
-  if (!policy || !policy.metadata || !policy.spec) throw new Error('Expected generated NetworkPolicy fixture.');
+  if (!policy?.metadata || !policy.spec) throw new Error('Expected generated NetworkPolicy fixture.');
   mutate(policy as unknown as { metadata: Record<string, unknown>; spec: Record<string, unknown> });
   return cloned;
 }

@@ -130,6 +130,9 @@ export function compileApplicationDeploymentGraph(
     bootstrapEgress: request.runtimeAccessBootstrapEgress ?? (context.target === 'kubernetes'
       ? kubernetesDnsBootstrapEgress()
       : []),
+    ...(request.runtimeAccessKubernetesNetworkPolicyProvider
+      ? { kubernetesNetworkPolicyProvider: request.runtimeAccessKubernetesNetworkPolicyProvider }
+      : {}),
     credentialRequirements: generatedSecretRequirements.flatMap((secret) =>
       runtimeCredentialConsumerNodeIds(request.graph, secret.consumers).map((consumerNodeId) => ({
         consumerNodeId,
@@ -144,7 +147,7 @@ export function compileApplicationDeploymentGraph(
     ]),
   });
   const runtimeAccessNetworkPolicies = context.target === 'kubernetes'
-    ? kubernetesPrivateNetworkPolicies(runtimeAccess)
+    ? kubernetesRuntimeNetworkPolicies(runtimeAccess)
     : [];
   const materializedComposition = request.materializedComposition
     ? {
@@ -285,12 +288,15 @@ function kubernetesDnsBootstrapEgress() {
  * widened into public CIDRs; an FQDN-capable target extension must own those
  * workloads before their deny boundary can be qualified.
  */
-function kubernetesPrivateNetworkPolicies(
+function kubernetesRuntimeNetworkPolicies(
   plan: ReturnType<typeof compileApplicationRuntimeAccessPlan>,
 ): readonly DeploymentJsonObject[] {
   return plan.workloads.flatMap((workload) => {
     const policy = workload.kubernetes;
-    if (!policy || policy.privatePeers.length === 0 || policy.externalEgress.length > 0) return [];
+    if (!policy || policy.networkEnforcement.kind === 'none' || policy.networkEnforcement.kind === 'unqualified') return [];
+    if (policy.networkEnforcement.kind === 'cilium-network-policy') {
+      return [ciliumRuntimeNetworkPolicy(workload, policy)];
+    }
     const egress = [
       ...policy.privatePeers.map((peer) => {
         if (peer.endpoint.target !== 'kubernetes') throw new Error(`Kubernetes workload ${workload.workloadIdentity} contains a non-Kubernetes private peer.`);
@@ -332,6 +338,65 @@ function kubernetesPrivateNetworkPolicies(
       },
     }];
   });
+}
+
+function ciliumRuntimeNetworkPolicy(
+  workload: ReturnType<typeof compileApplicationRuntimeAccessPlan>['workloads'][number],
+  policy: NonNullable<ReturnType<typeof compileApplicationRuntimeAccessPlan>['workloads'][number]['kubernetes']>,
+): DeploymentJsonObject {
+  const kubernetesLabels = (selector: Readonly<Record<string, string>>) => Object.fromEntries(
+    Object.entries(selector).map(([key, value]) => [`k8s:${key}`, value]),
+  );
+  const endpointLabels = (namespace: string, selector: Readonly<Record<string, string>>) => ({
+    'k8s:io.kubernetes.pod.namespace': namespace,
+    ...kubernetesLabels(selector),
+  });
+  const toPorts = (protocol: 'TCP' | 'UDP', port: number, dnsProxy = false) => [{
+    ports: [{ protocol, port: String(port) }],
+    ...(dnsProxy ? { rules: { dns: [{ matchPattern: '*' }] } } : {}),
+  }];
+  const egress = [
+    ...policy.privatePeers.map((peer) => {
+      if (peer.endpoint.target !== 'kubernetes') throw new Error(`Kubernetes workload ${workload.workloadIdentity} contains a non-Kubernetes private peer.`);
+      return {
+        toEndpoints: [{ matchLabels: endpointLabels(peer.endpoint.namespace, peer.endpoint.podSelector) }],
+        toPorts: toPorts(peer.protocol, peer.port),
+      };
+    }),
+    ...policy.bootstrapEgress.map((bootstrap) => {
+      if (bootstrap.endpoint.target !== 'kubernetes') throw new Error(`Kubernetes workload ${workload.workloadIdentity} contains a non-Kubernetes bootstrap endpoint.`);
+      return {
+        toEndpoints: [{ matchLabels: endpointLabels(bootstrap.endpoint.namespace, bootstrap.endpoint.podSelector) }],
+        toPorts: toPorts(bootstrap.protocol, bootstrap.port, bootstrap.purpose === 'dns'),
+      };
+    }),
+    ...policy.externalEgress.map((external) => {
+      if (external.destination.kind !== 'dnsName' || external.port === undefined) {
+        throw new Error(`Kubernetes workload ${workload.workloadIdentity} contains non-exact external egress in a Cilium-qualified policy.`);
+      }
+      return {
+        toFQDNs: [{ matchName: external.destination.hostname }],
+        toPorts: toPorts(external.protocol, external.port),
+      };
+    }),
+  ];
+  const suffix = digestApplicationDeploymentValue(workload.workloadIdentity).slice('sha256:'.length, 'sha256:'.length + 12);
+  return {
+    apiVersion: 'cilium.io/v2',
+    kind: 'CiliumNetworkPolicy',
+    metadata: {
+      name: safeNodeId(`applik8s-egress-${suffix}`),
+      namespace: policy.resource.namespace,
+      annotations: {
+        'applik8s.io/runtime-access-workload': workload.workloadIdentity,
+        'applik8s.io/runtime-access-policy-digest': workload.policyDigest,
+      },
+    },
+    spec: {
+      endpointSelector: { matchLabels: kubernetesLabels(policy.podSelector) },
+      egress,
+    },
+  };
 }
 
 function runtimeAccessTargetResources(

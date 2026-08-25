@@ -1,53 +1,53 @@
 // typecast-file-boundary: deployment commands validate generated JSON, dynamic application modules, and migration receipts before crossing typed backend contracts.
-import { dirname, join, resolve } from 'node:path';
+
 import { access, readFile } from 'node:fs/promises';
+import { dirname, join, resolve } from 'node:path';
 import {
+  type ApplicationProfileTransitionPlan,
   diffApplicationPlans,
   planApplicationProfileTransitions,
-  type ApplicationProfileTransitionPlan,
   validateApplicationPlan,
 } from '@applik8s/core';
 import type { DeploymentJsonObject } from '@applik8s/deployment-contract';
 import {
-  applicationDeploymentPhaseRemediation as remediation,
+  readApplicationDeploymentGraph,
+} from './application-alchemy-deployment.js';
+import {
+  resolveApplicationBuildPackage,
+  resolveApplicationProjectRoot,
+} from './application-build-package.js';
+import {
   type ApplicationDeleteCommandOptions,
   type ApplicationDeployCommandOptions,
   type ApplicationDeploymentCommandIo,
   type ApplicationDeploymentCommandRuntime,
   type ApplicationDeploymentPhase,
+  applicationDeploymentPhaseRemediation as remediation,
 } from './application-deployment-command-contract.js';
+import {
+  recordApplicationDeployEvidence,
+  recordApplicationPlanEvidence,
+} from './application-deployment-evidence.js';
 import {
   loadTypeKroCompositionEntrypoint,
   resolveGeneratedApplicationDeleteTarget,
   stageExplicitApplicationInstance,
 } from './application-deployment-files.js';
 import {
-  resolveApplicationBuildPackage,
-  resolveApplicationProjectRoot,
-} from './application-build-package.js';
-import { prepareTypeKroCompositionRuntimeEntrypoint } from './application-deployment-runtime-entrypoint.js';
-import {
   readApplicationInstanceSpec,
   verifyApplicationRegistryPullSecret,
-  waitForApplicationOwnedNamespaceDeletion,
   waitForApplicationEndpoint,
   waitForApplicationInstanceReadiness,
+  waitForApplicationOwnedNamespaceDeletion,
   waitForResourceGraphDefinitionReadiness,
 } from './application-deployment-observer.js';
 import {
   readGeneratedApplicationGraph,
   resolveDeploymentContainerRegistry,
 } from './application-deployment-registry.js';
+import { observeKubernetesRuntimeAccessNetworkPolicyProvider } from './application-deployment-runtime-access.js';
+import { prepareTypeKroCompositionRuntimeEntrypoint } from './application-deployment-runtime-entrypoint.js';
 import { resolveApplicationInstallationValues } from './application-installation-values.js';
-import {
-  applicationDeploymentInstallationSpec,
-  createGeneratedApplicationAlchemyDeployment,
-  readApplicationDeploymentGraph,
-} from './application-alchemy-deployment.js';
-import {
-  recordApplicationDeployEvidence,
-  recordApplicationPlanEvidence,
-} from './application-deployment-evidence.js';
 import {
   readPriorApplicationPlan,
   renderApplicationPlanDiff,
@@ -327,6 +327,7 @@ async function emitDeploymentGraph(
   });
   // static-import-exception: compiler workers are loaded only for an active Node deployment command.
   const { applicationDeploymentCompilerVersion, emitApplicationDeploymentGraph } = await import('@applik8s/compiler');
+  const runtimeAccessKubernetesNetworkPolicyProvider = await observeKubernetesRuntimeAccessNetworkPolicyProvider(context);
   const emitted = await emitApplicationDeploymentGraph({
     bundlePath,
     projectRoot,
@@ -342,6 +343,7 @@ async function emitDeploymentGraph(
     strategy,
     installationSpec: instance.spec,
     profileTransition: profileTransition.identityInput,
+    runtimeAccessKubernetesNetworkPolicyProvider,
   });
   return {
     path: emitted.path,

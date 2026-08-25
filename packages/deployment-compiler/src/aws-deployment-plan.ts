@@ -35,6 +35,8 @@ import {
 } from './providers.js';
 import {
   type ApplicationRuntimeAccessWorkloadPlacement,
+  awsBootstrapServiceEndpoint,
+  awsServiceEndpointResourceId,
   compileApplicationRuntimeAccessPlan,
 } from './runtime-access-plan.js';
 import { applicationWorkloadProviderNodeIds } from './workload-provider-references.js';
@@ -318,6 +320,7 @@ export function compileApplicationAwsDeploymentPlan(request: CompileApplicationA
     runtimeAccess,
     resources,
     target: request.target ?? 'aws',
+    region: request.region,
     name,
   });
   for (const entry of runtimeNetwork.resources) {
@@ -917,6 +920,12 @@ function awsRuntimeAccessWorkloadPlacements(
   scheduleNodeIds: readonly string[],
   name: (suffix: string, limit?: number) => string,
 ): readonly ApplicationRuntimeAccessWorkloadPlacement[] {
+  const ecsBootstrapServiceEndpoints = [
+    awsBootstrapServiceEndpoint('ecr.api', 'interface'),
+    awsBootstrapServiceEndpoint('ecr.dkr', 'interface'),
+    awsBootstrapServiceEndpoint('logs', 'interface'),
+    awsBootstrapServiceEndpoint('s3', 'gateway'),
+  ];
   const artifactPlacements = runtimeArtifacts.flatMap((artifact): readonly ApplicationRuntimeAccessWorkloadPlacement[] => {
     if (artifact.role === 'operator') return [];
     const artifactId = applicationRuntimeArtifactId(artifact);
@@ -932,6 +941,7 @@ function awsRuntimeAccessWorkloadPlacements(
         resourceId,
         roleName: name(`runtime-${hash(`aws:ecs:${resourceId}`, 12)}`, 64),
         executionRoleName: name(`bootstrap-${hash(`aws:ecs:${resourceId}`, 12)}`, 64),
+        bootstrapServiceEndpoints: ecsBootstrapServiceEndpoints,
       },
     }];
   });
@@ -947,6 +957,7 @@ function awsRuntimeAccessWorkloadPlacements(
         resourceId,
         roleName: name(`runtime-${hash(`aws:ecs:${resourceId}`, 12)}`, 64),
         executionRoleName: name(`bootstrap-${hash(`aws:ecs:${resourceId}`, 12)}`, 64),
+        bootstrapServiceEndpoints: ecsBootstrapServiceEndpoints,
       },
     };
   });
@@ -1409,11 +1420,14 @@ function materializeQualifiedAwsRuntimeNetwork(options: {
   readonly runtimeAccess: ApplicationRuntimeAccessPlan;
   readonly resources: ReadonlyMap<string, ApplicationAwsPlanResource>;
   readonly target: 'aws' | 'aws-local';
+  readonly region: string;
   readonly name: (suffix: string, limit?: number) => string;
 }): MaterializedAwsRuntimeNetwork {
   const workloadSecurityGroups = new Map<string, string>();
   const targetSecurityGroups = new Map<string, string>();
   const targetIngress = new Map<string, DeploymentJsonObject[]>();
+  const serviceEndpoints = new Map<string, NonNullable<ApplicationRuntimeAccessPlan['workloads'][number]['aws']>['serviceEndpoints'][number]>();
+  const serviceEndpointIngress = new Map<string, DeploymentJsonObject[]>();
   const workloadResources: ApplicationAwsPlanResource[] = [];
 
   for (const workload of options.runtimeAccess.workloads) {
@@ -1458,6 +1472,46 @@ function materializeQualifiedAwsRuntimeNetwork(options: {
         purpose: bootstrap.purpose,
       });
     }
+    for (const endpoint of workload.aws.serviceEndpoints) {
+      const current = serviceEndpoints.get(endpoint.service);
+      if (current && (current.endpointType !== endpoint.endpointType || current.port !== endpoint.port || current.protocol !== endpoint.protocol)) {
+        throw new Error(`AWS service endpoint ${endpoint.service} has conflicting runtime-access transports.`);
+      }
+      serviceEndpoints.set(endpoint.service, endpoint);
+      const endpointResourceId = awsServiceEndpointResourceId(endpoint.service);
+      if (endpoint.endpointType === 'interface') {
+        const endpointSecurityGroupId = `${endpointResourceId}.security-group`;
+        egressRules.push({
+          kind: 'securityGroup',
+          protocol: endpoint.protocol.toLowerCase(),
+          port: endpoint.port,
+          targetResourceId: endpointResourceId,
+          targetSecurityGroupResourceId: endpointSecurityGroupId,
+          endpointIdentity: endpoint.endpointIdentity,
+          requirementIds: [...endpoint.requirementIds],
+        });
+        const ingress = serviceEndpointIngress.get(endpoint.service) ?? [];
+        ingress.push({
+          kind: 'securityGroup',
+          protocol: endpoint.protocol.toLowerCase(),
+          port: endpoint.port,
+          sourceWorkloadIdentity: workload.workloadIdentity,
+          sourceSecurityGroupResourceId: workloadSecurityGroupId,
+          endpointIdentity: endpoint.endpointIdentity,
+          requirementIds: [...endpoint.requirementIds],
+        });
+        serviceEndpointIngress.set(endpoint.service, ingress);
+      } else {
+        egressRules.push({
+          kind: 'prefixList',
+          protocol: endpoint.protocol.toLowerCase(),
+          port: endpoint.port,
+          targetResourceId: endpointResourceId,
+          endpointIdentity: endpoint.endpointIdentity,
+          requirementIds: [...endpoint.requirementIds],
+        });
+      }
+    }
     workloadResources.push(resource(
       workloadSecurityGroupId,
       'ec2',
@@ -1496,8 +1550,67 @@ function materializeQualifiedAwsRuntimeNetwork(options: {
     'private',
     ['securityGroupId'],
   ));
+  const endpointResources = [...serviceEndpoints.entries()].flatMap(([service, endpoint]): readonly ApplicationAwsPlanResource[] => {
+    const endpointResourceId = awsServiceEndpointResourceId(service);
+    if (endpoint.endpointType === 'gateway') {
+      return [resource(
+        endpointResourceId,
+        'ec2',
+        'vpc-endpoint',
+        options.name(`endpoint-${service.replace(/[^a-z0-9]+/gu, '-')}`),
+        {
+          endpointService: service,
+          serviceName: `com.amazonaws.${options.region}.${service}`,
+          endpointType: 'gateway',
+          vpcResourceId: 'foundation.network',
+          routeTableScope: 'private',
+        },
+        undefined,
+        'private',
+        ['vpcEndpointId', 'prefixListId'],
+      )];
+    }
+    const endpointSecurityGroupId = `${endpointResourceId}.security-group`;
+    return [
+      resource(
+        endpointSecurityGroupId,
+        'ec2',
+        'security-group',
+        options.name(`endpoint-${service.replace(/[^a-z0-9]+/gu, '-')}-access`),
+        {
+          description: `PrivateLink ingress for ${service}`,
+          runtimeAccessKind: 'service-endpoint',
+          endpointService: service,
+          egressMode: 'explicit',
+          egressRules: [],
+          ingressRules: deploymentJson(serviceEndpointIngress.get(service) ?? []),
+        },
+        undefined,
+        'private',
+        ['securityGroupId'],
+      ),
+      resource(
+        endpointResourceId,
+        'ec2',
+        'vpc-endpoint',
+        options.name(`endpoint-${service.replace(/[^a-z0-9]+/gu, '-')}`),
+        {
+          endpointService: service,
+          serviceName: `com.amazonaws.${options.region}.${service}`,
+          endpointType: 'interface',
+          vpcResourceId: 'foundation.network',
+          subnetScope: 'private',
+          securityGroupResourceId: endpointSecurityGroupId,
+          privateDnsEnabled: true,
+        },
+        undefined,
+        'private',
+        ['vpcEndpointId', 'dnsEntries'],
+      ),
+    ];
+  });
   return {
-    resources: [...workloadResources, ...targetResources],
+    resources: [...workloadResources, ...targetResources, ...endpointResources],
     workloadSecurityGroups,
     targetSecurityGroups,
   };

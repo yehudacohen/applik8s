@@ -17,6 +17,7 @@ import {
   type ResourceGraphDefinition,
 } from "typekro";
 import { createSchemaProxy } from "typekro/advanced";
+import { ciliumNetworkPolicy } from "typekro/cilium";
 import { artifactOutput } from "typekro/experimental/planning";
 import * as kubernetes from "typekro/kubernetes";
 import type { TypeKroPlannableComposition } from "./binding.js";
@@ -25,14 +26,14 @@ import {
   expressionContext,
 } from "./expression-reconstruction.js";
 import {
-  generatedResourceReadinessEvaluator,
-  observedResourceReadinessEvaluator,
-} from "./readiness.js";
-import {
   type ArtifactSubstitutionIndex,
   artifactSubstitutionIndex,
   transformMaterializedValue,
 } from "./materialized-values.js";
+import {
+  generatedResourceReadinessEvaluator,
+  observedResourceReadinessEvaluator,
+} from "./readiness.js";
 
 const applicationTypeKroDefinitionProperty = "__applik8sTypeKroDefinition";
 
@@ -271,6 +272,7 @@ type RawKubernetesFactory = (
 ) => MaterializedResourceProxy;
 
 const rawKubernetesFactories = new Map<string, RawKubernetesFactory>([
+  ["cilium.io/v2/CiliumNetworkPolicy", ciliumNetworkPolicy as RawKubernetesFactory],
   ["apps/v1/Deployment", kubernetes.deployment as RawKubernetesFactory],
   ["batch/v1/Job", kubernetes.job as RawKubernetesFactory],
   ["networking.k8s.io/v1/Ingress", kubernetes.ingress as RawKubernetesFactory],

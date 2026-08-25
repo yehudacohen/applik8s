@@ -5,6 +5,7 @@ import type {
   ApplicationRuntimeAccessAwsStatement,
   ApplicationRuntimeAccessPlan,
 } from '@applik8s/deployment-contract';
+import { awsServiceEndpointResourceId, awsVpcEndpointServiceForAction } from './runtime-access-plan.js';
 
 export type AwsRuntimeAccessParityCode =
   | 'RUNTIME_ACCESS_WORKLOAD_MISSING'
@@ -138,37 +139,48 @@ function validateQualifiedSecurityGroups(
     ...workload.aws.bootstrapEgress.flatMap((entry) => entry.endpoint.target === 'aws' || entry.endpoint.target === 'aws-local'
       ? [{ kind: 'cidr' as const, protocol: entry.protocol.toLowerCase(), port: entry.port, cidr: entry.endpoint.cidr }]
       : []),
+    ...workload.aws.serviceEndpoints.map((endpoint) => ({
+      kind: endpoint.endpointType === 'interface' ? 'serviceEndpoint' as const : 'prefixList' as const,
+      protocol: endpoint.protocol.toLowerCase(),
+      port: endpoint.port,
+      targetResourceId: awsServiceEndpointResourceId(endpoint.service),
+    })),
   ];
   const actualRules = arrayRecords(group.configuration.egressRules);
   for (const expected of expectedRules) {
-    const sameDestination = actualRules.filter((actual) => expected.kind === 'securityGroup'
+    const sameDestination = actualRules.filter((actual) => expected.kind === 'securityGroup' || expected.kind === 'serviceEndpoint'
       ? actual.kind === 'securityGroup' && actual.targetResourceId === expected.targetResourceId
-      : actual.kind === 'cidr' && actual.cidr === expected.cidr);
+      : expected.kind === 'prefixList'
+        ? actual.kind === 'prefixList' && actual.targetResourceId === expected.targetResourceId
+        : actual.kind === 'cidr' && actual.cidr === expected.cidr);
     if (sameDestination.length === 0) {
-      finding('RUNTIME_ACCESS_NETWORK_MISSING', `AWS workload ${workload.workloadIdentity} security group omits ${expected.kind === 'securityGroup' ? expected.targetResourceId : expected.cidr}.`);
+      finding('RUNTIME_ACCESS_NETWORK_MISSING', `AWS workload ${workload.workloadIdentity} security group omits ${expected.kind === 'cidr' ? expected.cidr : expected.targetResourceId}.`);
       continue;
     }
-    if (expected.kind === 'securityGroup') {
-      const targetGroupId = stringValue(resourcesById.get(expected.targetResourceId)?.configuration.runtimeAccessSecurityGroupResourceId);
+    if (expected.kind === 'securityGroup' || expected.kind === 'serviceEndpoint') {
+      const target = resourcesById.get(expected.targetResourceId);
+      const targetGroupId = stringValue(expected.kind === 'serviceEndpoint'
+        ? target?.configuration.securityGroupResourceId
+        : target?.configuration.runtimeAccessSecurityGroupResourceId);
       if (!targetGroupId || !sameDestination.some((actual) => actual.targetSecurityGroupResourceId === targetGroupId)) {
         finding('RUNTIME_ACCESS_NETWORK_MISBOUND', `AWS workload ${workload.workloadIdentity} egress to ${expected.targetResourceId} is bound to the wrong target security group.`);
         continue;
       }
     }
     if (!sameDestination.some((actual) => actual.protocol === expected.protocol)) {
-      finding('RUNTIME_ACCESS_NETWORK_WRONG_PROTOCOL', `AWS workload ${workload.workloadIdentity} security group uses the wrong protocol for ${expected.kind === 'securityGroup' ? expected.targetResourceId : expected.cidr}.`);
+      finding('RUNTIME_ACCESS_NETWORK_WRONG_PROTOCOL', `AWS workload ${workload.workloadIdentity} security group uses the wrong protocol for ${expected.kind === 'cidr' ? expected.cidr : expected.targetResourceId}.`);
       continue;
     }
     if (!sameDestination.some((actual) => actual.protocol === expected.protocol && actual.port === expected.port)) {
-      finding('RUNTIME_ACCESS_NETWORK_WRONG_PORT', `AWS workload ${workload.workloadIdentity} security group uses the wrong port for ${expected.kind === 'securityGroup' ? expected.targetResourceId : expected.cidr}.`);
+      finding('RUNTIME_ACCESS_NETWORK_WRONG_PORT', `AWS workload ${workload.workloadIdentity} security group uses the wrong port for ${expected.kind === 'cidr' ? expected.cidr : expected.targetResourceId}.`);
     }
   }
   const expectedAtoms = new Set(expectedRules.map(networkRuleAtom));
   const actualAtoms = new Set(actualRules.map((rule) => networkRuleAtom({
-    kind: rule.kind === 'securityGroup' ? 'securityGroup' : 'cidr',
+    kind: rule.kind === 'securityGroup' ? 'securityGroup' : rule.kind === 'prefixList' ? 'prefixList' : 'cidr',
     protocol: rule.protocol,
     port: rule.port,
-    ...(rule.kind === 'securityGroup' ? { targetResourceId: rule.targetResourceId } : { cidr: rule.cidr }),
+    ...(rule.kind === 'securityGroup' || rule.kind === 'prefixList' ? { targetResourceId: rule.targetResourceId } : { cidr: rule.cidr }),
   })));
   if ([...actualAtoms].some((atom) => !expectedAtoms.has(atom))) {
     finding('RUNTIME_ACCESS_NETWORK_WIDENED', `AWS workload ${workload.workloadIdentity} security group contains egress outside its exact runtime-access envelope.`);
@@ -193,10 +205,42 @@ function validateQualifiedSecurityGroups(
       finding('RUNTIME_ACCESS_NETWORK_WRONG_PORT', `AWS private target ${peer.endpoint.resourceId} uses the wrong ingress port for ${workload.workloadIdentity}.`);
     }
   }
+  for (const endpoint of workload.aws.serviceEndpoints) {
+    const endpointResourceId = awsServiceEndpointResourceId(endpoint.service);
+    const endpointResource = resourcesById.get(endpointResourceId);
+    if (
+      !endpointResource
+      || endpointResource.service !== 'ec2'
+      || endpointResource.resourceType !== 'vpc-endpoint'
+      || endpointResource.configuration.endpointService !== endpoint.service
+      || endpointResource.configuration.endpointType !== endpoint.endpointType
+    ) {
+      finding('RUNTIME_ACCESS_NETWORK_MISSING', `AWS service ${endpoint.service} has no exact ${endpoint.endpointType} VPC endpoint.`);
+      continue;
+    }
+    if (endpoint.endpointType === 'gateway') continue;
+    const endpointGroupId = stringValue(endpointResource.configuration.securityGroupResourceId);
+    const endpointGroup = endpointGroupId ? resourcesById.get(endpointGroupId) : undefined;
+    if (!endpointGroup || endpointGroup.configuration.runtimeAccessKind !== 'service-endpoint' || endpointGroup.configuration.endpointService !== endpoint.service) {
+      finding('RUNTIME_ACCESS_NETWORK_MISBOUND', `AWS service ${endpoint.service} endpoint is not bound to one exact endpoint security group.`);
+      continue;
+    }
+    const ingress = arrayRecords(endpointGroup.configuration.ingressRules).filter((rule) =>
+      rule.sourceSecurityGroupResourceId === group.id && rule.sourceWorkloadIdentity === workload.workloadIdentity);
+    if (ingress.length === 0) {
+      finding('RUNTIME_ACCESS_NETWORK_MISSING', `AWS service ${endpoint.service} endpoint omits ingress from ${workload.workloadIdentity}.`);
+    } else if (!ingress.some((rule) => rule.protocol === endpoint.protocol.toLowerCase())) {
+      finding('RUNTIME_ACCESS_NETWORK_WRONG_PROTOCOL', `AWS service ${endpoint.service} endpoint uses the wrong ingress protocol for ${workload.workloadIdentity}.`);
+    } else if (!ingress.some((rule) => rule.protocol === endpoint.protocol.toLowerCase() && rule.port === endpoint.port)) {
+      finding('RUNTIME_ACCESS_NETWORK_WRONG_PORT', `AWS service ${endpoint.service} endpoint uses the wrong ingress port for ${workload.workloadIdentity}.`);
+    }
+  }
 }
 
 type ExactNetworkRule =
   | { readonly kind: 'securityGroup'; readonly protocol: string; readonly port: number; readonly targetResourceId: string }
+  | { readonly kind: 'serviceEndpoint'; readonly protocol: string; readonly port: number; readonly targetResourceId: string }
+  | { readonly kind: 'prefixList'; readonly protocol: string; readonly port: number; readonly targetResourceId: string }
   | { readonly kind: 'cidr'; readonly protocol: string; readonly port: number; readonly cidr: string };
 
 export function isAwsRuntimeAccessSecurityGroupQualified(
@@ -204,7 +248,7 @@ export function isAwsRuntimeAccessSecurityGroupQualified(
   resourcesById: ReadonlyMap<string, ApplicationAwsPlanResource>,
   target?: 'aws' | 'aws-local',
 ): boolean {
-  if (aws.privatePeers.length === 0 || aws.externalEgress.length > 0) return false;
+  if ((aws.privatePeers.length === 0 && aws.serviceEndpoints.length === 0) || aws.externalEgress.length > 0) return false;
   if (aws.privatePeers.some((peer) => {
     if (peer.endpoint.target !== 'aws' && peer.endpoint.target !== 'aws-local') return true;
     if (target && peer.endpoint.target !== target) return true;
@@ -218,20 +262,32 @@ export function isAwsRuntimeAccessSecurityGroupQualified(
     if (entry.endpoint.target !== 'aws' && entry.endpoint.target !== 'aws-local') return true;
     return Boolean(target && entry.endpoint.target !== target) || entry.purpose !== 'dns';
   })) return false;
-  // ECS resolves declared Secret projections before the application container
-  // starts. Other AWS API actions still require a first-class VPC endpoint or
-  // service-prefix destination before Security Group egress can be exact.
-  return aws.statements.every((statement) => statement.actions.every((action) => action === 'secretsmanager:GetSecretValue'));
+  const endpointServices = new Set(aws.serviceEndpoints.map(({ service }) => service));
+  const bootstrapServices = new Set(aws.serviceEndpoints
+    .filter(({ purpose }) => purpose === 'ecs-bootstrap')
+    .map(({ service }) => service));
+  if (!['ecr.api', 'ecr.dkr', 'logs', 's3'].every((service) => bootstrapServices.has(service))) return false;
+  if ((aws.executionRoleStatements ?? []).some((statement) => statement.actions.includes('secretsmanager:GetSecretValue'))
+    && !bootstrapServices.has('secretsmanager')) return false;
+  return aws.statements.every((statement) => statement.actions.every((action) => {
+    const endpoint = awsVpcEndpointServiceForAction(action);
+    // iam:PassRole is evaluated as part of the target service request and does
+    // not require a separate IAM API transport from the task.
+    return action === 'iam:PassRole' || Boolean(endpoint && endpointServices.has(endpoint.service));
+  }));
 }
 
 function networkRuleAtom(rule: Readonly<Record<string, unknown>>): string {
   return canonicalJsonV1String({
-    kind: rule.kind,
+    kind: rule.kind === 'serviceEndpoint' ? 'securityGroup' : rule.kind,
     protocol: rule.protocol,
     port: rule.port,
-    ...(rule.kind === 'securityGroup' ? { targetResourceId: rule.targetResourceId } : { cidr: rule.cidr }),
+    ...(rule.kind === 'securityGroup' || rule.kind === 'serviceEndpoint' || rule.kind === 'prefixList'
+      ? { targetResourceId: rule.targetResourceId }
+      : { cidr: rule.cidr }),
   });
 }
+
 
 function arrayRecords(value: unknown): readonly Readonly<Record<string, unknown>>[] {
   return Array.isArray(value) ? value.filter(record) : [];

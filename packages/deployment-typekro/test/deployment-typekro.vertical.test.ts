@@ -1250,6 +1250,24 @@ function materializedGraph(
                     },
                   },
                   {
+                    id: "applicationFqdnPolicy",
+                    template: {
+                      apiVersion: "cilium.io/v2",
+                      kind: "CiliumNetworkPolicy",
+                      metadata: {
+                        name: "adapter-egress",
+                        namespace: "adapter-test",
+                      },
+                      spec: {
+                        endpointSelector: { matchLabels: { app: "${schema.spec.name}" } },
+                        egress: [{
+                          toFQDNs: [{ matchName: "api.example.com" }],
+                          toPorts: [{ ports: [{ protocol: "TCP", port: "443" }] }],
+                        }],
+                      },
+                    },
+                  },
+                  {
                     id: "applicationConfig",
                     externalRef: {
                       apiVersion: "v1",
@@ -2326,6 +2344,7 @@ describe("TypeKro deployment adapter", () => {
         sensitive: false,
       });
       const serializedDeclarations = JSON.stringify(adapted.declarations);
+      expect(serializedDeclarations).toContain('"kind":"CiliumNetworkPolicy"');
       expect(serializedDeclarations).not.toContain("json.marshal(undefined)");
       expect(serializedDeclarations).toContain(
         '"imagePullPolicy":"IfNotPresent"',

@@ -83,6 +83,39 @@ export function synthesizeApplicationAwsCloudFormationTemplate(
         addRuntimeSecurityGroupRules(resources, entry, id, logical);
         break;
       }
+      case "ec2:vpc-endpoint": {
+        if (!network) throw new Error(`AWS VPC endpoint ${entry.id} requires foundation.network.`);
+        const endpointType = stringConfig(entry, "endpointType");
+        if (endpointType !== "interface" && endpointType !== "gateway") {
+          throw new Error(`AWS VPC endpoint ${entry.id} has unsupported endpointType ${endpointType}.`);
+        }
+        const endpointSecurityGroupId = optionalString(entry.configuration.securityGroupResourceId);
+        const endpointSecurityGroup = endpointSecurityGroupId ? required(plan, endpointSecurityGroupId) : undefined;
+        if (endpointType === "interface" && !endpointSecurityGroup) {
+          throw new Error(`AWS interface endpoint ${entry.id} requires one exact security group.`);
+        }
+        const vpcLogicalId = logical.get(network.id)!;
+        resources[id] = resource("AWS::EC2::VPCEndpoint", {
+          VpcId: ref(vpcLogicalId),
+          ServiceName: stringConfig(entry, "serviceName"),
+          VpcEndpointType: endpointType === "interface" ? "Interface" : "Gateway",
+          ...(endpointType === "interface"
+            ? {
+                PrivateDnsEnabled: booleanConfig(entry, "privateDnsEnabled", true),
+                SubnetIds: privateSubnets.map((subnet) => ref(logical.get(subnet.id)!)),
+                SecurityGroupIds: [ref(logical.get(endpointSecurityGroup!.id)!)],
+              }
+            : {
+                RouteTableIds: privateSubnets.map((_subnet, index) => ref(`${vpcLogicalId}PrivateRouteTable${index + 1}`)),
+              }),
+          Tags: tags(plan, entry),
+        }, [
+          vpcLogicalId,
+          ...privateSubnets.map((subnet) => logical.get(subnet.id)!),
+          ...(endpointSecurityGroup ? [logical.get(endpointSecurityGroup.id)!] : []),
+        ]);
+        break;
+      }
       case "ecr:repository":
         resources[id] = resource("AWS::ECR::Repository", {
           RepositoryName: entry.physicalName,
@@ -408,18 +441,26 @@ function addRuntimeSecurityGroupRules(
     const port = typeof rule.port === "number" && Number.isInteger(rule.port) ? rule.port : undefined;
     if (!protocol || !port || port < 1 || port > 65_535) throw new Error(`AWS security group ${entry.id} has an invalid egress rule at index ${index}.`);
     const targetSecurityGroupResourceId = optionalString(rule.targetSecurityGroupResourceId);
+    const targetPrefixListResourceId = optionalString(rule.targetPrefixListResourceId)
+      ?? (rule.kind === "prefixList" ? optionalString(rule.targetResourceId) : undefined);
     const cidr = optionalString(rule.cidr);
-    if (Boolean(targetSecurityGroupResourceId) === Boolean(cidr)) throw new Error(`AWS security group ${entry.id} egress rule ${index} must name exactly one destination.`);
+    if ([targetSecurityGroupResourceId, targetPrefixListResourceId, cidr].filter(Boolean).length !== 1) throw new Error(`AWS security group ${entry.id} egress rule ${index} must name exactly one destination.`);
     const targetLogicalId = targetSecurityGroupResourceId ? logical.get(targetSecurityGroupResourceId) : undefined;
+    const prefixListLogicalId = targetPrefixListResourceId ? logical.get(targetPrefixListResourceId) : undefined;
     if (targetSecurityGroupResourceId && !targetLogicalId) throw new Error(`AWS security group ${entry.id} egress rule ${index} names missing group ${targetSecurityGroupResourceId}.`);
+    if (targetPrefixListResourceId && !prefixListLogicalId) throw new Error(`AWS security group ${entry.id} egress rule ${index} names missing endpoint ${targetPrefixListResourceId}.`);
     resources[`${id}RuntimeEgress${index + 1}`] = resource("AWS::EC2::SecurityGroupEgress", {
       GroupId: ref(id),
       IpProtocol: protocol,
       FromPort: port,
       ToPort: port,
-      ...(targetLogicalId ? { DestinationSecurityGroupId: ref(targetLogicalId) } : { CidrIp: cidr ?? "" }),
-      Description: optionalString(rule.peerIdentity) ?? optionalString(rule.egressIdentity) ?? `Applik8s runtime egress ${index + 1}`,
-    }, [id, ...(targetLogicalId ? [targetLogicalId] : [])]);
+      ...(targetLogicalId
+        ? { DestinationSecurityGroupId: ref(targetLogicalId) }
+        : prefixListLogicalId
+          ? { DestinationPrefixListId: getAtt(prefixListLogicalId, "PrefixListId") }
+          : { CidrIp: cidr ?? "" }),
+      Description: optionalString(rule.peerIdentity) ?? optionalString(rule.endpointIdentity) ?? optionalString(rule.egressIdentity) ?? `Applik8s runtime egress ${index + 1}`,
+    }, [id, ...(targetLogicalId ? [targetLogicalId] : []), ...(prefixListLogicalId ? [prefixListLogicalId] : [])]);
   }
   for (const [index, rule] of arrayObjects(entry.configuration.ingressRules).entries()) {
     const protocol = optionalString(rule.protocol);
@@ -1708,6 +1749,7 @@ function outputValue(
   const attributes: Readonly<Record<string, string>> = {
     vpcId: "VpcId", subnetId: "SubnetId", securityGroupId: "GroupId", repositoryUri: "RepositoryUri", repositoryArn: "Arn",
     clusterArn: "Arn", clusterName: "ClusterName", logGroupArn: "Arn", roleArn: "Arn", endpoint: "Endpoint.Address", port: "Endpoint.Port",
+    vpcEndpointId: "Id", prefixListId: "PrefixListId", dnsEntries: "DnsEntries",
     bucketArn: "Arn", streamArn: "Arn", tableArn: "Arn", queueArn: "Arn", groupArn: "Arn", scheduleArn: "Arn", secretArn: "Arn",
     dnsName: "DNSName", zoneId: "CanonicalHostedZoneID", loadBalancerArn: "LoadBalancerArn", certificateArn: "Arn", databaseArn: "Arn", workgroupArn: "Arn", serviceArn: "ServiceArn",
   };
