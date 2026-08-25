@@ -14,6 +14,7 @@ export function applicationGraphHasObservabilityRuntime(
 export function generatedApplicationTelemetryImports(options?: {
 	readonly boundaryRunner?: boolean;
 	readonly carrierCapture?: boolean;
+	readonly carrierTransport?: boolean;
 	readonly providerOperationInstrumentation?: boolean;
 	readonly runtimeImplementation?: boolean;
 }): readonly string[] {
@@ -21,6 +22,9 @@ export function generatedApplicationTelemetryImports(options?: {
 		"installApplicationTelemetryRuntimeResolver",
 		...(options?.boundaryRunner ? ["runApplicationTelemetryBoundary"] : []),
 		...(options?.carrierCapture ? ["captureApplicationTelemetryContext"] : []),
+		...(options?.carrierTransport
+			? ["applicationTelemetryCarrierHeaderName", "decodeApplicationTelemetryCarrier", "encodeApplicationTelemetryCarrier"]
+			: []),
 		...(options?.providerOperationInstrumentation
 			? ["instrumentApplicationProviderOperation"]
 			: []),

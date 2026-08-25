@@ -162,6 +162,8 @@ describe('generated Kubernetes application gateway', () => {
 
   it('uses a bounded list resourceVersion as the signed watch frontier and rejects cross-context cursors', async () => {
     let page = 0;
+    const queryTelemetry: Array<{ readonly query: string; readonly operation: string }> = [];
+    const subscriptionLifecycle: string[] = [];
     const objects = {
       async listNamespacedCustomObject() {
         page += 1;
@@ -186,6 +188,7 @@ describe('generated Kubernetes application gateway', () => {
         expect(query.resourceVersion).toBe('11');
         queueMicrotask(() => {
           callback('MODIFIED', { metadata: { name: 'newer', resourceVersion: '12' } });
+          subscriptionLifecycle.push('watch:done');
           done();
         });
         return new AbortController();
@@ -201,6 +204,17 @@ describe('generated Kubernetes application gateway', () => {
       objects,
       watch,
       readiness: () => undefined,
+      queryTelemetry: {
+        async run(query, operation, execute) {
+          queryTelemetry.push({ query, operation });
+          subscriptionLifecycle.push(`${operation}:start`);
+          try {
+            return await execute();
+          } finally {
+            subscriptionLifecycle.push(`${operation}:end`);
+          }
+        },
+      },
       queries: [{
         id: 'GuestBookEntry.published',
         model: 'GuestBookEntry',
@@ -234,6 +248,7 @@ describe('generated Kubernetes application gateway', () => {
     const snapshot = await snapshotResponse.json() as { readonly value: unknown; readonly cursor: string };
     expect(snapshot.value).toEqual([{ id: 'newer', message: 'new' }]);
 
+    subscriptionLifecycle.length = 0;
     const subscription = await gateway.handle(post('/__applik8s/v1/queries/GuestBookEntry.published/subscribe', {
       input: { guestbook: 'tenant-a', limit: 1 },
       cursor: snapshot.cursor,
@@ -241,6 +256,7 @@ describe('generated Kubernetes application gateway', () => {
     const event = await subscription.text();
     expect(event).toContain('"kind":"invalidate"');
     expect(event).toContain('"models":["GuestBookEntry"]');
+    expect(subscriptionLifecycle).toEqual(['subscribe:start', 'watch:done', 'subscribe:end']);
 
     const multiplex = await gateway.handle(post('/__applik8s/v1/queries/multiplex', {
       subscriptions: [
@@ -260,9 +276,16 @@ describe('generated Kubernetes application gateway', () => {
       cursor: snapshot.cursor,
     }));
     expect(rejected.status).toBe(400);
+    expect(queryTelemetry).toEqual([
+      { query: 'GuestBookEntry.published', operation: 'snapshot' },
+      { query: 'GuestBookEntry.published', operation: 'subscribe' },
+      { query: 'GuestBookEntry.published', operation: 'subscribe' },
+      { query: 'GuestBookEntry.published', operation: 'subscribe' },
+    ]);
   });
 
   it('stops admitting work and aborts active Kubernetes watches during shutdown', async () => {
+    const telemetryLifecycle: string[] = [];
     const objects = {
       async listNamespacedCustomObject() {
         return {
@@ -283,6 +306,16 @@ describe('generated Kubernetes application gateway', () => {
       objects,
       watch,
       readiness: () => undefined,
+      queryTelemetry: {
+        async run(_query, operation, execute) {
+          telemetryLifecycle.push(`${operation}:start`);
+          try {
+            return await execute();
+          } finally {
+            telemetryLifecycle.push(`${operation}:end`);
+          }
+        },
+      },
       queries: [{
         id: 'GuestBookEntry.published',
         model: 'GuestBookEntry',
@@ -305,15 +338,18 @@ describe('generated Kubernetes application gateway', () => {
     });
     const snapshot = await gateway.handle(post('/__applik8s/v1/queries/GuestBookEntry.published/snapshot', { input: {} }));
     const { cursor } = await snapshot.json() as { readonly cursor: string };
+    telemetryLifecycle.length = 0;
     const subscription = await gateway.handle(post('/__applik8s/v1/queries/GuestBookEntry.published/subscribe', { input: {}, cursor }));
 
     await gateway.close();
 
     expect(active.signal.aborted).toBe(true);
+    expect(telemetryLifecycle).toEqual(['subscribe:start']);
     const rejected = await gateway.handle(post('/__applik8s/v1/queries/GuestBookEntry.published/snapshot', { input: {} }));
     expect(rejected.status).toBe(503);
     expect(await rejected.json()).toEqual({ error: 'gateway_stopping' });
     await subscription.body?.cancel();
+    expect(telemetryLifecycle).toEqual(['subscribe:start', 'subscribe:end']);
   });
 
   it('reports the underlying provider failure without weakening the redacted HTTP contract', async () => {

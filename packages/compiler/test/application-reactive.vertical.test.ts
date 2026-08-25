@@ -2011,8 +2011,12 @@ describe('generated v0.6 reactive workloads', () => {
       effectBoundary: 'externalEffectsAllowed',
       handlerSource: 'async () => ({})',
     } as const;
+    const observability = {
+      id: 'provider.observability.v1alpha1.primary', kind: 'provider', name: 'Observability', stability: 'stable',
+      interface: 'Observability', implementation: 'local-otel', config: {},
+    } as const;
     const [artifact] = await emitGeneratedApplicationReactive({
-      graph: reactiveGraph([card, cardQuery, policy, query, gateway, task, taskHandler] as unknown as ApplicationGraphNode[]),
+      graph: reactiveGraph([card, cardQuery, policy, query, gateway, task, taskHandler, observability] as unknown as ApplicationGraphNode[]),
       outDir: await mkdtemp(join(tmpdir(), 'applik8s-kubernetes-query-gateway-')),
       entrypoint: import.meta.filename,
     });
@@ -2031,6 +2035,12 @@ describe('generated v0.6 reactive workloads', () => {
     expect(generatedSource).toContain('relationalQueryIds');
     expect(generatedSource).toContain('kubernetesQueryIds');
     expect(source).toContain('Mixed query multiplex upstream failed');
+    expect(generatedSource).toContain('startApplicationOpenTelemetryRuntime');
+    expect(generatedSource).toContain('service: process.env.APPLIK8S_SERVICE_NAME ?? "query-gateway:administration"');
+    expect(generatedSource).toContain("kind: 'http', identity: 'query-gateway.request'");
+    expect(generatedSource).toContain('decodeApplicationTelemetryCarrier(request.headers.get(applicationTelemetryCarrierHeaderName))');
+    expect(generatedSource).toContain("kind: 'query', identity: query, definition: operation");
+    expect(generatedSource).toContain('closeApplicationTelemetryRuntime()');
     expect(source).not.toContain('Kubernetes queries use their declarative authority.');
     expect(artifact?.resources.map((resource) => resource.kind)).toEqual([
       'ServiceAccount', 'Deployment', 'NetworkPolicy', 'Role', 'RoleBinding', 'Service',

@@ -1,7 +1,7 @@
 // typecast-file-boundary: gateway fixtures emulate heterogeneous query and database results validated by the runtime.
 import { createHmac } from 'node:crypto';
-import type { ApplicationGatewayIdentity, ApplicationModelChange, ApplicationOnlineQueryRuntimeSource, ApplicationOnlineQuerySource, ApplicationQueryBinding, ApplicationRelationalContext } from '@applik8s/applik8s';
-import { app, applicationGraphFor, createApplicationQueryGateway, createApplicationQueryGatewayHttpHandler, createApplicationStreamSubscriptionGateway, createApplicationSubscriptionLimiter, postgres, trustedContext } from '@applik8s/applik8s';
+import type { ApplicationGatewayIdentity, ApplicationModelChange, ApplicationOnlineQueryRuntimeSource, ApplicationOnlineQuerySource, ApplicationQueryBinding, ApplicationRelationalContext, ApplicationTelemetryBoundary, ApplicationTelemetryRuntime } from '@applik8s/applik8s';
+import { app, applicationGraphFor, createApplicationQueryGateway, createApplicationQueryGatewayHttpHandler, createApplicationStreamSubscriptionGateway, createApplicationSubscriptionLimiter, installApplicationTelemetryRuntimeResolver, postgres, trustedContext } from '@applik8s/applik8s';
 import { type } from '@applik8s/applik8s/dsl';
 import { type ApplicationAuthorizationReceipt, canonicalJsonV1Value, createApplicationAdmissionContextV1, withApplicationAdmissionExecutionV1 } from '@applik8s/core';
 import { createSignedEnvelopeCodec, signedEnvelopeUtf8Key, staticSignedEnvelopeKeyProvider } from '@applik8s/runtime/signed-envelope';
@@ -89,6 +89,47 @@ function queryReceipt(
 }
 
 describe('v0.6 authenticated query gateway', () => {
+  test('owns one semantic query span beneath transport for public snapshots', async () => {
+    const { query } = queryFixture();
+    const boundaries: ApplicationTelemetryBoundary[] = [];
+    const runtime: ApplicationTelemetryRuntime = {
+      async run(boundary, execute) {
+        boundaries.push(boundary);
+        return execute();
+      },
+      log() {},
+      count() {},
+      record() {},
+      capture() { return undefined; },
+    };
+    const dispose = installApplicationTelemetryRuntimeResolver(() => runtime);
+    try {
+      const gateway = createApplicationQueryGateway({
+        queries: [query as ApplicationQueryBinding<unknown, unknown>],
+        authenticate: async () => ({
+          principal: testApplicationPrincipal('allowed'),
+          admittedContext: { values: { organizationId: 'organization-1' }, digestSecret: 'context-digest-secret-context-digest-secret' },
+        }),
+        context: () => fakeContext(),
+        cursorSecret: 'cursor-signing-secret-cursor-signing-secret',
+      });
+      const handler = createApplicationQueryGatewayHttpHandler(gateway);
+      const response = await handler(new Request('https://catalog.test/queries/cards.list.v1/snapshot', {
+        method: 'POST',
+        body: JSON.stringify({ input: { limit: 5 } }),
+      }));
+      expect(response.status).toBe(200);
+      expect(boundaries).toEqual([expect.objectContaining({
+        kind: 'query',
+        identity: 'cards.list.v1',
+        definition: 'snapshot',
+        relationship: 'synchronous',
+      })]);
+    } finally {
+      dispose();
+    }
+  });
+
   test('treats the required query authorization callback as application policy', () => {
     const { catalog } = queryFixture();
     const graph = applicationGraphFor(catalog.composition);
@@ -164,6 +205,17 @@ describe('v0.6 authenticated query gateway', () => {
 
   test('runs signed internal queries through the existing bounded query binding', async () => {
     const { query } = queryFixture();
+    const boundaries: ApplicationTelemetryBoundary[] = [];
+    const dispose = installApplicationTelemetryRuntimeResolver(() => ({
+      async run(boundary, execute) {
+        boundaries.push(boundary);
+        return execute();
+      },
+      log() {},
+      count() {},
+      record() {},
+      capture() { return undefined; },
+    }));
     const principal = testApplicationPrincipal('allowed', {
       authorityRevision: 'authority-1',
       catalogRevision: 'catalog-1',
@@ -208,30 +260,40 @@ describe('v0.6 authenticated query gateway', () => {
         },
       },
     );
-    await expect(gateway.invoke({
-      query: query.id,
-      input: { limit: 5 },
-      invocation: {
-        apiVersion: 'applik8s.internalOperation/v1alpha1',
-        id: 'internal-query-1',
-        operationId: receipt.operationId,
-        operationVersion: receipt.operationVersion,
-        inputDigest: receipt.inputDigest,
-        audience: receipt.audience,
-        source: {
-          transport: 'mcp',
-          workloadId: 'mcpServer.public',
+    try {
+      await expect(gateway.invoke({
+        query: query.id,
+        input: { limit: 5 },
+        invocation: {
+          apiVersion: 'applik8s.internalOperation/v1alpha1',
+          id: 'internal-query-1',
+          operationId: receipt.operationId,
+          operationVersion: receipt.operationVersion,
+          inputDigest: receipt.inputDigest,
+          audience: receipt.audience,
+          source: {
+            transport: 'mcp',
+            workloadId: 'mcpServer.public',
+          },
+          context,
+          admission: {
+            principal,
+            trustedContext: { organizationId: 'organization-1' },
+          },
+          authorizationReceipt: receipt,
+          issuedAt: '2026-07-30T12:00:00.000Z',
+          expiresAt: '2026-07-30T12:00:30.000Z',
         },
-        context,
-        admission: {
-          principal,
-          trustedContext: { organizationId: 'organization-1' },
-        },
-        authorizationReceipt: receipt,
-        issuedAt: '2026-07-30T12:00:00.000Z',
-        expiresAt: '2026-07-30T12:00:30.000Z',
-      },
-    })).resolves.toEqual([{ id: 'card-1', name: 'First' }]);
+      })).resolves.toEqual([{ id: 'card-1', name: 'First' }]);
+      expect(boundaries).toEqual([expect.objectContaining({
+        kind: 'query',
+        identity: 'cards.list.v1',
+        definition: 'invoke',
+        relationship: 'synchronous',
+      })]);
+    } finally {
+      dispose();
+    }
   });
 
   test('fails closed unless every returned signal capability has exact-instance read authority', async () => {

@@ -93,6 +93,14 @@ export interface Applik8sKubernetesGatewayOptions {
   readonly readiness?: () => void | Promise<void>;
   /** Framework-owned bounded evidence sink; failures never alter the gateway result. */
   readonly observeAdmission?: ApplicationAdmissionObserverV1;
+  /** Internal semantic query boundary supplied by the selected application telemetry runtime. */
+  readonly queryTelemetry?: {
+    run<TResult>(
+      query: string,
+      operation: 'snapshot' | 'subscribe',
+      execute: () => Promise<TResult>,
+    ): Promise<TResult>;
+  };
   /**
    * Receives the underlying failure after the public HTTP boundary has
    * classified it. Diagnostics must never alter the protocol response.
@@ -430,39 +438,41 @@ export function createApplik8sKubernetesGateway(options: Applik8sKubernetesGatew
   }
 
   async function querySnapshot(request: Request, query: Applik8sKubernetesQueryContract, body: Readonly<Record<string, unknown>>): Promise<Response> {
-    const input = validateUnknown(query.inputSchema, body.input, `${query.id}.input`);
-    const admission = await admit(options, request, { kind: 'query', id: query.id, action: 'snapshot', input });
-    if (!await query.authorize({ admission: applicationAdmissionInvocationView(admission), principal: admission.principal, context: admission.trustedContext.values, input })) {
-      throw new Error(`Application query ${query.id} is not authorized.`);
-    }
-    const result = await withTimeout(listSnapshot(objects, query, admission.trustedContext.values, input), query.budgets.timeoutMs, `Application query ${query.id} exceeded its execution budget.`);
-    const output = validateUnknown(query.outputSchema, result.value, `${query.id}.output`);
-    enforceOutputBudgets(query, output);
-    const contextDigest = admittedContextDigest(options.cursorSecret, admission.trustedContext.values);
-    const inputKey = stableInputKey(input);
-    const cursor = await signCursor(cursorCodec, {
-      version: 1,
-      kind: 'kubernetes-query',
-      query: query.id,
-      inputKey,
-      principalId: admission.principal.id,
-      contextDigest,
-      authorizationVersion: admission.authorityRevision,
-      resourceVersion: result.resourceVersion,
-      sequence: 0,
-      expiresAt: now().getTime() + cursorTtlSeconds * 1_000,
+    return runQueryTelemetry(options, query.id, 'snapshot', async () => {
+      const input = validateUnknown(query.inputSchema, body.input, `${query.id}.input`);
+      const admission = await admit(options, request, { kind: 'query', id: query.id, action: 'snapshot', input });
+      if (!await query.authorize({ admission: applicationAdmissionInvocationView(admission), principal: admission.principal, context: admission.trustedContext.values, input })) {
+        throw new Error(`Application query ${query.id} is not authorized.`);
+      }
+      const result = await withTimeout(listSnapshot(objects, query, admission.trustedContext.values, input), query.budgets.timeoutMs, `Application query ${query.id} exceeded its execution budget.`);
+      const output = validateUnknown(query.outputSchema, result.value, `${query.id}.output`);
+      enforceOutputBudgets(query, output);
+      const contextDigest = admittedContextDigest(options.cursorSecret, admission.trustedContext.values);
+      const inputKey = stableInputKey(input);
+      const cursor = await signCursor(cursorCodec, {
+        version: 1,
+        kind: 'kubernetes-query',
+        query: query.id,
+        inputKey,
+        principalId: admission.principal.id,
+        contextDigest,
+        authorizationVersion: admission.authorityRevision,
+        resourceVersion: result.resourceVersion,
+        sequence: 0,
+        expiresAt: now().getTime() + cursorTtlSeconds * 1_000,
+      });
+      const snapshot: ApplicationQuerySnapshot = {
+        kind: 'snapshot',
+        protocol: 'applik8s.query/v1alpha1',
+        query: query.id,
+        inputKey,
+        value: output,
+        cursor,
+        capability: 'atomicSnapshotResume',
+        generatedAt: now().toISOString(),
+      };
+      return json(snapshot, 200);
     });
-    const snapshot: ApplicationQuerySnapshot = {
-      kind: 'snapshot',
-      protocol: 'applik8s.query/v1alpha1',
-      query: query.id,
-      inputKey,
-      value: output,
-      cursor,
-      capability: 'atomicSnapshotResume',
-      generatedAt: now().toISOString(),
-    };
-    return json(snapshot, 200);
   }
 
   async function querySubscription(request: Request, query: Applik8sKubernetesQueryContract, body: Readonly<Record<string, unknown>>): Promise<Response> {
@@ -487,6 +497,7 @@ export function createApplik8sKubernetesGateway(options: Applik8sKubernetesGatew
       ttlSeconds: cursorTtlSeconds,
       maxSessionMs,
       now,
+      run: (execute) => runQueryTelemetry(options, query.id, 'subscribe', execute),
       release: () => subscriptions.release(admission.principal.id),
       track: (active) => {
         if (stopping) {
@@ -686,12 +697,16 @@ function kubernetesSubscriptionStream(options: {
   readonly ttlSeconds: number;
   readonly maxSessionMs: number;
   readonly now: () => Date;
+  readonly run: (execute: () => Promise<void>) => Promise<void>;
   readonly release: () => void;
   readonly track: (abort: AbortController) => () => void;
 }): ReadableStream<Uint8Array> {
   let abort: AbortController | undefined;
   let untrack: () => void = () => undefined;
   let released = false;
+  let cancelled = false;
+  let settleWatch: ((error?: unknown) => void) | undefined;
+  let lifecycleCompletion: Promise<void> | undefined;
   const release = () => {
     if (released) return;
     released = true;
@@ -699,91 +714,129 @@ function kubernetesSubscriptionStream(options: {
     options.release();
   };
   return new ReadableStream<Uint8Array>({
-    async start(controller) {
-      const encoder = new TextEncoder();
-      const namespace = options.query.resource.scope === 'Namespaced'
-        ? allowedNamespace(
-          requiredString(options.query.fixedNamespace ?? options.query.namespace?.({ context: options.context, input: options.input }), 'query.namespace'),
-          options.query.allowedNamespaces,
-          options.query.id,
-        )
-        : undefined;
-      const labelSelector = options.query.labelSelector?.({ context: options.context, input: options.input });
-      const fieldSelector = options.query.fieldSelector?.({ context: options.context, input: options.input });
-      const path = watchPath(options.query.resource, namespace);
-      let sequence = options.cursor.sequence;
-      let delivery = Promise.resolve();
-      let deliveryFailed = false;
-      const deadline = setTimeout(() => abort?.abort(), options.maxSessionMs);
-      const send = (event: ApplicationQueryEvent) => controller.enqueue(encoder.encode(`event: ${event.kind}\ndata: ${JSON.stringify(event)}\n\n`));
-      try {
-        abort = await options.watch.watch(
-          path,
-          {
-            resourceVersion: options.cursor.resourceVersion,
-            allowWatchBookmarks: true,
-            ...(labelSelector ? { labelSelector } : {}),
-            ...(fieldSelector ? { fieldSelector } : {}),
-          },
-          (phase, raw) => {
-            const object = raw as KubernetesObject & { readonly code?: number; readonly message?: string };
-            const resourceVersion = String(object.metadata?.resourceVersion ?? options.cursor.resourceVersion);
-            if (phase === 'ERROR') {
-              if (Number(object.code) === 410) {
-                send({ kind: 'reset', protocol: 'applik8s.query/v1alpha1', query: options.query.id, id: `${options.query.id}:reset:${options.now().getTime()}`, reason: 'providerReset' });
-                abort?.abort();
-                return;
-              }
-              controller.error(new Error(`Kubernetes watch failed with ${object.code ?? 'unknown'}: ${object.message ?? 'unknown error'}`));
-              abort?.abort();
-              return;
-            }
-            sequence += 1;
-            const eventSequence = sequence;
-            delivery = delivery.then(async () => {
-              const cursor = await signCursor(options.cursorCodec, {
-                ...options.cursor,
-                resourceVersion,
-                sequence: eventSequence,
-                expiresAt: options.now().getTime() + options.ttlSeconds * 1_000,
-              });
-              if (phase === 'BOOKMARK') {
-                send({ kind: 'keepalive', protocol: 'applik8s.query/v1alpha1', query: options.query.id, id: `${options.query.id}:bookmark:${resourceVersion}`, cursor, sequence: eventSequence });
-                return;
-              }
-              send({ kind: 'invalidate', protocol: 'applik8s.query/v1alpha1', query: options.query.id, id: `${options.query.id}:${phase}:${resourceVersion}`, cursor, sequence: eventSequence, models: [options.query.model] });
-            }).catch((error: unknown) => {
-              deliveryFailed = true;
-              controller.error(error);
-              abort?.abort();
+    start(controller) {
+      lifecycleCompletion = (async () => {
+        try {
+          await options.run(async () => {
+            const encoder = new TextEncoder();
+            const namespace = options.query.resource.scope === 'Namespaced'
+              ? allowedNamespace(
+                requiredString(options.query.fixedNamespace ?? options.query.namespace?.({ context: options.context, input: options.input }), 'query.namespace'),
+                options.query.allowedNamespaces,
+                options.query.id,
+              )
+              : undefined;
+            const labelSelector = options.query.labelSelector?.({ context: options.context, input: options.input });
+            const fieldSelector = options.query.fieldSelector?.({ context: options.context, input: options.input });
+            const path = watchPath(options.query.resource, namespace);
+            let sequence = options.cursor.sequence;
+            let delivery = Promise.resolve();
+            let settled = false;
+            let resolveCompletion: () => void = () => undefined;
+            let rejectCompletion: (error: unknown) => void = () => undefined;
+            const completion = new Promise<void>((resolve, reject) => {
+              resolveCompletion = resolve;
+              rejectCompletion = reject;
             });
-          },
-          (error) => {
-            clearTimeout(deadline);
-            release();
-            void delivery.then(() => {
-              if (deliveryFailed) return;
-              if (error) controller.error(error);
-              else controller.close();
-            }, (deliveryError: unknown) => controller.error(deliveryError));
-          },
-        );
-        untrack = options.track(abort);
-        if (released) {
-          untrack();
-          abort.abort();
+            const finish = (error?: unknown) => {
+              if (settled) return;
+              settled = true;
+              void delivery.then(
+                () => error === undefined ? resolveCompletion() : rejectCompletion(error),
+                rejectCompletion,
+              );
+            };
+            settleWatch = finish;
+            const deadline = setTimeout(() => {
+              abort?.abort();
+              finish();
+            }, options.maxSessionMs);
+            const send = (event: ApplicationQueryEvent) => {
+              if (!cancelled) controller.enqueue(encoder.encode(`event: ${event.kind}\ndata: ${JSON.stringify(event)}\n\n`));
+            };
+            try {
+              abort = await options.watch.watch(
+                path,
+                {
+                  resourceVersion: options.cursor.resourceVersion,
+                  allowWatchBookmarks: true,
+                  ...(labelSelector ? { labelSelector } : {}),
+                  ...(fieldSelector ? { fieldSelector } : {}),
+                },
+                (phase, raw) => {
+                  const object = raw as KubernetesObject & { readonly code?: number; readonly message?: string };
+                  const resourceVersion = String(object.metadata?.resourceVersion ?? options.cursor.resourceVersion);
+                  if (phase === 'ERROR') {
+                    if (Number(object.code) === 410) {
+                      send({ kind: 'reset', protocol: 'applik8s.query/v1alpha1', query: options.query.id, id: `${options.query.id}:reset:${options.now().getTime()}`, reason: 'providerReset' });
+                      abort?.abort();
+                      finish();
+                      return;
+                    }
+                    const error = new Error(`Kubernetes watch failed with ${object.code ?? 'unknown'}: ${object.message ?? 'unknown error'}`);
+                    abort?.abort();
+                    finish(error);
+                    return;
+                  }
+                  sequence += 1;
+                  const eventSequence = sequence;
+                  delivery = delivery.then(async () => {
+                    const cursor = await signCursor(options.cursorCodec, {
+                      ...options.cursor,
+                      resourceVersion,
+                      sequence: eventSequence,
+                      expiresAt: options.now().getTime() + options.ttlSeconds * 1_000,
+                    });
+                    if (phase === 'BOOKMARK') {
+                      send({ kind: 'keepalive', protocol: 'applik8s.query/v1alpha1', query: options.query.id, id: `${options.query.id}:bookmark:${resourceVersion}`, cursor, sequence: eventSequence });
+                      return;
+                    }
+                    send({ kind: 'invalidate', protocol: 'applik8s.query/v1alpha1', query: options.query.id, id: `${options.query.id}:${phase}:${resourceVersion}`, cursor, sequence: eventSequence, models: [options.query.model] });
+                  }).catch((error: unknown) => {
+                    abort?.abort();
+                    finish(error);
+                  });
+                },
+                finish,
+              );
+              untrack = options.track(abort);
+              if (cancelled || released) {
+                untrack();
+                abort.abort();
+                finish();
+              }
+              await completion;
+            } finally {
+              clearTimeout(deadline);
+              settleWatch = undefined;
+            }
+          });
+          if (!cancelled) controller.close();
+        } catch (error) {
+          if (!cancelled) controller.error(error);
+        } finally {
+          release();
         }
-      } catch (error) {
-        clearTimeout(deadline);
-        release();
-        controller.error(error);
-      }
+      })();
+      return lifecycleCompletion;
     },
-    cancel() {
+    async cancel() {
+      cancelled = true;
       abort?.abort();
+      settleWatch?.();
       release();
+      await lifecycleCompletion;
     },
   });
+}
+
+function runQueryTelemetry<TResult>(
+  options: Applik8sKubernetesGatewayOptions,
+  query: string,
+  operation: 'snapshot' | 'subscribe',
+  execute: () => Promise<TResult>,
+): Promise<TResult> {
+  return options.queryTelemetry?.run(query, operation, execute) ?? execute();
 }
 
 async function listObjects(

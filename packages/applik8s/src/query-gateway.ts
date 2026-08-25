@@ -12,6 +12,7 @@ import { createRollingSignedEnvelopeCodec, type RollingSignedEnvelopeCodec, sign
 import { applicationOperationInputDigest } from './application-operation-runtime.js';
 import type { ApplicationQueryBinding, ApplicationQueryPrincipal } from './application-queries.js';
 import { validateQueryInput, validateQueryOutput } from './application-query-runtime.js';
+import { runApplicationTelemetryBoundary } from './application-telemetry-runtime.js';
 import { applicationRequestContextValues } from './command-principal.js';
 import { type ApplicationAdmittedContext, type ApplicationRelationalContext, applicationAdmittedContextDigest } from './relational-runtime.js';
 import { validateTrustedContextValue } from './trusted-context.js';
@@ -339,6 +340,12 @@ export function createApplicationQueryGateway<TRequest, TPrincipal extends Appli
     async invoke(request) {
       const query = requiredQuery(queries, request.query);
       const input = validateQueryInput(query, request.input);
+      return runApplicationTelemetryBoundary({
+        kind: 'query',
+        identity: query.id,
+        definition: 'invoke',
+        relationship: 'synchronous',
+      }, async () => {
       // typecast-boundary: the internal handler has already validated the
       // canonical principal; generated query bindings use that common
       // principal contract rather than transport-specific credential shapes.
@@ -393,6 +400,7 @@ export function createApplicationQueryGateway<TRequest, TPrincipal extends Appli
       enforceResultBudget(query, output);
       await authorizeQueryOutputCapabilities(options, query, identity, output);
       return jsonValue(output);
+      });
     },
   };
 }
@@ -577,7 +585,11 @@ export function createApplicationQueryGatewayHttpHandler(gateway: ApplicationQue
       if (!body || typeof body !== 'object' || Array.isArray(body)) return jsonResponse({ error: 'invalid_request' }, 400);
       if (!query) return jsonResponse({ error: 'not_found' }, 404);
       if (!('input' in body)) return jsonResponse({ error: 'missing_input' }, 400);
-      if (operation === 'snapshot') return jsonResponse(await gateway.snapshot(request, query, body.input), 200);
+      if (operation === 'snapshot') {
+        return await runApplicationTelemetryBoundary({
+          kind: 'query', identity: query, definition: 'snapshot', relationship: 'synchronous',
+        }, async () => jsonResponse(await gateway.snapshot(request, query!, body.input), 200));
+      }
       const cursor = Reflect.get(body, 'cursor');
       if (typeof cursor !== 'string') return jsonResponse({ error: 'missing_cursor' }, 400);
       const iterator = gateway.subscribe(request, query, body.input, cursor, { signal: request.signal })[Symbol.asyncIterator]();
@@ -585,11 +597,15 @@ export function createApplicationQueryGatewayHttpHandler(gateway: ApplicationQue
       const stream = new ReadableStream<Uint8Array>({
         async start(controller) {
           try {
-            while (true) {
-              const next = await iterator.next();
-              if (next.done) break;
-              controller.enqueue(encoder.encode(`event: ${next.value.kind}\ndata: ${JSON.stringify(next.value)}\n\n`));
-            }
+            await runApplicationTelemetryBoundary({
+              kind: 'query', identity: query!, definition: 'subscribe', relationship: 'synchronous',
+            }, async () => {
+              while (true) {
+                const next = await iterator.next();
+                if (next.done) break;
+                controller.enqueue(encoder.encode(`event: ${next.value.kind}\ndata: ${JSON.stringify(next.value)}\n\n`));
+              }
+            });
             controller.close();
           } catch (error) {
             controller.error(error);
@@ -660,16 +676,20 @@ function multiplexQueryResponse(
       };
       const pumps = iterators.map(async ({ subscription, iterator }) => {
         try {
-          while (!abort.signal.aborted) {
-            const next = await iterator.next();
-            if (next.done) break;
-            enqueue({
-              protocol: 'applik8s.query-multiplex/v1alpha1',
-              kind: 'event',
-              subscriptionId: subscription.id,
-              event: next.value,
-            });
-          }
+          await runApplicationTelemetryBoundary({
+            kind: 'query', identity: subscription.query, definition: 'subscribe', relationship: 'synchronous',
+          }, async () => {
+            while (!abort.signal.aborted) {
+              const next = await iterator.next();
+              if (next.done) break;
+              enqueue({
+                protocol: 'applik8s.query-multiplex/v1alpha1',
+                kind: 'event',
+                subscriptionId: subscription.id,
+                event: next.value,
+              });
+            }
+          });
         } catch (error) {
           if (!abort.signal.aborted) enqueue(multiplexErrorFrame(subscription.id, error));
         } finally {

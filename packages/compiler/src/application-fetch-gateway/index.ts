@@ -346,7 +346,8 @@ export function generatedApplicationFetchGatewayModules(
 	if (observability || hasCallableProviderOperations)
 		imports.push(...generatedApplicationTelemetryImports({
 			boundaryRunner: observability,
-			carrierCapture: agents.length > 0,
+			carrierCapture: agents.length > 0 || (observability && hasRemoteQueries),
+			carrierTransport: observability && hasRemoteQueries,
 			providerOperationInstrumentation: hasCallableProviderOperations,
 			runtimeImplementation: observability,
 		}));
@@ -735,6 +736,9 @@ const localGateway =
   authenticate: (request) => ${authenticate}(request),
   cursorSecret: requiredEnv('APPLIK8S_CURSOR_SECRET'),
   observeAdmission: observeRequestAdmission,
+  ${observability ? `queryTelemetry: {
+    run: (query, operation, execute) => runApplicationTelemetryBoundary({ kind: 'query', identity: query, definition: operation, relationship: 'synchronous' }, execute),
+  },` : ''}
   commands: [${commandSources.join(",\n")}],
   queries: [${querySources.join(",\n")}],
   onError: (error, operation) => console.error('Applik8s Kubernetes application-host request failed', {
@@ -2015,13 +2019,12 @@ export const gateway = ${observability ? `{
   handle(request) {
     const url = new URL(request.url);
     const route = applicationGatewayRoute(url.pathname) ?? (url.pathname.startsWith('/__applik8s/') ? 'framework' : 'unmatched');
-    const boundaryKind = route.startsWith('query:') ? 'query'
-      : route.startsWith('command:') || route.startsWith('runtime:') || route.startsWith('object:') ? 'operation'
+    const boundaryKind = route.startsWith('command:') || route.startsWith('runtime:') || route.startsWith('object:') ? 'operation'
       : route.startsWith('webhook:') || route.startsWith('stream:') || route.startsWith('signal:') ? 'event'
       : 'http';
     return runApplicationTelemetryBoundary({
       kind: boundaryKind,
-      identity: route === 'unmatched' || route === 'framework' ? request.method + ' ' + route : route,
+      identity: route === 'unmatched' || route === 'framework' ? request.method.toLowerCase() + ':' + route : route,
       attributes: { 'http.request.method': request.method, 'url.path': url.pathname.slice(0, 512) },
     }, () => applicationGatewayCore.handle(request));
   },
@@ -2044,7 +2047,12 @@ function applicationGatewayRoute(pathname) {
 function forwardRemoteRequest(request, remoteBaseUrl) {
   const url = new URL(request.url);
   const remotePath = (url.pathname.startsWith('/__applik8s/v1') ? url.pathname.slice('/__applik8s/v1'.length) : url.pathname) || '/';
-  return fetch(new Request(new URL(remotePath + url.search, remoteBaseUrl), request));
+  ${observability && hasRemoteQueries ? `const forwarded = new Request(new URL(remotePath + url.search, remoteBaseUrl), request);
+  forwarded.headers.delete(applicationTelemetryCarrierHeaderName);
+  const telemetry = captureApplicationTelemetryContext();
+  const encodedTelemetry = telemetry ? encodeApplicationTelemetryCarrier(telemetry) : undefined;
+  if (encodedTelemetry) forwarded.headers.set(applicationTelemetryCarrierHeaderName, encodedTelemetry);
+  return fetch(forwarded);` : `return fetch(new Request(new URL(remotePath + url.search, remoteBaseUrl), request));`}
 }
 
 export const handleApplik8sRequest = (request) => gateway.handle(request);

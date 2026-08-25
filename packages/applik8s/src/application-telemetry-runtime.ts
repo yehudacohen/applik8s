@@ -5,6 +5,7 @@ import type {
   ApplicationTelemetryMetricName,
   ApplicationTelemetryPrincipalClass,
 } from '@applik8s/core';
+import { validateApplicationTelemetryEnvelopeV1 } from '@applik8s/core';
 
 export interface ApplicationTelemetryBoundary {
   readonly kind: ApplicationTelemetryBoundaryKind;
@@ -42,6 +43,9 @@ export interface ApplicationTelemetryRuntime {
 }
 
 const telemetryRuntimeResolvers: Array<() => ApplicationTelemetryRuntime | undefined> = [];
+
+export const applicationTelemetryCarrierHeaderName = 'x-applik8s-telemetry';
+export const maximumApplicationTelemetryCarrierBytes = 8_192;
 
 function currentApplicationTelemetryRuntime(): ApplicationTelemetryRuntime | undefined {
   for (let index = telemetryRuntimeResolvers.length - 1; index >= 0; index -= 1) {
@@ -127,6 +131,43 @@ function providerTelemetryBoundary(
 /** Captures the bounded, serialization-safe carrier for an explicit asynchronous handoff. */
 export function captureApplicationTelemetryContext(): ApplicationTelemetryEnvelopeV1 | undefined {
   return currentApplicationTelemetryRuntime()?.capture();
+}
+
+/**
+ * Serializes the framework-owned carrier used only between generated runtime
+ * boundaries. Application ingress must overwrite this header rather than trust
+ * a caller-authored value.
+ */
+export function encodeApplicationTelemetryCarrier(
+  carrier: ApplicationTelemetryEnvelopeV1,
+): string | undefined {
+  try {
+    validateApplicationTelemetryEnvelopeV1(carrier);
+    const encoded = JSON.stringify(carrier);
+    if (new TextEncoder().encode(encoded).byteLength > maximumApplicationTelemetryCarrierBytes) {
+      return undefined;
+    }
+    return encoded;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Decodes a bounded internal carrier. Malformed telemetry is ignored and can never fail business execution. */
+export function decodeApplicationTelemetryCarrier(
+  encoded: string | null | undefined,
+): ApplicationTelemetryEnvelopeV1 | undefined {
+  if (!encoded) return undefined;
+  try {
+    if (new TextEncoder().encode(encoded).byteLength > maximumApplicationTelemetryCarrierBytes) {
+      return undefined;
+    }
+    const carrier: unknown = JSON.parse(encoded);
+    validateApplicationTelemetryEnvelopeV1(carrier);
+    return carrier;
+  } catch {
+    return undefined;
+  }
 }
 
 /** @internal Records bounded framework compatibility evidence without exposing provider telemetry to application code. */

@@ -2,13 +2,37 @@
 import {
   app,
   applicationGraphFor,
+  applicationTelemetryCarrierHeaderName,
+  decodeApplicationTelemetryCarrier,
+  encodeApplicationTelemetryCarrier,
+  maximumApplicationTelemetryCarrierBytes,
   Observability,
   telemetryPolicy,
 } from '@applik8s/applik8s';
-import { validateApplicationGraphStructure } from '@applik8s/core';
+import { createApplicationTelemetryEnvelopeV1, validateApplicationGraphStructure } from '@applik8s/core';
 import { describe, expect, it } from 'vitest';
 
 describe('v0.8 provider-neutral observability', () => {
+  it('round-trips only bounded validated framework telemetry carriers', () => {
+    const carrier = createApplicationTelemetryEnvelopeV1({
+      traceparent: '00-0123456789abcdef0123456789abcdef-0123456789abcdef-01',
+      identity: {
+        application: 'observed',
+        environment: 'test',
+        target: 'local',
+        operation: 'query:cards.list.v1',
+        execution: 'http:query:cards.list.v1',
+        attempt: 1,
+      },
+    });
+    const encoded = encodeApplicationTelemetryCarrier(carrier);
+    expect(applicationTelemetryCarrierHeaderName).toBe('x-applik8s-telemetry');
+    expect(decodeApplicationTelemetryCarrier(encoded)).toEqual(carrier);
+    expect(decodeApplicationTelemetryCarrier('{"version":"caller-authored"}')).toBeUndefined();
+    expect(decodeApplicationTelemetryCarrier('x'.repeat(maximumApplicationTelemetryCarrierBytes + 1))).toBeUndefined();
+    expect(encodeApplicationTelemetryCarrier({ ...carrier, traceparent: 'caller-authored' })).toBeUndefined();
+  });
+
   it('normalizes bounded signal policy and records the selected provider in the canonical graph', () => {
     const policy = telemetryPolicy({
       logs: { level: 'info', overrides: { 'billing.checkout': 'debug' }, sample: { debug: 0.05 } },

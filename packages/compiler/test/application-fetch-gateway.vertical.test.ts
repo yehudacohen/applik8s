@@ -597,6 +597,7 @@ describe("application host Fetch gateway", () => {
 			revision: text("revision").notNull(),
 		});
 		const chirp = app("chirp", { namespace: "chirp" });
+		chirp.provide(Observability, Observability.local());
 		const database = chirp.database.postgres("chirp", { schema: { posts } });
 		const Post = chirp.model(posts, { name: "Post", database });
 		const TimelinePost = Post.view("timeline", {
@@ -653,6 +654,18 @@ describe("application host Fetch gateway", () => {
 		);
 		expect(modules?.files["gateway.generated.ts"]).toContain(
 			"forwardRemoteRequest(targetRequest, remoteBaseUrl)",
+		);
+		expect(modules?.files["gateway.generated.ts"]).toContain(
+			"forwarded.headers.delete(applicationTelemetryCarrierHeaderName)",
+		);
+		expect(modules?.files["gateway.generated.ts"]).toContain(
+			"const encodedTelemetry = telemetry ? encodeApplicationTelemetryCarrier(telemetry) : undefined",
+		);
+		expect(modules?.files["gateway.generated.ts"]).toContain("? 'operation'");
+		expect(modules?.files["gateway.generated.ts"]).toContain("? 'event'");
+		expect(modules?.files["gateway.generated.ts"]).toContain(": 'http';");
+		expect(modules?.files["gateway.generated.ts"]).not.toContain(
+			"route.startsWith('query:') ? 'query'",
 		);
 		expect(modules?.files["gateway.generated.ts"]).not.toContain(
 			"createApplik8sKubernetesGateway({",
