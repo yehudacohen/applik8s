@@ -244,18 +244,31 @@
     },
     {
       "kind": "reconciler",
-      "state": "not-started",
+      "state": "implemented",
       "relationship": "asynchronous",
-      "producer": "Kubernetes watch or scheduled resync admission",
-      "consumer": "operator host and guest reconcile handler",
-      "carrierPlacement": "the host/guest carrier is canonical, but the reconcile family is not yet represented by the TypeScript boundary runtime",
+      "producer": "kube-runtime controller admission from a resource watch, retry, or scheduled requeue",
+      "consumer": "one Rust host-owned reconcile attempt and its synchronous componentized-WASM guest",
+      "carrierPlacement": "the Rust host owns the only reconciler span, derives canonical operation/execution identity from the compiler runtime envelope, increments host retry attempts, and passes the exact span carrier synchronously into the guest; stale-generation status work remains a phase, replay creates no span, and unfinished host work closes as a typed interruption",
       "owners": [
-        "crates/applik8s-operator-host/src/main.rs",
-        "packages/compiler/src/application-kubernetes.ts"
+        "crates/applik8s-operator-host/src/lib.rs",
+        "packages/compiler/src/manifest/index.ts"
       ],
-      "sourceMarkers": [],
-      "regression": null,
-      "remaining": "Map the host-owned reconcile span into the maintained boundary inventory, link watch/resync causation, and record trap, stale, retry, and cancellation terminal outcomes."
+      "sourceMarkers": [
+        {
+          "path": "crates/applik8s-operator-host/src/lib.rs",
+          "marker": "\"applik8s.boundary.kind\", \"reconciler\""
+        },
+        {
+          "path": "crates/applik8s-operator-host/src/lib.rs",
+          "marker": "ReconcileOtelSpan"
+        },
+        {
+          "path": "crates/applik8s-operator-host/src/lib.rs",
+          "marker": "guest_host_telemetry_envelope"
+        }
+      ],
+      "regression": "cargo test -p applik8s-operator-host && bun run check:v08:observability",
+      "remaining": "kube-runtime does not expose whether a controller admission came from a watch notification or a scheduled requeue, so the host records the truthful bounded kubernetes-controller trigger rather than inventing provenance. Prove live watch, requeue, retry, trap, timeout, shutdown interruption, deletion/finalization, collector correlation, and restart continuity on emitted artifacts."
     },
     {
       "kind": "schedule",
