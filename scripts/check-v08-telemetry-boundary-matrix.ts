@@ -131,6 +131,31 @@ for (const path of instrumentedSourceFiles) {
   if (!ownedSources.has(path)) findings.push(`Instrumented source ${path} has no telemetry boundary owner.`);
 }
 
+const reconcilerHostPath = 'crates/applik8s-operator-host/src/lib.rs';
+const reconcilerHostSource = await readFile(join(root, reconcilerHostPath), 'utf8');
+for (const marker of [
+  '"applik8s.boundary.kind", "reconciler"',
+  '"applik8s.operation.count"',
+  '"applik8s.operation.duration"',
+  '"applik8s.retry.count"',
+  'ReconcileOtelSpan',
+  'guest_host_telemetry_envelope',
+  'ReconcileInterrupted',
+]) {
+  if (!reconcilerHostSource.includes(marker)) {
+    findings.push(`Reconciler host lacks canonical telemetry marker ${JSON.stringify(marker)}.`);
+  }
+}
+for (const forbidden of [
+  '"applik8s.failure.reason"',
+  '"exception.message"',
+  'Some(&error.to_string())',
+]) {
+  if (reconcilerHostSource.includes(forbidden)) {
+    findings.push(`Reconciler host contains unsafe telemetry marker ${JSON.stringify(forbidden)}.`);
+  }
+}
+
 if (findings.length > 0) {
   throw new Error(`v0.8 telemetry boundary matrix failed:\n${findings.map((finding) => `- ${finding}`).join('\n')}`);
 }

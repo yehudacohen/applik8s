@@ -196,6 +196,16 @@ pub struct ReplayArtifactContext<'a> {
     pub created_at: &'a str,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReconcileTelemetryContext {
+    pub operation: String,
+    pub execution: String,
+    pub instance: String,
+    pub attempt: u32,
+    pub invocation: &'static str,
+    pub trigger: &'static str,
+}
+
 #[derive(Clone)]
 pub struct OperatorMetrics {
     reconcile_total: Counter<u64>,
@@ -203,6 +213,9 @@ pub struct OperatorMetrics {
     reconcile_duration_seconds: Histogram<f64>,
     operation_total: Counter<u64>,
     retry_total: Counter<u64>,
+    managed_operation_total: Counter<u64>,
+    managed_operation_duration_seconds: Histogram<f64>,
+    managed_retry_total: Counter<u64>,
 }
 
 impl OperatorMetrics {
@@ -230,6 +243,21 @@ impl OperatorMetrics {
                 .u64_counter("applik8s_reconcile_retries_total")
                 .with_description("Total reconcile retries scheduled by the operator host.")
                 .build(),
+            managed_operation_total: meter
+                .u64_counter("applik8s.operation.count")
+                .with_description("Completed Applik8s managed execution attempts.")
+                .with_unit("{attempt}")
+                .build(),
+            managed_operation_duration_seconds: meter
+                .f64_histogram("applik8s.operation.duration")
+                .with_description("Duration of Applik8s managed execution attempts.")
+                .with_unit("s")
+                .build(),
+            managed_retry_total: meter
+                .u64_counter("applik8s.retry.count")
+                .with_description("Admitted retry attempts by managed execution family.")
+                .with_unit("{attempt}")
+                .build(),
         }
     }
 
@@ -244,6 +272,7 @@ impl OperatorMetrics {
         handler_route: &HandlerRoute,
         duration_seconds: f64,
         summary: &AppliedOperationSummary,
+        telemetry: &ReconcileTelemetryContext,
     ) {
         let attrs = metric_attrs(operator_name, handler_route, "succeeded");
         self.reconcile_duration_seconds
@@ -297,6 +326,7 @@ impl OperatorMetrics {
             "requeue",
             summary.requeued,
         );
+        self.record_managed_reconcile_result(telemetry, duration_seconds, "ok", None);
     }
 
     pub fn record_reconcile_failure(
@@ -305,6 +335,7 @@ impl OperatorMetrics {
         handler_route: &HandlerRoute,
         duration_seconds: f64,
         reason: &str,
+        telemetry: &ReconcileTelemetryContext,
     ) {
         let attrs = metric_attrs(operator_name, handler_route, "failed");
         self.reconcile_duration_seconds
@@ -318,6 +349,7 @@ impl OperatorMetrics {
                 KeyValue::new("reason", reason.to_string()),
             ],
         );
+        self.record_managed_reconcile_result(telemetry, duration_seconds, "error", Some(reason));
     }
 
     pub fn record_retry(
@@ -336,6 +368,40 @@ impl OperatorMetrics {
                 KeyValue::new("exhausted", exhausted),
             ],
         );
+    }
+
+    fn record_managed_reconcile_result(
+        &self,
+        telemetry: &ReconcileTelemetryContext,
+        duration_seconds: f64,
+        result: &'static str,
+        error_type: Option<&str>,
+    ) {
+        let mut attributes = vec![
+            KeyValue::new("applik8s.boundary.kind", "reconciler"),
+            KeyValue::new("applik8s.operation", telemetry.operation.clone()),
+            KeyValue::new("applik8s.result", result),
+            KeyValue::new("applik8s.invocation.kind", telemetry.invocation),
+        ];
+        if let Some(error_type) = error_type {
+            attributes.push(KeyValue::new(
+                "error.type",
+                telemetry_error_type(error_type),
+            ));
+        }
+        self.managed_operation_total.add(1, &attributes);
+        self.managed_operation_duration_seconds
+            .record(duration_seconds.max(0.0), &attributes);
+        if telemetry.invocation == "retry" {
+            self.managed_retry_total.add(
+                1,
+                &[
+                    KeyValue::new("applik8s.boundary.kind", "reconciler"),
+                    KeyValue::new("applik8s.operation", telemetry.operation.clone()),
+                    KeyValue::new("applik8s.result", result),
+                ],
+            );
+        }
     }
 }
 
@@ -532,7 +598,7 @@ impl OperatorHost {
             .unwrap_or("applik8s-operator");
         let object_json = match serde_json::to_value(object) {
             Ok(object_json) => object_json,
-            Err(error) => {
+            Err(_error) => {
                 emit_log_event(retry_log_event(
                     operator_name,
                     "unknown",
@@ -541,14 +607,14 @@ impl OperatorHost {
                         delay: Duration::from_secs(30),
                         exhausted: false,
                     },
-                    &format!("failed to serialize object for retry policy: {error}"),
+                    "ObjectSerializationFailed",
                 ));
                 return Action::requeue(Duration::from_secs(30));
             }
         };
         let owner = match object_ref_from_value(&object_json) {
             Ok(owner) => owner,
-            Err(error) => {
+            Err(_error) => {
                 emit_log_event(retry_log_event(
                     operator_name,
                     "unknown",
@@ -557,14 +623,14 @@ impl OperatorHost {
                         delay: Duration::from_secs(30),
                         exhausted: false,
                     },
-                    &format!("failed to resolve object ref for retry policy: {error}"),
+                    "ObjectIdentityInvalid",
                 ));
                 return Action::requeue(Duration::from_secs(30));
             }
         };
         let policy = match bundle.retry_policy() {
             Ok(policy) => policy,
-            Err(error) => {
+            Err(_error) => {
                 emit_log_event(retry_log_event(
                     operator_name,
                     &retry_state_key(&owner),
@@ -573,7 +639,7 @@ impl OperatorHost {
                         delay: Duration::from_secs(30),
                         exhausted: false,
                     },
-                    &format!("invalid retry policy, using safe fallback: {error}"),
+                    "RetryPolicyInvalid",
                 ));
                 RetryPolicy::default()
             }
@@ -589,7 +655,7 @@ impl OperatorHost {
             operator_name,
             &retry_state_key(&owner),
             &decision,
-            &error.to_string(),
+            reconcile_failure_reason(error),
         ));
         if decision.exhausted {
             let retry_key = retry_state_key(&owner);
@@ -597,7 +663,7 @@ impl OperatorHost {
                 bundle,
                 object_json,
                 copy_object_ref(&owner),
-                error.to_string(),
+                reconcile_failure_reason(error).to_string(),
                 decision.attempt,
             ) {
                 event!(
@@ -618,7 +684,7 @@ impl OperatorHost {
         bundle: &LoadedOperatorBundle,
         object_json: Value,
         owner: ObjectRef,
-        error_message: String,
+        error_type: String,
         attempt: u32,
     ) -> Result<(), OperatorHostError> {
         let api_version = object_json
@@ -649,7 +715,7 @@ impl OperatorHost {
             let status = retry_exhausted_status(
                 &object_json,
                 &status_convention,
-                &error_message,
+                &error_type,
                 attempt,
                 &Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true),
             );
@@ -678,6 +744,16 @@ impl OperatorHost {
         let attempt = attempts.get(&key).copied().unwrap_or(0).saturating_add(1);
         attempts.insert(key, attempt);
         retry_decision(policy, attempt)
+    }
+
+    fn current_reconcile_attempt(&self, owner: &ObjectRef) -> u32 {
+        let key = retry_state_key(owner);
+        self.retry_attempts
+            .lock()
+            .ok()
+            .and_then(|attempts| attempts.get(&key).copied())
+            .unwrap_or(0)
+            .saturating_add(1)
     }
 
     fn clear_retry_state(&self, owner: &ObjectRef) {
@@ -796,10 +872,22 @@ impl OperatorHost {
             .and_then(Value::as_str)
             .unwrap_or("sha256:0000000000000000000000000000000000000000000000000000000000000000");
         let (reconcile_id, reconcile_started_at_timestamp) = reconcile_metadata(&owner);
+        let identity_envelope =
+            bundle.runtime_identity_envelope(&handler_route, &reconcile_id, bundle_digest)?;
+        let reconcile_attempt = self.current_reconcile_attempt(&owner);
+        let telemetry_context = reconcile_telemetry_context(
+            identity_envelope.as_ref(),
+            &handler_route,
+            &reconcile_id,
+            reconcile_attempt,
+        );
+        let handler_timeout = bundle.handler_timeout()?;
+        let source_map_path = handler_source_map_path(&bundle.manifest);
+        let compiled_handler = self.compiled_handler(bundle)?;
         let reconcile_started_at = Instant::now();
         self.metrics
             .record_reconcile_start(operator_name, &handler_route);
-        let start_event = reconcile_log_event(
+        let start_event = reconcile_attempt_log_event(
             "info",
             "reconcile started",
             operator_name,
@@ -811,6 +899,8 @@ impl OperatorHost {
             None,
             None,
             None,
+            &telemetry_context,
+            "started",
         );
         let mut reconcile_span = start_reconcile_otel_span(&start_event);
         emit_log_event(start_event);
@@ -841,12 +931,47 @@ impl OperatorHost {
             "runtimeVersion": self.config.runtime_version.as_str(),
             "startedAt": reconcile_started_at_timestamp
         });
-        if let Some(identity_envelope) =
-            bundle.runtime_identity_envelope(&handler_route, &reconcile_id, bundle_digest)?
-        {
+        if let Some(identity_envelope) = identity_envelope {
             let mut identity_envelope = identity_envelope;
-            let telemetry =
-                guest_host_telemetry_envelope(&reconcile_span, &identity_envelope, operator_name)?;
+            let telemetry = match guest_host_telemetry_envelope(
+                &reconcile_span,
+                &identity_envelope,
+                operator_name,
+                &telemetry_context,
+            ) {
+                Ok(telemetry) => telemetry,
+                Err(error) => {
+                    self.metrics.record_reconcile_failure(
+                        operator_name,
+                        &handler_route,
+                        reconcile_started_at.elapsed().as_secs_f64(),
+                        reconcile_failure_reason(&error),
+                        &telemetry_context,
+                    );
+                    let failure_event = reconcile_attempt_log_event(
+                        "error",
+                        "reconcile failed",
+                        operator_name,
+                        &handler_route,
+                        &owner,
+                        &reconcile_id,
+                        bundle_digest,
+                        &self.config.runtime_version,
+                        None,
+                        Some(reconcile_failure_reason(&error)),
+                        reconcile_error_details(&error),
+                        &telemetry_context,
+                        "failed",
+                    );
+                    finish_reconcile_otel_span(
+                        &mut reconcile_span,
+                        &failure_event,
+                        "carrier.invalid",
+                    );
+                    emit_log_event(failure_event);
+                    return Err(error);
+                }
+            };
             identity_envelope
                 .as_object_mut()
                 .expect("runtime identity envelope is an object")
@@ -864,8 +989,6 @@ impl OperatorHost {
             "capabilities": bundle.manifest.pointer("/spec/capabilities").cloned().unwrap_or_else(|| serde_json::json!({})),
             "runtime": runtime_metadata
         });
-        let handler_timeout = bundle.handler_timeout()?;
-        let source_map_path = handler_source_map_path(&bundle.manifest);
         let capability_manifest = bundle.manifest.clone();
         let capability_secret_resolver = kubernetes_secret_resolver(
             self.bridge.client().clone(),
@@ -903,7 +1026,6 @@ impl OperatorHost {
             }) as applik8s_runtime_bridge::KubernetesReadFuture
         });
         record_reconcile_otel_phase(&mut reconcile_span, "handler.invoke");
-        let compiled_handler = self.compiled_handler(bundle)?;
         let invocation = if let Some(transport) = self.bridge.kubernetes_http().cloned() {
             invoke_compiled_handler_component_with_timeout_host_imports_and_kubernetes_http_async(
                 self.bridge.engine(),
@@ -938,8 +1060,9 @@ impl OperatorHost {
                     &handler_route,
                     reconcile_started_at.elapsed().as_secs_f64(),
                     reconcile_failure_reason(&error),
+                    &telemetry_context,
                 );
-                let failure_event = reconcile_log_event(
+                let failure_event = reconcile_attempt_log_event(
                     "error",
                     "reconcile failed",
                     operator_name,
@@ -949,8 +1072,10 @@ impl OperatorHost {
                     bundle_digest,
                     &self.config.runtime_version,
                     None,
-                    Some(&error.to_string()),
+                    Some(reconcile_failure_reason(&error)),
                     reconcile_error_details_with_source_map(&error, source_map_path.as_deref()),
+                    &telemetry_context,
+                    "failed",
                 );
                 finish_reconcile_otel_span(&mut reconcile_span, &failure_event, "handler.failed");
                 emit_log_event(failure_event);
@@ -1009,8 +1134,9 @@ impl OperatorHost {
                 &handler_route,
                 reconcile_started_at.elapsed().as_secs_f64(),
                 reconcile_failure_reason(&error),
+                &telemetry_context,
             );
-            let failure_event = reconcile_log_event(
+            let failure_event = reconcile_attempt_log_event(
                 "error",
                 "reconcile failed",
                 operator_name,
@@ -1020,8 +1146,10 @@ impl OperatorHost {
                 bundle_digest,
                 &self.config.runtime_version,
                 None,
-                Some(&error.to_string()),
+                Some(reconcile_failure_reason(&error)),
                 reconcile_error_details_with_source_map(&error, source_map_path.as_deref()),
+                &telemetry_context,
+                "failed",
             );
             finish_reconcile_otel_span(&mut reconcile_span, &failure_event, "plan.invalid");
             emit_log_event(failure_event);
@@ -1061,14 +1189,81 @@ impl OperatorHost {
             return Err(error);
         }
         record_reconcile_otel_phase(&mut reconcile_span, "plan.validated");
-        applier = resolve_plan_connections(
+        applier = match resolve_plan_connections(
             applier,
             &plan,
             self.bridge.client().clone(),
             bundle,
             connection_leases,
         )
-        .await?;
+        .await
+        {
+            Ok(applier) => applier,
+            Err(error) => {
+                self.metrics.record_reconcile_failure(
+                    operator_name,
+                    &handler_route,
+                    reconcile_started_at.elapsed().as_secs_f64(),
+                    reconcile_failure_reason(&error),
+                    &telemetry_context,
+                );
+                let failure_event = reconcile_attempt_log_event(
+                    "error",
+                    "reconcile failed",
+                    operator_name,
+                    &handler_route,
+                    &owner,
+                    &reconcile_id,
+                    bundle_digest,
+                    &self.config.runtime_version,
+                    None,
+                    Some(reconcile_failure_reason(&error)),
+                    reconcile_error_details_with_source_map(&error, source_map_path.as_deref()),
+                    &telemetry_context,
+                    "failed",
+                );
+                finish_reconcile_otel_span(
+                    &mut reconcile_span,
+                    &failure_event,
+                    "connections.failed",
+                );
+                emit_log_event(failure_event);
+                self.emit_replay_artifact(ReplayArtifactContext {
+                    operator_name,
+                    handler_route: &handler_route,
+                    owner: &owner,
+                    reconcile_id: &reconcile_id,
+                    bundle_digest,
+                    runtime_version: &self.config.runtime_version,
+                    phase: "connectionResolution",
+                    error: &error,
+                    input: &input,
+                    plan: Some(&plan),
+                    bundle_artifacts: bundle.manifest.pointer("/spec/bundle/artifacts"),
+                    include_payloads: self.config.replay_include_payloads,
+                    created_at: &Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true),
+                });
+                if let Some(status_convention) = status_convention
+                    .as_ref()
+                    .filter(|convention| convention.lifecycle_managed())
+                {
+                    report_reconcile_failure_status(
+                        &status_applier,
+                        &owner,
+                        &object_json,
+                        status_convention,
+                        &error,
+                        operator_name,
+                        &handler_route,
+                        &reconcile_id,
+                        bundle_digest,
+                        &self.config.runtime_version,
+                    )
+                    .await;
+                }
+                return Err(error);
+            }
+        };
         record_reconcile_otel_phase(&mut reconcile_span, "operations.apply");
         let summary = match applier.apply_plan(&owner, &plan).await {
             Ok(summary) => {
@@ -1082,8 +1277,9 @@ impl OperatorHost {
                     &handler_route,
                     reconcile_started_at.elapsed().as_secs_f64(),
                     reconcile_failure_reason(&error),
+                    &telemetry_context,
                 );
-                let failure_event = reconcile_log_event(
+                let failure_event = reconcile_attempt_log_event(
                     "error",
                     "reconcile failed",
                     operator_name,
@@ -1093,8 +1289,10 @@ impl OperatorHost {
                     bundle_digest,
                     &self.config.runtime_version,
                     None,
-                    Some(&error.to_string()),
+                    Some(reconcile_failure_reason(&error)),
                     reconcile_error_details_with_source_map(&error, source_map_path.as_deref()),
+                    &telemetry_context,
+                    "failed",
                 );
                 finish_reconcile_otel_span(
                     &mut reconcile_span,
@@ -1155,7 +1353,7 @@ impl OperatorHost {
             )
             .await;
         }
-        let success_event = reconcile_log_event(
+        let success_event = reconcile_attempt_log_event(
             "info",
             "reconcile succeeded",
             operator_name,
@@ -1167,6 +1365,8 @@ impl OperatorHost {
             Some(&summary),
             None,
             None,
+            &telemetry_context,
+            "succeeded",
         );
         finish_reconcile_otel_span(&mut reconcile_span, &success_event, "succeeded");
         emit_log_event(success_event);
@@ -1175,6 +1375,7 @@ impl OperatorHost {
             &handler_route,
             reconcile_started_at.elapsed().as_secs_f64(),
             &summary,
+            &telemetry_context,
         );
         self.clear_retry_state(&owner);
 
@@ -1382,7 +1583,7 @@ pub fn reconcile_log_event(
     bundle_digest: &str,
     runtime_version: &str,
     summary: Option<&AppliedOperationSummary>,
-    error: Option<&str>,
+    error_type: Option<&str>,
     error_details: Option<Value>,
 ) -> Value {
     let mut event = serde_json::json!({
@@ -1408,13 +1609,147 @@ pub fn reconcile_log_event(
             "requeued": summary.requeued,
         });
     }
-    if let Some(error) = error {
-        event["error"] = Value::String(error.to_string());
+    if let Some(error_type) = error_type {
+        event["error"] = Value::String(telemetry_error_type(error_type));
     }
     if let Some(error_details) = error_details {
-        event["errorDetails"] = error_details;
+        event["errorDetails"] = reconcile_telemetry_error_details(&error_details);
     }
     event
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn reconcile_attempt_log_event(
+    level: &str,
+    message: &str,
+    operator_name: &str,
+    handler_route: &HandlerRoute,
+    owner: &ObjectRef,
+    reconcile_id: &str,
+    bundle_digest: &str,
+    runtime_version: &str,
+    summary: Option<&AppliedOperationSummary>,
+    error_type: Option<&str>,
+    error_details: Option<Value>,
+    telemetry: &ReconcileTelemetryContext,
+    result: &str,
+) -> Value {
+    let mut event = reconcile_log_event(
+        level,
+        message,
+        operator_name,
+        handler_route,
+        owner,
+        reconcile_id,
+        bundle_digest,
+        runtime_version,
+        summary,
+        error_type,
+        error_details,
+    );
+    event["telemetry"] = serde_json::json!({
+        "boundaryKind": "reconciler",
+        "operation": telemetry.operation,
+        "execution": telemetry.execution,
+        "instance": telemetry.instance,
+        "attempt": telemetry.attempt,
+        "invocationKind": telemetry.invocation,
+        "relationship": "asynchronous",
+        "trigger": telemetry.trigger,
+        "result": result,
+    });
+    event
+}
+
+fn reconcile_telemetry_error_details(error_details: &Value) -> Value {
+    let mut sanitized = serde_json::json!({});
+    for pointer in [
+        "/type",
+        "/timeoutMs",
+        "/partialEffects",
+        "/sourceMapping/status",
+        "/operation/index",
+        "/operation/kind",
+        "/progress/completedOperations",
+        "/progress/applied",
+        "/progress/patched",
+        "/progress/deleted",
+        "/progress/statusPatched",
+        "/progress/eventsRecorded",
+        "/progress/finalizersMutated",
+        "/progress/requeued",
+    ] {
+        let Some(value) = error_details.pointer(pointer).cloned() else {
+            continue;
+        };
+        insert_json_pointer(&mut sanitized, pointer, value);
+    }
+    sanitized
+}
+
+fn insert_json_pointer(target: &mut Value, pointer: &str, value: Value) {
+    let segments = pointer
+        .trim_start_matches('/')
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .collect::<Vec<_>>();
+    let Some((last, parents)) = segments.split_last() else {
+        return;
+    };
+    let mut current = target;
+    for segment in parents {
+        if !current.is_object() {
+            *current = serde_json::json!({});
+        }
+        current = current
+            .as_object_mut()
+            .expect("telemetry error detail node is an object")
+            .entry((*segment).to_string())
+            .or_insert_with(|| serde_json::json!({}));
+    }
+    if !current.is_object() {
+        *current = serde_json::json!({});
+    }
+    current
+        .as_object_mut()
+        .expect("telemetry error detail node is an object")
+        .insert((*last).to_string(), value);
+}
+
+fn telemetry_error_type(value: &str) -> String {
+    if matches!(
+        value,
+        "AmbiguousHandlerRoute"
+            | "ApplyFailed"
+            | "ConnectionBindingChanged"
+            | "DeleteFailed"
+            | "EventRecordFailed"
+            | "FinalizerFailed"
+            | "HandlerFailed"
+            | "HandlerRuntimeFailed"
+            | "HandlerTimedOut"
+            | "HandlerTrap"
+            | "InvalidRuntimeIdentity"
+            | "InvalidRuntimePayload"
+            | "KubernetesApiFailed"
+            | "ObjectIdentityInvalid"
+            | "ObjectSerializationFailed"
+            | "OperationFailed"
+            | "PatchFailed"
+            | "ReconcileFailed"
+            | "ReconcileInterrupted"
+            | "RetryPolicyInvalid"
+            | "RuntimeSerializationFailed"
+            | "StatusPatchFailed"
+            | "StatusSubresourceUnsupported"
+            | "UndeclaredFinalizer"
+            | "UndeclaredPermission"
+            | "UnsupportedOperation"
+    ) {
+        value.to_string()
+    } else {
+        "ReconcileFailed".to_string()
+    }
 }
 
 pub fn reconcile_trace_dimensions(log_event: &Value) -> Value {
@@ -1432,6 +1767,14 @@ pub fn reconcile_trace_dimensions(log_event: &Value) -> Value {
         "resourceName": log_event.pointer("/objectRef/name").and_then(Value::as_str).unwrap_or(""),
         "objectKey": log_event.pointer("/objectKey").and_then(Value::as_str).unwrap_or(""),
         "failureReason": log_event.pointer("/error").and_then(Value::as_str).unwrap_or(""),
+        "boundaryKind": log_event.pointer("/telemetry/boundaryKind").and_then(Value::as_str).unwrap_or(""),
+        "operation": log_event.pointer("/telemetry/operation").and_then(Value::as_str).unwrap_or(""),
+        "execution": log_event.pointer("/telemetry/execution").and_then(Value::as_str).unwrap_or(""),
+        "attempt": log_event.pointer("/telemetry/attempt").and_then(Value::as_u64).unwrap_or_default(),
+        "invocationKind": log_event.pointer("/telemetry/invocationKind").and_then(Value::as_str).unwrap_or(""),
+        "invocationRelationship": log_event.pointer("/telemetry/relationship").and_then(Value::as_str).unwrap_or(""),
+        "telemetryResult": log_event.pointer("/telemetry/result").and_then(Value::as_str).unwrap_or(""),
+        "telemetryTrigger": log_event.pointer("/telemetry/trigger").and_then(Value::as_str).unwrap_or(""),
         "operationKind": log_event.pointer("/errorDetails/operation/kind").and_then(Value::as_str).unwrap_or(""),
         "operationIndex": log_event.pointer("/errorDetails/operation/index").and_then(Value::as_u64).unwrap_or_default(),
         "retryAttempt": log_event.pointer("/retry/attempt").and_then(Value::as_u64).unwrap_or_default(),
@@ -1449,6 +1792,51 @@ pub fn reconcile_trace_dimensions(log_event: &Value) -> Value {
 
 pub fn reconcile_otel_attributes(log_event: &Value) -> Vec<KeyValue> {
     let mut attributes = Vec::new();
+    push_otel_string_attribute(
+        &mut attributes,
+        "applik8s.boundary.kind",
+        log_event.pointer("/telemetry/boundaryKind"),
+    );
+    push_otel_string_attribute(
+        &mut attributes,
+        "applik8s.operation",
+        log_event.pointer("/telemetry/operation"),
+    );
+    push_otel_string_attribute(
+        &mut attributes,
+        "applik8s.execution",
+        log_event.pointer("/telemetry/execution"),
+    );
+    push_otel_string_attribute(
+        &mut attributes,
+        "applik8s.instance",
+        log_event.pointer("/telemetry/instance"),
+    );
+    push_otel_i64_attribute(
+        &mut attributes,
+        "applik8s.attempt",
+        log_event.pointer("/telemetry/attempt"),
+    );
+    push_otel_string_attribute(
+        &mut attributes,
+        "applik8s.invocation.kind",
+        log_event.pointer("/telemetry/invocationKind"),
+    );
+    push_otel_string_attribute(
+        &mut attributes,
+        "applik8s.invocation.relationship",
+        log_event.pointer("/telemetry/relationship"),
+    );
+    push_otel_string_attribute(
+        &mut attributes,
+        "applik8s.result",
+        log_event.pointer("/telemetry/result"),
+    );
+    push_otel_string_attribute(
+        &mut attributes,
+        "applik8s.reconcile.trigger",
+        log_event.pointer("/telemetry/trigger"),
+    );
     push_otel_string_attribute(
         &mut attributes,
         "applik8s.operator.name",
@@ -1511,13 +1899,10 @@ pub fn reconcile_otel_attributes(log_event: &Value) -> Vec<KeyValue> {
     );
     push_otel_string_attribute(
         &mut attributes,
-        "applik8s.failure.reason",
-        log_event.pointer("/error"),
-    );
-    push_otel_string_attribute(
-        &mut attributes,
-        "applik8s.failure.type",
-        log_event.pointer("/errorDetails/type"),
+        "error.type",
+        log_event
+            .pointer("/errorDetails/type")
+            .or_else(|| log_event.pointer("/error")),
     );
     push_otel_string_attribute(
         &mut attributes,
@@ -1620,20 +2005,93 @@ fn push_otel_bool_attribute(
     }
 }
 
-fn start_reconcile_otel_span(start_event: &Value) -> BoxedSpan {
+struct ReconcileOtelSpan {
+    span: Option<BoxedSpan>,
+}
+
+impl ReconcileOtelSpan {
+    fn span_context(&self) -> opentelemetry::trace::SpanContext {
+        self.span
+            .as_ref()
+            .map(OtelSpan::span_context)
+            .cloned()
+            .unwrap_or_else(opentelemetry::trace::SpanContext::empty_context)
+    }
+
+    fn add_phase(&mut self, phase: &'static str) {
+        let Some(span) = self.span.as_mut() else {
+            return;
+        };
+        span.add_event(
+            format!("applik8s.{phase}"),
+            vec![KeyValue::new("applik8s.phase", phase)],
+        );
+    }
+
+    fn finish(&mut self, outcome_event: &Value, phase: &'static str) {
+        let Some(mut span) = self.span.take() else {
+            return;
+        };
+        for attribute in reconcile_otel_attributes(outcome_event) {
+            span.set_attribute(attribute);
+        }
+        span.set_attribute(KeyValue::new("applik8s.phase", phase));
+        if let Some(error_type) = outcome_event
+            .pointer("/errorDetails/type")
+            .or_else(|| outcome_event.get("error"))
+            .and_then(Value::as_str)
+        {
+            span.set_status(OtelStatus::error(error_type.to_string()));
+            span.add_event(
+                "applik8s.reconcile.failed",
+                vec![
+                    KeyValue::new("error.type", error_type.to_string()),
+                    KeyValue::new("applik8s.phase", phase),
+                ],
+            );
+        } else {
+            span.set_status(OtelStatus::Ok);
+        }
+        span.add_event(
+            format!("applik8s.reconcile.{phase}"),
+            vec![KeyValue::new("applik8s.phase", phase)],
+        );
+        span.end();
+    }
+}
+
+impl Drop for ReconcileOtelSpan {
+    fn drop(&mut self) {
+        let Some(mut span) = self.span.take() else {
+            return;
+        };
+        span.set_attribute(KeyValue::new("applik8s.result", "cancelled"));
+        span.set_attribute(KeyValue::new("applik8s.invocation.kind", "cancellation"));
+        span.set_attribute(KeyValue::new("error.type", "ReconcileInterrupted"));
+        span.set_status(OtelStatus::error("ReconcileInterrupted"));
+        span.add_event(
+            "applik8s.reconcile.cancelled",
+            vec![KeyValue::new("error.type", "ReconcileInterrupted")],
+        );
+        span.end();
+    }
+}
+
+fn start_reconcile_otel_span(start_event: &Value) -> ReconcileOtelSpan {
     let tracer = global::tracer("applik8s.operator_host");
     let mut span = tracer.start("applik8s.reconcile");
     for attribute in reconcile_otel_attributes(start_event) {
         span.set_attribute(attribute);
     }
     span.add_event("applik8s.reconcile.started", Vec::new());
-    span
+    ReconcileOtelSpan { span: Some(span) }
 }
 
 fn guest_host_telemetry_envelope(
-    span: &BoxedSpan,
+    span: &ReconcileOtelSpan,
     identity_envelope: &Value,
     service: &str,
+    telemetry: &ReconcileTelemetryContext,
 ) -> Result<Value, OperatorHostError> {
     let required_identity = |field: &str| {
         identity_envelope
@@ -1678,12 +2136,12 @@ fn guest_host_telemetry_envelope(
             "target": "kubernetes",
             "operation": operation,
             "execution": execution,
-            "attempt": 1,
+            "attempt": telemetry.attempt,
             "service": service,
             "instance": instance,
         },
         "invocation": {
-            "kind": "live",
+            "kind": telemetry.invocation,
             "relationship": "synchronous",
             "replaySuppressed": false,
         },
@@ -1710,35 +2168,16 @@ fn deterministic_telemetry_hex(value: &str, length: usize) -> String {
     output
 }
 
-fn record_reconcile_otel_phase(span: &mut BoxedSpan, phase: &'static str) {
-    span.add_event(
-        format!("applik8s.{phase}"),
-        vec![KeyValue::new("applik8s.phase", phase)],
-    );
+fn record_reconcile_otel_phase(span: &mut ReconcileOtelSpan, phase: &'static str) {
+    span.add_phase(phase);
 }
 
-fn finish_reconcile_otel_span(span: &mut BoxedSpan, outcome_event: &Value, phase: &'static str) {
-    for attribute in reconcile_otel_attributes(outcome_event) {
-        span.set_attribute(attribute);
-    }
-    span.set_attribute(KeyValue::new("applik8s.phase", phase));
-    if let Some(error) = outcome_event.get("error").and_then(Value::as_str) {
-        span.set_status(OtelStatus::error(error.to_string()));
-        span.add_event(
-            "exception",
-            vec![
-                KeyValue::new("exception.message", error.to_string()),
-                KeyValue::new("applik8s.phase", phase),
-            ],
-        );
-    } else {
-        span.set_status(OtelStatus::Ok);
-    }
-    span.add_event(
-        format!("applik8s.reconcile.{phase}"),
-        vec![KeyValue::new("applik8s.phase", phase)],
-    );
-    span.end();
+fn finish_reconcile_otel_span(
+    span: &mut ReconcileOtelSpan,
+    outcome_event: &Value,
+    phase: &'static str,
+) {
+    span.finish(outcome_event, phase);
 }
 
 pub fn reconcile_metadata(owner: &ObjectRef) -> (String, String) {
@@ -1754,6 +2193,42 @@ pub fn reconcile_metadata(owner: &ObjectRef) -> (String, String) {
         ),
         timestamp,
     )
+}
+
+pub fn reconcile_telemetry_context(
+    identity_envelope: Option<&Value>,
+    handler_route: &HandlerRoute,
+    reconcile_id: &str,
+    attempt: u32,
+) -> ReconcileTelemetryContext {
+    let operation = identity_envelope
+        .and_then(|identity| identity.get("operation"))
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| {
+            format!(
+                "applik8s://handlers/{}/operations/{}",
+                handler_route.handler_id, handler_route.event
+            )
+        });
+    let execution = identity_envelope
+        .and_then(|identity| identity.get("execution"))
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("applik8s://handlers/{}/execution", handler_route.handler_id));
+    ReconcileTelemetryContext {
+        operation,
+        execution,
+        instance: reconcile_id.to_string(),
+        attempt: attempt.max(1),
+        invocation: if attempt > 1 { "retry" } else { "live" },
+        // kube-runtime admits the object but does not expose whether the trigger
+        // was a watch notification or a scheduled requeue. Do not invent that
+        // provenance at the telemetry boundary.
+        trigger: "kubernetes-controller",
+    }
 }
 
 pub fn replay_artifact(context: &ReplayArtifactContext<'_>) -> Value {
@@ -2287,7 +2762,7 @@ pub fn retry_log_event(
     operator_name: &str,
     object_key: &str,
     decision: &RetryDecision,
-    error: &str,
+    error_type: &str,
 ) -> Value {
     serde_json::json!({
         "level": if decision.exhausted { "warn" } else { "info" },
@@ -2299,7 +2774,7 @@ pub fn retry_log_event(
             "delayMs": decision.delay.as_millis(),
             "exhausted": decision.exhausted,
         },
-        "error": error,
+        "error": telemetry_error_type(error_type),
         "handlerAbi": SUPPORTED_HANDLER_ABI,
     })
 }
@@ -2896,7 +3371,7 @@ async fn report_reconcile_failure_status(
             bundle_digest,
             runtime_version,
             None,
-            Some(&report_error.to_string()),
+            Some(reconcile_failure_reason(&report_error)),
             reconcile_error_details(&report_error),
         ));
     }
@@ -2937,7 +3412,7 @@ async fn report_reconcile_stale_status(
             bundle_digest,
             runtime_version,
             None,
-            Some(&report_error.to_string()),
+            Some(reconcile_failure_reason(&report_error)),
             reconcile_error_details(&report_error),
         ));
     }
@@ -2976,7 +3451,7 @@ async fn report_reconcile_success_status(
             bundle_digest,
             runtime_version,
             None,
-            Some(&report_error.to_string()),
+            Some(reconcile_failure_reason(&report_error)),
             reconcile_error_details(&report_error),
         ));
     }
@@ -2994,14 +3469,15 @@ pub fn reconcile_failure_status(
 }
 
 fn failure_status_message(error: &OperatorHostError) -> String {
+    let reason = reconcile_failure_reason(error);
     match error {
         OperatorHostError::RuntimeBridge(RuntimeBridgeError::OperationFailed {
             progress, ..
         }) if progress.completed_operations > 0 => format!(
-            "{}; partial effects are visible: {} prior operation(s) completed before the failure",
-            error, progress.completed_operations
+            "Reconciliation failed ({reason}); partial effects are visible: {} prior operation(s) completed before the failure.",
+            progress.completed_operations
         ),
-        _ => error.to_string(),
+        _ => format!("Reconciliation failed ({reason})."),
     }
 }
 
@@ -3043,12 +3519,12 @@ pub fn reconcile_stale_status(
 pub fn retry_exhausted_status(
     object: &Value,
     status_convention: &StatusConvention,
-    error_message: &str,
+    error_type: &str,
     attempt: u32,
     now: &str,
 ) -> Value {
     let message = truncate_status_message(&format!(
-        "Retry exhausted after {attempt} failed attempt(s); waiting for a Kubernetes object change before retrying: {error_message}"
+        "Retry exhausted after {attempt} failed attempt(s) ({error_type}); waiting for a Kubernetes object change before retrying."
     ));
     condition_status(
         object,
@@ -3175,7 +3651,11 @@ fn reconcile_failure_reason(error: &OperatorHostError) -> &'static str {
         }
         OperatorHostError::UndeclaredPermission(_) => "UndeclaredPermission",
         OperatorHostError::UndeclaredFinalizer { .. } => "UndeclaredFinalizer",
+        OperatorHostError::StatusSubresourceUnsupported { .. } => "StatusSubresourceUnsupported",
         OperatorHostError::AmbiguousHandlerRoute { .. } => "AmbiguousHandlerRoute",
+        OperatorHostError::InvalidRuntimeIdentity(_) => "InvalidRuntimeIdentity",
+        OperatorHostError::ConnectionBindingChanged { .. } => "ConnectionBindingChanged",
+        OperatorHostError::ControllerStopped => "ReconcileInterrupted",
         _ => "ReconcileFailed",
     }
 }
@@ -6989,7 +7469,18 @@ mod connection_tests {
     #[test]
     fn guest_host_telemetry_carrier_is_versioned_bounded_and_w3c_shaped() {
         let tracer = global::tracer("applik8s.telemetry-contract-test");
-        let span = tracer.start("test");
+        let span = ReconcileOtelSpan {
+            span: Some(tracer.start("test")),
+        };
+        let telemetry = ReconcileTelemetryContext {
+            operation: "applik8s://resources/ImageJob/operations/reconcile".to_string(),
+            execution: "applik8s://applications/image-pipeline/execution-boundaries/image-job"
+                .to_string(),
+            instance: "attempt-1".to_string(),
+            attempt: 2,
+            invocation: "retry",
+            trigger: "kubernetes-controller",
+        };
         let carrier = guest_host_telemetry_envelope(
             &span,
             &serde_json::json!({
@@ -6999,6 +7490,7 @@ mod connection_tests {
                 "attempt": "attempt-1",
             }),
             "image-pipeline",
+            &telemetry,
         )
         .expect("validated identity produces a telemetry carrier");
         let traceparent = carrier
@@ -7046,7 +7538,11 @@ mod connection_tests {
         );
         assert_eq!(
             carrier.pointer("/identity/attempt").and_then(Value::as_u64),
-            Some(1)
+            Some(2)
+        );
+        assert_eq!(
+            carrier.pointer("/invocation/kind").and_then(Value::as_str),
+            Some("retry")
         );
         assert_eq!(
             carrier

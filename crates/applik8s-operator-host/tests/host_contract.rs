@@ -14,11 +14,12 @@ use applik8s_operator_host::{
     RuntimeReadiness, StatusConvention, controller_framework, execute_capability_request,
     execute_capability_request_with_auth_resolvers,
     execute_capability_request_with_secret_resolver, execute_kubernetes_read_request, host_role,
-    probe_response, reconcile_error_details, reconcile_error_details_with_source_map,
-    reconcile_failure_status, reconcile_log_event, reconcile_metadata, reconcile_otel_attributes,
-    reconcile_stale_status, reconcile_success_status, reconcile_trace_dimensions, replay_artifact,
-    retry_decision, retry_exhausted_status, retry_log_event, validate_plan_finalizer_ownership,
-    validate_plan_status_subresources, write_replay_artifact,
+    probe_response, reconcile_attempt_log_event, reconcile_error_details,
+    reconcile_error_details_with_source_map, reconcile_failure_status, reconcile_log_event,
+    reconcile_metadata, reconcile_otel_attributes, reconcile_stale_status,
+    reconcile_success_status, reconcile_telemetry_context, reconcile_trace_dimensions,
+    replay_artifact, retry_decision, retry_exhausted_status, retry_log_event,
+    validate_plan_finalizer_ownership, validate_plan_status_subresources, write_replay_artifact,
 };
 use applik8s_runtime_bridge::{
     AppliedOperationSummary, OperationProgress, RuntimeBridgeError, component_model_engine,
@@ -185,6 +186,7 @@ fn records_otel_metrics_without_requiring_configured_exporter() {
         handler_id: "ImageJob.reconcile.0".to_string(),
         event: "reconcile".to_string(),
     };
+    let telemetry = reconcile_telemetry_context(None, &route, "attempt-1", 1);
 
     metrics.record_reconcile_start("image-pipeline", &route);
     metrics.record_reconcile_success(
@@ -200,8 +202,9 @@ fn records_otel_metrics_without_requiring_configured_exporter() {
             finalizers_mutated: 1,
             requeued: 1,
         },
+        &telemetry,
     );
-    metrics.record_reconcile_failure("image-pipeline", &route, 0.250, "ApplyFailed");
+    metrics.record_reconcile_failure("image-pipeline", &route, 0.250, "ApplyFailed", &telemetry);
     metrics.record_retry("image-pipeline", 2, Duration::from_secs(10), false);
 }
 
@@ -724,6 +727,8 @@ fn emits_structured_retry_log_events() {
     assert_eq!(event["retry"]["attempt"], 2);
     assert_eq!(event["retry"]["delayMs"], 10_000);
     assert_eq!(event["retry"]["exhausted"], false);
+    assert_eq!(event["error"], "ReconcileFailed");
+    assert!(!event.to_string().contains("handler returned error"));
     assert_eq!(event["handlerAbi"], "applik8s.handler/v1alpha1");
 
     let dimensions = reconcile_trace_dimensions(&event);
@@ -732,10 +737,7 @@ fn emits_structured_retry_log_events() {
         dimensions["objectKey"],
         "media.applik8s.dev/v1alpha1/ImageJob media/hero-image"
     );
-    assert_eq!(
-        dimensions["failureReason"],
-        "runtime bridge failed: handler returned error"
-    );
+    assert_eq!(dimensions["failureReason"], "ReconcileFailed");
     assert_eq!(dimensions["retryAttempt"], 2);
     assert_eq!(dimensions["retryDelayMs"], 10_000);
     assert_eq!(dimensions["retryExhausted"], false);
@@ -746,13 +748,23 @@ fn emits_structured_retry_log_events() {
         "applik8s.object.key",
         "media.applik8s.dev/v1alpha1/ImageJob media/hero-image"
     )));
-    assert!(attributes.contains(&KeyValue::new(
-        "applik8s.failure.reason",
-        "runtime bridge failed: handler returned error"
-    )));
+    assert!(attributes.contains(&KeyValue::new("error.type", "ReconcileFailed")));
     assert!(attributes.contains(&KeyValue::new("applik8s.retry.attempt", 2_i64)));
     assert!(attributes.contains(&KeyValue::new("applik8s.retry.delay_ms", 10_000_i64)));
     assert!(attributes.contains(&KeyValue::new("applik8s.retry.exhausted", false)));
+
+    let secret_shaped = retry_log_event(
+        "image-pipeline",
+        "media.applik8s.dev/v1alpha1/ImageJob media/hero-image",
+        &applik8s_operator_host::RetryDecision {
+            attempt: 3,
+            delay: Duration::from_secs(20),
+            exhausted: false,
+        },
+        "SuperSecretToken",
+    );
+    assert_eq!(secret_shaped["error"], "ReconcileFailed");
+    assert!(!secret_shaped.to_string().contains("SuperSecretToken"));
 }
 
 #[test]
@@ -760,7 +772,7 @@ fn builds_retry_exhausted_status_condition() {
     let status = retry_exhausted_status(
         &serde_json::json!({ "metadata": { "generation": 9 } }),
         &StatusConvention::default(),
-        "runtime bridge failed: operation 0 apply failed",
+        "ApplyFailed",
         4,
         "2026-06-21T00:00:00Z",
     );
@@ -775,6 +787,12 @@ fn builds_retry_exhausted_status_condition() {
             .as_str()
             .expect("message is string")
             .contains("Retry exhausted after 4 failed attempt(s)")
+    );
+    assert!(
+        status["conditions"][0]["message"]
+            .as_str()
+            .expect("message is string")
+            .contains("(ApplyFailed)")
     );
 }
 
@@ -914,6 +932,91 @@ fn emits_structured_reconcile_log_events_with_operation_summary() {
 }
 
 #[test]
+fn emits_one_canonical_redacted_reconciler_attempt_contract() {
+    let route = HandlerRoute {
+        handler_id: "ImageJob.reconcile.0".to_string(),
+        event: "reconcile".to_string(),
+    };
+    let identity = serde_json::json!({
+        "operation": "applik8s://resources/ImageJob/operations/reconcile",
+        "execution": "applik8s://applications/image-pipeline/execution-boundaries/image-job",
+    });
+    let telemetry =
+        reconcile_telemetry_context(Some(&identity), &route, "ImageJob-media-hero-attempt-2", 2);
+    assert_eq!(telemetry.invocation, "retry");
+    assert_eq!(telemetry.attempt, 2);
+    assert_eq!(telemetry.trigger, "kubernetes-controller");
+
+    let event = reconcile_attempt_log_event(
+        "error",
+        "reconcile failed",
+        "image-pipeline",
+        &route,
+        &ObjectRef {
+            api_version: "media.applik8s.dev/v1alpha1".to_string(),
+            kind: "ImageJob".to_string(),
+            name: "hero-image".to_string(),
+            namespace: Some("media".to_string()),
+            uid: Some("uid-1".to_string()),
+            resource_version: Some("42".to_string()),
+        },
+        "ImageJob-media-hero-attempt-2",
+        "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "0.1.0",
+        None,
+        Some("HandlerTrap"),
+        Some(serde_json::json!({
+            "type": "handlerTrap",
+            "message": "credential=super-secret",
+            "sourceMapping": {
+                "status": "stackFramesPreserved",
+                "frames": ["at secret (/private/path.ts:1:1)"]
+            }
+        })),
+        &telemetry,
+        "failed",
+    );
+
+    assert_eq!(event["telemetry"]["boundaryKind"], "reconciler");
+    assert_eq!(event["telemetry"]["operation"], telemetry.operation);
+    assert_eq!(event["telemetry"]["execution"], telemetry.execution);
+    assert_eq!(event["telemetry"]["attempt"], 2);
+    assert_eq!(event["telemetry"]["invocationKind"], "retry");
+    assert_eq!(event["telemetry"]["relationship"], "asynchronous");
+    assert_eq!(event["telemetry"]["result"], "failed");
+    assert_eq!(event["error"], "HandlerTrap");
+    assert_eq!(event["errorDetails"]["type"], "handlerTrap");
+    assert_eq!(
+        event["errorDetails"]["sourceMapping"]["status"],
+        "stackFramesPreserved"
+    );
+    assert!(!event.to_string().contains("super-secret"));
+    assert!(!event.to_string().contains("private/path"));
+
+    let attributes = reconcile_otel_attributes(&event);
+    assert!(attributes.contains(&KeyValue::new("applik8s.boundary.kind", "reconciler")));
+    assert!(attributes.contains(&KeyValue::new(
+        "applik8s.operation",
+        "applik8s://resources/ImageJob/operations/reconcile"
+    )));
+    assert!(attributes.contains(&KeyValue::new("applik8s.attempt", 2_i64)));
+    assert!(attributes.contains(&KeyValue::new("applik8s.invocation.kind", "retry")));
+    assert!(attributes.contains(&KeyValue::new("applik8s.result", "failed")));
+    assert!(attributes.contains(&KeyValue::new("error.type", "handlerTrap")));
+    assert!(!attributes.iter().any(|attribute| {
+        let rendered = format!("{attribute:?}");
+        rendered.contains("super-secret") || rendered.contains("private/path")
+    }));
+
+    let live = reconcile_telemetry_context(None, &route, "attempt-1", 1);
+    assert_eq!(live.invocation, "live");
+    assert_eq!(
+        live.operation,
+        "applik8s://handlers/ImageJob.reconcile.0/operations/reconcile"
+    );
+}
+
+#[test]
 fn emits_structured_operation_failure_details() {
     let error = OperatorHostError::RuntimeBridge(RuntimeBridgeError::OperationFailed {
         index: 2,
@@ -965,31 +1068,30 @@ fn emits_structured_operation_failure_details() {
     assert_eq!(event["errorDetails"]["operation"]["kind"], "apply");
     assert_eq!(
         event["errorDetails"]["operation"]["target"],
-        "v1/ConfigMap media/hero-image-child"
+        serde_json::Value::Null
     );
     assert_eq!(
         event["errorDetails"]["operation"]["fieldManager"],
-        "applik8s"
+        serde_json::Value::Null
     );
-    assert_eq!(
-        event["errorDetails"]["cause"],
-        "kubernetes API operation failed: conflict"
-    );
+    assert_eq!(event["errorDetails"]["cause"], serde_json::Value::Null);
+    assert!(!event.to_string().contains("hero-image-child"));
+    assert!(!event.to_string().contains("conflict"));
 
     let dimensions = reconcile_trace_dimensions(&event);
-    assert_eq!(dimensions["failureReason"], error.to_string());
+    assert_eq!(dimensions["failureReason"], "ReconcileFailed");
     assert_eq!(dimensions["operationKind"], "apply");
     assert_eq!(dimensions["operationIndex"], 2);
 
     let attributes = reconcile_otel_attributes(&event);
-    assert!(attributes.contains(&KeyValue::new("applik8s.failure.type", "operationFailed")));
-    assert!(attributes.contains(&KeyValue::new("applik8s.failure.reason", error.to_string())));
+    assert!(attributes.contains(&KeyValue::new("error.type", "operationFailed")));
     assert!(attributes.contains(&KeyValue::new("applik8s.operation.kind", "apply")));
     assert!(attributes.contains(&KeyValue::new("applik8s.operation.index", 2_i64)));
-    assert!(attributes.contains(&KeyValue::new(
-        "applik8s.operation.target",
-        "v1/ConfigMap media/hero-image-child"
-    )));
+    assert!(
+        !attributes
+            .iter()
+            .any(|attribute| attribute.key.as_str() == "applik8s.operation.target")
+    );
 }
 
 #[test]
@@ -1785,8 +1887,10 @@ fn builds_reconcile_failure_status_condition_for_operation_failures() {
         status["conditions"][0]["message"]
             .as_str()
             .expect("message is string")
-            .contains("runtime bridge failed: operation 2")
+            .contains("Reconciliation failed (ApplyFailed).")
     );
+    assert!(!status.to_string().contains("hero-image-child"));
+    assert!(!status.to_string().contains("conflict"));
 }
 
 #[test]
@@ -1840,12 +1944,12 @@ fn builds_reconcile_failure_status_condition_for_handler_timeouts() {
         status["conditions"][0]["message"]
             .as_str()
             .expect("message is string")
-            .contains("timed out after 30000ms")
+            .contains("Reconciliation failed (HandlerTimedOut).")
     );
 }
 
 #[test]
-fn truncates_reconcile_failure_status_messages() {
+fn redacts_reconcile_failure_status_messages() {
     let error =
         OperatorHostError::RuntimeBridge(RuntimeBridgeError::HandlerFailed("x".repeat(2048)));
 
@@ -1859,12 +1963,10 @@ fn truncates_reconcile_failure_status_messages() {
     assert_eq!(status.get("observedGeneration"), None);
     assert_eq!(status["conditions"][0]["reason"], "HandlerFailed");
     assert_eq!(
-        status["conditions"][0]["message"]
-            .as_str()
-            .expect("message is string")
-            .len(),
-        1024
+        status["conditions"][0]["message"],
+        "Reconciliation failed (HandlerFailed)."
     );
+    assert!(!status.to_string().contains(&"x".repeat(128)));
 }
 
 #[test]
