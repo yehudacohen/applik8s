@@ -9,9 +9,10 @@ import {
   defineApplicationAIAgent,
 } from '@applik8s/ai';
 import {
-  ApplicationExecutionPrincipal,
-  ApplicationOperationId,
+  type ApplicationExecutionPrincipal,
+  type ApplicationOperationId,
   createApplicationAdmissionContextV1,
+  createApplicationTelemetryEnvelopeV1,
   withApplicationAdmissionExecutionV1,
 } from '@applik8s/core';
 import { describe, expect, it } from 'vitest';
@@ -131,6 +132,53 @@ describe('provider-neutral AI contracts', () => {
 });
 
 describe('durable AI attempts', () => {
+  it('persists the first producer telemetry carrier with the logical invocation', async () => {
+    const runtime = deterministicRuntime();
+    const producer = createApplicationTelemetryEnvelopeV1({
+      traceparent: '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01',
+      identity: {
+        application: 'research',
+        environment: 'test',
+        target: 'local',
+        operation: 'http:agent',
+        execution: 'gateway-request-1',
+        attempt: 1,
+      },
+    });
+    const replacement = createApplicationTelemetryEnvelopeV1({
+      traceparent: '00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01',
+      identity: {
+        application: 'research',
+        environment: 'test',
+        target: 'local',
+        operation: 'http:agent',
+        execution: 'gateway-request-2',
+        attempt: 1,
+      },
+    });
+
+    const first = await runtime.reserveInvocation({
+      ...invocation(),
+      telemetry: producer,
+    });
+    const joined = await runtime.reserveInvocation({
+      ...invocation(),
+      telemetry: replacement,
+    });
+    const attempt = await runtime.reserveAttempt({
+      invocationId: first.id,
+      redactedRequestMetadata: {},
+      route,
+    });
+
+    expect(first.telemetry).toEqual(producer);
+    expect(joined.telemetry).toEqual(producer);
+    await expect(runtime.observe(first.id)).resolves.toMatchObject({
+      invocation: { telemetry: producer },
+      attempts: [{ id: attempt.attempt.id, ordinal: 1 }],
+    });
+  });
+
   it('reserves one logical invocation and joins one physical attempt after worker replacement', async () => {
     const runtime = deterministicRuntime();
     const reservation = invocation();

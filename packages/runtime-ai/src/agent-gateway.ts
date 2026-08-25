@@ -1,17 +1,19 @@
 // typecast-file-boundary: Agent gateway request and response records are validated before typed routing and audit use.
 import { createHash } from 'node:crypto';
 import {
-  applicationCausalPrincipalContext,
   type ApplicationAdmissionContextV1,
   type ApplicationRequestAdmission,
+  type ApplicationTelemetryEnvelopeV1,
+  applicationCausalPrincipalContext,
   createApplicationAdmissionContextV1,
+  validateApplicationTelemetryEnvelopeV1,
   withApplicationAdmissionExecutionV1,
   withApplicationAdmissionTraceV1,
 } from '@applik8s/core';
 import {
+  type ApplicationAdmissionObserverV1,
   applicationAdmissionRejectionCodeV1,
   deliverApplicationAdmissionObservationV1,
-  type ApplicationAdmissionObserverV1,
 } from '@applik8s/core/admission';
 import {
   applicationExecutionAdmissionProtocol,
@@ -49,6 +51,8 @@ export interface ApplicationAIAgentGatewayOptions {
   readonly now?: () => Date;
   readonly maximumRequestBytes?: number;
   readonly maximumAdmissionLifetimeMs?: number;
+  /** Captures framework-owned telemetry after request admission; browser-provided carriers are never forwarded. */
+  readonly captureTelemetry?: () => ApplicationTelemetryEnvelopeV1 | undefined;
   /** Framework-owned bounded evidence sink; failures never alter the agent result. */
   readonly observeAdmission?: ApplicationAdmissionObserverV1;
   /** Server-side diagnostic sink; responses remain deliberately sanitized. */
@@ -111,11 +115,12 @@ export function createApplicationAIAgentGateway(
             now,
             maximumLifetimeMs,
           });
+          const telemetry = capturedTelemetry(options);
           return await request(new Request(
             new URL(`/__applik8s/v1/ai/chat?threadId=${encodeURIComponent(threadId)}`, target.baseUrl),
             {
               method: 'GET',
-              headers: forwardedHeaders(incoming.headers, token),
+              headers: forwardedHeaders(incoming.headers, token, telemetry),
               signal: AbortSignal.any([
                 incoming.signal,
                 AbortSignal.timeout(target.timeoutMs),
@@ -142,6 +147,7 @@ export function createApplicationAIAgentGateway(
           now,
           maximumLifetimeMs,
         });
+        const telemetry = capturedTelemetry(options);
         const timeout = AbortSignal.timeout(target.timeoutMs);
         try {
           return await request(
@@ -149,7 +155,7 @@ export function createApplicationAIAgentGateway(
               new URL('/__applik8s/v1/ai/chat', target.baseUrl),
               {
                 method: 'POST',
-                headers: forwardedHeaders(incoming.headers, token),
+                headers: forwardedHeaders(incoming.headers, token, telemetry),
                 body: source,
                 signal: AbortSignal.any([incoming.signal, timeout]),
               },
@@ -472,11 +478,59 @@ function assertAdmission(
   }
 }
 
-function forwardedHeaders(source: Headers, token: string): Headers {
+const applicationAIAgentTelemetryHeader = 'x-applik8s-telemetry';
+const maximumApplicationAIAgentTelemetryBytes = 8_192;
+
+function capturedTelemetry(
+  options: ApplicationAIAgentGatewayOptions,
+): string | undefined {
+  try {
+    const telemetry = options.captureTelemetry?.();
+    if (!telemetry) return undefined;
+    validateApplicationTelemetryEnvelopeV1(telemetry);
+    const encoded = JSON.stringify(telemetry);
+    if (
+      new TextEncoder().encode(encoded).byteLength
+      > maximumApplicationAIAgentTelemetryBytes
+    ) {
+      throw new Error('Application AI telemetry carrier exceeds its byte budget.');
+    }
+    return encoded;
+  } catch (error) {
+    options.onError?.(error);
+    return undefined;
+  }
+}
+
+/** Decodes only the bounded framework-to-worker carrier; malformed evidence is dropped without changing business execution. */
+export function decodeApplicationAIAgentTelemetry(
+  headers: Headers,
+): ApplicationTelemetryEnvelopeV1 | undefined {
+  const encoded = headers.get(applicationAIAgentTelemetryHeader);
+  if (!encoded) return undefined;
+  try {
+    if (
+      new TextEncoder().encode(encoded).byteLength
+      > maximumApplicationAIAgentTelemetryBytes
+    ) return undefined;
+    const telemetry: unknown = JSON.parse(encoded);
+    validateApplicationTelemetryEnvelopeV1(telemetry);
+    return telemetry;
+  } catch {
+    return undefined;
+  }
+}
+
+function forwardedHeaders(
+  source: Headers,
+  token: string,
+  telemetry?: string,
+): Headers {
   const headers = new Headers({
     'content-type': source.get('content-type') ?? 'application/json',
     accept: source.get('accept') ?? 'text/event-stream',
     'x-applik8s-execution-admission': token,
+    ...(telemetry ? { [applicationAIAgentTelemetryHeader]: telemetry } : {}),
   });
   for (const name of ['traceparent', 'tracestate'] as const) {
     const value = source.get(name);

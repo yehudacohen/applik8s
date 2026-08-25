@@ -5,6 +5,7 @@ import type {
   ApplicationIdentityReference,
   ApplicationOperationId,
   ApplicationProviderQualificationContract,
+  ApplicationTelemetryEnvelopeV1,
   JsonObject,
   JsonValue,
   SourceLocation,
@@ -511,6 +512,8 @@ export interface ApplicationAIInvocationRecord {
   readonly admittedPrincipal: ApplicationExecutionPrincipal;
   /** Credential-free canonical provenance retained for recovery and audit. */
   readonly admissionEvidence: ApplicationAIAdmissionEvidenceV1;
+  /** Bounded producer context retained once so retries link without fabricating a new request span. */
+  readonly telemetry?: ApplicationTelemetryEnvelopeV1;
   readonly authorityRevision: string;
   readonly state: 'active' | 'completed' | 'failed' | 'uncertain' | 'cancelled';
   readonly currentAttemptId?: string;

@@ -2,10 +2,11 @@
 
 import type { ApplicationAIAgentPersistence } from '@applik8s/ai';
 import {
-  ApplicationExecutionPrincipal,
-  ApplicationOperationDescriptor,
-  ApplicationWorkloadAuthorityEnvelope,
+  type ApplicationExecutionPrincipal,
+  type ApplicationOperationDescriptor,
+  type ApplicationWorkloadAuthorityEnvelope,
   createApplicationAdmissionContextV1,
+  createApplicationTelemetryEnvelopeV1,
   withApplicationAdmissionExecutionV1,
 } from '@applik8s/core';
 import { chat } from '@tanstack/ai';
@@ -13,12 +14,123 @@ import { memoryPersistence } from '@tanstack/ai-persistence';
 import { describe, expect, it } from 'vitest';
 import {
   type ApplicationAIAgentAttemptLifecycle,
+  type ApplicationAIAgentTelemetryBoundary,
   type ApplicationAIAgentToolContract,
   applicationAITextAdapter,
   createApplicationAIAgentRequestHandler,
 } from '../src/index.js';
 
 describe('generated application AI runtime', () => {
+  it('links one durable agent attempt to its producer and nests provider and tool attempts', async () => {
+    const boundaries: Array<{
+      readonly boundary: ApplicationAIAgentTelemetryBoundary;
+      readonly parent?: string;
+    }> = [];
+    let activeBoundary: string | undefined;
+    const telemetry = {
+      async run<TResult>(
+        boundary: ApplicationAIAgentTelemetryBoundary,
+        execute: () => Promise<TResult>,
+      ): Promise<TResult> {
+        const parent = activeBoundary;
+        boundaries.push({ boundary, ...(parent ? { parent } : {}) });
+        activeBoundary = String(boundary.kind);
+        try {
+          return await execute();
+        } finally {
+          activeBoundary = parent;
+        }
+      },
+    };
+    const producer = createApplicationTelemetryEnvelopeV1({
+      traceparent: '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01',
+      identity: {
+        application: 'research',
+        environment: 'test',
+        target: 'local',
+        operation: 'http:agent',
+        execution: 'gateway-request-1',
+        attempt: 1,
+      },
+    });
+    const handler = createApplicationAIAgentRequestHandler({
+      name: 'researcher',
+      logicalModel: 'fast',
+      instructions: 'Use the declared operation.',
+      provider: {
+        kind: 'deterministic',
+        response: 'The typed operation completed.',
+        tool: { input: { text: 'telemetry fixture' } },
+      },
+      tools: [toolContract()],
+      persistence: persistence(),
+      tanstackPersistence: memoryPersistence,
+      timeoutMs: 5_000,
+      maximumConcurrency: 1,
+      telemetry,
+      admit: () => ({ ...admission(), telemetry: producer }),
+      reserveAttempt: ({ runId }) => ({
+        action: 'dispatch',
+        runId,
+        invocationId: 'invocation-telemetry',
+        attemptId: 'attempt-telemetry',
+        ordinal: 2,
+        version: 1,
+        telemetry: producer,
+      }),
+      recovery: unavailableRecovery(),
+      attemptLifecycle: attemptLifecycle([]),
+      invoke: async () => ({ id: 'post-1' }),
+      handler: async (request, context) => chat({
+        adapter: context.tanstack.adapter,
+        messages: request.messages,
+        threadId: request.threadId,
+        runId: context.runId,
+        tools: context.tanstack.tools,
+        context: context.tanstack.execution,
+      }),
+    });
+
+    const response = await handler(agentRequest());
+    expect(response.status).toBe(200);
+    await response.text();
+
+    expect(boundaries).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        boundary: expect.objectContaining({
+          kind: 'agent',
+          identity: 'researcher',
+          execution: 'invocation-telemetry',
+          attempt: 2,
+          relationship: 'asynchronous',
+          links: [producer],
+        }),
+      }),
+      expect.objectContaining({
+        parent: 'agent',
+        boundary: expect.objectContaining({
+          kind: 'provider',
+          provider: 'applik8s-deterministic',
+          instance: 'attempt-telemetry',
+        }),
+      }),
+      expect.objectContaining({
+        parent: 'agent',
+        boundary: expect.objectContaining({
+          kind: 'operation',
+          identity: 'applik8s://models/Post/operations/create',
+          instance: 'attempt-telemetry',
+        }),
+      }),
+    ]));
+    expect(
+      boundaries.filter(({ boundary }) => boundary.kind === 'agent'),
+    ).toHaveLength(1);
+    expect(
+      boundaries.filter(({ boundary }) => boundary.kind === 'provider'),
+    ).toHaveLength(2);
+  });
+
   it('constructs a managed OpenAI-compatible gateway adapter without upstream credentials', () => {
     expect(() =>
       applicationAITextAdapter({
@@ -51,6 +163,7 @@ describe('generated application AI runtime', () => {
         runId,
         invocationId: 'invocation-1',
         attemptId: 'attempt-1',
+        ordinal: 1,
         version: 1,
       }),
       recovery: unavailableRecovery(),
@@ -118,6 +231,7 @@ describe('generated application AI runtime', () => {
         runId,
         invocationId: 'invocation-tool',
         attemptId: 'attempt-tool',
+        ordinal: 1,
         version: 1,
       }),
       recovery: unavailableRecovery(),
@@ -174,7 +288,7 @@ describe('generated application AI runtime', () => {
       maximumConcurrency: 1,
       admit: () => admission(),
       reserveAttempt: ({ runId }) => ({
-        action: 'dispatch', runId, invocationId: 'request-fixture', attemptId: 'attempt-fixture', version: 1,
+        action: 'dispatch', runId, invocationId: 'request-fixture', attemptId: 'attempt-fixture', ordinal: 1, version: 1,
       }),
       recovery: unavailableRecovery(),
       attemptLifecycle: attemptLifecycle([]),
@@ -245,6 +359,7 @@ describe('generated application AI runtime', () => {
         runId,
         invocationId: 'invocation-provider-failure',
         attemptId: 'attempt-provider-failure',
+        ordinal: 1,
         version: 1,
       }),
       recovery: unavailableRecovery(),
@@ -288,6 +403,7 @@ describe('generated application AI runtime', () => {
         runId,
         invocationId: 'invocation-empty-terminal',
         attemptId: 'attempt-empty-terminal',
+        ordinal: 1,
         version: 1,
       }),
       recovery: unavailableRecovery(),
@@ -393,6 +509,7 @@ describe('generated application AI runtime', () => {
         runId,
         invocationId: 'invocation-uncertain',
         attemptId: 'attempt-uncertain',
+        ordinal: 1,
         version: 1,
       }),
       recovery: unavailableRecovery(),
@@ -421,6 +538,7 @@ describe('generated application AI runtime', () => {
   it('joins a durable in-flight attempt and replays its canonical TanStack stream', async () => {
     let handlerInvoked = false;
     let observations = 0;
+    const telemetryBoundaries: unknown[] = [];
     const handler = createApplicationAIAgentRequestHandler({
       name: 'researcher',
       logicalModel: 'fast',
@@ -431,12 +549,19 @@ describe('generated application AI runtime', () => {
       tanstackPersistence: memoryPersistence,
       timeoutMs: 5_000,
       maximumConcurrency: 1,
+      telemetry: {
+        async run(boundary, execute) {
+          telemetryBoundaries.push(boundary);
+          return await execute();
+        },
+      },
       admit: () => admission(),
       reserveAttempt: ({ runId }) => ({
         action: 'join',
         runId,
         invocationId: 'invocation-join',
         attemptId: 'attempt-join',
+        ordinal: 1,
         version: 3,
       }),
       recovery: {
@@ -467,6 +592,7 @@ describe('generated application AI runtime', () => {
     expect(events).toContain('"type":"RUN_FINISHED"');
     expect(observations).toBe(2);
     expect(handlerInvoked).toBe(false);
+    expect(telemetryBoundaries).toEqual([]);
   });
 
   it('returns a stable escalation response for completion-uncertain attempts', async () => {
@@ -486,6 +612,7 @@ describe('generated application AI runtime', () => {
         runId,
         invocationId: 'invocation-join',
         attemptId: 'attempt-join',
+        ordinal: 1,
         version: 3,
       }),
       recovery: {
@@ -531,6 +658,7 @@ describe('generated application AI runtime', () => {
         runId,
         invocationId: 'invocation-capacity',
         attemptId: 'attempt-capacity',
+        ordinal: 1,
         version: 1,
       }),
       recovery: unavailableRecovery(),

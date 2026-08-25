@@ -4,6 +4,7 @@ import type {
   ApplicationExecutionPrincipal,
   ApplicationRequestAdmission,
 } from '@applik8s/core';
+import { createApplicationTelemetryEnvelopeV1 } from '@applik8s/core';
 import { decodeApplicationExecutionAdmission } from '@applik8s/operations';
 import { describe, expect, it, vi } from 'vitest';
 import {
@@ -24,6 +25,36 @@ const target: ApplicationAIAgentGatewayTarget = {
 };
 
 describe('application AI agent gateway', () => {
+  it('forwards one framework-captured telemetry carrier without trusting a browser carrier', async () => {
+    let forwarded: Request | undefined;
+    const carrier = telemetryEnvelope('gateway-producer');
+    const gateway = createApplicationAIAgentGateway({
+      application: 'research',
+      secret,
+      targets: [target],
+      authenticate: async () => admission(),
+      authorize: async () => true,
+      captureTelemetry: () => carrier,
+      now: () => new Date('2026-07-30T12:00:00.000Z'),
+      fetch: Object.assign(async (input: RequestInfo | URL, init?: RequestInit) => {
+        forwarded = input instanceof Request ? input : new Request(input, init);
+        return new Response('event: RUN_FINISHED\n\n');
+      }, { preconnect: vi.fn() }),
+    } as Parameters<typeof createApplicationAIAgentGateway>[0] & {
+      readonly captureTelemetry: () => typeof carrier;
+    });
+
+    const request = agentRequest();
+    request.headers.set(
+      'x-applik8s-telemetry',
+      JSON.stringify(telemetryEnvelope('forged-browser-carrier')),
+    );
+    await expect(gateway.handle(request)).resolves.toMatchObject({ status: 200 });
+
+    expect(JSON.parse(forwarded?.headers.get('x-applik8s-telemetry') ?? 'null'))
+      .toEqual(carrier);
+  });
+
   it('authenticates, authorizes, signs an exact run admission, and strips browser credentials', async () => {
     const forwarded: Request[] = [];
     const observations: unknown[] = [];
@@ -361,6 +392,20 @@ describe('application AI agent gateway', () => {
     });
   });
 });
+
+function telemetryEnvelope(execution: string) {
+  return createApplicationTelemetryEnvelopeV1({
+    traceparent: '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01',
+    identity: {
+      application: 'research',
+      environment: 'test',
+      target: 'local',
+      operation: 'http:agent',
+      execution,
+      attempt: 1,
+    },
+  });
+}
 
 function agentRequest(
   overrides: Readonly<Record<string, unknown>> = {},

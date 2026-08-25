@@ -341,7 +341,10 @@ export function generatedApplicationFetchGatewayModules(
 	if (actors.length > 0 || lakehousePublications.length > 0 || schedules.length > 0)
 		imports.push("import { nodeConstantTimeTextEqual } from '@applik8s/runtime/node-integrity';");
 	if (observability)
-		imports.push(...generatedApplicationTelemetryImports({ boundaryRunner: true }));
+		imports.push(...generatedApplicationTelemetryImports({
+			boundaryRunner: true,
+			carrierCapture: agents.length > 0,
+		}));
 	if (identity.length === 1)
 		imports.push(
 			"import { createApplicationIdentitySessionHandler } from '@applik8s/identity/server';",
@@ -758,6 +761,7 @@ const agentGateway =
   // remains independently constrained by service grants, workload envelopes,
   // and the per-run ExecutionPrincipal admitted by the agent runtime.
   authorize: ({ admission }) => admission.principal.audience.includes(${JSON.stringify(graph.metadata.name)}),
+  ${observability ? 'captureTelemetry: () => captureApplicationTelemetryContext(),' : ''}
   observeAdmission: observeRequestAdmission,
   onError: (error) => console.error('Applik8s AI agent gateway admission failed', {
     name: error instanceof Error ? error.name : 'Error',

@@ -38,6 +38,9 @@ import type {
   ApplicationAdmissionContextV1,
   ApplicationExecutionPrincipal,
   ApplicationOperationDescriptor,
+  ApplicationTelemetryBoundaryKind,
+  ApplicationTelemetryEnvelopeV1,
+  ApplicationTelemetryInvocationKind,
   ApplicationWorkloadAuthorityEnvelope,
   JsonObject,
   JsonValue,
@@ -84,7 +87,32 @@ export interface ApplicationAIAgentAttemptReservation {
   readonly invocationId: string;
   readonly attemptId: string;
   readonly runId: string;
+  readonly ordinal: number;
   readonly version: number;
+  readonly telemetry?: ApplicationTelemetryEnvelopeV1;
+}
+
+export interface ApplicationAIAgentTelemetryBoundary {
+  readonly kind: ApplicationTelemetryBoundaryKind;
+  readonly identity: string;
+  readonly attempt?: number;
+  readonly execution?: string;
+  readonly service?: string;
+  readonly provider?: string;
+  readonly definition?: string;
+  readonly instance?: string;
+  readonly invocation?: ApplicationTelemetryInvocationKind;
+  readonly relationship?: 'asynchronous' | 'synchronous';
+  readonly parent?: ApplicationTelemetryEnvelopeV1;
+  readonly links?: readonly ApplicationTelemetryEnvelopeV1[];
+  readonly attributes?: Readonly<Record<string, string | number | boolean>>;
+}
+
+export interface ApplicationAIAgentTelemetryRuntime {
+  run<TResult>(
+    boundary: ApplicationAIAgentTelemetryBoundary,
+    execute: () => Promise<TResult>,
+  ): Promise<TResult>;
 }
 
 export interface ApplicationAIAgentAttemptObservation {
@@ -166,6 +194,7 @@ export interface ApplicationAIAgentRuntimeOptions<
   readonly timeoutMs: number;
   readonly maximumConcurrency: number;
   readonly maximumRequestBytes?: number;
+  readonly telemetry?: ApplicationAIAgentTelemetryRuntime;
   readonly admit: (
     request: Request,
     body: ApplicationAIAgentRequestBody,
@@ -183,6 +212,7 @@ export interface ApplicationAIAgentRuntimeOptions<
       readonly runId: string;
       readonly logicalModel: string;
       readonly request: ApplicationAIAgentRequestBody;
+      readonly telemetry?: ApplicationTelemetryEnvelopeV1;
     },
   ) =>
     | Promise<ApplicationAIAgentAttemptReservation>
@@ -201,6 +231,7 @@ export interface ApplicationAIAgentExecutionAdmission {
   readonly context: ApplicationAdmissionContextV1 & {
     readonly principal: ApplicationExecutionPrincipal;
   };
+  readonly telemetry?: ApplicationTelemetryEnvelopeV1;
 }
 
 /**
@@ -279,6 +310,7 @@ export function createApplicationAIAgentRequestHandler<TResult>(
         runId: body.runId,
         logicalModel: options.logicalModel,
         request: body,
+        ...(admission.telemetry ? { telemetry: admission.telemetry } : {}),
       });
       if (reservation.runId !== body.runId) {
         throw new Error(`Agent ${options.name} attempt reservation changed protocol run identity.`);
@@ -350,16 +382,36 @@ export function createApplicationAIAgentRequestHandler<TResult>(
             if (tool.workloadAuthority.operationId !== tool.operation.id) {
               throw new Error(`Agent ${options.name} tool authority does not match ${tool.operation.id}.`);
             }
-            return await options.invoke(
+            const invoke = () => options.invoke(
               tool.operation,
               input,
               invocation,
               admission,
-            ) as TOutput;
+            ) as Promise<TOutput>;
+            if (!options.telemetry) return await invoke();
+            return await options.telemetry.run({
+              kind: 'operation',
+              identity: tool.operation.id,
+              execution: `${reservation.attemptId}:tool:${invocation.providerToolCallId}`,
+              attempt: 1,
+              instance: reservation.attemptId,
+              relationship: 'synchronous',
+              attributes: {
+                'applik8s.ai.provider_tool_call': invocation.providerToolCallId,
+              },
+            }, invoke);
           },
         };
         const runtime: ApplicationTanStackAgentRuntime = {
-          adapter: withApplicationInstructions(baseAdapter, instructions),
+          adapter: withApplicationInstructions(
+            instrumentApplicationAITextAdapter(
+              baseAdapter,
+              options.telemetry,
+              options.logicalModel,
+              reservation,
+            ),
+            instructions,
+          ),
           tools: operationTools,
           persistence: options.tanstackPersistence({
             principal,
@@ -369,22 +421,42 @@ export function createApplicationAIAgentRequestHandler<TResult>(
           execution,
         };
         try {
-          const result = await options.handler(
+          const result = await runApplicationAIAgentExecution(
+            options.telemetry,
             {
-              threadId: body.threadId,
-              messages: body.messages,
-              ...(body.resume !== undefined ? { resume: body.resume } : {}),
+              kind: 'agent',
+              identity: options.name,
+              execution: reservation.invocationId,
+              attempt: reservation.ordinal,
+              definition: options.name,
+              instance: reservation.attemptId,
+              relationship: 'asynchronous',
+              ...(reservation.telemetry
+                ? { links: [reservation.telemetry] }
+                : admission.telemetry
+                  ? { links: [admission.telemetry] }
+                  : {}),
+              attributes: {
+                'applik8s.ai.logical_model': options.logicalModel,
+              },
             },
-            {
-              runId: reservation.runId,
-              invocationId: reservation.invocationId,
-              attemptId: reservation.attemptId,
-              principal,
-              admission: admission.context,
-              trustedContext,
-              signal: controller.signal,
-              tanstack: runtime,
-            },
+            () => options.handler(
+              {
+                threadId: body.threadId,
+                messages: body.messages,
+                ...(body.resume !== undefined ? { resume: body.resume } : {}),
+              },
+              {
+                runId: reservation.runId,
+                invocationId: reservation.invocationId,
+                attemptId: reservation.attemptId,
+                principal,
+                admission: admission.context,
+                trustedContext,
+                signal: controller.signal,
+                tanstack: runtime,
+              },
+            ),
           );
           if (result instanceof Response) {
             throw new Error(
@@ -1089,6 +1161,214 @@ function withApplicationInstructions(
         }
       : {}),
   };
+}
+
+function instrumentApplicationAITextAdapter(
+  adapter: AnyTextAdapter,
+  telemetry: ApplicationAIAgentTelemetryRuntime | undefined,
+  logicalModel: string,
+  reservation: ApplicationAIAgentAttemptReservation,
+): AnyTextAdapter {
+  if (!telemetry) return adapter;
+  let providerAttempt = 0;
+  const boundary = (): ApplicationAIAgentTelemetryBoundary => {
+    providerAttempt += 1;
+    return {
+      kind: 'provider',
+      identity: `${logicalModel}.inference`,
+      execution: `${reservation.attemptId}:provider:${providerAttempt}`,
+      attempt: providerAttempt,
+      provider: adapter.name,
+      definition: logicalModel,
+      instance: reservation.attemptId,
+      relationship: 'synchronous',
+      attributes: {
+        'applik8s.ai.model': adapter.model,
+      },
+    };
+  };
+  const structuredOutputStream = adapter.structuredOutputStream;
+  return {
+    ...adapter,
+    chatStream: (options) => applicationAITelemetryStream(
+      telemetry,
+      boundary(),
+      adapter.chatStream(options),
+    ),
+    structuredOutput: (options) => telemetry.run(
+      boundary(),
+      () => adapter.structuredOutput(options),
+    ),
+    ...(structuredOutputStream
+      ? {
+          structuredOutputStream: (options) => applicationAITelemetryStream(
+            telemetry,
+            boundary(),
+            structuredOutputStream(options),
+          ),
+        }
+      : {}),
+  };
+}
+
+function applicationAITelemetryStream<T>(
+  telemetry: ApplicationAIAgentTelemetryRuntime,
+  boundary: ApplicationAIAgentTelemetryBoundary,
+  source: AsyncIterable<T>,
+): AsyncIterable<T> {
+  return {
+    async *[Symbol.asyncIterator]() {
+      const instrumented = await runApplicationAIAgentExecution(
+        telemetry,
+        boundary,
+        async () => source,
+      );
+      yield* instrumented;
+    },
+  };
+}
+
+async function runApplicationAIAgentExecution<TResult>(
+  telemetry: ApplicationAIAgentTelemetryRuntime | undefined,
+  boundary: ApplicationAIAgentTelemetryBoundary,
+  execute: () => TResult | Promise<TResult>,
+): Promise<TResult> {
+  if (!telemetry) return await execute();
+  const ready = applicationAIDeferred<
+    | { readonly kind: 'value'; readonly value: TResult }
+    | { readonly kind: 'stream'; readonly value: AsyncIterable<unknown> }
+  >();
+  const channel = applicationAITelemetryChannel<unknown>();
+  const running = telemetry.run(boundary, async () => {
+    try {
+      const value = await execute();
+      if (!isAsyncIterable(value)) {
+        ready.resolve({ kind: 'value', value });
+        return;
+      }
+      ready.resolve({ kind: 'stream', value: channel.iterable });
+      for await (const item of value) await channel.send(item);
+      channel.close();
+    } catch (error) {
+      if (!ready.settled()) ready.reject(error);
+      else channel.fail(error);
+      throw error;
+    }
+  });
+  // Stream failures are delivered by the channel. Immediate failures are
+  // delivered by `ready`; this catch prevents a second unhandled rejection.
+  void running.catch(() => {});
+  const outcome = await ready.promise;
+  if (outcome.kind === 'value') {
+    await running;
+    return outcome.value;
+  }
+  return outcome.value as TResult;
+}
+
+function applicationAIDeferred<T>(): {
+  readonly promise: Promise<T>;
+  readonly resolve: (value: T) => void;
+  readonly reject: (error: unknown) => void;
+  readonly settled: () => boolean;
+} {
+  let resolvePromise!: (value: T) => void;
+  let rejectPromise!: (error: unknown) => void;
+  let isSettled = false;
+  const promise = new Promise<T>((resolve, reject) => {
+    resolvePromise = resolve;
+    rejectPromise = reject;
+  });
+  return {
+    promise,
+    resolve(value) {
+      if (isSettled) return;
+      isSettled = true;
+      resolvePromise(value);
+    },
+    reject(error) {
+      if (isSettled) return;
+      isSettled = true;
+      rejectPromise(error);
+    },
+    settled: () => isSettled,
+  };
+}
+
+function applicationAITelemetryChannel<T>(): {
+  readonly iterable: AsyncIterable<T>;
+  readonly send: (value: T) => Promise<void>;
+  readonly close: () => void;
+  readonly fail: (error: unknown) => void;
+} {
+  type Consumer = {
+    readonly resolve: (result: IteratorResult<T>) => void;
+    readonly reject: (error: unknown) => void;
+  };
+  type Produced = {
+    readonly value: T;
+    readonly consumed: () => void;
+    readonly rejected: (error: unknown) => void;
+  };
+  let consumer: Consumer | undefined;
+  let produced: Produced | undefined;
+  let terminal: { readonly error?: unknown } | undefined;
+  const cancelled = new Error('Application AI telemetry stream consumer cancelled.');
+  cancelled.name = 'AbortError';
+
+  const fail = (error: unknown) => {
+    if (terminal) return;
+    terminal = { error };
+    consumer?.reject(error);
+    consumer = undefined;
+    produced?.rejected(error);
+    produced = undefined;
+  };
+  const close = () => {
+    if (terminal) return;
+    terminal = {};
+    consumer?.resolve({ done: true, value: undefined });
+    consumer = undefined;
+  };
+  const send = (value: T): Promise<void> => {
+    if (terminal) return Promise.reject(terminal.error ?? cancelled);
+    if (consumer) {
+      const selected = consumer;
+      consumer = undefined;
+      selected.resolve({ done: false, value });
+      return Promise.resolve();
+    }
+    return new Promise<void>((resolve, reject) => {
+      produced = { value, consumed: resolve, rejected: reject };
+    });
+  };
+  const iterable: AsyncIterable<T> = {
+    [Symbol.asyncIterator]() {
+      return {
+        next(): Promise<IteratorResult<T>> {
+          if (produced) {
+            const selected = produced;
+            produced = undefined;
+            selected.consumed();
+            return Promise.resolve({ done: false, value: selected.value });
+          }
+          if (terminal) {
+            return terminal.error === undefined
+              ? Promise.resolve({ done: true, value: undefined })
+              : Promise.reject(terminal.error);
+          }
+          return new Promise<IteratorResult<T>>((resolve, reject) => {
+            consumer = { resolve, reject };
+          });
+        },
+        async return(): Promise<IteratorResult<T>> {
+          fail(cancelled);
+          return { done: true, value: undefined };
+        },
+      };
+    },
+  };
+  return { iterable, send, close, fail };
 }
 
 function deterministicTextAdapter(

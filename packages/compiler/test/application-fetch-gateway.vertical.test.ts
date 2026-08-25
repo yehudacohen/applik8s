@@ -727,6 +727,7 @@ describe("application host Fetch gateway", () => {
 			AI,
 			AI.deterministic({ fixture: { response: "ready" } }),
 		);
+		research.provide(Observability, Observability.local());
 		const database = research.database.postgres("application", {
 			schema: { notes },
 		});
@@ -771,6 +772,10 @@ describe("application host Fetch gateway", () => {
 			];
 		expect(source).toContain(
 			"createApplicationAIAgentGateway",
+		);
+		expect(source).toContain("captureApplicationTelemetryContext");
+		expect(source).toContain(
+			"captureTelemetry: () => captureApplicationTelemetryContext()",
 		);
 		expect(source).toContain(
 			"http://researcher.research-system.svc:3000",

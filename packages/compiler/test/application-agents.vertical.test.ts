@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { AI } from '@applik8s/ai';
-import { app, applicationGraphFor, IdentityProvider, postgres, trustedContext } from '@applik8s/applik8s';
+import { app, applicationGraphFor, IdentityProvider, Observability, postgres, trustedContext } from '@applik8s/applik8s';
 import { type } from '@applik8s/applik8s/dsl';
 import { applicationConversations } from '@applik8s/conversations';
 import {
@@ -808,6 +808,7 @@ export const providerAgentStack = application.composition;
         authorityRevision: 'authority-test',
       }),
     );
+    application.provide(Observability, Observability.local());
     const posts = pgTable('research_posts', {
       id: text('id').primaryKey(),
       body: text('body').notNull(),
@@ -1028,6 +1029,16 @@ export const providerAgentStack = application.composition;
     );
     expect(generatedSource).toContain('applicationAgentDurableScope');
     expect(generatedSource).toContain('contract.scope.name');
+    expect(generatedSource).toContain('decodeApplicationAIAgentTelemetry');
+    expect(generatedSource).toContain(
+      'telemetry: { run: runApplicationTelemetryBoundary }',
+    );
+    expect(generatedSource).toContain(
+      'telemetry: decision.invocation.telemetry',
+    );
+    expect(generatedSource).toContain('ordinal: decision.attempt.ordinal');
+    expect(generatedSource).toContain('startApplicationOpenTelemetryRuntime');
+    expect(generatedSource).toContain('await closeApplicationTelemetryRuntime()');
     expect(generatedSource).toContain(
       'applicationAIConversationPrincipalScope(principal, trustedContext ?? {})',
     );
@@ -1119,6 +1130,9 @@ export const providerAgentStack = application.composition;
       'stream joining and terminal replay must complete before redispatch',
     );
     expect(source).not.toContain('packageManagerAtStartup');
-    expect(artifact.sizeBytes).toBeLessThan(1_500_000);
+    // The selected OpenTelemetry implementation is intentionally embedded so
+    // an observed agent worker is self-contained rather than relying on a
+    // process-global sidecar. Keep the complete generated worker bounded.
+    expect(artifact.sizeBytes).toBeLessThan(2_100_000);
   });
 });

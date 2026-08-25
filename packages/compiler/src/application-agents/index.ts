@@ -42,6 +42,11 @@ import {
   compileApplicationOperationPlacementReceiver,
 } from '../application-mcp/planner.js';
 import {
+  applicationGraphHasObservabilityRuntime,
+  generatedApplicationTelemetryImports,
+  generatedApplicationTelemetryRuntimeSource,
+} from '../application-observability-runtime-source.js';
+import {
   applicationStaticAuthorityManifest,
   compileApplicationOperationCatalog,
   compileApplicationWorkloadAuthority,
@@ -77,6 +82,7 @@ export interface GeneratedApplicationAgentResource {
 interface ApplicationAgentCompilerContract {
   readonly graph: ApplicationGraph;
   readonly application: string;
+  readonly observability: boolean;
   readonly agent: ApplicationAIAgentNode;
   readonly provider: ApplicationProviderNode;
   readonly providerConfig: JsonObject;
@@ -350,6 +356,7 @@ function applicationAgentCompilerContract(
   return {
     graph,
     application: graph.metadata.name,
+    observability: applicationGraphHasObservabilityRuntime(graph),
     agent,
     provider,
     providerConfig,
@@ -690,6 +697,9 @@ function generatedAgentSource(contract: ApplicationAgentCompilerContract): strin
       ? [`import { createTool as createLocalTool${index} } from ${JSON.stringify(`./${localAgentToolModuleFile(index)}`)};`]
       : []).join('\n');
   const localToolRuntime = generatedLocalAgentToolRuntime(contract);
+  const telemetryImports = contract.observability
+    ? generatedApplicationTelemetryImports({ boundaryRunner: true })
+    : [];
   return `
 import { createHash } from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
@@ -701,9 +711,10 @@ import { applicationAIConversationPrincipalScope, createApplicationAIAgentConver
 import { applicationCausalPrincipalContext, validateApplicationAdmissionContextV1 } from '@applik8s/core';
 import { applicationAdmissionRejectionCodeV1, createApplicationAdmissionObservationV1 } from '@applik8s/core/admission';
 import { createApplicationOperationAuthorityRuntime, decodeApplicationExecutionAdmission } from '@applik8s/operations';
-import { createApplicationAIAgentRequestHandler, createApplicationAIOperationExecutor, createPostgresApplicationAIAttemptStore } from '@applik8s/runtime-ai';
+import { createApplicationAIAgentRequestHandler, createApplicationAIOperationExecutor, createPostgresApplicationAIAttemptStore, decodeApplicationAIAgentTelemetry } from '@applik8s/runtime-ai';
 import { createApplicationTaskQueryRuntime } from '@applik8s/applik8s/task-query-runtime';
 import { createHandler } from './handler.generated.js';
+${telemetryImports.join('\n')}
 ${providerRuntimeImports}
 ${localToolImports}
 ${contract.tools.some((tool) => tool.local)
@@ -711,6 +722,13 @@ ${contract.tools.some((tool) => tool.local)
     : ''}
 ${contract.agent.instructions.kind === 'closure'
     ? "import { callback as instructions } from './instructions.generated.js';"
+    : ''}
+
+${contract.observability
+    ? generatedApplicationTelemetryRuntimeSource({
+        application: contract.application,
+        service: `ai-agent-${contract.agent.name}`,
+      })
     : ''}
 
 const contract = ${JSON.stringify({
@@ -1188,8 +1206,10 @@ const handle = createApplicationAIAgentRequestHandler({
   },
   timeoutMs: contract.budgets.timeoutMs,
   maximumConcurrency: contract.deployment.maximumConcurrency,
+  ${contract.observability ? 'telemetry: { run: runApplicationTelemetryBoundary },' : ''}
   async admit(request, body) {
     try {
+      const telemetry = decodeApplicationAIAgentTelemetry(request.headers);
       const token = request.headers.get('x-applik8s-execution-admission');
       if (!token) throw Object.assign(new Error('Agent execution admission is required.'), { code: 'AGENT_EXECUTION_ADMISSION_REQUIRED' });
       const invocation = decodeApplicationExecutionAdmission(
@@ -1245,13 +1265,13 @@ const handle = createApplicationAIAgentRequestHandler({
         },
       });
       await observeAgentAdmission('admitted', context);
-      return { context };
+      return { context, ...(telemetry ? { telemetry } : {}) };
     } catch (error) {
       await observeAgentAdmission('rejected', undefined, error);
       throw error;
     }
   },
-  async reserveAttempt({ principal, admission, trustedContext, threadId, runId, logicalModel, request }) {
+  async reserveAttempt({ principal, admission, trustedContext, threadId, runId, logicalModel, request, telemetry }) {
     const invocationId = 'invocation_' + createHash('sha256')
       .update(contract.application)
       .update('\\0')
@@ -1270,6 +1290,7 @@ const handle = createApplicationAIAgentRequestHandler({
       request,
       admittedPrincipal: principal,
       admission,
+      telemetry,
     });
     const decision = await attemptRuntime.reserveAttempt({
       invocationId,
@@ -1305,8 +1326,12 @@ const handle = createApplicationAIAgentRequestHandler({
       runId,
       invocationId,
       attemptId: decision.attempt.id,
+      ordinal: decision.attempt.ordinal,
       version: decision.attempt.version,
       principalScope: applicationAgentDurableScope(principal, trustedContext),
+      ...(decision.invocation.telemetry
+        ? { telemetry: decision.invocation.telemetry }
+        : {}),
     };
   },
   recovery: {
@@ -1576,6 +1601,7 @@ async function shutdown() {
   await new Promise((resolveShutdown) => server.close(resolveShutdown));
   await initializationTask;
   await sql.end({ timeout: 5 });
+  ${contract.observability ? 'await closeApplicationTelemetryRuntime();' : ''}
 }
 process.once('SIGTERM', () => { void shutdown(); });
 process.once('SIGINT', () => { void shutdown(); });

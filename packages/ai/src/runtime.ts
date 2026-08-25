@@ -3,10 +3,12 @@ import {
   type ApplicationAdmissionContextV1,
   type ApplicationExecutionPrincipal,
   type ApplicationOperationId,
+  type ApplicationTelemetryEnvelopeV1,
   canonicalJsonCompatibleV1Policy,
   canonicalJsonV1String,
   type JsonObject,
   validateApplicationAdmissionContextV1,
+  validateApplicationTelemetryEnvelopeV1,
 } from '@applik8s/core';
 import type {
   ApplicationAIAdmissionEvidenceV1,
@@ -60,6 +62,7 @@ export interface ApplicationAIInvocationReservation {
   readonly admission: ApplicationAdmissionContextV1 & {
     readonly principal: ApplicationExecutionPrincipal;
   };
+  readonly telemetry?: ApplicationTelemetryEnvelopeV1;
 }
 
 export interface ApplicationAIAttemptReservation {
@@ -119,6 +122,7 @@ export function createApplicationAIAttemptRuntime(options: {
         );
       }
       const admissionEvidence = applicationAIAdmissionEvidence(admission);
+      if (input.telemetry) validateApplicationTelemetryEnvelopeV1(input.telemetry);
       const requestHash = await applicationAIDigest(input.request);
       return options.store.transact(input.invocationId, (transaction) => {
         const existing = transaction.getInvocation();
@@ -151,6 +155,7 @@ export function createApplicationAIAttemptRuntime(options: {
           admittedPrincipal: structuredClone(input.admittedPrincipal),
           admissionEvidence,
           authorityRevision: input.admittedPrincipal.authorityRevision,
+          ...(input.telemetry ? { telemetry: structuredClone(input.telemetry) } : {}),
           state: 'active',
           createdAt: now,
           updatedAt: now,
