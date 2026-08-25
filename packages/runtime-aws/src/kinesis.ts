@@ -242,7 +242,7 @@ export async function handleKinesisEventRecord(
   } catch (cause) {
     await recordInvalidEnvelope(checkpoints, options, shardId, owner, record.SequenceNumber, cause);
     await checkpoint(checkpoints, options, shardId, owner, record.SequenceNumber, millisBehindLatest);
-    options.logger?.({ event: 'applik8s-event-envelope-invalid', shardId, sequence: record.SequenceNumber, error: safeErrorMessage(cause) });
+    options.logger?.({ event: 'applik8s-event-envelope-invalid', shardId, sequence: record.SequenceNumber, errorType: safeErrorType(cause) });
     return 'terminated';
   }
   if (decoded.channel !== 'events') {
@@ -251,7 +251,12 @@ export async function handleKinesisEventRecord(
   }
   const binding = eventBindingFor(options.bindings, decoded.envelope.contract);
   if (!binding) {
-    await eventLog.publish({ ...decoded.envelope, id: `${decoded.envelope.id}:dead-letter`, causationId: decoded.envelope.id }, 'dead-letter');
+    await eventLog.publish({
+      ...decoded.envelope,
+      id: `${decoded.envelope.id}:dead-letter`,
+      causationId: decoded.envelope.id,
+      routing: { ...(decoded.envelope.routing ?? {}), failureType: 'UnknownBinding' },
+    }, 'dead-letter');
     await checkpoint(checkpoints, options, shardId, owner, record.SequenceNumber, millisBehindLatest);
     return 'terminated';
   }
@@ -276,9 +281,14 @@ export async function handleKinesisEventRecord(
         if (signal.aborted) return 'retried';
         continue;
       }
-      await eventLog.publish({ ...decoded.envelope, id: `${decoded.envelope.id}:dead-letter`, causationId: decoded.envelope.id }, 'dead-letter');
+      await eventLog.publish({
+        ...decoded.envelope,
+        id: `${decoded.envelope.id}:dead-letter`,
+        causationId: decoded.envelope.id,
+        routing: { ...(decoded.envelope.routing ?? {}), failureType: safeErrorType(cause) },
+      }, 'dead-letter');
       await checkpoint(checkpoints, options, shardId, owner, record.SequenceNumber, millisBehindLatest);
-      options.logger?.({ event: 'applik8s-event-dead-lettered', messageId: decoded.envelope.id, binding: binding.bindingId, attempt, error: safeErrorMessage(cause) });
+      options.logger?.({ event: 'applik8s-event-dead-lettered', messageId: decoded.envelope.id, binding: binding.bindingId, attempt, errorType: safeErrorType(cause) });
       return 'terminated';
     }
     // The binding's manifest/frontier commit is the publication receipt.
@@ -582,3 +592,9 @@ function numberAttribute(value: AttributeValue | undefined): number { const pars
 async function abortableDelay(milliseconds: number, signal: AbortSignal): Promise<void> { if (signal.aborted) return; await new Promise<void>((resolve) => { const timer = setTimeout(resolve, milliseconds); signal.addEventListener('abort', () => { clearTimeout(timer); resolve(); }, { once: true }); }); }
 async function allShardLoops(loops: ReadonlyMap<string, Promise<void>>, signal: AbortSignal): Promise<void> { while (!signal.aborted) await abortableDelay(100, signal); await Promise.allSettled([...loops.values()]); }
 function safeErrorMessage(error: unknown): string { return error instanceof Error ? error.message : String(error); }
+function safeErrorType(value: unknown): string {
+  if (value instanceof Error) return value.name || 'Error';
+  if (value === null) return 'null';
+  if (Array.isArray(value)) return 'Array';
+  return typeof value;
+}

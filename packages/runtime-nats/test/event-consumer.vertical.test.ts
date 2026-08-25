@@ -26,19 +26,33 @@ describe('durable JetStream event consumer', () => {
 
   it('leaves the source unacknowledged until retry and dead-letters exhausted failures first', async () => {
     const retryOrder: string[] = [];
+    const records: Readonly<Record<string, unknown>>[] = [];
     await expect(handleJetStreamEventMessage(fakeMessage(2, retryOrder) as never, publisher() as never, {
-      bindings: [{ bindingId: 'history', contract: { name: 'post.created', version: 'v1' }, execute: async () => { throw new Error('object store unavailable'); } }],
+      bindings: [{ bindingId: 'history', contract: { name: 'post.created', version: 'v1' }, execute: async () => { throw new Error('token sk-private must not escape'); } }],
       subjectPrefix: 'applik8s', maxAttempts: 3, retryDelayMs: 10,
+      logger: (record) => records.push(record),
     })).resolves.toBe('retried');
     expect(retryOrder).toEqual(['nak:20']);
+    expect(records).toEqual([expect.objectContaining({
+      event: 'applik8s-event-retry',
+      errorType: 'Error',
+    })]);
+    expect(JSON.stringify(records)).not.toContain('sk-private');
 
     const terminalOrder: string[] = [];
     const published: unknown[] = [];
     await expect(handleJetStreamEventMessage(fakeMessage(3, terminalOrder) as never, publisher(published) as never, {
-      bindings: [{ bindingId: 'history', contract: { name: 'post.created', version: 'v1' }, execute: async () => { throw new Error('corrupt row'); } }],
+      bindings: [{ bindingId: 'history', contract: { name: 'post.created', version: 'v1' }, execute: async () => { throw new Error('credential private-terminal must not escape'); } }],
       subjectPrefix: 'applik8s', maxAttempts: 3,
     })).resolves.toBe('terminated');
-    expect(published).toEqual([expect.objectContaining({ subject: 'applik8s.dead-letter.history', body: expect.objectContaining({ id: 'event-1:dead-letter' }) })]);
+    expect(published).toEqual([expect.objectContaining({
+      subject: 'applik8s.dead-letter.history',
+      body: expect.objectContaining({
+        id: 'event-1:dead-letter',
+        routing: expect.objectContaining({ failureType: 'Error' }),
+      }),
+    })]);
+    expect(JSON.stringify(published)).not.toContain('private-terminal');
     expect(terminalOrder).toEqual(['term:applik8s event attempts exhausted']);
   });
 

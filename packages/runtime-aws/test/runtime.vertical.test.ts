@@ -328,6 +328,60 @@ describe('AWS Kinesis event log and command processing', () => {
     ]);
   });
 
+  it('redacts Kinesis event failures from logs and dead-letter payloads', async () => {
+    const order: string[] = [];
+    const checkpoints = new MemoryKinesisCheckpoints('owner', order);
+    const deadLetters: object[] = [];
+    const records: Readonly<Record<string, unknown>>[] = [];
+    const eventLog: ApplicationEventLogPublisher = {
+      async verify() {},
+      async publish(envelope, channel = 'events') {
+        order.push(channel);
+        deadLetters.push(envelope);
+        return { stream: 'events', sequence: 1, duplicate: false, subject: channel, messageId: envelope.id };
+      },
+      async consumerLag() { return { pending: 0, ackPending: 0, redelivered: 0 }; },
+      async drain() {},
+    };
+    const options = {
+      streamName: 'application-events', checkpointTable: 'checkpoints', consumer: 'history', maxAttempts: 1,
+      bindings: [{
+        bindingId: 'lakehouse-history', contract: { name: 'post.created', version: 'v1' },
+        async execute() { throw new Error('credential sk-private must not escape'); },
+      }],
+      logger: (record: Readonly<Record<string, unknown>>) => records.push(record),
+    } as const;
+    const record = {
+      SequenceNumber: '78',
+      PartitionKey: 'post-1',
+      Data: new TextEncoder().encode(JSON.stringify({
+        ...commandEnvelope('post-1'),
+        contract: { name: 'post.created', version: 'v1' },
+        channel: 'events',
+      })),
+    };
+
+    await expect(handleKinesisEventRecord(
+      checkpoints,
+      eventLog,
+      options,
+      'shard-0',
+      'owner',
+      record,
+      0,
+      new AbortController().signal,
+    )).resolves.toBe('terminated');
+    expect(deadLetters).toEqual([expect.objectContaining({
+      id: 'post-1:dead-letter',
+      routing: expect.objectContaining({ failureType: 'Error' }),
+    })]);
+    expect(records).toEqual([expect.objectContaining({
+      event: 'applik8s-event-dead-lettered',
+      errorType: 'Error',
+    })]);
+    expect(JSON.stringify({ deadLetters, records })).not.toContain('sk-private');
+  });
+
   it('surfaces shard-loop failure through the processor lifecycle instead of silently losing supervision', async () => {
     const processor = await startKinesisCommandProcessor({
       streamName: 'application-events', checkpointTable: 'checkpoints', consumer: 'posts',

@@ -88,14 +88,31 @@ describe('v0.8 lakehouse publication discovery', () => {
     expect(awsArtifact).toBeDefined();
     if (!artifact || !awsArtifact) return;
     expect(artifact.publicationId).toBe('lakehouse-publication.usage.recorded.v1.historical-usage');
+    expect(artifact.name).toMatch(/^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$/u);
+    expect(artifact.name).not.toContain('.');
     expect(artifact.resources).toEqual(expect.arrayContaining([
-      expect.objectContaining({ kind: 'Consumer', spec: expect.objectContaining({ ackPolicy: 'explicit' }) }),
+      expect.objectContaining({
+        kind: 'Consumer',
+        spec: expect.objectContaining({
+          ackPolicy: 'explicit',
+          durableName: artifact.name,
+        }),
+      }),
       expect.objectContaining({ kind: 'Deployment' }),
     ]));
     const bundled = await readFile(artifact.sourcePath, 'utf8');
+    const generated = await readFile(
+      join(artifact.sourcePath, '..', 'publisher.cloud.generated.ts'),
+      'utf8',
+    );
     const awsBundle = await readFile(awsArtifact.sourcePath, 'utf8');
     const localBundle = await readFile(artifact.localSourcePath, 'utf8');
     expect(bundled).toContain('startJetStreamEventConsumer');
+    expect(generated).toContain("return normalizeSchema(");
+    expect(generated).not.toContain('if (!normalized.ok)');
+    expect(generated).toContain('transformCallback(event, { append })');
+    expect(generated).toContain('const validated = rowSchema.validate(row)');
+    expect(generated).toContain("typeof runtime.close === 'function'");
     expect(bundled).not.toContain('APPLIK8S_KINESIS_CHECKPOINT_TABLE');
     expect(awsBundle).toContain('APPLIK8S_KINESIS_CHECKPOINT_TABLE');
     expect(awsBundle).not.toContain('APPLIK8S_NATS_STREAM');
@@ -125,11 +142,20 @@ describe('v0.8 lakehouse publication discovery', () => {
     expect(artifact).toBeDefined();
     if (!artifact) return;
     const bundled = await readFile(artifact.sourcePath, 'utf8');
+    const sourceMap = JSON.parse(await readFile(artifact.sourceMapPath, 'utf8')) as {
+      readonly sources?: readonly unknown[];
+    };
     const generated = await readFile(
       join(artifact.sourcePath, '..', 'publisher.cloud.generated.ts'),
       'utf8',
     );
     expect(bundled).toContain('startApplicationOpenTelemetryRuntime');
+    const telemetrySources = (sourceMap.sources ?? []).filter(
+      (source): source is string => typeof source === 'string'
+        && /application-telemetry-runtime\.[jt]s$/u.test(source),
+    );
+    expect(telemetrySources).toHaveLength(1);
+    expect(telemetrySources[0]).toContain('packages/applik8s/src/application-telemetry-runtime.ts');
     expect(generated).toContain('installApplicationTelemetryRuntimeResolver');
     expect(generated).toContain('closeApplicationTelemetryRuntime');
     expect(generated).toContain("finally { await drain('runner-closed'); }");

@@ -65,7 +65,7 @@ export async function handleJetStreamEventMessage(
     envelope = eventEnvelope(message.data);
   } catch (cause) {
     message.term('invalid applik8s event envelope');
-    log(options, 'applik8s-event-envelope-invalid', { subject: message.subject, error: safeErrorMessage(cause) });
+    log(options, 'applik8s-event-envelope-invalid', { subject: message.subject, errorType: safeErrorType(cause) });
     return 'terminated';
   }
   const binding = bindingFor(options.bindings, envelope.contract);
@@ -88,16 +88,16 @@ export async function handleJetStreamEventMessage(
     if (attempt < maximum) {
       const delayMs = retryDelay(attempt, options.retryDelayMs ?? 100, options.maxRetryDelayMs ?? 30_000);
       message.nak(delayMs);
-      log(options, 'applik8s-event-retry', { messageId: envelope.id, binding: binding.bindingId, attempt, delayMs, error: safeErrorMessage(cause) });
+      log(options, 'applik8s-event-retry', { messageId: envelope.id, binding: binding.bindingId, attempt, delayMs, errorType: safeErrorType(cause) });
       return 'retried';
     }
     await jetStream.publish(
       `${options.subjectPrefix}.dead-letter.${subjectToken(binding.bindingId)}`,
-      codec.encode(JSON.stringify({ ...envelope, id: `${envelope.id}:dead-letter`, causationId: envelope.id, routing: { ...(envelope.routing ?? {}), deadLetterBinding: binding.bindingId, failure: safeErrorMessage(cause) } })),
+      codec.encode(JSON.stringify({ ...envelope, id: `${envelope.id}:dead-letter`, causationId: envelope.id, routing: { ...(envelope.routing ?? {}), deadLetterBinding: binding.bindingId, failureType: safeErrorType(cause) } })),
       { msgID: `${envelope.id}:dead-letter` },
     );
     message.term('applik8s event attempts exhausted');
-    log(options, 'applik8s-event-dead-lettered', { messageId: envelope.id, binding: binding.bindingId, attempt, error: safeErrorMessage(cause) });
+    log(options, 'applik8s-event-dead-lettered', { messageId: envelope.id, binding: binding.bindingId, attempt, errorType: safeErrorType(cause) });
     return 'terminated';
   }
 }
@@ -142,5 +142,10 @@ function bindingFor(bindings: readonly ApplicationEventConsumerBinding[], contra
 }
 function retryDelay(attempt: number, base: number, maximum: number): number { return Math.min(maximum, base * 2 ** Math.max(0, attempt - 1)); }
 function subjectToken(value: string): string { return value.toLowerCase().replace(/[^a-z0-9_-]+/gu, '-').replace(/^-+|-+$/gu, '') || 'value'; }
-function safeErrorMessage(value: unknown): string { return value instanceof Error ? value.message : String(value); }
+function safeErrorType(value: unknown): string {
+  if (value instanceof Error) return value.name || 'Error';
+  if (value === null) return 'null';
+  if (Array.isArray(value)) return 'Array';
+  return typeof value;
+}
 function log(options: Pick<JetStreamEventConsumerOptions, 'logger'>, event: string, context: Readonly<Record<string, unknown>>): void { options.logger?.({ event, ...context }); }

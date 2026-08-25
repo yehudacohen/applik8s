@@ -215,6 +215,7 @@ export function applik8sWorkspaceSourcePlugin(): Plugin {
     ['@applik8s/applik8s/internal/historical-model-commands', resolve(workspaceRoot, 'packages/applik8s/src/historical-model-commands.ts')],
     ['@applik8s/applik8s/processor-runtime', resolve(workspaceRoot, 'packages/applik8s/src/processor-runtime.ts')],
     ['@applik8s/applik8s/event-log-runtime', resolve(workspaceRoot, 'packages/applik8s/src/event-log-runtime.ts')],
+    ['@applik8s/applik8s/telemetry-runtime', resolve(workspaceRoot, 'packages/applik8s/src/application-telemetry-runtime.ts')],
     ['@applik8s/applik8s/lakehouse-runtime', resolve(workspaceRoot, 'packages/applik8s/src/application-lakehouse.ts')],
     ['@applik8s/applik8s/postgres-runtime-contract', resolve(workspaceRoot, 'packages/applik8s/src/postgres-runtime-contract.ts')],
     ['@applik8s/applik8s/reactive-runtime', resolve(workspaceRoot, 'packages/applik8s/src/reactive-runtime.ts')],

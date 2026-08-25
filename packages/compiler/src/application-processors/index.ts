@@ -9,6 +9,7 @@ import type { GeneratedApplicationContainerArtifact } from '../application-conta
 import { emitGeneratedApplicationContainer } from '../application-containers/index.js';
 import { applicationFrameworkCredentialDependencies } from '../application-framework-credentials.js';
 import { applicationGraphBooleanCondition, applicationGraphInterpolate, applicationGraphJsonStringArray, applicationGraphStringValue } from '../application-installation-values.js';
+import { jetStreamConsumerName } from '../application-nats-naming.js';
 import { applicationGraphHasObservabilityRuntime, generatedApplicationTelemetryImports, generatedApplicationTelemetryRuntimeSource } from '../application-observability-runtime-source.js';
 import { applicationStaticAuthorityManifest, compileApplicationOperationCatalog } from '../application-operations/index.js';
 import { applik8sWorkspaceSourcePlugin } from '../bundling/index.js';
@@ -333,7 +334,7 @@ function processorContract(graph: ApplicationGraph, processor: ApplicationProces
     streamReplicas: numberConfig(config.replicas, 1),
     subjectPrefix:
       applicationGraphStringValue(config.subjectPrefix) || 'applik8s',
-    consumer: kubernetesName(processor.name),
+    consumer: jetStreamConsumerName(processor.name, 'processor'),
     ...(secretRef?.name ? { connectionSecret: { name: secretRef.name, ...(secretNamespace ? { namespace: secretNamespace } : {}), authMode, tokenKey: stringConfig(config.tokenKey) || 'token', userKey: stringConfig(config.userKey) || 'user', passwordKey: stringConfig(config.passwordKey) || 'password' } } : {}),
     retention: {
       bindingIds: handlers.map((handler) => handler.node.name),

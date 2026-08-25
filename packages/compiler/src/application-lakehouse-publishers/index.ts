@@ -9,6 +9,7 @@ import { generatedCallbackFactoryModule } from '../application-callback-module.j
 import { emitGeneratedApplicationContainer, type GeneratedApplicationContainerArtifact } from '../application-containers/index.js';
 import { applicationFrameworkCredentialDependencies } from '../application-framework-credentials.js';
 import { applicationGraphBooleanCondition, applicationGraphInterpolate, applicationGraphJsonStringArray, applicationGraphStringValue } from '../application-installation-values.js';
+import { jetStreamConsumerName } from '../application-nats-naming.js';
 import { applicationGraphHasObservabilityRuntime, generatedApplicationTelemetryImports, generatedApplicationTelemetryRuntimeSource } from '../application-observability-runtime-source.js';
 import { applik8sWorkspaceSourcePlugin } from '../bundling/index.js';
 
@@ -203,17 +204,24 @@ ${partitionModule ? `import { createCallback as createPartition } from './${part
 
 function requiredEnv(name) { const value = process.env[name]; if (!value) throw new Error('Missing required environment variable ' + name); return value; }
 function runtimeJsonSchema(schema, exportName) {
-  const normalized = normalizeSchema({ kind: 'jsonSchema', ref: { kind: 'jsonSchema', exportName }, schema });
-  if (!normalized.ok) throw new Error(normalized.error.message);
-  return normalized.value;
+  return normalizeSchema(
+    { kind: 'jsonSchema', ref: { kind: 'jsonSchema', exportName }, schema },
+    exportName,
+  );
 }
-const transform = createTransform({});
+const transformCallback = createTransform({});
 ${partitionModule ? 'const partition = createPartition({});' : ''}
+const rowSchema = runtimeJsonSchema(${JSON.stringify(publication.row.jsonSchema)}, ${JSON.stringify(`${contract.qualification}.row`)});
+function append(row) {
+  const validated = rowSchema.validate(row);
+  if (!validated.ok) throw new Error(${JSON.stringify(`Lakehouse publication ${publication.id} produced an invalid row: `)} + validated.error.message);
+  return validated.value;
+}
 const Publication = {
   kind: 'applicationLakehousePublication',
   event: { id: ${JSON.stringify(publication.sourceEventId)}, payload: runtimeJsonSchema(${JSON.stringify(publication.source.jsonSchema)}, ${JSON.stringify(`${publication.sourceEventId}.payload`)}) },
   dataset: { name: 'LakehouseDataset', qualification: { name: ${JSON.stringify(contract.qualification)} } },
-  transform,
+  transform: (event) => transformCallback(event, { append }),
   ${partitionModule ? 'partition,' : ''}
 };
 const datasets = ${JSON.stringify(contract.datasets)};
@@ -224,7 +232,7 @@ if (!selected) throw new Error('No LakehouseDataset runtime branch supports targ
 const runtime = ${runtimeTarget === 'local' ? `selected.kind === 'duckdb-dataset'
   ? await createDuckDbApplicationLakehouseRuntime({
       datasetId: ${JSON.stringify(contract.qualification)}, schemaRevision: selected.schemaRevision,
-      schema: runtimeJsonSchema(${JSON.stringify(publication.row.jsonSchema)}, ${JSON.stringify(`${contract.qualification}.row`)}),
+      schema: rowSchema,
       cursorKey: requiredEnv(selected.cursorSecretEnvironment), root: selected.root,
       maximumObjectsPerSnapshot: selected.maximumObjectsPerSnapshot, retainedSnapshots: selected.retainedSnapshots,
     })
@@ -235,7 +243,7 @@ const runtime = ${runtimeTarget === 'local' ? `selected.kind === 'duckdb-dataset
         datasetId: ${JSON.stringify(contract.qualification)}, bucket: override.bucket ?? selected.bucket,
         prefix: override.prefix ?? selected.prefix, region: override.region ?? selected.region ?? process.env.AWS_REGION,
         catalogDatabase: override.catalogDatabase ?? selected.catalog, schemaRevision: selected.schemaRevision,
-        schema: runtimeJsonSchema(${JSON.stringify(publication.row.jsonSchema)}, ${JSON.stringify(`${contract.qualification}.row`)}),
+        schema: rowSchema,
         cursorKey: requiredEnv(selected.cursorSecretEnvironment),
         maximumObjectsPerSnapshot: selected.maximumObjectsPerSnapshot, retainedSnapshots: selected.retainedSnapshots,
       });
@@ -271,6 +279,7 @@ function drain(signal) {
   await rm('/tmp/applik8s-lakehouse-publisher-ready', { force: true });
   let failure;
   try { await runner.drain(); } catch (error) { failure = error; }
+  try { if (typeof runtime.close === 'function') await runtime.close(); } catch (error) { failure ??= error; }
   try { disposeRuntime(); } catch (error) { failure ??= error; }
   ${contract.observability ? 'try { await closeApplicationTelemetryRuntime(); } catch (error) { failure ??= error; }' : ''}
   console.log(JSON.stringify({ event: 'applik8s-lakehouse-publisher-drained', signal }));
@@ -331,7 +340,10 @@ function publisherContract(
     ...(ownsStream && streamCondition && streamCondition !== 'true' ? { streamIncludeWhen: streamCondition } : {}),
     streamReplicas: positiveInteger(eventConfig.replicas) ?? 1,
     subjectPrefix: applicationGraphStringValue(eventConfig.subjectPrefix) || 'applik8s',
-    consumer: kubernetesName(`lakehouse-${publication.name}-${createHash('sha256').update(publication.id).digest('hex').slice(0, 8)}`),
+    consumer: jetStreamConsumerName(
+      `lakehouse-${publication.name}-${createHash('sha256').update(publication.id).digest('hex').slice(0, 8)}`,
+      'lakehouse-publisher',
+    ),
     observability: applicationGraphHasObservabilityRuntime(graph),
     ...(secret?.name ? { connectionSecret: { name: secret.name, authMode, tokenKey: stringValue(eventConfig.tokenKey) || 'token', userKey: stringValue(eventConfig.userKey) || 'user', passwordKey: stringValue(eventConfig.passwordKey) || 'password' } } : {}),
   };
