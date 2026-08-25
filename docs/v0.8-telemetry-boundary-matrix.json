@@ -133,8 +133,8 @@
           "marker": "generatedApplicationTelemetryRuntimeSource"
         }
       ],
-      "regression": "bunx vitest run --maxWorkers=1 packages/applik8s/test/event-log-runtime.vertical.test.ts packages/applik8s/test/application-lakehouse.vertical.test.ts packages/runtime-nats/test/event-consumer.vertical.test.ts packages/runtime-aws/test/runtime.vertical.test.ts packages/compiler/test/application-lakehouse-publications.vertical.test.ts && bash scripts/run-v08-observability-postgres-live.sh",
-      "remaining": "Qualify the generated application worker as a real process from authenticated HTTP through model commit, outbox relay, broker redelivery, and processor retry/replay with collector-visible linkage, restart continuity, redacted terminal outcomes, and verified cleanup. Deterministic and disposable-PostgreSQL evidence implements the carrier and attempt contract but does not claim a real JetStream/Kinesis backend lifecycle."
+      "regression": "bunx vitest run --maxWorkers=1 packages/applik8s/test/event-log-runtime.vertical.test.ts packages/applik8s/test/application-lakehouse.vertical.test.ts packages/runtime-nats/test/event-consumer.vertical.test.ts packages/runtime-aws/test/runtime.vertical.test.ts packages/compiler/test/application-lakehouse-publications.vertical.test.ts && bash scripts/run-v08-observability-postgres-live.sh && bun run test:v08:observability-generated-process-live",
+      "remaining": "The generated authenticated HTTP to PostgreSQL model/outbox to real JetStream lakehouse-publisher path now proves stable event identity, attempts 1 then 2 across publisher-process restart, one committed effect, redacted failures, local OTLP linkage, and verified cleanup. This does not qualify Kinesis as a live backend, a stream-processor attempt, a package-managed or external collector, ClickStack, or CloudWatch."
     },
     {
       "kind": "http",
@@ -157,8 +157,8 @@
           "marker": "kind: webhookEvent ? 'event' : 'http'"
         }
       ],
-      "regression": "bunx vitest run --maxWorkers=1 packages/compiler/test/application-fetch-gateway.vertical.test.ts packages/compiler/test/application-http.vertical.test.ts",
-      "remaining": "Prove a complete request-to-model-to-outbox causal vertical and redacted denial, timeout, and cancellation outcomes."
+      "regression": "bunx vitest run --maxWorkers=1 packages/compiler/test/application-fetch-gateway.vertical.test.ts packages/compiler/test/application-http.vertical.test.ts && bun run test:v08:observability-generated-process-live",
+      "remaining": "The positive authenticated request-to-model-to-outbox causal vertical is proven in a generated process. Redacted denial, timeout, cancellation, and remote-provider failure outcomes remain."
     },
     {
       "kind": "model",
@@ -178,8 +178,8 @@
           "marker": "kind: 'model'"
         }
       ],
-      "regression": "bash scripts/run-v08-observability-postgres-live.sh",
-      "remaining": "Extend the boundary through authoritative commit outcome, internal PostgreSQL retries, function-native transactions, and Kubernetes model mutations without emitting spans for durable replay."
+      "regression": "bash scripts/run-v08-observability-postgres-live.sh && bun run test:v08:observability-generated-process-live",
+      "remaining": "The positive generated native-PostgreSQL authoritative commit plus exactly one transactional event-outbox record is proven through a real process chain. Internal PostgreSQL retries, function-native transactions, negative commit outcomes, and Kubernetes model mutations remain, without emitting spans for durable replay."
     },
     {
       "kind": "operation",
@@ -219,7 +219,7 @@
         }
       ],
       "regression": "bunx vitest run --maxWorkers=1 packages/applik8s/test/stream-processor-runtime.vertical.test.ts packages/applik8s/test/stream-runtime-postgres.vertical.test.ts",
-      "remaining": "Record delivery lag and redacted terminal outcomes, distinguish explicit replay, and prove emitted-worker PostgreSQL restart/cleanup continuity."
+      "remaining": "Record delivery lag and redacted terminal outcomes, distinguish explicit replay, and prove an emitted stream-processor worker's PostgreSQL restart/cleanup continuity. The generated-process live receipt terminates in a lakehouse event publisher and deliberately does not qualify this separate processor boundary."
     },
     {
       "kind": "provider",
