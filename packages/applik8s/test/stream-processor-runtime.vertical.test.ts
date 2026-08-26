@@ -39,15 +39,44 @@ function telemetry(sequence: number) {
   });
 }
 
-function recordingTelemetryRuntime(boundaries: ApplicationTelemetryBoundary[]): ApplicationTelemetryRuntime {
+interface RecordedTelemetryMetric {
+  readonly metric: string;
+  readonly value: number;
+  readonly attributes?: Readonly<Record<string, string | number | boolean>>;
+}
+
+interface RecordedTelemetryCompletion {
+  readonly boundary: ApplicationTelemetryBoundary;
+  readonly result: 'error' | 'ok';
+  readonly errorType?: string;
+}
+
+function recordingTelemetryRuntime(
+  boundaries: ApplicationTelemetryBoundary[],
+  metrics: RecordedTelemetryMetric[] = [],
+  completions: RecordedTelemetryCompletion[] = [],
+): ApplicationTelemetryRuntime {
   return {
     async run(boundary, execute) {
       boundaries.push(boundary);
-      return execute();
+      try {
+        const result = await execute();
+        completions.push({ boundary, result: 'ok' });
+        return result;
+      } catch (error) {
+        completions.push({
+          boundary,
+          result: 'error',
+          errorType: error instanceof Error ? error.name : 'UnknownError',
+        });
+        throw error;
+      }
     },
     log() {},
     count() {},
-    record() {},
+    record(metric, value, attributes) {
+      metrics.push({ metric, value, ...(attributes ? { attributes } : {}) });
+    },
     capture() { return undefined; },
   };
 }
@@ -260,8 +289,10 @@ describe('durable replay stream processor runtime', () => {
   it('links every asynchronous processor attempt to the durable producer carrier and preserves retry identity', async () => {
     const parent = telemetry(1);
     const boundaries: ApplicationTelemetryBoundary[] = [];
+    const metrics: RecordedTelemetryMetric[] = [];
+    const completions: RecordedTelemetryCompletion[] = [];
     const dispose = installApplicationTelemetryRuntimeResolver(
-      () => recordingTelemetryRuntime(boundaries),
+      () => recordingTelemetryRuntime(boundaries, metrics, completions),
     );
     const persisted = store();
     let attempts = 0;
@@ -326,6 +357,55 @@ describe('durable replay stream processor runtime', () => {
         relationship: 'asynchronous',
         links: [parent],
       },
+    ]);
+    expect(completions.map(({ result, errorType }) => ({ result, errorType }))).toEqual([
+      { result: 'error', errorType: 'Error' },
+      { result: 'ok', errorType: undefined },
+    ]);
+    expect(metrics).toHaveLength(2);
+    expect(metrics.every(({ metric, value }) => metric === 'applik8s.delivery.lag' && value >= 0)).toBe(true);
+    expect(metrics.map(({ attributes }) => attributes?.['applik8s.result'])).toEqual(['error', 'ok']);
+  });
+
+  it('classifies explicit history replay without relabeling its physical retry', async () => {
+    const boundaries: ApplicationTelemetryBoundary[] = [];
+    const dispose = installApplicationTelemetryRuntimeResolver(
+      () => recordingTelemetryRuntime(boundaries),
+    );
+    let attempts = 0;
+    try {
+      await runApplicationStreamProcessor({
+        processor: 'timeline-replay',
+        streamName: 'posts.published.v1',
+        source: {
+          async read() {
+            return {
+              items: [envelope(1)],
+              nextSequence: 1,
+              exhausted: true,
+              retentionFloor: 0,
+            };
+          },
+        },
+        store: store().value,
+        admit: admitStreamDelivery,
+        handle: async () => {
+          attempts += 1;
+          if (attempts === 1) throw new Error('retry replay');
+        },
+        concurrency: 1,
+        retry: { maxAttempts: 2, initialDelayMs: 1, maxDelayMs: 1, factor: 2 },
+        failure: 'pause',
+        timeoutMs: 1_000,
+        maxInputBytes: 1_000,
+        invocation: 'replay',
+      });
+    } finally {
+      dispose();
+    }
+    expect(boundaries.map(({ attempt, invocation }) => ({ attempt, invocation }))).toEqual([
+      { attempt: 1, invocation: 'replay' },
+      { attempt: 2, invocation: 'retry' },
     ]);
   });
 
@@ -501,7 +581,11 @@ describe('durable replay stream processor runtime', () => {
     expect(dead.deadLetters).toEqual(['event-1']);
 
     const paused = store();
-    await expect(runApplicationStreamProcessor({ processor: 'timeline', streamName: 'posts.published.v1', source, store: paused.value, admit: admitStreamDelivery, handle: async () => { throw new Error('boom'); }, concurrency: 1, retry: { maxAttempts: 1, initialDelayMs: 1, maxDelayMs: 1, factor: 2 }, failure: 'pause', timeoutMs: 1_000, maxInputBytes: 1_000 })).rejects.toBeInstanceOf(ApplicationStreamProcessorPausedError);
+    const privateFailure = 'processor-private-credential-must-not-leak';
+    const pausedFailure = await runApplicationStreamProcessor({ processor: 'timeline', streamName: 'posts.published.v1', source, store: paused.value, admit: admitStreamDelivery, handle: async () => { throw new Error(privateFailure); }, concurrency: 1, retry: { maxAttempts: 1, initialDelayMs: 1, maxDelayMs: 1, factor: 2 }, failure: 'pause', timeoutMs: 1_000, maxInputBytes: 1_000 }).catch((error: unknown) => error);
+    expect(pausedFailure).toBeInstanceOf(ApplicationStreamProcessorPausedError);
+    expect(pausedFailure).toMatchObject({ detail: 'Processor attempt failed (Error).' });
+    expect(JSON.stringify(pausedFailure)).not.toContain(privateFailure);
     expect(paused.checkpoint()).toBe(0);
   });
 

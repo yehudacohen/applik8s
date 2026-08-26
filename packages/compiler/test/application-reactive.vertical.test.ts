@@ -2091,7 +2091,7 @@ describe('generated v0.6 reactive workloads', () => {
     });
     const source = await readFile(artifact?.sourcePath ?? '', 'utf8');
 		const generatedSource = await readFile(join(dirname(artifact?.sourcePath ?? ''), 'stream-processor.generated.ts'), 'utf8');
-    expect(source).toContain('must be an integer between');
+    expect(source).toContain('APPLIK8S_PROCESSOR_CONCURRENCY');
     expect(source).toMatch(/includeTrustedContext:(?:true|!0)/);
     expect(source).toContain('.trustedContext.tenantId');
     expect(source).toContain('.principal?.id');

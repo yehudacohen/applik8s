@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import type { ApplicationAdmissionInvocationContextV1 } from '@applik8s/core';
 import { applicationAdmissionRejectionCodeV1 } from '@applik8s/core/admission';
 import type { ApplicationEventBatch, ApplicationStreamBatchContext, ApplicationStreamProcessContext } from './application-reactive.js';
-import { runApplicationTelemetryBoundary } from './application-telemetry-runtime.js';
+import { recordApplicationTelemetry, runApplicationTelemetryBoundary } from './application-telemetry-runtime.js';
 import type { ApplicationPostgresSql } from './postgres-runtime-contract.js';
 import { createApplicationPostgresSql } from './postgres-runtime-loader.js';
 import type { ApplicationReplayableStream, ApplicationStreamEnvelope } from './projection-runtime-clickhouse.js';
@@ -264,6 +264,8 @@ export interface RunApplicationStreamProcessorOptions<
   readonly failure: 'pause' | 'deadLetter';
   readonly timeoutMs: number;
   readonly maxInputBytes: number;
+  /** Classifies an explicitly requested history replay; ordinary restart recovery remains live delivery. */
+  readonly invocation?: 'live' | 'replay';
   readonly batchSize?: number;
   readonly maxBatches?: number;
 }
@@ -319,6 +321,8 @@ export interface RunApplicationStreamBatchProcessorOptions<
   readonly maxBytes: number;
   readonly concurrency: number;
   readonly maxBatches?: number;
+  /** Classifies an explicitly requested history replay; frozen retry attempts remain retries. */
+  readonly invocation?: 'live' | 'replay';
 }
 
 export async function runApplicationStreamBatchProcessor<
@@ -509,10 +513,16 @@ async function processFrozenBatch<
         instance: frozen.id,
         occurrence: frozen.id,
         attempt,
-        invocation: attempt > 1 ? 'retry' : 'live',
+        invocation: attempt > 1 ? 'retry' : options.invocation ?? 'live',
         relationship: 'asynchronous',
         links: frozen.events.flatMap((event) => event.telemetry ? [event.telemetry] : []),
-        attributes: { 'applik8s.stream': options.streamName, 'applik8s.batch.size': frozen.events.length },
+        attributes: {
+          'applik8s.stream': options.streamName,
+          'applik8s.batch.size': frozen.events.length,
+          'applik8s.delivery.lag': streamProcessorDeliveryLagSeconds(
+            frozen.events.map((event) => event.recordedAt),
+          ),
+        },
       }, async () => {
         const values = await Promise.all(frozen.events.map(async (event) => {
           const admission = await options.admit({
@@ -566,8 +576,10 @@ async function processFrozenBatch<
           signal: controller.signal,
         });
       });
+      recordStreamProcessorDeliveryLag(options.processor, frozen.events.map((event) => event.recordedAt), 'ok');
       return { state: 'processed', eventId: frozen.id };
     } catch (error) {
+      recordStreamProcessorDeliveryLag(options.processor, frozen.events.map((event) => event.recordedAt), 'error');
       lastError = controller.signal.aborted
         ? `Timed out after ${options.timeoutMs}ms`
         : applicationStreamProcessorErrorMessage(error);
@@ -623,10 +635,15 @@ async function processEnvelope<
         instance: envelope.id,
         occurrence: envelope.id,
         attempt,
-        invocation: attempt > 1 ? 'retry' : 'live',
+        invocation: attempt > 1 ? 'retry' : options.invocation ?? 'live',
         relationship: 'asynchronous',
         links: envelope.telemetry ? [envelope.telemetry] : [],
-        attributes: { 'applik8s.stream': options.streamName },
+        attributes: {
+          'applik8s.stream': options.streamName,
+          'applik8s.delivery.lag': streamProcessorDeliveryLagSeconds([
+            envelope.recordedAt,
+          ]),
+        },
       }, async () => {
         const admission = await options.admit({
           envelope,
@@ -662,8 +679,10 @@ async function processEnvelope<
         controller.signal.throwIfAborted();
         await options.handle(payload, context);
       });
+      recordStreamProcessorDeliveryLag(options.processor, [envelope.recordedAt], 'ok');
       return { state: 'processed', eventId: envelope.id };
     } catch (error) {
+      recordStreamProcessorDeliveryLag(options.processor, [envelope.recordedAt], 'error');
       lastError = controller.signal.aborted
         ? `Timed out after ${options.timeoutMs}ms`
         : applicationStreamProcessorErrorMessage(error);
@@ -682,8 +701,9 @@ async function processEnvelope<
  * can contain implementation or credential detail and must not be persisted.
  */
 function applicationStreamProcessorErrorMessage(error: unknown): string {
-  const message = error instanceof Error ? error.message : String(error);
-  if (!error || typeof error !== 'object') return message;
+  if (!error || typeof error !== 'object') {
+    return 'Processor attempt failed (UnknownError).';
+  }
   const code = Reflect.get(error, 'code');
   if (
     typeof code === 'string'
@@ -697,14 +717,52 @@ function applicationStreamProcessorErrorMessage(error: unknown): string {
     || !rejection
     || typeof rejection !== 'object'
   ) {
-    return message;
+    return `Processor attempt failed (${streamProcessorErrorType(error)}).`;
   }
   const name = Reflect.get(rejection, 'name');
-  const payload = Reflect.get(rejection, 'payload');
-  if (typeof name !== 'string' || !payload || typeof payload !== 'object') {
-    return message;
+  if (typeof name !== 'string') {
+    return 'Processor attempt failed (DurableCommandRejectedError).';
   }
-  return `${message}: ${JSON.stringify({ name, payload })}`;
+  return `Model operation rejected (${boundedProcessorErrorType(name)}).`;
+}
+
+function streamProcessorErrorType(error: object): string {
+  const name = error instanceof Error ? error.name : Reflect.get(error, 'name');
+  return boundedProcessorErrorType(name);
+}
+
+function boundedProcessorErrorType(value: unknown): string {
+  return typeof value === 'string' && /^[A-Za-z][A-Za-z0-9_.-]{0,63}$/.test(value)
+    ? value
+    : 'UnknownError';
+}
+
+function streamProcessorDeliveryLagSeconds(recordedAt: readonly string[]): number {
+  const issuedAt = recordedAt
+    .map((value) => Date.parse(value))
+    .filter((value) => Number.isFinite(value));
+  if (issuedAt.length === 0) return 0;
+  return Math.max(0, Date.now() - Math.min(...issuedAt)) / 1_000;
+}
+
+function recordStreamProcessorDeliveryLag(
+  processor: string,
+  recordedAt: readonly string[],
+  result: 'error' | 'ok',
+): void {
+  try {
+    recordApplicationTelemetry(
+      'applik8s.delivery.lag',
+      streamProcessorDeliveryLagSeconds(recordedAt),
+      {
+        'applik8s.boundary.kind': 'processor',
+        'applik8s.operation': processor,
+        'applik8s.result': result,
+      },
+    );
+  } catch {
+    // Telemetry cannot alter processor acknowledgement or retry behavior.
+  }
 }
 
 function streamPayloadDecodeContext<TPayload extends object>(

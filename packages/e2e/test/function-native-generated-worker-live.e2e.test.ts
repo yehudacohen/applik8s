@@ -1,8 +1,10 @@
 // typecast-file-boundary: this live compiler fixture intentionally assembles the normalized graph contract exercised by the generated worker.
+
+import { type ChildProcess, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { spawn, type ChildProcess } from 'node:child_process';
 import { mkdtemp, rm } from 'node:fs/promises';
-import { createServer } from 'node:net';
+import { createServer as createHttpServer, type Server } from 'node:http';
+import { type AddressInfo, createServer as createNetServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type {
@@ -11,17 +13,20 @@ import type {
   ApplicationPrincipal,
   JsonObject,
 } from '@applik8s/core';
+import { createApplicationTelemetryEnvelopeV1 } from '@applik8s/core';
 import postgres from 'postgres';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
-  applicationModelMigrationSql,
   type ApplicationRuntimeModelContract,
+  applicationModelMigrationSql,
 } from '../../applik8s/src/application-models.js';
 import { applicationRequestContextValues } from '../../applik8s/src/command-principal.js';
 import { emitGeneratedApplicationReactive } from '../../compiler/src/application-reactive/index.js';
 
-const databaseUrl =
-  process.env.APPLIK8S_V07_FUNCTION_NATIVE_WORKER_DATABASE_URL;
+const v08DatabaseUrl = process.env.APPLIK8S_V08_PROCESSOR_DATABASE_URL;
+const databaseUrl = v08DatabaseUrl
+  ?? process.env.APPLIK8S_V07_FUNCTION_NATIVE_WORKER_DATABASE_URL;
+const observabilityLive = Boolean(v08DatabaseUrl);
 
 describe('v0.7 exact generated function-native worker', () => {
   const children = new Set<ChildProcess>();
@@ -34,6 +39,10 @@ describe('v0.7 exact generated function-native worker', () => {
   it.skipIf(!databaseUrl)(
     'executes compiler-emitted runtime.mjs atomically and recovers duplicate delivery without repeating effects',
     async () => {
+      const selectedDatabaseUrl = databaseUrl;
+      if (!selectedDatabaseUrl) {
+        throw new Error('Generated processor live evidence requires PostgreSQL.');
+      }
       const suffix = `${process.pid}_${Date.now()}`;
       const environment = `APPLIK8S_V07_WORKER_${suffix}_DATABASE_URL`;
       const post = runtimeModel(
@@ -53,7 +62,11 @@ describe('v0.7 exact generated function-native worker', () => {
       const outDir = await mkdtemp(
         join(tmpdir(), 'applik8s-generated-function-native-live-'),
       );
-      const sql = postgres(databaseUrl!, {
+      const collector = observabilityLive ? await startOtlpReceiver() : undefined;
+      const sensitiveFailure = `processor-private-failure-${suffix}`;
+      const outputs: Array<() => string> = [];
+      let completed = false;
+      const sql = postgres(selectedDatabaseUrl, {
         max: 4,
         idle_timeout: 5,
         connect_timeout: 5,
@@ -123,6 +136,22 @@ describe('v0.7 exact generated function-native worker', () => {
               payload: { postId: 'post-1' },
               partitionKey: 'post-1',
               recordedAt: sourceRecordedAt,
+              ...(observabilityLive
+                ? {
+                    telemetry: createApplicationTelemetryEnvelopeV1({
+                      traceparent: '00-0123456789abcdef0123456789abcdef-0123456789abcdef-01',
+                      identity: {
+                        application: 'function-native-worker',
+                        environment: 'generated-processor-live',
+                        target: 'local',
+                        operation: 'posts.requested',
+                        execution: `event:${sourceEventId}`,
+                        attempt: 1,
+                        instance: sourceEventId,
+                      },
+                    }) as unknown as JsonObject,
+                  }
+                : {}),
               trustedContext: {
                 values: contextValues,
                 digest: contextDigest,
@@ -144,7 +173,9 @@ describe('v0.7 exact generated function-native worker', () => {
             post,
             processorId,
             processorName,
+            sensitiveFailure,
             streamName,
+            observability: observabilityLive,
           }),
           outDir,
           entrypoint: import.meta.filename,
@@ -155,10 +186,12 @@ describe('v0.7 exact generated function-native worker', () => {
         const first = startWorker(
           artifact?.sourcePath ?? '',
           environment,
-          databaseUrl!,
+          selectedDatabaseUrl,
           firstPort,
+          collector?.endpoint,
         );
         children.add(first.child);
+        outputs.push(first.output);
         await waitFor(
           async () => {
             try {
@@ -194,10 +227,12 @@ describe('v0.7 exact generated function-native worker', () => {
         const second = startWorker(
           artifact?.sourcePath ?? '',
           environment,
-          databaseUrl!,
+          selectedDatabaseUrl,
           secondPort,
+          collector?.endpoint,
         );
         children.add(second.child);
+        outputs.push(second.output);
         await waitFor(
           async () => {
             const [checkpoint] = await sql.unsafe(
@@ -216,6 +251,27 @@ describe('v0.7 exact generated function-native worker', () => {
           outbox: 1,
           transitions: 1,
         });
+        if (collector) {
+          await collector.waitForTraces();
+          const processorSpans = collector.spans().filter(
+            (span) => attribute(span, 'applik8s.boundary.kind') === 'processor'
+              && attribute(span, 'applik8s.operation') === processorName,
+          );
+          expect(processorSpans).toHaveLength(4);
+          expect(processorSpans.map((span) => attribute(span, 'applik8s.invocation.kind'))).toEqual([
+            'live',
+            'retry',
+            'live',
+            'retry',
+          ]);
+          expect(processorSpans.filter((span) => span.status?.code === 2)).toHaveLength(2);
+          expect(processorSpans.filter((span) => span.status?.code === 1)).toHaveLength(2);
+          expect(processorSpans.every((span) => Number(attribute(span, 'applik8s.delivery.lag')) >= 0)).toBe(true);
+          expect(processorSpans.every((span) => span.links?.some((link) => link.traceId === '0123456789abcdef0123456789abcdef'))).toBe(true);
+          expect(JSON.stringify(collector.payloads())).not.toContain(sensitiveFailure);
+          expect(outputs.map((output) => output()).join('\n')).not.toContain(sensitiveFailure);
+        }
+        completed = true;
       } finally {
         await sql.unsafe(
           'DELETE FROM applik8s_command_inbox WHERE binding_id = $1',
@@ -231,7 +287,30 @@ describe('v0.7 exact generated function-native worker', () => {
         ).catch(() => undefined);
         await sql.unsafe(`DROP TABLE IF EXISTS ${quoteIdentifier(post.tableName)}`).catch(() => undefined);
         await sql.unsafe(`DROP TABLE IF EXISTS ${quoteIdentifier(account.tableName)}`).catch(() => undefined);
+        if (completed) {
+          const [cleanup] = await sql.unsafe(
+            `SELECT
+               (SELECT count(*)::int FROM applik8s_stream_processor_checkpoints WHERE processor = $1) AS checkpoints,
+               (SELECT count(*)::int FROM applik8s_public_stream_events WHERE contract_name IN ($2, $3)) AS events,
+               to_regclass($4) AS post_table,
+               to_regclass($5) AS account_table`,
+            [
+              processorName,
+              streamName,
+              changedName,
+              post.tableName,
+              account.tableName,
+            ],
+          );
+          expect(cleanup).toMatchObject({
+            checkpoints: 0,
+            events: 0,
+            post_table: null,
+            account_table: null,
+          });
+        }
         await sql.end({ timeout: 5 });
+        await collector?.close();
         await rm(outDir, { recursive: true, force: true });
       }
     },
@@ -267,7 +346,9 @@ function functionNativeWorkerGraph(options: {
   readonly post: ApplicationRuntimeModelContract;
   readonly processorId: string;
   readonly processorName: string;
+  readonly sensitiveFailure: string;
   readonly streamName: string;
+  readonly observability: boolean;
 }): ApplicationGraph {
   const database = {
     name: 'function-native-worker',
@@ -339,7 +420,7 @@ function functionNativeWorkerGraph(options: {
       source: { nodeId: 'stream.generated-post-requested.v1' },
       database,
       handlerSource:
-        'async event => Post.edit(event.postId, async post => { const account = await Account.require(post.accountId); await post.update({ state: account.value.state }); PostChanged.emit({ postId: event.postId, state: account.value.state }); })',
+        `async (event, context) => { if (context.attempt === 1) throw new Error(${JSON.stringify(options.sensitiveFailure)}); return Post.edit(event.postId, async post => { const account = await Account.require(post.accountId); await post.update({ state: account.value.state }); PostChanged.emit({ postId: event.postId, state: account.value.state }); }); }`,
       functionNativeTransaction: {
         primaryModel: { nodeId: 'model.generated-post' },
         models: [
@@ -391,6 +472,17 @@ function functionNativeWorkerGraph(options: {
       },
       budgets: { timeoutMs: 10_000, maxInputBytes: 64_000 },
     },
+    ...(options.observability
+      ? [{
+          id: 'provider.observability.v1alpha1.primary',
+          kind: 'provider',
+          name: 'Observability',
+          stability: 'stable',
+          interface: 'Observability',
+          implementation: 'local-otel',
+          config: {},
+        }]
+      : []),
   ] as unknown as ApplicationGraphNode[];
   return {
     apiVersion: 'applik8s.appGraph/v1alpha1',
@@ -426,6 +518,7 @@ function startWorker(
   databaseEnvironment: string,
   url: string,
   port: number,
+  telemetryEndpoint?: string,
 ): {
   readonly child: ChildProcess;
   readonly output: () => string;
@@ -439,6 +532,14 @@ function startWorker(
       APPLIK8S_HEALTH_PORT: String(port),
       APPLIK8S_PROCESSOR_CONCURRENCY: '1',
       APPLIK8S_PROCESSOR_MAX_ACK_PENDING: '16',
+      ...(telemetryEndpoint
+        ? {
+            APPLIK8S_APPLICATION_NAME: 'function-native-worker',
+            APPLIK8S_ENVIRONMENT_ID: 'generated-processor-live',
+            APPLIK8S_DEPLOYMENT_TARGET: 'local',
+            OTEL_EXPORTER_OTLP_ENDPOINT: telemetryEndpoint,
+          }
+        : {}),
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -509,7 +610,7 @@ async function effectCounts(
 
 async function availablePort(): Promise<number> {
   return new Promise((resolve, reject) => {
-    const server = createServer();
+    const server = createNetServer();
     server.once('error', reject);
     server.listen(0, '127.0.0.1', () => {
       const address = server.address();
@@ -522,6 +623,99 @@ async function availablePort(): Promise<number> {
       });
     });
   });
+}
+
+interface OtlpSpan {
+  readonly traceId: string;
+  readonly spanId: string;
+  readonly status?: { readonly code?: number };
+  readonly attributes?: readonly OtlpAttribute[];
+  readonly links?: readonly { readonly traceId?: string; readonly spanId?: string }[];
+}
+
+interface OtlpAttribute {
+  readonly key?: string;
+  readonly value?: Readonly<Record<string, unknown>>;
+}
+
+interface OtlpReceiver {
+  readonly endpoint: string;
+  payloads(): readonly unknown[];
+  spans(): readonly OtlpSpan[];
+  waitForTraces(): Promise<void>;
+  close(): Promise<void>;
+}
+
+async function startOtlpReceiver(): Promise<OtlpReceiver> {
+  const payloads: unknown[] = [];
+  const server = createHttpServer((request, response) => {
+    const chunks: Buffer[] = [];
+    request.on('data', (chunk) => chunks.push(Buffer.from(chunk)));
+    request.on('end', () => {
+      try {
+        const body = Buffer.concat(chunks).toString('utf8');
+        payloads.push(body ? JSON.parse(body) : {});
+        response.writeHead(200, { 'content-type': 'application/json' });
+        response.end('{}');
+      } catch {
+        response.writeHead(400, { 'content-type': 'application/json' });
+        response.end('{"error":"invalid-json"}');
+      }
+    });
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => resolve());
+  });
+  const address = server.address() as AddressInfo;
+  return {
+    endpoint: `http://127.0.0.1:${address.port}`,
+    payloads: () => payloads,
+    spans: () => payloads.flatMap(otlpSpans),
+    async waitForTraces() {
+      const started = Date.now();
+      while (Date.now() - started < 30_000) {
+        if (payloads.flatMap(otlpSpans).length > 0) return;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      throw new Error('Local OTLP receiver did not observe exported processor traces.');
+    },
+    close: () => closeServer(server),
+  };
+}
+
+function otlpSpans(payload: unknown): OtlpSpan[] {
+  if (!payload || typeof payload !== 'object') return [];
+  const resourceSpans = Reflect.get(payload, 'resourceSpans');
+  if (!Array.isArray(resourceSpans)) return [];
+  return resourceSpans.flatMap((resource) => {
+    const scopeSpans = resource && typeof resource === 'object'
+      ? Reflect.get(resource, 'scopeSpans')
+      : undefined;
+    if (!Array.isArray(scopeSpans)) return [];
+    return scopeSpans.flatMap((scope) => {
+      const spans = scope && typeof scope === 'object' ? Reflect.get(scope, 'spans') : undefined;
+      return Array.isArray(spans)
+        ? spans.filter((span): span is OtlpSpan => Boolean(span && typeof span === 'object'))
+        : [];
+    });
+  });
+}
+
+function attribute(span: OtlpSpan, key: string): string | number | boolean | undefined {
+  const value = span.attributes?.find((candidate) => candidate.key === key)?.value;
+  if (!value) return undefined;
+  for (const field of ['stringValue', 'intValue', 'doubleValue', 'boolValue'] as const) {
+    const candidate = value[field];
+    if (typeof candidate === 'string' || typeof candidate === 'number' || typeof candidate === 'boolean') {
+      return candidate;
+    }
+  }
+  return undefined;
+}
+
+function closeServer(server: Server): Promise<void> {
+  return new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
 }
 
 function quoteIdentifier(value: string): string {
