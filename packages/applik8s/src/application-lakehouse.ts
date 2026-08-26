@@ -586,73 +586,81 @@ export function createDeterministicApplicationLakehouseRuntime<TRow extends obje
   const persist = async (values = [...manifests.values()]): Promise<void> => options.persist?.(values);
   const now = options.now ?? (() => new Date());
   const cursorCodec = createApplicationLakehouseCursorCodec(options.cursorKey, () => now().getTime());
+  let publicationTail: Promise<void> = Promise.resolve();
+  const serializePublication = <T>(operation: () => Promise<T>): Promise<T> => {
+    const result = publicationTail.then(operation, operation);
+    publicationTail = result.then(() => undefined, () => undefined);
+    return result;
+  };
   return {
-    async append(request) {
-      if (!request.frontier.trim()) throw new Error('Lakehouse publication frontier must be non-empty.');
-      const priorFrontier = frontier.get(request.frontier);
-      if (priorFrontier) return priorFrontier;
-      if (request.expectedSnapshot !== undefined && request.expectedSnapshot !== current?.snapshotId) {
-        throw new Error(`Lakehouse publication conflict: expected ${request.expectedSnapshot}, current ${current?.snapshotId ?? 'none'}.`);
-      }
-      const rows = request.rows.map((row) => validateMessage(options.schema, row, `${options.datasetId}.row`));
-      if (request.partitions && request.partitions.length !== rows.length) {
-        throw new Error('Lakehouse publication must provide exactly one partition record per row.');
-      }
-      const partitions = request.partitions?.map(validateLakehousePartition);
-      const publishedAt = now().toISOString();
-      const allRows = [...(current?.rows ?? []), ...rows];
-      const rowIdentities = [
-        ...(current?.rowIdentities ?? []),
-        ...rows.map((row, index) => stableDigest({ frontier: request.frontier, index, row })),
-      ];
-      const previousObjects = current?.objects ?? [];
-      const appendedObject = rows.length > 0
-        ? lakehouseObjectEvidence(rows, rowIdentities.slice(rowIdentities.length - rows.length), current?.rows.length ?? 0)
-        : undefined;
-      const compacted = previousObjects.length + (appendedObject ? 1 : 0) > maximumObjectsPerSnapshot;
-      const objects = compacted
-        ? (allRows.length > 0 ? [lakehouseObjectEvidence(allRows, rowIdentities, 0)] : [])
-        : [...previousObjects, ...(appendedObject ? [appendedObject] : [])];
-      const content = {
-        datasetId: options.datasetId,
-        schemaRevision: options.schemaRevision,
-        schema: {
-          family: schemaFamily,
-          revision: options.schemaRevision,
-          fingerprint: schemaFingerprint,
-          jsonSchema: schemaJson,
-        },
-        ...(current?.snapshotId ? { parentSnapshotId: current.snapshotId } : {}),
-        frontier: [...(current?.frontier ?? []), request.frontier].sort(),
-        rows: allRows,
-        rowIdentities,
-        objects,
-        ...(partitions ? { partitions: [...(current?.partitions ?? []), ...partitions] } : current?.partitions ? { partitions: current.partitions } : {}),
-        publishedAt,
-        lifecycle: {
-          disposition: compacted ? 'compacted' as const : 'incremental' as const,
-          maximumObjectsPerSnapshot,
-          retainedSnapshots,
-        },
-      };
-      const digest = stableDigest(content);
-      const manifest: ApplicationLakehouseManifest<TRow> = deepFreezeJson({
-        schemaVersion: 'applik8s.lakehouseManifest/v1alpha1',
-        ...content,
-        objects,
-        snapshotId: `snapshot_${digest.slice(7)}`,
-        digest,
+    append(request) {
+      return serializePublication(async () => {
+        if (!request.frontier.trim()) throw new Error('Lakehouse publication frontier must be non-empty.');
+        const priorFrontier = frontier.get(request.frontier);
+        if (priorFrontier) return priorFrontier;
+        if (request.expectedSnapshot !== undefined && request.expectedSnapshot !== current?.snapshotId) {
+          throw new Error(`Lakehouse publication conflict: expected ${request.expectedSnapshot}, current ${current?.snapshotId ?? 'none'}.`);
+        }
+        const rows = request.rows.map((row) => validateMessage(options.schema, row, `${options.datasetId}.row`));
+        if (request.partitions && request.partitions.length !== rows.length) {
+          throw new Error('Lakehouse publication must provide exactly one partition record per row.');
+        }
+        const partitions = request.partitions?.map(validateLakehousePartition);
+        const publishedAt = now().toISOString();
+        const allRows = [...(current?.rows ?? []), ...rows];
+        const rowIdentities = [
+          ...(current?.rowIdentities ?? []),
+          ...rows.map((row, index) => stableDigest({ frontier: request.frontier, index, row })),
+        ];
+        const previousObjects = current?.objects ?? [];
+        const appendedObject = rows.length > 0
+          ? lakehouseObjectEvidence(rows, rowIdentities.slice(rowIdentities.length - rows.length), current?.rows.length ?? 0)
+          : undefined;
+        const compacted = previousObjects.length + (appendedObject ? 1 : 0) > maximumObjectsPerSnapshot;
+        const objects = compacted
+          ? (allRows.length > 0 ? [lakehouseObjectEvidence(allRows, rowIdentities, 0)] : [])
+          : [...previousObjects, ...(appendedObject ? [appendedObject] : [])];
+        const content = {
+          datasetId: options.datasetId,
+          schemaRevision: options.schemaRevision,
+          schema: {
+            family: schemaFamily,
+            revision: options.schemaRevision,
+            fingerprint: schemaFingerprint,
+            jsonSchema: schemaJson,
+          },
+          ...(current?.snapshotId ? { parentSnapshotId: current.snapshotId } : {}),
+          frontier: [...(current?.frontier ?? []), request.frontier].sort(),
+          rows: allRows,
+          rowIdentities,
+          objects,
+          ...(partitions ? { partitions: [...(current?.partitions ?? []), ...partitions] } : current?.partitions ? { partitions: current.partitions } : {}),
+          publishedAt,
+          lifecycle: {
+            disposition: compacted ? 'compacted' as const : 'incremental' as const,
+            maximumObjectsPerSnapshot,
+            retainedSnapshots,
+          },
+        };
+        const digest = stableDigest(content);
+        const manifest: ApplicationLakehouseManifest<TRow> = deepFreezeJson({
+          schemaVersion: 'applik8s.lakehouseManifest/v1alpha1',
+          ...content,
+          objects,
+          snapshotId: `snapshot_${digest.slice(7)}`,
+          digest,
+        });
+        const retained = [...manifests.values(), manifest].slice(-retainedSnapshots);
+        await persist(retained);
+        manifests.clear();
+        for (const retainedManifest of retained) manifests.set(retainedManifest.snapshotId, retainedManifest);
+        current = manifest;
+        frontier.clear();
+        for (const retainedManifest of retained) {
+          for (const identity of retainedManifest.frontier) if (!frontier.has(identity)) frontier.set(identity, retainedManifest);
+        }
+        return manifest;
       });
-      const retained = [...manifests.values(), manifest].slice(-retainedSnapshots);
-      await persist(retained);
-      manifests.clear();
-      for (const retainedManifest of retained) manifests.set(retainedManifest.snapshotId, retainedManifest);
-      current = manifest;
-      frontier.clear();
-      for (const retainedManifest of retained) {
-        for (const identity of retainedManifest.frontier) if (!frontier.has(identity)) frontier.set(identity, retainedManifest);
-      }
-      return manifest;
     },
     async query(request) {
       const startedAt = Date.now();

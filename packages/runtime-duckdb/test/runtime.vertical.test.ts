@@ -6,6 +6,7 @@ import { LakehouseDataset, type, type ApplicationLakehouseRowExpression } from '
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   ApplicationDuckDbLakehouseCorruptionError,
+  ApplicationDuckDbLakehouseLeaseError,
   ApplicationDuckDbLakehouseLimitError,
   createDuckDbApplicationLakehouseRuntime,
 } from '../src/index.js';
@@ -57,6 +58,78 @@ describe('DuckDB lakehouse runtime', () => {
     });
     expect(restored.rows).toHaveLength(2);
     await runtime.close();
+  });
+
+  it('holds an exclusive process lease until close and then permits a clean restart', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'applik8s-duckdb-lease-'));
+    roots.push(root);
+    const options = {
+      datasetId: 'leased-history',
+      schemaRevision: 'v1',
+      schema: type({ id: 'string' }),
+      cursorKey: 'leased-test-cursor-key'.repeat(2),
+      root,
+    } as const;
+    const first = await createDuckDbApplicationLakehouseRuntime(options);
+    await expect(createDuckDbApplicationLakehouseRuntime(options)).rejects.toMatchObject({
+      code: 'APPLIK8S_DUCKDB_LAKEHOUSE_LEASE_HELD',
+      datasetId: 'leased-history',
+      ownerPid: process.pid,
+    });
+    await first.close();
+
+    const restarted = await createDuckDbApplicationLakehouseRuntime(options);
+    expect(restarted).toMatchObject({ provider: 'duckdb' });
+    await restarted.close();
+    expect(await readdir(restarted.root)).not.toContain('runtime.lease.json');
+  });
+
+  it('recovers an abandoned process lease without weakening unreadable-lease safety', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'applik8s-duckdb-stale-lease-'));
+    roots.push(root);
+    const options = {
+      datasetId: 'recoverable-history',
+      schemaRevision: 'v1',
+      schema: type({ id: 'string' }),
+      cursorKey: 'recoverable-test-cursor-key'.repeat(2),
+      root,
+    } as const;
+    const initial = await createDuckDbApplicationLakehouseRuntime(options);
+    const datasetRoot = initial.root;
+    await initial.close();
+    await writeFile(join(datasetRoot, 'runtime.lease.json'), `${JSON.stringify({
+      schemaVersion: 'applik8s.duckdbLakehouseLease/v1alpha1',
+      datasetId: 'recoverable-history',
+      pid: 2_147_483_647,
+      token: 'abandoned-runtime',
+      acquiredAt: '2026-08-19T12:00:00.000Z',
+    })}\n`, { mode: 0o600 });
+
+    const recovered = await createDuckDbApplicationLakehouseRuntime(options);
+    await recovered.close();
+    await writeFile(join(datasetRoot, 'runtime.lease.json'), '{not-json}\n', { mode: 0o600 });
+    await expect(createDuckDbApplicationLakehouseRuntime(options)).rejects.toBeInstanceOf(
+      ApplicationDuckDbLakehouseLeaseError,
+    );
+  });
+
+  it('releases its lease when runtime initialization fails', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'applik8s-duckdb-failed-init-'));
+    roots.push(root);
+    const options = {
+      datasetId: 'failed-initialization-history',
+      schemaRevision: 'v1',
+      schema: type({ id: 'string' }),
+      cursorKey: 'failed-initialization-cursor-key'.repeat(2),
+      root,
+    } as const;
+    await expect(createDuckDbApplicationLakehouseRuntime({
+      ...options,
+      maximumConcurrentQueries: 0,
+    })).rejects.toThrow(/maximumConcurrentQueries/u);
+
+    const recovered = await createDuckDbApplicationLakehouseRuntime(options);
+    await recovered.close();
   });
 
   it('fails closed when a published object diverges from its signed manifest', async () => {

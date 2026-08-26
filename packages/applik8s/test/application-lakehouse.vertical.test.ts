@@ -255,6 +255,55 @@ describe('v0.8 published lakehouse snapshots', () => {
     })).toThrow(/integrity/u);
   });
 
+  it('serializes concurrent publication so every frontier has one canonical successor', async () => {
+    const persisted: Array<readonly { readonly snapshotId: string }[]> = [];
+    let releaseFirstPersist!: () => void;
+    const firstPersistBlocked = new Promise<void>((resolve) => {
+      releaseFirstPersist = resolve;
+    });
+    let persistenceCalls = 0;
+    const runtime = createDeterministicApplicationLakehouseRuntime({
+      datasetId: 'concurrent-history',
+      schemaRevision: 'v1',
+      schema: type({ id: 'string' }),
+      cursorKey: 'concurrent-test-cursor-key'.repeat(2),
+      async persist(snapshots) {
+        persistenceCalls += 1;
+        if (persistenceCalls === 1) await firstPersistBlocked;
+        persisted.push(snapshots.map(({ snapshotId }) => ({ snapshotId })));
+      },
+    });
+
+    const first = runtime.append({ frontier: 'event:first', rows: [{ id: 'first' }] });
+    const second = runtime.append({ frontier: 'event:second', rows: [{ id: 'second' }] });
+    await Promise.resolve();
+    expect(persistenceCalls).toBe(1);
+    releaseFirstPersist();
+
+    const [firstSnapshot, secondSnapshot] = await Promise.all([first, second]);
+    expect(secondSnapshot.parentSnapshotId).toBe(firstSnapshot.snapshotId);
+    expect(secondSnapshot.frontier).toEqual(['event:first', 'event:second']);
+    expect(secondSnapshot.rows).toEqual([{ id: 'first' }, { id: 'second' }]);
+    expect(runtime.current()?.snapshotId).toBe(secondSnapshot.snapshotId);
+    expect(persisted).toHaveLength(2);
+
+    const conflicted = createDeterministicApplicationLakehouseRuntime({
+      datasetId: 'conflicting-history',
+      schemaRevision: 'v1',
+      schema: type({ id: 'string' }),
+      cursorKey: 'conflicting-test-cursor-key'.repeat(2),
+    });
+    const baseline = await conflicted.append({ frontier: 'baseline', rows: [{ id: 'baseline' }] });
+    const contenders = await Promise.allSettled([
+      conflicted.append({ frontier: 'one', expectedSnapshot: baseline.snapshotId, rows: [{ id: 'one' }] }),
+      conflicted.append({ frontier: 'two', expectedSnapshot: baseline.snapshotId, rows: [{ id: 'two' }] }),
+    ]);
+    expect(contenders.map(({ status }) => status).sort()).toEqual(['fulfilled', 'rejected']);
+    expect(contenders.find(({ status }) => status === 'rejected')).toMatchObject({
+      reason: expect.objectContaining({ message: expect.stringMatching(/conflict/u) }),
+    });
+  });
+
   it('publishes immutable deltas, compacts within a bound, retains a bounded authority, and stabilizes tied ordering', async () => {
     const Dataset = LakehouseDataset.named('bounded-history');
     const runtime = createDeterministicApplicationLakehouseRuntime({

@@ -1,6 +1,6 @@
 // typecast-file-boundary: DuckDB native bindings return dynamically typed rows that are schema-validated before exposure.
 import { createHash, randomUUID } from 'node:crypto';
-import { chmod, mkdir, readdir, readFile, rename, stat, unlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, open, readdir, readFile, rename, stat, unlink, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import {
   type ApplicationLakehouseManifest,
@@ -60,16 +60,23 @@ export async function createDuckDbApplicationLakehouseRuntime<TRow extends objec
   await mkdir(objectsRoot, { recursive: true, mode: 0o700 });
   await chmod(datasetRoot, 0o700);
   await chmod(objectsRoot, 0o700);
-  const persisted = await readAuthority<TRow>(authorityPath, options.datasetId);
-  const maximumConcurrentQueries = boundedInteger(options.maximumConcurrentQueries ?? 4, 1, 64, 'maximumConcurrentQueries');
-  const maximumRows = boundedInteger(options.maximumRows ?? 1_000, 1, 100_000, 'maximumRows');
-  const maximumScannedBytes = boundedInteger(options.maximumScannedBytes ?? 64 * 1024 * 1024, 1, Number.MAX_SAFE_INTEGER, 'maximumScannedBytes');
-  const semaphore = createSemaphore(maximumConcurrentQueries);
-  const instance = await DuckDBInstance.create(join(datasetRoot, 'queries.duckdb'), {
-    threads: String(boundedInteger(options.threads ?? Math.min(4, maximumConcurrentQueries), 1, 64, 'threads')),
-    ...(options.memoryLimit ? { memory_limit: options.memoryLimit } : {}),
-  });
-  let closed = false;
+  const lease = await acquireDuckDbLakehouseLease(
+    join(datasetRoot, 'runtime.lease.json'),
+    options.datasetId,
+  );
+  let instance: DuckDBInstance | undefined;
+  try {
+    const persisted = await readAuthority<TRow>(authorityPath, options.datasetId);
+    const maximumConcurrentQueries = boundedInteger(options.maximumConcurrentQueries ?? 4, 1, 64, 'maximumConcurrentQueries');
+    const maximumRows = boundedInteger(options.maximumRows ?? 1_000, 1, 100_000, 'maximumRows');
+    const maximumScannedBytes = boundedInteger(options.maximumScannedBytes ?? 64 * 1024 * 1024, 1, Number.MAX_SAFE_INTEGER, 'maximumScannedBytes');
+    const semaphore = createSemaphore(maximumConcurrentQueries);
+    instance = await DuckDBInstance.create(join(datasetRoot, 'queries.duckdb'), {
+      threads: String(boundedInteger(options.threads ?? Math.min(4, maximumConcurrentQueries), 1, 64, 'threads')),
+      ...(options.memoryLimit ? { memory_limit: options.memoryLimit } : {}),
+    });
+    const duckdb = instance;
+    let closed = false;
 
   const deterministic = createDeterministicApplicationLakehouseRuntime<TRow>({
     datasetId: options.datasetId,
@@ -129,7 +136,7 @@ export async function createDuckDbApplicationLakehouseRuntime<TRow extends objec
       }
       try {
         const objectPaths = snapshotObjectPaths(objectsRoot, snapshot);
-        const connection = await instance.connect();
+        const connection = await duckdb.connect();
         const timeout = timeoutMilliseconds(request.timeout);
         const timeoutController = timeout === undefined ? undefined : new AbortController();
         const timeoutHandle = timeout === undefined ? undefined : setTimeout(() => timeoutController?.abort(new DOMException('Lakehouse query timed out.', 'TimeoutError')), timeout);
@@ -214,9 +221,141 @@ export async function createDuckDbApplicationLakehouseRuntime<TRow extends objec
       if (closed) return;
       closed = true;
       await semaphore.drain();
-      instance.closeSync();
+      try {
+        duckdb.closeSync();
+      } finally {
+        await lease.release();
+      }
     },
   };
+  } catch (cause) {
+    try {
+      instance?.closeSync();
+    } finally {
+      await lease.release();
+    }
+    throw cause;
+  }
+}
+
+interface DuckDbLakehouseLeaseRecord {
+  readonly schemaVersion: 'applik8s.duckdbLakehouseLease/v1alpha1';
+  readonly datasetId: string;
+  readonly pid: number;
+  readonly token: string;
+  readonly acquiredAt: string;
+}
+
+interface DuckDbLakehouseLease {
+  release(): Promise<void>;
+}
+
+export class ApplicationDuckDbLakehouseLeaseError extends Error {
+  readonly code = 'APPLIK8S_DUCKDB_LAKEHOUSE_LEASE_HELD';
+
+  constructor(readonly datasetId: string, readonly ownerPid?: number) {
+    super(
+      ownerPid === undefined
+        ? `DuckDB lakehouse dataset ${datasetId} has an unreadable runtime lease.`
+        : `DuckDB lakehouse dataset ${datasetId} is already owned by process ${ownerPid}.`,
+    );
+    this.name = 'ApplicationDuckDbLakehouseLeaseError';
+  }
+}
+
+async function acquireDuckDbLakehouseLease(
+  path: string,
+  datasetId: string,
+): Promise<DuckDbLakehouseLease> {
+  const token = randomUUID();
+  const record: DuckDbLakehouseLeaseRecord = {
+    schemaVersion: 'applik8s.duckdbLakehouseLease/v1alpha1',
+    datasetId,
+    pid: process.pid,
+    token,
+    acquiredAt: new Date().toISOString(),
+  };
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    try {
+      const handle = await open(path, 'wx', 0o600);
+      try {
+        await handle.writeFile(`${JSON.stringify(record)}\n`, 'utf8');
+        await handle.close();
+      } catch (cause) {
+        await handle.close().catch(() => undefined);
+        await unlink(path).catch((cleanupCause) => {
+          if (!isNotFound(cleanupCause)) throw cleanupCause;
+        });
+        throw cause;
+      }
+      return {
+        async release() {
+          let current: DuckDbLakehouseLeaseRecord;
+          try {
+            current = parseDuckDbLakehouseLease(await readFile(path, 'utf8'), datasetId);
+          } catch (cause) {
+            if (isNotFound(cause)) return;
+            throw cause;
+          }
+          if (current.token !== token) {
+            throw new ApplicationDuckDbLakehouseLeaseError(datasetId, current.pid);
+          }
+          const releasedPath = `${path}.released.${token}`;
+          await rename(path, releasedPath);
+          await unlink(releasedPath);
+        },
+      };
+    } catch (cause) {
+      if (!isAlreadyExists(cause)) throw cause;
+      let existing: DuckDbLakehouseLeaseRecord;
+      try {
+        existing = parseDuckDbLakehouseLease(await readFile(path, 'utf8'), datasetId);
+      } catch (readCause) {
+        if (isNotFound(readCause)) continue;
+        throw new ApplicationDuckDbLakehouseLeaseError(datasetId);
+      }
+      if (processExists(existing.pid)) {
+        throw new ApplicationDuckDbLakehouseLeaseError(datasetId, existing.pid);
+      }
+      const stalePath = `${path}.stale.${token}.${attempt}`;
+      try {
+        await rename(path, stalePath);
+      } catch (renameCause) {
+        if (isNotFound(renameCause)) continue;
+        throw renameCause;
+      }
+      await unlink(stalePath);
+    }
+  }
+  throw new ApplicationDuckDbLakehouseLeaseError(datasetId);
+}
+
+function parseDuckDbLakehouseLease(value: string, datasetId: string): DuckDbLakehouseLeaseRecord {
+  const candidate = JSON.parse(value) as Partial<DuckDbLakehouseLeaseRecord>;
+  if (
+    candidate.schemaVersion !== 'applik8s.duckdbLakehouseLease/v1alpha1'
+    || candidate.datasetId !== datasetId
+    || !Number.isSafeInteger(candidate.pid)
+    || Number(candidate.pid) < 1
+    || typeof candidate.token !== 'string'
+    || !candidate.token
+    || typeof candidate.acquiredAt !== 'string'
+  ) {
+    throw new ApplicationDuckDbLakehouseLeaseError(datasetId);
+  }
+  return candidate as DuckDbLakehouseLeaseRecord;
+}
+
+function processExists(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (cause) {
+    const code = cause && typeof cause === 'object' ? Reflect.get(cause, 'code') : undefined;
+    if (code === 'ESRCH') return false;
+    if (code === 'EPERM') return true;
+    throw cause;
+  }
 }
 
 async function cleanupUnreferencedObjects<TRow extends object>(
@@ -503,6 +642,10 @@ function safeSegment(value: string): string {
 
 function isNotFound(cause: unknown): boolean {
   return cause instanceof Error && Reflect.get(cause, 'code') === 'ENOENT';
+}
+
+function isAlreadyExists(cause: unknown): boolean {
+  return cause instanceof Error && Reflect.get(cause, 'code') === 'EEXIST';
 }
 
 function assertOpen(closed: boolean): void {
