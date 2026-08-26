@@ -162,6 +162,15 @@ export interface ApplicationArtifactNodeSpec extends DeploymentJsonObject {
   readonly artifactType: "containerImage" | "wasmComponent" | "migration" | "generatedRuntime";
   readonly sourceDescriptor: DeploymentJsonObject;
   readonly executionNodeIds?: readonly string[];
+  /** Exact non-secret Kubernetes credential identities mounted by this artifact. */
+  readonly credentialProjections?: readonly ApplicationArtifactCredentialProjection[];
+}
+
+export interface ApplicationArtifactCredentialProjection extends DeploymentJsonObject {
+  readonly target: "kubernetes";
+  readonly namespace: string;
+  readonly name: string;
+  readonly keys: readonly string[];
 }
 
 export interface ApplicationExternalProviderNodeSpec extends DeploymentJsonObject {

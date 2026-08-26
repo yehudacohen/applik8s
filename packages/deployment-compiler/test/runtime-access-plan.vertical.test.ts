@@ -586,6 +586,26 @@ describe('v0.8 runtime-access lowering', () => {
       expect.objectContaining({ code: 'RUNTIME_ACCESS_CREDENTIAL_MISSING' }),
       expect.objectContaining({ code: 'RUNTIME_ACCESS_CREDENTIAL_WIDENED' }),
     ]);
+    const volumeDeployment = (items?: readonly { readonly key: string; readonly path: string }[]) => ({
+      apiVersion: 'apps/v1',
+      kind: 'Deployment',
+      metadata: { name: 'notes', namespace: 'notes' },
+      spec: { template: { spec: {
+        serviceAccountName: 'notes',
+        containers: [{ name: 'operator', image: 'operator:test' }],
+        volumes: [{
+          name: 'signing',
+          secret: { secretName: 'signing', ...(items ? { items } : {}) },
+        }],
+      } } },
+    });
+    expect(validateKubernetesRuntimeAccessParity(plan, [
+      volumeDeployment([{ key: 'current', path: 'key' }]),
+    ])).toEqual([]);
+    expect(validateKubernetesRuntimeAccessParity(plan, [volumeDeployment()])).toEqual([
+      expect.objectContaining({ code: 'RUNTIME_ACCESS_CREDENTIAL_MISSING' }),
+      expect.objectContaining({ code: 'RUNTIME_ACCESS_CREDENTIAL_WIDENED' }),
+    ]);
   });
 
   it('fails pre-mutation parity when an AWS role grant is removed, widened, or attached to the wrong workload', () => {

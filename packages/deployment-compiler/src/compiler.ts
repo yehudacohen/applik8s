@@ -119,6 +119,23 @@ export function compileApplicationDeploymentGraph(
   const providerGeneratedSecretCredentials = providerGeneratedSecretCredentialRequirements(
     contributionNodes,
   );
+  const artifactCredentialRequirements = request.artifacts.flatMap((artifact) => {
+    const projections = artifact.credentialProjections ?? [];
+    if (projections.length === 0) return [];
+    const consumers = artifact.executionNodeIds
+      ?? (artifact.semanticNodeId ? [artifact.semanticNodeId] : []);
+    if (consumers.length === 0) {
+      throw new Error(
+        `Artifact ${artifact.id} declares credential projections without an executable semantic placement.`,
+      );
+    }
+    return projections.flatMap((projection) =>
+      consumers.map((consumerNodeId) => ({
+        consumerNodeId,
+        resourceId: `v1/Secret/${projection.namespace}/${projection.name}`,
+        keys: [...projection.keys].sort(),
+      })));
+  });
   const runtimeAccessTargets = runtimeAccessTargetResources(contributions);
   const runtimeAccess = compileApplicationRuntimeAccessPlan({
     graph: request.graph,
@@ -137,19 +154,22 @@ export function compileApplicationDeploymentGraph(
       ? { kubernetesNetworkPolicyProvider: request.runtimeAccessKubernetesNetworkPolicyProvider }
       : {}),
     credentialRequirements: [
-      ...generatedSecretRequirements.map((secret) => ({
-        namespace: secret.namespace,
-        name: secret.name,
-        keys: Object.keys(secret.values).sort(),
-        consumers: secret.consumers,
-      })),
-      ...providerGeneratedSecretCredentials,
-    ].flatMap((secret) =>
-      runtimeCredentialConsumerNodeIds(request.graph, secret.consumers).map((consumerNodeId) => ({
-        consumerNodeId,
-        resourceId: `v1/Secret/${secret.namespace}/${secret.name}`,
-        keys: secret.keys,
-      }))),
+      ...[
+        ...generatedSecretRequirements.map((secret) => ({
+          namespace: secret.namespace,
+          name: secret.name,
+          keys: Object.keys(secret.values).sort(),
+          consumers: secret.consumers,
+        })),
+        ...providerGeneratedSecretCredentials,
+      ].flatMap((secret) =>
+        runtimeCredentialConsumerNodeIds(request.graph, secret.consumers).map((consumerNodeId) => ({
+          consumerNodeId,
+          resourceId: `v1/Secret/${secret.namespace}/${secret.name}`,
+          keys: secret.keys,
+        }))),
+      ...artifactCredentialRequirements,
+    ],
     additionalRequirements: contributions.flatMap((contribution) =>
       contribution.runtimeAccessRequirements ?? []),
     workloadPlacements: mergeRuntimeAccessWorkloadPlacements([
@@ -1144,6 +1164,20 @@ function artifactNode(
       artifactType: artifact.artifactType,
       ...(artifact.executionNodeIds?.length
         ? { executionNodeIds: [...artifact.executionNodeIds].sort(compareStrings) }
+        : {}),
+      ...(artifact.credentialProjections?.length
+        ? {
+            credentialProjections: artifact.credentialProjections
+              .map((projection) => ({
+                ...projection,
+                keys: [...projection.keys].sort(compareStrings),
+              }))
+              .sort((left, right) =>
+                compareStrings(
+                  `${left.target}/${left.namespace}/${left.name}`,
+                  `${right.target}/${right.namespace}/${right.name}`,
+                )),
+          }
         : {}),
       sourceDescriptor: {
         ...artifact.sourceDescriptor,

@@ -717,7 +717,8 @@ const generatedFiles = [generated, ...generatedHandlers].join('\\n');
 if (
   !generatedFiles.includes('@fixture/acquisition/runtime')
   || !generatedFiles.includes('acquireThroughHelper')
-  || !generatedFiles.includes('"directProvider": { "acquire": providerOperation_')
+  || !generatedFiles.includes('"acquire": instrumentApplicationProviderOperation(')
+  || !generatedFiles.includes('"directProvider": { "acquire": instrumentApplicationProviderOperation(')
   || generatedFiles.includes('@applik8s/applik8s/internal/provider-runtime')
   || generatedFiles.includes('application.inject')
   || generatedFiles.includes('application.profile')
@@ -1069,10 +1070,10 @@ export const scheduleProviderStack = application.composition;
     `import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { deriveApplicationGraphFoundation } from '@applik8s/core';
-import { compileApplicationDeploymentGraph } from '@applik8s/deployment-compiler';
 import {
   compileTypeKroComposition,
   discoverApplicationGraphWithExports,
+  emitApplicationDeploymentGraph,
   generatedApplicationFetchGatewayModules,
 } from '@applik8s/compiler';
 const applicationPath = ${JSON.stringify(packedScheduleApplicationPath)};
@@ -1151,24 +1152,18 @@ const compiled = await compileTypeKroComposition({
   },
 });
 if (!compiled.ok) throw compiled.error;
-const deployment = compileApplicationDeploymentGraph({
+const deployment = await emitApplicationDeploymentGraph({
+  bundlePath: compiled.value.artifacts.manifestJsonPath,
+  projectRoot: ${JSON.stringify(packedScheduleDirectory)},
   graph,
   sourceGraphDigest: 'sha256:' + 'a'.repeat(64),
   compilerVersion: '0.8.0',
-  identity: {
-    connection: {
-      provider: 'kubernetes',
-      cluster: 'packed-consumer',
-      digest: 'sha256:' + 'b'.repeat(64),
-    },
-    application: 'packed-schedule-provider',
-    controlPlaneNamespace: 'applik8s-system',
-    instance: 'packed-schedule-provider',
-    profile: 'starter',
-  },
+  context: 'packed-consumer',
+  controlPlaneNamespace: 'applik8s-system',
+  instance: 'packed-schedule-provider',
+  profile: 'starter',
   strategy: 'kro',
   installationSpec: { name: 'packed-schedule-provider', profile: 'starter' },
-  artifacts: [],
 });
 const hatchetInstallation = deployment.graph.nodes.find(node =>
   node.kind === 'kubernetesDirect'

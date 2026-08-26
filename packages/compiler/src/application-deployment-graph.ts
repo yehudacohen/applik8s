@@ -1203,6 +1203,7 @@ async function applicationArtifactRequirements(
       logicalReference,
       semanticNodeId: "provider.application-host",
       executionNodeIds: applicationHostExecutionNodeIds(graph),
+      credentialProjections: applicationHostCredentialProjections(hostSpec),
     });
   }
   const ids = new Set<string>();
@@ -1215,9 +1216,48 @@ async function applicationArtifactRequirements(
   return artifacts.sort((left, right) => left.id.localeCompare(right.id));
 }
 
+function applicationHostCredentialProjections(
+  hostSpec: DeploymentJsonObject,
+): NonNullable<ApplicationArtifactRequirement["credentialProjections"]> {
+  return arrayValue(hostSpec.credentialProjections).map((candidate, index) => {
+    const projection = objectValue(
+      candidate,
+      `ApplicationHost credential projection ${index}`,
+    );
+    if (projection.target !== "kubernetes") {
+      throw new Error(
+        `ApplicationHost credential projection ${index} uses unsupported target ${JSON.stringify(projection.target)}.`,
+      );
+    }
+    return {
+      target: "kubernetes" as const,
+      namespace: stringValue(
+        projection.namespace,
+        `ApplicationHost credential projection ${index} namespace`,
+      ),
+      name: stringValue(
+        projection.name,
+        `ApplicationHost credential projection ${index} name`,
+      ),
+      keys: optionalStringArray(
+        projection.keys,
+        `ApplicationHost credential projection ${index} keys`,
+      ) ?? [],
+    };
+  });
+}
+
 function applicationHostExecutionNodeIds(graph: ApplicationGraph): readonly string[] {
   const members = new Set<string>();
   for (const node of graph.nodes) {
+    // When an ApplicationHost exists, generated schedule control is hosted in
+    // that process instead of a dedicated schedule-control artifact. Preserve
+    // the semantic schedule identity on the host artifact so runtime-access
+    // requirements can be joined to the physical Deployment.
+    if (node.kind === "schedule") {
+      members.add(node.id);
+      continue;
+    }
     if (node.kind !== "gateway") continue;
     members.add(node.id);
     for (const query of node.queries) members.add(query.nodeId);

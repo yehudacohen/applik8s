@@ -9,7 +9,10 @@ import {
   type JsonObject,
   normalizeApplicationGraph,
 } from '@applik8s/core';
-import type { ApplicationFrameworkCredentialDependency } from '@applik8s/deployment-contract';
+import type {
+  ApplicationArtifactCredentialProjection,
+  ApplicationFrameworkCredentialDependency,
+} from '@applik8s/deployment-contract';
 import { applicationCallableProviderEnvironment } from '../application-callable-provider-runtime.js';
 import { applicationGraphNumberValue, applicationGraphStringValue } from '../application-installation-values.js';
 import { applicationObjectStorageEnvironment } from '../application-object-storage-environment.js';
@@ -211,6 +214,26 @@ export async function emitGeneratedApplicationHost(options: {
     applicationHostCallableProviders(options.graph),
     { target: 'kubernetes', namespace },
   );
+  const applicationHostEnvironment = uniqueApplicationHostEnvironment([
+    { name: 'PORT', value: String(port) },
+    { name: 'APPLIK8S_APPLICATION_NAME', value: options.graph.metadata.name },
+    { name: 'APPLIK8S_DEPLOYMENT_TARGET', value: 'kubernetes' },
+    { name: 'APPLIK8S_NAMESPACE', value: namespace },
+    { name: 'APPLIK8S_WEB_ARTIFACT_DIGEST', value: manifest.digest },
+    { name: 'APPLIK8S_CURSOR_SECRET', valueFrom: { secretKeyRef: { name: cursorSecretName, key: cursorSecretKey } } },
+    ...internalOperationEnvironment,
+    ...scheduleDatabaseEnvironment,
+    ...applicationWorkflowScheduleEnvironment(options.graph),
+    ...hatchetScheduleEnvironment,
+    ...identityDatabaseEnvironment,
+    ...objectStorageEnvironment,
+    ...callableProviderEnvironment,
+  ]);
+  const credentialProjections = applicationHostCredentialProjections(
+    namespace,
+    applicationHostEnvironment,
+    applicationHostVolumes,
+  );
   const artifactRoot = resolve(applicationArtifactRoot(manifestPath), manifest.output);
   const contextRoot = resolve(options.outDir, 'context');
   await rm(contextRoot, { recursive: true, force: true });
@@ -246,6 +269,7 @@ export async function emitGeneratedApplicationHost(options: {
       dockerfile: 'Dockerfile.applik8s-host',
       context: '.',
       cursorSecret: { name: cursorSecretName, key: cursorSecretKey },
+      credentialProjections,
     },
   }, null, 2)}\n`);
   const clusterScopedRbac = requiresClusterScopedHostRbac(options.graph);
@@ -291,21 +315,7 @@ export async function emitGeneratedApplicationHost(options: {
               image,
               imagePullPolicy,
               command: ['node', `/app/${manifest.entrypoint}`],
-              env: uniqueApplicationHostEnvironment([
-                { name: 'PORT', value: String(port) },
-                { name: 'APPLIK8S_APPLICATION_NAME', value: options.graph.metadata.name },
-				{ name: 'APPLIK8S_DEPLOYMENT_TARGET', value: 'kubernetes' },
-                { name: 'APPLIK8S_NAMESPACE', value: namespace },
-                { name: 'APPLIK8S_WEB_ARTIFACT_DIGEST', value: manifest.digest },
-                { name: 'APPLIK8S_CURSOR_SECRET', valueFrom: { secretKeyRef: { name: cursorSecretName, key: cursorSecretKey } } },
-                ...internalOperationEnvironment,
-                ...scheduleDatabaseEnvironment,
-                ...applicationWorkflowScheduleEnvironment(options.graph),
-                ...hatchetScheduleEnvironment,
-                ...identityDatabaseEnvironment,
-                ...objectStorageEnvironment,
-                ...callableProviderEnvironment,
-              ]),
+              env: applicationHostEnvironment,
               ...(applicationHostVolumeMounts.length > 0
                 ? { volumeMounts: applicationHostVolumeMounts }
                 : {}),
@@ -430,6 +440,68 @@ function uniqueApplicationHostEnvironment(
     result.set(name, entry);
   }
   return [...result.values()];
+}
+
+/**
+ * Records the exact non-secret Secret identities mounted by the generated
+ * host. This is artifact-authored policy metadata, derived from the same
+ * bootstrap inputs as the Deployment rather than rediscovered from rendered
+ * Kubernetes resources later in deployment planning.
+ */
+function applicationHostCredentialProjections(
+  namespace: string,
+  environment: readonly Readonly<Record<string, unknown>>[],
+  volumes: readonly Readonly<Record<string, unknown>>[],
+): readonly ApplicationArtifactCredentialProjection[] {
+  const projections = new Map<string, Set<string>>();
+  const add = (name: unknown, key?: unknown): void => {
+    const secretName = stringValue(name);
+    if (!secretName) {
+      throw new Error('ApplicationHost Secret projection has no name.');
+    }
+    const identity = `${namespace}\0${secretName}`;
+    const keys = projections.get(identity) ?? new Set<string>();
+    const secretKey = stringValue(key);
+    if (secretKey) keys.add(secretKey);
+    projections.set(identity, keys);
+  };
+  for (const entry of environment) {
+    const valueFrom = objectValue(entry.valueFrom);
+    const secretKeyRef = objectValue(valueFrom.secretKeyRef);
+    if (Object.keys(secretKeyRef).length > 0) {
+      add(secretKeyRef.name, secretKeyRef.key);
+    }
+  }
+  for (const volume of volumes) {
+    const secret = objectValue(volume.secret);
+    if (Object.keys(secret).length > 0) {
+      const items = Array.isArray(secret.items) ? secret.items : [];
+      if (items.length === 0) add(secret.secretName);
+      else for (const item of items) add(secret.secretName, objectValue(item).key);
+    }
+    const projected = objectValue(volume.projected);
+    const sources = Array.isArray(projected.sources) ? projected.sources : [];
+    for (const source of sources) {
+      const projectedSecret = objectValue(objectValue(source).secret);
+      if (Object.keys(projectedSecret).length === 0) continue;
+      const items = Array.isArray(projectedSecret.items) ? projectedSecret.items : [];
+      if (items.length === 0) add(projectedSecret.name);
+      else for (const item of items) add(projectedSecret.name, objectValue(item).key);
+    }
+  }
+  return [...projections.entries()]
+    .map(([identity, keys]) => {
+      const separator = identity.indexOf('\0');
+      return {
+        target: 'kubernetes' as const,
+        namespace: identity.slice(0, separator),
+        name: identity.slice(separator + 1),
+        keys: [...keys].sort(),
+      };
+    })
+    .sort((left, right) =>
+      `${left.namespace}/${left.name}`.localeCompare(`${right.namespace}/${right.name}`),
+    );
 }
 
 export function applicationKubernetesFixedScheduleResources(options: {

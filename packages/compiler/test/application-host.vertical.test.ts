@@ -415,6 +415,16 @@ describe('generated ApplicationHost', () => {
       name: expect.stringMatching(/^scheduler-token-/u),
       secret: { secretName: 'hatchet-client-config', items: [{ key: 'HATCHET_CLIENT_TOKEN', path: 'token' }] },
     })]));
+    const artifact = JSON.parse(
+      await readFile(join(root, 'host', 'application-host.json'), 'utf8'),
+    ) as { readonly spec?: { readonly credentialProjections?: readonly unknown[] } };
+    expect(artifact.spec?.credentialProjections).toEqual(expect.arrayContaining([
+      { target: 'kubernetes', namespace: 'guestbook', name: 'guestbook-web-gateway-cursor', keys: ['key'] },
+      { target: 'kubernetes', namespace: 'guestbook', name: 'guestbook-internal-operation', keys: ['key'] },
+      { target: 'kubernetes', namespace: 'guestbook', name: 'guestbook-db-app', keys: ['uri'] },
+      { target: 'kubernetes', namespace: 'guestbook', name: 'hatchet-client-config', keys: ['HATCHET_CLIENT_TOKEN'] },
+      { target: 'kubernetes', namespace: 'guestbook', name: 'acquisition-dedicated', keys: ['token'] },
+    ]));
     expect(resources.find(({ kind }) => kind === 'Role')).toMatchObject({
       rules: expect.arrayContaining([{ apiGroups: ['batch'], resources: ['cronjobs'], verbs: ['create', 'delete', 'get', 'update'] }]),
     });

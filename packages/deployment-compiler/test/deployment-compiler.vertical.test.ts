@@ -751,6 +751,87 @@ describe("Application deployment compiler", () => {
     expect(JSON.stringify(compiled.runtimeAccess)).not.toContain('values.yaml');
   });
 
+  it('treats compiler-artifact Secret projections as canonical co-located workload access', () => {
+    const graph = {
+      ...applicationGraph(),
+      metadata: { name: 'guestbook', namespace: 'guestbook' },
+      nodes: [
+        ...applicationGraph().nodes,
+        { id: 'server.web', kind: 'server', name: 'web', routes: [] },
+        { id: 'server.api', kind: 'server', name: 'api', routes: [] },
+      ],
+    } as unknown as ApplicationGraph;
+    const base = {
+      ...request(),
+      graph,
+      artifacts: [],
+    };
+    const compiled = compileApplicationDeploymentGraph({
+      ...runtimeWorkloadRequest(
+        base,
+        'web',
+        ['server.web', 'server.api'],
+        [{
+          name: 'DATABASE_URL',
+          valueFrom: {
+            secretKeyRef: { name: 'guestbook-db-app', key: 'uri' },
+          },
+        }, {
+          name: 'APPLIK8S_CONTEXT_KEY',
+          valueFrom: {
+            secretKeyRef: { name: 'guestbook-context', key: 'key' },
+          },
+        }],
+      ),
+      artifacts: [{
+        id: 'artifact.web',
+        artifactType: 'containerImage',
+        name: 'web',
+        sourceDigest: sourceGraphDigest,
+        sourceDescriptor: { context: './web' },
+        logicalReference: 'applik8s/web:source',
+        executionNodeIds: ['server.web', 'server.api'],
+        credentialProjections: [{
+          target: 'kubernetes',
+          namespace: 'guestbook',
+          name: 'guestbook-db-app',
+          keys: ['uri'],
+        }, {
+          target: 'kubernetes',
+          namespace: 'guestbook',
+          name: 'guestbook-context',
+          keys: ['key'],
+        }],
+      }],
+    });
+    expect(compiled.runtimeAccess.diagnostics).toEqual([]);
+    expect(compiled.runtimeAccess.workloads[0]?.kubernetes?.credentialProjections)
+      .toEqual([
+        { resourceId: 'v1/Secret/guestbook/guestbook-context', keys: ['key'] },
+        { resourceId: 'v1/Secret/guestbook/guestbook-db-app', keys: ['uri'] },
+      ]);
+    const artifact = compiled.graph.nodes.find((node) => node.id === 'artifact.web');
+    expect(artifact?.kind).toBe('artifact');
+    if (artifact?.kind !== 'artifact') throw new Error('Expected web artifact.');
+    expect(artifact.spec).toMatchObject({
+      executionNodeIds: ['server.api', 'server.web'],
+      credentialProjections: [
+        {
+          target: 'kubernetes',
+          namespace: 'guestbook',
+          name: 'guestbook-context',
+          keys: ['key'],
+        },
+        {
+          target: 'kubernetes',
+          namespace: 'guestbook',
+          name: 'guestbook-db-app',
+          keys: ['uri'],
+        },
+      ],
+    });
+  });
+
   it("fails closed when a provider has no exact deployment contributor", () => {
     const graph = applicationGraph();
     const provider = graph.nodes[0];

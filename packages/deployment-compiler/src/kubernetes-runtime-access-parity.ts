@@ -433,12 +433,29 @@ function projectedSecretKeys(podSpec: Readonly<Record<string, unknown>> | undefi
     }
   }
   for (const volume of arrayValue(podSpec.volumes).map(recordValue).filter(defined)) {
-    const direct = stringValue(recordValue(volume.secret)?.secretName);
-    if (direct) names.add(`${direct}:*`);
+    const secret = recordValue(volume.secret);
+    const direct = stringValue(secret?.secretName);
+    if (direct) {
+      const keys = arrayValue(secret?.items)
+        .map(recordValue)
+        .filter(defined)
+        .map((item) => stringValue(item.key))
+        .filter(defined);
+      if (keys.length === 0) names.add(`${direct}:*`);
+      else for (const key of keys) names.add(`${direct}:${key}`);
+    }
     const projected = recordValue(volume.projected);
     for (const source of arrayValue(projected?.sources).map(recordValue).filter(defined)) {
-      const name = stringValue(recordValue(source.secret)?.name);
-      if (name) names.add(`${name}:*`);
+      const projectedSecret = recordValue(source.secret);
+      const name = stringValue(projectedSecret?.name);
+      if (!name) continue;
+      const keys = arrayValue(projectedSecret?.items)
+        .map(recordValue)
+        .filter(defined)
+        .map((item) => stringValue(item.key))
+        .filter(defined);
+      if (keys.length === 0) names.add(`${name}:*`);
+      else for (const key of keys) names.add(`${name}:${key}`);
     }
   }
   return [...names].sort();

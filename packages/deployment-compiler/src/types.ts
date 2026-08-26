@@ -5,6 +5,7 @@ import type {
   ApplicationRuntimeAccessRequirement,
 } from "@applik8s/core";
 import type {
+  ApplicationArtifactCredentialProjection,
   ApplicationDeploymentConnectionIdentity,
   ApplicationDeploymentEdge,
   ApplicationDeploymentGraph,
@@ -122,6 +123,8 @@ export interface ApplicationArtifactRequirement {
   readonly semanticNodeId?: string;
   /** Semantic execution nodes whose code is placed in this artifact. */
   readonly executionNodeIds?: readonly string[];
+  /** Exact non-secret credential identities mounted by the artifact bootstrap. */
+  readonly credentialProjections?: readonly ApplicationArtifactCredentialProjection[];
   readonly logicalReference?: string;
 }
 
