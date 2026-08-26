@@ -27,6 +27,15 @@ export {
   HatchetScheduleTimezoneCompatibilityError,
 } from './application-schedule.js';
 export {
+  type CompactHatchetWorkflowAdmissionPageOptions,
+  type CompactHatchetWorkflowAdmissionPageResult,
+  compactHatchetWorkflowAdmissionPage,
+  type HatchetWorkflowAdmissionDeleteResult,
+  type HatchetWorkflowAdmissionLeaseRecord,
+  type HatchetWorkflowAdmissionPage,
+  type HatchetWorkflowAdmissionRunState,
+} from './workflow-gateway-admission.js';
+export {
   durableErrorFromMessage,
   observeHatchetWorkflowRun,
   waitForHatchetResult,

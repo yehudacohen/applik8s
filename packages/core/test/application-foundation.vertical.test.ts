@@ -583,4 +583,69 @@ describe('v0.8 canonical foundation', () => {
     expect(scheduleAccess[0]?.consumer.executionIdentity).toContain('schedule-runner');
     expect(scheduleAccess.every(({ provenance: [entry] }) => entry?.module === 'src/schedules.ts')).toBe(true);
   });
+
+  it('declares external OTLP credential projections for every instrumented execution boundary', () => {
+    const graph = {
+      apiVersion: 'applik8s.appGraph/v1alpha1',
+      kind: 'ApplicationGraph',
+      metadata: { name: 'observed-notes', namespace: 'observed-notes' },
+      nodes: [
+        {
+          id: 'server.notes',
+          kind: 'server',
+          name: 'notes',
+          stability: 'stable',
+          routes: [],
+          sourceLocation: { file: 'src/server.ts', line: 4, column: 1 },
+        },
+        {
+          id: 'provider.Observability',
+          kind: 'provider',
+          name: 'Observability',
+          stability: 'stable',
+          interface: 'Observability',
+          implementation: 'otlp',
+          sourceLocation: { file: 'src/app.ts', line: 8, column: 1 },
+          config: {
+            observability: {
+              endpoint: 'https://collector.observed-notes.svc:4318',
+              authentication: {
+                secret: { apiVersion: 'v1', kind: 'Secret', name: 'otel-auth', namespace: 'observed-notes' },
+                key: 'token',
+              },
+              tls: {
+                trust: 'custom-ca',
+                certificateAuthority: { apiVersion: 'v1', kind: 'Secret', name: 'otel-ca', namespace: 'observed-notes' },
+                key: 'ca.crt',
+              },
+            },
+          },
+        },
+      ],
+      edges: [],
+      providerRequirements: [],
+      providerBindings: [],
+      compatibility: { stablePublicApis: [], documentedInternalContracts: [], experimentalSurfaces: [], postV3Surfaces: [], labels: [] },
+    } as unknown as ApplicationGraph;
+
+    const access = deriveApplicationGraphFoundation(graph).runtimeAccess
+      .filter(({ consumer }) => consumer.nodeId === 'server.notes');
+    expect(access.map(({ target }) => ({ operation: target.operation, scope: target.scope })))
+      .toEqual(expect.arrayContaining([
+        {
+          operation: 'telemetry.write',
+          scope: { kind: 'capability', capabilityId: 'Observability' },
+        },
+        {
+          operation: 'secret.read',
+          scope: { kind: 'resource', resourceId: 'v1/Secret/observed-notes/otel-auth', keys: ['token'] },
+        },
+        {
+          operation: 'secret.read',
+          scope: { kind: 'resource', resourceId: 'v1/Secret/observed-notes/otel-ca', keys: ['ca.crt'] },
+        },
+      ]));
+    expect(access.filter(({ target }) => target.operation === 'secret.read')
+      .every(({ provenance: [entry] }) => entry?.module === 'src/app.ts')).toBe(true);
+  });
 });

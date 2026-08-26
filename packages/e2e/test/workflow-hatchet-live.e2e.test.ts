@@ -16,6 +16,8 @@ const workflowApiGroup = 'workflow-proof-live.applik8s.dev';
 const workflowApiVersion = `${workflowApiGroup}/v1alpha1`;
 const workflowJobResource = `workflowjobs.${workflowApiGroup}`;
 const effectServiceName = 'workflow-effect-api';
+const telemetryCollectorName = 'workflow-otel';
+const telemetrySecretName = 'workflow-otel-tls';
 const storageClass = process.env.APPLIK8S_E2E_STORAGE_CLASS ?? 'csi-hostpath-sc';
 const testEmail = `applik8s-workflow-${process.pid}@example.test`;
 const testPassword = `Applik8sWorkflowE2e-${process.pid}-Only`;
@@ -45,6 +47,7 @@ describeLive('v0.5 Hatchet durable workflow proof', () => {
     }));
     outDir = join(tempDir, 'dist');
     await ensureNamespace(namespace);
+    await installTelemetryCollector();
     await installEffectService();
     await createCredentialsSecret();
     entrypointPath = join(tempDir, 'workflow-live.ts');
@@ -160,6 +163,7 @@ describeLive('v0.5 Hatchet durable workflow proof', () => {
       await waitForEffectCount('provision:cancelled', 2);
       await cancelled.cancel();
       await expect(cancelled.result()).rejects.toThrow();
+      await waitForWorkflowTelemetryEvidence();
     } finally {
       restoreRuntime?.();
       if (previousToken === undefined) delete process.env.HATCHET_CLIENT_TOKEN;
@@ -197,6 +201,27 @@ interface GatewayAdmissionLease {
   };
 }
 
+interface OtlpAttributeValue {
+  readonly stringValue?: string;
+  readonly intValue?: string | number;
+  readonly doubleValue?: number;
+  readonly boolValue?: boolean;
+}
+
+interface OtlpSpan {
+  readonly traceId?: string;
+  readonly spanId?: string;
+  readonly name?: string;
+  readonly attributes?: readonly {
+    readonly key?: string;
+    readonly value?: OtlpAttributeValue;
+  }[];
+  readonly links?: readonly {
+    readonly traceId?: string;
+    readonly spanId?: string;
+  }[];
+}
+
 interface PortForward {
   readonly endpoint: string;
   readonly port: number;
@@ -214,7 +239,7 @@ function requiredWorkflowBinding(): WorkflowBinding {
 
 function workflowEntrypointSource(): string {
   return `
-import { app, Scheduler, workflow, WorkflowEngine } from '@applik8s/applik8s';
+import { app, Observability, Scheduler, workflow, WorkflowEngine } from '@applik8s/applik8s';
 import { type } from '@applik8s/applik8s/dsl';
 
 const Effect = workflow('proof.effect.v1', {
@@ -232,6 +257,16 @@ const ResourceProof = workflow('proof.resource.v1', {
 });
 
 const platform = app(${JSON.stringify(stackName)}, { namespace: ${JSON.stringify(namespace)}, status: type({ ready: 'boolean?' }) });
+platform.provide(Observability, Observability.otlp({
+  endpoint: ${JSON.stringify(`https://${telemetryCollectorName}.${namespace}.svc:4318`)},
+  signals: ['traces'],
+  tls: {
+    trust: 'custom-ca',
+    certificateAuthority: { apiVersion: 'v1', kind: 'Secret', name: ${JSON.stringify(telemetrySecretName)}, namespace: ${JSON.stringify(namespace)} },
+    key: 'ca.crt',
+    serverName: ${JSON.stringify(`${telemetryCollectorName}.${namespace}.svc`)},
+  },
+}));
 platform.provide(WorkflowEngine, WorkflowEngine.hatchet({
   name: ${JSON.stringify(engineName)},
   namespace: ${JSON.stringify(namespace)},
@@ -311,6 +346,148 @@ async function createCredentialsSecret(): Promise<void> {
   const generated = await exec('kubectl', ['create', 'secret', 'generic', credentialsSecret, '--namespace', namespace, `--from-literal=adminEmail=${testEmail}`, `--from-literal=adminPassword=${testPassword}`, '--dry-run=client', '--output=yaml'], process.cwd());
   await writeFile(secretPath, generated.stdout);
   await kubectl(['apply', '--filename', secretPath]);
+}
+
+async function installTelemetryCollector(): Promise<void> {
+  const directory = requiredTempDir();
+  const certificatePath = join(directory, 'workflow-otel.crt');
+  const privateKeyPath = join(directory, 'workflow-otel.key');
+  await exec('openssl', [
+    'req',
+    '-x509',
+    '-newkey',
+    'rsa:2048',
+    '-nodes',
+    '-keyout',
+    privateKeyPath,
+    '-out',
+    certificatePath,
+    '-days',
+    '1',
+    '-subj',
+    `/CN=${telemetryCollectorName}.${namespace}.svc`,
+    '-addext',
+    `subjectAltName=DNS:${telemetryCollectorName}.${namespace}.svc`,
+  ], process.cwd());
+  const secretPath = join(directory, 'workflow-otel-secret.yaml');
+  const generatedSecret = await exec('kubectl', [
+    'create',
+    'secret',
+    'generic',
+    telemetrySecretName,
+    '--namespace',
+    namespace,
+    `--from-file=tls.crt=${certificatePath}`,
+    `--from-file=tls.key=${privateKeyPath}`,
+    `--from-file=ca.crt=${certificatePath}`,
+    '--dry-run=client',
+    '--output=yaml',
+  ], process.cwd());
+  await writeFile(secretPath, generatedSecret.stdout);
+  await kubectl(['apply', '--filename', secretPath]);
+
+  const manifest = `apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ${telemetryCollectorName}
+  namespace: ${namespace}
+data:
+  collector.yaml: |
+    receivers:
+      otlp:
+        protocols:
+          http:
+            endpoint: 0.0.0.0:4318
+            tls:
+              cert_file: /tls/tls.crt
+              key_file: /tls/tls.key
+    exporters:
+      file:
+        path: /var/lib/otel/traces.json
+        format: json
+    extensions:
+      health_check:
+        endpoint: 0.0.0.0:13133
+    service:
+      extensions: [health_check]
+      pipelines:
+        traces:
+          receivers: [otlp]
+          exporters: [file]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ${telemetryCollectorName}
+  namespace: ${namespace}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ${telemetryCollectorName}
+  template:
+    metadata:
+      labels:
+        app: ${telemetryCollectorName}
+    spec:
+      containers:
+        - name: collector
+          image: ghcr.io/open-telemetry/opentelemetry-collector-releases/opentelemetry-collector-contrib:0.153.0
+          args: [--config=/conf/collector.yaml]
+          ports:
+            - name: otlp-http
+              containerPort: 4318
+            - name: health
+              containerPort: 13133
+          readinessProbe:
+            httpGet:
+              path: /
+              port: health
+            initialDelaySeconds: 1
+            periodSeconds: 1
+          volumeMounts:
+            - name: config
+              mountPath: /conf
+              readOnly: true
+            - name: tls
+              mountPath: /tls
+              readOnly: true
+            - name: traces
+              mountPath: /var/lib/otel
+        - name: evidence-reader
+          image: node:22-alpine@sha256:16e22a550f3863206a3f701448c45f7912c6896a62de43add43bb9c86130c3e2
+          command: [sh, -c, 'sleep 86400']
+          volumeMounts:
+            - name: traces
+              mountPath: /var/lib/otel
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: ${telemetryCollectorName}
+        - name: tls
+          secret:
+            secretName: ${telemetrySecretName}
+        - name: traces
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ${telemetryCollectorName}
+  namespace: ${namespace}
+spec:
+  selector:
+    app: ${telemetryCollectorName}
+  ports:
+    - name: otlp-http
+      port: 4318
+      targetPort: otlp-http
+`;
+  const manifestPath = join(directory, 'workflow-otel.yaml');
+  await writeFile(manifestPath, manifest);
+  await kubectl(['apply', '--filename', manifestPath]);
+  await waitForDeploymentReady(telemetryCollectorName);
 }
 
 async function installEffectService(): Promise<void> {
@@ -411,6 +588,107 @@ async function assertSingleGatewayAdmission(client: Pick<HatchetClient, 'runs'>,
 
   const state = await effectState();
   expect(state.counts[`provision:${proofId}`]).toBe(2);
+}
+
+async function waitForWorkflowTelemetryEvidence(): Promise<void> {
+  const started = Date.now();
+  let lastSummary = 'collector output is not available';
+  while (Date.now() - started < 180_000) {
+    try {
+      const output = (await kubectl([
+        'exec',
+        '--namespace',
+        namespace,
+        `deployment/${telemetryCollectorName}`,
+        '--container',
+        'evidence-reader',
+        '--',
+        'cat',
+        '/var/lib/otel/traces.json',
+      ])).stdout;
+      const spans = collectorSpans(output);
+      const workflowSpans = spans.filter((span) => telemetryAttribute(span, 'applik8s.boundary.kind') === 'workflow');
+      const taskSpans = spans.filter((span) => telemetryAttribute(span, 'applik8s.boundary.kind') === 'task');
+      const linkedAttempts = workflowSpans.map((workflowSpan) => {
+        const attempts = taskSpans
+          .filter((taskSpan) => taskSpan.links?.some(
+            (link) => link.traceId === workflowSpan.traceId && link.spanId === workflowSpan.spanId,
+          ))
+          .map((taskSpan) => Number(telemetryAttribute(taskSpan, 'applik8s.attempt')))
+          .filter((attempt) => Number.isSafeInteger(attempt));
+        return { workflowSpan, attempts };
+      });
+      const retryGraph = linkedAttempts.find(({ attempts }) => attempts.includes(1) && attempts.includes(2));
+      lastSummary = JSON.stringify({
+        workflows: workflowSpans.length,
+        tasks: taskSpans.length,
+        linkedAttempts: linkedAttempts.map(({ attempts }) => attempts),
+      });
+      if (workflowSpans.length > 0 && taskSpans.length > 0 && retryGraph) {
+        const serialized = JSON.stringify(spans);
+        expect(serialized).not.toContain(testPassword);
+        expect(serialized).not.toContain('applik8s-workflow-causal-principal-invalid');
+        return;
+      }
+    } catch (cause) {
+      lastSummary = cause instanceof Error ? cause.message : String(cause);
+    }
+    await sleep(1_000);
+  }
+  const diagnostics = await Promise.allSettled([
+    kubectl(['logs', '--namespace', namespace, `deployment/${telemetryCollectorName}`, '--tail=100']),
+    kubectl(['logs', '--namespace', namespace, `deployment/${workerName}`, '--tail=100']),
+  ]);
+  throw new Error(
+    `Timed out waiting for a collector-visible workflow/task retry graph: ${lastSummary}\n${diagnostics.map(formatSettledOutput).join('\n')}`,
+  );
+}
+
+function collectorSpans(output: string): readonly OtlpSpan[] {
+  const trimmed = output.trim();
+  if (!trimmed) return [];
+  const payloads: unknown[] = [];
+  try {
+    payloads.push(JSON.parse(trimmed));
+  } catch {
+    for (const line of trimmed.split('\n').map((candidate) => candidate.trim()).filter(Boolean)) {
+      try {
+        payloads.push(JSON.parse(line));
+      } catch {
+        // The file exporter can be observed between appends. Ignore only the
+        // incomplete final record; complete records remain available below.
+      }
+    }
+  }
+  return payloads.flatMap(otlpSpans);
+}
+
+function otlpSpans(payload: unknown): readonly OtlpSpan[] {
+  if (!payload || typeof payload !== 'object') return [];
+  const resourceSpans = Reflect.get(payload, 'resourceSpans');
+  if (!Array.isArray(resourceSpans)) return [];
+  return resourceSpans.flatMap((resource) => {
+    const scopeSpans = resource && typeof resource === 'object'
+      ? Reflect.get(resource, 'scopeSpans')
+      : undefined;
+    if (!Array.isArray(scopeSpans)) return [];
+    return scopeSpans.flatMap((scope) => {
+      const spans = scope && typeof scope === 'object' ? Reflect.get(scope, 'spans') : undefined;
+      return Array.isArray(spans)
+        ? spans.filter((span): span is OtlpSpan => Boolean(span && typeof span === 'object'))
+        : [];
+    });
+  });
+}
+
+function telemetryAttribute(span: OtlpSpan, key: string): string | number | boolean | undefined {
+  const value = span.attributes?.find((candidate) => candidate.key === key)?.value;
+  if (!value) return undefined;
+  for (const field of ['stringValue', 'intValue', 'doubleValue', 'boolValue'] as const) {
+    const candidate = value[field];
+    if (typeof candidate === 'string' || typeof candidate === 'number' || typeof candidate === 'boolean') return candidate;
+  }
+  return undefined;
 }
 
 async function runResourceWorkflowProof(proofId: string): Promise<void> {
@@ -608,9 +886,13 @@ async function deleteTestFixtures(): Promise<void> {
   await kubectl([
     'delete',
     `deployment/${effectServiceName}`,
+    `deployment/${telemetryCollectorName}`,
     `service/${effectServiceName}`,
+    `service/${telemetryCollectorName}`,
     `configmap/${effectServiceName}`,
+    `configmap/${telemetryCollectorName}`,
     `secret/${credentialsSecret}`,
+    `secret/${telemetrySecretName}`,
     '--namespace',
     namespace,
     '--ignore-not-found=true',

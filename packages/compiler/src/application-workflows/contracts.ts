@@ -25,7 +25,7 @@ import { applicationRuntimeEndpointEnvironmentName } from '@applik8s/deployment-
 import ts from 'typescript';
 import { applicationGraphStringValue } from '../application-installation-values.js';
 import { applicationGraphHasObservabilityRuntime } from '../application-observability-runtime-source.js';
-import { kubernetesName, objectConfig, stringConfig } from './utilities.js';
+import { kubernetesName, numberConfig, objectConfig, stringConfig } from './utilities.js';
 
 const DEFAULT_WORKER_IMAGE = 'node:22-alpine@sha256:16e22a550f3863206a3f701448c45f7912c6896a62de43add43bb9c86130c3e2';
 const APPLICATION_RUNTIME_NAMESPACE_MARKER = '__APPLIK8S_RUNTIME_NAMESPACE__';
@@ -57,6 +57,11 @@ export interface WorkflowContract {
   readonly image: string;
   readonly contractNames: Readonly<Record<string, string>>;
   readonly gatewayCallers: readonly WorkflowGatewayCallerContract[];
+  readonly gatewayAdmission: {
+    readonly replayWindowSeconds: number;
+    readonly cleanupIntervalSeconds: number;
+    readonly cleanupBatchSize: number;
+  };
 }
 
 export interface WorkflowFunctionNativeTransactionContract {
@@ -244,6 +249,27 @@ export function workflowContract(
     }
   }
   const config = provider.config ?? {};
+  const admissionConfig = objectConfig(config.admission);
+  const gatewayAdmission = {
+    replayWindowSeconds: admissionConfig.replayWindowSeconds === undefined
+      ? 7 * 24 * 60 * 60
+      : numberConfig(admissionConfig.replayWindowSeconds),
+    cleanupIntervalSeconds: admissionConfig.cleanupIntervalSeconds === undefined
+      ? 5 * 60
+      : numberConfig(admissionConfig.cleanupIntervalSeconds),
+    cleanupBatchSize: admissionConfig.cleanupBatchSize === undefined
+      ? 1_000
+      : numberConfig(admissionConfig.cleanupBatchSize),
+  };
+  if (!Number.isSafeInteger(gatewayAdmission.replayWindowSeconds) || gatewayAdmission.replayWindowSeconds < 60) {
+    throw new Error(`Generated workflow worker ${worker.id} admission replayWindowSeconds must be a safe integer of at least 60 seconds.`);
+  }
+  if (!Number.isSafeInteger(gatewayAdmission.cleanupIntervalSeconds) || gatewayAdmission.cleanupIntervalSeconds < 10) {
+    throw new Error(`Generated workflow worker ${worker.id} admission cleanupIntervalSeconds must be a safe integer of at least 10 seconds.`);
+  }
+  if (!Number.isSafeInteger(gatewayAdmission.cleanupBatchSize) || gatewayAdmission.cleanupBatchSize < 1 || gatewayAdmission.cleanupBatchSize > 10_000) {
+    throw new Error(`Generated workflow worker ${worker.id} admission cleanupBatchSize must be a safe integer between 1 and 10000.`);
+  }
   const namespace = applicationGraphStringValue(config.namespace) || 'default';
   const engineName = kubernetesName(stringConfig(config.name) || 'applik8s-hatchet');
   const adminCredentials = objectConfig(config.adminCredentialsSecret);
@@ -348,6 +374,7 @@ export function workflowContract(
       `${left.namespace}/${left.serviceAccount}/${left.operator}`.localeCompare(
         `${right.namespace}/${right.serviceAccount}/${right.operator}`,
       )),
+    gatewayAdmission,
   };
 }
 

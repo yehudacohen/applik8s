@@ -99,6 +99,7 @@ export function deriveApplicationGraphFoundation(
   }
 
   const requirements: ApplicationRuntimeAccessRequirement[] = [];
+  const observabilityRuntime = applicationObservabilityRuntime(graph);
   const add = (
     consumer: ApplicationGraphNode,
     operation: ApplicationRuntimeAccessOperation,
@@ -130,6 +131,29 @@ export function deriveApplicationGraphFoundation(
 
   for (const node of graph.nodes) {
     if (!executionIdentities.has(node.id)) continue;
+    // Kubernetes reconcilers run in the Rust operator host rather than the
+    // generated JavaScript application runtimes that receive the external
+    // OTLP environment. Its independently configured Telemetry capability is
+    // recorded below, but browser/Node OTLP credentials must not be projected
+    // into that host implicitly.
+    if (observabilityRuntime && node.kind !== 'operator') {
+      add(
+        node,
+        'telemetry.write',
+        observabilityRuntime.provider.id,
+        { kind: 'capability', capabilityId: observabilityRuntime.provider.interface },
+        'framework',
+        observabilityRuntime.provider,
+      );
+      for (const secret of observabilityRuntime.secrets) {
+        const identity = applicationResourceIdentity(secret.ref);
+        add(node, 'secret.read', identity, {
+          kind: 'resource',
+          resourceId: identity,
+          keys: [secret.key],
+        }, 'framework', observabilityRuntime.provider);
+      }
+    }
     const runtimeSecrets = providerRuntimeSecretRefs(node, graph);
     for (const binding of callableProviderBindings(node)) {
       const access = binding.operation?.runtime?.access;
@@ -189,6 +213,60 @@ export function deriveApplicationGraphFoundation(
       ...requirements,
     ]),
   };
+}
+
+function applicationObservabilityRuntime(
+  graph: ApplicationGraph,
+): {
+  readonly provider: Extract<ApplicationGraphNode, { readonly kind: 'provider' }>;
+  readonly secrets: readonly { readonly ref: ApplicationResourceRef; readonly key: string }[];
+} | undefined {
+  const provider = graph.nodes.find((node): node is Extract<ApplicationGraphNode, { readonly kind: 'provider' }> =>
+    node.kind === 'provider' && node.interface === 'Observability');
+  if (!provider) return undefined;
+  const root = plainObject(provider.config);
+  const config = plainObject(root?.observability) ?? root;
+  if (!config) return { provider, secrets: [] };
+  const secrets: { ref: ApplicationResourceRef; key: string }[] = [];
+  const authentication = plainObject(config.authentication);
+  const authenticationSecret = applicationSecretRef(authentication?.secret);
+  if (authenticationSecret && typeof authentication?.key === 'string' && authentication.key.length > 0) {
+    secrets.push({ ref: authenticationSecret, key: authentication.key });
+  }
+  const tls = plainObject(config.tls);
+  const certificateAuthority = applicationSecretRef(tls?.certificateAuthority);
+  if (
+    tls?.trust === 'custom-ca'
+    && certificateAuthority
+    && typeof tls.key === 'string'
+    && tls.key.length > 0
+  ) {
+    secrets.push({ ref: certificateAuthority, key: tls.key });
+  }
+  return { provider, secrets };
+}
+
+function applicationSecretRef(value: unknown): ApplicationResourceRef | undefined {
+  const ref = plainObject(value);
+  if (
+    ref?.kind !== 'Secret'
+    || typeof ref.apiVersion !== 'string'
+    || typeof ref.name !== 'string'
+    || ref.name.length === 0
+    || (ref.namespace !== undefined && typeof ref.namespace !== 'string')
+  ) return undefined;
+  return {
+    apiVersion: ref.apiVersion,
+    kind: 'Secret',
+    name: ref.name,
+    ...(typeof ref.namespace === 'string' ? { namespace: ref.namespace } : {}),
+  };
+}
+
+function plainObject(value: unknown): Readonly<Record<string, unknown>> | undefined {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Readonly<Record<string, unknown>>
+    : undefined;
 }
 
 function callableProviderBindings(

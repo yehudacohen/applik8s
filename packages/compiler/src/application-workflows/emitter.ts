@@ -131,7 +131,7 @@ export async function emitWorkflowWorker(
         apiGroup: 'coordination.k8s.io',
         resource: 'leases',
         scope: 'Namespaced' as const,
-        verbs: ['create', 'get', 'list', 'update', 'patch'],
+        verbs: ['create', 'delete', 'get', 'list', 'update', 'patch'],
       }]
     : [];
   return {

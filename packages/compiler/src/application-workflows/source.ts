@@ -348,7 +348,7 @@ import { createSignedEnvelopeCodec, signedEnvelopeUtf8Key, staticSignedEnvelopeK
 	import { readFile } from 'node:fs/promises';
 	import { connect as connectTcp } from 'node:net';
 	import { HatchetClient } from '@hatchet-dev/typescript-sdk/v1/index.js';
-	import { decodeHatchetWorkflowTransportInput, encodeHatchetWorkflowTransportInput } from '@applik8s/runtime-hatchet';
+	import { compactHatchetWorkflowAdmissionPage, decodeHatchetWorkflowTransportInput, encodeHatchetWorkflowTransportInput } from '@applik8s/runtime-hatchet';
 	import { applicationAdmissionInvocationView, applicationCausalPrincipalContext, canonicalJsonV1String, createApplicationAdmissionContextV1, createApplicationExecutionPrincipalV1, validateApplicationAdmissionContextV1, validateApplicationAdmissionContextV1WithoutReceipt, validateApplicationTelemetryEnvelopeV1, withApplicationAdmissionExecutionV1, withApplicationAdmissionTraceV1 } from '@applik8s/core';
 	import { applicationAdmissionRejectionCodeV1, createApplicationAdmissionObservationV1 } from '@applik8s/core/admission';
 	import { nodeKeyedDigestHex } from '@applik8s/runtime/node-integrity';
@@ -1030,6 +1030,7 @@ async function shutdown() {
   if (operationAuthoritySql) await operationAuthoritySql.end({ timeout: 5 });
   if (signalStore) await signalStore.close();
   await Promise.all(projectionSources.map((source) => source.close()));
+  if (gatewayAdmissionCleanupTimer) clearInterval(gatewayAdmissionCleanupTimer);
   if (gatewayServer) await new Promise((resolve) => gatewayServer.close(resolve));
   ${contract.observability ? 'await closeApplicationTelemetryRuntime();' : ''}
   server.close();
@@ -1042,7 +1043,7 @@ await running;
 }
 
 function generatedWorkflowGateway(contract: WorkflowContract): string {
-  if (contract.gatewayCallers.length === 0) return 'const gatewayServer = undefined;';
+  if (contract.gatewayCallers.length === 0) return 'const gatewayServer = undefined;\nconst gatewayAdmissionCleanupTimer = undefined;';
   const allowedContracts = [...new Set(contract.gatewayCallers.flatMap((caller) => caller.contracts))].sort();
   const inputSchemas = Object.fromEntries([
     ...contract.tasks.map(({ task }) => [task.name, task.contract.input.jsonSchema]),
@@ -1105,6 +1106,9 @@ const gatewayAuthentication = gatewayKubeConfig.makeApiClient(AuthenticationV1Ap
 const gatewayCoordination = gatewayKubeConfig.makeApiClient(CoordinationV1Api);
 const gatewayAdmissionOwner = requiredEnv('APPLIK8S_WORKFLOW_POD_NAME') + ':' + randomUUID();
 const gatewayAdmissionInFlight = new Map();
+const gatewayAdmissionPolicy = Object.freeze(${JSON.stringify(contract.gatewayAdmission)});
+let gatewayAdmissionCleanupCursor;
+let gatewayAdmissionCleanupRunning = false;
 const gatewayRuntime = createHatchetWorkflowRuntimeFromClient(hatchet);
 const gatewayAdmission = createSignedEnvelopeCodec({
   purpose: 'applik8s.workflow-gateway-admission/v1',
@@ -1333,6 +1337,67 @@ async function createGatewayAdmissionLease(identity, contract) {
     const lease = await readGatewayAdmissionLease(identity.leaseName);
     if (!lease) throw new Error('WORKFLOW_ADMISSION_STATE_LOST');
     return Object.freeze({ lease, created: false });
+  }
+}
+async function compactGatewayAdmissionRecords() {
+  if (gatewayAdmissionCleanupRunning) return;
+  gatewayAdmissionCleanupRunning = true;
+  try {
+    const result = await compactHatchetWorkflowAdmissionPage({
+      nowMs: Date.now(),
+      replayWindowSeconds: gatewayAdmissionPolicy.replayWindowSeconds,
+      cleanupBatchSize: gatewayAdmissionPolicy.cleanupBatchSize,
+      ...(gatewayAdmissionCleanupCursor ? { cursor: gatewayAdmissionCleanupCursor } : {}),
+      listPage: async ({ cursor, limit }) => {
+        try {
+          const page = await gatewayCoordination.listNamespacedLease({
+            namespace: gatewayRuntimeNamespace,
+            labelSelector: 'applik8s.dev/workflow-admission=true',
+            limit,
+            ...(cursor ? { _continue: cursor } : {}),
+          });
+          return {
+            items: page.items ?? [],
+            ...(page.metadata?._continue ? { nextCursor: page.metadata._continue } : {}),
+          };
+        } catch (error) {
+          if (gatewayKubernetesStatus(error) === 410) return { items: [] };
+          throw error;
+        }
+      },
+      runState: async providerRunId => {
+        try {
+          return ['COMPLETED', 'CANCELLED', 'FAILED', 'TIMED_OUT', 'TIMEDOUT'].includes(String(await hatchet.runs.get_status(providerRunId)))
+            ? 'terminal'
+            : 'active';
+        } catch (error) {
+          if (gatewayKubernetesStatus(error) === 404) return 'missing';
+          throw error;
+        }
+      },
+      deleteLease: async ({ name, uid }) => {
+        try {
+          await gatewayCoordination.deleteNamespacedLease({
+            name,
+            namespace: gatewayRuntimeNamespace,
+            body: {
+              apiVersion: 'v1',
+              kind: 'DeleteOptions',
+              preconditions: { uid },
+            },
+          });
+          return 'deleted';
+        } catch (error) {
+          const status = gatewayKubernetesStatus(error);
+          if (status === 404) return 'absent';
+          if (status === 409) return 'conflict';
+          throw error;
+        }
+      },
+    });
+    gatewayAdmissionCleanupCursor = result.nextCursor;
+  } finally {
+    gatewayAdmissionCleanupRunning = false;
   }
 }
 async function convergeGatewayAdmission(caller, contract, idempotencyKey, start) {
@@ -1666,6 +1731,17 @@ const gatewayServer = createServer((request, response) => {
   void handleGatewayRequest(request, response);
 });
 gatewayServer.listen(${contract.worker.deployment.healthPort + 1}, '0.0.0.0');
+const gatewayAdmissionCleanupTimer = setInterval(() => {
+  compactGatewayAdmissionRecords().catch((error) => console.error(JSON.stringify({
+    event: 'applik8s-workflow-admission-cleanup-failed',
+    error: workflowAdmissionRejectionCode(error),
+  })));
+}, gatewayAdmissionPolicy.cleanupIntervalSeconds * 1_000);
+gatewayAdmissionCleanupTimer.unref?.();
+void compactGatewayAdmissionRecords().catch((error) => console.error(JSON.stringify({
+  event: 'applik8s-workflow-admission-cleanup-failed',
+  error: workflowAdmissionRejectionCode(error),
+})));
 `;
 }
 

@@ -985,6 +985,12 @@ export const workflowProof = platform.composition;
       expect(generatedSource).toContain('const now = new V1MicroTime();');
       expect(generatedSource).toContain('acquireTime: new V1MicroTime()');
       expect(generatedSource).toContain('renewTime: new V1MicroTime()');
+      expect(generatedSource).toContain('"replayWindowSeconds":604800');
+      expect(generatedSource).toContain('compactGatewayAdmissionRecords()');
+      expect(generatedSource).toContain('compactHatchetWorkflowAdmissionPage({');
+      expect(generatedSource).toContain("['COMPLETED', 'CANCELLED', 'FAILED', 'TIMED_OUT', 'TIMEDOUT'].includes(String(await hatchet.runs.get_status(providerRunId)))");
+      expect(generatedSource).toContain('preconditions: { uid }');
+      expect(generatedSource).toContain("if (status === 409) return 'conflict';");
       expect(generatedSource).toContain(
         '[applicationWorkflowProviderAdmissionMetadata]: admissionId',
       );
@@ -1010,7 +1016,7 @@ export const workflowProof = platform.composition;
         expect.objectContaining({ apiVersion: 'networking.k8s.io/v1', kind: 'NetworkPolicy' }),
         expect.objectContaining({ apiVersion: 'v1', kind: 'ServiceAccount', metadata: expect.objectContaining({ name: 'hatchet-runtime', namespace: 'workflow-proof' }) }),
         expect.objectContaining({ apiVersion: 'rbac.authorization.k8s.io/v1', kind: 'ClusterRole', rules: [{ apiGroups: ['authentication.k8s.io'], resources: ['tokenreviews'], verbs: ['create'] }] }),
-        expect.objectContaining({ apiVersion: 'rbac.authorization.k8s.io/v1', kind: 'Role', rules: [{ apiGroups: ['coordination.k8s.io'], resources: ['leases'], verbs: ['create', 'get', 'list', 'update', 'patch'] }] }),
+        expect.objectContaining({ apiVersion: 'rbac.authorization.k8s.io/v1', kind: 'Role', rules: [{ apiGroups: ['coordination.k8s.io'], resources: ['leases'], verbs: ['create', 'delete', 'get', 'list', 'update', 'patch'] }] }),
         expect.objectContaining({ apiVersion: 'rbac.authorization.k8s.io/v1', kind: 'ClusterRoleBinding' }),
         expect.objectContaining({ apiVersion: 'v1', kind: 'Service', metadata: expect.objectContaining({ name: 'hatchet', namespace: 'workflow-proof' }), spec: expect.objectContaining({ ports: [{ name: 'gateway', port: 8002, targetPort: 'gateway' }] }) }),
         expect.objectContaining({ apiVersion: 'keda.sh/v1alpha1', kind: 'TriggerAuthentication' }),

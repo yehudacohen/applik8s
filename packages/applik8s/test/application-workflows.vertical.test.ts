@@ -34,6 +34,25 @@ const ProvisionTenantWorkflow = workflow('tenant.provision-workflow.v1', {
 });
 
 describe('v0.5 durable task and workflow contracts', () => {
+  it('defaults and validates bounded root-run admission retention', () => {
+    expect(WorkflowEngine.hatchet()).toMatchObject({
+      admission: {
+        replayWindowSeconds: 7 * 24 * 60 * 60,
+        cleanupIntervalSeconds: 5 * 60,
+        cleanupBatchSize: 1_000,
+      },
+    });
+    expect(() => WorkflowEngine.hatchet({
+      admission: { replayWindowSeconds: 59 },
+    })).toThrow('replayWindowSeconds');
+    expect(() => WorkflowEngine.hatchet({
+      admission: { cleanupIntervalSeconds: 9 },
+    })).toThrow('cleanupIntervalSeconds');
+    expect(() => WorkflowEngine.hatchet({
+      admission: { cleanupBatchSize: 10_001 },
+    })).toThrow('cleanupBatchSize');
+  });
+
   it('declares an optionless function-native durable workflow without placeholder options', () => {
     const platform = app('optionless-function-native-workflow');
     const greet = platform.workflow(

@@ -146,6 +146,15 @@ export type ApplicationObjectStorageProvider = ApplicationKubernetesConfigMapObj
 export type ApplicationCredentialStoreProvider = ApplicationKubernetesCredentialStoreProvider;
 export type ApplicationEventLogProvider = ApplicationNatsJetStreamEventLogProvider;
 
+export interface ApplicationWorkflowAdmissionPolicy {
+  /** Duration during which a repeated caller/contract/idempotency tuple reattaches to the original run. */
+  readonly replayWindowSeconds: number;
+  /** Interval between bounded scans of the durable admission authority. */
+  readonly cleanupIntervalSeconds: number;
+  /** Maximum admission records inspected by one cleanup pass. */
+  readonly cleanupBatchSize: number;
+}
+
 export interface ApplicationHatchetWorkflowEngineProvider {
   readonly kind: 'hatchet';
   /** Typed desired-state switch for the provider and its generated workers. */
@@ -175,6 +184,8 @@ export interface ApplicationHatchetWorkflowEngineProvider {
   readonly apiUrl?: string;
   readonly tls?: boolean;
   readonly dashboard?: 'disabled' | 'internal';
+  /** Provider-neutral root-run admission fencing and bounded replay retention. */
+  readonly admission?: Partial<ApplicationWorkflowAdmissionPolicy>;
   readonly worker?: {
     readonly image?: string;
     readonly replicas?: number;
@@ -1831,7 +1842,11 @@ export const WorkflowEngine: ApplicationWorkflowEngineProviderToken = applicatio
   },
   accepts: isHatchetWorkflowEngineProvider,
   hatchet(options = {}) {
-    return { kind: 'hatchet', ...options };
+    return {
+      kind: 'hatchet',
+      ...options,
+      admission: applicationWorkflowAdmissionPolicy(options.admission),
+    };
   },
 });
 
@@ -2415,6 +2430,11 @@ export const defaultApplicationWorkflowEngineProvider: ApplicationWorkflowEngine
   tls: false,
   database: { provision: true, database: 'hatchet', instances: 1, storageSize: '8Gi' },
   dashboard: 'internal',
+  admission: {
+    replayWindowSeconds: 7 * 24 * 60 * 60,
+    cleanupIntervalSeconds: 5 * 60,
+    cleanupBatchSize: 1_000,
+  },
   worker: { replicas: 1, taskSlots: 16, durableSlots: 16, gracefulShutdownSeconds: 30, healthPort: 8001, scaling: { mode: 'fixed' } },
 };
 
@@ -2454,7 +2474,34 @@ export const defaultApplicationProviders: {
 };
 
 export function isHatchetWorkflowEngineProvider(value: unknown): value is ApplicationHatchetWorkflowEngineProvider {
-  return Boolean(value && typeof value === 'object' && Reflect.get(value, 'kind') === 'hatchet');
+  if (!value || typeof value !== 'object' || Reflect.get(value, 'kind') !== 'hatchet') return false;
+  try {
+    applicationWorkflowAdmissionPolicy(Reflect.get(value, 'admission') as Partial<ApplicationWorkflowAdmissionPolicy> | undefined);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function applicationWorkflowAdmissionPolicy(
+  value: Partial<ApplicationWorkflowAdmissionPolicy> | undefined,
+): ApplicationWorkflowAdmissionPolicy {
+  const policy = {
+    replayWindowSeconds: 7 * 24 * 60 * 60,
+    cleanupIntervalSeconds: 5 * 60,
+    cleanupBatchSize: 1_000,
+    ...value,
+  };
+  if (!Number.isSafeInteger(policy.replayWindowSeconds) || policy.replayWindowSeconds < 60) {
+    throw new Error('Workflow admission replayWindowSeconds must be a safe integer of at least 60 seconds.');
+  }
+  if (!Number.isSafeInteger(policy.cleanupIntervalSeconds) || policy.cleanupIntervalSeconds < 10) {
+    throw new Error('Workflow admission cleanupIntervalSeconds must be a safe integer of at least 10 seconds.');
+  }
+  if (!Number.isSafeInteger(policy.cleanupBatchSize) || policy.cleanupBatchSize < 1 || policy.cleanupBatchSize > 10_000) {
+    throw new Error('Workflow admission cleanupBatchSize must be a safe integer between 1 and 10000.');
+  }
+  return Object.freeze(policy);
 }
 
 export function isApplicationSchedulerProvider(value: unknown): value is ApplicationSchedulerProvider {
@@ -4043,6 +4090,7 @@ function applicationSelectedHatchetProvider(
     ...applicationSelectedField(normalizedSelection, 'apiUrl'),
     ...applicationSelectedField(normalizedSelection, 'tls'),
     ...applicationSelectedField(normalizedSelection, 'dashboard'),
+    ...applicationSelectedField(normalizedSelection, 'admission'),
     ...applicationSelectedField(normalizedSelection, 'worker'),
   };
 }
@@ -4065,6 +4113,7 @@ function normalizedApplicationHatchetProvider(
       ...provider.worker,
       ...(scaling ? { scaling } : {}),
     },
+    admission: applicationWorkflowAdmissionPolicy(provider.admission),
   };
   const managedNamespace = normalized.provision === false
     ? undefined

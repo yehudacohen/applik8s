@@ -200,7 +200,7 @@ export function workflowResources(contract: WorkflowContract, name: string, imag
         rules: [{
           apiGroups: ['coordination.k8s.io'],
           resources: ['leases'],
-          verbs: ['create', 'get', 'list', 'update', 'patch'],
+          verbs: ['create', 'delete', 'get', 'list', 'update', 'patch'],
         }],
       },
       {
