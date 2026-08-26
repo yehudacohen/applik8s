@@ -1,5 +1,6 @@
 // typecast-file-boundary: Lakehouse rows and cursors cross provider-neutral schema boundaries and are validated before materialization.
 import { createHash } from 'node:crypto';
+import { requireApplicationInvocationAdmission } from '@applik8s/client';
 import { type ApplicationLakehousePublicationNode, canonicalJsonV1Value, type JsonValue } from '@applik8s/core';
 import {
   createRollingSignedEnvelopeCodec,
@@ -144,9 +145,15 @@ export interface ApplicationLakehouseQueryRequest<TRow extends object> {
   readonly orderBy?: (row: ApplicationLakehouseRowExpression<TRow>) => readonly ApplicationLakehouseOrder[];
   readonly page?: { readonly size: number; readonly cursor?: string };
   readonly timeout?: string;
+  /** @internal Framework-derived cursor scope. Application code uses ApplicationLakehouseQueryInput. */
   readonly principalScope?: string;
   readonly signal?: AbortSignal;
 }
+
+export type ApplicationLakehouseQueryInput<TRow extends object> = Omit<
+  ApplicationLakehouseQueryRequest<TRow>,
+  'principalScope'
+>;
 
 export type ApplicationLakehouseQueryTerminalState =
   | 'succeeded'
@@ -268,7 +275,7 @@ export function createApplicationLakehouseCursorCodec(
 }
 
 export type ApplicationLakehouseQueryRegistrar = <TRow extends object>(
-  request: ApplicationLakehouseQueryRequest<TRow>,
+  request: ApplicationLakehouseQueryInput<TRow>,
 ) => Promise<ApplicationLakehouseQueryResult<TRow>>;
 
 export interface ApplicationLakehouseDatasetQueryContract<TInput extends object, TOutput extends object> {
@@ -311,14 +318,23 @@ export function installApplicationLakehouseQueryRuntimeResolver<TRow extends obj
   };
 }
 
-export function createApplicationLakehouseQuery<TRow extends object>(
+export async function createApplicationLakehouseQuery<TRow extends object>(
   provider: ApplicationQualifiedProviderToken<ApplicationLakehouseQueryProvider>,
-  request: ApplicationLakehouseQueryRequest<TRow>,
+  request: ApplicationLakehouseQueryInput<TRow>,
 ): Promise<ApplicationLakehouseQueryResult<TRow>> {
   const qualification = provider.qualification.name;
+  const admission = requireApplicationInvocationAdmission();
+  const scopedRequest: ApplicationLakehouseQueryRequest<TRow> = {
+    ...request,
+    principalScope: `admission_${stableDigest({
+      principalId: admission.principal.id,
+      authorityRevision: admission.authorityRevision,
+      trustedContextDigest: admission.trustedContext.digest,
+    }).slice(7)}`,
+  };
   for (let index = lakehouseRuntimeResolvers.length - 1; index >= 0; index -= 1) {
     const runtime = lakehouseRuntimeResolvers[index]?.(qualification);
-    if (runtime) return (runtime as unknown as ApplicationLakehouseQueryRuntime<TRow>).query(request);
+    if (runtime) return (runtime as unknown as ApplicationLakehouseQueryRuntime<TRow>).query(scopedRequest);
   }
   throw new Error(`No LakehouseQuery runtime is installed for qualified provider ${qualification}.`);
 }

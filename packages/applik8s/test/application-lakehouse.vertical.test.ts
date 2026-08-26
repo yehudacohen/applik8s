@@ -15,7 +15,8 @@ import {
   type ApplicationLakehouseRowExpression,
 } from '@applik8s/applik8s';
 import { createApplicationLakehouseCursorCodec } from '@applik8s/applik8s/lakehouse-runtime';
-import type { JsonValue } from '@applik8s/core';
+import { installApplicationInvocationAdmissionResolver } from '@applik8s/client';
+import type { ApplicationAdmissionInvocationContextV1, JsonValue } from '@applik8s/core';
 import {
   createSignedEnvelopeCodec,
   signedEnvelopeUtf8Key,
@@ -26,6 +27,43 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 const disposers: Array<() => void> = [];
 afterEach(() => { while (disposers.length > 0) disposers.pop()?.(); });
+
+function lakehouseAdmission(
+  principalName: string,
+  authorityRevision = 'authority:lakehouse:v1',
+  tenantDigest = 'sha256:tenant-one',
+): ApplicationAdmissionInvocationContextV1 {
+  const principalId = `principal:lakehouse:human:${principalName}` as const;
+  return Object.freeze({
+    apiVersion: 'applik8s.admission/v1',
+    principal: Object.freeze({
+      id: principalId,
+      identity: Object.freeze({
+        id: `identity:lakehouse:human:${principalName}` as const,
+        kind: 'human' as const,
+        issuer: 'applik8s://test',
+        subject: principalName,
+      }),
+      kind: 'human' as const,
+      authenticationMethod: 'test',
+      audience: Object.freeze(['applik8s://lakehouse']),
+      trustedContextDigest: tenantDigest,
+      catalogRevision: 'catalog:lakehouse:v1',
+      authorityRevision,
+      admittedAt: '2026-08-19T12:00:00.000Z',
+    }),
+    authorityRevision,
+    trustedContext: Object.freeze({
+      values: Object.freeze({ tenantId: tenantDigest }),
+      digest: tenantDigest,
+    }),
+    operation: Object.freeze({
+      id: 'applik8s://lakehouse/historical-queries/operations/query',
+      transport: 'framework' as const,
+    }),
+    correlationId: `lakehouse-${principalName}`,
+  });
+}
 
 describe('v0.8 published lakehouse snapshots', () => {
   type UsageRow = { organizationId: string; occurredAt: string; quantity: number };
@@ -157,12 +195,14 @@ describe('v0.8 published lakehouse snapshots', () => {
       ],
     });
     await expect(runtime.append({ frontier: 'event:1', rows: [{ organizationId: 'org-1', occurredAt: 'duplicate', quantity: 9 }] })).resolves.toEqual(first);
+    await expect(Queries.query({ dataset: Dataset })).rejects.toThrow(/active managed-execution admission/u);
+    let admission = lakehouseAdmission('one');
+    disposers.push(installApplicationInvocationAdmissionResolver(() => admission));
     const page1 = await Queries.query({
       dataset: Dataset,
       where: (row: ApplicationLakehouseRowExpression<UsageRow>) => row.organizationId.eq('org-1'),
       orderBy: (row: ApplicationLakehouseRowExpression<UsageRow>) => [row.occurredAt.asc()],
       page: { size: 1 },
-      principalScope: 'principal:one',
     });
     expect(page1).toMatchObject({
       state: 'succeeded', snapshot: first.snapshotId, rows: [{ quantity: 1 }], scannedBytes: expect.any(Number),
@@ -178,10 +218,15 @@ describe('v0.8 published lakehouse snapshots', () => {
       where: (row: ApplicationLakehouseRowExpression<UsageRow>) => row.organizationId.eq('org-1'),
       orderBy: (row: ApplicationLakehouseRowExpression<UsageRow>) => [row.occurredAt.asc()],
       page: { size: 1, cursor },
-      principalScope: 'principal:one',
     });
     expect(page2).toMatchObject({ snapshot: first.snapshotId, rows: [{ quantity: 2 }] });
-    await expect(Queries.query({ dataset: Dataset, snapshot: first.snapshotId, page: { size: 1, cursor }, principalScope: 'principal:two' })).rejects.toThrow(/principal/u);
+    admission = lakehouseAdmission('two');
+    await expect(Queries.query({ dataset: Dataset, snapshot: first.snapshotId, page: { size: 1, cursor } })).rejects.toThrow(/principal/u);
+    admission = lakehouseAdmission('one', 'authority:lakehouse:v2');
+    await expect(Queries.query({ dataset: Dataset, snapshot: first.snapshotId, page: { size: 1, cursor } })).rejects.toThrow(/principal/u);
+    admission = lakehouseAdmission('one', 'authority:lakehouse:v1', 'sha256:tenant-two');
+    await expect(Queries.query({ dataset: Dataset, snapshot: first.snapshotId, page: { size: 1, cursor } })).rejects.toThrow(/principal/u);
+    admission = lakehouseAdmission('one');
     now = new Date('2026-08-19T12:16:00.000Z');
     await expect(Queries.query({
       dataset: Dataset,
@@ -189,7 +234,6 @@ describe('v0.8 published lakehouse snapshots', () => {
       where: (row: ApplicationLakehouseRowExpression<UsageRow>) => row.organizationId.eq('org-1'),
       orderBy: (row: ApplicationLakehouseRowExpression<UsageRow>) => [row.occurredAt.asc()],
       page: { size: 1, cursor },
-      principalScope: 'principal:one',
     })).rejects.toMatchObject({
       code: 'APPLIK8S_LAKEHOUSE_QUERY_TERMINAL',
       receipt: { state: 'expired', snapshot: first.snapshotId },
