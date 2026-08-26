@@ -6,6 +6,7 @@ import {
   type ApplicationExternalProviderDeploymentNode,
   type ApplicationKubernetesCompositionDeploymentNode,
   type ApplicationRuntimeAccessPlan,
+  applicationDeploymentOutputReference,
   applicationRuntimeAccessPlanDigest,
   digestApplicationDeploymentValue,
 } from "@applik8s/deployment-contract";
@@ -1131,6 +1132,17 @@ function graphWithV08KubernetesProviders(
             name: "adapter-api",
             namespace: "adapter-test",
             labels: { "app.kubernetes.io/component": "typed-http" },
+            ...(options.observability === false
+              ? {}
+              : {
+                  annotations: {
+                    "applik8s.dev/otlp-endpoint":
+                      applicationDeploymentOutputReference(
+                        "direct.provider.observability.clickstack",
+                        "otlpHttpEndpoint",
+                      ),
+                  },
+                }),
           },
           spec: {
             selector: { "app.kubernetes.io/component": "typed-http" },
@@ -1445,6 +1457,22 @@ function materializedSourceComposition() {
   return source;
 }
 
+function providerSourceComposition() {
+  const definition = {
+    name: "adapter",
+    apiVersion: "testing.applik8s.dev/v1alpha1",
+    kind: "AdapterProviderApplication",
+    spec: type({ name: "string" }),
+    status: type({ ready: "boolean" }),
+  };
+  const source = kubernetesComposition(definition, () => ({ ready: true }));
+  Object.defineProperty(source, "__applik8sTypeKroDefinition", {
+    value: definition,
+    enumerable: false,
+  });
+  return source;
+}
+
 describe("TypeKro deployment adapter", () => {
   it("adapts only Alchemy's public Output protocol into canonical evidence", () => {
     const output = Object.assign(() => undefined, {
@@ -1720,14 +1748,35 @@ describe("TypeKro deployment adapter", () => {
       waitForReady: false,
     });
     const operator = direct["direct.provider.observability.clickhouse-operator"];
+    const credentials = deploymentGraph.nodes.find(
+      (node) => node.id === "external.provider.observability.clickstack-credentials",
+    );
     const clickhouse = direct["direct.provider.observability.clickhouse"];
     const clickstack = direct["direct.provider.observability.clickstack"];
 
     expect(operator?.compositionId).toBe("clickhouse-operator-bootstrap");
     expect(clickhouse?.compositionId).toBe("applik8s-clickstack-clickhouse");
     expect(clickstack?.compositionId).toBe("applik8s-clickstack");
+    expect(credentials).toMatchObject({
+      provider: {
+        interface: "Secret",
+        implementation: "alchemy-kubernetes-generated-secret",
+      },
+      spec: {
+        configuration: {
+          name: "adapter-observability-credentials",
+        },
+      },
+    });
     expect(JSON.stringify(clickhouse?.plan())).toContain("ClickHouseInstallation");
     expect(JSON.stringify(clickstack?.plan())).toContain("otlpHttpEndpoint");
+    expect(JSON.stringify(clickhouse?.plan())).toContain("passwordSecretRef");
+    expect(JSON.stringify(clickstack?.plan())).toContain("credentialsSecret");
+    expect(JSON.stringify(clickstack?.plan())).not.toContain("CLICKHOUSE_PASSWORD");
+    expect(JSON.stringify(clickstack?.plan())).not.toContain("HYPERDX_API_KEY");
+    expect(JSON.stringify(clickstack?.plan())).not.toContain(
+      '\"kind\":\"Namespace\"',
+    );
 
     for (const binding of [operator, clickhouse, clickstack]) {
       const directDeclarations = await binding?.declarations("direct");
@@ -1738,6 +1787,25 @@ describe("TypeKro deployment adapter", () => {
     expect(JSON.stringify(await clickstack?.declarations("kro"))).toContain(
       "typekroArtifactBindings",
     );
+
+    const assembled = assembleApplicationTypeKroComposition(
+      deploymentGraph,
+      providerSourceComposition(),
+    );
+    await expect(
+      adaptApplicationDeploymentToTypeKro({
+        graph: deploymentGraph,
+        root: bindTypeKroComposition(assembled, { name: "adapter" }, {
+          factory: { namespace: "applik8s-system", waitForReady: false },
+          instanceNameOverride: "adapter",
+          artifacts: typeKroArtifactRequirements(
+            deploymentGraph,
+            "kubernetes.application",
+          ),
+        }),
+        direct,
+      }),
+    ).resolves.toMatchObject({ declarationCount: expect.any(Number) });
   });
 
   it("binds the compiler-generated Celld Worker fleet without embedding credentials", async () => {

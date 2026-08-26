@@ -130,14 +130,31 @@ describe('v0.8 target-selected provider lowering', () => {
     const contribution = contributor!.contribute(provider, context('kubernetes'));
     expect(contribution.nodes.map(({ id }) => id)).toEqual([
       'direct.provider.Observability.clickhouse-operator',
+      'external.provider.Observability.clickstack-credentials',
       'direct.provider.Observability.clickhouse',
       'direct.provider.Observability.clickstack',
     ]);
+    const serialized = JSON.stringify(contribution);
+    expect(serialized).toContain('clickhouse-password');
+    expect(serialized).toContain('hyperdx-api-key');
+    expect(serialized).toContain('values.yaml');
+    expect(serialized).toContain('passwordSecretRef');
+    expect(serialized).not.toContain('CLICKHOUSE_PASSWORD":"');
+    expect(serialized).not.toContain('HYPERDX_API_KEY":"');
+    expect(contribution.edges).toContainEqual({
+      from: 'external.provider.Observability.clickstack-credentials',
+      to: 'direct.provider.Observability.clickhouse',
+      relationship: 'requiresReady',
+    });
+    expect(contribution.edges).toContainEqual({
+      from: 'external.provider.Observability.clickstack-credentials',
+      to: 'direct.provider.Observability.clickstack',
+      relationship: 'requiresReady',
+    });
     expect(contribution.edges).toContainEqual({
       from: 'direct.provider.Observability.clickhouse',
       to: 'direct.provider.Observability.clickstack',
-      relationship: 'requiresOutput',
-      output: 'host',
+      relationship: 'requiresReady',
     });
   });
 

@@ -921,10 +921,18 @@ function clickStackDirectContribution(
   const namespace = optionalString(config.namespace) ?? applicationNamespace(context);
   const name = `${safeProviderNodeId(context.graph.metadata.name)}-observability`;
   const operatorNodeId = `direct.${provider.id}.clickhouse-operator`;
+  const credentialsNodeId = `external.${provider.id}.clickstack-credentials`;
   const clusterNodeId = `direct.${provider.id}.clickhouse`;
   const stackNodeId = `direct.${provider.id}.clickstack`;
   const storageSize = optionalString(config.storageSize) ?? "10Gi";
   const storageClassName = optionalString(config.storageClassName);
+  const credentialsName = `${name}-credentials`;
+  const clickhouseName = `${name}-clickhouse`;
+  const clickhouseHost = `clickhouse-${clickhouseName}.${namespace}.svc.cluster.local`;
+  const clickhouseUser = "otelcollector";
+  const clickhousePasswordKey = "clickhouse-password";
+  const apiKeyKey = "hyperdx-api-key";
+  const helmValuesKey = "values.yaml";
   const operator = directNode({
     id: operatorNodeId,
     provider,
@@ -936,6 +944,62 @@ function clickStackDirectContribution(
     ownership: "shared",
     deletion: "retain",
   });
+  const credentials = generatedSecretProviderNode({
+    id: credentialsNodeId,
+    provider,
+    context,
+    namespace,
+    name: credentialsName,
+    values: {
+      [clickhousePasswordKey]: {
+        kind: "random",
+        bytes: 48,
+        encoding: "base64url",
+      },
+      [apiKeyKey]: {
+        kind: "random",
+        bytes: 48,
+        encoding: "base64url",
+      },
+      [helmValuesKey]: {
+        kind: "template",
+        segments: [
+          {
+            kind: "literal",
+            value: [
+              "hyperdx:",
+              "  secrets:",
+              "    CLICKHOUSE_PASSWORD: \"",
+            ].join("\n"),
+          },
+          { kind: "value", key: clickhousePasswordKey },
+          {
+            kind: "literal",
+            value: "\"\n    CLICKHOUSE_APP_PASSWORD: \"",
+          },
+          { kind: "value", key: clickhousePasswordKey },
+          {
+            kind: "literal",
+            value: "\"\n    HYPERDX_API_KEY: \"",
+          },
+          { kind: "value", key: apiKeyKey },
+          {
+            kind: "literal",
+            value: [
+              "\"",
+              "  deployment:",
+              "    defaultConnections: |-",
+              `      [{\"name\":\"Local ClickHouse\",\"host\":\"http://${clickhouseHost}:8123\",\"port\":8123,\"username\":\"${clickhouseUser}\",\"password\":\"`,
+            ].join("\n"),
+          },
+          { kind: "value", key: clickhousePasswordKey },
+          { kind: "literal", value: "\"}]\n" },
+        ],
+      },
+    },
+    consumers: [clusterNodeId, stackNodeId],
+    deletion: "delete",
+  });
   const clusterBase = directNode({
     id: clusterNodeId,
     provider,
@@ -944,10 +1008,18 @@ function clickStackDirectContribution(
     reason: "Own the single-node ClickHouse authority used exclusively by the maintained ClickStack observability provider.",
     namespace,
     configuration: compactJson({
-      name: `${name}-clickhouse`,
+      name: clickhouseName,
       namespace,
       version: "25.7.6",
       storage: { size: storageSize, ...(storageClassName ? { storageClassName } : {}) },
+      users: {
+        [clickhouseUser]: {
+          passwordSecretRef: {
+            name: credentialsName,
+            key: clickhousePasswordKey,
+          },
+        },
+      },
     }),
     ownership: "application",
     deletion: "delete",
@@ -968,6 +1040,8 @@ function clickStackDirectContribution(
     namespace,
     configuration: compactJson({
       build: {
+        credentials: { source: "secretValues" },
+        namespaceOwnership: "external",
         mongo: {
           mode: "internal",
           storage: { size: optionalString(config.metadataStorageSize) ?? "5Gi", ...(storageClassName ? { storageClassName } : {}) },
@@ -977,10 +1051,15 @@ function clickStackDirectContribution(
         name,
         namespace,
         clickhouse: {
-          host: applicationDeploymentOutputReference(clusterNodeId, "host"),
+          host: clickhouseHost,
           nativePort: 9000,
           httpPort: 8123,
           database: "default",
+          username: clickhouseUser,
+        },
+        credentialsSecret: {
+          name: credentialsName,
+          valuesKey: helmValuesKey,
         },
       },
     }),
@@ -996,10 +1075,12 @@ function clickStackDirectContribution(
     ],
   };
   return {
-    nodes: [operator, cluster, stack],
+    nodes: [operator, credentials, cluster, stack],
     edges: [
       { from: operatorNodeId, to: clusterNodeId, relationship: "requiresReady" },
-      { from: clusterNodeId, to: stackNodeId, relationship: "requiresOutput", output: "host" },
+      { from: credentialsNodeId, to: clusterNodeId, relationship: "requiresReady" },
+      { from: credentialsNodeId, to: stackNodeId, relationship: "requiresReady" },
+      { from: clusterNodeId, to: stackNodeId, relationship: "requiresReady" },
       { from: stackNodeId, to: "kubernetes.application", relationship: "requiresOutput", output: "otlpHttpEndpoint" },
     ],
   };

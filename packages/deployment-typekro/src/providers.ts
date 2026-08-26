@@ -7,17 +7,19 @@ import type {
 import { type } from "arktype";
 import {
   kubernetesComposition,
-  singleton,
   type PublicFactoryOptions,
+  singleton,
 } from "typekro";
-import { ClusterConfigSchema, cluster } from "typekro/cnpg";
 import {
-  clickHouseCluster,
-  clickhouseOperatorBootstrap,
   type ClickHouseClusterSpec,
+  clickhouseOperatorBootstrap,
+  makeClickHouseCluster,
 } from "typekro/clickhouse";
 import { makeClickstackBootstrap } from "typekro/clickstack";
+import { ClusterConfigSchema, cluster } from "typekro/cnpg";
 import { makeEnvoyAIGateway } from "typekro/envoy-ai-gateway";
+import { artifactOutput } from "typekro/experimental/planning";
+import { hatchetInstallation } from "typekro/hatchet";
 import {
   customResourceDefinition as kubernetesCustomResourceDefinition,
   deployment as kubernetesDeployment,
@@ -29,7 +31,6 @@ import {
   statefulSet as kubernetesStatefulSet,
 } from "typekro/kubernetes";
 import { natsBootstrap } from "typekro/nats";
-import { hatchetInstallation } from "typekro/hatchet";
 import {
   makeOpenSearchCluster,
   makeOpenSearchOperatorBootstrap,
@@ -51,15 +52,14 @@ import {
 } from "typekro/valkey";
 import {
   bindTypeKroComposition,
-  typeKroArtifactRequirements,
   type TypeKroPlannableComposition,
+  typeKroArtifactRequirements,
 } from "./binding.js";
-import { artifactOutput } from "typekro/experimental/planning";
+import { expressionContext } from "./expression-reconstruction.js";
 import {
   artifactSubstitutionIndex,
   transformMaterializedValue,
 } from "./materialized-values.js";
-import { expressionContext } from "./expression-reconstruction.js";
 import type { TypeKroCompositionBinding } from "./types.js";
 
 interface DirectNamespaceSpec {
@@ -105,9 +105,15 @@ interface ClickStackInstanceSpec {
   readonly name: string;
   readonly namespace: string;
   readonly clickhouse: {
+    readonly host: string;
     readonly nativePort: number;
     readonly httpPort: number;
     readonly database: string;
+    readonly username: string;
+  };
+  readonly credentialsSecret: {
+    readonly name: string;
+    readonly valuesKey: string;
   };
 }
 
@@ -167,9 +173,15 @@ const ClickStackInstanceSpecSchema = type({
   name: "string > 0",
   namespace: "string > 0",
   clickhouse: {
+    host: "string > 0",
     nativePort: "1 <= number.integer <= 65535",
     httpPort: "1 <= number.integer <= 65535",
     database: "string > 0",
+    username: "string > 0",
+  },
+  credentialsSecret: {
+    name: "string > 0",
+    valuesKey: "string > 0",
   },
 });
 const ClickStackClickHouseSpecSchema = type({
@@ -184,6 +196,14 @@ const ClickStackClickHouseSpecSchema = type({
   "podResources?": {
     "requests?": { "cpu?": "string", "memory?": "string" },
     "limits?": { "cpu?": "string", "memory?": "string" },
+  },
+  users: {
+    otelcollector: {
+      passwordSecretRef: {
+        name: "string > 0",
+        key: "string > 0",
+      },
+    },
   },
 });
 const ClickStackStatusSchema = type({
@@ -496,6 +516,15 @@ const applicationLocalS3Provider =
   },
   );
 
+const applicationClickStackClickHouseCluster = makeClickHouseCluster({
+  users: [
+    {
+      name: "otelcollector",
+      credentialSource: "secret",
+    },
+  ],
+} as never);
+
 const applicationClickStackClickHouseProvider =
   providerComposition<ClickHouseClusterSpec>(
     {
@@ -505,7 +534,7 @@ const applicationClickStackClickHouseProvider =
       status: type({ ready: "boolean", host: "string" }),
     },
     (spec) => {
-      const installation = clickHouseCluster(spec);
+      const installation = applicationClickStackClickHouseCluster(spec);
       return {
         ready: installation.status.ready,
         host: installation.status.clickhouse.host,
@@ -515,7 +544,6 @@ const applicationClickStackClickHouseProvider =
 
 function applicationClickStackProvider(
   build: Readonly<Record<string, unknown>>,
-  clickhouseRequirementId: string,
 ) {
   const clickstack = makeClickstackBootstrap(build as never);
   return providerComposition<ClickStackInstanceSpec>(
@@ -530,11 +558,13 @@ function applicationClickStackProvider(
         name: spec.name,
         namespace: spec.namespace,
         clickhouse: {
-          host: artifactOutput(clickhouseRequirementId, "host"),
+          host: spec.clickhouse.host,
           nativePort: spec.clickhouse.nativePort,
           httpPort: spec.clickhouse.httpPort,
           database: spec.clickhouse.database,
+          username: spec.clickhouse.username,
         },
+        credentialsSecret: spec.credentialsSecret,
       } as never);
       return {
         ready: stack.status.ready,
@@ -883,17 +913,10 @@ export function bindApplicationTypeKroDirectNodes(
         break;
       case "applik8s-clickstack": {
         const build = requiredObject(configuration, "build");
-        const instance = requiredObject(sourceConfiguration, "instance");
-        const clickhouse = requiredObject(instance, "clickhouse");
+        const instance = requiredObject(configuration, "instance");
         bindings[node.id] = bindTypeKroComposition(
-          applicationClickStackProvider(
-            build,
-            requiredOutputProducer(graph, node.id, "host"),
-          ),
-          {
-            ...instance,
-            clickhouse: withoutKey(clickhouse, "host"),
-          } as never,
+          applicationClickStackProvider(build),
+          instance as never,
           options,
         );
         break;
