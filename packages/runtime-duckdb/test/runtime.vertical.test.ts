@@ -2,7 +2,7 @@
 import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { LakehouseDataset, type, type ApplicationLakehouseRowExpression } from '@applik8s/applik8s';
+import { applicationLakehouseConformanceRows, LakehouseDataset, runApplicationLakehouseConformance, type, type ApplicationLakehouseRowExpression } from '@applik8s/applik8s';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   ApplicationDuckDbLakehouseCorruptionError,
@@ -195,6 +195,21 @@ describe('DuckDB lakehouse runtime', () => {
     const files = await readdir(join(runtime.root, 'objects'));
     expect(files).toEqual([`${second.objects[0]!.objectId}.ndjson`]);
     expect(files).not.toContain(`${first.objects[0]!.objectId}.ndjson`);
+    await runtime.close();
+  });
+
+  it('passes the shared provider-neutral lakehouse conformance fixtures', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'applik8s-duckdb-conformance-'));
+    roots.push(root);
+    const runtime = await createDuckDbApplicationLakehouseRuntime({
+      datasetId: 'conformance', schemaRevision: 'v1',
+      schema: type({ id: 'string', group: 'string', quantity: 'number', active: 'boolean', note: 'string | null' }),
+      cursorKey: 'duckdb-conformance-key'.repeat(2), root,
+    });
+    await runtime.append({ frontier: 'fixture', rows: applicationLakehouseConformanceRows });
+    await expect(runApplicationLakehouseConformance(runtime, LakehouseDataset.named('conformance'))).resolves.toMatchObject({
+      provider: 'duckdb', cases: [{ rowIds: ['c', 'a'] }, { rowIds: ['a', 'd'] }, { rowIds: ['a', 'b', 'c'] }],
+    });
     await runtime.close();
   });
 });

@@ -6,8 +6,10 @@ import {
   type ApplicationTelemetryBoundary,
   type ApplicationTelemetryRuntime,
   createDeterministicApplicationLakehouseRuntime,
+  applicationLakehouseConformanceRows,
   installApplicationTelemetryRuntimeResolver,
   LakehouseDataset,
+  runApplicationLakehouseConformance,
   type,
 } from '@applik8s/applik8s';
 import type { ApplicationEventLogPublisher } from '@applik8s/applik8s/processor-runtime';
@@ -310,6 +312,31 @@ describe('AWS lakehouse runtime', () => {
     expect(result.cursor).toEqual(expect.any(String));
     expect(athena.resultRequests).toHaveLength(2);
     expect(athena.resultRequests.every(({ MaxResults }) => Number(MaxResults) <= 1_000)).toBe(true);
+  });
+
+  it('passes the shared provider-neutral lakehouse conformance fixtures through Athena SQL and hydration', async () => {
+    const s3 = new MemoryS3();
+    const dataset = {
+      datasetId: 'conformance', bucket: 'conformance-bucket', prefix: 'conformance', catalogDatabase: 'conformance', schemaRevision: 'v1',
+      schema: type({ id: 'string', group: 'string', quantity: 'number', active: 'boolean', note: 'string | null' }),
+      cursorKey: 'athena-conformance-key'.repeat(2),
+      s3Client: s3 as unknown as S3Client, glueClient: new MemoryGlue() as unknown as GlueClient,
+    };
+    await createAwsApplicationLakehouseDatasetRuntime(dataset).append({ frontier: 'fixture', rows: applicationLakehouseConformanceRows });
+    const athena = new MemoryAthena();
+    athena.conformance = true;
+    const runtime = createAwsApplicationLakehouseQueryRuntime({
+      workgroup: 'conformance', datasets: { conformance: dataset },
+      s3Client: s3 as unknown as S3Client, athenaClient: athena as unknown as AthenaClient,
+    }) as ApplicationLakehouseQueryRuntime<(typeof applicationLakehouseConformanceRows)[number]>;
+    await expect(runApplicationLakehouseConformance(runtime, LakehouseDataset.named('conformance'))).resolves.toMatchObject({
+      provider: 'athena', cases: [{ rowIds: ['c', 'a'] }, { rowIds: ['a', 'd'] }, { rowIds: ['a', 'b', 'c'] }],
+    });
+    expect(athena.sqlHistory).toEqual([
+      expect.stringMatching(/"group" = 'alpha'.*"quantity" >= 2.*"active" = TRUE.*ORDER BY "quantity" DESC, "id" ASC/u),
+      expect.stringMatching(/"note" IS NULL.*ORDER BY "id" ASC/u),
+      expect.stringMatching(/"group" = 'alpha'.*ORDER BY "quantity" ASC, "id" ASC/u),
+    ]);
   });
 });
 
@@ -623,14 +650,16 @@ class ConflictingGlue {
 
 class MemoryAthena {
   sql = '';
+  readonly sqlHistory: string[] = [];
   running = false;
   stopped = false;
   cancelled = false;
   keepRunningAfterStop = false;
   failAfterAdmissionOnce = false;
+  conformance = false;
   columns = ['id', 'quantity'];
-  rows: string[][] = [['one', '2'], ['two', '3']];
-  resultPages?: Array<{ readonly columns: readonly string[]; readonly rows: readonly (readonly string[])[]; readonly nextToken?: string }>;
+  rows: (string | undefined)[][] = [['one', '2'], ['two', '3']];
+  resultPages?: Array<{ readonly columns: readonly string[]; readonly rows: readonly (readonly (string | undefined)[])[]; readonly nextToken?: string }>;
   readonly startTokens: string[] = [];
   readonly queryIdsByToken = new Map<string, string>();
   readonly resultRequests: Record<string, unknown>[] = [];
@@ -638,6 +667,8 @@ class MemoryAthena {
   async send(command: { constructor: { name: string }; input: Record<string, unknown> }): Promise<Record<string, unknown>> {
     if (command.constructor.name === 'StartQueryExecutionCommand') {
       this.sql = String(command.input.QueryString);
+      this.sqlHistory.push(this.sql);
+      if (this.conformance) this.selectConformanceRows();
       const token = String(command.input.ClientRequestToken);
       this.startTokens.push(token);
       const queryId = this.queryIdsByToken.get(token) ?? `query-${this.queryIdsByToken.size + 1}`;
@@ -662,12 +693,28 @@ class MemoryAthena {
           ResultSetMetadata: { ColumnInfo: columns.map((Name) => ({ Name })) },
           Rows: [
             ...(pageIndex === 0 ? [{ Data: columns.map((VarCharValue) => ({ VarCharValue })) }] : []),
-            ...rows.map((values) => ({ Data: values.map((VarCharValue) => ({ VarCharValue })) })),
+            ...rows.map((values) => ({ Data: values.map((VarCharValue) => VarCharValue === undefined ? {} : { VarCharValue }) })),
           ],
         },
       };
     }
     if (command.constructor.name === 'StopQueryExecutionCommand') { this.stopped = true; if (!this.keepRunningAfterStop) { this.running = false; this.cancelled = true; } return {}; }
     throw new Error(`Unexpected Athena command ${command.constructor.name}.`);
+  }
+
+  private selectConformanceRows(): void {
+    this.columns = ['id', 'group', 'quantity', 'active', 'note'];
+    const rows: Record<string, (string | undefined)[]> = {
+      a: ['a', 'alpha', '2', 'true', undefined],
+      b: ['b', 'alpha', '2', 'false', 'second'],
+      c: ['c', 'alpha', '5', 'true', 'third'],
+      d: ['d', 'beta', '1', 'true', undefined],
+    };
+    const ids = this.sql.includes('"note" IS NULL')
+      ? ['a', 'd']
+      : this.sql.includes('"active" = TRUE')
+        ? ['c', 'a']
+        : ['a', 'b', 'c'];
+    this.rows = ids.map((id) => rows[id]!);
   }
 }

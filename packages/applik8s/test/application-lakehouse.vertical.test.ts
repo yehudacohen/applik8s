@@ -3,6 +3,8 @@ import {
   app,
   applicationGraphFor,
   createDeterministicApplicationLakehouseRuntime,
+  applicationLakehouseConformanceRows,
+  runApplicationLakehouseConformance,
   classifyApplicationLakehouseSchemaEvolution,
   executeApplicationLakehousePublication,
   event,
@@ -249,6 +251,19 @@ describe('v0.8 published lakehouse snapshots', () => {
     })).rejects.toMatchObject({
       code: 'APPLIK8S_LAKEHOUSE_QUERY_TERMINAL',
       receipt: { state: 'expired', snapshot: first.snapshotId },
+    });
+  });
+
+  it('passes the shared provider-neutral lakehouse conformance fixtures', async () => {
+    const Dataset = LakehouseDataset.named('conformance');
+    const runtime = createDeterministicApplicationLakehouseRuntime({
+      datasetId: 'conformance', schemaRevision: 'v1',
+      schema: type({ id: 'string', group: 'string', quantity: 'number', active: 'boolean', note: 'string | null' }),
+      cursorKey: 'z'.repeat(32),
+    });
+    await runtime.append({ frontier: 'fixture', rows: applicationLakehouseConformanceRows });
+    await expect(runApplicationLakehouseConformance(runtime, Dataset)).resolves.toMatchObject({
+      apiVersion: 'applik8s.lakehouseConformance/v1', provider: 'deterministic', cases: [{ id: 'filtered-numeric-boolean-order' }, { id: 'nullable-equality' }, { id: 'stable-tie-order' }],
     });
   });
 

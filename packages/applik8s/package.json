@@ -71,6 +71,11 @@
       "import": "./dist/application-lakehouse.js",
       "default": "./dist/application-lakehouse.js"
     },
+    "./lakehouse-conformance": {
+      "types": "./dist/application-lakehouse-conformance.d.ts",
+      "import": "./dist/application-lakehouse-conformance.js",
+      "default": "./dist/application-lakehouse-conformance.js"
+    },
     "./postgres-runtime-contract": {
       "types": "./dist/postgres-runtime-contract.d.ts",
       "import": "./dist/postgres-runtime-contract.js",

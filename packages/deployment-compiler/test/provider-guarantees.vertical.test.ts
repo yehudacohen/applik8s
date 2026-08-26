@@ -30,6 +30,38 @@ describe('v0.8 provider guarantee manifests', () => {
     expect(manifest?.guarantees.every(({ disposition }) => disposition === 'unsupported')).toBe(true)
   })
 
+  it.each([
+    ['local', 'LakehouseDataset', 'duckdb-dataset'],
+    ['local', 'LakehouseQuery', 'duckdb-queries'],
+    ['aws', 'LakehouseDataset', 's3-dataset'],
+    ['aws', 'LakehouseQuery', 'athena-queries'],
+  ] as const)('emits the complete %s %s conformance vocabulary', (target, providerInterface, implementation) => {
+    const candidate = provider(providerInterface, implementation)
+    const [manifest] = applicationProviderGuaranteesForGraph({ graph: { ...graph(), nodes: [candidate] }, target })
+    const ids = manifest?.guarantees.filter(({ id }) => id.startsWith('lakehouse-')).map(({ id }) => id)
+    expect(ids).toEqual(providerInterface === 'LakehouseDataset'
+      ? [
+          'lakehouse-published-snapshot',
+          'lakehouse-manifest-cas',
+          'lakehouse-object-integrity',
+          'lakehouse-frontier-idempotency',
+          'lakehouse-schema-evolution',
+          'lakehouse-retention',
+          'lakehouse-causal-publication',
+        ]
+      : [
+          'lakehouse-snapshot-pinning',
+          'lakehouse-portable-query-subset',
+          'lakehouse-deterministic-pagination',
+          'lakehouse-principal-bound-cursor',
+          'lakehouse-terminal-receipt',
+          'lakehouse-cancellation-truth',
+          'lakehouse-scan-evidence',
+        ])
+    expect(manifest?.guarantees.filter(({ id }) => id.startsWith('lakehouse-')).every(({ disposition, evidence }) =>
+      disposition === 'bounded' && evidence.every((item) => item.startsWith(`conformance:v1:${target}:`)))).toBe(true)
+  })
+
   it.each(['local', 'kubernetes'] as const)(
     'qualifies a structurally valid framework-managed callable provider on %s',
     (target) => {

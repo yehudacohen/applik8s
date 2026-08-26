@@ -382,7 +382,48 @@ function baselineGuarantees(
     ...(provider.interface === 'Scheduler'
       ? scheduleGuarantees(graph, provider, implementation, target, supported)
       : []),
+    ...((provider.interface === 'LakehouseDataset' || provider.interface === 'LakehouseQuery')
+      ? lakehouseGuarantees(provider.interface as 'LakehouseDataset' | 'LakehouseQuery', implementation, target, supported)
+      : []),
   ];
+}
+
+function lakehouseGuarantees(
+  providerInterface: 'LakehouseDataset' | 'LakehouseQuery',
+  implementation: string,
+  target: ApplicationDeploymentTargetKind,
+  supported: boolean,
+): readonly ApplicationProviderGuarantee[] {
+  const bounded = (
+    id: string,
+    category: ApplicationProviderGuarantee['category'],
+    statement: string,
+  ): ApplicationProviderGuarantee => ({
+    id: `lakehouse-${id}`,
+    category,
+    statement,
+    disposition: supported ? 'bounded' : 'unsupported',
+    evidence: supported ? [`conformance:v1:${target}:${providerInterface}:${implementation}:${id}`] : [],
+  });
+  return providerInterface === 'LakehouseDataset'
+    ? [
+        bounded('published-snapshot', 'consistency', 'Readers observe one immutable published snapshot selected by canonical manifest authority.'),
+        bounded('manifest-cas', 'transaction-outbox', 'Object staging becomes visible only after one compare-and-swap manifest publication.'),
+        bounded('object-integrity', 'consistency', 'Metadata authority carries immutable object identities, digests, cardinality, and schema without embedding row payloads.'),
+        bounded('frontier-idempotency', 'replay-retention-acknowledgement-duplicates', 'A retried source frontier resolves to its already-published snapshot without duplicating logical rows.'),
+        bounded('schema-evolution', 'consistency', 'Only proven additive optional-field evolution is accepted without an explicit rebuild or new dataset identity.'),
+        bounded('retention', 'lifecycle', 'Snapshot and immutable-object retention is explicit and bounded by provider configuration.'),
+        bounded('causal-publication', 'readiness-output-authority', 'Published manifests retain bounded source, correlation, causation, and authorization-receipt identity.'),
+      ]
+    : [
+        bounded('snapshot-pinning', 'consistency', 'One query admission resolves latest-published exactly once and keeps that snapshot across pages.'),
+        bounded('portable-query-subset', 'limits', 'The provider accepts only the shared typed comparison, conjunction, disjunction, and ordering subset.'),
+        bounded('deterministic-pagination', 'ordering-partitioning', 'Pagination requires declared ordering and adds the framework row identity as a stable terminal tie-breaker.'),
+        bounded('principal-bound-cursor', 'runtime-access-enforcement', 'Opaque cursors are signed, expiring, and bound to dataset, snapshot, query shape, and admitted principal context.'),
+        bounded('terminal-receipt', 'readiness-output-authority', 'Success, failure, cancellation, timeout, pending cancellation, and unknown outcome produce typed receipts.'),
+        bounded('cancellation-truth', 'lifecycle', 'Cancellation requests never claim terminal provider cancellation until provider state confirms it.'),
+        bounded('scan-evidence', 'limits', 'Results report provider-attributed scanned bytes or an explicitly unavailable cost class.'),
+      ];
 }
 
 function scheduleGuarantees(

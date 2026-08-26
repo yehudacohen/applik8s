@@ -119,12 +119,7 @@ export const HistoricalUsagePublication = HistoricalUsageRecorded.publish(
   month: row.occurredAt.slice(0, 7),
 }));
 
-type HistoricalUsageRow = {
-  readonly principalScope: string;
-  readonly meter: string;
-  readonly quantity: number;
-  readonly occurredAt: string;
-};
+type HistoricalUsageValue = typeof HistoricalUsageRow.infer;
 
 export const HistoricalUsage = application.query('historical.usage.v1', {
   input: type({ principalScope: 'string', 'cursor?': 'string' }),
@@ -142,13 +137,12 @@ export const HistoricalUsage = application.query('historical.usage.v1', {
     principal.id.length > 0 && context.principalScope === input.principalScope,
   run: async ({ input }) => historicalQueries.query({
     dataset: historicalDataset,
-    where: (row: ApplicationLakehouseRowExpression<HistoricalUsageRow>) =>
+    where: (row: ApplicationLakehouseRowExpression<HistoricalUsageValue>) =>
       row.principalScope.eq(input.principalScope),
-    orderBy: (row: ApplicationLakehouseRowExpression<HistoricalUsageRow>) => [
+    orderBy: (row: ApplicationLakehouseRowExpression<HistoricalUsageValue>) => [
       row.occurredAt.desc(),
     ],
     page: { size: 100, ...(input.cursor ? { cursor: input.cursor } : {}) },
-    principalScope: input.principalScope,
     timeout: '10s',
   }),
 });
