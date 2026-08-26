@@ -268,6 +268,67 @@ describe('generated application AI runtime', () => {
     });
   });
 
+  it('cancels provider work from the managed request signal without callback ceremony', async () => {
+    const lifecycleEvents: string[] = [];
+    const controller = new AbortController();
+    const handler = createApplicationAIAgentRequestHandler({
+      name: 'researcher',
+      logicalModel: 'fast',
+      instructions: 'Return a delayed response.',
+      provider: {
+        kind: 'deterministic',
+        response: 'too late',
+        latencyMs: 5_000,
+      },
+      tools: [toolContract()],
+      persistence: persistence(),
+      tanstackPersistence: memoryPersistence,
+      timeoutMs: 10_000,
+      maximumConcurrency: 1,
+      admit: () => admission(),
+      reserveAttempt: ({ runId }) => ({
+        action: 'dispatch',
+        runId,
+        invocationId: 'invocation-cancelled',
+        attemptId: 'attempt-cancelled',
+        ordinal: 1,
+        version: 1,
+      }),
+      recovery: unavailableRecovery(),
+      attemptLifecycle: attemptLifecycle(lifecycleEvents),
+      invoke: async () => ({}),
+      // The callback intentionally does not create or pass an AbortController.
+      handler: async (request, context) => chat({
+        adapter: context.tanstack.adapter,
+        messages: request.messages,
+        threadId: request.threadId,
+        runId: context.runId,
+        tools: context.tanstack.tools,
+        context: context.tanstack.execution,
+      }),
+    });
+    const request = new Request('http://agent.test/__applik8s/v1/ai/chat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        threadId: 'conversation-cancelled',
+        runId: 'protocol-run-cancelled',
+        messages: [{ role: 'user', content: 'cancel this run' }],
+      }),
+      signal: controller.signal,
+    });
+
+    const response = await handler(request);
+    const started = Date.now();
+    const body = response.text();
+    setTimeout(() => controller.abort(new Error('caller disconnected')), 25);
+    expect(await body).toBe('');
+    expect(Date.now() - started).toBeLessThan(1_000);
+    expect(lifecycleEvents).toEqual(expect.arrayContaining([
+      expect.stringMatching(/^fail:cancelled:/),
+    ]));
+  });
+
   it('grounds the deterministic Starter document fixture in the latest request', async () => {
     const inputs: unknown[] = [];
     const handler = createApplicationAIAgentRequestHandler({

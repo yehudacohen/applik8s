@@ -134,8 +134,11 @@ export function createApplicationAIAttemptRuntime(options: {
             || existing.agentRunId !== input.agentRunId
             || existing.logicalModel !== input.logicalModel
             || existing.admittedPrincipal.id !== input.admittedPrincipal.id
-            || canonicalJsonV1String(existing.admissionEvidence)
-              !== canonicalJsonV1String(admissionEvidence)
+            || canonicalJsonV1String(
+              applicationAIReplayAdmissionIdentity(existing.admissionEvidence),
+            ) !== canonicalJsonV1String(
+              applicationAIReplayAdmissionIdentity(admissionEvidence),
+            )
           ) {
             throw new ApplicationAIProtocolConflictError(
               `AI invocation ${input.invocationId} was reused with another request or execution identity.`,
@@ -517,6 +520,28 @@ function applicationAIAdmissionEvidence(
       ? { authorizationReceiptId: context.authorizationReceipt.id }
       : {}),
   });
+}
+
+/**
+ * A fresh signed delivery for the same logical run legitimately renews its
+ * deadline and trace carrier. Those fields remain useful first-issuance audit
+ * evidence, but they are not part of the durable idempotency identity. The
+ * authority revision, principal, trusted context, operation, causal
+ * coordinates, cancellation revision, and delivery binding remain exact.
+ */
+function applicationAIReplayAdmissionIdentity(
+  evidence: ApplicationAIAdmissionEvidenceV1,
+): Omit<
+  ApplicationAIAdmissionEvidenceV1,
+  'deadline' | 'traceparent' | 'authorizationReceiptId'
+> {
+  const {
+    deadline: _deadline,
+    traceparent: _traceparent,
+    authorizationReceiptId: _authorizationReceiptId,
+    ...identity
+  } = evidence;
+  return identity;
 }
 
 export async function applicationAIDigest(value: unknown): Promise<string> {

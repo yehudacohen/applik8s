@@ -404,11 +404,14 @@ export function createApplicationAIAgentRequestHandler<TResult>(
         };
         const runtime: ApplicationTanStackAgentRuntime = {
           adapter: withApplicationInstructions(
-            instrumentApplicationAITextAdapter(
-              baseAdapter,
-              options.telemetry,
-              options.logicalModel,
-              reservation,
+            withApplicationAbortSignal(
+              instrumentApplicationAITextAdapter(
+                baseAdapter,
+                options.telemetry,
+                options.logicalModel,
+                reservation,
+              ),
+              controller.signal,
             ),
             instructions,
           ),
@@ -1163,6 +1166,115 @@ function withApplicationInstructions(
   };
 }
 
+/**
+ * Makes request cancellation a property of the managed agent execution rather
+ * than an opt-in responsibility of every authored `chat()` callback. TanStack
+ * AI still accepts an explicit AbortController, but the framework-owned request
+ * and budget signal remains authoritative even when the callback omits it.
+ */
+function withApplicationAbortSignal(
+  adapter: AnyTextAdapter,
+  signal: AbortSignal,
+): AnyTextAdapter {
+  const structuredOutputStream = adapter.structuredOutputStream;
+  return {
+    ...adapter,
+    chatStream: (options) => abortableApplicationAIStream(
+      adapter.chatStream({
+        ...options,
+        request: applicationAIRequestWithSignal(options.request, signal),
+      }),
+      signal,
+    ),
+    structuredOutput: (options) => abortableApplicationAIPromise(
+      adapter.structuredOutput({
+        ...options,
+        chatOptions: {
+          ...options.chatOptions,
+          request: applicationAIRequestWithSignal(
+            options.chatOptions.request,
+            signal,
+          ),
+        },
+      }),
+      signal,
+    ),
+    ...(structuredOutputStream
+      ? {
+          structuredOutputStream: (options) => abortableApplicationAIStream(
+            structuredOutputStream({
+              ...options,
+              chatOptions: {
+                ...options.chatOptions,
+                request: applicationAIRequestWithSignal(
+                  options.chatOptions.request,
+                  signal,
+                ),
+              },
+            }),
+            signal,
+          ),
+        }
+      : {}),
+  };
+}
+
+function applicationAIRequestWithSignal(
+  request: Request | RequestInit | undefined,
+  signal: AbortSignal,
+): Request | RequestInit {
+  const requestSignal = request instanceof Request ? request.signal : request?.signal;
+  const combined = requestSignal
+    ? AbortSignal.any([requestSignal, signal])
+    : signal;
+  return request instanceof Request
+    ? new Request(request, { signal: combined })
+    : { ...request, signal: combined };
+}
+
+async function abortableApplicationAIPromise<T>(
+  source: Promise<T>,
+  signal: AbortSignal,
+): Promise<T> {
+  if (signal.aborted) throw abortError(signal.reason);
+  let abort: (() => void) | undefined;
+  const cancelled = new Promise<never>((_resolve, reject) => {
+    abort = () => reject(abortError(signal.reason));
+    signal.addEventListener('abort', abort, { once: true });
+  });
+  try {
+    return await Promise.race([source, cancelled]);
+  } finally {
+    if (abort) signal.removeEventListener('abort', abort);
+  }
+}
+
+function abortableApplicationAIStream<T>(
+  source: AsyncIterable<T>,
+  signal: AbortSignal,
+): AsyncIterable<T> {
+  return {
+    async *[Symbol.asyncIterator]() {
+      const iterator = source[Symbol.asyncIterator]();
+      try {
+        while (true) {
+          const result = await abortableApplicationAIPromise(
+            iterator.next(),
+            signal,
+          );
+          if (result.done) return;
+          yield result.value;
+        }
+      } finally {
+        // Provider transports receive the same signal through request options.
+        // Do not hold the caller open while a non-cooperative adapter finishes
+        // an already-cancelled `next()` promise.
+        void iterator.return?.().catch(() => undefined);
+      }
+    },
+  };
+}
+
 function instrumentApplicationAITextAdapter(
   adapter: AnyTextAdapter,
   telemetry: ApplicationAIAgentTelemetryRuntime | undefined,
@@ -1381,7 +1493,12 @@ function deterministicTextAdapter(
     model: 'deterministic',
     '~types': undefined as never,
     async *chatStream(options): AsyncIterable<StreamChunk> {
-      if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
+      if (delay > 0) {
+        const requestSignal = options.request instanceof Request
+          ? options.request.signal
+          : options.request?.signal;
+        await applicationAIProviderDelay(delay, requestSignal);
+      }
       const runId = options.runId ?? `run-${crypto.randomUUID()}`;
       const threadId = options.threadId ?? `thread-${crypto.randomUUID()}`;
       const timestamp = Date.now();
@@ -1450,6 +1567,25 @@ function deterministicTextAdapter(
     },
   };
   return adapter;
+}
+
+function applicationAIProviderDelay(
+  delayMs: number,
+  signal?: AbortSignal | null,
+): Promise<void> {
+  if (signal?.aborted) return Promise.reject(abortError(signal.reason));
+  return new Promise<void>((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      signal?.removeEventListener('abort', abort);
+      resolve();
+    }, delayMs);
+    const abort = () => {
+      clearTimeout(timeout);
+      signal?.removeEventListener('abort', abort);
+      reject(abortError(signal?.reason));
+    };
+    signal?.addEventListener('abort', abort, { once: true });
+  });
 }
 
 function deterministicResponse(

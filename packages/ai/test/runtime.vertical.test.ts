@@ -221,6 +221,38 @@ describe('durable AI attempts', () => {
     expect(new Set(decisions.map((decision) => decision.attempt.id))).toHaveLength(1);
   });
 
+  it('accepts a freshly admitted delivery for the same logical run without changing first-issuance evidence', async () => {
+    const runtime = deterministicRuntime();
+    const first = await runtime.reserveInvocation(invocation());
+    const refreshedPrincipal: ApplicationExecutionPrincipal = {
+      ...principal,
+      admittedAt: '2026-07-29T12:01:00.000Z',
+      deadline: '2026-07-29T12:06:00.000Z',
+    };
+    const refreshed = await runtime.reserveInvocation({
+      ...invocation(),
+      admittedPrincipal: refreshedPrincipal,
+      admission: agentAdmission(refreshedPrincipal),
+    });
+
+    expect(refreshed).toEqual(first);
+    expect(refreshed.admissionEvidence.deadline).toBe(
+      '2026-07-29T12:05:00.000Z',
+    );
+
+    await expect(runtime.reserveInvocation({
+      ...invocation(),
+      admittedPrincipal: {
+        ...refreshedPrincipal,
+        authorityRevision: 'authority-v2',
+      },
+      admission: agentAdmission({
+        ...refreshedPrincipal,
+        authorityRevision: 'authority-v2',
+      }),
+    })).rejects.toThrow(/another request or execution identity/);
+  });
+
   it('does not infer retry safety from uncertain completion', async () => {
     const runtime = deterministicRuntime();
     await runtime.reserveInvocation(invocation());

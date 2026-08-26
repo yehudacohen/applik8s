@@ -728,7 +728,7 @@ ${telemetryImports.join('\n')}
 ${providerRuntimeImports}
 ${localToolImports}
 ${contract.tools.some((tool) => tool.local)
-    ? "import { normalizeSchema } from '@applik8s/sdk/schema-runtime';\nimport { applicationPostgresModelReadClients, applicationRequestContextValues, createApplicationFunctionNativeEventHandle, editApplicationNativeModelObject, executeFunctionNativePostgresModelEdit, findApplicationNativeModelObjects, getApplicationNativeModelObject, requireApplicationNativeModelObject, withApplicationNativeModelReadClients, withApplicationNativeModelTransactionRuntime } from '@applik8s/applik8s/stream-worker-runtime';"
+    ? "import { normalizeSchema } from '@applik8s/sdk/schema-runtime';\nimport { applicationPostgresModelReadClients, applicationRelationalChangeScopes, applicationRequestContextValues, createApplicationFunctionNativeEventHandle, editApplicationNativeModelObject, executeFunctionNativePostgresModelEdit, findApplicationNativeModelObjects, getApplicationNativeModelObject, requireApplicationNativeModelObject, withApplicationNativeModelReadClients, withApplicationNativeModelTransactionRuntime } from '@applik8s/applik8s/stream-worker-runtime';"
     : ''}
 ${contract.agent.instructions.kind === 'closure'
     ? "import { callback as instructions } from './instructions.generated.js';"
@@ -1522,6 +1522,7 @@ const handle = createApplicationAIAgentRequestHandler({
 let ready = false;
 let stopping = false;
 let lastDependencyError;
+const activeRequestControllers = new Set();
 const initializationController = new AbortController();
 async function initializeDependencies() {
   let attempt = 0;
@@ -1565,6 +1566,17 @@ function abortableSleep(ms, signal) {
   });
 }
 const server = createServer(async (request, response) => {
+  const requestController = new AbortController();
+  let responseCompleted = false;
+  const abortRequest = () => {
+    if (!responseCompleted) {
+      requestController.abort(new Error('Application agent request disconnected.'));
+    }
+  };
+  activeRequestControllers.add(requestController);
+  request.once('aborted', abortRequest);
+  response.once('close', abortRequest);
+  try {
   const url = new URL(request.url ?? '/', 'http://' + (request.headers.host ?? 'localhost'));
   if (request.method === 'GET' && (url.pathname === '/healthz' || url.pathname === '/readyz')) {
     const healthy = url.pathname === '/healthz' || (ready && !stopping);
@@ -1591,6 +1603,7 @@ const server = createServer(async (request, response) => {
   const webRequest = new Request(url, {
     method: request.method,
     headers: request.headers,
+    signal: requestController.signal,
     ...(body ? { body, duplex: 'half' } : {}),
   });
   const result = await handle(webRequest);
@@ -1601,6 +1614,20 @@ const server = createServer(async (request, response) => {
   }
   for await (const chunk of result.body) response.write(chunk);
   response.end();
+  } catch (error) {
+    if (!requestController.signal.aborted) {
+      console.error('Applik8s application agent request failed', error);
+      if (!response.headersSent) {
+        response.writeHead(500, { 'content-type': 'application/json' });
+      }
+      response.end(JSON.stringify({ error: 'agent_request_failed' }));
+    }
+  } finally {
+    responseCompleted = true;
+    activeRequestControllers.delete(requestController);
+    request.removeListener('aborted', abortRequest);
+    response.removeListener('close', abortRequest);
+  }
 });
 server.listen(contract.deployment.port, '0.0.0.0');
 const initializationTask = initializeDependencies();
@@ -1609,13 +1636,40 @@ async function shutdown() {
   stopping = true;
   ready = false;
   initializationController.abort();
+  const force = setTimeout(() => {
+    for (const controller of activeRequestControllers) {
+      controller.abort(new Error('Application agent graceful shutdown expired.'));
+    }
+    server.closeAllConnections?.();
+  }, contract.deployment.gracefulShutdownSeconds * 1_000);
+  force.unref?.();
+  server.closeIdleConnections?.();
   await new Promise((resolveShutdown) => server.close(resolveShutdown));
+  clearTimeout(force);
   await initializationTask;
   await sql.end({ timeout: 5 });
   ${contract.observability ? 'await closeApplicationTelemetryRuntime();' : ''}
 }
-process.once('SIGTERM', () => { void shutdown(); });
-process.once('SIGINT', () => { void shutdown(); });
+function terminate(signal) {
+  const deadline = setTimeout(() => {
+    console.error('Application agent exceeded its bounded shutdown deadline', { signal });
+    process.exit(1);
+  }, (contract.deployment.gracefulShutdownSeconds + 10) * 1_000);
+  deadline.unref?.();
+  void shutdown().then(
+    () => {
+      clearTimeout(deadline);
+      process.exit(0);
+    },
+    (error) => {
+      clearTimeout(deadline);
+      console.error('Application agent shutdown failed', error);
+      process.exit(1);
+    },
+  );
+}
+process.once('SIGTERM', () => terminate('SIGTERM'));
+process.once('SIGINT', () => terminate('SIGINT'));
 `;
 }
 
@@ -1680,17 +1734,23 @@ function generatedLocalAgentToolRuntime(
   localAgentTools.set(${JSON.stringify(tool.operation.id)}, Object.freeze({
     async invoke(input, context) {
       const validInput = validateLocalToolValue(${JSON.stringify(local.input.jsonSchema)}, input, ${JSON.stringify(`${tool.operation.id}.input`)});
+      const durableContextValues = applicationRequestContextValues(
+        context.principal,
+        context.principal.authorityRevision,
+        context.trustedContext,
+      );
+      const changeScopes = applicationRelationalChangeScopes({
+        values: durableContextValues,
+        digestSecret: requiredEnv('APPLIK8S_CONTEXT_SECRET'),
+      });
       const invokeWithModelReads = async () => withApplicationNativeModelReadClients(
         await applicationPostgresModelReadClients(
           requiredEnv(${JSON.stringify(primary.runtime.connectionEnvName)}),
           ${JSON.stringify(models)},
           {
-            values: applicationRequestContextValues(
-              context.principal,
-              context.principal.authorityRevision,
-              context.trustedContext,
-            ),
+            values: durableContextValues,
             digest: context.principal.trustedContextDigest,
+            changeScopes,
           },
         ),
         () => authored(validInput),
@@ -1710,12 +1770,9 @@ function generatedLocalAgentToolRuntime(
               causationId: context.invocationId,
               recordedAt: new Date().toISOString(),
               context: {
-                values: applicationRequestContextValues(
-                  context.principal,
-                  context.principal.authorityRevision,
-                  context.trustedContext,
-                ),
+                values: durableContextValues,
                 digest: context.principal.trustedContextDigest,
+                changeScopes,
               },
               authorizationReceipt: context.authorizationReceipt,
             },

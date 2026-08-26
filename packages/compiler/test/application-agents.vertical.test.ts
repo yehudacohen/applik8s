@@ -94,6 +94,14 @@ describe('generated application AI agents', () => {
     expect(generated).toContain('"actor":"research-session.v1"');
     expect(generated).toContain('principal: context.principal');
     expect(generated).toContain("transport: 'direct'");
+    expect(generated).toContain("request.once('aborted', abortRequest)");
+    expect(generated).toContain("response.once('close', abortRequest)");
+    expect(generated).toContain('signal: requestController.signal');
+    expect(generated).toContain('server.closeIdleConnections?.()');
+    expect(generated).toContain('contract.deployment.gracefulShutdownSeconds * 1_000');
+    expect(generated).toContain('server.closeAllConnections?.()');
+    expect(generated).toContain('(contract.deployment.gracefulShutdownSeconds + 10) * 1_000');
+    expect(generated).toContain("process.once('SIGTERM', () => terminate('SIGTERM'))");
     expect(generated).toContain('workloadAuthorityId: binding.workloadAuthority.id');
     expect(handler).not.toContain('application.inject');
     expect(generated).not.toContain("id: 'agent:' + context.invocationId");
@@ -629,10 +637,17 @@ export const providerAgentStack = application.composition;
       'idempotencyKey: context.idempotencyKey',
     );
     expect(generated).toContain(
-      'values: applicationRequestContextValues(',
+      'const durableContextValues = applicationRequestContextValues(',
+    );
+    expect(generated).toContain(
+      "digestSecret: requiredEnv('APPLIK8S_CONTEXT_SECRET')",
     );
     expect(generated).toMatch(
-      /applicationPostgresModelReadClients\([\s\S]*?values: applicationRequestContextValues\(\s*context\.principal,\s*context\.principal\.authorityRevision,\s*context\.trustedContext,[\s\S]*?digest: context\.principal\.trustedContextDigest/u,
+      /applicationPostgresModelReadClients\([\s\S]*?values: durableContextValues,[\s\S]*?digest: context\.principal\.trustedContextDigest,\s*changeScopes,/u,
+    );
+    expect(generated).toMatch(/delivery: \{[\s\S]*?context: \{\s*values: durableContextValues,\s*digest: context\.principal\.trustedContextDigest,\s*changeScopes,/u);
+    expect(artifact.frameworkCredentials).toContainEqual(
+      expect.objectContaining({ environmentName: 'APPLIK8S_CONTEXT_SECRET' }),
     );
     expect(generated).toContain(
       'authorizationReceipt: context.authorizationReceipt',
