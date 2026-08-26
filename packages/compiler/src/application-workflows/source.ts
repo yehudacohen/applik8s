@@ -211,11 +211,13 @@ const ${jsName(task.id)} = hatchet.${durableSignalTask ? 'durableTask' : 'task'}
   // retain their authored bounded execution timeout.
   executionTimeout: ${JSON.stringify(durableSignalTask ? '8760h' : `${handler.executionTimeoutSeconds}s`)},
   scheduleTimeout: ${JSON.stringify(`${handler.scheduleTimeoutSeconds}s`)},
-  fn: async (input, context) => runApplicationTelemetryBoundary(
-    workflowTelemetryBoundary(context, 'task', ${JSON.stringify(handler.id)}, ${JSON.stringify(task.name)}),
+  fn: async (transportInput, context) => {
+    const delivery = workflowDelivery(transportInput, context);
+    return runApplicationTelemetryBoundary(
+    workflowTelemetryBoundary(context, 'task', ${JSON.stringify(handler.id)}, ${JSON.stringify(task.name)}, delivery.metadata),
     async () => {
-    const validInput = validate(${JSON.stringify(task.contract.input.jsonSchema)}, input, ${JSON.stringify(`${task.name}.input`)});
-    const admitted = await canonicalTaskAdmission(${principal}, context, ${JSON.stringify(handler.id)}, ${JSON.stringify(task.name)}, ${JSON.stringify(authorityEnvelopes)}, ${handler.executionTimeoutSeconds});
+    const validInput = validate(${JSON.stringify(task.contract.input.jsonSchema)}, delivery.input, ${JSON.stringify(`${task.name}.input`)});
+    const admitted = await canonicalTaskAdmission(${principal}, context, ${JSON.stringify(handler.id)}, ${JSON.stringify(task.name)}, ${JSON.stringify(authorityEnvelopes)}, ${handler.executionTimeoutSeconds}, delivery.metadata);
     const principal = admitted.principal;
     const execution = taskContext(context, ${JSON.stringify(task.name)}, ${JSON.stringify(errors)}, ${JSON.stringify(capabilities)}, ${workflowOperationAliasesSource(operations)}, ${JSON.stringify(queries)}, ${JSON.stringify(projections)}, ${JSON.stringify(objects)}, principal, admitted.servicePrincipal, admitted.execution, validInput);
     const workflowSignals = workflowSignalApi(context, execution);
@@ -223,7 +225,8 @@ const ${jsName(task.id)} = hatchet.${durableSignalTask ? 'durableTask' : 'task'}
 	    const output = await ${functionNativeRuntime}directOperationScope.run(directApplicationRuntime(execution), () => directObjectScope.run((binding) => execution.objects[binding.name], () => directProjectionScope.run((binding) => execution.projections[binding.name], () => authoredHandler(validInput, execution))))${functionNativeRuntimeClose};
     return validate(${JSON.stringify(task.contract.output.jsonSchema)}, output, ${JSON.stringify(`${task.name}.output`)});
     },
-  ),
+  );
+  },
 });`;
   }).join('\n');
   const workflowDeclarations = contract.workflows.map(({ handler, workflow }) => {
@@ -255,12 +258,14 @@ const ${jsName(workflow.id)} = hatchet.durableTask({
   // consuming a worker. Effect tasks keep their independently bounded
   // executionTimeout values; this ceiling bounds only orchestration history.
   executionTimeout: '8760h',
-  fn: async (input, context) => runApplicationTelemetryBoundary(
-    workflowTelemetryBoundary(context, 'workflow', ${JSON.stringify(handler.id)}, ${JSON.stringify(workflow.name)}),
+  fn: async (transportInput, context) => {
+    const delivery = workflowDelivery(transportInput, context);
+    return runApplicationTelemetryBoundary(
+    workflowTelemetryBoundary(context, 'workflow', ${JSON.stringify(handler.id)}, ${JSON.stringify(workflow.name)}, delivery.metadata),
     async () => {
-    const validInput = validate(${JSON.stringify(workflow.contract.input.jsonSchema)}, input, ${JSON.stringify(`${workflow.name}.input`)});
-    const admitted = await canonicalWorkflowAdmission(context, ${JSON.stringify(handler.id)}, ${JSON.stringify(workflow.name)});
-    const execution = workflowContext(context, ${JSON.stringify(workflow.name)}, ${JSON.stringify(taskBindings)}, ${JSON.stringify(childBindings)}, ${JSON.stringify(errors)}, declarations, admitted);
+    const validInput = validate(${JSON.stringify(workflow.contract.input.jsonSchema)}, delivery.input, ${JSON.stringify(`${workflow.name}.input`)});
+    const admitted = await canonicalWorkflowAdmission(context, ${JSON.stringify(handler.id)}, ${JSON.stringify(workflow.name)}, delivery.metadata);
+    const execution = workflowContext(context, ${JSON.stringify(workflow.name)}, ${JSON.stringify(taskBindings)}, ${JSON.stringify(childBindings)}, ${JSON.stringify(errors)}, declarations, admitted.execution);
     await observeWorkflowExecution(execution, ${JSON.stringify(workflow.name)}, 'running');
     try {
       const directRuntime = directWorkflowRuntime(context, execution, ${JSON.stringify(taskBindings)}, ${JSON.stringify(childBindings)}, declarations);
@@ -280,7 +285,8 @@ const ${jsName(workflow.id)} = hatchet.durableTask({
       throw error;
     }
     },
-  ),
+  );
+  },
 });`;
   }).join('\n');
   const declarationNames = [...contract.tasks.map(({ task }) => jsName(task.id)), ...contract.workflows.map(({ workflow }) => jsName(workflow.id))];
@@ -288,7 +294,7 @@ const ${jsName(workflow.id)} = hatchet.durableTask({
     ...contract.tasks.map(({ task }) => `${JSON.stringify(task.name)}: ${jsName(task.id)}`),
     ...contract.workflows.map(({ workflow }) => `${JSON.stringify(workflow.name)}: ${jsName(workflow.id)}`),
   ];
-  const cronRegistrations = contract.workflows.flatMap(({ workflow }) => workflow.triggers.crons.map((cron) => `${jsName(workflow.id)}.cron(${JSON.stringify(cron.name)}, ${JSON.stringify(cron.expression)}, ${JSON.stringify(cron.input)})`));
+  const cronRegistrations = contract.workflows.flatMap(({ workflow }) => workflow.triggers.crons.map((cron) => `${jsName(workflow.id)}.cron(${JSON.stringify(cron.name)}, ${JSON.stringify(cron.expression)}, encodeHatchetWorkflowTransportInput(${JSON.stringify(cron.input)}))`));
   const capabilityImports = contract.capabilities.length > 0
     ? `import { createDeterministicStructuredGenerationCapability, createHttpStructuredGenerationCapability } from '@applik8s/applik8s/structured-generation-runtime';`
     : '';
@@ -320,7 +326,7 @@ import { applicationOperationInputDigest } from '@applik8s/applik8s/operation-ru
     ? `import { applicationPostgresModelReadClients, createApplicationFunctionNativeEventHandle, editApplicationNativeModelObject, executeFunctionNativePostgresModelEdit, findApplicationNativeModelObjects, getApplicationNativeModelObject, requireApplicationNativeModelObject, withApplicationNativeModelReadClients, withApplicationNativeModelTransactionRuntime } from '@applik8s/applik8s/stream-worker-runtime';`
     : '';
   const gatewayImports = contract.gatewayCallers.length > 0
-    ? `import { AuthenticationV1Api, KubeConfig } from '@kubernetes/client-node';
+    ? `import { AuthenticationV1Api, CoordinationV1Api, KubeConfig, V1MicroTime } from '@kubernetes/client-node';
 import { createHatchetWorkflowRuntimeFromClient, observeHatchetWorkflowRun } from '@applik8s/runtime-hatchet';
 import { createSignedEnvelopeCodec, signedEnvelopeUtf8Key, staticSignedEnvelopeKeyProvider } from '@applik8s/runtime';`
     : '';
@@ -337,15 +343,17 @@ import { createSignedEnvelopeCodec, signedEnvelopeUtf8Key, staticSignedEnvelopeK
     generatedWorkflowFunctionNativeTransactions(contract);
   const gatewayInitializer = generatedWorkflowGateway(contract);
   return `import { AsyncLocalStorage } from 'node:async_hooks';
+	import { createHash, randomUUID } from 'node:crypto';
 	import { createServer } from 'node:http';
 	import { readFile } from 'node:fs/promises';
 	import { connect as connectTcp } from 'node:net';
 	import { HatchetClient } from '@hatchet-dev/typescript-sdk/v1/index.js';
+	import { decodeHatchetWorkflowTransportInput, encodeHatchetWorkflowTransportInput } from '@applik8s/runtime-hatchet';
 	import { applicationAdmissionInvocationView, applicationCausalPrincipalContext, canonicalJsonV1String, createApplicationAdmissionContextV1, createApplicationExecutionPrincipalV1, validateApplicationAdmissionContextV1, validateApplicationAdmissionContextV1WithoutReceipt, validateApplicationTelemetryEnvelopeV1, withApplicationAdmissionExecutionV1, withApplicationAdmissionTraceV1 } from '@applik8s/core';
 	import { applicationAdmissionRejectionCodeV1, createApplicationAdmissionObservationV1 } from '@applik8s/core/admission';
 	import { nodeKeyedDigestHex } from '@applik8s/runtime/node-integrity';
 		import { installApplicationObjectStorageRuntimeResolver, installApplicationProjectionRuntimeResolver, installApplicationWorkflowRuntimeResolver } from '@applik8s/applik8s/workflow-runtime-resolvers';
-import { applicationWorkflowCausalPrincipalMetadata, applicationWorkflowTelemetryMetadata } from '@applik8s/applik8s/workflow-runtime';
+import { applicationWorkflowCausalPrincipalMetadata, applicationWorkflowProviderAdmissionMetadata, applicationWorkflowTelemetryMetadata } from '@applik8s/applik8s/workflow-runtime';
 ${generatedApplicationTelemetryImports({ boundaryRunner: true, carrierCapture: true, providerOperationInstrumentation: contract.tasks.some(({ handler }) => workflowTaskProviderRuntimeOperations(handler).length > 0), runtimeImplementation: contract.observability }).join('\n')}
 import { installApplicationInvocationAdmissionResolver, installApplicationOperationRuntimeResolver } from '@applik8s/client';
 import { normalizeSchema } from '@applik8s/sdk';
@@ -531,6 +539,21 @@ function workflowAdmissionRejectionCode(error) {
   return applicationAdmissionRejectionCodeV1(error);
 }
 
+function workflowGatewayStageError(code, cause) {
+  const error = new Error(code, { cause });
+  error.name = 'WorkflowGatewayStageError';
+  error.code = code;
+  const status = cause && typeof cause === 'object'
+    ? Reflect.get(cause, 'code')
+      ?? Reflect.get(cause, 'status')
+      ?? Reflect.get(cause, 'statusCode')
+      ?? Reflect.get(Reflect.get(cause, 'response') ?? {}, 'status')
+      ?? Reflect.get(Reflect.get(cause, 'response') ?? {}, 'statusCode')
+    : undefined;
+  if (typeof status === 'number' && Number.isSafeInteger(status)) error.providerStatus = status;
+  return error;
+}
+
 async function observeWorkflowAdmission(options, state, admission, reason) {
   const evidence = createApplicationAdmissionObservationV1({
     state,
@@ -565,7 +588,7 @@ async function observeWorkflowAdmission(options, state, admission, reason) {
   }
 }
 
-function canonicalTaskAdmission(principal, context, handlerId, contractName, envelopes, timeoutSeconds) {
+function canonicalTaskAdmission(principal, context, handlerId, contractName, envelopes, timeoutSeconds, transportedMetadata) {
   return canonicalManagedAdmission({
     context,
     executionKind: 'task',
@@ -574,10 +597,11 @@ function canonicalTaskAdmission(principal, context, handlerId, contractName, env
     envelopes,
     principal,
     timeoutSeconds,
+    transportedMetadata,
   });
 }
 
-function canonicalWorkflowAdmission(context, handlerId, contractName) {
+function canonicalWorkflowAdmission(context, handlerId, contractName, transportedMetadata) {
   return canonicalManagedAdmission({
     context,
     executionKind: 'workflow',
@@ -585,6 +609,7 @@ function canonicalWorkflowAdmission(context, handlerId, contractName) {
     operationId: 'applik8s://workflows/' + encodeURIComponent(contractName) + '/operations/execute',
     envelopes: [],
     timeoutSeconds: 365 * 24 * 60 * 60,
+    transportedMetadata,
   });
 }
 
@@ -609,7 +634,7 @@ async function canonicalManagedAdmission(options) {
 }
 
 async function canonicalManagedAdmissionUnchecked(options) {
-  const raw = metadata(options.context, options.executionKind);
+  const raw = metadata(options.context, options.executionKind, options.transportedMetadata);
   const authorityRevision = operationAuthority
     ? await operationAuthority.authorityRevision()
     : ${JSON.stringify(contract.authorityManifest?.revision ?? contract.operationCatalog?.revision ?? `authority:${contract.graphName}:none`)};
@@ -766,8 +791,16 @@ async function invokeApplicationActorMember(execution, principal, taskName, acto
   return memberKind === 'command' ? body.result : body.receipt;
 }
 
-function workflowCausalPrincipal(context) {
-  const data = typeof context.additionalMetadata === 'function' ? context.additionalMetadata() : {};
+function workflowDelivery(input, context) {
+  const decoded = decodeHatchetWorkflowTransportInput(input);
+  const providerMetadata = typeof context.additionalMetadata === 'function' ? context.additionalMetadata() : {};
+  return Object.freeze({
+    input: decoded.input,
+    metadata: Object.freeze({ ...providerMetadata, ...decoded.metadata }),
+  });
+}
+
+function workflowCausalPrincipal(data) {
   const serialized = data?.['applik8s.causal-principal'];
   if (!serialized) return undefined;
   let value;
@@ -795,22 +828,21 @@ function workflowCausalPrincipal(context) {
   });
 }
 
-function metadata(context, executionKind = 'task') {
+function metadata(context, executionKind = 'task', transportedMetadata) {
   const invocationId = String(executionKind === 'task'
     ? context.stepRunId?.() ?? context.workflowRunId?.() ?? 'unknown'
     : context.workflowRunId?.() ?? context.stepRunId?.() ?? 'unknown');
-  const data = typeof context.additionalMetadata === 'function' ? context.additionalMetadata() : {};
+  const data = transportedMetadata ?? (typeof context.additionalMetadata === 'function' ? context.additionalMetadata() : {});
   let trustedContext;
   if (data?.['applik8s.trusted-context']) {
     try { trustedContext = JSON.parse(data['applik8s.trusted-context']); } catch { throw new Error('applik8s-workflow-trusted-context-invalid'); }
     if (!trustedContext || typeof trustedContext !== 'object' || !trustedContext.values || typeof trustedContext.digest !== 'string') throw new Error('applik8s-workflow-trusted-context-invalid');
   }
-  const causalPrincipal = workflowCausalPrincipal(context);
-  const telemetry = workflowTelemetry(context);
+  const causalPrincipal = workflowCausalPrincipal(data);
+  const telemetry = workflowTelemetry(data);
   return { invocationId, idempotencyKey: invocationId, attempt: Number(context.retryCount?.() ?? 0) + 1, correlationId: data?.['applik8s.correlation-id'], causationId: data?.['applik8s.causation-id'], traceparent: data?.traceparent, ...(trustedContext ? { trustedContext } : {}), ...(causalPrincipal ? { causalPrincipal } : {}), ...(telemetry ? { telemetry } : {}), signal: context.abortController?.signal ?? new AbortController().signal };
 }
-function workflowTelemetry(context) {
-  const data = typeof context.additionalMetadata === 'function' ? context.additionalMetadata() : {};
+function workflowTelemetry(data) {
   const serialized = data?.['applik8s.telemetry'];
   if (!serialized) return undefined;
   let telemetry;
@@ -818,8 +850,8 @@ function workflowTelemetry(context) {
   try { validateApplicationTelemetryEnvelopeV1(telemetry); } catch { throw new Error('applik8s-workflow-telemetry-invalid'); }
   return Object.freeze(telemetry);
 }
-function workflowTelemetryBoundary(context, kind, handlerId, contractName) {
-  const execution = metadata(context, kind);
+function workflowTelemetryBoundary(context, kind, handlerId, contractName, transportedMetadata) {
+  const execution = metadata(context, kind, transportedMetadata);
   return {
     kind,
     identity: handlerId,
@@ -910,11 +942,24 @@ function childInvocationMetadata(parent, options) {
     trustedContext: options?.trustedContext ?? inherited.trustedContext,
   };
 }
+function spawnWorkflowChild(context, declaration, input, metadata) {
+  return context.spawnChild(
+    declaration,
+    encodeHatchetWorkflowTransportInput(input, metadata),
+    childOptions(metadata),
+  );
+}
 function workflowContext(context, workflowName, taskBindings, childBindings, errorSchemas, registry, base) {
   return {
     ...base,
-    task: (alias, input, options) => context.spawnChild(resolveDeclaration(registry, taskBindings, 'task', alias), input, childOptions(childInvocationMetadata(base, options))),
-    child: (alias, input, options) => context.spawnChild(resolveDeclaration(registry, childBindings, 'child workflow', alias), input, childOptions(childInvocationMetadata(base, options))),
+    task: (alias, input, options) => {
+      const childMetadata = childInvocationMetadata(base, options);
+      return spawnWorkflowChild(context, resolveDeclaration(registry, taskBindings, 'task', alias), input, childMetadata);
+    },
+    child: (alias, input, options) => {
+      const childMetadata = childInvocationMetadata(base, options);
+      return spawnWorkflowChild(context, resolveDeclaration(registry, childBindings, 'child workflow', alias), input, childMetadata);
+    },
     sleep: async (duration) => { await context.sleepFor(duration); },
     waitFor: (signal, options = {}) => context.waitForEvent(workflowName + '.' + signal, options.expression, undefined, options.scope ?? base.invocationId, options.lookback),
     now: () => context.now(),
@@ -932,10 +977,11 @@ function directWorkflowRuntime(context, execution, taskBindings, childBindings, 
     run: (contract, input, metadata) => {
       const declaration = bindings[contract];
       if (!declaration) throw new Error('Workflow attempted to call undeclared durable dependency ' + JSON.stringify(contract));
-      return context.spawnChild(
+      return spawnWorkflowChild(
+        context,
         registry[declaration] ?? declaration,
         input,
-        childOptions(childInvocationMetadata(execution, metadata)),
+        childInvocationMetadata(execution, metadata),
       );
     },
     start: async (contract) => {
@@ -1002,25 +1048,35 @@ function generatedWorkflowGateway(contract: WorkflowContract): string {
     ...contract.tasks.map(({ task }) => [task.name, task.contract.input.jsonSchema]),
     ...contract.workflows.map(({ workflow }) => [workflow.name, workflow.contract.input.jsonSchema]),
   ].filter(([id]) => allowedContracts.includes(String(id))));
-  const callerContracts = new Map<string, Set<string>>();
+  const callerContracts = new Map<string, {
+    readonly operator: string;
+    readonly contracts: Set<string>;
+  }>();
   for (const caller of contract.gatewayCallers) {
     const namespace = caller.namespace.startsWith('${')
       ? '__APPLIK8S_RUNTIME_NAMESPACE__'
       : caller.namespace;
     const identity = `${namespace}/${caller.serviceAccount}`;
-    const contracts = callerContracts.get(identity) ?? new Set<string>();
+    const existing = callerContracts.get(identity);
+    if (existing && existing.operator !== caller.operator) {
+      throw new Error(
+        `Workflow gateway service account ${identity} is assigned to both ${existing.operator} and ${caller.operator}.`,
+      );
+    }
+    const contracts = existing?.contracts ?? new Set<string>();
     for (const declaredContract of caller.contracts) {
       contracts.add(declaredContract);
     }
-    callerContracts.set(identity, contracts);
+    callerContracts.set(identity, { operator: caller.operator, contracts });
   }
   const callerSpecifications = [...callerContracts.entries()]
-    .map(([identity, contracts]) => {
+    .map(([identity, caller]) => {
       const separator = identity.indexOf('/');
       return {
         namespace: identity.slice(0, separator),
         serviceAccount: identity.slice(separator + 1),
-        contracts: [...contracts].sort(),
+        operator: caller.operator,
+        contracts: [...caller.contracts].sort(),
       };
     })
     .sort((left, right) =>
@@ -1037,9 +1093,18 @@ const gatewayCallerContracts = new Map(${JSON.stringify(callerSpecifications)}.m
     + ':' + caller.serviceAccount,
   new Set(caller.contracts),
 ]));
+const gatewayCallerOperators = new Map(${JSON.stringify(callerSpecifications)}.map((caller) => [
+  'system:serviceaccount:'
+    + (caller.namespace === '__APPLIK8S_RUNTIME_NAMESPACE__' ? gatewayRuntimeNamespace : caller.namespace)
+    + ':' + caller.serviceAccount,
+  caller.operator,
+]));
 const gatewayKubeConfig = new KubeConfig();
 gatewayKubeConfig.loadFromCluster();
 const gatewayAuthentication = gatewayKubeConfig.makeApiClient(AuthenticationV1Api);
+const gatewayCoordination = gatewayKubeConfig.makeApiClient(CoordinationV1Api);
+const gatewayAdmissionOwner = requiredEnv('APPLIK8S_WORKFLOW_POD_NAME') + ':' + randomUUID();
+const gatewayAdmissionInFlight = new Map();
 const gatewayRuntime = createHatchetWorkflowRuntimeFromClient(hatchet);
 const gatewayAdmission = createSignedEnvelopeCodec({
   purpose: 'applik8s.workflow-gateway-admission/v1',
@@ -1139,6 +1204,331 @@ async function openGatewayReference(reference, expectedContract, expectedCaller)
   ) throw new Error('invalid-reference');
   return value;
 }
+function gatewayKubernetesStatus(error) {
+  for (const candidate of [
+    error?.code,
+    error?.statusCode,
+    error?.response?.statusCode,
+    error?.response?.status,
+    error?.body?.code,
+  ]) if (typeof candidate === 'number') return candidate;
+  return undefined;
+}
+function gatewayAdmissionIdentity(caller, contract, idempotencyKey) {
+  const digest = createHash('sha256')
+    .update(canonicalJsonV1String({ caller, contract, idempotencyKey }))
+    .digest('hex');
+  return Object.freeze({
+    id: 'sha256:' + digest,
+    leaseName: 'workflow-admission-' + digest.slice(0, 40),
+  });
+}
+function gatewayLeaseAnnotations(lease) {
+  const annotations = lease?.metadata?.annotations;
+  return annotations && typeof annotations === 'object' ? annotations : {};
+}
+async function readGatewayAdmissionLease(name) {
+  try {
+    return await gatewayCoordination.readNamespacedLease({
+      name,
+      namespace: gatewayRuntimeNamespace,
+    });
+  } catch (error) {
+    if (gatewayKubernetesStatus(error) === 404) return undefined;
+    throw error;
+  }
+}
+async function findGatewayProviderRun(contract, admissionId, since) {
+  const result = await hatchet.runs.list({
+    workflowNames: [contract],
+    additionalMetadata: { 'applik8s.admission-id': admissionId },
+    since,
+    onlyTasks: false,
+    limit: 10,
+  });
+  const runIds = [...new Set((result.rows ?? [])
+    .map(row => row.workflowRunExternalId)
+    .filter(value => typeof value === 'string' && value.length > 0))];
+  if (runIds.length > 1) throw new Error('WORKFLOW_ADMISSION_AMBIGUOUS');
+  return runIds[0];
+}
+async function persistGatewayAdmission(lease, admissionId, contract, runId, admittedAt) {
+  let current = lease;
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const annotations = gatewayLeaseAnnotations(current);
+    if (annotations['applik8s.dev/provider-run-id']) {
+      if (annotations['applik8s.dev/provider-run-id'] !== runId) {
+        throw new Error('WORKFLOW_ADMISSION_AMBIGUOUS');
+      }
+      return Object.freeze({ id: runId, admittedAt: annotations['applik8s.dev/admitted-at'] ?? admittedAt });
+    }
+    try {
+      const updated = await gatewayCoordination.replaceNamespacedLease({
+        name: current.metadata.name,
+        namespace: gatewayRuntimeNamespace,
+        body: {
+          ...current,
+          metadata: {
+            ...current.metadata,
+            annotations: {
+              ...annotations,
+              'applik8s.dev/admission-id': admissionId,
+              'applik8s.dev/workflow-contract': contract,
+              'applik8s.dev/provider-run-id': runId,
+              'applik8s.dev/admitted-at': admittedAt,
+              'applik8s.dev/admission-state': 'admitted',
+            },
+          },
+          spec: {
+            ...(current.spec ?? {}),
+            holderIdentity: gatewayAdmissionOwner,
+            renewTime: new V1MicroTime(),
+          },
+        },
+      });
+      return Object.freeze({
+        id: runId,
+        admittedAt: gatewayLeaseAnnotations(updated)['applik8s.dev/admitted-at'] ?? admittedAt,
+      });
+    } catch (error) {
+      if (gatewayKubernetesStatus(error) !== 409) throw error;
+      current = await readGatewayAdmissionLease(current.metadata.name);
+      if (!current) throw new Error('WORKFLOW_ADMISSION_STATE_LOST');
+    }
+  }
+  throw new Error('WORKFLOW_ADMISSION_STATE_CONFLICT');
+}
+async function createGatewayAdmissionLease(identity, contract) {
+  const now = new V1MicroTime();
+  try {
+    const lease = await gatewayCoordination.createNamespacedLease({
+      namespace: gatewayRuntimeNamespace,
+      body: {
+        apiVersion: 'coordination.k8s.io/v1',
+        kind: 'Lease',
+        metadata: {
+          name: identity.leaseName,
+          namespace: gatewayRuntimeNamespace,
+          labels: {
+            'app.kubernetes.io/managed-by': 'applik8s',
+            'applik8s.dev/workflow-admission': 'true',
+          },
+          annotations: {
+            'applik8s.dev/admission-id': identity.id,
+            'applik8s.dev/workflow-contract': contract,
+            'applik8s.dev/admission-state': 'starting',
+          },
+        },
+        spec: {
+          holderIdentity: gatewayAdmissionOwner,
+          leaseDurationSeconds: 30,
+          acquireTime: now,
+          renewTime: now,
+        },
+      },
+    });
+    return Object.freeze({ lease, created: true });
+  } catch (error) {
+    if (gatewayKubernetesStatus(error) !== 409) throw error;
+    const lease = await readGatewayAdmissionLease(identity.leaseName);
+    if (!lease) throw new Error('WORKFLOW_ADMISSION_STATE_LOST');
+    return Object.freeze({ lease, created: false });
+  }
+}
+async function convergeGatewayAdmission(caller, contract, idempotencyKey, start) {
+  const identity = gatewayAdmissionIdentity(caller, contract, idempotencyKey);
+  const existing = gatewayAdmissionInFlight.get(identity.id);
+  if (existing) return existing;
+  const pending = (async () => {
+    let leaseState;
+    try {
+      leaseState = await createGatewayAdmissionLease(identity, contract);
+    } catch (cause) {
+      throw workflowGatewayStageError('WORKFLOW_ADMISSION_LEASE_CREATE_FAILED', cause);
+    }
+    let { lease, created } = leaseState;
+    const annotations = gatewayLeaseAnnotations(lease);
+    if (
+      annotations['applik8s.dev/admission-id'] !== identity.id
+      || annotations['applik8s.dev/workflow-contract'] !== contract
+    ) throw new Error('WORKFLOW_ADMISSION_IDENTITY_CONFLICT');
+    const priorRunId = annotations['applik8s.dev/provider-run-id'];
+    if (priorRunId) return Object.freeze({
+      id: priorRunId,
+      admittedAt: annotations['applik8s.dev/admitted-at'] ?? lease.metadata.creationTimestamp?.toISOString?.() ?? new Date().toISOString(),
+    });
+    if (!created && lease.spec?.holderIdentity !== gatewayAdmissionOwner) {
+      const startedAt = Date.now();
+      while (Date.now() - startedAt < 30_000) {
+        const recovered = await findGatewayProviderRun(
+          contract,
+          identity.id,
+          new Date(Date.now() - 24 * 60 * 60 * 1_000),
+        );
+        if (recovered) return persistGatewayAdmission(lease, identity.id, contract, recovered, new Date().toISOString());
+        await new Promise(resolve => setTimeout(resolve, 250));
+        const refreshed = await readGatewayAdmissionLease(identity.leaseName);
+        if (!refreshed) throw new Error('WORKFLOW_ADMISSION_STATE_LOST');
+        lease = refreshed;
+        const refreshedAnnotations = gatewayLeaseAnnotations(lease);
+        if (refreshedAnnotations['applik8s.dev/provider-run-id']) return Object.freeze({
+          id: refreshedAnnotations['applik8s.dev/provider-run-id'],
+          admittedAt: refreshedAnnotations['applik8s.dev/admitted-at'] ?? new Date().toISOString(),
+        });
+      }
+      const renewTime = Date.parse(String(lease.spec?.renewTime ?? lease.spec?.acquireTime ?? ''));
+      if (Number.isFinite(renewTime) && Date.now() - renewTime < 30_000) {
+        throw new Error('WORKFLOW_ADMISSION_IN_PROGRESS');
+      }
+      try {
+        lease = await gatewayCoordination.replaceNamespacedLease({
+          name: identity.leaseName,
+          namespace: gatewayRuntimeNamespace,
+          body: {
+            ...lease,
+            spec: {
+              ...(lease.spec ?? {}),
+              holderIdentity: gatewayAdmissionOwner,
+              leaseDurationSeconds: 30,
+              acquireTime: new V1MicroTime(),
+              renewTime: new V1MicroTime(),
+            },
+          },
+        });
+      } catch (error) {
+        if (gatewayKubernetesStatus(error) === 409) throw new Error('WORKFLOW_ADMISSION_IN_PROGRESS');
+        throw error;
+      }
+    }
+    let run;
+    try {
+      run = await start(identity.id);
+    } catch (cause) {
+      throw workflowGatewayStageError('WORKFLOW_ADMISSION_PROVIDER_START_FAILED', cause);
+    }
+    const admittedAt = new Date().toISOString();
+    return persistGatewayAdmission(lease, identity.id, contract, run.id, admittedAt);
+  })();
+  gatewayAdmissionInFlight.set(identity.id, pending);
+  try {
+    return await pending;
+  } finally {
+    if (gatewayAdmissionInFlight.get(identity.id) === pending) gatewayAdmissionInFlight.delete(identity.id);
+  }
+}
+function controllerGatewayAdmission(value, caller, contract) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('invalid-controller-source');
+  if (value.protocol !== 'applik8s.kubernetes-reconcile/v1alpha1') throw new Error('invalid-controller-source');
+  if (typeof value.reconcileId !== 'string' || !value.reconcileId.trim()) throw new Error('invalid-controller-source');
+  if (!['reconcile', 'created', 'updated', 'deleted', 'finalize', 'statusChanged'].includes(value.event)) throw new Error('invalid-controller-source');
+  const resource = value.resource;
+  if (
+    !resource
+    || typeof resource !== 'object'
+    || Array.isArray(resource)
+    || typeof resource.apiVersion !== 'string'
+    || !resource.apiVersion.trim()
+    || typeof resource.kind !== 'string'
+    || !resource.kind.trim()
+    || typeof resource.name !== 'string'
+    || !resource.name.trim()
+    || (resource.namespace !== undefined && typeof resource.namespace !== 'string')
+    || (resource.uid !== undefined && typeof resource.uid !== 'string')
+    || (resource.generation !== undefined && (!Number.isSafeInteger(resource.generation) || resource.generation < 0))
+  ) throw new Error('invalid-controller-source');
+  const expectedOperator = gatewayCallerOperators.get(caller);
+  const identityEnvelope = value.identityEnvelope;
+  if (
+    !expectedOperator
+    || value.operatorName !== expectedOperator
+    || !identityEnvelope
+    || typeof identityEnvelope !== 'object'
+    || Array.isArray(identityEnvelope)
+    || identityEnvelope.apiVersion !== 'applik8s.guestHostIdentity/v1alpha1'
+    || typeof identityEnvelope.application !== 'string'
+    || !identityEnvelope.application.startsWith('applik8s://')
+    || typeof identityEnvelope.operation !== 'string'
+    || !identityEnvelope.operation.startsWith('applik8s://')
+    || typeof identityEnvelope.execution !== 'string'
+    || !identityEnvelope.execution.startsWith('applik8s://')
+    || identityEnvelope.attempt !== value.reconcileId
+  ) {
+    throw new Error('invalid-controller-source');
+  }
+  const reconcileAttempt = identityEnvelope.telemetry?.identity?.attempt;
+  if (reconcileAttempt !== undefined && (!Number.isSafeInteger(reconcileAttempt) || reconcileAttempt < 1)) {
+    throw new Error('invalid-controller-source');
+  }
+  const serviceAccount = caller.slice('system:serviceaccount:'.length);
+  const workloadIdentity = Object.freeze({
+    id: 'identity:kubernetes:serviceaccount:' + serviceAccount,
+    kind: 'workload',
+    issuer: 'kubernetes://cluster',
+    subject: serviceAccount,
+  });
+  const trustedValues = Object.freeze({
+    resource: Object.freeze({
+      apiVersion: resource.apiVersion,
+      kind: resource.kind,
+      name: resource.name,
+      ...(resource.namespace ? { namespace: resource.namespace } : {}),
+      ...(resource.uid ? { uid: resource.uid } : {}),
+      ...(resource.generation !== undefined ? { generation: resource.generation } : {}),
+      event: value.event,
+      operation: identityEnvelope.operation,
+      execution: identityEnvelope.execution,
+    }),
+  });
+  const trustedContextDigest = nodeKeyedDigestHex({
+    key: requiredEnv('APPLIK8S_INTERNAL_OPERATION_SECRET'),
+    purpose: 'applik8s.kubernetes-reconcile-trusted-context/v1',
+    value: canonicalJsonV1String(trustedValues),
+  });
+  const deadline = new Date(Date.now() + 60_000).toISOString();
+  const cancellationRevision = 'active:' + value.reconcileId;
+  const principal = createApplicationExecutionPrincipalV1({
+    application: ${JSON.stringify(contract.graphName)},
+    executionKind: 'reconcile',
+    executionId: value.reconcileId,
+    attempt: reconcileAttempt ?? 1,
+    workloadIdentity,
+    envelopes: [],
+    trustedContextDigest,
+    audience: [${JSON.stringify(contract.worker.id)}],
+    catalogRevision: ${JSON.stringify(contract.operationCatalog?.revision ?? `catalog:${contract.graphName}:none`)},
+    authorityRevision: ${JSON.stringify(contract.authorityManifest?.revision ?? contract.operationCatalog?.revision ?? `authority:${contract.graphName}:none`)},
+    deadline,
+    cancellationRevision,
+    authenticationMethod: 'kubernetes-service-account-token-review',
+  });
+  const base = createApplicationAdmissionContextV1({
+    admission: { principal, trustedContext: trustedValues },
+    operation: {
+      id: 'applik8s://workflows/' + contract + '/operations/start',
+      transport: 'control-plane',
+    },
+    correlationId: value.reconcileId,
+  });
+  const traced = typeof identityEnvelope.telemetry?.traceparent === 'string'
+    ? withApplicationAdmissionTraceV1(base, {
+        traceparent: identityEnvelope.telemetry.traceparent,
+        ...(typeof identityEnvelope.telemetry.tracestate === 'string'
+          ? { tracestate: identityEnvelope.telemetry.tracestate }
+          : {}),
+      })
+    : base;
+  return validateApplicationAdmissionContextV1WithoutReceipt(
+    withApplicationAdmissionExecutionV1(traced, {
+      causationId: identityEnvelope.attempt,
+      deadline,
+      cancellation: { revision: cancellationRevision },
+      delivery: {
+        id: value.reconcileId,
+        source: 'kubernetes-controller:' + expectedOperator,
+      },
+    }),
+  );
+}
 async function handleGatewayRequest(request, response) {
   try {
     if (!ready || stopping) return gatewayJson(response, 503, { error: 'workflow-gateway-unavailable' });
@@ -1169,56 +1559,78 @@ async function handleGatewayRequest(request, response) {
       const requestedMetadata = body.metadata && typeof body.metadata === 'object' && !Array.isArray(body.metadata)
         ? body.metadata
         : {};
-      if (typeof body.admission !== 'string') {
-        return gatewayJson(response, 400, { error: 'admission-required' });
-      }
       let sourceAdmission;
-      try {
-        sourceAdmission = (await gatewayAdmission.verify(body.admission)).payload;
-      } catch {
-        return gatewayJson(response, 403, { error: 'admission-invalid' });
-      }
-      if (
-        sourceAdmission.operation.transport !== 'http'
-        && sourceAdmission.operation.transport !== 'webhook'
-        && sourceAdmission.operation.transport !== 'schedule'
-      ) {
-        return gatewayJson(response, 403, { error: 'admission-transport-invalid' });
+      if (typeof body.admission === 'string') {
+        try {
+          sourceAdmission = (await gatewayAdmission.verify(body.admission)).payload;
+        } catch {
+          return gatewayJson(response, 403, { error: 'admission-invalid' });
+        }
+        if (
+          sourceAdmission.operation.transport !== 'http'
+          && sourceAdmission.operation.transport !== 'webhook'
+          && sourceAdmission.operation.transport !== 'schedule'
+        ) {
+          return gatewayJson(response, 403, { error: 'admission-transport-invalid' });
+        }
+      } else if (body.source !== undefined) {
+        try {
+          sourceAdmission = controllerGatewayAdmission(body.source, gatewayCaller, contract);
+        } catch (cause) {
+          throw workflowGatewayStageError('WORKFLOW_CONTROLLER_ADMISSION_INVALID', cause);
+        }
+      } else {
+        return gatewayJson(response, 400, { error: 'admission-required' });
       }
       const causalPrincipal = applicationCausalPrincipalContext(
         sourceAdmission.principal,
       );
-      const run = await gatewayRuntime.start(contract, validInput, {
-        ...(typeof requestedMetadata.tenant === 'string'
-          ? { tenant: requestedMetadata.tenant }
-          : {}),
-        ...(['low', 'medium', 'high'].includes(requestedMetadata.priority)
-          ? { priority: requestedMetadata.priority }
-          : {}),
-        idempotencyKey,
-        correlationId: sourceAdmission.correlationId,
-        causationId: sourceAdmission.correlationId,
-        ...(sourceAdmission.trace?.traceparent
-          ? { traceparent: sourceAdmission.trace.traceparent }
-          : {}),
-        trustedContext: sourceAdmission.trustedContext,
-        [applicationWorkflowCausalPrincipalMetadata]: causalPrincipal,
-        ...(requestedMetadata.telemetry !== undefined
-          ? (() => {
-              validateApplicationTelemetryEnvelopeV1(requestedMetadata.telemetry);
-              return { [applicationWorkflowTelemetryMetadata]: requestedMetadata.telemetry };
-            })()
-          : {}),
-      });
-      const admittedAt = new Date().toISOString();
+      let admittedRun;
+      try {
+        admittedRun = await convergeGatewayAdmission(
+          gatewayCaller,
+          contract,
+          idempotencyKey,
+          admissionId => gatewayRuntime.start(contract, validInput, {
+            ...(typeof requestedMetadata.tenant === 'string'
+              ? { tenant: requestedMetadata.tenant }
+              : {}),
+            ...(['low', 'medium', 'high'].includes(requestedMetadata.priority)
+              ? { priority: requestedMetadata.priority }
+              : {}),
+            idempotencyKey,
+            correlationId: sourceAdmission.correlationId,
+            causationId: sourceAdmission.correlationId,
+            ...(sourceAdmission.trace?.traceparent
+              ? { traceparent: sourceAdmission.trace.traceparent }
+              : {}),
+            trustedContext: sourceAdmission.trustedContext,
+            [applicationWorkflowCausalPrincipalMetadata]: causalPrincipal,
+            [applicationWorkflowProviderAdmissionMetadata]: admissionId,
+            ...(requestedMetadata.telemetry !== undefined
+              ? (() => {
+                  validateApplicationTelemetryEnvelopeV1(requestedMetadata.telemetry);
+                  return { [applicationWorkflowTelemetryMetadata]: requestedMetadata.telemetry };
+                })()
+              : {}),
+          }),
+        );
+      } catch (cause) {
+        if (
+          cause
+          && typeof cause === 'object'
+          && Reflect.get(cause, 'name') === 'WorkflowGatewayStageError'
+        ) throw cause;
+        throw workflowGatewayStageError('WORKFLOW_PROVIDER_START_FAILED', cause);
+      }
       return gatewayJson(response, 202, {
         id: await sealGatewayReference({
           contract,
-          runId: run.id,
-          admittedAt,
+          runId: admittedRun.id,
+          admittedAt: admittedRun.admittedAt,
           caller: gatewayCaller,
         }),
-        admittedAt,
+        admittedAt: admittedRun.admittedAt,
       });
     }
     if (parts.length === 5 && (request.method === 'GET' || request.method === 'DELETE')) {
@@ -1243,6 +1655,9 @@ async function handleGatewayRequest(request, response) {
     console.error(JSON.stringify({
       event: 'applik8s-workflow-gateway-rejected',
       error: unauthorized ? 'unauthorized' : workflowAdmissionRejectionCode(error),
+      ...(error && typeof error === 'object' && typeof Reflect.get(error, 'providerStatus') === 'number'
+        ? { providerStatus: Reflect.get(error, 'providerStatus') }
+        : {}),
     }));
     return gatewayJson(response, unauthorized ? 401 : 400, { error: unauthorized ? 'unauthorized' : 'request-rejected' });
   }

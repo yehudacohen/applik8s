@@ -12,6 +12,8 @@ import { applicationMetadata, hatchetRunOptions } from './workflow-runtime-hatch
 import { observeHatchetWorkflowRun, waitForHatchetResult } from './workflow-runtime-hatchet-observation.js';
 import { boundedHatchetOperation, defaultHatchetOperationTimeoutMs } from './workflow-runtime-hatchet-operation.js';
 import { reconcileHatchetWorkflowSchedule } from './workflow-runtime-hatchet-schedule.js';
+import { encodeHatchetWorkflowTransportInput } from './workflow-runtime-hatchet-transport.js';
+
 
 export type {
   HatchetApplicationScheduleClient,
@@ -30,6 +32,10 @@ export {
   waitForHatchetResult,
 } from './workflow-runtime-hatchet-observation.js';
 export { reconcileHatchetWorkflowSchedule } from './workflow-runtime-hatchet-schedule.js';
+export {
+  decodeHatchetWorkflowTransportInput,
+  encodeHatchetWorkflowTransportInput,
+} from './workflow-runtime-hatchet-transport.js';
 
 export function createHatchetWorkflowRuntime(provider: ApplicationHatchetWorkflowEngineProvider): ApplicationWorkflowRuntime {
   return createHatchetWorkflowRuntimeFromClientFactory(() => hatchetClient(provider));
@@ -77,7 +83,7 @@ export function createHatchetWorkflowRuntimeFromClient(client: HatchetClient): A
     async run<TInput extends object, TOutput extends object>(contract: string, input: TInput, metadata?: ApplicationWorkflowInvocationMetadata, result?: ApplicationWorkflowResultOptions) {
       // typecast: schema-validated application input satisfies Hatchet's JSON object transport boundary.
       const reference = await boundedHatchetOperation(
-        () => client.runNoWait<JsonObject, JsonObject>(contract, input as JsonObject, hatchetRunOptions(metadata)),
+        () => client.runNoWait<JsonObject, JsonObject>(contract, encodeHatchetWorkflowTransportInput(input, metadata), hatchetRunOptions(metadata)),
         contract,
         'start',
         { timeoutMs: defaultHatchetOperationTimeoutMs },
@@ -88,7 +94,7 @@ export function createHatchetWorkflowRuntimeFromClient(client: HatchetClient): A
     async start<TInput extends object, TOutput extends object>(contract: string, input: TInput, metadata?: ApplicationWorkflowInvocationMetadata) {
       // typecast: schema-validated application input satisfies Hatchet's JSON object transport boundary.
       const reference = await boundedHatchetOperation(
-        () => client.runNoWait<JsonObject, JsonObject>(contract, input as JsonObject, hatchetRunOptions(metadata)),
+        () => client.runNoWait<JsonObject, JsonObject>(contract, encodeHatchetWorkflowTransportInput(input, metadata), hatchetRunOptions(metadata)),
         contract,
         'start',
         { timeoutMs: defaultHatchetOperationTimeoutMs },
@@ -122,7 +128,7 @@ export function createHatchetWorkflowRuntimeFromClient(client: HatchetClient): A
     async schedule(contract, input, at, metadata) {
       const declaration = client.workflow({ name: contract });
       const scheduled = await boundedHatchetOperation(
-        () => declaration.schedule(at, input, hatchetRunOptions(metadata)),
+        () => declaration.schedule(at, encodeHatchetWorkflowTransportInput(input, metadata), hatchetRunOptions(metadata)),
         contract,
         'schedule',
         { timeoutMs: defaultHatchetOperationTimeoutMs },

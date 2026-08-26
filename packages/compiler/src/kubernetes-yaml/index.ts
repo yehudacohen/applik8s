@@ -1,6 +1,7 @@
 import { mkdir, mkdtemp, rename, rm, writeFile } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
 import type { AnyResourceDefinition, AnyResourceVersionDefinition, ConcurrencyConfig, Diagnostic, JsonObject, OperatorDefinition, OperatorManifest, PermissionRule, Result, StatusConvention } from '@applik8s/core';
+import { usesWorkflowGatewayCapability, workflowGatewayServiceAccountTokenProjection } from '@applik8s/core';
 import { imageRefString } from '@applik8s/typetainer';
 import type { V1CustomResourceColumnDefinition } from '@kubernetes/client-node/dist/gen/models/V1CustomResourceColumnDefinition.js';
 import type { V1CustomResourceDefinition } from '@kubernetes/client-node/dist/gen/models/V1CustomResourceDefinition.js';
@@ -426,6 +427,36 @@ function rbacBindingDocument(operatorName: string, serviceAccountName: string, n
 
 function deploymentDocument(manifest: OperatorManifest, serviceAccountName: string, image: string, namespace: string | undefined, deployment?: OperatorDefinition['deployment']): V1Deployment {
   const configuredResources = deployment?.resources;
+  const usesWorkflowGateway = usesWorkflowGatewayCapability(manifest.spec.capabilities);
+  const workflowToken = workflowGatewayServiceAccountTokenProjection;
+  const volumeMounts = [
+    { name: 'tmp', mountPath: '/tmp' },
+    ...(usesWorkflowGateway
+      ? [{
+          name: workflowToken.name,
+          mountPath: workflowToken.mountPath,
+          readOnly: true,
+        }]
+      : []),
+  ];
+  const volumes = [
+    { name: 'tmp', emptyDir: {} },
+    ...(usesWorkflowGateway
+      ? [{
+          name: workflowToken.name,
+          projected: {
+            defaultMode: workflowToken.defaultMode,
+            sources: [{
+              serviceAccountToken: {
+                path: workflowToken.path,
+                expirationSeconds: workflowToken.expirationSeconds,
+                audience: workflowToken.audience,
+              },
+            }],
+          },
+        }]
+      : []),
+  ];
   const resources = {
     requests: { cpu: '100m', memory: '128Mi', ...configuredResources?.requests },
     // ComponentizeJS handlers execute inside Wasmtime and can transiently
@@ -466,7 +497,7 @@ function deploymentDocument(manifest: OperatorManifest, serviceAccountName: stri
                 readOnlyRootFilesystem: true,
                 capabilities: { drop: ['ALL'] },
               },
-              volumeMounts: [{ name: 'tmp', mountPath: '/tmp' }],
+              volumeMounts,
               ports: [{ name: 'health', containerPort: 8080 }],
               env: operatorHostEnv(manifest),
               startupProbe: {
@@ -492,7 +523,7 @@ function deploymentDocument(manifest: OperatorManifest, serviceAccountName: stri
               resources,
             },
           ],
-          volumes: [{ name: 'tmp', emptyDir: {} }],
+          volumes,
         },
       },
     },

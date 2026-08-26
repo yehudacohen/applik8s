@@ -123,6 +123,9 @@ export function workflowResources(contract: WorkflowContract, name: string, imag
               ...(gatewayEnabled ? [{
                 name: 'APPLIK8S_WORKFLOW_NAMESPACE',
                 valueFrom: { fieldRef: { fieldPath: 'metadata.namespace' } },
+              }, {
+                name: 'APPLIK8S_WORKFLOW_POD_NAME',
+                valueFrom: { fieldRef: { fieldPath: 'metadata.name' } },
               }] : []),
               ...workflowConnectionEnvironment,
               ...workflowCallableProviderEnvironment(contract),
@@ -182,6 +185,31 @@ export function workflowResources(contract: WorkflowContract, name: string, imag
         roleRef: {
           apiGroup: 'rbac.authorization.k8s.io',
           kind: 'ClusterRole',
+          name: gatewayRbacName,
+        },
+        subjects: [{
+          kind: 'ServiceAccount',
+          name: workerServiceAccount,
+          namespace: contract.namespace,
+        }],
+      },
+      {
+        apiVersion: 'rbac.authorization.k8s.io/v1',
+        kind: 'Role',
+        metadata: { name: gatewayRbacName, namespace: contract.namespace, labels },
+        rules: [{
+          apiGroups: ['coordination.k8s.io'],
+          resources: ['leases'],
+          verbs: ['create', 'get', 'list', 'update', 'patch'],
+        }],
+      },
+      {
+        apiVersion: 'rbac.authorization.k8s.io/v1',
+        kind: 'RoleBinding',
+        metadata: { name: gatewayRbacName, namespace: contract.namespace, labels },
+        roleRef: {
+          apiGroup: 'rbac.authorization.k8s.io',
+          kind: 'Role',
           name: gatewayRbacName,
         },
         subjects: [{

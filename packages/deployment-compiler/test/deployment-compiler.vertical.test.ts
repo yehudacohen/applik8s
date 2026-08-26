@@ -832,6 +832,85 @@ describe("Application deployment compiler", () => {
     });
   });
 
+  it('treats compiler-artifact Kubernetes grants as canonical co-located workload access', () => {
+    const graph = {
+      ...applicationGraph(),
+      metadata: { name: 'guestbook', namespace: 'guestbook' },
+      nodes: [
+        ...applicationGraph().nodes,
+        { id: 'server.web', kind: 'server', name: 'web', routes: [] },
+      ],
+    } as unknown as ApplicationGraph;
+    const image = 'applik8s/web:source';
+    const compiled = compileApplicationDeploymentGraph({
+      ...request(),
+      graph,
+      artifacts: [{
+        id: 'artifact.web',
+        artifactType: 'containerImage',
+        name: 'web',
+        sourceDigest: sourceGraphDigest,
+        sourceDescriptor: { context: './web' },
+        logicalReference: image,
+        executionNodeIds: ['server.web'],
+        credentialProjections: [{
+          target: 'kubernetes',
+          namespace: 'guestbook',
+          name: 'guestbook-context',
+          keys: ['key'],
+        }],
+        kubernetesPermissions: [{
+          apiGroup: 'authentication.k8s.io',
+          resource: 'tokenreviews',
+          scope: 'Cluster',
+          verbs: ['create'],
+        }],
+      }],
+      materializedComposition: {
+        resources: [{
+          apiVersion: 'apps/v1',
+          kind: 'Deployment',
+          metadata: { name: 'web', namespace: 'guestbook' },
+          spec: { template: { metadata: { labels: { app: 'web' } }, spec: {
+            serviceAccountName: 'web',
+            containers: [{ name: 'runtime', image, env: [{
+              name: 'APPLIK8S_CONTEXT_KEY',
+              valueFrom: { secretKeyRef: { name: 'guestbook-context', key: 'key' } },
+            }] }],
+          } } },
+        }, {
+          apiVersion: 'rbac.authorization.k8s.io/v1',
+          kind: 'ClusterRole',
+          metadata: { name: 'web' },
+          rules: [{ apiGroups: ['authentication.k8s.io'], resources: ['tokenreviews'], verbs: ['create'] }],
+        }, {
+          apiVersion: 'rbac.authorization.k8s.io/v1',
+          kind: 'ClusterRoleBinding',
+          metadata: { name: 'web' },
+          roleRef: { apiGroup: 'rbac.authorization.k8s.io', kind: 'ClusterRole', name: 'web' },
+          subjects: [{ kind: 'ServiceAccount', name: 'web', namespace: 'guestbook' }],
+        }],
+        status: {},
+      },
+    });
+    expect(compiled.runtimeAccess.diagnostics).toEqual([]);
+    expect(compiled.runtimeAccess.workloads[0]?.kubernetes?.bindings).toEqual([
+      expect.objectContaining({
+        kind: 'ClusterRole',
+        rules: [{ apiGroups: ['authentication.k8s.io'], resources: ['tokenreviews'], verbs: ['create'] }],
+      }),
+    ]);
+    const artifact = compiled.graph.nodes.find(({ id }) => id === 'artifact.web');
+    expect(artifact?.kind).toBe('artifact');
+    if (artifact?.kind !== 'artifact') throw new Error('Expected web artifact.');
+    expect(artifact.spec.kubernetesPermissions).toEqual([{
+      apiGroup: 'authentication.k8s.io',
+      resource: 'tokenreviews',
+      scope: 'Cluster',
+      verbs: ['create'],
+    }]);
+  });
+
   it("fails closed when a provider has no exact deployment contributor", () => {
     const graph = applicationGraph();
     const provider = graph.nodes[0];

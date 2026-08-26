@@ -95,7 +95,7 @@ describe('v0.5 generated workflow lowering', () => {
       workflowContract(graph, worker, undefined, [], callers),
     );
     expect(source).toContain("sourceAdmission.operation.transport !== 'schedule'");
-    expect(source).toContain('{"namespace":"workflow-system","serviceAccount":"schedule-caller","contracts":["daily.v1"]}');
+    expect(source).toContain('{"namespace":"workflow-system","serviceAccount":"schedule-caller","operator":"scheduled-workflows-web","contracts":["daily.v1"]}');
     expect(source).toContain('daily.v1');
   });
 
@@ -153,7 +153,7 @@ describe('v0.5 generated workflow lowering', () => {
       workflowContract(graph, worker, undefined, [], callers),
     );
     expect(source).toContain(
-      '{"namespace":"workflow-system","serviceAccount":"scheduled-workflows-schedule-control","contracts":["daily.v1"]}',
+      '{"namespace":"workflow-system","serviceAccount":"scheduled-workflows-schedule-control","operator":"scheduled-workflows-schedule-control","contracts":["daily.v1"]}',
     );
     expect(source).not.toContain('private.v1');
   });
@@ -841,7 +841,12 @@ export const workflowProof = platform.composition;
         join(dirname(artifact?.sourcePath ?? ''), 'workflow-worker.generated.ts'),
         'utf8',
       );
+      const metafile = JSON.parse(await readFile(artifact?.metafilePath ?? '', 'utf8')) as EsbuildMetafile;
       expect(source).toContain('HatchetClient');
+      expect(firstMetafileImportPath(
+        metafile,
+        input => input.includes('/node_modules/typekro/'),
+      )).toBeUndefined();
       expect(source).toContain('applik8s-workflow-startup-wait');
       expect(source).toContain('applik8s-workflow-startup-timeout');
       expect(source).toContain('applik8s-workflow-credential-timeout');
@@ -875,7 +880,15 @@ export const workflowProof = platform.composition;
       expect(generatedSource).toContain('admission-required');
       expect(generatedSource).toContain('admission-invalid');
       expect(generatedSource).toContain('admission-transport-invalid');
+      expect(generatedSource).toContain('applik8s.kubernetes-reconcile/v1alpha1');
+      expect(generatedSource).toContain("executionKind: 'reconcile'");
+      expect(generatedSource).toContain(
+        "authenticationMethod: 'kubernetes-service-account-token-review'",
+      );
       expect(generatedSource).toContain('gatewayCallerContracts');
+      expect(generatedSource).toContain(
+        '"operator":"tenant-controller"',
+      );
       expect(generatedSource).toContain(
         "audiences: ['https://kubernetes.default.svc']",
       );
@@ -890,16 +903,16 @@ export const workflowProof = platform.composition;
         'const { idempotencyKey: _parentIdempotencyKey, ...inherited } = parent ?? {}',
       );
       expect(generatedSource).toContain(
-        'childOptions(childInvocationMetadata(base, options))',
+        'const childMetadata = childInvocationMetadata(base, options)',
       );
       expect(generatedSource).toContain(
-        'childOptions(childInvocationMetadata(execution, metadata))',
+        'spawnWorkflowChild(',
       );
       expect(generatedSource).toContain(
         "'applik8s.causal-principal'",
       );
       expect(generatedSource).toContain(
-        'const causalPrincipal = workflowCausalPrincipal(context)',
+        'const causalPrincipal = workflowCausalPrincipal(data)',
       );
       expect(generatedSource).toContain(
         'createApplicationExecutionPrincipalV1',
@@ -959,6 +972,23 @@ export const workflowProof = platform.composition;
         'validateApplicationTelemetryEnvelopeV1',
       );
       expect(generatedSource).toContain(
+        'decodeHatchetWorkflowTransportInput',
+      );
+      expect(generatedSource).toContain(
+        'encodeHatchetWorkflowTransportInput',
+      );
+      expect(generatedSource).toContain(
+        'declarations, admitted.execution);',
+      );
+      expect(generatedSource).toContain('convergeGatewayAdmission(');
+      expect(generatedSource).toContain("'applik8s.dev/provider-run-id'");
+      expect(generatedSource).toContain('const now = new V1MicroTime();');
+      expect(generatedSource).toContain('acquireTime: new V1MicroTime()');
+      expect(generatedSource).toContain('renewTime: new V1MicroTime()');
+      expect(generatedSource).toContain(
+        '[applicationWorkflowProviderAdmissionMetadata]: admissionId',
+      );
+      expect(generatedSource).toContain(
         'closeApplicationTelemetryRuntime()',
       );
       expect(generatedSource).not.toContain(
@@ -980,6 +1010,7 @@ export const workflowProof = platform.composition;
         expect.objectContaining({ apiVersion: 'networking.k8s.io/v1', kind: 'NetworkPolicy' }),
         expect.objectContaining({ apiVersion: 'v1', kind: 'ServiceAccount', metadata: expect.objectContaining({ name: 'hatchet-runtime', namespace: 'workflow-proof' }) }),
         expect.objectContaining({ apiVersion: 'rbac.authorization.k8s.io/v1', kind: 'ClusterRole', rules: [{ apiGroups: ['authentication.k8s.io'], resources: ['tokenreviews'], verbs: ['create'] }] }),
+        expect.objectContaining({ apiVersion: 'rbac.authorization.k8s.io/v1', kind: 'Role', rules: [{ apiGroups: ['coordination.k8s.io'], resources: ['leases'], verbs: ['create', 'get', 'list', 'update', 'patch'] }] }),
         expect.objectContaining({ apiVersion: 'rbac.authorization.k8s.io/v1', kind: 'ClusterRoleBinding' }),
         expect.objectContaining({ apiVersion: 'v1', kind: 'Service', metadata: expect.objectContaining({ name: 'hatchet', namespace: 'workflow-proof' }), spec: expect.objectContaining({ ports: [{ name: 'gateway', port: 8002, targetPort: 'gateway' }] }) }),
         expect.objectContaining({ apiVersion: 'keda.sh/v1alpha1', kind: 'TriggerAuthentication' }),
@@ -1656,3 +1687,38 @@ export const externalRuntime = platform.composition;
     }
   }, 240_000);
 });
+
+interface EsbuildMetafile {
+  readonly inputs?: Readonly<Record<string, {
+    readonly imports?: readonly {
+      readonly path: string;
+      readonly external?: boolean;
+    }[];
+  }>>;
+}
+
+function firstMetafileImportPath(
+  metafile: EsbuildMetafile,
+  matches: (input: string) => boolean,
+): readonly string[] | undefined {
+  const inputs = metafile.inputs ?? {};
+  const entrypoint = Object.keys(inputs).find(input =>
+    input.endsWith('/workflow-worker.generated.ts')
+  );
+  if (!entrypoint) throw new Error('Workflow esbuild metafile did not contain its generated entrypoint.');
+  const pending: Array<readonly string[]> = [[entrypoint]];
+  const visited = new Set<string>();
+  while (pending.length > 0) {
+    const path = pending.shift();
+    const current = path?.at(-1);
+    if (!path || !current || visited.has(current)) continue;
+    visited.add(current);
+    if (matches(current)) return path;
+    for (const imported of inputs[current]?.imports ?? []) {
+      if (!imported.external && inputs[imported.path]) {
+        pending.push([...path, imported.path]);
+      }
+    }
+  }
+  return undefined;
+}

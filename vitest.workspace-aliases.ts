@@ -26,6 +26,8 @@ export function workspaceAliases(): Record<string, string> {
     '@applik8s/applik8s/workflow-runtime-resolvers': fileURLToPath(new URL('./packages/applik8s/src/workflow-runtime-resolvers.ts', import.meta.url)),
     '@applik8s/applik8s/workflow-runtime': fileURLToPath(new URL('./packages/applik8s/src/workflow-runtime.ts', import.meta.url)),
     '@applik8s/applik8s/workflow-gateway-binding': fileURLToPath(new URL('./packages/applik8s/src/workflow-gateway-binding.ts', import.meta.url)),
+    '@applik8s/applik8s/schedule-provider-runtime': fileURLToPath(new URL('./packages/applik8s/src/application-schedule-provider-runtime.ts', import.meta.url)),
+    '@applik8s/applik8s/schedule-execution-runtime': fileURLToPath(new URL('./packages/applik8s/src/application-schedule-execution-runtime.ts', import.meta.url)),
     '@applik8s/applik8s/schedule-runtime-local': fileURLToPath(new URL('./packages/applik8s/src/application-schedule-local-runtime.ts', import.meta.url)),
     '@applik8s/applik8s/schedule-state-runtime': fileURLToPath(new URL('./packages/applik8s/src/application-schedule-state-runtime.ts', import.meta.url)),
     '@applik8s/applik8s/actor-runtime-local': fileURLToPath(new URL('./packages/applik8s/src/application-actor-local-runtime.ts', import.meta.url)),

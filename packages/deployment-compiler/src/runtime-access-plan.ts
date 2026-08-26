@@ -2,8 +2,10 @@
 
 import {
   type ApplicationGraph,
+  type ApplicationGraphFoundationContract,
   type ApplicationProviderGuaranteeManifest,
   type ApplicationProviderNode,
+  type ApplicationRuntimeAccessOperation,
   type ApplicationRuntimeAccessRequirement,
   applicationCanonicalIdentity,
   applicationGraphNodeIdentity,
@@ -42,6 +44,35 @@ export type {
   ApplicationRuntimeAccessWorkloadPlan,
 } from '@applik8s/deployment-contract';
 
+function generatedExecutionContract(
+  graph: ApplicationGraph,
+  foundation: ApplicationGraphFoundationContract,
+  nodeId: string,
+) {
+  const node = graph.nodes.find(({ id }) => id === nodeId);
+  if (!node) return undefined;
+  const nodeIdentity = applicationGraphNodeIdentity({
+    application: graph.metadata.name,
+    nodeKind: node.kind,
+    nodeId: node.id,
+  });
+  const identity = foundation.identities.find((candidate) =>
+    candidate.kind === 'execution-boundary' && candidate.parentId === nodeIdentity.id);
+  const provenance = foundation.provenance.find((candidate) =>
+    candidate.causedBy === nodeIdentity.id);
+  return identity && provenance ? { identity, provenance } : undefined;
+}
+
+function kubernetesOperationForVerb(verb: string): ApplicationRuntimeAccessOperation {
+  if (verb === 'create') return 'kubernetes.create';
+  if (verb === 'delete' || verb === 'deletecollection') return 'kubernetes.delete';
+  if (verb === 'get') return 'kubernetes.get';
+  if (verb === 'list') return 'kubernetes.list';
+  if (verb === 'watch') return 'kubernetes.watch';
+  if (verb === 'patch' || verb === 'update') return 'kubernetes.patch';
+  throw new Error(`Generated artifact declares unsupported Kubernetes verb ${JSON.stringify(verb)}.`);
+}
+
 export interface ApplicationRuntimeAccessWorkloadPlacement {
   readonly workloadIdentity: string;
   readonly artifactIds: readonly string[];
@@ -75,6 +106,16 @@ export interface ApplicationRuntimeAccessCredentialRequirement {
   readonly consumerNodeId: string;
   readonly resourceId: string;
   readonly keys: readonly string[];
+}
+
+/** Compiler-authored Kubernetes access attached to one generated execution artifact. */
+export interface ApplicationRuntimeAccessKubernetesRequirement {
+  readonly consumerNodeId: string;
+  readonly apiGroup: string;
+  readonly resource: string;
+  readonly scope: 'Namespaced' | 'Cluster';
+  readonly namespace?: string;
+  readonly verbs: readonly string[];
 }
 
 /** Pure lowering from source-attributed semantic requirements to exact target grants. */
@@ -111,6 +152,8 @@ export function compileApplicationRuntimeAccessPlan(options: {
   readonly includedExecutionNodeIds?: readonly string[];
   /** Provider/profile-selected credentials required by exact semantic consumers. */
   readonly credentialRequirements?: readonly ApplicationRuntimeAccessCredentialRequirement[];
+  /** Exact Kubernetes API access required by generated runtime code. */
+  readonly kubernetesRequirements?: readonly ApplicationRuntimeAccessKubernetesRequirement[];
   /** Provider-authored execution requirements with canonical identities and provenance. */
   readonly additionalRequirements?: readonly ApplicationRuntimeAccessRequirement[];
 }): ApplicationRuntimeAccessPlan {
@@ -127,33 +170,63 @@ export function compileApplicationRuntimeAccessPlan(options: {
       .filter(({ consumerNodeId }) =>
         !includedExecutionNodeIds || includedExecutionNodeIds.has(consumerNodeId))
       .map((credential) => {
-        const consumerNode = options.graph.nodes.find(({ id }) => id === credential.consumerNodeId);
-        const nodeIdentity = consumerNode
-          ? applicationGraphNodeIdentity({
-              application: options.graph.metadata.name,
-              nodeKind: consumerNode.kind,
-              nodeId: consumerNode.id,
-            })
-          : undefined;
-        const executionIdentity = nodeIdentity
-          ? foundation.identities.find((identity) => identity.kind === 'execution-boundary' && identity.parentId === nodeIdentity.id)
-          : undefined;
-        const sourceRequirement = foundation.runtimeAccess.find(({ consumer }) => consumer.nodeId === credential.consumerNodeId);
-        if (!executionIdentity || !sourceRequirement) {
+        const execution = generatedExecutionContract(
+          options.graph,
+          foundation,
+          credential.consumerNodeId,
+        );
+        if (!execution) {
           throw new Error(`Credential ${credential.resourceId} names non-executable consumer ${credential.consumerNodeId}.`);
         }
         return applicationRuntimeAccessRequirement({
-          consumer: { nodeId: credential.consumerNodeId, executionIdentity: executionIdentity.id },
+          consumer: { nodeId: credential.consumerNodeId, executionIdentity: execution.identity.id },
           target: {
             capabilityId: 'Secret',
             operation: 'secret.read',
             scope: { kind: 'resource', resourceId: credential.resourceId, keys: [...credential.keys].sort() },
           },
           origin: 'provider-required',
-          provenance: sourceRequirement.provenance,
+          provenance: [execution.provenance],
           sensitivity: 'credential',
           enforcement: 'required',
         });
+      }),
+    ...(options.kubernetesRequirements ?? [])
+      .filter(({ consumerNodeId }) =>
+        !includedExecutionNodeIds || includedExecutionNodeIds.has(consumerNodeId))
+      .flatMap((permission) => {
+        const execution = generatedExecutionContract(
+          options.graph,
+          foundation,
+          permission.consumerNodeId,
+        );
+        if (!execution) {
+          throw new Error(
+            `Kubernetes permission ${permission.apiGroup}/${permission.resource} names non-executable consumer ${permission.consumerNodeId}.`,
+          );
+        }
+        return permission.verbs.map((verb) => applicationRuntimeAccessRequirement({
+          consumer: {
+            nodeId: permission.consumerNodeId,
+            executionIdentity: execution.identity.id,
+          },
+          target: {
+            capabilityId: `kubernetes:${permission.apiGroup}/${permission.resource}`,
+            operation: kubernetesOperationForVerb(verb),
+            scope: {
+              kind: 'kubernetes',
+              apiGroup: permission.apiGroup,
+              resource: permission.resource,
+              scope: permission.scope,
+              ...(permission.namespace ? { namespaces: [permission.namespace] } : {}),
+              verbs: [verb],
+            },
+          },
+          origin: 'framework',
+          provenance: [execution.provenance],
+          sensitivity: 'internal',
+          enforcement: 'required',
+        }));
       }),
   ]);
   const diagnostics: ApplicationRuntimeAccessPlanDiagnostic[] = [];

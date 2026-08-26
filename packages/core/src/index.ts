@@ -101,6 +101,10 @@ export {
   canonicalJsonV1Value,
   canonicalJsonVersion,
 } from './canonical-json.js';
+export {
+  usesWorkflowGatewayCapability,
+  workflowGatewayServiceAccountTokenProjection,
+} from './capability.js';
 export type * from './dns.js';
 export type * from './signed-envelope.js';
 export {

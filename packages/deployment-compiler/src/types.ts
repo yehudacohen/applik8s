@@ -6,6 +6,7 @@ import type {
 } from "@applik8s/core";
 import type {
   ApplicationArtifactCredentialProjection,
+  ApplicationArtifactKubernetesPermission,
   ApplicationDeploymentConnectionIdentity,
   ApplicationDeploymentEdge,
   ApplicationDeploymentGraph,
@@ -125,6 +126,8 @@ export interface ApplicationArtifactRequirement {
   readonly executionNodeIds?: readonly string[];
   /** Exact non-secret credential identities mounted by the artifact bootstrap. */
   readonly credentialProjections?: readonly ApplicationArtifactCredentialProjection[];
+  /** Exact Kubernetes API grants required by the generated artifact. */
+  readonly kubernetesPermissions?: readonly ApplicationArtifactKubernetesPermission[];
   readonly logicalReference?: string;
 }
 

@@ -281,7 +281,17 @@ describe('generated handler dispatcher', () => {
           spec: { sourceUrl: 's3://bucket/hero.png' },
         },
         capabilities: { 'applik8s-workflow-media': workflowGateway },
-        runtime: { reconcileId: 'ImageJob-hero' },
+        runtime: {
+          operatorName: 'workflow-gateway-pipeline',
+          reconcileId: 'ImageJob-hero',
+          identityEnvelope: {
+            apiVersion: 'applik8s.guestHostIdentity/v1alpha1',
+            application: 'applik8s://applications/workflow-gateway-pipeline/identity/workflow-gateway-pipeline',
+            operation: 'applik8s://resources/ImageJob/operations/reconcile',
+            execution: 'applik8s://applications/workflow-gateway-pipeline/execution-boundaries/image-job',
+            attempt: 'ImageJob-hero',
+          },
+        },
       }),
       {
         capabilityRequest(requestJson) {
@@ -314,6 +324,30 @@ describe('generated handler dispatcher', () => {
         capabilityName: 'applik8s-workflow-media',
         method: 'POST',
         path: '/v1/workflows/media.process.v1/runs',
+        body: {
+          input: { sourceUrl: 's3://bucket/hero.png' },
+          source: {
+            protocol: 'applik8s.kubernetes-reconcile/v1alpha1',
+            reconcileId: 'ImageJob-hero',
+            event: 'reconcile',
+            resource: {
+              apiVersion: 'media.applik8s.dev/v1alpha1',
+              kind: 'ImageJob',
+              name: 'hero',
+              namespace: 'media',
+              uid: 'uid-hero',
+              generation: 2,
+            },
+            operatorName: 'workflow-gateway-pipeline',
+            identityEnvelope: {
+              apiVersion: 'applik8s.guestHostIdentity/v1alpha1',
+              application: 'applik8s://applications/workflow-gateway-pipeline/identity/workflow-gateway-pipeline',
+              operation: 'applik8s://resources/ImageJob/operations/reconcile',
+              execution: 'applik8s://applications/workflow-gateway-pipeline/execution-boundaries/image-job',
+              attempt: 'ImageJob-hero',
+            },
+          },
+        },
         options: { idempotencyKey: 'uid-hero:2' },
       },
       {

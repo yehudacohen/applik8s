@@ -68,7 +68,11 @@ use tracing_subscriber::EnvFilter;
 const SUPPORTED_HANDLER_ABI: &str = "applik8s.handler/v1alpha1";
 const SUPPORTED_OPERATOR_MANIFEST_VERSION: &str = "applik8s.operator/v1alpha1";
 const KUBERNETES_CONNECTION_PROTOCOL: &str = "applik8s.kubernetes-connection/v1alpha1";
-const SERVICE_ACCOUNT_TOKEN_PATH: &str = "/var/run/secrets/kubernetes.io/serviceaccount/token";
+// Workflow-gateway capabilities use a compiler-owned, audience-bound projected
+// token. The default Kubernetes automount has a cluster-dependent audience and
+// must never be substituted for this private caller credential.
+const WORKFLOW_GATEWAY_TOKEN_PATH: &str =
+    "/var/run/secrets/applik8s/workflow-gateway/token";
 static RECONCILE_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone)]
@@ -6219,7 +6223,7 @@ async fn append_capability_auth_header(
         }
         let token = match service_account_token_resolver {
             Some(resolver) => resolver()?,
-            None => fs::read_to_string(SERVICE_ACCOUNT_TOKEN_PATH).map_err(|error| {
+            None => fs::read_to_string(WORKFLOW_GATEWAY_TOKEN_PATH).map_err(|error| {
                 format!(
                     "Capability {capability_name} could not read the projected service-account token: {error}"
                 )

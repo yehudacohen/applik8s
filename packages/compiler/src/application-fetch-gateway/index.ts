@@ -159,9 +159,14 @@ export function generatedApplicationFetchGatewayModules(
 			);
 		}
 	}
-	const hatchetScheduleBindings = schedulesOnly
-		? []
-		: applicationHatchetScheduleBindings(graph);
+	const hatchetScheduleBindings = applicationHatchetScheduleBindings(graph);
+	const kubernetesScheduleProviderIds = [...scheduleProviders.values()]
+		.filter((provider) =>
+			!provider.config?.qualification
+			&& (provider.implementation === "target-selected"
+				|| provider.implementation === "kubernetes-cronjob-scheduler"))
+		.map(({ id }) => id)
+		.sort();
 	const workflowScheduleTargets = schedules.filter(
 		(schedule): schedule is ApplicationScheduleNode & { readonly target: NonNullable<ApplicationScheduleNode["target"]> } =>
 			schedule.target?.kind === "durableStart",
@@ -1666,7 +1671,8 @@ const awsScheduleRunner = awsScheduleConfiguration
     })
   : undefined;
 void awsScheduleRunner;
-const kubernetesScheduleRuntime = process.env.APPLIK8S_DEPLOYMENT_TARGET === 'kubernetes' && defaultApplicationSchedules.length > 0
+const kubernetesScheduleProviderIds = new Set(${JSON.stringify(kubernetesScheduleProviderIds)});
+const kubernetesScheduleRuntime = process.env.APPLIK8S_DEPLOYMENT_TARGET === 'kubernetes' && kubernetesScheduleProviderIds.size > 0
   ? await createKubernetesApplicationScheduleRuntime({
       applicationId: process.env.APPLIK8S_APPLICATION_NAME ?? ${JSON.stringify(graph.metadata.name)},
       environmentId: process.env.APPLIK8S_ENVIRONMENT_ID ?? process.env.APPLIK8S_NAMESPACE ?? 'default',
@@ -1678,7 +1684,7 @@ const kubernetesScheduleRuntime = process.env.APPLIK8S_DEPLOYMENT_TARGET === 'ku
     })
   : undefined;
 const disposeKubernetesScheduleRuntime = kubernetesScheduleRuntime
-  ? installApplicationScheduleRuntimeResolver((schedulerNodeId) => schedulerNodeId === 'provider.scheduler' ? kubernetesScheduleRuntime : undefined)
+  ? installApplicationScheduleRuntimeResolver((schedulerNodeId) => kubernetesScheduleProviderIds.has(schedulerNodeId) ? kubernetesScheduleRuntime : undefined)
   : undefined;
 void disposeKubernetesScheduleRuntime;
 const hatchetScheduleRuntimeEntries = await Promise.all(${JSON.stringify(hatchetScheduleBindings)}.map(async (binding) => {

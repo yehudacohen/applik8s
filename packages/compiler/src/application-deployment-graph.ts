@@ -1149,6 +1149,8 @@ async function applicationArtifactRequirements(
         entry.executionNodeIds,
         `${name} executionNodeIds`,
       );
+      const credentialProjections = applicationArtifactCredentialProjections(entry, name);
+      const kubernetesPermissions = applicationArtifactKubernetesPermissions(entry, name);
       artifacts.push({
         id: artifactId(artifactClass, name),
         artifactType:
@@ -1168,6 +1170,8 @@ async function applicationArtifactRequirements(
           command: jsonArray(container.command, `${name} command`),
         },
         logicalReference,
+        ...(credentialProjections.length > 0 ? { credentialProjections } : {}),
+        ...(kubernetesPermissions.length > 0 ? { kubernetesPermissions } : {}),
         ...(explicitExecutionNodeIds
           ? {
               ...(semanticNodeId ? { semanticNodeId } : {}),
@@ -1214,6 +1218,51 @@ async function applicationArtifactRequirements(
     ids.add(artifact.id);
   }
   return artifacts.sort((left, right) => left.id.localeCompare(right.id));
+}
+
+function applicationArtifactCredentialProjections(
+  entry: DeploymentJsonObject,
+  artifactName: string,
+): NonNullable<ApplicationArtifactRequirement['credentialProjections']> {
+  return arrayValue(entry.credentialProjections).map((candidate, index) => {
+    const projection = objectValue(
+      candidate,
+      `${artifactName} credential projection ${index}`,
+    );
+    if (projection.target !== 'kubernetes') {
+      throw new Error(`${artifactName} credential projection ${index} must target Kubernetes.`);
+    }
+    return {
+      target: 'kubernetes' as const,
+      namespace: stringValue(projection.namespace, `${artifactName} credential projection namespace`),
+      name: stringValue(projection.name, `${artifactName} credential projection name`),
+      keys: optionalStringArray(projection.keys, `${artifactName} credential projection keys`) ?? [],
+    };
+  });
+}
+
+function applicationArtifactKubernetesPermissions(
+  entry: DeploymentJsonObject,
+  artifactName: string,
+): NonNullable<ApplicationArtifactRequirement['kubernetesPermissions']> {
+  return arrayValue(entry.kubernetesPermissions).map((candidate, index) => {
+    const permission = objectValue(
+      candidate,
+      `${artifactName} Kubernetes permission ${index}`,
+    );
+    const scope = stringValue(permission.scope, `${artifactName} Kubernetes permission scope`);
+    if (scope !== 'Namespaced' && scope !== 'Cluster') {
+      throw new Error(`${artifactName} Kubernetes permission ${index} has invalid scope ${JSON.stringify(scope)}.`);
+    }
+    const namespace = optionalString(permission.namespace);
+    return {
+      apiGroup: stringValue(permission.apiGroup, `${artifactName} Kubernetes permission apiGroup`),
+      resource: stringValue(permission.resource, `${artifactName} Kubernetes permission resource`),
+      scope,
+      ...(namespace ? { namespace } : {}),
+      verbs: optionalStringArray(permission.verbs, `${artifactName} Kubernetes permission verbs`) ?? [],
+    };
+  });
 }
 
 function applicationHostCredentialProjections(

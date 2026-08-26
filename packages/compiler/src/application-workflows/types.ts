@@ -1,4 +1,9 @@
-import type { ApplicationFrameworkCredentialDependency, ApplicationRuntimeEndpointDependency } from '@applik8s/deployment-contract';
+import type {
+  ApplicationArtifactCredentialProjection,
+  ApplicationArtifactKubernetesPermission,
+  ApplicationFrameworkCredentialDependency,
+  ApplicationRuntimeEndpointDependency,
+} from '@applik8s/deployment-contract';
 import type { GeneratedApplicationContainerArtifact } from '../application-containers/index.js';
 
 export interface GeneratedApplicationWorkflowArtifact {
@@ -14,6 +19,8 @@ export interface GeneratedApplicationWorkflowArtifact {
   readonly resources: readonly GeneratedApplicationWorkflowResource[];
   readonly runtimeEndpoints: readonly ApplicationRuntimeEndpointDependency[];
   readonly frameworkCredentials: readonly ApplicationFrameworkCredentialDependency[];
+  readonly credentialProjections: readonly ApplicationArtifactCredentialProjection[];
+  readonly kubernetesPermissions: readonly ApplicationArtifactKubernetesPermission[];
 }
 
 export interface GeneratedApplicationWorkflowResource {

@@ -186,6 +186,16 @@
       "import": "./dist/application-schedule-state-runtime.js",
       "default": "./dist/application-schedule-state-runtime.js"
     },
+    "./schedule-provider-runtime": {
+      "types": "./dist/application-schedule-provider-runtime.d.ts",
+      "import": "./dist/application-schedule-provider-runtime.js",
+      "default": "./dist/application-schedule-provider-runtime.js"
+    },
+    "./schedule-execution-runtime": {
+      "types": "./dist/application-schedule-execution-runtime.d.ts",
+      "import": "./dist/application-schedule-execution-runtime.js",
+      "default": "./dist/application-schedule-execution-runtime.js"
+    },
     "./actor-runtime-local": {
       "types": "./dist/application-actor-local-runtime.d.ts",
       "import": "./dist/application-actor-local-runtime.js",

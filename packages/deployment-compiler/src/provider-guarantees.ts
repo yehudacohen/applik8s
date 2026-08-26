@@ -482,7 +482,13 @@ function scheduleProviderFindings(
         message: `Schedule ${schedule.definition.id} uses calendar timezone ${schedule.definition.timezone}, but the maintained Hatchet cron API accepts no timezone. Select UTC or a timezone-capable provider.`,
       });
     }
-    if (implementation !== 'local-scheduler' && schedule.definition.requirements.precision === 'second') {
+    const exactHatchetOneTime = implementation === 'hatchet-scheduler'
+      && schedule.definition.configuration === 'dynamic'
+      && !schedule.definition.cron
+      && !schedule.definition.every;
+    if (implementation !== 'local-scheduler'
+      && !exactHatchetOneTime
+      && schedule.definition.requirements.precision === 'second') {
       findings.push({
         ...details,
         code: 'SCHEDULE_PRECISION_UNSUPPORTED',

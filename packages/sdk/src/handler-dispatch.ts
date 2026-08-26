@@ -77,7 +77,7 @@ export async function dispatchOperatorHandler(operator: OperatorDefinition, inpu
 
   const reconcileId = input.runtime?.reconcileId ?? 'runtime-reconcile';
   const descriptors = input.capabilities ?? operator.capabilities ?? {};
-  const invocation = await invokeRunnableHandler(registration, input.object, input.event, reconcileId, capabilityClients(descriptors, reconcileId, hostImports), descriptors, { ...operator.resources, ...(operator.reads ?? {}) }, hostImports.kubernetesRead);
+  const invocation = await invokeRunnableHandler(registration, input.object, input.event, reconcileId, capabilityClients(descriptors, reconcileId, hostImports), descriptors, { ...operator.resources, ...(operator.reads ?? {}) }, hostImports.kubernetesRead, input.runtime);
   if (!invocation.ok) {
     throw new Error(invocation.error.message);
   }
@@ -97,7 +97,7 @@ export function dispatchOperatorHandlerSync(operator: OperatorDefinition, inputJ
 
   const reconcileId = input.runtime?.reconcileId ?? 'runtime-reconcile';
   const descriptors = input.capabilities ?? operator.capabilities ?? {};
-  const invocation = invokeRunnableHandlerSync(registration, input.object, input.event, reconcileId, capabilityClients(descriptors, reconcileId, hostImports), descriptors, { ...operator.resources, ...(operator.reads ?? {}) }, hostImports.kubernetesRead);
+  const invocation = invokeRunnableHandlerSync(registration, input.object, input.event, reconcileId, capabilityClients(descriptors, reconcileId, hostImports), descriptors, { ...operator.resources, ...(operator.reads ?? {}) }, hostImports.kubernetesRead, input.runtime);
   if (!invocation.ok) {
     throw new Error(invocation.error.message);
   }
@@ -109,7 +109,24 @@ interface HandlerInputPayload {
   readonly event: HandlerEventType;
   readonly object: AnyKubernetesObject;
   readonly capabilities?: Readonly<Record<string, CapabilityDescriptor>>;
-  readonly runtime?: { readonly reconcileId?: string };
+  readonly runtime?: {
+    readonly operatorName?: string;
+    readonly reconcileId?: string;
+    readonly identityEnvelope?: {
+      readonly apiVersion?: string;
+      readonly application?: string;
+      readonly operation?: string;
+      readonly execution?: string;
+      readonly attempt?: string;
+      readonly causalPrincipalId?: string;
+      readonly telemetry?: {
+        readonly version?: string;
+        readonly traceparent?: string;
+        readonly tracestate?: string;
+        readonly identity?: { readonly attempt?: number };
+      };
+    };
+  };
 }
 
 interface InvocationResult {
@@ -117,9 +134,9 @@ interface InvocationResult {
   readonly plan: NormalizedOperationPlan;
 }
 
-async function invokeRunnableHandler(registration: RunnableHandlerRegistration, object: AnyKubernetesObject, event: HandlerEventType, reconcileId: string, capabilities: CapabilityClientSet, capabilityDescriptors: Readonly<Record<string, CapabilityDescriptor>>, resources: Readonly<Record<string, Pick<AnyResourceDefinition, 'apiVersion' | 'kind' | 'plural' | 'scope'>>>, kubernetesRead?: KubernetesReadImport): Promise<Result<InvocationResult>> {
+async function invokeRunnableHandler(registration: RunnableHandlerRegistration, object: AnyKubernetesObject, event: HandlerEventType, reconcileId: string, capabilities: CapabilityClientSet, capabilityDescriptors: Readonly<Record<string, CapabilityDescriptor>>, resources: Readonly<Record<string, Pick<AnyResourceDefinition, 'apiVersion' | 'kind' | 'plural' | 'scope'>>>, kubernetesRead?: KubernetesReadImport, runtime?: HandlerInputPayload['runtime']): Promise<Result<InvocationResult>> {
   const recorder = createRecorder(toResourceObject(object), { event, reconcileId, capabilities, capabilityDescriptors, resources, ...(kubernetesRead ? { kubernetesRead } : {}) });
-  const restoreWorkflowRuntime = installWorkflowGatewayRuntime(capabilities, object);
+  const restoreWorkflowRuntime = installWorkflowGatewayRuntime(capabilities, object, event, runtime);
   try {
     if (registration.handlerStyle === 'context') {
       const returned = await registration.handler(toResourceObject(object), createContext(recorder, object));
@@ -145,9 +162,9 @@ async function invokeRunnableHandler(registration: RunnableHandlerRegistration, 
   }
 }
 
-function invokeRunnableHandlerSync(registration: RunnableHandlerRegistration, object: AnyKubernetesObject, event: HandlerEventType, reconcileId: string, capabilities: CapabilityClientSet, capabilityDescriptors: Readonly<Record<string, CapabilityDescriptor>>, resources: Readonly<Record<string, Pick<AnyResourceDefinition, 'apiVersion' | 'kind' | 'plural' | 'scope'>>>, kubernetesRead?: KubernetesReadImport): Result<InvocationResult> {
+function invokeRunnableHandlerSync(registration: RunnableHandlerRegistration, object: AnyKubernetesObject, event: HandlerEventType, reconcileId: string, capabilities: CapabilityClientSet, capabilityDescriptors: Readonly<Record<string, CapabilityDescriptor>>, resources: Readonly<Record<string, Pick<AnyResourceDefinition, 'apiVersion' | 'kind' | 'plural' | 'scope'>>>, kubernetesRead?: KubernetesReadImport, runtime?: HandlerInputPayload['runtime']): Result<InvocationResult> {
   const recorder = createRecorder(toResourceObject(object), { event, reconcileId, capabilities, capabilityDescriptors, resources, ...(kubernetesRead ? { kubernetesRead } : {}) });
-  const restoreWorkflowRuntime = installWorkflowGatewayRuntime(capabilities, object);
+  const restoreWorkflowRuntime = installWorkflowGatewayRuntime(capabilities, object, event, runtime);
   try {
     if (registration.handlerStyle === 'context') {
       const returned = registration.handler(toResourceObject(object), createContext(recorder, object));
@@ -207,11 +224,13 @@ interface WorkflowGatewayResultOptions {
 function installWorkflowGatewayRuntime(
   capabilities: CapabilityClientSet,
   object: AnyKubernetesObject,
+  event: HandlerEventType,
+  runtime: HandlerInputPayload['runtime'],
 ): () => void {
-  const runtime = workflowGatewayRuntime(capabilities, object);
-  if (!runtime) return () => undefined;
+  const gatewayRuntime = workflowGatewayRuntime(capabilities, object, event, runtime);
+  if (!gatewayRuntime) return () => undefined;
   const previous = Reflect.get(globalThis, applicationWorkflowRuntimeResolverSymbol);
-  Reflect.set(globalThis, applicationWorkflowRuntimeResolverSymbol, () => runtime);
+  Reflect.set(globalThis, applicationWorkflowRuntimeResolverSymbol, () => gatewayRuntime);
   return () => {
     if (previous === undefined) {
       Reflect.deleteProperty(globalThis, applicationWorkflowRuntimeResolverSymbol);
@@ -224,6 +243,8 @@ function installWorkflowGatewayRuntime(
 function workflowGatewayRuntime(
   capabilities: CapabilityClientSet,
   object: AnyKubernetesObject,
+  event: HandlerEventType,
+  runtime: HandlerInputPayload['runtime'],
 ) {
   const contracts = new Map<string, CapabilityClient>();
   for (const capability of Object.values(capabilities)) {
@@ -293,7 +314,11 @@ function workflowGatewayRuntime(
     }
     const value = await capability.post(
       `/v1/workflows/${encodeURIComponent(contract)}/runs`,
-      { input, metadata },
+      {
+        input,
+        metadata,
+        source: workflowGatewayReconcileSource(object, event, runtime),
+      },
       { idempotencyKey },
     );
     const reference = workflowGatewayReference(value, contract);
@@ -327,6 +352,36 @@ function workflowGatewayRuntime(
       );
     },
   };
+}
+
+function workflowGatewayReconcileSource(
+  object: AnyKubernetesObject,
+  event: HandlerEventType,
+  runtime: HandlerInputPayload['runtime'],
+) {
+  const reconcileId = runtime?.reconcileId;
+  if (!reconcileId?.trim()) {
+    throw new Error('Private workflow admission requires the host-derived reconcile identity.');
+  }
+  return Object.freeze({
+    protocol: 'applik8s.kubernetes-reconcile/v1alpha1',
+    reconcileId,
+    event,
+    resource: Object.freeze({
+      apiVersion: object.apiVersion,
+      kind: object.kind,
+      name: object.metadata.name,
+      ...(object.metadata.namespace ? { namespace: object.metadata.namespace } : {}),
+      ...(object.metadata.uid ? { uid: object.metadata.uid } : {}),
+      ...(object.metadata.generation !== undefined
+        ? { generation: object.metadata.generation }
+        : {}),
+    }),
+    ...(runtime?.operatorName ? { operatorName: runtime.operatorName } : {}),
+    ...(runtime?.identityEnvelope
+      ? { identityEnvelope: Object.freeze({ ...runtime.identityEnvelope }) }
+      : {}),
+  });
 }
 
 function workflowGatewayProviderRun(

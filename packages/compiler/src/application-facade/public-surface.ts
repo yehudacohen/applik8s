@@ -817,7 +817,7 @@ function resolveScheduleStateAuthority(
         clusterName,
         namespace,
         database: graph.metadata.name,
-        ownership: 'application-graph',
+        ownership: 'direct-provisioned',
         lifecycle: { deletionPolicy: 'delete' },
       },
     },

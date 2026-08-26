@@ -102,6 +102,8 @@
       "@applik8s/applik8s/workflow-gateway-binding": ["packages/applik8s/src/workflow-gateway-binding.ts"],
       "@applik8s/applik8s/schedule-runtime-local": ["packages/applik8s/src/application-schedule-local-runtime.ts"],
       "@applik8s/applik8s/schedule-state-runtime": ["packages/applik8s/src/application-schedule-state-runtime.ts"],
+      "@applik8s/applik8s/schedule-provider-runtime": ["packages/applik8s/src/application-schedule-provider-runtime.ts"],
+      "@applik8s/applik8s/schedule-execution-runtime": ["packages/applik8s/src/application-schedule-execution-runtime.ts"],
       "@applik8s/applik8s/actor-runtime-local": ["packages/applik8s/src/application-actor-local-runtime.ts"],
       "@applik8s/applik8s/actor-authority-runtime": ["packages/applik8s/src/application-actor-authority-runtime.ts"],
       "@applik8s/client": ["packages/client/src/index.ts"],

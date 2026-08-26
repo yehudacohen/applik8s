@@ -414,7 +414,7 @@ describe('entrypoint-driven application public surface', () => {
       config: {
         transactionalDatabase: expect.objectContaining({
           clusterName: 'agentic-start-schedule-state',
-          ownership: 'application-graph',
+          ownership: 'direct-provisioned',
         }),
       },
     }));

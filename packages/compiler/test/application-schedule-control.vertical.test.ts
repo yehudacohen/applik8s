@@ -185,6 +185,71 @@ describe('generated workflow-only schedule control', () => {
       kind: 'GeneratedScheduleControlWorker',
     });
 
+    const hatchetGraph = {
+      ...graph,
+      nodes: graph.nodes.map((node) => node.id === 'provider.scheduler'
+        ? {
+            ...node,
+            implementation: 'hatchet-scheduler',
+            config: {
+              scheduler: {
+                kind: 'hatchet-scheduler',
+                workflowEngine: {
+                  kind: 'hatchet',
+                  namespace: 'catalog',
+                  hostPort: 'hatchet-engine.catalog.svc:7070',
+                  apiUrl: 'http://hatchet-api.catalog.svc:8080',
+                  workerTokenSecret: { name: 'hatchet-client-config', namespace: 'catalog' },
+                },
+              },
+            },
+          } as ApplicationGraphNode
+        : node),
+    } satisfies ApplicationGraph;
+    const [hatchetArtifact] = await emitGeneratedApplicationReactive({
+      graph: hatchetGraph,
+      outDir: await mkdtemp(join(tmpdir(), 'applik8s-hatchet-schedule-control-')),
+      entrypoint: import.meta.filename,
+      executionTarget: 'kubernetes',
+    });
+    expect(hatchetArtifact?.resources.map(({ kind }) => kind)).toEqual([
+      'ServiceAccount',
+      'Deployment',
+      'NetworkPolicy',
+      'Service',
+    ]);
+    expect(hatchetArtifact?.kubernetesPermissions).toEqual([]);
+    expect(hatchetArtifact?.credentialProjections).toEqual(expect.arrayContaining([
+      {
+        target: 'kubernetes',
+        namespace: 'catalog',
+        name: 'hatchet-client-config',
+        keys: ['HATCHET_CLIENT_TOKEN'],
+      },
+      {
+        target: 'kubernetes',
+        namespace: 'catalog',
+        name: 'schedule-db-app',
+        keys: ['uri'],
+      },
+    ]));
+    const hatchetDeployment = hatchetArtifact?.resources.find(({ kind }) => kind === 'Deployment');
+    expect(hatchetDeployment).toMatchObject({ spec: { template: { spec: {
+      volumes: expect.arrayContaining([expect.objectContaining({
+        secret: {
+          secretName: 'hatchet-client-config',
+          items: [{ key: 'HATCHET_CLIENT_TOKEN', path: 'token' }],
+        },
+      })]),
+    } } } });
+    const hatchetSource = await readFile(
+      join(dirname(hatchetArtifact?.sourcePath ?? ''), 'gateway.generated.ts'),
+      'utf8',
+    );
+    expect(hatchetSource).toContain('createHatchetApplicationScheduleRuntime');
+    expect(hatchetSource).toContain('const kubernetesScheduleProviderIds = new Set([])');
+    expect(hatchetSource).toContain('kubernetesScheduleProviderIds.has(schedulerNodeId)');
+
     const hosted = await emitGeneratedApplicationReactive({
       graph: {
         ...graph,

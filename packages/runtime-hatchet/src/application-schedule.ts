@@ -16,7 +16,7 @@ import {
   applicationScheduleImmediateInvocationAdmission,
   applicationScheduleOccurrenceId,
   applicationScheduleProjectedDesiredState,
-} from '@applik8s/applik8s';
+} from '@applik8s/applik8s/schedule-provider-runtime';
 import type { ApplicationAdmissionInvocationContextV1 } from '@applik8s/core';
 import {
   canonicalJsonCompatibleV1Policy,

@@ -994,7 +994,7 @@ function clickStackDirectContribution(
               "\"",
               "  deployment:",
               "    defaultConnections: |-",
-              `      [{\"name\":\"Local ClickHouse\",\"host\":\"http://${clickhouseHost}:8123\",\"port\":8123,\"username\":\"${clickhouseUser}\",\"password\":\"`,
+              `      [{"name":"Local ClickHouse","host":"http://${clickhouseHost}:8123","port":8123,"username":"${clickhouseUser}","password":"`,
             ].join("\n"),
           },
           { kind: "value", key: clickhousePasswordKey },
@@ -2427,13 +2427,17 @@ function workflowGeneratedSecretNode(options: {
   readonly name: string;
   readonly secretType?: "Opaque" | "kubernetes.io/basic-auth";
   readonly values: DeploymentJsonObject;
+  /** Application execution nodes that consume this Secret at runtime. */
+  readonly consumers?: readonly string[];
+  readonly runtimeKeys?: readonly string[];
 }): ApplicationExternalProviderDeploymentNode {
   const configuration = {
     namespace: options.namespace,
     name: options.name,
     ...(options.secretType ? { secretType: options.secretType } : {}),
     values: options.values,
-    consumers: [options.provider.id],
+    consumers: options.consumers ?? [],
+    ...(options.runtimeKeys ? { runtimeKeys: options.runtimeKeys } : {}),
   };
   return {
     id: options.id,

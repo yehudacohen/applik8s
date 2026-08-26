@@ -5,7 +5,11 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { gzipSync } from 'node:zlib';
 import type { ApplicationAIAgentNode, ApplicationCallableProviderBinding, ApplicationCallableProviderRuntimeOperation, ApplicationCommandHandlerNode, ApplicationCommandNode, ApplicationGatewayNode, ApplicationGraph, ApplicationHandlerDependencies, ApplicationIdentityReference, ApplicationIndexNode, ApplicationModelNode, ApplicationOperationCatalog, ApplicationProfiledCallbackContract, ApplicationProjectionNode, ApplicationProviderNode, ApplicationQueryNode, ApplicationReactiveDatabaseRuntimeContract, ApplicationSearchIndexPlan, ApplicationSerializedCallbackContract, ApplicationStreamNode, ApplicationStreamProcessorNode, ApplicationSubscriptionNode, ApplicationWorkloadAuthorityEnvelope, JsonObject } from '@applik8s/core';
-import type { ApplicationFrameworkCredentialDependency } from '@applik8s/deployment-contract';
+import type {
+  ApplicationArtifactCredentialProjection,
+  ApplicationArtifactKubernetesPermission,
+  ApplicationFrameworkCredentialDependency,
+} from '@applik8s/deployment-contract';
 import { build } from 'esbuild';
 import ts from 'typescript';
 import {
@@ -31,6 +35,7 @@ import { applicationObjectStorageEnvironment } from '../application-object-stora
 import { applicationGraphHasObservabilityRuntime, generatedApplicationTelemetryImports, generatedApplicationTelemetryRuntimeSource } from '../application-observability-runtime-source.js';
 import { applicationStaticAuthorityManifest, compileApplicationOperationCatalog, compileApplicationWorkloadAuthority } from '../application-operations/index.js';
 import { generatedApplicationProviderOperationValue } from '../application-provider-telemetry-source.js';
+import { applicationHatchetScheduleBindings } from '../application-schedule-hatchet.js';
 import { applik8sWorkspaceSourcePlugin } from '../bundling/index.js';
 
 const DEFAULT_NODE_IMAGE = 'node:22-alpine@sha256:16e22a550f3863206a3f701448c45f7912c6896a62de43add43bb9c86130c3e2';
@@ -65,6 +70,8 @@ export interface GeneratedApplicationReactiveArtifact {
   readonly container: GeneratedApplicationContainerArtifact;
   readonly resources: readonly GeneratedApplicationReactiveResource[];
   readonly frameworkCredentials: readonly ApplicationFrameworkCredentialDependency[];
+  readonly credentialProjections: readonly ApplicationArtifactCredentialProjection[];
+  readonly kubernetesPermissions: readonly ApplicationArtifactKubernetesPermission[];
 }
 
 const DEFAULT_REACTIVE_WORKER_CONTAINERS_PER_POD = 8;
@@ -217,6 +224,13 @@ interface BundleReactiveOptions {
   readonly includeWhen?: string;
   readonly permissions?: readonly GatewayKubernetesPermission[];
   readonly workflowToken?: { readonly secretName: string; readonly key: string };
+  readonly secretVolumes?: readonly {
+    readonly name: string;
+    readonly secretName: string;
+    readonly key: string;
+    readonly mountPath: string;
+    readonly path: string;
+  }[];
   readonly serviceAccountToken?: ReactiveProjectedServiceAccountToken;
   readonly caCertificates?: readonly ReactiveCaCertificate[];
   readonly extraResources?: (
@@ -342,7 +356,16 @@ async function emitScheduleControl(
   const durableWorkflowAccess = graph.nodes.some(
     (node) => node.kind === 'schedule' && node.target?.kind === 'durableStart',
   );
+  const kubernetesScheduleAccess = graph.nodes.some((node) => {
+    if (node.kind !== 'schedule') return false;
+    const provider = graph.nodes.find((candidate) => candidate.id === node.scheduler.nodeId);
+    return provider?.kind === 'provider'
+      && !provider.config?.qualification
+      && (provider.implementation === 'target-selected'
+        || provider.implementation === 'kubernetes-cronjob-scheduler');
+  });
   const permissions: readonly GatewayKubernetesPermission[] = executionTarget === 'kubernetes'
+    && kubernetesScheduleAccess
     ? [{
         apiGroup: 'batch',
         resource: 'cronjobs',
@@ -351,6 +374,14 @@ async function emitScheduleControl(
         verbs: ['create', 'delete', 'get', 'list', 'patch', 'update', 'watch'],
       }]
     : [];
+  const hatchetScheduleBindings = applicationHatchetScheduleBindings(graph);
+  for (const binding of hatchetScheduleBindings) {
+    if (binding.namespace !== namespace) {
+      throw new Error(
+        `Schedule-control Hatchet Scheduler ${binding.providerId} is in ${binding.namespace}, but the generated process runs in ${namespace}.`,
+      );
+    }
+  }
   return bundleReactive({
     graphName: graph.metadata.name,
     name,
@@ -380,8 +411,20 @@ async function emitScheduleControl(
       },
       ...applicationScheduleDatabaseEnvironment(graph, namespace),
       ...applicationWorkflowScheduleEnvironment(graph),
+      ...hatchetScheduleBindings.flatMap((binding) => [
+        { name: binding.hostPortEnvironment, value: binding.hostPort },
+        { name: binding.apiUrlEnvironment, value: binding.apiUrl },
+        { name: binding.tlsEnvironment, value: binding.tlsStrategy },
+      ]),
     ],
     permissions,
+    secretVolumes: hatchetScheduleBindings.map((binding) => ({
+      name: binding.tokenMountName,
+      secretName: binding.workerTokenSecret,
+      key: binding.tokenKey,
+      mountPath: binding.tokenMountPath,
+      path: 'token',
+    })),
     ...(durableWorkflowAccess
       ? {
           serviceAccountToken: {
@@ -393,7 +436,7 @@ async function emitScheduleControl(
           },
         }
       : {}),
-    ...(executionTarget === 'kubernetes'
+    ...(executionTarget === 'kubernetes' && kubernetesScheduleAccess
       ? {
           extraResources: (image) => applicationKubernetesFixedScheduleResources({
             graph,
@@ -1361,7 +1404,58 @@ async function bundleReactive(options: BundleReactiveOptions): Promise<Generated
   await writeFile(manifestPath, `${JSON.stringify({ apiVersion: 'applik8s.reactive/v1alpha1', kind: manifestKind, metadata: { name: options.name }, spec: { graph: options.graphName, digest, sizeBytes, distribution: 'ociImage', image: container.image, baseImage: container.baseImage, container, namespace: options.namespace, resources: resources.map((resource) => ({ apiVersion: resource.apiVersion, kind: resource.kind, metadata: resource.metadata })) } }, null, 2)}\n`);
   await writeFile(metafilePath, `${JSON.stringify(result.metafile, null, 2)}\n`);
   const frameworkCredentials = applicationFrameworkCredentialDependencies(source);
-  return { name: options.name, nodeId: options.nodeId, kind: options.kind, sourcePath, sourceMapPath, manifestPath, metafilePath, digest, sizeBytes, container, resources, frameworkCredentials };
+  const credentialProjections = reactiveCredentialProjections(options);
+  const kubernetesPermissions = (options.permissions ?? []).map((permission) => ({
+    apiGroup: permission.apiGroup,
+    resource: permission.resource,
+    scope: permission.scope,
+    ...(permission.namespace ? { namespace: permission.namespace } : {}),
+    verbs: permission.verbs ?? ['get', 'list', 'watch'],
+  }));
+  return {
+    name: options.name,
+    nodeId: options.nodeId,
+    kind: options.kind,
+    sourcePath,
+    sourceMapPath,
+    manifestPath,
+    metafilePath,
+    digest,
+    sizeBytes,
+    container,
+    resources,
+    frameworkCredentials,
+    credentialProjections,
+    kubernetesPermissions,
+  };
+}
+
+function reactiveCredentialProjections(
+  options: BundleReactiveOptions,
+): readonly ApplicationArtifactCredentialProjection[] {
+  const projections = new Map<string, Set<string>>();
+  const add = (name: string, key: string) => {
+    const keys = projections.get(name) ?? new Set<string>();
+    keys.add(key);
+    projections.set(name, keys);
+  };
+  for (const entry of options.env) {
+    const secret = objectConfig(objectConfig(entry.valueFrom).secretKeyRef);
+    const name = stringConfig(secret.name);
+    const key = stringConfig(secret.key);
+    if (name && key) add(name, key);
+  }
+  if (options.workflowToken) add(options.workflowToken.secretName, options.workflowToken.key);
+  for (const volume of options.secretVolumes ?? []) add(volume.secretName, volume.key);
+  for (const certificate of options.caCertificates ?? []) add(certificate.name, certificate.key);
+  return [...projections.entries()]
+    .map(([name, keys]) => ({
+      target: 'kubernetes' as const,
+      namespace: options.namespace,
+      name,
+      keys: [...keys].sort(),
+    }))
+    .sort((left, right) => left.name.localeCompare(right.name));
 }
 
 function generatedGatewaySource(
@@ -5340,6 +5434,11 @@ function reactiveResources(options: BundleReactiveOptions, image: string, digest
           readOnly: true,
         }]
       : []),
+    ...(options.secretVolumes ?? []).map((volume) => ({
+      name: volume.name,
+      mountPath: volume.mountPath,
+      readOnly: true,
+    })),
     ...(certificate && caVolumeName
       ? [{ name: caVolumeName, mountPath: '/var/run/secrets/applik8s/search-ca', readOnly: true }]
       : []),
@@ -5363,6 +5462,13 @@ function reactiveResources(options: BundleReactiveOptions, image: string, digest
           },
         }]
       : []),
+    ...(options.secretVolumes ?? []).map((volume) => ({
+      name: volume.name,
+      secret: {
+        secretName: volume.secretName,
+        items: [{ key: volume.key, path: volume.path }],
+      },
+    })),
     ...(certificate && caVolumeName
       ? [{
           name: caVolumeName,

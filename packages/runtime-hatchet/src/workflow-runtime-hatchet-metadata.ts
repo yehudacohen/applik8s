@@ -1,7 +1,8 @@
 import {
-  applicationWorkflowCausalPrincipalMetadata,
-  applicationWorkflowTelemetryMetadata,
   type ApplicationWorkflowInvocationMetadata,
+  applicationWorkflowCausalPrincipalMetadata,
+  applicationWorkflowProviderAdmissionMetadata,
+  applicationWorkflowTelemetryMetadata,
 } from '@applik8s/applik8s/workflow-runtime';
 import { validateApplicationTelemetryEnvelopeV1 } from '@applik8s/core';
 import { Priority } from '@hatchet-dev/typescript-sdk/v1/index.js';
@@ -11,7 +12,6 @@ export function hatchetRunOptions(
 ): {
   readonly additionalMetadata?: Record<string, string>;
   readonly priority?: Priority;
-  readonly childKey?: string;
 } {
   const additionalMetadata = applicationMetadata(metadata);
   const priority = metadata?.priority === 'high'
@@ -24,7 +24,6 @@ export function hatchetRunOptions(
   return {
     ...(Object.keys(additionalMetadata).length > 0 ? { additionalMetadata } : {}),
     ...(priority ? { priority } : {}),
-    ...(metadata?.idempotencyKey ? { childKey: metadata.idempotencyKey } : {}),
   };
 }
 
@@ -71,6 +70,9 @@ export function applicationMetadata(
       'applik8s.trusted-context': trustedContext,
       'applik8s.causal-principal': serializedCausalPrincipal,
       'applik8s.telemetry': serializedTelemetry,
+      'applik8s.admission-id': metadata?.[
+        applicationWorkflowProviderAdmissionMetadata
+      ],
     }).filter(
       (entry): entry is [string, string] =>
         typeof entry[1] === 'string' && entry[1].length > 0,

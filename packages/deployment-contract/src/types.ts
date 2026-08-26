@@ -164,6 +164,8 @@ export interface ApplicationArtifactNodeSpec extends DeploymentJsonObject {
   readonly executionNodeIds?: readonly string[];
   /** Exact non-secret Kubernetes credential identities mounted by this artifact. */
   readonly credentialProjections?: readonly ApplicationArtifactCredentialProjection[];
+  /** Exact Kubernetes API grants required by code in this artifact. */
+  readonly kubernetesPermissions?: readonly ApplicationArtifactKubernetesPermission[];
 }
 
 export interface ApplicationArtifactCredentialProjection extends DeploymentJsonObject {
@@ -171,6 +173,14 @@ export interface ApplicationArtifactCredentialProjection extends DeploymentJsonO
   readonly namespace: string;
   readonly name: string;
   readonly keys: readonly string[];
+}
+
+export interface ApplicationArtifactKubernetesPermission extends DeploymentJsonObject {
+  readonly apiGroup: string;
+  readonly resource: string;
+  readonly scope: "Namespaced" | "Cluster";
+  readonly namespace?: string;
+  readonly verbs: readonly string[];
 }
 
 export interface ApplicationExternalProviderNodeSpec extends DeploymentJsonObject {

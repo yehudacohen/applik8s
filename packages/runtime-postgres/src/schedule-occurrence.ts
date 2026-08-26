@@ -1,13 +1,13 @@
 // typecast-file-boundary: PostgreSQL JSON receipts are validated by the schedule contract before they are returned.
 import { randomUUID } from 'node:crypto';
+import { executeApplicationScheduleAdmission } from '@applik8s/applik8s/schedule-execution-runtime';
 import {
   type ApplicationScheduleAdmission,
   type ApplicationScheduleAdmissionRunner,
   type ApplicationScheduleHandle,
   type ApplicationScheduleOccurrenceReceipt,
   applicationScheduleOccurrenceId,
-  executeApplicationScheduleAdmission,
-} from '@applik8s/applik8s';
+} from '@applik8s/applik8s/schedule-provider-runtime';
 import postgres, { type Sql } from 'postgres';
 
 export interface PostgresScheduleAdmissionAuthorityOptions<TInput extends object, TResult> {

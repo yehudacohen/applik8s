@@ -13,6 +13,29 @@ export type CapabilityResponsePayload<TResponse = CapabilityPayload> =
   | { readonly ok: false; readonly error: Applik8sError };
 export interface CapabilityHost { request<TResponse = CapabilityPayload, TBody = CapabilityPayload>(request: CapabilityRequestPayload<TBody>): Promise<CapabilityResponsePayload<TResponse>>; }
 export interface CapabilityDescriptor { readonly name: string; readonly kind: CapabilityKind; readonly auth?: CapabilityAuth; readonly endpoint?: string; readonly permissions?: readonly PermissionRule[]; readonly kubernetesConnection?: KubernetesConnectionCapability; readonly workflowGateway?: WorkflowGatewayCapability; readonly policy?: CapabilityPolicy; readonly execution?: CapabilityExecutionPolicy; readonly sensitive?: boolean; }
+
+/**
+ * Canonical compiler/adapter contract for the private operator-to-workflow
+ * caller credential. It is deliberately separate from Kubernetes' default
+ * automount because that token's audience is cluster-dependent.
+ */
+export const workflowGatewayServiceAccountTokenProjection = Object.freeze({
+  name: 'workflow-gateway-token',
+  mountPath: '/var/run/secrets/applik8s/workflow-gateway',
+  filePath: '/var/run/secrets/applik8s/workflow-gateway/token',
+  path: 'token',
+  audience: 'https://kubernetes.default.svc',
+  expirationSeconds: 3_600,
+  defaultMode: 0o400,
+} as const);
+
+export function usesWorkflowGatewayCapability(
+  capabilities: Readonly<Record<string, CapabilityDescriptor>> | undefined,
+): boolean {
+  return Object.values(capabilities ?? {}).some(
+    (descriptor) => descriptor.workflowGateway?.protocol === 'applik8s.workflow-gateway/v1alpha1',
+  );
+}
 export interface KubernetesConnectionCapabilityDescriptor extends CapabilityDescriptor { readonly kind: 'kubernetes'; readonly kubernetesConnection: KubernetesConnectionCapability; readonly execution: CapabilityExecutionPolicy & { readonly protocol: 'applik8s.kubernetes-connection/v1alpha1' }; }
 export type CapabilityAuth =
   | { readonly type: 'secretRef'; readonly secretRef: SecretRef }

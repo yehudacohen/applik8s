@@ -5,15 +5,15 @@ import { StructuredGeneration } from '@applik8s/applik8s/structured-generation';
 import { installApplicationInvocationAdmissionResolver } from '@applik8s/client';
 import {
   applicationAdmissionInvocationView,
-  createApplicationTelemetryEnvelopeV1,
   createApplicationAdmissionContextV1,
+  createApplicationTelemetryEnvelopeV1,
   validateApplicationAdmissionContextV1WithoutReceipt,
   validateApplicationGraphStructure,
 } from '@applik8s/core';
-import { applicationWorkflowTelemetryMetadata } from '../src/workflow-runtime.js';
 import { pgTable, text } from 'drizzle-orm/pg-core';
 import { describe, expect, it } from 'vitest';
 import { testApplicationAdmission } from '../../../test-support/application-principal.js';
+import { applicationWorkflowTelemetryMetadata } from '../src/workflow-runtime.js';
 
 const ProvisionTenant = workflow('tenant.provision.v1', {
   input: type({ tenantId: 'string', requestId: 'string' }),
@@ -424,6 +424,9 @@ describe('v0.5 durable task and workflow contracts', () => {
       const started = await provision.start({
         tenantId: 'tenant-a',
         requestId: 'request-2',
+      }, {
+        correlationId: 'correlation-2',
+        causationId: 'cause-2',
       });
       expect(started.reference).toEqual({
         provider: 'workflow',
@@ -446,7 +449,11 @@ describe('v0.5 durable task and workflow contracts', () => {
       }), expect.objectContaining({
         operation: 'start',
         contract: 'tenant.provision.v1',
-        metadata: expect.objectContaining({ idempotencyKey: 'request-2' }),
+        metadata: expect.objectContaining({
+          idempotencyKey: 'request-2',
+          correlationId: 'correlation-2',
+          causationId: 'cause-2',
+        }),
       })]);
       for (const call of calls) {
         expect(Reflect.get(Reflect.get(call as object, 'metadata'), applicationWorkflowTelemetryMetadata)).toEqual(telemetry);

@@ -136,6 +136,25 @@ export function compileApplicationDeploymentGraph(
         keys: [...projection.keys].sort(),
       })));
   });
+  const artifactKubernetesRequirements = request.artifacts.flatMap((artifact) => {
+    const permissions = artifact.kubernetesPermissions ?? [];
+    if (permissions.length === 0) return [];
+    const consumers = artifact.executionNodeIds
+      ?? (artifact.semanticNodeId ? [artifact.semanticNodeId] : []);
+    if (consumers.length === 0) {
+      throw new Error(
+        `Artifact ${artifact.id} declares Kubernetes permissions without an executable semantic placement.`,
+      );
+    }
+    return permissions.flatMap((permission) => consumers.map((consumerNodeId) => ({
+      consumerNodeId,
+      apiGroup: permission.apiGroup,
+      resource: permission.resource,
+      scope: permission.scope,
+      ...(permission.namespace ? { namespace: permission.namespace } : {}),
+      verbs: [...permission.verbs].sort(),
+    })));
+  });
   const runtimeAccessTargets = runtimeAccessTargetResources(contributions);
   const runtimeAccess = compileApplicationRuntimeAccessPlan({
     graph: request.graph,
@@ -170,6 +189,7 @@ export function compileApplicationDeploymentGraph(
         }))),
       ...artifactCredentialRequirements,
     ],
+    kubernetesRequirements: artifactKubernetesRequirements,
     additionalRequirements: contributions.flatMap((contribution) =>
       contribution.runtimeAccessRequirements ?? []),
     workloadPlacements: mergeRuntimeAccessWorkloadPlacements([
@@ -1177,6 +1197,19 @@ function artifactNode(
                   `${left.target}/${left.namespace}/${left.name}`,
                   `${right.target}/${right.namespace}/${right.name}`,
                 )),
+        }
+        : {}),
+      ...(artifact.kubernetesPermissions?.length
+        ? {
+            kubernetesPermissions: artifact.kubernetesPermissions
+              .map((permission) => ({
+                ...permission,
+                verbs: [...permission.verbs].sort(compareStrings),
+              }))
+              .sort((left, right) => compareStrings(
+                `${left.scope}/${left.namespace ?? ''}/${left.apiGroup}/${left.resource}/${left.verbs.join(',')}`,
+                `${right.scope}/${right.namespace ?? ''}/${right.apiGroup}/${right.resource}/${right.verbs.join(',')}`,
+              )),
           }
         : {}),
       sourceDescriptor: {

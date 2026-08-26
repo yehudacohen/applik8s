@@ -11,6 +11,7 @@ import {
   boundedHatchetOperation,
   defaultHatchetOperationTimeoutMs,
 } from './workflow-runtime-hatchet-operation.js';
+import { encodeHatchetWorkflowTransportInput } from './workflow-runtime-hatchet-transport.js';
 import {
   boundedCronExpression,
   boundedJsonObject,
@@ -118,7 +119,7 @@ export async function reconcileHatchetWorkflowSchedule<TInput extends object>(
       client.cron.create(contract, {
         name: id,
         expression,
-        input: encodedInput,
+        input: encodeHatchetWorkflowTransportInput(encodedInput, metadata),
         additionalMetadata: {
           ...applicationMetadata(metadata),
           [scheduleRevisionKey]: revision,

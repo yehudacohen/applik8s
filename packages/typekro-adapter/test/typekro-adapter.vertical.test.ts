@@ -1134,6 +1134,80 @@ describe('TypeKro adapter operation targets', () => {
     }
   });
 
+  it('projects the private workflow-gateway token through resolved TypeKro operator installs', () => {
+    const { operator: imagePipelineDefinition, manifest } = imageOperatorFixture();
+    const imagePipeline = sdk.operator({
+      name: imagePipelineDefinition.name,
+      resources: imagePipelineDefinition.resources,
+      handlers: imagePipelineDefinition.handlers,
+      ...(imagePipelineDefinition.deployment ? { deployment: imagePipelineDefinition.deployment } : {}),
+    });
+    const workflowManifest: OperatorManifest = {
+      ...manifest,
+      spec: {
+        ...manifest.spec,
+        capabilities: {
+          workflow: {
+            ...sdk.external.http({ baseUrl: 'http://workflow-worker.media-system.svc:8002', auth: 'none' }),
+            auth: { type: 'serviceAccount' },
+            workflowGateway: {
+              protocol: 'applik8s.workflow-gateway/v1alpha1',
+              worker: 'workflow-worker',
+              contracts: ['image.process.v1'],
+              caller: {
+                operator: imagePipelineDefinition.name,
+                namespace: 'media-system',
+                serviceAccount: `${imagePipelineDefinition.name}-controller`,
+              },
+            },
+          },
+        },
+      },
+    };
+    const composition = typeKro.kubernetesComposition({
+      name: 'workflow-caller-stack',
+      apiVersion: 'media.applik8s.dev/v1alpha1',
+      kind: 'WorkflowCallerStack',
+      spec: arkType({ namespace: 'string' }),
+      status: arkType({ ready: 'boolean' }),
+    }, (spec) => {
+      const pipeline = imagePipeline({ namespace: spec.namespace, replicas: 1 });
+      return { ready: pipeline.status.ready === true };
+    });
+
+    const resolved = composition.resolveOperatorInstalls({ manifests: [workflowManifest] });
+
+    expect(resolved.ok).toBe(true);
+    if (!resolved.ok) throw new Error(resolved.error.message);
+    const deployment = resolved.value.resources.find((resource) => resource.kind === 'Deployment' && resource.metadata.name === imagePipelineDefinition.name);
+    const deploymentSpec = deployment?.spec as {
+      readonly template?: {
+        readonly spec?: {
+          readonly containers?: readonly OperatorContainerProjection[];
+          readonly volumes?: readonly JsonObject[];
+        };
+      };
+    } | undefined;
+    expect(deploymentSpec?.template?.spec?.containers?.[0]?.volumeMounts).toContainEqual({
+      name: 'workflow-gateway-token',
+      mountPath: '/var/run/secrets/applik8s/workflow-gateway',
+      readOnly: true,
+    });
+    expect(deploymentSpec?.template?.spec?.volumes).toContainEqual({
+      name: 'workflow-gateway-token',
+      projected: {
+        defaultMode: 0o400,
+        sources: [{
+          serviceAccountToken: {
+            path: 'token',
+            expirationSeconds: 3_600,
+            audience: 'https://kubernetes.default.svc',
+          },
+        }],
+      },
+    });
+  });
+
   it('passes generated CRDs as KRO prerequisites for resolved operator installs', () => {
     const { operator: imagePipelineDefinition, manifest } = imageOperatorFixture();
     const imagePipeline = sdk.operator({

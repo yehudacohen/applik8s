@@ -21,6 +21,11 @@ export const applicationWorkflowTelemetryMetadata = Symbol.for(
   '@applik8s/workflow-telemetry',
 );
 
+/** Framework-only provider admission identity used to adopt a durable root run. */
+export const applicationWorkflowProviderAdmissionMetadata = Symbol.for(
+  '@applik8s/workflow-provider-admission',
+);
+
 export interface ApplicationWorkflowInvocationMetadata {
   readonly idempotencyKey?: string;
   readonly tenant?: string;
@@ -40,6 +45,8 @@ export interface ApplicationWorkflowInvocationMetadata {
   /** @internal Framework-owned producer context for durable asynchronous linkage. */
   readonly [applicationWorkflowTelemetryMetadata]?:
     ApplicationTelemetryEnvelopeV1;
+  /** @internal Provider-private durable admission identity; application input cannot set it. */
+  readonly [applicationWorkflowProviderAdmissionMetadata]?: string;
 }
 
 /** @internal Attaches admitted causal attribution without exposing a public option. */

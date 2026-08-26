@@ -61,6 +61,70 @@ const imageStatusSchema: JsonSchemaSource<ImageStatus> = {
 };
 
 describe('Kubernetes YAML generation', () => {
+  it('projects an audience-bound token for private workflow-gateway capabilities', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'applik8s-workflow-token-'));
+    try {
+      const Work = sdk.crd<ImageSpec, ImageStatus>({
+        apiVersion: 'media.applik8s.dev/v1alpha1',
+        kind: 'Work',
+        spec: imageSpecSchema,
+        status: imageStatusSchema,
+      });
+      const operator = sdk.operator({
+        name: 'workflow-caller',
+        deployment: { namespace: 'media' },
+        resources: { Work },
+        capabilities: {
+          workflow: {
+            ...sdk.external.http({ baseUrl: 'http://workflow-worker.media.svc:8002', auth: 'none' }),
+            auth: { type: 'serviceAccount' },
+            workflowGateway: {
+              protocol: 'applik8s.workflow-gateway/v1alpha1',
+              worker: 'workflow-worker',
+              contracts: ['work.process.v1'],
+              caller: {
+                operator: 'workflow-caller',
+                namespace: 'media',
+                serviceAccount: 'workflow-caller-controller',
+              },
+            },
+          },
+        },
+        handlers: [],
+      });
+      const yaml = await emitOperatorKubernetesYaml({
+        manifest: await buildTestManifest(dir, operator.definition),
+        operator: operator.definition,
+        outDir: join(dir, 'kubernetes'),
+      });
+
+      expect(yaml.ok).toBe(true);
+      if (!yaml.ok) return;
+      const documents = await Promise.all(yaml.value.paths.map(async (path) => parse(await readFile(path, 'utf8'))));
+      const deployment = documents.find((document) => document.kind === 'Deployment');
+      expect(deployment?.spec.template.spec.containers[0].volumeMounts).toContainEqual({
+        name: 'workflow-gateway-token',
+        mountPath: '/var/run/secrets/applik8s/workflow-gateway',
+        readOnly: true,
+      });
+      expect(deployment?.spec.template.spec.volumes).toContainEqual({
+        name: 'workflow-gateway-token',
+        projected: {
+          defaultMode: 0o400,
+          sources: [{
+            serviceAccountToken: {
+              path: 'token',
+              expirationSeconds: 3_600,
+              audience: 'https://kubernetes.default.svc',
+            },
+          }],
+        },
+      });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it('atomically replaces prior output so obsolete RBAC files cannot survive recompilation', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'applik8s-atomic-yaml-'));
     const outDir = join(dir, 'kubernetes');

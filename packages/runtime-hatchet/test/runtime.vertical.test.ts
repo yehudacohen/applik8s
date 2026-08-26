@@ -2,14 +2,42 @@
 import { ApplicationDurableError, ApplicationWorkflowObservationError } from '@applik8s/applik8s';
 import {
   applicationWorkflowCausalPrincipalMetadata,
+  applicationWorkflowProviderAdmissionMetadata,
   applicationWorkflowTelemetryMetadata,
 } from '@applik8s/applik8s/workflow-runtime';
 import { createApplicationTelemetryEnvelopeV1 } from '@applik8s/core';
-import { createHatchetWorkflowRuntimeFromClient, createHatchetWorkflowRuntimeFromClientFactory, durableErrorFromMessage, observeHatchetWorkflowRun, reconcileHatchetWorkflowSchedule, waitForHatchetResult } from '@applik8s/runtime-hatchet';
+import { createHatchetWorkflowRuntimeFromClient, createHatchetWorkflowRuntimeFromClientFactory, decodeHatchetWorkflowTransportInput, durableErrorFromMessage, encodeHatchetWorkflowTransportInput, observeHatchetWorkflowRun, reconcileHatchetWorkflowSchedule, waitForHatchetResult } from '@applik8s/runtime-hatchet';
 import { describe, expect, it, vi } from 'vitest';
 import { applicationMetadata } from '../src/workflow-runtime-hatchet-metadata.js';
 
 describe('Hatchet workflow result observation', () => {
+  it('carries provider metadata inside the durable input and removes it before application validation', () => {
+    const encoded = encodeHatchetWorkflowTransportInput(
+      { tenantId: 'tenant-1' },
+      {
+        correlationId: 'correlation-1',
+        causationId: 'cause-1',
+        [applicationWorkflowProviderAdmissionMetadata]: 'admission-1',
+      },
+    );
+    expect(decodeHatchetWorkflowTransportInput(encoded)).toEqual({
+      input: { tenantId: 'tenant-1' },
+      metadata: {
+        'applik8s.correlation-id': 'correlation-1',
+        'applik8s.causation-id': 'cause-1',
+        'applik8s.admission-id': 'admission-1',
+      },
+    });
+    expect(decodeHatchetWorkflowTransportInput({ tenantId: 'legacy' })).toEqual({
+      input: { tenantId: 'legacy' },
+      metadata: {},
+    });
+    expect(() => decodeHatchetWorkflowTransportInput({
+      __applik8sWorkflow: { protocol: 'wrong', metadata: {} },
+      input: {},
+    })).toThrow(/input-invalid/);
+  });
+
   it('serializes the canonical producer carrier into bounded durable metadata', () => {
     const telemetry = workflowTelemetry();
     expect(applicationMetadata({
@@ -209,10 +237,8 @@ describe('Hatchet recurring schedule convergence', () => {
 });
 
 describe('Hatchet provider credential boundary', () => {
-  it('reattaches after a lost start response without admitting a second effect', async () => {
-    const admitted = new Map<string, string>();
-    let effects = 0;
-    let loseFirstResponse = true;
+  it('does not misrepresent a root idempotency key as Hatchet child identity', async () => {
+    let runs = 0;
     const client = {
       runNoWait: vi.fn(async (
         _contract: string,
@@ -222,21 +248,9 @@ describe('Hatchet provider credential boundary', () => {
           readonly additionalMetadata?: Readonly<Record<string, string>>;
         },
       ) => {
-        const childKey = options?.childKey;
-        if (!childKey) throw new Error('missing child key');
-        let runId = admitted.get(childKey);
-        if (!runId) {
-          effects += 1;
-          runId = `run-${effects}`;
-          admitted.set(childKey, runId);
-        }
-        if (loseFirstResponse) {
-          loseFirstResponse = false;
-          throw Object.assign(new Error('response lost after admission'), {
-            response: { status: 503 },
-          });
-        }
-        return { runId };
+        if (options?.childKey) throw new Error('root start used child-only identity');
+        runs += 1;
+        return { runId: `run-${runs}` };
       }),
       runs: { get: vi.fn(), cancel: vi.fn(async () => undefined) },
     };
@@ -247,29 +261,25 @@ describe('Hatchet provider credential boundary', () => {
       [applicationWorkflowTelemetryMetadata]: workflowTelemetry(),
     };
 
-    await expect(
-      runtime.start(
-        'tenant.provision.v1',
-        { tenantId: 'tenant-1' },
-        metadata,
-      ),
-    ).rejects.toMatchObject({ name: 'HatchetProviderError', status: 503 });
-    const reattached = await runtime.start(
+    const admitted = await runtime.start(
       'tenant.provision.v1',
       { tenantId: 'tenant-1' },
       metadata,
     );
-    expect(reattached).toMatchObject({ id: 'run-1' });
-    await reattached.cancel();
-    await reattached.cancel();
+    expect(admitted).toMatchObject({ id: 'run-1' });
+    await admitted.cancel();
+    await admitted.cancel();
 
-    expect(effects).toBe(1);
-    expect(client.runNoWait).toHaveBeenCalledTimes(2);
-    expect(client.runNoWait.mock.calls.map((call) => call[2]?.childKey))
-      .toEqual([metadata.idempotencyKey, metadata.idempotencyKey]);
+    expect(runs).toBe(1);
+    expect(client.runNoWait).toHaveBeenCalledTimes(1);
+    expect(client.runNoWait.mock.calls[0]?.[2]?.childKey).toBeUndefined();
     expect(client.runNoWait.mock.calls.map((call) => call[2]?.additionalMetadata?.['applik8s.telemetry']))
       .toEqual([
         JSON.stringify(metadata[applicationWorkflowTelemetryMetadata]),
+      ]);
+    expect(client.runNoWait.mock.calls.map((call) =>
+      decodeHatchetWorkflowTransportInput(call[1]).metadata['applik8s.telemetry']))
+      .toEqual([
         JSON.stringify(metadata[applicationWorkflowTelemetryMetadata]),
       ]);
     expect(client.runs.cancel).toHaveBeenCalledTimes(2);

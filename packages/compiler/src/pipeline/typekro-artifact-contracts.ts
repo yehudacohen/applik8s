@@ -3,6 +3,10 @@ import type {
   ApplicationWorkloadAuthorityEnvelope,
   JsonObject,
 } from '@applik8s/core';
+import type {
+  ApplicationArtifactCredentialProjection,
+  ApplicationArtifactKubernetesPermission,
+} from '@applik8s/deployment-contract';
 import type { GeneratedApplicationAgentArtifact } from '../application-agents/index.js';
 import type { GeneratedApplicationHttpArtifact } from '../application-http/index.js';
 import type { GeneratedApplicationLakehousePublisherArtifact } from '../application-lakehouse-publishers/index.js';
@@ -105,6 +109,8 @@ export interface TypeKroCompositionWorkflowArtifactReference extends JsonObject 
   readonly container: TypeKroCompositionContainerArtifactReference;
   readonly runtimeEndpoints?: readonly TypeKroCompositionRuntimeEndpointReference[];
   readonly frameworkCredentials?: readonly TypeKroCompositionFrameworkCredentialReference[];
+  readonly credentialProjections?: readonly ApplicationArtifactCredentialProjection[];
+  readonly kubernetesPermissions?: readonly ApplicationArtifactKubernetesPermission[];
 }
 
 export interface TypeKroCompositionReactiveArtifactReference extends JsonObject {
@@ -123,6 +129,8 @@ export interface TypeKroCompositionReactiveArtifactReference extends JsonObject 
   readonly sizeBytes: number;
   readonly container: TypeKroCompositionContainerArtifactReference;
   readonly frameworkCredentials?: readonly TypeKroCompositionFrameworkCredentialReference[];
+  readonly credentialProjections?: readonly ApplicationArtifactCredentialProjection[];
+  readonly kubernetesPermissions?: readonly ApplicationArtifactKubernetesPermission[];
 }
 
 export interface TypeKroCompositionAgentArtifactReference extends JsonObject {

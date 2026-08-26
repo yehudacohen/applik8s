@@ -3,18 +3,12 @@
 import { requireApplicationInvocationAdmission } from '@applik8s/client';
 import type {
   ApplicationAdmissionInvocationContextV1,
-  ApplicationRequestAdmission,
   ApplicationScheduleNode,
   JsonObject,
 } from '@applik8s/core';
 import {
-	applicationAdmissionInvocationView,
   canonicalJsonCompatibleV1Policy,
   canonicalJsonV1String,
-	createApplicationAdmissionContextV1,
-	validateApplicationAdmissionContextV1WithoutReceipt,
-	withApplicationAdmissionExecutionV1,
-	withApplicationAdmissionTraceV1,
 } from '@applik8s/core';
 import { sha256Hex } from '@applik8s/deployment-contract';
 import type { SchemaInput } from '@applik8s/sdk';
@@ -30,6 +24,15 @@ import type {
 } from './application-providers.js';
 import { Scheduler } from './application-providers.js';
 import {
+  applicationScheduleHandlerSymbol,
+  executeApplicationScheduleAdmission,
+} from './application-schedule-execution-runtime.js';
+import {
+  applicationScheduleImmediateInvocationAdmission,
+  applicationScheduleInvocationAdmission,
+  applicationScheduleOccurrenceId,
+} from './application-schedule-provider-runtime.js';
+import {
 	applicationScheduleDesiredStateDigest,
 	applicationScheduleDesiredStateRecord,
 } from './application-schedule-state-runtime.js';
@@ -44,6 +47,12 @@ export {
 	applicationScheduleDesiredStateRecord,
 	applicationScheduleProjectedDesiredState,
 } from './application-schedule-state-runtime.js';
+export {
+  applicationScheduleImmediateInvocationAdmission,
+  applicationScheduleInvocationAdmission,
+  applicationScheduleOccurrenceId,
+  executeApplicationScheduleAdmission,
+};
 
 export type ApplicationScheduleOverlapPolicy = 'allow' | 'skip';
 export type ApplicationScheduleMisfirePolicy = 'skip' | 'latest' | 'all-bounded';
@@ -875,230 +884,6 @@ export interface DeterministicApplicationScheduleRuntime extends ApplicationSche
   snapshot(): ApplicationScheduleRuntimeSnapshot;
 }
 
-const applicationScheduleHandlerSymbol = Symbol.for('applik8s.applicationSchedule.handler');
-
-/**
- * Constructs the canonical, bounded service admission for one schedule
- * invocation after the provider adapter has verified its delivery evidence.
- * The configuring user's principal is deliberately absent: future execution
- * belongs to the scheduler service and carries only the exact definition and
- * instance operation audience.
- */
-export function applicationScheduleInvocationAdmission(options: {
-	readonly applicationId: string;
-	readonly environmentId: string;
-	readonly definitionId: string;
-	readonly instanceId: string;
-	readonly occurrenceId: string;
-	readonly admittedAt: string;
-	readonly maximumAgeSeconds: number;
-	readonly trigger: 'schedule' | 'immediate';
-}): ApplicationAdmissionInvocationContextV1 {
-	const admittedAt = new Date(options.admittedAt);
-	if (!Number.isFinite(admittedAt.getTime())) throw new Error('Schedule admission time is invalid.');
-	if (!Number.isSafeInteger(options.maximumAgeSeconds) || options.maximumAgeSeconds < 1) {
-		throw new Error('Schedule admission maximum age must be a positive safe integer.');
-	}
-	const operationId = `applik8s://schedules/${encodeURIComponent(options.definitionId)}/instances/${encodeURIComponent(options.instanceId)}/operations/invoke`;
-	const trustedContext = Object.freeze({});
-	const trustedContextDigest = `sha256:${stableDigest(trustedContext)}`;
-	const deadline = new Date(admittedAt.getTime() + options.maximumAgeSeconds * 1_000).toISOString();
-	const schedulerIdentity = Object.freeze({
-		id: `identity:${options.applicationId}:scheduler`,
-		kind: 'service' as const,
-		issuer: 'applik8s://scheduler',
-		subject: `${options.applicationId}/${options.environmentId}`,
-	});
-	const admission: ApplicationRequestAdmission = {
-		principal: Object.freeze({
-			id: `principal:${options.applicationId}:scheduler:${options.environmentId}`,
-			identity: schedulerIdentity,
-			kind: 'service',
-			authenticationMethod: options.trigger === 'schedule' ? 'verified-scheduler-delivery' : 'framework-direct',
-			audience: Object.freeze([operationId]),
-			trustedContextDigest,
-			catalogRevision: `schedule-catalog:${stableDigest({ applicationId: options.applicationId, definitionId: options.definitionId })}`,
-			authorityRevision: 'schedule-authority:v1',
-			admittedAt: admittedAt.toISOString(),
-			expiresAt: deadline,
-		}),
-		trustedContext,
-	};
-	const context = withApplicationAdmissionExecutionV1(
-		createApplicationAdmissionContextV1({
-			admission,
-			operation: { id: operationId, transport: options.trigger === 'schedule' ? 'schedule' : 'direct' },
-			correlationId: options.occurrenceId,
-		}),
-		{
-			deadline,
-			delivery: {
-				id: options.occurrenceId,
-				source: `applik8s://schedulers/${encodeURIComponent(options.applicationId)}/${encodeURIComponent(options.environmentId)}`,
-			},
-		},
-	);
-	return applicationAdmissionInvocationView(validateApplicationAdmissionContextV1WithoutReceipt(context, {
-		now: admittedAt.getTime(),
-	}));
-}
-
-/**
- * Creates the synthetic one-time admission for an immediate callable schedule.
- * Unlike provider delivery, this path preserves the current execution principal,
- * trusted context, causal chain, cancellation, and trace. It deliberately does
- * not replay the caller's operation-specific authorization receipt under the
- * schedule operation identity.
- */
-export function applicationScheduleImmediateInvocationAdmission(options: {
-  readonly caller: ApplicationAdmissionInvocationContextV1;
-  readonly definitionId: string;
-  readonly instanceId: string;
-  readonly occurrenceId: string;
-  readonly admittedAt: string;
-  readonly maximumAgeSeconds: number;
-}): ApplicationAdmissionInvocationContextV1 {
-  const admittedAt = new Date(options.admittedAt);
-  if (!Number.isFinite(admittedAt.getTime())) throw new Error('Schedule admission time is invalid.');
-  if (!Number.isSafeInteger(options.maximumAgeSeconds) || options.maximumAgeSeconds < 1) {
-    throw new Error('Schedule admission maximum age must be a positive safe integer.');
-  }
-  const operationId = `applik8s://schedules/${encodeURIComponent(options.definitionId)}/instances/${encodeURIComponent(options.instanceId)}/operations/invoke`;
-  const maximumDeadline = admittedAt.getTime() + options.maximumAgeSeconds * 1_000;
-  const callerDeadline = options.caller.deadline
-    ? Date.parse(options.caller.deadline)
-    : Number.POSITIVE_INFINITY;
-  const deadline = new Date(Math.min(maximumDeadline, callerDeadline)).toISOString();
-  const base = createApplicationAdmissionContextV1({
-    admission: {
-      principal: options.caller.principal,
-      trustedContext: options.caller.trustedContext.values,
-    },
-    operation: { id: operationId, transport: 'direct' },
-    correlationId: options.occurrenceId,
-  });
-  const traced = options.caller.trace
-    ? withApplicationAdmissionTraceV1(base, options.caller.trace)
-    : base;
-  return applicationAdmissionInvocationView(validateApplicationAdmissionContextV1WithoutReceipt(
-    withApplicationAdmissionExecutionV1(traced, {
-      causationId: options.caller.correlationId,
-      deadline,
-      ...(options.caller.cancellation
-        ? { cancellation: options.caller.cancellation }
-        : {}),
-    }),
-    { now: admittedAt.getTime() },
-  ));
-}
-
-/** Provider bootstrap seam for an already admitted occurrence. */
-export async function executeApplicationScheduleAdmission<TInput extends object, TResult>(
-  handle: ApplicationScheduleHandle<TInput, TResult>,
-  admission: ApplicationScheduleAdmission,
-  signal: AbortSignal = new AbortController().signal,
-  runner?: ApplicationScheduleAdmissionRunner,
-): Promise<ApplicationScheduleOccurrenceReceipt<TResult>> {
-  if (admission.definitionId !== handle.definition.id) {
-    throw new Error(`Schedule admission for ${admission.definitionId} cannot execute ${handle.definition.id}.`);
-  }
-  if (!Number.isSafeInteger(admission.attempt) || admission.attempt < 1) {
-    throw new Error(`Schedule admission ${admission.definitionId}/${admission.instanceId} has an invalid attempt.`);
-  }
-  const scheduledAt = new Date(admission.scheduledAt);
-  const admittedAt = new Date(admission.admittedAt);
-  if (!Number.isFinite(scheduledAt.getTime()) || !Number.isFinite(admittedAt.getTime())) {
-    throw new Error(`Schedule admission ${admission.definitionId}/${admission.instanceId} has an invalid timestamp.`);
-  }
-  const latenessMs = admittedAt.getTime() - scheduledAt.getTime();
-  if (latenessMs < 0) {
-    throw new Error(`Schedule admission ${admission.definitionId}/${admission.instanceId} precedes its scheduled time.`);
-  }
-  const input: TInput = handle.definition.input
-    ? validateMessage(handle.definition.input, admission.input ?? {}, `${handle.definition.id}.input`)
-    : {} as TInput;
-  const handler = Reflect.get(handle, applicationScheduleHandlerSymbol);
-  if (typeof handler !== 'function') throw new Error(`Schedule ${handle.definition.id} has no framework runtime handler.`);
-  const occurrenceId = applicationScheduleOccurrenceId({
-    applicationId: admission.applicationId,
-    environmentId: admission.environmentId,
-    definitionId: admission.definitionId,
-    instanceId: admission.instanceId,
-    scheduledAt: scheduledAt.toISOString(),
-    ...(admission.schedulerExecutionId ? { schedulerExecutionId: admission.schedulerExecutionId } : {}),
-  });
-  if (latenessMs > handle.definition.retry.maximumAgeSeconds * 1_000
-    || (handle.definition.misfires === 'skip'
-      && latenessMs > handle.definition.maximumLatenessSeconds * 1_000)) {
-    return {
-      occurrenceId,
-      definitionId: admission.definitionId,
-      instanceId: admission.instanceId,
-      scheduledAt: scheduledAt.toISOString(),
-      state: 'skipped',
-      attempts: admission.attempt,
-    };
-  }
-  const startedAt = new Date().toISOString();
-	const invocationAdmission = applicationScheduleInvocationAdmission({
-		applicationId: admission.applicationId,
-		environmentId: admission.environmentId,
-		definitionId: admission.definitionId,
-		instanceId: admission.instanceId,
-		occurrenceId,
-		admittedAt: admittedAt.toISOString(),
-		maximumAgeSeconds: handle.definition.retry.maximumAgeSeconds,
-		trigger: 'schedule',
-  });
-  try {
-    const invoke = () => runApplicationTelemetryBoundary({
-      kind: 'schedule',
-      identity: admission.definitionId,
-      attempt: admission.attempt,
-      attributes: {
-        'applik8s.schedule.trigger': 'schedule',
-        'applik8s.schedule.occurrence_id': occurrenceId,
-      },
-    }, async () => (handler as ApplicationScheduleHandler<TInput, TResult>)(input, {
-      definitionId: admission.definitionId,
-      instanceId: admission.instanceId,
-      occurrenceId,
-      scheduledAt: scheduledAt.toISOString(),
-      admittedAt: admittedAt.toISOString(),
-      startedAt,
-      attempt: admission.attempt,
-      trigger: 'schedule',
-		admission: invocationAdmission,
-      signal,
-    }));
-    const result = await (runner
-      ? runner.run(invocationAdmission, invoke)
-      : invoke());
-    return {
-      occurrenceId,
-      definitionId: admission.definitionId,
-      instanceId: admission.instanceId,
-      scheduledAt: scheduledAt.toISOString(),
-      state: 'succeeded',
-      attempts: admission.attempt,
-      result,
-    };
-  } catch (error) {
-    return {
-      occurrenceId,
-      definitionId: admission.definitionId,
-      instanceId: admission.instanceId,
-      scheduledAt: scheduledAt.toISOString(),
-      state: 'failed',
-      attempts: admission.attempt,
-      error: {
-        name: error instanceof Error ? error.name : 'Error',
-        message: error instanceof Error ? error.message : String(error),
-      },
-    };
-  }
-}
-
 /** Framework bootstrap seam. Application code should export the fixed schedule handle. */
 export function registerFixedApplicationSchedule<TResult>(
   runtime: DeterministicApplicationScheduleRuntime,
@@ -1526,22 +1311,6 @@ function matchesCronField(field: string, value: number, minimum: number, maximum
       && value <= (endValue ?? maximum)
       && (value - (startValue ?? minimum)) % step === 0;
   });
-}
-
-export function applicationScheduleOccurrenceId(options: {
-  readonly applicationId: string;
-  readonly environmentId: string;
-  readonly definitionId: string;
-  readonly instanceId: string;
-  readonly scheduledAt: string;
-  /**
-   * Provider evidence retained for diagnostics only. It must never influence
-   * logical occurrence identity because retries and redeliveries can receive
-   * different provider execution identifiers.
-   */
-  readonly schedulerExecutionId?: string;
-}): string {
-  return `occ_${sha256Hex(`${options.applicationId}\0${options.environmentId}\0${options.definitionId}\0${options.instanceId}\0${options.scheduledAt}`)}`;
 }
 
 function compareRevision(left: string, right: string): number {

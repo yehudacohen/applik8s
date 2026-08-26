@@ -2,10 +2,9 @@ import { spawn } from 'node:child_process';
 import { copyFile, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { type ApplicationWorkflowRun, setApplicationWorkflowRuntimeFactory } from '@applik8s/applik8s';
+import { createHatchetWorkflowRuntime } from '@applik8s/runtime-hatchet';
 import { HatchetClient } from '@hatchet-dev/typescript-sdk/v1/index.js';
 import { afterAll, beforeAll, expect, it } from 'vitest';
-
-import { createHatchetWorkflowRuntime } from '@applik8s/runtime-hatchet';
 import { assertExpectedKubectlContext, describeLive, exec, formatSettledOutput, kubectl, sleep } from './live-e2e-helpers';
 
 const namespace = process.env.APPLIK8S_E2E_NAMESPACE ?? `applik8s-workflow-${process.pid}`;
@@ -120,6 +119,7 @@ describeLive('v0.5 Hatchet durable workflow proof', () => {
       await waitForDeploymentReady('workflow-job-controller');
       await runResourceWorkflowProof('resource-gateway-proof');
       await waitForEffectCount('provision:resource-gateway-proof', 2);
+      await assertSingleGatewayAdmission(hatchet, 'resource-gateway-proof');
 
       const binding = requiredWorkflowBinding();
       const run = await binding.start(workflowInput('restart-proof', false), {
@@ -191,6 +191,12 @@ interface EffectState {
   readonly records: readonly { readonly key: string; readonly correlationId?: string }[];
 }
 
+interface GatewayAdmissionLease {
+  readonly metadata?: {
+    readonly annotations?: Readonly<Record<string, string>>;
+  };
+}
+
 interface PortForward {
   readonly endpoint: string;
   readonly port: number;
@@ -208,7 +214,7 @@ function requiredWorkflowBinding(): WorkflowBinding {
 
 function workflowEntrypointSource(): string {
   return `
-import { app, workflow, WorkflowEngine } from '@applik8s/applik8s';
+import { app, Scheduler, workflow, WorkflowEngine } from '@applik8s/applik8s';
 import { type } from '@applik8s/applik8s/dsl';
 
 const Effect = workflow('proof.effect.v1', {
@@ -233,6 +239,7 @@ platform.provide(WorkflowEngine, WorkflowEngine.hatchet({
   database: { clusterName: 'hatchet-db', database: 'hatchet', instances: 1, storageSize: '1Gi', storageClass: ${JSON.stringify(storageClass)} },
   worker: { replicas: 1, taskSlots: 4, durableSlots: 8, gracefulShutdownSeconds: 30, scaling: { mode: 'fixed' } },
 }));
+platform.provide(Scheduler, Scheduler.hatchet());
 const effect = platform.workflow(Effect, { retries: 1, retryBackoff: { factor: 1, maxSeconds: 2 }, executionTimeoutSeconds: 30, idempotencyKey: (input) => input.proofId + ':' + input.operation, worker: { group: ${JSON.stringify(workerName)}, replicas: 1, taskSlots: 4, durableSlots: 8 } }, async (input, context) => {
   const body = new URLSearchParams({ proofId: input.proofId, operation: input.operation, compensationFails: String(input.compensationFails) });
   const response = await fetch(input.effectEndpoint + '/effect', { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded', 'idempotency-key': input.proofId + ':' + input.operation, ...(context.correlationId ? { 'x-correlation-id': context.correlationId } : {}) }, body, signal: context.signal });
@@ -369,6 +376,43 @@ async function waitForEffectCount(key: string, expected: number): Promise<void> 
   throw new Error(`Timed out waiting for effect ${key} count ${expected}: ${JSON.stringify(last)}`);
 }
 
+async function assertSingleGatewayAdmission(client: Pick<HatchetClient, 'runs'>, proofId: string): Promise<void> {
+  const leases = JSON.parse((await kubectl([
+    'get',
+    'leases.coordination.k8s.io',
+    '--namespace',
+    namespace,
+    '--selector=applik8s.dev/workflow-admission=true',
+    '--output=json',
+  ])).stdout) as { readonly items?: readonly GatewayAdmissionLease[] };
+  const admissions = (leases.items ?? []).filter(
+    lease => lease.metadata?.annotations?.['applik8s.dev/workflow-contract'] === 'proof.resource.v1',
+  );
+  expect(admissions).toHaveLength(1);
+  const annotations = admissions[0]?.metadata?.annotations;
+  const admissionId = annotations?.['applik8s.dev/admission-id'];
+  const providerRunId = annotations?.['applik8s.dev/provider-run-id'];
+  if (!admissionId || !providerRunId) throw new Error('Workflow admission Lease did not persist its admission and provider run identities.');
+  expect(admissionId).toMatch(/^sha256:[a-f0-9]{64}$/);
+  expect(providerRunId).toMatch(/^[0-9a-f-]{36}$/);
+  expect(annotations?.['applik8s.dev/admission-state']).toBe('admitted');
+
+  const providerRuns = await client.runs.list({
+    workflowNames: ['proof.resource.v1'],
+    additionalMetadata: { 'applik8s.admission-id': admissionId },
+    since: new Date(Date.now() - 24 * 60 * 60 * 1_000),
+    onlyTasks: false,
+    limit: 10,
+  });
+  const matchingRunIds = [...new Set((providerRuns.rows ?? [])
+    .map(row => row.workflowRunExternalId)
+    .filter((value): value is string => typeof value === 'string' && value.length > 0))];
+  expect(matchingRunIds).toEqual([providerRunId]);
+
+  const state = await effectState();
+  expect(state.counts[`provision:${proofId}`]).toBe(2);
+}
+
 async function runResourceWorkflowProof(proofId: string): Promise<void> {
   const resourcePath = join(requiredTempDir(), 'workflow-job.yaml');
   await writeFile(resourcePath, `apiVersion: ${workflowApiVersion}
@@ -401,7 +445,15 @@ spec:
     }
     await sleep(1_000);
   }
-  throw new Error(`WorkflowJob ${proofId} did not complete through the private workflow gateway: ${lastStatus}`);
+  const diagnostics = await Promise.allSettled([
+    kubectl(['get', `${workflowJobResource}/${proofId}`, '--namespace', namespace, '--output=yaml']),
+    kubectl(['logs', '--namespace', namespace, 'deployment/workflow-job-controller', '--tail=80']),
+    kubectl(['logs', '--namespace', namespace, `deployment/${workerName}`, '--tail=80']),
+    kubectl(['get', 'events', '--namespace', namespace, '--sort-by=.lastTimestamp']),
+  ]);
+  throw new Error(
+    `WorkflowJob ${proofId} did not complete through the private workflow gateway: ${lastStatus}\n${diagnostics.map(formatSettledOutput).join('\n')}`,
+  );
 }
 
 async function effectState(): Promise<EffectState> {

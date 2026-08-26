@@ -191,6 +191,38 @@ describe('v0.8 provider guarantee manifests', () => {
 		]))
 	})
 
+	it('preserves exact second-precision dynamic one-time starts through Hatchet', () => {
+		const source = graph()
+		const scheduler = {
+			...provider('Scheduler', 'hatchet-scheduler'),
+			id: 'provider.scheduler.v1alpha1.hosted',
+			config: {
+				qualification: { capability: 'Scheduler', name: 'hosted', compatibilityRevision: 'v1alpha1' },
+				scheduler: { kind: 'hatchet-scheduler' },
+			},
+		}
+		const recurring = scheduleNode(scheduler.id)
+		const { cron: _cron, every: _every, ...oneTimeDefinition } = recurring.definition
+		const oneTime = {
+			...recurring,
+			id: 'schedule.workflow-start.proof.v1',
+			definition: {
+				...oneTimeDefinition,
+				id: 'workflow-start.proof.v1',
+				configuration: 'dynamic' as const,
+				requirements: {
+					configuration: 'dynamic' as const,
+					cardinality: 'high' as const,
+					precision: 'second' as const,
+				},
+			},
+		}
+		expect(applicationScheduleProviderCompatibilityFindings({
+			graph: { ...source, nodes: [...source.nodes, scheduler, oneTime] },
+			target: 'kubernetes',
+		})).toEqual([])
+	})
+
 	it('records exact schedule guarantees for compatible target-selected providers', () => {
 		const source = graph()
 		const scheduler = source.nodes.find((node): node is ApplicationProviderNode =>

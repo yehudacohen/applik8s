@@ -115,5 +115,39 @@ export async function emitWorkflowWorker(
   await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
   await writeFile(metafilePath, `${JSON.stringify(result.metafile, null, 2)}\n`);
   const frameworkCredentials = applicationFrameworkCredentialDependencies(source);
-  return { name, workerId: contract.worker.id, sourcePath, sourceMapPath, manifestPath, metafilePath, digest, sizeBytes, container, resources, runtimeEndpoints, frameworkCredentials };
+  const credentialProjections = [{
+    target: 'kubernetes' as const,
+    namespace: contract.namespace,
+    name: contract.workerTokenSecret,
+    keys: [contract.tokenKey],
+  }];
+  const kubernetesPermissions = contract.gatewayCallers.length > 0
+    ? [{
+        apiGroup: 'authentication.k8s.io',
+        resource: 'tokenreviews',
+        scope: 'Cluster' as const,
+        verbs: ['create'],
+      }, {
+        apiGroup: 'coordination.k8s.io',
+        resource: 'leases',
+        scope: 'Namespaced' as const,
+        verbs: ['create', 'get', 'list', 'update', 'patch'],
+      }]
+    : [];
+  return {
+    name,
+    workerId: contract.worker.id,
+    sourcePath,
+    sourceMapPath,
+    manifestPath,
+    metafilePath,
+    digest,
+    sizeBytes,
+    container,
+    resources,
+    runtimeEndpoints,
+    frameworkCredentials,
+    credentialProjections,
+    kubernetesPermissions,
+  };
 }

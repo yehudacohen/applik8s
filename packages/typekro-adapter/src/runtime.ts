@@ -1,5 +1,6 @@
 import { toKubernetesStructuralOpenApiSchema, validateStructuralOpenApiSchema, withApplik8sFrameworkStatusSchema } from '@applik8s/compiler/kubernetes-schema';
 import type { AnyResourceDefinition, AnyResourceVersionDefinition, CapabilityClientSet, ConcurrencyConfig, DeleteTargetOptions, FinalizeHandlerOptions, Handler, HandlerEventType, HandlerRegistration, JsonObject, NormalizedOperationPlan, ObjectRef, OperatorDefinition, OperatorDeploymentOptions, OperatorManifest, PartialStatus, PermissionRule, ProxyHandler, ResourceDefinition, ResourceEventSources, ResourceWatchAddress, Result, StatusConvention } from '@applik8s/core';
+import { usesWorkflowGatewayCapability, workflowGatewayServiceAccountTokenProjection } from '@applik8s/core';
 import type { CallableOperator } from '@applik8s/sdk';
 import { sdk, setOperatorDeploymentInterceptor } from '@applik8s/sdk';
 import { imageRefString } from '@applik8s/typetainer';
@@ -1515,6 +1516,36 @@ function deploymentDocument(
   deployment: OperatorDeploymentOptions | undefined,
 ): KubernetesManifestResource {
   const configuredResources = deployment?.resources;
+  const usesWorkflowGateway = usesWorkflowGatewayCapability(manifest.spec.capabilities);
+  const workflowToken = workflowGatewayServiceAccountTokenProjection;
+  const volumeMounts = [
+    { name: 'tmp', mountPath: '/tmp' },
+    ...(usesWorkflowGateway
+      ? [{
+          name: workflowToken.name,
+          mountPath: workflowToken.mountPath,
+          readOnly: true,
+        }]
+      : []),
+  ];
+  const volumes = [
+    { name: 'tmp', emptyDir: {} },
+    ...(usesWorkflowGateway
+      ? [{
+          name: workflowToken.name,
+          projected: {
+            defaultMode: workflowToken.defaultMode,
+            sources: [{
+              serviceAccountToken: {
+                path: workflowToken.path,
+                expirationSeconds: workflowToken.expirationSeconds,
+                audience: workflowToken.audience,
+              },
+            }],
+          },
+        }]
+      : []),
+  ];
   const resources = {
     requests: { cpu: '100m', memory: '128Mi', ...configuredResources?.requests },
     // Match the compiler's measured ComponentizeJS/Wasmtime execution
@@ -1551,7 +1582,7 @@ function deploymentDocument(
                 readOnlyRootFilesystem: true,
                 capabilities: { drop: ['ALL'] },
               },
-              volumeMounts: [{ name: 'tmp', mountPath: '/tmp' }],
+              volumeMounts,
               ports: [{ name: 'health', containerPort: 8080 }],
               env: operatorHostEnv(manifest),
               startupProbe: {
@@ -1577,7 +1608,7 @@ function deploymentDocument(
               resources,
             },
           ],
-          volumes: [{ name: 'tmp', emptyDir: {} }],
+          volumes,
         },
       },
     },
