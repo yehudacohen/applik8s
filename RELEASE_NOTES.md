@@ -28,6 +28,13 @@ managed teardown. External OTLP Secret projections are also represented in the
 canonical runtime-access envelope for every generated JavaScript execution
 boundary that receives them.
 
+Function-native operations now create one synchronous semantic telemetry child
+at the framework-owned execution seam. The same contract identity survives
+direct calls, extracted handles, and module-local helpers in generated HTTP and
+workflow/task workers as well as transaction-local and compiler-owned atomic
+execution. Provider calls, model mutations, processors, and AI tool calls keep
+their distinct semantic owners, avoiding duplicate spans and author ceremony.
+
 ## v0.7.1
 
 v0.7.1 corrects the released-compiler and clean-consumer boundary discovered

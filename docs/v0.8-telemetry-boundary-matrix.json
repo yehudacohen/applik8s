@@ -8,9 +8,11 @@
     "packages/applik8s/src/event-log-runtime.ts",
     "packages/applik8s/src/application-lakehouse.ts",
     "packages/applik8s/src/model-command-postgres-runtime.ts",
+    "packages/applik8s/src/native-models.ts",
     "packages/applik8s/src/query-gateway.ts",
     "packages/applik8s/src/application-schedule.ts",
     "packages/applik8s/src/application-schedule-execution-runtime.ts",
+    "packages/applik8s/src/stream-worker-runtime.ts",
     "packages/applik8s/src/stream-processor-runtime.ts",
     "packages/compiler/src/application-fetch-gateway/index.ts",
     "packages/compiler/src/application-http/index.ts",
@@ -184,23 +186,43 @@
     },
     {
       "kind": "operation",
-      "state": "in-progress",
+      "state": "implemented",
       "relationship": "synchronous",
-      "producer": "authenticated command, object, or runtime request",
-      "consumer": "generated operation gateway and managed closure",
-      "carrierPlacement": "gateway ingress is instrumented; nested function-native operation execution is not exhaustively inventoried",
+      "producer": "authenticated transport or an active managed HTTP, workflow/task, transaction, agent-tool, or compiler-owned atomic execution",
+      "consumer": "one exact function-native application operation",
+      "carrierPlacement": "authenticated gateway invocation owns the root operation boundary; compiler-generated HTTP and workflow/task scopes, ambient transaction-local model handles, and compiler-owned atomic handles open exactly one synchronous child around the actual call while preserving the operation contract identity through extracted handles and module-local helpers; AI tool execution retains its existing runtime-ai owner and is not wrapped again",
       "owners": [
+        "packages/applik8s/src/native-models.ts",
+        "packages/applik8s/src/stream-worker-runtime.ts",
         "packages/compiler/src/application-fetch-gateway/index.ts",
+        "packages/compiler/src/application-http/index.ts",
+        "packages/compiler/src/application-workflows/source.ts",
         "packages/operations/src/runtime.ts"
       ],
       "sourceMarkers": [
         {
+          "path": "packages/applik8s/src/native-models.ts",
+          "marker": "kind: 'operation'"
+        },
+        {
+          "path": "packages/applik8s/src/stream-worker-runtime.ts",
+          "marker": "kind: 'operation'"
+        },
+        {
           "path": "packages/compiler/src/application-fetch-gateway/index.ts",
           "marker": "? 'operation'"
+        },
+        {
+          "path": "packages/compiler/src/application-http/index.ts",
+          "marker": "kind: 'operation'"
+        },
+        {
+          "path": "packages/compiler/src/application-workflows/source.ts",
+          "marker": "kind: 'operation'"
         }
       ],
-      "regression": "bunx vitest run --maxWorkers=1 packages/compiler/test/application-fetch-gateway.vertical.test.ts packages/operations/test/postgres.vertical.test.ts",
-      "remaining": "Wrap every managed operation invocation, preserve extracted/helper call identity, and prove nested synchronous parentage."
+      "regression": "bunx vitest run --maxWorkers=1 packages/applik8s/test/transactional-database-postgres-runtime.vertical.test.ts packages/compiler/test/application-fetch-gateway.vertical.test.ts packages/compiler/test/application-http.vertical.test.ts packages/operations/test/postgres.vertical.test.ts; NODE_OPTIONS=--max-old-space-size=8192 bunx vitest run --maxWorkers=1 packages/compiler/test/application-workflows.vertical.test.ts",
+      "remaining": "Deterministic runtime and generated-source evidence proves exhaustive maintained ownership, helper-mediated identity, synchronous nesting, and inherited redacted terminal semantics. A separate emitted-process collector receipt may strengthen backend qualification, but is not required to keep the operation contract implemented."
     },
     {
       "kind": "processor",

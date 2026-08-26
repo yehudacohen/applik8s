@@ -39,6 +39,11 @@ Current foundation increment:
   verification, UID-fenced deletion, exact runtime-access projection for
   external OTLP credentials, and an OrbStack collector receipt proving the
   workflow/task retry link graph through worker replacement and cancellation.
+- Closed function-native operation telemetry at the common framework execution
+  seams. Generated HTTP and workflow/task calls, transaction-local handles, and
+  compiler-owned atomic handles preserve one exact operation identity through
+  direct, extracted, and helper-mediated invocation without double-wrapping AI
+  tools or adjacent model/provider boundaries.
 
 Next, in manifesto dependency order:
 
