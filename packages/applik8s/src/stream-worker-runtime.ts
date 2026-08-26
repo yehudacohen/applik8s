@@ -5,6 +5,7 @@ import {
   currentApplicationManagedEffects,
   emitApplicationManagedEvent,
 } from './application-managed-effects-api.js';
+import { runApplicationTelemetryBoundary } from './application-telemetry-runtime.js';
 import type { EventDefinition } from './dsl.js';
 
 export {
@@ -114,12 +115,18 @@ export function createApplicationFunctionNativeOperationHandle<
         `Application operation ${options.operation.id} escaped its compiler-inferred lifecycle transaction.`,
       );
     }
-    if (!effects.invokeAtomic) {
+    const invokeAtomic = effects.invokeAtomic;
+    if (!invokeAtomic) {
       throw new Error(
         `Application operation ${options.operation.id} requires a compiler-owned atomic transaction envelope.`,
       );
     }
-    return effects.invokeAtomic(
+    return runApplicationTelemetryBoundary({
+      kind: 'operation',
+      identity: options.operation.id,
+      definition: options.operation.id,
+      relationship: 'synchronous',
+    }, () => invokeAtomic(
       options.operation,
       input,
       (messageId) => ({
@@ -134,6 +141,6 @@ export function createApplicationFunctionNativeOperationHandle<
             }
           : {}),
       }),
-    ) as Promise<TOutput>;
+    ) as Promise<TOutput>);
   };
 }

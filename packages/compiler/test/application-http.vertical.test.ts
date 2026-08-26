@@ -8,6 +8,7 @@ import {
   applicationGraphFor,
   EventLog,
   IdentityProvider,
+  Observability,
   WorkflowEngine,
   workflow,
 } from '@applik8s/applik8s';
@@ -168,6 +169,7 @@ describe('generated function-native HTTP worker', () => {
         },
       }),
     );
+    application.provide(Observability, Observability.local());
     const Database = application.database.postgres('main', {
       schema: { posts },
     });
@@ -436,6 +438,13 @@ describe('generated function-native HTTP worker', () => {
       '"provision": workflowHandle("workflow", "tenant.provision.v1"',
     );
     expect(generatedEntrypoint).toContain('directWorkflowScope.run');
+    expect(generatedEntrypoint).toContain("kind: 'operation'");
+    expect(generatedEntrypoint).toContain('identity: operation.id');
+    expect(generatedEntrypoint).toContain('definition: operation.id');
+    expect(generatedEntrypoint).toContain("relationship: 'synchronous'");
+    expect(generatedEntrypoint).toContain(
+      '() => invoke(operationInput, { idempotencyKey: idempotencyKey +',
+    );
     expect(generatedEntrypoint).toContain('occurrences: new Map()');
     expect(generatedEntrypoint).toContain('failure.retryable = false');
     expect(generatedEntrypoint).toContain(
@@ -672,7 +681,7 @@ export const pipelineHttpStack = application.composition;
     expect(
       workflowGeneratedSource,
     ).toContain(
-      '{"namespace":"pipeline-http","serviceAccount":"public-api","contracts":["tenant.provision.v1"]}',
+      '{"namespace":"pipeline-http","serviceAccount":"public-api","operator":"public-api","contracts":["tenant.provision.v1"]}',
     );
     expect(workflowGeneratedSource).toContain('gatewayCallerContracts');
     expect(workflowGeneratedSource).toContain(

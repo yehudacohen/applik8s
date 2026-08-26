@@ -1349,7 +1349,14 @@ async function invokeRoute(route, params, request, url, runtimeProtocol) {
     execute(operation, operationInput) {
       const invoke = operationBindings[operation.id];
       if (!invoke) throw new Error('HTTP route attempted undeclared operation ' + operation.id + '.');
-      return invoke(operationInput, { idempotencyKey: idempotencyKey + ':' + operation.id });
+      return ${observability
+        ? `runApplicationTelemetryBoundary({
+        kind: 'operation',
+        identity: operation.id,
+        definition: operation.id,
+        relationship: 'synchronous',
+      }, () => invoke(operationInput, { idempotencyKey: idempotencyKey + ':' + operation.id }))`
+        : `invoke(operationInput, { idempotencyKey: idempotencyKey + ':' + operation.id })`};
     },
   };
   const invoke = () => directOperationScope.run(

@@ -962,6 +962,11 @@ export const workflowProof = platform.composition;
       expect(generatedSource).toContain(
         "workflowTelemetryBoundary(context, 'workflow'",
       );
+      expect(generatedSource).toContain("kind: 'operation'");
+      expect(generatedSource).toContain('identity: operation.id');
+      expect(generatedSource).toContain('definition: operation.id');
+      expect(generatedSource).toContain("relationship: 'synchronous'");
+      expect(generatedSource).toContain('() => invoke(input)');
       expect(generatedSource).toContain(
         "invocation: execution.attempt > 1 ? 'retry' : 'live'",
       );

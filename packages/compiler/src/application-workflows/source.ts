@@ -901,7 +901,14 @@ function directApplicationRuntime(execution) {
     execute(operation, input) {
       const invoke = execution.operations[operation.id];
       if (!invoke) throw new Error('Workflow step attempted to call undeclared operation ' + JSON.stringify(operation.id));
-      return invoke(input);
+      return ${contract.observability
+        ? `runApplicationTelemetryBoundary({
+        kind: 'operation',
+        identity: operation.id,
+        definition: operation.id,
+        relationship: 'synchronous',
+      }, () => invoke(input))`
+        : 'invoke(input)'};
     },
     async snapshotQuery(operation, input) {
       const invoke = execution.queries[operation.id];

@@ -75,6 +75,7 @@ import type {
   ApplicationSearchField,
   ApplicationSearchIndexBinding,
 } from './application-search.js';
+import { runApplicationTelemetryBoundary } from './application-telemetry-runtime.js';
 import type { CommandDefinition } from './dsl.js';
 import {
   type ApplicationNativeModelEditTarget,
@@ -723,15 +724,22 @@ installApplicationOperationRuntimeResolver(() => {
       }
       const route = (messageId: string) =>
         binding.route(input as object, messageId, effects.routingContext);
-      if (effects.invokeAtomic) {
-        return effects.invokeAtomic(
-          operation,
-          input as object,
-          route,
-        ) as Promise<TOutput>;
-      }
-      const reference = effects.invoke(operation, input as object, route);
-      return stagedApplicationCommandResult<TOutput>(reference);
+      return runApplicationTelemetryBoundary({
+        kind: 'operation',
+        identity: operation.id,
+        definition: operation.id,
+        relationship: 'synchronous',
+      }, async () => {
+        if (effects.invokeAtomic) {
+          return effects.invokeAtomic(
+            operation,
+            input as object,
+            route,
+          ) as Promise<TOutput>;
+        }
+        const reference = effects.invoke(operation, input as object, route);
+        return stagedApplicationCommandResult<TOutput>(reference);
+      });
     },
   };
 });

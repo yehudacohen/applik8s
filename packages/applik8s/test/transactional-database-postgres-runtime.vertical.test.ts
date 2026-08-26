@@ -12,7 +12,7 @@ import { withApplicationManagedEffects } from '../src/application-managed-effect
 import { runApplicationModelBeforeCommit } from '../src/application-model-policy.js';
 import { type ApplicationRuntimeModelContract, applicationModelMigrationPreflightSql, applicationModelMigrationSql } from '../src/application-models.js';
 import { generatedApplicationRuntimeModuleSource } from '../src/application-runtime-modules.js';
-import { type ApplicationTelemetryBoundary, type ApplicationTelemetryRuntime, installApplicationTelemetryRuntimeResolver } from '../src/application-telemetry-runtime.js';
+import { type ApplicationTelemetryBoundary, type ApplicationTelemetryRuntime, installApplicationTelemetryRuntimeResolver, runApplicationTelemetryBoundary } from '../src/application-telemetry-runtime.js';
 import { applicationRequestContextValues } from '../src/command-principal.js';
 import { type ApplicationMessageEnvelope, command, event } from '../src/dsl.js';
 import { applicationPostgresModelReadClients, closePostgresModelCommandRuntime, executeFunctionNativePostgresModelEdit, executeFunctionNativePostgresTransaction, executePostgresModelCommand, type FunctionNativePostgresNestedOperation, isRetryablePostgresTransactionError, normalizePostgresNativeModelValue, type PostgresModelCommandEventDefinition, recordPostgresModelCommandTerminalFailure } from '../src/model-command-postgres-runtime.js';
@@ -55,7 +55,7 @@ describe('Postgres TransactionalDatabase script runtime', () => {
     expect(isRetryablePostgresTransactionError(new Error('connection failed'))).toBe(false);
   });
 
-  it('passes the compiler-owned durable message identity to inferred operation routing', async () => {
+  it('passes compiler-owned identity through helper-mediated operation routing and one synchronous telemetry child', async () => {
     const operation = {
       apiVersion: 'applik8s.operation/v1alpha1',
       kind: 'applicationOperation',
@@ -74,22 +74,45 @@ describe('Postgres TransactionalDatabase script runtime', () => {
       key: (_input, _context, messageId) => messageId,
     });
 
-    const result = await withApplicationManagedEffects({
-      commandId: 'source-event',
-      routingContext: {},
-      emit: () => {
-        throw new Error('not used');
-      },
-      invoke: () => {
-        throw new Error('not used');
-      },
-      async invokeAtomic(_operation, _input, route) {
-        const routed = route('deterministic-nested-message');
-        return { identity: routed.targetKey };
-      },
-    }, () => handle({ value: 'created' }));
+    const boundaries: ApplicationTelemetryBoundary[] = [];
+    const telemetry = recordingTelemetryRuntime(boundaries);
+    const disposeTelemetry = installApplicationTelemetryRuntimeResolver(
+      () => telemetry,
+    );
+    const invokeThroughHelper = (value: string) => handle({ value });
+    try {
+      const result = await runApplicationTelemetryBoundary({
+        kind: 'http',
+        identity: 'create-generated-identity',
+        relationship: 'synchronous',
+      }, () => withApplicationManagedEffects({
+        commandId: 'source-event',
+        routingContext: {},
+        emit: () => {
+          throw new Error('not used');
+        },
+        invoke: () => {
+          throw new Error('not used');
+        },
+        async invokeAtomic(_operation, _input, route) {
+          const routed = route('deterministic-nested-message');
+          return { identity: routed.targetKey };
+        },
+      }, () => invokeThroughHelper('created')));
 
-    expect(result).toEqual({ identity: 'deterministic-nested-message' });
+      expect(result).toEqual({ identity: 'deterministic-nested-message' });
+      expect(boundaries).toEqual([
+        expect.objectContaining({ kind: 'http', identity: 'create-generated-identity' }),
+        expect.objectContaining({
+          kind: 'operation',
+          identity: 'GeneratedIdentity.create',
+          definition: 'GeneratedIdentity.create',
+          relationship: 'synchronous',
+        }),
+      ]);
+    } finally {
+      disposeTelemetry();
+    }
   });
 
   it('normalizes provider-native timestamps to the logical JSON model representation', () => {
