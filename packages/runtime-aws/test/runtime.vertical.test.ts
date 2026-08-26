@@ -1,6 +1,7 @@
 // typecast-file-boundary: Test doubles intentionally implement partial AWS SDK clients and response envelopes.
 
 import {
+  type ApplicationLakehouseQueryRequest,
   type ApplicationLakehouseQueryRuntime,
   type ApplicationTelemetryBoundary,
   type ApplicationTelemetryRuntime,
@@ -119,7 +120,7 @@ describe('AWS lakehouse runtime', () => {
     athena.onStart = () => controller.abort(new DOMException('cancelled', 'AbortError'));
     await expect(runtime.query({ dataset: History, orderBy: (row) => [row.id.asc()], signal: controller.signal })).rejects.toMatchObject({
       name: 'AbortError',
-      receipt: { state: 'cancelled', provider: 'athena', providerQueryId: 'query-1' },
+      receipt: { state: 'cancelled', provider: 'athena', providerQueryId: expect.any(String) },
     });
     expect(athena.stopped).toBe(true);
   });
@@ -206,6 +207,82 @@ describe('AWS lakehouse runtime', () => {
       s3Client: s3 as unknown as S3Client, glueClient: glue as unknown as GlueClient,
     });
     await expect(runtime.append({ frontier: 'event-1', rows: [{ id: 'one' }] })).rejects.toThrow(/owner or storage descriptor/u);
+  });
+
+  it('reattaches to an ambiguously admitted Athena query through its stable provider token', async () => {
+    const s3 = new MemoryS3();
+    const dataset = {
+      datasetId: 'reattach', bucket: 'reattach-bucket', prefix: 'reattach', catalogDatabase: 'reattach', schemaRevision: 'v1',
+      schema: type({ id: 'string' }), cursorKey: 'r'.repeat(32),
+      s3Client: s3 as unknown as S3Client, glueClient: new MemoryGlue() as unknown as GlueClient,
+    };
+    await createAwsApplicationLakehouseDatasetRuntime(dataset).append({ frontier: 'one', rows: [{ id: 'one' }] });
+    const athena = new MemoryAthena();
+    athena.columns = ['id'];
+    athena.rows = [['one']];
+    athena.failAfterAdmissionOnce = true;
+    const request: ApplicationLakehouseQueryRequest<{ id: string }> = {
+      dataset: LakehouseDataset.named('reattach'), principalScope: 'tenant-a', orderBy: (row) => [row.id.asc()],
+    };
+    const firstRuntime = createAwsApplicationLakehouseQueryRuntime({
+      workgroup: 'reattach', datasets: { reattach: dataset }, s3Client: s3 as unknown as S3Client, athenaClient: athena as unknown as AthenaClient,
+    }) as ApplicationLakehouseQueryRuntime<{ id: string }>;
+    await expect(firstRuntime.query(request)).rejects.toMatchObject({
+      code: 'APPLIK8S_LAKEHOUSE_QUERY_TERMINAL', receipt: { state: 'outcome-unknown', provider: 'athena' },
+    });
+    const restartedRuntime = createAwsApplicationLakehouseQueryRuntime({
+      workgroup: 'reattach', datasets: { reattach: dataset }, s3Client: s3 as unknown as S3Client, athenaClient: athena as unknown as AthenaClient,
+    }) as ApplicationLakehouseQueryRuntime<{ id: string }>;
+    await expect(restartedRuntime.query(request)).resolves.toMatchObject({
+      state: 'succeeded', rows: [{ id: 'one' }], receipt: { providerQueryId: 'query-1' },
+    });
+    expect(athena.startTokens).toHaveLength(2);
+    expect(new Set(athena.startTokens).size).toBe(1);
+    expect(athena.queryIdsByToken.size).toBe(1);
+  });
+
+  it('rejects provider rows that do not satisfy the published dataset schema', async () => {
+    const s3 = new MemoryS3();
+    const dataset = {
+      datasetId: 'validated', bucket: 'validated-bucket', prefix: 'validated', catalogDatabase: 'validated', schemaRevision: 'v1',
+      schema: type({ id: 'string', quantity: 'number.integer' }), cursorKey: 'v'.repeat(32),
+      s3Client: s3 as unknown as S3Client, glueClient: new MemoryGlue() as unknown as GlueClient,
+    };
+    await createAwsApplicationLakehouseDatasetRuntime(dataset).append({ frontier: 'one', rows: [{ id: 'one', quantity: 1 }] });
+    const athena = new MemoryAthena();
+    athena.rows = [['one', 'not-a-number']];
+    const runtime = createAwsApplicationLakehouseQueryRuntime({
+      workgroup: 'validated', datasets: { validated: dataset }, s3Client: s3 as unknown as S3Client, athenaClient: athena as unknown as AthenaClient,
+    });
+    await expect(runtime.query({ dataset: LakehouseDataset.named('validated') })).rejects.toMatchObject({
+      code: 'APPLIK8S_LAKEHOUSE_QUERY_TERMINAL', receipt: { state: 'failed', provider: 'athena', providerQueryId: 'query-1' },
+    });
+  });
+
+  it('reads a full-size Athena page through bounded provider continuations', async () => {
+    const s3 = new MemoryS3();
+    const dataset = {
+      datasetId: 'full-page', bucket: 'full-page-bucket', prefix: 'full-page', catalogDatabase: 'full-page', schemaRevision: 'v1',
+      schema: type({ id: 'string' }), cursorKey: 'p'.repeat(32),
+      s3Client: s3 as unknown as S3Client, glueClient: new MemoryGlue() as unknown as GlueClient,
+    };
+    await createAwsApplicationLakehouseDatasetRuntime(dataset).append({ frontier: 'one', rows: [{ id: 'seed' }] });
+    const athena = new MemoryAthena();
+    athena.resultPages = [
+      { columns: ['id'], rows: Array.from({ length: 999 }, (_, index) => [`row-${index}`]), nextToken: 'page-2' },
+      { columns: ['id'], rows: [['row-999'], ['row-1000']] },
+    ];
+    const runtime = createAwsApplicationLakehouseQueryRuntime({
+      workgroup: 'full-page', datasets: { 'full-page': dataset }, maximumRows: 1_000,
+      s3Client: s3 as unknown as S3Client, athenaClient: athena as unknown as AthenaClient,
+    }) as ApplicationLakehouseQueryRuntime<{ id: string }>;
+    const result = await runtime.query({
+      dataset: LakehouseDataset.named('full-page'), orderBy: (row) => [row.id.asc()], page: { size: 1_000 },
+    });
+    expect(result.rows).toHaveLength(1_000);
+    expect(result.cursor).toEqual(expect.any(String));
+    expect(athena.resultRequests).toHaveLength(2);
+    expect(athena.resultRequests.every(({ MaxResults }) => Number(MaxResults) <= 1_000)).toBe(true);
   });
 });
 
@@ -523,15 +600,46 @@ class MemoryAthena {
   stopped = false;
   cancelled = false;
   keepRunningAfterStop = false;
+  failAfterAdmissionOnce = false;
+  columns = ['id', 'quantity'];
+  rows: string[][] = [['one', '2'], ['two', '3']];
+  resultPages?: Array<{ readonly columns: readonly string[]; readonly rows: readonly (readonly string[])[]; readonly nextToken?: string }>;
+  readonly startTokens: string[] = [];
+  readonly queryIdsByToken = new Map<string, string>();
+  readonly resultRequests: Record<string, unknown>[] = [];
   onStart?: () => void;
   async send(command: { constructor: { name: string }; input: Record<string, unknown> }): Promise<Record<string, unknown>> {
-    if (command.constructor.name === 'StartQueryExecutionCommand') { this.sql = String(command.input.QueryString); this.onStart?.(); return { QueryExecutionId: 'query-1' }; }
+    if (command.constructor.name === 'StartQueryExecutionCommand') {
+      this.sql = String(command.input.QueryString);
+      const token = String(command.input.ClientRequestToken);
+      this.startTokens.push(token);
+      const queryId = this.queryIdsByToken.get(token) ?? `query-${this.queryIdsByToken.size + 1}`;
+      this.queryIdsByToken.set(token, queryId);
+      this.onStart?.();
+      if (this.failAfterAdmissionOnce) {
+        this.failAfterAdmissionOnce = false;
+        throw new Error('transport failed after Athena admitted the query');
+      }
+      return { QueryExecutionId: queryId };
+    }
     if (command.constructor.name === 'GetQueryExecutionCommand') return { QueryExecution: { Status: { State: this.cancelled ? 'CANCELLED' : this.running ? 'RUNNING' : 'SUCCEEDED' }, Statistics: { DataScannedInBytes: 512 } } };
-    if (command.constructor.name === 'GetQueryResultsCommand') return { ResultSet: { ResultSetMetadata: { ColumnInfo: [{ Name: 'id' }, { Name: 'quantity' }] }, Rows: [
-      { Data: [{ VarCharValue: 'id' }, { VarCharValue: 'quantity' }] },
-      { Data: [{ VarCharValue: 'one' }, { VarCharValue: '2' }] },
-      { Data: [{ VarCharValue: 'two' }, { VarCharValue: '3' }] },
-    ] } };
+    if (command.constructor.name === 'GetQueryResultsCommand') {
+      this.resultRequests.push(command.input);
+      const pageIndex = command.input.NextToken ? 1 : 0;
+      const page = this.resultPages?.[pageIndex];
+      const columns = page?.columns ?? this.columns;
+      const rows = page?.rows ?? this.rows;
+      return {
+        ...(page?.nextToken ? { NextToken: page.nextToken } : {}),
+        ResultSet: {
+          ResultSetMetadata: { ColumnInfo: columns.map((Name) => ({ Name })) },
+          Rows: [
+            ...(pageIndex === 0 ? [{ Data: columns.map((VarCharValue) => ({ VarCharValue })) }] : []),
+            ...rows.map((values) => ({ Data: values.map((VarCharValue) => ({ VarCharValue })) })),
+          ],
+        },
+      };
+    }
     if (command.constructor.name === 'StopQueryExecutionCommand') { this.stopped = true; if (!this.keepRunningAfterStop) { this.running = false; this.cancelled = true; } return {}; }
     throw new Error(`Unexpected Athena command ${command.constructor.name}.`);
   }

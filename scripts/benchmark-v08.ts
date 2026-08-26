@@ -175,7 +175,7 @@ async function benchmarkLakehouse(count: number) {
   const started = performance.now();
   for (let index = 0; index < count; index += 1) {
     const operation = performance.now();
-    const result = await runtime.query({ dataset: Dataset, page: { size: 20 }, principalScope: `scope-${index % 4}` });
+    const result = await runtime.query({ dataset: Dataset, orderBy: (row) => [row.id.asc()], page: { size: 20 }, principalScope: `scope-${index % 4}` });
     scannedBytes = Math.max(scannedBytes, result.scannedBytes);
     latencies.push(performance.now() - operation);
   }

@@ -723,6 +723,9 @@ export function createDeterministicApplicationLakehouseRuntime<TRow extends obje
         compareApplicationLakehouseRows(left.row, right.row, compiled.orderBy) || left.identity.localeCompare(right.identity));
       const page = rows.slice(offset, offset + pageSize).map(({ row }) => row);
       const nextOffset = offset + page.length;
+      if (nextOffset < rows.length && compiled.orderBy.length === 0) {
+        throw new Error('Lakehouse pagination requires deterministic orderBy fields.');
+      }
       if (request.signal?.aborted) {
         throw applicationLakehouseQueryTerminalError({
           queryId,

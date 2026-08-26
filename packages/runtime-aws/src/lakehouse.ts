@@ -127,6 +127,12 @@ export function createAwsApplicationLakehouseQueryRuntime(
   const maximumRows = boundedInteger(configuration.maximumRows ?? 1_000, 1, 100_000, 'AWS lakehouse maximumRows');
   const maximumScannedBytes = boundedInteger(configuration.maximumScannedBytes ?? 10_000_000_000, 1, Number.MAX_SAFE_INTEGER, 'AWS lakehouse maximumScannedBytes');
   const cancellationConfirmationTimeoutMs = boundedInteger(configuration.cancellationConfirmationTimeoutMs ?? 2_000, 1, 30_000, 'AWS lakehouse cancellationConfirmationTimeoutMs');
+  const datasetSchemas = new Map(
+    Object.entries(configuration.datasets).map(([qualification, dataset]) => [
+      qualification,
+      normalizeSchema(dataset.schema, `${qualification}.lakehouse-row`),
+    ]),
+  );
   return {
     async query(request) {
       const startedAt = Date.now();
@@ -181,7 +187,7 @@ export function createAwsApplicationLakehouseQueryRuntime(
             WorkGroup: configuration.workgroup,
             ClientRequestToken: digest({ queryShape, offset }).slice(0, 64),
           })).catch((cause: unknown) => {
-          throw terminalError('failed', 'Athena rejected or failed query admission.', undefined, cause);
+          throw terminalError('outcome-unknown', 'Athena query admission could not be reconciled; retrying the same logical query is safe.', undefined, cause);
         });
         const queryId = started.QueryExecutionId;
         if (!queryId) throw terminalError('outcome-unknown', 'Athena admitted the query without returning an execution identity.');
@@ -204,14 +210,48 @@ export function createAwsApplicationLakehouseQueryRuntime(
         if (terminal.scannedBytes > maximumScannedBytes) {
           throw new AwsApplicationLakehouseLimitError('scannedBytes', maximumScannedBytes, terminal.scannedBytes, queryId);
         }
-        const response = await athena.send(new GetQueryResultsCommand({ QueryExecutionId: queryId, MaxResults: pageSize + 2 })).catch((cause: unknown) => {
-          throw terminalError('failed', 'Athena completed but its result object could not be read.', queryId, cause);
+        const providerRows: Record<string, unknown>[] = [];
+        const seenTokens = new Set<string>();
+        let columns: readonly string[] | undefined;
+        let nextToken: string | undefined;
+        let firstResultPage = true;
+        do {
+          const remaining = pageSize + 1 - providerRows.length;
+          const response = await athena.send(new GetQueryResultsCommand({
+            QueryExecutionId: queryId,
+            MaxResults: Math.min(1_000, remaining + (firstResultPage ? 1 : 0)),
+            ...(nextToken ? { NextToken: nextToken } : {}),
+          })).catch((cause: unknown) => {
+            throw terminalError('failed', 'Athena completed but its result object could not be read.', queryId, cause);
+          });
+          columns ??= response.ResultSet?.ResultSetMetadata?.ColumnInfo?.map(({ Name }) => Name ?? '') ?? [];
+          const rows = response.ResultSet?.Rows ?? [];
+          for (const row of rows.slice(firstResultPage ? 1 : 0)) {
+            providerRows.push(Object.fromEntries(columns.map((name, index) => [
+              name,
+              scalarValue(row.Data?.[index]?.VarCharValue, schemaProperty(snapshot.schema.jsonSchema, name)),
+            ])));
+            if (providerRows.length >= pageSize + 1) break;
+          }
+          firstResultPage = false;
+          nextToken = response.NextToken;
+          if (nextToken && seenTokens.has(nextToken)) {
+            throw terminalError('failed', 'Athena repeated a result continuation token.', queryId);
+          }
+          if (nextToken) seenTokens.add(nextToken);
+        } while (nextToken && providerRows.length < pageSize + 1);
+        const runtimeSchema = datasetSchemas.get(qualification);
+        if (!runtimeSchema) throw terminalError('failed', 'Athena query lost its dataset schema binding.', queryId);
+        const validatedRows = providerRows.map((row) => {
+          const validated = runtimeSchema.validate(row as never);
+          if (!validated.ok) {
+            throw terminalError('failed', 'Athena returned a row that does not satisfy the published dataset schema.', queryId);
+          }
+          return validated.value;
         });
-        const columns = response.ResultSet?.ResultSetMetadata?.ColumnInfo?.map(({ Name }) => Name ?? '') ?? [];
-        const providerRows = (response.ResultSet?.Rows ?? []).slice(1).map((row) => Object.fromEntries(columns.map((name, index) => [name, scalarValue(row.Data?.[index]?.VarCharValue, schemaProperty(snapshot.schema.jsonSchema, name))])));
-        const hasMore = providerRows.length > pageSize;
+        const hasMore = validatedRows.length > pageSize;
         if (hasMore && compiled.orderBy.length === 0) throw new Error('AWS lakehouse result requires pagination but the query has no deterministic orderBy.');
-        const rows = providerRows.slice(0, pageSize);
+        const rows = validatedRows.slice(0, pageSize);
         const nextOffset = offset + rows.length;
         return {
           state: 'succeeded',

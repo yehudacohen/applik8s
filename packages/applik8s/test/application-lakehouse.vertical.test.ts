@@ -209,6 +209,7 @@ describe('v0.8 published lakehouse snapshots', () => {
       receipt: { state: 'succeeded', provider: 'deterministic', dataset: 'historical-usage' },
     });
     expect(page1.cursor).toBeTruthy();
+    await expect(runtime.query({ dataset: Dataset, page: { size: 1 } })).rejects.toThrow(/deterministic orderBy/u);
     const cursor = page1.cursor!;
     await runtime.append({ frontier: 'event:2', expectedSnapshot: first.snapshotId, rows: [{ organizationId: 'org-1', occurredAt: '2026-08-03', quantity: 3 }] });
     expect((await runtime.append({ frontier: 'event:1', rows: [] })).snapshotId).toBe(first.snapshotId);
