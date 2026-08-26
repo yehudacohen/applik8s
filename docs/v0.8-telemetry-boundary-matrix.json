@@ -236,11 +236,11 @@
     },
     {
       "kind": "processor",
-      "state": "in-progress",
+      "state": "implemented",
       "relationship": "asynchronous",
       "producer": "transactional outbox or broker event issuance",
       "consumer": "stream processor attempt or frozen batch",
-      "carrierPlacement": "single-event and frozen-batch attempts link the internal stream envelope carriers with stable logical execution and explicit retry attempts; generated command and stream workers install the application-selected telemetry runtime and shut it down with the worker lifecycle",
+      "carrierPlacement": "single-event and frozen-batch attempts link the internal stream envelope carriers with stable logical execution, explicit replay classification, and physical retry attempts; every attempt records bounded delivery lag and a redacted terminal result; generated command and stream workers install the application-selected telemetry runtime and shut it down with the worker lifecycle",
       "owners": [
         "packages/applik8s/src/stream-processor-runtime.ts",
         "packages/compiler/src/application-reactive/index.ts"
@@ -251,8 +251,8 @@
           "marker": "kind: 'processor'"
         }
       ],
-      "regression": "bunx vitest run --maxWorkers=1 packages/applik8s/test/stream-processor-runtime.vertical.test.ts packages/applik8s/test/stream-runtime-postgres.vertical.test.ts",
-      "remaining": "Record delivery lag and redacted terminal outcomes, distinguish explicit replay, and prove an emitted stream-processor worker's PostgreSQL restart/cleanup continuity. The generated-process live receipt terminates in a lakehouse event publisher and deliberately does not qualify this separate processor boundary."
+      "regression": "bunx vitest run --maxWorkers=1 packages/applik8s/test/stream-processor-runtime.vertical.test.ts packages/applik8s/test/stream-runtime-postgres.vertical.test.ts && bun run test:v08:observability-processor-live",
+      "remaining": "Deterministic and emitted-process evidence proves producer linkage, delivery lag, live/replay/retry classification, redacted failure, checkpoint continuity, process restart, exactly one committed PostgreSQL effect, and verified cleanup. Kinesis remains deterministic rather than live-qualified, and this semantic row does not qualify a collector backend or broker lifecycle."
     },
     {
       "kind": "provider",

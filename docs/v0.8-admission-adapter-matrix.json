@@ -46,7 +46,7 @@
         "packages/compiler/src/application-reactive/index.ts"
       ],
       "regression": "bunx vitest run --maxWorkers=1 packages/applik8s/test/stream-processor-runtime.vertical.test.ts packages/applik8s/test/signal-runtime.vertical.test.ts; NODE_OPTIONS=--max-old-space-size=8192 bunx vitest run --maxWorkers=1 packages/compiler/test/application-reactive.vertical.test.ts",
-      "remaining": "shared bounded admission observations, fail-closed provenance substitution, redacted processor errors, stable current-state sampling, and source enforcement are integrated at 8a07641; obtain an emitted-worker PostgreSQL retry, restart, and cleanup receipt before live-qualified product claims"
+      "remaining": "shared bounded admission observations, fail-closed provenance substitution, redacted processor errors, stable current-state sampling, and source enforcement are integrated at 8a07641; the emitted worker now proves PostgreSQL retry, restart, checkpoint continuity, one committed effect, and cleanup at f781617, while live broker-specific qualification remains separate"
     },
     {
       "id": "workflow-task-delivery",
