@@ -16,12 +16,13 @@ import { createServer as createHttpServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { createServer as createNetServer } from 'node:net';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
 import type {
   ApplicationGraph,
   ApplicationModelNode,
 } from '@applik8s/core';
+import { build } from 'esbuild';
 import {
   AckPolicy,
   connect,
@@ -31,11 +32,14 @@ import {
 import postgres from 'postgres';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { ApplicationRuntimeModelContract } from '../../applik8s/src/application-models.js';
+import { generatedApplicationFetchGatewayModules } from '../../compiler/src/application-fetch-gateway/index.js';
 import { emitGeneratedApplicationLakehousePublishers } from '../../compiler/src/application-lakehouse-publishers/index.js';
 import { emitGeneratedApplicationMigrations } from '../../compiler/src/application-migrations/index.js';
 import { emitGeneratedApplicationProcessors } from '../../compiler/src/application-processors/index.js';
 import { emitGeneratedApplicationReactive } from '../../compiler/src/application-reactive/index.js';
+import { applik8sWorkspaceSourcePlugin } from '../../compiler/src/bundling/index.js';
 import { discoverApplicationGraphWithExports } from '../../compiler/src/pipeline/index.js';
+import { applicationRuntimeEndpointEnvironmentName } from '../../deployment-contract/src/runtime-artifact.js';
 
 const databaseUrl = process.env.APPLIK8S_V08_OBSERVABILITY_PROCESS_DATABASE_URL;
 const natsUrl = process.env.APPLIK8S_V08_OBSERVABILITY_PROCESS_NATS_URL;
@@ -54,7 +58,7 @@ describe('v0.8 generated process observability chain', () => {
   });
 
   it.skipIf(!databaseUrl || !natsUrl)(
-    'links authenticated HTTP, model/outbox, JetStream retry, process restart, and one lakehouse effect',
+    'links front-gateway queries, model/outbox, JetStream retry, process restart, cancellation, and one lakehouse effect',
     async () => {
       const selectedDatabaseUrl = databaseUrl;
       const selectedNatsUrl = natsUrl;
@@ -150,6 +154,13 @@ describe('v0.8 generated process observability chain', () => {
         if (!gateway || !commandProcessor || !publisher) {
           throw new Error('Observed process graph did not emit its gateway, command processor, and lakehouse publisher.');
         }
+        const frontGatewaySourcePath = await emitGeneratedFetchGatewayProcess(
+          graph,
+          join(outDir, 'front-gateway'),
+        );
+        const remoteGatewayEndpointEnvironment = applicationRuntimeEndpointEnvironmentName(
+          gateway.nodeId,
+        );
         commandProcessorName = commandProcessor.name;
         publisherName = publisher.name;
         const commandFilters = consumerFilters(commandProcessor.resources);
@@ -231,7 +242,7 @@ describe('v0.8 generated process observability chain', () => {
         await writeFile(datasetRoot, 'intentionally blocks the first durable publication attempt');
 
         const gatewayPort = await availablePort();
-        const gatewayProcess = startProcess(gateway.sourcePath, {
+        let gatewayProcess = startProcess(gateway.sourcePath, {
           ...commonEnvironment,
           APPLIK8S_HTTP_PORT: String(gatewayPort),
         });
@@ -239,6 +250,20 @@ describe('v0.8 generated process observability chain', () => {
         outputs.push(gatewayProcess.output);
         const endpoint = `http://127.0.0.1:${gatewayPort}`;
         await waitForHttp(`${endpoint}/ready`, gatewayProcess);
+
+        const frontGatewayPort = await availablePort();
+        const frontGateway = startProcess(frontGatewaySourcePath, {
+          ...commonEnvironment,
+          APPLIK8S_HTTP_PORT: String(frontGatewayPort),
+          [remoteGatewayEndpointEnvironment]: endpoint,
+        });
+        children.add(frontGateway.child);
+        outputs.push(frontGateway.output);
+        const publicEndpoint = `http://127.0.0.1:${frontGatewayPort}/__applik8s/v1`;
+        await waitForHttp(
+          `http://127.0.0.1:${frontGatewayPort}/ready`,
+          frontGateway,
+        );
 
         const operation = 'models.Observation.create.v1';
         const submissionId = `v08-observed-${suffix}`;
@@ -338,8 +363,92 @@ describe('v0.8 generated process observability chain', () => {
         expect(await stopProcess(thirdPublisher.child, 'SIGTERM')).toBe(true);
         children.delete(thirdPublisher.child);
 
+        const query = 'observations.for-organization.v1';
+        const queryInput = { organizationId };
+        const firstSnapshot = await postJson(
+          `${publicEndpoint}/queries/${query}/snapshot`,
+          { input: queryInput },
+          {
+            ...identityHeaders(organizationId),
+            'x-applik8s-telemetry': `malformed-private-carrier-${suffix}`,
+          },
+        );
+        expect(firstSnapshot).toMatchObject({
+          kind: 'snapshot',
+          query,
+          value: [expect.objectContaining({ id: observationId, organizationId })],
+        });
+
         expect(await stopProcess(gatewayProcess.child, 'SIGTERM')).toBe(true);
         children.delete(gatewayProcess.child);
+        gatewayProcess = startProcess(gateway.sourcePath, {
+          ...commonEnvironment,
+          APPLIK8S_HTTP_PORT: String(gatewayPort),
+        });
+        children.add(gatewayProcess.child);
+        outputs.push(gatewayProcess.output);
+        await waitForHttp(`${endpoint}/ready`, gatewayProcess);
+        const restartedSnapshot = await postJson(
+          `${publicEndpoint}/queries/${query}/snapshot`,
+          { input: queryInput },
+          identityHeaders(organizationId),
+        );
+        expect(restartedSnapshot).toMatchObject({
+          kind: 'snapshot',
+          query,
+          value: [expect.objectContaining({ id: observationId, organizationId })],
+        });
+
+        const multiplexController = new AbortController();
+        const multiplexRequest = fetch(`${publicEndpoint}/queries/multiplex`, {
+          method: 'POST',
+          headers: identityHeaders(organizationId),
+          body: JSON.stringify({
+            subscriptions: [{
+              id: 'observations',
+              query,
+              input: queryInput,
+              cursor: stringField(restartedSnapshot, 'cursor'),
+            }],
+          }),
+          signal: multiplexController.signal,
+        });
+        await delay(250);
+        multiplexController.abort();
+        const multiplexResult = await multiplexRequest.then(
+          (response) => ({ response }),
+          (error: unknown) => ({ error }),
+        );
+        if ('response' in multiplexResult) {
+          expect(
+            multiplexResult.response.status,
+            await multiplexResult.response.clone().text(),
+          ).toBe(200);
+          expect(multiplexResult.response.headers.get('content-type')).toContain(
+            'text/event-stream',
+          );
+          await multiplexResult.response.body?.cancel().catch(() => undefined);
+        } else {
+          expect(objectValue(multiplexResult.error).name).toBe('AbortError');
+        }
+        await delay(100);
+
+        const afterCancellation = await postJson(
+          `${publicEndpoint}/queries/${query}/snapshot`,
+          { input: queryInput },
+          identityHeaders(organizationId),
+        );
+        expect(afterCancellation).toMatchObject({
+          kind: 'snapshot',
+          query,
+          value: [expect.objectContaining({ id: observationId, organizationId })],
+        });
+        expect(frontGateway.output()).not.toContain('query multiplex upstream failure');
+
+        expect(await stopProcess(gatewayProcess.child, 'SIGTERM')).toBe(true);
+        children.delete(gatewayProcess.child);
+        expect(await stopProcess(frontGateway.child, 'SIGTERM')).toBe(true);
+        children.delete(frontGateway.child);
         expect(await stopProcess(command.child, 'SIGTERM')).toBe(true);
         children.delete(command.child);
         await collector.waitForTraces();
@@ -373,6 +482,9 @@ describe('v0.8 generated process observability chain', () => {
         const eventSpans = spans.filter((span) =>
           attribute(span, 'applik8s.boundary.kind') === 'event'
           && attribute(span, 'applik8s.execution') === `event:${publisherName}:${sourceEventId}`);
+        const querySpans = spans.filter((span) =>
+          attribute(span, 'applik8s.boundary.kind') === 'query'
+          && attribute(span, 'applik8s.operation') === query);
         const spanSummary = spans.map((span) => ({
           name: span.name,
           kind: attribute(span, 'applik8s.boundary.kind'),
@@ -382,6 +494,14 @@ describe('v0.8 generated process observability chain', () => {
         }));
         expect(modelSpans, JSON.stringify(spanSummary)).toHaveLength(1);
         expect(eventSpans).toHaveLength(2);
+        expect(querySpans.length).toBeGreaterThanOrEqual(4);
+        expect(new Set(querySpans.map((span) => span.traceId)).size).toBeGreaterThanOrEqual(4);
+        for (const querySpan of querySpans) {
+          expect(spans.some((span) =>
+            span.traceId === querySpan.traceId
+            && attribute(span, 'applik8s.boundary.kind') === 'http'),
+          JSON.stringify(spanSummary)).toBe(true);
+        }
         expect(eventSpans.map((span) => Number(attribute(span, 'applik8s.attempt')))).toEqual([1, 2]);
         expect(eventSpans.map((span) => attribute(span, 'applik8s.invocation.kind'))).toEqual(['live', 'retry']);
         expect(new Set(eventSpans.map((span) => attribute(span, 'applik8s.execution')))).toEqual(
@@ -399,6 +519,7 @@ describe('v0.8 generated process observability chain', () => {
         }
         const exported = JSON.stringify(collector.payloads());
         expect(exported).not.toContain(sensitiveSegment);
+        expect(exported).not.toContain(`malformed-private-carrier-${suffix}`);
         expect(outputs.map((output) => output()).join('\n')).not.toContain(sensitiveSegment);
       } finally {
         delete process.env.APPLIK8S_V08_OBSERVABILITY_LAKEHOUSE_ROOT;
@@ -452,6 +573,137 @@ interface OtlpReceiver {
   spans(): readonly OtlpSpan[];
   waitForTraces(): Promise<void>;
   close(): Promise<void>;
+}
+
+async function emitGeneratedFetchGatewayProcess(
+  graph: ApplicationGraph,
+  directory: string,
+): Promise<string> {
+  // This receipt qualifies the remotely owned relational gateway. The
+  // separately qualified publisher owns the local dataset process in this
+  // fixture, so do not start a second DuckDB authority in the front gateway.
+  const gatewayGraph = {
+    ...graph,
+    nodes: graph.nodes.filter((node) => node.kind !== 'lakehousePublication'),
+  };
+  const generated = generatedApplicationFetchGatewayModules(gatewayGraph);
+  if (!generated) {
+    throw new Error('Observed process graph emitted no application-host Fetch gateway.');
+  }
+  await Promise.all(Object.entries(generated.files).map(async ([path, source]) => {
+    const target = join(directory, path);
+    await mkdir(dirname(target), { recursive: true });
+    await writeFile(target, source);
+  }));
+  const entrypoint = join(directory, 'process.generated.ts');
+  const sourcePath = join(directory, 'runtime.mjs');
+  await writeFile(entrypoint, generatedFetchGatewayProcessSource());
+  await build({
+    entryPoints: [entrypoint],
+    outfile: sourcePath,
+    bundle: true,
+    format: 'esm',
+    platform: 'node',
+    target: 'node22',
+    minify: true,
+    keepNames: true,
+    legalComments: 'none',
+    nodePaths: [join(process.cwd(), 'node_modules')],
+    external: [
+      '@duckdb/node-api',
+      '@duckdb/node-bindings',
+      '@duckdb/node-bindings-*',
+    ],
+    plugins: [applik8sWorkspaceSourcePlugin()],
+    banner: {
+      js: "import { createRequire as __applik8sCreateRequire } from 'node:module'; const require = __applik8sCreateRequire(import.meta.url);",
+    },
+  });
+  return sourcePath;
+}
+
+function generatedFetchGatewayProcessSource(): string {
+  return `import { createServer } from 'node:http';
+import { closeApplik8sGateway, handleApplik8sRequest } from './gateway.generated.js';
+
+const maximumBodyBytes = 1_048_576;
+let stopping = false;
+
+const server = createServer(async (incoming, outgoing) => {
+  const controller = new AbortController();
+  const abort = () => controller.abort(new Error('Application-host request disconnected.'));
+  incoming.once('aborted', abort);
+  outgoing.once('close', abort);
+  try {
+    const request = await webRequest(incoming, controller.signal);
+    const url = new URL(request.url);
+    if (url.pathname === '/live') url.pathname = '/__applik8s/v1/healthz';
+    if (url.pathname === '/ready') url.pathname = '/__applik8s/v1/readyz';
+    await writeWebResponse(outgoing, await handleApplik8sRequest(new Request(url, request)));
+  } catch (error) {
+    if (!controller.signal.aborted) {
+      console.error('Applik8s application-host request failed', error);
+      if (!outgoing.headersSent) outgoing.writeHead(500, { 'content-type': 'application/json' });
+      outgoing.end(JSON.stringify({ error: 'application_host_failed' }));
+    }
+  } finally {
+    incoming.removeListener('aborted', abort);
+    outgoing.removeListener('close', abort);
+  }
+});
+
+server.listen(Number(process.env.APPLIK8S_HTTP_PORT ?? '8080'), '127.0.0.1');
+
+async function webRequest(incoming, signal) {
+  const chunks = [];
+  let size = 0;
+  if (incoming.method !== 'GET' && incoming.method !== 'HEAD') {
+    for await (const chunk of incoming) {
+      size += chunk.length;
+      if (size > maximumBodyBytes) throw new Error('Application-host request body exceeds 1 MiB.');
+      chunks.push(chunk);
+    }
+  }
+  const body = chunks.length > 0 ? Buffer.concat(chunks) : undefined;
+  return new Request('http://' + (incoming.headers.host ?? 'localhost') + (incoming.url ?? '/'), {
+    method: incoming.method,
+    headers: Object.entries(incoming.headers).flatMap(([key, value]) =>
+      Array.isArray(value) ? value.map((item) => [key, item]) : value === undefined ? [] : [[key, value]]),
+    signal,
+    ...(body ? { body, duplex: 'half' } : {}),
+  });
+}
+
+async function writeWebResponse(outgoing, response) {
+  outgoing.writeHead(response.status, Object.fromEntries(response.headers));
+  if (!response.body) {
+    outgoing.end();
+    return;
+  }
+  const reader = response.body.getReader();
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (!outgoing.write(Buffer.from(value))) {
+      await new Promise((resolve) => outgoing.once('drain', resolve));
+    }
+  }
+  outgoing.end();
+}
+
+async function shutdown() {
+  if (stopping) return;
+  stopping = true;
+  const force = setTimeout(() => server.closeAllConnections?.(), 15_000);
+  force.unref?.();
+  await new Promise((resolve) => server.close(resolve));
+  clearTimeout(force);
+  await closeApplik8sGateway();
+}
+
+process.once('SIGTERM', () => { void shutdown().catch((error) => { console.error(error); process.exitCode = 1; }); });
+process.once('SIGINT', () => { void shutdown().catch((error) => { console.error(error); process.exitCode = 1; }); });
+`;
 }
 
 function startProcess(

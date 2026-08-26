@@ -670,6 +670,9 @@ describe("application host Fetch gateway", () => {
 		expect(modules?.files["gateway.generated.ts"]).not.toContain(
 			"createApplik8sKubernetesGateway({",
 		);
+		expect(modules?.files["gateway.generated.ts"]).not.toContain(
+			"new AsyncLocalStorage()",
+		);
 	});
 
 	it("routes both replay and action requests for a gateway-owned durable signal", () => {

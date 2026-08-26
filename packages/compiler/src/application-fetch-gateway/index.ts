@@ -1568,6 +1568,7 @@ ${actors.length > 0 || lakehousePublications.length > 0 || schedules.length > 0 
     requiredEnv('APPLIK8S_INTERNAL_OPERATION_SECRET'),
   );
 }` : ""}
+${schedules.length > 0 ? `
 const applicationScheduleBindings = [${scheduleSources.join(",\n")}];
 const applicationSchedules = applicationScheduleBindings.map((entry) => entry.handle);
 const defaultApplicationScheduleBindings = applicationScheduleBindings.filter((entry) => entry.schedulerNodeId === 'provider.scheduler');
@@ -1717,6 +1718,7 @@ const disposeHatchetScheduleRuntime = hatchetScheduleRuntimes.size > 0
   ? installApplicationScheduleRuntimeResolver((schedulerNodeId) => hatchetScheduleRuntimes.get(schedulerNodeId))
   : undefined;
 void disposeHatchetScheduleRuntime;
+` : ""}
 const agentHealth = ${JSON.stringify(agentTargets)}.map(({ name, baseUrl, endpointEnvironmentName }) => ({ name: \`agent:\${name}\`, baseUrl: materializeRemoteBaseUrl(baseUrl, endpointEnvironmentName) }));
 
 const applicationGatewayCore = {

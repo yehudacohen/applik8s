@@ -10,6 +10,7 @@ import {
   type,
 } from '@applik8s/applik8s';
 import { createDeterministicApplicationAdmission } from '@applik8s/identity';
+import { eq } from 'drizzle-orm';
 import { pgTable, text, uuid } from 'drizzle-orm/pg-core';
 
 const namespace = 'v08-observability-process';
@@ -50,6 +51,25 @@ const Observation = application.model(observations, {
 });
 Observation.delete.applicationPolicy();
 Observation.update.applicationPolicy();
+
+const ObservationsForOrganization = application.query(
+  'observations.for-organization.v1',
+  {
+    input: type({ organizationId: 'string' }),
+    output: Observation.$model.schema.select.array(),
+    database: Database,
+    context: [OrganizationId],
+    reads: [Observation],
+    budgets: { timeoutMs: 2_000, maxRows: 100, maxResultBytes: 64 * 1_024 },
+    authorize: ({ principal, input }) =>
+      principal.identity.subject === input.organizationId,
+    run: async ({ context, input }) => context
+      .database(Database)
+      .select()
+      .from(Observation)
+      .where(eq(Observation.organizationId, input.organizationId)),
+  },
+);
 
 const ObservationCreated = event('observations.created.v1', {
   payload: type({
@@ -92,7 +112,7 @@ export const PublishedObservationHistory = ObservationCreated.publish(
 );
 
 application.gateway('public', {
-  queries: [],
+  queries: [ObservationsForOrganization],
   commands: [Observation.create],
   subscriptions: [],
   authorizeCommand: ({ principal }) => principal.id.length > 0,
