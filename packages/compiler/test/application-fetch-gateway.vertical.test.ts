@@ -877,6 +877,7 @@ describe("application host Fetch gateway", () => {
 
 	it("bounds request-derived Kubernetes model namespaces to the ApplicationHost namespace", () => {
 		const guestbook = app("guestbook", { namespace: "guestbook" });
+		guestbook.provide(Observability, Observability.local());
 		guestbook.provide(
 			IdentityProvider,
 			IdentityProvider.deterministic(identityOptions("author", { namespace: "guestbook" })),
@@ -925,6 +926,9 @@ describe("application host Fetch gateway", () => {
 		);
 		expect(source).toContain("commands: [{");
 		expect(source).toContain("queries: [{");
+		expect(source).toContain("modelTelemetry: {");
+		expect(source).toContain("kind: 'model'");
+		expect(source).toContain("execution: 'model:' + instance");
 		expect(source).toContain(
 			"Applik8s Kubernetes application-host request failed",
 		);

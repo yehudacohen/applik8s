@@ -280,6 +280,7 @@ const commandEffectBoundary = new AsyncLocalStorage<boolean>();
 interface FunctionNativePostgresTransactionContext {
   readonly transaction: ApplicationPostgresTransactionSql;
   readonly database?: ApplicationDatabaseClient<Readonly<Record<string, unknown>>>;
+  readonly transactionAttempt: number;
 }
 
 const functionNativePostgresTransaction =
@@ -354,7 +355,10 @@ export async function executePostgresModelCommand<
     : await postgresCommandDatabase(execution.model, execution.databaseUrl);
   const scope = commandScope(execution);
   const recordedAt = execution.message.recordedAt ?? new Date().toISOString();
-  const execute = () => {
+  const execute = (retryAttempt = 1) => {
+    const transactionAttempt = execution.transaction
+      ? functionNativePostgresTransaction.getStore()?.transactionAttempt ?? 1
+      : retryAttempt;
     const run = async (
       transaction: ApplicationPostgresTransactionSql,
     ): Promise<
@@ -396,6 +400,11 @@ export async function executePostgresModelCommand<
       };
     }
 
+    return runPostgresModelTelemetryBoundary(
+      execution,
+      transactionAttempt,
+      async () => {
+        const modelTelemetry = captureApplicationTelemetryContext();
     await transaction.unsafe('SAVEPOINT applik8s_command_handler');
     const serial = (execution.ordering ?? 'serial') === 'serial';
     let effectiveTargetKey = execution.message.targetKey;
@@ -571,25 +580,8 @@ export async function executePostgresModelCommand<
       },
     };
     let output: TOutput;
-    let modelTelemetry: ApplicationTelemetryEnvelopeV1 | undefined;
     try {
-      output = await runApplicationTelemetryBoundary(
-        {
-          kind: 'model',
-          identity: execution.bindingId,
-          execution: `model:${execution.message.id}`,
-          definition: `${execution.command.name}.${execution.command.version}`,
-          instance: execution.message.id,
-          attempt: execution.message.attempt ?? 1,
-          invocation: (execution.message.attempt ?? 1) > 1 ? 'retry' : 'live',
-          relationship: execution.message.telemetry ? 'asynchronous' : 'synchronous',
-          ...(execution.message.telemetry
-            ? { parent: execution.message.telemetry }
-            : {}),
-        },
-        async () => {
-          modelTelemetry = captureApplicationTelemetryContext();
-          return commandEffectBoundary.run(
+      output = await commandEffectBoundary.run(
             true,
             () => withApplicationNativeModelClients(
               participantClients,
@@ -716,8 +708,6 @@ export async function executePostgresModelCommand<
               ),
             ),
           );
-        },
-      );
       validateJsonMessageSchema(execution.schemas?.output, output, `${execution.command.name}.${execution.command.version}.output`);
     } catch (error) {
       if (
@@ -914,6 +904,8 @@ export async function executePostgresModelCommand<
       ...(deleteTarget ? { deleted: true } : {}),
       events: envelopes,
     };
+      },
+    );
     };
     if (execution.transaction) return run(execution.transaction);
     if (!sql) {
@@ -924,7 +916,7 @@ export async function executePostgresModelCommand<
     return sql.begin(run);
   };
   const outcome: PostgresModelCommandResult<TSpec, TStatus, TOutput> | RejectedCommandOutcome = execution.transaction
-    ? await execute()
+    ? await execute(1)
     : await retryPostgresCommandTransaction(execute, execution.retry);
   if ('rejected' in outcome) {
     throw new DurableCommandRejectedError(
@@ -962,7 +954,7 @@ export async function executeFunctionNativePostgresTransaction<TResult>(
   );
   const outerScope = `function-native:${execution.bindingId}:${execution.delivery.id}:${execution.delivery.idempotencyKey}:${execution.delivery.context?.digest ?? 'unscoped'}`;
   return retryPostgresCommandTransaction(
-    () => sql.begin(async (transaction) => {
+    (transactionAttempt) => sql.begin(async (transaction) => {
       let sequence = 0;
       const principal = applicationCommandPrincipal(execution.delivery.context);
       const transactionDatabase = transaction.database as
@@ -971,6 +963,7 @@ export async function executeFunctionNativePostgresTransaction<TResult>(
       return functionNativePostgresTransaction.run(
         {
           transaction,
+          transactionAttempt,
           // typecast: the runtime-postgres adapter supplies a Drizzle
           // transaction implementing the framework's narrowed client surface.
           ...(transactionDatabase ? { database: transactionDatabase } : {}),
@@ -1700,12 +1693,99 @@ function validateJsonMessageSchema(schema: JsonObject | undefined, value: unknow
   }
 }
 
-async function retryPostgresCommandTransaction<TResult>(operation: () => Promise<TResult>, policy: ApplicationRetryPolicy | undefined): Promise<TResult> {
+function postgresRetryMaxAttempts(policy: ApplicationRetryPolicy | undefined): number {
+  const retry = policy ?? {
+    mode: 'boundedExponentialBackoff',
+    maxAttempts: 5,
+  };
+  return retry.mode === 'never' ? 1 : Math.max(1, retry.maxAttempts ?? 5);
+}
+
+function postgresModelTelemetryBoundary<
+  TSpec extends object,
+  TStatus extends object,
+  TInput extends object,
+  TOutput extends object,
+>(
+  execution: PostgresModelCommandExecution<TSpec, TStatus, TInput, TOutput>,
+  transactionAttempt: number,
+): import('./application-telemetry-runtime.js').ApplicationTelemetryBoundary {
+  const deliveryAttempt = Math.max(1, execution.message.attempt ?? 1);
+  const attemptsPerDelivery = execution.transaction
+    ? 1
+    : postgresRetryMaxAttempts(execution.retry);
+  const attempt = ((deliveryAttempt - 1) * attemptsPerDelivery)
+    + Math.max(1, transactionAttempt);
+  return {
+    kind: 'model',
+    identity: execution.bindingId,
+    execution: `model:${execution.message.id}`,
+    definition: `${execution.command.name}.${execution.command.version}`,
+    instance: execution.message.id,
+    attempt,
+    invocation: attempt > 1 ? 'retry' : 'live',
+    relationship: execution.message.telemetry
+      ? 'asynchronous'
+      : 'synchronous',
+    ...(execution.message.telemetry
+      ? { parent: execution.message.telemetry }
+      : {}),
+    attributes: {
+      'applik8s.model.delivery_attempt': deliveryAttempt,
+      'applik8s.model.transaction_attempt': Math.max(1, transactionAttempt),
+    },
+  };
+}
+
+class ApplicationModelRejectedTelemetrySignal extends Error {
+  override readonly name = 'ApplicationModelRejected';
+
+  constructor(readonly outcome: RejectedCommandOutcome) {
+    super('The model transaction produced a durable rejected outcome.');
+  }
+}
+
+async function runPostgresModelTelemetryBoundary<
+  TSpec extends object,
+  TStatus extends object,
+  TInput extends object,
+  TOutput extends object,
+>(
+  execution: PostgresModelCommandExecution<TSpec, TStatus, TInput, TOutput>,
+  transactionAttempt: number,
+  execute: () => Promise<
+    | PostgresModelCommandResult<TSpec, TStatus, TOutput>
+    | RejectedCommandOutcome
+  >,
+): Promise<
+  | PostgresModelCommandResult<TSpec, TStatus, TOutput>
+  | RejectedCommandOutcome
+> {
+  try {
+    return await runApplicationTelemetryBoundary(
+      postgresModelTelemetryBoundary(execution, transactionAttempt),
+      async () => {
+        const outcome = await execute();
+        if ('rejected' in outcome) {
+          throw new ApplicationModelRejectedTelemetrySignal(outcome);
+        }
+        return outcome;
+      },
+    );
+  } catch (error) {
+    if (error instanceof ApplicationModelRejectedTelemetrySignal) {
+      return error.outcome;
+    }
+    throw error;
+  }
+}
+
+async function retryPostgresCommandTransaction<TResult>(operation: (attempt: number) => Promise<TResult>, policy: ApplicationRetryPolicy | undefined): Promise<TResult> {
   const retry = policy ?? { mode: 'boundedExponentialBackoff', maxAttempts: 5, initialDelayMs: 10, maxDelayMs: 250 };
-  const maxAttempts = retry.mode === 'never' ? 1 : Math.max(1, retry.maxAttempts ?? 5);
+  const maxAttempts = postgresRetryMaxAttempts(retry);
   for (let attempt = 1; ; attempt += 1) {
     try {
-      return await operation();
+      return await operation(attempt);
     } catch (error) {
       if (attempt >= maxAttempts || !isRetryablePostgresTransactionError(error)) throw error;
       const initial = Math.max(1, retry.initialDelayMs ?? 10);

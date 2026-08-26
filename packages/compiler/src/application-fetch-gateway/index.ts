@@ -741,6 +741,9 @@ const localGateway =
   authenticate: (request) => ${authenticate}(request),
   cursorSecret: requiredEnv('APPLIK8S_CURSOR_SECRET'),
   observeAdmission: observeRequestAdmission,
+  ${observability ? `modelTelemetry: {
+    run: (model, operation, instance, execute) => runApplicationTelemetryBoundary({ kind: 'model', identity: model, definition: operation, execution: 'model:' + instance, instance, relationship: 'synchronous' }, execute),
+  },` : ''}
   ${observability ? `queryTelemetry: {
     run: (query, operation, execute) => runApplicationTelemetryBoundary({ kind: 'query', identity: query, definition: operation, relationship: 'synchronous' }, execute),
   },` : ''}

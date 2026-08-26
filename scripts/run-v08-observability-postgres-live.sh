@@ -30,4 +30,4 @@ APPLIK8S_TRANSACTIONAL_DATABASE_SCRIPT_RUNTIME_DATABASE_URL="postgres://applik8s
 TYPEKRO_LOG_LEVEL=fatal \
   bunx vitest run --maxWorkers=1 \
     packages/applik8s/test/transactional-database-postgres-runtime.vertical.test.ts \
-    -t 'commits model state, history, transitions, results, and event outbox atomically and replays duplicate results'
+    -t 'commits model state, history, transitions, results, and event outbox atomically and replays duplicate results|retries an intentionally deadlocked multi-model transaction from a clean boundary'

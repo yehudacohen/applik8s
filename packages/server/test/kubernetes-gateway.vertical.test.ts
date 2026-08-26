@@ -31,6 +31,11 @@ describe('generated Kubernetes application gateway', () => {
     let stored: KubernetesObject | undefined;
     let commandAdmission: unknown;
     const observations: unknown[] = [];
+    const modelTelemetry: Array<{
+      readonly model: string;
+      readonly operation: string;
+      readonly instance: string;
+    }> = [];
     const objects = {
       async createNamespacedCustomObject(request: { readonly body: KubernetesObject }) {
         stored = {
@@ -54,6 +59,12 @@ describe('generated Kubernetes application gateway', () => {
       watch: inertWatch(),
       readiness: () => undefined,
       observeAdmission: (observation) => { observations.push(observation); },
+      modelTelemetry: {
+        async run(model, operation, instance, execute) {
+          modelTelemetry.push({ model, operation, instance });
+          return execute();
+        },
+      },
       commands: [{
         id: 'GuestBookEntry.create',
         model: 'GuestBookEntry',
@@ -101,6 +112,11 @@ describe('generated Kubernetes application gateway', () => {
       transport: 'http',
       compatibilityPath: 'canonical',
     });
+    expect(modelTelemetry).toEqual([{
+      model: 'GuestBookEntry',
+      operation: 'GuestBookEntry.create',
+      instance: 'command-1',
+    }]);
 
     const progress = await gateway.handle(post('/__applik8s/v1/commands/GuestBookEntry.create/progress', {
       cursor: await signedEnvelopeV1KubernetesCursor(legacyPayload),

@@ -795,17 +795,48 @@ describe.runIf(liveDatabaseUrl)('Postgres TransactionalDatabase script runtime l
         return { allowed: false as const, code: 'AUTHORIZATION_GRANT_REVOKED', message: 'revoked before commit' };
       },
     };
-    await expect(executePostgresModelCommand(preCommitDeniedExecution)).rejects.toMatchObject({
-      code: 'applik8s-command-rejected',
-      rejection: {
-        name: 'internalFailure',
-        payload: {
-          code: 'authorization_denied',
-          attempts: 1,
-          authorizationCode: 'AUTHORIZATION_GRANT_REVOKED',
+    const deniedBoundaries: ApplicationTelemetryBoundary[] = [];
+    const deniedCompletions: Array<{
+      readonly boundary: ApplicationTelemetryBoundary;
+      readonly result: 'ok' | 'error';
+      readonly errorType?: string;
+    }> = [];
+    const deniedTelemetryRuntime = recordingTelemetryRuntime(
+      deniedBoundaries,
+      deniedCompletions,
+    );
+    const disposeDeniedTelemetry = installApplicationTelemetryRuntimeResolver(
+      () => deniedTelemetryRuntime,
+    );
+    try {
+      await expect(executePostgresModelCommand(preCommitDeniedExecution)).rejects.toMatchObject({
+        code: 'applik8s-command-rejected',
+        rejection: {
+          name: 'internalFailure',
+          payload: {
+            code: 'authorization_denied',
+            attempts: 1,
+            authorizationCode: 'AUTHORIZATION_GRANT_REVOKED',
+          },
         },
-      },
-    });
+      });
+    } finally {
+      disposeDeniedTelemetry();
+    }
+    expect(deniedBoundaries).toEqual([
+      expect.objectContaining({
+        kind: 'model',
+        identity: bindingId,
+        attempt: 1,
+        invocation: 'live',
+      }),
+    ]);
+    expect(deniedCompletions).toEqual([
+      expect.objectContaining({
+        result: 'error',
+        errorType: 'ApplicationModelRejected',
+      }),
+    ]);
     expect(preCommitTransactionObserved).toBe(true);
     await expect(client.get({ id: 'note-command-1' })).resolves.toMatchObject({ spec: { message: 'after' } });
     await expect(sql.unsafe(
@@ -1871,11 +1902,37 @@ describe.runIf(liveDatabaseUrl)('Postgres TransactionalDatabase script runtime l
       },
     });
 
-    await expect(Promise.all([
-      execute('deadlock-a', 'account-a', 'audit-a', 'audit-b'),
-      execute('deadlock-b', 'account-b', 'audit-b', 'audit-a'),
-    ])).resolves.toHaveLength(2);
+    const retryBoundaries: ApplicationTelemetryBoundary[] = [];
+    const retryCompletions: Array<{
+      readonly boundary: ApplicationTelemetryBoundary;
+      readonly result: 'ok' | 'error';
+      readonly errorType?: string;
+    }> = [];
+    const retryTelemetryRuntime = recordingTelemetryRuntime(
+      retryBoundaries,
+      retryCompletions,
+    );
+    const disposeRetryTelemetry = installApplicationTelemetryRuntimeResolver(
+      () => retryTelemetryRuntime,
+    );
+    try {
+      await expect(Promise.all([
+        execute('deadlock-a', 'account-a', 'audit-a', 'audit-b'),
+        execute('deadlock-b', 'account-b', 'audit-b', 'audit-a'),
+      ])).resolves.toHaveLength(2);
+    } finally {
+      disposeRetryTelemetry();
+    }
     expect([...invocations.values()].some((count) => count > 1)).toBe(true);
+    expect(retryBoundaries.some((boundary) =>
+      boundary.kind === 'model'
+      && boundary.attempt === 2
+      && boundary.invocation === 'retry'
+      && boundary.attributes?.['applik8s.model.transaction_attempt'] === 2)).toBe(true);
+    expect(retryCompletions.some((completion) =>
+      completion.result === 'error')).toBe(true);
+    expect(retryCompletions.filter((completion) =>
+      completion.result === 'ok')).toHaveLength(2);
     await expect(auditClient.get({ id: 'audit-a' })).resolves.toMatchObject({ spec: { count: 2 } });
     await expect(auditClient.get({ id: 'audit-b' })).resolves.toMatchObject({ spec: { count: 2 } });
     await expect(sql.unsafe('SELECT count(*)::int AS count FROM applik8s_command_inbox WHERE binding_id = $1', [bindingId])).resolves.toMatchObject([{ count: 2 }]);
@@ -1924,6 +1981,11 @@ function telemetryCarrier(operation: string, execution: string) {
 
 function recordingTelemetryRuntime(
   boundaries: ApplicationTelemetryBoundary[],
+  completions: Array<{
+    readonly boundary: ApplicationTelemetryBoundary;
+    readonly result: 'ok' | 'error';
+    readonly errorType?: string;
+  }> = [],
 ): ApplicationTelemetryRuntime {
   let active: ReturnType<typeof telemetryCarrier> | undefined;
   return {
@@ -1955,7 +2017,16 @@ function recordingTelemetryRuntime(
         },
       });
       try {
-        return await execute();
+        const result = await execute();
+        completions.push({ boundary, result: 'ok' });
+        return result;
+      } catch (error) {
+        completions.push({
+          boundary,
+          result: 'error',
+          errorType: error instanceof Error ? error.name : 'Error',
+        });
+        throw error;
       } finally {
         active = previous;
       }

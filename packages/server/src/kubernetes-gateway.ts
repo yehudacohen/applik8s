@@ -12,9 +12,9 @@ import {
   type JsonValue,
 } from '@applik8s/core';
 import {
+  type ApplicationAdmissionObserverV1,
   applicationAdmissionRejectionCodeV1,
   deliverApplicationAdmissionObservationV1,
-  type ApplicationAdmissionObserverV1,
 } from '@applik8s/core/admission';
 import { nodeLegacyHmacBase64Url } from '@applik8s/runtime/node-integrity';
 import {
@@ -98,6 +98,15 @@ export interface Applik8sKubernetesGatewayOptions {
     run<TResult>(
       query: string,
       operation: 'snapshot' | 'subscribe',
+      execute: () => Promise<TResult>,
+    ): Promise<TResult>;
+  };
+  /** Internal semantic model boundary supplied by the selected application telemetry runtime. */
+  readonly modelTelemetry?: {
+    run<TResult>(
+      model: string,
+      operation: string,
+      instance: string,
       execute: () => Promise<TResult>,
     ): Promise<TResult>;
   };
@@ -378,16 +387,29 @@ export function createApplik8sKubernetesGateway(options: Applik8sKubernetesGatew
       },
       spec: input,
     };
-    let created: KubernetesObject;
-    try {
-      created = await createObject(objects, command.resource, namespace, object);
-    } catch (error) {
-      if (responseStatus(error) !== 409) throw error;
-      created = await getObject(objects, command.resource, namespace, name);
-      if (stableJson(created.spec) !== stableJson(input)) {
-        throw new Error(`Application command ${command.id} idempotency key already identifies a different Kubernetes object.`);
+    const create = async (): Promise<KubernetesObject> => {
+      try {
+        return await createObject(objects, command.resource, namespace, object);
+      } catch (error) {
+        if (responseStatus(error) !== 409) throw error;
+        const existing = await getObject(
+          objects,
+          command.resource,
+          namespace,
+          name,
+        );
+        if (stableJson(existing.spec) !== stableJson(input)) {
+          throw new Error(`Application command ${command.id} idempotency key already identifies a different Kubernetes object.`);
+        }
+        return existing;
       }
-    }
+    };
+    await (options.modelTelemetry?.run(
+      command.model,
+      command.id,
+      commandId,
+      create,
+    ) ?? create());
     const cursor = await signCursor(cursorCodec, {
       version: 1,
       kind: 'kubernetes-command',
