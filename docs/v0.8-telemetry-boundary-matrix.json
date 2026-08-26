@@ -165,24 +165,34 @@
     },
     {
       "kind": "model",
-      "state": "in-progress",
+      "state": "implemented",
       "relationship": "mixed",
       "producer": "managed transaction, durable command delivery, or nested operation",
       "consumer": "native relational or Kubernetes model mutation",
-      "carrierPlacement": "PostgreSQL model command handlers use synchronous nesting or a durable producer link and capture their child carrier for transactional event and command outboxes",
+      "carrierPlacement": "PostgreSQL mutation attempts open after durable replay detection and remain active through handler execution, pre-commit authorization, authoritative state/history/outbox/result persistence, and typed rejection; ambient function-native transactions propagate deterministic database-retry attempts to nested model boundaries; generated Kubernetes creates open at the admitted gateway mutation seam and include idempotent conflict resolution",
       "owners": [
         "packages/applik8s/src/model-command-postgres-runtime.ts",
         "packages/applik8s/src/native-models.ts",
-        "packages/operations/src/runtime.ts"
+        "packages/operations/src/runtime.ts",
+        "packages/server/src/kubernetes-gateway.ts",
+        "packages/compiler/src/application-fetch-gateway/index.ts"
       ],
       "sourceMarkers": [
         {
           "path": "packages/applik8s/src/model-command-postgres-runtime.ts",
           "marker": "kind: 'model'"
+        },
+        {
+          "path": "packages/compiler/src/application-fetch-gateway/index.ts",
+          "marker": "modelTelemetry"
+        },
+        {
+          "path": "packages/server/src/kubernetes-gateway.ts",
+          "marker": "options.modelTelemetry?.run"
         }
       ],
-      "regression": "bash scripts/run-v08-observability-postgres-live.sh && bun run test:v08:observability-generated-process-live",
-      "remaining": "The positive generated native-PostgreSQL authoritative commit plus exactly one transactional event-outbox record is proven through a real process chain. Internal PostgreSQL retries, function-native transactions, negative commit outcomes, and Kubernetes model mutations remain, without emitting spans for durable replay."
+      "regression": "bunx vitest run --maxWorkers=1 packages/applik8s/test/transactional-database-postgres-runtime.vertical.test.ts packages/server/test/kubernetes-gateway.vertical.test.ts packages/compiler/test/application-fetch-gateway.vertical.test.ts && bash scripts/run-v08-observability-postgres-live.sh && bun run test:v08:observability-generated-process-live",
+      "remaining": "Deterministic and live PostgreSQL evidence covers authoritative commits, event outboxes, durable replay suppression, function-native nesting, intentional deadlock retry, and typed negative commit outcomes. Generated Kubernetes gateway evidence covers one admitted create boundary and idempotent conflict resolution. A live Kubernetes collector receipt may strengthen backend qualification, but is not required to keep the semantic model contract implemented."
     },
     {
       "kind": "operation",

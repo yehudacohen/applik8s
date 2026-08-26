@@ -44,6 +44,10 @@ Current foundation increment:
   compiler-owned atomic handles preserve one exact operation identity through
   direct, extracted, and helper-mediated invocation without double-wrapping AI
   tools or adjacent model/provider boundaries.
+- Closed relational and Kubernetes model telemetry. PostgreSQL replay remains
+  inert while live/retried attempts cover authorization and every authoritative
+  write; ambient transactions propagate internal retry identity, and generated
+  Kubernetes creates use the server-owned mutation seam.
 
 Next, in manifesto dependency order:
 

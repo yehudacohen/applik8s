@@ -35,6 +35,14 @@ workflow/task workers as well as transaction-local and compiler-owned atomic
 execution. Provider calls, model mutations, processors, and AI tool calls keep
 their distinct semantic owners, avoiding duplicate spans and author ceremony.
 
+Native model mutations now have one complete framework-owned telemetry
+boundary. PostgreSQL spans begin after durable replay detection and cover
+handler execution, pre-commit authorization, authoritative persistence,
+transactional outboxes, typed rejection, and deterministic database retries.
+Generated Kubernetes create commands use the same semantic model boundary at
+their admitted mutation seam without asking application authors to instrument
+their models.
+
 ## v0.7.1
 
 v0.7.1 corrects the released-compiler and clean-consumer boundary discovered
