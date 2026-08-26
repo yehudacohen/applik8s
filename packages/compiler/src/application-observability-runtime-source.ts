@@ -48,8 +48,23 @@ export function generatedApplicationTelemetryRuntimeSource(options: {
   service: process.env.APPLIK8S_SERVICE_NAME ?? ${JSON.stringify(options.service)},
 };
 const applicationTelemetryEndpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
+const applicationTelemetrySignals = process.env.APPLIK8S_OTLP_SIGNALS
+  ?.split(',')
+  .map(value => value.trim())
+  .filter(Boolean);
+const applicationTelemetryHeaderName = process.env.APPLIK8S_OTLP_HEADER_NAME;
+const applicationTelemetryHeaderValue = process.env.APPLIK8S_OTLP_HEADER_VALUE;
 const applicationTelemetrySession = applicationTelemetryEndpoint
-  ? await startApplicationOpenTelemetryRuntime({ ...applicationTelemetryOptions, endpoint: applicationTelemetryEndpoint })
+  ? await startApplicationOpenTelemetryRuntime({
+      ...applicationTelemetryOptions,
+      endpoint: applicationTelemetryEndpoint,
+      ...(applicationTelemetrySignals ? { signals: applicationTelemetrySignals } : {}),
+      ...(applicationTelemetryHeaderName && applicationTelemetryHeaderValue
+        ? { headers: { [applicationTelemetryHeaderName]: applicationTelemetryHeaderValue } }
+        : {}),
+      ...(process.env.APPLIK8S_OTLP_CA_PEM ? { certificateAuthority: process.env.APPLIK8S_OTLP_CA_PEM } : {}),
+      ...(process.env.APPLIK8S_OTLP_SERVER_NAME ? { serverName: process.env.APPLIK8S_OTLP_SERVER_NAME } : {}),
+    })
   : undefined;
 const applicationTelemetryRuntime = applicationTelemetrySession?.runtime
   ?? createApplicationOpenTelemetryRuntime(applicationTelemetryOptions);

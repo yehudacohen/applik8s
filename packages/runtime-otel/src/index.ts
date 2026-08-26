@@ -30,12 +30,15 @@ import {
   type Tracer,
   trace,
 } from '@opentelemetry/api';
+import { logs, SeverityNumber } from '@opentelemetry/api-logs';
+import { OTLPLogExporter } from '@opentelemetry/exporter-logs-otlp-http';
 import { OTLPMetricExporter } from '@opentelemetry/exporter-metrics-otlp-http';
 import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http';
 import { resourceFromAttributes } from '@opentelemetry/resources';
+import { BatchLogRecordProcessor } from '@opentelemetry/sdk-logs';
 import { PeriodicExportingMetricReader } from '@opentelemetry/sdk-metrics';
 import { NodeSDK } from '@opentelemetry/sdk-node';
-import { ParentBasedSampler, TraceIdRatioBasedSampler } from '@opentelemetry/sdk-trace-base';
+import { BatchSpanProcessor, ParentBasedSampler, TraceIdRatioBasedSampler } from '@opentelemetry/sdk-trace-base';
 
 export interface ApplicationOpenTelemetryRuntimeOptions {
   readonly application: string;
@@ -59,8 +62,16 @@ export interface ApplicationOpenTelemetryStartOptions extends ApplicationOpenTel
   readonly endpoint: string;
   readonly traceEndpoint?: string;
   readonly metricEndpoint?: string;
+  readonly logEndpoint?: string;
+  readonly signals?: readonly ('traces' | 'metrics' | 'logs')[];
   readonly headers?: Readonly<Record<string, string>>;
+  readonly certificateAuthority?: string;
+  readonly serverName?: string;
   readonly metricIntervalMs?: number;
+  readonly batchDelayMs?: number;
+  readonly exportTimeoutMs?: number;
+  readonly maximumTraceQueueSize?: number;
+  readonly maximumLogQueueSize?: number;
   readonly samplingRatio?: number;
 }
 
@@ -435,9 +446,25 @@ export async function startApplicationOpenTelemetryRuntime(
   if (!Number.isFinite(samplingRatio) || samplingRatio < 0 || samplingRatio > 1) {
     throw new Error('OpenTelemetry samplingRatio must be between 0 and 1.');
   }
+  const signals = validateOtlpSignals(options.signals);
   const headers = Object.freeze({ ...(options.headers ?? {}) });
   const traceEndpoint = signalEndpoint(options.traceEndpoint ?? options.endpoint, 'traces');
   const metricEndpoint = signalEndpoint(options.metricEndpoint ?? options.endpoint, 'metrics');
+  const logEndpoint = signalEndpoint(options.logEndpoint ?? options.endpoint, 'logs');
+  const httpAgentOptions = applicationOtlpHttpAgentOptions(options);
+  const exporterOptions = { headers, ...(httpAgentOptions ? { httpAgentOptions } : {}) };
+  const logExporter = signals.has('logs')
+    ? new OTLPLogExporter({ ...exporterOptions, url: logEndpoint })
+    : undefined;
+  const traceExporter = signals.has('traces')
+    ? new OTLPTraceExporter({ ...exporterOptions, url: traceEndpoint })
+    : undefined;
+  const traceQueueSize = positiveInteger(options.maximumTraceQueueSize, 2_048);
+  const metricIntervalMs = options.metricIntervalMs ?? 30_000;
+  const exportTimeoutMs = options.exportTimeoutMs ?? 10_000;
+  if (signals.has('metrics') && metricIntervalMs < exportTimeoutMs) {
+    throw new Error('OpenTelemetry metricIntervalMs must be greater than or equal to exportTimeoutMs.');
+  }
   const sdk = new NodeSDK({
     resource: resourceFromAttributes({
       'service.name': options.service ?? options.application,
@@ -447,27 +474,63 @@ export async function startApplicationOpenTelemetryRuntime(
       ...(options.provider ? { 'applik8s.provider': options.provider } : {}),
     }),
     sampler: new ParentBasedSampler({ root: new TraceIdRatioBasedSampler(samplingRatio) }),
-    traceExporter: new OTLPTraceExporter({ url: traceEndpoint, headers }),
-    metricReader: new PeriodicExportingMetricReader({
-      exporter: new OTLPMetricExporter({ url: metricEndpoint, headers }),
-      exportIntervalMillis: options.metricIntervalMs ?? 30_000,
-    }),
+    ...(traceExporter ? {
+      spanProcessors: [new BatchSpanProcessor(traceExporter, {
+        maxQueueSize: traceQueueSize,
+        maxExportBatchSize: Math.min(512, traceQueueSize),
+        scheduledDelayMillis: options.batchDelayMs ?? 250,
+        exportTimeoutMillis: exportTimeoutMs,
+      })],
+    } : {}),
+    ...(signals.has('metrics') ? {
+      metricReader: new PeriodicExportingMetricReader({
+        exporter: new OTLPMetricExporter({ ...exporterOptions, url: metricEndpoint }),
+        exportIntervalMillis: metricIntervalMs,
+        exportTimeoutMillis: exportTimeoutMs,
+      }),
+    } : {}),
+    ...(logExporter ? {
+      logRecordProcessors: [new BatchLogRecordProcessor({
+        exporter: logExporter,
+        maxQueueSize: positiveInteger(options.maximumLogQueueSize, 2_048),
+        maxExportBatchSize: Math.min(512, positiveInteger(options.maximumLogQueueSize, 2_048)),
+        scheduledDelayMillis: options.batchDelayMs ?? 250,
+        exportTimeoutMillis: exportTimeoutMs,
+      })],
+    } : {}),
   });
   sdk.start();
+  const outputLog = options.log ?? ((record: Readonly<Record<string, unknown>>) => process.stdout.write(`${JSON.stringify(record)}\n`));
+  const otelLogger = logExporter ? logs.getLogger('applik8s', '0.8.0') : undefined;
+  const runtime = createApplicationOpenTelemetryRuntime({
+    ...options,
+    log(record) {
+      outputLog(record);
+      if (!otelLogger) return;
+      const severity = String(record.severity ?? 'info');
+      otelLogger.emit({
+        eventName: String(record.event ?? 'applik8s.log'),
+        severityText: severity.toUpperCase(),
+        severityNumber: applicationLogSeverityNumber(severity),
+        body: String(record.event ?? 'applik8s.log'),
+        attributes: applicationLogAttributes(record),
+      });
+    },
+  });
   return Object.freeze({
-    runtime: createApplicationOpenTelemetryRuntime(options),
+    runtime,
     shutdown: () => sdk.shutdown(),
   });
 }
 
 export function applicationOtlpSignalEndpoint(
   endpoint: string,
-  signal: 'metrics' | 'traces',
+  signal: 'metrics' | 'traces' | 'logs',
 ): string {
   return signalEndpoint(endpoint, signal);
 }
 
-function signalEndpoint(endpoint: string, signal: 'metrics' | 'traces'): string {
+function signalEndpoint(endpoint: string, signal: 'metrics' | 'traces' | 'logs'): string {
   const parsed = new URL(endpoint);
   if (!['http:', 'https:'].includes(parsed.protocol)) {
     throw new Error('OpenTelemetry endpoint must use HTTP or HTTPS.');
@@ -480,6 +543,51 @@ function signalEndpoint(endpoint: string, signal: 'metrics' | 'traces'): string 
     parsed.pathname = `${parsed.pathname.replace(/\/$/u, '')}${suffix}`;
   }
   return parsed.href;
+}
+
+function validateOtlpSignals(
+  input: ApplicationOpenTelemetryStartOptions['signals'],
+): ReadonlySet<'traces' | 'metrics' | 'logs'> {
+  const values = input ?? ['traces', 'metrics', 'logs'];
+  if (values.length === 0 || new Set(values).size !== values.length
+    || values.some((value) => !['traces', 'metrics', 'logs'].includes(value))) {
+    throw new Error('OpenTelemetry signals must be a non-empty unique subset of traces, metrics, and logs.');
+  }
+  return new Set(values);
+}
+
+function applicationOtlpHttpAgentOptions(
+  options: ApplicationOpenTelemetryStartOptions,
+): { readonly ca: string; readonly servername?: string } | undefined {
+  if (!options.certificateAuthority) {
+    if (options.serverName) throw new Error('OpenTelemetry serverName requires a custom certificateAuthority.');
+    return undefined;
+  }
+  const endpoint = new URL(options.endpoint);
+  if (endpoint.protocol !== 'https:') {
+    throw new Error('OpenTelemetry custom certificateAuthority requires an HTTPS endpoint.');
+  }
+  return {
+    ca: options.certificateAuthority,
+    ...(options.serverName ? { servername: options.serverName } : {}),
+  };
+}
+
+function applicationLogSeverityNumber(severity: string): SeverityNumber {
+  if (severity === 'error') return SeverityNumber.ERROR;
+  if (severity === 'warn') return SeverityNumber.WARN;
+  if (severity === 'debug') return SeverityNumber.DEBUG;
+  return SeverityNumber.INFO;
+}
+
+function applicationLogAttributes(record: Readonly<Record<string, unknown>>): Readonly<Record<string, string | number | boolean>> {
+  const attributes: Record<string, string | number | boolean> = {};
+  for (const [key, value] of Object.entries(record)) {
+    if (key === 'event' || key === 'severity' || key === 'timestamp' || key === 'fields') continue;
+    if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') attributes[key] = value;
+  }
+  if (record.fields !== undefined) attributes['applik8s.log.fields'] = JSON.stringify(record.fields);
+  return attributes;
 }
 
 function spanContextFromEnvelope(envelope: ApplicationTelemetryEnvelopeV1): SpanContext {

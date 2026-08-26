@@ -300,6 +300,60 @@ describe("compiler deployment graph emission", () => {
     });
   });
 
+  it("projects external OTLP signals and namespace-scoped Secret inputs into every Kubernetes runtime", async () => {
+    const directory = await mkdtemp(
+      join(process.env.TMPDIR ?? "/tmp", "applik8s-external-otlp-"),
+    );
+    temporaryDirectories.push(directory);
+    const bundlePath = join(directory, "typekro-bundle.json");
+    await writeFile(bundlePath, JSON.stringify({ spec: {} }));
+    await writeFile(join(directory, "resources.json"), JSON.stringify([{
+      apiVersion: "kro.run/v1alpha1",
+      kind: "ResourceGraphDefinition",
+      metadata: { name: "telemetry" },
+      spec: {
+        schema: { apiVersion: "v1alpha1", kind: "Telemetry", spec: { name: "string" }, status: { ready: "boolean" } },
+        resources: [
+          generatedDeployment("telemetryHttp", "telemetry-http", "typed-http", "http", "example.test/http@sha256:immutable"),
+          generatedDeployment("telemetryWorker", "telemetry-worker", "stream-processor", "runtime", "example.test/worker@sha256:immutable"),
+        ],
+      },
+    }]));
+    const graph = externalOtlpApplicationGraph();
+    const request = {
+      bundlePath,
+      projectRoot: directory,
+      graph,
+      sourceGraphDigest,
+      compilerVersion: "0.8.0",
+      context: "orbstack",
+      controlPlaneNamespace: "telemetry",
+      instance: "telemetry",
+      profile: "external",
+      strategy: "direct" as const,
+      installationSpec: { name: "telemetry", namespace: "telemetry" },
+    };
+    const emitted = await emitApplicationDeploymentGraph(request);
+    const host = emitted.graph.nodes.find(({ id }) => id === "kubernetes.application");
+    const resources = host?.kind === "kubernetesComposition"
+      ? host.spec.materialized?.resources ?? []
+      : [];
+    for (const workload of ["telemetry-http", "telemetry-worker"]) {
+      expect(deploymentEnvironment(resources, workload)).toEqual(expect.arrayContaining([
+        { name: "OTEL_EXPORTER_OTLP_ENDPOINT", value: "https://otel.example.test/tenant/demo" },
+        { name: "APPLIK8S_OTLP_SIGNALS", value: "traces,logs" },
+        { name: "APPLIK8S_OTLP_HEADER_NAME", value: "x-otel-token" },
+        { name: "APPLIK8S_OTLP_HEADER_VALUE", valueFrom: { secretKeyRef: { name: "otel-auth", key: "token" } } },
+        { name: "APPLIK8S_OTLP_CA_PEM", valueFrom: { secretKeyRef: { name: "otel-ca", key: "ca.crt" } } },
+        { name: "APPLIK8S_OTLP_SERVER_NAME", value: "otel.example.test" },
+      ]));
+    }
+
+    const crossNamespaceGraph = externalOtlpApplicationGraph("shared-observability");
+    await expect(emitApplicationDeploymentGraph({ ...request, graph: crossNamespaceGraph }))
+      .rejects.toThrow(/cannot be mounted by runtime workloads in namespace telemetry/u);
+  });
+
   it("keeps production-capable host credential values outside portable state", async () => {
     const directory = await mkdtemp(
       join(process.env.TMPDIR ?? "/tmp", "applik8s-host-environment-"),
@@ -773,6 +827,40 @@ function applicationGraph(): ApplicationGraph {
       labels: [],
     },
   };
+}
+
+function externalOtlpApplicationGraph(secretNamespace = "telemetry"): ApplicationGraph {
+  return {
+    ...applicationGraph(),
+    metadata: { name: "telemetry", namespace: "telemetry" },
+    nodes: [{
+      id: "provider.Observability",
+      kind: "provider",
+      name: "Observability",
+      stability: "stable",
+      interface: "Observability",
+      implementation: "otlp",
+      config: {
+        observability: {
+          kind: "otlp",
+          endpoint: "https://otel.example.test/tenant/demo",
+          protocol: "http/protobuf",
+          signals: ["traces", "logs"],
+          authentication: {
+            secret: { apiVersion: "v1", kind: "Secret", name: "otel-auth", namespace: secretNamespace },
+            key: "token",
+            header: "x-otel-token",
+          },
+          tls: {
+            trust: "custom-ca",
+            certificateAuthority: { apiVersion: "v1", kind: "Secret", name: "otel-ca", namespace: secretNamespace },
+            key: "ca.crt",
+            serverName: "otel.example.test",
+          },
+        },
+      },
+    }],
+  } as unknown as ApplicationGraph;
 }
 
 function paymentApplicationGraph(): ApplicationGraph {

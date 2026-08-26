@@ -313,10 +313,6 @@ export function compileLocalSupervisorPlan(request: CompileLocalSupervisorPlanRe
       ],
     );
     const sourceFile = server?.sourceLocation?.file ?? managedHost?.sourceLocation?.file;
-    const observabilityProvider = workloadProviders.find(({ interface: providerInterface }) => providerInterface === 'Observability');
-    const otlpBinding = observabilityProvider
-      ? bindings.find(({ id }) => id === `endpoint:${observabilityProvider.id}:otlp`)
-      : undefined;
     const process: LocalSupervisorProcess = {
       id: `process:${hostId}`,
       kind: 'process',
@@ -335,7 +331,6 @@ export function compileLocalSupervisorPlan(request: CompileLocalSupervisorPlanRe
           const endpoint = runtimeEndpointBindings.get(artifact.nodeId);
           return endpoint ? [{ name: applicationRuntimeEndpointEnvironmentName(artifact.nodeId), binding: endpoint.binding }] : [];
         }),
-        ...(otlpBinding ? [{ name: 'OTEL_EXPORTER_OTLP_ENDPOINT', binding: otlpBinding.id }] : []),
         { name: 'APPLIK8S_DEPLOYMENT_TARGET', binding: `literal:${request.target}` },
         { name: 'APPLIK8S_APPLICATION_NAME', binding: `literal:${request.graph.metadata.name}` },
         { name: 'APPLIK8S_ENVIRONMENT_ID', binding: `literal:${request.profile}` },
@@ -590,7 +585,29 @@ function localProviderResource(
     const password = credential('password');
     return { resource: container({ image: 'clickhouse/clickhouse-server:25.7-alpine', ports: [{ name: 'http', containerPort: 8123, protocol: 'http' }], environment: [{ name: 'CLICKHOUSE_USER', binding: 'literal:applik8s' }, { name: 'CLICKHOUSE_PASSWORD', binding: password.id }, { name: 'CLICKHOUSE_DB', binding: 'literal:applik8s' }, { name: 'CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT', binding: 'literal:1' }], volumes: [{ name: `${provider.id}-data`, mountPath: '/var/lib/clickhouse', retained: true }], health: { kind: 'http', path: '/ping', portBinding: http.id, timeoutMs: 60_000 } }), bindings: [http, password] };
   }
-  if (provider.interface === 'Observability' && ['local-otel', 'clickstack', 'cloudwatch'].includes(provider.implementation)) {
+  if (provider.interface === 'Observability' && provider.implementation === 'local-otel') {
+    const otlp = endpoint('otlp');
+    const health = endpoint('health');
+    const collectorConfiguration = localOpenTelemetryCollectorConfiguration();
+    return {
+      resource: {
+        ...container({
+          image: 'ghcr.io/open-telemetry/opentelemetry-collector-releases/opentelemetry-collector-contrib:0.153.0',
+          command: ['--config=env:APPLIK8S_OTELCOL_CONFIG'],
+          ports: [
+            { name: 'otlp', containerPort: 4318, protocol: 'http' },
+            { name: 'health', containerPort: 13133, protocol: 'http' },
+          ],
+          environment: [{ name: 'APPLIK8S_OTELCOL_CONFIG', binding: `literal:${collectorConfiguration}` }],
+          volumes: [],
+          health: { kind: 'http', path: '/', portBinding: health.id, timeoutMs: 30_000 },
+        }),
+        lifecycle: { ownership: 'application', retention: 'ephemeral' },
+      },
+      bindings: [otlp, health],
+    };
+  }
+  if (provider.interface === 'Observability' && provider.implementation === 'clickstack') {
     const otlp = endpoint('otlp');
     const ui = endpoint('ui');
     return {
@@ -607,12 +624,31 @@ function localProviderResource(
       bindings: [otlp, ui],
     };
   }
+  if (provider.interface === 'Observability' && provider.implementation === 'cloudwatch') {
+    return {
+      bindings: [],
+      diagnostic: {
+        severity: 'error',
+        code: 'LOCAL_TARGET_INCOMPATIBLE',
+        message: 'CloudWatch observability requires the aws or aws-local target; local development must select Observability.local(), Observability.clickStack(), or Observability.otlp(...).',
+        subjectId: provider.id,
+      },
+    };
+  }
   if (provider.interface === 'Observability' && provider.implementation === 'otlp') {
-    const configuredEndpoint = typeof provider.config?.endpoint === 'string' ? provider.config.endpoint : undefined;
+    const config = localProviderConfig(provider);
+    const configuredEndpoint = typeof config.endpoint === 'string' ? config.endpoint : undefined;
     if (!configuredEndpoint) return { bindings: [], diagnostic: { severity: 'error', code: 'LOCAL_PROVIDER_UNRESOLVED', message: 'External OTLP observability requires an endpoint.', subjectId: provider.id } };
     const otlp: LocalSupervisorBinding = { id: `endpoint:${provider.id}:otlp`, owner: id, kind: 'endpoint', sensitivity: 'public', value: configuredEndpoint };
     return {
-      resource: { ...common, kind: 'external', provider: 'otlp', responsibility: 'The caller owns availability, authentication, retention, and deletion of the OTLP endpoint.', health: { kind: 'external', timeoutMs: 30_000 } },
+      resource: {
+        ...common,
+        kind: 'external',
+        provider: 'otlp',
+        responsibility: 'The caller owns availability, authentication, retention, and deletion of the OTLP endpoint.',
+        lifecycle: { ownership: 'external', retention: 'external' },
+        health: { kind: 'external', timeoutMs: 30_000 },
+      },
       bindings: [otlp],
     };
   }
@@ -769,7 +805,47 @@ function miniStackResource(request: CompileLocalSupervisorPlanRequest): {
 }
 
 function awsCompatibleInterface(value: string): boolean {
-  return ['TransactionalDatabase', 'IndexStore', 'ObjectStorage', 'EventLog', 'Queue', 'Scheduler', 'ApplicationHost'].includes(value);
+  return ['TransactionalDatabase', 'IndexStore', 'ObjectStorage', 'EventLog', 'Queue', 'Scheduler', 'ApplicationHost', 'Observability'].includes(value);
+}
+
+function localOpenTelemetryCollectorConfiguration(): string {
+  return [
+    'receivers:',
+    '  otlp:',
+    '    protocols:',
+    '      http:',
+    '        endpoint: 0.0.0.0:4318',
+    'processors:',
+    '  memory_limiter:',
+    '    check_interval: 1s',
+    '    limit_mib: 128',
+    '    spike_limit_mib: 32',
+    '  batch:',
+    '    timeout: 1s',
+    '    send_batch_size: 512',
+    '    send_batch_max_size: 1024',
+    'exporters:',
+    '  debug:',
+    '    verbosity: basic',
+    'extensions:',
+    '  health_check:',
+    '    endpoint: 0.0.0.0:13133',
+    'service:',
+    '  extensions: [health_check]',
+    '  pipelines:',
+    '    traces:',
+    '      receivers: [otlp]',
+    '      processors: [memory_limiter, batch]',
+    '      exporters: [debug]',
+    '    metrics:',
+    '      receivers: [otlp]',
+    '      processors: [memory_limiter, batch]',
+    '      exporters: [debug]',
+    '    logs:',
+    '      receivers: [otlp]',
+    '      processors: [memory_limiter, batch]',
+    '      exporters: [debug]',
+  ].join('\n');
 }
 
 function localFrameworkCredentialAuthority(
@@ -805,6 +881,7 @@ function localFrameworkCredentialAuthority(
 }
 
 interface LocalHostEnvironmentCredential {
+  readonly namespace: string;
   readonly secretName: string;
   readonly key: string;
   readonly sourceEnvironment: string;
@@ -852,6 +929,7 @@ function localHostEnvironmentCredentials(
         throw new Error(`Generated Secret ${requirement.namespace}/${requirement.name}/${key} has invalid host environment variable ${value.name}.`);
       }
       candidates.push({
+        namespace: requirement.namespace,
         secretName: requirement.name,
         key,
         sourceEnvironment: value.name,
@@ -860,23 +938,23 @@ function localHostEnvironmentCredentials(
   }
   const bySecretKey = new Map<string, Omit<LocalHostEnvironmentCredential, 'binding'>>();
   for (const candidate of candidates) {
-    const key = localSecretKey(candidate.secretName, candidate.key);
+    const key = localSecretKey(candidate.namespace, candidate.secretName, candidate.key);
     const prior = bySecretKey.get(key);
     if (prior && prior.sourceEnvironment !== candidate.sourceEnvironment) {
-      throw new Error(`Local host environment maps Secret ${candidate.secretName}/${candidate.key} to both ${prior.sourceEnvironment} and ${candidate.sourceEnvironment}.`);
+      throw new Error(`Local host environment maps Secret ${candidate.namespace}/${candidate.secretName}/${candidate.key} to both ${prior.sourceEnvironment} and ${candidate.sourceEnvironment}.`);
     }
     bySecretKey.set(key, candidate);
   }
   return [...bySecretKey.values()]
     .map((candidate) => ({
       ...candidate,
-      binding: `host-environment:${sha256Hex(`${candidate.secretName}\0${candidate.key}\0${candidate.sourceEnvironment}`).slice(0, 24)}`,
+      binding: `host-environment:${sha256Hex(`${candidate.namespace}\0${candidate.secretName}\0${candidate.key}\0${candidate.sourceEnvironment}`).slice(0, 24)}`,
     }))
     .sort((left, right) => left.binding.localeCompare(right.binding));
 }
 
-function localSecretKey(secretName: string, key: string): string {
-  return `${secretName}\0${key}`;
+function localSecretKey(namespace: string, secretName: string, key: string): string {
+  return `${namespace}\0${secretName}\0${key}`;
 }
 
 function awsLocalRuntimeEnvironment(
@@ -1072,7 +1150,7 @@ function localRuntimeEnvironment(
   const providerIds = new Set(providers.map(({ id }) => id));
   const hostCredentials = new Map(
     localHostEnvironmentCredentials(request.generatedSecrets ?? [])
-      .map((credential) => [localSecretKey(credential.secretName, credential.key), credential]),
+      .map((credential) => [localSecretKey(credential.namespace, credential.secretName, credential.key), credential]),
   );
   for (const binding of request.graph.providerBindings.filter(({ provider: providerRef }) => providerIds.has(providerRef.nodeId))) {
     for (const [name, value] of Object.entries(binding.runtime.env ?? {})) {
@@ -1090,7 +1168,10 @@ function localRuntimeEnvironment(
         });
         continue;
       }
-      const hostCredential = hostCredentials.get(localSecretKey(secretName, key));
+      const namespace = typeof secretBinding.secret.namespace === 'string'
+        ? secretBinding.secret.namespace
+        : request.graph.metadata.namespace ?? request.graph.metadata.name;
+      const hostCredential = hostCredentials.get(localSecretKey(namespace, secretName, key));
       if (hostCredential && bindingExists(hostCredential.binding)) {
         add(name, { binding: hostCredential.binding });
       }
@@ -1204,6 +1285,56 @@ function localRuntimeEnvironment(
     add('APPLIK8S_OBJECT_STORAGE_FORCE_PATH_STYLE', { binding: 'literal:true' });
     add('AWS_ACCESS_KEY_ID', { binding: `credential:${objects.id}:access-key` });
     add('AWS_SECRET_ACCESS_KEY', { binding: `credential:${objects.id}:secret-key` });
+  }
+  const observability = provider('Observability')
+    ?? request.graph.nodes.find((node): node is ApplicationProviderNode =>
+      node.kind === 'provider' && node.interface === 'Observability' && !node.config?.qualification);
+  if (observability && bindingExists(`endpoint:${observability.id}:otlp`)) {
+    add('OTEL_EXPORTER_OTLP_ENDPOINT', { binding: `endpoint:${observability.id}:otlp` });
+    const config = localProviderConfig(observability);
+    const signals = Array.isArray(config.signals)
+      ? config.signals.filter((signal): signal is string => typeof signal === 'string')
+      : ['traces', 'metrics', 'logs'];
+    add('APPLIK8S_OTLP_SIGNALS', { binding: `literal:${signals.join(',')}` });
+    const authentication = jsonObject(config.authentication);
+    const authenticationSecret = jsonObject(authentication?.secret);
+    if (authentication && authenticationSecret) {
+      const secretName = typeof authenticationSecret.name === 'string' ? authenticationSecret.name : undefined;
+      const key = typeof authentication.key === 'string' ? authentication.key : undefined;
+      const header = typeof authentication.header === 'string' ? authentication.header : undefined;
+      const namespace = typeof authenticationSecret.namespace === 'string'
+        ? authenticationSecret.namespace
+        : request.graph.metadata.namespace ?? request.graph.metadata.name;
+      const credential = secretName && key ? hostCredentials.get(localSecretKey(namespace, secretName, key)) : undefined;
+      if (credential && bindingExists(credential.binding) && header) {
+        add('APPLIK8S_OTLP_HEADER_NAME', { binding: `literal:${header}` });
+        add('APPLIK8S_OTLP_HEADER_VALUE', { binding: credential.binding });
+      } else {
+        diagnostics.push({
+          severity: 'error', code: 'LOCAL_PROVIDER_UNRESOLVED', subjectId: observability.id,
+          message: `Local external OTLP provider ${observability.id} requires its authentication Secret/key to be supplied by one declared host-environment Secret source.`,
+        });
+      }
+    }
+    const tls = jsonObject(config.tls);
+    if (tls?.trust === 'custom-ca') {
+      const certificateAuthority = jsonObject(tls.certificateAuthority);
+      const secretName = typeof certificateAuthority?.name === 'string' ? certificateAuthority.name : undefined;
+      const key = typeof tls.key === 'string' ? tls.key : undefined;
+      const namespace = typeof certificateAuthority?.namespace === 'string'
+        ? certificateAuthority.namespace
+        : request.graph.metadata.namespace ?? request.graph.metadata.name;
+      const credential = secretName && key ? hostCredentials.get(localSecretKey(namespace, secretName, key)) : undefined;
+      if (credential && bindingExists(credential.binding)) {
+        add('APPLIK8S_OTLP_CA_PEM', { binding: credential.binding });
+        if (typeof tls.serverName === 'string') add('APPLIK8S_OTLP_SERVER_NAME', { binding: `literal:${tls.serverName}` });
+      } else {
+        diagnostics.push({
+          severity: 'error', code: 'LOCAL_PROVIDER_UNRESOLVED', subjectId: observability.id,
+          message: `Local external OTLP provider ${observability.id} requires its custom CA Secret/key to be supplied by one declared host-environment Secret source.`,
+        });
+      }
+    }
   }
   for (const { environmentName, kind } of frameworkCredentials) {
     if (bindingExists(`credential:framework:${kind}`)) add(environmentName, { binding: `credential:framework:${kind}` });

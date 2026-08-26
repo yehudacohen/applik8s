@@ -66,5 +66,45 @@ describe('v0.8 provider-neutral observability', () => {
     expect(() => telemetryPolicy({ baggage: { allowedKeys: ['User ID'] } })).toThrow(/stable identifier/u);
     expect(() => telemetryPolicy({ baggage: { maximumBytes: 100_000 } })).toThrow(/between 0 and 8192/u);
     expect(() => Observability.otlp({ endpoint: 'collector.internal', policy: telemetryPolicy() })).toThrow(/absolute HTTP/u);
+    expect(() => Observability.otlp({ endpoint: 'http://collector.internal', policy: telemetryPolicy() })).toThrow(/requires HTTPS/u);
+    expect(() => Observability.otlp({ endpoint: 'https://user:secret@collector.internal', policy: telemetryPolicy() })).toThrow(/without URL credentials/u);
+    expect(() => Observability.otlp({ endpoint: 'https://collector.internal', signals: [] })).toThrow(/non-empty unique subset/u);
+    expect(() => Observability.otlp({
+      endpoint: 'https://collector.internal',
+      authentication: {
+        secret: { apiVersion: 'v1', kind: 'ConfigMap', name: 'telemetry' },
+        key: 'token', header: 'authorization',
+      },
+    })).toThrow(/named Secret/u);
+    expect(() => Observability.otlp({
+      endpoint: 'http://127.0.0.1:4318',
+      tls: {
+        trust: 'custom-ca',
+        certificateAuthority: { apiVersion: 'v1', kind: 'Secret', name: 'telemetry-ca' },
+        key: 'ca.crt',
+      },
+    })).toThrow(/custom CA trust requires HTTPS/u);
+  });
+
+  it('normalizes the generic external OTLP contract without embedding credential values', () => {
+    const external = Observability.otlp({
+      endpoint: 'https://collector.example/tenant/demo',
+      signals: ['traces', 'logs'],
+      authentication: {
+        secret: { apiVersion: 'v1', kind: 'Secret', name: 'telemetry-auth', namespace: 'telemetry' },
+        key: 'token', header: 'x-collector-token',
+      },
+      tls: {
+        trust: 'custom-ca',
+        certificateAuthority: { apiVersion: 'v1', kind: 'Secret', name: 'telemetry-ca', namespace: 'telemetry' },
+        key: 'ca.crt', serverName: 'collector.example',
+      },
+    });
+    expect(external).toMatchObject({
+      kind: 'otlp', protocol: 'http/protobuf', signals: ['traces', 'logs'],
+      authentication: { secret: { kind: 'Secret', name: 'telemetry-auth' }, key: 'token', header: 'x-collector-token' },
+      tls: { trust: 'custom-ca', certificateAuthority: { kind: 'Secret', name: 'telemetry-ca' }, key: 'ca.crt' },
+    });
+    expect(JSON.stringify(external)).not.toContain('secret-header-canary');
   });
 });

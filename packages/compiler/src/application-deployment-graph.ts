@@ -268,10 +268,24 @@ function withInstallationRuntimeBindings(
     graph,
     profiledProviderIds,
   );
-  const observability = graph.nodes.find((node) =>
+  const observability = graph.nodes.find((node): node is Extract<ApplicationGraph["nodes"][number], { readonly kind: "provider" }> =>
     node.kind === "provider"
     && node.interface === "Observability"
     && kubernetesProviderImplementation(node) === "clickstack");
+  const externalObservability = graph.nodes.find((node): node is Extract<ApplicationGraph["nodes"][number], { readonly kind: "provider" }> =>
+    node.kind === "provider"
+    && node.interface === "Observability"
+    && kubernetesProviderImplementation(node) === "otlp");
+  const externalObservabilityConfig = externalObservability
+    ? optionalObject(externalObservability.config?.observability) ?? optionalObject(externalObservability.config)
+    : undefined;
+  const externalObservabilityAuthentication = optionalObject(externalObservabilityConfig?.authentication);
+  const externalObservabilityAuthenticationSecret = optionalObject(externalObservabilityAuthentication?.secret);
+  const externalObservabilityTls = optionalObject(externalObservabilityConfig?.tls);
+  const externalObservabilityCaSecret = optionalObject(externalObservabilityTls?.certificateAuthority);
+  const runtimeNamespace = graph.metadata.namespace ?? graph.metadata.name;
+  assertPodSecretNamespace(externalObservabilityAuthenticationSecret, runtimeNamespace, "External OTLP authentication");
+  assertPodSecretNamespace(externalObservabilityCaSecret, runtimeNamespace, "External OTLP custom CA");
   const actorRuntime = graph.nodes.find((node): node is Extract<ApplicationGraph["nodes"][number], { readonly kind: "provider" }> =>
     node.kind === "provider"
     && node.interface === "ActorRuntime"
@@ -284,6 +298,43 @@ function withInstallationRuntimeBindings(
         "otlpHttpEndpoint",
       ),
     }] : []),
+    ...(externalObservabilityConfig ? [
+      {
+        name: "OTEL_EXPORTER_OTLP_ENDPOINT",
+        value: stringValue(externalObservabilityConfig.endpoint, "External OTLP endpoint"),
+      },
+      {
+        name: "APPLIK8S_OTLP_SIGNALS",
+        value: Array.isArray(externalObservabilityConfig.signals)
+          ? externalObservabilityConfig.signals.map((signal) => String(signal)).join(",")
+          : "traces,metrics,logs",
+      },
+      ...(externalObservabilityAuthentication && externalObservabilityAuthenticationSecret
+        ? [
+            {
+              name: "APPLIK8S_OTLP_HEADER_NAME",
+              value: stringValue(externalObservabilityAuthentication.header, "External OTLP authentication header"),
+            },
+            secretEnvironment(
+              "APPLIK8S_OTLP_HEADER_VALUE",
+              stringValue(externalObservabilityAuthenticationSecret.name, "External OTLP authentication Secret name"),
+              stringValue(externalObservabilityAuthentication.key, "External OTLP authentication Secret key"),
+            ),
+          ]
+        : []),
+      ...(externalObservabilityTls?.trust === "custom-ca" && externalObservabilityCaSecret
+        ? [
+            secretEnvironment(
+              "APPLIK8S_OTLP_CA_PEM",
+              stringValue(externalObservabilityCaSecret.name, "External OTLP CA Secret name"),
+              stringValue(externalObservabilityTls.key, "External OTLP CA Secret key"),
+            ),
+            ...(typeof externalObservabilityTls.serverName === "string"
+              ? [{ name: "APPLIK8S_OTLP_SERVER_NAME", value: externalObservabilityTls.serverName }]
+              : []),
+          ]
+        : []),
+    ] : []),
   ];
   const routedResources = withPublishedActorIngressRoutes(
     materialized.resources,
@@ -602,6 +653,18 @@ function secretEnvironment(
       },
     },
   };
+}
+
+function assertPodSecretNamespace(
+  reference: DeploymentJsonObject | undefined,
+  runtimeNamespace: string,
+  subject: string,
+): void {
+  if (!reference || reference.namespace === undefined) return;
+  const namespace = stringValue(reference.namespace, `${subject} Secret namespace`);
+  if (namespace !== runtimeNamespace) {
+    throw new Error(`${subject} Secret ${namespace}/${String(reference.name ?? "<unknown>")} cannot be mounted by runtime workloads in namespace ${runtimeNamespace}. Kubernetes Secret environment references are namespace-scoped; copy or generate the Secret in the application namespace.`);
+  }
 }
 
 /**

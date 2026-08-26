@@ -110,6 +110,14 @@ export interface ApplicationPlanObservability {
   readonly export: string;
   readonly retention: string;
   readonly cardinality: 'bounded' | 'unbounded' | 'unknown';
+  readonly topology: {
+    readonly collector: 'local-collector' | 'clickstack-gateway' | 'cloudwatch-collector' | 'external-collector' | 'provider-resolved';
+    readonly protocol: 'otlp/http-protobuf' | 'provider-resolved';
+    readonly endpoint: 'supervisor-assigned' | 'provider-managed' | string;
+    readonly lifecycle: 'ephemeral' | 'retained' | 'external' | 'provider-managed';
+    readonly authentication: 'none' | 'secret-header' | 'workload-identity' | 'provider-resolved';
+    readonly tls: 'plaintext-loopback' | 'system-trust' | 'custom-ca' | 'workload-identity' | 'provider-resolved';
+  };
   readonly sampling?: {
     readonly traceHead: number;
     readonly debugLogs: number;

@@ -7,6 +7,7 @@ import {
   type ApplicationPlan,
   type ApplicationPlanDiagnostic,
   type ApplicationPlanEstimate,
+  type ApplicationPlanObservability,
   type ApplicationProviderGuaranteeManifest,
   type ApplicationSourceProvenance,
   applicationCanonicalIdentity,
@@ -407,6 +408,16 @@ function semanticObservability(
   const logs = policy && typeof policy === 'object' ? Reflect.get(policy, 'logs') : undefined;
   const traces = policy && typeof policy === 'object' ? Reflect.get(policy, 'traces') : undefined;
   const redaction = policy && typeof policy === 'object' ? Reflect.get(policy, 'redaction') : undefined;
+  const implementation = provider?.implementation;
+  const endpoint = providerConfig && typeof providerConfig === 'object'
+    ? Reflect.get(providerConfig, 'endpoint')
+    : undefined;
+  const authentication = providerConfig && typeof providerConfig === 'object'
+    ? Reflect.get(providerConfig, 'authentication')
+    : undefined;
+  const tls = providerConfig && typeof providerConfig === 'object'
+    ? Reflect.get(providerConfig, 'tls')
+    : undefined;
   const retentionSummary = retention && typeof retention === 'object'
     ? `logs=${String(Reflect.get(retention, 'logs') ?? 'unknown')},traces=${String(Reflect.get(retention, 'traces') ?? 'unknown')},metrics=${String(Reflect.get(retention, 'metrics') ?? 'unknown')}`
     : 'provider-resolved';
@@ -426,6 +437,12 @@ function semanticObservability(
       export: provider?.implementation ?? 'provider-resolved',
       retention: retentionSummary,
       cardinality: 'bounded' as const,
+      topology: observabilityTopology(
+        implementation,
+        typeof endpoint === 'string' ? endpoint : undefined,
+        authentication,
+        tls,
+      ),
       ...(logs && typeof logs === 'object' && traces && typeof traces === 'object' ? {
         sampling: {
           traceHead: Number(Reflect.get(traces, 'headSample') ?? 0),
@@ -440,6 +457,44 @@ function semanticObservability(
       provenance: [nodeProvenance(node, workspaceRoot)],
     }];
   });
+}
+
+function observabilityTopology(
+  implementation: string | undefined,
+  endpoint: string | undefined,
+  authentication: unknown,
+  tls: unknown,
+): ApplicationPlanObservability['topology'] {
+  if (implementation === 'local-otel') {
+    return {
+      collector: 'local-collector', protocol: 'otlp/http-protobuf', endpoint: 'supervisor-assigned',
+      lifecycle: 'ephemeral', authentication: 'none', tls: 'plaintext-loopback',
+    };
+  }
+  if (implementation === 'clickstack') {
+    return {
+      collector: 'clickstack-gateway', protocol: 'otlp/http-protobuf', endpoint: 'provider-managed',
+      lifecycle: 'retained', authentication: 'provider-resolved', tls: 'provider-resolved',
+    };
+  }
+  if (implementation === 'cloudwatch') {
+    return {
+      collector: 'cloudwatch-collector', protocol: 'otlp/http-protobuf', endpoint: 'provider-managed',
+      lifecycle: 'provider-managed', authentication: 'workload-identity', tls: 'workload-identity',
+    };
+  }
+  if (implementation === 'otlp') {
+    const tlsObject = tls && typeof tls === 'object' ? tls : undefined;
+    return {
+      collector: 'external-collector', protocol: 'otlp/http-protobuf', endpoint: endpoint ?? 'provider-managed',
+      lifecycle: 'external', authentication: authentication ? 'secret-header' : 'none',
+      tls: tlsObject && Reflect.get(tlsObject, 'trust') === 'custom-ca' ? 'custom-ca' : 'system-trust',
+    };
+  }
+  return {
+    collector: 'provider-resolved', protocol: 'provider-resolved', endpoint: 'provider-managed',
+    lifecycle: 'provider-managed', authentication: 'provider-resolved', tls: 'provider-resolved',
+  };
 }
 
 function executionScalingBoundary(node: ApplicationGraphNode): 'singleton' | 'replicated' | 'provider-managed' | 'unknown' {

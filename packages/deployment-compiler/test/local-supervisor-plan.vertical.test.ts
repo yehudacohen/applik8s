@@ -27,12 +27,20 @@ describe('local supervisor plan compiler', () => {
     expect(first.resources).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: 'provider:provider.database', kind: 'container', image: 'postgres:17-alpine' }),
       expect.objectContaining({ id: 'provider:provider.events', kind: 'container', image: 'nats:2.11-alpine' }),
-      expect.objectContaining({ id: 'provider:provider.observability', kind: 'container', image: 'grafana/otel-lgtm:0.30.0' }),
+      expect.objectContaining({
+        id: 'provider:provider.observability',
+        kind: 'container',
+        image: 'ghcr.io/open-telemetry/opentelemetry-collector-releases/opentelemetry-collector-contrib:0.153.0',
+        lifecycle: { ownership: 'application', retention: 'ephemeral' },
+        volumes: [],
+        health: { kind: 'http', path: '/', portBinding: 'endpoint:provider.observability:health', timeoutMs: 30_000 },
+      }),
       expect.objectContaining({ id: 'process:server.web', kind: 'process', command: 'bun' }),
       expect.objectContaining({
         id: 'runtime:processor:processor.events', kind: 'process', command: 'node', args: ['/workspace/app/.applik8s/build/processor.mjs'],
         environment: expect.arrayContaining([
           expect.objectContaining({ name: 'APPLIK8S_NATS_SERVERS' }),
+          { name: 'OTEL_EXPORTER_OTLP_ENDPOINT', binding: 'endpoint:provider.observability:otlp' },
         ]),
       }),
     ]));
@@ -60,6 +68,14 @@ describe('local supervisor plan compiler', () => {
     expect(applicationPlan.physical.edges).toEqual(expect.arrayContaining([
       expect.objectContaining({ relationship: 'requiresReady' }),
     ]));
+    expect(applicationPlan.semantic.observability).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        topology: {
+          collector: 'local-collector', protocol: 'otlp/http-protobuf', endpoint: 'supervisor-assigned',
+          lifecycle: 'ephemeral', authentication: 'none', tls: 'plaintext-loopback',
+        },
+      }),
+    ]));
   });
 
   it('lowers Hatchet to a bounded local engine, database, and short-lived worker credential', () => {
@@ -81,6 +97,77 @@ describe('local supervisor plan compiler', () => {
       }),
     ]));
     expect(serializeLocalSupervisorPlan(plan)).not.toContain('HATCHET_CLIENT_TOKEN=');
+  });
+
+  it('wires external OTLP headers and custom trust only through declared Secret sources', () => {
+    const base = applicationGraph();
+    const graph: ApplicationGraph = {
+      ...base,
+      nodes: base.nodes.map((node) => node.id === 'provider.observability' ? {
+        ...node,
+        implementation: 'otlp',
+        config: {
+          observability: {
+            kind: 'otlp', endpoint: 'https://collector.example/tenant/demo', protocol: 'http/protobuf',
+            signals: ['traces', 'logs'], policy: {}, retention: {},
+            authentication: {
+              secret: { apiVersion: 'v1', kind: 'Secret', name: 'telemetry-auth', namespace: 'telemetry' },
+              key: 'token', header: 'x-collector-token',
+            },
+            tls: {
+              trust: 'custom-ca',
+              certificateAuthority: { apiVersion: 'v1', kind: 'Secret', name: 'telemetry-ca', namespace: 'telemetry' },
+              key: 'ca.crt', serverName: 'collector.example',
+            },
+          },
+        },
+      } : node),
+    };
+    const plan = compileLocalSupervisorPlan({
+      graph, target: 'local', profile: 'starter', projectDigest: 'sha256:project',
+      generatedSecrets: [
+        {
+          id: 'telemetry-auth', namespace: 'telemetry', name: 'telemetry-auth', consumers: ['server.web'], referenceMode: 'staticIdentity',
+          values: { token: { kind: 'hostEnvironment', name: 'TEST_OTLP_TOKEN' } },
+        },
+        {
+          id: 'telemetry-ca', namespace: 'telemetry', name: 'telemetry-ca', consumers: ['server.web'], referenceMode: 'staticIdentity',
+          values: { 'ca.crt': { kind: 'hostEnvironment', name: 'TEST_OTLP_CA_PEM' } },
+        },
+      ],
+    });
+    expect(validateLocalSupervisorPlan(plan)).toEqual({ valid: true, diagnostics: [] });
+    const applicationPlan = compileLocalApplicationPlan({ graph, supervisor: plan });
+    expect(applicationPlan.semantic.observability).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        topology: {
+          collector: 'external-collector', protocol: 'otlp/http-protobuf',
+          endpoint: 'https://collector.example/tenant/demo', lifecycle: 'external',
+          authentication: 'secret-header', tls: 'custom-ca',
+        },
+      }),
+    ]));
+    expect(plan.resources).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: 'provider:provider.observability', kind: 'external', provider: 'otlp',
+        lifecycle: { ownership: 'external', retention: 'external' },
+      }),
+      expect.objectContaining({
+        id: 'process:server.web',
+        environment: expect.arrayContaining([
+          { name: 'OTEL_EXPORTER_OTLP_ENDPOINT', binding: 'endpoint:provider.observability:otlp' },
+          { name: 'APPLIK8S_OTLP_SIGNALS', binding: 'literal:traces,logs' },
+          { name: 'APPLIK8S_OTLP_HEADER_NAME', binding: 'literal:x-collector-token' },
+          expect.objectContaining({ name: 'APPLIK8S_OTLP_HEADER_VALUE' }),
+          expect.objectContaining({ name: 'APPLIK8S_OTLP_CA_PEM' }),
+          { name: 'APPLIK8S_OTLP_SERVER_NAME', binding: 'literal:collector.example' },
+        ]),
+      }),
+    ]));
+    const serialized = serializeLocalSupervisorPlan(plan);
+    expect(serialized).toContain('TEST_OTLP_TOKEN');
+    expect(serialized).toContain('TEST_OTLP_CA_PEM');
+    expect(serialized).not.toContain('secret-header-canary');
   });
 
   it('places a qualified Hatchet Scheduler and canonical occurrence authority on the local ApplicationHost', () => {
@@ -338,6 +425,7 @@ describe('local supervisor plan compiler', () => {
     expect(hostBinding).not.toHaveProperty('value');
     const host = plan.resources.find(({ id }) => id === 'process:server.web');
     const processor = plan.resources.find(({ id }) => id === 'runtime:processor:processor.events');
+    const serializedPlan = serializeLocalSupervisorPlan(plan);
     expect(host).toMatchObject({
       kind: 'process',
       environment: expect.arrayContaining([
@@ -346,7 +434,7 @@ describe('local supervisor plan compiler', () => {
       ]),
     });
     expect(JSON.stringify(processor)).not.toContain('APPLIK8S_PAYMENT_API_KEY');
-    expect(serializeLocalSupervisorPlan(plan)).not.toContain('a-secret-value');
+    expect(serializedPlan).not.toContain('a-secret-value');
   });
 
   it('hydrates only declared generated-runtime endpoints and orders the caller after its receiver', () => {
@@ -409,6 +497,7 @@ describe('local supervisor plan compiler', () => {
     const agent = plan.resources.find(({ id }) => id === 'runtime:agent:agent.writer');
     const http = plan.resources.find(({ id }) => id === 'runtime:http:server.api');
     const host = plan.resources.find(({ id }) => id === 'process:server.web');
+    const serializedPlan = serializeLocalSupervisorPlan(plan);
     expect(agent).toMatchObject({
       kind: 'process',
       environment: expect.arrayContaining([
@@ -433,8 +522,8 @@ describe('local supervisor plan compiler', () => {
     });
     expect(JSON.stringify(host)).not.toContain('APPLIK8S_AGENT_QUERY_CONTEXT_SECRET');
     expect(JSON.stringify(host)).not.toContain('APPLIK8S_HTTP_CONTEXT_SECRET');
-    expect(serializeLocalSupervisorPlan(plan)).not.toContain('task-query-context');
-    expect(serializeLocalSupervisorPlan(plan)).not.toContain('task-operation-context');
+    expect(serializedPlan).not.toContain('task-query-context');
+    expect(serializedPlan).not.toContain('task-operation-context');
   });
 
   it('routes durable workflow actor calls through the one local application host', () => {

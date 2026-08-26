@@ -319,7 +319,21 @@ export interface ApplicationCloudWatchObservabilityProvider extends ApplicationO
 export interface ApplicationOtlpObservabilityProvider extends ApplicationObservabilityProviderBase {
   readonly kind: 'otlp';
   readonly endpoint: string;
-  readonly authentication?: ApplicationResourceRef;
+  readonly protocol: 'http/protobuf';
+  readonly signals: readonly ('traces' | 'metrics' | 'logs')[];
+  readonly authentication?: {
+    readonly secret: ApplicationResourceRef;
+    readonly key: string;
+    readonly header: string;
+  };
+  readonly tls: {
+    readonly trust: 'system';
+  } | {
+    readonly trust: 'custom-ca';
+    readonly certificateAuthority: ApplicationResourceRef;
+    readonly key: string;
+    readonly serverName?: string;
+  };
 }
 
 export type ApplicationObservabilityProvider =
@@ -1353,7 +1367,13 @@ export interface ApplicationObservabilityProviderToken extends ApplicationQualif
   local(options?: Partial<Omit<ApplicationLocalObservabilityProvider, 'kind' | 'policy' | 'retention'>> & { readonly policy?: ApplicationTelemetryPolicy; readonly retention?: Partial<ApplicationObservabilityProviderBase['retention']> }): ApplicationLocalObservabilityProvider;
   clickStack(options: Omit<ApplicationClickStackObservabilityProvider, 'kind' | 'policy' | 'retention'> & { readonly policy?: ApplicationTelemetryPolicy; readonly retention?: Partial<ApplicationObservabilityProviderBase['retention']> }): ApplicationClickStackObservabilityProvider;
   cloudWatch(options: Omit<ApplicationCloudWatchObservabilityProvider, 'kind' | 'policy' | 'retention'> & { readonly policy?: ApplicationTelemetryPolicy; readonly retention?: Partial<ApplicationObservabilityProviderBase['retention']> }): ApplicationCloudWatchObservabilityProvider;
-  otlp(options: Omit<ApplicationOtlpObservabilityProvider, 'kind' | 'policy' | 'retention'> & { readonly policy?: ApplicationTelemetryPolicy; readonly retention?: Partial<ApplicationObservabilityProviderBase['retention']> }): ApplicationOtlpObservabilityProvider;
+  otlp(options: Omit<ApplicationOtlpObservabilityProvider, 'kind' | 'policy' | 'retention' | 'protocol' | 'signals' | 'tls'> & {
+    readonly policy?: ApplicationTelemetryPolicy;
+    readonly retention?: Partial<ApplicationObservabilityProviderBase['retention']>;
+    readonly protocol?: ApplicationOtlpObservabilityProvider['protocol'];
+    readonly signals?: ApplicationOtlpObservabilityProvider['signals'];
+    readonly tls?: ApplicationOtlpObservabilityProvider['tls'];
+  }): ApplicationOtlpObservabilityProvider;
 }
 
 export interface ApplicationQualifiedLakehouseDatasetProviderToken<TName extends string = string>
@@ -1950,8 +1970,16 @@ export const Observability: ApplicationObservabilityProviderToken = applicationQ
     return { kind: 'cloudwatch', ...options, policy: options.policy ?? defaultTelemetryPolicy, retention: observabilityRetention(options.retention) };
   },
   otlp(options) {
-    if (!/^https?:\/\//u.test(options.endpoint)) throw new Error('Observability.otlp(...) requires an absolute HTTP(S) endpoint.');
-    return { kind: 'otlp', ...options, policy: options.policy ?? defaultTelemetryPolicy, retention: observabilityRetention(options.retention) };
+    assertApplicationOtlpObservabilityProvider(options);
+    return {
+      kind: 'otlp',
+      ...options,
+      protocol: options.protocol ?? 'http/protobuf',
+      signals: Object.freeze([...(options.signals ?? ['traces', 'metrics', 'logs'])]),
+      tls: options.tls ?? { trust: 'system' },
+      policy: options.policy ?? defaultTelemetryPolicy,
+      retention: observabilityRetention(options.retention),
+    };
   },
 });
 
@@ -2456,7 +2484,81 @@ export function isApplicationObservabilityProvider(value: unknown): value is App
     || !policy || typeof policy !== 'object'
     || Reflect.get(policy, 'apiVersion') !== 'applik8s.telemetryPolicy/v1alpha1'
     || !retention || typeof retention !== 'object') return false;
-  return kind !== 'otlp' || (typeof Reflect.get(value, 'endpoint') === 'string' && /^https?:\/\//u.test(String(Reflect.get(value, 'endpoint'))));
+  if (kind !== 'otlp') return true;
+  try {
+    assertApplicationOtlpObservabilityProvider(value as Parameters<typeof assertApplicationOtlpObservabilityProvider>[0]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function assertApplicationOtlpObservabilityProvider(value: {
+  readonly endpoint?: unknown;
+  readonly protocol?: unknown;
+  readonly signals?: unknown;
+  readonly authentication?: unknown;
+  readonly tls?: unknown;
+}): void {
+  if (typeof value.endpoint !== 'string') {
+    throw new Error('Observability.otlp(...) requires an absolute HTTP(S) endpoint.');
+  }
+  let endpoint: URL;
+  try {
+    endpoint = new URL(value.endpoint);
+  } catch {
+    throw new Error('Observability.otlp(...) requires an absolute HTTP(S) endpoint.');
+  }
+  if (!['http:', 'https:'].includes(endpoint.protocol) || endpoint.username || endpoint.password) {
+    throw new Error('Observability.otlp(...) requires an absolute HTTP(S) endpoint without URL credentials.');
+  }
+  if (endpoint.protocol === 'http:' && !['localhost', '127.0.0.1', '::1'].includes(endpoint.hostname)) {
+    throw new Error('Observability.otlp(...) requires HTTPS except for an explicit loopback collector.');
+  }
+  if (value.protocol !== undefined && value.protocol !== 'http/protobuf') {
+    throw new Error('Observability.otlp(...) v0.8 supports only OTLP HTTP/protobuf.');
+  }
+  if (value.signals !== undefined) {
+    if (!Array.isArray(value.signals) || value.signals.length === 0 || new Set(value.signals).size !== value.signals.length
+      || value.signals.some((signal) => !['traces', 'metrics', 'logs'].includes(String(signal)))) {
+      throw new Error('Observability.otlp(...) signals must be a non-empty unique subset of traces, metrics, and logs.');
+    }
+  }
+  if (value.authentication !== undefined) {
+    if (!value.authentication || typeof value.authentication !== 'object') {
+      throw new Error('Observability.otlp(...) authentication must reference one Secret-backed header.');
+    }
+    const secret = Reflect.get(value.authentication, 'secret');
+    const key = Reflect.get(value.authentication, 'key');
+    const header = Reflect.get(value.authentication, 'header');
+    if (!isNamedSecretReference(secret) || typeof key !== 'string' || !key.trim()
+      || typeof header !== 'string' || !/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/u.test(header)) {
+      throw new Error('Observability.otlp(...) authentication requires a named Secret, non-empty key, and valid HTTP header name.');
+    }
+  }
+  if (value.tls !== undefined) {
+    if (!value.tls || typeof value.tls !== 'object' || !['system', 'custom-ca'].includes(String(Reflect.get(value.tls, 'trust')))) {
+      throw new Error('Observability.otlp(...) TLS trust must be system or custom-ca.');
+    }
+    if (Reflect.get(value.tls, 'trust') === 'custom-ca') {
+      if (endpoint.protocol !== 'https:' || !isNamedSecretReference(Reflect.get(value.tls, 'certificateAuthority'))
+        || typeof Reflect.get(value.tls, 'key') !== 'string' || !String(Reflect.get(value.tls, 'key')).trim()) {
+        throw new Error('Observability.otlp(...) custom CA trust requires HTTPS and a named Secret/key reference.');
+      }
+      const serverName = Reflect.get(value.tls, 'serverName');
+      if (serverName !== undefined && (typeof serverName !== 'string' || !serverName.trim())) {
+        throw new Error('Observability.otlp(...) TLS serverName must not be empty.');
+      }
+    }
+  }
+}
+
+function isNamedSecretReference(value: unknown): value is ApplicationResourceRef {
+  return Boolean(value && typeof value === 'object'
+    && Reflect.get(value, 'apiVersion') === 'v1'
+    && Reflect.get(value, 'kind') === 'Secret'
+    && typeof Reflect.get(value, 'name') === 'string'
+    && String(Reflect.get(value, 'name')).trim());
 }
 
 export function isApplicationLakehouseDatasetProvider(value: unknown): value is ApplicationLakehouseDatasetProvider {

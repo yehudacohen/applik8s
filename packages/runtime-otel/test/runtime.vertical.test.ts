@@ -1,5 +1,7 @@
 // typecast-file-boundary: Test exporters expose OpenTelemetry's erased recording shapes for semantic assertions.
 
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import type { ApplicationTelemetryEnvelopeV1 } from '@applik8s/core';
 import { AggregationTemporality, InMemoryMetricExporter, MeterProvider, PeriodicExportingMetricReader } from '@opentelemetry/sdk-metrics';
 import { InMemorySpanExporter, SimpleSpanProcessor } from '@opentelemetry/sdk-trace-base';
@@ -8,6 +10,7 @@ import { describe, expect, it } from 'vitest';
 import {
   applicationOtlpSignalEndpoint,
   createApplicationOpenTelemetryRuntime,
+  startApplicationOpenTelemetryRuntime,
 } from '../src/index.js';
 
 describe('OpenTelemetry runtime', () => {
@@ -266,6 +269,8 @@ describe('OpenTelemetry runtime', () => {
       .toBe('https://collector.example/tenant/acme/v1/traces');
     expect(applicationOtlpSignalEndpoint('https://collector.example/tenant/acme/v1/metrics', 'metrics'))
       .toBe('https://collector.example/tenant/acme/v1/metrics');
+    expect(applicationOtlpSignalEndpoint('https://collector.example/tenant/acme', 'logs'))
+      .toBe('https://collector.example/tenant/acme/v1/logs');
     expect(() => applicationOtlpSignalEndpoint('grpc://collector.example', 'traces'))
       .toThrow(/HTTP or HTTPS/u);
     expect(() => applicationOtlpSignalEndpoint('https://user:secret@collector.example', 'traces'))
@@ -277,4 +282,121 @@ describe('OpenTelemetry runtime', () => {
       allowedBaggageKeys: ['principal.id'],
     })).toThrow(/not a safe stable attribute/u);
   });
+
+  it('exports traces, metrics, and redacted logs over authenticated OTLP HTTP without leaking credentials', async () => {
+    const requests: Array<{ path: string; authorization?: string; body: Buffer; mode: string }> = [];
+    let mode: 'ok' | 'throttled' | 'malformed' = 'ok';
+    const createReceiver = () => createServer((request, response) => {
+      const chunks: Buffer[] = [];
+      request.on('data', (chunk) => chunks.push(Buffer.from(chunk)));
+      request.on('end', () => {
+        requests.push({
+          path: request.url ?? '', mode,
+          ...(typeof request.headers['x-collector-token'] === 'string'
+            ? { authorization: request.headers['x-collector-token'] }
+            : {}),
+          body: Buffer.concat(chunks),
+        });
+        if (mode === 'throttled') {
+          response.writeHead(429, { 'content-type': 'application/x-protobuf' });
+          response.end();
+          return;
+        }
+        response.writeHead(200, { 'content-type': 'application/x-protobuf' });
+        response.end(mode === 'malformed' ? 'not-protobuf' : undefined);
+      });
+    });
+    let server = createReceiver();
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const endpoint = `http://127.0.0.1:${(server.address() as AddressInfo).port}/tenant/demo`;
+    const session = await startApplicationOpenTelemetryRuntime({
+      application: 'demo', environment: 'test', target: 'local', endpoint,
+      headers: { 'x-collector-token': 'secret-header-canary' },
+      metricIntervalMs: 500,
+      exportTimeoutMs: 500,
+      batchDelayMs: 25,
+      maximumTraceQueueSize: 8,
+      maximumLogQueueSize: 8,
+      log: () => undefined,
+    });
+    await session.runtime.run({ kind: 'http', identity: 'documents.create' }, async () => {
+      session.runtime.log('info', 'document.created', {
+        token: 'secret-payload-canary',
+        principalId: 'private-principal-canary',
+        count: 1,
+      });
+    });
+    await new Promise((resolve) => setTimeout(resolve, 550));
+    await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    const offlineStarted = performance.now();
+    await expect(session.runtime.run({ kind: 'operation', identity: 'collector.offline' }, async () => {
+      for (let index = 0; index < 64; index += 1) {
+        session.runtime.log('info', 'collector.offline', { index, token: 'offline-private-canary' });
+      }
+      return 'business-progress';
+    })).resolves.toBe('business-progress');
+    expect(performance.now() - offlineStarted).toBeLessThan(250);
+    await new Promise((resolve) => setTimeout(resolve, 75));
+
+    server = createReceiver();
+    await new Promise<void>((resolve) => server.listen(Number(new URL(endpoint).port), '127.0.0.1', resolve));
+    await waitFor(() => requests.some(({ mode: requestMode }) => requestMode === 'ok'), 2_000);
+    mode = 'throttled';
+    await session.runtime.run({ kind: 'operation', identity: 'collector.throttled' }, async () => {
+      session.runtime.log('warn', 'collector.throttled', { token: 'throttled-private-canary' });
+    });
+    await waitFor(() => requests.some(({ mode: requestMode }) => requestMode === 'throttled'), 2_000);
+    mode = 'malformed';
+    await session.runtime.run({ kind: 'operation', identity: 'collector.malformed' }, async () => {
+      session.runtime.log('warn', 'collector.malformed', { token: 'malformed-private-canary' });
+    });
+    await waitFor(() => requests.some(({ mode: requestMode }) => requestMode === 'malformed'), 2_000);
+    mode = 'ok';
+    await session.runtime.run({ kind: 'operation', identity: 'collector.recovered' }, async () => {
+      session.runtime.log('info', 'collector.recovered', { token: 'recovered-private-canary' });
+    });
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    const shutdownStarted = performance.now();
+    await session.shutdown();
+    expect(performance.now() - shutdownStarted).toBeLessThan(2_000);
+    await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+
+    expect(new Set(requests.map(({ path }) => path))).toEqual(new Set([
+      '/tenant/demo/v1/traces',
+      '/tenant/demo/v1/metrics',
+      '/tenant/demo/v1/logs',
+    ]));
+    expect(requests.every(({ authorization }) => authorization === 'secret-header-canary')).toBe(true);
+    expect(requests.some(({ mode: requestMode }) => requestMode === 'throttled')).toBe(true);
+    expect(requests.some(({ mode: requestMode }) => requestMode === 'malformed')).toBe(true);
+    expect(requests.some(({ mode: requestMode, path }) => requestMode === 'ok' && path === '/tenant/demo/v1/traces')).toBe(true);
+    const exported = Buffer.concat(requests.map(({ body }) => body)).toString('utf8');
+    expect(exported).not.toContain('secret-header-canary');
+    expect(exported).not.toContain('secret-payload-canary');
+    expect(exported).not.toContain('private-principal-canary');
+    expect(exported).not.toContain('offline-private-canary');
+    expect(exported).not.toContain('throttled-private-canary');
+    expect(exported).not.toContain('malformed-private-canary');
+    expect(exported).not.toContain('recovered-private-canary');
+    expect(exported).toContain('[REDACTED]');
+  });
+
+  it('rejects unsupported signal sets and custom trust on plaintext before starting export', async () => {
+    await expect(startApplicationOpenTelemetryRuntime({
+      application: 'demo', environment: 'test', target: 'local', endpoint: 'http://127.0.0.1:4318',
+      signals: [] as never,
+    })).rejects.toThrow(/non-empty unique subset/u);
+    await expect(startApplicationOpenTelemetryRuntime({
+      application: 'demo', environment: 'test', target: 'local', endpoint: 'http://127.0.0.1:4318',
+      certificateAuthority: 'test-ca',
+    })).rejects.toThrow(/requires an HTTPS endpoint/u);
+  });
 });
+
+async function waitFor(predicate: () => boolean, timeoutMs: number): Promise<void> {
+  const deadline = performance.now() + timeoutMs;
+  while (!predicate()) {
+    if (performance.now() >= deadline) throw new Error(`Timed out after ${timeoutMs}ms waiting for OTLP receiver evidence.`);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
