@@ -141,6 +141,7 @@ describe('v0.8 target-selected provider lowering', () => {
     expect(serialized).toContain('passwordSecretRef');
     expect(serialized).not.toContain('CLICKHOUSE_PASSWORD":"');
     expect(serialized).not.toContain('HYPERDX_API_KEY":"');
+    expect(serialized).toContain('"consumers":["provider.Observability"');
     expect(contribution.edges).toContainEqual({
       from: 'external.provider.Observability.clickstack-credentials',
       to: 'direct.provider.Observability.clickhouse',
@@ -156,6 +157,38 @@ describe('v0.8 target-selected provider lowering', () => {
       to: 'direct.provider.Observability.clickstack',
       relationship: 'requiresReady',
     });
+  });
+
+  it('bounds ClickStack identities before Altinity derives its host resources', () => {
+    const provider: ApplicationProviderNode = {
+      id: 'provider.Observability', kind: 'provider', name: 'Observability', stability: 'stable',
+      interface: 'Observability', implementation: 'clickstack',
+      config: { observability: { kind: 'clickstack', namespace: 'telemetry', policy: {}, retention: {} } },
+    };
+    const contributor = builtinApplicationDeploymentContributors().find((candidate) =>
+      candidate.interface === 'Observability' && candidate.implementation === 'clickstack');
+    const longContext = {
+      ...context('kubernetes'),
+      graph: {
+        ...context('kubernetes').graph,
+        metadata: { name: 'a-very-long-application-name-that-would-overflow-altinity-derived-resources' },
+      },
+    };
+    const contribution = contributor!.contribute(provider, longContext);
+    const cluster = contribution.nodes.find(({ id }) => id.endsWith('.clickhouse'));
+    const stack = contribution.nodes.find(({ id }) => id.endsWith('.clickstack'));
+    if (!cluster || !stack) throw new Error('ClickStack contribution omitted its cluster or stack node.');
+    const clusterName = String(jsonObject(jsonObject(cluster.spec).configuration).name);
+    const stackName = String(jsonObject(jsonObject(jsonObject(stack.spec).configuration).instance).name);
+
+    expect(clusterName.length).toBeLessThanOrEqual(34);
+    expect(`chi-${clusterName}-cluster-0-0`.length).toBeLessThanOrEqual(63);
+    expect(`chi-${clusterName}-cluster-0-0-0`.length).toBeLessThanOrEqual(63);
+    expect(`chi-${clusterName}-common-configd`.length).toBeLessThanOrEqual(63);
+    expect(`chi-${clusterName}-common-usersd`.length).toBeLessThanOrEqual(63);
+    expect(`chi-${clusterName}-deploy-confd-cluster-0-0`.length).toBeLessThanOrEqual(63);
+    expect(stackName.length).toBeLessThanOrEqual(23);
+    expect(clusterName).toMatch(/-[a-f0-9]{8}-clickhouse$/u);
   });
 
   it('lowers an explicit Celld provider to a generated OCI Worker and reference-only credentials', () => {
@@ -234,4 +267,11 @@ function emptyGraph(): ApplicationGraph {
     apiVersion: 'applik8s.appGraph/v1alpha1', kind: 'ApplicationGraph', metadata: { name: 'proof' }, nodes: [], edges: [], providerRequirements: [], providerBindings: [],
     compatibility: { stablePublicApis: [], documentedInternalContracts: [], experimentalSurfaces: [], postV3Surfaces: [], labels: [] },
   };
+}
+
+function jsonObject(value: unknown): Readonly<Record<string, unknown>> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('Expected deployment JSON object.');
+  }
+  return value as Readonly<Record<string, unknown>>;
 }

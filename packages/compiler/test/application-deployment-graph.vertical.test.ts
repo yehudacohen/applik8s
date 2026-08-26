@@ -354,6 +354,58 @@ describe("compiler deployment graph emission", () => {
       .rejects.toThrow(/cannot be mounted by runtime workloads in namespace telemetry/u);
   });
 
+  it("projects ClickStack authorization from its generated Secret into telemetry runtimes", async () => {
+    const directory = await mkdtemp(
+      join(process.env.TMPDIR ?? "/tmp", "applik8s-clickstack-auth-"),
+    );
+    temporaryDirectories.push(directory);
+    const bundlePath = join(directory, "typekro-bundle.json");
+    await writeFile(bundlePath, JSON.stringify({ spec: {} }));
+    await writeFile(join(directory, "resources.json"), JSON.stringify([{
+      apiVersion: "kro.run/v1alpha1",
+      kind: "ResourceGraphDefinition",
+      metadata: { name: "telemetry" },
+      spec: {
+        schema: { apiVersion: "v1alpha1", kind: "Telemetry", spec: { name: "string" }, status: { ready: "boolean" } },
+        resources: [
+          generatedDeployment("telemetryHttp", "telemetry-http", "typed-http", "http", "example.test/http@sha256:immutable"),
+        ],
+      },
+    }]));
+    const graph = clickStackApplicationGraph();
+    const emitted = await emitApplicationDeploymentGraph({
+      bundlePath,
+      projectRoot: directory,
+      graph,
+      sourceGraphDigest,
+      compilerVersion: "0.8.0",
+      context: "orbstack",
+      controlPlaneNamespace: "default",
+      instance: "telemetry",
+      profile: "dedicated",
+      strategy: "direct",
+      installationSpec: { name: "telemetry", namespace: "telemetry" },
+    });
+    const host = emitted.graph.nodes.find(({ id }) => id === "kubernetes.application");
+    const resources = host?.kind === "kubernetesComposition"
+      ? host.spec.materialized?.resources ?? []
+      : [];
+    expect(deploymentEnvironment(resources, "telemetry-http")).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: "OTEL_EXPORTER_OTLP_ENDPOINT" }),
+      { name: "APPLIK8S_OTLP_HEADER_NAME", value: "authorization" },
+      {
+        name: "APPLIK8S_OTLP_HEADER_VALUE",
+        valueFrom: {
+          secretKeyRef: {
+            name: "telemetry-observability-credentials",
+            key: "hyperdx-api-key",
+          },
+        },
+      },
+    ]));
+    expect(JSON.stringify(emitted.graph.runtimeAccess)).not.toContain("kind\":\"random");
+  });
+
   it("keeps production-capable host credential values outside portable state", async () => {
     const directory = await mkdtemp(
       join(process.env.TMPDIR ?? "/tmp", "applik8s-host-environment-"),
@@ -860,6 +912,29 @@ function externalOtlpApplicationGraph(secretNamespace = "telemetry"): Applicatio
         },
       },
     }],
+  } as unknown as ApplicationGraph;
+}
+
+function clickStackApplicationGraph(): ApplicationGraph {
+  return {
+    ...applicationGraph(),
+    metadata: { name: "telemetry", namespace: "telemetry" },
+    nodes: [{
+        id: "provider.Observability",
+        kind: "provider",
+        name: "Observability",
+        stability: "stable",
+        interface: "Observability",
+        implementation: "clickstack",
+        config: {
+          observability: {
+            kind: "clickstack",
+            namespace: "telemetry",
+            policy: {},
+            retention: {},
+          },
+        },
+      }],
   } as unknown as ApplicationGraph;
 }
 

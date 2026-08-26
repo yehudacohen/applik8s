@@ -9,6 +9,7 @@ import {
   type ApplicationGeneratedSecretRequirement,
   type ApplicationKubernetesRuntimeAccessNetworkPolicyProvider,
   applicationProviderGuaranteesForGraph,
+  clickStackCredentialsSecretName,
   compileApplicationDeploymentGraph,
   compileApplicationPlan,
 } from "@applik8s/deployment-compiler";
@@ -291,13 +292,24 @@ function withInstallationRuntimeBindings(
     && node.interface === "ActorRuntime"
     && kubernetesProviderImplementation(node) === "celld-actors");
   const universalEnvironment: Array<DeploymentJsonObject & { readonly name: string }> = [
-    ...(observability ? [{
-      name: "OTEL_EXPORTER_OTLP_ENDPOINT",
-      value: applicationDeploymentOutputReference(
-        `direct.${observability.id}.clickstack`,
-        "otlpHttpEndpoint",
+    ...(observability ? [
+      {
+        name: "OTEL_EXPORTER_OTLP_ENDPOINT",
+        value: applicationDeploymentOutputReference(
+          `direct.${observability.id}.clickstack`,
+          "otlpHttpEndpoint",
+        ),
+      },
+      {
+        name: "APPLIK8S_OTLP_HEADER_NAME",
+        value: "authorization",
+      },
+      secretEnvironment(
+        "APPLIK8S_OTLP_HEADER_VALUE",
+        clickStackCredentialsSecretName(graph.metadata.name),
+        "hyperdx-api-key",
       ),
-    }] : []),
+    ] : []),
     ...(externalObservabilityConfig ? [
       {
         name: "OTEL_EXPORTER_OTLP_ENDPOINT",

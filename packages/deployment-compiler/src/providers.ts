@@ -919,14 +919,19 @@ function clickStackDirectContribution(
 ): ProviderDirectContribution {
   const config = nestedObject(provider.config, "observability") ?? {};
   const namespace = optionalString(config.namespace) ?? applicationNamespace(context);
-  const name = `${safeProviderNodeId(context.graph.metadata.name)}-observability`;
+  // Altinity derives host, label, ConfigMap, and volume names from the
+  // installation. Its longest observed suffix is
+  // `chi-<installation>-deploy-confd-cluster-0-0`, so bound the provider stem
+  // before adding `-clickhouse` and keep every controller-derived identity
+  // within Kubernetes' 63-character DNS-label limit.
+  const name = clickStackProviderName(context.graph.metadata.name);
   const operatorNodeId = `direct.${provider.id}.clickhouse-operator`;
   const credentialsNodeId = `external.${provider.id}.clickstack-credentials`;
   const clusterNodeId = `direct.${provider.id}.clickhouse`;
   const stackNodeId = `direct.${provider.id}.clickstack`;
   const storageSize = optionalString(config.storageSize) ?? "10Gi";
   const storageClassName = optionalString(config.storageClassName);
-  const credentialsName = `${name}-credentials`;
+  const credentialsName = clickStackCredentialsSecretName(context.graph.metadata.name);
   const clickhouseName = `${name}-clickhouse`;
   const clickhouseHost = `clickhouse-${clickhouseName}.${namespace}.svc.cluster.local`;
   const clickhouseUser = "otelcollector";
@@ -997,7 +1002,12 @@ function clickStackDirectContribution(
         ],
       },
     },
-    consumers: [clusterNodeId, stackNodeId],
+    // The provider identity deliberately joins this generated Secret to every
+    // semantic execution that consumes Observability. The deployment nodes
+    // remain listed because they also consume the same authority during
+    // infrastructure reconciliation.
+    consumers: [provider.id, clusterNodeId, stackNodeId],
+    runtimeKeys: [apiKeyKey],
     deletion: "delete",
   });
   const clusterBase = directNode({
@@ -1084,6 +1094,24 @@ function clickStackDirectContribution(
       { from: stackNodeId, to: "kubernetes.application", relationship: "requiresOutput", output: "otlpHttpEndpoint" },
     ],
   };
+}
+
+/**
+ * Stable ClickStack installation identity shared by provider lowering and the
+ * application workload compiler. Keeping this derivation public prevents a
+ * second, almost-equivalent Secret naming algorithm from entering generated
+ * runtime manifests.
+ */
+export function clickStackProviderName(application: string): string {
+  return boundedProviderName(
+    `${safeProviderNodeId(application)}-observability`,
+    23,
+  );
+}
+
+/** Exact Secret mounted by ClickStack itself and by telemetry producers. */
+export function clickStackCredentialsSecretName(application: string): string {
+  return `${clickStackProviderName(application)}-credentials`;
 }
 
 function celldActorRuntimeDirectContribution(
@@ -3305,6 +3333,8 @@ function generatedSecretProviderNode(options: {
   readonly name: string;
   readonly values: DeploymentJsonObject;
   readonly consumers: readonly string[];
+  /** Exact subset mounted into semantic application runtimes. */
+  readonly runtimeKeys?: readonly string[];
   readonly deletion: "delete" | "retain";
 }): ApplicationExternalProviderDeploymentNode {
   const configuration = {
@@ -3312,6 +3342,7 @@ function generatedSecretProviderNode(options: {
     name: options.name,
     values: options.values,
     consumers: [...options.consumers],
+    ...(options.runtimeKeys ? { runtimeKeys: [...options.runtimeKeys].sort() } : {}),
   };
   return {
     id: options.id,
@@ -3571,6 +3602,19 @@ function safeProviderNodeId(value: string): string {
     .toLowerCase()
     .replace(/[^a-z0-9.-]+/gu, "-")
     .replace(/^-+|-+$/gu, "");
+}
+
+function boundedProviderName(value: string, maximumLength: number): string {
+  if (value.length <= maximumLength) return value;
+  const digest = digestApplicationDeploymentValue(value)
+    .slice("sha256:".length, "sha256:".length + 8);
+  const prefix = value
+    .slice(0, maximumLength - digest.length - 1)
+    .replace(/[.-]+$/gu, "");
+  if (!prefix) {
+    throw new Error(`Provider name ${JSON.stringify(value)} cannot be bounded to ${maximumLength} characters.`);
+  }
+  return `${prefix}-${digest}`;
 }
 
 function compactJson(

@@ -173,6 +173,36 @@ export function bindTypeKroComposition<
       }
       return composition.plan(spec, plan);
     },
+    async deleteInstance(strategy) {
+      const factory = composition.factory(strategy, {
+        ...options.factory,
+        plan,
+      });
+      if (!factory.deleteInstance || !factory.dispose) {
+        throw new Error(
+          `TypeKro composition ${composition.name} does not expose the v0.32 deleteInstance/dispose lifecycle contract.`,
+        );
+      }
+      try {
+        const result = await factory.deleteInstance(
+          concreteInstanceName(spec, options.instanceNameOverride),
+          {
+            ...(options.factory?.timeout !== undefined
+              ? { timeout: options.factory.timeout }
+              : {}),
+          },
+        );
+        if (result.status !== "complete") {
+          throw new Error(
+            `TypeKro composition ${composition.name} instance deletion is ${result.status}: ${result.blockers
+              .map((blocker) => blocker.message)
+              .join("; ") || "finalization has not completed"}`,
+          );
+        }
+      } finally {
+        await factory.dispose();
+      }
+    },
     async declarations(strategy) {
       const factory = composition.factory(strategy, {
         ...options.factory,
@@ -209,6 +239,7 @@ export function bindTypeKroCompositionWithSupportingDeclarations(
     compositionId: primary.compositionId,
     inspect: () => primary.inspect(),
     plan: () => primary.plan(),
+    deleteInstance: (strategy) => primary.deleteInstance(strategy),
     async declarations(strategy) {
       const authoredDeclarations = await authored.declarations(strategy);
       const primaryDeclarations = await primary.declarations(strategy);
@@ -254,6 +285,26 @@ export function bindTypeKroCompositionWithSupportingDeclarations(
       ];
     },
   };
+}
+
+function concreteInstanceName(
+  spec: KroCompatibleType,
+  override: string | undefined,
+): string {
+  if (override?.trim()) return override;
+  if (
+    spec
+    && typeof spec === "object"
+    && !Array.isArray(spec)
+    && "name" in spec
+    && typeof spec.name === "string"
+    && spec.name.trim()
+  ) {
+    return spec.name;
+  }
+  throw new Error(
+    "A TypeKro composition binding requires instanceNameOverride or a concrete spec.name before it can delete an instance.",
+  );
 }
 
 function planOptions(options: BindTypeKroCompositionOptions): PlanOptions {

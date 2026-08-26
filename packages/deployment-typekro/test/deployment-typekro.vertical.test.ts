@@ -1773,7 +1773,11 @@ describe("TypeKro deployment adapter", () => {
     expect(JSON.stringify(clickhouse?.plan())).toContain("passwordSecretRef");
     expect(JSON.stringify(clickstack?.plan())).toContain("credentialsSecret");
     expect(JSON.stringify(clickstack?.plan())).not.toContain("CLICKHOUSE_PASSWORD");
-    expect(JSON.stringify(clickstack?.plan())).not.toContain("HYPERDX_API_KEY");
+    expect(JSON.stringify(clickstack?.plan())).toContain("HYPERDX_API_KEY");
+    expect(JSON.stringify(clickstack?.plan())).not.toContain(
+      '"HYPERDX_API_KEY":"',
+    );
+    expect(JSON.stringify(clickstack?.plan())).not.toContain("[object Object]");
     expect(JSON.stringify(clickstack?.plan())).not.toContain(
       '\"kind\":\"Namespace\"',
     );
@@ -2569,5 +2573,41 @@ describe("TypeKro deployment adapter", () => {
     expect(serialized).not.toContain(
       "external.provider.object-storage.credentials",
     );
+  });
+
+  it("retains the originating TypeKro lifecycle authority for interrupted Alchemy cleanup", async () => {
+    const calls: unknown[] = [];
+    const lifecycleComposition = {
+      name: "lifecycle-app",
+      inspect: () => ({}) as never,
+      plan: () => ({}) as never,
+      factory: (strategy: "direct" | "kro", options: unknown) => {
+        calls.push(["factory", strategy, options]);
+        return {
+          toAlchemyResources: async () => [],
+          deleteInstance: async (name: string, options: unknown) => {
+            calls.push(["delete", name, options]);
+            return { status: "complete", blockers: [] };
+          },
+          dispose: async () => { calls.push(["dispose"]); },
+        };
+      },
+    };
+    const binding = bindTypeKroComposition(
+      lifecycleComposition as never,
+      { name: "spec-name" },
+      {
+        instanceNameOverride: "durable-instance",
+        factory: { namespace: "lifecycle", timeout: 42_000 },
+      },
+    );
+
+    await binding.deleteInstance("direct");
+
+    expect(calls).toEqual([
+      ["factory", "direct", expect.objectContaining({ namespace: "lifecycle" })],
+      ["delete", "durable-instance", { timeout: 42_000 }],
+      ["dispose"],
+    ]);
   });
 });

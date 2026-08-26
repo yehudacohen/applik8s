@@ -1,6 +1,8 @@
 import type { ApplicationDeploymentGraph } from "@applik8s/deployment-contract";
 import {
   type ApplicationTypeKroCompositionSource,
+  type AdaptedTypeKroDeployment,
+  type TypeKroCompositionBinding,
   adaptApplicationDeploymentToTypeKro,
   assembleApplicationTypeKroComposition,
   bindApplicationTypeKroDirectNodes,
@@ -17,6 +19,7 @@ import {
   type ApplicationAlchemyDeploymentOptions,
   createApplicationAlchemyDeployment,
 } from "./backend.js";
+import { orderedTypeKroGroups } from "./typekro-ordering.js";
 
 export interface ApplicationAlchemyGraphDeploymentOptions<
   TSpec extends KroCompatibleType,
@@ -79,56 +82,60 @@ export async function createApplicationAlchemyGraphDeployment<
           ),
         )
       : primary;
+  const direct = bindApplicationTypeKroDirectNodes(
+    options.graph,
+    supportingFactory,
+  );
   const adapted = await adaptApplicationDeploymentToTypeKro({
     graph: options.graph,
     root,
-    direct: bindApplicationTypeKroDirectNodes(
-      options.graph,
-      supportingFactory,
-    ),
+    direct,
   });
   const deployment = createApplicationAlchemyDeployment({
     ...options,
     adapted,
   });
-  if (options.graph.metadata.strategy !== "kro") return deployment;
   return {
     ...deployment,
     async destroy() {
-      // Alchemy does not invoke a provider delete hook for a resource whose
-      // prior transaction stopped in `creating`. A live KRO instance can still
-      // exist in that state, so make the TypeKro factory the authoritative
-      // preflight for every destroy. This is idempotent when Alchemy already
-      // holds a completed resource and guarantees that children/finalizers
-      // drain before artifact, Secret, RGD, or Namespace teardown begins.
-      const factory = composition.factory("kro", rootFactory);
-      if (!factory.deleteInstance || !factory.dispose) {
-        throw new Error(
-          `TypeKro composition ${composition.name} does not expose the v0.32 deleteInstance/dispose lifecycle contract.`,
-        );
-      }
-      try {
-        const result = await factory.deleteInstance(
-          options.graph.metadata.identity.instance,
-          {
-            ...(rootFactory.timeout !== undefined
-              ? { timeout: rootFactory.timeout }
-              : {}),
-          },
-        );
-        if (result.status !== "complete") {
-          throw new Error(
-            `TypeKro root instance deletion is ${result.status}: ${result.blockers
-              .map((blocker) => blocker.message)
-              .join("; ") || "finalization has not completed"}`,
-          );
-        }
-      } finally {
-        await factory.dispose();
-      }
+      // An interrupted Alchemy transaction can leave a live Kubernetes object
+      // while its declaration is still `creating`; Alchemy then has no
+      // committed provider state from which to invoke delete. TypeKro remains
+      // the lifecycle authority, so converge every composition instance to
+      // absence first, in reverse dependency order, and let Alchemy remove the
+      // remaining external resources and durable state afterward.
+      await deleteApplicationTypeKroInstances(
+        options.graph,
+        adapted,
+        root,
+        direct,
+      );
       return deployment.destroy();
     },
   };
+}
+
+/** @internal Exported from this module only for lifecycle contract tests. */
+export async function deleteApplicationTypeKroInstances(
+  graph: ApplicationDeploymentGraph,
+  adapted: AdaptedTypeKroDeployment,
+  root: TypeKroCompositionBinding,
+  direct: Readonly<Record<string, TypeKroCompositionBinding>>,
+): Promise<void> {
+  const bindings = new Map([
+    ["kubernetes.application", root] as const,
+    ...Object.entries(direct),
+  ]);
+  const ordered = [...orderedTypeKroGroups(graph, adapted)].reverse();
+  for (const group of ordered) {
+    const binding = bindings.get(group.deploymentNodeId);
+    if (!binding) {
+      throw new Error(
+        `TypeKro lifecycle binding ${group.deploymentNodeId} is missing during application teardown.`,
+      );
+    }
+    await binding.deleteInstance(group.strategy);
+  }
 }
 
 /**

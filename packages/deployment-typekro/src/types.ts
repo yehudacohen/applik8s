@@ -24,6 +24,13 @@ export interface TypeKroCompositionBinding {
   readonly compositionId: string;
   inspect(): CompositionInspection;
   plan(): DesiredStatePlan;
+  /**
+   * Ask the originating TypeKro factory to converge this concrete instance to
+   * absence. This remains available even when an interrupted Alchemy
+   * transaction never committed the declaration state needed by its ordinary
+   * provider delete hooks.
+   */
+  deleteInstance(strategy: "direct" | "kro"): Promise<void>;
   declarations(
     strategy: "direct" | "kro",
   ): Promise<readonly ApplicationTypeKroDeclaration[]>;

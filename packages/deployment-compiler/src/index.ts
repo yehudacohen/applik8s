@@ -17,6 +17,8 @@ export {
   type ApplicationProviderExecution,
   applicationProviderSelectionDeploymentContributor,
   builtinApplicationDeploymentContributors,
+  clickStackCredentialsSecretName,
+  clickStackProviderName,
   resolveApplicationProviderForTarget,
 } from "./providers.js";
 export type {

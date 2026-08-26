@@ -116,6 +116,9 @@ export function compileApplicationDeploymentGraph(
     ...applicationGraphGeneratedSecrets(request),
     ...(request.generatedSecrets ?? []),
   ]);
+  const providerGeneratedSecretCredentials = providerGeneratedSecretCredentialRequirements(
+    contributionNodes,
+  );
   const runtimeAccessTargets = runtimeAccessTargetResources(contributions);
   const runtimeAccess = compileApplicationRuntimeAccessPlan({
     graph: request.graph,
@@ -133,11 +136,19 @@ export function compileApplicationDeploymentGraph(
     ...(request.runtimeAccessKubernetesNetworkPolicyProvider
       ? { kubernetesNetworkPolicyProvider: request.runtimeAccessKubernetesNetworkPolicyProvider }
       : {}),
-    credentialRequirements: generatedSecretRequirements.flatMap((secret) =>
+    credentialRequirements: [
+      ...generatedSecretRequirements.map((secret) => ({
+        namespace: secret.namespace,
+        name: secret.name,
+        keys: Object.keys(secret.values).sort(),
+        consumers: secret.consumers,
+      })),
+      ...providerGeneratedSecretCredentials,
+    ].flatMap((secret) =>
       runtimeCredentialConsumerNodeIds(request.graph, secret.consumers).map((consumerNodeId) => ({
         consumerNodeId,
         resourceId: `v1/Secret/${secret.namespace}/${secret.name}`,
-        keys: Object.keys(secret.values).sort(),
+        keys: secret.keys,
       }))),
     additionalRequirements: contributions.flatMap((contribution) =>
       contribution.runtimeAccessRequirements ?? []),
@@ -831,6 +842,51 @@ function applicationGraphGeneratedSecrets(
           },
         ];
   return [...gatewaySecrets, ...contextSecrets];
+}
+
+/**
+ * Provider contributors may own a generated Secret outside the root
+ * composition while application runtimes consume one of its keys. Recover
+ * only the public identity and key contract here; generated values remain in
+ * the external-provider node and never enter the runtime-access artifact.
+ */
+function providerGeneratedSecretCredentialRequirements(
+  nodes: readonly ApplicationDeploymentNode[],
+): readonly {
+  readonly namespace: string;
+  readonly name: string;
+  readonly keys: readonly string[];
+  readonly consumers: readonly string[];
+}[] {
+  return nodes.flatMap((node) => {
+    if (
+      node.kind !== 'externalProvider'
+      || node.provider.interface !== 'Secret'
+      || node.provider.implementation !== 'alchemy-kubernetes-generated-secret'
+    ) return [];
+    const configuration = portableRecord(node.spec.configuration);
+    const values = portableRecord(configuration?.values);
+    const consumers = configuration?.consumers;
+    const runtimeKeys = configuration?.runtimeKeys;
+    if (
+      typeof configuration?.namespace !== 'string'
+      || typeof configuration.name !== 'string'
+      || !values
+      || !Array.isArray(consumers)
+      || consumers.some((consumer) => typeof consumer !== 'string')
+      || (runtimeKeys !== undefined
+        && (!Array.isArray(runtimeKeys)
+          || runtimeKeys.some((key) => typeof key !== 'string' || !(key in values))))
+    ) {
+      throw new Error(`Generated Secret deployment node ${node.id} has an invalid credential projection contract.`);
+    }
+    return [{
+      namespace: configuration.namespace,
+      name: configuration.name,
+      keys: runtimeKeys === undefined ? Object.keys(values).sort() : [...runtimeKeys].sort(),
+      consumers: [...consumers].sort(),
+    }];
+  });
 }
 
 function runtimeCredentialConsumerNodeIds(

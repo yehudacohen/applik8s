@@ -18,6 +18,7 @@ import { kubernetesComposition, simple } from "typekro";
 import { artifactOutput } from "typekro/experimental/planning";
 import { afterEach, describe, expect, it } from "vitest";
 import { selectPublishedImmutableReference } from "../src/backend.js";
+import { deleteApplicationTypeKroInstances } from "../src/application.js";
 import { assertApplicationAlchemyDestroyState } from "../src/destroy-state.js";
 import {
   createApplicationAlchemyDeployment,
@@ -37,6 +38,59 @@ afterEach(async () => {
 });
 
 describe("Alchemy deployment backend", () => {
+  it("preflights TypeKro instance deletion in reverse graph dependency order", async () => {
+    const calls: string[] = [];
+    const graph = deploymentGraph();
+    const providerNode: ApplicationKubernetesDirectDeploymentNode = {
+      id: "direct.provider",
+      kind: "kubernetesDirect",
+      contractVersion: 1,
+      source: {},
+      provider: { interface: "Test", implementation: "typekro", version: "1" },
+      scope: graph.nodes[0]!.scope,
+      capabilities: { strategies: ["direct"], alchemy: true },
+      configurationDigest: digestApplicationDeploymentValue({ name: "provider" }),
+      inputs: {},
+      outputs: [],
+      lifecycle: {
+        ownership: "application",
+        deletion: "delete",
+        adoption: "createOrAdoptExact",
+      },
+      spec: {
+        compositionId: "provider",
+        reason: "Verify reverse dependency teardown.",
+        configuration: { name: "provider" },
+        ownership: "application",
+        deletion: "delete",
+      },
+    };
+    const orderedGraph: ApplicationDeploymentGraph = {
+      ...graph,
+      nodes: [...graph.nodes, providerNode],
+      edges: [{ from: providerNode.id, to: "kubernetes.application", relationship: "requiresReady" }],
+    };
+    const binding = (id: string) => ({
+      compositionId: id,
+      inspect: () => ({}) as never,
+      plan: () => ({}) as never,
+      declarations: async () => [],
+      deleteInstance: async (strategy: "direct" | "kro") => { calls.push(`${id}:${strategy}`); },
+    });
+
+    await deleteApplicationTypeKroInstances(
+      orderedGraph,
+      {
+        root: { deploymentNodeId: "kubernetes.application", strategy: "direct" },
+        direct: [{ deploymentNodeId: providerNode.id, strategy: "direct" }],
+      } as never,
+      binding("root"),
+      { [providerNode.id]: binding("provider") },
+    );
+
+    expect(calls).toEqual(["root:direct", "provider:direct"]);
+  });
+
   it("fails closed when a destroy transaction leaves resumable state behind", () => {
     expect(() => assertApplicationAlchemyDestroyState([])).not.toThrow();
     expect(() =>

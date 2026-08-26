@@ -20,6 +20,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   type ApplicationDeploymentContributor,
+  clickStackCredentialsSecretName,
   compileApplicationDeploymentGraph,
   compileApplicationPlan,
 } from "../src/index.js";
@@ -687,6 +688,67 @@ describe("Application deployment compiler", () => {
       ...request(),
       contributors: [contributor],
     })).toThrow(/provider-runtime\.shared is assigned to both/u);
+  });
+
+  it('treats a provider-owned generated Secret key as canonical ClickStack runtime access', () => {
+    const providerId = 'provider.observability';
+    const graph = {
+      ...applicationGraph(),
+      metadata: { name: 'guestbook', namespace: 'guestbook' },
+      nodes: [
+        {
+          id: providerId,
+          kind: 'provider',
+          name: 'Observability',
+          stability: 'stable',
+          interface: 'Observability',
+          implementation: 'clickstack',
+          config: { observability: { kind: 'clickstack', namespace: 'guestbook', policy: {}, retention: {} } },
+        },
+        { id: 'server.telemetry', kind: 'server', name: 'telemetry-http', routes: [] },
+      ],
+      edges: [{
+        from: { nodeId: providerId },
+        to: { nodeId: 'server.telemetry' },
+        relationship: 'provides',
+      }],
+    } as unknown as ApplicationGraph;
+    const base = {
+      ...request(),
+      graph,
+      artifacts: [],
+    };
+    const credentialsName = clickStackCredentialsSecretName(graph.metadata.name);
+    const compiled = compileApplicationDeploymentGraph(runtimeWorkloadRequest(
+      base,
+      'telemetry-http',
+      ['server.telemetry'],
+      [{
+        name: 'APPLIK8S_OTLP_HEADER_VALUE',
+        valueFrom: {
+          secretKeyRef: {
+            name: credentialsName,
+            key: 'hyperdx-api-key',
+          },
+        },
+      }, {
+        name: 'APPLIK8S_CONTEXT_KEY',
+        valueFrom: {
+          secretKeyRef: {
+            name: 'guestbook-context',
+            key: 'key',
+          },
+        },
+      }],
+    ));
+    expect(compiled.runtimeAccess.diagnostics).toEqual([]);
+    expect(compiled.runtimeAccess.workloads[0]?.kubernetes?.credentialProjections)
+      .toContainEqual({
+        resourceId: `v1/Secret/guestbook/${credentialsName}`,
+        keys: ['hyperdx-api-key'],
+      });
+    expect(JSON.stringify(compiled.runtimeAccess)).not.toContain('clickhouse-password');
+    expect(JSON.stringify(compiled.runtimeAccess)).not.toContain('values.yaml');
   });
 
   it("fails closed when a provider has no exact deployment contributor", () => {
