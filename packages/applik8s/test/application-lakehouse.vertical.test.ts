@@ -157,11 +157,22 @@ describe('v0.8 published lakehouse snapshots', () => {
       cursorKey: 'c'.repeat(32),
     });
     disposers.push(installApplicationLakehousePublicationRuntimeResolver((qualification) => qualification === 'historical-usage' ? runtime : undefined));
-    const envelope = { id: 'event-1', payload: { organizationId: 'org-1', occurredAt: '2026-08-19T00:00:00.000Z', quantity: 3 } };
+    const envelope = {
+      id: 'event-1',
+      recordedAt: '2026-08-19T00:00:00.000Z',
+      correlationId: 'correlation-1',
+      causationId: 'command-1',
+      payload: { organizationId: 'org-1', occurredAt: '2026-08-19T00:00:00.000Z', quantity: 3 },
+    };
     const first = await executeApplicationLakehousePublication(publication, envelope);
     const replay = await executeApplicationLakehousePublication(publication, envelope);
     expect(replay.snapshotId).toBe(first.snapshotId);
-    expect(first).toMatchObject({ frontier: ['event-1'], partitions: [{ organizationId: 'org-1' }], rows: [envelope.payload] });
+    expect(first).toMatchObject({
+      frontier: ['event-1'],
+      causalReceipts: [{ sourceId: 'event-1', recordedAt: envelope.recordedAt, correlationId: 'correlation-1', causationId: 'command-1' }],
+      partitions: [{ organizationId: 'org-1' }],
+      rows: [envelope.payload],
+    });
   });
 
   it('expresses a validated one-shot dataset query as an ordinary async function', async () => {

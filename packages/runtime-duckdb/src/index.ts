@@ -3,7 +3,9 @@ import { createHash, randomUUID } from 'node:crypto';
 import { chmod, mkdir, open, readdir, readFile, rename, stat, unlink, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import {
+  applicationLakehouseAuthorityManifest,
   type ApplicationLakehouseManifest,
+  type ApplicationLakehouseAuthorityManifest,
   type ApplicationLakehouseQueryRequest,
   type ApplicationLakehouseQueryResult,
   ApplicationLakehouseQueryTerminalError,
@@ -11,6 +13,7 @@ import {
   applicationLakehouseQueryTerminalError,
   compileApplicationLakehouseQuery,
   createDeterministicApplicationLakehouseRuntime,
+  verifyApplicationLakehouseManifest,
   type DeterministicApplicationLakehouseRuntime,
 } from '@applik8s/applik8s/lakehouse-runtime';
 import { canonicalJsonV1String, type JsonValue } from '@applik8s/core';
@@ -43,7 +46,7 @@ export interface DuckDbApplicationLakehouseRuntime<TRow extends object>
 interface PersistedLakehouseAuthority<TRow extends object> {
   readonly schemaVersion: 'applik8s.duckdbLakehouse/v1alpha1';
   readonly datasetId: string;
-  readonly manifests: readonly ApplicationLakehouseManifest<TRow>[];
+  readonly manifests: readonly ApplicationLakehouseAuthorityManifest<TRow>[];
 }
 
 /**
@@ -67,6 +70,7 @@ export async function createDuckDbApplicationLakehouseRuntime<TRow extends objec
   let instance: DuckDBInstance | undefined;
   try {
     const persisted = await readAuthority<TRow>(authorityPath, options.datasetId);
+    const restoredSnapshots = await hydrateDuckDbLakehouseManifests<TRow>(objectsRoot, persisted.manifests, options.datasetId);
     const maximumConcurrentQueries = boundedInteger(options.maximumConcurrentQueries ?? 4, 1, 64, 'maximumConcurrentQueries');
     const maximumRows = boundedInteger(options.maximumRows ?? 1_000, 1, 100_000, 'maximumRows');
     const maximumScannedBytes = boundedInteger(options.maximumScannedBytes ?? 64 * 1024 * 1024, 1, Number.MAX_SAFE_INTEGER, 'maximumScannedBytes');
@@ -86,13 +90,13 @@ export async function createDuckDbApplicationLakehouseRuntime<TRow extends objec
     ...(options.now ? { now: options.now } : {}),
     ...(options.maximumObjectsPerSnapshot ? { maximumObjectsPerSnapshot: options.maximumObjectsPerSnapshot } : {}),
     ...(options.retainedSnapshots ? { retainedSnapshots: options.retainedSnapshots } : {}),
-    snapshots: persisted.manifests,
+    snapshots: restoredSnapshots,
     persist: async (manifests) => {
       for (const manifest of manifests) await writeSnapshotObject(objectsRoot, manifest);
       await writeJsonAtomic(authorityPath, {
         schemaVersion: 'applik8s.duckdbLakehouse/v1alpha1',
         datasetId: options.datasetId,
-        manifests,
+        manifests: manifests.map(applicationLakehouseAuthorityManifest),
       } satisfies PersistedLakehouseAuthority<TRow>);
       await cleanupUnreferencedObjects(objectsRoot, manifests);
     },
@@ -374,8 +378,11 @@ async function cleanupUnreferencedObjects<TRow extends object>(
 export class ApplicationDuckDbLakehouseCorruptionError extends Error {
   readonly code = 'APPLIK8S_DUCKDB_LAKEHOUSE_CORRUPTION';
 
-  constructor(readonly snapshotId: string, readonly objectPath: string) {
-    super(`Published lakehouse snapshot ${snapshotId} does not match its immutable DuckDB object ${objectPath}.`);
+  constructor(readonly snapshotId: string, readonly objectPath: string, cause?: unknown) {
+    super(
+      `Published lakehouse snapshot ${snapshotId} does not match its immutable DuckDB object ${objectPath}.`,
+      cause === undefined ? {} : { cause },
+    );
     this.name = 'ApplicationDuckDbLakehouseCorruptionError';
   }
 }
@@ -414,6 +421,59 @@ async function readAuthority<TRow extends object>(
     if (isNotFound(cause)) return { schemaVersion: 'applik8s.duckdbLakehouse/v1alpha1', datasetId, manifests: [] };
     throw cause;
   }
+}
+
+async function hydrateDuckDbLakehouseManifests<TRow extends object>(
+  objectsRoot: string,
+  manifests: readonly ApplicationLakehouseAuthorityManifest<TRow>[],
+  datasetId: string,
+): Promise<readonly ApplicationLakehouseManifest<TRow>[]> {
+  const cache = new Map<string, { readonly rows: readonly TRow[]; readonly rowIdentities: readonly string[] }>();
+  const hydrated: ApplicationLakehouseManifest<TRow>[] = [];
+  for (const manifest of manifests) {
+    const rows: TRow[] = [];
+    const rowIdentities: string[] = [];
+    for (const object of manifest.objects) {
+      let content = cache.get(object.objectId);
+      if (!content) {
+        const path = lakehouseObjectPath(objectsRoot, object.objectId);
+        content = parsePhysicalRows<TRow>(await readFile(path, 'utf8'), manifest.snapshotId, path);
+        cache.set(object.objectId, content);
+      }
+      rows.push(...content.rows);
+      rowIdentities.push(...content.rowIdentities);
+    }
+    hydrated.push(verifyApplicationLakehouseManifest({ ...manifest, rows, rowIdentities }, datasetId));
+  }
+  return hydrated;
+}
+
+function parsePhysicalRows<TRow extends object>(
+  encoded: string,
+  snapshotId: string,
+  objectPath: string,
+): { readonly rows: readonly TRow[]; readonly rowIdentities: readonly string[] } {
+  const rows: TRow[] = [];
+  const rowIdentities: string[] = [];
+  for (const line of encoded.split('\n')) {
+    if (!line) continue;
+    let candidate: unknown;
+    try {
+      candidate = JSON.parse(line);
+    } catch (cause) {
+      throw new ApplicationDuckDbLakehouseCorruptionError(snapshotId, objectPath, cause);
+    }
+    if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) {
+      throw new ApplicationDuckDbLakehouseCorruptionError(snapshotId, objectPath);
+    }
+    const { __applik8s_row_id: identity, ...row } = candidate as Record<string, unknown>;
+    if (typeof identity !== 'string' || !/^sha256:[a-f0-9]{64}$/u.test(identity)) {
+      throw new ApplicationDuckDbLakehouseCorruptionError(snapshotId, objectPath);
+    }
+    rows.push(row as TRow);
+    rowIdentities.push(identity);
+  }
+  return { rows, rowIdentities };
 }
 
 async function writeSnapshotObject<TRow extends object>(

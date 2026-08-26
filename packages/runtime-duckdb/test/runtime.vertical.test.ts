@@ -140,8 +140,11 @@ describe('DuckDB lakehouse runtime', () => {
       cursorKey: 'corruption-test-cursor-key'.repeat(2), root,
     });
     const snapshot = await runtime.append({ frontier: 'one', rows: [{ id: 'one' }] });
-    const authority = JSON.parse(await readFile(join(runtime.root, 'authority.json'), 'utf8')) as { manifests: Array<{ snapshotId: string }> };
+    const authority = JSON.parse(await readFile(join(runtime.root, 'authority.json'), 'utf8')) as { manifests: Array<{ snapshotId: string; rowCount: number; rows?: unknown; rowIdentities?: unknown }> };
     expect(authority.manifests[0]?.snapshotId).toBe(snapshot.snapshotId);
+    expect(authority.manifests[0]).toMatchObject({ rowCount: 1 });
+    expect(authority.manifests[0]).not.toHaveProperty('rows');
+    expect(authority.manifests[0]).not.toHaveProperty('rowIdentities');
     await writeFile(join(runtime.root, 'objects', `${snapshot.objects[0]!.objectId}.ndjson`), `${JSON.stringify({ id: 'tampered' })}\n`);
     await expect(runtime.query({ dataset: LakehouseDataset.named('audit-history') })).rejects.toBeInstanceOf(ApplicationDuckDbLakehouseCorruptionError);
     await runtime.close();

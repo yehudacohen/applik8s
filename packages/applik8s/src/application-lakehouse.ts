@@ -39,7 +39,16 @@ export interface ApplicationLakehousePublicationRuntime<TRow extends object = ob
     readonly rows: readonly TRow[];
     readonly partitions?: readonly Readonly<Record<string, string>>[];
     readonly expectedSnapshot?: string;
+    readonly causalReceipt?: ApplicationLakehousePublicationCausalReceipt;
   }): Promise<ApplicationLakehouseManifest<TRow>>;
+}
+
+export interface ApplicationLakehousePublicationCausalReceipt {
+  readonly sourceId: string;
+  readonly recordedAt?: string;
+  readonly correlationId?: string;
+  readonly causationId?: string;
+  readonly authorizationReceiptId?: string;
 }
 
 type ErasedApplicationLakehousePublicationRuntime = ApplicationLakehousePublicationRuntime<object>;
@@ -63,7 +72,10 @@ export function installApplicationLakehousePublicationRuntimeResolver<TRow exten
 /** Framework worker entrypoint for one admitted source fact. */
 export async function executeApplicationLakehousePublication<TRow extends object>(
   publication: ApplicationLakehousePublication<TRow>,
-  envelope: Pick<ApplicationMessageEnvelope<object>, 'id' | 'payload'>,
+  envelope: Pick<
+    ApplicationMessageEnvelope<object>,
+    'id' | 'payload' | 'recordedAt' | 'correlationId' | 'causationId' | 'authorizationReceipt'
+  >,
 ): Promise<ApplicationLakehouseManifest<TRow>> {
   const qualification = publication.dataset.qualification?.name;
   if (!qualification) throw new Error('Lakehouse publication lost its qualified dataset identity.');
@@ -77,7 +89,18 @@ export async function executeApplicationLakehousePublication<TRow extends object
       // This function owns only idempotent publication into the selected
       // dataset so direct calls and consumer retries cannot double-count the
       // same event as nested business spans.
-      return runtime.append({ frontier: envelope.id, rows: [row], ...(partitions ? { partitions } : {}) });
+      return runtime.append({
+        frontier: envelope.id,
+        rows: [row],
+        ...(partitions ? { partitions } : {}),
+        causalReceipt: {
+          sourceId: envelope.id,
+          recordedAt: envelope.recordedAt,
+          ...(envelope.correlationId ? { correlationId: envelope.correlationId } : {}),
+          ...(envelope.causationId ? { causationId: envelope.causationId } : {}),
+          ...(envelope.authorizationReceipt?.id ? { authorizationReceiptId: envelope.authorizationReceipt.id } : {}),
+        },
+      });
     }
   }
   throw new Error(`No LakehouseDataset publication runtime is installed for qualified provider ${qualification}.`);
@@ -484,6 +507,13 @@ export interface ApplicationLakehouseManifest<TRow extends object> {
   };
   readonly parentSnapshotId?: string;
   readonly frontier: readonly string[];
+  readonly causalReceipts?: readonly ApplicationLakehousePublicationCausalReceipt[];
+  /** Logical cardinality; row payloads live only in immutable objects. */
+  readonly rowCount: number;
+  /**
+   * Materialized rows are a runtime-only view used by deterministic providers.
+   * Persisted publication authority must use applicationLakehouseAuthorityManifest().
+   */
   readonly rows: readonly TRow[];
   /** Stable framework-owned row identities used only as a pagination tie-breaker. */
   readonly rowIdentities: readonly string[];
@@ -504,8 +534,75 @@ export interface ApplicationLakehouseManifest<TRow extends object> {
   readonly digest: string;
 }
 
+/** Metadata-only publication authority. It never embeds dataset payloads. */
+export type ApplicationLakehouseAuthorityManifest<TRow extends object = object> = Omit<
+  ApplicationLakehouseManifest<TRow>,
+  'rows' | 'rowIdentities'
+>;
+
+export function applicationLakehouseAuthorityManifest<TRow extends object>(
+  manifest: ApplicationLakehouseManifest<TRow>,
+): ApplicationLakehouseAuthorityManifest<TRow> {
+  const { rows: _rows, rowIdentities: _rowIdentities, ...authority } = manifest;
+  return deepFreezeJson(JSON.parse(JSON.stringify(authority))) as ApplicationLakehouseAuthorityManifest<TRow>;
+}
+
+export function verifyApplicationLakehouseAuthorityManifest<TRow extends object>(
+  manifest: ApplicationLakehouseAuthorityManifest<TRow>,
+  datasetId: string,
+): ApplicationLakehouseAuthorityManifest<TRow> {
+  if (Reflect.has(manifest, 'rows') || Reflect.has(manifest, 'rowIdentities')) {
+    throw new Error('Lakehouse publication authority must not embed logical row payloads.');
+  }
+  if (manifest.schemaVersion !== 'applik8s.lakehouseManifest/v1alpha1' || manifest.datasetId !== datasetId) {
+    throw new Error('Lakehouse manifest belongs to another dataset or schema version.');
+  }
+  const actualSchemaFingerprint = manifest.schema ? stableDigest(manifest.schema.jsonSchema) : undefined;
+  if (!manifest.schema || manifest.schema.family !== datasetId || manifest.schema.revision !== manifest.schemaRevision || actualSchemaFingerprint !== manifest.schema.fingerprint) {
+    throw new Error(`Lakehouse manifest ${manifest.snapshotId} has invalid schema authority${manifest.schema ? `: expected ${manifest.schema.fingerprint}, observed ${actualSchemaFingerprint}.` : '.'}`);
+  }
+  let expectedOffset = 0;
+  if (
+    !Number.isSafeInteger(manifest.rowCount)
+    || manifest.rowCount < 0
+    || !Array.isArray(manifest.objects)
+    || (manifest.rowCount > 0 && manifest.objects.length === 0)
+    || manifest.objects.some((object) => {
+      if (
+        !/^object_[a-f0-9]{64}$/u.test(object.objectId)
+        || !/^sha256:[a-f0-9]{64}$/u.test(object.digest)
+        || object.rowOffset !== expectedOffset
+        || !Number.isSafeInteger(object.rowCount)
+        || object.rowCount < 1
+        || !Number.isSafeInteger(object.bytes)
+        || object.bytes < 0
+      ) return true;
+      expectedOffset += object.rowCount;
+      return false;
+    })
+    || expectedOffset !== manifest.rowCount
+  ) {
+    throw new Error(`Lakehouse manifest ${manifest.snapshotId} has invalid immutable object evidence.`);
+  }
+  if (manifest.causalReceipts && manifest.causalReceipts.some((receipt) => {
+    try {
+      normalizeLakehouseCausalReceipt(receipt, receipt.sourceId);
+      return !manifest.frontier.includes(receipt.sourceId);
+    } catch {
+      return true;
+    }
+  })) {
+    throw new Error(`Lakehouse manifest ${manifest.snapshotId} has invalid causal receipts.`);
+  }
+  const { digest, snapshotId: _snapshotId, schemaVersion: _schemaVersion, ...content } = manifest;
+  if (stableDigest(content) !== digest || manifest.snapshotId !== `snapshot_${digest.slice(7)}`) {
+    throw new Error(`Lakehouse manifest ${manifest.snapshotId} failed its integrity digest.`);
+  }
+  return manifest;
+}
+
 export interface DeterministicApplicationLakehouseRuntime<TRow extends object> extends ApplicationLakehouseQueryRuntime<TRow> {
-  append(options: { readonly frontier: string; readonly rows: readonly TRow[]; readonly partitions?: readonly Readonly<Record<string, string>>[]; readonly expectedSnapshot?: string }): Promise<ApplicationLakehouseManifest<TRow>>;
+  append(options: { readonly frontier: string; readonly rows: readonly TRow[]; readonly partitions?: readonly Readonly<Record<string, string>>[]; readonly expectedSnapshot?: string; readonly causalReceipt?: ApplicationLakehousePublicationCausalReceipt }): Promise<ApplicationLakehouseManifest<TRow>>;
   current(): ApplicationLakehouseManifest<TRow> | undefined;
   snapshots(): readonly ApplicationLakehouseManifest<TRow>[];
 }
@@ -575,18 +672,14 @@ export function createDeterministicApplicationLakehouseRuntime<TRow extends obje
   const schemaFamily = options.datasetId;
   const maximumObjectsPerSnapshot = lakehouseBoundedInteger(options.maximumObjectsPerSnapshot ?? 64, 1, 10_000, 'maximumObjectsPerSnapshot');
   const retainedSnapshots = lakehouseBoundedInteger(options.retainedSnapshots ?? 256, 1, 100_000, 'retainedSnapshots');
-  const orderedManifests = (options.snapshots ?? []).map((snapshot) => {
+  const restoredManifests = (options.snapshots ?? []).map((snapshot) => {
     const value = JSON.parse(JSON.stringify(snapshot)) as ApplicationLakehouseManifest<TRow>;
     verifyManifest(value, options.datasetId);
-    return deepFreezeJson(value);
+    return value;
   });
-  const manifests = new Map(orderedManifests.map((snapshot) => [snapshot.snapshotId, snapshot]));
-  if (manifests.size !== orderedManifests.length) throw new Error(`Lakehouse dataset ${options.datasetId} restored duplicate snapshot identities.`);
-  const frontier = new Map<string, ApplicationLakehouseManifest<TRow>>();
-  for (const manifest of orderedManifests) {
-    for (const identity of manifest.frontier) if (!frontier.has(identity)) frontier.set(identity, manifest);
-  }
-  let current = orderedManifests.at(-1);
+  const restoredIdentities = new Set(restoredManifests.map(({ snapshotId }) => snapshotId));
+  if (restoredIdentities.size !== restoredManifests.length) throw new Error(`Lakehouse dataset ${options.datasetId} restored duplicate snapshot identities.`);
+  let current = restoredManifests.at(-1);
   if (current) {
     if (current.schema.family !== schemaFamily) throw new Error(`Lakehouse dataset ${options.datasetId} changed schema family.`);
     if (current.schemaRevision === options.schemaRevision && current.schema.fingerprint !== schemaFingerprint) {
@@ -599,6 +692,20 @@ export function createDeterministicApplicationLakehouseRuntime<TRow extends obje
       }
     }
   }
+  const orderedManifests: readonly ApplicationLakehouseManifest<TRow>[] = restoredManifests.map((value) => {
+    const normalized: ApplicationLakehouseManifest<TRow> = {
+      ...value,
+      rows: value.rows.map((row) => validateMessage(options.schema, row, `${options.datasetId}.restored-row`)),
+    };
+    verifyManifest(normalized, options.datasetId);
+    return deepFreezeJson(normalized);
+  });
+  const manifests = new Map(orderedManifests.map((snapshot) => [snapshot.snapshotId, snapshot]));
+  const frontier = new Map<string, ApplicationLakehouseManifest<TRow>>();
+  for (const manifest of orderedManifests) {
+    for (const identity of manifest.frontier) if (!frontier.has(identity)) frontier.set(identity, manifest);
+  }
+  current = orderedManifests.at(-1);
   const persist = async (values = [...manifests.values()]): Promise<void> => options.persist?.(values);
   const now = options.now ?? (() => new Date());
   const cursorCodec = createApplicationLakehouseCursorCodec(options.cursorKey, () => now().getTime());
@@ -612,6 +719,9 @@ export function createDeterministicApplicationLakehouseRuntime<TRow extends obje
     append(request) {
       return serializePublication(async () => {
         if (!request.frontier.trim()) throw new Error('Lakehouse publication frontier must be non-empty.');
+        const causalReceipt = request.causalReceipt
+          ? normalizeLakehouseCausalReceipt(request.causalReceipt, request.frontier)
+          : undefined;
         const priorFrontier = frontier.get(request.frontier);
         if (priorFrontier) return priorFrontier;
         if (request.expectedSnapshot !== undefined && request.expectedSnapshot !== current?.snapshotId) {
@@ -647,6 +757,10 @@ export function createDeterministicApplicationLakehouseRuntime<TRow extends obje
           },
           ...(current?.snapshotId ? { parentSnapshotId: current.snapshotId } : {}),
           frontier: [...(current?.frontier ?? []), request.frontier].sort(),
+          ...(causalReceipt || current?.causalReceipts
+            ? { causalReceipts: [...(current?.causalReceipts ?? []), causalReceipt ?? { sourceId: request.frontier }] }
+            : {}),
+          rowCount: allRows.length,
           rows: allRows,
           rowIdentities,
           objects,
@@ -658,7 +772,20 @@ export function createDeterministicApplicationLakehouseRuntime<TRow extends obje
             retainedSnapshots,
           },
         };
-        const digest = stableDigest(content);
+        const authorityContent = {
+          datasetId: content.datasetId,
+          schemaRevision: content.schemaRevision,
+          schema: content.schema,
+          ...(content.parentSnapshotId ? { parentSnapshotId: content.parentSnapshotId } : {}),
+          frontier: content.frontier,
+          ...(content.causalReceipts ? { causalReceipts: content.causalReceipts } : {}),
+          rowCount: content.rowCount,
+          objects: content.objects,
+          ...(content.partitions ? { partitions: content.partitions } : {}),
+          publishedAt: content.publishedAt,
+          lifecycle: content.lifecycle,
+        };
+        const digest = stableDigest(authorityContent);
         const manifest: ApplicationLakehouseManifest<TRow> = deepFreezeJson({
           schemaVersion: 'applik8s.lakehouseManifest/v1alpha1',
           ...content,
@@ -771,12 +898,8 @@ export function verifyApplicationLakehouseManifest<TRow extends object>(
   manifest: ApplicationLakehouseManifest<TRow>,
   datasetId: string,
 ): ApplicationLakehouseManifest<TRow> {
-  if (manifest.schemaVersion !== 'applik8s.lakehouseManifest/v1alpha1' || manifest.datasetId !== datasetId) throw new Error('Lakehouse manifest belongs to another dataset or schema version.');
-  const actualSchemaFingerprint = manifest.schema ? stableDigest(manifest.schema.jsonSchema) : undefined;
-  if (!manifest.schema || manifest.schema.family !== datasetId || manifest.schema.revision !== manifest.schemaRevision || actualSchemaFingerprint !== manifest.schema.fingerprint) {
-    throw new Error(`Lakehouse manifest ${manifest.snapshotId} has invalid schema authority${manifest.schema ? `: expected ${manifest.schema.fingerprint}, observed ${actualSchemaFingerprint}.` : '.'}`);
-  }
-  if (!Array.isArray(manifest.rowIdentities) || manifest.rowIdentities.length !== manifest.rows.length || manifest.rowIdentities.some((identity) => !/^sha256:[a-f0-9]{64}$/u.test(identity))) {
+  verifyApplicationLakehouseAuthorityManifest(applicationLakehouseAuthorityManifest(manifest), datasetId);
+  if (manifest.rowCount !== manifest.rows.length || !Array.isArray(manifest.rowIdentities) || manifest.rowIdentities.length !== manifest.rows.length || manifest.rowIdentities.some((identity) => !/^sha256:[a-f0-9]{64}$/u.test(identity))) {
     throw new Error(`Lakehouse manifest ${manifest.snapshotId} has invalid stable row identities.`);
   }
   let expectedOffset = 0;
@@ -791,12 +914,34 @@ export function verifyApplicationLakehouseManifest<TRow extends object>(
   }) || expectedOffset !== manifest.rows.length) {
     throw new Error(`Lakehouse manifest ${manifest.snapshotId} has invalid immutable object evidence.`);
   }
-  const { digest, snapshotId: _snapshotId, schemaVersion: _schemaVersion, ...content } = manifest;
-  if (stableDigest(content) !== digest) throw new Error(`Lakehouse manifest ${manifest.snapshotId} failed its integrity digest.`);
   return manifest;
 }
 
 const verifyManifest = verifyApplicationLakehouseManifest;
+
+function normalizeLakehouseCausalReceipt(
+  receipt: ApplicationLakehousePublicationCausalReceipt,
+  frontier: string,
+): ApplicationLakehousePublicationCausalReceipt {
+  if (receipt.sourceId !== frontier) throw new Error('Lakehouse causal receipt sourceId must match its publication frontier.');
+  const bounded = (value: string | undefined, name: string): string | undefined => {
+    if (value === undefined) return undefined;
+    if (!value || value.length > 1_024 || /[\0\r\n]/u.test(value)) throw new Error(`Lakehouse causal receipt ${name} is invalid.`);
+    return value;
+  };
+  const recordedAt = bounded(receipt.recordedAt, 'recordedAt');
+  const correlationId = bounded(receipt.correlationId, 'correlationId');
+  const causationId = bounded(receipt.causationId, 'causationId');
+  const authorizationReceiptId = bounded(receipt.authorizationReceiptId, 'authorizationReceiptId');
+  if (recordedAt && !Number.isFinite(Date.parse(recordedAt))) throw new Error('Lakehouse causal receipt recordedAt must be an ISO-compatible timestamp.');
+  return Object.freeze({
+    sourceId: frontier,
+    ...(recordedAt ? { recordedAt } : {}),
+    ...(correlationId ? { correlationId } : {}),
+    ...(causationId ? { causationId } : {}),
+    ...(authorizationReceiptId ? { authorizationReceiptId } : {}),
+  });
+}
 
 function lakehouseObjectEvidence<TRow extends object>(
   rows: readonly TRow[],

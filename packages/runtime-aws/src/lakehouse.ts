@@ -12,10 +12,13 @@ import { GetObjectCommand, NoSuchKey, PutObjectCommand, S3Client } from '@aws-sd
 import {
   applicationLakehouseQueryIdentity,
   applicationLakehouseQueryTerminalError,
+  applicationLakehouseAuthorityManifest,
   compileApplicationLakehouseQuery,
   createApplicationLakehouseCursorCodec,
   createDeterministicApplicationLakehouseRuntime,
+  verifyApplicationLakehouseAuthorityManifest,
   verifyApplicationLakehouseManifest,
+  type ApplicationLakehouseAuthorityManifest,
   type ApplicationLakehouseManifest,
   type ApplicationLakehouseCursorPayload,
   type ApplicationLakehousePublicationRuntime,
@@ -60,7 +63,7 @@ interface AwsLakehouseAuthority<TRow extends object> {
   readonly schemaVersion: 'applik8s.awsLakehouse/v1alpha1';
   readonly datasetId: string;
   readonly schemaRevision: string;
-  readonly manifests: readonly ApplicationLakehouseManifest<TRow>[];
+  readonly manifests: readonly ApplicationLakehouseAuthorityManifest<TRow>[];
 }
 
 /** S3/Glue publication provider with immutable snapshots and an S3 CAS frontier. */
@@ -70,18 +73,26 @@ export function createAwsApplicationLakehouseDatasetRuntime<TRow extends object>
   validateDataset(configuration);
   const s3 = configuration.s3Client ?? new S3Client(configuration.region ? { region: configuration.region } : {});
   const glue = configuration.glueClient ?? new GlueClient(configuration.region ? { region: configuration.region } : {});
+  const objectCache = new Map<string, { readonly rows: readonly TRow[]; readonly rowIdentities: readonly string[] }>();
+  const snapshotCache = new Map<string, ApplicationLakehouseManifest<TRow>>();
   return {
     async append(request) {
       for (let attempt = 0; attempt < 8; attempt += 1) {
         const current = await readAuthority<TRow>(s3, configuration);
-        const prior = current.authority.manifests.find((manifest) => manifest.frontier.includes(request.frontier));
+        const currentAuthority = current.authority.manifests.at(-1);
+        const currentManifest = currentAuthority
+          ? snapshotCache.get(currentAuthority.snapshotId)
+            ?? (await hydrateAwsLakehouseManifests(s3, configuration, [currentAuthority], objectCache))[0]
+          : undefined;
+        if (currentManifest) snapshotCache.set(currentManifest.snapshotId, currentManifest);
+        const prior = currentManifest?.frontier.includes(request.frontier) ? currentManifest : undefined;
         if (prior) return prior;
         const deterministic = createDeterministicApplicationLakehouseRuntime({
           datasetId: configuration.datasetId,
           schemaRevision: configuration.schemaRevision,
           schema: configuration.schema,
           cursorKey: configuration.cursorKey,
-          snapshots: current.authority.manifests,
+          snapshots: currentManifest ? [currentManifest] : [],
           ...(configuration.maximumObjectsPerSnapshot ? { maximumObjectsPerSnapshot: configuration.maximumObjectsPerSnapshot } : {}),
           ...(configuration.retainedSnapshots ? { retainedSnapshots: configuration.retainedSnapshots } : {}),
         });
@@ -90,13 +101,15 @@ export function createAwsApplicationLakehouseDatasetRuntime<TRow extends object>
           await putImmutableObject(s3, configuration, dataObjectKey(configuration, object.objectId), physicalRows(manifest, object), 'application/x-ndjson');
         }
         await putImmutableObject(s3, configuration, snapshotLinkKey(configuration, manifest.snapshotId), manifest.objects.map(({ objectId }) => `s3://${configuration.bucket}/${dataObjectKey(configuration, objectId)}`).join('\n') + '\n', 'text/plain');
-        await putImmutableObject(s3, configuration, manifestObjectKey(configuration, manifest.snapshotId), `${JSON.stringify(manifest)}\n`, 'application/json');
+        await putImmutableObject(s3, configuration, manifestObjectKey(configuration, manifest.snapshotId), `${JSON.stringify(applicationLakehouseAuthorityManifest(manifest))}\n`, 'application/json');
         await ensureSnapshotTable(glue, configuration, manifest);
+        const retainedSnapshots = configuration.retainedSnapshots ?? 256;
+        const retained = [...current.authority.manifests, applicationLakehouseAuthorityManifest(manifest)].slice(-retainedSnapshots);
         const next: AwsLakehouseAuthority<TRow> = {
           schemaVersion: 'applik8s.awsLakehouse/v1alpha1',
           datasetId: configuration.datasetId,
           schemaRevision: configuration.schemaRevision,
-          manifests: deterministic.snapshots(),
+          manifests: retained,
         };
         try {
           await s3.send(new PutObjectCommand({
@@ -106,6 +119,10 @@ export function createAwsApplicationLakehouseDatasetRuntime<TRow extends object>
             ContentType: 'application/json',
             ...(current.etag ? { IfMatch: current.etag } : { IfNoneMatch: '*' }),
           }));
+          snapshotCache.set(manifest.snapshotId, manifest);
+          for (const snapshotId of [...snapshotCache.keys()]) {
+            if (!retained.some((candidate) => candidate.snapshotId === snapshotId)) snapshotCache.delete(snapshotId);
+          }
           return manifest;
         } catch (cause) {
           if (!isPreconditionFailed(cause) || attempt === 7) throw cause;
@@ -305,7 +322,7 @@ async function readAuthority<TRow extends object>(s3: S3Client, configuration: A
     const verified: AwsLakehouseAuthority<TRow> = {
       ...authority,
       manifests: authority.manifests.map((manifest) =>
-        verifyApplicationLakehouseManifest(manifest, configuration.datasetId)),
+        verifyApplicationLakehouseAuthorityManifest(manifest, configuration.datasetId)),
     };
     return { authority: verified, ...(response.ETag ? { etag: response.ETag } : {}) };
   } catch (cause) {
@@ -322,6 +339,63 @@ async function putImmutableObject(s3: S3Client, configuration: AwsApplicationLak
     const existing = await s3.send(new GetObjectCommand({ Bucket: configuration.bucket, Key: key }));
     if (await existing.Body?.transformToString() !== body) throw new Error(`Immutable AWS lakehouse object s3://${configuration.bucket}/${key} conflicts with different content.`);
   }
+}
+
+async function hydrateAwsLakehouseManifests<TRow extends object>(
+  s3: S3Client,
+  configuration: AwsApplicationLakehouseDatasetConfiguration<TRow>,
+  manifests: readonly ApplicationLakehouseAuthorityManifest<TRow>[],
+  cache: Map<string, { readonly rows: readonly TRow[]; readonly rowIdentities: readonly string[] }>,
+): Promise<readonly ApplicationLakehouseManifest<TRow>[]> {
+  const hydrated: ApplicationLakehouseManifest<TRow>[] = [];
+  for (const manifest of manifests) {
+    const rows: TRow[] = [];
+    const rowIdentities: string[] = [];
+    for (const object of manifest.objects) {
+      let content = cache.get(object.objectId);
+      if (!content) {
+        const response = await s3.send(new GetObjectCommand({
+          Bucket: configuration.bucket,
+          Key: dataObjectKey(configuration, object.objectId),
+        }));
+        const encoded = await response.Body?.transformToString();
+        if (encoded === undefined) throw new Error(`AWS lakehouse object ${object.objectId} is empty.`);
+        content = parsePhysicalRows<TRow>(encoded, object.objectId);
+        cache.set(object.objectId, content);
+      }
+      rows.push(...content.rows);
+      rowIdentities.push(...content.rowIdentities);
+    }
+    hydrated.push(verifyApplicationLakehouseManifest({ ...manifest, rows, rowIdentities }, configuration.datasetId));
+  }
+  return hydrated;
+}
+
+function parsePhysicalRows<TRow extends object>(
+  encoded: string,
+  objectId: string,
+): { readonly rows: readonly TRow[]; readonly rowIdentities: readonly string[] } {
+  const rows: TRow[] = [];
+  const rowIdentities: string[] = [];
+  for (const [index, line] of encoded.split('\n').entries()) {
+    if (!line) continue;
+    let candidate: unknown;
+    try {
+      candidate = JSON.parse(line);
+    } catch (cause) {
+      throw new Error(`AWS lakehouse object ${objectId} contains invalid JSON at line ${index + 1}.`, { cause });
+    }
+    if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) {
+      throw new Error(`AWS lakehouse object ${objectId} contains a non-object row at line ${index + 1}.`);
+    }
+    const { __applik8s_row_id: identity, ...row } = candidate as Record<string, unknown>;
+    if (typeof identity !== 'string' || !/^sha256:[a-f0-9]{64}$/u.test(identity)) {
+      throw new Error(`AWS lakehouse object ${objectId} has an invalid row identity at line ${index + 1}.`);
+    }
+    rows.push(row as TRow);
+    rowIdentities.push(identity);
+  }
+  return { rows, rowIdentities };
 }
 
 async function ensureSnapshotTable<TRow extends object>(glue: GlueClient, configuration: AwsApplicationLakehouseDatasetConfiguration<TRow>, manifest: ApplicationLakehouseManifest<TRow>): Promise<void> {

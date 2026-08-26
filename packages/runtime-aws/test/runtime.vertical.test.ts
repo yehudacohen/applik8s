@@ -76,7 +76,7 @@ describe('AWS lakehouse runtime', () => {
       schema: type({ id: 'string', quantity: 'number.integer' }), cursorKey: 'c'.repeat(32),
       s3Client: s3 as unknown as S3Client, glueClient: glue as unknown as GlueClient,
     });
-    const first = await runtime.append({ frontier: 'event-1', rows: [{ id: 'one', quantity: 2 }] });
+    const first = await runtime.append({ frontier: 'event-1', rows: [{ id: 'payload-canary-not-in-authority', quantity: 2 }] });
     const replay = await runtime.append({ frontier: 'event-1', rows: [{ id: 'duplicate', quantity: 99 }] });
     expect(replay.snapshotId).toBe(first.snapshotId);
     expect([...s3.objects.keys()]).toEqual(expect.arrayContaining([
@@ -88,6 +88,11 @@ describe('AWS lakehouse runtime', () => {
     expect(s3.contentTypes).toContain('application/x-ndjson');
     expect(s3.contentTypes).toContain('application/json');
     expect(glue.tables).toHaveLength(1);
+    const authority = JSON.parse(s3.objects.get('history/authority.json')!.body) as { manifests: Array<Record<string, unknown>> };
+    expect(authority.manifests[0]).toMatchObject({ rowCount: 1 });
+    expect(authority.manifests[0]).not.toHaveProperty('rows');
+    expect(authority.manifests[0]).not.toHaveProperty('rowIdentities');
+    expect(s3.objects.get('history/authority.json')!.body).not.toContain('payload-canary-not-in-authority');
   });
 
   it('pins Athena queries to one snapshot, emits scan evidence, signs principal-bound cursors, and cancels', async () => {
@@ -186,8 +191,8 @@ describe('AWS lakehouse runtime', () => {
     await createAwsApplicationLakehouseDatasetRuntime(dataset).append({ frontier: 'event-1', rows: [{ id: 'one' }] });
     const authorityKey = 'tamper-proof/authority.json';
     const stored = s3.objects.get(authorityKey)!;
-    const authority = JSON.parse(stored.body) as { manifests: Array<{ rows: Array<{ id: string }> }> };
-    authority.manifests[0]!.rows[0] = { id: 'tampered' };
+    const authority = JSON.parse(stored.body) as { manifests: Array<{ rowCount: number }> };
+    authority.manifests[0]!.rowCount = 2;
     s3.objects.set(authorityKey, { body: JSON.stringify(authority), etag: stored.etag });
     const athena = new MemoryAthena();
     const runtime = createAwsApplicationLakehouseQueryRuntime({
@@ -207,6 +212,28 @@ describe('AWS lakehouse runtime', () => {
       s3Client: s3 as unknown as S3Client, glueClient: glue as unknown as GlueClient,
     });
     await expect(runtime.append({ frontier: 'event-1', rows: [{ id: 'one' }] })).rejects.toThrow(/owner or storage descriptor/u);
+  });
+
+  it('publishes concurrent AWS writers as one canonical successor chain', async () => {
+    const s3 = new MemoryS3();
+    const runtime = createAwsApplicationLakehouseDatasetRuntime({
+      datasetId: 'concurrent', bucket: 'concurrent-bucket', prefix: 'concurrent', catalogDatabase: 'concurrent', schemaRevision: 'v1',
+      schema: type({ id: 'string' }), cursorKey: 'w'.repeat(32),
+      s3Client: s3 as unknown as S3Client, glueClient: new MemoryGlue() as unknown as GlueClient,
+    });
+    await Promise.all([
+      runtime.append({ frontier: 'one', rows: [{ id: 'one' }] }),
+      runtime.append({ frontier: 'two', rows: [{ id: 'two' }] }),
+    ]);
+    const authority = JSON.parse(s3.objects.get('concurrent/authority.json')!.body) as {
+      manifests: Array<{ readonly snapshotId: string; readonly parentSnapshotId?: string; readonly frontier: readonly string[]; readonly rowCount: number }>;
+    };
+    expect(authority.manifests).toHaveLength(2);
+    expect(authority.manifests[1]).toMatchObject({
+      parentSnapshotId: authority.manifests[0]!.snapshotId,
+      frontier: ['one', 'two'],
+      rowCount: 2,
+    });
   });
 
   it('reattaches to an ambiguously admitted Athena query through its stable provider token', async () => {
