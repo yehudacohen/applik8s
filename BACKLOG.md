@@ -1,6 +1,6 @@
 # applik8s Backlog
 
-Last updated: 2026-08-19
+Last updated: 2026-08-26
 
 - `[post-v0.7]` Add adapter-owned browser OAuth completion for provider-neutral
   Integration requests. Preserve the v0.7 safe intent/status model, keep
@@ -34,6 +34,11 @@ Current foundation increment:
   remain `implemented: false` until guest/host propagation, recursive source
   attribution, complete access inference, schemas, renderers, and integration
   evidence satisfy their full RFP evidence sets.
+- Closed the generated Hatchet root-admission operational boundary with a
+  configurable replay window, bounded paginated cleanup, terminal-provider
+  verification, UID-fenced deletion, exact runtime-access projection for
+  external OTLP credentials, and an OrbStack collector receipt proving the
+  workflow/task retry link graph through worker replacement and cancellation.
 
 Next, in manifesto dependency order:
 

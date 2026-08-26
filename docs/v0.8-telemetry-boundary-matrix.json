@@ -10,6 +10,7 @@
     "packages/applik8s/src/model-command-postgres-runtime.ts",
     "packages/applik8s/src/query-gateway.ts",
     "packages/applik8s/src/application-schedule.ts",
+    "packages/applik8s/src/application-schedule-execution-runtime.ts",
     "packages/applik8s/src/stream-processor-runtime.ts",
     "packages/compiler/src/application-fetch-gateway/index.ts",
     "packages/compiler/src/application-http/index.ts",
@@ -325,11 +326,16 @@
       "consumer": "function-native schedule handler",
       "carrierPlacement": "active runtime scope around local and admitted schedule execution; durable provider carrier linkage still requires exact receipt evidence",
       "owners": [
-        "packages/applik8s/src/application-schedule.ts"
+        "packages/applik8s/src/application-schedule.ts",
+        "packages/applik8s/src/application-schedule-execution-runtime.ts"
       ],
       "sourceMarkers": [
         {
           "path": "packages/applik8s/src/application-schedule.ts",
+          "marker": "kind: 'schedule'"
+        },
+        {
+          "path": "packages/applik8s/src/application-schedule-execution-runtime.ts",
           "marker": "kind: 'schedule'"
         }
       ],
@@ -338,7 +344,7 @@
     },
     {
       "kind": "task",
-      "state": "in-progress",
+      "state": "implemented",
       "relationship": "asynchronous",
       "producer": "durable workflow step admission",
       "consumer": "task worker attempt",
@@ -355,11 +361,11 @@
         }
       ],
       "regression": "bunx vitest run --maxWorkers=1 packages/applik8s/test/task-operation-runtime.vertical.test.ts packages/compiler/test/application-workflows.vertical.test.ts packages/runtime-hatchet/test/runtime.vertical.test.ts",
-      "remaining": "Prove live Hatchet worker restart and cancellation outcomes, durable replay suppression, and collector-visible attempt linkage without changing task authority."
+      "remaining": "The OrbStack generated-worker receipt proves task retry attempts 1 and 2 link to the same workflow span across worker replacement, typed signal branches, cancellation, replay-safe effects, custom-CA OTLP export, redaction, and managed cleanup. Arbitrary external Hatchet service behavior remains provider-owned and unclaimed."
     },
     {
       "kind": "workflow",
-      "state": "in-progress",
+      "state": "implemented",
       "relationship": "mixed",
       "producer": "function-native call, HTTP start, schedule, signal, or parent workflow",
       "consumer": "durable workflow run",
@@ -377,7 +383,7 @@
         }
       ],
       "regression": "bunx vitest run --maxWorkers=1 packages/applik8s/test/application-workflows.vertical.test.ts packages/compiler/test/application-workflows.vertical.test.ts packages/runtime-hatchet/test/runtime.vertical.test.ts",
-      "remaining": "Prove live workflow suspension/resumption, cancellation, and restart; distinguish provider replay from a live retry without fabricating a second logical business span."
+      "remaining": "The OrbStack generated-worker receipt proves suspension/resumption, worker replacement, typed signals, cancellation, one Lease-fenced root run, retry-linked task attempts, custom-CA OTLP export, and managed cleanup without fabricating a second logical workflow span. Arbitrary external Hatchet service behavior remains provider-owned and unclaimed."
     }
   ]
 }

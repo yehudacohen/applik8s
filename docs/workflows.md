@@ -32,6 +32,11 @@ platform.provide(WorkflowEngine, WorkflowEngine.hatchet({
   namespace: 'platform',
   adminCredentialsSecret: { apiVersion: 'v1', kind: 'Secret', name: 'hatchet-admin', namespace: 'platform' },
   database: { clusterName: 'hatchet-db', database: 'hatchet', storageSize: '8Gi' },
+  admission: {
+    replayWindowSeconds: 7 * 24 * 60 * 60,
+    cleanupIntervalSeconds: 5 * 60,
+    cleanupBatchSize: 1_000,
+  },
 }));
 
 const ReviewTenant = platform.workflow.signal('tenant.review.v1', {
@@ -165,6 +170,28 @@ AutomationScheduleChanged.process('reconcile-automation-schedules', {
 ```
 
 The provider adapter converges create, unchanged, replacement, suspension/deletion, and retry behavior under the processor deadline. Application code names no Hatchet API.
+
+## Root-run admission retention
+
+The private workflow gateway persists one Kubernetes Lease for each exact
+caller, workflow contract, and idempotency key. Repeating that tuple during the
+configured replay window reattaches to the original Hatchet root run, including
+after a gateway response or process is lost. The idempotency key itself is not
+stored in the Lease.
+
+`WorkflowEngine.hatchet({ admission })` controls bounded retention. Defaults are
+seven days for replay, a five-minute cleanup interval, and at most 1,000 records
+inspected per pass. Cleanup advances through Kubernetes continuation tokens and
+removes only records older than the replay window whose provider run is
+terminal or confirmed absent. Active, recent, starting, malformed, or
+unobservable runs remain intact. Every deletion carries the observed Lease UID,
+so a concurrent replacement cannot be deleted accidentally. Expired
+continuation tokens restart scanning from a fresh page, while provider or
+Kubernetes uncertainty fails closed and is retried by a later pass.
+
+The application Namespace remains the outer lifecycle authority for these
+records. Shortening the replay window is therefore an explicit product
+idempotency decision, not merely a storage optimization.
 
 ## Authoritative online-projection rebuilds
 

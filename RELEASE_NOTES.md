@@ -18,6 +18,16 @@ performance/cost history. Those are local evidence only: retained-data
 OrbStack migration, MiniStack, real AWS, and distributed celld qualification
 remain explicit release blockers until exact-commit live evidence exists.
 
+Durable root-workflow admission now has a provider-neutral, configurable replay
+window and bounded compaction policy. Generated Hatchet gateways page through
+their Lease authority, preserve in-flight and recent runs, verify terminal or
+missing provider state, and delete expired records with UID preconditions. The
+live OrbStack workflow receipt now exports over custom-CA OTLP and proves the
+workflow/task retry link graph through worker replacement, cancellation, and
+managed teardown. External OTLP Secret projections are also represented in the
+canonical runtime-access envelope for every generated JavaScript execution
+boundary that receives them.
+
 ## v0.7.1
 
 v0.7.1 corrects the released-compiler and clean-consumer boundary discovered
