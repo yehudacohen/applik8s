@@ -238,6 +238,68 @@ describe('AWS lakehouse runtime', () => {
     });
   });
 
+  it('reconciles retained S3 and Glue state under a CAS lifecycle lease', async () => {
+    const s3 = new MemoryS3();
+    const glue = new MemoryGlue();
+    let clock = new Date('2026-08-26T00:00:00.000Z');
+    const runtime = createAwsApplicationLakehouseDatasetRuntime({
+      datasetId: 'retained', bucket: 'retained-bucket', prefix: 'retained', catalogDatabase: 'retained', schemaRevision: 'v1',
+      schema: type({ id: 'string' }), cursorKey: 'lifecycle-key'.repeat(3), retainedSnapshots: 1, maximumObjectsPerSnapshot: 1,
+      lifecycleLeaseMs: 60_000, now: () => clock,
+      s3Client: s3 as unknown as S3Client, glueClient: glue as unknown as GlueClient,
+    });
+    await runtime.append({ frontier: 'one', rows: [{ id: 'one' }] });
+    await runtime.append({ frontier: 'two', rows: [{ id: 'two' }] });
+    const current = await runtime.append({ frontier: 'three', rows: [{ id: 'three' }] });
+    expect(glue.tables).toHaveLength(3);
+    expect([...s3.objects.keys()].filter((key) => key.includes('/staging/'))).toEqual([]);
+
+    const activeLeaseKey = 'retained/staging/lease-00000000-0000-0000-0000-000000000000.json';
+    s3.objects.set(activeLeaseKey, {
+      etag: 'active-lease',
+      body: `${JSON.stringify({
+        schemaVersion: 'applik8s.awsLakehouseStagingLease/v1alpha1', datasetId: 'retained', token: 'active',
+        createdAt: clock.toISOString(), expiresAt: new Date(clock.getTime() + 60_000).toISOString(), objectIds: [],
+      })}\n`,
+    });
+    await expect(runtime.reconcileLifecycle()).resolves.toMatchObject({ state: 'publication-active', deletedObjects: 0, deletedSnapshotArtifacts: 0, deletedCatalogTables: 0 });
+    expect(glue.tables).toHaveLength(3);
+
+    clock = new Date(clock.getTime() + 120_000);
+    await expect(runtime.reconcileLifecycle()).resolves.toMatchObject({
+      state: 'reconciled', retainedSnapshots: 1, retainedObjects: 1,
+      deletedObjects: 2, deletedSnapshotArtifacts: 4, deletedCatalogTables: 2, expiredStagingLeases: 1,
+    });
+    expect(glue.tables).toHaveLength(1);
+    expect([...s3.objects.keys()]).toEqual(expect.arrayContaining([
+      'retained/authority.json',
+      expect.stringMatching(new RegExp(`retained/manifests/${current.snapshotId}`)),
+      expect.stringMatching(new RegExp(`retained/snapshot-links/${current.snapshotId}`)),
+    ]));
+    expect([...s3.objects.keys()].filter((key) => key.includes('/staging/'))).toEqual([]);
+  });
+
+  it('retains an interrupted publication lease until expiry and then removes its staged state', async () => {
+    const s3 = new MemoryS3();
+    let clock = new Date('2026-08-26T00:00:00.000Z');
+    const configuration = {
+      datasetId: 'interrupted', bucket: 'interrupted-bucket', prefix: 'interrupted', catalogDatabase: 'interrupted', schemaRevision: 'v1',
+      schema: type({ id: 'string' }), cursorKey: 'interrupted-lifecycle-key'.repeat(2), lifecycleLeaseMs: 1_000, now: () => clock,
+      s3Client: s3 as unknown as S3Client,
+    };
+    const failed = createAwsApplicationLakehouseDatasetRuntime({ ...configuration, glueClient: new ConflictingGlue() as unknown as GlueClient });
+    await expect(failed.append({ frontier: 'one', rows: [{ id: 'one' }] })).rejects.toThrow(/owner or storage descriptor/u);
+    expect([...s3.objects.keys()].filter((key) => key.includes('/staging/'))).toHaveLength(1);
+    expect([...s3.objects.keys()].some((key) => key.includes('/objects/'))).toBe(true);
+
+    clock = new Date(clock.getTime() + 2_000);
+    const recovered = createAwsApplicationLakehouseDatasetRuntime({ ...configuration, glueClient: new MemoryGlue() as unknown as GlueClient });
+    await expect(recovered.reconcileLifecycle()).resolves.toMatchObject({
+      state: 'reconciled', retainedSnapshots: 0, deletedObjects: 1, deletedSnapshotArtifacts: 2, expiredStagingLeases: 1,
+    });
+    expect([...s3.objects.keys()]).toEqual(['interrupted/authority.json']);
+  });
+
   it('reattaches to an ambiguously admitted Athena query through its stable provider token', async () => {
     const s3 = new MemoryS3();
     const dataset = {
@@ -617,6 +679,14 @@ class MemoryS3 {
       if (typeof command.input.ContentType === 'string') this.contentTypes.push(command.input.ContentType);
       return { ETag: etag };
     }
+    if (command.constructor.name === 'ListObjectsV2Command') {
+      const prefix = String(command.input.Prefix ?? '');
+      return { Contents: [...this.objects.keys()].filter((candidate) => candidate.startsWith(prefix)).sort().map((Key) => ({ Key })) };
+    }
+    if (command.constructor.name === 'DeleteObjectCommand') {
+      this.objects.delete(key);
+      return {};
+    }
     throw new Error(`Unexpected S3 command ${command.constructor.name}.`);
   }
 }
@@ -625,7 +695,16 @@ class MemoryGlue {
   readonly tables: Record<string, unknown>[] = [];
   async send(command: { constructor: { name: string }; input: Record<string, unknown> }): Promise<Record<string, unknown>> {
     if (command.constructor.name === 'CreateTableCommand') { this.tables.push(command.input); return {}; }
-    if (command.constructor.name === 'GetTableCommand') return { Table: { StorageDescriptor: { Columns: [] } } };
+    if (command.constructor.name === 'GetTableCommand') {
+      const table = this.tables.find(({ TableInput }) => (TableInput as Record<string, unknown> | undefined)?.Name === command.input.Name);
+      return { Table: table?.TableInput ?? { StorageDescriptor: { Columns: [] } } };
+    }
+    if (command.constructor.name === 'GetTablesCommand') return { TableList: this.tables.flatMap(({ TableInput }) => TableInput ? [TableInput] : []) };
+    if (command.constructor.name === 'DeleteTableCommand') {
+      const index = this.tables.findIndex(({ TableInput }) => (TableInput as Record<string, unknown> | undefined)?.Name === command.input.Name);
+      if (index >= 0) this.tables.splice(index, 1);
+      return {};
+    }
     throw new Error(`Unexpected Glue command ${command.constructor.name}.`);
   }
 }

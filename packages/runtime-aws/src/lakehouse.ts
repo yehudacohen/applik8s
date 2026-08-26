@@ -1,5 +1,5 @@
 // typecast-file-boundary: Athena, Glue, and S3 responses cross SDK JSON boundaries and are validated before hydration.
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   GetQueryExecutionCommand,
   GetQueryResultsCommand,
@@ -7,8 +7,8 @@ import {
   StopQueryExecutionCommand,
   AthenaClient,
 } from '@aws-sdk/client-athena';
-import { AlreadyExistsException, CreateTableCommand, GetTableCommand, GlueClient } from '@aws-sdk/client-glue';
-import { GetObjectCommand, NoSuchKey, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
+import { AlreadyExistsException, CreateTableCommand, DeleteTableCommand, GetTableCommand, GetTablesCommand, GlueClient } from '@aws-sdk/client-glue';
+import { DeleteObjectCommand, GetObjectCommand, ListObjectsV2Command, NoSuchKey, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import {
   applicationLakehouseQueryIdentity,
   applicationLakehouseQueryTerminalError,
@@ -40,6 +40,9 @@ export interface AwsApplicationLakehouseDatasetConfiguration<TRow extends object
   readonly region?: string;
   readonly maximumObjectsPerSnapshot?: number;
   readonly retainedSnapshots?: number;
+  /** Lease duration for publication and lifecycle reconciliation. */
+  readonly lifecycleLeaseMs?: number;
+  readonly now?: () => Date;
   /** Test/custom transport seam; normal callers rely on the region-configured SDK client. */
   readonly s3Client?: S3Client;
   /** Test/custom transport seam; normal callers rely on the region-configured SDK client. */
@@ -64,71 +67,119 @@ interface AwsLakehouseAuthority<TRow extends object> {
   readonly datasetId: string;
   readonly schemaRevision: string;
   readonly manifests: readonly ApplicationLakehouseAuthorityManifest<TRow>[];
+  readonly maintenanceLease?: AwsLakehouseMaintenanceLease;
+}
+
+interface AwsLakehouseMaintenanceLease {
+  readonly token: string;
+  readonly expiresAt: string;
+}
+
+interface AwsLakehouseStagingLease {
+  readonly schemaVersion: 'applik8s.awsLakehouseStagingLease/v1alpha1';
+  readonly datasetId: string;
+  readonly token: string;
+  readonly createdAt: string;
+  readonly expiresAt: string;
+  readonly snapshotId?: string;
+  readonly objectIds: readonly string[];
+}
+
+export interface AwsApplicationLakehouseLifecycleReceipt {
+  readonly schemaVersion: 'applik8s.awsLakehouseLifecycleReceipt/v1alpha1';
+  readonly datasetId: string;
+  readonly state: 'reconciled' | 'publication-active';
+  readonly retainedSnapshots: number;
+  readonly retainedObjects: number;
+  readonly deletedObjects: number;
+  readonly deletedSnapshotArtifacts: number;
+  readonly deletedCatalogTables: number;
+  readonly expiredStagingLeases: number;
+}
+
+export interface AwsApplicationLakehouseDatasetRuntime<TRow extends object>
+  extends ApplicationLakehousePublicationRuntime<TRow> {
+  reconcileLifecycle(): Promise<AwsApplicationLakehouseLifecycleReceipt>;
 }
 
 /** S3/Glue publication provider with immutable snapshots and an S3 CAS frontier. */
 export function createAwsApplicationLakehouseDatasetRuntime<TRow extends object>(
   configuration: AwsApplicationLakehouseDatasetConfiguration<TRow>,
-): ApplicationLakehousePublicationRuntime<TRow> {
+): AwsApplicationLakehouseDatasetRuntime<TRow> {
   validateDataset(configuration);
   const s3 = configuration.s3Client ?? new S3Client(configuration.region ? { region: configuration.region } : {});
   const glue = configuration.glueClient ?? new GlueClient(configuration.region ? { region: configuration.region } : {});
   const objectCache = new Map<string, { readonly rows: readonly TRow[]; readonly rowIdentities: readonly string[] }>();
   const snapshotCache = new Map<string, ApplicationLakehouseManifest<TRow>>();
+  const now = configuration.now ?? (() => new Date());
+  const lifecycleLeaseMs = boundedInteger(configuration.lifecycleLeaseMs ?? 5 * 60_000, 1_000, 60 * 60_000, 'AWS lakehouse lifecycleLeaseMs');
   return {
     async append(request) {
       for (let attempt = 0; attempt < 8; attempt += 1) {
-        const current = await readAuthority<TRow>(s3, configuration);
-        const currentAuthority = current.authority.manifests.at(-1);
-        const currentManifest = currentAuthority
-          ? snapshotCache.get(currentAuthority.snapshotId)
-            ?? (await hydrateAwsLakehouseManifests(s3, configuration, [currentAuthority], objectCache))[0]
-          : undefined;
-        if (currentManifest) snapshotCache.set(currentManifest.snapshotId, currentManifest);
-        const prior = currentManifest?.frontier.includes(request.frontier) ? currentManifest : undefined;
-        if (prior) return prior;
-        const deterministic = createDeterministicApplicationLakehouseRuntime({
-          datasetId: configuration.datasetId,
-          schemaRevision: configuration.schemaRevision,
-          schema: configuration.schema,
-          cursorKey: configuration.cursorKey,
-          snapshots: currentManifest ? [currentManifest] : [],
-          ...(configuration.maximumObjectsPerSnapshot ? { maximumObjectsPerSnapshot: configuration.maximumObjectsPerSnapshot } : {}),
-          ...(configuration.retainedSnapshots ? { retainedSnapshots: configuration.retainedSnapshots } : {}),
-        });
-        const manifest = await deterministic.append(request);
-        for (const object of manifest.objects) {
-          await putImmutableObject(s3, configuration, dataObjectKey(configuration, object.objectId), physicalRows(manifest, object), 'application/x-ndjson');
-        }
-        await putImmutableObject(s3, configuration, snapshotLinkKey(configuration, manifest.snapshotId), manifest.objects.map(({ objectId }) => `s3://${configuration.bucket}/${dataObjectKey(configuration, objectId)}`).join('\n') + '\n', 'text/plain');
-        await putImmutableObject(s3, configuration, manifestObjectKey(configuration, manifest.snapshotId), `${JSON.stringify(applicationLakehouseAuthorityManifest(manifest))}\n`, 'application/json');
-        await ensureSnapshotTable(glue, configuration, manifest);
-        const retainedSnapshots = configuration.retainedSnapshots ?? 256;
-        const retained = [...current.authority.manifests, applicationLakehouseAuthorityManifest(manifest)].slice(-retainedSnapshots);
-        const next: AwsLakehouseAuthority<TRow> = {
-          schemaVersion: 'applik8s.awsLakehouse/v1alpha1',
-          datasetId: configuration.datasetId,
-          schemaRevision: configuration.schemaRevision,
-          manifests: retained,
-        };
+        const staging = await createAwsLakehouseStagingLease(s3, configuration, now(), lifecycleLeaseMs);
+        let removeStagingLease = false;
         try {
-          await s3.send(new PutObjectCommand({
-            Bucket: configuration.bucket,
-            Key: authorityKey(configuration),
-            Body: `${JSON.stringify(next)}\n`,
-            ContentType: 'application/json',
-            ...(current.etag ? { IfMatch: current.etag } : { IfNoneMatch: '*' }),
-          }));
-          snapshotCache.set(manifest.snapshotId, manifest);
-          for (const snapshotId of [...snapshotCache.keys()]) {
-            if (!retained.some((candidate) => candidate.snapshotId === snapshotId)) snapshotCache.delete(snapshotId);
+          const current = await readAuthority<TRow>(s3, configuration);
+          if (activeMaintenanceLease(current.authority, now())) {
+            removeStagingLease = true;
+            throw new AwsApplicationLakehouseLifecycleBusyError(configuration.datasetId);
           }
-          return manifest;
-        } catch (cause) {
-          if (!isPreconditionFailed(cause) || attempt === 7) throw cause;
+          const currentAuthority = current.authority.manifests.at(-1);
+          const currentManifest = currentAuthority
+            ? snapshotCache.get(currentAuthority.snapshotId)
+              ?? (await hydrateAwsLakehouseManifests(s3, configuration, [currentAuthority], objectCache))[0]
+            : undefined;
+          if (currentManifest) snapshotCache.set(currentManifest.snapshotId, currentManifest);
+          const prior = currentManifest?.frontier.includes(request.frontier) ? currentManifest : undefined;
+          if (prior) {
+            removeStagingLease = true;
+            return prior;
+          }
+          const deterministic = createDeterministicApplicationLakehouseRuntime({
+            datasetId: configuration.datasetId,
+            schemaRevision: configuration.schemaRevision,
+            schema: configuration.schema,
+            cursorKey: configuration.cursorKey,
+            snapshots: currentManifest ? [currentManifest] : [],
+            ...(configuration.maximumObjectsPerSnapshot ? { maximumObjectsPerSnapshot: configuration.maximumObjectsPerSnapshot } : {}),
+            ...(configuration.retainedSnapshots ? { retainedSnapshots: configuration.retainedSnapshots } : {}),
+          });
+          const manifest = await deterministic.append(request);
+          await updateAwsLakehouseStagingLease(s3, configuration, staging, manifest, now(), lifecycleLeaseMs);
+          for (const object of manifest.objects) {
+            await putImmutableObject(s3, configuration, dataObjectKey(configuration, object.objectId), physicalRows(manifest, object), 'application/x-ndjson');
+          }
+          await putImmutableObject(s3, configuration, snapshotLinkKey(configuration, manifest.snapshotId), manifest.objects.map(({ objectId }) => `s3://${configuration.bucket}/${dataObjectKey(configuration, objectId)}`).join('\n') + '\n', 'text/plain');
+          await putImmutableObject(s3, configuration, manifestObjectKey(configuration, manifest.snapshotId), `${JSON.stringify(applicationLakehouseAuthorityManifest(manifest))}\n`, 'application/json');
+          await ensureSnapshotTable(glue, configuration, manifest);
+          const retainedSnapshots = configuration.retainedSnapshots ?? 256;
+          const retained = [...current.authority.manifests, applicationLakehouseAuthorityManifest(manifest)].slice(-retainedSnapshots);
+          const next: AwsLakehouseAuthority<TRow> = {
+            schemaVersion: 'applik8s.awsLakehouse/v1alpha1',
+            datasetId: configuration.datasetId,
+            schemaRevision: configuration.schemaRevision,
+            manifests: retained,
+          };
+          try {
+            await writeAwsLakehouseAuthority(s3, configuration, next, current.etag);
+            removeStagingLease = true;
+            snapshotCache.set(manifest.snapshotId, manifest);
+            for (const snapshotId of [...snapshotCache.keys()]) {
+              if (!retained.some((candidate) => candidate.snapshotId === snapshotId)) snapshotCache.delete(snapshotId);
+            }
+            return manifest;
+          } catch (cause) {
+            if (!isPreconditionFailed(cause) || attempt === 7) throw cause;
+            removeStagingLease = true;
+          }
+        } finally {
+          if (removeStagingLease) await deleteAwsLakehouseObject(s3, configuration, staging.key).catch(() => undefined);
         }
       }
       throw new Error(`AWS lakehouse dataset ${configuration.datasetId} could not advance its publication frontier.`);
+    },
+    async reconcileLifecycle() {
+      return reconcileAwsApplicationLakehouseLifecycle(s3, glue, configuration, now(), lifecycleLeaseMs);
     },
   };
 }
@@ -310,6 +361,251 @@ export class AwsApplicationLakehouseLimitError extends Error {
   }
 }
 
+export class AwsApplicationLakehouseLifecycleBusyError extends Error {
+  readonly code = 'APPLIK8S_AWS_LAKEHOUSE_LIFECYCLE_BUSY';
+
+  constructor(readonly datasetId: string) {
+    super(`AWS lakehouse dataset ${datasetId} has an active publication or lifecycle lease.`);
+    this.name = 'AwsApplicationLakehouseLifecycleBusyError';
+  }
+}
+
+async function createAwsLakehouseStagingLease<TRow extends object>(
+  s3: S3Client,
+  configuration: AwsApplicationLakehouseDatasetConfiguration<TRow>,
+  now: Date,
+  leaseMs: number,
+): Promise<{ readonly key: string; readonly etag?: string; readonly record: AwsLakehouseStagingLease }> {
+  const token = randomUUID();
+  const record: AwsLakehouseStagingLease = {
+    schemaVersion: 'applik8s.awsLakehouseStagingLease/v1alpha1',
+    datasetId: configuration.datasetId,
+    token,
+    createdAt: now.toISOString(),
+    expiresAt: new Date(now.getTime() + leaseMs).toISOString(),
+    objectIds: [],
+  };
+  const key = stagingLeaseKey(configuration, token);
+  const response = await s3.send(new PutObjectCommand({
+    Bucket: configuration.bucket,
+    Key: key,
+    Body: `${JSON.stringify(record)}\n`,
+    ContentType: 'application/json',
+    IfNoneMatch: '*',
+  }));
+  return { key, record, ...(response.ETag ? { etag: response.ETag } : {}) };
+}
+
+async function updateAwsLakehouseStagingLease<TRow extends object>(
+  s3: S3Client,
+  configuration: AwsApplicationLakehouseDatasetConfiguration<TRow>,
+  lease: { readonly key: string; readonly etag?: string; readonly record: AwsLakehouseStagingLease },
+  manifest: ApplicationLakehouseManifest<TRow>,
+  now: Date,
+  leaseMs: number,
+): Promise<void> {
+  if (!lease.etag) throw new Error(`AWS lakehouse staging lease ${lease.key} has no concurrency identity.`);
+  const record: AwsLakehouseStagingLease = {
+    ...lease.record,
+    expiresAt: new Date(now.getTime() + leaseMs).toISOString(),
+    snapshotId: manifest.snapshotId,
+    objectIds: manifest.objects.map(({ objectId }) => objectId),
+  };
+  await s3.send(new PutObjectCommand({
+    Bucket: configuration.bucket,
+    Key: lease.key,
+    Body: `${JSON.stringify(record)}\n`,
+    ContentType: 'application/json',
+    IfMatch: lease.etag,
+  }));
+}
+
+async function reconcileAwsApplicationLakehouseLifecycle<TRow extends object>(
+  s3: S3Client,
+  glue: GlueClient,
+  configuration: AwsApplicationLakehouseDatasetConfiguration<TRow>,
+  now: Date,
+  leaseMs: number,
+): Promise<AwsApplicationLakehouseLifecycleReceipt> {
+  const current = await readAuthority(s3, configuration);
+  const baseReceipt = {
+    schemaVersion: 'applik8s.awsLakehouseLifecycleReceipt/v1alpha1' as const,
+    datasetId: configuration.datasetId,
+    retainedSnapshots: current.authority.manifests.length,
+    retainedObjects: new Set(current.authority.manifests.flatMap(({ objects }) => objects.map(({ objectId }) => objectId))).size,
+  };
+  if (activeMaintenanceLease(current.authority, now)) throw new AwsApplicationLakehouseLifecycleBusyError(configuration.datasetId);
+  const maintenanceLease: AwsLakehouseMaintenanceLease = {
+    token: randomUUID(),
+    expiresAt: new Date(now.getTime() + leaseMs).toISOString(),
+  };
+  let maintenanceEtag: string | undefined;
+  try {
+    maintenanceEtag = await writeAwsLakehouseAuthority(s3, configuration, { ...current.authority, maintenanceLease }, current.etag);
+  } catch (cause) {
+    if (isPreconditionFailed(cause)) throw new AwsApplicationLakehouseLifecycleBusyError(configuration.datasetId);
+    throw cause;
+  }
+  if (!maintenanceEtag) throw new Error(`AWS lakehouse lifecycle lease for ${configuration.datasetId} has no concurrency identity.`);
+  let expiredStagingLeases = 0;
+  try {
+    const stagingKeys = (await listAwsLakehouseKeys(s3, configuration, `${cleanPrefix(configuration.prefix)}/staging/`))
+      .filter((key) => /\/lease-[a-f0-9-]+\.json$/u.test(key));
+    let activePublication = false;
+    for (const key of stagingKeys) {
+      const lease = await readAwsLakehouseStagingLease(s3, configuration, key);
+      if (Date.parse(lease.expiresAt) > now.getTime()) activePublication = true;
+      else {
+        await deleteAwsLakehouseObject(s3, configuration, key);
+        expiredStagingLeases += 1;
+      }
+    }
+    if (activePublication) {
+      return {
+        ...baseReceipt,
+        state: 'publication-active',
+        deletedObjects: 0,
+        deletedSnapshotArtifacts: 0,
+        deletedCatalogTables: 0,
+        expiredStagingLeases,
+      };
+    }
+
+    const retainedSnapshots = new Set(current.authority.manifests.map(({ snapshotId }) => snapshotId));
+    const retainedObjects = new Set(current.authority.manifests.flatMap(({ objects }) => objects.map(({ objectId }) => objectId)));
+    const keys = await listAwsLakehouseKeys(s3, configuration, `${cleanPrefix(configuration.prefix)}/`);
+    let deletedObjects = 0;
+    let deletedSnapshotArtifacts = 0;
+    for (const key of keys) {
+      const object = key.match(/\/objects\/(object_[a-f0-9]{64})\.ndjson$/u)?.[1];
+      const manifest = key.match(/\/manifests\/(snapshot_[a-f0-9]{64})\.json$/u)?.[1];
+      const link = key.match(/\/snapshot-links\/(snapshot_[a-f0-9]{64})\/objects\.symlink$/u)?.[1];
+      if (object && !retainedObjects.has(object)) {
+        await deleteAwsLakehouseObject(s3, configuration, key);
+        deletedObjects += 1;
+      } else if ((manifest && !retainedSnapshots.has(manifest)) || (link && !retainedSnapshots.has(link))) {
+        await deleteAwsLakehouseObject(s3, configuration, key);
+        deletedSnapshotArtifacts += 1;
+      }
+    }
+    const deletedCatalogTables = await deleteUnretainedAwsLakehouseTables(glue, configuration, retainedSnapshots);
+    return {
+      ...baseReceipt,
+      state: 'reconciled',
+      deletedObjects,
+      deletedSnapshotArtifacts,
+      deletedCatalogTables,
+      expiredStagingLeases,
+    };
+  } finally {
+    await writeAwsLakehouseAuthority(s3, configuration, current.authority, maintenanceEtag);
+  }
+}
+
+function activeMaintenanceLease<TRow extends object>(authority: AwsLakehouseAuthority<TRow>, now: Date): boolean {
+  const lease = authority.maintenanceLease;
+  return Boolean(lease && Date.parse(lease.expiresAt) > now.getTime());
+}
+
+async function writeAwsLakehouseAuthority<TRow extends object>(
+  s3: S3Client,
+  configuration: AwsApplicationLakehouseDatasetConfiguration<TRow>,
+  authority: AwsLakehouseAuthority<TRow>,
+  etag?: string,
+): Promise<string | undefined> {
+  const response = await s3.send(new PutObjectCommand({
+    Bucket: configuration.bucket,
+    Key: authorityKey(configuration),
+    Body: `${JSON.stringify(authority)}\n`,
+    ContentType: 'application/json',
+    ...(etag ? { IfMatch: etag } : { IfNoneMatch: '*' }),
+  }));
+  return response.ETag;
+}
+
+async function listAwsLakehouseKeys<TRow extends object>(
+  s3: S3Client,
+  configuration: AwsApplicationLakehouseDatasetConfiguration<TRow>,
+  prefix: string,
+): Promise<readonly string[]> {
+  const keys: string[] = [];
+  const seen = new Set<string>();
+  let continuationToken: string | undefined;
+  do {
+    const response = await s3.send(new ListObjectsV2Command({
+      Bucket: configuration.bucket,
+      Prefix: prefix,
+      ...(continuationToken ? { ContinuationToken: continuationToken } : {}),
+    }));
+    keys.push(...(response.Contents ?? []).flatMap(({ Key }) => Key ? [Key] : []));
+    continuationToken = response.NextContinuationToken;
+    if (continuationToken && seen.has(continuationToken)) throw new Error('AWS lakehouse S3 listing repeated its continuation token.');
+    if (continuationToken) seen.add(continuationToken);
+  } while (continuationToken);
+  return keys;
+}
+
+async function readAwsLakehouseStagingLease<TRow extends object>(
+  s3: S3Client,
+  configuration: AwsApplicationLakehouseDatasetConfiguration<TRow>,
+  key: string,
+): Promise<AwsLakehouseStagingLease> {
+  const response = await s3.send(new GetObjectCommand({ Bucket: configuration.bucket, Key: key }));
+  const text = await response.Body?.transformToString();
+  const value = text ? JSON.parse(text) as Partial<AwsLakehouseStagingLease> : undefined;
+  if (
+    !value
+    || value.schemaVersion !== 'applik8s.awsLakehouseStagingLease/v1alpha1'
+    || value.datasetId !== configuration.datasetId
+    || typeof value.token !== 'string'
+    || !value.token
+    || !Number.isFinite(Date.parse(value.createdAt ?? ''))
+    || !Number.isFinite(Date.parse(value.expiresAt ?? ''))
+    || !Array.isArray(value.objectIds)
+    || value.objectIds.some((objectId) => typeof objectId !== 'string' || !/^object_[a-f0-9]{64}$/u.test(objectId))
+  ) throw new Error(`AWS lakehouse staging lease ${key} is invalid.`);
+  return value as AwsLakehouseStagingLease;
+}
+
+async function deleteAwsLakehouseObject<TRow extends object>(
+  s3: S3Client,
+  configuration: AwsApplicationLakehouseDatasetConfiguration<TRow>,
+  key: string,
+): Promise<void> {
+  await s3.send(new DeleteObjectCommand({ Bucket: configuration.bucket, Key: key }));
+}
+
+async function deleteUnretainedAwsLakehouseTables<TRow extends object>(
+  glue: GlueClient,
+  configuration: AwsApplicationLakehouseDatasetConfiguration<TRow>,
+  retainedSnapshots: ReadonlySet<string>,
+): Promise<number> {
+  let deleted = 0;
+  let nextToken: string | undefined;
+  const seen = new Set<string>();
+  do {
+    const response = await glue.send(new GetTablesCommand({
+      DatabaseName: configuration.catalogDatabase,
+      ...(nextToken ? { NextToken: nextToken } : {}),
+    }));
+    for (const table of response.TableList ?? []) {
+      const snapshot = table.Parameters?.['applik8s.snapshot'];
+      if (
+        table.Parameters?.['applik8s.dataset'] !== configuration.datasetId
+        || !snapshot
+        || retainedSnapshots.has(snapshot)
+        || table.Name !== snapshotTableName(configuration, snapshot)
+      ) continue;
+      await glue.send(new DeleteTableCommand({ DatabaseName: configuration.catalogDatabase, Name: table.Name }));
+      deleted += 1;
+    }
+    nextToken = response.NextToken;
+    if (nextToken && seen.has(nextToken)) throw new Error('AWS lakehouse Glue listing repeated its continuation token.');
+    if (nextToken) seen.add(nextToken);
+  } while (nextToken);
+  return deleted;
+}
+
 async function readAuthority<TRow extends object>(s3: S3Client, configuration: AwsApplicationLakehouseDatasetConfiguration<TRow>): Promise<{ readonly authority: AwsLakehouseAuthority<TRow>; readonly etag?: string }> {
   try {
     const response = await s3.send(new GetObjectCommand({ Bucket: configuration.bucket, Key: authorityKey(configuration) }));
@@ -319,6 +615,14 @@ async function readAuthority<TRow extends object>(s3: S3Client, configuration: A
     if (authority.schemaVersion !== 'applik8s.awsLakehouse/v1alpha1' || authority.datasetId !== configuration.datasetId || !Array.isArray(authority.manifests)) {
       throw new Error(`AWS lakehouse authority for ${configuration.datasetId} has incompatible identity.`);
     }
+    if (
+      authority.maintenanceLease
+      && (
+        typeof authority.maintenanceLease.token !== 'string'
+        || !authority.maintenanceLease.token
+        || !Number.isFinite(Date.parse(authority.maintenanceLease.expiresAt))
+      )
+    ) throw new Error(`AWS lakehouse authority for ${configuration.datasetId} has an invalid maintenance lease.`);
     const verified: AwsLakehouseAuthority<TRow> = {
       ...authority,
       manifests: authority.manifests.map((manifest) =>
@@ -593,6 +897,7 @@ function scalarValue(value: string | undefined, schema: unknown): unknown {
 function schemaProperty(schema: Readonly<Record<string, unknown>>, name: string): unknown { return (schema.properties as Record<string, unknown> | undefined)?.[name]; }
 
 function authorityKey(configuration: { readonly prefix: string }): string { return `${cleanPrefix(configuration.prefix)}/authority.json`; }
+function stagingLeaseKey(configuration: { readonly prefix: string }, token: string): string { return `${cleanPrefix(configuration.prefix)}/staging/lease-${token}.json`; }
 function manifestObjectKey(configuration: { readonly prefix: string }, snapshot: string): string { return `${cleanPrefix(configuration.prefix)}/manifests/${snapshot}.json`; }
 function dataObjectKey(configuration: { readonly prefix: string }, objectId: string): string { return `${cleanPrefix(configuration.prefix)}/objects/${objectId}.ndjson`; }
 function snapshotLinkPrefix(configuration: { readonly prefix: string }, snapshot: string): string { return `${cleanPrefix(configuration.prefix)}/snapshot-links/${snapshot}`; }
@@ -664,6 +969,7 @@ function validateDataset(value: AwsApplicationLakehouseDatasetConfiguration<obje
   schemaColumns(value.schema);
   if (value.maximumObjectsPerSnapshot !== undefined) boundedInteger(value.maximumObjectsPerSnapshot, 1, 10_000, 'AWS lakehouse maximumObjectsPerSnapshot');
   if (value.retainedSnapshots !== undefined) boundedInteger(value.retainedSnapshots, 1, 100_000, 'AWS lakehouse retainedSnapshots');
+  if (value.lifecycleLeaseMs !== undefined) boundedInteger(value.lifecycleLeaseMs, 1_000, 60 * 60_000, 'AWS lakehouse lifecycleLeaseMs');
 }
 
 function schemaProperties(schema: Readonly<Record<string, unknown>>): Readonly<Record<string, unknown>> {
