@@ -411,6 +411,7 @@ function managedApplicationAgenticStartPackage(
       'drizzle-kit': '0.31.10',
       nitro: agenticStartNitroVersion,
       shadcn: '4.18.0',
+      typescript: '^5.3.0',
       vitest: '^3.2.4',
       tailwindcss: '4.3.3',
     }),

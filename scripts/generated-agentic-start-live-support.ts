@@ -19,10 +19,76 @@ const execFileAsync = promisify(execFile);
 
 interface PackageManifest {
   readonly name?: unknown;
+  readonly bin?: unknown;
   readonly dependencies?: Readonly<Record<string, unknown>>;
   readonly devDependencies?: Readonly<Record<string, unknown>>;
   readonly peerDependencies?: Readonly<Record<string, unknown>>;
   readonly optionalDependencies?: Readonly<Record<string, unknown>>;
+}
+
+function manifestDependencyNames(manifest: PackageManifest): readonly string[] {
+  return [...new Set([
+    ...Object.keys(manifest.dependencies ?? {}),
+    ...Object.keys(manifest.devDependencies ?? {}),
+    ...Object.keys(manifest.peerDependencies ?? {}),
+    ...Object.keys(manifest.optionalDependencies ?? {}),
+  ])].sort();
+}
+
+function packageBins(
+  packageName: string,
+  value: unknown,
+): Readonly<Record<string, string>> {
+  if (typeof value === 'string' && value.length > 0) {
+    return { [packageName.slice(packageName.lastIndexOf('/') + 1)]: value };
+  }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  return Object.fromEntries(
+    Object.entries(value).filter(
+      (entry): entry is [string, string] =>
+        entry[0].length > 0
+        && typeof entry[1] === 'string'
+        && entry[1].length > 0,
+    ),
+  );
+}
+
+export async function materializeDeclaredPackageBins(
+  targetDirectory: string,
+): Promise<Readonly<Record<string, string>>> {
+  const manifest = await readManifest(join(targetDirectory, 'package.json'));
+  const modules = join(targetDirectory, 'node_modules');
+  const bins = join(modules, '.bin');
+  await rm(bins, { recursive: true, force: true });
+  await mkdir(bins, { recursive: true });
+  const claimedBins = new Map<string, string>();
+  for (const packageName of manifestDependencyNames(manifest)) {
+    const packageDirectory = join(modules, ...packageName.split('/'));
+    if (!existsSync(packageDirectory)) continue;
+    const packageManifest = await readManifest(join(packageDirectory, 'package.json'));
+    for (const [binName, binTarget] of Object.entries(
+      packageBins(packageName, packageManifest.bin),
+    )) {
+      const prior = claimedBins.get(binName);
+      if (prior && prior !== packageName) {
+        throw new Error(
+          `Generated application dependencies ${prior} and ${packageName} both provide executable ${binName}.`,
+        );
+      }
+      claimedBins.set(binName, packageName);
+      const executable = join(packageDirectory, binTarget);
+      if (!existsSync(executable)) {
+        throw new Error(
+          `${packageName} declares executable ${binName} at missing path ${binTarget}.`,
+        );
+      }
+      const link = join(bins, binName);
+      await rm(link, { force: true });
+      await symlink(relative(bins, executable), link);
+    }
+  }
+  return Object.fromEntries([...claimedBins].sort(([left], [right]) =>
+    left.localeCompare(right)));
 }
 
 async function readManifest(path: string): Promise<PackageManifest> {
@@ -223,11 +289,11 @@ export async function materializePackedGeneratedWorkspaceDependencies(options: {
       await mkdir(dirname(link), { recursive: true });
       await symlink(source, link, 'junction');
     }
-    await symlink(
-      join(options.workspaceRoot, 'node_modules/.bin'),
-      join(modules, '.bin'),
-      'junction',
-    );
+
+    // A generated product must execute the packages installed in its own
+    // node_modules tree. Linking the repository's complete .bin directory can
+    // select an ambient/stale CLI and masks missing direct tool dependencies.
+    await materializeDeclaredPackageBins(options.targetDirectory);
   } finally {
     await rm(workDirectory, { recursive: true, force: true });
   }

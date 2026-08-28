@@ -623,6 +623,7 @@ describe('Agentic Start generator', () => {
     expect(manifest.dependencies['radix-ui']).toBe('1.6.7');
     expect(manifest.dependencies['react-markdown']).toBe('10.1.0');
     expect(manifest.dependencies['remark-gfm']).toBe('4.0.1');
+    expect(manifest.devDependencies.typescript).toBe('^5.3.0');
     expect(manifest.dependencies['tailwind-merge']).toBe('3.6.0');
     expect(manifest.imports['#components/*']).toBe('./src/components/*.tsx');
     expect(manifest.devDependencies.tailwindcss).toBe('4.3.3');
