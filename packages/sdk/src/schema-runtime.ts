@@ -416,7 +416,7 @@ function validateJsonValue(value: JsonValue, schema: JsonObject, path: string): 
 
 function unsupportedJsonSchemaDiagnostics(schema: JsonObject, path: string) {
   const diagnostics: Diagnostic[] = [];
-  const supportedKeywords = new Set(['type', 'required', 'properties', 'items', 'enum', 'nullable', 'additionalProperties', 'description', 'title', 'default', 'examples', 'deprecated', '$schema', 'pattern', 'minimum', 'maximum', 'exclusiveMinimum', 'exclusiveMaximum', 'multipleOf', 'minLength', 'maxLength', 'minItems', 'maxItems', 'uniqueItems', 'oneOf', 'anyOf', 'allOf', 'not']);
+  const supportedKeywords = new Set(['type', 'required', 'properties', 'items', 'enum', 'nullable', 'additionalProperties', 'description', 'title', 'default', 'examples', 'deprecated', '$schema', 'pattern', 'minimum', 'maximum', 'exclusiveMinimum', 'exclusiveMaximum', 'multipleOf', 'minLength', 'maxLength', 'minItems', 'maxItems', 'uniqueItems', 'oneOf', 'anyOf', 'allOf', 'not', 'xKubernetesValidations']);
   for (const key of Object.keys(schema)) {
     if (!supportedKeywords.has(key)) {
       diagnostics.push({ severity: 'warning', code: 'SCHEMA_UNSUPPORTED', message: `${path} uses unsupported JSON Schema keyword ${key}.` });
@@ -486,6 +486,17 @@ function unsupportedJsonSchemaDiagnostics(schema: JsonObject, path: string) {
   }
   if ('uniqueItems' in schema && typeof schema.uniqueItems !== 'boolean') {
     diagnostics.push({ severity: 'warning', code: 'SCHEMA_UNSUPPORTED', message: `${path}.uniqueItems must be boolean.` });
+  }
+  if ('xKubernetesValidations' in schema) {
+    const validations = schema.xKubernetesValidations;
+    if (!Array.isArray(validations) || validations.length === 0 || validations.some((validation) =>
+      !isJsonObject(validation)
+      || typeof validation.rule !== 'string'
+      || validation.rule.trim().length === 0
+      || (validation.message !== undefined && typeof validation.message !== 'string')
+    )) {
+      diagnostics.push({ severity: 'warning', code: 'SCHEMA_UNSUPPORTED', message: `${path}.xKubernetesValidations must be a non-empty array of CEL rule objects.` });
+    }
   }
 
   const properties = readSchemaMap(schema, 'properties');

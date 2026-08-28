@@ -1,3 +1,4 @@
+// typecast-file-boundary: Node/WebCrypto values and decoded envelope bytes are checked before conversion to the shared signed-envelope contract.
 import {
   canonicalJsonV1Bytes,
   canonicalJsonV1String,
@@ -32,7 +33,29 @@ export interface SignedEnvelopeCodecOptions<TPayload> {
   readonly maximumEncodedBytes?: number;
   readonly maximumLifetimeMs?: number;
   readonly now?: () => number;
+  /**
+   * Receives bounded, payload-free format evidence. Observer failures are
+   * isolated from signing and verification so telemetry can never change the
+   * integrity decision.
+   */
+  readonly observe?: SignedEnvelopeCodecObserver;
 }
+
+export type SignedEnvelopeCodecFormat = 'legacy' | 'v1';
+export type SignedEnvelopeCodecOperation = 'sign' | 'verify';
+export type SignedEnvelopeCodecResult = 'accepted' | 'rejected';
+
+export interface SignedEnvelopeCodecObservation {
+  readonly purpose: string;
+  readonly format: SignedEnvelopeCodecFormat;
+  readonly operation: SignedEnvelopeCodecOperation;
+  readonly result: SignedEnvelopeCodecResult;
+  readonly errorCode?: SignedEnvelopeRuntimeErrorCode | SignedEnvelopeV1ValidationError['code'];
+}
+
+export type SignedEnvelopeCodecObserver = (
+  observation: SignedEnvelopeCodecObservation,
+) => void;
 
 export interface SignedEnvelopeSignOptions {
   readonly issuedAt?: number;
@@ -107,104 +130,137 @@ export function createSignedEnvelopeCodec<TPayload>(
 
   const codec: SignedEnvelopeCodec<TPayload> = {
     async sign(payload: TPayload, signOptions: SignedEnvelopeSignOptions = {}) {
-      const issuedAt = signOptions.issuedAt ?? now();
-      if (
-        signOptions.expiresAt !== undefined
-        && signOptions.expiresInMs !== undefined
-      ) {
-        throw new TypeError('Signed envelope expiry must use expiresAt or expiresInMs, not both.');
+      try {
+        const issuedAt = signOptions.issuedAt ?? now();
+        if (
+          signOptions.expiresAt !== undefined
+          && signOptions.expiresInMs !== undefined
+        ) {
+          throw new TypeError('Signed envelope expiry must use expiresAt or expiresInMs, not both.');
+        }
+        const expiresAt = signOptions.expiresAt
+          ?? (signOptions.expiresInMs === undefined
+            ? undefined
+            : issuedAt + signOptions.expiresInMs);
+        const signingKey = await options.keys.signingKey(options.purpose);
+        const protectedBody = validateSignedEnvelopeV1Protected({
+          version: signedEnvelopeVersion,
+          purpose: options.purpose,
+          algorithm: signedEnvelopeAlgorithm,
+          keyId: signingKey.id,
+          issuedAt,
+          ...(expiresAt === undefined ? {} : { expiresAt }),
+          payload,
+        }, {
+          purpose: options.purpose,
+          now: issuedAt,
+          ...(options.maximumLifetimeMs === undefined
+            ? {}
+            : { maximumLifetimeMs: options.maximumLifetimeMs }),
+          validatePayload: options.validatePayload,
+        });
+        const body = ownedBytes(canonicalJsonV1Bytes(protectedBody));
+        const signature = new Uint8Array(await subtle().sign(
+          'HMAC',
+          await hmacKey(signingKey.key, ['sign']),
+          body,
+        ));
+        const token = `${base64UrlEncode(body)}.${base64UrlEncode(signature)}`;
+        assertEncodedSize(token, maximumEncodedBytes);
+        observeSignedEnvelope(options.observe, {
+          purpose: options.purpose,
+          format: 'v1',
+          operation: 'sign',
+          result: 'accepted',
+        });
+        return token;
+      } catch (cause) {
+        observeSignedEnvelope(options.observe, rejectedObservation(
+          options.purpose,
+          'v1',
+          'sign',
+          cause,
+        ));
+        throw cause;
       }
-      const expiresAt = signOptions.expiresAt
-        ?? (signOptions.expiresInMs === undefined
-          ? undefined
-          : issuedAt + signOptions.expiresInMs);
-      const signingKey = await options.keys.signingKey(options.purpose);
-      const protectedBody = validateSignedEnvelopeV1Protected({
-        version: signedEnvelopeVersion,
-        purpose: options.purpose,
-        algorithm: signedEnvelopeAlgorithm,
-        keyId: signingKey.id,
-        issuedAt,
-        ...(expiresAt === undefined ? {} : { expiresAt }),
-        payload,
-      }, {
-        purpose: options.purpose,
-        now: issuedAt,
-        ...(options.maximumLifetimeMs === undefined
-          ? {}
-          : { maximumLifetimeMs: options.maximumLifetimeMs }),
-        validatePayload: options.validatePayload,
-      });
-      const body = ownedBytes(canonicalJsonV1Bytes(protectedBody));
-      const signature = new Uint8Array(await subtle().sign(
-        'HMAC',
-        await hmacKey(signingKey.key, ['sign']),
-        body,
-      ));
-      const token = `${base64UrlEncode(body)}.${base64UrlEncode(signature)}`;
-      assertEncodedSize(token, maximumEncodedBytes);
-      return token;
     },
 
     async verify(token: string) {
-      assertEncodedSize(token, maximumEncodedBytes);
-      const parts = token.split('.');
-      if (parts.length !== 2 || !parts[0] || !parts[1]) throw malformed();
-      const body = ownedBytes(base64UrlDecode(parts[0]));
-      const signature = ownedBytes(base64UrlDecode(parts[1]));
-      if (signature.byteLength !== 32) {
-        throw new SignedEnvelopeRuntimeError(
-          'SIGNED_ENVELOPE_SIGNATURE_INVALID',
-          'Signed envelope signature is invalid.',
-        );
-      }
-      let parsed: unknown;
-      let serialized: string;
       try {
-        serialized = new TextDecoder('utf-8', { fatal: true }).decode(body);
-        parsed = JSON.parse(serialized) as unknown;
-      } catch {
-        throw malformed();
-      }
-      // The compact body has one canonical byte representation. This rejects
-      // duplicate/unsorted keys and alternate whitespace before key use.
-      try {
-        if (canonicalJsonV1String(parsed) !== serialized) throw malformed();
-      } catch (error) {
-        if (error instanceof SignedEnvelopeRuntimeError) throw error;
-        throw malformed();
-      }
-      const keyId = untrustedKeyId(parsed);
-      const key = await options.keys.verificationKey(
-        options.purpose,
-        keyId,
-      );
-      if (!key) {
-        throw new SignedEnvelopeRuntimeError(
-          'SIGNED_ENVELOPE_KEY_UNKNOWN',
-          'Signed envelope key identity is unknown.',
+        assertEncodedSize(token, maximumEncodedBytes);
+        const parts = token.split('.');
+        if (parts.length !== 2 || !parts[0] || !parts[1]) throw malformed();
+        const body = ownedBytes(base64UrlDecode(parts[0]));
+        const signature = ownedBytes(base64UrlDecode(parts[1]));
+        if (signature.byteLength !== 32) {
+          throw new SignedEnvelopeRuntimeError(
+            'SIGNED_ENVELOPE_SIGNATURE_INVALID',
+            'Signed envelope signature is invalid.',
+          );
+        }
+        let parsed: unknown;
+        let serialized: string;
+        try {
+          serialized = new TextDecoder('utf-8', { fatal: true }).decode(body);
+          parsed = JSON.parse(serialized) as unknown;
+        } catch {
+          throw malformed();
+        }
+        // The compact body has one canonical byte representation. This rejects
+        // duplicate/unsorted keys and alternate whitespace before key use.
+        try {
+          if (canonicalJsonV1String(parsed) !== serialized) throw malformed();
+        } catch (error) {
+          if (error instanceof SignedEnvelopeRuntimeError) throw error;
+          throw malformed();
+        }
+        const keyId = untrustedKeyId(parsed);
+        const key = await options.keys.verificationKey(
+          options.purpose,
+          keyId,
         );
-      }
-      const valid = await subtle().verify(
-        'HMAC',
-        await hmacKey(key, ['verify']),
-        signature,
-        body,
-      );
-      if (!valid) {
-        throw new SignedEnvelopeRuntimeError(
-          'SIGNED_ENVELOPE_SIGNATURE_INVALID',
-          'Signed envelope signature is invalid.',
+        if (!key) {
+          throw new SignedEnvelopeRuntimeError(
+            'SIGNED_ENVELOPE_KEY_UNKNOWN',
+            'Signed envelope key identity is unknown.',
+          );
+        }
+        const valid = await subtle().verify(
+          'HMAC',
+          await hmacKey(key, ['verify']),
+          signature,
+          body,
         );
+        if (!valid) {
+          throw new SignedEnvelopeRuntimeError(
+            'SIGNED_ENVELOPE_SIGNATURE_INVALID',
+            'Signed envelope signature is invalid.',
+          );
+        }
+        const verified = validateSignedEnvelopeV1Protected(parsed, {
+          purpose: options.purpose,
+          now: now(),
+          ...(options.maximumLifetimeMs === undefined
+            ? {}
+            : { maximumLifetimeMs: options.maximumLifetimeMs }),
+          validatePayload: options.validatePayload,
+        });
+        observeSignedEnvelope(options.observe, {
+          purpose: options.purpose,
+          format: 'v1',
+          operation: 'verify',
+          result: 'accepted',
+        });
+        return verified;
+      } catch (cause) {
+        observeSignedEnvelope(options.observe, rejectedObservation(
+          options.purpose,
+          'v1',
+          'verify',
+          cause,
+        ));
+        throw cause;
       }
-      return validateSignedEnvelopeV1Protected(parsed, {
-        purpose: options.purpose,
-        now: now(),
-        ...(options.maximumLifetimeMs === undefined
-          ? {}
-          : { maximumLifetimeMs: options.maximumLifetimeMs }),
-        validatePayload: options.validatePayload,
-      });
     },
   };
   return Object.freeze(codec);
@@ -217,59 +273,118 @@ export function createSignedEnvelopeCodec<TPayload>(
 export function createRollingSignedEnvelopeCodec<TPayload, TLegacyPayload>(
   options: RollingSignedEnvelopeCodecOptions<TPayload, TLegacyPayload>,
 ): RollingSignedEnvelopeCodec<TPayload> {
-  const current = createSignedEnvelopeCodec(options);
+  const { observe, ...currentOptions } = options;
+  const current = createSignedEnvelopeCodec(currentOptions);
   const now = options.now ?? Date.now;
   const codec: RollingSignedEnvelopeCodec<TPayload> = {
     async sign(payload, signOptions = {}) {
-      if (options.writer === 'v1') return current.sign(payload, signOptions);
-      const timing = signedEnvelopeTiming(now(), signOptions);
-      const normalized = validateSignedEnvelopeV1Protected({
-        version: signedEnvelopeVersion,
-        purpose: options.purpose,
-        algorithm: signedEnvelopeAlgorithm,
-        keyId: 'legacy-rolling-migration',
-        issuedAt: timing.issuedAt,
-        ...(timing.expiresAt === undefined
-          ? {}
-          : { expiresAt: timing.expiresAt }),
-        payload,
-      }, {
-        purpose: options.purpose,
-        now: timing.issuedAt,
-        ...(options.maximumLifetimeMs === undefined
-          ? {}
-          : { maximumLifetimeMs: options.maximumLifetimeMs }),
-        validatePayload: options.validatePayload,
-      }).payload;
-      return signLegacyCompactHmacJsonForRollingMigration(
-        options.legacy.fromCurrent(normalized, timing),
-        {
+      const format = options.writer;
+      try {
+        const token = options.writer === 'v1'
+          ? await current.sign(payload, signOptions)
+          : await signRollingLegacy(payload, signOptions);
+        observeSignedEnvelope(observe, {
+          purpose: options.purpose,
+          format,
+          operation: 'sign',
+          result: 'accepted',
+        });
+        return token;
+      } catch (cause) {
+        observeSignedEnvelope(observe, rejectedObservation(
+          options.purpose,
+          format,
+          'sign',
+          cause,
+        ));
+        throw cause;
+      }
+    },
+    async verify(token) {
+      try {
+        const payload = (await current.verify(token)).payload;
+        observeSignedEnvelope(observe, {
+          purpose: options.purpose,
+          format: 'v1',
+          operation: 'verify',
+          result: 'accepted',
+        });
+        return payload;
+      } catch (cause) {
+        if (!isLegacyCompactCandidate(cause)) {
+          observeSignedEnvelope(observe, rejectedObservation(
+            options.purpose,
+            'v1',
+            'verify',
+            cause,
+          ));
+          throw cause;
+        }
+      }
+      try {
+        const legacy = await verifyLegacyCompactHmacJson(token, {
           key: options.legacy.key,
           ...(options.maximumEncodedBytes === undefined
             ? {}
             : { maximumEncodedBytes: options.maximumEncodedBytes }),
-        },
-      );
-    },
-    async verify(token) {
-      try {
-        return (await current.verify(token)).payload;
+          validatePayload: options.legacy.validatePayload,
+        });
+        const payload = options.validatePayload(canonicalJsonV1Value(
+          options.legacy.toCurrent(legacy, now()),
+        ));
+        observeSignedEnvelope(observe, {
+          purpose: options.purpose,
+          format: 'legacy',
+          operation: 'verify',
+          result: 'accepted',
+        });
+        return payload;
       } catch (cause) {
-        if (!isLegacyCompactCandidate(cause)) throw cause;
+        observeSignedEnvelope(observe, rejectedObservation(
+          options.purpose,
+          'legacy',
+          'verify',
+          cause,
+        ));
+        throw cause;
       }
-      const legacy = await verifyLegacyCompactHmacJson(token, {
+    },
+  };
+  return Object.freeze(codec);
+
+  async function signRollingLegacy(
+    payload: TPayload,
+    signOptions: SignedEnvelopeSignOptions,
+  ): Promise<string> {
+    const timing = signedEnvelopeTiming(now(), signOptions);
+    const normalized = validateSignedEnvelopeV1Protected({
+      version: signedEnvelopeVersion,
+      purpose: options.purpose,
+      algorithm: signedEnvelopeAlgorithm,
+      keyId: 'legacy-rolling-migration',
+      issuedAt: timing.issuedAt,
+      ...(timing.expiresAt === undefined
+        ? {}
+        : { expiresAt: timing.expiresAt }),
+      payload,
+    }, {
+      purpose: options.purpose,
+      now: timing.issuedAt,
+      ...(options.maximumLifetimeMs === undefined
+        ? {}
+        : { maximumLifetimeMs: options.maximumLifetimeMs }),
+      validatePayload: options.validatePayload,
+    }).payload;
+    return signLegacyCompactHmacJsonForRollingMigration(
+      options.legacy.fromCurrent(normalized, timing),
+      {
         key: options.legacy.key,
         ...(options.maximumEncodedBytes === undefined
           ? {}
           : { maximumEncodedBytes: options.maximumEncodedBytes }),
-        validatePayload: options.legacy.validatePayload,
-      });
-      return options.validatePayload(canonicalJsonV1Value(
-        options.legacy.toCurrent(legacy, now()),
-      ));
-    },
-  };
-  return Object.freeze(codec);
+      },
+    );
+  }
 }
 
 function signedEnvelopeTiming(
@@ -492,6 +607,37 @@ function malformed(): SignedEnvelopeRuntimeError {
     'SIGNED_ENVELOPE_MALFORMED',
     'Signed envelope is malformed.',
   );
+}
+
+function rejectedObservation(
+  purpose: string,
+  format: SignedEnvelopeCodecFormat,
+  operation: SignedEnvelopeCodecOperation,
+  cause: unknown,
+): SignedEnvelopeCodecObservation {
+  const errorCode = cause instanceof SignedEnvelopeRuntimeError
+    || cause instanceof SignedEnvelopeV1ValidationError
+    ? cause.code
+    : undefined;
+  return {
+    purpose,
+    format,
+    operation,
+    result: 'rejected',
+    ...(errorCode === undefined ? {} : { errorCode }),
+  };
+}
+
+function observeSignedEnvelope(
+  observer: SignedEnvelopeCodecObserver | undefined,
+  observation: SignedEnvelopeCodecObservation,
+): void {
+  try {
+    observer?.(Object.freeze(observation));
+  } catch {
+    // Integrity telemetry is deliberately fail-open with respect to the
+    // already-determined cryptographic result.
+  }
 }
 
 function ownedBytes(value: Uint8Array): Uint8Array<ArrayBuffer> {

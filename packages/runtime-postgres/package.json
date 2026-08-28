@@ -34,6 +34,7 @@
   },
   "dependencies": {
     "@applik8s/applik8s": "0.8.0",
+    "@applik8s/core": "0.8.0",
     "drizzle-orm": "^0.45.1",
     "postgres": "^3.4.7"
   }

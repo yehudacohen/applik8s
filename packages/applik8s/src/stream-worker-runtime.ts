@@ -23,6 +23,7 @@ export {
   currentFunctionNativePostgresTransaction,
   executeFunctionNativePostgresModelEdit,
   executeFunctionNativePostgresTransaction,
+  executePostgresModelCommand,
 } from './model-command-postgres-runtime.js';
 export type {
   ApplicationNativeModelTransactionRequest,

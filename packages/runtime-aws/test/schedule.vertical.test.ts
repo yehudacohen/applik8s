@@ -1,13 +1,14 @@
 // typecast-file-boundary: The in-memory client exercises AWS SDK command inputs without network access.
+
+import { createDeterministicApplicationScheduleStateAuthority } from '@applik8s/applik8s';
 import {
   CreateScheduleCommand,
   DeleteScheduleCommand,
   GetScheduleCommand,
-  SchedulerClient,
+  type SchedulerClient,
   UpdateScheduleCommand,
 } from '@aws-sdk/client-scheduler';
 import { describe, expect, it } from 'vitest';
-import { createDeterministicApplicationScheduleStateAuthority } from '@applik8s/applik8s';
 import { createAwsApplicationScheduleRuntime } from '../src/schedule.js';
 
 const configuration = {
@@ -127,6 +128,15 @@ describe('AWS function-native Scheduler', () => {
     });
     expect(await authority.pending()).toHaveLength(0);
     expect(client.current?.ScheduleExpression).toBe('rate(5 minutes)');
+
+    client.current = undefined;
+    await createAwsApplicationScheduleRuntime(configuration, {
+      scheduler: client as unknown as SchedulerClient,
+      stateAuthority: authority,
+    });
+    expect(
+      (client.current as Record<string, unknown> | undefined)?.ScheduleExpression,
+    ).toBe('rate(5 minutes)');
   });
 });
 

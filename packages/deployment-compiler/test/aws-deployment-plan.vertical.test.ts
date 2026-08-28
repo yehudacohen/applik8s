@@ -77,6 +77,66 @@ describe('v0.8 AWS deployment planning', () => {
     ]);
   });
 
+  it('rejects MiniStack-incomplete Kinesis before Alchemy can mutate AWS-local state', () => {
+    const graph: ApplicationGraph = {
+      ...awsGraph(),
+      nodes: [{
+        id: 'provider.EventLog',
+        kind: 'provider',
+        name: 'EventLog',
+        stability: 'stable',
+        interface: 'EventLog',
+        implementation: 'kinesis',
+      }],
+      edges: [],
+      providerRequirements: [],
+      providerBindings: [],
+    };
+    const plan = compileApplicationAwsDeploymentPlan({
+      graph,
+      environment: 'review',
+      region: 'us-east-1',
+      accountId: '000000000000',
+      target: 'aws-local',
+      includeApplicationHosts: false,
+    });
+    expect(plan.resources.some(({ service }) => service === 'kinesis')).toBe(false);
+    expect(plan.diagnostics).toEqual([
+      expect.objectContaining({
+        severity: 'error',
+        code: 'AWS_PROVIDER_INCOMPATIBLE',
+        subjectId: 'provider.EventLog',
+        message: expect.stringMatching(/ListTagsForResource/u),
+      }),
+    ]);
+  });
+
+  it('lowers a default provider alias through its canonical authority without duplicating infrastructure', () => {
+    const base = awsGraph();
+    const objectStorage = base.nodes.find((node) => node.id === 'provider.ObjectStorage');
+    if (!objectStorage || objectStorage.kind !== 'provider') throw new Error('ObjectStorage fixture provider is missing.');
+    const canonicalId = 'provider.object-storage.v1alpha1.primary';
+    const graph: ApplicationGraph = {
+      ...base,
+      nodes: [
+        ...base.nodes.filter((node) => node.id !== objectStorage.id),
+        { ...objectStorage, id: canonicalId },
+        { ...objectStorage, config: { ...(objectStorage.config ?? {}), aliasOf: canonicalId } },
+      ],
+    };
+    const plan = compileApplicationAwsDeploymentPlan({
+      graph,
+      environment: 'review',
+      profile: 'review',
+      region: 'us-east-1',
+      accountId: '123456789012',
+    });
+    const buckets = plan.resources.filter(({ service, resourceType }) => service === 's3' && resourceType === 'bucket');
+    expect(buckets).toHaveLength(1);
+    expect(buckets[0]?.semanticNodeId).toBe(canonicalId);
+    expect(plan.diagnostics.filter(({ severity }) => severity === 'error')).toEqual([]);
+  });
+
   it('materializes exact per-workload and per-target security groups for a database-only runtime', () => {
     const base = awsGraph();
     const graph: ApplicationGraph = {
@@ -112,15 +172,16 @@ describe('v0.8 AWS deployment planning', () => {
         runtimeAccessKind: 'workload',
         workloadResourceId: host?.id,
         egressMode: 'explicit',
-        egressRules: expect.arrayContaining([
-          expect.objectContaining({ kind: 'securityGroup', protocol: 'tcp', port: 5432, targetResourceId: database?.id }),
-          expect.objectContaining({ kind: 'cidr', protocol: 'tcp', port: 53, cidr: '10.64.0.2/32' }),
-          expect.objectContaining({ kind: 'cidr', protocol: 'udp', port: 53, cidr: '10.64.0.2/32' }),
-          expect.objectContaining({ kind: 'securityGroup', protocol: 'tcp', port: 443, targetResourceId: expect.stringMatching(/^runtime-network\.aws-service\./u) }),
-          expect.objectContaining({ kind: 'prefixList', protocol: 'tcp', port: 443, targetResourceId: expect.stringMatching(/^runtime-network\.aws-service\./u) }),
-        ]),
       },
     });
+    const egressRules = workloadGroup?.configuration.egressRules;
+    expect(Array.isArray(egressRules)).toBe(true);
+    if (!Array.isArray(egressRules)) throw new Error('Expected a concrete workload egress rule array.');
+    expect(egressRules.some((rule) => isRecord(rule) && rule.kind === 'securityGroup' && rule.protocol === 'tcp' && rule.port === 5432 && rule.targetResourceId === database?.id)).toBe(true);
+    expect(egressRules.some((rule) => isRecord(rule) && rule.kind === 'cidr' && rule.protocol === 'tcp' && rule.port === 53 && rule.cidr === '10.64.0.2/32')).toBe(true);
+    expect(egressRules.some((rule) => isRecord(rule) && rule.kind === 'cidr' && rule.protocol === 'udp' && rule.port === 53 && rule.cidr === '10.64.0.2/32')).toBe(true);
+    expect(egressRules.some((rule) => isRecord(rule) && rule.kind === 'securityGroup' && rule.protocol === 'tcp' && rule.port === 443 && typeof rule.targetResourceId === 'string' && rule.targetResourceId.startsWith('runtime-network.aws-service.'))).toBe(true);
+    expect(egressRules.some((rule) => isRecord(rule) && rule.kind === 'prefixList' && rule.protocol === 'tcp' && rule.port === 443 && typeof rule.targetResourceId === 'string' && rule.targetResourceId.startsWith('runtime-network.aws-service.'))).toBe(true);
     expect(endpointServices).toEqual(['ecr.api', 'ecr.dkr', 'logs', 's3', 'secretsmanager']);
     expect(serviceEndpoints.find(({ configuration }) => configuration.endpointService === 's3')?.configuration)
       .toMatchObject({ endpointType: 'gateway', routeTableScope: 'private' });
@@ -135,14 +196,16 @@ describe('v0.8 AWS deployment planning', () => {
         runtimeAccessKind: 'target',
         targetResourceId: database?.id,
         egressMode: 'explicit',
-        ingressRules: [expect.objectContaining({
-          kind: 'securityGroup',
-          protocol: 'tcp',
-          port: 5432,
-          sourceSecurityGroupResourceId: workloadGroup?.id,
-        })],
       },
     });
+    const ingressRules = targetGroup?.configuration.ingressRules;
+    expect(Array.isArray(ingressRules)).toBe(true);
+    if (!Array.isArray(ingressRules)) throw new Error('Expected a concrete target ingress rule array.');
+    expect(ingressRules.some((rule) => isRecord(rule)
+      && rule.kind === 'securityGroup'
+      && rule.protocol === 'tcp'
+      && rule.port === 5432
+      && rule.sourceSecurityGroupResourceId === workloadGroup?.id)).toBe(true);
     expect(host?.configuration.runtimeAccessSecurityGroupResourceId).not.toBe('foundation.security-group.application');
     expect(database?.configuration.runtimeAccessSecurityGroupResourceId).not.toBe('foundation.security-group.application');
     expect(executionRole).toMatchObject({
@@ -562,6 +625,7 @@ describe('v0.8 AWS deployment planning', () => {
         credentialsResourceId: `provider.${workflowProvider.id}.credentials`,
         configFilesystemResourceId: `provider.${workflowProvider.id}.config`,
         workerTokenResourceId: `provider.${workflowProvider.id}.worker-token`,
+        workerTokenRoleResourceId: `provider.${workflowProvider.id}.worker-token-role`,
       },
     });
     expect(plan.resources).toEqual(expect.arrayContaining([
@@ -569,6 +633,15 @@ describe('v0.8 AWS deployment planning', () => {
       expect.objectContaining({ id: `provider.${workflowProvider.id}.database`, service: 'rds', resourceType: 'postgresql-instance' }),
       expect.objectContaining({ id: `provider.${workflowProvider.id}.config`, service: 'efs', resourceType: 'shared-filesystem', lifecycle: expect.objectContaining({ deletion: 'retain' }) }),
       expect.objectContaining({ id: `provider.${workflowProvider.id}.worker-token`, service: 'secrets-manager', resourceType: 'workflow-token', configuration: expect.objectContaining({ issuance: 'deployment-bootstrap' }) }),
+      expect.objectContaining({
+        id: `provider.${workflowProvider.id}.worker-token-role`,
+        service: 'iam',
+        resourceType: 'role',
+        configuration: expect.objectContaining({
+          rolePurpose: 'workflow-token-bootstrap',
+          statements: [{ effect: 'Allow', actions: ['secretsmanager:PutSecretValue'], resources: [`output://provider.${workflowProvider.id}.worker-token/secretArn`] }],
+        }),
+      }),
     ]));
     const host = plan.resources.find(({ resourceType, semanticNodeId }) => resourceType === 'fargate-service' && semanticNodeId === 'server.web');
     expect(host?.configuration.workflowEngineResourceIds).toEqual([engine?.id]);
@@ -588,6 +661,8 @@ describe('v0.8 AWS deployment planning', () => {
       { from: `provider.${workflowProvider.id}.database`, to: engine?.id, relationship: 'requiresReady' },
       { from: `provider.${workflowProvider.id}.config`, to: engine?.id, relationship: 'requiresReady' },
       { from: `provider.${workflowProvider.id}.worker-token`, to: engine?.id, relationship: 'requiresReady' },
+      { from: `provider.${workflowProvider.id}.worker-token`, to: `provider.${workflowProvider.id}.worker-token-role`, relationship: 'requiresOutput', output: 'secretArn' },
+      { from: `provider.${workflowProvider.id}.worker-token-role`, to: engine?.id, relationship: 'requiresReady' },
     ]));
   });
 });
@@ -641,6 +716,10 @@ function awsGraph(): ApplicationGraph {
     providerRequirements: [], providerBindings: [],
     compatibility: { stablePublicApis: [], documentedInternalContracts: [], experimentalSurfaces: [], postV3Surfaces: [], labels: [] },
   };
+}
+
+function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
 function awsLakehouseGraph(): ApplicationGraph {

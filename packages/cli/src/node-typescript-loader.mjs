@@ -11,6 +11,14 @@ export async function resolve(specifier, context, nextResolve) {
       shortCircuit: true,
     };
   }
+  if (compilerOwnedSpecifier(specifier)) {
+    // Discovery bundles intentionally keep compiler/TypeKro implementation
+    // dependencies external. Resolve those externals from the CLI's own
+    // dependency graph, not from the application temporary directory. This
+    // keeps generated applications free of compiler, TypeKro, and esbuild
+    // implementation dependencies while preserving one exact compiler cohort.
+    return nextResolve(specifier, { ...context, parentURL: import.meta.url });
+  }
   if (
     specifier.startsWith('.')
     && context.parentURL?.startsWith('file:')
@@ -33,6 +41,14 @@ export async function resolve(specifier, context, nextResolve) {
     }
   }
   return nextResolve(specifier, context);
+}
+
+function compilerOwnedSpecifier(specifier) {
+  return specifier === 'esbuild'
+    || specifier === 'typekro'
+    || specifier.startsWith('typekro/')
+    || specifier === '@applik8s/compiler'
+    || specifier.startsWith('@applik8s/compiler/');
 }
 
 export async function load(url, context, nextLoad) {

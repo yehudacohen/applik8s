@@ -149,6 +149,7 @@ describe('v0.8 generated process observability chain', () => {
         const [publisher] = await emitGeneratedApplicationLakehousePublishers({
           graph,
           outDir: join(outDir, 'lakehouse'),
+          entrypoint: fixture,
           executionTarget: 'local',
         });
         if (!gateway || !commandProcessor || !publisher) {

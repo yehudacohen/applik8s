@@ -22,6 +22,7 @@ import {
   compileApplicationOperationCatalog,
 } from '../application-operations/index.js';
 import { applik8sWorkspaceSourcePlugin } from '../bundling/index.js';
+import { handlerSourceMetadataPlugin } from '../pipeline/entrypoint-handler-instrumentation.js';
 import {
   type ApplicationMcpPlacementRoute,
   compileApplicationMcpPlacementRoutes,
@@ -80,6 +81,7 @@ export async function emitGeneratedApplicationMcpServers(options: {
   readonly graph: ApplicationGraph;
   readonly operationCatalog?: ApplicationOperationCatalog;
   readonly outDir: string;
+  readonly entrypoint: string;
 }): Promise<readonly GeneratedApplicationMcpArtifact[]> {
   const servers = options.graph.nodes.filter(
     (node): node is ApplicationMcpServerNode => node.kind === 'mcpServer',
@@ -98,6 +100,7 @@ export async function emitGeneratedApplicationMcpServers(options: {
         routes.filter((route) => route.serverId === server.id),
       ),
       options.outDir,
+      options.entrypoint,
     ),
   ));
 }
@@ -139,6 +142,7 @@ function mcpCompilerContract(
 async function emitMcpServer(
   contract: ApplicationMcpCompilerContract,
   outDir: string,
+  applicationEntrypoint: string,
 ): Promise<GeneratedApplicationMcpArtifact> {
   const name = kubernetesName(
     `${contract.graph.metadata.name}-${contract.server.name}-mcp`,
@@ -165,7 +169,10 @@ async function emitMcpServer(
     sourcesContent: false,
     metafile: true,
     nodePaths: [join(process.cwd(), 'node_modules')],
-    plugins: [applik8sWorkspaceSourcePlugin()],
+    plugins: [
+      handlerSourceMetadataPlugin(applicationEntrypoint, { includeMaintainedPackages: false }),
+      applik8sWorkspaceSourcePlugin(),
+    ],
     banner: {
       js: "import { createRequire as __applik8sCreateRequire } from 'node:module'; const require = __applik8sCreateRequire(import.meta.url);",
     },
@@ -297,9 +304,12 @@ const executor = createApplicationMcpPlacementExecutor({
         method: 'POST',
         headers: {
           'content-type': 'application/json',
-          'x-applik8s-internal-invocation': invocationToken,
         },
-        body: JSON.stringify({ operationId: operation.id, input }),
+        body: JSON.stringify({
+          operationId: operation.id,
+          input,
+          invocation: invocationToken,
+        }),
         signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(60000)]) : AbortSignal.timeout(60000),
       });
       const bytes = new Uint8Array(await response.arrayBuffer());

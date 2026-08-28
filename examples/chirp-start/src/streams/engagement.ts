@@ -1,5 +1,5 @@
 import { type } from '@applik8s/applik8s/dsl';
-import { app } from '../app';
+import { app } from '../domain-app';
 import { Database } from '../providers/database';
 import { recordEngagementBatch } from '../domain/engagement';
 import { FollowChanged, ReactionChanged } from '../domain/events';

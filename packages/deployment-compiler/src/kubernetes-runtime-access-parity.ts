@@ -1,3 +1,4 @@
+// typecast-file-boundary: Validated Kubernetes manifests are inspected through kind-specific structural guards at this pre-mutation parity boundary.
 import type {
   ApplicationRuntimeAccessKubernetesRule,
   ApplicationRuntimeAccessPlan,
@@ -11,6 +12,7 @@ export interface KubernetesRuntimeAccessParityFinding {
     | 'RUNTIME_ACCESS_RBAC_WIDENED'
     | 'RUNTIME_ACCESS_CREDENTIAL_MISSING'
     | 'RUNTIME_ACCESS_CREDENTIAL_WIDENED'
+    | 'RUNTIME_ACCESS_CREDENTIAL_CROSS_NAMESPACE'
     | 'RUNTIME_ACCESS_NETWORK_MISSING'
     | 'RUNTIME_ACCESS_NETWORK_WIDENED'
     | 'RUNTIME_ACCESS_NETWORK_WRONG_PORT'
@@ -87,11 +89,15 @@ export function validateKubernetesRuntimeAccessParity(
     }
 
     const expectedSecrets = [...new Set(expected.credentialProjections.flatMap((projection) => {
-      const name = secretNameFromIdentity(projection.resourceId);
-      if (!name) return [];
+      const identity = secretIdentity(projection.resourceId);
+      if (!identity) return [];
+      if (identity.namespace !== expected.resource.namespace) {
+        findings.push(finding(workload, 'RUNTIME_ACCESS_CREDENTIAL_CROSS_NAMESPACE',
+          `Workload ${workload.workloadIdentity} in namespace ${expected.resource.namespace} cannot mount Secret ${identity.namespace}/${identity.name}.`));
+      }
       return projection.keys.length > 0
-        ? projection.keys.map((key) => `${name}:${key}`)
-        : [`${name}:*`];
+        ? projection.keys.map((key) => `${identity.name}:${key}`)
+        : [`${identity.name}:*`];
     }))].sort();
     const actualSecrets = projectedSecretKeys(podSpec);
     const missingSecrets = difference(expectedSecrets, actualSecrets);
@@ -461,9 +467,11 @@ function projectedSecretKeys(podSpec: Readonly<Record<string, unknown>> | undefi
   return [...names].sort();
 }
 
-function secretNameFromIdentity(identity: string): string | undefined {
-  const match = /^(?:.+\/)Secret\/[^/]*\/([^/]+)$/u.exec(identity);
-  return match?.[1];
+function secretIdentity(identity: string): { readonly namespace: string; readonly name: string } | undefined {
+  const match = /^(?:.+\/)Secret\/([^/]*)\/([^/]+)$/u.exec(identity);
+  return match?.[1] && match[2]
+    ? { namespace: match[1], name: match[2] }
+    : undefined;
 }
 
 function workloadPodSpec(workload: Readonly<Record<string, unknown>>): Readonly<Record<string, unknown>> | undefined {

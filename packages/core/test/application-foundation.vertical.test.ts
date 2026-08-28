@@ -314,6 +314,47 @@ describe('v0.8 canonical foundation', () => {
     })).toEqual([]);
   });
 
+  it('treats a search index as the execution owner of its generated projection worker', () => {
+    const graph = {
+      apiVersion: 'applik8s.appGraph/v1alpha1',
+      kind: 'ApplicationGraph',
+      metadata: { name: 'notes' },
+      nodes: [{
+        id: 'index.notes-search',
+        kind: 'index',
+        name: 'notes-search',
+        stability: 'stable',
+        purpose: 'searchProjection',
+        provider: {
+          interface: 'Search',
+          implementation: 'postgres-search',
+          nodeId: 'provider.search',
+        },
+        source: { nodeId: 'model.note' },
+        search: {},
+      }],
+      edges: [],
+      providerRequirements: [],
+      providerBindings: [],
+      compatibility: {
+        stablePublicApis: [],
+        documentedInternalContracts: [],
+        experimentalSurfaces: [],
+        postV3Surfaces: [],
+        labels: [],
+      },
+    } as unknown as ApplicationGraph;
+
+    const foundation = deriveApplicationGraphFoundation(graph);
+    const indexIdentity = foundation.identities.find((identity) =>
+      identity.kind === 'graph-node' && identity.semanticKey.includes('index.notes-search'));
+    expect(indexIdentity).toBeDefined();
+    expect(foundation.identities).toContainEqual(expect.objectContaining({
+      kind: 'execution-boundary',
+      parentId: indexIdentity?.id,
+    }));
+  });
+
   it('derives callable-provider access from function-native HTTP routes', () => {
     const providerId = 'provider.acquisition-provider.v1alpha1.primary';
     const graph = {

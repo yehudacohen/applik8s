@@ -69,6 +69,7 @@ export async function emitGeneratedApplicationWorkflows(options: {
       contract,
       options.outDir,
       ownsProvider,
+      options.entrypoint,
       options.executionTarget ?? 'kubernetes',
     ));
   }
@@ -109,36 +110,9 @@ export function applicationScheduleWorkflowGatewayCallers(
     return contract ? [contract] : [];
   }))].sort();
   if (contracts.length === 0) return [];
-  const hosts = graph.nodes.filter(
-    (node): node is Extract<ApplicationGraph['nodes'][number], { readonly kind: 'provider' }> =>
-      node.kind === 'provider'
-        && node.interface === 'ApplicationHost'
-        && !node.config?.qualification,
-  );
-  if (hosts.length > 1) {
-    throw new Error(
-      `Scheduled workflows require at most one unqualified ApplicationHost caller; found ${hosts.length}.`,
-    );
-  }
-  if (hosts.length === 0) {
-    const provider = nodes.get(worker.workflowEngine.nodeId);
-    const providerConfig = provider?.kind === 'provider'
-      ? objectConfig(provider.config)
-      : {};
-    const name = kubernetesName(`${graph.metadata.name}-schedule-control`);
-    const namespace = applicationGraphStringValue(providerConfig.namespace)
-      ?? graph.metadata.namespace
-      ?? 'default';
-    return [{ operator: name, namespace, serviceAccount: name, contracts }];
-  }
-  const hostConfig = objectConfig(hosts[0]?.config?.host);
-  const name = applicationGraphStringValue(hostConfig.name)
-    ?? `${graph.metadata.name}-web`;
-  const namespace = applicationGraphStringValue(hostConfig.namespace)
-    ?? graph.metadata.namespace
-    ?? 'default';
-  const serviceAccount = applicationGraphStringValue(hostConfig.serviceAccountName)
-    ?? name;
+  const name = kubernetesName(`${graph.metadata.name}-schedule-control`);
+  const namespace = graph.metadata.namespace ?? 'default';
+  const serviceAccount = name;
   return [{ operator: name, namespace, serviceAccount, contracts }];
 }
 

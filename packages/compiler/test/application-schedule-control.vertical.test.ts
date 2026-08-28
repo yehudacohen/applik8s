@@ -1,3 +1,4 @@
+// typecast-file-boundary: Compiler fixtures inspect and perturb generated schedule artifacts through intentionally partial test-only representations.
 import { mkdtemp, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -53,7 +54,7 @@ describe('generated workflow-only schedule control', () => {
       {
         id: 'schedule.digest', kind: 'schedule', name: 'digest', stability: 'stable',
         definition: {
-          id: 'digest', configuration: 'fixed', cron: '0 4 * * *', timezone: 'UTC', overlap: 'skip', misfires: 'latest',
+          id: 'agentic-runtime-evidence-maintenance-v1', configuration: 'fixed', cron: '0 4 * * *', timezone: 'UTC', overlap: 'skip', misfires: 'latest',
           maximumLatenessSeconds: 300, retry: { maxAttempts: 4, maximumAgeSeconds: 3_600 },
           requirements: { configuration: 'fixed', cardinality: 'bounded', precision: 'minute' },
         },
@@ -120,6 +121,12 @@ describe('generated workflow-only schedule control', () => {
       'CronJob',
       'CronJob',
     ]);
+    const cronJobNames = artifact?.resources
+      .filter((resource) => resource.kind === 'CronJob')
+      .map((resource) => resource.metadata.name)
+      .filter((name): name is string => typeof name === 'string') ?? [];
+    expect(cronJobNames.every((name) => name.length <= 52)).toBe(true);
+    expect(cronJobNames).toContain('schedule-agentic-runtime-evidence-mainten-36940d72fe');
     const deployment = artifact?.resources.find((resource) => resource.kind === 'Deployment');
     expect(deployment).toMatchObject({
       spec: {
@@ -148,6 +155,11 @@ describe('generated workflow-only schedule control', () => {
       resources: ['cronjobs'],
       verbs: ['create', 'delete', 'get', 'list', 'patch', 'update', 'watch'],
     });
+    expect(role?.rules).toContainEqual({
+      apiGroups: ['batch'],
+      resources: ['jobs'],
+      verbs: ['get'],
+    });
     const oneTimeCronJob = artifact?.resources
       .filter((resource) => resource.kind === 'CronJob')
       .find((resource) => (resource.metadata.annotations as Readonly<Record<string, string>> | undefined)?.['applik8s.dev/schedule-definition'] === 'delayed-digest');
@@ -156,7 +168,9 @@ describe('generated workflow-only schedule control', () => {
         readonly spec: {
           readonly template: {
             readonly spec: {
+              readonly serviceAccountName?: string;
               readonly containers: readonly [{
+                readonly command?: readonly string[];
                 readonly env: readonly { readonly name: string; readonly value?: string }[];
               }];
             };
@@ -164,6 +178,10 @@ describe('generated workflow-only schedule control', () => {
         };
       };
     } | undefined;
+    expect(oneTimeSpec?.jobTemplate.spec.template.spec.serviceAccountName)
+      .toBe('reactive-test-schedule-control');
+    expect(oneTimeSpec?.jobTemplate.spec.template.spec.containers[0]?.command?.join(' '))
+      .toContain('batch.kubernetes.io/cronjob-scheduled-timestamp');
     const oneTimeAdmission = oneTimeSpec?.jobTemplate.spec.template.spec.containers[0]?.env
       .find((entry: { readonly name?: string }) => entry.name === 'APPLIK8S_SCHEDULE_ADMISSION')?.value;
     expect(JSON.parse(String(oneTimeAdmission))).toMatchObject({
@@ -175,6 +193,12 @@ describe('generated workflow-only schedule control', () => {
     const generated = await readFile(join(dirname(artifact?.sourcePath ?? ''), 'gateway.generated.ts'), 'utf8');
     expect(source).toContain('closeApplik8sGateway');
     expect(generated).toContain('startScheduledWorkflow');
+    expect(generated).toContain("'/__applik8s/v1/internal/schedules/manage'");
+    expect(generated).toContain('applik8s.scheduleManagementRequest/v1alpha1');
+    expect(generated).toContain('generatedScheduleRuntimeFor(binding.schedulerNodeId)');
+    expect(generated).toContain('applicationScheduleRuntimeHandler(binding.handle)');
+    expect(generated).toContain("body.action === 'configure'");
+    expect(generated).toContain("body.action === 'remove'");
     expect(generated).toContain('await installLocalApplicationScheduleRuntime');
     expect(generated).toContain('await startAwsApplicationScheduleQueueRunner');
     expect(generated).toContain('reactive-test-schedule-control.catalog.svc:8080');
@@ -192,6 +216,7 @@ describe('generated workflow-only schedule control', () => {
             ...node,
             implementation: 'hatchet-scheduler',
             config: {
+              qualification: { name: 'hosted' },
               scheduler: {
                 kind: 'hatchet-scheduler',
                 workflowEngine: {
@@ -246,9 +271,12 @@ describe('generated workflow-only schedule control', () => {
       join(dirname(hatchetArtifact?.sourcePath ?? ''), 'gateway.generated.ts'),
       'utf8',
     );
+    const hatchetRuntime = await readFile(hatchetArtifact?.sourcePath ?? '', 'utf8');
     expect(hatchetSource).toContain('createHatchetApplicationScheduleRuntime');
     expect(hatchetSource).toContain('const kubernetesScheduleProviderIds = new Set([])');
     expect(hatchetSource).toContain('kubernetesScheduleProviderIds.has(schedulerNodeId)');
+    expect(hatchetRuntime).toContain('Heartbeat failed:');
+    expect(hatchetRuntime).not.toContain('heartbeat-worker');
 
     const hosted = await emitGeneratedApplicationReactive({
       graph: {
@@ -263,7 +291,17 @@ describe('generated workflow-only schedule control', () => {
       entrypoint: import.meta.filename,
       executionTarget: 'kubernetes',
     });
-    expect(hosted).toEqual([]);
+    expect(hosted).toHaveLength(1);
+    expect(hosted[0]).toMatchObject({
+      kind: 'scheduleControlWorker',
+      name: 'reactive-test-schedule-control',
+    });
+    const hostedSource = await readFile(
+      join(dirname(hosted[0]?.sourcePath ?? ''), 'gateway.generated.ts'),
+      'utf8',
+    );
+    expect(hostedSource).toContain('createKubernetesApplicationScheduleRuntime');
+    expect(hostedSource).toContain('createAwsApplicationScheduleRuntime');
 
     const externallyManaged = await emitGeneratedApplicationReactive({
       graph: {
@@ -305,3 +343,4 @@ function schema(jsonSchema: JsonObject) {
     jsonSchema,
   };
 }
+// typecast-file-boundary: Compiler fixtures inspect and perturb generated schedule artifacts through intentionally partial test-only representations.

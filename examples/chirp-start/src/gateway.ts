@@ -1,6 +1,7 @@
 import { verifyApplicationObjectCompletionReceipt } from '@applik8s/applik8s';
 import type { ApplicationPrincipal } from '@applik8s/core';
-import { app, authenticateChirpRequest, capacity, namespace } from './app';
+import { app, capacity, namespace } from './domain-app';
+import { authenticateChirpRequest } from './providers/identity';
 import { AutomationPostReviewRequests } from './automation/workflow';
 import { Account, AccountByHandle, AccountDiscover, AccountMe, CredentialLink, InstallationSetting } from './domain/accounts';
 import { Automation, AutomationControl, AutomationControlCurrent, AutomationMine, AutomationRun, AutomationRunRecent } from './domain/automation';

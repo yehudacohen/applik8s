@@ -1,3 +1,4 @@
+// typecast-file-boundary: Compiler provider fixtures inspect erased generated handles and deliberately invalid metadata at the discovery boundary.
 import type { ApplicationProviderNode } from '@applik8s/core';
 import { describe, expect, it } from 'vitest';
 import { applicationCallableProviderEnvironment } from '../src/application-callable-provider-runtime.js';
@@ -120,3 +121,4 @@ function secret(name: string, namespace = 'workflows'): Readonly<Record<string, 
     key: 'token',
   };
 }
+// typecast-file-boundary: Compiler provider fixtures inspect erased generated handles and deliberately invalid metadata at the discovery boundary.

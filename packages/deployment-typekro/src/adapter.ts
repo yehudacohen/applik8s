@@ -1,4 +1,5 @@
-import { validateKubernetesRuntimeAccessParity } from '@applik8s/deployment-compiler';
+// typecast-file-boundary: TypeKro planning Outputs and materialized resources are validated at this deployment adapter before typed reconstruction.
+import { validateKubernetesRuntimeAccessParity } from '@applik8s/deployment-compiler/runtime-access-parity';
 import {
   type ApplicationDeploymentGraph,
   type ApplicationDeploymentNode,
@@ -20,11 +21,11 @@ import {
   type TypeKroSemanticPlanEvidence,
 } from "./types.js";
 
-const supportedTypeKroVersion = "0.33.7";
+const supportedTypeKroVersion = "0.33.8";
 const supportedSemanticPlanVersion = 1;
 const supportedArtifactPlanVersion = 1;
 const adapterCompatibility: AdaptedTypeKroDeployment["adapter"] = {
-  typekro: "0.33.7",
+  typekro: "0.33.8",
   semanticPlanVersion: 1,
   artifactPlanVersion: 1,
 };
@@ -688,3 +689,4 @@ function adaptTypeKroEvidenceValue(
   }
   return adapted;
 }
+// typecast-file-boundary: TypeKro planning Outputs and materialized resources are validated at this deployment adapter before typed reconstruction.

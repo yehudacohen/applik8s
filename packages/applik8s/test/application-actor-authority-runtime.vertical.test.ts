@@ -1,3 +1,4 @@
+// typecast-file-boundary: Actor-authority fixtures intentionally construct legacy, narrowed, and invalid authority records to test migration and rejection.
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   type ApplicationAuthorizationReceipt,
@@ -287,3 +288,4 @@ function testReceipt(
     admittedAt: '2026-08-23T00:00:00.000Z',
   });
 }
+// typecast-file-boundary: Actor-authority fixtures intentionally construct legacy, narrowed, and invalid authority records to test migration and rejection.

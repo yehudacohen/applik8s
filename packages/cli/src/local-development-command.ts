@@ -7,11 +7,13 @@ import { dirname, isAbsolute, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { applicationGeneratedSecretRequirements } from '@applik8s/compiler';
 import { type ApplicationGraph, type ApplicationPlan, serializeApplicationPlan } from '@applik8s/core';
-import { type ApplicationAwsDeployment, applicationAwsOutputKey, createApplicationAwsDeployment } from '@applik8s/deployment-alchemy';
+import { type ApplicationAwsDeployment, createApplicationAwsDeployment } from '@applik8s/deployment-alchemy';
 import { type ApplicationLocalRuntimeArtifact, awsLocalOutputBindingId, awsLocalRuntimeBindingId, compileApplicationAwsDeploymentPlan, compileLocalApplicationPlan, compileLocalSupervisorPlan } from '@applik8s/deployment-compiler';
-import { type ApplicationAwsDeploymentPlan, type DeploymentJsonObject, type LocalSupervisorTarget, serializeApplicationAwsDeploymentPlan, serializeLocalSupervisorPlan, validateApplicationAwsDeploymentPlan, validateApplicationRuntimeArtifact, validateLocalSupervisorPlan } from '@applik8s/deployment-contract';
+import { type ApplicationAwsDeploymentPlan, type DeploymentJsonObject, type LocalSupervisorPlan, type LocalSupervisorTarget, serializeApplicationAwsDeploymentPlan, serializeLocalSupervisorPlan, validateApplicationAwsDeploymentPlan, validateApplicationRuntimeArtifact, validateLocalSupervisorPlan } from '@applik8s/deployment-contract';
 import { OpenCodeAgentProvider } from '@applik8s/dev/agent/opencode';
+import { applicationPlanSelectionResolver } from '@applik8s/dev';
 import { createDevelopmentDaemon, type DevelopmentApplicationEvidence, type DevelopmentDaemonState } from '@applik8s/dev/server';
+import { watch, type FSWatcher } from 'chokidar';
 import { parse as parseYaml } from 'yaml';
 import { resolveApplicationBuildPackage, resolveApplicationProjectRoot } from './application-build-package.js';
 import { readApplicationProjectConfiguration } from './application-project-config.js';
@@ -52,6 +54,17 @@ export interface LocalDevelopmentCommandRuntime {
   readonly resumeAwsLocalTarget?: (runtimeId: string, endpoint: string) => Promise<void>;
 }
 
+interface LocalDevelopmentWatcherOptions {
+  readonly projectRoot: string;
+  readonly applicationEntrypoint: string;
+  readonly outDir: string;
+  readonly signal: AbortSignal;
+  /** Test seam for constrained environments where native watch handles are unavailable. */
+  readonly usePolling?: boolean;
+  rebuild(changes: readonly string[]): Promise<void>;
+  onError(error: Error): void;
+}
+
 export async function runLocalDevelopmentCommand(
   entrypoint: string,
   options: LocalDevelopmentCommandOptions,
@@ -86,6 +99,7 @@ export async function runLocalDevelopmentCommand(
     runtime: { state: 'stopped', message: 'The local supervisor has not started.' },
   };
   const applicationOrigins = new Set<string>();
+  let currentApplicationPlan: ApplicationPlan | undefined;
   const agentProvider = options.agent
     ? new OpenCodeAgentProvider({
         executable: options.agentExecutable ?? 'opencode',
@@ -96,11 +110,12 @@ export async function runLocalDevelopmentCommand(
   const daemon = options.portal === false ? undefined : await createDevelopmentDaemon({
     projectName: applicationEntrypoint.split('/').at(-2) ?? 'applik8s-application',
     workspaceRoot: projectRoot,
-    revision: projectDigest,
+    revision: () => currentApplicationPlan?.sourceDigest ?? projectDigest,
     target,
     port: options.portalPort ?? 4388,
     state: async () => developmentState,
     allowedOrigins: () => [...applicationOrigins],
+    selectionResolver: applicationPlanSelectionResolver({ currentPlan: () => currentApplicationPlan }),
     ...(agentProvider ? { agentProvider } : {}),
   });
   await daemon?.start();
@@ -139,7 +154,7 @@ export async function runLocalDevelopmentCommand(
       return buildCode;
     }
     const graphPath = resolve(io.cwd, outDir, 'typekro', 'application-graph.json');
-    const graph = await readApplicationGraph(graphPath);
+    let graph = await readApplicationGraph(graphPath);
     const bundlePath = resolve(io.cwd, outDir, 'typekro', 'typekro-composition.json');
     const runtimeArtifacts = await readLocalRuntimeArtifacts(
       bundlePath,
@@ -164,7 +179,7 @@ export async function runLocalDevelopmentCommand(
         )
       : [];
     const applicationPackage = await resolveApplicationBuildPackage(applicationEntrypoint);
-    const plan = compileLocalSupervisorPlan({
+    let plan = compileLocalSupervisorPlan({
       graph,
       target,
       profile,
@@ -190,7 +205,8 @@ export async function runLocalDevelopmentCommand(
       return 1;
     }
     const applicationPlanPath = resolve(io.cwd, outDir, 'application-plan.json');
-    const applicationPlan = compileLocalApplicationPlan({ graph, supervisor: plan, workspaceRoot: projectRoot });
+    let applicationPlan = compileLocalApplicationPlan({ graph, supervisor: plan, workspaceRoot: projectRoot });
+    currentApplicationPlan = applicationPlan;
     await writeFile(applicationPlanPath, serializeApplicationPlan(applicationPlan));
     io.stdout(`Canonical application plan: ${applicationPlanPath}`);
 
@@ -248,16 +264,14 @@ export async function runLocalDevelopmentCommand(
             const resolved: Record<string, string | number> = {};
             for (const targetResource of awsLocalPlan.resources) {
               for (const output of targetResource.outputs) {
-                const value = applied.aws.directOutputs[targetResource.id]?.[output.name]
-                  ?? applied.aws.outputs[applicationAwsOutputKey(targetResource.id, output.name)];
+                const value = applied.aws.directOutputs[targetResource.id]?.[output.name];
                 if (value !== undefined) resolved[awsLocalOutputBindingId(targetResource.id, output.name)] = value;
               }
             }
             for (const binding of awsLocalPlan.runtimeBindings) {
               const targetResource = awsLocalPlan.resources.find(({ id }) => id === binding.resourceId);
               if (!targetResource) throw new Error(`AWS-local runtime binding ${binding.id} references missing resource ${binding.resourceId}.`);
-              const output = (name: string): string | number | undefined => applied.aws.directOutputs[targetResource.id]?.[name]
-                ?? applied.aws.outputs[applicationAwsOutputKey(targetResource.id, name)];
+              const output = (name: string): string | number | undefined => applied.aws.directOutputs[targetResource.id]?.[name];
               const host = output('endpoint');
               const port = output('port');
               const secretArn = output('secretArn');
@@ -283,9 +297,96 @@ export async function runLocalDevelopmentCommand(
       : undefined;
     const url = applicationEndpoint ? session.state.bindings[applicationEndpoint.id] : undefined;
     if (typeof url === 'string') applicationOrigins.add(new URL(url).origin);
-    io.stdout(`Local application ready${url ? ` at ${url}` : ''}. Press Ctrl-C to stop; retained provider volumes survive restarts.`);
-    await waitForAbort(abort.signal);
-    await session.stop();
+    io.stdout(`Local application ready${url ? ` at ${url}` : ''}. Source changes rebuild and reload application processes; retained provider volumes survive restarts.`);
+    const watcher = startLocalDevelopmentWatcher({
+      projectRoot,
+      applicationEntrypoint,
+      outDir: resolve(io.cwd, outDir),
+      signal: abort.signal,
+      async rebuild(changes) {
+        developmentState.application = { state: 'building', message: `Rebuilding after ${changes.length} source change${changes.length === 1 ? '' : 's'}.` };
+        const nextBuildCode = await runtime.runBuild(entrypoint, {
+          outDir,
+          typekro: true,
+          compositionName: options.compositionName ?? configuration.compositionName ?? 'app',
+          localDevelopment: true,
+          executionTarget: target,
+        }, io);
+        if (nextBuildCode !== 0) {
+          developmentState.application = { state: 'failed', message: `Rebuild failed with exit code ${nextBuildCode}; the last healthy runtime remains active.` };
+          io.stderr(`Local rebuild failed with exit code ${nextBuildCode}; keeping the last healthy runtime active.`);
+          return;
+        }
+        const nextGraph = await readApplicationGraph(graphPath);
+        const nextRuntimeArtifacts = await readLocalRuntimeArtifacts(bundlePath, resolve(io.cwd, outDir), target);
+        const nextApplicationHostFrameworkCredentials = await readLocalApplicationHostFrameworkCredentials(bundlePath);
+        const nextGeneratedSecrets = installationSpec
+          ? await applicationGeneratedSecretRequirements(bundlePath, nextGraph.metadata.namespace, nextGraph, installationSpec)
+          : [];
+        const nextPlan = compileLocalSupervisorPlan({
+          graph: nextGraph,
+          target,
+          profile,
+          projectDigest,
+          projectDirectory: applicationPackage.directory,
+          runtimeArtifacts: nextRuntimeArtifacts,
+          applicationHostFrameworkCredentials: nextApplicationHostFrameworkCredentials,
+          generatedSecrets: nextGeneratedSecrets,
+          localResourceAuthorityModule: fileURLToPath(import.meta.resolve('@applik8s/server/local-resource-authority-process')),
+          ...(installationSpec ? { installationSpec } : {}),
+          ...(options.allowDockerSocket ? { allowDockerSocket: true } : {}),
+        });
+        const nextValidation = validateLocalSupervisorPlan(nextPlan);
+        if (!nextValidation.valid) {
+          developmentState.application = { state: 'failed', message: nextValidation.diagnostics.map(({ message }) => message).join(' ') };
+          for (const diagnostic of nextValidation.diagnostics) io.stderr(`${diagnostic.code}: ${diagnostic.message}`);
+          return;
+        }
+        const stableTopology = localPlansAreReloadCompatible(plan, nextPlan);
+        if (!stableTopology && target === 'aws-local') {
+          developmentState.application = {
+            state: 'failed',
+            message: 'The rebuild changed AWS-local infrastructure, bindings, or process topology. Restart the local command to reconcile that structural target change safely.',
+          };
+          io.stderr('AWS-local rebuild changed the supervisor topology; refusing a partial target mutation. Restart the local command to reconcile the new graph safely.');
+          return;
+        }
+        const nextApplicationPlan = compileLocalApplicationPlan({ graph: nextGraph, supervisor: nextPlan, workspaceRoot: projectRoot });
+        await writeFile(planPath, serializeLocalSupervisorPlan(nextPlan));
+        await writeFile(applicationPlanPath, serializeApplicationPlan(nextApplicationPlan));
+        if (stableTopology) await session.reload();
+        else await session.reconcile(nextPlan);
+        graph = nextGraph;
+        plan = nextPlan;
+        applicationPlan = nextApplicationPlan;
+        currentApplicationPlan = nextApplicationPlan;
+        developmentState.evidence = developmentApplicationEvidence({
+          graph,
+          applicationPlan,
+          localPlanResources: plan.resources.length,
+          target,
+          projectRoot,
+          applicationPlanPath,
+          targetPlanPath: target === 'aws-local' ? resolve(io.cwd, outDir, 'aws-local-plan.json') : planPath,
+          ...(awsLocalPlan ? { awsLocalResources: awsLocalPlan.resources.length } : {}),
+        });
+        developmentState.runtime = { state: 'ready', message: `${session.state.resources.length} supervised resources are healthy after reload.` };
+        developmentState.application = { state: 'ready', message: 'The rebuilt application is active; providers and retained data were preserved.' };
+      },
+      onError(error) {
+        developmentState.application = { state: 'failed', message: `Local source watcher failed: ${error.message}` };
+        io.stderr(`Local source watcher failed: ${error.message}`);
+      },
+    });
+    try {
+      await Promise.race([
+        waitForAbort(abort.signal),
+        session.failed.then((error) => { throw error; }),
+      ]);
+    } finally {
+      await watcher.close();
+      await session.stop();
+    }
     return 0;
   } finally {
     process.off('SIGINT', stop);
@@ -295,6 +396,66 @@ export async function runLocalDevelopmentCommand(
       if (value === undefined) delete process.env[name]; else process.env[name] = value;
     }
   }
+}
+
+export function startLocalDevelopmentWatcher(options: LocalDevelopmentWatcherOptions): FSWatcher {
+  const watched = [
+    options.applicationEntrypoint,
+    resolve(options.projectRoot, 'src'),
+    resolve(options.projectRoot, 'package.json'),
+  ];
+  const watcher = watch(watched, {
+    ignoreInitial: true,
+    ...(options.usePolling ? { usePolling: true, interval: 25 } : {}),
+    awaitWriteFinish: { stabilityThreshold: 75, pollInterval: 20 },
+    ignored(path) {
+      const relativePath = relative(options.projectRoot, path);
+      const pathToProject = relative(path, options.projectRoot);
+      const insideProject = relativePath === '' || (!relativePath.startsWith('..') && !isAbsolute(relativePath));
+      const projectInsidePath = pathToProject === '' || (!pathToProject.startsWith('..') && !isAbsolute(pathToProject));
+      if (!insideProject && !projectInsidePath) return true;
+      return path === options.outDir
+        || (!relative(options.outDir, path).startsWith('..') && relative(options.outDir, path) !== '')
+        || relativePath === '.git'
+        || relativePath.startsWith('.git/')
+        || relativePath === 'node_modules'
+        || relativePath.startsWith('node_modules/');
+    },
+  });
+  const pending = new Set<string>();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let running = false;
+  const drain = async (): Promise<void> => {
+    if (running || options.signal.aborted) return;
+    running = true;
+    try {
+      while (pending.size > 0 && !options.signal.aborted) {
+        const changes = [...pending].sort();
+        pending.clear();
+        await options.rebuild(changes);
+      }
+    } catch (cause) {
+      options.onError(cause instanceof Error ? cause : new Error(String(cause)));
+    } finally {
+      running = false;
+    }
+  };
+  const changed = (path: string): void => {
+    pending.add(path);
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(() => void drain(), 100);
+  };
+  watcher.on('add', changed).on('change', changed).on('unlink', changed);
+  watcher.on('error', (cause) => options.onError(cause instanceof Error ? cause : new Error(String(cause))));
+  options.signal.addEventListener('abort', () => {
+    if (timer) clearTimeout(timer);
+    void watcher.close();
+  }, { once: true });
+  return watcher;
+}
+
+function localPlansAreReloadCompatible(current: LocalSupervisorPlan, next: LocalSupervisorPlan): boolean {
+  return serializeLocalSupervisorPlan(current) === serializeLocalSupervisorPlan(next);
 }
 
 function developmentApplicationEvidence(input: {

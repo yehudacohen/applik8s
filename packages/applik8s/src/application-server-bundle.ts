@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { AnyResourceDefinition, JsonValue, ResourceIndex } from '@applik8s/core';
-import { buildSync, transformSync } from 'esbuild';
+import { applicationBuildSync, applicationTransformSync } from './application-build-tool.js';
 import type { ApplicationRuntimeModelContract } from './application-models.js';
 import type { SerializedApplicationServerRouteWithDependencies } from './application-route-source.js';
 import { generatedServerRuntimeBundleContract } from './application-server-runtime-bundle.js';
@@ -86,7 +86,7 @@ function lowerTemplateLiteralsForKro(fileName: string, source: string): string {
     return source;
   }
   const diagnosticHeader = source.match(/^(?:\/\/ applik8s-route-[^\n]*\n)+/)?.[0] ?? '';
-  const transformed = transformSync(source, {
+  const transformed = applicationTransformSync(source, {
     loader: 'js',
     format: 'esm',
     target: 'node22',
@@ -248,7 +248,7 @@ function mkdirpSync(path: string): void {
 }
 
 function bundleApplicationServerEntrypoint(sourceFileName: string, sourceDir: string, routesManifest: string | undefined): Readonly<Record<string, string>> {
-  const result = buildSync({
+  const result = applicationBuildSync({
     entryPoints: [join(sourceDir, sourceFileName)],
     outfile: join(sourceDir, 'dist', sourceFileName),
     bundle: true,
@@ -651,7 +651,7 @@ export const ${module.exportName} = (${module.route.handlerSource});
 }
 
 function bundledApplicationServerRouteModuleSource(module: GeneratedApplicationServerRouteModule, bindingImport: string): ApplicationRouteModuleBundle {
-  const result = buildSync({
+  const result = applicationBuildSync({
     stdin: {
       contents: `
 ${module.route.handlerDependencySource ?? ''}

@@ -1,3 +1,4 @@
+// typecast-file-boundary: Canonical JSON recursively validates supported values before restoring the closed JSON algebra at this serialization boundary.
 import type { JsonValue } from './common.js';
 
 export const canonicalJsonVersion = 'applik8s.canonical-json/v1' as const;

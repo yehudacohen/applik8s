@@ -1,3 +1,4 @@
+// typecast-file-boundary: Hatchet admission fixtures deliberately supply narrowed provider records and malformed compatibility inputs at the transport boundary.
 import { describe, expect, it, vi } from 'vitest';
 import { compactHatchetWorkflowAdmissionPage } from '../src/workflow-gateway-admission.js';
 
@@ -101,3 +102,4 @@ describe('Hatchet workflow gateway admission retention', () => {
     })).resolves.toEqual({ inspected: 1, deleted: 0 });
   });
 });
+// typecast-file-boundary: Hatchet admission fixtures deliberately supply narrowed provider records and malformed compatibility inputs at the transport boundary.

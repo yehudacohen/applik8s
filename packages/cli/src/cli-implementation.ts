@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// typecast-file-boundary: CLI arguments, generated manifests, and deployment observations are validated before command-specific typed dispatch.
 import { access } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -957,3 +958,4 @@ export {
   resolveApplicationContext,
   resolveApplicationEntrypoint,
 } from './application-project-config.js';
+// typecast-file-boundary: CLI arguments, generated manifests, and deployment observations are validated before command-specific typed dispatch.

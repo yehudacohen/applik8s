@@ -1,3 +1,4 @@
+// typecast-file-boundary: This live transport fixture supplies a controlled TLS adapter and narrows only its explicitly modeled response surface.
 import { execFile, execFileSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { createServer } from 'node:https';
@@ -121,3 +122,4 @@ describe('OpenTelemetry custom trust transport (live loopback)', () => {
     expect(identityFailure).toMatch(/hostname|identity|altname|certificate/iu);
   }, 45_000);
 });
+// typecast-file-boundary: This live transport fixture supplies a controlled TLS adapter and narrows only its explicitly modeled response surface.

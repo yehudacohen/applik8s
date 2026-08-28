@@ -1,5 +1,26 @@
 # TypeKro Golden Path
 
+## v0.8 deployment boundary
+
+Applik8s v0.8 pins TypeKro `0.33.8`, Alchemy `2.0.0-beta.74`, Effect
+`4.0.0-rc.110`, and Distilled AWS `1.0.0-rc.6` as one reviewed deployment
+cohort. AWS plans lower directly to individually stateful native Alchemy
+resources. Applik8s retains custom Alchemy lifecycles only for provisioned
+Valkey subnet/replication groups and receipt-bearing one-shot ECS tasks; a
+mechanical boundary rejects aggregate CloudFormation ownership, the unbounded
+AWS provider catalog, and additional private AWS resource identities.
+
+The qualification command remains:
+
+```sh
+bun run check:v07:typekro
+```
+
+The historical command name is retained for automation compatibility; its
+version assertions follow the active v0.8 cohort. AWS-local MiniStack evidence
+is API-fidelity-only, and real AWS lifecycle/security/cost qualification
+remains a separate release gate.
+
 ## v0.7 deployment boundary
 
 Applik8s v0.7 pins TypeKro `0.33.7`, Alchemy `2.0.0-beta.58`, and Effect

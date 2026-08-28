@@ -11,8 +11,8 @@ import { describe, expect, it } from 'vitest';
 import {
   createHatchetApplicationScheduleRuntimeFromClient,
   type HatchetApplicationScheduleClient,
-  type HatchetApplicationScheduleDeliveryInput,
 } from '../src/application-schedule.js';
+import { encodeHatchetWorkflowTransportInput } from '../src/workflow-runtime-hatchet-transport.js';
 
 describe('Hatchet function-native Scheduler adapter', () => {
   it('projects canonical fixed and dynamic state and delivers one canonical occurrence', async () => {
@@ -61,7 +61,7 @@ describe('Hatchet function-native Scheduler adapter', () => {
       cron: '* * * * *',
       enabled: true,
     });
-    await runtime.reconcile({
+    await expect(runtime.reconcile({
       definition: dynamic.definition,
       instance: {
         id: 'source-a',
@@ -72,18 +72,31 @@ describe('Hatchet function-native Scheduler adapter', () => {
         enabled: true,
       },
       handler: async () => undefined,
-    });
+    })).resolves.toMatchObject({ state: 'created' });
+    expect(provider.crons).toHaveLength(2);
+    await expect(runtime.reconcile({
+      definition: dynamic.definition,
+      instance: {
+        id: 'source-a',
+        revision: '2',
+        input: { sourceId: 'source-a' },
+        cron: '*/10 * * * *',
+        timezone: 'UTC',
+        enabled: true,
+      },
+      handler: async () => undefined,
+    })).resolves.toMatchObject({ state: 'updated' });
     expect(provider.crons).toHaveLength(2);
 
     const delivery = provider.tasks[1];
     if (!delivery) throw new Error('Expected the dynamic Hatchet delivery task.');
     const receipt = await delivery.fn(
-      {
+      encodeHatchetWorkflowTransportInput({
         schemaVersion: 'applik8s.hatchetScheduleDelivery/v1alpha1',
         definitionId: 'poll-source.v1',
         instanceId: 'source-a',
         input: { sourceId: 'source-a' },
-      },
+      }),
       {
         workflowRunId: () => 'hatchet-run-1',
         retryCount: () => 1,
@@ -194,6 +207,15 @@ describe('Hatchet function-native Scheduler adapter', () => {
     expect(await stateAuthority.pending()).toHaveLength(0);
     expect(provider.crons).toHaveLength(1);
     await recovered.close();
+
+    provider.crons.length = 0;
+    const driftRecovered = await createHatchetApplicationScheduleRuntimeFromClient(
+      provider.client,
+      options,
+      [dynamic as unknown as ApplicationScheduleHandle<object, unknown>],
+    );
+    expect(provider.crons).toHaveLength(1);
+    await driftRecovered.close();
   });
 
   it('stops its worker when fixed-schedule initialization fails closed', async () => {
@@ -258,7 +280,7 @@ function fakeHatchetScheduleClient(): {
   readonly tasks: Array<{
     readonly name: string;
     readonly fn: (
-      input: HatchetApplicationScheduleDeliveryInput,
+      input: unknown,
       context: {
         workflowRunId(): string;
         retryCount(): number;
@@ -284,7 +306,7 @@ function fakeHatchetScheduleClient(): {
   const tasks: Array<{
     readonly name: string;
     readonly fn: (
-      input: HatchetApplicationScheduleDeliveryInput,
+      input: unknown,
       context: {
         workflowRunId(): string;
         retryCount(): number;

@@ -23,6 +23,7 @@ import { applicationProviderGraphNodeId } from './application-identifiers.js';
 import type { ApplicationModelCommandBinding } from './application-models.js';
 import { registerApplicationObjectStore } from './application-object-storage.js';
 import { type ApplicationProcessorOptions, normalizeApplicationProcessorOptions } from './application-processor-policy.js';
+import type { ApplicationScheduleHandle } from './application-schedule.js';
 import {
   applicationProjectionRuntime,
   attachApplicationProjectionRebuildTarget,
@@ -1255,6 +1256,11 @@ function registerApplicationStreamProcessorInternal<
     member,
     memberKind,
   }));
+  const applicationScheduleBindings = applicationStreamScheduleHandleBindings(
+    state,
+    name,
+    inferred,
+  );
   const awaitedValues = new Set(Object.values(inferred.awaited));
   const unawaitedOperations = Object.entries(inferred.bindings)
     .filter(([, value]) => applicationModelCommandBindingForOperation(value))
@@ -1321,6 +1327,7 @@ function registerApplicationStreamProcessorInternal<
     ...operationBindings.map(({ identifier }) => identifier),
     ...queryBindings.map(({ identifier }) => identifier),
     ...actorBindings.map(({ identifier }) => identifier),
+    ...applicationScheduleBindings.map(({ identifier }) => identifier),
     ...providerBindings.map(({ identifier }) => identifier),
   ]
     .flatMap((identifier) => [
@@ -1356,6 +1363,9 @@ function registerApplicationStreamProcessorInternal<
     ...(operationBindings.length > 0 ? { operationBindings } : {}),
     ...(queryBindings.length > 0 ? { queryBindings } : {}),
     ...(actorBindings.length > 0 ? { actorBindings } : {}),
+    ...(applicationScheduleBindings.length > 0
+      ? { applicationScheduleBindings }
+      : {}),
     ...(inferred.callables.length > 0
       ? { callableBindings: inferred.callables }
       : {}),
@@ -1412,6 +1422,18 @@ function registerApplicationStreamProcessorInternal<
       relationship: 'dependsOn',
     });
   }
+  for (const binding of applicationScheduleBindings) {
+    addApplicationGraphEdge(state, {
+      from: { nodeId },
+      to: binding.schedule,
+      relationship: 'dependsOn',
+    });
+    addApplicationGraphEdge(state, {
+      from: { nodeId: binding.scheduler.nodeId },
+      to: { nodeId },
+      relationship: 'provides',
+    });
+  }
   for (const provider of providerBindings) {
     addApplicationGraphEdge(state, {
       from: { nodeId: provider.provider.nodeId },
@@ -1427,6 +1449,60 @@ function registerApplicationStreamProcessorInternal<
   // handler shapes; the erased graph binding intentionally exposes one
   // processor identity to deployment code.
   return { kind: 'applicationStreamProcessor', name, source, handler: handler as ApplicationStreamProcessHandler<TPayload, TSchedules, TTasks>, options };
+}
+
+function applicationStreamScheduleHandleBindings(
+  state: ApplicationReactiveState,
+  processorName: string,
+  dependencies: ReturnType<typeof expandApplicationCallbackDependencies>,
+): NonNullable<ApplicationStreamProcessorNode['applicationScheduleBindings']> {
+  const handles = dependencies.calls.filter(
+    (value): value is ApplicationScheduleHandle<object, unknown> =>
+      typeof value === 'function'
+      && Reflect.get(value, 'kind') === 'applicationSchedule',
+  );
+  return handles.flatMap((handle) => {
+    const registered = state.graphNodes.find(
+      (candidate) => candidate.kind === 'schedule'
+        && candidate.definition.id === handle.definition.id,
+    );
+    if (registered && (
+      registered.kind !== 'schedule'
+      || registered.id !== handle.graphNode.id
+      || registered.scheduler.nodeId !== handle.graphNode.scheduler.nodeId
+    )) {
+      throw new Error(
+        `Application stream processor ${processorName} captures schedule ${handle.definition.id}, but the application graph contains a conflicting definition.`,
+      );
+    }
+    // Entrypoint schedules are merged into the public graph only after the
+    // application module has executed. Keep the callback binding now and let
+    // that canonical merge resolve its database and Scheduler providers; do
+    // not require application setup to replay inside the generated worker.
+    const node = registered?.kind === 'schedule'
+      ? registered
+      : handle.graphNode;
+    const aliases = Object.entries(dependencies.bindings)
+      .filter(
+        ([identifier, candidate]) =>
+          candidate === handle && !/^generatedCall\d+$/.test(identifier),
+      )
+      .map(([identifier]) => identifier);
+    return (aliases.length > 0
+      ? aliases
+      : [applicationGeneratedDependencyAlias(handle.definition.id)])
+      .map((identifier) => ({
+        identifier,
+        schedule: { nodeId: node.id },
+        scheduler: node.scheduler,
+      }));
+  }).filter(
+    (binding, index, bindings) =>
+      bindings.findIndex(
+        (candidate) => candidate.identifier === binding.identifier
+          && candidate.schedule.nodeId === binding.schedule.nodeId,
+      ) === index,
+  );
 }
 
 function applicationStreamQueryBindings(

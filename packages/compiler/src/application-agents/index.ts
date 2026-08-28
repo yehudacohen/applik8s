@@ -52,7 +52,9 @@ import {
   compileApplicationWorkloadAuthority,
 } from '../application-operations/index.js';
 import { generatedApplicationProviderOperationValue } from '../application-provider-telemetry-source.js';
+import { generatedAgentWorkerResources } from '../application-workload-resources.js';
 import { applik8sWorkspaceSourcePlugin } from '../bundling/index.js';
+import { handlerSourceMetadataPlugin } from '../pipeline/entrypoint-handler-instrumentation.js';
 
 const DEFAULT_GENERATED_AGENT_RUNTIME_IMAGE =
   'node:22-alpine@sha256:16e22a550f3863206a3f701448c45f7912c6896a62de43add43bb9c86130c3e2';
@@ -130,7 +132,16 @@ interface ApplicationAgentCompilerContract {
   readonly conversationAccess?: {
     readonly setting: string;
   };
-  readonly usage?: ApplicationModelRuntimeContract;
+  readonly usage?: {
+    readonly model: ApplicationModelRuntimeContract;
+    readonly operation: ApplicationOperationDescriptor;
+    readonly event: {
+      readonly id: string;
+      readonly name: string;
+      readonly version: string;
+      readonly payload: JsonObject;
+    };
+  };
   readonly route: JsonObject;
 }
 
@@ -161,6 +172,7 @@ export async function emitGeneratedApplicationAgents(options: {
           workloadAuthority,
         ),
         options.outDir,
+        options.entrypoint,
       )),
   );
 }
@@ -348,12 +360,47 @@ function applicationAgentCompilerContract(
   const actorApplicationEndpoint = actors.length > 0
     ? applicationActorInvocationBoundary(graph, namespace, `Application agent ${agent.id}`).endpoint
     : undefined;
-  const usage = graph.nodes.find(
+  const usageModel = graph.nodes.find(
     (node): node is ApplicationModelNode & { readonly runtime: ApplicationModelRuntimeContract } =>
       node.kind === 'model'
       && node.database.nodeId === agent.state.nodeId
       && node.runtime?.tableName === 'applik8s_usage_facts',
-  )?.runtime;
+  );
+  const usageOperationId = usageModel
+    ? applicationOperationId({
+        domain: 'models',
+        owner: usageModel.name,
+        operation: 'create',
+      })
+    : undefined;
+  const usageOperation = usageOperationId
+    ? operations.get(usageOperationId)
+    : undefined;
+  const usageEvent = usageModel
+    ? graph.nodes.find(
+        (node) =>
+          node.kind === 'event'
+          && node.contract.name === `models.${usageModel.name}.created`
+          && node.contract.version === 'v1',
+      )
+    : undefined;
+  if (usageModel && (!usageOperation || usageEvent?.kind !== 'event')) {
+    throw new Error(
+      `Application agent ${agent.id} usage model ${usageModel.name} has no compiled observable create operation and lifecycle event.`,
+    );
+  }
+  const usage = usageModel && usageOperation && usageEvent?.kind === 'event'
+    ? {
+        model: usageModel.runtime,
+        operation: usageOperation,
+        event: {
+          id: `${usageEvent.contract.name}.${usageEvent.contract.version}`,
+          name: usageEvent.contract.name,
+          version: usageEvent.contract.version,
+          payload: usageEvent.contract.payload.jsonSchema,
+        },
+      }
+    : undefined;
   return {
     graph,
     application: graph.metadata.name,
@@ -480,6 +527,7 @@ function applicationAgentQueryRuntime(
 async function emitAgent(
   contract: ApplicationAgentCompilerContract,
   outDir: string,
+  applicationEntrypoint: string,
 ): Promise<GeneratedApplicationAgentArtifact> {
   const name = kubernetesName(contract.agent.name);
   const agentDir = join(outDir, name);
@@ -570,7 +618,10 @@ async function emitAgent(
       js: "import { createRequire as __applik8sCreateRequire } from 'node:module'; const require = __applik8sCreateRequire(import.meta.url);",
     },
     supported: { 'template-literal': false },
-    plugins: [applik8sWorkspaceSourcePlugin()],
+    plugins: [
+      handlerSourceMetadataPlugin(applicationEntrypoint, { includeMaintainedPackages: false }),
+      applik8sWorkspaceSourcePlugin(),
+    ],
   });
   const source = await readFile(sourcePath, 'utf8');
   const sizeBytes = Buffer.byteLength(source);
@@ -586,13 +637,22 @@ async function emitAgent(
     baseImage: DEFAULT_GENERATED_AGENT_RUNTIME_IMAGE,
     sourceDigest: digest,
   });
-  const resources = generatedAgentResources(contract, container.image, digest);
+  const frameworkCredentials = applicationFrameworkCredentialDependencies(source)
+    .filter((credential) =>
+      credential.kind !== 'agent-query-context'
+      || contract.queryCursorSecret !== undefined
+    );
+  const resources = generatedAgentResources(
+    contract,
+    container.image,
+    digest,
+    frameworkCredentials,
+  );
   const runtimeEndpoints = uniqueRuntimeEndpoints([
     ...contract.tools.flatMap((tool) => tool.receiver ? [{ nodeId: tool.receiver.nodeId, environmentName: tool.receiver.environmentName }] : []),
     ...contract.operations.map(({ receiver }) => ({ nodeId: receiver.nodeId, environmentName: receiver.environmentName })),
     ...contract.queries.map(({ gateway, endpointEnvironmentName }) => ({ nodeId: gateway.id, environmentName: endpointEnvironmentName })),
   ]);
-  const frameworkCredentials = applicationFrameworkCredentialDependencies(source);
   await writeFile(
     manifestPath,
     `${JSON.stringify(
@@ -727,8 +787,8 @@ import { createHandler } from './handler.generated.js';
 ${telemetryImports.join('\n')}
 ${providerRuntimeImports}
 ${localToolImports}
-${contract.tools.some((tool) => tool.local)
-    ? "import { normalizeSchema } from '@applik8s/sdk/schema-runtime';\nimport { applicationPostgresModelReadClients, applicationRelationalChangeScopes, applicationRequestContextValues, createApplicationFunctionNativeEventHandle, editApplicationNativeModelObject, executeFunctionNativePostgresModelEdit, findApplicationNativeModelObjects, getApplicationNativeModelObject, requireApplicationNativeModelObject, withApplicationNativeModelReadClients, withApplicationNativeModelTransactionRuntime } from '@applik8s/applik8s/stream-worker-runtime';"
+${contract.tools.some((tool) => tool.local) || contract.usage
+    ? "import { normalizeSchema } from '@applik8s/sdk/schema-runtime';\nimport { applicationPostgresModelReadClients, applicationRelationalChangeScopes, applicationRequestContextValues, createApplicationFunctionNativeEventHandle, editApplicationNativeModelObject, executeFunctionNativePostgresModelEdit, executePostgresModelCommand, findApplicationNativeModelObjects, getApplicationNativeModelObject, requireApplicationNativeModelObject, withApplicationNativeModelReadClients, withApplicationNativeModelTransactionRuntime } from '@applik8s/applik8s/stream-worker-runtime';"
     : ''}
 ${contract.agent.instructions.kind === 'closure'
     ? "import { callback as instructions } from './instructions.generated.js';"
@@ -775,6 +835,15 @@ const contract = ${JSON.stringify({
     executionPolicy: contract.agent.executionPolicy,
     deployment: contract.agent.deployment,
   })};
+const usageCreatedEvent = contract.usage
+  ? Object.freeze({
+      kind: 'applik8sEvent',
+      ...contract.usage.event,
+      emit() {
+        throw new Error('AI usage lifecycle events are emitted only by the durable model transaction.');
+      },
+    })
+  : undefined;
 
 function requiredEnv(name) {
   const value = process.env[name];
@@ -1034,9 +1103,6 @@ async function observeAgentAdmission(state, admission, error) {
     }));
   }
 }
-function quotedIdentifier(value) {
-  return '"' + String(value).replaceAll('"', '""') + '"';
-}
 async function recordUsageFact(reservation, usage) {
   if (!contract.usage || !usage) return;
   if (!reservation.principalScope) {
@@ -1070,39 +1136,66 @@ async function recordUsageFact(reservation, usage) {
     },
     occurredAt: new Date().toISOString(),
   };
-  const columns = new Map(
-    contract.usage.nativeRelational.columns.map((column) => [column.property, column.column]),
-  );
-  const entries = Object.entries(row).filter(([property, value]) =>
-    value !== undefined && columns.has(property));
-  const table = [contract.usage.nativeRelational.schema, contract.usage.tableName]
-    .filter(Boolean)
-    .map(quotedIdentifier)
-    .join('.');
-  const names = entries.map(([property]) => quotedIdentifier(columns.get(property)));
-  const placeholders = entries.map(([property], index) =>
-    '$' + (index + 1) + (property === 'dimensions' ? '::jsonb' : ''));
-  const values = entries.map(([property, value]) =>
-    property === 'dimensions' ? JSON.stringify(value) : value);
-  const attemptColumn = quotedIdentifier(columns.get('attemptId'));
-  const pricingColumn = quotedIdentifier(columns.get('pricingRevision'));
-  const insert = async (client) => client.unsafe(
-    'INSERT INTO ' + table + ' (' + names.join(', ') + ') VALUES ('
-      + placeholders.join(', ') + ') ON CONFLICT (' + attemptColumn + ', '
-      + pricingColumn + ') DO NOTHING',
-    values,
-  );
-  const accessSetting = contract.usage.nativeRelational.access?.setting;
-  if (!accessSetting) {
-    await insert(sql);
-    return;
+  row.recordedAt = row.occurredAt;
+  const admission = reservation.executionAdmission;
+  if (!admission) {
+    throw new Error('AI usage recording requires the retained server-admitted execution context.');
   }
-  await sql.begin(async transaction => {
-    await transaction.unsafe(
-      'SELECT set_config($1, $2, true)',
-      [accessSetting, reservation.principalScope],
-    );
-    await insert(transaction);
+  const durableContextValues = applicationRequestContextValues(
+    admission.principal,
+    admission.authorityRevision,
+    admission.trustedContext.values,
+  );
+  const changeScopes = applicationRelationalChangeScopes({
+    values: durableContextValues,
+    digestSecret: requiredEnv('APPLIK8S_CONTEXT_SECRET'),
+  });
+  const deliveryId = 'ai-usage:' + reservation.attemptId + ':' + pricingRevision;
+  await executePostgresModelCommand({
+    bindingId: 'framework.ai-usage.' + contract.name,
+    operation: 'create',
+    command: {
+      name: 'models.' + contract.usage.model.name + '.create',
+      version: contract.usage.operation.version,
+    },
+    errors: Object.keys(contract.usage.operation.errors),
+    schemas: {
+      input: contract.usage.operation.input.schema,
+      output: contract.usage.operation.output.schema,
+      errors: Object.fromEntries(
+        Object.entries(contract.usage.operation.errors).map(([name, descriptor]) => [name, descriptor.schema]),
+      ),
+      events: { [usageCreatedEvent.id]: contract.usage.event.payload },
+      commands: {},
+    },
+    model: contract.usage.model,
+    message: {
+      id: deliveryId,
+      input: row,
+      targetKey: row.id,
+      idempotencyKey: deliveryId,
+      correlationId: admission.correlationId,
+      causationId: reservation.invocationId,
+      recordedAt: row.occurredAt,
+      context: {
+        values: durableContextValues,
+        digest: admission.trustedContext.digest,
+        changeScopes,
+      },
+    },
+    history: true,
+    outbox: [usageCreatedEvent],
+    databaseUrl: requiredEnv(contract.usage.model.connectionEnvName),
+    initialize: input => input,
+    async handler(target, _input, context) {
+      const created = {
+        operation: 'create',
+        identity: target.identity,
+        value: target.value,
+      };
+      context.emit(usageCreatedEvent, created);
+      return { identity: target.identity, value: target.value };
+    },
   });
 }
 ${localToolRuntime}
@@ -1137,9 +1230,12 @@ const invokeOperation = createApplicationAIOperationExecutor({
         method: 'POST',
         headers: {
           'content-type': 'application/json',
-          'x-applik8s-internal-invocation': invocationToken,
         },
-        body: JSON.stringify({ operationId: operation.id, input }),
+        body: JSON.stringify({
+          operationId: operation.id,
+          input,
+          invocation: invocationToken,
+        }),
         signal: signal
           ? AbortSignal.any([signal, AbortSignal.timeout(60000)])
           : AbortSignal.timeout(60000),
@@ -1148,7 +1244,25 @@ const invokeOperation = createApplicationAIOperationExecutor({
       if (bytes.byteLength > route.maximumResponseBytes) {
         throw new Error('AI placement response exceeded its configured bound.');
       }
-      const value = JSON.parse(new TextDecoder().decode(bytes));
+      const responseText = new TextDecoder().decode(bytes);
+      let value;
+      try {
+        value = responseText ? JSON.parse(responseText) : undefined;
+      } catch (error) {
+        console.error(JSON.stringify({
+          event: 'applik8s-ai-operation-placement-response-invalid',
+          operationId: operation.id,
+          status: response.status,
+          contentType: response.headers.get('content-type'),
+          responseBytes: bytes.byteLength,
+          responseExcerpt: responseText.slice(0, 512),
+          error: error instanceof Error ? error.message : String(error),
+        }));
+        throw new Error(
+          'AI placement invocation returned invalid JSON (' + response.status + ').',
+          { cause: error },
+        );
+      }
       if (!response.ok || !value || typeof value !== 'object' || !('value' in value)) {
         const placementError = value && typeof value === 'object'
           && typeof value.error === 'string'
@@ -1340,6 +1454,7 @@ const handle = createApplicationAIAgentRequestHandler({
       ordinal: decision.attempt.ordinal,
       version: decision.attempt.version,
       principalScope: applicationAgentDurableScope(principal, trustedContext),
+      executionAdmission: admission,
       ...(decision.invocation.telemetry
         ? { telemetry: decision.invocation.telemetry }
         : {}),
@@ -1902,10 +2017,55 @@ function localAgentToolModuleFile(index: number): string {
   return `tool-${index}.generated.ts`;
 }
 
+function generatedAgentFrameworkCredentialEnvironment(
+  contract: ApplicationAgentCompilerContract,
+  credentials: readonly ApplicationFrameworkCredentialDependency[],
+): readonly Readonly<Record<string, unknown>>[] {
+  const applicationName = kubernetesName(contract.graph.metadata.name);
+  return credentials.map((credential) => {
+    const secretKeyRef = (() => {
+      switch (credential.kind) {
+        case 'agent-query-context':
+          if (!contract.queryCursorSecret) {
+            throw new Error(
+              `Generated agent ${contract.agent.id} consumes ${credential.environmentName} without a query cursor Secret contract.`,
+            );
+          }
+          return {
+            name: contract.queryCursorSecret.name,
+            key: contract.queryCursorSecret.key,
+            optional: false,
+          };
+        case 'context':
+          return {
+            name: `${applicationName}-context`,
+            key: 'key',
+            optional: false,
+          };
+        case 'internal-operation':
+          return {
+            name: `${applicationName}-internal-operation`,
+            key: 'key',
+            optional: false,
+          };
+        default:
+          throw new Error(
+            `Generated agent ${contract.agent.id} consumes unsupported framework credential ${credential.kind} (${credential.environmentName}).`,
+          );
+      }
+    })();
+    return {
+      name: credential.environmentName,
+      valueFrom: { secretKeyRef },
+    };
+  });
+}
+
 function generatedAgentResources(
   contract: ApplicationAgentCompilerContract,
   image: string,
   digest: string,
+  frameworkCredentials: readonly ApplicationFrameworkCredentialDependency[],
 ): readonly GeneratedApplicationAgentResource[] {
   const name = kubernetesName(contract.agent.name);
   const deploymentProvider = applicationAgentProviderForTarget(
@@ -2026,33 +2186,14 @@ function generatedAgentResources(
                       },
                     },
                   },
-                  {
-                    name: 'APPLIK8S_INTERNAL_OPERATION_SECRET',
-                    valueFrom: {
-                      secretKeyRef: {
-                        name:
-                          `${kubernetesName(contract.graph.metadata.name)}-internal-operation`,
-                        key: 'key',
-                        optional: false,
-                      },
-                    },
-                  },
+                  ...generatedAgentFrameworkCredentialEnvironment(
+                    contract,
+                    frameworkCredentials,
+                  ),
                   ...(contract.actorApplicationEndpoint
                     ? [{
                         name: 'APPLIK8S_ACTOR_APPLICATION_ENDPOINT',
                         value: contract.actorApplicationEndpoint,
-                      }]
-                    : []),
-                  ...(contract.queryCursorSecret
-                    ? [{
-                        name: 'APPLIK8S_AGENT_QUERY_CONTEXT_SECRET',
-                        valueFrom: {
-                          secretKeyRef: {
-                            name: contract.queryCursorSecret.name,
-                            key: contract.queryCursorSecret.key,
-                            optional: false,
-                          },
-                        },
                       }]
                     : []),
                   ...applicationCallableProviderEnvironment(
@@ -2080,6 +2221,7 @@ function generatedAgentResources(
                   timeoutSeconds: 2,
                   failureThreshold: 3,
                 },
+                resources: generatedAgentWorkerResources(),
                 securityContext: {
                   allowPrivilegeEscalation: false,
                   readOnlyRootFilesystem: true,

@@ -65,7 +65,7 @@ function staticSerializableOperatorSource(operator: OperatorDefinition, userEntr
   }
   const operatorSource = JSON.stringify(operatorWithoutHandlers.value);
   if (resourceIdentifiers.length === 0) {
-    return { ok: true, value: { source: `Object.assign(${operatorSource}, { handlers: [${handlerRegistrations.join(', ')}] })`, imports: [...capturedImports].sort() } };
+    return { ok: true, value: { source: `Object.assign(${operatorSource}, { handlers: [${handlerRegistrations.join(', ')}] })`, imports: [...capturedImports] } };
   }
   const resourceBindings = resourceIdentifiers.map((resource) => `const ${resource.identifier} = __operator.resources[${JSON.stringify(resource.key)}];`).join('\n');
   return {
@@ -74,7 +74,7 @@ function staticSerializableOperatorSource(operator: OperatorDefinition, userEntr
 const __operator = ${operatorSource};
 ${resourceBindings}
 return Object.assign(__operator, { handlers: [${handlerRegistrations.join(', ')}] });
-})()`, imports: [...capturedImports].sort() },
+})()`, imports: [...capturedImports] },
   };
 }
 
@@ -532,7 +532,15 @@ function createStaticCaptureSession(handlerId: string, sourceModule: string | un
         if (rendered.has(path) || rendering.has(path)) return;
         rendering.add(path);
         for (const binding of bindings.get(path)?.values() ?? []) {
-          if (binding.dependencyModule && selected.has(binding.dependencyModule)) renderModule(binding.dependencyModule);
+          const dependencyModule = binding.dependencyModule && selected.has(binding.dependencyModule)
+            ? binding.dependencyModule
+            : [...selected.keys()].find((candidate) => {
+              const candidateModule = modulesByPath.get(candidate);
+              return candidateModule
+                ? binding.expression.startsWith(`${namespaceFor(candidateModule)}.`)
+                : false;
+            });
+          if (dependencyModule) renderModule(dependencyModule);
         }
         const module = modulesByPath.get(path);
         const statements = [...(selected.get(path)?.values() ?? [])].sort((left, right) => left.index - right.index);

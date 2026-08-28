@@ -1,3 +1,4 @@
+// typecast-file-boundary: Event-log fixtures deliberately reconstruct partial persistence records to exercise validation and replay behavior.
 import { createApplicationTelemetryEnvelopeV1 } from '@applik8s/core';
 import { describe, expect, it } from 'vitest';
 import {
@@ -139,3 +140,4 @@ function publisher(stream: string): ApplicationEventLogPublisher {
     async drain() {},
   };
 }
+// typecast-file-boundary: Event-log fixtures deliberately reconstruct partial persistence records to exercise validation and replay behavior.

@@ -1,3 +1,4 @@
+// typecast-file-boundary: Billing runtime literals are closed protocol declarations and validated records, not unchecked external input.
 import type { ApplicationProviderRuntimeContract } from '@applik8s/core';
 import type { ApplicationPaymentProvider } from './index.js';
 
@@ -38,3 +39,4 @@ export function applicationPaymentProviderRuntime(
     ? runtime as ApplicationProviderRuntimeContract
     : undefined;
 }
+// typecast-file-boundary: Billing runtime literals are closed protocol declarations and validated records, not unchecked external input.

@@ -1,3 +1,4 @@
+// typecast-file-boundary: Deployment-observer fixtures adapt partial Kubernetes watch values to exercise status and error normalization.
 import { type ApplicationKubernetesDirectDeploymentNode, applicationRuntimeAccessPlanDigest } from '@applik8s/deployment-contract';
 import { describe, expect, it } from 'vitest';
 import {
@@ -152,3 +153,4 @@ describe('application deployment observation', () => {
     })).toEqual(['application-system']);
   });
 });
+// typecast-file-boundary: Deployment-observer fixtures adapt partial Kubernetes watch values to exercise status and error normalization.

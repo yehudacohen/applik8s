@@ -31,6 +31,11 @@
       "types": "./dist/lakehouse.d.ts",
       "import": "./dist/lakehouse.js",
       "default": "./dist/lakehouse.js"
+    },
+    "./schedule": {
+      "types": "./dist/schedule.d.ts",
+      "import": "./dist/schedule.js",
+      "default": "./dist/schedule.js"
     }
   },
   "dependencies": {

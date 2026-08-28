@@ -1,3 +1,4 @@
+// typecast-file-boundary: Validated application deployment graphs are adapted once to Alchemy resource declarations at this lifecycle boundary.
 import type { ApplicationDeploymentGraph } from "@applik8s/deployment-contract";
 import {
   type ApplicationTypeKroCompositionSource,
@@ -151,3 +152,4 @@ function supportingFactoryOptions(
   delete supporting.aspects;
   return supporting;
 }
+// typecast-file-boundary: Validated application deployment graphs are adapted once to Alchemy resource declarations at this lifecycle boundary.

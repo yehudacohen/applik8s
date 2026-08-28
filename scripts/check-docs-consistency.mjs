@@ -90,6 +90,7 @@ const publicDocs = [
   'docs/release-evidence-v0.4.md',
   'docs/release-evidence-v0.4.1.md',
   'docs/release-evidence-v0.6.md',
+  'docs/release-evidence-v0.8.md',
   'docs/stabilization-boundary.md',
   'docs/future-surface.md',
   'docs/scale-boundaries.md',

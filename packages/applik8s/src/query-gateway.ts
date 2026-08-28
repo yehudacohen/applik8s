@@ -1,3 +1,4 @@
+// typecast-file-boundary: Authenticated HTTP query input, cursor payloads, and provider results are validated at this transport boundary before typed dispatch.
 import { randomUUID } from 'node:crypto';
 import { type ApplicationQueryEvent, type ApplicationQueryMultiplexErrorFrame, type ApplicationQueryMultiplexFrame, type ApplicationQueryMultiplexSubscription, type ApplicationQuerySnapshot, queryInputKey } from '@applik8s/client';
 import { type ApplicationAdmissionInvocationContextV1, type ApplicationAuthorizationReceipt, applicationAdmissionInvocationView, canonicalJsonV1Value, createApplicationRequestAdmissionContextV1, type JsonValue, validateApplicationAuthorizationReceipt } from '@applik8s/core';
@@ -12,7 +13,7 @@ import { createRollingSignedEnvelopeCodec, type RollingSignedEnvelopeCodec, sign
 import { applicationOperationInputDigest } from './application-operation-runtime.js';
 import type { ApplicationQueryBinding, ApplicationQueryPrincipal } from './application-queries.js';
 import { validateQueryInput, validateQueryOutput } from './application-query-runtime.js';
-import { runApplicationTelemetryBoundary } from './application-telemetry-runtime.js';
+import { observeApplicationRuntimeIntegrityEnvelope, runApplicationTelemetryBoundary } from './application-telemetry-runtime.js';
 import { applicationRequestContextValues } from './command-principal.js';
 import { type ApplicationAdmittedContext, type ApplicationRelationalContext, applicationAdmittedContextDigest } from './relational-runtime.js';
 import { validateTrustedContextValue } from './trusted-context.js';
@@ -41,6 +42,18 @@ export interface ApplicationQueryGatewayOptions<TRequest, TPrincipal extends App
   readonly audit?: (record: ApplicationQueryGatewayAuditRecord) => void;
   /** Framework-owned bounded evidence sink; failures never alter the query result. */
   readonly observeAdmission?: ApplicationAdmissionObserverV1;
+  /**
+   * Installs the admitted query invocation as the active managed-execution
+   * scope while application-authored query code runs. Generated Node gateways
+   * use this boundary to hydrate function-native callables without putting
+   * AsyncLocalStorage or provider implementations in this portable runtime.
+   */
+  readonly execute?: <T>(request: {
+    readonly query: ApplicationQueryBinding<unknown, unknown, TPrincipal>;
+    readonly identity: ApplicationGatewayIdentity<TPrincipal>;
+    readonly authorizationReceipt?: ApplicationAuthorizationReceipt;
+    readonly operation: 'snapshot' | 'invoke';
+  }, run: () => Promise<T>) => Promise<T>;
   /**
    * Canonical operation-authority boundary. Generated production gateways
    * provide this in addition to the query's domain predicate; the returned
@@ -182,6 +195,7 @@ export function createApplicationQueryGateway<TRequest, TPrincipal extends Appli
     maximumLifetimeMs: cursorTtlSeconds * 1_000,
     maximumEncodedBytes: 64 * 1_024,
     validatePayload: validateCursorPayload,
+    observe: observeApplicationRuntimeIntegrityEnvelope,
     writer: 'legacy',
     legacy: {
       key: cursorKey,
@@ -203,10 +217,15 @@ export function createApplicationQueryGateway<TRequest, TPrincipal extends Appli
       const receipt = await authorizeQueryOperation(options, 'admission', query, input, identity);
       if (!query.database) throw new Error(`Application query ${query.id} has no snapshot authority. Bind its first implementation to a registered database or declare reset-only provider behavior.`);
       const context = options.context(identity);
-      const result = await withTimeout(context.snapshot(query.database, async () => {
+      const result = await withTimeout(executeAdmittedQuery(options, {
+        query,
+        identity,
+        ...(receipt ? { authorizationReceipt: receipt } : {}),
+        operation: 'snapshot',
+      }, () => context.snapshot(query.database!, async () => {
         if (!query.sourceRuntime) return query.run(context, identity.principal, input);
         return query.sourceRuntime.snapshot(async (source) => query.run(context, identity.principal, input, source));
-      }), query.budgets.timeoutMs, `Application query ${query.id} exceeded its ${query.budgets.timeoutMs}ms execution budget.`);
+      })), query.budgets.timeoutMs, `Application query ${query.id} exceeded its ${query.budgets.timeoutMs}ms execution budget.`);
       const providerSnapshot = query.sourceRuntime
         ? result.value as { readonly value: unknown; readonly revision: string }
         : undefined;
@@ -376,17 +395,23 @@ export function createApplicationQueryGateway<TRequest, TPrincipal extends Appli
       const identity: ApplicationGatewayIdentity<TPrincipal> = {
         principal,
         admittedContext,
+        admission: applicationAdmissionInvocationView(request.invocation.context),
       };
       const context = options.context(identity);
       const result = await withTimeout(
-        context.snapshot(query.database, async () => {
+        executeAdmittedQuery(options, {
+          query,
+          identity,
+          authorizationReceipt: request.invocation.authorizationReceipt,
+          operation: 'invoke',
+        }, () => context.snapshot(query.database!, async () => {
           if (!query.sourceRuntime) {
             return query.run(context, principal, input);
           }
           return query.sourceRuntime.snapshot(async (source) =>
             query.run(context, principal, input, source),
           );
-        }),
+        })),
         query.budgets.timeoutMs,
         `Application query ${query.id} exceeded its ${query.budgets.timeoutMs}ms execution budget.`,
       );
@@ -403,6 +428,23 @@ export function createApplicationQueryGateway<TRequest, TPrincipal extends Appli
       });
     },
   };
+}
+
+async function executeAdmittedQuery<
+  TRequest,
+  TPrincipal extends ApplicationQueryPrincipal,
+  T,
+>(
+  options: ApplicationQueryGatewayOptions<TRequest, TPrincipal>,
+  request: {
+    readonly query: ApplicationQueryBinding<unknown, unknown, TPrincipal>;
+    readonly identity: ApplicationGatewayIdentity<TPrincipal>;
+    readonly authorizationReceipt?: ApplicationAuthorizationReceipt;
+    readonly operation: 'snapshot' | 'invoke';
+  },
+  run: () => Promise<T>,
+): Promise<T> {
+  return options.execute ? options.execute(request, run) : run();
 }
 
 async function authorizeQueryOutputCapabilities<

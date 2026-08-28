@@ -105,21 +105,28 @@ export function typeKroCompositionOutputBinding(
       requirement[input.output] = value;
       artifactOutputs[input.requirementId] = requirement;
     }
-    const needsSpec = Object.values(outputs).some(planValueReferencesSpec);
-    const spec = needsSpec
-      ? materializePlanValue(group.spec, {
-          ...(Object.keys(artifactOutputs).length > 0
-            ? { artifactOutputs }
-            : {}),
-        })
-      : undefined;
-    return materializePlanOutputs(outputs, {
-      ...(spec !== undefined ? { spec } : {}),
-      resources: liveResources,
-      ...(Object.keys(artifactOutputs).length > 0
-        ? { artifactOutputs }
-        : {}),
-    });
+    try {
+      const needsSpec = Object.values(outputs).some(planValueReferencesSpec);
+      const spec = needsSpec
+        ? materializePlanValue(group.spec, {
+            ...(Object.keys(artifactOutputs).length > 0
+              ? { artifactOutputs }
+              : {}),
+          })
+        : undefined;
+      return materializePlanOutputs(outputs, {
+        ...(spec !== undefined ? { spec } : {}),
+        resources: liveResources,
+        ...(Object.keys(artifactOutputs).length > 0
+          ? { artifactOutputs }
+          : {}),
+      });
+    } catch (error) {
+      throw new Error(
+        `Failed to hydrate TypeKro outputs [${outputNames.join(", ")}] for deployment node ${group.deploymentNodeId}: ${error instanceof Error ? error.message : String(error)}`,
+        { cause: error },
+      );
+    }
   });
 
   return {

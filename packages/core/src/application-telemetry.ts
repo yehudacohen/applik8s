@@ -1,3 +1,4 @@
+// typecast-file-boundary: Canonical telemetry literals and decoded carrier records are narrowed only after bounded validation in this protocol owner.
 export const applicationTelemetryEnvelopeVersion = "applik8s.telemetry/v1alpha1" as const;
 export const applicationTelemetrySemanticVersion = "applik8s.telemetrySemantics/v1alpha1" as const;
 
@@ -165,6 +166,20 @@ export const applicationTelemetryMetricCatalog = Object.freeze({
     "counter",
     "cumulative",
     ["applik8s.actor.authority.format"],
+  ),
+  "applik8s.runtime.integrity.envelope": metric(
+    "applik8s.runtime.integrity.envelope",
+    "Signed-envelope operations by purpose, wire format, and bounded result.",
+    "{envelope}",
+    "counter",
+    "cumulative",
+    [
+      "applik8s.runtime.integrity.purpose",
+      "applik8s.runtime.integrity.format",
+      "applik8s.runtime.integrity.operation",
+      "applik8s.runtime.integrity.result",
+      "error.type",
+    ],
   ),
 } satisfies Readonly<Record<string, ApplicationTelemetryMetricDefinition>>);
 

@@ -1,3 +1,4 @@
+// typecast-file-boundary: Event fixtures deliberately erase handler generics while verifying the public callback and dispatch contracts.
 import { type } from 'arktype';
 import { describe, expect, it } from 'vitest';
 import {
@@ -158,3 +159,4 @@ describe('application-native Kubernetes lifecycle handlers', () => {
     expect(application.operatorInstalls).toHaveLength(0);
   });
 });
+// typecast-file-boundary: Event fixtures deliberately erase handler generics while verifying the public callback and dispatch contracts.

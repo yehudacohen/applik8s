@@ -2,6 +2,74 @@
 
 ## v0.8.0
 
+- Release automation now separates cluster-free local qualification from
+  target-live actor qualification and requires a v0.8-specific exact-commit
+  evidence packet. The packet independently binds real AWS, Cilium-enforced
+  Kubernetes, ClickStack/scheduling/Celld lifecycle, anonymous multi-architecture
+  Celld operator image, and generated-product browser receipts; the tagged
+  release fails closed on missing, stale, widened, or foreign-commit evidence.
+
+Function-native schedules captured by deployed event processors now hydrate the
+same typed `.schedule()` and `.unschedule()` handles used locally. Generated
+processors forward an admitted, schema-validated management request to the
+dedicated schedule-control service; no provider client or scheduler credential
+enters application callbacks. The canonical desired-state authority replays
+every active projection after restart, so Kubernetes, Hatchet, and EventBridge
+adapters repair provider drift even after an earlier successful projection.
+OrbStack receipts cover event-driven Kubernetes create/update/restart-repair/
+remove and a real generated occurrence Job that reads Kubernetes' authoritative
+CronJob scheduled timestamp through exact `jobs/get` RBAC before completing the
+durable handler receipt. The admission container runs as the pinned image's
+non-root user under the generated hardened security context. Hatchet evidence
+adds fixed and dynamic firing, dynamic replacement, disable, deletion, exact
+one-time timestamps, two schedule-control pod replacements, the existing
+durable-workflow recovery packet, and leak-free teardown.
+
+Generated Hatchet schedule-control workers now bundle the SDK's heartbeat
+implementation as one ESM-safe file and decode the same canonical workflow
+transport carrier used when recurring schedules are projected. The OrbStack
+release receipt proves a real fixed schedule fires, survives deletion of its
+Hatchet cron plus replacement of the complete schedule-control pod, repairs the
+provider projection, fires again through the PostgreSQL occurrence authority,
+and tears down without retained test resources.
+
+Celld worker artifacts now consume Applik8s telemetry through the focused,
+browser-safe runtime subpath. The compiler regression also rejects Node or
+Kubernetes client dependency leakage from the emitted worker.
+
+The CelldFleet admission contract now accepts both published
+`repository@sha256:...` artifacts and immutable digest-only local-engine image
+IDs, while continuing to reject mutable image tags.
+
+Chirp now declares every package root imported by its target-portable generated
+gateway, including the local, AWS, and Kubernetes schedule adapters, so clean
+production installs no longer rely on transitive workspace hoisting.
+
+Deployed schedules now run in one dedicated schedule-control workload for both
+hosted and workflow-only applications. The TanStack/Vite web host embeds the
+deterministic scheduler only during local `serve`; production web artifacts do
+not contain schedule execution code or AWS, Kubernetes, or Hatchet scheduler
+providers. Chirp's production build verifies this boundary while retaining the
+same function-native schedule declarations.
+
+Qualified scheduler tokens now retain their intended type-safe selection
+semantics across discovery, runtime generation, callable-provider hydration,
+credential placement, and deployment planning. A named concrete Hatchet
+scheduler runs in the dedicated schedule-control workload; only a qualified
+unresolved `target-selected` scheduler is treated as externally executed. The
+clean packed-consumer gate proves that provider credentials reach exactly one
+Deployment—the schedule-control worker—and never a web host.
+
+The deployment compiler now publishes a focused `/runtime-access-parity`
+subpath. TypeKro materialization uses that pure validator without importing the
+compiler umbrella, while the module-boundary gate permits only the exact core,
+integrity, schedule-authority, and provider-composition seams used by v0.8.
+
+The Vite integration keeps target-specific AWS, Hatchet, Kubernetes, and
+DuckDB server runtimes external at their package boundary. A portable gateway
+therefore loads the selected provider without embedding every provider SDK in
+the relational web artifact.
+
 v0.8.0 makes one semantic application graph portable across local, AWS-local,
 AWS, and Kubernetes targets. It adds the canonical ApplicationPlan, persistent
 local supervision and Builder portal, Alchemy-owned AWS deployment, inferred
@@ -17,6 +85,87 @@ v0.7.1 source-and-export migration fixture, and a v0.8-specific synthetic
 performance/cost history. Those are local evidence only: retained-data
 OrbStack migration, MiniStack, real AWS, and distributed celld qualification
 remain explicit release blockers until exact-commit live evidence exists.
+
+Local development now consumes the compiler's reload-group contract instead of
+stopping every dependency for an ordinary source edit. The CLI watches authored
+source while excluding generated output, rebuilds and validates the production
+semantic graph, and reloads stable application-process topology while preserving
+ports, generated credentials, provider containers, and retained volumes. The
+supervisor also monitors unexpected process and container exits and attempts a
+bounded recovery before surfacing terminal failure. Local structural topology
+changes reconcile dependency-aware add, update, and removal under the active
+lease and restore the previous healthy plan after a failed replacement.
+AWS-local structural changes remain fail-closed. The complete packed generated-
+application lifecycle is now qualified: an npm-packed Agentic Start and CLI
+start a real TanStack application, preserve its URL through source and graph
+changes, recover killed child and supervisor processes, retain object-store data,
+and remove state and volumes on reset. Generated applications no longer need to
+declare compiler, TypeKro, or esbuild merely so compiler-owned discovery can run.
+The shared TanStack adapter also exposes `/-/healthz` and supports hosted graphs
+without an application HTTP gateway while still hydrating a present gateway
+fail-closed.
+
+The independent Builder now binds visual product context to the current
+canonical `ApplicationPlan` revision. Generated Agentic Start surfaces expose
+opaque semantic provenance IDs; the loopback daemon—not browser-authored
+paths—resolves those IDs into redacted source, graph, operation, and physical-
+plan attachments. The bridge obtains the current source digest immediately
+before capture, rejects stale or replayed selections, persists named referents
+through daemon restart, and remains available while the generated application
+is broken. Reviewed plans still require exact approval classes, optimistic file
+digests, required validation evidence, and agent-owned undo.
+
+Kubernetes provider qualification and runtime credentials are now consistent
+with physical deployment. The maintained Envoy AI Gateway, OpenSearch,
+notification, payment, and structured-generation adapters carry explicit
+Kubernetes guarantees. Framework-generated application Secrets opt into exact
+runtime projection; provider-infrastructure Secrets such as the Envoy MCP seed
+remain infrastructure-only unless their contributor explicitly declares
+`runtimeKeys`. Embedded callable implementations are represented as embedded
+runtime-access targets instead of fabricated network dependencies.
+
+Kubernetes dynamic schedules now enforce a configurable active-CronJob ceiling
+(100 by default) in the canonical desired-state transaction. The provider
+rejects high-cardinality definitions before projection, serializes concurrent
+capacity changes across PostgreSQL reconcilers, and releases capacity through
+the same authority during removal instead of counting eventually consistent
+CronJob listings.
+
+AWS-local now carries a versioned emulator capability boundary rather than
+inheriting the entire real-AWS matrix. Native S3, SQS, and ECR pass the pinned
+MiniStack lifecycle, including drift repair, configuration update, persisted
+restart, output restoration, and teardown. Kinesis remains native on real AWS
+but fails during AWS-local planning because MiniStack `1.4.20` lacks
+`ListTagsForResource`. The same live gate corrected SQS duration mapping so
+planned seconds cannot be interpreted as Alchemy's bare-number milliseconds.
+
+Kubernetes actors now use the independently consumable
+`@applik8s/celld-operator` package. TypeKro and Alchemy own the shared operator
+bootstrap, external dependencies, immutable artifacts, and each `CelldFleet`
+custom resource; the operator exclusively owns the fleet StatefulSet,
+Services, deployment Job, network policy, disruption budget, status, and
+restart-safe finalizer. The ordinary Applik8s actor-provider path infers this
+installation, while `/typekro` and `/testing` subpaths support direct platform
+consumers. Live OrbStack evidence covers two fleets sharing one bootstrap,
+current-generation artifact proof, idempotent turns, pod-loss recovery,
+scaling, controller restart, child repair, retained durable data, and
+fleet-first deletion. The same vertical now performs a real immutable Worker
+upgrade and reverse rollback, checks the runtime-reported manifest at every
+generation, and proves actor state survives both directions. Historical Celld
+deployment Jobs are replayed before a rollback StatefulSet advances, because a
+past completion receipt cannot prove that its artifact remains active after a
+later deployment. OrbStack now also proves an official Celld v0.2.1 to v0.3.0
+replacement transition and reverse version rollback, with StatefulSet identity
+replacement and actor-state continuity. The release remains blocked on
+publishing and anonymously pulling the multi-architecture operator image plus
+only publishing and anonymously pulling the multi-architecture operator image.
+A second immutable operator build now upgrades in
+place while every controller pod is deliberately removed; the two-replica
+Deployment recovers on the new image, the existing fleet remains ready, actor
+state is preserved, and the complete application teardown remains leak-free.
+The same production deployment path migrates a live, pinned prior CelldFleet
+structural schema revision to the current revision while two persisted fleets
+remain admitted and ready.
 
 Durable root-workflow admission now has a provider-neutral, configurable replay
 window and bounded compaction policy. Generated Hatchet gateways page through

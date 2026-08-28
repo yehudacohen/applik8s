@@ -1,17 +1,15 @@
+// typecast-file-boundary: Search cursor payloads are purpose-verified and structurally validated here before provider-specific continuation types are restored.
 import {
   canonicalJsonStrictV1Policy,
   canonicalJsonV1Value,
   type JsonValue,
-  SignedEnvelopeV1ValidationError,
 } from '@applik8s/core';
 import {
-  createSignedEnvelopeCodec,
-  SignedEnvelopeRuntimeError,
+  createRollingSignedEnvelopeCodec,
   signedEnvelopeUtf8Key,
-  signLegacyCompactHmacJsonForRollingMigration,
   staticSignedEnvelopeKeyProvider,
-  verifyLegacyCompactHmacJson,
 } from '@applik8s/runtime/signed-envelope';
+import { observeApplicationRuntimeIntegrityEnvelope } from './application-telemetry-runtime.js';
 
 export const applicationSearchCursorProtocol = 'applik8s.search-cursor/v1' as const;
 export const applicationSearchCursorPurpose = 'applik8s.search-cursor/v1' as const;
@@ -85,7 +83,7 @@ export function createApplicationSearchCursorCodec(
   const now = options.now ?? Date.now;
   const lifetimeMs = boundedLifetime(options.lifetimeMs ?? defaultApplicationSearchCursorLifetimeMs);
   const writer = options.writer ?? 'legacy';
-  const envelope = createSignedEnvelopeCodec<ApplicationSearchCursor>({
+  const envelope = createRollingSignedEnvelopeCodec<ApplicationSearchCursor, LegacySearchCursor>({
     purpose: applicationSearchCursorPurpose,
     keys: staticSignedEnvelopeKeyProvider({
       current: { id: 'search-cursor-current', key },
@@ -94,6 +92,18 @@ export function createApplicationSearchCursorCodec(
     maximumLifetimeMs: maximumCursorLifetimeMs,
     maximumEncodedBytes: maximumEncodedCursorBytes,
     validatePayload: validateCanonicalCursor,
+    observe: observeApplicationRuntimeIntegrityEnvelope,
+    writer,
+    legacy: {
+      key,
+      validatePayload: validateLegacyCursor,
+      toCurrent: (payload) => normalizeLegacyCursor(payload, now()),
+      fromCurrent: (payload, timing) => legacyPayload(
+        payload,
+        timing.issuedAt,
+        timing.expiresAt ?? timing.issuedAt + lifetimeMs,
+      ),
+    },
   });
 
   const codec: ApplicationSearchCursorCodec = {
@@ -104,31 +114,15 @@ export function createApplicationSearchCursorCodec(
       });
       const issuedAt = now();
       const expiresAt = issuedAt + lifetimeMs;
-      if (writer === 'v1') {
-        return envelope.sign(payload, { issuedAt, expiresAt });
-      }
-      return signLegacyCompactHmacJsonForRollingMigration(
-        legacyPayload(payload, issuedAt, expiresAt),
-        { key, maximumEncodedBytes: maximumEncodedCursorBytes },
-      );
+      return envelope.sign(payload, { issuedAt, expiresAt });
     },
 
     async decode(token, expected) {
       let cursor: ApplicationSearchCursor;
       try {
-        cursor = (await envelope.verify(token)).payload;
+        cursor = await envelope.verify(token);
       } catch (cause) {
-        if (!isLegacyCandidate(cause)) throw invalidCursor(cause);
-        try {
-          const legacy = await verifyLegacyCompactHmacJson<LegacySearchCursor>(token, {
-            key,
-            maximumEncodedBytes: maximumEncodedCursorBytes,
-            validatePayload: validateLegacyCursor,
-          });
-          cursor = normalizeLegacyCursor(legacy, now());
-        } catch (legacyCause) {
-          throw invalidCursor(legacyCause);
-        }
+        throw invalidCursor(cause);
       }
       validateExpected(cursor, expected);
       return cursor;
@@ -332,16 +326,6 @@ function validateLegacyTiming(
     throw new TypeError('Legacy search cursor expiry is invalid.');
   }
   return { issuedAt: value.issuedAt, expiresAt: value.expiresAt };
-}
-
-function isLegacyCandidate(cause: unknown): boolean {
-  return (
-    cause instanceof SignedEnvelopeV1ValidationError
-    && cause.code === 'SIGNED_ENVELOPE_VERSION_INVALID'
-  ) || (
-    cause instanceof SignedEnvelopeRuntimeError
-    && cause.code === 'SIGNED_ENVELOPE_MALFORMED'
-  );
 }
 
 function invalidCursor(cause: unknown): ApplicationSearchCursorError {

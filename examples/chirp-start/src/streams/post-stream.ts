@@ -1,4 +1,4 @@
-import { app } from '../app';
+import { app } from '../domain-app';
 import { Database } from '../providers/database';
 import { PostPublished, PostTimelineChanged } from '../domain/events';
 

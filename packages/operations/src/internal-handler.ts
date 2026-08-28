@@ -122,7 +122,9 @@ export function createApplicationInternalOperationHandler(
       const rawInput = jsonValue(body.input);
       const input = binding.validateInput(rawInput);
       const inputDigest = applicationInternalOperationInputDigest(input);
-      const token = request.headers.get('x-applik8s-internal-invocation');
+      const token = typeof body.invocation === 'string'
+        ? body.invocation
+        : request.headers.get('x-applik8s-internal-invocation');
       if (!token) {
         throw new ApplicationInternalOperationRequestError(
           'invocation_required',

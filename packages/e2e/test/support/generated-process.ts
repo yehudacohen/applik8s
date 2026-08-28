@@ -1,3 +1,4 @@
+// typecast-file-boundary: Generated-process support adapts child-process messages and ephemeral test servers after explicit protocol and lifecycle checks.
 import { type ChildProcess, spawn } from 'node:child_process';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { createServer as createHttpServer, type Server } from 'node:http';
@@ -323,3 +324,4 @@ function closeServer(server: Server | ReturnType<typeof createNetServer>): Promi
 function delay(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
+// typecast-file-boundary: Generated-process support adapts child-process messages and ephemeral test servers after explicit protocol and lifecycle checks.

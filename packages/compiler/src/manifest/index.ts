@@ -1,3 +1,4 @@
+// typecast-file-boundary: Compiler-validated semantic artifacts are lowered into external Kubernetes and container manifest types at this emission boundary.
 import { createHash } from 'node:crypto';
 
 import { applicationCanonicalIdentity, applicationExecutionBoundaryIdentity, applicationGraphNodeIdentity, applicationOperationId, applicationOperationIdentity, type AnyHandlerRegistration, type AnyResourceDefinition, type BundleArtifact, type CapabilityDescriptor, type CapabilityExecutionPolicy, type CapabilityKind, type ConcurrencyConfig, type HandlerEventType, type HandlerId, type KubernetesConnectionBinding, type OperatorDefinition, type OperatorManifest, type OperatorRuntimeIdentityContract, type PermissionRule, type ResourceWatchAddress, type Result, type RetryPolicy, type RuntimePayloadSchemaDigests, type SecretRef } from '@applik8s/core';
@@ -129,7 +130,11 @@ export function buildOperatorManifest(request: ManifestBuildRequest): Result<Ope
     plural: resource.plural,
     scope: resource.scope,
     access: resource.access,
-    ...(resource.namespaces ? { namespaces: resource.namespaces } : {}),
+    ...(resource.namespaces
+      ? { namespaces: resource.namespaces }
+      : request.operator.deployment?.scope === 'Cluster' && resource.scope === 'Namespaced' && resource.access !== 'connection'
+        ? { namespaces: 'all' as const }
+        : {}),
   }));
   const artifactInventory = canonicalBundleArtifacts([
     { kind: 'wasm-component', path: request.handlerArtifactPath, digest: request.handlerArtifactDigest },
@@ -176,12 +181,15 @@ export function buildOperatorManifest(request: ManifestBuildRequest): Result<Ope
     metadata: {
       name: request.operator.name,
       ...(request.operator.deployment?.labels ? { labels: request.operator.deployment.labels } : {}),
-      ...(request.operator.deployment?.annotations || request.operator.deployment?.namespace
+      ...(request.operator.deployment?.annotations || request.operator.deployment?.namespace || request.operator.deployment?.scope === 'Cluster'
         ? {
             annotations: {
               ...(request.operator.deployment.annotations ?? {}),
               ...(request.operator.deployment.namespace
                 ? { 'applik8s.dev/namespace': manifestNamespace(request.operator.deployment.namespace) }
+                : {}),
+              ...(request.operator.deployment.scope === 'Cluster'
+                ? { 'applik8s.dev/watch-scope': 'Cluster' }
                 : {}),
             },
           }
@@ -1337,3 +1345,4 @@ function digestJson(value: unknown): string {
 function digestText(value: string): string {
   return `sha256:${createHash('sha256').update(value).digest('hex')}`;
 }
+// typecast-file-boundary: Compiler-validated semantic artifacts are lowered into external Kubernetes and container manifest types at this emission boundary.

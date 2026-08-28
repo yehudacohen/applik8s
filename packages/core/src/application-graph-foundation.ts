@@ -23,6 +23,7 @@ import type {
   ApplicationGraphNodeRef,
   ApplicationResourceRef,
 } from './application-graph-contract.js';
+import { applicationScheduleControlIdentity } from './application-schedule-control.js';
 import type { SourceLocation } from './common.js';
 
 export interface DeriveApplicationGraphFoundationOptions {
@@ -46,6 +47,11 @@ const executionNodeKinds = new Set<ApplicationGraphNodeKind>([
   'streamProcessor',
   'subscription',
   'projection',
+  // A search index is both the declarative search contract and the owner of
+  // its generated projection worker. Keeping the execution identity on the
+  // canonical index node lets artifact credentials and provider access bind
+  // to the same semantic owner instead of inventing a deployment-only node.
+  'index',
   'job',
   'schedule',
   'lakehousePublication',
@@ -494,7 +500,23 @@ function addNodeSpecificRequirements(
     add(node, 'telemetry.write', 'Telemetry', { kind: 'capability', capabilityId: 'Telemetry' }, 'framework');
     return;
   }
-  if (node.kind === 'server' || node.kind === 'job' || node.kind === 'streamProcessor' || node.kind === 'projection') {
+  if (node.kind === 'streamProcessor') {
+    const scheduleControl = applicationScheduleControlIdentity(graph.metadata.name);
+    for (const binding of node.applicationScheduleBindings ?? []) {
+      add(node, 'schedule.configure', binding.scheduler.nodeId, resourceScope(binding.schedule));
+      add(node, 'schedule.unschedule', binding.scheduler.nodeId, resourceScope(binding.schedule));
+      add(node, 'schedule.invoke', binding.scheduler.nodeId, resourceScope(binding.schedule));
+    }
+    if ((node.applicationScheduleBindings?.length ?? 0) > 0) {
+      add(node, 'network.connect', scheduleControl.capabilityId, {
+        kind: 'resource',
+        resourceId: scheduleControl.nodeId,
+      }, 'framework');
+    }
+    add(node, 'telemetry.write', 'Telemetry', { kind: 'capability', capabilityId: 'Telemetry' }, 'framework');
+    return;
+  }
+  if (node.kind === 'server' || node.kind === 'job' || node.kind === 'projection') {
     add(node, 'telemetry.write', 'Telemetry', { kind: 'capability', capabilityId: 'Telemetry' }, 'framework');
   }
 }

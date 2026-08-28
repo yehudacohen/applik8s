@@ -1,4 +1,5 @@
 // typecast-file-boundary: Literal deployment discriminants are constructed here from validated ApplicationGraph inputs.
+import { applicationScheduleControlIdentity } from '@applik8s/core';
 import type {
   ApplicationGraphNode,
   ApplicationProviderNode,
@@ -41,12 +42,14 @@ export function compileApplicationDeploymentGraph(
 ): CompileApplicationDeploymentGraphResult {
   const context: ApplicationDeploymentPlanningContext = {
     graph: request.graph,
+    sourceGraphDigest: requiredSourceGraphDigest(request.sourceGraphDigest),
     target: request.target ?? deploymentTargetFromConnection(request.identity.connection.provider),
     connection: request.identity.connection,
     instance: request.identity.instance,
     profile: request.identity.profile,
     strategy: request.strategy,
     installationSpec: request.installationSpec,
+    artifacts: request.artifacts,
     ...(request.materializedComposition
       ? { materializedComposition: request.materializedComposition }
       : {}),
@@ -155,7 +158,14 @@ export function compileApplicationDeploymentGraph(
       verbs: [...permission.verbs].sort(),
     })));
   });
-  const runtimeAccessTargets = runtimeAccessTargetResources(contributions);
+  const runtimeAccessTargets = runtimeAccessTargetResources(
+    contributions,
+    request.graph,
+    context.target,
+    request.graph.metadata.namespace && typeof request.graph.metadata.namespace === 'string'
+      ? request.graph.metadata.namespace
+      : request.identity.instance,
+  );
   const runtimeAccess = compileApplicationRuntimeAccessPlan({
     graph: request.graph,
     target: context.target,
@@ -305,10 +315,17 @@ export function compileApplicationDeploymentGraph(
   };
   const validation = validateApplicationDeploymentGraph(graph);
   if (!validation.valid) {
+    const runtimeDiagnostics = runtimeAccess.diagnostics
+      .filter(({ severity }) => severity === 'error')
+      .map((diagnostic) =>
+        `- [${diagnostic.code}] ${diagnostic.message}`);
+    const graphDiagnostics = validation.diagnostics.map((diagnostic) =>
+      `- [${diagnostic.code}] ${diagnostic.message}`);
     throw new Error(
-      `Application deployment graph is invalid:\n${validation.diagnostics
-        .map((diagnostic) => `- [${diagnostic.code}] ${diagnostic.message}`)
-        .join("\n")}`,
+      `Application deployment graph is invalid:\n${[
+        ...graphDiagnostics,
+        ...runtimeDiagnostics,
+      ].join("\n")}`,
     );
   }
   return {
@@ -461,6 +478,9 @@ function ciliumRuntimeNetworkPolicy(
 
 function runtimeAccessTargetResources(
   contributions: readonly ApplicationDeploymentContribution[],
+  graph: CompileApplicationDeploymentGraphRequest['graph'],
+  target: ApplicationDeploymentPlanningContext['target'],
+  namespace: string,
 ): Readonly<Record<string, Readonly<Record<string, unknown>>>> {
   const targets = new Map<string, Readonly<Record<string, unknown>>>();
   for (const target of contributions.flatMap((contribution) => contribution.runtimeAccessTargets ?? [])) {
@@ -470,6 +490,23 @@ function runtimeAccessTargetResources(
       throw new Error(`Runtime-access target ${target.capabilityId} has conflicting provider-owned endpoint identities.`);
     }
     targets.set(target.capabilityId, value);
+  }
+  if (
+    target === 'kubernetes'
+    && graph.nodes.some(
+      (node) => node.kind === 'streamProcessor'
+        && (node.applicationScheduleBindings?.length ?? 0) > 0,
+    )
+  ) {
+    const scheduleControl = applicationScheduleControlIdentity(graph.metadata.name);
+    targets.set(scheduleControl.capabilityId, {
+      networkKind: 'privatePeer',
+      networkNamespace: namespace,
+      networkServiceName: scheduleControl.serviceName,
+      networkPodSelector: scheduleControl.podSelector,
+      networkProtocol: 'TCP',
+      networkPort: scheduleControl.port,
+    });
   }
   return Object.fromEntries(targets);
 }
@@ -491,6 +528,16 @@ function kubernetesRuntimeAccessWorkloadPlacements(
     const workloadKind: 'Deployment' | 'Job' | 'CronJob' = kind;
     const metadata = portableRecord(resource.metadata);
     const name = typeof metadata?.name === 'string' ? metadata.name : undefined;
+    const workloadLabels = portableStringRecord(metadata?.labels);
+    // Generated schedule CronJobs reuse the schedule-control image only as a
+    // small admission transport. They read the authoritative Kubernetes
+    // timestamp and call the controller; the scheduled application closure
+    // executes in schedule-control. Treating image reuse as closure placement
+    // grants the transport the controller's capabilities and assigns one
+    // semantic execution to two workloads.
+    if (workloadKind === 'CronJob' && workloadLabels?.['app.kubernetes.io/component'] === 'schedule') {
+      return [];
+    }
     const namespace = typeof metadata?.namespace === 'string'
       ? metadata.namespace
       : request.graph.metadata.namespace && typeof request.graph.metadata.namespace === 'string'
@@ -848,8 +895,6 @@ function applicationGraphGeneratedSecrets(
   });
   const nodes = new Map(request.graph.nodes.map((node) => [node.id, node]));
   const contextConsumers = request.graph.nodes.flatMap((node) =>
-    (node.kind === "gateway" &&
-      node.materialization === "generatedDeployment") ||
     node.kind === "server" ||
     (node.kind === "workflowWorker" &&
       node.handlers.some((reference) => {
@@ -920,10 +965,15 @@ function providerGeneratedSecretCredentialRequirements(
     ) {
       throw new Error(`Generated Secret deployment node ${node.id} has an invalid credential projection contract.`);
     }
+    // Provider infrastructure often owns generated Secrets that application
+    // code must never receive (for example an Envoy controller encryption
+    // seed). Runtime projection is therefore an explicit contract, not the
+    // default behavior of the generic generated-Secret resource.
+    if (runtimeKeys === undefined || runtimeKeys.length === 0) return [];
     return [{
       namespace: configuration.namespace,
       name: configuration.name,
-      keys: runtimeKeys === undefined ? Object.keys(values).sort() : [...runtimeKeys].sort(),
+      keys: [...runtimeKeys].sort(),
       consumers: [...consumers].sort(),
     }];
   });
@@ -999,6 +1049,10 @@ function generatedSecretNode(
     name: requirement.name,
     values: requirement.values,
     consumers: [...requirement.consumers].sort(),
+    // Secrets generated from the application graph are intentionally consumed
+    // by those runtimes. Provider-contributed generated Secrets must opt in
+    // independently through the same runtimeKeys field.
+    runtimeKeys: Object.keys(requirement.values).sort(),
   };
   return {
     id,

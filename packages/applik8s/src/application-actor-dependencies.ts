@@ -1,3 +1,4 @@
+// typecast-file-boundary: Actor dependency discovery reflects branded callable handles and restores generics only after runtime-contract validation.
 import {
   getApplicationOperationContract,
   type ApplicationOperationLike,
@@ -100,3 +101,4 @@ export function applicationActorDependencyBindings(
     left.alias.localeCompare(right.alias),
   );
 }
+// typecast-file-boundary: Actor dependency discovery reflects branded callable handles and restores generics only after runtime-contract validation.

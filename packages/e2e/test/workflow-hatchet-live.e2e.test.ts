@@ -1,3 +1,4 @@
+// typecast-file-boundary: The live Hatchet fixture narrows external provider and Kubernetes responses after explicit readiness and identity checks.
 import { spawn } from 'node:child_process';
 import { copyFile, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -12,6 +13,9 @@ const stackName = `workflow-proof-${process.pid}`;
 const credentialsSecret = 'hatchet-admin';
 const engineName = 'hatchet';
 const workerName = 'workflow-proof';
+const scheduleProofId = 'fixed-schedule';
+const dynamicScheduleProofId = 'dynamic-schedule';
+const oneTimeScheduleProofId = 'one-time-schedule';
 const workflowApiGroup = 'workflow-proof-live.applik8s.dev';
 const workflowApiVersion = `${workflowApiGroup}/v1alpha1`;
 const workflowJobResource = `workflowjobs.${workflowApiGroup}`;
@@ -27,6 +31,7 @@ let outDir: string | undefined;
 let entrypointPath: string | undefined;
 let kubeContext: string | undefined;
 let durableProof: WorkflowBinding | undefined;
+let dynamicScheduleProof: ScheduleBinding | undefined;
 let instanceDeployed = false;
 
 describeLive('v0.5 Hatchet durable workflow proof', () => {
@@ -53,9 +58,16 @@ describeLive('v0.5 Hatchet durable workflow proof', () => {
     entrypointPath = join(tempDir, 'workflow-live.ts');
     await writeFile(entrypointPath, workflowEntrypointSource());
     // static-import-exception: the test authors this bounded entrypoint immediately before importing its known exports. typecast: the test validates both expected exports immediately below.
-    const exports = await import(entrypointPath) as { readonly workflowProof?: unknown; readonly durableProof?: WorkflowBinding };
-    if (!exports.workflowProof || !exports.durableProof) throw new Error('Generated workflow proof entrypoint did not export its composition and workflow binding.');
+    const exports = await import(entrypointPath) as {
+      readonly workflowProof?: unknown;
+      readonly durableProof?: WorkflowBinding;
+      readonly dynamicScheduleProof?: ScheduleBinding;
+    };
+    if (!exports.workflowProof || !exports.durableProof || !exports.dynamicScheduleProof) {
+      throw new Error('Generated workflow proof entrypoint did not export its composition, workflow binding, and dynamic schedule binding.');
+    }
     durableProof = exports.durableProof;
+    dynamicScheduleProof = exports.dynamicScheduleProof;
     await deployApplicationWithAlchemy();
     instanceDeployed = true;
   }, 900_000);
@@ -89,6 +101,125 @@ describeLive('v0.5 Hatchet durable workflow proof', () => {
     }
     if (cleanupErrors.length > 0) {
       throw new AggregateError(cleanupErrors, 'Hatchet live proof cleanup did not complete.');
+    }
+  }, 600_000);
+
+  it('fires and repairs fixed schedules and reconciles dynamic and one-time schedules', async () => {
+    await waitForCnpgReady();
+    await waitForHelmReleaseReady();
+    const apiForward = await startPortForward(`service/${engineName}-api`, 8080);
+    let workerForward: PortForward | undefined;
+    let scheduleForward: PortForward | undefined;
+    const previousToken = process.env.HATCHET_CLIENT_TOKEN;
+    try {
+      const token = await generatedWorkerToken();
+      process.env.HATCHET_CLIENT_TOKEN = token;
+      await waitForDeploymentReady(workerName);
+      const engineForward = await startPortForward(`service/${engineName}-engine`, 7070);
+      workerForward = engineForward;
+      const hatchet = HatchetClient.init({
+        token,
+        host_port: `127.0.0.1:${engineForward.port}`,
+        api_url: apiForward.endpoint,
+        tls_config: { tls_strategy: 'none' },
+      });
+      const scheduleControlName = `${stackName}-schedule-control`;
+      await waitForDeploymentReady(scheduleControlName);
+      await waitForEffectCount(`schedule:${scheduleProofId}`, 1);
+      const [providerSchedule] = await waitForHatchetCron(hatchet);
+      await hatchet.cron.delete(providerSchedule.metadata.id);
+      await waitForHatchetCronCount(hatchet, 0);
+      const oldScheduleControlPod = await runningDeploymentPod(scheduleControlName);
+      await kubectl(['delete', `pod/${oldScheduleControlPod}`, '--namespace', namespace, '--wait=false', '--grace-period=30']);
+      await waitForReplacementDeploymentPod(scheduleControlName, oldScheduleControlPod);
+      await waitForHatchetCronCount(hatchet, 1);
+      await waitForEffectCount(`schedule:${scheduleProofId}`, 2);
+
+      scheduleForward = await startPortForward(`service/${scheduleControlName}`, 8080);
+      const scheduleAuthorization = await generatedInternalOperationSecret();
+      const dynamic = requiredDynamicScheduleBinding();
+      await expect(manageSchedule(scheduleForward, scheduleAuthorization, dynamic, {
+        action: 'configure',
+        instance: {
+          id: 'dynamic-source',
+          revision: '1',
+          input: { proofId: dynamicScheduleProofId },
+          every: '1m',
+          enabled: true,
+        },
+      })).resolves.toMatchObject({ state: 'created', revision: '1' });
+      const dynamicOne = await waitForHatchetCronRevision(hatchet, '1');
+      expect(dynamicOne.cron).toBe('* * * * *');
+      await waitForEffectCount(`schedule:${dynamicScheduleProofId}`, 1);
+
+      await expect(manageSchedule(scheduleForward, scheduleAuthorization, dynamic, {
+        action: 'configure',
+        instance: {
+          id: 'dynamic-source',
+          revision: '2',
+          input: { proofId: dynamicScheduleProofId },
+          every: '2m',
+          enabled: true,
+        },
+      })).resolves.toMatchObject({ state: 'updated', revision: '2' });
+      const dynamicTwo = await waitForHatchetCronRevision(hatchet, '2');
+      expect(dynamicTwo.cron).toBe('*/2 * * * *');
+      expect(dynamicTwo.metadata.id).not.toBe(dynamicOne.metadata.id);
+
+      await hatchet.cron.delete(dynamicTwo.metadata.id);
+      await waitForHatchetCronCount(hatchet, 1);
+      const dynamicControlPod = await runningDeploymentPod(scheduleControlName);
+      await kubectl(['delete', `pod/${dynamicControlPod}`, '--namespace', namespace, '--wait=false', '--grace-period=30']);
+      await waitForReplacementDeploymentPod(scheduleControlName, dynamicControlPod);
+      await scheduleForward.close();
+      scheduleForward = await startPortForward(`service/${scheduleControlName}`, 8080);
+      await waitForHatchetCronRevision(hatchet, '2');
+
+      await expect(manageSchedule(scheduleForward, scheduleAuthorization, dynamic, {
+        action: 'configure',
+        instance: {
+          id: 'dynamic-source',
+          revision: '3',
+          input: { proofId: dynamicScheduleProofId },
+          every: '2m',
+          enabled: false,
+        },
+      })).resolves.toMatchObject({ state: 'updated', revision: '3' });
+      await waitForHatchetCronCount(hatchet, 1);
+
+      const oneTimeAt = new Date(Date.now() + 45_000).toISOString();
+      await expect(manageSchedule(scheduleForward, scheduleAuthorization, dynamic, {
+        action: 'configure',
+        instance: {
+          id: 'one-time-source',
+          revision: '1',
+          input: { proofId: oneTimeScheduleProofId },
+          at: oneTimeAt,
+          enabled: true,
+          deleteAfterCompletion: true,
+        },
+      })).resolves.toMatchObject({ state: 'created', revision: '1' });
+      await waitForHatchetOneTimeRevision(hatchet, '1');
+      await waitForEffectCount(`schedule:${oneTimeScheduleProofId}`, 1);
+      expect((await effectState()).records).toContainEqual(expect.objectContaining({
+        key: `schedule:${oneTimeScheduleProofId}`,
+        scheduledAt: oneTimeAt,
+      }));
+      await expect(manageSchedule(scheduleForward, scheduleAuthorization, dynamic, {
+        action: 'remove',
+        instanceId: 'one-time-source',
+      })).resolves.toMatchObject({ state: expect.stringMatching(/^(removed|unchanged)$/u) });
+      await expect(manageSchedule(scheduleForward, scheduleAuthorization, dynamic, {
+        action: 'remove',
+        instanceId: 'dynamic-source',
+      })).resolves.toMatchObject({ state: 'removed' });
+      await waitForHatchetCronCount(hatchet, 1);
+    } finally {
+      if (previousToken === undefined) delete process.env.HATCHET_CLIENT_TOKEN;
+      else process.env.HATCHET_CLIENT_TOKEN = previousToken;
+      await workerForward?.close();
+      await scheduleForward?.close();
+      await apiForward.close();
     }
   }, 600_000);
 
@@ -179,6 +310,11 @@ interface WorkflowBinding {
   signal(runId: string, name: string, payload: { readonly approved: boolean; readonly reviewer: string }): Promise<void>;
 }
 
+interface ScheduleBinding {
+  readonly definition: { readonly id: string };
+  readonly graphNode: { readonly scheduler: { readonly nodeId: string } };
+}
+
 interface WorkflowInput {
   readonly effectEndpoint: string;
   readonly proofId: string;
@@ -192,7 +328,11 @@ interface WorkflowOutput {
 
 interface EffectState {
   readonly counts: Readonly<Record<string, number>>;
-  readonly records: readonly { readonly key: string; readonly correlationId?: string }[];
+  readonly records: readonly {
+    readonly key: string;
+    readonly correlationId?: string;
+    readonly scheduledAt?: string;
+  }[];
 }
 
 interface GatewayAdmissionLease {
@@ -237,6 +377,11 @@ function requiredWorkflowBinding(): WorkflowBinding {
   return durableProof;
 }
 
+function requiredDynamicScheduleBinding(): ScheduleBinding {
+  if (!dynamicScheduleProof) throw new Error('Dynamic schedule binding is unavailable.');
+  return dynamicScheduleProof;
+}
+
 function workflowEntrypointSource(): string {
   return `
 import { app, Observability, Scheduler, workflow, WorkflowEngine } from '@applik8s/applik8s';
@@ -275,6 +420,47 @@ platform.provide(WorkflowEngine, WorkflowEngine.hatchet({
   worker: { replicas: 1, taskSlots: 4, durableSlots: 8, gracefulShutdownSeconds: 30, scaling: { mode: 'fixed' } },
 }));
 platform.provide(Scheduler, Scheduler.hatchet());
+export const fixedScheduleProof = Scheduler.schedule({
+  id: 'proof.fixed-schedule.v1',
+  cron: '* * * * *',
+  timezone: 'UTC',
+}, async (context) => {
+  const body = new URLSearchParams({
+    proofId: ${JSON.stringify(scheduleProofId)},
+    operation: 'schedule',
+    compensationFails: 'false',
+    scheduledAt: context.scheduledAt,
+  });
+  const response = await fetch(${JSON.stringify(`http://${effectServiceName}.${namespace}.svc:8080/effect`)}, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/x-www-form-urlencoded',
+      'idempotency-key': context.occurrenceId,
+    },
+    body,
+    signal: context.signal,
+  });
+  if (!response.ok) throw new Error('scheduled effect failed with HTTP ' + response.status);
+  return await response.json();
+});
+export const dynamicScheduleProof = Scheduler.schedule({
+  id: 'proof.dynamic-schedule.v1',
+  input: type({ proofId: 'string' }),
+  requirements: { configuration: 'dynamic', cardinality: 'bounded', precision: 'minute' },
+}, async ({ proofId }, context) => {
+  const body = new URLSearchParams({ proofId, operation: 'schedule', compensationFails: 'false', scheduledAt: context.scheduledAt });
+  const response = await fetch(${JSON.stringify(`http://${effectServiceName}.${namespace}.svc:8080/effect`)}, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/x-www-form-urlencoded',
+      'idempotency-key': context.occurrenceId,
+    },
+    body,
+    signal: context.signal,
+  });
+  if (!response.ok) throw new Error('dynamic scheduled effect failed with HTTP ' + response.status);
+  return await response.json();
+});
 const effect = platform.workflow(Effect, { retries: 1, retryBackoff: { factor: 1, maxSeconds: 2 }, executionTimeoutSeconds: 30, idempotencyKey: (input) => input.proofId + ':' + input.operation, worker: { group: ${JSON.stringify(workerName)}, replicas: 1, taskSlots: 4, durableSlots: 8 } }, async (input, context) => {
   const body = new URLSearchParams({ proofId: input.proofId, operation: input.operation, compensationFails: String(input.compensationFails) });
   const response = await fetch(input.effectEndpoint + '/effect', { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded', 'idempotency-key': input.proofId + ':' + input.operation, ...(context.correlationId ? { 'x-correlation-id': context.correlationId } : {}) }, body, signal: context.signal });
@@ -491,7 +677,7 @@ spec:
 }
 
 async function installEffectService(): Promise<void> {
-  const source = `const http=require('node:http');const counts={};const records=[];http.createServer((req,res)=>{if(req.method==='GET'&&req.url==='/state'){res.writeHead(200,{'content-type':'application/json'});return res.end(JSON.stringify({counts,records}));}let body='';req.on('data',c=>body+=c);req.on('end',()=>{const p=new URLSearchParams(body);const proofId=p.get('proofId');const operation=p.get('operation');const key=operation+':'+proofId;counts[key]=(counts[key]||0)+1;records.push({key,correlationId:req.headers['x-correlation-id']});const fail=(operation==='provision'&&counts[key]===1)||(operation==='compensate'&&p.get('compensationFails')==='true');res.writeHead(fail?503:200,{'content-type':'application/json'});res.end(JSON.stringify({attempts:counts[key]}));});}).listen(8080,'0.0.0.0');`;
+  const source = `const http=require('node:http');const counts={};const records=[];http.createServer((req,res)=>{if(req.method==='GET'&&req.url==='/state'){res.writeHead(200,{'content-type':'application/json'});return res.end(JSON.stringify({counts,records}));}let body='';req.on('data',c=>body+=c);req.on('end',()=>{const p=new URLSearchParams(body);const proofId=p.get('proofId');const operation=p.get('operation');const key=operation+':'+proofId;counts[key]=(counts[key]||0)+1;records.push({key,correlationId:req.headers['x-correlation-id'],scheduledAt:p.get('scheduledAt')||undefined});const fail=(operation==='provision'&&counts[key]===1)||(operation==='compensate'&&p.get('compensationFails')==='true');res.writeHead(fail?503:200,{'content-type':'application/json'});res.end(JSON.stringify({attempts:counts[key]}));});}).listen(8080,'0.0.0.0');`;
   const manifest = `apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: ${effectServiceName}\n  namespace: ${namespace}\ndata:\n  server.js: ${JSON.stringify(source)}\n---\napiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: ${effectServiceName}\n  namespace: ${namespace}\nspec:\n  replicas: 1\n  selector:\n    matchLabels:\n      app: ${effectServiceName}\n  template:\n    metadata:\n      labels:\n        app: ${effectServiceName}\n    spec:\n      containers:\n        - name: server\n          image: node:22-alpine@sha256:16e22a550f3863206a3f701448c45f7912c6896a62de43add43bb9c86130c3e2\n          command: [node, /app/server.js]\n          ports:\n            - containerPort: 8080\n          volumeMounts:\n            - name: source\n              mountPath: /app\n              readOnly: true\n      volumes:\n        - name: source\n          configMap:\n            name: ${effectServiceName}\n---\napiVersion: v1\nkind: Service\nmetadata:\n  name: ${effectServiceName}\n  namespace: ${namespace}\nspec:\n  selector:\n    app: ${effectServiceName}\n  ports:\n    - port: 8080\n      targetPort: 8080\n`;
   const path = join(requiredTempDir(), 'effect-service.yaml');
   await writeFile(path, manifest);
@@ -540,6 +726,82 @@ async function generatedWorkerToken(): Promise<string> {
   const token = (await kubectl(['get', `secret/${engineName}-client-config`, '--namespace', namespace, '--output=jsonpath={.data.HATCHET_CLIENT_TOKEN}'])).stdout.trim();
   if (!token) throw new Error('Hatchet chart generated no worker token.');
   return Buffer.from(token, 'base64').toString('utf8');
+}
+
+async function generatedInternalOperationSecret(): Promise<string> {
+  const encoded = (await kubectl([
+    'get', `secret/${stackName}-internal-operation`, '--namespace', namespace,
+    '--output=jsonpath={.data.key}',
+  ])).stdout.trim();
+  if (!encoded) throw new Error('Generated schedule-control authorization Secret has no key.');
+  return Buffer.from(encoded, 'base64').toString('utf8');
+}
+
+type ScheduleManagementRequest =
+  | {
+      readonly action: 'configure';
+      readonly instance: {
+        readonly id: string;
+        readonly revision: string;
+        readonly input: Readonly<Record<string, unknown>>;
+        readonly cron?: string;
+        readonly every?: string;
+        readonly at?: string;
+        readonly enabled: boolean;
+        readonly deleteAfterCompletion?: boolean;
+      };
+    }
+  | { readonly action: 'remove'; readonly instanceId: string };
+
+async function manageSchedule(
+  forward: PortForward,
+  authorization: string,
+  binding: ScheduleBinding,
+  request: ScheduleManagementRequest,
+): Promise<Readonly<Record<string, unknown>>> {
+  const instanceId = request.action === 'configure' ? request.instance.id : request.instanceId;
+  const revision = request.action === 'configure' ? request.instance.revision : 'removed';
+  const admittedAt = new Date().toISOString();
+  const management = {
+    apiVersion: 'applik8s.scheduleManagement/v1alpha1',
+    id: `schedule-management:${request.action}:${instanceId}:${revision}:${process.pid}`,
+    action: request.action,
+    definitionId: binding.definition.id,
+    instanceId,
+    revision,
+    principalId: 'principal:human:hatchet-schedule-live',
+    authorityRevision: 'authority-live-1',
+    trustedContextDigest: 'a'.repeat(64),
+    correlationId: `hatchet-schedule-live:${instanceId}:${revision}`,
+    admittedAt,
+  };
+  const response = await fetch(`${forward.endpoint}/__applik8s/v1/internal/schedules/manage`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${authorization}`,
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({
+      apiVersion: 'applik8s.scheduleManagementRequest/v1alpha1',
+      schedulerNodeId: binding.graphNode.scheduler.nodeId,
+      definitionId: binding.definition.id,
+      action: request.action,
+      ...(request.action === 'configure'
+        ? { instance: request.instance }
+        : { instanceId: request.instanceId }),
+      management,
+    }),
+    signal: AbortSignal.timeout(60_000),
+  });
+  const body = await response.json() as {
+    readonly ok?: boolean;
+    readonly result?: Readonly<Record<string, unknown>>;
+    readonly error?: string;
+  };
+  if (!response.ok || body.ok !== true || !body.result) {
+    throw new Error(`Schedule management failed with HTTP ${response.status}: ${JSON.stringify(body)}`);
+  }
+  return body.result;
 }
 
 async function waitForEffectCount(key: string, expected: number): Promise<void> {
@@ -745,6 +1007,101 @@ async function runningWorkerPod(): Promise<string> {
   const pod = output.items?.find((item: { readonly status?: { readonly phase?: string } }) => item.status?.phase === 'Running');
   if (!pod?.metadata?.name) throw new Error(`No running workflow worker pod in ${namespace}.`);
   return String(pod.metadata.name);
+}
+
+async function runningDeploymentPod(deployment: string): Promise<string> {
+  const output = JSON.parse((await kubectl([
+    'get', 'pods', '--namespace', namespace,
+    '--selector', `app.kubernetes.io/name=${deployment}`,
+    '--output=json',
+  ])).stdout) as {
+    readonly items?: readonly {
+      readonly metadata?: { readonly name?: string };
+      readonly status?: { readonly phase?: string };
+    }[];
+  };
+  const pod = output.items?.find((item) => item.status?.phase === 'Running');
+  if (!pod?.metadata?.name) throw new Error(`No running ${deployment} pod in ${namespace}.`);
+  return pod.metadata.name;
+}
+
+async function waitForReplacementDeploymentPod(deployment: string, previous: string): Promise<void> {
+  const started = Date.now();
+  while (Date.now() - started < 180_000) {
+    try {
+      const current = await runningDeploymentPod(deployment);
+      if (current !== previous) {
+        await waitForDeploymentReady(deployment);
+        return;
+      }
+    } catch {
+      // The replacement Pod is still scheduling or becoming ready.
+    }
+    await sleep(1_000);
+  }
+  throw new Error(`${deployment} pod ${previous} was not replaced.`);
+}
+
+interface HatchetCronRecord {
+  readonly metadata: { readonly id: string };
+  readonly name: string;
+  readonly cron: string;
+  readonly enabled: boolean;
+  readonly additionalMetadata?: Readonly<Record<string, unknown>>;
+}
+
+interface HatchetOneTimeRecord {
+  readonly metadata: { readonly id: string };
+  readonly triggerAt: string;
+  readonly additionalMetadata?: Readonly<Record<string, unknown>>;
+}
+
+async function listedHatchetCrons(client: HatchetClient): Promise<readonly HatchetCronRecord[]> {
+  const result = await client.cron.list({ limit: 100, offset: 0 });
+  return (result.rows ?? []) as readonly HatchetCronRecord[];
+}
+
+async function waitForHatchetCronCount(client: HatchetClient, expected: number): Promise<readonly HatchetCronRecord[]> {
+  const started = Date.now();
+  let last: readonly HatchetCronRecord[] = [];
+  while (Date.now() - started < 180_000) {
+    last = await listedHatchetCrons(client);
+    if (last.length === expected) return last;
+    await sleep(1_000);
+  }
+  throw new Error(`Timed out waiting for ${expected} Hatchet cron records: ${JSON.stringify(last)}`);
+}
+
+async function waitForHatchetCron(client: HatchetClient): Promise<readonly [HatchetCronRecord]> {
+  const rows = await waitForHatchetCronCount(client, 1);
+  const row = rows[0];
+  if (!row) throw new Error('Hatchet reported one cron without returning its record.');
+  return [row];
+}
+
+async function waitForHatchetCronRevision(client: HatchetClient, revision: string): Promise<HatchetCronRecord> {
+  const started = Date.now();
+  let last: readonly HatchetCronRecord[] = [];
+  while (Date.now() - started < 180_000) {
+    last = await listedHatchetCrons(client);
+    const matched = last.find((row) => row.additionalMetadata?.['applik8s.schedule.revision'] === revision);
+    if (matched) return matched;
+    await sleep(1_000);
+  }
+  throw new Error(`Timed out waiting for Hatchet cron revision ${revision}: ${JSON.stringify(last)}`);
+}
+
+async function waitForHatchetOneTimeRevision(client: HatchetClient, revision: string): Promise<HatchetOneTimeRecord> {
+  const started = Date.now();
+  let last: readonly HatchetOneTimeRecord[] = [];
+  while (Date.now() - started < 180_000) {
+    const result = await client.scheduled.list({ limit: 100, offset: 0 });
+    last = (result.rows ?? []) as readonly HatchetOneTimeRecord[];
+    const matched = last.find((row) => row.additionalMetadata?.['applik8s.schedule.revision'] === revision);
+    if (matched) return matched;
+    await sleep(1_000);
+  }
+  throw new Error(`Timed out waiting for Hatchet one-time revision ${revision}: ${JSON.stringify(last)}`);
 }
 
 async function waitForReplacementWorker(previous: string): Promise<void> {
@@ -975,3 +1332,4 @@ function requiredKubeContext(): string {
   if (!kubeContext) throw new Error('Pinned Kubernetes context is unavailable.');
   return kubeContext;
 }
+// typecast-file-boundary: The live Hatchet fixture narrows external provider and Kubernetes responses after explicit readiness and identity checks.

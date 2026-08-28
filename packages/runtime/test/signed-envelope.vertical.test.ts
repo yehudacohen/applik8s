@@ -1,3 +1,4 @@
+// typecast-file-boundary: Signed-envelope fixtures intentionally construct legacy, tampered, and cross-purpose records that cannot be represented by the safe public types.
 import { createHmac } from 'node:crypto';
 import {
   createRollingSignedEnvelopeCodec,
@@ -28,6 +29,7 @@ function codec(options: {
   readonly key?: typeof current;
   readonly previous?: readonly (typeof current)[];
   readonly purpose?: string;
+  readonly observe?: Parameters<typeof createSignedEnvelopeCodec>[0]['observe'];
 } = {}) {
   return createSignedEnvelopeCodec({
     purpose: options.purpose ?? purpose,
@@ -37,6 +39,7 @@ function codec(options: {
     }),
     now: () => options.now ?? issuedAt,
     maximumLifetimeMs: 60_000,
+    ...(options.observe ? { observe: options.observe } : {}),
     ...(options.maximumEncodedBytes === undefined
       ? {}
       : { maximumEncodedBytes: options.maximumEncodedBytes }),
@@ -187,6 +190,66 @@ describe('portable Signed Envelope v1 runtime', () => {
     )).rejects.toMatchObject({ code: 'SIGNED_ENVELOPE_LIFETIME_INVALID' });
   });
 
+  it('reports one payload-free result per rolling operation and isolates observers', async () => {
+    interface CursorPayload { readonly cursor: string }
+    const observations: Array<{
+      readonly purpose: string;
+      readonly format: string;
+      readonly operation: string;
+      readonly result: string;
+      readonly errorCode?: string;
+    }> = [];
+    const rolling = createRollingSignedEnvelopeCodec<CursorPayload, CursorPayload>({
+      purpose,
+      keys: staticSignedEnvelopeKeyProvider({ current }),
+      now: () => issuedAt,
+      maximumLifetimeMs: 60_000,
+      writer: 'legacy',
+      observe(observation) {
+        observations.push(observation);
+        if (observation.operation === 'sign') throw new Error('telemetry unavailable');
+      },
+      validatePayload(value) {
+        if (!value || typeof value !== 'object' || typeof Reflect.get(value, 'cursor') !== 'string') {
+          throw new TypeError('cursor is invalid');
+        }
+        return { cursor: Reflect.get(value, 'cursor') as string };
+      },
+      legacy: {
+        key: current.key,
+        validatePayload(value) {
+          if (!value || typeof value !== 'object' || typeof Reflect.get(value, 'cursor') !== 'string') {
+            throw new TypeError('legacy cursor is invalid');
+          }
+          return { cursor: Reflect.get(value, 'cursor') as string };
+        },
+        toCurrent: (value) => value,
+        fromCurrent: (value) => ({ cursor: value.cursor }),
+      },
+    });
+
+    const legacy = await rolling.sign({ cursor: 'secret-payload-canary' }, { issuedAt, expiresAt });
+    await expect(rolling.verify(legacy)).resolves.toEqual({ cursor: 'secret-payload-canary' });
+    const v1 = await codec().sign({ cursor: 'secret-v1-canary' }, { issuedAt, expiresAt });
+    await expect(rolling.verify(v1)).resolves.toEqual({ cursor: 'secret-v1-canary' });
+    await expect(rolling.verify(`${legacy.slice(0, -2)}aa`)).rejects.toBeInstanceOf(Error);
+
+    expect(observations).toEqual([
+      { purpose, format: 'legacy', operation: 'sign', result: 'accepted' },
+      { purpose, format: 'legacy', operation: 'verify', result: 'accepted' },
+      { purpose, format: 'v1', operation: 'verify', result: 'accepted' },
+      expect.objectContaining({
+        purpose,
+        format: 'legacy',
+        operation: 'verify',
+        result: 'rejected',
+        errorCode: 'SIGNED_ENVELOPE_SIGNATURE_INVALID',
+      }),
+    ]);
+    expect(JSON.stringify(observations)).not.toContain('secret-payload-canary');
+    expect(JSON.stringify(observations)).not.toContain('secret-v1-canary');
+  });
+
   it('revalidates legacy adapters against the current payload contract', async () => {
     interface CursorPayload { readonly cursor: string }
     const rolling = createRollingSignedEnvelopeCodec<CursorPayload, { readonly legacy: string }>({
@@ -227,3 +290,4 @@ describe('portable Signed Envelope v1 runtime', () => {
     await expect(rolling.verify(legacy)).rejects.toThrow('current cursor is invalid');
   });
 });
+// typecast-file-boundary: Signed-envelope fixtures intentionally construct legacy, tampered, and cross-purpose records that cannot be represented by the safe public types.

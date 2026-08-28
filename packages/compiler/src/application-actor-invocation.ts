@@ -1,3 +1,4 @@
+// typecast-file-boundary: Actor invocation lowering inspects compiler-validated callable operations and preserves their literal runtime contract identity.
 import type { ApplicationGraph, ApplicationProviderNode } from '@applik8s/core';
 import { applicationGraphStringValue } from './application-installation-values.js';
 
@@ -77,3 +78,4 @@ function kubernetesName(value: string): string {
   if (!normalized) return 'application';
   return normalized.length <= 63 ? normalized : normalized.slice(0, 63).replace(/-+$/gu, '');
 }
+// typecast-file-boundary: Actor invocation lowering inspects compiler-validated callable operations and preserves their literal runtime contract identity.

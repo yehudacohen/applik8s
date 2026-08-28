@@ -17,6 +17,7 @@ export interface CelldProviderRuntimeAccessOptions {
   readonly provider: ApplicationProviderNode;
   readonly context: ApplicationDeploymentPlanningContext;
   readonly deploymentNodeId: string;
+  readonly artifactManifestDigest: string;
   readonly name: string;
   readonly namespace: string;
   readonly stateStoreEndpoint?: string;
@@ -157,7 +158,7 @@ export function celldProviderRuntimeAccess(
     ],
     workloads: [
       {
-        workloadIdentity: `batch/v1:Job:${options.namespace}:${options.name}-worker-deployment`,
+        workloadIdentity: `batch/v1:Job:${options.namespace}:${celldDeploymentJobName(options.name, options.artifactManifestDigest)}`,
         artifactIds: ['artifact.celld-runtime'],
         executionNodeIds: [deployerExecutionNodeId],
         kubernetes: {
@@ -165,14 +166,14 @@ export function celldProviderRuntimeAccess(
             apiVersion: 'batch/v1',
             kind: 'Job',
             namespace: options.namespace,
-            name: `${options.name}-worker-deployment`,
+            name: celldDeploymentJobName(options.name, options.artifactManifestDigest),
           },
           materialization: {
-            authority: 'provider-direct',
+            authority: 'operator-reconciled',
             deploymentNodeId: options.deploymentNodeId,
           },
           podSelector: labels,
-          serviceAccountName: 'default',
+          serviceAccountName: `${options.name}-celld`,
         },
       },
       {
@@ -187,11 +188,11 @@ export function celldProviderRuntimeAccess(
             name: options.name,
           },
           materialization: {
-            authority: 'provider-direct',
+            authority: 'operator-reconciled',
             deploymentNodeId: options.deploymentNodeId,
           },
           podSelector: labels,
-          serviceAccountName: 'default',
+          serviceAccountName: `${options.name}-celld`,
         },
       },
     ],
@@ -203,8 +204,12 @@ export function celldWorkloadLabels(name: string): Readonly<Record<string, strin
     'app.kubernetes.io/name': 'celld',
     'app.kubernetes.io/instance': name,
     'app.kubernetes.io/component': 'actor-runtime',
-    'app.kubernetes.io/managed-by': 'applik8s',
+    'app.kubernetes.io/managed-by': 'applik8s-celld-operator',
   };
+}
+
+function celldDeploymentJobName(name: string, manifestDigest: string): string {
+  return `${name}-deploy-${manifestDigest.slice('sha256:'.length, 'sha256:'.length + 12)}`;
 }
 
 function celldStateStoreRuntimeAccessTarget(

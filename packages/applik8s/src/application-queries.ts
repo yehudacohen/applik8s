@@ -17,7 +17,11 @@ import type {
 } from '@applik8s/core';
 import type { Type } from 'arktype';
 import type { ApplicationDatabaseBinding } from './application.js';
-import { serializeApplicationCallback } from './application-callback.js';
+import { applicationActorDependencyBindings } from './application-actor-dependencies.js';
+import {
+  expandApplicationCallbackDependencies,
+  serializeApplicationCallback,
+} from './application-callback.js';
 import type { ApplicationGraphState } from './application-graph-state.js';
 import { addApplicationGraphEdge, addApplicationGraphNode } from './application-graph-state.js';
 import { applicationTypeKroSerializedValue } from './application-typekro-values.js';
@@ -555,6 +559,19 @@ export function registerApplicationQuery<
   if (budgets.timeoutMs < 1 || budgets.maxResultBytes < 1 || budgets.maxRows < 1)
     throw new Error(`Application query ${id} budgets must be positive and bounded.`);
   const registrar = options.modelOperation?.kind ?? 'query';
+  const inferredHandlerDependencies = options.run
+    ? expandApplicationCallbackDependencies({ calls: [options.run] })
+    : { calls: [], bindings: {}, awaited: {}, callables: [], providerBindings: [] };
+  const actorBindings = applicationActorDependencyBindings(
+    state,
+    `Application query ${id}`,
+    inferredHandlerDependencies,
+  ).map(({ alias, actor, member, memberKind }) => ({
+    identifier: alias,
+    actor,
+    member,
+    memberKind,
+  }));
   // typecast: callback serialization erases only generic parameter names; runtime schemas remain authoritative for their values.
   const authorization =
     options.__generatedSources?.authorize ??
@@ -578,6 +595,10 @@ export function registerApplicationQuery<
           // typecast: serialization needs only the callback's executable shape; the public binding retains its input/output generics.
           callback: options.run as (...args: never[]) => unknown,
           allowDeferredResolution: true,
+          injectedIdentifiers: actorBindings.flatMap(({ identifier }) => [
+            identifier,
+            identifier.split('.')[0] ?? identifier,
+          ]),
         })
       : { source: '() => { throw new Error("Kubernetes queries execute through their snapshot/watch authority."); }' });
   const kubernetes = options.kubernetes
@@ -638,10 +659,18 @@ export function registerApplicationQuery<
         }
       : {}),
     ...(handler.dependencies ? { handlerDependencies: handler.dependencies } : {}),
+    ...(actorBindings.length > 0 ? { actorBindings } : {}),
     ...(handler.location ? { handlerLocation: handler.location } : {}),
     ...(handler.unresolved ? { handlerUnresolved: handler.unresolved } : {}),
   });
   for (const read of reads) addApplicationGraphEdge(state, { from: { nodeId }, to: read.model, relationship: 'reads' });
+  for (const actor of actorBindings) {
+    addApplicationGraphEdge(state, {
+      from: { nodeId },
+      to: actor.actor,
+      relationship: 'dependsOn',
+    });
+  }
   const execution = createApplicationQueryOperation<TInput, TOutput>({
     apiVersion: 'applik8s.operation/v1alpha1',
     kind: 'applicationOperation',

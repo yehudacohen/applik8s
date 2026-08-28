@@ -11,9 +11,11 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { join } from 'node:path';
-import { createApplicationAgenticStart } from '../packages/start-agentic/src/index.js';
 import { agenticProductEvidenceJourneys } from '../packages/e2e/browser/agentic-product-evidence-contract.js';
+import { createApplicationAgenticStart } from '../packages/start-agentic/src/index.js';
+import { checkAgenticProductBundles } from './check-agentic-product-bundles.js';
 import {
+  materializePackedGeneratedWorkspaceDependencies,
   writeOfficialTanStackScaffold,
 } from './generated-agentic-start-live-support.js';
 import {
@@ -35,7 +37,6 @@ import {
   discardV06Evidence,
   writeV06EvidenceReceipt,
 } from './v06-evidence.js';
-import { checkAgenticProductBundles } from './check-agentic-product-bundles.js';
 import { v07ReleaseEvidenceContract } from './v07-release-evidence-contract.js';
 
 const root = process.cwd();
@@ -103,7 +104,10 @@ async function waitForExactGeneratedHandoff(
         if (consecutiveHealthyResponses >= 3) return;
       } else {
         consecutiveHealthyResponses = 0;
-        lastDiagnostic = `HTTP ${response.status}; heading=${body.includes('What should we accomplish?')}; exactBuild=${exactBuild}`;
+        const responseExcerpt = body
+          .replace(/\s+/gu, ' ')
+          .slice(0, 500);
+        lastDiagnostic = `HTTP ${response.status}; heading=${body.includes('What should we accomplish?')}; exactBuild=${exactBuild}; body=${JSON.stringify(responseExcerpt)}`;
       }
     } catch (error) {
       consecutiveHealthyResponses = 0;
@@ -332,6 +336,88 @@ async function captureLifecycleDatabaseDiagnostics() {
   );
 }
 
+async function captureUsagePublicationDatabaseDiagnostics() {
+  const pods = await captureIdentityStartCommand(
+    'kubectl',
+    [
+      '--context',
+      context,
+      'get',
+      'pods',
+      '--selector',
+      `cnpg.io/cluster=${projectName}-db`,
+      '--namespace',
+      namespace,
+      '--output=jsonpath={.items[0].metadata.name}',
+    ],
+    root,
+  );
+  const pod = pods.stdout.trim();
+  if (pods.code !== 0 || !pod) return pods;
+  return captureIdentityStartCommand(
+    'kubectl',
+    [
+      '--context',
+      context,
+      'exec',
+      pod,
+      '--namespace',
+      namespace,
+      '--container',
+      'postgres',
+      '--',
+      'psql',
+      '--username=postgres',
+      `--dbname=${projectName}`,
+      '--tuples-only',
+      '--no-align',
+      '--command',
+      `SELECT json_build_object(
+  'conversationRuns', coalesce((SELECT json_agg(json_build_object(
+    'id', id,
+    'status', status,
+    'terminalReason', terminal_reason,
+    'updatedAt', updated_at
+  ) ORDER BY updated_at) FROM applik8s_conversation_runs), '[]'::json),
+  'usageFacts', coalesce((SELECT json_agg(json_build_object(
+    'id', id,
+    'principalScope', principal_scope,
+    'inputTokens', input_tokens,
+    'outputTokens', output_tokens,
+    'occurredAt', occurred_at
+  ) ORDER BY occurred_at) FROM applik8s_usage_facts), '[]'::json),
+  'eventOutbox', coalesce((SELECT json_agg(json_build_object(
+    'id', id,
+    'contract', contract_name || '.' || contract_version,
+    'publishedAt', published_at
+  ) ORDER BY created_at) FROM applik8s_event_outbox
+    WHERE contract_name IN ('models.UsageFact.created', 'agentic.usage-recorded')), '[]'::json),
+  'publicEvents', coalesce((SELECT json_agg(json_build_object(
+    'id', id,
+    'sequence', sequence,
+    'contract', contract_name || '.' || contract_version,
+    'recordedAt', recorded_at
+  ) ORDER BY sequence) FROM applik8s_public_stream_events
+    WHERE contract_name IN ('models.UsageFact.created', 'agentic.usage-recorded')), '[]'::json),
+  'processorCheckpoints', coalesce((SELECT json_agg(json_build_object(
+    'processor', processor,
+    'stream', stream,
+    'sequence', sequence,
+    'updatedAt', updated_at
+  )) FROM applik8s_stream_processor_checkpoints
+    WHERE processor = 'deliver-billable-usage-create'), '[]'::json),
+  'processorDeadLetters', coalesce((SELECT json_agg(json_build_object(
+    'eventId', event_id,
+    'attempts', attempts,
+    'error', error
+  )) FROM applik8s_stream_processor_dead_letters
+    WHERE processor = 'deliver-billable-usage-create'), '[]'::json)
+)::text;`,
+    ],
+    root,
+  );
+}
+
 if (!focusedBrowserTest) await discardV06Evidence(evidencePath);
 
 try {
@@ -412,6 +498,14 @@ try {
       }
       await writeOfficialTanStackScaffold(target, projectName);
     },
+  });
+  const packedWorkspacePackages = await materializePackedGeneratedWorkspaceDependencies({
+    workspaceRoot: root,
+    targetDirectory: target,
+  });
+  observed.set('workspace-package-boundary', {
+    test: `the generated product materialized ${packedWorkspacePackages.length} built npm package artifacts without relying on root hoisting or workspace source traversal`,
+    observedAt: new Date().toISOString(),
   });
   if (preservedEnvironmentFiles.size > 0) {
     for (const [name, preservedEnvironmentPath] of preservedEnvironmentFiles) {
@@ -504,7 +598,7 @@ try {
   });
   const bundleReport = await checkAgenticProductBundles(target);
   observed.set('production-build', {
-    test: `official TanStack Start client, SSR, and Nitro production build within bundle ceilings (client ${bundleReport.javascriptBytes} bytes/${bundleReport.javascriptGzipBytes} gzip; server ${bundleReport.serverJavaScriptBytes} bytes/${bundleReport.serverJavaScriptGzipBytes} gzip; largest client chunk ${bundleReport.largestChunk.name}; largest server chunk ${bundleReport.largestServerChunk.name})`,
+    test: `official TanStack Start client, SSR, and Nitro production build within bundle ceilings (client ${bundleReport.javascriptBytes} bytes/${bundleReport.javascriptGzipBytes} gzip; compiled server ${bundleReport.serverJavaScriptBytes} bytes/${bundleReport.serverJavaScriptGzipBytes} gzip; traced runtime dependencies ${bundleReport.tracedDependencyJavaScriptBytes} bytes/${bundleReport.tracedDependencyJavaScriptGzipBytes} gzip; largest client chunk ${bundleReport.largestChunk.name}; largest server chunk ${bundleReport.largestServerChunk.name})`,
     observedAt: new Date().toISOString(),
   });
 
@@ -775,6 +869,15 @@ try {
   if (!focusedBrowserTest) await discardV06Evidence(evidencePath);
   await tunnel?.close();
   if (deployed && await Bun.file(deploymentGraphPath).exists()) {
+    const applicationHostLogs = await captureGeneratedContainerLogs(
+      'application-host',
+      'application',
+    );
+    if (applicationHostLogs.stdout.trim() || applicationHostLogs.stderr.trim()) {
+      console.error('\n[agentic-product-starter] application host diagnostics');
+      process.stderr.write(applicationHostLogs.stdout);
+      process.stderr.write(applicationHostLogs.stderr);
+    }
     const documentPublicationLogs = await captureGeneratedContainerLogs(
       'reactive-worker',
       `${projectName}-publish-document-artifact-update`,
@@ -810,6 +913,43 @@ try {
       console.error('\n[agentic-product-starter] agent evaluation processor diagnostics');
       process.stderr.write(evaluationLogs.stdout);
       process.stderr.write(evaluationLogs.stderr);
+    }
+    const usageDeliveryLogs = await captureGeneratedContainerLogs(
+      'reactive-worker',
+      `${projectName}-deliver-billable-usage-create`,
+    );
+    await preserveGeneratedDiagnostic('usage-delivery', usageDeliveryLogs);
+    if (usageDeliveryLogs.stdout.trim() || usageDeliveryLogs.stderr.trim()) {
+      console.error('\n[agentic-product-starter] usage delivery diagnostics');
+      process.stderr.write(usageDeliveryLogs.stdout);
+      process.stderr.write(usageDeliveryLogs.stderr);
+    }
+    const lakehousePublisherLogs = await captureGeneratedContainerLogs(
+      'lakehouse-publisher',
+      'publisher',
+    );
+    await preserveGeneratedDiagnostic('lakehouse-publisher', lakehousePublisherLogs);
+    if (
+      lakehousePublisherLogs.stdout.trim()
+      || lakehousePublisherLogs.stderr.trim()
+    ) {
+      console.error('\n[agentic-product-starter] lakehouse publisher diagnostics');
+      process.stderr.write(lakehousePublisherLogs.stdout);
+      process.stderr.write(lakehousePublisherLogs.stderr);
+    }
+    const usagePublicationDatabase =
+      await captureUsagePublicationDatabaseDiagnostics();
+    await preserveGeneratedDiagnostic(
+      'usage-publication-database',
+      usagePublicationDatabase,
+    );
+    if (
+      usagePublicationDatabase.stdout.trim()
+      || usagePublicationDatabase.stderr.trim()
+    ) {
+      console.error('\n[agentic-product-starter] usage publication database diagnostics');
+      process.stderr.write(usagePublicationDatabase.stdout);
+      process.stderr.write(usagePublicationDatabase.stderr);
     }
     const queryGatewayLogs = await captureGeneratedContainerLogs(
       'query-gateway',

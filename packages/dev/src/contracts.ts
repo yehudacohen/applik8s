@@ -21,6 +21,30 @@ export interface DevelopmentContextAttachment {
   readonly payload: Readonly<Record<string, unknown>>;
 }
 
+/**
+ * A bounded resolver result. The coordinator, rather than a toolbar or coding
+ * provider, assigns durable identity and content digests after redaction.
+ */
+export interface DevelopmentResolvedAttachment {
+  readonly class: Exclude<DevelopmentAttachmentClass, 'visualSelection' | 'visualSnapshot'>;
+  readonly resolution: DevelopmentResolution;
+  readonly redaction: 'none' | 'partial' | 'withheld';
+  readonly payload: Readonly<Record<string, unknown>>;
+}
+
+export interface DevelopmentSelectionResolutionContext {
+  readonly projectId: string;
+  readonly revision: string;
+}
+
+/** Resolves opaque, revision-bound visual hints without trusting DOM source paths. */
+export interface DevelopmentSelectionResolver {
+  resolve(
+    selection: DevelopmentVisualSelection,
+    context: DevelopmentSelectionResolutionContext,
+  ): Promise<readonly DevelopmentResolvedAttachment[]>;
+}
+
 export interface DevelopmentConversationReferent {
   readonly id: string;
   readonly label: string;

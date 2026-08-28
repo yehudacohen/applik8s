@@ -1,3 +1,4 @@
+// typecast-file-boundary: Development-aspect fixtures inspect generated Kubernetes resources through partial test-only manifest shapes.
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { type ApplicationDeploymentGraph, applicationRuntimeAccessPlanDigest } from '@applik8s/deployment-contract';
@@ -353,3 +354,4 @@ function deploymentGraph(): ApplicationDeploymentGraph {
     ],
   };
 }
+// typecast-file-boundary: Development-aspect fixtures inspect generated Kubernetes resources through partial test-only manifest shapes.

@@ -12,6 +12,23 @@ import {
 } from '@applik8s/core';
 import { type CelldActorConnectionTicketClaims, verifyCelldActorConnectionTicket } from './connection-ticket.js';
 
+declare const __APPLIK8S_CELLD_RUNTIME_MANIFEST__: string | undefined;
+
+interface EmbeddedCelldRuntimeManifest {
+  readonly apiVersion: 'applik8s.celld-runtime-artifact/v1';
+  readonly manifestDigest: string;
+  readonly workerVersion: string;
+  readonly celldVersion: string;
+  readonly applicationGraphDigest: string;
+  readonly protocolRevision: string;
+}
+
+const embeddedCelldRuntimeManifest = (() => {
+  if (typeof __APPLIK8S_CELLD_RUNTIME_MANIFEST__ !== 'string') return undefined;
+  try { return JSON.parse(__APPLIK8S_CELLD_RUNTIME_MANIFEST__) as EmbeddedCelldRuntimeManifest; }
+  catch { return undefined; }
+})();
+
 interface DurableObjectIdLike { toString(): string }
 interface DurableObjectStubLike { fetch(request: Request): Promise<Response> }
 interface DurableObjectNamespaceLike {
@@ -52,6 +69,11 @@ export interface CelldActorWorkerEnvironment {
   readonly APPLIK8S_ACTOR_CONNECTION_SIGNING_KEY?: string;
   readonly APPLIK8S_ACTOR_APPLICATION_ENDPOINT?: string;
   readonly APPLIK8S_ACTOR_APPLICATION_AUTHORIZATION?: string;
+  /** Operator-only credential for fleet admission and artifact observation. */
+  readonly APPLIK8S_ACTOR_OPERATOR_AUTHORIZATION?: string;
+  readonly APPLIK8S_CELLD_RUNTIME_MANIFEST_DIGEST?: string;
+  readonly APPLIK8S_CELLD_WORKER_VERSION?: string;
+  readonly APPLIK8S_CELLD_VERSION?: string;
 }
 
 interface ActorCellState { readonly revision: number; readonly stateVersion?: number; readonly value: object }
@@ -144,12 +166,28 @@ const connectionIndexKey = 'applik8s:connection-index';
 const connectionTicketPrefix = 'applik8s:connection-ticket:';
 const maximumRealtimeMessageBytes = 64 * 1024;
 const maximumRealtimeBufferedBytes = 256 * 1024;
+const controlActor = '__applik8s_fleet_control__';
+const controlKey = 'singleton';
+const controlStateKey = 'applik8s:fleet-control';
+
+interface FleetControlState {
+  readonly mode: 'accepting' | 'quiescing';
+  readonly highWatermark: number;
+  readonly issuedAt: string;
+  readonly inflight: Readonly<Record<string, number>>;
+}
 
 export default {
   async fetch(request: Request, environment: CelldActorWorkerEnvironment): Promise<Response> {
     const url = new URL(request.url);
     if (url.pathname === '/healthz') return json({ ready: true });
     const authorization = validateAuthorization(environment.APPLIK8S_ACTOR_AUTHORIZATION);
+    if (url.pathname.startsWith('/__applik8s/v1/operator/')) {
+      const operatorAuthorization = environment.APPLIK8S_ACTOR_OPERATOR_AUTHORIZATION;
+      if (!operatorAuthorization) return json({ error: 'operator_authorization_unavailable' }, 503);
+      if (!operatorAuthorized(request, operatorAuthorization)) return json({ error: 'forbidden' }, 403);
+      return controlStub(environment).fetch(controlRequest(request, operatorAuthorization));
+    }
     const match = /^\/__applik8s\/v1\/actors\/([^/]+)\/([^/]+)(\/.*)$/u.exec(url.pathname);
     if (!match) return json({ error: 'not_found' }, 404);
     const actor = decodePath(match[1] ?? '');
@@ -179,7 +217,22 @@ export default {
       headers.set('authorization', `Bearer ${authorization}`);
       headers.set('x-applik8s-connection-ticket-claims', encodeJsonHeader(ticketClaims));
     }
-    return environment.APPLIK8S_ACTOR_CELLS.get(id).fetch(new Request(request, { headers }));
+    const operationId = await actorAdmissionOperationId(request, url.pathname);
+    const operatorAuthorization = environment.APPLIK8S_ACTOR_OPERATOR_AUTHORIZATION;
+    const admissionId = operationId ?? `connection:${crypto.randomUUID()}`;
+    if (operatorAuthorization && isNewActorAdmission(request, url.pathname)) {
+      const admitted = await controlStub(environment).fetch(controlRequest(new Request('http://celld.internal/__applik8s/v1/operator/admit', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ operationId: admissionId, leaseMilliseconds: await actorAdmissionLeaseMilliseconds(request) }),
+      }), operatorAuthorization));
+      if (!admitted.ok) return json({ error: 'actor_admission_quiesced', retryable: true }, 503);
+    }
+    const response = await environment.APPLIK8S_ACTOR_CELLS.get(id).fetch(new Request(request, { headers }));
+    if (operatorAuthorization && shouldReleaseActorAdmission(request, url.pathname, response)) {
+      await completeFleetAdmission(environment, operatorAuthorization, admissionId).catch(() => undefined);
+    }
+    return response;
   },
 };
 
@@ -195,10 +248,11 @@ export class Applik8sActorCell {
   }
 
   async fetch(request: Request): Promise<Response> {
-    const authorization = validateAuthorization(this.#environment.APPLIK8S_ACTOR_AUTHORIZATION);
-    if (!authorized(request, authorization)) return json({ error: 'forbidden' }, 403);
     const identity = requestIdentity(request);
     if (!identity) return json({ error: 'invalid_actor_identity' }, 400);
+    if (identity.actor === controlActor && identity.key === controlKey) return this.#control(request);
+    const authorization = validateAuthorization(this.#environment.APPLIK8S_ACTOR_AUTHORIZATION);
+    if (!authorized(request, authorization)) return json({ error: 'forbidden' }, 403);
     await this.#ensureIdentity(identity);
     const pathname = new URL(request.url).pathname;
     if (request.headers.get('upgrade')?.toLowerCase() === 'websocket' && pathname.endsWith('/connections')) {
@@ -222,6 +276,51 @@ export class Applik8sActorCell {
     } catch (cause) {
       return json({ error: 'invalid_request', message: cause instanceof Error ? cause.message : String(cause) }, 400);
     }
+  }
+
+  async #control(request: Request): Promise<Response> {
+    const authorization = this.#environment.APPLIK8S_ACTOR_OPERATOR_AUTHORIZATION;
+    if (!authorization || !authorized(request, authorization)) return json({ error: 'forbidden' }, 403);
+    const pathname = new URL(request.url).pathname;
+    if (pathname.endsWith('/manifest')) {
+      if (embeddedCelldRuntimeManifest) return json(embeddedCelldRuntimeManifest);
+      const manifestDigest = this.#environment.APPLIK8S_CELLD_RUNTIME_MANIFEST_DIGEST;
+      const workerVersion = this.#environment.APPLIK8S_CELLD_WORKER_VERSION;
+      const celldVersion = this.#environment.APPLIK8S_CELLD_VERSION;
+      if (!manifestDigest || !workerVersion || !celldVersion) return json({ error: 'runtime_manifest_unavailable' }, 503);
+      return json({ apiVersion: 'applik8s.celld-runtime-artifact/v1', manifestDigest, workerVersion, celldVersion });
+    }
+    const current = pruneFleetControlState(await this.#state.storage.get<FleetControlState>(controlStateKey));
+    if (request.method === 'GET' && pathname.endsWith('/state')) return json(fleetControlReceipt(current));
+    if (request.method !== 'POST') return json({ error: 'method_not_allowed' }, 405);
+    if (pathname.endsWith('/quiesce')) {
+      const next = { ...current, mode: 'quiescing' as const, issuedAt: new Date().toISOString() };
+      await this.#state.storage.put(controlStateKey, next);
+      return json(fleetControlReceipt(next));
+    }
+    const body = await requestObject(request);
+    if (!body) return json({ error: 'invalid_json_object' }, 400);
+    if (pathname.endsWith('/admit')) {
+      if (current.mode !== 'accepting') return json({ error: 'actor_admission_quiesced', retryable: true }, 503);
+      const operationId = requiredString(body.operationId, 'operationId');
+      const leaseMilliseconds = requiredPositiveInteger(body.leaseMilliseconds, 'leaseMilliseconds');
+      const existed = current.inflight[operationId] !== undefined;
+      const next: FleetControlState = {
+        ...current,
+        highWatermark: existed ? current.highWatermark : current.highWatermark + 1,
+        inflight: { ...current.inflight, [operationId]: Date.now() + leaseMilliseconds },
+      };
+      await this.#state.storage.put(controlStateKey, next);
+      return json(fleetControlReceipt(next));
+    }
+    if (pathname.endsWith('/complete')) {
+      const operationId = requiredString(body.operationId, 'operationId');
+      const { [operationId]: _completed, ...inflight } = current.inflight;
+      const next = { ...current, inflight };
+      await this.#state.storage.put(controlStateKey, next);
+      return json(fleetControlReceipt(next));
+    }
+    return json({ error: 'not_found' }, 404);
   }
 
   async alarm(): Promise<void> {
@@ -713,6 +812,17 @@ function validateAuthorization(value: string): string {
   return value;
 }
 function authorized(request: Request, expected: string): boolean { return request.headers.get('authorization') === `Bearer ${expected}`; }
+
+/**
+ * Kubernetes' API proxy consumes the caller's Authorization header before it
+ * forwards a request to a Pod or Service. The operator-control header carries
+ * the same private credential across that authenticated proxy without making
+ * the endpoint public or granting the handler unrestricted network access.
+ */
+function operatorAuthorized(request: Request, expected: string): boolean {
+  return authorized(request, expected)
+    || request.headers.get('x-applik8s-operator-authorization') === expected;
+}
 async function requestObject(request: Request): Promise<Readonly<Record<string, unknown>> | undefined> {
   try {
     const value: unknown = await request.json();
@@ -938,6 +1048,80 @@ function requiredActorAuthorizationReceipt(value: unknown, label: string): Appli
   }
   return structuredClone(receipt);
 }
+
+function controlStub(environment: CelldActorWorkerEnvironment): DurableObjectStubLike {
+  return environment.APPLIK8S_ACTOR_CELLS.get(
+    environment.APPLIK8S_ACTOR_CELLS.idFromName(`applik8s.actor.v1:${controlActor}:${controlKey}`),
+  );
+}
+
+function controlRequest(request: Request, authorization: string): Request {
+  const headers = new Headers(request.headers);
+  headers.set('authorization', `Bearer ${authorization}`);
+  headers.set('x-applik8s-actor', controlActor);
+  headers.set('x-applik8s-actor-key', controlKey);
+  return new Request(request, { headers });
+}
+
+async function actorAdmissionOperationId(request: Request, pathname: string): Promise<string | undefined> {
+  if (!pathname.endsWith('/turns:begin') && !pathname.endsWith('/turns:commit') && !pathname.endsWith('/turns:abort')) return undefined;
+  try {
+    const value = await request.clone().json() as Record<string, unknown>;
+    return typeof value.operationId === 'string' && value.operationId.length > 0 ? value.operationId : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+async function actorAdmissionLeaseMilliseconds(request: Request): Promise<number> {
+  try {
+    const value = await request.clone().json() as Record<string, unknown>;
+    return typeof value.leaseMilliseconds === 'number' && Number.isSafeInteger(value.leaseMilliseconds) && value.leaseMilliseconds > 0
+      ? value.leaseMilliseconds
+      : 30_000;
+  } catch {
+    return 30_000;
+  }
+}
+
+function isNewActorAdmission(request: Request, pathname: string): boolean {
+  return pathname.endsWith('/turns:begin')
+    || (pathname.endsWith('/connections') && request.headers.get('upgrade')?.toLowerCase() === 'websocket');
+}
+
+function shouldReleaseActorAdmission(request: Request, pathname: string, response: Response): boolean {
+  if (pathname.endsWith('/turns:commit') || pathname.endsWith('/turns:abort')) return true;
+  if (pathname.endsWith('/turns:begin')) return response.status !== 200;
+  return pathname.endsWith('/connections') && request.headers.get('upgrade')?.toLowerCase() === 'websocket';
+}
+
+async function completeFleetAdmission(environment: CelldActorWorkerEnvironment, authorization: string, operationId: string): Promise<void> {
+  await controlStub(environment).fetch(controlRequest(new Request('http://celld.internal/__applik8s/v1/operator/complete', {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ operationId }),
+  }), authorization));
+}
+
+function pruneFleetControlState(value: FleetControlState | undefined): FleetControlState {
+  const now = Date.now();
+  const inflight = Object.fromEntries(Object.entries(value?.inflight ?? {}).filter(([, expiresAt]) => expiresAt > now));
+  return {
+    mode: value?.mode ?? 'accepting',
+    highWatermark: value?.highWatermark ?? 0,
+    issuedAt: value?.issuedAt ?? new Date(0).toISOString(),
+    inflight,
+  };
+}
+
+function fleetControlReceipt(state: FleetControlState) {
+  return {
+    apiVersion: 'applik8s.celld-admission/v1alpha1',
+    mode: state.mode,
+    highWatermark: state.highWatermark,
+    inflight: Object.keys(state.inflight).length,
+    issuedAt: state.issuedAt,
+  };
+}
+
 function json(value: unknown, status = 200): Response {
   return new Response(JSON.stringify(value), { status, headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' } });
 }

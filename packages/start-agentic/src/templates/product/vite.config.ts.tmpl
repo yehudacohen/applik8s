@@ -5,6 +5,10 @@ import tailwindcss from '@tailwindcss/vite';
 import { defineConfig } from 'vite';
 
 export default defineConfig({
+  server: {
+    host: process.env.HOST ?? '127.0.0.1',
+    port: Number(process.env.PORT ?? '3000'),
+  },
   define: {
     __APPLIK8S_BUILD_LINEAGE__: JSON.stringify(
       process.env.APPLIK8S_BUILD_LINEAGE ?? 'development',

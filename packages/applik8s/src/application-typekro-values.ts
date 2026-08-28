@@ -1,3 +1,4 @@
+// typecast-file-boundary: TypeKro/CEL installation values are parsed with a bounded grammar and structurally checked before typed materialization.
 import { Cel } from 'typekro';
 
 /**
@@ -73,6 +74,13 @@ export function applicationTypeKroGreaterThan(value: number, threshold: number):
   return expression ? Cel.expr<boolean>(`(${expression}) > ${threshold}`) : value > threshold;
 }
 
+/** Preserve JavaScript nullish-default semantics for direct and KRO profile values. */
+export function applicationValueDefault<T>(value: T | null | undefined, fallback: T): T {
+  // typecast: this framework boundary deliberately preserves the caller's
+  // exact generic shape while TypeKro exposes separate scalar/object overloads.
+  return Cel.default(value as never, fallback as never) as T;
+}
+
 /** Preserve a TypeKro value in non-Kubernetes artifacts such as the ApplicationGraph. */
 export function applicationTypeKroSerializedValue(value: unknown): string {
   const expression = applicationTypeKroExpression(value);
@@ -140,3 +148,4 @@ function applicationTypeKroExpression(value: unknown): string | undefined {
     ? expression
     : undefined;
 }
+// typecast-file-boundary: TypeKro/CEL installation values are parsed with a bounded grammar and structurally checked before typed materialization.

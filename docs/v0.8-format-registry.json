@@ -51,9 +51,9 @@
       "readers": ["0.8.x"],
       "maximumLifetime": "payload-contract-specific",
       "purposeOrKeyNamespace": "required-per-payload-contract",
-      "migrationPhase": "gateway-adoption-not-yet-integrated",
-      "telemetry": "runtime-integrity-envelope-version-and-purpose",
-      "rollbackSafeThrough": "pending-gateway-inventory",
+      "migrationPhase": "release-a-integrated",
+      "telemetry": "applik8s.runtime.integrity.envelope{purpose,format,operation,result,error.type}; payload-free observer failures are isolated from integrity decisions",
+      "rollbackSafeThrough": "release-a-legacy-writer-window",
       "decoderRemovalRelease": null
     },
     {
@@ -68,7 +68,7 @@
       "maximumLifetime": "5m-plus-30s-verifier-clock-skew",
       "purposeOrKeyNamespace": "applik8s.actor-connection-ticket/v1",
       "migrationPhase": "new-v0.8-capability-no-released-legacy-reader",
-      "telemetry": "pending-envelope-version-and-rejection-metrics",
+      "telemetry": "applik8s.runtime.integrity.envelope with payload-free purpose, format, operation, result, and bounded error type",
       "rollbackSafeThrough": "v0.8-pre-release-only",
       "decoderRemovalRelease": null
     },
@@ -106,7 +106,7 @@
       "maximumLifetime": "60s",
       "purposeOrKeyNamespace": "applik8s.task-query-admission/v1",
       "migrationPhase": "release-a-reads-legacy-and-dual-context-payloads-writes-rollback-compatible-dual-context-payloads",
-      "telemetry": "pending-envelope-version-and-rejection-metrics",
+      "telemetry": "applik8s.runtime.integrity.envelope{purpose,format,operation,result,error.type}",
       "rollbackSafeThrough": "0.7.x-readers-accept-all-0.8.x-output",
       "decoderRemovalRelease": "0.10.0"
     },
@@ -123,7 +123,7 @@
       "maximumLifetime": "0.8-issued-cursors-15m-default-and-24h-maximum; pre-v0.8-cursors-unbounded-until-generation-or-authority-invalidates",
       "purposeOrKeyNamespace": "applik8s.search-cursor/v1",
       "migrationPhase": "release-a-reads-legacy-and-v1-writes-legacy; offset providers also accept the registered pre-canonical Date query digest while writing the canonical digest",
-      "telemetry": "pending-envelope-version-provider-continuation-query-digest-format-and-rejection-metrics",
+      "telemetry": "shared applik8s.runtime.integrity.envelope{purpose,format,operation,result,error.type} integrated; provider, continuation, and query-digest-format dimensions remain pending",
       "rollbackSafeThrough": "0.7.x-readers-accept-provider-specific-0.8.x-output",
       "decoderRemovalRelease": "0.10.0"
     },
@@ -140,7 +140,7 @@
       "maximumLifetime": "0.8-default-15m-and-maximum-24h; pre-v0.8-configured-expiry-had-no-framework-maximum",
       "purposeOrKeyNamespace": "applik8s.query-cursor/v1",
       "migrationPhase": "release-a-reads-legacy-and-v1-writes-legacy",
-      "telemetry": "pending-envelope-version-reset-reason-and-rejection-metrics",
+      "telemetry": "shared applik8s.runtime.integrity.envelope{purpose,format,operation,result,error.type} integrated; query reset reason remains pending",
       "rollbackSafeThrough": "0.7.x-readers-accept-all-0.8.x-output",
       "decoderRemovalRelease": "0.10.0-earliest-after-zero-legacy-telemetry"
     },
@@ -157,7 +157,7 @@
       "maximumLifetime": "0.8-default-15m-and-maximum-24h; pre-v0.8-configured-expiry-had-no-framework-maximum",
       "purposeOrKeyNamespace": "applik8s.stream-cursor/v1",
       "migrationPhase": "release-a-reads-legacy-and-v1-writes-legacy",
-      "telemetry": "pending-envelope-version-and-rejection-metrics",
+      "telemetry": "applik8s.runtime.integrity.envelope{purpose,format,operation,result,error.type}",
       "rollbackSafeThrough": "0.7.x-readers-accept-all-0.8.x-output",
       "decoderRemovalRelease": "0.10.0-earliest-after-zero-legacy-telemetry"
     },
@@ -174,7 +174,7 @@
       "maximumLifetime": "0.8-default-15m-and-maximum-24h; pre-v0.8-configured-expiry-had-no-framework-maximum",
       "purposeOrKeyNamespace": "applik8s.command-cursor/v1",
       "migrationPhase": "release-a-reads-legacy-and-v1-writes-legacy",
-      "telemetry": "pending-envelope-version-and-rejection-metrics",
+      "telemetry": "applik8s.runtime.integrity.envelope{purpose,format,operation,result,error.type}",
       "rollbackSafeThrough": "0.7.x-readers-accept-all-0.8.x-output",
       "decoderRemovalRelease": "0.10.0-earliest-after-zero-legacy-telemetry"
     },
@@ -191,7 +191,7 @@
       "maximumLifetime": "0.8-store-configured-with-30s-minimum-and-24h-maximum; pre-v0.8-configured-expiry-had-no-framework-maximum",
       "purposeOrKeyNamespace": "applik8s.object-intent/v1",
       "migrationPhase": "release-a-reads-legacy-and-v1-writes-legacy",
-      "telemetry": "pending-envelope-version-and-rejection-metrics",
+      "telemetry": "applik8s.runtime.integrity.envelope{purpose,format,operation,result,error.type}",
       "rollbackSafeThrough": "0.7.x-readers-accept-all-0.8.x-output",
       "decoderRemovalRelease": "0.10.0-earliest-after-zero-legacy-telemetry"
     },
@@ -208,7 +208,7 @@
       "maximumLifetime": "15m",
       "purposeOrKeyNamespace": "applik8s.lakehouse-cursor/v1",
       "migrationPhase": "release-a-reads-legacy-and-v1-writes-legacy",
-      "telemetry": "pending-envelope-version-provider-and-rejection-metrics",
+      "telemetry": "shared applik8s.runtime.integrity.envelope{purpose,format,operation,result,error.type} integrated; lakehouse provider dimension remains pending",
       "rollbackSafeThrough": "0.7.x-readers-accept-all-0.8.x-output",
       "decoderRemovalRelease": "0.10.0-earliest-after-zero-legacy-telemetry"
     },
@@ -225,7 +225,7 @@
       "maximumLifetime": "0.8-default-15m-and-maximum-24h; pre-v0.8-caller-configured",
       "purposeOrKeyNamespace": "applik8s.kubernetes-gateway-cursor/v1",
       "migrationPhase": "release-a-reads-legacy-and-v1-writes-legacy",
-      "telemetry": "pending-envelope-version-operation-kind-and-rejection-metrics",
+      "telemetry": "shared applik8s.runtime.integrity.envelope{purpose,format,operation,result,error.type} integrated; Kubernetes gateway operation-kind dimension remains pending",
       "rollbackSafeThrough": "0.7.x-readers-accept-all-0.8.x-output",
       "decoderRemovalRelease": "0.10.0-earliest-after-zero-legacy-telemetry"
     },

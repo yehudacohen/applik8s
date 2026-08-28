@@ -16,6 +16,7 @@ export function generatedApplicationTelemetryImports(options?: {
 	readonly carrierCapture?: boolean;
 	readonly carrierTransport?: boolean;
 	readonly providerOperationInstrumentation?: boolean;
+	readonly runtimeIntegrityObserver?: boolean;
 	readonly runtimeImplementation?: boolean;
 }): readonly string[] {
 	const applik8sImports = [
@@ -27,6 +28,9 @@ export function generatedApplicationTelemetryImports(options?: {
 			: []),
 		...(options?.providerOperationInstrumentation
 			? ["instrumentApplicationProviderOperation"]
+			: []),
+		...(options?.runtimeIntegrityObserver
+			? ["observeApplicationRuntimeIntegrityEnvelope"]
 			: []),
 	];
 	return [

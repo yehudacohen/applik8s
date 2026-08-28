@@ -1,11 +1,11 @@
 // typecast-file-boundary: PostgreSQL JSONB rows are validated by schema version and identity before provider hydration.
 import {
-	applicationScheduleDesiredStateDigest,
-	applicationScheduleDesiredStateRecord,
 	type ApplicationScheduleConvergenceResult,
 	type ApplicationScheduleManagementReceipt,
 	type ApplicationScheduleStateAuthority,
 	type ApplicationScheduleStateRecord,
+	applicationScheduleDesiredStateDigest,
+	applicationScheduleDesiredStateRecord,
 } from '@applik8s/applik8s/schedule-state-runtime';
 import postgres, { type Sql, type TransactionSql } from 'postgres';
 
@@ -51,6 +51,7 @@ export function createPostgresApplicationScheduleStateAuthority(
 				request.instance,
 			);
 			return sql.begin(async (transaction) => {
+				await lockScheduleCapacity(transaction, options);
 				await lockScheduleState(
 					transaction,
 					options,
@@ -100,6 +101,24 @@ export function createPostgresApplicationScheduleStateAuthority(
 						`Schedule ${request.definition.id}:${request.instance.id} revision ${request.instance.revision} is stale; current revision is ${prior.revision}.`,
 					);
 				}
+				if (request.maximumActiveInstances !== undefined) {
+					const maximum = request.maximumActiveInstances;
+					if (!Number.isSafeInteger(maximum) || maximum < 1) {
+						throw new Error('Schedule maximumActiveInstances must be a positive integer.');
+					}
+					const [{ count = 0 } = {}] = await transaction<{ readonly count: number }[]>`
+            SELECT count(*)::int AS count
+            FROM applik8s_schedule_instances
+            WHERE application_id = ${options.applicationId}
+              AND environment_id = ${options.environmentId}
+              AND state = 'active'
+          `;
+					if (prior?.state !== 'active' && count >= maximum) {
+						throw new Error(
+							`Schedule instance ceiling ${maximum} is exhausted for this application environment.`,
+						);
+					}
+				}
 				await transaction`
           INSERT INTO applik8s_schedule_instances (
             application_id, environment_id, definition_id, instance_id,
@@ -139,6 +158,7 @@ export function createPostgresApplicationScheduleStateAuthority(
 		async remove(definitionId, instanceId, management) {
 			await ensure();
 			return sql.begin(async (transaction) => {
+				await lockScheduleCapacity(transaction, options);
 				await lockScheduleState(transaction, options, definitionId, instanceId);
 				const prior = await readScheduleState(
 					transaction,
@@ -185,6 +205,20 @@ export function createPostgresApplicationScheduleStateAuthority(
         WHERE application_id = ${options.applicationId}
           AND environment_id = ${options.environmentId}
           AND projection_state = 'pending'
+        ORDER BY definition_id, instance_id
+      `;
+			return rows.map(scheduleStateRecord);
+		},
+
+		async recoveryCandidates() {
+			await ensure();
+			const rows = await sql<ScheduleStateRecordRow[]>`
+        SELECT definition_id, instance_id, revision, digest, state,
+               projection_state, desired, management, updated_at
+        FROM applik8s_schedule_instances
+        WHERE application_id = ${options.applicationId}
+          AND environment_id = ${options.environmentId}
+          AND (state = 'active' OR projection_state = 'pending')
         ORDER BY definition_id, instance_id
       `;
 			return rows.map(scheduleStateRecord);
@@ -279,6 +313,16 @@ async function lockScheduleState(
 	await sql.unsafe('SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))', [
 		authorityKey,
 		instanceKey,
+	]);
+}
+
+async function lockScheduleCapacity(
+	sql: Sql | TransactionSql,
+	options: PostgresApplicationScheduleStateAuthorityOptions,
+): Promise<void> {
+	await sql.unsafe('SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))', [
+		JSON.stringify([options.applicationId, options.environmentId]),
+		'schedule-capacity',
 	]);
 }
 

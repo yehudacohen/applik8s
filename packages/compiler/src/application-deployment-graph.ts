@@ -6,8 +6,11 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import { type ApplicationGraph, serializeApplicationPlan } from "@applik8s/core";
 import {
   type ApplicationArtifactRequirement,
+  type ApplicationCelldRuntimeRelease,
   type ApplicationGeneratedSecretRequirement,
   type ApplicationKubernetesRuntimeAccessNetworkPolicyProvider,
+  applicationCelldRuntimeManifest,
+  applicationCelldRuntimeRelease,
   applicationProviderGuaranteesForGraph,
   clickStackCredentialsSecretName,
   compileApplicationDeploymentGraph,
@@ -25,8 +28,6 @@ import {
 import { build } from "esbuild";
 
 const celldRuntimeArtifactId = "artifact.celld-runtime";
-const celldRuntimeBaseImage =
-  "ghcr.io/denoland/celld@sha256:7a4380721b6400073f2a26afe70a828410169f658d31b5ef61383e648ca0c530";
 const celldRuntimeBuildImage =
   "node:22-alpine@sha256:16e22a550f3863206a3f701448c45f7912c6896a62de43add43bb9c86130c3e2";
 
@@ -46,6 +47,8 @@ export interface EmitApplicationDeploymentGraphRequest {
   readonly installationSpec: Readonly<Record<string, unknown>>;
   readonly profileTransition?: Readonly<Record<string, unknown>>;
   readonly runtimeAccessKubernetesNetworkPolicyProvider?: ApplicationKubernetesRuntimeAccessNetworkPolicyProvider;
+  /** @internal Release qualification may compile an earlier immutable Celld runtime. */
+  readonly celldRuntimeRelease?: ApplicationCelldRuntimeRelease;
 }
 
 export interface EmittedApplicationDeploymentGraph {
@@ -67,12 +70,6 @@ export async function emitApplicationDeploymentGraph(
   request: EmitApplicationDeploymentGraphRequest,
 ): Promise<EmittedApplicationDeploymentGraph> {
   const bundle = await readJson(request.bundlePath);
-  const artifacts = await applicationArtifactRequirements(
-    bundle,
-    request.bundlePath,
-    request.projectRoot,
-    request.graph,
-  );
   const installationSpec = jsonObject(request.installationSpec, "installation spec");
   const materialized = withInstallationRuntimeBindings(
     await applicationMaterializedComposition(
@@ -82,6 +79,15 @@ export async function emitApplicationDeploymentGraph(
     installationSpec,
     request.graph,
     request.profile,
+  );
+  const artifacts = await applicationArtifactRequirements(
+    bundle,
+    request.bundlePath,
+    request.projectRoot,
+    request.graph,
+    request.sourceGraphDigest,
+    request.celldRuntimeRelease ?? applicationCelldRuntimeRelease,
+    materialized.resources,
   );
   const generatedSecrets = await applicationGeneratedSecretRequirements(
     request.bundlePath,
@@ -153,7 +159,7 @@ export async function emitApplicationDeploymentGraph(
   };
 }
 
-function withInstallationRuntimeBindings(
+export function withInstallationRuntimeBindings(
   materialized: {
     readonly resources: readonly DeploymentJsonObject[];
     readonly status: DeploymentJsonObject;
@@ -169,7 +175,20 @@ function withInstallationRuntimeBindings(
 } {
   const providers = optionalObject(installationSpec.providers);
   const payments = optionalObject(providers?.payments);
+  const inference = optionalObject(providers?.inference);
   const notifications = optionalObject(providers?.notifications);
+  const inferenceEnvironment: Array<
+    DeploymentJsonObject & { readonly name: string }
+  > = inference
+      ? [secretEnvironment(
+          "APPLIK8S_AI_GATEWAY_API_KEY",
+          stringValue(
+            inference.credentialSecretName,
+            "Application inference credential Secret name",
+          ),
+          optionalString(inference.credentialKey) ?? "apiKey",
+        )]
+      : [];
   const paymentEnvironment: Array<
     DeploymentJsonObject & { readonly name: string }
   > = payments
@@ -253,6 +272,7 @@ function withInstallationRuntimeBindings(
         })()
       : [{ name: "APPLIK8S_NOTIFICATION_DELIVERY_KIND", value: "local" }];
   const paymentConsumers = providerConsumerWorkloads(graph, "PaymentProvider");
+  const inferenceConsumers = providerConsumerWorkloads(graph, "AI");
   const notificationConsumers = providerConsumerWorkloads(
     graph,
     "NotificationDelivery",
@@ -291,6 +311,18 @@ function withInstallationRuntimeBindings(
     node.kind === "provider"
     && node.interface === "ActorRuntime"
     && kubernetesProviderImplementation(node) === "celld-actors");
+  const actorQueryGatewayWorkloads = new Set(
+    graph.nodes.flatMap((node) => {
+      if (node.kind !== "gateway" || !node.deployment) return [];
+      const usesActors = node.queries.some((reference) => {
+        const query = graph.nodes.find((candidate) => candidate.id === reference.nodeId);
+        return query?.kind === "query" && (query.actorBindings?.length ?? 0) > 0;
+      });
+      return usesActors
+        ? [kubernetesName(`${graph.metadata.name}-${node.name}`)]
+        : [];
+    }),
+  );
   const universalEnvironment: Array<DeploymentJsonObject & { readonly name: string }> = [
     ...(observability ? [
       {
@@ -367,41 +399,39 @@ function withInstallationRuntimeBindings(
       ? applicationHostWorkloadName(graph)
       : undefined);
     if (!workloadName) return resource;
-    const environment: Array<
+    const component = applicationRuntimeComponent(template);
+    const deploymentConsumesActorRuntime = Boolean(
+      actorRuntime
+      && (component === "application-host"
+        || (component === "query-gateway"
+          && (actorQueryGatewayWorkloads.has(workloadName)
+            || deploymentEnvironmentHas(template, "APPLIK8S_ACTOR_RUNTIME_REQUIRED")))),
+    );
+    const actorEnvironment: Array<
       DeploymentJsonObject & { readonly name: string }
-    > = [
-      ...universalEnvironment,
-      ...(profiledConsumers.has(workloadName)
-        || paymentConsumers.has(workloadName)
-        || notificationConsumers.has(workloadName)
-        ? [{ name: "APPLIK8S_PROFILE_VARIANT", value: profile }]
-        : []),
-      ...(actorRuntime && applicationRuntimeComponent(template) === "typed-http"
-        ? [
-            {
-              name: "APPLIK8S_ACTOR_ENDPOINT",
-              value: applicationDeploymentOutputReference(
-                `direct.${actorRuntime.id}.celld`,
-                "endpoint",
-              ),
-            },
-            secretEnvironment(
-              "APPLIK8S_ACTOR_AUTHORIZATION",
-              `${kubernetesName(graph.metadata.name)}-actors-authorization`,
-              "authorization",
+    > = deploymentConsumesActorRuntime
+      ? [
+          {
+            name: "APPLIK8S_ACTOR_ENDPOINT",
+            value: applicationDeploymentOutputReference(
+              `direct.${actorRuntime!.id}.celld`,
+              "endpoint",
             ),
-            secretEnvironment(
-              "APPLIK8S_ACTOR_CONNECTION_SIGNING_KEY",
-              `${kubernetesName(graph.metadata.name)}-actors-authorization`,
-              "connectionSigningKey",
-            ),
-          ]
-        : []),
-      ...(paymentConsumers.has(workloadName) ? paymentEnvironment : []),
-      ...(notificationConsumers.has(workloadName)
-        ? notificationEnvironment
-        : []),
-    ];
+          },
+          secretEnvironment(
+            "APPLIK8S_ACTOR_AUTHORIZATION",
+            `${kubernetesName(graph.metadata.name)}-actors-authorization`,
+            "actor-authorization",
+          ),
+          ...(component === "application-host"
+            ? [secretEnvironment(
+                "APPLIK8S_ACTOR_CONNECTION_SIGNING_KEY",
+                `${kubernetesName(graph.metadata.name)}-actors-authorization`,
+                "connection-signing-key",
+              )]
+            : []),
+        ]
+      : [];
     const spec = objectValue(template.spec, "payment consumer Deployment spec");
     const podTemplate = objectValue(
       spec.template,
@@ -416,28 +446,64 @@ function withInstallationRuntimeBindings(
         value,
         "payment consumer Deployment container",
       );
+      const containerName = optionalString(container.name);
+      const consumes = (consumers: ReadonlySet<string>) =>
+        consumers.has(workloadName)
+        || (containerName !== undefined && consumers.has(containerName));
+      const providerConsumer = consumes(profiledConsumers)
+        || consumes(inferenceConsumers)
+        || consumes(paymentConsumers)
+        || consumes(notificationConsumers);
       if (
         container.name !== "application"
         && container.name !== "agent"
         && container.name !== "http"
         && container.name !== "runtime"
         && container.name !== "worker"
+        && component !== "query-gateway"
+        && !providerConsumer
       ) {
         return container;
       }
       const existing = arrayValue(container.env).map((entry) =>
         objectValue(entry, "payment consumer environment entry"),
       );
-      const names = new Set(
-        existing.flatMap((entry) =>
-          typeof entry.name === "string" ? [entry.name] : [],
-        ),
+      const environment: Array<
+        DeploymentJsonObject & { readonly name: string }
+      > = [
+        ...universalEnvironment,
+        ...(consumes(profiledConsumers)
+          || consumes(inferenceConsumers)
+          || consumes(paymentConsumers)
+          || consumes(notificationConsumers)
+          ? [{ name: "APPLIK8S_PROFILE_VARIANT", value: profile }]
+          : []),
+        // The canonical ApplicationHost is the public Celld callback and
+        // WebSocket façade. Typed HTTP route workers do not invoke actors merely
+        // because the application declares one, so projecting actor credentials
+        // into every route server would widen their authority unnecessarily.
+        ...(component === "application-host" ? actorEnvironment : []),
+        ...(consumes(inferenceConsumers) ? inferenceEnvironment : []),
+        ...(consumes(paymentConsumers) ? paymentEnvironment : []),
+        ...(consumes(notificationConsumers) ? notificationEnvironment : []),
+      ];
+      const containerNeedsActorRuntime = Boolean(
+        actorRuntime
+        && component === "query-gateway"
+        && existing.some((entry) => entry.name === "APPLIK8S_ACTOR_RUNTIME_REQUIRED"),
       );
+      const projectedEnvironment = [
+        ...environment,
+        ...(containerNeedsActorRuntime ? actorEnvironment : []),
+      ];
+      const projectedNames = new Set(projectedEnvironment.map(({ name }) => name));
       return {
         ...container,
         env: [
-          ...existing,
-          ...environment.filter((entry) => !names.has(entry.name)),
+          ...existing.filter((entry) =>
+            typeof entry.name !== "string" || !projectedNames.has(entry.name)
+          ),
+          ...projectedEnvironment,
         ],
       };
     });
@@ -581,10 +647,9 @@ export function applicationProviderConsumerWorkloads(
         : []),
   );
   const applicationHostName = applicationHostWorkloadName(graph);
-  const scheduleControlName = applicationHostName
-    ?? (graph.nodes.some((node) => node.kind === "schedule")
-      ? kubernetesName(`${graph.metadata.name}-schedule-control`)
-      : undefined);
+  const scheduleControlName = graph.nodes.some((node) => node.kind === "schedule")
+    ? kubernetesName(`${graph.metadata.name}-schedule-control`)
+    : undefined;
   return new Set(
     graph.nodes.flatMap((node) => {
       if (!consumerIds.has(node.id)) return [];
@@ -608,7 +673,9 @@ export function applicationProviderConsumerWorkloads(
         const scheduler = graph.nodes.find(
           (candidate) => candidate.id === node.scheduler.nodeId,
         );
-        return scheduler?.kind === "provider" && !scheduler.config?.qualification
+        return scheduler?.kind === "provider"
+          && (scheduler.implementation !== "target-selected"
+            || !scheduler.config?.qualification)
           ? [scheduleControlName]
           : [];
       }
@@ -637,18 +704,40 @@ function isApplicationRuntimeDeployment(resource: DeploymentJsonObject): boolean
   const component = labels?.["app.kubernetes.io/component"];
   return component === "typed-http"
     || component === "application-host"
+    || component === "query-gateway"
     || component === "schedule-control"
+    || component === "command-processor"
+    || component === "lakehouse-publisher"
     || component === "stream-processor"
     || component === "workflow-worker"
+    || component === "reactive-worker"
     || component === "reactive-runtime"
     || component === "ai-agent"
     || component === "agent-runtime"
+    || component === "mcp-server"
     || component === "mcp-runtime";
 }
 
 function applicationRuntimeComponent(resource: DeploymentJsonObject): unknown {
   const metadata = optionalObject(resource.metadata);
   return optionalObject(metadata?.labels)?.["app.kubernetes.io/component"];
+}
+
+function deploymentEnvironmentHas(
+  resource: DeploymentJsonObject,
+  name: string,
+): boolean {
+  const template = optionalObject(resource.spec);
+  const podTemplate = optionalObject(template?.template);
+  const podSpec = optionalObject(podTemplate?.spec);
+  const containers = Array.isArray(podSpec?.containers)
+    ? podSpec.containers
+    : [];
+  return containers.some((candidate) => {
+    const container = optionalObject(candidate);
+    const environment = Array.isArray(container?.env) ? container.env : [];
+    return environment.some((entry) => optionalString(optionalObject(entry)?.name) === name);
+  });
 }
 
 function secretEnvironment(
@@ -762,7 +851,6 @@ export async function applicationGeneratedSecretRequirements(
   const internalCallbacks = graph.nodes.filter((node) =>
     node.kind === "schedule"
     || node.kind === "actor"
-    || node.kind === "lakehousePublication"
     || node.kind === "workflowWorker");
   const workflowGatewayServers = graph.nodes.filter((node) =>
     node.kind === "server"
@@ -1064,11 +1152,19 @@ async function applicationArtifactRequirements(
   bundlePath: string,
   projectRoot: string,
   graph: ApplicationGraph,
+  sourceGraphDigest: string,
+  celldRuntimeRelease: ApplicationCelldRuntimeRelease,
+  materializedResources: readonly DeploymentJsonObject[],
 ): Promise<readonly ApplicationArtifactRequirement[]> {
   const spec = objectValue(bundle.spec, "TypeKro bundle spec");
   const artifacts: ApplicationArtifactRequirement[] = [];
   if (applicationRequiresCelldArtifact(graph)) {
-    artifacts.push(await celldActorRuntimeArtifact(bundlePath, graph.metadata.name));
+    artifacts.push(await celldActorRuntimeArtifact(
+      bundlePath,
+      graph.metadata.name,
+      sourceGraphDigest,
+      celldRuntimeRelease,
+    ));
   }
   const operatorEntries = arrayValue(spec.operators);
   const operatorHost = operatorEntries.length > 0
@@ -1217,7 +1313,128 @@ async function applicationArtifactRequirements(
     }
     ids.add(artifact.id);
   }
-  return artifacts.sort((left, right) => left.id.localeCompare(right.id));
+  return artifacts
+    .map((artifact) => {
+      const hasExecutionPlacement = (artifact.executionNodeIds?.length ?? 0) > 0
+        || artifact.semanticNodeId !== undefined;
+      const physicalProjection = artifact.logicalReference && hasExecutionPlacement
+        ? applicationWorkloadCredentialProjections(
+            materializedResources,
+            artifact.logicalReference,
+          )
+        : { matched: false, projections: [] };
+      // Once an immutable artifact has a concrete workload placement, that
+      // pod is the complete Kubernetes credential projection contract. The
+      // emitter-level projections may still contain installation/profile CEL
+      // from the reusable RGD and must not survive alongside their concrete
+      // replacements as a second authority requirement.
+      const credentialProjections = physicalProjection.matched
+        ? physicalProjection.projections
+        : mergeArtifactCredentialProjections(artifact.credentialProjections ?? []);
+      return credentialProjections.length > 0
+        ? { ...artifact, credentialProjections }
+        : artifact;
+    })
+    .sort((left, right) => left.id.localeCompare(right.id));
+}
+
+/**
+ * Promote the compiler-authored pod projection into the portable artifact
+ * contract before deployment planning. This is intentionally done here—not
+ * by the target parity validator—because installation/profile lowering can
+ * add exact provider credentials after an emitter has produced its bundle
+ * entry. The artifact remains the policy source; the later Kubernetes check
+ * independently proves that materialization matches it.
+ */
+function applicationWorkloadCredentialProjections(
+  resources: readonly DeploymentJsonObject[],
+  image: string,
+): {
+  readonly matched: boolean;
+  readonly projections: NonNullable<ApplicationArtifactRequirement['credentialProjections']>;
+} {
+  const projections: Array<NonNullable<ApplicationArtifactRequirement['credentialProjections']>[number]> = [];
+  let matched = false;
+  for (const candidate of resources) {
+    const resource = optionalObject(candidate.template) ?? candidate;
+    const metadata = optionalObject(resource.metadata);
+    const namespace = optionalString(metadata?.namespace);
+    if (!namespace) continue;
+    const spec = optionalObject(resource.spec);
+    const podTemplate = resource.kind === 'CronJob'
+      ? optionalObject(optionalObject(optionalObject(optionalObject(spec?.jobTemplate)?.spec)?.template)?.spec)
+      : optionalObject(optionalObject(spec?.template)?.spec);
+    if (!podTemplate) continue;
+    const containers = [
+      ...arrayValue(podTemplate.containers),
+      ...arrayValue(podTemplate.initContainers),
+    ].map((value) => optionalObject(value)).filter((value): value is DeploymentJsonObject => Boolean(value));
+    if (!containers.some((container) => container.image === image)) continue;
+    matched = true;
+    for (const container of containers) {
+      for (const value of arrayValue(container.env)) {
+        const entry = optionalObject(value);
+        const secret = optionalObject(optionalObject(entry?.valueFrom)?.secretKeyRef);
+        const name = optionalString(secret?.name);
+        const key = optionalString(secret?.key);
+        if (name && key) projections.push({ target: 'kubernetes', namespace, name, keys: [key] });
+      }
+      for (const value of arrayValue(container.envFrom)) {
+        const name = optionalString(optionalObject(optionalObject(value)?.secretRef)?.name);
+        if (name) projections.push({ target: 'kubernetes', namespace, name, keys: [] });
+      }
+    }
+    for (const value of arrayValue(podTemplate.volumes)) {
+      const volume = optionalObject(value);
+      const secret = optionalObject(volume?.secret);
+      const directName = optionalString(secret?.secretName);
+      if (directName) {
+        const keys = arrayValue(secret?.items).flatMap((item) => {
+          const key = optionalString(optionalObject(item)?.key);
+          return key ? [key] : [];
+        });
+        projections.push({ target: 'kubernetes', namespace, name: directName, keys });
+      }
+      const projected = optionalObject(volume?.projected);
+      for (const source of arrayValue(projected?.sources)) {
+        const projectedSecret = optionalObject(optionalObject(source)?.secret);
+        const name = optionalString(projectedSecret?.name);
+        if (!name) continue;
+        const keys = arrayValue(projectedSecret?.items).flatMap((item) => {
+          const key = optionalString(optionalObject(item)?.key);
+          return key ? [key] : [];
+        });
+        projections.push({ target: 'kubernetes', namespace, name, keys });
+      }
+    }
+  }
+  return { matched, projections: mergeArtifactCredentialProjections(projections) };
+}
+
+function mergeArtifactCredentialProjections(
+  projections: NonNullable<ApplicationArtifactRequirement['credentialProjections']>,
+): NonNullable<ApplicationArtifactRequirement['credentialProjections']> {
+  const merged = new Map<string, { namespace: string; name: string; keys: Set<string>; wildcard: boolean }>();
+  for (const projection of projections) {
+    const identity = `${projection.namespace}/${projection.name}`;
+    const current = merged.get(identity) ?? {
+      namespace: projection.namespace,
+      name: projection.name,
+      keys: new Set<string>(),
+      wildcard: false,
+    };
+    if (projection.keys.length === 0) current.wildcard = true;
+    for (const key of projection.keys) current.keys.add(key);
+    merged.set(identity, current);
+  }
+  return [...merged.values()]
+    .sort((left, right) => `${left.namespace}/${left.name}`.localeCompare(`${right.namespace}/${right.name}`))
+    .map(({ namespace, name, keys, wildcard }) => ({
+      target: 'kubernetes' as const,
+      namespace,
+      name,
+      keys: wildcard ? [] : [...keys].sort(),
+    }));
 }
 
 function applicationArtifactCredentialProjections(
@@ -1296,21 +1513,18 @@ function applicationHostCredentialProjections(
   });
 }
 
-function applicationHostExecutionNodeIds(graph: ApplicationGraph): readonly string[] {
+export function applicationHostExecutionNodeIds(graph: ApplicationGraph): readonly string[] {
   const members = new Set<string>();
   for (const node of graph.nodes) {
-    // When an ApplicationHost exists, generated schedule control is hosted in
-    // that process instead of a dedicated schedule-control artifact. Preserve
-    // the semantic schedule identity on the host artifact so runtime-access
-    // requirements can be joined to the physical Deployment.
-    if (node.kind === "schedule") {
-      members.add(node.id);
-      continue;
-    }
-    if (node.kind !== "gateway") continue;
+    if (
+      node.kind !== "gateway"
+      || node.visibility === "internal"
+      || (node.materialization !== "generatedDeployment" && node.materialization !== "runtimeOnly")
+    ) continue;
+    // ApplicationHost owns the browser-facing transport façade. A generated
+    // gateway still owns and executes its query/subscription children; those
+    // closures must not be attributed to the forwarding web process.
     members.add(node.id);
-    for (const query of node.queries) members.add(query.nodeId);
-    for (const subscription of node.subscriptions) members.add(subscription.nodeId);
   }
   return [...members].sort();
 }
@@ -1350,10 +1564,13 @@ function applicationRequiresCelldArtifact(graph: ApplicationGraph): boolean {
 async function celldActorRuntimeArtifact(
   bundlePath: string,
   graphName: string,
+  sourceGraphDigest: string,
+  celldRuntimeRelease: ApplicationCelldRuntimeRelease,
 ): Promise<ApplicationArtifactRequirement> {
   const contextPath = join(dirname(bundlePath), "celld-runtime", "container");
   await mkdir(contextPath, { recursive: true });
   const workerPath = join(contextPath, "worker.mjs");
+  const runtimeManifest = applicationCelldRuntimeManifest(sourceGraphDigest, celldRuntimeRelease);
   await build({
     entryPoints: ["@applik8s/runtime-celld/worker"],
     outfile: workerPath,
@@ -1363,6 +1580,9 @@ async function celldActorRuntimeArtifact(
     target: "es2022",
     sourcemap: false,
     legalComments: "none",
+    define: {
+      __APPLIK8S_CELLD_RUNTIME_MANIFEST__: JSON.stringify(JSON.stringify(runtimeManifest)),
+    },
   });
   const wrangler = `${JSON.stringify({
     name: "applik8s-actor-authority",
@@ -1376,21 +1596,25 @@ async function celldActorRuntimeArtifact(
   const dockerfile = [
     `FROM ${celldRuntimeBuildImage} AS esbuild`,
     "RUN npm install --global --ignore-scripts=false esbuild@0.28.1",
-    `FROM ${celldRuntimeBaseImage}`,
+    `FROM ${celldRuntimeRelease.image}`,
     "WORKDIR /app",
     "COPY --from=esbuild --chmod=0555 /usr/local/lib/node_modules/esbuild/bin/esbuild /usr/local/bin/esbuild",
-    "COPY worker.mjs wrangler.jsonc /app/",
+    "COPY worker.mjs wrangler.jsonc runtime-artifact.json /app/",
     "USER 65532:65532",
     "",
   ].join("\n");
   await writeFile(join(contextPath, "wrangler.jsonc"), wrangler);
+  const runtimeManifestJson = `${JSON.stringify(runtimeManifest, null, 2)}\n`;
+  await writeFile(join(contextPath, "runtime-artifact.json"), runtimeManifestJson);
   await writeFile(join(contextPath, "Dockerfile"), dockerfile);
-  await writeFile(join(contextPath, ".dockerignore"), "*\n!worker.mjs\n!wrangler.jsonc\n!Dockerfile\n!.dockerignore\n");
+  await writeFile(join(contextPath, ".dockerignore"), "*\n!worker.mjs\n!wrangler.jsonc\n!runtime-artifact.json\n!Dockerfile\n!.dockerignore\n");
   const worker = await readFile(workerPath);
   const sourceDigest = `sha256:${createHash("sha256")
     .update(worker)
     .update("\0")
     .update(wrangler)
+    .update("\0")
+    .update(runtimeManifestJson)
     .update("\0")
     .update(dockerfile)
     .digest("hex")}`;
@@ -1404,8 +1628,16 @@ async function celldActorRuntimeArtifact(
     sourceDescriptor: {
       contextPath,
       dockerfilePath: join(contextPath, "Dockerfile"),
-      baseImage: celldRuntimeBaseImage,
+      baseImage: celldRuntimeRelease.image,
       protocol: "applik8s.actorAuthority/v1alpha1",
+      runtimeManifest: {
+        apiVersion: runtimeManifest.apiVersion,
+        manifestDigest: runtimeManifest.manifestDigest,
+        workerVersion: runtimeManifest.workerVersion,
+        celldVersion: runtimeManifest.celldVersion,
+        applicationGraphDigest: runtimeManifest.applicationGraphDigest,
+        protocolRevision: runtimeManifest.protocolRevision,
+      },
     },
     logicalReference,
   };

@@ -10,21 +10,18 @@ import {
   canonicalJsonV1Value,
   createApplicationAdmissionContextV1,
   type JsonObject,
-  SignedEnvelopeV1ValidationError,
   validateApplicationAdmissionContextV1WithoutReceipt,
   withApplicationAdmissionExecutionV1,
   withApplicationAdmissionTraceV1,
 } from '@applik8s/core';
 import { nodeKeyedDigestHex } from '@applik8s/runtime/node-integrity';
 import {
-  createSignedEnvelopeCodec,
-  SignedEnvelopeRuntimeError,
+  createRollingSignedEnvelopeCodec,
   signedEnvelopeUtf8Key,
-  signLegacyCompactHmacJsonForRollingMigration,
   staticSignedEnvelopeKeyProvider,
-  verifyLegacyCompactHmacJson,
 } from '@applik8s/runtime/signed-envelope';
 import { normalizeSchema } from '@applik8s/sdk/schema-runtime';
+import { observeApplicationRuntimeIntegrityEnvelope } from './application-telemetry-runtime.js';
 import type { ApplicationTaskServicePrincipal } from './application-workflows.js';
 
 const protocol = 'applik8s.task-query/v1alpha1';
@@ -351,9 +348,15 @@ async function encodeToken(
   if (new TextEncoder().encode(canonicalJsonV1String(payload)).byteLength > maximumTokenBytes) {
     throw new Error('applik8s-task-query-principal-too-large');
   }
-  return signLegacyCompactHmacJsonForRollingMigration(payload, {
-    key: signedEnvelopeUtf8Key(secret),
-    maximumEncodedBytes: maximumEncodedTokenBytes,
+  const issuedAt = token.context
+    ? Date.parse(token.context.principal.admittedAt)
+    : token.expiresAt - maximumTokenLifetimeMs;
+  if (!Number.isSafeInteger(issuedAt) || issuedAt < 0) {
+    throw new Error('applik8s-task-query-admission-time-invalid');
+  }
+  return taskQueryTokenCodec(secret, issuedAt).sign(token, {
+    issuedAt,
+    expiresAt: token.expiresAt,
   });
 }
 
@@ -363,45 +366,35 @@ async function decodeToken(
   now: number,
 ): Promise<ApplicationTaskQueryToken | undefined> {
   try {
-    const envelope = await taskQueryTokenCodec(secret, now).verify(encoded);
-    return validateTaskQueryToken(envelope.payload);
-  } catch (cause) {
-    const legacyCandidate = (
-      cause instanceof SignedEnvelopeV1ValidationError
-      && cause.code === 'SIGNED_ENVELOPE_VERSION_INVALID'
-    ) || (
-      cause instanceof SignedEnvelopeRuntimeError
-      && cause.code === 'SIGNED_ENVELOPE_MALFORMED'
-    );
-    if (!legacyCandidate) return undefined;
-  }
-  try {
-    const value = await verifyLegacyCompactHmacJson(encoded, {
-      key: signedEnvelopeUtf8Key(secret),
-      maximumEncodedBytes: maximumEncodedTokenBytes,
-      validatePayload(value) {
-        validateTaskQueryToken(value);
-        return value;
-      },
-    });
-    return validateTaskQueryToken(value);
+    return await taskQueryTokenCodec(secret, now).verify(encoded);
   } catch {
     return undefined;
   }
 }
 
 function taskQueryTokenCodec(secret: string, now: number) {
-  return createSignedEnvelopeCodec({
+  const key = signedEnvelopeUtf8Key(secret);
+  return createRollingSignedEnvelopeCodec<ApplicationTaskQueryToken, ApplicationTaskQueryToken>({
     purpose: tokenPurpose,
     keys: staticSignedEnvelopeKeyProvider({
-      current: { id: 'task-query-current', key: signedEnvelopeUtf8Key(secret) },
+      current: { id: 'task-query-current', key },
     }),
     now: () => now,
     maximumLifetimeMs: maximumTokenLifetimeMs,
     maximumEncodedBytes: maximumEncodedTokenBytes,
     validatePayload(value) {
-      validateTaskQueryToken(value);
-      return value;
+      return validateTaskQueryToken(value);
+    },
+    observe: observeApplicationRuntimeIntegrityEnvelope,
+    writer: 'legacy',
+    legacy: {
+      key,
+      validatePayload: validateTaskQueryToken,
+      toCurrent: (payload) => payload,
+      fromCurrent: (payload) => canonicalJsonV1Value(
+        payload,
+        canonicalJsonCompatibleV1Policy,
+      ),
     },
   });
 }

@@ -20,6 +20,7 @@ import { nodeLegacyHmacBase64Url } from '@applik8s/runtime/node-integrity';
 import {
   createRollingSignedEnvelopeCodec,
   type RollingSignedEnvelopeCodec,
+  type SignedEnvelopeCodecObserver,
   signedEnvelopeUtf8Key,
   staticSignedEnvelopeKeyProvider,
 } from '@applik8s/runtime/signed-envelope';
@@ -93,6 +94,8 @@ export interface Applik8sKubernetesGatewayOptions {
   readonly readiness?: () => void | Promise<void>;
   /** Framework-owned bounded evidence sink; failures never alter the gateway result. */
   readonly observeAdmission?: ApplicationAdmissionObserverV1;
+  /** Framework-owned payload-free envelope evidence sink. */
+  readonly observeRuntimeIntegrity?: SignedEnvelopeCodecObserver;
   /** Internal semantic query boundary supplied by the selected application telemetry runtime. */
   readonly queryTelemetry?: {
     run<TResult>(
@@ -267,6 +270,9 @@ export function createApplik8sKubernetesGateway(options: Applik8sKubernetesGatew
     maximumLifetimeMs: cursorTtlSeconds * 1_000,
     maximumEncodedBytes: 64 * 1_024,
     validatePayload: validateGatewayCursor,
+    ...(options.observeRuntimeIntegrity
+      ? { observe: options.observeRuntimeIntegrity }
+      : {}),
     writer: 'legacy',
     legacy: {
       key: cursorKey,

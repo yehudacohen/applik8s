@@ -52,7 +52,7 @@ export function applicationProviderGuaranteesForGraph(
     .filter((node): node is ApplicationProviderNode => node.kind === 'provider')
     .map((provider) => {
       const implementation = selectedImplementation(provider, request.profile, request.target, request.graph);
-      const support = providerSupport(provider, implementation, request.target);
+      const support = providerSupport(provider, implementation, request.target, request.graph, request.profile);
       const scheduleFindings = provider.interface === 'Scheduler'
         ? scheduleProviderFindings(request.graph, provider, implementation, request.target)
         : [];
@@ -172,7 +172,8 @@ function selectedImplementation(
   const implementation = branch.implementation.split('/')[0] ?? branch.implementation;
   return implementation === 'application-target-provider-selection'
     ? selectedTargetImplementation(objectValue(branch.config), target) ?? implementation
-    : implementation;
+    : targetImplementationAliases[target]?.[provider.interface]?.[implementation]
+      ?? implementation;
 }
 
 function selectedTargetImplementation(
@@ -182,12 +183,13 @@ function selectedTargetImplementation(
   if (!config) return undefined;
   const selection = config.kind === 'application-target-provider-selection'
     ? config
-    : Object.values(config)
+    : objectValue(config.targetSelection) ?? Object.values(config)
         .map(objectValue)
         .find((candidate) => candidate?.kind === 'application-target-provider-selection');
   const targets = objectValue(selection?.targets);
   const selected = objectValue(targets?.[target] ?? (target === 'aws-local' ? targets?.aws : undefined));
-  return typeof selected?.kind === 'string' ? selected.kind : undefined;
+  const implementation = selected?.implementation ?? selected?.kind;
+  return typeof implementation === 'string' ? implementation : undefined;
 }
 
 const targetImplementationAliases: Readonly<Record<ApplicationDeploymentTargetKind, Readonly<Record<string, Readonly<Record<string, string>>>>>> = {
@@ -241,23 +243,35 @@ function providerSupport(
   provider: ApplicationProviderNode,
   implementation: string,
   target: ApplicationDeploymentTargetKind,
+  graph: ApplicationGraph,
+  profile?: string,
 ): boolean {
+  const aliasOf = objectValue(provider.config)?.aliasOf;
+  if (typeof aliasOf === 'string') {
+    const targetProvider = graph.nodes.find((node): node is ApplicationProviderNode => node.kind === 'provider' && node.id === aliasOf);
+    if (!targetProvider) return false;
+    return providerSupport(targetProvider, selectedImplementation(targetProvider, profile, target, graph), target, graph, profile);
+  }
   const capability = provider.interface;
   // A callable provider is not an infrastructure implementation that needs a
   // bespoke target contributor. Its compiler-retained runtime binding gives
   // the generated local/Kubernetes workload exact configuration, Secret
   // references, readiness dependencies, operations, and access requirements.
   // Treat that generic framework-managed path as bounded only on targets where
-  // those projections are maintained. AWS stays fail-closed until the same
-  // binding is proven through its task-role and secret materializer.
+  // those projections are maintained. Physical secret and network lowering is
+  // still checked independently by the runtime-access planner.
   if (
-    (target === 'local' || target === 'kubernetes')
+    (target === 'local' || target === 'kubernetes' || target === 'aws' || target === 'aws-local')
     && hasFrameworkManagedCallableRuntime(provider.config?.callableRuntime, target)
   ) {
     return true;
   }
   if (target === 'local') return Boolean(localProviders[capability]?.includes(implementation));
-  if (target === 'aws-local' || target === 'aws') return Boolean(awsProviders[capability]?.includes(implementation));
+  if (target === 'aws-local') {
+    if (awsLocalUnsupportedProviders[capability]?.includes(implementation)) return false;
+    return Boolean(awsProviders[capability]?.includes(implementation));
+  }
+  if (target === 'aws') return Boolean(awsProviders[capability]?.includes(implementation));
   if (target === 'kubernetes' && kubernetesProviders[capability]) {
     return kubernetesProviders[capability]?.includes(implementation) ?? false;
   }
@@ -269,7 +283,7 @@ function providerSupport(
 
 function hasFrameworkManagedCallableRuntime(
   candidate: unknown,
-  target: 'local' | 'kubernetes',
+  target: 'local' | 'kubernetes' | 'aws' | 'aws-local',
 ): boolean {
   const binding = objectValue(candidate);
   if (!binding || typeof binding.kind !== 'string') return false;
@@ -332,6 +346,20 @@ const awsProviders: Readonly<Record<string, readonly string[]>> = {
   LakehouseQuery: ['athena-queries'],
   WorkflowEngine: ['hatchet'],
   ActorRuntime: ['celld-actors', 'deterministic-local-actors'],
+  AI: ['envoy-ai-gateway'],
+  Search: ['postgres-search'],
+  NotificationDelivery: ['local-inspectable', 'smtp'],
+  PaymentProvider: ['local-simulated', 'stripe'],
+};
+
+/**
+ * MiniStack is a deliberately bounded AWS-local emulator, not an assertion
+ * that every real-AWS lifecycle is emulated. Keep gaps here so a provider can
+ * remain native on AWS while failing closed before any local Alchemy effects.
+ */
+const awsLocalUnsupportedProviders: Readonly<Record<string, readonly string[]>> = {
+  EventLog: ['kinesis'],
+  EventSource: ['kinesis'],
 };
 
 const kubernetesProviders: Readonly<Record<string, readonly string[]>> = {
@@ -341,6 +369,18 @@ const kubernetesProviders: Readonly<Record<string, readonly string[]>> = {
   EventSource: ['nats-jetstream', 'kubernetes-watch'],
   Queue: ['kubernetes-configmap-queue'],
   ObjectStorage: ['s3', 'kubernetes-configmap-objects'],
+  AnalyticalDatabase: ['clickhouse'],
+  AI: ['ai-deterministic', 'envoy-ai-gateway'],
+  Authorization: ['application-authorization'],
+  IdentityProvider: ['identity-provider'],
+  NotificationDelivery: ['local-inspectable', 'smtp'],
+  OAuthAuthorizationServer: ['oauth-authorization-server'],
+  PaymentProvider: ['local-simulated', 'stripe'],
+  Search: ['opensearch', 'postgres-search'],
+  StructuredGeneration: [
+    'structured-generation-deterministic',
+    'structured-generation-http',
+  ],
   ApplicationHost: ['managed-application-host', 'kubernetes-application-host'],
   HttpExposure: ['ingress', 'node-port'],
   DnsPublication: ['external-dns'],
@@ -348,6 +388,12 @@ const kubernetesProviders: Readonly<Record<string, readonly string[]>> = {
   Scheduler: ['kubernetes-cronjob-scheduler', 'hatchet-scheduler'],
   WorkflowEngine: ['hatchet'],
   Observability: ['clickstack', 'otlp'],
+  // Kubernetes workloads can consume externally managed S3/Athena through
+  // workload identity or explicit Secret projections. The provider remains
+  // external-controller owned; support here records the bounded runtime
+  // contract rather than claiming Kubernetes lifecycle ownership of AWS.
+  LakehouseDataset: ['s3-dataset'],
+  LakehouseQuery: ['athena-queries'],
   ActorRuntime: ['celld-actors'],
 };
 

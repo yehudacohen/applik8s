@@ -1,3 +1,4 @@
+// typecast-file-boundary: OpenTelemetry SDK records and decoded OTLP inputs are narrowed at this provider adapter after bounded protocol validation.
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type {
   ApplicationTelemetryBoundary,

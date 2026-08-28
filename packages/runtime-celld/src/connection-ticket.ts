@@ -1,3 +1,4 @@
+// typecast-file-boundary: Celld connection tickets cross the signed transport boundary here and are validated before typed authority use.
 import {
   type ApplicationAuthorizationReceipt,
   canonicalJsonCompatibleV1Policy,
@@ -6,6 +7,7 @@ import {
   type JsonValue,
   validateApplicationAuthorizationReceipt,
 } from '@applik8s/core';
+import { observeApplicationRuntimeIntegrityEnvelope } from '@applik8s/applik8s/telemetry-runtime';
 import {
   createSignedEnvelopeCodec,
   signedEnvelopeUtf8Key,
@@ -111,6 +113,7 @@ function actorConnectionTicketCodec(
       : options.now,
     maximumLifetimeMs: CELLD_ACTOR_CONNECTION_TICKET_MAXIMUM_LIFETIME_MS,
     maximumEncodedBytes: CELLD_ACTOR_CONNECTION_TICKET_MAXIMUM_BYTES,
+    observe: observeApplicationRuntimeIntegrityEnvelope,
     validatePayload(value: JsonValue) {
       validateClaims(
         value,

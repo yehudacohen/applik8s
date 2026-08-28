@@ -40,20 +40,10 @@ export function typeKroGroupPrerequisites(
   graph: ApplicationDeploymentGraph,
   nodeId: string,
 ): readonly string[] {
-  const typeKroNodes = new Set(
-    graph.nodes
-      .filter(
-        (node) =>
-          node.kind === "kubernetesComposition" ||
-          node.kind === "kubernetesDirect",
-      )
-      .map((node) => node.id),
-  );
   return graph.edges
     .filter(
       (edge) =>
         edge.to === nodeId &&
-        typeKroNodes.has(edge.from) &&
         (edge.relationship === "requiresReady" ||
           edge.relationship === "installsApi" ||
           edge.relationship === "owns"),
@@ -65,8 +55,12 @@ export function typeKroGroupPrerequisites(
 /**
  * Add deployment-graph ordering without changing TypeKro's canonical
  * `dependencies` field. Every declaration in the consumer group receives the
- * outer prerequisite, including declarations that already have native
- * TypeKro dependencies. Those two dependency sources are additive.
+ * outer prerequisite, including external Alchemy providers such as generated
+ * Secrets and declarations that already have native TypeKro dependencies.
+ * Those dependency sources are additive. Keeping the prerequisite as an
+ * Alchemy Input is also a deletion contract: the TypeKro consumer must reach
+ * terminal deletion before Alchemy may remove the credential or substrate it
+ * needs to finalize.
  */
 export function withOrderingOnlyPrerequisites(
   declarations: readonly AlchemyResourceDeclaration[],

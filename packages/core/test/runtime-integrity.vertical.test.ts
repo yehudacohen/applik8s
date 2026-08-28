@@ -1,3 +1,4 @@
+// typecast-file-boundary: Adversarial protocol fixtures intentionally reconstruct malformed and legacy values to verify every Runtime Integrity decoder fails closed.
 import {
   ApplicationAdmissionContextV1Error,
   type ApplicationGraph,
@@ -608,3 +609,4 @@ describe('Admission Context v1', () => {
     })).toThrow(/belongs to/u);
   });
 });
+// typecast-file-boundary: Adversarial protocol fixtures intentionally reconstruct malformed and legacy values to verify every Runtime Integrity decoder fails closed.

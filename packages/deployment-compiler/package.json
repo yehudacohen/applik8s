@@ -20,6 +20,11 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "default": "./dist/index.js"
+    },
+    "./runtime-access-parity": {
+      "types": "./dist/kubernetes-runtime-access-parity.d.ts",
+      "import": "./dist/kubernetes-runtime-access-parity.js",
+      "default": "./dist/kubernetes-runtime-access-parity.js"
     }
   },
   "dependencies": {

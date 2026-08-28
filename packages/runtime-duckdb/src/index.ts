@@ -162,7 +162,11 @@ export async function createDuckDbApplicationLakehouseRuntime<TRow extends objec
             throw new ApplicationDuckDbLakehouseLimitError('scannedBytes', maximumScannedBytes, scannedBytes);
           }
           if (snapshot.rows.length > 0) {
-            const statement = duckDbQuery(objectPaths, compiled);
+            const statement = duckDbQuery(
+              objectPaths,
+              compiled,
+              snapshot.schema.jsonSchema,
+            );
             const reader = await connection.runAndReadAll(statement.sql, statement.values);
             const providerRows = reader.getRowObjectsJson();
             const expected = await deterministic.query(request);
@@ -597,6 +601,7 @@ function sqlString(value: string): string {
 function duckDbQuery(
   objectPaths: readonly string[],
   compiled: import('@applik8s/applik8s').CompiledApplicationLakehouseQuery,
+  schema: Readonly<Record<string, unknown>>,
 ): { readonly sql: string; readonly values: import('@duckdb/node-api').DuckDBValue[] } {
   const values: import('@duckdb/node-api').DuckDBValue[] = [];
   const filter = compiled.where ? ` where ${duckDbFilter(compiled.where, values)}` : '';
@@ -604,10 +609,67 @@ function duckDbQuery(
     ? ` order by ${compiled.orderBy.map((order) => `${duckDbPath(order.path)} ${order.direction}`).join(', ')}, "__applik8s_row_id" asc`
     : '';
   const paths = `[${objectPaths.map((path) => `'${sqlString(path)}'`).join(', ')}]`;
+  const columns = duckDbColumns(schema);
   return {
-    sql: `select * exclude ("__applik8s_row_id") from read_json_auto(${paths}, format = 'newline_delimited')${filter}${ordering}`,
+    // The immutable manifest schema is authoritative. read_json_auto() can
+    // reinterpret ISO-looking strings as DATE/TIMESTAMP values and thereby
+    // change both their lexical value and canonical digest. Explicit columns
+    // preserve the same portable value algebra used by every provider.
+    sql: `select * exclude ("__applik8s_row_id") from read_json(${paths}, format = 'newline_delimited', columns = ${columns})${filter}${ordering}`,
     values,
   };
+}
+
+function duckDbColumns(schema: Readonly<Record<string, unknown>>): string {
+  if (schema.type !== 'object' || !schema.properties || typeof schema.properties !== 'object' || Array.isArray(schema.properties)) {
+    throw new Error('DuckDB lakehouse queries require an object row schema with explicit properties.');
+  }
+  const properties = schema.properties as Readonly<Record<string, unknown>>;
+  return `{${[
+    ...Object.entries(properties).map(([name, value]) =>
+      `${sqlIdentifier(name)}: '${sqlString(duckDbSchemaType(value, name))}'`),
+    `${sqlIdentifier('__applik8s_row_id')}: 'VARCHAR'`,
+  ].join(', ')}}`;
+}
+
+function duckDbSchemaType(value: unknown, path: string): string {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error(`DuckDB lakehouse schema field ${path} is invalid.`);
+  }
+  const schema = value as Readonly<Record<string, unknown>>;
+  const alternatives = Array.isArray(schema.anyOf)
+    ? schema.anyOf.filter((candidate) =>
+      candidate && typeof candidate === 'object' && !Array.isArray(candidate)
+      && Reflect.get(candidate, 'type') !== 'null')
+    : undefined;
+  if (alternatives) {
+    if (alternatives.length !== 1) return 'JSON';
+    return duckDbSchemaType(alternatives[0], path);
+  }
+  const type = schema.type;
+  if (Array.isArray(type)) {
+    const concrete = type.filter((candidate) => candidate !== 'null');
+    if (concrete.length !== 1) return 'JSON';
+    return duckDbSchemaType({ ...schema, type: concrete[0] }, path);
+  }
+  if (type === 'string') return 'VARCHAR';
+  if (type === 'integer') return 'BIGINT';
+  if (type === 'number') return 'DOUBLE';
+  if (type === 'boolean') return 'BOOLEAN';
+  if (type === 'array') {
+    return schema.items ? `${duckDbSchemaType(schema.items, `${path}[]`)}[]` : 'JSON';
+  }
+  if (type === 'object') {
+    if (!schema.properties || typeof schema.properties !== 'object' || Array.isArray(schema.properties)) return 'JSON';
+    const fields = Object.entries(schema.properties as Readonly<Record<string, unknown>>);
+    if (fields.length === 0) return 'JSON';
+    return `STRUCT(${fields.map(([name, child]) => `${sqlIdentifier(name)} ${duckDbSchemaType(child, `${path}.${name}`)}`).join(', ')})`;
+  }
+  return 'JSON';
+}
+
+function sqlIdentifier(value: string): string {
+  return `"${value.replaceAll('"', '""')}"`;
 }
 
 function duckDbFilter(

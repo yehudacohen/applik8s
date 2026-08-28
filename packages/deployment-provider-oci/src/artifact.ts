@@ -1,3 +1,4 @@
+// typecast-file-boundary: OCI and Alchemy artifact outputs are validated for immutable identity before conversion to deployment-provider records.
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import * as Provider from "alchemy/Provider";
@@ -108,6 +109,10 @@ export interface ApplicationContainerArtifactProviderOptions {
     reference: string,
     signal: AbortSignal,
   ) => Promise<boolean>;
+  readonly localImageDigest?: (
+    reference: string,
+    signal: AbortSignal,
+  ) => Promise<`sha256:${string}`>;
 }
 
 export function applicationContainerArtifactProvider(
@@ -122,8 +127,9 @@ export function applicationContainerArtifactProvider(
       ? defaultBuildScheduler
       : createBuildScheduler(options.maxConcurrentBuilds);
   const localImageExists = options.localImageExists ?? inspectLocalDockerImage;
+  const localImageDigest = options.localImageDigest ?? inspectLocalDockerImageDigest;
   return Provider.succeed(ApplicationContainerArtifact, {
-    version: 2,
+    version: 3,
     read: ({ output }) =>
       Effect.succeed(output ? completePublicationReferences(output) : output),
     list: () => Effect.succeed([]),
@@ -146,15 +152,13 @@ export function applicationContainerArtifactProvider(
           assertArtifactProps(news);
           return scheduleBuild(signal, async () => {
             if (options.build) {
-              return projectBuildResult(
-                news,
-                await options.build(buildOptions(news, options, signal)),
-              );
+              const built = await options.build(buildOptions(news, options, signal));
+              return projectBuildResult(news, await ensureLocalImmutableReference(news, built, localImageDigest, signal));
             }
             const built = await buildContainer(
               buildOptions(news, options, signal),
             );
-            return projectBuildResult(news, {
+            return projectBuildResult(news, await ensureLocalImmutableReference(news, {
               deploymentNodeId: news.deploymentNodeId,
               sourceDigest: news.sourceDigest,
               immutableReference: built.imageUri,
@@ -164,7 +168,7 @@ export function applicationContainerArtifactProvider(
               ...(built.digest ? { digest: built.digest } : {}),
               pushed: built.pushed,
               platforms: built.platforms,
-            });
+            }, localImageDigest, signal));
           });
         },
         catch: (cause) =>
@@ -254,6 +258,46 @@ async function inspectLocalDockerImage(
       `Could not verify local container image ${reference}: ${stderr.trim() || (cause instanceof Error ? cause.message : String(cause))}`,
     );
   }
+}
+
+async function inspectLocalDockerImageDigest(
+  reference: string,
+  signal: AbortSignal,
+): Promise<`sha256:${string}`> {
+  signal.throwIfAborted();
+  try {
+    const { stdout } = await execFileAsync(
+      "docker",
+      ["image", "inspect", "--format={{.Id}}", reference],
+      { signal, encoding: "utf8" },
+    );
+    const digest = stdout.trim();
+    if (!/^sha256:[a-f0-9]{64}$/.test(digest)) {
+      throw new Error(`Docker returned invalid image identity ${JSON.stringify(digest)}.`);
+    }
+    return digest as `sha256:${string}`;
+  } catch (cause) {
+    signal.throwIfAborted();
+    const stderr = cause && typeof cause === "object" && "stderr" in cause
+      ? String(cause.stderr).trim()
+      : "";
+    throw new Error(
+      `Could not resolve immutable local image identity for ${reference}: ${stderr || (cause instanceof Error ? cause.message : String(cause))}`,
+    );
+  }
+}
+
+async function ensureLocalImmutableReference(
+  props: ApplicationContainerArtifactProps,
+  built: ApplicationContainerArtifactBuildResult,
+  localImageDigest: (reference: string, signal: AbortSignal) => Promise<`sha256:${string}`>,
+  signal: AbortSignal,
+): Promise<ApplicationContainerArtifactBuildResult> {
+  if (props.registry.type !== "orbstack" || built.immutableReference !== built.taggedReference || built.digest !== undefined) {
+    return built;
+  }
+  const digest = await localImageDigest(built.taggedReference, signal);
+  return { ...built, immutableReference: digest, digest };
 }
 
 function projectBuildResult(
@@ -445,3 +489,4 @@ function assertArtifactProps(props: ApplicationContainerArtifactProps): void {
     }
   }
 }
+// typecast-file-boundary: OCI and Alchemy artifact outputs are validated for immutable identity before conversion to deployment-provider records.

@@ -1,9 +1,12 @@
+// typecast-file-boundary: Compiler lakehouse fixtures inspect generated publication metadata through validated partial artifact shapes.
 import { mkdtemp, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { emitGeneratedApplicationLakehousePublishers } from '../src/application-lakehouse-publishers/index.js';
 import { discoverApplicationGraphWithExports } from '../src/pipeline/index.js';
+
+const lakehouseEntrypoint = new URL('./fixtures/v08-lakehouse-app.ts', import.meta.url).pathname;
 
 describe('v0.8 lakehouse publication discovery', () => {
   it('lowers exported publications into one provider-bound execution graph', async () => {
@@ -75,11 +78,13 @@ describe('v0.8 lakehouse publication discovery', () => {
     ]));
 
     const [artifact] = await emitGeneratedApplicationLakehousePublishers({
+      entrypoint: lakehouseEntrypoint,
       graph: discovered.value.graph,
       outDir: await mkdtemp(join(tmpdir(), 'applik8s-lakehouse-publisher-')),
       executionTarget: 'kubernetes',
     });
     const [awsArtifact] = await emitGeneratedApplicationLakehousePublishers({
+      entrypoint: lakehouseEntrypoint,
       graph: discovered.value.graph,
       outDir: await mkdtemp(join(tmpdir(), 'applik8s-lakehouse-publisher-aws-')),
       executionTarget: 'aws',
@@ -118,7 +123,11 @@ describe('v0.8 lakehouse publication discovery', () => {
     expect(awsBundle).not.toContain('APPLIK8S_NATS_STREAM');
     expect(bundled).not.toContain('createDuckDbApplicationLakehouseRuntime');
     expect(awsBundle).not.toContain('createDuckDbApplicationLakehouseRuntime');
-    expect(localBundle).toContain('createDuckDbApplicationLakehouseRuntime');
+    // Minification may rewrite the imported constructor identifier. Assert the
+    // stable provider protocol and lease machinery rather than a private local
+    // symbol name.
+    expect(localBundle).toContain('applik8s.duckdbLakehouse/v1alpha1');
+    expect(localBundle).toContain('runtime.lease.json');
     expect(localBundle).toContain('startJetStreamEventConsumer');
     expect(localBundle).not.toContain('APPLIK8S_KINESIS_CHECKPOINT_TABLE');
     expect(Buffer.byteLength(bundled)).toBeLessThan(2 * 1024 * 1024);
@@ -135,6 +144,7 @@ describe('v0.8 lakehouse publication discovery', () => {
     if (!discovered.ok) return;
 
     const [artifact] = await emitGeneratedApplicationLakehousePublishers({
+      entrypoint: new URL('./fixtures/v08-observed-lakehouse-app.ts', import.meta.url).pathname,
       graph: discovered.value.graph,
       outDir: await mkdtemp(join(tmpdir(), 'applik8s-observed-lakehouse-publisher-')),
       executionTarget: 'kubernetes',
@@ -166,3 +176,4 @@ describe('v0.8 lakehouse publication discovery', () => {
     expect(Buffer.byteLength(bundled)).toBeLessThan(3 * 1024 * 1024);
   }, 60_000);
 });
+// typecast-file-boundary: Compiler lakehouse fixtures inspect generated publication metadata through validated partial artifact shapes.

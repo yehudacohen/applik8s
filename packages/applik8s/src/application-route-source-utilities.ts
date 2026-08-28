@@ -1,4 +1,5 @@
-import { transformSync } from 'esbuild';
+import * as nodeModule from 'node:module';
+import { applicationTransformSync } from './application-build-tool.js';
 
 export function normalizeSerializableFunctionSource(source: string): string {
   if (/^async\s*\(/.test(source)) {
@@ -8,8 +9,23 @@ export function normalizeSerializableFunctionSource(source: string): string {
 }
 
 export function transpileApplicationCallbackExpression(source: string): string {
+  const normalized = normalizeSerializableFunctionSource(source.trim());
+  try {
+    Function(`return (${normalized});`);
+    return normalized;
+  } catch {
+    // Authored callback metadata can retain TypeScript annotations. Production
+    // Node runtimes have a built-in syntax eraser, while Bun-based authoring
+    // and older supported tool hosts fall back to the package's build-time
+    // esbuild dependency. Resolve esbuild dynamically so it is not bundled
+    // into every generated operation image (where its worker-thread bootstrap
+    // is both unnecessary and invalid inside a single-file ESM artifact).
+  }
   const wrapped = `const __applik8sRouteHandler = (${source});\nexport { __applik8sRouteHandler };\n`;
-  const output = transformSync(wrapped, { loader: 'ts', format: 'esm', target: 'node22' }).code.trim();
+  const stripTypeScriptTypes = Reflect.get(nodeModule, 'stripTypeScriptTypes');
+  const output = typeof stripTypeScriptTypes === 'function'
+    ? String(stripTypeScriptTypes(wrapped, { mode: 'transform' })).trim()
+    : applicationBuildToolTransform(wrapped, 'ts');
   const prefix = 'const __applik8sRouteHandler = ';
   const start = output.indexOf(prefix);
   const end = output.lastIndexOf(';\nexport');
@@ -19,9 +35,31 @@ export function transpileApplicationCallbackExpression(source: string): string {
   return output.slice(start + prefix.length, end).trim();
 }
 
+function applicationBuildToolTransform(
+  source: string,
+  loader: 'js' | 'jsx' | 'ts' | 'tsx',
+): string {
+  return applicationTransformSync(
+    source,
+    { loader, format: 'esm', target: 'node22' },
+  ).code.trim();
+}
+
 export function transpileApplicationRouteModuleForDependencies(source: string, file: string): string {
   try {
-    return transformSync(source, { loader: file.endsWith('.tsx') || file.endsWith('.jsx') ? 'tsx' : file.endsWith('.js') || file.endsWith('.mjs') || file.endsWith('.cjs') ? 'js' : 'ts', format: 'esm', target: 'node22' }).code;
+    const loader = file.endsWith('.tsx')
+      ? 'tsx'
+      : file.endsWith('.jsx')
+        ? 'jsx'
+        : file.endsWith('.js') || file.endsWith('.mjs') || file.endsWith('.cjs')
+          ? 'js'
+          : 'ts';
+    if (loader === 'js') return source;
+    const stripTypeScriptTypes = Reflect.get(nodeModule, 'stripTypeScriptTypes');
+    if (loader === 'ts' && typeof stripTypeScriptTypes === 'function') {
+      return String(stripTypeScriptTypes(source, { mode: 'transform' }));
+    }
+    return applicationBuildToolTransform(source, loader);
   } catch (_error) {
     return source;
   }

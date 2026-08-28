@@ -2,7 +2,7 @@
 import { randomBytes } from 'node:crypto';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { resolve } from 'node:path';
-import type { DevelopmentApprovalClass, DevelopmentChangePlan, DevelopmentConversationReferent, DevelopmentVisualSelection } from './contracts.js';
+import type { DevelopmentApprovalClass, DevelopmentChangePlan, DevelopmentConversationReferent, DevelopmentSelectionResolver, DevelopmentVisualSelection } from './contracts.js';
 import type {
   DevelopmentAgentProvider,
   DevelopmentEvent,
@@ -69,6 +69,7 @@ export interface DevelopmentDaemonOptions {
   readonly state?: () => Promise<Omit<DevelopmentDaemonState, 'project' | 'target'>>;
   readonly validationCommands?: DevelopmentValidationCommands;
   readonly knownSecretValues?: readonly string[];
+  readonly selectionResolver?: DevelopmentSelectionResolver;
   /** Optional local coding provider. The portal remains useful without one. */
   readonly agentProvider?: DevelopmentAgentProvider;
 }
@@ -105,6 +106,7 @@ export async function createDevelopmentDaemon(options: DevelopmentDaemonOptions)
     journal,
     ...(options.validationCommands ? { validationCommands: options.validationCommands } : {}),
     ...(options.knownSecretValues ? { knownSecretValues: options.knownSecretValues } : {}),
+    ...(options.selectionResolver ? { selectionResolver: options.selectionResolver } : {}),
   });
   const agentSessions = await recoverAgentSessions(options.agentProvider, journal);
   const server = createServer(async (request, response) => {
@@ -122,11 +124,18 @@ export async function createDevelopmentDaemon(options: DevelopmentDaemonOptions)
       const effectivePort = new URL(origin).port;
       const configuredOrigins = typeof options.allowedOrigins === 'function' ? options.allowedOrigins() : options.allowedOrigins;
       const allowedOrigins = new Set([origin, `http://localhost:${effectivePort}`, ...(configuredOrigins ?? [])]);
-      if (request.method === 'OPTIONS' && url.pathname === '/v1/selections') {
-        authorizeBridgePreflight(request, allowedOrigins);
+      if (request.method === 'OPTIONS' && (url.pathname === '/v1/selections' || url.pathname === '/v1/bridge-context')) {
+        authorizeBridgePreflight(request, allowedOrigins, url.pathname === '/v1/bridge-context' ? 'GET' : 'POST');
         bridgeCors(response, request);
         response.statusCode = 204;
         response.end();
+        return;
+      }
+      if (request.method === 'GET' && url.pathname === '/v1/bridge-context') {
+        authorizeBridge(request, allowedOrigins, bridgeToken, usedBridgeNonces);
+        bridgeCors(response, request);
+        response.setHeader('cross-origin-resource-policy', 'cross-origin');
+        json(response, 200, { projectId: options.projectName, revision: currentRevision() });
         return;
       }
       if (request.method === 'POST' && url.pathname === '/v1/selections') {
@@ -333,19 +342,22 @@ function authorizeBridge(request: IncomingMessage, origins: ReadonlySet<string>,
   usedNonces.add(nonce);
   if (usedNonces.size > 10_000) usedNonces.delete(usedNonces.values().next().value as string);
 }
-function authorizeBridgePreflight(request: IncomingMessage, origins: ReadonlySet<string>): void {
+function authorizeBridgePreflight(request: IncomingMessage, origins: ReadonlySet<string>, method: 'GET' | 'POST'): void {
   assertOrigin(request, origins);
   const requestedMethod = request.headers['access-control-request-method'];
   const requestedHeaders = request.headers['access-control-request-headers']?.toLowerCase().split(',').map((value) => value.trim()) ?? [];
-  if (requestedMethod !== 'POST') throw new DevelopmentAuthorizationError('Development toolbar preflight requested an unsupported method.');
-  if (!['content-type', 'x-applik8s-bridge', 'x-applik8s-bridge-nonce'].every((header) => requestedHeaders.includes(header))) {
+  if (requestedMethod !== method) throw new DevelopmentAuthorizationError('Development toolbar preflight requested an unsupported method.');
+  const requiredHeaders = method === 'POST'
+    ? ['content-type', 'x-applik8s-bridge', 'x-applik8s-bridge-nonce']
+    : ['x-applik8s-bridge', 'x-applik8s-bridge-nonce'];
+  if (!requiredHeaders.every((header) => requestedHeaders.includes(header))) {
     throw new DevelopmentAuthorizationError('Development toolbar preflight omitted required capability headers.');
   }
 }
 function bridgeCors(response: ServerResponse, request: IncomingMessage): void {
   const origin = request.headers.origin;
   if (origin) response.setHeader('access-control-allow-origin', origin);
-  response.setHeader('access-control-allow-methods', 'POST, OPTIONS');
+  response.setHeader('access-control-allow-methods', 'GET, POST, OPTIONS');
   response.setHeader('access-control-allow-headers', 'content-type, x-applik8s-bridge, x-applik8s-bridge-nonce');
   response.setHeader('access-control-max-age', '600');
   response.setHeader('vary', 'origin');

@@ -1,3 +1,4 @@
+// typecast-file-boundary: This executable source audit deliberately traverses heterogeneous TypeScript AST records through checked compiler-node kinds.
 import { readdir, readFile } from 'node:fs/promises';
 import { join, relative } from 'node:path';
 import ts from 'typescript';
@@ -52,6 +53,17 @@ const admissionObservationConsumers = new Set([
   'packages/compiler/src/application-workflows/source.ts',
   'packages/runtime-ai/src/agent-gateway.ts',
   'packages/server/src/kubernetes-gateway.ts',
+]);
+const signedEnvelopeObservationConsumers = new Map([
+  ['packages/applik8s/src/application-lakehouse.ts', 'observeApplicationRuntimeIntegrityEnvelope'],
+  ['packages/applik8s/src/application-object-storage-gateway.ts', 'observeApplicationRuntimeIntegrityEnvelope'],
+  ['packages/applik8s/src/command-gateway.ts', 'observeApplicationRuntimeIntegrityEnvelope'],
+  ['packages/applik8s/src/query-gateway.ts', 'observeApplicationRuntimeIntegrityEnvelope'],
+  ['packages/applik8s/src/search-cursor-codec.ts', 'observeApplicationRuntimeIntegrityEnvelope'],
+  ['packages/applik8s/src/stream-subscription-gateway.ts', 'observeApplicationRuntimeIntegrityEnvelope'],
+  ['packages/applik8s/src/task-query-runtime.ts', 'observeApplicationRuntimeIntegrityEnvelope'],
+  ['packages/runtime-celld/src/connection-ticket.ts', 'observeApplicationRuntimeIntegrityEnvelope'],
+  ['packages/server/src/kubernetes-gateway.ts', 'observeRuntimeIntegrity'],
 ]);
 const expectedInventoryPaths = new Set([
   'packages/applik8s/src/command-gateway.ts',
@@ -239,6 +251,13 @@ for (const path of admissionObservationConsumers) {
   }
   if (!source.includes('applicationAdmissionRejectionCodeV1')) {
     findings.push(`${path} retains an unbounded admission rejection classifier.`);
+  }
+}
+
+for (const [path, marker] of signedEnvelopeObservationConsumers) {
+  const source = await readFile(join(root, path), 'utf8');
+  if (!source.includes(marker)) {
+    findings.push(`${path} does not expose the shared payload-free signed-envelope observation seam.`);
   }
 }
 

@@ -1,5 +1,8 @@
 // typecast-file-boundary: AWS Scheduler and SQS admissions are decoded from SDK transport values and validated before execution.
 import { createHash, randomUUID } from 'node:crypto'
+import { type ApplicationScheduleAdmissionRunner, type ApplicationScheduleConvergenceResult, type ApplicationScheduleDefinitionContract, type ApplicationScheduleInstance, type ApplicationScheduleManagementReceipt, type ApplicationScheduleStateAuthority, applicationScheduleImmediateInvocationAdmission, applicationScheduleOccurrenceId, applicationScheduleProjectedDesiredState } from '@applik8s/applik8s/schedule-provider-runtime'
+import { type ApplicationAdmissionInvocationContextV1, canonicalJsonCompatibleV1Policy, canonicalJsonV1String } from '@applik8s/core'
+import { createPostgresApplicationScheduleStateAuthority } from '@applik8s/runtime-postgres/schedule-state'
 import {
   CreateScheduleCommand,
   DeleteScheduleCommand,
@@ -12,12 +15,9 @@ import {
   ChangeMessageVisibilityCommand,
   DeleteMessageCommand,
   ReceiveMessageCommand,
-  SQSClient,
   type ReceiveMessageCommandOutput,
+  SQSClient,
 } from '@aws-sdk/client-sqs'
-import { applicationScheduleImmediateInvocationAdmission, applicationScheduleOccurrenceId, applicationScheduleProjectedDesiredState, type ApplicationScheduleAdmissionRunner, type ApplicationScheduleConvergenceResult, type ApplicationScheduleDefinitionContract, type ApplicationScheduleInstance, type ApplicationScheduleManagementReceipt, type ApplicationScheduleStateAuthority } from '@applik8s/applik8s'
-import { type ApplicationAdmissionInvocationContextV1, canonicalJsonCompatibleV1Policy, canonicalJsonV1String } from '@applik8s/core'
-import { createPostgresApplicationScheduleStateAuthority } from '@applik8s/runtime-postgres/schedule-state'
 import postgres, { type Sql } from 'postgres'
 
 export interface AwsApplicationScheduleAdmission {
@@ -84,7 +84,7 @@ export interface AwsApplicationScheduleRuntime {
 
 /**
  * AWS Scheduler runtime used by function-native `.schedule()` calls. Static
- * schedules are reconciled by CloudFormation; dynamic instances use the same
+ * schedules are reconciled as native Alchemy Scheduler resources; dynamic instances use the same
  * group, queue, role, admission envelope, and lifecycle identity.
  */
 export async function createAwsApplicationScheduleRuntime(
@@ -249,7 +249,7 @@ export async function createAwsApplicationScheduleRuntime(
     },
     async recover() {
       const recovered: ApplicationScheduleConvergenceResult[] = []
-      for (const record of await stateAuthority.pending()) {
+      for (const record of await stateAuthority.recoveryCandidates()) {
         if (record.state === 'active') {
           const desired = applicationScheduleProjectedDesiredState(record)
           const state = await project(desired)

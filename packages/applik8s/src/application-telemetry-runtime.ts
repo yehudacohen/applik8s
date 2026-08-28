@@ -1,3 +1,4 @@
+// typecast-file-boundary: Runtime telemetry context is validated by the canonical carrier owner before this adapter restores execution-specific generics.
 import type {
   ApplicationTelemetryBoundaryKind,
   ApplicationTelemetryEnvelopeV1,
@@ -6,6 +7,7 @@ import type {
   ApplicationTelemetryPrincipalClass,
 } from '@applik8s/core';
 import { validateApplicationTelemetryEnvelopeV1 } from '@applik8s/core';
+import type { SignedEnvelopeCodecObserver } from '@applik8s/runtime/signed-envelope';
 
 export interface ApplicationTelemetryBoundary {
   readonly kind: ApplicationTelemetryBoundaryKind;
@@ -179,6 +181,27 @@ export function countApplicationTelemetry(
   currentApplicationTelemetryRuntime()?.count(metric, value, attributes);
 }
 
+/**
+ * Shared payload-free observer for every maintained signed-envelope owner.
+ * The codec already isolates observer failures, while this adapter keeps the
+ * application telemetry vocabulary out of the integrity package.
+ *
+ * @internal Framework/runtime seam.
+ */
+export const observeApplicationRuntimeIntegrityEnvelope: SignedEnvelopeCodecObserver = (
+  observation,
+) => {
+  countApplicationTelemetry('applik8s.runtime.integrity.envelope', 1, {
+    'applik8s.runtime.integrity.purpose': observation.purpose,
+    'applik8s.runtime.integrity.format': observation.format,
+    'applik8s.runtime.integrity.operation': observation.operation,
+    'applik8s.runtime.integrity.result': observation.result,
+    ...(observation.errorCode === undefined
+      ? {}
+      : { 'error.type': observation.errorCode }),
+  });
+};
+
 /** @internal Records a value through the versioned metric catalog. */
 export function recordApplicationTelemetry(
   metric: ApplicationTelemetryMetricName,
@@ -196,3 +219,4 @@ export function logApplicationTelemetry(
 ): void {
   currentApplicationTelemetryRuntime()?.log(severity, event, fields);
 }
+// typecast-file-boundary: Runtime telemetry context is validated by the canonical carrier owner before this adapter restores execution-specific generics.

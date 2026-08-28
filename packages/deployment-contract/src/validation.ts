@@ -64,7 +64,7 @@ function validateRuntimeAccess(
     }
     const owner = graph.nodes.find(({ id }) => id === materialization.deploymentNodeId);
     if (!owner || owner.kind !== 'kubernetesDirect') {
-      diagnostics.push(diagnostic('DEPLOYMENT_GRAPH_INVALID', `Runtime-access workload ${workload.workloadIdentity} names missing or non-direct provider materialization node ${materialization.deploymentNodeId}.`));
+      diagnostics.push(diagnostic('DEPLOYMENT_GRAPH_INVALID', `Runtime-access workload ${workload.workloadIdentity} names missing or non-direct lifecycle materialization node ${materialization.deploymentNodeId}.`));
     }
   }
 }

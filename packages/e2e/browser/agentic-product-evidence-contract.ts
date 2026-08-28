@@ -7,6 +7,10 @@ export const agenticProductEvidenceJourneys = Object.freeze({
     evidenceId: 'causal-agent-note',
     test: 'attributes an agent-created document to its human requester and reactively renders it',
   }),
+  historicalLakehouse: Object.freeze({
+    evidenceId: 'historical-usage-browser',
+    test: 'publishes workspace usage into the immutable lakehouse and renders its authoritative browser query',
+  }),
   starterBilling: Object.freeze({
     evidenceId: 'starter-billing',
     test: 'uses the provider-neutral Starter billing path without Stripe credentials',

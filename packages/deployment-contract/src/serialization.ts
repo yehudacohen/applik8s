@@ -1,3 +1,4 @@
+// typecast-file-boundary: Deployment values are normalized and validated against the canonical JSON policy before typed graph reconstruction.
 import {
   type CanonicalJsonV1Policy,
   canonicalJsonCompatibleV1Policy,

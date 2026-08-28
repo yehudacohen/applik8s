@@ -1,3 +1,4 @@
+// typecast-file-boundary: Billing provider results and persisted records are schema-validated before conversion to the provider-neutral runtime contract.
 import type {
   ApplicationPaymentProvider,
   BillingUsageReport,
@@ -129,8 +130,8 @@ async function paymentProvider(
         `Managed payment provider kind ${JSON.stringify(kind)} is unsupported.`,
       );
     }
-    // static-import-exception: Stripe is an optional provider package and must
-    // not load in applications that select the dependency-free local adapter.
+    // Stripe is an optional provider package and must not load in applications
+    // static-import-exception: that select the dependency-free local adapter.
     const { StripePayments } = await import('@applik8s/billing-stripe');
     return StripePayments.fromSecret({
       endpoint,
@@ -203,3 +204,4 @@ function optionalPositiveInteger(
   }
   return number;
 }
+// typecast-file-boundary: Billing provider results and persisted records are schema-validated before conversion to the provider-neutral runtime contract.

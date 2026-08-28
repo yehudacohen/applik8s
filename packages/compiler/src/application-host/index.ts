@@ -13,10 +13,10 @@ import type {
   ApplicationArtifactCredentialProjection,
   ApplicationFrameworkCredentialDependency,
 } from '@applik8s/deployment-contract';
+import { kubernetesApplicationScheduleAdmissionContainer } from '@applik8s/runtime-kubernetes';
 import { applicationCallableProviderEnvironment } from '../application-callable-provider-runtime.js';
 import { applicationGraphNumberValue, applicationGraphStringValue } from '../application-installation-values.js';
 import { applicationObjectStorageEnvironment } from '../application-object-storage-environment.js';
-import { applicationHatchetScheduleBindings } from '../application-schedule-hatchet.js';
 
 export interface GeneratedApplicationHostResource {
   readonly apiVersion: string;
@@ -152,64 +152,8 @@ export async function emitGeneratedApplicationHost(options: {
     options.graph,
     namespace,
   );
-  const scheduleDatabaseEnvironment = applicationScheduleDatabaseEnvironment(
-    options.graph,
-    namespace,
-  );
-  const workflowScheduleAccess = options.graph.nodes.some(
-    (node) => node.kind === 'schedule' && node.target?.kind === 'durableStart',
-  );
-  const hatchetScheduleBindings = applicationHatchetScheduleBindings(options.graph);
-  for (const binding of hatchetScheduleBindings) {
-    if (binding.namespace !== namespace) {
-      throw new Error(
-        `ApplicationHost Hatchet Scheduler ${binding.providerId} is in ${binding.namespace}, but the host runs in ${namespace}. Keep the provider token with its execution boundary or configure an explicit host-local credential projection.`,
-      );
-    }
-  }
-  const hatchetScheduleEnvironment = hatchetScheduleBindings.flatMap((binding) => [
-    { name: binding.hostPortEnvironment, value: binding.hostPort },
-    { name: binding.apiUrlEnvironment, value: binding.apiUrl },
-    { name: binding.tlsEnvironment, value: binding.tlsStrategy },
-  ]);
-  const applicationHostVolumeMounts = [
-    ...(workflowScheduleAccess
-      ? [{
-          name: 'workflow-gateway-token',
-          mountPath: '/var/run/secrets/applik8s/workflow-gateway',
-          readOnly: true,
-        }]
-      : []),
-    ...hatchetScheduleBindings.map((binding) => ({
-      name: binding.tokenMountName,
-      mountPath: binding.tokenMountPath,
-      readOnly: true,
-    })),
-  ];
-  const applicationHostVolumes = [
-    ...(workflowScheduleAccess
-      ? [{
-          name: 'workflow-gateway-token',
-          projected: {
-            defaultMode: 0o400,
-            sources: [{
-              serviceAccountToken: {
-                path: 'token',
-                expirationSeconds: 3_600,
-                audience: 'https://kubernetes.default.svc',
-              },
-            }],
-          },
-        }]
-      : []),
-    ...hatchetScheduleBindings.map((binding) => ({
-      name: binding.tokenMountName,
-      secret: {
-        secretName: binding.workerTokenSecret,
-        items: [{ key: binding.tokenKey, path: 'token' }],
-      },
-    })),
-  ];
+  const applicationHostVolumeMounts: readonly Readonly<Record<string, unknown>>[] = [];
+  const applicationHostVolumes: readonly Readonly<Record<string, unknown>>[] = [];
   const callableProviderEnvironment = applicationCallableProviderEnvironment(
     applicationHostCallableProviders(options.graph),
     { target: 'kubernetes', namespace },
@@ -222,9 +166,6 @@ export async function emitGeneratedApplicationHost(options: {
     { name: 'APPLIK8S_WEB_ARTIFACT_DIGEST', value: manifest.digest },
     { name: 'APPLIK8S_CURSOR_SECRET', valueFrom: { secretKeyRef: { name: cursorSecretName, key: cursorSecretKey } } },
     ...internalOperationEnvironment,
-    ...scheduleDatabaseEnvironment,
-    ...applicationWorkflowScheduleEnvironment(options.graph),
-    ...hatchetScheduleEnvironment,
     ...identityDatabaseEnvironment,
     ...objectStorageEnvironment,
     ...callableProviderEnvironment,
@@ -360,15 +301,6 @@ export async function emitGeneratedApplicationHost(options: {
       spec: { minAvailable: 1, selector: { matchLabels: labels } },
     });
   }
-  emitted.push(...applicationKubernetesFixedScheduleResources({
-    graph: options.graph,
-    namespace,
-    hostName: name,
-    image,
-    imagePullPolicy,
-    internalOperationSecretName: `${kubernetesName(options.graph.metadata.name)}-internal-operation`,
-    port,
-  }));
   return emitted;
 }
 
@@ -401,11 +333,7 @@ function applicationHostCallableProviders(
   const consumers = new Set(
     graph.nodes.flatMap((node) => {
       if (node.kind === 'actor') return [node.id];
-      if (node.kind !== 'schedule') return [];
-      const scheduler = graph.nodes.find(
-        (candidate) => candidate.id === node.scheduler.nodeId,
-      );
-      return scheduler?.kind === 'provider' ? [node.id] : [];
+      return [];
     }),
   );
   const providerIds = new Set(
@@ -521,7 +449,7 @@ export function applicationKubernetesFixedScheduleResources(options: {
       && (provider.implementation === 'target-selected' || provider.implementation === 'kubernetes-cronjob-scheduler');
   });
   return schedules.map((node) => {
-    const name = kubernetesName(`schedule-${node.definition.id}-${createHash('sha256').update(node.definition.id).digest('hex').slice(0, 10)}`);
+    const name = kubernetesCronJobName(node.definition.id);
     const labels = {
       'app.kubernetes.io/name': options.graph.metadata.name,
       'app.kubernetes.io/component': 'schedule',
@@ -533,9 +461,18 @@ export function applicationKubernetesFixedScheduleResources(options: {
       environmentId: options.namespace,
       definitionId: node.definition.id,
       instanceId: 'fixed',
+      ...(node.definition.at
+        ? { scheduledAt: new Date(node.definition.at).toISOString() }
+        : {}),
       ...(node.definition.at ? { deleteAfterCompletion: true, providerResourceName: name } : {}),
     };
-    const source = "const base=JSON.parse(process.env.APPLIK8S_SCHEDULE_ADMISSION);const now=new Date().toISOString();const response=await fetch(process.env.APPLIK8S_SCHEDULE_ENDPOINT,{method:'POST',headers:{'content-type':'application/json','authorization':'Bearer '+process.env.APPLIK8S_INTERNAL_OPERATION_SECRET},body:JSON.stringify({...base,scheduledAt:now,admittedAt:now,attempt:1,schedulerExecutionId:process.env.APPLIK8S_JOB_NAME})});if(!response.ok){console.error(await response.text());process.exit(1)};console.log(await response.text());";
+    const admissionContainer = kubernetesApplicationScheduleAdmissionContainer({
+      image: options.image,
+      endpoint: `http://${options.hostName}.${options.namespace}.svc:${options.port}/__applik8s/v1/internal/schedules/occurrences`,
+      authorizationSecretName: options.internalOperationSecretName,
+      authorizationSecretKey: 'key',
+      admission,
+    });
     return {
       apiVersion: 'batch/v1',
       kind: 'CronJob',
@@ -556,20 +493,8 @@ export function applicationKubernetesFixedScheduleResources(options: {
               metadata: { labels },
               spec: {
                 restartPolicy: 'Never',
-                containers: [{
-                  name: 'schedule-admission',
-                  image: options.image,
-                  imagePullPolicy: options.imagePullPolicy,
-                  command: ['node', '--input-type=module', '--eval', source],
-                  env: [
-                    { name: 'APPLIK8S_SCHEDULE_ENDPOINT', value: `http://${options.hostName}.${options.namespace}.svc:${options.port}/__applik8s/v1/internal/schedules/occurrences` },
-                    { name: 'APPLIK8S_SCHEDULE_ADMISSION', value: JSON.stringify(admission) },
-                    { name: 'APPLIK8S_JOB_NAME', valueFrom: { fieldRef: { fieldPath: "metadata.labels['batch.kubernetes.io/job-name']" } } },
-                    { name: 'APPLIK8S_INTERNAL_OPERATION_SECRET', valueFrom: { secretKeyRef: { name: options.internalOperationSecretName, key: 'key' } } },
-                  ],
-                  resources: { requests: { cpu: '10m', memory: '32Mi' }, limits: { memory: '64Mi' } },
-                  securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, runAsNonRoot: true, capabilities: { drop: ['ALL'] } },
-                }],
+                serviceAccountName: options.hostName,
+                containers: [{ ...admissionContainer, imagePullPolicy: options.imagePullPolicy }],
               },
             },
           },
@@ -832,12 +757,6 @@ function applicationHostRules(graph: ApplicationGraph): readonly Readonly<Record
   for (const node of graph.nodes) {
     if (node.kind === 'crd' && node.create) addRule(node.resource.apiVersion, node.resource.plural, ['create', 'get']);
     if (node.kind === 'query' && node.kubernetes && !remoteQueries.has(node.id)) addRule(node.kubernetes.resource.apiVersion, node.kubernetes.resource.plural, ['get', 'list', 'watch']);
-    if (node.kind === 'schedule') {
-      const provider = graph.nodes.find((candidate) => candidate.id === node.scheduler.nodeId);
-      if (provider?.kind === 'provider' && (provider.implementation === 'target-selected' || provider.implementation === 'kubernetes-cronjob-scheduler')) {
-        addRule('batch/v1', 'cronjobs', ['create', 'delete', 'get', 'update']);
-      }
-    }
   }
   return [...groups.entries()]
     .sort(([left], [right]) => left.localeCompare(right))
@@ -930,4 +849,19 @@ function kubernetesName(value: string): string {
   const normalized = value.toLowerCase().replace(/[^a-z0-9-]+/gu, '-').replace(/^-+|-+$/gu, '').slice(0, 63).replace(/-+$/gu, '');
   if (!normalized) throw new Error(`Kubernetes resource name ${JSON.stringify(value)} is invalid.`);
   return normalized;
+}
+
+/**
+ * CronJob names are stricter than ordinary DNS subdomains because the job
+ * controller appends an eleven-character timestamp suffix. Keep the semantic
+ * prefix readable while reserving a stable digest suffix so truncation cannot
+ * make distinct schedule identities collide.
+ */
+function kubernetesCronJobName(scheduleId: string): string {
+  const digest = createHash('sha256').update(scheduleId).digest('hex').slice(0, 10);
+  const maximumPrefixLength = 52 - digest.length - 1;
+  const prefix = kubernetesName(`schedule-${scheduleId}`)
+    .slice(0, maximumPrefixLength)
+    .replace(/-+$/gu, '') || 'schedule';
+  return `${prefix}-${digest}`;
 }

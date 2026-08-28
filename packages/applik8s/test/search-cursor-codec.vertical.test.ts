@@ -1,3 +1,4 @@
+// typecast-file-boundary: Cursor fixtures intentionally construct provider continuations and invalid retained records outside the safe public union.
 import { createHmac } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import {
@@ -133,3 +134,4 @@ function legacyToken(payload: object): string {
   const encoded = Buffer.from(JSON.stringify(payload)).toString('base64url');
   return `${encoded}.${createHmac('sha256', secret).update(encoded).digest('base64url')}`;
 }
+// typecast-file-boundary: Cursor fixtures intentionally construct provider continuations and invalid retained records outside the safe public union.

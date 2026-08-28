@@ -1,3 +1,4 @@
+// typecast-file-boundary: Generated workflow source is emitted from validated semantic contracts; assertions preserve literal AST/source discriminants at this compiler boundary.
 import { createHash } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -6,6 +7,7 @@ import { emitGeneratedApplicationContainer } from '../application-containers/ind
 import type { ApplicationRuntimeExecutionTarget } from '../application-event-log-runtime-source.js';
 import { applicationFrameworkCredentialDependencies } from '../application-framework-credentials.js';
 import { applik8sWorkspaceSourcePlugin } from '../bundling/index.js';
+import { handlerSourceMetadataPlugin } from '../pipeline/entrypoint-handler-instrumentation.js';
 import type { WorkflowContract } from './contracts.js';
 import { workflowResources } from './resources.js';
 import {
@@ -25,6 +27,7 @@ export async function emitWorkflowWorker(
   contract: WorkflowContract,
   outDir: string,
   ownsProvider: boolean,
+  applicationEntrypoint: string,
   executionTarget: ApplicationRuntimeExecutionTarget = 'kubernetes',
 ): Promise<GeneratedApplicationWorkflowArtifact> {
   const name = kubernetesName(contract.worker.name);
@@ -74,7 +77,11 @@ export async function emitWorkflowWorker(
     metafile: true,
     banner: { js: "import { createRequire as __applik8sCreateRequire } from 'node:module'; const require = __applik8sCreateRequire(import.meta.url);" },
     nodePaths: [join(process.cwd(), 'node_modules')],
-    plugins: [hatchetSingleFileHeartbeatPlugin(), applik8sWorkspaceSourcePlugin()],
+    plugins: [
+      handlerSourceMetadataPlugin(applicationEntrypoint, { includeMaintainedPackages: false }),
+      hatchetSingleFileHeartbeatPlugin(),
+      applik8sWorkspaceSourcePlugin(),
+    ],
   });
   const source = await readFile(sourcePath, 'utf8');
   const sizeBytes = Buffer.byteLength(source);
@@ -151,3 +158,4 @@ export async function emitWorkflowWorker(
     kubernetesPermissions,
   };
 }
+// typecast-file-boundary: Generated workflow source is emitted from already validated semantic contracts; assertions preserve literal AST/source discriminants at this compiler boundary.

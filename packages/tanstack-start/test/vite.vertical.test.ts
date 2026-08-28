@@ -1,5 +1,8 @@
 import { ApplicationCommandClient, ApplicationQueryClient } from '@applik8s/client';
 import { runWithApplik8sServerRequest } from '@applik8s/server';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import {
   installApplik8sNitroRequestRuntime,
@@ -18,6 +21,45 @@ describe('TanStack Start Vite adapter', () => {
     expect(plugins.findIndex((plugin) => pluginName(plugin) === '@applik8s/tanstack-start-fetch-adapter')).toBeLessThan(
       plugins.findIndex((plugin) => pluginName(plugin).includes('nitro')),
     );
+  });
+
+  it('generates a fail-closed health handler alongside the gateway adapter', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'applik8s-start-health-'));
+    try {
+      await mkdir(join(root, '.applik8s/generated'), { recursive: true });
+      await writeFile(join(root, '.applik8s/generated/gateway.generated.ts'), 'export const gateway = {};\n');
+      const plugins = applik8sStart({ application: 'src/application.ts' }).flat().filter(Boolean);
+      const adapter = plugins.find((plugin) => pluginName(plugin) === '@applik8s/tanstack-start-fetch-adapter');
+      expect(adapter).toBeDefined();
+      const hook = adapter && typeof adapter === 'object' ? Reflect.get(adapter, 'configResolved') : undefined;
+      expect(hook).toBeTypeOf('function');
+      await hook.call(adapter, { root });
+      const health = await readFile(join(root, '.applik8s/generated/nitro-health.generated.ts'), 'utf8');
+      expect(health).toContain("import { gateway } from './gateway.generated.js';");
+      expect(health).toContain("component: 'applik8s-start'");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps hosted applications without an HTTP gateway healthy', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'applik8s-start-health-'));
+    try {
+      const plugins = applik8sStart({ application: 'src/application.ts' }).flat().filter(Boolean);
+      const adapter = plugins.find((plugin) => pluginName(plugin) === '@applik8s/tanstack-start-fetch-adapter');
+      const hook = adapter && typeof adapter === 'object' ? Reflect.get(adapter, 'configResolved') : undefined;
+      expect(hook).toBeTypeOf('function');
+      await hook.call(adapter, { root });
+      const health = await readFile(join(root, '.applik8s/generated/nitro-health.generated.ts'), 'utf8');
+      const handler = await readFile(join(root, '.applik8s/generated/nitro-handler.generated.ts'), 'utf8');
+      const plugin = await readFile(join(root, '.applik8s/generated/nitro-plugin.generated.ts'), 'utf8');
+      expect(health).not.toContain('gateway.generated.js');
+      expect(health).toContain("component: 'applik8s-start'");
+      expect(handler).toContain("new Response('Not Found', { status: 404 })");
+      expect(plugin).toBe('export default () => undefined;\n');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it('does not require the optional fetch.preconnect optimization', () => {

@@ -1,3 +1,4 @@
+// typecast-file-boundary: Signed-envelope payloads and purpose literals are validated before this protocol owner restores their closed canonical types.
 import type { JsonValue } from './common.js';
 
 export const signedEnvelopeVersion = 'applik8s.signed-envelope/v1' as const;

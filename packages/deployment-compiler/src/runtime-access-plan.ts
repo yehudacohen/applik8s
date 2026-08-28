@@ -86,7 +86,8 @@ export interface ApplicationRuntimeAccessWorkloadPlacement {
     };
     readonly materialization:
       | { readonly authority: 'application-root' }
-      | { readonly authority: 'provider-direct'; readonly deploymentNodeId: string };
+      | { readonly authority: 'provider-direct'; readonly deploymentNodeId: string }
+      | { readonly authority: 'operator-reconciled'; readonly deploymentNodeId: string };
     readonly podSelector: Readonly<Record<string, string>>;
     readonly serviceAccountName: string;
   };
@@ -314,6 +315,7 @@ export function compileApplicationRuntimeAccessPlan(options: {
       awsStatementsForRequirement(requirement, options.graph, options.targetResources).length > 0,
       privatePeers.some((peer) => peer.requirementIds.includes(requirement.id)),
       externalEgress.some((egress) => egress.requirementIds.includes(requirement.id)),
+      runtimeAccessTarget(requirement, options.graph, options.targetResources)?.networkMode === 'embedded',
       requiresKubernetesRule(requirement),
       requiresAwsStatement(requirement, options.graph, options.targetResources),
       providerAccessGuarantee(requirement, options.graph, providerGuarantees),
@@ -693,6 +695,16 @@ function runtimePrivatePeer(
     port,
     endpoint,
   }];
+}
+
+function runtimeAccessTarget(
+  requirement: ApplicationRuntimeAccessRequirement,
+  graph: ApplicationGraph,
+  targetResources?: Readonly<Record<string, Readonly<Record<string, unknown>>>>,
+): Readonly<Record<string, unknown>> | undefined {
+  const provider = providerForRequirement(requirement, graph);
+  return targetResources?.[requirement.target.capabilityId]
+    ?? (provider ? targetResources?.[provider.id] : undefined);
 }
 
 function runtimeExternalEgress(
@@ -1124,6 +1136,7 @@ function requirementLowering(
   hasAwsStatement: boolean,
   hasPrivatePeer: boolean,
   hasExternalEgress: boolean,
+  hasEmbeddedRuntime: boolean,
   requiresKubernetesEnforcement: boolean,
   requiresAwsEnforcement: boolean,
   providerGuarantee: ApplicationRuntimeAccessRequirementLowering['providerGuarantee'],
@@ -1134,6 +1147,7 @@ function requirementLowering(
   if (requirement.enforcement === 'application-only') {
     return lowering(requirement, 'application-only', ['application-authorization'], providerGuarantee);
   }
+  if (hasEmbeddedRuntime) return lowering(requirement, 'capability', [], providerGuarantee);
   if (requirement.target.scope.kind === 'external') {
     return lowering(requirement, 'external', ['external-contract'], providerGuarantee);
   }

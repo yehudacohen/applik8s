@@ -5,12 +5,16 @@ import { readdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createApplicationAgenticStart } from '../packages/start-agentic/src/index.js';
 import {
+  materializePackedGeneratedWorkspaceDependencies,
+  writeOfficialTanStackScaffold,
+} from './generated-agentic-start-live-support';
+import {
+  type IdentityStartServiceTunnel,
   identityStartResourceExists,
   identityStartServiceTunnel,
   passedIdentityStartBrowserTests,
   runIdentityStartCommand,
   waitForIdentityStartAbsent,
-  type IdentityStartServiceTunnel,
 } from './identity-start-live-support.js';
 import {
   collectV06ArtifactIdentity,
@@ -21,9 +25,6 @@ import {
   discardV06Evidence,
   writeV06EvidenceReceipt,
 } from './v06-evidence';
-import {
-  writeOfficialTanStackScaffold,
-} from './generated-agentic-start-live-support';
 
 const root = process.cwd();
 const context = process.env.APPLIK8S_E2E_CONTEXT ?? 'orbstack';
@@ -119,6 +120,10 @@ try {
       }
       await writeOfficialTanStackScaffold(target, projectName);
     },
+  });
+  await materializePackedGeneratedWorkspaceDependencies({
+    workspaceRoot: root,
+    targetDirectory: target,
   });
   await runIdentityStartCommand(
     execution,

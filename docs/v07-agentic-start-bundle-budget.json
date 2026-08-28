@@ -1,17 +1,23 @@
 {
-  "apiVersion": "applik8s.agenticStartBundleBudget/v1alpha1",
+  "apiVersion": "applik8s.agenticStartBundleBudget/v1alpha2",
   "client": {
     "maximumJavaScriptBytes": 1050000,
     "maximumJavaScriptGzipBytes": 330000,
     "maximumChunkBytes": 400000,
     "maximumChunkGzipBytes": 125000,
-    "maximumCssBytes": 100000,
+    "maximumCssBytes": 145000,
     "maximumCssGzipBytes": 25000
   },
   "server": {
-    "maximumJavaScriptBytes": 5750000,
-    "maximumJavaScriptGzipBytes": 1200000,
+    "maximumJavaScriptBytes": 6800000,
+    "maximumJavaScriptGzipBytes": 1400000,
     "maximumChunkBytes": 1150000,
-    "maximumChunkGzipBytes": 150000
+    "maximumChunkGzipBytes": 225000
+  },
+  "tracedDependencies": {
+    "maximumJavaScriptBytes": 150000,
+    "maximumJavaScriptGzipBytes": 40000,
+    "maximumChunkBytes": 110000,
+    "maximumChunkGzipBytes": 25000
   }
 }

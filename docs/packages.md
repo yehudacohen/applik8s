@@ -15,7 +15,7 @@ provider, runtime, deployment, or tooling boundaries.
 | `@applik8s/ai` | Provider-neutral logical models, agents, attempt records, usage, and AI contracts. |
 | `@applik8s/identity` | Provider-neutral identity, session, admission, OAuth, and recovery contracts. |
 | `@applik8s/operations` | Typed operation catalog, roles, grants, receipts, revocation, and authority. |
-| `@applik8s/dev` | Independent local development daemon, durable change journal, reviewed workspace mutation, portal UI, coding-agent adapters, and version-matched skills. |
+| `@applik8s/dev` | Independent local development daemon, durable change journal, reviewed workspace mutation, revision-bound ApplicationPlan selection resolution, portal UI, coding-agent adapters, and version-matched skills. Public subpaths are `/server`, `/ui`, `/agent`, `/agent/opencode`, and `/skills`. |
 | `@applik8s/mcp` | Provider-neutral MCP catalog, transport, trust, and persistence contracts. |
 
 ## Web application integrations
@@ -26,7 +26,7 @@ provider, runtime, deployment, or tooling boundaries.
 | `@applik8s/react` | Router-independent React providers and live query/mutation hooks. |
 | `@applik8s/server` | Framework-neutral authenticated request scope and gateway integration. |
 | `@applik8s/vite` | Browser/server partitioning, graph discovery, and Vite build integration. |
-| `@applik8s/tanstack-start` | Thin TanStack Start server and Vite adapters. |
+| `@applik8s/tanstack-start` | Thin TanStack Start server and Vite adapters, including fail-closed generated-gateway hydration and `/-/healthz`. |
 | `@applik8s/ai-tanstack` | TanStack AI tools, persistence, connection, and client adapters. |
 | `@applik8s/operations-ui` | Optional redacted operational queries and React control-center surfaces. |
 
@@ -68,6 +68,7 @@ Install only the providers selected by the application profile.
 | `@applik8s/runtime-postgres` | PostgreSQL model, command, stream, and projection runtime. |
 | `@applik8s/runtime-aws` | AWS runtime bindings for managed secrets, Kinesis delivery, EventBridge schedule admission, and S3/Glue/Athena lakehouse queries. |
 | `@applik8s/runtime-celld` | celld-backed distributed durable actor admission, state, receipts, broadcasts, and alarms. |
+| `@applik8s/celld-operator` | Independently consumable Kubernetes `CelldFleet` CRD and Applik8s operator. The root exports contracts and rendering; `/typekro` installs the singleton control plane or a fleet; `/testing` exposes conformance fixtures. |
 | `@applik8s/runtime-otel` | OpenTelemetry spans, correlated structured logs, bounded metrics, and OTLP export. |
 | `@applik8s/runtime-duckdb` | DuckDB-backed local lakehouse snapshots and bounded query execution. |
 | `@applik8s/runtime-opensearch` | OpenSearch projection, query, rebuild, and cutover runtime. |
@@ -79,6 +80,11 @@ publication, immutable-manifest, cursor, and query execution contracts; normal
 application source continues to declare publications from the main
 `@applik8s/applik8s` authoring surface.
 
+Generated actor hosts similarly use the focused
+`@applik8s/applik8s/actor-runtime` subpath. The authoring surface stays on the
+root package, while deployed request hosts do not inherit TypeKro or Kubernetes
+compiler dependencies merely to execute actor protocol operations.
+
 ## Compiler, deployment, and tooling
 
 These packages are public so tooling and custom integrations can compose them.
@@ -86,7 +92,7 @@ Normal applications usually reach them through the CLI.
 
 | Package | Use it for |
 | --- | --- |
-| `@applik8s/cli` | Build, plan, deploy, status, destroy, operator authority, and Start commands. |
+| `@applik8s/cli` | Build, plan, deploy, status, destroy, operator authority, and Start commands. Its local command owns source watching, process-group reload, bounded child recovery, retained provider state, and lease-safe reset. |
 | `@applik8s/compiler` | Application/operator discovery, lowering, artifacts, manifests, and WASM components. |
 | `@applik8s/runtime-contract` | Canonical handler/runtime ABI schemas and generated WIT. |
 | `@applik8s/runtime` | Interfaces for implementing a custom operator runtime. |
@@ -103,6 +109,10 @@ Normal applications usually reach them through the CLI.
 
 `@applik8s/typekro-adapter` participates in authoring and compilation;
 `@applik8s/deployment-typekro` binds the already-compiled deployment graph.
+It consumes the focused
+`@applik8s/deployment-compiler/runtime-access-parity` validator to prove that
+TypeKro's materialized workloads exactly implement the canonical RBAC,
+credential, and network envelope without importing the compiler umbrella.
 `@applik8s/runtime-contract` defines the host ABI; `@applik8s/runtime` defines
 TypeScript interfaces for alternate runtime implementations.
 

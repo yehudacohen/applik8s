@@ -1,3 +1,4 @@
+// typecast-file-boundary: Private capability symbols brand values created by this module; assertions only recover the exact generic carried by that brand.
 import type { Applik8sError, CapabilityFailureMode, CapabilityKind, Condition, ExternalEffectPhase, JsonArray, JsonPrimitive, KubernetesName, NamespaceName, ReconcileId, Result, Sha256Digest, Timestamp } from './common.js';
 import type { DeleteResult, PermissionRule } from './resource.js';
 
@@ -70,3 +71,4 @@ export interface RetryPolicy { readonly maxAttempts: number; readonly backoffMs:
 export interface ExternalEffectRecord { readonly capabilityName: string; readonly phase: ExternalEffectPhase; readonly idempotencyKey: string; readonly requestDigest: Sha256Digest; readonly responseDigest?: Sha256Digest; readonly condition?: Condition; readonly observedAt: Timestamp; }
 export interface ExternalEffectState { readonly effects: readonly ExternalEffectRecord[]; }
 export interface CapabilityRegistry { create(name: string, descriptor: CapabilityDescriptor): Result<CapabilityDescriptor>; read(name: string): Result<CapabilityDescriptor>; list(): Result<Readonly<Record<string, CapabilityDescriptor>>>; update(name: string, descriptor: CapabilityDescriptor): Result<CapabilityDescriptor>; delete(name: string): Result<DeleteResult>; }
+// typecast-file-boundary: Private capability symbols brand values created by this module; assertions only recover the exact generic carried by that brand.

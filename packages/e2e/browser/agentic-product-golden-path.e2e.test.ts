@@ -271,6 +271,54 @@ test(
 );
 
 test(
+  agenticProductEvidenceJourneys.historicalLakehouse.test,
+  async ({ page }) => {
+    const suffix = Date.now().toString(36);
+    const workspaceName = `Historical usage ${suffix}`;
+    await page.goto('/app/workspaces');
+    await page.getByLabel('Name').fill(workspaceName);
+    await page.getByLabel('Slug').fill(`historical-${suffix}`);
+    await page.getByRole('button', { name: 'Create workspace' }).click();
+    await expect(
+      page.getByRole('heading', { name: workspaceName }),
+    ).toBeVisible({ timeout: 90_000 });
+    const workspaceUrl = page.url();
+
+    await page.goto('/app');
+    const existingIds = new Set(
+      (await readAuthoritativeDocuments(page)).map(document => document.id),
+    );
+    await page.getByLabel('Message').fill(starterDocumentPrompt);
+    await page.getByRole('button', { name: 'Send' }).click();
+    await expect.poll(async () =>
+      (await readAuthoritativeDocuments(page)).some(
+        document =>
+          !existingIds.has(document.id)
+          && document.sourceConversationId !== undefined,
+      ), { timeout: 120_000 }).toBe(true);
+    // Creating the authoritative document can complete during an intermediate
+    // tool-call turn. Navigating away at that point aborts the admitted SSE
+    // request by design, so wait for the provider's terminal turn before
+    // observing the usage event produced by that completed attempt.
+    await expect(
+      page.getByRole('button', { name: 'Send', exact: true }),
+    ).toBeEnabled({ timeout: 120_000 });
+
+    await page.goto(workspaceUrl);
+    const history = page.getByRole('region', {
+      name: 'Historical workspace usage',
+    });
+    await expect(history).toContainText(/\b[1-9][0-9]* recent usage facts\b/u, {
+      timeout: 120_000,
+    });
+    await expect(history).toContainText(/bytes scanned · schema v1/u);
+    await expect(history).not.toContainText(
+      'No published usage snapshot is visible yet.',
+    );
+  },
+);
+
+test(
   'uses live provider-neutral Developer billing without exposing Stripe credentials',
   async ({ page }) => {
     test.skip(

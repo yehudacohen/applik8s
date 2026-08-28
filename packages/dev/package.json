@@ -19,5 +19,8 @@
     "./agent/opencode": { "types": "./dist/agent/opencode.d.ts", "import": "./dist/agent/opencode.js", "default": "./dist/agent/opencode.js" },
     "./skills": { "types": "./dist/skills.d.ts", "import": "./dist/skills.js", "default": "./dist/skills.js" }
   },
-  "dependencies": { "@libsql/client": "^0.17.4" }
+  "dependencies": {
+    "@applik8s/core": "0.8.0",
+    "@libsql/client": "^0.17.4"
+  }
 }

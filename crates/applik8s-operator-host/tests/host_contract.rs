@@ -2965,6 +2965,41 @@ fn defaults_namespaced_manifest_watches_to_operator_namespace() {
 }
 
 #[test]
+fn cluster_scoped_operator_watches_namespaced_resources_across_namespaces() {
+    let bundle = LoadedOperatorBundle {
+        manifest: serde_json::json!({
+            "apiVersion": "applik8s.operator/v1alpha1",
+            "kind": "OperatorBundle",
+            "metadata": {
+                "name": "fleet-controller",
+                "annotations": {
+                    "applik8s.dev/namespace": "fleet-system",
+                    "applik8s.dev/watch-scope": "Cluster"
+                }
+            },
+            "spec": {
+                "ownedCrds": [],
+                "watches": [{
+                    "apiVersion": "celld.applik8s.io/v1alpha1",
+                    "kind": "CelldFleet",
+                    "plural": "celldfleets",
+                    "scope": "Namespaced",
+                    "events": ["reconcile"],
+                    "handlers": ["CelldFleet.reconcile.0"]
+                }]
+            }
+        }),
+        handler_wasm: vec![0, 97, 115, 109],
+    };
+
+    let watches = bundle
+        .manifest_resource_watches()
+        .expect("cluster-scoped operator watches parse");
+    assert_eq!(watches.len(), 1);
+    assert_eq!(watches[0].namespace, None);
+}
+
+#[test]
 fn validates_persisted_bundle_compatibility_matrix() {
     let entries = persisted_compatibility_matrix();
     let engine = component_model_engine().expect("component engine configures");

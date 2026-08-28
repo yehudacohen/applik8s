@@ -1,3 +1,4 @@
+// typecast-file-boundary: Alchemy lifecycle fixtures reconstruct partial Outputs and persisted provider state to test resolution, migration, and fail-closed behavior.
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import {
@@ -17,7 +18,10 @@ import { type } from "arktype";
 import { kubernetesComposition, simple } from "typekro";
 import { artifactOutput } from "typekro/experimental/planning";
 import { afterEach, describe, expect, it } from "vitest";
-import { selectPublishedImmutableReference } from "../src/backend.js";
+import {
+  selectPublishedBuildReference,
+  selectPublishedImmutableReference,
+} from "../src/backend.js";
 import { deleteApplicationTypeKroInstances } from "../src/application.js";
 import { assertApplicationAlchemyDestroyState } from "../src/destroy-state.js";
 import {
@@ -26,6 +30,7 @@ import {
 } from "../src/index.js";
 import { typeKroMaterializationComponents } from "../src/typekro-components.js";
 import {
+  typeKroGroupPrerequisites,
   withOrderingOnlyPrerequisites,
 } from "../src/typekro-ordering.js";
 
@@ -38,6 +43,40 @@ afterEach(async () => {
 });
 
 describe("Alchemy deployment backend", () => {
+  it("retains external lifecycle prerequisites for TypeKro consumers", () => {
+    const graph = deploymentGraph();
+    const providerNode = graph.nodes.find(
+      (node) => node.id === "kubernetes.application",
+    );
+    if (!providerNode) throw new Error("Expected the application deployment node.");
+    const external = {
+      id: "external.actor-runtime.authorization",
+      kind: "externalProvider",
+      contractVersion: 1,
+      source: {},
+      provider: { interface: "Secret", implementation: "generated", version: "1" },
+      scope: providerNode.scope,
+      capabilities: { strategies: ["direct"], alchemy: true },
+      configurationDigest: digestApplicationDeploymentValue({ name: "actor-runtime" }),
+      inputs: {},
+      outputs: [],
+      lifecycle: { ownership: "application", deletion: "delete", adoption: "createOrAdoptExact" },
+      spec: { resourceType: "secret", controller: "test", referenceMode: "staticIdentity", configuration: {} },
+    } as const;
+    const withSecret: ApplicationDeploymentGraph = {
+      ...graph,
+      nodes: [...graph.nodes, external],
+      edges: [{
+        from: external.id,
+        to: "kubernetes.application",
+        relationship: "requiresReady",
+      }],
+    };
+
+    expect(typeKroGroupPrerequisites(withSecret, "kubernetes.application"))
+      .toEqual([external.id]);
+  });
+
   it("preflights TypeKro instance deletion in reverse graph dependency order", async () => {
     const calls: string[] = [];
     const graph = deploymentGraph();
@@ -121,6 +160,29 @@ describe("Alchemy deployment backend", () => {
     expect(() =>
       selectPublishedImmutableReference(undefined, undefined),
     ).toThrow(/neither a published nor deployment immutable reference/);
+  });
+
+  it("uses a tagged local address to build from a digest-identified OrbStack base", () => {
+    const digest = `sha256:${"a".repeat(64)}`;
+    expect(
+      selectPublishedBuildReference(
+        digest,
+        "applik8s/operator-host:sha-local",
+        digest,
+        "applik8s/operator-host:sha-local",
+      ),
+    ).toBe("applik8s/operator-host:sha-local");
+    expect(
+      selectPublishedBuildReference(
+        "registry.example/applik8s/operator-host@sha256:published",
+        "registry.example/applik8s/operator-host:sha-published",
+        "harbor.internal/applik8s/operator-host@sha256:published",
+        "harbor.internal/applik8s/operator-host:sha-published",
+      ),
+    ).toBe("registry.example/applik8s/operator-host@sha256:published");
+    expect(() =>
+      selectPublishedBuildReference(digest, undefined, digest, undefined),
+    ).toThrow(/no tagged build address/);
   });
 
   it("previews TypeKro declarations through Alchemy without mutating Kubernetes", async () => {
@@ -499,7 +561,7 @@ describe("Alchemy deployment backend", () => {
         },
         adapted: {
           adapter: {
-            typekro: "0.33.7",
+            typekro: "0.33.8",
             semanticPlanVersion: 1,
             artifactPlanVersion: 1,
           },
@@ -808,3 +870,4 @@ function emptyRuntimeAccessPlan(
   const content = { apiVersion: 'applik8s.runtimeAccessPlan/v1alpha1' as const, application, target, sourceGraphDigest, executions: [], workloads: [], diagnostics: [] };
   return { ...content, digest: applicationRuntimeAccessPlanDigest(content) };
 }
+// typecast-file-boundary: Alchemy lifecycle fixtures reconstruct partial Outputs and persisted provider state to test resolution, migration, and fail-closed behavior.

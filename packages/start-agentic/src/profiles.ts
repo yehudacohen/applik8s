@@ -8,6 +8,7 @@ import {
   AnalyticalDatabase,
   Analytics,
   ApplicationHost,
+  applicationValueDefault,
   type ApplicationIdentityInfrastructure,
   type ApplicationIdentityProvider,
   type ApplicationProviderBinding,
@@ -92,7 +93,8 @@ export interface AgenticExternalInference {
   readonly endpoint: string;
   readonly model: string;
   readonly credentialSecretName: string;
-  readonly credentialKey?: string;
+  /** Envoy AI Gateway's versioned Secret contract requires this canonical key. */
+  readonly credentialKey?: 'apiKey';
   /** Explicit local-test escape hatch; production external inference must use HTTPS. */
   readonly allowInsecureHttp?: boolean;
 }
@@ -687,7 +689,7 @@ export const AgenticDedicated = Object.freeze({
                 kind: 'Secret',
                 name: spec.credentialSecretName,
                 namespace: context.namespace,
-                key: spec.credentialKey ?? 'apiKey',
+                key: 'apiKey',
               },
               capabilities: ['chat', 'tools', 'streaming'],
             }),
@@ -867,7 +869,7 @@ export const AgenticExternal = Object.freeze({
                 kind: 'Secret',
                 name: spec.credentialSecretName,
                 namespace: context.namespace,
-                key: spec.credentialKey ?? 'apiKey',
+                key: 'apiKey',
               },
               capabilities: ['chat', 'tools', 'streaming'],
             }),
@@ -954,7 +956,13 @@ export function configureAgenticProfiles<
     .awsLocal(() => Observability.cloudWatch({ region: 'us-east-1' }))
     .aws(() => Observability.cloudWatch({ region: 'us-east-1' }))
     .kubernetes(() => Observability.clickStack({
-      namespace: `${applicationName}-observability`,
+      // ClickStack's API key is consumed by the application workloads as a
+      // kubelet Secret projection. Kubernetes cannot mount a Secret across
+      // namespaces, so the maintained starter deliberately co-locates this
+      // application-owned provider with those workloads. Applications that
+      // isolate observability must supply an explicit Secret replication
+      // authority instead of receiving a silently broken deployment.
+      namespace,
       storageSize: '20Gi',
     }));
 
@@ -1265,12 +1273,12 @@ function agenticStripePayments(
       apiKey: {
         name: spec.secretName,
         namespace,
-        key: spec.apiKeyKey ?? 'apiKey',
+        key: applicationValueDefault(spec.apiKeyKey, 'apiKey'),
       },
       webhookSecret: {
         name: spec.secretName,
         namespace,
-        key: spec.webhookSecretKey ?? 'webhookSecret',
+        key: applicationValueDefault(spec.webhookSecretKey, 'webhookSecret'),
       },
     },
     async resolveSecret(reference) {
@@ -1298,12 +1306,12 @@ function agenticSmtpNotifications(
     username: {
       name: spec.secretName,
       namespace: context.namespace,
-      key: spec.usernameKey ?? 'username',
+      key: applicationValueDefault(spec.usernameKey, 'username'),
     },
     password: {
       name: spec.secretName,
       namespace: context.namespace,
-      key: spec.passwordKey ?? 'password',
+      key: applicationValueDefault(spec.passwordKey, 'password'),
     },
     async resolveSecret(reference) {
       // static-import-exception: load credentials only inside the admitted server workload selected by dependency capture.

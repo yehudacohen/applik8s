@@ -16,7 +16,10 @@ import {
   expandApplicationCallbackDependencies,
   serializeApplicationCallback,
 } from './application-callback.js';
-import { applicationProviderGraphNodeId } from './application-identifiers.js';
+import {
+  applicationProviderGraphNodeId,
+  kubernetesNameSegment,
+} from './application-identifiers.js';
 import type {
   ApplicationQualifiedProviderToken,
   ApplicationSchedulerProvider,
@@ -41,6 +44,10 @@ import {
   declaredSchema,
   validateMessage,
 } from './application-workflow-serialization.js';
+import type {
+  ApplicationTaskBinding,
+  ApplicationWorkflowBinding,
+} from './application-workflow-types.js';
 
 export {
 	applicationScheduleDesiredStateDigest,
@@ -256,6 +263,8 @@ export interface ApplicationScheduleStateAuthority {
     readonly definition: ApplicationScheduleDefinitionContract<TInput>;
     readonly instance: ApplicationScheduleInstance<TInput>;
     readonly management?: ApplicationScheduleManagementReceipt;
+    /** Provider-enforced ceiling for active projected instances in this application/environment. */
+    readonly maximumActiveInstances?: number;
   }): Promise<ApplicationScheduleConvergenceResult>;
   remove(
     definitionId: string,
@@ -264,6 +273,14 @@ export interface ApplicationScheduleStateAuthority {
   ): Promise<ApplicationScheduleConvergenceResult>;
   /** Pending provider projections retained across process failure and restart. */
   pending(): Promise<readonly ApplicationScheduleStateRecord[]>;
+  /**
+   * Complete restart reconciliation set: every active desired record plus only
+   * tombstones whose provider removal has not yet been acknowledged.
+   *
+   * Active projections are deliberately replayed even after a prior successful
+   * acknowledgement so provider drift or deletion is repaired after restart.
+   */
+  recoveryCandidates(): Promise<readonly ApplicationScheduleStateRecord[]>;
   /** Acknowledges only the exact canonical revision that was projected. */
   markProjected(
     definitionId: string,
@@ -337,6 +354,18 @@ export function createDeterministicApplicationScheduleStateAuthority(options: {
       if (prior?.state === 'active' && compareRevision(request.instance.revision, prior.revision) < 0) {
         throw new Error(`Schedule ${key} revision ${request.instance.revision} is stale; current revision is ${prior.revision}.`);
       }
+      if (request.maximumActiveInstances !== undefined) {
+        const maximum = positiveInteger(
+          request.maximumActiveInstances,
+          'schedule maximumActiveInstances',
+        );
+        const active = snapshot().filter((record) => record.state === 'active').length;
+        if (prior?.state !== 'active' && active >= maximum) {
+          throw new Error(
+            `Schedule instance ceiling ${maximum} is exhausted for this application environment.`,
+          );
+        }
+      }
       records.set(key, Object.freeze({
         schemaVersion: 'applik8s.scheduleState/v1alpha1',
         definitionId: request.definition.id,
@@ -378,6 +407,10 @@ export function createDeterministicApplicationScheduleStateAuthority(options: {
     },
     async pending() {
       return snapshot().filter((record) => record.projection === 'pending');
+    },
+    async recoveryCandidates() {
+      return snapshot().filter((record) =>
+        record.state === 'active' || record.projection === 'pending');
     },
     async markProjected(definitionId, instanceId, revision, state) {
       const key = scheduleStateKey(definitionId, instanceId);
@@ -552,6 +585,11 @@ export function createApplicationSchedule<TInput extends object, TResult>(
     callback: handler as (...args: never[]) => unknown,
     allowDeferredResolution: true,
   });
+	const durableTarget = directApplicationScheduleDurableTarget(
+		serialized.source,
+		inferredDependencies,
+		normalized.configuration,
+	);
   const qualification = Reflect.get(scheduler, 'qualification') as
     | { readonly name: string; readonly compatibilityRevision: string }
     | undefined;
@@ -595,7 +633,7 @@ export function createApplicationSchedule<TInput extends object, TResult>(
     scheduler: { interface: 'Scheduler' as const, nodeId: schedulerNodeId },
     state: { interface: 'TransactionalDatabase' as const, nodeId: 'provider.TransactionalDatabase' },
     ...(providerBindings.length > 0 ? { providerBindings } : {}),
-    handler: serialized,
+		...(durableTarget ? { target: durableTarget } : { handler: serialized }),
     functionNative: true,
   });
   const callable = async (input: TInput): Promise<TResult> => {
@@ -646,6 +684,153 @@ export function createApplicationSchedule<TInput extends object, TResult>(
       return { ...converged, management: converged.management ?? management };
     },
     [applicationScheduleHandlerSymbol]: runtimeHandler,
+  }) as ApplicationScheduleHandle<TInput, TResult>;
+}
+
+type ApplicationScheduleDurableBinding =
+  | ApplicationTaskBinding<object, object>
+  | ApplicationWorkflowBinding<object, object>;
+
+/**
+ * A transparent `schedule(..., input => Durable(input))` wrapper has no
+ * independent execution semantics. Lower it to the canonical durable-start
+ * graph edge so generated schedule workers invoke the private workflow
+ * gateway instead of replaying the authoring-time workflow declaration.
+ */
+function directApplicationScheduleDurableTarget(
+  source: string,
+  dependencies: ReturnType<typeof expandApplicationCallbackDependencies>,
+  configuration: 'fixed' | 'dynamic',
+): ApplicationScheduleNode['target'] | undefined {
+  if (configuration !== 'dynamic') return undefined;
+  const durableBindings = dependencies.calls.filter(
+    (candidate): candidate is ApplicationScheduleDurableBinding =>
+      typeof candidate === 'function'
+      && (
+        Reflect.get(candidate, 'kind') === 'applicationTask'
+        || Reflect.get(candidate, 'kind') === 'applicationWorkflow'
+      ),
+  );
+  for (const binding of durableBindings) {
+    const aliases = Object.entries(dependencies.bindings)
+      .filter(
+        ([identifier, candidate]) =>
+          candidate === binding && !/^generatedCall\d+$/u.test(identifier),
+      )
+      .map(([identifier]) => identifier)
+      .sort();
+    for (const alias of aliases) {
+      if (!isDirectApplicationScheduleDurableInvocation(source, alias)) continue;
+      const kind: 'task' | 'workflow' =
+        binding.kind === 'applicationTask' ? 'task' : 'workflow';
+      return Object.freeze({
+        kind: 'durableStart' as const,
+        durable: {
+          kind,
+          nodeId: `${kind}.${kubernetesNameSegment(binding.definition.id)}`,
+        },
+        contract: {
+          name: binding.definition.name,
+          version: binding.definition.version,
+          input: declaredSchema(
+            binding.definition.input,
+            `${binding.definition.id}.input`,
+          ),
+        },
+        input: { kind: 'scheduleInput' as const },
+      });
+    }
+  }
+  return undefined;
+}
+
+function isDirectApplicationScheduleDurableInvocation(
+  source: string,
+  alias: string,
+): boolean {
+  const identifier = '[A-Za-z_$][A-Za-z0-9_$]*';
+  const escapedAlias = alias.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+  const arrow = new RegExp(
+    `^(?:async\\s+)?(?:(${identifier})|\\(\\s*(${identifier})\\s*\\))\\s*=>\\s*(?:await\\s+)?${escapedAlias}\\(\\s*(${identifier})\\s*\\)\\s*;?$`,
+    'u',
+  );
+  const direct = arrow.exec(source.trim());
+  if (direct && (direct[1] ?? direct[2]) === direct[3]) return true;
+  const block = new RegExp(
+    `^(?:async\\s+)?(?:(${identifier})|\\(\\s*(${identifier})\\s*\\))\\s*=>\\s*\\{\\s*return\\s+(?:await\\s+)?${escapedAlias}\\(\\s*(${identifier})\\s*\\)\\s*;?\\s*\\}\\s*;?$`,
+    'u',
+  );
+  const returned = block.exec(source.trim());
+  return Boolean(returned && (returned[1] ?? returned[2]) === returned[3]);
+}
+
+/** Generated-runtime seam that rehydrates one captured handle without replaying application setup. */
+export function hydrateApplicationScheduleHandle<TInput extends object, TResult>(options: {
+  readonly definition: ApplicationScheduleDefinitionContract<TInput>;
+  readonly graphNode: ApplicationScheduleNode;
+  readonly schedulerNodeId: string;
+  readonly runtime: ApplicationScheduleRuntime;
+}): ApplicationScheduleHandle<TInput, TResult> {
+  if (options.graphNode.kind !== 'schedule'
+    || options.graphNode.definition.id !== options.definition.id
+    || options.graphNode.scheduler.nodeId !== options.schedulerNodeId) {
+    throw new Error(`Schedule ${options.definition.id} runtime contract does not match its canonical graph identity.`);
+  }
+  const unavailableHandler: ApplicationScheduleHandler<TInput, TResult> = async () => {
+    throw new Error(`Schedule ${options.definition.id} handler executes only in its generated schedule-control boundary.`);
+  };
+  const callable = async (input: TInput): Promise<TResult> => {
+    const validated = options.definition.input
+      ? validateMessage(options.definition.input, input, `${options.definition.id}.input`)
+      : {} as TInput;
+    return options.runtime.invoke({
+      definition: options.definition,
+      input: validated,
+      handler: unavailableHandler,
+      callerAdmission: requireApplicationInvocationAdmission(),
+    });
+  };
+  return Object.assign(callable, {
+    kind: 'applicationSchedule' as const,
+    definition: options.definition,
+    graphNode: options.graphNode,
+    schedule: async (instance: ApplicationScheduleInstance<TInput>) => {
+      if (options.definition.configuration === 'fixed') {
+        throw new Error(`Fixed schedule ${options.definition.id} cannot create dynamic instances.`);
+      }
+      const normalizedInstance = normalizeScheduleInstance(options.definition, instance);
+      const management = applicationScheduleManagementReceipt({
+        action: 'configure',
+        definitionId: options.definition.id,
+        instanceId: normalizedInstance.id,
+        revision: normalizedInstance.revision,
+        admission: requireApplicationInvocationAdmission(),
+      });
+      const converged = await options.runtime.reconcile({
+        definition: options.definition,
+        instance: normalizedInstance,
+        handler: unavailableHandler,
+        management,
+      });
+      return { ...converged, management: converged.management ?? management };
+    },
+    unschedule: async (instanceId: string) => {
+      const normalizedInstanceId = nonEmptyId(instanceId, 'schedule instance id');
+      const management = applicationScheduleManagementReceipt({
+        action: 'remove',
+        definitionId: options.definition.id,
+        instanceId: normalizedInstanceId,
+        revision: 'removed',
+        admission: requireApplicationInvocationAdmission(),
+      });
+      const converged = await options.runtime.remove(
+        options.definition.id,
+        normalizedInstanceId,
+        management,
+      );
+      return { ...converged, management: converged.management ?? management };
+    },
+    [applicationScheduleHandlerSymbol]: unavailableHandler,
   }) as ApplicationScheduleHandle<TInput, TResult>;
 }
 

@@ -31,8 +31,89 @@ describe('v0.8 provider guarantee manifests', () => {
   })
 
   it.each([
+    ['NotificationDelivery', 'smtp'],
+    ['NotificationDelivery', 'local-inspectable'],
+    ['PaymentProvider', 'stripe'],
+    ['PaymentProvider', 'local-simulated'],
+  ] as const)('qualifies the explicit AWS runtime-only %s/%s adapter', (providerInterface, implementation) => {
+    const candidate = provider(providerInterface, implementation)
+    const [manifest] = applicationProviderGuaranteesForGraph({ graph: { ...graph(), nodes: [candidate] }, target: 'aws' })
+    expect(manifest?.guarantees.every(({ disposition }) => disposition !== 'unsupported')).toBe(true)
+  })
+
+  it.each([
+    ['AI', 'envoy-ai-gateway'],
+    ['Search', 'opensearch'],
+    ['NotificationDelivery', 'smtp'],
+    ['PaymentProvider', 'stripe'],
+    ['StructuredGeneration', 'structured-generation-http'],
+  ] as const)('qualifies the maintained Kubernetes %s/%s adapter', (providerInterface, implementation) => {
+    const candidate = provider(providerInterface, implementation)
+    const [manifest] = applicationProviderGuaranteesForGraph({ graph: { ...graph(), nodes: [candidate] }, target: 'kubernetes' })
+    expect(manifest?.guarantees.every(({ disposition }) => disposition !== 'unsupported')).toBe(true)
+  })
+
+  it('keeps native Kinesis qualified on AWS while failing closed for the bounded AWS-local emulator', () => {
+    const eventLog = provider('EventLog', 'kinesis')
+    const candidate = { ...graph(), nodes: [eventLog] }
+    const [aws] = applicationProviderGuaranteesForGraph({ graph: candidate, target: 'aws' })
+    const [awsLocal] = applicationProviderGuaranteesForGraph({ graph: candidate, target: 'aws-local' })
+    expect(aws?.guarantees.every(({ disposition }) => disposition !== 'unsupported')).toBe(true)
+    expect(awsLocal?.evidenceLevel).toBe('none')
+    expect(awsLocal?.guarantees.every(({ disposition }) => disposition === 'unsupported')).toBe(true)
+    expect(awsLocal?.limitations).toEqual([expect.stringMatching(/no qualified aws-local lowering/u)])
+  })
+
+  it('applies target aliases after resolving a profile-selected provider', () => {
+    const profiled = {
+      ...provider('TransactionalDatabase', 'application-provider-selection'),
+      config: {
+        profile: {
+          branches: [{ variant: 'developer', implementation: 'postgres' }],
+        },
+      },
+    } satisfies ApplicationProviderNode
+    const [manifest] = applicationProviderGuaranteesForGraph({
+      graph: { ...graph(), nodes: [profiled] },
+      target: 'aws',
+      profile: 'developer',
+    })
+    expect(manifest?.capability.implementation).toBe('rds-postgresql')
+    expect(manifest?.guarantees).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'runtime-access', disposition: 'bounded' }),
+    ]))
+  })
+
+  it('keeps a default alias addressable while inheriting its canonical provider guarantees', () => {
+    const canonical = {
+      ...provider('EventLog', 'application-provider-selection'),
+      id: 'provider.event-log.v1alpha1.primary',
+      config: {
+        profile: {
+          branches: [{ variant: 'starter', implementation: 'nats-jetstream' }],
+        },
+      },
+    } satisfies ApplicationProviderNode
+    const alias = {
+      ...provider('EventLog', 'nats-jetstream'),
+      id: 'provider.event-log',
+      config: { aliasOf: canonical.id },
+    } satisfies ApplicationProviderNode
+    const manifests = applicationProviderGuaranteesForGraph({
+      graph: { ...graph(), nodes: [alias, canonical] },
+      target: 'aws',
+      profile: 'starter',
+    })
+    expect(manifests).toHaveLength(2)
+    expect(manifests.map(({ capability }) => capability.implementation)).toEqual(['kinesis', 'kinesis'])
+    expect(manifests.every(({ guarantees }) => guarantees.every(({ disposition }) => disposition !== 'unsupported'))).toBe(true)
+  })
+
+  it.each([
     ['local', 'LakehouseDataset', 'duckdb-dataset'],
     ['local', 'LakehouseQuery', 'duckdb-queries'],
+    ['kubernetes', 'LakehouseDataset', 's3-dataset'],
+    ['kubernetes', 'LakehouseQuery', 'athena-queries'],
     ['aws', 'LakehouseDataset', 's3-dataset'],
     ['aws', 'LakehouseQuery', 'athena-queries'],
   ] as const)('emits the complete %s %s conformance vocabulary', (target, providerInterface, implementation) => {
@@ -60,6 +141,30 @@ describe('v0.8 provider guarantee manifests', () => {
         ])
     expect(manifest?.guarantees.filter(({ id }) => id.startsWith('lakehouse-')).every(({ disposition, evidence }) =>
       disposition === 'bounded' && evidence.every((item) => item.startsWith(`conformance:v1:${target}:`)))).toBe(true)
+  })
+
+  it('resolves the fluent target-selection implementation before evaluating Kubernetes guarantees', () => {
+    const candidate = {
+      ...provider('LakehouseDataset', 'application-target-provider-selection'),
+      config: {
+        targetSelection: {
+          targets: {
+            local: { implementation: 'duckdb-dataset', configuration: { path: '.applik8s/lakehouse' } },
+            kubernetes: { implementation: 's3-dataset', configuration: { bucket: 'history' } },
+            aws: { implementation: 's3-dataset', configuration: { bucket: 'history' } },
+          },
+        },
+      },
+    } satisfies ApplicationProviderNode
+    const [manifest] = applicationProviderGuaranteesForGraph({
+      graph: { ...graph(), nodes: [candidate] },
+      target: 'kubernetes',
+    })
+    expect(manifest?.capability.implementation).toBe('s3-dataset')
+    expect(manifest?.guarantees).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'runtime-access', disposition: 'bounded' }),
+      expect.objectContaining({ id: 'lakehouse-published-snapshot', disposition: 'bounded' }),
+    ]))
   })
 
   it.each(['local', 'kubernetes'] as const)(
@@ -103,7 +208,7 @@ describe('v0.8 provider guarantee manifests', () => {
     },
   )
 
-  it('fails closed for malformed, target-missing, and AWS callable provider bindings', () => {
+  it('fails closed for malformed and target-missing callable provider bindings and qualifies AWS runtime bindings', () => {
     const candidates = [
       { callableRuntime: {} },
       {
@@ -133,7 +238,7 @@ describe('v0.8 provider guarantee manifests', () => {
       graph: { ...graph(), nodes: [callable] },
       target: 'aws',
     })[0]
-    expect(aws?.guarantees.every(({ disposition }) => disposition === 'unsupported')).toBe(true)
+    expect(aws?.guarantees.every(({ disposition }) => disposition === 'bounded')).toBe(true)
   })
 
   it.each(['aws', 'kubernetes'] as const)('records the complete qualified celld actor contract on %s', (target) => {

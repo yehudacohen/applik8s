@@ -1,3 +1,4 @@
+// typecast-file-boundary: Qualified scheduler handles are branded and validated before provider receiver generics are restored.
 /** Focused provider-safe schedule identity and admission surface. */
 
 import type {
@@ -159,3 +160,4 @@ function scheduleStableDigest(value: unknown): string {
     canonicalJsonV1String(value, canonicalJsonCompatibleV1Policy),
   );
 }
+// typecast-file-boundary: Qualified scheduler handles are branded and validated before provider receiver generics are restored.

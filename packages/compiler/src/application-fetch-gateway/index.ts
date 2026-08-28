@@ -55,6 +55,15 @@ export interface GeneratedApplicationFetchGatewayOptions {
 	}[];
 	/** Emits only the schedule-control surface for a non-web application. */
 	readonly surface?: "all" | "schedules";
+	/**
+	 * Includes the deterministic local scheduler in an all-surface gateway.
+	 *
+	 * Vite enables this only while serving the local development application.
+	 * Production application artifacts delegate every schedule to the dedicated
+	 * schedule-control workload instead of embedding scheduler providers in the
+	 * web host.
+	 */
+	readonly localDevelopmentSchedules?: boolean;
 	readonly scheduleHost?: {
 		readonly name: string;
 		readonly namespace: string;
@@ -90,6 +99,7 @@ export function generatedApplicationFetchGatewayModules(
 	options: GeneratedApplicationFetchGatewayOptions = {},
 ): GeneratedApplicationFetchGatewayModules | undefined {
 	const schedulesOnly = options.surface === "schedules";
+	const includeSchedules = schedulesOnly || options.localDevelopmentSchedules !== false;
 	const exportedModels = new Set(
 		(options.modelExports ?? []).map((model) => model.modelName),
 	);
@@ -137,15 +147,16 @@ export function generatedApplicationFetchGatewayModules(
 	const agents = schedulesOnly ? [] : graph.nodes.filter(
 		(node): node is ApplicationAIAgentNode => node.kind === "aiAgent",
 	);
-	const schedules = graph.nodes.filter(
+	const schedules = includeSchedules ? graph.nodes.filter(
 		(node): node is ApplicationScheduleNode =>
 			node.kind === "schedule"
 			&& (!schedulesOnly || graph.nodes.some((provider) =>
 				provider.id === node.scheduler.nodeId
-				&& provider.kind === "provider"
-				&& provider.interface === "Scheduler"
-				&& !provider.config?.qualification)),
-	);
+					&& provider.kind === "provider"
+					&& provider.interface === "Scheduler"
+					&& (provider.implementation !== "target-selected"
+						|| !provider.config?.qualification))),
+	) : [];
 	const scheduleProviders = new Map(
 		graph.nodes.flatMap((node) =>
 			node.kind === "provider" && node.interface === "Scheduler"
@@ -159,12 +170,14 @@ export function generatedApplicationFetchGatewayModules(
 			);
 		}
 	}
-	const hatchetScheduleBindings = applicationHatchetScheduleBindings(graph);
+	const hatchetScheduleBindings = schedulesOnly
+		? applicationHatchetScheduleBindings(graph)
+		: [];
 	const kubernetesScheduleProviderIds = [...scheduleProviders.values()]
 		.filter((provider) =>
-			!provider.config?.qualification
-			&& (provider.implementation === "target-selected"
-				|| provider.implementation === "kubernetes-cronjob-scheduler"))
+			provider.implementation === "kubernetes-cronjob-scheduler"
+				|| (provider.implementation === "target-selected"
+					&& !provider.config?.qualification))
 		.map(({ id }) => id)
 		.sort();
 	const workflowScheduleTargets = schedules.filter(
@@ -310,11 +323,16 @@ export function generatedApplicationFetchGatewayModules(
 	if (schedules.length > 0)
 		imports.push(
 			"import { executeApplicationScheduleAdmission, installApplicationScheduleRuntimeResolver, schedule } from '@applik8s/applik8s';",
+			"import { applicationScheduleRuntimeHandler } from '@applik8s/applik8s/schedule-execution-runtime';",
 			"import { installApplicationInvocationAdmissionResolver } from '@applik8s/client';",
+			"import { applicationAdmissionInvocationView, validateApplicationAdmissionContextV1WithoutReceipt } from '@applik8s/core';",
 			"import { installLocalApplicationScheduleRuntime } from '@applik8s/applik8s/schedule-runtime-local';",
-			"import { createAwsApplicationScheduleRuntime, startAwsApplicationScheduleQueueRunner } from '@applik8s/runtime-aws';",
-			"import { createKubernetesApplicationScheduleRuntime, executeKubernetesApplicationScheduleAdmission } from '@applik8s/runtime-kubernetes';",
 			"import { AsyncLocalStorage } from 'node:async_hooks';",
+		);
+	if (schedulesOnly && schedules.length > 0)
+		imports.push(
+			"import { createAwsApplicationScheduleRuntime, startAwsApplicationScheduleQueueRunner } from '@applik8s/runtime-aws/schedule';",
+			"import { createKubernetesApplicationScheduleRuntime, executeKubernetesApplicationScheduleAdmission } from '@applik8s/runtime-kubernetes';",
 		);
 	if (hatchetScheduleBindings.length > 0)
 		imports.push(
@@ -328,8 +346,8 @@ export function generatedApplicationFetchGatewayModules(
 		);
 	if (actors.length > 0)
 		imports.push(
-			"import { actor, actorState, createApplicationActor, createApplicationActorTurnAuthority, executeApplicationActorAlarm, executeApplicationActorInvocation, executeApplicationActorRealtime, installApplicationActorInvocationAuthorityResolver, installApplicationActorRuntimeResolver, validateApplicationAuthorizationReceipt, withApplicationActorTurnAuthority } from '@applik8s/applik8s';",
-			"import { applicationCausalPrincipalContext } from '@applik8s/core';",
+			"import { actor, actorState, createApplicationActor, createApplicationActorTurnAuthority, executeApplicationActorAlarm, executeApplicationActorInvocation, executeApplicationActorRealtime, installApplicationActorInvocationAuthorityResolver, installApplicationActorRuntimeResolver, withApplicationActorTurnAuthority } from '@applik8s/applik8s/actor-runtime';",
+			"import { applicationCausalPrincipalContext, validateApplicationAuthorizationReceipt } from '@applik8s/core';",
 			"import { applicationOperationInputDigest } from '@applik8s/applik8s/operation-runtime';",
 			"import { createPersistentLocalApplicationActorRuntime } from '@applik8s/applik8s/actor-runtime-local';",
 			"import { createApplicationEventLogPublisherFromEnvironment } from '@applik8s/applik8s/event-log-runtime';",
@@ -339,9 +357,8 @@ export function generatedApplicationFetchGatewayModules(
 	if (publicActors.length > 0) imports.push("import { randomUUID } from 'node:crypto';");
 	if (lakehousePublications.length > 0)
 		imports.push(
-			"import { event, executeApplicationLakehousePublication, installApplicationLakehousePublicationRuntimeResolver, installApplicationLakehouseQueryRuntimeResolver, LakehouseDataset } from '@applik8s/applik8s';",
-			"import { createDuckDbApplicationLakehouseRuntime } from '@applik8s/runtime-duckdb';",
-			"import { createAwsApplicationLakehouseDatasetRuntime, createAwsApplicationLakehouseQueryRuntime } from '@applik8s/runtime-aws';",
+			"import { createApplicationLakehousePublication, executeApplicationLakehousePublication, installApplicationLakehousePublicationRuntimeResolver, installApplicationLakehouseQueryRuntimeResolver } from '@applik8s/applik8s/lakehouse-runtime';",
+			"import { createAwsApplicationLakehouseDatasetRuntime, createAwsApplicationLakehouseQueryRuntime } from '@applik8s/runtime-aws/lakehouse';",
 			...(actors.length > 0
 				? []
 				: ["import { normalizeSchema } from '@applik8s/sdk';"]),
@@ -354,6 +371,7 @@ export function generatedApplicationFetchGatewayModules(
 			carrierCapture: agents.length > 0 || (observability && hasRemoteQueries),
 			carrierTransport: observability && hasRemoteQueries,
 			providerOperationInstrumentation: hasCallableProviderOperations,
+			runtimeIntegrityObserver: observability && (queries.length > 0 || commands.length > 0 || workflowScheduleTargets.length > 0),
 			runtimeImplementation: observability,
 		}));
 	if (identity.length === 1)
@@ -517,7 +535,7 @@ export function generatedApplicationFetchGatewayModules(
 			"lakehouse-transform",
 			publication.transform,
 		);
-		const base = `event(${JSON.stringify(publication.sourceEventId)}, { payload: runtimeJsonSchema(${JSON.stringify(publication.source.jsonSchema)}, ${JSON.stringify(`${publication.sourceEventId}.payload`)}) }).publish(LakehouseDataset.named(${JSON.stringify(dataset.qualification)}), runtimeJsonSchema(${JSON.stringify(publication.row.jsonSchema)}, ${JSON.stringify(`${dataset.qualification}.row`)}), ${transform})`;
+		const base = `createApplicationLakehousePublication({ kind: 'applik8sEvent', id: ${JSON.stringify(publication.sourceEventId)}, name: ${JSON.stringify(publication.sourceContract.name)}, version: ${JSON.stringify(publication.sourceContract.version)}, payload: runtimeJsonSchema(${JSON.stringify(publication.source.jsonSchema)}, ${JSON.stringify(`${publication.sourceEventId}.payload`)}) }, { name: 'LakehouseDataset', qualification: { name: ${JSON.stringify(dataset.qualification)} } }, runtimeJsonSchema(${JSON.stringify(publication.row.jsonSchema)}, ${JSON.stringify(`${dataset.qualification}.row`)}), ${transform})`;
 		if (!publication.partition) return base;
 		const partition = graphCallback(
 			files,
@@ -741,6 +759,7 @@ const localGateway =
   authenticate: (request) => ${authenticate}(request),
   cursorSecret: requiredEnv('APPLIK8S_CURSOR_SECRET'),
   observeAdmission: observeRequestAdmission,
+  ${observability ? 'observeRuntimeIntegrity: observeApplicationRuntimeIntegrityEnvelope,' : ''}
   ${observability ? `modelTelemetry: {
     run: (model, operation, instance, execute) => runApplicationTelemetryBoundary({ kind: 'model', identity: model, definition: operation, execution: 'model:' + instance, instance, relationship: 'synchronous' }, execute),
   },` : ''}
@@ -786,6 +805,108 @@ const agentGateway =
   }),
 })`
 			: "undefined";
+	const targetScheduleRuntimeSource = schedulesOnly && schedules.length > 0
+		? `const awsScheduleConfiguration = process.env.APPLIK8S_DEPLOYMENT_TARGET === 'aws' && defaultApplicationSchedules.length > 0
+  ? {
+      applicationId: process.env.APPLIK8S_APPLICATION_NAME ?? ${JSON.stringify(graph.metadata.name)},
+      environmentId: process.env.APPLIK8S_ENVIRONMENT_ID ?? 'default',
+      region: process.env.AWS_REGION,
+      queueUrl: process.env.APPLIK8S_AWS_SCHEDULE_QUEUE_URL ?? '',
+      queueArn: process.env.APPLIK8S_AWS_SCHEDULE_QUEUE_ARN ?? '',
+      deadLetterQueueArn: process.env.APPLIK8S_AWS_SCHEDULE_DLQ_ARN ?? '',
+      groupName: process.env.APPLIK8S_AWS_SCHEDULE_GROUP ?? '',
+      executionRoleArn: process.env.APPLIK8S_AWS_SCHEDULE_ROLE_ARN ?? '',
+      databaseUrl: process.env.APPLIK8S_SCHEDULE_DATABASE_URL ?? '',
+    }
+  : undefined;
+const awsScheduleRuntime = awsScheduleConfiguration
+  ? await createAwsApplicationScheduleRuntime(awsScheduleConfiguration, { admissionRunner: scheduleAdmissionRunner })
+  : undefined;
+const disposeAwsScheduleRuntime = awsScheduleRuntime
+  ? installApplicationScheduleRuntimeResolver((schedulerNodeId) => schedulerNodeId === 'provider.scheduler' ? awsScheduleRuntime : undefined)
+  : undefined;
+void disposeAwsScheduleRuntime;
+const awsScheduleRunner = awsScheduleConfiguration
+  ? await startAwsApplicationScheduleQueueRunner({
+      configuration: awsScheduleConfiguration,
+      execute: async (admission, signal) => {
+        const handle = defaultApplicationSchedules.find((candidate) => candidate.definition.id === admission.definitionId);
+        if (!handle) throw new Error('AWS Scheduler admitted unknown definition ' + admission.definitionId + '.');
+        return executeApplicationScheduleAdmission(handle, admission, signal, scheduleAdmissionRunner);
+      },
+      onError: (error) => {
+        void observeScheduleAdmission('rejected', undefined, error);
+        console.error(JSON.stringify({
+          event: 'applik8s-aws-schedule-admission-failed',
+          error: applicationAdmissionRejectionCodeV1(error),
+        }));
+      },
+    })
+  : undefined;
+void awsScheduleRunner;
+const kubernetesScheduleProviderIds = new Set(${JSON.stringify(kubernetesScheduleProviderIds)});
+const kubernetesScheduleRuntime = process.env.APPLIK8S_DEPLOYMENT_TARGET === 'kubernetes' && kubernetesScheduleProviderIds.size > 0
+  ? await createKubernetesApplicationScheduleRuntime({
+      applicationId: process.env.APPLIK8S_APPLICATION_NAME ?? ${JSON.stringify(graph.metadata.name)},
+      environmentId: process.env.APPLIK8S_ENVIRONMENT_ID ?? process.env.APPLIK8S_NAMESPACE ?? 'default',
+      namespace: process.env.APPLIK8S_NAMESPACE ?? ${JSON.stringify(scheduleHost?.namespace ?? graph.metadata.namespace ?? 'default')},
+      admissionEndpoint: ${JSON.stringify(scheduleHost?.admissionEndpoint ?? '')},
+      authorizationSecretName: ${JSON.stringify(`${kubernetesName(graph.metadata.name)}-internal-operation`)},
+      serviceAccountName: ${JSON.stringify(scheduleHost?.serviceAccountName ?? kubernetesName(`${graph.metadata.name}-schedule-control`))},
+      databaseUrl: process.env.APPLIK8S_SCHEDULE_DATABASE_URL ?? '',
+      admissionRunner: scheduleAdmissionRunner,
+    })
+  : undefined;
+const disposeKubernetesScheduleRuntime = kubernetesScheduleRuntime
+  ? installApplicationScheduleRuntimeResolver((schedulerNodeId) => kubernetesScheduleProviderIds.has(schedulerNodeId) ? kubernetesScheduleRuntime : undefined)
+  : undefined;
+void disposeKubernetesScheduleRuntime;
+${hatchetScheduleBindings.length > 0 ? `const hatchetScheduleRuntimeEntries = await Promise.all(${JSON.stringify(hatchetScheduleBindings)}.map(async (binding) => {
+  const handles = applicationScheduleBindings
+    .filter((entry) => entry.schedulerNodeId === binding.providerId)
+    .map((entry) => entry.handle);
+  if (handles.length !== binding.scheduleIds.length) {
+    throw new Error('Hatchet Scheduler ' + binding.providerId + ' could not resolve its complete generated schedule set.');
+  }
+  const tlsStrategy = process.env[binding.tlsEnvironment] ?? binding.tlsStrategy;
+  if (tlsStrategy !== 'tls' && tlsStrategy !== 'none') {
+    throw new Error('Hatchet Scheduler ' + binding.providerId + ' has invalid TLS strategy ' + JSON.stringify(tlsStrategy) + '.');
+  }
+  const runtime = await createHatchetApplicationScheduleRuntime({
+    applicationId: process.env.APPLIK8S_APPLICATION_NAME ?? ${JSON.stringify(graph.metadata.name)},
+    environmentId: process.env.APPLIK8S_ENVIRONMENT_ID ?? process.env.APPLIK8S_NAMESPACE ?? 'default',
+    schedulerNodeId: binding.providerId,
+    databaseUrl: process.env.APPLIK8S_SCHEDULE_DATABASE_URL ?? '',
+    ...(process.env.APPLIK8S_DEPLOYMENT_TARGET === 'kubernetes'
+      ? { tokenFile: binding.tokenFile }
+      : { token: process.env[binding.tokenEnvironment] ?? process.env.HATCHET_CLIENT_TOKEN }),
+    provider: {
+      kind: 'hatchet-scheduler',
+      workflowEngine: {
+        kind: 'hatchet',
+        hostPort: process.env[binding.hostPortEnvironment] ?? binding.hostPort,
+        apiUrl: process.env[binding.apiUrlEnvironment] ?? binding.apiUrl,
+        tls: tlsStrategy === 'tls',
+      },
+    },
+    admissionRunner: scheduleAdmissionRunner,
+  }, handles);
+  return [binding.providerId, runtime];
+}));
+const hatchetScheduleRuntimes = new Map(hatchetScheduleRuntimeEntries);
+const disposeHatchetScheduleRuntime = hatchetScheduleRuntimes.size > 0
+  ? installApplicationScheduleRuntimeResolver((schedulerNodeId) => hatchetScheduleRuntimes.get(schedulerNodeId))
+  : undefined;
+void disposeHatchetScheduleRuntime;` : ""}
+
+function generatedScheduleRuntimeFor(schedulerNodeId) {
+  const runtime = (schedulerNodeId === 'provider.scheduler' ? awsScheduleRuntime : undefined)
+    ?? (kubernetesScheduleProviderIds.has(schedulerNodeId) ? kubernetesScheduleRuntime : undefined)
+    ${hatchetScheduleBindings.length > 0 ? '?? hatchetScheduleRuntimes.get(schedulerNodeId)' : ''};
+  if (!runtime) throw Object.assign(new Error('Schedule management references an unavailable provider.'), { code: 'SCHEDULE_PROVIDER_UNAVAILABLE', status: 503 });
+  return runtime;
+}`
+		: "";
 	files["gateway.generated.ts"] = `${imports.join("\n")}
 
 function requiredEnv(name) {
@@ -808,6 +929,7 @@ ${workflowScheduleTargets.length > 0 ? `const scheduledWorkflowAdmission = creat
     },
   }),
   validatePayload: value => validateApplicationAdmissionContextV1(value),
+  ${observability ? 'observe: observeApplicationRuntimeIntegrityEnvelope,' : ''}
   maximumEncodedBytes: 32_768,
   maximumLifetimeMs: 60_000,
 });
@@ -1485,7 +1607,9 @@ void disposeActorRuntime;
 void applicationActors;` : ""}
 ${lakehousePublications.length > 0 ? `const applicationLakehousePublications = [${lakehousePublicationSources.join(",\n")}];
 const localLakehouseRuntimeEntries = process.env.APPLIK8S_DEPLOYMENT_TARGET === 'local'
-  ? await Promise.all(${JSON.stringify(lakehouseDatasets)}.filter((dataset) => dataset.kind === 'duckdb-dataset' && (!dataset.targets || dataset.targets.includes('local'))).map(async (dataset) => [
+  ? await (async () => {
+      const { createDuckDbApplicationLakehouseRuntime } = await import('@applik8s/runtime-duckdb');
+      return Promise.all(${JSON.stringify(lakehouseDatasets)}.filter((dataset) => dataset.kind === 'duckdb-dataset' && (!dataset.targets || dataset.targets.includes('local'))).map(async (dataset) => [
       dataset.qualification,
       await createDuckDbApplicationLakehouseRuntime({
         datasetId: dataset.qualification,
@@ -1497,7 +1621,8 @@ const localLakehouseRuntimeEntries = process.env.APPLIK8S_DEPLOYMENT_TARGET === 
         maximumRows: ${JSON.stringify(lakehouseQueries)}.find((query) => query.qualification === dataset.qualification && query.kind === 'duckdb-queries' && (!query.targets || query.targets.includes('local')))?.maximumRows,
         maximumScannedBytes: ${JSON.stringify(lakehouseQueries)}.find((query) => query.qualification === dataset.qualification && query.kind === 'duckdb-queries' && (!query.targets || query.targets.includes('local')))?.maximumScannedBytes,
       }),
-    ]))
+    ]));
+    })()
   : [];
 const localLakehouseRuntimes = new Map(localLakehouseRuntimeEntries);
 const localLakehouseQueryRuntime = {
@@ -1636,97 +1761,7 @@ const localScheduleRuntime = process.env.APPLIK8S_DEPLOYMENT_TARGET === 'local' 
     })
   : undefined;
 void localScheduleRuntime;
-const awsScheduleConfiguration = process.env.APPLIK8S_DEPLOYMENT_TARGET === 'aws' && defaultApplicationSchedules.length > 0
-  ? {
-      applicationId: process.env.APPLIK8S_APPLICATION_NAME ?? ${JSON.stringify(graph.metadata.name)},
-      environmentId: process.env.APPLIK8S_ENVIRONMENT_ID ?? 'default',
-      region: process.env.AWS_REGION,
-      queueUrl: process.env.APPLIK8S_AWS_SCHEDULE_QUEUE_URL ?? '',
-      queueArn: process.env.APPLIK8S_AWS_SCHEDULE_QUEUE_ARN ?? '',
-      deadLetterQueueArn: process.env.APPLIK8S_AWS_SCHEDULE_DLQ_ARN ?? '',
-      groupName: process.env.APPLIK8S_AWS_SCHEDULE_GROUP ?? '',
-      executionRoleArn: process.env.APPLIK8S_AWS_SCHEDULE_ROLE_ARN ?? '',
-      databaseUrl: process.env.APPLIK8S_SCHEDULE_DATABASE_URL ?? '',
-    }
-  : undefined;
-const awsScheduleRuntime = awsScheduleConfiguration
-  ? await createAwsApplicationScheduleRuntime(awsScheduleConfiguration, { admissionRunner: scheduleAdmissionRunner })
-  : undefined;
-const disposeAwsScheduleRuntime = awsScheduleRuntime
-  ? installApplicationScheduleRuntimeResolver((schedulerNodeId) => schedulerNodeId === 'provider.scheduler' ? awsScheduleRuntime : undefined)
-  : undefined;
-void disposeAwsScheduleRuntime;
-const awsScheduleRunner = awsScheduleConfiguration
-  ? await startAwsApplicationScheduleQueueRunner({
-      configuration: awsScheduleConfiguration,
-      execute: async (admission, signal) => {
-        const handle = defaultApplicationSchedules.find((candidate) => candidate.definition.id === admission.definitionId);
-        if (!handle) throw new Error('AWS Scheduler admitted unknown definition ' + admission.definitionId + '.');
-        return executeApplicationScheduleAdmission(handle, admission, signal, scheduleAdmissionRunner);
-      },
-      onError: (error) => {
-        void observeScheduleAdmission('rejected', undefined, error);
-        console.error(JSON.stringify({
-          event: 'applik8s-aws-schedule-admission-failed',
-          error: applicationAdmissionRejectionCodeV1(error),
-        }));
-      },
-    })
-  : undefined;
-void awsScheduleRunner;
-const kubernetesScheduleProviderIds = new Set(${JSON.stringify(kubernetesScheduleProviderIds)});
-const kubernetesScheduleRuntime = process.env.APPLIK8S_DEPLOYMENT_TARGET === 'kubernetes' && kubernetesScheduleProviderIds.size > 0
-  ? await createKubernetesApplicationScheduleRuntime({
-      applicationId: process.env.APPLIK8S_APPLICATION_NAME ?? ${JSON.stringify(graph.metadata.name)},
-      environmentId: process.env.APPLIK8S_ENVIRONMENT_ID ?? process.env.APPLIK8S_NAMESPACE ?? 'default',
-      namespace: process.env.APPLIK8S_NAMESPACE ?? ${JSON.stringify(scheduleHost?.namespace ?? graph.metadata.namespace ?? 'default')},
-      admissionEndpoint: ${JSON.stringify(scheduleHost?.admissionEndpoint ?? '')},
-      authorizationSecretName: ${JSON.stringify(`${kubernetesName(graph.metadata.name)}-internal-operation`)},
-      databaseUrl: process.env.APPLIK8S_SCHEDULE_DATABASE_URL ?? '',
-      admissionRunner: scheduleAdmissionRunner,
-    })
-  : undefined;
-const disposeKubernetesScheduleRuntime = kubernetesScheduleRuntime
-  ? installApplicationScheduleRuntimeResolver((schedulerNodeId) => kubernetesScheduleProviderIds.has(schedulerNodeId) ? kubernetesScheduleRuntime : undefined)
-  : undefined;
-void disposeKubernetesScheduleRuntime;
-const hatchetScheduleRuntimeEntries = await Promise.all(${JSON.stringify(hatchetScheduleBindings)}.map(async (binding) => {
-  const handles = applicationScheduleBindings
-    .filter((entry) => entry.schedulerNodeId === binding.providerId)
-    .map((entry) => entry.handle);
-  if (handles.length !== binding.scheduleIds.length) {
-    throw new Error('Hatchet Scheduler ' + binding.providerId + ' could not resolve its complete generated schedule set.');
-  }
-  const tlsStrategy = process.env[binding.tlsEnvironment] ?? binding.tlsStrategy;
-  if (tlsStrategy !== 'tls' && tlsStrategy !== 'none') {
-    throw new Error('Hatchet Scheduler ' + binding.providerId + ' has invalid TLS strategy ' + JSON.stringify(tlsStrategy) + '.');
-  }
-  const runtime = await createHatchetApplicationScheduleRuntime({
-    applicationId: process.env.APPLIK8S_APPLICATION_NAME ?? ${JSON.stringify(graph.metadata.name)},
-    environmentId: process.env.APPLIK8S_ENVIRONMENT_ID ?? process.env.APPLIK8S_NAMESPACE ?? 'default',
-    schedulerNodeId: binding.providerId,
-    databaseUrl: process.env.APPLIK8S_SCHEDULE_DATABASE_URL ?? '',
-    ...(process.env.APPLIK8S_DEPLOYMENT_TARGET === 'kubernetes'
-      ? { tokenFile: binding.tokenFile }
-      : { token: process.env[binding.tokenEnvironment] ?? process.env.HATCHET_CLIENT_TOKEN }),
-    provider: {
-      kind: 'hatchet-scheduler',
-      workflowEngine: {
-        kind: 'hatchet',
-        hostPort: process.env[binding.hostPortEnvironment] ?? binding.hostPort,
-        apiUrl: process.env[binding.apiUrlEnvironment] ?? binding.apiUrl,
-        tls: tlsStrategy === 'tls',
-      },
-    },
-    admissionRunner: scheduleAdmissionRunner,
-  }, handles);
-  return [binding.providerId, runtime];
-}));
-const hatchetScheduleRuntimes = new Map(hatchetScheduleRuntimeEntries);
-const disposeHatchetScheduleRuntime = hatchetScheduleRuntimes.size > 0
-  ? installApplicationScheduleRuntimeResolver((schedulerNodeId) => hatchetScheduleRuntimes.get(schedulerNodeId))
-  : undefined;
-void disposeHatchetScheduleRuntime;
+${targetScheduleRuntimeSource}
 ` : ""}
 const agentHealth = ${JSON.stringify(agentTargets)}.map(({ name, baseUrl, endpointEnvironmentName }) => ({ name: \`agent:\${name}\`, baseUrl: materializeRemoteBaseUrl(baseUrl, endpointEnvironmentName) }));
 
@@ -1882,7 +1917,40 @@ const applicationGatewayCore = {
         return new Response(JSON.stringify({ error: 'lakehouse_publication_failed' }), { status: 500, headers: { 'content-type': 'application/json' } });
       }
     }` : ""}
-    ${schedules.length > 0 ? `if (url.pathname === '/__applik8s/v1/internal/schedules/occurrences' && request.method === 'POST') {
+    ${schedulesOnly && schedules.length > 0 ? `if (url.pathname === '/__applik8s/v1/internal/schedules/manage' && request.method === 'POST') {
+      if (!authorizedInternalAdmission(request)) {
+        await observeScheduleAdmission('rejected', undefined, Object.assign(new Error('Schedule management authorization was rejected.'), { code: 'SCHEDULE_MANAGEMENT_AUTHORIZATION_REJECTED' }));
+        return new Response(JSON.stringify({ error: 'forbidden' }), { status: 403, headers: { 'content-type': 'application/json' } });
+      }
+      try {
+        const body = await request.json();
+        if (body?.apiVersion !== 'applik8s.scheduleManagementRequest/v1alpha1') throw Object.assign(new Error('Schedule management protocol is unsupported.'), { code: 'SCHEDULE_MANAGEMENT_VERSION_INVALID', status: 400 });
+        const binding = applicationScheduleBindings.find((candidate) => candidate.schedulerNodeId === body.schedulerNodeId && candidate.handle.definition.id === body.definitionId);
+        if (!binding) throw Object.assign(new Error('Schedule management references an unknown definition/provider pair.'), { code: 'SCHEDULE_DEFINITION_UNKNOWN', status: 404 });
+        const runtime = generatedScheduleRuntimeFor(binding.schedulerNodeId);
+        const handler = applicationScheduleRuntimeHandler(binding.handle);
+        let result;
+        if (body.action === 'invoke') {
+          const callerAdmission = applicationAdmissionInvocationView(validateApplicationAdmissionContextV1WithoutReceipt(body.callerAdmission));
+          result = await runtime.invoke({ definition: binding.handle.definition, input: body.input, handler, callerAdmission });
+        } else if (body.action === 'configure') {
+          const management = validatedScheduleManagement(body.management, body, 'configure');
+          result = await runtime.reconcile({ definition: binding.handle.definition, instance: body.instance, handler, management });
+        } else if (body.action === 'remove') {
+          const management = validatedScheduleManagement(body.management, body, 'remove');
+          result = await runtime.remove(binding.handle.definition.id, body.instanceId, management);
+        } else {
+          throw Object.assign(new Error('Schedule management action is unsupported.'), { code: 'SCHEDULE_MANAGEMENT_ACTION_INVALID', status: 400 });
+        }
+        return new Response(JSON.stringify({ ok: true, result }), { status: 200, headers: { 'content-type': 'application/json', 'cache-control': 'no-store' } });
+      } catch (error) {
+        await observeScheduleAdmission('rejected', undefined, error);
+        console.error(JSON.stringify({ event: 'applik8s-schedule-management-failed', error: applicationAdmissionRejectionCodeV1(error) }));
+        const status = Number.isSafeInteger(error?.status) && error.status >= 400 && error.status <= 599 ? error.status : 500;
+        return new Response(JSON.stringify({ error: error?.code ?? 'schedule_management_failed' }), { status, headers: { 'content-type': 'application/json', 'cache-control': 'no-store' } });
+      }
+    }
+    if (url.pathname === '/__applik8s/v1/internal/schedules/occurrences' && request.method === 'POST') {
       if (!authorizedInternalAdmission(request)) {
         await observeScheduleAdmission('rejected', undefined, Object.assign(new Error('Schedule internal authorization was rejected.'), { code: 'SCHEDULE_INTERNAL_AUTHORIZATION_REJECTED' }));
         return new Response(JSON.stringify({ error: 'forbidden' }), { status: 403, headers: { 'content-type': 'application/json' } });
@@ -1911,6 +1979,23 @@ const applicationGatewayCore = {
         }));
         return new Response(JSON.stringify({ error: busy ? 'schedule_occurrence_busy' : unknown ? 'unknown_schedule' : 'schedule_admission_failed' }), { status: busy ? 409 : unknown ? 404 : 500, headers: { 'content-type': 'application/json' } });
       }
+    }
+    function validatedScheduleManagement(management, body, action) {
+      if (!management || typeof management !== 'object'
+        || management.apiVersion !== 'applik8s.scheduleManagement/v1alpha1'
+        || management.action !== action
+        || management.definitionId !== body.definitionId
+        || management.instanceId !== (action === 'configure' ? body.instance?.id : body.instanceId)
+        || typeof management.revision !== 'string' || management.revision.length === 0
+        || typeof management.id !== 'string' || management.id.length === 0
+        || typeof management.principalId !== 'string' || management.principalId.length === 0
+        || typeof management.authorityRevision !== 'string' || management.authorityRevision.length === 0
+        || typeof management.trustedContextDigest !== 'string' || management.trustedContextDigest.length === 0
+        || typeof management.correlationId !== 'string' || management.correlationId.length === 0
+        || !Number.isFinite(Date.parse(management.admittedAt))) {
+        throw Object.assign(new Error('Schedule management receipt is invalid.'), { code: 'SCHEDULE_MANAGEMENT_RECEIPT_INVALID', status: 400 });
+      }
+      return management;
     }` : ""}
     ${actors.length > 0 ? `if (url.pathname === '/__applik8s/v1/internal/actors/alarms' && request.method === 'POST') {
       if (!authorizedInternalAdmission(request)) return new Response(JSON.stringify({ error: 'forbidden' }), { status: 403, headers: { 'content-type': 'application/json' } });
@@ -2069,15 +2154,15 @@ function forwardRemoteRequest(request, remoteBaseUrl) {
 export const handleApplik8sRequest = (request) => gateway.handle(request);
 ${schedules.length > 0 || observability ? `export async function closeApplik8sGateway() {
   ${schedules.length > 0 ? `
-  disposeAwsScheduleRuntime?.();
+  ${schedulesOnly ? `disposeAwsScheduleRuntime?.();
   disposeKubernetesScheduleRuntime?.();
-  disposeHatchetScheduleRuntime?.();
+  disposeHatchetScheduleRuntime?.();` : ""}
   await Promise.all([
     ...(localScheduleRuntime ? [localScheduleRuntime.stop()] : []),
-    ...(awsScheduleRunner ? [awsScheduleRunner.stop()] : []),
+    ${schedulesOnly ? `...(awsScheduleRunner ? [awsScheduleRunner.stop()] : []),
     ...(awsScheduleRuntime ? [awsScheduleRuntime.close()] : []),
     ...(kubernetesScheduleRuntime ? [kubernetesScheduleRuntime.close()] : []),
-    ...[...hatchetScheduleRuntimes.values()].map((runtime) => runtime.close()),
+    ...[...hatchetScheduleRuntimes.values()].map((runtime) => runtime.close()),` : ""}
   ]);
   ` : ""}
   ${observability ? "await closeApplicationTelemetryRuntime();" : ""}
@@ -2439,11 +2524,16 @@ function applicationScheduleHost(
 		readonly namespace: string;
 		readonly port: number;
 	},
-): { readonly namespace: string; readonly admissionEndpoint: string } {
+): {
+	readonly namespace: string;
+	readonly admissionEndpoint: string;
+	readonly serviceAccountName: string;
+} {
 	if (override) {
 		return {
 			namespace: override.namespace,
 			admissionEndpoint: `http://${kubernetesName(override.name)}.${override.namespace}.svc:${override.port}/__applik8s/v1/internal/schedules/occurrences`,
+			serviceAccountName: kubernetesName(override.name),
 		};
 	}
 	const provider = graph.nodes.find((node): node is ApplicationProviderNode =>
@@ -2458,6 +2548,7 @@ function applicationScheduleHost(
 	return {
 		namespace,
 		admissionEndpoint: `http://${name}.${namespace}.svc:${port}/__applik8s/v1/internal/schedules/occurrences`,
+		serviceAccountName: name,
 	};
 }
 
@@ -2721,19 +2812,17 @@ function graphCallback(
 		.digest("hex")
 		.slice(0, 12);
 	const file = `${role}-${digest}.generated.ts`;
-	const variable = `callback_${role.replace(/[^A-Za-z0-9_$]+/g, "_")}_${digest}`;
-	const dependencies = callback.dependencies?.source
-		? absoluteDependencyImports(
-				callback.dependencies.source,
-				callback.dependencies.resolveDir,
-			)
-		: "";
-	files[file] =
-		`${dependencies}${dependencies ? "\n\n" : ""}export const callback = (${callback.source});\n`;
+	const variable = `createCallback_${role.replace(/[^A-Za-z0-9_$]+/g, "_")}_${digest}`;
+	files[file] = generatedCallbackFactoryModule({
+		source: callback.source,
+		...(callback.dependencies ? { dependencies: callback.dependencies } : {}),
+		injectedIdentifiers: [],
+		exportName: "createCallback",
+	});
 	imports.push(
-		`import { callback as ${variable} } from './${file.replace(/\.ts$/, ".js")}';`,
+		`import { createCallback as ${variable} } from './${file.replace(/\.ts$/, ".js")}';`,
 	);
-	return variable;
+	return `${variable}()`;
 }
 
 function graphProfiledCallback(

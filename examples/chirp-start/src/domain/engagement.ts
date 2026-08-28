@@ -1,6 +1,6 @@
 import { type } from '@applik8s/applik8s/dsl';
 import { desc } from 'drizzle-orm';
-import { app, workflow } from '../app';
+import { app, workflow } from '../domain-app';
 import { Database } from '../providers/database';
 import { engagementBatches } from '../schema/engagement';
 

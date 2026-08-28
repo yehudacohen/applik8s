@@ -320,6 +320,21 @@ export interface ApplicationClickStackObservabilityProvider extends ApplicationO
   readonly kind: 'clickstack';
   readonly namespace?: string;
   readonly storageSize?: string;
+  /**
+   * Provider-specific ClickHouse Pod sizing. The maintained Kubernetes
+   * lowering supplies a bounded Burstable default when this is omitted so a
+   * real telemetry workload is never emitted as BestEffort.
+   */
+  readonly clickhouseResources?: {
+    readonly requests?: {
+      readonly cpu?: string;
+      readonly memory?: string;
+    };
+    readonly limits?: {
+      readonly cpu?: string;
+      readonly memory?: string;
+    };
+  };
 }
 
 export interface ApplicationCloudWatchObservabilityProvider extends ApplicationObservabilityProviderBase {

@@ -5,6 +5,8 @@ import type {
   DevelopmentChangePlan,
   DevelopmentContextAttachment,
   DevelopmentConversationReferent,
+  DevelopmentResolvedAttachment,
+  DevelopmentSelectionResolver,
   DevelopmentValidationEvidence,
   DevelopmentVisualSelection,
 } from './contracts.js';
@@ -22,6 +24,7 @@ export interface DevelopmentCoordinatorOptions {
   readonly journal: DevelopmentJournal;
   readonly validationCommands?: DevelopmentValidationCommands;
   readonly knownSecretValues?: readonly string[];
+  readonly selectionResolver?: DevelopmentSelectionResolver;
 }
 
 export interface DevelopmentApplyOutcome {
@@ -124,7 +127,37 @@ export class DevelopmentCoordinator {
     };
     this.#attachments.set(attachment.id, attachment);
     await this.options.journal.append('attachment.admitted', { attachment });
+    const resolved = await this.options.selectionResolver?.resolve(selection, {
+      projectId: this.options.projectId,
+      revision: this.options.revision(),
+    }) ?? [];
+    for (const candidate of resolved) await this.#admitResolvedAttachment(candidate, selection.capturedAtRevision);
     return attachment;
+  }
+
+  async #admitResolvedAttachment(
+    candidate: DevelopmentResolvedAttachment,
+    capturedAtRevision: string,
+  ): Promise<void> {
+    if (capturedAtRevision !== this.options.revision()) {
+      throw new Error('Development selection resolution became stale before admission.');
+    }
+    assertResolvedAttachment(candidate);
+    const payload = redactDevelopmentValue(
+      JSON.parse(JSON.stringify(candidate.payload)),
+      this.options.knownSecretValues ?? [],
+    ) as Readonly<Record<string, unknown>>;
+    const attachment: DevelopmentContextAttachment = {
+      id: `attachment_${randomUUID()}`,
+      class: candidate.class,
+      digest: digest(payload),
+      capturedAtRevision,
+      resolution: candidate.resolution,
+      redaction: candidate.redaction,
+      payload,
+    };
+    this.#attachments.set(attachment.id, attachment);
+    await this.options.journal.append('attachment.admitted', { attachment });
   }
 
   async saveReferent(referent: DevelopmentConversationReferent): Promise<void> {
@@ -244,6 +277,17 @@ function assertSelection(selection: DevelopmentVisualSelection, revision: string
   if (!selection.route.pathname.startsWith('/') || selection.route.pathname.length > 2048) throw new Error('Development visual selection route is invalid.');
   if (Buffer.byteLength(JSON.stringify(selection)) > 64 * 1024) throw new Error('Development visual selection exceeds the 64KiB admission limit.');
   if ((selection.element?.boundedText?.length ?? 0) > 2_000 || (selection.text?.boundedValue.length ?? 0) > 4_000) throw new Error('Development visual selection contains unbounded page text.');
+}
+
+function assertResolvedAttachment(candidate: DevelopmentResolvedAttachment): void {
+  const allowedClasses: readonly string[] = ['source', 'graphNode', 'operation', 'runtimeTrace', 'applicationPlanNode', 'validationEvidence'];
+  if (!allowedClasses.includes(candidate.class)) throw new Error('Development selection resolver returned an invalid attachment class.');
+  if (!['exact', 'candidate', 'stale', 'unresolved', 'external'].includes(candidate.resolution)) {
+    throw new Error('Development selection resolver returned an invalid resolution.');
+  }
+  if (Buffer.byteLength(JSON.stringify(candidate.payload)) > 64 * 1024) {
+    throw new Error('Development selection resolver attachment exceeds the 64KiB admission limit.');
+  }
 }
 
 function requiredApprovalClasses(plan: DevelopmentChangePlan): readonly DevelopmentApprovalClass[] {

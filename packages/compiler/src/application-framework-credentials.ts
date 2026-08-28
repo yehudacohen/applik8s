@@ -1,3 +1,4 @@
+// typecast-file-boundary: Closed compiler-authored credential names are preserved as literals while lowering validated execution requirements.
 import type {
   ApplicationFrameworkCredentialDependency,
   ApplicationFrameworkCredentialKind,
@@ -29,12 +30,20 @@ export function applicationFrameworkCredentialDependencies(
   generatedSource: string,
   additional: Readonly<Record<string, ApplicationFrameworkCredentialKind>> = {},
 ): readonly ApplicationFrameworkCredentialDependency[] {
+  // esbuild may honor its lineLimit by inserting JavaScript line
+  // continuations inside long string literals. Credential names are still
+  // identical at runtime, but a raw substring scan would miss, for example,
+  // `APPLIK8S_CONTEXT_SECR\\\nET` and omit the Secret projection from the
+  // workload. Collapse only JavaScript line continuations before inspecting
+  // the compiler-owned bundle; ordinary whitespace and authored strings are
+  // otherwise left untouched.
+  const inspectableSource = generatedSource.replace(/\\\r?\n/gu, '');
   const candidates: Readonly<Record<string, ApplicationFrameworkCredentialKind>> = {
     ...FRAMEWORK_CREDENTIAL_ENVIRONMENTS,
     ...additional,
   };
   const dependencies = Object.entries(candidates)
-    .filter(([environmentName]) => generatedSource.includes(environmentName))
+    .filter(([environmentName]) => inspectableSource.includes(environmentName))
     .map(([environmentName, kind]) => ({ kind, environmentName }))
     .sort((left, right) => left.environmentName.localeCompare(right.environmentName));
   for (const dependency of dependencies) {
@@ -44,3 +53,4 @@ export function applicationFrameworkCredentialDependencies(
   }
   return dependencies;
 }
+// typecast-file-boundary: Closed compiler-authored credential names are preserved as literals while lowering validated execution requirements.

@@ -1,5 +1,5 @@
 import type { ApplicationProcessorOptions } from '@applik8s/applik8s';
-import { app, capacity } from '../app';
+import { app, capacity } from '../domain-app';
 import { databaseProvider } from '../providers';
 import { chirpSchema } from '../schema/index';
 

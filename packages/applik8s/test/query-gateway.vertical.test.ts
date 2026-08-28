@@ -189,6 +189,48 @@ describe('v0.6 authenticated query gateway', () => {
     });
   });
 
+  test('runs authored query code inside the canonical admitted execution boundary', async () => {
+    const { query } = queryFixture();
+    let execution: Parameters<NonNullable<Parameters<typeof createApplicationQueryGateway>[0]['execute']>>[0] | undefined;
+    const gateway = createApplicationQueryGateway({
+      queries: [query as ApplicationQueryBinding<unknown, unknown>],
+      authenticate: async () => ({
+        principal: testApplicationPrincipal('allowed'),
+        admittedContext: {
+          values: { organizationId: 'organization-1' },
+          digestSecret: 'context-digest-secret-context-digest-secret',
+        },
+      }),
+      context: () => fakeContext(),
+      cursorSecret: 'cursor-signing-secret-cursor-signing-secret',
+      async execute(request, run) {
+        execution = request;
+        return run();
+      },
+    });
+    await gateway.snapshot(
+      new Request('https://catalog.test/queries/cards.list.v1/snapshot', {
+        method: 'POST',
+        headers: { 'x-request-id': 'query-managed-execution-1' },
+      }),
+      query.id,
+      { limit: 5 },
+    );
+    expect(execution).toMatchObject({
+      operation: 'snapshot',
+      identity: {
+        admission: {
+          correlationId: 'query-managed-execution-1',
+          operation: {
+            id: 'applik8s://queries/cards.list.v1/snapshot',
+            transport: 'http',
+          },
+        },
+      },
+    });
+    expect(execution?.query.id).toBe('cards.list.v1');
+  });
+
   test('bounds query cursor lifetime at the framework boundary', () => {
     const { query } = queryFixture();
     expect(() => createApplicationQueryGateway({

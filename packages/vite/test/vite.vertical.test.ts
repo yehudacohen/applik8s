@@ -1,5 +1,5 @@
 // typecast-file-boundary: Vite plugin tests use minimal structural doubles for the hooks exercised by the generic adapter.
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -9,6 +9,24 @@ import { type Applik8sVitePlugin, applik8sVite } from '../src/index.js';
 const fixtureRoot = join(dirname(fileURLToPath(import.meta.url)), 'fixtures');
 
 describe('framework-neutral Applik8s Vite integration', () => {
+  it('preserves authored callback metadata in production SSR modules only', async () => {
+    const plugin = adapter();
+    plugin.config({}, { command: 'build' });
+    await plugin.configResolved({
+      root: fixtureRoot,
+      build: { outDir: 'dist/server', ssr: true },
+    });
+    const source = [
+      'const WorkspaceActivity = { snapshot() {} };',
+      "application.workflow('workspace.digest.v1', contract, async () => WorkspaceActivity.snapshot());",
+    ].join('\n');
+    const modulePath = join(fixtureRoot, 'runtime-model.ts');
+    const instrumented = plugin.transform(source, modulePath, { ssr: true });
+    expect(instrumented).toContain('applik8s.applicationCallbackSource');
+    expect(instrumented).toContain('WorkspaceActivity.snapshot');
+    expect(plugin.transform(source, modulePath, { ssr: false })).toBeUndefined();
+  });
+
   it('injects a selection-scoped Builder toolbar only into supervised development HTML', () => {
     const names = ['APPLIK8S_DEV_PORTAL_ORIGIN', 'APPLIK8S_DEV_BRIDGE_TOKEN', 'APPLIK8S_DEV_REVISION'] as const;
     const previous = Object.fromEntries(names.map((name) => [name, process.env[name]]));
@@ -21,6 +39,8 @@ describe('framework-neutral Applik8s Vite integration', () => {
       const transformed = development.transformIndexHtml('<html><body><main>Product</main></body></html>');
       expect(transformed).toContain('data-applik8s-development-only="true"');
       expect(transformed).toContain("'/v1/selections'");
+      expect(transformed).toContain("'/v1/bridge-context'");
+      expect(transformed).toContain('capturedAtRevision:bridgeContext.revision');
       expect(transformed).toContain('selection-capability');
       expect(transformed).not.toContain('sessionToken');
 
@@ -78,8 +98,18 @@ describe('framework-neutral Applik8s Vite integration', () => {
   it('discovers the ApplicationGraph and generates facades without source regex parsing', async () => {
     const plugin = adapter();
     expect(plugin.config({}, { command: 'serve' })).toMatchObject({
-      ssr: { external: ['@duckdb/node-api'] },
-      optimizeDeps: { exclude: ['@duckdb/node-api'] },
+      ssr: { external: [
+        '@applik8s/runtime-aws',
+        '@applik8s/runtime-hatchet',
+        '@applik8s/runtime-kubernetes',
+        '@duckdb/node-api',
+      ] },
+      optimizeDeps: { exclude: [
+        '@applik8s/runtime-aws',
+        '@applik8s/runtime-hatchet',
+        '@applik8s/runtime-kubernetes',
+        '@duckdb/node-api',
+      ] },
     });
     await mkdir(join(fixtureRoot, '.applik8s/generated'), { recursive: true });
     await writeFile(join(fixtureRoot, '.applik8s/generated/stale.generated.ts'), 'throw new Error("stale");\n');
@@ -134,19 +164,34 @@ describe('framework-neutral Applik8s Vite integration', () => {
     expect(identitySource).toContain('/packages/vite/test/fixtures/identity');
   }, 60_000);
 
-  it('includes exported durable scheduling in the generated hosted gateway before the server artifact exists', async () => {
-    const plugin = adapter({ application: 'schedule-application.ts' });
-    plugin.config({}, { command: 'build' });
-    await plugin.configResolved({ root: fixtureRoot, build: { outDir: 'dist/server', ssr: true } });
-    await plugin.buildStart();
-    const source = await readFile(
+  it('keeps local scheduling in serve and out of the production web artifact', async () => {
+    const production = adapter({ application: 'schedule-application.ts' });
+    production.config({}, { command: 'build' });
+    await production.configResolved({ root: fixtureRoot, build: { outDir: 'dist/server', ssr: true } });
+    await production.buildStart();
+    const productionSource = await readFile(
+      join(fixtureRoot, '.applik8s/generated/gateway.generated.ts'),
+      'utf8',
+    ).catch(() => '');
+    expect(productionSource).not.toContain('workflow-start.tenant.rebuild.v1');
+    expect(productionSource).not.toContain('startScheduledWorkflow');
+    expect(productionSource).not.toContain('installLocalApplicationScheduleRuntime');
+    expect(productionSource).not.toContain('/__applik8s/v1/internal/schedules/occurrences');
+
+    const development = adapter({ application: 'schedule-application.ts' });
+    development.config({}, { command: 'serve' });
+    await development.configResolved({ root: fixtureRoot, build: { outDir: 'dist/server', ssr: true } });
+    await development.buildStart();
+    const developmentSource = await readFile(
       join(fixtureRoot, '.applik8s/generated/gateway.generated.ts'),
       'utf8',
     );
-    expect(source).toContain('workflow-start.tenant.rebuild.v1');
-    expect(source).toContain('startScheduledWorkflow');
-    expect(source).toContain('tenant.rebuild.v1');
-    expect(source).toContain("purpose: 'applik8s.workflow-gateway-admission/v1'");
+    expect(developmentSource).toContain('workflow-start.tenant.rebuild.v1');
+    expect(developmentSource).toContain('startScheduledWorkflow');
+    expect(developmentSource).toContain('tenant.rebuild.v1');
+    expect(developmentSource).toContain("purpose: 'applik8s.workflow-gateway-admission/v1'");
+    expect(developmentSource).toContain('installLocalApplicationScheduleRuntime');
+    expect(developmentSource).not.toContain('/__applik8s/v1/internal/schedules/occurrences');
   }, 60_000);
 
   it('emits immutable build metadata and rejects browser server-dependency capture', async () => {
@@ -299,6 +344,36 @@ var public_assets_data_default = {
       await writeFile(join(output, 'nitro.json'), '{"date":"2026-07-20T12:35:57.890Z"}\n');
       await plugin.closeBundle();
       expect(await readFile(join(root, '.applik8s/web-artifacts/server.json'), 'utf8')).toBe(first);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('dereferences Nitro dependency-directory symlinks into the portable server artifact', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'applik8s-vite-nitro-dependencies-'));
+    try {
+      const output = join(root, '.output');
+      const entrypoint = join(output, 'server/index.mjs');
+      const packageRoot = join(output, 'server/node_modules/.nf3/runtime@1.0.0');
+      await mkdir(packageRoot, { recursive: true });
+      await writeFile(join(packageRoot, 'index.js'), 'export const runtime = true;\n');
+      await mkdir(join(output, 'server/node_modules'), { recursive: true });
+      await symlink('.nf3/runtime@1.0.0', join(output, 'server/node_modules/runtime'));
+      const plugin = applik8sVite({
+        application: 'application.ts',
+        serverArtifact: { outputDirectory: '.output', entrypoint: 'server/index.mjs' },
+      }) as unknown as Applik8sVitePlugin;
+      await plugin.configResolved({ root, build: { outDir: '.output/server', ssr: true } });
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      await mkdir(dirname(entrypoint), { recursive: true });
+      await writeFile(entrypoint, 'export const server = true;\n');
+      await plugin.closeBundle();
+      const manifest = JSON.parse(await readFile(join(root, '.applik8s/web-artifacts/server.json'), 'utf8')) as {
+        readonly artifacts: readonly { readonly path: string }[];
+      };
+      expect(manifest.artifacts).toContainEqual(expect.objectContaining({
+        path: 'server/node_modules/runtime/index.js',
+      }));
     } finally {
       await rm(root, { recursive: true, force: true });
     }

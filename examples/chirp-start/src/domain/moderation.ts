@@ -1,7 +1,7 @@
 // typecast-file-boundary: validated model payloads are narrowed to the declared moderation states before domain decisions.
 import { entity, type } from '@applik8s/applik8s/dsl';
 import { desc, eq } from 'drizzle-orm';
-import { app, namespace, workflow } from '../app';
+import { app, namespace, workflow } from '../domain-app';
 import { AutomationPostReview } from '../automation/workflow';
 import { Database } from '../providers/database';
 import { moderationCases, reports } from '../schema/moderation';

@@ -1,4 +1,6 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+// typecast-file-boundary: Synthetic compiler workspaces intentionally restore
+// JSON/package fixture shapes after asserting the generated source contract.
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -6,6 +8,36 @@ import { describe, expect, it } from 'vitest';
 import { bundleHandlerEntrypoint } from '../src/index.js';
 
 describe('compiler portability policy', () => {
+  it('resolves exported Applik8s subpaths wholly from workspace source', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'applik8s-compiler-workspace-source-'));
+
+    try {
+      const entrypoint = join(dir, 'handler-entry.ts');
+      await writeFile(
+        entrypoint,
+        `import { applicationAdmissionContextVersion } from '@applik8s/core/admission';
+
+export function handle(): string {
+  return applicationAdmissionContextVersion;
+}
+`,
+      );
+
+      const bundle = await bundleHandlerEntrypoint({ entrypoint, outDir: join(dir, 'bundle') });
+
+      expect(bundle.ok).toBe(true);
+      if (!bundle.ok) return;
+      const metafile = JSON.parse(await readFile(bundle.value.metafilePath, 'utf8')) as {
+        readonly inputs: Readonly<Record<string, unknown>>;
+      };
+      const inputs = Object.keys(metafile.inputs);
+      expect(inputs.some((input) => input.endsWith('packages/core/src/application-admission.ts'))).toBe(true);
+      expect(inputs.some((input) => input.includes('node_modules/@applik8s/core/dist/'))).toBe(false);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it('allows direct fetch in async handler source', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'applik8s-compiler-fetch-policy-'));
 

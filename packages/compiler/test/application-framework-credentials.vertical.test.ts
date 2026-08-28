@@ -22,6 +22,14 @@ describe('generated application framework credential dependencies', () => {
     ]);
   });
 
+  it('recognizes credential names split by a bundler line continuation', () => {
+    expect(applicationFrameworkCredentialDependencies(
+      "requiredEnv('APPLIK8S_CONTEXT_SECR\\\nET')",
+    )).toEqual([
+      { kind: 'context', environmentName: 'APPLIK8S_CONTEXT_SECRET' },
+    ]);
+  });
+
   it('rejects renamed credentials that could shadow ambient or sibling authorities', () => {
     expect(() => applicationFrameworkCredentialDependencies(
       `requiredEnv('AWS_SECRET_ACCESS_KEY')`,

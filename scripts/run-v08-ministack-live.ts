@@ -19,6 +19,10 @@ try {
     `127.0.0.1:${port}:4566`,
     '-e',
     'AWS_DEFAULT_REGION=us-east-1',
+    '-e',
+    'S3_PERSIST=1',
+    '-e',
+    'RDS_PERSIST=1',
     image,
   ], { encoding: 'utf8' });
   started = true;

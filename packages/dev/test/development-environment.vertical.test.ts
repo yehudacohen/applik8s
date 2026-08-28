@@ -3,9 +3,11 @@ import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promis
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import type { ApplicationPlan, ApplicationSourceProvenance } from '@applik8s/core';
 import type { DevelopmentAgentProvider, DevelopmentEvent } from '../src/agent/index.js';
 import type { DevelopmentChangePlan } from '../src/contracts.js';
 import { DevelopmentCoordinator } from '../src/coordinator.js';
+import { applicationPlanSelectionResolver } from '../src/application-plan-selection.js';
 import { openDevelopmentJournal } from '../src/journal.js';
 import { createDevelopmentDaemon } from '../src/server.js';
 import { renderDevelopmentPortal } from '../src/ui.js';
@@ -139,6 +141,54 @@ describe('independent development environment', () => {
     journal.close();
   });
 
+  it('resolves an opaque graph identity into revision-bound source, operation, and plan context', async () => {
+    const root = await temporaryRoot();
+    const journal = await openDevelopmentJournal(join(root, '.applik8s/dev/journal.sqlite'));
+    const provenance = {
+      apiVersion: 'applik8s.provenance/v1alpha1' as const,
+      id: 'source:documents',
+      origin: 'authored' as const,
+      module: 'src/features/documents/model.ts',
+      symbol: 'DocumentList',
+      location: { file: 'src/features/documents/model.ts', line: 41, column: 5 },
+    };
+    const plan = applicationPlanFixture(provenance);
+    const coordinator = await DevelopmentCoordinator.open({
+      workspaceRoot: root,
+      projectId: 'agentic-start',
+      revision: () => 'sha256:revision',
+      journal,
+      selectionResolver: applicationPlanSelectionResolver({ currentPlan: () => plan }),
+    });
+
+    await coordinator.admitSelection({
+      id: 'selection_documents_view',
+      capturedAtRevision: 'sha256:revision',
+      route: { pathname: '/app/documents', searchKeys: [] },
+      element: { role: 'main', boundedText: 'Documents' },
+      sourceHints: [{ provenanceId: 'query.document-list', confidence: 'exact' }],
+    });
+
+    const attachments = coordinator.context().attachments;
+    expect(attachments.map(({ class: attachmentClass }) => attachmentClass)).toEqual([
+      'visualSelection',
+      'source',
+      'graphNode',
+      'operation',
+      'applicationPlanNode',
+      'applicationPlanNode',
+      'applicationPlanNode',
+      'applicationPlanNode',
+    ]);
+    expect(attachments.every(({ capturedAtRevision }) => capturedAtRevision === 'sha256:revision')).toBe(true);
+    expect(attachments.find(({ class: attachmentClass }) => attachmentClass === 'source')).toMatchObject({
+      resolution: 'exact',
+      payload: { provenance: { module: 'src/features/documents/model.ts', symbol: 'DocumentList' } },
+    });
+    expect(JSON.stringify(attachments)).not.toContain(root);
+    journal.close();
+  });
+
   it('renders the independent recovery portal without generated-application code', () => {
     const html = renderDevelopmentPortal({ projectName: 'proof', revision: 'sha256:revision', target: 'local', scriptNonce: 'test-nonce' });
     expect(html).toContain('Applik8s Builder');
@@ -153,22 +203,124 @@ describe('independent development environment', () => {
 
   it.skipIf(process.env.APPLIK8S_DEV_LIVE !== '1')('keeps health and recovery state available independently of an application failure', async () => {
     const root = await temporaryRoot();
+    await mkdir(join(root, 'src/features/documents'), { recursive: true });
+    await writeFile(
+      join(root, 'src/features/documents/model.ts'),
+      'export const DocumentList = true;\n',
+    );
     const applicationOrigin = 'http://127.0.0.1:3010';
-    const daemon = await createDevelopmentDaemon({ projectName: 'proof', workspaceRoot: root, revision: 'sha256:revision', target: 'local', port: 0, allowedOrigins: [applicationOrigin], state: async () => ({ application: { state: 'failed', message: 'Typecheck failed.' }, runtime: { state: 'ready', message: 'Providers healthy.' } }) });
+    let revision = 'sha256:revision';
+    let applicationState: 'ready' | 'failed' = 'ready';
+    const plan = applicationPlanFixture({
+      apiVersion: 'applik8s.provenance/v1alpha1',
+      id: 'source:documents-live',
+      origin: 'authored',
+      module: 'src/features/documents/model.ts',
+      symbol: 'DocumentList',
+      location: {
+        file: 'src/features/documents/model.ts',
+        line: 1,
+        column: 14,
+      },
+    });
+    const journalPath = join(root, '.applik8s/dev/journal.sqlite');
+    const daemon = await createDevelopmentDaemon({
+      projectName: 'proof',
+      workspaceRoot: root,
+      revision: () => revision,
+      target: 'local',
+      port: 0,
+      journalPath,
+      allowedOrigins: [applicationOrigin],
+      selectionResolver: applicationPlanSelectionResolver({ currentPlan: () => plan }),
+      state: async () => ({
+        application: applicationState === 'ready'
+          ? { state: 'ready', message: 'Application compiled and started.' }
+          : { state: 'failed', message: 'Typecheck failed.' },
+        runtime: { state: 'ready', message: 'Providers healthy.' },
+      }),
+    });
     await daemon.start();
     try {
       expect(await fetch(`${daemon.origin}/v1/health`).then((response) => response.json())).toMatchObject({ ready: true, applicationIndependent: true });
       const state = await fetch(`${daemon.origin}/v1/state`, { headers: { authorization: `Bearer ${daemon.sessionToken}`, origin: daemon.origin } }).then((response) => response.json());
-      expect(state).toMatchObject({ application: { state: 'failed' }, runtime: { state: 'ready' }, journal: { valid: true } });
+      expect(state).toMatchObject({ application: { state: 'ready' }, runtime: { state: 'ready' }, journal: { valid: true } });
       expect((await fetch(`${daemon.origin}/v1/state`, { headers: { authorization: 'Bearer invalid' } })).status).toBe(403);
       const preflight = await fetch(`${daemon.origin}/v1/selections`, { method: 'OPTIONS', headers: { origin: applicationOrigin, 'access-control-request-method': 'POST', 'access-control-request-headers': 'content-type, x-applik8s-bridge, x-applik8s-bridge-nonce' } });
       expect(preflight.status).toBe(204);
       expect(preflight.headers.get('access-control-allow-origin')).toBe(applicationOrigin);
-      const selection = await fetch(`${daemon.origin}/v1/selections`, { method: 'POST', headers: { origin: applicationOrigin, 'content-type': 'application/json', 'x-applik8s-bridge': daemon.bridgeToken, 'x-applik8s-bridge-nonce': 'nonce_for_selection_001' }, body: JSON.stringify({ id: 'selection_one_001', capturedAtRevision: 'sha256:revision', route: { pathname: '/app', searchKeys: [] }, element: { role: 'button', boundedText: 'Create' }, sourceHints: [] }) });
+      const bridgeContext = await fetch(`${daemon.origin}/v1/bridge-context`, {
+        headers: {
+          origin: applicationOrigin,
+          'x-applik8s-bridge': daemon.bridgeToken,
+          'x-applik8s-bridge-nonce': 'nonce_for_context_001',
+        },
+      });
+      expect(bridgeContext.status).toBe(200);
+      expect(await bridgeContext.json()).toEqual({ projectId: 'proof', revision: 'sha256:revision' });
+      const selection = await fetch(`${daemon.origin}/v1/selections`, { method: 'POST', headers: { origin: applicationOrigin, 'content-type': 'application/json', 'x-applik8s-bridge': daemon.bridgeToken, 'x-applik8s-bridge-nonce': 'nonce_for_selection_001' }, body: JSON.stringify({ id: 'selection_one_001', capturedAtRevision: 'sha256:revision', route: { pathname: '/app/documents', searchKeys: [] }, element: { role: 'main', boundedText: 'Documents' }, sourceHints: [{ provenanceId: 'query.document-list', confidence: 'exact' }] }) });
       expect(selection.status).toBe(201);
       expect(selection.headers.get('access-control-allow-origin')).toBe(applicationOrigin);
-      expect(daemon.coordinator.snapshot().attachments).toHaveLength(1);
+      expect(daemon.coordinator.snapshot().attachments).toHaveLength(8);
+      const attachmentIds = (daemon.coordinator.snapshot().attachments as readonly { readonly id: string }[]).map(({ id }) => id);
+      const portalHeaders = {
+        authorization: `Bearer ${daemon.sessionToken}`,
+        origin: daemon.origin,
+        'content-type': 'application/json',
+        'x-applik8s-csrf': '1',
+      };
+      expect((await fetch(`${daemon.origin}/v1/referents`, {
+        method: 'POST',
+        headers: portalHeaders,
+        body: JSON.stringify({
+          id: 'referent_documents_selection',
+          label: 'the Documents surface',
+          attachmentIds,
+          resolution: 'exact',
+        }),
+      })).status).toBe(201);
+      applicationState = 'failed';
+      expect(await fetch(`${daemon.origin}/v1/state`, {
+        headers: { authorization: `Bearer ${daemon.sessionToken}`, origin: daemon.origin },
+      }).then((response) => response.json())).toMatchObject({
+        application: { state: 'failed' },
+        runtime: { state: 'ready' },
+        development: {
+          attachments: expect.arrayContaining([
+            expect.objectContaining({ class: 'source', resolution: 'exact' }),
+            expect.objectContaining({ class: 'applicationPlanNode', resolution: 'exact' }),
+          ]),
+          referents: [expect.objectContaining({ id: 'referent_documents_selection' })],
+        },
+      });
+      revision = 'sha256:next-revision';
+      const staleSelection = await fetch(`${daemon.origin}/v1/selections`, { method: 'POST', headers: { origin: applicationOrigin, 'content-type': 'application/json', 'x-applik8s-bridge': daemon.bridgeToken, 'x-applik8s-bridge-nonce': 'nonce_for_selection_002' }, body: JSON.stringify({ id: 'selection_stale_001', capturedAtRevision: 'sha256:revision', route: { pathname: '/app', searchKeys: [] }, sourceHints: [] }) });
+      expect(staleSelection.status).toBe(422);
     } finally { await daemon.stop(); }
+    const recovered = await createDevelopmentDaemon({
+      projectName: 'proof',
+      workspaceRoot: root,
+      revision: () => revision,
+      target: 'local',
+      port: 0,
+      journalPath,
+      selectionResolver: applicationPlanSelectionResolver({ currentPlan: () => plan }),
+      state: async () => ({
+        application: { state: 'ready', message: 'Application repaired.' },
+        runtime: { state: 'ready', message: 'Providers healthy.' },
+      }),
+    });
+    expect(recovered.coordinator.snapshot()).toMatchObject({
+      attachments: expect.arrayContaining([
+        expect.objectContaining({ class: 'visualSelection' }),
+        expect.objectContaining({ class: 'source' }),
+        expect.objectContaining({ class: 'graphNode' }),
+        expect.objectContaining({ class: 'operation' }),
+      ]),
+      referents: [expect.objectContaining({ id: 'referent_documents_selection' })],
+    });
+    await recovered.start();
+    await recovered.stop();
   });
 
   it.skipIf(process.env.APPLIK8S_DEV_LIVE !== '1')('brokers a reviewed agent proposal through apply, undo, and daemon recovery', async () => {
@@ -214,4 +366,44 @@ async function* events(event: DevelopmentEvent): AsyncIterable<DevelopmentEvent>
 
 function plan(file: DevelopmentChangePlan['files'][number]): DevelopmentChangePlan {
   return { id: 'plan-one', summary: 'Update one file', requestedOutcome: 'proof', contextReferents: [], files: [file], graphChanges: [], schemaChanges: [], authorityChanges: [], infrastructureChanges: [], dependencies: [], risks: [], validation: [], rollbackBoundary: { kind: 'agent-owned-hunks', files: [file.path] } };
+}
+
+function applicationPlanFixture(provenance: ApplicationSourceProvenance): ApplicationPlan {
+  const identity = {
+    apiVersion: 'applik8s.foundation/v1alpha1' as const,
+    kind: 'graph-node' as const,
+    id: 'applik8s://agentic-start/graph-node/query-document-list' as const,
+    application: 'agentic-start',
+    semanticKey: 'query.document-list',
+  };
+  return {
+    schemaVersion: 'applik8s.applicationPlan/v1alpha1' as const,
+    sourceGraphVersion: 'applik8s.appGraph/v1alpha1' as const,
+    application: { ...identity, kind: 'application' as const, id: 'applik8s://agentic-start/application/root' as const },
+    target: {
+      apiVersion: 'applik8s.target/v1alpha1' as const,
+      identity: { ...identity, kind: 'target' as const, id: 'applik8s://agentic-start/target/local' as const },
+      target: 'local' as const,
+      profile: 'starter',
+      lifecycleAuthority: 'local-supervisor' as const,
+      attributes: {},
+    },
+    generatedAt: '2026-08-27T00:00:00.000Z',
+    sourceDigest: 'sha256:source',
+    identities: [identity],
+    semantic: {
+      nodes: [{ id: identity.id, graphNodeId: 'query.document-list', kind: 'query', name: 'DocumentList', stability: 'stable' as const, fact: 'declared' as const, provenance: [provenance] }],
+      edges: [],
+      executions: [{ id: 'execution:document-list', identity: identity.id, graphNodeId: 'query.document-list', kind: 'query', scalingBoundary: 'replicated' as const, fact: 'declared' as const, provenance: [provenance] }],
+      authority: [], dataFlows: [], state: [], exposures: [], observability: [], runtimeAccess: [],
+    },
+    resolution: {
+      capabilities: [{ id: 'resolution:database', requirementId: 'database', consumer: identity.id, capability: { interface: 'TransactionalDatabase' }, maturity: 'stable' as const, disposition: 'supported' as const, guarantees: [], gaps: [], externalResponsibilities: [], fact: 'resolved' as const, provenance: [provenance] }],
+    },
+    physical: {
+      nodes: [{ id: identity.id, deploymentNodeId: 'postgres', kind: 'database', provider: { interface: 'TransactionalDatabase', implementation: 'postgres', version: '1' }, scope: { connectionDigest: 'sha256:connection' }, lifecycle: { ownership: 'application' as const, intent: 'create' as const }, outputs: [], fact: 'planned' as const, provenance: [provenance] }],
+      edges: [], nativePlans: [],
+    },
+    diagnostics: [], estimates: [], evidence: [],
+  };
 }

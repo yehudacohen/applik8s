@@ -363,12 +363,7 @@ describe('generated ApplicationHost', () => {
       }],
     };
     const resources = await emitGeneratedApplicationHost({ graph, entrypoint: join(root, 'src/application.ts'), outDir: join(root, 'host') });
-    expect(resources.map(({ kind }) => kind)).toContain('CronJob');
-    expect(resources.find(({ kind }) => kind === 'CronJob')).toMatchObject({
-      metadata: { namespace: 'guestbook' },
-      spec: { schedule: '*/15 * * * *', timeZone: 'UTC', concurrencyPolicy: 'Forbid', jobTemplate: { spec: { backoffLimit: 3 } } },
-    });
-    expect(JSON.stringify(resources.find(({ kind }) => kind === 'CronJob'))).toContain('/__applik8s/v1/internal/schedules/occurrences');
+    expect(resources.map(({ kind }) => kind)).not.toContain('CronJob');
     const applicationHostDeployment = resources.find(
       (resource) => resource.kind === 'Deployment'
         && (resource.metadata.labels as Readonly<Record<string, unknown>> | undefined)?.['app.kubernetes.io/component'] === 'application-host',
@@ -384,50 +379,24 @@ describe('generated ApplicationHost', () => {
     } | undefined;
     expect(podSpec?.containers?.[0]?.env).toEqual(expect.arrayContaining([
       { name: 'APPLIK8S_INTERNAL_OPERATION_SECRET', valueFrom: { secretKeyRef: { name: 'guestbook-internal-operation', key: 'key' } } },
-      { name: 'APPLIK8S_SCHEDULE_DATABASE_URL', valueFrom: { secretKeyRef: { name: 'guestbook-db-app', key: 'uri', optional: false } } },
-      { name: 'APPLIK8S_WORKFLOW_GATEWAY_TOKEN_FILE', value: '/var/run/secrets/applik8s/workflow-gateway/token' },
-      expect.objectContaining({ name: expect.stringMatching(/^APPLIK8S_HATCHET_SCHEDULER_HOST_/u), value: 'hatchet-engine.guestbook.svc:7070' }),
-      expect.objectContaining({ name: expect.stringMatching(/^APPLIK8S_HATCHET_SCHEDULER_API_/u), value: 'http://hatchet-api.guestbook.svc:8080' }),
-      expect.objectContaining({ name: expect.stringMatching(/^APPLIK8S_HATCHET_SCHEDULER_TLS_/u), value: 'none' }),
-      { name: 'ACQUISITION_SOURCE', value: 'dedicated' },
-      { name: 'ACQUISITION_TOKEN', valueFrom: { secretKeyRef: { name: 'acquisition-dedicated', key: 'token' } } },
     ]));
-    expect(podSpec?.containers?.[0]?.volumeMounts).toEqual(expect.arrayContaining([{
-      name: 'workflow-gateway-token',
-      mountPath: '/var/run/secrets/applik8s/workflow-gateway',
-      readOnly: true,
-    }, expect.objectContaining({
-      name: expect.stringMatching(/^scheduler-token-/u),
-      mountPath: expect.stringMatching(/^\/var\/run\/secrets\/applik8s\/schedulers\//u),
-      readOnly: true,
-    })]));
-    expect(podSpec?.volumes).toEqual(expect.arrayContaining([expect.objectContaining({
-      name: 'workflow-gateway-token',
-      projected: expect.objectContaining({
-        sources: [expect.objectContaining({
-          serviceAccountToken: expect.objectContaining({
-            path: 'token',
-            audience: 'https://kubernetes.default.svc',
-          }),
-        })],
-      }),
-    }), expect.objectContaining({
-      name: expect.stringMatching(/^scheduler-token-/u),
-      secret: { secretName: 'hatchet-client-config', items: [{ key: 'HATCHET_CLIENT_TOKEN', path: 'token' }] },
-    })]));
+    expect(podSpec?.containers?.[0]?.env).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: 'APPLIK8S_SCHEDULE_DATABASE_URL' }),
+      expect.objectContaining({ name: 'APPLIK8S_WORKFLOW_GATEWAY_TOKEN_FILE' }),
+      expect.objectContaining({ name: expect.stringMatching(/^APPLIK8S_HATCHET_SCHEDULER_/u) }),
+      expect.objectContaining({ name: 'ACQUISITION_SOURCE' }),
+      expect.objectContaining({ name: 'ACQUISITION_TOKEN' }),
+    ]));
+    expect(podSpec?.containers?.[0]?.volumeMounts).toBeUndefined();
+    expect(podSpec?.volumes).toBeUndefined();
     const artifact = JSON.parse(
       await readFile(join(root, 'host', 'application-host.json'), 'utf8'),
     ) as { readonly spec?: { readonly credentialProjections?: readonly unknown[] } };
     expect(artifact.spec?.credentialProjections).toEqual(expect.arrayContaining([
       { target: 'kubernetes', namespace: 'guestbook', name: 'guestbook-web-gateway-cursor', keys: ['key'] },
       { target: 'kubernetes', namespace: 'guestbook', name: 'guestbook-internal-operation', keys: ['key'] },
-      { target: 'kubernetes', namespace: 'guestbook', name: 'guestbook-db-app', keys: ['uri'] },
-      { target: 'kubernetes', namespace: 'guestbook', name: 'hatchet-client-config', keys: ['HATCHET_CLIENT_TOKEN'] },
-      { target: 'kubernetes', namespace: 'guestbook', name: 'acquisition-dedicated', keys: ['token'] },
     ]));
-    expect(resources.find(({ kind }) => kind === 'Role')).toMatchObject({
-      rules: expect.arrayContaining([{ apiGroups: ['batch'], resources: ['cronjobs'], verbs: ['create', 'delete', 'get', 'update'] }]),
-    });
+    expect(JSON.stringify(resources.find(({ kind }) => kind === 'Role'))).not.toContain('cronjobs');
   });
 
   it('projects only a declared identity-admission database binding into the server host', async () => {

@@ -27,16 +27,19 @@ export interface LocalSupervisorDriverResource {
   readonly runtimeId: string;
   readonly kind: 'process' | 'container';
   readonly pid?: number;
+  readonly volumes?: readonly { readonly id: string; readonly retained: boolean }[];
 }
 
 export interface LocalSupervisorDriver {
   startProcess(resource: LocalSupervisorProcess, environment: Readonly<Record<string, string>>): Promise<LocalSupervisorDriverResource>;
   startContainer(resource: LocalSupervisorContainer, environment: Readonly<Record<string, string>>, ports: Readonly<Record<string, number>>, identity: string): Promise<LocalSupervisorDriverResource>;
   stop(resource: LocalSupervisorDriverResource): Promise<void>;
-  remove(resource: LocalSupervisorDriverResource): Promise<void>;
+  remove(resource: LocalSupervisorDriverResource, options?: { readonly removeRetainedVolumes?: boolean }): Promise<void>;
   waitHealthy(resource: LocalSupervisorResource, bindings: Readonly<Record<string, string | number>>): Promise<void>;
   /** Resolves declared post-readiness outputs without exposing them through logs. */
   resolveBindings?(resource: LocalSupervisorContainer, runtime: LocalSupervisorDriverResource): Promise<Readonly<Record<string, string | number>>>;
+  /** Resolves when a supervised runtime exits for any reason. */
+  waitForExit?(resource: LocalSupervisorDriverResource): Promise<void>;
 }
 
 export interface LocalSupervisorOptions {
@@ -70,6 +73,12 @@ export interface LocalSupervisorLifecycle {
 export interface LocalSupervisorSession {
   readonly stateDirectory: string;
   readonly state: LocalSupervisorState;
+  /** Resolves only when bounded automatic recovery is exhausted. */
+  readonly failed: Promise<Error>;
+  /** Restarts process resources in the selected reload groups without churning providers. */
+  reload(reloadGroups?: readonly string[]): Promise<LocalSupervisorState>;
+  /** Reconciles a newly compiled plan under the existing lease and retained bindings. */
+  reconcile(plan: LocalSupervisorPlan): Promise<LocalSupervisorState>;
   stop(): Promise<void>;
   reset(): Promise<void>;
 }
@@ -103,6 +112,7 @@ export async function startLocalSupervisor(
   if (!validation.valid) {
     throw new Error(validation.diagnostics.map(({ code, message }) => `${code}: ${message}`).join('\n'));
   }
+  let activePlan = plan;
   const hostEnvironment = options.hostEnvironment ?? process.env;
   const hostEnvironmentValues = resolveHostEnvironmentBindings(plan, hostEnvironment);
   const stateDirectory = options.stateRoot
@@ -116,60 +126,240 @@ export async function startLocalSupervisor(
   if (prior) await stopRecordedResources(prior.resources, driver, io);
 
   const secretValues = await resolveSecretBindings(plan.bindings, secretsPath);
-  const publicBindings = await resolvePublicBindings(plan, options.allocatePort ?? availablePort);
+  const allocatePort = options.allocatePort ?? availablePort;
+  const publicBindings = await resolvePublicBindings(plan, allocatePort, prior?.bindings);
   const allBindings: Record<string, string | number> = { ...publicBindings, ...secretValues, ...hostEnvironmentValues };
-  const started: LocalSupervisorDriverResource[] = [];
+  const runtimeByResourceId = new Map<string, LocalSupervisorDriverResource>();
+  const generationByResourceId = new Map<string, number>();
   const startedAt = new Date().toISOString();
-  try {
-    for (const resource of topologicalLocalResources(plan.resources)) {
-      if (resource.kind === 'external') continue;
-      const environment = {
-        ...Object.fromEntries(resource.environment.map((entry) => [entry.name, resolveEnvironment(entry, allBindings, resource.kind)])),
-        ...(resource.kind === 'process' ? {
-          APPLIK8S_APPLICATION_NAME: plan.application,
-          APPLIK8S_DEPLOYMENT_TARGET: plan.target,
-          APPLIK8S_ENVIRONMENT_ID: `${plan.target}:${plan.profile}`,
-          APPLIK8S_LOCAL_STATE_DIRECTORY: stateDirectory,
-          APPLIK8S_SCHEDULE_STATE_PATH: join(stateDirectory, 'schedules.json'),
-        } : {}),
-      };
-      const record = resource.kind === 'process'
-        ? await driver.startProcess(resource, environment)
-        : await driver.startContainer(resource, environment, containerPorts(resource, publicBindings), localRuntimeIdentity(plan, resource.id));
-      started.push(record);
+  let stopped = false;
+  let operation = Promise.resolve();
+  let failSession!: (error: Error) => void;
+  const failed = new Promise<Error>((resolveFailure) => { failSession = resolveFailure; });
+
+  const currentRecords = (): LocalSupervisorDriverResource[] => topologicalLocalResources(activePlan.resources)
+    .flatMap((resource) => {
+      const runtime = runtimeByResourceId.get(resource.id);
+      return runtime ? [runtime] : [];
+    });
+  const writeCurrentState = async (): Promise<LocalSupervisorState> => {
+    const next = supervisorState(activePlan, lease, startedAt, publicBindings, currentRecords());
+    await writeSupervisorState(statePath, next);
+    return next;
+  };
+  const startResource = async (resource: LocalSupervisorResource): Promise<LocalSupervisorDriverResource | undefined> => {
+    if (resource.kind === 'external') return undefined;
+    const environment = {
+      ...Object.fromEntries(resource.environment.map((entry) => [entry.name, resolveEnvironment(entry, allBindings, resource.kind)])),
+      ...(resource.kind === 'process' ? {
+        APPLIK8S_APPLICATION_NAME: activePlan.application,
+        APPLIK8S_DEPLOYMENT_TARGET: activePlan.target,
+        APPLIK8S_ENVIRONMENT_ID: `${activePlan.target}:${activePlan.profile}`,
+        APPLIK8S_LOCAL_STATE_DIRECTORY: stateDirectory,
+        APPLIK8S_SCHEDULE_STATE_PATH: join(stateDirectory, 'schedules.json'),
+      } : {}),
+    };
+    const record = resource.kind === 'process'
+      ? await driver.startProcess(resource, environment)
+      : await driver.startContainer(resource, environment, containerPorts(resource, publicBindings), localRuntimeIdentity(activePlan, resource.id));
+    runtimeByResourceId.set(resource.id, record);
+    try {
       await driver.waitHealthy(resource, publicBindings);
       const driverBindings = resource.kind === 'container'
         ? await driver.resolveBindings?.(resource, record)
         : undefined;
-      if (driverBindings) mergeResolvedBindings(plan, resource, driverBindings, allBindings, publicBindings);
+      if (driverBindings) mergeResolvedBindings(activePlan, resource, driverBindings, allBindings, publicBindings);
       const resolved = await options.lifecycle?.resourceReady?.(resource, {
         stateDirectory,
         bindings: allBindings,
       });
-      if (resolved) mergeResolvedBindings(plan, resource, resolved, allBindings, publicBindings);
-      await writeCredentialBindings(secretsPath, plan, allBindings);
-      await writeSupervisorState(statePath, supervisorState(plan, lease, startedAt, publicBindings, started));
+      if (resolved) mergeResolvedBindings(activePlan, resource, resolved, allBindings, publicBindings);
+      await writeCredentialBindings(secretsPath, activePlan, allBindings);
+      await writeCurrentState();
       io.stdout(`Local ${resource.kind} ready: ${resource.id}`);
+      return record;
+    } catch (cause) {
+      runtimeByResourceId.delete(resource.id);
+      await driver.stop(record).catch((stopCause) => io.stderr(`Local failed-start cleanup warning for ${resource.id}: ${errorMessage(stopCause)}`));
+      throw cause;
+    }
+  };
+  const monitor = (resource: LocalSupervisorResource, record: LocalSupervisorDriverResource): void => {
+    if (!driver.waitForExit) return;
+    const generation = generationByResourceId.get(resource.id) ?? 0;
+    void driver.waitForExit(record).then(() => {
+      operation = operation.then(async () => {
+        if (stopped || generationByResourceId.get(resource.id) !== generation) return;
+        if (runtimeByResourceId.get(resource.id)?.runtimeId !== record.runtimeId) return;
+        runtimeByResourceId.delete(resource.id);
+        await writeCurrentState();
+        let last: unknown;
+        for (let attempt = 1; attempt <= 5 && !stopped; attempt += 1) {
+          try {
+            if (attempt > 1) await new Promise((resolveWait) => setTimeout(resolveWait, Math.min(2_000, 100 * (2 ** (attempt - 2)))));
+            const restarted = await startResource(resource);
+            if (restarted) {
+              state = await writeCurrentState();
+              io.stderr(`Local ${resource.kind} ${resource.id} exited unexpectedly and recovered on attempt ${attempt}.`);
+              monitor(resource, restarted);
+            }
+            return;
+          } catch (cause) {
+            last = cause;
+            io.stderr(`Local recovery attempt ${attempt}/5 failed for ${resource.id}: ${errorMessage(cause)}`);
+          }
+        }
+        if (!stopped) failSession(new Error(`Local resource ${resource.id} exhausted automatic recovery: ${errorMessage(last)}`));
+      }).catch((cause) => {
+        if (!stopped) failSession(cause instanceof Error ? cause : new Error(String(cause)));
+      });
+    }).catch((cause) => {
+      if (!stopped) failSession(new Error(`Local runtime monitor failed for ${resource.id}: ${errorMessage(cause)}`));
+    });
+  };
+  try {
+    for (const resource of topologicalLocalResources(activePlan.resources)) {
+      generationByResourceId.set(resource.id, 0);
+      await startResource(resource);
     }
   } catch (cause) {
-    await stopRecordedResources(started, driver, io);
+    await stopRecordedResources(currentRecords(), driver, io);
     await releaseLocalSupervisorLease(stateDirectory, lease.leaseId);
     throw cause;
   }
 
-  let stopped = false;
-  const state = supervisorState(plan, lease, startedAt, publicBindings, started);
-  await writeSupervisorState(statePath, state);
+  let state = await writeCurrentState();
+  for (const resource of topologicalLocalResources(activePlan.resources)) {
+    const record = runtimeByResourceId.get(resource.id);
+    if (record) monitor(resource, record);
+  }
+  const reload = async (reloadGroups?: readonly string[]): Promise<LocalSupervisorState> => {
+    if (stopped) throw new Error('Cannot reload a stopped local supervisor.');
+    const selected = topologicalLocalResources(activePlan.resources).filter((resource): resource is LocalSupervisorProcess =>
+      resource.kind === 'process' && (!reloadGroups || reloadGroups.includes(resource.reloadGroup)));
+    if (selected.length === 0) return state;
+    operation = operation.then(async () => {
+      for (const resource of [...selected].reverse()) {
+        generationByResourceId.set(resource.id, (generationByResourceId.get(resource.id) ?? 0) + 1);
+        const current = runtimeByResourceId.get(resource.id);
+        if (current) await driver.stop(current);
+        runtimeByResourceId.delete(resource.id);
+      }
+      for (const resource of selected) {
+        const record = await startResource(resource);
+        if (record) monitor(resource, record);
+      }
+      state = await writeCurrentState();
+      io.stdout(`Reloaded local groups: ${[...new Set(selected.map(({ reloadGroup }) => reloadGroup))].join(', ')}`);
+    });
+    try {
+      await operation;
+    } catch (cause) {
+      operation = Promise.resolve();
+      throw cause;
+    }
+    return state;
+  };
+  const reconcile = async (nextPlan: LocalSupervisorPlan): Promise<LocalSupervisorState> => {
+    if (stopped) throw new Error('Cannot reconcile a stopped local supervisor.');
+    const nextValidation = validateLocalSupervisorPlan(nextPlan);
+    if (!nextValidation.valid) {
+      throw new Error(nextValidation.diagnostics.map(({ code, message }) => `${code}: ${message}`).join('\n'));
+    }
+    if (nextPlan.application !== activePlan.application
+      || nextPlan.target !== activePlan.target
+      || nextPlan.profile !== activePlan.profile
+      || nextPlan.projectDigest !== activePlan.projectDigest) {
+      throw new Error('Local supervisor reconciliation cannot change application, target, profile, or project identity under an active lease.');
+    }
+    operation = operation.then(async () => {
+      const previousPlan = activePlan;
+      const previousBindings = { ...allBindings };
+      const previousPublicBindings = { ...publicBindings };
+      const nextSecrets = await resolveSecretBindings(nextPlan.bindings, secretsPath);
+      const nextPublicBindings = await resolvePublicBindings(nextPlan, allocatePort, publicBindings);
+      const nextHostEnvironment = resolveHostEnvironmentBindings(nextPlan, hostEnvironment);
+      const nextBindings: Record<string, string | number> = {
+        ...nextPublicBindings,
+        ...nextSecrets,
+        ...nextHostEnvironment,
+      };
+      for (const binding of nextPlan.bindings.filter(({ kind }) => kind === 'targetOutput')) {
+        const retained = allBindings[binding.id];
+        if (retained !== undefined) nextBindings[binding.id] = retained;
+      }
+      const affected = affectedLocalResources(previousPlan, nextPlan, previousBindings, nextBindings);
+      const previousResources = new Map(previousPlan.resources.map((resource) => [resource.id, resource]));
+      const nextResources = new Map(nextPlan.resources.map((resource) => [resource.id, resource]));
+      const stopAffected = async (planToStop: LocalSupervisorPlan): Promise<void> => {
+        for (const resource of [...topologicalLocalResources(planToStop.resources)].reverse()) {
+          if (!affected.has(resource.id)) continue;
+          generationByResourceId.set(resource.id, (generationByResourceId.get(resource.id) ?? 0) + 1);
+          const runtime = runtimeByResourceId.get(resource.id);
+          if (!runtime) continue;
+          await driver.stop(runtime);
+          await driver.remove(runtime, { removeRetainedVolumes: !nextResources.has(resource.id) });
+          runtimeByResourceId.delete(resource.id);
+        }
+      };
+      const startAffected = async (planToStart: LocalSupervisorPlan): Promise<void> => {
+        for (const resource of topologicalLocalResources(planToStart.resources)) {
+          if (!affected.has(resource.id) || resource.kind === 'external') continue;
+          const record = await startResource(resource);
+          if (record) monitor(resource, record);
+        }
+      };
+      await stopAffected(previousPlan);
+      activePlan = nextPlan;
+      replaceBindingValues(allBindings, nextBindings);
+      replaceBindingValues(publicBindings, nextPublicBindings);
+      for (const resourceId of nextResources.keys()) {
+        if (!generationByResourceId.has(resourceId)) generationByResourceId.set(resourceId, 0);
+      }
+      try {
+        await startAffected(nextPlan);
+        state = await writeCurrentState();
+        io.stdout(`Reconciled local supervisor plan (${affected.size} affected resource${affected.size === 1 ? '' : 's'}).`);
+      } catch (cause) {
+        await stopAffected(nextPlan).catch((cleanupCause) => io.stderr(`Local reconcile cleanup warning: ${errorMessage(cleanupCause)}`));
+        activePlan = previousPlan;
+        replaceBindingValues(allBindings, previousBindings);
+        replaceBindingValues(publicBindings, previousPublicBindings);
+        try {
+          await startAffected(previousPlan);
+          state = await writeCurrentState();
+          await writeCredentialBindings(secretsPath, previousPlan, allBindings);
+          throw new Error(`Local plan reconciliation failed and the previous healthy plan was restored: ${errorMessage(cause)}`);
+        } catch (rollbackCause) {
+          if (rollbackCause instanceof Error && rollbackCause.message.startsWith('Local plan reconciliation failed and')) throw rollbackCause;
+          const failure = new Error(`Local plan reconciliation failed and rollback could not restore the previous plan: ${errorMessage(cause)}; rollback: ${errorMessage(rollbackCause)}`);
+          failSession(failure);
+          throw failure;
+        }
+      }
+      for (const resourceId of previousResources.keys()) {
+        if (!nextResources.has(resourceId)) generationByResourceId.delete(resourceId);
+      }
+    });
+    try {
+      await operation;
+    } catch (cause) {
+      operation = Promise.resolve();
+      throw cause;
+    }
+    return state;
+  };
   const stop = async (): Promise<void> => {
     if (stopped) return;
     stopped = true;
-    await stopRecordedResources([...started].reverse(), driver, io);
+    await operation.catch(() => undefined);
+    await stopRecordedResources(currentRecords(), driver, io);
     await releaseLocalSupervisorLease(stateDirectory, lease.leaseId);
   };
   const reset = async (): Promise<void> => {
     await options.lifecycle?.beforeReset?.({ stateDirectory, bindings: allBindings });
     await stop();
-    for (const resource of [...started].reverse()) await driver.remove(resource).catch((cause) => io.stderr(`Local cleanup warning for ${resource.resourceId}: ${errorMessage(cause)}`));
+    for (const resource of [...currentRecords()].reverse()) await driver.remove(resource, { removeRetainedVolumes: true }).catch((cause) => io.stderr(`Local cleanup warning for ${resource.resourceId}: ${errorMessage(cause)}`));
     await rm(stateDirectory, { recursive: true, force: true });
   };
   if (options.signal) {
@@ -177,7 +367,7 @@ export async function startLocalSupervisor(
       if (options.stopOnAbort !== false) void stop();
     }, { once: true });
   }
-  return { stateDirectory, state, stop, reset };
+  return { stateDirectory, get state() { return state; }, failed, reload, reconcile, stop, reset };
 }
 
 export async function readLocalSupervisorStatus(stateDirectory: string): Promise<LocalSupervisorState | undefined> {
@@ -197,7 +387,7 @@ export async function resetLocalSupervisor(
   if (state) {
     for (const resource of [...state.resources].reverse()) {
       await driver.stop(resource).catch((cause) => io.stderr(`Local stop warning for ${resource.resourceId}: ${errorMessage(cause)}`));
-      await driver.remove(resource);
+      await driver.remove(resource, { removeRetainedVolumes: true });
     }
   }
   await rm(stateDirectory, { recursive: true, force: true });
@@ -301,7 +491,11 @@ async function writeCredentialBindings(
   await writeFileAtomic(path, `${JSON.stringify(sensitive, null, 2)}\n`, 0o600);
 }
 
-async function resolvePublicBindings(plan: LocalSupervisorPlan, allocatePort: () => Promise<number>): Promise<Record<string, string | number>> {
+async function resolvePublicBindings(
+  plan: LocalSupervisorPlan,
+  allocatePort: () => Promise<number>,
+  prior: Readonly<Record<string, string | number>> = {},
+): Promise<Record<string, string | number>> {
   const result: Record<string, string | number> = {};
   const resources = new Map(plan.resources.map((resource) => [resource.id, resource]));
   for (const binding of plan.bindings.filter(({ sensitivity }) => sensitivity === 'public')) {
@@ -310,7 +504,8 @@ async function resolvePublicBindings(plan: LocalSupervisorPlan, allocatePort: ()
       continue;
     }
     if (binding.kind === 'port') {
-      result[binding.id] = await allocatePort();
+      const retainedPort = prior[binding.id];
+      result[binding.id] = typeof retainedPort === 'number' ? retainedPort : await allocatePort();
       continue;
     }
     if (binding.kind === 'endpoint') {
@@ -320,7 +515,11 @@ async function resolvePublicBindings(plan: LocalSupervisorPlan, allocatePort: ()
         const port = owner.ports.find(({ name }) => name === portName) ?? owner.ports[0];
         if (!port) throw new Error(`Local endpoint ${binding.id} has no container port.`);
         const portBinding = `port:${binding.owner.replace(/^provider:/, '')}:${port.name}`;
-        const hostPort = typeof result[portBinding] === 'number' ? result[portBinding] : await allocatePort();
+        const hostPort = typeof result[portBinding] === 'number'
+          ? result[portBinding]
+          : typeof prior[portBinding] === 'number'
+            ? prior[portBinding]
+            : await allocatePort();
         result[portBinding] = hostPort;
         const authority = `127.0.0.1:${hostPort}`;
         result[binding.id] = binding.format === 'authority'
@@ -328,7 +527,11 @@ async function resolvePublicBindings(plan: LocalSupervisorPlan, allocatePort: ()
           : `${port.protocol === 'http' ? 'http' : protocolForProvider(owner.image)}://${authority}`;
       } else {
         const portBinding = `port:${binding.owner.replace(/^process:/, '')}:${portName ?? 'http'}`;
-        const hostPort = typeof result[portBinding] === 'number' ? result[portBinding] : await allocatePort();
+        const hostPort = typeof result[portBinding] === 'number'
+          ? result[portBinding]
+          : typeof prior[portBinding] === 'number'
+            ? prior[portBinding]
+            : await allocatePort();
         result[portBinding] = hostPort;
         result[binding.id] = `http://127.0.0.1:${hostPort}`;
       }
@@ -410,6 +613,64 @@ function mergeResolvedBindings(
   }
 }
 
+function affectedLocalResources(
+  previous: LocalSupervisorPlan,
+  next: LocalSupervisorPlan,
+  previousBindings: Readonly<Record<string, string | number>>,
+  nextBindings: Readonly<Record<string, string | number>>,
+): Set<string> {
+  const affected = new Set<string>();
+  const previousResources = new Map(previous.resources.map((resource) => [resource.id, resource]));
+  const nextResources = new Map(next.resources.map((resource) => [resource.id, resource]));
+  for (const resourceId of new Set([...previousResources.keys(), ...nextResources.keys()])) {
+    if (canonicalLocalValue(previousResources.get(resourceId)) !== canonicalLocalValue(nextResources.get(resourceId))) affected.add(resourceId);
+  }
+  const previousBindingDeclarations = new Map(previous.bindings.map((binding) => [binding.id, binding]));
+  const nextBindingDeclarations = new Map(next.bindings.map((binding) => [binding.id, binding]));
+  const changedBindings = new Set<string>();
+  for (const bindingId of new Set([...previousBindingDeclarations.keys(), ...nextBindingDeclarations.keys()])) {
+    if (canonicalLocalValue(previousBindingDeclarations.get(bindingId)) !== canonicalLocalValue(nextBindingDeclarations.get(bindingId))
+      || previousBindings[bindingId] !== nextBindings[bindingId]) changedBindings.add(bindingId);
+  }
+  for (const resource of [...previous.resources, ...next.resources]) {
+    if (resource.kind === 'external') continue;
+    const consumed = resource.environment.flatMap((environment) => 'binding' in environment
+      ? [environment.binding]
+      : environment.template.flatMap((segment) => segment.kind === 'binding' ? [segment.binding] : []));
+    if (consumed.some((binding) => changedBindings.has(binding))) affected.add(resource.id);
+  }
+  let widened = true;
+  while (widened) {
+    widened = false;
+    for (const resource of [...previous.resources, ...next.resources]) {
+      if (!affected.has(resource.id) && resource.dependsOn.some((dependency) => affected.has(dependency))) {
+        affected.add(resource.id);
+        widened = true;
+      }
+    }
+  }
+  return affected;
+}
+
+function replaceBindingValues(
+  target: Record<string, string | number>,
+  source: Readonly<Record<string, string | number>>,
+): void {
+  for (const key of Object.keys(target)) delete target[key];
+  Object.assign(target, source);
+}
+
+function canonicalLocalValue(value: unknown): string {
+  if (value === undefined) return 'undefined';
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonicalLocalValue).join(',')}]`;
+  return `{${Object.entries(value)
+    .filter(([, entry]) => entry !== undefined)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, entry]) => `${JSON.stringify(key)}:${canonicalLocalValue(entry)}`)
+    .join(',')}}`;
+}
+
 function topologicalLocalResources(resources: readonly LocalSupervisorResource[]): readonly LocalSupervisorResource[] {
   const byId = new Map(resources.map((resource) => [resource.id, resource]));
   const visiting = new Set<string>();
@@ -436,6 +697,7 @@ function nodeLocalSupervisorDriver(
   io: LocalSupervisorIo,
   hostEnvironment: Readonly<Record<string, string | undefined>> = process.env,
 ): LocalSupervisorDriver {
+  const processExits = new Map<string, Promise<void>>();
   return {
     async startProcess(resource, environment) {
       const args = environment.PORT && resource.command === 'bun' && resource.args[0] === 'run'
@@ -447,7 +709,14 @@ function nodeLocalSupervisorDriver(
         stdio: 'inherit',
       });
       if (!child.pid) throw new Error(`Local process ${resource.id} failed to start.`);
-      return { resourceId: resource.id, runtimeId: String(child.pid), kind: 'process', pid: child.pid };
+      const runtimeId = String(child.pid);
+      processExits.set(runtimeId, new Promise<void>((resolveExit) => {
+        child.once('exit', () => {
+          processExits.delete(runtimeId);
+          resolveExit();
+        });
+      }));
+      return { resourceId: resource.id, runtimeId, kind: 'process', pid: child.pid };
     },
     async startContainer(resource, environment, ports, identity) {
       const name = `applik8s-${identity}`;
@@ -455,10 +724,13 @@ function nodeLocalSupervisorDriver(
       const args = ['run', '--detach', '--name', name, '--label', `dev.applik8s.identity=${identity}`, '--add-host', 'host.docker.internal:host-gateway'];
       for (const port of resource.ports) args.push('--publish', `127.0.0.1:${ports[port.name]}:${port.containerPort}`);
       for (const [key, value] of Object.entries(environment)) args.push('--env', `${key}=${value}`);
+      const volumes = resource.volumes.flatMap((volume) => volume.hostPath
+        ? []
+        : [{ id: `${name}-${volume.name}`, retained: volume.retained }]);
       for (const volume of resource.volumes) args.push('--volume', `${volume.hostPath ?? `${name}-${volume.name}`}:${volume.mountPath}`);
       args.push(resource.image, ...(resource.command ?? []));
       const runtimeId = (await runCommand('docker', args, io.cwd)).trim();
-      return { resourceId: resource.id, runtimeId: runtimeId || name, kind: 'container' };
+      return { resourceId: resource.id, runtimeId: runtimeId || name, kind: 'container', ...(volumes.length > 0 ? { volumes } : {}) };
     },
     async resolveBindings(resource, runtime) {
       const resolved: Record<string, string> = {};
@@ -471,13 +743,37 @@ function nodeLocalSupervisorDriver(
     },
     async stop(resource) {
       if (resource.kind === 'process') {
-        if (resource.pid && processIsAlive(resource.pid)) process.kill(resource.pid, 'SIGTERM');
+        if (resource.pid && processIsAlive(resource.pid)) {
+          process.kill(resource.pid, 'SIGTERM');
+          const exit = processExits.get(resource.runtimeId);
+          if (exit) {
+            const completed = await Promise.race([
+              exit.then(() => true),
+              new Promise<false>((resolveTimeout) => setTimeout(() => resolveTimeout(false), 5_000)),
+            ]);
+            if (!completed && processIsAlive(resource.pid)) {
+              process.kill(resource.pid, 'SIGKILL');
+              await processExits.get(resource.runtimeId);
+            }
+          } else {
+            const deadline = Date.now() + 5_000;
+            while (processIsAlive(resource.pid) && Date.now() < deadline) {
+              await new Promise((resolveWait) => setTimeout(resolveWait, 25));
+            }
+            if (processIsAlive(resource.pid)) process.kill(resource.pid, 'SIGKILL');
+          }
+        }
         return;
       }
       await runCommand('docker', ['stop', '--time', '10', resource.runtimeId], io.cwd, true);
     },
-    async remove(resource) {
-      if (resource.kind === 'container') await runCommand('docker', ['rm', '-f', resource.runtimeId], io.cwd, true);
+    async remove(resource, options) {
+      if (resource.kind !== 'container') return;
+      await runCommand('docker', ['rm', '-f', resource.runtimeId], io.cwd, true);
+      for (const volume of resource.volumes ?? []) {
+        if (volume.retained && !options?.removeRetainedVolumes) continue;
+        await runCommand('docker', ['volume', 'rm', '-f', volume.id], io.cwd, true);
+      }
     },
     async waitHealthy(resource, bindings) {
       const deadline = Date.now() + resource.health.timeoutMs;
@@ -499,6 +795,13 @@ function nodeLocalSupervisorDriver(
         await new Promise((resolveWait) => setTimeout(resolveWait, 200));
       }
       throw new Error(`Local resource ${resource.id} did not become healthy within ${resource.health.timeoutMs}ms: ${errorMessage(last)}`);
+    },
+    async waitForExit(resource) {
+      if (resource.kind === 'process') {
+        await processExits.get(resource.runtimeId);
+        return;
+      }
+      await runCommand('docker', ['wait', resource.runtimeId], io.cwd, true);
     },
   };
 }

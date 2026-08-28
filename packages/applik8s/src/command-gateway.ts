@@ -1,3 +1,4 @@
+// typecast-file-boundary: Authenticated command requests and durable progress envelopes are validated at this transport boundary before typed execution.
 import type { ApplicationCommandProgress, ApplicationCommandSubmission } from '@applik8s/client';
 import { type ApplicationAdmissionContextV1, type ApplicationAdmissionInvocationContextV1, type ApplicationAuthorizationReceipt, type ApplicationOperationTransport, type ApplicationPrincipal, type ApplicationRequestAdmission, applicationAdmissionInvocationView, canonicalJsonV1String, canonicalJsonV1Value, createApplicationRequestAdmissionContextV1, type JsonObject, type JsonValue, validateApplicationAuthorizationReceipt } from '@applik8s/core';
 import {
@@ -12,7 +13,7 @@ import { normalizeSchema } from '@applik8s/sdk/schema-runtime';
 import { applicationOperationInputDigest } from './application-operation-runtime.js';
 import type { ApplicationQueryPrincipal } from './application-queries.js';
 import type { ApplicationGatewayAdmission } from './application-reactive.js';
-import { captureApplicationTelemetryContext } from './application-telemetry-runtime.js';
+import { captureApplicationTelemetryContext, observeApplicationRuntimeIntegrityEnvelope } from './application-telemetry-runtime.js';
 import { applicationRequestContextValues } from './command-principal.js';
 import { applicationCommandScope, canonicalApplicationCommandKey } from './command-runtime-contract.js';
 import type { ApplicationEventLogPublisher } from './event-log-runtime.js';
@@ -171,6 +172,7 @@ export function createApplicationCommandGateway<TPrincipal extends ApplicationQu
     maximumLifetimeMs: cursorTtlSeconds * 1_000,
     maximumEncodedBytes: 64 * 1_024,
     validatePayload: validateProgressCursor,
+    observe: observeApplicationRuntimeIntegrityEnvelope,
     writer: 'legacy',
     legacy: {
       key: cursorKey,

@@ -1,6 +1,6 @@
 # applik8s Backlog
 
-Last updated: 2026-08-26
+Last updated: 2026-08-27
 
 - `[post-v0.7]` Add adapter-owned browser OAuth completion for provider-neutral
   Integration requests. Preserve the v0.7 safe intent/status model, keep
@@ -13,7 +13,62 @@ This backlog prioritizes correctness, excellence, and the public developer exper
 
 Status: implementation started on `codex/v0.8-rfps`; no release is authorized.
 
+- Added the v0.8 exact-commit release-evidence contract and workflow lane.
+  Cluster-free qualification no longer smuggles the Kubernetes operator E2E
+  into its local actor command; real AWS, active-Cilium Kubernetes, platform,
+  multi-architecture image, and browser receipts remain explicit release
+  boundaries.
+
 Current foundation increment:
+
+- Live-qualified the Kubernetes CronJob scheduler on OrbStack. The exact
+  function-native path now runs from an event callback through the admitted
+  management bridge and generated schedule-control service into a real Job.
+  That Job uses a dedicated ServiceAccount with only `jobs/get`, reads
+  `batch.kubernetes.io/cronjob-scheduled-timestamp`, runs as the pinned Node
+  image's non-root UID/GID, completes the generated occurrence endpoint, and
+  persists the exact durable receipt before update, restart repair, disable,
+  removal, and leak-free cleanup.
+
+- Live-qualified the generated Hatchet scheduling provider on OrbStack. The
+  schedule-only worker uses an ESM-safe SDK heartbeat, decodes the canonical
+  Hatchet transport carrier, and admits fixed, dynamic, and exact one-time
+  occurrences through PostgreSQL. The receipt proves dynamic create, firing,
+  replacement update, disable, deletion, exact scheduled-time preservation,
+  two independent provider-deletion/pod-replacement repairs, the existing
+  durable-workflow recovery packet, and leak-free TypeKro/Alchemy teardown.
+  Deployed event callbacks now use the same typed `.schedule()`/`.unschedule()`
+  surface through an admitted generated management bridge. Real EventBridge
+  retry/DLQ/lifecycle/cost evidence remains separate release work.
+
+- Kept generated Celld workers browser-safe by replacing their umbrella
+  telemetry import with the focused runtime boundary and checking emitted
+  artifacts for Node/Kubernetes dependency leakage.
+- Aligned CelldFleet ArkType and CRD admission with the OCI provider's two
+  immutable deployment forms: published repository digests and local-engine
+  digest IDs; mutable tags remain rejected.
+- Made Chirp's generated gateway dependencies explicit at the application
+  boundary instead of relying on workspace-hoisted client, identity, runtime,
+  AWS, or Kubernetes schedule packages.
+- Kept target-specific server runtimes external in Vite/Nitro output so a
+  portable application declares all providers but bundles only its shared web
+  surface rather than every provider SDK.
+- Separated deployed scheduling from the web host. Hosted and workflow-only
+  applications emit the same focused schedule-control workload, while Vite
+  `serve` retains the deterministic local scheduler. A clean Chirp production
+  build now excludes TypeKro and the Kubernetes client from the relational web
+  artifact without weakening target schedule ownership.
+- Preserved qualified scheduler selection across the full compiler path. Named
+  concrete schedulers, including Hatchet, execute in schedule control and
+  receive only their captured provider bindings; only qualified unresolved
+  `target-selected` schedulers remain external. The clean package-consumer gate
+  packs all 60 packages, imports 108 public entrypoints, and proves exact
+  schedule-control credential isolation.
+- Narrowed TypeKro's compiler dependency to the public
+  `@applik8s/deployment-compiler/runtime-access-parity` subpath and reconciled
+  the executable module-boundary policy with the focused integrity,
+  schedule-authority, core-contract, and provider-composition seams actually
+  owned by v0.8 packages.
 
 - Added versioned canonical application, graph-node, operation, source,
   provider, execution-boundary, artifact, and target identities without using
@@ -48,6 +103,48 @@ Current foundation increment:
   inert while live/retried attempts cover authorization and every authoritative
   write; ambient transactions propagate internal retry identity, and generated
   Kubernetes creates use the server-owned mutation seam.
+- Added the independently consumable `@applik8s/celld-operator` package and
+  provider-specific `CelldFleet` contract. TypeKro/Alchemy own singleton
+  bootstrap and application inputs; the operator exclusively owns fleet
+  children, current-generation status, restore-gated rollout, continuous drift
+  repair, and blocking retained-data finalization. The aggregate actor gate now
+  passes deterministic, Docker, realtime, and two-fleet OrbStack lifecycle
+  evidence. The operator vertical also proves a distinct immutable Worker
+  upgrade and reverse rollback with runtime-manifest evidence and state
+  continuity; historical deployment receipts are replayed before rollback
+  workloads advance. A distinct operator image upgrade now survives deliberate
+  loss of every operator pod while preserving fleet readiness and actor state.
+  A pinned prior CelldFleet structural schema also migrates through the normal
+  TypeKro/Alchemy path while two persisted fleets survive the interrupted
+  operator upgrade. Release qualification now requires only the published,
+  anonymously verified multi-architecture operator image. Official Celld
+  v0.2.1 to v0.3.0 and reverse replacement transitions pass with StatefulSet
+  UID replacement and state continuity.
+- Completed the local runtime gate with reload-group execution, authored-source watching, generated-output
+  exclusion, retained credential/provider continuity, bounded child-runtime
+  recovery, and dependency-aware structural reconciliation with rollback. A
+  fresh npm-packed generated application proves cold start, real Start health,
+  rebuild, structural reconciliation, child and supervisor recovery, retained
+  data, reset, and teardown without app-local compiler dependencies. AWS-local
+  structural hot reconciliation remains separate and explicitly unsupported.
+- Qualified the supported AWS-local subset against pinned MiniStack: native
+  S3, SQS, and ECR pass lifecycle, drift, restart, output, and cleanup evidence.
+  Kinesis remains an upstream native AWS resource and now fails during
+  AWS-local planning while the emulator lacks `ListTagsForResource`; it will
+  not be replaced by a production provider fork. Corrected SQS duration units
+  and enabled emulator persistence so restart evidence tests the intended
+  contract.
+- Completed the v0.8 development-agent preview vertical. Agentic Start emits
+  opaque semantic provenance at selected product roots; the independent daemon
+  resolves it against the current canonical ApplicationPlan into revision-bound
+  source, graph, operation, and physical-plan attachments. The gate covers
+  generated-app selection, named referent recovery, redaction, reviewed apply,
+  truthful validation, broken-app portal survival, repair, journal recovery,
+  source-governed OpenCode context, and undo.
+- Completed bounded Kubernetes schedule capacity enforcement. The provider
+  declares a 100-instance default ceiling, rejects high-cardinality schedules,
+  and enforces create/remove capacity atomically in deterministic and
+  PostgreSQL desired-state authorities with OrbStack lifecycle evidence.
 
 Next, in manifesto dependency order:
 

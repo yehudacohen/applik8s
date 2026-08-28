@@ -71,8 +71,7 @@ const KUBERNETES_CONNECTION_PROTOCOL: &str = "applik8s.kubernetes-connection/v1a
 // Workflow-gateway capabilities use a compiler-owned, audience-bound projected
 // token. The default Kubernetes automount has a cluster-dependent audience and
 // must never be substituted for this private caller credential.
-const WORKFLOW_GATEWAY_TOKEN_PATH: &str =
-    "/var/run/secrets/applik8s/workflow-gateway/token";
+const WORKFLOW_GATEWAY_TOKEN_PATH: &str = "/var/run/secrets/applik8s/workflow-gateway/token";
 static RECONCILE_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone)]
@@ -1434,11 +1433,11 @@ impl OperatorHost {
         let namespace = if target_watch.scope == "Cluster" || namespace_mode == "all" {
             None
         } else if namespace_mode == "operator" {
-            default_watch_namespace(&bundle.manifest)
+            operator_namespace(&bundle.manifest)
         } else {
             source_namespace
                 .map(str::to_string)
-                .or_else(|| default_watch_namespace(&bundle.manifest))
+                .or_else(|| operator_namespace(&bundle.manifest))
         };
         if target_watch.scope == "Namespaced" && namespace.is_none() && namespace_mode != "all" {
             return Err(OperatorHostError::InvalidOwnedCrd(
@@ -1490,17 +1489,21 @@ impl OperatorHost {
                     )));
                 }
             };
-            let target_name = source_json
-                .pointer("/metadata")
-                .and_then(|metadata| metadata.get(metadata_container))
-                .and_then(|values| values.get(source_field_key))
-                .and_then(Value::as_str)
-                .filter(|name| valid_kubernetes_object_name(name))
-                .ok_or_else(|| {
-                    OperatorHostError::InvalidOwnedCrd(format!(
-                        "exact secondary watch source {source_field_kind} {source_field_key} is missing or does not contain a valid Kubernetes target name"
-                    ))
-                })?;
+            let Some(target_name) = exact_secondary_target_name(
+                &source_json,
+                source_field_kind,
+                metadata_container,
+                source_field_key,
+            )?
+            else {
+                tracing::debug!(
+                    source_kind,
+                    source_field_kind,
+                    source_field_key,
+                    "exact secondary watch source is not associated with an owned target"
+                );
+                return Ok(Action::await_change());
+            };
             let Some(target) = api.get_opt(target_name).await? else {
                 tracing::debug!(
                     source_kind,
@@ -1560,6 +1563,25 @@ impl OperatorHost {
             Action::await_change()
         })
     }
+}
+
+fn exact_secondary_target_name<'a>(
+    source: &'a Value,
+    source_field_kind: &str,
+    metadata_container: &str,
+    source_field_key: &str,
+) -> Result<Option<&'a str>, OperatorHostError> {
+    let target_name = source
+        .pointer("/metadata")
+        .and_then(|metadata| metadata.get(metadata_container))
+        .and_then(|values| values.get(source_field_key))
+        .and_then(Value::as_str);
+    if target_name.is_some_and(|name| !valid_kubernetes_object_name(name)) {
+        return Err(OperatorHostError::InvalidOwnedCrd(format!(
+            "exact secondary watch source {source_field_kind} {source_field_key} does not contain a valid Kubernetes target name"
+        )));
+    }
+    Ok(target_name)
 }
 
 fn valid_kubernetes_object_name(value: &str) -> bool {
@@ -5003,16 +5025,20 @@ fn status_observed_generation_for_route(
 }
 
 fn default_watch_namespace(manifest: &Value) -> Option<String> {
-    default_watch_namespace_with_pod_namespace(
-        manifest,
-        std::env::var("APPLIK8S_POD_NAMESPACE").ok(),
-    )
+    default_watch_namespace_with_pod_namespace(manifest, operator_namespace(manifest))
 }
 
 fn default_watch_namespace_with_pod_namespace(
     manifest: &Value,
     pod_namespace: Option<String>,
 ) -> Option<String> {
+    if manifest
+        .pointer("/metadata/annotations/applik8s.dev~1watch-scope")
+        .and_then(Value::as_str)
+        == Some("Cluster")
+    {
+        return None;
+    }
     pod_namespace.filter(|value| !value.is_empty()).or_else(|| {
         manifest
             .pointer("/metadata/annotations/applik8s.dev~1namespace")
@@ -5020,6 +5046,19 @@ fn default_watch_namespace_with_pod_namespace(
             .filter(|value| !value.is_empty())
             .map(str::to_string)
     })
+}
+
+fn operator_namespace(manifest: &Value) -> Option<String> {
+    std::env::var("APPLIK8S_POD_NAMESPACE")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            manifest
+                .pointer("/metadata/annotations/applik8s.dev~1namespace")
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+        })
 }
 
 fn unsupported_runtime_concurrency(manifest: &Value) -> Option<String> {
@@ -5465,7 +5504,7 @@ async fn load_connection_lease(
             "connection kubeconfig Secret name, namespace, and key must be non-empty".to_string(),
         ));
     }
-    if default_watch_namespace(manifest).as_deref() != Some(secret_ref.namespace.as_str()) {
+    if operator_namespace(manifest).as_deref() != Some(secret_ref.namespace.as_str()) {
         return Err(OperatorHostError::KubernetesConfiguration(format!(
             "connection Secret for alias {alias} must be in the operator namespace"
         )));
@@ -5896,7 +5935,7 @@ fn validate_manifest_read_resource(
             "Kubernetes read for namespaced resource {api_version}/{kind} requires query.namespace."
         )
     })?;
-    let controller_namespace = default_watch_namespace(manifest);
+    let controller_namespace = operator_namespace(manifest);
     let namespace_allowed =
         matching_scope
             .iter()
@@ -7112,7 +7151,7 @@ fn leader_election_namespace(
     config
         .lease_namespace
         .clone()
-        .or_else(|| default_watch_namespace(&bundle.manifest))
+        .or_else(|| operator_namespace(&bundle.manifest))
         .ok_or_else(|| {
             OperatorHostError::InvalidRuntimeConfig(
                 "spec.runtime.leaderElection.leaseNamespace or deployment.namespace is required when leader election is enabled"
@@ -7610,6 +7649,24 @@ mod connection_tests {
         assert!(!valid_kubernetes_object_name("Tenant_A"));
         assert!(!valid_kubernetes_object_name("-tenant"));
         assert!(!valid_kubernetes_object_name("tenant-"));
+    }
+
+    #[test]
+    fn exact_secondary_watch_ignores_unassociated_sources_but_rejects_invalid_targets() {
+        let unrelated = serde_json::json!({ "metadata": { "name": "application-api" } });
+        assert_eq!(
+            exact_secondary_target_name(&unrelated, "label", "labels", "celld.applik8s.io/fleet",)
+                .expect("unassociated sources are not errors"),
+            None,
+        );
+
+        let invalid = serde_json::json!({
+            "metadata": { "labels": { "celld.applik8s.io/fleet": "Not Valid" } }
+        });
+        assert!(matches!(
+            exact_secondary_target_name(&invalid, "label", "labels", "celld.applik8s.io/fleet",),
+            Err(OperatorHostError::InvalidOwnedCrd(_)),
+        ));
     }
 
     #[test]

@@ -9,6 +9,22 @@ import {
 } from '../src/pipeline/entrypoint-discovery.js';
 
 describe('application callback discovery instrumentation', () => {
+  it('leaves Object.prototype-named calls in TSX application modules untouched', () => {
+    const source = `
+      export function Summary({ total }: { total: number }) {
+        return <p>{total.toLocaleString()}</p>;
+      }
+    `;
+
+    const instrumented = instrumentApplicationCallbackRegistrations(
+      source,
+      '/workspace/src/summary.tsx',
+    );
+
+    expect(instrumented).toContain('total.toLocaleString()');
+    expect(instrumented).not.toContain('__applik8s');
+  });
+
   it('instruments direct function-native schedules and preserves captured handles for module bundling', () => {
     const source = `
 export const WorkspaceDigest = schedule(
@@ -206,6 +222,13 @@ async function publish(
       rootEntrypoint,
       join(process.cwd(), 'packages', 'sdk', 'src', 'handler-dispatch.ts'),
     )).toBe(false);
+  });
+
+  it('matches a relative CLI entrypoint with absolute esbuild module paths', () => {
+    expect(applicationPackageOwnsModule(
+      'src/application.ts',
+      join(process.cwd(), 'src', 'features', 'runtime', 'model.ts'),
+    )).toBe(true);
   });
 
   it('instruments callback registrars from packed Applik8s packages before esbuild rewrites them', () => {
@@ -762,6 +785,25 @@ workflow('media.verify.v1', Contract, async input => {
     expect(instrumented).toContain('__generatedCalls: [Attachments, Media.update]');
     expect(instrumented).not.toContain('value: contentType.toLowerCase');
     expect(instrumented).not.toContain('value: expected.toLowerCase');
+  });
+
+  it('leaves browser-global calls as runtime lookups in SSR-safe modules', () => {
+    const source = `
+export function WorkspaceSwitcher() {
+  return <button onClick={() => globalThis.location.assign('/app')}>Switch</button>;
+}
+`;
+
+    const instrumented = instrumentApplicationCallbackRegistrations(
+      source,
+      '/workspace/src/workspace-switcher.tsx',
+    );
+
+    expect(instrumented).toContain("globalThis.location.assign('/app')");
+    expect(instrumented).not.toContain(
+      'identifier: "globalThis.location.assign"',
+    );
+    expect(instrumented).not.toContain('value: globalThis.location.assign');
   });
 
   it('preserves typed delete operations while retaining opaque handle ownership', () => {

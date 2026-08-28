@@ -354,7 +354,7 @@ import { createSignedEnvelopeCodec, signedEnvelopeUtf8Key, staticSignedEnvelopeK
 	import { nodeKeyedDigestHex } from '@applik8s/runtime/node-integrity';
 		import { installApplicationObjectStorageRuntimeResolver, installApplicationProjectionRuntimeResolver, installApplicationWorkflowRuntimeResolver } from '@applik8s/applik8s/workflow-runtime-resolvers';
 import { applicationWorkflowCausalPrincipalMetadata, applicationWorkflowProviderAdmissionMetadata, applicationWorkflowTelemetryMetadata } from '@applik8s/applik8s/workflow-runtime';
-${generatedApplicationTelemetryImports({ boundaryRunner: true, carrierCapture: true, providerOperationInstrumentation: contract.tasks.some(({ handler }) => workflowTaskProviderRuntimeOperations(handler).length > 0), runtimeImplementation: contract.observability }).join('\n')}
+${generatedApplicationTelemetryImports({ boundaryRunner: true, carrierCapture: true, providerOperationInstrumentation: contract.tasks.some(({ handler }) => workflowTaskProviderRuntimeOperations(handler).length > 0), runtimeIntegrityObserver: contract.gatewayCallers.length > 0, runtimeImplementation: contract.observability }).join('\n')}
 import { installApplicationInvocationAdmissionResolver, installApplicationOperationRuntimeResolver } from '@applik8s/client';
 import { normalizeSchema } from '@applik8s/sdk';
 ${capabilityImports}
@@ -1128,6 +1128,7 @@ const gatewayAdmission = createSignedEnvelopeCodec({
     },
   }),
   validatePayload: value => validateApplicationAdmissionContextV1(value),
+  observe: observeApplicationRuntimeIntegrityEnvelope,
   maximumEncodedBytes: 32_768,
   maximumLifetimeMs: 60_000,
 });
@@ -1160,6 +1161,7 @@ const gatewayRunReference = createSignedEnvelopeCodec({
       caller: value.caller,
     });
   },
+  observe: observeApplicationRuntimeIntegrityEnvelope,
   maximumEncodedBytes: 8_192,
 });
 

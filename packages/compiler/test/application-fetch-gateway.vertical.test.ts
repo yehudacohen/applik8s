@@ -43,6 +43,11 @@ describe("application host Fetch gateway", () => {
 		const graph = applicationGraphWithEntrypointPublicSurface(base, { operationIds: [], modelNames: [], lakehousePublications: [publication.graphNode] });
 		const source = generatedApplicationFetchGatewayModules(graph)?.files["gateway.generated.ts"] ?? "";
 		expect(source).toContain("createDuckDbApplicationLakehouseRuntime");
+		expect(source).toContain("await import('@applik8s/runtime-duckdb')");
+		expect(source).not.toContain("from '@applik8s/runtime-duckdb';");
+		expect(source).toContain("from '@applik8s/applik8s/lakehouse-runtime'");
+		expect(source).toContain("createApplicationLakehousePublication");
+		expect(source).not.toContain("LakehouseDataset.named");
 		expect(source).toContain("createAwsApplicationLakehouseDatasetRuntime");
 		expect(source).toContain("createAwsApplicationLakehouseQueryRuntime");
 		expect(source).toContain('"targets":["local"]');
@@ -80,6 +85,8 @@ describe("application host Fetch gateway", () => {
 				"gateway.generated.ts"
 			] ?? "";
 		expect(source).toContain("createDuckDbApplicationLakehouseRuntime");
+		expect(source).toContain("await import('@applik8s/runtime-duckdb')");
+		expect(source).not.toContain("from '@applik8s/runtime-duckdb';");
 		expect(source).toContain("installApplicationLakehousePublicationRuntimeResolver");
 		expect(source).toContain("/__applik8s/v1/internal/lakehouse/events");
 		expect(source).toContain('cursorKey: requiredEnv(dataset.cursorSecretEnvironment)');
@@ -110,6 +117,8 @@ describe("application host Fetch gateway", () => {
 		if (!graph) throw new Error("Expected actor application graph.");
 		const source = generatedApplicationFetchGatewayModules(graph)?.files["gateway.generated.ts"] ?? "";
 		expect(source).toContain("createPersistentLocalApplicationActorRuntime");
+		expect(source).toContain("from '@applik8s/applik8s/actor-runtime'");
+		expect(source).not.toContain("from '@applik8s/applik8s';");
 		expect(source).toContain("installApplicationActorRuntimeResolver");
 		expect(source).toContain("runtimeActorKeySchema");
 		expect(source).toContain("/__applik8s/v1/internal/actors/invoke");

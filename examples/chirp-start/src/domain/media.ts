@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { type } from '@applik8s/applik8s/dsl';
 import { inArray, sql } from 'drizzle-orm';
-import { workflow } from '../app';
+import { workflow } from '../domain-app';
 import { Attachments } from '../media/objects';
 import { Database } from '../providers/database';
 import { mediaAttachments } from '../schema/posts';

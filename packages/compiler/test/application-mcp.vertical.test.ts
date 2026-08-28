@@ -11,6 +11,7 @@ import { emitGeneratedApplicationMcpServers } from '../src/application-mcp/emitt
 import { compileApplicationMcpPlacementRoutes } from '../src/application-mcp/index.js';
 
 const operationId = 'applik8s://models/Post/operations/create' as const;
+const compilerTestEntrypoint = new URL('./application-mcp.vertical.test.ts', import.meta.url).pathname;
 
 function fixture(options: {
   readonly secondGateway?: boolean;
@@ -296,6 +297,8 @@ describe('application MCP placement routing', () => {
         namespace: 'chirp-system',
         port: 8080,
         path: '/__applik8s/internal/v1/operations',
+        baseUrl: 'http://chirp-social.chirp-system.svc:8080',
+        environmentName: 'APPLIK8S_RUNTIME_ENDPOINT_3F2D11115CC1B5916218',
         url: 'http://chirp-social.chirp-system.svc:8080/__applik8s/internal/v1/operations',
       },
     }]);
@@ -318,6 +321,7 @@ describe('application MCP placement routing', () => {
   it('emits a durable OAuth-protected MCP workload without copying operation handlers', async () => {
     const { graph, catalog } = fixture();
     const [artifact] = await emitGeneratedApplicationMcpServers({
+      entrypoint: compilerTestEntrypoint,
       graph,
       operationCatalog: catalog,
       outDir: await mkdtemp(join(tmpdir(), 'applik8s-mcp-artifact-')),
@@ -351,7 +355,8 @@ describe('application MCP placement routing', () => {
     expect(generated).toContain('OryHydraOAuthAdapter');
     expect(generated).toContain('createApplicationMcpPlacementExecutor');
     expect(generated).toContain('path: "/__applik8s/mcp/public"');
-    expect(generated).toContain('x-applik8s-internal-invocation');
+    expect(generated).toContain('invocation: invocationToken');
+    expect(generated).not.toContain('x-applik8s-internal-invocation');
     expect(generated).not.toContain('created: true');
     expect(generated).not.toContain('Authorization:');
     expect(JSON.stringify(deployment)).toContain(
@@ -398,6 +403,7 @@ describe('application MCP placement routing', () => {
       ),
     };
     const [artifact] = await emitGeneratedApplicationMcpServers({
+      entrypoint: compilerTestEntrypoint,
       graph: profiledGraph,
       operationCatalog: catalog,
       outDir: await mkdtemp(join(tmpdir(), 'applik8s-profiled-mcp-')),

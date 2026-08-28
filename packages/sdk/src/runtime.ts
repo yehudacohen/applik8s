@@ -1,3 +1,4 @@
+// typecast-file-boundary: The SDK runtime validates guest/host handler payloads and operation effects before restoring resource-specific generics.
 import type {
   AnyKubernetesObject,
   AnyResourceDefinition,
@@ -70,8 +71,11 @@ export const sdk: Applik8sSdk = {
       const exactNamespace = options?.map ? options.namespace : undefined;
       if (exactNamespace === 'all') throw new Error('Exact secondary-watch mappings cannot use namespace: "all"; select the source or operator namespace.');
       return {
-        source,
-        target,
+        // Resource definitions may also be callable authoring handles. Persist
+        // only their portable Kubernetes identity so JSON bundle emission never
+        // drops a function-valued secondary-watch target.
+        source: watchResourceIdentity(source),
+        target: watchResourceIdentity(target),
         ...(options?.watch ? { watch: options.watch } : {}),
         mapper: options?.map
           ? { ...options.map, ...(exactNamespace ? { namespace: exactNamespace } : {}) }
@@ -107,6 +111,20 @@ export const sdk: Applik8sSdk = {
   },
   isApplik8sError,
 };
+
+function watchResourceIdentity(resource: {
+  readonly apiVersion: AnyResourceDefinition['apiVersion'];
+  readonly kind: AnyResourceDefinition['kind'];
+  readonly plural: AnyResourceDefinition['plural'];
+  readonly scope: AnyResourceDefinition['scope'];
+}): Pick<AnyResourceDefinition, 'apiVersion' | 'kind' | 'plural' | 'scope'> {
+  return {
+    apiVersion: resource.apiVersion,
+    kind: resource.kind,
+    plural: resource.plural,
+    scope: resource.scope,
+  };
+}
 
 function kubernetesConnectionDescriptor(options: import('./interfaces.js').KubernetesConnectionRequirementOptions): KubernetesConnectionCapabilityDescriptor {
   return {
@@ -391,7 +409,11 @@ function inferHandlerSourceModule(): HandlerSourceMetadata | undefined {
     if (!match?.[1]) continue;
     const file = decodeURIComponent(match[1].replace(/^file:\/\//, ''));
     const normalized = file.replaceAll('\\', '/');
-    if (normalized.endsWith('/packages/sdk/src/runtime.ts') || normalized.includes('/node_modules/@applik8s/sdk/dist/runtime.js')) continue;
+    if (
+      normalized.endsWith('/packages/sdk/src/runtime.ts')
+      || normalized.endsWith('/packages/sdk/dist/runtime.js')
+      || normalized.includes('/node_modules/@applik8s/sdk/dist/runtime.js')
+    ) continue;
     return { file, line: Number(match[2]), column: Number(match[3]) };
   }
   return undefined;
@@ -549,3 +571,4 @@ export function objectRefFor(resource: Pick<AnyResourceDefinition, 'apiVersion' 
     ...(object.metadata.namespace ? { namespace: object.metadata.namespace } : {}),
   };
 }
+// typecast-file-boundary: The SDK runtime validates guest/host handler payloads and operation effects before restoring resource-specific generics.

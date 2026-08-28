@@ -24,7 +24,7 @@
       "owner": "runtime-integrity",
       "maturity": "stable",
       "command": "bun run check:v08:runtime-integrity",
-      "implemented": false,
+      "implemented": true,
       "cadence": ["per-pr", "nightly", "release-candidate"],
       "environments": ["node", "browser", "worker", "componentized-wasm-host", "rolling-runtime-fixture"],
       "evidence": [
@@ -36,17 +36,36 @@
         "search-provider-cursor-parity",
         "mixed-version-rolling-migration",
         "private-crypto-source-inventory"
-      ]
+      ],
+      "qualifiedEvidence": [
+        "canonical-json-v1-fixed-vectors",
+        "purpose-separated-signed-envelopes",
+        "cross-purpose-and-tamper-rejection",
+        "key-rotation-and-expiry",
+        "canonical-admission-ingress-parity",
+        "search-provider-cursor-parity",
+        "mixed-version-rolling-migration",
+        "private-crypto-source-inventory"
+      ],
+      "remainingEvidence": []
     },
     {
       "id": "local-runtime",
       "owner": "portable-runtime",
       "maturity": "stable",
       "command": "bun run check:v08:local",
-      "implemented": false,
+      "implemented": true,
       "cadence": ["per-pr", "nightly", "historical-benchmark"],
       "environments": ["clean-generated-agentic-start", "local-processes-and-containers"],
-      "evidence": ["cold-start", "hot-reload", "crash-recovery", "lease-safe-reset"]
+      "evidence": [
+        "packed-generated-cold-start",
+        "hot-reload",
+        "structural-reconciliation",
+        "child-and-supervisor-crash-recovery",
+        "retained-data-continuity",
+        "lease-safe-reset",
+        "leak-free-teardown"
+      ]
     },
     {
       "id": "aws-core",
@@ -73,10 +92,12 @@
       "owner": "portable-runtime",
       "maturity": "stable",
       "command": "bun run check:v08:target-parity",
-      "implemented": false,
+      "implemented": true,
       "cadence": ["per-pr", "nightly", "release-candidate"],
       "environments": ["local", "aws-local", "real-aws", "kubernetes"],
-      "evidence": ["one-semantic-graph", "fail-closed-incompatibility", "single-lifecycle-owner"]
+      "evidence": ["one-semantic-graph", "fail-closed-incompatibility", "single-lifecycle-owner"],
+      "qualifiedEvidence": ["one-semantic-graph", "fail-closed-incompatibility", "single-lifecycle-owner"],
+      "remainingEvidence": []
     },
     {
       "id": "application-plan",
@@ -149,19 +170,23 @@
       "command": "bun run check:v08:actors",
       "implemented": false,
       "cadence": ["per-pr", "nightly", "release-candidate", "historical-benchmark"],
-      "environments": ["deterministic-local", "celld-live", "kubernetes-lifecycle"],
+      "environments": ["deterministic-local", "celld-live", "applik8s-celld-operator-kubernetes-lifecycle"],
       "nonBlockingEnvironments": ["rivet-conformance"],
-      "evidence": ["schema-backed-protocol", "generated-callback-and-call-surfaces", "full-turn-serialization-across-await", "admission-and-prior-result-recovery", "object-store-fencing", "acknowledged-write-recovery", "state-outbox-alarm-durability", "node-loss-and-reassignment", "websocket-hibernation-and-reconnection", "rolling-deployment", "migration", "authority", "cycles", "provider-semantic-differences"]
+      "evidence": ["schema-backed-protocol", "generated-callback-and-call-surfaces", "full-turn-serialization-across-await", "admission-and-prior-result-recovery", "object-store-fencing", "acknowledged-write-recovery", "state-outbox-alarm-durability", "node-loss-and-reassignment", "websocket-hibernation-and-reconnection", "singleton-operator-bootstrap", "exclusive-fleet-child-ownership", "restore-gated-statefulset-rollout", "operator-restart-recovery", "operator-image-upgrade", "crd-schema-migration", "interrupted-upgrade-recovery", "celld-version-upgrade-and-rollback", "blocking-finalization", "retained-actor-data", "multi-architecture-operator-image", "authority", "cycles", "provider-semantic-differences"],
+      "qualifiedEvidence": ["schema-backed-protocol", "generated-callback-and-call-surfaces", "full-turn-serialization-across-await", "admission-and-prior-result-recovery", "object-store-fencing", "acknowledged-write-recovery", "state-outbox-alarm-durability", "node-loss-and-reassignment", "websocket-hibernation-and-reconnection", "singleton-operator-bootstrap", "exclusive-fleet-child-ownership", "restore-gated-statefulset-rollout", "operator-restart-recovery", "operator-image-upgrade", "crd-schema-migration", "interrupted-upgrade-recovery", "celld-version-upgrade-and-rollback", "blocking-finalization", "retained-actor-data", "authority", "cycles", "provider-semantic-differences"],
+      "remainingEvidence": ["published-multi-architecture-operator-image"]
     },
     {
       "id": "development-agent",
       "owner": "independent-development-environment",
       "maturity": "developer-preview",
       "command": "bun run check:v08:development-agent",
-      "implemented": false,
+      "implemented": true,
       "cadence": ["per-pr", "nightly"],
       "environments": ["clean-generated-agentic-start", "broken-application"],
-      "evidence": ["visual-product-selection", "source-graph-plan-resolution", "persistent-referents", "attachment-redaction", "plan-diff-approval", "truthful-validation", "journal-recovery", "undo", "source-governance"]
+      "evidence": ["visual-product-selection", "source-graph-plan-resolution", "persistent-referents", "attachment-redaction", "plan-diff-approval", "truthful-validation", "journal-recovery", "undo", "source-governance"],
+      "qualifiedEvidence": ["visual-product-selection", "source-graph-plan-resolution", "persistent-referents", "attachment-redaction", "plan-diff-approval", "truthful-validation", "journal-recovery", "undo", "source-governance"],
+      "remainingEvidence": []
     },
     {
       "id": "release",

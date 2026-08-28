@@ -128,10 +128,9 @@ function request(
       method: 'POST',
       headers: {
         'content-type': 'application/json',
-        'x-applik8s-internal-invocation': token,
         ...headers,
       },
-      body: JSON.stringify({ operationId: operation.id, input }),
+      body: JSON.stringify({ operationId: operation.id, input, invocation: token }),
     },
   );
 }

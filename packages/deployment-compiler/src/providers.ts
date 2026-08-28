@@ -11,6 +11,7 @@ import {
   digestApplicationDeploymentValue,
 } from "@applik8s/deployment-contract";
 import { celldProviderRuntimeAccess } from './celld-runtime-access.js';
+import type { ApplicationCelldRuntimeManifest } from './celld-runtime-artifact.js';
 import type { ApplicationRuntimeAccessWorkloadPlacement } from './runtime-access-plan.js';
 import type {
   ApplicationDeploymentContribution,
@@ -211,12 +212,24 @@ function targetSelectedProvider(
 function inferredKubernetesCelldConfiguration(
   context: ApplicationDeploymentPlanningContext,
 ): DeploymentJsonObject {
-  const candidates = context.graph.nodes.filter(
+  const objectStorageProviders = context.graph.nodes.filter(
     (candidate): candidate is ApplicationProviderNode =>
       candidate.kind === "provider"
-      && candidate.interface === "ObjectStorage"
-      && !optionalObject(candidate.config?.qualification),
+      && candidate.interface === "ObjectStorage",
   );
+  const providersById = new Map(objectStorageProviders.map((candidate) => [candidate.id, candidate]));
+  const candidatesByAuthority = new Map<string, ApplicationProviderNode>();
+  for (const candidate of objectStorageProviders) {
+    if (optionalObject(candidate.config?.qualification)) continue;
+    const authorityId = canonicalProviderAuthorityId(candidate, providersById);
+    // Prefer the default/unqualified spelling. Resolving that node retains the
+    // canonical provider's selected configuration while preserving the source
+    // binding that made the authority eligible for implicit selection.
+    if (!candidatesByAuthority.has(authorityId)) {
+      candidatesByAuthority.set(authorityId, candidate);
+    }
+  }
+  const candidates = [...candidatesByAuthority.values()];
   if (candidates.length !== 1) {
     throw new Error(
       `Target-selected ActorRuntime on Kubernetes requires exactly one unqualified ObjectStorage provider; found ${candidates.length}. `
@@ -246,6 +259,32 @@ function inferredKubernetesCelldConfiguration(
     kind: "celld-actors",
     stateStore: storage,
   });
+}
+
+function canonicalProviderAuthorityId(
+  provider: ApplicationProviderNode,
+  providersById: ReadonlyMap<string, ApplicationProviderNode>,
+): string {
+  let current = provider;
+  const visited = new Set<string>();
+  while (true) {
+    if (visited.has(current.id)) {
+      throw new Error(`Application provider alias cycle includes ${current.id}.`);
+    }
+    visited.add(current.id);
+    const aliasOf = optionalString(current.config?.aliasOf);
+    if (!aliasOf) return current.id;
+    const target = providersById.get(aliasOf);
+    if (!target) {
+      throw new Error(`Application provider ${current.id} aliases missing provider ${aliasOf}.`);
+    }
+    if (target.interface !== provider.interface) {
+      throw new Error(
+        `Application provider ${current.id} cannot alias ${target.id}: provider interfaces differ (${provider.interface} vs ${target.interface}).`,
+      );
+    }
+    current = target;
+  }
 }
 
 /**
@@ -377,6 +416,27 @@ export function resolveApplicationProviderForTarget(
   provider: ApplicationProviderNode,
   context: ApplicationDeploymentPlanningContext,
 ): ApplicationProviderNode {
+  return resolveApplicationProviderForTargetInternal(provider, context, new Set());
+}
+
+function resolveApplicationProviderForTargetInternal(
+  provider: ApplicationProviderNode,
+  context: ApplicationDeploymentPlanningContext,
+  seen: ReadonlySet<string>,
+): ApplicationProviderNode {
+  if (seen.has(provider.id)) throw new Error(`Application provider alias cycle includes ${provider.id}.`);
+  const aliasOf = optionalString(provider.config?.aliasOf);
+  if (aliasOf) {
+    const target = context.graph.nodes.find((node): node is ApplicationProviderNode => node.kind === 'provider' && node.id === aliasOf);
+    if (!target) throw new Error(`Application provider ${provider.id} aliases missing provider ${aliasOf}.`);
+    const resolved = resolveApplicationProviderForTargetInternal(target, context, new Set(seen).add(provider.id));
+    return {
+      ...resolved,
+      id: provider.id,
+      name: provider.name,
+      config: { ...(resolved.config ?? {}), aliasOf },
+    };
+  }
   const profiled = provider.implementation === 'application-provider-selection'
     || providerHasProfileBranches(provider)
     ? selectedProfileProvider(provider, context)
@@ -687,6 +747,26 @@ export function applicationProviderRuntimeAccessTargets(
   context: ApplicationDeploymentPlanningContext,
 ): readonly ApplicationDeploymentRuntimeAccessTarget[] {
   if (
+    (provider.interface === 'NotificationDelivery' && provider.implementation === 'local-inspectable')
+    || (provider.interface === 'PaymentProvider' && provider.implementation === 'local-simulated')
+    || (provider.interface === 'AI' && provider.implementation === 'ai-deterministic')
+    || (provider.interface === 'StructuredGeneration' && provider.implementation === 'structured-generation-deterministic')
+  ) {
+    return [{ capabilityId: provider.id, target: 'embedded' }];
+  }
+  if (
+    provider.interface === 'AI'
+    && provider.implementation === 'envoy-ai-gateway'
+    && provider.config?.provision === false
+  ) {
+    const inference = optionalObject(optionalObject(context.installationSpec.providers)?.inference);
+    return [externalHttpRuntimeAccessTarget({
+      capabilityId: provider.id,
+      endpoint: optionalString(inference?.endpoint),
+      responsibility: 'external OpenAI-compatible inference endpoint',
+    })];
+  }
+  if (
     provider.interface === 'StructuredGeneration'
     && provider.implementation === 'structured-generation-http'
   ) {
@@ -740,7 +820,9 @@ export function applicationProviderRuntimeAccessTargets(
 export function applicationDeploymentRuntimeAccessTargetRecord(
   target: ApplicationDeploymentRuntimeAccessTarget,
 ): Readonly<Record<string, unknown>> {
-  return target.target === 'kubernetes'
+  return target.target === 'embedded'
+    ? { networkMode: 'embedded' }
+    : target.target === 'kubernetes'
     ? {
         networkKind: 'privatePeer',
         networkNamespace: target.namespace,
@@ -919,18 +1001,35 @@ function clickStackDirectContribution(
 ): ProviderDirectContribution {
   const config = nestedObject(provider.config, "observability") ?? {};
   const namespace = optionalString(config.namespace) ?? applicationNamespace(context);
+  const ownsDedicatedNamespace = namespace !== applicationNamespace(context);
   // Altinity derives host, label, ConfigMap, and volume names from the
   // installation. Its longest observed suffix is
   // `chi-<installation>-deploy-confd-cluster-0-0`, so bound the provider stem
   // before adding `-clickhouse` and keep every controller-derived identity
   // within Kubernetes' 63-character DNS-label limit.
   const name = clickStackProviderName(context.graph.metadata.name);
+  const namespaceNodeId = ownsDedicatedNamespace
+    ? `direct.${provider.id}.namespace`
+    : "direct.namespace.workload";
   const operatorNodeId = `direct.${provider.id}.clickhouse-operator`;
   const credentialsNodeId = `external.${provider.id}.clickstack-credentials`;
   const clusterNodeId = `direct.${provider.id}.clickhouse`;
   const stackNodeId = `direct.${provider.id}.clickstack`;
   const storageSize = optionalString(config.storageSize) ?? "10Gi";
   const storageClassName = optionalString(config.storageClassName);
+  const configuredResources = nestedObject(config, "clickhouseResources");
+  const configuredRequests = nestedObject(configuredResources, "requests");
+  const configuredLimits = nestedObject(configuredResources, "limits");
+  const podResources = {
+    requests: {
+      cpu: optionalString(configuredRequests?.cpu) ?? "250m",
+      memory: optionalString(configuredRequests?.memory) ?? "512Mi",
+    },
+    limits: {
+      cpu: optionalString(configuredLimits?.cpu) ?? "2",
+      memory: optionalString(configuredLimits?.memory) ?? "2Gi",
+    },
+  };
   const credentialsName = clickStackCredentialsSecretName(context.graph.metadata.name);
   const clickhouseName = `${name}-clickhouse`;
   const clickhouseHost = `clickhouse-${clickhouseName}.${namespace}.svc.cluster.local`;
@@ -938,6 +1037,17 @@ function clickStackDirectContribution(
   const clickhousePasswordKey = "clickhouse-password";
   const apiKeyKey = "hyperdx-api-key";
   const helmValuesKey = "values.yaml";
+  const namespaceNode = ownsDedicatedNamespace ? directNode({
+    id: namespaceNodeId,
+    provider,
+    context,
+    compositionId: "applik8s-namespace",
+    reason: "Own the observability Namespace once, before credentials and both ClickStack data-plane compositions.",
+    namespace,
+    configuration: { name: namespace },
+    ownership: "application",
+    deletion: "delete",
+  }) : undefined;
   const operator = directNode({
     id: operatorNodeId,
     provider,
@@ -1022,6 +1132,7 @@ function clickStackDirectContribution(
       namespace,
       version: "25.7.6",
       storage: { size: storageSize, ...(storageClassName ? { storageClassName } : {}) },
+      podResources,
       users: {
         [clickhouseUser]: {
           passwordSecretRef: {
@@ -1051,7 +1162,6 @@ function clickStackDirectContribution(
     configuration: compactJson({
       build: {
         credentials: { source: "secretValues" },
-        namespaceOwnership: "external",
         mongo: {
           mode: "internal",
           storage: { size: optionalString(config.metadataStorageSize) ?? "5Gi", ...(storageClassName ? { storageClassName } : {}) },
@@ -1085,8 +1195,19 @@ function clickStackDirectContribution(
     ],
   };
   return {
-    nodes: [operator, credentials, cluster, stack],
+    nodes: [
+      ...(namespaceNode ? [namespaceNode] : []),
+      operator,
+      credentials,
+      cluster,
+      stack,
+    ],
     edges: [
+      ...(namespaceNode ? [
+        { from: namespaceNodeId, to: credentialsNodeId, relationship: "requiresReady" as const },
+        { from: namespaceNodeId, to: clusterNodeId, relationship: "requiresReady" as const },
+        { from: namespaceNodeId, to: stackNodeId, relationship: "requiresReady" as const },
+      ] : []),
       { from: operatorNodeId, to: clusterNodeId, relationship: "requiresReady" },
       { from: credentialsNodeId, to: clusterNodeId, relationship: "requiresReady" },
       { from: credentialsNodeId, to: stackNodeId, relationship: "requiresReady" },
@@ -1129,6 +1250,13 @@ function celldActorRuntimeDirectContribution(
   if (!credentials || !optionalString(credentials.name)) {
     throw new Error("ActorRuntime.celld(...) on Kubernetes requires stateStore.credentialsSecret so the fleet never receives inline credentials.");
   }
+  const accessKeyIdKey = optionalString(stateStore.accessKeyIdKey) ?? 'AWS_ACCESS_KEY_ID';
+  const secretAccessKeyKey = optionalString(stateStore.secretAccessKeyKey) ?? 'AWS_SECRET_ACCESS_KEY';
+  if (accessKeyIdKey !== 'AWS_ACCESS_KEY_ID' || secretAccessKeyKey !== 'AWS_SECRET_ACCESS_KEY') {
+    throw new Error(
+      'ActorRuntime.celld(...) requires the versioned applik8s.object-store.s3-credentials/v1 Secret contract with AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY keys.',
+    );
+  }
   const name = `${safeProviderNodeId(context.graph.metadata.name)}-actors`;
   const applicationService = kubernetesApplicationService(context);
   const publicRealtime = context.graph.nodes.some((node) =>
@@ -1153,6 +1281,7 @@ function celldActorRuntimeDirectContribution(
     );
   }
   const nodeId = `direct.${provider.id}.celld`;
+  const operatorNodeId = `direct.${provider.id}.celld-operator`;
   const authorizationId = `external.${provider.id}.celld-authorization`;
   const authorizationName = `${name}-authorization`;
   const authorization = generatedSecretProviderNode({
@@ -1162,35 +1291,73 @@ function celldActorRuntimeDirectContribution(
     namespace,
     name: authorizationName,
     values: {
-      authorization: { kind: "random", bytes: 48, encoding: "base64url" },
-      connectionSigningKey: { kind: "random", bytes: 48, encoding: "base64url" },
+      'actor-authorization': { kind: "random", bytes: 48, encoding: "base64url" },
+      'application-authorization': { kind: "random", bytes: 48, encoding: "base64url" },
+      'connection-signing-key': { kind: "random", bytes: 48, encoding: "base64url" },
+      'operator-authorization': { kind: "random", bytes: 48, encoding: "base64url" },
     },
     consumers: [nodeId, "kubernetes.application"],
     deletion: "delete",
   });
+  const operator = directNode({
+    id: operatorNodeId,
+    provider,
+    context,
+    compositionId: 'applik8s-celld-operator-bootstrap',
+    reason: 'Install the retained singleton CelldFleet CRD and Applik8s operator before any application-owned fleet instance.',
+    namespace: 'applik8s-celld-system',
+    configuration: {
+      name: 'applik8s-celld-operator',
+      image: applicationDeploymentOutputReference('artifact.operator.applik8s-celld-operator', 'immutableReference'),
+      replicas: 2,
+    },
+    ownership: 'shared',
+    deletion: 'retain',
+  });
+  const runtimeManifest = requiredCelldRuntimeArtifactManifest(context);
   const base = directNode({
     id: nodeId,
     provider,
     context,
-    compositionId: "applik8s-celld-actors",
-    reason: "Deploy the compiler-generated Celld Worker, private fleet, conditional-write object-store authority, and ingress as one TypeKro lifecycle boundary.",
+    compositionId: "applik8s-celld-fleet-installation",
+    reason: "Create one application-owned CelldFleet; its operator exclusively reconciles workloads, rollout, drain, restore, and status.",
     namespace,
     configuration: compactJson({
       name,
       namespace,
-      image: applicationDeploymentOutputReference("artifact.celld-runtime", "immutableReference"),
-      replicas: optionalInteger(config.replicas) ?? 1,
-      bucket: requiredString(stateStore.bucket, "Celld state-store bucket"),
-      region: requiredString(stateStore.region, "Celld state-store region"),
-      ...(optionalString(stateStore.endpoint) ? { endpoint: optionalString(stateStore.endpoint) } : {}),
-      credentialsSecretName: requiredString(credentials.name, "Celld state-store credentials Secret name"),
-      accessKeyIdKey: optionalString(stateStore.accessKeyIdKey) ?? "AWS_ACCESS_KEY_ID",
-      secretAccessKeyKey: optionalString(stateStore.secretAccessKeyKey) ?? "AWS_SECRET_ACCESS_KEY",
-      authorizationSecretName: authorizationName,
-      authorizationSecretKey: "authorization",
-      connectionSigningSecretKey: "connectionSigningKey",
-      ingressControllerNamespace: ingressControllerNamespace ?? namespace,
-      applicationEndpoint: applicationService.endpoint,
+      fleet: {
+        artifact: {
+          image: applicationDeploymentOutputReference("artifact.celld-runtime", "immutableReference"),
+          manifestDigest: runtimeManifest.manifestDigest,
+          workerVersion: runtimeManifest.workerVersion,
+          celldVersion: runtimeManifest.celldVersion,
+        },
+        replicas: optionalInteger(config.replicas) ?? 1,
+        objectStore: {
+          dialect: 's3',
+          bucket: requiredString(stateStore.bucket, "Celld state-store bucket"),
+          prefix: `applik8s/${safeProviderNodeId(context.graph.metadata.name)}/actors`,
+          region: requiredString(stateStore.region, "Celld state-store region"),
+          ...(optionalString(stateStore.endpoint) ? { endpoint: optionalString(stateStore.endpoint) } : {}),
+          credentials: {
+            type: 'secret',
+            secretRef: {
+              name: requiredString(credentials.name, "Celld state-store credentials Secret name"),
+              contract: 'applik8s.object-store.s3-credentials/v1',
+            },
+          },
+        },
+        runtimeSecretRef: { name: authorizationName, contract: 'applik8s.celld-runtime/v1' },
+        applicationEndpoint: applicationService.endpoint,
+        ingressNamespaces: [...new Set([namespace, ingressControllerNamespace ?? namespace])].sort(),
+        rollout: {
+          strategy: 'Rolling',
+          progressDeadlineSeconds: 900,
+          drainDeadlineSeconds: 300,
+          restoreDeadlineSeconds: 600,
+        },
+        deletion: { dataPolicy: 'Retain', drainTimeoutPolicy: 'Block' },
+      },
     }),
     ownership: "application",
     deletion: "delete",
@@ -1215,6 +1382,7 @@ function celldActorRuntimeDirectContribution(
     provider,
     context,
     deploymentNodeId: nodeId,
+    artifactManifestDigest: runtimeManifest.manifestDigest,
     name,
     namespace,
     ...(stateStoreEndpoint
@@ -1224,20 +1392,26 @@ function celldActorRuntimeDirectContribution(
       namespace: optionalString(credentials.namespace) ?? namespace,
       name: requiredString(credentials.name, 'Celld state-store credentials Secret name'),
       keys: [
-        optionalString(stateStore.accessKeyIdKey) ?? 'AWS_ACCESS_KEY_ID',
-        optionalString(stateStore.secretAccessKeyKey) ?? 'AWS_SECRET_ACCESS_KEY',
+        accessKeyIdKey,
+        secretAccessKeyKey,
       ],
     },
     authorizationSecret: {
       namespace,
       name: authorizationName,
-      keys: ['authorization', 'connectionSigningKey'],
+      keys: ['actor-authorization', 'application-authorization', 'connection-signing-key', 'operator-authorization'],
     },
     applicationService,
   });
   return {
-    nodes: [authorization, fleet],
+    nodes: [operator, authorization, fleet],
     edges: [
+      {
+        from: 'artifact.operator.applik8s-celld-operator',
+        to: operatorNodeId,
+        relationship: 'requiresOutput',
+        output: 'immutableReference',
+      },
       ...(stateStoreDependency
         ? [{
             from: stateStoreDependency,
@@ -1246,6 +1420,7 @@ function celldActorRuntimeDirectContribution(
           }]
         : []),
       { from: "artifact.celld-runtime", to: nodeId, relationship: "requiresOutput", output: "immutableReference" },
+      { from: operatorNodeId, to: nodeId, relationship: 'requiresReady' },
       { from: authorizationId, to: nodeId, relationship: "requiresReady" },
       rootConsumesEndpoint
         ? { from: nodeId, to: "kubernetes.application", relationship: "requiresOutput", output: "endpoint" }
@@ -1254,6 +1429,44 @@ function celldActorRuntimeDirectContribution(
     runtimeAccessTargets: access.targets,
     runtimeAccessRequirements: access.requirements,
     runtimeAccessWorkloads: access.workloads,
+  };
+}
+
+function requiredCelldRuntimeArtifactManifest(
+  context: ApplicationDeploymentPlanningContext,
+): ApplicationCelldRuntimeManifest & { readonly manifestDigest: string } {
+  const artifact = context.artifacts?.find(({ id }) => id === 'artifact.celld-runtime');
+  if (!artifact) {
+    throw new Error('ActorRuntime.celld(...) requires the canonical artifact.celld-runtime compiler artifact.');
+  }
+  const candidate = optionalObject(artifact.sourceDescriptor.runtimeManifest);
+  if (!candidate) {
+    throw new Error('artifact.celld-runtime must carry its digest-bound runtimeManifest in sourceDescriptor.');
+  }
+  const manifest = {
+    apiVersion: requiredString(candidate.apiVersion, 'Celld runtime-manifest apiVersion'),
+    workerVersion: requiredString(candidate.workerVersion, 'Celld runtime-manifest workerVersion'),
+    celldVersion: requiredString(candidate.celldVersion, 'Celld runtime-manifest celldVersion'),
+    applicationGraphDigest: requiredString(
+      candidate.applicationGraphDigest,
+      'Celld runtime-manifest applicationGraphDigest',
+    ),
+    protocolRevision: requiredString(candidate.protocolRevision, 'Celld runtime-manifest protocolRevision'),
+  };
+  if (manifest.apiVersion !== 'applik8s.celld-runtime-artifact/v1') {
+    throw new Error(`Unsupported Celld runtime-manifest apiVersion ${JSON.stringify(manifest.apiVersion)}.`);
+  }
+  const manifestDigest = requiredString(candidate.manifestDigest, 'Celld runtime-manifest manifestDigest');
+  const expectedDigest = digestApplicationDeploymentValue(manifest);
+  if (manifestDigest !== expectedDigest) {
+    throw new Error(
+      `artifact.celld-runtime manifest digest mismatch: expected ${expectedDigest}, received ${manifestDigest}.`,
+    );
+  }
+  return {
+    ...manifest,
+    apiVersion: 'applik8s.celld-runtime-artifact/v1',
+    manifestDigest,
   };
 }
 
@@ -1289,9 +1502,17 @@ function celldStateStoreDeploymentDependency(
       return [];
     }
     if (provisioning?.kind === "local-s3") {
-      return [`direct.${candidate.id}.local-s3`];
+      const ownerId = canonicalProviderAuthorityId(
+        candidate,
+        new Map(context.graph.nodes.flatMap((node) => node.kind === "provider" ? [[node.id, node] as const] : [])),
+      );
+      return [`direct.${ownerId}.local-s3`];
     }
-    return [`direct.${candidate.id}.claim`];
+    const ownerId = canonicalProviderAuthorityId(
+      candidate,
+      new Map(context.graph.nodes.flatMap((node) => node.kind === "provider" ? [[node.id, node] as const] : [])),
+    );
+    return [`direct.${ownerId}.claim`];
   });
   const unique = [...new Set(matches)];
   if (unique.length > 1) {
@@ -1327,18 +1548,32 @@ function kubernetesApplicationService(
   readonly port: number;
   readonly podSelector: Readonly<Record<string, string>>;
 } {
-  const candidates = (context.materializedComposition?.resources ?? [])
+  const services = (context.materializedComposition?.resources ?? [])
     .map((resource) => optionalObject(resource.template) ?? optionalObject(resource.externalRef))
     .filter((resource): resource is DeploymentJsonObject => resource !== undefined)
     .filter((resource) => {
       if (resource.apiVersion !== "v1" || resource.kind !== "Service") return false;
       const labels = optionalObject(optionalObject(resource.metadata)?.labels);
+      return labels?.["app.kubernetes.io/component"] === "application-host"
+        || labels?.["app.kubernetes.io/component"] === "typed-http";
+    });
+  // A managed ApplicationHost is the canonical callback authority because it
+  // owns the complete generated gateway. A single typed HTTP service remains
+  // a supported fallback for operator-only applications without a web host.
+  const applicationHosts = services.filter((service) => {
+    const labels = optionalObject(optionalObject(service.metadata)?.labels);
+    return labels?.["app.kubernetes.io/component"] === "application-host";
+  });
+  const candidates = applicationHosts.length > 0
+    ? applicationHosts
+    : services.filter((service) => {
+      const labels = optionalObject(optionalObject(service.metadata)?.labels);
       return labels?.["app.kubernetes.io/component"] === "typed-http";
     });
   if (candidates.length !== 1) {
     throw new Error(
-      `ActorRuntime.celld(...) requires exactly one compiler-generated typed HTTP Service; found ${candidates.length}. `
-      + "Expose one application HTTP server before selecting the Kubernetes Celld runtime.",
+      `ActorRuntime.celld(...) requires one canonical compiler-generated application callback Service; found ${candidates.length}. `
+      + "Expose one ApplicationHost, or exactly one typed HTTP server for an operator-only application, before selecting the Kubernetes Celld runtime.",
     );
   }
   const service = candidates[0]!;
@@ -2374,6 +2609,36 @@ function workflowDirectContribution(
         ?? `hatchet-engine.${namespace}.svc:7070`,
       grpcInsecure: value.tls !== true,
       workerTokenJob: true,
+      ...(value.mode === "ha"
+        ? {}
+        : {
+            // Hatchet's upstream chart defaults every control-plane component
+            // to a 1Gi request. That is appropriate for a production HA
+            // installation, but makes the single-node starter profile consume
+            // 3Gi before any application workload is scheduled. Keep the
+            // provider's stack mode deliberately developer-sized while still
+            // leaving headroom above observed steady-state usage.
+            values: {
+              api: {
+                resources: {
+                  requests: { cpu: "100m", memory: "256Mi" },
+                  limits: { cpu: "1", memory: "512Mi" },
+                },
+              },
+              engine: {
+                resources: {
+                  requests: { cpu: "100m", memory: "256Mi" },
+                  limits: { cpu: "1", memory: "512Mi" },
+                },
+              },
+              frontend: {
+                resources: {
+                  requests: { cpu: "50m", memory: "128Mi" },
+                  limits: { cpu: "500m", memory: "256Mi" },
+                },
+              },
+            },
+          }),
     }),
     ownership: "application",
     deletion: "delete",
@@ -2769,6 +3034,7 @@ function objectStorageDirectContribution(
         },
       },
       consumers: [provider.id],
+      runtimeKeys: ['AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY'],
     };
     const secretNodeId = `external.${provider.id}.local-s3-credentials`;
     const localS3NodeId = `direct.${provider.id}.local-s3`;

@@ -5,19 +5,20 @@ import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { createApplicationAwsDeployment } from '@applik8s/deployment-alchemy';
+import { applicationCelldRuntimeRelease } from '@applik8s/deployment-compiler';
 import {
-  validateApplicationAwsDeploymentPlan,
   type ApplicationAwsDeploymentPlan,
+  validateApplicationAwsDeploymentPlan,
 } from '@applik8s/deployment-contract';
-import {
-  compileApplicationTargetPlan,
-  renderAwsPlanText,
-  type ApplicationTargetPlanCommandOptions,
-} from './application-target-plan-command.js';
 import type {
   ApplicationDeploymentCommandIo,
   ApplicationDeploymentCommandRuntime,
 } from './application-deployment-command-contract.js';
+import {
+  type ApplicationTargetPlanCommandOptions,
+  compileApplicationTargetPlan,
+  renderAwsPlanText,
+} from './application-target-plan-command.js';
 
 export interface ApplicationAwsCommandOptions extends ApplicationTargetPlanCommandOptions {
   readonly imageUri?: string;
@@ -60,6 +61,15 @@ export async function runApplicationAwsDeploy(
         ...(options.endpoint ? { endpoint: options.endpoint } : {}),
       }),
     } : {}),
+    ...(!options.skipImageBuild && compiled.plan.runtimeArtifacts.some(({ role }) => role !== 'operator') ? {
+      buildRuntimeArtifactImage: runtimeArtifactImageBuilder({
+        workspaceRoot: io.cwd,
+        stateDirectory: awsStateRoot(io.cwd, options.outDir),
+        region: options.region,
+        ...(options.awsProfile ? { profile: options.awsProfile } : {}),
+        ...(options.endpoint ? { endpoint: options.endpoint } : {}),
+      }),
+    } : {}),
     ...(compiled.plan.resources.some(({ resourceType }) => resourceType === 'celld-fleet') ? {
       buildCelldWorkerImage: celldWorkerImageBuilder({
         stateDirectory: awsStateRoot(io.cwd, options.outDir),
@@ -77,10 +87,15 @@ export async function runApplicationAwsDeploy(
   if (compiled.plan.resources.some(({ resourceType }) => resourceType === 'fargate-service') && !options.imageUri && options.skipImageBuild) {
     throw new Error('AWS deployment contains an ApplicationHost and --skip-image-build was requested. Supply --image-uri with an immutable repository@sha256:... reference or allow the compiler artifact to be published automatically.');
   }
+  if (compiled.plan.runtimeArtifacts.some(({ role }) => role !== 'operator') && options.skipImageBuild) {
+    throw new Error('AWS deployment contains compiler-owned runtime artifacts and --skip-image-build was requested. Allow Applik8s to publish their immutable images.');
+  }
   const applied = await deployment.apply();
-  io.stdout(`AWS application ready: ${applied.aws.stackName} (${applied.aws.status}, ${applied.aws.planDigest}).`);
-  for (const [name, value] of Object.entries(applied.aws.outputs).sort(([left], [right]) => left.localeCompare(right))) {
-    io.stdout(`  ${name}=${value}`);
+  io.stdout(`AWS application ready through native Alchemy resources (${applied.aws.status}, ${applied.aws.planDigest}).`);
+  for (const [resourceId, values] of Object.entries(applied.aws.directOutputs).sort(([left], [right]) => left.localeCompare(right))) {
+    for (const [name, value] of Object.entries(values).sort(([left], [right]) => left.localeCompare(right))) {
+      io.stdout(`  ${resourceId}.${name}=${value}`);
+    }
   }
   return 0;
 }
@@ -142,7 +157,7 @@ exec celld deploy /tmp/applik8s-celld-worker --bucket "$CELLD_BUCKET" --region "
 `, { mode: 0o700 });
     await writeFile(join(context, 'Dockerfile'), `FROM node:22-alpine@sha256:16e22a550f3863206a3f701448c45f7912c6896a62de43add43bb9c86130c3e2 AS esbuild
 RUN npm install --global --ignore-scripts=false esbuild@0.28.1
-FROM ghcr.io/denoland/celld@sha256:7a4380721b6400073f2a26afe70a828410169f658d31b5ef61383e648ca0c530
+FROM ${applicationCelldRuntimeRelease.image}
 COPY --from=esbuild --chmod=0555 /usr/local/lib/node_modules/esbuild/bin/esbuild /usr/local/bin/esbuild
 COPY worker.mjs wrangler.template.json deploy.sh /worker/
 RUN chmod 0555 /worker/deploy.sh && chmod 0444 /worker/worker.mjs /worker/wrangler.template.json
@@ -209,6 +224,65 @@ function applicationImageBuilder(options: {
   };
 }
 
+function runtimeArtifactImageBuilder(options: {
+  readonly workspaceRoot: string;
+  readonly stateDirectory: string;
+  readonly region: string;
+  readonly profile?: string;
+  readonly endpoint?: string;
+}) {
+  return async ({ repositoryUri, plan, artifact, signal }: {
+    readonly repositoryUri: string;
+    readonly plan: ApplicationAwsDeploymentPlan;
+    readonly artifact: ApplicationAwsDeploymentPlan['runtimeArtifacts'][number];
+    readonly signal?: AbortSignal;
+  }): Promise<string> => {
+    if (!artifact.container) throw new Error(`AWS runtime artifact ${artifact.role}:${artifact.nodeId} has no compiler-owned container recipe.`);
+    const registry = repositoryUri.split('/')[0];
+    if (!registry) throw new Error(`AWS ECR repository URI ${repositoryUri} has no registry authority.`);
+    const run = promisify(execFile);
+    const environment = options.endpoint
+      ? { ...process.env, AWS_ACCESS_KEY_ID: process.env.AWS_ACCESS_KEY_ID ?? 'test', AWS_SECRET_ACCESS_KEY: process.env.AWS_SECRET_ACCESS_KEY ?? 'test' }
+      : process.env;
+    const password = await run('aws', [
+      'ecr', 'get-login-password', '--region', options.region,
+      ...(options.profile ? ['--profile', options.profile] : []),
+      ...(options.endpoint ? ['--endpoint-url', options.endpoint] : []),
+    ], { encoding: 'utf8', env: environment, ...(signal ? { signal } : {}) }).then(({ stdout }) => stdout.trim());
+    if (!password) throw new Error(`AWS ECR returned an empty authorization password for runtime artifact ${artifact.role}:${artifact.nodeId}.`);
+    await dockerLogin(registry, password, signal);
+    const artifactId = `${artifact.role}:${artifact.nodeId}`;
+    const tag = `${repositoryUri}:runtime-${safeDockerTag(artifactId)}-${artifact.digest.slice('sha256:'.length, 'sha256:'.length + 20)}`;
+    const metadataPath = join(options.stateDirectory, `runtime-build-${safeDockerTag(artifactId)}-${plan.digest.slice(-16)}.json`);
+    const contextDirectory = resolve(options.workspaceRoot, artifact.container.contextPath);
+    const dockerfilePath = resolve(options.workspaceRoot, artifact.container.dockerfilePath);
+    await mkdir(options.stateDirectory, { recursive: true });
+    await rm(metadataPath, { force: true });
+    try {
+      await run('docker', [
+        'buildx', 'build',
+        '--file', dockerfilePath,
+        '--tag', tag,
+        '--push',
+        '--metadata-file', metadataPath,
+        contextDirectory,
+      ], { encoding: 'utf8', env: process.env, ...(signal ? { signal } : {}) });
+      const metadata = JSON.parse(await readFile(metadataPath, 'utf8')) as Readonly<Record<string, unknown>>;
+      const digest = metadata['containerimage.digest'];
+      if (typeof digest !== 'string' || !/^sha256:[a-f0-9]{64}$/u.test(digest)) {
+        throw new Error(`Docker Buildx did not report one immutable digest for runtime artifact ${artifactId}.`);
+      }
+      return `${repositoryUri}@${digest}`;
+    } finally {
+      await rm(metadataPath, { force: true });
+    }
+  };
+}
+
+function safeDockerTag(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9_.-]+/gu, '-').replace(/^[.-]+|[.-]+$/gu, '').slice(0, 80) || 'artifact';
+}
+
 async function dockerLogin(registry: string, password: string, signal?: AbortSignal): Promise<void> {
   await new Promise<void>((resolveLogin, reject) => {
     const child = spawn('docker', ['login', '--username', 'AWS', '--password-stdin', registry], {
@@ -230,7 +304,7 @@ export async function runApplicationAwsStatus(options: ApplicationAwsStoredComma
   const deployment = deploymentFromStoredPlan(plan, options, io.cwd);
   const status = await deployment.status();
   if (options.json) io.stdout(JSON.stringify(status ?? { state: 'absent' }, null, 2));
-  else io.stdout(status ? `${status.stackName} ${status.status} ${status.planDigest}` : `AWS application ${plan.application}/${plan.environment} is absent.`);
+  else io.stdout(status ? `alchemy-native ${status.status} ${status.planDigest}` : `AWS application ${plan.application}/${plan.environment} is absent.`);
   return status ? 0 : 1;
 }
 

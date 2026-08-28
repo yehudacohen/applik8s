@@ -4,7 +4,8 @@ import { existsSync, readFileSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { gzipSync } from 'node:zlib';
-import type { ApplicationAIAgentNode, ApplicationCallableProviderBinding, ApplicationCallableProviderRuntimeOperation, ApplicationCommandHandlerNode, ApplicationCommandNode, ApplicationGatewayNode, ApplicationGraph, ApplicationHandlerDependencies, ApplicationIdentityReference, ApplicationIndexNode, ApplicationModelNode, ApplicationOperationCatalog, ApplicationProfiledCallbackContract, ApplicationProjectionNode, ApplicationProviderNode, ApplicationQueryNode, ApplicationReactiveDatabaseRuntimeContract, ApplicationSearchIndexPlan, ApplicationSerializedCallbackContract, ApplicationStreamNode, ApplicationStreamProcessorNode, ApplicationSubscriptionNode, ApplicationWorkloadAuthorityEnvelope, JsonObject } from '@applik8s/core';
+import type { ApplicationAIAgentNode, ApplicationCallableProviderBinding, ApplicationCallableProviderRuntimeOperation, ApplicationCommandHandlerNode, ApplicationCommandNode, ApplicationGatewayNode, ApplicationGraph, ApplicationHandlerDependencies, ApplicationIdentityReference, ApplicationIndexNode, ApplicationModelNode, ApplicationOperationCatalog, ApplicationProfiledCallbackContract, ApplicationProjectionNode, ApplicationProviderNode, ApplicationQueryNode, ApplicationReactiveDatabaseRuntimeContract, ApplicationScheduleNode, ApplicationSearchIndexPlan, ApplicationSerializedCallbackContract, ApplicationStreamNode, ApplicationStreamProcessorNode, ApplicationSubscriptionNode, ApplicationWorkloadAuthorityEnvelope, JsonObject } from '@applik8s/core';
+import { applicationScheduleControlIdentity } from '@applik8s/core';
 import type {
   ApplicationArtifactCredentialProjection,
   ApplicationArtifactKubernetesPermission,
@@ -36,7 +37,9 @@ import { applicationGraphHasObservabilityRuntime, generatedApplicationTelemetryI
 import { applicationStaticAuthorityManifest, compileApplicationOperationCatalog, compileApplicationWorkloadAuthority } from '../application-operations/index.js';
 import { generatedApplicationProviderOperationValue } from '../application-provider-telemetry-source.js';
 import { applicationHatchetScheduleBindings } from '../application-schedule-hatchet.js';
+import { hatchetSingleFileHeartbeatPlugin } from '../application-workflows/source.js';
 import { applik8sWorkspaceSourcePlugin } from '../bundling/index.js';
+import { handlerSourceMetadataPlugin } from '../pipeline/entrypoint-handler-instrumentation.js';
 
 const DEFAULT_NODE_IMAGE = 'node:22-alpine@sha256:16e22a550f3863206a3f701448c45f7912c6896a62de43add43bb9c86130c3e2';
 
@@ -210,6 +213,7 @@ interface ReactiveProjectedServiceAccountToken {
 }
 
 interface BundleReactiveOptions {
+  readonly applicationEntrypoint: string;
   readonly graphName: string;
   readonly name: string;
   readonly nodeId: string;
@@ -291,10 +295,11 @@ export async function emitGeneratedApplicationReactive(options: {
         (route) => route.receiver.nodeId === gateway.id,
       ),
       options.outDir,
+      options.entrypoint,
       options.executionTarget ?? 'kubernetes',
     ))),
-    ...await Promise.all(projections.map((projection) => emitProjection(options.graph, projection, options.outDir))),
-    ...await Promise.all(searchProjections.map((projection) => emitSearchProjection(options.graph, projection, options.outDir))),
+    ...await Promise.all(projections.map((projection) => emitProjection(options.graph, projection, options.outDir, options.entrypoint))),
+    ...await Promise.all(searchProjections.map((projection) => emitSearchProjection(options.graph, projection, options.outDir, options.entrypoint))),
     ...await Promise.all(streamProcessors.map((processor) =>
       emitStreamProcessor(
         options.graph,
@@ -302,12 +307,14 @@ export async function emitGeneratedApplicationReactive(options: {
         operationCatalog,
         workloadAuthority,
         options.outDir,
+        options.entrypoint,
         options.executionTarget ?? 'kubernetes',
       ))),
     ...(scheduleControl
       ? [await emitScheduleControl(
           options.graph,
           options.outDir,
+          options.entrypoint,
           options.executionTarget ?? 'kubernetes',
         )]
       : []),
@@ -315,24 +322,24 @@ export async function emitGeneratedApplicationReactive(options: {
 }
 
 function applicationNeedsScheduleControl(graph: ApplicationGraph): boolean {
-  if (graph.nodes.some((node) =>
-    node.kind === 'provider'
-      && node.interface === 'ApplicationHost'
-      && !node.config?.qualification)) return false;
   const nodes = new Map(graph.nodes.map((node) => [node.id, node]));
   return graph.nodes.some((node) => {
     if (node.kind !== 'schedule') return false;
     const provider = nodes.get(node.scheduler.nodeId);
-    return provider?.kind === 'provider' && !provider.config?.qualification;
+    return provider?.kind === 'provider'
+      && provider.interface === 'Scheduler'
+      && (provider.implementation !== 'target-selected' || !provider.config?.qualification);
   });
 }
 
 async function emitScheduleControl(
   graph: ApplicationGraph,
   outDir: string,
+  applicationEntrypoint: string,
   executionTarget: 'kubernetes' | 'local' | 'aws-local' | 'aws',
 ): Promise<GeneratedApplicationReactiveArtifact> {
-  const name = kubernetesName(`${graph.metadata.name}-schedule-control`);
+  const scheduleControl = applicationScheduleControlIdentity(graph.metadata.name);
+  const name = scheduleControl.serviceName;
   const namespace = applicationGraphStringValue(graph.metadata.namespace) ?? 'default';
   const port = 8080;
   const artifactDir = join(outDir, name);
@@ -366,15 +373,25 @@ async function emitScheduleControl(
   });
   const permissions: readonly GatewayKubernetesPermission[] = executionTarget === 'kubernetes'
     && kubernetesScheduleAccess
-    ? [{
-        apiGroup: 'batch',
-        resource: 'cronjobs',
-        scope: 'Namespaced',
-        namespace,
-        verbs: ['create', 'delete', 'get', 'list', 'patch', 'update', 'watch'],
-      }]
+    ? [
+        {
+          apiGroup: 'batch',
+          resource: 'cronjobs',
+          scope: 'Namespaced',
+          namespace,
+          verbs: ['create', 'delete', 'get', 'list', 'patch', 'update', 'watch'],
+        },
+        {
+          apiGroup: 'batch',
+          resource: 'jobs',
+          scope: 'Namespaced',
+          namespace,
+          verbs: ['get'],
+        },
+      ]
     : [];
   const hatchetScheduleBindings = applicationHatchetScheduleBindings(graph);
+  const callableProviders = scheduleControlCallableProviders(graph);
   for (const binding of hatchetScheduleBindings) {
     if (binding.namespace !== namespace) {
       throw new Error(
@@ -383,9 +400,10 @@ async function emitScheduleControl(
     }
   }
   return bundleReactive({
+    applicationEntrypoint,
     graphName: graph.metadata.name,
     name,
-    nodeId: `schedule-control.${graph.metadata.name}`,
+    nodeId: scheduleControl.nodeId,
     kind: 'scheduleControlWorker',
     namespace,
     image: DEFAULT_NODE_IMAGE,
@@ -411,6 +429,10 @@ async function emitScheduleControl(
       },
       ...applicationScheduleDatabaseEnvironment(graph, namespace),
       ...applicationWorkflowScheduleEnvironment(graph),
+      ...applicationCallableProviderEnvironment(callableProviders, {
+        target: executionTarget,
+        namespace,
+      }),
       ...hatchetScheduleBindings.flatMap((binding) => [
         { name: binding.hostPortEnvironment, value: binding.hostPort },
         { name: binding.apiUrlEnvironment, value: binding.apiUrl },
@@ -450,6 +472,35 @@ async function emitScheduleControl(
         }
       : {}),
   });
+}
+
+function scheduleControlCallableProviders(
+  graph: ApplicationGraph,
+): readonly ApplicationProviderNode[] {
+  const providers = new Map<string, ApplicationProviderNode>();
+  for (const schedule of graph.nodes) {
+    if (schedule.kind !== 'schedule') continue;
+    const scheduler = graph.nodes.find((candidate) => candidate.id === schedule.scheduler.nodeId);
+    if (
+      scheduler?.kind !== 'provider'
+      || (scheduler.implementation === 'target-selected' && scheduler.config?.qualification)
+    ) continue;
+    for (const binding of schedule.providerBindings ?? []) {
+      if (!binding.operation) continue;
+      const provider = graph.nodes.find(
+        (candidate): candidate is ApplicationProviderNode =>
+          candidate.kind === 'provider'
+            && candidate.id === binding.provider.nodeId,
+      );
+      if (!provider || provider.interface !== binding.provider.interface) {
+        throw new Error(
+          `Schedule ${schedule.id} provider binding ${binding.identifier} references missing provider ${binding.provider.nodeId}.`,
+        );
+      }
+      providers.set(provider.id, provider);
+    }
+  }
+  return [...providers.values()].sort((left, right) => left.id.localeCompare(right.id));
 }
 
 function generatedScheduleControlSource(): string {
@@ -647,6 +698,7 @@ async function emitGateway(
   operationCatalog: ApplicationOperationCatalog,
   internalPlacementRoutes: readonly ApplicationInternalPlacementRoute[],
   outDir: string,
+  applicationEntrypoint: string,
   executionTarget: 'kubernetes' | 'local' | 'aws-local' | 'aws',
 ): Promise<GeneratedApplicationReactiveArtifact> {
   if (
@@ -696,13 +748,21 @@ async function emitGateway(
     // typecast: the runtime guard above establishes the model runtime required by generated command observation.
     return { handler, command, model: model as ApplicationModelNode & { readonly runtime: NonNullable<ApplicationModelNode['runtime']> } };
   });
+  const hasActorQueries = queries.some(
+    (query) => (query.actorBindings?.length ?? 0) > 0,
+  );
   const commandAuthorityDatabases = new Set(commands.map(({ model }) => model.runtime.connectionEnvName));
   if (commandAuthorityDatabases.size > 1) {
     throw new Error(`Generated application gateway ${gateway.id} commands span multiple transactional authority databases. Bind one explicit AuthorizationAuthority database before exposing a cross-database command gateway.`);
   }
-  const eventLog = commands.length > 0 ? gatewayEventLog(nodes, gateway.id, commands) : undefined;
-  if (commands.length > 0 && !operationCatalog) {
+  const eventLog = commands.length > 0 || hasActorQueries
+    ? gatewayEventLog(nodes, gateway.id, commands)
+    : undefined;
+  if ((commands.length > 0 || hasActorQueries) && !operationCatalog) {
     throw new Error(`Generated application gateway ${gateway.id} requires its compiled operation catalog.`);
+  }
+  if (hasActorQueries && !gatewayAuthorityDatabaseEnvironment(queries, commands, subscriptions)) {
+    throw new Error(`Generated application gateway ${gateway.id} actor-backed queries require one transactional operation-authority database.`);
   }
   if (
     internalPlacementRoutes.length > 0
@@ -811,6 +871,7 @@ async function emitGateway(
     executionTarget,
   ));
   return bundleReactive({
+    applicationEntrypoint,
     graphName: graph.metadata.name, name, nodeId: gateway.id, kind: 'queryGateway', namespace: gatewayNamespace,
     image: gateway.deployment.image || DEFAULT_NODE_IMAGE,
     replicas: applicationGraphNumberValue(gateway.deployment.replicas) ?? 1,
@@ -833,14 +894,14 @@ async function emitGateway(
   });
 }
 
-async function emitProjection(graph: ApplicationGraph, projection: ApplicationProjectionNode, outDir: string): Promise<GeneratedApplicationReactiveArtifact> {
+async function emitProjection(graph: ApplicationGraph, projection: ApplicationProjectionNode, outDir: string, applicationEntrypoint: string): Promise<GeneratedApplicationReactiveArtifact> {
   assertResolved(projection.id, 'handler', projection.handlerUnresolved);
   const nodes = graphNodes(graph);
   const stream = requiredNode(nodes, projection.source.nodeId, 'stream', projection.id);
   assertResolved(stream.id, 'partition', stream.partitionUnresolved);
   assertResolved(stream.id, 'authorization', stream.authorizationUnresolved);
   const provider = requiredProvider(nodes, projection.provider.nodeId, projection.id);
-  if (projection.storage === 'online' || projection.online) return emitOnlineProjection(graph, projection, stream, provider, outDir);
+  if (projection.storage === 'online' || projection.online) return emitOnlineProjection(graph, projection, stream, provider, outDir, applicationEntrypoint);
   const config = clickHouseAnalyticalProviderConfig(
     provider,
     applicationGraphStringValue(stream.database.secretNamespace)
@@ -861,6 +922,7 @@ async function emitProjection(graph: ApplicationGraph, projection: ApplicationPr
   const env = projectionEnvironment(stream, config);
   const includeWhen = applicationGraphBooleanCondition(config.enabled);
   return bundleReactive({
+    applicationEntrypoint,
     graphName: graph.metadata.name,
     name,
     nodeId: projection.id,
@@ -882,6 +944,7 @@ async function emitOnlineProjection(
   stream: ApplicationStreamNode,
   provider: ApplicationProviderNode,
   outDir: string,
+  applicationEntrypoint: string,
 ): Promise<GeneratedApplicationReactiveArtifact> {
   if (!projection.online) throw new Error(`Generated online projection ${projection.id} is missing its online semantics.`);
   if (provider.interface !== 'IndexStore' || provider.implementation !== 'valkey') throw new Error(`Generated online projection ${projection.id} requires one Valkey-compatible IndexStore provider.`);
@@ -908,13 +971,14 @@ async function emitOnlineProjection(
   const entrypoint = join(artifactDir, 'projection.generated.ts');
   await writeFile(entrypoint, generatedValkeyProjectionSource(graph.metadata.name, projection, stream, config));
   const environment = onlineProjectionEnvironment(stream, authentication, config, graph.metadata.name);
-  return bundleReactive({ graphName: graph.metadata.name, name, nodeId: projection.id, kind: 'projectionWorker', namespace, image: DEFAULT_NODE_IMAGE, replicas: 1, port: 8080, entrypoint, artifactDir, env: environment });
+  return bundleReactive({ applicationEntrypoint, graphName: graph.metadata.name, name, nodeId: projection.id, kind: 'projectionWorker', namespace, image: DEFAULT_NODE_IMAGE, replicas: 1, port: 8080, entrypoint, artifactDir, env: environment });
 }
 
 async function emitSearchProjection(
   graph: ApplicationGraph,
   work: SearchProjectionWorkItem,
   outDir: string,
+  applicationEntrypoint: string,
 ): Promise<GeneratedApplicationReactiveArtifact> {
   const database = work.contract.query.database;
   if (!database) {
@@ -935,6 +999,7 @@ async function emitSearchProjection(
   const entrypoint = join(artifactDir, 'search-projection.generated.ts');
   await writeFile(entrypoint, generatedSearchProjectionSource(work.contract));
   return bundleReactive({
+    applicationEntrypoint,
     graphName: graph.metadata.name,
     name,
     nodeId: work.contract.index.id,
@@ -959,6 +1024,7 @@ async function emitStreamProcessor(
   operationCatalog: ApplicationOperationCatalog,
   workloadAuthority: readonly ApplicationWorkloadAuthorityEnvelope[],
   outDir: string,
+  applicationEntrypoint: string,
   executionTarget: 'kubernetes' | 'local' | 'aws-local' | 'aws',
 ): Promise<GeneratedApplicationReactiveArtifact> {
   assertResolved(processor.id, 'handler', processor.handlerUnresolved);
@@ -981,6 +1047,11 @@ async function emitStreamProcessor(
         namespace,
         `Generated stream processor ${processor.id}`,
       ).endpoint
+    : undefined;
+  const managesApplicationSchedules = (processor.applicationScheduleBindings?.length ?? 0) > 0;
+  const scheduleControl = applicationScheduleControlIdentity(graph.metadata.name);
+  const scheduleManagementEndpoint = managesApplicationSchedules
+    ? `http://${scheduleControl.serviceName}.${namespace}.svc:${scheduleControl.port}/__applik8s/v1/internal/schedules/manage`
     : undefined;
   const serviceIdentity = inferredStreamProcessorServiceIdentity(
     graph,
@@ -1033,6 +1104,7 @@ async function emitStreamProcessor(
   const usesObjectStorage = streamProcessorUsesObjectStorage(processor);
   const callableProviders = streamProcessorCallableProviders(graph, processor);
   return bundleReactive({
+    applicationEntrypoint,
     graphName: graph.metadata.name,
     name,
     nodeId: processor.id,
@@ -1059,6 +1131,12 @@ async function emitStreamProcessor(
         target: executionTarget,
         namespace,
       }),
+      ...(scheduleManagementEndpoint
+        ? [{
+            name: 'APPLIK8S_SCHEDULE_MANAGEMENT_ENDPOINT',
+            value: scheduleManagementEndpoint,
+          }]
+        : []),
       ...(queries.length > 0 ? [{
         name: 'APPLIK8S_CONTEXT_SECRET',
         valueFrom: {
@@ -1068,12 +1146,12 @@ async function emitStreamProcessor(
           },
         },
       }] : []),
-      ...(actorApplicationEndpoint
+      ...(actorApplicationEndpoint || scheduleManagementEndpoint
         ? [
-            {
+            ...(actorApplicationEndpoint ? [{
               name: 'APPLIK8S_ACTOR_APPLICATION_ENDPOINT',
               value: actorApplicationEndpoint,
-            },
+            }] : []),
             {
               name: 'APPLIK8S_INTERNAL_OPERATION_SECRET',
               valueFrom: {
@@ -1371,7 +1449,7 @@ async function bundleReactive(options: BundleReactiveOptions): Promise<Generated
   const manifestPath = join(options.artifactDir, 'runtime.manifest.json');
   const result = await build({
     entryPoints: [options.entrypoint], outfile: sourcePath, bundle: true, format: 'esm', platform: 'node', target: 'node22', minify: true, keepNames: true,
-    legalComments: 'none', sourcemap: 'external', sourcesContent: false, metafile: true, nodePaths: [join(process.cwd(), 'node_modules')], plugins: [applik8sWorkspaceSourcePlugin()],
+    legalComments: 'none', sourcemap: 'external', sourcesContent: false, metafile: true, nodePaths: [join(process.cwd(), 'node_modules')], plugins: [handlerSourceMetadataPlugin(options.applicationEntrypoint, { includeMaintainedPackages: false }), hatchetSingleFileHeartbeatPlugin(), applik8sWorkspaceSourcePlugin()],
     banner: { js: "import { createRequire as __applik8sCreateRequire } from 'node:module'; const require = __applik8sCreateRequire(import.meta.url);" },
   });
   const source = await readFile(sourcePath, 'utf8');
@@ -1478,6 +1556,10 @@ function generatedGatewaySource(
   );
   const relationalQueries = queries.filter((query) => !query.kubernetes);
   const kubernetesQueries = queries.filter((query) => Boolean(query.kubernetes));
+  const actorQueries = relationalQueries.filter(
+    (query) => (query.actorBindings?.length ?? 0) > 0,
+  );
+  const hasActorQueries = actorQueries.length > 0;
   const searchContracts = relationalQueries
     .filter((query) => Boolean(query.search))
     .map((query) => gatewaySearchContract(graph, query));
@@ -1490,7 +1572,7 @@ function generatedGatewaySource(
     ...subscriptions,
     ...capabilityProjectionStreams,
   ]);
-  const eventLogPublisher = commands.length === 0
+  const eventLogPublisher = commands.length === 0 && !hasActorQueries
     ? undefined
     : generatedApplicationEventLogPublisherSource({
         executionTarget,
@@ -1515,7 +1597,16 @@ function generatedGatewaySource(
           "import { createOpenSearchApplicationSearchRuntime } from '@applik8s/runtime-opensearch';",
         ]
       : []),
-    ...(commands.length > 0 ? ["import { createApplicationCommandGateway } from '@applik8s/applik8s/command-gateway-runtime';", eventLogPublisher!.importSource] : []),
+    ...(commands.length > 0 ? ["import { createApplicationCommandGateway } from '@applik8s/applik8s/command-gateway-runtime';"] : []),
+    ...(eventLogPublisher ? [eventLogPublisher.importSource] : []),
+    ...(hasActorQueries ? [
+      "import { AsyncLocalStorage } from 'node:async_hooks';",
+      "import { applicationCausalPrincipalContext } from '@applik8s/core';",
+      "import { installApplicationInvocationAdmissionResolver } from '@applik8s/client';",
+      "import { createApplicationActorTurnAuthority, installApplicationActorInvocationAuthorityResolver, installApplicationActorRuntimeResolver, withApplicationActorTurnAuthority } from '@applik8s/applik8s/actor-runtime';",
+      "import { createPersistentLocalApplicationActorRuntime } from '@applik8s/applik8s/actor-runtime-local';",
+      "import { createCelldApplicationActorRuntime } from '@applik8s/runtime-celld';",
+    ] : []),
     ...(gatewayAuthorityDatabaseEnvironment(queries, commands, subscriptions)
       ? [
           "import { gunzipSync } from 'node:zlib';",
@@ -1526,12 +1617,14 @@ function generatedGatewaySource(
       ? ["import { createApplicationInternalOperationHandler } from '@applik8s/operations';"]
       : []),
     ...(subscriptions.length > 0 ? ["import { createApplicationStreamSubscriptionGateway, createPostgresApplicationStream } from '@applik8s/applik8s/subscription-runtime';"] : []),
-    ...(signalStreams.length > 0
+    ...(signalStreams.length > 0 || hasActorQueries
       ? [
-          "import { createApplicationSignalGateway } from '@applik8s/applik8s/signal-gateway';",
-          "import { applicationSignalAccessAllows, applicationSignalIsActionable, createPostgresApplicationSignalStore } from '@applik8s/applik8s/signal-runtime';",
+          ...(signalStreams.length > 0 ? [
+            "import { createApplicationSignalGateway } from '@applik8s/applik8s/signal-gateway';",
+            "import { applicationSignalAccessAllows, applicationSignalIsActionable, createPostgresApplicationSignalStore } from '@applik8s/applik8s/signal-runtime';",
+          ] : []),
           "import { applicationOperationInputDigest } from '@applik8s/applik8s/operation-runtime';",
-          "import { createApplicationAuthorizedReplayableStream } from '@applik8s/applik8s/subscription-runtime';",
+          ...(signalStreams.length > 0 ? ["import { createApplicationAuthorizedReplayableStream } from '@applik8s/applik8s/subscription-runtime';"] : []),
         ]
       : []),
     ...(kubernetesQueries.length > 0 ? [
@@ -1541,6 +1634,7 @@ function generatedGatewaySource(
     ...(observability ? generatedApplicationTelemetryImports({
       boundaryRunner: true,
       carrierTransport: true,
+      runtimeIntegrityObserver: kubernetesQueries.length > 0,
     }) : []),
     "import { callback as authenticateRequest } from './authentication.generated.js';",
     ...(gateway.identityReadinessSource || gateway.identityReadinessProfile
@@ -1598,6 +1692,9 @@ function generatedGatewaySource(
   const authorityDatabaseEnvironment = gatewayAuthorityDatabaseEnvironment(queries, commands, subscriptions);
   const operationAuthority = authorityDatabaseEnvironment
     ? generatedGatewayOperationAuthority(graph, authorityDatabaseEnvironment, operationCatalog)
+    : '';
+  const actorRuntime = hasActorQueries
+    ? generatedGatewayActorRuntime(graph, actorQueries, operationCatalog)
     : '';
   const commandGateway = commands.length > 0 && eventLog && operationCatalog
     ? generatedCommandGateway(graph, gateway, commands, operationCatalog, eventLog)
@@ -1677,6 +1774,7 @@ ${onlineSourceDeclarations}
 ${analyticalSourceDeclarations}
 ${searchSourceDeclarations}
 ${operationAuthority}
+${actorRuntime}
 ${authorityDatabaseEnvironment ? `async function admitGatewayPrincipal(admission, trustedContextDigest) {
   return operationAuthority.admitPrincipal({
     id: admission.principal.id,
@@ -1703,6 +1801,7 @@ const gateway = queries.length > 0 ? createApplicationQueryGateway({
   cursorSecret,
   subscriptionLimits: ${JSON.stringify(gateway.subscriptionLimits)},
   subscriptionLimiter,
+  ${hasActorQueries ? `execute: (execution, run) => executeGatewayQuery(execution, run),` : ''}
   authenticate: async (request, query, input) => {
     const admitted = await admitQuery(request, query, input);
     const trustedContext = admitted.trustedContext ?? {};
@@ -1744,6 +1843,7 @@ const kubernetesGateway = ${kubernetesQueries.length > 0 ? `createApplik8sKubern
   cursorSecret,
   queries: [${kubernetesQueryDeclarations}],
   subscriptionLimits: ${JSON.stringify(gateway.subscriptionLimits)},
+  ${observability ? 'observeRuntimeIntegrity: observeApplicationRuntimeIntegrityEnvelope,' : ''}
   ${observability ? `queryTelemetry: {
     run: (query, operation, execute) => runApplicationTelemetryBoundary({ kind: 'query', identity: query, definition: operation, relationship: 'synchronous' }, execute),
   },` : ''}
@@ -3048,6 +3148,185 @@ await loopTask;
 `;
 }
 
+function generatedGatewayActorRuntime(
+  graph: ApplicationGraph,
+  queries: readonly ApplicationQueryNode[],
+  operationCatalog: ApplicationOperationCatalog,
+): string {
+  const queryIds = queries.map((query) => query.id).sort();
+  const actorAuthority = compileApplicationWorkloadAuthority(
+    graph,
+    operationCatalog,
+  ).filter(({ workloadIdentity }) =>
+    workloadIdentity.subject.startsWith('actor.'));
+  return `const gatewayQueryInvocationScope = new AsyncLocalStorage();
+const disposeGatewayQueryAdmission = installApplicationInvocationAdmissionResolver(() => gatewayQueryInvocationScope.getStore());
+const gatewayActorQueryIds = new Set(${JSON.stringify(queryIds)});
+const gatewayActorWorkloadAuthority = ${JSON.stringify(actorAuthority)};
+const gatewayLocalActorRuntime = ['local', 'aws-local'].includes(process.env.APPLIK8S_DEPLOYMENT_TARGET ?? '')
+  ? await createPersistentLocalApplicationActorRuntime({
+      path: process.env.APPLIK8S_ACTOR_STATE_PATH ?? '.applik8s/state/actors.json',
+      deliverEvent: deliverGatewayActorEvent,
+    })
+  : undefined;
+const gatewayCelldActorRuntime = process.env.APPLIK8S_ACTOR_ENDPOINT
+  ? createCelldApplicationActorRuntime({
+      endpoint: process.env.APPLIK8S_ACTOR_ENDPOINT,
+      authorization: requiredEnv('APPLIK8S_ACTOR_AUTHORIZATION'),
+      deliverEvent: deliverGatewayActorEvent,
+    })
+  : undefined;
+if (!gatewayLocalActorRuntime && !gatewayCelldActorRuntime) {
+  throw new Error('Actor-backed application queries require local actor state or APPLIK8S_ACTOR_ENDPOINT.');
+}
+const disposeGatewayActorRuntime = installApplicationActorRuntimeResolver(() => gatewayLocalActorRuntime ?? gatewayCelldActorRuntime);
+async function deliverGatewayActorEvent(effect) {
+  await applicationEventLogPublisher.publish({
+    id: effect.effectId,
+    contract: { name: effect.contract.name, version: effect.contract.version },
+    payload: effect.payload,
+    recordedAt: effect.recordedAt,
+    partitionKey: effect.partitionKey,
+    causationId: effect.operationId,
+  }, 'events');
+}
+function gatewayActorEnvelopes(actor, member) {
+  const subject = 'actor.' + actor + ':' + member;
+  return gatewayActorWorkloadAuthority.filter((envelope) => envelope.workloadIdentity.subject === subject);
+}
+function gatewayActorEnvelope(principal, operationId, transport) {
+  return gatewayActorWorkloadAuthority.find((envelope) =>
+    envelope.workloadIdentity.id === principal.workloadIdentity?.id
+    && envelope.operationId === operationId
+    && envelope.transports.includes(transport));
+}
+function gatewayActorDeadline(sourcePrincipal) {
+  const sourceDeadline = sourcePrincipal.kind === 'execution'
+    ? sourcePrincipal.deadline
+    : sourcePrincipal.expiresAt;
+  const maximum = Date.now() + 5 * 60_000;
+  const parsed = sourceDeadline ? Date.parse(sourceDeadline) : maximum;
+  const deadline = Math.min(maximum, parsed);
+  if (!Number.isFinite(deadline) || deadline <= Date.now()) throw new Error('Actor query authority expired before turn admission.');
+  return new Date(deadline).toISOString();
+}
+const disposeGatewayActorAuthority = installApplicationActorInvocationAuthorityResolver(async (request) => {
+  const sourceAdmission = request.current.admission;
+  if (!sourceAdmission) throw new Error('Actor-backed query requires canonical source admission.');
+  const operationId = 'applik8s://actors/' + request.actor + '/operations/' + request.member;
+  const target = { kind: 'target', model: request.actor, identity: { key: request.key } };
+  const inputDigest = applicationOperationInputDigest(request.input);
+  const sourcePrincipal = sourceAdmission.principal;
+  const sourceAuthorization = sourcePrincipal.kind === 'execution'
+    ? await (async () => {
+        const envelope = gatewayActorEnvelope(sourcePrincipal, operationId, request.transport);
+        if (!envelope) throw new Error('Actor query execution has no exact compiled authority for ' + operationId + '.');
+        return operationAuthority.authorizeExecution({
+          principal: sourcePrincipal,
+          envelope,
+          target,
+          audience: ${JSON.stringify(graph.metadata.name)},
+          transport: request.transport,
+          inputDigest,
+          trustedContextDigest: request.current.trustedContextDigest,
+          currentCancellationRevision: sourcePrincipal.cancellationRevision,
+          ...(request.idempotencyKey ? { idempotencyKey: request.idempotencyKey } : {}),
+          targetDigest: applicationOperationInputDigest(target),
+        });
+      })()
+    : await operationAuthority.authorize({
+        principal: sourcePrincipal,
+        operationId,
+        target,
+        audience: ${JSON.stringify(graph.metadata.name)},
+        transport: request.transport,
+        inputDigest,
+        trustedContextDigest: request.current.trustedContextDigest,
+        ...(request.idempotencyKey ? { idempotencyKey: request.idempotencyKey } : {}),
+        targetDigest: applicationOperationInputDigest(target),
+        applicationPolicyAllowed: true,
+      });
+  if (!sourceAuthorization.allowed) throw new Error(sourceAuthorization.code + ': ' + sourceAuthorization.message);
+  const envelopes = gatewayActorEnvelopes(request.actor, request.member);
+  const selfEnvelope = envelopes.find((envelope) =>
+    envelope.operationId === operationId && envelope.transports.includes('direct'));
+  if (!selfEnvelope) throw new Error('Actor ' + request.actor + '.' + request.member + ' has no compiled execution authority.');
+  const causal = applicationCausalPrincipalContext(sourcePrincipal);
+  const keyDigest = applicationOperationInputDigest({ key: request.key });
+  const turnId = 'actor_' + applicationOperationInputDigest({
+    actor: request.actor,
+    member: request.member,
+    keyDigest,
+    inputDigest,
+    idempotencyKey: request.idempotencyKey ?? sourceAuthorization.receipt.id,
+  });
+  const deadline = gatewayActorDeadline(sourcePrincipal);
+  const cancellationRevision = sourceAdmission.cancellation?.revision
+    ?? (sourcePrincipal.kind === 'execution'
+      ? sourcePrincipal.cancellationRevision
+      : 'active:actor:' + turnId);
+  const executionPrincipal = await operationAuthority.admitExecutionPrincipal({
+    executionKind: 'actor',
+    executionId: turnId,
+    attempt: 1,
+    workloadIdentity: selfEnvelope.workloadIdentity,
+    executionContext: { kind: 'actor', actor: request.actor, member: request.member, keyDigest, turnId },
+    causalPrincipalId: causal.id,
+    causalPrincipal: causal.identity,
+    causalGrantIds: causal.grantIds,
+    envelopes,
+    trustedContextDigest: request.current.trustedContextDigest,
+    audience: [${JSON.stringify(graph.metadata.name)}],
+    deadline,
+    cancellationRevision,
+  });
+  const actorAuthorization = await operationAuthority.authorizeExecution({
+    principal: executionPrincipal,
+    envelope: selfEnvelope,
+    target,
+    audience: ${JSON.stringify(graph.metadata.name)},
+    transport: 'direct',
+    inputDigest,
+    trustedContextDigest: request.current.trustedContextDigest,
+    currentCancellationRevision: cancellationRevision,
+    ...(request.idempotencyKey ? { idempotencyKey: request.idempotencyKey } : {}),
+    targetDigest: applicationOperationInputDigest(target),
+    applicationPolicyAllowed: true,
+  });
+  if (!actorAuthorization.allowed) throw new Error(actorAuthorization.code + ': ' + actorAuthorization.message);
+  return createApplicationActorTurnAuthority({
+    admission: { principal: actorAuthorization.principal, trustedContext: sourceAdmission.trustedContext.values },
+    operationId,
+    correlationId: turnId,
+    causationId: sourceAdmission.correlationId,
+    deadline,
+    cancellation: { revision: cancellationRevision },
+    causalPrincipal: { id: causal.id },
+    authorizationReceipt: actorAuthorization.receipt,
+  });
+});
+async function executeGatewayQuery(execution, run) {
+  const admission = execution.identity.admission;
+  if (!admission) throw new Error('Application query execution requires canonical admission.');
+  return gatewayQueryInvocationScope.run(admission, () => {
+    if (!gatewayActorQueryIds.has(execution.query.id)) return run();
+    const receipt = execution.authorizationReceipt;
+    if (!receipt) throw new Error('Actor-backed application query requires canonical operation authorization.');
+    const causal = applicationCausalPrincipalContext(admission.principal);
+    return withApplicationActorTurnAuthority(createApplicationActorTurnAuthority({
+      admission: { principal: admission.principal, trustedContext: admission.trustedContext.values },
+      operationId: receipt.operationId,
+      correlationId: admission.correlationId,
+      causalPrincipal: { id: causal.id },
+      authorizationReceipt: receipt,
+    }), run);
+  });
+}
+void disposeGatewayQueryAdmission;
+void disposeGatewayActorRuntime;
+void disposeGatewayActorAuthority;`;
+}
+
 function generatedStreamProcessorSource(
   graph: ApplicationGraph,
   processor: ApplicationStreamProcessorNode,
@@ -3088,8 +3367,8 @@ installApplicationObjectStorageRuntimeResolver((binding) => {
 });
 `
     : '';
-  const workflowImport = workflow ? "import { AsyncLocalStorage } from 'node:async_hooks';\nimport { applicationWorkflowCausalPrincipalMetadata } from '@applik8s/applik8s/workflow-runtime';\nimport { installApplicationWorkflowRuntimeResolver } from '@applik8s/applik8s/workflow-runtime-resolvers';\nimport { createHatchetWorkflowRuntime } from '@applik8s/runtime-hatchet';\nimport { normalizeSchema } from '@applik8s/sdk/schema-runtime';" : '';
-  const admissionImport = "import { applicationAdmissionInvocationView, applicationCausalPrincipalContext, createApplicationAdmissionContextV1, validateApplicationAdmissionContextV1WithoutReceipt, withApplicationAdmissionExecutionV1 } from '@applik8s/core';\nimport { applicationAdmissionRejectionCodeV1, createApplicationAdmissionObservationV1 } from '@applik8s/core/admission';";
+  const workflowImport = workflow ? "import { applicationWorkflowCausalPrincipalMetadata } from '@applik8s/applik8s/workflow-runtime';\nimport { installApplicationWorkflowRuntimeResolver } from '@applik8s/applik8s/workflow-runtime-resolvers';\nimport { createHatchetWorkflowRuntime } from '@applik8s/runtime-hatchet';\nimport { normalizeSchema } from '@applik8s/sdk/schema-runtime';" : '';
+  const admissionImport = "import { AsyncLocalStorage } from 'node:async_hooks';\nimport { applicationAdmissionInvocationView, applicationCausalPrincipalContext, createApplicationAdmissionContextV1, validateApplicationAdmissionContextV1WithoutReceipt, withApplicationAdmissionExecutionV1 } from '@applik8s/core';\nimport { applicationAdmissionRejectionCodeV1, createApplicationAdmissionObservationV1 } from '@applik8s/core/admission';\nimport { installApplicationInvocationAdmissionResolver } from '@applik8s/client';";
   const postgresImport = "import postgres from 'postgres';";
   const authorityImport = "import { createApplicationOperationAuthorityRuntime } from '@applik8s/operations';";
   const hasTransactionalFunctionNativeRuntime = Boolean(
@@ -3098,6 +3377,7 @@ installApplicationObjectStorageRuntimeResolver((binding) => {
   const hasFunctionNativeBindings = Boolean(
     hasTransactionalFunctionNativeRuntime
     || (processor.callableBindings?.length ?? 0) > 0
+    || (processor.applicationScheduleBindings?.length ?? 0) > 0
     || (processor.providerBindings ?? []).some(
       (binding) => binding.operation?.runtime,
     ),
@@ -3118,6 +3398,9 @@ import { createApplicationRelationalContext, withApplicationDatabaseRuntimeResol
     ? "import { applicationCommandPrincipalValues, applicationPostgresModelReadClients, createApplicationFunctionNativeEventHandle, createApplicationFunctionNativeOperationHandle, currentFunctionNativePostgresDatabase, currentFunctionNativePostgresTransaction, editApplicationNativeModelObject, executeFunctionNativePostgresModelEdit, executeFunctionNativePostgresTransaction, findApplicationNativeModelObjects, getApplicationNativeModelObject, requireApplicationNativeModelObject, withApplicationNativeModelReadClients, withApplicationNativeModelTransactionRuntime } from '@applik8s/applik8s/stream-worker-runtime';\nimport { runApplicationModelBeforeCommit } from '@applik8s/applik8s/processor-runtime';"
     : '';
   const callableImports = [
+    ...((processor.applicationScheduleBindings?.length ?? 0) > 0
+      ? ["import { createRemoteApplicationScheduleHandle } from '@applik8s/applik8s/schedule-runtime-remote';"]
+      : []),
     ...((processor.callableBindings ?? []).some(
       (binding) => binding.runtime === 'notifications.request.v1',
     )
@@ -3229,6 +3512,8 @@ const processorOperationAuthority = createApplicationOperationAuthorityRuntime({
   catalog: ${JSON.stringify(operationCatalog)},
   ${applicationStaticAuthorityManifest(graph) ? `authorityManifest: ${JSON.stringify(applicationStaticAuthorityManifest(graph))},` : ''}
 });
+const processorInvocationScope = new AsyncLocalStorage();
+installApplicationInvocationAdmissionResolver(() => processorInvocationScope.getStore());
 ${observability ? generatedApplicationTelemetryRuntimeSource({ application: graph.metadata.name, service: `stream-processor:${processor.name}` }) : ''}
 const createSource = () => createPostgresApplicationStream({ stream, databaseUrl, principal: { id: ${JSON.stringify(`applik8s:processor:${processor.name}`)} }, includeTrustedContext: true, internalConsumer: { kind: 'processor', name: ${JSON.stringify(processor.name)} } });
 let source = createSource();
@@ -3243,11 +3528,15 @@ ${queryDeclarations}
 ${actorDeclarations}
 ${functionNativeDeclarations}
 ${authoredHandlerInvocation}
+const invokeAdmittedHandler = (input, context) => processorInvocationScope.run(
+  context.admission,
+  () => invokeHandler(input, context),
+);
 let ready = false; let stopping = false; let lastError; let checkpoint = 0; let processed = 0; let deadLettered = 0; let lastSuccessfulCycleAt = 0;
 const loopController = new AbortController();
 const server = createServer((request, response) => { const live = request.url === '/live'; const health = live || request.url === '/ready'; if (!health) { response.writeHead(404); response.end(); return; } const fresh = lastSuccessfulCycleAt > 0 && Date.now() - lastSuccessfulCycleAt < 60_000; const ok = live || (ready && fresh && !stopping); response.writeHead(ok ? 200 : 503, { 'content-type': 'application/json' }); response.end(JSON.stringify({ ready: ready && fresh, stopping, checkpoint, processed, deadLettered, lastError, lastSuccessfulCycleAt })); });
 server.listen(Number(process.env.APPLIK8S_HEALTH_PORT ?? '8080'), '0.0.0.0');
-async function loop() { while (!stopping) { try { const result = await ${runtimeFunction}({ processor: ${JSON.stringify(processor.name)}, streamName: ${JSON.stringify(`${stream.name}.${stream.version}`)}, source, store, handle: invokeHandler, admit: processorAdmission, ${signalRuntime.runtimeOption}${runtimeOptions}, retry: ${JSON.stringify(processor.retry)}, failure: ${JSON.stringify(processor.failure)}, timeoutMs: ${processor.budgets.timeoutMs}, maxInputBytes: ${processor.budgets.maxInputBytes} }); checkpoint = result.checkpoint; processed += result.processed; deadLettered += result.deadLettered; await enforcePostgresApplicationStreamRetention({ stream, databaseUrl, batchSize: 1000 }); lastError = undefined; ready = true; lastSuccessfulCycleAt = Date.now(); await abortableSleep(result.exhausted ? ${exhaustedWaitMs} : 10, loopController.signal); } catch (error) { lastError = error instanceof Error ? error.message : String(error); ready = false; await source.close().catch(() => undefined); if (!stopping) { source = createSource(); console.error(error); } await abortableSleep(5000, loopController.signal); } } }
+async function loop() { while (!stopping) { try { const result = await ${runtimeFunction}({ processor: ${JSON.stringify(processor.name)}, streamName: ${JSON.stringify(`${stream.name}.${stream.version}`)}, source, store, handle: invokeAdmittedHandler, admit: processorAdmission, ${signalRuntime.runtimeOption}${runtimeOptions}, retry: ${JSON.stringify(processor.retry)}, failure: ${JSON.stringify(processor.failure)}, timeoutMs: ${processor.budgets.timeoutMs}, maxInputBytes: ${processor.budgets.maxInputBytes} }); checkpoint = result.checkpoint; processed += result.processed; deadLettered += result.deadLettered; await enforcePostgresApplicationStreamRetention({ stream, databaseUrl, batchSize: 1000 }); lastError = undefined; ready = true; lastSuccessfulCycleAt = Date.now(); await abortableSleep(result.exhausted ? ${exhaustedWaitMs} : 10, loopController.signal); } catch (error) { lastError = error instanceof Error ? error.message : String(error); ready = false; await source.close().catch(() => undefined); if (!stopping) { source = createSource(); console.error(error); } await abortableSleep(5000, loopController.signal); } } }
 function abortableSleep(ms, signal) { if (signal.aborted) return Promise.resolve(); return new Promise((resolve) => { const timeout = setTimeout(done, ms); const abort = () => done(); function done() { clearTimeout(timeout); signal.removeEventListener('abort', abort); resolve(); } signal.addEventListener('abort', abort, { once: true }); }); }
 const loopTask = loop();
 async function shutdown() { if (stopping) return; stopping = true; ready = false; loopController.abort(); await new Promise((resolve) => server.close(resolve)); await loopTask; await Promise.all([source.close(), store.close(), processorAuthoritySql.end({ timeout: 5 })${queries.length > 0 ? ', processorQuerySql.end({ timeout: 5 })' : ''}${signalRuntime.shutdown}${observability ? ', closeApplicationTelemetryRuntime()' : ''}]); }
@@ -3266,6 +3555,7 @@ function generatedFunctionNativeStreamTransaction(
   if (!transaction && operations.length === 0) {
     const hasPortableBindings =
       (processor.callableBindings?.length ?? 0) > 0
+      || (processor.applicationScheduleBindings?.length ?? 0) > 0
       || streamProcessorProviderRuntimeOperations(processor).length > 0;
     if (!hasPortableBindings) {
       return 'const functionNativeBindings = Object.freeze({});';
@@ -3755,10 +4045,13 @@ function streamProcessorCallbackBindingsSource(
       readonly operations: Map<string, StreamProcessorOperationContract>;
       readonly providerRootOperation?: string;
       readonly providerOperations: Map<string, string>;
+      readonly scheduleRoot?: string;
+      readonly schedules: Map<string, string>;
   }
   const emptyRootBinding = (): StreamCallbackRootBinding => ({
     operations: new Map<string, StreamProcessorOperationContract>(),
     providerOperations: new Map<string, string>(),
+    schedules: new Map<string, string>(),
   });
   const roots = new Map<string, StreamCallbackRootBinding>();
   for (const { identifier, model } of functionNativeModelRuntimeBindings(
@@ -3908,11 +4201,46 @@ function streamProcessorCallbackBindingsSource(
     );
     roots.set(root, existing);
   }
+  for (const binding of processor.applicationScheduleBindings ?? []) {
+    const segments = binding.identifier.split('.');
+    if (segments.length === 0 || segments.some((segment) => !/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(segment))) {
+      throw new Error(`Stream processor ${processor.id} schedule binding ${binding.identifier} must use a serializable property path.`);
+    }
+    const schedule = graph.nodes.find(
+      (node) => node.kind === 'schedule' && node.id === binding.schedule.nodeId,
+    );
+    if (schedule?.kind !== 'schedule' || schedule.scheduler.nodeId !== binding.scheduler.nodeId) {
+      throw new Error(`Stream processor ${processor.id} schedule binding ${binding.identifier} references a missing or mismatched schedule definition.`);
+    }
+    const value = `createRemoteApplicationScheduleHandle({ definition: ${JSON.stringify(applicationScheduleRuntimeDefinition(schedule))}, graphNode: ${JSON.stringify(applicationScheduleRuntimeGraphNode(schedule))}, schedulerNodeId: ${JSON.stringify(binding.scheduler.nodeId)}, endpoint: requiredEnv('APPLIK8S_SCHEDULE_MANAGEMENT_ENDPOINT'), authorization: requiredEnv('APPLIK8S_INTERNAL_OPERATION_SECRET') })`;
+    const root = functionNativeCallbackBindingRoot(binding.identifier, processor.id);
+    const existing = roots.get(root) ?? emptyRootBinding();
+    const path = segments.slice(1).join('.');
+    if (segments.length === 1) {
+      if (existing.model || existing.event || existing.operations.size > 0 || existing.providerOperations.size > 0 || existing.providerRootOperation || existing.schedules.size > 0 || (existing.scheduleRoot && existing.scheduleRoot !== value)) {
+        throw new Error(`Stream processor ${processor.id} callback root ${root} is ambiguous between a schedule handle and another runtime binding.`);
+      }
+      roots.set(root, { ...existing, scheduleRoot: value });
+      continue;
+    }
+    if (existing.scheduleRoot || existing.providerRootOperation || existing.event || existing.operations.has(path) || existing.providerOperations.has(path)) {
+      throw new Error(`Stream processor ${processor.id} callback path ${binding.identifier} is ambiguous between a schedule handle and another runtime binding.`);
+    }
+    const previous = existing.schedules.get(path);
+    if (previous && previous !== value) {
+      throw new Error(`Stream processor ${processor.id} schedule binding ${binding.identifier} is ambiguous.`);
+    }
+    existing.schedules.set(path, value);
+    roots.set(root, existing);
+  }
   return `{ ${[...roots.entries()]
     .sort(([left], [right]) => left.localeCompare(right))
     .map(([root, binding]) => {
       if (binding.providerRootOperation) {
         return `${JSON.stringify(root)}: ${binding.providerRootOperation}`;
+      }
+      if (binding.scheduleRoot) {
+        return `${JSON.stringify(root)}: ${binding.scheduleRoot}`;
       }
       if (binding.event) {
         return `${JSON.stringify(root)}: createApplicationFunctionNativeEventHandle(${JSON.stringify(`${binding.event.name}.${binding.event.version}`)}, { payload: schema(${JSON.stringify(binding.event.schema)}) })`;
@@ -3930,6 +4258,10 @@ function streamProcessorCallbackBindingsSource(
       const providerOperationObject = nestedCallbackObjectSource(
         providerOperationEntries,
       );
+      const scheduleEntries = [...binding.schedules.entries()]
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([path, value]) => ({ path, value }));
+      const scheduleObject = nestedCallbackObjectSource(scheduleEntries);
       const properties = [
         ...(binding.model
           ? [`...functionNativeModelHandle(${JSON.stringify(binding.model.name)})`]
@@ -3938,10 +4270,50 @@ function streamProcessorCallbackBindingsSource(
         ...(providerOperationEntries.length > 0
           ? [`...(${providerOperationObject})`]
           : []),
+        ...(scheduleEntries.length > 0 ? [`...(${scheduleObject})`] : []),
       ];
       return `${JSON.stringify(root)}: Object.freeze({ ${properties.join(', ')} })`;
     })
     .join(', ')} }`;
+}
+
+function applicationScheduleRuntimeGraphNode(
+  schedule: ApplicationScheduleNode,
+): ApplicationScheduleNode {
+  const {
+    handler: _handler,
+    providerBindings: _providerBindings,
+    sourceLocation: _sourceLocation,
+    ...runtimeIdentity
+  } = schedule;
+  return runtimeIdentity;
+}
+
+/**
+ * Converts the compiler's normalized graph schema into the standalone runtime
+ * schema source expected by a rehydrated handle. The schedule-control process
+ * owns overlap-key execution, so the effect caller deliberately carries no
+ * authoring callback or serialized callback descriptor.
+ */
+function applicationScheduleRuntimeDefinition(
+  schedule: ApplicationScheduleNode,
+): Readonly<Record<string, unknown>> {
+  const { input, overlapBy: _overlapBy, ...definition } = schedule.definition;
+  return {
+    ...definition,
+    ...(input
+      ? {
+          input: {
+            kind: 'jsonSchema',
+            ref: {
+              kind: 'jsonSchema',
+              uri: `generated:${definition.id}.input`,
+            },
+            schema: input.jsonSchema,
+          },
+        }
+      : {}),
+  };
 }
 
 function generatedStreamProcessorExecutionPrincipal(
@@ -4559,6 +4931,9 @@ async function writeStreamHandlerModule(
       (binding) => binding.identifier,
     ),
     ...(processor.providerBindings ?? []).map(
+      (binding) => binding.identifier,
+    ),
+    ...(processor.applicationScheduleBindings ?? []).map(
       (binding) => binding.identifier,
     ),
   ]
@@ -5564,12 +5939,13 @@ function gatewayKubernetesRbacResources(
 function kubernetesPermissionRules(permissions: readonly GatewayKubernetesPermission[]) {
   const grouped = new Map<string, { apiGroups: string[]; resources: string[]; verbs: string[] }>();
   for (const permission of permissions) {
-    const key = permission.apiGroup;
-    const rule = grouped.get(key) ?? { apiGroups: [permission.apiGroup], resources: [], verbs: [] };
+    const verbs = [...new Set(permission.verbs ?? ['get', 'list', 'watch'])].sort();
+    // RBAC grants every listed verb over every listed resource. Grouping only
+    // by API group would accidentally widen a narrow `jobs/get` requirement to
+    // the full CronJob mutation verb set.
+    const key = `${permission.apiGroup}\0${verbs.join(',')}`;
+    const rule = grouped.get(key) ?? { apiGroups: [permission.apiGroup], resources: [], verbs };
     if (!rule.resources.includes(permission.resource)) rule.resources.push(permission.resource);
-    for (const verb of permission.verbs ?? ['get', 'list', 'watch']) {
-      if (!rule.verbs.includes(verb)) rule.verbs.push(verb);
-    }
     grouped.set(key, rule);
   }
   return [...grouped.values()].map((rule) => ({
@@ -5634,6 +6010,9 @@ function gatewayEnvironment(
       : []),
     { name: 'APPLIK8S_APPLICATION_NAME', value: graph.metadata.name },
     { name: 'APPLIK8S_NAMESPACE', value: applicationGraphStringValue(gateway.deployment?.namespace) ?? 'default' },
+    ...(queries.some((query) => (query.actorBindings?.length ?? 0) > 0)
+      ? [{ name: 'APPLIK8S_ACTOR_RUNTIME_REQUIRED', value: 'true' }]
+      : []),
     ...queries.flatMap((query) => query.kubernetes?.namespace && serializedInstallationExpression(query.kubernetes.namespace)
       ? [{ name: kubernetesQueryNamespaceEnvironmentName(query.id), value: query.kubernetes.namespace }]
       : []),

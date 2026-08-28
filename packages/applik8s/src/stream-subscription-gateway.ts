@@ -27,6 +27,7 @@ import type { ApplicationStreamBinding } from './application-reactive.js';
 import type { ApplicationReplayableStream, ApplicationReplayPage, ApplicationStreamEnvelope } from './projection-runtime-clickhouse.js';
 import type { ApplicationSubscriptionLimiter } from './query-gateway.js';
 import { createApplicationSubscriptionLimiter } from './query-gateway.js';
+import { observeApplicationRuntimeIntegrityEnvelope } from './application-telemetry-runtime.js';
 
 export interface ApplicationStreamSubscriptionIdentity<TPrincipal extends ApplicationQueryPrincipal = ApplicationQueryPrincipal> {
   readonly principal: TPrincipal;
@@ -183,6 +184,7 @@ export function createApplicationStreamSubscriptionGateway<TPrincipal extends Ap
     maximumLifetimeMs: cursorTtlSeconds * 1_000,
     maximumEncodedBytes: 64 * 1_024,
     validatePayload: validateStreamCursor,
+    observe: observeApplicationRuntimeIntegrityEnvelope,
     writer: 'legacy',
     legacy: {
       key: cursorKey,

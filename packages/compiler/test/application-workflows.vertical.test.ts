@@ -26,7 +26,7 @@ import {
 import { compileTypeKroComposition, discoverApplicationGraph } from '../src/pipeline/index.js';
 
 describe('v0.5 generated workflow lowering', () => {
-  it('authorizes the ApplicationHost for only the workflow contracts targeted by shared schedules', () => {
+  it('authorizes dedicated schedule control for only the workflow contracts targeted by shared schedules', () => {
     const graph = {
       metadata: { name: 'scheduled-workflows', namespace: 'workflow-system' },
       nodes: [
@@ -86,16 +86,16 @@ describe('v0.5 generated workflow lowering', () => {
     if (worker?.kind !== 'workflowWorker') throw new Error('Expected workflow worker.');
     const callers = applicationScheduleWorkflowGatewayCallers(graph, worker);
     expect(callers).toEqual([{
-      operator: 'scheduled-workflows-web',
+      operator: 'scheduled-workflows-schedule-control',
       namespace: 'workflow-system',
-      serviceAccount: 'schedule-caller',
+      serviceAccount: 'scheduled-workflows-schedule-control',
       contracts: ['daily.v1'],
     }]);
     const source = generatedWorkerSource(
       workflowContract(graph, worker, undefined, [], callers),
     );
     expect(source).toContain("sourceAdmission.operation.transport !== 'schedule'");
-    expect(source).toContain('{"namespace":"workflow-system","serviceAccount":"schedule-caller","operator":"scheduled-workflows-web","contracts":["daily.v1"]}');
+    expect(source).toContain('{"namespace":"workflow-system","serviceAccount":"scheduled-workflows-schedule-control","operator":"scheduled-workflows-schedule-control","contracts":["daily.v1"]}');
     expect(source).toContain('daily.v1');
   });
 

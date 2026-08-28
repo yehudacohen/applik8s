@@ -1,3 +1,4 @@
+// typecast-file-boundary: Hatchet transport payloads are decoded and checked here before conversion to provider-neutral workflow contracts.
 import type { ApplicationWorkflowInvocationMetadata } from '@applik8s/applik8s/workflow-runtime';
 import type { JsonObject } from '@hatchet-dev/typescript-sdk/v1/index.js';
 import { applicationMetadata } from './workflow-runtime-hatchet-metadata.js';
@@ -64,3 +65,4 @@ export function decodeHatchetWorkflowTransportInput(value: unknown): {
     metadata: Object.freeze({ ...metadata }),
   };
 }
+// typecast-file-boundary: Hatchet transport payloads are decoded and checked here before conversion to provider-neutral workflow contracts.

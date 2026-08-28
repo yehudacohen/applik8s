@@ -1,3 +1,4 @@
+// typecast-file-boundary: Validated portable access and native AWS plan records are reconciled through intentionally erased provider shapes at this parity boundary.
 import { canonicalJsonV1String } from '@applik8s/core/canonical-json';
 import type {
   ApplicationAwsPlanEdge,

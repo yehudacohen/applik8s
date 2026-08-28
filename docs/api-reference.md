@@ -4,10 +4,12 @@ For the native Drizzle/Kubernetes model, trusted-context, migration, query,
 stream, client, and projection contracts, see
 [Native Models and Live Queries](./native-models-and-live-queries.md).
 
-This is the supported public surface for the `applik8s` v0.7 release.
+This is the supported public surface for the `applik8s` v0.8 candidate.
 It includes the earlier application substrate, durable messaging and
 workflows, native models, live queries, browser facades, application hosting,
-and the v0.7 function-native execution and Agentic Start contracts.
+the v0.7 function-native execution and Agentic Start contracts, and the v0.8
+portable planning, scheduling, actor, observability, lakehouse, and development
+environment extensions.
 
 ## Packages
 
@@ -26,6 +28,51 @@ Most application authors need only:
 Operator-only and WASM code should prefer the focused `@applik8s/sdk` surface.
 Compiler, deployment, and provider packages are public extension seams but are
 normally reached through `@applik8s/cli`.
+
+### Celld Kubernetes operator
+
+`@applik8s/celld-operator` is an independently consumable provider package,
+not part of the ordinary application-authoring surface. Its root exports the
+`CelldFleet` CRD contract, exact versioned Secret contracts, the Applik8s
+operator definition, and deterministic fleet-child rendering. The
+`/typekro` subpath exposes the cluster-singleton bootstrap and namespaced fleet
+installation compositions without eagerly loading TypeKro from the package
+root. The `/testing` subpath exposes lifecycle fixtures.
+
+Application authors continue to select the provider-neutral Celld actor
+runtime. The compiler then builds the generated Worker and operator artifacts;
+TypeKro/Alchemy owns the singleton control plane, dependencies, and
+`CelldFleet`; the operator exclusively owns the fleet StatefulSet, Services,
+Job, NetworkPolicy, PodDisruptionBudget, optional ServiceAccount, status, and
+finalizer. Omitting the bootstrap `namespace` creates and owns
+`applik8s-celld-system`; passing a namespace consumes that externally owned
+namespace. There is no ambiguous namespace-ownership flag.
+
+### Independent development environment
+
+`@applik8s/dev` owns the local-only v0.8 Builder preview. Its root exports the
+reviewed change coordinator, durable journal, workspace mutation contracts,
+and `applicationPlanSelectionResolver()`. The `/server` and `/ui` subpaths own
+the application-independent loopback daemon and portal; `/agent` defines the
+provider-neutral coding-agent protocol; `/agent/opencode` is the maintained
+OpenCode adapter; and `/skills` publishes the version-matched framework catalog.
+
+Generated development UI may emit
+`data-applik8s-provenance="<semantic-node-id>"`. This value is an opaque hint,
+not a source path or mutation capability. Immediately before capture the Vite
+toolbar reads the daemon's bridge context and submits the current
+`ApplicationPlan.sourceDigest`; the daemon rejects stale revisions, replayed
+nonces, hostile origins, oversized content, and unknown identities. Only the
+daemon resolves the hint into workspace-relative source provenance, semantic
+graph nodes, operation context, and plan records.
+
+`DevelopmentCoordinator` persists admitted attachments, named conversation
+referents, proposals, exact approval scopes, validation receipts, apply state,
+and undo state in the hash-chained SQLite/WAL journal. Agent output remains
+advisory: it cannot bypass approval, optimistic file digests, required
+validation, path/symlink confinement, secret redaction, or agent-owned undo.
+The portal and journal remain usable while the generated application fails to
+compile or start.
 
 The umbrella package is the normal application-authoring and integration surface. Code that must be captured inside a minimal WASM reconciliation closure should import focused handler-safe APIs from `@applik8s/sdk` or an explicitly documented handler-safe subpath. The compiler follows the reachable closure and fails closed on unsupported Node or integration dependencies; it does not promise that importing the umbrella entrypoint from inside a handler is minimal or portable.
 
@@ -333,7 +380,7 @@ The defaults are deliberately bounded: Postgres/CNPG for models; Valkey for inde
 
 “Broad provider implementations” can also mean multiple production-scale adapters behind each contract—for example S3 and GCS, several hosted queues, multiple SQL databases, secret managers, and several gateway choices. v0.3 does not require that catalog: it requires one working zero-configuration default for every native interface. `defaultApplicationProviders` exposes those choices, while `app.defaults(...)` and `app.provide(...)` remain override points.
 
-Applik8s qualifies TypeKro 0.33.7 and consumes its production Valkey,
+Applik8s v0.8 qualifies TypeKro 0.33.8 with Alchemy beta.74 and consumes its production Valkey,
 Rook/Ceph, NATS/JetStream, Harbor, Hatchet, OpenSearch, Ory, and deployment
 planning surfaces through the focused deployment packages. These are explicit
 profile scale-up paths rather than unconditional defaults: operators and

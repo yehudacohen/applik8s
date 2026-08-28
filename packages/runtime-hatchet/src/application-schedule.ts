@@ -27,6 +27,7 @@ import { executePostgresApplicationScheduleAdmission } from '@applik8s/runtime-p
 import { createPostgresApplicationScheduleStateAuthority } from '@applik8s/runtime-postgres/schedule-state';
 import { HatchetClient } from '@hatchet-dev/typescript-sdk/v1/index.js';
 import { reconcileHatchetWorkflowSchedule } from './workflow-runtime-hatchet-schedule.js';
+import { decodeHatchetWorkflowTransportInput } from './workflow-runtime-hatchet-transport.js';
 
 const scheduleIdentityKey = 'applik8s.schedule.identity';
 const scheduleRevisionKey = 'applik8s.schedule.revision';
@@ -85,7 +86,7 @@ export interface HatchetApplicationScheduleClient {
     readonly executionTimeout: string;
     readonly scheduleTimeout: string;
     readonly fn: (
-      input: HatchetApplicationScheduleDeliveryInput,
+      input: unknown,
       context: HatchetDeliveryContext,
     ) => Promise<ApplicationScheduleOccurrenceReceipt>;
   }): HatchetDeliveryDeclaration;
@@ -183,9 +184,16 @@ export async function createHatchetApplicationScheduleRuntimeFromClient(
     retries: Math.max(0, handle.definition.retry.maxAttempts - 1),
     executionTimeout: `${handle.definition.retry.maximumAgeSeconds}s`,
     scheduleTimeout: `${handle.definition.retry.maximumAgeSeconds}s`,
-    fn: async (input, context) => {
+    fn: async (transportInput, context) => {
+      const input = decodeHatchetWorkflowTransportInput(transportInput).input as Partial<HatchetApplicationScheduleDeliveryInput>;
       if (input.schemaVersion !== 'applik8s.hatchetScheduleDelivery/v1alpha1'
-        || input.definitionId !== handle.definition.id) {
+        || input.definitionId !== handle.definition.id
+        || typeof input.instanceId !== 'string'
+        || input.instanceId.length === 0
+        || !input.input
+        || typeof input.input !== 'object'
+        || Array.isArray(input.input)
+        || (input.scheduledAt !== undefined && typeof input.scheduledAt !== 'string')) {
         throw new Error(`Hatchet Scheduler received invalid delivery input for ${handle.definition.id}.`);
       }
       const run = await client.runs.get(context.workflowRunId());
@@ -329,7 +337,15 @@ export async function createHatchetApplicationScheduleRuntimeFromClient(
         await runtime.recover();
         throw new Error(`Schedule ${request.definition.id}:${request.instance.id} changed during Hatchet projection.`);
       }
-      return { ...canonical, state: projected === 'unchanged' ? canonical.state : projected };
+      return {
+        ...canonical,
+        // Hatchet replaces recurring cron rows because its provider surface has
+        // no in-place update. The public state follows canonical schedule
+        // identity, so replacing an existing projection remains an update.
+        state: canonical.state === 'updated'
+          ? 'updated'
+          : projected === 'unchanged' ? canonical.state : projected,
+      };
     },
     async remove(definitionId, instanceId, management) {
       const canonical = await stateAuthority.remove(definitionId, instanceId, management);
@@ -370,7 +386,7 @@ export async function createHatchetApplicationScheduleRuntimeFromClient(
     },
     async recover() {
       const results: ApplicationScheduleConvergenceResult[] = [];
-      for (const record of await stateAuthority.pending()) {
+      for (const record of await stateAuthority.recoveryCandidates()) {
         if (record.state === 'active') {
           const desired = applicationScheduleProjectedDesiredState(record);
           const state = await project(desired);

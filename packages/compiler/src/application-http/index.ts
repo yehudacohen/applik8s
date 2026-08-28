@@ -45,7 +45,9 @@ import {
 } from '../application-operations/index.js';
 import { generatedApplicationProviderOperationValue } from '../application-provider-telemetry-source.js';
 import { applicationServerNamespace } from '../application-server-namespace.js';
+import { generatedHttpWorkerResources } from '../application-workload-resources.js';
 import { applik8sWorkspaceSourcePlugin } from '../bundling/index.js';
+import { handlerSourceMetadataPlugin } from '../pipeline/entrypoint-handler-instrumentation.js';
 
 const DEFAULT_GENERATED_HTTP_RUNTIME_IMAGE =
   'node:22-alpine@sha256:16e22a550f3863206a3f701448c45f7912c6896a62de43add43bb9c86130c3e2';
@@ -144,6 +146,7 @@ export async function emitGeneratedApplicationHttpServers(options: {
   readonly graph: ApplicationGraph;
   readonly operationCatalog?: ApplicationOperationCatalog;
   readonly outDir: string;
+  readonly entrypoint: string;
   readonly executionTarget?: ApplicationRuntimeExecutionTarget;
 }): Promise<readonly GeneratedApplicationHttpArtifact[]> {
   const servers = options.graph.nodes.filter(
@@ -165,6 +168,7 @@ export async function emitGeneratedApplicationHttpServers(options: {
           options.executionTarget ?? 'kubernetes',
         ),
         options.outDir,
+        options.entrypoint,
       )),
   );
 }
@@ -383,6 +387,7 @@ function applicationHttpCompilerContract(
 async function emitHttpServer(
   contract: HttpServerCompilerContract,
   outDir: string,
+  applicationEntrypoint: string,
 ): Promise<GeneratedApplicationHttpArtifact> {
   const name = kubernetesName(contract.server.name);
   const artifactDir = join(outDir, name);
@@ -453,7 +458,10 @@ async function emitHttpServer(
     banner: {
       js: "import { createRequire as __applik8sCreateRequire } from 'node:module'; const require = __applik8sCreateRequire(import.meta.url);",
     },
-    plugins: [applik8sWorkspaceSourcePlugin()],
+    plugins: [
+      handlerSourceMetadataPlugin(applicationEntrypoint, { includeMaintainedPackages: false }),
+      applik8sWorkspaceSourcePlugin(),
+    ],
   });
   const source = await readFile(sourcePath, 'utf8');
   const sizeBytes = Buffer.byteLength(source);
@@ -612,7 +620,7 @@ import { applicationAdmissionInvocationView, canonicalJsonV1String, createApplic
 import { applicationAdmissionRejectionCodeV1, createApplicationAdmissionObservationV1 } from '@applik8s/core/admission';
 import { createApplicationOperationAuthorityRuntime } from '@applik8s/operations';
 import { normalizeSchema } from '@applik8s/sdk/schema-runtime';
-${generatedApplicationTelemetryImports({ boundaryRunner: true, carrierCapture: true, providerOperationInstrumentation: uniqueHttpProviderRuntimeOperations(contract.routes).length > 0, runtimeImplementation: observability }).join('\n')}
+${generatedApplicationTelemetryImports({ boundaryRunner: true, carrierCapture: true, providerOperationInstrumentation: uniqueHttpProviderRuntimeOperations(contract.routes).length > 0, runtimeIntegrityObserver: hasWorkflows, runtimeImplementation: observability }).join('\n')}
 ${hasOperations
     ? `${eventLogPublisher!.importSource}\nimport { createApplicationTaskOperationRuntime } from '@applik8s/applik8s/task-operation-runtime';`
     : ''}
@@ -675,6 +683,7 @@ const workflowGatewayAdmission = createSignedEnvelopeCodec({
     },
   }),
   validatePayload: value => validateApplicationAdmissionContextV1(value),
+  observe: observeApplicationRuntimeIntegrityEnvelope,
   maximumEncodedBytes: 32_768,
   maximumLifetimeMs: 60_000,
 });
@@ -1962,6 +1971,7 @@ function generatedHttpResources(
                 timeoutSeconds: 2,
                 failureThreshold: 3,
               },
+              resources: generatedHttpWorkerResources(),
               securityContext: {
                 allowPrivilegeEscalation: false,
                 readOnlyRootFilesystem: true,

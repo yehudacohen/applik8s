@@ -13,6 +13,7 @@ import { jetStreamConsumerName } from '../application-nats-naming.js';
 import { applicationGraphHasObservabilityRuntime, generatedApplicationTelemetryImports, generatedApplicationTelemetryRuntimeSource } from '../application-observability-runtime-source.js';
 import { applicationStaticAuthorityManifest, compileApplicationOperationCatalog } from '../application-operations/index.js';
 import { applik8sWorkspaceSourcePlugin } from '../bundling/index.js';
+import { handlerSourceMetadataPlugin } from '../pipeline/entrypoint-handler-instrumentation.js';
 import { generatedProcessorCapacity, generatedProcessorDisruptionResource, generatedProcessorPodScheduling } from './capacity.js';
 
 const DEFAULT_GENERATED_PROCESSOR_RUNTIME_IMAGE = 'node:22-alpine@sha256:16e22a550f3863206a3f701448c45f7912c6896a62de43add43bb9c86130c3e2';
@@ -56,12 +57,12 @@ export async function emitGeneratedApplicationProcessors(options: {
     const eventLogId = processor.eventLog?.nodeId ?? '';
     const ownsStream = !emittedEventLogStreams.has(eventLogId);
     if (eventLogId) emittedEventLogStreams.add(eventLogId);
-    artifacts.push(await emitProcessor(options.graph, processor, operationCatalog, options.outDir, ownsStream, options.executionTarget ?? 'kubernetes'));
+    artifacts.push(await emitProcessor(options.graph, processor, operationCatalog, options.outDir, ownsStream, options.entrypoint, options.executionTarget ?? 'kubernetes'));
   }
   return artifacts;
 }
 
-async function emitProcessor(graph: ApplicationGraph, processor: ApplicationProcessorNode, operationCatalog: ApplicationOperationCatalog, outDir: string, ownsStream: boolean, executionTarget: 'kubernetes' | 'local' | 'aws-local' | 'aws'): Promise<GeneratedApplicationProcessorArtifact> {
+async function emitProcessor(graph: ApplicationGraph, processor: ApplicationProcessorNode, operationCatalog: ApplicationOperationCatalog, outDir: string, ownsStream: boolean, applicationEntrypoint: string, executionTarget: 'kubernetes' | 'local' | 'aws-local' | 'aws'): Promise<GeneratedApplicationProcessorArtifact> {
   const name = kubernetesName(processor.name);
   const processorDir = join(outDir, name);
   const generatedEntrypoint = join(processorDir, 'processor.generated.ts');
@@ -106,7 +107,10 @@ async function emitProcessor(graph: ApplicationGraph, processor: ApplicationProc
     nodePaths: [join(process.cwd(), 'node_modules')],
     banner: { js: "import { createRequire as __applik8sCreateRequire } from 'node:module'; const require = __applik8sCreateRequire(import.meta.url);" },
     supported: { 'template-literal': false },
-    plugins: [applik8sWorkspaceSourcePlugin()],
+    plugins: [
+      handlerSourceMetadataPlugin(applicationEntrypoint, { includeMaintainedPackages: false }),
+      applik8sWorkspaceSourcePlugin(),
+    ],
   });
   const source = await readFile(sourcePath, 'utf8');
   const sizeBytes = Buffer.byteLength(source);
@@ -858,7 +862,7 @@ function nestedCommandCallbackBindingsSource(
         .join(', ');
       return value.direct
         ? `${JSON.stringify(root)}: Object.freeze({ ...${value.direct}, ${properties} })`
-        : `${JSON.stringify(root)}: { ${properties} }`;
+        : `${JSON.stringify(root)}: Object.freeze({ ${properties} })`;
     })
     .join(', ')} }`;
 }

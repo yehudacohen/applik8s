@@ -67,9 +67,14 @@
       "default": "./dist/event-log-runtime.js"
     },
     "./lakehouse-runtime": {
-      "types": "./dist/application-lakehouse.d.ts",
-      "import": "./dist/application-lakehouse.js",
-      "default": "./dist/application-lakehouse.js"
+      "types": "./dist/lakehouse-runtime.d.ts",
+      "import": "./dist/lakehouse-runtime.js",
+      "default": "./dist/lakehouse-runtime.js"
+    },
+    "./actor-runtime": {
+      "types": "./dist/application-actors.d.ts",
+      "import": "./dist/application-actors.js",
+      "default": "./dist/application-actors.js"
     },
     "./lakehouse-conformance": {
       "types": "./dist/application-lakehouse-conformance.d.ts",
@@ -186,6 +191,11 @@
       "import": "./dist/application-schedule-local-runtime.js",
       "default": "./dist/application-schedule-local-runtime.js"
     },
+    "./schedule-runtime-remote": {
+      "types": "./dist/application-schedule-remote-runtime.d.ts",
+      "import": "./dist/application-schedule-remote-runtime.js",
+      "default": "./dist/application-schedule-remote-runtime.js"
+    },
     "./schedule-state-runtime": {
       "types": "./dist/application-schedule-state-runtime.d.ts",
       "import": "./dist/application-schedule-state-runtime.js",
@@ -249,7 +259,7 @@
     "drizzle-orm": "^0.45.1",
     "esbuild": "^0.28.1",
     "hono": "^4.10.7",
-    "typekro": "0.33.7"
+    "typekro": "0.33.8"
   },
   "peerDependencies": {
     "@applik8s/runtime-aws": "0.8.0",

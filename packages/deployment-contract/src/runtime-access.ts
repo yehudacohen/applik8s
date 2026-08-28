@@ -1,3 +1,4 @@
+// typecast-file-boundary: Runtime-access plans are closed validated artifacts; normalization restores branded identities only after structural checks.
 import type {
   ApplicationProviderGuaranteeManifest,
   ApplicationRuntimeAccessRequirement,
@@ -33,7 +34,8 @@ export interface ApplicationRuntimeAccessWorkloadPlan {
     /** Lifecycle boundary that must materialize this workload before mutation. */
     readonly materialization:
       | { readonly authority: 'application-root' }
-      | { readonly authority: 'provider-direct'; readonly deploymentNodeId: string };
+      | { readonly authority: 'provider-direct'; readonly deploymentNodeId: string }
+      | { readonly authority: 'operator-reconciled'; readonly deploymentNodeId: string };
     /** Exact pod labels used by generated NetworkPolicy workload selection. */
     readonly podSelector: Readonly<Record<string, string>>;
     readonly serviceAccountName: string;
@@ -363,10 +365,10 @@ export function validateApplicationRuntimeAccessPlan(
     if ((plan.target === 'aws' || plan.target === 'aws-local') && !workload.aws) errors.push(`workload ${workload.workloadIdentity} has no AWS enforcement policy`);
     if (workload.kubernetes) {
       const materialization = workload.kubernetes.materialization;
-      if (!record(materialization) || (materialization.authority !== 'application-root' && materialization.authority !== 'provider-direct')) {
+      if (!record(materialization) || !['application-root', 'provider-direct', 'operator-reconciled'].includes(String(materialization.authority))) {
         errors.push(`workload ${workload.workloadIdentity} has no valid Kubernetes materialization authority`);
-      } else if (materialization.authority === 'provider-direct' && (typeof materialization.deploymentNodeId !== 'string' || !materialization.deploymentNodeId.trim())) {
-        errors.push(`workload ${workload.workloadIdentity} has no provider-direct deployment node identity`);
+      } else if ((materialization.authority === 'provider-direct' || materialization.authority === 'operator-reconciled') && (typeof materialization.deploymentNodeId !== 'string' || !materialization.deploymentNodeId.trim())) {
+        errors.push(`workload ${workload.workloadIdentity} has no deployment node identity for ${String(materialization.authority)} materialization`);
       }
       const networkEnforcement = workload.kubernetes.networkEnforcement;
       if (!record(networkEnforcement) || !['none', 'standard-network-policy', 'cilium-network-policy', 'unqualified'].includes(String(networkEnforcement.kind))) {

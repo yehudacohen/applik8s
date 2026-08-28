@@ -8,6 +8,10 @@ export function validateStructuralOpenApiSchema(schema: JsonObject, path: string
 
 export function toKubernetesStructuralOpenApiSchema(schema: JsonObject): JsonObject {
   const normalized: Record<string, unknown> = { ...schema };
+  if (Array.isArray(normalized.xKubernetesValidations)) {
+    normalized['x-kubernetes-validations'] = normalized.xKubernetesValidations;
+    delete normalized.xKubernetesValidations;
+  }
   if (isJsonObject(normalized.properties)) {
     const properties: Record<string, JsonObject> = {};
     for (const [key, value] of Object.entries(normalized.properties)) {

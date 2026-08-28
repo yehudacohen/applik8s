@@ -1,6 +1,7 @@
-import { describe, expect, it } from 'vitest';
-
+// typecast-file-boundary: Runtime SDK fixtures use controlled structural casts
+// to exercise generated proxy and schema behavior at the public boundary.
 import type { JsonSchemaSource } from '@applik8s/core';
+import { describe, expect, it } from 'vitest';
 import { sdk } from '../src/index.js';
 
 interface ImageSpec {
@@ -32,6 +33,23 @@ const imageStatusSchema: JsonSchemaSource<ImageStatus> = {
 };
 
 describe('SDK runtime API honesty', () => {
+  it('attributes imported reconcile handlers to their declaring module rather than the SDK registrar', () => {
+    const ImageJob = sdk.crd<ImageSpec, ImageStatus>({
+      apiVersion: 'media.applik8s.dev/v1alpha1',
+      kind: 'ImageJob',
+      spec: imageSpecSchema,
+      status: imageStatusSchema,
+    });
+    const registration = ImageJob.on.reconcile(async function reconcileImage() {});
+    const metadata = Reflect.get(
+      registration,
+      Symbol.for('applik8s.handlerSourceModule'),
+    ) as { readonly file?: unknown } | undefined;
+
+    expect(metadata?.file).toContain('/packages/sdk/test/runtime.vertical.test.ts');
+    expect(metadata?.file).not.toMatch(/packages\/sdk\/(?:src|dist)\/runtime\.(?:ts|js)$/u);
+  });
+
   it('does not expose pre-compile install resources from callable operators', () => {
     const ImageJob = sdk.crd<ImageSpec, ImageStatus>({
       apiVersion: 'media.applik8s.dev/v1alpha1',

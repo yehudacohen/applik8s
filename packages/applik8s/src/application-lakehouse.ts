@@ -14,7 +14,7 @@ import type {
   ApplicationQualifiedProviderToken,
 } from './application-providers.js';
 import { declaredSchema, validateMessage } from './application-schema-runtime.js';
-import { runApplicationTelemetryBoundary } from './application-telemetry-runtime.js';
+import { observeApplicationRuntimeIntegrityEnvelope, runApplicationTelemetryBoundary } from './application-telemetry-runtime.js';
 import type { ApplicationMessageEnvelope, EventDefinition } from './dsl.js';
 
 export interface QualifiedLakehouseDatasetRef {
@@ -287,6 +287,7 @@ export function createApplicationLakehouseCursorCodec(
     maximumLifetimeMs: 15 * 60_000,
     maximumEncodedBytes: 64 * 1_024,
     validatePayload: validateApplicationLakehouseCursorPayload,
+    observe: observeApplicationRuntimeIntegrityEnvelope,
     writer: 'legacy',
     legacy: {
       key: keyBytes,

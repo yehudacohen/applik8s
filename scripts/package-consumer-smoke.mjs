@@ -26,6 +26,7 @@ const publicEntrypoints = [
   '@applik8s/applik8s/processor-runtime',
   '@applik8s/applik8s/event-log-runtime',
   '@applik8s/applik8s/lakehouse-runtime',
+  '@applik8s/applik8s/actor-runtime',
   '@applik8s/applik8s/schedule-runtime-local',
   '@applik8s/applik8s/schedule-state-runtime',
   '@applik8s/applik8s/actor-runtime-local',
@@ -106,6 +107,9 @@ const publicEntrypoints = [
   '@applik8s/runtime-aws/kinesis',
   '@applik8s/runtime-celld',
   '@applik8s/runtime-celld/worker',
+  '@applik8s/celld-operator',
+  '@applik8s/celld-operator/typekro',
+  '@applik8s/celld-operator/testing',
   '@applik8s/runtime-otel',
   '@applik8s/runtime-duckdb',
   '@applik8s/dev',
@@ -942,40 +946,7 @@ if (JSON.stringify(unrelated.resources).includes('ACQUISITION_TOKEN')) {
   console.log('Package consumer smoke: packed external HTTP provider hydration passed.');
 
   const packedScheduleDirectory = join(consumerDir, 'packed-schedule-provider');
-  await mkdir(
-    join(packedScheduleDirectory, '.applik8s', 'web-artifacts'),
-    { recursive: true },
-  );
-  await mkdir(
-    join(packedScheduleDirectory, 'dist', 'server'),
-    { recursive: true },
-  );
-  const packedScheduleServer = 'console.log("packed schedule host");\n';
-  await writeFile(
-    join(packedScheduleDirectory, 'dist', 'server', 'index.mjs'),
-    packedScheduleServer,
-  );
-  await writeFile(
-    join(
-      packedScheduleDirectory,
-      '.applik8s',
-      'web-artifacts',
-      'server.json',
-    ),
-    `${JSON.stringify({
-      apiVersion: 'applik8s.webArtifact/v1alpha1',
-      application: 'application.mjs',
-      output: 'dist/server',
-      target: 'server',
-      digest: `sha256:${createHash('sha256').update(packedScheduleServer).digest('hex')}`,
-      entrypoint: 'index.mjs',
-      artifacts: [{
-        path: 'index.mjs',
-        bytes: Buffer.byteLength(packedScheduleServer),
-        digest: createHash('sha256').update(packedScheduleServer).digest('hex'),
-      }],
-    })}\n`,
-  );
+  await mkdir(packedScheduleDirectory, { recursive: true });
   const packedScheduleApplicationPath = join(
     packedScheduleDirectory,
     'application.mjs',
@@ -983,7 +954,6 @@ if (JSON.stringify(unrelated.resources).includes('ACQUISITION_TOKEN')) {
   await writeFile(
     packedScheduleApplicationPath,
     `import {
-  ApplicationHost,
   Scheduler,
   TransactionalDatabase,
   app,
@@ -995,15 +965,6 @@ const application = app('packed-schedule-provider', {
   spec: type({ profile: "'starter' | 'dedicated'" }),
   status: type({ ready: 'boolean' }),
 });
-application.provide(
-  ApplicationHost,
-  ApplicationHost.managed({
-    name: 'packed-schedule-provider',
-    namespace: 'packed-schedule-provider',
-    replicas: 1,
-    port: 3000,
-  }),
-);
 application.provide(
   TransactionalDatabase,
   TransactionalDatabase.postgres({
@@ -1113,7 +1074,15 @@ if (
   || access.map(requirement => requirement.target.operation).sort().join(',')
     !== 'connection.use,network.connect'
 ) throw new Error('Packed schedule provider access was not placed exactly.');
-const generated = generatedApplicationFetchGatewayModules(graph);
+const scheduleHost = {
+  name: 'packed-schedule-provider-schedule-control',
+  namespace: 'packed-schedule-provider',
+  port: 8080,
+};
+const generated = generatedApplicationFetchGatewayModules(graph, {
+  surface: 'schedules',
+  scheduleHost,
+});
 if (!generated) throw new Error('Packed schedule control source is missing.');
 const source = Object.values(generated.files).join('\\n');
 if (
@@ -1127,7 +1096,10 @@ if (
   || source.includes('application.profile')
   || source.includes('application.provide')
 ) throw new Error('Packed schedule control did not hydrate only the public provider operation.');
-const repeated = generatedApplicationFetchGatewayModules(graph);
+const repeated = generatedApplicationFetchGatewayModules(graph, {
+  surface: 'schedules',
+  scheduleHost,
+});
 if (JSON.stringify(repeated) !== JSON.stringify(generated)) {
   throw new Error('Packed schedule control generation is not deterministic.');
 }
@@ -1180,30 +1152,51 @@ if (
 ) throw new Error('Packed qualified Scheduler did not lower to ordered Hatchet infrastructure.');
 const resources = compiled.value.artifacts.resources;
 const deploymentJson = JSON.stringify(resources);
+const scheduleControl = resources.find(resource =>
+  resource.kind === 'Deployment'
+  && resource.metadata?.name === 'packed-schedule-provider-schedule-control'
+);
+const applicationHost = resources.find(resource =>
+  resource.kind === 'Deployment'
+  && resource.metadata?.name === 'packed-schedule-provider'
+);
+const scheduleControlJson = JSON.stringify(scheduleControl);
 if (
-  !deploymentJson.includes('application-host')
-  || !deploymentJson.includes('hatchet')
-  || !deploymentJson.includes('ACQUISITION_SOURCE')
-  || !deploymentJson.includes('ACQUISITION_TOKEN')
-  || !deploymentJson.includes('acquisition-starter')
-  || !deploymentJson.includes('acquisition-dedicated')
-) throw new Error('Packed schedule provider configuration was not placed on its application host: ' + JSON.stringify({
-  applicationHost: deploymentJson.includes('application-host'),
-  hatchet: deploymentJson.includes('hatchet'),
-  source: deploymentJson.includes('ACQUISITION_SOURCE'),
-  token: deploymentJson.includes('ACQUISITION_TOKEN'),
-  starter: deploymentJson.includes('acquisition-starter'),
-  dedicated: deploymentJson.includes('acquisition-dedicated'),
+  !scheduleControl
+  || !scheduleControlJson.includes('hatchet')
+  || !scheduleControlJson.includes('ACQUISITION_SOURCE')
+  || !scheduleControlJson.includes('ACQUISITION_TOKEN')
+  || !scheduleControlJson.includes('acquisition-starter')
+  || !scheduleControlJson.includes('acquisition-dedicated')
+) throw new Error('Packed schedule provider configuration was not placed on its schedule-control workload: ' + JSON.stringify({
+  scheduleControl: Boolean(scheduleControl),
+  hatchet: scheduleControlJson.includes('hatchet'),
+  source: scheduleControlJson.includes('ACQUISITION_SOURCE'),
+  token: scheduleControlJson.includes('ACQUISITION_TOKEN'),
+  starter: scheduleControlJson.includes('acquisition-starter'),
+  dedicated: scheduleControlJson.includes('acquisition-dedicated'),
 }));
-if ((deploymentJson.match(/ACQUISITION_TOKEN/g) ?? []).length !== 1) {
+const deploymentsWithAcquisitionToken = resources.filter(resource =>
+  resource.kind === 'Deployment'
+  && JSON.stringify(resource).includes('ACQUISITION_TOKEN')
+);
+if (
+  deploymentsWithAcquisitionToken.length !== 1
+  || deploymentsWithAcquisitionToken[0]?.metadata?.name
+    !== 'packed-schedule-provider-schedule-control'
+) {
   throw new Error('Packed schedule provider credentials reached an unrelated resource.');
+}
+if (applicationHost && JSON.stringify(applicationHost).includes('ACQUISITION_TOKEN')) {
+  throw new Error('Packed schedule provider credentials leaked into the web application host.');
 }
 await readFile(join(
   ${JSON.stringify(packedScheduleDirectory)},
   'build',
   'typekro',
-  'application-host',
-  'application-host.json',
+  'reactive',
+  'packed-schedule-provider-schedule-control',
+  'runtime.manifest.json',
 ), 'utf8');
 `,
   );

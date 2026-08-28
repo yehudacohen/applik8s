@@ -1,3 +1,4 @@
+// typecast-file-boundary: This compiler fixture deliberately erases callable-provider generics to test discovery through callbacks and local helpers.
 import { app, defineApplicationProvider, type } from '../../src/index.js';
 
 const application = app('provider-callback-dependencies', {
@@ -65,4 +66,4 @@ deployment
 
 const primary = application.inject(PrimaryProvider);
 export const acquire = primary.acquire;
-
+// typecast-file-boundary: This compiler fixture deliberately erases callable-provider generics to test discovery through callbacks and local helpers.

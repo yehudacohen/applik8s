@@ -1,3 +1,4 @@
+// typecast-file-boundary: OCI provider fixtures reconstruct partial artifact outputs to test adoption and immutable identity validation.
 import * as Test from "alchemy/Test/Core";
 import * as Effect from "effect/Effect";
 import type { ContainerBuildOptions } from "typekro/containers";
@@ -64,6 +65,57 @@ describe("Alchemy container artifact provider", () => {
     await Test.run(scratch.destroy(), { providers: provider });
   });
 
+  it("restores the original immutable output across an A-to-B-to-A rollback", async () => {
+    const builds: string[] = [];
+    const provider = applicationContainerArtifactProvider({
+      build: async (options) => {
+        const revision = options.tag === "sha-a" ? "a" : "b";
+        builds.push(revision);
+        return {
+          deploymentNodeId: "artifact.web",
+          sourceDigest: `sha256:${revision.repeat(64)}`,
+          immutableReference: `registry.example/applik8s/web@sha256:${revision.repeat(64)}`,
+          taggedReference: `registry.example/applik8s/web:${options.tag}`,
+          repository: "registry.example/applik8s/web",
+          tag: options.tag ?? "latest",
+          digest: `sha256:${revision.repeat(64)}`,
+          pushed: true,
+          platforms: ["linux/amd64"],
+        };
+      },
+    });
+    const scratch = Test.scratchStack(
+      { providers: provider, stage: "test" },
+      "applik8s-artifact-provider-rollback",
+    );
+    const program = (revision: "a" | "b") => Effect.gen(function* () {
+      return yield* ApplicationContainerArtifact("artifact.web", {
+        deploymentNodeId: "artifact.web",
+        sourceDigest: `sha256:${revision.repeat(64)}`,
+        context: "/workspace/web",
+        imageName: "web",
+        tag: `sha-${revision}`,
+        existingTagPolicy: "adopt",
+        registry: {
+          type: "oci",
+          registry: "https://registry.example",
+          repositoryPrefix: "applik8s",
+        },
+      });
+    });
+
+    const first = await Test.run(scratch.deploy(program("a")), { providers: provider });
+    const upgraded = await Test.run(scratch.deploy(program("b")), { providers: provider });
+    const rolledBack = await Test.run(scratch.deploy(program("a")), { providers: provider });
+
+    expect(first.immutableReference).toContain(`sha256:${"a".repeat(64)}`);
+    expect(upgraded.immutableReference).toContain(`sha256:${"b".repeat(64)}`);
+    expect(rolledBack.immutableReference).toBe(first.immutableReference);
+    expect(rolledBack.sourceDigest).toBe(first.sourceDigest);
+    expect(builds).toEqual(["a", "b", "a"]);
+    await Test.run(scratch.destroy(), { providers: provider });
+  });
+
   it("rebuilds an OrbStack artifact when persisted state points at a missing local image", async () => {
     let builds = 0;
     let inspections = 0;
@@ -108,6 +160,44 @@ describe("Alchemy container artifact provider", () => {
     await Test.run(scratch.deploy(program), { providers: provider });
     expect(inspections).toBe(1);
     expect(builds).toBe(2);
+    await Test.run(scratch.destroy(), { providers: provider });
+  });
+
+  it("publishes a locally runnable immutable image ID for OrbStack artifacts", async () => {
+    const digest = `sha256:${"d".repeat(64)}` as const;
+    const provider = applicationContainerArtifactProvider({
+      localImageDigest: async (reference) => {
+        expect(reference).toBe("web:sha-source");
+        return digest;
+      },
+      build: async () => ({
+        deploymentNodeId: "artifact.web",
+        sourceDigest: `sha256:${"a".repeat(64)}`,
+        immutableReference: "web:sha-source",
+        taggedReference: "web:sha-source",
+        repository: "web",
+        tag: "sha-source",
+        pushed: false,
+        platforms: ["linux/arm64"],
+      }),
+    });
+    const scratch = Test.scratchStack(
+      { providers: provider, stage: "test" },
+      "applik8s-artifact-local-digest",
+    );
+    const result = await Test.run(scratch.deploy(Effect.gen(function* () {
+      return yield* ApplicationContainerArtifact("artifact.web", {
+        deploymentNodeId: "artifact.web",
+        sourceDigest: `sha256:${"a".repeat(64)}`,
+        context: "/workspace/web",
+        imageName: "web",
+        tag: "sha-source",
+        registry: { type: "orbstack" },
+      });
+    })), { providers: provider });
+    expect(result.immutableReference).toBe(digest);
+    expect(result.digest).toBe(digest);
+    expect(result.taggedReference).toBe("web:sha-source");
     await Test.run(scratch.destroy(), { providers: provider });
   });
 
@@ -349,3 +439,4 @@ describe("Alchemy container artifact provider", () => {
     );
   });
 });
+// typecast-file-boundary: OCI provider fixtures reconstruct partial artifact outputs to test adoption and immutable identity validation.

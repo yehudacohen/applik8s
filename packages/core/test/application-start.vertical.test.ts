@@ -50,7 +50,7 @@ function startDefinition(): ApplicationStartDefinition {
       tanstackAIReact: '0.19.3',
       tanstackAIPersistence: '0.1.5',
       agUi: '0.1.1-canary.beta.0',
-      typekro: '0.33.7',
+      typekro: '0.33.8',
     },
     packages: [
       {

@@ -90,6 +90,15 @@ export interface ApplicationAIAgentAttemptReservation {
   readonly ordinal: number;
   readonly version: number;
   readonly telemetry?: ApplicationTelemetryEnvelopeV1;
+  /**
+   * Request-local, server-derived authority retained across provider stream
+   * callbacks. This is never persisted with the durable attempt record; it
+   * lets terminal framework effects avoid depending on an ambient scope that
+   * may have unwound while an SSE response was consumed.
+   */
+  readonly executionAdmission?: ApplicationAdmissionContextV1 & {
+    readonly principal: ApplicationExecutionPrincipal;
+  };
 }
 
 export interface ApplicationAIAgentTelemetryBoundary {

@@ -1,7 +1,7 @@
 // typecast-file-boundary: workflow signal and structured-generation outputs are schema-validated before their provider-neutral domain shapes are restored.
 import { StructuredGeneration } from '@applik8s/applik8s/structured-generation';
 import { type } from '@applik8s/applik8s/dsl';
-import { workflow } from '../app';
+import { workflow } from '../domain-app';
 import { AutomationRun, AutomationControlCurrent } from '../domain/automation';
 import { PostHomeTimeline, Post } from '../domain/post';
 

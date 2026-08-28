@@ -37,7 +37,10 @@ const database = { name: 'catalog', connectionEnvName: 'APPLIK8S_DATABASE_CATALO
 // Includes the v0.8 provider-operation access declaration carried by the
 // maintained notifications package. Keep the ceiling narrow enough that a
 // dependency-graph regression remains visible.
-const reactiveRuntimeBundleBudgetBytes = 601_000;
+// Includes the payload-free Runtime Integrity observer used by cursor-owning
+// gateways; keep the ceiling tight enough to catch accidental authoring-graph
+// or provider-runtime capture.
+const reactiveRuntimeBundleBudgetBytes = 604_000;
 
 describe('generated v0.6 reactive workloads', () => {
   it('emits collision-safe variables for inferred dotted outbox model operations', async () => {

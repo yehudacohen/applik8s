@@ -1,13 +1,13 @@
 // typecast-file-boundary: Test fixtures intentionally exercise generic schedule schemas and transport admissions.
 import {
+  applicationScheduleProjectedDesiredState,
   createDeterministicApplicationScheduleRuntime,
   createDeterministicApplicationScheduleStateAuthority,
-  applicationScheduleProjectedDesiredState,
   executeApplicationScheduleAdmission,
   installApplicationScheduleRuntimeResolver,
   registerFixedApplicationSchedule,
-  schedule,
   Scheduler,
+  schedule,
   type,
 } from '@applik8s/applik8s';
 import { installApplicationInvocationAdmissionResolver } from '@applik8s/client';
@@ -502,6 +502,9 @@ describe('v0.8 function-native schedules', () => {
     });
     await authority.markProjected(definition.id, instance.id, instance.revision, 'active');
     expect(await authority.pending()).toEqual([]);
+    expect(await authority.recoveryCandidates()).toEqual([
+      expect.objectContaining({ state: 'active', projection: 'applied' }),
+    ]);
     const management = {
       apiVersion: 'applik8s.scheduleManagement/v1alpha1' as const,
       id: 'schedule-management:test',
@@ -537,6 +540,7 @@ describe('v0.8 function-native schedules', () => {
     expect(await restarted.pending()).toHaveLength(1);
     await restarted.markProjected(definition.id, instance.id, '1', 'removed');
     expect(restarted.records()).toEqual([expect.objectContaining({ state: 'removed', projection: 'applied' })]);
+    expect(await restarted.recoveryCandidates()).toEqual([]);
   });
 
   it('keeps delimiter-like schedule identities distinct in deterministic state', async () => {
@@ -558,5 +562,29 @@ describe('v0.8 function-native schedules', () => {
     });
 
     expect(authority.records()).toHaveLength(2);
+  });
+
+  it('enforces a provider active-instance ceiling before committing desired state', async () => {
+    const authority = createDeterministicApplicationScheduleStateAuthority();
+    const definition = {
+      id: 'bounded.v1', configuration: 'dynamic' as const, timezone: 'UTC', overlap: 'skip' as const,
+      misfires: 'latest' as const, maximumLatenessSeconds: 300,
+      retry: { maxAttempts: 3, maximumAgeSeconds: 1800 },
+      requirements: { configuration: 'dynamic' as const, cardinality: 'bounded' as const, precision: 'minute' as const },
+    };
+    const instance = (id: string) => ({ id, revision: '1', input: {}, every: '1h' });
+
+    await expect(authority.reconcile({
+      definition, instance: instance('one'), maximumActiveInstances: 1,
+    })).resolves.toMatchObject({ state: 'created' });
+    await expect(authority.reconcile({
+      definition, instance: instance('two'), maximumActiveInstances: 1,
+    })).rejects.toThrow(/instance ceiling 1 is exhausted/u);
+    expect(authority.records()).toHaveLength(1);
+
+    await authority.remove(definition.id, 'one');
+    await expect(authority.reconcile({
+      definition, instance: instance('two'), maximumActiveInstances: 1,
+    })).resolves.toMatchObject({ state: 'created' });
   });
 });

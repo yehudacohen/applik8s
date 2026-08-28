@@ -98,6 +98,12 @@ export interface ApplicationStreamProcessorNode
 		readonly member: string;
 		readonly memberKind: "command" | "message" | "alarm";
 	}[];
+	/** Function-native schedule handles captured by this managed callback. */
+	readonly applicationScheduleBindings?: readonly {
+		readonly identifier: string;
+		readonly schedule: ApplicationGraphNodeRef;
+		readonly scheduler: ApplicationProviderRef<"Scheduler">;
+	}[];
 	/** Portable package-owned wrappers reconstructed from their admitted operation leaves. */
 	readonly callableBindings?: readonly {
 		readonly identifier: string;

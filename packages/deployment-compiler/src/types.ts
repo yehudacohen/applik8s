@@ -133,12 +133,19 @@ export interface ApplicationArtifactRequirement {
 
 export interface ApplicationDeploymentPlanningContext {
   readonly graph: ApplicationGraph;
+  readonly sourceGraphDigest?: string;
   readonly target: ApplicationDeploymentTargetKind;
   readonly connection: ApplicationDeploymentConnectionIdentity;
   readonly instance: string;
   readonly profile: string;
   readonly strategy: ApplicationDeploymentStrategy;
   readonly installationSpec: DeploymentJsonObject;
+  /**
+   * Canonical compiler-produced artifacts available to provider contributors.
+   * Contributors must consume artifact identity from here instead of
+   * independently reconstructing version or digest metadata.
+   */
+  readonly artifacts?: readonly ApplicationArtifactRequirement[];
   /**
    * Compiler-authored Kubernetes resources for this exact application
    * instance. Provider contributors may inspect stable resource identities
@@ -163,6 +170,11 @@ export interface ApplicationDeploymentContribution {
 }
 
 export type ApplicationDeploymentRuntimeAccessTarget =
+  | {
+      /** Provider executes inside the admitted application workload and has no network data plane. */
+      readonly capabilityId: string;
+      readonly target: 'embedded';
+    }
   | {
       readonly capabilityId: string;
       readonly target: 'kubernetes';

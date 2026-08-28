@@ -18,6 +18,7 @@ describe('Kubernetes function-native Scheduler', () => {
       image: 'demo@sha256:abc',
       admissionEndpoint: 'http://demo.demo.svc:3000/__applik8s/v1/internal/schedules/occurrences',
       authorizationSecretName: 'demo-internal-operation',
+      serviceAccountName: 'demo-schedule-control',
       definition: {
         id: 'cleanup.v1',
         configuration: 'fixed',
@@ -36,11 +37,18 @@ describe('Kubernetes function-native Scheduler', () => {
         schedule: '*/15 * * * *',
         timeZone: 'UTC',
         concurrencyPolicy: 'Forbid',
-        jobTemplate: { spec: { backoffLimit: 3, template: { spec: { restartPolicy: 'Never' } } } },
+        jobTemplate: { spec: { backoffLimit: 3, template: { spec: {
+          restartPolicy: 'Never',
+          serviceAccountName: 'demo-schedule-control',
+        } } } },
       },
     });
     expect(JSON.stringify(cronJob)).toContain("batch.kubernetes.io/job-name");
+    expect(JSON.stringify(cronJob)).toContain("batch.kubernetes.io/cronjob-scheduled-timestamp");
+    expect(JSON.stringify(cronJob)).toContain('NODE_EXTRA_CA_CERTS');
     expect(JSON.stringify(cronJob)).toContain('APPLIK8S_INTERNAL_OPERATION_SECRET');
+    expect(cronJob.spec?.jobTemplate.spec?.template.spec?.containers[0]?.securityContext)
+      .toMatchObject({ runAsNonRoot: true, runAsUser: 1000, readOnlyRootFilesystem: true });
   });
 
   test('projects elapsed intervals and absolute instants in UTC without changing their meaning', () => {
@@ -73,6 +81,11 @@ describe('Kubernetes function-native Scheduler', () => {
     });
     expect(interval.spec).toMatchObject({ schedule: '0 */2 * * *', timeZone: 'UTC' });
     expect(oneTime.spec).toMatchObject({ schedule: '30 5 1 11 *', timeZone: 'UTC' });
+    const oneTimeAdmission = oneTime.spec?.jobTemplate.spec?.template.spec?.containers[0]?.env
+      ?.find(({ name }) => name === 'APPLIK8S_SCHEDULE_ADMISSION')?.value;
+    expect(JSON.parse(String(oneTimeAdmission))).toMatchObject({
+      scheduledAt: '2026-11-01T05:30:00.000Z',
+    });
   });
 
   test('creates, noops, replaces, and removes dynamic CronJobs by revision', async () => {
@@ -108,7 +121,9 @@ describe('Kubernetes function-native Scheduler', () => {
     const runtime = await createKubernetesApplicationScheduleRuntime({
       applicationId: 'demo', environmentId: 'test', namespace: 'demo',
       admissionEndpoint: 'http://demo.demo.svc/internal', authorizationSecretName: 'demo-internal-operation', kubeConfig,
+      serviceAccountName: 'demo-schedule-control',
       stateAuthority: createDeterministicApplicationScheduleStateAuthority(),
+      maximumInstances: 1,
     });
     const definition = {
       id: 'digest.v1', configuration: 'dynamic' as const, timezone: 'UTC', overlap: 'skip' as const, misfires: 'latest' as const, maximumLatenessSeconds: 300,
@@ -123,6 +138,22 @@ describe('Kubernetes function-native Scheduler', () => {
     const updated = await runtime.reconcile({ definition, instance: { id: 'tenant-a', revision: '2', input: {}, every: '2h' }, handler: async () => undefined });
     expect([first.state, same.state, repaired.state, updated.state]).toEqual(['created', 'unchanged', 'updated', 'updated']);
     expect([...resources.values()][0]?.spec?.schedule).toBe('0 */2 * * *');
+    expect([...resources.values()][0]?.spec?.jobTemplate.spec?.template.spec?.serviceAccountName)
+      .toBe('demo-schedule-control');
+    await expect(runtime.reconcile({
+      definition,
+      instance: { id: 'tenant-b', revision: '1', input: {}, every: '1h' },
+      handler: async () => undefined,
+    })).rejects.toThrow(/instance ceiling 1 is exhausted/u);
+    await expect(runtime.reconcile({
+      definition: {
+        ...definition,
+        id: 'high-cardinality.v1',
+        requirements: { ...definition.requirements, cardinality: 'high' as const },
+      },
+      instance: { id: 'tenant-high', revision: '1', input: {}, every: '1h' },
+      handler: async () => undefined,
+    })).rejects.toThrow(/requires bounded cardinality/u);
     expect((await runtime.remove(definition.id, 'tenant-a')).state).toBe('removed');
     expect((await runtime.remove(definition.id, 'tenant-a')).state).toBe('unchanged');
   });
@@ -173,6 +204,10 @@ describe('Kubernetes function-native Scheduler', () => {
 
     await createKubernetesApplicationScheduleRuntime(options);
     expect(await authority.pending()).toHaveLength(0);
+    expect([...resources.values()][0]?.metadata?.annotations?.['applik8s.dev/schedule-revision']).toBe('1');
+
+    resources.clear();
+    await createKubernetesApplicationScheduleRuntime(options);
     expect([...resources.values()][0]?.metadata?.annotations?.['applik8s.dev/schedule-revision']).toBe('1');
   });
 });

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { serializeApplicationCallback as AliasedSerializeCallback } from '../src/application-callback';
 import { applicationCallbackSourceMatchesRuntime } from '../src/application-callback-source-equivalence';
-import { analyzeApplicationServerRouteSource, applicationRouteSourceDependencies, extractApplicationCallArgumentSource, extractApplicationCallObjectFunctionSource, unsupportedRouteFreeIdentifiers } from '../src/application-route-source';
+import { analyzeApplicationServerRouteSource, applicationRouteSourceDependencies, extractApplicationCallArgumentSource, extractApplicationCallObjectFunctionSource, transpileApplicationCallbackExpression, unsupportedRouteFreeIdentifiers } from '../src/application-route-source';
 
 const sourceRegistrar = {
   register(_options: unknown) {
@@ -19,6 +19,22 @@ function workflowSource(
 }
 
 describe('application callback lexical analysis', () => {
+  it('does not invoke a build-tool transform for already-valid runtime JavaScript', () => {
+    expect(transpileApplicationCallbackExpression(
+      'async input => ({ id: input.id })',
+    )).toBe('async input => ({ id: input.id })');
+  });
+
+  it('erases authored TypeScript callback annotations on the authoring host', () => {
+    const transpiled = transpileApplicationCallbackExpression(
+      'async (input: { id: string }): Promise<string> => input.id',
+    );
+    expect(transpiled).toContain('async');
+    expect(transpiled).toContain('input.id');
+    expect(transpiled).not.toContain(': string');
+    expect(() => Function(`return (${transpiled});`)).not.toThrow();
+  });
+
   it('treats captured class members and constructor parameters as declarations', () => {
     const analysis = analyzeApplicationServerRouteSource(`
 class DeliveryError extends Error {

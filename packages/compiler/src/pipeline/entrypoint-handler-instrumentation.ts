@@ -1,7 +1,8 @@
 // typecast-file-boundary: TypeScript compiler nodes are kind-checked before this source-to-source transformer restores their narrower AST types.
+import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
-import { dirname, extname, join, relative } from 'node:path';
+import { dirname, extname, join, relative, resolve } from 'node:path';
 import type { Plugin } from 'esbuild';
 import ts from 'typescript';
 import {
@@ -9,7 +10,13 @@ import {
   decorateApplicationCallbackArguments,
 } from './entrypoint-application-callbacks.js';
 
-export function handlerSourceMetadataPlugin(entrypoint: string): Plugin {
+const applicationRuntimeModuleInstrumentationCache = new Map<string, string>();
+const maximumApplicationRuntimeModuleInstrumentationEntries = 1_024;
+
+export function handlerSourceMetadataPlugin(
+  entrypoint: string,
+  options: { readonly includeMaintainedPackages?: boolean } = {},
+): Plugin {
   return {
     name: 'applik8s-handler-source-metadata',
     setup(buildContext) {
@@ -19,13 +26,11 @@ export function handlerSourceMetadataPlugin(entrypoint: string): Plugin {
           || !applicationCallbackModuleIsInstrumentable(args.path)
         ) return undefined;
         const source = await readFile(args.path, 'utf8');
-        const applicationOwned = applicationPackageOwnsModule(entrypoint, args.path);
-        const instrumented = instrumentApplicationCallbackRegistrations(
-          source,
+        const instrumented = instrumentApplicationRuntimeModule(
+          entrypoint,
           args.path,
-          applicationCallbackModuleOwnsDependencies(entrypoint, args.path),
-          portableApplicationModuleIdentity(entrypoint, args.path),
-          !applicationOwned,
+          source,
+          options,
         );
         if (instrumented === source) return undefined;
         const extension = extname(args.path);
@@ -40,6 +45,62 @@ export function handlerSourceMetadataPlugin(entrypoint: string): Plugin {
       });
     },
   };
+}
+
+/**
+ * Preserve authored callback source and dependency metadata in every generated
+ * server-runtime bundle that can transitively import an application module.
+ *
+ * Discovery, generated workers, and framework-hosted Vite SSR must share this
+ * exact transform. Otherwise a production minifier can rename a module-local
+ * handle while the imported application replays registration, making runtime
+ * behavior diverge from the graph that the compiler admitted.
+ *
+ * @internal
+ */
+export function instrumentApplicationRuntimeModule(
+  entrypoint: string,
+  sourceFile: string,
+  source: string,
+  options: { readonly includeMaintainedPackages?: boolean } = {},
+): string {
+  if (!applicationCallbackModuleIsInstrumentable(sourceFile)) return source;
+  // Generated callback factories already contain the compiler-admitted source
+  // and bindings. Re-instrumenting them embeds output-directory paths in the
+  // artifact, breaks reproducible digests, and needlessly parses very large
+  // generated runtime modules.
+  if (/\.generated\.[cm]?[jt]sx?$/u.test(sourceFile)) return source;
+  const applicationOwned = applicationPackageOwnsModule(entrypoint, sourceFile);
+  if (!applicationOwned && options.includeMaintainedPackages === false) {
+    return source;
+  }
+  const cacheKey = createHash('sha256')
+    .update(entrypoint)
+    .update('\0')
+    .update(sourceFile)
+    .update('\0')
+    .update(options.includeMaintainedPackages === false ? 'application' : 'maintained')
+    .update('\0')
+    .update(source)
+    .digest('hex');
+  const cached = applicationRuntimeModuleInstrumentationCache.get(cacheKey);
+  if (cached !== undefined) return cached;
+  const instrumented = instrumentApplicationCallbackRegistrations(
+    source,
+    sourceFile,
+    applicationCallbackModuleOwnsDependencies(entrypoint, sourceFile),
+    portableApplicationModuleIdentity(entrypoint, sourceFile),
+    !applicationOwned,
+  );
+  if (
+    applicationRuntimeModuleInstrumentationCache.size
+    >= maximumApplicationRuntimeModuleInstrumentationEntries
+  ) {
+    const oldest = applicationRuntimeModuleInstrumentationCache.keys().next().value;
+    if (oldest) applicationRuntimeModuleInstrumentationCache.delete(oldest);
+  }
+  applicationRuntimeModuleInstrumentationCache.set(cacheKey, instrumented);
+  return instrumented;
 }
 
 /**
@@ -195,7 +256,11 @@ export function applicationCallbackModuleOwnsDependencies(
 }
 
 function applicationPackageRoot(entrypoint: string): string {
-  let current = dirname(entrypoint);
+  // CLI entrypoints are commonly authored relative to the consumer cwd while
+  // esbuild onLoad paths are absolute. Package ownership must not depend on
+  // that representational difference or production artifact builds will skip
+  // the application callback transform even though discovery admitted it.
+  let current = dirname(resolve(entrypoint));
   const filesystemRoot = dirname(current) === current ? current : undefined;
   while (true) {
     if (existsSync(join(current, 'package.json'))) return current;

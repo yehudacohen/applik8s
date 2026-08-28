@@ -1,3 +1,4 @@
+// typecast-file-boundary: Runtime-artifact tests deliberately reconstruct partial persisted records to prove the public validator rejects invalid state.
 import { describe, expect, it } from 'vitest';
 import { validateApplicationRuntimeArtifact } from '../src/runtime-artifact.js';
 
@@ -35,4 +36,4 @@ describe('application runtime artifact credentials', () => {
     ]));
   });
 });
-
+// typecast-file-boundary: Runtime-artifact tests deliberately reconstruct partial persisted records to prove the public validator rejects invalid state.

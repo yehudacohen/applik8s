@@ -1,12 +1,10 @@
 import type { ApplicationModelViewContext } from '@applik8s/applik8s';
 import {
   applicationArtifactDetailSchema,
-  applicationArtifactDownloadTargetSchema,
   applicationArtifactLibrarySchema,
   applicationArtifactSafeFileName,
   listApplicationArtifacts,
   loadApplicationArtifact,
-  loadApplicationArtifactDownloadTarget,
 } from '@applik8s/artifacts';
 import { type } from 'arktype';
 import { ArtifactObjects, Artifacts } from '../../modules';
@@ -47,20 +45,6 @@ export const ArtifactDetail = Artifacts.Artifact.view({
 
 Authenticated.can(ArtifactDetail);
 
-const ArtifactDownloadTarget = Artifacts.Artifact.view({
-  input: type({ id: 'string' }),
-  output: applicationArtifactDownloadTargetSchema,
-  database,
-  authorize: ({ principal }: { readonly principal: { readonly id: string } }) => principal.id.length > 0,
-  budgets: { timeoutMs: 2_000, maxRows: 1, maxResultBytes: 16_000 },
-}, async function loadArtifactDownloadTarget(input: { readonly id: string }, context: ApplicationModelViewContext) {
-  return loadApplicationArtifactDownloadTarget(input, context, {
-    database,
-    scope: agenticWorkspaceScope,
-    title: artifactProvenanceTitle,
-  });
-});
-
 const artifactDownloads = application.http('artifact-downloads');
 export const DownloadArtifact = artifactDownloads.post(
   'download-artifact',
@@ -76,14 +60,15 @@ export const DownloadArtifact = artifactDownloads.post(
     authorize: (_request, context) => context.principal.id.length > 0,
   },
   async function authorizeArtifactDownload(request) {
-    const target = await ArtifactDownloadTarget({ id: request.input.id });
-    if (!target) throw new Error('The artifact is unavailable or outside the admitted workspace.');
-    const intent = await ArtifactObjects.signDownload({ key: target.objectKey });
+    const { value: artifact } = await Artifacts.Artifact.require(request.input.id);
+    if (artifact.state !== 'available') throw new Error('The artifact is unavailable or outside the admitted workspace.');
+    const title = artifactProvenanceTitle(artifact.provenance) ?? 'artifact';
+    const intent = await ArtifactObjects.signDownload({ key: artifact.objectKey });
     return {
       url: intent.url,
       expiresAt: intent.expiresAt,
-      mediaType: target.mediaType,
-      fileName: `${applicationArtifactSafeFileName(target.title)}.${target.mediaType === 'text/markdown' ? 'md' : 'bin'}`,
+      mediaType: artifact.mediaType,
+      fileName: `${applicationArtifactSafeFileName(title)}.${artifact.mediaType === 'text/markdown' ? 'md' : 'bin'}`,
     };
   },
 );

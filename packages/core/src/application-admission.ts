@@ -1,3 +1,4 @@
+// typecast-file-boundary: This is the canonical unknown-to-admission validation boundary; assertions occur only after closed structural and discriminant checks.
 import type {
   ApplicationAuthorizationReceipt,
   ApplicationCausalPrincipalContext,

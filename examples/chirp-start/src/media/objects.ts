@@ -1,4 +1,4 @@
-import { app } from "../app";
+import { app } from "../domain-app";
 
 export const Avatars = app.objectStore("avatars", {
 	enabled: app.installation.spec.features.media,

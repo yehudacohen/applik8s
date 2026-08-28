@@ -68,6 +68,9 @@ describe('generated application', () => {
       kind: 'applicationActor',
       id: 'workspace-activity.v1',
     });
+    expect(WorkspaceActivity.snapshot.authority.classification).toBe('application-policy');
+    expect(WorkspaceActivity.record.send.authority.classification).toBe('application-policy');
+    expect(WorkspaceActivity.alarms.expire.schedule.authority.classification).toBe('application-policy');
     expect(WorkspaceDigestSchedule.kind).toBe('applicationSchedule');
     expect(WorkspaceDigestSchedule.definition).toMatchObject({
       configuration: 'dynamic',

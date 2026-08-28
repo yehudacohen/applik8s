@@ -1,6 +1,9 @@
 // typecast-file-boundary: Adapter tests inspect generated TypeKro resources only after asserting their resource kinds and shapes.
 
-import { compileApplicationDeploymentGraph } from "@applik8s/deployment-compiler";
+import {
+  applicationCelldRuntimeManifest,
+  compileApplicationDeploymentGraph,
+} from "@applik8s/deployment-compiler";
 import {
   type ApplicationDeploymentGraph,
   type ApplicationExternalProviderDeploymentNode,
@@ -996,6 +999,8 @@ function graphWithEnvoyAIGateway(): ApplicationDeploymentGraph {
 function graphWithV08KubernetesProviders(
   options: { readonly observability?: boolean } = {},
 ): ApplicationDeploymentGraph {
+  const sourceGraphDigest = digestApplicationDeploymentValue({ app: "adapter" });
+  const runtimeManifest = applicationCelldRuntimeManifest(sourceGraphDigest);
   const connectionDigest = digestApplicationDeploymentValue({
     provider: "kubernetes",
     cluster: "orbstack",
@@ -1016,8 +1021,12 @@ function graphWithV08KubernetesProviders(
           config: {
             observability: {
               kind: "clickstack",
-              namespace: "adapter-test",
+              namespace: "adapter-observability",
               storageSize: "10Gi",
+              clickhouseResources: {
+                requests: { cpu: "250m", memory: "512Mi" },
+                limits: { cpu: "2", memory: "2Gi" },
+              },
               metadataStorageSize: "5Gi",
               policy: {},
               retention: {},
@@ -1096,7 +1105,7 @@ function graphWithV08KubernetesProviders(
       },
     },
     target: "kubernetes",
-    sourceGraphDigest: digestApplicationDeploymentValue({ app: "adapter" }),
+    sourceGraphDigest,
     compilerVersion: "test",
     identity: {
       connection: {
@@ -1111,17 +1120,31 @@ function graphWithV08KubernetesProviders(
     },
     strategy: "direct",
     installationSpec: { name: "adapter" },
-    artifacts: [{
-      id: "artifact.celld-runtime",
-      artifactType: "generatedRuntime",
-      name: "celld-actor-runtime",
-      sourceDigest: digestApplicationDeploymentValue({ worker: "adapter" }),
-      sourceDescriptor: {
-        kind: "generated-runtime",
-        contextPath: "/tmp/adapter-celld",
+    artifacts: [
+      {
+        id: "artifact.celld-runtime",
+        artifactType: "generatedRuntime",
+        name: "celld-actor-runtime",
+        sourceDigest: runtimeManifest.manifestDigest,
+        sourceDescriptor: {
+          kind: "generated-runtime",
+          contextPath: "/tmp/adapter-celld",
+          runtimeManifest: { ...runtimeManifest },
+        },
+        logicalReference: "applik8s/adapter-celld-runtime:source-test",
       },
-      logicalReference: "applik8s/adapter-celld-runtime:source-test",
-    }],
+      {
+        id: 'artifact.operator.applik8s-celld-operator',
+        artifactType: 'containerImage',
+        name: 'applik8s-celld-operator',
+        sourceDigest: digestApplicationDeploymentValue({ operator: 'celld' }),
+        sourceDescriptor: {
+          contextPath: '/tmp/applik8s-celld-operator',
+          dockerfilePath: '/tmp/applik8s-celld-operator/Dockerfile',
+        },
+        logicalReference: 'applik8s/applik8s-celld-operator:source-test',
+      },
+    ],
     materializedComposition: {
       resources: [{
         id: "adapterHttpService",
@@ -1530,7 +1553,7 @@ describe("TypeKro deployment adapter", () => {
       });
 
       expect(adapted.adapter).toEqual({
-        typekro: "0.33.7",
+        typekro: "0.33.8",
         semanticPlanVersion: 1,
         artifactPlanVersion: 1,
       });
@@ -1747,6 +1770,7 @@ describe("TypeKro deployment adapter", () => {
       namespace: "adapter-test",
       waitForReady: false,
     });
+    const namespace = direct["direct.provider.observability.namespace"];
     const operator = direct["direct.provider.observability.clickhouse-operator"];
     const credentials = deploymentGraph.nodes.find(
       (node) => node.id === "external.provider.observability.clickstack-credentials",
@@ -1754,6 +1778,7 @@ describe("TypeKro deployment adapter", () => {
     const clickhouse = direct["direct.provider.observability.clickhouse"];
     const clickstack = direct["direct.provider.observability.clickstack"];
 
+    expect(namespace?.compositionId).toBe("applik8s-namespace");
     expect(operator?.compositionId).toBe("clickhouse-operator-bootstrap");
     expect(clickhouse?.compositionId).toBe("applik8s-clickstack-clickhouse");
     expect(clickstack?.compositionId).toBe("applik8s-clickstack");
@@ -1771,18 +1796,22 @@ describe("TypeKro deployment adapter", () => {
     expect(JSON.stringify(clickhouse?.plan())).toContain("ClickHouseInstallation");
     expect(JSON.stringify(clickstack?.plan())).toContain("otlpHttpEndpoint");
     expect(JSON.stringify(clickhouse?.plan())).toContain("passwordSecretRef");
+    expect(JSON.stringify(clickhouse?.plan())).toContain('"value":"512Mi"');
     expect(JSON.stringify(clickstack?.plan())).toContain("credentialsSecret");
+    expect(JSON.stringify(clickstack?.plan())).toContain("valuesFrom");
     expect(JSON.stringify(clickstack?.plan())).not.toContain("CLICKHOUSE_PASSWORD");
-    expect(JSON.stringify(clickstack?.plan())).toContain("HYPERDX_API_KEY");
-    expect(JSON.stringify(clickstack?.plan())).not.toContain(
-      '"HYPERDX_API_KEY":"',
-    );
+    // The versioned Secret key name is intentionally public and appears in
+    // secretKeyRef wiring/the bootstrap script; no inline key/value entry may
+    // carry its secret value in the semantic plan.
+    expect(JSON.stringify(clickstack?.plan())).not.toContain('"HYPERDX_API_KEY":"');
     expect(JSON.stringify(clickstack?.plan())).not.toContain("[object Object]");
-    expect(JSON.stringify(clickstack?.plan())).not.toContain(
-      '\"kind\":\"Namespace\"',
-    );
 
-    for (const binding of [operator, clickhouse, clickstack]) {
+    const clickstackDirectDeclarations = await clickstack?.declarations("direct");
+    expect(clickstackDirectDeclarations?.some(
+      (declaration) => declaration.props.resource.kind === "Namespace",
+    )).toBe(false);
+
+    for (const binding of [namespace, operator, clickhouse, clickstack]) {
       const directDeclarations = await binding?.declarations("direct");
       const kroDeclarations = await binding?.declarations("kro");
       expect(directDeclarations?.length).toBeGreaterThan(0);
@@ -1796,8 +1825,7 @@ describe("TypeKro deployment adapter", () => {
       deploymentGraph,
       providerSourceComposition(),
     );
-    await expect(
-      adaptApplicationDeploymentToTypeKro({
+    const adapted = await adaptApplicationDeploymentToTypeKro({
         graph: deploymentGraph,
         root: bindTypeKroComposition(assembled, { name: "adapter" }, {
           factory: { namespace: "applik8s-system", waitForReady: false },
@@ -1808,21 +1836,21 @@ describe("TypeKro deployment adapter", () => {
           ),
         }),
         direct,
-      }),
-    ).resolves.toMatchObject({ declarationCount: expect.any(Number) });
+      });
+    expect(adapted).toMatchObject({ declarationCount: expect.any(Number) });
   });
 
   it("binds the compiler-generated Celld Worker fleet without embedding credentials", async () => {
     const deploymentGraph = graphWithV08KubernetesProviders({ observability: false });
     const providerWorkloads = deploymentGraph.runtimeAccess.workloads.filter(
-      ({ kubernetes }) => kubernetes?.materialization.authority === 'provider-direct'
+      ({ kubernetes }) => kubernetes?.materialization.authority === 'operator-reconciled'
         && kubernetes.materialization.deploymentNodeId === 'direct.provider.actors.celld',
     );
     expect(providerWorkloads).toHaveLength(2);
     expect(providerWorkloads).toEqual(expect.arrayContaining([
       expect.objectContaining({
         kubernetes: expect.objectContaining({
-          resource: expect.objectContaining({ kind: 'Job', name: 'adapter-actors-worker-deployment' }),
+          resource: expect.objectContaining({ kind: 'Job', name: expect.stringMatching(/^adapter-actors-deploy-/u) }),
         }),
       }),
       expect.objectContaining({
@@ -1844,22 +1872,32 @@ describe("TypeKro deployment adapter", () => {
     expect(providerWorkloads.flatMap(({ kubernetes }) =>
       kubernetes?.credentialProjections ?? [])).toEqual(expect.arrayContaining([
         { resourceId: 'v1/Secret/adapter-test/adapter-actor-state', keys: ['AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY'] },
-        { resourceId: 'v1/Secret/adapter-test/adapter-actors-authorization', keys: ['authorization', 'connectionSigningKey'] },
+        { resourceId: 'v1/Secret/adapter-test/adapter-actors-authorization', keys: ['actor-authorization', 'application-authorization', 'connection-signing-key', 'operator-authorization'] },
       ]));
     const direct = bindApplicationTypeKroDirectNodes(deploymentGraph, {
       namespace: "adapter-test",
       waitForReady: false,
     });
     const binding = direct["direct.provider.actors.celld"];
-    expect(binding?.compositionId).toBe("applik8s-celld-actors");
+    const operatorBinding = direct['direct.provider.actors.celld-operator'];
+    expect(binding?.compositionId).toBe("applik8s-celld-fleet-installation");
+    expect(operatorBinding?.compositionId).toBe('applik8s-celld-operator-bootstrap');
+
+    const operatorDeclarations = await operatorBinding?.declarations('direct');
+    expect(operatorDeclarations?.some(({ props }) =>
+      props.resource.kind === 'Namespace'
+      && props.resource.metadata.name === 'applik8s-celld-system')).toBe(true);
+    expect(operatorDeclarations?.flatMap(({ artifactOutputUses }) => artifactOutputUses ?? []))
+      .toContainEqual({
+        requirementId: 'artifact.operator.applik8s-celld-operator',
+        output: 'immutableReference',
+        sensitive: false,
+      });
 
     const plan = JSON.stringify(binding?.plan());
-    expect(plan).toContain("StatefulSet");
-    expect(plan).toContain("Job");
-    expect(plan).toContain("NetworkPolicy");
-    expect(plan).toContain("internal-listen");
-    expect(plan).toContain("celld-peer");
-    expect(plan).toContain("8081");
+    expect(plan).toContain("CelldFleet");
+    expect(plan).not.toContain("StatefulSet");
+    expect(plan).not.toContain("NetworkPolicy");
     expect(plan).toContain("artifact.celld-runtime");
     expect(plan).toContain(
       "http://adapter-api.adapter-test.svc.cluster.local:8080",
@@ -1869,26 +1907,15 @@ describe("TypeKro deployment adapter", () => {
     const directDeclarations = await binding?.declarations("direct");
     const kroDeclarations = await binding?.declarations("kro");
     expect(directDeclarations?.some(({ props }) =>
-      props.resource.kind === "StatefulSet"
+      props.resource.kind === "CelldFleet"
     )).toBe(true);
-    expect(directDeclarations?.some(({ props }) =>
-      props.resource.kind === "Job"
-    )).toBe(true);
+    expect(directDeclarations?.some(({ props }) => props.resource.kind === 'StatefulSet')).toBe(false);
     const fleet = directDeclarations?.find(({ props }) =>
-      props.resource.kind === "StatefulSet"
+      props.resource.kind === "CelldFleet"
     )?.props.resource;
     expect(fleet?.spec).toMatchObject({
-      template: {
-        spec: {
-          securityContext: {
-            runAsNonRoot: true,
-            runAsUser: 65532,
-            runAsGroup: 65532,
-            fsGroup: 65532,
-            fsGroupChangePolicy: "OnRootMismatch",
-          },
-        },
-      },
+      runtimeSecretRef: { contract: 'applik8s.celld-runtime/v1' },
+      objectStore: { credentials: { secretRef: { contract: 'applik8s.object-store.s3-credentials/v1' } } },
     });
     expect(kroDeclarations?.length).toBeGreaterThan(0);
     expect(
@@ -1926,7 +1953,7 @@ describe("TypeKro deployment adapter", () => {
       ...binding!,
       declarations: async (strategy: 'direct' | 'kro') =>
         (await binding!.declarations(strategy)).filter(({ props }) =>
-          props.resource.kind !== 'StatefulSet'),
+          props.resource.kind !== 'CelldFleet'),
     };
     await expect(adaptApplicationDeploymentToTypeKro({
       graph: deploymentGraph,
@@ -1939,7 +1966,7 @@ describe("TypeKro deployment adapter", () => {
         },
       ),
       direct: { ...direct, 'direct.provider.actors.celld': missingFleet },
-    })).rejects.toThrow(/RUNTIME_ACCESS_WORKLOAD_MISSING/u);
+    })).rejects.toThrow(/emitted no declarations/u);
   });
 
   it("binds the dedicated Rook operator and platform as retained singletons before its application claim", async () => {

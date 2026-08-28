@@ -21,8 +21,8 @@ const rules: readonly BoundaryRule[] = [
   },
   {
     roots: ['packages/identity/src'],
-    forbidden: [/^@applik8s\/(?!core(?:\/|$))/, /^@kubernetes\//, /^typekro(?:\/|$)/, /^alchemy(?:\/|$)/],
-    rationale: 'Provider-neutral identity and OAuth flow authority may depend on portable core principals but never provider SDKs, Kubernetes, TypeKro, or deployment effects.',
+    forbidden: [/^@applik8s\/(?!core(?:\/|$)|runtime\/node-integrity$)/, /^@kubernetes\//, /^typekro(?:\/|$)/, /^alchemy(?:\/|$)/],
+    rationale: 'Provider-neutral identity and OAuth flow authority may depend on portable core principals and the focused Node integrity algebra, but never provider SDKs, Kubernetes, TypeKro, or deployment effects.',
   },
   {
     roots: ['packages/runtime-ai/src'],
@@ -31,8 +31,8 @@ const rules: readonly BoundaryRule[] = [
   },
   {
     roots: ['packages/deployment-contract/src'],
-    forbidden: [/^node:/, /^@applik8s\/(?!core\/canonical-json$)/, /^@kubernetes\//, /^alchemy(?:\/|$)/, /^typekro(?:\/|$)/],
-    rationale: 'Deployment contracts may consume the focused portable Canonical JSON byte algebra, but no runtime, provider, Kubernetes, TypeKro, or Alchemy dependency.',
+    forbidden: [/^node:/, /^@applik8s\/(?!core(?:\/|$))/, /^@kubernetes\//, /^alchemy(?:\/|$)/, /^typekro(?:\/|$)/],
+    rationale: 'Deployment contracts may consume portable core identities, guarantees, and Canonical JSON, but no runtime, provider, Kubernetes, TypeKro, or Alchemy dependency.',
   },
   {
     roots: ['packages/deployment-compiler/src'],
@@ -41,8 +41,8 @@ const rules: readonly BoundaryRule[] = [
   },
   {
     roots: ['packages/deployment-typekro/src'],
-    forbidden: [/^node:/, /^@applik8s\/(?!deployment-contract(?:\/|$))/, /^@kubernetes\//, /^alchemy(?:\/|$)/],
-    rationale: 'The TypeKro adapter may consume only the portable deployment contract and released TypeKro APIs; Alchemy runtime ownership belongs in the deployment backend.',
+    forbidden: [/^node:/, /^@applik8s\/(?!deployment-contract(?:\/|$)|deployment-compiler\/runtime-access-parity$|celld-operator\/typekro$)/, /^@kubernetes\//, /^alchemy(?:\/|$)/],
+    rationale: 'The TypeKro adapter may consume the portable deployment contract, the focused pure parity validator, provider-owned TypeKro compositions, and released TypeKro APIs; Alchemy runtime ownership belongs in the deployment backend.',
   },
   {
     roots: ['packages/deployment-alchemy/src'],
@@ -76,8 +76,8 @@ const rules: readonly BoundaryRule[] = [
   },
   {
     roots: ['packages/runtime-hatchet/src'],
-    forbidden: [/^@applik8s\/(?!applik8s(?:\/|$))/, /^@kubernetes\//, /^typekro(?:\/|$)/, /^alchemy(?:\/|$)/],
-    rationale: 'The Hatchet runtime may implement the provider-neutral Applik8s workflow contract but must not depend on compiler, deployment, Kubernetes, TypeKro, or Alchemy packages.',
+    forbidden: [/^@applik8s\/(?!applik8s(?:\/|$)|core(?:\/|$)|runtime-postgres\/schedule-(?:state|occurrence)$)/, /^@kubernetes\//, /^typekro(?:\/|$)/, /^alchemy(?:\/|$)/],
+    rationale: 'The Hatchet runtime may implement Applik8s/core contracts and compose the focused PostgreSQL schedule authority, but must not depend on compiler, deployment, Kubernetes, TypeKro, or Alchemy packages.',
   },
   {
     roots: ['packages/runtime-nats/src'],
@@ -86,23 +86,23 @@ const rules: readonly BoundaryRule[] = [
   },
   {
     roots: ['packages/runtime-kubernetes/src'],
-    forbidden: [/^@applik8s\/(?!applik8s(?:\/|$)|core(?:\/|$))/, /^typekro(?:\/|$)/, /^alchemy(?:\/|$)/],
-    rationale: 'The Kubernetes runtime may implement provider-neutral installation transports but must not depend on compiler, deployment, TypeKro, or Alchemy packages.',
+    forbidden: [/^@applik8s\/(?!applik8s(?:\/|$)|core(?:\/|$)|runtime-postgres\/schedule-(?:state|occurrence)$)/, /^typekro(?:\/|$)/, /^alchemy(?:\/|$)/],
+    rationale: 'The Kubernetes runtime may implement provider-neutral installation transports and compose the focused PostgreSQL schedule authority, but must not depend on compiler, deployment, TypeKro, or Alchemy packages.',
   },
   {
     roots: ['packages/runtime-postgres/src'],
-    forbidden: [/^@applik8s\/(?!applik8s(?:\/|$))/, /^@kubernetes\//, /^typekro(?:\/|$)/, /^alchemy(?:\/|$)/],
-    rationale: 'The PostgreSQL runtime may implement the provider-neutral SQL contract but must not depend on compiler, deployment, Kubernetes, TypeKro, or Alchemy packages.',
+    forbidden: [/^@applik8s\/(?!applik8s(?:\/|$)|core(?:\/|$))/, /^@kubernetes\//, /^typekro(?:\/|$)/, /^alchemy(?:\/|$)/],
+    rationale: 'The PostgreSQL runtime may implement provider-neutral Applik8s and core SQL contracts but must not depend on compiler, deployment, Kubernetes, TypeKro, or Alchemy packages.',
   },
   {
     roots: ['packages/runtime-aws/src'],
-    forbidden: [/^@applik8s\/(?!applik8s(?:\/|$)|core(?:\/|$)|sdk(?:\/|$))/, /^@kubernetes\//, /^typekro(?:\/|$)/, /^alchemy(?:\/|$)/],
-    rationale: 'The AWS runtime may implement provider-neutral Applik8s/core contracts and validate focused SDK schemas, but must not depend on compiler, deployment, Kubernetes, TypeKro, or Alchemy packages.',
+    forbidden: [/^@applik8s\/(?!applik8s(?:\/|$)|core(?:\/|$)|sdk(?:\/|$)|runtime-postgres\/schedule-state$)/, /^@kubernetes\//, /^typekro(?:\/|$)/, /^alchemy(?:\/|$)/],
+    rationale: 'The AWS runtime may implement Applik8s/core contracts, validate focused SDK schemas, and compose the focused PostgreSQL schedule authority, but must not depend on compiler, deployment, Kubernetes, TypeKro, or Alchemy packages.',
   },
   {
     roots: ['packages/runtime-celld/src'],
-    forbidden: [/^@applik8s\/(?!applik8s(?:\/|$)|deployment-contract(?:\/|$)|sdk(?:\/|$))/, /^@kubernetes\//, /^typekro(?:\/|$)/, /^alchemy(?:\/|$)/],
-    rationale: 'The celld runtime may implement actor contracts and use stable hashing/schema validation, but must not depend on compiler, Kubernetes, TypeKro, or Alchemy packages.',
+    forbidden: [/^@applik8s\/(?!applik8s(?:\/|$)|core(?:\/|$)|deployment-contract(?:\/|$)|runtime\/signed-envelope$|sdk(?:\/|$))/, /^@kubernetes\//, /^typekro(?:\/|$)/, /^alchemy(?:\/|$)/],
+    rationale: 'The celld runtime may implement actor/core contracts and use the focused signed-envelope, stable hashing, and schema-validation contracts, but must not depend on compiler, Kubernetes, TypeKro, or Alchemy packages.',
   },
   {
     roots: ['packages/runtime-otel/src'],
@@ -111,7 +111,7 @@ const rules: readonly BoundaryRule[] = [
   },
   {
     roots: ['packages/runtime-duckdb/src'],
-    forbidden: [/^@applik8s\/(?!applik8s(?:\/|$)|sdk(?:\/|$))/, /^@kubernetes\//, /^typekro(?:\/|$)/, /^alchemy(?:\/|$)/],
+    forbidden: [/^@applik8s\/(?!applik8s(?:\/|$)|core(?:\/|$)|sdk(?:\/|$))/, /^@kubernetes\//, /^typekro(?:\/|$)/, /^alchemy(?:\/|$)/],
     rationale: 'The DuckDB runtime may implement the provider-neutral lakehouse contract and validate focused SDK schemas, but must not depend on compiler, deployment, Kubernetes, TypeKro, or Alchemy packages.',
   },
   {
@@ -136,8 +136,8 @@ const rules: readonly BoundaryRule[] = [
   },
   {
     roots: ['packages/server/src'],
-    forbidden: [/^@applik8s\/(?!client(?:\/|$)|core(?:\/|$)|sdk(?:\/|$))/, /^typekro(?:\/|$)/],
-    rationale: 'Framework-neutral server authority may use only client, core, SDK, and Kubernetes APIs—not authoring, build, UI, or framework adapters.',
+    forbidden: [/^@applik8s\/(?!client(?:\/|$)|core(?:\/|$)|runtime\/(?:node-integrity|signed-envelope)$|sdk(?:\/|$))/, /^typekro(?:\/|$)/],
+    rationale: 'Framework-neutral server authority may use client, core, focused integrity/envelope, SDK, and Kubernetes APIs—not authoring, build, UI, or framework adapters.',
   },
   {
     roots: ['packages/tanstack-start/src'],

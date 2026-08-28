@@ -6,6 +6,16 @@ export type { CompileApplicationAwsDeploymentPlanRequest } from './aws-deploymen
 export { compileApplicationAwsDeploymentPlan } from './aws-deployment-plan.js';
 export type { AwsRuntimeAccessParityFinding } from './aws-runtime-access-parity.js';
 export { validateAwsRuntimeAccessParity } from './aws-runtime-access-parity.js';
+export {
+  type ApplicationCelldRuntimeManifest,
+  type ApplicationCelldRuntimeRelease,
+  applicationCelldProtocolRevision,
+  applicationCelldRuntimeManifest,
+  applicationCelldRuntimeRelease,
+  applicationCelldVersion,
+  applicationCelldWorkerVersion,
+  assertApplicationCelldRuntimeRelease,
+} from './celld-runtime-artifact.js';
 export { compileApplicationDeploymentGraph } from "./compiler.js";
 export type { KubernetesRuntimeAccessParityFinding } from './kubernetes-runtime-access-parity.js';
 export { validateKubernetesRuntimeAccessParity } from './kubernetes-runtime-access-parity.js';

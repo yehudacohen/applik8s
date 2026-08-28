@@ -29,7 +29,10 @@ The v0.8 deliverable includes:
    identity, native-plan composition, plan diff, redaction, and lifecycle owner;
 2. a persistent local supervisor and independent development portal with safe
    reset, crash recovery, reviewed diffs, truthful validation, and undo;
-3. an Alchemy-owned AWS target with exact IAM, networking, encryption,
+3. an Alchemy-owned AWS target composed from current native Alchemy AWS
+   resources, with custom lifecycle ownership limited to provisioned Valkey
+   subnet/groups and receipt-bearing one-shot ECS tasks, and with exact IAM,
+   networking, encryption,
    image-build adoption, create/update/drift/delete, AWS-local API fidelity, and
    real-AWS qualification;
 4. provider-neutral OpenTelemetry at HTTP, operation, query, event, workflow,
@@ -95,6 +98,11 @@ not be used to reorder or bypass that plan.
 - Complete graph/provenance, `ApplicationPlan`, provider guarantee manifests,
   target selection, local supervisor, AWS compiler, Alchemy lifecycle, runtime
   bindings, security bounds, and deterministic plan/diff output.
+- Lower the AWS semantic plan directly into Alchemy resources and `Output`
+  dependencies. CloudFormation templates, stack orchestration, and AWS CLI
+  reconciliation are not an accepted deployment layer. Delete the superseded
+  CloudFormation seam and its tests during the cutover; do not preserve it as a
+  compatibility path in this pre-1.0 release.
 - Keep AWS-local explicitly labelled API-fidelity-only.
 - Qualify clean local and MiniStack create/update/restart/reset/delete before
   using those paths as acceptance evidence.
@@ -147,10 +155,14 @@ The branch now contains the accepted planning suite and the locally implemented
 v0.8 verticals: canonical planning and diff, persistent local supervision,
 AWS planning and Alchemy lowering, inferred runtime access, provider guarantees,
 function-native schedules, OpenTelemetry, immutable lakehouse publication and
-DuckDB/Athena contracts, deterministic and celld actor runtimes, automatic
+DuckDB/Athena contracts, deterministic and Celld actor runtimes, automatic
 provider runtime installation, and the independent reviewed development
-environment. A clean packed consumer generates, discovers, compiles, and
-production-builds Agentic Start from the 59-package candidate.
+environment. The direct TypeKro/Alchemy Celld graph remains `AC-2b0` feasibility
+evidence; the accepted Kubernetes architecture is now implemented through the
+independently consumable Applik8s Celld operator, TypeKro-installed singleton
+bootstrap, application-owned `CelldFleet`, and a real OrbStack lifecycle pass. A clean packed consumer
+generates, discovers, compiles, and production-builds Agentic Start from the
+59-package candidate.
 
 Local qualification now also has explicit v0.7.1 source/export migration,
 fail-closed canonical/AWS plan serialization, Builder secret canaries, and
@@ -167,7 +179,8 @@ an external release blocker even after all other locally provable work is green.
 
 Before continuing that matrix, execute the checkpoint, release-line
 reconciliation, Runtime Integrity, and callable-provider phases in the accepted
-execution plan. The current actor contract suite and Docker/celld distributed
-lifecycle are candidate evidence. The latest Kubernetes actor run was blocked by
-OrbStack node pod capacity and completed its Alchemy teardown; it must be rerun
-successfully before Kubernetes actor qualification is claimed.
+execution plan. The actor contract suite plus `AC-2a`, `AC-2c`, and the
+operator-backed `AC-2b` lifecycle receipts remain valid. The successful direct
+Kubernetes run is retained only as `AC-2b0`; the release claim still requires
+anonymous linux/amd64 and linux/arm64 operator-image evidence plus CRD/operator
+upgrade, interrupted-migration, rollback, and Celld-version replacement proof.

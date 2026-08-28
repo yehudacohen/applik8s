@@ -15,7 +15,7 @@ import {
   applicationScheduleImmediateInvocationAdmission,
   applicationScheduleOccurrenceId,
   applicationScheduleProjectedDesiredState,
-} from '@applik8s/applik8s';
+} from '@applik8s/applik8s/schedule-provider-runtime';
 import {
   type ApplicationAdmissionInvocationContextV1,
   exactFiveFieldCronForInterval,
@@ -28,6 +28,7 @@ import { createPostgresApplicationScheduleStateAuthority } from '@applik8s/runti
 import type { BatchV1Api, KubeConfig, V1CronJob } from '@kubernetes/client-node';
 
 const admissionImage = 'node:22-alpine@sha256:16e22a550f3863206a3f701448c45f7912c6896a62de43add43bb9c86130c3e2';
+export const DEFAULT_KUBERNETES_SCHEDULE_INSTANCE_CEILING = 100;
 
 export interface KubernetesApplicationScheduleRuntimeOptions {
   readonly applicationId: string;
@@ -36,9 +37,13 @@ export interface KubernetesApplicationScheduleRuntimeOptions {
   readonly admissionEndpoint: string;
   readonly authorizationSecretName: string;
   readonly authorizationSecretKey?: string;
+  /** ServiceAccount used by occurrence Jobs to read their authoritative scheduled timestamp. */
+  readonly serviceAccountName?: string;
   readonly databaseUrl?: string;
   readonly kubeConfig?: KubeConfig;
   readonly image?: string;
+  /** Maximum active CronJob projections allowed for one application/environment. */
+  readonly maximumInstances?: number;
   readonly admissionRunner?: ApplicationScheduleAdmissionRunner;
   readonly stateAuthority?: ApplicationScheduleStateAuthority;
 }
@@ -70,6 +75,8 @@ export async function createKubernetesApplicationScheduleRuntime(
   }
   const api = kubeConfig.makeApiClient(kubernetes.BatchV1Api);
   const image = options.image ?? admissionImage;
+  const maximumInstances = options.maximumInstances
+    ?? DEFAULT_KUBERNETES_SCHEDULE_INSTANCE_CEILING;
   const stateAuthority = options.stateAuthority
     ?? createPostgresApplicationScheduleStateAuthority({
       databaseUrl: required(options.databaseUrl ?? '', 'Kubernetes schedule PostgreSQL state authority'),
@@ -157,7 +164,15 @@ export async function createKubernetesApplicationScheduleRuntime(
       if (request.definition.configuration !== 'dynamic') {
         throw new Error(`Kubernetes Scheduler cannot reconcile dynamic instance state for fixed definition ${request.definition.id}.`);
       }
-      const canonical = await stateAuthority.reconcile(request);
+      if (request.definition.requirements.cardinality !== 'bounded') {
+        throw new Error(
+          `Kubernetes Scheduler requires bounded cardinality; schedule ${request.definition.id} declares ${request.definition.requirements.cardinality}.`,
+        );
+      }
+      const canonical = await stateAuthority.reconcile({
+        ...request,
+        maximumActiveInstances: maximumInstances,
+      });
       const projected = await project({
         definition: request.definition as unknown as ApplicationScheduleDefinitionContract<object>,
         instance: request.instance as ApplicationScheduleInstance<object>,
@@ -193,7 +208,7 @@ export async function createKubernetesApplicationScheduleRuntime(
     },
     async recover() {
       const recovered: ApplicationScheduleConvergenceResult[] = [];
-      for (const record of await stateAuthority.pending()) {
+      for (const record of await stateAuthority.recoveryCandidates()) {
         if (record.state === 'active') {
           const desired = applicationScheduleProjectedDesiredState(record);
           const state = await project(desired);
@@ -339,7 +354,7 @@ function cronJob<TInput extends object>(request: {
   readonly options: Pick<
     KubernetesApplicationScheduleRuntimeOptions,
     'applicationId' | 'environmentId' | 'namespace' | 'admissionEndpoint'
-      | 'authorizationSecretName' | 'authorizationSecretKey'
+      | 'authorizationSecretName' | 'authorizationSecretKey' | 'serviceAccountName'
   >;
   readonly image: string;
   readonly name: string;
@@ -396,7 +411,10 @@ function cronJob<TInput extends object>(request: {
             metadata: { labels },
             spec: {
               restartPolicy: 'Never',
-              containers: [admissionContainer({
+              ...(request.options.serviceAccountName
+                ? { serviceAccountName: request.options.serviceAccountName }
+                : {}),
+              containers: [kubernetesApplicationScheduleAdmissionContainer({
                 image: request.image,
                 endpoint: request.options.admissionEndpoint,
                 authorizationSecretName: request.options.authorizationSecretName,
@@ -408,6 +426,9 @@ function cronJob<TInput extends object>(request: {
                   definitionId: request.definition.id,
                   instanceId: request.instance.id,
                   input: request.instance.input,
+                  ...(request.instance.at
+                    ? { scheduledAt: new Date(request.instance.at).toISOString() }
+                    : {}),
                   ...(request.instance.at && request.instance.deleteAfterCompletion
                     ? { deleteAfterCompletion: true, providerResourceName: request.name }
                     : {}),
@@ -430,6 +451,7 @@ export function kubernetesApplicationScheduleCronJob(options: {
   readonly admissionEndpoint: string;
   readonly authorizationSecretName: string;
   readonly authorizationSecretKey?: string;
+  readonly serviceAccountName?: string;
   readonly definition: ApplicationScheduleDefinitionContract<Record<string, never>>;
 }): V1CronJob {
   return cronJob({
@@ -450,27 +472,36 @@ export function kubernetesApplicationScheduleCronJob(options: {
   });
 }
 
-function admissionContainer(options: {
+export function kubernetesApplicationScheduleAdmissionContainer(options: {
   readonly image: string;
   readonly endpoint: string;
   readonly authorizationSecretName: string;
   readonly authorizationSecretKey: string;
   readonly admission: object;
 }): NonNullable<NonNullable<NonNullable<V1CronJob['spec']>['jobTemplate']['spec']>['template']['spec']>['containers'][number] {
-  const source = `const base=JSON.parse(process.env.APPLIK8S_SCHEDULE_ADMISSION);const now=new Date().toISOString();const response=await fetch(process.env.APPLIK8S_SCHEDULE_ENDPOINT,{method:'POST',headers:{'content-type':'application/json','authorization':'Bearer '+process.env.APPLIK8S_INTERNAL_OPERATION_SECRET},body:JSON.stringify({...base,scheduledAt:now,admittedAt:now,attempt:1,schedulerExecutionId:process.env.APPLIK8S_JOB_NAME})});if(!response.ok){console.error(await response.text());process.exit(1)};console.log(await response.text());`;
+  const source = `import{readFile}from'node:fs/promises';const base=JSON.parse(process.env.APPLIK8S_SCHEDULE_ADMISSION);const admittedAt=new Date().toISOString();let scheduledAt=base.scheduledAt;if(!scheduledAt){const token=(await readFile('/var/run/secrets/kubernetes.io/serviceaccount/token','utf8')).trim();const namespace=process.env.APPLIK8S_NAMESPACE;const jobName=process.env.APPLIK8S_JOB_NAME;const jobResponse=await fetch('https://kubernetes.default.svc/apis/batch/v1/namespaces/'+encodeURIComponent(namespace)+'/jobs/'+encodeURIComponent(jobName),{headers:{authorization:'Bearer '+token}});if(!jobResponse.ok)throw new Error('Unable to read Kubernetes schedule Job '+jobName+': HTTP '+jobResponse.status);const job=await jobResponse.json();scheduledAt=job?.metadata?.annotations?.['batch.kubernetes.io/cronjob-scheduled-timestamp'];}if(typeof scheduledAt!=='string'||!Number.isFinite(Date.parse(scheduledAt)))throw new Error('Kubernetes schedule Job has no authoritative scheduled timestamp.');const response=await fetch(process.env.APPLIK8S_SCHEDULE_ENDPOINT,{method:'POST',headers:{'content-type':'application/json','authorization':'Bearer '+process.env.APPLIK8S_INTERNAL_OPERATION_SECRET},body:JSON.stringify({...base,scheduledAt:new Date(scheduledAt).toISOString(),admittedAt,attempt:1,schedulerExecutionId:process.env.APPLIK8S_JOB_NAME})});if(!response.ok){console.error(await response.text());process.exit(1)};console.log(await response.text());`;
   return {
     name: 'schedule-admission',
     image: options.image,
     imagePullPolicy: 'IfNotPresent',
     command: ['node', '--input-type=module', '--eval', source],
+    securityContext: {
+      allowPrivilegeEscalation: false,
+      capabilities: { drop: ['ALL'] },
+      readOnlyRootFilesystem: true,
+      runAsGroup: 1000,
+      runAsNonRoot: true,
+      runAsUser: 1000,
+    },
     env: [
       { name: 'APPLIK8S_SCHEDULE_ENDPOINT', value: options.endpoint },
       { name: 'APPLIK8S_SCHEDULE_ADMISSION', value: JSON.stringify(options.admission) },
       { name: 'APPLIK8S_JOB_NAME', valueFrom: { fieldRef: { fieldPath: "metadata.labels['batch.kubernetes.io/job-name']" } } },
+      { name: 'APPLIK8S_NAMESPACE', valueFrom: { fieldRef: { fieldPath: 'metadata.namespace' } } },
+      { name: 'NODE_EXTRA_CA_CERTS', value: '/var/run/secrets/kubernetes.io/serviceaccount/ca.crt' },
       { name: 'APPLIK8S_INTERNAL_OPERATION_SECRET', valueFrom: { secretKeyRef: { name: options.authorizationSecretName, key: options.authorizationSecretKey } } },
     ],
     resources: { requests: { cpu: '10m', memory: '32Mi' }, limits: { memory: '64Mi' } },
-    securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, runAsNonRoot: true, capabilities: { drop: ['ALL'] } },
   };
 }
 
@@ -502,8 +533,13 @@ function validateOptions(options: KubernetesApplicationScheduleRuntimeOptions): 
     throw new Error('Kubernetes Scheduler runtime databaseUrl is required when no stateAuthority is injected.');
   }
   for (const [name, value] of Object.entries(options)) {
-    if (name === 'kubeConfig' || name === 'authorizationSecretKey' || name === 'image' || name === 'admissionRunner' || name === 'stateAuthority' || name === 'databaseUrl') continue;
+    if (name === 'kubeConfig' || name === 'authorizationSecretKey' || name === 'serviceAccountName' || name === 'image' || name === 'maximumInstances' || name === 'admissionRunner' || name === 'stateAuthority' || name === 'databaseUrl') continue;
     if (typeof value !== 'string' || !value.trim()) throw new Error(`Kubernetes Scheduler runtime ${name} is required.`);
+  }
+  const maximumInstances = options.maximumInstances
+    ?? DEFAULT_KUBERNETES_SCHEDULE_INSTANCE_CEILING;
+  if (!Number.isSafeInteger(maximumInstances) || maximumInstances < 1) {
+    throw new Error('Kubernetes schedule maximumInstances must be a positive integer.');
   }
 }
 

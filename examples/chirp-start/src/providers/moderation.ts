@@ -1,6 +1,6 @@
 import { createResource } from 'typekro';
 import { registerPortableReadinessEvaluator } from 'typekro/advanced';
-import { app, namespace } from '../app';
+import { app, namespace } from '../installation';
 import { moderationPolicyApiVersion, moderationPolicyKind } from '../domain/moderation';
 
 interface ObservedModerationPolicy {

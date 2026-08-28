@@ -1,11 +1,11 @@
 // typecast-file-boundary: compiler-discovered module exports and serialized composition metadata are discriminator-checked before typed planning.
 import { mkdir } from 'node:fs/promises';
-import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { dirname, join } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { inspect } from 'node:util';
 
 import type { Diagnostic, OperatorDefinition, Result } from '@applik8s/core';
-import { build } from 'esbuild';
+import { build, type Plugin } from 'esbuild';
 
 import { applik8sWorkspaceSourcePlugin } from '../bundling/index.js';
 import type { CompileResult } from '../interfaces.js';
@@ -108,9 +108,10 @@ export async function discoverEntrypointExports(entrypoint: string): Promise<Res
       banner: {
         js: "import { createRequire as __applik8sCreateRequire } from 'node:module'; const require = __applik8sCreateRequire(import.meta.url);",
       },
-      external: ['applik8s:handler/capabilities', 'applik8s:handler/kubernetes', '@applik8s/compiler', '@applik8s/compiler/*', 'esbuild', 'typekro', 'typekro/*', '@napi-rs/lzma-*', '@oxc-parser/binding-*'],
+      external: ['applik8s:handler/capabilities', 'applik8s:handler/kubernetes', '@napi-rs/lzma-*', '@oxc-parser/binding-*'],
       plugins: [
         handlerSourceMetadataPlugin(entrypoint),
+        compilerOwnedDiscoveryDependenciesPlugin(),
         applik8sWorkspaceSourcePlugin(),
       ],
     });
@@ -208,6 +209,35 @@ export async function discoverEntrypointExports(entrypoint: string): Promise<Res
   } finally {
     deferTemporaryDirectoryCleanup(bundleRoot);
   }
+}
+
+function compilerOwnedDiscoveryDependenciesPlugin(): Plugin {
+  const compilerDirectory = dirname(fileURLToPath(import.meta.url));
+  const resolvingCompilerDependency = Object.freeze({ compilerOwnedDiscoveryDependency: true });
+  return {
+    name: 'applik8s-compiler-owned-discovery-dependencies',
+    setup(buildContext) {
+      buildContext.onResolve(
+        { filter: /^(?:@applik8s\/compiler(?:\/.*)?|esbuild|typekro(?:\/.*)?)$/ },
+        async (args) => {
+          if (args.pluginData === resolvingCompilerDependency) return undefined;
+          const resolved = await buildContext.resolve(args.path, {
+            kind: args.kind,
+            resolveDir: compilerDirectory,
+            pluginData: resolvingCompilerDependency,
+          });
+          if (resolved.errors.length > 0) return { errors: resolved.errors };
+          return {
+          // The discovery bundle executes below the application directory.
+          // Anchor compiler implementation externals to this compiler module
+          // so Node never asks the generated application to install them.
+            path: resolved.path,
+            external: true,
+          };
+        },
+      );
+    },
+  };
 }
 
 function exportedApplicationDurable(value: unknown): {

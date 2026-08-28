@@ -51,10 +51,11 @@ describe('authenticated command gateway', () => {
         attempt: 1,
       },
     });
+    const metrics: Array<{ readonly name: string; readonly attributes?: Readonly<Record<string, string | number | boolean>> }> = [];
     const runtime: ApplicationTelemetryRuntime = {
       async run(_boundary, execute) { return execute(); },
       log() {},
-      count() {},
+      count(name, _value, attributes) { metrics.push({ name, ...(attributes ? { attributes } : {}) }); },
       record() {},
       capture() { return producer; },
     };
@@ -101,6 +102,15 @@ describe('authenticated command gateway', () => {
         expect.objectContaining({ telemetry: producer }),
         'commands',
       );
+      expect(metrics).toContainEqual({
+        name: 'applik8s.runtime.integrity.envelope',
+        attributes: {
+          'applik8s.runtime.integrity.purpose': 'applik8s.command-cursor/v1',
+          'applik8s.runtime.integrity.format': 'legacy',
+          'applik8s.runtime.integrity.operation': 'sign',
+          'applik8s.runtime.integrity.result': 'accepted',
+        },
+      });
     } finally {
       await gateway.close();
       dispose();

@@ -1,3 +1,4 @@
+// typecast-file-boundary: This bounded compatibility reader validates retained v0.7 search material before adapting it to the v0.8 cursor contract.
 import { createHash } from 'node:crypto';
 
 /**

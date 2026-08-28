@@ -1,3 +1,4 @@
+// typecast-file-boundary: The MiniStack fixture narrows external emulator responses only after endpoint-specific checks and uses partial records for adversarial lifecycle assertions.
 import { execFile } from 'node:child_process';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -19,7 +20,7 @@ afterAll(async () => {
 });
 
 live('v0.8 pinned MiniStack AWS-local lifecycle', () => {
-  test('applies the canonical AWS plan, exercises APIs, repairs drift, and deletes completely', async () => {
+  test('applies the supported canonical AWS-local plan, exercises APIs, repairs drift, and deletes completely', async () => {
     const suffix = `${process.pid}-${Date.now().toString(36)}`.toLowerCase();
     const graph = awsLocalGraph(`v08-mini-${suffix}`);
     const plan = compileApplicationAwsDeploymentPlan({
@@ -47,21 +48,20 @@ live('v0.8 pinned MiniStack AWS-local lifecycle', () => {
 
       const bucket = requiredResource(plan, 's3', 'bucket').physicalName;
       const queue = requiredResource(plan, 'sqs', 'queue').physicalName;
-      const stream = requiredResource(plan, 'kinesis', 'stream').physicalName;
       await aws(['s3api', 'put-object', '--bucket', bucket, '--key', 'qualification/probe.txt', '--body', probePath]);
       expect(JSON.parse(await aws(['s3api', 'head-object', '--bucket', bucket, '--key', 'qualification/probe.txt']))).toMatchObject({ ContentLength: 13 });
       expect(JSON.stringify(JSON.parse(await aws(['s3api', 'get-bucket-encryption', '--bucket', bucket])))).toContain('AES256');
       const queueUrl = String(JSON.parse(await aws(['sqs', 'get-queue-url', '--queue-name', queue])).QueueUrl);
       await aws(['sqs', 'send-message', '--queue-url', queueUrl, '--message-body', 'applik8s-v08']);
       expect(JSON.parse(await aws(['sqs', 'receive-message', '--queue-url', queueUrl, '--wait-time-seconds', '1'])).Messages).toHaveLength(1);
-      await aws(['kinesis', 'put-record', '--stream-name', stream, '--partition-key', 'qualification', '--data', 'YXBwbGlrOHMtdjA4']);
-      expect(JSON.parse(await aws(['kinesis', 'describe-stream-summary', '--stream-name', stream])).StreamDescriptionSummary.StreamStatus).toBe('ACTIVE');
-
       expect((await deployment.plan()).changes.every(({ action }) => action === 'noop')).toBe(true);
 
       await aws(['sqs', 'set-queue-attributes', '--queue-url', queueUrl, '--attributes', JSON.stringify({ VisibilityTimeout: '41' })]);
       expect(JSON.parse(await aws(['sqs', 'get-queue-attributes', '--queue-url', queueUrl, '--attribute-names', 'VisibilityTimeout'])).Attributes.VisibilityTimeout).toBe('41');
-      expect((await deployment.plan()).changes.some(({ action }) => action === 'update')).toBe(true);
+      // Alchemy's plan is a declaration/state diff. apply() deliberately
+      // forces each native provider through its observe/ensure/sync loop so
+      // live control-plane drift is repaired without a second state engine.
+      expect((await deployment.plan()).changes.every(({ action }) => action === 'noop')).toBe(true);
       await deployment.apply();
       expect(JSON.parse(await aws(['sqs', 'get-queue-attributes', '--queue-url', queueUrl, '--attribute-names', 'VisibilityTimeout'])).Attributes.VisibilityTimeout).toBe('300');
 
@@ -78,7 +78,7 @@ live('v0.8 pinned MiniStack AWS-local lifecycle', () => {
       expect((await deployment.plan()).changes.every(({ action }) => action === 'noop')).toBe(true);
 
       await restartMiniStack();
-      expect((await deployment.plan()).changes.some(({ action }) => action === 'update')).toBe(true);
+      expect((await deployment.plan()).changes.every(({ action }) => action === 'noop')).toBe(true);
       await deployment.apply();
       const recoveredQueueUrl = String(JSON.parse(await aws(['sqs', 'get-queue-url', '--queue-name', queue])).QueueUrl);
       expect(JSON.parse(await aws(['sqs', 'get-queue-attributes', '--queue-url', recoveredQueueUrl, '--attribute-names', 'VisibilityTimeout'])).Attributes.VisibilityTimeout).toBe('180');
@@ -95,6 +95,116 @@ live('v0.8 pinned MiniStack AWS-local lifecycle', () => {
       }
     }
   }, 300_000);
+
+  test('rejects Kinesis before constructing an Alchemy deployment against incomplete MiniStack lifecycle APIs', () => {
+    const name = `v08-mini-kinesis-${process.pid}-${Date.now().toString(36)}`.toLowerCase();
+    const plan = compileApplicationAwsDeploymentPlan({
+      graph: {
+        ...awsLocalGraph(name),
+        nodes: [{
+          id: 'provider.EventLog',
+          kind: 'provider',
+          name: 'EventLog',
+          stability: 'stable',
+          interface: 'EventLog',
+          implementation: 'kinesis',
+        }],
+      },
+      target: 'aws-local',
+      includeApplicationHosts: false,
+      environment: 'live',
+      region: 'us-east-1',
+      accountId: '000000000000',
+    });
+    expect(plan.resources.some(({ service }) => service === 'kinesis')).toBe(false);
+    expect(plan.diagnostics).toEqual([
+      expect.objectContaining({ code: 'AWS_PROVIDER_INCOMPATIBLE', message: expect.stringMatching(/ListTagsForResource/u) }),
+    ]);
+    expect(() => createApplicationAwsDeployment({ plan, endpoint, stateRoot: '/unreachable', dev: true }))
+      .toThrow(/AWS_PROVIDER_INCOMPATIBLE.*ListTagsForResource/su);
+  });
+
+  test('passes native ECR outputs into immutable artifact publication and restores the resolved stack output', async () => {
+    const suffix = `${process.pid}-${Date.now().toString(36)}`.toLowerCase();
+    const base = compileApplicationAwsDeploymentPlan({
+      graph: { ...awsLocalGraph(`v08-image-${suffix}`), nodes: [], providerRequirements: [], providerBindings: [] },
+      target: 'aws-local',
+      includeApplicationHosts: false,
+      environment: 'live',
+      region: 'us-east-1',
+      accountId: '000000000000',
+    });
+    const artifact = {
+      nodeId: 'processor.image-proof',
+      name: 'image-proof',
+      role: 'processor' as const,
+      source: '.applik8s/image-proof/worker.mjs',
+      digest: `sha256:${'a'.repeat(64)}` as const,
+      container: {
+        image: 'image-proof:generated',
+        imageName: 'image-proof',
+        tag: 'generated',
+        baseImage: 'node:22-bookworm-slim',
+        contextPath: '.applik8s/image-proof/container',
+        dockerfilePath: '.applik8s/image-proof/container/Dockerfile',
+        entrypoint: '/app/worker.mjs',
+        command: ['node', '/app/worker.mjs'],
+        sourceDigest: `sha256:${'b'.repeat(64)}` as const,
+      },
+    };
+    const plan = normalizeApplicationAwsDeploymentPlan({
+      ...base,
+      resources: [{
+        id: 'foundation.registry',
+        service: 'ecr',
+        resourceType: 'repository',
+        physicalName: `v08-image-${suffix}`,
+        lifecycle: { ownership: 'application', deletion: 'delete', adoption: 'createOrAdoptExact' },
+        network: 'none',
+        configuration: { imageTagMutability: 'IMMUTABLE', scanOnPush: true },
+        outputs: [
+          { name: 'repositoryUri', sensitivity: 'public', persistence: 'state' },
+          { name: 'repositoryArn', sensitivity: 'public', persistence: 'state' },
+        ],
+        provenance: {},
+      }],
+      runtimeArtifacts: [artifact],
+    });
+    const stateRoot = await mkdtemp(join(tmpdir(), 'applik8s-v08-image-output-'));
+    stateRoots.push(stateRoot);
+    const observedRepositories: string[] = [];
+    const digest = `sha256:${'c'.repeat(64)}`;
+    const deployment = createApplicationAwsDeployment({
+      plan,
+      endpoint,
+      stateRoot,
+      dev: true,
+      buildRuntimeArtifactImage: async ({ repositoryUri }) => {
+        observedRepositories.push(repositoryUri);
+        return `${repositoryUri}@${digest}`;
+      },
+    });
+    let attempted = false;
+    try {
+      attempted = true;
+      const applied = await deployment.apply();
+      const expected = `${observedRepositories[0]}@${digest}`;
+      expect(observedRepositories).toHaveLength(1);
+      expect(observedRepositories[0]).toMatch(/\.dkr\.ecr\.us-east-1\.amazonaws\.com\/v08-image-/u);
+      expect(applied.aws.artifactImageUris).toEqual({ 'processor:processor.image-proof': expected });
+      expect(await deployment.status()).toMatchObject({
+        planDigest: plan.digest,
+        resources: { 'foundation.registry': { repositoryUri: observedRepositories[0] } },
+        artifactImageUris: { 'processor:processor.image-proof': expected },
+      });
+      expect((await deployment.plan()).changes.every(({ action }) => action === 'noop')).toBe(true);
+      await deployment.destroy();
+      attempted = false;
+      expect(await deployment.status()).toBeUndefined();
+    } finally {
+      if (attempted) await deployment.destroy().catch(() => undefined);
+    }
+  }, 120_000);
 });
 
 async function aws(args: readonly string[]): Promise<string> {
@@ -136,7 +246,7 @@ async function restartMiniStack(): Promise<void> {
 
 function requiredResource(
   plan: ReturnType<typeof compileApplicationAwsDeploymentPlan>,
-  service: 's3' | 'sqs' | 'kinesis',
+  service: 's3' | 'sqs',
   resourceType: string,
 ) {
   const resource = plan.resources.find((candidate) => candidate.service === service && candidate.resourceType === resourceType);
@@ -152,7 +262,6 @@ function awsLocalGraph(name: string): ApplicationGraph {
     nodes: [
       { id: 'provider.ObjectStorage', kind: 'provider', name: 'ObjectStorage', stability: 'stable', interface: 'ObjectStorage', implementation: 's3', config: { objectStorage: { kind: 's3', prefix: 'qualification' } } },
       { id: 'provider.Queue', kind: 'provider', name: 'Queue', stability: 'stable', interface: 'Queue', implementation: 'sqs' },
-      { id: 'provider.EventLog', kind: 'provider', name: 'EventLog', stability: 'stable', interface: 'EventLog', implementation: 'kinesis' },
     ],
     edges: [],
     providerRequirements: [],
@@ -160,3 +269,4 @@ function awsLocalGraph(name: string): ApplicationGraph {
     compatibility: { stablePublicApis: [], documentedInternalContracts: [], experimentalSurfaces: [], postV3Surfaces: [], labels: [] },
   };
 }
+// typecast-file-boundary: The MiniStack fixture narrows external emulator responses only after endpoint-specific checks and uses partial records for adversarial lifecycle assertions.

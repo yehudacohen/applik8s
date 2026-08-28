@@ -12,6 +12,7 @@ import { applicationGraphBooleanCondition, applicationGraphInterpolate, applicat
 import { jetStreamConsumerName } from '../application-nats-naming.js';
 import { applicationGraphHasObservabilityRuntime, generatedApplicationTelemetryImports, generatedApplicationTelemetryRuntimeSource } from '../application-observability-runtime-source.js';
 import { applik8sWorkspaceSourcePlugin } from '../bundling/index.js';
+import { handlerSourceMetadataPlugin } from '../pipeline/entrypoint-handler-instrumentation.js';
 
 const runtimeImage = 'node:22-alpine@sha256:16e22a550f3863206a3f701448c45f7912c6896a62de43add43bb9c86130c3e2';
 
@@ -75,6 +76,7 @@ interface PublisherContract {
 export async function emitGeneratedApplicationLakehousePublishers(options: {
   readonly graph: ApplicationGraph;
   readonly outDir: string;
+  readonly entrypoint: string;
   readonly executionTarget?: 'kubernetes' | 'local' | 'aws-local' | 'aws';
 }): Promise<readonly GeneratedApplicationLakehousePublisherArtifact[]> {
   const publications = options.graph.nodes.filter((node): node is ApplicationLakehousePublicationNode => node.kind === 'lakehousePublication');
@@ -92,6 +94,7 @@ export async function emitGeneratedApplicationLakehousePublishers(options: {
     artifacts.push(await emitPublisher(
       contract,
       options.outDir,
+      options.entrypoint,
       options.executionTarget === 'aws' || options.executionTarget === 'aws-local'
         ? 'aws'
         : 'kubernetes',
@@ -103,6 +106,7 @@ export async function emitGeneratedApplicationLakehousePublishers(options: {
 async function emitPublisher(
   contract: PublisherContract,
   outDir: string,
+  applicationEntrypoint: string,
   executionTarget: 'kubernetes' | 'aws',
 ): Promise<GeneratedApplicationLakehousePublisherArtifact> {
   const directory = join(outDir, contract.consumer);
@@ -137,14 +141,14 @@ async function emitPublisher(
     legalComments: 'none', minify: true, keepNames: true, lineLimit: 120, sourcemap: 'external', sourcesContent: false,
     nodePaths: [join(process.cwd(), 'node_modules')],
     banner: { js: "import { createRequire as __applik8sCreateRequire } from 'node:module'; const require = __applik8sCreateRequire(import.meta.url);" },
-    supported: { 'template-literal': false }, plugins: [applik8sWorkspaceSourcePlugin()],
+    supported: { 'template-literal': false }, plugins: [handlerSourceMetadataPlugin(applicationEntrypoint, { includeMaintainedPackages: false }), applik8sWorkspaceSourcePlugin()],
   });
   await build({
     entryPoints: [localGenerated], outfile: localSourcePath, bundle: true, format: 'esm', platform: 'node', target: 'node22',
     legalComments: 'none', minify: true, keepNames: true, lineLimit: 120, sourcemap: 'external', sourcesContent: false,
     nodePaths: [join(process.cwd(), 'node_modules')], external: ['@duckdb/node-api', '@duckdb/node-bindings', '@duckdb/node-bindings-*'],
     banner: { js: "import { createRequire as __applik8sCreateRequire } from 'node:module'; const require = __applik8sCreateRequire(import.meta.url);" },
-    supported: { 'template-literal': false }, plugins: [applik8sWorkspaceSourcePlugin()],
+    supported: { 'template-literal': false }, plugins: [handlerSourceMetadataPlugin(applicationEntrypoint, { includeMaintainedPackages: false }), applik8sWorkspaceSourcePlugin()],
   });
   const source = await readFile(sourcePath);
   const localSource = await readFile(localSourcePath);

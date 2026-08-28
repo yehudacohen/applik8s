@@ -228,6 +228,28 @@ describe('v0.8 runtime-access lowering', () => {
     expect(JSON.stringify(opaque)).not.toContain('0.0.0.0/0');
   });
 
+  it('treats an explicitly embedded callable provider as capability access without inventing network egress', () => {
+    const base = externalPaymentAccessGraph();
+    const graph = {
+      ...base,
+      nodes: base.nodes.map((node) => node.kind === 'provider'
+        ? { ...node, implementation: 'local-simulated' }
+        : node),
+    } as ApplicationGraph;
+    const plan = compileApplicationRuntimeAccessPlan({
+      graph,
+      target: 'aws',
+      targetResources: { 'provider.payments': { networkMode: 'embedded' } },
+    });
+    expect(plan.diagnostics).toEqual([]);
+    expect(plan.executions[0]?.aws).toMatchObject({ privatePeers: [], externalEgress: [] });
+    expect(plan.executions[0]?.lowerings).toContainEqual(expect.objectContaining({
+      operation: 'network.connect',
+      fidelity: 'capability',
+      mechanisms: [],
+    }));
+  });
+
   it('derives Stripe external egress from the reviewed provider adapter rather than provider-config scanning', () => {
     const graph = externalPaymentAccessGraph();
     const request = {
@@ -582,6 +604,21 @@ describe('v0.8 runtime-access lowering', () => {
     });
 
     expect(validateKubernetesRuntimeAccessParity(plan, [deployment('current')])).toEqual([]);
+    const crossNamespacePlan = {
+      ...plan,
+      workloads: plan.workloads.map((workload) => workload.kubernetes
+        ? {
+            ...workload,
+            kubernetes: {
+              ...workload.kubernetes,
+              credentialProjections: [{ resourceId: 'v1/Secret/telemetry/signing', keys: ['current'] }],
+            },
+          }
+        : workload),
+    };
+    expect(validateKubernetesRuntimeAccessParity(crossNamespacePlan, [deployment('current')])).toEqual([
+      expect.objectContaining({ code: 'RUNTIME_ACCESS_CREDENTIAL_CROSS_NAMESPACE' }),
+    ]);
     expect(validateKubernetesRuntimeAccessParity(plan, [deployment('previous')])).toEqual([
       expect.objectContaining({ code: 'RUNTIME_ACCESS_CREDENTIAL_MISSING' }),
       expect.objectContaining({ code: 'RUNTIME_ACCESS_CREDENTIAL_WIDENED' }),

@@ -29,6 +29,113 @@ const sourceGraphDigest = `sha256:${"a".repeat(64)}`;
 const connectionDigest = `sha256:${"b".repeat(64)}`;
 
 describe("Application deployment compiler", () => {
+  it('does not mistake a schedule-admission CronJob for the scheduled closure workload', () => {
+    const scheduleId = 'schedule.source.poll.v1';
+    const graph = scheduleManagingGraph();
+    const withProcessor = runtimeWorkloadRequest(
+      { ...request(), graph },
+      'schedule-proof-processor',
+      ['streamProcessor.reconcile-source-polling'],
+    );
+    const withScheduleControl = runtimeWorkloadRequest(
+      withProcessor,
+      'schedule-proof-schedule-control',
+      [scheduleId],
+    );
+    const image = 'applik8s/schedule-proof-schedule-control:source';
+    const compiled = compileApplicationDeploymentGraph({
+      ...withScheduleControl,
+      materializedComposition: {
+        resources: [
+          ...withProcessor.materializedComposition.resources,
+          ...withScheduleControl.materializedComposition.resources,
+          {
+            apiVersion: 'batch/v1',
+            kind: 'CronJob',
+            metadata: {
+              name: 'schedule-source-poll-v1',
+              namespace: 'schedule-proof',
+              labels: { 'app.kubernetes.io/component': 'schedule' },
+            },
+            spec: {
+              jobTemplate: {
+                spec: {
+                  template: {
+                    metadata: { labels: { 'app.kubernetes.io/component': 'schedule' } },
+                    spec: { containers: [{ name: 'schedule-admission', image }] },
+                  },
+                },
+              },
+            },
+          },
+        ],
+        status: {},
+      },
+    });
+
+    const scheduleExecution = compiled.runtimeAccess.executions.find(({ nodeId }) => nodeId === scheduleId);
+    expect(scheduleExecution).toBeDefined();
+    expect(compiled.runtimeAccess.workloads.filter(({ executionIdentities }) =>
+      executionIdentities.includes(scheduleExecution!.executionIdentity)))
+      .toEqual([
+        expect.objectContaining({
+          workloadIdentity: 'apps/v1:Deployment:guestbook:schedule-proof-schedule-control',
+        }),
+      ]);
+    expect(compiled.runtimeAccess.workloads.some(({ workloadIdentity }) =>
+      workloadIdentity.includes(':CronJob:'))).toBe(false);
+  });
+
+  it('binds function-native schedule management to the generated private control Service', () => {
+    const withProcessor = runtimeWorkloadRequest(
+      request(),
+      'schedule-proof-processor',
+      ['streamProcessor.reconcile-source-polling'],
+    );
+    const withScheduleRunner = runtimeWorkloadRequest(
+      withProcessor,
+      'schedule-proof-schedule-runner',
+      ['schedule.source.poll.v1'],
+    );
+    const compiled = compileApplicationDeploymentGraph({
+      ...withScheduleRunner,
+      graph: scheduleManagingGraph(),
+      materializedComposition: {
+        resources: [
+          ...withProcessor.materializedComposition.resources,
+          ...withScheduleRunner.materializedComposition.resources,
+        ],
+        status: {},
+      },
+    });
+    const execution = compiled.runtimeAccess.executions.find(
+      ({ nodeId }) => nodeId === 'streamProcessor.reconcile-source-polling',
+    );
+    expect(execution?.kubernetes?.privatePeers).toEqual([
+      expect.objectContaining({
+        capabilityId: 'framework.schedule-control.schedule-proof',
+        protocol: 'TCP',
+        port: 8080,
+        endpoint: {
+          target: 'kubernetes',
+          namespace: 'schedule-proof',
+          serviceName: 'schedule-proof-schedule-control',
+          podSelector: {
+            'app.kubernetes.io/name': 'schedule-proof-schedule-control',
+            'app.kubernetes.io/component': 'schedule-control',
+            'applik8s.dev/graph': 'schedule-proof',
+          },
+        },
+      }),
+    ]);
+    expect(execution?.lowerings).toContainEqual(expect.objectContaining({
+      operation: 'network.connect',
+      capabilityId: 'framework.schedule-control.schedule-proof',
+      fidelity: 'exact',
+      mechanisms: ['kubernetes-network'],
+    }));
+  });
+
   it("lowers artifacts, providers, and the root composition deterministically", () => {
     const first = compileApplicationDeploymentGraph(request());
     const second = compileApplicationDeploymentGraph({
@@ -304,6 +411,26 @@ describe("Application deployment compiler", () => {
           },
           adminCredentialsSecret: {
             name: "guestbook-workflows-admin",
+          },
+          values: {
+            api: {
+              resources: {
+                requests: { cpu: "100m", memory: "256Mi" },
+                limits: { cpu: "1", memory: "512Mi" },
+              },
+            },
+            engine: {
+              resources: {
+                requests: { cpu: "100m", memory: "256Mi" },
+                limits: { cpu: "1", memory: "512Mi" },
+              },
+            },
+            frontend: {
+              resources: {
+                requests: { cpu: "50m", memory: "128Mi" },
+                limits: { cpu: "500m", memory: "256Mi" },
+              },
+            },
           },
         },
       },
@@ -633,6 +760,34 @@ describe("Application deployment compiler", () => {
       relationship: "requiresOutput",
       output: "name",
     });
+  });
+
+  it("does not grant the forwarding application gateway HTTP context authority", () => {
+    const base = applicationGraph();
+    const graph = {
+      ...base,
+      metadata: { ...base.metadata, namespace: "guestbook" },
+      nodes: [
+        ...base.nodes,
+        {
+          id: "gateway.web",
+          kind: "gateway",
+          name: "web",
+          stability: "stable",
+          visibility: "public",
+          materialization: "generatedDeployment",
+          queries: [],
+          commands: [],
+          subscriptions: [],
+        },
+      ],
+    } as unknown as ApplicationGraph;
+
+    const result = compileApplicationDeploymentGraph({ ...request(), graph });
+    expect(result.graph.nodes.find(
+      ({ id }) => id === "external.generated-secret.application.context",
+    )).toBeUndefined();
+    expect(JSON.stringify(result.runtimeAccess)).not.toContain("guestbook-context");
   });
 
   it("rejects duplicate contributor identities", () => {
@@ -1563,6 +1718,7 @@ describe("Application deployment compiler", () => {
         configuration: {
           namespace: "guestbook",
           name: "guestbook-objects-credentials",
+          runtimeKeys: ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"],
           values: {
             AWS_ACCESS_KEY_ID: {
               kind: "random",
@@ -2562,6 +2718,14 @@ describe("Application deployment compiler", () => {
     expect(seed).toMatchObject({
       spec: { referenceMode: "staticIdentity" },
     });
+    expect(
+      result.runtimeAccess.workloads.flatMap((workload) =>
+        workload.kubernetes?.credentialProjections ?? []),
+    ).not.toContainEqual({
+      resourceId:
+        "v1/Secret/envoy-ai-gateway-system/envoy-ai-gateway-mcp-seed",
+      keys: ["seed"],
+    });
     expect(result.graph.edges).not.toContainEqual({
       from: seed?.id,
       to: "kubernetes.application",
@@ -2991,11 +3155,112 @@ function scheduleNode(providerId: string): ApplicationScheduleNode {
       misfires: "latest",
       maximumLatenessSeconds: 300,
       retry: { maxAttempts: 4, maximumAgeSeconds: 21_600 },
-      requirements: { configuration: "dynamic", cardinality: "high", precision: "minute" },
+      requirements: { configuration: "dynamic", cardinality: "bounded", precision: "minute" },
     },
     scheduler: { interface: "Scheduler", nodeId: providerId },
     state: { interface: "TransactionalDatabase", nodeId: "provider.transactional-database" },
     handler: { source: "async () => undefined" },
     functionNative: true,
+  };
+}
+
+function scheduleManagingGraph(): ApplicationGraph {
+  const database = {
+    name: 'schedule-state',
+    connectionEnvName: 'APPLIK8S_DATABASE_SCHEDULE_STATE_URL',
+    secretName: 'schedule-state-app',
+    secretKey: 'uri',
+    secretNamespace: 'schedule-proof',
+  };
+  const schedulerId = 'provider.scheduler';
+  const schedule = scheduleNode(schedulerId);
+  return {
+    ...applicationGraph(),
+    metadata: { name: 'schedule-proof', namespace: 'schedule-proof' },
+    nodes: [
+      ...applicationGraph().nodes,
+      {
+        id: schedulerId,
+        kind: 'provider',
+        name: 'Scheduler',
+        stability: 'stable',
+        interface: 'Scheduler',
+        implementation: 'kubernetes-cronjob-scheduler',
+      },
+      schedule,
+      {
+        id: 'stream.source-binding.changed.v1',
+        kind: 'stream',
+        name: 'source-binding.changed',
+        version: 'v1',
+        stability: 'stable',
+        payload: {
+          kind: 'declared',
+          runtime: 'arktype',
+          jsonSchema: { type: 'object', properties: {}, required: [] },
+        },
+        authority: 'postgres-outbox',
+        delivery: 'at-least-once',
+        replay: 'supported',
+        retention: { maxAgeSeconds: 86_400 },
+        partitioning: 'declared',
+        compatibility: 'versioned-schema',
+        authorization: 'application-defined',
+        database,
+        partitionSource: 'event => event.sourceBindingId',
+        authorizationSource: '() => false',
+      },
+      {
+        id: 'streamProcessor.reconcile-source-polling',
+        kind: 'streamProcessor',
+        name: 'reconcile-source-polling',
+        stability: 'stable',
+        source: { nodeId: 'stream.source-binding.changed.v1' },
+        database,
+        handlerSource: 'async () => undefined',
+        applicationScheduleBindings: [{
+          identifier: 'PollSource',
+          schedule: { nodeId: schedule.id },
+          scheduler: schedule.scheduler,
+        }],
+        delivery: 'at-least-once',
+        invocation: 'event',
+        idempotency: 'source-event-id',
+        checkpoint: 'postgres',
+        failure: 'pause',
+        retry: { mode: 'boundedExponentialBackoff', maxAttempts: 8, initialDelayMs: 250, maxDelayMs: 30_000, factor: 2 },
+        deployment: {
+          replicas: 1,
+          concurrency: 1,
+          maxAckPending: 64,
+          resources: {
+            requests: { cpu: '100m', memory: '128Mi' },
+            limits: { cpu: '500m', memory: '512Mi' },
+          },
+          disruption: { maxUnavailable: 1 },
+        },
+        budgets: { timeoutMs: 30_000, maxInputBytes: 256_000 },
+      },
+    ],
+    edges: [
+      { from: { nodeId: 'streamProcessor.reconcile-source-polling' }, to: { nodeId: schedule.id }, relationship: 'dependsOn' },
+      { from: { nodeId: schedulerId }, to: { nodeId: 'streamProcessor.reconcile-source-polling' }, relationship: 'provides' },
+      { from: { nodeId: schedule.id }, to: { nodeId: schedulerId }, relationship: 'dependsOn' },
+    ],
+    providerRequirements: [{
+      id: `requirement.${schedule.id}.scheduler`,
+      interface: 'Scheduler',
+      consumer: { nodeId: schedule.id },
+      provider: schedule.scheduler,
+      required: true,
+      purpose: 'scheduler',
+      diagnostics: { missing: 'missing', ambiguous: 'ambiguous' },
+    }],
+    providerBindings: [{
+      requirement: `requirement.${schedule.id}.scheduler`,
+      provider: schedule.scheduler,
+      generatedResources: [],
+      runtime: {},
+    }],
   };
 }

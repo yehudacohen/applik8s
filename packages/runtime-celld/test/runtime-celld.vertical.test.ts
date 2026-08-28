@@ -45,14 +45,17 @@ function authority() {
   const authorization = 'test-actor-authority-token-which-is-long-enough';
   const connectionSigningKey = 'test-actor-connection-signing-key-which-is-long-enough';
   const applicationAuthorization = 'test-application-callback-token-long-enough';
+  const operatorAuthorization = 'test-operator-control-token-long-enough';
   let applicationFetch: typeof fetch = async () => new Response(JSON.stringify({ error: 'not_configured' }), { status: 503 });
   const cells = new Map<string, { cell: Applik8sActorCell; storage: MemoryStorage; sockets: Array<{ readonly socket: MemoryWebSocket; readonly tags: readonly string[] }> }>();
+  const controlCells = new Map<string, { cell: Applik8sActorCell; storage: MemoryStorage; sockets: Array<{ readonly socket: MemoryWebSocket; readonly tags: readonly string[] }> }>();
   let environment: CelldActorWorkerEnvironment;
   const namespace = {
     idFromName(name: string) { return { toString: () => name }; },
     get(id: { toString(): string }) {
       const name = id.toString();
-      let found = cells.get(name);
+      const registry = name.includes('__applik8s_fleet_control__') ? controlCells : cells;
+      let found = registry.get(name);
       if (!found) {
         const storage = new MemoryStorage();
         const sockets: Array<{ readonly socket: MemoryWebSocket; readonly tags: readonly string[] }> = [];
@@ -62,7 +65,7 @@ function authority() {
           getWebSockets(tag?: string) { return sockets.filter((entry) => !tag || entry.tags.includes(tag)).map(({ socket }) => socket); },
         };
         found = { storage, sockets, cell: new Applik8sActorCell(state as never, environment, (...args) => applicationFetch(...args)) };
-        cells.set(name, found);
+        registry.set(name, found);
       }
       return { fetch: (request: Request) => found!.cell.fetch(request) };
     },
@@ -73,10 +76,14 @@ function authority() {
     APPLIK8S_ACTOR_CONNECTION_SIGNING_KEY: connectionSigningKey,
     APPLIK8S_ACTOR_APPLICATION_ENDPOINT: 'http://application.test/',
     APPLIK8S_ACTOR_APPLICATION_AUTHORIZATION: applicationAuthorization,
+    APPLIK8S_ACTOR_OPERATOR_AUTHORIZATION: operatorAuthorization,
+    APPLIK8S_CELLD_RUNTIME_MANIFEST_DIGEST: `sha256:${'a'.repeat(64)}`,
+    APPLIK8S_CELLD_WORKER_VERSION: '0.8.0-test',
+    APPLIK8S_CELLD_VERSION: '0.1.0-test',
   };
   const fetch = (input: string | URL | Request, init?: RequestInit) => worker.fetch(new Request(input, init), environment);
   return {
-    authorization, applicationAuthorization, connectionSigningKey, cells, fetch,
+    authorization, applicationAuthorization, operatorAuthorization, connectionSigningKey, cells, fetch,
     setApplicationFetch(value: typeof fetch) { applicationFetch = value; },
   };
 }
@@ -166,6 +173,31 @@ afterEach(() => {
 });
 
 describe('celld actor runtime', () => {
+  it('publishes a proven runtime manifest and durably quiesces new actor admissions', async () => {
+    const service = authority();
+    const operatorHeaders = { authorization: `Bearer ${service.operatorAuthorization}` };
+    const manifest = await service.fetch('http://celld.test/__applik8s/v1/operator/manifest', {
+      headers: { 'x-applik8s-operator-authorization': service.operatorAuthorization },
+    });
+    await expect(manifest.json()).resolves.toEqual({
+      apiVersion: 'applik8s.celld-runtime-artifact/v1',
+      manifestDigest: `sha256:${'a'.repeat(64)}`,
+      workerVersion: '0.8.0-test',
+      celldVersion: '0.1.0-test',
+    });
+
+    const quiesced = await service.fetch('http://celld.test/__applik8s/v1/operator/quiesce', { method: 'POST', headers: operatorHeaders });
+    expect(quiesced.status).toBe(200);
+    await expect(quiesced.json()).resolves.toMatchObject({ mode: 'quiescing', highWatermark: 0, inflight: 0 });
+    const rejected = await service.fetch('http://celld.test/__applik8s/v1/actors/example/key/turns:begin', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${service.authorization}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ operationId: 'after-quiesce', fingerprint: 'sha256:test', member: 'read', leaseMilliseconds: 30_000 }),
+    });
+    expect(rejected.status).toBe(503);
+    await expect(rejected.json()).resolves.toEqual({ error: 'actor_admission_quiesced', retryable: true });
+  });
+
   it('admits one short-lived signed public connection without disclosing the provider bearer', async () => {
     Reflect.set(globalThis, 'WebSocketPair', MemoryWebSocketPair);
     const service = authority();
@@ -181,6 +213,14 @@ describe('celld actor runtime', () => {
     Workspace.on.connect(() => undefined);
     Workspace.on.disconnect(() => undefined);
     const connectionAuthority = turnAuthority('celld-ticket-fixture', 'celld-ticket.v1', 'connect');
+    const integrityMetrics: Array<{ readonly name: string; readonly attributes?: Readonly<Record<string, string | number | boolean>> }> = [];
+    disposers.push(installApplicationTelemetryRuntimeResolver(() => ({
+      async run(_boundary, execute) { return execute(); },
+      log() {},
+      count(name, _value, attributes) { integrityMetrics.push({ name, ...(attributes ? { attributes } : {}) }); },
+      record() {},
+      capture: () => undefined,
+    })));
     const runtime = createCelldApplicationActorRuntime({ endpoint: 'http://celld.test/', authorization: service.authorization, fetch: service.fetch as typeof fetch });
     disposers.push(installApplicationActorRuntimeResolver(() => runtime));
     service.setApplicationFetch(async (input, init) => {
@@ -226,6 +266,25 @@ describe('celld actor runtime', () => {
         operationId: 'applik8s://actors/celld-ticket.v1/operations/disconnect',
       },
     }, service.connectionSigningKey)).rejects.toThrow(/does not match its actor, key, and member/u);
+    expect(integrityMetrics).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: 'applik8s.runtime.integrity.envelope',
+        attributes: expect.objectContaining({
+          'applik8s.runtime.integrity.purpose': 'applik8s.actor-connection-ticket/v1',
+          'applik8s.runtime.integrity.format': 'v1',
+          'applik8s.runtime.integrity.operation': 'sign',
+          'applik8s.runtime.integrity.result': 'accepted',
+        }),
+      }),
+      expect.objectContaining({
+        name: 'applik8s.runtime.integrity.envelope',
+        attributes: expect.objectContaining({
+          'applik8s.runtime.integrity.purpose': 'applik8s.actor-connection-ticket/v1',
+          'applik8s.runtime.integrity.operation': 'verify',
+          'applik8s.runtime.integrity.result': 'rejected',
+        }),
+      }),
+    ]));
     const request = () => new Request(`http://celld.test/__applik8s/v1/actors/celld-ticket.v1/one/connections?ticket=${encodeURIComponent(ticket)}`, {
       headers: { upgrade: 'websocket' },
     });

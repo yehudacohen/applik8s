@@ -74,7 +74,7 @@ export interface TypeKroDeclarationGroup {
 
 export interface AdaptedTypeKroDeployment {
   readonly adapter: {
-    readonly typekro: "0.33.7";
+    readonly typekro: "0.33.8";
     readonly semanticPlanVersion: 1;
     readonly artifactPlanVersion: 1;
   };

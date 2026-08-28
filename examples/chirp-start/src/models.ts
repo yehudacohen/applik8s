@@ -23,7 +23,6 @@ export { TimelinePost, type TimelinePost as TimelinePostValue } from './domain/t
 export { accountGateway, administrationGateway, gateway, socialGateway } from './gateway';
 export { Attachments, Avatars } from './media/objects';
 export { Database } from './providers/database';
-export { DefaultModerationPolicy } from './providers/moderation';
 export { RebuildHomeTimelines } from './recovery/timeline';
 export { AutomationScheduleChanges, AutomationScheduleReconciler } from './streams/automation';
 export { FollowAnalytics, FollowChanges, ReactionAnalytics, ReactionBatchReceipts, ReactionChanges } from './streams/engagement';

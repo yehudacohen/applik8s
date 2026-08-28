@@ -1,3 +1,4 @@
+// typecast-file-boundary: Deployment-graph fixtures intentionally reconstruct partial and adversarial persisted artifacts to exercise validation.
 import { describe, expect, it } from "vitest";
 import {
   type ApplicationDeploymentGraph,
@@ -551,3 +552,4 @@ function singleton(
     spec: { singletonKey },
   };
 }
+// typecast-file-boundary: Deployment-graph fixtures intentionally reconstruct partial and adversarial persisted artifacts to exercise validation.

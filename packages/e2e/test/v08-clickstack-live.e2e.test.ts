@@ -177,7 +177,7 @@ describe('v0.8 ClickStack application observability provider', () => {
           }));
           const collector = await clickStackCollectorDiagnostics(namespace);
           throw new Error(
-            `ClickStack emitter deployment failed.\n${logs.join('\n')}\n${collector}\n${message(cause)}`,
+            `ClickStack emitter deployment failed: ${message(cause)}\n${logs.join('\n')}\n${collector}`,
           );
         }
         applied = true;
@@ -367,7 +367,9 @@ function clickStackTelemetryEmitterJob(options: {
     `      failure = signal + ' export returned ' + response.status + ': ' + await response.text();`,
     `      if (response.status >= 400 && response.status < 500 && response.status !== 408 && response.status !== 429) throw new Error(failure);`,
     `    } catch (cause) {`,
-    `      failure = cause instanceof Error ? cause.message : String(cause);`,
+    `      const nested = cause && typeof cause === 'object' && 'cause' in cause ? cause.cause : undefined;`,
+    `      const details = nested && typeof nested === 'object' ? JSON.stringify({ name: nested.name, code: nested.code, syscall: nested.syscall, hostname: nested.hostname, address: nested.address, port: nested.port, message: nested.message }) : String(nested ?? '');`,
+    `      failure = (cause instanceof Error ? cause.message : String(cause)) + (details && details !== 'undefined' ? ' (' + details + ')' : '');`,
     `      if (/returned 4\\d\\d:/u.test(failure)) throw cause;`,
     `    }`,
     `    await delay(1_000);`,
@@ -517,11 +519,12 @@ async function clickHousePod(namespace: string, clickhouseName: string): Promise
 
 async function clickStackCollectorDiagnostics(namespace: string): Promise<string> {
   try {
-    const result = await kubectl([
+    const [result, services, endpoints] = await Promise.all([kubectl([
       'get', 'pods', '--namespace', namespace,
       '--selector', 'app.kubernetes.io/name=otel-collector',
       '--output=json',
-    ]);
+    ]), kubectl(['get', 'services', '--namespace', namespace, '--output=json']),
+    kubectl(['get', 'endpoints', '--namespace', namespace, '--output=json'])]);
     const pods = JSON.parse(result.stdout) as {
       readonly items?: readonly {
         readonly metadata?: { readonly name?: string };
@@ -547,9 +550,13 @@ async function clickStackCollectorDiagnostics(namespace: string): Promise<string
         `${logs.stdout}${logs.stderr}`,
       ].join('\n');
     }));
-    return observations.length > 0
-      ? observations.join('\n')
-      : 'No ClickStack collector pod matched app.kubernetes.io/name=otel-collector.';
+    return [
+      observations.length > 0
+        ? observations.join('\n')
+        : 'No ClickStack collector pod matched app.kubernetes.io/name=otel-collector.',
+      `services: ${services.stdout}`,
+      `endpoints: ${endpoints.stdout}`,
+    ].join('\n');
   } catch (cause) {
     return `ClickStack collector diagnostics unavailable: ${message(cause)}`;
   }

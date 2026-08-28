@@ -1,3 +1,4 @@
+// typecast-file-boundary: Live actor fixtures construct exact admitted authority records and deliberately invalid variants for provider conformance tests.
 import { createHash, randomUUID } from 'node:crypto';
 import type {
   ApplicationActorTurnAuthority,
@@ -70,3 +71,4 @@ export function createActorLiveAuthority(
     },
   };
 }
+// typecast-file-boundary: Live actor fixtures construct exact admitted authority records and deliberately invalid variants for provider conformance tests.

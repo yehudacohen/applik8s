@@ -1,4 +1,4 @@
-import { actor, app, defineApplicationProvider, Scheduler, schedule, type } from '@applik8s/applik8s';
+import { actor, app, defineApplicationProvider, event, Scheduler, schedule, type } from '@applik8s/applik8s';
 
 const platform = app('schedule-proof', {
   namespace: 'schedule-proof',
@@ -32,8 +32,10 @@ const AcquisitionProvider = defineApplicationProvider<{
     },
     operations: {
       acquire: {
-        module: '@fixture/acquisition/runtime',
-        export: 'acquireItem',
+        // A maintained public runtime module keeps the fixture bundleable;
+        // the provider contract remains synthetic and is never executed.
+        module: '@applik8s/notifications/runtime',
+        export: 'deliverApplicationNotification',
         access: {
           kind: 'provider',
           operations: ['connection.use', 'network.connect'],
@@ -146,5 +148,44 @@ export const PollSource = SourcePolling.schedule(
     acquisition: await acquire({ id: sourceBindingId }),
   }),
 );
+
+const scheduleState = platform.database.postgres('schedule-state', {
+  schema: {},
+  provision: false,
+  namespace: 'schedule-proof',
+  connectionSecret: {
+    apiVersion: 'v1',
+    kind: 'Secret',
+    name: 'schedule-state-app',
+    namespace: 'schedule-proof',
+  },
+});
+const SourceBindingChanged = event('source-binding.changed.v1', {
+  payload: type({
+    sourceBindingId: 'string',
+    revision: 'string',
+    enabled: 'boolean',
+    cadence: 'string',
+  }),
+});
+const sourceBindings = platform.stream(SourceBindingChanged, {
+  database: scheduleState,
+  retention: { maxAgeSeconds: 86_400 },
+  partitionBy: ({ sourceBindingId }) => sourceBindingId,
+  authorize: () => false,
+});
+
+sourceBindings.onEvent(async function reconcileSourcePolling(binding) {
+  if (binding.enabled) {
+    await PollSource.schedule({
+      id: binding.sourceBindingId,
+      revision: binding.revision,
+      every: binding.cadence,
+      input: { sourceBindingId: binding.sourceBindingId },
+    });
+    return;
+  }
+  await PollSource.unschedule(binding.sourceBindingId);
+});
 
 export const scheduleProof = platform.composition;

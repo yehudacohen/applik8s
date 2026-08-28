@@ -292,7 +292,7 @@ export function createApplicationAlchemyDeployment(
             );
           }
           const publishedBaseImage = baseArtifact
-            ? compatiblePublishedImmutableReference(baseArtifact)
+            ? compatiblePublishedBuildReference(baseArtifact)
             : undefined;
           const resource = yield* ApplicationContainerArtifact(
             artifact.id,
@@ -342,7 +342,12 @@ export function createApplicationAlchemyDeployment(
           const prerequisiteHandles = typeKroGroupPrerequisites(
             options.graph,
             group.deploymentNodeId,
-          ).flatMap((nodeId) => groupResources.get(nodeId) ?? []);
+          ).flatMap((nodeId) => {
+            const groupHandles = groupResources.get(nodeId);
+            if (groupHandles) return groupHandles;
+            const binding = bindings[nodeId];
+            return binding ? [binding.resource] : [];
+          });
           const resources: Record<string, unknown> = {};
           for (const component of typeKroMaterializationComponents(
             group.declarations,
@@ -466,21 +471,55 @@ export function createApplicationAlchemyDeployment(
   };
 }
 
-function compatiblePublishedImmutableReference(
+function compatiblePublishedBuildReference(
   artifact: ApplicationContainerArtifactAttributes,
 ) {
-  // Alchemy can legitimately reuse state written before publication aliases
-  // became required outputs. Property access still produces an Output proxy,
-  // so JavaScript `??` cannot distinguish that legacy absence. Resolve both
-  // outputs inside Alchemy and prefer the publication endpoint only when the
-  // persisted value is a non-empty string.
+  // Deployment references and Dockerfile FROM references have subtly
+  // different requirements on a local engine. Kubernetes can run an OrbStack
+  // image by its digest-only image ID, but BuildKit interprets that same value
+  // as docker.io/library/sha256:<digest>. Resolve all aliases inside Alchemy and
+  // retain the tag solely as the build address when the immutable identity is
+  // local-only. The resulting child artifact is still deployed by its own
+  // immutable output.
   return Output.map(
     Output.all(
       Output.asOutput(artifact.publishedImmutableReference),
+      Output.asOutput(artifact.publishedTaggedReference),
       Output.asOutput(artifact.immutableReference),
+      Output.asOutput(artifact.taggedReference),
     ),
-    ([published, immutable]) =>
-      selectPublishedImmutableReference(published, immutable),
+    ([publishedImmutable, publishedTagged, immutable, tagged]) =>
+      selectPublishedBuildReference(
+        publishedImmutable,
+        publishedTagged,
+        immutable,
+        tagged,
+      ),
+  );
+}
+
+export function selectPublishedBuildReference(
+  publishedImmutable: unknown,
+  publishedTagged: unknown,
+  immutable: unknown,
+  tagged: unknown,
+): string {
+  const preferredImmutable = firstNonEmptyString(
+    publishedImmutable,
+    immutable,
+  );
+  if (preferredImmutable && !isLocalImageId(preferredImmutable)) {
+    return preferredImmutable;
+  }
+  const buildAddress = firstNonEmptyString(publishedTagged, tagged);
+  if (buildAddress) return buildAddress;
+  if (preferredImmutable) {
+    throw new Error(
+      `Local immutable image identity ${preferredImmutable} has no tagged build address.`,
+    );
+  }
+  throw new Error(
+    "Container artifact has neither a published nor deployment build reference.",
   );
 }
 
@@ -493,6 +532,16 @@ export function selectPublishedImmutableReference(
   throw new Error(
     "Container artifact has neither a published nor deployment immutable reference.",
   );
+}
+
+function firstNonEmptyString(...values: readonly unknown[]): string | undefined {
+  return values.find(
+    (value): value is string => typeof value === "string" && value.trim().length > 0,
+  );
+}
+
+function isLocalImageId(reference: string): boolean {
+  return /^sha256:[a-f0-9]{64}$/.test(reference);
 }
 
 function summarizePlan(plan: Plan.Plan): readonly ApplicationAlchemyPlanChange[] {

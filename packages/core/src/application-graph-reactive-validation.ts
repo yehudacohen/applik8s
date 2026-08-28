@@ -62,6 +62,20 @@ function queryMessages(node: ApplicationQueryNode, graph: ApplicationGraph): rea
     if (projection?.kind !== 'projection' || projection.storage !== node.projection.storage) messages.push(`Application query ${node.id} references an incompatible projection authority ${node.projection.nodeId}.`);
     if (!node.database) messages.push(`Application query ${node.id} projection authority must retain its source database for authorization and invalidation sequencing.`);
   }
+  const actorIdentifiers = new Set<string>();
+  for (const binding of node.actorBindings ?? []) {
+    if (!binding.identifier.trim() || actorIdentifiers.has(binding.identifier)) {
+      messages.push(`Application query ${node.id} actor bindings must have unique non-empty identifiers.`);
+    }
+    actorIdentifiers.add(binding.identifier);
+    const actor = graph.nodes.find((candidate) => candidate.id === binding.actor.nodeId);
+    const member = actor?.kind === 'actor'
+      ? actor.definition.protocol.find((candidate) => candidate.name === binding.member)
+      : undefined;
+    if (actor?.kind !== 'actor' || !member || member.kind !== binding.memberKind) {
+      messages.push(`Application query ${node.id} actor ${binding.identifier} must reference matching ${binding.memberKind} member ${binding.member}.`);
+    }
+  }
   return messages;
 }
 

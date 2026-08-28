@@ -320,7 +320,7 @@ Fargate is the default stateless host; EBS attachment must not distort that defa
 | `TransactionalDatabase` | PostgreSQL container | MiniStack RDS PostgreSQL | RDS PostgreSQL; Aurora only after separate qualification | CNPG |
 | `IndexStore` | Valkey container | MiniStack ElastiCache | ElastiCache | Valkey |
 | `ObjectStorage` | filesystem or S3-compatible container | MiniStack S3 | S3 | Rook/Ceph or external S3 |
-| `EventSource` stream | NATS or in-process test provider when compatible | MiniStack Kinesis | Kinesis | NATS/JetStream |
+| `EventSource` stream | NATS or in-process test provider when compatible | planning-time unsupported on pinned MiniStack `1.4.20` because its Kinesis lifecycle lacks `ListTagsForResource` | Kinesis | NATS/JetStream |
 | `Queue` | local queue provider | MiniStack SQS | SQS | selected Kubernetes queue |
 | `Scheduler` | deterministic local supervisor | API-fidelity only | EventBridge Scheduler | bounded CronJob or qualified shared scheduler |
 | `DnsPublication` | development router | MiniStack Route53 evidence | Route53 | ExternalDNS/provider adapter |
@@ -583,8 +583,10 @@ the portable-runtime implementation does not introduce separate log or metric se
 
 ### MiniStack fidelity
 
-- ECS workload, RDS connection, ElastiCache access, S3 objects, Kinesis delivery, and Route53 evidence
-  pass at the pinned version.
+- Each advertised AWS-local resource passes at the pinned version; the current
+  qualified cohort includes native S3, SQS, and ECR lifecycle.
+- Kinesis is rejected before deployment while pinned MiniStack lacks
+  `ListTagsForResource`; real AWS retains the upstream native Kinesis resource.
 - Unsupported semantics produce a planning diagnostic.
 - MiniStack interruption recovers without losing Alchemy ownership state.
 

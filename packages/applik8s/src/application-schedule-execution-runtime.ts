@@ -1,3 +1,4 @@
+// typecast-file-boundary: Schedule execution records cross a validated provider/admission boundary here before function-native callback dispatch.
 /** Focused execution kernel for an already admitted schedule occurrence. */
 
 import type {
@@ -12,6 +13,17 @@ import { validateMessage } from './application-schema-runtime.js';
 import { runApplicationTelemetryBoundary } from './application-telemetry-runtime.js';
 
 export const applicationScheduleHandlerSymbol = Symbol.for('applik8s.applicationSchedule.handler');
+
+/** Generated provider bootstrap seam; application code receives only the callable handle. */
+export function applicationScheduleRuntimeHandler<TInput extends object, TResult>(
+  handle: ApplicationScheduleHandle<TInput, TResult>,
+): ApplicationScheduleHandler<TInput, TResult> {
+  const handler = Reflect.get(handle, applicationScheduleHandlerSymbol);
+  if (typeof handler !== 'function') {
+    throw new Error(`Schedule ${handle.definition.id} has no framework runtime handler.`);
+  }
+  return handler as ApplicationScheduleHandler<TInput, TResult>;
+}
 
 /** Provider bootstrap seam for an already admitted occurrence. */
 export async function executeApplicationScheduleAdmission<TInput extends object, TResult>(
@@ -38,8 +50,7 @@ export async function executeApplicationScheduleAdmission<TInput extends object,
   const input: TInput = handle.definition.input
     ? validateMessage(handle.definition.input, admission.input ?? {}, `${handle.definition.id}.input`)
     : {} as TInput;
-  const handler = Reflect.get(handle, applicationScheduleHandlerSymbol);
-  if (typeof handler !== 'function') throw new Error(`Schedule ${handle.definition.id} has no framework runtime handler.`);
+  const handler = applicationScheduleRuntimeHandler(handle);
   const occurrenceId = applicationScheduleOccurrenceId({
     applicationId: admission.applicationId,
     environmentId: admission.environmentId,
@@ -80,7 +91,7 @@ export async function executeApplicationScheduleAdmission<TInput extends object,
         'applik8s.schedule.trigger': 'schedule',
         'applik8s.schedule.occurrence_id': occurrenceId,
       },
-    }, async () => (handler as ApplicationScheduleHandler<TInput, TResult>)(input, {
+    }, async () => handler(input, {
       definitionId: admission.definitionId,
       instanceId: admission.instanceId,
       occurrenceId,
@@ -119,3 +130,4 @@ export async function executeApplicationScheduleAdmission<TInput extends object,
     };
   }
 }
+// typecast-file-boundary: Schedule execution records cross a validated provider/admission boundary here before function-native callback dispatch.

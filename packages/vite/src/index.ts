@@ -9,6 +9,7 @@ import {
   discoverApplicationGraphWithExports,
   generatedApplicationFacadeSource,
   generatedApplicationFetchGatewayModules,
+  instrumentApplicationRuntimeModule,
 } from '@applik8s/compiler';
 import type { PluginOption } from 'vite';
 
@@ -53,6 +54,7 @@ export interface Applik8sVitePlugin {
   buildStart(): Promise<void>;
   resolveId(this: { resolve(source: string, importer?: string, options?: { readonly skipSelf?: boolean; readonly ssr?: boolean }): Promise<{ readonly id: string } | null> }, source: string, importer?: string, options?: { readonly ssr?: boolean }): Promise<string | undefined>;
   load(id: string): string | undefined;
+  transform(source: string, id: string, options?: { readonly ssr?: boolean }): string | undefined;
   transformIndexHtml(html: string): string;
   generateBundle(options: { readonly dir?: string }, bundle: Readonly<Record<string, ViteOutputLike>>): Promise<void>;
   closeBundle(): Promise<void>;
@@ -79,6 +81,13 @@ const forbiddenBrowserPackages = [
   '@hatchet-dev/typescript-sdk',
   'node:fs',
   'node:child_process',
+] as const;
+
+const externalServerRuntimePackages = [
+  '@applik8s/runtime-aws',
+  '@applik8s/runtime-hatchet',
+  '@applik8s/runtime-kubernetes',
+  '@duckdb/node-api',
 ] as const;
 
 /** Pure Vite adapter: discovers graph metadata, partitions facades, and records immutable artifacts without deploying. */
@@ -108,12 +117,14 @@ export function applik8sVite(options: Applik8sViteOptions = {}): PluginOption {
           managedDevelopmentEnvironment,
         );
       }
-      // DuckDB is a Node-native local runtime. Keeping the public package
-      // external lets Node load the platform binding at runtime instead of
-      // asking browser/server bundlers to parse a `.node` binary as source.
+      // Provider runtimes remain package-level server capabilities. Keeping
+      // them external prevents one target-portable gateway from embedding
+      // every AWS/Kubernetes SDK (and DuckDB's native binding) in an unrelated
+      // web artifact; the generated application's direct dependencies remain
+      // the runtime loading authority.
       return {
-        ssr: { external: ['@duckdb/node-api'] },
-        optimizeDeps: { exclude: ['@duckdb/node-api'] },
+        ssr: { external: [...externalServerRuntimePackages] },
+        optimizeDeps: { exclude: [...externalServerRuntimePackages] },
       };
     },
     async configResolved(config) {
@@ -156,6 +167,17 @@ export function applik8sVite(options: Applik8sViteOptions = {}): PluginOption {
             : {}),
         },
       );
+    },
+    transform(source, id, transformOptions) {
+      if (!transformOptions?.ssr || id.startsWith('\0')) return undefined;
+      const sourceFile = cleanResolvedId(id);
+      const instrumented = instrumentApplicationRuntimeModule(
+        application,
+        sourceFile,
+        source,
+        { includeMaintainedPackages: false },
+      );
+      return instrumented === source ? undefined : instrumented;
     },
     transformIndexHtml(html) {
       if (!developmentServer) return html;
@@ -241,6 +263,7 @@ export function applik8sVite(options: Applik8sViteOptions = {}): PluginOption {
     const gateway = generatedApplicationFetchGatewayModules(discovered.value.graph, {
       modelExports: discovered.value.modelExports,
       actorExports: discovered.value.actorExports,
+      localDevelopmentSchedules: developmentServer,
     });
     const files = gateway?.files ?? {};
     const previous = await readFile(ownedFilesPath, 'utf8')
@@ -275,7 +298,7 @@ const config=${encoded};const toolbar=document.querySelector('#applik8s-dev-tool
 document.querySelector('#applik8s-dev-open')?.addEventListener('click',()=>window.open(config.portalOrigin+'/#builder','applik8s-builder'));
 inspect?.addEventListener('click',()=>{active=!active;inspect.dataset.active=String(active);inspect.textContent=active?'Cancel':'Inspect';status.textContent=active?'Select an element':'Ready';if(!active&&hovered){hovered.classList.remove('applik8s-dev-inspect');hovered=undefined;}});
 document.addEventListener('pointerover',(event)=>{if(!active)return;const target=event.target;if(!(target instanceof HTMLElement)||toolbar?.contains(target))return;if(hovered&&hovered!==target)hovered.classList.remove('applik8s-dev-inspect');hovered=target;target.classList.add('applik8s-dev-inspect');},true);
-document.addEventListener('click',async(event)=>{if(!active)return;const target=event.target;if(!(target instanceof HTMLElement)||toolbar?.contains(target))return;event.preventDefault();event.stopPropagation();active=false;inspect.dataset.active='false';inspect.textContent='Inspect';target.classList.remove('applik8s-dev-inspect');const text=(target.innerText||target.textContent||'').trim().slice(0,4000);const provenance=target.closest('[data-applik8s-provenance]')?.getAttribute('data-applik8s-provenance');status.textContent='Sending selection…';try{const response=await fetch(config.portalOrigin+'/v1/selections',{method:'POST',headers:{'content-type':'application/json','x-applik8s-bridge':config.bridgeToken,'x-applik8s-bridge-nonce':crypto.randomUUID()},body:JSON.stringify({id:'selection_'+crypto.randomUUID(),capturedAtRevision:config.revision,route:{pathname:location.pathname,searchKeys:[...new URLSearchParams(location.search).keys()].slice(0,64)},element:{role:target.getAttribute('role')||undefined,accessibleName:target.getAttribute('aria-label')||undefined,boundedText:text||undefined,componentInstanceId:provenance||undefined},text:text?{boundedValue:text,redaction:'none'}:undefined,sourceHints:provenance?[{provenanceId:provenance,confidence:'exact'}]:[]})});if(!response.ok)throw new Error('HTTP '+response.status);status.textContent='Selection attached';window.open(config.portalOrigin+'/#builder','applik8s-builder');}catch(error){status.textContent=error instanceof Error?error.message:'Selection failed';}},true);
+document.addEventListener('click',async(event)=>{if(!active)return;const target=event.target;if(!(target instanceof HTMLElement)||toolbar?.contains(target))return;event.preventDefault();event.stopPropagation();active=false;inspect.dataset.active='false';inspect.textContent='Inspect';target.classList.remove('applik8s-dev-inspect');const text=(target.innerText||target.textContent||'').trim().slice(0,4000);const provenance=target.closest('[data-applik8s-provenance]')?.getAttribute('data-applik8s-provenance');status.textContent='Sending selection…';try{const contextResponse=await fetch(config.portalOrigin+'/v1/bridge-context',{headers:{'x-applik8s-bridge':config.bridgeToken,'x-applik8s-bridge-nonce':crypto.randomUUID()}});if(!contextResponse.ok)throw new Error('HTTP '+contextResponse.status);const bridgeContext=await contextResponse.json();const response=await fetch(config.portalOrigin+'/v1/selections',{method:'POST',headers:{'content-type':'application/json','x-applik8s-bridge':config.bridgeToken,'x-applik8s-bridge-nonce':crypto.randomUUID()},body:JSON.stringify({id:'selection_'+crypto.randomUUID(),capturedAtRevision:bridgeContext.revision,route:{pathname:location.pathname,searchKeys:[...new URLSearchParams(location.search).keys()].slice(0,64)},element:{role:target.getAttribute('role')||undefined,accessibleName:target.getAttribute('aria-label')||undefined,boundedText:text||undefined,componentInstanceId:provenance||undefined},text:text?{boundedValue:text,redaction:'none'}:undefined,sourceHints:provenance?[{provenanceId:provenance,confidence:'exact'}]:[]})});if(!response.ok)throw new Error('HTTP '+response.status);status.textContent='Selection attached';window.open(config.portalOrigin+'/#builder','applik8s-builder');}catch(error){status.textContent=error instanceof Error?error.message:'Selection failed';}},true);
 </script>`;
   return html.includes('</body>') ? html.replace('</body>', `${source}</body>`) : `${html}${source}`;
 }
@@ -414,9 +437,21 @@ function cleanResolvedId(id: string): string {
 
 async function recursiveFiles(directory: string): Promise<readonly string[]> {
   const entries = await readdir(directory, { withFileTypes: true });
-  const files = await Promise.all(entries.map((entry) => {
+  const files = await Promise.all(entries.map(async (entry) => {
     const path = resolve(directory, entry.name);
-    return entry.isDirectory() ? recursiveFiles(path) : Promise.resolve([path] as readonly string[]);
+    if (entry.isDirectory()) return recursiveFiles(path);
+    if (entry.isSymbolicLink()) {
+      const target = await stat(path).catch(() => undefined);
+      if (!target) {
+        throw new Error(`Applik8s server artifact contains a broken symbolic link at ${path}.`);
+      }
+      // Nitro's dependency tracer uses directory symlinks for its flattened
+      // package graph. Artifact manifests contain portable files rather than
+      // host-specific links, so dereference those directories at their public
+      // import path.
+      if (target.isDirectory()) return recursiveFiles(path);
+    }
+    return [path] as readonly string[];
   }));
   return files.flat().sort();
 }

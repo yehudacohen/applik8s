@@ -1,6 +1,9 @@
+// typecast-file-boundary: TypeScript package manifests and compiler AST nodes
+// are structurally checked before their narrow export/source views are used by
+// the bundler's workspace-resolution boundary.
 import { readFileSync } from 'node:fs';
 import { access, mkdir, readFile, writeFile } from 'node:fs/promises';
-import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Diagnostic, Result } from '@applik8s/core';
 import { build, type Plugin } from 'esbuild';
@@ -226,6 +229,7 @@ export function applik8sWorkspaceSourcePlugin(): Plugin {
     ['@applik8s/runtime-s3', resolve(workspaceRoot, 'packages/runtime-s3/src/index.ts')],
     ['@applik8s/runtime-aws/kinesis', resolve(workspaceRoot, 'packages/runtime-aws/src/kinesis.ts')],
     ['@applik8s/runtime-aws/lakehouse', resolve(workspaceRoot, 'packages/runtime-aws/src/lakehouse.ts')],
+    ['@applik8s/runtime-aws/schedule', resolve(workspaceRoot, 'packages/runtime-aws/src/schedule.ts')],
     ['@applik8s/runtime-aws/bootstrap', resolve(workspaceRoot, 'packages/runtime-aws/src/bootstrap.ts')],
     ['@applik8s/runtime-aws', resolve(workspaceRoot, 'packages/runtime-aws/src/index.ts')],
     ['@applik8s/runtime-otel', resolve(workspaceRoot, 'packages/runtime-otel/src/index.ts')],
@@ -299,6 +303,7 @@ export function applik8sWorkspaceSourcePlugin(): Plugin {
     ['@applik8s/typekro-adapter/targets', resolve(workspaceRoot, 'packages/typekro-adapter/src/operation-targets.ts')],
     ['@applik8s/typetainer', resolve(workspaceRoot, 'packages/typetainer/src/index.ts')],
   ]);
+  const packageExportSourceCache = new Map<string, Promise<string | undefined>>();
 
   return {
     name: 'applik8s-workspace-source',
@@ -307,6 +312,14 @@ export function applik8sWorkspaceSourcePlugin(): Plugin {
         const alias = packageAliases.get(args.path);
         if (alias && await fileExists(alias)) {
           return { path: alias };
+        }
+        const packageExportSource = await cachedWorkspacePackageExportSource(
+          args.path,
+          workspaceRoot,
+          packageExportSourceCache,
+        );
+        if (packageExportSource) {
+          return { path: packageExportSource };
         }
         return undefined;
       });
@@ -340,17 +353,173 @@ export function applik8sWorkspaceSourcePlugin(): Plugin {
       });
 
       build.onResolve({ filter: /^\.\.?\/.*\.js$/ }, async (args) => {
-        if (!args.importer.includes(`${workspaceRoot}/packages/`)) {
-          return undefined;
+        if (args.importer.includes(`${workspaceRoot}/packages/`)) {
+          const tsCandidate = resolve(args.resolveDir, args.path.replace(/\.js$/, '.ts'));
+          if (await fileExists(tsCandidate)) {
+            return { path: tsCandidate };
+          }
         }
-        const tsCandidate = resolve(args.resolveDir, args.path.replace(/\.js$/, '.ts'));
-        if (await fileExists(tsCandidate)) {
-          return { path: tsCandidate };
+
+        const packedPackageSource = await workspaceSourceForPackedPackageImport(
+          args.importer,
+          args.path,
+          workspaceRoot,
+        );
+        if (packedPackageSource) {
+          return { path: packedPackageSource };
         }
         return undefined;
       });
     },
   };
+}
+
+async function cachedWorkspacePackageExportSource(
+  importPath: string,
+  workspaceRoot: string,
+  cache: Map<string, Promise<string | undefined>>,
+): Promise<string | undefined> {
+  const cached = cache.get(importPath);
+  if (cached) {
+    return cached;
+  }
+  const pending = workspacePackageExportSource(importPath, workspaceRoot);
+  cache.set(importPath, pending);
+  return pending;
+}
+
+async function workspacePackageExportSource(
+  importPath: string,
+  workspaceRoot: string,
+): Promise<string | undefined> {
+  const match = /^@applik8s\/([^/]+)(?:\/(.+))?$/.exec(importPath);
+  if (!match) {
+    return undefined;
+  }
+
+  const packageName = match[1];
+  const subpath = match[2];
+  if (!packageName) {
+    return undefined;
+  }
+
+  const packageRoot = resolve(workspaceRoot, 'packages', packageName);
+  try {
+    const manifest = JSON.parse(await readFile(join(packageRoot, 'package.json'), 'utf8')) as {
+      readonly exports?: unknown;
+    };
+    const exportKey = subpath ? `./${subpath}` : '.';
+    const exportTarget = packageExportTarget(manifest.exports, exportKey);
+    if (exportTarget) {
+      const source = await workspaceSourceForExportTarget(packageRoot, exportTarget);
+      if (source) {
+        return source;
+      }
+    }
+  } catch {
+    return undefined;
+  }
+
+  return undefined;
+}
+
+function packageExportTarget(exportsValue: unknown, exportKey: string): string | undefined {
+  if (typeof exportsValue === 'string') {
+    return exportKey === '.' ? exportsValue : undefined;
+  }
+  if (!exportsValue || typeof exportsValue !== 'object' || Array.isArray(exportsValue)) {
+    return undefined;
+  }
+
+  const record = exportsValue as Readonly<Record<string, unknown>>;
+  const selected = Object.keys(record).some((key) => key.startsWith('.'))
+    ? record[exportKey]
+    : exportKey === '.'
+      ? record
+      : undefined;
+  return conditionalPackageExportTarget(selected);
+}
+
+function conditionalPackageExportTarget(value: unknown): string | undefined {
+  if (typeof value === 'string') {
+    return value;
+  }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return undefined;
+  }
+  const record = value as Readonly<Record<string, unknown>>;
+  for (const condition of ['browser', 'import', 'module', 'default']) {
+    const target = conditionalPackageExportTarget(record[condition]);
+    if (target) {
+      return target;
+    }
+  }
+  return undefined;
+}
+
+async function workspaceSourceForExportTarget(
+  packageRoot: string,
+  exportTarget: string,
+): Promise<string | undefined> {
+  if (!exportTarget.startsWith('./')) {
+    return undefined;
+  }
+  const normalizedTarget = exportTarget.slice(2);
+  const sourceRelative = normalizedTarget.startsWith('dist/')
+    ? normalizedTarget.slice('dist/'.length)
+    : normalizedTarget.startsWith('src/')
+      ? normalizedTarget.slice('src/'.length)
+      : normalizedTarget;
+  return firstExistingTypeScriptSource(resolve(packageRoot, 'src', sourceRelative));
+}
+
+async function workspaceSourceForPackedPackageImport(
+  importer: string,
+  importPath: string,
+  workspaceRoot: string,
+): Promise<string | undefined> {
+  const normalizedImporter = importer.split(sep).join('/');
+  const marker = '/node_modules/@applik8s/';
+  const markerIndex = normalizedImporter.lastIndexOf(marker);
+  if (markerIndex === -1) {
+    return undefined;
+  }
+  const packageRelativeImporter = normalizedImporter.slice(markerIndex + marker.length);
+  const slashIndex = packageRelativeImporter.indexOf('/');
+  if (slashIndex === -1) {
+    return undefined;
+  }
+  const packageName = packageRelativeImporter.slice(0, slashIndex);
+  const packedPackageRoot = normalizedImporter.slice(0, markerIndex + marker.length + slashIndex);
+  const packedDistRoot = resolve(packedPackageRoot, 'dist');
+  const resolvedPackedImport = resolve(dirname(importer), importPath);
+  const relativeToDist = relative(packedDistRoot, resolvedPackedImport);
+  if (
+    !relativeToDist ||
+    relativeToDist.startsWith(`..${sep}`) ||
+    relativeToDist === '..' ||
+    isAbsolute(relativeToDist)
+  ) {
+    return undefined;
+  }
+  return firstExistingTypeScriptSource(
+    resolve(workspaceRoot, 'packages', packageName, 'src', relativeToDist),
+  );
+}
+
+async function firstExistingTypeScriptSource(compiledPath: string): Promise<string | undefined> {
+  const candidates = /\.[cm]?js$/.test(compiledPath)
+    ? [
+        compiledPath.replace(/\.mjs$/, '.mts').replace(/\.cjs$/, '.cts').replace(/\.js$/, '.ts'),
+        compiledPath.replace(/\.[cm]?js$/, '.tsx'),
+      ]
+    : [compiledPath];
+  for (const candidate of candidates) {
+    if (await fileExists(candidate)) {
+      return candidate;
+    }
+  }
+  return undefined;
 }
 
 async function fileExists(path: string): Promise<boolean> {

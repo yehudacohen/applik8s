@@ -1,4 +1,4 @@
-import { app } from '../app';
+import { app } from '../domain-app';
 import { executeAutomationRun } from '../automation/workflow';
 import { Database } from '../providers/database';
 import { AutomationScheduleChanged } from '../domain/events';

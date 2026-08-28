@@ -10,6 +10,7 @@ import { nodeKeyedDigestHex } from '@applik8s/runtime/node-integrity';
 import { createRollingSignedEnvelopeCodec, type RollingSignedEnvelopeCodec, signedEnvelopeUtf8Key, staticSignedEnvelopeKeyProvider } from '@applik8s/runtime/signed-envelope';
 import type { ApplicationObjectStorageRuntime, ApplicationSignedObjectIntent, ApplicationVerifiedObjectCompletion } from './application-object-storage.js';
 import type { ApplicationIdentityProvider, ApplicationRequestAdmission } from './application-providers.js';
+import { observeApplicationRuntimeIntegrityEnvelope } from './application-telemetry-runtime.js';
 
 export interface ApplicationObjectStoreGatewayBinding {
   readonly name: string;
@@ -361,6 +362,7 @@ function objectIntentCodec(
     maximumLifetimeMs: maximumLifetimeSeconds * 1_000,
     maximumEncodedBytes: 64 * 1_024,
     validatePayload: validateObjectIntentToken,
+    observe: observeApplicationRuntimeIntegrityEnvelope,
     writer: 'legacy',
     legacy: {
       key,

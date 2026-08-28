@@ -120,6 +120,7 @@ describeLive('v0.8 Kubernetes Scheduler lifecycle on OrbStack', () => {
 			admissionEndpoint: `http://${applicationId}.${namespace}.svc.cluster.local/__applik8s/v1/internal/schedules/occurrences`,
 			authorizationSecretName: `${applicationId}-internal-operation`,
 			databaseUrl,
+			maximumInstances: 1,
 		});
 		try {
 			const unchanged = await runtime.reconcile({
@@ -225,6 +226,21 @@ describeLive('v0.8 Kubernetes Scheduler lifecycle on OrbStack', () => {
 				},
 				spec: { schedule: '0 */2 * * *', suspend: true },
 			});
+			await expect(runtime.reconcile({
+				definition,
+				instance: {
+					...firstInstance,
+					id: 'workspace-b',
+					revision: 'revision-one',
+					input: { workspaceId: 'workspace-b' },
+				},
+				handler: async () => undefined,
+			})).rejects.toThrow(/instance ceiling 1 is exhausted/u);
+			const capacityResources = JSON.parse((await kubectl([
+				'get', 'cronjob', '--namespace', namespace, '--output=json',
+			])).stdout) as { readonly items?: readonly { readonly metadata?: { readonly uid?: string } }[] };
+			expect(capacityResources.items).toHaveLength(1);
+			expect(capacityResources.items?.[0]?.metadata?.uid).toBe(uid);
 
 			expect(
 				(await runtime.remove(definition.id, firstInstance.id)).state,
@@ -300,7 +316,11 @@ describeLive('v0.8 Kubernetes Scheduler lifecycle on OrbStack', () => {
 		})).resolves.toMatchObject({ state: 'skipped', attempts: 0 });
 		releaseFirst();
 		const completed = await first;
-		expect(completed).toMatchObject({ state: 'succeeded', result: { effect: 1 } });
+		expect(completed).toMatchObject({
+			state: 'succeeded',
+			scheduledAt: firstScheduledAt,
+			result: { effect: 1 },
+		});
 		await expect(executePostgresApplicationScheduleAdmission({
 			databaseUrl,
 			handle,
@@ -344,6 +364,7 @@ describeLive('v0.8 Kubernetes Scheduler lifecycle on OrbStack', () => {
 		});
 		expect(failed).toMatchObject({
 			state: 'failed',
+			scheduledAt,
 			attempts: 2,
 			error: { message: 'intentional terminal failure' },
 		});

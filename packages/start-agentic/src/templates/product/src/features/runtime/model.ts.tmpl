@@ -35,6 +35,15 @@ export const WorkspaceActivity = application.actor('workspace-activity.v1', {
   },
 });
 
+// Actor state is reachable only through authenticated application workflows,
+// queries, schedules, and processors. Classify every protocol operation at the
+// operation boundary so the installed application policy reauthorizes the
+// current principal and trusted context; the actor runtime never becomes an
+// accidentally public side channel.
+WorkspaceActivity.snapshot.applicationPolicy();
+WorkspaceActivity.record.send.applicationPolicy();
+WorkspaceActivity.alarms.expire.schedule.applicationPolicy();
+
 WorkspaceActivity.on.initialize(() => ({
   revision: 0,
   activityCount: 0,

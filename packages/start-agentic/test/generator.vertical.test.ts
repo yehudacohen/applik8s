@@ -11,14 +11,20 @@ import {
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import {
+  type ApplicationGraph,
+  deriveApplicationGraphFoundation,
+} from '@applik8s/core';
+import {
   compileTypeKroComposition,
   discoverApplicationGraph,
 } from '@applik8s/compiler';
 import {
   compileApplicationAwsDeploymentPlan,
   compileApplicationDeploymentGraph,
+  compileLocalApplicationPlan,
   compileLocalSupervisorPlan,
 } from '@applik8s/deployment-compiler';
+import { applicationPlanSelectionResolver } from '@applik8s/dev';
 import {
   type ApplicationStartCommand,
   applicationAgenticStartDefinition,
@@ -159,6 +165,9 @@ describe('Agentic Start generator', () => {
       "import { AgenticStartOnboarding } from '@applik8s/start-agentic/react';",
     );
     expect(researchView).toContain('<AgenticStartOnboarding');
+    expect(researchView).toContain(
+      'data-applik8s-provenance="query.Conversation.listConversations"',
+    );
     expect(researchView).not.toContain('profile="starter"');
     const applicationSource = await readFile(
       join(target, 'src/application.ts'),
@@ -366,6 +375,9 @@ describe('Agentic Start generator', () => {
       outDir: '.applik8s/deploy',
     });
     expect(manifest.dependencies['@tanstack/react-start']).toBe('1.168.28');
+    expect(manifest.scripts.dev).toBe('vite');
+    expect(manifest.devDependencies['@applik8s/compiler']).toBeUndefined();
+    expect(manifest.devDependencies.typekro).toBeUndefined();
     expect(manifest.dependencies['@tanstack/react-router']).toBe('1.170.18');
     expect(manifest.devDependencies.nitro).toBe(
       'npm:nitro-nightly@3.0.1-20260715-190547-7af4fee3',
@@ -381,6 +393,20 @@ describe('Agentic Start generator', () => {
     );
     expect(manifest.dependencies['@applik8s/identity']).toBe('workspace:*');
     expect(manifest.dependencies['@applik8s/runtime-s3']).toBe('workspace:*');
+    expect(manifest.dependencies['@applik8s/client']).toBe('workspace:*');
+    expect(manifest.dependencies['@applik8s/core']).toBe('workspace:*');
+    expect(manifest.dependencies['@applik8s/runtime-contract']).toBe('workspace:*');
+    expect(manifest.dependencies['@applik8s/runtime']).toBe('workspace:*');
+    expect(manifest.dependencies['@applik8s/runtime-ai']).toBe('workspace:*');
+    expect(manifest.dependencies['@applik8s/runtime-aws']).toBe('workspace:*');
+    expect(manifest.dependencies['@applik8s/runtime-celld']).toBe('workspace:*');
+    expect(manifest.dependencies['@applik8s/runtime-duckdb']).toBe('workspace:*');
+    expect(manifest.dependencies['@applik8s/runtime-kubernetes']).toBe('workspace:*');
+    expect(manifest.dependencies['@applik8s/runtime-nats']).toBe('workspace:*');
+    expect(manifest.dependencies['@applik8s/runtime-otel']).toBe('workspace:*');
+    expect(manifest.dependencies['@applik8s/runtime-postgres']).toBe('workspace:*');
+    expect(manifest.dependencies['@applik8s/identity-ory']).toBe('workspace:*');
+    expect(manifest.dependencies['@applik8s/notifications-smtp']).toBe('workspace:*');
     expect(manifest.dependencies['@tanstack/ai-react']).toBe('0.19.3');
     expect(manifest.dependencies['@tanstack/ai-persistence']).toBe('0.1.5');
     expect(
@@ -680,6 +706,11 @@ describe('Agentic Start generator', () => {
     expect(notesModel).toContain("const documentWorkspace = module(");
     expect(notesModel).toContain('currentApplication.include(maintainedDocuments)');
     expect(notesModel).not.toContain('ApplicationModelViewContext');
+    const documentsView = await readFile(
+      join(target, 'src/features/documents/view.tsx'),
+      'utf8',
+    );
+    expect(documentsView).toContain('data-applik8s-provenance="query.document-list"');
     const productModulesSource = await readFile(
       join(target, 'src/modules.ts'),
       'utf8',
@@ -940,10 +971,10 @@ describe('Agentic Start generator', () => {
     expect(artifactRoute).toContain('DownloadArtifact({ id: detail.data.id })');
     expect(artifactRoute).not.toContain('objectKey');
     expect(artifactRoute).toContain('Download artifact');
-    expect(libraryModel).toContain('const ArtifactDownloadTarget');
-    expect(libraryModel).toContain('loadApplicationArtifactDownloadTarget(input, context, {');
+    expect(libraryModel).not.toContain('ArtifactDownloadTarget');
+    expect(libraryModel).toContain('await Artifacts.Artifact.require(request.input.id)');
     expect(libraryModel).toContain('scope: agenticWorkspaceScope');
-    expect(libraryModel).toContain('ArtifactObjects.signDownload({ key: target.objectKey })');
+    expect(libraryModel).toContain('ArtifactObjects.signDownload({ key: artifact.objectKey })');
     const administrationModel = await readFile(
       join(target, 'src/features/administration/model.ts'),
       'utf8',
@@ -1423,6 +1454,33 @@ describe('Agentic Start generator', () => {
       expect(localPlan.resources).toEqual(expect.arrayContaining([
         expect.objectContaining({ kind: 'process' }),
       ]));
+      const localApplicationPlan = compileLocalApplicationPlan({
+        graph: result.value,
+        supervisor: localPlan,
+        workspaceRoot: target,
+      });
+      const resolvedSelection = await applicationPlanSelectionResolver({
+        currentPlan: () => localApplicationPlan,
+      }).resolve({
+        id: 'selection_research_inbox',
+        capturedAtRevision: localApplicationPlan.sourceDigest,
+        route: { pathname: '/', searchKeys: [] },
+        element: { role: 'main', boundedText: 'Research inbox' },
+        sourceHints: [{
+          provenanceId: 'query.Conversation.listConversations',
+          confidence: 'exact',
+        }],
+      }, {
+        projectId: result.value.metadata.name,
+        revision: localApplicationPlan.sourceDigest,
+      });
+      expect(resolvedSelection).toEqual(expect.arrayContaining([
+        expect.objectContaining({ class: 'source', resolution: 'exact' }),
+        expect.objectContaining({ class: 'graphNode', resolution: 'exact' }),
+        expect.objectContaining({ class: 'operation', resolution: 'exact' }),
+        expect.objectContaining({ class: 'applicationPlanNode', resolution: 'exact' }),
+      ]));
+      expect(JSON.stringify(resolvedSelection)).not.toContain(target);
       const awsPlan = compileApplicationAwsDeploymentPlan({
         graph: result.value,
         workspaceRoot: target,
@@ -1499,7 +1557,7 @@ describe('Agentic Start generator', () => {
             },
           },
         },
-        artifacts: [],
+        ...kubernetesRuntimeFixture(result.value, target),
       });
       expect(
         dedicatedDeployment.graph.nodes.find(
@@ -1622,7 +1680,7 @@ describe('Agentic Start generator', () => {
           name: 'research-workspace',
           profile: 'starter',
         },
-        artifacts: [],
+        ...kubernetesRuntimeFixture(result.value, target),
       });
       expect(
         starterDeployment.graph.nodes.some(
@@ -1700,7 +1758,7 @@ describe('Agentic Start generator', () => {
             },
           },
         },
-        artifacts: [],
+        ...kubernetesRuntimeFixture(result.value, target),
       });
       expect(
         externalDeployment.graph.nodes.filter(
@@ -1823,8 +1881,20 @@ describe('Agentic Start generator', () => {
       expect(notificationWorkerSource).toMatch(
         /import \{ deliverApplicationNotification as providerOperation_[a-f0-9]{12} \} from "@applik8s\/notifications\/runtime";/u,
       );
-      expect(notificationWorkerSource).toMatch(
-        /"delivery": Object\.freeze\(\{ \.\.\.\(\{ "deliver": providerOperation_[a-f0-9]{12} \}\) \}\)/u,
+      const operationsOffset = notificationWorkerSource.indexOf(
+        'const functionNativeOperations',
+      );
+      const deliveryBindingOffset = notificationWorkerSource.indexOf(
+        '"delivery"',
+        operationsOffset,
+      );
+      expect(
+        notificationWorkerSource.slice(
+          deliveryBindingOffset,
+          deliveryBindingOffset + 400,
+        ),
+      ).toMatch(
+        /"delivery": Object\.freeze\(\{ \.\.\.\(\{ "deliver": instrumentApplicationProviderOperation\(\{"interface":"NotificationDelivery","nodeId":"provider\.notification-delivery\.v1alpha1\.transactional","member":"deliver"\}, providerOperation_[a-f0-9]{12}\) \}\) \}\)/u,
       );
       const nestedOperationSource = notificationWorkerSource.slice(
         notificationWorkerSource.indexOf('const functionNativeOperations'),
@@ -1920,6 +1990,83 @@ describe('Agentic Start generator', () => {
     120_000,
   );
 });
+
+function kubernetesRuntimeFixture(graph: ApplicationGraph, workspaceRoot: string) {
+  const executionNodeIds = [...new Set(
+    deriveApplicationGraphFoundation(graph, { workspaceRoot }).runtimeAccess.map(({ consumer }) => consumer.nodeId),
+  )].sort();
+  const namespace = graph.metadata.namespace ?? graph.metadata.name;
+  const logicalReference = 'artifact://agentic-start-application-host';
+  const generatedSecretEnvironment = graph.nodes.flatMap((node, index) =>
+    node.kind === 'gateway'
+    && node.materialization === 'generatedDeployment'
+    && node.cursorSecret
+    && typeof node.cursorSecret.name === 'string'
+      ? [{
+          name: `APPLIK8S_TEST_CURSOR_${index}`,
+          valueFrom: {
+            secretKeyRef: {
+              name: node.cursorSecret.name,
+              key: node.cursorSecret.key,
+            },
+          },
+        }]
+      : []);
+  const nodesById = new Map(graph.nodes.map((node) => [node.id, node]));
+  const needsContextSecret = graph.nodes.some((node) =>
+    (node.kind === 'gateway' && node.materialization === 'generatedDeployment')
+    || node.kind === 'server'
+    || (node.kind === 'workflowWorker' && node.handlers.some(({ nodeId }) => {
+      const handler = nodesById.get(nodeId);
+      return handler?.kind === 'taskHandler' && (handler.operations?.length ?? 0) > 0;
+    })));
+  if (needsContextSecret) {
+    generatedSecretEnvironment.push({
+      name: 'APPLIK8S_TEST_CONTEXT',
+      valueFrom: {
+        secretKeyRef: {
+          name: `${graph.metadata.name}-context`,
+          key: 'key',
+        },
+      },
+    });
+  }
+  return {
+    artifacts: [{
+      id: 'artifact.application-host',
+      artifactType: 'containerImage' as const,
+      name: 'agentic-start-application-host',
+      sourceDigest: `sha256:${'e'.repeat(64)}`,
+      sourceDescriptor: { logicalReference },
+      executionNodeIds,
+    }],
+    materializedComposition: {
+      resources: [{
+        id: 'applicationHostDeployment',
+        template: {
+          apiVersion: 'apps/v1',
+          kind: 'Deployment',
+          metadata: { name: 'agentic-start', namespace },
+          spec: {
+            selector: { matchLabels: { 'app.kubernetes.io/name': 'agentic-start' } },
+            template: {
+              metadata: { labels: { 'app.kubernetes.io/name': 'agentic-start' } },
+              spec: {
+                serviceAccountName: 'agentic-start',
+                containers: [{
+                  name: 'application',
+                  image: logicalReference,
+                  env: generatedSecretEnvironment,
+                }],
+              },
+            },
+          },
+        },
+      }],
+      status: {},
+    },
+  };
+}
 
 async function writeOfficialRouterFiles(target: string): Promise<void> {
   await writeFile(

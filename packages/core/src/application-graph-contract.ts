@@ -1279,6 +1279,13 @@ export interface ApplicationQueryNode extends ApplicationGraphNodeBase<'query'> 
   /** Calling convention retained while the compatibility request envelope is lowered away. */
   readonly handlerInvocation?: 'request' | 'input-context';
   readonly handlerDependencies?: ApplicationHandlerDependencies;
+  /** Exact actor protocol members reached by the function-native query callback. */
+  readonly actorBindings?: readonly {
+    readonly identifier: string;
+    readonly actor: ApplicationGraphNodeRef;
+    readonly member: string;
+    readonly memberKind: 'command' | 'message' | 'alarm';
+  }[];
   readonly handlerLocation?: SourceLocation;
   readonly handlerUnresolved?: readonly string[];
 }
@@ -3619,6 +3626,13 @@ function applicationGraphNodeStructureDiagnostics(node: ApplicationGraphNode, gr
           ? actor.definition.protocol.find((candidate) => candidate.name === binding.member)
           : undefined;
         if (actor?.kind !== 'actor' || !member || member.kind !== binding.memberKind) messages.push(`Application stream processor ${node.id} actor ${binding.identifier} must reference matching ${binding.memberKind} member ${binding.member}.`);
+      }
+      const applicationScheduleAliases = new Set<string>();
+      for (const binding of node.applicationScheduleBindings ?? []) {
+        if (!binding.identifier.trim() || applicationScheduleAliases.has(binding.identifier)) messages.push(`Application stream processor ${node.id} schedule-handle bindings must have unique non-empty identifiers.`);
+        applicationScheduleAliases.add(binding.identifier);
+        const schedule = graph.nodes.find((candidate) => candidate.id === binding.schedule.nodeId);
+        if (schedule?.kind !== 'schedule' || schedule.scheduler.nodeId !== binding.scheduler.nodeId) messages.push(`Application stream processor ${node.id} schedule handle ${binding.identifier} must reference one matching schedule definition and Scheduler provider.`);
       }
       if ((node.schedules?.length ?? 0) + (node.tasks?.length ?? 0) > 0) {
         const provider = graph.nodes.find((candidate) => candidate.id === node.workflowEngine?.nodeId);

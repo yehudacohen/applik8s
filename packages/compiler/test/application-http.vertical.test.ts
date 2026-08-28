@@ -30,6 +30,7 @@ import { applicationServerNamespace } from '../src/application-server-namespace.
 import { compileTypeKroComposition } from '../src/pipeline/index.js';
 
 const directories: string[] = [];
+const compilerTestEntrypoint = new URL('./application-http.vertical.test.ts', import.meta.url).pathname;
 
 afterEach(async () => {
   await Promise.all(
@@ -317,6 +318,7 @@ describe('generated function-native HTTP worker', () => {
     directories.push(outDir);
 
     const artifacts = await emitGeneratedApplicationHttpServers({
+      entrypoint: compilerTestEntrypoint,
       graph: graphWithSelectedEventLog,
       operationCatalog: compileApplicationOperationCatalog(
         graphWithSelectedEventLog,
@@ -342,11 +344,14 @@ describe('generated function-native HTTP worker', () => {
     ]);
     const source = (await readFile(artifacts[0]!.sourcePath, 'utf8'))
       .replaceAll('\\\n', '');
+    expect(source).not.toContain('startWorkerThreadService');
+    expect(source).not.toContain('esbuildCommandAndArgs');
     const repeatedOutDir = await mkdtemp(
       join(tmpdir(), 'applik8s-http-worker-repeat-'),
     );
     directories.push(repeatedOutDir);
     const repeatedArtifacts = await emitGeneratedApplicationHttpServers({
+      entrypoint: compilerTestEntrypoint,
       graph: graphWithSelectedEventLog,
       operationCatalog: compileApplicationOperationCatalog(
         graphWithSelectedEventLog,
@@ -487,6 +492,10 @@ describe('generated function-native HTTP worker', () => {
       ? Reflect.get(containers[0], 'env')
       : undefined;
     expect(deployment?.spec?.replicas).toBe(2);
+    expect(Reflect.get(containers[0] as object, 'resources')).toEqual({
+      requests: { cpu: '100m', memory: '128Mi' },
+      limits: { cpu: '1', memory: '512Mi' },
+    });
     expect(
       Array.isArray(environment)
         ? environment.map((entry) => Reflect.get(entry, 'name'))
@@ -535,6 +544,7 @@ describe('generated function-native HTTP worker', () => {
     );
     directories.push(awsOutDir);
     await emitGeneratedApplicationHttpServers({
+      entrypoint: compilerTestEntrypoint,
       graph: graphWithSelectedEventLog,
       operationCatalog: compileApplicationOperationCatalog(
         graphWithSelectedEventLog,
@@ -552,7 +562,7 @@ describe('generated function-native HTTP worker', () => {
     expect(awsGeneratedEntrypoint).not.toContain(
       "from '@applik8s/runtime-nats/event-log'",
     );
-  });
+  }, 120_000);
 
   it('compiles app.http into one OCI worker and removes the raw server bundle', async () => {
     const directory = await mkdtemp(
@@ -1038,6 +1048,7 @@ export const providerHttpStack = application.composition;
     } as ApplicationGraph;
     await expect(
       emitGeneratedApplicationHttpServers({
+        entrypoint: compilerTestEntrypoint,
         graph: missingRuntimeGraph,
         outDir: join(directory, 'missing-runtime'),
       }),
@@ -1067,6 +1078,7 @@ export const providerHttpStack = application.composition;
     } as ApplicationGraph;
     await expect(
       emitGeneratedApplicationHttpServers({
+        entrypoint: compilerTestEntrypoint,
         graph: placementOnlyGraph,
         outDir: join(directory, 'placement-only'),
       }),

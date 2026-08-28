@@ -15,7 +15,9 @@ records
 **v0.8 contract integrations:** Portable targets deploy selected actor providers, inferred runtime access
 attributes protocol operations, unified observability traces turns, function-native scheduling remains
 separate from actor alarms, and the application plan explains capability and topology. Deterministic
-semantics can be implemented before distributed provider qualification.
+semantics can be implemented before distributed provider qualification. On Kubernetes, TypeKro and
+Alchemy install the Celld control plane while an Applik8s-native operator owns continuous fleet
+reconciliation.
 
 **First distributed provider candidate:** celld, behind an Applik8s-owned provider-neutral contract
 
@@ -641,13 +643,291 @@ The provider is split into:
 
 - an Applik8s-generated Worker/runtime adapter translating admission, state, alarms, connections,
   broadcasts, results, effects, authority, and traces;
-- a TypeKro composition for celld nodes, private peer networking, ingress/TLS termination, object-store
-  binding, readiness, upgrades, and deletion;
+- the independently consumable `@applik8s/celld-operator` package and multi-architecture operator image,
+  which own the provider-specific `CelldFleet` CRD, continuous reconciliation, drain and restore gates,
+  rollout state, fleet status, and finalization;
+- a TypeKro/Alchemy installation composition that deploys and wires the Kubernetes control plane,
+  object-store and Secret bindings, generated Worker publication, provider-neutral ingress/TLS, and
+  dependency ordering without also owning the operator's per-fleet child resources;
 - an Alchemy AWS adapter for compute, load balancing, private networking, S3 authority, IAM, deployment,
   and cross-resource outputs;
 - a local target using a pinned conditional-write-compatible object store rather than pretending the
   filesystem satisfies celld's fencing contract; and
 - an external celld binding for an already managed fleet.
+
+### Kubernetes control-plane architecture
+
+The Kubernetes implementation has one unambiguous ownership boundary:
+
+| Authority | Canonical responsibility |
+| --- | --- |
+| TypeKro and Alchemy | Install the CRD, operator Deployment, RBAC, object-store and Secret dependencies, generated Worker publication, exposure/TLS resources, observability wiring, and the selected `CelldFleet` instance in dependency order. |
+| `@applik8s/celld-operator` | Reconcile each `CelldFleet` into its StatefulSet, headless and serving Services, NetworkPolicy, PodDisruptionBudget, fleet ServiceAccount, rollout state, finalizer, and authoritative status. |
+| celld | Execute the generated Worker and own cell activation, one-writer fencing, durable cell state, alarms, connections, hibernation, and drain behavior. |
+| Applik8s application surface | Expose only provider-neutral actor definitions, references, operations, capabilities, and selected-provider configuration. |
+
+#### Installation resources and shared ownership
+
+The deployment layer exposes two deliberately separate compositions:
+
+- `CelldOperatorBootstrap` is a cluster singleton that owns the `CelldFleet` CRD, operator Deployment,
+  control-plane ServiceAccount, and cluster RBAC. Its identity and singleton-spec fingerprint are stable
+  across consuming applications. A conflicting bootstrap configuration fails closed. Removing an
+  application never deletes this bootstrap, and explicit platform teardown refuses while any
+  `CelldFleet` exists.
+- `CelldFleetInstallation` is namespaced and application-owned. It materializes the generated Worker
+  publication, object-store and Secret bindings, provider-neutral exposure, observability wiring, and
+  one `CelldFleet` instance. It depends on the bootstrap but never owns it.
+
+The singleton bootstrap may be externally supplied. Presence of a supplied control-plane binding means
+the application consumes that bootstrap rather than creating another owner; no ambiguous `shared`
+boolean changes lifecycle semantics. Existing singleton state must be adopted only after its version,
+fingerprint, CRD compatibility, and live ownership are proven.
+
+TypeKro must not continuously own or reapply resources also owned by the operator. The installation graph
+may create the `CelldFleet` instance and project its status, but the operator is the sole field and
+lifecycle owner of the instance's child resources. Deleting an application first finalizes its
+`CelldFleet`; TypeKro and Alchemy may remove the operator control plane or CRD only after every owned
+instance has disappeared. Persistent actor data remains governed by the separately declared object-store
+retention policy and is never implicitly deleted with a fleet workload.
+
+The compiler lowers an application's selected Celld actor provider into an internal `CelldFleet` resource.
+Application authors do not import `CelldFleet`, the operator package, Kubernetes resources, or celld APIs
+on the ordinary path. The resource carries references to already materialized image artifacts, object
+storage, runtime Secrets, exposure, and observability rather than copying provider credentials into its
+spec or status.
+
+#### Normative `CelldFleet` contract
+
+`CelldFleet` is namespaced at `celld.applik8s.io/v1alpha1`. It is provider-specific and internal to the
+inferred actor-provider path, but publicly documented for direct package, Kubernetes, and GitOps
+consumers. The operator is the authoritative spec/status reconciler under its dedicated field manager and
+uses `celld.applik8s.io/finalizer` for deletion. The v0.8 contract is at least:
+
+```ts
+interface CelldFleetSpec {
+  artifact: {
+    /** Published repository@digest or local-engine digest ID containing celld and the generated Worker. */
+    image: string;
+    manifestDigest: string;
+    workerVersion: string;
+    celldVersion: string;
+  };
+  replicas: number;
+  placement?: {
+    /** Defaults to kubernetes.io/hostname. */
+    topologyKey?: string;
+    /** v0.8 supports at most one fleet replica per topology domain. */
+    maxPerDomain?: 1;
+  };
+  objectStore: {
+    dialect: "s3" | "gcs";
+    bucket: string;
+    prefix: string;
+    endpoint?: string;
+    region?: string;
+    credentials:
+      | {
+          type: "secret";
+          secretRef: {
+            name: string;
+            contract:
+              | "applik8s.object-store.s3-credentials/v1"
+              | "applik8s.object-store.gcs-credentials/v1";
+          };
+        }
+      | {
+          type: "workloadIdentity";
+          serviceAccountRef: {
+            name: string;
+          };
+        };
+  };
+  runtimeSecretRef: {
+    name: string;
+    contract: "applik8s.celld-runtime/v1";
+  };
+  rollout: {
+    strategy: "Rolling" | "Recreate";
+    progressDeadlineSeconds: number;
+    drainDeadlineSeconds: number;
+    restoreDeadlineSeconds: number;
+  };
+  deletion: {
+    /** Retain is the only generally available v0.8 data policy. */
+    dataPolicy: "Retain";
+    /** Normal deletion always fails closed on an incomplete drain. */
+    drainTimeoutPolicy: "Block";
+  };
+}
+
+interface CelldFleetStatus {
+  observedGeneration: number;
+  phase: "Pending" | "Ready" | "Progressing" | "Draining" | "Degraded";
+  replicas: number;
+  readyReplicas: number;
+  updatedReplicas: number;
+  observedImageDigest?: string;
+  observedArtifactManifestDigest?: string;
+  observedWorkerVersion?: string;
+  observedCelldVersion?: string;
+  endpoint?: string;
+  rollout?: {
+    partition: number;
+    waitingOn?: string;
+    startedAt?: string;
+  };
+  conditions: Array<{
+    type: "Ready" | "Progressing" | "Degraded" | "Draining" | "RestoreBlocked";
+    status: "True" | "False" | "Unknown";
+    observedGeneration: number;
+    reason: string;
+    message: string;
+    lastTransitionTime: string;
+  }>;
+}
+```
+
+Names, namespaces, image references, versions, bucket locations, prefixes, deadlines, and Secret
+references are validated before mutation and in the generated CRD schema. Secret values never enter the
+`CelldFleet` spec or status, redacted application plan, public diagnostic, or fleet YAML; any separately
+materialized Secret is a sensitive deployment artifact with its own exact ownership and access policy.
+`Ready=True` is valid only for the current generation when every desired replica is ready and updated,
+the observed image digest and runtime artifact manifest prove the Worker and Celld versions, no drain is
+active, and the fleet-wide restore gate is clear.
+
+`applik8s.object-store.s3-credentials/v1`, `applik8s.object-store.gcs-credentials/v1`, and
+`applik8s.celld-runtime/v1` are versioned package exports with exact required and optional keys. External
+Secret controllers and manually managed Secrets satisfy those contracts rather than relying on implicit
+key names. Workload identity remains a first-class alternative to static object-store credentials.
+
+The compiler emits an `applik8s.celld-runtime-artifact/v1` canonical manifest containing the Worker
+version, Celld version, application-graph digest, protocol revision, and artifact digest. The manifest is
+bound into the OCI build identity. Each running runtime exposes it through the operator-only listener.
+The operator derives observed status only after the desired digest-pinned image, Kubernetes
+`containerStatuses[].imageID`, runtime-reported manifest digest, and manifest versions agree. Desired spec
+strings alone can never populate an observed field or satisfy readiness.
+
+#### Operator execution boundary and workload
+
+The package dogfoods the ordinary Applik8s Kubernetes operator model:
+
+```ts
+CelldFleet.on.reconcile(async (fleet) => {
+  // Observe children and celld's bounded internal operational surface.
+  // Converge one restart-safe rollout/finalization transition.
+  // Project authoritative status for fleet.metadata.generation.
+});
+```
+
+The controller runs on the normal Applik8s operator host and may use declared Kubernetes reads, effects,
+secondary watches, bounded schedules, and an internal Celld operations client. It does not acquire or
+depend on the `ActorRuntime` provider it installs, and therefore introduces no recursive actor-runtime
+bootstrap.
+
+Field ownership is exact. TypeKro/Alchemy or a direct GitOps consumer owns `CelldFleet.spec` and selected
+metadata under its deployment field manager. The operator never mutates spec; it exclusively owns the
+status subresource and every child field it materializes under its operator field manager. TypeKro may
+observe status for readiness and outputs but never applies it. Every child carries a controller
+ownerReference leased to the live `CelldFleet` UID plus a canonical identity/fingerprint. A same-identity
+foreign or stale-UID child fails closed with a bounded conflict diagnostic rather than being silently
+adopted or overwritten.
+
+The canonical fleet workload is a StatefulSet. Stable ordinals, peer DNS, explicit replicas, partitioned
+updates, and restore-gated ordinal advancement are part of the provider guarantee. Required topology
+spread or pod anti-affinity enforces at most one replica per selected topology domain without coupling
+fleet size to node count. A DaemonSet or per-node placement mode has materially different scaling and
+upgrade semantics and is outside the v0.8 provider contract.
+
+#### Finalization state machine
+
+The `CelldFleet` finalizer is persisted before child creation and advances through restart-safe observed
+states:
+
+1. **Quiesce admission.** Invoke the authenticated operator-only quiesce operation on every live runtime.
+   The runtime atomically rejects new actor turns and connection admissions with retryable unavailability,
+   allows already admitted work to complete, and returns a durable receipt containing its admission
+   high-watermark and remaining in-flight count. The public serving path stays unavailable while the
+   bounded operational listener remains reachable for reconciliation.
+2. **Confirm the drain boundary.** Observe every runtime node through the operator-only listener. Wait
+   until the quiesce high-watermark has no in-flight work, fleet-wide restoring and evicting work is
+   clear, and any unreachable owner is fenced or its lease has safely expired. Existing client
+   connections are no longer an admission path and may close as their serving process terminates.
+3. **Drain processes.** Patch the operator-owned StatefulSet to zero replicas. Kubernetes delivers the
+   normal termination signal and Celld completes its process-level shutdown against already durable
+   state. Wait for every exact fleet-UID runtime Pod to disappear; an operator restart recovers this
+   phase from the persisted zero-replica StatefulSet rather than calling the now-absent serving Service.
+4. **Remove workload identity.** Delete and verify absence of the zero-replica StatefulSet and remaining
+   operator-owned namespaced children without deleting the separately owned object store or its retained
+   prefix.
+5. **Finalize.** Project the terminal condition and remove the finalizer only after the preceding evidence
+   is durable.
+
+An exceeded drain, restore, fencing, or deletion deadline sets a generation-current degraded condition
+naming the blocking pods, leases, finalizers, or resources and retains the finalizer. Normal spec fields
+cannot request orphaning or force removal. A force-finalize or orphan action is a separate, explicitly
+authorized and audited administrative operation with a reason, affected-resource inventory, and data-loss
+warning; it is never an automatic timeout policy.
+
+Quiesce, drain, and checkpoint operations are idempotent and receipt-addressed. An operator restart rereads
+the persisted receipt/high-watermark and observed runtime state; it never reopens admission, skips
+in-flight work, or treats disappearance of a pod as proof of durability.
+
+#### Upgrade and rollback ownership
+
+`CelldOperatorBootstrap` upgrades the CRD and operator before a fleet may use a newer contract. The
+operator must read every still-served CRD version, preserve unknown data across supported transitions,
+and complete or resume required storage migration before an old served version is removed. A downgrade or
+rollback is rejected before mutation when any live instance or persisted status cannot be understood by
+the target operator.
+
+Every fleet change has one explicit rollout epoch. A Worker-only artifact change uses the declared
+strategy. A Celld-version change is classified against a maintained compatibility table before any pod
+changes. When Worker and Celld versions change together, the stricter Celld-version policy governs the
+single physical image rollout; status cannot report either version complete until both match across the
+fleet. The operator automatically promotes known mixed-version-unsafe boundaries to `Recreate`, even when
+the configured Worker strategy is `Rolling`; application authors never select framework-runtime upgrade
+mechanics. Interrupted operator, CRD, Worker, and
+Celld upgrades resume from observed resources and status rather than restarting or skipping gates.
+
+A completed artifact deployment Job proves only that the artifact was deployed at that point in history;
+it is not authoritative proof that the same artifact remains active after a later deployment. Returning to
+a previously deployed immutable artifact must replay its historical Job during the current rollout epoch.
+The operator records the epoch start, rejects receipts whose creation identity cannot be verified, and does
+not advance the StatefulSet until the desired artifact's current activation Job has succeeded. This rule is
+restart-safe and applies equally to forward rollout and rollback.
+
+Multiple application fleets may run different supported Worker and Celld versions concurrently. Control-
+plane upgrades therefore cannot assume all instances move together, and removal of old compatibility code
+requires an inventory proving that no live fleet still needs it.
+
+The package is nevertheless a real public product boundary because the operator is independently
+deployable and useful outside an Applik8s-authored application. It publishes:
+
+- `@applik8s/celld-operator` for the CRD contract, operator application, extension surface, and typed
+  status/reference APIs;
+- `@applik8s/celld-operator/typekro` for the installation composition, without eagerly loading TypeKro
+  through the package root;
+- `@applik8s/celld-operator/testing` for provider conformance and lifecycle fixtures; and
+- `ghcr.io/applik8s/celld-operator:<version>` as a pinned linux/amd64 and linux/arm64 image.
+
+Direct consumers may install the control plane through the TypeKro subpath, apply `CelldFleet` resources
+through Kubernetes or GitOps, and observe the same status contract. This direct surface cannot expose
+Applik8s application credentials or silently weaken the fleet lifecycle guarantees used by the inferred
+provider path. Extension points may add policy, observation, or supported resource decoration, but cannot
+replace the core reconciler, bypass rollout gates, or introduce a second field owner for fleet children.
+
+The v0.8 product promise is an independently consumable Applik8s Celld provider package, not a generic
+multi-tenant Celld platform for unrelated ecosystems. Direct consumers receive the same documented CRD,
+operator image, installation composition, lifecycle guarantees, and diagnostics. Account systems,
+generic deployment services, arbitrary tenant schedulers, and compatibility beyond the qualified Celld
+matrix require separate evidence and are not implied by publishing the package.
+
+An external Celld operator may later implement the same provider capability as an optional external
+control-plane binding. It is not the v0.8 Kubernetes default and does not replace Applik8s conformance
+evidence merely by exposing a similar CRD. Its Celld-version compatibility, architecture support,
+rollout behavior, status fidelity, security boundaries, and complete fleet lifecycle must pass the same
+suite before it can be selected as a qualified provider.
 
 celld remains alpha until the submitted version passes Applik8s conformance. Rapid adoption, maintainer
 reputation, or upstream claims cannot substitute for repeatable release evidence. No v0.8 application API
@@ -767,8 +1047,17 @@ operation with provider capability and race semantics.
 
 ### Increment 4 — celld provider
 
-- Implement the generated Worker/runtime adapter and local, TypeKro/Kubernetes, Alchemy/AWS, and external
-  fleet bindings.
+- Implement the generated Worker/runtime adapter and local, Kubernetes, Alchemy/AWS, and external fleet
+  bindings.
+- Publish `@applik8s/celld-operator`, its multi-architecture image, provider-specific `CelldFleet` CRD,
+  authoritative status contract, and complete reconciliation/finalization behavior.
+- Have TypeKro and Alchemy install the singleton `CelldOperatorBootstrap`, materialize each
+  application-owned `CelldFleetInstallation`, create the fleet instance, and project status without
+  sharing ownership of the fleet's child resources.
+- Preserve a direct TypeKro and Kubernetes/GitOps consumption path for users who want the Celld operator
+  without the inferred Applik8s actor provider.
+- Prove two applications can share one bootstrap, delete independently, run supported version-skewed
+  fleets, and reject an incompatible bootstrap, CRD downgrade, or simultaneous unsafe image change.
 - Prove full-turn serialization across `await`, admission/result recovery, activation, fencing,
   hibernation, state/outbox/alarm durability, optional realtime behavior, node loss, rolling update, and
   teardown.
@@ -850,7 +1139,13 @@ operation with provider capability and race semantics.
 - The suite proves the celld adapter prevents Durable Objects-style interleaving across awaited work and
   preserves one complete serialized Applik8s turn.
 - Rivet runs the same suite as an independent nonblocking target until explicitly promoted.
-- Kubernetes installation, upgrade, finalizer-safe deletion, and retained state are live tested.
+- Kubernetes qualification creates a real `CelldFleet` and Celld workload; starting only the operator
+  manager or probing its metrics is not fleet lifecycle evidence.
+- Kubernetes installation, app-version rollout, Celld-version upgrade, operator restart during rollout,
+  node loss, restore gating, scale-down drain, finalizer-safe deletion, and retained state are live tested
+  on both supported image architectures where the cluster architecture is available.
+- TypeKro/Alchemy teardown proves that every owned `CelldFleet` finalizes before the operator Deployment
+  and CRD disappear, and that no resource has competing TypeKro and operator ownership.
 - Finalization retries safely, blocks deletion while unresolved, and never runs merely because an actor
   hibernates or its process crashes.
 - Provider capability differences appear in plan and operations evidence.
@@ -865,6 +1160,8 @@ operation with provider capability and race semantics.
 - Multi-region active-active actor state in the first release.
 - Exposing Rivet or celld client objects in application source.
 - Treating the local deterministic provider as production-ready.
+- A DaemonSet or implicit per-node Celld fleet whose capacity changes with cluster membership.
+- A generic multi-tenant Celld platform beyond the independently consumable Applik8s provider package.
 
 ## Closed v0.8 decisions
 
@@ -886,6 +1183,24 @@ operation with provider capability and race semantics.
 - Provider-specific placement and storage choices stay behind capability negotiation.
 - celld is the first distributed provider implementation candidate; it earns beta qualification only by
   passing the full conformance and lifecycle suite.
+- Kubernetes Celld fleets are reconciled by the Applik8s-native operator published as
+  `@applik8s/celld-operator`; TypeKro and Alchemy install and order that control plane but do not share
+  ownership of its child resources.
+- `CelldOperatorBootstrap` is singleton control-plane ownership and `CelldFleetInstallation` is
+  per-application ownership; deleting one application never removes a bootstrap serving another.
+- The operator dogfoods `CelldFleet.on.reconcile` on the ordinary Kubernetes operator runtime and does
+  not depend on the ActorRuntime it installs.
+- A restore-gated StatefulSet with explicit replicas and topology spreading is the canonical v0.8 fleet
+  workload; DaemonSet placement is not an equivalent lowering.
+- Normal finalization quiesces admission, drains, confirms durable checkpoint/fencing, removes workloads,
+  retains declared object data, and fails closed on timeout. Force/orphan behavior requires a separate
+  authorized and audited administrative operation.
+- Worker and Celld versions advance through one explicit rollout epoch, with the stricter Celld
+  compatibility policy governing a combined image change and current-generation status proving both.
+- The inferred actor-provider path does not require application authors to import the Celld operator
+  package, while the package and multi-architecture image remain independently consumable.
+- Third-party Celld operators are optional external provider implementations and must independently pass
+  the same compatibility, security, rollout, recovery, and lifecycle gates before qualification.
 - Rivet is the second independent conformance and operational-maturity target and is initially
   nonblocking.
 - Actors ship as beta in v0.8 even if local/AWS portability is declared stable.
@@ -898,4 +1213,7 @@ handlers through `Actor.on.<member>()`, authorize each inbound member, persist a
 durable effects, observe lifecycle and presence, and run the same semantic contract through deterministic
 local and one fully qualified distributed deployment—celld is the intended first candidate—without
 importing provider APIs or confusing actors with workflows, events, or models. Rivet independently
-challenges that contract before any stronger maturity claim.
+challenges that contract before any stronger maturity claim. On Kubernetes, the same completion claim
+also requires a TypeKro/Alchemy-installed, independently consumable Applik8s Celld operator whose real
+fleet rollout, recovery, status, finalization, and retained-state behavior pass the live qualification
+suite.

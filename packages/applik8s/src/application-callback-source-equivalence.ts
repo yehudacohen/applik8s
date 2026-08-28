@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { transformSync } from 'esbuild';
+import { applicationTransformSync } from './application-build-tool.js';
 
 /**
  * Rejects a stale stack-derived callsite before it can replace the callback
@@ -16,7 +16,7 @@ export function applicationCallbackSourceMatchesRuntime(
   try {
     const aliases = authoredFile ? sourceImportAliases(authoredFile) : undefined;
     const canonical = (source: string, runtime = false) =>
-      transformSync(
+      applicationTransformSync(
         `const __applik8sCallback = (${normalizeBundledImportAccess(source, runtime ? aliases : undefined)});`,
         {
           loader: 'ts',

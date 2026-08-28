@@ -1,3 +1,4 @@
+// typecast-file-boundary: Provider dependency discovery reflects branded callable handles and restores generics only after contract validation.
 import {
   type ApplicationCallableProviderRuntimeOperation,
   type ApplicationProviderRef,
@@ -5,11 +6,50 @@ import {
 } from '@applik8s/core';
 import { applicationProviderGraphNodeId } from './application-identifiers.js';
 import type { ApplicationProviderBinding } from './application-providers.js';
-import {
-  applicationProviderQualificationFor,
-  applicationProviderTokenName,
-  isApplicationQualifiedProviderToken,
-} from './application-providers.js';
+
+/**
+ * Runtime-only provider identity inspection.
+ *
+ * Keep this structural and local: importing the authoring-time provider
+ * catalog would also load TypeKro into serialized callback and web-host
+ * runtimes. Provider tokens cross this boundary only after their public
+ * discriminants have been established by the authoring API.
+ */
+function isApplicationQualifiedProviderToken(value: unknown): value is {
+  readonly kind: 'applicationQualifiedProvider';
+  readonly name: string;
+  readonly qualification: {
+    readonly apiVersion: 'applik8s.providerQualification/v1alpha1';
+    readonly capability: string;
+    readonly name: string;
+    readonly compatibilityRevision: string;
+    readonly key: string;
+  };
+} {
+  return Boolean(
+    value
+    && typeof value === 'object'
+    && Reflect.get(value, 'kind') === 'applicationQualifiedProvider'
+    && Reflect.get(value, 'base')
+    && Reflect.get(value, 'qualification'),
+  );
+}
+
+function applicationProviderQualificationFor(value: unknown) {
+  if (isApplicationQualifiedProviderToken(value)) return value.qualification;
+  if (value && typeof value === 'object' && Reflect.get(value, 'kind') === 'applicationProvider') {
+    const token = Reflect.get(value, 'token');
+    return isApplicationQualifiedProviderToken(token) ? token.qualification : undefined;
+  }
+  return undefined;
+}
+
+function applicationProviderTokenName(token: unknown): string {
+  if (!token || typeof token !== 'object' || typeof Reflect.get(token, 'name') !== 'string') {
+    throw new Error('Application provider dependency lost its token identity.');
+  }
+  return Reflect.get(token, 'name') as string;
+}
 
 const applicationProviderDependencyRegistry =
   new WeakMap<object, readonly unknown[]>();
@@ -348,3 +388,4 @@ function isApplicationProviderBinding(
       && Reflect.get(value, 'token'),
   );
 }
+// typecast-file-boundary: Provider dependency discovery reflects branded callable handles and restores generics only after contract validation.

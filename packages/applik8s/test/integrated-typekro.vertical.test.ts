@@ -2667,7 +2667,7 @@ describe('integrated TypeKro package surface', () => {
     const sourceConfigMap = composition.resources.find((resource) => resource.kind === 'ConfigMap' && resource.metadata.name === 'web-source');
     expect(sourceConfigMap).toMatchObject({ data: { 'route-get-typed-0.mjs': expect.stringContaining('applik8s-route-source-kind: source') } });
     expect(sourceConfigMap).toMatchObject({ data: { 'route-get-typed-0.mjs': expect.not.stringContaining('readonly query') } });
-    expect(sourceConfigMap).toMatchObject({ data: { 'route-get-typed-0.mjs': expect.stringContaining('cursor: request.query.cursor ?? "first"') } });
+    expect(sourceConfigMap).toMatchObject({ data: { 'route-get-typed-0.mjs': expect.stringMatching(/cursor: request\.query\.cursor \?\? ['"]first['"]/) } });
     expect(sourceConfigMap).toMatchObject({ data: { 'routes.manifest.json': expect.stringContaining('"sourceKind": "source"') } });
     expect(sourceConfigMap).toMatchObject({ data: { 'routes.mjs': expect.stringContaining('sourceLocation') } });
     expect(sourceConfigMap).toMatchObject({ data: { 'server.mjs': expect.stringContaining('routeDiagnostics(route)') } });
@@ -3011,10 +3011,10 @@ describe('integrated TypeKro package surface', () => {
     const adapterPackage = JSON.parse(await readFile('packages/typekro-adapter/package.json', 'utf8'));
     const installedPackage = JSON.parse(await readFile('node_modules/typekro/package.json', 'utf8'));
 
-    expect(workspacePackage.dependencies.typekro).toBe('0.33.7');
-    expect(applik8sPackage.dependencies.typekro).toBe('0.33.7');
-    expect(adapterPackage.dependencies.typekro).toBe('0.33.7');
-    expect(installedPackage.version).toBe('0.33.7');
+    expect(workspacePackage.dependencies.typekro).toBe('0.33.8');
+    expect(applik8sPackage.dependencies.typekro).toBe('0.33.8');
+    expect(adapterPackage.dependencies.typekro).toBe('0.33.8');
+    expect(installedPackage.version).toBe('0.33.8');
   });
 
   it('builds generated app infrastructure on existing TypeKro Kubernetes factories', async () => {

@@ -1,4 +1,4 @@
-import { app } from '../app';
+import { app } from '../domain-app';
 import { MediaUploadCompleted } from '../domain/events';
 import { verifyMedia } from '../domain/media';
 import { Database } from '../providers/database';

@@ -955,6 +955,10 @@ export const providerAgentStack = application.composition;
                 automountServiceAccountToken: false,
                 containers: [
                   expect.objectContaining({
+                    resources: {
+                      requests: { cpu: '100m', memory: '192Mi' },
+                      limits: { cpu: '1', memory: '768Mi' },
+                    },
                     env: expect.arrayContaining([
                       {
                         name: 'APPLIK8S_PROFILE_VARIANT',
@@ -1023,8 +1027,15 @@ export const providerAgentStack = application.composition;
     );
     const normalizedSource = source.replaceAll('\\\n', '');
     expect(normalizedSource).toContain('x-applik8s-execution-admission');
-    expect(normalizedSource).toContain('x-applik8s-internal-invocation');
+    expect(generatedSource).toContain('invocation: invocationToken');
+    expect(normalizedSource).not.toContain('x-applik8s-internal-invocation');
     expect(normalizedSource).toContain('applik8s-ai-operation-placement-error');
+    expect(normalizedSource).toContain(
+      'applik8s-ai-operation-placement-response-invalid',
+    );
+    expect(generatedSource).toContain(
+      "value = responseText ? JSON.parse(responseText) : undefined",
+    );
     expect(normalizedSource).toContain('createApplicationAdmissionObservationV1');
     expect(normalizedSource).toContain('applik8s-agent-admission');
     expect(normalizedSource).toContain('transport:"framework"');
@@ -1065,14 +1076,28 @@ export const providerAgentStack = application.composition;
     expect(generatedSource).toContain('applik8s_usage_facts');
     expect(generatedSource).toContain('await recordUsageFact(reservation, usage)');
     expect(generatedSource).toContain(
-      'contract.usage.nativeRelational.access?.setting',
+      'await executePostgresModelCommand({',
     );
     expect(generatedSource).toContain(
-      "'SELECT set_config($1, $2, true)'",
+      "bindingId: 'framework.ai-usage.' + contract.name",
     );
+    expect(generatedSource).toContain('context.emit(usageCreatedEvent, created)');
+    expect(generatedSource).toContain("digestSecret: requiredEnv('APPLIK8S_CONTEXT_SECRET')");
+    expect(artifact.frameworkCredentials).toContainEqual({
+      kind: 'context',
+      environmentName: 'APPLIK8S_CONTEXT_SECRET',
+    });
+    expect(JSON.stringify(artifact.resources)).toContain(
+      'APPLIK8S_CONTEXT_SECRET',
+    );
+    expect(JSON.stringify(artifact.resources)).toContain(
+      'research-platform-context',
+    );
+    expect(generatedSource).toContain('executionAdmission: admission');
     expect(generatedSource).toContain(
-      '[accessSetting, reservation.principalScope]',
+      'const admission = reservation.executionAdmission',
     );
+    expect(generatedSource).not.toContain('INSERT INTO applik8s_usage_facts');
     expect(generatedSource).toContain('protocolRunId: reservation.runId');
     expect(generatedSource).toContain('protocolRunId: runId');
     expect(generatedSource).toContain("confidence: 'calculated'");
@@ -1152,6 +1177,10 @@ export const providerAgentStack = application.composition;
     // The selected OpenTelemetry implementation is intentionally embedded so
     // an observed agent worker is self-contained rather than relying on a
     // process-global sidecar. Keep the complete generated worker bounded.
-    expect(artifact.sizeBytes).toBeLessThan(2_100_000);
+    // Canonical observable usage recording deliberately enters the same
+    // durable Postgres model kernel as application-authored creates. Keep the
+    // self-contained agent bounded while accounting for that correctness
+    // boundary instead of regressing to a raw SQL side channel.
+    expect(artifact.sizeBytes).toBeLessThan(2_200_000);
   });
 });

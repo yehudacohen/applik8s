@@ -1,3 +1,4 @@
+// typecast-file-boundary: Telemetry tests deliberately create partial and malformed carriers that safe application code cannot construct.
 import {
   ApplicationTelemetryContractError,
   applicationTelemetryMetricDefinition,
@@ -130,5 +131,15 @@ describe('v0.8 telemetry semantic contract', () => {
     })).toThrow(/does not allow attribute/u);
     expect(() => applicationTelemetryMetricDefinition('applik8s.dynamic.metric'))
       .toThrow(/not in the versioned/u);
+
+    const integrity = applicationTelemetryMetricDefinition('applik8s.runtime.integrity.envelope');
+    expect(integrity).toMatchObject({ kind: 'counter', unit: '{envelope}' });
+    expect(() => validateApplicationTelemetryMetricAttributes(integrity, {
+      'applik8s.runtime.integrity.purpose': 'applik8s.query-cursor/v1',
+      'applik8s.runtime.integrity.format': 'legacy',
+      'applik8s.runtime.integrity.operation': 'verify',
+      'applik8s.runtime.integrity.result': 'accepted',
+    })).not.toThrow();
   });
 });
+// typecast-file-boundary: Telemetry tests deliberately create partial and malformed carriers that safe application code cannot construct.

@@ -19,6 +19,7 @@ import {
 } from '@applik8s/applik8s';
 import { emitApplicationDeploymentGraph } from '@applik8s/compiler';
 import type { ApplicationGraph } from '@applik8s/core';
+import { applicationCelldRuntimeRelease } from '@applik8s/deployment-compiler';
 import {
   createCelldApplicationActorRuntime,
   signCelldActorConnectionTicket,
@@ -29,7 +30,7 @@ import { createActorLiveAuthority } from './actor-live-authority.js';
 const live = process.env.APPLIK8S_E2E_CELLD === '1' ? describe : describe.skip;
 const realtimeTest = process.env.APPLIK8S_E2E_CELLD_REALTIME === '1' ? test : test.skip;
 const run = promisify(execFile);
-const celldImage = 'ghcr.io/denoland/celld@sha256:7a4380721b6400073f2a26afe70a828410169f658d31b5ef61383e648ca0c530';
+const celldImage = applicationCelldRuntimeRelease.image;
 const seaweedImage = 'docker.io/chrislusf/seaweedfs@sha256:f898c91e42d7da5f4bb13f1efd424ff03ba85b420312eb929708a384e8a8b03d';
 const cleanupActions: Array<() => Promise<void>> = [];
 
@@ -390,7 +391,30 @@ live('v0.8 distributed celld actor qualification', () => {
 
 async function generatedCelldArtifact(directory: string) {
   const bundlePath = join(directory, 'typekro-bundle.json');
-  await writeFile(bundlePath, JSON.stringify({ spec: {} }));
+  const operatorManifestPath = join(directory, 'celld-operator-manifest.json');
+  await writeFile(operatorManifestPath, JSON.stringify({
+    spec: {
+      bundle: { buildIdentityDigest: `sha256:${'c'.repeat(64)}` },
+      container: {
+        build: {
+          context: join(directory, 'celld-operator'),
+          dockerfile: join(directory, 'celld-operator', 'Dockerfile'),
+        },
+        image: {
+          repository: 'applik8s/applik8s-celld-operator',
+          tag: 'source-test',
+        },
+      },
+    },
+  }));
+  await writeFile(bundlePath, JSON.stringify({
+    spec: {
+      operators: [{
+        name: 'applik8s-celld-operator',
+        manifest: operatorManifestPath,
+      }],
+    },
+  }));
   await writeFile(join(directory, 'resources.json'), JSON.stringify([{
     apiVersion: 'kro.run/v1alpha1',
     kind: 'ResourceGraphDefinition',
@@ -407,7 +431,10 @@ async function generatedCelldArtifact(directory: string) {
         template: {
           apiVersion: 'v1', kind: 'Service',
           metadata: { name: 'celld-live-http', namespace: 'celld-live', labels: { 'app.kubernetes.io/component': 'typed-http' } },
-          spec: { ports: [{ name: 'http', port: 3000, targetPort: 'http' }] },
+          spec: {
+            selector: { 'app.kubernetes.io/component': 'typed-http' },
+            ports: [{ name: 'http', port: 3000, targetPort: 'http' }],
+          },
         },
       }],
     },

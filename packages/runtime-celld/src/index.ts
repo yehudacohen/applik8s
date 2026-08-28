@@ -9,13 +9,15 @@ import {
   type ApplicationActorRuntimeInvocation,
   type ApplicationActorTurn,
   type ApplicationActorTurnAuthority,
-  captureApplicationTelemetryContext,
   normalizeApplicationActorTurnAuthority,
   resolveApplicationActorInvocationAuthority,
-  runApplicationTelemetryBoundary,
   withApplicationActorTurnAuthority,
-} from '@applik8s/applik8s';
+} from '@applik8s/applik8s/actor-runtime';
 import { withApplicationManagedEffects } from '@applik8s/applik8s/internal/managed-effects';
+import {
+  captureApplicationTelemetryContext,
+  runApplicationTelemetryBoundary,
+} from '@applik8s/applik8s/telemetry-runtime';
 import { sha256Hex } from '@applik8s/deployment-contract';
 import { normalizeSchema } from '@applik8s/sdk';
 

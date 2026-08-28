@@ -1,5 +1,5 @@
 import { type } from '@applik8s/applik8s/dsl';
-import { workflow } from '../app';
+import { workflow } from '../domain-app';
 import { HomeTimeline } from '../streams/timeline';
 
 /**

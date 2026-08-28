@@ -1,3 +1,4 @@
+// typecast-file-boundary: Runtime-access CLI fixtures deliberately construct incomplete plans to verify pre-mutation rejection.
 import { describe, expect, it } from 'vitest';
 import { classifyKubernetesRuntimeAccessNetworkPolicyProvider } from '../src/application-deployment-runtime-access.js';
 
@@ -29,3 +30,4 @@ describe('deployment runtime-access target capability observation', () => {
     expect(classifyKubernetesRuntimeAccessNetworkPolicyProvider([crd], [daemonSet], [{ ...configMap, data: { 'enable-l7-proxy': 'false' } }])).toBe('standard');
   });
 });
+// typecast-file-boundary: Runtime-access CLI fixtures deliberately construct incomplete plans to verify pre-mutation rejection.

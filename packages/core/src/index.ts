@@ -1,4 +1,6 @@
 export type * from './application-admission.js';
+export type * from './application-callable-provider-runtime.js';
+export { resolveApplicationCallableProviderRuntimeEnvironment } from './application-callable-provider-runtime.js';
 export {
   ApplicationAdmissionContextV1Error,
   applicationAdmissionContextVersion,
@@ -73,6 +75,8 @@ export {
   ApplicationScheduleCronCompatibilityError,
   exactFiveFieldCronForInterval,
 } from './application-schedule-cron.js';
+export type * from './application-schedule-control.js';
+export { applicationScheduleControlIdentity } from './application-schedule-control.js';
 export type * from './application-start.js';
 export {
   applicationStartDefinitionApiVersion,

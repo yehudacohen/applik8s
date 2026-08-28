@@ -522,7 +522,17 @@ export function decorateApplicationCallbackArguments(
       'partition',
     )];
   }
-  const properties = applicationCallbackProperties[registrar];
+  // A property-access call can have any JavaScript member name. Looking it up
+  // directly on a normal object accidentally exposes Object.prototype entries
+  // such as `toLocaleString`, `constructor`, and `valueOf` as if they were
+  // callback registrar definitions. JSX-heavy application modules exercise
+  // these ordinary methods frequently, so require an authored registry entry.
+  const properties = Object.prototype.hasOwnProperty.call(
+    applicationCallbackProperties,
+    registrar,
+  )
+    ? applicationCallbackProperties[registrar]
+    : undefined;
   if (!properties) return undefined;
   const optionsIndex = node.arguments.length === 1 ? 0 : 1;
   return node.arguments.map((argument, index) => {
@@ -1547,6 +1557,11 @@ function knownRuntimeGlobal(name: string): boolean {
     'decodeURIComponent',
     'encodeURIComponent',
     'fetch',
+    // Browser and worker platform capabilities remain runtime lookups. They
+    // are not application handles and eagerly evaluating a member such as
+    // globalThis.location.assign while importing an SSR bundle can crash the
+    // server before any route is rendered.
+    'globalThis',
     'setInterval',
     'setTimeout',
     'structuredClone',

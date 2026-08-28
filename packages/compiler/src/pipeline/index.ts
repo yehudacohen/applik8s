@@ -1,6 +1,8 @@
 // typecast-file-boundary: the compiler validates graph discriminators and generated artifact shapes before projecting erased node unions into emitters.
-import { chmod, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { access, chmod, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
+import { dirname, join, resolve } from 'node:path';
+import { celldOperator } from '@applik8s/celld-operator';
 import type {
   ApplicationGraph,
   ApplicationInstallationArtifactContract,
@@ -79,6 +81,7 @@ import { typeKroSingletonOwnerInstances } from './typekro-singleton-instances.js
 import { digestFile, safePathSegment, unique } from './utilities.js';
 
 export { bundleApplicationCompositionRuntimeEntrypoint } from './runtime-entrypoint.js';
+export { instrumentApplicationRuntimeModule } from './entrypoint-handler-instrumentation.js';
 export type {
   TypeKroCompositionAgentArtifactReference,
   TypeKroCompositionArtifacts,
@@ -367,6 +370,24 @@ export async function compileTypeKroComposition(request: CompileTypeKroCompositi
   const applicationGraph = publicApplicationGraph
     ? applicationGraphWithCompiledOperatorPermissions(publicApplicationGraph, operatorCompiles)
     : undefined;
+  if (
+    applicationGraph
+    && (request.executionTarget === undefined || request.executionTarget === 'kubernetes')
+    && applicationGraph.nodes.some((node) => node.kind === 'actor')
+    && !operatorCompiles.some((compiled) => compiled.manifest.metadata.name === celldOperator.definition.name)
+  ) {
+    const compileRequest: CompileOperatorRequestWithDefinition = {
+      ...operatorRequest,
+      entrypoint: await celldOperatorCompilerEntrypoint(),
+      operatorName: celldOperator.definition.name,
+      operatorDefinition: portableOperatorDefinition(celldOperator.definition),
+      dispatcherMode: 'staticSerializable',
+      outDir: join(outputDirectory(request), 'operators', safePathSegment(celldOperator.definition.name)),
+    };
+    const compiled = await createCompilerPipeline().run(compileRequest);
+    if (!compiled.ok) return compiled;
+    operatorCompiles.push(compiled.value);
+  }
   const applicationInstallation = applicationInstallationForComposition(composition.value);
   if (applicationGraph) {
     const graphDiagnostics = validateApplicationGraph(applicationGraph);
@@ -397,6 +418,21 @@ export async function compileTypeKroComposition(request: CompileTypeKroCompositi
       diagnostics: operatorCompiles.flatMap((compiled) => compiled.diagnostics),
     },
   };
+}
+
+async function celldOperatorCompilerEntrypoint(): Promise<string> {
+  // Source workspaces do not have to prebuild the package before compiling an
+  // application. Published installations resolve the package's compiled
+  // entrypoint instead. In both cases static closure discovery starts at the
+  // module that actually declares the reconcile/finalize handlers.
+  const sourceCandidate = resolve(
+    dirname(fileURLToPath(import.meta.url)),
+    '../../../celld-operator/src/operator.ts',
+  );
+  if (await access(sourceCandidate).then(() => true).catch(() => false)) {
+    return sourceCandidate;
+  }
+  return fileURLToPath(import.meta.resolve('@applik8s/celld-operator'));
 }
 
 function applicationGraphWithCompiledOperatorPermissions(
@@ -484,6 +520,7 @@ async function emitTypeKroCompositionArtifacts(request: EmitTypeKroCompositionAr
           graph: request.applicationGraph,
           ...(operationCatalog ? { operationCatalog } : {}),
           outDir: join(request.outDir, 'http'),
+          entrypoint: request.entrypoint,
           executionTarget: request.executionTarget ?? 'kubernetes',
         })
       : [];
@@ -495,13 +532,14 @@ async function emitTypeKroCompositionArtifacts(request: EmitTypeKroCompositionAr
           graph: request.applicationGraph,
           ...(operationCatalog ? { operationCatalog } : {}),
           outDir: join(request.outDir, 'mcp'),
+          entrypoint: request.entrypoint,
         })
       : [];
     const processorArtifacts = request.applicationGraph
       ? await emitGeneratedApplicationProcessors({ graph: request.applicationGraph, ...(operationCatalog ? { operationCatalog } : {}), outDir: join(request.outDir, 'processors'), entrypoint: request.entrypoint, executionTarget: request.executionTarget ?? 'kubernetes' })
       : [];
     const lakehousePublisherArtifacts = request.applicationGraph
-      ? await emitGeneratedApplicationLakehousePublishers({ graph: request.applicationGraph, outDir: join(request.outDir, 'lakehouse-publishers'), executionTarget: request.executionTarget ?? 'kubernetes' })
+      ? await emitGeneratedApplicationLakehousePublishers({ graph: request.applicationGraph, outDir: join(request.outDir, 'lakehouse-publishers'), entrypoint: request.entrypoint, executionTarget: request.executionTarget ?? 'kubernetes' })
       : [];
     const workflowArtifacts = request.applicationGraph
       ? await emitGeneratedApplicationWorkflows({
@@ -1276,7 +1314,14 @@ function typeKroExecutionNodeReferences(
   }
   const node = graph.nodes.find(({ id }) => id === nodeId);
   if (!node) return {};
-  const executionNodeIds = new Set<string>([nodeId]);
+  const applicationHostedGateway = node.kind === 'gateway'
+    && node.visibility !== 'internal'
+    && graph.nodes.some((candidate) =>
+      candidate.kind === 'provider' && candidate.interface === 'ApplicationHost');
+  // The ApplicationHost owns a public gateway's browser-facing façade while
+  // this artifact owns its executable query/subscription children. Internal
+  // gateways have no host façade and retain their parent execution identity.
+  const executionNodeIds = new Set<string>(applicationHostedGateway ? [] : [nodeId]);
   if (node.kind === 'processor' || node.kind === 'workflowWorker') {
     for (const handler of node.handlers) executionNodeIds.add(handler.nodeId);
   } else if (node.kind === 'gateway') {

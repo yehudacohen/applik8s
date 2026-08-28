@@ -1,0 +1,75 @@
+name: Qualify Celld Operator Candidate
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Full immutable commit SHA to qualify
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      source_sha: ${{ steps.candidate.outputs.source_sha }}
+      image_tag: ${{ steps.candidate.outputs.image_tag }}
+    steps:
+      - name: Validate immutable candidate identity
+        id: candidate
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          if [[ ! "$SOURCE_SHA" =~ ^[a-f0-9]{40}$ ]]; then
+            echo "source_sha must be a full lowercase commit SHA" >&2
+            exit 1
+          fi
+          echo "source_sha=$SOURCE_SHA" >> "$GITHUB_OUTPUT"
+          echo "image_tag=sha-${SOURCE_SHA:0:12}" >> "$GITHUB_OUTPUT"
+
+  publish-host:
+    needs: prepare
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/operator-host-image.yml
+    with:
+      source_ref: ${{ needs.prepare.outputs.source_sha }}
+      image_tag: ${{ needs.prepare.outputs.image_tag }}
+
+  publish-operator:
+    needs: [prepare, publish-host]
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/celld-operator-image.yml
+    with:
+      source_ref: ${{ needs.prepare.outputs.source_sha }}
+      image_tag: ${{ needs.prepare.outputs.image_tag }}
+
+  record:
+    needs: [prepare, publish-host, publish-operator]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Record immutable qualification receipt
+        env:
+          SOURCE_SHA: ${{ needs.prepare.outputs.source_sha }}
+          IMAGE_TAG: ${{ needs.prepare.outputs.image_tag }}
+          HOST_DIGEST: ${{ needs.publish-host.outputs.digest }}
+          OPERATOR_DIGEST: ${{ needs.publish-operator.outputs.digest }}
+        run: |
+          test -n "$HOST_DIGEST"
+          test -n "$OPERATOR_DIGEST"
+          {
+            echo '### Celld operator candidate'
+            echo
+            echo "- Source: \`$SOURCE_SHA\`"
+            echo "- Host: \`ghcr.io/yehudacohen/applik8s-operator-host@$HOST_DIGEST\`"
+            echo "- Operator: \`ghcr.io/yehudacohen/applik8s-celld-operator@$OPERATOR_DIGEST\`"
+            echo '- Platforms: `linux/amd64`, `linux/arm64`'
+            echo '- Registry access: anonymously verified by both reusable workflows'
+          } >> "$GITHUB_STEP_SUMMARY"
