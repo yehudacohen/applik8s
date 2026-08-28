@@ -516,12 +516,11 @@ function applicationClickStackProvider(
 ) {
   // The application deployment graph owns the workload Namespace as a
   // separate root lifecycle node. Keep ClickStack's child composition from
-  // introducing a competing Namespace declaration/field owner; the graph
-  // edge still orders the provider after that canonical owner.
-  const clickstack = makeClickstackBootstrap({
-    ...build,
-    namespaceOwnership: "external",
-  } as never);
+  // introducing a competing Namespace declaration/field owner by supplying
+  // the runtime namespace. The graph edge still orders the provider after
+  // that canonical owner; TypeKro owns its default only when this field is
+  // omitted for standalone use.
+  const clickstack = makeClickstackBootstrap(build as never);
   return providerComposition<ClickStackInstanceSpec>(
     {
       name: "applik8s-clickstack",

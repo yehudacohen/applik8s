@@ -574,6 +574,20 @@ describe('Agentic Start generator', () => {
       "await requestLifecycle({\n      scope: 'account'",
     );
     expect(lifecycleUi).not.toContain('for (const document');
+    expect(lifecycleUi).toContain(
+      "globalThis.document.createElement('a')",
+    );
+    expect(lifecycleUi).not.toMatch(/(?<!globalThis\.)document\.createElement/u);
+    const artifactDetailUi = await readFile(
+      join(target, 'src/routes/app.artifacts.$artifactId.tsx'),
+      'utf8',
+    );
+    expect(artifactDetailUi).toContain(
+      "globalThis.document.createElement('a')",
+    );
+    expect(artifactDetailUi).not.toMatch(
+      /(?<!globalThis\.)document\.createElement/u,
+    );
 
     const manifest = JSON.parse(
       await readFile(join(target, 'package.json'), 'utf8'),

@@ -24,7 +24,7 @@ function ArtifactDetailRoute() {
       const response = await fetch(intent.url);
       if (!response.ok) throw new Error(`Artifact download failed with HTTP ${response.status}.`);
       const href = URL.createObjectURL(await response.blob());
-      const anchor = document.createElement('a');
+      const anchor = globalThis.document.createElement('a');
       anchor.href = href;
       anchor.download = intent.fileName;
       anchor.click();

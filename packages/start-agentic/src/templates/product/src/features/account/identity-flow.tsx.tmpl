@@ -87,7 +87,7 @@ export function AccountDataControls() {
       ],
     }, null, 2);
     const url = URL.createObjectURL(new Blob([payload], { type: 'application/json' }));
-    const anchor = document.createElement('a');
+    const anchor = globalThis.document.createElement('a');
     anchor.href = url;
     anchor.download = `application-export-${exportedAt.slice(0, 10)}.json`;
     anchor.click();

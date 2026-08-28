@@ -1561,10 +1561,16 @@ function knownRuntimeGlobal(name: string): boolean {
     // are not application handles and eagerly evaluating a member such as
     // globalThis.location.assign while importing an SSR bundle can crash the
     // server before any route is rendered.
+    'document',
     'globalThis',
+    'localStorage',
+    'location',
+    'navigator',
+    'sessionStorage',
     'setInterval',
     'setTimeout',
     'structuredClone',
+    'window',
   ]).has(name);
 }
 

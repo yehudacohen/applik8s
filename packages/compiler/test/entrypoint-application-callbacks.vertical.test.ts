@@ -790,7 +790,15 @@ workflow('media.verify.v1', Contract, async input => {
   it('leaves browser-global calls as runtime lookups in SSR-safe modules', () => {
     const source = `
 export function WorkspaceSwitcher() {
-  return <button onClick={() => globalThis.location.assign('/app')}>Switch</button>;
+  function download() {
+    const anchor = document.createElement('a');
+    anchor.click();
+  }
+  return <button onClick={() => {
+    globalThis.location.assign('/app');
+    window.open('/help');
+    download();
+  }}>Switch</button>;
 }
 `;
 
@@ -800,10 +808,16 @@ export function WorkspaceSwitcher() {
     );
 
     expect(instrumented).toContain("globalThis.location.assign('/app')");
+    expect(instrumented).toContain("window.open('/help')");
+    expect(instrumented).toContain("document.createElement('a')");
     expect(instrumented).not.toContain(
       'identifier: "globalThis.location.assign"',
     );
     expect(instrumented).not.toContain('value: globalThis.location.assign');
+    expect(instrumented).not.toContain('identifier: "window.open"');
+    expect(instrumented).not.toContain('value: window.open');
+    expect(instrumented).not.toContain('identifier: "document.createElement"');
+    expect(instrumented).not.toContain('value: document.createElement');
   });
 
   it('preserves typed delete operations while retaining opaque handle ownership', () => {
