@@ -300,9 +300,12 @@ test(
     // tool-call turn. Navigating away at that point aborts the admitted SSE
     // request by design, so wait for the provider's terminal turn before
     // observing the usage event produced by that completed attempt.
+    await expect(page.getByLabel('Message')).toBeEnabled({
+      timeout: 120_000,
+    });
     await expect(
       page.getByRole('button', { name: 'Send', exact: true }),
-    ).toBeEnabled({ timeout: 120_000 });
+    ).toBeVisible();
 
     await page.goto(workspaceUrl);
     const history = page.getByRole('region', {
