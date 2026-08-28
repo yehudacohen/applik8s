@@ -196,6 +196,8 @@ export interface FunctionNativePostgresTransactionExecution {
   readonly databaseUrl: string;
   readonly connectionModel: ApplicationRuntimeModelContract;
   readonly operations: readonly FunctionNativePostgresNestedOperation[];
+  /** Compiler-proven events that may be staged by the enclosing callback. */
+  readonly outbox?: readonly PostgresModelCommandEventDefinition[];
   readonly delivery: FunctionNativePostgresModelEditExecution['delivery'];
   readonly retry?: ApplicationRetryPolicy;
 }
@@ -956,11 +958,18 @@ export async function executeFunctionNativePostgresTransaction<TResult>(
   return retryPostgresCommandTransaction(
     (transactionAttempt) => sql.begin(async (transaction) => {
       let sequence = 0;
+      const allowedEvents = new Map(
+        (execution.outbox ?? []).map((definition) => [definition.id, definition]),
+      );
+      const emittedEvents: Array<{
+        readonly definition: PostgresModelCommandEventDefinition;
+        readonly payload: object;
+      }> = [];
       const principal = applicationCommandPrincipal(execution.delivery.context);
       const transactionDatabase = transaction.database as
         | ApplicationDatabaseClient<Readonly<Record<string, unknown>>>
         | undefined;
-      return functionNativePostgresTransaction.run(
+      const result = await functionNativePostgresTransaction.run(
         {
           transaction,
           transactionAttempt,
@@ -976,10 +985,22 @@ export async function executeFunctionNativePostgresTransaction<TResult>(
               execution.delivery.context,
             ),
           },
-          emit(contract) {
-            throw new Error(
-              `applik8s-function-native-event-without-model-edit: Event ${contract.id} needs an explicit Model.edit(...) transaction boundary.`,
-            );
+          emit(contract, payload) {
+            const definition = allowedEvents.get(contract.id);
+            if (!definition) {
+              throw new Error(
+                `applik8s-function-native-event-undeclared: Transaction ${execution.bindingId} emitted ${contract.id}, but the compiler did not declare it in the transaction outbox.`,
+              );
+            }
+            validateApplicationEventPayload(definition, payload);
+            const eventSequence = emittedEvents.length;
+            emittedEvents.push({ definition, payload });
+            return {
+              kind: 'applicationStagedEffect',
+              effect: 'event',
+              contract: definition.id,
+              sequence: eventSequence,
+            };
           },
           invoke(operation) {
             throw new Error(
@@ -1046,9 +1067,170 @@ export async function executeFunctionNativePostgresTransaction<TResult>(
           },
         }, handler),
       );
+      await commitFunctionNativePostgresEvents(
+        transaction,
+        execution,
+        outerScope,
+        emittedEvents,
+      );
+      return result;
     }),
     execution.retry,
   );
+}
+
+async function commitFunctionNativePostgresEvents(
+  transaction: ApplicationPostgresTransactionSql,
+  execution: FunctionNativePostgresTransactionExecution,
+  outerScope: string,
+  emitted: readonly {
+    readonly definition: PostgresModelCommandEventDefinition;
+    readonly payload: object;
+  }[],
+): Promise<void> {
+  if (emitted.length === 0) return;
+  const scope = commandDeterministicId(outerScope, 'ambient-effects');
+  const recordedAt = execution.delivery.recordedAt ?? new Date().toISOString();
+  await transaction.unsafe(
+    'SELECT pg_advisory_xact_lock(hashtextextended($1, 0))',
+    [scope],
+  );
+  const inboxRows = await transaction.unsafe(
+    `INSERT INTO applik8s_command_inbox (scope, binding_id, model, target_key, idempotency_key, message_id, input, authorization_receipt)
+     VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb)
+     ON CONFLICT (scope) DO UPDATE SET scope = EXCLUDED.scope
+     WHERE applik8s_command_inbox.binding_id = EXCLUDED.binding_id
+       AND applik8s_command_inbox.model = EXCLUDED.model
+       AND applik8s_command_inbox.target_key = EXCLUDED.target_key
+       AND applik8s_command_inbox.idempotency_key = EXCLUDED.idempotency_key
+       AND applik8s_command_inbox.message_id = EXCLUDED.message_id
+       AND applik8s_command_inbox.input = EXCLUDED.input
+       AND applik8s_command_inbox.authorization_receipt IS NOT DISTINCT FROM EXCLUDED.authorization_receipt
+     RETURNING scope`,
+    [
+      scope,
+      execution.bindingId,
+      execution.connectionModel.name,
+      execution.delivery.id,
+      execution.delivery.idempotencyKey,
+      execution.delivery.id,
+      postgresJson(transaction, { kind: 'functionNativeAmbientEffects' }),
+      execution.delivery.authorizationReceipt
+        ? postgresJson(transaction, execution.delivery.authorizationReceipt)
+        : null,
+    ],
+  );
+  assertFunctionNativeEventIdempotency(inboxRows, scope);
+  const commitScopes = [...new Set(
+    emitted.map(({ definition }) =>
+      applicationPublicStreamCommitScope(definition.name, definition.version)
+    ),
+  )].sort();
+  for (const commitScope of commitScopes) {
+    await transaction.unsafe(
+      'SELECT pg_advisory_xact_lock(hashtextextended($1, 0))',
+      [commitScope],
+    );
+  }
+  for (const [index, item] of emitted.entries()) {
+    const partitionKey = applicationEventPartitionKey(
+      item.definition,
+      item.payload,
+      execution.delivery.id,
+    );
+    const envelope: ApplicationMessageEnvelope<object> = {
+      id: commandDeterministicId(scope, `event:${index}:${item.definition.id}`),
+      contract: {
+        name: item.definition.name,
+        version: item.definition.version,
+      },
+      payload: item.payload,
+      recordedAt,
+      correlationId:
+        execution.delivery.correlationId ?? execution.delivery.id,
+      causationId: execution.delivery.causationId ?? execution.delivery.id,
+      ...(execution.delivery.attempt
+        ? { attempt: execution.delivery.attempt }
+        : {}),
+      partitionKey,
+      ...(execution.delivery.context
+        ? { trustedContext: execution.delivery.context }
+        : {}),
+      ...(execution.delivery.authorizationReceipt
+        ? { authorizationReceipt: execution.delivery.authorizationReceipt }
+        : {}),
+    };
+    const eventRows = await transaction.unsafe(
+      `INSERT INTO applik8s_event_outbox (id, scope, contract_name, contract_version, partition_key, envelope, payload)
+       VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb)
+       ON CONFLICT (id) DO UPDATE SET id = EXCLUDED.id
+       WHERE applik8s_event_outbox.scope = EXCLUDED.scope
+         AND applik8s_event_outbox.contract_name = EXCLUDED.contract_name
+         AND applik8s_event_outbox.contract_version = EXCLUDED.contract_version
+         AND applik8s_event_outbox.partition_key = EXCLUDED.partition_key
+         AND applik8s_event_outbox.envelope - 'recordedAt' = EXCLUDED.envelope - 'recordedAt'
+         AND applik8s_event_outbox.payload = EXCLUDED.payload
+       RETURNING id`,
+      [
+        envelope.id,
+        scope,
+        item.definition.name,
+        item.definition.version,
+        partitionKey,
+        postgresJson(transaction, envelope),
+        postgresJson(transaction, item.payload),
+      ],
+    );
+    assertFunctionNativeEventIdempotency(eventRows, envelope.id);
+    const publicRows = await transaction.unsafe(
+      `INSERT INTO applik8s_public_stream_events (id, contract_name, contract_version, partition_key, envelope, payload, context_digest, recorded_at)
+       VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7, $8::timestamptz)
+       ON CONFLICT (id) DO UPDATE SET id = EXCLUDED.id
+       WHERE applik8s_public_stream_events.contract_name = EXCLUDED.contract_name
+         AND applik8s_public_stream_events.contract_version = EXCLUDED.contract_version
+         AND applik8s_public_stream_events.partition_key = EXCLUDED.partition_key
+         AND applik8s_public_stream_events.envelope - 'recordedAt' = EXCLUDED.envelope - 'recordedAt'
+         AND applik8s_public_stream_events.payload = EXCLUDED.payload
+         AND applik8s_public_stream_events.context_digest IS NOT DISTINCT FROM EXCLUDED.context_digest
+       RETURNING id`,
+      [
+        envelope.id,
+        item.definition.name,
+        item.definition.version,
+        partitionKey,
+        postgresJson(transaction, envelope),
+        postgresJson(transaction, item.payload),
+        execution.delivery.context?.digest ?? null,
+        recordedAt,
+      ],
+    );
+    assertFunctionNativeEventIdempotency(publicRows, envelope.id);
+  }
+}
+
+function assertFunctionNativeEventIdempotency(
+  rows: readonly Record<string, unknown>[],
+  identity: string,
+): void {
+  if (rows.length > 0) return;
+  throw new Error(
+    `applik8s-function-native-event-idempotency-conflict: Durable effect ${identity} was already recorded with different content.`,
+  );
+}
+
+function validateApplicationEventPayload(
+  definition: PostgresModelCommandEventDefinition,
+  payload: object,
+): void {
+  const result = normalizeSchema<object>(
+    definition.payload,
+    `${definition.name}.${definition.version}.payload`,
+  ).validate(payload as JsonValue);
+  if (!result.ok) {
+    throw new Error(
+      `applik8s-message-schema-invalid: ${definition.name}.${definition.version}.payload: ${result.error.message}`,
+    );
+  }
 }
 
 /**

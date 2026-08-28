@@ -978,6 +978,7 @@ describe('generated v0.6 reactive workloads', () => {
     expect(generated).toContain('"name":"Account"');
     expect(generated).toContain('"id":"posts.changed.v1"');
     expect(generated).toContain('idempotencyKey: context.idempotencyKey');
+    expect(generated).toContain('outbox: functionNativeOutbox');
     expect(generated).toContain(
       'changeScopes: context.event.changeScopes',
     );

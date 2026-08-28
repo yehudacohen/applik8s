@@ -3702,7 +3702,7 @@ const invokeWithModelReads = async (input, context) => {
 };
 const invokeHandler = (input, context) =>
   ${operations.length > 0 && transaction?.mode !== 'write'
-    ? `executeFunctionNativePostgresTransaction({ bindingId: ${JSON.stringify(processor.id)}, databaseUrl, connectionModel: functionNativePrimaryModel, operations: functionNativeOperations, delivery: functionNativeDelivery(context), retry: ${JSON.stringify(processor.retry)} }, () => invokeWithModelReads(input, context))`
+    ? `executeFunctionNativePostgresTransaction({ bindingId: ${JSON.stringify(processor.id)}, databaseUrl, connectionModel: functionNativePrimaryModel, operations: functionNativeOperations, outbox: functionNativeOutbox, delivery: functionNativeDelivery(context), retry: ${JSON.stringify(processor.retry)} }, () => invokeWithModelReads(input, context))`
     : transaction?.mode === 'read' ? 'invokeWithModelReads(input, context)' : `withApplicationNativeModelTransactionRuntime(
     functionNativeRuntime(context),
     () => invokeWithModelReads(input, context),

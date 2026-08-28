@@ -1151,11 +1151,22 @@ describe.runIf(liveDatabaseUrl)('Postgres TransactionalDatabase script runtime l
       command: { id: updateId },
       key: (input) => input.id,
     });
+    const AmbientChanged = {
+      ...event('function-native-ambient.changed.v1', {
+        payload: type({ id: 'string', message: 'string' }),
+      }),
+      partition: (payload: object) => String(Reflect.get(payload, 'id')),
+    } satisfies PostgresModelCommandEventDefinition;
+    await sql.unsafe(
+      'DELETE FROM applik8s_public_stream_events WHERE contract_name = $1 AND contract_version = $2',
+      [AmbientChanged.name, AmbientChanged.version],
+    );
     const execution = {
       bindingId: `function-native-atomic-lifecycle-${process.pid}`,
       databaseUrl: liveDatabaseUrl,
       connectionModel: atomicModel,
       operations,
+      outbox: [AmbientChanged],
       delivery: {
         id: 'function-native-atomic-event-1',
         idempotencyKey: 'function-native-atomic-event-1',
@@ -1173,6 +1184,10 @@ describe.runIf(liveDatabaseUrl)('Postgres TransactionalDatabase script runtime l
           revision: expect.any(String),
         });
         const updated = await updateNote({ id: created.identity, message: 'updated' });
+        AmbientChanged.emit({
+          id: updated.identity,
+          message: updated.value.message,
+        });
         expect(updated).toMatchObject({
           identity: 'atomic-note',
           value: { message: 'updated' },
@@ -1199,6 +1214,20 @@ describe.runIf(liveDatabaseUrl)('Postgres TransactionalDatabase script runtime l
       admittedPrincipal.id,
     ]);
     expect(observedTenants).toEqual(['atomic-tenant', 'atomic-tenant']);
+    await expect(sql.unsafe(
+      'SELECT count(*)::int AS count FROM applik8s_event_outbox WHERE contract_name = $1 AND contract_version = $2',
+      ['function-native-ambient.changed', 'v1'],
+    )).resolves.toEqual([{ count: 1 }]);
+    await expect(sql.unsafe(
+      'SELECT count(*)::int AS count FROM applik8s_public_stream_events WHERE contract_name = $1 AND contract_version = $2',
+      ['function-native-ambient.changed', 'v1'],
+    )).resolves.toEqual([{ count: 1 }]);
+    await expect(executeFunctionNativePostgresTransaction(
+      execution,
+      async () => {
+        AmbientChanged.emit({ id: 'atomic-note', message: 'conflicting-replay' });
+      },
+    )).rejects.toThrow(/applik8s-function-native-event-idempotency-conflict/);
     await expect(client.get({ id: 'atomic-note' })).resolves.toMatchObject({
       spec: { message: 'updated' },
     });
@@ -1213,6 +1242,7 @@ describe.runIf(liveDatabaseUrl)('Postgres TransactionalDatabase script runtime l
       },
       async () => {
         await createNote({ id: 'rolled-back-note', message: 'temporary' });
+        AmbientChanged.emit({ id: 'rolled-back-note', message: 'temporary' });
         throw new Error('rollback-after-provisional-result');
       },
     )).rejects.toThrow(/rollback-after-provisional-result/);
@@ -1221,10 +1251,18 @@ describe.runIf(liveDatabaseUrl)('Postgres TransactionalDatabase script runtime l
       'SELECT count(*)::int AS count FROM applik8s_command_inbox WHERE binding_id = $1 AND target_key = $2',
       [createBindingId, 'rolled-back-note'],
     )).resolves.toEqual([{ count: 0 }]);
+    await expect(sql.unsafe(
+      'SELECT count(*)::int AS count FROM applik8s_event_outbox WHERE contract_name = $1 AND contract_version = $2 AND partition_key = $3',
+      ['function-native-ambient.changed', 'v1', 'rolled-back-note'],
+    )).resolves.toEqual([{ count: 0 }]);
 
     await sql.unsafe(
       'DELETE FROM applik8s_command_inbox WHERE binding_id = ANY($1::text[])',
-      [[createBindingId, updateBindingId]],
+      [[createBindingId, updateBindingId, execution.bindingId]],
+    );
+    await sql.unsafe(
+      'DELETE FROM applik8s_public_stream_events WHERE contract_name = $1 AND contract_version = $2',
+      [AmbientChanged.name, AmbientChanged.version],
     );
     await sql.unsafe(`DROP TABLE IF EXISTS ${quoteIdentifier(atomicModel.tableName)}`);
   });
