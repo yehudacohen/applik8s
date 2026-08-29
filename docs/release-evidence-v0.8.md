@@ -19,6 +19,13 @@ realtime behavior, package consumers, Rust, security, migration, product, and
 performance history. Kubernetes actor lifecycle remains in the target-live
 packet rather than being hidden in a command named `local-qualification`.
 
+The latest complete local receipt passed on 2026-08-29 at exact commit
+`63951de9f15614ac187773f5027af37232fe7a9c`. It covered 62 package typechecks,
+four script shards, all three acceptance applications, 60 packed packages, 109
+public entrypoints, clean generated Agentic Start browser/server builds, the
+complete Rust workspace, the scorecard, and the evidence-verifier self-test.
+That receipt does not stand in for any target-live receipt below.
+
 ## Exact-commit target packet
 
 The Release Evidence workflow accepts one schema-v1 aggregate attestation for
