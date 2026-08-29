@@ -92,14 +92,24 @@ export function createPostgresApplicationStreamProcessorStore(options: PostgresA
   const sql = options.sql ? Promise.resolve(options.sql) : createApplicationPostgresSql(options.databaseUrl as string, { max: 4, idle_timeout: 20, connect_timeout: 10, prepare: false });
   let preparation: Promise<void> | undefined;
   async function prepareStore() {
-    await (await sql).unsafe(`CREATE TABLE IF NOT EXISTS applik8s_stream_processor_checkpoints (
+    await (await sql).begin(async (transaction) => {
+      // PostgreSQL's CREATE TABLE IF NOT EXISTS is not sufficient protection
+      // when many generated processor Deployments initialize the same catalog
+      // concurrently: catalog type creation can still race. One transaction-
+      // scoped lease serializes the framework-owned schema transition without
+      // coupling processor execution after startup.
+      await transaction.unsafe(
+        'SELECT pg_advisory_xact_lock(hashtextextended($1, 0))',
+        ['applik8s:stream-processor-schema:v1'],
+      );
+      await transaction.unsafe(`CREATE TABLE IF NOT EXISTS applik8s_stream_processor_checkpoints (
   processor text NOT NULL,
   stream text NOT NULL,
   sequence bigint NOT NULL CHECK (sequence >= 0),
   updated_at timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (processor, stream)
 )`);
-    await (await sql).unsafe(`CREATE TABLE IF NOT EXISTS applik8s_stream_processor_dead_letters (
+      await transaction.unsafe(`CREATE TABLE IF NOT EXISTS applik8s_stream_processor_dead_letters (
   processor text NOT NULL,
   stream text NOT NULL,
   event_id text NOT NULL,
@@ -112,7 +122,7 @@ export function createPostgresApplicationStreamProcessorStore(options: PostgresA
   failed_at timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (processor, stream, event_id)
 )`);
-    await (await sql).unsafe(`CREATE TABLE IF NOT EXISTS applik8s_stream_processor_batch_groups (
+      await transaction.unsafe(`CREATE TABLE IF NOT EXISTS applik8s_stream_processor_batch_groups (
   processor text NOT NULL,
   stream text NOT NULL,
   group_id text NOT NULL,
@@ -128,9 +138,10 @@ export function createPostgresApplicationStreamProcessorStore(options: PostgresA
     // array as a JSONB string. Restore its exact structured value in place;
     // the checkpoint has not advanced while a group exists, so neither
     // membership nor replay identity changes during this repair.
-    await (await sql).unsafe(`UPDATE applik8s_stream_processor_batch_groups
+      await transaction.unsafe(`UPDATE applik8s_stream_processor_batch_groups
 SET batches = (batches #>> '{}')::jsonb
 WHERE jsonb_typeof(batches) = 'string'`);
+    });
   }
   return {
     prepare() {

@@ -2141,27 +2141,43 @@ function functionNativeTaskRuntimeBindingEntries(
 ): readonly { readonly identifier: string; readonly expression: string }[] {
   const bindings = new Map<string, { readonly target: string; readonly expression: string }>();
   for (const binding of transaction.modelBindings) {
-    const identifier = functionNativeTaskBindingRoot(
+    const segments = functionNativeTaskBindingSegments(
       binding.identifier,
       transaction.taskHandlerId,
     );
+    const method = segments.at(-1);
+    const runtimeMethod = method !== undefined
+      && ['get', 'find', 'require', 'edit'].includes(method);
     const target = binding.model.id;
-    const existing = bindings.get(identifier);
-    if (existing && existing.target !== target) {
-      throw new Error(
-        `Function-native workflow task ${transaction.taskHandlerId} callback identifier ${identifier} is ambiguous between ${existing.target} and ${target}.`,
-      );
+    const methods: readonly string[] = runtimeMethod && method
+      ? [method]
+      : ['get', 'find', 'require', 'edit'];
+    for (const runtimeMethodName of methods) {
+      const identifier = runtimeMethod
+        ? binding.identifier
+        : `${binding.identifier}.${runtimeMethodName}`;
+      const existing = bindings.get(identifier);
+      if (existing && existing.target !== target) {
+        throw new Error(
+          `Function-native workflow task ${transaction.taskHandlerId} callback identifier ${identifier} is ambiguous between ${existing.target} and ${target}.`,
+        );
+      }
+      bindings.set(identifier, {
+        target,
+        expression: `functionNativeModelHandle(${JSON.stringify(binding.model.name)})[${JSON.stringify(runtimeMethodName)}]`,
+      });
     }
-    bindings.set(identifier, {
-      target,
-      expression: `functionNativeModelHandle(${JSON.stringify(binding.model.name)})`,
-    });
   }
   for (const binding of transaction.eventBindings) {
-    const identifier = functionNativeTaskBindingRoot(
+    const segments = functionNativeTaskBindingSegments(
       binding.identifier,
       transaction.taskHandlerId,
     );
+    const method = segments.at(-1);
+    const eventHandle = `createApplicationFunctionNativeEventHandle(${JSON.stringify(`${binding.event.contract.name}.${binding.event.contract.version}`)}, { payload: { kind: 'jsonSchema', ref: { kind: 'jsonSchema', uri: ${JSON.stringify(`generated:${binding.event.name}.payload`)} }, schema: ${JSON.stringify(binding.event.contract.payload.jsonSchema)} } })`;
+    const identifier = method === 'emit'
+      ? binding.identifier
+      : `${binding.identifier}.emit`;
     const target = binding.event.id;
     const existing = bindings.get(identifier);
     if (existing && existing.target !== target) {
@@ -2171,7 +2187,7 @@ function functionNativeTaskRuntimeBindingEntries(
     }
     bindings.set(identifier, {
       target,
-      expression: `createApplicationFunctionNativeEventHandle(${JSON.stringify(`${binding.event.contract.name}.${binding.event.contract.version}`)}, { payload: { kind: 'jsonSchema', ref: { kind: 'jsonSchema', uri: ${JSON.stringify(`generated:${binding.event.name}.payload`)} }, schema: ${JSON.stringify(binding.event.contract.payload.jsonSchema)} } })`,
+      expression: `${eventHandle}.emit`,
     });
   }
   return [...bindings.entries()]
@@ -2179,17 +2195,22 @@ function functionNativeTaskRuntimeBindingEntries(
     .sort((left, right) => left.identifier.localeCompare(right.identifier));
 }
 
-function functionNativeTaskBindingRoot(
+function functionNativeTaskBindingSegments(
   identifier: string,
   owner: string,
-): string {
-  const root = identifier.split('.')[0]?.trim();
-  if (!root || !/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(root)) {
+): readonly string[] {
+  const segments = identifier.split('.').map((segment) => segment.trim());
+  if (
+    segments.length === 0
+    || segments.some(
+      (segment) => !/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(segment),
+    )
+  ) {
     throw new Error(
-      `Function-native workflow task ${owner} callback binding ${JSON.stringify(identifier)} does not have a serializable root identifier.`,
+      `Function-native workflow task ${owner} callback binding ${JSON.stringify(identifier)} is not a serializable property path.`,
     );
   }
-  return root;
+  return segments;
 }
 
 function generatedWorkflowFunctionNativeTransactions(

@@ -657,9 +657,11 @@ export const providerAgentStack = application.composition;
     );
     expect(generated).toContain('const localAgentTools = new Map()');
     expect(generated).toContain(
-      '"Post": localToolModelHandle("Post")',
+      '"Post": { "edit": localToolModelHandle("Post")["edit"] }',
     );
-    expect(generated).not.toContain('"Post": { "edit"');
+    expect(generated).toContain(
+      '"PostPublished": { "emit": createApplicationFunctionNativeEventHandle(',
+    );
     expect(generated).toContain(
       'const placementRoutes = new Map([])',
     );

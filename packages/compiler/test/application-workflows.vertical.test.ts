@@ -687,10 +687,10 @@ export const workflowModelEdit = platform.composition;
         'const authoredHandler = handler_',
       );
       expect(generatedSource).toContain(
-        'functionNativeTaskBindings("task-handler.records.edit.v1.step")["RecordModel"]',
+        'functionNativeTaskBindings("task-handler.records.edit.v1.step")["RecordModel.edit"]',
       );
       expect(generatedSource).toContain(
-        'functionNativeTaskBindings("task-handler.records.edit.v1.step")["RecordChanged"]',
+        'functionNativeTaskBindings("task-handler.records.edit.v1.step")["RecordChanged.emit"]',
       );
       expect(generatedSource).toContain('durableId');
       expect(generatedSource).toContain('@fixture/acquisition/runtime');

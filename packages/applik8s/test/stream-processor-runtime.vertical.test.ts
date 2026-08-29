@@ -242,6 +242,8 @@ describe('durable replay stream processor runtime', () => {
     expect(calls.some(({ query }) =>
       query.includes("SET batches = (batches #>> '{}')::jsonb"))).toBe(true);
     expect(calls.filter(({ query }) =>
+      query.includes('pg_advisory_xact_lock'))).toHaveLength(1);
+    expect(calls.filter(({ query }) =>
       query.includes('CREATE TABLE IF NOT EXISTS applik8s_stream_processor_'))).toHaveLength(3);
     expect(calls.filter(({ query }) =>
       query.includes("SET batches = (batches #>> '{}')::jsonb"))).toHaveLength(1);

@@ -1948,17 +1948,28 @@ function localAgentToolBindingsSource(
         `Local agent tool binding ${binding.identifier} references missing model ${binding.model.nodeId}.`,
       );
     }
-    const root = localAgentToolBindingRoot(binding.identifier);
-    const previous = entries.get(root);
-    if (previous && previous.target !== model.id) {
-      throw new Error(
-        `Local agent tool binding ${root} is ambiguous between ${previous.target} and ${model.id}.`,
-      );
+    const segments = localAgentToolBindingSegments(binding.identifier);
+    const method = segments.at(-1);
+    const runtimeMethod = method !== undefined
+      && ['get', 'find', 'require', 'edit'].includes(method);
+    const methods: readonly string[] = runtimeMethod && method
+      ? [method]
+      : ['get', 'find', 'require', 'edit'];
+    for (const runtimeMethodName of methods) {
+      const path = runtimeMethod
+        ? binding.identifier
+        : `${binding.identifier}.${runtimeMethodName}`;
+      const previous = entries.get(path);
+      if (previous && previous.target !== model.id) {
+        throw new Error(
+          `Local agent tool binding ${path} is ambiguous between ${previous.target} and ${model.id}.`,
+        );
+      }
+      entries.set(path, {
+        target: model.id,
+        value: `localToolModelHandle(${JSON.stringify(model.name)})[${JSON.stringify(runtimeMethodName)}]`,
+      });
     }
-    entries.set(root, {
-      target: model.id,
-      value: `localToolModelHandle(${JSON.stringify(model.name)})`,
-    });
   }
   for (const binding of local.functionNativeTransaction.eventBindings ?? []) {
     const event = graphNodes.get(binding.event.nodeId);
@@ -1967,23 +1978,62 @@ function localAgentToolBindingsSource(
         `Local agent tool binding ${binding.identifier} references missing event ${binding.event.nodeId}.`,
       );
     }
-    const root = localAgentToolBindingRoot(binding.identifier);
-    const previous = entries.get(root);
+    const segments = localAgentToolBindingSegments(binding.identifier);
+    const path = segments.at(-1) === 'emit'
+      ? binding.identifier
+      : `${binding.identifier}.emit`;
+    const previous = entries.get(path);
     if (previous && previous.target !== event.id) {
       throw new Error(
-        `Local agent tool binding ${root} is ambiguous between ${previous.target} and ${event.id}.`,
+        `Local agent tool binding ${path} is ambiguous between ${previous.target} and ${event.id}.`,
       );
     }
-    entries.set(root, {
+    entries.set(path, {
       target: event.id,
-      value: `createApplicationFunctionNativeEventHandle(${JSON.stringify(`${event.contract.name}.${event.contract.version}`)}, { payload: localToolSchema(${JSON.stringify(event.contract.payload.jsonSchema)}, ${JSON.stringify(`${event.name}.payload`)}) })`,
+      value: `createApplicationFunctionNativeEventHandle(${JSON.stringify(`${event.contract.name}.${event.contract.version}`)}, { payload: localToolSchema(${JSON.stringify(event.contract.payload.jsonSchema)}, ${JSON.stringify(`${event.name}.payload`)}) }).emit`,
     });
   }
-  return `{ ${[...entries.entries()]
-    .sort(([left], [right]) => left.localeCompare(right))
-    .map(([root, binding]) =>
-      `${JSON.stringify(root)}: ${binding.value}`)
-    .join(', ')} }`;
+  return localAgentToolBindingObjectSource(
+    [...entries.entries()].map(([path, binding]) => ({
+      path,
+      value: binding.value,
+    })),
+  );
+}
+
+function localAgentToolBindingObjectSource(
+  entries: readonly { readonly path: string; readonly value: string }[],
+): string {
+  interface Node {
+    direct?: string;
+    readonly children: Map<string, Node>;
+  }
+  const root: Node = { children: new Map() };
+  for (const entry of entries) {
+    const segments = localAgentToolBindingSegments(entry.path);
+    let current = root;
+    for (const segment of segments) {
+      const child = current.children.get(segment) ?? {
+        children: new Map<string, Node>(),
+      };
+      current.children.set(segment, child);
+      current = child;
+    }
+    if (current.direct && current.direct !== entry.value) {
+      throw new Error(
+        `Local agent tool binding ${entry.path} resolves to multiple runtime values.`,
+      );
+    }
+    current.direct = entry.value;
+  }
+  const render = (node: Node): string => {
+    if (node.direct && node.children.size === 0) return node.direct;
+    return `{ ${[...node.children.entries()]
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([name, child]) => `${JSON.stringify(name)}: ${render(child)}`)
+      .join(', ')} }`;
+  };
+  return render(root);
 }
 
 function localAgentToolBindingRoot(identifier: string): string {
@@ -1994,6 +2044,21 @@ function localAgentToolBindingRoot(identifier: string): string {
     );
   }
   return root;
+}
+
+function localAgentToolBindingSegments(identifier: string): readonly string[] {
+  const segments = identifier.split('.').map((segment) => segment.trim());
+  if (
+    segments.length === 0
+    || segments.some(
+      (segment) => !/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(segment),
+    )
+  ) {
+    throw new Error(
+      `Local agent tool callback binding ${JSON.stringify(identifier)} is not a serializable property path.`,
+    );
+  }
+  return segments;
 }
 
 function localAgentToolBindingRoots(

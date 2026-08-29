@@ -4035,13 +4035,14 @@ function streamProcessorCallbackBindingsSource(
   operations: readonly StreamProcessorOperationContract[],
 ): string {
   interface StreamCallbackRootBinding {
-      readonly model?: { readonly id: string; readonly name: string };
-      readonly event?: {
-        readonly id: string;
-        readonly name: string;
-        readonly version: string;
-        readonly schema: JsonObject;
-      };
+      readonly models: Map<
+        string,
+        { readonly id: string; readonly name: string; readonly value: string }
+      >;
+      readonly events: Map<
+        string,
+        { readonly id: string; readonly value: string }
+      >;
       readonly operations: Map<string, StreamProcessorOperationContract>;
       readonly providerRootOperation?: string;
       readonly providerOperations: Map<string, string>;
@@ -4049,6 +4050,8 @@ function streamProcessorCallbackBindingsSource(
       readonly schedules: Map<string, string>;
   }
   const emptyRootBinding = (): StreamCallbackRootBinding => ({
+    models: new Map(),
+    events: new Map(),
     operations: new Map<string, StreamProcessorOperationContract>(),
     providerOperations: new Map<string, string>(),
     schedules: new Map<string, string>(),
@@ -4058,38 +4061,62 @@ function streamProcessorCallbackBindingsSource(
     graph,
     processor,
   )) {
-    const root = functionNativeCallbackBindingRoot(identifier, processor.id);
+    const segments = functionNativeCallbackBindingSegments(
+      identifier,
+      processor.id,
+    );
+    const root = segments[0]!;
     const existing = roots.get(root) ?? emptyRootBinding();
-    if (existing.model && existing.model.id !== model.id) {
-      throw new Error(
-        `Stream processor ${processor.id} callback root ${root} is ambiguous between ${existing.model.id} and ${model.id}.`,
-      );
+    const method = segments.at(-1);
+    const runtimeMethod = method !== undefined
+      && ['get', 'find', 'require', 'edit'].includes(method);
+    const path = segments.slice(1).join('.');
+    const methods: readonly string[] = runtimeMethod && method
+      ? [method]
+      : ['get', 'find', 'require', 'edit'];
+    for (const runtimeMethodName of methods) {
+      const methodPath = runtimeMethod
+        ? path
+        : [path, runtimeMethodName].filter(Boolean).join('.');
+      const previous = existing.models.get(methodPath);
+      if (previous && previous.id !== model.id) {
+        throw new Error(
+          `Stream processor ${processor.id} callback path ${identifier} is ambiguous between ${previous.id} and ${model.id}.`,
+        );
+      }
+      existing.models.set(methodPath, {
+        id: model.id,
+        name: model.name,
+        value: `functionNativeModelHandle(${JSON.stringify(model.name)})[${JSON.stringify(runtimeMethodName)}]`,
+      });
     }
-    roots.set(root, {
-      ...existing,
-      model: { id: model.id, name: model.name },
-    });
+    roots.set(root, existing);
   }
   for (const { identifier, event } of functionNativeEventRuntimeBindings(
     graph,
     processor,
   )) {
-    const root = functionNativeCallbackBindingRoot(identifier, processor.id);
+    const segments = functionNativeCallbackBindingSegments(
+      identifier,
+      processor.id,
+    );
+    const root = segments[0]!;
     const existing = roots.get(root) ?? emptyRootBinding();
-    if (existing.model || existing.event) {
+    const method = segments.at(-1);
+    const path = method === 'emit'
+      ? segments.slice(1).join('.')
+      : [...segments.slice(1), 'emit'].join('.');
+    const previous = existing.events.get(path);
+    if (previous && previous.id !== event.id) {
       throw new Error(
-        `Stream processor ${processor.id} callback root ${root} cannot hydrate as both an event and another runtime handle.`,
+        `Stream processor ${processor.id} callback path ${identifier} is ambiguous between ${previous.id} and ${event.id}.`,
       );
     }
-    roots.set(root, {
-      ...existing,
-      event: {
-        id: event.id,
-        name: event.contract.name,
-        version: event.contract.version,
-        schema: event.contract.payload.jsonSchema,
-      },
+    existing.events.set(path, {
+      id: event.id,
+      value: `createApplicationFunctionNativeEventHandle(${JSON.stringify(`${event.contract.name}.${event.contract.version}`)}, { payload: schema(${JSON.stringify(event.contract.payload.jsonSchema)}) }).emit`,
     });
+    roots.set(root, existing);
   }
   for (const operation of operations) {
     const segments = operation.identifier.split('.');
@@ -4108,12 +4135,15 @@ function streamProcessorCallbackBindingsSource(
       );
     }
     const existing = roots.get(root) ?? emptyRootBinding();
-    if (existing.event) {
+    const operationPath = segments.slice(1).join('.');
+    if (
+      existing.models.has(operationPath)
+      || existing.events.has(operationPath)
+    ) {
       throw new Error(
-        `Stream processor ${processor.id} callback root ${root} cannot hydrate as both an event and an operation.`,
+        `Stream processor ${processor.id} callback path ${operation.identifier} cannot hydrate as both a model/event method and an operation.`,
       );
     }
-    const operationPath = segments.slice(1).join('.');
     const previous = existing.operations.get(operationPath);
     if (previous && previous.operationId !== operation.operationId) {
       throw new Error(
@@ -4157,8 +4187,8 @@ function streamProcessorCallbackBindingsSource(
     const operationPath = segments.slice(1).join('.');
     if (segments.length === 1) {
       if (
-        existing.model
-        || existing.event
+        existing.models.size > 0
+        || existing.events.size > 0
         || existing.operations.size > 0
         || existing.providerOperations.size > 0
         || (existing.providerRootOperation
@@ -4179,7 +4209,8 @@ function streamProcessorCallbackBindingsSource(
     }
     if (
       existing.providerRootOperation
-      || existing.event
+      || existing.models.has(operationPath)
+      || existing.events.has(operationPath)
       || existing.operations.has(operationPath)
     ) {
       throw new Error(
@@ -4217,13 +4248,13 @@ function streamProcessorCallbackBindingsSource(
     const existing = roots.get(root) ?? emptyRootBinding();
     const path = segments.slice(1).join('.');
     if (segments.length === 1) {
-      if (existing.model || existing.event || existing.operations.size > 0 || existing.providerOperations.size > 0 || existing.providerRootOperation || existing.schedules.size > 0 || (existing.scheduleRoot && existing.scheduleRoot !== value)) {
+      if (existing.models.size > 0 || existing.events.size > 0 || existing.operations.size > 0 || existing.providerOperations.size > 0 || existing.providerRootOperation || existing.schedules.size > 0 || (existing.scheduleRoot && existing.scheduleRoot !== value)) {
         throw new Error(`Stream processor ${processor.id} callback root ${root} is ambiguous between a schedule handle and another runtime binding.`);
       }
       roots.set(root, { ...existing, scheduleRoot: value });
       continue;
     }
-    if (existing.scheduleRoot || existing.providerRootOperation || existing.event || existing.operations.has(path) || existing.providerOperations.has(path)) {
+    if (existing.scheduleRoot || existing.providerRootOperation || existing.models.has(path) || existing.events.has(path) || existing.operations.has(path) || existing.providerOperations.has(path)) {
       throw new Error(`Stream processor ${processor.id} callback path ${binding.identifier} is ambiguous between a schedule handle and another runtime binding.`);
     }
     const previous = existing.schedules.get(path);
@@ -4242,35 +4273,39 @@ function streamProcessorCallbackBindingsSource(
       if (binding.scheduleRoot) {
         return `${JSON.stringify(root)}: ${binding.scheduleRoot}`;
       }
-      if (binding.event) {
-        return `${JSON.stringify(root)}: createApplicationFunctionNativeEventHandle(${JSON.stringify(`${binding.event.name}.${binding.event.version}`)}, { payload: schema(${JSON.stringify(binding.event.schema)}) })`;
-      }
+      const modelEntries = [...binding.models.entries()]
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([path, model]) => ({ path, value: model.value }));
+      const eventEntries = [...binding.events.entries()]
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([path, event]) => ({ path, value: event.value }));
       const operationEntries = [...binding.operations.entries()]
         .sort(([left], [right]) => left.localeCompare(right))
         .map(([path, operation]) => ({
           path,
           value: `createApplicationFunctionNativeOperationHandle({ operation: ${JSON.stringify(operation.operation)}, command: { id: ${JSON.stringify(`${operation.command.contract.name}.${operation.command.contract.version}`)} }, key: (${operation.handler.key.source})${operation.handler.idempotencyKey ? `, idempotencyKey: (${operation.handler.idempotencyKey.source})` : ''} })`,
         }));
-      const operationObject = nestedCallbackObjectSource(operationEntries);
       const providerOperationEntries = [...binding.providerOperations.entries()]
         .sort(([left], [right]) => left.localeCompare(right))
         .map(([path, value]) => ({ path, value }));
-      const providerOperationObject = nestedCallbackObjectSource(
-        providerOperationEntries,
-      );
       const scheduleEntries = [...binding.schedules.entries()]
         .sort(([left], [right]) => left.localeCompare(right))
         .map(([path, value]) => ({ path, value }));
-      const scheduleObject = nestedCallbackObjectSource(scheduleEntries);
+      const nestedObject = nestedCallbackObjectSource([
+        ...modelEntries,
+        ...eventEntries,
+        ...operationEntries,
+        ...providerOperationEntries,
+        ...scheduleEntries,
+      ]);
       const properties = [
-        ...(binding.model
-          ? [`...functionNativeModelHandle(${JSON.stringify(binding.model.name)})`]
+        ...(modelEntries.length > 0
+            || eventEntries.length > 0
+            || operationEntries.length > 0
+            || providerOperationEntries.length > 0
+            || scheduleEntries.length > 0
+          ? [`...(${nestedObject})`]
           : []),
-        ...(operationEntries.length > 0 ? [`...(${operationObject})`] : []),
-        ...(providerOperationEntries.length > 0
-          ? [`...(${providerOperationObject})`]
-          : []),
-        ...(scheduleEntries.length > 0 ? [`...(${scheduleObject})`] : []),
       ];
       return `${JSON.stringify(root)}: Object.freeze({ ${properties.join(', ')} })`;
     })
@@ -4682,10 +4717,8 @@ function functionNativeModelRuntimeBindings(
   const nodes = graphNodes(graph);
   const bindings = new Map<string, ApplicationModelNode>();
   for (const binding of transaction.modelBindings) {
-    const identifier = functionNativeCallbackBindingRoot(
-      binding.identifier,
-      processor.id,
-    );
+    functionNativeCallbackBindingSegments(binding.identifier, processor.id);
+    const identifier = binding.identifier;
     const model = requiredNode(
       nodes,
       binding.model.nodeId,
@@ -4725,10 +4758,8 @@ function functionNativeEventRuntimeBindings(
     ),
   );
   for (const binding of transaction.eventBindings ?? []) {
-    const identifier = functionNativeCallbackBindingRoot(
-      binding.identifier,
-      processor.id,
-    );
+    functionNativeCallbackBindingSegments(binding.identifier, processor.id);
+    const identifier = binding.identifier;
     if (modelIdentifiers.has(identifier)) {
       throw new Error(
         `Function-native stream processor ${processor.id} callback identifier ${identifier} cannot hydrate as both a model and an event.`,
@@ -4764,6 +4795,24 @@ function functionNativeCallbackBindingRoot(
     );
   }
   return root;
+}
+
+function functionNativeCallbackBindingSegments(
+  identifier: string,
+  owner: string,
+): readonly string[] {
+  const segments = identifier.split('.').map((segment) => segment.trim());
+  if (
+    segments.length === 0
+    || segments.some(
+      (segment) => !/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(segment),
+    )
+  ) {
+    throw new Error(
+      `Function-native callback ${owner} binding ${JSON.stringify(identifier)} is not a serializable property path.`,
+    );
+  }
+  return segments;
 }
 
 function generatedStreamProcessorSignalRuntime(

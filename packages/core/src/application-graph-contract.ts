@@ -4318,23 +4318,25 @@ function applicationFunctionNativeTransactionMessages(
   }
   const callbackIdentifiers = new Map<string, string>();
   for (const binding of transaction.modelBindings) {
-    const root = binding.identifier.split('.')[0]?.trim();
-    if (!root) {
+    const paths = functionNativeRuntimeBindingPaths(binding.identifier, 'model');
+    if (paths.length === 0) {
       messages.push(`${label} function-native model bindings must retain a callback identifier.`);
       continue;
     }
-    const previous = callbackIdentifiers.get(root);
-    if (previous && previous !== binding.model.nodeId) {
-      messages.push(
-        `${label} function-native callback identifier ${root} is ambiguous between ${previous} and ${binding.model.nodeId}.`,
-      );
+    for (const path of paths) {
+      const previous = callbackIdentifiers.get(path);
+      if (previous && previous !== binding.model.nodeId) {
+        messages.push(
+          `${label} function-native callback path ${path} is ambiguous between ${previous} and ${binding.model.nodeId}.`,
+        );
+      }
+      callbackIdentifiers.set(path, binding.model.nodeId);
     }
-    callbackIdentifiers.set(root, binding.model.nodeId);
   }
   const outboxIds = new Set(transaction.outbox.map((event) => event.nodeId));
   for (const binding of transaction.eventBindings ?? []) {
-    const root = binding.identifier.split('.')[0]?.trim();
-    if (!root) {
+    const paths = functionNativeRuntimeBindingPaths(binding.identifier, 'event');
+    if (paths.length === 0) {
       messages.push(`${label} function-native event bindings must retain a callback identifier.`);
       continue;
     }
@@ -4351,13 +4353,15 @@ function applicationFunctionNativeTransactionMessages(
         `${label} function-native event binding ${binding.identifier} must reference a declared event.`,
       );
     }
-    const previous = callbackIdentifiers.get(root);
-    if (previous && previous !== binding.event.nodeId) {
-      messages.push(
-        `${label} function-native callback identifier ${root} is ambiguous between ${previous} and ${binding.event.nodeId}.`,
-      );
+    for (const path of paths) {
+      const previous = callbackIdentifiers.get(path);
+      if (previous && previous !== binding.event.nodeId) {
+        messages.push(
+          `${label} function-native callback path ${path} is ambiguous between ${previous} and ${binding.event.nodeId}.`,
+        );
+      }
+      callbackIdentifiers.set(path, binding.event.nodeId);
     }
-    callbackIdentifiers.set(root, binding.event.nodeId);
   }
   const writeModels = new Set(
     transaction.modelBindings
@@ -4398,6 +4402,34 @@ function applicationFunctionNativeTransactionMessages(
     }
   }
   return messages;
+}
+
+function functionNativeRuntimeBindingPaths(
+  identifier: string,
+  kind: 'model' | 'event',
+): readonly string[] {
+  const segments = identifier.split('.').map((segment) => segment.trim());
+  if (
+    segments.length === 0
+    || segments.some(
+      (segment) => !/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(segment),
+    )
+  ) {
+    return [];
+  }
+  const member = segments.at(-1);
+  if (kind === 'event') {
+    return [member === 'emit' ? identifier : `${identifier}.emit`];
+  }
+  if (
+    member !== undefined
+    && ['get', 'find', 'require', 'edit'].includes(member)
+  ) {
+    return [identifier];
+  }
+  return ['get', 'find', 'require', 'edit'].map(
+    (method) => `${identifier}.${method}`,
+  );
 }
 
 function applicationWorkflowHandlerNodeStructureDiagnostics(node: ApplicationWorkflowHandlerNode, graph: ApplicationGraph): readonly Diagnostic[] {

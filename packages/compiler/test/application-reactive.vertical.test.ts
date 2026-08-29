@@ -809,6 +809,13 @@ describe('generated v0.6 reactive workloads', () => {
         runtime: modelRuntime('Account', 'accounts'),
       },
       {
+        id: 'model.subscription',
+        kind: 'model',
+        name: 'Subscription',
+        stability: 'stable',
+        runtime: modelRuntime('Subscription', 'subscriptions'),
+      },
+      {
         id: 'event.posts.changed.v1',
         kind: 'event',
         name: 'posts.changed.v1',
@@ -881,9 +888,14 @@ describe('generated v0.6 reactive workloads', () => {
         handlerSource: 'async event => Post.edit(event.postId, async post => { const account = await Account.require(post.accountId); await post.update({ state: account.value.state }); await PendingPosts({}); await Workspace.observe.send(event.postId, { postId: event.postId }); PostChanged.emit({ postId: event.postId }); })',
         functionNativeTransaction: {
           primaryModel: { nodeId: 'model.post' },
-          models: [{ nodeId: 'model.account' }, { nodeId: 'model.post' }],
+          models: [
+            { nodeId: 'model.account' },
+            { nodeId: 'model.post' },
+            { nodeId: 'model.subscription' },
+          ],
           modelBindings: [
             { identifier: 'Account.require', model: { nodeId: 'model.account' }, access: 'read' },
+            { identifier: 'Billing.Subscription', model: { nodeId: 'model.subscription' }, access: 'read' },
             { identifier: 'Post.edit', model: { nodeId: 'model.post' }, access: 'write' },
           ],
           eventBindings: [
@@ -976,6 +988,12 @@ describe('generated v0.6 reactive workloads', () => {
     expect(generated).toContain('processorQueries(context)');
     expect(generated).toContain('"name":"Post"');
     expect(generated).toContain('"name":"Account"');
+    expect(generated).toContain(
+      '"Billing": Object.freeze({ ...({ "Subscription": { "edit": functionNativeModelHandle("Subscription")["edit"], "find": functionNativeModelHandle("Subscription")["find"], "get": functionNativeModelHandle("Subscription")["get"], "require": functionNativeModelHandle("Subscription")["require"] } }) })',
+    );
+    expect(generated).toContain(
+      '"Account": Object.freeze({ ...({ "require": functionNativeModelHandle("Account")["require"] }) })',
+    );
     expect(generated).toContain('"id":"posts.changed.v1"');
     expect(generated).toContain('idempotencyKey: context.idempotencyKey');
     expect(generated).toContain('outbox: functionNativeOutbox');
