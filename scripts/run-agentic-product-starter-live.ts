@@ -1003,10 +1003,29 @@ try {
       'workflow-worker',
       'worker',
     );
+    await preserveGeneratedDiagnostic('workflow-worker', workflowWorkerLogs);
     if (workflowWorkerLogs.stdout.trim() || workflowWorkerLogs.stderr.trim()) {
       console.error('\n[agentic-product-starter] workflow worker diagnostics');
       process.stderr.write(workflowWorkerLogs.stdout);
       process.stderr.write(workflowWorkerLogs.stderr);
+    }
+    const decisionCoordinatorLogs = await captureGeneratedContainerLogs(
+      'reactive-worker',
+      `${projectName}-begin-decision-review-create`,
+    );
+    await preserveGeneratedDiagnostic(
+      'decision-review-coordinator',
+      decisionCoordinatorLogs,
+    );
+    if (
+      decisionCoordinatorLogs.stdout.trim()
+      || decisionCoordinatorLogs.stderr.trim()
+    ) {
+      console.error(
+        '\n[agentic-product-starter] decision review coordinator diagnostics',
+      );
+      process.stderr.write(decisionCoordinatorLogs.stdout);
+      process.stderr.write(decisionCoordinatorLogs.stderr);
     }
     try {
       await runIdentityStartCommand(

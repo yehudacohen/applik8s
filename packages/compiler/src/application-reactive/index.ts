@@ -3458,6 +3458,11 @@ function directWorkflowRuntime(context) { const requireContract = (contract) => 
     workloadAuthority,
     observability,
   );
+  const bindingMergeDeclarations = workflow
+    && queries.length === 0
+    && (processor.actorBindings?.length ?? 0) === 0
+    ? processorBindingMergeSource()
+    : '';
   const authoredHandlerInvocation =
     generatedStreamProcessorAuthoredHandlerInvocation(
       Boolean(workflow),
@@ -3526,6 +3531,7 @@ ${workflowDeclarations}
 ${executionPrincipal}
 ${queryDeclarations}
 ${actorDeclarations}
+${bindingMergeDeclarations}
 ${functionNativeDeclarations}
 ${authoredHandlerInvocation}
 const invokeAdmittedHandler = (input, context) => processorInvocationScope.run(

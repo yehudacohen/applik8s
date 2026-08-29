@@ -2118,6 +2118,8 @@ describe('generated v0.6 reactive workloads', () => {
     expect(source).toContain('.trustedContext.tenantId');
     expect(source).toContain('.principal?.id');
 		expect(generatedSource).toContain('workflowRuntime.run');
+		expect(generatedSource).toContain('function mergeProcessorBindings(...sources)');
+		expect(generatedSource.match(/function mergeProcessorBindings\(\.\.\.sources\)/gu)).toHaveLength(1);
 		expect(generatedSource).toContain('context.idempotencyKey');
 		expect(generatedSource).toContain("causationId: event?.id ?? context.batch?.id");
 		expect(generatedSource).toContain("changeScopes: event.changeScopes");
