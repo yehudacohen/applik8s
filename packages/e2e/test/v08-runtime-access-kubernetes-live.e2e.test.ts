@@ -20,6 +20,7 @@ import {
   compileApplicationDeploymentGraph,
 } from '@applik8s/deployment-compiler';
 import type { DeploymentJsonObject } from '@applik8s/deployment-contract';
+import type { ApplicationContainerArtifactRegistry } from '@applik8s/deployment-provider-oci';
 import type { ApplicationTypeKroCompositionSource } from '@applik8s/deployment-typekro';
 import { kubernetesComposition } from 'typekro';
 import { expect, it } from 'vitest';
@@ -213,7 +214,7 @@ describeLive('v0.8 Kubernetes runtime-access enforcement', () => {
         stateRoot,
         stage: 'qualification',
         owner: `v08-runtime-access-${process.pid}`,
-        artifactRegistry: { type: 'orbstack' },
+        artifactRegistry: runtimeAccessArtifactRegistry(),
         factory: {
           namespace,
           waitForReady: true,
@@ -222,7 +223,10 @@ describeLive('v0.8 Kubernetes runtime-access enforcement', () => {
       });
 
       const applied = await deployment.apply();
-      for (const built of applied.artifacts) builtImages.add(built.taggedReference);
+      for (const built of applied.artifacts) {
+        builtImages.add(built.taggedReference);
+        builtImages.add(built.publishedTaggedReference);
+      }
       await waitForDeploymentReady(namespace, privateService, 180_000);
       const initialProbeUid = await waitForDeploymentReady(namespace, probeDeployment, 240_000);
       await waitForCiliumPolicy(namespace, policyName, 60_000);
@@ -1021,6 +1025,23 @@ function recordValue(value: unknown): Readonly<Record<string, unknown>> | undefi
 
 function stringValue(value: unknown): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
+function runtimeAccessArtifactRegistry(): ApplicationContainerArtifactRegistry {
+  const registry = process.env.APPLIK8S_E2E_OCI_REGISTRY?.trim();
+  const deploymentRegistry = process.env.APPLIK8S_E2E_OCI_DEPLOYMENT_REGISTRY?.trim();
+  if (!registry && !deploymentRegistry) return { type: 'orbstack' };
+  if (!registry || !deploymentRegistry) {
+    throw new Error(
+      'APPLIK8S_E2E_OCI_REGISTRY and APPLIK8S_E2E_OCI_DEPLOYMENT_REGISTRY must be supplied together.',
+    );
+  }
+  return {
+    type: 'oci',
+    registry,
+    deploymentRegistry,
+    tls: { plainHttp: true },
+  };
 }
 
 function isExecError(cause: unknown): cause is Error & { readonly stdout?: string } {

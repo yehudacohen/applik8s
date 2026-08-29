@@ -773,6 +773,37 @@ describe("Application deployment compiler", () => {
     });
   });
 
+  it("retains an explicit static-identity Secret without inventing runtime access", () => {
+    const result = compileApplicationDeploymentGraph({
+      ...request(),
+      generatedSecrets: [{
+        id: "runtime.probe",
+        namespace: "guestbook",
+        name: "guestbook-runtime-probe",
+        values: {
+          allowed: { kind: "random", bytes: 32, encoding: "base64url" },
+          sibling: { kind: "random", bytes: 32, encoding: "base64url" },
+        },
+        consumers: [],
+        referenceMode: "staticIdentity",
+      }],
+    });
+
+    expect(result.graph.nodes).toContainEqual(expect.objectContaining({
+      id: "external.generated-secret.runtime.probe",
+      spec: expect.objectContaining({ referenceMode: "staticIdentity" }),
+    }));
+    expect(result.graph.edges).toContainEqual({
+      from: "external.generated-secret.runtime.probe",
+      to: "kubernetes.application",
+      relationship: "requiresReady",
+    });
+    expect(result.runtimeAccess.executions.flatMap((execution) =>
+      execution.kubernetes?.credentialProjections ?? []).some((projection) =>
+      projection.resourceId === "v1/Secret/guestbook/guestbook-runtime-probe"))
+      .toBe(false);
+  });
+
   it("gives workflow model operations the application context authority instead of a gateway cursor", () => {
     const base = applicationGraph();
     const graph = {

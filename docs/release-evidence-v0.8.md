@@ -52,11 +52,39 @@ The aggregate file is uploaded as
 workflow downloads and revalidates that artifact before package or image
 publication. Receipts expire after fourteen days by default.
 
+### Kubernetes/Cilium execution lane
+
+The Kubernetes runtime-access test is portable across clusters and registries.
+The target cluster must use Cilium as its active pod CNI; a ready Cilium
+DaemonSet layered beside another active CNI is insufficient. For a registry
+whose build/push address differs from the address visible to cluster nodes,
+provide both origins explicitly:
+
+```sh
+APPLIK8S_E2E_LIVE=1 \
+APPLIK8S_E2E_CONTEXT=<cilium-managed-context> \
+APPLIK8S_E2E_OCI_REGISTRY=http://<builder-registry> \
+APPLIK8S_E2E_OCI_DEPLOYMENT_REGISTRY=http://<node-registry> \
+TYPEKRO_LOG_LEVEL=fatal \
+bunx vitest run --config vitest.e2e.config.ts --maxWorkers=1 \
+  packages/e2e/test/v08-runtime-access-kubernetes-live.e2e.test.ts
+```
+
+The two registry variables are an inseparable pair. They are intended for an
+explicitly isolated qualification registry and currently select plain HTTP;
+omitting both retains the OrbStack registry path. The gate proves Cilium pod
+endpoints before mutation, then exercises allow, denial, restart, drift repair,
+and TypeKro/Alchemy-owned teardown. The release packet must still bind the
+receipt to the exact candidate commit.
+
 ## Honest external boundaries
 
 The current development machine has no real AWS credentials, and OrbStack's
-installed Cilium components are not its active pod CNI. Those are execution
-boundaries, not reasons to weaken the contract. The acceptance manifest remains
-`proposed`, and target-dependent gates remain false, until the exact receipts
-exist. The commit-addressed Celld candidate workflow can publish images before a
-semver tag without weakening immutable release identity.
+installed Cilium components are not its active pod CNI. The Kubernetes/Cilium
+slice has therefore been exercised on a disposable Cilium-managed Kind cluster;
+OrbStack is still not accepted as equivalent evidence. The remaining external
+boundaries are not reasons to weaken the contract. The acceptance manifest
+remains `proposed`, and aggregate target-dependent gates remain false, until the
+exact candidate receipts exist. The commit-addressed Celld candidate workflow
+can publish images before a semver tag without weakening immutable release
+identity.

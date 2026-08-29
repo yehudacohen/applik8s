@@ -1,9 +1,9 @@
 // typecast-file-boundary: Literal deployment discriminants are constructed here from validated ApplicationGraph inputs.
-import { applicationScheduleControlIdentity } from '@applik8s/core';
 import type {
   ApplicationGraphNode,
   ApplicationProviderNode,
 } from "@applik8s/core";
+import { applicationScheduleControlIdentity } from '@applik8s/core';
 import {
   type ApplicationArtifactDeploymentNode,
   type ApplicationDeploymentEdge,
@@ -103,7 +103,15 @@ export function compileApplicationDeploymentGraph(
     const consumers = requirement.consumers.filter(
       (consumer) => !unavailableExecutionNodeIds.has(consumer),
     );
-    return consumers.length > 0 ? [{ ...requirement, consumers }] : [];
+    // An explicitly supplied Secret may be referenced by a materialized
+    // workload whose exact key-level access arrives through compiler artifact
+    // metadata rather than a semantic consumer declaration. Preserve that
+    // infrastructure resource without widening runtime access. By contrast,
+    // a Secret whose declared consumers are all unavailable belongs to an
+    // inactive provider branch and must be omitted with that branch.
+    return requirement.consumers.length === 0 || consumers.length > 0
+      ? [{ ...requirement, consumers }]
+      : [];
   }));
   const infrastructureNodes = applicationInfrastructureNodes(
     request,
