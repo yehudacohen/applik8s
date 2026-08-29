@@ -145,9 +145,22 @@ jobs:
             "https://ghcr.io/v2/yehudacohen/applik8s-celld-operator/manifests/$IMAGE_TAG" \
             | tr -d '\r' | awk -F': ' 'tolower($1) == "docker-content-digest" { print $2 }')"
           DIGEST="$(docker buildx imagetools inspect "$IMAGE:$IMAGE_TAG" --format '{{json .Manifest.Digest}}' | tr -d '"')"
-          test "$PUBLIC_DIGEST" = "$DIGEST"
-          test -n "$DIGEST"
+          if [[ ! "$DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+            echo "published manifest did not produce a sha256 digest: $DIGEST" >&2
+            exit 1
+          fi
+          if [[ "$PUBLIC_DIGEST" != "$DIGEST" ]]; then
+            echo "anonymous manifest digest $PUBLIC_DIGEST did not match $DIGEST" >&2
+            exit 1
+          fi
           echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
           docker buildx imagetools inspect "$IMAGE@$DIGEST" | tee /tmp/celld-operator-manifest.txt
           grep -q 'Platform:.*linux/amd64' /tmp/celld-operator-manifest.txt
           grep -q 'Platform:.*linux/arm64' /tmp/celld-operator-manifest.txt
+          {
+            echo '### Celld operator image'
+            echo
+            echo "- Tag: \`$IMAGE:$IMAGE_TAG\`"
+            echo "- Digest: \`$DIGEST\`"
+            echo '- Platforms: `linux/amd64`, `linux/arm64`'
+          } >> "$GITHUB_STEP_SUMMARY"

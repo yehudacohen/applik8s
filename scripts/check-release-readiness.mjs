@@ -43,6 +43,10 @@ const requiredDocs = [
   'docs/release-evidence-v0.4.3.md',
   'docs/release-evidence-v0.5.md',
   'docs/release-evidence-v0.6.md',
+  'docs/release-evidence-v0.8.md',
+  'docs/v0.8-execution-plan.md',
+  'docs/v0.8-reconciliation-ledger.md',
+  'docs/v0.8-acceptance.json',
   'docs/commands.md',
   'docs/npm-first-run.md',
   'docs/v0.4-scorecard.md',
@@ -86,11 +90,16 @@ const publicReleaseFiles = [
   'scripts/write-v07-release-attestation.mjs',
   'scripts/benchmark-v06.ts',
   'scripts/verify-v04-live-evidence.mjs',
+  'scripts/build-celld-operator-release.mjs',
+  'scripts/v08-release-evidence-contract.mjs',
+  'scripts/verify-v08-live-evidence.mjs',
   'scripts/publish-packages.mjs',
   'security/npm-audit-baseline.json',
   '.github/workflows/ci.yml',
   '.github/workflows/deploy.yml',
   '.github/workflows/operator-host-image.yml',
+  '.github/workflows/celld-operator-image.yml',
+  '.github/workflows/celld-operator-candidate.yml',
   '.github/workflows/release-evidence.yml',
   ...publishablePackages,
   ...requiredDocs,
@@ -111,6 +120,7 @@ const publicReleaseFiles = [
   'docs/release-evidence-v0.4.3.md',
   'docs/release-evidence-v0.5.md',
   'docs/release-evidence-v0.6.md',
+  'docs/release-evidence-v0.8.md',
   'docs/kubernetes-connections.md',
   'docs/security-model.md',
   'docs/build-supply-chain.md',
@@ -131,6 +141,38 @@ const publicReleaseFiles = [
   'packages/e2e/test/tenant-platform-live.e2e.test.ts',
   'packages/e2e/test/kubernetes-sdk-wasm-live.e2e.test.ts',
 ];
+
+const requiredReleaseContracts = new Map([
+  ['.github/workflows/celld-operator-image.yml', [
+    'source_ref must be an immutable semver tag or full commit SHA',
+    'platform: linux/amd64',
+    'platform: linux/arm64',
+    'docker logout ghcr.io',
+    'PUBLIC_DIGEST=',
+    'published manifest did not produce a sha256 digest',
+    'anonymous manifest digest $PUBLIC_DIGEST did not match $DIGEST',
+    "grep -q 'Platform:.*linux/amd64'",
+    "grep -q 'Platform:.*linux/arm64'",
+  ]],
+  ['.github/workflows/deploy.yml', [
+    'publish-celld-operator-image',
+    'uses: ./.github/workflows/celld-operator-image.yml',
+    '- publish-celld-operator-image',
+  ]],
+  ['.github/workflows/celld-operator-candidate.yml', [
+    'source_sha must be a full lowercase commit SHA',
+    'uses: ./.github/workflows/operator-host-image.yml',
+    'uses: ./.github/workflows/celld-operator-image.yml',
+    'Registry access: anonymously verified by both reusable workflows',
+  ]],
+  ['scripts/build-celld-operator-release.mjs', [
+    "entrypoint: resolve(process.cwd(), 'packages/celld-operator/src/operator.ts')",
+    "operatorName: 'applik8s-celld-operator'",
+    'deterministicBuild: true',
+    'allowEnvironmentAccess: false',
+    'includeSourceContent: false',
+  ]],
+]);
 
 const privateBrand = ['ska', 'tes'].join('');
 const privateProductBrands = [
@@ -234,6 +276,21 @@ for (const path of requiredDocs) {
     await readFile(path, 'utf8');
   } catch {
     failures.push(`${path}: required ${releaseLabel} release document is missing.`);
+  }
+}
+
+for (const [path, requiredFragments] of requiredReleaseContracts) {
+  let contents;
+  try {
+    contents = await readFile(path, 'utf8');
+  } catch {
+    failures.push(`${path}: required v0.8 release contract is missing.`);
+    continue;
+  }
+  for (const fragment of requiredFragments) {
+    if (!contents.includes(fragment)) {
+      failures.push(`${path}: required v0.8 release invariant is missing: ${fragment}`);
+    }
   }
 }
 
