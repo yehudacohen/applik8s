@@ -14,6 +14,7 @@ import type {
   ApplicationPrincipal,
   ApplicationSerializedCallbackContract,
   JsonObject,
+  RuntimeSchema,
 } from '@applik8s/core';
 import {
   emitArkTypeStructuralJsonSchema,
@@ -476,8 +477,8 @@ export interface ApplicationQueryBinding<
   readonly id: string;
   readonly name: string;
   readonly version: string;
-  readonly input: ApplicationQuerySchema<TInput> | SchemaInput<object>;
-  readonly output: ApplicationQuerySchema<TOutput> | SchemaInput<object>;
+  readonly input: Type<TInput> | RuntimeSchema<object>;
+  readonly output: Type<TOutput> | RuntimeSchema<object>;
   readonly database?: ApplicationDatabaseBinding;
   readonly source?: TSource;
   /** Generated provider adapter; authoring bindings intentionally do not carry connections. */
@@ -580,6 +581,8 @@ export function registerApplicationQuery<
   };
   if (budgets.timeoutMs < 1 || budgets.maxResultBytes < 1 || budgets.maxRows < 1)
     throw new Error(`Application query ${id} budgets must be positive and bounded.`);
+  const inputSchema = runtimeQuerySchema(options.input, `${id}.input`);
+  const outputSchema = runtimeQuerySchema(options.output, `${id}.output`);
   const registrar = options.modelOperation?.kind ?? 'query';
   const inferredHandlerDependencies = options.run
     ? expandApplicationCallbackDependencies({ calls: [options.run] })
@@ -702,7 +705,7 @@ export function registerApplicationQuery<
     operation: 'query',
     transport: 'query',
     ...(authorityState.current ? { authority: authorityState.current } : {}),
-  }, undefined, { input: options.input, output: options.output });
+  }, undefined, { input: inputSchema, output: outputSchema });
   const callable = ((...args: ApplicationOperationArguments<TInput>) => execution(...args));
   Object.defineProperty(callable, 'operation', {
     get: () => execution.operation,
@@ -714,8 +717,8 @@ export function registerApplicationQuery<
     id,
     name: parsed.name,
     version: parsed.version,
-    input: options.input,
-    output: options.output,
+    input: inputSchema,
+    output: outputSchema,
     ...(database ? { database } : {}),
     ...(source ? { source } : {}),
     ...(kubernetes ? { kubernetes } : {}),
@@ -1078,6 +1081,15 @@ function querySchema<TValue>(schema: ApplicationQuerySchema<TValue>): Applicatio
     throw new Error(`applik8s-query-schema-unsupported: ${emitted.error.message}`);
   }
   return { kind: 'declared', runtime: 'arktype', jsonSchema: emitted.value.schema };
+}
+
+function runtimeQuerySchema<TValue>(
+  schema: ApplicationQuerySchema<TValue>,
+  name: string,
+): Type<TValue> | RuntimeSchema<object> {
+  // typecast: only ArkType is callable within the accepted schema union.
+  if (typeof schema === 'function') return schema as Type<TValue>;
+  return normalizeSchema(schema as SchemaInput<object>, name);
 }
 
 function parseVersionedQueryId(id: string): {

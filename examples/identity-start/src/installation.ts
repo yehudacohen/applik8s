@@ -45,7 +45,7 @@ const ExternalProviders = type({
     endpoint: 'string',
     model: 'string',
     credentialSecretName: 'string',
-    'credentialKey?': '"apiKey"',
+    'credentialKey?': 'string > 0',
     'allowInsecureHttp?': 'boolean',
   },
   identity: {
@@ -77,7 +77,7 @@ const DedicatedProviders = type({
     endpoint: 'string',
     model: 'string',
     credentialSecretName: 'string',
-    'credentialKey?': '"apiKey"',
+    'credentialKey?': 'string > 0',
   },
   identity: {
     issuer: 'string',
@@ -114,7 +114,7 @@ const DeveloperProviders = type({
     endpoint: 'string',
     model: 'string',
     credentialSecretName: 'string',
-    'credentialKey?': '"apiKey"',
+    'credentialKey?': 'string > 0',
   },
   'payments?': {
     secretName: 'string',

@@ -1,7 +1,6 @@
-import type { JsonValue } from '@applik8s/core';
-import { normalizeSchema, type SchemaInput } from '@applik8s/sdk';
+import type { JsonValue, RuntimeSchema } from '@applik8s/core';
 import type { Type } from 'arktype';
-import type { ApplicationQueryBinding, ApplicationQuerySchema } from './application-queries.js';
+import type { ApplicationQueryBinding } from './application-queries.js';
 
 export function validateQueryInput<TInput>(query: ApplicationQueryBinding<TInput>, value: unknown): TInput {
   return validateQuerySchema(query.id, 'input', query.input, value);
@@ -11,10 +10,13 @@ export function validateQueryOutput<TOutput>(query: ApplicationQueryBinding<unkn
   return validateQuerySchema(query.id, 'output', query.output, value);
 }
 
+// typecast-boundary: heterogeneous query catalogs erase their schema source;
+// this function restores the phantom value type only after the corresponding
+// ArkType or normalized runtime validator has accepted the value.
 function validateQuerySchema<TValue>(
   query: string,
   direction: 'input' | 'output',
-  schema: ApplicationQuerySchema<TValue> | SchemaInput<object>,
+  schema: Type<TValue> | RuntimeSchema<object>,
   value: unknown,
 ): TValue {
   if (typeof schema === 'function') {
@@ -23,10 +25,7 @@ function validateQuerySchema<TValue>(
     // typecast: ArkType returns TValue after the error-shape branch above rejects validation failures.
     return result as TValue;
   }
-  const result = normalizeSchema(
-    schema as SchemaInput<object>,
-    `Application query ${query} ${direction}`,
-  ).validate(value as JsonValue);
+  const result = schema.validate(value as JsonValue);
   if (!result.ok) {
     throw new Error(`Application query ${query} ${direction} validation failed: ${result.error.message}`);
   }

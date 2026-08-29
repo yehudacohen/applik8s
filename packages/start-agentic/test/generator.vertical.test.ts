@@ -1249,7 +1249,10 @@ describe('Agentic Start generator', () => {
       // v0.8 adds one visible actor, fixed/dynamic schedules, historical
       // lakehouse publication/query, and target-selected observability. Keep
       // their complete generated surface bounded rather than hiding growth.
-      expect(result.value.nodes.length).toBeLessThan(540);
+      // The digest workflow also carries an explicit service identity so its
+      // authenticated actor call and provider accounting retain durable
+      // causal authority instead of borrowing a browser principal.
+      expect(result.value.nodes.length).toBeLessThan(550);
       expect(result.value.nodes).toEqual(expect.arrayContaining([
         expect.objectContaining({ kind: 'model', id: 'model.document-comment' }),
         expect.objectContaining({ kind: 'model', id: 'model.billing-plan' }),

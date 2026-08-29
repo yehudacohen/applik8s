@@ -15,8 +15,9 @@ describe('application module inclusion', () => {
       status: type({ ready: 'boolean' }),
     });
     application.database.postgres('application', { schema: {} });
+    const capability: 'portable' = 'portable';
     const reusable = module('reusable-capability', () => ({
-      capability: 'portable' as const,
+      capability,
     }));
 
     const included = application.include(reusable);

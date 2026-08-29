@@ -17,6 +17,8 @@ import { eq, relations } from 'drizzle-orm';
 import { pgTable, text, uuid } from 'drizzle-orm/pg-core';
 import { describe, expect, expectTypeOf, test } from 'vitest';
 import { withApplicationManagedEffects } from '../src/application-managed-effects.js';
+import { applicationQueryBindingForOperation } from '../src/application-queries.js';
+import { validateQueryInput, validateQueryOutput } from '../src/application-query-runtime.js';
 import {
   withApplicationNativeModelClients,
   withApplicationNativeModelTransactionRuntime,
@@ -243,7 +245,7 @@ describe('v0.6 app-scoped native model promotion', () => {
       { effect: 'event', contract: 'ambient-record.changed.v1' },
       { effect: 'command', contract: 'AmbientRecord.create' },
     ]);
-    expect(() => staged.then()).toThrow(/cannot be awaited before commit/);
+    await expect(staged).rejects.toThrow(/cannot be awaited before commit/);
   });
 
   test('derives a defaulted scalar identity from the admitted principal without an undefined command key', () => {
@@ -585,6 +587,14 @@ describe('v0.6 app-scoped native model promotion', () => {
     );
 
     expectTypeOf<Awaited<ReturnType<typeof Cards>>>().toEqualTypeOf<QueryOutput>();
+    const binding = applicationQueryBindingForOperation(Cards);
+    expect(binding).toBeDefined();
+    if (!binding) return;
+    expect(validateQueryInput(binding, { limit: 1 })).toEqual({ limit: 1 });
+    expect(() => validateQueryInput(binding, { limit: 0 })).toThrow(/validation failed/u);
+    expect(validateQueryOutput(binding, { items: [{ id: 'card-1' }] })).toEqual({
+      items: [{ id: 'card-1' }],
+    });
     expect(applicationGraphFor(catalog.composition)?.nodes.find(
       (node) => node.kind === 'query' && node.publicId === 'Card.cards',
     )).toMatchObject({
