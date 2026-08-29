@@ -23,7 +23,6 @@ import type {
 	ApplicationObjectMetadata,
 	ApplicationObjectPutRequest,
 	ApplicationObjectReference,
-	ApplicationObjectStorageRuntime,
 	ApplicationSignedObjectIntent,
 } from "./application-object-storage-runtime-contract.js";
 import { createApplicationObjectStoreRuntimeHandle } from "./application-object-storage-runtime-handle.js";

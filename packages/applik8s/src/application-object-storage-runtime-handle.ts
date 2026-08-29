@@ -1,11 +1,14 @@
 import type { ApplicationObjectStoreNode } from "@applik8s/core";
-import {
-	type ApplicationObjectMetadata,
-	type ApplicationObjectPutRequest,
-	type ApplicationObjectReference,
-	type ApplicationSignedObjectIntent,
+import type {
+	ApplicationObjectMetadata,
+	ApplicationObjectPutRequest,
+	ApplicationObjectReference,
+	ApplicationSignedObjectIntent,
 } from "./application-object-storage-runtime-contract.js";
-import { applicationObjectStorageRuntime } from "./application-object-storage-runtime-resolver.js";
+import {
+	applicationObjectStorageRuntime,
+	type ApplicationObjectStorageRuntimeIdentity,
+} from "./application-object-storage-runtime-resolver.js";
 
 export type ApplicationObjectStoreRuntimeContract = Pick<
 	ApplicationObjectStoreNode,
@@ -33,8 +36,8 @@ export interface ApplicationObjectStoreRuntimeHandle {
 export function createApplicationObjectStoreRuntimeHandle(
 	contract: ApplicationObjectStoreRuntimeContract,
 ): ApplicationObjectStoreRuntimeHandle {
-	const identity = Object.freeze({
-		kind: "applicationObjectStore" as const,
+	const identity: ApplicationObjectStorageRuntimeIdentity = Object.freeze({
+		kind: "applicationObjectStore",
 		name: contract.name,
 	});
 	const runtime = () => applicationObjectStorageRuntime(identity);
