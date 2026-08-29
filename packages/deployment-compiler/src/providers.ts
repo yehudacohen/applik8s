@@ -59,6 +59,8 @@ const builtinProviderRegistrations: readonly BuiltinProviderRegistration[] = [
   { interface: "ObjectStorage", implementation: "s3", execution: "root-composition" },
   { interface: "NotificationDelivery", implementation: "local-inspectable", execution: "runtime-only" },
   { interface: "NotificationDelivery", implementation: "smtp", execution: "runtime-only" },
+  { interface: "WebSearch", implementation: "web-search-deterministic", execution: "runtime-only" },
+  { interface: "WebSearch", implementation: "searxng", execution: "external-controller" },
   { interface: "PaymentProvider", implementation: "local-simulated", execution: "runtime-only" },
   { interface: "PaymentProvider", implementation: "stripe", execution: "runtime-only" },
   { interface: "AnalyticalDatabase", implementation: "clickhouse", execution: "root-composition" },
@@ -665,6 +667,8 @@ function providerGraphConfigurationKey(
       return "lakehouseQuery";
     case "Search":
       return "search";
+    case "WebSearch":
+      return "webSearch";
     case "TransactionalDatabase":
       return "transactionalDatabase";
     default:
@@ -906,6 +910,20 @@ export function applicationProviderRuntimeAccessTargets(
       fidelity: host ? 'port-only' : 'not-introspectable',
     }];
   }
+  if (provider.interface === 'WebSearch' && provider.implementation === 'web-search-deterministic') {
+    return [{ capabilityId: provider.id, target: 'embedded' }];
+  }
+  if (provider.interface === 'WebSearch' && provider.implementation === 'searxng') {
+    const webSearch = nestedObject(provider.config, 'webSearch') ?? provider.config ?? {};
+    const deployment = optionalObject(webSearch.deployment) ?? {};
+    if (deployment.management === 'external') {
+      return [externalHttpRuntimeAccessTarget({
+        capabilityId: provider.id,
+        endpoint: optionalString(deployment.endpoint),
+        responsibility: 'external SearXNG web-search endpoint',
+      })];
+    }
+  }
   if (provider.interface === 'Observability' && provider.implementation === 'otlp') {
     const observability = optionalObject(provider.config?.observability) ?? provider.config;
     return [externalHttpRuntimeAccessTarget({
@@ -1087,12 +1105,78 @@ function providerDirectContribution(
     return clickStackDirectContribution(provider, context);
   }
   if (
+    provider.interface === 'WebSearch'
+    && provider.implementation === 'searxng'
+  ) {
+    return searxngDirectContribution(provider, context);
+  }
+  if (
     provider.interface === "ActorRuntime"
     && provider.implementation === "celld-actors"
   ) {
     return celldActorRuntimeDirectContribution(provider, context);
   }
   return { nodes: [], edges: [] };
+}
+
+function searxngDirectContribution(
+  provider: ApplicationProviderNode,
+  context: ApplicationDeploymentPlanningContext,
+): ProviderDirectContribution {
+  const webSearch = nestedObject(provider.config, 'webSearch') ?? provider.config ?? {};
+  const deployment = optionalObject(webSearch.deployment) ?? {};
+  if (deployment.management === 'external') return { nodes: [], edges: [] };
+  if (deployment.management !== 'typekro') {
+    throw new Error(
+      `WebSearch provider ${provider.id} must declare SearXNG management as typekro or external.`,
+    );
+  }
+  const name = requiredString(deployment.name, 'Managed SearXNG name');
+  const namespace = requiredString(deployment.namespace, 'Managed SearXNG namespace');
+  const secretKeyRef = requiredObject(deployment.secretKeyRef, 'Managed SearXNG secretKeyRef');
+  const replicas = optionalInteger(deployment.replicas) ?? 1;
+  if (replicas < 1 || replicas > 32) {
+    throw new Error('Managed SearXNG replicas must be between 1 and 32.');
+  }
+  const node = directNode({
+    id: `direct.${provider.id}.searxng`,
+    provider,
+    context,
+    compositionId: 'searxng-bootstrap',
+    reason: 'Install the selected provider-neutral web-search implementation through TypeKro.',
+    namespace,
+    configuration: compactJson({
+      name,
+      namespace,
+      secretKeyRef: {
+        name: requiredString(secretKeyRef.name, 'SearXNG Secret name'),
+        key: optionalString(secretKeyRef.key) ?? 'secret_key',
+      },
+      replicas,
+      ...(optionalString(deployment.image) ? { image: optionalString(deployment.image) } : {}),
+      ...(optionalString(deployment.redisUrl) ? { redisUrl: optionalString(deployment.redisUrl) } : {}),
+      server: { limiter: Boolean(optionalString(deployment.redisUrl)) },
+      search: { formats: ['html', 'json'] },
+    }),
+    ownership: 'application',
+    deletion: 'delete',
+  });
+  return {
+    nodes: [node],
+    edges: [],
+    runtimeAccessTargets: [{
+      capabilityId: provider.id,
+      target: 'kubernetes',
+      namespace,
+      serviceName: name,
+      podSelector: {
+        'app.kubernetes.io/name': 'searxng',
+        'app.kubernetes.io/instance': name,
+      },
+      protocol: 'TCP',
+      port: 8080,
+    }],
+  };
 }
 
 function clickStackDirectContribution(

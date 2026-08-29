@@ -45,6 +45,7 @@ still own their product vocabulary, policy, routes, and presentation.
 | `@applik8s/integrations` | Provider-neutral connection intent, scopes, and safe lifecycle state. |
 | `@applik8s/billing` | Provider-neutral plans, subscriptions, checkout, portal, and entitlement models. |
 | `@applik8s/notifications` | Transactional notification contracts, durable requests, and local inspection. |
+| `@applik8s/web-search` | Bounded provider-neutral web retrieval, deterministic local execution, and source provenance. |
 | `@applik8s/conversations` | Conversations, messages, protocol runs, run events, memory, and TanStack persistence. |
 | `@applik8s/data-lifecycle` | Provider-neutral lifecycle request state and progress vocabulary; applications own deletion policy. |
 | `@applik8s/evals` | Versioned datasets, scorers, evaluation runs, cases, and results. |
@@ -59,6 +60,7 @@ Install only the providers selected by the application profile.
 | --- | --- |
 | `@applik8s/billing-stripe` | Server-only Stripe implementation of the billing capability. |
 | `@applik8s/notifications-smtp` | Server-only SMTP implementation of notification delivery. |
+| `@applik8s/web-search-searxng` | Optional SearXNG runtime and TypeKro-managed web-search provider. |
 | `@applik8s/identity-ory` | Ory Kratos and Hydra identity/OAuth adapter. |
 | `@applik8s/identity-postgres` | PostgreSQL persistence for identity admission and OAuth flows. |
 | `@applik8s/runtime-s3` | S3-compatible object storage and signed object intents. |

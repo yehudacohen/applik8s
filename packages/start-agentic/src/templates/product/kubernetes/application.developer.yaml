@@ -24,3 +24,6 @@ spec:
         kind: hostEnvironment
         apiKeyVariable: STRIPE_SECRET_KEY
         webhookSecretVariable: STRIPE_WEBHOOK_SECRET
+    webSearch:
+      secretName: applik8s-template-project-web-search
+      secretKey: secret_key

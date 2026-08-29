@@ -44,6 +44,12 @@ import {
   NotificationDelivery,
 } from '@applik8s/notifications';
 import { SmtpNotificationDelivery } from '@applik8s/notifications-smtp';
+import {
+  type ApplicationWebSearchProvider,
+  LocalWebSearch,
+  WebSearch,
+} from '@applik8s/web-search';
+import { SearxngWebSearch } from '@applik8s/web-search-searxng';
 import { type } from 'arktype';
 
 export interface AgenticExternalDatabase {
@@ -156,6 +162,20 @@ export interface AgenticManagedSmtpNotifications
   };
 }
 
+export interface AgenticManagedWebSearch {
+  readonly secretName: string;
+  readonly secretKey?: string;
+  readonly name?: string;
+  readonly namespace?: string;
+  readonly replicas?: number;
+  readonly redisUrl?: string;
+}
+
+export interface AgenticExternalWebSearch {
+  readonly endpoint: string;
+  readonly allowInsecureHttp?: boolean;
+}
+
 export interface AgenticDeveloperProviders {
   readonly inference: AgenticDedicatedInference;
   /**
@@ -164,6 +184,8 @@ export interface AgenticDeveloperProviders {
    */
   readonly payments?: AgenticManagedStripePayments;
   readonly notifications?: AgenticManagedSmtpNotifications;
+  /** Kubernetes live retrieval; non-Kubernetes developer targets stay deterministic. */
+  readonly webSearch?: AgenticManagedWebSearch;
 }
 
 /**
@@ -189,6 +211,7 @@ export interface AgenticExternalProviders {
   readonly identity: AgenticExternalIdentity;
   readonly payments: AgenticStripePayments;
   readonly notifications: AgenticSmtpNotifications;
+  readonly webSearch: AgenticExternalWebSearch;
 }
 
 export type AgenticInstallationSpec =
@@ -213,6 +236,7 @@ export type AgenticInstallationSpec =
         readonly objects: AgenticDedicatedObjects;
         readonly payments: AgenticManagedStripePayments;
         readonly notifications: AgenticManagedSmtpNotifications;
+        readonly webSearch?: AgenticManagedWebSearch;
       };
     }
   | {
@@ -286,6 +310,15 @@ export interface ConfigureAgenticProfilesOptions<
   readonly externalNotifications?: (
     spec: Extract<AgenticInstallationSpec, { readonly profile: 'external' }>,
   ) => ApplicationNotificationDeliveryProvider;
+  readonly developerWebSearch?: (
+    spec: Extract<AgenticInstallationSpec, { readonly profile: 'developer' }>,
+  ) => ApplicationWebSearchProvider;
+  readonly dedicatedWebSearch?: (
+    spec: Extract<AgenticInstallationSpec, { readonly profile: 'dedicated' }>,
+  ) => ApplicationWebSearchProvider;
+  readonly externalWebSearch?: (
+    spec: Extract<AgenticInstallationSpec, { readonly profile: 'external' }>,
+  ) => ApplicationWebSearchProvider;
 }
 
 export type AgenticProfilesOptions = Pick<
@@ -300,6 +333,9 @@ export type AgenticProfilesOptions = Pick<
   | 'developerNotifications'
   | 'dedicatedNotifications'
   | 'externalNotifications'
+  | 'developerWebSearch'
+  | 'dedicatedWebSearch'
+  | 'externalWebSearch'
 >;
 
 type DatabaseBinding =
@@ -545,6 +581,9 @@ export const AgenticStarter = Object.freeze({
   notifications() {
     return LocalNotificationDelivery.inspectable();
   },
+  webSearch() {
+    return LocalWebSearch.deterministic();
+  },
 });
 
 /**
@@ -564,6 +603,9 @@ export const AgenticDeveloper = Object.freeze({
   },
   notifications(spec: AgenticManagedSmtpNotifications, context: AgenticProfileContext) {
     return agenticSmtpNotifications(spec, context);
+  },
+  webSearch(spec: AgenticManagedWebSearch, context: AgenticProfileContext) {
+    return agenticManagedWebSearch(spec, context);
   },
 });
 
@@ -754,6 +796,9 @@ export const AgenticDedicated = Object.freeze({
   notifications(spec: AgenticSmtpNotifications, context: AgenticProfileContext) {
     return agenticSmtpNotifications(spec, context);
   },
+  webSearch(spec: AgenticManagedWebSearch, context: AgenticProfileContext) {
+    return agenticManagedWebSearch(spec, context);
+  },
 });
 
 /** Explicitly externally owned provider constructors. */
@@ -904,7 +949,38 @@ export const AgenticExternal = Object.freeze({
   notifications(spec: AgenticSmtpNotifications, context: AgenticProfileContext) {
     return agenticSmtpNotifications(spec, context);
   },
+  webSearch(spec: AgenticExternalWebSearch) {
+    return SearxngWebSearch.external(spec);
+  },
 });
+
+function agenticManagedWebSearch(
+  spec: AgenticManagedWebSearch | undefined,
+  context: AgenticProfileContext,
+): ApplicationWebSearchProvider {
+  if (!spec) {
+    throw new Error(
+      'Kubernetes Agentic Start profiles require providers.webSearch with a reference to an existing SearXNG secret.',
+    );
+  }
+  const name = applicationValueDefault(
+    spec.name,
+    `${context.application}-web-search`,
+  );
+  return SearxngWebSearch.managed({
+    name,
+    namespace: applicationValueDefault(
+      spec.namespace,
+      `${context.application}-web-search-system`,
+    ),
+    secretKeyRef: {
+      name: spec.secretName,
+      key: applicationValueDefault(spec.secretKey, 'secret_key'),
+    },
+    ...(spec.replicas !== undefined ? { replicas: spec.replicas } : {}),
+    ...(spec.redisUrl ? { redisUrl: spec.redisUrl } : {}),
+  });
+}
 
 /**
  * Maintained exhaustive profile wiring for the Agentic Start.
@@ -944,6 +1020,7 @@ export function configureAgenticProfiles<
   const PrimaryIdentity = IdentityProvider.named('primary');
   const PrimaryPayments = PaymentProvider.named('primary');
   const TransactionalNotifications = NotificationDelivery.named('transactional');
+  const ResearchWeb = WebSearch.named('research');
   const Inference = AI.named('inference');
   const HistoricalDataset = LakehouseDataset.named('historical-usage');
   const HistoricalQueries = LakehouseQuery.named('historical-usage');
@@ -1194,6 +1271,33 @@ export function configureAgenticProfiles<
     )
     .exhaustive();
 
+  deployment
+    .provide(ResearchWeb)
+    .starter(() => AgenticStarter.webSearch())
+    .developer((spec) =>
+      options.developerWebSearch?.(spec)
+        ?? application.selectTarget({
+          local: () => AgenticStarter.webSearch(),
+          awsLocal: () => AgenticStarter.webSearch(),
+          aws: () => AgenticStarter.webSearch(),
+          kubernetes: () => agenticManagedWebSearch(spec.providers.webSearch, profileContext),
+        }),
+    )
+    .dedicated((spec) =>
+      options.dedicatedWebSearch?.(spec)
+        ?? application.selectTarget({
+          local: () => AgenticStarter.webSearch(),
+          awsLocal: () => AgenticStarter.webSearch(),
+          aws: () => AgenticStarter.webSearch(),
+          kubernetes: () => agenticManagedWebSearch(spec.providers.webSearch, profileContext),
+        }),
+    )
+    .external((spec) =>
+      options.externalWebSearch?.(spec)
+        ?? AgenticExternal.webSearch(spec.providers.webSearch),
+    )
+    .exhaustive();
+
   const analytics = application.inject(AnalyticsStore);
   const eventLog = application.inject(EventTransport);
   const objects = application.inject(ApplicationObjects);
@@ -1203,6 +1307,7 @@ export function configureAgenticProfiles<
   const identity = application.inject(PrimaryIdentity);
   const payments = application.inject(PrimaryPayments);
   const notifications = application.inject(TransactionalNotifications);
+  const webSearch = application.inject(ResearchWeb);
   application.defaults({
     database: primaryDatabase,
     analytics,
@@ -1250,6 +1355,7 @@ export function configureAgenticProfiles<
     identity,
     payments,
     notifications,
+    webSearch,
     observability,
     historicalDataset: HistoricalDataset,
     historicalQueries: HistoricalQueries,

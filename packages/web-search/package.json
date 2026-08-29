@@ -1,0 +1,47 @@
+{
+  "name": "@applik8s/web-search",
+  "version": "0.8.0",
+  "description": "Provider-neutral bounded web search contracts and deterministic local execution for Applik8s.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yehudacohen/applik8s.git",
+    "directory": "packages/web-search"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./runtime": {
+      "types": "./dist/runtime.d.ts",
+      "import": "./dist/runtime.js",
+      "default": "./dist/runtime.js"
+    },
+    "./runtime-contract": {
+      "types": "./dist/runtime-contract.d.ts",
+      "import": "./dist/runtime-contract.js",
+      "default": "./dist/runtime-contract.js"
+    }
+  },
+  "dependencies": {
+    "@applik8s/applik8s": "0.8.0",
+    "@applik8s/core": "0.8.0"
+  },
+  "peerDependencies": {
+    "@applik8s/web-search-searxng": "0.8.0"
+  },
+  "peerDependenciesMeta": {
+    "@applik8s/web-search-searxng": {
+      "optional": true
+    }
+  }
+}

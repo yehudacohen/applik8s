@@ -78,6 +78,16 @@ export const applicationAgenticStartDefinition = Object.freeze({
       required: true,
     },
     packageContribution(
+      '@applik8s/web-search',
+      'bounded provider-neutral web retrieval with deterministic Starter execution',
+    ),
+    {
+      package: '@applik8s/web-search-searxng',
+      purpose: 'server-only external and TypeKro-managed SearXNG adapter',
+      dependencyZone: 'server-only',
+      required: true,
+    },
+    packageContribution(
       '@applik8s/evals',
       'versioned datasets, scorers, evaluation runs, and results',
     ),

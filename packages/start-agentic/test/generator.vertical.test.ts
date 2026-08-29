@@ -1442,6 +1442,13 @@ describe('Agentic Start generator', () => {
       );
       if (!result.ok) return;
       expect(result.value.metadata.name).toBe('research-workspace');
+      const webSearchProvider = result.value.nodes.find(
+        (node) => node.kind === 'provider' && node.interface === 'WebSearch',
+      );
+      expect(JSON.stringify(webSearchProvider)).not.toContain('[object Object]');
+      expect(JSON.stringify(webSearchProvider)).toContain(
+        'schema.spec.providers.webSearch.name',
+      );
       expect(
         result.value.nodes
           .filter((node) => node.kind === 'model')
@@ -1573,6 +1580,7 @@ describe('Agentic Start generator', () => {
               model: 'frontier',
               credentialSecretName: 'inference-credentials',
             },
+            webSearch: { secretName: 'research-web-search' },
           },
         },
         ...kubernetesRuntimeFixture(result.value, target),
@@ -1774,6 +1782,7 @@ describe('Agentic Start generator', () => {
               secretName: 'smtp-notifications',
               senderEmail: 'notifications@example.test',
             },
+            webSearch: { endpoint: 'https://web-search.example.test' },
           },
         },
         ...kubernetesRuntimeFixture(result.value, target),

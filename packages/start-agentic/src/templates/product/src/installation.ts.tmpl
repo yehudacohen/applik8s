@@ -70,6 +70,10 @@ const ExternalProviders = type({
     senderEmail: 'string',
     'senderName?': 'string',
   },
+  webSearch: {
+    endpoint: 'string > 0',
+    'allowInsecureHttp?': 'boolean',
+  },
 });
 
 const DedicatedProviders = type({
@@ -116,6 +120,14 @@ const DedicatedProviders = type({
       'passwordVariable?': 'string',
     },
   },
+  'webSearch?': {
+    secretName: 'string > 0',
+    'secretKey?': 'string > 0',
+    'name?': 'string > 0',
+    'namespace?': 'string > 0',
+    'replicas?': '1 <= number.integer <= 32',
+    'redisUrl?': 'string > 0',
+  },
 });
 
 const DeveloperProviders = type({
@@ -154,6 +166,14 @@ const DeveloperProviders = type({
       'usernameVariable?': 'string',
       'passwordVariable?': 'string',
     },
+  },
+  'webSearch?': {
+    secretName: 'string > 0',
+    'secretKey?': 'string > 0',
+    'name?': 'string > 0',
+    'namespace?': 'string > 0',
+    'replicas?': '1 <= number.integer <= 32',
+    'redisUrl?': 'string > 0',
   },
 });
 

@@ -35,3 +35,7 @@ spec:
       senderName: Product
       credentialSource:
         kind: existingSecret
+    webSearch:
+      secretName: product-web-search
+      secretKey: secret_key
+      replicas: 3

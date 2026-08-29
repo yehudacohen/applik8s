@@ -702,6 +702,9 @@ export function recordApplicationProviderGraph(
       ...(providerInterface === 'Search' && !targetSelection && implementation && typeof implementation === 'object'
         ? { search: applicationTypeKroGraphValue(implementation) as JsonValue }
         : {}),
+      ...(providerInterface === 'WebSearch' && !targetSelection && implementation && typeof implementation === 'object'
+        ? { webSearch: applicationTypeKroGraphValue(implementation) as JsonValue }
+        : {}),
       ...(providerInterface === 'AI' && !targetSelection && implementation && typeof implementation === 'object'
         ? { ai: applicationTypeKroGraphValue(implementation) as JsonValue }
         : {}),

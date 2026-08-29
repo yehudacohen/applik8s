@@ -37,6 +37,7 @@ import {
   makeOpenSearchOperatorBootstrap,
 } from "typekro/opensearch";
 import { oryIdentityStack, oryPlatformStack } from "typekro/ory";
+import { searxngBootstrap } from 'typekro/searxng';
 import {
   type RookCephExternalOperatorSingleNodePlatformConfig,
   RookCephExternalOperatorSingleNodePlatformConfigSchema,
@@ -651,6 +652,13 @@ export function bindApplicationTypeKroDirectNodes(
           natsBootstrap,
           // typecast: the deployment compiler emits the complete validated
           // TypeKro NATS bootstrap contract at this pinned adapter boundary.
+          configuration as never,
+          options,
+        );
+        break;
+      case 'searxng-bootstrap':
+        bindings[node.id] = bindTypeKroComposition(
+          searxngBootstrap,
           configuration as never,
           options,
         );

@@ -66,6 +66,8 @@
     "@applik8s/notifications": "0.8.0",
     "@applik8s/operations": "0.8.0",
     "@applik8s/notifications-smtp": "0.8.0",
+    "@applik8s/web-search": "0.8.0",
+    "@applik8s/web-search-searxng": "0.8.0",
     "@applik8s/conversations": "0.8.0",
     "@applik8s/data-lifecycle": "0.8.0",
     "@applik8s/core": "0.8.0",

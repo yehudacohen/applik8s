@@ -322,6 +322,8 @@ function managedApplicationAgenticStartPackage(
     '@applik8s/identity-ory': version,
     '@applik8s/notifications': version,
     '@applik8s/notifications-smtp': version,
+    '@applik8s/web-search': version,
+    '@applik8s/web-search-searxng': version,
     '@applik8s/runtime': version,
     '@applik8s/runtime-ai': version,
     '@applik8s/runtime-aws': version,

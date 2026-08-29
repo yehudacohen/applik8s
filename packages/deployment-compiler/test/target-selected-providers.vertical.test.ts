@@ -8,6 +8,60 @@ import {
 } from '../src/index.js';
 
 describe('v0.8 target-selected provider lowering', () => {
+  it('lowers managed and external WebSearch providers without leaking provider policy', () => {
+    const contributor = builtinApplicationDeploymentContributors().find(
+      (candidate) => candidate.interface === 'WebSearch' && candidate.implementation === 'searxng',
+    );
+    expect(contributor).toBeDefined();
+    const managed: ApplicationProviderNode = {
+      id: 'provider.web-search.v1alpha1.research', kind: 'provider', name: 'WebSearch', stability: 'stable',
+      interface: 'WebSearch', implementation: 'searxng',
+      config: { webSearch: {
+        kind: 'searxng', provider: 'searxng', mode: 'live',
+        deployment: {
+          management: 'typekro', name: 'research-search', namespace: 'research-search-system',
+          secretKeyRef: { name: 'research-search-secret', key: 'secret_key' }, replicas: 2,
+        },
+      } },
+    };
+    const contribution = contributor!.contribute(managed, context('kubernetes'));
+    expect(contribution.nodes).toEqual([
+      expect.objectContaining({
+        kind: 'kubernetesDirect',
+        spec: expect.objectContaining({
+          compositionId: 'searxng-bootstrap',
+          configuration: expect.objectContaining({
+            name: 'research-search',
+            namespace: 'research-search-system',
+            replicas: 2,
+            secretKeyRef: { name: 'research-search-secret', key: 'secret_key' },
+          }),
+        }),
+      }),
+    ]);
+    expect(contribution.runtimeAccessTargets).toEqual([
+      expect.objectContaining({
+        capabilityId: managed.id,
+        target: 'kubernetes',
+        serviceName: 'research-search',
+        port: 8080,
+      }),
+    ]);
+
+    const external: ApplicationProviderNode = {
+      ...managed,
+      config: { webSearch: {
+        kind: 'searxng', provider: 'searxng', mode: 'live',
+        deployment: { management: 'external', endpoint: 'https://search.example.test' },
+      } },
+    };
+    const externalContribution = contributor!.contribute(external, context('kubernetes'));
+    expect(externalContribution.nodes).toEqual([]);
+    expect(externalContribution.runtimeAccessTargets).toEqual([
+      expect.objectContaining({ target: 'external', port: 443 }),
+    ]);
+  });
+
   it.each([
     ['local', 'local-scheduler'],
     ['aws-local', 'eventbridge-scheduler'],

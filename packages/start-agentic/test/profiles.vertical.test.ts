@@ -79,6 +79,10 @@ describe('maintained Agentic Start profiles', () => {
       kind: 'local-simulated',
       mode: 'simulated',
     });
+    expect(AgenticStarter.webSearch()).toMatchObject({
+      kind: 'web-search-deterministic',
+      mode: 'deterministic',
+    });
   });
 
   it('keeps dedicated state retained, redundant, and production-shaped', () => {
@@ -196,6 +200,20 @@ describe('maintained Agentic Start profiles', () => {
       kind: 'stripe',
       mode: 'live',
     });
+    expect(AgenticDedicated.webSearch({
+      secretName: 'research-web-search',
+      replicas: 3,
+    }, context)).toMatchObject({
+      kind: 'searxng',
+      mode: 'live',
+      deployment: {
+        management: 'typekro',
+        name: 'research-web-search',
+        namespace: 'research-web-search-system',
+        replicas: 3,
+        secretKeyRef: { name: 'research-web-search', key: 'secret_key' },
+      },
+    });
   });
 
   it('never takes ownership of externally supplied providers and selects reviewed capacity exhaustively', () => {
@@ -273,6 +291,15 @@ describe('maintained Agentic Start profiles', () => {
     ).toMatchObject({
       kind: 'stripe',
       mode: 'live',
+    });
+    expect(AgenticExternal.webSearch({
+      endpoint: 'https://web-search.example.test',
+    })).toMatchObject({
+      kind: 'searxng',
+      deployment: {
+        management: 'external',
+        endpoint: 'https://web-search.example.test',
+      },
     });
 
     const selected: string[] = [];

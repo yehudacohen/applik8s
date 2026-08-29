@@ -61,3 +61,5 @@ spec:
       passwordKey: password
       senderEmail: notifications@identity.example.test
       senderName: Identity Start
+    webSearch:
+      endpoint: https://identity-external-web-search.identity-start-system.svc.cluster.local:8080

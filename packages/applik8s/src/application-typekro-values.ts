@@ -36,6 +36,15 @@ export function applicationTypeKroString(...parts: readonly unknown[]): string {
 }
 
 /**
+ * Compose framework-owned installation values into a string without exposing
+ * TypeKro/CEL details to provider adapters. Concrete values use ordinary
+ * JavaScript concatenation; installation references remain graph expressions.
+ */
+export function applicationValueString(...parts: readonly unknown[]): string {
+  return applicationTypeKroString(...parts);
+}
+
+/**
  * Encode a string array for an environment variable without serializing
  * TypeKro references into nested `${...}` marker text. The returned value is
  * concrete JSON in direct mode and one CEL string expression in KRO mode.

@@ -36,6 +36,7 @@ const controlPlaneNamespace = 'identity-start-control';
 const serverName = 'identity-start-inference';
 const serverPort = 8080;
 const inferenceSecretName = 'identity-start-inference';
+const webSearchSecretName = 'identity-start-web-search';
 const paymentsSecretName = externalLifecycle
   ? 'identity-external-payments'
   : 'identity-start-payments';
@@ -118,6 +119,18 @@ function createDedicatedFixture() {
       });
       if (applicationNs) {
         notificationCredentials.dependsOn(applicationNs);
+      }
+      if (!externalLifecycle) {
+        const webSearchCredentials = secret({
+          id: 'webSearchCredentials',
+          metadata: {
+            name: webSearchSecretName,
+            namespace: applicationNamespace,
+            labels,
+          },
+          stringData: { secret_key: 'identity-start-web-search-fixture-key' },
+        });
+        if (applicationNs) webSearchCredentials.dependsOn(applicationNs);
       }
 
       const server = deployment({

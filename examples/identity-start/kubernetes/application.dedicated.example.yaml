@@ -35,3 +35,6 @@ spec:
       senderName: Identity Start
       credentialSource:
         kind: existingSecret
+    webSearch:
+      secretName: identity-start-web-search
+      secretKey: secret_key

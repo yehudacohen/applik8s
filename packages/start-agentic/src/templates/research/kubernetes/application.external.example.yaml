@@ -48,3 +48,5 @@ spec:
       passwordKey: password
       senderEmail: notifications@example.test
       senderName: Product
+    webSearch:
+      endpoint: https://web-search.example.test

@@ -430,6 +430,7 @@ bun run check:v04:prerelease:orbstack
 - `docs/dns-publication.md`
 - `docs/kubernetes-connections.md`
 - `docs/workflows.md`
+- [`docs/web-search.md`](docs/web-search.md)
 - `docs/v0.5-scorecard.md`
 - `docs/v0.4-scorecard.md`
 - `docs/release-evidence-v0.4.md`

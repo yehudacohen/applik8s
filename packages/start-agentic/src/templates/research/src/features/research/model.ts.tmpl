@@ -4,8 +4,21 @@ import { AgenticPrincipalScope } from '@applik8s/start-agentic';
 import { withApplicationTanStackPersistence } from '@applik8s/ai-tanstack';
 import { chat } from '@tanstack/ai';
 import { application } from '../../app';
-import { inference } from '../../providers';
+import { inference, webSearch } from '../../providers';
 import { ResearchNote as ResearchNoteTable } from './schema';
+
+/**
+ * Ordinary provider-neutral retrieval. The application still owns durable
+ * evidence, source classification, disclosure, and citation policy.
+ */
+export async function findPublicSources(query: string) {
+  return webSearch.search({
+    query,
+    limit: 8,
+    safeSearch: 'moderate',
+    timeoutMs: 10_000,
+  });
+}
 
 const research = module(
   'research',
