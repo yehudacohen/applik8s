@@ -340,6 +340,11 @@ read dependencies, provider authority, trusted context, and hard budgets. The
 application graph records `query` versus `view` explicitly rather than making
 the runtime infer lifecycle semantics from client usage.
 
+Input and output accept the same `SchemaInput<T>` boundary as the SDK. ArkType
+remains the concise authoring default, while a typed `JsonSchemaSource<T>` or
+maintained runtime schema preserves `T`, emits its normalized structural JSON
+Schema, and validates through the shared runtime adapter.
+
 ## Maintained Operations UI
 
 `application.include(operationsOverview)` installs the bounded,

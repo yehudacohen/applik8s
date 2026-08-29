@@ -13,6 +13,13 @@ public application graph and dependency edges. Deployment planning can prove
 the route's object-storage access and place credentials without rediscovering
 serialized callback internals.
 
+Model queries and views now accept the SDK's normalized schema sources as
+first-class typed contracts, including structural JSON Schema, while preserving
+ArkType behavior. Reusable application modules no longer become invariant in
+an unrelated root Application CRD spec. Agentic Start also accepts custom,
+non-empty inference Secret keys and carries the selected key into both managed
+and external Envoy AI Gateway bindings.
+
 - Release automation now separates cluster-free local qualification from
   target-live actor qualification and requires a v0.8-specific exact-commit
   evidence packet. The packet independently binds real AWS, Cilium-enforced

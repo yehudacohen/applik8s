@@ -1,6 +1,6 @@
 // typecast-file-boundary: Workflow registration preserves generic schema inference while normalizing validated graph metadata at the registration boundary.
 import { createHash } from 'node:crypto';
-import { AI, isApplicationAIProvider, type ApplicationAIProvider } from '@applik8s/ai';
+import { AI, type ApplicationAIProvider, isApplicationAIProvider } from '@applik8s/ai';
 import { type ApplicationOperationLike, getApplicationOperationContract, isApplicationBoundOperation, isApplicationScopedOperation } from '@applik8s/client';
 import { type ApplicationOperationInvocationDependency, type ApplicationProviderRuntimeContract, type ApplicationResourceRef, applicationOperationId, canonicalJsonV1String } from '@applik8s/core';
 import {
@@ -19,19 +19,19 @@ import {
   createApplicationSchedule,
 } from './application-schedule.js';
 import type { ApplicationSignalDefinition } from './application-signals.js';
-import { applicationTypeKroGraphValue, applicationTypeKroString } from './application-typekro-values.js';
 import { captureApplicationTelemetryContext } from './application-telemetry-runtime.js';
+import { applicationTypeKroGraphValue, applicationTypeKroString } from './application-typekro-values.js';
 import type { ApplicationWorkflowTaskDefinition as TaskDefinition } from './application-workflow-internal.js';
 import { declaredSchema, durableContract, functionExpression, requiredSchema, schemaRecord, validateMessage, workflowHandlerSerialization } from './application-workflow-serialization.js';
 import type {
   ApplicationTaskBinding,
   ApplicationTaskHandler,
   ApplicationTaskObjectStores,
-  ApplicationTaskProviderAccounting,
   ApplicationTaskOperationDependency,
   ApplicationTaskOperations,
   ApplicationTaskOptions,
   ApplicationTaskProjections,
+  ApplicationTaskProviderAccounting,
   ApplicationTaskQueries,
   ApplicationTaskReference,
   ApplicationWorkflowBinding,
@@ -64,8 +64,6 @@ export type {
   ApplicationTaskHandler,
   ApplicationTaskObjectFunctions,
   ApplicationTaskObjectStores,
-  ApplicationTaskProviderAccounting,
-  ApplicationTaskProviderAccountingFunctions,
   ApplicationTaskOperationDependency,
   ApplicationTaskOperationFunctions,
   ApplicationTaskOperations,
@@ -73,6 +71,8 @@ export type {
   ApplicationTaskProjectionFunctions,
   ApplicationTaskProjections,
   ApplicationTaskProjectionTarget,
+  ApplicationTaskProviderAccounting,
+  ApplicationTaskProviderAccountingFunctions,
   ApplicationTaskQueries,
   ApplicationTaskQueryFunctions,
   ApplicationTaskReference,
@@ -214,9 +214,10 @@ export function registerApplicationTask<
   if (operations.length + queries.length + actors.length + providerAccounting.length > 0 && !options.identity && !options.principal) {
     throw new Error(`Task ${definition.id} declares authenticated operations, queries, actor invocations, or provider accounting and requires options.identity.`);
   }
-  if (operations.length + queries.length + actors.length + providerAccounting.length === 0 && (options.identity || options.principal)) {
-    throw new Error(`Task ${definition.id} declares an execution identity without any authenticated operation, query, actor invocation, or provider-accounting handle.`);
-  }
+  // An explicit identity remains valid when registration runs without
+  // compiler-authored closure metadata. Discovery may attach an implicitly
+  // captured operation, actor, or accounting handle later; rejecting the
+  // identity here would make direct source imports disagree with compilation.
   const operationPrincipal = options.principal ? serializeApplicationCallback({
     registrar: 'task', argumentIndex: 1, property: 'principal', label: `Task ${definition.id} operation principal`,
     callback: options.principal as (...args: never[]) => unknown, allowDeferredResolution: true,

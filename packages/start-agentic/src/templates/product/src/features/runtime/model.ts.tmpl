@@ -70,11 +70,16 @@ WorkspaceActivity.on.expire(async (workspace, input) => {
   await workspace.setState(next);
 });
 
+const WorkspaceDigestWorker = application.serviceIdentity('workspace-digest-worker');
+
 const WorkspaceDigestWorkflow = application.workflow(
   'workspace.digest.v1',
   {
     input: type({ workspaceId: 'string' }),
     output: type({ workspaceId: 'string', revision: 'number.integer >= 0' }),
+  },
+  {
+    identity: WorkspaceDigestWorker,
   },
   async input => {
     const snapshot = await WorkspaceActivity.snapshot(input.workspaceId, {});

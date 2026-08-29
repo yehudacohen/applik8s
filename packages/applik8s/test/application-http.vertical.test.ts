@@ -3,6 +3,7 @@
 import {
   app,
   applicationGraphFor,
+  ObjectStorage,
   WorkflowEngine,
   workflow,
 } from '@applik8s/applik8s';
@@ -12,6 +13,45 @@ import { pgTable, text } from 'drizzle-orm/pg-core';
 import { describe, expect, it } from 'vitest';
 
 describe('function-native HTTP authoring', () => {
+  it('retains captured object-store provenance in the public route graph', () => {
+    const application = app('typed-http-objects');
+    application.provide(ObjectStorage, ObjectStorage.s3({
+      bucket: 'typed-http-objects',
+      region: 'us-east-1',
+      ownership: 'external',
+    }));
+    const Attachments = application.objectStore('attachments', {
+      mode: 'immutable',
+      maxObjectBytes: 1_000,
+      contentTypes: ['application/octet-stream'],
+    });
+    const api = application.http('public-api');
+    api.post(
+      'read-attachment',
+      '/attachments/read',
+      {
+        input: type({ key: 'string' }),
+        output: type({ found: 'boolean' }),
+        __generatedBindings: { Attachments },
+      },
+      async ({ input }) => ({ found: (await Attachments.get(input.key)) !== undefined }),
+    );
+
+    const graph = applicationGraphFor(application.composition);
+    const route = graph?.nodes
+      .find((node) => node.kind === 'server')
+      ?.routes[0];
+    expect(route?.functionNative?.objectBindings).toEqual([{
+      identifier: 'Attachments',
+      store: { nodeId: 'objectStore.attachments' },
+    }]);
+    expect(graph?.edges).toContainEqual({
+      from: { nodeId: 'server.public-api' },
+      to: { nodeId: 'objectStore.attachments' },
+      relationship: 'reads',
+    });
+  });
+
   it('captures durable workflow calls as generated route bindings', () => {
     const application = app('typed-http-workflow', {
       namespace: 'typed-http-workflow',

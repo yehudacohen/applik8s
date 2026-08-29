@@ -18,9 +18,7 @@ export interface ApplicationModuleContext<
   /** Profile-owned processor placement inherited by maintained models. */
   readonly processor: ApplicationProcessorOptions | undefined;
   /** Includes another module through the same idempotent application graph. */
-  include<TResult>(
-    module: ApplicationModuleDefinition<TResult, object, object>,
-  ): TResult;
+  include<TResult>(module: ApplicationModuleReference<TResult>): TResult;
 }
 
 export interface ApplicationModuleMetadata<
@@ -28,6 +26,8 @@ export interface ApplicationModuleMetadata<
   TSpec extends object = Record<string, never>,
   TStatus extends object = { readonly ready: boolean },
 > {
+  /** Type-only result association used by the erased inclusion boundary. */
+  readonly resultType?: TResult;
   /** Stable graph identity. */
   readonly name: string;
   /**
@@ -82,6 +82,25 @@ export type ApplicationModuleDefinition<
     TSpec,
     TStatus
   >;
+  /** Compiler-owned structural marker; application code must not construct it. */
+  readonly __applik8sApplicationModule: {
+    readonly name: string;
+    readonly resultType?: TResult;
+  };
+};
+
+/**
+ * Erased inclusion boundary for a branded module. Root installation spec and
+ * status types are intentionally absent: a reusable module contributes to the
+ * application scope and must not become invariant in an unrelated root CRD.
+ */
+export type ApplicationModuleReference<
+  TResult = unknown,
+> = CallableFunction & {
+  readonly __applik8sApplicationModule: {
+    readonly name: string;
+    readonly resultType?: TResult;
+  };
 };
 
 /**
@@ -102,6 +121,12 @@ export function defineApplicationModule<
 ): ApplicationModuleDefinition<TResult, TSpec, TStatus, TCallable> {
   Object.defineProperty(callable, applicationModuleDefinition, {
     value: Object.freeze(metadata),
+    enumerable: false,
+    configurable: false,
+    writable: false,
+  });
+  Object.defineProperty(callable, '__applik8sApplicationModule', {
+    value: Object.freeze({ name: metadata.name }),
     enumerable: false,
     configurable: false,
     writable: false,

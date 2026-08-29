@@ -1,14 +1,30 @@
-import { describe, expect, expectTypeOf, it } from 'vitest';
 import { type } from 'arktype';
+import { describe, expect, expectTypeOf, it } from 'vitest';
+import { field, model } from '../src/drizzle.js';
 import {
   app,
   applicationGraphFor,
   defineApplicationModule,
   module,
 } from '../src/index.js';
-import { field, model } from '../src/drizzle.js';
 
 describe('application module inclusion', () => {
+  it('keeps reusable modules independent of a concrete root installation schema', () => {
+    const application = app('typed-root-module-fixture', {
+      spec: type({ profile: "'developer' | 'production'" }),
+      status: type({ ready: 'boolean' }),
+    });
+    application.database.postgres('application', { schema: {} });
+    const reusable = module('reusable-capability', () => ({
+      capability: 'portable' as const,
+    }));
+
+    const included = application.include(reusable);
+
+    expectTypeOf(included.capability).toEqualTypeOf<'portable'>();
+    expect(included).toEqual({ capability: 'portable' });
+  });
+
   it('installs named modules once and resolves nested module dependencies', () => {
     const application = app('module-fixture');
     let dependencyInstalls = 0;

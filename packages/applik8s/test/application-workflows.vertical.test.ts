@@ -1,8 +1,9 @@
 // typecast-file-boundary: workflow fixtures inspect compiler-owned metadata and deliberately restore their declared generic binding shapes.
+
+import { AI } from '@applik8s/ai';
 import { actor, app, applicationGraphFor, applicationScheduleInvocationAdmission, defineApplicationProvider, event, IndexStore, installApplicationScheduleRuntimeResolver, installApplicationTelemetryRuntimeResolver, ObjectStorage, StructuredGeneration as StructuredGenerationProvider, setApplicationWorkflowRuntimeFactory, WorkflowEngine, workflow } from '@applik8s/applik8s';
 import { type } from '@applik8s/applik8s/dsl';
 import { StructuredGeneration } from '@applik8s/applik8s/structured-generation';
-import { AI } from '@applik8s/ai';
 import { installApplicationInvocationAdmissionResolver } from '@applik8s/client';
 import {
   applicationAdmissionInvocationView,
@@ -163,6 +164,31 @@ describe('v0.5 durable task and workflow contracts', () => {
     ]));
   });
 
+  it('preserves an explicit step identity before compiler closure metadata is attached', () => {
+    const platform = app('single-step-identity');
+    const worker = platform.serviceIdentity('workspace-digest-worker');
+
+    platform.workflow(
+      'workspace.digest.v1',
+      {
+        input: type({ workspaceId: 'string' }),
+        output: type({ workspaceId: 'string' }),
+      },
+      { identity: worker },
+      async ({ workspaceId }) => ({ workspaceId }),
+    );
+
+    expect(applicationGraphFor(platform.composition)?.nodes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: 'taskHandler',
+          name: 'workspace.digest.v1.step',
+          serviceIdentity: worker.identity,
+        }),
+      ]),
+    );
+  });
+
   it('lowers a provider-only function-native workflow into a durable task boundary', () => {
     interface AcquisitionImplementation {
       readonly kind: 'acquisition';
@@ -254,6 +280,7 @@ describe('v0.5 durable task and workflow contracts', () => {
 
   it('captures exact actor protocol calls as durable task dependencies', () => {
     const platform = app('actor-workflow');
+    const worker = platform.serviceIdentity('activity-digest-worker');
     const Activity = platform.actor('activity.v1', {
       key: type('string'),
       state: type({ count: 'number.integer >= 0' }),
@@ -271,6 +298,7 @@ describe('v0.5 durable task and workflow contracts', () => {
       'activity.digest.v1',
       { input: type({ id: 'string' }), output: type({ count: 'number.integer >= 0' }) },
       {
+        identity: worker,
         __generatedCalls: [Activity.snapshot, Activity.record.send, Activity.alarms.expire.schedule],
         __generatedBindings: {
           'Activity.snapshot': Activity.snapshot,
@@ -286,6 +314,7 @@ describe('v0.5 durable task and workflow contracts', () => {
       expect.objectContaining({
         kind: 'taskHandler',
         name: 'activity.digest.v1.step',
+        serviceIdentity: worker.identity,
         actors: [
           { alias: 'Activity.alarms.expire.schedule', actor: { nodeId: 'actor.activity.v1' }, member: 'expire', memberKind: 'alarm' },
           { alias: 'Activity.record.send', actor: { nodeId: 'actor.activity.v1' }, member: 'record', memberKind: 'message' },

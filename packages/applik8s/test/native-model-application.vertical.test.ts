@@ -12,7 +12,7 @@ import {
   bindApplicationProviderDependencies,
   bindApplicationProviderOperation,
 } from '@applik8s/applik8s/internal/provider-runtime';
-import { type ApplicationCommandNode, type JsonValue, serializeApplicationGraph, validateApplicationGraphStructure } from '@applik8s/core';
+import { type ApplicationCommandNode, type JsonSchemaSource, type JsonValue, serializeApplicationGraph, validateApplicationGraphStructure } from '@applik8s/core';
 import { eq, relations } from 'drizzle-orm';
 import { pgTable, text, uuid } from 'drizzle-orm/pg-core';
 import { describe, expect, expectTypeOf, test } from 'vitest';
@@ -356,6 +356,9 @@ describe('v0.6 app-scoped native model promotion', () => {
 
     const graph = applicationGraphFor(catalog.composition);
     expect(graph).toBeDefined();
+    if (!graph) throw new Error('Expected native application graph.');
+    expect(validateApplicationGraphStructure(graph)).toEqual([]);
+    const serialized = serializeApplicationGraph(graph);
     const card = graph?.nodes.find((node) => node.kind === 'model' && node.name === 'Card');
     expect(card).toMatchObject({
       stability: 'stable',
@@ -405,9 +408,6 @@ describe('v0.6 app-scoped native model promotion', () => {
       snapshotResume: 'resumableInvalidation',
       reads: [{ model: { nodeId: 'model.card' }, relationship: 'set' }],
     });
-    if (!graph) throw new Error('Expected native application graph.');
-    expect(validateApplicationGraphStructure(graph)).toEqual([]);
-    const serialized = serializeApplicationGraph(graph);
     expect(serialized).toContain('"native":{"artifact":{"database":"catalog","migrations":{"digest":"sha256:catalog","path":"./drizzle"},"name":"cards"}');
     expect(serialized).not.toContain('organizationId":{"kind"');
     expect(serialized).not.toContain('drizzle-arktype');
@@ -536,6 +536,60 @@ describe('v0.6 app-scoped native model promotion', () => {
         kind: 'query',
       },
       budgets: { timeoutMs: 2_000, maxRows: 100 },
+    });
+  });
+
+  test('preserves normalized JSON-schema types and graph contracts for model queries', () => {
+    interface QueryInput { readonly limit: number }
+    interface QueryOutput { readonly items: readonly { readonly id: string }[] }
+    const input: JsonSchemaSource<QueryInput> = {
+      kind: 'jsonSchema',
+      ref: { kind: 'jsonSchema', exportName: 'QueryInput' },
+      schema: {
+        type: 'object',
+        properties: { limit: { type: 'integer', minimum: 1 } },
+        required: ['limit'],
+        additionalProperties: false,
+      },
+    };
+    const output: JsonSchemaSource<QueryOutput> = {
+      kind: 'jsonSchema',
+      ref: { kind: 'jsonSchema', exportName: 'QueryOutput' },
+      schema: {
+        type: 'object',
+        properties: {
+          items: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: { id: { type: 'string' } },
+              required: ['id'],
+              additionalProperties: false,
+            },
+          },
+        },
+        required: ['items'],
+        additionalProperties: false,
+      },
+    };
+    const schema = catalogSchema();
+    const catalog = app('normalized-query-schema-fixture');
+    const Database = catalog.database.postgres('catalog', { schema });
+    const Card = catalog.model(schema.cards, { name: 'Card', database: Database });
+    const Cards = Card.query(
+      { input, output, database: Database, authorize: () => true },
+      async function cards(request) {
+        expectTypeOf(request.limit).toEqualTypeOf<number>();
+        return { items: [{ id: String(request.limit) }] };
+      },
+    );
+
+    expectTypeOf<Awaited<ReturnType<typeof Cards>>>().toEqualTypeOf<QueryOutput>();
+    expect(applicationGraphFor(catalog.composition)?.nodes.find(
+      (node) => node.kind === 'query' && node.publicId === 'Card.cards',
+    )).toMatchObject({
+      input: { jsonSchema: input.schema },
+      output: { jsonSchema: output.schema },
     });
   });
 

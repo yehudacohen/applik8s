@@ -9,11 +9,11 @@ import {
   AnalyticalDatabase,
   Analytics,
   ApplicationHost,
-  applicationValueDefault,
   type ApplicationIdentityInfrastructure,
   type ApplicationIdentityProvider,
   type ApplicationProviderBinding,
   type ApplicationTransactionalDatabaseProvider,
+  applicationValueDefault,
   Database,
   EventLog,
   IdentityProvider,
@@ -94,8 +94,8 @@ export interface AgenticExternalInference {
   readonly endpoint: string;
   readonly model: string;
   readonly credentialSecretName: string;
-  /** Envoy AI Gateway's versioned Secret contract requires this canonical key. */
-  readonly credentialKey?: 'apiKey';
+  /** Secret data key containing the provider credential; defaults to `apiKey`. */
+  readonly credentialKey?: string;
   /** Explicit local-test escape hatch; production external inference must use HTTPS. */
   readonly allowInsecureHttp?: boolean;
 }
@@ -700,7 +700,7 @@ export const AgenticDedicated = Object.freeze({
                 kind: 'Secret',
                 name: spec.credentialSecretName,
                 namespace: context.namespace,
-                key: 'apiKey',
+                key: spec.credentialKey ?? 'apiKey',
               },
               capabilities: ['chat', 'tools', 'streaming'],
             }),
@@ -880,7 +880,7 @@ export const AgenticExternal = Object.freeze({
                 kind: 'Secret',
                 name: spec.credentialSecretName,
                 namespace: context.namespace,
-                key: 'apiKey',
+                key: spec.credentialKey ?? 'apiKey',
               },
               capabilities: ['chat', 'tools', 'streaming'],
             }),

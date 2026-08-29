@@ -140,6 +140,7 @@ describe('maintained Agentic Start profiles', () => {
           endpoint: 'https://inference.example.test',
           model: 'frontier',
           credentialSecretName: 'inference-credentials',
+          credentialKey: 'openrouter-token',
         },
         context,
       ),
@@ -153,6 +154,7 @@ describe('maintained Agentic Start profiles', () => {
             credentials: {
               name: 'inference-credentials',
               namespace: 'research-system',
+              key: 'openrouter-token',
             },
           }],
         },

@@ -9,13 +9,17 @@ import {
   observeApplicationOperationAuthority,
 } from '@applik8s/client';
 import type {
-  ApplicationPrincipal,
   ApplicationKubernetesQueryAuthorityContract,
   ApplicationMessageContractSchema,
+  ApplicationPrincipal,
   ApplicationSerializedCallbackContract,
   JsonObject,
 } from '@applik8s/core';
-import { emitArkTypeStructuralJsonSchema } from '@applik8s/sdk';
+import {
+  emitArkTypeStructuralJsonSchema,
+  normalizeSchema,
+  type SchemaInput,
+} from '@applik8s/sdk';
 import type { Type } from 'arktype';
 import type { ApplicationDatabaseBinding } from './application.js';
 import { applicationActorDependencyBindings } from './application-actor-dependencies.js';
@@ -30,6 +34,23 @@ import type { ApplicationModelRelationshipContract, CommonApplicationModelFacet 
 import { getApplicationModelFacet } from './native-models.js';
 import type { ApplicationRelationalContext } from './relational-runtime.js';
 import type { ApplicationTrustedContext } from './trusted-context.js';
+
+/** Any schema accepted by the maintained runtime-schema boundary. */
+export type ApplicationQuerySchema<TValue> =
+  | Type<TValue>
+  | (TValue extends object ? SchemaInput<TValue> : never);
+
+/** Preserves the value carried by ArkType and normalized schema sources. */
+export type ApplicationQuerySchemaValue<TSchema> =
+  TSchema extends Type<infer TValue>
+    ? TValue
+    : TSchema extends { readonly inferredType?: infer TValue }
+      ? Exclude<TValue, undefined>
+      : TSchema extends SchemaInput<infer TValue>
+      ? TValue
+      : never;
+
+export type ApplicationQuerySchemaSource = Type | SchemaInput<object>;
 
 /** Canonical provider-neutral principal used by every query and transport. */
 export type ApplicationQueryPrincipal = ApplicationPrincipal;
@@ -172,8 +193,8 @@ export interface ApplicationKubernetesModelViewOptions<
   TOutput,
   TPrincipal extends ApplicationQueryPrincipal = ApplicationQueryPrincipal,
 > {
-  readonly input: Type<TInput>;
-  readonly output: Type<TOutput>;
+  readonly input: ApplicationQuerySchema<TInput>;
+  readonly output: ApplicationQuerySchema<TOutput>;
   readonly context?: readonly ApplicationTrustedContext<unknown>[];
   readonly reads?: readonly ApplicationQueryReadDependency[];
   readonly authorize: (request: ApplicationQueryAuthorizationRequest<TInput, TPrincipal>) => boolean | Promise<boolean>;
@@ -270,8 +291,8 @@ export interface ApplicationKubernetesModelViewContract<
   TOutput,
   TPrincipal extends ApplicationQueryPrincipal = ApplicationQueryPrincipal,
 > {
-  readonly input: Type<TInput>;
-  readonly output: Type<TOutput>;
+  readonly input: ApplicationQuerySchema<TInput>;
+  readonly output: ApplicationQuerySchema<TOutput>;
   readonly context?: readonly ApplicationTrustedContext<unknown>[];
   readonly reads?: readonly ApplicationQueryReadDependency[];
   readonly authorize: (
@@ -295,15 +316,15 @@ export interface ApplicationKubernetesModelViewContract<
  * framework generics.
  */
 export type ApplicationKubernetesModelViewSchemaContract<
-  TInputSchema extends Type,
+  TInputSchema extends ApplicationQuerySchemaSource,
   TObject,
-  TOutputSchema extends Type,
+  TOutputSchema extends ApplicationQuerySchemaSource,
   TPrincipal extends ApplicationQueryPrincipal = ApplicationQueryPrincipal,
 > = Omit<
   ApplicationKubernetesModelViewContract<
-    TInputSchema['infer'],
+    ApplicationQuerySchemaValue<TInputSchema>,
     TObject,
-    TOutputSchema['infer'],
+    ApplicationQuerySchemaValue<TOutputSchema>,
     TPrincipal
   >,
   'input' | 'output'
@@ -327,8 +348,8 @@ export interface ApplicationQueryOptions<
   TPrincipal extends ApplicationQueryPrincipal = ApplicationQueryPrincipal,
   TSource extends ApplicationQuerySourceBinding | undefined = undefined,
 > {
-  readonly input: Type<TInput>;
-  readonly output: Type<TOutput>;
+  readonly input: ApplicationQuerySchema<TInput>;
+  readonly output: ApplicationQuerySchema<TOutput>;
   readonly database?: ApplicationDatabaseBinding;
   readonly source?: TSource;
   readonly context?: readonly ApplicationTrustedContext<unknown>[];
@@ -398,12 +419,12 @@ export type ApplicationModelQueryContract<
  * from widening discriminants through the implementation callback.
  */
 export type ApplicationModelViewSchemaContract<
-  TInputSchema extends Type,
-  TOutputSchema extends Type,
+  TInputSchema extends ApplicationQuerySchemaSource,
+  TOutputSchema extends ApplicationQuerySchemaSource,
   TPrincipal extends ApplicationQueryPrincipal = ApplicationQueryPrincipal,
   TSource extends ApplicationQuerySourceBinding | undefined = undefined,
 > = Omit<
-  ApplicationModelViewContract<TInputSchema['infer'], TOutputSchema['infer'], TPrincipal, TSource>,
+  ApplicationModelViewContract<ApplicationQuerySchemaValue<TInputSchema>, ApplicationQuerySchemaValue<TOutputSchema>, TPrincipal, TSource>,
   'input' | 'output'
 > & {
   readonly input: TInputSchema;
@@ -411,8 +432,8 @@ export type ApplicationModelViewSchemaContract<
 };
 
 export type ApplicationModelQuerySchemaContract<
-  TInputSchema extends Type,
-  TOutputSchema extends Type,
+  TInputSchema extends ApplicationQuerySchemaSource,
+  TOutputSchema extends ApplicationQuerySchemaSource,
   TPrincipal extends ApplicationQueryPrincipal = ApplicationQueryPrincipal,
   TSource extends ApplicationQuerySourceBinding | undefined = undefined,
 > = ApplicationModelViewSchemaContract<TInputSchema, TOutputSchema, TPrincipal, TSource>;
@@ -455,8 +476,8 @@ export interface ApplicationQueryBinding<
   readonly id: string;
   readonly name: string;
   readonly version: string;
-  readonly input: Type<TInput>;
-  readonly output: Type<TOutput>;
+  readonly input: ApplicationQuerySchema<TInput> | SchemaInput<object>;
+  readonly output: ApplicationQuerySchema<TOutput> | SchemaInput<object>;
   readonly database?: ApplicationDatabaseBinding;
   readonly source?: TSource;
   /** Generated provider adapter; authoring bindings intentionally do not carry connections. */
@@ -1041,12 +1062,22 @@ function isRelationship(value: object): value is ApplicationModelRelationshipCon
   );
 }
 
-function querySchema<TValue>(schema: Type<TValue>): ApplicationMessageContractSchema {
-  return {
-    kind: 'declared',
-    runtime: 'arktype',
-    jsonSchema: emitArkTypeStructuralJsonSchema(schema),
-  };
+function querySchema<TValue>(schema: ApplicationQuerySchema<TValue>): ApplicationMessageContractSchema {
+  if (typeof schema === 'function') {
+    return {
+      kind: 'declared',
+      runtime: 'arktype',
+      jsonSchema: emitArkTypeStructuralJsonSchema(schema as Type<TValue>),
+    };
+  }
+  const emitted = normalizeSchema(
+    schema as SchemaInput<object>,
+    'application.query',
+  ).emitJsonSchema();
+  if (!emitted.ok) {
+    throw new Error(`applik8s-query-schema-unsupported: ${emitted.error.message}`);
+  }
+  return { kind: 'declared', runtime: 'arktype', jsonSchema: emitted.value.schema };
 }
 
 function parseVersionedQueryId(id: string): {

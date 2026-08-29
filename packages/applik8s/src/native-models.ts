@@ -64,6 +64,8 @@ import type {
   ApplicationModelViewOptions,
   ApplicationModelViewSchemaContract,
   ApplicationQueryPrincipal,
+  ApplicationQuerySchemaSource,
+  ApplicationQuerySchemaValue,
   ApplicationQuerySourceBinding,
 } from './application-queries.js';
 import type {
@@ -389,19 +391,19 @@ export interface DrizzleApplicationModelApi<TTable extends AnyPgTable, TIdentity
   >;
   readonly on: FunctionNativeApplicationModelLifecycleRegistrar<InferSelectModel<TTable>, TIdentity>;
   query<
-    TInputSchema extends Type,
-    TOutputSchema extends Type,
+    TInputSchema extends ApplicationQuerySchemaSource,
+    TOutputSchema extends ApplicationQuerySchemaSource,
     TPrincipal extends ApplicationQueryPrincipal = ApplicationQueryPrincipal,
     TSource extends ApplicationQuerySourceBinding | undefined = undefined,
   >(
     contract: ApplicationModelQuerySchemaContract<TInputSchema, TOutputSchema, TPrincipal, TSource>,
     implementation: ApplicationModelQueryImplementation<
-      TInputSchema['infer'],
-      TOutputSchema['infer'],
+      ApplicationQuerySchemaValue<TInputSchema>,
+      ApplicationQuerySchemaValue<TOutputSchema>,
       TPrincipal,
       TSource
     >,
-  ): ApplicationQueryOperation<TInputSchema['infer'], TOutputSchema['infer']>;
+  ): ApplicationQueryOperation<ApplicationQuerySchemaValue<TInputSchema>, ApplicationQuerySchemaValue<TOutputSchema>>;
   query<
     TInput,
     TOutput,
@@ -412,17 +414,17 @@ export interface DrizzleApplicationModelApi<TTable extends AnyPgTable, TIdentity
     implementation: ApplicationModelQueryImplementation<TInput, TOutput, TPrincipal, TSource>,
   ): ApplicationQueryOperation<TInput, TOutput>;
   view<
-    TInputSchema extends Type,
-    TOutputSchema extends Type,
+    TInputSchema extends ApplicationQuerySchemaSource,
+    TOutputSchema extends ApplicationQuerySchemaSource,
     TPrincipal extends ApplicationQueryPrincipal = ApplicationQueryPrincipal,
     TSource extends ApplicationQuerySourceBinding | undefined = undefined,
   >(
     contract: ApplicationModelViewSchemaContract<TInputSchema, TOutputSchema, TPrincipal, TSource>,
     implementation: (
-      input: TInputSchema['infer'],
+      input: ApplicationQuerySchemaValue<TInputSchema>,
       context: import('./application-queries.js').ApplicationModelViewContext<TPrincipal, TSource>,
     ) => unknown | Promise<unknown>,
-  ): ApplicationQueryOperation<TInputSchema['infer'], TOutputSchema['infer']>;
+  ): ApplicationQueryOperation<ApplicationQuerySchemaValue<TInputSchema>, ApplicationQuerySchemaValue<TOutputSchema>>;
   view<
     TInput,
     TOutput,
@@ -509,19 +511,19 @@ export interface DrizzleAnalyticalApplicationModelFacet<
   };
   readonly api: {
     query<
-      TInputSchema extends Type,
-      TOutputSchema extends Type,
+      TInputSchema extends ApplicationQuerySchemaSource,
+      TOutputSchema extends ApplicationQuerySchemaSource,
       TPrincipal extends ApplicationQueryPrincipal = ApplicationQueryPrincipal,
       TSource extends ApplicationQuerySourceBinding | undefined = undefined,
     >(
       contract: ApplicationModelQuerySchemaContract<TInputSchema, TOutputSchema, TPrincipal, TSource>,
       implementation: ApplicationModelQueryImplementation<
-        TInputSchema['infer'],
-        TOutputSchema['infer'],
+        ApplicationQuerySchemaValue<TInputSchema>,
+        ApplicationQuerySchemaValue<TOutputSchema>,
         TPrincipal,
         TSource
       >,
-    ): ApplicationQueryOperation<TInputSchema['infer'], TOutputSchema['infer']>;
+    ): ApplicationQueryOperation<ApplicationQuerySchemaValue<TInputSchema>, ApplicationQuerySchemaValue<TOutputSchema>>;
     query<
       TInput,
       TOutput,
@@ -572,19 +574,19 @@ type DrizzleAnalyticalModelDirectMembers<TTable extends AnyPgTable, TIdentity> =
     ...fields: TFields
   ): ApplicationSearchIndexBinding<ApplicationSearchDocument<TFields>>;
   query<
-    TInputSchema extends Type,
-    TOutputSchema extends Type,
+    TInputSchema extends ApplicationQuerySchemaSource,
+    TOutputSchema extends ApplicationQuerySchemaSource,
     TPrincipal extends ApplicationQueryPrincipal = ApplicationQueryPrincipal,
     TSource extends ApplicationQuerySourceBinding | undefined = undefined,
   >(
     contract: ApplicationModelQuerySchemaContract<TInputSchema, TOutputSchema, TPrincipal, TSource>,
     implementation: ApplicationModelQueryImplementation<
-      TInputSchema['infer'],
-      TOutputSchema['infer'],
+      ApplicationQuerySchemaValue<TInputSchema>,
+      ApplicationQuerySchemaValue<TOutputSchema>,
       TPrincipal,
       TSource
     >,
-  ): ApplicationQueryOperation<TInputSchema['infer'], TOutputSchema['infer']>;
+  ): ApplicationQueryOperation<ApplicationQuerySchemaValue<TInputSchema>, ApplicationQuerySchemaValue<TOutputSchema>>;
   query<
     TInput,
     TOutput,
@@ -939,8 +941,8 @@ export type PromotedKubernetesResource<
   readonly on: ResourceDefinition<TSpec, TStatus>['on'] &
     FunctionNativeApplicationKubernetesLifecycleRegistrar<TSpec, TStatus>;
   query<
-    TInputSchema extends Type,
-    TOutputSchema extends Type,
+    TInputSchema extends ApplicationQuerySchemaSource,
+    TOutputSchema extends ApplicationQuerySchemaSource,
     TPrincipal extends ApplicationQueryPrincipal = ApplicationQueryPrincipal,
   >(
     contract: ApplicationKubernetesModelViewSchemaContract<
@@ -950,11 +952,11 @@ export type PromotedKubernetesResource<
       TPrincipal
     >,
     implementation: ApplicationKubernetesModelViewImplementation<
-      TInputSchema['infer'],
+      ApplicationQuerySchemaValue<TInputSchema>,
       ResourceObject<TSpec, TStatus>,
-      TOutputSchema['infer']
+      ApplicationQuerySchemaValue<TOutputSchema>
     >,
-  ): ApplicationQueryOperation<TInputSchema['infer'], TOutputSchema['infer']>;
+  ): ApplicationQueryOperation<ApplicationQuerySchemaValue<TInputSchema>, ApplicationQuerySchemaValue<TOutputSchema>>;
   query<TInput, TOutput, TPrincipal extends ApplicationQueryPrincipal = ApplicationQueryPrincipal>(
     contract: ApplicationKubernetesModelViewContract<
       TInput,
@@ -972,8 +974,8 @@ export type PromotedKubernetesResource<
     options: ApplicationKubernetesModelViewOptions<TInput, ResourceObject<TSpec, TStatus>, TOutput, TPrincipal>,
   ): ApplicationQueryOperation<TInput, TOutput>;
   view<
-    TInputSchema extends Type,
-    TOutputSchema extends Type,
+    TInputSchema extends ApplicationQuerySchemaSource,
+    TOutputSchema extends ApplicationQuerySchemaSource,
     TPrincipal extends ApplicationQueryPrincipal = ApplicationQueryPrincipal,
   >(
     contract: ApplicationKubernetesModelViewSchemaContract<
@@ -983,11 +985,11 @@ export type PromotedKubernetesResource<
       TPrincipal
     >,
     implementation: ApplicationKubernetesModelViewImplementation<
-      TInputSchema['infer'],
+      ApplicationQuerySchemaValue<TInputSchema>,
       ResourceObject<TSpec, TStatus>,
-      TOutputSchema['infer']
+      ApplicationQuerySchemaValue<TOutputSchema>
     >,
-  ): ApplicationQueryOperation<TInputSchema['infer'], TOutputSchema['infer']>;
+  ): ApplicationQueryOperation<ApplicationQuerySchemaValue<TInputSchema>, ApplicationQuerySchemaValue<TOutputSchema>>;
   view<TInput, TOutput, TPrincipal extends ApplicationQueryPrincipal = ApplicationQueryPrincipal>(
     contract: ApplicationKubernetesModelViewContract<
       TInput,
