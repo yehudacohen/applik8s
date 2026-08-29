@@ -52,6 +52,7 @@ export function MobileMoreNavigation({
   readonly administration: readonly MobileNavigationItem[];
   readonly operations: readonly MobileNavigationItem[];
 }) {
+  const hydrated = useSyncExternalStore(subscribeHydration, hydratedSnapshot, serverHydrationSnapshot);
   const primaryPaths = ['/app', '/app/documents', '/app/inbox'];
   const moreIsCurrent = !primaryPaths.some(path =>
     path === '/app' ? pathname === path : pathname.startsWith(path),
@@ -61,6 +62,8 @@ export function MobileMoreNavigation({
       <SheetTrigger asChild>
         <button
           type="button"
+          disabled={!hydrated}
+          aria-busy={!hydrated}
           aria-current={moreIsCurrent ? 'page' : undefined}
           className={cn(
             'flex min-h-12 min-w-0 flex-col items-center justify-center gap-0.5 rounded-xl px-1 py-2 text-[.68rem] font-medium leading-none text-stone-600 transition hover:bg-stone-100 hover:text-stone-950 dark:text-stone-300 dark:hover:bg-stone-800 dark:hover:text-stone-50',
@@ -85,6 +88,18 @@ export function MobileMoreNavigation({
       </SheetContent>
     </Sheet>
   );
+}
+
+function subscribeHydration(): () => void {
+  return () => undefined;
+}
+
+function hydratedSnapshot(): true {
+  return true;
+}
+
+function serverHydrationSnapshot(): false {
+  return false;
 }
 
 function MobileNavigationGroup({ label, items }: { readonly label: string; readonly items: readonly MobileNavigationItem[] }) {

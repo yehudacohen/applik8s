@@ -273,6 +273,10 @@ test(
 test(
   agenticProductEvidenceJourneys.historicalLakehouse.test,
   async ({ page }) => {
+    test.skip(
+      process.env.APPLIK8S_E2E_LAKEHOUSE_QUALIFIED !== '1',
+      'Historical browser publication is qualified only when this target selects an individually qualified lakehouse provider.',
+    );
     const suffix = Date.now().toString(36);
     const workspaceName = `Historical usage ${suffix}`;
     await page.goto('/app/workspaces');

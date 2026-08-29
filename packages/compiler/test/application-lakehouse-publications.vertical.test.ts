@@ -2,6 +2,7 @@
 import { mkdtemp, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import type { ApplicationGraph } from '@applik8s/core';
 import { describe, expect, it } from 'vitest';
 import { emitGeneratedApplicationLakehousePublishers } from '../src/application-lakehouse-publishers/index.js';
 import { discoverApplicationGraphWithExports } from '../src/pipeline/index.js';
@@ -9,6 +10,45 @@ import { discoverApplicationGraphWithExports } from '../src/pipeline/index.js';
 const lakehouseEntrypoint = new URL('./fixtures/v08-lakehouse-app.ts', import.meta.url).pathname;
 
 describe('v0.8 lakehouse publication discovery', () => {
+  it('omits a Kubernetes publisher when the target explicitly requires an external qualified provider', async () => {
+    const discovered = await discoverApplicationGraphWithExports(
+      lakehouseEntrypoint,
+      'lakehouseProof',
+    );
+    expect(discovered.ok, discovered.ok ? undefined : discovered.error.message).toBe(true);
+    if (!discovered.ok) return;
+    const graph: ApplicationGraph = {
+      ...discovered.value.graph,
+      nodes: discovered.value.graph.nodes.map((node) => node.kind === 'provider' && node.id === 'provider.lakehouse-dataset.v1alpha1.historical-usage'
+        ? {
+            ...node,
+            config: {
+              ...node.config,
+              targetSelection: {
+                ...node.config?.targetSelection as object,
+                targets: {
+                  ...(node.config?.targetSelection as { readonly targets?: object } | undefined)?.targets,
+                  kubernetes: {
+                    implementation: 'qualified-lakehouse-provider-required',
+                    configuration: {
+                      kind: 'qualified-lakehouse-provider-required',
+                      reason: 'Kubernetes requires an individually qualified provider.',
+                    },
+                  },
+                },
+              },
+            },
+          }
+        : node),
+    };
+    await expect(emitGeneratedApplicationLakehousePublishers({
+      entrypoint: lakehouseEntrypoint,
+      graph,
+      outDir: await mkdtemp(join(tmpdir(), 'applik8s-lakehouse-unconfigured-')),
+      executionTarget: 'kubernetes',
+    })).resolves.toEqual([]);
+  }, 60_000);
+
   it('lowers exported publications into one provider-bound execution graph', async () => {
     const discovered = await discoverApplicationGraphWithExports(
       new URL('./fixtures/v08-lakehouse-app.ts', import.meta.url).pathname,

@@ -409,8 +409,18 @@ export interface ApplicationAthenaLakehouseQueryProvider {
   readonly maximumScannedBytes?: number;
 }
 
-export type ApplicationLakehouseDatasetProvider = ApplicationDuckDbLakehouseDatasetProvider | ApplicationS3LakehouseDatasetProvider;
-export type ApplicationLakehouseQueryProvider = ApplicationDuckDbLakehouseQueryProvider | ApplicationAthenaLakehouseQueryProvider;
+/**
+ * Explicit target disposition used when a beta lakehouse capability requires
+ * an independently qualified external provider. It keeps the semantic graph
+ * portable without fabricating a runtime implementation for that target.
+ */
+export interface ApplicationQualifiedLakehouseProviderRequired {
+  readonly kind: 'qualified-lakehouse-provider-required';
+  readonly reason: string;
+}
+
+export type ApplicationLakehouseDatasetProvider = ApplicationDuckDbLakehouseDatasetProvider | ApplicationS3LakehouseDatasetProvider | ApplicationQualifiedLakehouseProviderRequired;
+export type ApplicationLakehouseQueryProvider = ApplicationDuckDbLakehouseQueryProvider | ApplicationAthenaLakehouseQueryProvider | ApplicationQualifiedLakehouseProviderRequired;
 
 export interface ApplicationClickHouseAnalyticalDatabaseProvider {
   readonly kind: 'clickhouse';
@@ -1434,6 +1444,7 @@ export interface ApplicationLakehouseConstructors {
   s3Dataset(options: Omit<ApplicationS3LakehouseDatasetProvider, 'kind'>): ApplicationS3LakehouseDatasetProvider;
   duckdbQueries(options?: Omit<ApplicationDuckDbLakehouseQueryProvider, 'kind'>): ApplicationDuckDbLakehouseQueryProvider;
   athenaQueries(options: Omit<ApplicationAthenaLakehouseQueryProvider, 'kind'>): ApplicationAthenaLakehouseQueryProvider;
+  qualifiedProviderRequired(options: Omit<ApplicationQualifiedLakehouseProviderRequired, 'kind'>): ApplicationQualifiedLakehouseProviderRequired;
 }
 
 export interface ApplicationAnalyticalDatabaseProviderToken extends ApplicationQualifiableProviderToken<ApplicationAnalyticalDatabaseProvider> {
@@ -2056,6 +2067,10 @@ export const Lakehouse: ApplicationLakehouseConstructors = Object.freeze({
   },
   duckdbQueries(options = {}) { return { kind: 'duckdb-queries' as const, ...options }; },
   athenaQueries(options: Omit<ApplicationAthenaLakehouseQueryProvider, 'kind'>) { return { kind: 'athena-queries' as const, ...options }; },
+  qualifiedProviderRequired(options: Omit<ApplicationQualifiedLakehouseProviderRequired, 'kind'>) {
+    if (!options.reason.trim()) throw new Error('Lakehouse.qualifiedProviderRequired(...) requires an actionable reason.');
+    return { kind: 'qualified-lakehouse-provider-required' as const, ...options };
+  },
 });
 
 function assertLakehouseDatasetOptions(options: {
@@ -2627,6 +2642,9 @@ export function isApplicationLakehouseDatasetProvider(value: unknown): value is 
   if (!value || typeof value !== 'object') return false;
   const kind = Reflect.get(value, 'kind');
   return kind === 'duckdb-dataset'
+    || (kind === 'qualified-lakehouse-provider-required'
+      && typeof Reflect.get(value, 'reason') === 'string'
+      && String(Reflect.get(value, 'reason')).trim().length > 0)
     || (kind === 's3-dataset'
       && ['bucket', 'region', 'catalog'].every((field) => typeof Reflect.get(value, field) === 'string' && String(Reflect.get(value, field)).trim()));
 }
@@ -2635,6 +2653,9 @@ export function isApplicationLakehouseQueryProvider(value: unknown): value is Ap
   if (!value || typeof value !== 'object') return false;
   const kind = Reflect.get(value, 'kind');
   return kind === 'duckdb-queries'
+    || (kind === 'qualified-lakehouse-provider-required'
+      && typeof Reflect.get(value, 'reason') === 'string'
+      && String(Reflect.get(value, 'reason')).trim().length > 0)
     || (kind === 'athena-queries'
       && ['workgroup', 'region', 'resultLocation'].every((field) => typeof Reflect.get(value, field) === 'string' && String(Reflect.get(value, field)).trim()));
 }

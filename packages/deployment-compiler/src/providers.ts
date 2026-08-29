@@ -87,8 +87,10 @@ const builtinProviderRegistrations: readonly BuiltinProviderRegistration[] = [
   { interface: "Observability", implementation: "otlp", execution: "runtime-only" },
   { interface: "LakehouseDataset", implementation: "duckdb-dataset", execution: "runtime-only" },
   { interface: "LakehouseDataset", implementation: "s3-dataset", execution: "external-controller" },
+  { interface: "LakehouseDataset", implementation: "qualified-lakehouse-provider-required", execution: "runtime-only" },
   { interface: "LakehouseQuery", implementation: "duckdb-queries", execution: "runtime-only" },
   { interface: "LakehouseQuery", implementation: "athena-queries", execution: "external-controller" },
+  { interface: "LakehouseQuery", implementation: "qualified-lakehouse-provider-required", execution: "runtime-only" },
 ];
 
 /**

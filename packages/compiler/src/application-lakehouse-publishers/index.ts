@@ -90,6 +90,12 @@ export async function emitGeneratedApplicationLakehousePublishers(options: {
     if (!eventLog) throw new Error(`Lakehouse publication ${publication.id} has no executable EventLog binding.`);
     const boundPublication = { ...publication, eventLog };
     const contract = publisherContract(options.graph, boundPublication, !streams.has(eventLog.nodeId));
+    const executionTarget = options.executionTarget ?? 'kubernetes';
+    if (!contract.datasets.some(({ targets }) =>
+      !targets || targets.includes(executionTarget)
+        || (executionTarget === 'aws-local' && targets.includes('aws')))) {
+      continue;
+    }
     streams.add(eventLog.nodeId);
     artifacts.push(await emitPublisher(
       contract,
@@ -309,14 +315,15 @@ function publisherContract(
   const eventConfig = targetConfiguration(eventLog, 'kubernetes') ?? objectConfig(eventLog.config);
   const qualification = stringValue(objectConfig(dataset.config?.qualification).name);
   if (!qualification) throw new Error(`Lakehouse publication ${publication.id} references an unqualified dataset provider.`);
-  const datasets = targetConfigurations(dataset).map(({ configuration, targets }) => {
+  const datasets: DatasetConfiguration[] = targetConfigurations(dataset).flatMap(({ configuration, targets }) => {
     const kind = stringValue(configuration.kind);
+    if (kind === 'qualified-lakehouse-provider-required') return [];
     if (kind !== 'duckdb-dataset' && kind !== 's3-dataset') throw new Error(`Lakehouse publisher ${publication.id} cannot run dataset implementation ${kind || '<unknown>'}.`);
     const cursorSecretEnvironment = stringValue(configuration.cursorSecretEnvironment) || 'APPLIK8S_CURSOR_SECRET';
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/u.test(cursorSecretEnvironment)) throw new Error(`Lakehouse publisher ${publication.id} has invalid cursor Secret environment ${cursorSecretEnvironment}.`);
     const maximumObjectsPerSnapshot = positiveInteger(configuration.maximumObjectsPerSnapshot);
     const retainedSnapshots = positiveInteger(configuration.retainedSnapshots);
-    return {
+    return [{
       kind,
       ...(targets ? { targets } : {}),
       root: stringValue(configuration.root) || `.applik8s/state/lakehouse/${qualification}`,
@@ -325,7 +332,7 @@ function publisherContract(
       schemaRevision: stringValue(configuration.schemaRevision) || 'v1', cursorSecretEnvironment,
       ...(maximumObjectsPerSnapshot ? { maximumObjectsPerSnapshot } : {}),
       ...(retainedSnapshots ? { retainedSnapshots } : {}),
-    } satisfies DatasetConfiguration;
+    } satisfies DatasetConfiguration];
   });
   const namespace = applicationGraphStringValue(eventConfig.namespace) || applicationGraphStringValue(graph.metadata.namespace) || undefined;
   const serviceName = applicationGraphStringValue(eventConfig.name) || 'applik8s-events';

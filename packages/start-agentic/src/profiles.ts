@@ -948,8 +948,10 @@ export function configureAgenticProfiles<
 
   // Runtime topology is selected by the deployment target, independently of
   // product profile. Feature source consumes only the qualified capabilities.
-  // Kubernetes deliberately uses an externally qualified S3/Athena path until
-  // a Kubernetes-native lakehouse provider passes the same beta contract.
+  // Kubernetes deliberately has no implicit lakehouse branch. The v0.8 target
+  // contract requires an individually qualified external engine; selecting an
+  // AWS-shaped provider without endpoint and credential authority would only
+  // defer an unsupported topology into runtime failures.
   const observability = application
     .provide(ApplicationObservability)
     .local(() => Observability.local())
@@ -986,12 +988,8 @@ export function configureAgenticProfiles<
       catalog: historyCatalog,
       schemaRevision: 'v1',
     }))
-    .kubernetes(() => Lakehouse.s3Dataset({
-      bucket: historyBucket,
-      prefix: 'lakehouse/historical-usage',
-      region: 'us-east-1',
-      catalog: historyCatalog,
-      schemaRevision: 'v1',
+    .kubernetes(() => Lakehouse.qualifiedProviderRequired({
+      reason: 'Kubernetes historical usage requires an individually qualified external lakehouse provider.',
     }));
 
   application
@@ -1010,10 +1008,8 @@ export function configureAgenticProfiles<
       region: 'us-east-1',
       resultLocation: `s3://${historyBucket}/queries/`,
     }))
-    .kubernetes(() => Lakehouse.athenaQueries({
-      workgroup: `${applicationName}-history`,
-      region: 'us-east-1',
-      resultLocation: `s3://${historyBucket}/queries/`,
+    .kubernetes(() => Lakehouse.qualifiedProviderRequired({
+      reason: 'Kubernetes historical queries require an individually qualified external lakehouse provider.',
     }));
 
   deployment

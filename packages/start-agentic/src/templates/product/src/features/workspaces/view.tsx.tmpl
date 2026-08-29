@@ -143,6 +143,8 @@ export function WorkspaceDashboardView(
               <p><strong className="text-stone-950">{history.data.rows.length}</strong> recent usage facts</p>
               <p className="mt-1">{history.data.scannedBytes.toLocaleString()} bytes scanned · schema {history.data.schemaRevision}</p>
             </div>
+          ) : history.error ? (
+            <p className="mt-3 text-sm text-stone-600">This installation has no qualified historical-query provider. Product work remains available without pretending the retained dataset is configured.</p>
           ) : <p className="mt-3 text-sm text-stone-600">No published usage snapshot is visible yet.</p>}
         </Card>
       </div>

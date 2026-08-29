@@ -69,6 +69,18 @@ function lakehouseAdmission(
 
 describe('v0.8 published lakehouse snapshots', () => {
   type UsageRow = { organizationId: string; occurredAt: string; quantity: number };
+  it('represents a qualified-provider-required target without fabricating a runtime', () => {
+    expect(Lakehouse.qualifiedProviderRequired({
+      reason: 'Kubernetes requires an independently qualified lakehouse provider.',
+    })).toEqual({
+      kind: 'qualified-lakehouse-provider-required',
+      reason: 'Kubernetes requires an independently qualified lakehouse provider.',
+    });
+    expect(() => Lakehouse.qualifiedProviderRequired({ reason: '  ' })).toThrow(
+      'requires an actionable reason',
+    );
+  });
+
   it('keeps Release-A lakehouse cursors readable by v0.7 while accepting Signed Envelope v1', async () => {
     const now = Date.parse('2026-08-19T12:00:00.000Z');
     const expiresAt = now + 15 * 60_000;

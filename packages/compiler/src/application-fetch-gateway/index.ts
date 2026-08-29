@@ -2929,6 +2929,7 @@ function applicationLakehouseDatasets(
 			for (const selected of configurations) {
 			const configuration = selected.configuration;
 			const kind = stringConfig(configuration.kind);
+			if (kind === "qualified-lakehouse-provider-required") continue;
 			if (kind !== "duckdb-dataset" && kind !== "s3-dataset") throw new Error(`Generated Fetch gateway cannot materialize LakehouseDataset ${qualification} from provider ${kind || "<unknown>"}.`);
 		const cursorSecretEnvironment =
 			stringConfig(configuration.cursorSecretEnvironment) ||
@@ -3002,7 +3003,8 @@ function applicationLakehouseQueries(graph: ApplicationGraph): readonly {
 		if (provider.kind !== "provider" || provider.interface !== "LakehouseQuery") return [];
 		const qualification = stringConfig(objectConfig(provider.config?.qualification).name);
 		if (!qualification) return [];
-			return applicationProviderRuntimeConfigurations(provider, "lakehouseQuery").map(({ configuration: query, targets }) => {
+			return applicationProviderRuntimeConfigurations(provider, "lakehouseQuery").flatMap(({ configuration: query, targets }) => {
+			if (stringConfig(query.kind) === "qualified-lakehouse-provider-required") return [];
 			const maximum = typeof query.maximumConcurrentQueries === "number" && Number.isSafeInteger(query.maximumConcurrentQueries) && query.maximumConcurrentQueries > 0
 			? query.maximumConcurrentQueries
 			: 4;
@@ -3012,7 +3014,7 @@ function applicationLakehouseQueries(graph: ApplicationGraph): readonly {
 			const maximumScannedBytes = typeof query.maximumScannedBytes === "number" && Number.isSafeInteger(query.maximumScannedBytes) && query.maximumScannedBytes > 0
 				? query.maximumScannedBytes
 				: undefined;
-			return {
+			return [{
 			qualification,
 			kind: stringConfig(query.kind),
 			...(stringConfig(query.workgroup) ? { workgroup: stringConfig(query.workgroup) } : {}),
@@ -3022,7 +3024,7 @@ function applicationLakehouseQueries(graph: ApplicationGraph): readonly {
 				...(maximumRows ? { maximumRows } : {}),
 				...(maximumScannedBytes ? { maximumScannedBytes } : {}),
 				...(targets ? { targets } : {}),
-			};
+			}];
 			});
 		}).sort((left, right) => left.qualification.localeCompare(right.qualification));
 }
