@@ -15,6 +15,11 @@ import {
 	addApplicationProviderBinding,
 	addApplicationProviderRequirement,
 } from "./application-graph-state.js";
+import {
+	applicationObjectStorageRuntime,
+	installApplicationObjectStorageRuntimeResolver,
+	setApplicationObjectStorageRuntimeFactory,
+} from "./application-object-storage-runtime-resolver.js";
 import type {
 	ApplicationObjectStorageProvider,
 	ApplicationProviderBinding,
@@ -23,11 +28,6 @@ import type {
 import {
 	applicationObjectStorageImplementation,
 } from "./application-providers.js";
-import {
-	applicationObjectStorageRuntime,
-	installApplicationObjectStorageRuntimeResolver,
-	setApplicationObjectStorageRuntimeFactory,
-} from "./application-object-storage-runtime-resolver.js";
 import { applicationTypeKroGraphValue } from "./application-typekro-values.js";
 
 export interface ApplicationObjectStoreOptions {
@@ -179,6 +179,104 @@ export interface ApplicationObjectStoreBinding {
 	}): Promise<ApplicationSignedObjectIntent>;
 }
 
+export type ApplicationObjectStoreRuntimeContract = Pick<
+	ApplicationObjectStoreNode,
+	'name' | 'objectMode' | 'maxObjectBytes' | 'contentTypes' | 'browserAccess' | 'deletion'
+>;
+
+export type ApplicationObjectStoreRuntimeHandle = Pick<
+	ApplicationObjectStoreBinding,
+	'put' | 'get' | 'head' | 'delete' | 'signUpload' | 'signDownload'
+>;
+
+/**
+ * Rehydrates the bounded authored object-store surface inside generated
+ * workers. Provider credentials remain behind the execution-scoped resolver;
+ * the serialized graph contributes only the logical store policy.
+ */
+export function createApplicationObjectStoreRuntimeHandle(
+	contract: ApplicationObjectStoreRuntimeContract,
+): ApplicationObjectStoreRuntimeHandle {
+	return applicationObjectStoreRuntimeHandle(contract);
+}
+
+function applicationObjectStoreRuntimeHandle(
+	contract: ApplicationObjectStoreRuntimeContract,
+): ApplicationObjectStoreRuntimeHandle {
+	const identity = Object.freeze({
+		kind: 'applicationObjectStore' as const,
+		name: contract.name,
+	});
+	const runtime = () => applicationObjectStorageRuntime(identity);
+	const assertKey = (key: string) => {
+		if (!key || key.startsWith('/') || key.includes('..') || key.length > 1_024) {
+			throw new Error(`Application object store ${contract.name} received an unsafe object key.`);
+		}
+	};
+	const assertContentType = (contentType: string) => {
+		const normalized = contentType.trim().toLowerCase();
+		if (!contract.contentTypes.includes(normalized)) {
+			throw new Error(`Application object store ${contract.name} does not allow ${contentType}.`);
+		}
+		return normalized;
+	};
+	return Object.freeze({
+		async put(request) {
+			assertKey(request.key);
+			const contentType = assertContentType(request.contentType);
+			const size = typeof request.body === 'string'
+				? new TextEncoder().encode(request.body).byteLength
+				: request.body.byteLength;
+			if (size > contract.maxObjectBytes) {
+				throw new Error(`Application object store ${contract.name} object ${request.key} exceeds the ${contract.maxObjectBytes}-byte limit.`);
+			}
+			return runtime().put({
+				...request,
+				contentType,
+				...(contract.objectMode === 'immutable' ? { ifAbsent: true } : {}),
+			});
+		},
+		async get(key) {
+			assertKey(key);
+			return runtime().get(key);
+		},
+		async head(key) {
+			assertKey(key);
+			return runtime().head(key);
+		},
+		async delete(key, options) {
+			assertKey(key);
+			return runtime().delete(key, options);
+		},
+		async signUpload(request) {
+			assertKey(request.key);
+			const contentType = assertContentType(request.contentType);
+			if (contract.browserAccess.upload !== 'signed') {
+				throw new Error(`Application object store ${contract.name} does not allow signed browser uploads.`);
+			}
+			if (!Number.isSafeInteger(request.size) || request.size < 1 || request.size > contract.maxObjectBytes) {
+				throw new Error(`Application object store ${contract.name} upload size must be between 1 and ${contract.maxObjectBytes} bytes.`);
+			}
+			return runtime().signUpload({
+				...request,
+				contentType,
+				sha256: normalizeSha256(request.sha256, `Application object store ${contract.name} upload`),
+				ttlSeconds: contract.browserAccess.ttlSeconds,
+			});
+		},
+		async signDownload(request) {
+			assertKey(request.key);
+			if (contract.browserAccess.download !== 'signed') {
+				throw new Error(`Application object store ${contract.name} does not allow signed browser downloads.`);
+			}
+			return runtime().signDownload({
+				key: request.key,
+				ttlSeconds: contract.browserAccess.ttlSeconds,
+			});
+		},
+	});
+}
+
 export {
 	installApplicationObjectStorageRuntimeResolver,
 	setApplicationObjectStorageRuntimeFactory,
@@ -305,25 +403,7 @@ export function registerApplicationObjectStore(
 		metadataLinks: [],
 	});
 
-	let binding: ApplicationObjectStoreBinding;
-	const runtime = () => {
-		return applicationObjectStorageRuntime(binding);
-	};
-	const assertKey = (key: string) => {
-		if (!key || key.startsWith("/") || key.includes("..") || key.length > 1_024)
-			throw new Error(
-				`Application object store ${name} received an unsafe object key.`,
-			);
-	};
-	const assertContentType = (contentType: string) => {
-		const normalized = contentType.trim().toLowerCase();
-		if (!contentTypes.includes(normalized))
-			throw new Error(
-				`Application object store ${name} does not allow content type ${JSON.stringify(contentType)}.`,
-			);
-		return normalized;
-	};
-	binding = {
+	const binding: ApplicationObjectStoreBinding = {
 		kind: "applicationObjectStore",
 		name,
 		provider,
@@ -358,73 +438,7 @@ export function registerApplicationObjectStore(
 			operation: "custom",
 			transport: "runtime",
 		}),
-		async put(request) {
-			assertKey(request.key);
-			const contentType = assertContentType(request.contentType);
-			const bytes =
-				typeof request.body === "string"
-					? new TextEncoder().encode(request.body).byteLength
-					: request.body.byteLength;
-			if (bytes > options.maxObjectBytes)
-				throw new Error(
-					`Application object store ${name} object ${request.key} exceeds the ${options.maxObjectBytes}-byte limit.`,
-				);
-			return runtime().put({
-				...request,
-				contentType,
-				...(node.objectMode === "immutable" ? { ifAbsent: true } : {}),
-			});
-		},
-		async get(key) {
-			assertKey(key);
-			return runtime().get(key);
-		},
-		async head(key) {
-			assertKey(key);
-			return runtime().head(key);
-		},
-		async delete(key, deleteOptions) {
-			assertKey(key);
-			return runtime().delete(key, deleteOptions);
-		},
-		async signUpload(request) {
-			assertKey(request.key);
-			const contentType = assertContentType(request.contentType);
-			if (browser.upload !== "signed")
-				throw new Error(
-					`Application object store ${name} does not allow signed browser uploads.`,
-				);
-			if (
-				!Number.isSafeInteger(request.size) ||
-				request.size < 1 ||
-				request.size > options.maxObjectBytes
-			)
-				throw new Error(
-					`Application object store ${name} upload size must be between 1 and ${options.maxObjectBytes} bytes.`,
-				);
-			const sha256 = normalizeSha256(
-				request.sha256,
-				`Application object store ${name} upload`,
-			);
-			return runtime().signUpload({
-				key: request.key,
-				contentType,
-				size: request.size,
-				sha256,
-				ttlSeconds: browser.ttlSeconds,
-			});
-		},
-		async signDownload(request) {
-			assertKey(request.key);
-			if (browser.download !== "signed")
-				throw new Error(
-					`Application object store ${name} does not allow signed browser downloads.`,
-				);
-			return runtime().signDownload({
-				key: request.key,
-				ttlSeconds: browser.ttlSeconds,
-			});
-		},
+		...applicationObjectStoreRuntimeHandle(node),
 	};
 	return binding;
 }

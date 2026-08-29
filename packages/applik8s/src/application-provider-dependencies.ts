@@ -294,6 +294,7 @@ export interface ApplicationCallableProviderDependency {
   readonly identifier: string;
   readonly provider: ApplicationProviderRef;
   readonly placement?: 'objectStore' | 'providerDependency';
+  readonly objectStore?: { readonly nodeId: string };
   readonly operation?: ApplicationProviderOperationMetadata;
 }
 
@@ -319,6 +320,7 @@ export function applicationCallableProviderDependencies(
           nodeId: applicationProviderGraphNodeId('ObjectStorage'),
         },
         placement: 'objectStore',
+        objectStore: { nodeId: `objectStore.${callable.name}` },
       });
     }
     const dependencies = [
@@ -369,11 +371,12 @@ export function applicationCallableProviderDependencies(
 
 function isApplicationObjectStoreBinding(
   value: unknown,
-): value is { readonly kind: 'applicationObjectStore' } {
+): value is { readonly kind: 'applicationObjectStore'; readonly name: string } {
   return Boolean(
     value
       && typeof value === 'object'
-      && Reflect.get(value, 'kind') === 'applicationObjectStore',
+      && Reflect.get(value, 'kind') === 'applicationObjectStore'
+      && typeof (value as { readonly name?: unknown }).name === 'string',
   );
 }
 

@@ -5,6 +5,7 @@ import {
 	ObjectStorage,
 	setApplicationObjectStorageRuntimeFactory,
 } from "@applik8s/applik8s";
+import { createApplicationObjectStoreRuntimeHandle } from "@applik8s/applik8s/workflow-runtime-resolvers";
 import { afterEach, describe, expect, it } from "vitest";
 import { applicationCallableProviderDependencies } from "../src/application-provider-dependencies.js";
 
@@ -101,7 +102,64 @@ describe("provider-neutral application object stores", () => {
 				nodeId: "provider.object-storage",
 			},
 			placement: "objectStore",
+			objectStore: { nodeId: "objectStore.artifacts" },
 		}]);
+	});
+
+	it("rehydrates a bounded handler-safe store handle from the graph contract", async () => {
+		const requests: unknown[] = [];
+		const uninstall = installApplicationObjectStorageRuntimeResolver((identity) =>
+			identity.name === "artifacts"
+				? {
+					async put(request) {
+						requests.push(request);
+						return {
+							store: identity.name,
+							key: request.key,
+							size: 5,
+							contentType: request.contentType,
+							sha256: "sha256:test",
+						};
+					},
+					async get() { return new Uint8Array(); },
+					async head() { return undefined; },
+					async delete() {},
+					async signUpload() { throw new Error("unused"); },
+					async signDownload() { throw new Error("unused"); },
+				}
+				: undefined,
+		);
+		try {
+			const handle = createApplicationObjectStoreRuntimeHandle({
+				name: "artifacts",
+				objectMode: "immutable",
+				maxObjectBytes: 16,
+				contentTypes: ["text/plain"],
+				browserAccess: {
+					upload: "none",
+					download: "none",
+					downloadAccess: "owner",
+					ttlSeconds: 300,
+				},
+				deletion: "explicit",
+			});
+			await expect(handle.put({
+				key: "documents/one.txt",
+				body: "hello",
+				contentType: "text/plain",
+			})).resolves.toMatchObject({ store: "artifacts" });
+			expect(requests).toEqual([expect.objectContaining({
+				key: "documents/one.txt",
+				ifAbsent: true,
+			})]);
+			await expect(handle.put({
+				key: "../escape",
+				body: "hello",
+				contentType: "text/plain",
+			})).rejects.toThrow("unsafe object key");
+		} finally {
+			uninstall();
+		}
 	});
 
 	it("records a bounded S3-compatible logical store and hydrates runtime I/O without exposing credentials", async () => {

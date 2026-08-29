@@ -644,6 +644,28 @@ describe('generated v0.6 reactive workloads', () => {
         },
       },
       {
+        id: 'objectStore.artifacts',
+        kind: 'objectStore',
+        name: 'artifacts',
+        stability: 'stable',
+        provider: {
+          interface: 'ObjectStorage',
+          nodeId: 'provider.object-storage',
+        },
+        objectMode: 'immutable',
+        maxObjectBytes: 1_000,
+        contentTypes: ['text/plain'],
+        browserAccess: {
+          upload: 'none',
+          download: 'none',
+          downloadAccess: 'owner',
+          ttlSeconds: 300,
+        },
+        integrity: 'sha256',
+        credentials: 'server-only',
+        deletion: 'explicit',
+      },
+      {
         id: 'stream.documents.published.v1',
         kind: 'stream',
         name: 'documents.published',
@@ -679,6 +701,8 @@ describe('generated v0.6 reactive workloads', () => {
             interface: 'ObjectStorage',
             nodeId: 'provider.object-storage',
           },
+          placement: 'objectStore',
+          objectStore: { nodeId: 'objectStore.artifacts' },
         }],
         delivery: 'at-least-once',
         invocation: 'event',
@@ -718,6 +742,7 @@ describe('generated v0.6 reactive workloads', () => {
 
     expect(generated).toContain('installApplicationObjectStorageRuntimeResolver');
     expect(generated).toContain('createS3ApplicationObjectStorageRuntime');
+    expect(generated).toContain('"ArtifactObjects": createApplicationObjectStoreRuntimeHandle({"name":"artifacts"');
     expect(generated).toContain('objectStorageRuntimes.get(binding.name)');
     expect(resources).toContain('APPLIK8S_OBJECT_STORAGE_BUCKET');
     expect(resources).toContain('catalog-objects');

@@ -2,16 +2,23 @@
  * Focused handler-safe exports used by generated durable workers. Keeping this
  * module narrow avoids importing the application authoring surface at runtime.
  */
+
 export {
-  installApplicationWorkflowRuntimeResolver,
-  type ApplicationWorkflowRuntime,
-} from './workflow-runtime.js';
+  type ApplicationObjectStoreRuntimeContract,
+  type ApplicationObjectStoreRuntimeHandle,
+  createApplicationObjectStoreRuntimeHandle,
+} from './application-object-storage.js';
 export {
-  installApplicationObjectStorageRuntimeResolver,
+  type ApplicationObjectStorageRuntimeIdentity,
   type ApplicationObjectStorageRuntimeResolver,
+  installApplicationObjectStorageRuntimeResolver,
 } from './application-object-storage-runtime-resolver.js';
 export {
-  installApplicationProjectionRuntimeResolver,
   type ApplicationProjectionRuntime,
   type ApplicationProjectionRuntimeResolver,
+  installApplicationProjectionRuntimeResolver,
 } from './application-projection-binding.js';
+export {
+  type ApplicationWorkflowRuntime,
+  installApplicationWorkflowRuntimeResolver,
+} from './workflow-runtime.js';

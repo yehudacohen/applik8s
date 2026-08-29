@@ -4,7 +4,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { gzipSync } from 'node:zlib';
-import type { ApplicationAIAgentNode, ApplicationCallableProviderBinding, ApplicationCallableProviderRuntimeOperation, ApplicationCommandHandlerNode, ApplicationCommandNode, ApplicationGatewayNode, ApplicationGraph, ApplicationHandlerDependencies, ApplicationIdentityReference, ApplicationIndexNode, ApplicationModelNode, ApplicationOperationCatalog, ApplicationProfiledCallbackContract, ApplicationProjectionNode, ApplicationProviderNode, ApplicationQueryNode, ApplicationReactiveDatabaseRuntimeContract, ApplicationScheduleNode, ApplicationSearchIndexPlan, ApplicationSerializedCallbackContract, ApplicationStreamNode, ApplicationStreamProcessorNode, ApplicationSubscriptionNode, ApplicationWorkloadAuthorityEnvelope, JsonObject } from '@applik8s/core';
+import type { ApplicationAIAgentNode, ApplicationCallableProviderBinding, ApplicationCallableProviderRuntimeOperation, ApplicationCommandHandlerNode, ApplicationCommandNode, ApplicationGatewayNode, ApplicationGraph, ApplicationHandlerDependencies, ApplicationIdentityReference, ApplicationIndexNode, ApplicationModelNode, ApplicationObjectStoreNode, ApplicationOperationCatalog, ApplicationProfiledCallbackContract, ApplicationProjectionNode, ApplicationProviderNode, ApplicationQueryNode, ApplicationReactiveDatabaseRuntimeContract, ApplicationScheduleNode, ApplicationSearchIndexPlan, ApplicationSerializedCallbackContract, ApplicationStreamNode, ApplicationStreamProcessorNode, ApplicationSubscriptionNode, ApplicationWorkloadAuthorityEnvelope, JsonObject } from '@applik8s/core';
 import { applicationScheduleControlIdentity } from '@applik8s/core';
 import type {
   ApplicationArtifactCredentialProjection,
@@ -3341,7 +3341,7 @@ function generatedStreamProcessorSource(
 	const observability = applicationGraphHasObservabilityRuntime(graph);
   const usesObjectStorage = streamProcessorUsesObjectStorage(processor);
   const objectStorageImports = usesObjectStorage
-    ? "import { installApplicationObjectStorageRuntimeResolver } from '@applik8s/applik8s/workflow-runtime-resolvers';\nimport { createS3ApplicationObjectStorageRuntime } from '@applik8s/runtime-s3';"
+    ? "import { createApplicationObjectStoreRuntimeHandle, installApplicationObjectStorageRuntimeResolver } from '@applik8s/applik8s/workflow-runtime-resolvers';\nimport { createS3ApplicationObjectStorageRuntime } from '@applik8s/runtime-s3';"
     : '';
   const objectStorageDeclarations = usesObjectStorage
     ? `
@@ -3379,7 +3379,7 @@ installApplicationObjectStorageRuntimeResolver((binding) => {
     || (processor.callableBindings?.length ?? 0) > 0
     || (processor.applicationScheduleBindings?.length ?? 0) > 0
     || (processor.providerBindings ?? []).some(
-      (binding) => binding.operation?.runtime,
+      (binding) => binding.placement === 'objectStore' || binding.operation?.runtime,
     ),
   );
   const queryImports = queries.length > 0
@@ -3562,6 +3562,9 @@ function generatedFunctionNativeStreamTransaction(
     const hasPortableBindings =
       (processor.callableBindings?.length ?? 0) > 0
       || (processor.applicationScheduleBindings?.length ?? 0) > 0
+      || (processor.providerBindings ?? []).some(
+        (binding) => binding.placement === 'objectStore',
+      )
       || streamProcessorProviderRuntimeOperations(processor).length > 0;
     if (!hasPortableBindings) {
       return 'const functionNativeBindings = Object.freeze({});';
@@ -4052,6 +4055,8 @@ function streamProcessorCallbackBindingsSource(
       readonly operations: Map<string, StreamProcessorOperationContract>;
       readonly providerRootOperation?: string;
       readonly providerOperations: Map<string, string>;
+      readonly objectStoreRoot?: string;
+      readonly objectStores: Map<string, string>;
       readonly scheduleRoot?: string;
       readonly schedules: Map<string, string>;
   }
@@ -4060,6 +4065,7 @@ function streamProcessorCallbackBindingsSource(
     events: new Map(),
     operations: new Map<string, StreamProcessorOperationContract>(),
     providerOperations: new Map<string, string>(),
+    objectStores: new Map<string, string>(),
     schedules: new Map<string, string>(),
   });
   const roots = new Map<string, StreamCallbackRootBinding>();
@@ -4238,6 +4244,85 @@ function streamProcessorCallbackBindingsSource(
     );
     roots.set(root, existing);
   }
+  for (const providerBinding of processor.providerBindings ?? []) {
+    if (providerBinding.placement !== 'objectStore') continue;
+    const segments = providerBinding.identifier.split('.');
+    if (segments.length === 0 || segments.some(
+      (segment) => !/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(segment),
+    )) {
+      throw new Error(
+        `Stream processor ${processor.id} object-store binding ${providerBinding.identifier} must use a serializable property path.`,
+      );
+    }
+    if (!providerBinding.objectStore) {
+      throw new Error(
+        `Stream processor ${processor.id} object-store binding ${providerBinding.identifier} does not identify its logical object store. Recompile the authored application graph.`,
+      );
+    }
+    const objectStore = graph.nodes.find(
+      (node): node is ApplicationObjectStoreNode =>
+        node.kind === 'objectStore' && node.id === providerBinding.objectStore?.nodeId,
+    );
+    if (!objectStore || objectStore.provider.nodeId !== providerBinding.provider.nodeId) {
+      throw new Error(
+        `Stream processor ${processor.id} object-store binding ${providerBinding.identifier} references missing or mismatched store ${providerBinding.objectStore.nodeId}.`,
+      );
+    }
+    const value = `createApplicationObjectStoreRuntimeHandle(${JSON.stringify({
+      name: objectStore.name,
+      objectMode: objectStore.objectMode,
+      maxObjectBytes: objectStore.maxObjectBytes,
+      contentTypes: objectStore.contentTypes,
+      browserAccess: objectStore.browserAccess,
+      deletion: objectStore.deletion,
+    })})`;
+    const root = functionNativeCallbackBindingRoot(
+      providerBinding.identifier,
+      processor.id,
+    );
+    const existing = roots.get(root) ?? emptyRootBinding();
+    const path = segments.slice(1).join('.');
+    if (segments.length === 1) {
+      if (
+        existing.models.size > 0
+        || existing.events.size > 0
+        || existing.operations.size > 0
+        || existing.providerOperations.size > 0
+        || existing.objectStores.size > 0
+        || existing.providerRootOperation
+        || existing.scheduleRoot
+        || (existing.objectStoreRoot && existing.objectStoreRoot !== value)
+      ) {
+        throw new Error(
+          `Stream processor ${processor.id} callback root ${root} is ambiguous between an object-store handle and another runtime binding.`,
+        );
+      }
+      roots.set(root, { ...existing, objectStoreRoot: value });
+      continue;
+    }
+    if (
+      existing.objectStoreRoot
+      || existing.providerRootOperation
+      || existing.scheduleRoot
+      || existing.models.has(path)
+      || existing.events.has(path)
+      || existing.operations.has(path)
+      || existing.providerOperations.has(path)
+      || existing.schedules.has(path)
+    ) {
+      throw new Error(
+        `Stream processor ${processor.id} callback path ${providerBinding.identifier} is ambiguous between an object-store handle and another runtime binding.`,
+      );
+    }
+    const previous = existing.objectStores.get(path);
+    if (previous && previous !== value) {
+      throw new Error(
+        `Stream processor ${processor.id} object-store binding ${providerBinding.identifier} is ambiguous.`,
+      );
+    }
+    existing.objectStores.set(path, value);
+    roots.set(root, existing);
+  }
   for (const binding of processor.applicationScheduleBindings ?? []) {
     const segments = binding.identifier.split('.');
     if (segments.length === 0 || segments.some((segment) => !/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(segment))) {
@@ -4254,13 +4339,13 @@ function streamProcessorCallbackBindingsSource(
     const existing = roots.get(root) ?? emptyRootBinding();
     const path = segments.slice(1).join('.');
     if (segments.length === 1) {
-      if (existing.models.size > 0 || existing.events.size > 0 || existing.operations.size > 0 || existing.providerOperations.size > 0 || existing.providerRootOperation || existing.schedules.size > 0 || (existing.scheduleRoot && existing.scheduleRoot !== value)) {
+      if (existing.models.size > 0 || existing.events.size > 0 || existing.operations.size > 0 || existing.providerOperations.size > 0 || existing.objectStores.size > 0 || existing.providerRootOperation || existing.objectStoreRoot || existing.schedules.size > 0 || (existing.scheduleRoot && existing.scheduleRoot !== value)) {
         throw new Error(`Stream processor ${processor.id} callback root ${root} is ambiguous between a schedule handle and another runtime binding.`);
       }
       roots.set(root, { ...existing, scheduleRoot: value });
       continue;
     }
-    if (existing.scheduleRoot || existing.providerRootOperation || existing.models.has(path) || existing.events.has(path) || existing.operations.has(path) || existing.providerOperations.has(path)) {
+    if (existing.scheduleRoot || existing.providerRootOperation || existing.objectStoreRoot || existing.models.has(path) || existing.events.has(path) || existing.operations.has(path) || existing.providerOperations.has(path) || existing.objectStores.has(path)) {
       throw new Error(`Stream processor ${processor.id} callback path ${binding.identifier} is ambiguous between a schedule handle and another runtime binding.`);
     }
     const previous = existing.schedules.get(path);
@@ -4278,6 +4363,9 @@ function streamProcessorCallbackBindingsSource(
       }
       if (binding.scheduleRoot) {
         return `${JSON.stringify(root)}: ${binding.scheduleRoot}`;
+      }
+      if (binding.objectStoreRoot) {
+        return `${JSON.stringify(root)}: ${binding.objectStoreRoot}`;
       }
       const modelEntries = [...binding.models.entries()]
         .sort(([left], [right]) => left.localeCompare(right))
@@ -4297,11 +4385,15 @@ function streamProcessorCallbackBindingsSource(
       const scheduleEntries = [...binding.schedules.entries()]
         .sort(([left], [right]) => left.localeCompare(right))
         .map(([path, value]) => ({ path, value }));
+      const objectStoreEntries = [...binding.objectStores.entries()]
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([path, value]) => ({ path, value }));
       const nestedObject = nestedCallbackObjectSource([
         ...modelEntries,
         ...eventEntries,
         ...operationEntries,
         ...providerOperationEntries,
+        ...objectStoreEntries,
         ...scheduleEntries,
       ]);
       const properties = [
@@ -4309,6 +4401,7 @@ function streamProcessorCallbackBindingsSource(
             || eventEntries.length > 0
             || operationEntries.length > 0
             || providerOperationEntries.length > 0
+            || objectStoreEntries.length > 0
             || scheduleEntries.length > 0
           ? [`...(${nestedObject})`]
           : []),

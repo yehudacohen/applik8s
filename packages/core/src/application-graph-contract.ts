@@ -2182,6 +2182,8 @@ export interface ApplicationCallableProviderBinding {
    * provider dependency without an exact operation remains invalid.
    */
   readonly placement?: 'objectStore' | 'providerDependency';
+  /** Exact logical store whose bounded runtime handle must be hydrated. */
+  readonly objectStore?: ApplicationGraphNodeRef;
   /** Absent only when `placement` records non-callable dependency provenance. */
   readonly operation?: {
     readonly member: string;

@@ -1,10 +1,14 @@
 import type {
-  ApplicationObjectStorageRuntime,
-  ApplicationObjectStoreBinding,
+	ApplicationObjectStorageRuntime,
 } from './application-object-storage.js';
 
+export interface ApplicationObjectStorageRuntimeIdentity {
+  readonly kind: 'applicationObjectStore';
+  readonly name: string;
+}
+
 export type ApplicationObjectStorageRuntimeResolver = (
-  binding: ApplicationObjectStoreBinding,
+	binding: ApplicationObjectStorageRuntimeIdentity,
 ) => ApplicationObjectStorageRuntime | undefined;
 
 export type ApplicationObjectStorageRuntimeFactory =
@@ -31,7 +35,7 @@ export function setApplicationObjectStorageRuntimeFactory(
 }
 
 export function applicationObjectStorageRuntime(
-  binding: ApplicationObjectStoreBinding,
+	binding: ApplicationObjectStorageRuntimeIdentity,
 ): ApplicationObjectStorageRuntime {
   for (let index = runtimeResolvers.length - 1; index >= 0; index -= 1) {
     const runtime = runtimeResolvers[index]?.(binding);
