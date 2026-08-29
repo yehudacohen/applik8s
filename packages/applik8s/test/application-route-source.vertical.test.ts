@@ -19,6 +19,21 @@ function workflowSource(
 }
 
 describe('application callback lexical analysis', () => {
+  it('accepts only the intrinsic Error constructor normalization', () => {
+    const authored = 'async input => { if (!input.ok) throw new Error("missing"); return input; }';
+    const runtime = 'async input => { if (!input.ok) throw Error("missing"); return input; }';
+
+    expect(applicationCallbackSourceMatchesRuntime(authored, runtime)).toBe(true);
+    expect(applicationCallbackSourceMatchesRuntime(
+      authored.replace('new Error', 'new Date'),
+      runtime.replace('Error', 'Date'),
+    )).toBe(false);
+    expect(applicationCallbackSourceMatchesRuntime(
+      authored.replace('new Error', 'new DomainError'),
+      runtime.replace('Error', 'DomainError'),
+    )).toBe(false);
+  });
+
   it('does not invoke a build-tool transform for already-valid runtime JavaScript', () => {
     expect(transpileApplicationCallbackExpression(
       'async input => ({ id: input.id })',
@@ -114,6 +129,26 @@ class DeliveryError extends Error {
     expect(dependencies?.resolveDir).toBe(new URL('./fixtures', import.meta.url).pathname.replace(/\/$/, ''));
   });
 
+  it('recovers later top-level helpers without promoting template or regex text', () => {
+    const file = new URL(
+      './fixtures/application-route-late-helper.ts',
+      import.meta.url,
+    ).pathname;
+    const dependencies = applicationRouteSourceDependencies({
+      id: 'late-helper',
+      method: 'POST',
+      path: '/late-helper',
+      handlerSource: 'async input => routeCallback(input)',
+      handlerSourceKind: 'source',
+      handlerSourceLocation: { file, line: 6, column: 1 },
+    }, ['routeCallback'], new Set());
+
+    expect(dependencies?.source).toContain('function routeCallback');
+    expect(dependencies?.source).toContain('function lateHelper');
+    expect(dependencies?.source).not.toContain('function notARealHelper');
+    expect(dependencies?.source).not.toContain('function alsoNotARealHelper');
+  });
+
   it('keeps direct workflow and signal handles executable without attributing child effects to orchestration', () => {
     const dependencies = applicationRouteSourceDependencies({
       id: 'review',
@@ -156,8 +191,8 @@ class DeliveryError extends Error {
       },
     }, ['Billing'], new Set());
 
-    expect(dependencies?.source).toContain(
-      'import { providers } from "./application-provider-profile"',
+    expect(dependencies?.source).toMatch(
+      /import \{ providers \} from ['"]\.\/application-provider-profile['"]/,
     );
     expect(dependencies?.source).toContain(
       'const primaryStore = providers.database',
@@ -187,9 +222,11 @@ class DeliveryError extends Error {
     ]);
 
     const source = dependencies?.source ?? '';
-    expect(source).toContain("const deployment = application.profile(application.installation.spec, \"profile\")");
+    expect(source).toMatch(
+      /const deployment = application\.profile\(application\.installation\.spec, ['"]profile['"]\)/,
+    );
     expect(source).toContain('.provide(PrimaryProvider)');
-    expect(source).toContain("primaryImplementation(\"dedicated\")");
+    expect(source).toMatch(/primaryImplementation\(['"]dedicated['"]\)/);
     expect(source).toContain('const primary = application.inject(PrimaryProvider)');
     expect(source.indexOf('.provide(PrimaryProvider)')).toBeLessThan(
       source.indexOf('application.inject(PrimaryProvider)'),
@@ -205,8 +242,8 @@ class DeliveryError extends Error {
       },
     });
 
-    expect(extracted?.source).toContain('async (request) =>');
-    expect(extracted?.source).toContain("request.headers.get(\"x-principal\")");
+    expect(extracted?.source).toMatch(/async\s*\(request\)\s*=>/);
+    expect(extracted?.source).toMatch(/request\.headers\.get\(['"]x-principal['"]\)/);
     expect(extracted?.location.file).toBe(import.meta.filename);
   });
 
@@ -218,7 +255,7 @@ class DeliveryError extends Error {
       async ({ generation }: { generation: string }) => ({ generation }),
     );
 
-    expect(extracted?.source).toContain('async ({ generation }) =>');
+    expect(extracted?.source).toMatch(/async\s*\(\{ generation \}\)\s*=>/);
     expect(extracted?.source).toContain('({ generation })');
     expect(extracted?.location.file).toBe(import.meta.filename);
   });

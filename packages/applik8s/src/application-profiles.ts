@@ -9,7 +9,10 @@ import type {
   ApplicationProviderQualification,
   ApplicationQualifiedProviderToken,
 } from './application-providers.js';
-import { applicationProviderSelectionSatisfies } from './application-providers.js';
+import {
+  applicationProviderPrivateRuntimeFor,
+  applicationProviderSelectionSatisfies,
+} from './application-providers.js';
 import { applicationTypeKroExpressionValue } from './application-typekro-values.js';
 
 export type ApplicationProfileStringKey<T> = Extract<keyof T, string>;
@@ -496,6 +499,15 @@ function assertProviderImplementation<TImplementation>(
   token: ApplicationQualifiedProviderToken<TImplementation>,
   implementation: TImplementation,
 ): void {
+  const runtime = applicationProviderPrivateRuntimeFor(implementation);
+  if (runtime) {
+    if (runtime.token.qualification.key !== token.qualification.key) {
+      throw new Error(
+        `Application profile provider ${token.qualification.key} received private runtime construction for ${runtime.token.qualification.key}.`,
+      );
+    }
+    return;
+  }
   if (token.accepts
     && !token.accepts(implementation)
     && !applicationProviderSelectionSatisfies(implementation, token.accepts)) {
@@ -530,6 +542,9 @@ function profileProviderContract<TImplementation>(
             `Application profile provider ${token.qualification.key} has no ${variant} branch.`,
           );
         }
+        const runtime = applicationProviderPrivateRuntimeFor(
+          branch.implementation,
+        );
         return Object.freeze({
           variant,
           implementation:
@@ -541,6 +556,9 @@ function profileProviderContract<TImplementation>(
           resources: Object.freeze([...(branch.options.resources ?? [])]),
           provenance: branch.options.provenance ?? 'application',
           config: providerSafeConfig(branch.implementation),
+          ...(runtime
+            ? { privateRuntime: structuredClone(runtime.contract) }
+            : {}),
         });
       }),
     ),

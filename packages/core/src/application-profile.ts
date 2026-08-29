@@ -1,4 +1,37 @@
+// typecast-file-boundary: Profile validation narrows version-discriminated portable contracts before applying provider-private branch invariants.
 import type { JsonObject } from './common.js';
+import type { ApplicationSerializedCallbackContract } from './application-graph-gateway.js';
+
+/**
+ * Portable construction metadata for one provider implementation. Values are
+ * hydrated only inside the selected managed workload; the graph retains exact
+ * references and closed callbacks, never credential contents or SQL clients.
+ */
+export interface ApplicationProviderPrivateRuntimeContract {
+  readonly apiVersion: 'applik8s.providerRuntime/v1alpha1';
+  readonly implementation: string;
+  readonly construct: ApplicationSerializedCallbackContract;
+  readonly validate: ApplicationSerializedCallbackContract;
+  readonly credentials: readonly {
+    readonly alias: string;
+    readonly secret: {
+      readonly apiVersion: 'v1';
+      readonly kind: 'Secret';
+      readonly name: string;
+      readonly namespace?: string;
+    };
+    readonly key: string;
+  }[];
+  readonly postgres: readonly {
+    readonly alias: string;
+    readonly databaseProviderNodeId: string;
+  }[];
+  readonly isolation: {
+    readonly secretDelivery: 'readOnlyVolume';
+    readonly construction: 'selectedWorkloadOnly';
+    readonly publicContractExposure: 'none';
+  };
+}
 
 export interface ApplicationProviderQualificationContract {
   readonly apiVersion: 'applik8s.providerQualification/v1alpha1';
@@ -43,6 +76,7 @@ export interface ApplicationProfileProviderBranch {
   readonly credentialReferences: readonly string[];
   readonly resources: readonly string[];
   readonly provenance: 'application' | 'start-default' | 'application-override';
+  readonly privateRuntime?: ApplicationProviderPrivateRuntimeContract;
 }
 
 export interface ApplicationProfileProviderSelectionContract {
@@ -106,6 +140,65 @@ export function validateApplicationProfileProviderSelection(
     diagnostics.push(
       `Profile provider ${selection.qualification.key} has a branch without an implementation identity.`,
     );
+  }
+  for (const branch of selection.branches) {
+    const runtime = branch.privateRuntime;
+    if (!runtime) continue;
+    if (
+      runtime.apiVersion !== 'applik8s.providerRuntime/v1alpha1'
+      || !runtime.implementation.trim()
+      || runtime.implementation !== branch.implementation
+    ) {
+      diagnostics.push(
+        `Profile provider ${selection.qualification.key} branch ${branch.variant} has an invalid private runtime identity.`,
+      );
+    }
+    if (
+      runtime.isolation.secretDelivery !== 'readOnlyVolume'
+      || runtime.isolation.construction !== 'selectedWorkloadOnly'
+      || runtime.isolation.publicContractExposure !== 'none'
+    ) {
+      diagnostics.push(
+        `Profile provider ${selection.qualification.key} branch ${branch.variant} must retain the provider-private isolation contract.`,
+      );
+    }
+    for (const callback of [runtime.construct, runtime.validate]) {
+      if (!callback.source.trim() || (callback.unresolved?.length ?? 0) > 0) {
+        diagnostics.push(
+          `Profile provider ${selection.qualification.key} branch ${branch.variant} private runtime callbacks must be closed and serializable.`,
+        );
+      }
+    }
+    for (const [kind, aliases] of [
+      ['credential', runtime.credentials.map(({ alias }) => alias)],
+      ['PostgreSQL', runtime.postgres.map(({ alias }) => alias)],
+    ] as const) {
+      if (
+        aliases.some((alias) => !/^[A-Za-z_$][A-Za-z0-9_$]*$/u.test(alias))
+        || new Set(aliases).size !== aliases.length
+      ) {
+        diagnostics.push(
+          `Profile provider ${selection.qualification.key} branch ${branch.variant} private ${kind} aliases must be stable identifiers and unique.`,
+        );
+      }
+    }
+    for (const credential of runtime.credentials) {
+      if (
+        credential.secret.apiVersion !== 'v1'
+        || credential.secret.kind !== 'Secret'
+        || !credential.secret.name.trim()
+        || !credential.key.trim()
+      ) {
+        diagnostics.push(
+          `Profile provider ${selection.qualification.key} branch ${branch.variant} private credential ${credential.alias} must name one exact v1 Secret key.`,
+        );
+      }
+    }
+    if (runtime.postgres.some(({ databaseProviderNodeId }) => !databaseProviderNodeId.trim())) {
+      diagnostics.push(
+        `Profile provider ${selection.qualification.key} branch ${branch.variant} private PostgreSQL dependencies must reference TransactionalDatabase providers.`,
+      );
+    }
   }
   const transitionPairs = new Set<string>();
   for (const transition of selection.transitions) {

@@ -57,7 +57,11 @@ export const applicationConversations = model(
       table.updatedAt,
     ),
   ],
-  { name: 'Conversation', revision: false },
+  {
+    name: 'Conversation',
+    revision: false,
+    runtimeRoles: ['applik8s.conversation-state/v1'],
+  },
 );
 
 export const applicationConversationMessages = model(

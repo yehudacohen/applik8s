@@ -1,5 +1,8 @@
 import type { JsonObject } from '@applik8s/core';
-import { normalizeSchema } from '@applik8s/sdk/schema-runtime';
+import {
+  emitArkTypeStructuralJsonSchema,
+  normalizeSchema,
+} from '@applik8s/sdk/schema-runtime';
 import type { Type } from 'arktype';
 
 export interface ApplicationTrustedContext<TValue> {
@@ -28,8 +31,7 @@ export function trustedContext<TValue>(name: string, options: ApplicationTrusted
   if (!/^[A-Za-z][A-Za-z0-9._-]*$/.test(name)) {
     throw new Error(`Trusted context name ${JSON.stringify(name)} must be a stable identifier.`);
   }
-  // typecast: ArkType emits the JSON-compatible schema consumed by the common schema contract.
-  const jsonSchema = options.schema.toJsonSchema() as JsonObject;
+  const jsonSchema = emitArkTypeStructuralJsonSchema(options.schema);
   return Object.freeze({
     kind: 'applicationTrustedContext',
     name,

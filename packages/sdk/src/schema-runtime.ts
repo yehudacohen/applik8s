@@ -18,6 +18,26 @@ import type { SchemaInput } from './interfaces.js';
 type RuntimeSchemaSource<T extends object> = (ArkTypeSchemaSource<T> | JsonSchemaSource<T> | CustomSchemaSource<T>) & { readonly arktype?: Type<T> };
 type ArkTypeRuntimeSchemaSource<T extends object> = RuntimeSchemaSource<T> & { readonly kind: 'arktype'; readonly arktype: Type<T> };
 
+/**
+ * Emits the portable structural portion of an ArkType contract.
+ *
+ * Predicates, including `Type.narrow(...)`, remain authoritative at runtime
+ * but cannot be represented by JSON Schema. Their already-constrained base is
+ * safe to publish as the wire shape. Morphs and every other unsupported
+ * construct continue to fail closed through ArkType's default policy.
+ */
+export function emitArkTypeStructuralJsonSchema<TValue>(
+  schema: Type<TValue>,
+): JsonObject {
+  // typecast: ArkType's emitted value is JSON-compatible and is subsequently
+  // validated by the shared schema diagnostics boundary.
+  return schema.toJsonSchema({
+    fallback: {
+      predicate: (context) => context.base,
+    },
+  }) as JsonObject;
+}
+
 export function normalizeSchema<T extends object>(input: SchemaInput<T>, name: string): RuntimeSchema<T> {
   if (isRuntimeSchema(input)) {
     return input;
@@ -166,8 +186,7 @@ function arktypeJsonSchema<T extends object>(source: ArkTypeRuntimeSchemaSource<
   if (typeof emitter !== 'function') {
     return unsupportedSchemaResult(source, 'JSON Schema emission');
   }
-  // typecast: ArkType's toJsonSchema is discovered reflectively because its public Type type does not expose the method in this version.
-  const emitted = emitter.call(source.arktype) as unknown;
+  const emitted = emitArkTypeStructuralJsonSchema(source.arktype);
   if (!isJsonObject(emitted)) {
     return err('SCHEMA_UNSUPPORTED', `ArkType schema ${schemaRefName(source.ref)} did not emit a JSON object schema.`);
   }
@@ -194,6 +213,16 @@ function toDraft7Subset(schema: JsonObject): JsonObject {
 
   if (isJsonObject(normalized.properties)) {
     normalized.properties = Object.fromEntries(Object.entries(normalized.properties).map(([key, value]) => [key, isJsonObject(value) ? toDraft7Subset(value) : value]));
+  }
+  for (const keyword of ['$defs', 'definitions'] as const) {
+    if (isJsonObject(normalized[keyword])) {
+      normalized[keyword] = Object.fromEntries(
+        Object.entries(normalized[keyword]).map(([key, value]) => [
+          key,
+          isJsonObject(value) ? toDraft7Subset(value) : value,
+        ]),
+      );
+    }
   }
   if (isJsonObject(normalized.items)) {
     normalized.items = toDraft7Subset(normalized.items);

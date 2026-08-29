@@ -27,7 +27,17 @@ export function applicationCallbackSourceMatchesRuntime(
           minifyWhitespace: true,
         },
       ).code;
-    return canonical(authoredSource) === canonical(runtimeSource, true);
+    const authored = canonical(authoredSource);
+    const runtime = canonical(runtimeSource, true);
+    if (authored === runtime) return true;
+
+    // Vite/esbuild may remove `new` from the intrinsic Error constructor.
+    // Error(...) and new Error(...) are equivalent, but this exception must
+    // not weaken source matching for Date, application classes, or members.
+    const normalizeIntrinsicErrorConstruction = (source: string) =>
+      source.replace(/\bnew Error(?=\()/gu, 'Error');
+    return normalizeIntrinsicErrorConstruction(authored)
+      === normalizeIntrinsicErrorConstruction(runtime);
   } catch {
     return false;
   }

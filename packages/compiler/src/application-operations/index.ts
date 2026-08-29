@@ -16,6 +16,7 @@ import type {
   ApplicationStaticGrantDefinition,
   ApplicationStaticPermissionDefinition,
   ApplicationWorkloadAuthorityEnvelope,
+  JsonObject,
 } from '@applik8s/core';
 import {
   applicationOperationId,
@@ -1469,7 +1470,71 @@ function modelOperationKind(
 }
 
 function schemaDescriptor(schema: ApplicationMessageContractSchema): ApplicationSchemaDescriptor {
-  return { digest: digestJson(schema.jsonSchema), schema: schema.jsonSchema };
+  const canonical = canonicalOperationSchema(schema.jsonSchema);
+  return { digest: digestJson(canonical), schema: canonical };
+}
+
+/**
+ * Rewrites process-local JSON Schema definition labels by first reachable use.
+ * ArkType may assign ordinal-bearing `$defs` names that change when unrelated
+ * declarations are evaluated. Operation authority identifies accepted
+ * structure, not those emitter-local labels.
+ */
+function canonicalOperationSchema(schema: JsonObject): JsonObject {
+  const definitions = schema.$defs;
+  if (!definitions || typeof definitions !== 'object' || Array.isArray(definitions)) {
+    return schema;
+  }
+  const sourceDefinitions = definitions as Readonly<Record<string, unknown>>;
+  const names = new Map<string, string>();
+  const canonicalDefinitions: Record<string, unknown> = {};
+
+  const rewriteReference = (reference: string): string => {
+    const prefix = '#/$defs/';
+    if (!reference.startsWith(prefix)) return reference;
+    const path = reference.slice(prefix.length);
+    const separator = path.indexOf('/');
+    const encodedName = separator === -1 ? path : path.slice(0, separator);
+    const suffix = separator === -1 ? '' : path.slice(separator);
+    const originalName = encodedName
+      .replace(/~1/gu, '/')
+      .replace(/~0/gu, '~');
+    if (!Object.hasOwn(sourceDefinitions, originalName)) return reference;
+    let canonicalName = names.get(originalName);
+    if (!canonicalName) {
+      canonicalName = `definition${names.size}`;
+      names.set(originalName, canonicalName);
+      canonicalDefinitions[canonicalName] = {};
+      canonicalDefinitions[canonicalName] = visit(
+        sourceDefinitions[originalName],
+        false,
+      );
+    }
+    return `${prefix}${canonicalName}${suffix}`;
+  };
+
+  const visit = (value: unknown, root: boolean): unknown => {
+    if (value === null || typeof value !== 'object') return value;
+    if (Array.isArray(value)) return value.map((entry) => visit(entry, false));
+    return Object.fromEntries(
+      Object.entries(value)
+        .filter(([key]) => !(root && key === '$defs'))
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, entry]) => [
+          key,
+          (key === '$ref' || key === '$dynamicRef' || key === '$recursiveRef')
+            && typeof entry === 'string'
+            ? rewriteReference(entry)
+            : visit(entry, false),
+        ]),
+    );
+  };
+
+  const canonical = visit(schema, true) as Record<string, unknown>;
+  if (Object.keys(canonicalDefinitions).length > 0) {
+    canonical.$defs = canonicalDefinitions;
+  }
+  return canonical as JsonObject;
 }
 
 function emptySchema(): ApplicationMessageContractSchema {

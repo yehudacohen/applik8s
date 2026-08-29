@@ -27,6 +27,7 @@ describe('generated workflow gateway binding', () => {
           async cancel() {},
         };
       },
+      async attach() { throw new Error('not used'); },
       async schedule() {
         return { id: 'scheduled-1' };
       },

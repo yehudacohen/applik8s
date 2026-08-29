@@ -1,3 +1,4 @@
+// typecast-file-boundary: Instrumentation tests inspect symbol-keyed portable metadata after executing isolated generated JavaScript fixtures.
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -1077,6 +1078,36 @@ Post.view(
     expect(instrumented).toContain('property: "run"');
     expect(instrumented).toContain('name: "timeline"');
     expect(instrumented).toContain('source: "async function timeline(input)');
+  });
+
+  it('attaches lazy provenance before a hoisted direct view callback registers', () => {
+    const source = `
+let captured;
+const Post = { view(_contract, callback) { captured = callback; } };
+Post.view({}, listPosts);
+function listPosts() { return PostStore.all(); }
+const PostStore = { all() { return []; } };
+`;
+    const instrumented = instrumentApplicationCallbackRegistrations(
+      source,
+      '/workspace/src/views.ts',
+    );
+    const captured = Function(
+      `${instrumented}\nreturn captured;`,
+    )() as Record<PropertyKey, unknown>;
+    const sourceMetadata = Reflect.get(
+      captured,
+      Symbol.for('applik8s.applicationCallbackSource'),
+    ) as { readonly name?: string };
+    const dependencies = Reflect.get(
+      captured,
+      Symbol.for('applik8s.applicationCallbackDependencies'),
+    ) as readonly { readonly identifier: string; readonly value: unknown }[];
+
+    expect(sourceMetadata.name).toBe('listPosts');
+    expect(dependencies).toHaveLength(1);
+    expect(dependencies[0]?.identifier).toBe('PostStore.all');
+    expect(typeof dependencies[0]?.value).toBe('function');
   });
 
   it('instruments the function-native one-shot Model.query contract and implementation separately', () => {

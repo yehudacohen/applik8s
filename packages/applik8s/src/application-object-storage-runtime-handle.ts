@@ -79,6 +79,11 @@ export function createApplicationObjectStoreRuntimeHandle(
 		},
 		async delete(key, options) {
 			assertKey(key);
+			if (contract.deletion === "retained") {
+				throw new Error(
+					`Application object store ${contract.name} retains objects and does not grant deletion.`,
+				);
+			}
 			return runtime().delete(key, options);
 		},
 		async signUpload(request) {

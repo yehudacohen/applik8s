@@ -797,6 +797,41 @@ describe('application deployment profiles', () => {
     expect(validateApplicationGraph(graph as NonNullable<typeof graph>)).toEqual([]);
   });
 
+  it('preserves qualified logical roles when they explicitly share one physical provider binding', () => {
+    const application = app('shared-provider-roles', {
+      namespace: 'shared-provider-roles',
+      spec: Installation,
+      status: type({ ready: 'boolean' }),
+    });
+    const PrimaryEvents = EventLog.named('primary');
+    const AuditEvents = EventLog.named('audit');
+    const primary = application.provide(PrimaryEvents, {
+      kind: 'nats-jetstream',
+      name: 'shared-events',
+      provision: true,
+      stream: 'EVENTS',
+      subjectPrefix: 'events',
+    });
+
+    application.provide(AuditEvents, primary);
+
+    const graph = applicationGraphFor(application.composition);
+    const audit = graph?.nodes.find(
+      (node) => node.kind === 'provider'
+        && node.id === 'provider.event-log.v1alpha1.audit',
+    );
+    expect(audit).toMatchObject({
+      kind: 'provider',
+      implementation: 'nats-jetstream',
+      config: {
+        aliasOf: 'provider.event-log.v1alpha1.primary',
+        kind: 'nats-jetstream',
+        name: 'shared-events',
+      },
+    });
+    expect(validateApplicationGraph(graph as NonNullable<typeof graph>)).toEqual([]);
+  });
+
   it('preserves profile-selected generated workload database connections', () => {
     const application = app('unstable-database-profile', {
       namespace: 'unstable-database-profile',
@@ -1381,7 +1416,7 @@ describe('application deployment profiles', () => {
     expect(validateApplicationGraph(graph)).toEqual([]);
   });
 
-  it('fails closed for mismatched explicit variants and duplicate profiles', () => {
+  it('reopens an identical profile but fails closed for incompatible declarations', () => {
     const application = app('profile-validation', {
       spec: Installation,
       status: type({ ready: 'boolean' }),
@@ -1392,10 +1427,22 @@ describe('application deployment profiles', () => {
       }),
     ).toThrow(/do not match its ArkType discriminator/);
 
-    application.profile(application.installation.spec, 'profile');
-    expect(() =>
+    const profile = application.profile(application.installation.spec, 'profile');
+    expect(
       application.profile(application.installation.spec, 'profile'),
-    ).toThrow(/already declares profile/);
+    ).toBe(profile);
+    expect(() =>
+      application.profile(application.installation.spec, 'profile', {
+        schemaRevision: 'v2',
+      }),
+    ).toThrow(/cannot be reopened with different variants or schema revision/);
+    expect(() =>
+      application.profile(application.installation.spec, 'profile', {
+        variants: ['starter', 'dedicated'] as const,
+      }),
+    ).toThrow(
+      /do not match its ArkType discriminator|cannot be reopened with different variants or schema revision/,
+    );
   });
 
   it('derives variants from a discriminated installation union with branch-specific providers', () => {

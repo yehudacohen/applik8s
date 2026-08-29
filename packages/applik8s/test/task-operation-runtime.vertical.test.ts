@@ -111,6 +111,57 @@ describe('task operation runtime', () => {
     await runtime.close();
   });
 
+  it('derives default task idempotency from the validated input', async () => {
+    const published: Record<string, unknown>[] = [];
+    const runtime = createApplicationTaskOperationRuntime({
+      commands: [{
+        id: 'Post.create.v1',
+        bindingId: 'Post.create',
+        model: 'Post',
+        inputSchema,
+        databaseUrl: 'postgres://unused',
+        sql: {
+          unsafe: vi.fn(async () => [{
+            output: { identity: 'post' },
+            error: null,
+          }]),
+        } as unknown as ApplicationPostgresSql,
+        key: input => Reflect.get(input, 'id'),
+      }],
+      cursorSecret: 'a-stable-secret-containing-at-least-thirty-two-characters',
+      eventLogPublisher: {
+        async publish(envelope) {
+          published.push(envelope as unknown as Record<string, unknown>);
+          return {
+            stream: 'events', sequence: published.length, duplicate: false,
+            subject: 'commands', messageId: envelope.id,
+          };
+        },
+        async drain() {},
+      },
+    });
+    const operations = runtime.bind(
+      { publish: 'Post.create.v1' },
+      taskPrincipal('bot-1'),
+      {
+        invocationId: 'run-1',
+        idempotencyKey: 'run-1',
+        signal: new AbortController().signal,
+      },
+    );
+
+    await operations.publish?.({ id: 'post-1', body: 'first' });
+    await operations.publish?.({ id: 'post-2', body: 'second' });
+    await operations.publish?.({ id: 'post-1', body: 'first' });
+
+    const keys = published.map(envelope =>
+      Reflect.get(Reflect.get(envelope, 'routing') as object, 'idempotencyKey'),
+    );
+    expect(keys[0]).not.toBe(keys[1]);
+    expect(keys[0]).toBe(keys[2]);
+    await runtime.close();
+  });
+
   it('submits only declared commands with a fixed service principal and observes the canonical durable result', async () => {
     let published: Record<string, unknown> | undefined;
     const telemetry = createApplicationTelemetryEnvelopeV1({

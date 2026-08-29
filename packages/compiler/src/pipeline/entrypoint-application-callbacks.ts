@@ -662,7 +662,7 @@ export function applicationCallbackDependencyMetadataStatementsByName(
   file: ts.SourceFile,
   sourceFile: string,
   moduleIdentity: string,
-  deferDependencyValueReads = false,
+  deferDependencyValueReads = true,
 ): ReadonlyMap<string, readonly ts.Statement[]> {
   const statements = new Map<string, readonly ts.Statement[]>();
   for (const [name, callable] of topLevelApplicationCallables(file)) {
@@ -1694,7 +1694,14 @@ function decorateApplicationCallbackExpression(
     || ts.isFunctionExpression(expression)
     || Boolean(
       localResolution
-      && !file.statements.includes(localResolution.declaration),
+      && (
+        !file.statements.includes(localResolution.declaration)
+        // Function declarations are hoisted. A registration may therefore
+        // execute before the declaration's module-level metadata statement.
+        // Attach a lazy dependency view at the callsite as well so authored
+        // ordering cannot change which capability leaves discovery observes.
+        || ts.isFunctionDeclaration(localResolution.declaration)
+      ),
     );
   const dependencyAnalysis = requiresCallsiteDependencyMetadata
     ? directApplicationCallAnalysis(expression, file, sourceFile, registrar)
@@ -1762,8 +1769,14 @@ function decorateApplicationCallbackExpression(
               ts.factory.createTrue(),
             ),
             ts.factory.createPropertyAssignment(
-              'value',
-              ts.factory.createArrayLiteralExpression(
+              'get',
+              ts.factory.createArrowFunction(
+                undefined,
+                undefined,
+                [],
+                undefined,
+                ts.factory.createToken(ts.SyntaxKind.EqualsGreaterThanToken),
+                ts.factory.createArrayLiteralExpression(
                 dependencyAnalysis.calls.map((dependency) =>
                   ts.factory.createObjectLiteralExpression([
                     ts.factory.createPropertyAssignment(
@@ -1791,6 +1804,7 @@ function decorateApplicationCallbackExpression(
                     ),
                   ]),
                 ),
+              ),
               ),
             ),
           ]),

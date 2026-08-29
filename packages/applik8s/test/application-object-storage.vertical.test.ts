@@ -1,3 +1,4 @@
+// typecast-file-boundary: Negative public-API fixtures deliberately erase callable overload types to exercise runtime validation failures.
 import {
 	app,
 	applicationGraphFor,
@@ -106,6 +107,36 @@ describe("provider-neutral application object stores", () => {
 		}]);
 	});
 
+	it("projects exact task methods and validates task-local credentials", () => {
+		const application = app("scoped-task-objects");
+		application.provide(ObjectStorage, ObjectStorage.s3({
+			bucket: "scoped-task-objects",
+			region: "us-east-1",
+			ownership: "external",
+		}));
+		const retained = application.objectStore("evidence", {
+			mode: "immutable",
+			maxObjectBytes: 1_000,
+			contentTypes: ["application/json"],
+			deletion: "retained",
+		});
+
+		const reader = retained.allow("get", "head").usingCredentials({
+			apiVersion: "v1",
+			kind: "Secret",
+			name: "evidence-reader",
+			namespace: "workers",
+		});
+		expect(reader).toMatchObject({
+			kind: "applicationTaskObjectStore",
+			operations: ["get", "head"],
+			credentialsSecret: { name: "evidence-reader" },
+		});
+		expect(() => (retained.allow as (...operations: never[]) => unknown)()).toThrow("at least one operation");
+		expect(() => retained.allow("get", "get")).toThrow("must not repeat");
+		expect(() => retained.allow("delete")).toThrow("retains objects");
+	});
+
 	it("rehydrates a bounded handler-safe store handle from the graph contract", async () => {
 		const requests: unknown[] = [];
 		const uninstall = installApplicationObjectStorageRuntimeResolver((identity) =>
@@ -157,6 +188,22 @@ describe("provider-neutral application object stores", () => {
 				body: "hello",
 				contentType: "text/plain",
 			})).rejects.toThrow("unsafe object key");
+			const retained = createApplicationObjectStoreRuntimeHandle({
+				name: "artifacts",
+				objectMode: "immutable",
+				maxObjectBytes: 16,
+				contentTypes: ["text/plain"],
+				browserAccess: {
+					upload: "none",
+					download: "none",
+					downloadAccess: "owner",
+					ttlSeconds: 300,
+				},
+				deletion: "retained",
+			});
+			await expect(retained.delete("documents/one.txt")).rejects.toThrow(
+				"retains objects",
+			);
 		} finally {
 			uninstall();
 		}

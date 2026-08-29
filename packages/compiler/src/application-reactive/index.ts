@@ -38,6 +38,13 @@ import { applicationStaticAuthorityManifest, compileApplicationOperationCatalog,
 import { generatedApplicationProviderOperationValue } from '../application-provider-telemetry-source.js';
 import { applicationHatchetScheduleBindings } from '../application-schedule-hatchet.js';
 import { hatchetSingleFileHeartbeatPlugin } from '../application-workflows/source.js';
+import {
+  nestedApplicationCallbackObjectSource as nestedCallbackObjectSource,
+  nestedApplicationCallbackVariable as nestedCallbackVariable,
+  nestedApplicationCommandDefinition as nestedCommandDefinition,
+  nestedApplicationEventDefinition as nestedEventDefinition,
+  requiredApplicationGraphNode as requiredNode,
+} from '../application-nested-operation-source.js';
 import { applik8sWorkspaceSourcePlugin } from '../bundling/index.js';
 import { handlerSourceMetadataPlugin } from '../pipeline/entrypoint-handler-instrumentation.js';
 
@@ -1742,10 +1749,16 @@ function generatedGatewaySource(
       ? "readinessCheck('authorization', () => verifyAuthorizationReadiness())"
       : "readinessCheck('authorization', () => undefined)",
   ];
-  const searchReadinessChecks = searchContracts.map(
-    (contract) =>
+  const requiredSearchReadinessChecks = searchContracts
+    .filter(contract => contract.index.search.readiness.failurePolicy === 'block')
+    .map(contract =>
       `readinessCheck(${JSON.stringify(`search:${contract.query.id}`)}, () => ${searchRuntimeVariable(contract.query.id)}.refresh())`,
-  );
+    );
+  const degradedSearchReadinessChecks = searchContracts
+    .filter(contract => contract.index.search.readiness.failurePolicy === 'degrade')
+    .map(contract =>
+      `readinessCheck(${JSON.stringify(`search:${contract.query.id}`)}, () => ${searchRuntimeVariable(contract.query.id)}.refresh())`,
+    );
   const mixedQueryMultiplex = relationalQueries.length > 0 && kubernetesQueries.length > 0
     ? `const relationalQueryIds = new Set(${JSON.stringify(relationalQueries.map((query) => query.publicId ?? `${query.name}.${query.version}`))});
 const kubernetesQueryIds = new Set(${JSON.stringify(kubernetesQueries.map((query) => query.publicId ?? `${query.name}.${query.version}`))});
@@ -1870,10 +1883,18 @@ const dependencyMonitor = new AbortController();
 async function handleGatewayRequest(request) { const internalResponse = internalOperationHandler ? await internalOperationHandler(request.clone()) : undefined; const multiplexResponse = internalResponse || await handleMixedQueryMultiplex(request.clone()); const commandResponse = multiplexResponse || !commandGateway ? undefined : await commandGateway.handle(request.clone()); const signalResponse = multiplexResponse || commandResponse || !signalGateway ? undefined : await signalGateway.handle(request.clone()); const streamResponse = multiplexResponse || commandResponse || signalResponse || !streamGateway ? undefined : await streamGateway.handle(request.clone()); const kubernetesResponse = multiplexResponse || commandResponse || signalResponse || streamResponse || !kubernetesGateway ? undefined : await kubernetesGateway.handle(prefixKubernetesRequest(request.clone())); const relationalResponse = multiplexResponse || commandResponse || signalResponse || streamResponse || (kubernetesResponse && kubernetesResponse.status !== 404) || !handle ? undefined : await handle(request); return internalResponse ?? multiplexResponse ?? commandResponse ?? signalResponse ?? streamResponse ?? (kubernetesResponse?.status !== 404 ? kubernetesResponse : undefined) ?? relationalResponse ?? new Response(JSON.stringify({ error: 'not_found' }), { status: 404, headers: { 'content-type': 'application/json' } }); }
 const server = createServer(async (incoming, outgoing) => { const requestController = new AbortController(); const abortRequest = () => requestController.abort(); incoming.once('aborted', abortRequest); outgoing.once('close', abortRequest); try { if (incoming.url === '/live' || incoming.url === '/ready') { const ok = incoming.url === '/live' || (ready && !stopping); outgoing.writeHead(ok ? 200 : 503, { 'content-type': 'application/json' }); outgoing.end(JSON.stringify({ ready, stopping, lastDependencyError, degradedDependencyError })); return; } const request = await webRequest(incoming, requestController.signal); const response = ${observability ? `await runApplicationTelemetryBoundary({ kind: 'http', identity: 'query-gateway.request', relationship: 'synchronous', parent: decodeApplicationTelemetryCarrier(request.headers.get(applicationTelemetryCarrierHeaderName)), attributes: { 'http.request.method': request.method, 'url.path': new URL(request.url).pathname.slice(0, 512) } }, () => handleGatewayRequest(request))` : 'await handleGatewayRequest(request)'}; await writeResponse(outgoing, response); } catch (error) { if (!requestController.signal.aborted) { console.error(error); if (!outgoing.headersSent) outgoing.writeHead(500, { 'content-type': 'application/json' }); outgoing.end(JSON.stringify({ error: 'internal_error' })); } } finally { incoming.removeListener('aborted', abortRequest); outgoing.removeListener('close', abortRequest); } });
 server.listen(Number(process.env.APPLIK8S_HTTP_PORT ?? '${gateway.deployment?.port ?? 8080}'), '0.0.0.0');
-async function monitorDependencies() { while (!stopping) { try { await Promise.all([${providerReadinessChecks.join(', ')}]); const degraded = (await Promise.all([${[...onlineSources, ...analyticalSources].map((contract) => `recoverableProjectionReadiness(() => ${projectionQuerySourceVariable(contract.query.id)}.revision())`).join(', ')}])).filter(Boolean); await Promise.all([${searchReadinessChecks.join(', ')}]); ready = true; lastDependencyError = undefined; degradedDependencyError = degraded[0]; } catch (error) { ready = false; lastDependencyError = providerReadinessError(error); degradedDependencyError = undefined; if (!stopping) console.error(lastDependencyError); } await abortableSleep(5000, dependencyMonitor.signal); } }
+async function monitorDependencies() { while (!stopping) { try { await Promise.all([${[...providerReadinessChecks, ...requiredSearchReadinessChecks].join(', ')}]); const degraded = (await Promise.all([${[
+    ...[...onlineSources, ...analyticalSources].map(contract =>
+      `recoverableProjectionReadiness(() => ${projectionQuerySourceVariable(contract.query.id)}.revision())`,
+    ),
+    ...degradedSearchReadinessChecks.map(check =>
+      `recoverableSearchReadiness(() => ${check})`,
+    ),
+  ].join(', ')}])).filter(Boolean); ready = true; lastDependencyError = undefined; degradedDependencyError = degraded[0]; } catch (error) { ready = false; lastDependencyError = providerReadinessError(error); degradedDependencyError = undefined; if (!stopping) console.error(lastDependencyError); } await abortableSleep(5000, dependencyMonitor.signal); } }
 const dependencyMonitorTask = monitorDependencies();
 async function readinessCheck(boundary, check) { try { return await check(); } catch (error) { throw new Error('Provider ' + boundary + ' not ready.', { cause: error }); } }
 function providerReadinessError(error) { if (!(error instanceof Error)) return 'Provider readiness failed.'; const cause = error.cause; return cause === undefined || cause === error ? error.message : error.message + ' ' + providerReadinessError(cause); }
+async function recoverableSearchReadiness(check) { try { await check(); } catch (error) { return providerReadinessError(error); } }
 async function recoverableProjectionReadiness(check) { try { await check(); } catch (error) { if (!isRecoverableProjectionReadinessError(error)) throw error; return error instanceof Error ? error.message : String(error); } }
 function isRecoverableProjectionReadinessError(error) { if (!error || typeof error !== 'object') return false; const code = Reflect.get(error, 'code'); return code === 'APPLIK8S_ONLINE_PROJECTION_UNAVAILABLE' || code === 'APPLIK8S_ANALYTICAL_PROJECTION_NOT_CONFIGURED'; }
 function abortableSleep(ms, signal) { if (signal.aborted) return Promise.resolve(); return new Promise((resolve) => { const timeout = setTimeout(done, ms); const abort = () => done(); function done() { clearTimeout(timeout); signal.removeEventListener('abort', abort); resolve(); } signal.addEventListener('abort', abort, { once: true }); }); }
@@ -3946,96 +3967,6 @@ function nestedModelOperation(
   if (operation.operation.operation === 'update') return 'update';
   if (operation.operation.operation === 'delete') return 'delete';
   return 'custom';
-}
-
-function nestedEventDefinition(event: import('@applik8s/core').ApplicationEventNode) {
-  return {
-    kind: 'applik8sEvent' as const,
-    id: `${event.contract.name}.${event.contract.version}`,
-    name: event.contract.name,
-    version: event.contract.version,
-    payload: {
-      kind: 'jsonSchema' as const,
-      ref: { kind: 'jsonSchema' as const, uri: `generated:${event.id}.payload` },
-      schema: event.contract.payload.jsonSchema,
-    },
-  };
-}
-
-function nestedCommandDefinition(command: ApplicationCommandNode) {
-  return {
-    kind: 'applik8sCommand' as const,
-    id: `${command.contract.name}.${command.contract.version}`,
-    name: command.contract.name,
-    version: command.contract.version,
-    input: {
-      kind: 'jsonSchema' as const,
-      ref: { kind: 'jsonSchema' as const, uri: `generated:${command.id}.input` },
-      schema: command.contract.input.jsonSchema,
-    },
-    output: {
-      kind: 'jsonSchema' as const,
-      ref: { kind: 'jsonSchema' as const, uri: `generated:${command.id}.output` },
-      schema: command.contract.output.jsonSchema,
-    },
-    errors: Object.fromEntries(command.contract.errors.map((error) => [
-      error.name,
-      {
-        kind: 'jsonSchema' as const,
-        ref: { kind: 'jsonSchema' as const, uri: `generated:${command.id}.errors.${error.name}` },
-        schema: error.schema.jsonSchema,
-      },
-    ])),
-  };
-}
-
-function nestedCallbackVariable(identifier: string): string {
-  return /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(identifier)
-    ? identifier
-    : `nestedBinding_${createHash('sha256').update(identifier).digest('hex').slice(0, 12)}`;
-}
-
-function nestedCallbackObjectSource(
-  entries: readonly { readonly path: string; readonly value: string }[],
-): string {
-  interface NestedCallbackNode {
-    direct?: string;
-    readonly children: Map<string, NestedCallbackNode>;
-  }
-  const root: NestedCallbackNode = { children: new Map() };
-  for (const entry of entries) {
-    const segments = entry.path.split('.');
-    if (
-      segments.length === 0
-      || segments.some(
-        (segment) => !/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(segment),
-      )
-    ) {
-      continue;
-    }
-    let current = root;
-    for (const segment of segments) {
-      const child = current.children.get(segment) ?? {
-        children: new Map<string, NestedCallbackNode>(),
-      };
-      current.children.set(segment, child);
-      current = child;
-    }
-    current.direct = entry.value;
-  }
-  const render = (node: NestedCallbackNode): string => {
-    if (node.direct && node.children.size === 0) return node.direct;
-    const values = [
-      ...(node.direct ? [`...(${node.direct})`] : []),
-      ...[...node.children.entries()]
-        .sort(([left], [right]) => left.localeCompare(right))
-        .map(
-          ([property, child]) => `${JSON.stringify(property)}: ${render(child)}`,
-        ),
-    ];
-    return `{ ${values.join(', ')} }`;
-  };
-  return render(root);
 }
 
 function streamProcessorCallbackBindingsSource(
@@ -6572,8 +6503,6 @@ function canonicalGraphModelName(graph: ApplicationGraph, value: string): string
 }
 
 function graphNodes(graph: ApplicationGraph): ReadonlyMap<string, ApplicationGraph['nodes'][number]> { return new Map(graph.nodes.map((node) => [node.id, node])); }
-// typecast: the runtime kind equality check narrows the graph node to the requested discriminated-union member.
-function requiredNode<TKind extends ApplicationGraph['nodes'][number]['kind']>(nodes: ReadonlyMap<string, ApplicationGraph['nodes'][number]>, id: string, kind: TKind, owner: string): Extract<ApplicationGraph['nodes'][number], { readonly kind: TKind }> { const node = nodes.get(id); if (node?.kind !== kind) throw new Error(`${owner} references missing ${kind} ${id}.`); return node as Extract<ApplicationGraph['nodes'][number], { readonly kind: TKind }>; }
 function requiredProvider(nodes: ReadonlyMap<string, ApplicationGraph['nodes'][number]>, id: string, owner: string): ApplicationProviderNode { const node = nodes.get(id); if (node?.kind !== 'provider') throw new Error(`${owner} references missing provider ${id}.`); return node; }
 function assertResolved(owner: string, callback: string, unresolved?: readonly string[]): void { if (unresolved?.length) throw new Error(`${owner} ${callback} callback cannot be emitted because it captures unresolved local identifier(s): ${unresolved.map((identifier) => JSON.stringify(identifier)).join(', ')}. Move them to module scope or keep this declaration runtime-only.`); }
 function assertSecretNamespace(database: ApplicationReactiveDatabaseRuntimeContract, namespace: string, owner: string): void { assertResourceNamespace(database.secretNamespace, namespace, `${owner} PostgreSQL Secret ${database.secretName}`); }

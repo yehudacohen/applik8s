@@ -4,11 +4,39 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { type Applik8sVitePlugin, applik8sVite } from '../src/index.js';
+import {
+  type Applik8sVitePlugin,
+  applik8sApplicationCallbacks,
+  applik8sVite,
+} from '../src/index.js';
 
 const fixtureRoot = join(dirname(fileURLToPath(import.meta.url)), 'fixtures');
 
 describe('framework-neutral Applik8s Vite integration', () => {
+  it('offers a focused callback transform for Vite and Vitest application modules', () => {
+    const plugin = applik8sApplicationCallbacks({ include: ['src'] });
+    plugin.configResolved({ root: '/workspace/product' });
+    const source = [
+      'const Records = { all() {} };',
+      'Record.view(contract, async function records() { return Records.all(); });',
+    ].join('\n');
+    const transformed = plugin.transform(source, '/workspace/product/src/model.ts');
+    expect(transformed?.code).toContain('applik8s.applicationCallbackSource');
+    expect(transformed?.code).toContain('Records.all');
+    expect(transformed?.map).toBeNull();
+    expect(plugin.transform(source, '/workspace/product/test/model.ts')).toBeUndefined();
+    expect(plugin.transform(source, '/workspace/product/src/model.generated.ts')).toBeUndefined();
+    expect(plugin.transform(source, '/workspace/product/node_modules/example/model.ts')).toBeUndefined();
+    expect(plugin.transform(source, '/outside/model.ts')).toBeUndefined();
+  });
+
+  it('fails closed when a callback include escapes the Vite workspace', () => {
+    const plugin = applik8sApplicationCallbacks({ include: ['../shared'] });
+    expect(() => plugin.configResolved({ root: '/workspace/product' })).toThrow(
+      /include root must stay inside the Vite workspace/,
+    );
+  });
+
   it('preserves authored callback metadata in production SSR modules only', async () => {
     const plugin = adapter();
     plugin.config({}, { command: 'build' });

@@ -46,6 +46,15 @@ export function validateApplicationRouteDiagnosticsContract(owner: string, contr
 
 export function applicationModelNodeStructureDiagnostics(node: ApplicationModelNode, graph: ApplicationGraph): readonly Diagnostic[] {
   const diagnostics: Diagnostic[] = [];
+  const runtimeRoles = node.common?.runtimeRoles ?? [];
+  if (new Set(runtimeRoles).size !== runtimeRoles.length) {
+    diagnostics.push(applicationGraphStructureDiagnostic(`Application model node ${node.id} runtime roles must be unique.`));
+  }
+  for (const role of runtimeRoles) {
+    if (!/^[a-z][a-z0-9.-]*(?:\/[A-Za-z0-9._-]+)+$/u.test(role)) {
+      diagnostics.push(applicationGraphStructureDiagnostic(`Application model node ${node.id} runtime role ${JSON.stringify(role)} must be a stable namespaced identifier.`));
+    }
+  }
   if (node.database.interface !== node.materialization.provider.interface || node.database.nodeId !== node.materialization.provider.nodeId) {
     diagnostics.push(applicationGraphStructureDiagnostic(`Application model node ${node.id} has inconsistent TransactionalDatabase refs between database and materialization.provider.`));
   }

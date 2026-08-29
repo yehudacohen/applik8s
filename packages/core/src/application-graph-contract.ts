@@ -381,6 +381,8 @@ export interface ApplicationCommonModelContract {
     readonly rawWrites: 'explicit-invalidation-required' | 'observed';
   };
   readonly relationships: readonly ApplicationModelRelationshipGraphContract[];
+  /** Explicit maintained-module/runtime capabilities; never inferred from table names. */
+  readonly runtimeRoles?: readonly string[];
   readonly operations?: readonly ApplicationModelOperationGraphContract[];
   readonly access?: {
     readonly context: string;
@@ -581,6 +583,10 @@ export interface ApplicationSearchIndexPlan {
     readonly retirement: 'observedReadersThenExplicitDelete';
   };
   readonly requiredCapabilities: readonly string[];
+  /** Readiness policy for this exact search projection binding. */
+  readonly readiness: {
+    readonly failurePolicy: 'block' | 'degrade';
+  };
   readonly searchOperation: ApplicationGraphNodeRef;
 }
 
@@ -721,6 +727,9 @@ export interface ApplicationTaskNode extends ApplicationGraphNodeBase<'task'> {
   };
 }
 
+/** Server-side object operations that a durable task may receive explicitly. */
+export type ApplicationTaskObjectOperation = 'put' | 'get' | 'head' | 'delete';
+
 export interface ApplicationTaskHandlerNode extends ApplicationGraphNodeBase<'taskHandler'> {
   readonly task: ApplicationGraphNodeRef;
   readonly workflowEngine: ApplicationProviderRef<'WorkflowEngine'>;
@@ -728,6 +737,11 @@ export interface ApplicationTaskHandlerNode extends ApplicationGraphNodeBase<'ta
   readonly serviceIdentity?: ApplicationIdentityReference;
   /** Runtime capabilities explicitly injected into this external-effect task. */
   readonly capabilities?: readonly ApplicationProviderRef[];
+  /** Durable child workflows captured directly by the task closure. */
+  readonly childWorkflowBindings?: readonly {
+    readonly alias: string;
+    readonly workflow: ApplicationGraphNodeRef;
+  }[];
   /** Function-native provider operations captured directly by the task closure. */
   readonly providerBindings?: readonly ApplicationCallableProviderBinding[];
   /**
@@ -764,6 +778,10 @@ export interface ApplicationTaskHandlerNode extends ApplicationGraphNodeBase<'ta
 	readonly objects?: readonly {
 		readonly alias: string;
 		readonly store: ApplicationGraphNodeRef;
+		/** Exact least-authority method surface projected into this task. */
+		readonly operations: readonly ApplicationTaskObjectOperation[];
+		/** Optional workload-specific credential selected at the task boundary. */
+		readonly credentialsSecret?: ApplicationResourceRef;
 	}[];
   /** Exact actor protocol members captured by this durable effect closure. */
   readonly actors?: readonly {
@@ -2176,6 +2194,10 @@ export interface ApplicationCallableProviderBinding {
   /** Authored lexical binding path. A one-segment path is an extracted function. */
   readonly identifier: string;
   readonly provider: ApplicationProviderRef;
+  /** Exact captured value projection reconstructed by the managed worker. */
+  readonly projection?: 'binding' | 'implementation' | 'token';
+  /** True only when the selected provider is constructed in this workload. */
+  readonly privateRuntime?: true;
   /**
    * Explicit provenance for a non-callable placement dependency. Generated
    * workers may omit only resource-backed placement bindings; an ordinary
@@ -3540,7 +3562,7 @@ function applicationGraphNodeStructureDiagnostics(node: ApplicationGraphNode, gr
     case 'job':
       return applicationJobNodeStructureDiagnostics(node);
     case 'provider':
-      return applicationProviderNodeStructureDiagnostics(node);
+      return applicationProviderNodeStructureDiagnostics(node, graph);
     case 'server':
       return [...applicationObservabilityStructureDiagnostics(`Application server node ${node.id}`, node.observability, 'routeDiagnostics'), ...applicationServerRouteStructureDiagnostics(node, graph)];
     case 'command':
@@ -4178,6 +4200,50 @@ function applicationTaskHandlerNodeStructureDiagnostics(node: ApplicationTaskHan
     const provider = nodes.get(capability.nodeId);
     if (provider?.kind !== 'provider' || provider.interface !== capability.interface) diagnostics.push(applicationGraphStructureDiagnostic(`Application task handler ${node.id} capability ${capability.interface} must reference a matching provider node.`));
   }
+  const childAliases = new Set<string>();
+  for (const binding of node.childWorkflowBindings ?? []) {
+    if (!binding.alias.trim() || childAliases.has(binding.alias)) {
+      diagnostics.push(applicationGraphStructureDiagnostic(`Application task handler ${node.id} child workflow aliases must be non-empty and unique.`));
+    }
+    childAliases.add(binding.alias);
+    if (nodes.get(binding.workflow.nodeId)?.kind !== 'workflow') {
+      diagnostics.push(applicationGraphStructureDiagnostic(`Application task handler ${node.id} child workflow ${binding.alias} must reference a workflow node.`));
+    }
+  }
+  const providerBindingIdentities = new Set<string>();
+  for (const binding of node.providerBindings ?? []) {
+    if (
+      !binding.identifier.trim()
+      || providerBindingIdentities.has(binding.identifier)
+    ) {
+      diagnostics.push(applicationGraphStructureDiagnostic(
+        `Application task handler ${node.id} provider binding identifiers must be non-empty and unique.`,
+      ));
+    }
+    providerBindingIdentities.add(binding.identifier);
+    const provider = nodes.get(binding.provider.nodeId);
+    if (
+      provider?.kind !== 'provider'
+      || provider.interface !== binding.provider.interface
+    ) {
+      diagnostics.push(applicationGraphStructureDiagnostic(
+        `Application task handler ${node.id} provider binding ${binding.identifier} must reference a matching provider node.`,
+      ));
+    }
+    if (
+      binding.projection !== undefined
+      && !['binding', 'implementation', 'token'].includes(binding.projection)
+    ) {
+      diagnostics.push(applicationGraphStructureDiagnostic(
+        `Application task handler ${node.id} provider binding ${binding.identifier} has an invalid runtime projection.`,
+      ));
+    }
+    if (binding.privateRuntime !== undefined && binding.privateRuntime !== true) {
+      diagnostics.push(applicationGraphStructureDiagnostic(
+        `Application task handler ${node.id} provider binding ${binding.identifier} has an invalid private-runtime marker.`,
+      ));
+    }
+  }
   const operationAliases = new Set<string>();
   for (const operation of node.operations ?? []) {
     if (!operation.alias.trim() || operationAliases.has(operation.alias)) diagnostics.push(applicationGraphStructureDiagnostic(`Application task handler ${node.id} operation aliases must be non-empty and unique.`));
@@ -4227,7 +4293,25 @@ function applicationTaskHandlerNodeStructureDiagnostics(node: ApplicationTaskHan
 	for (const object of node.objects ?? []) {
 		if (!object.alias.trim() || objectAliases.has(object.alias)) diagnostics.push(applicationGraphStructureDiagnostic(`Application task handler ${node.id} object aliases must be non-empty and unique.`));
 		objectAliases.add(object.alias);
-		if (nodes.get(object.store.nodeId)?.kind !== 'objectStore') diagnostics.push(applicationGraphStructureDiagnostic(`Application task handler ${node.id} object ${object.alias} must reference an object store.`));
+		const store = nodes.get(object.store.nodeId);
+		if (store?.kind !== 'objectStore') diagnostics.push(applicationGraphStructureDiagnostic(`Application task handler ${node.id} object ${object.alias} must reference an object store.`));
+		const operations = Array.isArray(object.operations)
+			? object.operations
+			: undefined;
+		if (!operations || operations.length === 0) {
+			diagnostics.push(applicationGraphStructureDiagnostic(`Application task handler ${node.id} object ${object.alias} must declare at least one operation.`));
+			continue;
+		}
+		const supported = new Set<ApplicationTaskObjectOperation>(['put', 'get', 'head', 'delete']);
+		if (operations.some(operation => !supported.has(operation))) diagnostics.push(applicationGraphStructureDiagnostic(`Application task handler ${node.id} object ${object.alias} declares an unsupported operation.`));
+		if (new Set(operations).size !== operations.length) diagnostics.push(applicationGraphStructureDiagnostic(`Application task handler ${node.id} object ${object.alias} operations must be unique.`));
+		if (store?.kind === 'objectStore' && store.deletion === 'retained' && operations.includes('delete')) diagnostics.push(applicationGraphStructureDiagnostic(`Application task handler ${node.id} object ${object.alias} cannot receive delete authority for retained store ${store.id}.`));
+		if (object.credentialsSecret && (
+			object.credentialsSecret.apiVersion !== 'v1'
+			|| object.credentialsSecret.kind !== 'Secret'
+			|| typeof object.credentialsSecret.name !== 'string'
+			|| !object.credentialsSecret.name.trim()
+		)) diagnostics.push(applicationGraphStructureDiagnostic(`Application task handler ${node.id} object ${object.alias} credentials must reference a named v1 Secret.`));
 	}
   const actorAliases = new Set<string>();
   for (const binding of node.actors ?? []) {
@@ -4547,7 +4631,10 @@ function applicationServerRouteStructureDiagnostics(
   return diagnostics;
 }
 
-function applicationProviderNodeStructureDiagnostics(node: ApplicationProviderNode): readonly Diagnostic[] {
+function applicationProviderNodeStructureDiagnostics(
+  node: ApplicationProviderNode,
+  graph: ApplicationGraph,
+): readonly Diagnostic[] {
   const diagnostics: Diagnostic[] = [];
   const profile = node.config?.profile;
   if (
@@ -4573,6 +4660,22 @@ function applicationProviderNodeStructureDiagnostics(node: ApplicationProviderNo
           `Application provider node ${node.id} profile qualification ${selection.qualification.capability} must match provider interface ${node.interface}.`,
         ),
       );
+    }
+    const nodes = new Map(graph.nodes.map((candidate) => [candidate.id, candidate]));
+    for (const branch of selection.branches) {
+      for (const dependency of branch.privateRuntime?.postgres ?? []) {
+        const database = nodes.get(dependency.databaseProviderNodeId);
+        if (
+          database?.kind !== 'provider'
+          || database.interface !== 'TransactionalDatabase'
+        ) {
+          diagnostics.push(
+            applicationGraphStructureDiagnostic(
+              `Application provider node ${node.id} branch ${branch.variant} private PostgreSQL ${dependency.alias} must reference a TransactionalDatabase provider.`,
+            ),
+          );
+        }
+      }
     }
   }
   if (!node.contract) {

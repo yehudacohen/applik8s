@@ -736,7 +736,76 @@ function applicationRouteTopLevelBindings(
     const end = statementSourceEnd(source, index);
     index = end > index ? end : index + 1;
   }
+  // The statement scanner intentionally fails closed around complex regex and
+  // template syntax. Recover only real module-scope function declarations
+  // from a same-length lexical projection. The raw-source depth check prevents
+  // declarations inside callback bodies or template interpolations from being
+  // promoted into the generated runtime dependency bundle.
+  const lexicalSource = stripCommentsAndStrings(source);
+  for (const match of lexicalSource.matchAll(
+    /^(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\b/gmu,
+  )) {
+    const name = match[1];
+    const position = match.index;
+    if (
+      !name
+      || position === undefined
+      || bindingNames.has(name)
+      || bindings.has(name)
+      || !topLevelSourcePosition(source, position)
+    ) {
+      continue;
+    }
+    const declaration = topLevelDeclarationBindingAt(
+      source,
+      position,
+      bindingNames,
+    );
+    if (!declaration || !declaration.names.includes(name)) continue;
+    bindings.set(name, {
+      name,
+      source: declaration.source,
+      analysisSource: declaration.source,
+      kind: 'declaration',
+      position,
+    });
+  }
   return { bindings, providerSetups };
+}
+
+function topLevelSourcePosition(source: string, position: number): boolean {
+  let parens = 0;
+  let braces = 0;
+  let brackets = 0;
+  let index = 0;
+  while (index < position) {
+    const character = source[index] ?? '';
+    let skipped: number | undefined;
+    if (character === '\'' || character === '"') {
+      skipped = quotedSourceEnd(source, index, character);
+    } else if (character === '`') {
+      skipped = templateSourceEnd(source, index);
+    } else if (character === '/' && source[index + 1] === '/') {
+      skipped = lineCommentEnd(source, index);
+    } else if (character === '/' && source[index + 1] === '*') {
+      skipped = blockCommentEnd(source, index);
+    } else if (character === '/' && isRegexLiteralStart(source, index)) {
+      skipped = regexLiteralEnd(source, index);
+    }
+    if (skipped !== undefined) {
+      if (skipped > position) return false;
+      index = skipped;
+      continue;
+    }
+    if (character === '(') parens += 1;
+    else if (character === ')') parens = Math.max(0, parens - 1);
+    else if (character === '{') braces += 1;
+    else if (character === '}') braces = Math.max(0, braces - 1);
+    else if (character === '[') brackets += 1;
+    else if (character === ']') brackets = Math.max(0, brackets - 1);
+    index += 1;
+  }
+  return parens === 0 && braces === 0 && brackets === 0;
 }
 
 function topLevelStatementStart(source: string, start: number): number {

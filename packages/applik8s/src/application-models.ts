@@ -540,6 +540,7 @@ export function recordApplicationNativeModelGraph<TTable extends AnyPgTable>(
       snapshot: { shape: 'identity-value-revision', revisionOptional: true },
       changes: { authority: 'postgres-change-log', rawWrites: 'explicit-invalidation-required' },
       relationships: model.relationships,
+      ...(model.runtimeRoles ? { runtimeRoles: model.runtimeRoles } : {}),
       operations: [{
         name: 'create',
         operation: 'create',
@@ -670,6 +671,7 @@ export function recordApplicationAnalyticalNativeModelGraph<
         rawWrites: 'explicit-invalidation-required',
       },
       relationships: model.relationships,
+      ...(model.runtimeRoles ? { runtimeRoles: model.runtimeRoles } : {}),
       operations: [],
     },
   });

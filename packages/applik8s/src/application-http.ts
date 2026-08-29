@@ -73,6 +73,13 @@ export interface ApplicationHttpContext {
   readonly principal: ApplicationPrincipal;
   readonly trustedContext: Readonly<Record<string, JsonValue>>;
   /**
+   * Framework-normalized operation idempotency identity. Ordinary typed
+   * routes receive the trimmed, bounded `Idempotency-Key`; authenticated
+   * webhooks receive the provider-event identity derived by the framework.
+   * Raw request headers remain unavailable.
+   */
+  readonly idempotencyKey: string;
+  /**
    * Browser-supplied HTTP Origin after strict HTTP(S) normalization. This is
    * framework transport metadata, not application input, and is intentionally
    * absent for non-browser/server-to-server callers.

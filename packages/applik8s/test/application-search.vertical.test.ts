@@ -144,6 +144,26 @@ describe('application search projections', () => {
         }),
       ]),
     );
+    const searchQuery = graph?.nodes.find(
+      node => node.kind === 'query' && node.publicId === 'product-search.search',
+    );
+    expect(searchQuery?.kind === 'query'
+      ? searchQuery.input.jsonSchema
+      : undefined).toMatchObject({
+      properties: {
+        orderBy: {
+          oneOf: [
+            {
+              properties: {
+                field: { enum: expect.arrayContaining(['title', 'createdAt']) },
+                direction: { enum: ['asc', 'desc'] },
+              },
+            },
+            { type: 'array', minItems: 1, maxItems: 32 },
+          ],
+        },
+      },
+    });
   });
 
   test('rejects an unaggregated many-valued relationship path', () => {

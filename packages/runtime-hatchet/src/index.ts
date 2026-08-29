@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import type { ApplicationHatchetWorkflowEngineProvider } from '@applik8s/applik8s';
 import type {
   ApplicationWorkflowInvocationMetadata,
+  ApplicationWorkflowProviderRun,
   ApplicationWorkflowResultOptions,
   ApplicationWorkflowRuntime,
   ApplicationWorkflowScheduleSpec,
@@ -60,6 +61,9 @@ export function createHatchetWorkflowRuntimeFromClientFactory(client: () => Hatc
     start<TInput extends object, TOutput extends object, TErrors extends Readonly<Record<string, object>> = Readonly<Record<never, never>>>(contract: string, input: TInput, metadata?: ApplicationWorkflowInvocationMetadata) {
       return runtime().start<TInput, TOutput, TErrors>(contract, input, metadata);
     },
+    attach<TOutput extends object, TErrors extends Readonly<Record<string, object>> = Readonly<Record<never, never>>>(contract: string, runId: string, admittedAt: string) {
+      return runtime().attach<TOutput, TErrors>(contract, runId, admittedAt);
+    },
     schedule<TInput extends object>(contract: string, input: TInput, at: Date, metadata?: ApplicationWorkflowInvocationMetadata) {
       return runtime().schedule(contract, input, at, metadata);
     },
@@ -100,7 +104,7 @@ export function createHatchetWorkflowRuntimeFromClient(client: HatchetClient): A
       const id = await boundedHatchetOperation(() => Promise.resolve(reference.runId), contract, 'resolve run id', { timeoutMs: defaultHatchetOperationTimeoutMs });
       return waitForHatchetResult<TOutput>(client, id, result);
     },
-    async start<TInput extends object, TOutput extends object>(contract: string, input: TInput, metadata?: ApplicationWorkflowInvocationMetadata) {
+    async start<TInput extends object, TOutput extends object, TErrors extends Readonly<Record<string, object>> = Readonly<Record<never, never>>>(contract: string, input: TInput, metadata?: ApplicationWorkflowInvocationMetadata) {
       // typecast: schema-validated application input satisfies Hatchet's JSON object transport boundary.
       const reference = await boundedHatchetOperation(
         () => client.runNoWait<JsonObject, JsonObject>(contract, encodeHatchetWorkflowTransportInput(input, metadata), hatchetRunOptions(metadata)),
@@ -110,29 +114,18 @@ export function createHatchetWorkflowRuntimeFromClient(client: HatchetClient): A
       );
       const id = await boundedHatchetOperation(() => Promise.resolve(reference.runId), contract, 'resolve run id', { timeoutMs: defaultHatchetOperationTimeoutMs });
       const admittedAt = new Date().toISOString();
-      return {
-        id,
-        result: (options) => waitForHatchetResult<TOutput>(client, id, options),
-        observe: (options?: ApplicationWorkflowResultOptions) =>
-          observeHatchetWorkflowRun<TOutput>(client, id, admittedAt, options),
-        cancel: async (options) => {
-          await boundedHatchetOperation(() => client.runs.cancel({ ids: [id] }), id, 'cancel', {
-            ...options,
-            timeoutMs: options?.timeoutMs ?? defaultHatchetOperationTimeoutMs,
-          });
-        },
-        __cancelReference: async (runId: string, options?: Omit<ApplicationWorkflowResultOptions, 'pollIntervalMs'>) => {
-          await boundedHatchetOperation(
-            () => client.runs.cancel({ ids: [runId] }),
-            runId,
-            'cancel superseded run',
-            {
-              ...options,
-              timeoutMs: options?.timeoutMs ?? defaultHatchetOperationTimeoutMs,
-            },
-          );
-        },
-      };
+      return attachedHatchetRun<TOutput, TErrors>(client, id, admittedAt);
+    },
+    async attach<TOutput extends object, TErrors extends Readonly<Record<string, object>> = Readonly<Record<never, never>>>(
+      _contract: string,
+      runId: string,
+      admittedAt: string,
+    ) {
+      return attachedHatchetRun<TOutput, TErrors>(
+        client,
+        requiredRunId(runId),
+        requiredAdmittedAt(admittedAt),
+      );
     },
     async schedule(contract, input, at, metadata) {
       const declaration = client.workflow({ name: contract });
@@ -160,4 +153,53 @@ export function createHatchetWorkflowRuntimeFromClient(client: HatchetClient): A
       );
     },
   };
+}
+
+function attachedHatchetRun<
+  TOutput extends object,
+  TErrors extends Readonly<Record<string, object>> = Readonly<Record<never, never>>,
+>(
+  client: HatchetClient,
+  id: string,
+  admittedAt: string,
+): ApplicationWorkflowProviderRun<TOutput, TErrors> {
+  return {
+        id,
+        result: (options) => waitForHatchetResult<TOutput>(client, id, options),
+        observe: (options?: ApplicationWorkflowResultOptions) =>
+          observeHatchetWorkflowRun<TOutput>(client, id, admittedAt, options),
+        cancel: async (options) => {
+          await boundedHatchetOperation(() => client.runs.cancel({ ids: [id] }), id, 'cancel', {
+            ...options,
+            timeoutMs: options?.timeoutMs ?? defaultHatchetOperationTimeoutMs,
+          });
+        },
+        __cancelReference: async (runId: string, options?: Omit<ApplicationWorkflowResultOptions, 'pollIntervalMs'>) => {
+          await boundedHatchetOperation(
+            () => client.runs.cancel({ ids: [runId] }),
+            runId,
+            'cancel superseded run',
+            {
+              ...options,
+              timeoutMs: options?.timeoutMs ?? defaultHatchetOperationTimeoutMs,
+            },
+          );
+        },
+  };
+}
+
+function requiredRunId(value: string): string {
+  const normalized = value.trim();
+  if (!normalized || normalized !== value) {
+    throw new Error('Workflow attachment requires a retained provider run ID.');
+  }
+  return normalized;
+}
+
+function requiredAdmittedAt(value: string): string {
+  const timestamp = new Date(value);
+  if (!value || Number.isNaN(timestamp.getTime())) {
+    throw new Error('Workflow attachment requires a valid admittedAt timestamp.');
+  }
+  return timestamp.toISOString();
 }

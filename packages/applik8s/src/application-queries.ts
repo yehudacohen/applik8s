@@ -15,6 +15,7 @@ import type {
   ApplicationSerializedCallbackContract,
   JsonObject,
 } from '@applik8s/core';
+import { emitArkTypeStructuralJsonSchema } from '@applik8s/sdk';
 import type { Type } from 'arktype';
 import type { ApplicationDatabaseBinding } from './application.js';
 import { applicationActorDependencyBindings } from './application-actor-dependencies.js';
@@ -1041,8 +1042,11 @@ function isRelationship(value: object): value is ApplicationModelRelationshipCon
 }
 
 function querySchema<TValue>(schema: Type<TValue>): ApplicationMessageContractSchema {
-  // typecast: ArkType's JSON Schema result is validated by the shared schema adapter at runtime.
-  return { kind: 'declared', runtime: 'arktype', jsonSchema: schema.toJsonSchema() as JsonObject };
+  return {
+    kind: 'declared',
+    runtime: 'arktype',
+    jsonSchema: emitArkTypeStructuralJsonSchema(schema),
+  };
 }
 
 function parseVersionedQueryId(id: string): {

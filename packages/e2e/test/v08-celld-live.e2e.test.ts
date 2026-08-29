@@ -145,7 +145,10 @@ live('v0.8 distributed celld actor qualification', () => {
       admitted('increment', 'workspace-one', { by: 1 }, () => Counter.increment('workspace-one', { by: 1 }, { idempotencyKey: 'increment-two' })),
     ]);
     expect(concurrent.map(({ count }) => count).sort((left, right) => left - right)).toEqual([1, 2]);
-    await expect(admitted('increment', 'workspace-one', { by: 1 }, () => Counter.increment('workspace-one', { by: 1 }, { idempotencyKey: 'increment-two' }))).resolves.toEqual({ count: 2 });
+    // Concurrent calls have no caller-order guarantee: increment-two may win
+    // the actor lease first and legitimately commit count=1. Idempotency must
+    // replay that operation's exact committed result, whichever order won.
+    await expect(admitted('increment', 'workspace-one', { by: 1 }, () => Counter.increment('workspace-one', { by: 1 }, { idempotencyKey: 'increment-two' }))).resolves.toEqual(concurrent[1]);
 
     await docker(['stop', '--time', '0', nodeA], 30_000);
     activeRuntime = createCelldApplicationActorRuntime({

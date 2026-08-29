@@ -160,7 +160,9 @@ export function createApplicationRelationalSearchSources<
     if (identities.length === 0) return [];
     const unique = [...new Set(identities.map(requiredIdentity))].sort();
     const query = documentQuery(unique, undefined, undefined);
-    const rows = await options.sql.unsafe(query.sql, query.parameters);
+    const rows = await withProjectionAuthority(options.sql, connection =>
+      connection.unsafe(query.sql, query.parameters),
+    );
     const found = new Map<string, TDocument>();
     for (const row of rows) {
       const identity = requiredRowString(row.identity, "identity");
@@ -184,8 +186,8 @@ export function createApplicationRelationalSearchSources<
       const boundedLimit = boundedInteger(limit, 1, 2_000, "limit");
       // One statement observes the retained floor, committed frontier, and
       // bounded page under one PostgreSQL statement snapshot.
-      const rows = await options.sql.unsafe(
-        `SELECT
+      const rows = await withProjectionAuthority(options.sql, connection =>
+        connection.unsafe(`SELECT
           "frontier"."position" AS high_watermark,
           COALESCE("retention"."floor", "frontier"."position" + 1) AS retention_floor,
           "changes"."sequence",
@@ -211,7 +213,7 @@ export function createApplicationRelationalSearchSources<
         ) AS "changes" ON true
         WHERE "frontier"."singleton" = true
         ORDER BY "changes"."commit_position", "changes"."sequence"`,
-        [after, boundedLimit],
+        [after, boundedLimit]),
       );
       const first = rows[0];
       const highWatermark = first
@@ -252,7 +254,9 @@ export function createApplicationRelationalSearchSources<
         models,
       );
       const query = affectedRootQuery(root, path, maximum);
-      const rows = await options.sql.unsafe(query, [change.sourceIdentity]);
+      const rows = await withProjectionAuthority(options.sql, connection =>
+        connection.unsafe(query, [change.sourceIdentity]),
+      );
       const identities = rows.map((row) =>
         requiredRowString(row.identity, "identity"),
       );
@@ -288,6 +292,7 @@ export function createApplicationRelationalSearchSources<
           "BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY",
         );
         begun = true;
+        await establishProjectionAuthority(connection);
         const rows = await connection.unsafe(
           `SELECT position
           FROM applik8s_model_change_commit_frontier
@@ -363,6 +368,41 @@ export function createApplicationRelationalSearchSources<
       );
     },
   };
+}
+
+async function withProjectionAuthority<TResult>(
+  sql: ApplicationRelationalSearchSql,
+  operation: (
+    connection: ApplicationRelationalSearchConnection,
+  ) => Promise<TResult>,
+): Promise<TResult> {
+  const connection = await sql.reserve();
+  let begun = false;
+  try {
+    await connection.unsafe(
+      "BEGIN TRANSACTION ISOLATION LEVEL READ COMMITTED READ ONLY",
+    );
+    begun = true;
+    await establishProjectionAuthority(connection);
+    const result = await operation(connection);
+    await connection.unsafe("COMMIT");
+    begun = false;
+    return result;
+  } catch (error) {
+    if (begun) await connection.unsafe("ROLLBACK").catch(() => undefined);
+    throw error;
+  } finally {
+    await connection.release();
+  }
+}
+
+async function establishProjectionAuthority(
+  connection: ApplicationRelationalSearchConnection,
+): Promise<void> {
+  // Applications may grant FORCE-RLS-safe, read-only projection access to
+  // this transaction-local marker. The marker grants nothing by itself and is
+  // automatically cleared at transaction completion.
+  await connection.unsafe(`SET LOCAL "applik8s.search_projection" = 'v1'`);
 }
 
 function committedChange(

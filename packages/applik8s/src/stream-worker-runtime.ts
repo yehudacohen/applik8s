@@ -145,3 +145,22 @@ export function createApplicationFunctionNativeOperationHandle<
     ) as Promise<TOutput>);
   };
 }
+
+/**
+ * Keeps one function-native operation callable in both places application
+ * authors naturally use it: as an ordinary queued durable command and inside
+ * a compiler-owned PostgreSQL edit where it can join the active transaction.
+ * The managed-effects scope is the authority; callers cannot select atomic
+ * execution themselves.
+ */
+export function bindApplicationFunctionNativeOperationHandle<
+  TInput extends object,
+  TOutput,
+>(
+  atomic: (input: TInput) => Promise<TOutput>,
+  fallback: (input: TInput) => Promise<TOutput>,
+): (input: TInput) => Promise<TOutput> {
+  return (input) => currentApplicationManagedEffects()
+    ? atomic(input)
+    : fallback(input);
+}

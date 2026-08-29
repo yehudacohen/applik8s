@@ -238,7 +238,13 @@ export class DurableCommandRejectedError extends Error {
     readonly replayed: boolean,
     readonly observation: ApplicationCommandObservation,
   ) {
-    super(`applik8s-command-rejected: ${rejection.name}`);
+    const candidate = Reflect.get(rejection.payload, 'message');
+    const policyMessage = typeof candidate === 'string' && candidate.length > 0
+      ? `: ${candidate.slice(0, 512)}`
+      : '';
+    super(
+      `applik8s-command-rejected: ${observation.target.model}/${observation.target.key}: ${rejection.name}${policyMessage}`,
+    );
     this.name = 'DurableCommandRejectedError';
   }
 }
@@ -2129,7 +2135,13 @@ async function insertModelObject<TSpec extends object, TStatus extends object>(
   if (entries.length === 0) throw new Error(`Native model ${model.name} initialization produced no insertable fields.`);
   const columns = entries.map(({ column }) => quoteIdentifier(column)).join(', ');
   const placeholders = entries.map((_entry, index) => `$${index + 1}`).join(', ');
-  const parameters = entries.map(({ property }) => Reflect.get(properties, property));
+  const parameters = entries.map(({ property, logicalType }) =>
+    nativePostgresModelValue(
+      transaction,
+      Reflect.get(properties, property),
+      logicalType,
+    ),
+  );
   return transaction.unsafe(`INSERT INTO ${qualifiedModelTable(model)} (${columns}) VALUES (${placeholders})${ignoreConflict ? ` ON CONFLICT (${quoteIdentifier(native.identity.column)}) DO NOTHING` : ''} RETURNING *`, parameters);
 }
 
@@ -2155,8 +2167,34 @@ async function updateModelObject<TSpec extends object, TStatus extends object>(
       `Native model ${model.name} cannot execute concurrent durable commands without a revision column; use serial ordering or declare a revision column.`,
     );
   }
-  const mutable = native.columns.filter(({ property }) => property !== native.identity.property);
-  const parameters = mutable.map(({ property }) => property === revision?.property ? after.revision : Reflect.get(after.spec, property));
+  // SQL NULL and JSON null hydrate to the same JavaScript value. Rewriting
+  // every column can therefore mutate an untouched SQL NULL. Persist only
+  // semantic changes, while always advancing a declared revision column.
+  const mutable = native.columns.filter(({ property }) =>
+    property !== native.identity.property
+    && (
+      property === revision?.property
+      || !Object.is(
+        Reflect.get(before.spec, property),
+        Reflect.get(after.spec, property),
+      )
+    ),
+  );
+  if (mutable.length === 0) {
+    return transaction.unsafe(
+      `SELECT ${quoteIdentifier(native.identity.column)} FROM ${qualifiedModelTable(model)} WHERE ${quoteIdentifier(native.identity.column)} = $1`,
+      [after.id],
+    );
+  }
+  const parameters = mutable.map(({ property, logicalType }) =>
+    property === revision?.property
+      ? after.revision
+      : nativePostgresModelValue(
+          transaction,
+          Reflect.get(after.spec, property),
+          logicalType,
+        ),
+  );
   const assignments = mutable.map(({ column }, index) => `${quoteIdentifier(column)} = $${index + 1}`).join(', ');
   parameters.push(after.id);
   let predicate = `${quoteIdentifier(native.identity.column)} = $${parameters.length}`;
@@ -2378,6 +2416,19 @@ function commandTargetScope(bindingId: string, model: string, targetKey: string)
 
 function commandDeterministicId(scope: string, purpose: string): string {
   return createHash('sha256').update(`${scope}:${purpose}`).digest('hex');
+}
+
+function nativePostgresModelValue(
+  transaction: ApplicationPostgresTransactionSql,
+  value: unknown,
+  logicalType?: string,
+): unknown {
+  if (logicalType !== 'json') return value;
+  // postgres.js treats a raw JavaScript null as SQL NULL before its JSON
+  // serializer runs. A non-null value whose JSON representation is null keeps
+  // the distinct root JSON-null value.
+  if (value === null) return transaction.json({ toJSON: () => null });
+  return postgresJson(transaction, value);
 }
 
 function postgresJson(transaction: ApplicationPostgresTransactionSql, value: unknown): unknown {

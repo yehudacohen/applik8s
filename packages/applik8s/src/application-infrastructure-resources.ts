@@ -705,6 +705,9 @@ export function recordApplicationProviderGraph(
       ...(providerInterface === 'AI' && !targetSelection && implementation && typeof implementation === 'object'
         ? { ai: applicationTypeKroGraphValue(implementation) as JsonValue }
         : {}),
+      ...(providerInterface === 'StructuredGeneration' && !targetSelection && implementation && typeof implementation === 'object'
+        ? applicationTypeKroGraphValue(implementation) as JsonObject
+        : {}),
       ...((providerInterface === 'EventLog' || providerInterface === 'WorkflowEngine')
         && !targetSelection
         && implementation

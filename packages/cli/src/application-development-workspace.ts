@@ -9,6 +9,7 @@ const DEVELOPMENT_SOURCE_PATHS = [
   ['src', 'Directory'],
   ['public', 'Directory'],
   ['drizzle', 'Directory'],
+  ['patches', 'Directory'],
   ['package.json', 'File'],
   ['bun.lock', 'File'],
   ['tsconfig.json', 'File'],
@@ -135,10 +136,10 @@ async function localWorkspacePackages(
   );
   const requested = workspaceDependencyNames(projectManifest);
   if (requested.length === 0) return [];
-  const root = await findWorkspaceRoot(dirname(projectRoot), requested);
+  const root = await findWorkspaceRoot(projectRoot, requested);
   if (!root) {
     throw new Error(
-      `Development project ${projectRoot} uses workspace:* dependencies, but no ancestor workspace provides ${requested.join(', ')}.`,
+      `Development project ${projectRoot} uses workspace:* dependencies, but neither the project nor an ancestor workspace provides ${requested.join(', ')}.`,
     );
   }
   const available = await workspacePackageMap(root);
@@ -368,6 +369,12 @@ async function existingDevelopmentSources(
         .catch(() => false),
     })),
   );
+  const patches = entries.find(
+    (entry) => entry.path === 'patches' && entry.exists,
+  );
+  if (patches) {
+    await assertNoEnvironmentFiles(join(projectRoot, patches.path));
+  }
   return entries
     .filter((entry) => entry.exists)
     .map(({ path, type }) => ({ path, type }));

@@ -1,5 +1,5 @@
 // typecast-file-boundary: provider constructors validate structural runtime input before restoring provider-specific discriminated contracts.
-import { type ApplicationCallableProviderRuntimeBinding, type ApplicationCallableProviderRuntimeOperation, type ApplicationMigrationContract, type ApplicationProviderInterfaceKind, type ApplicationProviderRuntimeContract, type ApplicationResourceRef, isApplicationRuntimeAccessOperation } from '@applik8s/core';
+import { type ApplicationCallableProviderRuntimeBinding, type ApplicationCallableProviderRuntimeOperation, type ApplicationMigrationContract, type ApplicationProviderInterfaceKind, type ApplicationProviderPrivateRuntimeContract, type ApplicationProviderRuntimeContract, type ApplicationResourceRef, isApplicationRuntimeAccessOperation } from '@applik8s/core';
 import type {
   ApplicationDeterministicIdentityOptions,
   ApplicationOAuthAuthorizationFlowRecord,
@@ -1002,6 +1002,53 @@ export interface ApplicationProviderToken<TImplementation = unknown> {
   readonly callableRuntime?: ApplicationCallableProviderRuntimeContract;
   readonly accepts?: (implementation: unknown) => implementation is TImplementation;
   readonly __implementation?: TImplementation;
+}
+
+const applicationProviderPrivateRuntimeSymbol = Symbol.for(
+  'applik8s.applicationProviderPrivateRuntime',
+);
+
+export interface ApplicationProviderPrivateRuntimeImplementation<TImplementation = unknown> {
+  readonly token: ApplicationQualifiedProviderToken<TImplementation>;
+  readonly contract: ApplicationProviderPrivateRuntimeContract;
+}
+
+/** @internal Non-callable authoring placeholder for one runtime provider. */
+export function applicationProviderPrivateRuntimeImplementation<TImplementation>(
+  token: ApplicationQualifiedProviderToken<TImplementation>,
+  contract: ApplicationProviderPrivateRuntimeContract,
+): TImplementation {
+  const placeholder = Object.create(null) as Record<PropertyKey, unknown>;
+  Object.defineProperty(placeholder, applicationProviderPrivateRuntimeSymbol, {
+    configurable: false,
+    enumerable: false,
+    writable: false,
+    value: Object.freeze({ token, contract }),
+  });
+  Object.defineProperty(placeholder, 'kind', {
+    configurable: false,
+    enumerable: true,
+    writable: false,
+    value: contract.implementation,
+  });
+  return Object.freeze(placeholder) as TImplementation;
+}
+
+export function applicationProviderPrivateRuntimeFor<TImplementation = unknown>(
+  value: unknown,
+): ApplicationProviderPrivateRuntimeImplementation<TImplementation> | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const metadata = Reflect.get(value, applicationProviderPrivateRuntimeSymbol);
+  if (!metadata || typeof metadata !== 'object') return undefined;
+  const token = Reflect.get(metadata, 'token');
+  const contract = Reflect.get(metadata, 'contract');
+  if (!isApplicationQualifiedProviderToken<TImplementation>(token)) return undefined;
+  if (
+    !contract
+    || typeof contract !== 'object'
+    || Reflect.get(contract, 'apiVersion') !== 'applik8s.providerRuntime/v1alpha1'
+  ) return undefined;
+  return { token, contract: contract as ApplicationProviderPrivateRuntimeContract };
 }
 
 /** Static runtime exports available to managed closures for this provider. */
@@ -3368,14 +3415,18 @@ export function applicationProviderSelectionSatisfies<TImplementation>(
   if (isApplicationTargetProviderSelection(value)) {
     const candidates = Object.values(value.targets);
     return candidates.length > 0 && candidates.every((candidate) =>
-      accepts(candidate) || applicationProviderSelectionSatisfies(candidate, accepts));
+      accepts(candidate)
+      || applicationProviderPrivateRuntimeFor(candidate) !== undefined
+      || applicationProviderSelectionSatisfies(candidate, accepts));
   }
   if (!isApplicationProviderSelection(value)) return false;
   return [
     ...Object.values(value.cases),
     value.default,
   ].every((candidate) =>
-    accepts(candidate) || applicationProviderSelectionSatisfies(candidate, accepts));
+    accepts(candidate)
+    || applicationProviderPrivateRuntimeFor(candidate) !== undefined
+    || applicationProviderSelectionSatisfies(candidate, accepts));
 }
 
 function applicationProviderStateField(tokenName: string | undefined): 'counters' | 'events' | 'eventLogs' | 'secrets' | 'queues' | 'objects' | 'credentials' | undefined {

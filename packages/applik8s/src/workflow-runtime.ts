@@ -218,6 +218,8 @@ export interface ApplicationWorkflowScheduleResult {
 export interface ApplicationWorkflowRuntime {
   run<TInput extends object, TOutput extends object>(contract: string, input: TInput, metadata?: ApplicationWorkflowInvocationMetadata, result?: ApplicationWorkflowResultOptions): Promise<TOutput>;
   start<TInput extends object, TOutput extends object, TErrors extends Readonly<Record<string, object>> = Readonly<Record<never, never>>>(contract: string, input: TInput, metadata?: ApplicationWorkflowInvocationMetadata): Promise<ApplicationWorkflowProviderRun<TOutput, TErrors>>;
+  /** Reattach to one already-admitted provider run without redispatch. */
+  attach<TOutput extends object, TErrors extends Readonly<Record<string, object>> = Readonly<Record<never, never>>>(contract: string, runId: string, admittedAt: string): Promise<ApplicationWorkflowProviderRun<TOutput, TErrors>>;
   schedule<TInput extends object>(contract: string, input: TInput, at: Date, metadata?: ApplicationWorkflowInvocationMetadata): Promise<{ readonly id: string }>;
   /** Converges one application-owned recurring schedule without exposing provider APIs to domain code. */
   reconcileSchedule<TInput extends object>(contract: string, schedule: ApplicationWorkflowScheduleSpec<TInput>, metadata?: ApplicationWorkflowInvocationMetadata): Promise<ApplicationWorkflowScheduleResult>;

@@ -16,6 +16,7 @@ import type {
   ResourceObject,
   RuntimeSchema,
 } from '@applik8s/core';
+import { emitArkTypeStructuralJsonSchema } from '@applik8s/sdk';
 import { type as arkType, type Type } from 'arktype';
 import { createInsertSchema, createSelectSchema, createUpdateSchema } from 'drizzle-arktype';
 import {
@@ -300,6 +301,7 @@ export interface CommonApplicationModelFacet<TValue, TIdentity = string, TInsert
   readonly revision?: ApplicationModelRevisionContract;
   readonly schema: ApplicationModelSchemaSet<TValue, TInsert, TUpdate>;
   readonly relationships: readonly ApplicationModelRelationshipContract[];
+  readonly runtimeRoles?: readonly string[];
   readonly relations: Readonly<Record<string, ApplicationModelRelationshipContract>>;
   readonly access?: {
     readonly context: string;
@@ -638,6 +640,7 @@ export interface PromoteDrizzleTableOptions<TTable extends AnyPgTable> {
   readonly schema?: Readonly<Record<string, unknown>>;
   readonly identity?: readonly (keyof InferSelectModel<TTable> & string)[];
   readonly revision?: (keyof InferSelectModel<TTable> & string) | false;
+  readonly runtimeRoles?: readonly string[];
 }
 
 export type PromoteAnalyticalDrizzleTableOptions<TTable extends AnyPgTable> = Omit<
@@ -1085,6 +1088,7 @@ export function promoteAnalyticalDrizzleTable<TTable extends AnyPgTable>(
     encoding: 'scalar',
   };
   const relationships = Object.freeze(normalizeDrizzleModelRelationships(table, options.schema, name));
+  const runtimeRoles = normalizedApplicationModelRuntimeRoles(name, options.runtimeRoles);
   const view = ((
     nameOrOptions: string | ApplicationModelViewOptions<unknown, unknown, ApplicationQueryPrincipal>,
     maybeOptions?:
@@ -1125,6 +1129,7 @@ export function promoteAnalyticalDrizzleTable<TTable extends AnyPgTable>(
     identity,
     schema: Object.freeze({ select: selectSchema }),
     relationships,
+    ...(runtimeRoles.length > 0 ? { runtimeRoles } : {}),
     relations: Object.freeze(
       Object.fromEntries(relationships.map((relationship) => [relationship.name, relationship])),
     ),
@@ -1221,6 +1226,7 @@ export function promoteDrizzleTable<TTable extends AnyPgTable>(
   const name = publicApplicationModelName(options.name ?? getTableName(table), `Drizzle table ${getTableName(table)}`);
   const identity: ApplicationModelIdentityContract = { fields: identityFields, encoding: 'scalar' };
   const relationships = Object.freeze(normalizeDrizzleModelRelationships(table, options.schema, name));
+  const runtimeRoles = normalizedApplicationModelRuntimeRoles(name, options.runtimeRoles);
   let collisionSafeApi: DrizzleApplicationModelApi<TTable> | undefined;
   const facet: DrizzleApplicationModelFacet<TTable> = Object.freeze({
     apiVersion: 'applik8s.model/v1alpha1',
@@ -1244,6 +1250,7 @@ export function promoteDrizzleTable<TTable extends AnyPgTable>(
     ...(revisionField ? { revision: { field: revisionField, authority: 'postgres-row' as const } } : {}),
     schema: Object.freeze({ select: selectSchema, insert: insertSchema, update: updateSchema }),
     relationships,
+    ...(runtimeRoles.length > 0 ? { runtimeRoles } : {}),
     relations: Object.freeze(
       Object.fromEntries(relationships.map((relationship) => [relationship.name, relationship])),
     ),
@@ -2245,7 +2252,7 @@ function modelRelationshipsFromRuntimeSchema(
   if (!schemaSource.arktype) {
     return [];
   }
-  const jsonSchema = schemaSource.arktype.toJsonSchema();
+  const jsonSchema = emitArkTypeStructuralJsonSchema(schemaSource.arktype);
   const relationships: ApplicationModelRelationshipContract[] = [];
   visitReferenceDescriptions(jsonSchema, [], relationships, source);
   return relationships.sort((left, right) => left.name.localeCompare(right.name));
@@ -2317,6 +2324,21 @@ function publicApplicationModelName(value: string, owner: string): string {
     );
   }
   return value;
+}
+
+function normalizedApplicationModelRuntimeRoles(
+  model: string,
+  roles: readonly string[] | undefined,
+): readonly string[] {
+  const normalized = Object.freeze([...new Set(roles ?? [])].sort());
+  for (const role of normalized) {
+    if (!/^[a-z][a-z0-9.-]*(?:\/[A-Za-z0-9._-]+)+$/u.test(role)) {
+      throw new Error(
+        `Drizzle model ${model} runtime role ${JSON.stringify(role)} must be a stable namespaced identifier.`,
+      );
+    }
+  }
+  return normalized;
 }
 
 // Compile-time guard: relation schema inputs are native Drizzle objects, never serialized graph values.

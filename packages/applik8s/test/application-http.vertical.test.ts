@@ -167,6 +167,35 @@ describe('function-native HTTP authoring', () => {
     );
   });
 
+  it('exposes the admitted idempotency identity without exposing raw headers', () => {
+    const application = app('typed-http-idempotency-context');
+    const api = application.http('public-api');
+    api.post(
+      'apply-operation',
+      '/operations/apply',
+      {
+        input: type({ operationId: 'string > 0' }),
+        output: type({ operationId: 'string > 0' }),
+        authorize: (request, context) =>
+          context.idempotencyKey === request.input.operationId,
+      },
+      async (_request, context) => ({
+        operationId: context.idempotencyKey,
+      }),
+    );
+
+    const route = applicationGraphFor(application.composition)?.nodes
+      .find((node) => node.kind === 'server')
+      ?.routes[0];
+    expect(route?.functionNative?.authorize?.source).toContain(
+      'context.idempotencyKey',
+    );
+    expect(route?.functionNative?.handler.source).toContain(
+      'context.idempotencyKey',
+    );
+    expect(route?.functionNative?.handler.source).not.toContain('headers');
+  });
+
   it('fails closed for duplicate route and server identities', () => {
     const application = app('typed-http-duplicates');
     const api = application.http('public-api');

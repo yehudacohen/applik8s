@@ -9,6 +9,7 @@ import {
   discoverApplicationGraphWithExports,
   generatedApplicationFacadeSource,
   generatedApplicationFetchGatewayModules,
+  instrumentApplicationCallbackRegistrations,
   instrumentApplicationRuntimeModule,
 } from '@applik8s/compiler';
 import type { PluginOption } from 'vite';
@@ -60,6 +61,18 @@ export interface Applik8sVitePlugin {
   closeBundle(): Promise<void>;
 }
 
+export interface Applik8sApplicationCallbacksVitePlugin {
+  readonly name: '@applik8s/vite-application-callbacks';
+  readonly enforce: 'pre';
+  configResolved(config: { readonly root: string }): void;
+  transform(source: string, id: string): { readonly code: string; readonly map: null } | undefined;
+}
+
+export interface Applik8sApplicationCallbacksOptions {
+  /** Workspace-relative application-authoring roots. Defaults to the Vite root. */
+  readonly include?: readonly string[];
+}
+
 const forbiddenBrowserPackages = [
   '@applik8s/applik8s',
   '@applik8s/ai',
@@ -89,6 +102,49 @@ const externalServerRuntimePackages = [
   '@applik8s/runtime-kubernetes',
   '@duckdb/node-api',
 ] as const;
+
+/**
+ * Applies the compiler-owned callback transform to application modules that
+ * Vite or Vitest evaluates directly. It deliberately does not discover a
+ * graph, replace an entrypoint, or touch dependencies/generated output.
+ */
+export function applik8sApplicationCallbacks(
+  options: Applik8sApplicationCallbacksOptions = {},
+): Applik8sApplicationCallbacksVitePlugin {
+  let root = process.cwd();
+  let includedRoots = [root];
+  return {
+    name: '@applik8s/vite-application-callbacks',
+    enforce: 'pre',
+    configResolved(config) {
+      root = resolve(config.root);
+      includedRoots = (options.include ?? ['.']).map((entry) => {
+        const included = resolve(root, entry);
+        if (!pathIsInside(root, included)) {
+          throw new Error(
+            `Applik8s callback transform include root must stay inside the Vite workspace: ${entry}`,
+          );
+        }
+        return included;
+      });
+    },
+    transform(source, id) {
+      const file = cleanResolvedId(id);
+      if (!isWorkspaceCallbackSource(root, includedRoots, file)) return undefined;
+      const moduleIdentity = relative(root, file).replaceAll('\\', '/');
+      const instrumented = instrumentApplicationCallbackRegistrations(
+        source,
+        file,
+        true,
+        moduleIdentity,
+        true,
+      );
+      return instrumented === source
+        ? undefined
+        : { code: instrumented, map: null };
+    },
+  };
+}
 
 /** Pure Vite adapter: discovers graph metadata, partitions facades, and records immutable artifacts without deploying. */
 export function applik8sVite(options: Applik8sViteOptions = {}): PluginOption {
@@ -433,6 +489,37 @@ function resolveImport(source: string, importer: string): string | undefined {
 function cleanResolvedId(id: string): string {
   const clean = id.split('?', 1)[0] ?? id;
   return clean.startsWith('/@fs/') ? clean.slice('/@fs'.length) : clean;
+}
+
+function isWorkspaceCallbackSource(
+  root: string,
+  includedRoots: readonly string[],
+  file: string,
+): boolean {
+  if (file.includes('/node_modules/')) return false;
+  if (!/\.[cm]?[jt]sx?$/u.test(file)) return false;
+  if (/\.generated\.[cm]?[jt]sx?$/u.test(file)) return false;
+  const workspacePath = relative(root, file);
+  const segments = workspacePath.split(/[\\/]/u);
+  return workspacePath.length > 0
+    && !workspacePath.startsWith('..')
+    && !workspacePath.startsWith('/')
+    && !workspacePath.startsWith('\\')
+    && includedRoots.some((included) => pathIsInside(included, file))
+    && !segments.some((segment) =>
+      segment === 'dist'
+      || segment === 'build'
+      || segment === '.output'
+      || segment === '.applik8s'
+      || segment === '.package-build');
+}
+
+function pathIsInside(parent: string, candidate: string): boolean {
+  const path = relative(parent, candidate);
+  return path.length === 0
+    || (!path.startsWith('..')
+      && !path.startsWith('/')
+      && !path.startsWith('\\'));
 }
 
 async function recursiveFiles(directory: string): Promise<readonly string[]> {

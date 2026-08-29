@@ -81,6 +81,8 @@ export interface ApplicationRelationalModelOptions<
    * named `revision` is not the framework concurrency token.
    */
   readonly revision?: (keyof TColumnsMap & string) | false;
+  /** Stable framework/module roles consumed through explicit graph dependencies. */
+  readonly runtimeRoles?: readonly string[];
 }
 
 type DeclaredApplicationRelationalModel<
@@ -205,6 +207,7 @@ export function applicationRelationalModelOptionsFor(
   readonly name?: string;
   readonly identity?: readonly string[];
   readonly revision?: string | false;
+  readonly runtimeRoles?: readonly string[];
   readonly signalFields?: Readonly<
     Record<string, ApplicationSignalFieldDeclaration>
   >;
@@ -219,6 +222,7 @@ export function applicationRelationalModelOptionsFor(
         readonly name?: string;
         readonly identity?: readonly string[];
         readonly revision?: string | false;
+        readonly runtimeRoles?: readonly string[];
         readonly signalFields?: Readonly<
           Record<string, ApplicationSignalFieldDeclaration>
         >;

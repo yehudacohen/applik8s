@@ -12,9 +12,11 @@ import type {
   ApplicationPrincipal,
   JsonObject,
 } from '@applik8s/core';
+import type { ApplicationAIProviderToken } from '@applik8s/ai';
+import type { ApplicationTanStackTaskCapability } from '@applik8s/ai-tanstack';
 import type { ApplicationServiceIdentityBinding } from './application-authority.js';
 import type { ApplicationGraphState } from './application-graph-state.js';
-import type { ApplicationObjectReference, ApplicationObjectStoreBinding } from './application-object-storage.js';
+import type { ApplicationObjectReference, ApplicationObjectStoreBinding, ApplicationTaskObjectStoreBinding } from './application-object-storage.js';
 import type { ApplicationProviderState, ApplicationProviderToken } from './application-providers.js';
 import type { ApplicationOnlineProjectionBinding } from './application-reactive.js';
 import type { WorkflowDefinition } from './dsl.js';
@@ -36,7 +38,9 @@ export type ApplicationTaskOperationDependency =
 export type ApplicationTaskOperations = Readonly<Record<string, ApplicationTaskOperationDependency>>;
 export type ApplicationTaskQueries = Readonly<Record<string, ApplicationOperationLike>>;
 export type ApplicationTaskProjections = Readonly<Record<string, ApplicationTaskProjectionTarget>>;
-export type ApplicationTaskObjectStores = Readonly<Record<string, ApplicationObjectStoreBinding>>;
+export type ApplicationTaskObjectStores = Readonly<
+  Record<string, ApplicationTaskObjectStoreBinding>
+>;
 
 export interface ApplicationTaskProjectionTarget {
   readonly projection: Pick<ApplicationOnlineProjectionBinding, 'kind' | 'storage' | 'name'>;
@@ -86,7 +90,9 @@ export type ApplicationTaskProjectionFunctions<TProjections extends ApplicationT
 };
 
 export type ApplicationTaskObjectFunctions<TObjects extends ApplicationTaskObjectStores> = {
-	readonly [TAlias in keyof TObjects]-?: Pick<TObjects[TAlias], 'put' | 'get' | 'head' | 'delete'>;
+	readonly [TAlias in keyof TObjects]-?: TObjects[TAlias] extends ApplicationTaskObjectStoreBinding<infer TOperations>
+		? Pick<ApplicationObjectStoreBinding, TOperations[number]>
+		: never;
 };
 
 export interface ApplicationTaskContext<
@@ -113,7 +119,8 @@ export interface ApplicationTaskContext<
   /** Generation rebuild/retirement controls explicitly injected into this task. */
   readonly projections: ApplicationTaskProjectionFunctions<TProjections>;
 	/** Bounded server-side object stores explicitly injected into this task. */
-	readonly objects: ApplicationTaskObjectFunctions<TObjects>;
+  readonly objects: ApplicationTaskObjectFunctions<TObjects>;
+  use(token: ApplicationAIProviderToken): ApplicationTanStackTaskCapability;
   use(token: ApplicationStructuredGenerationProviderToken): ApplicationStructuredGenerationCapability;
   fail<TName extends keyof TErrors & string>(name: TName, payload: TErrors[TName]): never;
 }
@@ -262,6 +269,7 @@ export interface ApplicationTaskBinding<TInput extends object, TOutput extends o
   readonly __errors?: TErrors;
   run(input: TInput, metadata?: ApplicationWorkflowInvocationMetadata, result?: ApplicationWorkflowResultOptions): Promise<TOutput>;
   start(input: TInput, metadata?: ApplicationWorkflowInvocationMetadata): Promise<ApplicationWorkflowRun<TOutput, TErrors>>;
+  attach(reference: import('./workflow-runtime.js').ApplicationWorkflowExecutionReference, admittedAt: string): Promise<ApplicationWorkflowRun<TOutput, TErrors>>;
   schedule(input: TInput, at: Date, metadata?: ApplicationWorkflowInvocationMetadata): Promise<{ readonly id: string }>;
   reconcile(schedule: ApplicationWorkflowScheduleSpec<TInput>, metadata?: ApplicationWorkflowInvocationMetadata): Promise<ApplicationWorkflowScheduleResult>;
 }
@@ -279,6 +287,7 @@ export interface ApplicationWorkflowBinding<
   readonly __signals?: TSignals;
   run(input: TInput, metadata?: ApplicationWorkflowInvocationMetadata, result?: ApplicationWorkflowResultOptions): Promise<TOutput>;
   start(input: TInput, metadata?: ApplicationWorkflowInvocationMetadata): Promise<ApplicationWorkflowRun<TOutput, TErrors>>;
+  attach(reference: import('./workflow-runtime.js').ApplicationWorkflowExecutionReference, admittedAt: string): Promise<ApplicationWorkflowRun<TOutput, TErrors>>;
   schedule(input: TInput, at: Date, metadata?: ApplicationWorkflowInvocationMetadata): Promise<{ readonly id: string }>;
   reconcile(schedule: ApplicationWorkflowScheduleSpec<TInput>, metadata?: ApplicationWorkflowInvocationMetadata): Promise<ApplicationWorkflowScheduleResult>;
   signal<TName extends [keyof TSignals] extends [never] ? string : keyof TSignals & string>(

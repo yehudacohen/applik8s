@@ -5,6 +5,10 @@ import { join, resolve } from 'node:path';
 import type {
   ApplicationCallableProviderBinding,
   ApplicationCallableProviderRuntimeOperation,
+  ApplicationCommandHandlerNode,
+  ApplicationCommandNode,
+  ApplicationEventNode,
+  ApplicationGraph,
   ApplicationStreamNode,
   ApplicationTaskHandlerNode,
   ApplicationWorkflowHandlerNode,
@@ -24,7 +28,21 @@ import {
 } from '../application-observability-runtime-source.js';
 import { applicationSignalGrantPermissionId } from '../application-operations/index.js';
 import { generatedApplicationProviderOperationValue } from '../application-provider-telemetry-source.js';
+import {
+  nestedApplicationCallbackObjectSource,
+  nestedApplicationCallbackVariable,
+  nestedApplicationCommandDefinition,
+  nestedApplicationEventDefinition,
+  requiredApplicationGraphNode,
+} from '../application-nested-operation-source.js';
 import { structuredGenerationSelection, type WorkflowContract, type WorkflowFunctionNativeTransactionContract, type WorkflowOperationAliasContract, type WorkflowTaskObjectContract, type WorkflowTaskProjectionContract } from './contracts.js';
+import {
+  privateProviderBranchVariable,
+  privateProviderConstructorModuleFile,
+  privateProviderMountPath,
+  privateProviderRuntimeVariable,
+  privateProviderValidatorModuleFile,
+} from './provider-private-runtime.js';
 import { jsName, kubernetesName, numberConfig, objectConfig, stringConfig, workflowObjectEnabledEnvironment } from './utilities.js';
 
 function absoluteDependencyImports(source: string, resolveDir: string): string {
@@ -91,6 +109,15 @@ export function generatedWorkerSource(
         ({ runtime, variable }) =>
           `import { ${runtime.export} as ${variable} } from ${JSON.stringify(runtime.module)};`,
       )))
+    .concat((contract.privateProviderEffects?.providers ?? []).flatMap(
+      (provider) => provider.branches.flatMap((branch) =>
+        branch.runtime
+          ? [
+              `import { createConstructor as ${privateProviderBranchVariable(provider.provider.id, branch.variant, 'construct')} } from ${JSON.stringify(`./${privateProviderConstructorModuleFile(provider.provider.id, branch.variant)}`)};`,
+              `import { createValidator as ${privateProviderBranchVariable(provider.provider.id, branch.variant, 'validate')} } from ${JSON.stringify(`./${privateProviderValidatorModuleFile(provider.provider.id, branch.variant)}`)};`,
+            ]
+          : []),
+    ))
     .filter((statement, index, statements) =>
       statements.indexOf(statement) === index)
     .join('\n');
@@ -101,6 +128,12 @@ export function generatedWorkerSource(
     const queries = contract.queryEffects?.aliases[handler.id] ?? {};
     const projections = contract.projectionEffects?.aliases[handler.id] ?? {};
     const objects = contract.objectEffects?.aliases[handler.id] ?? {};
+    const childBindings = Object.fromEntries(
+      (handler.childWorkflowBindings ?? []).map((binding) => [
+        binding.alias,
+        contract.contractNames[binding.workflow.nodeId],
+      ]),
+    );
     const actorBindings = handler.actors ?? [];
     const actorEffects = contract.actorEffects?.actors.filter(
       (candidate) => candidate.taskHandlerId === handler.id,
@@ -153,9 +186,19 @@ export function generatedWorkerSource(
         path: binding.identifier,
         value: generatedApplicationProviderOperationValue(binding, variable),
       })),
+      ...(handler.providerBindings ?? []).flatMap((binding) => {
+        const value = privateProviderBindingSource(contract, binding);
+        return value ? [{ path: binding.identifier, value }] : [];
+      }),
+      ...(handler.childWorkflowBindings ?? []).map((binding) => ({
+        path: binding.alias,
+        value: `(input, options) => taskWorkflowRuntime.run(${JSON.stringify(contract.contractNames[binding.workflow.nodeId])}, input, options)`,
+      })),
       ...(handler.operations ?? []).map((binding) => ({
         path: binding.alias,
-        value: `execution.operations[${JSON.stringify(binding.alias)}]`,
+        value: functionNativeTransaction?.mode === 'write'
+          ? `bindApplicationFunctionNativeOperationHandle(functionNativeTaskOperationHandles[${JSON.stringify(handler.id)}][${JSON.stringify(binding.alias)}], execution.operations[${JSON.stringify(binding.alias)}])`
+          : `execution.operations[${JSON.stringify(binding.alias)}]`,
       })),
       ...(handler.queries ?? []).map((binding) => ({
         path: binding.alias,
@@ -193,13 +236,16 @@ export function generatedWorkerSource(
       ? ''
       : functionNativeTransaction.mode === 'read'
         ? `withApplicationNativeModelReadClients(await functionNativeTaskReadClients(${JSON.stringify(handler.id)}, context), () => `
-        : `withApplicationNativeModelTransactionRuntime(functionNativeTaskRuntime(${JSON.stringify(handler.id)}, context), async () => withApplicationNativeModelReadClients(await functionNativeTaskReadClients(${JSON.stringify(handler.id)}, context), () => `;
+        : `withApplicationNativeModelTransactionRuntime(functionNativeTaskRuntime(${JSON.stringify(handler.id)}, context, principal), async () => withApplicationNativeModelReadClients(await functionNativeTaskReadClients(${JSON.stringify(handler.id)}, context), () => `;
     const functionNativeRuntimeClose = !functionNativeTransaction
       ? ''
       : functionNativeTransaction.mode === 'read'
         ? ')'
         : '))';
     const durableSignalTask = (handler.signalBindings?.length ?? 0) > 0;
+    if (Object.values(childBindings).some((value) => !value)) {
+      throw new Error(`Task handler ${handler.id} contains an unresolved child-workflow binding.`);
+    }
     return `
 const ${jsName(task.id)} = hatchet.${durableSignalTask ? 'durableTask' : 'task'}({
   name: ${JSON.stringify(task.name)},
@@ -219,10 +265,11 @@ const ${jsName(task.id)} = hatchet.${durableSignalTask ? 'durableTask' : 'task'}
     const validInput = validate(${JSON.stringify(task.contract.input.jsonSchema)}, delivery.input, ${JSON.stringify(`${task.name}.input`)});
     const admitted = await canonicalTaskAdmission(${principal}, context, ${JSON.stringify(handler.id)}, ${JSON.stringify(task.name)}, ${JSON.stringify(authorityEnvelopes)}, ${handler.executionTimeoutSeconds}, delivery.metadata);
     const principal = admitted.principal;
-    const execution = taskContext(context, ${JSON.stringify(task.name)}, ${JSON.stringify(errors)}, ${JSON.stringify(capabilities)}, ${workflowOperationAliasesSource(operations)}, ${JSON.stringify(queries)}, ${JSON.stringify(projections)}, ${JSON.stringify(objects)}, principal, admitted.servicePrincipal, admitted.execution, validInput);
+    const execution = taskContext(context, ${JSON.stringify(task.name)}, ${JSON.stringify({ contractId: task.contract.name, contractVersion: task.contract.version, handlerId: handler.id, workerId: contract.worker.id })}, ${JSON.stringify(errors)}, ${JSON.stringify(capabilities)}, ${workflowOperationAliasesSource(operations)}, ${JSON.stringify(queries)}, ${JSON.stringify(projections)}, ${JSON.stringify(objects)}, principal, admitted.servicePrincipal, admitted.execution, validInput);
+    const taskWorkflowRuntime = directWorkflowRuntime(context, execution, {}, ${JSON.stringify(childBindings)}, declarations, true);
     const workflowSignals = workflowSignalApi(context, execution);
     const authoredHandler = ${handlerVariable(handler.id)}(${directBindings});
-	    const output = await ${functionNativeRuntime}directOperationScope.run(directApplicationRuntime(execution), () => directObjectScope.run((binding) => execution.objects[binding.name], () => directProjectionScope.run((binding) => execution.projections[binding.name], () => authoredHandler(validInput, execution))))${functionNativeRuntimeClose};
+	    const output = await ${functionNativeRuntime}directWorkflowScope.run(taskWorkflowRuntime, () => directOperationScope.run(directApplicationRuntime(execution), () => directObjectScope.run((binding) => execution.objects[binding.name], () => directProjectionScope.run((binding) => execution.projections[binding.name], () => authoredHandler(validInput, execution)))))${functionNativeRuntimeClose};
     return validate(${JSON.stringify(task.contract.output.jsonSchema)}, output, ${JSON.stringify(`${task.name}.output`)});
     },
   );
@@ -295,9 +342,18 @@ const ${jsName(workflow.id)} = hatchet.durableTask({
     ...contract.workflows.map(({ workflow }) => `${JSON.stringify(workflow.name)}: ${jsName(workflow.id)}`),
   ];
   const cronRegistrations = contract.workflows.flatMap(({ workflow }) => workflow.triggers.crons.map((cron) => `${jsName(workflow.id)}.cron(${JSON.stringify(cron.name)}, ${JSON.stringify(cron.expression)}, encodeHatchetWorkflowTransportInput(${JSON.stringify(cron.input)}))`));
-  const capabilityImports = contract.capabilities.length > 0
-    ? `import { createDeterministicStructuredGenerationCapability, createHttpStructuredGenerationCapability } from '@applik8s/applik8s/structured-generation-runtime';`
-    : '';
+  const structuredGenerationCapability = contract.capabilities.some(
+    (provider) => provider.interface === 'StructuredGeneration',
+  );
+  const capabilityImports = `import { createApplicationTaskCapabilityBindings, defineApplicationTaskCapabilityFactory } from '@applik8s/applik8s/task-capability-runtime';${structuredGenerationCapability
+    ? `
+import { createDeterministicStructuredGenerationCapability, createHttpStructuredGenerationCapability } from '@applik8s/applik8s/structured-generation-runtime';`
+    : ''}${contract.nativeAI
+    ? `
+import { createApplicationTanStackTaskCapability, withApplicationTanStackPersistence } from '@applik8s/ai-tanstack';
+import { applicationAIConversationPrincipalScope, createApplicationTanStackConversationPersistence, createPostgresApplicationConversationStore } from '@applik8s/conversations/runtime';
+import { applicationAITextAdapter } from '@applik8s/runtime-ai';`
+    : ''}`;
   const eventLogPublisher = contract.operationEffects
     ? generatedApplicationEventLogPublisherSource({
         executionTarget,
@@ -307,8 +363,9 @@ const ${jsName(workflow.id)} = hatchet.durableTask({
     : undefined;
   const operationImports = `import { canonicalApplicationTaskServicePrincipal${contract.operationEffects ? ', createApplicationTaskOperationRuntime' : ''} } from '@applik8s/applik8s/task-operation-runtime';
 ${contract.operationEffects || contract.signalEffects ? `import { createApplicationOperationAuthorityRuntime } from '@applik8s/operations';
-	import postgres from 'postgres';
-	${eventLogPublisher?.importSource ?? ''}` : ''}`;
+	${contract.nativeAI ? '' : "import postgres from 'postgres';"}
+	${eventLogPublisher?.importSource ?? ''}` : ''}
+${contract.nativeAI ? "import postgres from 'postgres';" : ''}`;
   const queryImports = contract.queryEffects
     ? `import { createApplicationTaskQueryRuntime } from '@applik8s/applik8s/task-query-runtime';`
     : '';
@@ -323,14 +380,19 @@ ${contract.operationEffects || contract.signalEffects ? `import { createApplicat
 import { applicationOperationInputDigest } from '@applik8s/applik8s/operation-runtime';`
     : '';
   const functionNativeImports = contract.functionNativeTransactions
-    ? `import { applicationPostgresModelReadClients, createApplicationFunctionNativeEventHandle, editApplicationNativeModelObject, executeFunctionNativePostgresModelEdit, findApplicationNativeModelObjects, getApplicationNativeModelObject, requireApplicationNativeModelObject, withApplicationNativeModelReadClients, withApplicationNativeModelTransactionRuntime } from '@applik8s/applik8s/stream-worker-runtime';`
+    ? `import { applicationCommandPrincipalValues, applicationPostgresModelReadClients, applicationRelationalChangeScopes, bindApplicationFunctionNativeOperationHandle, createApplicationFunctionNativeEventHandle, createApplicationFunctionNativeOperationHandle, editApplicationNativeModelObject, executeFunctionNativePostgresModelEdit, findApplicationNativeModelObjects, getApplicationNativeModelObject, requireApplicationNativeModelObject, withApplicationNativeModelReadClients, withApplicationNativeModelTransactionRuntime } from '@applik8s/applik8s/stream-worker-runtime';${contract.operationEffects?.operations.some(({ handler }) => Boolean(handler.beforeCommit)) ? "\nimport { runApplicationModelBeforeCommit } from '@applik8s/applik8s/processor-runtime';" : ''}`
     : '';
   const gatewayImports = contract.gatewayCallers.length > 0
     ? `import { AuthenticationV1Api, CoordinationV1Api, KubeConfig, V1MicroTime } from '@kubernetes/client-node';
 import { createHatchetWorkflowRuntimeFromClient, observeHatchetWorkflowRun } from '@applik8s/runtime-hatchet';
 import { createSignedEnvelopeCodec, signedEnvelopeUtf8Key, staticSignedEnvelopeKeyProvider } from '@applik8s/runtime';`
     : '';
+  const privateProviderImports = contract.privateProviderEffects
+    && !(contract.operationEffects || contract.signalEffects || contract.nativeAI)
+    ? `import postgres from 'postgres';`
+    : '';
   const capabilityInitializers = generatedWorkflowCapabilities(contract);
+  const nativeAIStateInitializer = generatedWorkflowNativeAIState(contract);
   const operationInitializer = generatedWorkflowOperationRuntime(
     contract,
     eventLogPublisher?.declarationSource,
@@ -339,9 +401,14 @@ import { createSignedEnvelopeCodec, signedEnvelopeUtf8Key, staticSignedEnvelopeK
   const projectionInitializer = generatedWorkflowProjectionRuntime(contract);
 	const objectInitializer = generatedWorkflowObjectRuntime(contract);
   const signalInitializer = generatedWorkflowSignalRuntime(contract);
+  const functionNativeOperationInitializer =
+    generatedWorkflowFunctionNativeOperations(contract);
   const functionNativeInitializer =
     generatedWorkflowFunctionNativeTransactions(contract);
   const gatewayInitializer = generatedWorkflowGateway(contract);
+  const privateProviderInitializer = generatedWorkflowPrivateProviderRuntime(
+    contract,
+  );
   return `import { AsyncLocalStorage } from 'node:async_hooks';
 	import { createHash, randomUUID } from 'node:crypto';
 	import { createServer } from 'node:http';
@@ -365,6 +432,7 @@ ${objectImports}
 ${signalImports}
 ${functionNativeImports}
 ${gatewayImports}
+${privateProviderImports}
 ${handlerImports}
 
 if (process.argv.includes('--credential-preflight')) {
@@ -376,6 +444,7 @@ const hatchet = HatchetClient.init();
 ${contract.observability ? generatedApplicationTelemetryRuntimeSource({ application: contract.graphName, service: `workflow-worker:${contract.worker.name}` }) : ''}
 const declarations = Object.create(null);
 	const directWorkflowScope = new AsyncLocalStorage();
+	const directTaskEffectScope = new AsyncLocalStorage();
 	const directOperationScope = new AsyncLocalStorage();
 	const directObjectScope = new AsyncLocalStorage();
 	const directProjectionScope = new AsyncLocalStorage();
@@ -385,12 +454,15 @@ const declarations = Object.create(null);
 	installApplicationObjectStorageRuntimeResolver((binding) => directObjectScope.getStore()?.(binding));
 	installApplicationProjectionRuntimeResolver((binding) => directProjectionScope.getStore()?.(binding));
 const capabilities = Object.create(null);
+${nativeAIStateInitializer}
+${privateProviderInitializer}
 ${capabilityInitializers}
 ${operationInitializer}
 ${queryInitializer}
 ${projectionInitializer}
 ${objectInitializer}
 ${signalInitializer}
+${functionNativeOperationInitializer}
 ${functionNativeInitializer}
 let ready = false;
 let stopping = false;
@@ -401,6 +473,7 @@ const server = createServer((request, response) => {
 });
 server.listen(${contract.worker.deployment.healthPort}, '0.0.0.0');
 ${gatewayInitializer}
+${nativeAITaskProviderSource(contract)}
 
 async function retryStartup(dependency, operation, timeoutMs = 600_000) {
   const startedAt = Date.now();
@@ -871,7 +944,30 @@ function declaredFailure(contractName, errorSchemas, name, payload) {
   const validPayload = validate(schema, payload, contractName + '.errors.' + name);
   throw new Error('applik8s-durable-error:' + JSON.stringify({ name, payload: validPayload }));
 }
-function taskContext(_context, contractName, errorSchemas, declaredCapabilities, declaredOperations, declaredQueries, declaredProjections, declaredObjects, principal, queryPrincipal, base, executionSource) {
+function taskContext(_context, contractName, task, errorSchemas, declaredCapabilities, declaredOperations, declaredQueries, declaredProjections, declaredObjects, principal, queryPrincipal, base, executionSource) {
+  const capabilityBindings = createApplicationTaskCapabilityBindings(
+    capabilities,
+    declaredCapabilities,
+    {
+      task,
+      invocation: {
+        invocationId: base.invocationId,
+        idempotencyKey: base.idempotencyKey,
+        attempt: base.attempt,
+        ...(base.correlationId ? { correlationId: base.correlationId } : {}),
+        ...(base.causationId ? { causationId: base.causationId } : {}),
+        ...(base.traceparent ? { traceparent: base.traceparent } : {}),
+        ...(base.trustedContext ? { trustedContext: base.trustedContext } : {}),
+        signal: base.signal,
+        deadline: base.deadline,
+        cancellationRevision: base.cancellationRevision,
+      },
+      authority: principal
+        ? { kind: 'admitted-task', principal }
+        : { kind: 'none' },
+    },
+    contractName,
+  );
   return {
     ...base,
     operations: operationRuntime ? operationRuntime.bind(declaredOperations, principal, base, executionSource) : Object.freeze({}),
@@ -881,17 +977,15 @@ function taskContext(_context, contractName, errorSchemas, declaredCapabilities,
       if (!runtime) throw new Error('Task ' + contractName + ' attempted to use undeclared projection ' + JSON.stringify(alias));
       return [alias, runtime];
     }))),
-		objects: Object.freeze(Object.fromEntries(Object.entries(declaredObjects).map(([alias, id]) => {
-			const runtime = objectRuntimes[id];
+		objects: Object.freeze(Object.fromEntries(Object.entries(declaredObjects).map(([alias, declaration]) => {
+			const runtime = objectRuntimes[declaration.store];
 			if (!runtime) throw new Error('Task ' + contractName + ' attempted to use undeclared object store ' + JSON.stringify(alias));
-			return [alias, runtime];
+			return [alias, Object.freeze(Object.fromEntries(declaration.operations.map((operation) => [operation, runtime[operation]])))];
 		}))),
     use: (token) => {
       const name = token?.name;
-      if (typeof name !== 'string' || !declaredCapabilities.includes(name)) throw new Error('Task ' + contractName + ' attempted to use undeclared capability ' + JSON.stringify(name));
-      const capability = capabilities[name];
-      if (!capability) throw new Error('Task ' + contractName + ' capability ' + name + ' is not configured');
-      return capability;
+      if (typeof name !== 'string') throw new Error('Task ' + contractName + ' attempted to use undeclared capability ' + JSON.stringify(name));
+      return capabilityBindings.use(name);
     },
     fail: (name, payload) => declaredFailure(contractName, errorSchemas, name, payload),
   };
@@ -976,7 +1070,7 @@ function workflowContext(context, workflowName, taskBindings, childBindings, err
     fail: (name, payload) => declaredFailure(workflowName, errorSchemas, name, payload),
   };
 }
-function directWorkflowRuntime(context, execution, taskBindings, childBindings, registry) {
+function directWorkflowRuntime(context, execution, taskBindings, childBindings, registry, taskEffect = false) {
   const bindings = { ...taskBindings, ...childBindings };
   // Compiler-generated aliases are an internal graph detail. Direct callable
   // handles identify their dependency by the durable contract ID itself.
@@ -985,11 +1079,31 @@ function directWorkflowRuntime(context, execution, taskBindings, childBindings, 
     run: (contract, input, metadata) => {
       const declaration = bindings[contract];
       if (!declaration) throw new Error('Workflow attempted to call undeclared durable dependency ' + JSON.stringify(contract));
+      let invocationMetadata = metadata;
+      if (taskEffect) {
+        const effect = directTaskEffectScope.getStore();
+        if (effect && !metadata?.idempotencyKey) {
+          const digest = createHash('sha256')
+            .update('applik8s.task-workflow-child/v1')
+            .update('\\0')
+            .update(execution.idempotencyKey)
+            .update('\\0')
+            .update(effect.id)
+            .update('\\0')
+            .update(contract)
+            .digest('hex');
+          invocationMetadata = {
+            ...metadata,
+            idempotencyKey: 'task-workflow-v1-' + digest,
+            causationId: metadata?.causationId ?? effect.id,
+          };
+        }
+      }
       return spawnWorkflowChild(
         context,
         registry[declaration] ?? declaration,
         input,
-        childInvocationMetadata(execution, metadata),
+        childInvocationMetadata(execution, invocationMetadata),
       );
     },
     start: async (contract) => {
@@ -1036,6 +1150,8 @@ async function shutdown() {
   if (signalBridgeTask) await signalBridgeTask;
   if (operationRuntime) await operationRuntime.close();
   if (operationAuthoritySql) await operationAuthoritySql.end({ timeout: 5 });
+  if (nativeAIStateSql && nativeAIStateSql !== operationAuthoritySql) await nativeAIStateSql.end({ timeout: 5 });
+  await Promise.all(providerPrivateSqlClients.map((sql) => sql.end({ timeout: 5 })));
   if (signalStore) await signalStore.close();
   await Promise.all(projectionSources.map((source) => source.close()));
   if (gatewayAdmissionCleanupTimer) clearInterval(gatewayAdmissionCleanupTimer);
@@ -1048,6 +1164,54 @@ process.once('SIGTERM', () => { shutdown().catch((error) => { console.error(erro
 process.once('SIGINT', () => { shutdown().catch((error) => { console.error(error); process.exitCode = 1; }); });
 await running;
 `;
+}
+
+function generatedWorkflowNativeAIState(contract: WorkflowContract): string {
+  const nativeAI = contract.nativeAI;
+  if (!nativeAI) return 'const nativeAIStateSql = undefined;';
+  return `const nativeAIStateSql = postgres(requiredEnv(${JSON.stringify(nativeAI.state.runtime.connectionEnvName)}), { max: 6, idle_timeout: 20, connect_timeout: 10, prepare: false });`;
+}
+
+function nativeAITaskProviderSource(contract: WorkflowContract): string {
+  if (!contract.nativeAI) return '';
+  return `function nativeAITaskProvider(provider, model) {
+  if (provider.kind === 'ai-deterministic') {
+    return {
+      kind: 'deterministic',
+      response: typeof provider.fixture?.response === 'string' ? provider.fixture.response : undefined,
+      latencyMs: provider.latencyMs,
+      ...(provider.fixture?.tool ? { tool: provider.fixture.tool } : {}),
+    };
+  }
+  if (provider.kind !== 'envoy-ai-gateway' || provider.provision === false) {
+    throw new Error('Native AI task capability supports deterministic or managed Envoy AI Gateway providers.');
+  }
+  const route = provider.models?.[model.name];
+  const backend = Array.isArray(route?.backends) ? route.backends[0] : undefined;
+  if (!backend || typeof backend.name !== 'string' || typeof backend.model !== 'string') {
+    throw new Error('Native AI task capability logical model ' + JSON.stringify(model.name) + ' has no valid managed route.');
+  }
+  const requested = new Set(model.capabilities.map((capability) => capability.name));
+  const supported = new Set(Array.isArray(backend.capabilities)
+    ? backend.capabilities
+    : model.capabilities.map((capability) => capability.name));
+  const missing = [...requested].filter((capability) => !supported.has(capability));
+  if (missing.length > 0) {
+    throw new Error('Native AI task capability route ' + model.name + ' lacks capabilities: ' + missing.join(', '));
+  }
+  const endpoint = new URL(requiredEnv('APPLIK8S_AI_GATEWAY_MANAGED_URL'));
+  const path = endpoint.pathname.replace(/\\\/+$/u, '');
+  if (!path.endsWith('/v1')) endpoint.pathname = (path || '') + '/v1';
+  endpoint.search = '';
+  endpoint.hash = '';
+  return {
+    kind: 'openai-compatible',
+    name: backend.name,
+    baseUrl: endpoint.toString().replace(/\\\/$/u, ''),
+    allowInsecureHttp: true,
+    model: model.name,
+  };
+}`;
 }
 
 function generatedWorkflowGateway(contract: WorkflowContract): string {
@@ -2125,6 +2289,297 @@ export function uniqueWorkflowObjectEffects(contract: WorkflowContract): readonl
 	return [...result.values()].sort((left, right) => left.store.id.localeCompare(right.store.id));
 }
 
+function generatedWorkflowFunctionNativeOperations(
+  contract: WorkflowContract,
+): string {
+  const transactions = contract.functionNativeTransactions ?? [];
+  const effects = contract.operationEffects;
+  if (transactions.length === 0 || !effects) {
+    return `const functionNativeTaskOperations = Object.freeze({});
+const functionNativeTaskOperationHandles = Object.freeze({});
+const functionNativeTaskCommands = Object.freeze({});`;
+  }
+  const nodes = new Map(contract.graph.nodes.map((node) => [node.id, node]));
+  const imports = new Set<string>();
+  const operationEntries: string[] = [];
+  const operationHandleEntries: string[] = [];
+  const commandEntries: string[] = [];
+  for (const transaction of transactions) {
+    const candidates = effects.operations.filter(
+      (operation) => operation.taskHandlerId === transaction.taskHandlerId,
+    );
+    const unique = new Map<string, (typeof candidates)[number]>();
+    for (const operation of candidates) {
+      const existing = unique.get(operation.authority.operationId);
+      if (
+        existing
+        && (
+          existing.handler.id !== operation.handler.id
+          || existing.command.id !== operation.command.id
+          || existing.model.id !== operation.model.id
+        )
+      ) {
+        throw new Error(
+          `Workflow task ${transaction.taskHandlerId} resolves atomic operation ${operation.authority.operationId} ambiguously.`,
+        );
+      }
+      unique.set(operation.authority.operationId, operation);
+    }
+    const operations = [...unique.values()];
+    const sources = operations.map((operation) => {
+      const { handler, command, model } = operation;
+      if (
+        model.runtime.connectionEnvName
+        !== transaction.primaryModel.runtime.connectionEnvName
+      ) {
+        throw new Error(
+          `Workflow task ${transaction.taskHandlerId} atomic operation ${operation.authority.operationId} crosses database authorities.`,
+        );
+      }
+      const eventBindings = (handler.eventBindings ?? []).map((binding) => {
+        const event = requiredApplicationGraphNode(
+          nodes,
+          binding.event.nodeId,
+          'event',
+          handler.id,
+        );
+        return {
+          identifier: binding.identifier,
+          event,
+          variable: nestedApplicationCallbackVariable(binding.identifier),
+        };
+      });
+      const commandBindings = (handler.commandBindings ?? []).map((binding) => {
+        const nestedCommand = requiredApplicationGraphNode(
+          nodes,
+          binding.command.nodeId,
+          'command',
+          handler.id,
+        );
+        const owner = contract.graph.nodes.find(
+          (candidate): candidate is ApplicationCommandHandlerNode =>
+            candidate.kind === 'commandHandler'
+            && candidate.command.nodeId === nestedCommand.id,
+        );
+        return {
+          identifier: binding.identifier,
+          command: nestedCommand,
+          owner,
+          variable: nestedApplicationCallbackVariable(binding.identifier),
+        };
+      });
+      const modelBindings = (handler.transaction.modelBindings ?? []).map(
+        (binding) => {
+          const participant = requiredApplicationGraphNode(
+            nodes,
+            binding.model.nodeId,
+            'model',
+            handler.id,
+          );
+          if (!participant.runtime) {
+            throw new Error(
+              `Workflow atomic operation ${operation.authority.operationId} model binding ${binding.identifier} has no PostgreSQL runtime.`,
+            );
+          }
+          return {
+            identifier: binding.identifier,
+            model: participant,
+            variable: nestedApplicationCallbackVariable(binding.identifier),
+          };
+        },
+      );
+      const participantModels = handler.transaction.models.map((reference) => {
+        const participant = requiredApplicationGraphNode(
+          nodes,
+          reference.nodeId,
+          'model',
+          handler.id,
+        );
+        if (!participant.runtime) {
+          throw new Error(
+            `Workflow atomic operation ${operation.authority.operationId} participant ${participant.id} has no PostgreSQL runtime.`,
+          );
+        }
+        if (
+          participant.runtime.connectionEnvName
+          !== transaction.primaryModel.runtime.connectionEnvName
+        ) {
+          throw new Error(
+            `Workflow atomic operation ${operation.authority.operationId} participant ${participant.name} crosses database authorities.`,
+          );
+        }
+        return participant;
+      });
+      const eventDeclarations = eventBindings.map(({ event, variable }) =>
+        `const ${variable}Contract = Object.freeze(${JSON.stringify(nestedApplicationEventDefinition(event))});
+      const ${variable} = Object.freeze({ ...${variable}Contract, emit: payload => context.emit(${variable}Contract, payload) });`,
+      ).join('\n      ');
+      const modelDeclarations = modelBindings.map(
+        ({ model: participant, variable }) =>
+          `const ${variable} = Object.freeze({
+        async get(identity) { const value = await context.models[${JSON.stringify(participant.name)}].get({ id: String(identity) }); return value ? { identity: value.id, value: value.spec, ...(value.revision ? { revision: value.revision } : {}) } : undefined; },
+        async find(options) { const page = await context.models[${JSON.stringify(participant.name)}].query(options); return page.items.map(value => ({ identity: value.id, value: value.spec, ...(value.revision ? { revision: value.revision } : {}) })); },
+      });`,
+      ).join('\n      ');
+      const commandDeclarations = commandBindings.map(
+        ({ command: nestedCommand, owner, variable }) => {
+          if (!owner) {
+            return `const ${variable} = () => { throw new Error(${JSON.stringify(`Atomic operation ${operation.authority.operationId} references outbound command ${nestedCommand.id} without a local owner.`)}); };`;
+          }
+          return `const ${variable}Contract = Object.freeze(${JSON.stringify(nestedApplicationCommandDefinition(nestedCommand))});
+      const ${variable} = Object.assign(
+        input => {
+          const idempotencyKey = ${owner.idempotencyKey ? `(${owner.idempotencyKey.source})(input)` : `context.id(${JSON.stringify(`nested-command:${nestedCommand.id}`)})`};
+          context.send(${variable}Contract, input, { targetKey: (${owner.key.source})(input, undefined, idempotencyKey), idempotencyKey });
+        },
+        ${variable}Contract,
+      );`;
+        },
+      ).join('\n      ');
+      const callbackBindings = [
+        ...modelBindings.map(({ identifier, variable }) => ({
+          path: identifier,
+          value: variable,
+        })),
+        ...eventBindings.map(({ identifier, variable }) => ({
+          path: identifier,
+          value: variable,
+        })),
+        ...commandBindings.map(({ identifier, variable }) => ({
+          path: identifier,
+          value: variable,
+        })),
+      ];
+      let beforeCommit = '';
+      if (handler.beforeCommit) {
+        const suffix = createHash('sha256')
+          .update(handler.id)
+          .digest('hex')
+          .slice(0, 12);
+        imports.add(
+          `import { createCallback as createWorkflowBeforeCommit_${suffix} } from './workflow-before-commit-${suffix}.generated.js';`,
+        );
+        beforeCommit = `const __applik8sBeforeCommit = createWorkflowBeforeCommit_${suffix}(${nestedApplicationCallbackObjectSource(callbackBindings)});`;
+      }
+      const outbox = handler.transaction.outbox.map((reference) =>
+        nestedApplicationEventDefinition(requiredApplicationGraphNode(
+          nodes,
+          reference.nodeId,
+          'event',
+          handler.id,
+        )),
+      );
+      const completionEvent = handler.completionEvent
+        ? nestedApplicationEventDefinition(requiredApplicationGraphNode(
+            nodes,
+            handler.completionEvent.nodeId,
+            'event',
+            handler.id,
+          ))
+        : undefined;
+      return `Object.freeze({
+      operationId: ${JSON.stringify(operation.authority.operationId)},
+      bindingId: ${JSON.stringify(handler.name)},
+      operation: ${JSON.stringify(workflowNestedModelOperation(command, model.name))},
+      command: ${JSON.stringify({ name: command.contract.name, version: command.contract.version })},
+      errors: ${JSON.stringify(command.contract.errors.map(({ name }) => name))},
+      schemas: ${JSON.stringify({
+        input: command.contract.input.jsonSchema,
+        output: command.contract.output.jsonSchema,
+        errors: Object.fromEntries(command.contract.errors.map((error) => [
+          error.name,
+          error.schema.jsonSchema,
+        ])),
+        events: Object.fromEntries(eventBindings.map(({ event }) => [
+          `${event.contract.name}.${event.contract.version}`,
+          event.contract.payload.jsonSchema,
+        ])),
+        commands: Object.fromEntries(commandBindings.map(({ command: nestedCommand }) => [
+          `${nestedCommand.contract.name}.${nestedCommand.contract.version}`,
+          nestedCommand.contract.input.jsonSchema,
+        ])),
+      })},
+      model: ${JSON.stringify(model.runtime)},
+      models: ${JSON.stringify(participantModels.map(({ runtime }) => runtime))},
+      selfRead: ${String(handler.transaction.selfRead === true)},
+      historyModels: ${JSON.stringify(handler.transaction.history.map((reference) => participantModels.find(({ id }) => id === reference.nodeId)?.name).filter(Boolean))},
+      retry: ${JSON.stringify(handler.retry)},
+      history: ${String(handler.transaction.history.some((reference) => reference.nodeId === model.id))},
+      outbox: ${JSON.stringify(outbox)},
+      ${completionEvent ? `completionEvent: ${JSON.stringify(completionEvent)},` : ''}
+      commands: ${JSON.stringify(commandBindings.map(({ command: nestedCommand }) => nestedApplicationCommandDefinition(nestedCommand)))},
+      ordering: ${JSON.stringify(handler.ordering)},
+      ${handler.missingRoute ? `missingRoute: ${JSON.stringify(handler.missingRoute)},` : ''}
+      ${handler.initializeSource ? `initialize: (${handler.initializeSource}),` : ''}
+      handler: async (model, input, context) => {
+        ${eventDeclarations}
+        ${modelDeclarations}
+        ${commandDeclarations}
+        ${handler.beforeCommit ? 'const __applik8sRunBeforeCommit = runApplicationModelBeforeCommit;' : ''}
+        ${beforeCommit}
+        return (${handler.handlerSource})(model, input, context);
+      },
+    })`;
+    });
+    operationEntries.push(
+      `${JSON.stringify(transaction.taskHandlerId)}: Object.freeze([${sources.join(',\n')}])`,
+    );
+    const handles = candidates.map((operation) => {
+      const commandId = `${operation.command.contract.name}.${operation.command.contract.version}`;
+      const operationName = workflowModelOperationName(
+        operation.command,
+        operation.model.name,
+      );
+      return `${JSON.stringify(operation.alias)}: createApplicationFunctionNativeOperationHandle({
+        operation: Object.freeze({ apiVersion: 'applik8s.operation/v1alpha1', kind: 'applicationOperation', id: ${JSON.stringify(operation.authority.operationId)}, model: ${JSON.stringify(operation.model.name)}, name: ${JSON.stringify(operationName)}, operation: ${JSON.stringify(workflowNestedModelOperation(operation.command, operation.model.name))}, transport: 'command' }),
+        command: Object.freeze({ id: ${JSON.stringify(commandId)} }),
+        key: (${operation.handler.key.source}),
+        ${operation.handler.idempotencyKey ? `idempotencyKey: (${operation.handler.idempotencyKey.source}),` : ''}
+      })`;
+    });
+    operationHandleEntries.push(
+      `${JSON.stringify(transaction.taskHandlerId)}: Object.freeze({${handles.join(',\n')}})`,
+    );
+    commandEntries.push(
+      `${JSON.stringify(transaction.taskHandlerId)}: Object.freeze(${JSON.stringify(operations.map(({ command }) => nestedApplicationCommandDefinition(command)))})`,
+    );
+  }
+  return `${[...imports].sort().join('\n')}
+const functionNativeTaskOperations = Object.freeze({
+  ${operationEntries.join(',\n  ')}
+});
+const functionNativeTaskOperationHandles = Object.freeze({
+  ${operationHandleEntries.join(',\n  ')}
+});
+const functionNativeTaskCommands = Object.freeze({
+  ${commandEntries.join(',\n  ')}
+});`;
+}
+
+function workflowModelOperationName(
+  command: ApplicationCommandNode,
+  modelName: string,
+): string {
+  const prefix = `models.${modelName}.`;
+  if (!command.contract.name.startsWith(prefix)) {
+    throw new Error(
+      `Workflow operation command ${command.contract.name} is not owned by model ${modelName}.`,
+    );
+  }
+  const name = command.contract.name.slice(prefix.length);
+  if (!name) throw new Error(`Workflow operation for model ${modelName} has no name.`);
+  return name;
+}
+
+function workflowNestedModelOperation(
+  command: ApplicationCommandNode,
+  modelName: string,
+): 'create' | 'update' | 'delete' | 'custom' {
+  const name = workflowModelOperationName(command, modelName);
+  if (name === 'create' || name === 'update' || name === 'delete') return name;
+  return 'custom';
+}
+
 function functionNativeTaskCallbackBindingEntries(
   transaction: WorkflowFunctionNativeTransactionContract | undefined,
 ): readonly { readonly path: string; readonly value: string }[] {
@@ -2229,6 +2684,8 @@ function generatedWorkflowFunctionNativeTransactions(
       outbox: Object.freeze(${JSON.stringify(
         transaction.outbox.map((event) => functionNativeEventDefinition(event)),
       )}),
+      commands: functionNativeTaskCommands[${JSON.stringify(transaction.taskHandlerId)}] ?? Object.freeze([]),
+      operations: functionNativeTaskOperations[${JSON.stringify(transaction.taskHandlerId)}] ?? Object.freeze([]),
       bindings: Object.freeze({
 ${functionNativeTaskRuntimeBindingEntries(transaction).map((entry) => `        ${JSON.stringify(entry.identifier)}: ${entry.expression},`).join('\n')}
       }),
@@ -2261,10 +2718,31 @@ function functionNativeTaskReadClients(handlerId, context) {
     metadata(context).trustedContext,
   );
 }
-function functionNativeTaskRuntime(handlerId, context) {
+function functionNativeTaskCommandContext(delivery, principal) {
+  const inherited = delivery.trustedContext;
+  if (!principal) return inherited;
+  const trustedValues = inherited?.values ?? principal.trustedContext ?? {};
+  const base = inherited ?? Object.freeze({
+    values: trustedValues,
+    digest: principal.trustedContextDigest,
+    changeScopes: applicationRelationalChangeScopes({
+      values: trustedValues,
+      digestSecret: requiredEnv('APPLIK8S_TASK_OPERATION_CONTEXT_SECRET'),
+    }),
+  });
+  return Object.freeze({
+    ...base,
+    values: Object.freeze({
+      ...trustedValues,
+      ...applicationCommandPrincipalValues(principal),
+    }),
+  });
+}
+function functionNativeTaskRuntime(handlerId, context, principal) {
   const transaction = functionNativeTaskTransactions[handlerId];
   if (!transaction) throw new Error('No function-native transaction was declared for task handler ' + handlerId + '.');
   const delivery = metadata(context);
+  const commandContext = functionNativeTaskCommandContext(delivery, principal);
   const durableId = handlerId + ':' + delivery.invocationId;
   return Object.freeze({
     edit: request => executeFunctionNativePostgresModelEdit({
@@ -2272,6 +2750,8 @@ function functionNativeTaskRuntime(handlerId, context) {
       model: transaction.model,
       models: transaction.models,
       outbox: transaction.outbox,
+      commands: transaction.commands,
+      atomicOperations: transaction.operations,
       databaseUrl: transaction.databaseUrl,
       delivery: {
         id: durableId,
@@ -2279,7 +2759,7 @@ function functionNativeTaskRuntime(handlerId, context) {
         correlationId: delivery.correlationId ?? durableId,
         causationId: delivery.causationId ?? delivery.invocationId,
         attempt: delivery.attempt,
-        ...(delivery.trustedContext ? { context: delivery.trustedContext } : {}),
+        ...(commandContext ? { context: commandContext } : {}),
       },
     }, request),
   });
@@ -2312,9 +2792,10 @@ export function generatedHandlerModule(
   const providerOperations = handler.kind === 'taskHandler'
     ? workflowTaskProviderRuntimeOperations(handler)
     : [];
-  const providerBindingPaths = providerOperations.map(
-    ({ binding }) => binding.identifier,
-  );
+  const providerBindingPaths = handler.kind === 'taskHandler'
+    ? (handler.providerBindings ?? []).flatMap((binding) =>
+        binding.operation || binding.privateRuntime ? [binding.identifier] : [])
+    : [];
   const providerBindingRoots = providerBindingPaths
     .map((identifier) => identifier.split('.')[0])
     .filter((identifier): identifier is string => Boolean(identifier));
@@ -2421,6 +2902,55 @@ function workflowTaskProviderRuntimeOperations(
   });
 }
 
+export async function writeWorkflowPrivateProviderModules(
+  directory: string,
+  contract: WorkflowContract,
+): Promise<void> {
+  await Promise.all(
+    (contract.privateProviderEffects?.providers ?? []).flatMap((provider) =>
+      provider.branches.flatMap((branch) => {
+        if (!branch.runtime) return [];
+        return [
+          writeFile(
+            join(
+              directory,
+              privateProviderConstructorModuleFile(
+                provider.provider.id,
+                branch.variant,
+              ),
+            ),
+            generatedCallbackFactoryModule({
+              source: branch.runtime.construct.source,
+              ...(branch.runtime.construct.dependencies
+                ? { dependencies: branch.runtime.construct.dependencies }
+                : {}),
+              injectedIdentifiers: [],
+              exportName: 'createConstructor',
+            }),
+          ),
+          writeFile(
+            join(
+              directory,
+              privateProviderValidatorModuleFile(
+                provider.provider.id,
+                branch.variant,
+              ),
+            ),
+            generatedCallbackFactoryModule({
+              source: branch.runtime.validate.source,
+              ...(branch.runtime.validate.dependencies
+                ? { dependencies: branch.runtime.validate.dependencies }
+                : {}),
+              injectedIdentifiers: [],
+              exportName: 'createValidator',
+            }),
+          ),
+        ];
+      }),
+    ),
+  );
+}
+
 export function nestedCallbackBindingsSource(
   entries: readonly { readonly path: string; readonly value: string }[],
 ): string {
@@ -2447,24 +2977,12 @@ export function nestedCallbackBindingsSource(
       children: new Map<string, BindingTree>(),
     };
     let leaf = current;
-    const traversed = [root];
     for (const segment of rest) {
-      if (leaf.direct !== undefined) {
-        throw new Error(
-          `Generated callback binding ${entry.path} conflicts with callable binding ${traversed.join('.')}. A runtime binding cannot be both a callable leaf and a namespace.`,
-        );
-      }
       const child = leaf.children.get(segment) ?? {
         children: new Map<string, BindingTree>(),
       };
       leaf.children.set(segment, child);
       leaf = child;
-      traversed.push(segment);
-    }
-    if (leaf.children.size > 0) {
-      throw new Error(
-        `Generated callback binding ${entry.path} conflicts with nested runtime bindings. A runtime binding cannot be both a callable leaf and a namespace.`,
-      );
     }
     if (leaf.direct !== undefined && leaf.direct !== entry.value) {
       throw new Error(
@@ -2486,12 +3004,35 @@ export function nestedCallbackBindingsSource(
           `${JSON.stringify(property)}: ${source(child)}`,
       )
       .join(', ');
-    return `{ ${nested} }`;
+    return `{ ${node.direct ? `...(${node.direct}), ` : ''}${nested} }`;
   };
   const properties = [...roots.entries()]
     .sort(([left], [right]) => left.localeCompare(right))
     .map(([root, value]) => `${JSON.stringify(root)}: ${source(value)}`);
   return `{ ${properties.join(', ')} }`;
+}
+
+function privateProviderBindingSource(
+  contract: WorkflowContract,
+  binding: NonNullable<ApplicationTaskHandlerNode['providerBindings']>[number],
+): string | undefined {
+  if (!binding.privateRuntime) return undefined;
+  const provider = contract.privateProviderEffects?.providers.find(
+    (candidate) => candidate.provider.id === binding.provider.nodeId,
+  );
+  if (!provider) {
+    throw new Error(
+      `Workflow task provider binding ${binding.identifier} has no managed private runtime for ${binding.provider.nodeId}.`,
+    );
+  }
+  const implementation = privateProviderRuntimeVariable(provider.provider.id);
+  if (binding.projection === 'implementation') return implementation;
+  if (binding.projection === 'binding') {
+    return `Object.freeze({ kind: 'applicationProvider', implementation: ${implementation} })`;
+  }
+  throw new Error(
+    `Workflow task provider binding ${binding.identifier} must capture the provider implementation or binding.`,
+  );
 }
 
 export function generatedOperationPrincipalModule(handler: ApplicationTaskHandlerNode): string {
@@ -2500,6 +3041,85 @@ export function generatedOperationPrincipalModule(handler: ApplicationTaskHandle
     ? absoluteDependencyImports(handler.operationPrincipalDependencies.source, handler.operationPrincipalDependencies.resolveDir)
     : '';
   return `${dependencies}${dependencies ? '\n\n' : ''}export const principal = (${handler.operationPrincipalSource});\n`;
+}
+
+function generatedWorkflowPrivateProviderRuntime(
+  contract: WorkflowContract,
+): string {
+  const providers = contract.privateProviderEffects?.providers ?? [];
+  if (providers.length === 0) {
+    return 'const providerPrivateSqlClients = [];';
+  }
+  const declarations = providers.map((provider) => {
+    const branches = provider.branches.map((branch) => {
+      if (!branch.runtime) {
+        return `case ${JSON.stringify(branch.variant)}: return undefined;`;
+      }
+      const credentials = branch.runtime.credentials.map((credential) =>
+        `${JSON.stringify(credential.alias)}: await requiredPrivateProviderFile(${JSON.stringify(privateProviderMountPath(provider.provider.id, 'credentials', credential.alias))}, ${JSON.stringify(`${provider.provider.id}.${branch.variant} credential ${credential.alias}`)})`).join(', ');
+      const postgresBindings = branch.postgres.map((dependency) => {
+        const path = privateProviderMountPath(
+          provider.provider.id,
+          'postgres',
+          dependency.alias,
+        );
+        return `${JSON.stringify(dependency.alias)}: await createPrivateProviderPostgres(${JSON.stringify(path)}, ${JSON.stringify(dependency.database)}, ${JSON.stringify(`${provider.provider.id}.${branch.variant} PostgreSQL ${dependency.alias}`)})`;
+      }).join(', ');
+      const construct = privateProviderBranchVariable(
+        provider.provider.id,
+        branch.variant,
+        'construct',
+      );
+      const validate = privateProviderBranchVariable(
+        provider.provider.id,
+        branch.variant,
+        'validate',
+      );
+      return `case ${JSON.stringify(branch.variant)}: {
+        const runtime = Object.freeze({
+          credentials: Object.freeze({ ${credentials} }),
+          postgres: Object.freeze({ ${postgresBindings} }),
+        });
+        let implementation;
+        try { implementation = await ${construct}()(runtime); }
+        catch (cause) { throw new Error(${JSON.stringify(`Provider ${provider.provider.id}.${branch.variant} private runtime construction failed.`)}, { cause }); }
+        if (!${validate}()(implementation)) {
+          throw new Error(${JSON.stringify(`Provider ${provider.provider.id}.${branch.variant} runtime constructor returned an implementation that violates its versioned contract.`)});
+        }
+        return Object.freeze(implementation);
+      }`;
+    }).join('\n');
+    return `const ${privateProviderRuntimeVariable(provider.provider.id)} = await (async () => {
+      const variant = requiredEnv('APPLIK8S_PROFILE_VARIANT');
+      switch (variant) {
+        ${branches}
+        default: throw new Error(${JSON.stringify(`Provider ${provider.provider.id} has no runtime branch for the selected profile variant `)} + JSON.stringify(variant));
+      }
+    })();`;
+  }).join('\n');
+  return `const providerPrivateSqlClients = [];
+async function requiredPrivateProviderFile(path, label) {
+  let value;
+  try { value = await readFile(path, 'utf8'); }
+  catch (cause) { throw new Error('Missing provider-private ' + label + '.', { cause }); }
+  if (!value) throw new Error('Provider-private ' + label + ' must not be empty.');
+  return value;
+}
+async function createPrivateProviderPostgres(path, database, label) {
+  const connectionString = (await requiredPrivateProviderFile(path, label)).trim();
+  if (!connectionString) throw new Error('Provider-private ' + label + ' must not be blank.');
+  const client = postgres(connectionString, { max: ${Math.max(2, contract.worker.deployment.taskSlots)} });
+  providerPrivateSqlClients.push(client);
+  const sql = Object.freeze({
+    unsafe: (query, parameters) => client.unsafe(query, parameters),
+    begin: (operation) => client.begin((transaction) => operation(Object.freeze({
+      unsafe: (query, parameters) => transaction.unsafe(query, parameters),
+      json: (value) => transaction.json(value),
+    }))),
+  });
+  return Object.freeze({ sql, database });
+}
+${declarations}`;
 }
 
 function generatedWorkflowOperationRuntime(
@@ -2713,6 +3333,57 @@ export async function writeWorkflowProjectionCallbackModules(directory: string, 
   }
 }
 
+export async function writeWorkflowFunctionNativeOperationCallbackModules(
+  directory: string,
+  contract: WorkflowContract,
+): Promise<void> {
+  const transactionHandlers = new Set(
+    (contract.functionNativeTransactions ?? []).map(
+      ({ taskHandlerId }) => taskHandlerId,
+    ),
+  );
+  const handlers = new Map<string, ApplicationCommandHandlerNode>();
+  for (const operation of contract.operationEffects?.operations ?? []) {
+    if (
+      transactionHandlers.has(operation.taskHandlerId)
+      && operation.handler.beforeCommit
+    ) {
+      handlers.set(operation.handler.id, operation.handler);
+    }
+  }
+  await Promise.all([...handlers.values()].map(async (handler) => {
+    if (!handler.beforeCommit) return;
+    const suffix = createHash('sha256')
+      .update(handler.id)
+      .digest('hex')
+      .slice(0, 12);
+    const injectedIdentifiers = [
+      ...(handler.transaction.modelBindings ?? []).map(
+        ({ identifier }) => identifier,
+      ),
+      ...(handler.eventBindings ?? []).map(({ identifier }) => identifier),
+      ...(handler.commandBindings ?? []).map(({ identifier }) => identifier),
+    ]
+      .map((identifier) => identifier.split('.')[0] ?? identifier)
+      .filter(
+        (identifier, index, values) =>
+          /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(identifier)
+          && values.indexOf(identifier) === index,
+      );
+    await writeFile(
+      join(directory, `workflow-before-commit-${suffix}.generated.ts`),
+      generatedCallbackFactoryModule({
+        source: handler.beforeCommit.source,
+        ...(handler.beforeCommit.dependencies
+          ? { dependencies: handler.beforeCommit.dependencies }
+          : {}),
+        injectedIdentifiers,
+        exportName: 'createCallback',
+      }),
+    );
+  }));
+}
+
 function projectionCallbackModuleFile(id: string, role: string): string { return `projection-${role}-${createHash('sha256').update(id).digest('hex').slice(0, 12)}.generated.ts`; }
 function projectionCallbackVariable(id: string, role: string): string { return `projection_${role}_${createHash('sha256').update(id).digest('hex').slice(0, 12)}`; }
 
@@ -2722,6 +3393,52 @@ function workflowDatabaseBindingSource(stream: ApplicationStreamNode): string {
 
 function generatedWorkflowCapabilities(contract: WorkflowContract): string {
   return contract.capabilities.map((provider) => {
+    if (provider.interface === 'AI') {
+      const nativeAI = contract.nativeAI;
+      if (!nativeAI) {
+        throw new Error(`Workflow worker ${contract.worker.id} AI capability has no native runtime contract.`);
+      }
+      const access = nativeAI.conversationAccess;
+      return `{
+  const configuredProvider = ${JSON.stringify(nativeAI.providerConfig)};
+  const selectedProvider = configuredProvider.kind === 'application-provider-selection'
+    ? configuredProvider.cases?.[requiredEnv('APPLIK8S_NATIVE_AI_SELECTION')] ?? configuredProvider.default
+    : configuredProvider;
+  if (!selectedProvider || typeof selectedProvider !== 'object') {
+    throw new Error('Native AI task capability has no selected provider.');
+  }
+  if (!nativeAIStateSql) throw new Error('Native AI task capability requires durable conversation storage.');
+  const nativeAIConversationStore = createPostgresApplicationConversationStore({
+    sql: nativeAIStateSql,
+    ${access ? `access: { setting: ${JSON.stringify(access.setting)} },` : ''}
+  });
+  capabilities.AI = defineApplicationTaskCapabilityFactory((binding) => {
+    if (binding.authority.kind !== 'admitted-task') {
+      throw new Error('Native AI task capability requires compiler-admitted task authority.');
+    }
+    const trustedContext = binding.invocation.trustedContext?.values ?? {};
+    const persistence = createApplicationTanStackConversationPersistence({
+      store: nativeAIConversationStore,
+      principalScope: applicationAIConversationPrincipalScope(binding.authority.principal, trustedContext),
+    });
+    return createApplicationTanStackTaskCapability({
+      persistenceMiddleware: withApplicationTanStackPersistence(persistence),
+      execution: {
+        operationId: binding.task.contractId + '@' + binding.task.contractVersion,
+        invocationId: binding.invocation.invocationId,
+        idempotencyKey: binding.invocation.idempotencyKey,
+        attempt: binding.invocation.attempt,
+        ...(binding.invocation.correlationId ? { correlationId: binding.invocation.correlationId } : {}),
+        ...(binding.invocation.causationId ? { causationId: binding.invocation.causationId } : {}),
+        ...(binding.invocation.traceparent ? { traceparent: binding.invocation.traceparent } : {}),
+        signal: binding.invocation.signal,
+      },
+      runTaskEffect: (effect, invoke) => directTaskEffectScope.run(effect, invoke),
+      adapter: (model) => applicationAITextAdapter(nativeAITaskProvider(selectedProvider, model)),
+    });
+  });
+}`;
+    }
     if (provider.interface !== 'StructuredGeneration') throw new Error(`Workflow worker ${contract.worker.id} has no runtime adapter for capability ${provider.interface}.`);
     const config = provider.config ?? {};
     const selection = structuredGenerationSelection(config);

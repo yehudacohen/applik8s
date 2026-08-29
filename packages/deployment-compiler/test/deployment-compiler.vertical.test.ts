@@ -2001,6 +2001,7 @@ describe("Application deployment compiler", () => {
           implementation: "nats-jetstream",
           config: {
             bindingKind: "commandTransport",
+            aliasOf: "provider.event-log.v1alpha1.primary",
             name: "identity-start-events",
             namespace: "identity-start-system",
             provision: true,
@@ -2832,6 +2833,99 @@ describe("Application deployment compiler", () => {
       relationship: "requiresOutput",
       output: "name",
     });
+  });
+
+  it("deploys explicitly shared logical AI roles through one physical Envoy authority", () => {
+    const base = applicationGraph();
+    const ai = {
+      kind: "envoy-ai-gateway",
+      name: "shared-inference",
+      namespace: "guestbook",
+      provision: true,
+      versions: {
+        envoyGateway: "v1.6.0",
+        aiGateway: "v0.6.0",
+        gatewayApi: "v1.4.1",
+      },
+      models: {
+        fast: {
+          fallback: "disabled",
+          backends: [{
+            apiVersion: "applik8s.aiBackend/v1alpha1",
+            name: "primary",
+            providerClass: "openai-compatible",
+            model: "fast",
+            endpoint: "http://model.guestbook.svc:8080",
+            capabilities: ["chat", "tools", "streaming"],
+          }],
+        },
+      },
+    };
+    const graph: ApplicationGraph = {
+      ...base,
+      nodes: [
+        ...base.nodes,
+        {
+          id: "provider.ai.v1alpha1.inference",
+          kind: "provider",
+          name: "AI",
+          stability: "stable",
+          interface: "AI",
+          implementation: "envoy-ai-gateway",
+          config: {
+            qualification: { name: "inference", compatibilityRevision: "v1alpha1" },
+            ai,
+          },
+        },
+        {
+          id: "provider.ai.v1alpha1.research",
+          kind: "provider",
+          name: "AI",
+          stability: "stable",
+          interface: "AI",
+          implementation: "envoy-ai-gateway",
+          config: {
+            qualification: { name: "research", compatibilityRevision: "v1alpha1" },
+            aliasOf: "provider.ai.v1alpha1.inference",
+            ai,
+          },
+        },
+      ],
+    };
+
+    const result = compileApplicationDeploymentGraph({
+      ...request(),
+      graph,
+      identity: { ...request().identity, profile: "dedicated" },
+      installationSpec: { name: "guestbook", profile: "dedicated" },
+    });
+    expect(
+      result.graph.nodes.filter(
+        (node) => node.kind === "kubernetesDirect"
+          && node.spec.compositionId === "envoy-ai-gateway",
+      ),
+    ).toHaveLength(1);
+
+    const forged: ApplicationGraph = {
+      ...graph,
+      nodes: graph.nodes.map((node) =>
+        node.kind === "provider"
+          && node.id === "provider.ai.v1alpha1.research"
+          ? {
+              ...node,
+              config: {
+                ...node.config,
+                ai: { ...ai, name: "different-inference" },
+              },
+            }
+          : node),
+    };
+    expect(() => compileApplicationDeploymentGraph({
+      ...request(),
+      graph: forged,
+      identity: { ...request().identity, profile: "dedicated" },
+      installationSpec: { name: "guestbook", profile: "dedicated" },
+    })).toThrow(/physical provider plans differ/);
   });
 
   it("bounds Envoy AI Gateway's derived ext-proc volume identity", () => {

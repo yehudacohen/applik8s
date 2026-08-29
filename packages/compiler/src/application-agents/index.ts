@@ -1,3 +1,4 @@
+// typecast-file-boundary: Agent compilation narrows validated graph/config records into provider-specific source contracts at the generation boundary.
 import { createHash } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
@@ -324,7 +325,9 @@ function applicationAgentCompilerContract(
     );
   }
   const conversationRuntime = stateModels.find(
-    (model) => model.runtime.tableName === 'applik8s_conversations',
+    model => model.common?.runtimeRoles?.includes(
+      'applik8s.conversation-state/v1',
+    ) === true,
   )?.runtime;
   const conversationAccess = conversationRuntime?.nativeRelational?.access;
   const namespace = graph.metadata.namespace ?? stringValue(providerConfig.namespace) ?? 'default';
@@ -2222,7 +2225,7 @@ function generatedAgentResources(
                         name: 'APPLIK8S_AI_GATEWAY_MANAGED_URL',
                         value:
                           applicationOptionalDeploymentOutputReference(
-                            `direct.${contract.provider.id}.envoy-ai-gateway`,
+                            `direct.${applicationAgentPhysicalProviderId(contract.graph, contract.provider)}.envoy-ai-gateway`,
                             'endpoint',
                           ),
                       }]
@@ -2669,6 +2672,35 @@ function applicationAgentHasManagedEnvoy(provider: JsonObject): boolean {
       && candidate.kind === 'envoy-ai-gateway'
       && candidate.provision !== false,
   );
+}
+
+function applicationAgentPhysicalProviderId(
+  graph: ApplicationGraph,
+  provider: ApplicationProviderNode,
+): string {
+  const providers = new Map(
+    graph.nodes.flatMap((node) =>
+      node.kind === 'provider' ? [[node.id, node] as const] : []),
+  );
+  let current = provider;
+  const visited = new Set<string>();
+  while (true) {
+    if (visited.has(current.id)) {
+      throw new Error(`Application AI provider alias cycle includes ${current.id}.`);
+    }
+    visited.add(current.id);
+    const aliasOf = typeof current.config?.aliasOf === 'string'
+      ? current.config.aliasOf
+      : undefined;
+    if (!aliasOf) return current.id;
+    const target = providers.get(aliasOf);
+    if (!target || target.interface !== provider.interface) {
+      throw new Error(
+        `Application AI provider ${current.id} aliases missing or incompatible provider ${aliasOf}.`,
+      );
+    }
+    current = target;
+  }
 }
 
 function applicationAgentCredentialSecret(

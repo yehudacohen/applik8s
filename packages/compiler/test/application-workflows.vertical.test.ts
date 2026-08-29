@@ -26,6 +26,113 @@ import {
 import { compileTypeKroComposition, discoverApplicationGraph } from '../src/pipeline/index.js';
 
 describe('v0.5 generated workflow lowering', () => {
+  it('hydrates one handler-safe native AI capability for an admitted durable task', () => {
+    const graph = {
+      metadata: { name: 'native-ai-workflow', namespace: 'workflow-system' },
+      nodes: [
+        {
+          id: 'provider.WorkflowEngine', kind: 'provider', name: 'WorkflowEngine', stability: 'stable',
+          interface: 'WorkflowEngine', implementation: 'hatchet', config: { namespace: 'workflow-system' },
+        },
+        {
+          id: 'provider.AI.v1alpha1.inference', kind: 'provider', name: 'AI', stability: 'stable',
+          interface: 'AI', implementation: 'ai-deterministic',
+          config: {
+            qualification: { name: 'inference' },
+            ai: { kind: 'ai-deterministic', production: false, fixture: { response: 'bounded' } },
+          },
+        },
+        {
+          id: 'provider.TransactionalDatabase', kind: 'provider', name: 'TransactionalDatabase', stability: 'stable',
+          interface: 'TransactionalDatabase', implementation: 'postgres', config: {},
+        },
+        {
+          id: 'model.Conversation', kind: 'model', name: 'Conversation', stability: 'stable',
+          entity: { name: 'Conversation', identity: ['id'], revision: { strategy: 'none' } },
+          database: { interface: 'TransactionalDatabase', nodeId: 'provider.TransactionalDatabase' },
+          schema: { input: { jsonSchema: { type: 'object' } }, output: { jsonSchema: { type: 'object' } } },
+          materialization: { kind: 'native-relational' },
+          common: {
+            runtimeRoles: ['applik8s.conversation-state/v1'],
+            identity: { fields: ['id'], encoding: 'scalar' },
+            snapshot: { shape: 'identity-value-revision', revisionOptional: true },
+            changes: { authority: 'transactional-database-outbox', rawWrites: 'observed' },
+            relationships: [],
+          },
+          runtime: {
+            name: 'Conversation', tableName: 'applik8s_conversations', provider: 'postgres', database: 'application', clusterName: 'application',
+            secretName: 'application-db', secretKey: 'uri', connectionEnvName: 'APPLIK8S_DATABASE_APPLICATION_URL',
+            constraints: [], indexes: [], retention: { mode: 'retain' }, storageShape: 'native-relational',
+            nativeRelational: { identity: { property: 'id', column: 'id' }, columns: [] },
+          },
+        },
+        {
+          id: 'task.native-ai.v1', kind: 'task', name: 'native-ai.v1', stability: 'stable',
+          contract: { name: 'native-ai', version: 'v1', input: { jsonSchema: { type: 'object' } }, output: { jsonSchema: { type: 'object' } }, errors: [] },
+        },
+        {
+          id: 'workflow.publish.v1', kind: 'workflow', name: 'publish.v1', stability: 'stable',
+          contract: { name: 'publish', version: 'v1', input: { jsonSchema: { type: 'object' } }, output: { jsonSchema: { type: 'object' } }, errors: [], signals: [] },
+          triggers: { crons: [] },
+        },
+        {
+          id: 'task-handler.native-ai.v1', kind: 'taskHandler', name: 'native-ai.v1', stability: 'stable',
+          task: { nodeId: 'task.native-ai.v1' }, workflowEngine: { interface: 'WorkflowEngine', nodeId: 'provider.WorkflowEngine' },
+          capabilities: [{ interface: 'AI', nodeId: 'provider.AI.v1alpha1.inference' }],
+          childWorkflowBindings: [{ alias: 'Publish', workflow: { nodeId: 'workflow.publish.v1' } }],
+          retry: { mode: 'boundedExponentialBackoff', maxAttempts: 3, initialDelayMs: 1000, maxDelayMs: 30000, factor: 2 },
+          executionTimeoutSeconds: 60, scheduleTimeoutSeconds: 300,
+          idempotency: { required: true, keySource: 'invocation', guarantee: 'atLeastOnceRetrySafe' },
+          effectBoundary: 'externalEffectsAllowed', handlerSource: 'async input => input',
+        },
+        {
+          id: 'workflow-worker.native-ai', kind: 'workflowWorker', name: 'native-ai-worker', stability: 'stable',
+          handlers: [{ nodeId: 'task-handler.native-ai.v1' }],
+          workflowEngine: { interface: 'WorkflowEngine', nodeId: 'provider.WorkflowEngine' }, runtime: 'node', lifecycle: 'longLived',
+          deployment: { replicas: 1, taskSlots: 4, durableSlots: 4, gracefulShutdownSeconds: 30, healthPort: 8080, egress: 'allowAll', scaling: { mode: 'fixed' } },
+        },
+      ],
+      edges: [], providerRequirements: [], providerBindings: [],
+    } as unknown as ApplicationGraph;
+    const worker = graph.nodes.find((node) => node.kind === 'workflowWorker');
+    if (worker?.kind !== 'workflowWorker') throw new Error('Expected workflow worker.');
+    const contract = workflowContract(graph, worker);
+    const source = generatedWorkerSource(contract);
+    const resources = workflowResources(contract, 'native-ai-worker', 'fixture-image', 'fixture-digest', false);
+
+    expect(source).toContain('createApplicationTanStackTaskCapability');
+    expect(source).toContain('defineApplicationTaskCapabilityFactory((binding) =>');
+    expect(source).toContain('createApplicationTanStackConversationPersistence');
+    expect(source).toContain("capabilities.AI");
+    expect(source).toContain("applicationAITextAdapter(nativeAITaskProvider(selectedProvider, model))");
+    expect(source).toContain('applik8s.task-workflow-child/v1');
+    expect(source).toContain('taskWorkflowRuntime.run("publish.v1", input, options)');
+    expect(source).toContain('directTaskEffectScope.run(effect, invoke)');
+    expect(source).not.toContain('application-db-secret-value');
+    const deployment = resources.find((resource) => resource.kind === 'Deployment');
+    expect(deployment).toBeDefined();
+    const containers = (deployment?.spec as { template?: { spec?: { containers?: readonly { env?: readonly Record<string, unknown>[] }[] } } })?.template?.spec?.containers;
+    expect(containers?.[0]?.env).toContainEqual({
+      name: 'APPLIK8S_DATABASE_APPLICATION_URL',
+      valueFrom: { secretKeyRef: { name: 'application-db', key: 'uri', optional: false } },
+    });
+  });
+
+  it('merges a direct model handle with operations below the same identifier', () => {
+    expect(nestedCallbackBindingsSource([
+      {
+        path: 'WebhookSubscription.create',
+        value: 'execution.operations["WebhookSubscription.create"]',
+      },
+      {
+        path: 'WebhookSubscription',
+        value: 'functionNativeTaskBindings("handler")["WebhookSubscription"]',
+      },
+    ])).toBe(
+      '{ "WebhookSubscription": { ...(functionNativeTaskBindings("handler")["WebhookSubscription"]), "create": execution.operations["WebhookSubscription.create"] } }',
+    );
+  });
+
   it('authorizes dedicated schedule control for only the workflow contracts targeted by shared schedules', () => {
     const graph = {
       metadata: { name: 'scheduled-workflows', namespace: 'workflow-system' },
@@ -279,11 +386,12 @@ describe('v0.5 generated workflow lowering', () => {
         { path: 'Alpha.invoke', value: 'alpha' },
       ]),
     ).toBe('{ "Alpha": { "invoke": alpha }, "Zulu": { "invoke": zulu } }');
-    expect(() =>
+    expect(
       nestedCallbackBindingsSource([
         { path: 'Provider', value: 'provider' },
         { path: 'Provider.acquire', value: 'acquire' },
-      ])).toThrow(/both a callable leaf and a namespace/);
+      ]),
+    ).toBe('{ "Provider": { ...(provider), "acquire": acquire } }');
     expect(() =>
       nestedCallbackBindingsSource([
         { path: 'Provider.acquire', value: 'first' },
@@ -486,6 +594,7 @@ async function acquireThroughHelper(id) {
 async function persistRecord(id, body) {
   await RecordModel.edit(id, async record => {
     await RecordModel.require(id);
+    await RecordModel.create({ id: id + '-nested', body });
     await record.update({ body });
     RecordChanged.emit({ id, body });
   });
@@ -493,9 +602,13 @@ async function persistRecord(id, body) {
 platform.workflow('records.edit.v1', {
   input: type({ id: 'string', body: 'string' }),
   output: type({ id: 'string' }),
+}, {
+  authority: [RecordModel.create.all()],
+  principal: input => ({ id: 'record-writer:' + input.id, claims: {}, authorizationVersion: 'records-v1' }),
 }, async input => {
   const acquired = await acquireThroughHelper(input.id);
   const direct = await directProvider.acquire({ id: input.id });
+  await RecordModel.create({ id: input.id, body: input.body });
   await persistRecord(input.id, acquired.body + '|' + direct.body);
   return { id: input.id };
 });
@@ -676,6 +789,17 @@ export const workflowModelEdit = platform.composition;
       expect(generatedSource).toContain(
         'createApplicationFunctionNativeEventHandle',
       );
+      expect(generatedSource).toContain(
+        'bindApplicationFunctionNativeOperationHandle',
+      );
+      expect(generatedSource).toContain(
+        'const functionNativeTaskOperationHandles = Object.freeze',
+      );
+      expect(generatedSource).toContain('models.Record.create');
+      expect(generatedSource).toContain('atomicOperations: transaction.operations');
+      expect(generatedSource).toContain(
+        'applicationCommandPrincipalValues(principal)',
+      );
       expect(generatedSource).toContain('functionNativeTaskBindings');
       expect(generatedSource).toContain(
         'function functionNativeTaskReadClients(handlerId, context)',
@@ -725,6 +849,7 @@ export const workflowModelEdit = platform.composition;
         throw new Error('Expected callable provider binding.');
       }
       delete missingRuntimeBinding.operation.runtime;
+      delete missingRuntimeHandler.operations;
       expect(() =>
         generatedWorkerSource(workflowContract(
           missingRuntimeGraph,
@@ -743,6 +868,7 @@ export const workflowModelEdit = platform.composition;
         throw new Error('Expected provider runtime operation.');
       }
       privateRuntimeBinding.operation.runtime.module = '../private-runtime.js';
+      delete privateRuntimeHandler.operations;
       expect(() =>
         generatedWorkerSource(workflowContract(
           privateRuntimeGraph,
@@ -1519,7 +1645,7 @@ function rebuildPartition() { return 'all'; }
 const timeline = changes.project('timeline', { store: IndexStore, output: type({ id: 'string', score: 'number' }), map: (payload) => payload, partitionBy: rebuildPartition, key: ({ id }) => id, score: ({ score }) => score, value: (row) => row, retention: { maxItemsPerPartition: 1000 }, generationScoped: true, rebuild: { source: RecordModel, map: (record) => ({ id: record.id, score: 0 }), checkpoint: 'durable' } });
 const artifacts = platform.objectStore('projection-artifacts', { mode: 'immutable', maxObjectBytes: 4000000, contentTypes: ['application/vnd.applik8s.projection-segment+json', 'application/vnd.applik8s.projection-rebuild+json'] });
 const Rebuild = workflow('records.rebuild.v1', { input: type({ generation: 'string' }), output: type({ watermark: 'number' }) });
-platform.workflow(Rebuild, { projections: { timeline: { projection: timeline, artifacts, bounds: { batchSize: 250, maxSegments: 1000 } } }, objects: { artifacts } }, async (input, context) => {
+platform.workflow(Rebuild, { projections: { timeline: { projection: timeline, artifacts, bounds: { batchSize: 250, maxSegments: 1000 } } }, objects: { artifacts: artifacts.allow('put', 'get', 'head') } }, async (input, context) => {
   await context.objects.artifacts.head('rebuild/' + input.generation + '/manifest.json');
   return { watermark: (await context.projections.timeline.rebuild({ generation: input.generation })).publishedWatermark };
 });

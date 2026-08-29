@@ -1,5 +1,6 @@
 // typecast-file-boundary: Workflow registration preserves generic schema inference while normalizing validated graph metadata at the registration boundary.
 import { createHash } from 'node:crypto';
+import { AI, isApplicationAIProvider, type ApplicationAIProvider } from '@applik8s/ai';
 import { type ApplicationOperationLike, getApplicationOperationContract, isApplicationBoundOperation, isApplicationScopedOperation } from '@applik8s/client';
 import { type ApplicationOperationInvocationDependency, type ApplicationProviderRuntimeContract, type ApplicationResourceRef, applicationOperationId, canonicalJsonV1String } from '@applik8s/core';
 import {
@@ -8,9 +9,10 @@ import {
 } from './application-callback.js';
 import { inferApplicationFunctionNativeTransaction } from './application-function-native-transactions.js';
 import { addApplicationGraphEdge, addApplicationGraphNode, addApplicationProviderBinding, addApplicationProviderRequirement } from './application-graph-state.js';
-import type { ApplicationObjectStoreBinding } from './application-object-storage.js';
+import { applicationProviderGraphNodeId } from './application-identifiers.js';
+import type { ApplicationTaskObjectStoreBinding } from './application-object-storage.js';
 import { applicationProjectionRebuildTarget } from './application-projection-binding.js';
-import { type ApplicationProviderSelectionValue, type ApplicationProviderToken, type ApplicationWorkflowEngineProvider, applicationProviderImplementationName, applicationWorkflowEngineImplementation, isApplicationProviderSelection, Scheduler } from './application-providers.js';
+import { type ApplicationProviderSelectionValue, type ApplicationProviderToken, type ApplicationWorkflowEngineProvider, applicationProviderImplementationName, applicationWorkflowEngineImplementation, isApplicationProviderSelection, isApplicationQualifiedProviderToken, Scheduler } from './application-providers.js';
 import { applicationQueryBindingForOperation } from './application-queries.js';
 import {
   type ApplicationScheduleHandle,
@@ -43,6 +45,7 @@ import type { WorkflowDefinition } from './dsl.js';
 import { applicationModelCommandBindingForOperation } from './native-models.js';
 import { type ApplicationStructuredGenerationProvider, isApplicationStructuredGenerationProvider, StructuredGeneration } from './structured-generation.js';
 import {
+  type ApplicationWorkflowExecutionReference,
   type ApplicationWorkflowInvocationMetadata,
   type ApplicationWorkflowProviderRun,
   type ApplicationWorkflowResultOptions,
@@ -174,6 +177,14 @@ export function registerApplicationTask<
             && candidate.provider.nodeId === binding.provider.nodeId,
         ),
     );
+  const childWorkflowBindings = uniqueWorkflowDependencies(
+    Object.entries(inferredDependencies.bindings).flatMap(([identifier, value]) =>
+      typeof value === 'function' && Reflect.get(value, 'kind') === 'applicationWorkflow'
+        ? [{ alias: validAlias(identifier), id: workflowDefinition(
+            value as ApplicationWorkflowBinding<object, object>,
+          ).id }]
+        : []),
+  );
   const functionNativeTransaction = inferApplicationFunctionNativeTransaction(
     state,
     `Application task ${definition.id}`,
@@ -212,6 +223,7 @@ export function registerApplicationTask<
     ...objects.map(({ alias }) => alias),
     ...actors.map(({ alias }) => alias),
     ...providerBindings.map(({ identifier }) => identifier),
+    ...childWorkflowBindings.map(({ alias }) => alias),
     ...signalBindings.map(({ alias }) => alias),
     ...(signalBindings.length > 0 ? ['workflow'] : []),
     ...(functionNativeTransaction?.modelBindings ?? [])
@@ -256,6 +268,14 @@ export function registerApplicationTask<
     workflowEngine: workflowEngineRef(),
     ...(options.identity ? { serviceIdentity: options.identity.identity } : {}),
     ...(capabilities.length > 0 ? { capabilities: capabilities.map(({ reference }) => reference) } : {}),
+    ...(childWorkflowBindings.length > 0
+      ? {
+          childWorkflowBindings: childWorkflowBindings.map((binding) => ({
+            alias: binding.alias,
+            workflow: { nodeId: graphNodeId('workflow', binding.id) },
+          })),
+        }
+      : {}),
     ...(providerBindings.length > 0 ? { providerBindings } : {}),
     ...(operations.length > 0 ? { operations } : {}),
     ...(queries.length > 0 ? { queries } : {}),
@@ -294,6 +314,13 @@ export function registerApplicationTask<
   state.workflowHandlerGroups.set(handlerNodeId, workflowWorkerGroup(engine, options.worker));
   addApplicationGraphEdge(state, { from: { nodeId: handlerNodeId }, to: { nodeId: taskNodeId }, relationship: 'owns' });
   for (const capability of capabilities) addApplicationGraphEdge(state, { from: capability.reference, to: { nodeId: handlerNodeId }, relationship: 'provides' });
+  for (const binding of childWorkflowBindings) {
+    addApplicationGraphEdge(state, {
+      from: { nodeId: handlerNodeId },
+      to: { nodeId: graphNodeId('workflow', binding.id) },
+      relationship: 'dependsOn',
+    });
+  }
   for (const provider of providerBindings) {
     addApplicationGraphEdge(state, {
       from: { nodeId: provider.provider.nodeId },
@@ -324,8 +351,12 @@ export function registerApplicationTask<
     addApplicationGraphEdge(state, { from: { nodeId: handlerNodeId }, to: projection.artifacts, relationship: 'writes' });
   }
 	for (const object of objects) {
-		addApplicationGraphEdge(state, { from: { nodeId: handlerNodeId }, to: object.store, relationship: 'reads' });
-		addApplicationGraphEdge(state, { from: { nodeId: handlerNodeId }, to: object.store, relationship: 'writes' });
+		if (object.operations.some(operation => operation === 'get' || operation === 'head')) {
+			addApplicationGraphEdge(state, { from: { nodeId: handlerNodeId }, to: object.store, relationship: 'reads' });
+		}
+		if (object.operations.some(operation => operation === 'put' || operation === 'delete')) {
+			addApplicationGraphEdge(state, { from: { nodeId: handlerNodeId }, to: object.store, relationship: 'writes' });
+		}
 	}
   for (const actor of actors) addApplicationGraphEdge(state, { from: { nodeId: handlerNodeId }, to: actor.actor, relationship: 'dependsOn' });
   recordWorkflowWorker(state, engine, options.worker);
@@ -362,11 +393,23 @@ function recordTaskActors(
 function recordTaskObjects(
 	consumerNodeId: string,
 	objects: ApplicationTaskObjectStores,
-): readonly { readonly alias: string; readonly store: { readonly nodeId: string } }[] {
-	return Object.entries(objects).sort(([left], [right]) => left.localeCompare(right)).map(([alias, store]) => {
+): readonly {
+	readonly alias: string;
+	readonly store: { readonly nodeId: string };
+	readonly operations: readonly import('@applik8s/core').ApplicationTaskObjectOperation[];
+	readonly credentialsSecret?: ApplicationResourceRef;
+}[] {
+	return Object.entries(objects).sort(([left], [right]) => left.localeCompare(right)).map(([alias, binding]) => {
 		if (!alias.trim()) throw new Error(`Task ${consumerNodeId} object aliases must not be empty.`);
-		if (store.kind !== 'applicationObjectStore') throw new Error(`Task ${consumerNodeId} object ${alias} is not an application object store.`);
-		return { alias, store: { nodeId: `objectStore.${store.name}` } };
+		if (binding.kind !== 'applicationTaskObjectStore') throw new Error(`Task ${consumerNodeId} object ${alias} is not a method-scoped task object store.`);
+		return {
+			alias,
+			store: { nodeId: `objectStore.${binding.store.name}` },
+			operations: binding.operations,
+			...(binding.credentialsSecret
+				? { credentialsSecret: binding.credentialsSecret }
+				: {}),
+		};
 	});
 }
 
@@ -421,7 +464,7 @@ function normalizeTaskDirectDependencies(
   const operations: Record<string, ApplicationTaskOperationDependency> = {};
   const queries: Record<string, ApplicationOperationLike> = {};
   const projections: Record<string, import('./application-workflow-types.js').ApplicationTaskProjectionTarget> = {};
-  const objects: Record<string, ApplicationObjectStoreBinding> = {};
+  const objects: Record<string, ApplicationTaskObjectStoreBinding> = {};
   const actors: Record<string, { readonly actorId: string; readonly member: string }> = {};
   const expanded = expandApplicationCallbackDependencies({
     calls: generatedCalls,
@@ -487,13 +530,12 @@ function normalizeTaskDirectDependencies(
     if (
       candidate
       && typeof candidate === 'object'
-      && Reflect.get(candidate, 'kind') === 'applicationObjectStore'
-      && typeof Reflect.get(candidate, 'name') === 'string'
-    ) {
-      const store = candidate as ApplicationObjectStoreBinding;
-      for (const identifier of identifiersFor(candidate, store.name)) {
-        objects[identifier] = store;
-      }
+			&& Reflect.get(candidate, 'kind') === 'applicationTaskObjectStore'
+		) {
+			const binding = candidate as ApplicationTaskObjectStoreBinding;
+			for (const identifier of identifiersFor(candidate, binding.store.name)) {
+				objects[identifier] = binding;
+			}
       continue;
     }
     const query = applicationQueryBindingForOperation(candidate);
@@ -629,30 +671,66 @@ function recordTaskCapabilities(
     if (!token.contract) throw new Error(`Task capability ${token.name} must declare a versioned provider contract.`);
     if (seen.has(token.name)) throw new Error(`Task ${consumerNodeId} declares capability ${token.name} more than once.`);
     seen.add(token.name);
-    if ((token as unknown) !== StructuredGeneration) {
-      throw new Error(`Task capability ${token.name} has no generated runtime adapter. StructuredGeneration is the currently supported task-injected capability.`);
-    }
-    const implementation = state.providers.extensions?.[`${token.contract.interface}@${token.contract.version}`];
-    if (!isStructuredGenerationProviderOrSelection(implementation)) {
-      throw new Error(`Task ${consumerNodeId} requires StructuredGeneration, but the application has not provided StructuredGeneration.http(...) or .deterministic(...).`);
-    }
-    const reference = { interface: token.contract.interface, nodeId: graphNodeId('provider', token.contract.interface) };
-    addApplicationGraphNode(state, {
-      id: reference.nodeId,
-      kind: 'provider',
-      name: token.contract.interface,
-      stability: 'stable',
+    const qualification = isApplicationQualifiedProviderToken(token)
+      ? token.qualification
+      : undefined;
+    const reference = {
       interface: token.contract.interface,
-      implementation: applicationProviderImplementationName(implementation),
-      contract: {
-        ...token.contract,
-        implementation: { name: applicationProviderImplementationName(implementation) },
-        surface: 'stablePublicApi',
-        support: 'implemented',
-        diagnostics: [],
-      },
-      config: jsonObject({ ...applicationTypeKroGraphValue(implementation) as object, bindingKind: 'taskCapability' }),
-    });
+      nodeId: applicationProviderGraphNodeId(token.contract.interface, qualification),
+    };
+    let implementation: unknown;
+    let runtime: ApplicationProviderRuntimeContract;
+    if ((token as unknown) === StructuredGeneration) {
+      implementation = state.providers.extensions?.[`${token.contract.interface}@${token.contract.version}`];
+      if (!isStructuredGenerationProviderOrSelection(implementation)) {
+        throw new Error(`Task ${consumerNodeId} requires StructuredGeneration, but the application has not provided StructuredGeneration.http(...) or .deterministic(...).`);
+      }
+      runtime = structuredGenerationRuntime(implementation);
+    } else if ((token as unknown) === AI || token.contract.interface === 'AI') {
+      const existing = state.graphNodes.find(
+        (node) => node.kind === 'provider' && node.id === reference.nodeId,
+      );
+      if (existing?.kind === 'provider') {
+        const candidate = existing.config?.ai;
+        if (!isAIProviderOrSelection(candidate)) {
+          throw new Error(`Task ${consumerNodeId} requires ${qualification?.key ?? 'AI'}, but its provider graph has no portable AI configuration.`);
+        }
+        implementation = candidate;
+      } else {
+        implementation = state.providers.extensions?.[`${token.contract.interface}@${token.contract.version}`];
+        if (!isAIProviderOrSelection(implementation)) {
+          throw new Error(`Task ${consumerNodeId} requires AI, but the application has not provided AI.deterministic(...) or AI.envoy(...).`);
+        }
+        addApplicationGraphNode(state, {
+          id: reference.nodeId,
+          kind: 'provider',
+          name: token.contract.interface,
+          stability: 'stable',
+          interface: token.contract.interface,
+          implementation: applicationProviderImplementationName(implementation),
+          contract: {
+            ...token.contract,
+            implementation: { name: applicationProviderImplementationName(implementation) },
+            surface: 'stablePublicApi',
+            support: 'implemented',
+            diagnostics: [],
+          },
+          config: jsonObject({
+            bindingKind: 'taskCapability',
+            ai: applicationTypeKroGraphValue(implementation),
+          }),
+        });
+      }
+      runtime = {
+        readiness: {
+          dependencies: [],
+          condition: 'the selected native AI route is verified when the admitted task binds its logical model',
+          timeoutSeconds: 60,
+        },
+      };
+    } else {
+      throw new Error(`Task capability ${token.name} has no generated runtime adapter. AI and StructuredGeneration are the supported task-injected capabilities.`);
+    }
     const requirementId = `requirement.${consumerNodeId}.${kubernetesName(token.contract.interface)}`;
     addApplicationProviderRequirement(state, {
       id: requirementId,
@@ -670,10 +748,18 @@ function recordTaskCapabilities(
       requirement: requirementId,
       provider: reference,
       generatedResources: [],
-      runtime: structuredGenerationRuntime(implementation),
+      runtime,
     });
     return { reference };
   });
+}
+
+function isAIProviderOrSelection(
+  value: unknown,
+): value is ApplicationAIProvider | ApplicationProviderSelectionValue<ApplicationAIProvider> {
+  if (isApplicationAIProvider(value)) return true;
+  if (!isApplicationProviderSelection(value)) return false;
+  return [...Object.values(value.cases), value.default].every(isApplicationAIProvider);
 }
 
 function isStructuredGenerationProviderOrSelection(
@@ -1221,6 +1307,15 @@ function taskBinding<TInput extends object, TOutput extends object, TErrors exte
       );
       return applicationWorkflowRun(providerRun, definition.id, definition.version);
     },
+    async attach(reference: ApplicationWorkflowExecutionReference, admittedAt: string) {
+      assertWorkflowReference(definition.id, reference);
+      const providerRun = await (await applicationWorkflowRuntime(engine())).attach<TOutput, TErrors>(
+        definition.id,
+        reference.run,
+        requiredWorkflowTimestamp(admittedAt),
+      );
+      return applicationWorkflowRun(providerRun, definition.id, definition.version);
+    },
     async schedule(input: TInput, at: Date, metadata?: ApplicationWorkflowInvocationMetadata) {
       const validInput = validateMessage(definition.input, input, `${definition.id}.input`);
       const invocation = invocationMetadata(validInput, metadata);
@@ -1278,6 +1373,15 @@ function workflowBinding<TInput extends object, TOutput extends object, TErrors 
       );
       return applicationWorkflowRun(providerRun, definition.id, definition.version);
     },
+    async attach(reference: ApplicationWorkflowExecutionReference, admittedAt: string) {
+      assertWorkflowReference(definition.id, reference);
+      const providerRun = await (await applicationWorkflowRuntime(engine())).attach<TOutput, TErrors>(
+        definition.id,
+        reference.run,
+        requiredWorkflowTimestamp(admittedAt),
+      );
+      return applicationWorkflowRun(providerRun, definition.id, definition.version);
+    },
     async schedule(input: TInput, at: Date, metadata?: ApplicationWorkflowInvocationMetadata) {
       const validInput = validateMessage(definition.input, input, `${definition.id}.input`);
       const id = durableStartInstanceId('workflow', definition.id, validInput, at, metadata?.idempotencyKey);
@@ -1310,6 +1414,29 @@ function workflowBinding<TInput extends object, TOutput extends object, TErrors 
       await (await applicationWorkflowRuntime(engine())).signal(definition.id, runId, name, validateMessage(schema, payload, `${definition.id}.signals.${name}`), workflowTelemetryMetadata(metadata));
     },
   }) as ApplicationWorkflowBinding<TInput, TOutput, TErrors, TSignals>;
+}
+
+function assertWorkflowReference(
+  workflow: string,
+  reference: ApplicationWorkflowExecutionReference,
+): void {
+  if (
+    reference.provider !== 'workflow'
+    || reference.workflow !== workflow
+    || !reference.run.trim()
+  ) {
+    throw new Error(
+      `Workflow ${workflow} cannot attach reference ${JSON.stringify(reference)}.`,
+    );
+  }
+}
+
+function requiredWorkflowTimestamp(value: string): string {
+  const timestamp = new Date(value);
+  if (!value || Number.isNaN(timestamp.getTime())) {
+    throw new Error('Workflow attachment requires a valid retained admittedAt timestamp.');
+  }
+  return timestamp.toISOString();
 }
 
 function workflowTelemetryMetadata(

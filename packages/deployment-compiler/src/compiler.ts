@@ -1469,7 +1469,14 @@ function providerNodes(
         `Application provider ${provider.id} cannot alias ${target.id}: provider interfaces differ (${provider.interface} vs ${target.interface}).`,
       );
     }
-    aliases.add(provider.id);
+    // An unqualified alias is only a derived application default and must not
+    // contribute infrastructure twice. A qualified alias is a distinct
+    // logical capability role: keep it in the contributor pass so the
+    // provider adapter can validate its physical authority, emit no duplicate
+    // infrastructure, and retain role-specific runtime access.
+    if (providerQualificationName(provider) === undefined) {
+      aliases.add(provider.id);
+    }
   }
   const primaryInterfaces = new Set(
     providers

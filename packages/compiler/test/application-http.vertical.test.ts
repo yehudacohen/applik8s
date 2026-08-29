@@ -8,6 +8,7 @@ import {
   applicationGraphFor,
   EventLog,
   IdentityProvider,
+  ObjectStorage,
   Observability,
   WorkflowEngine,
   workflow,
@@ -171,10 +172,31 @@ describe('generated function-native HTTP worker', () => {
       }),
     );
     application.provide(Observability, Observability.local());
+    application.provide(
+      ObjectStorage,
+      ObjectStorage.s3({
+        name: 'http-objects',
+        bucket: 'generated-http-objects',
+        region: 'us-east-1',
+        endpoint: 'http://object-store.generated-http.svc:9000',
+        credentialsSecret: {
+          apiVersion: 'v1',
+          kind: 'Secret',
+          name: 'generated-http-object-credentials',
+          namespace: 'generated-http',
+        },
+      }),
+    );
     const Database = application.database.postgres('main', {
       schema: { posts },
     });
     const Post = application.model(posts, { name: 'Post', database: Database });
+    const Artifacts = application.objectStore('artifacts', {
+      mode: 'immutable',
+      maxObjectBytes: 4_096,
+      contentTypes: ['text/plain'],
+      deletion: 'retained',
+    });
     Post.create.public();
     const api = application.http('public-api', { replicas: 2 });
     const Provision = workflow('tenant.provision.v1', {
@@ -266,6 +288,22 @@ describe('generated function-native HTTP worker', () => {
       }),
     );
     listNestedSubscriptions.public();
+    api.post(
+      'write-artifact',
+      '/artifacts',
+      {
+        input: type({ key: 'string > 0', value: 'string' }),
+        output: type({ key: 'string > 0' }),
+        __generatedBindings: { Artifacts },
+      },
+      async ({ input }) => ({
+        key: (await Artifacts.put({
+          key: input.key,
+          body: input.value,
+          contentType: 'text/plain',
+        })).key,
+      }),
+    ).public();
     api.webhook(
       'receive-provider-event',
       '/webhooks/provider',
@@ -413,6 +451,9 @@ describe('generated function-native HTTP worker', () => {
       join(outDir, 'public-api', 'http.generated.ts'),
       'utf8',
     );
+    expect(generatedEntrypoint).toMatch(
+      /const authorizationContext = Object\.freeze\(\{[\s\S]*?idempotencyKey,/u,
+    );
     expect(generatedEntrypoint).toContain(
       "from '@applik8s/runtime-nats/event-log'",
     );
@@ -443,6 +484,17 @@ describe('generated function-native HTTP worker', () => {
       '"provision": workflowHandle("workflow", "tenant.provision.v1"',
     );
     expect(generatedEntrypoint).toContain('directWorkflowScope.run');
+    expect(generatedEntrypoint).toContain(
+      "from '@applik8s/runtime-s3'",
+    );
+    expect(generatedEntrypoint).toContain(
+      'installApplicationObjectStorageRuntimeResolver',
+    );
+    expect(generatedEntrypoint).toContain(
+      '"Artifacts": createApplicationObjectStoreRuntimeHandle',
+    );
+    expect(generatedEntrypoint).toContain('"maxObjectBytes":4096');
+    expect(generatedEntrypoint).toContain('"deletion":"retained"');
     expect(generatedEntrypoint).toContain("kind: 'operation'");
     expect(generatedEntrypoint).toContain('identity: operation.id');
     expect(generatedEntrypoint).toContain('definition: operation.id');
@@ -508,6 +560,10 @@ describe('generated function-native HTTP worker', () => {
       'APPLIK8S_DATABASE_MAIN_URL',
       'APPLIK8S_WORKFLOW_GATEWAY_TOKEN_FILE',
       'APPLIK8S_INTERNAL_OPERATION_SECRET',
+      'APPLIK8S_OBJECT_STORAGE_BUCKET',
+      'APPLIK8S_OBJECT_STORAGE_REGION',
+      'AWS_ACCESS_KEY_ID',
+      'AWS_SECRET_ACCESS_KEY',
     ]));
     expect(Reflect.get(containers[0] as object, 'volumeMounts')).toEqual([
       expect.objectContaining({

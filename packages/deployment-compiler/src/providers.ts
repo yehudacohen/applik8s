@@ -107,6 +107,26 @@ export function builtinApplicationDeploymentContributors(): readonly Application
       context: ApplicationDeploymentPlanningContext,
     ): ApplicationDeploymentContribution {
       const concreteProvider = targetSelectedProvider(provider, context);
+      const physicalProvider = physicalProviderAuthority(
+        concreteProvider,
+        context,
+      );
+      if (physicalProvider.id !== concreteProvider.id) {
+        const physicalConcrete = targetSelectedProvider(physicalProvider, context);
+        const physicalDirect = context.target === "kubernetes"
+          ? providerDirectContribution(physicalConcrete, context)
+          : { nodes: [], edges: [] };
+        const runtimeAccessTargets = [
+          ...applicationProviderRuntimeAccessTargets(physicalConcrete, context),
+          ...(physicalDirect.runtimeAccessTargets ?? []),
+        ].map((target) => ({ ...target, capabilityId: concreteProvider.id }));
+        return {
+          nodes: [],
+          edges: [],
+          compositionFragments: [],
+          ...(runtimeAccessTargets.length > 0 ? { runtimeAccessTargets } : {}),
+        };
+      }
       const providerDirect = context.target === "kubernetes"
         ? providerDirectContribution(concreteProvider, context)
         : { nodes: [], edges: [] };
@@ -290,6 +310,61 @@ function canonicalProviderAuthorityId(
 }
 
 /**
+ * Resolves an explicitly shared physical provider while preserving the
+ * qualified logical node as the capability/admission identity. Sharing is
+ * never inferred from similar YAML: the authored alias must point at one
+ * existing provider and both physical plans must remain byte-equivalent after
+ * removing graph-only identity metadata.
+ */
+function physicalProviderAuthority(
+  provider: ApplicationProviderNode,
+  context: ApplicationDeploymentPlanningContext,
+): ApplicationProviderNode {
+  const providers = context.graph.nodes.filter(
+    (node): node is ApplicationProviderNode => node.kind === "provider",
+  );
+  const providersById = new Map(providers.map((node) => [node.id, node]));
+  const authorityId = canonicalProviderAuthorityId(provider, providersById);
+  if (authorityId === provider.id) return provider;
+  const authority = providersById.get(authorityId);
+  if (!authority) {
+    throw new Error(
+      `Application provider ${provider.id} aliases missing physical authority ${authorityId}.`,
+    );
+  }
+  if (authority.implementation !== provider.implementation) {
+    throw new Error(
+      `Application provider ${provider.id} cannot share ${authority.id}: implementations differ (${provider.implementation} vs ${authority.implementation}).`,
+    );
+  }
+  const expected = digestApplicationDeploymentValue(
+    physicalProviderConfiguration(authority),
+  );
+  const actual = digestApplicationDeploymentValue(
+    physicalProviderConfiguration(provider),
+  );
+  if (expected !== actual) {
+    throw new Error(
+      `Application provider ${provider.id} aliases ${authority.id}, but their physical provider plans differ (${actual} vs ${expected}). Reuse the returned provider binding instead of independently reconstructing its configuration.`,
+    );
+  }
+  return authority;
+}
+
+function physicalProviderConfiguration(
+  provider: ApplicationProviderNode,
+): NonNullable<ApplicationProviderNode["config"]> {
+  const {
+    bindingKind: _bindingKind,
+    qualification: _qualification,
+    aliasOf: _aliasOf,
+    callableRuntime: _callableRuntime,
+    ...configuration
+  } = provider.config ?? {};
+  return configuration;
+}
+
+/**
  * Profile selections are a framework-owned deployment indirection rather than
  * a provider implementation. The selected branches remain encoded in the
  * source composition so TypeKro can lower their installation-schema
@@ -308,6 +383,26 @@ export function applicationProviderSelectionDeploymentContributor(
       context: ApplicationDeploymentPlanningContext,
     ): ApplicationDeploymentContribution {
       const selected = resolveApplicationProviderForTarget(provider, context);
+      const physicalProvider = physicalProviderAuthority(selected, context);
+      if (physicalProvider.id !== selected.id) {
+        const physicalSelected = resolveApplicationProviderForTarget(
+          physicalProvider,
+          context,
+        );
+        const physicalDirect = context.target === "kubernetes"
+          ? providerDirectContribution(physicalSelected, context)
+          : { nodes: [], edges: [] };
+        const runtimeAccessTargets = [
+          ...applicationProviderRuntimeAccessTargets(physicalSelected, context),
+          ...(physicalDirect.runtimeAccessTargets ?? []),
+        ].map((target) => ({ ...target, capabilityId: selected.id }));
+        return {
+          nodes: [],
+          edges: [],
+          compositionFragments: [],
+          ...(runtimeAccessTargets.length > 0 ? { runtimeAccessTargets } : {}),
+        };
+      }
       const providerDirect = context.target === "kubernetes"
         ? providerDirectContribution(selected, context)
         : { nodes: [], edges: [] };
@@ -604,7 +699,10 @@ function selectedProviderAliasConfiguration(
     );
   }
   return candidates[0]
-    ? selectedProviderConfiguration(candidates[0].config, context)
+    ? selectedProviderConfiguration(
+        physicalProviderConfiguration(candidates[0]),
+        context,
+      )
     : undefined;
 }
 

@@ -172,6 +172,69 @@ function graph(classification: 'public' | 'unclassified'): ApplicationGraph {
 }
 
 describe('application operation catalog compilation', () => {
+  it('canonicalizes reachable schema definition labels before deriving authority digests', () => {
+    const withDefinition = (
+      label: string,
+      valueType: 'string' | 'number' = 'string',
+    ): ApplicationGraph => {
+      const fixture = structuredClone(graph('public'));
+      const contract = fixture.nodes.find((node) => node.kind === 'command');
+      if (!contract || contract.kind !== 'command') {
+        throw new Error('Expected command fixture.');
+      }
+      const schema = {
+        type: 'object',
+        properties: {
+          post: { $ref: `#/$defs/${label}` },
+        },
+        required: ['post'],
+        additionalProperties: false,
+        $defs: {
+          [label]: {
+            type: 'object',
+            properties: { id: { type: valueType } },
+            required: ['id'],
+            additionalProperties: false,
+          },
+          UnreachableEmitterOrdinal: { type: 'boolean' },
+        },
+      } as const;
+      const input = {
+        kind: 'declared',
+        runtime: 'arktype',
+        jsonSchema: schema,
+      } as const;
+      (contract.contract as unknown as { input: typeof input }).input = input;
+      const model = fixture.nodes.find((node) => node.kind === 'model');
+      const operation = model?.kind === 'model'
+        ? model.common?.operations?.find((candidate) => candidate.name === 'publish')
+        : undefined;
+      if (!operation) throw new Error('Expected model operation fixture.');
+      (operation as unknown as { input: typeof input }).input = input;
+      return fixture;
+    };
+
+    const first = compileApplicationOperationCatalog(
+      withDefinition('Post_172'),
+    ).operations[0]?.input;
+    const second = compileApplicationOperationCatalog(
+      withDefinition('Post_991'),
+    ).operations[0]?.input;
+    const changed = compileApplicationOperationCatalog(
+      withDefinition('Post_172', 'number'),
+    ).operations[0]?.input;
+
+    expect(first).toEqual(second);
+    expect(first?.schema).toMatchObject({
+      properties: { post: { $ref: '#/$defs/definition0' } },
+      $defs: { definition0: { properties: { id: { type: 'string' } } } },
+    });
+    expect(first?.schema).not.toHaveProperty(
+      '$defs.UnreachableEmitterOrdinal',
+    );
+    expect(changed?.digest).not.toBe(first?.digest);
+  });
+
   it('separates stable operation identity from its command transport binding', () => {
     const catalog = compileApplicationOperationCatalog(graph('public'), {
       revision: 'catalog-1',

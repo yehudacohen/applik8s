@@ -3,6 +3,7 @@ import {
   AI,
   AIBackend,
   type ApplicationAIDeterministicProvider,
+  type ApplicationAIProvider,
 } from '@applik8s/ai';
 import {
   AnalyticalDatabase,
@@ -249,6 +250,15 @@ export interface ConfigureAgenticProfilesOptions<
    * Starter acceptance application. Production profiles cannot select it.
    */
   readonly starterInference?: () => ApplicationAIDeterministicProvider;
+  /**
+   * Provider-neutral external-profile inference adapter. The application may
+   * place a managed gateway in front of an externally hosted model without
+   * exposing the upstream credential to generated task workers.
+   */
+  readonly externalInference?: (
+    spec: Extract<AgenticInstallationSpec, { readonly profile: 'external' }>,
+    context: AgenticProfileContext,
+  ) => ApplicationAIProvider;
   /** Provider-neutral identity adapter for externally managed identity. */
   readonly externalIdentity?: (
     spec: Extract<AgenticInstallationSpec, { readonly profile: 'external' }>,
@@ -281,6 +291,7 @@ export interface ConfigureAgenticProfilesOptions<
 export type AgenticProfilesOptions = Pick<
   ConfigureAgenticProfilesOptions,
   | 'starterInference'
+  | 'externalInference'
   | 'dedicatedIdentity'
   | 'externalIdentity'
   | 'developerPayments'
@@ -1094,7 +1105,8 @@ export function configureAgenticProfiles<
       kubernetes: () => AgenticDedicated.inference(spec.providers.inference, profileContext),
     }))
     .external((spec) =>
-      AgenticExternal.inference(spec.providers.inference, profileContext),
+      options.externalInference?.(spec, profileContext)
+        ?? AgenticExternal.inference(spec.providers.inference, profileContext),
     )
     .exhaustive();
 

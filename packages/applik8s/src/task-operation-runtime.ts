@@ -291,13 +291,13 @@ export function createApplicationTaskOperationRuntime(options: ApplicationTaskOp
             : completeBoundInput(alias, aliasBinding, executionSource, input);
           const validInput = validateInput(command, completeInput);
           const targetKey = canonicalApplicationCommandKey(command.key(validInput) as string | number | boolean | Readonly<Record<string, string | number | boolean>>);
+          const inputDigest = digestJson(validInput);
           const idempotencyKey = command.idempotencyKey?.(validInput)
             ?? commandOptions.idempotencyKey
-            ?? `${invocation.idempotencyKey}:${alias}`;
+            ?? `${invocation.idempotencyKey}:${alias}:${inputDigest}`;
           if (!idempotencyKey.trim()) throw new Error(`Application task operation ${alias} produced an empty idempotency key.`);
           const commandId = stableCommandId(invocation.invocationId, alias, idempotencyKey);
           const target = { kind: 'target' as const, model: command.model, identity: { key: targetKey } };
-          const inputDigest = digestJson(validInput);
           const targetDigest = digestJson(target);
           let authorizationReceipt: ApplicationAuthorizationReceipt | undefined;
           if (typeof aliasBinding !== 'string' && aliasBinding.envelope) {

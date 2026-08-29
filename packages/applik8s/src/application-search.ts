@@ -196,6 +196,8 @@ export interface ApplicationSearchIndexOptions {
   readonly fanOutCeiling?: number;
   readonly authorizationFields?: readonly string[];
   readonly requiredCapabilities?: readonly ApplicationSearchCapability[];
+  /** Defaults to block; degrade requires another declared serving authority. */
+  readonly readiness?: { readonly failurePolicy: 'block' | 'degrade' };
 }
 
 export interface ApplicationSearchRootOptions {
@@ -209,6 +211,8 @@ export interface ApplicationSearchRootOptions {
   readonly fanOutCeiling?: number;
   readonly authorizationFields?: readonly string[];
   readonly requiredCapabilities?: readonly ApplicationSearchCapability[];
+  /** Defaults to block; degrade requires another declared serving authority. */
+  readonly readiness?: { readonly failurePolicy: 'block' | 'degrade' };
 }
 
 interface RegisteredSearchColumn {
@@ -335,6 +339,8 @@ function registerApplicationSearchIndex<
     fanOutCeiling: options.indexOptions.fanOutCeiling ?? 1_000,
     authorizationFields: options.indexOptions.authorizationFields ?? [],
     requiredCapabilities: options.indexOptions.requiredCapabilities ?? [],
+    readinessFailurePolicy:
+      options.indexOptions.readiness?.failurePolicy ?? 'block',
     queryNodeId,
   });
   const nodeId = `index.${kubernetesNameSegment(options.name)}`;
@@ -552,6 +558,7 @@ function compileSearchIndexPlan(options: {
   readonly fanOutCeiling: number;
   readonly authorizationFields: readonly string[];
   readonly requiredCapabilities: readonly ApplicationSearchCapability[];
+  readonly readinessFailurePolicy: 'block' | 'degrade';
   readonly queryNodeId: string;
 }): ApplicationSearchIndexPlan {
   if (
@@ -632,6 +639,7 @@ function compileSearchIndexPlan(options: {
     inverseInvalidation,
     authorizationFields: [...options.authorizationFields].sort(),
     requiredCapabilities,
+    readiness: { failurePolicy: options.readinessFailurePolicy },
   };
   const revision = digest(revisionInput);
   return {
@@ -687,6 +695,9 @@ function compileSearchIndexPlan(options: {
       cutover: 'atomicAlias',
       cursorBinding: 'exactGeneration',
       retirement: 'observedReadersThenExplicitDelete',
+    },
+    readiness: {
+      failurePolicy: options.readinessFailurePolicy,
     },
     requiredCapabilities,
     searchOperation: { nodeId: options.queryNodeId },
@@ -1138,6 +1149,18 @@ function stableJson(value: unknown): string {
 }
 
 function searchRequestJsonSchema(plan: ApplicationSearchIndexPlan) {
+  const sort = {
+    type: 'object',
+    additionalProperties: false,
+    required: ['field', 'direction'],
+    properties: {
+      field: {
+        type: 'string',
+        enum: plan.fields.map(field => field.alias),
+      },
+      direction: { type: 'string', enum: ['asc', 'desc'] },
+    },
+  } as const;
   return {
     type: 'object',
     additionalProperties: false,
@@ -1162,6 +1185,17 @@ function searchRequestJsonSchema(plan: ApplicationSearchIndexPlan) {
             .filter((field) => field.kind === 'facet')
             .map((field) => field.alias),
         },
+      },
+      orderBy: {
+        oneOf: [
+          sort,
+          {
+            type: 'array',
+            minItems: 1,
+            maxItems: 32,
+            items: sort,
+          },
+        ],
       },
       limit: { type: 'integer', minimum: 1, maximum: 100 },
       cursor: { type: 'string' },

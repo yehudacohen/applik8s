@@ -90,7 +90,7 @@ export function instrumentApplicationRuntimeModule(
     sourceFile,
     applicationCallbackModuleOwnsDependencies(entrypoint, sourceFile),
     portableApplicationModuleIdentity(entrypoint, sourceFile),
-    !applicationOwned,
+    true,
   );
   if (
     applicationRuntimeModuleInstrumentationCache.size
@@ -136,7 +136,7 @@ export function instrumentApplicationCallbackRegistrations(
   sourceFile: string,
   attachDependencyMetadata = true,
   moduleIdentity = portableApplicationModuleIdentity(sourceFile, sourceFile),
-  deferDependencyValueReads = false,
+  deferDependencyValueReads = true,
 ): string {
   const file = ts.createSourceFile(
     sourceFile,

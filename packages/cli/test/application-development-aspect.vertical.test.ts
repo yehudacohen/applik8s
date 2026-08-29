@@ -25,7 +25,12 @@ describe('Application development TypeKro aspect', () => {
     );
     temporaryDirectories.push(projectRoot);
     await mkdir(join(projectRoot, 'src'));
+    await mkdir(join(projectRoot, 'patches'));
     await writeFile(join(projectRoot, 'src', 'app.ts'), 'export {};\n');
+    await writeFile(
+      join(projectRoot, 'patches', 'dependency.patch'),
+      'synthetic patch\n',
+    );
     await writeFile(join(projectRoot, 'package.json'), '{"scripts":{"dev":"vite"}}\n');
     await writeFile(join(projectRoot, '.env'), 'MUST_NOT_ENTER_POD=synthetic\n');
 
@@ -36,6 +41,7 @@ describe('Application development TypeKro aspect', () => {
     const encoded = JSON.stringify(aspects);
     expect(encoded).toContain(join(projectRoot, 'src'));
     expect(encoded).toContain(join(projectRoot, 'package.json'));
+    expect(encoded).toContain(join(projectRoot, 'patches'));
     expect(encoded).not.toContain(join(projectRoot, '.env'));
     expect(encoded).not.toContain('MUST_NOT_ENTER_POD');
     expect(encoded).toContain('developer-test-app');
@@ -46,6 +52,25 @@ describe('Application development TypeKro aspect', () => {
     expect(encoded).toContain('TSR_TMP_DIR');
     expect(encoded).toContain('/src/.tanstack/tmp');
     expect(encoded).toContain('"memory":"2Gi"');
+  });
+
+  it('rejects environment files hidden inside the mounted patches directory', async () => {
+    const projectRoot = await mkdtemp(
+      join(process.env.TMPDIR ?? '/tmp', 'applik8s-development-patches-'),
+    );
+    temporaryDirectories.push(projectRoot);
+    await mkdir(join(projectRoot, 'src'));
+    await mkdir(join(projectRoot, 'patches'));
+    await writeFile(join(projectRoot, 'src', 'app.ts'), 'export {};\n');
+    await writeFile(join(projectRoot, 'package.json'), '{"scripts":{"dev":"vite"}}\n');
+    await writeFile(
+      join(projectRoot, 'patches', '.env.production'),
+      'MUST_NOT_ENTER_POD=synthetic\n',
+    );
+
+    await expect(
+      applicationDevelopmentAspects(deploymentGraph(), projectRoot),
+    ).rejects.toThrow(/contains \.env\.production/);
   });
 
   it('removes only the unused production ApplicationHost image artifact', () => {
@@ -149,6 +174,37 @@ describe('Application development TypeKro aspect', () => {
         nitro: 'npm:nitro-nightly@3.0.1-example',
       },
     });
+  });
+
+  it('discovers workspace packages owned by the application root itself', async () => {
+    const projectRoot = await mkdtemp(
+      join(process.env.TMPDIR ?? '/tmp', 'applik8s-development-root-workspace-'),
+    );
+    temporaryDirectories.push(projectRoot);
+    const sdkRoot = join(projectRoot, 'packages', 'sdk');
+    await mkdir(join(projectRoot, 'src'), { recursive: true });
+    await mkdir(join(sdkRoot, 'src'), { recursive: true });
+    await writeFile(
+      join(projectRoot, 'package.json'),
+      JSON.stringify({
+        private: true,
+        workspaces: ['packages/*'],
+        scripts: { dev: 'vite' },
+        dependencies: { '@example/sdk': 'workspace:*' },
+      }),
+    );
+    await writeFile(join(projectRoot, 'src', 'app.ts'), 'export {};\n');
+    await writeFile(
+      join(sdkRoot, 'package.json'),
+      JSON.stringify({ name: '@example/sdk' }),
+    );
+    await writeFile(join(sdkRoot, 'src', 'index.ts'), 'export {};\n');
+
+    const aspects = await applicationDevelopmentAspects(
+      deploymentGraph(),
+      projectRoot,
+    );
+    expect(JSON.stringify(aspects)).toContain(sdkRoot);
   });
 });
 

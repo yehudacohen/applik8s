@@ -98,7 +98,7 @@ import {
   createApplicationProfileRuntime,
 } from './application-profiles.js';
 import { createApplicationQualifiedProviderBinding } from './application-provider-handle.js';
-import type { ApplicationAnalyticalDatabaseProvider, ApplicationDefaults, ApplicationDefaultsBinding, ApplicationHostBinding, ApplicationHostProvider, ApplicationHttpExposureProvider, ApplicationIndexBackend, ApplicationPostgresTransactionalDatabaseOptions, ApplicationProviderBinding, ApplicationProviderDeploymentTarget, ApplicationProviderState, ApplicationProviderToken, ApplicationQualifiedProviderToken, ApplicationTargetProviderSelectionValue, ApplicationTransactionalDatabaseProvider, ApplicationValkeyIndexBackend } from './application-providers.js';
+import type { ApplicationAnalyticalDatabaseProvider, ApplicationDefaults, ApplicationDefaultsBinding, ApplicationHostBinding, ApplicationHostProvider, ApplicationHttpExposureProvider, ApplicationIndexBackend, ApplicationPostgresTransactionalDatabaseOptions, ApplicationProviderBinding, ApplicationProviderDeploymentTarget, ApplicationProviderQualification, ApplicationProviderState, ApplicationProviderToken, ApplicationQualifiedProviderToken, ApplicationTargetProviderSelectionValue, ApplicationTransactionalDatabaseProvider, ApplicationValkeyIndexBackend } from './application-providers.js';
 import { ActorRuntime, ApplicationHost, applicationAnalyticalDatabaseImplementation, applicationCallableProviderRuntimeBinding, applicationCertificateImplementation, applicationDnsPublicationImplementation, applicationEventLogImplementation, applicationHostBinding, applicationHttpExposureImplementation, applicationIndexBackend, applicationObjectStorageImplementation, applicationPostgresClusterSpec, applicationProviderQualificationFor, applicationProviderSelectionFor, applicationProviderSelectionSatisfies, applicationProviderTokenName, applicationSearchProviderImplementation, applicationTargetProviderSelectionFor, applicationTransactionalDatabaseImplementation, applyApplicationProvider, defaultApplicationEventLogProvider, defaultApplicationIndexBackend, defaultApplicationIndexProvider, defaultApplicationProviders, IndexStore, isApplicationProviderSelection, isApplicationQualifiedProviderToken, isValkeyIndexDefault, TransactionalDatabase } from './application-providers.js';
 import { type ApplicationCallableQueryBinding, type ApplicationQueryBinding, type ApplicationQueryOptions, type ApplicationQueryPrincipal, type ApplicationQuerySourceBinding, applicationQueryBindingForOperation, registerApplicationModelView, registerApplicationQuery } from './application-queries.js';
 import { type ApplicationAnalyticalProjectionBinding, type ApplicationAnalyticalProjectionOptions, type ApplicationGatewayBinding, type ApplicationGatewayOptions, type ApplicationOnlineProjectionBinding, type ApplicationOnlineProjectionDraft, type ApplicationOnlineProjectionOptions, type ApplicationOnlineProjectionRetentionPolicy, type ApplicationOnlineProjectionTransform, type ApplicationProjectionOptions, type ApplicationProjectionOutput, type ApplicationProjectionRebuildModel, type ApplicationProjectionRebuildScope, type ApplicationProjectionTransform, type ApplicationStreamBatchHandler, type ApplicationStreamBatchOptions, type ApplicationStreamBinding, type ApplicationStreamOptions, type ApplicationStreamProcessHandler, type ApplicationStreamProcessOptions, type ApplicationSubscriptionBinding, type ApplicationSubscriptionOptions, registerApplicationGateway, registerApplicationProjection, registerApplicationStream, registerApplicationStreamBatchProcessor, registerApplicationStreamProcessor, registerApplicationSubscription } from './application-reactive.js';
@@ -405,6 +405,12 @@ export interface KubernetesApplicationScope extends ApplicationAuthorityRegistra
   schedule(name: string, options?: ApplicationScheduleOptions): ApplicationJobBinding;
   defaults(defaults: ApplicationDefaults): ApplicationDefaultsBinding;
   provide<TImplementation>(token: ApplicationProviderToken<TImplementation>): ApplicationTargetProviderBinding<TImplementation>;
+  provide<TImplementation>(
+    token: ApplicationQualifiedProviderToken<TImplementation>,
+    implementation: TImplementation | ApplicationProviderBinding<TImplementation>,
+  ): ApplicationProviderBinding<TImplementation> & {
+    readonly qualification: ApplicationProviderQualification;
+  };
   provide<TImplementation>(token: ApplicationProviderToken<TImplementation>, implementation: TImplementation | ApplicationProviderBinding<TImplementation>): ApplicationProviderBinding<TImplementation>;
   aggregate<TStats extends object, TEvent extends object>(name: string, options: ApplicationAggregateOptions<TStats, TEvent>): ApplicationAggregateBinding<TStats, TEvent>;
   readonly workflow: ApplicationWorkflowRegistrar;
@@ -1322,6 +1328,14 @@ function replayApplicationSearchDeclarations(
   }
 }
 
+function sameOrderedStrings(
+  left: readonly string[],
+  right: readonly string[],
+): boolean {
+  return left.length === right.length
+    && left.every((value, index) => value === right[index]);
+}
+
 // typecast-boundary: the replayable builder erases heterogeneous generics only inside its private registration and replay registry.
 function createKubernetesApplicationBuilder<TSpec extends KroCompatibleType = Record<string, never>, TStatus extends KroCompatibleType = { readonly ready: boolean }>(name: string, options: KubernetesApplicationBuilderOptions<TSpec, TStatus> = {}): KubernetesApplicationBuilder<TSpec, TStatus> {
   const definition = applicationBuilderDefinition(name, options);
@@ -1356,7 +1370,14 @@ function createKubernetesApplicationBuilder<TSpec extends KroCompatibleType = Re
     readonly options: ApplicationServerOptions;
     readonly routes: ApplicationHttpRouteDeclaration[];
   }>();
-  const profileDiscriminators = new Set<string>();
+  const profileRuntimes = new Map<
+    string,
+    {
+      readonly variants: readonly string[];
+      readonly schemaRevision: string;
+      readonly profile: unknown;
+    }
+  >();
   const includedModules = new Map<CallableFunction, unknown>();
   const includedModuleNames = new Map<string, CallableFunction>();
   const moduleStack: CallableFunction[] = [];
@@ -1839,17 +1860,29 @@ function createKubernetesApplicationBuilder<TSpec extends KroCompatibleType = Re
           `Application ${name} profile ${String(discriminator)} must use application.installation.spec.`,
         );
       }
-      if (profileDiscriminators.has(String(discriminator))) {
-        throw new Error(
-          `Application ${name} already declares profile ${String(discriminator)}.`,
-        );
-      }
+      const discriminatorName = String(discriminator);
       const variants = applicationProfileVariantsFromSchema(
         options.spec?.json,
-        String(discriminator),
+        discriminatorName,
         profileOptions.variants,
       ) as readonly TVariant[];
-      profileDiscriminators.add(String(discriminator));
+      const schemaRevision = profileOptions.schemaRevision ?? 'v1alpha1';
+      const existingRuntime = profileRuntimes.get(discriminatorName);
+      if (existingRuntime) {
+        if (
+          existingRuntime.schemaRevision !== schemaRevision
+          || !sameOrderedStrings(existingRuntime.variants, variants)
+        ) {
+          throw new Error(
+            `Application ${name} profile ${discriminatorName} cannot be reopened with different variants or schema revision.`,
+          );
+        }
+        return existingRuntime.profile as ApplicationProfile<
+          TSpec,
+          TDiscriminator,
+          TVariant
+        >;
+      }
       const runtime = createApplicationProfileRuntime<
         TSpec,
         TDiscriminator,
@@ -1859,7 +1892,7 @@ function createKubernetesApplicationBuilder<TSpec extends KroCompatibleType = Re
         spec: profileSpec,
         discriminator,
         variants,
-        schemaRevision: profileOptions.schemaRevision ?? 'v1alpha1',
+        schemaRevision,
         selectionInput: Reflect.get(profileSpec, discriminator) as string,
         selector: applicationTypeKroExpressionValue(
           Reflect.get(profileSpec, discriminator),
@@ -1929,6 +1962,11 @@ function createKubernetesApplicationBuilder<TSpec extends KroCompatibleType = Re
           invalidate();
           return binding;
         },
+      });
+      profileRuntimes.set(discriminatorName, {
+        variants,
+        schemaRevision,
+        profile: runtime.profile,
       });
       return runtime.profile;
     },
@@ -3804,6 +3842,21 @@ function createApplicationContext<TSpec extends KroCompatibleType, TStatus exten
         );
       });
     }
+    const explicitPhysicalAuthority = applicationQualifiedProviderAliasNodeId(
+      applicationProviderTokenName(token),
+      implementation,
+    );
+    if (
+      explicitPhysicalAuthority
+      && explicitPhysicalAuthority === applicationProviderGraphNodeId(
+        applicationProviderTokenName(token),
+        qualification,
+      )
+    ) {
+      throw new Error(
+        `app.provide(${applicationProviderTokenName(token)}) cannot share a provider with itself.`,
+      );
+    }
     const concreteImplementation = (
       implementation
       && typeof implementation === 'object'
@@ -3845,12 +3898,13 @@ function createApplicationContext<TSpec extends KroCompatibleType, TStatus exten
       recordedImplementation,
       token.contract,
       qualification,
-      qualification
-        ? undefined
-        : applicationQualifiedProviderAliasNodeId(
+      explicitPhysicalAuthority
+        ?? (qualification
+          ? undefined
+          : applicationQualifiedProviderAliasNodeId(
             applicationProviderTokenName(token),
             concreteImplementation,
-          ),
+          )),
       applicationCallableProviderRuntimeBinding(token, recordedImplementation),
     );
     if ((token as unknown) === ApplicationHost) {
@@ -3864,6 +3918,7 @@ function createApplicationContext<TSpec extends KroCompatibleType, TStatus exten
       kind: 'applicationProvider',
       token,
       implementation: recordedImplementation,
+      ...(qualification ? { qualification } : {}),
     } as ApplicationProviderBinding<TImplementation>;
   };
   const provide = provideImplementation as KubernetesApplicationScope['provide'];
@@ -4307,6 +4362,7 @@ function createApplicationContext<TSpec extends KroCompatibleType, TStatus exten
         ...(options.requiredCapabilities
           ? { requiredCapabilities: options.requiredCapabilities }
           : {}),
+        ...(options.readiness ? { readiness: options.readiness } : {}),
       });
     },
     query(id, options) {
@@ -4723,6 +4779,15 @@ function recordApplicationProfileSelectionGraph(
       profile: profile as unknown as JsonObject,
     },
   });
+  for (const branch of profile.branches) {
+    for (const dependency of branch.privateRuntime?.postgres ?? []) {
+      addApplicationGraphEdge(state, {
+        from: { nodeId: dependency.databaseProviderNodeId },
+        to: { nodeId: providerNodeId },
+        relationship: 'provides',
+      });
+    }
+  }
 }
 
 function applicationProfileProviderWithNamespace<TImplementation>(
@@ -4911,6 +4976,9 @@ function registerApplicationDatabaseSchemaModels(
         : {}),
       ...(declaration.revision !== undefined
         ? { revision: declaration.revision }
+        : {}),
+      ...(declaration.runtimeRoles
+        ? { runtimeRoles: declaration.runtimeRoles }
         : {}),
       ...(processor ? { processor } : {}),
     });

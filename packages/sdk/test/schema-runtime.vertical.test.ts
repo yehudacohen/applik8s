@@ -1,8 +1,12 @@
+// typecast-file-boundary: Schema-runtime tests use deliberately partial ArkType-like objects to exercise the guarded structural adapter boundary.
 import { describe, expect, it } from 'vitest';
 import { type as arkType } from 'arktype';
 
 import type { JsonSchemaSource } from '@applik8s/core';
-import { toRuntimeSchema } from '../src/schema-runtime.js';
+import {
+  emitArkTypeStructuralJsonSchema,
+  toRuntimeSchema,
+} from '../src/schema-runtime.js';
 
 interface MapSpec {
   readonly labels: Readonly<Record<string, string>>;
@@ -35,6 +39,90 @@ const mapSpecSchema: JsonSchemaSource<MapSpec> = {
 };
 
 describe('schema runtime', () => {
+  it('emits narrowed predicates as their structural base while retaining runtime validation', () => {
+    const structural = arkType({
+      objectiveId: 'string',
+      generation: 'number.integer >= 1',
+    });
+    const narrowed = structural.narrow((value) =>
+      value.objectiveId.startsWith('objective_'),
+    );
+
+    expect(emitArkTypeStructuralJsonSchema(narrowed)).toEqual(
+      structural.toJsonSchema(),
+    );
+    const runtime = toRuntimeSchema({
+      kind: 'arktype',
+      ref: { kind: 'arktype', exportName: 'NarrowedObjective' },
+      arktype: narrowed,
+    });
+    expect(runtime.emitJsonSchema()).toMatchObject({
+      ok: true,
+      value: {
+        schema: {
+          type: 'object',
+          required: ['generation', 'objectiveId'],
+        },
+      },
+    });
+    expect(
+      runtime.validate({ objectiveId: 'objective_1', generation: 1 }).ok,
+    ).toBe(true);
+    expect(
+      runtime.validate({ objectiveId: 'other_1', generation: 1 }).ok,
+    ).toBe(false);
+  });
+
+  it('does not broaden structural emission beyond predicates', () => {
+    const morphed = arkType({ value: 'string' }).pipe((value) => ({
+      value: value.value.trim(),
+    }));
+    expect(() => emitArkTypeStructuralJsonSchema(morphed)).toThrow();
+  });
+
+  it('recursively lowers draft-2020 definitions into the supported Draft-7 subset', () => {
+    const arktypeLike = {
+      toJsonSchema: () => ({
+        $schema: 'https://json-schema.org/draft/2020-12/schema',
+        type: 'object',
+        $defs: {
+          State: {
+            type: 'object',
+            properties: {
+              phase: { const: 'ready' },
+              detail: {
+                anyOf: [{ type: 'string' }, { type: 'null' }],
+              },
+            },
+          },
+        },
+        properties: {
+          state: { $ref: '#/$defs/State' },
+        },
+      }),
+    } as never;
+    const runtime = toRuntimeSchema({
+      kind: 'arktype',
+      ref: { kind: 'arktype', exportName: 'DefinitionFixture' },
+      arktype: arktypeLike,
+    });
+
+    expect(runtime.emitJsonSchema()).toMatchObject({
+      ok: true,
+      value: {
+        schema: {
+          $defs: {
+            State: {
+              properties: {
+                phase: { enum: ['ready'] },
+                detail: { type: 'string', nullable: true },
+              },
+            },
+          },
+        },
+      },
+    });
+  });
   it('validates supported ArkType optional, enum, nullable, literal, array, map, and nested object shapes', () => {
     const schema = toRuntimeSchema({
       kind: 'arktype',

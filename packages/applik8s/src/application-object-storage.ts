@@ -7,6 +7,8 @@ import {
 import type {
 	ApplicationObjectStoreNode,
 	ApplicationProviderRef,
+	ApplicationResourceRef,
+	ApplicationTaskObjectOperation,
 } from "@applik8s/core";
 import type { ApplicationGraphState } from "./application-graph-state.js";
 import {
@@ -101,11 +103,31 @@ export interface ApplicationObjectDownloadRequest {
 	readonly key: string;
 }
 
+export type ApplicationTaskObjectOperationList = readonly [
+	ApplicationTaskObjectOperation,
+	...ApplicationTaskObjectOperation[],
+];
+
+/** A task-local, method-scoped view of an application object store. */
+export interface ApplicationTaskObjectStoreBinding<
+	TOperations extends ApplicationTaskObjectOperationList = ApplicationTaskObjectOperationList,
+> {
+	readonly kind: "applicationTaskObjectStore";
+	readonly store: ApplicationObjectStoreBinding;
+	readonly operations: TOperations;
+	readonly credentialsSecret?: ApplicationResourceRef;
+	/** Selects a workload-specific Kubernetes Secret for this task binding. */
+	usingCredentials(
+		secret: ApplicationResourceRef,
+	): ApplicationTaskObjectStoreBinding<TOperations>;
+}
+
 export interface ApplicationObjectStoreBinding {
 	readonly kind: "applicationObjectStore";
 	readonly name: string;
 	readonly provider: ApplicationObjectStorageProvider;
 	readonly mode: "immutable" | "mutable";
+	readonly deletion: "explicit" | "retained";
 	readonly maxObjectBytes: number;
 	readonly contentTypes: readonly string[];
 	readonly browser: {
@@ -114,6 +136,10 @@ export interface ApplicationObjectStoreBinding {
 		readonly downloadAccess: "owner" | "authenticated";
 		readonly ttlSeconds: number;
 	};
+	/** Restricts the object methods projected into one durable task. */
+	allow<const TOperations extends ApplicationTaskObjectOperationList>(
+		...operations: TOperations
+	): ApplicationTaskObjectStoreBinding<TOperations>;
 	/** Browser/SSR-safe authenticated intent; the facade routes it through the application gateway. */
 	readonly createUpload: ApplicationOperation<
 		ApplicationObjectUploadRequest,
@@ -277,9 +303,58 @@ export function registerApplicationObjectStore(
 		name,
 		provider,
 		mode: node.objectMode,
+		deletion: node.deletion,
 		maxObjectBytes: node.maxObjectBytes,
 		contentTypes,
 		browser,
+		allow(...operations) {
+			const supported = ["put", "get", "head", "delete"] as const;
+			if (operations.length === 0) {
+				throw new Error(
+					`Application object store ${name} task capabilities must declare at least one operation.`,
+				);
+			}
+			if (new Set(operations).size !== operations.length) {
+				throw new Error(
+					`Application object store ${name} task capabilities must not repeat operations.`,
+				);
+			}
+			if (operations.some(operation => !supported.includes(operation))) {
+				throw new Error(
+					`Application object store ${name} received an unsupported task operation.`,
+				);
+			}
+			if (node.deletion === "retained" && operations.includes("delete")) {
+				throw new Error(
+					`Application object store ${name} retains objects and cannot grant task deletion.`,
+				);
+			}
+			const canonical = supported.filter(operation => operations.includes(operation));
+			const taskBinding = (
+				credentialsSecret?: ApplicationResourceRef,
+			): ApplicationTaskObjectStoreBinding<typeof operations> => Object.freeze({
+				kind: "applicationTaskObjectStore",
+				store: binding,
+				operations: Object.freeze(canonical) as typeof operations,
+				...(credentialsSecret
+					? { credentialsSecret: Object.freeze({ ...credentialsSecret }) }
+					: {}),
+				usingCredentials(secret: ApplicationResourceRef) {
+					if (
+						secret.apiVersion !== "v1"
+						|| secret.kind !== "Secret"
+						|| typeof secret.name !== "string"
+						|| !secret.name.trim()
+					) {
+						throw new Error(
+							`Application object store ${name} task credentials must reference a named v1 Secret.`,
+						);
+					}
+					return taskBinding(secret);
+				},
+			});
+			return taskBinding();
+		},
 		createUpload: createApplicationRuntimeOperation({
 			apiVersion: "applik8s.operation/v1alpha1",
 			kind: "applicationOperation",

@@ -62,6 +62,44 @@ const applicationCallbackDependenciesSymbol = Symbol.for(
 const applicationProviderOperationSymbol = Symbol.for(
   'applik8s.applicationProviderOperation',
 );
+const applicationProviderPrivateRuntimeSymbol = Symbol.for(
+  'applik8s.applicationProviderPrivateRuntime',
+);
+const applicationProviderSelectionMetadata = Symbol.for(
+  'Applik8s.ApplicationProviderSelection',
+);
+
+function applicationProviderPrivateRuntimeFor(value: unknown): {
+  readonly token: unknown;
+} | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const metadata = Reflect.get(value, applicationProviderPrivateRuntimeSymbol);
+  if (!metadata || typeof metadata !== 'object') return undefined;
+  const token = Reflect.get(metadata, 'token');
+  return isApplicationQualifiedProviderToken(token) ? { token } : undefined;
+}
+
+function applicationProviderSelectionFor(value: unknown): {
+  readonly cases: Readonly<Record<string, unknown>>;
+  readonly default: unknown;
+} | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  if (Reflect.get(value, 'kind') === 'applicationProvider') {
+    return applicationProviderSelectionFor(Reflect.get(value, 'implementation'));
+  }
+  const candidate = Reflect.get(value, applicationProviderSelectionMetadata) ?? value;
+  if (
+    !candidate
+    || typeof candidate !== 'object'
+    || Reflect.get(candidate, 'kind') !== 'application-provider-selection'
+  ) return undefined;
+  const cases = Reflect.get(candidate, 'cases');
+  if (!cases || typeof cases !== 'object') return undefined;
+  return {
+    cases: cases as Readonly<Record<string, unknown>>,
+    default: Reflect.get(candidate, 'default'),
+  };
+}
 
 export interface ApplicationMaintainedCallableDependency {
   readonly identifier: string;
@@ -293,6 +331,8 @@ export function applicationProviderDependenciesFor(
 export interface ApplicationCallableProviderDependency {
   readonly identifier: string;
   readonly provider: ApplicationProviderRef;
+  readonly projection?: 'binding' | 'implementation' | 'token';
+  readonly privateRuntime?: true;
   readonly placement?: 'objectStore' | 'providerDependency';
   readonly objectStore?: { readonly nodeId: string };
   readonly operation?: ApplicationProviderOperationMetadata;
@@ -325,11 +365,21 @@ export function applicationCallableProviderDependencies(
     }
     const dependencies = [
       ...(isApplicationProviderBinding(callable) ? [callable] : []),
+      ...(applicationProviderPrivateRuntimeFor(callable) ? [callable] : []),
       ...applicationProviderDependenciesFor(callable),
     ];
     for (const dependency of dependencies) {
+      const privateRuntime = applicationProviderPrivateRuntimeFor(dependency);
+      const selection = applicationProviderSelectionFor(dependency);
+      const selectedPrivateRuntime = selection
+        ? [...Object.values(selection.cases), selection.default].some(
+            (candidate) => applicationProviderPrivateRuntimeFor(candidate) !== undefined,
+          )
+        : false;
       const token = isApplicationProviderBinding(dependency)
         ? dependency.token
+        : privateRuntime
+          ? privateRuntime.token
         : isApplicationQualifiedProviderToken(dependency)
           ? dependency
           : undefined;
@@ -338,6 +388,16 @@ export function applicationCallableProviderDependencies(
       const qualification = applicationProviderQualificationFor(dependency);
       discovered.push({
         identifier,
+        ...(!isApplicationProviderBinding(dependency)
+          ? {
+              projection: privateRuntime
+                ? 'implementation' as const
+                : 'token' as const,
+            }
+          : {}),
+        ...(privateRuntime || selectedPrivateRuntime
+          ? { privateRuntime: true as const }
+          : {}),
         provider: {
           interface: tokenName,
           nodeId: applicationProviderGraphNodeId(tokenName, qualification),
@@ -355,6 +415,8 @@ export function applicationCallableProviderDependencies(
           (candidate) =>
             candidate.identifier === dependency.identifier
             && candidate.provider.nodeId === dependency.provider.nodeId
+            && candidate.projection === dependency.projection
+            && candidate.privateRuntime === dependency.privateRuntime
             && candidate.placement === dependency.placement
             && candidate.operation?.member === dependency.operation?.member
             && candidate.operation?.runtime?.module

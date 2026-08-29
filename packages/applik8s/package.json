@@ -141,6 +141,11 @@
       "import": "./dist/task-operation-runtime.js",
       "default": "./dist/task-operation-runtime.js"
     },
+    "./task-capability-runtime": {
+      "types": "./dist/task-capability-runtime.d.ts",
+      "import": "./dist/task-capability-runtime.js",
+      "default": "./dist/task-capability-runtime.js"
+    },
     "./task-query-runtime": {
       "types": "./dist/task-query-runtime.d.ts",
       "import": "./dist/task-query-runtime.js",

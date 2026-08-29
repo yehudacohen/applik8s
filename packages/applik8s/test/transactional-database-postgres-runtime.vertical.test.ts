@@ -15,16 +15,38 @@ import { generatedApplicationRuntimeModuleSource } from '../src/application-runt
 import { type ApplicationTelemetryBoundary, type ApplicationTelemetryRuntime, installApplicationTelemetryRuntimeResolver, runApplicationTelemetryBoundary } from '../src/application-telemetry-runtime.js';
 import { applicationRequestContextValues } from '../src/command-principal.js';
 import { type ApplicationMessageEnvelope, command, event } from '../src/dsl.js';
-import { applicationPostgresModelReadClients, closePostgresModelCommandRuntime, executeFunctionNativePostgresModelEdit, executeFunctionNativePostgresTransaction, executePostgresModelCommand, type FunctionNativePostgresNestedOperation, isRetryablePostgresTransactionError, normalizePostgresNativeModelValue, type PostgresModelCommandEventDefinition, recordPostgresModelCommandTerminalFailure } from '../src/model-command-postgres-runtime.js';
+import { applicationPostgresModelReadClients, closePostgresModelCommandRuntime, DurableCommandRejectedError, executeFunctionNativePostgresModelEdit, executeFunctionNativePostgresTransaction, executePostgresModelCommand, type FunctionNativePostgresNestedOperation, isRetryablePostgresTransactionError, normalizePostgresNativeModelValue, type PostgresModelCommandEventDefinition, recordPostgresModelCommandTerminalFailure } from '../src/model-command-postgres-runtime.js';
 import { applicationModelCommandBindingForOperation, nativeApplicationModelBindingFor, nativeApplicationModelCommandRegistrar } from '../src/native-models.js';
 import { cleanupPostgresCommandData, observePostgresOutboxLag, relayPostgresCommandOutbox, relayPostgresEventOutbox } from '../src/postgres-outbox-runtime.js';
 import { applicationRelationalFrameworkMigrationSql } from '../src/relational-runtime.js';
-import { createApplicationFunctionNativeOperationHandle, runApplicationStreamProcessor } from '../src/stream-worker-runtime.js';
+import { bindApplicationFunctionNativeOperationHandle, createApplicationFunctionNativeOperationHandle, runApplicationStreamProcessor } from '../src/stream-worker-runtime.js';
 import { closePostgresModelClients, createPostgresModelClient } from '../src/transactional-database-postgres-runtime.js';
 
 const liveDatabaseUrl = process.env.APPLIK8S_TRANSACTIONAL_DATABASE_SCRIPT_RUNTIME_DATABASE_URL;
 
 describe('Postgres TransactionalDatabase script runtime', () => {
+  it('retains bounded target and public policy context in rejection diagnostics', () => {
+    const error = new DurableCommandRejectedError(
+      {
+        name: 'policyRejected',
+        payload: { message: 'The card is outside the admitted workspace.' },
+      },
+      false,
+      {
+        commandId: 'command-1',
+        correlationId: 'command-1',
+        target: { model: 'Card', key: 'card-7' },
+        phase: 'rejected',
+        replayed: false,
+        resultRevision: 'revision-1',
+      },
+    );
+    expect(error.message).toBe(
+      'applik8s-command-rejected: Card/card-7: policyRejected: The card is outside the admitted workspace.',
+    );
+    expect(error.message).not.toContain(JSON.stringify(error.rejection));
+  });
+
   afterEach(async () => {
     delete process.env.APPLIK8S_TRANSACTIONAL_DATABASE_SCRIPT_NOTE_DATABASE_URL;
     delete process.env.APPLIK8S_TRANSACTIONAL_DATABASE_SCRIPT_LIVE_NOTE_DATABASE_URL;
@@ -113,6 +135,30 @@ describe('Postgres TransactionalDatabase script runtime', () => {
     } finally {
       disposeTelemetry();
     }
+  });
+
+  it('uses queued delivery outside a managed edit and atomic delivery inside it', async () => {
+    const calls: string[] = [];
+    const operation = bindApplicationFunctionNativeOperationHandle(
+      async ({ value }: { readonly value: string }) => {
+        calls.push(`atomic:${value}`);
+        return 'atomic';
+      },
+      async ({ value }: { readonly value: string }) => {
+        calls.push(`queued:${value}`);
+        return 'queued';
+      },
+    );
+
+    await expect(operation({ value: 'outside' })).resolves.toBe('queued');
+    await expect(withApplicationManagedEffects({
+      commandId: 'transaction-1',
+      routingContext: {},
+      emit: () => { throw new Error('not used'); },
+      invoke: () => { throw new Error('not used'); },
+      invokeAtomic: async () => undefined,
+    }, () => operation({ value: 'inside' }))).resolves.toBe('atomic');
+    expect(calls).toEqual(['queued:outside', 'atomic:inside']);
   });
 
   it('normalizes provider-native timestamps to the logical JSON model representation', () => {

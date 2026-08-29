@@ -81,7 +81,10 @@ import { typeKroSingletonOwnerInstances } from './typekro-singleton-instances.js
 import { digestFile, safePathSegment, unique } from './utilities.js';
 
 export { bundleApplicationCompositionRuntimeEntrypoint } from './runtime-entrypoint.js';
-export { instrumentApplicationRuntimeModule } from './entrypoint-handler-instrumentation.js';
+export {
+  instrumentApplicationCallbackRegistrations,
+  instrumentApplicationRuntimeModule,
+} from './entrypoint-handler-instrumentation.js';
 export type {
   TypeKroCompositionAgentArtifactReference,
   TypeKroCompositionArtifacts,

@@ -1,8 +1,13 @@
 // typecast-file-boundary: Workflow resource lowering maps validated contracts and installation expressions into Kubernetes manifest shapes.
 import { createHash } from 'node:crypto';
+import { applicationOptionalDeploymentOutputReference } from '@applik8s/deployment-contract';
 import { applicationCallableProviderEnvironment } from '../application-callable-provider-runtime.js';
 import { applicationGraphAllConditions, applicationGraphBooleanCondition, applicationGraphJsonStringArray, applicationGraphStringValue } from '../application-installation-values.js';
 import { structuredGenerationSelectedScalar, structuredGenerationSelection, type WorkflowContract, type WorkflowTaskProjectionContract } from './contracts.js';
+import {
+  privateProviderMountDirectory,
+  privateProviderVolumeName,
+} from './provider-private-runtime.js';
 import { uniqueWorkflowObjectEffects, uniqueWorkflowProjectionEffects } from './source.js';
 import type { GeneratedApplicationWorkflowResource } from './types.js';
 import { kubernetesName, objectConfig, stringConfig, workflowObjectEnabledEnvironment } from './utilities.js';
@@ -95,6 +100,7 @@ export function workflowResources(contract: WorkflowContract, name: string, imag
     { name: 'HATCHET_CLIENT_API_URL', value: stringConfig(contract.providerConfig.apiUrl) || `http://hatchet-api.${contract.namespace}.svc:8080` },
     { name: 'HATCHET_CLIENT_TLS_STRATEGY', value: workflowTlsStrategy(contract.providerConfig.tls) },
   ];
+  const privateProviderResources = workflowPrivateProviderResources(contract);
   const workloadResources: GeneratedApplicationWorkflowResource[] = [
     {
       apiVersion: 'apps/v1', kind: 'Deployment', metadata: { name, namespace: contract.namespace, labels }, spec: {
@@ -134,13 +140,18 @@ export function workflowResources(contract: WorkflowContract, name: string, imag
                 { target: 'kubernetes', namespace: contract.namespace },
               ),
               ...workflowCapabilityEnvironment(contract),
+              ...workflowNativeAIEnvironment(contract),
               ...workflowOperationEnvironment(contract),
               ...workflowQueryEnvironment(contract),
               ...workflowProjectionEnvironment(contract),
 							...workflowObjectEnvironment(contract),
               ...workflowActorEnvironment(contract),
               ...workflowSignalEnvironment(contract),
+              ...privateProviderResources.environment,
             ]),
+            ...(privateProviderResources.mounts.length > 0
+              ? { volumeMounts: privateProviderResources.mounts }
+              : {}),
             ports: [
               { name: 'health', containerPort: contract.worker.deployment.healthPort },
               ...(gatewayEnabled ? [{ name: 'gateway', containerPort: gatewayPort }] : []),
@@ -155,7 +166,7 @@ export function workflowResources(contract: WorkflowContract, name: string, imag
               secretName: contract.workerTokenSecret,
               items: [{ key: contract.tokenKey, path: 'token' }],
             },
-          }],
+          }, ...privateProviderResources.volumes],
         } },
       },
     },
@@ -235,6 +246,149 @@ export function workflowResources(contract: WorkflowContract, name: string, imag
   ];
 }
 
+function workflowPrivateProviderResources(contract: WorkflowContract): {
+  readonly environment: readonly Record<string, unknown>[];
+  readonly mounts: readonly Record<string, unknown>[];
+  readonly volumes: readonly Record<string, unknown>[];
+} {
+  const providers = contract.privateProviderEffects?.providers ?? [];
+  if (providers.length === 0) {
+    return { environment: [], mounts: [], volumes: [] };
+  }
+  const selectors = new Set(providers.map(({ selectedBy }) => selectedBy));
+  if (selectors.size !== 1) {
+    throw new Error(
+      `Workflow worker ${contract.worker.id} private providers require one profile discriminator.`,
+    );
+  }
+  const selectedBy = providers[0]?.selectedBy;
+  if (!selectedBy) {
+    throw new Error(
+      `Workflow worker ${contract.worker.id} private providers require one selected profile.`,
+    );
+  }
+  const mounts: Record<string, unknown>[] = [];
+  const volumes: Record<string, unknown>[] = [];
+  for (const provider of providers) {
+    const credentialAliases = new Set(
+      provider.branches.flatMap((branch) =>
+        branch.runtime?.credentials.map(({ alias }) => alias) ?? []),
+    );
+    for (const alias of [...credentialAliases].sort()) {
+      const volumeName = privateProviderVolumeName(
+        provider.provider.id,
+        'credential',
+        alias,
+      );
+      mounts.push({
+        name: volumeName,
+        mountPath: privateProviderMountDirectory(
+          provider.provider.id,
+          'credentials',
+          alias,
+        ),
+        readOnly: true,
+      });
+      volumes.push({
+        name: volumeName,
+        secret: {
+          secretName: privateProviderSelectedScalar(
+            provider,
+            (branch) => branch.runtime?.credentials.find(
+              (candidate) => candidate.alias === alias,
+            )?.secret.name,
+            `applik8s-provider-unused-${volumeName.slice(-12)}`,
+          ),
+          optional: true,
+          defaultMode: 0o400,
+          items: [{
+            key: privateProviderSelectedScalar(
+              provider,
+              (branch) => branch.runtime?.credentials.find(
+                (candidate) => candidate.alias === alias,
+              )?.key,
+              'unused',
+            ),
+            path: 'value',
+          }],
+        },
+      });
+    }
+    const postgresAliases = new Set(
+      provider.branches.flatMap((branch) =>
+        branch.postgres.map(({ alias }) => alias)),
+    );
+    for (const alias of [...postgresAliases].sort()) {
+      const volumeName = privateProviderVolumeName(
+        provider.provider.id,
+        'postgres',
+        alias,
+      );
+      mounts.push({
+        name: volumeName,
+        mountPath: privateProviderMountDirectory(
+          provider.provider.id,
+          'postgres',
+          alias,
+        ),
+        readOnly: true,
+      });
+      volumes.push({
+        name: volumeName,
+        secret: {
+          secretName: privateProviderSelectedScalar(
+            provider,
+            (branch) => branch.postgres.find(
+              (candidate) => candidate.alias === alias,
+            )?.secret.name,
+            `applik8s-provider-unused-${volumeName.slice(-12)}`,
+          ),
+          optional: true,
+          defaultMode: 0o400,
+          items: [{
+            key: privateProviderSelectedScalar(
+              provider,
+              (branch) => branch.postgres.find(
+                (candidate) => candidate.alias === alias,
+              )?.secret.key,
+              'unused',
+            ),
+            path: 'value',
+          }],
+        },
+      });
+    }
+  }
+  return {
+    environment: [{
+      name: 'APPLIK8S_PROFILE_VARIANT',
+      value: `\${${selectedBy}}`,
+    }],
+    mounts,
+    volumes,
+  };
+}
+
+function privateProviderSelectedScalar(
+  provider: NonNullable<
+    WorkflowContract['privateProviderEffects']
+  >['providers'][number],
+  select: (
+    branch: NonNullable<
+      WorkflowContract['privateProviderEffects']
+    >['providers'][number]['branches'][number],
+  ) => string | undefined,
+  fallback: string,
+): string {
+  const otherwise = JSON.stringify(fallback);
+  const expression = [...provider.branches].reverse().reduce(
+    (current, branch) =>
+      `${provider.selectedBy} == ${JSON.stringify(branch.variant)} ? ${JSON.stringify(select(branch) ?? fallback)} : (${current})`,
+    otherwise,
+  );
+  return `\${${expression}}`;
+}
+
 function workflowActorEnvironment(contract: WorkflowContract): readonly Record<string, unknown>[] {
   return [
     ...(contract.actorEffects
@@ -253,6 +407,51 @@ function workflowActorEnvironment(contract: WorkflowContract): readonly Record<s
         },
       },
     },
+  ];
+}
+
+function workflowNativeAIEnvironment(
+  contract: WorkflowContract,
+): readonly Record<string, unknown>[] {
+  const nativeAI = contract.nativeAI;
+  if (!nativeAI) return [];
+  const selection = nativeAI.providerConfig.kind === 'application-provider-selection';
+  const candidates = selection
+    ? [
+        ...Object.values(objectConfig(nativeAI.providerConfig.cases)).map(objectConfig),
+        objectConfig(nativeAI.providerConfig.default),
+      ]
+    : [nativeAI.providerConfig];
+  const managed = candidates.some(
+    (candidate) => stringConfig(candidate.kind) === 'envoy-ai-gateway'
+      && candidate.provision !== false,
+  );
+  return [
+    {
+      name: nativeAI.state.runtime.connectionEnvName,
+      valueFrom: {
+        secretKeyRef: {
+          name: nativeAI.state.runtime.secretName,
+          key: nativeAI.state.runtime.secretKey,
+          optional: false,
+        },
+      },
+    },
+    ...(selection
+      ? [{
+          name: 'APPLIK8S_NATIVE_AI_SELECTION',
+          value: applicationGraphStringValue(nativeAI.providerConfig.selector),
+        }]
+      : []),
+    ...(managed
+      ? [{
+          name: 'APPLIK8S_AI_GATEWAY_MANAGED_URL',
+          value: applicationOptionalDeploymentOutputReference(
+            `direct.${nativeAI.physicalProviderId}.envoy-ai-gateway`,
+            'endpoint',
+          ),
+        }]
+      : []),
   ];
 }
 
@@ -283,7 +482,7 @@ function workflowObjectEnvironment(contract: WorkflowContract): readonly Record<
 	const bucket = applicationGraphStringValue(config.bucket);
 	const region = applicationGraphStringValue(config.region);
 	if (!bucket || !region) throw new Error(`Workflow worker ${contract.worker.id} task ObjectStorage requires bucket and region values.`);
-	const credentials = objectConfig(config.credentialsSecret);
+	const credentials = first.credentialsSecret;
 	const credentialsName = applicationGraphStringValue(credentials.name);
 	const optionalCredentials = config.enabled !== true;
 	const provisionedConnection = workflowObjectBucketConnection(config);
@@ -443,10 +642,26 @@ function uniqueWorkflowEnvironment(values: readonly Record<string, unknown>[]): 
   for (const value of values) {
     const name = stringConfig(value.name);
     const previous = result.get(name);
-    if (previous && JSON.stringify(previous) !== JSON.stringify(value)) throw new Error(`Workflow worker has conflicting environment contracts for ${name}.`);
+    if (
+      previous
+      && workflowEnvironmentContractKey(previous)
+        !== workflowEnvironmentContractKey(value)
+    ) throw new Error(`Workflow worker has conflicting environment contracts for ${name}.`);
     result.set(name, value);
   }
   return [...result.values()];
+}
+
+function workflowEnvironmentContractKey(
+  value: Readonly<Record<string, unknown>>,
+): string {
+  const normalized = structuredClone(value);
+  const valueFrom = objectConfig(normalized.valueFrom);
+  const secretKeyRef = objectConfig(valueFrom.secretKeyRef);
+  if (secretKeyRef.optional === false) {
+    Reflect.deleteProperty(secretKeyRef, 'optional');
+  }
+  return JSON.stringify(normalized);
 }
 
 function workflowEventLogServers(config: Readonly<Record<string, unknown>>): readonly string[] {

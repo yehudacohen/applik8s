@@ -818,6 +818,11 @@ export const providerAgentStack = application.composition;
           },
         }))
       .exhaustive();
+    const researchInference = AI.named('research');
+    const researchInferenceBinding = application.provide(
+      researchInference,
+      application.inject(inference),
+    );
     application.provide(
       IdentityProvider,
       IdentityProvider.deterministic({
@@ -865,7 +870,7 @@ export const providerAgentStack = application.composition;
         scope: WorkspaceId,
         model: AI.model('fast', {
           capabilities: [AI.chat, AI.tools, AI.streaming],
-          inference: application.inject(inference),
+          inference: researchInferenceBinding,
         }),
         instructions: 'Answer only with evidence.',
         tools: [Post.create],

@@ -11,6 +11,7 @@ import type {
   ApplicationProcessorNode,
   ApplicationProjectionNode,
   ApplicationProviderNode,
+  ApplicationProviderPrivateRuntimeContract,
   ApplicationQueryNode,
   ApplicationStaticAuthorityManifest,
   ApplicationStreamNode,
@@ -31,6 +32,7 @@ const DEFAULT_WORKER_IMAGE = 'node:22-alpine@sha256:16e22a550f3863206a3f701448c4
 const APPLICATION_RUNTIME_NAMESPACE_MARKER = '__APPLIK8S_RUNTIME_NAMESPACE__';
 
 export interface WorkflowContract {
+  readonly graph: ApplicationGraph;
   readonly graphName: string;
   readonly observability: boolean;
   readonly worker: ApplicationWorkflowWorkerNode;
@@ -39,6 +41,7 @@ export interface WorkflowContract {
   readonly tasks: readonly { readonly handler: ApplicationTaskHandlerNode; readonly task: ApplicationTaskNode }[];
   readonly workflows: readonly { readonly handler: ApplicationWorkflowHandlerNode; readonly workflow: ApplicationWorkflowNode }[];
   readonly capabilities: readonly ApplicationProviderNode[];
+  readonly nativeAI?: WorkflowNativeAIContract;
   readonly callableProviders?: readonly ApplicationProviderNode[];
   readonly operationEffects?: WorkflowOperationEffectsContract;
   readonly operationCatalog?: ApplicationOperationCatalog;
@@ -46,6 +49,7 @@ export interface WorkflowContract {
   readonly queryEffects?: WorkflowQueryEffectsContract;
   readonly projectionEffects?: WorkflowProjectionEffectsContract;
   readonly objectEffects?: WorkflowObjectEffectsContract;
+  readonly privateProviderEffects?: WorkflowPrivateProviderEffectsContract;
   readonly actorEffects?: WorkflowActorEffectsContract;
   readonly signalEffects?: WorkflowSignalEffectsContract;
   readonly functionNativeTransactions?: readonly WorkflowFunctionNativeTransactionContract[];
@@ -61,6 +65,45 @@ export interface WorkflowContract {
     readonly replayWindowSeconds: number;
     readonly cleanupIntervalSeconds: number;
     readonly cleanupBatchSize: number;
+  };
+}
+
+export interface WorkflowPrivateProviderPostgresDependency {
+  readonly alias: string;
+  readonly provider: ApplicationProviderNode;
+  readonly database: string;
+  readonly secret: {
+    readonly name: string;
+    readonly key: string;
+    readonly namespace: string;
+  };
+}
+
+export interface WorkflowPrivateProviderBranchContract {
+  readonly variant: string;
+  readonly runtime?: ApplicationProviderPrivateRuntimeContract;
+  readonly postgres: readonly WorkflowPrivateProviderPostgresDependency[];
+}
+
+export interface WorkflowPrivateProviderContract {
+  readonly provider: ApplicationProviderNode;
+  readonly selectedBy: string;
+  readonly branches: readonly WorkflowPrivateProviderBranchContract[];
+}
+
+export interface WorkflowPrivateProviderEffectsContract {
+  readonly providers: readonly WorkflowPrivateProviderContract[];
+}
+
+export interface WorkflowNativeAIContract {
+  readonly provider: ApplicationProviderNode;
+  readonly physicalProviderId: string;
+  readonly providerConfig: Readonly<Record<string, unknown>>;
+  readonly state: ApplicationModelNode & {
+    readonly runtime: NonNullable<ApplicationModelNode['runtime']>;
+  };
+  readonly conversationAccess?: {
+    readonly setting: string;
   };
 }
 
@@ -159,11 +202,19 @@ export interface WorkflowTaskObjectContract {
 	readonly store: ApplicationObjectStoreNode;
 	readonly provider: ApplicationProviderNode;
 	readonly config: Readonly<Record<string, unknown>>;
+	readonly credentialsSecret: Readonly<Record<string, unknown>>;
+	readonly credentialsSource: 'task' | 'provider';
+	readonly operations: NonNullable<ApplicationTaskHandlerNode['objects']>[number]['operations'];
+}
+
+interface WorkflowTaskObjectAliasContract {
+	readonly store: string;
+	readonly operations: NonNullable<ApplicationTaskHandlerNode['objects']>[number]['operations'];
 }
 
 interface WorkflowObjectEffectsContract {
 	readonly objects: readonly WorkflowTaskObjectContract[];
-	readonly aliases: Readonly<Record<string, Readonly<Record<string, string>>>>;
+	readonly aliases: Readonly<Record<string, Readonly<Record<string, WorkflowTaskObjectAliasContract>>>>;
 }
 
 export interface WorkflowTaskActorContract {
@@ -281,6 +332,11 @@ export function workflowContract(
     }
   }
   for (const capability of capabilities.values()) validateWorkflowCapability(capability, namespace, worker);
+  const nativeAI = workflowNativeAIContract(
+    graph,
+    [...capabilities.values()],
+    worker,
+  );
   const queryEffects = workflowQueryEffects(graph, nodes, tasks, namespace, worker);
   const operationEffects = workflowOperationEffects(
     graph,
@@ -292,6 +348,12 @@ export function workflowContract(
   );
   const projectionEffects = workflowProjectionEffects(nodes, tasks, namespace, worker);
 	const objectEffects = workflowObjectEffects(nodes, tasks, namespace, worker);
+  const privateProviderEffects = workflowPrivateProviderEffects(
+    nodes,
+    tasks,
+    namespace,
+    worker,
+  );
   const actorEffects = workflowActorEffects(
     graph,
     nodes,
@@ -342,6 +404,7 @@ export function workflowContract(
     }
   }
   return {
+    graph,
     graphName: graph.metadata.name,
     observability: applicationGraphHasObservabilityRuntime(graph),
     worker,
@@ -350,6 +413,7 @@ export function workflowContract(
     tasks,
     workflows,
     capabilities: [...capabilities.values()].sort((left, right) => left.id.localeCompare(right.id)),
+    ...(nativeAI ? { nativeAI } : {}),
     callableProviders: [...callableProviders.values()].sort((left, right) =>
       left.id.localeCompare(right.id)),
     ...(operationEffects ? { operationEffects } : {}),
@@ -358,6 +422,7 @@ export function workflowContract(
     ...(queryEffects ? { queryEffects } : {}),
     ...(projectionEffects ? { projectionEffects } : {}),
 		...(objectEffects ? { objectEffects } : {}),
+    ...(privateProviderEffects ? { privateProviderEffects } : {}),
     ...(actorEffects ? { actorEffects } : {}),
     ...(signalEffects ? { signalEffects } : {}),
     ...(functionNativeTransactions.length > 0
@@ -559,28 +624,217 @@ function workflowObjectEffects(
 	worker: ApplicationWorkflowWorkerNode,
 ): WorkflowObjectEffectsContract | undefined {
 	const objects: WorkflowTaskObjectContract[] = [];
-	const aliases: Record<string, Record<string, string>> = {};
+	const aliases: Record<string, Record<string, WorkflowTaskObjectAliasContract>> = {};
 	for (const { handler } of tasks) {
 		if ((handler.objects?.length ?? 0) === 0) continue;
-		const taskAliases: Record<string, string> = {};
+		const taskAliases: Record<string, WorkflowTaskObjectAliasContract> = {};
 		for (const reference of handler.objects ?? []) {
 			const store = nodes.get(reference.store.nodeId);
 			if (store?.kind !== 'objectStore') throw new Error(`Workflow task ${handler.id} object ${reference.alias} references missing store ${reference.store.nodeId}.`);
+			const operations = Array.isArray(reference.operations)
+				? reference.operations
+				: undefined;
+			if (!operations || operations.length === 0) throw new Error(`Workflow task ${handler.id} object ${reference.alias} must declare at least one operation.`);
+			const supported = new Set(['put', 'get', 'head', 'delete']);
+			if (operations.some(operation => !supported.has(operation))) throw new Error(`Workflow task ${handler.id} object ${reference.alias} declares an unsupported operation.`);
+			if (new Set(operations).size !== operations.length) throw new Error(`Workflow task ${handler.id} object ${reference.alias} operations must be unique.`);
+			if (store.deletion === 'retained' && operations.includes('delete')) throw new Error(`Workflow task ${handler.id} object ${reference.alias} cannot receive delete authority for retained store ${store.id}.`);
 			const provider = nodes.get(store.provider.nodeId);
 			if (provider?.kind !== 'provider' || provider.interface !== 'ObjectStorage') throw new Error(`Workflow task ${handler.id} object ${reference.alias} references missing ObjectStorage provider ${store.provider.nodeId}.`);
 			const config = objectConfig(provider.config?.objectStorage);
 			if (stringConfig(config.kind) !== 's3') throw new Error(`Workflow task ${handler.id} object ${reference.alias} requires an S3-compatible ObjectStorage provider.`);
-			const secret = objectConfig(config.credentialsSecret);
+			const secret = objectConfig(reference.credentialsSecret ?? config.credentialsSecret);
+			if (!applicationGraphStringValue(secret.name)) throw new Error(`Workflow task ${handler.id} object ${reference.alias} requires a named ObjectStorage credentials Secret.`);
 			assertWorkflowSecretNamespace(secret.namespace, namespace, `Workflow task ${handler.id} object ${reference.alias} ObjectStorage Secret`);
-			objects.push({ taskHandlerId: handler.id, alias: reference.alias, store, provider, config });
-			taskAliases[reference.alias] = store.id;
+			objects.push({
+				taskHandlerId: handler.id,
+				alias: reference.alias,
+				store,
+				provider,
+				config,
+				credentialsSecret: secret,
+				credentialsSource: reference.credentialsSecret ? 'task' : 'provider',
+				operations,
+			});
+			taskAliases[reference.alias] = { store: store.id, operations };
 		}
 		aliases[handler.id] = taskAliases;
 	}
 	if (objects.length === 0) return undefined;
 	const providers = new Set(objects.map((effect) => effect.provider.id));
 	if (providers.size !== 1) throw new Error(`Workflow worker ${worker.id} task object stores require one ObjectStorage provider.`);
+	const credentialIdentities = new Set(objects.map(effect =>
+		`${applicationGraphStringValue(effect.credentialsSecret.namespace) ?? namespace}/${applicationGraphStringValue(effect.credentialsSecret.name)}`,
+	));
+	if (credentialIdentities.size !== 1) throw new Error(`Workflow worker ${worker.id} task object stores require one credential identity; split tasks with different credentials into separate workers.`);
 	return { objects, aliases };
+}
+
+function workflowPrivateProviderEffects(
+  nodes: ReadonlyMap<string, ApplicationGraph['nodes'][number]>,
+  tasks: readonly {
+    readonly handler: ApplicationTaskHandlerNode;
+    readonly task: ApplicationTaskNode;
+  }[],
+  namespace: string,
+  worker: ApplicationWorkflowWorkerNode,
+): WorkflowPrivateProviderEffectsContract | undefined {
+  const referenced = new Map<string, ApplicationProviderNode>();
+  for (const { handler } of tasks) {
+    for (const binding of handler.providerBindings ?? []) {
+      if (!binding.privateRuntime) continue;
+      const provider = nodes.get(binding.provider.nodeId);
+      if (
+        provider?.kind !== 'provider'
+        || provider.interface !== binding.provider.interface
+      ) {
+        throw new Error(
+          `Workflow task ${handler.id} provider binding ${binding.identifier} references missing provider ${binding.provider.nodeId}.`,
+        );
+      }
+      referenced.set(provider.id, provider);
+    }
+  }
+  const providers: WorkflowPrivateProviderContract[] = [];
+  for (const provider of referenced.values()) {
+    const profile = objectConfig(provider.config?.profile);
+    if (
+      profile.apiVersion !== 'applik8s.profileProvider/v1alpha1'
+      || !Array.isArray(profile.branches)
+    ) continue;
+    const selectedBy = stringConfig(profile.selectedBy);
+    if (!/^schema\.spec(?:\.[A-Za-z_][A-Za-z0-9_]*)+$/u.test(selectedBy)) {
+      throw new Error(
+        `Workflow worker ${worker.id} private provider ${provider.id} must use one direct schema.spec profile discriminator.`,
+      );
+    }
+    const branches = profile.branches.map((value) => {
+      const branch = objectConfig(value);
+      const variant = stringConfig(branch.variant);
+      if (!variant) {
+        throw new Error(
+          `Workflow worker ${worker.id} private provider ${provider.id} has a profile branch without a variant.`,
+        );
+      }
+      const runtimeValue = branch.privateRuntime;
+      if (runtimeValue === undefined) return { variant, postgres: [] };
+      const runtime = runtimeValue as ApplicationProviderPrivateRuntimeContract;
+      if (runtime.apiVersion !== 'applik8s.providerRuntime/v1alpha1') {
+        throw new Error(
+          `Workflow worker ${worker.id} provider ${provider.id}.${variant} has an unsupported private runtime contract.`,
+        );
+      }
+      for (const credential of runtime.credentials) {
+        assertWorkflowSecretNamespace(
+          credential.secret.namespace,
+          namespace,
+          `Workflow provider ${provider.id}.${variant} credential ${credential.alias}`,
+        );
+      }
+      const postgres = runtime.postgres.map((dependency) => {
+        const databaseProvider = nodes.get(dependency.databaseProviderNodeId);
+        if (
+          databaseProvider?.kind !== 'provider'
+          || databaseProvider.interface !== 'TransactionalDatabase'
+        ) {
+          throw new Error(
+            `Workflow provider ${provider.id}.${variant} PostgreSQL dependency ${dependency.alias} references missing TransactionalDatabase provider ${dependency.databaseProviderNodeId}.`,
+          );
+        }
+        const authoredConfig = objectConfig(
+          databaseProvider.config?.transactionalDatabase,
+        );
+        const config = selectedPrivateProviderPostgresConfig(
+          authoredConfig,
+          selectedBy,
+          variant,
+          provider.id,
+          dependency.alias,
+        );
+        if (applicationGraphStringValue(config.kind) !== 'postgres') {
+          throw new Error(
+            `Workflow provider ${provider.id}.${variant} PostgreSQL dependency ${dependency.alias} requires a PostgreSQL implementation.`,
+          );
+        }
+        const connectionSecret = objectConfig(config.connectionSecret);
+        const clusterName = applicationGraphStringValue(config.clusterName)
+          || applicationGraphStringValue(config.name);
+        const secretName = applicationGraphStringValue(connectionSecret.name)
+          || (clusterName && !clusterName.includes('${')
+            ? `${clusterName}-app`
+            : '');
+        const secretNamespace = applicationGraphStringValue(connectionSecret.namespace)
+          || applicationGraphStringValue(config.namespace)
+          || namespace;
+        if (!secretName) {
+          throw new Error(
+            `Workflow provider ${provider.id}.${variant} PostgreSQL dependency ${dependency.alias} requires an exact connection Secret name.`,
+          );
+        }
+        assertWorkflowSecretNamespace(
+          secretNamespace,
+          namespace,
+          `Workflow provider ${provider.id}.${variant} PostgreSQL dependency ${dependency.alias}`,
+        );
+        return {
+          alias: dependency.alias,
+          provider: databaseProvider,
+          database: applicationGraphStringValue(config.database)
+            || applicationGraphStringValue(config.name)
+            || dependency.alias,
+          secret: {
+            name: secretName,
+            key: applicationGraphStringValue(config.connectionSecretKey) || 'uri',
+            namespace: secretNamespace,
+          },
+        };
+      });
+      return { variant, runtime, postgres };
+    });
+    if (branches.some((branch) => branch.runtime)) {
+      if (branches.some((branch) => !branch.runtime)) {
+        throw new Error(
+          `Workflow worker ${worker.id} private provider ${provider.id} must declare runtime construction for every selected profile branch.`,
+        );
+      }
+      providers.push({ provider, selectedBy, branches });
+    }
+  }
+  if (providers.length === 0) return undefined;
+  const selectors = new Set(providers.map(({ selectedBy }) => selectedBy));
+  if (selectors.size !== 1) {
+    throw new Error(
+      `Workflow worker ${worker.id} private providers span multiple profile discriminators; split them into separately selected workers.`,
+    );
+  }
+  return {
+    providers: providers.sort((left, right) =>
+      left.provider.id.localeCompare(right.provider.id)),
+  };
+}
+
+function selectedPrivateProviderPostgresConfig(
+  config: Readonly<Record<string, unknown>>,
+  selectedBy: string,
+  variant: string,
+  providerId: string,
+  alias: string,
+): Readonly<Record<string, unknown>> {
+  if (applicationGraphStringValue(config.kind) !== 'application-provider-selection') {
+    return config;
+  }
+  if (applicationGraphStringValue(config.selector) !== selectedBy) {
+    throw new Error(
+      `Workflow provider ${providerId}.${variant} PostgreSQL dependency ${alias} must use the same profile discriminator as its provider.`,
+    );
+  }
+  const cases = objectConfig(config.cases);
+  if (!Object.hasOwn(cases, variant)) {
+    throw new Error(
+      `Workflow provider ${providerId}.${variant} PostgreSQL dependency ${alias} has no matching database profile branch.`,
+    );
+  }
+  return objectConfig(cases[variant]);
 }
 
 function workflowProjectionEffects(
@@ -924,6 +1178,10 @@ function assertWorkflowSecretNamespace(value: unknown, namespace: string, owner:
 }
 
 function validateWorkflowCapability(provider: ApplicationProviderNode, namespace: string, worker: ApplicationWorkflowWorkerNode): void {
+  if (provider.interface === 'AI') {
+    validateWorkflowAIProvider(provider, worker);
+    return;
+  }
   if (provider.interface !== 'StructuredGeneration') throw new Error(`Workflow worker ${worker.id} has no runtime adapter for capability ${provider.interface}.`);
   const config = provider.config ?? {};
   const selection = structuredGenerationSelection(config);
@@ -934,6 +1192,93 @@ function validateWorkflowCapability(provider: ApplicationProviderNode, namespace
     return;
   }
   validateStructuredGenerationCandidate(provider, config, namespace, worker);
+}
+
+function validateWorkflowAIProvider(
+  provider: ApplicationProviderNode,
+  worker: ApplicationWorkflowWorkerNode,
+): void {
+  const config = objectConfig(provider.config?.ai);
+  const candidates = config.kind === 'application-provider-selection'
+    ? [...Object.values(objectConfig(config.cases)).map(objectConfig), objectConfig(config.default)]
+    : [config];
+  if (candidates.length === 0 || candidates.some((candidate) => Object.keys(candidate).length === 0)) {
+    throw new Error(`Workflow worker ${worker.id} AI capability ${provider.id} has no portable provider configuration.`);
+  }
+  for (const candidate of candidates) {
+    const kind = stringConfig(candidate.kind);
+    if (kind === 'ai-deterministic') continue;
+    if (kind !== 'envoy-ai-gateway') {
+      throw new Error(`Workflow worker ${worker.id} AI capability ${provider.id} has unsupported provider ${kind || '<missing>'}.`);
+    }
+    if (candidate.provision === false) {
+      throw new Error(
+        `Workflow worker ${worker.id} AI capability ${provider.id} cannot bind a direct external inference endpoint. Route task inference through a managed provider boundary.`,
+      );
+    }
+  }
+}
+
+function workflowNativeAIContract(
+  graph: ApplicationGraph,
+  capabilities: readonly ApplicationProviderNode[],
+  worker: ApplicationWorkflowWorkerNode,
+): WorkflowNativeAIContract | undefined {
+  const providers = capabilities.filter((provider) => provider.interface === 'AI');
+  if (providers.length === 0) return undefined;
+  if (providers.length !== 1) {
+    throw new Error(
+      `Workflow worker ${worker.id} requires ${providers.length} logical AI providers. One worker may bind exactly one qualified AI capability.`,
+    );
+  }
+  const provider = providers[0]!;
+  const providerConfig = objectConfig(provider.config?.ai);
+  const stateModels = graph.nodes.filter(
+    (node): node is ApplicationModelNode & {
+      readonly runtime: NonNullable<ApplicationModelNode['runtime']>;
+    } => node.kind === 'model'
+      && Boolean(node.runtime)
+      && node.common?.runtimeRoles?.includes('applik8s.conversation-state/v1') === true,
+  );
+  if (stateModels.length !== 1) {
+    throw new Error(
+      `Workflow worker ${worker.id} native AI requires exactly one model with runtime role applik8s.conversation-state/v1; found ${stateModels.length}.`,
+    );
+  }
+  const state = stateModels[0]!;
+  const access = state.runtime.nativeRelational?.access;
+  return {
+    provider,
+    physicalProviderId: physicalProviderId(graph, provider),
+    providerConfig,
+    state,
+    ...(access ? { conversationAccess: { setting: access.setting } } : {}),
+  };
+}
+
+function physicalProviderId(
+  graph: ApplicationGraph,
+  provider: ApplicationProviderNode,
+): string {
+  const providers = new Map(graph.nodes.flatMap((node) =>
+    node.kind === 'provider' ? [[node.id, node] as const] : []));
+  const visited = new Set<string>();
+  let current = provider;
+  while (true) {
+    if (visited.has(current.id)) {
+      throw new Error(`Workflow AI provider alias cycle includes ${current.id}.`);
+    }
+    visited.add(current.id);
+    const aliasOf = stringConfig(current.config?.aliasOf);
+    if (!aliasOf) return current.id;
+    const target = providers.get(aliasOf);
+    if (!target || target.interface !== provider.interface) {
+      throw new Error(
+        `Workflow AI provider ${current.id} aliases missing or incompatible provider ${aliasOf}.`,
+      );
+    }
+    current = target;
+  }
 }
 
 function validateStructuredGenerationCandidate(

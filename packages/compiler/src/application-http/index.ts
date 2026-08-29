@@ -10,6 +10,7 @@ import type {
   ApplicationHandlerDependencies,
   ApplicationMessageContractSchema,
   ApplicationModelNode,
+  ApplicationObjectStoreNode,
   ApplicationOperationCatalog,
   ApplicationProviderNode,
   ApplicationRouteContract,
@@ -19,6 +20,7 @@ import type {
 import type { ApplicationFrameworkCredentialDependency } from '@applik8s/deployment-contract';
 import { build } from 'esbuild';
 import { applicationCallableProviderEnvironment } from '../application-callable-provider-runtime.js';
+import { applicationObjectStorageEnvironment } from '../application-object-storage-environment.js';
 import { generatedCallbackFactoryModule } from '../application-callback-module.js';
 import {
   emitGeneratedApplicationContainer,
@@ -117,6 +119,11 @@ interface HttpRouteCompilerContract {
   readonly operation: ApplicationOperationCatalog['operations'][number];
   readonly operationBindings: readonly HttpOperationBinding[];
   readonly workflowBindings: readonly HttpWorkflowBinding[];
+}
+
+interface HttpObjectStoreBinding {
+  readonly binding: ApplicationCallableProviderBinding;
+  readonly store: ApplicationObjectStoreNode;
 }
 
 interface HttpServerCompilerContract {
@@ -402,6 +409,10 @@ async function emitHttpServer(
     const roots = applicationHttpRouteBindingRoots(route);
     const providerBindingRoots = httpProviderRuntimeOperations(route)
       .map(({ binding }) => bindingRoot(binding.identifier))
+      .concat(
+        httpObjectStoreBindings(contract.graph, route).map(({ binding }) =>
+          bindingRoot(binding.identifier)),
+      )
       .filter((identifier, rootIndex, identifiers) =>
         identifiers.indexOf(identifier) === rootIndex
       );
@@ -553,6 +564,8 @@ ${route.route.functionNative.webhookAuthentication
   const hasWorkflows = contract.routes.some(
     (route) => route.workflowBindings.length > 0,
   );
+  const objectStores = uniqueHttpObjectStoreBindings(contract);
+  const hasObjectStores = objectStores.length > 0;
   const workflowGateways = [...new Set(contract.routes.flatMap((route) =>
     route.workflowBindings.map((binding) =>
       applicationHttpWorkflowGateway(
@@ -630,6 +643,9 @@ ${hasTransactions
 ${hasWorkflows
     ? "import { readFile } from 'node:fs/promises';\nimport { createSignedEnvelopeCodec, signedEnvelopeUtf8Key, staticSignedEnvelopeKeyProvider } from '@applik8s/runtime';"
     : ''}
+${hasObjectStores
+    ? "import { createApplicationObjectStoreRuntimeHandle, installApplicationObjectStorageRuntimeResolver } from '@applik8s/applik8s/workflow-runtime-resolvers';\nimport { createS3ApplicationObjectStorageRuntime } from '@applik8s/runtime-s3';"
+    : ''}
 import { callback as authenticate } from './identity.generated.js';
 ${routeImports}
 ${providerRuntimeImports}
@@ -671,6 +687,7 @@ const operationAuthority = createApplicationOperationAuthorityRuntime({
 const directOperationScope = new AsyncLocalStorage();
 installApplicationOperationRuntimeResolver(() => directOperationScope.getStore());
 installApplicationInvocationAdmissionResolver(() => directOperationScope.getStore()?.admission);
+${generatedHttpObjectStorageRuntime(objectStores)}
 ${hasWorkflows ? `const directWorkflowScope = new AsyncLocalStorage();
 const workflowGatewayAdmission = createSignedEnvelopeCodec({
   purpose: 'applik8s.workflow-gateway-admission/v1',
@@ -1302,6 +1319,7 @@ async function invokeRoute(route, params, request, url, runtimeProtocol) {
     admission: applicationAdmissionInvocationView(baseAdmission),
     principal,
     trustedContext: Object.freeze({ ...admission.trustedContext }),
+    idempotencyKey,
     ...(requestOrigin ? { requestOrigin } : {}),
     signal: request.signal,
   });
@@ -1590,6 +1608,20 @@ function applicationHttpRouteBindingsSource(
       target: operation.binding.provider.nodeId,
     });
   }
+  for (const object of httpObjectStoreBindings(graph, route)) {
+    entries.push({
+      path: object.binding.identifier,
+      value: `createApplicationObjectStoreRuntimeHandle(${JSON.stringify({
+        name: object.store.name,
+        objectMode: object.store.objectMode,
+        maxObjectBytes: object.store.maxObjectBytes,
+        contentTypes: object.store.contentTypes,
+        browserAccess: object.store.browserAccess,
+        deletion: object.store.deletion,
+      })})`,
+      target: object.store.id,
+    });
+  }
   const nodes = new Map(graph.nodes.map((node) => [node.id, node]));
   for (const binding of route.route.functionNative.transaction?.modelBindings ?? []) {
     const model = nodes.get(binding.model.nodeId);
@@ -1698,7 +1730,6 @@ function applicationHttpRouteBindingPaths(
     ...route.operationBindings.map((binding) => binding.identifier),
     ...route.workflowBindings.map((binding) => binding.identifier),
     ...(route.route.functionNative.providerBindings ?? [])
-      .filter((binding) => binding.operation !== undefined)
       .map((binding) => binding.identifier),
     ...(route.route.functionNative.transaction?.modelBindings ?? []).map(
       (binding) => binding.identifier,
@@ -1713,6 +1744,83 @@ interface HttpProviderRuntimeOperation {
   readonly binding: ApplicationCallableProviderBinding;
   readonly runtime: ApplicationCallableProviderRuntimeOperation;
   readonly variable: string;
+}
+
+function httpObjectStoreBindings(
+  graph: ApplicationGraph,
+  route: HttpRouteCompilerContract,
+): readonly HttpObjectStoreBinding[] {
+  const nodes = new Map(graph.nodes.map((node) => [node.id, node]));
+  return (route.route.functionNative.providerBindings ?? []).flatMap((binding) => {
+    if (binding.placement !== 'objectStore') return [];
+    if (binding.provider.interface !== 'ObjectStorage' || !binding.objectStore) {
+      throw new Error(
+        `Typed HTTP route ${route.route.id} object-store binding ${binding.identifier} has incomplete ObjectStorage provenance. Recompile the authored application graph.`,
+      );
+    }
+    const store = nodes.get(binding.objectStore.nodeId);
+    if (
+      store?.kind !== 'objectStore'
+      || store.provider.nodeId !== binding.provider.nodeId
+    ) {
+      throw new Error(
+        `Typed HTTP route ${route.route.id} object-store binding ${binding.identifier} references missing or mismatched store ${binding.objectStore.nodeId}.`,
+      );
+    }
+    return [{ binding, store }];
+  });
+}
+
+function uniqueHttpObjectStoreBindings(
+  contract: HttpServerCompilerContract,
+): readonly HttpObjectStoreBinding[] {
+  const bindings = new Map<string, HttpObjectStoreBinding>();
+  for (const route of contract.routes) {
+    for (const binding of httpObjectStoreBindings(contract.graph, route)) {
+      const previous = bindings.get(binding.store.id);
+      if (
+        previous
+        && previous.binding.provider.nodeId !== binding.binding.provider.nodeId
+      ) {
+        throw new Error(
+          `Generated typed HTTP server ${contract.server.id} resolves conflicting providers for object store ${binding.store.id}.`,
+        );
+      }
+      bindings.set(binding.store.id, previous ?? binding);
+    }
+  }
+  return [...bindings.values()].sort((left, right) =>
+    left.store.id.localeCompare(right.store.id));
+}
+
+function generatedHttpObjectStorageRuntime(
+  bindings: readonly HttpObjectStoreBinding[],
+): string {
+  if (bindings.length === 0) return '';
+  return `const applicationObjectStorageRuntimes = new Map([
+${bindings.map(({ store }) => `  [${JSON.stringify(store.name)}, createS3ApplicationObjectStorageRuntime({
+    store: ${JSON.stringify(store.name)},
+    provider: {
+      kind: 's3',
+      bucket: requiredEnv('APPLIK8S_OBJECT_STORAGE_BUCKET'),
+      region: requiredEnv('APPLIK8S_OBJECT_STORAGE_REGION'),
+      ...(process.env.APPLIK8S_OBJECT_STORAGE_PREFIX
+        ? { prefix: process.env.APPLIK8S_OBJECT_STORAGE_PREFIX }
+        : {}),
+      ...(process.env.APPLIK8S_OBJECT_STORAGE_ENDPOINT
+        ? { endpoint: process.env.APPLIK8S_OBJECT_STORAGE_ENDPOINT }
+        : {}),
+      forcePathStyle:
+        process.env.APPLIK8S_OBJECT_STORAGE_FORCE_PATH_STYLE === 'true',
+    },
+  })]`).join(',\n')}
+]);
+installApplicationObjectStorageRuntimeResolver((identity) => {
+  if (process.env.APPLIK8S_OBJECT_STORAGE_ENABLED === 'false') {
+    throw new Error('Application object storage is disabled for this installation.');
+  }
+  return applicationObjectStorageRuntimes.get(identity.name);
+});`;
 }
 
 function httpProviderRuntimeOperations(
@@ -1909,6 +2017,13 @@ function generatedHttpResources(
       contract.callableProviders,
       { target: contract.executionTarget, namespace: contract.namespace },
     ),
+    ...(uniqueHttpObjectStoreBindings(contract).length > 0
+      ? applicationObjectStorageEnvironment(
+          contract.graph,
+          contract.namespace,
+          `Generated typed HTTP server ${contract.server.id}`,
+        )
+      : []),
   ]);
   return [
     { apiVersion: 'v1', kind: 'ServiceAccount', metadata },

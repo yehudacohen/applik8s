@@ -2,6 +2,7 @@
 import { actor, app, applicationGraphFor, applicationScheduleInvocationAdmission, defineApplicationProvider, event, IndexStore, installApplicationScheduleRuntimeResolver, installApplicationTelemetryRuntimeResolver, ObjectStorage, StructuredGeneration as StructuredGenerationProvider, setApplicationWorkflowRuntimeFactory, WorkflowEngine, workflow } from '@applik8s/applik8s';
 import { type } from '@applik8s/applik8s/dsl';
 import { StructuredGeneration } from '@applik8s/applik8s/structured-generation';
+import { AI } from '@applik8s/ai';
 import { installApplicationInvocationAdmissionResolver } from '@applik8s/client';
 import {
   applicationAdmissionInvocationView,
@@ -34,6 +35,41 @@ const ProvisionTenantWorkflow = workflow('tenant.provision-workflow.v1', {
 });
 
 describe('v0.5 durable task and workflow contracts', () => {
+  it('binds a qualified native AI capability without exposing provider configuration', () => {
+    const platform = app('native-ai-task');
+    const Inference = AI.named('inference');
+    platform.provide(Inference, AI.deterministic({ fixture: { response: 'bounded' } }));
+    platform.workflow(
+      'native-ai-task.v1',
+      {
+        input: type({ threadId: 'string' }),
+        output: type({ ready: 'boolean' }),
+      },
+      { requires: [Inference] },
+      async () => ({ ready: true }),
+    );
+
+    const graph = applicationGraphFor(platform.composition);
+    expect(graph?.nodes).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: 'provider.ai.v1alpha1.inference',
+        kind: 'provider',
+        interface: 'AI',
+      }),
+      expect.objectContaining({
+        kind: 'taskHandler',
+        capabilities: [{ interface: 'AI', nodeId: 'provider.ai.v1alpha1.inference' }],
+      }),
+    ]));
+    expect(graph?.providerRequirements).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        interface: 'AI',
+        provider: { interface: 'AI', nodeId: 'provider.ai.v1alpha1.inference' },
+        purpose: 'taskCapability',
+      }),
+    ]));
+  });
+
   it('defaults and validates bounded root-run admission retention', () => {
     expect(WorkflowEngine.hatchet()).toMatchObject({
       admission: {
@@ -432,6 +468,17 @@ describe('v0.5 durable task and workflow contracts', () => {
           };
         }, async cancel() {} };
       },
+      async attach(contract, runId, admittedAt) {
+        calls.push({ operation: 'attach', contract, runId, admittedAt });
+        return {
+          id: runId,
+          async result() { return { endpoint: 'attached' } as never; },
+          async observe() {
+            return { phase: 'Running' as const, admittedAt };
+          },
+          async cancel() {},
+        };
+      },
       async schedule() { return { id: 'scheduled-1' }; },
       async reconcileSchedule(_contract, schedule) { return { id: schedule.id, revision: schedule.revision, state: 'unchanged' }; },
       async signal(contract, runId, signal, payload, metadata) { calls.push({ operation: 'signal', contract, runId, signal, payload, metadata }); },
@@ -460,6 +507,12 @@ describe('v0.5 durable task and workflow contracts', () => {
         phase: 'Running',
         admittedAt: '2026-07-31T12:00:00.000Z',
       });
+      const attached = await provision.attach(
+        started.reference,
+        '2026-07-31T12:00:00Z',
+      );
+      expect(attached.reference).toEqual(started.reference);
+      await expect(attached.result()).resolves.toEqual({ endpoint: 'attached' });
       expect(calls).toEqual([expect.objectContaining({
         operation: 'run',
         contract: 'tenant.provision.v1',
@@ -473,8 +526,13 @@ describe('v0.5 durable task and workflow contracts', () => {
           correlationId: 'correlation-2',
           causationId: 'cause-2',
         }),
+      }), expect.objectContaining({
+        operation: 'attach',
+        contract: 'tenant.provision.v1',
+        runId: 'run-1',
+        admittedAt: '2026-07-31T12:00:00.000Z',
       })]);
-      for (const call of calls) {
+      for (const call of calls.filter((candidate) => Reflect.has(candidate as object, 'metadata'))) {
         expect(Reflect.get(Reflect.get(call as object, 'metadata'), applicationWorkflowTelemetryMetadata)).toEqual(telemetry);
       }
     } finally {
@@ -518,6 +576,7 @@ describe('v0.5 durable task and workflow contracts', () => {
           async cancel() {},
         };
       },
+      async attach() { throw new Error('not used'); },
       async schedule() { throw new Error('provider-native workflow scheduling must not be used'); },
       async reconcileSchedule() { throw new Error('provider-native workflow cron must not be used'); },
       async signal() {},
@@ -915,17 +974,24 @@ describe('v0.5 durable task and workflow contracts', () => {
 			mode: 'immutable', maxObjectBytes: 1_000_000, contentTypes: ['image/png'], deletion: 'explicit',
 		});
 		const Inspect = workflow('media.inspect.v1', { input: type({ key: 'string' }), output: type({ bytes: 'number.integer >= 0' }) });
-		platform.workflow(Inspect, { objects: { attachments } }, async ({ key }, context) => {
+		platform.workflow(Inspect, { objects: { attachments: attachments.allow('head', 'get') } }, async ({ key }, context) => {
 			const value = await context.objects.attachments.get(key);
 			return { bytes: value?.byteLength ?? 0 };
 		});
 
 		const graph = applicationGraphFor(platform.composition);
 		expect(graph?.nodes).toEqual(expect.arrayContaining([
-			expect.objectContaining({ kind: 'taskHandler', objects: [{ alias: 'attachments', store: { nodeId: 'objectStore.attachments' } }] }),
+			expect.objectContaining({
+				kind: 'taskHandler',
+				objects: [{
+					alias: 'attachments',
+					store: { nodeId: 'objectStore.attachments' },
+					operations: ['get', 'head'],
+				}],
+			}),
 		]));
 		expect(graph?.edges).toContainEqual({ from: { nodeId: 'task-handler.media.inspect.v1.step' }, to: { nodeId: 'objectStore.attachments' }, relationship: 'reads' });
-		expect(graph?.edges).toContainEqual({ from: { nodeId: 'task-handler.media.inspect.v1.step' }, to: { nodeId: 'objectStore.attachments' }, relationship: 'writes' });
+		expect(graph?.edges).not.toContainEqual({ from: { nodeId: 'task-handler.media.inspect.v1.step' }, to: { nodeId: 'objectStore.attachments' }, relationship: 'writes' });
 		if (!graph) throw new Error('Expected task object graph.');
 		expect(validateApplicationGraphStructure(graph)).toEqual([]);
 	});

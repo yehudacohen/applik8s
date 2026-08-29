@@ -18,6 +18,8 @@ import {
   hatchetSingleFileHeartbeatPlugin,
   operationPrincipalModuleFile,
   uniqueWorkflowProjectionEffects,
+  writeWorkflowFunctionNativeOperationCallbackModules,
+  writeWorkflowPrivateProviderModules,
   writeWorkflowProjectionCallbackModules,
 } from './source.js';
 import type { GeneratedApplicationWorkflowArtifact } from './types.js';
@@ -60,7 +62,9 @@ export async function emitWorkflowWorker(
       await writeFile(join(workerDir, operationPrincipalModuleFile(handler.id)), generatedOperationPrincipalModule(handler));
     }
   }
+  await writeWorkflowFunctionNativeOperationCallbackModules(workerDir, contract);
   for (const effect of uniqueWorkflowProjectionEffects(contract)) await writeWorkflowProjectionCallbackModules(workerDir, effect);
+  await writeWorkflowPrivateProviderModules(workerDir, contract);
   await writeFile(generatedEntrypoint, generatedWorkerSource(contract, executionTarget));
   const result = await build({
     entryPoints: [generatedEntrypoint],
