@@ -151,36 +151,41 @@ not be used to reorder or bypass that plan.
 
 ## Current checkpoint
 
-The branch now contains the accepted planning suite and the locally implemented
-v0.8 verticals: canonical planning and diff, persistent local supervision,
-AWS planning and Alchemy lowering, inferred runtime access, provider guarantees,
-function-native schedules, OpenTelemetry, immutable lakehouse publication and
-DuckDB/Athena contracts, deterministic and Celld actor runtimes, automatic
-provider runtime installation, and the independent reviewed development
-environment. The direct TypeKro/Alchemy Celld graph remains `AC-2b0` feasibility
-evidence; the accepted Kubernetes architecture is now implemented through the
-independently consumable Applik8s Celld operator, TypeKro-installed singleton
-bootstrap, application-owned `CelldFleet`, and a real OrbStack lifecycle pass. A clean packed consumer
-generates, discovers, compiles, and production-builds Agentic Start from the
-59-package candidate.
+The implementation and all locally executable release-candidate gates are
+complete at code commit `63951de9f15614ac187773f5027af37232fe7a9c`.
+`bun run check:v08:local-qualification` passed on 2026-08-29 across 62 package
+typechecks, four script shards, the three acceptance applications, local and
+MiniStack lifecycles, Runtime Integrity, ApplicationPlan, runtime access,
+observability, scheduling, lakehouse, actor state/realtime recovery, provider
+conformance, migration, security, performance history, 60 packed packages, 109
+public entrypoints, generated Agentic Start browser/server builds, the complete
+Rust workspace, scorecard, and evidence-verifier self-test.
 
-Local qualification now also has explicit v0.7.1 source/export migration,
-fail-closed canonical/AWS plan serialization, Builder secret canaries, and
-v0.8-specific performance/cost history. These remain candidate evidence, not a
-release claim.
+The Kubernetes runtime-access slice is also live-qualified at that code commit.
+A disposable Kind v1.36.1 cluster using Cilium 1.20.1 as its active CNI passed
+the exact RBAC and Secret-key allows, sibling Secret/wrong-port/wrong-host
+denials, FQDN policy, restart continuity, single-resource policy drift repair,
+and reverse-topological TypeKro/Alchemy teardown of all fourteen resources.
+Agentic Start's graph-backed browser/lakehouse journey and the operator-backed
+Celld fleet lifecycle retain their recorded live evidence. These receipts do
+not imply real-AWS or published-image qualification.
 
-Immediate work is the remaining live evidence matrix: retained-data and
-persisted-ownership migration on OrbStack, complete Agentic Start/Chirp/
-GuestBook target journeys, MiniStack API-fidelity lifecycle, live Kubernetes
-schedule/actor/telemetry lifecycle, and real AWS CloudWatch, Athena,
-EventBridge Scheduler, IAM/network/encryption/drift/delete/cost qualification.
-Real AWS credentials are not currently available, so real-AWS qualification is
-an external release blocker even after all other locally provable work is green.
+Three external boundaries remain:
 
-Before continuing that matrix, execute the checkpoint, release-line
-reconciliation, Runtime Integrity, and callable-provider phases in the accepted
-execution plan. The actor contract suite plus `AC-2a`, `AC-2c`, and the
-operator-backed `AC-2b` lifecycle receipts remain valid. The successful direct
-Kubernetes run is retained only as `AC-2b0`; the release claim still requires
-anonymous linux/amd64 and linux/arm64 operator-image evidence plus CRD/operator
-upgrade, interrupted-migration, rollback, and Celld-version replacement proof.
+1. TypeKro PR `#165` at `9abe26f3` is mergeable and green. It resolves the
+   ClickStack credential, rotation, typing, generation-readiness, documentation,
+   and transformed nested-output findings. After it is merged and released,
+   consume the published TypeKro version and rerun the complete authenticated
+   OrbStack ClickStack create/ingest/query/destroy receipt.
+2. Publish the exact-commit Celld operator candidate through the prepared
+   multi-architecture workflow and anonymously verify its immutable
+   `linux/amd64` and `linux/arm64` manifest. Publication is not authorized by
+   this goal alone.
+3. Run the real-AWS CloudWatch, EventBridge Scheduler, Athena/Glue/S3,
+   IAM/network/encryption, drift/delete, cleanup, and bounded-cost packet once
+   credentials and an acceptance account are available.
+
+The exact aggregate release attestation must bind every remote receipt to one
+unchanged candidate commit. Do not set aggregate acceptance flags, tag, publish
+npm packages, create a GitHub Release, or claim v0.8 release readiness before
+those boundaries close and the maintainer explicitly authorizes publication.
