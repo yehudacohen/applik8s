@@ -7,7 +7,7 @@ export {
   type ApplicationObjectStoreRuntimeContract,
   type ApplicationObjectStoreRuntimeHandle,
   createApplicationObjectStoreRuntimeHandle,
-} from './application-object-storage.js';
+} from './application-object-storage-runtime-handle.js';
 export {
   type ApplicationObjectStorageRuntimeIdentity,
   type ApplicationObjectStorageRuntimeResolver,

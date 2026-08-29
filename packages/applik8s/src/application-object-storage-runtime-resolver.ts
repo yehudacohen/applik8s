@@ -1,6 +1,4 @@
-import type {
-	ApplicationObjectStorageRuntime,
-} from './application-object-storage.js';
+import type { ApplicationObjectStorageRuntime } from "./application-object-storage-runtime-contract.js";
 
 export interface ApplicationObjectStorageRuntimeIdentity {
   readonly kind: 'applicationObjectStore';
