@@ -1392,6 +1392,15 @@ export const signalProof = platform.composition;
         'const principal = execution.admission?.principal',
       );
       expect(generatedSource).toContain(
+        'executionKind: options.executionKind',
+      );
+      expect(generatedSource).toContain(
+        'principal.executionKind !== execution.executionKind',
+      );
+      expect(generatedSource).not.toContain(
+        'execution.admission.execution?.kind',
+      );
+      expect(generatedSource).toContain(
         'currentCancellationRevision: execution.cancellationRevision',
       );
       expect(generatedSource).toContain(

@@ -736,6 +736,7 @@ async function canonicalManagedAdmissionUnchecked(options) {
     servicePrincipal: authoredPrincipal,
     execution: Object.freeze({
       ...raw,
+      executionKind: options.executionKind,
       deadline,
       cancellationRevision,
       trustedContext,
@@ -1960,7 +1961,7 @@ function workflowSignalApi(context, execution) {
       const principal = execution.admission?.principal;
       if (!principal || principal.kind !== 'execution'
         || principal.executionId !== execution.invocationId
-        || principal.executionKind !== execution.admission.execution?.kind
+        || principal.executionKind !== execution.executionKind
         || principal.cancellationRevision !== execution.cancellationRevision) {
         throw new Error('Signal issuance requires the workflow canonical execution principal.');
       }
