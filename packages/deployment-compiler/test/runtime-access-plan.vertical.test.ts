@@ -26,6 +26,21 @@ describe('v0.8 runtime-access lowering', () => {
     expect(embedded.digest).not.toBe(standalone.digest);
   });
 
+  it('omits an explicitly unavailable execution boundary without weakening other runtime access', () => {
+    const graph = accessGraph();
+    const ordinary = compileApplicationRuntimeAccessPlan({ graph, target: 'kubernetes', namespace: 'notes' });
+    const unavailable = compileApplicationRuntimeAccessPlan({
+      graph,
+      target: 'kubernetes',
+      namespace: 'notes',
+      excludedExecutionNodeIds: ['operator.notes'],
+    });
+    expect(ordinary.executions).toHaveLength(1);
+    expect(unavailable.executions).toEqual([]);
+    expect(unavailable.workloads).toEqual([]);
+    expect(unavailable.diagnostics).toEqual([]);
+  });
+
   it('keeps projected Kubernetes credentials out of API RBAC while retaining their exact Secret identity', () => {
     const graph = accessGraph();
     const local = compileApplicationRuntimeAccessPlan({ graph, target: 'local' });

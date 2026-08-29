@@ -21,6 +21,7 @@ import {
   applicationDeploymentRuntimeAccessTargetRecord,
   applicationProviderSelectionDeploymentContributor,
   builtinApplicationDeploymentContributors,
+  resolveApplicationProviderForTarget,
 } from "./providers.js";
 import {
   type ApplicationRuntimeAccessWorkloadPlacement,
@@ -92,9 +93,22 @@ export function compileApplicationDeploymentGraph(
   const contributionEdges = contributions.flatMap(
     (contribution) => contribution.edges,
   );
+  const unavailableExecutionNodeIds = new Set(
+    unavailableTargetExecutionNodeIds(request.graph, context),
+  );
+  const generatedSecretRequirements = dedupeGeneratedSecrets([
+    ...applicationGraphGeneratedSecrets(request),
+    ...(request.generatedSecrets ?? []),
+  ].flatMap((requirement) => {
+    const consumers = requirement.consumers.filter(
+      (consumer) => !unavailableExecutionNodeIds.has(consumer),
+    );
+    return consumers.length > 0 ? [{ ...requirement, consumers }] : [];
+  }));
   const infrastructureNodes = applicationInfrastructureNodes(
     request,
     contributionNodes,
+    generatedSecretRequirements,
   );
   const baseArtifactIds = new Set(
     artifactNodes
@@ -115,10 +129,6 @@ export function compileApplicationDeploymentGraph(
       !baseArtifactIds.has(artifact.id)
       && !directlyConsumedArtifactIds.has(artifact.id),
   );
-  const generatedSecretRequirements = dedupeGeneratedSecrets([
-    ...applicationGraphGeneratedSecrets(request),
-    ...(request.generatedSecrets ?? []),
-  ]);
   const providerGeneratedSecretCredentials = providerGeneratedSecretCredentialRequirements(
     contributionNodes,
   );
@@ -202,6 +212,7 @@ export function compileApplicationDeploymentGraph(
     kubernetesRequirements: artifactKubernetesRequirements,
     additionalRequirements: contributions.flatMap((contribution) =>
       contribution.runtimeAccessRequirements ?? []),
+    excludedExecutionNodeIds: [...unavailableExecutionNodeIds].sort(),
     workloadPlacements: mergeRuntimeAccessWorkloadPlacements([
       ...kubernetesRuntimeAccessWorkloadPlacements(request, artifactNodes),
       ...contributions.flatMap((contribution) => contribution.runtimeAccessWorkloads ?? []),
@@ -333,6 +344,30 @@ export function compileApplicationDeploymentGraph(
     contributorKeys: [...contributorKeys].sort(compareStrings),
     runtimeAccess,
   };
+}
+
+/**
+ * A qualified-provider-required branch is an explicit statement that this
+ * target does not own an executable implementation. Remove only the direct
+ * consumers of that provider from target runtime planning; their semantic
+ * graph nodes remain available to tooling and become executable as soon as a
+ * qualified provider replaces the marker.
+ */
+function unavailableTargetExecutionNodeIds(
+  graph: CompileApplicationDeploymentGraphRequest['graph'],
+  context: ApplicationDeploymentPlanningContext,
+): readonly string[] {
+  const unavailableProviders = new Set(graph.nodes.flatMap((node) => {
+    if (node.kind !== 'provider') return [];
+    const resolved = resolveApplicationProviderForTarget(node, context);
+    return resolved.implementation === 'qualified-lakehouse-provider-required'
+      ? [node.id]
+      : [];
+  }));
+  return [...new Set(graph.providerRequirements.flatMap((requirement) =>
+    requirement.provider && unavailableProviders.has(requirement.provider.nodeId)
+      ? [requirement.consumer.nodeId]
+      : []))].sort();
 }
 
 function kubernetesDnsBootstrapEgress() {
@@ -664,6 +699,7 @@ function isClusterApiPrerequisiteNode(
 function applicationInfrastructureNodes(
   request: CompileApplicationDeploymentGraphRequest,
   contributionNodes: readonly ApplicationDeploymentNode[],
+  generatedSecrets: readonly ApplicationGeneratedSecretRequirement[],
 ): readonly ApplicationDeploymentNode[] {
   const workloadNamespace = requiredConcreteNamespace(
     request.graph.metadata.namespace ??
@@ -722,14 +758,10 @@ function applicationInfrastructureNodes(
       ),
     );
   }
-  const generatedSecrets = [
-    ...applicationGraphGeneratedSecrets(request),
-    ...(request.generatedSecrets ?? []),
-  ];
   return [
     ...namespaces.values(),
     ...clusterApiPrerequisiteNodes(request),
-    ...dedupeGeneratedSecrets(generatedSecrets).map((secret) =>
+    ...generatedSecrets.map((secret) =>
       generatedSecretNode(secret, request),
     ),
   ];

@@ -29,6 +29,75 @@ const sourceGraphDigest = `sha256:${"a".repeat(64)}`;
 const connectionDigest = `sha256:${"b".repeat(64)}`;
 
 describe("Application deployment compiler", () => {
+  it('omits unavailable target-selected lakehouse execution and its generated cursor Secret', () => {
+    const providerId = 'provider.lakehouse-dataset.v1alpha1.history';
+    const publicationId = 'lakehouse-publication.usage.v1.history';
+    const graph = {
+      ...applicationGraph(),
+      nodes: [
+        {
+          id: providerId,
+          kind: 'provider',
+          name: 'LakehouseDataset',
+          stability: 'stable',
+          interface: 'LakehouseDataset',
+          implementation: 'application-target-provider-selection',
+          config: {
+            qualification: { name: 'history', compatibilityRevision: 'v1alpha1' },
+            targetSelection: { targets: {
+              local: { implementation: 'duckdb-dataset', configuration: { kind: 'duckdb-dataset', root: '.applik8s/history' } },
+              kubernetes: {
+                implementation: 'qualified-lakehouse-provider-required',
+                configuration: { kind: 'qualified-lakehouse-provider-required', reason: 'Install a qualified Kubernetes lakehouse.' },
+              },
+            } },
+          },
+        },
+        {
+          id: publicationId,
+          kind: 'lakehousePublication',
+          name: 'usage.v1:history',
+          stability: 'experimental',
+          sourceEventId: 'usage.v1',
+          sourceContract: { name: 'usage', version: 'v1' },
+          source: { kind: 'declared', runtime: 'arktype', jsonSchema: { type: 'object' } },
+          row: { kind: 'declared', runtime: 'arktype', jsonSchema: { type: 'object' } },
+          transform: { source: '(event, output) => output.append(event)' },
+          dataset: { nodeId: providerId, interface: 'LakehouseDataset' },
+          eventLog: { nodeId: 'provider.event-log', interface: 'EventLog' },
+          semantics: { frontier: 'sourceEvent', publication: 'atomicManifest', schemaEvolution: 'explicitRevision' },
+        },
+      ],
+      edges: [{ from: { nodeId: publicationId }, to: { nodeId: providerId }, relationship: 'dependsOn' }],
+      providerRequirements: [{
+        id: `requirement.${publicationId}.dataset`,
+        consumer: { nodeId: publicationId },
+        interface: 'LakehouseDataset',
+        purpose: 'lakehouseDataset',
+        required: true,
+        provider: { nodeId: providerId, interface: 'LakehouseDataset' },
+        diagnostics: { missing: 'missing', ambiguous: 'ambiguous' },
+      }],
+      providerBindings: [],
+    } as ApplicationGraph;
+    const compiled = compileApplicationDeploymentGraph({
+      ...request(),
+      graph,
+      artifacts: [],
+      generatedSecrets: [{
+        id: 'lakehouse.cursor',
+        namespace: 'guestbook',
+        name: 'guestbook-lakehouse-cursor',
+        values: { key: { kind: 'random', bytes: 48, encoding: 'base64url' } },
+        consumers: [publicationId],
+      }],
+    });
+
+    expect(compiled.runtimeAccess.executions).toEqual([]);
+    expect(compiled.runtimeAccess.diagnostics).toEqual([]);
+    expect(compiled.graph.nodes.some((node) => node.id === 'external.generated-secret.lakehouse.cursor')).toBe(false);
+  });
+
   it('does not mistake a schedule-admission CronJob for the scheduled closure workload', () => {
     const scheduleId = 'schedule.source.poll.v1';
     const graph = scheduleManagingGraph();

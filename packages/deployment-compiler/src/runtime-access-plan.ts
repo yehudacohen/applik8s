@@ -151,6 +151,13 @@ export function compileApplicationRuntimeAccessPlan(options: {
    * AWS-local provider plane) owns the omitted execution boundaries.
    */
   readonly includedExecutionNodeIds?: readonly string[];
+  /**
+   * Execution boundaries that are deliberately unavailable on this target.
+   * This is narrower than a compatibility waiver: their provider contract
+   * must have selected an explicit fail-closed marker, so no physical
+   * workload or runtime-access envelope is emitted for them.
+   */
+  readonly excludedExecutionNodeIds?: readonly string[];
   /** Provider/profile-selected credentials required by exact semantic consumers. */
   readonly credentialRequirements?: readonly ApplicationRuntimeAccessCredentialRequirement[];
   /** Exact Kubernetes API access required by generated runtime code. */
@@ -162,14 +169,18 @@ export function compileApplicationRuntimeAccessPlan(options: {
   const includedExecutionNodeIds = options.includedExecutionNodeIds
     ? new Set(options.includedExecutionNodeIds)
     : undefined;
+  const excludedExecutionNodeIds = new Set(options.excludedExecutionNodeIds ?? []);
+  const includesExecution = (nodeId: string): boolean =>
+    (!includedExecutionNodeIds || includedExecutionNodeIds.has(nodeId))
+    && !excludedExecutionNodeIds.has(nodeId);
   const runtimeRequirements = mergeApplicationRuntimeAccessRequirements([
     ...foundation.runtimeAccess.filter(({ consumer }) =>
-      !includedExecutionNodeIds || includedExecutionNodeIds.has(consumer.nodeId)),
+      includesExecution(consumer.nodeId)),
     ...(options.additionalRequirements ?? []).filter(({ consumer }) =>
-      !includedExecutionNodeIds || includedExecutionNodeIds.has(consumer.nodeId)),
+      includesExecution(consumer.nodeId)),
     ...(options.credentialRequirements ?? [])
       .filter(({ consumerNodeId }) =>
-        !includedExecutionNodeIds || includedExecutionNodeIds.has(consumerNodeId))
+        includesExecution(consumerNodeId))
       .map((credential) => {
         const execution = generatedExecutionContract(
           options.graph,
@@ -194,7 +205,7 @@ export function compileApplicationRuntimeAccessPlan(options: {
       }),
     ...(options.kubernetesRequirements ?? [])
       .filter(({ consumerNodeId }) =>
-        !includedExecutionNodeIds || includedExecutionNodeIds.has(consumerNodeId))
+        includesExecution(consumerNodeId))
       .flatMap((permission) => {
         const execution = generatedExecutionContract(
           options.graph,
