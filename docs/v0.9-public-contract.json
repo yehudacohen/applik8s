@@ -1299,6 +1299,7 @@
             "ApplicationWorkflowWorkerNode",
             "ApplicationWorkflowWorkerOptions",
             "ApplicationWorkloadAuthorityEnvelope",
+            "ApplicationWorkloadRegistrar",
             "Applik8sError",
             "Applik8sErrorCode",
             "Applik8sSdk",

@@ -135,7 +135,7 @@ describe('integrated TypeKro package surface', () => {
       const server = app.server('admin', {}, (routes) => {
         routes.get('/', async () => ({ ready: true }));
       });
-      const job = app.job('repair', { taskKind: 'repair' });
+      const job = app.workload.job('repair', { taskKind: 'repair' });
       serverPlan = server.plan(target, { dryRun: true, fieldManager: 'generated-server-dry-run' });
       jobPlan = job.plan(target, { dryRun: true, fieldManager: 'generated-job-dry-run' });
       serverApplyPlan = server.plan(target, { fieldManager: 'generated-server-apply-plan' });
@@ -677,7 +677,7 @@ describe('integrated TypeKro package surface', () => {
       spec: type({}),
       status: type({ ready: 'boolean' }),
     }, (_spec, app) => {
-      const job = app.job('migrate', { taskKind: 'migration', image: 'busybox:1.36', command: ['sh', '-c'], args: ['echo migrate'] });
+      const job = app.workload.job('migrate', { taskKind: 'migration', image: 'busybox:1.36', command: ['sh', '-c'], args: ['echo migrate'] });
       expect(job).toMatchObject({ kind: 'applicationJob', resourceName: 'migrate', diagnosticsConfigMapName: 'migrate-diagnostics', statusPath: 'status.applik8s.jobs.migrate' });
       return { ready: true };
     });
@@ -727,7 +727,7 @@ describe('integrated TypeKro package surface', () => {
       spec: type({}),
       status: type({ ready: 'boolean' }),
     }, (_spec, app) => {
-      const schedule = app.schedule('cleanup', { taskKind: 'cleanup', cron: '0 * * * *', concurrencyPolicy: 'forbid', missedRunPolicy: 'failClosed' });
+      const schedule = app.workload.cronJob('cleanup', { taskKind: 'cleanup', cron: '0 * * * *', concurrencyPolicy: 'forbid', missedRunPolicy: 'failClosed' });
       expect(schedule).toMatchObject({ kind: 'applicationJob', resourceName: 'cleanup', diagnosticsConfigMapName: 'cleanup-diagnostics', statusPath: 'status.applik8s.jobs.cleanup' });
       return { ready: true };
     });
@@ -754,8 +754,8 @@ describe('integrated TypeKro package surface', () => {
       spec: type({}),
       status: type({ ready: 'boolean' }),
     }, (_spec, app) => {
-      app.job('compact', { taskKind: 'maintenance' });
-      app.schedule('sweep', { taskKind: 'cleanup', cron: '*/5 * * * *' });
+      app.workload.job('compact', { taskKind: 'maintenance' });
+      app.workload.cronJob('sweep', { taskKind: 'cleanup', cron: '*/5 * * * *' });
       return { ready: true };
     });
     const maintenanceResources = plainValue(multiJobComposition.resources);
@@ -1891,8 +1891,8 @@ describe('integrated TypeKro package surface', () => {
       spec: type({}),
       status: type({ ready: 'boolean' }),
     }, (_spec, app) => {
-      const repair = app.job('repair accounts', { namespace: 'maintenance', taskKind: 'repair', image: 'busybox:1.36' });
-      const cleanup = app.schedule('cleanup accounts', { namespace: 'maintenance', taskKind: 'cleanup', cron: '*/15 * * * *', timezone: 'UTC', concurrencyPolicy: 'forbid', missedRunPolicy: 'failClosed' });
+      const repair = app.workload.job('repair accounts', { namespace: 'maintenance', taskKind: 'repair', image: 'busybox:1.36' });
+      const cleanup = app.workload.cronJob('cleanup accounts', { namespace: 'maintenance', taskKind: 'cleanup', cron: '*/15 * * * *', timezone: 'UTC', concurrencyPolicy: 'forbid', missedRunPolicy: 'failClosed' });
       expect(repair.statusPath).toBe('status.applik8s.jobs.repair-accounts');
       expect(cleanup.statusPath).toBe('status.applik8s.jobs.cleanup-accounts');
       return { ready: true };
@@ -2271,8 +2271,8 @@ describe('integrated TypeKro package surface', () => {
       app.server('admin', {}, (server) => {
         server.get('/accounts/:id', async (request) => Account.get({ id: request.query.id ?? '' }));
       });
-      app.job('repair accounts', { taskKind: 'repair' });
-      app.schedule('cleanup accounts', { taskKind: 'cleanup', cron: '0 3 * * *', concurrencyPolicy: 'forbid', missedRunPolicy: 'failClosed' });
+      app.workload.job('repair accounts', { taskKind: 'repair' });
+      app.workload.cronJob('cleanup accounts', { taskKind: 'cleanup', cron: '0 3 * * *', concurrencyPolicy: 'forbid', missedRunPolicy: 'failClosed' });
       return { ready: true };
     });
     const graph = applicationGraphFor(composition);
@@ -2332,7 +2332,6 @@ describe('integrated TypeKro package surface', () => {
       'app.inject',
       'app.installation',
       'app.interpolate',
-      'app.job',
       'app.mcp',
       'app.mcp.client',
       'app.model',
@@ -2342,7 +2341,6 @@ describe('integrated TypeKro package surface', () => {
       'app.provide',
       'app.query',
       'app.resource',
-      'app.schedule',
       'app.secret',
       'app.select',
       'app.selectProvider',
@@ -2351,6 +2349,8 @@ describe('integrated TypeKro package surface', () => {
       'app.subscription',
       'app.when',
       'app.workflow',
+      'app.workload.cronJob',
+      'app.workload.job',
       'command',
       'event',
       'provider.AI',

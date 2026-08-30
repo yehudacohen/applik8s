@@ -48,7 +48,7 @@ function stablePublicApiForApplicationGraphNode(node: ApplicationGraphNode): str
   if (node.kind === 'provider') return `provider.${node.interface}`;
   if (node.kind === 'counter') return 'Resource.increment';
   if (node.kind === 'index') return 'Resource.index';
-  if (node.kind === 'job') return node.schedule ? 'app.schedule' : 'app.job';
+  if (node.kind === 'job') return node.schedule ? 'app.workload.cronJob' : 'app.workload.job';
   const apiByNodeKind: Partial<Record<ApplicationGraphNodeKind, string>> = {
     crd: 'app.crd', model: 'app.model', server: 'app.server', aggregate: 'app.aggregate', config: 'app.config', secret: 'app.secret', exposure: 'app.expose',
     command: 'command', event: 'event', commandHandler: 'Model.on.command', processor: 'Model.on.command', task: 'app.workflow', taskHandler: 'app.workflow', workflow: 'workflow', workflowHandler: 'app.workflow', workflowWorker: 'app.workflow', aiAgent: 'app.agent', query: 'app.query', gateway: 'app.gateway', stream: 'app.stream', subscription: 'app.subscription', projection: 'app.projection',

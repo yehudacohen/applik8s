@@ -523,8 +523,8 @@ appSdk.kubernetesComposition({
   const store = app.provide(TransactionalDatabase, accountTransactionalDatabase);
   app.provide(WorkflowEngine, WorkflowEngine.hatchet({ namespace: spec.namespace, provision: false, workerTokenSecret: { apiVersion: 'v1', kind: 'Secret', name: 'hatchet-worker', namespace: spec.namespace } }));
   const modelDefaults = app.defaults({ database: accountTransactionalDatabase });
-  const maintenanceJob: ApplicationJobBinding = app.job('compact-accounts', { taskKind: 'maintenance', image: 'busybox:1.36', command: ['sh', '-c'], args: ['echo compact'] });
-  const maintenanceSchedule: ApplicationJobBinding = app.schedule('compact-accounts-hourly', { taskKind: 'maintenance', cron: '0 * * * *', concurrencyPolicy: 'forbid', missedRunPolicy: 'failClosed' });
+  const maintenanceJob: ApplicationJobBinding = app.workload.job('compact-accounts', { taskKind: 'maintenance', image: 'busybox:1.36', command: ['sh', '-c'], args: ['echo compact'] });
+  const maintenanceSchedule: ApplicationJobBinding = app.workload.cronJob('compact-accounts-hourly', { taskKind: 'maintenance', cron: '0 * * * *', concurrencyPolicy: 'forbid', missedRunPolicy: 'failClosed' });
   const maintenanceJobStatusPath: string = maintenanceJob.statusPath;
   const maintenanceScheduleDiagnostics: string = maintenanceSchedule.diagnosticsConfigMapName;
   const maintenanceJobDryRun = maintenanceJob.plan(handlerOperationTarget, { dryRun: true });

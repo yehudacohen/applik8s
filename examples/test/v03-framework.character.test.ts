@@ -121,7 +121,7 @@ describe('v0.3 infrastructure-from-code product story', () => {
     });
 
     const graph = applicationGraphFor(composition);
-    expect(graph?.compatibility.stablePublicApis).toEqual(expect.arrayContaining(['app.model', 'app.job', 'app.schedule', 'app.defaults', 'app.provide', 'provider.TransactionalDatabase']));
+    expect(graph?.compatibility.stablePublicApis).toEqual(expect.arrayContaining(['app.model', 'app.workload.job', 'app.workload.cronJob', 'app.defaults', 'app.provide', 'provider.TransactionalDatabase']));
     expect(graph?.compatibility.documentedInternalContracts).toEqual(expect.arrayContaining(['ApplicationGraph']));
     expect(graph?.compatibility.experimentalSurfaces).toEqual(expect.arrayContaining(['app.graph']));
     expect(graph?.compatibility.postV3Surfaces).toEqual(expect.arrayContaining(['workload-movement-operator', 'additional-provider-adapters']));
@@ -255,7 +255,7 @@ describe('v0.3 infrastructure-from-code product story', () => {
     ]) } } } });
   });
 
-  it('generates app.job workloads with durable status and diagnostics contracts', () => {
+  it('generates app.workload.job workloads with durable status and diagnostics contracts', () => {
     const composition = sdk.kubernetesComposition({
       name: 'accounts-maintenance-contract',
       apiVersion: 'platform.applik8s.dev/v1alpha1',
@@ -263,7 +263,7 @@ describe('v0.3 infrastructure-from-code product story', () => {
       spec: type({}),
       status: type({ ready: 'boolean' }),
     }, (_spec, app) => {
-      const job = app.job('compact-accounts', { taskKind: 'maintenance', image: 'postgres:16-alpine', command: ['sh', '-c'], args: ['echo compact'] });
+      const job = app.workload.job('compact-accounts', { taskKind: 'maintenance', image: 'postgres:16-alpine', command: ['sh', '-c'], args: ['echo compact'] });
       expect(job.statusPath).toBe('status.applik8s.jobs.compact-accounts');
       return { ready: true };
     });
@@ -295,7 +295,7 @@ describe('v0.3 infrastructure-from-code product story', () => {
     ]));
   });
 
-  it('generates app.schedule CronJobs with durable status and diagnostics contracts', () => {
+  it('generates app.workload.cronJob workloads with durable status and diagnostics contracts', () => {
     const composition = sdk.kubernetesComposition({
       name: 'accounts-scheduled-maintenance-contract',
       apiVersion: 'platform.applik8s.dev/v1alpha1',
@@ -303,7 +303,7 @@ describe('v0.3 infrastructure-from-code product story', () => {
       spec: type({}),
       status: type({ ready: 'boolean' }),
     }, (_spec, app) => {
-      const job = app.schedule('compact-accounts-hourly', { taskKind: 'maintenance', cron: '0 * * * *', image: 'postgres:16-alpine', concurrencyPolicy: 'forbid', missedRunPolicy: 'failClosed' });
+      const job = app.workload.cronJob('compact-accounts-hourly', { taskKind: 'maintenance', cron: '0 * * * *', image: 'postgres:16-alpine', concurrencyPolicy: 'forbid', missedRunPolicy: 'failClosed' });
       expect(job.statusPath).toBe('status.applik8s.jobs.compact-accounts-hourly');
       return { ready: true };
     });
@@ -431,6 +431,11 @@ function providerInterfaces(): readonly ApplicationProviderInterfaceContract[] {
     { interface: 'DnsPublication', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
     { interface: 'CredentialStore', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
     { interface: 'WorkflowEngine', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
+    { interface: 'Scheduler', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
+    { interface: 'Observability', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
+    { interface: 'LakehouseDataset', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
+    { interface: 'LakehouseQuery', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
+    { interface: 'ActorRuntime', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
     { interface: 'StructuredGeneration', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
     { interface: 'AI', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
     { interface: 'AnalyticalDatabase', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },

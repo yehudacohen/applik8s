@@ -173,6 +173,12 @@
       "diagnostic": "PLAN_PHYSICAL_IMPLEMENTATION_UNKNOWN"
     },
     {
+      "id": "finite-job-vocabulary-boundary",
+      "implemented": true,
+      "blocking": true,
+      "diagnostic": "JOB_WORKLOAD_VOCABULARY_CONFLICT"
+    },
+    {
       "id": "read-only-v0.8-migration-proposal",
       "implemented": true,
       "blocking": true,

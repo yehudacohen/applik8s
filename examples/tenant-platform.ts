@@ -661,8 +661,8 @@ export function createTenantPlatformExample(options: TenantPlatformExampleOption
     });
   }
 
-  tenantPlatform.job('tenant-platform-repair', { taskKind: 'repair', image: 'postgres:16-alpine', command: ['sh', '-c'], args: ['echo repair tenant platform status'] });
-  tenantPlatform.schedule('tenant-platform-cleanup', { taskKind: 'cleanup', cron: '*/15 * * * *', image: 'postgres:16-alpine', concurrencyPolicy: 'forbid', missedRunPolicy: 'failClosed' });
+  tenantPlatform.workload.job('tenant-platform-repair', { taskKind: 'repair', image: 'postgres:16-alpine', command: ['sh', '-c'], args: ['echo repair tenant platform status'] });
+  tenantPlatform.workload.cronJob('tenant-platform-cleanup', { taskKind: 'cleanup', cron: '*/15 * * * *', image: 'postgres:16-alpine', concurrencyPolicy: 'forbid', missedRunPolicy: 'failClosed' });
 
   return {
     composition: tenantPlatform.composition,
@@ -727,6 +727,11 @@ function tenantPlatformProviderInterfaces(): readonly ApplicationProviderInterfa
       { interface: 'Certificate', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
       { interface: 'DnsPublication', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
       { interface: 'WorkflowEngine', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
+      { interface: 'Scheduler', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
+      { interface: 'Observability', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
+      { interface: 'LakehouseDataset', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
+      { interface: 'LakehouseQuery', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
+      { interface: 'ActorRuntime', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
       { interface: 'StructuredGeneration', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
       { interface: 'AI', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
       { interface: 'AnalyticalDatabase', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },

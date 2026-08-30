@@ -412,8 +412,8 @@ export interface KubernetesApplicationScope extends ApplicationAuthorityRegistra
   config(name: string, options: ApplicationConfigOptions): ApplicationConfigBinding;
   secret(name: string, options: ApplicationSecretOptions): ApplicationSecretBinding;
   expose(name: string, options: ApplicationExposureOptions): ApplicationExposureBinding;
-  job(name: string, options?: ApplicationJobOptions): ApplicationJobBinding;
-  schedule(name: string, options?: ApplicationScheduleOptions): ApplicationJobBinding;
+  /** Low-level finite and recurring infrastructure workloads. Application-level finite work uses application.job(...). */
+  readonly workload: ApplicationWorkloadRegistrar;
   defaults(defaults: ApplicationDefaults): ApplicationDefaultsBinding;
   provide<TImplementation>(token: ApplicationProviderToken<TImplementation>): ApplicationTargetProviderBinding<TImplementation>;
   provide<TImplementation>(
@@ -459,6 +459,11 @@ export interface KubernetesApplicationScope extends ApplicationAuthorityRegistra
   all(...conditions: readonly boolean[]): boolean;
   /** Compose a string from literals and typed installation values without authoring CEL. */
   interpolate(strings: TemplateStringsArray, ...values: readonly ApplicationGraphScalar[]): string;
+}
+
+export interface ApplicationWorkloadRegistrar {
+  job(name: string, options?: ApplicationJobOptions): ApplicationJobBinding;
+  cronJob(name: string, options?: ApplicationScheduleOptions): ApplicationJobBinding;
 }
 
 export interface ApplicationWorkflowContract<
@@ -2688,24 +2693,26 @@ function createKubernetesApplicationBuilder<TSpec extends KroCompatibleType = Re
       invalidate();
       return binding;
     },
-    job(jobName: string, jobOptions?: ApplicationJobOptions): ApplicationJobBinding {
-      const normalizedOptions = withDefaultNamespace(jobOptions);
-      const binding = preview.job(jobName, normalizedOptions);
-      replays.push((scope) => {
-        scope.job(jobName, normalizedOptions);
-      });
-      invalidate();
-      return binding;
-    },
-    schedule(scheduleName: string, scheduleOptions?: ApplicationScheduleOptions): ApplicationJobBinding {
-      const normalizedOptions = withDefaultNamespace(scheduleOptions);
-      const binding = preview.schedule(scheduleName, normalizedOptions);
-      replays.push((scope) => {
-        scope.schedule(scheduleName, normalizedOptions);
-      });
-      invalidate();
-      return binding;
-    },
+    workload: Object.freeze({
+      job(jobName: string, jobOptions?: ApplicationJobOptions): ApplicationJobBinding {
+        const normalizedOptions = withDefaultNamespace(jobOptions);
+        const binding = preview.workload.job(jobName, normalizedOptions);
+        replays.push((scope) => {
+          scope.workload.job(jobName, normalizedOptions);
+        });
+        invalidate();
+        return binding;
+      },
+      cronJob(scheduleName: string, scheduleOptions?: ApplicationScheduleOptions): ApplicationJobBinding {
+        const normalizedOptions = withDefaultNamespace(scheduleOptions);
+        const binding = preview.workload.cronJob(scheduleName, normalizedOptions);
+        replays.push((scope) => {
+          scope.workload.cronJob(scheduleName, normalizedOptions);
+        });
+        invalidate();
+        return binding;
+      },
+    }),
     actor<TState extends object, const TProtocol extends ApplicationActorProtocolShape>(
       actorId: string,
       actorOptions: { readonly key: ApplicationActorKeySchema; readonly state: ApplicationActorStateInput<TState>; readonly protocol: TProtocol },
@@ -4535,12 +4542,14 @@ function createApplicationContext<TSpec extends KroCompatibleType, TStatus exten
     expose(name, options) {
       return emitApplicationExposure(state, name, options);
     },
-    job(name, options) {
-      return emitApplicationGeneratedJob(state, name, options ?? {}, undefined, applicationBindingPlan);
-    },
-    schedule(name, options) {
-      return emitApplicationGeneratedJob(state, name, options ?? {}, options?.cron ?? '* * * * *', applicationBindingPlan);
-    },
+    workload: Object.freeze({
+      job(name: string, options?: ApplicationJobOptions) {
+        return emitApplicationGeneratedJob(state, name, options ?? {}, undefined, applicationBindingPlan);
+      },
+      cronJob(name: string, options?: ApplicationScheduleOptions) {
+        return emitApplicationGeneratedJob(state, name, options ?? {}, options?.cron ?? '* * * * *', applicationBindingPlan);
+      },
+    }),
     defaults,
     provide,
     aggregate(name, options) {

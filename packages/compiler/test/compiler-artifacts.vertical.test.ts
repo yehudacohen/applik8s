@@ -914,7 +914,7 @@ export const imagePipeline = sdk.operator({
       expect(graph.providerBindings).toEqual([]);
       expect(graph.compatibility).toMatchObject({
         documentedInternalContracts: expect.arrayContaining(['ApplicationGraph']),
-        stablePublicApis: expect.arrayContaining(['Resource.increment', 'Resource.on.reconcile', 'app.aggregate', 'app.crd', 'app.database.postgres', 'app.defaults', 'app.http', 'app.job', 'app.model', 'app.provide', 'app.resource', 'app.schedule', 'app.server', 'provider.TransactionalDatabase', 'sdk.kubernetesComposition']),
+        stablePublicApis: expect.arrayContaining(['Resource.increment', 'Resource.on.reconcile', 'app.aggregate', 'app.crd', 'app.database.postgres', 'app.defaults', 'app.http', 'app.workload.job', 'app.model', 'app.provide', 'app.resource', 'app.workload.cronJob', 'app.server', 'provider.TransactionalDatabase', 'sdk.kubernetesComposition']),
         experimentalSurfaces: expect.arrayContaining(['app.graph']),
         postV3Surfaces: expect.arrayContaining(['workload-movement-operator']),
         labels: expect.arrayContaining([

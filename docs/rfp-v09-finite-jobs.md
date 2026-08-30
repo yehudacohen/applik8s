@@ -30,6 +30,18 @@ registrar is `application.job(...)`; application modules may bind `const job = a
 concise `job(...)` spelling. Existing infrastructure-oriented `app.job(...)` vocabulary moves beneath
 `application.workload.*`; it does not remain as an overlapping synonym.
 
+## Current implementation status
+
+The first compatibility-breaking vocabulary increment is implemented. Low-level Kubernetes `Job` and
+`CronJob` generation now lives exclusively at `application.workload.job(...)` and
+`application.workload.cronJob(...)`; the former top-level spellings have been removed rather than kept as
+aliases. This reserves `application.job(...)` for the finite managed execution contract below and makes a
+workload declaration visibly different from application behavior before either surface reaches 1.0.
+
+The typed semantic Job handle, local runtime, durable provider, scheduling integration, graph/plan nodes,
+and conformance evidence remain implementation work. The vocabulary move alone does not claim the Job
+contract is available.
+
 This RFP owns logical run identity, attempt identity, input/result/progress/cancellation contracts,
 idempotency scope, retry and interruption semantics, authority and causal attribution, scheduling
 integration, graph/plan representation, and provider conformance. It does not own workflow history,
