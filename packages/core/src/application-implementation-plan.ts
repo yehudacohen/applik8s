@@ -344,19 +344,20 @@ export function resolveApplicationImplementationPlan(
     }
   }
   for (const declaration of [...declarations.values()].filter(({ key }) => reachable.has(key))) {
-    if (declaration.identity.kind !== 'inline') continue;
+    const inlineIdentity = declaration.identity;
+    if (inlineIdentity.kind !== 'inline') continue;
     const identity = resolveIdentity(declaration.key);
-    const parent = resolveIdentity(declaration.identity.parent);
+    const parent = resolveIdentity(inlineIdentity.parent);
     if (!dependencies.some((edge) => (
       edge.consumer === parent.canonical.id
       && edge.dependency === identity.canonical.id
-      && edge.slot === declaration.identity.slot
+      && edge.slot === inlineIdentity.slot
     ))) {
       throw resolutionError(
         'PROVIDER_DEPENDENCY_INCOMPATIBLE',
-        `Inline implementation ${declaration.key} must be consumed by parent ${declaration.identity.parent} through slot ${declaration.identity.slot}.`,
-        declaration.identity.parent,
-        declaration.identity.slot,
+        `Inline implementation ${declaration.key} must be consumed by parent ${inlineIdentity.parent} through slot ${inlineIdentity.slot}.`,
+        inlineIdentity.parent,
+        inlineIdentity.slot,
         declaration.key,
       );
     }

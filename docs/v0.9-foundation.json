@@ -83,6 +83,16 @@
       "maturity": "stable-1.0-candidate",
       "owner": "source-owned-journeys",
       "evidence": ["versioned-portable-result", "lease-scoped-cleanup", "evidence-redaction"]
+    },
+    {
+      "id": "deployment-migration-proposal",
+      "package": "@applik8s/core",
+      "entrypoint": ".",
+      "symbol": "ApplicationDeploymentMigrationProposal",
+      "schemaVersion": "applik8s.deploymentMigrationProposal/v1alpha1",
+      "maturity": "stable-1.0-candidate",
+      "owner": "deployment-state-migration",
+      "evidence": ["exact-baseline-validation", "deterministic-read-only-mapping", "lifecycle-transfer-plan"]
     }
   ],
   "foundationGates": [
@@ -112,7 +122,7 @@
     },
     {
       "id": "read-only-v0.8-migration-proposal",
-      "implemented": false,
+      "implemented": true,
       "blocking": true,
       "diagnostic": "V09_MIGRATION_PROPOSAL_UNAVAILABLE"
     },

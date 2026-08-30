@@ -37,9 +37,15 @@ Status: alpha.1 foundation started on `codex/v0.9-semantic-completion`.
   identities, records semantic assertions, returns a versioned public result,
   enforces real deadlines, and performs lease-authorized reverse-dependency
   cleanup with explicit absence proof and redacted evidence.
-- Next foundation work: integrate the implementation plan with compilation,
-  produce the read-only v0.8 migration proposal, and establish the
-  documentation and first clean-context evidence.
+- Added the read-only deployment-migration proposal contract. It validates an
+  exact source/codec baseline, maps semantic and provider-native physical
+  identities deterministically, explains lifecycle-authority transfer and
+  destructive consequences, and fails closed before mutation on ambiguity,
+  provider incompatibility, unsafe ownership, or retained-data drift.
+- Next foundation work: integrate the implementation plan with compilation and
+  establish the documentation and first clean-context evidence. Active
+  migration/provider writes remain blocked until the exact released v0.8
+  baseline exists.
 
 ## v0.8 Explainable portable runtime program
 

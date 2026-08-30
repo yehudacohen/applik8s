@@ -32,6 +32,15 @@ and clean external fixtures in lease-scoped reverse dependency order. Handler
 and cleanup deadlines settle even when user callbacks ignore cancellation;
 unsafe evidence fails closed and is never returned.
 
+Deployment migration now has a versioned, deterministic read-only proposal in
+`@applik8s/core`. It accepts only an exact v0.8 release record matching the
+loaded codec, maps every legacy node by semantic and canonical physical
+identity, and explains fenced handoff, migration-exclusive replacement,
+retirement, retained data, shared ownership, and external bindings. Ambiguous
+or incompatible mappings remain blocked with `mutationAuthorized: false`;
+provider mutation stays globally disabled until an actual v0.8 release
+baseline is available and qualified.
+
 ## v0.8.0
 
 Workflow tasks can now declare the maintained Usage module's

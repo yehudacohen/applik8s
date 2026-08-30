@@ -282,6 +282,13 @@ MIGRATION_GITOPS_PROCEDURE_REQUIRED
 
 ## Implementation sequence
 
+The alpha.1 foundation implements steps 2 and 3 as a pure
+`ApplicationDeploymentMigrationProposal` mapper. Its output is permanently
+`mode: "read-only"` and `mutationAuthorized: false`; it does not read or write
+Alchemy, TypeKro, Kubernetes, GitOps, or provider state. The exact released
+v0.8 fixture required by step 1 is not currently available, so executable
+authority transfer and every deployment-state write remain gated off.
+
 1. Freeze and publish the exact v0.8 source fixtures, state snapshots, codecs, and live evidence.
 2. Define stable recursive implementation identity and the v0.9 plan schema.
 3. Build the read-only mapper and ambiguity diagnostics.

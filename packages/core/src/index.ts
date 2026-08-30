@@ -1,6 +1,4 @@
 export type * from './application-admission.js';
-export type * from './application-callable-provider-runtime.js';
-export { resolveApplicationCallableProviderRuntimeEnvironment } from './application-callable-provider-runtime.js';
 export {
   ApplicationAdmissionContextV1Error,
   applicationAdmissionContextVersion,
@@ -14,6 +12,16 @@ export {
   withApplicationAdmissionExecutionV1,
   withApplicationAdmissionTraceV1,
 } from './application-admission.js';
+export type * from './application-callable-provider-runtime.js';
+export { resolveApplicationCallableProviderRuntimeEnvironment } from './application-callable-provider-runtime.js';
+export type * from './application-deployment-migration-proposal.js';
+export {
+  ApplicationDeploymentMigrationProposalError,
+  applicationDeploymentMigrationProposalVersion,
+  applicationPhysicalIdentityKey,
+  proposeApplicationDeploymentMigration,
+  serializeApplicationDeploymentMigrationProposal,
+} from './application-deployment-migration-proposal.js';
 export type * from './application-explain.js';
 export { explainApplicationGraph } from './application-explain.js';
 export type * from './application-foundation.js';
@@ -31,6 +39,12 @@ export {
   sourceProvenance,
   validateApplicationFoundation,
 } from './application-foundation.js';
+export { applicationGraphArtifactFileName, applicationGraphMetadataProperty, applicationGraphNodeKinds, applicationInstallationMetadataProperty, applicationProviderInterfaceKinds, applicationTypeKroDefinitionProperty, applicationV03LiveValidationAssertions, applicationV03ProviderInterfaceKinds, isApplicationGraphNodeKind, isApplicationProviderInterfaceKind, normalizeApplicationGraph, resolveApplicationGraphProviderRequirement, serializeApplicationGraph, validateApplicationCrdSchemaCompatibilityContract, validateApplicationDurableStatusOwnershipContract, validateApplicationGraph, validateApplicationGraphCompatibilityPolicy, validateApplicationGraphProviderBindings, validateApplicationGraphStructure, validateApplicationJobStatusLifecycleContract, validateApplicationMigrationDriftCheckContract, validateApplicationOperationTargetContract, validateApplicationProviderCompatibilityMatrixContract, validateApplicationProviderInterfaceContract, validateApplicationRuntimeModuleInterfaceContract, validateApplicationRuntimeModuleManifestContract, validateApplicationTransactionalDatabaseSemanticsContract, validateApplicationV03PressureTestContract, validateApplicationWatchScopeLoweringContract } from './application-graph.js';
+export type * from './application-graph-foundation.js';
+export {
+  deriveApplicationGraphFoundation,
+  withDerivedApplicationGraphFoundation,
+} from './application-graph-foundation.js';
 export type * from './application-implementation-plan.js';
 export {
   ApplicationImplementationResolutionError,
@@ -38,12 +52,6 @@ export {
   resolveApplicationImplementationPlan,
   serializeApplicationImplementationPlan,
 } from './application-implementation-plan.js';
-export { applicationGraphArtifactFileName, applicationGraphMetadataProperty, applicationGraphNodeKinds, applicationInstallationMetadataProperty, applicationProviderInterfaceKinds, applicationTypeKroDefinitionProperty, applicationV03LiveValidationAssertions, applicationV03ProviderInterfaceKinds, isApplicationGraphNodeKind, isApplicationProviderInterfaceKind, normalizeApplicationGraph, resolveApplicationGraphProviderRequirement, serializeApplicationGraph, validateApplicationCrdSchemaCompatibilityContract, validateApplicationDurableStatusOwnershipContract, validateApplicationGraph, validateApplicationGraphCompatibilityPolicy, validateApplicationGraphProviderBindings, validateApplicationGraphStructure, validateApplicationJobStatusLifecycleContract, validateApplicationMigrationDriftCheckContract, validateApplicationOperationTargetContract, validateApplicationProviderCompatibilityMatrixContract, validateApplicationProviderInterfaceContract, validateApplicationRuntimeModuleInterfaceContract, validateApplicationRuntimeModuleManifestContract, validateApplicationTransactionalDatabaseSemanticsContract, validateApplicationV03PressureTestContract, validateApplicationWatchScopeLoweringContract } from './application-graph.js';
-export type * from './application-graph-foundation.js';
-export {
-  deriveApplicationGraphFoundation,
-  withDerivedApplicationGraphFoundation,
-} from './application-graph-foundation.js';
 export type * from './application-operation-authority.js';
 export {
   applicationCausalPrincipalContext,
@@ -78,12 +86,12 @@ export {
   planApplicationProfileTransitions,
   profileTransitionAcknowledgement,
 } from './application-profile-transition.js';
+export type * from './application-schedule-control.js';
+export { applicationScheduleControlIdentity } from './application-schedule-control.js';
 export {
   ApplicationScheduleCronCompatibilityError,
   exactFiveFieldCronForInterval,
 } from './application-schedule-cron.js';
-export type * from './application-schedule-control.js';
-export { applicationScheduleControlIdentity } from './application-schedule-control.js';
 export type * from './application-start.js';
 export {
   applicationStartDefinitionApiVersion,

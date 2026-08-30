@@ -412,6 +412,16 @@
             "ApplicationDefaults",
             "ApplicationDefaultsBinding",
             "ApplicationDelegationRecord",
+            "ApplicationDeploymentMigrationBaseline",
+            "ApplicationDeploymentMigrationDiagnostic",
+            "ApplicationDeploymentMigrationDirective",
+            "ApplicationDeploymentMigrationDisposition",
+            "ApplicationDeploymentMigrationInput",
+            "ApplicationDeploymentMigrationMapping",
+            "ApplicationDeploymentMigrationProposal",
+            "ApplicationDeploymentMigrationProposalError",
+            "ApplicationDeploymentMigrationSource",
+            "ApplicationDeploymentMigrationTarget",
             "ApplicationDeploymentTargetDescriptor",
             "ApplicationDeploymentTargetKind",
             "ApplicationDiagnosticContract",
@@ -633,6 +643,7 @@
             "ApplicationLakehouseRowExpression",
             "ApplicationLakehouseScalar",
             "ApplicationLakehouseSchemaCompatibility",
+            "ApplicationLegacyDeploymentNode",
             "ApplicationLocalActorRuntimeProvider",
             "ApplicationLocalObservabilityProvider",
             "ApplicationLocalSchedulerProvider",
@@ -658,6 +669,8 @@
             "ApplicationMigrationDriftEnforcementContract",
             "ApplicationMigrationDriftFailureMode",
             "ApplicationMigrationHistoryContract",
+            "ApplicationMigrationLifecycle",
+            "ApplicationMigrationLifecycleTransferPlan",
             "ApplicationMigrationPlanContract",
             "ApplicationMigrationStepContract",
             "ApplicationMixedWatchScope",
@@ -828,6 +841,7 @@
             "ApplicationPhaseConditionType",
             "ApplicationPhaseContract",
             "ApplicationPhaseStatus",
+            "ApplicationPhysicalIdentity",
             "ApplicationPhysicalPlanEdge",
             "ApplicationPhysicalPlanNode",
             "ApplicationPhysicalTopologyPlan",
@@ -1177,6 +1191,7 @@
             "ApplicationSubscriptionLimiter",
             "ApplicationSubscriptionNode",
             "ApplicationSubscriptionOptions",
+            "ApplicationTargetDeploymentNode",
             "ApplicationTargetProviderBinding",
             "ApplicationTaskBinding",
             "ApplicationTaskContext",
@@ -1808,6 +1823,7 @@
             "applicationCanonicalIdentity",
             "applicationCausalPrincipalContext",
             "applicationDatabaseHandle",
+            "applicationDeploymentMigrationProposalVersion",
             "applicationExecutionBoundaryIdentity",
             "applicationFoundationApiVersion",
             "applicationGraphArtifactFileName",
@@ -1829,6 +1845,7 @@
             "applicationOperationCatalogArtifactFileName",
             "applicationOperationId",
             "applicationOperationIdentity",
+            "applicationPhysicalIdentityKey",
             "applicationProviderIdentity",
             "applicationProviderInterfaceKinds",
             "applicationRelationalChangeScopeDigest",
@@ -2001,6 +2018,7 @@
             "promoteAnalyticalDrizzleTable",
             "promoteDrizzleTable",
             "promoteKubernetesResource",
+            "proposeApplicationDeploymentMigration",
             "providerGuaranteeFor",
             "providers",
             "proxyApplicationQueryMultiplex",
@@ -2030,6 +2048,7 @@
             "sdk",
             "search",
             "secretRef",
+            "serializeApplicationDeploymentMigrationProposal",
             "serializeApplicationGraph",
             "serializeApplicationImplementationPlan",
             "serializeApplicationPlan",
@@ -3171,6 +3190,16 @@
             "ApplicationCrdSchemaCompatibilityPolicy",
             "ApplicationCrdSchemaPostV3Requirement",
             "ApplicationDelegationRecord",
+            "ApplicationDeploymentMigrationBaseline",
+            "ApplicationDeploymentMigrationDiagnostic",
+            "ApplicationDeploymentMigrationDirective",
+            "ApplicationDeploymentMigrationDisposition",
+            "ApplicationDeploymentMigrationInput",
+            "ApplicationDeploymentMigrationMapping",
+            "ApplicationDeploymentMigrationProposal",
+            "ApplicationDeploymentMigrationProposalError",
+            "ApplicationDeploymentMigrationSource",
+            "ApplicationDeploymentMigrationTarget",
             "ApplicationDeploymentTargetDescriptor",
             "ApplicationDeploymentTargetKind",
             "ApplicationDiagnosticContract",
@@ -3257,6 +3286,7 @@
             "ApplicationKubernetesCreateAuthorityContract",
             "ApplicationKubernetesQueryAuthorityContract",
             "ApplicationLakehousePublicationNode",
+            "ApplicationLegacyDeploymentNode",
             "ApplicationMcpClientNode",
             "ApplicationMcpExternalToolContract",
             "ApplicationMcpServerNode",
@@ -3269,6 +3299,8 @@
             "ApplicationMigrationDriftEnforcementContract",
             "ApplicationMigrationDriftFailureMode",
             "ApplicationMigrationHistoryContract",
+            "ApplicationMigrationLifecycle",
+            "ApplicationMigrationLifecycleTransferPlan",
             "ApplicationMigrationPlanContract",
             "ApplicationMigrationStepContract",
             "ApplicationMixedWatchScope",
@@ -3326,6 +3358,7 @@
             "ApplicationPhaseConditionType",
             "ApplicationPhaseContract",
             "ApplicationPhaseStatus",
+            "ApplicationPhysicalIdentity",
             "ApplicationPhysicalPlanEdge",
             "ApplicationPhysicalPlanNode",
             "ApplicationPhysicalTopologyPlan",
@@ -3457,6 +3490,7 @@
             "ApplicationStreamNode",
             "ApplicationStreamProcessorNode",
             "ApplicationSubscriptionNode",
+            "ApplicationTargetDeploymentNode",
             "ApplicationTaskHandlerNode",
             "ApplicationTaskNode",
             "ApplicationTaskObjectOperation",
@@ -3885,6 +3919,7 @@
             "applicationAdmissionRejectionCodeV1",
             "applicationCanonicalIdentity",
             "applicationCausalPrincipalContext",
+            "applicationDeploymentMigrationProposalVersion",
             "applicationExecutionBoundaryIdentity",
             "applicationFoundationApiVersion",
             "applicationGraphArtifactFileName",
@@ -3896,6 +3931,7 @@
             "applicationOperationCatalogArtifactFileName",
             "applicationOperationId",
             "applicationOperationIdentity",
+            "applicationPhysicalIdentityKey",
             "applicationProviderIdentity",
             "applicationProviderInterfaceKinds",
             "applicationRuntimeAccessRequirement",
@@ -3955,6 +3991,7 @@
             "operator",
             "planApplicationProfileTransitions",
             "profileTransitionAcknowledgement",
+            "proposeApplicationDeploymentMigration",
             "providerGuaranteeFor",
             "readyCondition",
             "redactApplicationTelemetryValue",
@@ -3966,6 +4003,7 @@
             "scopeContainsUnreviewedCode",
             "sdk",
             "secretRef",
+            "serializeApplicationDeploymentMigrationProposal",
             "serializeApplicationGraph",
             "serializeApplicationImplementationPlan",
             "serializeApplicationPlan",
@@ -5457,6 +5495,16 @@
             "ApplicationCrdSchemaCompatibilityPolicy",
             "ApplicationCrdSchemaPostV3Requirement",
             "ApplicationDelegationRecord",
+            "ApplicationDeploymentMigrationBaseline",
+            "ApplicationDeploymentMigrationDiagnostic",
+            "ApplicationDeploymentMigrationDirective",
+            "ApplicationDeploymentMigrationDisposition",
+            "ApplicationDeploymentMigrationInput",
+            "ApplicationDeploymentMigrationMapping",
+            "ApplicationDeploymentMigrationProposal",
+            "ApplicationDeploymentMigrationProposalError",
+            "ApplicationDeploymentMigrationSource",
+            "ApplicationDeploymentMigrationTarget",
             "ApplicationDeploymentTargetDescriptor",
             "ApplicationDeploymentTargetKind",
             "ApplicationDiagnosticContract",
@@ -5543,6 +5591,7 @@
             "ApplicationKubernetesCreateAuthorityContract",
             "ApplicationKubernetesQueryAuthorityContract",
             "ApplicationLakehousePublicationNode",
+            "ApplicationLegacyDeploymentNode",
             "ApplicationMcpClientNode",
             "ApplicationMcpExternalToolContract",
             "ApplicationMcpServerNode",
@@ -5555,6 +5604,8 @@
             "ApplicationMigrationDriftEnforcementContract",
             "ApplicationMigrationDriftFailureMode",
             "ApplicationMigrationHistoryContract",
+            "ApplicationMigrationLifecycle",
+            "ApplicationMigrationLifecycleTransferPlan",
             "ApplicationMigrationPlanContract",
             "ApplicationMigrationStepContract",
             "ApplicationMixedWatchScope",
@@ -5612,6 +5663,7 @@
             "ApplicationPhaseConditionType",
             "ApplicationPhaseContract",
             "ApplicationPhaseStatus",
+            "ApplicationPhysicalIdentity",
             "ApplicationPhysicalPlanEdge",
             "ApplicationPhysicalPlanNode",
             "ApplicationPhysicalTopologyPlan",
@@ -5743,6 +5795,7 @@
             "ApplicationStreamNode",
             "ApplicationStreamProcessorNode",
             "ApplicationSubscriptionNode",
+            "ApplicationTargetDeploymentNode",
             "ApplicationTaskHandlerNode",
             "ApplicationTaskNode",
             "ApplicationTaskObjectOperation",
@@ -6120,6 +6173,7 @@
             "applicationAdmissionRejectionCodeV1",
             "applicationCanonicalIdentity",
             "applicationCausalPrincipalContext",
+            "applicationDeploymentMigrationProposalVersion",
             "applicationExecutionBoundaryIdentity",
             "applicationFoundationApiVersion",
             "applicationGraphArtifactFileName",
@@ -6131,6 +6185,7 @@
             "applicationOperationCatalogArtifactFileName",
             "applicationOperationId",
             "applicationOperationIdentity",
+            "applicationPhysicalIdentityKey",
             "applicationProviderIdentity",
             "applicationProviderInterfaceKinds",
             "applicationRuntimeAccessRequirement",
@@ -6172,6 +6227,7 @@
             "normalizeApplicationScope",
             "planApplicationProfileTransitions",
             "profileTransitionAcknowledgement",
+            "proposeApplicationDeploymentMigration",
             "providerGuaranteeFor",
             "redactApplicationTelemetryValue",
             "renderApplicationPlanGraph",
@@ -6180,6 +6236,7 @@
             "resolveApplicationGraphProviderRequirement",
             "resolveApplicationImplementationPlan",
             "scopeContainsUnreviewedCode",
+            "serializeApplicationDeploymentMigrationProposal",
             "serializeApplicationGraph",
             "serializeApplicationImplementationPlan",
             "serializeApplicationPlan",
@@ -10509,6 +10566,78 @@
       "maturity": "candidate-review-required"
     },
     {
+      "code": "MIGRATION_LIFECYCLE_TRANSFER_UNSAFE",
+      "owner": "package:@applik8s/core",
+      "sources": [
+        "packages/core/src/application-deployment-migration-proposal.ts"
+      ],
+      "maturity": "candidate-review-required"
+    },
+    {
+      "code": "MIGRATION_MAPPING_AMBIGUOUS",
+      "owner": "package:@applik8s/core",
+      "sources": [
+        "packages/core/src/application-deployment-migration-proposal.ts"
+      ],
+      "maturity": "candidate-review-required"
+    },
+    {
+      "code": "MIGRATION_PHYSICAL_IDENTITY_CONFLICT",
+      "owner": "package:@applik8s/core",
+      "sources": [
+        "packages/core/src/application-deployment-migration-proposal.ts"
+      ],
+      "maturity": "candidate-review-required"
+    },
+    {
+      "code": "MIGRATION_PROVIDER_INCOMPATIBLE",
+      "owner": "package:@applik8s/core",
+      "sources": [
+        "packages/core/src/application-deployment-migration-proposal.ts"
+      ],
+      "maturity": "candidate-review-required"
+    },
+    {
+      "code": "MIGRATION_RETAINED_DATA_UNSAFE",
+      "owner": "package:@applik8s/core",
+      "sources": [
+        "packages/core/src/application-deployment-migration-proposal.ts"
+      ],
+      "maturity": "candidate-review-required"
+    },
+    {
+      "code": "MIGRATION_SHARED_OWNER_BLOCKED",
+      "owner": "package:@applik8s/core",
+      "sources": [
+        "packages/core/src/application-deployment-migration-proposal.ts"
+      ],
+      "maturity": "candidate-review-required"
+    },
+    {
+      "code": "MIGRATION_SOURCE_RELEASE_UNQUALIFIED",
+      "owner": "package:@applik8s/core",
+      "sources": [
+        "packages/core/src/application-deployment-migration-proposal.ts"
+      ],
+      "maturity": "candidate-review-required"
+    },
+    {
+      "code": "MIGRATION_SOURCE_SCHEMA_UNSUPPORTED",
+      "owner": "package:@applik8s/core",
+      "sources": [
+        "packages/core/src/application-deployment-migration-proposal.ts"
+      ],
+      "maturity": "candidate-review-required"
+    },
+    {
+      "code": "MIGRATION_SOURCE_STATE_MISSING",
+      "owner": "package:@applik8s/core",
+      "sources": [
+        "packages/core/src/application-deployment-migration-proposal.ts"
+      ],
+      "maturity": "candidate-review-required"
+    },
+    {
       "code": "OAUTH_AUDIENCE_DENIED",
       "owner": "package:@applik8s/identity",
       "sources": [
@@ -11448,6 +11577,20 @@
         "versioned-portable-result",
         "lease-scoped-cleanup",
         "evidence-redaction"
+      ]
+    },
+    {
+      "id": "deployment-migration-proposal",
+      "package": "@applik8s/core",
+      "entrypoint": ".",
+      "symbol": "ApplicationDeploymentMigrationProposal",
+      "schemaVersion": "applik8s.deploymentMigrationProposal/v1alpha1",
+      "maturity": "stable-1.0-candidate",
+      "owner": "deployment-state-migration",
+      "evidence": [
+        "exact-baseline-validation",
+        "deterministic-read-only-mapping",
+        "lifecycle-transfer-plan"
       ]
     }
   ]

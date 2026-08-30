@@ -78,7 +78,7 @@ for (const entry of packages) {
   }
 }
 
-const diagnostics = collectDiagnostics()
+const diagnostics = [...collectDiagnostics()]
   .sort((left, right) => left.code.localeCompare(right.code));
 const foundation = JSON.parse(await readFile(resolve(root, 'docs/v0.9-foundation.json'), 'utf8')) as {
   readonly contracts?: readonly unknown[];

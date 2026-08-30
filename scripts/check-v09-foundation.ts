@@ -119,6 +119,7 @@ for (const required of [
   'implementation-plan',
   'journey-definition',
   'journey-result',
+  'deployment-migration-proposal',
 ]) {
   if (!contractIds.has(required)) findings.push(`PUBLIC_CONTRACT_MISSING: ${required}.`);
   if (!publicContractInventory.contracts?.some(({ id }) => id === required)) {
