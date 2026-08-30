@@ -52,6 +52,7 @@ const executionNodeKinds = new Set<ApplicationGraphNodeKind>([
   // canonical index node lets artifact credentials and provider access bind
   // to the same semantic owner instead of inventing a deployment-only node.
   'index',
+  'job',
   'workloadJob',
   'schedule',
   'lakehousePublication',
@@ -516,7 +517,7 @@ function addNodeSpecificRequirements(
     add(node, 'telemetry.write', 'Telemetry', { kind: 'capability', capabilityId: 'Telemetry' }, 'framework');
     return;
   }
-  if (node.kind === 'server' || node.kind === 'workloadJob' || node.kind === 'projection') {
+  if (node.kind === 'server' || node.kind === 'job' || node.kind === 'workloadJob' || node.kind === 'projection') {
     add(node, 'telemetry.write', 'Telemetry', { kind: 'capability', capabilityId: 'Telemetry' }, 'framework');
   }
 }

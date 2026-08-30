@@ -42,8 +42,9 @@ import {
 import { expandApplicationCallbackDependencies } from './application-callback.js';
 import { recordApplicationCrdGraph } from './application-crd-graph.js';
 import { type ApplicationResourceControllerBinding, type ApplicationResourceControllerOptions, type ApplicationResourceEventHandlers, createApplicationResourceEventOperatorController } from './application-events.js';
+import { type ApplicationJobBinding, type ApplicationJobContract, type ApplicationJobHandler, type ApplicationJobOptions, registerApplicationJob } from './application-finite-jobs.js';
 import { inferApplicationFunctionNativeTransaction } from './application-function-native-transactions.js';
-import { type ApplicationGeneratedJobResourceState, type ApplicationWorkloadJobBinding, type ApplicationWorkloadJobOptions, type ApplicationWorkloadCronJobOptions, emitApplicationGeneratedJob, emitApplicationModelMigrationResources } from './application-generated-job-resources.js';
+import { type ApplicationGeneratedJobResourceState, type ApplicationWorkloadCronJobOptions, type ApplicationWorkloadJobBinding, type ApplicationWorkloadJobOptions, emitApplicationGeneratedJob, emitApplicationModelMigrationResources } from './application-generated-job-resources.js';
 import type { ApplicationServerRuntimeIndex } from './application-generated-runtime-sources.js';
 import { generatedApplicationAggregateSource, generatedValkeyIndexerSource } from './application-generated-runtime-sources.js';
 import { type ApplicationGraphState, addApplicationGraphEdge, addApplicationGraphNode, addApplicationProviderRequirement, applicationGraphFromState, isApplicationGraph } from './application-graph-state.js';
@@ -157,7 +158,7 @@ import type { ApplicationPostgresRlsPolicy } from './trusted-context.js';
 export type { ApplicationAgentBinding, ApplicationAgentDeploymentOptions, ApplicationAgentHandler, ApplicationAgentOptions, ApplicationAgentTool } from './application-ai.js';
 export type { ApplicationAuthorityRegistrar, ApplicationAuthoritySelection, ApplicationOAuthClientIdentityBinding, ApplicationOAuthClientIdentityOptions, ApplicationOutcomeBinding, ApplicationOutcomeOptions, ApplicationPermissionBinding, ApplicationServiceIdentityBinding } from './application-authority.js';
 export type { ApplicationFinalizeEventHandler, ApplicationResourceControllerBinding, ApplicationResourceControllerOptions, ApplicationResourceEventHandler, ApplicationResourceObject } from './application-events.js';
-export type { ApplicationWorkloadJobBinding, ApplicationWorkloadJobOptions, ApplicationWorkloadCronJobOptions } from './application-generated-job-resources.js';
+export type { ApplicationWorkloadCronJobOptions, ApplicationWorkloadJobBinding, ApplicationWorkloadJobOptions } from './application-generated-job-resources.js';
 export type { ApplicationHttpAuthorization, ApplicationHttpContext, ApplicationHttpHandler, ApplicationHttpOptions, ApplicationHttpRegistrar, ApplicationHttpRequest, ApplicationHttpRouteContract, ApplicationHttpServer, ApplicationHttpWebhookAuthentication, ApplicationHttpWebhookContract, ApplicationHttpWebhookRequest } from './application-http.js';
 export type { ApplicationInstallationClient, ApplicationInstallationConnectOptions, ApplicationInstallationReference, ApplicationInstallationTransport, ApplicationInstallationWatchOptions } from './application-installation-client.js';
 export type { ApplicationLakehouseAuthorityManifest, ApplicationLakehouseComparisonExpression, ApplicationLakehouseDatasetQueryContract, ApplicationLakehouseFieldExpression, ApplicationLakehouseFilterExpression, ApplicationLakehouseLogicalExpression, ApplicationLakehouseManifest, ApplicationLakehouseOrder, ApplicationLakehouseOrderExpression, ApplicationLakehousePredicate, ApplicationLakehousePublication, ApplicationLakehousePublicationRuntime, ApplicationLakehouseQueryFailureReceipt, ApplicationLakehouseQueryInput, ApplicationLakehouseQueryReceipt, ApplicationLakehouseQueryRequest, ApplicationLakehouseQueryResult, ApplicationLakehouseQueryRuntime, ApplicationLakehouseQueryTerminalState, ApplicationLakehouseRowExpression, ApplicationLakehouseScalar, ApplicationLakehouseSchemaCompatibility, CompiledApplicationLakehouseQuery, DeterministicApplicationLakehouseRuntime } from './application-lakehouse.js';
@@ -349,6 +350,19 @@ export interface ApplicationWorkflowRegistrar {
   ): Promise<ApplicationSignalDecision<TDefinition>>;
 }
 
+export type ApplicationJobRegistrar =
+  <
+    TInput extends object,
+    TOutput extends object,
+    TProgress extends object = Record<string, never>,
+    TError extends object = never,
+  >(
+    id: `${string}.v${number}`,
+    contract: ApplicationJobContract<TInput, TOutput, TProgress, TError>,
+    options: ApplicationJobOptions<TInput>,
+    handler: ApplicationJobHandler<TInput, TOutput, TProgress, TError>,
+  ) => ApplicationJobBinding<TInput, TOutput, TProgress, TError>;
+
 /** Fluent target-only provider selection; branch factories stay inert during discovery. */
 export interface ApplicationTargetProviderBinding<TImplementation> {
   readonly kind: 'applicationProvider';
@@ -424,6 +438,7 @@ export interface KubernetesApplicationScope extends ApplicationAuthorityRegistra
   };
   provide<TImplementation>(token: ApplicationProviderToken<TImplementation>, implementation: TImplementation | ApplicationProviderBinding<TImplementation>): ApplicationProviderBinding<TImplementation>;
   aggregate<TStats extends object, TEvent extends object>(name: string, options: ApplicationAggregateOptions<TStats, TEvent>): ApplicationAggregateBinding<TStats, TEvent>;
+  readonly job: ApplicationJobRegistrar;
   readonly workflow: ApplicationWorkflowRegistrar;
   /** Select a scalar graph value from a typed installation field without authoring raw CEL. */
   select<TInput extends string, TOutput extends ApplicationGraphScalar>(
@@ -2693,6 +2708,14 @@ function createKubernetesApplicationBuilder<TSpec extends KroCompatibleType = Re
       invalidate();
       return binding;
     },
+    job: ((jobId: `${string}.v${number}`, jobContract: ApplicationJobContract<object, object, object, object>, jobOptions: ApplicationJobOptions<object>, handler: ApplicationJobHandler<object, object, object, object>) => {
+      const binding = preview.job(jobId, jobContract, jobOptions, handler);
+      replays.push((scope) => {
+        scope.job(jobId, jobContract, jobOptions, handler);
+      });
+      invalidate();
+      return binding;
+    }) as ApplicationJobRegistrar,
     workload: Object.freeze({
       job(jobName: string, jobOptions?: ApplicationWorkloadJobOptions): ApplicationWorkloadJobBinding {
         const normalizedOptions = withDefaultNamespace(jobOptions);
@@ -4542,6 +4565,8 @@ function createApplicationContext<TSpec extends KroCompatibleType, TStatus exten
     expose(name, options) {
       return emitApplicationExposure(state, name, options);
     },
+    job: ((jobId: `${string}.v${number}`, jobContract: ApplicationJobContract<object, object, object, object>, jobOptions: ApplicationJobOptions<object>, handler: ApplicationJobHandler<object, object, object, object>) =>
+      registerApplicationJob(state, jobId, jobContract, jobOptions, handler)) as ApplicationJobRegistrar,
     workload: Object.freeze({
       job(name: string, options?: ApplicationWorkloadJobOptions) {
         return emitApplicationGeneratedJob(state, name, options ?? {}, undefined, applicationBindingPlan);

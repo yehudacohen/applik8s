@@ -31,7 +31,7 @@ export function applicationGraphFromState(name: string, state: ApplicationGraphS
     compatibility: {
       stablePublicApis: ['sdk.kubernetesComposition', 'app.installation', 'app.server', 'app.http', 'app.crd', 'app.resource', 'app.model', 'Resource.on.reconcile', 'app.database.postgres', 'app.objectStore', 'app.workload.job', 'app.workload.cronJob', 'app.defaults', 'app.provide', 'app.profile', 'app.inject', 'Provider.named', 'app.select', 'app.selectProvider', 'app.when', 'app.any', 'app.all', 'app.interpolate', 'app.aggregate', 'app.config', 'app.secret', 'app.expose', 'app.query', 'app.gateway', 'app.stream', 'app.subscription', 'app.projection', 'app.agent', 'app.mcp', 'app.mcp.client', 'Stream.process', 'Stream.project', 'Stream.subscribe', 'Resource.index', 'Resource.increment', 'command', 'event', 'stream', 'workflow', 'Model.create', 'Model.update', 'Model.delete', 'Model.require', 'Model.edit', 'Model.on.create', 'Model.on.update', 'Model.on.delete', 'app.workflow', 'provider.TransactionalDatabase', 'provider.AnalyticalDatabase', 'provider.IndexStore', 'provider.CounterStore', 'provider.EventSource', 'provider.EventLog', 'provider.Secret', 'provider.Queue', 'provider.ObjectStorage', 'provider.HttpExposure', 'provider.Certificate', 'provider.DnsPublication', 'provider.CredentialStore', 'provider.WorkflowEngine', 'provider.Authorization', 'provider.StructuredGeneration', 'provider.AI'],
       documentedInternalContracts: ['ApplicationGraph'],
-      experimentalSurfaces: ['app.graph'],
+      experimentalSurfaces: ['app.graph', 'app.job'],
       postV3Surfaces: ['workload-movement-operator', 'additional-provider-adapters'],
       labels: [
         stableApiLabel('sdk.kubernetesComposition', 'v0.2', 'Canonical TypeKro-backed app composition entrypoint.'),
@@ -73,6 +73,7 @@ export function applicationGraphFromState(name: string, state: ApplicationGraphS
         stableApiLabel('provider.HttpExposure', 'v0.3', 'Typed HTTP exposure capability contract backed by explicit Ingress and NodePort providers.'),
         stableApiLabel('provider.CredentialStore', 'v0.3', 'Defaults to Kubernetes SecretRef credentials with external object ownership.'),
         { name: 'app.graph', surface: 'experimentalSurface', since: 'v0.3', rationale: 'Direct graph introspection remains experimental while the serialized ApplicationGraph artifact is the documented contract.', implementation: 'failClosedReserved' },
+        { name: 'app.job', surface: 'experimentalSurface', since: 'v0.9', rationale: 'Function-native finite managed work is available through the local conformance runtime while profile-selected Kubernetes and AWS JobRuntime providers remain release-gated.', implementation: 'failClosedReserved' },
         stableApiLabel('command', 'v0.4', 'Inert versioned command contracts with durable schema, identity, result, and compatibility semantics.'),
         stableApiLabel('event', 'v0.4', 'Inert versioned committed-fact contracts written through declared transactional outboxes.'),
         stableApiLabel('Model.create', 'v0.7', 'Direct schema-derived durable relational creation with transactional outbox change delivery.'),

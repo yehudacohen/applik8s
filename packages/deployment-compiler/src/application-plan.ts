@@ -5,11 +5,11 @@ import {
   type ApplicationGraphNode,
   type ApplicationImplementationPlan,
   type ApplicationNativePlanRecord,
+  type ApplicationPhysicalPlanNode,
   type ApplicationPlan,
   type ApplicationPlanDiagnostic,
   type ApplicationPlanEstimate,
   type ApplicationPlanObservability,
-  type ApplicationPhysicalPlanNode,
   type ApplicationProviderGuaranteeManifest,
   type ApplicationSourceProvenance,
   applicationCanonicalIdentity,
@@ -654,6 +654,7 @@ function stateContract(node: ApplicationGraphNode): { readonly authority: string
   if (node.kind === 'index' || node.kind === 'projection') return { authority: 'derived-projection', consistency: 'eventual', recovery: 'rebuild' };
   if (node.kind === 'workflow' || node.kind === 'task') return { authority: 'workflow-engine', consistency: 'durable-history', recovery: 'history-replay' };
   if (node.kind === 'schedule') return { authority: node.scheduler.interface, consistency: 'idempotent-occurrence-receipt', retention: 'provider-defined', recovery: 'prior-receipt-and-misfire-policy' };
+  if (node.kind === 'job') return { authority: node.runtime.interface, consistency: 'single-terminal-transition', retention: 'profile-defined', recovery: 'provider-attempt-retry' };
   if (node.kind === 'lakehousePublication') return { authority: node.dataset.interface, consistency: node.semantics.publication, retention: 'immutable-snapshots', recovery: 'frontier-replay-and-manifest-republish' };
   if (node.kind === 'actor') return { authority: node.runtime.interface, consistency: node.semantics.serialization, retention: 'provider-defined', recovery: 'admission-receipt-state-and-outbox' };
   if (node.kind === 'aggregate' || node.kind === 'counter') return { authority: 'provider-defined', consistency: 'atomic', recovery: 'source-rebuild' };

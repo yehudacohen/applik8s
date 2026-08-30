@@ -1,13 +1,17 @@
 // typecast-file-boundary: The local Job runtime erases schema-validated record generics only inside its heterogeneous durable run map and restores them through definition-owned handles.
 import { createHash, randomUUID } from 'node:crypto';
 import {
+  type ApplicationAdmissionInvocationContextV1,
   applicationAdmissionContextVersion,
   canonicalJsonV1String,
-  type ApplicationAdmissionInvocationContextV1,
 } from '@applik8s/core';
 import type { SchemaInput } from '@applik8s/sdk';
+import { serializeApplicationCallback } from './application-callback.js';
+import { type ApplicationGraphState, addApplicationGraphNode } from './application-graph-state.js';
+import { kubernetesNameSegment } from './application-identifiers.js';
 import { parseApplicationScheduleDuration } from './application-schedule.js';
-import { validateMessage } from './application-schema-runtime.js';
+import { declaredSchema, validateMessage } from './application-schema-runtime.js';
+import { functionExpression } from './application-workflow-serialization.js';
 
 export const applicationJobRuntimeProtocol = 'applik8s.jobRuntime/v1alpha1' as const;
 
@@ -169,6 +173,28 @@ export interface DeterministicApplicationJobRuntimeOptions {
   readonly maximumConcurrency?: number;
   readonly now?: () => Date;
   readonly id?: () => string;
+}
+
+const applicationJobRuntimeResolvers: Array<() => ApplicationJobRuntime | undefined> = [];
+let defaultApplicationJobRuntime: ApplicationJobRuntime | undefined;
+
+export function installApplicationJobRuntimeResolver(
+  resolver: () => ApplicationJobRuntime | undefined,
+): () => void {
+  applicationJobRuntimeResolvers.push(resolver);
+  return () => {
+    const index = applicationJobRuntimeResolvers.lastIndexOf(resolver);
+    if (index >= 0) applicationJobRuntimeResolvers.splice(index, 1);
+  };
+}
+
+export function applicationJobRuntime(): ApplicationJobRuntime {
+  for (const resolver of [...applicationJobRuntimeResolvers].reverse()) {
+    const runtime = resolver();
+    if (runtime) return runtime;
+  }
+  defaultApplicationJobRuntime ??= createDeterministicApplicationJobRuntime();
+  return defaultApplicationJobRuntime;
 }
 
 export class ApplicationJobRunError<TError extends object = never> extends Error {
@@ -487,6 +513,69 @@ export function createApplicationJobBinding<
   });
 }
 
+/** Registers one application-owned finite Job and returns its function-native handle. */
+export function registerApplicationJob<
+  TInput extends object,
+  TOutput extends object,
+  TProgress extends object = Record<string, never>,
+  TError extends object = never,
+>(
+  state: ApplicationGraphState,
+  id: string,
+  contract: ApplicationJobContract<TInput, TOutput, TProgress, TError>,
+  options: ApplicationJobOptions<TInput>,
+  handler: ApplicationJobHandler<TInput, TOutput, TProgress, TError>,
+): ApplicationJobBinding<TInput, TOutput, TProgress, TError> {
+  const identity = finiteJobIdentity(id);
+  const serialized = serializeApplicationCallback({
+    registrar: 'job',
+    argumentIndex: 3,
+    property: 'handler',
+    label: `Application Job ${id}`,
+    callback: handler as (...args: never[]) => unknown,
+    allowDeferredResolution: true,
+  });
+  const timeoutSeconds = options.timeout
+    ? parseApplicationScheduleDuration(options.timeout)
+    : undefined;
+  addApplicationGraphNode(state, {
+    id: `job.${kubernetesNameSegment(id)}`,
+    kind: 'job',
+    name: id,
+    stability: 'experimental',
+    contract: {
+      name: identity.name,
+      version: identity.version,
+      input: declaredSchema(contract.input, `${id}.input`),
+      output: declaredSchema(contract.output, `${id}.output`),
+      ...(contract.progress ? { progress: declaredSchema(contract.progress, `${id}.progress`) } : {}),
+      ...(contract.error ? { error: declaredSchema(contract.error, `${id}.error`) } : {}),
+    },
+    handlerSource: serialized.source,
+    ...(serialized.dependencies ? { handlerDependencies: serialized.dependencies } : {}),
+    ...(serialized.location ? { sourceLocation: serialized.location } : {}),
+    retry: { maxAttempts: nonNegativeInteger(options.retries ?? 0, `Job ${id} retries`) + 1, wholeAttempt: true },
+    ...(timeoutSeconds === undefined ? {} : { executionDeadlineSeconds: timeoutSeconds }),
+    idempotency: {
+      scope: 'applicationDeploymentContractContextAuthority',
+      keySource: options.idempotencyKey ? 'inputExpression' : 'invocation',
+      ...(options.idempotencyKey ? { expression: functionExpression(options.idempotencyKey, `${id} idempotency key`) } : {}),
+      conflict: 'failClosed',
+    },
+    cancellation: {
+      request: 'durableReceipt',
+      terminal: 'firstTransitionWins',
+      behavior: 'cooperativeThenProviderBounded',
+    },
+    runtime: {
+      interface: 'JobRuntime',
+      selection: 'profile',
+      protocol: applicationJobRuntimeProtocol,
+    },
+  });
+  return createApplicationJobBinding({ id, contract, options, handler }, applicationJobRuntime());
+}
+
 function localJobAdmission(
   job: string,
   now: () => Date,
@@ -524,6 +613,14 @@ function localJobAdmission(
 
 function digest(value: unknown): string {
   return createHash('sha256').update(canonicalJsonV1String(value)).digest('hex');
+}
+
+function finiteJobIdentity(id: string): { readonly name: string; readonly version: string } {
+  const match = /^(.+)\.(v[1-9][0-9]*)$/u.exec(id.trim());
+  if (!match?.[1] || !match[2]) {
+    throw new TypeError(`Application Job id ${JSON.stringify(id)} must end in a positive version such as search.rebuild.v1.`);
+  }
+  return { name: match[1], version: match[2] };
 }
 
 function positiveInteger(value: number, label: string): number {

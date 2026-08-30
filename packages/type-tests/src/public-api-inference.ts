@@ -1,7 +1,6 @@
-import type { Applik8sTypeKroAdapterApi as TopLevelTypeKroAdapterApi } from '@applik8s/applik8s';
-import { AnalyticalDatabase, Analytics, type ApplicationAnalyticalProjectionOptions, type ApplicationConfigBinding, type ApplicationExposureBinding, type ApplicationWorkloadJobBinding, type ApplicationModelBinding, type ApplicationModelObject, type ApplicationOAuthClientIdentityBinding, type ApplicationResourceControllerOptions, type ApplicationResourceEventHandler, type ApplicationSecretBinding, type ApplicationTransactionalDatabaseProvider, type ApplicationWorkflowBinding, applicationModelFacet, sdk as appSdk, Certificate, CounterStore, CredentialStore, command, Database, DnsPublication, app as defineApplication, EventSource, event, HttpExposure, IndexStore, ObjectStorage, Queue, Secret, TransactionalDatabase, WorkflowEngine, workflow } from '@applik8s/applik8s';
 // @ts-expect-error The application-centric v0.6 controller-options name was removed rather than aliased.
-import type { ApplicationReconcileOptions } from '@applik8s/applik8s';
+import type { ApplicationReconcileOptions, Applik8sTypeKroAdapterApi as TopLevelTypeKroAdapterApi } from '@applik8s/applik8s';
+import { AnalyticalDatabase, Analytics, type ApplicationAnalyticalProjectionOptions, type ApplicationConfigBinding, type ApplicationExposureBinding, type ApplicationJobBinding, type ApplicationModelBinding, type ApplicationModelObject, type ApplicationOAuthClientIdentityBinding, type ApplicationResourceControllerOptions, type ApplicationResourceEventHandler, type ApplicationSecretBinding, type ApplicationTransactionalDatabaseProvider, type ApplicationWorkflowBinding, type ApplicationWorkloadJobBinding, applicationModelFacet, sdk as appSdk, Certificate, CounterStore, CredentialStore, command, Database, DnsPublication, app as defineApplication, EventSource, event, HttpExposure, IndexStore, ObjectStorage, Queue, Secret, TransactionalDatabase, WorkflowEngine, workflow } from '@applik8s/applik8s';
 import * as applicationDsl from '@applik8s/applik8s/dsl';
 import { entity as appEntity, type as appSchemaType } from '@applik8s/applik8s/dsl';
 import type {
@@ -525,6 +524,30 @@ appSdk.kubernetesComposition({
   const modelDefaults = app.defaults({ database: accountTransactionalDatabase });
   const maintenanceJob: ApplicationWorkloadJobBinding = app.workload.job('compact-accounts', { taskKind: 'maintenance', image: 'busybox:1.36', command: ['sh', '-c'], args: ['echo compact'] });
   const maintenanceSchedule: ApplicationWorkloadJobBinding = app.workload.cronJob('compact-accounts-hourly', { taskKind: 'maintenance', cron: '0 * * * *', concurrencyPolicy: 'forbid', missedRunPolicy: 'failClosed' });
+  const rebuildSearch: ApplicationJobBinding<{ accountId: string }, { indexed: number }, { indexed: number }> = app.job(
+    'search.rebuild.v1',
+    {
+      input: appSchemaType({ accountId: 'string' }),
+      output: appSchemaType({ indexed: 'number.integer >= 0' }),
+      progress: appSchemaType({ indexed: 'number.integer >= 0' }),
+    },
+    { retries: 2, timeout: '30m', idempotencyKey: (input) => input.accountId },
+    async (input, execution) => {
+      await execution.progress({ indexed: 1 });
+      return { indexed: input.accountId.length };
+    },
+  );
+  void rebuildSearch({ accountId: 'account-1' }).then((result) => {
+    const indexed: number = result.indexed;
+    expectTypeUsage(indexed);
+  });
+  void rebuildSearch.start({ accountId: 'account-1' }).then(async (run) => {
+    const result: { indexed: number } = await run.result();
+    const progress: { indexed: number } | undefined = (await run.progress())?.value;
+    expectTypeUsage(result, progress, run.reference);
+  });
+  // @ts-expect-error semantic Jobs require a positive version suffix.
+  app.job('search.rebuild', { input: appSchemaType({ accountId: 'string' }), output: appSchemaType({ indexed: 'number' }) }, {}, async () => ({ indexed: 1 }));
   const maintenanceJobStatusPath: string = maintenanceJob.statusPath;
   const maintenanceScheduleDiagnostics: string = maintenanceSchedule.diagnosticsConfigMapName;
   const maintenanceJobDryRun = maintenanceJob.plan(handlerOperationTarget, { dryRun: true });

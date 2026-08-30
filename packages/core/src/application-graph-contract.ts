@@ -99,6 +99,7 @@ export type ApplicationGraphNodeKind =
   | 'subscription'
   | 'projection'
   | 'objectStore'
+  | 'job'
   | 'workloadJob'
   | 'config'
   | 'secret'
@@ -140,6 +141,7 @@ export const applicationGraphNodeKinds = [
   'subscription',
   'projection',
   'objectStore',
+  'job',
   'workloadJob',
   'config',
   'secret',
@@ -299,6 +301,7 @@ export type ApplicationGraphNode =
   | ApplicationSubscriptionNode
   | ApplicationProjectionNode
   | ApplicationObjectStoreNode
+  | ApplicationJobNode
   | ApplicationWorkloadJobNode
   | ApplicationConfigNode
   | ApplicationSecretNode
@@ -1480,6 +1483,42 @@ export interface ApplicationWorkloadJobNode extends ApplicationGraphNodeBase<'wo
   readonly runtime: ApplicationJobRuntimeContract;
   readonly observability: ApplicationObservabilityContract;
   readonly generatedResources?: readonly ApplicationGeneratedResourceContract[];
+}
+
+/** Provider-neutral finite managed work; Kubernetes Job/CronJob resources are workloadJob nodes. */
+export interface ApplicationJobNode extends ApplicationGraphNodeBase<'job'> {
+  readonly contract: {
+    readonly name: string;
+    readonly version: string;
+    readonly input: ApplicationMessageContractSchema;
+    readonly output: ApplicationMessageContractSchema;
+    readonly progress?: ApplicationMessageContractSchema;
+    readonly error?: ApplicationMessageContractSchema;
+  };
+  readonly handlerSource: string;
+  readonly handlerDependencies?: { readonly source: string; readonly resolveDir: string };
+  readonly sourceLocation?: SourceLocation;
+  readonly retry: {
+    readonly maxAttempts: number;
+    readonly wholeAttempt: true;
+  };
+  readonly executionDeadlineSeconds?: number;
+  readonly idempotency: {
+    readonly scope: 'applicationDeploymentContractContextAuthority';
+    readonly keySource: 'invocation' | 'inputExpression';
+    readonly expression?: ApplicationExpressionContract;
+    readonly conflict: 'failClosed';
+  };
+  readonly cancellation: {
+    readonly request: 'durableReceipt';
+    readonly terminal: 'firstTransitionWins';
+    readonly behavior: 'cooperativeThenProviderBounded';
+  };
+  readonly runtime: {
+    readonly interface: 'JobRuntime';
+    readonly selection: 'profile';
+    readonly protocol: 'applik8s.jobRuntime/v1alpha1';
+  };
 }
 
 export interface ApplicationConfigNode extends ApplicationGraphNodeBase<'config'> {
@@ -3572,6 +3611,8 @@ function applicationGraphNodeStructureDiagnostics(node: ApplicationGraphNode, gr
   switch (node.kind) {
     case 'model':
       return applicationModelNodeStructureDiagnostics(node, graph);
+    case 'job':
+      return applicationFiniteJobNodeStructureDiagnostics(node);
     case 'workloadJob':
       return applicationWorkloadJobNodeStructureDiagnostics(node);
     case 'provider':
@@ -3689,6 +3730,27 @@ function applicationGraphNodeStructureDiagnostics(node: ApplicationGraphNode, gr
     default:
       return [];
   }
+}
+
+function applicationFiniteJobNodeStructureDiagnostics(node: ApplicationJobNode): readonly Diagnostic[] {
+  const diagnostics: Diagnostic[] = [];
+  if (!node.contract.name.trim() || !/^v[1-9][0-9]*$/u.test(node.contract.version)) {
+    diagnostics.push(applicationGraphStructureDiagnostic(`Application Job ${node.id} must retain a stable versioned contract identity.`));
+  }
+  if (!node.handlerSource.trim()) diagnostics.push(applicationGraphStructureDiagnostic(`Application Job ${node.id} must retain its managed closure source.`));
+  if (!Number.isSafeInteger(node.retry.maxAttempts) || node.retry.maxAttempts < 1 || node.retry.wholeAttempt !== true) {
+    diagnostics.push(applicationGraphStructureDiagnostic(`Application Job ${node.id} must declare a positive whole-attempt retry budget.`));
+  }
+  if (node.executionDeadlineSeconds !== undefined && (!Number.isSafeInteger(node.executionDeadlineSeconds) || node.executionDeadlineSeconds < 1)) {
+    diagnostics.push(applicationGraphStructureDiagnostic(`Application Job ${node.id} execution deadline must be a positive duration.`));
+  }
+  if (node.idempotency.scope !== 'applicationDeploymentContractContextAuthority' || node.idempotency.conflict !== 'failClosed') {
+    diagnostics.push(applicationGraphStructureDiagnostic(`Application Job ${node.id} must retain the complete fail-closed idempotency scope.`));
+  }
+  if (node.runtime.interface !== 'JobRuntime' || node.runtime.selection !== 'profile' || node.runtime.protocol !== 'applik8s.jobRuntime/v1alpha1') {
+    diagnostics.push(applicationGraphStructureDiagnostic(`Application Job ${node.id} must select a profile-owned JobRuntime using the supported protocol.`));
+  }
+  return diagnostics;
 }
 
 function applicationLakehousePublicationNodeStructureDiagnostics(

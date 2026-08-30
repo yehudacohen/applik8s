@@ -1,5 +1,7 @@
 import { describe, expect, test } from 'bun:test';
+import { validateApplicationGraphCompatibilityPolicy } from '@applik8s/core';
 import { type } from 'arktype';
+import { app, applicationGraphFor } from '../src/application-builder.js';
 import {
   ApplicationJobIdempotencyConflictError,
   ApplicationJobInvocationTimeoutError,
@@ -14,6 +16,68 @@ const Progress = type({ completed: 'number.integer >= 0' });
 const Failure = type({ code: "'invalid'" });
 
 describe('application finite Job runtime', () => {
+  test('registers function-native finite work as a semantic Job graph node', async () => {
+    const application = app('finite-jobs', {
+      spec: type({}),
+      status: type({ ready: 'boolean' }),
+    });
+    const job = application.job(
+      'numbers.double.v1',
+      { input: Input, output: Output, progress: Progress, error: Failure },
+      { retries: 2, timeout: '30s', idempotencyKey: (input) => String(input.value) },
+      async (input, execution) => {
+        await execution.progress({ completed: 1 });
+        return { doubled: input.value * 2 };
+      },
+    );
+
+    await expect(job({ value: 9 })).resolves.toEqual({ doubled: 18 });
+    const graph = applicationGraphFor(application.composition);
+    expect(graph?.nodes).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: 'job',
+        contract: expect.objectContaining({ name: 'numbers.double', version: 'v1' }),
+        retry: { maxAttempts: 3, wholeAttempt: true },
+        executionDeadlineSeconds: 30,
+        idempotency: expect.objectContaining({
+          scope: 'applicationDeploymentContractContextAuthority',
+          keySource: 'inputExpression',
+          conflict: 'failClosed',
+        }),
+        runtime: {
+          interface: 'JobRuntime',
+          selection: 'profile',
+          protocol: 'applik8s.jobRuntime/v1alpha1',
+        },
+      }),
+    ]));
+    expect(graph?.compatibility.experimentalSurfaces).toContain('app.job');
+    expect(graph ? validateApplicationGraphCompatibilityPolicy(graph) : []).toEqual([]);
+  });
+
+  test('keeps semantic Jobs distinct from explicit Kubernetes workload Jobs', () => {
+    const application = app('job-vocabulary', {
+      spec: type({}),
+      status: type({ ready: 'boolean' }),
+    });
+    application.job(
+      'semantic.run.v1',
+      { input: Input, output: Output },
+      {},
+      (input) => ({ doubled: input.value * 2 }),
+    );
+    application.workload.job('migration', {
+      taskKind: 'migration',
+      image: 'busybox:1.36',
+      command: ['sh', '-c'],
+      args: ['echo migration'],
+    });
+
+    const nodes = applicationGraphFor(application.composition)?.nodes ?? [];
+    expect(nodes.some((node) => node.kind === 'job')).toBe(true);
+    expect(nodes.some((node) => node.kind === 'workloadJob')).toBe(true);
+  });
+
   test('returns one typed result for direct and durable invocation', async () => {
     const runtime = createDeterministicApplicationJobRuntime({ id: () => 'run-1' });
     const job = createApplicationJobBinding({
