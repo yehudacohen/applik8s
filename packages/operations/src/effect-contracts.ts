@@ -191,7 +191,9 @@ export function validateEffectContract(
     throw new EffectContractError('EFFECT_RETRY_UNSAFE', 'Effect guarantees must not contain duplicates.');
   }
   if (guarantees.has('unfencedExternal') && (
-    guarantees.has('dependencyFenced')
+    guarantees.has('frameworkFenced')
+    || guarantees.has('dependencyFenced')
+    || contract.fencing.mode === 'framework'
     || contract.fencing.mode === 'dependency'
   )) {
     throw new EffectContractError(
@@ -202,6 +204,15 @@ export function validateEffectContract(
   if (contract.fencing.mode === 'dependency' && !guarantees.has('dependencyFenced')) {
     throw new EffectContractError('EFFECT_FENCE_UNSUPPORTED', 'Dependency fencing requires the dependencyFenced guarantee.');
   }
+  if (contract.fencing.mode === 'framework' && !guarantees.has('frameworkFenced')) {
+    throw new EffectContractError('EFFECT_FENCE_UNSUPPORTED', 'Framework fencing requires the frameworkFenced guarantee.');
+  }
+  if (guarantees.has('dependencyFenced') && contract.fencing.mode !== 'dependency') {
+    throw new EffectContractError('EFFECT_FENCE_UNSUPPORTED', 'The dependencyFenced guarantee requires dependency fencing.');
+  }
+  if (guarantees.has('frameworkFenced') && contract.fencing.mode !== 'framework') {
+    throw new EffectContractError('EFFECT_FENCE_UNSUPPORTED', 'The frameworkFenced guarantee requires framework fencing.');
+  }
   if (contract.idempotency.mode === 'logicalIdentity' && !guarantees.has('idempotent')) {
     throw new EffectContractError('EFFECT_RETRY_UNSAFE', 'Logical-identity idempotency requires the idempotent guarantee.');
   }
@@ -210,6 +221,12 @@ export function validateEffectContract(
   }
   if (contract.retry.mode === 'afterProvenAbsent' && contract.receipt.observation === 'unsupported') {
     throw new EffectContractError('EFFECT_RETRY_UNSAFE', 'Retry after absence requires a provider observation path.');
+  }
+  if (contract.retry.mode === 'never' && contract.retry.maximumAttempts !== 1) {
+    throw new EffectContractError('EFFECT_RETRY_UNSAFE', 'A non-retryable effect must declare exactly one attempt.');
+  }
+  if (guarantees.has('transactionalIntent') && contract.receipt.authority !== 'transaction') {
+    throw new EffectContractError('EFFECT_RETRY_UNSAFE', 'Transactional intent requires transaction-owned receipts.');
   }
   if (contract.compensation) {
     validateEffectContractIdentity(contract.compensation.effect);

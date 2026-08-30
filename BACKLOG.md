@@ -21,8 +21,11 @@ Status: alpha.1 foundation started on `codex/v0.9-semantic-completion`.
   It distinguishes the completed v0.8 source candidate from an exact released
   v0.8 migration baseline and fails closed before any v0.9 work writes
   deployment state.
-- Next foundation work: derive the complete public package/export/diagnostic
-  inventory, freeze implementation identity and profile resolution in the
+- Derived the public contract inventory from all 62 publishable package
+  manifests, 193 export-map entrypoints, 6,902 TypeScript exports, and 242
+  typed diagnostic positions. The generated catalog stays dirty-checkable
+  while per-symbol maturity/evidence review remains visibly in progress.
+- Next foundation work: freeze implementation identity and profile resolution in the
   ApplicationPlan schema, produce the read-only v0.8 migration proposal, add
   the minimal `journey()` runner, and establish the documentation and first
   clean-context evidence.

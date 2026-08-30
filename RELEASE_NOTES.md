@@ -13,6 +13,9 @@ A machine-readable foundation gate records the exact released-v0.8 baseline
 required for active-state migration. Because v0.8 has not yet been published,
 the gate deliberately blocks v0.9 deployment-state writes while allowing
 non-mutating contract work to proceed against the identified source candidate.
+The same gate consumes a generated public-contract inventory derived from all
+publishable package manifests, export maps, TypeScript module exports, and
+typed diagnostic positions instead of maintaining a second manual API list.
 
 ## v0.8.0
 

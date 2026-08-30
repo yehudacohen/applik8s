@@ -22,6 +22,7 @@
     "allowed": false,
     "blockedBy": "V09_BASELINE_RELEASE_UNAVAILABLE"
   },
+  "publicContractInventory": "v0.9-public-contract.json",
   "contracts": [
     {
       "id": "effect-contract",
@@ -59,7 +60,7 @@
     },
     {
       "id": "public-contract-inventory",
-      "implemented": false,
+      "implemented": true,
       "blocking": true,
       "diagnostic": "PUBLIC_CONTRACT_INVENTORY_INCOMPLETE"
     },

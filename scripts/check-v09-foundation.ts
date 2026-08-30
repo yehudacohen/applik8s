@@ -26,7 +26,7 @@ interface FoundationGate {
 interface FoundationManifest {
   readonly schemaVersion: 1;
   readonly release: '0.9.0-alpha.1';
-  readonly status: 'blocked-on-v0.8-release' | 'foundation-ready';
+  readonly status: 'blocked-on-v0.8-release' | 'foundation-in-progress' | 'foundation-ready';
   readonly sourceCandidate: {
     readonly packageVersion: '0.8.0';
     readonly commit: string;
@@ -37,6 +37,7 @@ interface FoundationManifest {
     readonly allowed: boolean;
     readonly blockedBy?: string;
   };
+  readonly publicContractInventory: 'v0.9-public-contract.json';
   readonly contracts: readonly {
     readonly id: string;
     readonly package: string;
@@ -53,6 +54,15 @@ interface FoundationManifest {
 const execFileAsync = promisify(execFile);
 const requireDeploymentWrites = process.argv.includes('--require-deployment-writes');
 const manifest = JSON.parse(await readFile('docs/v0.9-foundation.json', 'utf8')) as FoundationManifest;
+const publicContractInventory = JSON.parse(
+  await readFile(`docs/${manifest.publicContractInventory}`, 'utf8'),
+) as {
+  readonly schemaVersion?: number;
+  readonly release?: string;
+  readonly packages?: readonly unknown[];
+  readonly diagnostics?: readonly unknown[];
+  readonly contracts?: readonly { readonly id?: string }[];
+};
 const findings: string[] = [];
 
 if (manifest.schemaVersion !== 1 || manifest.release !== '0.9.0-alpha.1') {
@@ -62,6 +72,15 @@ if (!/^[a-f0-9]{40}$/u.test(manifest.sourceCandidate.commit)) {
   findings.push('V09_SOURCE_CANDIDATE_INVALID: source-candidate commit must be a complete Git hash.');
 } else if (!(await gitObjectExists(manifest.sourceCandidate.commit))) {
   findings.push(`V09_SOURCE_CANDIDATE_MISSING: commit ${manifest.sourceCandidate.commit} is unavailable.`);
+}
+if (
+  manifest.publicContractInventory !== 'v0.9-public-contract.json'
+  || publicContractInventory.schemaVersion !== 1
+  || publicContractInventory.release !== manifest.release
+  || (publicContractInventory.packages?.length ?? 0) === 0
+  || (publicContractInventory.diagnostics?.length ?? 0) === 0
+) {
+  findings.push('PUBLIC_CONTRACT_INVENTORY_INCOMPLETE: package, export, symbol, diagnostic, or release identity is missing.');
 }
 
 const gateIds = new Set<string>();
@@ -95,25 +114,40 @@ for (const contract of manifest.contracts) {
 }
 for (const required of ['effect-contract', 'effect-receipt']) {
   if (!contractIds.has(required)) findings.push(`PUBLIC_CONTRACT_MISSING: ${required}.`);
+  if (!publicContractInventory.contracts?.some(({ id }) => id === required)) {
+    findings.push(`PUBLIC_CONTRACT_INVENTORY_INCOMPLETE: generated inventory lacks ${required}.`);
+  }
 }
 
 validateBaseline(manifest.releasedV08Baseline, findings);
 const exactBaseline = manifest.releasedV08Baseline.status === 'exact-release';
-if (manifest.deploymentStateWrites.allowed !== exactBaseline) {
-  findings.push('V09_DEPLOYMENT_WRITE_POLICY_INVALID: deployment-state writes must exactly follow baseline qualification.');
+const migrationProposalReady = manifest.foundationGates.some(
+  ({ id, implemented }) => id === 'read-only-v0.8-migration-proposal' && implemented,
+);
+const deploymentWritesReady = exactBaseline && migrationProposalReady;
+const foundationReady = manifest.foundationGates
+  .filter(({ blocking }) => blocking)
+  .every(({ implemented }) => implemented);
+if (manifest.deploymentStateWrites.allowed !== deploymentWritesReady) {
+  findings.push('V09_DEPLOYMENT_WRITE_POLICY_INVALID: deployment-state writes require both the exact baseline and read-only migration proposal.');
 }
 if (!exactBaseline && manifest.deploymentStateWrites.blockedBy !== 'V09_BASELINE_RELEASE_UNAVAILABLE') {
   findings.push('V09_DEPLOYMENT_WRITE_POLICY_INVALID: unavailable baseline requires the stable blocking diagnostic.');
 }
-if (exactBaseline && manifest.status !== 'foundation-ready') {
-  findings.push('V09_FOUNDATION_STATUS_INVALID: an exact baseline requires foundation-ready status.');
-}
 if (!exactBaseline && manifest.status !== 'blocked-on-v0.8-release') {
   findings.push('V09_FOUNDATION_STATUS_INVALID: an unavailable baseline must remain visibly blocked.');
 }
-if (requireDeploymentWrites && !exactBaseline) {
+if (exactBaseline && !foundationReady && manifest.status !== 'foundation-in-progress') {
+  findings.push('V09_FOUNDATION_STATUS_INVALID: a partially implemented exact-release foundation must remain in progress.');
+}
+if (foundationReady && manifest.status !== 'foundation-ready') {
+  findings.push('V09_FOUNDATION_STATUS_INVALID: all blocking gates are implemented but status is not foundation-ready.');
+}
+if (requireDeploymentWrites && !deploymentWritesReady) {
   findings.push(
-    'V09_BASELINE_RELEASE_UNAVAILABLE: deployment-state work is blocked until an exact released v0.8 package, tag, schema, catalog, runtime, and evidence baseline is recorded.',
+    exactBaseline
+      ? 'V09_MIGRATION_PROPOSAL_UNAVAILABLE: deployment-state work is blocked until the read-only v0.8 logical-to-physical migration proposal is qualified.'
+      : 'V09_BASELINE_RELEASE_UNAVAILABLE: deployment-state work is blocked until an exact released v0.8 package, tag, schema, catalog, runtime, and evidence baseline is recorded.',
   );
 }
 

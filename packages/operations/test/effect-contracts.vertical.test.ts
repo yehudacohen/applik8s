@@ -62,6 +62,13 @@ describe('effect contracts', () => {
       receipt: { authority: 'provider', observation: 'unsupported' },
       retry: { mode: 'afterProvenAbsent', maximumAttempts: 2 },
     })).toThrow('requires a provider observation path');
+    expect(() => defineEffectContract({
+      ...contract,
+      guarantees: ['transactionalIntent'],
+      idempotency: { mode: 'none' },
+      receipt: { authority: 'provider', observation: 'byLogicalIdentity' },
+      retry: { mode: 'never', maximumAttempts: 1 },
+    })).toThrow('requires transaction-owned receipts');
   });
 
   it('preserves one logical identity across attempts and appends immutable receipts', () => {
