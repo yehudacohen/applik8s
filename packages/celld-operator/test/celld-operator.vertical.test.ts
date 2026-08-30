@@ -24,7 +24,7 @@ const manifestDigest = `sha256:${'b'.repeat(64)}`;
 
 function fleetSpec(overrides: Partial<CelldFleetSpec> = {}): CelldFleetSpec {
   return {
-    artifact: { image: `registry.example.test/celld@${digest}`, manifestDigest, workerVersion: '0.8.0', celldVersion: digest },
+    artifact: { image: `registry.example.test/celld@${digest}`, manifestDigest, workerVersion: '0.8.0', celldVersion: 'v0.4.0' },
     replicas: 3,
     objectStore: {
       dialect: 's3', bucket: 'actors', prefix: 'tenant-a', region: 'us-east-1',
@@ -69,7 +69,7 @@ describe('@applik8s/celld-operator', () => {
       },
     });
     const serialized = JSON.stringify(children.all);
-    expect(serialized).toContain('/__celld/health');
+    expect(serialized).toContain('/.well-known/celld/health');
     expect(serialized).toContain('operator-authorization');
     expect(serialized).toContain('actor-deployer');
     expect(serialized).toContain('applik8s-celld-operator');
@@ -89,6 +89,17 @@ describe('@applik8s/celld-operator', () => {
 
     expect(scaled.deploymentJob).toEqual(first.deploymentJob);
     expect(scaled.statefulSet).not.toEqual(first.statefulSet);
+  });
+
+  it('renders the release-specific readiness endpoint across the v0.3 to v0.4 boundary', () => {
+    const historical = renderCelldFleetChildren({
+      identity: { name: 'actors', namespace: 'tenant-a', uid: 'fleet-uid', generation: 1 },
+      spec: fleetSpec({ artifact: { ...fleetSpec().artifact, celldVersion: 'v0.3.0' } }),
+      fingerprint: `${manifestDigest}:1`,
+      rolloutPartition: 0,
+    });
+    expect(JSON.stringify(historical.statefulSet)).toContain('/__celld/health');
+    expect(JSON.stringify(historical.statefulSet)).not.toContain('/.well-known/celld/health');
   });
 
   it('distinguishes a historical artifact receipt from the receipt created for the active rollout', () => {
@@ -115,6 +126,7 @@ describe('@applik8s/celld-operator', () => {
     expect(classifyCelldVersionTransition('0.2.1', '0.2.1')).toBe('unchanged');
     expect(classifyCelldVersionTransition('0.2.1', '0.3.0')).toBe('requiresRecreate');
     expect(effectiveCelldRolloutStrategy('0.2.1', '0.3.0', 'Rolling')).toBe('Recreate');
+    expect(effectiveCelldRolloutStrategy('0.3.0', '0.4.0', 'Rolling')).toBe('Recreate');
     expect(effectiveCelldRolloutStrategy('0.3.0', '0.3.0', 'Rolling')).toBe('Rolling');
     expect(effectiveCelldRolloutStrategy('0.3.0', '0.3.0', 'Recreate')).toBe('Recreate');
   });
@@ -132,6 +144,40 @@ describe('@applik8s/celld-operator', () => {
     };
     expect(celldOperatorInternals.statefulSetUsesImageDigest(replacement, digest)).toBe(true);
     expect(celldOperatorInternals.statefulSetUsesImageDigest(replacement, `sha256:${'b'.repeat(64)}`)).toBe(false);
+  });
+
+  it('proves a zero-pod boundary before recreating an incompatible Celld fleet', async () => {
+    const oldPod = {
+      apiVersion: 'v1',
+      kind: 'Pod',
+      metadata: { name: 'actors-0', namespace: 'tenant-a' },
+      spec: { containers: [{ name: 'celld', image: `registry.example.test/celld@sha256:${'c'.repeat(64)}` }] },
+      status: { phase: 'Terminating' },
+    };
+    const fleet = {
+      apiVersion: 'celld.applik8s.io/v1alpha1',
+      kind: 'CelldFleet',
+      metadata: { name: 'actors', namespace: 'tenant-a' },
+      spec: fleetSpec({ replicas: 1 }),
+      status: {},
+    };
+
+    await expect(celldOperatorInternals.reconcileRolloutState(
+      fleet as never,
+      undefined,
+      [oldPod] as never,
+      'tenant-a',
+      digest,
+      'Recreate',
+    )).resolves.toMatchObject({ waitForFleetStop: true, waitingOn: 'previous fleet termination' });
+    await expect(celldOperatorInternals.reconcileRolloutState(
+      fleet as never,
+      undefined,
+      [],
+      'tenant-a',
+      digest,
+      'Recreate',
+    )).resolves.toEqual({ partition: 0, restoreBlocked: false });
   });
 
   it('does not create or own a caller-supplied workload-identity ServiceAccount', () => {

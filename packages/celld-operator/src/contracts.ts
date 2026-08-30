@@ -42,6 +42,7 @@ export const celldRuntimeArtifactV1 = Object.freeze({
 
 const dns1123 = /^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$/;
 const sha256 = /^sha256:[a-f0-9]{64}$/;
+const celldVersion = /^v[0-9]+\.[0-9]+\.[0-9]+$/;
 const immutableImage = /^(?:sha256:[a-f0-9]{64}|[a-z0-9][a-z0-9._/-]*(?::[a-zA-Z0-9._-]+)?@sha256:[a-f0-9]{64})$/;
 
 const CelldObjectStoreCredentialsSchema = type({
@@ -58,7 +59,7 @@ export const CelldFleetSpecSchema = type({
     image: immutableImage,
     manifestDigest: sha256,
     workerVersion: 'string > 0',
-    celldVersion: 'string > 0',
+    celldVersion,
   },
   replicas: '1 <= number.integer <= 100',
   'placement?': {
@@ -127,6 +128,7 @@ const dns1123OpenApiString = {
   pattern: '^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$',
 } as const;
 const sha256OpenApiString = { type: 'string', pattern: '^sha256:[a-f0-9]{64}$' } as const;
+const celldVersionOpenApiString = { type: 'string', pattern: '^v[0-9]+\\.[0-9]+\\.[0-9]+$' } as const;
 
 /**
  * One structural Kubernetes schema shared by the standalone operator compiler
@@ -142,7 +144,7 @@ export const celldFleetSpecOpenApiSchema = {
         image: { type: 'string', pattern: '^(?:sha256:[a-f0-9]{64}|[a-z0-9][a-z0-9._/-]*(?::[A-Za-z0-9._-]+)?@sha256:[a-f0-9]{64})$' },
         manifestDigest: sha256OpenApiString,
         workerVersion: nonemptyOpenApiString,
-        celldVersion: nonemptyOpenApiString,
+        celldVersion: celldVersionOpenApiString,
       },
     },
     replicas: { type: 'integer', minimum: 1, maximum: 100 },

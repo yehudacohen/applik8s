@@ -1,12 +1,13 @@
 import type { AnyKubernetesObject, ObjectMeta } from '@applik8s/core';
+import { celldHealthPath } from './compatibility.js';
 import {
+  type CelldFleetSpec,
   celldFleetFingerprintAnnotation,
   celldFleetLabel,
   celldFleetUidLabel,
   celldRuntimeSecretV1,
   gcsCredentialsSecretV1,
   s3CredentialsSecretV1,
-  type CelldFleetSpec,
 } from './contracts.js';
 
 export interface CelldFleetIdentity {
@@ -146,7 +147,7 @@ export function renderCelldFleetChildren(options: RenderCelldFleetChildrenOption
               { name: 'CELLD_WATCH', value: '/var/lib/celld/state' },
             ],
             ports: [{ name: 'celld', containerPort: 8080 }, { name: 'celld-peer', containerPort: 8081 }],
-            readinessProbe: { httpGet: { path: '/__celld/health', port: 'celld' }, initialDelaySeconds: 3, periodSeconds: 3, failureThreshold: 40 },
+            readinessProbe: { httpGet: { path: celldHealthPath(spec.artifact.celldVersion), port: 'celld' }, initialDelaySeconds: 3, periodSeconds: 3, failureThreshold: 40 },
             livenessProbe: { tcpSocket: { port: 'celld' }, initialDelaySeconds: 20, periodSeconds: 10, failureThreshold: 6 },
             volumeMounts: [{ name: 'runtime', mountPath: '/var/lib/celld' }],
             securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: ['ALL'] } },

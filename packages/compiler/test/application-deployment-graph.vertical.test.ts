@@ -27,8 +27,8 @@ const temporaryDirectories: string[] = [];
 const artifactDigest = `sha256:${"a".repeat(64)}`;
 const sourceGraphDigest = `sha256:${"b".repeat(64)}`;
 const historicalCelldRuntimeRelease = {
-  image: 'ghcr.io/denoland/celld@sha256:7a4380721b6400073f2a26afe70a828410169f658d31b5ef61383e648ca0c530',
-  version: 'sha256:7a4380721b6400073f2a26afe70a828410169f658d31b5ef61383e648ca0c530',
+  image: 'ghcr.io/denoland/celld@sha256:f47d97c2980aa98aef1d9c42205a313442f48acb606c5987dbb9b32983a23aaf',
+  version: 'v0.3.0',
 } as const satisfies ApplicationCelldRuntimeRelease;
 
 afterEach(async () => {

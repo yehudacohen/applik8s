@@ -114,6 +114,16 @@ const reconcile = CelldFleet.on.reconcile(async function reconcileCelldFleet(fle
     fleet.requeue({ afterSeconds: 2 });
     return;
   }
+  if (rollout.waitForFleetStop) {
+    setProgressingStatus(
+      fleet,
+      generation,
+      'WaitingForFleetStop',
+      'Waiting for every pod from the previous Celld runtime to terminate before creating the replacement StatefulSet.',
+    );
+    fleet.requeue({ afterSeconds: 2 });
+    return;
+  }
   const children = renderCelldFleetChildren({
     identity: { name: fleet.metadata.name, namespace, uid, generation },
     spec: fleet.spec,
@@ -433,8 +443,12 @@ async function reconcileRolloutState(
   namespace: string,
   desiredImageDigest: string,
   rolloutStrategy: 'Rolling' | 'Recreate',
-): Promise<{ readonly partition: number; readonly waitingOn?: string; readonly restoreBlocked: boolean; readonly recreateStatefulSet?: boolean }> {
-  if (!statefulSet) return { partition: 0, restoreBlocked: false };
+): Promise<{ readonly partition: number; readonly waitingOn?: string; readonly restoreBlocked: boolean; readonly recreateStatefulSet?: boolean; readonly waitForFleetStop?: boolean }> {
+  if (!statefulSet) {
+    return rolloutStrategy === 'Recreate' && pods.length > 0
+      ? { partition: 0, waitingOn: 'previous fleet termination', restoreBlocked: false, waitForFleetStop: true }
+      : { partition: 0, restoreBlocked: false };
+  }
   if (desiredPodCount(pods, desiredImageDigest) === fleet.spec.replicas) return { partition: 0, restoreBlocked: false };
   if (rolloutStrategy === 'Recreate') {
     return statefulSetUsesImageDigest(statefulSet, desiredImageDigest)

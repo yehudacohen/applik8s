@@ -38,8 +38,8 @@ import {
 } from './live-e2e-helpers.js';
 
 const historicalCelldRuntimeRelease = {
-  image: 'ghcr.io/denoland/celld@sha256:7a4380721b6400073f2a26afe70a828410169f658d31b5ef61383e648ca0c530',
-  version: 'sha256:7a4380721b6400073f2a26afe70a828410169f658d31b5ef61383e648ca0c530',
+  image: 'ghcr.io/denoland/celld@sha256:f47d97c2980aa98aef1d9c42205a313442f48acb606c5987dbb9b32983a23aaf',
+  version: 'v0.3.0',
 } as const satisfies ApplicationCelldRuntimeRelease;
 
 describeLive('v0.8 AC-2b operator-owned Celld Kubernetes lifecycle on OrbStack', () => {
@@ -380,7 +380,7 @@ describeLive('v0.8 AC-2b operator-owned Celld Kubernetes lifecycle on OrbStack',
           nestedString(value, 'metadata', 'uid') !== rollingStatefulSetUid
           && nestedNumber(value, 'status', 'readyReplicas') === 1,
         300_000,
-        'Celld v0.2.1 to v0.3.0 Recreate rollout',
+        'Celld v0.3.0 to v0.4.0 stop-before-start Recreate rollout',
       );
       const recreatedStatefulSetUid = requiredString(
         requiredObject(recreatedStatefulSet, 'metadata'),
@@ -393,7 +393,7 @@ describeLive('v0.8 AC-2b operator-owned Celld Kubernetes lifecycle on OrbStack',
           && nestedString(value, 'status', 'observedArtifactManifestDigest') === celldUpgradeManifest.manifestDigest
           && nestedString(value, 'status', 'observedCelldVersion') === applicationCelldRuntimeRelease.version,
         300_000,
-        'Celld v0.3.0 digest-bound runtime observation',
+        'Celld v0.4.0 digest-bound runtime observation',
       );
       await portForward.close();
       portForward = await startPortForward(namespace, `pod/${application}-actors-0`, 8080);
@@ -459,7 +459,7 @@ describeLive('v0.8 AC-2b operator-owned Celld Kubernetes lifecycle on OrbStack',
             nestedString(value, 'metadata', 'uid') !== recreatedStatefulSetUid
             && nestedNumber(value, 'status', 'readyReplicas') === 1,
           300_000,
-          'Celld v0.3.0 to v0.2.1 Recreate rollback',
+          'Celld v0.4.0 to v0.3.0 stop-before-start Recreate rollback',
         );
         expect(nestedString(rollbackStatefulSet, 'metadata', 'uid')).not.toBe(recreatedStatefulSetUid);
       } catch (cause) {
@@ -685,6 +685,16 @@ describeLive('v0.8 AC-2b operator-owned Celld Kubernetes lifecycle on OrbStack',
           ]);
         } catch (cause) {
           cleanupErrors.push(`secondary namespace: ${errorMessage(cause)}`);
+        }
+      }
+      if (deployment && !destroyed) {
+        try {
+          await kubectl([
+            'delete', `celldfleet/${application}-actors`, '--namespace', namespace,
+            '--ignore-not-found=true', '--wait=true', '--timeout=180s',
+          ]);
+        } catch (cause) {
+          cleanupErrors.push(`primary fleet: ${errorMessage(cause)}`);
         }
       }
       if (deployment && !destroyed) {

@@ -1,5 +1,17 @@
 export type CelldVersionTransition = 'unchanged' | 'requiresRecreate';
 
+export function celldHealthPath(version: string): string {
+  const match = /^v?([0-9]+)\.([0-9]+)\.([0-9]+)(?:-|$)/u.exec(version);
+  if (!match) {
+    throw new Error(`CelldFleet artifact.celldVersion must be an exact semantic version, received ${JSON.stringify(version)}.`);
+  }
+  const major = Number(match[1]);
+  const minor = Number(match[2]);
+  return major > 0 || minor >= 4
+    ? '/.well-known/celld/health'
+    : '/__celld/health';
+}
+
 /**
  * v0.8 intentionally qualifies rolling updates only within one Celld runtime
  * version. A version change has unknown mixed-version semantics until a pair is

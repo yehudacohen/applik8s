@@ -4,13 +4,13 @@ export const applicationCelldWorkerVersion = '0.8.0';
 export interface ApplicationCelldRuntimeRelease {
   /** Immutable, multi-platform Celld OCI image. */
   readonly image: `ghcr.io/denoland/celld@sha256:${string}`;
-  /** Exact OCI index digest also reported by the running runtime manifest. */
-  readonly version: `sha256:${string}`;
+  /** Exact upstream Celld release reported by the running runtime manifest. */
+  readonly version: `v${number}.${number}.${number}`;
 }
 
 export const applicationCelldRuntimeRelease: ApplicationCelldRuntimeRelease = Object.freeze({
-  image: 'ghcr.io/denoland/celld@sha256:f47d97c2980aa98aef1d9c42205a313442f48acb606c5987dbb9b32983a23aaf',
-  version: 'sha256:f47d97c2980aa98aef1d9c42205a313442f48acb606c5987dbb9b32983a23aaf',
+  image: 'ghcr.io/denoland/celld@sha256:f73157548ed8e54a4b50e9cecfcb0fb8e209fb4d35cf78b7c45815ce78a7929f',
+  version: 'v0.4.0',
 });
 export const applicationCelldVersion = applicationCelldRuntimeRelease.version;
 export const applicationCelldProtocolRevision = 'applik8s.actorAuthority/v1alpha1';
@@ -52,9 +52,12 @@ export function assertApplicationCelldRuntimeRelease(
   release: ApplicationCelldRuntimeRelease,
 ): void {
   const digest = release.image.slice(release.image.lastIndexOf('@') + 1);
-  if (!/^sha256:[a-f0-9]{64}$/u.test(digest) || release.version !== digest) {
+  if (!/^sha256:[a-f0-9]{64}$/u.test(digest)) {
     throw new Error(
-      'A Celld runtime release must bind its image and observed version to the same immutable sha256 OCI index digest.',
+      'A Celld runtime release must use an immutable sha256 OCI index digest.',
     );
+  }
+  if (!/^v[0-9]+\.[0-9]+\.[0-9]+$/u.test(release.version)) {
+    throw new Error('A Celld runtime release must declare its exact upstream vMAJOR.MINOR.PATCH version.');
   }
 }
