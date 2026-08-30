@@ -9,6 +9,24 @@ Last updated: 2026-08-27
 
 This backlog prioritizes correctness, excellence, and the public developer experience over feature completeness.
 
+## v0.9 Semantic completion and 1.0-readiness program
+
+Status: alpha.1 foundation started on `codex/v0.9-semantic-completion`.
+
+- Added the first provider-neutral effect contract and receipt state machine,
+  including stable logical identity, explicit provider guarantees, append-only
+  transition validation, unknown outcomes, proven absence, and authorized
+  operator resolution.
+- Added a machine-readable alpha.1 foundation manifest and executable gate.
+  It distinguishes the completed v0.8 source candidate from an exact released
+  v0.8 migration baseline and fails closed before any v0.9 work writes
+  deployment state.
+- Next foundation work: derive the complete public package/export/diagnostic
+  inventory, freeze implementation identity and profile resolution in the
+  ApplicationPlan schema, produce the read-only v0.8 migration proposal, add
+  the minimal `journey()` runner, and establish the documentation and first
+  clean-context evidence.
+
 ## v0.8 Explainable portable runtime program
 
 Status: implementation started on `codex/v0.8-rfps`; no release is authorized.

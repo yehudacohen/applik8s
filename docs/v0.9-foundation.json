@@ -1,0 +1,97 @@
+{
+  "schemaVersion": 1,
+  "release": "0.9.0-alpha.1",
+  "status": "blocked-on-v0.8-release",
+  "sourceCandidate": {
+    "packageVersion": "0.8.0",
+    "commit": "367d6003cd3f77087701624272f08df925ab33bf",
+    "qualification": "source-candidate-only"
+  },
+  "releasedV08Baseline": {
+    "status": "unavailable",
+    "npmVersion": null,
+    "gitTag": null,
+    "commit": null,
+    "applicationGraphSchema": null,
+    "applicationPlanSchema": null,
+    "providerCatalogDigest": null,
+    "runtimeProtocolVersions": [],
+    "evidenceManifest": null
+  },
+  "deploymentStateWrites": {
+    "allowed": false,
+    "blockedBy": "V09_BASELINE_RELEASE_UNAVAILABLE"
+  },
+  "contracts": [
+    {
+      "id": "effect-contract",
+      "package": "@applik8s/operations",
+      "entrypoint": ".",
+      "symbol": "EffectContract",
+      "schemaVersion": "applik8s.effectContract/v1alpha1",
+      "maturity": "stable-1.0-candidate",
+      "owner": "effect-safety",
+      "evidence": ["effect-contract-validation", "unknown-outcome-transition-tests"]
+    },
+    {
+      "id": "effect-receipt",
+      "package": "@applik8s/operations",
+      "entrypoint": ".",
+      "symbol": "EffectReceipt",
+      "schemaVersion": "applik8s.effectReceipt/v1alpha1",
+      "maturity": "stable-1.0-candidate",
+      "owner": "effect-safety",
+      "evidence": ["append-only-receipt-chain", "unknown-outcome-resolution"]
+    }
+  ],
+  "foundationGates": [
+    {
+      "id": "exact-v0.8-baseline",
+      "implemented": false,
+      "blocking": true,
+      "diagnostic": "V09_BASELINE_RELEASE_UNAVAILABLE"
+    },
+    {
+      "id": "effect-contract-schemas",
+      "implemented": true,
+      "blocking": true,
+      "diagnostic": "EFFECT_CONTRACT_UNQUALIFIED"
+    },
+    {
+      "id": "public-contract-inventory",
+      "implemented": false,
+      "blocking": true,
+      "diagnostic": "PUBLIC_CONTRACT_INVENTORY_INCOMPLETE"
+    },
+    {
+      "id": "profile-resolver-plan-schema",
+      "implemented": false,
+      "blocking": true,
+      "diagnostic": "PROFILE_IMPLEMENTATION_IDENTITY_UNAVAILABLE"
+    },
+    {
+      "id": "read-only-v0.8-migration-proposal",
+      "implemented": false,
+      "blocking": true,
+      "diagnostic": "V09_MIGRATION_PROPOSAL_UNAVAILABLE"
+    },
+    {
+      "id": "minimal-journey-runner",
+      "implemented": false,
+      "blocking": true,
+      "diagnostic": "JOURNEY_RUNNER_UNAVAILABLE"
+    },
+    {
+      "id": "documentation-skeleton",
+      "implemented": false,
+      "blocking": true,
+      "diagnostic": "V09_DOCUMENTATION_FOUNDATION_INCOMPLETE"
+    },
+    {
+      "id": "clean-context-alpha-1",
+      "implemented": false,
+      "blocking": true,
+      "diagnostic": "V09_CLEAN_CONTEXT_REVIEW_MISSING"
+    }
+  ]
+}

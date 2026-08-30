@@ -1,5 +1,19 @@
 # Release Notes
 
+## v0.9.0-alpha.1 (in development)
+
+The semantic-completion foundation now defines provider-neutral effect
+contracts and append-only receipts in `@applik8s/operations`. Providers state
+their real fencing, idempotency, observation, retry, cancellation, and
+compensation guarantees; managed runtimes preserve one logical identity and
+represent interrupted provider acceptance as an honest unknown outcome until
+observation or authorized operator disposition resolves it.
+
+A machine-readable foundation gate records the exact released-v0.8 baseline
+required for active-state migration. Because v0.8 has not yet been published,
+the gate deliberately blocks v0.9 deployment-state writes while allowing
+non-mutating contract work to proceed against the identified source candidate.
+
 ## v0.8.0
 
 Workflow tasks can now declare the maintained Usage module's
