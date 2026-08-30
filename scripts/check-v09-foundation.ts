@@ -112,7 +112,14 @@ for (const contract of manifest.contracts) {
     findings.push(`PUBLIC_CONTRACT_INCOMPLETE: ${contract.id}.`);
   }
 }
-for (const required of ['effect-contract', 'effect-receipt', 'implementation-identity', 'implementation-plan']) {
+for (const required of [
+  'effect-contract',
+  'effect-receipt',
+  'implementation-identity',
+  'implementation-plan',
+  'journey-definition',
+  'journey-result',
+]) {
   if (!contractIds.has(required)) findings.push(`PUBLIC_CONTRACT_MISSING: ${required}.`);
   if (!publicContractInventory.contracts?.some(({ id }) => id === required)) {
     findings.push(`PUBLIC_CONTRACT_INVENTORY_INCOMPLETE: generated inventory lacks ${required}.`);

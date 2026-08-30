@@ -107,7 +107,7 @@ Normal applications usually reach them through the CLI.
 | `@applik8s/deployment-alchemy` | Alchemy v2 deployment backend. |
 | `@applik8s/typekro-adapter` | TypeKro integration for authored operators and operation targets. |
 | `@applik8s/typetainer` | Dependency-light typed container image and build recipe utilities. |
-| `@applik8s/testing` | Local operator test harnesses and proxy recorders. |
+| `@applik8s/testing` | Source-owned application journeys, public-admission local runners, ownership-safe fixture cleanup, provider conformance, local operator harnesses, and proxy recorders. It is a development/test dependency and is excluded from production application bundles. |
 
 `@applik8s/typekro-adapter` participates in authoring and compilation;
 `@applik8s/deployment-typekro` binds the already-compiled deployment graph.

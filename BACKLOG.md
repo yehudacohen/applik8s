@@ -32,10 +32,14 @@ Status: alpha.1 foundation started on `codex/v0.9-semantic-completion`.
   metadata, and canonical serialization while rejecting missing bindings,
   incompatible capabilities, wildcard authority, identity collisions, and
   dependency cycles.
+- Added the minimal development-only `journey()` declaration and local runner
+  in `@applik8s/testing`. It traverses public admission, creates run-bound
+  identities, records semantic assertions, returns a versioned public result,
+  enforces real deadlines, and performs lease-authorized reverse-dependency
+  cleanup with explicit absence proof and redacted evidence.
 - Next foundation work: integrate the implementation plan with compilation,
-  produce the read-only v0.8 migration proposal, add
-  the minimal `journey()` runner, and establish the documentation and first
-  clean-context evidence.
+  produce the read-only v0.8 migration proposal, and establish the
+  documentation and first clean-context evidence.
 
 ## v0.8 Explainable portable runtime program
 

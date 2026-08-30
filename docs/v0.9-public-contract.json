@@ -8717,7 +8717,7 @@
       "name": "@applik8s/testing",
       "version": "0.8.0",
       "directory": "packages/testing",
-      "description": "Local testing harness for applik8s operators.",
+      "description": "Source-owned application journeys, provider conformance, and local operator testing for Applik8s.",
       "owner": "package:@applik8s/testing",
       "maturity": "candidate-review-required",
       "documentation": "docs/packages.md",
@@ -8738,6 +8738,38 @@
             "FakeCapabilityResponse",
             "HandlerProxyRecorder",
             "HandlerProxyRecorderOptions",
+            "JourneyAssertion",
+            "JourneyAssertionResult",
+            "JourneyAuthorityAssertion",
+            "JourneyAuthorityDecision",
+            "JourneyAuthorityExpectation",
+            "JourneyCleanupContext",
+            "JourneyCleanupContract",
+            "JourneyCleanupResult",
+            "JourneyContext",
+            "JourneyDeepPartial",
+            "JourneyDefinition",
+            "JourneyDefinitionOptions",
+            "JourneyDependencyReference",
+            "JourneyDiagnostic",
+            "JourneyEventWaitOptions",
+            "JourneyEvidenceReference",
+            "JourneyExecutionAdapter",
+            "JourneyExecutionError",
+            "JourneyHandler",
+            "JourneyIdentityFixture",
+            "JourneyIdentityFixtureRequest",
+            "JourneyIsolationLease",
+            "JourneyMode",
+            "JourneyOwnedResourceDescription",
+            "JourneyRequirement",
+            "JourneyResult",
+            "JourneyResultDraft",
+            "JourneyRoleReference",
+            "JourneyRunEnvironment",
+            "JourneyRunOptions",
+            "JourneyStepResult",
+            "LocalJourneyAdapterOptions",
             "ManifestMatcher",
             "OperatorDefinitionSource",
             "OperatorTestHarness",
@@ -8752,7 +8784,13 @@
             "TestRunOptions",
             "TestRunResult",
             "createHandlerProxyRecorder",
+            "defineJourneyAdapter",
             "inspectApplicationProviderPackageConformance",
+            "journey",
+            "journeyDefinitionVersion",
+            "journeyResultVersion",
+            "localJourneyAdapter",
+            "runJourney",
             "testOperator",
             "testing"
           ]
@@ -10180,6 +10218,62 @@
       "maturity": "candidate-review-required"
     },
     {
+      "code": "JOURNEY_ASSERTION_TIMEOUT",
+      "owner": "package:@applik8s/testing",
+      "sources": [
+        "packages/testing/src/journey.ts"
+      ],
+      "maturity": "candidate-review-required"
+    },
+    {
+      "code": "JOURNEY_AUTHORITY_SETUP_FAILED",
+      "owner": "package:@applik8s/testing",
+      "sources": [
+        "packages/testing/src/journey.ts"
+      ],
+      "maturity": "candidate-review-required"
+    },
+    {
+      "code": "JOURNEY_CLEANUP_INCOMPLETE",
+      "owner": "package:@applik8s/testing",
+      "sources": [
+        "packages/testing/src/journey.ts"
+      ],
+      "maturity": "candidate-review-required"
+    },
+    {
+      "code": "JOURNEY_DEPENDENCY_UNRESOLVED",
+      "owner": "package:@applik8s/testing",
+      "sources": [
+        "packages/testing/src/journey.ts"
+      ],
+      "maturity": "candidate-review-required"
+    },
+    {
+      "code": "JOURNEY_EVIDENCE_REDACTION_FAILED",
+      "owner": "package:@applik8s/testing",
+      "sources": [
+        "packages/testing/src/journey.ts"
+      ],
+      "maturity": "candidate-review-required"
+    },
+    {
+      "code": "JOURNEY_FIXTURE_UNAVAILABLE",
+      "owner": "package:@applik8s/testing",
+      "sources": [
+        "packages/testing/src/journey.ts"
+      ],
+      "maturity": "candidate-review-required"
+    },
+    {
+      "code": "JOURNEY_PROVIDER_INCOMPATIBLE",
+      "owner": "package:@applik8s/testing",
+      "sources": [
+        "packages/testing/src/journey.ts"
+      ],
+      "maturity": "candidate-review-required"
+    },
+    {
       "code": "KUBERNETES_API_ERROR",
       "owner": "package:@applik8s/core",
       "sources": [
@@ -11327,6 +11421,33 @@
         "recursive-resolution",
         "sharing-and-cycle-conformance",
         "canonical-serialization"
+      ]
+    },
+    {
+      "id": "journey-definition",
+      "package": "@applik8s/testing",
+      "entrypoint": ".",
+      "symbol": "JourneyDefinition",
+      "schemaVersion": "applik8s.journeyDefinition/v1alpha1",
+      "maturity": "stable-1.0-candidate",
+      "owner": "source-owned-journeys",
+      "evidence": [
+        "callback-native-declaration",
+        "public-admission-local-runner"
+      ]
+    },
+    {
+      "id": "journey-result",
+      "package": "@applik8s/testing",
+      "entrypoint": ".",
+      "symbol": "JourneyResult",
+      "schemaVersion": "applik8s.journeyResult/v1alpha1",
+      "maturity": "stable-1.0-candidate",
+      "owner": "source-owned-journeys",
+      "evidence": [
+        "versioned-portable-result",
+        "lease-scoped-cleanup",
+        "evidence-redaction"
       ]
     }
   ]

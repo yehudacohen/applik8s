@@ -63,6 +63,26 @@
       "maturity": "stable-1.0-candidate",
       "owner": "provider-resolution",
       "evidence": ["recursive-resolution", "sharing-and-cycle-conformance", "canonical-serialization"]
+    },
+    {
+      "id": "journey-definition",
+      "package": "@applik8s/testing",
+      "entrypoint": ".",
+      "symbol": "JourneyDefinition",
+      "schemaVersion": "applik8s.journeyDefinition/v1alpha1",
+      "maturity": "stable-1.0-candidate",
+      "owner": "source-owned-journeys",
+      "evidence": ["callback-native-declaration", "public-admission-local-runner"]
+    },
+    {
+      "id": "journey-result",
+      "package": "@applik8s/testing",
+      "entrypoint": ".",
+      "symbol": "JourneyResult",
+      "schemaVersion": "applik8s.journeyResult/v1alpha1",
+      "maturity": "stable-1.0-candidate",
+      "owner": "source-owned-journeys",
+      "evidence": ["versioned-portable-result", "lease-scoped-cleanup", "evidence-redaction"]
     }
   ],
   "foundationGates": [
@@ -98,7 +118,7 @@
     },
     {
       "id": "minimal-journey-runner",
-      "implemented": false,
+      "implemented": true,
       "blocking": true,
       "diagnostic": "JOURNEY_RUNNER_UNAVAILABLE"
     },

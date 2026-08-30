@@ -218,6 +218,11 @@ journey declaration.
 - `JOURNEY_ASSERTION_TIMEOUT`
 - `JOURNEY_CLEANUP_INCOMPLETE`
 - `JOURNEY_PROVIDER_INCOMPATIBLE`
+- `JOURNEY_EVIDENCE_REDACTION_FAILED`
+
+Adapter-produced evidence that contains a credential-shaped value fails closed
+under `JOURNEY_EVIDENCE_REDACTION_FAILED`; the unsafe evidence references are
+discarded rather than copied into the portable result.
 
 ## Implementation increments
 

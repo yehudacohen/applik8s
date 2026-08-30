@@ -24,6 +24,14 @@ survives source movement. Resolution preserves required guarantees and private
 provider authority and fails before mutation on ambiguity, missing bindings,
 capability mismatch, wildcard access, or dependency cycles.
 
+The development-only `@applik8s/testing` package now owns the first
+source-native `journey()` contract and local runner. Journeys call public
+application admission with explicit fixture identities, produce versioned
+portable results, block unsupported provider semantics instead of skipping,
+and clean external fixtures in lease-scoped reverse dependency order. Handler
+and cleanup deadlines settle even when user callbacks ignore cancellation;
+unsafe evidence fails closed and is never returned.
+
 ## v0.8.0
 
 Workflow tasks can now declare the maintained Usage module's

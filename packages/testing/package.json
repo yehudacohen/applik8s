@@ -1,7 +1,7 @@
 {
   "name": "@applik8s/testing",
   "version": "0.8.0",
-  "description": "Local testing harness for applik8s operators.",
+  "description": "Source-owned application journeys, provider conformance, and local operator testing for Applik8s.",
   "license": "Apache-2.0",
   "type": "module",
   "files": [
