@@ -3,11 +3,12 @@
 import { createHash } from 'node:crypto';
 import type {
   ApplicationGraph,
+  ApplicationImplementationPlanSet,
   ApplicationInstallationArtifactContract,
   ApplicationProviderNode,
   JsonObject,
 } from '@applik8s/core';
-import { applicationGraphMetadataProperty, applicationInstallationMetadataProperty } from '@applik8s/core';
+import { applicationGraphMetadataProperty, applicationImplementationPlanSetVersion, applicationImplementationPlansMetadataProperty, applicationInstallationMetadataProperty } from '@applik8s/core';
 import {
   applicationGraphAllConditions,
   applicationGraphBooleanCondition,
@@ -1187,6 +1188,21 @@ export function applicationGraphForComposition(composition: object): Application
     && Reflect.get(graph, 'apiVersion') === 'applik8s.appGraph/v1alpha1'
     && Reflect.get(graph, 'kind') === 'ApplicationGraph'
     ? graph as ApplicationGraph
+    : undefined;
+}
+
+export function applicationImplementationPlansForComposition(
+  composition: object,
+): ApplicationImplementationPlanSet | undefined {
+  const value = Reflect.get(composition, applicationImplementationPlansMetadataProperty);
+  const plans = value && typeof value === 'object'
+    ? Reflect.get(value, 'plans')
+    : undefined;
+  return value && typeof value === 'object'
+    && Reflect.get(value, 'apiVersion') === applicationImplementationPlanSetVersion
+    && Array.isArray(plans)
+    && plans.length > 0
+    ? value as ApplicationImplementationPlanSet
     : undefined;
 }
 

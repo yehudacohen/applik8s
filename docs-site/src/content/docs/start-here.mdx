@@ -35,8 +35,10 @@ compiler records both layers in a canonical plan before deployment.
 - source-owned acceptance journeys;
 - effect guarantees and honest unknown outcomes.
 
-The new v0.9 profile authoring syntax shown above is the intended API and remains under active implementation.
-The documentation marks such preview surfaces instead of presenting them as released behavior.
+The v0.9 profile syntax shown above is implemented as a preview contract. The compiler emits every authored
+profile into a digest-bound implementation-plan artifact, and deployment selects exactly the plan named by
+the installation. Infrastructure mutation remains blocked in this branch until the exact v0.8 release
+baseline is available and recorded.
 
 ## Next
 

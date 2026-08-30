@@ -7,3 +7,4 @@
  * execution families additive instead of accretive.
  */
 export * from './application-builder.js';
+export * from './application-assembly-profiles.js';

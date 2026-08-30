@@ -6,6 +6,9 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import {
   type ApplicationGraph,
   type ApplicationImplementationPlan,
+  type ApplicationImplementationPlanSet,
+  applicationImplementationPlanSetVersion,
+  applicationImplementationPlanVersion,
   serializeApplicationPlan,
 } from "@applik8s/core";
 import {
@@ -76,6 +79,14 @@ export async function emitApplicationDeploymentGraph(
   request: EmitApplicationDeploymentGraphRequest,
 ): Promise<EmittedApplicationDeploymentGraph> {
   const bundle = await readJson(request.bundlePath);
+  const implementationPlan = request.implementationPlan
+    ?? await implementationPlanForBundle(
+      bundle,
+      request.bundlePath,
+      request.projectRoot,
+      request.graph.metadata.name,
+      request.profile,
+    );
   const installationSpec = jsonObject(request.installationSpec, "installation spec");
   const materialized = withInstallationRuntimeBindings(
     await applicationMaterializedComposition(
@@ -155,7 +166,7 @@ export async function emitApplicationDeploymentGraph(
       target: 'kubernetes',
       profile: request.profile,
     }),
-    ...(request.implementationPlan ? { implementationPlan: request.implementationPlan } : {}),
+    ...(implementationPlan ? { implementationPlan } : {}),
   })));
   return {
     path,
@@ -1719,6 +1730,67 @@ async function resolveArtifactPath(
   throw new Error(
     `Compiler artifact ${path} does not exist at ${candidates.join(" or ")}.`,
   );
+}
+
+async function implementationPlanForBundle(
+  bundle: DeploymentJsonObject,
+  bundlePath: string,
+  projectRoot: string,
+  application: string,
+  profile: string,
+): Promise<ApplicationImplementationPlan | undefined> {
+  const spec = optionalObject(bundle.spec);
+  const reference = optionalObject(spec?.implementationPlans);
+  if (!reference) return undefined;
+  if (reference.apiVersion !== applicationImplementationPlanSetVersion) {
+    throw new Error(
+      `Implementation-plan artifact has unsupported API version ${String(reference.apiVersion)}.`,
+    );
+  }
+  const artifactPath = await resolveArtifactPath(
+    stringValue(reference.path, 'Implementation-plan artifact path'),
+    bundlePath,
+    projectRoot,
+  );
+  const expectedDigest = digestValue(
+    reference.digest,
+    'Implementation-plan artifact digest',
+  );
+  const source = await readFile(artifactPath, 'utf8');
+  const observedDigest = `sha256:${createHash('sha256').update(source).digest('hex')}`;
+  if (observedDigest !== expectedDigest) {
+    throw new Error(
+      `Implementation-plan artifact digest mismatch: expected ${expectedDigest}, observed ${observedDigest}.`,
+    );
+  }
+  const value = JSON.parse(source) as unknown;
+  const set = objectValue(value, 'Implementation-plan artifact') as unknown as ApplicationImplementationPlanSet;
+  if (set.apiVersion !== applicationImplementationPlanSetVersion) {
+    throw new Error('Implementation-plan artifact body has an unsupported API version.');
+  }
+  if (set.application !== application) {
+    throw new Error(
+      `Implementation-plan artifact belongs to ${String(set.application)}, expected ${application}.`,
+    );
+  }
+  if (!Array.isArray(set.plans)) {
+    throw new Error('Implementation-plan artifact plans must be an array.');
+  }
+  const matches = set.plans.filter((candidate) => candidate.profile?.id === profile);
+  if (matches.length !== 1) {
+    const available = set.plans
+      .map((candidate) => candidate.profile?.id)
+      .filter((candidate): candidate is string => typeof candidate === 'string')
+      .sort();
+    throw new Error(
+      `Application profile ${profile} resolves to ${matches.length} implementation plans. Available profiles: ${available.join(', ') || '<none>'}.`,
+    );
+  }
+  const plan = matches[0];
+  if (!plan || plan.schemaVersion !== applicationImplementationPlanVersion) {
+    throw new Error(`Application profile ${profile} has an unsupported implementation-plan schema.`);
+  }
+  return plan;
 }
 
 async function readJson(path: string): Promise<DeploymentJsonObject> {

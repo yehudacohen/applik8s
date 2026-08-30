@@ -1,17 +1,18 @@
 // typecast-file-boundary: the compiler validates graph discriminators and generated artifact shapes before projecting erased node unions into emitters.
 import { access, chmod, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
-import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { celldOperator } from '@applik8s/celld-operator';
 import type {
   ApplicationGraph,
+  ApplicationImplementationPlanSet,
   ApplicationInstallationArtifactContract,
   BundleArtifact,
   Diagnostic,
   OperatorDefinition,
   Result,
 } from '@applik8s/core';
-import { applicationGraphArtifactFileName, applicationOperationCatalogArtifactFileName, applicationWorkloadAuthorityArtifactFileName, serializeApplicationGraph, validateApplicationGraph } from '@applik8s/core';
+import { applicationGraphArtifactFileName, applicationImplementationPlansArtifactFileName, applicationOperationCatalogArtifactFileName, applicationWorkloadAuthorityArtifactFileName, serializeApplicationGraph, serializeApplicationImplementationPlanSet, validateApplicationGraph } from '@applik8s/core';
 import type { ApplicationFrameworkCredentialDependency } from '@applik8s/deployment-contract';
 import { stringify } from 'yaml';
 import { emitGeneratedApplicationAgents } from '../application-agents/index.js';
@@ -45,6 +46,7 @@ import { emitHandlerWitArtifact, emitRuntimeContractArtifact } from '../runtime-
 import { emitWasmComponentArtifact } from '../wasm-component/index.js';
 import {
   applicationGraphForComposition,
+  applicationImplementationPlansForComposition,
   applicationInstallationForComposition,
   filterReplacedFunctionNativeServerResources,
   injectGeneratedResourcesIntoApplicationRgd,
@@ -92,11 +94,11 @@ import {
 import { typeKroSingletonOwnerInstances } from './typekro-singleton-instances.js';
 import { digestFile, safePathSegment, unique } from './utilities.js';
 
-export { bundleApplicationCompositionRuntimeEntrypoint } from './runtime-entrypoint.js';
 export {
   instrumentApplicationCallbackRegistrations,
   instrumentApplicationRuntimeModule,
 } from './entrypoint-handler-instrumentation.js';
+export { bundleApplicationCompositionRuntimeEntrypoint } from './runtime-entrypoint.js';
 export type {
   TypeKroCompositionAgentArtifactReference,
   TypeKroCompositionArtifacts,
@@ -252,6 +254,7 @@ interface EmitTypeKroCompositionArtifactsRequest {
   readonly composition: CompiledTypeKroComposition;
   readonly operatorCompiles: readonly CompileResult[];
   readonly applicationGraph?: ApplicationGraph;
+  readonly implementationPlans?: ApplicationImplementationPlanSet;
   readonly applicationInstallation?: ApplicationInstallationArtifactContract;
   readonly operationCatalogPolicy?: 'development' | 'production';
   readonly executionTarget?: 'kubernetes' | 'local' | 'aws-local' | 'aws';
@@ -352,6 +355,8 @@ export async function compileTypeKroComposition(request: CompileTypeKroCompositi
   }
   const authoredApplicationGraph =
     applicationGraphForComposition(composition.value);
+  const implementationPlans =
+    applicationImplementationPlansForComposition(composition.value);
   const publicApplicationGraph = authoredApplicationGraph
     ? applicationGraphWithEntrypointPublicSurface(
         await applicationGraphWithInferredApplicationHost(
@@ -416,6 +421,7 @@ export async function compileTypeKroComposition(request: CompileTypeKroCompositi
     composition: resolvedComposition.value,
     operatorCompiles,
     ...(applicationGraph ? { applicationGraph } : {}),
+    ...(implementationPlans ? { implementationPlans } : {}),
     ...(applicationInstallation ? { applicationInstallation } : {}),
     ...(request.operationCatalogPolicy ? { operationCatalogPolicy: request.operationCatalogPolicy } : {}),
     ...(request.executionTarget ? { executionTarget: request.executionTarget } : {}),
@@ -646,6 +652,9 @@ async function emitTypeKroCompositionArtifacts(request: EmitTypeKroCompositionAr
     const applyScriptPath = join(request.outDir, 'apply.sh');
     const templateManifestListPath = join(request.outDir, 'template-manifests.txt');
     const applicationGraphJsonPath = request.applicationGraph ? join(request.outDir, applicationGraphArtifactFileName) : undefined;
+    const implementationPlansJsonPath = request.implementationPlans
+      ? join(request.outDir, applicationImplementationPlansArtifactFileName)
+      : undefined;
     const operationCatalogJsonPath = request.applicationGraph ? join(request.outDir, applicationOperationCatalogArtifactFileName) : undefined;
     const workloadAuthorityJsonPath = request.applicationGraph ? join(request.outDir, applicationWorkloadAuthorityArtifactFileName) : undefined;
     const resourceYamlPaths: string[] = [];
@@ -656,6 +665,15 @@ async function emitTypeKroCompositionArtifacts(request: EmitTypeKroCompositionAr
       await writeFile(applicationGraphJsonPath, serializeApplicationGraph(request.applicationGraph));
     }
     const applicationGraphDigest = applicationGraphJsonPath ? await digestFile(applicationGraphJsonPath) : undefined;
+    if (request.implementationPlans && implementationPlansJsonPath) {
+      await writeFile(
+        implementationPlansJsonPath,
+        serializeApplicationImplementationPlanSet(request.implementationPlans),
+      );
+    }
+    const implementationPlansDigest = implementationPlansJsonPath
+      ? await digestFile(implementationPlansJsonPath)
+      : undefined;
     if (operationCatalog && operationCatalogJsonPath) {
       await writeFile(operationCatalogJsonPath, `${JSON.stringify(operationCatalog, null, 2)}\n`);
     }
@@ -685,6 +703,14 @@ async function emitTypeKroCompositionArtifacts(request: EmitTypeKroCompositionAr
             apiVersion: request.applicationGraph.apiVersion,
             path: applicationGraphJsonPath,
             digest: applicationGraphDigest,
+          },
+        } : {}),
+        ...(request.implementationPlans && implementationPlansJsonPath && implementationPlansDigest ? {
+          implementationPlans: {
+            apiVersion: request.implementationPlans.apiVersion,
+            path: implementationPlansJsonPath,
+            digest: implementationPlansDigest,
+            count: request.implementationPlans.plans.length,
           },
         } : {}),
         ...(operationCatalog && operationCatalogJsonPath && operationCatalogDigest ? {
@@ -767,6 +793,7 @@ async function emitTypeKroCompositionArtifacts(request: EmitTypeKroCompositionAr
         resourceYamlPaths,
         instanceYamlPaths,
         ...(applicationGraphJsonPath ? { applicationGraphJsonPath } : {}),
+        ...(implementationPlansJsonPath ? { implementationPlansJsonPath } : {}),
         ...(operationCatalogJsonPath ? { operationCatalogJsonPath } : {}),
         ...(workloadAuthorityJsonPath ? { workloadAuthorityJsonPath } : {}),
         workloadAuthority,

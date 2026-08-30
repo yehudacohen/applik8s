@@ -7,6 +7,9 @@ import { applicationProviderIdentity } from './application-foundation.js';
 import { canonicalJsonV1String } from './canonical-json.js';
 
 export const applicationImplementationPlanVersion = 'applik8s.implementationPlan/v1alpha1' as const;
+export const applicationImplementationPlanSetVersion = 'applik8s.implementationPlanSet/v1alpha1' as const;
+export const applicationImplementationPlansMetadataProperty = '__applik8sApplicationImplementationPlans';
+export const applicationImplementationPlansArtifactFileName = 'application-implementation-plans.json';
 
 export interface ApplicationCapabilityReference {
   readonly interface: string;
@@ -21,6 +24,7 @@ export interface ApplicationProviderConstructorReference {
 
 export type ApplicationImplementationIdentitySource =
   | { readonly kind: 'named'; readonly name: string }
+  | { readonly kind: 'binding'; readonly binding: string }
   | { readonly kind: 'declaration' }
   | { readonly kind: 'inline'; readonly parent: string; readonly slot: string };
 
@@ -135,6 +139,12 @@ export interface ApplicationImplementationPlan {
   readonly bindings: readonly ApplicationImplementationBindingPlan[];
   readonly implementations: readonly ApplicationImplementationPlanNode[];
   readonly dependencies: readonly ApplicationImplementationDependencyPlan[];
+}
+
+export interface ApplicationImplementationPlanSet {
+  readonly apiVersion: typeof applicationImplementationPlanSetVersion;
+  readonly application: string;
+  readonly plans: readonly ApplicationImplementationPlan[];
 }
 
 export class ApplicationImplementationResolutionError extends Error {
@@ -415,6 +425,46 @@ export function serializeApplicationImplementationPlan(plan: ApplicationImplemen
   return `${canonicalJsonV1String(plan)}\n`;
 }
 
+export function applicationImplementationPlanSet(
+  application: string,
+  plans: readonly ApplicationImplementationPlan[],
+): ApplicationImplementationPlanSet {
+  requireText(application, 'application');
+  const profiles = new Set<string>();
+  for (const plan of plans) {
+    if (plan.schemaVersion !== applicationImplementationPlanVersion) {
+      throw resolutionError(
+        'PROVIDER_CONFIGURATION_INVALID',
+        `Implementation plan ${plan.profile.id} has unsupported schema version ${String(plan.schemaVersion)}.`,
+      );
+    }
+    if (plan.application !== application) {
+      throw resolutionError(
+        'PROVIDER_CONFIGURATION_INVALID',
+        `Implementation plan ${plan.profile.id} belongs to ${plan.application}, expected ${application}.`,
+      );
+    }
+    if (profiles.has(plan.profile.id)) {
+      throw resolutionError(
+        'PROFILE_BINDING_CONFLICT',
+        `Implementation plan profile ${plan.profile.id} is duplicated.`,
+      );
+    }
+    profiles.add(plan.profile.id);
+  }
+  return Object.freeze({
+    apiVersion: applicationImplementationPlanSetVersion,
+    application,
+    plans: Object.freeze([...plans].sort((left, right) => left.profile.id.localeCompare(right.profile.id))),
+  });
+}
+
+export function serializeApplicationImplementationPlanSet(
+  value: ApplicationImplementationPlanSet,
+): string {
+  return `${canonicalJsonV1String(value)}\n`;
+}
+
 function implementationIdentity(
   application: string,
   declaration: ApplicationImplementationDeclaration,
@@ -428,6 +478,15 @@ function implementationIdentity(
     requireText(declaration.identity.name, 'implementation explicit identity');
     explicitName = declaration.identity.name;
     semanticKey = lengthPrefixed(['named', capability, declaration.provider.package, declaration.provider.export, explicitName]);
+  } else if (declaration.identity.kind === 'binding') {
+    requireText(declaration.identity.binding, 'implementation binding identity');
+    semanticKey = lengthPrefixed([
+      'binding',
+      capability,
+      declaration.provider.package,
+      declaration.provider.export,
+      declaration.identity.binding,
+    ]);
   } else if (declaration.identity.kind === 'inline') {
     requireText(declaration.identity.slot, 'inline implementation slot');
     const parentIdentity = resolveIdentity(declaration.identity.parent);

@@ -65,6 +65,26 @@
       "evidence": ["recursive-resolution", "sharing-and-cycle-conformance", "canonical-serialization", "application-plan-integration", "compiler-artifact-forwarding"]
     },
     {
+      "id": "assembly-profile-definition",
+      "package": "@applik8s/applik8s",
+      "entrypoint": ".",
+      "symbol": "ApplicationAssemblyProfileDefinition",
+      "schemaVersion": "applik8s.assemblyProfile/v1alpha1",
+      "maturity": "stable-1.0-candidate",
+      "owner": "provider-resolution",
+      "evidence": ["target-free-profile-authoring", "deterministic-profile-planning", "profile-rename-identity-stability"]
+    },
+    {
+      "id": "implementation-plan-set",
+      "package": "@applik8s/core",
+      "entrypoint": ".",
+      "symbol": "ApplicationImplementationPlanSet",
+      "schemaVersion": "applik8s.implementationPlanSet/v1alpha1",
+      "maturity": "stable-1.0-candidate",
+      "owner": "provider-resolution",
+      "evidence": ["compiler-discovery", "digest-bound-bundle-artifact", "deployment-profile-selection"]
+    },
+    {
       "id": "journey-definition",
       "package": "@applik8s/testing",
       "entrypoint": ".",

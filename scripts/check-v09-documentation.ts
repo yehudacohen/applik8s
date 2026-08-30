@@ -10,7 +10,7 @@ const requiredPages = {
   'docs-site/src/content/docs/start-here.mdx': [
     'What is Applik8s?',
     "application.profile('local'",
-    'under active implementation',
+    'implemented as a preview contract',
   ],
   'docs-site/src/content/docs/build-applications/operations-and-effects.mdx': [
     'await Billing.changePlan',
@@ -21,6 +21,7 @@ const requiredPages = {
   'docs-site/src/content/docs/understand/implementation-plans.mdx': [
     'Implementation:',
     'fails before mutation',
+    'application-implementation-plans.json',
     'explicit migration before 1.0',
   ],
   'docs-site/src/content/docs/understand/journeys.mdx': [

@@ -36,6 +36,12 @@ export interface TypeKroCompositionBundleManifest extends JsonObject {
     readonly resourceCount: number;
     readonly operators: readonly TypeKroCompositionOperatorArtifactReference[];
     readonly applicationGraph?: ApplicationGraphArtifactReference;
+    readonly implementationPlans?: {
+      readonly apiVersion: 'applik8s.implementationPlanSet/v1alpha1';
+      readonly path: string;
+      readonly digest: string;
+      readonly count: number;
+    };
     readonly operationCatalog?: {
       readonly apiVersion: 'applik8s.operationCatalog/v1alpha1';
       readonly revision: string;
@@ -219,6 +225,7 @@ export interface TypeKroCompositionArtifacts {
   readonly resourceYamlPaths: readonly string[];
   readonly instanceYamlPaths: readonly string[];
   readonly applicationGraphJsonPath?: string;
+  readonly implementationPlansJsonPath?: string;
   readonly operationCatalogJsonPath?: string;
   readonly workloadAuthorityJsonPath?: string;
   readonly workloadAuthority: readonly ApplicationWorkloadAuthorityEnvelope[];

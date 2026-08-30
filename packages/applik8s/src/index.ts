@@ -3,6 +3,7 @@ export type * from '@applik8s/core';
 export { applicationCausalPrincipalContext, validateApplicationAuthorizationReceipt } from '@applik8s/core';
 export * from '@applik8s/sdk';
 export * from '@applik8s/typetainer';
+export * from './application-assembly-profiles.js';
 export type * from './application.js';
 export type { ApplicationModuleContext, ApplicationModuleDefinition, ApplicationModuleMetadata, ApplicationModuleOptions, ApplicationModuleReference, ApplicationModuleSetup } from './application.js';
 export { ActorRuntime, AnalyticalDatabase, Analytics, ApplicationDurableError, ApplicationHost, Authorization, app, applicationGraphFor, applicationValueDefault, applicationValueString, Certificate, ContainerRegistry, CounterStore, CredentialStore, createDeterministicApplicationLakehouseRuntime, Database, DnsPublication, defaultApplicationEventLogProvider, defaultApplicationProviders, defaultApplicationWorkflowEngineProvider, defineApplicationModule, defineApplicationProvider, EventLog, EventSource, HttpExposure, IdentityProvider, IndexStore, installApplicationLakehouseQueryRuntimeResolver, installApplicationWorkflowRuntimeResolver, installApplicationWorkflowSignalRuntimeResolver, isApplicationDurableError, kubernetesComposition, Lakehouse, LakehouseDataset, LakehouseQuery, module, OAuthAuthorizationServer, ObjectStorage, Observability, providers, Queue, Scheduler, Search, Secret, StructuredGeneration, sdk, search, TransactionalDatabase, telemetryPolicy, WorkflowEngine } from './application.js';

@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
+  applicationImplementationPlanSet,
   resolveApplicationImplementationPlan,
   serializeApplicationImplementationPlan,
+  serializeApplicationImplementationPlanSet,
   sourceProvenance,
   type ApplicationCapabilityReference,
   type ApplicationImplementationDeclaration,
@@ -78,6 +80,35 @@ function input(overrides: Partial<ApplicationImplementationResolutionInput> = {}
 }
 
 describe('application implementation planning', () => {
+  it('derives profile-name-independent identity for directly bound implementations', () => {
+    const database = implementation('database', Database, {
+      identity: { kind: 'binding', binding: 'TransactionalDatabase@v1:primary' },
+    });
+    const local = resolveApplicationImplementationPlan({
+      application: 'chirp',
+      profile: {
+        id: 'development',
+        digest: sha('d'),
+        provenance: [sourceProvenance({ origin: 'authored', module: 'profiles.ts', symbol: 'development' })],
+      },
+      declarations: [database],
+      bindings: [{ id: 'binding:database', capability: Database, implementation: 'database', provenance: database.provenance }],
+    });
+    const renamed = resolveApplicationImplementationPlan({
+      application: 'chirp',
+      profile: {
+        id: 'local',
+        digest: sha('l'),
+        provenance: [sourceProvenance({ origin: 'authored', module: 'profiles.ts', symbol: 'local' })],
+      },
+      declarations: [database],
+      bindings: [{ id: 'binding:database', capability: Database, implementation: 'database', provenance: database.provenance }],
+    });
+
+    expect(local.implementations[0]?.id).toBe(renamed.implementations[0]?.id);
+    expect(local.implementations[0]?.identity.source).toBe('binding');
+  });
+
   it('materializes reused implementations once and retains every typed consumer edge', () => {
     const source = input();
     const plan = resolveApplicationImplementationPlan(input({
@@ -132,6 +163,29 @@ describe('application implementation planning', () => {
       bindings: [...source.bindings].reverse(),
     });
     expect(serializeApplicationImplementationPlan(second)).toBe(serializeApplicationImplementationPlan(first));
+  });
+
+  it('builds a deterministic profile-indexed implementation-plan set', () => {
+    const first = resolveApplicationImplementationPlan(input());
+    const source = input();
+    const second = resolveApplicationImplementationPlan(input({
+      profile: { ...source.profile, id: 'development', digest: sha('d') },
+    }));
+    const set = applicationImplementationPlanSet('chirp', [first, second]);
+
+    expect(set.plans.map(({ profile }) => profile.id)).toEqual([
+      'development',
+      'production-kubernetes',
+    ]);
+    expect(serializeApplicationImplementationPlanSet(set)).toContain(
+      'applik8s.implementationPlanSet/v1alpha1',
+    );
+    expect(() => applicationImplementationPlanSet('other', [first])).toThrow(
+      /belongs to chirp/u,
+    );
+    expect(() => applicationImplementationPlanSet('chirp', [first, first])).toThrow(
+      /duplicated/u,
+    );
   });
 
   it('uses explicit logical identity to survive source movement without renaming physical resources', () => {

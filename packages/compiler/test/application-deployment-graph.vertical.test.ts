@@ -1,6 +1,7 @@
 // typecast-file-boundary: Test fixtures preserve literal discriminants while
 // exercising compiler shadow emission without loading the compiler's
 // worker-backed bundling entrypoints into Bun's test process.
+import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { ApplicationGraph } from "@applik8s/core";
@@ -953,10 +954,34 @@ describe("compiler deployment graph emission", () => {
     temporaryDirectories.push(directory);
     const bundlePath = join(directory, "typekro-bundle.json");
     const manifestPath = join(directory, "operator-manifest.json");
+    const implementationPlan = {
+      schemaVersion: 'applik8s.implementationPlan/v1alpha1' as const,
+      application: 'notes',
+      profile: {
+        id: 'local',
+        digest: `sha256:${'c'.repeat(64)}`,
+        provenance: [],
+      },
+      bindings: [],
+      implementations: [],
+      dependencies: [],
+    };
+    const implementationPlansPath = join(directory, 'application-implementation-plans.json');
+    const implementationPlansSource = JSON.stringify({
+      apiVersion: 'applik8s.implementationPlanSet/v1alpha1',
+      application: 'notes',
+      plans: [implementationPlan],
+    });
+    await writeFile(implementationPlansPath, implementationPlansSource);
     await writeFile(
       bundlePath,
       JSON.stringify({
         spec: {
+          implementationPlans: {
+            apiVersion: 'applik8s.implementationPlanSet/v1alpha1',
+            path: implementationPlansPath,
+            digest: `sha256:${createHash('sha256').update(implementationPlansSource).digest('hex')}`,
+          },
           agents: [
             generatedContainerEntry("researcher", "agent"),
           ],
@@ -1042,18 +1067,6 @@ describe("compiler deployment graph emission", () => {
       profile: "local",
       strategy: "kro" as const,
       installationSpec: { name: "notes", namespace: "notes" },
-      implementationPlan: {
-        schemaVersion: 'applik8s.implementationPlan/v1alpha1' as const,
-        application: 'notes',
-        profile: {
-          id: 'local',
-          digest: `sha256:${'c'.repeat(64)}`,
-          provenance: [],
-        },
-        bindings: [],
-        implementations: [],
-        dependencies: [],
-      },
     };
     const first = await emitApplicationDeploymentGraph(request);
     const second = await emitApplicationDeploymentGraph(request);
@@ -1174,6 +1187,11 @@ describe("compiler deployment graph emission", () => {
       acknowledgements: ["reviewed-transition"],
     });
     expect(transition.digest).not.toBe(fresh.digest);
+
+    await writeFile(implementationPlansPath, `${implementationPlansSource}\n`);
+    await expect(emitApplicationDeploymentGraph(request)).rejects.toThrow(
+      /Implementation-plan artifact digest mismatch/u,
+    );
   });
 });
 

@@ -16,6 +16,25 @@ and lifecycle ownership
 **Unblocks:** One coherent assembly experience for local, Kubernetes, AWS, external, and mixed-provider
 applications without target, placement, substrate, or installation abstractions in application source
 
+## Implementation progress
+
+The target-free authoring and immutable planning vertical is implemented on the v0.9 branch:
+
+- `application.profile(name, callback)` binds inspectable capability implementations without an
+  installation discriminator or deployment target;
+- direct bindings derive identity from the semantic capability binding, while `.identified(name)` is the
+  explicit refactor-stability escape hatch;
+- recursive private dependencies, reuse, guarantees, lifecycle, readiness, migration, maturity, evidence,
+  and configuration-source metadata lower into `ApplicationImplementationPlan`;
+- the compiler emits every authored profile in a versioned, digest-bound
+  `application-implementation-plans.json` artifact;
+- deployment selects exactly one plan for the installation profile and rejects missing, ambiguous, or
+  tampered plan artifacts before infrastructure mutation.
+
+Provider-constructor coverage, target parity, and deployment migration qualification remain subsequent
+implementation phases. Deployment-state mutation remains blocked until the exact released v0.8 baseline
+is recorded.
+
 ## Executive summary
 
 Profiles and deployment targets currently overlap. Attempts to resolve that overlap with installation,

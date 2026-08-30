@@ -1,13 +1,13 @@
-import { describe, expect, it } from 'vitest';
 import type { JsonValue, RuntimeSchema } from '@applik8s/core';
+import { describe, expect, it } from 'vitest';
 import {
-  EffectContractSchemaVersion,
-  EffectReceiptSchemaVersion,
   appendEffectReceipt,
   defineEffectContract,
   type EffectContract,
+  EffectContractSchemaVersion,
   type EffectInvocationIdentity,
   type EffectReceipt,
+  EffectReceiptSchemaVersion,
 } from '../src/index.js';
 
 const schema = {} as RuntimeSchema<Record<string, JsonValue>>;
@@ -26,12 +26,18 @@ const identity: EffectInvocationIdentity = {
   causalPrincipalId: 'principal:owner-1',
 };
 
-function receipt<T extends EffectReceipt>(value: Omit<T, 'apiVersion' | 'identity'>): T {
+type EffectReceiptInput<T extends EffectReceipt> = T extends EffectReceipt
+  ? Omit<T, 'apiVersion' | 'identity'>
+  : never;
+
+function receipt<T extends EffectReceipt>(value: EffectReceiptInput<T>): T {
+  // typecast-test-boundary: the helper injects the two shared receipt fields
+  // after TypeScript has already checked the selected distributive variant.
   return {
     apiVersion: EffectReceiptSchemaVersion,
     identity,
     ...value,
-  } as T;
+  } as unknown as T;
 }
 
 describe('effect contracts', () => {

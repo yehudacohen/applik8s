@@ -6,7 +6,7 @@ import {
   getApplicationOperationContract,
 } from '@applik8s/client';
 import type { AnyResourceDefinition, ApplicationGeneratedResourceContract, ApplicationGraph, ApplicationObservabilityContract, ApplicationOperationAuthorityGraphContract, ApplicationProfileProviderSelectionContract, ApplicationProviderInterfaceKind, HandlerRegistration, JsonObject, JsonValue, NormalizedOperationPlan, OperationTarget, OperatorDeploymentOptions, PermissionRule, PlanTargetOptions, ResourceDefinition, ResourceIndex, ResourceObject, Result } from '@applik8s/core';
-import { applicationGraphMetadataProperty, applicationInstallationMetadataProperty, applicationOperationId, applicationTypeKroDefinitionProperty, normalizeApplicationGraph } from '@applik8s/core';
+import { applicationGraphMetadataProperty, applicationImplementationPlanSet, applicationImplementationPlansMetadataProperty, applicationInstallationMetadataProperty, applicationOperationId, applicationTypeKroDefinitionProperty, normalizeApplicationGraph } from '@applik8s/core';
 import type { CrdOptions, SchemaInput } from '@applik8s/sdk';
 import { sdk as baseSdk, normalizeSchema, setOperatorDeploymentInterceptor } from '@applik8s/sdk';
 import type { TypeKroListenerComposition, TypeKroListenerCompositionDefinition } from '@applik8s/typekro-adapter';
@@ -28,6 +28,12 @@ import {
   registerApplicationAgent,
 } from './application-ai.js';
 import { emitApplicationAnalyticalDatabaseResources } from './application-analytical-database-resources.js';
+import {
+  type ApplicationAssemblyProfileBuilder,
+  type ApplicationAssemblyProfileCatalog,
+  type ApplicationAssemblyProfileDefinition,
+  createApplicationAssemblyProfileCatalog,
+} from './application-assembly-profiles.js';
 import {
   type ApplicationAuthorityGraphState,
   type ApplicationAuthorityRegistrar,
@@ -159,9 +165,9 @@ export { ApplicationLakehouseQueryTerminalError, applicationLakehouseAuthorityMa
 export type { ApplicationLakehouseConformanceCase, ApplicationLakehouseConformanceReport, ApplicationLakehouseConformanceRow } from './application-lakehouse-conformance.js';
 export { applicationLakehouseConformanceCases, applicationLakehouseConformanceRows, runApplicationLakehouseConformance } from './application-lakehouse-conformance.js';
 export type { ApplicationMcpClientBinding, ApplicationMcpClientOptions, ApplicationMcpRegistrar, ApplicationMcpServerBinding, ApplicationMcpServerOptions, ApplicationMcpToolSelection } from './application-mcp.js';
-export type { ApplicationCommandDomainError, ApplicationCommandKey, ApplicationCommandSubmissionAcknowledgement, ApplicationModelBackendContract, ApplicationModelBinding, ApplicationModelCommandBinding, ApplicationModelCommandContext, ApplicationModelCommandDeliveryOptions, ApplicationModelCommandHandler, ApplicationModelCommandOptions, ApplicationModelCommandParticipantClient, ApplicationModelCommandTarget, ApplicationModelConstraintOptions, ApplicationModelCreateInput, ApplicationModelEventBinding, ApplicationModelEventHandler, ApplicationModelEventRegistrar, ApplicationModelIndexBinding, ApplicationModelIndexOptions, ApplicationModelObject, ApplicationModelOptions, ApplicationModelPatch, ApplicationModelQueryOptions, ApplicationModelQueryPage, ApplicationModelRef, ApplicationModelRuntimeBinding, ApplicationModelSchemaIndexOptions, ApplicationModelSchemaOptions, ApplicationRuntimeModelContract } from './application-models.js';
 export type { ApplicationModelClearIntent, ApplicationModelUpdatePatch } from './application-model-update-contract.js';
 export { clear } from './application-model-update-contract.js';
+export type { ApplicationCommandDomainError, ApplicationCommandKey, ApplicationCommandSubmissionAcknowledgement, ApplicationModelBackendContract, ApplicationModelBinding, ApplicationModelCommandBinding, ApplicationModelCommandContext, ApplicationModelCommandDeliveryOptions, ApplicationModelCommandHandler, ApplicationModelCommandOptions, ApplicationModelCommandParticipantClient, ApplicationModelCommandTarget, ApplicationModelConstraintOptions, ApplicationModelCreateInput, ApplicationModelEventBinding, ApplicationModelEventHandler, ApplicationModelEventRegistrar, ApplicationModelIndexBinding, ApplicationModelIndexOptions, ApplicationModelObject, ApplicationModelOptions, ApplicationModelPatch, ApplicationModelQueryOptions, ApplicationModelQueryPage, ApplicationModelRef, ApplicationModelRuntimeBinding, ApplicationModelSchemaIndexOptions, ApplicationModelSchemaOptions, ApplicationRuntimeModelContract } from './application-models.js';
 export type { ApplicationModuleContext, ApplicationModuleDefinition, ApplicationModuleMetadata, ApplicationModuleOptions, ApplicationModuleReference, ApplicationModuleSetup } from './application-modules.js';
 export { defineApplicationModule, module } from './application-modules.js';
 export type { ApplicationObjectMetadata, ApplicationObjectPutRequest, ApplicationObjectReference, ApplicationObjectStorageRuntime, ApplicationObjectStoreBinding, ApplicationObjectStoreOptions, ApplicationSignedObjectIntent } from './application-object-storage.js';
@@ -995,6 +1001,16 @@ export interface KubernetesApplicationBuilder<TSpec extends KroCompatibleType = 
     ) => TResult,
   ): TResult;
   /**
+   * Declares one target-free assembly profile. Profiles bind semantic
+   * capabilities to inspectable implementations; deployment targets consume
+   * the resulting implementation plan without participating in selection.
+   */
+  profile(
+    name: string,
+    configure: (profile: ApplicationAssemblyProfileBuilder) => void,
+    options?: { readonly provenance?: import('@applik8s/core').ApplicationSourceProvenance },
+  ): ApplicationAssemblyProfileDefinition;
+  /**
    * Derives an exhaustive deployment profile from one string-literal
    * installation discriminator. The explicit variant tuple is required only
    * when the public ArkType JSON projection cannot prove the union.
@@ -1010,6 +1026,10 @@ export interface KubernetesApplicationBuilder<TSpec extends KroCompatibleType = 
       readonly schemaRevision?: string;
     },
   ): ApplicationProfile<TSpec, TDiscriminator, TVariant>;
+  /** Read-only catalog of authored target-free assembly profiles. */
+  readonly assemblyProfiles: ApplicationAssemblyProfileCatalog;
+  /** Resolves the immutable implementation plan for one assembly profile. */
+  implementationPlan(profile: string): import('@applik8s/core').ApplicationImplementationPlan;
   /** Resolves one exhaustively provided, semantically qualified capability. */
   inject<TImplementation>(
     token: ApplicationQualifiedProviderToken<TImplementation>,
@@ -1368,6 +1388,7 @@ function createKubernetesApplicationBuilder<TSpec extends KroCompatibleType = Re
   const terminalReplays: ApplicationBuilderReplay[] = [];
   const inferredGatewayReplays: ((state: ApplicationScopeState) => void)[] = [];
   const installationReplays: ((spec: TSpec, scope: KubernetesApplicationScope) => void)[] = [];
+  const assemblyProfiles = createApplicationAssemblyProfileCatalog(name);
   const declaredResources: Record<string, AnyResourceDefinition> = {};
   const declaredModels: Record<string, ApplicationModelBinding<object, object>> = {};
   const capturedNativeModels = new WeakMap<
@@ -1716,6 +1737,10 @@ function createKubernetesApplicationBuilder<TSpec extends KroCompatibleType = Re
   const builder = {
     name,
     installation,
+    assemblyProfiles,
+    implementationPlan(profileName: string) {
+      return assemblyProfiles.plan(profileName);
+    },
     get composition() {
       return materialize();
     },
@@ -1857,13 +1882,42 @@ function createKubernetesApplicationBuilder<TSpec extends KroCompatibleType = Re
       TDiscriminator extends Extract<keyof TSpec, string>,
       TVariant extends string = ApplicationProfileVariant<TSpec, TDiscriminator>,
     >(
-      profileSpec: TSpec,
-      discriminator: TDiscriminator,
+      profileOrSpec: string | TSpec,
+      configureOrDiscriminator:
+        | ((profile: ApplicationAssemblyProfileBuilder) => void)
+        | TDiscriminator,
       profileOptions: {
+        readonly provenance?: import('@applik8s/core').ApplicationSourceProvenance;
         readonly variants?: readonly TVariant[];
         readonly schemaRevision?: string;
       } = {},
-    ): ApplicationProfile<TSpec, TDiscriminator, TVariant> {
+    ): ApplicationAssemblyProfileDefinition & ApplicationProfile<TSpec, TDiscriminator, TVariant> {
+      if (typeof profileOrSpec === 'string') {
+        if (typeof configureOrDiscriminator !== 'function') {
+          throw new TypeError(
+            `Application ${name} profile ${profileOrSpec} requires a configuration callback.`,
+          );
+        }
+        const definition = assemblyProfiles.profile(
+          profileOrSpec,
+          configureOrDiscriminator,
+          profileOptions.provenance
+            ? { provenance: profileOptions.provenance }
+            : {},
+        );
+        invalidate();
+        // typecast-boundary: the public interface overload narrows this branch
+        // to ApplicationAssemblyProfileDefinition. The object-literal
+        // implementation must satisfy both overloads simultaneously.
+        return definition as ApplicationAssemblyProfileDefinition & ApplicationProfile<TSpec, TDiscriminator, TVariant>;
+      }
+      const profileSpec = profileOrSpec;
+      if (typeof configureOrDiscriminator !== 'string') {
+        throw new TypeError(
+          `Application ${name} legacy installation profile requires a discriminator field.`,
+        );
+      }
+      const discriminator = configureOrDiscriminator;
       if (profileSpec !== installationSpec) {
         throw new Error(
           `Application ${name} profile ${String(discriminator)} must use application.installation.spec.`,
@@ -1886,7 +1940,7 @@ function createKubernetesApplicationBuilder<TSpec extends KroCompatibleType = Re
             `Application ${name} profile ${discriminatorName} cannot be reopened with different variants or schema revision.`,
           );
         }
-        return existingRuntime.profile as ApplicationProfile<
+        return existingRuntime.profile as ApplicationAssemblyProfileDefinition & ApplicationProfile<
           TSpec,
           TDiscriminator,
           TVariant
@@ -1977,7 +2031,7 @@ function createKubernetesApplicationBuilder<TSpec extends KroCompatibleType = Re
         schemaRevision,
         profile: runtime.profile,
       });
-      return runtime.profile;
+      return runtime.profile as ApplicationAssemblyProfileDefinition & ApplicationProfile<TSpec, TDiscriminator, TVariant>;
     },
     inject<TImplementation>(
       token: ApplicationQualifiedProviderToken<TImplementation>,
@@ -3007,6 +3061,14 @@ function createKubernetesApplicationBuilder<TSpec extends KroCompatibleType = Re
     configurable: false,
   });
   Object.defineProperty(builder, applicationInstallationMetadataProperty, { get: () => Reflect.get(materialize(), applicationInstallationMetadataProperty), enumerable: false, configurable: false });
+  Object.defineProperty(builder, applicationImplementationPlansMetadataProperty, {
+    get: () => applicationImplementationPlanSet(
+      name,
+      assemblyProfiles.list().map((profile) => profile.plan()),
+    ),
+    enumerable: false,
+    configurable: false,
+  });
   Object.defineProperty(builder, applicationTypeKroDefinitionProperty, { value: definition, enumerable: false, configurable: false });
   return builder;
 }

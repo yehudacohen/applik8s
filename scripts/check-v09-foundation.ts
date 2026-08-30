@@ -117,6 +117,8 @@ for (const required of [
   'effect-receipt',
   'implementation-identity',
   'implementation-plan',
+  'assembly-profile-definition',
+  'implementation-plan-set',
   'journey-definition',
   'journey-result',
   'deployment-migration-proposal',

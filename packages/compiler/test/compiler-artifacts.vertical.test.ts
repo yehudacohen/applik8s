@@ -968,6 +968,7 @@ export const imagePipeline = sdk.operator({
       });
       expect(result.ok, result.ok ? undefined : result.error.message).toBe(true);
       if (result.ok) {
+        expect(result.value.artifacts.implementationPlansJsonPath).toBeUndefined();
         expect(result.value.artifacts.resources).toEqual(expect.arrayContaining([
           expect.objectContaining({ kind: 'CustomResourceDefinition', metadata: expect.objectContaining({ name: 'guestbooks.guestbook.applik8s.dev' }) }),
           expect.objectContaining({ kind: 'CustomResourceDefinition', metadata: expect.objectContaining({ name: 'guestbookentries.guestbook.applik8s.dev' }) }),
@@ -975,6 +976,69 @@ export const imagePipeline = sdk.operator({
           expect.objectContaining({ kind: 'Ingress', spec: expect.objectContaining({ rules: [expect.objectContaining({ host: 'guestbook.localhost' })] }) }),
         ]));
       }
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }, 120_000);
+
+  it('emits target-free implementation profiles as a versioned compiler artifact', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'applik8s-implementation-profiles-'));
+    try {
+      const entrypoint = join(dir, 'application.ts');
+      await writeFile(entrypoint, `
+import { app, defineApplicationCapabilityImplementation, defineApplicationProvider } from '@applik8s/applik8s';
+const Cache = defineApplicationProvider({
+  interface: 'ProfileCache',
+  version: 'v1',
+  guarantees: ['key-value'],
+  accepts: value => Boolean(value && typeof value === 'object' && value.kind === 'cache'),
+});
+const redis = defineApplicationCapabilityImplementation(Cache, {
+  provider: { package: '@example/cache', export: 'redis', version: '1.0.0' },
+  configurationDigest: 'sha256:${'a'.repeat(64)}',
+  runtimeAdapter: '@example/cache/runtime',
+  deploymentContributor: '@example/cache/deployment',
+  readiness: 'cache.ready.v1',
+  lifecycle: 'application',
+  migration: 'cache.migration.v1',
+  maturity: 'beta',
+  value: { kind: 'cache' },
+});
+const platform = app('profile-artifact');
+platform.profile('production', profile => profile.provide(Cache, redis));
+export const profileArtifact = platform;
+`);
+      const result = await compileTypeKroComposition({
+        entrypoint,
+        compositionName: 'profileArtifact',
+        outDir: join(dir, 'dist'),
+        runtimeVersionRange: '^0.9.0',
+        handlerAbiVersion: 'applik8s.handler/v1alpha1',
+        adapter: 'wasmComponent',
+        portability: { deterministicBuild: true, allowEnvironmentAccess: false, allowFilesystemAccess: false, allowNetworkAccess: false, allowedHostImports: [], sourceMaps: { emit: true, includeSourceContent: false, redactPaths: false } },
+      });
+      expect(result.ok, result.ok ? undefined : result.error.message).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.artifacts.implementationPlansJsonPath).toBe(
+        join(dir, 'dist', 'typekro', 'application-implementation-plans.json'),
+      );
+      expect(result.value.artifacts.manifest.spec.implementationPlans).toMatchObject({
+        apiVersion: 'applik8s.implementationPlanSet/v1alpha1',
+        count: 1,
+        digest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/u),
+      });
+      const artifact = JSON.parse(await readFile(
+        result.value.artifacts.implementationPlansJsonPath ?? '',
+        'utf8',
+      ));
+      expect(artifact).toMatchObject({
+        apiVersion: 'applik8s.implementationPlanSet/v1alpha1',
+        application: 'profile-artifact',
+        plans: [expect.objectContaining({
+          schemaVersion: 'applik8s.implementationPlan/v1alpha1',
+          profile: expect.objectContaining({ id: 'production' }),
+        })],
+      });
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

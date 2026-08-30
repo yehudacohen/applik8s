@@ -48,9 +48,14 @@ export {
 export type * from './application-implementation-plan.js';
 export {
   ApplicationImplementationResolutionError,
+  applicationImplementationPlanSet,
+  applicationImplementationPlanSetVersion,
+  applicationImplementationPlansArtifactFileName,
+  applicationImplementationPlansMetadataProperty,
   applicationImplementationPlanVersion,
   resolveApplicationImplementationPlan,
   serializeApplicationImplementationPlan,
+  serializeApplicationImplementationPlanSet,
 } from './application-implementation-plan.js';
 export type * from './application-operation-authority.js';
 export {

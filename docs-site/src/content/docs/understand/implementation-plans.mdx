@@ -18,5 +18,19 @@ The plan preserves reuse, inline parent/slot identity, required guarantees, conf
 private provider authority. Resolution fails before mutation on missing bindings, ambiguity, incompatible
 capabilities, wildcard authority, identity collisions, or dependency cycles.
 
+Profiles are authored without a deployment target:
+
+```ts
+application.profile('production', profile => {
+  profile.provide(Database, postgres({ tier: 'ha' }));
+  profile.provide(Scheduler, hatchet());
+});
+```
+
+The compiler discovers this catalog from the selected application export, writes
+`application-implementation-plans.json`, binds it to the application bundle by SHA-256 digest, and requires
+the deployed installation profile to select exactly one plan. The implementation identity comes from its
+semantic capability binding or an explicit `.identified(...)` name—not from the profile name.
+
 The v0.9 plan augments the existing target-bearing compatibility artifact. The legacy `target` field is not
 the destination API and will be removed through an explicit migration before 1.0.
