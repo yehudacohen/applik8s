@@ -1,3 +1,4 @@
+// typecast-file-boundary: Effect tests deliberately narrow protocol fixtures after exercising their public validators.
 import type { JsonValue, RuntimeSchema } from '@applik8s/core';
 import { describe, expect, it } from 'vitest';
 import {

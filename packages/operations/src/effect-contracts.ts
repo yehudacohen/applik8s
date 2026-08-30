@@ -1,3 +1,4 @@
+// typecast-file-boundary: Effect contract constructors validate protocol identities and terminal-state transitions before narrowing version literals.
 import type { JsonObject, JsonValue, RuntimeSchema } from '@applik8s/core';
 
 export const EffectContractSchemaVersion = 'applik8s.effectContract/v1alpha1' as const;

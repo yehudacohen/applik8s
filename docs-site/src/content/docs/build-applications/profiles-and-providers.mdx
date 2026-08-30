@@ -1,0 +1,62 @@
+---
+title: Profiles and providers
+description: Select concrete implementations without turning deployment targets into application concepts.
+---
+
+Applik8s applications depend on semantic capabilities. A profile selects concrete implementations for
+those capabilities without classifying the whole application as local, Kubernetes, or AWS.
+
+```ts
+import {
+  Database,
+  Scheduler,
+  TransactionalDatabase,
+  app,
+} from '@applik8s/applik8s';
+
+const application = app('orders');
+
+application.profile('production', profile => {
+  profile.provide(
+    TransactionalDatabase,
+    Database.postgres({ storage: { size: '50Gi' } }),
+  );
+  profile.provide(Scheduler, Scheduler.cronJob());
+});
+```
+
+Maintained constructors attach runtime, deployment, readiness, lifecycle, migration, evidence, and
+configuration metadata themselves. Application code does not call an implementation wrapper or author a
+digest. Use `.identified('stable-name.v1')` only when a diagnostic asks for identity that must survive
+source movement or dynamic construction.
+
+Provider-native environment inputs are references, not eager environment reads:
+
+```ts
+import { config, secret } from '@applik8s/applik8s';
+
+const endpoint = config.env.url('DATABASE_ENDPOINT');
+const port = config.env.integer('DATABASE_PORT', { default: 5432 });
+const credentials = secret.env('DATABASE_CREDENTIALS', {
+  contract: { version: 'v1', keys: { url: 'url' } },
+});
+```
+
+The implementation plan records source names, requiredness, expected Secret contract, and a deterministic
+configuration digest. It never reads or serializes the Secret value. A selected provider resolves the
+reference at its authorized deployment/runtime boundary and makes any encrypted runtime projection
+visible in the later physical plan.
+
+Inline provider dependencies remain private. Reusing the same implementation value preserves one node:
+
+```ts
+const database = Database.postgres({ storage: { size: '50Gi' } });
+
+application.profile('production', profile => {
+  profile.provide(TransactionalDatabase, database);
+  profile.provide(Search, Search.postgres({ database }));
+});
+```
+
+Search receives database authority internally. Application callbacks do not gain database access merely
+because the search implementation depends on it.

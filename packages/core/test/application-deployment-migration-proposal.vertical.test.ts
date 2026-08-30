@@ -1,3 +1,4 @@
+// typecast-file-boundary: Migration tests construct deliberately incomplete persisted-state fixtures to verify fail-closed decoding.
 import { describe, expect, it } from 'vitest';
 import {
   type ApplicationCapabilityImplementationIdentity,

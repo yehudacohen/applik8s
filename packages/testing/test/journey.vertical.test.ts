@@ -1,3 +1,4 @@
+// typecast-file-boundary: Journey tests use intentionally partial application fixtures to exercise public admission and cleanup boundaries.
 import { describe, expect, it } from 'vitest';
 import {
   type JourneyExecutionAdapter,

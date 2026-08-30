@@ -1,3 +1,4 @@
+// typecast-file-boundary: Journey decoding validates callback outputs, evidence, and versioned result records before restoring generic application types.
 import type {
   ApplicationIdentityReference,
   JsonObject,

@@ -14,6 +14,11 @@ import {
   createApplicationLakehouseDatasetQuery,
   createApplicationLakehouseQuery,
 } from './application-lakehouse.js';
+import {
+  type ApplicationCapabilityImplementation,
+  applicationCapabilityImplementationMetadata,
+  maintainedApplicationCapabilityImplementation,
+} from './application-capability-implementation.js';
 import { applicationQualifiableProviderToken } from './application-provider-qualification.js';
 import {
   type ApplicationScheduleRegistrar,
@@ -1404,8 +1409,8 @@ export interface ApplicationTransactionalDatabaseProviderToken extends Applicati
 }
 
 export interface ApplicationDatabaseConstructors {
-  postgres(options?: ApplicationPostgresTransactionalDatabaseOptions): ApplicationPostgresTransactionalDatabaseProvider;
-  externalPostgres(options: ApplicationExternalPostgresDatabaseOptions): ApplicationPostgresTransactionalDatabaseProvider;
+  postgres(options?: ApplicationPostgresTransactionalDatabaseOptions): ApplicationCapabilityImplementation<ApplicationPostgresTransactionalDatabaseProvider>;
+  externalPostgres(options: ApplicationExternalPostgresDatabaseOptions): ApplicationCapabilityImplementation<ApplicationPostgresTransactionalDatabaseProvider>;
   readonly migrations: ApplicationTransactionalDatabaseProviderToken['migrations'];
 }
 
@@ -1423,7 +1428,7 @@ export interface ApplicationDnsPublicationProviderToken extends ApplicationQuali
 }
 
 export interface ApplicationWorkflowEngineProviderToken extends ApplicationQualifiableProviderToken<ApplicationWorkflowEngineProvider> {
-  hatchet(options?: Omit<ApplicationHatchetWorkflowEngineProvider, 'kind'>): ApplicationHatchetWorkflowEngineProvider;
+  hatchet(options?: Omit<ApplicationHatchetWorkflowEngineProvider, 'kind'>): ApplicationCapabilityImplementation<ApplicationHatchetWorkflowEngineProvider>;
 }
 
 export interface ApplicationQualifiedSchedulerProviderToken<TName extends string = string>
@@ -1434,16 +1439,16 @@ export interface ApplicationQualifiedSchedulerProviderToken<TName extends string
 export interface ApplicationSchedulerProviderToken extends ApplicationQualifiableProviderToken<ApplicationSchedulerProvider> {
   named<const TName extends string>(name: TName): ApplicationQualifiedSchedulerProviderToken<TName>;
   readonly schedule: ApplicationScheduleRegistrar;
-  local(options?: Omit<ApplicationLocalSchedulerProvider, 'kind'>): ApplicationLocalSchedulerProvider;
-  cronJob(options?: Omit<ApplicationKubernetesCronJobSchedulerProvider, 'kind'>): ApplicationKubernetesCronJobSchedulerProvider;
-  hatchet(options?: Omit<ApplicationHatchetSchedulerProvider, 'kind'>): ApplicationHatchetSchedulerProvider;
-  eventBridge(options?: Omit<ApplicationEventBridgeSchedulerProvider, 'kind'>): ApplicationEventBridgeSchedulerProvider;
+  local(options?: Omit<ApplicationLocalSchedulerProvider, 'kind'>): ApplicationCapabilityImplementation<ApplicationLocalSchedulerProvider>;
+  cronJob(options?: Omit<ApplicationKubernetesCronJobSchedulerProvider, 'kind'>): ApplicationCapabilityImplementation<ApplicationKubernetesCronJobSchedulerProvider>;
+  hatchet(options?: Omit<ApplicationHatchetSchedulerProvider, 'kind'>): ApplicationCapabilityImplementation<ApplicationHatchetSchedulerProvider>;
+  eventBridge(options?: Omit<ApplicationEventBridgeSchedulerProvider, 'kind'>): ApplicationCapabilityImplementation<ApplicationEventBridgeSchedulerProvider>;
 }
 
 export interface ApplicationActorRuntimeProviderToken extends ApplicationQualifiableProviderToken<ApplicationActorRuntimeProvider> {
-  local(options?: Omit<ApplicationLocalActorRuntimeProvider, 'kind'>): ApplicationLocalActorRuntimeProvider;
-  celld(options: Omit<ApplicationCelldActorRuntimeProvider, 'kind'>): ApplicationCelldActorRuntimeProvider;
-  rivet(options: Omit<ApplicationRivetActorRuntimeProvider, 'kind'>): ApplicationRivetActorRuntimeProvider;
+  local(options?: Omit<ApplicationLocalActorRuntimeProvider, 'kind'>): ApplicationCapabilityImplementation<ApplicationLocalActorRuntimeProvider>;
+  celld(options: Omit<ApplicationCelldActorRuntimeProvider, 'kind'>): ApplicationCapabilityImplementation<ApplicationCelldActorRuntimeProvider>;
+  rivet(options: Omit<ApplicationRivetActorRuntimeProvider, 'kind'>): ApplicationCapabilityImplementation<ApplicationRivetActorRuntimeProvider>;
 }
 
 export interface ApplicationObservabilityProviderToken extends ApplicationQualifiableProviderToken<ApplicationObservabilityProvider> {
@@ -1500,9 +1505,9 @@ export interface ApplicationAnalyticalDatabaseProviderToken extends ApplicationQ
 }
 
 export interface ApplicationAnalyticsConstructors {
-  postgres(options: Omit<ApplicationPostgresAnalyticalDatabaseProvider, 'kind'>): ApplicationPostgresAnalyticalDatabaseProvider;
-  clickHouse(options?: Omit<ApplicationClickHouseAnalyticalDatabaseProvider, 'kind'>): ApplicationClickHouseAnalyticalDatabaseProvider;
-  externalClickHouse(options: ApplicationExternalClickHouseOptions): ApplicationClickHouseAnalyticalDatabaseProvider;
+  postgres(options: Omit<ApplicationPostgresAnalyticalDatabaseProvider, 'kind'>): ApplicationCapabilityImplementation<ApplicationPostgresAnalyticalDatabaseProvider>;
+  clickHouse(options?: Omit<ApplicationClickHouseAnalyticalDatabaseProvider, 'kind'>): ApplicationCapabilityImplementation<ApplicationClickHouseAnalyticalDatabaseProvider>;
+  externalClickHouse(options: ApplicationExternalClickHouseOptions): ApplicationCapabilityImplementation<ApplicationClickHouseAnalyticalDatabaseProvider>;
 }
 
 export interface ApplicationContainerRegistryProviderToken extends ApplicationQualifiableProviderToken<ApplicationContainerRegistryProvider> {
@@ -1514,8 +1519,8 @@ export interface ApplicationContainerRegistryProviderToken extends ApplicationQu
 }
 
 export interface ApplicationObjectStorageProviderToken extends ApplicationQualifiableProviderToken<ApplicationObjectStorageProvider> {
-  s3(options: Omit<ApplicationS3ObjectStorageProvider, 'kind'>): ApplicationS3ObjectStorageProvider;
-  configMap(options?: Omit<ApplicationKubernetesConfigMapObjectStorageProvider, 'kind'>): ApplicationKubernetesConfigMapObjectStorageProvider;
+  s3(options: Omit<ApplicationS3ObjectStorageProvider, 'kind'>): ApplicationCapabilityImplementation<ApplicationS3ObjectStorageProvider>;
+  configMap(options?: Omit<ApplicationKubernetesConfigMapObjectStorageProvider, 'kind'>): ApplicationCapabilityImplementation<ApplicationKubernetesConfigMapObjectStorageProvider>;
   /**
    * Bind a database backup destination to one declared object-storage
    * capability. Bucket, endpoint, region, and Secret coordinates follow the
@@ -1597,15 +1602,66 @@ export interface ApplicationSearchProviderToken
   extends ApplicationQualifiableProviderToken<ApplicationSearchProvider> {
   postgres(
     options: Omit<ApplicationPostgresSearchProvider, 'kind'>,
-  ): ApplicationPostgresSearchProvider;
+  ): ApplicationCapabilityImplementation<ApplicationPostgresSearchProvider>;
   openSearch(
     options?: Omit<ApplicationOpenSearchProvider, 'kind'>,
-  ): ApplicationOpenSearchProvider;
+  ): ApplicationCapabilityImplementation<ApplicationOpenSearchProvider>;
   externalOpenSearch(
     options: Omit<ApplicationOpenSearchProvider, 'kind' | 'provision'> & {
       readonly endpoint: string;
     },
-  ): ApplicationOpenSearchProvider;
+  ): ApplicationCapabilityImplementation<ApplicationOpenSearchProvider>;
+}
+
+function maintainedBuiltInImplementation<TImplementation extends object>(
+  token: ApplicationProviderToken<unknown>,
+  constructorExport: string,
+  value: TImplementation,
+  options: {
+    readonly runtimeAdapter: string;
+    readonly deploymentContributor?: string;
+    readonly readiness: string;
+    readonly lifecycle: 'application' | 'shared' | 'external' | 'retained';
+    readonly migration: string;
+    readonly maturity?: 'stable' | 'beta' | 'preview' | 'experimental' | 'external';
+    readonly evidence?: readonly string[];
+    readonly dependencies?: readonly import('./application-capability-implementation.js').ApplicationCapabilityImplementationDependency[];
+  },
+): ApplicationCapabilityImplementation<TImplementation> {
+  return maintainedApplicationCapabilityImplementation(
+    token as ApplicationProviderToken<TImplementation>,
+    {
+      provider: {
+        package: '@applik8s/applik8s',
+        export: constructorExport,
+        version: '0.9.0-alpha.1',
+      },
+      runtimeAdapter: options.runtimeAdapter,
+      ...(options.deploymentContributor
+        ? { deploymentContributor: options.deploymentContributor }
+        : {}),
+      readiness: options.readiness,
+      lifecycle: options.lifecycle,
+      migration: options.migration,
+      evidence: options.evidence ?? [`${constructorExport}.conformance`],
+      maturity: options.maturity ?? (options.lifecycle === 'external' ? 'external' : 'beta'),
+      ...(options.dependencies ? { dependencies: options.dependencies } : {}),
+      value,
+    },
+  );
+}
+
+function maintainedDependencyInput(
+  value: object | undefined,
+  fallback: ApplicationProviderToken<object>,
+): ApplicationCapabilityImplementation<object> | ApplicationProviderToken<object> {
+  if (value && applicationCapabilityImplementationMetadata(value)) {
+    return value as ApplicationCapabilityImplementation<object>;
+  }
+  if (value && isApplicationProviderBinding(value)) {
+    return value.token as ApplicationProviderToken<object>;
+  }
+  return fallback;
 }
 
 export const IndexStore: ApplicationIndexStoreProviderToken = applicationQualifiableProviderToken({
@@ -1644,7 +1700,7 @@ export const Search: ApplicationSearchProviderToken =
           'Search.postgres(...) maximumCandidateRows must be a positive integer.',
         );
       }
-      return {
+      return maintainedBuiltInImplementation(Search, 'Search.postgres', {
         kind: 'postgres-search',
         ...options,
         maximumCandidateRows,
@@ -1654,11 +1710,26 @@ export const Search: ApplicationSearchProviderToken =
           'sort',
           'facets',
         ],
-      };
+      }, {
+        runtimeAdapter: '@applik8s/runtime-postgres/search',
+      readiness: 'applik8s.search.postgres.readiness/v1alpha1',
+      lifecycle: 'application',
+      migration: 'applik8s.search.postgres.migration/v1alpha1',
+      dependencies: [{
+        slot: 'database',
+        requirement: TransactionalDatabase as ApplicationProviderToken<object>,
+        requiredGuarantees: ['transactions', 'strongReads'],
+        operations: ['database.read', 'database.write'],
+        input: maintainedDependencyInput(
+          options.database as object,
+          TransactionalDatabase as ApplicationProviderToken<object>,
+        ),
+      }],
+      });
     },
     openSearch(options = {}) {
       assertApplicationOpenSearchProvider(options);
-      return {
+      return maintainedBuiltInImplementation(Search, 'Search.openSearch', {
         kind: 'opensearch',
         provision: true,
         ...options,
@@ -1671,7 +1742,13 @@ export const Search: ApplicationSearchProviderToken =
           'fuzzy',
           'openSearchQuery',
         ],
-      };
+      }, {
+        runtimeAdapter: '@applik8s/runtime-opensearch',
+        deploymentContributor: '@applik8s/deployment-compiler/providers/opensearch',
+        readiness: 'applik8s.search.opensearch.readiness/v1alpha1',
+        lifecycle: 'application',
+        migration: 'applik8s.search.opensearch.migration/v1alpha1',
+      });
     },
     externalOpenSearch(options) {
       if (!applicationProviderRequiredString(options.endpoint)) {
@@ -1680,7 +1757,7 @@ export const Search: ApplicationSearchProviderToken =
         );
       }
       assertApplicationOpenSearchProvider(options);
-      return {
+      return maintainedBuiltInImplementation(Search, 'Search.externalOpenSearch', {
         kind: 'opensearch',
         ...options,
         provision: false,
@@ -1693,7 +1770,12 @@ export const Search: ApplicationSearchProviderToken =
           'fuzzy',
           'openSearchQuery',
         ],
-      };
+      }, {
+        runtimeAdapter: '@applik8s/runtime-opensearch',
+        readiness: 'applik8s.search.opensearch.external-readiness/v1alpha1',
+        lifecycle: 'external',
+        migration: 'applik8s.search.opensearch.external-migration/v1alpha1',
+      });
     },
   });
 
@@ -1720,7 +1802,19 @@ export const TransactionalDatabase: ApplicationTransactionalDatabaseProviderToke
 
 export const Database: ApplicationDatabaseConstructors = Object.freeze({
   postgres(options = {}) {
-    return TransactionalDatabase.postgres(options);
+    const provider = TransactionalDatabase.postgres(options);
+    const external = provider.ownership === 'external' || provider.provision === false;
+    return maintainedBuiltInImplementation(TransactionalDatabase, 'Database.postgres', provider, {
+      runtimeAdapter: '@applik8s/runtime-postgres',
+      ...(external
+        ? {}
+        : { deploymentContributor: '@applik8s/deployment-compiler/providers/postgres' }),
+      readiness: external
+        ? 'applik8s.database.postgres.external-readiness/v1alpha1'
+        : 'applik8s.database.postgres.readiness/v1alpha1',
+      lifecycle: external ? 'external' : 'application',
+      migration: 'applik8s.database.postgres.migration/v1alpha1',
+    });
   },
   externalPostgres(options: ApplicationExternalPostgresDatabaseOptions) {
     const {
@@ -1737,7 +1831,7 @@ export const Database: ApplicationDatabaseConstructors = Object.freeze({
         'Database.externalPostgres(...) connection.secretName must not be empty.',
       );
     }
-    return TransactionalDatabase.postgres({
+    const provider = TransactionalDatabase.postgres({
       ...providerOptions,
       ownership: 'external',
       provision: false,
@@ -1755,6 +1849,17 @@ export const Database: ApplicationDatabaseConstructors = Object.freeze({
         : {}),
       ...(connection?.key ? { connectionSecretKey: connection.key } : {}),
     });
+    return maintainedBuiltInImplementation(
+      TransactionalDatabase,
+      'Database.externalPostgres',
+      provider,
+      {
+        runtimeAdapter: '@applik8s/runtime-postgres',
+        readiness: 'applik8s.database.postgres.external-readiness/v1alpha1',
+        lifecycle: 'external',
+        migration: 'applik8s.database.postgres.external-migration/v1alpha1',
+      },
+    );
   },
   migrations: TransactionalDatabase.migrations,
 });
@@ -1817,10 +1922,31 @@ export const ObjectStorage: ApplicationObjectStorageProviderToken = applicationQ
     if (!dynamicOwnership && options.ownership !== 'direct-provisioned' && options.provisioning) {
       throw new Error('ObjectStorage.s3({ provisioning }) is valid only with ownership: "direct-provisioned".');
     }
-    return { kind: 's3', ...options };
+    const provider: ApplicationS3ObjectStorageProvider = { kind: 's3', ...options };
+    const external = provider.ownership !== 'direct-provisioned';
+    return maintainedBuiltInImplementation(ObjectStorage, 'ObjectStorage.s3', provider, {
+      runtimeAdapter: '@applik8s/runtime/object-storage-s3',
+      ...(external
+        ? {}
+        : { deploymentContributor: '@applik8s/deployment-compiler/providers/object-storage' }),
+      readiness: external
+        ? 'applik8s.object-storage.s3.external-readiness/v1alpha1'
+        : 'applik8s.object-storage.s3.readiness/v1alpha1',
+      lifecycle: external ? 'external' : 'application',
+      migration: 'applik8s.object-storage.s3.migration/v1alpha1',
+    });
   },
   configMap(options = {}) {
-    return { kind: 'kubernetes-configmap-objects', ...options };
+    return maintainedBuiltInImplementation(ObjectStorage, 'ObjectStorage.configMap', {
+      kind: 'kubernetes-configmap-objects',
+      ...options,
+    }, {
+      runtimeAdapter: '@applik8s/runtime-kubernetes/object-storage',
+      deploymentContributor: '@applik8s/deployment-compiler/providers/object-storage',
+      readiness: 'applik8s.object-storage.config-map.readiness/v1alpha1',
+      lifecycle: 'application',
+      migration: 'applik8s.object-storage.config-map.migration/v1alpha1',
+    });
   },
   backup(provider, options) {
     const storage = applicationObjectStorageImplementation(provider);
@@ -1915,11 +2041,22 @@ export const WorkflowEngine: ApplicationWorkflowEngineProviderToken = applicatio
   },
   accepts: isHatchetWorkflowEngineProvider,
   hatchet(options = {}) {
-    return {
+    const provider: ApplicationHatchetWorkflowEngineProvider = {
       kind: 'hatchet',
       ...options,
       admission: applicationWorkflowAdmissionPolicy(options.admission),
     };
+    return maintainedBuiltInImplementation(WorkflowEngine, 'WorkflowEngine.hatchet', provider, {
+      runtimeAdapter: '@applik8s/runtime-hatchet',
+      ...(provider.provision === false
+        ? {}
+        : { deploymentContributor: '@applik8s/deployment-compiler/providers/hatchet' }),
+      readiness: provider.provision === false
+        ? 'applik8s.workflow.hatchet.external-readiness/v1alpha1'
+        : 'applik8s.workflow.hatchet.readiness/v1alpha1',
+      lifecycle: provider.provision === false ? 'external' : 'application',
+      migration: 'applik8s.workflow.hatchet.migration/v1alpha1',
+    });
   },
 });
 
@@ -1942,16 +2079,63 @@ export const Scheduler: ApplicationSchedulerProviderToken = applicationQualifiab
     return createApplicationSchedule(this, options as never, handler as never) as never;
   },
   local(options = {}) {
-    return { kind: 'local-scheduler', clock: 'system', persistence: 'application-database', ...options };
+    return maintainedBuiltInImplementation(Scheduler, 'Scheduler.local', {
+      kind: 'local-scheduler',
+      clock: 'system',
+      persistence: 'application-database',
+      ...options,
+    }, {
+      runtimeAdapter: '@applik8s/applik8s/schedule-runtime-local',
+      readiness: 'applik8s.scheduler.local.readiness/v1alpha1',
+      lifecycle: 'application',
+      migration: 'applik8s.scheduler.local.migration/v1alpha1',
+      maturity: 'stable',
+    });
   },
   cronJob(options = {}) {
-    return { kind: 'kubernetes-cronjob-scheduler', maximumDefinitions: 100, ...options };
+    return maintainedBuiltInImplementation(Scheduler, 'Scheduler.cronJob', {
+      kind: 'kubernetes-cronjob-scheduler',
+      maximumDefinitions: 100,
+      ...options,
+    }, {
+      runtimeAdapter: '@applik8s/runtime-kubernetes/scheduler',
+      deploymentContributor: '@applik8s/deployment-compiler/providers/scheduler',
+      readiness: 'applik8s.scheduler.cron-job.readiness/v1alpha1',
+      lifecycle: 'application',
+      migration: 'applik8s.scheduler.cron-job.migration/v1alpha1',
+    });
   },
   hatchet(options = {}) {
-    return { kind: 'hatchet-scheduler', ...options };
+    return maintainedBuiltInImplementation(Scheduler, 'Scheduler.hatchet', {
+      kind: 'hatchet-scheduler',
+      ...options,
+    }, {
+      runtimeAdapter: '@applik8s/runtime-hatchet/scheduler',
+      readiness: 'applik8s.scheduler.hatchet.readiness/v1alpha1',
+      lifecycle: 'application',
+      migration: 'applik8s.scheduler.hatchet.migration/v1alpha1',
+      dependencies: [{
+        slot: 'workflow-engine',
+        requirement: WorkflowEngine as ApplicationProviderToken<object>,
+        operations: ['workflow.schedule'],
+        input: maintainedDependencyInput(
+          options.workflowEngine,
+          WorkflowEngine as ApplicationProviderToken<object>,
+        ),
+      }],
+    });
   },
   eventBridge(options = {}) {
-    return { kind: 'eventbridge-scheduler', ...options };
+    return maintainedBuiltInImplementation(Scheduler, 'Scheduler.eventBridge', {
+      kind: 'eventbridge-scheduler',
+      ...options,
+    }, {
+      runtimeAdapter: '@applik8s/runtime-aws/scheduler',
+      deploymentContributor: '@applik8s/deployment-alchemy/providers/eventbridge-scheduler',
+      readiness: 'applik8s.scheduler.event-bridge.readiness/v1alpha1',
+      lifecycle: 'application',
+      migration: 'applik8s.scheduler.event-bridge.migration/v1alpha1',
+    });
   },
 });
 
@@ -1967,14 +2151,51 @@ export const ActorRuntime: ApplicationActorRuntimeProviderToken = applicationQua
   },
   accepts: isApplicationActorRuntimeProvider,
   local(options = {}) {
-    return { kind: 'deterministic-local-actors', persistence: 'application-database', ...options };
+    return maintainedBuiltInImplementation(ActorRuntime, 'ActorRuntime.local', {
+      kind: 'deterministic-local-actors',
+      persistence: 'application-database',
+      ...options,
+    }, {
+      runtimeAdapter: '@applik8s/applik8s/actor-runtime-local',
+      readiness: 'applik8s.actor.local.readiness/v1alpha1',
+      lifecycle: 'application',
+      migration: 'applik8s.actor.local.migration/v1alpha1',
+      maturity: 'stable',
+    });
   },
   celld(options) {
-    return { kind: 'celld-actors', ...options };
+    return maintainedBuiltInImplementation(ActorRuntime, 'ActorRuntime.celld', {
+      kind: 'celld-actors',
+      ...options,
+    }, {
+      runtimeAdapter: '@applik8s/celld-operator/runtime',
+      deploymentContributor: '@applik8s/celld-operator/typekro',
+      readiness: 'applik8s.actor.celld.readiness/v1alpha1',
+      lifecycle: 'application',
+      migration: 'applik8s.actor.celld.migration/v1alpha1',
+      dependencies: [{
+        slot: 'state-store',
+        requirement: ObjectStorage as ApplicationProviderToken<object>,
+        requiredGuarantees: ['objectReadWrite'],
+        operations: ['object.read', 'object.write'],
+        input: maintainedDependencyInput(
+          options.stateStore as object,
+          ObjectStorage as ApplicationProviderToken<object>,
+        ),
+      }],
+    });
   },
   rivet(options) {
     if (!/^https:\/\//u.test(options.endpoint)) throw new Error('ActorRuntime.rivet(...) requires an HTTPS endpoint.');
-    return { kind: 'rivet-actors', ...options };
+    return maintainedBuiltInImplementation(ActorRuntime, 'ActorRuntime.rivet', {
+      kind: 'rivet-actors',
+      ...options,
+    }, {
+      runtimeAdapter: '@applik8s/runtime/rivet-actors',
+      readiness: 'applik8s.actor.rivet.external-readiness/v1alpha1',
+      lifecycle: 'external',
+      migration: 'applik8s.actor.rivet.external-migration/v1alpha1',
+    });
   },
 });
 
@@ -2163,10 +2384,39 @@ export const Analytics: ApplicationAnalyticsConstructors = Object.freeze({
         'Analytics.postgres(...) requires a TransactionalDatabase provider or qualified binding.',
       );
     }
-    return { kind: 'postgres-analytics' as const, ...options };
+    return maintainedBuiltInImplementation(AnalyticalDatabase, 'Analytics.postgres', {
+      kind: 'postgres-analytics' as const,
+      ...options,
+    }, {
+      runtimeAdapter: '@applik8s/runtime-postgres/analytics',
+      readiness: 'applik8s.analytics.postgres.readiness/v1alpha1',
+      lifecycle: 'application',
+      migration: 'applik8s.analytics.postgres.migration/v1alpha1',
+      dependencies: [{
+        slot: 'database',
+        requirement: TransactionalDatabase as ApplicationProviderToken<object>,
+        requiredGuarantees: ['transactions'],
+        operations: ['database.read', 'database.write'],
+        input: maintainedDependencyInput(
+          options.database as object,
+          TransactionalDatabase as ApplicationProviderToken<object>,
+        ),
+      }],
+    });
   },
   clickHouse(options = {}) {
-    return AnalyticalDatabase.clickhouse(options);
+    const provider = AnalyticalDatabase.clickhouse(options);
+    return maintainedBuiltInImplementation(AnalyticalDatabase, 'Analytics.clickHouse', provider, {
+      runtimeAdapter: '@applik8s/runtime/clickhouse',
+      ...(provider.provision === false
+        ? {}
+        : { deploymentContributor: '@applik8s/deployment-compiler/providers/clickhouse' }),
+      readiness: provider.provision === false
+        ? 'applik8s.analytics.clickhouse.external-readiness/v1alpha1'
+        : 'applik8s.analytics.clickhouse.readiness/v1alpha1',
+      lifecycle: provider.provision === false ? 'external' : 'application',
+      migration: 'applik8s.analytics.clickhouse.migration/v1alpha1',
+    });
   },
   externalClickHouse(options: ApplicationExternalClickHouseOptions) {
     const connection =
@@ -2192,7 +2442,7 @@ export const Analytics: ApplicationAnalyticsConstructors = Object.freeze({
         'Analytics.externalClickHouse(...) credentialsSecretName must not be empty.',
       );
     }
-    return {
+    return maintainedBuiltInImplementation(AnalyticalDatabase, 'Analytics.externalClickHouse', {
       kind: 'clickhouse' as const,
       ...(options.name ? { name: options.name } : {}),
       ...(options.namespace ? { namespace: options.namespace } : {}),
@@ -2217,7 +2467,12 @@ export const Analytics: ApplicationAnalyticsConstructors = Object.freeze({
       ...(connection.passwordKey
         ? { passwordKey: connection.passwordKey }
         : {}),
-    };
+    }, {
+      runtimeAdapter: '@applik8s/runtime/clickhouse',
+      readiness: 'applik8s.analytics.clickhouse.external-readiness/v1alpha1',
+      lifecycle: 'external',
+      migration: 'applik8s.analytics.clickhouse.external-migration/v1alpha1',
+    });
   },
 });
 

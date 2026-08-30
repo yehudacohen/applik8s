@@ -85,6 +85,26 @@
       "evidence": ["compiler-discovery", "digest-bound-bundle-artifact", "deployment-profile-selection"]
     },
     {
+      "id": "capability-implementation",
+      "package": "@applik8s/applik8s",
+      "entrypoint": ".",
+      "symbol": "ApplicationCapabilityImplementation",
+      "schemaVersion": "applik8s.implementationIdentity/v1alpha1",
+      "maturity": "stable-1.0-candidate",
+      "owner": "provider-resolution",
+      "evidence": ["maintained-constructor-metadata", "explicit-identity", "private-dependency-resolution"]
+    },
+    {
+      "id": "configuration-binding",
+      "package": "@applik8s/applik8s",
+      "entrypoint": ".",
+      "symbol": "ApplicationConfigSourceBinding",
+      "schemaVersion": "applik8s.configurationBinding/v1alpha1",
+      "maturity": "stable-1.0-candidate",
+      "owner": "provider-configuration",
+      "evidence": ["typed-environment-bindings", "secret-safe-provenance", "canonical-configuration-digest"]
+    },
+    {
       "id": "journey-definition",
       "package": "@applik8s/testing",
       "entrypoint": ".",
@@ -139,6 +159,12 @@
       "implemented": true,
       "blocking": true,
       "diagnostic": "PROFILE_IMPLEMENTATION_IDENTITY_UNAVAILABLE"
+    },
+    {
+      "id": "concrete-provider-configuration-foundation",
+      "implemented": true,
+      "blocking": true,
+      "diagnostic": "PROVIDER_CONFIGURATION_PROVENANCE_UNAVAILABLE"
     },
     {
       "id": "read-only-v0.8-migration-proposal",

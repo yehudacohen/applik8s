@@ -26,7 +26,10 @@ export default defineConfig({
         { label: 'Start Here', items: [{ label: 'What is Applik8s?', slug: 'start-here' }] },
         {
           label: 'Build Applications',
-          items: [{ label: 'Operations and effect safety', slug: 'build-applications/operations-and-effects' }],
+          items: [
+            { label: 'Profiles and providers', slug: 'build-applications/profiles-and-providers' },
+            { label: 'Operations and effect safety', slug: 'build-applications/operations-and-effects' },
+          ],
         },
         {
           label: 'Understand & Operate',

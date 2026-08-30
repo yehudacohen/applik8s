@@ -1,3 +1,4 @@
+// typecast-file-boundary: Migration proposal decoding validates versioned persisted JSON before restoring its closed plan types.
 import type { ApplicationSourceProvenance } from './application-foundation.js';
 import type {
   ApplicationCapabilityImplementationIdentity,

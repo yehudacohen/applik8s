@@ -1,3 +1,4 @@
+// typecast-file-boundary: The documentation gate owns this static checked-in path/content contract and narrows it only for deterministic iteration.
 import { readFile } from 'node:fs/promises';
 
 const requiredPages = {
@@ -17,6 +18,12 @@ const requiredPages = {
     'defineEffectContract',
     '`unknown` is a real durable state',
     'There is no public `operation()` or `effect()` registrar',
+  ],
+  'docs-site/src/content/docs/build-applications/profiles-and-providers.mdx': [
+    "application.profile('production'",
+    "Database.postgres",
+    "config.env.url('DATABASE_ENDPOINT')",
+    'never reads or serializes the Secret value',
   ],
   'docs-site/src/content/docs/understand/implementation-plans.mdx': [
     'Implementation:',
@@ -61,6 +68,7 @@ for (const expected of [
   "base: '/docs/preview/v0.9'",
   "content: 'noindex,nofollow'",
   "slug: 'build-applications/operations-and-effects'",
+  "slug: 'build-applications/profiles-and-providers'",
   "slug: 'upgrade/v08-to-v09'",
 ]) {
   if (!config.includes(expected)) {

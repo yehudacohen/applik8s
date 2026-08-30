@@ -1,10 +1,17 @@
+// typecast-file-boundary: Adversarial tests intentionally erase one opaque implementation to prove the public profile boundary rejects it.
 import { describe, expect, it } from 'vitest';
 import {
   app,
+  config,
   createApplicationAssemblyProfileCatalog,
+  Database as MaintainedDatabase,
   defineApplicationCapabilityImplementation,
   defineApplicationProvider,
   profileFragment,
+  Scheduler as MaintainedScheduler,
+  Search as MaintainedSearch,
+  secret,
+  TransactionalDatabase,
 } from '../src/index.js';
 
 interface DatabaseImplementation {
@@ -188,5 +195,85 @@ describe('application assembly profiles', () => {
       profile.provide(Database, database('external'));
     })).toThrow(/binds .* more than once/u);
     expect(() => catalog.plan('missing')).toThrow(/Available profiles/u);
+  });
+
+  it('accepts maintained constructors without exposing implementation-plan ceremony', () => {
+    const application = app('maintained-providers');
+    const database = MaintainedDatabase.postgres({
+      name: 'primary',
+      storage: { size: '20Gi' },
+    }).identified('primary-database.v1');
+
+    application.profile('production', profile => {
+      profile.provide(TransactionalDatabase, database);
+      profile.provide(MaintainedSearch, MaintainedSearch.postgres({ database }));
+      profile.provide(MaintainedScheduler, MaintainedScheduler.cronJob({
+        namespace: 'application-system',
+      }));
+    });
+
+    const plan = application.implementationPlan('production');
+    expect(plan.implementations.map(({ identity }) => identity.provider.export).sort()).toEqual([
+      'Database.postgres',
+      'Scheduler.cronJob',
+      'Search.postgres',
+    ]);
+    expect(plan.implementations.find(({ identity }) =>
+      identity.provider.export === 'Database.postgres')?.identity.explicitName)
+      .toBe('primary-database.v1');
+    expect(plan.implementations.every(({ configurationSources }) =>
+      configurationSources.length === 0)).toBe(true);
+    expect(plan.dependencies).toHaveLength(1);
+    expect(plan.dependencies[0]).toMatchObject({
+      slot: 'database',
+      resolution: 'implementation',
+      visibility: 'private',
+    });
+  });
+
+  it('records typed config and Secret provenance without resolving or serializing values', () => {
+    interface ExternalDatabaseImplementation extends DatabaseImplementation {
+      readonly credential: ReturnType<typeof secret.env>;
+      readonly port: ReturnType<typeof config.env.integer>;
+    }
+    const ExternalDatabase = defineApplicationProvider<ExternalDatabaseImplementation>({
+      interface: 'ExternalProfileDatabase',
+      version: 'v1',
+      guarantees: ['transactions'],
+      accepts: (value): value is ExternalDatabaseImplementation => Boolean(
+        value && typeof value === 'object' && Reflect.get(value, 'kind') === 'database',
+      ),
+    });
+    const implementation = defineApplicationCapabilityImplementation(ExternalDatabase, {
+      provider: { package: '@example/database', export: 'external', version: '1.0.0' },
+      configurationDigest: digest('e'),
+      configurationSources: [
+        { kind: 'config', reference: 'DATABASE_PORT', required: false },
+        { kind: 'secret', reference: 'DATABASE_CREDENTIAL', required: true },
+      ],
+      runtimeAdapter: '@example/database/runtime',
+      readiness: 'database.connection.v1',
+      lifecycle: 'external',
+      migration: 'database.external-migration.v1',
+      maturity: 'external',
+      value: {
+        kind: 'database',
+        endpoint: 'external',
+        credential: secret.env('DATABASE_CREDENTIAL', {
+          contract: { version: 'v1', keys: ['url'] },
+        }),
+        port: config.env.integer('DATABASE_PORT', { default: 5432 }),
+      },
+    });
+    const plan = createApplicationAssemblyProfileCatalog('secret-safe')
+      .profile('production', profile => profile.provide(ExternalDatabase, implementation))
+      .plan();
+
+    expect(plan.implementations[0]?.configurationSources).toEqual([
+      { kind: 'config', reference: 'DATABASE_PORT', required: false },
+      { kind: 'secret', reference: 'DATABASE_CREDENTIAL', required: true },
+    ]);
+    expect(JSON.stringify(plan)).not.toContain('DATABASE_CREDENTIAL=');
+    expect(() => secret.env('not-a-valid-env-name')).toThrow(/valid variable name/u);
   });
 });

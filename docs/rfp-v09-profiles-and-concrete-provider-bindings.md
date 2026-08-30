@@ -1051,6 +1051,25 @@ profile constructors and preserve package pruning.
 
 ## Implementation sequence
 
+### Current implementation status
+
+The target-free profile registrar, deterministic recursive resolver, digest-bound plan-set artifact, and
+deployment-time profile selection are implemented. Maintained database, search, object-storage,
+workflow, scheduling, actor, and analytics constructors now carry inspectable implementation metadata
+automatically, including reusable private dependency edges. Application authors use the constructors
+directly; `defineApplicationCapabilityImplementation(...)` remains a provider-author seam.
+
+The first configuration contract is also implemented: `config.env(...)`, typed URL/integer/boolean
+variants, and `secret.env(...)` produce immutable source references with deterministic, Secret-safe
+provenance. They never read `process.env` while authoring the application and never place resolved Secret
+values in implementation plans or configuration digests.
+
+Increment 3 remains in progress until every maintained constructor accepts its provider-native binding
+types and the deployment compiler resolves those bindings into explicit runtime projections. Increment 4
+physical resource planning and Increment 5 active-state migration remain open. The unavailable exact v0.8
+release baseline continues to prohibit deployment-state writes; it does not block these additive semantic
+contracts.
+
 ### Increment 1 — Contract and vocabulary
 
 - Freeze profile, provider-configuration, provider-resolution, deployment-name, and physical-plan schemas.

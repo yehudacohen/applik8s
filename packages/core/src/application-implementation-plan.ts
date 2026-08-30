@@ -1,3 +1,4 @@
+// typecast-file-boundary: Implementation resolution validates declarations and canonical identities before narrowing version literals and graph records.
 import type {
   ApplicationCanonicalIdentity,
   ApplicationProviderMaturity,
