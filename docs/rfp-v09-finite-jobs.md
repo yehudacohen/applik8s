@@ -38,6 +38,11 @@ The first compatibility-breaking vocabulary increment is implemented. Low-level 
 aliases. This reserves `application.job(...)` for the finite managed execution contract below and makes a
 workload declaration visibly different from application behavior before either surface reaches 1.0.
 
+The same boundary is now explicit in the semantic graph. Infrastructure declarations emit
+`workloadJob` nodes; the `job` node kind is reserved for the application-level finite execution contract.
+Plans and compatibility reports therefore cannot silently collapse a Kubernetes workload into managed
+application behavior.
+
 The typed semantic Job handle, local runtime, durable provider, scheduling integration, graph/plan nodes,
 and conformance evidence remain implementation work. The vocabulary move alone does not claim the Job
 contract is available.

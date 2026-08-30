@@ -19,10 +19,10 @@ describe('v0.3 infrastructure-from-code product story', () => {
       expect.objectContaining({ id: 'model.invitation', kind: 'model' }),
       expect.objectContaining({ id: 'model.usage-sample', kind: 'model' }),
       expect.objectContaining({ id: 'server.tenant-admin', kind: 'server' }),
-      expect.objectContaining({ id: 'job.account-migration', kind: 'job', task: expect.objectContaining({ taskKind: 'migration' }) }),
-      expect.objectContaining({ id: 'job.audit-record-migration', kind: 'job', task: expect.objectContaining({ taskKind: 'migration' }) }),
-      expect.objectContaining({ id: 'job.tenant-platform-repair', kind: 'job', task: expect.objectContaining({ taskKind: 'repair' }) }),
-      expect.objectContaining({ id: 'job.tenant-platform-cleanup', kind: 'job', task: expect.objectContaining({ taskKind: 'cleanup' }) }),
+      expect.objectContaining({ id: 'job.account-migration', kind: 'workloadJob', task: expect.objectContaining({ taskKind: 'migration' }) }),
+      expect.objectContaining({ id: 'job.audit-record-migration', kind: 'workloadJob', task: expect.objectContaining({ taskKind: 'migration' }) }),
+      expect.objectContaining({ id: 'job.tenant-platform-repair', kind: 'workloadJob', task: expect.objectContaining({ taskKind: 'repair' }) }),
+      expect.objectContaining({ id: 'job.tenant-platform-cleanup', kind: 'workloadJob', task: expect.objectContaining({ taskKind: 'cleanup' }) }),
     ]));
     const generatedResources = graph?.nodes.flatMap((node) => node.generatedResources ?? []) ?? [];
     expect(generatedResources).toEqual(expect.arrayContaining([
@@ -63,7 +63,7 @@ describe('v0.3 infrastructure-from-code product story', () => {
     });
     expect(pressureTest.name).toBe('tenant-platform-control-plane-pressure-test');
     expect(pressureTest.requiredProviders).toEqual(expect.arrayContaining(['TransactionalDatabase', 'Secret', 'CredentialStore', 'HttpExposure', 'Queue', 'ObjectStorage', 'EventSource']));
-    expect(pressureTest.requiredNodes).toEqual(expect.arrayContaining(['model', 'server', 'job', 'provider']));
+    expect(pressureTest.requiredNodes).toEqual(expect.arrayContaining(['model', 'server', 'workloadJob', 'provider']));
     expect(pressureTest.requiredStatusEvidence).toMatchObject({ authoritativeStore: 'applicationStatus', liveGate: 'requiredBeforeAnnouncement' });
     expect(pressureTest.requiredTransactionalDatabaseEvidence).toMatchObject({ scriptRuntimeParity: 'localAndOptInLiveGate', migrationDriftCoverage: 'required' });
     expect(pressureTest.requiredOperationTargetEvidence.contexts).toEqual(expect.arrayContaining(['generatedServer', 'generatedJob']));
@@ -211,7 +211,7 @@ describe('v0.3 infrastructure-from-code product story', () => {
   it('publishes durable generated job status and extracted runtime modules as v0.3 substrate contracts', () => {
     const { composition } = accountsModelApp();
     const graph = applicationGraphFor(composition);
-    const migrationJob = graph?.nodes.find((node) => node.kind === 'job' && node.name === 'accounts-model-migration');
+    const migrationJob = graph?.nodes.find((node) => node.kind === 'workloadJob' && node.name === 'accounts-model-migration');
     const sourceConfigMap = composition.resources.find((resource) => resource.kind === 'ConfigMap' && resource.metadata.name === 'accounts-web-source');
     const statusRuntimeConfigMap = composition.resources.find((resource) => resource.kind === 'ConfigMap' && resource.metadata.name === 'accounts-model-migration-status-runtime');
     const appStatusConfigMap = composition.resources.find((resource) => resource.kind === 'ConfigMap' && resource.metadata.name === 'accounts-platform-status-reconciler-status');
@@ -291,7 +291,7 @@ describe('v0.3 infrastructure-from-code product story', () => {
     const statusConfigMap = composition.resources.find((resource) => resource.kind === 'ConfigMap' && resource.metadata.name === 'accounts-maintenance-contract-status-reconciler-status');
     expect(statusConfigMap).toMatchObject({ __externalRef: true });
     expect(applicationGraphFor(composition)?.nodes).toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: 'job.compact-accounts', kind: 'job', runtime: expect.objectContaining({ materialization: 'kubernetes-job', durableStatusUpdater: expect.objectContaining({ failurePolicy: 'failClosed' }) }) }),
+      expect.objectContaining({ id: 'job.compact-accounts', kind: 'workloadJob', runtime: expect.objectContaining({ materialization: 'kubernetes-job', durableStatusUpdater: expect.objectContaining({ failurePolicy: 'failClosed' }) }) }),
     ]));
   });
 
@@ -315,7 +315,7 @@ describe('v0.3 infrastructure-from-code product story', () => {
       expect.objectContaining({ apiVersion: 'apps/v1', kind: 'Deployment', metadata: expect.objectContaining({ name: 'accounts-scheduled-maintenance-contract-status-reconciler' }) }),
     ]));
     expect(applicationGraphFor(composition)?.nodes).toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: 'job.compact-accounts-hourly', kind: 'job', schedule: expect.objectContaining({ cron: '0 * * * *', concurrencyPolicy: 'forbid' }), runtime: expect.objectContaining({ materialization: 'kubernetes-cronjob' }) }),
+      expect.objectContaining({ id: 'job.compact-accounts-hourly', kind: 'workloadJob', schedule: expect.objectContaining({ cron: '0 * * * *', concurrencyPolicy: 'forbid' }), runtime: expect.objectContaining({ materialization: 'kubernetes-cronjob' }) }),
     ]));
   });
 
@@ -352,7 +352,7 @@ describe('v0.3 infrastructure-from-code product story', () => {
     } satisfies ApplicationV03PressureTestContract;
 
     expect(pressureTest.graph.digest).toBe(graphDigest);
-    expect(pressureTest.requiredNodes).toEqual(expect.arrayContaining(['model', 'server', 'job', 'provider']));
+    expect(pressureTest.requiredNodes).toEqual(expect.arrayContaining(['model', 'server', 'workloadJob', 'provider']));
     expect(graph.nodes.map((node) => node.kind)).toEqual(expect.arrayContaining(pressureTest.requiredNodes));
     expect(graph.providerRequirements.map((requirement) => requirement.interface)).toEqual(expect.arrayContaining(['TransactionalDatabase']));
     expect(graph.providerBindings.flatMap((binding) => binding.generatedResources.map((resource) => resource.kind))).toEqual(expect.arrayContaining(['Cluster']));

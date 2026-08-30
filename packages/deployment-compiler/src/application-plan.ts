@@ -642,7 +642,7 @@ function executionScalingBoundary(node: ApplicationGraphNode): 'singleton' | 're
     || node.kind === 'lakehousePublication'
     || node.kind === 'actor'
   ) return 'provider-managed';
-  if (node.kind === 'operator' || node.kind === 'job') return 'singleton';
+  if (node.kind === 'operator' || node.kind === 'workloadJob') return 'singleton';
   return 'unknown';
 }
 

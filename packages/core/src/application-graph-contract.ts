@@ -99,7 +99,7 @@ export type ApplicationGraphNodeKind =
   | 'subscription'
   | 'projection'
   | 'objectStore'
-  | 'job'
+  | 'workloadJob'
   | 'config'
   | 'secret'
   | 'exposure'
@@ -140,7 +140,7 @@ export const applicationGraphNodeKinds = [
   'subscription',
   'projection',
   'objectStore',
-  'job',
+  'workloadJob',
   'config',
   'secret',
   'exposure',
@@ -299,7 +299,7 @@ export type ApplicationGraphNode =
   | ApplicationSubscriptionNode
   | ApplicationProjectionNode
   | ApplicationObjectStoreNode
-  | ApplicationJobNode
+  | ApplicationWorkloadJobNode
   | ApplicationConfigNode
   | ApplicationSecretNode
   | ApplicationExposureNode
@@ -1470,7 +1470,8 @@ export interface ApplicationModelRuntimeContract {
   };
 }
 
-export interface ApplicationJobNode extends ApplicationGraphNodeBase<'job'> {
+/** Low-level Kubernetes Job/CronJob workload. Semantic finite work uses the separate application Job contract. */
+export interface ApplicationWorkloadJobNode extends ApplicationGraphNodeBase<'workloadJob'> {
   readonly task: ApplicationJobTaskContract;
   readonly schedule?: ApplicationScheduleContract;
   readonly phase: ApplicationPhaseContract;
@@ -1499,7 +1500,7 @@ export interface ApplicationSecretNode extends ApplicationGraphNodeBase<'secret'
   readonly generatedResources: readonly ApplicationGeneratedResourceContract[];
 }
 
-export interface GeneratedJobContract extends ApplicationJobNode {
+export interface GeneratedJobContract extends ApplicationWorkloadJobNode {
   readonly task: ApplicationJobTaskContract;
   readonly phase: ApplicationPhaseContract;
   readonly retry: ApplicationRetryPolicy;
@@ -3248,7 +3249,7 @@ export function validateApplicationV03PressureTestContract(contract: Application
     diagnostics.push(applicationGraphStructureDiagnostic(`Application v0.3 pressure test ${contract.name} must reference an emitted application graph artifact path and digest.`));
   }
   // typecast: these literal checklists are intentionally kept as narrow tuples while checked against the public contract unions.
-  const requiredNodeKinds = ['model', 'server', 'job', 'provider'] as const satisfies readonly ApplicationGraphNodeKind[];
+  const requiredNodeKinds = ['model', 'server', 'workloadJob', 'provider'] as const satisfies readonly ApplicationGraphNodeKind[];
   // typecast: these literal checklists are intentionally kept as narrow tuples while checked against the public contract unions.
   const requiredProviders = applicationV03ProviderInterfaceKinds;
   // typecast: these literal checklists are intentionally kept as narrow tuples while checked against the public contract unions.
@@ -3571,8 +3572,8 @@ function applicationGraphNodeStructureDiagnostics(node: ApplicationGraphNode, gr
   switch (node.kind) {
     case 'model':
       return applicationModelNodeStructureDiagnostics(node, graph);
-    case 'job':
-      return applicationJobNodeStructureDiagnostics(node);
+    case 'workloadJob':
+      return applicationWorkloadJobNodeStructureDiagnostics(node);
     case 'provider':
       return applicationProviderNodeStructureDiagnostics(node, graph);
     case 'server':
@@ -4707,7 +4708,7 @@ function applicationProviderNodeStructureDiagnostics(
   return diagnostics;
 }
 
-function applicationJobNodeStructureDiagnostics(node: ApplicationJobNode): readonly Diagnostic[] {
+function applicationWorkloadJobNodeStructureDiagnostics(node: ApplicationWorkloadJobNode): readonly Diagnostic[] {
   const diagnostics: Diagnostic[] = [];
   if (node.runtime.materialization === 'kubernetes-cronjob' && !node.schedule) {
     diagnostics.push(applicationGraphStructureDiagnostic(`Application job node ${node.id} uses kubernetes-cronjob runtime without a schedule contract.`));

@@ -259,7 +259,7 @@ const transactionalDatabaseGuarantees = {
 
 const generatedJobContract = {
   id: 'job.accounts-model-migration',
-  kind: 'job',
+  kind: 'workloadJob',
   name: 'accounts-model-migration',
   stability: 'stable',
   task: { taskKind: 'migration' },

@@ -172,7 +172,7 @@ export function emitApplicationGeneratedJob(state: ApplicationGeneratedJobResour
 
   addApplicationGraphNode(state, {
     id: nodeId,
-    kind: 'job',
+    kind: 'workloadJob',
     name: resourceName,
     stability: 'stable',
     task: {

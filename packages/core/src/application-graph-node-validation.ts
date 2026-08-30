@@ -59,7 +59,7 @@ export function applicationModelNodeStructureDiagnostics(node: ApplicationModelN
     diagnostics.push(applicationGraphStructureDiagnostic(`Application model node ${node.id} has inconsistent TransactionalDatabase refs between database and materialization.provider.`));
   }
   if (node.schema.migrations.strategy === 'generatedJob') {
-    const hasMigrationJob = graph.edges.some((edge) => edge.relationship === 'dependsOn' && edge.to.nodeId === node.id && graph.nodes.some((candidate) => candidate.id === edge.from.nodeId && candidate.kind === 'job' && candidate.task.taskKind === 'migration'));
+    const hasMigrationJob = graph.edges.some((edge) => edge.relationship === 'dependsOn' && edge.to.nodeId === node.id && graph.nodes.some((candidate) => candidate.id === edge.from.nodeId && candidate.kind === 'workloadJob' && candidate.task.taskKind === 'migration'));
     if (!hasMigrationJob) {
       diagnostics.push(applicationGraphStructureDiagnostic(`Application model node ${node.id} declares generatedJob migrations but no migration job depends on it.`));
     }

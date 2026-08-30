@@ -2063,7 +2063,7 @@ function recordApplicationModelMigrationJobGraph(state: ApplicationModelGraphSta
   });
   addApplicationGraphNode(state, {
     id: nodeId,
-    kind: 'job',
+    kind: 'workloadJob',
     name: jobName,
     stability: 'stable',
     task: { taskKind: 'migration' },

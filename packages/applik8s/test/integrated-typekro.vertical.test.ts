@@ -491,7 +491,7 @@ describe('integrated TypeKro package surface', () => {
           }),
         }),
       }),
-      expect.objectContaining({ id: 'job.notes-model-migration', kind: 'job', task: { taskKind: 'migration' } }),
+      expect.objectContaining({ id: 'job.notes-model-migration', kind: 'workloadJob', task: { taskKind: 'migration' } }),
     ]));
     const modelProviderComposition = sdk.kubernetesComposition({
       name: 'notes-model-provider-app',
@@ -528,7 +528,7 @@ describe('integrated TypeKro package surface', () => {
     const directProviderModelGraph = applicationGraphFor(directProviderModelComposition);
     expect(directProviderModelGraph?.nodes).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: 'model.note', kind: 'model', name: 'Note', database: { interface: 'TransactionalDatabase', nodeId: 'provider.transactional-database' } }),
-      expect.objectContaining({ id: 'job.notes-model-migration', kind: 'job', task: { taskKind: 'migration' } }),
+      expect.objectContaining({ id: 'job.notes-model-migration', kind: 'workloadJob', task: { taskKind: 'migration' } }),
     ]));
     expect(directProviderModelGraph?.nodes).toEqual(expect.arrayContaining([
       expect.objectContaining({
@@ -714,11 +714,11 @@ describe('integrated TypeKro package surface', () => {
     expect(jobDiagnostics?.data?.terminalFailureStatus).toContain('GeneratedJobFailed');
     expect(jobDiagnostics?.data?.observabilityContract).toContain('applik8s_generated_job_observations_total');
     expect(applicationGraphFor(jobComposition)?.nodes).toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: 'job.migrate', kind: 'job', name: 'migrate', task: expect.objectContaining({ taskKind: 'migration' }), runtime: expect.objectContaining({ materialization: 'kubernetes-job', phaseStatus: expect.objectContaining({ statusPath: 'status.applik8s.jobs.migrate' }), statusLifecycle: expect.objectContaining({ multiJob: 'appLevelReconciler', fallback: 'generatedStatusConfigMap', ownership: expect.objectContaining({ applicationStatusProjection: 'requiredAuthoritative', appStatusSchemaContract: expect.objectContaining({ jobsPath: 'status.applik8s.jobs', ownership: 'kroStatusProjection' }), durableStore: { apiVersion: 'v1', kind: 'ConfigMap', name: 'notes-job-app-status-reconciler-status' }, fallbackStore: expect.objectContaining({ objectOwnership: 'runtimeCreatedResource', dataKeys: expect.arrayContaining(['status.json', 'applik8s-jobs.json', 'history.json', 'conflicts.json', 'updatedAt']) }) }) }), durableStatusUpdater: expect.objectContaining({ runtimeModule: { kind: 'jobRunnerRuntime', name: 'generated-job-status-updater' }, statusOwnership: expect.objectContaining({ durableStore: { apiVersion: 'v1', kind: 'ConfigMap', name: 'notes-job-app-status-reconciler-status' } }) }) }) }),
+      expect.objectContaining({ id: 'job.migrate', kind: 'workloadJob', name: 'migrate', task: expect.objectContaining({ taskKind: 'migration' }), runtime: expect.objectContaining({ materialization: 'kubernetes-job', phaseStatus: expect.objectContaining({ statusPath: 'status.applik8s.jobs.migrate' }), statusLifecycle: expect.objectContaining({ multiJob: 'appLevelReconciler', fallback: 'generatedStatusConfigMap', ownership: expect.objectContaining({ applicationStatusProjection: 'requiredAuthoritative', appStatusSchemaContract: expect.objectContaining({ jobsPath: 'status.applik8s.jobs', ownership: 'kroStatusProjection' }), durableStore: { apiVersion: 'v1', kind: 'ConfigMap', name: 'notes-job-app-status-reconciler-status' }, fallbackStore: expect.objectContaining({ objectOwnership: 'runtimeCreatedResource', dataKeys: expect.arrayContaining(['status.json', 'applik8s-jobs.json', 'history.json', 'conflicts.json', 'updatedAt']) }) }) }), durableStatusUpdater: expect.objectContaining({ runtimeModule: { kind: 'jobRunnerRuntime', name: 'generated-job-status-updater' }, statusOwnership: expect.objectContaining({ durableStore: { apiVersion: 'v1', kind: 'ConfigMap', name: 'notes-job-app-status-reconciler-status' } }) }) }) }),
     ]));
-    const jobGraphNode = applicationGraphFor(jobComposition)?.nodes.find((node) => node.kind === 'job' && node.id === 'job.migrate');
-    expect(jobGraphNode?.kind === 'job' && jobGraphNode.runtime.statusLifecycle ? validateApplicationJobStatusLifecycleContract(jobGraphNode.runtime.statusLifecycle) : []).toEqual([]);
-    expect(jobGraphNode?.kind === 'job' ? jobGraphNode.runtime.statusLifecycle : undefined).toMatchObject({ historyRetention: { maxEntries: 20, terminalRetention: 'retain' } });
+    const jobGraphNode = applicationGraphFor(jobComposition)?.nodes.find((node) => node.kind === 'workloadJob' && node.id === 'job.migrate');
+    expect(jobGraphNode?.kind === 'workloadJob' && jobGraphNode.runtime.statusLifecycle ? validateApplicationJobStatusLifecycleContract(jobGraphNode.runtime.statusLifecycle) : []).toEqual([]);
+    expect(jobGraphNode?.kind === 'workloadJob' ? jobGraphNode.runtime.statusLifecycle : undefined).toMatchObject({ historyRetention: { maxEntries: 20, terminalRetention: 'retain' } });
 
     const scheduleComposition = sdk.kubernetesComposition({
       name: 'notes-schedule-app',
@@ -744,7 +744,7 @@ describe('integrated TypeKro package surface', () => {
       ]) }) }) }) }),
     ]));
     expect(applicationGraphFor(scheduleComposition)?.nodes).toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: 'job.cleanup', kind: 'job', schedule: expect.objectContaining({ cron: '0 * * * *', concurrencyPolicy: 'forbid', missedRunPolicy: 'failClosed' }), runtime: expect.objectContaining({ materialization: 'kubernetes-cronjob', statusLifecycle: expect.objectContaining({ cronJob: 'latestRunAndHistory' }) }) }),
+      expect.objectContaining({ id: 'job.cleanup', kind: 'workloadJob', schedule: expect.objectContaining({ cron: '0 * * * *', concurrencyPolicy: 'forbid', missedRunPolicy: 'failClosed' }), runtime: expect.objectContaining({ materialization: 'kubernetes-cronjob', statusLifecycle: expect.objectContaining({ cronJob: 'latestRunAndHistory' }) }) }),
     ]));
 
     const multiJobComposition = sdk.kubernetesComposition({
@@ -1942,8 +1942,8 @@ describe('integrated TypeKro package surface', () => {
     expect(statusStore).toBeDefined();
     expect(Reflect.get(statusStore ?? {}, '__externalRef')).toBe(true);
     expect(applicationGraphFor(composition)?.nodes).toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: 'job.repair-accounts', kind: 'job', runtime: expect.objectContaining({ statusLifecycle: expect.objectContaining({ multiJob: 'appLevelReconciler' }) }) }),
-      expect.objectContaining({ id: 'job.cleanup-accounts', kind: 'job', schedule: expect.objectContaining({ cron: '*/15 * * * *', missedRunPolicy: 'failClosed' }), runtime: expect.objectContaining({ statusLifecycle: expect.objectContaining({ cronJob: 'latestRunAndHistory' }) }) }),
+      expect.objectContaining({ id: 'job.repair-accounts', kind: 'workloadJob', runtime: expect.objectContaining({ statusLifecycle: expect.objectContaining({ multiJob: 'appLevelReconciler' }) }) }),
+      expect.objectContaining({ id: 'job.cleanup-accounts', kind: 'workloadJob', schedule: expect.objectContaining({ cron: '*/15 * * * *', missedRunPolicy: 'failClosed' }), runtime: expect.objectContaining({ statusLifecycle: expect.objectContaining({ cronJob: 'latestRunAndHistory' }) }) }),
     ]));
   });
 
@@ -2293,8 +2293,8 @@ describe('integrated TypeKro package surface', () => {
       'provider.transactional-database',
       'server.admin',
     ]);
-    expect(nodesById.get('job.cleanup-accounts')).toMatchObject({ id: 'job.cleanup-accounts', kind: 'job', schedule: expect.objectContaining({ cron: '0 3 * * *' }) });
-    expect(nodesById.get('job.repair-accounts')).toMatchObject({ id: 'job.repair-accounts', kind: 'job', observability: expect.objectContaining({ diagnosticsArtifact: { kind: 'jobDiagnostics', name: 'repair-accounts-diagnostics' } }) });
+    expect(nodesById.get('job.cleanup-accounts')).toMatchObject({ id: 'job.cleanup-accounts', kind: 'workloadJob', schedule: expect.objectContaining({ cron: '0 3 * * *' }) });
+    expect(nodesById.get('job.repair-accounts')).toMatchObject({ id: 'job.repair-accounts', kind: 'workloadJob', observability: expect.objectContaining({ diagnosticsArtifact: { kind: 'jobDiagnostics', name: 'repair-accounts-diagnostics' } }) });
     expect(nodesById.get('model.account')).toMatchObject({ id: 'model.account', kind: 'model', materialization: expect.objectContaining({ mode: 'providerBacked', provider: { interface: 'TransactionalDatabase', nodeId: 'provider.transactional-database' } }) });
     expect(nodesById.get('provider.transactional-database')).toMatchObject({ id: 'provider.transactional-database', kind: 'provider', interface: 'TransactionalDatabase', implementation: 'postgres' });
     expect(nodesById.get('server.admin')).toMatchObject({ id: 'server.admin', kind: 'server', observability: expect.objectContaining({ health: { mode: 'http', readinessPath: '/-/healthz', livenessPath: '/-/healthz' } }) });

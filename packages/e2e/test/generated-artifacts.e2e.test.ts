@@ -189,12 +189,12 @@ describe('Tenant Platform generated artifact pressure test', () => {
     expect(graph.nodes).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: 'provider.transactional-database', kind: 'provider', name: 'TransactionalDatabase' }),
       expect.objectContaining({ id: 'server.tenant-admin', kind: 'server' }),
-      expect.objectContaining({ id: 'job.account-migration', kind: 'job' }),
-      expect.objectContaining({ id: 'job.audit-record-migration', kind: 'job' }),
-      expect.objectContaining({ id: 'job.invitation-migration', kind: 'job' }),
-      expect.objectContaining({ id: 'job.usage-sample-migration', kind: 'job' }),
-      expect.objectContaining({ id: 'job.tenant-platform-repair', kind: 'job' }),
-      expect.objectContaining({ id: 'job.tenant-platform-cleanup', kind: 'job' }),
+      expect.objectContaining({ id: 'job.account-migration', kind: 'workloadJob' }),
+      expect.objectContaining({ id: 'job.audit-record-migration', kind: 'workloadJob' }),
+      expect.objectContaining({ id: 'job.invitation-migration', kind: 'workloadJob' }),
+      expect.objectContaining({ id: 'job.usage-sample-migration', kind: 'workloadJob' }),
+      expect.objectContaining({ id: 'job.tenant-platform-repair', kind: 'workloadJob' }),
+      expect.objectContaining({ id: 'job.tenant-platform-cleanup', kind: 'workloadJob' }),
     ]));
     expect(compiled.value.artifacts.manifest.spec.applicationGraph).toMatchObject({
       apiVersion: 'applik8s.appGraph/v1alpha1',
