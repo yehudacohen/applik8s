@@ -384,6 +384,14 @@ The adapter must not infer retry safety merely because an HTTP request failed or
 Cost, usage, and rate-limit accounting retain every physical attempt even when the logical invocation
 ultimately fails.
 
+Native TanStack applications that own a finer-grained physical-call journal may install an optional
+pre-dispatch admission at the exact adapter boundary. The admission receives only credential-free,
+stable call facts and may dispatch, return bounded retained output, or reject. It may join an equivalent
+in-flight call inside its own durable policy before returning a decision. Applik8s performs the replay
+without invoking the provider adapter and continues to emit observations only for actual dispatches.
+Application-specific leases, budgets, accounting, reconciliation, and terminality do not enter the
+framework contract.
+
 Attempt cancellation is best effort against the provider but authoritative for Applik8s follow-on work:
 after cancellation is committed, no newly arriving provider output may trigger undeclared tool calls or
 become a canonical assistant message.

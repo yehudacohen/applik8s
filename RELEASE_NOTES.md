@@ -60,6 +60,14 @@ independently open.
 
 ## v0.8.0
 
+The native TanStack physical-call middleware now accepts an optional
+application-owned pre-dispatch admission. Durable applications can atomically
+admit a new call, join an equivalent call before deciding, replay bounded
+retained output without invoking the provider, or reject an unsafe redispatch.
+The existing sink remains the provider-neutral observation boundary; leases,
+budgets, accounting, reconciliation, and product terminality remain
+application-owned.
+
 Workflow tasks can now declare the maintained Usage module's
 `usage.providerAccounting` handle. The compiler injects a provider-neutral,
 scope-bound accounting capability backed by the task's selected PostgreSQL

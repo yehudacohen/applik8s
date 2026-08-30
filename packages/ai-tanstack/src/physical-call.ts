@@ -70,11 +70,44 @@ export interface ApplicationTanStackPhysicalCallSink {
   record(observation: ApplicationTanStackPhysicalCallObservation): Promise<void>;
 }
 
+export type ApplicationTanStackPhysicalCallAdmissionDecision =
+  | { readonly action: 'dispatch' }
+  | {
+      readonly action: 'replay';
+      readonly output: ApplicationTanStackPhysicalCallOutput;
+    }
+  | {
+      readonly action: 'reject';
+      readonly reason: string;
+    };
+
+/**
+ * Optional application-owned gate invoked before the adapter receives a
+ * request. Implementations may atomically reserve a new call, join an
+ * equivalent retained call before returning its output, or reject an unsafe
+ * redispatch. Applik8s owns only the exact adapter seam and replay mechanics;
+ * leases, accounting, reconciliation, and product terminality remain in the
+ * application.
+ */
+export interface ApplicationTanStackPhysicalCallAdmission {
+  admit(
+    facts: ApplicationTanStackPhysicalCallFacts,
+    signal?: AbortSignal,
+  ): Promise<ApplicationTanStackPhysicalCallAdmissionDecision>;
+  /** Optional durable run-level barrier beyond calls seen by this process. */
+  assertTerminal?(input: {
+    readonly operationId: string;
+    readonly invocationId: string;
+    readonly runId: string;
+  }): Promise<void>;
+}
+
 export interface ApplicationTanStackPhysicalCallMiddlewareOptions {
   readonly operationId: string;
   readonly invocationId: string;
   readonly runId: string;
   readonly sink: ApplicationTanStackPhysicalCallSink;
+  readonly admission?: ApplicationTanStackPhysicalCallAdmission;
   /** Maximum JSON bytes retained in one completion observation. */
   readonly maximumRetainedResultBytes?: number;
 }
@@ -111,7 +144,11 @@ export function createApplicationTanStackPhysicalCallMiddleware(
     chatStream: method((request: Parameters<AnyTextAdapter['chatStream']>[0]) =>
       physicalStream('agent-loop', request, () => adapter.chatStream(request))),
     structuredOutput: method(async (request: Parameters<AnyTextAdapter['structuredOutput']>[0]) => {
-      const facts = await issue('structured-output-finalization', request);
+      const call = await openCall('structured-output-finalization', request);
+      if (call.action === 'replay') {
+        return replayedStructuredOutput(call.output);
+      }
+      const facts = call.facts;
       try {
         const result = await adapter.structuredOutput(request);
         await complete(facts, retainedOutput('structured-output', result, maximumBytes), modelCallUsage(result.usage));
@@ -145,6 +182,7 @@ export function createApplicationTanStackPhysicalCallMiddleware(
         `TanStack run cannot become terminal with ${open.size} physical call(s) still open.`,
       );
     }
+    await options.admission?.assertTerminal?.({ operationId, invocationId, runId });
   };
   const middleware: ChatMiddleware = Object.freeze({
     name: 'applik8s-physical-call-terminal-observation',
@@ -158,10 +196,13 @@ export function createApplicationTanStackPhysicalCallMiddleware(
     observations: () => Object.freeze([...observations]),
   });
 
-  async function issue(
+  async function openCall(
     phase: ApplicationTanStackPhysicalCallPhase,
     request: unknown,
-  ): Promise<ApplicationTanStackPhysicalCallFacts> {
+  ): Promise<
+    | { readonly action: 'dispatch'; readonly facts: ApplicationTanStackPhysicalCallFacts }
+    | { readonly action: 'replay'; readonly output: ApplicationTanStackPhysicalCallOutput }
+  > {
     const callOrdinal = ordinal++;
     const providerRequestHash = await applicationTanStackProviderRequestHashV1(phase, request);
     const conversationCheckpointHash = await applicationTanStackConversationCheckpointHashV1(phase, request);
@@ -185,9 +226,26 @@ export function createApplicationTanStackPhysicalCallMiddleware(
       provider: adapterProvider(adapter),
       providerRequestHash,
     });
+    const signal = requestSignal(request);
+    if (signal?.aborted) throw abortReason(signal);
+    const decision = options.admission
+      ? await options.admission.admit(facts, signal)
+      : { action: 'dispatch' as const };
+    if (decision.action === 'replay') {
+      return Object.freeze({
+        action: 'replay' as const,
+        output: retainedReplayOutput(decision.output, maximumBytes),
+      });
+    }
+    if (decision.action === 'reject') {
+      throw new ApplicationTanStackPhysicalCallStateError(
+        facts,
+        nonEmpty(decision.reason, 'physical-call admission rejection reason'),
+      );
+    }
     open.set(facts.providerCallId, facts);
     await observe(Object.freeze({ state: 'issued', facts }));
-    return facts;
+    return Object.freeze({ action: 'dispatch' as const, facts });
   }
 
   async function complete(
@@ -225,7 +283,12 @@ export function createApplicationTanStackPhysicalCallMiddleware(
     source: () => AsyncIterable<T>,
   ): AsyncIterable<T> {
     return (async function* () {
-      const facts = await issue(phase, request);
+      const call = await openCall(phase, request);
+      if (call.action === 'replay') {
+        for (const chunk of replayedStreamOutput<T>(call.output)) yield chunk;
+        return;
+      }
+      const facts = call.facts;
       const chunks: JsonValue[] = [];
       let bytes = 2;
       let terminal = false;
@@ -364,6 +427,41 @@ function retainedOutput(kind: 'structured-output', value: unknown, maximumBytes:
   const result = jsonClone(value, 'TanStack structured-output result');
   if (jsonBytes(result) > maximumBytes) throw new ApplicationTanStackPhysicalCallRetentionError(maximumBytes);
   return Object.freeze({ kind, result });
+}
+
+function retainedReplayOutput(
+  output: ApplicationTanStackPhysicalCallOutput,
+  maximumBytes: number,
+): ApplicationTanStackPhysicalCallOutput {
+  if (output.kind === 'structured-output') {
+    return retainedOutput('structured-output', output.result, maximumBytes);
+  }
+  const chunks = output.chunks.map((chunk) =>
+    jsonClone(chunk, 'Retained TanStack provider stream chunk'));
+  const bytes = jsonBytes(chunks);
+  if (bytes > maximumBytes) {
+    throw new ApplicationTanStackPhysicalCallRetentionError(maximumBytes);
+  }
+  return Object.freeze({ kind: 'stream', chunks: Object.freeze(chunks) });
+}
+
+function replayedStructuredOutput(
+  output: ApplicationTanStackPhysicalCallOutput,
+): JsonValue {
+  if (output.kind !== 'structured-output') {
+    throw new TypeError('Retained TanStack physical call is not structured output.');
+  }
+  return jsonClone(output.result, 'Retained TanStack structured output');
+}
+
+function replayedStreamOutput<T extends { readonly type: string }>(
+  output: ApplicationTanStackPhysicalCallOutput,
+): readonly T[] {
+  if (output.kind !== 'stream') {
+    throw new TypeError('Retained TanStack physical call is not a stream.');
+  }
+  return output.chunks.map((chunk) =>
+    jsonClone(chunk, 'Retained TanStack provider stream chunk') as T);
 }
 
 function requestSignal(value: unknown): AbortSignal | undefined {

@@ -76,6 +76,12 @@ Status: implementation started on `codex/v0.8-rfps`; no release is authorized.
 
 Current foundation increment:
 
+- Added an optional replay-safe admission at the native TanStack physical
+  adapter boundary. It composes with the existing observation sink while
+  allowing a durable application to return retained output or reject unsafe
+  redispatch before the provider is invoked; application lifecycle policy and
+  accounting remain outside Applik8s.
+
 - Live-qualified the Kubernetes CronJob scheduler on OrbStack. The exact
   function-native path now runs from an event callback through the admitted
   management bridge and generated schedule-control service into a real Job.

@@ -102,6 +102,120 @@ describe('native TanStack physical provider-call observations', () => {
     });
   });
 
+  it('replays admitted retained output without redispatching the adapter', async () => {
+    const adapter = fixtureAdapter();
+    let adapterCalls = 0;
+    Object.defineProperties(adapter, {
+      chatStream: {
+        value() {
+          adapterCalls += 1;
+          throw new Error('retained stream must not redispatch');
+        },
+      },
+      structuredOutput: {
+        async value() {
+          adapterCalls += 1;
+          throw new Error('retained structured output must not redispatch');
+        },
+      },
+    });
+    const recorded: ApplicationTanStackPhysicalCallObservation[] = [];
+    const admitted: string[] = [];
+    let terminalAssertions = 0;
+    const physical = createApplicationTanStackPhysicalCallMiddleware(adapter, {
+      operationId: 'specialist@v1',
+      invocationId: 'invocation-replay',
+      runId: 'run-replay',
+      sink: { async record(observation) { recorded.push(observation); } },
+      admission: {
+        async admit(facts) {
+          admitted.push(facts.providerCallId);
+          return facts.phase === 'structured-output-finalization'
+            ? {
+                action: 'replay',
+                output: {
+                  kind: 'structured-output',
+                  result: {
+                    data: { retained: true },
+                    rawText: '{"retained":true}',
+                    usage: {
+                      promptTokens: 1,
+                      completionTokens: 1,
+                      totalTokens: 2,
+                    },
+                  },
+                },
+              } as const
+            : {
+                action: 'replay',
+                output: {
+                  kind: 'stream',
+                  chunks: [{
+                    type: EventType.RUN_FINISHED,
+                    runId: 'run-replay',
+                    threadId: 'thread-replay',
+                    model: 'fixture-model',
+                    timestamp: 1,
+                    finishReason: 'stop',
+                    usage: {
+                      promptTokens: 1,
+                      completionTokens: 1,
+                      totalTokens: 2,
+                    },
+                  }],
+                },
+              } as const;
+        },
+        async assertTerminal() {
+          terminalAssertions += 1;
+        },
+      },
+    });
+
+    await expect(physical.adapter.structuredOutput({ messages: [] } as never))
+      .resolves.toMatchObject({ data: { retained: true } });
+    const chunks = [];
+    for await (const chunk of physical.adapter.chatStream({ messages: [] } as never)) {
+      chunks.push(chunk);
+    }
+    await expect(physical.middleware.onFinish?.({} as never, {} as never))
+      .resolves.toBeUndefined();
+
+    expect(chunks).toHaveLength(1);
+    expect(adapterCalls).toBe(0);
+    expect(recorded).toEqual([]);
+    expect(admitted).toHaveLength(2);
+    expect(new Set(admitted)).toHaveLength(2);
+    expect(terminalAssertions).toBe(1);
+  });
+
+  it('rejects an unsafe redispatch before the adapter is invoked', async () => {
+    const adapter = fixtureAdapter();
+    let adapterCalls = 0;
+    Object.defineProperty(adapter, 'structuredOutput', {
+      async value() {
+        adapterCalls += 1;
+        return { data: {} };
+      },
+    });
+    const physical = createApplicationTanStackPhysicalCallMiddleware(adapter, {
+      operationId: 'specialist@v1',
+      invocationId: 'invocation-reject',
+      runId: 'run-reject',
+      sink: { async record() {} },
+      admission: {
+        async admit() {
+          return { action: 'reject', reason: 'existing call is uncertain' };
+        },
+      },
+    });
+
+    await expect(physical.adapter.structuredOutput({ messages: [] } as never))
+      .rejects.toThrow('existing call is uncertain');
+    expect(adapterCalls).toBe(0);
+    expect(physical.observations()).toEqual([]);
+  });
+
   it('removes credentials from the provider request digest', async () => {
     const base = {
       messages: [{ role: 'user', content: 'hello' }],
