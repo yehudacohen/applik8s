@@ -156,6 +156,7 @@ export function applicationNativeRuntimeModelContract<TTable extends AnyPgTable>
         property,
         column: column.name,
         logicalType: column.dataType,
+        nullable: !column.notNull,
       })),
       ...(database.access && accessColumn ? {
         access: {

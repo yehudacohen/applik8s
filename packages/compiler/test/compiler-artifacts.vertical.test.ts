@@ -568,7 +568,7 @@ export function handle(input: string) { return JSON.stringify({ input, recognize
         ],
       });
       expect(manifest.value.spec.payloadSchemaDigests).toEqual({
-        handlerInput: 'sha256:11b38400005b447a4086b4c38470fc927470d9f58738e035095d725e3145b6f5',
+        handlerInput: 'sha256:78e6d0f8916572dd9098e03f4c1c3301e49dd6650ad1743e6546b04b505ce73c',
         normalizedOperationPlan: 'sha256:0443f019d60a14c9a2d483f0f0f1b241d68b9553c78bdcf1cd0e23e4b9de86e7',
         operatorManifest: 'sha256:0535b6580b6987670d3f21a4611e8e2ebc49c4cc4bb79df31beddf4bf704c70c',
         handlerError: 'sha256:d32b7ebac603179818d4932a654cf10871206b9391958c26d2323f7bd0ac3010',

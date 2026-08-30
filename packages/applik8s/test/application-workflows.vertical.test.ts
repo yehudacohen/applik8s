@@ -71,6 +71,56 @@ describe('v0.5 durable task and workflow contracts', () => {
     ]));
   });
 
+  it('binds one qualified AI capability across nested profile and deployment-target selections', () => {
+    const platform = app('profile-native-ai-task', {
+      spec: type({ profile: "'starter' | 'dedicated'" }),
+      status: type({ ready: 'boolean' }),
+    });
+    const Inference = AI.named('inference');
+    platform
+      .profile(platform.installation.spec, 'profile')
+      .provide(Inference)
+      .starter(() => AI.deterministic({ fixture: { response: 'starter' } }))
+      .dedicated(() => platform.selectTarget({
+        local: () => AI.deterministic({ fixture: { response: 'local' } }),
+        aws: () => AI.deterministic({ fixture: { response: 'aws' } }),
+        kubernetes: () => AI.deterministic({ fixture: { response: 'kubernetes' } }),
+      }))
+      .exhaustive();
+    platform.inject(Inference);
+    platform.workflow(
+      'profile-native-ai-task.v1',
+      {
+        input: type({ requestId: 'string' }),
+        output: type({ ready: 'boolean' }),
+      },
+      { requires: [Inference] },
+      async () => ({ ready: true }),
+    );
+
+    const graph = applicationGraphFor(platform.composition);
+    expect(graph?.nodes).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: 'provider.ai.v1alpha1.inference',
+        kind: 'provider',
+        config: expect.objectContaining({
+          ai: expect.objectContaining({
+            kind: 'application-provider-selection',
+            cases: expect.objectContaining({
+              dedicated: expect.objectContaining({
+                kind: 'application-target-provider-selection',
+              }),
+            }),
+          }),
+        }),
+      }),
+      expect.objectContaining({
+        kind: 'taskHandler',
+        capabilities: [{ interface: 'AI', nodeId: 'provider.ai.v1alpha1.inference' }],
+      }),
+    ]));
+  });
+
   it('defaults and validates bounded root-run admission retention', () => {
     expect(WorkflowEngine.hatchet()).toMatchObject({
       admission: {

@@ -8,13 +8,12 @@ import type {
   ApplicationInstallationArtifactContract,
   BundleArtifact,
   Diagnostic,
-  JsonObject,
   OperatorDefinition,
   Result,
 } from '@applik8s/core';
 import { applicationGraphArtifactFileName, applicationOperationCatalogArtifactFileName, applicationWorkloadAuthorityArtifactFileName, serializeApplicationGraph, validateApplicationGraph } from '@applik8s/core';
 import type { ApplicationFrameworkCredentialDependency } from '@applik8s/deployment-contract';
-import { parseAllDocuments, stringify } from 'yaml';
+import { stringify } from 'yaml';
 import { emitGeneratedApplicationAgents } from '../application-agents/index.js';
 import { applicationGraphWithEntrypointPublicSurface } from '../application-facade/public-surface.js';
 import { applicationGraphWithInferredApplicationHost, applicationHostFrameworkCredentialDependencies } from '../application-host/index.js';
@@ -76,7 +75,20 @@ import type {
   TypeKroCompositionResource,
   TypeKroCompositionRuntimeEndpointReference,
 } from './typekro-artifact-contracts.js';
-import { planTypeKroEmission, typeKroResourceFingerprint } from './typekro-emission-plan.js';
+import { planTypeKroEmission } from './typekro-emission-plan.js';
+import {
+  isTypeKroTemplateResource,
+  typeKroConditionalPrerequisiteInstance,
+  typeKroInstanceResources,
+  typeKroTemplateResourceFingerprints,
+} from './typekro-resource-graph.js';
+import {
+  compositionResourceFileName,
+  isTypeKroExternalReferenceResource,
+  parseTypeKroYamlResources,
+  serializeCompositionResource,
+  uniqueTypeKroResources,
+} from './typekro-resource-serialization.js';
 import { typeKroSingletonOwnerInstances } from './typekro-singleton-instances.js';
 import { digestFile, safePathSegment, unique } from './utilities.js';
 
@@ -839,315 +851,6 @@ function typeKroFactoryArtifacts(
     // prerequisites; preserve them without inventing root desired state.
     return { resources, instances: singletonInstances, instancesAreAuthoritative: true };
   }
-}
-
-function uniqueTypeKroResources(resources: readonly TypeKroCompositionResource[]): readonly TypeKroCompositionResource[] {
-  const uniqueResources = new Map<string, TypeKroCompositionResource>();
-  for (const [index, resource] of resources.entries()) {
-    uniqueResources.set(typeKroResourceFingerprint(resource) ?? `${index}:${resource.apiVersion}:${resource.kind}`, resource);
-  }
-  return [...uniqueResources.values()];
-}
-
-function parseTypeKroYamlResources(source: unknown): readonly TypeKroCompositionResource[] {
-  if (typeof source !== 'string' || source.trim().length === 0) {
-    return [];
-  }
-  return parseAllDocuments(source)
-    .map((document) => document.toJSON())
-    .filter((value): value is object => Boolean(value && typeof value === 'object' && !Array.isArray(value)))
-    .map((resource, index) => serializeCompositionResource(resource, index));
-}
-
-function serializeCompositionResource(resource: unknown, index: number): TypeKroCompositionResource {
-  if (!resource || typeof resource !== 'object') {
-    throw new Error(`Resolved TypeKro resource ${index + 1} is not an object.`);
-  }
-  const sourceMetadata = Reflect.get(resource, 'metadata');
-  const sourceName = sourceMetadata && (typeof sourceMetadata === 'object' || typeof sourceMetadata === 'function')
-    ? serializeTypeKroReference('name', Reflect.get(sourceMetadata, 'name'))
-    : undefined;
-  const sourceNamespace = sourceMetadata && (typeof sourceMetadata === 'object' || typeof sourceMetadata === 'function')
-    ? serializeTypeKroReference('namespace', Reflect.get(sourceMetadata, 'namespace'))
-    : undefined;
-  // JSON.stringify invokes an object's toJSON() before its replacer. TypeKro
-  // reference proxies therefore become `{}` when nested inside plain
-  // Kubernetes objects such as RoleBinding subjects or selector labels.
-  // Capture their locations first and restore the portable expression strings
-  // after the rest of the resource has been safely JSON-normalized.
-  const nestedReferences = collectTypeKroReferencePaths(resource);
-  // typecast: JSON.parse returns any; immediately re-narrow to JsonObject before using the serialized resource.
-  const serialized = JSON.parse(JSON.stringify(resource, serializeTypeKroReference)) as unknown;
-  if (!isJsonObject(serialized)) {
-    throw new Error(`Resolved TypeKro resource ${index + 1} is not JSON-serializable as an object.`);
-  }
-  for (const reference of nestedReferences) setSerializedPath(serialized, reference.path, reference.value);
-  const serializedMetadata = isJsonObject(serialized.metadata) ? serialized.metadata : {};
-  const normalized = normalizeKubernetesTopLevelLists({
-    ...serialized,
-    metadata: {
-      ...serializedMetadata,
-      ...(typeof serializedMetadata.name === 'string' ? {} : typeof sourceName === 'string' ? { name: sourceName } : {}),
-      ...(typeof serializedMetadata.namespace === 'string' ? {} : typeof sourceNamespace === 'string' ? { namespace: sourceNamespace } : {}),
-    },
-  });
-  if (!isTypeKroCompositionResource(normalized)) {
-    const resourceNumber = index + 1;
-    if (!isJsonObject(normalized)) {
-      throw new Error(`Resolved TypeKro resource ${resourceNumber} is not JSON-serializable as an object.`);
-    }
-    if (typeof normalized.apiVersion !== 'string') {
-      throw new Error(`Resolved TypeKro resource ${resourceNumber} is missing apiVersion.`);
-    }
-    if (typeof normalized.kind !== 'string') {
-      throw new Error(`Resolved TypeKro resource ${resourceNumber} is missing kind.`);
-    }
-    throw new Error(`Resolved TypeKro resource ${resourceNumber} is missing metadata.name.`);
-  }
-  return normalized;
-}
-
-function serializeTypeKroReference(_key: string, value: unknown): unknown {
-  if ((typeof value === 'object' || typeof value === 'function') && value !== null) {
-    if (Reflect.get(value, Symbol.for('TypeKro.KubernetesRef')) === true) {
-      const resourceId = Reflect.get(value, 'resourceId');
-      const fieldPath = Reflect.get(value, 'fieldPath');
-      if (resourceId === '__schema__' && typeof fieldPath === 'string' && fieldPath.trim()) return `\${schema.${fieldPath}}`;
-      if (typeof resourceId === 'string' && resourceId.trim() && typeof fieldPath === 'string' && fieldPath.trim()) return `\${${resourceId}.${fieldPath}}`;
-    }
-    if (Reflect.get(value, Symbol.for('TypeKro.CelExpression')) === true) {
-      const expression = Reflect.get(value, 'expression');
-      if (typeof expression === 'string' && expression.trim()) return `\${${expression}}`;
-    }
-  }
-  return value;
-}
-
-interface TypeKroReferencePath {
-  readonly path: readonly string[];
-  readonly value: string;
-}
-
-function collectTypeKroReferencePaths(value: unknown): readonly TypeKroReferencePath[] {
-  const references: TypeKroReferencePath[] = [];
-  const ancestors = new WeakSet<object>();
-  const visit = (entry: unknown, path: readonly string[]): void => {
-    if (!entry || (typeof entry !== 'object' && typeof entry !== 'function')) return;
-    const serialized = serializeTypeKroReference('', entry);
-    if (typeof serialized === 'string') {
-      references.push({ path, value: serialized });
-      return;
-    }
-    if (ancestors.has(entry)) return;
-    ancestors.add(entry);
-    try {
-      for (const key of Object.keys(entry)) visit(Reflect.get(entry, key), [...path, key]);
-    } finally {
-      ancestors.delete(entry);
-    }
-  };
-  visit(value, []);
-  return references;
-}
-
-function setSerializedPath(root: JsonObject, path: readonly string[], value: string): void {
-  if (path.length === 0) return;
-  let parent: unknown = root;
-  for (const segment of path.slice(0, -1)) {
-    if (!parent || typeof parent !== 'object') return;
-    parent = Reflect.get(parent, segment);
-  }
-  const leaf = path.at(-1);
-  if (!leaf || !parent || typeof parent !== 'object') return;
-  Reflect.set(parent, leaf, value);
-}
-
-const kubernetesTopLevelListFields: Readonly<Record<string, readonly string[]>> = {
-  'rbac.authorization.k8s.io/v1|ClusterRole': ['rules'],
-  'rbac.authorization.k8s.io/v1|ClusterRoleBinding': ['subjects'],
-  'rbac.authorization.k8s.io/v1|Role': ['rules'],
-  'rbac.authorization.k8s.io/v1|RoleBinding': ['subjects'],
-};
-
-function normalizeKubernetesTopLevelLists(resource: JsonObject): JsonObject {
-  const apiVersion = typeof resource.apiVersion === 'string' ? resource.apiVersion : undefined;
-  const kind = typeof resource.kind === 'string' ? resource.kind : undefined;
-  const listFields = apiVersion && kind ? kubernetesTopLevelListFields[`${apiVersion}|${kind}`] : undefined;
-  if (!listFields) {
-    return resource;
-  }
-
-  let normalized: Record<string, unknown> | undefined;
-  for (const field of listFields) {
-    const list = numericKeyedObjectToArray(resource[field]);
-    if (list) {
-      normalized ??= { ...resource };
-      normalized[field] = list;
-    }
-  }
-  // typecast: values originated from JSON serialization; this function only restores known Kubernetes list fields from TypeKro's numeric object encoding.
-  return (normalized ?? resource) as JsonObject;
-}
-
-function numericKeyedObjectToArray(value: unknown): unknown[] | undefined {
-  if (!isJsonObject(value)) {
-    return undefined;
-  }
-  const entries = Object.entries(value);
-  const indexed: { readonly index: number; readonly entry: unknown }[] = [];
-  for (const [key, entry] of entries) {
-    if (!/^(0|[1-9]\d*)$/.test(key)) {
-      return undefined;
-    }
-    indexed.push({ index: Number(key), entry });
-  }
-  indexed.sort((left, right) => left.index - right.index);
-  for (const [expectedIndex, entry] of indexed.entries()) {
-    if (entry.index !== expectedIndex) {
-      return undefined;
-    }
-  }
-  return indexed.map((entry) => entry.entry);
-}
-
-function isTypeKroCompositionResource(value: unknown): value is TypeKroCompositionResource {
-  return Boolean(
-    isJsonObject(value) &&
-      typeof value.apiVersion === 'string' &&
-      typeof value.kind === 'string' &&
-      isJsonObject(value.metadata) &&
-      typeof value.metadata.name === 'string'
-  );
-}
-
-function isTypeKroExternalReferenceResource(resource: TypeKroCompositionResource): boolean {
-  return Reflect.get(resource, '__externalRef') === true;
-}
-
-function compositionResourceFileName(resource: TypeKroCompositionResource, index: number): string {
-  const metadata = resource.metadata;
-  const namespace = typeof metadata.namespace === 'string' ? `${metadata.namespace}-` : '';
-  const name = typeof metadata.name === 'string' ? metadata.name : `resource-${index + 1}`;
-  return `${String(index + 1).padStart(2, '0')}-${safePathSegment(String(resource.kind ?? 'resource').toLowerCase())}-${safePathSegment(`${namespace}${name}`.toLowerCase())}`;
-}
-
-function typeKroTemplateResourceFingerprints(resources: readonly TypeKroCompositionResource[]): ReadonlySet<string> {
-  const fingerprints = new Set<string>();
-  for (const rgd of typeKroResourceGraphDefinitions(resources)) {
-    for (const graphResource of typeKroResourceGraphObservedResources(rgd)) {
-      const fingerprint = typeKroResourceFingerprint(graphResource);
-      if (fingerprint) {
-        fingerprints.add(fingerprint);
-      }
-    }
-  }
-  return fingerprints;
-}
-
-function typeKroInstanceResources(resources: readonly TypeKroCompositionResource[]): readonly TypeKroCompositionResource[] {
-  return typeKroResourceGraphDefinitions(resources).map((rgd) => {
-    const schema = typeKroResourceGraphSchema(rgd);
-    const kind = typeof schema?.kind === 'string' ? schema.kind : undefined;
-    const schemaApiVersion = typeof schema?.apiVersion === 'string' ? schema.apiVersion : undefined;
-    if (!kind || !schemaApiVersion) {
-      throw new Error(`ResourceGraphDefinition ${rgd.metadata.name} is missing spec.schema.kind or spec.schema.apiVersion.`);
-    }
-    const version = schemaApiVersion.includes('/') ? schemaApiVersion.split('/').at(-1) : schemaApiVersion;
-    const group = typeof schema?.group === 'string' && schema.group.length > 0 ? schema.group : 'kro.run';
-    const namespace = unique(typeKroResourceGraphTemplates(rgd).map((template) => template.metadata.namespace).filter((value): value is string => typeof value === 'string'));
-    return {
-      apiVersion: `${group}/${version}`,
-      kind,
-      metadata: {
-        name: rgd.metadata.name,
-        ...(namespace.length === 1 ? { namespace: namespace[0] } : {}),
-      },
-      spec: {},
-    };
-  });
-}
-
-function typeKroConditionalPrerequisiteInstance(
-  instance: TypeKroCompositionResource,
-  resources: readonly TypeKroCompositionResource[],
-): TypeKroCompositionResource {
-  const conditions = new Set<string>();
-  for (const rgd of typeKroResourceGraphDefinitions(resources)) {
-    const spec = isJsonObject(rgd.spec) ? rgd.spec : undefined;
-    if (!spec || !Array.isArray(spec.resources)) continue;
-    for (const entry of spec.resources) {
-      if (!isJsonObject(entry) || !isJsonObject(entry.externalRef) || !isJsonObject(entry.externalRef.metadata)
-        || !Array.isArray(entry.includeWhen)) continue;
-      if (entry.externalRef.apiVersion !== instance.apiVersion || entry.externalRef.kind !== instance.kind
-        || entry.externalRef.metadata.name !== instance.metadata.name
-        || (entry.externalRef.metadata.namespace ?? '') !== (instance.metadata.namespace ?? '')) continue;
-      for (const condition of entry.includeWhen) {
-        if (typeof condition === 'string' && condition.trim().length > 0) conditions.add(condition);
-      }
-    }
-  }
-  if (conditions.size === 0) return instance;
-  const annotations = isJsonObject(instance.metadata.annotations) ? instance.metadata.annotations : {};
-  return {
-    ...instance,
-    metadata: {
-      ...instance.metadata,
-      annotations: {
-        ...annotations,
-        'applik8s.dev/include-when': JSON.stringify([...conditions]),
-      },
-    },
-  };
-}
-
-function isTypeKroTemplateResource(resource: TypeKroCompositionResource, templateFingerprints: ReadonlySet<string>): boolean {
-  const fingerprint = typeKroResourceFingerprint(resource);
-  return Boolean(fingerprint && templateFingerprints.has(fingerprint));
-}
-
-function typeKroResourceGraphDefinitions(resources: readonly TypeKroCompositionResource[]): TypeKroCompositionResource[] {
-  return resources.filter((resource) => resource.apiVersion === 'kro.run/v1alpha1' && resource.kind === 'ResourceGraphDefinition');
-}
-
-function typeKroResourceGraphSchema(rgd: TypeKroCompositionResource): JsonObject | undefined {
-  const spec = rgd.spec;
-  if (!isJsonObject(spec)) {
-    return undefined;
-  }
-  const schema = spec.schema;
-  return isJsonObject(schema) ? schema : undefined;
-}
-
-function typeKroResourceGraphTemplates(rgd: TypeKroCompositionResource): TypeKroCompositionResource[] {
-  const spec = rgd.spec;
-  if (!isJsonObject(spec) || !Array.isArray(spec.resources)) {
-    return [];
-  }
-  return spec.resources.flatMap((entry) => {
-    if (!isJsonObject(entry)) {
-      return [];
-    }
-    const template = entry.template;
-    return isTypeKroCompositionResource(template) ? [template] : [];
-  });
-}
-
-function typeKroResourceGraphObservedResources(rgd: TypeKroCompositionResource): TypeKroCompositionResource[] {
-  const spec = rgd.spec;
-  if (!isJsonObject(spec) || !Array.isArray(spec.resources)) return [];
-  return spec.resources.flatMap((entry) => {
-    if (!isJsonObject(entry)) return [];
-    const resource = isTypeKroCompositionResource(entry.template)
-      ? entry.template
-      : isTypeKroCompositionResource(entry.externalRef)
-        ? entry.externalRef
-        : undefined;
-    return resource ? [resource] : [];
-  });
-}
-
-function isJsonObject(value: unknown): value is JsonObject {
-  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
 }
 
 class MinimalCompileOperatorPipeline implements CompileOperatorPipeline {

@@ -1,0 +1,119 @@
+import { type } from '@applik8s/applik8s';
+import { chat } from '@tanstack/ai';
+import { application } from '../../app';
+import { Inference, ResearchSpecialistModel } from '../../inference-roles';
+import { webSearch } from '../../providers';
+import { Document } from '../documents/model';
+
+const ResearchSpecialistIdentity = application.serviceIdentity('research-specialist');
+
+const ResearchBriefInput = type({
+  requestId: 'string.uuid',
+  topic: '1 <= string <= 500',
+  mode: "'supplied-context' | 'web-research'",
+  'context?': 'string <= 20000',
+});
+
+const ResearchBriefOutput = type({
+  status: "'created' | 'needs-evidence'",
+  'documentId?': 'string.uuid',
+  'title?': 'string',
+  sourceCount: 'number.integer >= 0',
+  provider: 'string',
+  message: 'string',
+});
+
+export const ProduceResearchBrief = application.workflow(
+  'workspace.produce-research-brief.v1',
+  {
+    input: ResearchBriefInput,
+    output: ResearchBriefOutput,
+  },
+  {
+    requires: [Inference],
+    authority: [Document.create.all()],
+    identity: ResearchSpecialistIdentity,
+    retries: 2,
+    executionTimeoutSeconds: 120,
+    idempotencyKey: input => input.requestId,
+  },
+  async (input, context) => {
+    const search = input.mode === 'web-research'
+      ? await webSearch.search({
+          query: input.topic,
+          limit: 8,
+          safeSearch: 'moderate',
+          timeoutMs: 10_000,
+        })
+      : undefined;
+    const sources = search?.results ?? [];
+    const supplied = input.context?.trim();
+    if (!supplied && sources.length === 0) {
+      return {
+        status: 'needs-evidence' as const,
+        sourceCount: 0,
+        provider: search?.provider ?? 'supplied-context',
+        message: input.mode === 'web-research'
+          ? 'No public sources were returned. Add context or configure a live WebSearch provider before treating external claims as researched.'
+          : 'Add source material before asking the specialist to synthesize a brief.',
+      };
+    }
+    const sourceMaterial = [
+      ...(supplied ? [`Supplied context:\n${supplied}`] : []),
+      ...sources.map((source, index) =>
+        `[${index + 1}] ${source.title}\n${source.url}\n${source.snippet}`),
+    ].join('\n\n');
+    const capability = context.use(Inference);
+    const generated = await chat({
+      adapter: capability.adapter(ResearchSpecialistModel),
+      messages: [{
+        role: 'user',
+        content: [
+          `Create a concise Markdown research brief about: ${input.topic}`,
+          'Use only the supplied evidence. Distinguish observations from recommendations.',
+          'Do not invent citations. The server will append the authoritative source list.',
+          sourceMaterial,
+        ].join('\n\n'),
+      }],
+      stream: false,
+      middleware: [capability.context.applik8s.persistenceMiddleware],
+      context: capability.context,
+    });
+    const title = `Research brief: ${input.topic}`.slice(0, 200);
+    const citations = sources.length > 0
+      ? `\n\n## Sources\n${sources.map((source, index) =>
+          `${index + 1}. [${source.title}](${source.url})`).join('\n')}`
+      : '\n\n## Evidence\nThis brief was synthesized from context supplied by an admitted workspace member.';
+    await Document.create({
+      id: input.requestId,
+      title,
+      body: `${generated.trim()}${citations}`,
+      summary: `A durable specialist brief based on ${sources.length > 0 ? `${sources.length} public source(s)` : 'supplied workspace context'}.`,
+      tags: ['research', 'specialist-created'],
+    });
+    return {
+      status: 'created' as const,
+      documentId: input.requestId,
+      title,
+      sourceCount: sources.length,
+      provider: search?.provider ?? 'supplied-context',
+      message: 'The specialist committed an authoritative Document. Review and publication remain separate decisions.',
+    };
+  },
+);
+
+ResearchSpecialistIdentity.can(Document.create);
+
+const specialistApi = application.http('specialists');
+
+/** Authenticated browser transport for the otherwise private durable workflow. */
+export const StartResearchBrief = specialistApi.post(
+  'produce-research-brief',
+  '/research-brief',
+  {
+    input: ResearchBriefInput,
+    output: ResearchBriefOutput,
+    authorize: (_request, context) => context.principal.id.length > 0,
+  },
+  async request => ProduceResearchBrief(request.input),
+);

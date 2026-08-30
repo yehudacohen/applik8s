@@ -1,7 +1,7 @@
 // typecast-file-boundary: TypeScript package manifests and compiler AST nodes
 // are structurally checked before their narrow export/source views are used by
 // the bundler's workspace-resolution boundary.
-import { readFileSync } from 'node:fs';
+import { readFileSync, realpathSync } from 'node:fs';
 import { access, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -333,7 +333,13 @@ export function applik8sWorkspaceSourcePlugin(): Plugin {
         try {
           const segments = args.path.split('/');
           const packageName = args.path.startsWith('@') ? segments.slice(0, 2).join('/') : segments[0] ?? args.path;
-          const packageRoot = join(workspaceRoot, 'node_modules', ...packageName.split('/'));
+          // Resolve Bun's workspace symlink before selecting the package entry.
+          // Keeping the visible symlink path makes esbuild search for transitive
+          // dependencies beside the symlink instead of inside Bun's isolated
+          // package graph (for example @aws-sdk/client-s3 -> @smithy/core).
+          const packageRoot = realpathSync(
+            join(workspaceRoot, 'node_modules', ...packageName.split('/')),
+          );
           // typecast: package.json module/browser/main fields are validated by the string checks below before choosing an esbuild entrypoint.
           const manifest = JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8')) as { readonly module?: string; readonly browser?: string; readonly main?: string };
           const moduleEntry = typeof manifest.module === 'string' ? manifest.module : undefined;

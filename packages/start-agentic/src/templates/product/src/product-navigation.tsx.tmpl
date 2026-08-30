@@ -1,0 +1,94 @@
+import {
+  Activity,
+  Archive,
+  Bot,
+  Boxes,
+  Building2,
+  CircleUserRound,
+  CreditCard,
+  FileText,
+  FlaskConical,
+  Gauge,
+  Home,
+  Inbox,
+  LibraryBig,
+  PlugZap,
+  ShieldCheck,
+  UsersRound,
+  type LucideIcon,
+} from 'lucide-react';
+
+export type ApplicationRoute =
+  | '/app'
+  | '/app/documents'
+  | '/app/artifacts'
+  | '/app/inbox'
+  | '/app/agents'
+  | '/app/knowledge'
+  | '/app/integrations'
+  | '/app/evaluations'
+  | '/app/workspaces'
+  | '/app/usage'
+  | '/app/billing'
+  | '/app/account'
+  | '/app/setup'
+  | '/app/operations'
+  | '/admin'
+  | '/admin/tenants'
+  | '/admin/catalog';
+
+export type ApplicationShellSurface = 'product' | 'builder' | 'administration' | 'operator';
+
+export interface ApplicationNavigationItem {
+  readonly to: ApplicationRoute;
+  readonly label: string;
+  readonly icon: LucideIcon;
+}
+
+/** Product-owned information architecture. Edit this file to reshape the generated application. */
+export const applicationNavigation = Object.freeze({
+  product: [
+    { to: '/app', label: 'Home', icon: Home },
+    { to: '/app/documents', label: 'Documents', icon: FileText },
+    { to: '/app/artifacts', label: 'Artifacts', icon: Archive },
+    { to: '/app/inbox', label: 'Inbox', icon: Inbox },
+    { to: '/app/workspaces', label: 'Workspaces', icon: UsersRound },
+    { to: '/app/usage', label: 'Usage', icon: Gauge },
+    { to: '/app/billing', label: 'Billing', icon: CreditCard },
+    { to: '/app/account', label: 'Account', icon: CircleUserRound },
+  ],
+  builder: [
+    { to: '/app/agents', label: 'Agents', icon: Bot },
+    { to: '/app/knowledge', label: 'Knowledge', icon: LibraryBig },
+    { to: '/app/integrations', label: 'Connections', icon: PlugZap },
+    { to: '/app/evaluations', label: 'Evaluations', icon: FlaskConical },
+  ],
+  administration: [
+    { to: '/admin', label: 'Overview', icon: Building2 },
+    { to: '/admin/tenants', label: 'Tenants', icon: UsersRound },
+    { to: '/admin/catalog', label: 'Catalog', icon: Boxes },
+  ],
+  operator: [
+    { to: '/app/setup', label: 'Launchpad', icon: ShieldCheck },
+    { to: '/app/operations', label: 'Operations', icon: Activity },
+  ],
+  mobilePrimary: [
+    { to: '/app', label: 'Home', icon: Home },
+    { to: '/app/documents', label: 'Documents', icon: FileText },
+    { to: '/app/inbox', label: 'Inbox', icon: Inbox },
+  ],
+} satisfies Record<ApplicationShellSurface | 'mobilePrimary', readonly ApplicationNavigationItem[]>);
+
+export function applicationShellSurface(pathname: string): ApplicationShellSurface {
+  if (pathname.startsWith('/admin')) return 'administration';
+  if (pathname === '/app/setup' || pathname === '/app/operations') return 'operator';
+  if (applicationNavigation.builder.some(item => pathname === item.to)) return 'builder';
+  return 'product';
+}
+
+export function applicationShellSurfaceLabel(surface: ApplicationShellSurface): string {
+  if (surface === 'builder') return 'Builder';
+  if (surface === 'administration') return 'Administration';
+  if (surface === 'operator') return 'Operator';
+  return 'Product';
+}

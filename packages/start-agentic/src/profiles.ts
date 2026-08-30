@@ -537,6 +537,7 @@ export const AgenticStarter = Object.freeze({
         response: 'I created a launch-readiness brief with an objective, execution plan, success measures, risks, and a concrete next action. The saved Document is the authoritative result.',
         tool: {
           index: 0,
+          required: false,
           inputFromLatestUser: 'document',
           input: {
             title: 'Launch readiness brief',
@@ -744,7 +745,41 @@ export const AgenticDedicated = Object.freeze({
                 namespace: context.namespace,
                 key: spec.credentialKey ?? 'apiKey',
               },
-              capabilities: ['chat', 'tools', 'streaming'],
+              capabilities: ['chat', 'tools', 'streaming', 'text-input', 'text-output'],
+            }),
+          ],
+        },
+        'interactive-assistant': {
+          fallback: 'disabled',
+          backends: [
+            AIBackend.openAICompatible('primary', {
+              model: spec.model,
+              endpoint: spec.endpoint,
+              credentials: {
+                apiVersion: 'v1',
+                kind: 'Secret',
+                name: spec.credentialSecretName,
+                namespace: context.namespace,
+                key: spec.credentialKey ?? 'apiKey',
+              },
+              capabilities: ['chat', 'tools', 'streaming', 'text-input', 'text-output'],
+            }),
+          ],
+        },
+        'research-specialist': {
+          fallback: 'disabled',
+          backends: [
+            AIBackend.openAICompatible('primary', {
+              model: spec.model,
+              endpoint: spec.endpoint,
+              credentials: {
+                apiVersion: 'v1',
+                kind: 'Secret',
+                name: spec.credentialSecretName,
+                namespace: context.namespace,
+                key: spec.credentialKey ?? 'apiKey',
+              },
+              capabilities: ['chat', 'tools', 'streaming', 'text-input', 'text-output'],
             }),
           ],
         },
@@ -927,7 +962,47 @@ export const AgenticExternal = Object.freeze({
                 namespace: context.namespace,
                 key: spec.credentialKey ?? 'apiKey',
               },
-              capabilities: ['chat', 'tools', 'streaming'],
+              capabilities: ['chat', 'tools', 'streaming', 'text-input', 'text-output'],
+            }),
+          ],
+        },
+        'interactive-assistant': {
+          fallback: 'disabled',
+          backends: [
+            AIBackend.openAICompatible('external', {
+              model: spec.model,
+              endpoint: spec.endpoint,
+              ...(spec.allowInsecureHttp
+                ? { allowInsecureHttp: spec.allowInsecureHttp }
+                : {}),
+              credentials: {
+                apiVersion: 'v1',
+                kind: 'Secret',
+                name: spec.credentialSecretName,
+                namespace: context.namespace,
+                key: spec.credentialKey ?? 'apiKey',
+              },
+              capabilities: ['chat', 'tools', 'streaming', 'text-input', 'text-output'],
+            }),
+          ],
+        },
+        'research-specialist': {
+          fallback: 'disabled',
+          backends: [
+            AIBackend.openAICompatible('external', {
+              model: spec.model,
+              endpoint: spec.endpoint,
+              ...(spec.allowInsecureHttp
+                ? { allowInsecureHttp: spec.allowInsecureHttp }
+                : {}),
+              credentials: {
+                apiVersion: 'v1',
+                kind: 'Secret',
+                name: spec.credentialSecretName,
+                namespace: context.namespace,
+                key: spec.credentialKey ?? 'apiKey',
+              },
+              capabilities: ['chat', 'tools', 'streaming', 'text-input', 'text-output'],
             }),
           ],
         },

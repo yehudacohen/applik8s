@@ -177,10 +177,10 @@ export const applicationAgenticStartDefinition = Object.freeze({
     // Compatibility ceiling retained by the Start definition schema. Release
     // review uses the categorized source-ownership inventory below rather than
     // treating one aggregate count as a quality target.
-    maximumApplicationFiles: 118,
+    maximumApplicationFiles: 123,
     maximumIntegrationLines: 600,
     files: [
-      '.applik8s/start-lineage.json',
+      '.applik8s-start.json',
       'package.json',
       'biome.json',
       'components.json',
@@ -195,6 +195,9 @@ export const applicationAgenticStartDefinition = Object.freeze({
       'src/app.ts',
       'src/application.ts',
       'src/brand.ts',
+      'src/product-home.ts',
+      'src/product-navigation.tsx',
+      'src/operational-objectives.ts',
       'src/components/markdown-document.tsx',
       'src/components/app-shell.tsx',
       'src/components/builder-boundary.tsx',
@@ -241,6 +244,7 @@ export const applicationAgenticStartDefinition = Object.freeze({
       'src/features/evaluations/view.tsx',
       'src/features/runtime/events.ts',
       'src/features/runtime/model.ts',
+      'src/features/specialists/model.ts',
       'src/features/integrations/model.ts',
       'src/features/integrations/schema.ts',
       'src/features/integrations/view.tsx',
@@ -257,6 +261,7 @@ export const applicationAgenticStartDefinition = Object.freeze({
       'src/features/workspaces/schema.ts',
       'src/features/workspaces/view.tsx',
       'src/installation.ts',
+      'src/inference-roles.ts',
       'src/modules.ts',
       'src/providers.ts',
       'src/workspace-scope.ts',

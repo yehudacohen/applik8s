@@ -3,6 +3,7 @@ import {
   index,
   model,
   pgEnum,
+  unique,
   uniqueIndex,
 } from '@applik8s/applik8s/drizzle';
 import { sql } from 'drizzle-orm';
@@ -147,7 +148,13 @@ export const applicationProviderCalls = model(
   },
   (table) => [
     uniqueIndex('applik8s_provider_calls_ref_uidx').on(table.ref),
-    uniqueIndex('applik8s_provider_calls_scope_ref_uidx').on(table.principalScope, table.ref),
+    // This scoped identity is referenced by a composite foreign key below.
+    // Model it as a table constraint so Drizzle emits it with CREATE TABLE,
+    // before migration-time ALTER TABLE foreign keys are applied.
+    unique('applik8s_provider_calls_scope_ref_unique').on(
+      table.principalScope,
+      table.ref,
+    ),
     uniqueIndex('applik8s_provider_calls_uncertainty_uidx').on(
       table.uncertaintyId,
     ),
@@ -229,7 +236,10 @@ export const applicationProviderCostRecords = model(
   },
   (table) => [
     uniqueIndex('applik8s_provider_cost_records_ref_uidx').on(table.ref),
-    uniqueIndex('applik8s_provider_cost_records_scope_ref_uidx').on(table.principalScope, table.ref),
+    unique('applik8s_provider_cost_records_scope_ref_unique').on(
+      table.principalScope,
+      table.ref,
+    ),
     index('applik8s_provider_cost_records_call_idx').on(
       table.providerCallRef,
       table.recordedAt,

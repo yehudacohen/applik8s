@@ -421,7 +421,7 @@ import { createSignedEnvelopeCodec, signedEnvelopeUtf8Key, staticSignedEnvelopeK
 	import { createServer } from 'node:http';
 	import { readFile } from 'node:fs/promises';
 	import { connect as connectTcp } from 'node:net';
-	import { HatchetClient } from '@hatchet-dev/typescript-sdk/v1/index.js';
+	import { HatchetClient, NonRetryableError } from '@hatchet-dev/typescript-sdk/v1/index.js';
 	import { compactHatchetWorkflowAdmissionPage, decodeHatchetWorkflowTransportInput, encodeHatchetWorkflowTransportInput } from '@applik8s/runtime-hatchet';
 	import { applicationAdmissionInvocationView, applicationCausalPrincipalContext, canonicalJsonV1String, createApplicationAdmissionContextV1, createApplicationExecutionPrincipalV1, validateApplicationAdmissionContextV1, validateApplicationAdmissionContextV1WithoutReceipt, validateApplicationTelemetryEnvelopeV1, withApplicationAdmissionExecutionV1, withApplicationAdmissionTraceV1 } from '@applik8s/core';
 	import { applicationAdmissionRejectionCodeV1, createApplicationAdmissionObservationV1 } from '@applik8s/core/admission';
@@ -951,7 +951,7 @@ function declaredFailure(contractName, errorSchemas, name, payload) {
   const schema = errorSchemas[name];
   if (!schema) throw new Error('Unknown declared durable error ' + JSON.stringify(name) + ' for ' + contractName);
   const validPayload = validate(schema, payload, contractName + '.errors.' + name);
-  throw new Error('applik8s-durable-error:' + JSON.stringify({ name, payload: validPayload }));
+  throw new NonRetryableError('applik8s-durable-error:' + JSON.stringify({ name, payload: validPayload }));
 }
 function taskContext(_context, contractName, task, errorSchemas, declaredCapabilities, declaredOperations, declaredQueries, declaredProjections, declaredObjects, declaredProviderAccounting, principal, queryPrincipal, base, executionSource) {
   const capabilityBindings = createApplicationTaskCapabilityBindings(
@@ -1202,8 +1202,8 @@ function nativeAITaskProviderSource(contract: WorkflowContract): string {
       ...(provider.fixture?.tool ? { tool: provider.fixture.tool } : {}),
     };
   }
-  if (provider.kind !== 'envoy-ai-gateway' || provider.provision === false) {
-    throw new Error('Native AI task capability supports deterministic or managed Envoy AI Gateway providers.');
+  if (provider.kind !== 'envoy-ai-gateway') {
+    throw new Error('Native AI task capability supports deterministic or Envoy AI Gateway providers.');
   }
   const route = provider.models?.[model.name];
   const backend = Array.isArray(route?.backends) ? route.backends[0] : undefined;
@@ -1218,17 +1218,28 @@ function nativeAITaskProviderSource(contract: WorkflowContract): string {
   if (missing.length > 0) {
     throw new Error('Native AI task capability route ' + model.name + ' lacks capabilities: ' + missing.join(', '));
   }
-  const endpoint = new URL(requiredEnv('APPLIK8S_AI_GATEWAY_MANAGED_URL'));
+  const external = provider.provision === false;
+  const endpoint = new URL(external
+    ? backend.endpoint
+    : requiredEnv('APPLIK8S_AI_GATEWAY_MANAGED_URL'));
+  if (external
+    && endpoint.protocol !== 'https:'
+    && endpoint.hostname !== 'localhost'
+    && endpoint.hostname !== '127.0.0.1'
+    && backend.allowInsecureHttp !== true) {
+    throw new Error('External native AI task endpoints must use HTTPS outside loopback.');
+  }
   const path = endpoint.pathname.replace(/\\\/+$/u, '');
-  if (!path.endsWith('/v1')) endpoint.pathname = (path || '') + '/v1';
+  if (!external && !path.endsWith('/v1')) endpoint.pathname = (path || '') + '/v1';
   endpoint.search = '';
   endpoint.hash = '';
   return {
     kind: 'openai-compatible',
     name: backend.name,
     baseUrl: endpoint.toString().replace(/\\\/$/u, ''),
-    allowInsecureHttp: true,
-    model: model.name,
+    ...(external && backend.credentials ? { apiKey: requiredEnv('APPLIK8S_AI_GATEWAY_API_KEY') } : {}),
+    allowInsecureHttp: !external || backend.allowInsecureHttp === true,
+    model: external ? backend.model : model.name,
   };
 }`;
 }

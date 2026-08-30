@@ -418,6 +418,89 @@ async function captureUsagePublicationDatabaseDiagnostics() {
   );
 }
 
+async function captureNotificationDatabaseDiagnostics() {
+  const pods = await captureIdentityStartCommand(
+    'kubectl',
+    [
+      '--context',
+      context,
+      'get',
+      'pods',
+      '--selector',
+      `cnpg.io/cluster=${projectName}-db`,
+      '--namespace',
+      namespace,
+      '--output=jsonpath={.items[0].metadata.name}',
+    ],
+    root,
+  );
+  const pod = pods.stdout.trim();
+  if (pods.code !== 0 || !pod) return pods;
+  return captureIdentityStartCommand(
+    'kubectl',
+    [
+      '--context',
+      context,
+      'exec',
+      pod,
+      '--namespace',
+      namespace,
+      '--container',
+      'postgres',
+      '--',
+      'psql',
+      '--username=postgres',
+      `--dbname=${projectName}`,
+      '--tuples-only',
+      '--no-align',
+      '--command',
+      `SELECT json_build_object(
+  'invitations', coalesce((SELECT json_agg(json_build_object(
+    'id', id,
+    'workspaceId', workspace_id,
+    'email', email,
+    'state', state,
+    'createdAt', created_at
+  ) ORDER BY created_at) FROM workspace_invitations), '[]'::json),
+  'notificationRequests', coalesce((SELECT json_agg(json_build_object(
+    'id', id,
+    'idempotencyKey', idempotency_key,
+    'state', state,
+    'attempts', attempts,
+    'provider', provider,
+    'providerMessageId', provider_message_id,
+    'lastError', last_error,
+    'createdAt', created_at,
+    'updatedAt', updated_at
+  ) ORDER BY created_at) FROM applik8s_notification_requests), '[]'::json),
+  'publicEvents', coalesce((SELECT json_agg(json_build_object(
+    'id', id,
+    'sequence', sequence,
+    'contract', contract_name || '.' || contract_version,
+    'recordedAt', recorded_at,
+    'payload', payload
+  ) ORDER BY sequence) FROM applik8s_public_stream_events
+    WHERE contract_name IN ('models.Invitation.created', 'models.NotificationRequest.created')), '[]'::json),
+  'processorCheckpoints', coalesce((SELECT json_agg(json_build_object(
+    'processor', processor,
+    'stream', stream,
+    'sequence', sequence,
+    'updatedAt', updated_at
+  )) FROM applik8s_stream_processor_checkpoints
+    WHERE processor IN ('request-invitation-delivery-create', 'deliver-requested-notification-create')), '[]'::json),
+  'processorDeadLetters', coalesce((SELECT json_agg(json_build_object(
+    'processor', processor,
+    'eventId', event_id,
+    'attempts', attempts,
+    'error', error
+  )) FROM applik8s_stream_processor_dead_letters
+    WHERE processor IN ('request-invitation-delivery-create', 'deliver-requested-notification-create')), '[]'::json)
+)::text;`,
+    ],
+    root,
+  );
+}
+
 if (!focusedBrowserTest) await discardV06Evidence(evidencePath);
 
 try {
@@ -576,7 +659,7 @@ try {
     ['generate'],
     target,
   );
-  const lineage = JSON.parse(await readFile(join(target, '.applik8s/start-lineage.json'), 'utf8')) as { readonly templateRevision?: unknown };
+  const lineage = JSON.parse(await readFile(join(target, '.applik8s-start.json'), 'utf8')) as { readonly templateRevision?: unknown };
   if (typeof lineage.templateRevision !== 'string' || !/^sha256:[a-f0-9]{64}$/u.test(lineage.templateRevision)) {
     throw new Error('Generated product lineage is missing its canonical template revision.');
   }
@@ -923,6 +1006,51 @@ try {
       console.error('\n[agentic-product-starter] usage delivery diagnostics');
       process.stderr.write(usageDeliveryLogs.stdout);
       process.stderr.write(usageDeliveryLogs.stderr);
+    }
+    const invitationDeliveryLogs = await captureGeneratedContainerLogs(
+      'reactive-worker',
+      `${projectName}-request-invitation-delivery-create`,
+    );
+    await preserveGeneratedDiagnostic(
+      'invitation-delivery-request',
+      invitationDeliveryLogs,
+    );
+    if (
+      invitationDeliveryLogs.stdout.trim()
+      || invitationDeliveryLogs.stderr.trim()
+    ) {
+      console.error('\n[agentic-product-starter] invitation delivery request diagnostics');
+      process.stderr.write(invitationDeliveryLogs.stdout);
+      process.stderr.write(invitationDeliveryLogs.stderr);
+    }
+    const notificationDeliveryLogs = await captureGeneratedContainerLogs(
+      'reactive-worker',
+      `${projectName}-deliver-requested-notification-create`,
+    );
+    await preserveGeneratedDiagnostic(
+      'notification-delivery',
+      notificationDeliveryLogs,
+    );
+    if (
+      notificationDeliveryLogs.stdout.trim()
+      || notificationDeliveryLogs.stderr.trim()
+    ) {
+      console.error('\n[agentic-product-starter] notification delivery diagnostics');
+      process.stderr.write(notificationDeliveryLogs.stdout);
+      process.stderr.write(notificationDeliveryLogs.stderr);
+    }
+    const notificationDatabase = await captureNotificationDatabaseDiagnostics();
+    await preserveGeneratedDiagnostic(
+      'notification-database',
+      notificationDatabase,
+    );
+    if (
+      notificationDatabase.stdout.trim()
+      || notificationDatabase.stderr.trim()
+    ) {
+      console.error('\n[agentic-product-starter] notification database diagnostics');
+      process.stderr.write(notificationDatabase.stdout);
+      process.stderr.write(notificationDatabase.stderr);
     }
     const lakehousePublisherLogs = await captureGeneratedContainerLogs(
       'lakehouse-publisher',

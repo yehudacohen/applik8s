@@ -138,6 +138,8 @@ export type ApplicationAIDeterministicFixture = JsonObject & {
   readonly tool?: JsonObject & {
     readonly index?: number;
     readonly input: JsonObject;
+    /** When false, a role without tools receives the fixture response. */
+    readonly required?: boolean;
     /** Derives a bounded demonstration Document from the latest user message. */
     readonly inputFromLatestUser?: 'document';
   };
@@ -717,6 +719,11 @@ const aiProviderToken: ApplicationAIProviderToken = {
       ) {
         throw new Error(
           'AI.deterministic({ fixture.tool.inputFromLatestUser }) supports only document.',
+        );
+      }
+      if (tool.required !== undefined && typeof tool.required !== 'boolean') {
+        throw new Error(
+          'AI.deterministic({ fixture.tool.required }) must be a boolean.',
         );
       }
     }

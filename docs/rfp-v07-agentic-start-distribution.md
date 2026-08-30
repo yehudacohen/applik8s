@@ -661,7 +661,7 @@ The generated project must:
 
 ### Lineage and eventual updates
 
-Every generated project records `.applik8s/start-lineage.json` with the Start
+Every generated project records the tracked `.applik8s-start.json` manifest with the Start
 name/version, generator version, selected example, pinned upstream TanStack CLI,
 and TanStack Start version. Template source lives as independently reviewable
 assets in `@applik8s/start-agentic`; the generator does not embed an opaque
@@ -669,8 +669,8 @@ multi-thousand-line source map.
 
 The v0.7 `applik8s start update --check` command is read-only. It loads
 that lineage, renders the corresponding old and current templates, classifies
-each path as unchanged, application-modified, template-added, template-removed,
-or conflicting, and prints a deterministic drift report including compatibility and security-relevant
+each path as unchanged, application-edited, upstream-added, upstream-removed,
+cleanly-applicable, or conflict, and prints a deterministic three-way report including compatibility and security-relevant
 template changes. It must never overwrite application-owned changes. An apply/update workflow is
 intentionally outside v0.7 until ownership and three-way-merge policy receive separate review.
 

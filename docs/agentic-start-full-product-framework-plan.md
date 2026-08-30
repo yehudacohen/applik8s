@@ -13,6 +13,14 @@ the v0.7 experience specification, and the versioned Agentic product baseline.
 Source placement follows the normative
 [Agentic Start source ownership](./agentic-start-source-ownership.md) contract.
 
+The bounded v0.8 continuation—supported-line compatibility, semantic Start
+updates, application-owned extension seams, interactive and durable specialist
+execution, authoritative cost evidence, and optional Web research—is governed by
+the
+[v0.8 compatibility and Agentic Start incorporation plan](./v0.8-compatibility-and-agentic-start-incorporation-plan.md).
+That continuation preserves the completed v0.7 product baseline rather than
+reopening its execution model or importing application-specific domain policy.
+
 ## Executive judgment
 
 Applik8s has the execution substrate Agentic Start needs: typed callable models

@@ -86,6 +86,7 @@ export const v07ReleaseEvidenceContract: Readonly<
     'deployment-status',
     'handoff-freshness',
     'causal-agent-note',
+    'durable-specialist',
     'historical-usage-browser',
     'agent-workbench',
     'bounded-knowledge',

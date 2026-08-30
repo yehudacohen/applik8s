@@ -35,6 +35,7 @@ export interface WorkflowContract {
   readonly graph: ApplicationGraph;
   readonly graphName: string;
   readonly observability: boolean;
+  readonly executionTarget: 'kubernetes' | 'local' | 'aws-local' | 'aws';
   readonly worker: ApplicationWorkflowWorkerNode;
   readonly provider: ApplicationProviderNode;
   readonly providerConfig: Readonly<Record<string, unknown>>;
@@ -272,6 +273,7 @@ export function workflowContract(
   workloadAuthority: readonly ApplicationWorkloadAuthorityEnvelope[] = [],
   gatewayCallers: readonly WorkflowGatewayCallerContract[] = [],
   authorityManifest?: ApplicationStaticAuthorityManifest,
+  executionTarget: 'kubernetes' | 'local' | 'aws-local' | 'aws' = 'kubernetes',
 ): WorkflowContract {
   const nodes = new Map(graph.nodes.map((node) => [node.id, node]));
   const provider = nodes.get(worker.workflowEngine.nodeId);
@@ -345,11 +347,14 @@ export function workflowContract(
       throw new Error(`Generated workflow worker ${worker.id} cannot read Hatchet Secret ${credentialNamespace}/${stringConfig(credentials.name)} from namespace ${namespace}.`);
     }
   }
-  for (const capability of capabilities.values()) validateWorkflowCapability(capability, namespace, worker);
+  for (const capability of capabilities.values()) {
+    validateWorkflowCapability(capability, namespace, worker, executionTarget);
+  }
   const nativeAI = workflowNativeAIContract(
     graph,
     [...capabilities.values()],
     worker,
+    executionTarget,
   );
   const queryEffects = workflowQueryEffects(graph, nodes, tasks, namespace, worker);
   const operationEffects = workflowOperationEffects(
@@ -422,6 +427,7 @@ export function workflowContract(
     graph,
     graphName: graph.metadata.name,
     observability: applicationGraphHasObservabilityRuntime(graph),
+    executionTarget,
     worker,
     provider,
     providerConfig: config,
@@ -724,7 +730,12 @@ function workflowPrivateProviderEffects(
         `Workflow worker ${worker.id} private provider ${provider.id} must use one direct schema.spec profile discriminator.`,
       );
     }
-    const branches = profile.branches.map((value) => {
+    // TypeKro may preserve graph-aware array method semantics on a captured
+    // profile branch collection. Materialize its iterable into an ordinary
+    // array before transforming it into the compiler-owned runtime contract;
+    // otherwise `.map()` can return an expression proxy rather than branch
+    // records that a generated worker can enumerate.
+    const branches = [...profile.branches].map((value) => {
       const branch = objectConfig(value);
       const variant = stringConfig(branch.variant);
       if (!variant) {
@@ -811,6 +822,11 @@ function workflowPrivateProviderEffects(
       if (branches.some((branch) => !branch.runtime)) {
         throw new Error(
           `Workflow worker ${worker.id} private provider ${provider.id} must declare runtime construction for every selected profile branch.`,
+        );
+      }
+      if (!Array.isArray(branches)) {
+        throw new Error(
+          `Workflow worker ${worker.id} private provider ${provider.id} did not materialize concrete profile branches.`,
         );
       }
       providers.push({ provider, selectedBy, branches });
@@ -1228,9 +1244,14 @@ function assertWorkflowSecretNamespace(value: unknown, namespace: string, owner:
   if (secretNamespace && secretNamespace !== namespace) throw new Error(`${owner} is in namespace ${secretNamespace}, but its generated worker is in ${namespace}.`);
 }
 
-function validateWorkflowCapability(provider: ApplicationProviderNode, namespace: string, worker: ApplicationWorkflowWorkerNode): void {
+function validateWorkflowCapability(
+  provider: ApplicationProviderNode,
+  namespace: string,
+  worker: ApplicationWorkflowWorkerNode,
+  executionTarget: 'kubernetes' | 'local' | 'aws-local' | 'aws',
+): void {
   if (provider.interface === 'AI') {
-    validateWorkflowAIProvider(provider, worker);
+    validateWorkflowAIProvider(provider, worker, executionTarget);
     return;
   }
   if (provider.interface !== 'StructuredGeneration') throw new Error(`Workflow worker ${worker.id} has no runtime adapter for capability ${provider.interface}.`);
@@ -1248,11 +1269,14 @@ function validateWorkflowCapability(provider: ApplicationProviderNode, namespace
 function validateWorkflowAIProvider(
   provider: ApplicationProviderNode,
   worker: ApplicationWorkflowWorkerNode,
+  executionTarget: 'kubernetes' | 'local' | 'aws-local' | 'aws',
 ): void {
-  const config = objectConfig(provider.config?.ai);
-  const candidates = config.kind === 'application-provider-selection'
-    ? [...Object.values(objectConfig(config.cases)).map(objectConfig), objectConfig(config.default)]
-    : [config];
+  const config = workflowAIProviderForTarget(
+    objectConfig(provider.config?.ai),
+    executionTarget,
+    worker,
+  );
+  const candidates = workflowAIProviderCandidates(config);
   if (candidates.length === 0 || candidates.some((candidate) => Object.keys(candidate).length === 0)) {
     throw new Error(`Workflow worker ${worker.id} AI capability ${provider.id} has no portable provider configuration.`);
   }
@@ -1263,17 +1287,88 @@ function validateWorkflowAIProvider(
       throw new Error(`Workflow worker ${worker.id} AI capability ${provider.id} has unsupported provider ${kind || '<missing>'}.`);
     }
     if (candidate.provision === false) {
-      throw new Error(
-        `Workflow worker ${worker.id} AI capability ${provider.id} cannot bind a direct external inference endpoint. Route task inference through a managed provider boundary.`,
-      );
+      const models = objectConfig(candidate.models);
+      if (Object.keys(models).length === 0) {
+        throw new Error(
+          `Workflow worker ${worker.id} AI capability ${provider.id} external inference has no model routes.`,
+        );
+      }
+      for (const [model, routeValue] of Object.entries(models)) {
+        const backends = objectConfig(routeValue).backends;
+        const selected = objectConfig(Array.isArray(backends) ? backends[0] : undefined);
+        const endpoint = applicationGraphStringValue(selected.endpoint);
+        if (!endpoint || !applicationGraphStringValue(selected.model)) {
+          throw new Error(
+            `Workflow worker ${worker.id} external AI model ${model} requires one concrete endpoint and model.`,
+          );
+        }
+        if (
+          !endpoint.startsWith('${')
+          && new URL(endpoint).protocol !== 'https:'
+          && selected.allowInsecureHttp !== true
+        ) {
+          throw new Error(
+            `Workflow worker ${worker.id} external AI model ${model} must use HTTPS unless allowInsecureHttp is explicit.`,
+          );
+        }
+      }
     }
   }
+}
+
+function workflowAIProviderForTarget(
+  config: Readonly<Record<string, unknown>>,
+  target: 'kubernetes' | 'local' | 'aws-local' | 'aws',
+  worker: ApplicationWorkflowWorkerNode,
+): Readonly<Record<string, unknown>> {
+  if (config.kind === 'application-target-provider-selection') {
+    const selected = objectConfig(objectConfig(config.targets)[target]);
+    if (Object.keys(selected).length === 0) {
+      throw new Error(
+        `Workflow worker ${worker.id} AI capability has no ${target} deployment-target branch.`,
+      );
+    }
+    return workflowAIProviderForTarget(selected, target, worker);
+  }
+  if (config.kind !== 'application-provider-selection') return config;
+  return {
+    ...config,
+    cases: Object.fromEntries(
+      Object.entries(objectConfig(config.cases)).map(([variant, candidate]) => [
+        variant,
+        workflowAIProviderForTarget(objectConfig(candidate), target, worker),
+      ]),
+    ),
+    default: workflowAIProviderForTarget(
+      objectConfig(config.default),
+      target,
+      worker,
+    ),
+  };
+}
+
+function workflowAIProviderCandidates(
+  config: Readonly<Record<string, unknown>>,
+): readonly Readonly<Record<string, unknown>>[] {
+  if (config.kind === 'application-provider-selection') {
+    return [
+      ...Object.values(objectConfig(config.cases)).flatMap((candidate) =>
+        workflowAIProviderCandidates(objectConfig(candidate))),
+      ...workflowAIProviderCandidates(objectConfig(config.default)),
+    ];
+  }
+  if (config.kind === 'application-target-provider-selection') {
+    return Object.values(objectConfig(config.targets)).flatMap((candidate) =>
+      workflowAIProviderCandidates(objectConfig(candidate)));
+  }
+  return [config];
 }
 
 function workflowNativeAIContract(
   graph: ApplicationGraph,
   capabilities: readonly ApplicationProviderNode[],
   worker: ApplicationWorkflowWorkerNode,
+  executionTarget: 'kubernetes' | 'local' | 'aws-local' | 'aws',
 ): WorkflowNativeAIContract | undefined {
   const providers = capabilities.filter((provider) => provider.interface === 'AI');
   if (providers.length === 0) return undefined;
@@ -1283,7 +1378,11 @@ function workflowNativeAIContract(
     );
   }
   const provider = providers[0]!;
-  const providerConfig = objectConfig(provider.config?.ai);
+  const providerConfig = workflowAIProviderForTarget(
+    objectConfig(provider.config?.ai),
+    executionTarget,
+    worker,
+  );
   const stateModels = graph.nodes.filter(
     (node): node is ApplicationModelNode & {
       readonly runtime: NonNullable<ApplicationModelNode['runtime']>;

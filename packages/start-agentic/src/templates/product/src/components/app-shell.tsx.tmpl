@@ -1,60 +1,17 @@
 import { useApplicationIdentitySession } from '@applik8s/react/identity';
 import { AgenticAccountSession } from '@applik8s/start-agentic/react';
 import { Link, useRouterState } from '@tanstack/react-router';
-import {
-  Activity,
-  Archive,
-  Bot,
-  Boxes,
-  Building2,
-  CircleUserRound,
-  CreditCard,
-  FileText,
-  FlaskConical,
-  Gauge,
-  Home,
-  Inbox,
-  LibraryBig,
-  PlugZap,
-  ShieldCheck,
-  UsersRound,
-  type LucideIcon,
-} from 'lucide-react';
 import type { ReactNode } from 'react';
 import { brand } from '../brand';
+import {
+  type ApplicationNavigationItem,
+  type ApplicationShellSurface,
+  applicationNavigation,
+  applicationShellSurface,
+  applicationShellSurfaceLabel,
+} from '../product-navigation';
 import { MobileMoreNavigation, ThemeControl, WorkspaceScopeControl } from './mobile-navigation';
 import { Badge, Button, RouteState, cn } from './ui';
-
-const productNavigation = [
-  { to: '/app', label: 'Home', icon: Home },
-  { to: '/app/documents', label: 'Documents', icon: FileText },
-  { to: '/app/artifacts', label: 'Artifacts', icon: Archive },
-  { to: '/app/inbox', label: 'Inbox', icon: Inbox },
-  { to: '/app/workspaces', label: 'Workspaces', icon: UsersRound },
-  { to: '/app/usage', label: 'Usage', icon: Gauge },
-  { to: '/app/billing', label: 'Billing', icon: CreditCard },
-  { to: '/app/account', label: 'Account', icon: CircleUserRound },
-] as const;
-
-const builderNavigation = [
-  { to: '/app/agents', label: 'Agents', icon: Bot },
-  { to: '/app/knowledge', label: 'Knowledge', icon: LibraryBig },
-  { to: '/app/integrations', label: 'Connections', icon: PlugZap },
-  { to: '/app/evaluations', label: 'Evaluations', icon: FlaskConical },
-] as const;
-
-const administrationNavigation = [
-  { to: '/admin', label: 'Overview', icon: Building2 },
-  { to: '/admin/tenants', label: 'Tenants', icon: UsersRound },
-  { to: '/admin/catalog', label: 'Catalog', icon: Boxes },
-] as const;
-
-const operatorNavigation = [
-  { to: '/app/setup', label: 'Launchpad', icon: ShieldCheck },
-  { to: '/app/operations', label: 'Operations', icon: Activity },
-] as const;
-
-type ShellSurface = 'product' | 'builder' | 'administration' | 'operator';
 
 export function AppShell({ children }: { readonly children: ReactNode }) {
   const session = useApplicationIdentitySession();
@@ -63,15 +20,15 @@ export function AppShell({ children }: { readonly children: ReactNode }) {
   const workspaceAdministrator = session.data?.capabilities?.workspaceAdministration === true;
   const operator = session.data?.capabilities?.applicationOperations === true;
   const builder = workspaceAdministrator || operator;
-  const surface = shellSurface(pathname);
+  const surface = applicationShellSurface(pathname);
   const admissionRoute = isAdmissionPath(pathname);
   const navigation = surface === 'builder'
-    ? builderNavigation
+    ? applicationNavigation.builder
     : surface === 'administration'
-      ? administrationNavigation
+      ? applicationNavigation.administration
       : surface === 'operator'
-        ? operatorNavigation
-        : productNavigation;
+        ? applicationNavigation.operator
+        : applicationNavigation.product;
 
   if (!authenticated) {
     return (
@@ -136,7 +93,7 @@ export function AppShell({ children }: { readonly children: ReactNode }) {
           {authenticated ? (
             <nav aria-label="Application" className="mt-9 flex flex-1 flex-col">
               <SurfaceSwitcher surface={surface} builder={builder} operator={operator} />
-              <p className="nav-label mt-7">{surfaceLabel(surface)}</p>
+              <p className="nav-label mt-7">{applicationShellSurfaceLabel(surface)}</p>
               {navigation.map(item => <NavLink key={item.to} {...item} />)}
             </nav>
           ) : <div className="mt-9 text-sm leading-6 text-stone-600">Sign in to enter your workspace copilot.</div>}
@@ -154,34 +111,20 @@ export function AppShell({ children }: { readonly children: ReactNode }) {
       </div>
       {authenticated ? (
         <nav aria-label="Mobile application" data-mobile-navigation className="fixed inset-x-3 bottom-[calc(.75rem+env(safe-area-inset-bottom))] z-50 grid grid-cols-4 rounded-2xl border border-stone-200 bg-white/95 p-1.5 shadow-xl backdrop-blur dark:border-stone-700 dark:bg-stone-950/95 lg:hidden">
-          <NavLink to="/app" label="Home" icon={Home} compact />
-          <NavLink to="/app/documents" label="Documents" icon={FileText} compact />
-          <NavLink to="/app/inbox" label="Inbox" icon={Inbox} compact />
+          {applicationNavigation.mobilePrimary.map(item => <NavLink key={item.to} {...item} compact />)}
           <MobileMoreNavigation
             pathname={pathname}
             workspaceAdministrator={builder}
             operator={operator}
-            product={productNavigation}
-            builder={builderNavigation}
-            administration={administrationNavigation}
-            operations={operatorNavigation}
+            product={applicationNavigation.product}
+            builder={applicationNavigation.builder}
+            administration={applicationNavigation.administration}
+            operations={applicationNavigation.operator}
           />
         </nav>
       ) : null}
     </div>
   );
-}
-
-function shellSurface(pathname: string): ShellSurface {
-  if (pathname.startsWith('/admin')) return 'administration';
-  if (pathname === '/app/setup' || pathname === '/app/operations') return 'operator';
-  if (
-    pathname === '/app/agents'
-    || pathname === '/app/knowledge'
-    || pathname === '/app/integrations'
-    || pathname === '/app/evaluations'
-  ) return 'builder';
-  return 'product';
 }
 
 function isAdmissionPath(pathname: string) {
@@ -191,20 +134,13 @@ function isAdmissionPath(pathname: string) {
     || pathname === '/verify';
 }
 
-function surfaceLabel(surface: ShellSurface) {
-  if (surface === 'builder') return 'Builder';
-  if (surface === 'administration') return 'Administration';
-  if (surface === 'operator') return 'Operator';
-  return 'Product';
-}
-
 function SurfaceSwitcher({
   surface,
   builder,
   operator,
   compact = false,
 }: {
-  readonly surface: ShellSurface;
+  readonly surface: ApplicationShellSurface;
   readonly builder: boolean;
   readonly operator: boolean;
   readonly compact?: boolean;
@@ -258,10 +194,7 @@ function NavLink({
   label,
   icon,
   compact = false,
-}: {
-  readonly to: '/' | '/app' | '/app/documents' | '/app/artifacts' | '/app/inbox' | '/app/agents' | '/app/knowledge' | '/app/integrations' | '/app/evaluations' | '/app/workspaces' | '/app/usage' | '/app/billing' | '/app/account' | '/app/setup' | '/app/operations' | '/admin' | '/admin/tenants' | '/admin/catalog';
-  readonly label: string;
-  readonly icon: LucideIcon;
+}: ApplicationNavigationItem & {
   readonly compact?: boolean;
 }) {
   const Icon = icon;

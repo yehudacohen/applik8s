@@ -575,6 +575,7 @@ describe('generated function-native HTTP worker', () => {
       expect.objectContaining({
         name: 'workflow-gateway-token',
         projected: expect.objectContaining({
+          defaultMode: 0o444,
           sources: [expect.objectContaining({
             serviceAccountToken: expect.objectContaining({
               audience: 'https://kubernetes.default.svc',

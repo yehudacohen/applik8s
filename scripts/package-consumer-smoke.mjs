@@ -1516,6 +1516,37 @@ export function getRouter() {
       'Packed Agentic Start migration generation reported success without emitting SQL.',
     );
   }
+  const packedMigrationSql = (
+    await Promise.all(
+      packedMigrations.map((file) =>
+        readFile(join(agenticStartTarget, 'drizzle', file), 'utf8')
+      ),
+    )
+  ).join('\n');
+  const providerCallConstraint = packedMigrationSql.indexOf(
+    'CONSTRAINT "applik8s_provider_calls_scope_ref_unique" UNIQUE',
+  );
+  const providerCallForeignKey = packedMigrationSql.indexOf(
+    'CONSTRAINT "applik8s_provider_cost_records_call_fk" FOREIGN KEY',
+  );
+  const providerCostConstraint = packedMigrationSql.indexOf(
+    'CONSTRAINT "applik8s_provider_cost_records_scope_ref_unique" UNIQUE',
+  );
+  const providerCostForeignKey = packedMigrationSql.indexOf(
+    'CONSTRAINT "applik8s_provider_cost_records_reconciles_fk" FOREIGN KEY',
+  );
+  if (
+    providerCallConstraint < 0
+    || providerCallForeignKey < 0
+    || providerCallConstraint > providerCallForeignKey
+    || providerCostConstraint < 0
+    || providerCostForeignKey < 0
+    || providerCostConstraint > providerCostForeignKey
+  ) {
+    throw new Error(
+      'Packed Agentic Start must emit scoped provider-accounting unique constraints before the foreign keys that reference them.',
+    );
+  }
   assertGeneratedRuntimeFiles('generated migration command');
   const packedServerSource = 'export default {};\n';
   const packedServerArtifacts = [{

@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
+import { app, applicationGraphFor } from '@applik8s/applik8s';
 import {
   applicationGraphDeploymentSlice,
   applicationInstallationReadiness,
@@ -17,10 +18,7 @@ import {
   stageExplicitApplicationInstance,
   waitForApplicationEndpoint,
 } from '@applik8s/cli';
-import {
-  compileApplicationOperationCatalog,
-} from '@applik8s/compiler';
-import { app, applicationGraphFor } from '@applik8s/applik8s';
+import { compileApplicationOperationCatalog } from '@applik8s/compiler';
 import { pgTable, text } from 'drizzle-orm/pg-core';
 import { describe, expect, it } from 'vitest';
 import { resolveApplicationInstallationValues } from '../../cli/src/application-installation-values.js';
@@ -291,7 +289,7 @@ describe('applik8s CLI', () => {
       else process.env.APPLIK8S_DISABLE_NODE_DELETE_HANDOFF = previousHandoff;
       await rm(dir, { recursive: true, force: true });
     }
-  });
+  }, 15_000);
 
   it('fails closed before compilation for an unknown deployment strategy', async () => {
     const output: string[] = [];

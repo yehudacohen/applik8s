@@ -99,11 +99,13 @@ describe('application-native Kubernetes lifecycle handlers', () => {
       {
         apiGroups: ['workflows.example'],
         resources: ['workflowjobs'],
+        scope: 'Namespaced',
         verbs: ['patch'],
       },
       {
         apiGroups: ['workflows.example'],
         resources: ['workflowjobs/finalizers'],
+        scope: 'Namespaced',
         verbs: ['patch', 'update'],
       },
     ]);

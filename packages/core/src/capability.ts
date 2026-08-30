@@ -27,7 +27,11 @@ export const workflowGatewayServiceAccountTokenProjection = Object.freeze({
   path: 'token',
   audience: 'https://kubernetes.default.svc',
   expirationSeconds: 3_600,
-  defaultMode: 0o400,
+  // Kubernetes projected volumes are root-owned. Generated workloads run as
+  // non-root without assuming one image-specific UID/GID, so the file must be
+  // readable independently of ownership. The volume is mounted only into the
+  // intended container and remains read-only.
+  defaultMode: 0o444,
 } as const);
 
 export function usesWorkflowGatewayCapability(

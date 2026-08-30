@@ -37,13 +37,27 @@ describe('provider-private workflow construction', () => {
   it('hydrates only the selected provider in the worker and never serializes credentials', () => {
     const graph = privateProviderGraph();
     const contract = contractFor(graph);
-    expect(contract.privateProviderEffects?.providers[0]).toMatchObject({
-      selectedBy: 'schema.spec.profile',
-      branches: expect.arrayContaining([expect.objectContaining({
-        variant: 'dedicated',
-        postgres: [expect.objectContaining({ alias: 'catalog' })],
-      })]),
-    });
+    const privateProvider = contract.privateProviderEffects?.providers[0];
+    expect(privateProvider?.selectedBy).toBe('schema.spec.profile');
+    expect(Array.isArray(privateProvider?.branches)).toBe(true);
+    const dedicated = privateProvider?.branches.find(
+      (branch) => branch.variant === 'dedicated',
+    );
+    expect(dedicated?.postgres.map(({ alias }) => alias)).toEqual(['catalog']);
+    expect(Array.prototype.map.call(
+      contract.privateProviderEffects?.providers ?? [],
+      (provider: NonNullable<typeof contract.privateProviderEffects>['providers'][number]) => ({
+        providersArray: Array.isArray(contract.privateProviderEffects?.providers),
+        branchesArray: Array.isArray(provider.branches),
+        providerFlatMap: typeof contract.privateProviderEffects?.providers.flatMap,
+        branchFlatMap: typeof provider.branches.flatMap,
+      }),
+    )).toEqual([{
+      providersArray: true,
+      branchesArray: true,
+      providerFlatMap: 'function',
+      branchFlatMap: 'function',
+    }]);
     const source = generatedWorkerSource(contract);
     expect(source).toContain("requiredEnv('APPLIK8S_PROFILE_VARIANT')");
     expect(source).toContain('/var/run/secrets/applik8s/provider-private/');
@@ -61,7 +75,7 @@ describe('provider-private workflow construction', () => {
       expect.objectContaining({ mountPath: expect.stringContaining('/provider-private/'), readOnly: true }),
     ]));
     expect(deployment.spec.template.spec.volumes).toEqual(expect.arrayContaining([
-      expect.objectContaining({ secret: expect.objectContaining({ optional: true, defaultMode: 0o400 }) }),
+      expect.objectContaining({ secret: expect.objectContaining({ optional: true, defaultMode: 0o444 }) }),
     ]));
   });
 

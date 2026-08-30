@@ -2,7 +2,11 @@
 import { createHmac } from 'node:crypto';
 import { queryInputKey } from '@applik8s/client';
 import { describe, expect, it, vi } from 'vitest';
-import { createApplicationTaskQueryRuntime, verifyApplicationTaskQueryAdmission } from '../src/task-query-runtime.js';
+import {
+  ApplicationTaskQueryTimeoutError,
+  createApplicationTaskQueryRuntime,
+  verifyApplicationTaskQueryAdmission,
+} from '../src/task-query-runtime.js';
 
 const secret = 'task-query-test-secret-with-at-least-32-bytes';
 
@@ -157,6 +161,53 @@ describe('task query runtime', () => {
       authorityRevision: 'authority-v1',
       trustedContextDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/u),
     });
+  });
+
+  it('attributes an expired dependency query without relabeling caller cancellation', async () => {
+    const runtime = createApplicationTaskQueryRuntime({
+      cursorSecret: secret,
+      fetch: Object.assign(
+        async (_url: string | URL | Request, init?: RequestInit) => {
+          const signal = init?.signal;
+          if (!signal) throw new Error('Expected a bounded task-query signal.');
+          await new Promise<never>((_resolve, reject) => {
+            const abort = () => reject(signal.reason);
+            if (signal.aborted) abort();
+            else signal.addEventListener('abort', abort, { once: true });
+          });
+          throw new Error('unreachable');
+        },
+        { preconnect: () => undefined },
+      ),
+      queries: [{
+        id: 'AgentProfile.active',
+        audience: 'gateway.web',
+        endpoint: 'http://gateway/queries/AgentProfile.active/snapshot',
+        inputSchema: { type: 'object' },
+        outputSchema: { type: 'object' },
+        timeoutMs: 10,
+        maxResultBytes: 1_000,
+      }],
+    });
+    const active = runtime.bind(
+      { active: 'AgentProfile.active' },
+      { id: 'workspace-assistant', authorizationVersion: 'v1' },
+    ).active;
+    if (!active) throw new Error('Expected declared query.');
+
+    const expired = await active({}).catch((error: unknown) => error);
+    expect(expired).toBeInstanceOf(ApplicationTaskQueryTimeoutError);
+    expect(expired).toMatchObject({
+      code: 'APPLIK8S_TASK_QUERY_TIMEOUT',
+      query: 'AgentProfile.active',
+      timeoutMs: 10,
+    });
+    expect((expired as Error).message).toContain('AgentProfile.active');
+
+    const cancelled = new AbortController();
+    const cancellation = new Error('caller disconnected');
+    cancelled.abort(cancellation);
+    await expect(active({}, { signal: cancelled.signal })).rejects.toBe(cancellation);
   });
 
   it('preserves function-native zero-input queries while required inputs remain fail-closed', async () => {

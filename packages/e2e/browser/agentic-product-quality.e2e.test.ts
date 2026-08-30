@@ -2,7 +2,25 @@
 // closed literal tuples whose values are exercised against the generated app.
 
 import AxeBuilder from '@axe-core/playwright';
-import { expect, test } from '@playwright/test';
+import { expect, type Page, type Response, test } from '@playwright/test';
+
+async function gotoProductRoute(
+  page: Page,
+  path: string,
+): Promise<Response | null> {
+  try {
+    return await page.goto(path, { waitUntil: 'domcontentloaded' });
+  } catch (cause) {
+    const message = cause instanceof Error ? cause.message : String(cause);
+    if (!message.includes('NS_BINDING_ABORTED')) throw cause;
+
+    // Firefox can cancel an in-flight document navigation while the previous
+    // route's live-query stream is closing. Retry exactly that browser-level
+    // cancellation once; the second navigation and every HTTP/UI assertion
+    // below remain fail-closed.
+    return page.goto(path, { waitUntil: 'domcontentloaded' });
+  }
+}
 
 const representativeRoutes = [
   '/',
@@ -148,7 +166,7 @@ test('has no serious automated accessibility violations across the core journeys
     '/app/billing',
     '/app/setup',
   ] as const) {
-    await page.goto(path, { waitUntil: 'domcontentloaded' });
+    await gotoProductRoute(page, path);
     await expect(page.locator('main')).toBeVisible();
     await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
     const results = await new AxeBuilder({ page })
@@ -226,7 +244,7 @@ test('captures a reviewable product, builder, billing, and operator journey', as
     ['workspace-billing', '/app/billing', 'Plan, usage, and access'],
     ['operator-launchpad', '/app/setup', 'Get this application ready to launch'],
   ] as const) {
-    await page.goto(path, { waitUntil: 'domcontentloaded' });
+    await gotoProductRoute(page, path);
     await expect(page.getByRole('heading', { name: heading }).first()).toBeVisible({
       timeout: 15_000,
     });

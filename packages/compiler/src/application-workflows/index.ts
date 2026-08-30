@@ -62,6 +62,7 @@ export async function emitGeneratedApplicationWorkflows(options: {
       workloadAuthority,
       [...gatewayCallers, ...httpGatewayCallers, ...scheduleGatewayCallers],
       authorityManifest,
+      options.executionTarget ?? 'kubernetes',
     );
     const ownsProvider = !provisionedProviders.has(contract.provider.id);
     provisionedProviders.add(contract.provider.id);

@@ -18,6 +18,7 @@ interface BrowserDocument {
   readonly principalScope: string;
   readonly createdByPrincipalId: string;
   readonly sourceConversationId?: string;
+  readonly sourceRunId?: string;
 }
 
 async function readAuthoritativeDocuments(
@@ -271,12 +272,69 @@ test(
 );
 
 test(
+  agenticProductEvidenceJourneys.durableSpecialist.test,
+  async ({ page }) => {
+    test.setTimeout(180_000);
+    await page.goto('/app/documents');
+    const existingIds = new Set(
+      (await readAuthoritativeDocuments(page)).map(document => document.id),
+    );
+    await page.getByRole('button', { name: 'Research brief' }).click();
+    await page.getByLabel('Topic').fill('Durable specialist release evidence');
+    await page.getByLabel('Source material').fill([
+      'The release candidate passed its generated consumer gates.',
+      'Deployment readiness must be established by observed runtime evidence.',
+      'Missing price or provider evidence must remain explicitly unknown.',
+    ].join('\n'));
+    await page.getByRole('button', { name: 'Start durable brief' }).click();
+
+    let authoritative: BrowserDocument | undefined;
+    await expect.poll(async () => {
+      authoritative = (await readAuthoritativeDocuments(page)).find(
+        document => !existingIds.has(document.id) && Boolean(document.sourceRunId),
+      );
+      return authoritative?.sourceRunId;
+    }, { timeout: 120_000 }).toBeTruthy();
+    if (!authoritative) {
+      throw new Error('The durable specialist did not commit its authoritative Document.');
+    }
+    expect(authoritative).toMatchObject({
+      id: expect.any(String),
+      sourceRunId: expect.any(String),
+      principalScope: expect.any(String),
+      createdByPrincipalId: expect.any(String),
+    });
+    expect(authoritative.body).toContain('## Evidence');
+    await expect(page.getByRole('status')).toContainText(
+      'The specialist committed an authoritative Document',
+    );
+    await expect(
+      page.getByRole('link').filter({ hasText: authoritative.title }),
+    ).toContainText('Created by a durable specialist');
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await expect(
+      page.getByRole('link').filter({ hasText: authoritative.title }),
+    ).toBeVisible();
+
+    if (qualificationProfile === 'starter') {
+      await page.getByRole('button', { name: 'Research brief' }).click();
+      await page.getByLabel('Evidence source').selectOption('web-research');
+      await page.getByLabel('Topic').fill('Facts not present in local fixtures');
+      await page.getByLabel('Optional framing or private context').fill('');
+      await page.getByRole('button', { name: 'Start durable brief' }).click();
+      await expect(page.getByRole('status')).toContainText(
+        'No public sources were returned',
+        { timeout: 120_000 },
+      );
+    }
+  },
+);
+
+test(
   agenticProductEvidenceJourneys.historicalLakehouse.test,
   async ({ page }) => {
-    test.skip(
-      process.env.APPLIK8S_E2E_LAKEHOUSE_QUALIFIED !== '1',
-      'Historical browser publication is qualified only when this target selects an individually qualified lakehouse provider.',
-    );
+    const lakehouseQualified =
+      process.env.APPLIK8S_E2E_LAKEHOUSE_QUALIFIED === '1';
     const suffix = Date.now().toString(36);
     const workspaceName = `Historical usage ${suffix}`;
     await page.goto('/app/workspaces');
@@ -287,6 +345,15 @@ test(
       page.getByRole('heading', { name: workspaceName }),
     ).toBeVisible({ timeout: 90_000 });
     const workspaceUrl = page.url();
+
+    if (!lakehouseQualified) {
+      await expect(
+        page.getByRole('region', { name: 'Historical workspace usage' }),
+      ).toContainText(
+        'This installation has no qualified historical-query provider.',
+      );
+      return;
+    }
 
     await page.goto('/app');
     const existingIds = new Set(

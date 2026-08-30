@@ -209,11 +209,18 @@ const notificationRequests = promotedNotificationModel(
   applicationNotificationRequests,
 );
 
+type ApplicationNotificationRequestApi =
+  DrizzleApplicationModelFacet<typeof applicationNotificationRequests>['api'];
+
 interface ApplicationNotificationRequestBindings {
-  readonly NotificationRequest: Pick<
-    DrizzleApplicationModelFacet<typeof applicationNotificationRequests>['api'],
-    'find' | 'create'
-  >;
+  readonly NotificationRequest: {
+    readonly find: (
+      ...args: Parameters<ApplicationNotificationRequestApi['find']>
+    ) => ReturnType<ApplicationNotificationRequestApi['find']>;
+    readonly create: (
+      ...args: Parameters<ApplicationNotificationRequestApi['create']>
+    ) => ReturnType<ApplicationNotificationRequestApi['create']>;
+  };
 }
 
 /** @internal Managed-worker hydration for the framework-owned request callable. */
@@ -238,22 +245,40 @@ export function createApplicationNotificationRequestCallable(
           `Notification idempotency key ${normalized.idempotencyKey} was reused with different content.`,
         );
       }
-      return existing[0].value;
+      return existing[0];
     }
     return bindings.NotificationRequest.create({
       id: normalized.id,
       idempotencyKey: normalized.idempotencyKey,
       recipientEmail: normalized.recipient.email,
-      recipientName: normalized.recipient.name,
-      senderEmail: normalized.sender?.email,
-      senderName: normalized.sender?.name,
-      replyToEmail: normalized.replyTo?.email,
-      replyToName: normalized.replyTo?.name,
+      ...(normalized.recipient.name
+        ? { recipientName: normalized.recipient.name }
+        : {}),
+      ...(normalized.sender
+        ? {
+            senderEmail: normalized.sender.email,
+            ...(normalized.sender.name
+              ? { senderName: normalized.sender.name }
+              : {}),
+          }
+        : {}),
+      ...(normalized.replyTo
+        ? {
+            replyToEmail: normalized.replyTo.email,
+            ...(normalized.replyTo.name
+              ? { replyToName: normalized.replyTo.name }
+              : {}),
+          }
+        : {}),
       subject: normalized.content.subject,
       text: normalized.content.text,
-      html: normalized.content.html,
-      templateId: normalized.template?.id,
-      templateVersion: normalized.template?.version,
+      ...(normalized.content.html ? { html: normalized.content.html } : {}),
+      ...(normalized.template
+        ? {
+            templateId: normalized.template.id,
+            templateVersion: normalized.template.version,
+          }
+        : {}),
       tags: normalized.tags ?? {},
       state: 'pending',
       attempts: 0,
@@ -407,7 +432,10 @@ function deliveryInputFromRequest(
     ...(templateId && templateVersion
       ? { template: { id: templateId, version: templateVersion } }
       : {}),
-    ...(tags && typeof tags === 'object' && !Array.isArray(tags)
+    ...(tags
+      && typeof tags === 'object'
+      && !Array.isArray(tags)
+      && Object.keys(tags).length > 0
       ? {
         // typecast: normalizeApplicationNotification validates every tag key and value at this untrusted row boundary.
         tags: tags as Readonly<Record<string, string>>,

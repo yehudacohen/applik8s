@@ -28,6 +28,7 @@ async function loadAgentKnowledge(input: { readonly sourceIds?: readonly string[
 }
 
 const workflow = application.workflow;
+const KnowledgeWorkerSubject = 'knowledge-ingestion-worker';
 const KnowledgeWorker = application.serviceIdentity('knowledge-ingestion-worker');
 
 const knowledge = module('knowledge-workbench', {}, currentApplication => {
@@ -107,7 +108,7 @@ const knowledge = module('knowledge-workbench', {}, currentApplication => {
   KnowledgeSourceTable.update.beforeCommit({ history: true }, async function protectKnowledgeUpdate(source, input, context) {
     if (!context.principal || source.value.principalScope !== agenticWorkspaceScope(context)) throw new Error('The knowledge source is outside the admitted workspace scope.');
     const workerUpdate = context.principal.kind === 'execution'
-      && context.principal.serviceIdentity?.id === KnowledgeWorker.identity.id;
+      && context.principal.serviceIdentity?.subject === KnowledgeWorkerSubject;
     if (
       'principalScope' in input.patch
       || 'createdAt' in input.patch

@@ -9,6 +9,10 @@ import {
   isApplicationModelPolicyRejectedError,
 } from './application-model-policy.js';
 import type { ApplicationModelCommandContext, ApplicationModelCommandHandler, ApplicationModelCommandParticipantClient, ApplicationModelCommandTarget, ApplicationModelObject, ApplicationModelPatch, ApplicationModelQueryOptions, ApplicationModelQueryPage, ApplicationModelRef, ApplicationRuntimeModelContract } from './application-models.js';
+import {
+  isApplicationModelClearIntent,
+  type ApplicationModelUpdatePatch,
+} from './application-model-update-contract.js';
 import { applicationPublicStreamCommitScope } from './application-stream-commit.js';
 import {
   captureApplicationTelemetryContext,
@@ -26,6 +30,10 @@ import type {
   ApplicationNativeModelTransactionRequest,
 } from './native-model-execution.js';
 import { withApplicationNativeModelClients } from './native-model-execution.js';
+import {
+  applicationNativeModelMutableColumns,
+  applyApplicationModelUpdatePatch,
+} from './native-model-update.js';
 import type { ApplicationPostgresSql, ApplicationPostgresTransactionSql } from './postgres-runtime-contract.js';
 import { createApplicationPostgresSql } from './postgres-runtime-loader.js';
 import type { ApplicationDatabaseClient } from './relational-runtime.js';
@@ -514,6 +522,7 @@ export async function executePostgresModelCommand<
 
     let stagedSpec = before.spec;
     let stagedStatus = before.status;
+    const clearedSpecProperties = new Set<string>();
     let deleteTarget = false;
     await transaction.unsafe(
       'INSERT INTO applik8s_command_inbox (scope, binding_id, model, target_key, idempotency_key, message_id, input, authorization_receipt) VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb)',
@@ -531,19 +540,39 @@ export async function executePostgresModelCommand<
     let atomicOperationSequence = 0;
     const emittedCommands: EmittedCommand[] = [];
     const target = commandTarget<TSpec, TStatus>(before, (patch) => {
-      stagedSpec = { ...stagedSpec, ...(patch.spec ?? {}) };
+      if (patch.spec) {
+        stagedSpec = applyApplicationModelUpdatePatch(
+          execution.model,
+          stagedSpec,
+          patch.spec,
+          clearedSpecProperties,
+        );
+      }
       if (patch.status) {
         // typecast: model patch keys are constrained to Partial<TStatus>; merging them preserves the status contract.
         stagedStatus = { ...(stagedStatus ?? {}), ...patch.status } as TStatus;
       }
     }, () => stagedSpec, () => stagedStatus, () => { deleteTarget = true; });
-    const updateTarget: ApplicationModelCommandContext<Readonly<Record<string, object>>>['update'] = async <TValue extends object>(model: ApplicationModelCommandTarget<TValue, object>, patch: Partial<TValue>, options?: { readonly ifRevision?: string }) => {
+    const updateTarget: ApplicationModelCommandContext<Readonly<Record<string, object>>>['update'] = async <TValue extends object>(model: ApplicationModelCommandTarget<TValue, object>, patch: ApplicationModelUpdatePatch<TValue>, options?: { readonly ifRevision?: string }) => {
       if (model.id !== target.id) throw new Error('applik8s-command-update-target-invalid: context.update() may only mutate the locked command target; declare other models as transaction participants.');
       if (options?.ifRevision && options.ifRevision !== before.revision) {
         throw new CommandRejectionSignal({ name: 'revisionConflict', payload: { expectedRevision: options.ifRevision, actualRevision: before.revision ?? null } });
       }
-      const changed = Object.keys(patch).some((field) => !Object.is(Reflect.get(stagedSpec, field), Reflect.get(patch, field)));
-      if (changed) stagedSpec = { ...stagedSpec, ...patch };
+      const changed = Object.entries(patch).some(([field, value]) =>
+        isApplicationModelClearIntent(value)
+        || !Object.is(Reflect.get(stagedSpec, field), value),
+      );
+      if (changed) {
+        stagedSpec = applyApplicationModelUpdatePatch(
+          execution.model,
+          stagedSpec,
+          // typecast: the single locked target identity above proves TValue is
+          // this handler's TSpec; the public generic only preserves the model
+          // relationship at the call site.
+          patch as unknown as ApplicationModelUpdatePatch<TSpec>,
+          clearedSpecProperties,
+        );
+      }
       // typecast: model identity was checked against the single locked target and the patch's TValue shape is the same handler-bound model value.
       return { value: { identity: model.identity, value: stagedSpec as unknown as TValue, ...(model.revision ? { revision: model.revision } : {}) }, changed };
     };
@@ -822,7 +851,14 @@ export async function executePostgresModelCommand<
 
     const updated = deleteTarget
       ? await deleteModelObject(transaction, execution.model, before, serial)
-      : await updateModelObject(transaction, execution.model, before, after, serial);
+      : await updateModelObject(
+          transaction,
+          execution.model,
+          before,
+          after,
+          serial,
+          clearedSpecProperties,
+        );
     if (!serial && updated.length === 0) throw concurrentCommandModification();
     await transaction.unsafe(
       'INSERT INTO applik8s_model_transitions (id, scope, model, target_key, before_state, after_state, model_revision) VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7)',
@@ -834,7 +870,7 @@ export async function executePostgresModelCommand<
         [commandDeterministicId(scope, 'history'), scope, execution.model.name, effectiveTargetKey, postgresJson(transaction, before), postgresJson(transaction, deleteTarget ? { id: after.id, deleted: true, revision } : after), revision],
       );
     }
-    await recordGenericModelChange(transaction, execution.model, effectiveTargetKey, revision, execution.message.context, initializedTarget ? {} : before.spec, deleteTarget ? {} : after.spec, deleteTarget ? 'delete' : initializedTarget ? 'insert' : 'update');
+    await recordGenericModelChange(transaction, execution.model, effectiveTargetKey, revision, execution.message.context, initializedTarget ? {} : before.spec, deleteTarget ? {} : after.spec, deleteTarget ? 'delete' : initializedTarget ? 'insert' : 'update', clearedSpecProperties);
 
     const envelopes: ApplicationMessageEnvelope<object>[] = [];
     // Identity values are allocated by INSERT, not commit. Serialize every
@@ -1329,7 +1365,7 @@ export async function executeFunctionNativePostgresModelEdit<
         value: { get: () => value, enumerable: false },
         update: {
           enumerable: false,
-          value: async (patch: Partial<TValue>) => {
+          value: async (patch: ApplicationModelUpdatePatch<TValue>) => {
             const updated = await context.update(target, patch);
             value = updated.value.value;
             for (const [key, next] of Object.entries(value)) {
@@ -1712,15 +1748,21 @@ function commandParticipantClients(
         const before = await lockedModelObject<object, object>(transaction, model, ref.id, true);
         if (!before) throw new Error(`applik8s-command-participant-missing: Model ${model.name}/${ref.id} does not exist.`);
         const revision = nextRevision('patch');
+        const clearedProperties = new Set<string>();
         const after = {
           id: before.id,
-          spec: { ...before.spec, ...(patch.spec ?? {}) },
+          spec: applyApplicationModelUpdatePatch(
+            model,
+            before.spec,
+            patch.spec ?? {},
+            clearedProperties,
+          ),
           ...(before.status || patch.status ? { status: { ...(before.status ?? {}), ...(patch.status ?? {}) } } : {}),
           revision,
         };
-        await updateModelObject(transaction, model, before, after, true);
+        await updateModelObject(transaction, model, before, after, true, clearedProperties);
         await transition(before, after, revision);
-        await recordGenericModelChange(transaction, model, after.id, revision, execution.message.context, before.spec, after.spec);
+        await recordGenericModelChange(transaction, model, after.id, revision, execution.message.context, before.spec, after.spec, 'update', clearedProperties);
         return after;
       },
       async delete(ref) {
@@ -2151,6 +2193,7 @@ async function updateModelObject<TSpec extends object, TStatus extends object>(
   before: ApplicationModelObject<TSpec, TStatus>,
   after: ApplicationModelObject<TSpec, TStatus>,
   locked: boolean,
+  clearedProperties: ReadonlySet<string> = new Set(),
 ): Promise<readonly unknown[]> {
   if (model.storageShape !== 'native-relational') {
     return transaction.unsafe(
@@ -2170,15 +2213,11 @@ async function updateModelObject<TSpec extends object, TStatus extends object>(
   // SQL NULL and JSON null hydrate to the same JavaScript value. Rewriting
   // every column can therefore mutate an untouched SQL NULL. Persist only
   // semantic changes, while always advancing a declared revision column.
-  const mutable = native.columns.filter(({ property }) =>
-    property !== native.identity.property
-    && (
-      property === revision?.property
-      || !Object.is(
-        Reflect.get(before.spec, property),
-        Reflect.get(after.spec, property),
-      )
-    ),
+  const mutable = applicationNativeModelMutableColumns(
+    model,
+    before.spec,
+    after.spec,
+    clearedProperties,
   );
   if (mutable.length === 0) {
     return transaction.unsafe(
@@ -2189,6 +2228,8 @@ async function updateModelObject<TSpec extends object, TStatus extends object>(
   const parameters = mutable.map(({ property, logicalType }) =>
     property === revision?.property
       ? after.revision
+      : clearedProperties.has(property)
+        ? null
       : nativePostgresModelValue(
           transaction,
           Reflect.get(after.spec, property),
@@ -2314,12 +2355,18 @@ async function recordGenericModelChange(
   before: object,
   after: object,
   operation: 'insert' | 'update' | 'delete' = 'update',
+  forcedChangedFields: ReadonlySet<string> = new Set(),
 ): Promise<void> {
   if (model.storageShape !== 'native-relational') return;
   if (!context?.digest) throw new Error(`applik8s-command-context-digest-missing: Native model ${model.name} changes require a server-admitted context digest.`);
   if (!context.changeScopes) throw new Error(`applik8s-command-change-scopes-missing: Native model ${model.name} changes require server-admitted relational change scopes.`);
   const changeScope = applicationRelationalChangeScopeDigest(context.changeScopes, model.nativeRelational?.access?.context);
-  const changedFields = [...new Set([...Object.keys(before), ...Object.keys(after)].filter((field) => !Object.is(Reflect.get(before, field), Reflect.get(after, field))))].sort();
+  const changedFields = [...new Set([
+    ...forcedChangedFields,
+    ...[...Object.keys(before), ...Object.keys(after)].filter((field) =>
+      !Object.is(Reflect.get(before, field), Reflect.get(after, field)),
+    ),
+  ])].sort();
   await transaction.unsafe(
     `WITH next_commit AS (
       UPDATE applik8s_model_change_commit_frontier

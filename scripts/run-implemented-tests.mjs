@@ -6,11 +6,25 @@ import { resolve } from 'node:path';
 // ceiling merely because they happened to hash into the same concurrent shard.
 const shards = boundedInteger(process.env.APPLIK8S_TEST_SHARDS, 16, 'APPLIK8S_TEST_SHARDS');
 const workers = boundedInteger(process.env.APPLIK8S_TEST_MAX_WORKERS, 1, 'APPLIK8S_TEST_MAX_WORKERS');
+const startShard = boundedInteger(
+  process.env.APPLIK8S_TEST_START_SHARD,
+  1,
+  'APPLIK8S_TEST_START_SHARD',
+);
+if (startShard > shards) {
+  throw new Error('APPLIK8S_TEST_START_SHARD cannot exceed APPLIK8S_TEST_SHARDS.');
+}
+const maxOldSpaceSizeMb = boundedMemoryMb(
+  process.env.APPLIK8S_TEST_MAX_OLD_SPACE_MB,
+  8_192,
+  'APPLIK8S_TEST_MAX_OLD_SPACE_MB',
+);
 const vitest = resolve('node_modules/vitest/vitest.mjs');
 
-for (let shard = 1; shard <= shards; shard += 1) {
+for (let shard = startShard; shard <= shards; shard += 1) {
   process.stdout.write(`\nImplemented test shard ${shard}/${shards} (${workers} workers)\n`);
   const code = await run(process.execPath, [
+    `--max-old-space-size=${maxOldSpaceSizeMb}`,
     vitest,
     'run',
     `--shard=${shard}/${shards}`,
@@ -31,6 +45,15 @@ function boundedInteger(raw, fallback, name) {
   const value = Number(raw);
   if (!Number.isSafeInteger(value) || value < 1 || value > 32) {
     throw new Error(`${name} must be an integer between 1 and 32.`);
+  }
+  return value;
+}
+
+function boundedMemoryMb(raw, fallback, name) {
+  if (raw === undefined) return fallback;
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || value < 1_024 || value > 16_384) {
+    throw new Error(`${name} must be an integer between 1024 and 16384.`);
   }
   return value;
 }

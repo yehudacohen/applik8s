@@ -1,0 +1,93 @@
+import type { ApplicationOperationsSnapshot } from '@applik8s/operations-ui';
+import type { ApplicationOperationalObjective } from '@applik8s/operations-ui/react';
+
+type ObjectiveState = ApplicationOperationalObjective['state'];
+
+function observedState(
+  rows: readonly { readonly state?: string }[],
+  healthy: readonly string[],
+  unhealthy: readonly string[],
+): ObjectiveState {
+  const states = rows.flatMap(row => row.state ? [row.state.toLowerCase()] : []);
+  if (states.some(state => unhealthy.includes(state))) return 'degraded';
+  if (states.some(state => healthy.includes(state))) return 'verified';
+  return 'missing';
+}
+
+function evidence(state: ObjectiveState, observed: number, healthy: string, degraded: string): string {
+  if (state === 'verified') return healthy;
+  if (state === 'degraded') return degraded;
+  return `No qualifying canonical observation is available (${observed} records inspected).`;
+}
+
+/** Application-owned service promises. Absence of evidence deliberately remains Unknown. */
+export function applicationOperationalObjectives(
+  snapshot: ApplicationOperationsSnapshot,
+): readonly ApplicationOperationalObjective[] {
+  const durableState = observedState(
+    snapshot.workflows,
+    ['ready', 'completed', 'healthy', 'succeeded'],
+    ['failed', 'blocked', 'degraded', 'timed-out'],
+  );
+  const providerRows = [
+    ...snapshot.providers,
+    ...snapshot.databases,
+    ...snapshot.gateways,
+    ...snapshot.objectStores,
+  ];
+  const providerState = observedState(
+    providerRows,
+    ['ready', 'healthy', 'available'],
+    ['failed', 'blocked', 'degraded', 'unavailable'],
+  );
+  const reviewRows = [...snapshot.approvals, ...snapshot.outcomes];
+  const reviewState = observedState(
+    reviewRows,
+    ['resolved', 'approved', 'rejected', 'completed'],
+    ['failed', 'blocked', 'expired'],
+  );
+  return [
+    {
+      id: 'durable-work',
+      title: 'Durable work completes',
+      description: 'Accepted agent and workflow work reaches a terminal state without being silently lost.',
+      state: durableState,
+      evidence: evidence(durableState, snapshot.workflows.length, 'A current workflow completion observation exists.', 'A workflow reports a current failure or blocked state.'),
+      authority: 'workflow runtime observations',
+      window: 'current bounded snapshot',
+      owner: 'application operator',
+      runbook: {
+        title: 'Recover durable work',
+        steps: ['Inspect the workflow observation and causal run receipt.', 'Repair the provider or application failure.', 'Retry only through the retained idempotent operation.'],
+      },
+    },
+    {
+      id: 'provider-foundation',
+      title: 'Application providers are available',
+      description: 'Required database, object, gateway, and provider capabilities report observed readiness.',
+      state: providerState,
+      evidence: evidence(providerState, providerRows.length, 'A provider reports current readiness.', 'A required provider reports degradation or unavailability.'),
+      authority: 'provider and installation observations',
+      window: 'current bounded snapshot',
+      owner: 'platform operator',
+      runbook: {
+        title: 'Restore a provider',
+        steps: ['Open the affected provider observation.', 'Inspect the owning deployment and retained resources.', 'Reconcile through the declared deployment graph.'],
+      },
+    },
+    {
+      id: 'human-review',
+      title: 'Human decisions remain attributable',
+      description: 'Review outcomes are durable, independently observable, and tied to their authority receipt.',
+      state: reviewState,
+      evidence: evidence(reviewState, reviewRows.length, 'A durable review outcome is observable.', 'A review is failed, blocked, or expired.'),
+      authority: 'approval and outcome records',
+      window: 'current bounded snapshot',
+      owner: 'workspace administrator',
+      runbook: {
+        title: 'Recover human review',
+        steps: ['Inspect the review and its authorization receipt.', 'Confirm the intended reviewer still has authority.', 'Reissue an expired request instead of mutating its history.'],
+      },
+    },
+  ];
+}

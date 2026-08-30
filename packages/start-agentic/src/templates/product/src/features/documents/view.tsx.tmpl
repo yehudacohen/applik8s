@@ -1,6 +1,6 @@
 import { Link } from '@tanstack/react-router';
 import { type FormEvent, useState } from 'react';
-import { Document, DocumentList } from '../../application';
+import { Document, DocumentList, StartResearchBrief } from '../../application';
 import {
   Badge,
   Button,
@@ -21,6 +21,12 @@ export function DocumentsView() {
   const [search, setSearch] = useState('');
   const [state, setState] = useState<DocumentState | ''>('');
   const [creating, setCreating] = useState(false);
+  const [researching, setResearching] = useState(false);
+  const [researchTopic, setResearchTopic] = useState('');
+  const [researchContext, setResearchContext] = useState('');
+  const [researchMode, setResearchMode] = useState<'supplied-context' | 'web-research'>('supplied-context');
+  const [researchPending, setResearchPending] = useState(false);
+  const [researchDocumentId, setResearchDocumentId] = useState<string>();
   const [title, setTitle] = useState('');
   const [body, setBody] = useState('');
   const [notice, setNotice] = useState<string>();
@@ -50,14 +56,52 @@ export function DocumentsView() {
     }
   }
 
+  async function produceResearchBrief(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!researchTopic.trim() || (researchMode === 'supplied-context' && !researchContext.trim())) return;
+    setResearchPending(true);
+    setResearchDocumentId(undefined);
+    try {
+      const result = await StartResearchBrief({
+        requestId: crypto.randomUUID(),
+        topic: researchTopic.trim(),
+        mode: researchMode,
+        ...(researchContext.trim() ? { context: researchContext.trim() } : {}),
+      });
+      setNotice(result.message);
+      if (result.documentId) {
+        setResearchDocumentId(result.documentId);
+        await documents.refresh();
+      }
+    } catch (error) {
+      setNotice(error instanceof Error
+        ? `The specialist did not complete: ${error.message}`
+        : 'The specialist did not complete. Its durable run can be retried without accepting a duplicate result.');
+    } finally {
+      setResearchPending(false);
+    }
+  }
+
   return (
     <div data-applik8s-provenance="query.document-list">
       <PageHeader
         eyebrow="Workspace knowledge"
         title="Documents"
         description="Create, refine, review, and publish the durable work your team and agents produce together."
-        action={<Button type="button" onClick={() => setCreating(value => !value)}>{creating ? 'Close editor' : 'New document'}</Button>}
+        action={<div className="flex flex-wrap gap-2"><Button type="button" variant="secondary" onClick={() => setResearching(value => !value)}>{researching ? 'Close specialist' : 'Research brief'}</Button><Button type="button" onClick={() => setCreating(value => !value)}>{creating ? 'Close editor' : 'New document'}</Button></div>}
       />
+
+      {researching ? (
+        <Card className="mb-6 border-sky-200 bg-sky-50/60">
+          <form onSubmit={produceResearchBrief} className="grid gap-4">
+            <div><p className="eyebrow">Durable specialist</p><h2 className="mt-1 text-xl font-semibold">Produce an evidence-bounded research brief</h2><p className="mt-2 text-sm leading-6 text-stone-600">This runs outside the browser as admitted durable work. A result is complete only after it appears as a Document.</p></div>
+            <label className="text-sm font-medium">Topic<Input className="mt-2" value={researchTopic} onChange={event => setResearchTopic(event.currentTarget.value)} placeholder="How should we launch the next version?" /></label>
+            <label className="text-sm font-medium">Evidence source<Select className="mt-2" value={researchMode} onChange={event => setResearchMode(event.currentTarget.value as typeof researchMode)}><option value="supplied-context">Use context I provide</option><option value="web-research">Search the public web</option></Select></label>
+            <label className="text-sm font-medium">{researchMode === 'web-research' ? 'Optional framing or private context' : 'Source material'}<Textarea className="mt-2 min-h-36" value={researchContext} onChange={event => setResearchContext(event.currentTarget.value)} placeholder={researchMode === 'web-research' ? 'Questions, constraints, or context the public sources should be evaluated against' : 'Paste the facts, notes, or source material to synthesize'} /></label>
+            <div className="flex flex-wrap items-center gap-2"><Button type="submit" disabled={researchPending || !researchTopic.trim() || (researchMode === 'supplied-context' && !researchContext.trim())}>{researchPending ? 'Specialist working…' : 'Start durable brief'}</Button>{researchDocumentId ? <Button asChild variant="secondary"><Link to="/app/documents/$documentId" params={{ documentId: researchDocumentId }}>Open committed result</Link></Button> : null}</div>
+          </form>
+        </Card>
+      ) : null}
 
       {creating ? (
         <Card className="mb-6 border-emerald-200 bg-emerald-50/60">
@@ -89,7 +133,7 @@ export function DocumentsView() {
               <h2 className="mt-4 text-lg font-semibold">{document.title}</h2>
               <p className="mt-2 line-clamp-3 text-sm leading-6 text-stone-600">{document.summary || documentExcerpt(document.body)}</p>
               {document.tags.length > 0 ? <div className="mt-4 flex flex-wrap gap-2">{document.tags.map(tag => <Badge key={tag}>{tag}</Badge>)}</div> : null}
-              <p className="mt-5 text-xs text-stone-500">{document.sourceConversationId ? 'Created by your workspace agent' : 'Created by a workspace member'}</p>
+              <p className="mt-5 text-xs text-stone-500">{document.sourceConversationId ? 'Created by your workspace assistant' : document.sourceRunId ? 'Created by a durable specialist' : 'Created by a workspace member'}</p>
             </Card>
           </Link>
         ))}

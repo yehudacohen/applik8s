@@ -240,4 +240,38 @@ describe('generated callback capability bindings', () => {
       }),
     ).toThrow(/cannot reconstruct module-local application handle RecentSubscriptions declared with \.view\(\)/);
   });
+
+  it('fails closed for an unbound module-factory-local service identity', () => {
+    expect(() =>
+      generatedCallbackFactoryModule({
+        source: `async (_value, _input, context) => {
+          if (context.principal.serviceIdentity?.id !== UsageBudgetWorker.identity.id) {
+            throw new Error("unauthorized");
+          }
+        }`,
+        dependencies: {
+          source: 'const unrelated = "safe";',
+          resolveDir: '/workspace/application',
+        },
+        injectedIdentifiers: [],
+        exportName: 'createCallback',
+      }),
+    ).toThrow(/application identity UsageBudgetWorker\.identity\.id without a captured declaration/);
+  });
+
+  it('accepts identity comparisons backed by a captured declaration', () => {
+    const source = generatedCallbackFactoryModule({
+      source: `async (_value, _input, context) =>
+        context.principal.serviceIdentity?.id === UsageBudgetWorker.identity.id`,
+      dependencies: {
+        source: `const UsageBudgetWorker = Object.freeze({ identity: { id: "identity:application:service:usage-budget-worker" } });`,
+        resolveDir: '/workspace/application',
+      },
+      injectedIdentifiers: [],
+      exportName: 'createCallback',
+    });
+
+    expect(source).toContain('const UsageBudgetWorker');
+    expect(source).toContain('UsageBudgetWorker.identity.id');
+  });
 });

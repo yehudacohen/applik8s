@@ -301,7 +301,7 @@ function workflowPrivateProviderResources(contract: WorkflowContract): {
             `applik8s-provider-unused-${volumeName.slice(-12)}`,
           ),
           optional: true,
-          defaultMode: 0o400,
+          defaultMode: 0o444,
           items: [{
             key: privateProviderSelectedScalar(
               provider,
@@ -345,7 +345,7 @@ function workflowPrivateProviderResources(contract: WorkflowContract): {
             `applik8s-provider-unused-${volumeName.slice(-12)}`,
           ),
           optional: true,
-          defaultMode: 0o400,
+          defaultMode: 0o444,
           items: [{
             key: privateProviderSelectedScalar(
               provider,
@@ -427,6 +427,9 @@ function workflowNativeAIEnvironment(
     (candidate) => stringConfig(candidate.kind) === 'envoy-ai-gateway'
       && candidate.provision !== false,
   );
+  const externalCredential = workflowNativeAIExternalCredential(
+    nativeAI.providerConfig,
+  );
   return [
     {
       name: nativeAI.state.runtime.connectionEnvName,
@@ -453,7 +456,119 @@ function workflowNativeAIEnvironment(
           ),
         }]
       : []),
+    ...(externalCredential
+      ? [{
+          name: 'APPLIK8S_AI_GATEWAY_API_KEY',
+          valueFrom: {
+            secretKeyRef: externalCredential,
+          },
+        }]
+      : []),
   ];
+}
+
+function workflowNativeAIExternalCredential(
+  provider: Readonly<Record<string, unknown>>,
+): Readonly<{
+  name: string;
+  key: string;
+  optional: boolean;
+}> | undefined {
+  if (provider.kind !== 'application-provider-selection') {
+    const credential = workflowNativeAILeafCredential(provider);
+    if (!credential) return undefined;
+    const name = applicationGraphStringValue(credential.name);
+    const key = applicationGraphStringValue(credential.key);
+    if (!name || !key) {
+      throw new Error(
+        'Native AI task external credential Secret name and key must be installation strings.',
+      );
+    }
+    return { name, key, optional: false };
+  }
+  const selector = workflowNativeAIScalarExpression(provider.selector);
+  const cases = Object.entries(objectConfig(provider.cases));
+  const credentials = [
+    ...cases.map(([, candidate]) =>
+      workflowNativeAILeafCredential(objectConfig(candidate))),
+    workflowNativeAILeafCredential(objectConfig(provider.default)),
+  ];
+  if (credentials.every((credential) => credential === undefined)) {
+    return undefined;
+  }
+  const selected = (
+    read: (credential: Readonly<{ name: unknown; key: unknown }>) => unknown,
+    absent: string,
+  ): string => {
+    const serialize = (
+      credential: Readonly<{ name: unknown; key: unknown }> | undefined,
+    ) => workflowNativeAIScalarExpression(
+      credential ? read(credential) : absent,
+    );
+    return `\${${cases.reduceRight(
+      (current, [variant], index) =>
+        `${selector} == ${JSON.stringify(variant)} ? ${serialize(credentials[index])} : (${current})`,
+      serialize(credentials.at(-1)),
+    )}}`;
+  };
+  return {
+    name: selected(
+      credential => credential.name,
+      'applik8s-ai-credentials-unused',
+    ),
+    key: selected(credential => credential.key, 'apiKey'),
+    optional: credentials.some((credential) => credential === undefined),
+  };
+}
+
+function workflowNativeAILeafCredential(
+  provider: Readonly<Record<string, unknown>>,
+): Readonly<{ name: unknown; key: unknown }> | undefined {
+  if (
+    provider.kind !== 'envoy-ai-gateway'
+    || provider.provision !== false
+  ) {
+    return undefined;
+  }
+  const credentials = Object.values(objectConfig(provider.models)).flatMap(
+    (routeValue) => {
+      const backends = objectConfig(routeValue).backends;
+      const backend = objectConfig(Array.isArray(backends) ? backends[0] : undefined);
+      const credential = objectConfig(backend.credentials);
+      return credential.name === undefined
+        ? []
+        : [{ name: credential.name, key: credential.key ?? 'apiKey' }];
+    },
+  );
+  if (credentials.length === 0) return undefined;
+  const [first] = credentials;
+  if (!first) return undefined;
+  const identity = JSON.stringify([
+    applicationGraphStringValue(first.name),
+    applicationGraphStringValue(first.key),
+  ]);
+  if (credentials.some((credential) => JSON.stringify([
+    applicationGraphStringValue(credential.name),
+    applicationGraphStringValue(credential.key),
+  ]) !== identity)) {
+    throw new Error(
+      'Native AI task external model routes must share one exact credential Secret name and key per provider branch.',
+    );
+  }
+  return first;
+}
+
+function workflowNativeAIScalarExpression(value: unknown): string {
+  const serialized = applicationGraphStringValue(value);
+  if (serialized !== undefined) {
+    const expression = /^\$\{(.+)\}$/u.exec(serialized)?.[1];
+    return expression ?? JSON.stringify(serialized);
+  }
+  if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+  if (typeof value === 'boolean') return String(value);
+  throw new Error(
+    'Native AI task selected credential fields must be scalar installation values.',
+  );
 }
 
 function workflowSignalEnvironment(

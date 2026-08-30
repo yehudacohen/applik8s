@@ -17,7 +17,7 @@ import type {
   RuntimeSchema,
 } from '@applik8s/core';
 import { emitArkTypeStructuralJsonSchema } from '@applik8s/sdk';
-import { type as arkType, type Type } from 'arktype';
+import { scope as arkScope, type as arkType, type Type } from 'arktype';
 import { createInsertSchema, createSelectSchema, createUpdateSchema } from 'drizzle-arktype';
 import {
   createTableRelationsHelpers,
@@ -1083,7 +1083,10 @@ export function promoteAnalyticalDrizzleTable<TTable extends AnyPgTable>(
       `Drizzle table ${getTableName(table)} has composite identity [${identityFields.join(', ')}]. Analytical model promotion requires one canonical identity field.`,
     );
   }
-  const selectSchema = createSelectSchema(table) as Type<InferSelectModel<TTable>>;
+  const selectSchema = strictDrizzleJsonRuntimeSchema(
+    createSelectSchema(table, drizzleJsonColumnRefinements(table) as never),
+    table,
+  ) as Type<InferSelectModel<TTable>>;
   const name = publicApplicationModelName(options.name ?? getTableName(table), `Drizzle table ${getTableName(table)}`);
   const identity: ApplicationModelIdentityContract = {
     fields: identityFields,
@@ -1222,9 +1225,19 @@ export function promoteDrizzleTable<TTable extends AnyPgTable>(
     );
   }
   const revisionField = resolveRevisionField(table, options.revision);
-  const selectSchema = createSelectSchema(table) as Type<InferSelectModel<TTable>>;
-  const insertSchema = createInsertSchema(table) as Type<InferInsertModel<TTable>>;
-  const updateSchema = createUpdateSchema(table) as Type<Partial<InferInsertModel<TTable>>>;
+  const jsonColumnRefinements = drizzleJsonColumnRefinements(table);
+  const selectSchema = strictDrizzleJsonRuntimeSchema(
+    createSelectSchema(table, jsonColumnRefinements as never),
+    table,
+  ) as Type<InferSelectModel<TTable>>;
+  const insertSchema = strictDrizzleJsonRuntimeSchema(
+    createInsertSchema(table, jsonColumnRefinements as never),
+    table,
+  ) as Type<InferInsertModel<TTable>>;
+  const updateSchema = strictDrizzleJsonRuntimeSchema(
+    createUpdateSchema(table, jsonColumnRefinements as never),
+    table,
+  ) as Type<Partial<InferInsertModel<TTable>>>;
   const name = publicApplicationModelName(options.name ?? getTableName(table), `Drizzle table ${getTableName(table)}`);
   const identity: ApplicationModelIdentityContract = { fields: identityFields, encoding: 'scalar' };
   const relationships = Object.freeze(normalizeDrizzleModelRelationships(table, options.schema, name));
@@ -2208,6 +2221,83 @@ function logicalModelNameForTable(schema: Readonly<Record<string, unknown>>, tab
 
 function columnPropertyName(columns: Readonly<Record<string, unknown>>, column: unknown): string {
   return Object.entries(columns).find(([, candidate]) => candidate === column)?.[0] ?? 'unknown';
+}
+
+// typecast: ArkType carries private recursive-scope names in its generic
+// metadata; the exported root validates exactly the public JsonValue algebra
+// and intentionally erases those internal aliases at this adapter boundary.
+const drizzleJsonValueSchema = arkScope({
+  json: 'null | boolean | number | string | jsonArray | jsonObject',
+  jsonArray: 'json[]',
+  jsonObject: { '[string]': 'json' },
+}).export().json as unknown as Type<JsonValue>;
+
+function strictDrizzleJsonRuntimeSchema<TSchema extends Type<unknown>>(
+  schema: TSchema,
+  table: AnyPgTable,
+): TSchema {
+  const jsonFields = Object.entries(getTableColumns(table))
+    .filter(([, column]) => Reflect.get(column, 'dataType') === 'json')
+    .map(([field]) => field);
+  if (jsonFields.length === 0) return schema;
+  const strict = schema.narrow((value) =>
+    typeof value === 'object'
+    && value !== null
+    && jsonFields.every((field) => (
+      !(field in value) || isDrizzleJsonValue(Reflect.get(value, field))
+    ))) as TSchema;
+  // ArkType's structural recursive scope emits the correct schema, while the
+  // root predicate closes a recursive-array runtime gap. Preserve that exact
+  // structural emitter rather than serializing the implementation predicate.
+  const emit = schema.toJsonSchema.bind(schema);
+  Object.defineProperty(strict, 'toJsonSchema', {
+    value: (...args: Parameters<TSchema['toJsonSchema']>) => emit(...args),
+    enumerable: false,
+    configurable: false,
+    writable: false,
+  });
+  return strict;
+}
+
+function isDrizzleJsonValue(
+  value: unknown,
+  ancestors: Set<object> = new Set<object>(),
+): value is JsonValue {
+  if (
+    value === null
+    || typeof value === 'string'
+    || typeof value === 'boolean'
+    || (typeof value === 'number' && Number.isFinite(value))
+  ) return true;
+  if (typeof value !== 'object' || ancestors.has(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  if (!Array.isArray(value) && prototype !== Object.prototype && prototype !== null) return false;
+  if (Object.getOwnPropertySymbols(value).length > 0) return false;
+  ancestors.add(value);
+  const valid = Array.isArray(value)
+    ? Array.from({ length: value.length }, (_, index) => index)
+      .every((index) => index in value && isDrizzleJsonValue(value[index], ancestors))
+    : Object.values(value).every((entry) => isDrizzleJsonValue(entry, ancestors));
+  ancestors.delete(value);
+  return valid;
+}
+
+/**
+ * drizzle-arktype's PostgreSQL json/jsonb mapping is not recursively complete.
+ * Override only JSON-valued columns while retaining Drizzle's native
+ * nullability and insert/update optionality for every column.
+ */
+function drizzleJsonColumnRefinements(
+  table: AnyPgTable,
+): Readonly<Record<string, (_schema: Type<unknown>) => Type<JsonValue>>> {
+  return Object.freeze(Object.fromEntries(
+    Object.entries(getTableColumns(table))
+      .filter(([, column]) => Reflect.get(column, 'dataType') === 'json')
+      // drizzle-arktype applies nullability and operation-specific optionality
+      // after function refinements. A Type value here would replace those
+      // wrappers and make nullable JSON columns incorrectly required.
+      .map(([property]) => [property, (_schema: Type<unknown>) => drizzleJsonValueSchema]),
+  ));
 }
 
 function arktypePropertySchema<TValue>(schema: Type<TValue>, field: string): Type<unknown> {

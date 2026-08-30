@@ -1,5 +1,8 @@
 // typecast-file-boundary: adapter tests restore generic executor outputs and branded operation IDs after exercising their runtime validation boundaries.
-import { createApplicationMutationOperation } from '@applik8s/client';
+import {
+  createApplicationMutationOperation,
+  createApplicationQueryOperation,
+} from '@applik8s/client';
 import type { ApplicationExecutionPrincipal, ApplicationOperationId } from '@applik8s/core';
 import { type } from 'arktype';
 import { describe, expect, expectTypeOf, it, vi } from 'vitest';
@@ -187,6 +190,53 @@ describe('TanStack AI operation tools', () => {
       { 'Evidence.search': operation },
       ['Evidence.search'],
     )).toThrow(/did not hydrate selected application tools/);
+  });
+
+  it('infers canonical Owner.operation keys from hydrated operation metadata', () => {
+    const canonicalOperation = createApplicationMutationOperation(
+      {
+        ...operation.operation,
+        id: 'applik8s://models/Evidence/operations/search',
+      },
+      undefined,
+      { input: Input, output: Output },
+    );
+    const tool = asTool(canonicalOperation);
+    expect(selectApplicationTanStackTools(
+      [tool],
+      ['Evidence.search'],
+    )).toEqual([tool]);
+    expect(() => selectApplicationTanStackTools(
+      [tool],
+      ['Evidence.missing'],
+    )).toThrow(/does not declare selected tool/);
+  });
+
+  it('fails closed when inferred operation keys collide across domains', () => {
+    const modelOperation = createApplicationMutationOperation(
+      {
+        ...operation.operation,
+        id: 'applik8s://models/Evidence/operations/search',
+      },
+      undefined,
+      { input: Input, output: Output },
+    );
+    const modelTool = asTool(modelOperation);
+    const query = createApplicationQueryOperation(
+      {
+        ...operation.operation,
+        id: 'applik8s://queries/Evidence/operations/search',
+        operation: 'query',
+        transport: 'query',
+      },
+      undefined,
+      { input: Input, output: Output },
+    );
+    const queryTool = asTool(query);
+    expect(() => selectApplicationTanStackTools(
+      [modelTool, queryTool],
+      ['Evidence.search'],
+    )).toThrow(/is ambiguous/);
   });
 });
 

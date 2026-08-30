@@ -12,7 +12,7 @@ import { addApplicationGraphEdge, addApplicationGraphNode, addApplicationProvide
 import { applicationProviderGraphNodeId } from './application-identifiers.js';
 import type { ApplicationTaskObjectStoreBinding } from './application-object-storage.js';
 import { applicationProjectionRebuildTarget } from './application-projection-binding.js';
-import { type ApplicationProviderSelectionValue, type ApplicationProviderToken, type ApplicationWorkflowEngineProvider, applicationProviderImplementationName, applicationWorkflowEngineImplementation, isApplicationProviderSelection, isApplicationQualifiedProviderToken, Scheduler } from './application-providers.js';
+import { type ApplicationProviderSelectionValue, type ApplicationProviderToken, type ApplicationTargetProviderSelectionValue, type ApplicationWorkflowEngineProvider, applicationProviderImplementationName, applicationWorkflowEngineImplementation, isApplicationProviderSelection, isApplicationQualifiedProviderToken, isApplicationTargetProviderSelection, Scheduler } from './application-providers.js';
 import { applicationQueryBindingForOperation } from './application-queries.js';
 import {
   type ApplicationScheduleHandle,
@@ -731,7 +731,8 @@ function recordTaskCapabilities(
       if (existing?.kind === 'provider') {
         const candidate = existing.config?.ai;
         if (!isAIProviderOrSelection(candidate)) {
-          throw new Error(`Task ${consumerNodeId} requires ${qualification?.key ?? 'AI'}, but its provider graph has no portable AI configuration.`);
+          const available = Object.keys(existing.config ?? {}).sort().join(', ') || 'none';
+          throw new Error(`Task ${consumerNodeId} requires ${qualification?.key ?? 'AI'}, but its provider graph has no portable AI configuration (available fields: ${available}).`);
         }
         implementation = candidate;
       } else {
@@ -794,10 +795,16 @@ function recordTaskCapabilities(
 
 function isAIProviderOrSelection(
   value: unknown,
-): value is ApplicationAIProvider | ApplicationProviderSelectionValue<ApplicationAIProvider> {
+): value is ApplicationAIProvider | ApplicationProviderSelectionValue<ApplicationAIProvider> | ApplicationTargetProviderSelectionValue<ApplicationAIProvider> {
   if (isApplicationAIProvider(value)) return true;
-  if (!isApplicationProviderSelection(value)) return false;
-  return [...Object.values(value.cases), value.default].every(isApplicationAIProvider);
+  if (isApplicationProviderSelection(value)) {
+    return [...Object.values(value.cases), value.default].every(isAIProviderOrSelection);
+  }
+  if (isApplicationTargetProviderSelection(value)) {
+    const candidates = Object.values(value.targets);
+    return candidates.length > 0 && candidates.every(isAIProviderOrSelection);
+  }
+  return false;
 }
 
 function isStructuredGenerationProviderOrSelection(
@@ -1328,7 +1335,7 @@ function taskBinding<TInput extends object, TOutput extends object, TErrors exte
     return { ...metadata, idempotencyKey: options.idempotencyKey(input) };
   };
   const run = async (input: TInput, metadata?: ApplicationWorkflowInvocationMetadata, result?: ApplicationWorkflowResultOptions) =>
-    (await applicationWorkflowRuntime(engine())).run(
+    (await applicationWorkflowRuntime(engine())).run<TInput, TOutput>(
       definition.id,
       validateMessage(definition.input, input, `${definition.id}.input`),
       workflowTelemetryMetadata(invocationMetadata(input, metadata)),
@@ -1394,7 +1401,7 @@ function workflowBinding<TInput extends object, TOutput extends object, TErrors 
     return { ...metadata, idempotencyKey: idempotencyKey(input) };
   };
   const run = async (input: TInput, metadata?: ApplicationWorkflowInvocationMetadata, result?: ApplicationWorkflowResultOptions) =>
-    (await applicationWorkflowRuntime(engine())).run(
+    (await applicationWorkflowRuntime(engine())).run<TInput, TOutput>(
       definition.id,
       validateMessage(definition.input, input, `${definition.id}.input`),
       workflowTelemetryMetadata(invocationMetadata(input, metadata)),

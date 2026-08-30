@@ -346,6 +346,91 @@ describe('entrypoint-driven application public surface', () => {
     );
   });
 
+  it('does not provision a dynamic scheduler for an immediate HTTP workflow call', () => {
+    const authored = workflowScheduleGraph();
+    const published = applicationGraphWithEntrypointPublicSurface({
+      ...authored,
+      nodes: [
+        ...authored.nodes,
+        {
+          id: 'server.workflow-start',
+          kind: 'server',
+          name: 'workflow-start',
+          stability: 'stable',
+          routes: [{
+            id: 'start-onboarding',
+            named: true,
+            method: 'POST',
+            path: '/start',
+            functionNative: {
+              input: { jsonSchema: { type: 'object' } },
+              output: { jsonSchema: { type: 'object' } },
+              handler: { source: 'async input => Onboarding(input)' },
+              workflowBindings: [{
+                identifier: 'Onboarding',
+                target: { nodeId: 'workflow.tenant.onboarding.v1' },
+                contract: {
+                  name: 'tenant.onboarding',
+                  version: 'v1',
+                  input: { jsonSchema: { type: 'object' } },
+                  output: { jsonSchema: { type: 'object' } },
+                  signals: [],
+                },
+              }],
+              workflowEngine: {
+                interface: 'WorkflowEngine',
+                nodeId: 'provider.workflow-engine',
+              },
+              idempotency: {
+                source: 'http-idempotency-key',
+                contextScoped: true,
+              },
+              requestBoundary: {
+                durableValues: 'schema-normalized-only',
+                rawRequestCapture: 'rejected',
+                principal: 'framework-authenticated',
+              },
+            },
+            diagnostics: {
+              declaredName: true,
+              staticPath: true,
+              portableHandler: true,
+              requestBoundary: true,
+            },
+          }],
+          deployment: {
+            namespace: 'workflow-system',
+            replicas: 1,
+            port: 80,
+            maxRequestBodyBytes: 8_192,
+            mutationRateLimit: { maxRequests: 20, windowSeconds: 60 },
+          },
+          resources: [],
+          indexes: [],
+          observability: {
+            tracing: 'openTelemetry',
+            metrics: 'prometheus',
+            logs: 'structured',
+          },
+        },
+      ],
+    } as unknown as ApplicationGraph, {
+      operationIds: ['applik8s://http/workflow-start/operations/start-onboarding'],
+      modelNames: [],
+    });
+
+    expect(published.nodes).not.toContainEqual(expect.objectContaining({
+      id: 'schedule.workflow-start.tenant.onboarding.v1',
+    }));
+    expect(published.nodes).toContainEqual(expect.objectContaining({
+      kind: 'schedule',
+      definition: expect.objectContaining({
+        configuration: 'fixed',
+        cron: '0 4 * * *',
+      }),
+    }));
+  });
+
   it('lowers legacy workflow crons through the shared schedule graph without duplicating provider cron ownership', () => {
     const published = applicationGraphWithEntrypointPublicSurface(
       workflowScheduleGraph(),

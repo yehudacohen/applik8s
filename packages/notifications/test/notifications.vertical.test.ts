@@ -1,9 +1,17 @@
+import type { ApplicationModelSnapshot } from '@applik8s/applik8s';
 import { describe, expect, it } from 'vitest';
 import {
   type ApplicationNotificationDeliveryInput,
+  createApplicationNotificationRequestCallable,
   LocalNotificationDelivery,
   normalizeApplicationNotification,
 } from '../src/index';
+import { applicationNotificationRequests } from '../src/schema';
+
+type NotificationRequestValue =
+  typeof applicationNotificationRequests.$inferSelect;
+type NotificationRequestInput =
+  typeof applicationNotificationRequests.$inferInsert;
 
 describe('application notification delivery', () => {
   it('captures a deterministic idempotent Starter notification', async () => {
@@ -112,5 +120,74 @@ describe('application notification delivery', () => {
       content: { subject: 'Hello', text: 'Safe' },
       tags: Object.fromEntries(Array.from({ length: 33 }, (_, index) => [`tag-${index}`, 'value'])),
     })).toThrow(/at most 32 tags/);
+  });
+
+  it('hydrates the maintained request callable across find, create, and idempotent replay', async () => {
+    const stored: Array<ApplicationModelSnapshot<NotificationRequestValue>> = [];
+    let createInput: NotificationRequestInput | undefined;
+    const request = createApplicationNotificationRequestCallable({
+      NotificationRequest: {
+        async find(options) {
+          return stored.filter(
+            row => row.value.idempotencyKey === options.where?.idempotencyKey,
+          );
+        },
+        async create(input) {
+          createInput = input;
+          const value: NotificationRequestValue = {
+            ...input,
+            state: 'pending',
+            attempts: 0,
+            acceptedAt: null,
+            createdAt: '2026-08-08T12:00:00.000Z',
+            html: input.html ?? null,
+            lastError: null,
+            provider: null,
+            providerMessageId: null,
+            recipientName: input.recipientName ?? null,
+            replyToEmail: input.replyToEmail ?? null,
+            replyToName: input.replyToName ?? null,
+            senderEmail: input.senderEmail ?? null,
+            senderName: input.senderName ?? null,
+            tags: input.tags ?? {},
+            templateId: input.templateId ?? null,
+            templateVersion: input.templateVersion ?? null,
+            updatedAt: '2026-08-08T12:00:00.000Z',
+          };
+          const created = { identity: input.id, value };
+          stored.push(created);
+          return created;
+        },
+      },
+    });
+    const input: ApplicationNotificationDeliveryInput = {
+      id: 'workspace-invitation:invite-1',
+      idempotencyKey: 'workspace-invitation:invite-1:created',
+      recipient: { email: 'Builder@Example.com' },
+      content: { subject: 'You are invited', text: 'Open the invitation.' },
+      template: { id: 'workspace-invitation', version: 'v1' },
+    };
+
+    const first = await request(input);
+    const replay = await request(input);
+
+    expect(first).toEqual(replay);
+    expect(stored).toHaveLength(1);
+    expect(createInput).toBeDefined();
+    expect(
+      Object.entries(createInput ?? {}).filter(([, value]) => value === undefined),
+    ).toEqual([]);
+    expect(first).toMatchObject({
+      identity: input.id,
+      value: {
+        idempotencyKey: input.idempotencyKey,
+        recipientEmail: 'builder@example.com',
+        state: 'pending',
+      },
+    });
+    await expect(request({
+      ...input,
+      content: { ...input.content, text: 'Conflicting content.' },
+    })).rejects.toThrow(/reused with different content/);
   });
 });

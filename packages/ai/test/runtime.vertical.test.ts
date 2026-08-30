@@ -82,7 +82,7 @@ describe('provider-neutral AI contracts', () => {
       AI.deterministic({
         fixture: {
           response: 'completed',
-          tool: { index: 0, input: { text: 'bounded fixture' } },
+          tool: { index: 0, input: { text: 'bounded fixture' }, required: false },
         },
       }),
     ).toMatchObject({
@@ -90,7 +90,7 @@ describe('provider-neutral AI contracts', () => {
       production: false,
       fixture: {
         response: 'completed',
-        tool: { index: 0, input: { text: 'bounded fixture' } },
+        tool: { index: 0, input: { text: 'bounded fixture' }, required: false },
       },
     });
     expect(() =>
@@ -100,6 +100,9 @@ describe('provider-neutral AI contracts', () => {
         },
       }),
     ).toThrow(/non-negative integer/);
+    expect(() => AI.deterministic({
+      fixture: { tool: { input: {}, required: 'sometimes' as never } },
+    })).toThrow(/must be a boolean/u);
   });
 
   it('requires executable agents and preserves service identity separately', () => {

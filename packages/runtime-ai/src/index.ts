@@ -68,6 +68,7 @@ export type ApplicationAITextProvider =
         readonly index?: number;
         readonly input: JsonObject;
         readonly inputFromLatestUser?: 'document';
+        readonly required?: boolean;
       };
     }
   | {
@@ -1513,7 +1514,11 @@ function deterministicTextAdapter(
       const timestamp = Date.now();
       yield { type: EventType.RUN_STARTED, runId, threadId, model: adapter.model, timestamp };
       const fixtureTool = provider.tool;
-      if (fixtureTool && !hasToolResultAfterLatestUser(options.messages)) {
+      if (
+        fixtureTool
+        && !hasToolResultAfterLatestUser(options.messages)
+        && (fixtureTool.required !== false || (options.tools?.length ?? 0) > 0)
+      ) {
         const toolIndex = fixtureTool.index ?? 0;
         const tool = options.tools?.[toolIndex];
         if (!tool) {

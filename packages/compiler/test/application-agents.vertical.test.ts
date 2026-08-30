@@ -1083,6 +1083,12 @@ export const providerAgentStack = application.composition;
     expect(generatedSource).toContain('applik8s_usage_facts');
     expect(generatedSource).toContain('await recordUsageFact(reservation, usage)');
     expect(generatedSource).toContain(
+      "...(Number.isInteger(usage.cachedInputTokens) ? { cachedInputTokens: usage.cachedInputTokens } : {})",
+    );
+    expect(generatedSource).not.toContain(
+      'cachedInputTokens: usage.cachedInputTokens,',
+    );
+    expect(generatedSource).toContain(
       'await executePostgresModelCommand({',
     );
     expect(generatedSource).toContain(

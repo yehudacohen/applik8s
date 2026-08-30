@@ -33,6 +33,7 @@ import {
 } from './schema';
 
 export const WorkspaceId = AgenticWorkspaceId;
+const WorkspaceMembershipBootstrapSubject = 'workspace-membership-bootstrap';
 
 const workspaces = module(
   'workspaces',
@@ -108,7 +109,7 @@ const workspaces = module(
         const principal = context.principal;
         if (
           principal?.kind !== 'execution'
-          || principal.serviceIdentity?.id !== WorkspaceMembershipBootstrapIdentity.identity.id
+          || principal.serviceIdentity?.subject !== WorkspaceMembershipBootstrapSubject
           || principal.causalPrincipalId !== input.identityId
         ) {
           throw new Error(

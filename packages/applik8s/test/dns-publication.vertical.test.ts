@@ -56,7 +56,12 @@ describe('v0.5 reusable DNS publication primitives', () => {
     });
     const remote = externalDnsEndpointResource({ access: 'connection', namespaces: ['remote-dns'] });
     expect(remote.access).toBe('connection');
-    expect(remote.permissions.read()).toEqual({ apiGroups: ['externaldns.k8s.io'], resources: ['dnsendpoints'], verbs: ['get', 'list'] });
+    expect(remote.permissions.read()).toEqual({
+      apiGroups: ['externaldns.k8s.io'],
+      resources: ['dnsendpoints'],
+      scope: 'Namespaced',
+      verbs: ['get', 'list'],
+    });
   });
 
   it('rejects invalid Kubernetes placement before rendering or reading provider state', () => {

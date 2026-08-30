@@ -307,34 +307,104 @@ function schemaRefName(ref: RuntimeSchemaSource<object>['ref']): string {
   return ref.exportName ?? ref.moduleSpecifier ?? ref.kind;
 }
 
-function validateJsonValue(value: JsonValue, schema: JsonObject, path: string): readonly string[] {
+interface JsonSchemaValidationState {
+  calls: number;
+}
+
+function validateJsonValue(
+  value: JsonValue,
+  schema: JsonObject,
+  path: string,
+  root: JsonObject = schema,
+  state: JsonSchemaValidationState = { calls: 0 },
+  ancestors: ReadonlySet<object> = new Set<object>(),
+  referenceTrail: ReadonlySet<string> = new Set<string>(),
+): readonly string[] {
+  state.calls += 1;
+  if (state.calls > 10_000) return [`${path} exceeds the bounded JSON Schema validation budget.`];
+  if (value === undefined) return [`${path} must not be undefined.`];
+  if (typeof value === 'number' && !Number.isFinite(value)) return [`${path} must be a finite JSON number.`];
+  if (typeof value === 'bigint' || typeof value === 'function' || typeof value === 'symbol') {
+    return [`${path} must be a JSON value.`];
+  }
+  if (value && typeof value === 'object') {
+    const prototype = Object.getPrototypeOf(value);
+    if (!Array.isArray(value) && prototype !== Object.prototype && prototype !== null) {
+      return [`${path} must be a plain JSON object.`];
+    }
+    if (Object.getOwnPropertySymbols(value).length > 0) return [`${path} must not contain symbol keys.`];
+    if (ancestors.has(value)) return [`${path} must not contain a cyclic JSON value.`];
+  }
+
+  // OpenAPI-compatible nullable is a sibling constraint. Preserve it before
+  // following a local reference so `{ $ref, nullable: true }` accepts null.
+  if (value === null && schema.nullable === true) return [];
+  const reference = readString(schema, '$ref');
+  if (reference) {
+    if (referenceTrail.has(reference)) {
+      return [`${path} contains a circular JSON Schema reference without descending through data: ${reference}.`];
+    }
+    const resolved = resolveLocalJsonSchemaReference(root, reference);
+    if (!resolved) return [`${path} references unresolved local JSON Schema ${reference}.`];
+    const nextTrail = new Set(referenceTrail);
+    nextTrail.add(reference);
+    const resolvedErrors = validateJsonValue(value, resolved, path, root, state, ancestors, nextTrail);
+    if (resolvedErrors.length > 0) return resolvedErrors;
+    const { $ref: _reference, ...siblings } = schema;
+    return Object.keys(siblings).length === 0
+      ? []
+      : validateJsonValue(value, siblings, path, root, state, ancestors, referenceTrail);
+  }
+
   const anyOf = readSchemaArray(schema, 'anyOf');
   if (anyOf) {
-    const matches = anyOf.filter((branch) => validateJsonValue(value, branch, path).length === 0);
+    const matches = anyOf.filter((branch) => validateJsonValue(
+      value,
+      branch,
+      path,
+      root,
+      state,
+      ancestors,
+      referenceTrail,
+    ).length === 0);
     if (matches.length === 0) return [`${path} must match at least one anyOf branch.`];
   }
 
   const oneOf = readSchemaArray(schema, 'oneOf');
   if (oneOf) {
-    const matches = oneOf.filter((branch) => validateJsonValue(value, branch, path).length === 0);
+    const matches = oneOf.filter((branch) => validateJsonValue(
+      value,
+      branch,
+      path,
+      root,
+      state,
+      ancestors,
+      referenceTrail,
+    ).length === 0);
     if (matches.length !== 1) return [`${path} must match exactly one oneOf branch; matched ${matches.length}.`];
   }
 
   const allOf = readSchemaArray(schema, 'allOf');
   if (allOf) {
     for (const branch of allOf) {
-      const errors = validateJsonValue(value, branch, path);
+      const errors = validateJsonValue(value, branch, path, root, state, ancestors, referenceTrail);
       if (errors.length > 0) return errors;
     }
   }
 
   const excluded = readSchema(schema, 'not');
-  if (excluded && validateJsonValue(value, excluded, path).length === 0) {
+  if (excluded && validateJsonValue(value, excluded, path, root, state, ancestors, referenceTrail).length === 0) {
     return [`${path} must not match the excluded schema.`];
   }
 
   if (value === null) {
-    return schema.nullable === true || schema.type === 'null' ? [] : [`${path} must not be null.`];
+    return schema.nullable === true
+      || schema.type === 'null'
+      || anyOf !== undefined
+      || oneOf !== undefined
+      || allOf !== undefined
+      ? []
+      : [`${path} must not be null.`];
   }
 
   const enumValues = readArray(schema, 'enum');
@@ -350,6 +420,12 @@ function validateJsonValue(value: JsonValue, schema: JsonObject, path: string): 
   const pattern = readString(schema, 'pattern');
   if (pattern && typeof value === 'string' && !new RegExp(pattern).test(value)) {
     return [`${path} must match pattern ${pattern}.`];
+  }
+
+  const format = readString(schema, 'format');
+  if (format) {
+    const formatError = validateJsonSchemaFormat(value, format, path);
+    if (formatError) return [formatError];
   }
 
   if (typeof value === 'number') {
@@ -385,10 +461,20 @@ function validateJsonValue(value: JsonValue, schema: JsonObject, path: string): 
     }
 
     const properties = readSchemaMap(schema, 'properties');
+    const descendantAncestors = new Set(ancestors);
+    descendantAncestors.add(value);
     if (properties) {
       for (const [key, propertySchema] of Object.entries(properties)) {
         if (key in value) {
-          const errors = validateJsonValue(value[key] ?? null, propertySchema, `${path}.${key}`);
+          const errors = validateJsonValue(
+            value[key] as JsonValue,
+            propertySchema,
+            `${path}.${key}`,
+            root,
+            state,
+            descendantAncestors,
+            new Set<string>(),
+          );
           if (errors.length > 0) {
             return errors;
           }
@@ -409,7 +495,15 @@ function validateJsonValue(value: JsonValue, schema: JsonObject, path: string): 
       const allowed = new Set(Object.keys(properties ?? {}));
       for (const [key, propertyValue] of Object.entries(value)) {
         if (!allowed.has(key)) {
-          const errors = validateJsonValue(propertyValue ?? null, additionalPropertiesSchema, `${path}.${key}`);
+          const errors = validateJsonValue(
+            propertyValue as JsonValue,
+            additionalPropertiesSchema,
+            `${path}.${key}`,
+            root,
+            state,
+            descendantAncestors,
+            new Set<string>(),
+          );
           if (errors.length > 0) {
             return errors;
           }
@@ -431,8 +525,18 @@ function validateJsonValue(value: JsonValue, schema: JsonObject, path: string): 
 
     const itemSchema = readSchema(schema, 'items');
     if (itemSchema) {
+      const descendantAncestors = new Set(ancestors);
+      descendantAncestors.add(value);
       for (const [index, item] of value.entries()) {
-        const errors = validateJsonValue(item, itemSchema, `${path}[${index}]`);
+        const errors = validateJsonValue(
+          item,
+          itemSchema,
+          `${path}[${index}]`,
+          root,
+          state,
+          descendantAncestors,
+          new Set<string>(),
+        );
         if (errors.length > 0) {
           return errors;
         }
@@ -443,12 +547,47 @@ function validateJsonValue(value: JsonValue, schema: JsonObject, path: string): 
   return [];
 }
 
-function unsupportedJsonSchemaDiagnostics(schema: JsonObject, path: string) {
+function unsupportedJsonSchemaDiagnostics(
+  schema: JsonObject,
+  path: string,
+  root: JsonObject = schema,
+  visitedReferences: Set<string> = new Set<string>(),
+) {
   const diagnostics: Diagnostic[] = [];
-  const supportedKeywords = new Set(['type', 'required', 'properties', 'items', 'enum', 'nullable', 'additionalProperties', 'description', 'title', 'default', 'examples', 'deprecated', '$schema', 'pattern', 'minimum', 'maximum', 'exclusiveMinimum', 'exclusiveMaximum', 'multipleOf', 'minLength', 'maxLength', 'minItems', 'maxItems', 'uniqueItems', 'oneOf', 'anyOf', 'allOf', 'not', 'xKubernetesValidations']);
+  const supportedKeywords = new Set(['type', 'required', 'properties', 'items', 'enum', 'nullable', 'additionalProperties', 'description', 'title', 'default', 'examples', 'deprecated', '$schema', '$ref', '$defs', 'definitions', 'pattern', 'format', 'minimum', 'maximum', 'exclusiveMinimum', 'exclusiveMaximum', 'multipleOf', 'minLength', 'maxLength', 'minItems', 'maxItems', 'uniqueItems', 'oneOf', 'anyOf', 'allOf', 'not', 'xKubernetesValidations']);
   for (const key of Object.keys(schema)) {
     if (!supportedKeywords.has(key)) {
       diagnostics.push({ severity: 'warning', code: 'SCHEMA_UNSUPPORTED', message: `${path} uses unsupported JSON Schema keyword ${key}.` });
+    }
+  }
+
+  if ('$ref' in schema) {
+    const reference = readString(schema, '$ref');
+    const resolved = reference ? resolveLocalJsonSchemaReference(root, reference) : undefined;
+    if (!reference || !reference.startsWith('#/') || !resolved) {
+      diagnostics.push({
+        severity: 'warning',
+        code: 'SCHEMA_UNSUPPORTED',
+        message: `${path}.$ref must resolve to a local JSON Schema object.`,
+      });
+    } else if (!visitedReferences.has(reference)) {
+      visitedReferences.add(reference);
+      diagnostics.push(...unsupportedJsonSchemaDiagnostics(
+        resolved,
+        `${path}.$ref(${reference})`,
+        root,
+        visitedReferences,
+      ));
+    }
+  }
+
+  for (const keyword of ['$defs', 'definitions'] as const) {
+    if (keyword in schema && readSchemaMap(schema, keyword) === undefined) {
+      diagnostics.push({
+        severity: 'warning',
+        code: 'SCHEMA_UNSUPPORTED',
+        message: `${path}.${keyword} must be an object whose values are schemas.`,
+      });
     }
   }
 
@@ -500,6 +639,17 @@ function unsupportedJsonSchemaDiagnostics(schema: JsonObject, path: string) {
     }
   }
 
+  if ('format' in schema) {
+    const format = readString(schema, 'format');
+    if (!format || !supportedRuntimeJsonSchemaFormats.has(format)) {
+      diagnostics.push({
+        severity: 'warning',
+        code: 'SCHEMA_UNSUPPORTED',
+        message: `${path}.format ${JSON.stringify(format ?? schema.format)} must be one of ${[...supportedRuntimeJsonSchemaFormats].join(', ')}.`,
+      });
+    }
+  }
+
   for (const keyword of ['minimum', 'maximum', 'exclusiveMinimum', 'exclusiveMaximum', 'multipleOf'] as const) {
     if (keyword in schema && readNumber(schema, keyword) === undefined) {
       diagnostics.push({ severity: 'warning', code: 'SCHEMA_UNSUPPORTED', message: `${path}.${keyword} must be a finite number.` });
@@ -531,37 +681,120 @@ function unsupportedJsonSchemaDiagnostics(schema: JsonObject, path: string) {
   const properties = readSchemaMap(schema, 'properties');
   if (properties) {
     for (const [key, propertySchema] of Object.entries(properties)) {
-      diagnostics.push(...unsupportedJsonSchemaDiagnostics(propertySchema, `${path}.${key}`));
+      diagnostics.push(...unsupportedJsonSchemaDiagnostics(propertySchema, `${path}.${key}`, root, visitedReferences));
+    }
+  }
+
+  for (const keyword of ['$defs', 'definitions'] as const) {
+    const definitions = readSchemaMap(schema, keyword);
+    if (!definitions) continue;
+    for (const [key, definition] of Object.entries(definitions)) {
+      diagnostics.push(...unsupportedJsonSchemaDiagnostics(
+        definition,
+        `${path}.${keyword}.${key}`,
+        root,
+        visitedReferences,
+      ));
     }
   }
 
   const itemSchema = readSchema(schema, 'items');
   if (itemSchema) {
-    diagnostics.push(...unsupportedJsonSchemaDiagnostics(itemSchema, `${path}[]`));
+    diagnostics.push(...unsupportedJsonSchemaDiagnostics(itemSchema, `${path}[]`, root, visitedReferences));
   }
 
   const additionalPropertiesSchema = readSchema(schema, 'additionalProperties');
   if (additionalPropertiesSchema) {
-    diagnostics.push(...unsupportedJsonSchemaDiagnostics(additionalPropertiesSchema, `${path}.*`));
+    diagnostics.push(...unsupportedJsonSchemaDiagnostics(additionalPropertiesSchema, `${path}.*`, root, visitedReferences));
   }
   for (const keyword of ['oneOf', 'anyOf', 'allOf'] as const) {
     const branches = readSchemaArray(schema, keyword);
     if (branches) {
       for (const [index, branch] of branches.entries()) {
-        diagnostics.push(...unsupportedJsonSchemaDiagnostics(branch, `${path}.${keyword}[${index}]`));
+        diagnostics.push(...unsupportedJsonSchemaDiagnostics(branch, `${path}.${keyword}[${index}]`, root, visitedReferences));
       }
     }
   }
   const excluded = readSchema(schema, 'not');
   if (excluded) {
-    diagnostics.push(...unsupportedJsonSchemaDiagnostics(excluded, `${path}.not`));
+    diagnostics.push(...unsupportedJsonSchemaDiagnostics(excluded, `${path}.not`, root, visitedReferences));
   }
 
   return diagnostics;
 }
 
+function resolveLocalJsonSchemaReference(
+  root: JsonObject,
+  reference: string,
+): JsonObject | undefined {
+  if (!reference.startsWith('#/')) return undefined;
+  let current: JsonValue = root;
+  for (const encoded of reference.slice(2).split('/')) {
+    if (!isJsonObject(current)) return undefined;
+    const segment = encoded.replaceAll('~1', '/').replaceAll('~0', '~');
+    const next: JsonValue | undefined = current[segment];
+    if (next === undefined) return undefined;
+    current = next;
+  }
+  return isJsonObject(current) ? current : undefined;
+}
+
 function schemaDiagnostic(message: string): Diagnostic {
   return { severity: 'warning', code: 'SCHEMA_UNSUPPORTED', message };
+}
+
+const supportedRuntimeJsonSchemaFormats = new Set([
+  'uuid',
+  'date-time',
+  'int32',
+  'int64',
+]);
+
+function validateJsonSchemaFormat(
+  value: JsonValue,
+  format: string,
+  path: string,
+): string | undefined {
+  if (format === 'uuid' && typeof value === 'string') {
+    return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu.test(value)
+      ? undefined
+      : `${path} must be a UUID.`;
+  }
+  if (format === 'date-time' && typeof value === 'string') {
+    return isRfc3339DateTime(value)
+      ? undefined
+      : `${path} must be an RFC 3339 date-time.`;
+  }
+  if (format === 'int32' && typeof value === 'number') {
+    return Number.isInteger(value) && value >= -2_147_483_648 && value <= 2_147_483_647
+      ? undefined
+      : `${path} must be a signed 32-bit integer.`;
+  }
+  if (format === 'int64' && typeof value === 'number') {
+    return Number.isSafeInteger(value)
+      ? undefined
+      : `${path} must be a JSON-safe integer for the int64 format.`;
+  }
+  return undefined;
+}
+
+function isRfc3339DateTime(value: string): boolean {
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-](\d{2}):(\d{2}))$/u.exec(value);
+  if (!match) return false;
+  const [, yearText, monthText, dayText, hourText, minuteText, secondText, offsetHourText, offsetMinuteText] = match;
+  const year = Number(yearText);
+  const month = Number(monthText);
+  const day = Number(dayText);
+  const hour = Number(hourText);
+  const minute = Number(minuteText);
+  const second = Number(secondText);
+  const offsetHour = offsetHourText === undefined ? 0 : Number(offsetHourText);
+  const offsetMinute = offsetMinuteText === undefined ? 0 : Number(offsetMinuteText);
+  if (month < 1 || month > 12 || hour > 23 || minute > 59 || second > 59 || offsetHour > 23 || offsetMinute > 59) {
+    return false;
+  }
+  const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  return day >= 1 && day <= daysInMonth && Number.isFinite(Date.parse(value));
 }
 
 function matchesJsonSchemaType(value: JsonValue, type: string): boolean {

@@ -136,6 +136,11 @@ export function generatedCallbackFactoryModule(
   );
   const dependencySource = preparedDependencies.source;
   assertNoCapturedHandleDeclarations(dependencySource, injectedIdentifiers);
+  assertNoUnboundApplicationIdentityReferences(
+    options.source,
+    dependencySource,
+    injectedIdentifiers,
+  );
   const collisions = moduleBindingNames(dependencySource).filter((identifier) =>
     injectedIdentifiers.includes(identifier),
   );
@@ -162,6 +167,67 @@ ${dependencyModule.locals}
 return (${options.source});
 }
 `;
+}
+
+/**
+ * Application identity handles are authoring-time graph values. A callback may
+ * use one only when closure discovery retained its declaration or the runtime
+ * explicitly injects it. In particular, a handle declared inside a
+ * `module(..., application => { ... })` factory cannot be recreated by a
+ * generated worker. Reject that dangling capture during compilation instead
+ * of emitting a callback that throws `ReferenceError` only after deployment.
+ */
+function assertNoUnboundApplicationIdentityReferences(
+  callbackSource: string,
+  dependencySource: string,
+  injectedIdentifiers: readonly string[],
+): void {
+  const available = new Set([
+    ...moduleBindingNames(dependencySource),
+    ...injectedIdentifiers,
+  ]);
+  const file = ts.createSourceFile(
+    'applik8s-callback-identity-references.ts',
+    `const __applik8sCallback = (${callbackSource});`,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TS,
+  );
+  const locallyDeclared = new Set<string>();
+  const collect = (node: ts.Node): void => {
+    if (
+      ts.isVariableDeclaration(node)
+      || ts.isParameter(node)
+      || ts.isBindingElement(node)
+    ) {
+      collectBindingNames(node.name, locallyDeclared);
+    } else if (
+      (ts.isFunctionDeclaration(node) || ts.isClassDeclaration(node))
+      && node.name
+    ) {
+      locallyDeclared.add(node.name.text);
+    }
+    ts.forEachChild(node, collect);
+  };
+  collect(file);
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isPropertyAccessExpression(node)
+      && node.name.text === 'id'
+      && ts.isPropertyAccessExpression(node.expression)
+      && node.expression.name.text === 'identity'
+      && ts.isIdentifier(node.expression.expression)
+    ) {
+      const identifier = node.expression.expression.text;
+      if (!available.has(identifier) && !locallyDeclared.has(identifier)) {
+        throw new Error(
+          `Generated callback references application identity ${identifier}.identity.id without a captured declaration or admitted runtime binding. Compare trusted principal identity fields with a handler-safe constant, or declare the identity in a capturable module scope. Dangling application identity captures fail closed.`,
+        );
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(file);
 }
 
 /**

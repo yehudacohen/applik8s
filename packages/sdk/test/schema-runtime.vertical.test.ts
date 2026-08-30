@@ -123,6 +123,80 @@ describe('schema runtime', () => {
       },
     });
   });
+
+  it('validates recursive local references, composed null, escaped pointers, and explicit undefined', () => {
+    const schema = toRuntimeSchema<{ readonly payload: unknown; readonly maybeCount: number | null; readonly label: string }>({
+      kind: 'jsonSchema',
+      ref: { kind: 'jsonSchema', exportName: 'RecursiveJsonValue' },
+      schema: {
+        $ref: '#/$defs/root',
+        $defs: {
+          root: {
+            type: 'object',
+            required: ['label', 'maybeCount', 'payload'],
+            properties: {
+              label: { $ref: '#/$defs/a~1b~0c', minLength: 3 },
+              maybeCount: { anyOf: [{ type: 'integer', minimum: 0 }, { type: 'null' }] },
+              payload: { $ref: '#/$defs/json' },
+            },
+          },
+          'a/b~c': { type: 'string' },
+          json: {
+            anyOf: [
+              { type: 'null' },
+              { type: 'boolean' },
+              { type: 'number' },
+              { type: 'string' },
+              { type: 'array', items: { $ref: '#/$defs/json' } },
+              { type: 'object', additionalProperties: { $ref: '#/$defs/json' } },
+            ],
+          },
+        },
+      },
+    });
+
+    expect(schema.validate({
+      label: 'valid',
+      maybeCount: null,
+      payload: [1, { nested: ['value', null] }],
+    }).ok).toBe(true);
+    expect(schema.validate({ label: 'no', maybeCount: 1, payload: [] }).ok).toBe(false);
+    expect(schema.validate({ label: 'valid', maybeCount: -1, payload: [] }).ok).toBe(false);
+    expect(schema.validate({ label: 'valid', maybeCount: 1, payload: [undefined] } as never).ok).toBe(false);
+    expect(schema.validate({ label: 'valid', maybeCount: 1, payload: [new Date()] } as never).ok).toBe(false);
+
+    const cyclic: Record<string, unknown> = {};
+    cyclic.self = cyclic;
+    expect(schema.validate({ label: 'valid', maybeCount: 1, payload: cyclic } as never).ok).toBe(false);
+    const emitted = schema.emitJsonSchema();
+    expect(emitted.ok).toBe(true);
+    if (emitted.ok) expect(emitted.value.diagnostics).toEqual([]);
+  });
+
+  it('fails closed for unresolved and non-descending circular local references', () => {
+    const unresolved = toRuntimeSchema<{ readonly value: string }>({
+      kind: 'jsonSchema',
+      ref: { kind: 'jsonSchema', exportName: 'UnresolvedReference' },
+      schema: { type: 'object', properties: { value: { $ref: '#/$defs/missing' } } },
+    });
+    const unresolvedResult = unresolved.validate({ value: 'hello' });
+    expect(unresolvedResult.ok).toBe(false);
+    if (!unresolvedResult.ok) expect(unresolvedResult.error.code).toBe('SCHEMA_UNSUPPORTED');
+
+    const circular = toRuntimeSchema<{ readonly value: string }>({
+      kind: 'jsonSchema',
+      ref: { kind: 'jsonSchema', exportName: 'CircularReference' },
+      schema: {
+        $ref: '#/$defs/loop',
+        $defs: { loop: { $ref: '#/$defs/loop' } },
+      },
+    });
+    const circularResult = circular.validate({ value: 'hello' });
+    expect(circularResult.ok).toBe(false);
+    if (!circularResult.ok) {
+      expect(circularResult.error.message).toContain('circular JSON Schema reference');
+    }
+  });
   it('validates supported ArkType optional, enum, nullable, literal, array, map, and nested object shapes', () => {
     const schema = toRuntimeSchema({
       kind: 'arktype',
@@ -289,6 +363,70 @@ describe('schema runtime', () => {
     const invalid = schema.validate({ id: 'not-a-uuid' });
     expect(invalid.ok).toBe(false);
     if (!invalid.ok) expect(invalid.error.message).toContain('must match pattern');
+  });
+
+  it('validates compiler-emitted UUID and RFC 3339 formats through nested JSON Schema branches', () => {
+    const schema = toRuntimeSchema<{
+      readonly requestId: string;
+      readonly metadata: { readonly admittedAt: string };
+    }>({
+      kind: 'jsonSchema',
+      ref: { kind: 'jsonSchema', exportName: 'FormattedWorkflowAdmission' },
+      schema: {
+        type: 'object',
+        required: ['metadata', 'requestId'],
+        properties: {
+          requestId: {
+            description: 'a UUID',
+            format: 'uuid',
+            anyOf: [
+              { type: 'string', format: 'uuid', pattern: '[\\da-f]{8}-[\\da-f]{4}-[1-8][\\da-f]{3}-[89ab][\\da-f]{3}-[\\da-f]{12}' },
+              { type: 'string', format: 'uuid', enum: ['00000000-0000-0000-0000-000000000000'] },
+              { type: 'string', format: 'uuid', enum: ['ffffffff-ffff-ffff-ffff-ffffffffffff'] },
+            ],
+          },
+          metadata: {
+            type: 'object',
+            required: ['admittedAt'],
+            properties: {
+              admittedAt: { type: 'string', format: 'date-time' },
+            },
+          },
+        },
+      },
+    });
+
+    expect(schema.validate({
+      requestId: '6430855f-9bdd-4a38-aaf9-5be6c9c0bc2e',
+      metadata: { admittedAt: '2026-08-30T06:00:37.384Z' },
+    }).ok).toBe(true);
+    expect(schema.validate({
+      requestId: 'not-a-uuid',
+      metadata: { admittedAt: '2026-08-30T06:00:37.384Z' },
+    }).ok).toBe(false);
+    expect(schema.validate({
+      requestId: '6430855f-9bdd-4a38-aaf9-5be6c9c0bc2e',
+      metadata: { admittedAt: '2026-02-31T06:00:37Z' },
+    }).ok).toBe(false);
+  });
+
+  it('fails closed on JSON Schema formats without a runtime-equivalent validator', () => {
+    const schema = toRuntimeSchema<{ readonly value: string }>({
+      kind: 'jsonSchema',
+      ref: { kind: 'jsonSchema', exportName: 'UnsupportedFormat' },
+      schema: {
+        type: 'object',
+        required: ['value'],
+        properties: { value: { type: 'string', format: 'custom-identifier' } },
+      },
+    });
+
+    const result = schema.validate({ value: 'apparently-valid' });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe('SCHEMA_UNSUPPORTED');
+      expect(result.error.message).toContain('custom-identifier');
+    }
   });
 
   it('normalizes compiler-emitted nullable shapes and enforces scalar and collection bounds', () => {

@@ -1812,6 +1812,12 @@ async function admitQuery(request, query, input) { ${acceptsTaskQueryAdmission
 const gateway = queries.length > 0 ? createApplicationQueryGateway({
   queries,
   cursorSecret,
+  // Browser disconnect propagation is runtime-adapter dependent. Keep every
+  // upstream SSE lease independently bounded so an abandoned proxied request
+  // cannot occupy gateway or HTTP client capacity for the five-minute generic
+  // default. Query clients reconnect from their signed cursor.
+  heartbeatMs: 15_000,
+  maxSessionMs: 20_000,
   subscriptionLimits: ${JSON.stringify(gateway.subscriptionLimits)},
   subscriptionLimiter,
   ${hasActorQueries ? `execute: (execution, run) => executeGatewayQuery(execution, run),` : ''}
@@ -2860,6 +2866,11 @@ const streamSubscriptions = { ${index} };
 const streamGateway = createApplicationStreamSubscriptionGateway({
   subscriptions: streamSubscriptionBindings,
   cursorSecret,
+  // Public stream clients resume from their signed cursor. A short bounded
+  // upstream lease also makes cleanup deterministic when a hosting adapter
+  // cannot observe the original browser socket closing.
+  heartbeatMs: 15_000,
+  maxSessionMs: 20_000,
   subscriptionLimiter,
   authenticate: async (request) => {
     const admitted = await admitRequest(request);
@@ -5905,7 +5916,7 @@ function reactiveResources(options: BundleReactiveOptions, image: string, digest
       ? [{
           name: options.serviceAccountToken.name,
           projected: {
-            defaultMode: 0o400,
+            defaultMode: 0o444,
             sources: [{
               serviceAccountToken: {
                 path: options.serviceAccountToken.path,

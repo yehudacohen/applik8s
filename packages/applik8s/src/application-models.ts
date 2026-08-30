@@ -19,6 +19,7 @@ import { type CommandDefinition, type EntityDefinition, type EventDefinition, ev
 import { type ApplicationEventLogPublisher, createApplicationEventLogPublisherFromEnvironment, type EventLogPublishAcknowledgement } from './event-log-runtime.js';
 import type { PostgresModelCommandResult } from './model-command-postgres-runtime.js';
 import { canonicalApplicationCommandKey, executePostgresModelCommand } from './model-command-postgres-runtime.js';
+import type { ApplicationModelUpdatePatch } from './application-model-update-contract.js';
 import { applicationModelCommandBindingForOperation, applicationModelFacet, type DrizzleAnalyticalApplicationModelFacet, type DrizzleApplicationModelFacet, getApplicationModelFacet, nativeApplicationModelBindingFor } from './native-models.js';
 import { createPostgresModelClient } from './transactional-database-postgres-runtime.js';
 
@@ -147,6 +148,12 @@ export type ApplicationCommandDomainError<TErrors extends Readonly<Record<string
   readonly [TName in keyof TErrors & string]: { readonly name: TName; readonly payload: TErrors[TName] };
 }[keyof TErrors & string];
 
+export type {
+  ApplicationModelClearIntent,
+  ApplicationModelUpdatePatch,
+} from './application-model-update-contract.js';
+export { clear } from './application-model-update-contract.js';
+
 export interface ApplicationModelCommandParticipantClient {
   get(ref: ApplicationModelRef): Promise<ApplicationModelObject<object, object> | undefined>;
   /** Bounded transaction-locked equality query over an explicitly declared participant. */
@@ -169,7 +176,7 @@ export interface ApplicationModelCommandContext<TErrors extends Readonly<Record<
   readonly models: Readonly<Record<string, ApplicationModelCommandParticipantClient>>;
   update<TValue extends object>(
     model: ApplicationModelCommandTarget<TValue, object>,
-    patch: Partial<TValue>,
+    patch: ApplicationModelUpdatePatch<TValue>,
     options?: { readonly ifRevision?: string },
   ): Promise<{ readonly value: import('./native-models.js').ApplicationModelSnapshot<TValue>; readonly changed: boolean }>;
   id(scope?: string): string;
@@ -290,6 +297,8 @@ export interface ApplicationRuntimeModelContract {
        * retain this decoder intent rather than guessing from a live value.
        */
       readonly logicalType?: string;
+      /** Whether the physical column accepts SQL NULL. */
+      readonly nullable?: boolean;
     }[];
     readonly access?: { readonly context: string; readonly setting: string; readonly property: string; readonly column: string };
   };
@@ -337,7 +346,7 @@ export interface ApplicationModelQueryPage<TSpec extends object, TStatus extends
 }
 
 export interface ApplicationModelPatch<TSpec extends object, TStatus extends object = Record<string, never>> {
-  readonly spec?: Partial<TSpec>;
+  readonly spec?: ApplicationModelUpdatePatch<TSpec>;
   readonly status?: Partial<TStatus>;
 }
 

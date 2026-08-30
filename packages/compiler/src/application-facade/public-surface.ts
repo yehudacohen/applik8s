@@ -415,13 +415,6 @@ function reachableDurableScheduleTargets(
     exported.map(({ kind, id }) => `${kind}.${id}`),
   );
   for (const node of graph.nodes) {
-    if (node.kind === 'server') {
-      for (const route of node.routes) {
-        for (const binding of route.functionNative?.workflowBindings ?? []) {
-          targets.add(binding.target.nodeId);
-        }
-      }
-    }
     if (node.kind === 'streamProcessor') {
       for (const binding of node.schedules ?? []) {
         targets.add(binding.target.nodeId);

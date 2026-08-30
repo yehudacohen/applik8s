@@ -40,7 +40,9 @@ const database = { name: 'catalog', connectionEnvName: 'APPLIK8S_DATABASE_CATALO
 // Includes the payload-free Runtime Integrity observer used by cursor-owning
 // gateways; keep the ceiling tight enough to catch accidental authoring-graph
 // or provider-runtime capture.
-const reactiveRuntimeBundleBudgetBytes = 604_000;
+// Includes bounded query and signal SSE lease/reconnect support. Keep this close
+// to the measured release candidate so future runtime growth remains explicit.
+const reactiveRuntimeBundleBudgetBytes = 608_000;
 
 describe('generated v0.6 reactive workloads', () => {
   it('emits collision-safe variables for inferred dotted outbox model operations', async () => {
@@ -1416,6 +1418,9 @@ describe('generated v0.6 reactive workloads', () => {
     expect(generatedSource).toContain("from '@applik8s/runtime-nats/event-log'");
     expect(generatedSource).not.toContain("from '@applik8s/runtime-aws/kinesis'");
     expect(generatedSource).toContain('async function admitQuery(request, query, input)');
+    expect(generatedSource).toContain('heartbeatMs: 15_000');
+    expect(generatedSource).toContain('maxSessionMs: 20_000');
+    expect(generatedSource.match(/maxSessionMs: 20_000/g)).toHaveLength(2);
     expect(generatedSource).not.toContain('verifyApplicationTaskQueryAdmission');
     expect(generatedSource).toContain('authenticate: admitRequest');
     expect(generatedSource).toContain('createApplicationOperationAuthorityRuntime');

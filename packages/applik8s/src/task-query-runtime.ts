@@ -25,7 +25,6 @@ import { observeApplicationRuntimeIntegrityEnvelope } from './application-teleme
 import type { ApplicationTaskServicePrincipal } from './application-workflows.js';
 
 const protocol = 'applik8s.task-query/v1alpha1';
-const defaultTimeoutMs = 5_000;
 const maximumTokenLifetimeMs = 60_000;
 const maximumTokenBytes = 32 * 1_024;
 const maximumEncodedTokenBytes = 64 * 1_024;
@@ -47,6 +46,29 @@ export interface ApplicationTaskQueryRuntime {
     principal: ApplicationTaskServicePrincipal | undefined,
     metadata?: { readonly correlationId?: string; readonly causationId?: string; readonly traceparent?: string },
   ): Readonly<Record<string, (input?: object, options?: { readonly signal?: AbortSignal; readonly timeoutMs?: number }) => Promise<unknown>>>;
+}
+
+/**
+ * Identifies a declared task query whose own execution budget expired.
+ *
+ * Keeping this distinct from a caller cancellation prevents an internal view
+ * dependency from being misreported as an inference-provider timeout by an
+ * agent or workflow that consumes the query.
+ */
+export class ApplicationTaskQueryTimeoutError extends Error {
+  readonly code = 'APPLIK8S_TASK_QUERY_TIMEOUT';
+
+  constructor(
+    readonly query: string,
+    readonly timeoutMs: number,
+    options: ErrorOptions = {},
+  ) {
+    super(
+      `Application task query ${query} exceeded its ${timeoutMs}ms execution budget.`,
+      options,
+    );
+    this.name = 'ApplicationTaskQueryTimeoutError';
+  }
 }
 
 interface ApplicationTaskQueryToken {
@@ -138,19 +160,32 @@ export function createApplicationTaskQueryRuntime(options: {
             context,
             expiresAt,
           });
-          const response = await request(contract.endpoint, {
-            method: 'POST',
-            headers: {
-              'content-type': 'application/json',
-              'x-applik8s-task-query': token,
-              ...(metadata.correlationId ? { 'x-applik8s-correlation-id': metadata.correlationId } : {}),
-              ...(metadata.causationId ? { 'x-applik8s-causation-id': metadata.causationId } : {}),
-              ...(metadata.traceparent ? { traceparent: metadata.traceparent } : {}),
-            },
-            body: JSON.stringify({ input }),
-            signal: combinedSignal(invokeOptions.signal, timeoutMs),
-          });
-          const text = await boundedResponseText(response, contract.maxResultBytes + 64 * 1_024);
+          const timeout = AbortSignal.timeout(timeoutMs);
+          const signal = invokeOptions.signal
+            ? AbortSignal.any([invokeOptions.signal, timeout])
+            : timeout;
+          let response: Response;
+          let text: string;
+          try {
+            response = await request(contract.endpoint, {
+              method: 'POST',
+              headers: {
+                'content-type': 'application/json',
+                'x-applik8s-task-query': token,
+                ...(metadata.correlationId ? { 'x-applik8s-correlation-id': metadata.correlationId } : {}),
+                ...(metadata.causationId ? { 'x-applik8s-causation-id': metadata.causationId } : {}),
+                ...(metadata.traceparent ? { traceparent: metadata.traceparent } : {}),
+              },
+              body: JSON.stringify({ input }),
+              signal,
+            });
+            text = await boundedResponseText(response, contract.maxResultBytes + 64 * 1_024);
+          } catch (cause) {
+            if (timeout.aborted && !invokeOptions.signal?.aborted) {
+              throw new ApplicationTaskQueryTimeoutError(contract.id, timeoutMs, { cause });
+            }
+            throw cause;
+          }
           if (!response.ok) throw new Error(`applik8s-task-query-failed: ${contract.id} returned ${response.status}: ${text.slice(0, 512)}`);
           let snapshot: unknown;
           try { snapshot = JSON.parse(text); }
@@ -460,11 +495,6 @@ function isEmptyObjectInputSchema(schema: JsonObject): boolean {
 function boundedTimeout(value: number): number {
   if (!Number.isSafeInteger(value) || value < 1 || value > 60_000) throw new Error('applik8s-task-query-timeout-invalid');
   return value;
-}
-
-function combinedSignal(signal: AbortSignal | undefined, timeoutMs: number): AbortSignal {
-  const timeout = AbortSignal.timeout(timeoutMs || defaultTimeoutMs);
-  return signal ? AbortSignal.any([signal, timeout]) : timeout;
 }
 
 async function boundedResponseText(response: Response, maximumBytes: number): Promise<string> {

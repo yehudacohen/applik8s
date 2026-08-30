@@ -136,7 +136,10 @@ describe('generated workflow-only schedule control', () => {
             serviceAccountName: 'reactive-test-schedule-control',
             volumes: [expect.objectContaining({
               name: 'workflow-gateway-token',
-              projected: expect.objectContaining({ sources: [expect.objectContaining({ serviceAccountToken: expect.objectContaining({ path: 'token' }) })] }),
+              projected: expect.objectContaining({
+                defaultMode: 0o444,
+                sources: [expect.objectContaining({ serviceAccountToken: expect.objectContaining({ path: 'token' }) })],
+              }),
             })],
             containers: [expect.objectContaining({
               env: expect.arrayContaining([

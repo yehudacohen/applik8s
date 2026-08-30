@@ -11,13 +11,13 @@ import {
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import {
-  type ApplicationGraph,
-  deriveApplicationGraphFoundation,
-} from '@applik8s/core';
-import {
   compileTypeKroComposition,
   discoverApplicationGraph,
 } from '@applik8s/compiler';
+import {
+  type ApplicationGraph,
+  deriveApplicationGraphFoundation,
+} from '@applik8s/core';
 import {
   compileApplicationAwsDeploymentPlan,
   compileApplicationDeploymentGraph,
@@ -203,7 +203,7 @@ describe('Agentic Start generator', () => {
     );
     expect(workspaceModel).toContain("input.role !== 'workspace-owner'");
     expect(workspaceModel).toContain(
-      'principal.serviceIdentity?.id !== WorkspaceMembershipBootstrapIdentity.identity.id',
+      'principal.serviceIdentity?.subject !== WorkspaceMembershipBootstrapSubject',
     );
     expect(workspaceModel).toContain(
       'Workspace ownership cannot be granted through an invitation.',
@@ -697,7 +697,7 @@ describe('Agentic Start generator', () => {
     expect(onboardingSchema).not.toContain("field.jsonb('completed_steps')");
     const lineage = JSON.parse(
       await readFile(
-        join(target, '.applik8s/start-lineage.json'),
+        join(target, '.applik8s-start.json'),
         'utf8',
       ),
     ) as {
@@ -707,6 +707,7 @@ describe('Agentic Start generator', () => {
       readonly files: Readonly<Record<string, string>>;
     };
     expect(lineage).toMatchObject({
+      apiVersion: 'applik8s.startLineage/v1alpha2',
       example: 'product',
       projectName: 'documents-product',
       templateRevision: expect.stringMatching(/^sha256:[a-f0-9]{64}$/u),
@@ -758,10 +759,17 @@ describe('Agentic Start generator', () => {
     expect(home).toContain('<WorkspaceAssistantCard key={threadId}');
     expect(home).not.toContain('pending-conversation');
     expect(home).toContain('documents.refresh()');
-    expect(home).toContain('What should we accomplish?');
+    expect(home).toContain('productHome.header.title');
     expect(home).not.toContain('Create manually');
-    expect(home).toContain('Workspace assistant');
+    expect(home).toContain('productHome.assistant.title');
     expect(home).not.toMatch(/\bNotes assistant\b/u);
+    const productHome = await readFile(
+      join(target, 'src/product-home.ts'),
+      'utf8',
+    );
+    expect(productHome).toContain('What should we accomplish?');
+    expect(productHome).toContain('Workspace assistant');
+    expect(productHome).toContain('Start your first work session');
     const inboxView = await readFile(
       join(target, 'src/features/inbox/view.tsx'),
       'utf8',
@@ -799,8 +807,12 @@ describe('Agentic Start generator', () => {
     );
     expect(documentsModel).toContain('agenticWorkspaceScope(context)');
     expect(documentsModel).toContain('scope: WorkspaceId');
+    expect(documentsModel).toContain('InteractiveAssistantModel');
+    expect(documentsModel).toContain("serviceIdentity?.subject === 'research-specialist'");
+    expect(documentsModel).toContain('sourceRunId: context.principal.executionId');
     expect(documentsModel).toContain('selectApplicationTanStackTools(');
-    expect(documentsModel).toContain("'Document.create': DocumentTable.create");
+    expect(documentsModel).toContain('context.tanstack.tools,\n                profile.tools,');
+    expect(documentsModel).not.toContain('const toolCatalog =');
     expect(documentsModel).toContain("context.principal.executionContext?.kind === 'agent'");
     expect(documentsModel).toContain('sourceConversationId: agentExecution.threadId');
     expect(documentsModel).toContain('sourceRunId: agentExecution.runId');
@@ -810,11 +822,35 @@ describe('Agentic Start generator', () => {
       'utf8',
     )).rejects.toMatchObject({ code: 'ENOENT' });
     expect(documentsModel).not.toContain('For every Document.create or Document.update in this run');
+    const inferenceRoles = await readFile(
+      join(target, 'src/inference-roles.ts'),
+      'utf8',
+    );
+    expect(inferenceRoles).toContain("AI.model('interactive-assistant'");
+    expect(inferenceRoles).toContain("AI.model('research-specialist'");
+    expect(inferenceRoles.match(/inference,/gu)).toHaveLength(2);
+    const specialist = await readFile(
+      join(target, 'src/features/specialists/model.ts'),
+      'utf8',
+    );
+    expect(specialist).toContain("application.workflow(\n  'workspace.produce-research-brief.v1'");
+    expect(specialist).toContain('requires: [Inference]');
+    expect(specialist).toContain('authority: [Document.create.all()]');
+    expect(specialist).toContain('const capability = context.use(Inference)');
+    expect(specialist).toContain('await webSearch.search({');
+    expect(specialist).toContain('No public sources were returned');
+    expect(specialist).toContain('await Document.create({');
+    expect(specialist).toContain('The server will append the authoritative source list');
+    expect(specialist).toContain("specialistApi.post(\n  'produce-research-brief'");
+    expect(documentsView).toContain('StartResearchBrief({');
+    expect(documentsView).toContain('A result is complete only after it appears as a Document');
+    expect(documentsView).toContain('Created by a durable specialist');
     const agentsModel = await readFile(
       join(target, 'src/features/agents/model.ts'),
       'utf8',
     );
     expect(agentsModel).toContain('const AgentReleaseGate = AgentProfileTable.view({');
+    expect(agentsModel).toContain('budgets: { timeoutMs: 5_000, maxRows: 1, maxResultBytes: 64_000 }');
     expect(agentsModel).toContain('qualifiedVersion: AgentProfileTable.qualifiedVersion');
     expect(agentsModel).toContain('qualificationScore: AgentProfileTable.qualificationScore');
     expect(agentsModel).toContain('result?.qualifiedVersion === input.version');
@@ -846,7 +882,7 @@ describe('Agentic Start generator', () => {
       'utf8',
     );
     expect(knowledgeModel).toContain(
-      'context.principal.serviceIdentity?.id === KnowledgeWorker.identity.id',
+      'context.principal.serviceIdentity?.subject === KnowledgeWorkerSubject',
     );
     expect(knowledgeModel).toContain('Uploaded knowledge must be verified by the object provider');
     expect(knowledgeModel).toContain('verifyApplicationObjectCompletionReceipt({');
@@ -958,6 +994,15 @@ describe('Agentic Start generator', () => {
     expect(productWorkspaceSchema).toContain("model('ai_usage_reservations'");
     expect(productAIUsageBudget).toContain("'starter.ai-usage-reservation.release.v1'");
     expect(productAIUsageBudget).toContain("'starter.ai-usage-reservation.settle.v1'");
+    expect(productAIUsageBudget).toContain(
+      "const UsageBudgetWorkerSubject = 'usage-budget-worker'",
+    );
+    expect(productAIUsageBudget).toContain(
+      'principal.serviceIdentity?.subject !== UsageBudgetWorkerSubject',
+    );
+    expect(productAIUsageBudget).not.toContain(
+      'UsageBudgetWorker.identity.id',
+    );
     expect(productAIUsageBudget).toContain('Usage.UsageFact.on.create(');
     expect(productAIUsageBudget).toContain('await SettleAIUsageReservation.start(');
     expect(billing).toContain("rawType: 'checkout.completed'");
@@ -1073,6 +1118,27 @@ describe('Agentic Start generator', () => {
     expect(appShell).toContain('if (admissionRoute)');
     expect(appShell).toContain("pathname === '/sign-up'");
     expect(appShell).toContain('cannot issue workspace-scoped queries');
+    expect(appShell).toContain('applicationNavigation.mobilePrimary.map');
+    expect(appShell).not.toContain('const productNavigation =');
+    const productNavigation = await readFile(
+      join(target, 'src/product-navigation.tsx'),
+      'utf8',
+    );
+    expect(productNavigation).toContain('Product-owned information architecture');
+    expect(productNavigation).toContain("{ to: '/app/documents', label: 'Documents'");
+    expect(productNavigation).toContain('applicationShellSurface');
+    const operationsRoute = await readFile(
+      join(target, 'src/routes/app.operations.tsx'),
+      'utf8',
+    );
+    expect(operationsRoute).toContain('objectives={applicationOperationalObjectives}');
+    const operationalObjectives = await readFile(
+      join(target, 'src/operational-objectives.ts'),
+      'utf8',
+    );
+    expect(operationalObjectives).toContain("id: 'durable-work'");
+    expect(operationalObjectives).toContain("return 'missing'");
+    expect(operationalObjectives).toContain('Absence of evidence deliberately remains Unknown');
     expect(await readFile(
       join(target, 'src/components/builder-boundary.tsx'),
       'utf8',
@@ -1097,6 +1163,12 @@ describe('Agentic Start generator', () => {
     expect(billingView).toContain('intentId: crypto.randomUUID()');
     expect(billingView).toContain('else await dashboard.refresh();');
     expect(billingView).toContain('dashboard.data?.canManageBilling');
+    expect(billingView).toContain('Logical roles and physical providers');
+    expect(billingView).toContain('The displayed cost is incomplete, not zero.');
+    expect(billingView).not.toContain('Estimated cost');
+    expect(billingFeature).toContain('pricingRevision: Usage.UsageFact.pricingRevision');
+    expect(billingFeature).toContain("if (!fact.pricingRevision) current.pricing = 'unpriced'");
+    expect(billingFeature).toContain("logicalRole = fact.logicalModel ?? fact.operationId ?? 'unclassified'");
     expect(
       await readFile(join(target, 'src/features/workspaces/model.ts'), 'utf8'),
     ).toContain("const workspaces = module(");
@@ -1252,7 +1324,11 @@ describe('Agentic Start generator', () => {
       // The digest workflow also carries an explicit service identity so its
       // authenticated actor call and provider accounting retain durable
       // causal authority instead of borrowing a browser principal.
-      expect(result.value.nodes.length).toBeLessThan(550);
+      // The research specialist adds one durable single-step workflow over
+      // the existing qualified inference provider. Preserve a small explicit
+      // allowance for that user-visible capability without accepting an
+      // unbounded second provider or demo-only graph.
+      expect(result.value.nodes.length).toBeLessThan(560);
       expect(result.value.nodes).toEqual(expect.arrayContaining([
         expect.objectContaining({ kind: 'model', id: 'model.document-comment' }),
         expect.objectContaining({ kind: 'model', id: 'model.billing-plan' }),
@@ -1267,7 +1343,26 @@ describe('Agentic Start generator', () => {
         expect.objectContaining({ kind: 'model', id: 'model.approval-review' }),
         expect.objectContaining({ kind: 'model', id: 'model.data-lifecycle-request' }),
         expect.objectContaining({ kind: 'streamProcessor', name: 'process-data-lifecycle-request-create' }),
+        expect.objectContaining({ kind: 'workflow', name: 'workspace.produce-research-brief.v1' }),
+        expect.objectContaining({
+          kind: 'taskHandler',
+          name: 'workspace.produce-research-brief.v1.step',
+          capabilities: [{
+            interface: 'AI',
+            nodeId: 'provider.ai.v1alpha1.inference',
+          }],
+        }),
       ]));
+      expect(result.value.nodes.filter(
+        (node) => node.kind === 'provider' && node.interface === 'AI',
+      )).toEqual([
+        expect.objectContaining({
+          id: 'provider.ai.v1alpha1.inference',
+          config: expect.objectContaining({
+            ai: expect.objectContaining({ kind: 'application-provider-selection' }),
+          }),
+        }),
+      ]);
       expect(
         result.value.nodes.flatMap((node) =>
           node.kind === 'query' && (node.handlerUnresolved?.length ?? 0) > 0

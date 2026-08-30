@@ -386,10 +386,11 @@ Ready.
 
 ### Generated source update awareness
 
-`.applik8s/start-lineage.json` records the original Start, generator, upstream
+The tracked `.applik8s-start.json` records the original Start, generator, upstream
 TanStack, and template revisions. `applik8s start update --check` renders old and
-current templates in isolation and reports unchanged, application-modified,
-added, removed, conflicting, compatibility-changing, and security-relevant
+current templates in isolation and reports unchanged, application-edited,
+upstream-added, upstream-removed, cleanly-applicable, conflict,
+compatibility-changing, and security-relevant
 paths. It never mutates application source in v0.7.
 
 ### Claim-level release evidence

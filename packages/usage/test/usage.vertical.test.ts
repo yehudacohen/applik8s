@@ -106,6 +106,12 @@ describe('provider-call accounting conformance', () => {
       'applik8s_provider_cost_records_call_fk',
       'applik8s_provider_cost_records_reconciles_fk',
     ]));
+    expect(callConfig.uniqueConstraints.map(({ name }) => name)).toContain(
+      'applik8s_provider_calls_scope_ref_unique',
+    );
+    expect(costConfig.uniqueConstraints.map(({ name }) => name)).toContain(
+      'applik8s_provider_cost_records_scope_ref_unique',
+    );
   });
 
   it('rejects non-canonical temporal and opaque-reference representations', async () => {

@@ -17,7 +17,10 @@ import {
   resolveApplicationContext,
   resolveApplicationEntrypoint,
 } from './application-project-config.js';
-import { checkApplicationStartUpdate } from './application-start-update-command.js';
+import {
+  applyApplicationStartUpdate,
+  checkApplicationStartUpdate,
+} from './application-start-update-command.js';
 
 interface CliIo extends ApplicationDeploymentCommandIo {}
 
@@ -94,6 +97,7 @@ interface DoctorCommandOptions {
 
 interface StartUpdateCommandOptions {
   readonly check?: boolean;
+  readonly apply?: boolean;
   readonly json?: boolean;
 }
 
@@ -164,14 +168,28 @@ function createProgram(io: CliIo): Command {
 
   const start = program
     .command('start')
-    .description('Inspect maintained Start lineage without mutating application source.');
+    .description('Inspect or safely apply maintained Start lineage.');
   start
     .command('update')
     .description('Compare generated source with the current maintained Start.')
-    .requiredOption('--check', 'perform a read-only update check')
+    .option('--check', 'perform a read-only update check')
+    .option('--apply', 'apply a conflict-free update and preserve application-owned source')
     .option('--json', 'print the machine-readable update report')
     .action(async (options: StartUpdateCommandOptions) => {
-      if (!options.check) return;
+      if (options.check === options.apply) {
+        throw new Error('Choose exactly one of --check or --apply.');
+      }
+      if (options.apply) {
+        const result = await applyApplicationStartUpdate(io.cwd);
+        if (options.json) {
+          io.stdout(JSON.stringify(result, null, 2));
+        } else {
+          io.stdout(
+            `Applied Agentic Start ${result.report.availableVersion}: ${result.applied.length} updated, ${result.removed.length} removed, ${result.preserved.length} application-owned paths preserved.`,
+          );
+        }
+        return;
+      }
       const report = await checkApplicationStartUpdate(io.cwd);
       if (options.json) {
         io.stdout(JSON.stringify(report, null, 2));

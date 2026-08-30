@@ -34,6 +34,7 @@ import {
   text,
   time,
   timestamp,
+  unique,
   uniqueIndex,
   uuid,
   varchar,
@@ -301,7 +302,7 @@ export const field = Object.freeze({
   },
 });
 
-export { index, pgEnum, primaryKey, relations, uniqueIndex };
+export { index, pgEnum, primaryKey, relations, unique, uniqueIndex };
 
 const authenticatedPrincipalDefault = Symbol.for('@applik8s/drizzle-authenticated-principal-default');
 const causalPrincipalDefault = Symbol.for(

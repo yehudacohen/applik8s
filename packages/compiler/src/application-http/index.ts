@@ -1980,7 +1980,7 @@ function generatedHttpResources(
     ? [{
         name: 'workflow-gateway-token',
         projected: {
-          defaultMode: 0o400,
+          defaultMode: 0o444,
           sources: [{
             serviceAccountToken: {
               path: 'token',

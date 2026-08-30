@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, symlink, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import {
@@ -8,7 +8,10 @@ import {
   renderApplicationAgenticStartTemplates,
 } from '@applik8s/start-agentic';
 import { describe, expect, it } from 'vitest';
-import { checkApplicationStartUpdate } from '../src/application-start-update-command.js';
+import {
+  applyApplicationStartUpdate,
+  checkApplicationStartUpdate,
+} from '../src/application-start-update-command.js';
 
 describe('applik8s start update --check', () => {
   it('classifies application changes without mutating generated source', async () => {
@@ -48,7 +51,7 @@ describe('applik8s start update --check', () => {
     expect(report.updateAvailable).toBe(false);
     expect(report.conflicts).toBe(false);
     expect(report.paths.find(({ path }) => path === 'src/routes/index.tsx'))
-      .toMatchObject({ state: 'application-modified' });
+      .toMatchObject({ state: 'application-edited' });
   });
 
   it('rejects symbolic links instead of reading outside the project', async () => {
@@ -110,7 +113,7 @@ describe('applik8s start update --check', () => {
     const modified = await checkApplicationStartUpdate(root);
     expect(modified.paths).toContainEqual(expect.objectContaining({
       path: 'package.json',
-      state: 'application-modified',
+      state: 'application-edited',
     }));
   });
 
@@ -160,10 +163,183 @@ describe('applik8s start update --check', () => {
     });
     expect(report.paths).toContainEqual(expect.objectContaining({
       path: securityPath,
-      state: 'template-changed',
+      state: 'cleanly-applicable',
       securityRelevant: true,
     }));
     expect(after).toBe(before);
+  });
+
+  it('uses the tracked v0.8 lineage to report a deterministic conservative three-way plan', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'applik8s-start-update-tracked-'));
+    const templates = await renderApplicationAgenticStartTemplates(
+      'notes-product',
+      'product',
+    );
+    const changedPath = 'src/routes/index.tsx';
+    const addedPath = 'src/brand.ts';
+    const baseline: Record<string, string> = {
+      ...templates,
+      [changedPath]: `${templates[changedPath]}\n// installed baseline\n`,
+    };
+    delete baseline[addedPath];
+    const files = Object.fromEntries(
+      Object.entries(baseline).map(([path, source]) => [path, digest(source)]),
+    );
+    for (const [path, source] of Object.entries(baseline)) {
+      await mkdir(dirname(join(root, path)), { recursive: true });
+      await writeFile(join(root, path), source);
+    }
+    await writeFile(join(root, '.applik8s-start.json'), JSON.stringify({
+      apiVersion: 'applik8s.startLineage/v1alpha2',
+      start: 'agentic',
+      startVersion: '0.7.1',
+      generatorVersion: '0.7.1',
+      projectName: 'notes-product',
+      example: 'product',
+      templateRevision: digest(JSON.stringify(
+        Object.fromEntries(Object.entries(files).sort(([left], [right]) => left.localeCompare(right))),
+      )),
+      files,
+    }));
+
+    const first = await checkApplicationStartUpdate(root);
+    const second = await checkApplicationStartUpdate(root);
+    expect(second).toEqual(first);
+    expect(first.paths).toContainEqual(expect.objectContaining({
+      path: changedPath,
+      state: 'cleanly-applicable',
+      baselineDigest: files[changedPath],
+      applicationDigest: files[changedPath],
+      availableDigest: expect.stringMatching(/^sha256:/u),
+    }));
+    expect(first.paths).toContainEqual(expect.objectContaining({
+      path: addedPath,
+      state: 'upstream-added',
+    }));
+
+    await writeFile(join(root, changedPath), `${baseline[changedPath]}\n// application edit\n`);
+    const conflict = await checkApplicationStartUpdate(root);
+    expect(conflict.conflicts).toBe(true);
+    expect(conflict.paths).toContainEqual(expect.objectContaining({
+      path: changedPath,
+      state: 'conflict',
+    }));
+
+    await writeFile(join(root, changedPath), templates[changedPath] ?? '');
+    const applied = await checkApplicationStartUpdate(root);
+    expect(applied.paths).toContainEqual(expect.objectContaining({
+      path: changedPath,
+      state: 'unchanged',
+    }));
+  });
+
+  it('applies clean updates, preserves application package fields, and is idempotent', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'applik8s-start-update-apply-'));
+    const templates = await renderApplicationAgenticStartTemplates('notes-product', 'product');
+    const changedPath = 'src/routes/index.tsx';
+    const removedPath = 'src/removed-upstream.ts';
+    const addedPath = 'src/brand.ts';
+    const managedPackage = renderApplicationAgenticStartManagedPackage(
+      'notes-product',
+      'product',
+      'workspace:*',
+      'orbstack',
+    );
+    // typecast: the generator owns and validates the managed package fixture.
+    const applicationPackage = JSON.parse(managedPackage) as {
+      scripts: Record<string, string>;
+      dependencies: Record<string, string>;
+    };
+    applicationPackage.scripts['application-owned'] = 'echo retained';
+    applicationPackage.dependencies['application-owned-package'] = '1.0.0';
+    const baseline: Record<string, string> = {
+      ...templates,
+      [changedPath]: `${templates[changedPath]}\n// installed baseline\n`,
+      [removedPath]: 'export const removed = true;\n',
+      'package.json': managedPackage,
+    };
+    delete baseline[addedPath];
+    for (const [path, source] of Object.entries(baseline)) {
+      await mkdir(dirname(join(root, path)), { recursive: true });
+      await writeFile(
+        join(root, path),
+        path === 'package.json'
+          ? `${JSON.stringify(applicationPackage, null, 2)}\n`
+          : source,
+      );
+    }
+    const files = Object.fromEntries(
+      Object.entries(baseline).map(([path, source]) => [path, digest(source)]),
+    );
+    await writeFile(join(root, '.applik8s-start.json'), JSON.stringify({
+      apiVersion: 'applik8s.startLineage/v1alpha2',
+      start: 'agentic',
+      startVersion: '0.7.1',
+      projectName: 'notes-product',
+      example: 'product',
+      packageVersion: 'workspace:*',
+      context: 'orbstack',
+      templateRevision: digest(JSON.stringify(files)),
+      files,
+    }));
+
+    const result = await applyApplicationStartUpdate(root);
+    expect(result.applied).toEqual(expect.arrayContaining([changedPath, addedPath]));
+    expect(result.removed).toContain(removedPath);
+    expect(await readFile(join(root, changedPath), 'utf8')).toBe(templates[changedPath]);
+    await expect(access(join(root, removedPath))).rejects.toThrow();
+    // typecast: the updater emits this package fixture from its validated object merger.
+    const updatedPackage = JSON.parse(await readFile(join(root, 'package.json'), 'utf8')) as {
+      scripts: Record<string, string>;
+      dependencies: Record<string, string>;
+    };
+    expect(updatedPackage.scripts['application-owned']).toBe('echo retained');
+    expect(updatedPackage.dependencies['application-owned-package']).toBe('1.0.0');
+    expect(result.report).toMatchObject({ updateAvailable: false, conflicts: false });
+
+    const rerun = await applyApplicationStartUpdate(root);
+    expect(rerun.applied).toEqual([]);
+    expect(rerun.removed).toEqual([]);
+    expect(rerun.report).toEqual(result.report);
+  });
+
+  it('fails closed and preserves every path when any update conflicts', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'applik8s-start-update-conflict-'));
+    const templates = await renderApplicationAgenticStartTemplates('notes-product', 'product');
+    const conflictPath = 'src/routes/index.tsx';
+    const cleanPath = 'src/routes/__root.tsx';
+    const baseline = {
+      ...templates,
+      [conflictPath]: `${templates[conflictPath]}\n// prior conflict baseline\n`,
+      [cleanPath]: `${templates[cleanPath]}\n// prior clean baseline\n`,
+    };
+    const files = Object.fromEntries(
+      Object.entries(baseline).map(([path, source]) => [path, digest(source)]),
+    );
+    for (const [path, source] of Object.entries(baseline)) {
+      await mkdir(dirname(join(root, path)), { recursive: true });
+      await writeFile(
+        join(root, path),
+        path === conflictPath ? `${source}// application edit\n` : source,
+      );
+    }
+    await writeFile(join(root, '.applik8s-start.json'), JSON.stringify({
+      apiVersion: 'applik8s.startLineage/v1alpha2',
+      start: 'agentic',
+      startVersion: '0.7.1',
+      projectName: 'notes-product',
+      example: 'product',
+      templateRevision: digest(JSON.stringify(files)),
+      files,
+    }));
+    const beforeConflict = await readFile(join(root, conflictPath), 'utf8');
+    const beforeClean = await readFile(join(root, cleanPath), 'utf8');
+
+    await expect(applyApplicationStartUpdate(root)).rejects.toThrow(
+      'has conflicts and made no changes',
+    );
+    expect(await readFile(join(root, conflictPath), 'utf8')).toBe(beforeConflict);
+    expect(await readFile(join(root, cleanPath), 'utf8')).toBe(beforeClean);
   });
 });
 

@@ -1,8 +1,18 @@
 import { createHash } from 'node:crypto';
-import { lstat, readFile, realpath } from 'node:fs/promises';
+import {
+  lstat,
+  mkdir,
+  readFile,
+  realpath,
+  rename,
+  unlink,
+  writeFile,
+} from 'node:fs/promises';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 import {
+  applicationAgenticStartLineagePath,
   applicationAgenticStartDefinition,
+  applicationStartTemplateRevision,
   projectApplicationAgenticStartManagedPackage,
   renderApplicationAgenticStartManagedPackage,
   renderApplicationAgenticStartTemplates,
@@ -10,17 +20,20 @@ import {
 
 export type ApplicationStartUpdatePathState =
   | 'unchanged'
-  | 'application-modified'
-  | 'added'
-  | 'removed'
-  | 'template-changed'
-  | 'conflicting';
+  | 'application-edited'
+  | 'upstream-added'
+  | 'upstream-removed'
+  | 'cleanly-applicable'
+  | 'conflict';
 
 export interface ApplicationStartUpdatePath {
   readonly path: string;
   readonly state: ApplicationStartUpdatePathState;
   readonly securityRelevant: boolean;
   readonly compatibilityChanging: boolean;
+  readonly baselineDigest?: string;
+  readonly applicationDigest?: string;
+  readonly availableDigest?: string;
 }
 
 export interface ApplicationStartUpdateReport {
@@ -36,8 +49,18 @@ export interface ApplicationStartUpdateReport {
   readonly paths: readonly ApplicationStartUpdatePath[];
 }
 
+export interface AppliedApplicationStartUpdate {
+  readonly apiVersion: 'applik8s.startUpdateResult/v1alpha1';
+  readonly applied: readonly string[];
+  readonly removed: readonly string[];
+  readonly preserved: readonly string[];
+  readonly report: ApplicationStartUpdateReport;
+}
+
 interface ApplicationStartLineage {
-  readonly apiVersion: 'applik8s.startLineage/v1alpha1';
+  readonly apiVersion:
+    | 'applik8s.startLineage/v1alpha1'
+    | 'applik8s.startLineage/v1alpha2';
   readonly start: string;
   readonly startVersion: string;
   readonly projectName: string;
@@ -78,7 +101,10 @@ export async function checkApplicationStartUpdate(
   const currentDigests = Object.fromEntries(
     Object.entries(current).map(([path, source]) => [path, digest(source)]),
   );
-  const currentTemplateRevision = digest(JSON.stringify(currentDigests));
+  const currentTemplateRevision = lineage.apiVersion
+    === 'applik8s.startLineage/v1alpha1'
+    ? digest(JSON.stringify(currentDigests))
+    : applicationStartTemplateRevision(currentDigests);
   const paths = [...new Set([
     ...Object.keys(lineage.files),
     ...Object.keys(currentDigests),
@@ -102,6 +128,9 @@ export async function checkApplicationStartUpdate(
       ),
       securityRelevant: isSecurityRelevantStartPath(path),
       compatibilityChanging: isCompatibilityChangingStartPath(path),
+      ...(baselineDigest ? { baselineDigest } : {}),
+      ...(applicationDigest ? { applicationDigest } : {}),
+      ...(currentDigest ? { availableDigest: currentDigest } : {}),
     });
   }
   const updateAvailable =
@@ -116,9 +145,174 @@ export async function checkApplicationStartUpdate(
     installedTemplateRevision: lineage.templateRevision,
     currentTemplateRevision,
     updateAvailable,
-    conflicts: results.some(({ state }) => state === 'conflicting'),
+    conflicts: results.some(({ state }) => state === 'conflict'),
     paths: Object.freeze(results),
   });
+}
+
+/**
+ * Applies only a conflict-free semantic Start update. Application-owned files
+ * and application-owned package.json entries are retained. The optimistic
+ * digest check closes the gap between planning and mutation.
+ */
+export async function applyApplicationStartUpdate(
+  projectRoot: string,
+): Promise<AppliedApplicationStartUpdate> {
+  const root = await realpath(resolve(projectRoot));
+  const lineage = await readLineage(root);
+  const report = await checkApplicationStartUpdate(root);
+  if (report.conflicts) {
+    const paths = report.paths
+      .filter(({ state }) => state === 'conflict')
+      .map(({ path }) => path)
+      .join(', ');
+    throw new Error(
+      `Start update has conflicts and made no changes: ${paths}. Resolve or preserve them explicitly before applying.`,
+    );
+  }
+
+  const templates = await renderApplicationAgenticStartTemplates(
+    lineage.projectName,
+    lineage.example,
+  );
+  const available: Readonly<Record<string, string>> = Object.freeze({
+    ...templates,
+    ...('package.json' in lineage.files
+      ? {
+        'package.json': renderApplicationAgenticStartManagedPackage(
+          lineage.projectName,
+          lineage.example,
+          lineage.packageVersion ?? `^${applicationAgenticStartDefinition.version}`,
+          lineage.context,
+        ),
+      }
+      : {}),
+  });
+  const applied: string[] = [];
+  const removed: string[] = [];
+  const preserved: string[] = [];
+
+  // Complete the optimistic-concurrency preflight before the first write. A
+  // late application edit must never leave a partially applied Start update.
+  for (const pathPlan of report.paths) {
+    validateTemplatePath(pathPlan.path);
+    const observedDigest = await projectFileDigest(
+      root,
+      pathPlan.path,
+      lineage.example,
+    );
+    if (observedDigest !== pathPlan.applicationDigest) {
+      throw new Error(
+        `Start update made no changes because ${pathPlan.path} changed after planning. Run the command again.`,
+      );
+    }
+  }
+
+  for (const pathPlan of report.paths) {
+    if (pathPlan.state === 'application-edited') {
+      preserved.push(pathPlan.path);
+      continue;
+    }
+    if (pathPlan.state === 'upstream-removed') {
+      await unlink(resolve(root, pathPlan.path));
+      removed.push(pathPlan.path);
+      continue;
+    }
+    if (
+      pathPlan.state !== 'cleanly-applicable'
+      && pathPlan.state !== 'upstream-added'
+    ) {
+      continue;
+    }
+    const source = available[pathPlan.path];
+    if (source === undefined) {
+      throw new Error(
+        `Start update plan for ${pathPlan.path} has no maintained source.`,
+      );
+    }
+    const output = resolve(root, pathPlan.path);
+    await mkdir(resolve(output, '..'), { recursive: true });
+    if (pathPlan.path === 'package.json' && pathPlan.applicationDigest) {
+      const applicationSource = await readFile(output, 'utf8');
+      await writeFile(
+        output,
+        mergeManagedPackageSource(applicationSource, source),
+      );
+    } else {
+      await writeFile(output, source);
+    }
+    applied.push(pathPlan.path);
+  }
+
+  const files = Object.fromEntries(
+    Object.entries(available).map(([path, source]) => [path, digest(source)]),
+  );
+  const trackedLineage = {
+    apiVersion: 'applik8s.startLineage/v1alpha2',
+    start: applicationAgenticStartDefinition.name,
+    startVersion: applicationAgenticStartDefinition.version,
+    generatorVersion: applicationAgenticStartDefinition.version,
+    projectName: lineage.projectName,
+    example: lineage.example,
+    ...(lineage.packageVersion ? { packageVersion: lineage.packageVersion } : {}),
+    ...(lineage.context ? { context: lineage.context } : {}),
+    templateRevision: applicationStartTemplateRevision(files),
+    files,
+    upstream: applicationAgenticStartDefinition.generator.upstream,
+    tanstackStart: applicationAgenticStartDefinition.compatibility.tanstackStart,
+  };
+  const lineagePath = resolve(root, applicationAgenticStartLineagePath);
+  const temporaryLineagePath = `${lineagePath}.tmp-${process.pid}`;
+  await writeFile(
+    temporaryLineagePath,
+    `${JSON.stringify(trackedLineage, null, 2)}\n`,
+  );
+  await rename(temporaryLineagePath, lineagePath);
+
+  return Object.freeze({
+    apiVersion: 'applik8s.startUpdateResult/v1alpha1',
+    applied: Object.freeze(applied),
+    removed: Object.freeze(removed),
+    preserved: Object.freeze(preserved),
+    report: await checkApplicationStartUpdate(root),
+  });
+}
+
+function mergeManagedPackageSource(
+  applicationSource: string,
+  managedSource: string,
+): string {
+  const application = parsePackageRecord(applicationSource);
+  const managed = parsePackageRecord(managedSource);
+  const merge = (key: string) => ({
+    ...objectRecord(application[key]),
+    ...objectRecord(managed[key]),
+  });
+  return `${JSON.stringify({
+    ...application,
+    name: managed.name,
+    scripts: merge('scripts'),
+    applik8s: merge('applik8s'),
+    imports: merge('imports'),
+    dependencies: merge('dependencies'),
+    devDependencies: merge('devDependencies'),
+  }, null, 2)}\n`;
+}
+
+function parsePackageRecord(source: string): Record<string, unknown> {
+  const parsed: unknown = JSON.parse(source);
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('Generated package.json must contain an object.');
+  }
+  // typecast: the object/array guard above establishes a keyed package record.
+  return parsed as Record<string, unknown>;
+}
+
+function objectRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    // typecast: the preceding runtime guard establishes a plain keyed object.
+    ? value as Record<string, unknown>
+    : {};
 }
 
 function updatePathState(
@@ -126,19 +320,28 @@ function updatePathState(
   current: string | undefined,
   application: string | undefined,
 ): ApplicationStartUpdatePathState {
-  if (!baseline) return application ? 'conflicting' : 'added';
-  if (!current) return application === baseline ? 'removed' : 'conflicting';
+  if (!baseline) return application ? 'conflict' : 'upstream-added';
+  if (!current) {
+    if (!application) return 'unchanged';
+    return application === baseline ? 'upstream-removed' : 'conflict';
+  }
   if (application === current) return 'unchanged';
   if (baseline === current) {
-    return application === baseline ? 'unchanged' : 'application-modified';
+    return application === baseline ? 'unchanged' : 'application-edited';
   }
-  if (application === baseline) return 'template-changed';
-  return 'conflicting';
+  if (application === baseline) return 'cleanly-applicable';
+  return 'conflict';
 }
 
 async function readLineage(root: string): Promise<ApplicationStartLineage> {
-  const path = resolve(root, '.applik8s/start-lineage.json');
-  await assertRegularProjectFile(root, path, '.applik8s/start-lineage.json');
+  const tracked = resolve(root, applicationAgenticStartLineagePath);
+  const legacy = resolve(root, '.applik8s/start-lineage.json');
+  const path = await lstat(tracked).then(() => tracked).catch((cause) => {
+    if (isNotFoundError(cause)) return legacy;
+    throw cause;
+  });
+  const label = relative(root, path).split(sep).join('/');
+  await assertRegularProjectFile(root, path, label);
   // typecast: JSON.parse is deliberately reintroduced as unknown before the complete lineage validation below.
   const parsed = JSON.parse(await readFile(path, 'utf8')) as unknown;
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
@@ -148,7 +351,8 @@ async function readLineage(root: string): Promise<ApplicationStartLineage> {
   const value = parsed as Record<string, unknown>;
   const files = value.files;
   if (
-    value.apiVersion !== 'applik8s.startLineage/v1alpha1'
+    (value.apiVersion !== 'applik8s.startLineage/v1alpha1'
+      && value.apiVersion !== 'applik8s.startLineage/v1alpha2')
     || typeof value.start !== 'string'
     || typeof value.startVersion !== 'string'
     || typeof value.projectName !== 'string'

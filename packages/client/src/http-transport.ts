@@ -126,6 +126,7 @@ function createHttpQueryMultiplexer(input: {
   }
 
   async function run(controller: AbortController, included: readonly HttpMultiplexSubscription[]): Promise<void> {
+    let endedCleanly = false;
     try {
       const response = await input.request(`${input.baseUrl}/queries/multiplex`, {
         method: 'POST',
@@ -152,11 +153,15 @@ function createHttpQueryMultiplexer(input: {
         if (frame.event.kind !== 'reset') subscription.cursor = frame.event.cursor;
         subscription.onEvent(frame.event);
       }
-      if (!controller.signal.aborted && active?.controller === controller) failIncluded(included, new Error('Multiplexed query subscription ended before cancellation.'));
+      endedCleanly = !controller.signal.aborted;
     } catch (error) {
       if (!controller.signal.aborted && active?.controller === controller) failIncluded(included, error instanceof Error ? error : new Error(String(error)));
     } finally {
       if (active?.controller === controller) active = undefined;
+      // Generated gateways deliberately bound every SSE lease. A graceful EOF is
+      // therefore a resume point, not an application error. Reconcile a fresh
+      // physical stream from each logical subscription's last signed cursor.
+      if (endedCleanly && subscriptions.size > 0) scheduleRestart();
     }
   }
 

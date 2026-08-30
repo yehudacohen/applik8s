@@ -115,13 +115,20 @@ export async function publishApplicationDeploymentReceipt(
     readonly installationSpec: Readonly<Record<string, unknown>>;
   },
 ): Promise<boolean> {
-  const context = await loadAuthorityContext(outDir, io, false, deployment);
-  if (!context) return false;
+  let context: Awaited<ReturnType<typeof loadAuthorityContext>>;
   try {
+    context = await loadAuthorityContext(outDir, io, false, deployment);
+    if (!context) return false;
     await context.runtime.observeDeploymentReceipt(receipt);
     return true;
+  } catch {
+    // Deployment evidence is deliberately non-authoritative. During a first
+    // apply, the generated database Secret (or the database itself) may not
+    // exist yet. Failing to publish this derived receipt must never turn a
+    // valid deployment plan into a failed deployment or fabricate authority.
+    return false;
   } finally {
-    await context.close();
+    await context?.close().catch(() => undefined);
   }
 }
 

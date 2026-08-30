@@ -55,6 +55,18 @@ const BillingDashboardResult = type({
     costMicrounits: 'number',
     reservedTokens: 'number',
     reservedCostMicrounits: 'number',
+    unpricedFacts: 'number.integer >= 0',
+    providerActivity: type({
+      logicalRole: 'string',
+      provider: 'string',
+      backend: 'string',
+      calls: 'number.integer >= 0',
+      inputTokens: 'number.integer >= 0',
+      outputTokens: 'number.integer >= 0',
+      costMicrounits: 'number',
+      pricing: "'priced' | 'unpriced'",
+      confidence: 'string',
+    }).array(),
   },
   budget: type({
     'maxMonthlyTokens?': 'number | null',
@@ -85,7 +97,7 @@ async function loadBillingDashboard(
   const principalScope = agenticWorkspaceScope(context);
   const workspaceId = selectedAgenticWorkspaceId(context);
   const periodStart = `${new Date().toISOString().slice(0, 7)}-01T00:00:00.000Z`;
-  const [plans, subscriptions, usageRows, budgetRows, ledgerRows, entitlements, history] = await Promise.all([
+  const [plans, subscriptions, usageRows, usageFacts, budgetRows, ledgerRows, entitlements, history] = await Promise.all([
     client.select({
       id: Billing.BillingPlan.id,
       name: Billing.BillingPlan.name,
@@ -119,6 +131,24 @@ async function loadBillingDashboard(
         eq(Usage.UsageFact.principalScope, principalScope),
         gte(Usage.UsageFact.occurredAt, periodStart),
       )),
+    client.select({
+      logicalModel: Usage.UsageFact.logicalModel,
+      operationId: Usage.UsageFact.operationId,
+      provider: Usage.UsageFact.provider,
+      backend: Usage.UsageFact.backend,
+      inputTokens: Usage.UsageFact.inputTokens,
+      outputTokens: Usage.UsageFact.outputTokens,
+      costMicrounits: Usage.UsageFact.costMicrounits,
+      pricingRevision: Usage.UsageFact.pricingRevision,
+      confidence: Usage.UsageFact.confidence,
+    })
+      .from(Usage.UsageFact)
+      .where(and(
+        eq(Usage.UsageFact.principalScope, principalScope),
+        gte(Usage.UsageFact.occurredAt, periodStart),
+      ))
+      .orderBy(desc(Usage.UsageFact.occurredAt))
+      .limit(250),
     workspaceId ? client.select({
       maxMonthlyTokens: WorkspaceBudgetPolicy.maxMonthlyTokens,
       maxMonthlyCostMicrounits: WorkspaceBudgetPolicy.maxMonthlyCostMicrounits,
@@ -161,6 +191,41 @@ async function loadBillingDashboard(
   const budget = budgetRows[0];
   const ledger = ledgerRows[0];
   const subscription = subscriptions[0];
+  const activity = new Map<string, {
+    logicalRole: string;
+    provider: string;
+    backend: string;
+    calls: number;
+    inputTokens: number;
+    outputTokens: number;
+    costMicrounits: number;
+    pricing: 'priced' | 'unpriced';
+    confidence: string;
+  }>();
+  for (const fact of usageFacts) {
+    const logicalRole = fact.logicalModel ?? fact.operationId ?? 'unclassified';
+    const provider = fact.provider ?? 'unreported';
+    const backend = fact.backend ?? 'unreported';
+    const key = `${logicalRole}\0${provider}\0${backend}`;
+    const current = activity.get(key) ?? {
+      logicalRole,
+      provider,
+      backend,
+      calls: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      costMicrounits: 0,
+      pricing: 'priced' as const,
+      confidence: fact.confidence,
+    };
+    current.calls += 1;
+    current.inputTokens += Number(fact.inputTokens ?? 0);
+    current.outputTokens += Number(fact.outputTokens ?? 0);
+    current.costMicrounits += Number(fact.costMicrounits ?? 0);
+    if (!fact.pricingRevision) current.pricing = 'unpriced';
+    if (current.confidence !== fact.confidence) current.confidence = 'mixed';
+    activity.set(key, current);
+  }
   return {
     canManageBilling: canManageWorkspaceBilling(context),
     plans,
@@ -180,6 +245,10 @@ async function loadBillingDashboard(
       costMicrounits: Number(usage?.costMicrounits ?? 0),
       reservedTokens: Number(ledger?.reservedTokens ?? 0),
       reservedCostMicrounits: Number(ledger?.reservedCostMicrounits ?? 0),
+      unpricedFacts: usageFacts.filter(fact => !fact.pricingRevision).length,
+      providerActivity: [...activity.values()].sort((left, right) =>
+        right.costMicrounits - left.costMicrounits
+        || right.inputTokens + right.outputTokens - left.inputTokens - left.outputTokens),
     },
     budget: budget ? {
       maxMonthlyTokens: budget.maxMonthlyTokens,

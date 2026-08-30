@@ -268,6 +268,44 @@ describe('generated application AI runtime', () => {
     });
   });
 
+  it('shares one deterministic provider with a tool-free logical role when the fixture tool is optional', async () => {
+    const handler = createApplicationAIAgentRequestHandler({
+      name: 'durable-specialist',
+      logicalModel: 'research-specialist',
+      instructions: 'Synthesize only supplied evidence.',
+      provider: {
+        kind: 'deterministic',
+        response: 'Evidence-bounded specialist result.',
+        tool: { input: { text: 'interactive-only' }, required: false },
+      },
+      tools: [],
+      persistence: persistence(),
+      tanstackPersistence: memoryPersistence,
+      timeoutMs: 5_000,
+      maximumConcurrency: 1,
+      admit: () => admission(),
+      reserveAttempt: ({ runId }) => ({
+        action: 'dispatch', runId, invocationId: 'invocation-specialist',
+        attemptId: 'attempt-specialist', ordinal: 1, version: 1,
+      }),
+      recovery: unavailableRecovery(),
+      attemptLifecycle: attemptLifecycle([]),
+      invoke: async () => {
+        throw new Error('A tool-free role must not invoke the interactive fixture tool.');
+      },
+      handler: async (request, context) => chat({
+        adapter: context.tanstack.adapter,
+        messages: request.messages,
+        stream: false,
+        context: context.tanstack.execution,
+      }),
+    });
+
+    const response = await handler(agentRequest('Summarize supplied evidence.'));
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain('Evidence-bounded specialist result.');
+  });
+
   it('cancels provider work from the managed request signal without callback ceremony', async () => {
     const lifecycleEvents: string[] = [];
     const controller = new AbortController();

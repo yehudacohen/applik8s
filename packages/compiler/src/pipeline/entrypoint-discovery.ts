@@ -1,15 +1,30 @@
 // typecast-file-boundary: compiler-discovered module exports and serialized composition metadata are discriminator-checked before typed planning.
 import { mkdir } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { inspect } from 'node:util';
 
 import type { Diagnostic, OperatorDefinition, Result } from '@applik8s/core';
-import { build, type Plugin } from 'esbuild';
+import { build } from 'esbuild';
 
 import { applik8sWorkspaceSourcePlugin } from '../bundling/index.js';
 import type { CompileResult } from '../interfaces.js';
 import { deferTemporaryDirectoryCleanup } from './entrypoint-discovery-cleanup.js';
+import {
+  exportedApplicationActorId,
+  exportedApplicationAgentName,
+  exportedApplicationDurable,
+  exportedApplicationLakehousePublication,
+  exportedApplicationModelName,
+  exportedApplicationObjectStoreName,
+  exportedApplicationOperationId,
+  exportedApplicationSchedule,
+  exportedApplicationSignalId,
+  firstDuplicate,
+  isExportedOperator,
+  isExportedTypeKroComposition,
+} from './entrypoint-export-inspection.js';
+import { compilerOwnedDiscoveryDependenciesPlugin } from './entrypoint-discovery-plugin.js';
 import { handlerSourceMetadataPlugin } from './entrypoint-handler-instrumentation.js';
 
 export {
@@ -209,167 +224,6 @@ export async function discoverEntrypointExports(entrypoint: string): Promise<Res
   } finally {
     deferTemporaryDirectoryCleanup(bundleRoot);
   }
-}
-
-function compilerOwnedDiscoveryDependenciesPlugin(): Plugin {
-  const compilerDirectory = dirname(fileURLToPath(import.meta.url));
-  const resolvingCompilerDependency = Object.freeze({ compilerOwnedDiscoveryDependency: true });
-  return {
-    name: 'applik8s-compiler-owned-discovery-dependencies',
-    setup(buildContext) {
-      buildContext.onResolve(
-        { filter: /^(?:@applik8s\/compiler(?:\/.*)?|esbuild|typekro(?:\/.*)?)$/ },
-        async (args) => {
-          if (args.pluginData === resolvingCompilerDependency) return undefined;
-          const resolved = await buildContext.resolve(args.path, {
-            kind: args.kind,
-            resolveDir: compilerDirectory,
-            pluginData: resolvingCompilerDependency,
-          });
-          if (resolved.errors.length > 0) return { errors: resolved.errors };
-          return {
-          // The discovery bundle executes below the application directory.
-          // Anchor compiler implementation externals to this compiler module
-          // so Node never asks the generated application to install them.
-            path: resolved.path,
-            external: true,
-          };
-        },
-      );
-    },
-  };
-}
-
-function exportedApplicationDurable(value: unknown): {
-  readonly kind: 'workflow' | 'task';
-  readonly id: string;
-} | undefined {
-  if (typeof value !== 'function') return undefined;
-  const bindingKind = Reflect.get(value, 'kind');
-  const kind = bindingKind === 'applicationWorkflow'
-    ? 'workflow'
-    : bindingKind === 'applicationTask'
-      ? 'task'
-      : undefined;
-  if (!kind) return undefined;
-  const definition = Reflect.get(value, 'definition');
-  const id = definition && typeof definition === 'object'
-    ? Reflect.get(definition, 'id')
-    : undefined;
-  return typeof id === 'string' && id.trim().length > 0
-    ? { kind, id }
-    : undefined;
-}
-
-function exportedApplicationActorId(value: unknown): string | undefined {
-  if ((typeof value !== 'object' && typeof value !== 'function') || value === null) return undefined;
-  if (Reflect.get(value, 'kind') !== 'applicationActor') return undefined;
-  const id = Reflect.get(value, 'id');
-  const graphNode = Reflect.get(value, 'graphNode');
-  return typeof id === 'string'
-    && id.trim().length > 0
-    && graphNode !== null
-    && typeof graphNode === 'object'
-    && Reflect.get(graphNode, 'kind') === 'actor'
-    ? id
-    : undefined;
-}
-
-function exportedApplicationLakehousePublication(value: unknown): import('@applik8s/core').ApplicationLakehousePublicationNode | undefined {
-  if (!value || typeof value !== 'object' || Reflect.get(value, 'kind') !== 'applicationLakehousePublication') return undefined;
-  const graphNode = Reflect.get(value, 'graphNode');
-  return graphNode && typeof graphNode === 'object' && Reflect.get(graphNode, 'kind') === 'lakehousePublication'
-    ? graphNode as import('@applik8s/core').ApplicationLakehousePublicationNode
-    : undefined;
-}
-
-function exportedApplicationSchedule(value: unknown): {
-  readonly id: string;
-  readonly graphNode: import('@applik8s/core').ApplicationScheduleNode;
-} | undefined {
-  if (typeof value !== 'function' || Reflect.get(value, 'kind') !== 'applicationSchedule') return undefined;
-  const definition = Reflect.get(value, 'definition');
-  const graphNode = Reflect.get(value, 'graphNode');
-  if (!definition || typeof definition !== 'object' || !graphNode || typeof graphNode !== 'object') return undefined;
-  const id = Reflect.get(definition, 'id');
-  if (typeof id !== 'string' || Reflect.get(graphNode, 'kind') !== 'schedule') return undefined;
-  return {
-    id,
-    graphNode: graphNode as import('@applik8s/core').ApplicationScheduleNode,
-  };
-}
-
-function exportedApplicationOperationId(value: unknown): string | undefined {
-  if ((typeof value !== 'object' && typeof value !== 'function') || value === null) return undefined;
-  const search = Reflect.get(value, 'search');
-  const operation = Reflect.get(value, 'kind') === 'applicationSearchIndex'
-    && (typeof search === 'object' || typeof search === 'function')
-    && search !== null
-    ? Reflect.get(search, 'operation')
-    : Reflect.get(value, 'operation');
-  if (typeof operation !== 'object' || operation === null) return undefined;
-  const id = Reflect.get(operation, 'id');
-  const kind = Reflect.get(operation, 'kind');
-  return typeof id === 'string' && kind === 'applicationOperation' ? id : undefined;
-}
-
-function exportedApplicationModelName(value: unknown): string | undefined {
-  if ((typeof value !== 'object' && typeof value !== 'function') || value === null) {
-    return undefined;
-  }
-  const facet = Reflect.get(value, Symbol.for('@applik8s/model-facet'));
-  if (
-    !facet
-    || typeof facet !== 'object'
-    || Reflect.get(facet, 'kind') !== 'applicationModelFacet'
-  ) {
-    return undefined;
-  }
-  const name = Reflect.get(facet, 'name');
-  return typeof name === 'string' && name.trim() ? name : undefined;
-}
-
-function exportedApplicationSignalId(value: unknown): string | undefined {
-  if (typeof value !== 'object' || value === null) return undefined;
-  if (Reflect.get(value, 'signalKind') !== 'applicationSignal') return undefined;
-  const signal = Reflect.get(value, 'signal');
-  if (typeof signal !== 'object' || signal === null) return undefined;
-  const id = Reflect.get(signal, 'id');
-  const kind = Reflect.get(signal, 'kind');
-  return typeof id === 'string' && kind === 'applicationSignalDefinition'
-    ? id
-    : undefined;
-}
-
-function exportedApplicationAgentName(value: unknown): string | undefined {
-  if (typeof value !== 'object' || value === null) return undefined;
-  if (Reflect.get(value, 'kind') !== 'applicationAgent') return undefined;
-  const name = Reflect.get(value, 'name');
-  return typeof name === 'string' && name.trim() ? name : undefined;
-}
-
-function exportedApplicationObjectStoreName(value: unknown): string | undefined {
-  if (typeof value !== 'object' || value === null) return undefined;
-  if (Reflect.get(value, 'kind') !== 'applicationObjectStore') return undefined;
-  const name = Reflect.get(value, 'name');
-  return typeof name === 'string' && name.trim() ? name : undefined;
-}
-
-function isExportedOperator(value: unknown): value is { readonly definition: OperatorDefinition } {
-  return Boolean(value && typeof value === 'function' && typeof Reflect.get(value, 'definition') === 'object');
-}
-
-function isExportedTypeKroComposition(value: unknown): value is TypeKroCompositionExport {
-  return Boolean(value && (typeof value === 'object' || typeof value === 'function') && Array.isArray(Reflect.get(value, 'operatorInstalls')) && typeof Reflect.get(value, 'resolveOperatorInstalls') === 'function');
-}
-
-function firstDuplicate<T>(values: readonly T[]): T | undefined {
-  const seen = new Set<T>();
-  for (const value of values) {
-    if (seen.has(value)) return value;
-    seen.add(value);
-  }
-  return undefined;
 }
 
 function error<T = never>(code: Diagnostic['code'], message: string): Result<T> {

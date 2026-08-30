@@ -1,0 +1,29 @@
+import { AI } from '@applik8s/ai';
+import { inference } from './providers';
+
+/** Stable logical capability identity shared by durable tasks and role models. */
+export const Inference = AI.named('inference');
+
+/** Low-latency conversational role. It may share one physical provider with other roles. */
+export const InteractiveAssistantModel = AI.model('interactive-assistant', {
+  inference,
+  capabilities: [AI.chat, AI.tools, AI.streaming],
+  constraints: {
+    latencyClass: 'interactive',
+    availabilityClass: 'high',
+    maximumInputCostPerMillion: 20_000_000,
+    maximumOutputCostPerMillion: 60_000_000,
+  },
+});
+
+/** Bounded background role optimized for durable work-product generation. */
+export const ResearchSpecialistModel = AI.model('research-specialist', {
+  inference,
+  capabilities: [AI.chat, AI.textInput, AI.textOutput],
+  constraints: {
+    latencyClass: 'batch',
+    minimumContextTokens: 16_000,
+    maximumInputCostPerMillion: 20_000_000,
+    maximumOutputCostPerMillion: 60_000_000,
+  },
+});

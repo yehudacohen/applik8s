@@ -89,6 +89,10 @@ export interface ApplicationTanStackToolReference {
  * keys. Persisted agent configuration never depends on a provider tool name,
  * and a stale or unavailable selection fails before inference starts.
  */
+export function selectApplicationTanStackTools(
+  tools: readonly AnyTool[],
+  selected: readonly string[],
+): AnyTool[];
 export function selectApplicationTanStackTools<
   const TCatalog extends Readonly<
     Record<string, ApplicationTanStackToolReference>
@@ -97,13 +101,23 @@ export function selectApplicationTanStackTools<
   tools: readonly AnyTool[],
   catalog: TCatalog,
   selected: readonly (keyof TCatalog & string)[] | readonly string[],
+): AnyTool[];
+export function selectApplicationTanStackTools(
+  tools: readonly AnyTool[],
+  catalogOrSelected:
+    | Readonly<Record<string, ApplicationTanStackToolReference>>
+    | readonly string[],
+  explicitSelected?: readonly string[],
 ): AnyTool[] {
-  const operationByKey = new Map(
-    Object.entries(catalog).map(([key, operation]) => [
-      key,
-      operation.operation.id,
-    ]),
-  );
+  const operationByKey = Array.isArray(catalogOrSelected)
+    ? inferredApplicationTanStackToolCatalog(tools)
+    : new Map(
+        Object.entries(catalogOrSelected).map(([key, operation]) => [
+          key,
+          operation.operation.id,
+        ]),
+      );
+  const selected = explicitSelected ?? catalogOrSelected as readonly string[];
   const selectedOperations = new Set<string>();
   for (const key of selected) {
     const operationId = operationByKey.get(key);
@@ -147,6 +161,37 @@ export function selectApplicationTanStackTools<
     }
     return tool;
   });
+}
+
+function inferredApplicationTanStackToolCatalog(
+  tools: readonly AnyTool[],
+): ReadonlyMap<string, string> {
+  const catalog = new Map<string, string>();
+  for (const tool of tools) {
+    const operationId = applicationTanStackToolOperationId(tool);
+    if (!operationId) continue;
+    const key = applicationTanStackToolStableKey(operationId);
+    const existing = catalog.get(key);
+    if (existing && existing !== operationId) {
+      throw new Error(
+        `Application tool key ${JSON.stringify(key)} is ambiguous between ${existing} and ${operationId}. Pass an explicit application-owned catalog to disambiguate it.`,
+      );
+    }
+    catalog.set(key, operationId);
+  }
+  return catalog;
+}
+
+function applicationTanStackToolStableKey(operationId: string): string {
+  const match = /^applik8s:\/\/[^/]+\/([^/]+)\/operations\/([^/]+)$/u.exec(
+    operationId,
+  );
+  if (!match?.[1] || !match[2]) {
+    throw new Error(
+      `Application operation ${operationId} cannot be represented by the inferred Owner.operation tool catalog. Pass an explicit application-owned catalog.`,
+    );
+  }
+  return `${match[1]}.${match[2]}`;
 }
 
 function applicationTanStackToolOperationId(tool: AnyTool): string | undefined {

@@ -21,14 +21,19 @@ describe('browser-safe HTTP/SSE query transport', () => {
     }
   });
 
-  it('validates snapshots and parses bounded CRLF SSE streams', async () => {
+  it('validates snapshots and transparently resumes bounded CRLF SSE streams from the last cursor', async () => {
     const input = { setId: 'set-1' };
     const snapshot = { kind: 'snapshot', protocol: 'applik8s.query/v1alpha1', query: 'cards.v1', inputKey: queryInputKey(input), value: [{ id: 'card-1' }], cursor: 'cursor-1', capability: 'resumableInvalidation', generatedAt: '2026-07-15T00:00:00.000Z' } as const;
+    let multiplexRequest = 0;
     const fetch = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
       if (String(url).endsWith('/queries/multiplex')) {
+        multiplexRequest += 1;
         const body = JSON.parse(String(init?.body)) as { readonly subscriptions: readonly { readonly id: string }[] };
         const subscriptionId = body.subscriptions[0]?.id;
-        return new Response(new ReadableStream({ start(controller) { controller.enqueue(new TextEncoder().encode(`event: message\r\ndata: {"protocol":"applik8s.query-multiplex/v1alpha1","kind":"event","subscriptionId":${JSON.stringify(subscriptionId)},"event":{"kind":"invalidate","protocol":"applik8s.query/v1alpha1","id":"cards.v1:2","sequence":2,"query":"cards.v1","cursor":"cursor-2","models":["Card"]}}\r\n\r\n`)); controller.close(); } }), { status: 200 });
+        if (multiplexRequest === 1) {
+          return new Response(new ReadableStream({ start(controller) { controller.enqueue(new TextEncoder().encode(`event: message\r\ndata: {"protocol":"applik8s.query-multiplex/v1alpha1","kind":"event","subscriptionId":${JSON.stringify(subscriptionId)},"event":{"kind":"invalidate","protocol":"applik8s.query/v1alpha1","id":"cards.v1:2","sequence":2,"query":"cards.v1","cursor":"cursor-2","models":["Card"]}}\r\n\r\n`)); controller.close(); } }), { status: 200 });
+        }
+        return new Response(new ReadableStream(), { status: 200 });
       }
       return new Response(JSON.stringify(snapshot), { status: 200 });
     });
@@ -36,11 +41,16 @@ describe('browser-safe HTTP/SSE query transport', () => {
     await expect(transport.snapshot('cards.v1', input)).resolves.toEqual(snapshot);
     const events: unknown[] = [];
     const errors: Error[] = [];
-    transport.subscribe('cards.v1', input, snapshot.cursor, { signal: new AbortController().signal, onEvent: (event) => events.push(event), onError: (error) => errors.push(error) });
-    await settle();
+    const subscription = new AbortController();
+    transport.subscribe('cards.v1', input, snapshot.cursor, { signal: subscription.signal, onEvent: (event) => events.push(event), onError: (error) => errors.push(error) });
+    await waitFor(() => fetch.mock.calls.filter(([url]) => String(url).endsWith('/queries/multiplex')).length === 2);
     expect(events).toEqual([expect.objectContaining({ kind: 'invalidate', cursor: 'cursor-2' })]);
-    expect(errors[0]?.message).toContain('ended before cancellation');
-    expect(fetch.mock.calls.filter(([url]) => String(url).endsWith('/queries/multiplex'))).toHaveLength(1);
+    expect(errors).toEqual([]);
+    const multiplexCalls = fetch.mock.calls.filter(([url]) => String(url).endsWith('/queries/multiplex'));
+    expect(multiplexCalls).toHaveLength(2);
+    const resumed = JSON.parse(String(multiplexCalls[1]?.[1]?.body)) as { readonly subscriptions: readonly { readonly cursor: string }[] };
+    expect(resumed.subscriptions[0]?.cursor).toBe('cursor-2');
+    subscription.abort();
   });
 
   it('fails closed for oversized or malformed protocol messages', async () => {
@@ -59,20 +69,43 @@ describe('browser-safe HTTP/SSE query transport', () => {
         subscriptionId: subscription.id,
         event: { kind: 'invalidate', protocol: 'applik8s.query/v1alpha1', id: `${subscription.query}:${index + 1}`, sequence: index + 1, query: subscription.query, cursor: `cursor-${index + 1}`, models: ['Card'] },
       })}\n\n`).join('');
-      return new Response(new ReadableStream({ start(controller) { controller.enqueue(new TextEncoder().encode(payload)); controller.close(); } }), { status: 200 });
+      return new Response(new ReadableStream({ start(controller) { controller.enqueue(new TextEncoder().encode(payload)); } }), { status: 200 });
     });
     const transport = createHttpApplicationQueryTransport({ baseUrl: 'https://catalog.test', fetch: fetch as unknown as typeof globalThis.fetch });
     const first: unknown[] = [];
     const second: unknown[] = [];
-    transport.subscribe('cards.first.v1', {}, 'first-cursor', { signal: new AbortController().signal, onEvent: (event) => first.push(event), onError: () => undefined });
-    transport.subscribe('cards.second.v1', {}, 'second-cursor', { signal: new AbortController().signal, onEvent: (event) => second.push(event), onError: () => undefined });
-    await settle();
+    const firstController = new AbortController();
+    const secondController = new AbortController();
+    transport.subscribe('cards.first.v1', {}, 'first-cursor', { signal: firstController.signal, onEvent: (event) => first.push(event), onError: () => undefined });
+    transport.subscribe('cards.second.v1', {}, 'second-cursor', { signal: secondController.signal, onEvent: (event) => second.push(event), onError: () => undefined });
+    await waitFor(() => first.length === 1 && second.length === 1);
 
     expect(fetch).toHaveBeenCalledTimes(1);
     const request = JSON.parse(String(fetch.mock.calls[0]?.[1]?.body)) as { readonly subscriptions: readonly unknown[] };
     expect(request.subscriptions).toHaveLength(2);
     expect(first).toEqual([expect.objectContaining({ query: 'cards.first.v1' })]);
     expect(second).toEqual([expect.objectContaining({ query: 'cards.second.v1' })]);
+    firstController.abort();
+    secondController.abort();
+  });
+
+  it('fails closed instead of reconnecting after a malformed multiplex frame', async () => {
+    const fetch = vi.fn(async () => new Response(new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('data: {"kind":"not-the-protocol"}\n\n'));
+        controller.close();
+      },
+    }), { status: 200 }));
+    const errors: Error[] = [];
+    createHttpApplicationQueryTransport({ fetch: fetch as unknown as typeof globalThis.fetch }).subscribe(
+      'cards.v1',
+      {},
+      'cursor-1',
+      { signal: new AbortController().signal, onEvent: () => undefined, onError: (error) => errors.push(error) },
+    );
+    await waitFor(() => errors.length === 1);
+    expect(errors[0]?.message).toContain('violates');
+    expect(fetch).toHaveBeenCalledTimes(1);
   });
 
   it('waits for physical SSE cancellation before opening a replacement connection', async () => {

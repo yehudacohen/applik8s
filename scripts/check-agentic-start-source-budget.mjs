@@ -109,7 +109,7 @@ if (ownership.applicationBehavior.nonblankLines > budget.ownership.maximumApplic
 
 const definition = await readFile(resolve(root, 'packages/start-agentic/src/definition.ts'), 'utf8');
 const inventory = [
-  '.applik8s/start-lineage.json',
+  '.applik8s-start.json',
   'package.json',
   ...files.map(file => relative(templateRoot, file).replaceAll('\\', '/').replace(/\.tmpl$/u, '')),
 ].sort();

@@ -7,9 +7,13 @@ export const agenticProductEvidenceJourneys = Object.freeze({
     evidenceId: 'causal-agent-note',
     test: 'attributes an agent-created document to its human requester and reactively renders it',
   }),
+  durableSpecialist: Object.freeze({
+    evidenceId: 'durable-specialist',
+    test: 'creates one server-authored research document through an admitted durable specialist and preserves its run provenance',
+  }),
   historicalLakehouse: Object.freeze({
     evidenceId: 'historical-usage-browser',
-    test: 'publishes workspace usage into the immutable lakehouse and renders its authoritative browser query',
+    test: 'renders qualified historical usage or an explicit unavailable-provider boundary',
   }),
   starterBilling: Object.freeze({
     evidenceId: 'starter-billing',

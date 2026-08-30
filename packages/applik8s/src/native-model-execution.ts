@@ -133,7 +133,7 @@ export interface ApplicationNativeModelEditTarget<
   readonly identity: TIdentity;
   readonly revision?: string;
   readonly value: TValue;
-  update(patch: Partial<TValue>): Promise<void>;
+  update(patch: import('./application-model-update-contract.js').ApplicationModelUpdatePatch<TValue>): Promise<void>;
   delete(): Promise<void>;
 }
 

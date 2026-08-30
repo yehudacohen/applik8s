@@ -23,6 +23,9 @@ export interface ApplicationStartCommand {
 
 export type ApplicationAgenticStartExample = 'product' | 'research';
 
+/** Tracked, reviewable generated-source ownership receipt. */
+export const applicationAgenticStartLineagePath = '.applik8s-start.json';
+
 export interface ApplicationStartProgress {
   readonly phase:
     | 'scaffold'
@@ -122,16 +125,14 @@ export async function createApplicationAgenticStart(
       ([path, source]) => [path, applicationStartTemplateDigest(source)],
     ),
   );
-  const templateRevision = applicationStartTemplateDigest(
-    JSON.stringify(fileDigests),
-  );
+  const templateRevision = applicationStartTemplateRevision(fileDigests);
   const lineagePath = resolve(
     targetDirectory,
-    '.applik8s/start-lineage.json',
+    applicationAgenticStartLineagePath,
   );
   await mkdir(dirname(lineagePath), { recursive: true });
   await writeFile(lineagePath, `${JSON.stringify({
-    apiVersion: 'applik8s.startLineage/v1alpha1',
+    apiVersion: 'applik8s.startLineage/v1alpha2',
     start: applicationAgenticStartDefinition.name,
     startVersion: applicationAgenticStartDefinition.version,
     generatorVersion: applicationAgenticStartDefinition.version,
@@ -185,7 +186,7 @@ export async function createApplicationAgenticStart(
     projectName,
     example,
     files: [
-      '.applik8s/start-lineage.json',
+      applicationAgenticStartLineagePath,
       ...Object.keys(templates),
       'package.json',
     ],
@@ -194,6 +195,15 @@ export async function createApplicationAgenticStart(
       version: upstream.version,
     },
   };
+}
+
+export function applicationStartTemplateRevision(
+  files: Readonly<Record<string, string>>,
+): string {
+  return applicationStartTemplateDigest(JSON.stringify(
+    Object.fromEntries(Object.entries(files).sort(([left], [right]) =>
+      left.localeCompare(right))),
+  ));
 }
 
 async function runCommand(command: ApplicationStartCommand): Promise<void> {

@@ -17,6 +17,8 @@ export { ApplicationLakehouseQueryTerminalError, applicationLakehouseAuthorityMa
 export type { ApplicationLakehouseConformanceCase, ApplicationLakehouseConformanceReport, ApplicationLakehouseConformanceRow } from './application-lakehouse-conformance.js';
 export { applicationLakehouseConformanceCases, applicationLakehouseConformanceRows, runApplicationLakehouseConformance } from './application-lakehouse-conformance.js';
 export type { ApplicationModelTransactionParticipant } from './application-models.js';
+export type { ApplicationModelClearIntent, ApplicationModelUpdatePatch } from './application-model-update-contract.js';
+export { clear } from './application-model-update-contract.js';
 export type { ApplicationObjectDownloadRequest, ApplicationObjectMetadata, ApplicationObjectPutRequest, ApplicationObjectReference, ApplicationObjectStorageRuntime, ApplicationObjectStoreBinding, ApplicationObjectStoreOptions, ApplicationObjectUploadCompletionRequest, ApplicationObjectUploadRequest, ApplicationSignedObjectIntent, ApplicationVerifiedObjectCompletion } from './application-object-storage.js';
 export { installApplicationObjectStorageRuntimeResolver, setApplicationObjectStorageRuntimeFactory } from './application-object-storage.js';
 export type { ApplicationObjectCompletionReceiptVerification } from './application-object-storage-gateway.js';

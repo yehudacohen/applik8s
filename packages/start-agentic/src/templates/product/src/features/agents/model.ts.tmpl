@@ -44,7 +44,10 @@ const agentProfiles = module('agent-profile-workbench', {}, currentApplication =
     output: AgentProfileResult.or('null'),
     database,
     authorize: ({ principal }) => principal.id.length > 0,
-    budgets: { timeoutMs: 1_000, maxRows: 1, maxResultBytes: 64_000 },
+    // Agent workloads resolve this view over the signed internal task-query
+    // gateway. Leave enough budget for a cold database connection while the
+    // query runtime still enforces a hard, attributable deadline.
+    budgets: { timeoutMs: 5_000, maxRows: 1, maxResultBytes: 64_000 },
   }, loadActiveAgentProfile);
 
   const AgentProfileForEvaluation = AgentProfileTable.view({

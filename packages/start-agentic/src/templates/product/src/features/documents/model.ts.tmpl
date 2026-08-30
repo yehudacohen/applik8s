@@ -1,4 +1,3 @@
-import { AI } from '@applik8s/ai';
 import {
   selectApplicationTanStackTools,
   withApplicationTanStackPersistence,
@@ -21,7 +20,8 @@ import { type } from 'arktype';
 import { chat, combineStrategies, maxIterations } from '@tanstack/ai';
 import { application } from '../../app';
 import { ArtifactObjects, Artifacts } from '../../modules';
-import { database, inference } from '../../providers';
+import { database } from '../../providers';
+import { InteractiveAssistantModel } from '../../inference-roles';
 import { ActiveAgentProfile } from '../agents/model';
 import { KnowledgeSearch } from '../knowledge/model';
 import { WorkspaceId } from '../workspaces/model';
@@ -98,6 +98,8 @@ const documentWorkspace = module('document-workspace', {},
         ) throw new Error('Document ownership, provenance, revision, and lifecycle timestamps are server-owned.');
         const assistant = context.principal.kind === 'execution'
           && context.principal.serviceIdentity?.subject === 'workspace-assistant';
+        const specialist = context.principal.kind === 'execution'
+          && context.principal.serviceIdentity?.subject === 'research-specialist';
         if (input.sourceConversationId !== undefined || input.sourceRunId !== undefined) {
           throw new Error('Conversation and run provenance are framework-owned.');
         }
@@ -107,6 +109,9 @@ const documentWorkspace = module('document-workspace', {},
           ? context.principal.executionContext
           : undefined;
         if (assistant && !agentExecution) throw new Error('Agent-authored documents require admitted execution provenance.');
+        if (specialist && !context.principal.executionId?.trim()) {
+          throw new Error('Specialist-authored documents require admitted durable execution provenance.');
+        }
         if (document.value.createdByPrincipalId !== context.principal.id) {
           throw new Error('Document creator provenance must match the acting principal.');
         }
@@ -118,7 +123,9 @@ const documentWorkspace = module('document-workspace', {},
                   sourceConversationId: agentExecution.threadId,
                   sourceRunId: agentExecution.runId,
                 }
-              : {}),
+              : specialist
+                ? { sourceRunId: context.principal.executionId }
+                : {}),
           },
         });
         context.send(DocumentRevisionTable.create, {
@@ -287,16 +294,12 @@ const documentWorkspace = module('document-workspace', {},
 
     const Authenticated = currentApplication.role('authenticated');
     const AssistantIdentity = currentApplication.serviceIdentity('workspace-assistant');
-    const FastModel = AI.model('fast', {
-      inference,
-      capabilities: [AI.chat, AI.tools, AI.streaming],
-    });
     const WorkspaceAssistant = currentApplication.agent(
       'workspace-assistant',
       {
         identity: AssistantIdentity,
         scope: WorkspaceId,
-        model: FastModel,
+        model: InteractiveAssistantModel,
         instructions: [
           'You are a workspace copilot that produces substantive, editable work rather than chat-only answers.',
           'When asked to create a deliverable, call Document.create with a useful title, Markdown body, concise summary, and tags.',
@@ -342,10 +345,6 @@ const documentWorkspace = module('document-workspace', {},
           : undefined;
         const knowledge = knowledgeResult?.hits.map(hit => hit.document) ?? [];
         const knowledgeContext = applicationKnowledgeContext(knowledge);
-        const toolCatalog = {
-          'Document.create': DocumentTable.create,
-          'Document.update': DocumentTable.update,
-        } as const;
         const systemMessages = [
           ...(profile ? [{
               id: `agent-profile:${profile.id}:${profile.revision}`,
@@ -376,7 +375,6 @@ const documentWorkspace = module('document-workspace', {},
           tools: profile
             ? selectApplicationTanStackTools(
                 context.tanstack.tools,
-                toolCatalog,
                 profile.tools,
               )
             : context.tanstack.tools,

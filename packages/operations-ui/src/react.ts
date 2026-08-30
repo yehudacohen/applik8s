@@ -16,6 +16,25 @@ export interface ApplicationOperationsControlCenterProps {
   readonly title?: string;
   readonly baseUrl?: string;
   readonly limit?: number;
+  /** Application-owned objectives evaluated from the canonical snapshot. */
+  readonly objectives?: (
+    snapshot: ApplicationOperationsSnapshot,
+  ) => readonly ApplicationOperationalObjective[];
+}
+
+export interface ApplicationOperationalObjective {
+  readonly id: string;
+  readonly title: string;
+  readonly description: string;
+  readonly state: 'verified' | 'degraded' | 'missing';
+  readonly evidence: string;
+  readonly authority: string;
+  readonly window: string;
+  readonly owner: string;
+  readonly runbook: {
+    readonly title: string;
+    readonly steps: readonly string[];
+  };
 }
 
 /**
@@ -109,6 +128,7 @@ function ApplicationOperationsDashboard(
     .sort((left, right) =>
       attentionPriority(left.row) - attentionPriority(right.row),
     );
+  const objectives = props.objectives?.(snapshot) ?? [];
   return createElement('section', operationSurfaceProps(props.title), [
     heading(props.title),
     createElement(
@@ -122,6 +142,21 @@ function ApplicationOperationsDashboard(
       summaryMetric('Topology declarations', declared.length),
       summaryMetric('Needs attention', attention.length),
     ]),
+    objectives.length > 0
+      ? createElement('section', {
+          key: 'objectives',
+          style: styles.group,
+          'aria-label': 'Application objectives',
+        }, [
+          createElement('div', { key: 'heading', style: styles.groupHeading }, [
+            createElement('h2', { key: 'title', style: styles.groupTitle }, 'Application objectives'),
+            createElement('p', { key: 'description', style: styles.description }, 'Application-owned service promises evaluated only from canonical observations. Missing evidence remains Unknown.'),
+          ]),
+          createElement('div', { key: 'grid', style: styles.grid }, objectives.map(objective =>
+            createElement(OperationalObjective, { key: objective.id, objective }),
+          )),
+        ])
+      : null,
     createElement('section', {
       key: 'attention',
       style: styles.attention,
@@ -158,6 +193,49 @@ function ApplicationOperationsDashboard(
       ['Compiled topology', declared, 'Deployable responsibilities inferred from the application graph'],
       ...visibleGovernance,
     ]),
+  ]);
+}
+
+function OperationalObjective({ objective }: { readonly objective: ApplicationOperationalObjective }): ReactNode {
+  const state = objective.state === 'verified'
+    ? 'Verified'
+    : objective.state === 'degraded'
+      ? 'Degraded'
+      : 'Unknown';
+  return createElement('article', { style: styles.card }, [
+    createElement('div', { key: 'heading', style: styles.cardHeader }, [
+      createElement('div', { key: 'labels' }, [
+        createElement('h3', { key: 'title', style: styles.sectionTitle }, objective.title),
+        createElement('p', { key: 'description', style: styles.description }, objective.description),
+      ]),
+      createElement('strong', {
+        key: 'state',
+        style: objective.state === 'verified'
+          ? styles.objectiveVerified
+          : objective.state === 'degraded'
+            ? styles.objectiveDegraded
+            : styles.objectiveMissing,
+      }, state),
+    ]),
+    createElement('dl', { key: 'evidence', style: styles.objectiveFacts }, [
+      objectiveFact('Evidence', objective.evidence),
+      objectiveFact('Authority', objective.authority),
+      objectiveFact('Window', objective.window),
+      objectiveFact('Owner', objective.owner),
+    ]),
+    createElement('details', { key: 'runbook', style: styles.runbook }, [
+      createElement('summary', { key: 'summary' }, objective.runbook.title),
+      createElement('ol', { key: 'steps', style: styles.runbookSteps }, objective.runbook.steps.map((step, index) =>
+        createElement('li', { key: `${objective.id}:${index}` }, step),
+      )),
+    ]),
+  ]);
+}
+
+function objectiveFact(label: string, value: string): ReactNode {
+  return createElement('div', { key: label }, [
+    createElement('dt', { key: 'label', style: styles.metricLabel }, label),
+    createElement('dd', { key: 'value', style: styles.objectiveValue }, value),
   ]);
 }
 
@@ -455,6 +533,46 @@ const styles = {
     color: 'var(--applik8s-operations-accent-contrast, var(--surface, #fff))',
     textAlign: 'center',
   },
+  objectiveVerified: {
+    alignSelf: 'start',
+    padding: '5px 9px',
+    borderRadius: 999,
+    background: 'var(--applik8s-operations-success-surface, #dff7eb)',
+    color: 'var(--applik8s-operations-success, #155c42)',
+    fontSize: 11,
+  },
+  objectiveDegraded: {
+    alignSelf: 'start',
+    padding: '5px 9px',
+    borderRadius: 999,
+    background: 'var(--applik8s-operations-danger-surface, #ffe2d8)',
+    color: 'var(--applik8s-operations-danger, #8b2f18)',
+    fontSize: 11,
+  },
+  objectiveMissing: {
+    alignSelf: 'start',
+    padding: '5px 9px',
+    borderRadius: 999,
+    background: 'var(--applik8s-operations-muted-surface, #edf2ef)',
+    color: 'var(--applik8s-operations-muted-text, #45544f)',
+    fontSize: 11,
+  },
+  objectiveFacts: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+    gap: 12,
+    margin: 0,
+    padding: 18,
+  },
+  objectiveValue: { margin: '3px 0 0', fontSize: 13 },
+  runbook: {
+    margin: '0 18px 18px',
+    padding: 12,
+    borderRadius: 10,
+    background: 'var(--applik8s-operations-muted-surface, #f4f7f5)',
+    fontSize: 13,
+  },
+  runbookSteps: { margin: '10px 0 0', paddingLeft: 20, lineHeight: 1.6 },
   list: { margin: 0, padding: 0, listStyle: 'none' },
   row: {
     padding: '11px 18px',

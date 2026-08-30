@@ -10,6 +10,8 @@ import {
   WorkspaceBudgetPolicy as WorkspaceBudgetPolicyTable,
 } from './models';
 
+const UsageBudgetWorkerSubject = 'usage-budget-worker';
+
 const workspaceAIUsageBudgets = module(
   'workspace-ai-usage-budgets',
   {
@@ -159,7 +161,7 @@ const workspaceAIUsageBudgets = module(
         const principal = context.principal;
         if (
           principal?.kind !== 'execution'
-          || principal.serviceIdentity?.id !== UsageBudgetWorker.identity.id
+          || principal.serviceIdentity?.subject !== UsageBudgetWorkerSubject
         ) {
           throw new Error('AI usage reservations are settled only by the framework budget worker.');
         }

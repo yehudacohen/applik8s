@@ -5,35 +5,11 @@ import {
   selectAgenticWorkspace,
 } from '@applik8s/start-agentic/react';
 import { Link } from '@tanstack/react-router';
-import { Menu, Monitor, Moon, Sun, type LucideIcon } from 'lucide-react';
+import { Menu, Monitor, Moon, Sun } from 'lucide-react';
 import { useSyncExternalStore } from 'react';
 import { WorkspaceList } from '../application';
+import type { ApplicationNavigationItem } from '../product-navigation';
 import { Button, Sheet, SheetClose, SheetContent, SheetDescription, SheetHeader, SheetTitle, SheetTrigger, cn } from './ui';
-
-type ApplicationRoute =
-  | '/app'
-  | '/app/documents'
-  | '/app/artifacts'
-  | '/app/inbox'
-  | '/app/agents'
-  | '/app/knowledge'
-  | '/app/integrations'
-  | '/app/evaluations'
-  | '/app/workspaces'
-  | '/app/usage'
-  | '/app/billing'
-  | '/app/account'
-  | '/app/setup'
-  | '/app/operations'
-  | '/admin'
-  | '/admin/tenants'
-  | '/admin/catalog';
-
-export interface MobileNavigationItem {
-  readonly to: ApplicationRoute;
-  readonly label: string;
-  readonly icon: LucideIcon;
-}
 
 export function MobileMoreNavigation({
   pathname,
@@ -47,10 +23,10 @@ export function MobileMoreNavigation({
   readonly pathname: string;
   readonly workspaceAdministrator: boolean;
   readonly operator: boolean;
-  readonly product: readonly MobileNavigationItem[];
-  readonly builder: readonly MobileNavigationItem[];
-  readonly administration: readonly MobileNavigationItem[];
-  readonly operations: readonly MobileNavigationItem[];
+  readonly product: readonly ApplicationNavigationItem[];
+  readonly builder: readonly ApplicationNavigationItem[];
+  readonly administration: readonly ApplicationNavigationItem[];
+  readonly operations: readonly ApplicationNavigationItem[];
 }) {
   const hydrated = useSyncExternalStore(subscribeHydration, hydratedSnapshot, serverHydrationSnapshot);
   const primaryPaths = ['/app', '/app/documents', '/app/inbox'];
@@ -102,7 +78,7 @@ function serverHydrationSnapshot(): false {
   return false;
 }
 
-function MobileNavigationGroup({ label, items }: { readonly label: string; readonly items: readonly MobileNavigationItem[] }) {
+function MobileNavigationGroup({ label, items }: { readonly label: string; readonly items: readonly ApplicationNavigationItem[] }) {
   return (
     <section>
       <p className="nav-label">{label}</p>

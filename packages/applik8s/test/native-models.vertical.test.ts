@@ -2,10 +2,10 @@
 
 import { getApplicationOperationContract } from '@applik8s/client';
 import { createTableRelationsHelpers, eq, extractTablesRelationalConfig, relations } from 'drizzle-orm';
-import { alias, pgTable, text, timestamp, uuid } from 'drizzle-orm/pg-core';
+import { alias, jsonb, pgTable, text, timestamp, uuid } from 'drizzle-orm/pg-core';
 import { drizzle } from 'drizzle-orm/pg-proxy';
 import { describe, expect, test } from 'vitest';
-import { applicationModelFacet, getApplicationModelFacet, isPromotedApplicationModel, modelReferenceContract, promoteDrizzleTable } from '../src/native-models.js';
+import { applicationModelFacet, getApplicationModelFacet, isPromotedApplicationModel, modelReferenceContract, promoteAnalyticalDrizzleTable, promoteDrizzleTable } from '../src/native-models.js';
 
 const sets = pgTable('sets', {
   id: uuid('id').primaryKey(),
@@ -74,6 +74,35 @@ describe('native Drizzle application models', () => {
     expect(inserted).not.toHaveProperty('summary');
     const updated = Card.$model.schema.update({ name: 'Renamed' });
     expect(updated).not.toHaveProperty('summary');
+  });
+
+  test('preserves recursive JSON values across select, insert, update, and analytical promotion', () => {
+    const documents = pgTable('json_documents', {
+      id: text('id').primaryKey(),
+      payload: jsonb('payload').$type<readonly unknown[]>().notNull(),
+      annotations: jsonb('annotations').$type<Readonly<Record<string, unknown>>>(),
+    });
+    const Document = promoteDrizzleTable(documents, { name: 'JsonDocument' });
+    const payload = [1, 'two', true, null, { nested: ['value', { count: 3 }] }] as const;
+
+    expect(Document.$model.schema.insert.allows({ id: 'document-1', payload })).toBe(true);
+    expect(Document.$model.schema.insert.allows({ id: 'document-2', payload, annotations: null })).toBe(true);
+    expect(Document.$model.schema.select.allows({ id: 'document-1', payload, annotations: null })).toBe(true);
+    expect(Document.$model.schema.update.allows({ payload })).toBe(true);
+    expect(Document.$model.schema.update.allows({ annotations: { source: ['fixture'] } })).toBe(true);
+    expect(Document.$model.schema.insert.allows({ id: 'bad', payload: [undefined] })).toBe(false);
+    expect(Document.$model.schema.insert.allows({ id: 'bad', payload: [new Date()] })).toBe(false);
+    expect(JSON.stringify(Document.$model.schema.insert.toJsonSchema())).toContain('"type":"array"');
+
+    const analyticalDocuments = pgTable('analytical_json_documents', {
+      id: text('id').primaryKey(),
+      payload: jsonb('payload').$type<readonly unknown[]>().notNull(),
+    });
+    const AnalyticalDocument = promoteAnalyticalDrizzleTable(analyticalDocuments, {
+      name: 'AnalyticalJsonDocument',
+    });
+    expect(AnalyticalDocument.$model.schema.select.allows({ id: 'document-1', payload })).toBe(true);
+    expect(AnalyticalDocument.$model.schema.select.allows({ id: 'bad', payload: [undefined] })).toBe(false);
   });
 
   test('normalizes native relations and carries typed reference metadata', () => {

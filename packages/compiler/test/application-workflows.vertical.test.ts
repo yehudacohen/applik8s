@@ -172,6 +172,145 @@ export const providerAccountingProof = platform.composition;
     });
   });
 
+  it('resolves nested AI profile and deployment-target providers for durable workers', () => {
+    const graph = nativeAIWorkflowGraph({
+      kind: 'application-provider-selection',
+      selector: '${schema.spec.profile}',
+      cases: {
+        starter: {
+          kind: 'ai-deterministic',
+          production: false,
+          fixture: { response: 'starter' },
+        },
+        dedicated: {
+          kind: 'application-target-provider-selection',
+          targets: {
+            local: {
+              kind: 'ai-deterministic',
+              production: false,
+              fixture: { response: 'local' },
+            },
+            kubernetes: externalAIProvider('https://openrouter.example.test/v1'),
+            aws: externalAIProvider('https://bedrock.example.test/v1'),
+          },
+        },
+      },
+      default: {
+        kind: 'ai-deterministic',
+        production: false,
+        fixture: { response: 'default' },
+      },
+    });
+    const worker = requiredWorkflowWorker(graph);
+    const kubernetes = workflowContract(
+      graph,
+      worker,
+      undefined,
+      [],
+      [],
+      undefined,
+      'kubernetes',
+    );
+    const dedicated = requiredObject(
+      Reflect.get(
+        requiredObject(kubernetes.nativeAI?.providerConfig.cases, 'AI profile cases'),
+        'dedicated',
+      ),
+      'dedicated AI profile',
+    );
+    expect(dedicated).toMatchObject({
+      kind: 'envoy-ai-gateway',
+      provision: false,
+    });
+    expect(Reflect.get(dedicated, 'kind')).not.toBe('application-target-provider-selection');
+
+    const resources = workflowResources(
+      kubernetes,
+      'native-ai-worker',
+      'fixture-image',
+      'fixture-digest',
+      false,
+    );
+    const environment = workflowContainerEnvironment(resources);
+    expect(environment).toEqual(expect.arrayContaining([
+      {
+        name: 'APPLIK8S_NATIVE_AI_SELECTION',
+        value: '${schema.spec.profile}',
+      },
+      {
+        name: 'APPLIK8S_AI_GATEWAY_API_KEY',
+        valueFrom: {
+          secretKeyRef: expect.objectContaining({ optional: true }),
+        },
+      },
+    ]));
+    const source = generatedWorkerSource(kubernetes);
+    expect(source).toContain("? backend.endpoint");
+    expect(source).toContain("provider.provision === false");
+    expect(source).toContain("requiredEnv('APPLIK8S_AI_GATEWAY_API_KEY')");
+
+    const local = workflowContract(
+      graph,
+      worker,
+      undefined,
+      [],
+      [],
+      undefined,
+      'local',
+    );
+    expect(requiredObject(
+      Reflect.get(
+        requiredObject(local.nativeAI?.providerConfig.cases, 'AI profile cases'),
+        'dedicated',
+      ),
+      'dedicated AI profile',
+    )).toMatchObject({ kind: 'ai-deterministic' });
+    expect(workflowContainerEnvironment(workflowResources(
+      local,
+      'native-ai-worker',
+      'fixture-image',
+      'fixture-digest',
+      false,
+    ))).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: 'APPLIK8S_AI_GATEWAY_API_KEY' }),
+    ]));
+  });
+
+  it('fails closed for unsafe or inconsistent durable external AI credentials', () => {
+    const insecure = nativeAIWorkflowGraph(
+      externalAIProvider('http://provider.example.test/v1'),
+    );
+    expect(() => workflowContract(insecure, requiredWorkflowWorker(insecure))).toThrow(
+      'must use HTTPS',
+    );
+
+    const inconsistent = nativeAIWorkflowGraph({
+      kind: 'envoy-ai-gateway',
+      provision: false,
+      models: {
+        first: externalAIRoute(
+          'https://provider.example.test/v1',
+          'credential-one',
+        ),
+        second: externalAIRoute(
+          'https://provider.example.test/v1',
+          'credential-two',
+        ),
+      },
+    });
+    const contract = workflowContract(
+      inconsistent,
+      requiredWorkflowWorker(inconsistent),
+    );
+    expect(() => workflowResources(
+      contract,
+      'native-ai-worker',
+      'fixture-image',
+      'fixture-digest',
+      false,
+    )).toThrow('must share one exact credential Secret');
+  });
+
   it('merges a direct model handle with operations below the same identifier', () => {
     expect(nestedCallbackBindingsSource([
       {
@@ -1038,6 +1177,10 @@ export const workflowProof = platform.composition;
       expect(source).toContain('Hatchet engine');
       expect(source).toContain('Hatchet API');
       expect(source).toContain('applik8s-durable-error:');
+      expect(source).toContain('.NonRetryableError');
+      expect(generatedSource).toContain('HatchetClient, NonRetryableError');
+      expect(generatedSource).toContain("throw new NonRetryableError('applik8s-durable-error:'");
+      expect(generatedSource).not.toContain("throw new Error('applik8s-durable-error:'");
       expect(source).toContain('providerUnavailable');
       expect(source).toContain('rejected');
       expect(source).toContain('applik8s-structured-generation-output-invalid');
@@ -1926,4 +2069,112 @@ function firstMetafileImportPath(
 function requiredObject(value: unknown, label: string): object {
   if (!value || typeof value !== 'object') throw new Error(`Expected ${label}.`);
   return value;
+}
+
+function requiredWorkflowWorker(graph: ApplicationGraph) {
+  const worker = graph.nodes.find((node) => node.kind === 'workflowWorker');
+  if (worker?.kind !== 'workflowWorker') throw new Error('Expected workflow worker.');
+  return worker;
+}
+
+function workflowContainerEnvironment(
+  resources: ReturnType<typeof workflowResources>,
+): readonly Record<string, unknown>[] {
+  const deployment = resources.find((resource) => resource.kind === 'Deployment');
+  const deploymentSpec = requiredObject(deployment?.spec, 'workflow deployment spec');
+  const template = requiredObject(Reflect.get(deploymentSpec, 'template'), 'workflow pod template');
+  const podSpec = requiredObject(Reflect.get(template, 'spec'), 'workflow pod spec');
+  const containers = Reflect.get(podSpec, 'containers');
+  if (!Array.isArray(containers)) throw new Error('Expected workflow containers.');
+  const container = requiredObject(containers[0], 'workflow container');
+  const environment = Reflect.get(container, 'env');
+  if (!Array.isArray(environment)) throw new Error('Expected workflow environment.');
+  return environment;
+}
+
+function externalAIRoute(endpoint: string, credentialName = 'openrouter-api') {
+  return {
+    backends: [{
+      name: 'openrouter',
+      endpoint,
+      model: 'fixture/model',
+      capabilities: ['chat', 'tools', 'streaming', 'text-input', 'text-output'],
+      credentials: { name: credentialName, key: 'apiKey' },
+    }],
+  };
+}
+
+function externalAIProvider(endpoint: string): Readonly<Record<string, unknown>> {
+  return {
+    kind: 'envoy-ai-gateway',
+    provision: false,
+    models: {
+      'interactive-assistant': externalAIRoute(endpoint),
+      'research-specialist': externalAIRoute(endpoint),
+    },
+  };
+}
+
+function nativeAIWorkflowGraph(
+  ai: Readonly<Record<string, unknown>>,
+): ApplicationGraph {
+  return {
+    metadata: { name: 'native-ai-workflow', namespace: 'workflow-system' },
+    nodes: [
+      {
+        id: 'provider.WorkflowEngine', kind: 'provider', name: 'WorkflowEngine', stability: 'stable',
+        interface: 'WorkflowEngine', implementation: 'hatchet', config: { namespace: 'workflow-system' },
+      },
+      {
+        id: 'provider.AI.v1alpha1.inference', kind: 'provider', name: 'AI', stability: 'stable',
+        interface: 'AI', implementation: 'qualified-ai',
+        config: { qualification: { name: 'inference' }, ai },
+      },
+      {
+        id: 'provider.TransactionalDatabase', kind: 'provider', name: 'TransactionalDatabase', stability: 'stable',
+        interface: 'TransactionalDatabase', implementation: 'postgres', config: {},
+      },
+      {
+        id: 'model.Conversation', kind: 'model', name: 'Conversation', stability: 'stable',
+        entity: { name: 'Conversation', identity: ['id'], revision: { strategy: 'none' } },
+        database: { interface: 'TransactionalDatabase', nodeId: 'provider.TransactionalDatabase' },
+        schema: { input: { jsonSchema: { type: 'object' } }, output: { jsonSchema: { type: 'object' } } },
+        materialization: { kind: 'native-relational' },
+        common: {
+          runtimeRoles: ['applik8s.conversation-state/v1'],
+          identity: { fields: ['id'], encoding: 'scalar' },
+          snapshot: { shape: 'identity-value-revision', revisionOptional: true },
+          changes: { authority: 'transactional-database-outbox', rawWrites: 'observed' },
+          relationships: [],
+        },
+        runtime: {
+          name: 'Conversation', tableName: 'applik8s_conversations', provider: 'postgres', database: 'application', clusterName: 'application',
+          secretName: 'application-db', secretKey: 'uri', connectionEnvName: 'APPLIK8S_DATABASE_APPLICATION_URL',
+          constraints: [], indexes: [], retention: { mode: 'retain' }, storageShape: 'native-relational',
+          nativeRelational: { identity: { property: 'id', column: 'id' }, columns: [] },
+        },
+      },
+      {
+        id: 'task.native-ai.v1', kind: 'task', name: 'native-ai.v1', stability: 'stable',
+        contract: { name: 'native-ai', version: 'v1', input: { jsonSchema: { type: 'object' } }, output: { jsonSchema: { type: 'object' } }, errors: [] },
+      },
+      {
+        id: 'task-handler.native-ai.v1', kind: 'taskHandler', name: 'native-ai.v1', stability: 'stable',
+        task: { nodeId: 'task.native-ai.v1' }, workflowEngine: { interface: 'WorkflowEngine', nodeId: 'provider.WorkflowEngine' },
+        capabilities: [{ interface: 'AI', nodeId: 'provider.AI.v1alpha1.inference' }],
+        childWorkflowBindings: [],
+        retry: { mode: 'boundedExponentialBackoff', maxAttempts: 3, initialDelayMs: 1000, maxDelayMs: 30000, factor: 2 },
+        executionTimeoutSeconds: 60, scheduleTimeoutSeconds: 300,
+        idempotency: { required: true, keySource: 'invocation', guarantee: 'atLeastOnceRetrySafe' },
+        effectBoundary: 'externalEffectsAllowed', handlerSource: 'async input => input',
+      },
+      {
+        id: 'workflow-worker.native-ai', kind: 'workflowWorker', name: 'native-ai-worker', stability: 'stable',
+        handlers: [{ nodeId: 'task-handler.native-ai.v1' }],
+        workflowEngine: { interface: 'WorkflowEngine', nodeId: 'provider.WorkflowEngine' }, runtime: 'node', lifecycle: 'longLived',
+        deployment: { replicas: 1, taskSlots: 4, durableSlots: 4, gracefulShutdownSeconds: 30, healthPort: 8080, egress: 'allowAll', scaling: { mode: 'fixed' } },
+      },
+    ],
+    edges: [], providerRequirements: [], providerBindings: [],
+  } as unknown as ApplicationGraph;
 }
