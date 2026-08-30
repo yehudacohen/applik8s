@@ -3,6 +3,7 @@ import {
   type ApplicationCanonicalIdentity,
   type ApplicationGraph,
   type ApplicationGraphNode,
+  type ApplicationImplementationPlan,
   type ApplicationNativePlanRecord,
   type ApplicationPlan,
   type ApplicationPlanDiagnostic,
@@ -33,6 +34,7 @@ export interface CompileApplicationPlanRequest {
   readonly generatedAt: string;
   readonly providerGuarantees?: readonly ApplicationProviderGuaranteeManifest[];
   readonly nativePlans?: readonly ApplicationNativePlanRecord[];
+  readonly implementationPlan?: ApplicationImplementationPlan;
   /** Used only to make absolute compiler source locations workspace-relative. */
   readonly workspaceRoot?: string;
 }
@@ -120,6 +122,24 @@ export function compileApplicationPlan(request: CompileApplicationPlanRequest): 
 
   const guarantees = request.providerGuarantees ?? [];
   const diagnostics: ApplicationPlanDiagnostic[] = [];
+  const implementationPlan = request.implementationPlan;
+  if (implementationPlan && implementationPlan.application !== request.graph.metadata.name) {
+    diagnostics.push({
+      severity: 'error',
+      code: 'PLAN_IMPLEMENTATION_GRAPH_MISMATCH',
+      message: `Implementation plan application ${implementationPlan?.application ?? '<missing>'} does not match graph ${request.graph.metadata.name}.`,
+      provenance: implementationPlan?.profile.provenance ?? [graphProvenance],
+    });
+  }
+  if (implementationPlan && implementationPlan.profile.id !== request.deployment.metadata.identity.profile) {
+    diagnostics.push({
+      severity: 'error',
+      code: 'PLAN_IMPLEMENTATION_PROFILE_MISMATCH',
+      message: `Implementation plan profile ${implementationPlan.profile.id} does not match deployment profile ${request.deployment.metadata.identity.profile}.`,
+      provenance: implementationPlan.profile.provenance,
+    });
+  }
+  const implementationBindings = implementationPlan?.bindings ?? [];
   const resolvedProviderIdentities: ApplicationCanonicalIdentity[] = [];
   const resolutions = request.graph.providerRequirements.map((requirement) => {
     const consumerNode = requiredNode(request.graph, requirement.consumer.nodeId);
@@ -173,6 +193,23 @@ export function compileApplicationPlan(request: CompileApplicationPlanRequest): 
         provenance,
       });
     }
+    const implementationCandidates = implementationBindings.filter(({ capability }) => capability.interface === requirement.interface);
+    const implementationBinding = implementationCandidates.length === 1
+      ? implementationCandidates[0]
+      : implementationCandidates.find(({ capability }) => capability.qualifier === undefined);
+    if (implementationPlan && !implementationBinding) {
+      diagnostics.push({
+        severity: 'error',
+        code: implementationCandidates.length > 1
+          ? 'PLAN_IMPLEMENTATION_BINDING_AMBIGUOUS'
+          : 'PLAN_IMPLEMENTATION_BINDING_UNRESOLVED',
+        message: implementationCandidates.length > 1
+          ? `Capability ${requirement.interface} has multiple qualified implementation bindings and the legacy requirement has no qualifier.`
+          : `Capability ${requirement.interface} has no concrete implementation binding in profile ${implementationPlan.profile.id}.`,
+        subjectId: requirement.id,
+        provenance,
+      });
+    }
     return {
       id: recordId('provider-resolution', [requirement.id]),
       requirementId: requirement.id,
@@ -183,6 +220,7 @@ export function compileApplicationPlan(request: CompileApplicationPlanRequest): 
         implementation: manifest?.capability.implementation ?? providerNode.implementation,
         version: manifest?.capability.version ?? providerNode.contract?.version ?? 'unknown',
       } : {}),
+      ...(implementationBinding ? { implementationIdentity: implementationBinding.implementation } : {}),
       maturity: manifest?.maturity ?? 'experimental',
       disposition,
       guarantees: manifest?.guarantees.filter(({ disposition: guaranteeDisposition }) => guaranteeDisposition === 'guaranteed' || guaranteeDisposition === 'bounded').map(({ id }) => id) ?? [],
@@ -199,7 +237,7 @@ export function compileApplicationPlan(request: CompileApplicationPlanRequest): 
 
   for (const actor of request.graph.nodes.filter((node) => node.kind === 'actor')) {
     const providerNode = request.graph.nodes.find((node) => node.kind === 'provider' && node.id === actor.runtime.nodeId);
-    if (!providerNode || providerNode.kind !== 'provider') continue;
+    if (providerNode?.kind !== 'provider') continue;
     const identity = applicationProviderIdentity({
       application: request.graph.metadata.name,
       capabilityInterface: providerNode.interface,
@@ -272,6 +310,7 @@ export function compileApplicationPlan(request: CompileApplicationPlanRequest): 
       ...physicalIdentity.values(),
       ...foundation.identities,
       ...resolvedProviderIdentities,
+      ...(implementationPlan?.implementations.map(({ identity }) => identity.canonical) ?? []),
     ]),
     semantic: {
       nodes: semanticNodes,
@@ -284,7 +323,10 @@ export function compileApplicationPlan(request: CompileApplicationPlanRequest): 
       observability,
       runtimeAccess: foundation.runtimeAccess,
     },
-    resolution: { capabilities: resolutions },
+    resolution: {
+      capabilities: resolutions,
+      ...(implementationPlan ? { implementationPlan } : {}),
+    },
     physical: {
       nodes: physicalNodes,
       edges: physicalEdges,

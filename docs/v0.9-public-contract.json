@@ -10859,6 +10859,22 @@
       "maturity": "candidate-review-required"
     },
     {
+      "code": "PLAN_IMPLEMENTATION_GRAPH_MISMATCH",
+      "owner": "package:@applik8s/deployment-compiler",
+      "sources": [
+        "packages/deployment-compiler/src/application-plan.ts"
+      ],
+      "maturity": "candidate-review-required"
+    },
+    {
+      "code": "PLAN_IMPLEMENTATION_PROFILE_MISMATCH",
+      "owner": "package:@applik8s/deployment-compiler",
+      "sources": [
+        "packages/deployment-compiler/src/application-plan.ts"
+      ],
+      "maturity": "candidate-review-required"
+    },
+    {
       "code": "PROFILE_BINDING_CONFLICT",
       "owner": "package:@applik8s/core",
       "sources": [
@@ -11549,7 +11565,9 @@
       "evidence": [
         "recursive-resolution",
         "sharing-and-cycle-conformance",
-        "canonical-serialization"
+        "canonical-serialization",
+        "application-plan-integration",
+        "compiler-artifact-forwarding"
       ]
     },
     {

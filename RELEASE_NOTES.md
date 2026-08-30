@@ -41,6 +41,13 @@ or incompatible mappings remain blocked with `mutationAuthorized: false`;
 provider mutation stays globally disabled until an actual v0.8 release
 baseline is available and qualified.
 
+Canonical `ApplicationPlan` artifacts can now embed the recursive concrete
+implementation plan selected by profile DI. Capability resolutions link to
+canonical implementation identities; validation, deterministic serialization,
+diffing, text explanation, graph rendering, deployment compilation, and final
+compiler artifact emission preserve implementation nodes and their private or
+reused dependency edges without granting callback authority.
+
 ## v0.8.0
 
 Workflow tasks can now declare the maintained Usage module's

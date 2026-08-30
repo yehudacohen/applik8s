@@ -3,7 +3,11 @@
 import { createHash } from "node:crypto";
 import { access, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
-import { type ApplicationGraph, serializeApplicationPlan } from "@applik8s/core";
+import {
+  type ApplicationGraph,
+  type ApplicationImplementationPlan,
+  serializeApplicationPlan,
+} from "@applik8s/core";
 import {
   type ApplicationArtifactRequirement,
   type ApplicationCelldRuntimeRelease,
@@ -46,6 +50,8 @@ export interface EmitApplicationDeploymentGraphRequest {
   readonly strategy: ApplicationDeploymentStrategy;
   readonly installationSpec: Readonly<Record<string, unknown>>;
   readonly profileTransition?: Readonly<Record<string, unknown>>;
+  /** v0.9 concrete recursive provider resolution, when discovered by the application compiler. */
+  readonly implementationPlan?: ApplicationImplementationPlan;
   readonly runtimeAccessKubernetesNetworkPolicyProvider?: ApplicationKubernetesRuntimeAccessNetworkPolicyProvider;
   /** @internal Release qualification may compile an earlier immutable Celld runtime. */
   readonly celldRuntimeRelease?: ApplicationCelldRuntimeRelease;
@@ -149,6 +155,7 @@ export async function emitApplicationDeploymentGraph(
       target: 'kubernetes',
       profile: request.profile,
     }),
+    ...(request.implementationPlan ? { implementationPlan: request.implementationPlan } : {}),
   })));
   return {
     path,
@@ -400,8 +407,9 @@ export function withInstallationRuntimeBindings(
       : undefined);
     if (!workloadName) return resource;
     const component = applicationRuntimeComponent(template);
+    const actorRuntimeId = actorRuntime?.id;
     const deploymentConsumesActorRuntime = Boolean(
-      actorRuntime
+      actorRuntimeId
       && (component === "application-host"
         || (component === "query-gateway"
           && (actorQueryGatewayWorkloads.has(workloadName)
@@ -414,7 +422,7 @@ export function withInstallationRuntimeBindings(
           {
             name: "APPLIK8S_ACTOR_ENDPOINT",
             value: applicationDeploymentOutputReference(
-              `direct.${actorRuntime!.id}.celld`,
+              `direct.${actorRuntimeId}.celld`,
               "endpoint",
             ),
           },

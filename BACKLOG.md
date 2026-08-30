@@ -42,8 +42,13 @@ Status: alpha.1 foundation started on `codex/v0.9-semantic-completion`.
   identities deterministically, explains lifecycle-authority transfer and
   destructive consequences, and fails closed before mutation on ambiguity,
   provider incompatibility, unsafe ownership, or retained-data drift.
-- Next foundation work: integrate the implementation plan with compilation and
-  establish the documentation and first clean-context evidence. Active
+- Integrated recursive implementation resolution into the canonical
+  `ApplicationPlan` and compiler artifact path. The plan now validates,
+  serializes, diffs, explains, and renders concrete implementation identities,
+  bindings, and private/reused dependency edges.
+- Next foundation work: discover implementation declarations from the new
+  profile authoring surface and establish the documentation and first
+  clean-context evidence. Active
   migration/provider writes remain blocked until the exact released v0.8
   baseline exists.
 

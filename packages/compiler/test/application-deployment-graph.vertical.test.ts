@@ -1042,6 +1042,18 @@ describe("compiler deployment graph emission", () => {
       profile: "local",
       strategy: "kro" as const,
       installationSpec: { name: "notes", namespace: "notes" },
+      implementationPlan: {
+        schemaVersion: 'applik8s.implementationPlan/v1alpha1' as const,
+        application: 'notes',
+        profile: {
+          id: 'local',
+          digest: `sha256:${'c'.repeat(64)}`,
+          provenance: [],
+        },
+        bindings: [],
+        implementations: [],
+        dependencies: [],
+      },
     };
     const first = await emitApplicationDeploymentGraph(request);
     const second = await emitApplicationDeploymentGraph(request);
@@ -1103,6 +1115,15 @@ describe("compiler deployment graph emission", () => {
         identity: {
           connection: { provider: "kubernetes", cluster: "orbstack" },
           instance: "notes",
+        },
+      },
+    });
+    expect(JSON.parse(await readFile(first.applicationPlanPath, 'utf8'))).toMatchObject({
+      resolution: {
+        implementationPlan: {
+          schemaVersion: 'applik8s.implementationPlan/v1alpha1',
+          application: 'notes',
+          profile: { id: 'local' },
         },
       },
     });

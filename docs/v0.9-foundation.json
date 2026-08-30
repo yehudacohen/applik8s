@@ -62,7 +62,7 @@
       "schemaVersion": "applik8s.implementationPlan/v1alpha1",
       "maturity": "stable-1.0-candidate",
       "owner": "provider-resolution",
-      "evidence": ["recursive-resolution", "sharing-and-cycle-conformance", "canonical-serialization"]
+      "evidence": ["recursive-resolution", "sharing-and-cycle-conformance", "canonical-serialization", "application-plan-integration", "compiler-artifact-forwarding"]
     },
     {
       "id": "journey-definition",

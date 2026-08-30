@@ -7,8 +7,10 @@ import {
   diffApplicationPlans,
   renderApplicationPlanGraph,
   renderApplicationPlanText,
+  resolveApplicationImplementationPlan,
   serializeApplicationPlan,
   serializeApplicationPlanContent,
+  sourceProvenance,
   validateApplicationPlan,
 } from "@applik8s/core";
 import {
@@ -3229,6 +3231,119 @@ describe("Application deployment compiler", () => {
     })).toThrowError(expect.objectContaining({
       code: "PLAN_COMPARISON_APPLICATION_MISMATCH",
     }));
+  });
+
+  it('embeds the recursive concrete implementation graph in the canonical ApplicationPlan', () => {
+    const base = request();
+    const graph: ApplicationGraph = {
+      ...base.graph,
+      providerRequirements: [{
+        id: 'requirement.database',
+        interface: 'TransactionalDatabase',
+        consumer: { nodeId: 'provider.transactional-database' },
+        provider: { interface: 'TransactionalDatabase', nodeId: 'provider.transactional-database' },
+        required: true,
+        purpose: 'transactionalDatabase',
+        diagnostics: { missing: 'Database provider is missing.', ambiguous: 'Database provider is ambiguous.' },
+      }],
+      providerBindings: [{
+        requirement: 'requirement.database',
+        provider: { interface: 'TransactionalDatabase', nodeId: 'provider.transactional-database' },
+        generatedResources: [],
+        runtime: {},
+      }],
+    };
+    const deployment = compileApplicationDeploymentGraph({ ...base, graph }).graph;
+    const implementationProvenance = sourceProvenance({
+      origin: 'authored',
+      module: 'src/profiles/local.ts',
+      symbol: 'local',
+    });
+    const implementationPlan = resolveApplicationImplementationPlan({
+      application: 'guestbook',
+      profile: {
+        id: 'local',
+        digest: `sha256:${'c'.repeat(64)}`,
+        provenance: [implementationProvenance],
+      },
+      declarations: [{
+        key: 'database',
+        capability: { interface: 'TransactionalDatabase' },
+        provider: { package: '@applik8s/runtime-postgres', export: 'postgres', version: '0.9.0' },
+        identity: { kind: 'named', name: 'primary-database' },
+        provenance: implementationProvenance,
+        configurationDigest: `sha256:${'d'.repeat(64)}`,
+        configurationSources: [{ kind: 'secret', reference: 'DATABASE_URL', required: true }],
+        guarantees: ['transaction-boundary'],
+        runtimeAdapter: '@applik8s/runtime-postgres',
+        deploymentContributor: '@applik8s/deployment-typekro/postgres',
+        readiness: 'postgres.ready/v1',
+        lifecycle: 'application',
+        migration: 'postgres.migration/v1',
+        evidence: ['postgres-runtime-live'],
+        maturity: 'stable',
+        dependencies: [],
+      }],
+      bindings: [{
+        id: 'binding.database',
+        capability: { interface: 'TransactionalDatabase' },
+        implementation: 'database',
+        provenance: implementationProvenance,
+      }],
+    });
+    const provider = applicationProviderIdentity({
+      application: 'guestbook',
+      capabilityInterface: 'TransactionalDatabase',
+      nodeId: 'provider.transactional-database',
+    });
+    const plan = compileApplicationPlan({
+      graph,
+      deployment,
+      target: 'kubernetes',
+      lifecycleAuthority: 'alchemy',
+      generatedAt: '2026-08-30T00:00:00.000Z',
+      implementationPlan,
+      providerGuarantees: [{
+        apiVersion: 'applik8s.providerGuarantees/v1alpha1',
+        provider,
+        capability: { interface: 'TransactionalDatabase', implementation: 'postgres', version: '0.9.0' },
+        targets: ['kubernetes'],
+        maturity: 'stable',
+        guarantees: [{
+          id: 'transaction-boundary',
+          category: 'transaction-outbox',
+          statement: 'One database transaction is authoritative.',
+          disposition: 'guaranteed',
+          evidence: ['postgres-runtime-live'],
+        }],
+        limitations: [],
+        evidenceLevel: 'target-live',
+      }],
+    });
+
+    expect(plan.resolution.implementationPlan).toEqual(implementationPlan);
+    expect(plan.resolution.capabilities).toEqual([
+      expect.objectContaining({
+        requirementId: 'requirement.database',
+        implementationIdentity: implementationPlan.implementations[0]?.id,
+      }),
+    ]);
+    expect(plan.identities).toContainEqual(implementationPlan.implementations[0]?.identity.canonical);
+    expect(renderApplicationPlanText(plan)).toContain('Implementations: 1 concrete, 0 private/reused edges');
+    expect(renderApplicationPlanGraph(plan)).toContain('implementation: postgres');
+    expect(validateApplicationPlan(plan)).toEqual({ valid: true, diagnostics: [] });
+
+    const mismatched = compileApplicationPlan({
+      graph,
+      deployment,
+      target: 'kubernetes',
+      lifecycleAuthority: 'alchemy',
+      generatedAt: '2026-08-30T00:00:00.000Z',
+      implementationPlan: { ...implementationPlan, application: 'another-application' },
+      providerGuarantees: [],
+    });
+    expect(mismatched.diagnostics).toContainEqual(expect.objectContaining({ code: 'PLAN_IMPLEMENTATION_GRAPH_MISMATCH' }));
+    expect(validateApplicationPlan(mismatched).valid).toBe(false);
   });
 });
 

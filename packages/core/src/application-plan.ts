@@ -9,6 +9,7 @@ import type {
   ApplicationRuntimeAccessRequirement,
   ApplicationSourceProvenance,
 } from './application-foundation.js';
+import type { ApplicationImplementationPlan } from './application-implementation-plan.js';
 import { canonicalJsonV1String } from './canonical-json.js';
 
 export type ApplicationPlanSchemaVersion = 'applik8s.applicationPlan/v1alpha1';
@@ -149,6 +150,8 @@ export interface ApplicationSemanticPlanEdge {
 
 export interface ApplicationProviderResolutionPlan {
   readonly capabilities: readonly ApplicationProviderResolutionEntry[];
+  /** Recursive concrete implementation graph selected by the profile resolver. */
+  readonly implementationPlan?: ApplicationImplementationPlan;
 }
 
 export interface ApplicationProviderResolutionEntry {
@@ -158,6 +161,7 @@ export interface ApplicationProviderResolutionEntry {
   readonly capability: { readonly interface: string; readonly qualifier?: string };
   readonly provider?: ApplicationCanonicalIdentity;
   readonly implementation?: string;
+  readonly implementationIdentity?: ApplicationCanonicalIdentity['id'];
   readonly version?: string;
   readonly maturity: ApplicationProviderMaturity;
   readonly disposition: ApplicationProviderDisposition;
@@ -307,7 +311,12 @@ export function normalizeApplicationPlan(plan: ApplicationPlan): ApplicationPlan
       observability: sorted(plan.semantic.observability),
       runtimeAccess: sorted(plan.semantic.runtimeAccess),
     },
-    resolution: { capabilities: sorted(plan.resolution.capabilities) },
+    resolution: {
+      capabilities: sorted(plan.resolution.capabilities),
+      ...(plan.resolution.implementationPlan
+        ? { implementationPlan: normalizeImplementationPlan(plan.resolution.implementationPlan) }
+        : {}),
+    },
     physical: {
       nodes: sorted(plan.physical.nodes),
       edges: sorted(plan.physical.edges),
@@ -346,6 +355,7 @@ export function renderApplicationPlanText(plan: ApplicationPlan): string {
     `Authority: ${normalized.semantic.authority.length} grants`,
     `Data flow: ${normalized.semantic.dataFlows.length} flows, ${normalized.semantic.state.length} state authorities`,
     `Providers: ${normalized.resolution.capabilities.length - unresolved.length} resolved, ${unresolved.length} unresolved/incompatible`,
+    `Implementations: ${normalized.resolution.implementationPlan?.implementations.length ?? 0} concrete, ${normalized.resolution.implementationPlan?.dependencies.length ?? 0} private/reused edges`,
     `Physical: ${normalized.physical.nodes.length} nodes, ${normalized.physical.nativePlans.length} native plan records`,
     `Runtime access: ${normalized.semantic.runtimeAccess.length} requirements`,
     `Diagnostics: ${normalized.diagnostics.filter(({ severity }) => severity === 'error').length} errors, ${normalized.diagnostics.filter(({ severity }) => severity === 'warning').length} warnings`,
@@ -383,6 +393,42 @@ export function validateApplicationPlan(plan: ApplicationPlan): ApplicationPlanV
       diagnostics.push(planDiagnostic('error', 'PLAN_IDENTITY_MISSING', `Provider resolution ${resolution.id} has no canonical provider identity record.`, resolution.id, resolution.provenance));
     }
   }
+  const implementationPlan = plan.resolution.implementationPlan;
+  if (implementationPlan) {
+    if (implementationPlan.schemaVersion !== 'applik8s.implementationPlan/v1alpha1') {
+      diagnostics.push(planDiagnostic('error', 'PLAN_IMPLEMENTATION_SCHEMA_UNSUPPORTED', 'Implementation plan schema is unsupported.'));
+    }
+    if (implementationPlan.application !== plan.application.application) {
+      diagnostics.push(planDiagnostic('error', 'PLAN_IMPLEMENTATION_GRAPH_MISMATCH', 'Implementation plan application does not match the ApplicationPlan.'));
+    }
+    if (implementationPlan.profile.id !== plan.target.profile) {
+      diagnostics.push(planDiagnostic('error', 'PLAN_IMPLEMENTATION_PROFILE_MISMATCH', 'Implementation plan profile does not match the selected ApplicationPlan profile.'));
+    }
+    const implementationIds = new Set(implementationPlan.implementations.map(({ id }) => id));
+    for (const implementation of implementationPlan.implementations) {
+      if (implementation.id !== implementation.identity.canonical.id) {
+        diagnostics.push(planDiagnostic('error', 'PLAN_IMPLEMENTATION_IDENTITY_MISMATCH', `Implementation ${implementation.id} does not equal its canonical identity.`, implementation.id, [implementation.identity.provenance]));
+      }
+      if (!canonicalIdentityIds.has(implementation.identity.canonical.id)) {
+        diagnostics.push(planDiagnostic('error', 'PLAN_IDENTITY_MISSING', `Implementation ${implementation.id} has no canonical identity record.`, implementation.id, [implementation.identity.provenance]));
+      }
+    }
+    for (const binding of implementationPlan.bindings) {
+      if (!implementationIds.has(binding.implementation)) {
+        diagnostics.push(planDiagnostic('error', 'PLAN_IMPLEMENTATION_BINDING_UNRESOLVED', `Implementation binding ${binding.id} references unknown implementation ${binding.implementation}.`, binding.id, [binding.provenance]));
+      }
+    }
+    for (const dependency of implementationPlan.dependencies) {
+      if (!implementationIds.has(dependency.consumer) || !implementationIds.has(dependency.dependency)) {
+        diagnostics.push(planDiagnostic('error', 'PLAN_IMPLEMENTATION_DEPENDENCY_UNRESOLVED', `Implementation dependency ${dependency.id} references an unknown consumer or dependency.`, dependency.id));
+      }
+    }
+    for (const resolution of plan.resolution.capabilities) {
+      if (resolution.implementationIdentity && !implementationIds.has(resolution.implementationIdentity)) {
+        diagnostics.push(planDiagnostic('error', 'PLAN_IMPLEMENTATION_BINDING_UNRESOLVED', `Provider resolution ${resolution.id} references unknown implementation ${resolution.implementationIdentity}.`, resolution.id, resolution.provenance));
+      }
+    }
+  }
   for (const record of [
     ...plan.semantic.nodes,
     ...plan.semantic.edges,
@@ -394,6 +440,9 @@ export function validateApplicationPlan(plan: ApplicationPlan): ApplicationPlanV
     ...plan.semantic.observability,
     ...plan.semantic.runtimeAccess,
     ...plan.resolution.capabilities,
+    ...(implementationPlan?.bindings ?? []),
+    ...(implementationPlan?.implementations ?? []),
+    ...(implementationPlan?.dependencies ?? []),
     ...plan.physical.nodes,
     ...plan.physical.edges,
     ...plan.physical.nativePlans,
@@ -438,6 +487,9 @@ export function diffApplicationPlans(before: ApplicationPlan, after: Application
     ...securitySensitiveDiff('exposure', before.semantic.exposures, after.semantic.exposures),
     ...diffRecords('observability', before.semantic.observability, after.semantic.observability),
     ...diffProviderRecords(before.resolution.capabilities, after.resolution.capabilities),
+    ...diffRecords('provider', before.resolution.implementationPlan?.implementations ?? [], after.resolution.implementationPlan?.implementations ?? []),
+    ...diffRecords('provider', before.resolution.implementationPlan?.bindings ?? [], after.resolution.implementationPlan?.bindings ?? []),
+    ...diffRecords('dependency', before.resolution.implementationPlan?.dependencies ?? [], after.resolution.implementationPlan?.dependencies ?? []),
     ...diffPhysicalRecords(before.physical.nodes, after.physical.nodes),
     ...diffRecords('dependency', before.physical.edges, after.physical.edges),
     ...diffRecords('native-plan', before.physical.nativePlans, after.physical.nativePlans),
@@ -492,6 +544,12 @@ export function renderApplicationPlanGraph(plan: ApplicationPlan): string {
     const provider = graphIdentifier(resolution.provider.id);
     lines.push(`  ${provider}[${JSON.stringify(`provider: ${resolution.implementation ?? resolution.capability.interface}`)}]`);
     lines.push(`  ${graphIdentifier(resolution.consumer)} -.->|${JSON.stringify(resolution.capability.interface)}| ${provider}`);
+  }
+  for (const implementation of normalized.resolution.implementationPlan?.implementations ?? []) {
+    lines.push(`  ${graphIdentifier(implementation.id)}[${JSON.stringify(`implementation: ${implementation.identity.provider.export}`)}]`);
+  }
+  for (const dependency of normalized.resolution.implementationPlan?.dependencies ?? []) {
+    lines.push(`  ${graphIdentifier(dependency.consumer)} -.->|${JSON.stringify(dependency.slot)}| ${graphIdentifier(dependency.dependency)}`);
   }
   return `${lines.join('\n')}\n`;
 }
@@ -618,6 +676,9 @@ function planDiffRecordIds(plan: ApplicationPlan): readonly string[] {
     ...plan.semantic.observability,
     ...plan.semantic.runtimeAccess,
     ...plan.resolution.capabilities,
+    ...(plan.resolution.implementationPlan?.bindings ?? []),
+    ...(plan.resolution.implementationPlan?.implementations ?? []),
+    ...(plan.resolution.implementationPlan?.dependencies ?? []),
     ...plan.physical.nodes,
     ...plan.physical.edges,
     ...plan.physical.nativePlans,
@@ -625,6 +686,28 @@ function planDiffRecordIds(plan: ApplicationPlan): readonly string[] {
     ...plan.estimates,
     ...plan.evidence,
   ].map(({ id }) => id);
+}
+
+function normalizeImplementationPlan(plan: ApplicationImplementationPlan): ApplicationImplementationPlan {
+  return {
+    ...plan,
+    profile: {
+      ...plan.profile,
+      provenance: sorted(plan.profile.provenance),
+    },
+    bindings: sorted(plan.bindings),
+    implementations: sorted(plan.implementations).map((implementation) => ({
+      ...implementation,
+      configurationSources: [...implementation.configurationSources].sort((left, right) => compare(left.kind, right.kind) || compare(left.reference, right.reference)),
+      guarantees: [...implementation.guarantees].sort(compare),
+      evidence: [...implementation.evidence].sort(compare),
+    })),
+    dependencies: sorted(plan.dependencies).map((dependency) => ({
+      ...dependency,
+      requiredGuarantees: [...dependency.requiredGuarantees].sort(compare),
+      operations: [...dependency.operations].sort(compare),
+    })),
+  };
 }
 
 function assertNoSensitivePlanData(plan: ApplicationPlan): void {

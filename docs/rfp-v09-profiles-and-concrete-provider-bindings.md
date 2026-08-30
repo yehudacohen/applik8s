@@ -887,6 +887,17 @@ No stage may mutate the semantic application graph to make a provider implementa
 
 ## ApplicationPlan contract
 
+The alpha.1 `ApplicationPlan.resolution` now carries the canonical recursive
+`ApplicationImplementationPlan` alongside legacy capability-resolution facts.
+Each capability resolution links to its canonical implementation identity;
+the identity registry, validator, serializer, diff, text explanation, and graph
+renderer all include implementation nodes and their private/reused dependency
+edges. The compiler accepts this plan as an explicit discovered input and
+preserves it into the emitted `application-plan.json`. Automatic discovery
+from the new profile authoring surface remains the next implementation step;
+the compiler does not infer a v0.9 implementation graph from installed
+packages or silently reinterpret legacy target selection.
+
 The plan records provider resolution and actual physical outputs rather than a global target, placement,
 or substrate authority:
 
