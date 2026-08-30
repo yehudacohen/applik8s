@@ -1,0 +1,94 @@
+---
+title: Operations and effect safety
+description: Call ordinary typed methods while providers declare the guarantees needed for safe recovery.
+---
+
+An operation is an ordinary typed function or capability method; an effect contract is provider-owned
+metadata that tells the runtime how that method may be admitted, retried, observed, and recovered.
+
+```ts title="src/billing.ts"
+export async function upgradeWorkspace(input: UpgradeWorkspaceInput) {
+  const subscription = await Billing.changePlan({
+    workspaceId: input.workspaceId,
+    plan: input.plan,
+  });
+
+  await Workspace.update(input.workspaceId, {
+    billingPlan: subscription.plan,
+  });
+
+  return subscription;
+}
+```
+
+Application code calls `Billing.changePlan(...)` directly. It does not construct an effect object, handle a
+provider SDK, choose a fence, or persist a receipt.
+
+## Why the framework needs a contract
+
+If the provider accepted `changePlan` and the connection failed before a response arrived, immediately
+retrying could charge twice. Applik8s preserves one logical invocation identity and records an append-only
+receipt chain:
+
+```text
+admitted → accepted → succeeded
+                   ↘ unknown → absent → safe retry
+                             ↘ operator resolved
+```
+
+`unknown` is a real durable state. It does not mean failed, and it never silently becomes retryable.
+
+## Provider contract
+
+Provider authors describe the truth of one effectful method once:
+
+```ts title="provider/effects.ts"
+import {
+  EffectContractSchemaVersion,
+  defineEffectContract,
+} from '@applik8s/operations';
+
+export const ChangePlanEffect = defineEffectContract({
+  apiVersion: EffectContractSchemaVersion,
+  identity: {
+    application: 'billing-stripe',
+    capability: 'Billing',
+    method: 'changePlan',
+    revision: 'v1',
+  },
+  input: ChangePlanInput,
+  result: SubscriptionResult,
+  guarantees: ['dependencyFenced', 'idempotent', 'receipted'],
+  authority: {
+    operationId: 'applik8s://billing/operations/change-plan',
+    reauthorizeOnRetry: true,
+  },
+  idempotency: { mode: 'logicalIdentity', providerKey: 'idempotency-key' },
+  fencing: { mode: 'dependency', providerToken: 'request-id' },
+  receipt: { authority: 'provider', observation: 'byLogicalIdentity' },
+  cancellation: { mode: 'bestEffort' },
+  retry: { mode: 'idempotent', maximumAttempts: 3 },
+});
+```
+
+The runtime rejects contradictory claims—for example, idempotent retry without logical-identity
+idempotency, or retry-after-absence without an observation path.
+
+## Guarantees
+
+- The framework preserves the same logical ID across transport retries.
+- Receipts are append-only and identity-bound.
+- An accepted request with no terminal evidence becomes `unknown`.
+- Retry is permitted only by idempotency or evidence proving absence.
+- Compensation cannot run while the original effect remains unknown.
+- Operator resolution requires an authenticated principal, reviewed evidence, a reason, and acknowledged risk.
+
+## What this does not add
+
+There is no public `operation()` or `effect()` registrar. Durable multi-step execution still belongs in a
+workflow; ordinary deterministic helpers remain ordinary TypeScript functions.
+
+## Next
+
+Use [source-owned journeys](../../understand/journeys/) to prove the behavior through public admission and
+record redacted evidence.

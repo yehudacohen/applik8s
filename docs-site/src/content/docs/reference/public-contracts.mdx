@@ -1,0 +1,12 @@
+---
+title: Public contract inventory
+description: The generated package, entrypoint, symbol, diagnostic, and maturity boundary for v0.9.
+---
+
+The canonical public inventory is generated from publishable package manifests, export maps, TypeScript
+module exports, and typed diagnostic positions. It is checked for drift by `bun run check:v09:public-contracts`.
+
+The checked-in source is [`docs/v0.9-public-contract.json`](https://github.com/yehudacohen/applik8s/blob/codex/v0.9-semantic-completion/docs/v0.9-public-contract.json).
+
+Per-symbol maturity review remains in progress. A symbol appearing in the inventory does not upgrade its
+provider maturity or evidence level.

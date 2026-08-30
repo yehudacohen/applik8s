@@ -1,0 +1,44 @@
+---
+title: What is Applik8s?
+description: The shortest path to the Applik8s programming model.
+---
+
+Applik8s is a TypeScript application framework that compiles one typed application graph into the runtime,
+permissions, workloads, and infrastructure selected by a profile.
+
+```ts title="src/application.ts"
+const GuestBookEntry = application.model(entries, {
+  name: 'GuestBookEntry',
+  database: Database,
+});
+
+GuestBookEntry.on.create('announce-entry', async created => {
+  await Notifications.send({
+    topic: 'guestbook',
+    message: created.value.message,
+  });
+});
+
+application.profile('local', profile =>
+  profile.provide(Database, localPostgres()),
+);
+```
+
+Application code states *what* the application means. A profile selects concrete implementations. The
+compiler records both layers in a canonical plan before deployment.
+
+## What is stable in this preview?
+
+- direct callable application operations;
+- typed model and event contracts;
+- deterministic implementation identity and planning;
+- source-owned acceptance journeys;
+- effect guarantees and honest unknown outcomes.
+
+The new v0.9 profile authoring syntax shown above is the intended API and remains under active implementation.
+The documentation marks such preview surfaces instead of presenting them as released behavior.
+
+## Next
+
+Read [Operations and effect safety](../build-applications/operations-and-effects/) to understand what a
+direct method call means when a provider accepts work and the caller loses contact.

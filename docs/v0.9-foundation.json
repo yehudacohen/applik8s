@@ -134,7 +134,7 @@
     },
     {
       "id": "documentation-skeleton",
-      "implemented": false,
+      "implemented": true,
       "blocking": true,
       "diagnostic": "V09_DOCUMENTATION_FOUNDATION_INCOMPLETE"
     },

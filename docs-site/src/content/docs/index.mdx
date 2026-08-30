@@ -1,0 +1,39 @@
+---
+title: Applik8s
+description: Build distributed TypeScript applications as one typed application graph.
+template: splash
+hero:
+  tagline: Build distributed TypeScript applications as one typed application graph—from models and events to jobs, agents, infrastructure, and operations.
+  actions:
+    - text: Start building
+      link: /docs/preview/v0.9/start-here/
+      icon: right-arrow
+      variant: primary
+    - text: See effect safety
+      link: /docs/preview/v0.9/build-applications/operations-and-effects/
+      icon: open-book
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+## One application, explicit guarantees
+
+Write application semantics in ordinary typed code. Applik8s discovers the graph, resolves concrete
+implementations, explains lifecycle and authority, and generates the runtime boundaries needed by the
+selected profile.
+
+<CardGrid>
+  <Card title="Write application semantics" icon="pencil">
+    Models, callable operations, events, jobs, workflows, and agents remain the application vocabulary.
+  </Card>
+  <Card title="Compose dependencies in code" icon="puzzle">
+    Provider-neutral capabilities resolve to concrete implementations with explicit guarantees.
+  </Card>
+  <Card title="Explain before deploying" icon="magnifier">
+    Canonical plans expose implementation identity, private dependencies, authority, and lifecycle.
+  </Card>
+</CardGrid>
+
+> **v0.9 preview:** These pages document `0.9.0-alpha.1`. Deployment-state mutation remains disabled until
+> the exact released v0.8 migration baseline is available. Preview documentation never supersedes stable
+> release documentation.

@@ -1,0 +1,22 @@
+---
+title: Read a deployment plan
+description: See which implementation a profile selected before anything mutates infrastructure.
+---
+
+An implementation plan is the deterministic, provider-neutral explanation of how requested capabilities
+resolve to concrete implementations and private dependencies.
+
+```text
+Application capability: Database
+Implementation: production-postgres
+Guarantees: transactional-writes, durable-outbox
+Private dependency: credentials (external Secret reference)
+Lifecycle: application-owned
+```
+
+The plan preserves reuse, inline parent/slot identity, required guarantees, configuration provenance, and
+private provider authority. Resolution fails before mutation on missing bindings, ambiguity, incompatible
+capabilities, wildcard authority, identity collisions, or dependency cycles.
+
+The v0.9 plan augments the existing target-bearing compatibility artifact. The legacy `target` field is not
+the destination API and will be removed through an explicit migration before 1.0.

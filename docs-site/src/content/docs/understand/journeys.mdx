@@ -1,0 +1,30 @@
+---
+title: Test a user journey
+description: Keep acceptance behavior beside application source and run it through public admission.
+---
+
+A journey is a development-only, source-owned acceptance artifact that calls the same public boundary as a
+real client and produces portable, redacted evidence.
+
+```ts title="src/journeys/create-entry.journey.ts"
+import { journey } from '@applik8s/testing';
+
+export default journey('guestbook/create-entry', async context => {
+  const author = context.identity('author');
+
+  await context.as(author, async admission => {
+    await admission.call('GuestBookEntry.create', {
+      message: 'Hello from a journey',
+    });
+  });
+
+  context.assert.semantic('entry-visible', {
+    model: 'GuestBookEntry',
+    state: 'present',
+  });
+});
+```
+
+Journeys are not a second runtime API. Unsupported provider semantics are reported as `blocked`, never
+silently skipped. External fixtures are lease-scoped and cleaned in reverse dependency order with absence
+proof. Evidence that cannot be safely redacted fails closed and is discarded.

@@ -420,6 +420,9 @@ bun run check:v04:prerelease:orbstack
 
 ## Documentation
 
+- [`docs-site/README.md`](docs-site/README.md) — v0.9 Astro/Starlight documentation website and local preview
+- [`docs/manifesto-v09-semantic-completion-and-1.0-readiness.md`](docs/manifesto-v09-semantic-completion-and-1.0-readiness.md) — v0.9 semantic-completion program
+- [`docs/v0.9-foundation.json`](docs/v0.9-foundation.json) — machine-readable alpha.1 gates and the explicit v0.8 release blocker
 - [`docs/packages.md`](docs/packages.md) — authoritative public package and module boundaries
 - `docs/imagejob-golden-path.md`
 - `docs/first-run.md`

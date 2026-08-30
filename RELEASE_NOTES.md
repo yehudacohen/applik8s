@@ -48,6 +48,16 @@ diffing, text explanation, graph rendering, deployment compilation, and final
 compiler artifact emission preserve implementation nodes and their private or
 reused dependency edges without granting callback authority.
 
+The v0.9 documentation product now has a real Astro/Starlight static-site
+skeleton under a versioned preview path. Its first user-facing primitive guide
+explains direct operation calls, provider-owned effect contracts, append-only
+receipts, and honest unknown outcomes without introducing an `operation()` or
+`effect()` registrar. The site builds a same-origin Pagefind index, carries an
+explicit preview/no-index marker, links implementation plans, journeys, public
+contracts, and migration safety, and is enforced by `check:v09:docs`. This
+closes the documentation-skeleton gate; clean-context alpha.1 review remains
+independently open.
+
 ## v0.8.0
 
 Workflow tasks can now declare the maintained Usage module's

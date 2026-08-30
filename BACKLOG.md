@@ -46,9 +46,12 @@ Status: alpha.1 foundation started on `codex/v0.9-semantic-completion`.
   `ApplicationPlan` and compiler artifact path. The plan now validates,
   serializes, diffs, explains, and renders concrete implementation identities,
   bindings, and private/reused dependency edges.
+- Added the Astro/Starlight v0.9 documentation skeleton, versioned preview
+  route, local Pagefind index, first effect-safety guide, plan/journey/public-
+  contract/migration pages, and a release-checked site build. The first
+  independent clean-context review remains intentionally open.
 - Next foundation work: discover implementation declarations from the new
-  profile authoring surface and establish the documentation and first
-  clean-context evidence. Active
+  profile authoring surface and establish independent clean-context evidence. Active
   migration/provider writes remain blocked until the exact released v0.8
   baseline exists.
 
