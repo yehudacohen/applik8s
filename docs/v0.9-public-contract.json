@@ -10914,6 +10914,30 @@
       "maturity": "candidate-review-required"
     },
     {
+      "code": "PLAN_PHYSICAL_CONTRIBUTOR_UNDECLARED",
+      "owner": "package:@applik8s/deployment-compiler",
+      "sources": [
+        "packages/deployment-compiler/src/application-plan.ts"
+      ],
+      "maturity": "candidate-review-required"
+    },
+    {
+      "code": "PLAN_PHYSICAL_IMPLEMENTATION_AMBIGUOUS",
+      "owner": "package:@applik8s/deployment-compiler",
+      "sources": [
+        "packages/deployment-compiler/src/application-plan.ts"
+      ],
+      "maturity": "candidate-review-required"
+    },
+    {
+      "code": "PLAN_PHYSICAL_IMPLEMENTATION_UNKNOWN",
+      "owner": "package:@applik8s/deployment-compiler",
+      "sources": [
+        "packages/deployment-compiler/src/application-plan.ts"
+      ],
+      "maturity": "candidate-review-required"
+    },
+    {
       "code": "PROFILE_BINDING_CONFLICT",
       "owner": "package:@applik8s/core",
       "sources": [

@@ -9,6 +9,7 @@ import {
   type ApplicationPlanDiagnostic,
   type ApplicationPlanEstimate,
   type ApplicationPlanObservability,
+  type ApplicationPhysicalPlanNode,
   type ApplicationProviderGuaranteeManifest,
   type ApplicationSourceProvenance,
   applicationCanonicalIdentity,
@@ -193,7 +194,8 @@ export function compileApplicationPlan(request: CompileApplicationPlanRequest): 
         provenance,
       });
     }
-    const implementationCandidates = implementationBindings.filter(({ capability }) => capability.interface === requirement.interface);
+    const implementationCandidates = implementationBindings.filter(({ capability }) =>
+      implementationCapabilityInterface(capability.interface) === requirement.interface);
     const implementationBinding = implementationCandidates.length === 1
       ? implementationCandidates[0]
       : implementationCandidates.find(({ capability }) => capability.qualifier === undefined);
@@ -268,11 +270,19 @@ export function compileApplicationPlan(request: CompileApplicationPlanRequest): 
       parentId: target.id,
     });
     physicalIdentity.set(node.id, identity);
+    const implementations = implementationAttributionsForDeploymentNode(
+      node,
+      request.graph,
+      implementationPlan,
+      diagnostics,
+      request.workspaceRoot,
+    );
     return {
       id: identity.id,
       deploymentNodeId: node.id,
       kind: node.kind,
       provider: node.provider,
+      ...(implementations.length > 0 ? { implementations } : {}),
       scope: node.scope,
       lifecycle: { ownership: node.lifecycle.ownership, intent: lifecycleIntent(node.lifecycle) },
       outputs: node.outputs.map(({ name, sensitivity, persistence }) => ({ name, sensitivity, persistence })),
@@ -336,6 +346,89 @@ export function compileApplicationPlan(request: CompileApplicationPlanRequest): 
     estimates,
     evidence: [],
   };
+}
+
+function implementationAttributionsForDeploymentNode(
+  node: ApplicationDeploymentNode,
+  graph: ApplicationGraph,
+  implementationPlan: ApplicationImplementationPlan | undefined,
+  diagnostics: ApplicationPlanDiagnostic[],
+  workspaceRoot?: string,
+): NonNullable<ApplicationPhysicalPlanNode['implementations']> {
+  if (!implementationPlan) return [];
+  const providerIds = deploymentNodeProviderIds(node, graph);
+  const attributions: NonNullable<ApplicationPhysicalPlanNode['implementations']>[number][] = [];
+  for (const providerId of providerIds) {
+    const semantic = graph.nodes.find(({ id }) => id === providerId);
+    if (semantic?.kind !== 'provider') continue;
+    const candidates = implementationPlan.bindings.filter(({ capability }) =>
+      implementationCapabilityInterface(capability.interface) === semantic.interface);
+    if (candidates.length === 0) continue;
+    if (candidates.length > 1) {
+      diagnostics.push({
+        severity: 'error',
+        code: 'PLAN_PHYSICAL_IMPLEMENTATION_AMBIGUOUS',
+        message: `Physical node ${node.id} maps provider ${semantic.id} to multiple ${semantic.interface} implementation bindings.`,
+        subjectId: node.id,
+        provenance: [deploymentProvenance(node, graph, workspaceRoot)],
+      });
+      continue;
+    }
+    const identity = candidates[0]?.implementation;
+    const implementation = implementationPlan.implementations.find(({ id }) => id === identity);
+    if (!implementation) {
+      diagnostics.push({
+        severity: 'error',
+        code: 'PLAN_PHYSICAL_IMPLEMENTATION_UNKNOWN',
+        message: `Physical node ${node.id} maps provider ${semantic.id} to missing implementation ${identity ?? '<unknown>'}.`,
+        subjectId: node.id,
+        provenance: [deploymentProvenance(node, graph, workspaceRoot)],
+      });
+      continue;
+    }
+    if (node.lifecycle.ownership !== 'external' && !implementation.deploymentContributor) {
+      diagnostics.push({
+        severity: 'error',
+        code: 'PLAN_PHYSICAL_CONTRIBUTOR_UNDECLARED',
+        message: `Managed physical node ${node.id} is attributed to ${implementation.id}, which declares no deployment contributor.`,
+        subjectId: node.id,
+        provenance: [deploymentProvenance(node, graph, workspaceRoot)],
+      });
+    }
+    attributions.push({
+      identity: implementation.id,
+      ...(implementation.deploymentContributor
+        ? { contributor: implementation.deploymentContributor }
+        : {}),
+      mapping: 'semantic-provider',
+    });
+  }
+  return [...new Map(attributions.map((attribution) => [attribution.identity, attribution])).values()]
+    .sort((left, right) => left.identity.localeCompare(right.identity));
+}
+
+function deploymentNodeProviderIds(
+  node: ApplicationDeploymentNode,
+  graph: ApplicationGraph,
+): readonly string[] {
+  const candidates = new Set<string>();
+  if (node.source.semanticNodeId) candidates.add(node.source.semanticNodeId);
+  if (node.kind === 'kubernetesComposition') {
+    for (const fragmentId of node.spec.fragmentIds) {
+      if (fragmentId.startsWith('provider:')) candidates.add(fragmentId.slice('provider:'.length));
+    }
+  }
+  return [...candidates]
+    .filter((candidate) => graph.nodes.some(({ id, kind }) => id === candidate && kind === 'provider'))
+    .sort((left, right) => left.localeCompare(right));
+}
+
+function implementationCapabilityInterface(value: string): string {
+  const separator = value.lastIndexOf('@');
+  if (separator <= 0 || !/^v[1-9][0-9]*(?:(?:alpha|beta)[1-9][0-9]*)?$/u.test(value.slice(separator + 1))) {
+    return value;
+  }
+  return value.slice(0, separator);
 }
 
 function semanticExecutions(

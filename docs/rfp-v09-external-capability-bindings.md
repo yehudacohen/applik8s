@@ -240,6 +240,13 @@ identity, consuming implementations/executions, and authority. The plan records 
 adapter, deployment contribution or explicit absence, readiness, lifecycle, physical endpoint identity,
 Secret/network access, migration, maturity, and evidence.
 
+Physical attribution is many-to-many. A provider-specific deployment node names the exact implementation
+that authored it, while one root TypeKro composition may name every implementation whose provider fragment
+it contains. The compiler derives those links from semantic provider provenance and fragment identity; it
+must not guess from resource names, configuration equality, or package naming. Each attribution records the
+declared deployment contributor, and plan validation fails closed when the implementation is missing or the
+contributor disagrees with the resolved implementation plan.
+
 Required diagnostics include:
 
 - `EXTERNAL_BINDING_CONFIGURATION_INVALID`
@@ -259,6 +266,8 @@ Required diagnostics include:
 - The same application source runs against managed and external PostgreSQL implementations.
 - Managed provider plans expose their actual TypeKro compositions or Alchemy resources, and boundary
   validation rejects incompatible implementation paths.
+- Every managed physical resource is traceable through its owning deployment node to the exact concrete
+  implementation and contributor; shared compositions preserve all contributors rather than choosing one.
 - Kubernetes-hosted PostgreSQL is composed with TypeKro and deployed through its Alchemy integration;
   non-Kubernetes managed PostgreSQL uses native or focused Alchemy resources.
 - No maintained provider emits CloudFormation or constructs Kubernetes API objects through a parallel

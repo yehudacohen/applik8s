@@ -3268,7 +3268,7 @@ describe("Application deployment compiler", () => {
       },
       declarations: [{
         key: 'database',
-        capability: { interface: 'TransactionalDatabase' },
+        capability: { interface: 'TransactionalDatabase@v1' },
         provider: { package: '@applik8s/runtime-postgres', export: 'postgres', version: '0.9.0' },
         identity: { kind: 'named', name: 'primary-database' },
         provenance: implementationProvenance,
@@ -3286,7 +3286,7 @@ describe("Application deployment compiler", () => {
       }],
       bindings: [{
         id: 'binding.database',
-        capability: { interface: 'TransactionalDatabase' },
+        capability: { interface: 'TransactionalDatabase@v1' },
         implementation: 'database',
         provenance: implementationProvenance,
       }],
@@ -3329,9 +3329,41 @@ describe("Application deployment compiler", () => {
       }),
     ]);
     expect(plan.identities).toContainEqual(implementationPlan.implementations[0]?.identity.canonical);
+    expect(plan.physical.nodes).toContainEqual(expect.objectContaining({
+      implementations: [{
+        identity: implementationPlan.implementations[0]?.id,
+        contributor: '@applik8s/deployment-typekro/postgres',
+        mapping: 'semantic-provider',
+      }],
+    }));
     expect(renderApplicationPlanText(plan)).toContain('Implementations: 1 concrete, 0 private/reused edges');
     expect(renderApplicationPlanGraph(plan)).toContain('implementation: postgres');
+    expect(renderApplicationPlanGraph(plan)).toContain('@applik8s/deployment-typekro/postgres');
     expect(validateApplicationPlan(plan)).toEqual({ valid: true, diagnostics: [] });
+
+    const attributed = plan.physical.nodes.find(({ implementations }) => implementations?.length);
+    expect(attributed).toBeDefined();
+    const mismatchedContributor = {
+      ...plan,
+      physical: {
+        ...plan.physical,
+        nodes: plan.physical.nodes.map((node) => {
+          if (node !== attributed || !node.implementations) return node;
+          return {
+            ...node,
+            implementations: node.implementations.map((implementation, index) => index === 0
+              ? { ...implementation, contributor: '@example/wrong-contributor' }
+              : implementation),
+          };
+        }),
+      },
+    };
+    expect(validateApplicationPlan(mismatchedContributor)).toEqual(expect.objectContaining({
+      valid: false,
+      diagnostics: expect.arrayContaining([
+        expect.objectContaining({ code: 'PLAN_PHYSICAL_CONTRIBUTOR_MISMATCH' }),
+      ]),
+    }));
 
     const mismatched = compileApplicationPlan({
       graph,

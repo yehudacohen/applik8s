@@ -167,6 +167,12 @@
       "diagnostic": "PROVIDER_CONFIGURATION_PROVENANCE_UNAVAILABLE"
     },
     {
+      "id": "physical-implementation-attribution",
+      "implemented": true,
+      "blocking": true,
+      "diagnostic": "PLAN_PHYSICAL_IMPLEMENTATION_UNKNOWN"
+    },
+    {
       "id": "read-only-v0.8-migration-proposal",
       "implemented": true,
       "blocking": true,

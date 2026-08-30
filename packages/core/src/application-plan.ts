@@ -183,6 +183,12 @@ export interface ApplicationPhysicalPlanNode {
   readonly deploymentNodeId: string;
   readonly kind: string;
   readonly provider: { readonly interface: string; readonly implementation: string; readonly version: string };
+  /** Exact v0.9 implementations and contributors that authored this physical node. */
+  readonly implementations?: readonly {
+    readonly identity: ApplicationCanonicalIdentity['id'];
+    readonly contributor?: string;
+    readonly mapping: 'semantic-provider';
+  }[];
   readonly scope: { readonly connectionDigest: string; readonly namespace?: string };
   readonly lifecycle: {
     readonly ownership: 'application' | 'shared' | 'external';
@@ -428,6 +434,46 @@ export function validateApplicationPlan(plan: ApplicationPlan): ApplicationPlanV
         diagnostics.push(planDiagnostic('error', 'PLAN_IMPLEMENTATION_BINDING_UNRESOLVED', `Provider resolution ${resolution.id} references unknown implementation ${resolution.implementationIdentity}.`, resolution.id, resolution.provenance));
       }
     }
+    const implementationById = new Map(
+      implementationPlan.implementations.map((implementation) => [implementation.id, implementation]),
+    );
+    for (const physical of plan.physical.nodes) {
+      for (const attribution of physical.implementations ?? []) {
+        const implementation = implementationById.get(attribution.identity);
+        if (!implementation) {
+          diagnostics.push(planDiagnostic(
+            'error',
+            'PLAN_PHYSICAL_IMPLEMENTATION_UNKNOWN',
+            `Physical node ${physical.deploymentNodeId} references unknown implementation ${attribution.identity}.`,
+            physical.id,
+            physical.provenance,
+          ));
+          continue;
+        }
+        if (attribution.contributor !== implementation.deploymentContributor) {
+          diagnostics.push(planDiagnostic(
+            'error',
+            'PLAN_PHYSICAL_CONTRIBUTOR_MISMATCH',
+            `Physical node ${physical.deploymentNodeId} contributor does not match implementation ${implementation.id}.`,
+            physical.id,
+            physical.provenance,
+          ));
+        }
+        if (
+          physical.lifecycle.ownership !== 'external'
+          && physical.fact !== 'external'
+          && !attribution.contributor
+        ) {
+          diagnostics.push(planDiagnostic(
+            'error',
+            'PLAN_PHYSICAL_CONTRIBUTOR_UNDECLARED',
+            `Managed physical node ${physical.deploymentNodeId} has no declared deployment contributor for implementation ${implementation.id}.`,
+            physical.id,
+            physical.provenance,
+          ));
+        }
+      }
+    }
   }
   for (const record of [
     ...plan.semantic.nodes,
@@ -550,6 +596,12 @@ export function renderApplicationPlanGraph(plan: ApplicationPlan): string {
   }
   for (const dependency of normalized.resolution.implementationPlan?.dependencies ?? []) {
     lines.push(`  ${graphIdentifier(dependency.consumer)} -.->|${JSON.stringify(dependency.slot)}| ${graphIdentifier(dependency.dependency)}`);
+  }
+  for (const physical of normalized.physical.nodes) {
+    lines.push(`  ${graphIdentifier(physical.id)}[${JSON.stringify(`physical: ${physical.kind}`)}]`);
+    for (const implementation of physical.implementations ?? []) {
+      lines.push(`  ${graphIdentifier(implementation.identity)} -->|${JSON.stringify(implementation.contributor ?? 'external binding')}| ${graphIdentifier(physical.id)}`);
+    }
   }
   return `${lines.join('\n')}\n`;
 }
