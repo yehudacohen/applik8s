@@ -17,6 +17,13 @@ The same gate consumes a generated public-contract inventory derived from all
 publishable package manifests, export maps, TypeScript module exports, and
 typed diagnostic positions instead of maintaining a second manual API list.
 
+Provider assembly now has a deterministic, target-free implementation-plan
+contract. Reused values produce one node with every consumer edge; inline
+dependencies derive identity from their parent and typed slot; named identity
+survives source movement. Resolution preserves required guarantees and private
+provider authority and fails before mutation on ambiguity, missing bindings,
+capability mismatch, wildcard access, or dependency cycles.
+
 ## v0.8.0
 
 Workflow tasks can now declare the maintained Usage module's

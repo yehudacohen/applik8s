@@ -354,6 +354,8 @@
             "ApplicationCallableQueryBinding",
             "ApplicationCanonicalIdentity",
             "ApplicationCanonicalIdentityKind",
+            "ApplicationCapabilityImplementationIdentity",
+            "ApplicationCapabilityReference",
             "ApplicationCatalogRevisionId",
             "ApplicationCatalogState",
             "ApplicationCausalPrincipalContext",
@@ -537,6 +539,15 @@
             "ApplicationIdentityProviderToken",
             "ApplicationIdentityReference",
             "ApplicationIdentityReferenceId",
+            "ApplicationImplementationBindingPlan",
+            "ApplicationImplementationDeclaration",
+            "ApplicationImplementationDependencyDeclaration",
+            "ApplicationImplementationDependencyPlan",
+            "ApplicationImplementationIdentitySource",
+            "ApplicationImplementationPlan",
+            "ApplicationImplementationPlanNode",
+            "ApplicationImplementationResolutionError",
+            "ApplicationImplementationResolutionInput",
             "ApplicationIndexBackend",
             "ApplicationIndexNode",
             "ApplicationIndexStoreProviderToken",
@@ -858,6 +869,7 @@
             "ApplicationProfile",
             "ApplicationProfileBranchOptions",
             "ApplicationProfileDescriptor",
+            "ApplicationProfileImplementationBinding",
             "ApplicationProfileProviderBranch",
             "ApplicationProfileProviderSelectionContract",
             "ApplicationProfileTransitionContract",
@@ -882,6 +894,7 @@
             "ApplicationProviderBinding",
             "ApplicationProviderBindingContract",
             "ApplicationProviderCompatibilityMatrixContract",
+            "ApplicationProviderConstructorReference",
             "ApplicationProviderDisposition",
             "ApplicationProviderGuarantee",
             "ApplicationProviderGuaranteeCategory",
@@ -1802,6 +1815,7 @@
             "applicationGraphMetadataProperty",
             "applicationGraphNodeIdentity",
             "applicationGraphNodeKinds",
+            "applicationImplementationPlanVersion",
             "applicationInstallationMetadataProperty",
             "applicationInstallationSpecEnvironmentVariable",
             "applicationLakehouseAuthorityManifest",
@@ -1999,6 +2013,7 @@
             "resolveApplicationActorInvocationAuthority",
             "resolveApplicationCallableProviderRuntimeEnvironment",
             "resolveApplicationGraphProviderRequirement",
+            "resolveApplicationImplementationPlan",
             "resolveOperatorInstalls",
             "resource",
             "resources",
@@ -2016,6 +2031,7 @@
             "search",
             "secretRef",
             "serializeApplicationGraph",
+            "serializeApplicationImplementationPlan",
             "serializeApplicationPlan",
             "serializeApplicationPlanContent",
             "setApplicationObjectStorageRuntimeFactory",
@@ -3132,6 +3148,8 @@
             "ApplicationCallableProviderRuntimeOperation",
             "ApplicationCanonicalIdentity",
             "ApplicationCanonicalIdentityKind",
+            "ApplicationCapabilityImplementationIdentity",
+            "ApplicationCapabilityReference",
             "ApplicationCatalogRevisionId",
             "ApplicationCatalogState",
             "ApplicationCausalPrincipalContext",
@@ -3217,6 +3235,15 @@
             "ApplicationIdentityKind",
             "ApplicationIdentityReference",
             "ApplicationIdentityReferenceId",
+            "ApplicationImplementationBindingPlan",
+            "ApplicationImplementationDeclaration",
+            "ApplicationImplementationDependencyDeclaration",
+            "ApplicationImplementationDependencyPlan",
+            "ApplicationImplementationIdentitySource",
+            "ApplicationImplementationPlan",
+            "ApplicationImplementationPlanNode",
+            "ApplicationImplementationResolutionError",
+            "ApplicationImplementationResolutionInput",
             "ApplicationIndexNode",
             "ApplicationInstallationArtifactContract",
             "ApplicationJobHistoryRetentionContract",
@@ -3327,6 +3354,7 @@
             "ApplicationProcessorDeploymentContract",
             "ApplicationProcessorNode",
             "ApplicationProfileDescriptor",
+            "ApplicationProfileImplementationBinding",
             "ApplicationProfileProviderBranch",
             "ApplicationProfileProviderSelectionContract",
             "ApplicationProfileTransitionContract",
@@ -3338,6 +3366,7 @@
             "ApplicationProjectionNode",
             "ApplicationProviderBindingContract",
             "ApplicationProviderCompatibilityMatrixContract",
+            "ApplicationProviderConstructorReference",
             "ApplicationProviderDisposition",
             "ApplicationProviderGuarantee",
             "ApplicationProviderGuaranteeCategory",
@@ -3862,6 +3891,7 @@
             "applicationGraphMetadataProperty",
             "applicationGraphNodeIdentity",
             "applicationGraphNodeKinds",
+            "applicationImplementationPlanVersion",
             "applicationInstallationMetadataProperty",
             "applicationOperationCatalogArtifactFileName",
             "applicationOperationId",
@@ -3932,10 +3962,12 @@
             "renderApplicationPlanText",
             "resolveApplicationCallableProviderRuntimeEnvironment",
             "resolveApplicationGraphProviderRequirement",
+            "resolveApplicationImplementationPlan",
             "scopeContainsUnreviewedCode",
             "sdk",
             "secretRef",
             "serializeApplicationGraph",
+            "serializeApplicationImplementationPlan",
             "serializeApplicationPlan",
             "serializeApplicationPlanContent",
             "setCondition",
@@ -5402,6 +5434,8 @@
             "ApplicationCallableProviderRuntimeOperation",
             "ApplicationCanonicalIdentity",
             "ApplicationCanonicalIdentityKind",
+            "ApplicationCapabilityImplementationIdentity",
+            "ApplicationCapabilityReference",
             "ApplicationCatalogRevisionId",
             "ApplicationCatalogState",
             "ApplicationCausalPrincipalContext",
@@ -5487,6 +5521,15 @@
             "ApplicationIdentityKind",
             "ApplicationIdentityReference",
             "ApplicationIdentityReferenceId",
+            "ApplicationImplementationBindingPlan",
+            "ApplicationImplementationDeclaration",
+            "ApplicationImplementationDependencyDeclaration",
+            "ApplicationImplementationDependencyPlan",
+            "ApplicationImplementationIdentitySource",
+            "ApplicationImplementationPlan",
+            "ApplicationImplementationPlanNode",
+            "ApplicationImplementationResolutionError",
+            "ApplicationImplementationResolutionInput",
             "ApplicationIndexNode",
             "ApplicationInstallationArtifactContract",
             "ApplicationJobHistoryRetentionContract",
@@ -5597,6 +5640,7 @@
             "ApplicationProcessorDeploymentContract",
             "ApplicationProcessorNode",
             "ApplicationProfileDescriptor",
+            "ApplicationProfileImplementationBinding",
             "ApplicationProfileProviderBranch",
             "ApplicationProfileProviderSelectionContract",
             "ApplicationProfileTransitionContract",
@@ -5608,6 +5652,7 @@
             "ApplicationProjectionNode",
             "ApplicationProviderBindingContract",
             "ApplicationProviderCompatibilityMatrixContract",
+            "ApplicationProviderConstructorReference",
             "ApplicationProviderDisposition",
             "ApplicationProviderGuarantee",
             "ApplicationProviderGuaranteeCategory",
@@ -6081,6 +6126,7 @@
             "applicationGraphMetadataProperty",
             "applicationGraphNodeIdentity",
             "applicationGraphNodeKinds",
+            "applicationImplementationPlanVersion",
             "applicationInstallationMetadataProperty",
             "applicationOperationCatalogArtifactFileName",
             "applicationOperationId",
@@ -6132,8 +6178,10 @@
             "renderApplicationPlanText",
             "resolveApplicationCallableProviderRuntimeEnvironment",
             "resolveApplicationGraphProviderRequirement",
+            "resolveApplicationImplementationPlan",
             "scopeContainsUnreviewedCode",
             "serializeApplicationGraph",
+            "serializeApplicationImplementationPlan",
             "serializeApplicationPlan",
             "serializeApplicationPlanContent",
             "signedEnvelopeAlgorithm",
@@ -10588,6 +10636,14 @@
       "maturity": "candidate-review-required"
     },
     {
+      "code": "PROFILE_BINDING_CONFLICT",
+      "owner": "package:@applik8s/core",
+      "sources": [
+        "packages/core/src/application-implementation-plan.ts"
+      ],
+      "maturity": "candidate-review-required"
+    },
+    {
       "code": "PROVIDER_COMPLETION_INVALID",
       "owner": "package:@applik8s/identity",
       "sources": [
@@ -10596,10 +10652,58 @@
       "maturity": "candidate-review-required"
     },
     {
+      "code": "PROVIDER_CONFIGURATION_INVALID",
+      "owner": "package:@applik8s/core",
+      "sources": [
+        "packages/core/src/application-implementation-plan.ts"
+      ],
+      "maturity": "candidate-review-required"
+    },
+    {
       "code": "PROVIDER_CONTINUITY_INVALID",
       "owner": "package:@applik8s/identity",
       "sources": [
         "packages/identity/src/runtime.ts"
+      ],
+      "maturity": "candidate-review-required"
+    },
+    {
+      "code": "PROVIDER_DEPENDENCY_CYCLE",
+      "owner": "package:@applik8s/core",
+      "sources": [
+        "packages/core/src/application-implementation-plan.ts"
+      ],
+      "maturity": "candidate-review-required"
+    },
+    {
+      "code": "PROVIDER_DEPENDENCY_INCOMPATIBLE",
+      "owner": "package:@applik8s/core",
+      "sources": [
+        "packages/core/src/application-implementation-plan.ts"
+      ],
+      "maturity": "candidate-review-required"
+    },
+    {
+      "code": "PROVIDER_DEPENDENCY_MISSING",
+      "owner": "package:@applik8s/core",
+      "sources": [
+        "packages/core/src/application-implementation-plan.ts"
+      ],
+      "maturity": "candidate-review-required"
+    },
+    {
+      "code": "PROVIDER_IMPLEMENTATION_IDENTITY_COLLISION",
+      "owner": "package:@applik8s/core",
+      "sources": [
+        "packages/core/src/application-implementation-plan.ts"
+      ],
+      "maturity": "candidate-review-required"
+    },
+    {
+      "code": "PROVIDER_IMPLEMENTATION_IDENTITY_UNSTABLE",
+      "owner": "package:@applik8s/core",
+      "sources": [
+        "packages/core/src/application-implementation-plan.ts"
       ],
       "maturity": "candidate-review-required"
     },
@@ -11196,6 +11300,33 @@
       "evidence": [
         "append-only-receipt-chain",
         "unknown-outcome-resolution"
+      ]
+    },
+    {
+      "id": "implementation-identity",
+      "package": "@applik8s/core",
+      "entrypoint": ".",
+      "symbol": "ApplicationCapabilityImplementationIdentity",
+      "schemaVersion": "applik8s.implementationIdentity/v1alpha1",
+      "maturity": "stable-1.0-candidate",
+      "owner": "provider-resolution",
+      "evidence": [
+        "deterministic-authored-identity",
+        "identity-collision-rejection"
+      ]
+    },
+    {
+      "id": "implementation-plan",
+      "package": "@applik8s/core",
+      "entrypoint": ".",
+      "symbol": "ApplicationImplementationPlan",
+      "schemaVersion": "applik8s.implementationPlan/v1alpha1",
+      "maturity": "stable-1.0-candidate",
+      "owner": "provider-resolution",
+      "evidence": [
+        "recursive-resolution",
+        "sharing-and-cycle-conformance",
+        "canonical-serialization"
       ]
     }
   ]

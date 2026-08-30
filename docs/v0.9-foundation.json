@@ -43,6 +43,26 @@
       "maturity": "stable-1.0-candidate",
       "owner": "effect-safety",
       "evidence": ["append-only-receipt-chain", "unknown-outcome-resolution"]
+    },
+    {
+      "id": "implementation-identity",
+      "package": "@applik8s/core",
+      "entrypoint": ".",
+      "symbol": "ApplicationCapabilityImplementationIdentity",
+      "schemaVersion": "applik8s.implementationIdentity/v1alpha1",
+      "maturity": "stable-1.0-candidate",
+      "owner": "provider-resolution",
+      "evidence": ["deterministic-authored-identity", "identity-collision-rejection"]
+    },
+    {
+      "id": "implementation-plan",
+      "package": "@applik8s/core",
+      "entrypoint": ".",
+      "symbol": "ApplicationImplementationPlan",
+      "schemaVersion": "applik8s.implementationPlan/v1alpha1",
+      "maturity": "stable-1.0-candidate",
+      "owner": "provider-resolution",
+      "evidence": ["recursive-resolution", "sharing-and-cycle-conformance", "canonical-serialization"]
     }
   ],
   "foundationGates": [
@@ -66,7 +86,7 @@
     },
     {
       "id": "profile-resolver-plan-schema",
-      "implemented": false,
+      "implemented": true,
       "blocking": true,
       "diagnostic": "PROFILE_IMPLEMENTATION_IDENTITY_UNAVAILABLE"
     },

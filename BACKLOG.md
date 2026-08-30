@@ -25,8 +25,15 @@ Status: alpha.1 foundation started on `codex/v0.9-semantic-completion`.
   manifests, 193 export-map entrypoints, 6,902 TypeScript exports, and 242
   typed diagnostic positions. The generated catalog stays dirty-checkable
   while per-symbol maturity/evidence review remains visibly in progress.
-- Next foundation work: freeze implementation identity and profile resolution in the
-  ApplicationPlan schema, produce the read-only v0.8 migration proposal, add
+- Added deterministic authored implementation identity and a pure recursive
+  profile-resolution plan. It preserves explicit sharing, inline parent/slot
+  identity, typed guarantees, private provider-internal authority, source
+  provenance, configuration-source provenance, lifecycle/readiness/migration
+  metadata, and canonical serialization while rejecting missing bindings,
+  incompatible capabilities, wildcard authority, identity collisions, and
+  dependency cycles.
+- Next foundation work: integrate the implementation plan with compilation,
+  produce the read-only v0.8 migration proposal, add
   the minimal `journey()` runner, and establish the documentation and first
   clean-context evidence.
 
