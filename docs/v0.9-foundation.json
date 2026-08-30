@@ -133,6 +133,16 @@
       "maturity": "stable-1.0-candidate",
       "owner": "deployment-state-migration",
       "evidence": ["exact-baseline-validation", "deterministic-read-only-mapping", "lifecycle-transfer-plan"]
+    },
+    {
+      "id": "finite-job-runtime",
+      "package": "@applik8s/applik8s",
+      "entrypoint": ".",
+      "symbol": "ApplicationJobRuntime",
+      "schemaVersion": "applik8s.jobRuntime/v1alpha1",
+      "maturity": "experimental",
+      "owner": "finite-jobs",
+      "evidence": ["typed-direct-and-start", "scoped-idempotency", "retry-cancel-deadline-races", "caller-timeout-rejoin"]
     }
   ],
   "foundationGates": [
@@ -183,6 +193,12 @@
       "implemented": true,
       "blocking": true,
       "diagnostic": "JOB_GRAPH_VOCABULARY_CONFLICT"
+    },
+    {
+      "id": "finite-job-local-runtime",
+      "implemented": true,
+      "blocking": true,
+      "diagnostic": "JOB_PROVIDER_UNSUPPORTED"
     },
     {
       "id": "read-only-v0.8-migration-proposal",

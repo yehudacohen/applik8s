@@ -19,7 +19,7 @@ import type { ApplicationGeneratedJobStatusTarget, ApplicationStatusReconcilerAp
 import { applicationStatusReconcilerName } from './application-status-reconciler.js';
 import { applicationTypeKroString } from './application-typekro-values.js';
 
-export interface ApplicationJobOptions {
+export interface ApplicationWorkloadJobOptions {
   readonly taskKind?: 'preflight' | 'migration' | 'cleanup' | 'repair' | 'maintenance' | 'custom';
   readonly namespace?: string;
   readonly image?: string;
@@ -28,7 +28,7 @@ export interface ApplicationJobOptions {
   readonly env?: Readonly<Record<string, string>>;
 }
 
-export interface ApplicationScheduleOptions extends ApplicationJobOptions {
+export interface ApplicationWorkloadCronJobOptions extends ApplicationWorkloadJobOptions {
   readonly cron?: string;
   readonly timezone?: string;
   readonly concurrencyPolicy?: 'allow' | 'forbid' | 'replace';
@@ -36,7 +36,7 @@ export interface ApplicationScheduleOptions extends ApplicationJobOptions {
   readonly startingDeadlineSeconds?: number;
 }
 
-export interface ApplicationJobBinding {
+export interface ApplicationWorkloadJobBinding {
   readonly kind: 'applicationJob';
   readonly name: string;
   readonly resourceName: string;
@@ -54,7 +54,7 @@ function applicationGraphNodeId(kind: string, name: string): string {
   return `${kind}.${kubernetesNameSegment(name)}`;
 }
 
-export function emitApplicationGeneratedJob(state: ApplicationGeneratedJobResourceState, name: string, options: ApplicationJobOptions | ApplicationScheduleOptions, cron: string | undefined, plan: ApplicationJobBinding['plan']): ApplicationJobBinding {
+export function emitApplicationGeneratedJob(state: ApplicationGeneratedJobResourceState, name: string, options: ApplicationWorkloadJobOptions | ApplicationWorkloadCronJobOptions, cron: string | undefined, plan: ApplicationWorkloadJobBinding['plan']): ApplicationWorkloadJobBinding {
   const resourceName = kubernetesNameSegment(name);
   const namespace = options.namespace;
   const nodeId = applicationGraphNodeId('job', resourceName);
@@ -68,7 +68,7 @@ export function emitApplicationGeneratedJob(state: ApplicationGeneratedJobResour
     'app.kubernetes.io/managed-by': 'applik8s',
     'applik8s.dev/job': resourceName,
   };
-  const missedRunPolicy = isApplicationScheduleOptions(options) ? options.missedRunPolicy : undefined;
+  const missedRunPolicy = isApplicationWorkloadCronJobOptions(options) ? options.missedRunPolicy : undefined;
   const annotations = missedRunPolicy ? { 'applik8s.dev/missed-run-policy': missedRunPolicy } : undefined;
   const container = applicationGeneratedJobContainer(resourceName, statusPath, options);
   const materialization = cron ? 'kubernetes-cronjob' : 'kubernetes-job';
@@ -105,10 +105,10 @@ export function emitApplicationGeneratedJob(state: ApplicationGeneratedJobResour
   });
   const schedule = cron ? {
     cron,
-    ...(isApplicationScheduleOptions(options) && options.timezone ? { timezone: options.timezone } : {}),
-    ...(isApplicationScheduleOptions(options) && options.concurrencyPolicy ? { concurrencyPolicy: options.concurrencyPolicy } : {}),
+    ...(isApplicationWorkloadCronJobOptions(options) && options.timezone ? { timezone: options.timezone } : {}),
+    ...(isApplicationWorkloadCronJobOptions(options) && options.concurrencyPolicy ? { concurrencyPolicy: options.concurrencyPolicy } : {}),
     ...(missedRunPolicy ? { missedRunPolicy } : {}),
-    ...(isApplicationScheduleOptions(options) && options.startingDeadlineSeconds !== undefined ? { startingDeadlineSeconds: options.startingDeadlineSeconds } : {}),
+    ...(isApplicationWorkloadCronJobOptions(options) && options.startingDeadlineSeconds !== undefined ? { startingDeadlineSeconds: options.startingDeadlineSeconds } : {}),
   } : undefined;
 
   if (cron) {
@@ -119,9 +119,9 @@ export function emitApplicationGeneratedJob(state: ApplicationGeneratedJobResour
       metadata: { name: resourceName, ...(namespace ? { namespace } : {}), labels, ...(annotations ? { annotations } : {}) },
       spec: {
         schedule: cron,
-        ...(isApplicationScheduleOptions(options) && options.timezone ? { timeZone: options.timezone } : {}),
-        ...(isApplicationScheduleOptions(options) && options.concurrencyPolicy ? { concurrencyPolicy: kubernetesCronJobConcurrencyPolicy(options.concurrencyPolicy) } : {}),
-        ...(isApplicationScheduleOptions(options) && options.startingDeadlineSeconds !== undefined ? { startingDeadlineSeconds: options.startingDeadlineSeconds } : {}),
+        ...(isApplicationWorkloadCronJobOptions(options) && options.timezone ? { timeZone: options.timezone } : {}),
+        ...(isApplicationWorkloadCronJobOptions(options) && options.concurrencyPolicy ? { concurrencyPolicy: kubernetesCronJobConcurrencyPolicy(options.concurrencyPolicy) } : {}),
+        ...(isApplicationWorkloadCronJobOptions(options) && options.startingDeadlineSeconds !== undefined ? { startingDeadlineSeconds: options.startingDeadlineSeconds } : {}),
         jobTemplate: { spec: applicationGeneratedJobSpec(labels, container) },
       },
     });
@@ -223,7 +223,7 @@ function applicationGeneratedJobSpec(labels: Readonly<Record<string, string>>, c
   };
 }
 
-function applicationGeneratedJobContainer(resourceName: string, statusPath: string, options: ApplicationJobOptions) {
+function applicationGeneratedJobContainer(resourceName: string, statusPath: string, options: ApplicationWorkloadJobOptions) {
   return {
     name: 'job',
     image: options.image ?? 'busybox:1.36',
@@ -237,7 +237,7 @@ function applicationGeneratedJobContainer(resourceName: string, statusPath: stri
   };
 }
 
-function isApplicationScheduleOptions(options: ApplicationJobOptions | ApplicationScheduleOptions): options is ApplicationScheduleOptions {
+function isApplicationWorkloadCronJobOptions(options: ApplicationWorkloadJobOptions | ApplicationWorkloadCronJobOptions): options is ApplicationWorkloadCronJobOptions {
   return 'cron' in options || 'timezone' in options || 'concurrencyPolicy' in options || 'missedRunPolicy' in options || 'startingDeadlineSeconds' in options;
 }
 

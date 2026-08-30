@@ -43,9 +43,13 @@ The same boundary is now explicit in the semantic graph. Infrastructure declarat
 Plans and compatibility reports therefore cannot silently collapse a Kubernetes workload into managed
 application behavior.
 
-The typed semantic Job handle, local runtime, durable provider, scheduling integration, graph/plan nodes,
-and conformance evidence remain implementation work. The vocabulary move alone does not claim the Job
-contract is available.
+The provider-neutral typed Job handle and deterministic local runtime are implemented. They establish
+schema-validated input/output/progress/application errors, scoped idempotency, bounded concurrency,
+whole-attempt retry, cancellation, execution deadlines, caller timeout with a rejoinable run reference,
+and first-terminal-transition semantics. The application-owned registrar, durable deployed providers,
+scheduling integration, semantic graph/plan nodes, retention, events/telemetry, and cross-provider
+conformance evidence remain implementation work. The local runtime is a behavioral kernel, not a claim
+that the complete Job contract is available through `application.job(...)` yet.
 
 This RFP owns logical run identity, attempt identity, input/result/progress/cancellation contracts,
 idempotency scope, retry and interruption semantics, authority and causal attribution, scheduling

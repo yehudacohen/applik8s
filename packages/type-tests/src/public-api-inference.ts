@@ -1,5 +1,5 @@
 import type { Applik8sTypeKroAdapterApi as TopLevelTypeKroAdapterApi } from '@applik8s/applik8s';
-import { AnalyticalDatabase, Analytics, type ApplicationAnalyticalProjectionOptions, type ApplicationConfigBinding, type ApplicationExposureBinding, type ApplicationJobBinding, type ApplicationModelBinding, type ApplicationModelObject, type ApplicationOAuthClientIdentityBinding, type ApplicationResourceControllerOptions, type ApplicationResourceEventHandler, type ApplicationSecretBinding, type ApplicationTransactionalDatabaseProvider, type ApplicationWorkflowBinding, applicationModelFacet, sdk as appSdk, Certificate, CounterStore, CredentialStore, command, Database, DnsPublication, app as defineApplication, EventSource, event, HttpExposure, IndexStore, ObjectStorage, Queue, Secret, TransactionalDatabase, WorkflowEngine, workflow } from '@applik8s/applik8s';
+import { AnalyticalDatabase, Analytics, type ApplicationAnalyticalProjectionOptions, type ApplicationConfigBinding, type ApplicationExposureBinding, type ApplicationWorkloadJobBinding, type ApplicationModelBinding, type ApplicationModelObject, type ApplicationOAuthClientIdentityBinding, type ApplicationResourceControllerOptions, type ApplicationResourceEventHandler, type ApplicationSecretBinding, type ApplicationTransactionalDatabaseProvider, type ApplicationWorkflowBinding, applicationModelFacet, sdk as appSdk, Certificate, CounterStore, CredentialStore, command, Database, DnsPublication, app as defineApplication, EventSource, event, HttpExposure, IndexStore, ObjectStorage, Queue, Secret, TransactionalDatabase, WorkflowEngine, workflow } from '@applik8s/applik8s';
 // @ts-expect-error The application-centric v0.6 controller-options name was removed rather than aliased.
 import type { ApplicationReconcileOptions } from '@applik8s/applik8s';
 import * as applicationDsl from '@applik8s/applik8s/dsl';
@@ -469,7 +469,7 @@ const v03RuntimeReleasePolicy = {
 const v03PressureTestContract = {
   name: 'accounts-platform-pressure-test',
   graph: { apiVersion: 'applik8s.appGraph/v1alpha1', path: 'application-graph.json', digest: 'sha256:accounts' },
-  requiredNodes: ['crd', 'model', 'server', 'job', 'provider', 'permission', 'typeKroResource'],
+  requiredNodes: ['crd', 'model', 'server', 'workloadJob', 'provider', 'permission', 'typeKroResource'],
   requiredProviders: ['TransactionalDatabase', 'IndexStore', 'Secret', 'HttpExposure', 'CredentialStore'],
   requiredRuntimeModules: ['serverRuntime', 'modelRuntime', 'jobRunnerRuntime', 'kubernetesClient', 'diagnostics', 'providerAdapter'],
   requiredOperationTargets: [operationTargetContract],
@@ -492,7 +492,7 @@ const v03PressureTestContract = {
 const _invalidPartialV03PressureTestContract: ApplicationV03PressureTestContract = {
   name: 'partial-accounts-platform-pressure-test',
   graph: { apiVersion: 'applik8s.appGraph/v1alpha1', path: 'application-graph.json', digest: 'sha256:accounts' },
-  requiredNodes: ['model', 'server', 'job', 'provider'],
+  requiredNodes: ['model', 'server', 'workloadJob', 'provider'],
   requiredProviders: ['TransactionalDatabase', 'CredentialStore', 'HttpExposure'],
   requiredRuntimeModules: ['serverRuntime', 'modelRuntime', 'jobRunnerRuntime', 'kubernetesClient', 'diagnostics', 'providerAdapter'],
   requiredOperationTargets: [operationTargetContract],
@@ -523,8 +523,8 @@ appSdk.kubernetesComposition({
   const store = app.provide(TransactionalDatabase, accountTransactionalDatabase);
   app.provide(WorkflowEngine, WorkflowEngine.hatchet({ namespace: spec.namespace, provision: false, workerTokenSecret: { apiVersion: 'v1', kind: 'Secret', name: 'hatchet-worker', namespace: spec.namespace } }));
   const modelDefaults = app.defaults({ database: accountTransactionalDatabase });
-  const maintenanceJob: ApplicationJobBinding = app.workload.job('compact-accounts', { taskKind: 'maintenance', image: 'busybox:1.36', command: ['sh', '-c'], args: ['echo compact'] });
-  const maintenanceSchedule: ApplicationJobBinding = app.workload.cronJob('compact-accounts-hourly', { taskKind: 'maintenance', cron: '0 * * * *', concurrencyPolicy: 'forbid', missedRunPolicy: 'failClosed' });
+  const maintenanceJob: ApplicationWorkloadJobBinding = app.workload.job('compact-accounts', { taskKind: 'maintenance', image: 'busybox:1.36', command: ['sh', '-c'], args: ['echo compact'] });
+  const maintenanceSchedule: ApplicationWorkloadJobBinding = app.workload.cronJob('compact-accounts-hourly', { taskKind: 'maintenance', cron: '0 * * * *', concurrencyPolicy: 'forbid', missedRunPolicy: 'failClosed' });
   const maintenanceJobStatusPath: string = maintenanceJob.statusPath;
   const maintenanceScheduleDiagnostics: string = maintenanceSchedule.diagnosticsConfigMapName;
   const maintenanceJobDryRun = maintenanceJob.plan(handlerOperationTarget, { dryRun: true });

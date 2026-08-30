@@ -43,7 +43,7 @@ import { expandApplicationCallbackDependencies } from './application-callback.js
 import { recordApplicationCrdGraph } from './application-crd-graph.js';
 import { type ApplicationResourceControllerBinding, type ApplicationResourceControllerOptions, type ApplicationResourceEventHandlers, createApplicationResourceEventOperatorController } from './application-events.js';
 import { inferApplicationFunctionNativeTransaction } from './application-function-native-transactions.js';
-import { type ApplicationGeneratedJobResourceState, type ApplicationJobBinding, type ApplicationJobOptions, type ApplicationScheduleOptions, emitApplicationGeneratedJob, emitApplicationModelMigrationResources } from './application-generated-job-resources.js';
+import { type ApplicationGeneratedJobResourceState, type ApplicationWorkloadJobBinding, type ApplicationWorkloadJobOptions, type ApplicationWorkloadCronJobOptions, emitApplicationGeneratedJob, emitApplicationModelMigrationResources } from './application-generated-job-resources.js';
 import type { ApplicationServerRuntimeIndex } from './application-generated-runtime-sources.js';
 import { generatedApplicationAggregateSource, generatedValkeyIndexerSource } from './application-generated-runtime-sources.js';
 import { type ApplicationGraphState, addApplicationGraphEdge, addApplicationGraphNode, addApplicationProviderRequirement, applicationGraphFromState, isApplicationGraph } from './application-graph-state.js';
@@ -157,7 +157,7 @@ import type { ApplicationPostgresRlsPolicy } from './trusted-context.js';
 export type { ApplicationAgentBinding, ApplicationAgentDeploymentOptions, ApplicationAgentHandler, ApplicationAgentOptions, ApplicationAgentTool } from './application-ai.js';
 export type { ApplicationAuthorityRegistrar, ApplicationAuthoritySelection, ApplicationOAuthClientIdentityBinding, ApplicationOAuthClientIdentityOptions, ApplicationOutcomeBinding, ApplicationOutcomeOptions, ApplicationPermissionBinding, ApplicationServiceIdentityBinding } from './application-authority.js';
 export type { ApplicationFinalizeEventHandler, ApplicationResourceControllerBinding, ApplicationResourceControllerOptions, ApplicationResourceEventHandler, ApplicationResourceObject } from './application-events.js';
-export type { ApplicationJobBinding, ApplicationJobOptions, ApplicationScheduleOptions } from './application-generated-job-resources.js';
+export type { ApplicationWorkloadJobBinding, ApplicationWorkloadJobOptions, ApplicationWorkloadCronJobOptions } from './application-generated-job-resources.js';
 export type { ApplicationHttpAuthorization, ApplicationHttpContext, ApplicationHttpHandler, ApplicationHttpOptions, ApplicationHttpRegistrar, ApplicationHttpRequest, ApplicationHttpRouteContract, ApplicationHttpServer, ApplicationHttpWebhookAuthentication, ApplicationHttpWebhookContract, ApplicationHttpWebhookRequest } from './application-http.js';
 export type { ApplicationInstallationClient, ApplicationInstallationConnectOptions, ApplicationInstallationReference, ApplicationInstallationTransport, ApplicationInstallationWatchOptions } from './application-installation-client.js';
 export type { ApplicationLakehouseAuthorityManifest, ApplicationLakehouseComparisonExpression, ApplicationLakehouseDatasetQueryContract, ApplicationLakehouseFieldExpression, ApplicationLakehouseFilterExpression, ApplicationLakehouseLogicalExpression, ApplicationLakehouseManifest, ApplicationLakehouseOrder, ApplicationLakehouseOrderExpression, ApplicationLakehousePredicate, ApplicationLakehousePublication, ApplicationLakehousePublicationRuntime, ApplicationLakehouseQueryFailureReceipt, ApplicationLakehouseQueryInput, ApplicationLakehouseQueryReceipt, ApplicationLakehouseQueryRequest, ApplicationLakehouseQueryResult, ApplicationLakehouseQueryRuntime, ApplicationLakehouseQueryTerminalState, ApplicationLakehouseRowExpression, ApplicationLakehouseScalar, ApplicationLakehouseSchemaCompatibility, CompiledApplicationLakehouseQuery, DeterministicApplicationLakehouseRuntime } from './application-lakehouse.js';
@@ -462,8 +462,8 @@ export interface KubernetesApplicationScope extends ApplicationAuthorityRegistra
 }
 
 export interface ApplicationWorkloadRegistrar {
-  job(name: string, options?: ApplicationJobOptions): ApplicationJobBinding;
-  cronJob(name: string, options?: ApplicationScheduleOptions): ApplicationJobBinding;
+  job(name: string, options?: ApplicationWorkloadJobOptions): ApplicationWorkloadJobBinding;
+  cronJob(name: string, options?: ApplicationWorkloadCronJobOptions): ApplicationWorkloadJobBinding;
 }
 
 export interface ApplicationWorkflowContract<
@@ -2694,7 +2694,7 @@ function createKubernetesApplicationBuilder<TSpec extends KroCompatibleType = Re
       return binding;
     },
     workload: Object.freeze({
-      job(jobName: string, jobOptions?: ApplicationJobOptions): ApplicationJobBinding {
+      job(jobName: string, jobOptions?: ApplicationWorkloadJobOptions): ApplicationWorkloadJobBinding {
         const normalizedOptions = withDefaultNamespace(jobOptions);
         const binding = preview.workload.job(jobName, normalizedOptions);
         replays.push((scope) => {
@@ -2703,7 +2703,7 @@ function createKubernetesApplicationBuilder<TSpec extends KroCompatibleType = Re
         invalidate();
         return binding;
       },
-      cronJob(scheduleName: string, scheduleOptions?: ApplicationScheduleOptions): ApplicationJobBinding {
+      cronJob(scheduleName: string, scheduleOptions?: ApplicationWorkloadCronJobOptions): ApplicationWorkloadJobBinding {
         const normalizedOptions = withDefaultNamespace(scheduleOptions);
         const binding = preview.workload.cronJob(scheduleName, normalizedOptions);
         replays.push((scope) => {
@@ -4543,10 +4543,10 @@ function createApplicationContext<TSpec extends KroCompatibleType, TStatus exten
       return emitApplicationExposure(state, name, options);
     },
     workload: Object.freeze({
-      job(name: string, options?: ApplicationJobOptions) {
+      job(name: string, options?: ApplicationWorkloadJobOptions) {
         return emitApplicationGeneratedJob(state, name, options ?? {}, undefined, applicationBindingPlan);
       },
-      cronJob(name: string, options?: ApplicationScheduleOptions) {
+      cronJob(name: string, options?: ApplicationWorkloadCronJobOptions) {
         return emitApplicationGeneratedJob(state, name, options ?? {}, options?.cron ?? '* * * * *', applicationBindingPlan);
       },
     }),
