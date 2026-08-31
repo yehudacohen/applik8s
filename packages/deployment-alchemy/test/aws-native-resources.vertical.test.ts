@@ -5,6 +5,7 @@ import {
 } from "@applik8s/deployment-contract";
 import { describe, expect, test } from "vitest";
 import { applicationAwsNativeResourceDeclarations } from "../src/index.js";
+import { applicationAwsNativeWorkloadEnvironmentForTest } from "../src/aws-native-resources.js";
 
 describe("AWS native Alchemy resource graph", () => {
   test("maps each portable resource to a concrete Alchemy resource identity", () => {
@@ -86,6 +87,27 @@ describe("AWS native Alchemy resource graph", () => {
       new Set(["Applik8s.AWS.ECS.OneShotTask"]),
     );
     expect(declarations.some(({ type }) => type.includes("CloudFormation"))).toBe(false);
+  });
+
+  test("projects finite Job controller identity and bounded worker networking without image commands", () => {
+    const plan = fixturePlan();
+    const controller = resource("runtime.jobs", "ecs", "fargate-runtime-service", "native-demo-jobs", {
+      finiteJobController: true,
+      jobPrivateSubnetResourceIds: ["foundation.subnet.private.1", "foundation.subnet.private.2"],
+      jobSecurityGroupResourceIds: ["runtime.jobs.security-group"],
+    }, ["serviceArn", "endpoint"]);
+    const environment = applicationAwsNativeWorkloadEnvironmentForTest(controller, plan, {
+      "foundation.subnet.private.1": { subnetId: "subnet-a" },
+      "foundation.subnet.private.2": { subnetId: "subnet-b" },
+      "runtime.jobs.security-group": { groupId: "sg-jobs" },
+    });
+    expect(environment).toMatchObject({
+      APPLIK8S_APPLICATION_NAME: "native-demo",
+      APPLIK8S_DEPLOYMENT_ID: "test",
+      APPLIK8S_AWS_JOB_CONTAINER: "runtime",
+      APPLIK8S_AWS_JOB_SUBNETS: JSON.stringify(["subnet-a", "subnet-b"]),
+      APPLIK8S_AWS_JOB_SECURITY_GROUPS: JSON.stringify(["sg-jobs"]),
+    });
   });
 
   test("rejects dependency cycles before creating an Alchemy stack", () => {

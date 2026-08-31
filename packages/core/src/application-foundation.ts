@@ -125,6 +125,8 @@ export type ApplicationRuntimeAccessOperation =
   | 'event.publish'
   | 'queue.consume'
   | 'queue.publish'
+  | 'job.attempt.start'
+  | 'job.attempt.cancel'
   | 'workflow.invoke'
   | 'workflow.admin'
   | 'schedule.configure'
@@ -164,6 +166,8 @@ const applicationRuntimeAccessOperations = new Set<string>([
   'event.publish',
   'queue.consume',
   'queue.publish',
+  'job.attempt.start',
+  'job.attempt.cancel',
   'workflow.invoke',
   'workflow.admin',
   'schedule.configure',

@@ -79,6 +79,22 @@ describe('local supervisor', () => {
     await expect(readLocalRuntimeArtifacts(manifest, root)).rejects.toThrow(/escapes its build root/u);
   });
 
+  it('loads generated finite Job controllers as first-class runtime artifacts', async () => {
+    const root = await mkdtemp(join(process.env.TMPDIR ?? '/tmp', 'applik8s-local-jobs-'));
+    const source = join(root, 'job-controller.mjs');
+    const contents = 'export const controller = true;\n';
+    await writeFile(source, contents);
+    const digest = `sha256:${createHash('sha256').update(contents).digest('hex')}`;
+    const manifest = join(root, 'typekro-composition.json');
+    await writeFile(manifest, JSON.stringify({
+      apiVersion: 'applik8s.dev/v1alpha1', kind: 'TypeKroCompositionBundle',
+      spec: { jobs: [{ name: 'jobs', nodeId: 'provider.JobRuntime', source, digest }] },
+    }));
+    await expect(readLocalRuntimeArtifacts(manifest, root)).resolves.toEqual([{
+      name: 'jobs', nodeId: 'provider.JobRuntime', role: 'job', source, digest,
+    }]);
+  });
+
   it('selects paired local artifacts only for local execution and rejects partial local variants', async () => {
     const root = await mkdtemp(join(process.env.TMPDIR ?? '/tmp', 'applik8s-local-variant-'));
     const artifactDirectory = join(root, 'lakehouse', 'example');

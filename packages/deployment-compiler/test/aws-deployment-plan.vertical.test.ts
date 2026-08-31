@@ -541,6 +541,61 @@ describe('v0.8 AWS deployment planning', () => {
     expect(plan.resources.some(({ resourceType }) => resourceType === 'fargate-service')).toBe(false);
   });
 
+  it('lowers an AWS finite Job artifact to a private controller with exact worker network inputs', () => {
+    const base = awsGraph();
+    const jobRuntime = {
+      id: 'provider.JobRuntime',
+      kind: 'provider' as const,
+      name: 'JobRuntime',
+      stability: 'experimental' as const,
+      interface: 'JobRuntime',
+      implementation: 'aws-job-runtime',
+      config: {},
+    };
+    const graph = { ...base, nodes: [...base.nodes, jobRuntime] };
+    const artifact = {
+      nodeId: jobRuntime.id,
+      name: 'jobs',
+      role: 'job' as const,
+      source: '/workspace/application/.applik8s/compiled/jobs/controller.mjs',
+      digest: `sha256:${'e'.repeat(64)}` as const,
+      container: {
+        image: 'applik8s/jobs:generated', imageName: 'jobs', tag: 'generated', baseImage: 'node:22-alpine',
+        contextPath: '/workspace/application/.applik8s/compiled/jobs/container',
+        dockerfilePath: '/workspace/application/.applik8s/compiled/jobs/container/Dockerfile',
+        entrypoint: '/app/controller.mjs', command: ['node', '/app/controller.mjs'],
+        sourceDigest: `sha256:${'f'.repeat(64)}` as const,
+      },
+    };
+    const plan = compileApplicationAwsDeploymentPlan({
+      graph,
+      environment: 'review',
+      region: 'us-east-1',
+      accountId: '123456789012',
+      runtimeArtifacts: [artifact],
+    });
+    const service = plan.resources.find(({ semanticNodeId }) => semanticNodeId === jobRuntime.id);
+    expect(plan.diagnostics).toEqual([]);
+    expect(service).toMatchObject({
+      service: 'ecs',
+      resourceType: 'fargate-runtime-service',
+      configuration: {
+        artifactId: `job:${jobRuntime.id}`,
+        finiteJobController: true,
+        port: 8091,
+        healthPort: 8091,
+        healthPath: '/healthz',
+        runtimeBindingEnvironmentNames: ['DATABASE_URL'],
+        jobPrivateSubnetResourceIds: ['foundation.subnet.private.1', 'foundation.subnet.private.2'],
+        jobSecurityGroupResourceIds: [expect.stringMatching(/^runtime-network\.workload\./u)],
+      },
+    });
+    expect(plan.runtimeBindings).toContainEqual(expect.objectContaining({
+      environmentName: 'DATABASE_URL',
+      resourceId: expect.stringContaining('TransactionalDatabase'),
+    }));
+  });
+
   it('binds a caller only to its compiler-declared runtime receiver', () => {
     const base = awsGraph();
     const receiver = base.nodes.find((node) => node.id === 'server.web');

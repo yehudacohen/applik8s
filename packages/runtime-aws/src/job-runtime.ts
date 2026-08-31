@@ -90,6 +90,12 @@ export interface AwsApplicationJobRuntime extends ApplicationJobRuntime {
   close(): Promise<void>;
 }
 
+export interface AwsApplicationJobTaskIdentity {
+  readonly cluster: string;
+  readonly taskArn: string;
+  readonly taskDefinition: string;
+}
+
 export class AwsApplicationJobDispatchError extends Error {
   readonly code = 'JOB_AWS_DISPATCH_FAILED' as const;
   constructor(
@@ -100,6 +106,31 @@ export class AwsApplicationJobDispatchError extends Error {
     super(message, options);
     this.name = 'AwsApplicationJobDispatchError';
   }
+}
+
+/** Resolves the exact task-definition revision of the current ECS task. */
+export async function resolveAwsApplicationJobTaskIdentity(options: {
+  readonly metadataUri?: string;
+  readonly fetch?: (input: string, init?: RequestInit) => Promise<Response>;
+} = {}): Promise<AwsApplicationJobTaskIdentity> {
+  const metadataUri = required(
+    options.metadataUri ?? process.env.ECS_CONTAINER_METADATA_URI_V4,
+    'ECS container metadata URI',
+  );
+  const response = await (options.fetch ?? globalThis.fetch)(`${metadataUri.replace(/\/$/u, '')}/task`, {
+    signal: AbortSignal.timeout(5_000),
+  });
+  if (!response.ok) throw new Error(`ECS task metadata request failed with HTTP ${response.status}.`);
+  const value: unknown = await response.json();
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new TypeError('ECS task metadata returned an invalid document.');
+  }
+  const cluster = required(stringField(value, 'Cluster'), 'ECS task metadata cluster');
+  const taskArn = required(stringField(value, 'TaskARN'), 'ECS task metadata task ARN');
+  const family = required(stringField(value, 'Family'), 'ECS task metadata family');
+  const revision = required(stringField(value, 'Revision'), 'ECS task metadata revision');
+  if (!/^\d+$/u.test(revision)) throw new TypeError('ECS task metadata revision must be numeric.');
+  return { cluster, taskArn, taskDefinition: `${family}:${revision}` };
 }
 
 /** Creates the controller or exact-run worker over one PostgreSQL authority. */
@@ -225,7 +256,6 @@ export function createAwsApplicationJobDispatcher(
         overrides: {
           containerOverrides: [{
             name: options.containerName,
-            command: ['--applik8s-job-run', run.reference.runId],
             environment: [
               { name: 'APPLIK8S_JOB_RUN_ID', value: run.reference.runId },
               { name: 'APPLIK8S_JOB_ID', value: run.reference.job },
@@ -377,6 +407,11 @@ function required(value: string | undefined, label: string): string {
 function requiredDispatcher(value: AwsApplicationJobDispatcher | undefined): AwsApplicationJobDispatcher {
   if (!value) throw new Error('AWS Job controller dispatcher is unavailable.');
   return value;
+}
+
+function stringField(value: object, field: string): string | undefined {
+  const candidate = Reflect.get(value, field);
+  return typeof candidate === 'string' ? candidate : undefined;
 }
 
 function shortDigest(value: string, length: number): string {

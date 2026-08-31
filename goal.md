@@ -104,8 +104,16 @@ attempt-scoped SDK idempotency, stopped-attempt history, duplicate-active-owner
 rejection, exact-task cancellation, and normalized physical observation. Its
 deterministic SDK suite proves create/adopt, retry, collision, cancellation,
 terminal classification, and controller/exact-task-worker composition. AWS
-compiler/deployment lowering and real-AWS lifecycle/interruption evidence remain
-open. The managed-model slice now freezes and implements the public
+compiler/deployment lowering now emits that same immutable controller/worker
+artifact for the AWS target, resolves its exact running ECS task-definition
+revision from task metadata, deploys the controller behind private Cloud Map
+discovery, projects PostgreSQL and bounded subnet/security-group inputs through
+Alchemy, gives typed HTTP Job handles only the controller endpoint, and lowers
+Job attempt start/cancel into exact ECS/PassRole runtime-access grants. Focused
+compiler, plan, access, Alchemy-boundary, SDK, and artifact-loader tests pass.
+Real-AWS create/update/interruption/cancellation/teardown evidence remains open;
+the implementation is not promoted on deterministic SDK evidence alone. The
+managed-model slice now freezes and implements the public
 `application.model(table).managed({ status })` enrichment, qualified
 `Model.store`, `Model.on.reconcile`, and `Model.on.finalize` surface; persists
 that declaration through preview/materialization replay; serializes its exact

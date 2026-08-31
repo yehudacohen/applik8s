@@ -586,6 +586,35 @@ function awsStatementsForRequirement(
     if (!arn) return [];
     return [{ effect: 'Allow', actions: operation === 'event.publish' ? ['kinesis:PutRecord', 'kinesis:PutRecords'] : ['kinesis:DescribeStreamSummary', 'kinesis:GetRecords', 'kinesis:GetShardIterator', 'kinesis:ListShards'], resources: [arn] }];
   }
+  if ((operation === 'job.attempt.start' || operation === 'job.attempt.cancel')
+    && (provider?.interface === 'FiniteExecutionHost' || provider?.interface === 'JobRuntime')) {
+    const taskDefinitionArn = exactArn(config, ['taskDefinitionArn']);
+    const taskArn = exactArn(config, ['taskArn']);
+    const clusterArn = exactArn(config, ['clusterArn']);
+    const taskRoleArn = exactArn(config, ['taskRoleArn']);
+    const executionRoleArn = exactArn(config, ['executionRoleArn']);
+    if (!taskDefinitionArn || !taskArn || !clusterArn || !taskRoleArn || !executionRoleArn) return [];
+    return [
+      ...(operation === 'job.attempt.start' ? [{
+        effect: 'Allow' as const,
+        actions: ['ecs:RunTask'],
+        resources: [taskDefinitionArn],
+      }, {
+        effect: 'Allow' as const,
+        actions: ['iam:PassRole'],
+        resources: [taskRoleArn, executionRoleArn],
+        conditions: { StringEquals: { 'iam:PassedToService': ['ecs-tasks.amazonaws.com'] } },
+      }] : []),
+      {
+        effect: 'Allow',
+        actions: operation === 'job.attempt.start'
+          ? ['ecs:DescribeTasks', 'ecs:ListTasks']
+          : ['ecs:DescribeTasks', 'ecs:ListTasks', 'ecs:StopTask'],
+        resources: ['*'],
+        conditions: { ArnEquals: { 'ecs:cluster': [clusterArn] } },
+      },
+    ];
+  }
   if (operation === 'secret.read') {
     const arn = exactArn(config, ['secretArn', 'arn']) ?? exactArn(graphNodeConfig(requirement, graph), ['secretArn', 'arn']);
     return arn ? [{ effect: 'Allow', actions: ['secretsmanager:GetSecretValue'], resources: [arn] }] : [];
@@ -940,6 +969,7 @@ function owningExecutionNodeIds(nodeId: string, graph: ApplicationGraph): Readon
 function providerInterfaceForOperation(operation: ApplicationRuntimeAccessRequirement['target']['operation']): string | undefined {
   if (operation === 'event.publish' || operation === 'event.subscribe') return 'EventLog';
   if (operation === 'queue.publish' || operation === 'queue.consume') return 'Queue';
+  if (operation === 'job.attempt.start' || operation === 'job.attempt.cancel') return 'FiniteExecutionHost';
   if (operation.startsWith('object.')) return 'ObjectStorage';
   return undefined;
 }
@@ -988,6 +1018,7 @@ function requiresAwsStatement(
   return [
     'object.list', 'object.read', 'object.write', 'object.delete',
     'queue.consume', 'queue.publish', 'secret.read',
+    'job.attempt.start', 'job.attempt.cancel',
     'checkpoint.use', 'schedule.admit',
   ].includes(requirement.target.operation);
 }
@@ -1045,6 +1076,20 @@ function kubernetesBindings(
   defaultNamespace: string,
 ): readonly KubernetesBindingEntry[] {
   const target = graph.nodes.find(({ id }) => id === requirement.target.capabilityId || id === resourceId(requirement));
+  if (requirement.target.operation === 'job.attempt.start' || requirement.target.operation === 'job.attempt.cancel') {
+    return [{
+      kind: 'Role',
+      namespace: defaultNamespace,
+      rule: {
+        apiGroups: ['batch'],
+        resources: ['jobs'],
+        verbs: requirement.target.operation === 'job.attempt.start'
+          ? ['create', 'get']
+          : ['delete', 'get'],
+      },
+      requirementId: requirement.id,
+    }];
+  }
   if (requirement.target.scope.kind === 'kubernetes') {
     const scope = requirement.target.scope;
     const rule = {
@@ -1067,7 +1112,9 @@ function kubernetesBindings(
 }
 
 function requiresKubernetesRule(requirement: ApplicationRuntimeAccessRequirement): boolean {
-  return requirement.target.operation.startsWith('kubernetes.');
+  return requirement.target.operation.startsWith('kubernetes.')
+    || requirement.target.operation === 'job.attempt.start'
+    || requirement.target.operation === 'job.attempt.cancel';
 }
 
 function verbs(operation: ApplicationRuntimeAccessRequirement['target']['operation']): readonly string[] {

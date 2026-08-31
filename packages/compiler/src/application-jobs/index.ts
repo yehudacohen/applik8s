@@ -45,6 +45,7 @@ export interface GeneratedApplicationJobResource {
 }
 
 interface JobControllerContract {
+  readonly executionTarget: 'kubernetes' | 'aws';
   readonly graphName: string;
   readonly provider: ApplicationProviderNode<'JobRuntime'>;
   readonly namespace: string;
@@ -70,7 +71,7 @@ interface JobControllerContract {
   readonly jobs: readonly ApplicationJobNode[];
 }
 
-/** Emits one immutable controller/worker artifact for Kubernetes finite Jobs. */
+/** Emits one immutable controller/worker artifact for maintained finite Jobs. */
 export async function emitGeneratedApplicationJobs(options: {
   readonly graph: ApplicationGraph;
   readonly outDir: string;
@@ -86,17 +87,23 @@ export async function emitGeneratedApplicationJobs(options: {
       node.kind === 'provider' && node.interface === 'JobRuntime',
   );
   if (!provider) throw new Error('Application Jobs require one selected JobRuntime provider.');
-  if (options.executionTarget !== undefined && options.executionTarget !== 'kubernetes') {
-    if (provider.implementation === 'kubernetes-job-runtime') {
-      throw new Error(`JobRuntime ${provider.id} selects Kubernetes but compilation targets ${options.executionTarget}.`);
-    }
-    return [];
-  }
+  const executionTarget = options.executionTarget ?? 'kubernetes';
   if (provider.implementation === 'local-job-runtime') return [];
-  if (provider.implementation !== 'kubernetes-job-runtime') {
-    throw new Error(`Kubernetes compilation cannot lower JobRuntime implementation ${provider.implementation}.`);
+  const expectedImplementation = executionTarget === 'kubernetes'
+    ? 'kubernetes-job-runtime'
+    : executionTarget === 'aws' || executionTarget === 'aws-local'
+      ? 'aws-job-runtime'
+      : undefined;
+  if (!expectedImplementation) return [];
+  if (provider.implementation !== expectedImplementation) {
+    throw new Error(`${executionTarget} compilation cannot lower JobRuntime implementation ${provider.implementation}.`);
   }
-  const contract = jobControllerContract(options.graph, provider, jobs);
+  const contract = jobControllerContract(
+    options.graph,
+    provider,
+    jobs,
+    executionTarget === 'kubernetes' ? 'kubernetes' : 'aws',
+  );
   await mkdir(options.outDir, { recursive: true });
   const generatedEntrypoint = join(options.outDir, 'job-controller.generated.ts');
   const sourcePath = join(options.outDir, 'job-controller.mjs');
@@ -142,7 +149,9 @@ export async function emitGeneratedApplicationJobs(options: {
     baseImage: runtimeImage,
     sourceDigest: digest,
   });
-  const resources = jobControllerResources(contract, container.image, digest);
+  const resources = contract.executionTarget === 'kubernetes'
+    ? jobControllerResources(contract, container.image, digest)
+    : [];
   const manifest = {
     apiVersion: 'applik8s.jobController/v1alpha1',
     kind: 'GeneratedApplicationJobController',
@@ -163,7 +172,7 @@ export async function emitGeneratedApplicationJobs(options: {
       },
       worker: {
         mode: 'sameImmutableArtifact',
-        physicalResource: 'batch/v1 Job',
+        physicalResource: contract.executionTarget === 'kubernetes' ? 'batch/v1 Job' : 'AWS ECS Fargate task',
         durableAuthority: 'postgres',
       },
       container,
@@ -262,26 +271,11 @@ const queryBatchRuntime${index} = createPostgresApplicationQueryBatchRuntime({
   const batchRuntimeClose = runtimeQueries.length > 0
     ? `removeQueryBatchRuntimeResolver(); await Promise.all([${runtimeQueries.map((_, index) => `queryBatchRuntime${index}.close()`).join(', ')}]);`
     : '';
-  return `
-import { createServer } from 'node:http';
-import { createApplicationJobControllerHandler } from '@applik8s/applik8s/job-controller-runtime';
-import { validateApplicationAdmissionContextV1 } from '@applik8s/core';
-import { createSignedEnvelopeCodec, signedEnvelopeUtf8Key, staticSignedEnvelopeKeyProvider } from '@applik8s/runtime';
-import { createPostgresApplicationJobStore } from '@applik8s/runtime-postgres/job-store';
-import { createKubernetesApplicationJobRuntime } from '@applik8s/runtime-kubernetes/job-runtime';
-${batchRuntimeImports}
-${imports}
-
-function requiredEnv(name) { const value = process.env[name]; if (!value) throw new Error('Missing required environment variable ' + name); return value; }
-function jsonSchema(schema, name) { return Object.freeze({ kind: 'jsonSchema', ref: { kind: 'jsonSchema', uri: 'generated:' + name }, schema }); }
-const databaseUrl = requiredEnv('DATABASE_URL');
-const applicationId = ${JSON.stringify(contract.graphName)};
-const deploymentId = requiredEnv('APPLIK8S_DEPLOYMENT_ID');
-${batchRuntimeDeclarations}
-${batchRuntimeResolver}
-const workerRunId = process.env.APPLIK8S_JOB_RUN_ID || process.argv[process.argv.indexOf('--applik8s-job-run') + 1];
-const store = createPostgresApplicationJobStore({ databaseUrl, applicationId, deploymentId });
-const runtime = await createKubernetesApplicationJobRuntime({
+  const providerRuntimeImport = contract.executionTarget === 'kubernetes'
+    ? `import { createKubernetesApplicationJobRuntime } from '@applik8s/runtime-kubernetes/job-runtime';`
+    : `import { createAwsApplicationJobRuntime, resolveAwsApplicationJobTaskIdentity } from '@applik8s/runtime-aws/job-runtime';`;
+  const providerRuntimeInitialization = contract.executionTarget === 'kubernetes'
+    ? `const runtime = await createKubernetesApplicationJobRuntime({
   applicationId,
   deploymentId,
   namespace: ${JSON.stringify(contract.namespace)},
@@ -298,7 +292,51 @@ const runtime = await createKubernetesApplicationJobRuntime({
     { name: 'APPLIK8S_JOB_IMAGE', value: requiredEnv('APPLIK8S_JOB_IMAGE') },
     ${batchRuntimeEnvironment}
   ],
-});
+});`
+    : `const taskIdentity = await resolveAwsApplicationJobTaskIdentity();
+const runtime = await createAwsApplicationJobRuntime({
+  applicationId,
+  deploymentId,
+  cluster: taskIdentity.cluster,
+  taskDefinition: taskIdentity.taskDefinition,
+  containerName: requiredEnv('APPLIK8S_AWS_JOB_CONTAINER'),
+  subnets: jsonStringArrayEnv('APPLIK8S_AWS_JOB_SUBNETS'),
+  securityGroups: jsonStringArrayEnv('APPLIK8S_AWS_JOB_SECURITY_GROUPS', false),
+  region: process.env.AWS_REGION,
+  store,
+  resultRetentionSeconds: ${contract.resultRetentionSeconds},
+  progressRetentionSeconds: ${contract.progressRetentionSeconds},
+  ...(workerRunId ? { workerRunId, workerId: taskIdentity.taskArn } : {}),
+});`;
+  return `
+import { createServer } from 'node:http';
+import { createApplicationJobControllerHandler } from '@applik8s/applik8s/job-controller-runtime';
+import { validateApplicationAdmissionContextV1 } from '@applik8s/core';
+import { createSignedEnvelopeCodec, signedEnvelopeUtf8Key, staticSignedEnvelopeKeyProvider } from '@applik8s/runtime';
+import { createPostgresApplicationJobStore } from '@applik8s/runtime-postgres/job-store';
+${providerRuntimeImport}
+${batchRuntimeImports}
+${imports}
+
+function requiredEnv(name) { const value = process.env[name]; if (!value) throw new Error('Missing required environment variable ' + name); return value; }
+function jsonStringArrayEnv(name, required = true) {
+  const raw = process.env[name];
+  if (!raw && !required) return undefined;
+  let value;
+  try { value = JSON.parse(requiredEnv(name)); } catch (cause) { throw new Error('Environment variable ' + name + ' must contain a JSON string array.', { cause }); }
+  if (!Array.isArray(value) || value.length === 0 || value.some(item => typeof item !== 'string' || !item)) throw new Error('Environment variable ' + name + ' must contain a non-empty JSON string array.');
+  return value;
+}
+function jsonSchema(schema, name) { return Object.freeze({ kind: 'jsonSchema', ref: { kind: 'jsonSchema', uri: 'generated:' + name }, schema }); }
+const databaseUrl = requiredEnv('DATABASE_URL');
+const applicationId = ${JSON.stringify(contract.graphName)};
+const deploymentId = requiredEnv('APPLIK8S_DEPLOYMENT_ID');
+${batchRuntimeDeclarations}
+${batchRuntimeResolver}
+const workerArgumentIndex = process.argv.indexOf('--applik8s-job-run');
+const workerRunId = process.env.APPLIK8S_JOB_RUN_ID || (workerArgumentIndex >= 0 ? process.argv[workerArgumentIndex + 1] : undefined);
+const store = createPostgresApplicationJobStore({ databaseUrl, applicationId, deploymentId });
+${providerRuntimeInitialization}
 const definitions = [${definitions}];
 for (const definition of definitions) runtime.register(definition);
 
@@ -355,6 +393,7 @@ function jobControllerContract(
   graph: ApplicationGraph,
   provider: ApplicationProviderNode<'JobRuntime'>,
   jobs: readonly ApplicationJobNode[],
+  executionTarget: 'kubernetes' | 'aws',
 ): JobControllerContract {
   const config = record(provider.config);
   const namespace = applicationGraphStringValue(config.namespace)
@@ -365,7 +404,7 @@ function jobControllerContract(
     record(record(config.results).database),
   );
   const databaseNamespace = applicationGraphStringValue(databaseProvider.namespace) ?? namespace;
-  if (databaseNamespace !== namespace) {
+  if (executionTarget === 'kubernetes' && databaseNamespace !== namespace) {
     throw new Error(`JobRuntime ${provider.id} is deployed to ${namespace}, but its PostgreSQL Secret is in ${databaseNamespace}. Kubernetes Secret env references must remain in one namespace.`);
   }
   const databaseName = applicationGraphStringValue(databaseProvider.clusterName)
@@ -401,6 +440,7 @@ function jobControllerContract(
     }];
   });
   return {
+    executionTarget,
     graphName: graph.metadata.name,
     provider,
     namespace,

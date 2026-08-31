@@ -381,6 +381,18 @@ function addNodeSpecificRequirements(
     add(node, 'connection.use', node.workflowEngine.interface, { kind: 'capability', capabilityId: node.workflowEngine.interface }, 'framework');
     return;
   }
+  if (node.kind === 'job') {
+    const requirement = graph.providerRequirements.find(({ consumer, interface: providerInterface }) =>
+      consumer.nodeId === node.id && providerInterface === 'JobRuntime');
+    const binding = requirement
+      ? graph.providerBindings.find(({ requirement: requirementId }) => requirementId === requirement.id)
+      : undefined;
+    const providerId = binding?.provider.nodeId ?? requirement?.provider?.nodeId ?? 'JobRuntime';
+    add(node, 'job.attempt.start', providerId, { kind: 'capability', capabilityId: providerId }, 'framework');
+    add(node, 'job.attempt.cancel', providerId, { kind: 'capability', capabilityId: providerId }, 'framework');
+    add(node, 'telemetry.write', 'Telemetry', { kind: 'capability', capabilityId: 'Telemetry' }, 'framework');
+    return;
+  }
   if (node.kind === 'mlModel') {
     add(node, 'connection.use', node.inference.interface, { kind: 'capability', capabilityId: node.inference.interface }, 'framework');
     return;
@@ -526,7 +538,7 @@ function addNodeSpecificRequirements(
     add(node, 'telemetry.write', 'Telemetry', { kind: 'capability', capabilityId: 'Telemetry' }, 'framework');
     return;
   }
-  if (node.kind === 'server' || node.kind === 'job' || node.kind === 'workloadJob' || node.kind === 'projection') {
+  if (node.kind === 'server' || node.kind === 'workloadJob' || node.kind === 'projection') {
     add(node, 'telemetry.write', 'Telemetry', { kind: 'capability', capabilityId: 'Telemetry' }, 'framework');
   }
 }

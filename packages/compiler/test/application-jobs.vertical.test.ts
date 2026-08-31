@@ -21,6 +21,7 @@ import {
 } from '@applik8s/applik8s';
 import { type } from 'arktype';
 import { pgTable, text } from 'drizzle-orm/pg-core';
+import { deriveApplicationGraphFoundation } from '@applik8s/core';
 import { describe, expect, test } from 'vitest';
 import { emitGeneratedApplicationHttpServers } from '../src/application-http/index.js';
 import { emitGeneratedApplicationJobs } from '../src/application-jobs/index.js';
@@ -180,6 +181,10 @@ describe('generated Kubernetes finite Job controller', () => {
     ).public();
     const graph = applicationGraphFor(application.composition);
     expect(graph).toBeDefined();
+    expect(deriveApplicationGraphFoundation(graph!).runtimeAccess).toEqual(expect.arrayContaining([
+      expect.objectContaining({ target: expect.objectContaining({ operation: 'job.attempt.start' }) }),
+      expect.objectContaining({ target: expect.objectContaining({ operation: 'job.attempt.cancel' }) }),
+    ]));
     const outDir = await mkdtemp(join(tmpdir(), 'applik8s-jobs-'));
     try {
       const [artifact] = await emitGeneratedApplicationJobs({
@@ -233,6 +238,38 @@ describe('generated Kubernetes finite Job controller', () => {
       ).toBe(true);
       expect(JSON.stringify(http?.resources)).toContain('APPLIK8S_INTERNAL_OPERATION_SECRET');
       expect(JSON.stringify(http?.resources)).toContain('job-state-app');
+      const awsGraph = {
+        ...graph!,
+        nodes: graph!.nodes.map((node) =>
+          node.kind === 'provider' && node.interface === 'JobRuntime'
+            ? { ...node, implementation: 'aws-job-runtime' as const }
+            : node),
+      };
+      const [awsArtifact] = await emitGeneratedApplicationJobs({
+        graph: awsGraph,
+        outDir: join(outDir, 'aws-jobs'),
+        entrypoint: import.meta.filename,
+        executionTarget: 'aws',
+      });
+      expect(awsArtifact?.resources).toEqual([]);
+      expect(JSON.parse(await readFile(awsArtifact!.manifestPath, 'utf8'))).toMatchObject({
+        spec: { worker: { physicalResource: 'AWS ECS Fargate task' } },
+      });
+      const awsSource = await readFile(join(outDir, 'aws-jobs', 'job-controller.generated.ts'), 'utf8');
+      expect(awsSource).toContain("from '@applik8s/runtime-aws/job-runtime'");
+      expect(awsSource).toContain('resolveAwsApplicationJobTaskIdentity()');
+      expect(awsSource).toContain("jsonStringArrayEnv('APPLIK8S_AWS_JOB_SUBNETS')");
+      expect(awsSource).not.toContain('createKubernetesApplicationJobRuntime');
+      const [awsHttp] = await emitGeneratedApplicationHttpServers({
+        graph: awsGraph,
+        outDir: join(outDir, 'aws-http'),
+        entrypoint: import.meta.filename,
+        executionTarget: 'aws',
+      });
+      expect(awsHttp?.runtimeEndpoints).toEqual([expect.objectContaining({
+        nodeId: expect.stringContaining('provider.job-runtime'),
+      })]);
+      expect(await readFile(awsHttp!.sourcePath, 'utf8')).toContain('APPLIK8S_RUNTIME_ENDPOINT_');
       const reactive = await emitGeneratedApplicationReactive({
         graph: graph!,
         outDir: join(outDir, 'reactive'),

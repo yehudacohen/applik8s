@@ -1349,6 +1349,7 @@ function nativeWorkloadEnvironment(
   const environment: Record<string, unknown> = {
     APPLIK8S_DEPLOYMENT_TARGET: "aws",
     APPLIK8S_APPLICATION_NAME: plan.application,
+    APPLIK8S_DEPLOYMENT_ID: plan.environment,
     APPLIK8S_ENVIRONMENT_ID: plan.environment,
     AWS_REGION: plan.region,
   };
@@ -1421,7 +1422,28 @@ function nativeWorkloadEnvironment(
     const applicationEndpoint = stringConfig(config, "applicationEndpoint");
     if (applicationEndpoint) environment.CELLD_VAR_APPLIK8S_ACTOR_APPLICATION_ENDPOINT = applicationEndpoint;
   }
+  if (booleanConfig(config, "finiteJobController") === true) {
+    const subnetIds = stringArrayConfig(config, "jobPrivateSubnetResourceIds").map((id) =>
+      outputValue(outputs, id, "subnetId"));
+    if (subnetIds.length === 0) throw new Error(`AWS finite Job controller ${resource.id} requires private subnets.`);
+    const securityGroupIds = stringArrayConfig(config, "jobSecurityGroupResourceIds").map((id) =>
+      outputValue(outputs, id, "groupId"));
+    environment.APPLIK8S_AWS_JOB_CONTAINER = nativeContainerName(resource);
+    environment.APPLIK8S_AWS_JOB_SUBNETS = mapStringInputs(subnetIds, (values) => JSON.stringify(values));
+    if (securityGroupIds.length > 0) {
+      environment.APPLIK8S_AWS_JOB_SECURITY_GROUPS = mapStringInputs(securityGroupIds, (values) => JSON.stringify(values));
+    }
+  }
   return environment;
+}
+
+/** @internal Pure regression seam for portable-plan environment projection. */
+export function applicationAwsNativeWorkloadEnvironmentForTest(
+  resource: ApplicationAwsPlanResource,
+  plan: ApplicationAwsDeploymentPlan,
+  outputs: Readonly<Record<string, Readonly<Record<string, unknown>>>>,
+): Readonly<Record<string, unknown>> {
+  return nativeWorkloadEnvironment(resource, plan, outputs);
 }
 
 function nativeWorkloadSecrets(
@@ -1797,6 +1819,13 @@ function requiredStringConfig(resource: ApplicationAwsPlanResource, key: string)
 function stringConfig(value: Readonly<Record<string, unknown>> | undefined, key: string): string | undefined {
   const candidate = value?.[key];
   return typeof candidate === "string" && candidate.length > 0 ? candidate : undefined;
+}
+
+function stringArrayConfig(value: Readonly<Record<string, unknown>> | undefined, key: string): readonly string[] {
+  const candidate = value?.[key];
+  return Array.isArray(candidate) && candidate.every((entry) => typeof entry === "string" && entry.length > 0)
+    ? candidate
+    : [];
 }
 
 function numberConfig(value: Readonly<Record<string, unknown>> | undefined, key: string): number | undefined {

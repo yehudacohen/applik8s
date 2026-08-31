@@ -18,7 +18,11 @@ import type {
   ApplicationServerNode,
   JsonObject,
 } from '@applik8s/core';
-import type { ApplicationFrameworkCredentialDependency } from '@applik8s/deployment-contract';
+import {
+  applicationRuntimeEndpointEnvironmentName,
+  type ApplicationFrameworkCredentialDependency,
+  type ApplicationRuntimeEndpointDependency,
+} from '@applik8s/deployment-contract';
 import { build } from 'esbuild';
 import { applicationCallableProviderEnvironment } from '../application-callable-provider-runtime.js';
 import { generatedCallbackFactoryModule } from '../application-callback-module.js';
@@ -67,6 +71,7 @@ export interface GeneratedApplicationHttpArtifact {
   readonly container: GeneratedApplicationContainerArtifact;
   readonly resources: readonly GeneratedApplicationHttpResource[];
   readonly frameworkCredentials: readonly ApplicationFrameworkCredentialDependency[];
+  readonly runtimeEndpoints: readonly ApplicationRuntimeEndpointDependency[];
 }
 
 export interface GeneratedApplicationHttpResource {
@@ -153,7 +158,8 @@ interface HttpServerCompilerContract {
   readonly workflowEngine?: ApplicationProviderNode;
   readonly jobRuntime?: ApplicationProviderNode;
   readonly jobController?: {
-    readonly endpoint: string;
+    readonly endpoint?: string;
+    readonly endpointEnvironmentName?: string;
     readonly databaseEnvName: string;
     readonly databaseSecretName: string;
     readonly databaseSecretKey: string;
@@ -390,16 +396,15 @@ function applicationHttpCompilerContract(
     if (
       provider?.kind !== 'provider'
       || provider.interface !== 'JobRuntime'
-      || provider.implementation !== 'kubernetes-job-runtime'
+      || !['kubernetes-job-runtime', 'aws-job-runtime'].includes(provider.implementation)
     ) {
       throw new Error(
-        `Generated typed HTTP server ${server.id} finite Jobs require the selected Kubernetes JobRuntime adapter.`,
+        `Generated typed HTTP server ${server.id} finite Jobs require a maintained JobRuntime adapter.`,
       );
     }
-    const providerNamespace = applicationGraphStringValue(provider.config?.namespace)
-      ?? graph.metadata.namespace
-      ?? namespace;
-    if (providerNamespace !== namespace) {
+    const kubernetesRuntime = provider.implementation === 'kubernetes-job-runtime';
+    const providerNamespace = applicationGraphStringValue(provider.config?.namespace) ?? graph.metadata.namespace ?? namespace;
+    if (kubernetesRuntime && providerNamespace !== namespace) {
       throw new Error(
         `Generated typed HTTP server ${server.id} is in namespace ${namespace}, but JobRuntime ${provider.id} is in ${providerNamespace}; private Job handles require a shared namespace.`,
       );
@@ -415,7 +420,9 @@ function applicationHttpCompilerContract(
     const connectionSecret = objectValue(databaseProvider.connectionSecret);
     jobRuntime = provider;
     jobController = {
-      endpoint: `http://${kubernetesName(`${graph.metadata.name}-jobs`)}.${namespace}.svc:8091/v1/jobs`,
+      ...(kubernetesRuntime
+        ? { endpoint: `http://${kubernetesName(`${graph.metadata.name}-jobs`)}.${namespace}.svc:8091/v1/jobs` }
+        : { endpointEnvironmentName: applicationRuntimeEndpointEnvironmentName(provider.id) }),
       databaseEnvName: 'APPLIK8S_JOB_DATABASE_URL',
       databaseSecretName:
         applicationGraphStringValue(connectionSecret.name) ?? `${databaseName}-app`,
@@ -638,6 +645,12 @@ async function emitHttpServer(
     container,
     resources,
     frameworkCredentials,
+    runtimeEndpoints: contract.jobRuntime && contract.jobController?.endpointEnvironmentName
+      ? [{
+          nodeId: contract.jobRuntime.id,
+          environmentName: contract.jobController.endpointEnvironmentName,
+        }]
+      : [],
   };
 }
 
@@ -768,7 +781,11 @@ const contract = ${JSON.stringify({
 ${observability ? generatedApplicationTelemetryRuntimeSource({ application: contract.graph.metadata.name, service: `http-server:${contract.server.name}` }) : ''}
 const routes = [${routeDefinitions}];
 const workflowGateways = Object.freeze(${JSON.stringify(workflowGateways)});
-const jobControllerEndpoint = ${JSON.stringify(contract.jobController?.endpoint)};
+const jobControllerEndpoint = ${contract.jobController?.endpoint
+    ? JSON.stringify(contract.jobController.endpoint)
+    : contract.jobController?.endpointEnvironmentName
+      ? `new URL('/v1/jobs', requiredEnv(${JSON.stringify(contract.jobController.endpointEnvironmentName)})).toString()`
+      : 'undefined'};
 const routeMatchers = routes.map(route => ({
   route,
   segments: route.path.split('/').filter(Boolean),
@@ -795,7 +812,7 @@ const directOperationScope = new AsyncLocalStorage();
 installApplicationOperationRuntimeResolver(() => directOperationScope.getStore());
 installApplicationInvocationAdmissionResolver(() => directOperationScope.getStore()?.admission);
 ${hasJobs ? `const remoteJobRuntime = createRemoteApplicationJobRuntime({
-  endpoint: ${JSON.stringify(contract.jobController?.endpoint)},
+  endpoint: jobControllerEndpoint,
   authorization: requiredEnv('APPLIK8S_INTERNAL_OPERATION_SECRET'),
   providerNodeId: ${JSON.stringify(contract.jobRuntime?.id)},
   encodeAdmission: admission => jobControllerAdmission.sign(

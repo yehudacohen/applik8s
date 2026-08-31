@@ -125,6 +125,47 @@ describe('v0.8 runtime-access lowering', () => {
     ]);
   });
 
+  it('lowers finite Job attempt control to one task family, cluster, and role pair', () => {
+    const base = accessGraph();
+    const derived = deriveApplicationGraphFoundation(base);
+    const source = derived.runtimeAccess[0];
+    if (!source) throw new Error('Expected one source-attributed execution fixture.');
+    const provider = {
+      id: 'provider.FiniteExecutionHost', kind: 'provider' as const, name: 'FiniteExecutionHost', stability: 'experimental' as const,
+      interface: 'FiniteExecutionHost', implementation: 'aws-finite-execution-host',
+    };
+    const requirement = (operation: 'job.attempt.start' | 'job.attempt.cancel') => applicationRuntimeAccessRequirement({
+      ...source,
+      target: { capabilityId: provider.id, operation, scope: { kind: 'capability', capabilityId: provider.id } },
+      origin: 'provider-required',
+    });
+    const graph: ApplicationGraph = {
+      ...base,
+      nodes: [base.nodes[0]!, provider],
+      edges: [],
+      foundation: { ...derived, runtimeAccess: [requirement('job.attempt.start'), requirement('job.attempt.cancel')] },
+    };
+    const plan = compileApplicationRuntimeAccessPlan({
+      graph,
+      target: 'aws',
+      targetResources: {
+        [provider.id]: {
+          taskDefinitionArn: 'arn:aws:ecs:us-east-1:123456789012:task-definition/application-jobs:*',
+          taskArn: 'arn:aws:ecs:us-east-1:123456789012:task/application/*',
+          clusterArn: 'arn:aws:ecs:us-east-1:123456789012:cluster/application',
+          taskRoleArn: 'arn:aws:iam::123456789012:role/application-jobs',
+          executionRoleArn: 'arn:aws:iam::123456789012:role/application-jobs-bootstrap',
+        },
+      },
+    });
+    expect(plan.diagnostics).toEqual([]);
+    expect(plan.executions[0]?.aws?.statements).toEqual(expect.arrayContaining([
+      expect.objectContaining({ actions: ['ecs:RunTask'], resources: [expect.stringContaining('task-definition/application-jobs:*')] }),
+      expect.objectContaining({ actions: ['ecs:DescribeTasks', 'ecs:ListTasks', 'ecs:StopTask'], resources: ['*'] }),
+      expect.objectContaining({ actions: ['iam:PassRole'], resources: expect.arrayContaining([expect.stringContaining(':role/application-jobs')]) }),
+    ]));
+  });
+
   it('resolves a processor event requirement through its exact bound EventLog', () => {
     const graph = eventAccessGraph(['provider.events']);
     const aws = compileApplicationRuntimeAccessPlan({

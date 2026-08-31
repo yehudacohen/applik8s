@@ -351,6 +351,8 @@ const awsProviders: Readonly<Record<string, readonly string[]>> = {
   Search: ['postgres-search'],
   NotificationDelivery: ['local-inspectable', 'smtp'],
   PaymentProvider: ['local-simulated', 'stripe'],
+  JobRuntime: ['aws-job-runtime'],
+  FiniteExecutionHost: ['aws-finite-execution-host'],
 };
 
 /**
@@ -396,6 +398,8 @@ const kubernetesProviders: Readonly<Record<string, readonly string[]>> = {
   LakehouseDataset: ['s3-dataset'],
   LakehouseQuery: ['athena-queries'],
   ActorRuntime: ['celld-actors'],
+  JobRuntime: ['kubernetes-job-runtime'],
+  FiniteExecutionHost: ['kubernetes-finite-execution-host'],
 };
 
 function providerMaturity(target: ApplicationDeploymentTargetKind, stability: ApplicationProviderNode['stability']): ApplicationProviderGuaranteeManifest['maturity'] {

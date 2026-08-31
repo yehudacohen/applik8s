@@ -607,6 +607,7 @@ export async function readLocalRuntimeArtifacts(
     ['agents', 'agent'],
     ['http', 'http'],
     ['mcp', 'mcp'],
+    ['jobs', 'job'],
   ] as const;
   const artifacts: ApplicationLocalRuntimeArtifact[] = [];
   const identities = new Set<string>();

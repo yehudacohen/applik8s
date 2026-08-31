@@ -8,6 +8,7 @@ export type ApplicationRuntimeArtifactRole =
   | 'agent'
   | 'http'
   | 'mcp'
+  | 'job'
   | 'operator';
 
 /**

@@ -18,6 +18,7 @@ import {
   awsApplicationJobStartedBy,
   createAwsApplicationJobDispatcher,
   createAwsApplicationJobRuntime,
+  resolveAwsApplicationJobTaskIdentity,
 } from '../src/job-runtime.js';
 
 function storedRun(overrides: Partial<ApplicationJobStoredRun> = {}): ApplicationJobStoredRun {
@@ -122,6 +123,25 @@ const options = {
 } as const;
 
 describe('AWS finite Job dispatcher', () => {
+  test('resolves the exact running task-definition revision from ECS metadata', async () => {
+    await expect(resolveAwsApplicationJobTaskIdentity({
+      metadataUri: 'http://metadata/v4/container',
+      fetch: async (input) => {
+        expect(String(input)).toBe('http://metadata/v4/container/task');
+        return Response.json({
+          Cluster: 'arn:aws:ecs:us-east-1:123456789012:cluster/application',
+          TaskARN: 'arn:aws:ecs:us-east-1:123456789012:task/application/controller',
+          Family: 'application-jobs',
+          Revision: '17',
+        });
+      },
+    })).resolves.toEqual({
+      cluster: 'arn:aws:ecs:us-east-1:123456789012:cluster/application',
+      taskArn: 'arn:aws:ecs:us-east-1:123456789012:task/application/controller',
+      taskDefinition: 'application-jobs:17',
+    });
+  });
+
   test('creates and adopts one identity-tagged Fargate task', async () => {
     const fake = fakeEcs();
     const run = storedRun();
@@ -137,8 +157,11 @@ describe('AWS finite Job dispatcher', () => {
       launchType: 'FARGATE',
       startedBy: awsApplicationJobStartedBy(options, run.reference.runId),
       networkConfiguration: { awsvpcConfiguration: { assignPublicIp: 'DISABLED' } },
-      overrides: { containerOverrides: [{ name: 'worker', command: ['--applik8s-job-run', 'run-1'] }] },
+      overrides: { containerOverrides: [{ name: 'worker', environment: expect.arrayContaining([
+        { name: 'APPLIK8S_JOB_RUN_ID', value: 'run-1' },
+      ]) }] },
     });
+    expect(submitted?.input.overrides?.containerOverrides?.[0]?.command).toBeUndefined();
   });
 
   test('normalizes running, successful, failed, and cancellation state', async () => {

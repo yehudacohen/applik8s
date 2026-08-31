@@ -397,7 +397,14 @@ export function compileApplicationAwsDeploymentPlan(request: CompileApplicationA
     target: request.target ?? 'aws',
     profile: request.profile ?? request.environment,
     ...(request.workspaceRoot ? { workspaceRoot: request.workspaceRoot } : {}),
-    targetResources: awsRuntimeAccessBindings(request.graph, resources, request),
+    targetResources: awsRuntimeAccessBindings(
+      request.graph,
+      resources,
+      request,
+      runtimeArtifacts,
+      workloadPlacements,
+      name,
+    ),
     bootstrapEgress: resources.has('foundation.network')
       ? awsDnsBootstrapEgress(request.target ?? 'aws')
       : [],
@@ -578,6 +585,13 @@ export function compileApplicationAwsDeploymentPlan(request: CompileApplicationA
       runtimeBindingEnvironmentNames: databaseEnvironmentNames,
       runtimeEndpointBindings,
       ...runtimeConfiguration,
+      ...(artifact.role === 'job' ? {
+        finiteJobController: true,
+        jobPrivateSubnetResourceIds: ['foundation.subnet.private.1', 'foundation.subnet.private.2'],
+        ...(runtimeNetwork.workloadSecurityGroups.get(id)
+          ? { jobSecurityGroupResourceIds: [runtimeNetwork.workloadSecurityGroups.get(id)!] }
+          : {}),
+      } : {}),
       ...(placement.kind === 'service' ? {
         port: placement.port,
         healthPort: placement.healthPort,
@@ -767,6 +781,9 @@ function runtimeArtifactPlacement(
   if (artifact.role === 'workflow' && node?.kind === 'workflowWorker') {
     return { kind: 'service', port: node.deployment.healthPort + 1, healthPort: node.deployment.healthPort, healthPath: '/ready' };
   }
+  if (artifact.role === 'job' && node?.kind === 'provider' && node.interface === 'JobRuntime') {
+    return { kind: 'service', port: 8091, healthPort: 8091, healthPath: '/healthz' };
+  }
   return { kind: 'worker' };
 }
 
@@ -830,6 +847,12 @@ function databaseEnvironmentNamesForWorkload(nodeId: string, graph: ApplicationG
     if (reachable.has(requirement.consumer.nodeId)) reachable.add(requirement.target.capabilityId);
   }
   const environments = new Set<string>();
+  if (root?.kind === 'provider' && root.interface === 'JobRuntime' && root.implementation === 'aws-job-runtime') {
+    environments.add('DATABASE_URL');
+  }
+  if (root?.kind === 'server' && root.routes.some((route) => (route.functionNative?.jobBindings?.length ?? 0) > 0)) {
+    environments.add('APPLIK8S_JOB_DATABASE_URL');
+  }
   const visit = (id: string): void => {
     const node = graph.nodes.find((candidate) => candidate.id === id);
     if (!node) return;
@@ -1167,6 +1190,33 @@ function awsRuntimeBindings(
     if (previous && stableJson(previous) !== stableJson(binding)) throw new Error(`Database environment ${binding.environmentName} resolves to multiple AWS runtime authorities.`);
     bindings.set(binding.environmentName, binding);
   }
+  const awsJobRuntime = graph.nodes.find((node): node is ApplicationProviderNode =>
+    node.kind === 'provider'
+    && node.interface === 'JobRuntime'
+    && node.implementation === 'aws-job-runtime');
+  if (awsJobRuntime) {
+    const databaseResource = [...resources.values()].find(({ service, resourceType }) =>
+      service === 'rds' && resourceType === 'postgresql-instance');
+    if (!databaseResource) {
+      throw new Error(`AWS JobRuntime ${awsJobRuntime.id} requires a PostgreSQL result authority, but no RDS resource was planned.`);
+    }
+    bindings.set('DATABASE_URL', {
+      id: 'postgres-url.job-runtime',
+      kind: 'postgresUrl',
+      environmentName: 'DATABASE_URL',
+      resourceId: databaseResource.id,
+      database: 'postgres',
+      sensitivity: 'sensitive',
+    });
+    bindings.set('APPLIK8S_JOB_DATABASE_URL', {
+      id: 'postgres-url.job-http-runtime',
+      kind: 'postgresUrl',
+      environmentName: 'APPLIK8S_JOB_DATABASE_URL',
+      resourceId: databaseResource.id,
+      database: 'postgres',
+      sensitivity: 'sensitive',
+    });
+  }
   if (graph.nodes.some(({ kind }) => kind === 'schedule')) {
     const resourceId = [...resources.values()].find(({ service, resourceType }) => service === 'rds' && resourceType === 'postgresql-instance')?.id;
     if (!resourceId) throw new Error('AWS Scheduler requires a PostgreSQL occurrence authority, but no RDS resource was planned.');
@@ -1410,6 +1460,7 @@ function awsProviderResources(provider: ApplicationProviderNode, request: Compil
 }
 
 function awsRuntimeOnlyProvider(provider: ApplicationProviderNode): boolean {
+  if (provider.interface === 'JobRuntime' && provider.implementation === 'aws-job-runtime') return true;
   if (provider.interface === 'ActorRuntime' && provider.implementation === 'deterministic-local-actors') return true;
   if (provider.interface === 'AI' && provider.implementation === 'envoy-ai-gateway') {
     return providerConfig(provider).provision === false;
@@ -1474,6 +1525,9 @@ function awsRuntimeAccessBindings(
   graph: ApplicationGraph,
   resources: ReadonlyMap<string, ApplicationAwsPlanResource>,
   request: CompileApplicationAwsDeploymentPlanRequest,
+  runtimeArtifacts: readonly ApplicationRuntimeArtifact[],
+  workloadPlacements: readonly ApplicationRuntimeAccessWorkloadPlacement[],
+  name: (suffix: string, limit?: number) => string,
 ): Readonly<Record<string, Readonly<Record<string, unknown>>>> {
   const bindings: Record<string, Readonly<Record<string, unknown>>> = {};
   for (const sourceProvider of graph.nodes.filter((node): node is ApplicationProviderNode => node.kind === 'provider')) {
@@ -1518,6 +1572,27 @@ function awsRuntimeAccessBindings(
         scheduleArn: `arn:aws:scheduler:${request.region}:${request.accountId}:schedule/${group.physicalName}/*`,
         executionRoleArn: `output://${executionRole.id}/roleArn`,
       };
+    }
+    else if ((provider.interface === 'FiniteExecutionHost' && provider.implementation === 'aws-finite-execution-host')
+      || (provider.interface === 'JobRuntime' && provider.implementation === 'aws-job-runtime')) {
+      const artifact = runtimeArtifacts.find(({ role }) => role === 'job');
+      const artifactId = artifact ? applicationRuntimeArtifactId(artifact) : undefined;
+      const resourceId = artifactId ? `runtime-artifact.${hash(artifactId, 20)}` : undefined;
+      const placement = resourceId
+        ? workloadPlacements.find(({ aws }) => aws?.resourceId === resourceId)?.aws
+        : undefined;
+      const cluster = resources.get('foundation.compute');
+      if (artifactId && resourceId && placement && cluster) {
+        const physicalName = name(`job-${hash(artifactId, 10)}`);
+        const account = request.accountId ?? '*';
+        bindings[provider.id] = {
+          taskDefinitionArn: `arn:aws:ecs:${request.region}:${account}:task-definition/${physicalName}:*`,
+          taskArn: `arn:aws:ecs:${request.region}:${account}:task/${cluster.physicalName}/*`,
+          clusterArn: `arn:aws:ecs:${request.region}:${account}:cluster/${cluster.physicalName}`,
+          taskRoleArn: `arn:aws:iam::${account}:role/${placement.roleName}`,
+          executionRoleArn: `arn:aws:iam::${account}:role/${placement.executionRoleName}`,
+        };
+      }
     }
     else if (provider.interface === 'ActorRuntime' && provider.implementation === 'celld-actors') {
       const base = `provider.${canonicalProviderId}`;
