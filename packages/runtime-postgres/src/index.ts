@@ -11,6 +11,8 @@ import {
 } from 'drizzle-orm/postgres-js';
 import postgres from 'postgres';
 
+export * from './job-store.js';
+
 export function createApplicationPostgresSql(url: string, options: ApplicationPostgresClientOptions = {}): ApplicationPostgresSql {
   const native = postgres(url, options);
   return createApplicationPostgresSqlFromNative(native);

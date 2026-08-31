@@ -8465,8 +8465,20 @@
           "name": ".",
           "source": "packages/runtime-postgres/src/index.ts",
           "symbols": [
+            "PostgresApplicationJobStore",
+            "PostgresApplicationJobStoreOptions",
             "createApplicationPostgresDrizzle",
-            "createApplicationPostgresSql"
+            "createApplicationPostgresSql",
+            "createPostgresApplicationJobStore"
+          ]
+        },
+        {
+          "name": "./job-store",
+          "source": "packages/runtime-postgres/src/job-store.ts",
+          "symbols": [
+            "PostgresApplicationJobStore",
+            "PostgresApplicationJobStoreOptions",
+            "createPostgresApplicationJobStore"
           ]
         },
         {
@@ -10460,6 +10472,22 @@
       "sources": [
         "packages/applik8s/src/application-finite-jobs.ts",
         "packages/applik8s/src/application-job-durable-runtime.ts"
+      ],
+      "maturity": "candidate-review-required"
+    },
+    {
+      "code": "JOB_LEASE_LOST",
+      "owner": "package:@applik8s/applik8s",
+      "sources": [
+        "packages/applik8s/src/application-job-store.ts"
+      ],
+      "maturity": "candidate-review-required"
+    },
+    {
+      "code": "JOB_STORE_INVARIANT",
+      "owner": "package:@applik8s/applik8s",
+      "sources": [
+        "packages/applik8s/src/application-job-store.ts"
       ],
       "maturity": "candidate-review-required"
     },

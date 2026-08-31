@@ -30,6 +30,11 @@
       "types": "./dist/schedule-occurrence.d.ts",
       "import": "./dist/schedule-occurrence.js",
       "default": "./dist/schedule-occurrence.js"
+    },
+    "./job-store": {
+      "types": "./dist/job-store.d.ts",
+      "import": "./dist/job-store.js",
+      "default": "./dist/job-store.js"
     }
   },
   "dependencies": {

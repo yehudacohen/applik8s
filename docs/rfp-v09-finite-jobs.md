@@ -57,8 +57,8 @@ deliberately experimental and remains distinct from the stable `workloadJob` inf
 `JobRuntime.local()`, `.kubernetes()`, and `.aws()` produce validated, graph-visible implementation values;
 the deployed constructors now require typed private queue, execution-host, result-store, scheduler, and
 event-publication dependencies instead of accepting structural objects. Scheduling integration,
-application-fact publication, a transactional PostgreSQL store, deployed runtime adapters, and deployed
-cross-provider conformance evidence remain
+application-fact publication, deployed execution adapters, and deployed cross-provider conformance
+evidence remain
 implementation work. The Kubernetes and AWS constructors remain release-gated until their adapters and
 lifecycle evidence are complete. The local runtime is a behavioral kernel, not a claim that the complete
 Job contract is deployment-ready yet.
@@ -74,6 +74,11 @@ deployment lifecycle remain provider-specific additions to the shared suite and 
 The shared durable kernel itself passes the same black-box suite and an adversarial worker-loss test: a
 second worker reclaims the expired lease, increments the attempt, commits the result, and rejects the late
 first attempt without replacing the durable run identity.
+The same kernel now runs over the transactional `@applik8s/runtime-postgres/job-store` authority. Its
+OrbStack qualification passes the complete black-box suite and a concurrent two-runtime admission test,
+proving that scoped idempotency is serialized by the database rather than a process-local cache. This is
+durable control-plane evidence; it does not yet qualify Kubernetes workload execution as the maintained
+deployed provider.
 
 This RFP owns logical run identity, attempt identity, input/result/progress/cancellation contracts,
 idempotency scope, retry and interruption semantics, authority and causal attribution, scheduling

@@ -8,6 +8,8 @@ import {
 } from '@applik8s/applik8s';
 import {
   type ApplicationAdmissionInvocationContextV1,
+  canonicalJsonCompatibleV1Policy,
+  canonicalJsonV1String,
   createApplicationExecutionPrincipalV1,
 } from '@applik8s/core';
 import { type as schema } from 'arktype';
@@ -311,8 +313,8 @@ function exact(actual: unknown, expected: unknown, label: string): void {
 }
 
 function equal(actual: unknown, expected: unknown, label: string): void {
-  const left = JSON.stringify(actual);
-  const right = JSON.stringify(expected);
+  const left = canonicalJsonV1String(actual, canonicalJsonCompatibleV1Policy);
+  const right = canonicalJsonV1String(expected, canonicalJsonCompatibleV1Policy);
   if (left !== right) throw new Error(`${label} expected ${right} but received ${left}.`);
 }
 

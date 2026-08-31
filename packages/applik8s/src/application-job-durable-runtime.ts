@@ -160,14 +160,14 @@ export function createDurableApplicationJobRuntime(
     if (deadlineMs !== undefined) {
       if (deadlineMs <= 0) {
         terminalizedByDeadline = true;
-        await terminalizeDeadline(store, claimed, lease, now, resultRetentionSeconds);
+        await terminalizeDeadline(store, claimed, lease, definition, now, resultRetentionSeconds);
         controllers.delete(claimed.reference.runId);
         return;
       }
       terminalTimer = setTimeout(() => {
         terminalizedByDeadline = true;
         controller.abort(new Error('JOB_EXECUTION_DEADLINE_EXCEEDED'));
-        void terminalizeDeadline(store, claimed, lease, now, resultRetentionSeconds);
+        void terminalizeDeadline(store, claimed, lease, definition, now, resultRetentionSeconds);
       }, deadlineMs);
       terminalTimer.unref?.();
     }
@@ -317,7 +317,11 @@ export function createDurableApplicationJobRuntime(
           runId: reference.runId,
           requestedAt,
           ...(reason?.trim() ? { reason: reason.trim() } : {}),
-          resultExpiresAt: retentionExpiry(requestedAt, undefined, resultRetentionSeconds),
+          resultExpiresAt: retentionExpiry(
+            requestedAt,
+            definitions.get(reference.job)?.options.retention?.result,
+            resultRetentionSeconds,
+          ),
         });
         controllers.get(reference.runId)?.abort(new ApplicationJobCancelledError(updated.cancellation?.reason));
         wake();
@@ -406,6 +410,7 @@ async function terminalizeDeadline(
   store: ApplicationJobStore,
   run: ApplicationJobStoredRun,
   lease: ApplicationJobLeaseToken,
+  definition: AnyJobDefinition,
   now: () => Date,
   resultRetentionSeconds: number,
 ): Promise<void> {
@@ -416,7 +421,11 @@ async function terminalizeDeadline(
       lease,
       outcome: { status: 'timedOut', deadline: run.deadline ?? terminalAt },
       terminalAt,
-      resultExpiresAt: retentionExpiry(terminalAt, undefined, resultRetentionSeconds),
+      resultExpiresAt: retentionExpiry(
+        terminalAt,
+        definition.options.retention?.result,
+        resultRetentionSeconds,
+      ),
     });
   } catch (cause) {
     if (!(cause instanceof ApplicationJobLeaseLostError)) throw cause;
