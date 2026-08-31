@@ -54,6 +54,8 @@ export interface DurableApplicationJobRuntimeOptions {
   readonly claimRunId?: string;
   /** Idempotent physical-dispatch convergence invoked after every nonterminal admission. */
   readonly dispatch?: (run: ApplicationJobStoredRun) => void | Promise<void>;
+  /** Provider cancellation delivery invoked after the durable request is recorded. */
+  readonly cancelDispatch?: (run: ApplicationJobStoredRun) => void | Promise<void>;
 }
 
 export interface DurableApplicationJobRuntime extends ApplicationJobRuntime {
@@ -331,6 +333,7 @@ export function createDurableApplicationJobRuntime(
             resultRetentionSeconds,
           ),
         });
+        await options.cancelDispatch?.(updated);
         controllers.get(reference.runId)?.abort(new ApplicationJobCancelledError(updated.cancellation?.reason));
         wake();
         return {

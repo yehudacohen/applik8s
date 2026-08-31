@@ -1,8 +1,10 @@
 // typecast-file-boundary: Kubernetes client-node returns structurally untyped custom objects; this adapter validates API coordinates and confines conversion to the transport edge.
-import type { ResourceObject, ResourceReadList, WatchEvent } from '@applik8s/core';
-import type { KubeConfig } from '@kubernetes/client-node';
-import type { ApplicationInstallationReference, ApplicationInstallationTransport, ApplicationInstallationWatchOptions } from '@applik8s/applik8s';
 
+import type { ApplicationInstallationReference, ApplicationInstallationTransport } from '@applik8s/applik8s';
+import type { ResourceObject, WatchEvent } from '@applik8s/core';
+import type { KubeConfig } from '@kubernetes/client-node';
+
+export * from './job-runtime.js';
 export * from './schedule.js';
 
 export interface KubernetesApplicationInstallationTransportOptions {

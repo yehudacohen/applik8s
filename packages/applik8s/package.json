@@ -171,6 +171,11 @@
       "import": "./dist/application-operation-runtime.js",
       "default": "./dist/application-operation-runtime.js"
     },
+    "./job": {
+      "types": "./dist/application-finite-jobs.d.ts",
+      "import": "./dist/application-finite-jobs.js",
+      "default": "./dist/application-finite-jobs.js"
+    },
     "./job-store": {
       "types": "./dist/application-job-store.d.ts",
       "import": "./dist/application-job-store.js",

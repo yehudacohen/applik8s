@@ -73,6 +73,7 @@ describe('durable finite Job runtime', () => {
   test('separates controller admission from one exact-run worker', async () => {
     const store = createDeterministicApplicationJobStore();
     const dispatched: string[] = [];
+    const cancelled: string[] = [];
     let executions = 0;
     const definition = {
       id: 'exports.controller-worker.v1',
@@ -87,6 +88,7 @@ describe('durable finite Job runtime', () => {
       store,
       executeWorkers: false,
       dispatch: (run) => { dispatched.push(run.reference.runId); },
+      cancelDispatch: (run) => { cancelled.push(run.reference.runId); },
     });
     const job = createApplicationJobBinding(definition, controller);
     const run = await job.start({ value: 4 });
@@ -94,6 +96,10 @@ describe('durable finite Job runtime', () => {
     expect(executions).toBe(0);
     expect(dispatched).toEqual([run.reference.runId, run.reference.runId]);
     expect(duplicate.reference).toEqual(run.reference);
+
+    const cancelledRun = await job.start({ value: 5 }, { idempotencyKey: 'cancelled-run' });
+    await expect(cancelledRun.cancel('not needed')).resolves.toMatchObject({ status: 'requested' });
+    expect(cancelled).toEqual([cancelledRun.reference.runId]);
 
     const worker = createDurableApplicationJobRuntime({
       store,
