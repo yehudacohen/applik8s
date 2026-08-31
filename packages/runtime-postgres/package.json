@@ -21,6 +21,11 @@
       "import": "./dist/index.js",
       "default": "./dist/index.js"
     },
+    "./sql": {
+      "types": "./dist/sql.d.ts",
+      "import": "./dist/sql.js",
+      "default": "./dist/sql.js"
+    },
     "./schedule-state": {
       "types": "./dist/schedule-state.d.ts",
       "import": "./dist/schedule-state.js",

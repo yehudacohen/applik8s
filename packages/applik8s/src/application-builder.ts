@@ -41,6 +41,17 @@ import {
 } from './application-authority.js';
 import { expandApplicationCallbackDependencies } from './application-callback.js';
 import { recordApplicationCrdGraph } from './application-crd-graph.js';
+import {
+  type ApplicationEventCatalog,
+  type ApplicationEventCatalogSource,
+  type ApplicationEventProducer,
+  type ApplicationEventSelectionBinding,
+  applicationCatalogSourceOptions,
+  bindApplicationEventCatalogSource,
+  bindApplicationEventProducer,
+  createApplicationEventCatalog,
+  createApplicationEventCatalogRegistry,
+} from './application-event-catalog.js';
 import { type ApplicationResourceControllerBinding, type ApplicationResourceControllerOptions, type ApplicationResourceEventHandlers, createApplicationResourceEventOperatorController } from './application-events.js';
 import { type ApplicationJobBinding, type ApplicationJobContract, type ApplicationJobHandler, type ApplicationJobOptions, registerApplicationJob } from './application-finite-jobs.js';
 import { inferApplicationFunctionNativeTransaction } from './application-function-native-transactions.js';
@@ -79,17 +90,6 @@ import {
   type ApplicationModuleReference,
   applicationModuleMetadataFor,
 } from './application-modules.js';
-import {
-  type ApplicationEventCatalog,
-  type ApplicationEventProducer,
-  type ApplicationEventCatalogSource,
-  type ApplicationEventSelectionBinding,
-  applicationCatalogSourceOptions,
-  bindApplicationEventCatalogSource,
-  bindApplicationEventProducer,
-  createApplicationEventCatalog,
-  createApplicationEventCatalogRegistry,
-} from './application-event-catalog.js';
 import {
   applicationNativeCommandModelBinding,
   applicationNativeCreateContracts,
@@ -4480,15 +4480,9 @@ function createApplicationContext<TSpec extends KroCompatibleType, TStatus exten
       return source;
     },
     register(input) {
-      const binding = registerScopedStream(input.definition, {
-        database: input.database,
-        retention: { maxAgeSeconds: 30 * 24 * 60 * 60, maxMessages: 10_000_000 },
-        partitionBy: (event) => event.id,
-        authorize: () => false,
-      }, {
-        revision: `catalog-${input.definition.id}`,
-        selection: input.selection,
-        sources: input.sources.map((source) => ({
+      const sources = input.sources.map((source) => {
+        const stream = source.stream();
+        return {
           stream: { nodeId: applicationReactiveNodeId('stream', source.definition.id) },
           contract: {
             id: source.definition.id,
@@ -4497,7 +4491,19 @@ function createApplicationContext<TSpec extends KroCompatibleType, TStatus exten
           },
           payload: source.definition.payload,
           producer: source.producer,
-        })),
+          authorize: (principal: ApplicationQueryPrincipal, action: 'read' | 'replay') =>
+            stream.authorize(principal, action),
+        };
+      });
+      const binding = registerScopedStream(input.definition, {
+        database: input.database,
+        retention: { maxAgeSeconds: 30 * 24 * 60 * 60, maxMessages: 10_000_000 },
+        partitionBy: (event) => event.id,
+        authorize: () => false,
+      }, {
+        revision: `catalog-${input.definition.id}`,
+        selection: input.selection,
+        sources,
         lowering: 'postgres-native-filter',
         ...(input.predicate ? { predicate: input.predicate } : {}),
       });

@@ -23,7 +23,6 @@ import { applicationProviderGraphNodeId } from './application-identifiers.js';
 import type { ApplicationModelCommandBinding } from './application-models.js';
 import { registerApplicationObjectStore } from './application-object-storage.js';
 import { type ApplicationProcessorOptions, normalizeApplicationProcessorOptions } from './application-processor-policy.js';
-import type { ApplicationScheduleHandle } from './application-schedule.js';
 import {
   applicationProjectionRuntime,
   attachApplicationProjectionRebuildTarget,
@@ -33,6 +32,7 @@ import type { ApplicationAnalyticalDatabaseProvider, ApplicationIdentityProvider
 import { applicationAnalyticalDatabaseImplementation, applicationIndexBackend, applicationObjectStorageImplementation, applicationProviderImplementationName, applicationProviderQualificationFor, applicationProviderSelectionFor, applicationTransactionalDatabaseImplementation, defaultApplicationIndexProvider, IndexStore, isApplicationAnalyticalDatabaseProvider, isApplicationIdentityProvider, isClickHouseAnalyticalDatabaseProvider, isPostgresAnalyticalDatabaseProvider } from './application-providers.js';
 import type { ApplicationQueryBinding, ApplicationQueryPrincipal } from './application-queries.js';
 import { applicationQueryBindingForOperation } from './application-queries.js';
+import type { ApplicationScheduleHandle } from './application-schedule.js';
 import { applicationTypeKroGraphValue, applicationTypeKroSerializedValue, applicationTypeKroString } from './application-typekro-values.js';
 import { type ApplicationTaskBinding, type ApplicationWorkflowBinding, type ApplicationWorkflowState, applicationGeneratedDependencyAlias, recordApplicationWorkflowEngine } from './application-workflows.js';
 import { applicationRelationalModelOptionsFor } from './drizzle.js';
@@ -131,6 +131,11 @@ export interface ApplicationStreamBinding<TPayload extends object = object, TPri
       readonly version: string;
       readonly payload: SchemaInput<object>;
       readonly producer: { readonly kind: string; readonly id: string };
+      /** Runtime-only source visibility policy; graph artifacts retain the source node identity. */
+      readonly authorize?: (
+        principal: ApplicationQueryPrincipal,
+        action: 'read' | 'replay',
+      ) => Promise<boolean>;
     }[];
     readonly predicate?: (event: TPayload) => boolean;
   };
@@ -520,6 +525,10 @@ export function registerApplicationStream<TPayload extends object, TPrincipal ex
     readonly contract: { readonly id: string; readonly name: string; readonly version: string };
     readonly payload: SchemaInput<object>;
     readonly producer: { readonly kind: string; readonly id: string };
+    readonly authorize?: (
+      principal: ApplicationQueryPrincipal,
+      action: 'read' | 'replay',
+    ) => Promise<boolean>;
   }[];
   readonly lowering: 'postgres-native-filter';
   readonly predicate?: (event: TPayload) => boolean;
@@ -586,7 +595,12 @@ export function registerApplicationStream<TPayload extends object, TPrincipal ex
     database: options.database,
     ...(catalog ? { catalog: {
       revision: catalog.revision,
-      sources: catalog.sources.map(({ contract, payload, producer }) => ({ ...contract, payload, producer })),
+      sources: catalog.sources.map(({ contract, payload, producer, authorize }) => ({
+        ...contract,
+        payload,
+        producer,
+        ...(authorize ? { authorize } : {}),
+      })),
       ...(catalog.predicate ? { predicate: catalog.predicate } : {}),
     } } : {}),
     partition(payloadValue) {

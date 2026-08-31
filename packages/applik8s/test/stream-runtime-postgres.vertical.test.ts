@@ -44,6 +44,78 @@ describe('PostgreSQL replayable application stream', () => {
     expect(unsafe).toHaveBeenCalledWith(expect.stringContaining('jsonb_to_recordset'), expect.any(Array));
   });
 
+  test('intersects public catalog delivery with every selected source policy', async () => {
+    const application = app('catalog-runtime-authority');
+    const database = application.database.postgres('catalog', { schema: {} });
+    const Public = event('posts.public-fact.v1', {
+      payload: type({ postId: 'string' }),
+    });
+    const Private = event('posts.private-fact.v1', {
+      payload: type({ postId: 'string' }),
+    });
+    application.stream(Public, {
+      database,
+      retention: { maxAgeSeconds: 3_600 },
+      partitionBy: ({ postId }) => postId,
+      authorize: ({ principal }) => principal.id === 'reader',
+    });
+    application.stream(Private, {
+      database,
+      retention: { maxAgeSeconds: 3_600 },
+      partitionBy: ({ postId }) => postId,
+      authorize: () => false,
+    });
+    const selection = application.events.of(Public, Private);
+    const unsafe = vi.fn(async (query: string, _parameters?: readonly unknown[]) => query.includes('retention_floors')
+      ? [{ retention_floor: 0 }]
+      : query.includes('SELECT events.id')
+        ? [{
+            id: 'public',
+            sequence: 21,
+            contract_name: 'posts.public-fact',
+            contract_version: 'v1',
+            partition_key: 'post-1',
+            recorded_at: '2026-08-30T00:00:00.000Z',
+            payload: { postId: 'post-1' },
+          }]
+        : []);
+    const source = createPostgresApplicationCatalogStream({
+      stream: selection,
+      sql: transactionalSql(unsafe),
+      principal: testApplicationPrincipal('reader'),
+    });
+
+    await expect(source.read(0, 10)).resolves.toMatchObject({
+      items: [{
+        id: 'public',
+        payload: {
+          contract: { id: 'posts.public-fact.v1' },
+          detail: { postId: 'post-1' },
+        },
+      }],
+      nextSequence: 21,
+    });
+    const selectedContracts = unsafe.mock.calls
+      .flatMap(([_query, parameters]) => Array.isArray(parameters) ? parameters : [])
+      .find((parameter) => typeof parameter === 'string' && parameter.includes('posts.public-fact'));
+    expect(selectedContracts).toContain('posts.public-fact');
+    expect(selectedContracts).not.toContain('posts.private-fact');
+
+    const deniedUnsafe = vi.fn();
+    const denied = createPostgresApplicationCatalogStream({
+      stream: selection,
+      sql: transactionalSql(deniedUnsafe),
+      principal: testApplicationPrincipal('other'),
+    });
+    await expect(denied.read(0, 10)).resolves.toEqual({
+      items: [],
+      nextSequence: 0,
+      exhausted: true,
+      retentionFloor: 0,
+    });
+    expect(deniedUnsafe).not.toHaveBeenCalled();
+  });
+
   test('reads a bounded, context-scoped, schema-validated outbox page', async () => {
     const catalog = app('stream-runtime');
     const database = catalog.database.postgres('catalog', { schema: {} });

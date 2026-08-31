@@ -13,7 +13,7 @@ let runtime: Promise<ApplicationPostgresRuntimeModule> | undefined;
 
 async function loadApplicationPostgresRuntime(): Promise<ApplicationPostgresRuntimeModule> {
   // static-import-exception: the PostgreSQL wire client is an optional runtime adapter and must not inflate authoring-only installs.
-  runtime ??= import('@applik8s/runtime-postgres');
+  runtime ??= import('@applik8s/runtime-postgres/sql');
   return runtime;
 }
 

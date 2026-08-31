@@ -3,9 +3,10 @@ import { mkdtemp, readdir, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { gunzipSync } from 'node:zlib';
-import { app, applicationGraphFor, EventLog, Observability } from '@applik8s/applik8s';
+import { app, applicationGraphFor, EventLog, event, IdentityProvider, Observability } from '@applik8s/applik8s';
 import { bindApplicationCallableDependencies } from '@applik8s/applik8s/internal/provider-runtime';
 import type { ApplicationGraph, ApplicationGraphNode, JsonObject } from '@applik8s/core';
+import { type } from 'arktype';
 import { pgTable, text } from 'drizzle-orm/pg-core';
 import { describe, expect, it } from 'vitest';
 import { emitGeneratedApplicationProcessors } from '../src/application-processors/index.js';
@@ -49,6 +50,76 @@ const database = { name: 'catalog', connectionEnvName: 'APPLIK8S_DATABASE_CATALO
 const reactiveRuntimeBundleBudgetBytes = 626_000;
 
 describe('generated v0.6 reactive workloads', () => {
+  it('preserves every physical source policy in generated public event-catalog subscriptions', async () => {
+    const application = app('catalog-source-authority', {
+      namespace: 'catalog-source-authority',
+    });
+    application.provide(
+      IdentityProvider,
+      IdentityProvider.deterministic({
+        mode: 'starter',
+        application: 'catalog-source-authority',
+        subject: 'reader',
+        audience: ['catalog-source-authority'],
+        catalogRevision: 'catalog-v1',
+        authorityRevision: 'authority-v1',
+      }),
+    );
+    const database = application.database.postgres('catalog', { schema: {} });
+    const Visible = event('catalog.visible.v1', {
+      payload: type({ id: 'string' }),
+    });
+    const Restricted = event('catalog.restricted.v1', {
+      payload: type({ id: 'string' }),
+    });
+    application.stream(Visible, {
+      database,
+      retention: { maxAgeSeconds: 3_600 },
+      partitionBy: ({ id }) => id,
+      authorize: ({ principal }) => principal.id === 'catalog-visible-reader',
+    });
+    application.stream(Restricted, {
+      database,
+      retention: { maxAgeSeconds: 3_600 },
+      partitionBy: ({ id }) => id,
+      authorize: ({ principal }) => principal.id === 'catalog-restricted-reader',
+    });
+    const subscription = application.events
+      .of(Visible, Restricted)
+      .subscribe('catalog-facts', {
+        authorize: ({ principal }) => principal.id === 'catalog-subscriber',
+      });
+    application.gateway('public', {
+      subscriptions: [subscription],
+      deployment: {
+        namespace: 'catalog-source-authority',
+        cursorSecret: { name: 'catalog-cursor', key: 'secret' },
+      },
+    });
+
+    const graph = applicationGraphFor(application.composition);
+    if (!graph) throw new Error('Expected application graph.');
+    const outDir = await mkdtemp(join(tmpdir(), 'applik8s-catalog-authority-'));
+    const artifacts = await emitGeneratedApplicationReactive({
+      graph,
+      outDir,
+      entrypoint: import.meta.filename,
+    });
+    const gateway = artifacts.find((artifact) => artifact.kind === 'queryGateway');
+    const directory = dirname(gateway?.sourcePath ?? '');
+    const generated = await readFile(join(directory, 'gateway.generated.ts'), 'utf8');
+    const callbacks = await Promise.all(
+      (await readdir(directory))
+        .filter((name) => name.startsWith('catalog-source-authorize-'))
+        .map((name) => readFile(join(directory, name), 'utf8')),
+    );
+    expect(callbacks).toHaveLength(2);
+    expect(callbacks.join('\n')).toContain('catalog-visible-reader');
+    expect(callbacks.join('\n')).toContain('catalog-restricted-reader');
+    expect(generated).toContain('catalogSourceAuthorize');
+    expect(generated).toContain('createPostgresApplicationCatalogStream');
+  }, 120_000);
+
   it('emits collision-safe variables for inferred dotted outbox model operations', async () => {
     const parents = pgTable('compiler_outbox_parents', {
       id: text('id').primaryKey(),

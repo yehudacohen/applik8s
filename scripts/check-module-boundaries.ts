@@ -86,8 +86,8 @@ const rules: readonly BoundaryRule[] = [
   },
   {
     roots: ['packages/runtime-kubernetes/src'],
-    forbidden: [/^@applik8s\/(?!applik8s(?:\/|$)|core(?:\/|$)|runtime-postgres\/schedule-(?:state|occurrence)$)/, /^typekro(?:\/|$)/, /^alchemy(?:\/|$)/],
-    rationale: 'The Kubernetes runtime may implement provider-neutral installation transports and compose the focused PostgreSQL schedule authority, but must not depend on compiler, deployment, TypeKro, or Alchemy packages.',
+    forbidden: [/^@applik8s\/(?!applik8s(?:\/|$)|core(?:\/|$)|runtime-postgres\/(?:job-store|schedule-(?:state|occurrence))$)/, /^typekro(?:\/|$)/, /^alchemy(?:\/|$)/],
+    rationale: 'The Kubernetes runtime may implement provider-neutral installation transports and compose focused PostgreSQL Job and schedule authorities, but must not depend on compiler, deployment, TypeKro, or Alchemy packages.',
   },
   {
     roots: ['packages/runtime-postgres/src'],

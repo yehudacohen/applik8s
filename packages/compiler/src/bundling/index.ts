@@ -252,6 +252,7 @@ export function applik8sWorkspaceSourcePlugin(): Plugin {
     ['@applik8s/runtime-kubernetes', resolve(workspaceRoot, 'packages/runtime-kubernetes/src/index.ts')],
     ['@applik8s/runtime-postgres/schedule-occurrence', resolve(workspaceRoot, 'packages/runtime-postgres/src/schedule-occurrence.ts')],
     ['@applik8s/runtime-postgres/schedule-state', resolve(workspaceRoot, 'packages/runtime-postgres/src/schedule-state.ts')],
+    ['@applik8s/runtime-postgres/sql', resolve(workspaceRoot, 'packages/runtime-postgres/src/sql.ts')],
     ['@applik8s/runtime-postgres', resolve(workspaceRoot, 'packages/runtime-postgres/src/index.ts')],
     ['@applik8s/runtime-opensearch', resolve(workspaceRoot, 'packages/runtime-opensearch/src/index.ts')],
     ['@applik8s/runtime-ai', resolve(workspaceRoot, 'packages/runtime-ai/src/index.ts')],

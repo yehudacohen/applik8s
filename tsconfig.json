@@ -152,6 +152,7 @@
       "@applik8s/runtime-kubernetes": ["packages/runtime-kubernetes/src/index.ts"],
       "@applik8s/runtime-kubernetes/job-runtime": ["packages/runtime-kubernetes/src/job-runtime.ts"],
       "@applik8s/runtime-postgres": ["packages/runtime-postgres/src/index.ts"],
+      "@applik8s/runtime-postgres/sql": ["packages/runtime-postgres/src/sql.ts"],
       "@applik8s/runtime-postgres/schedule-state": ["packages/runtime-postgres/src/schedule-state.ts"],
       "@applik8s/runtime-postgres/schedule-occurrence": ["packages/runtime-postgres/src/schedule-occurrence.ts"],
       "@applik8s/runtime-aws": ["packages/runtime-aws/src/index.ts"],

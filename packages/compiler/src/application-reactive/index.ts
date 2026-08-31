@@ -32,12 +32,6 @@ import {
 import { applicationGraphAllConditions, applicationGraphBooleanCondition, applicationGraphJsonStringArray, applicationGraphNumberValue, applicationGraphServiceHost, applicationGraphStringValue } from '../application-installation-values.js';
 import type { ApplicationOperationPlacementReceiver } from '../application-mcp/index.js';
 import { compileApplicationMcpPlacementRoutes, compileApplicationOperationPlacementReceiver } from '../application-mcp/index.js';
-import { applicationObjectStorageEnvironment } from '../application-object-storage-environment.js';
-import { applicationGraphHasObservabilityRuntime, generatedApplicationTelemetryImports, generatedApplicationTelemetryRuntimeSource } from '../application-observability-runtime-source.js';
-import { applicationStaticAuthorityManifest, compileApplicationOperationCatalog, compileApplicationWorkloadAuthority } from '../application-operations/index.js';
-import { generatedApplicationProviderOperationValue } from '../application-provider-telemetry-source.js';
-import { applicationHatchetScheduleBindings } from '../application-schedule-hatchet.js';
-import { hatchetSingleFileHeartbeatPlugin } from '../application-workflows/source.js';
 import {
   nestedApplicationCallbackObjectSource as nestedCallbackObjectSource,
   nestedApplicationCallbackVariable as nestedCallbackVariable,
@@ -45,6 +39,12 @@ import {
   nestedApplicationEventDefinition as nestedEventDefinition,
   requiredApplicationGraphNode as requiredNode,
 } from '../application-nested-operation-source.js';
+import { applicationObjectStorageEnvironment } from '../application-object-storage-environment.js';
+import { applicationGraphHasObservabilityRuntime, generatedApplicationTelemetryImports, generatedApplicationTelemetryRuntimeSource } from '../application-observability-runtime-source.js';
+import { applicationStaticAuthorityManifest, compileApplicationOperationCatalog, compileApplicationWorkloadAuthority } from '../application-operations/index.js';
+import { generatedApplicationProviderOperationValue } from '../application-provider-telemetry-source.js';
+import { applicationHatchetScheduleBindings } from '../application-schedule-hatchet.js';
+import { hatchetSingleFileHeartbeatPlugin } from '../application-workflows/source.js';
 import { applik8sWorkspaceSourcePlugin } from '../bundling/index.js';
 import { handlerSourceMetadataPlugin } from '../pipeline/entrypoint-handler-instrumentation.js';
 
@@ -746,6 +746,10 @@ async function emitGateway(
     assertSecretNamespace(source.database, gatewayNamespace, `gateway ${gateway.id} stream subscription`);
     return { subscription, stream: source };
   });
+  const catalogSourceAuthorizers = uniqueCatalogSourceStreams(nodes, subscriptions);
+  for (const source of catalogSourceAuthorizers) {
+    assertResolved(source.id, 'catalog source authorization', source.authorizationUnresolved);
+  }
   const commands = gateway.commands.map((reference): GatewayCommandContract => {
     const handler = requiredNode(nodes, reference.handler.nodeId, 'commandHandler', gateway.id);
     const command = requiredNode(nodes, reference.command.nodeId, 'command', gateway.id);
@@ -856,6 +860,14 @@ async function emitGateway(
       assertResolved(stream.id, 'catalog predicate', stream.catalog.predicateUnresolved);
       await writeCallbackModule(artifactDir, callbackName(stream.id, 'catalog-predicate'), stream.catalog.predicateSource, stream.catalog.predicateDependencies);
     }
+  }
+  for (const source of catalogSourceAuthorizers) {
+    await writeCallbackModule(
+      artifactDir,
+      callbackName(source.id, 'catalog-source-authorize'),
+      source.authorizationSource,
+      source.authorizationDependencies,
+    );
   }
   for (const query of queries) {
     if (!query.search) {
@@ -1596,6 +1608,10 @@ function generatedGatewaySource(
     ...subscriptions,
     ...capabilityProjectionStreams,
   ]);
+  const catalogSourceAuthorizers = uniqueCatalogSourceStreams(
+    graphNodes(graph),
+    subscriptions,
+  );
   const eventLogPublisher = commands.length === 0 && !hasActorQueries
     ? undefined
     : generatedApplicationEventLogPublisherSource({
@@ -1681,6 +1697,8 @@ function generatedGatewaySource(
         ? [`import { callback as ${callbackVariable(stream.id, 'streamAuthorize')} } from './${callbackName(stream.id, 'authorize-stream')}.generated.js';`]
         : []),
     ]),
+    ...catalogSourceAuthorizers.map((source) =>
+      `import { callback as ${callbackVariable(source.id, 'catalogSourceAuthorize')} } from './${callbackName(source.id, 'catalog-source-authorize')}.generated.js';`),
   ].join('\n');
   const databases = uniqueDatabaseRuntimes([
     ...queries.map((query) => query.database).filter((database): database is ApplicationReactiveDatabaseRuntimeContract => Boolean(database)),
@@ -2866,7 +2884,11 @@ function generatedStreamSubscriptionGateway(
     const open = stream.signal
       ? `createApplicationAuthorizedReplayableStream({ source: ${source}, authorize: (event) => authorizeSignalIssuance(identity, event) })`
       : source;
-    return `{ name: ${JSON.stringify(subscription.name)}, stream: { kind: 'applicationStream', definition: { kind: 'stream', id: ${JSON.stringify(streamId)}, name: ${JSON.stringify(stream.name)}, version: ${JSON.stringify(stream.version)}, payload: schema(${JSON.stringify(stream.payload.jsonSchema)}, ${JSON.stringify(`${streamId}.payload`)}) }, retention: ${JSON.stringify(stream.retention)}, authority: 'postgres-outbox', replay: 'supported', database: ${databaseBindingSource(stream.database)}, partition: () => { throw new Error('Subscription replay never repartitions persisted events.'); }, authorize: ${streamAuthorize}${generatedCatalogBinding(stream, stream.catalog?.predicateSource ? callbackVariable(stream.id, 'catalogPredicate') : undefined)} }, authorize: async (principal) => ${callbackVariable(subscription.id, 'authorize')}({ principal }), open: (identity) => ${open} }`;
+    return `{ name: ${JSON.stringify(subscription.name)}, stream: { kind: 'applicationStream', definition: { kind: 'stream', id: ${JSON.stringify(streamId)}, name: ${JSON.stringify(stream.name)}, version: ${JSON.stringify(stream.version)}, payload: schema(${JSON.stringify(stream.payload.jsonSchema)}, ${JSON.stringify(`${streamId}.payload`)}) }, retention: ${JSON.stringify(stream.retention)}, authority: 'postgres-outbox', replay: 'supported', database: ${databaseBindingSource(stream.database)}, partition: () => { throw new Error('Subscription replay never repartitions persisted events.'); }, authorize: ${streamAuthorize}${generatedCatalogBinding(
+      stream,
+      stream.catalog?.predicateSource ? callbackVariable(stream.id, 'catalogPredicate') : undefined,
+      (source) => callbackVariable(source.stream.nodeId, 'catalogSourceAuthorize'),
+    )} }, authorize: async (principal) => ${callbackVariable(subscription.id, 'authorize')}({ principal }), open: (identity) => ${open} }`;
   }).join(',\n');
   const index = subscriptions.map(({ subscription }, position) => `${JSON.stringify(subscription.name)}: streamSubscriptionBindings[${position}]`).join(', ');
   const operationContracts = operationCatalog && hasOperationAuthority
@@ -3616,12 +3638,36 @@ await loopTask;
 function generatedCatalogBinding(
   stream: ApplicationStreamNode,
   predicateVariable?: string,
+  authorizationVariable?: (
+    source: NonNullable<ApplicationStreamNode['catalog']>['sources'][number],
+  ) => string,
 ): string {
   if (!stream.catalog) return '';
-  const sources = stream.catalog.sources.map((source) =>
-    `{ id: ${JSON.stringify(source.contract.id)}, name: ${JSON.stringify(source.contract.name)}, version: ${JSON.stringify(source.contract.version)}, producer: ${JSON.stringify(source.producer)}, payload: schema(${JSON.stringify(stream.payload.jsonSchema)}) }`)
+  const sources = stream.catalog.sources.map((source) => {
+    const authorize = authorizationVariable?.(source);
+    return `{ id: ${JSON.stringify(source.contract.id)}, name: ${JSON.stringify(source.contract.name)}, version: ${JSON.stringify(source.contract.version)}, producer: ${JSON.stringify(source.producer)}, payload: schema(${JSON.stringify(stream.payload.jsonSchema)})${authorize ? `, authorize: async (principal, action) => ${authorize}({ principal, action })` : ''} }`;
+  })
     .join(', ');
   return `, catalog: Object.freeze({ revision: ${JSON.stringify(stream.catalog.revision)}, sources: Object.freeze([${sources}])${predicateVariable ? `, predicate: ${predicateVariable}` : ''} })`;
+}
+
+function uniqueCatalogSourceStreams(
+  nodes: ReadonlyMap<string, ApplicationGraph['nodes'][number]>,
+  subscriptions: readonly GatewayStreamSubscriptionContract[],
+): readonly ApplicationStreamNode[] {
+  const sources = new Map<string, ApplicationStreamNode>();
+  for (const { stream } of subscriptions) {
+    for (const source of stream.catalog?.sources ?? []) {
+      const physical = requiredNode(
+        nodes,
+        source.stream.nodeId,
+        'stream',
+        stream.id,
+      );
+      sources.set(physical.id, physical);
+    }
+  }
+  return [...sources.values()].sort((left, right) => left.id.localeCompare(right.id));
 }
 
 function generatedFunctionNativeStreamTransaction(

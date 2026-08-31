@@ -42,13 +42,29 @@ export interface PostgresApplicationStreamRetentionOptions<TPayload extends obje
 // typecast-boundary: the PostgreSQL client is selected after the sql-or-URL invariant and payloads are schema-validated.
 export function createPostgresApplicationStream<TPayload extends object, TPrincipal extends ApplicationQueryPrincipal>(options: PostgresApplicationStreamOptions<TPayload, TPrincipal>): PostgresApplicationStream<TPayload> {
   if (options.stream.catalog) throw new Error(`Catalog stream ${options.stream.definition.id} requires createPostgresApplicationCatalogStream().`);
-  return createPostgresApplicationStreamRuntime(options, readPostgresApplicationStreamPage);
+  return createPostgresApplicationStreamRuntime(
+    options,
+    readPostgresApplicationStreamPage,
+    async () => {
+      if (options.internalConsumer) {
+        assertInternalConsumer(options);
+      } else if (!await options.stream.authorize(options.principal, 'replay')) {
+        throw new ApplicationStreamAuthorizationError(options.stream.definition.id);
+      }
+    },
+  );
 }
 
 /** Native PostgreSQL reader for one compiler-pinned event-catalog revision. */
 export function createPostgresApplicationCatalogStream<TPayload extends object, TPrincipal extends ApplicationQueryPrincipal>(options: PostgresApplicationStreamOptions<TPayload, TPrincipal>): PostgresApplicationStream<TPayload> {
   if (!options.stream.catalog) throw new Error(`Stream ${options.stream.definition.id} is not an event-catalog selection.`);
-  return createPostgresApplicationStreamRuntime(options, readPostgresApplicationCatalogPage);
+  return createPostgresApplicationStreamRuntime(
+    options,
+    readPostgresApplicationCatalogPage,
+    async () => {
+      if (options.internalConsumer) assertInternalConsumer(options);
+    },
+  );
 }
 
 function createPostgresApplicationStreamRuntime<TPayload extends object, TPrincipal extends ApplicationQueryPrincipal>(
@@ -59,6 +75,7 @@ function createPostgresApplicationStreamRuntime<TPayload extends object, TPrinci
     afterSequence: number,
     limit: number,
   ) => Promise<ApplicationReplayPage<TPayload>>,
+  authorize: () => Promise<void>,
 ): PostgresApplicationStream<TPayload> {
   if (options.stream.authority !== 'postgres-outbox') throw new Error(`Stream ${options.stream.definition.id} is not backed by the PostgreSQL outbox authority.`);
   if (!options.sql && !options.databaseUrl) throw new Error(`Stream ${options.stream.definition.id} requires sql or databaseUrl.`);
@@ -68,18 +85,25 @@ function createPostgresApplicationStreamRuntime<TPayload extends object, TPrinci
     async read(afterSequence, limit) {
       if (!Number.isSafeInteger(afterSequence) || afterSequence < 0) throw new Error('Application stream replay sequence must be a non-negative safe integer.');
       if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1_000) throw new Error('Application stream replay limit must be between 1 and 1000.');
-      if (options.internalConsumer) {
-        const expectedPrincipal = `applik8s:${options.internalConsumer.kind}:${options.internalConsumer.name}`;
-        if (options.principal.id !== expectedPrincipal) throw new ApplicationStreamAuthorizationError(options.stream.definition.id);
-      } else if (!await options.stream.authorize(options.principal, 'replay')) {
-        throw new ApplicationStreamAuthorizationError(options.stream.definition.id);
-      }
+      await authorize();
       return (await client).begin((transaction) => readPage(options, transaction, afterSequence, limit));
     },
     async close() {
       if (ownsClient) await (await client).end({ timeout: 5 });
     },
   };
+}
+
+function assertInternalConsumer<
+  TPayload extends object,
+  TPrincipal extends ApplicationQueryPrincipal,
+>(options: PostgresApplicationStreamOptions<TPayload, TPrincipal>): void {
+  const consumer = options.internalConsumer;
+  if (!consumer) return;
+  const expectedPrincipal = `applik8s:${consumer.kind}:${consumer.name}`;
+  if (options.principal.id !== expectedPrincipal) {
+    throw new ApplicationStreamAuthorizationError(options.stream.definition.id);
+  }
 }
 
 async function readPostgresApplicationStreamPage<TPayload extends object, TPrincipal extends ApplicationQueryPrincipal>(
@@ -109,10 +133,26 @@ async function readPostgresApplicationCatalogPage<TPayload extends object, TPrin
 ): Promise<ApplicationReplayPage<TPayload>> {
   const catalog = options.stream.catalog;
   if (!catalog) throw new Error(`Stream ${options.stream.definition.id} is not an event-catalog selection.`);
-  for (const contract of catalog.sources) {
+  const selectedSources = options.internalConsumer
+    ? catalog.sources
+    : (await Promise.all(catalog.sources.map(async (source) => ({
+        source,
+        allowed: source.authorize
+          ? await source.authorize(options.principal, 'replay')
+          : false,
+      })))).filter(({ allowed }) => allowed).map(({ source }) => source);
+  if (selectedSources.length === 0) {
+    return {
+      items: [],
+      nextSequence: afterSequence,
+      exhausted: true,
+      retentionFloor: 0,
+    };
+  }
+  for (const contract of selectedSources) {
     await transaction.unsafe('SELECT pg_advisory_xact_lock_shared(hashtextextended($1, 0))', [applicationPublicStreamCommitScope(contract.name, contract.version)]);
   }
-  const selectedJson = JSON.stringify(catalog.sources.map(({ name, version }) => ({ name, version })));
+  const selectedJson = JSON.stringify(selectedSources.map(({ name, version }) => ({ name, version })));
   const contextClause = options.contextDigest ? ' AND events.context_digest = $4' : '';
   const parameters = [selectedJson, afterSequence, limit + 1, ...(options.contextDigest ? [options.contextDigest] : [])];
   const [floorRows, rows] = await Promise.all([
