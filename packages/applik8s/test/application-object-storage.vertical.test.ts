@@ -137,6 +137,38 @@ describe("provider-neutral application object stores", () => {
 		expect(() => retained.allow("delete")).toThrow("retains objects");
 	});
 
+	it("retains installation-selected task credential identity as a graph expression", () => {
+		const application = app("selected-task-objects");
+		application.provide(ObjectStorage, ObjectStorage.s3({
+			bucket: "selected-task-objects",
+			region: "us-east-1",
+			ownership: "external",
+		}));
+		const evidence = application.objectStore("evidence", {
+			mode: "immutable",
+			maxObjectBytes: 1_000,
+			contentTypes: ["application/json"],
+		});
+		const selectedName = {
+			[Symbol.for("TypeKro.CelExpression")]: true,
+			expression: "schema.spec.profile == 'dedicated' ? 'evidence-reader' : 'objects'",
+		} as unknown as string;
+
+		const reader = evidence.allow("get", "head").usingCredentials({
+			apiVersion: "v1",
+			kind: "Secret",
+			name: selectedName,
+			namespace: "selected-task-objects-system",
+		});
+
+		expect(reader.credentialsSecret).toEqual({
+			apiVersion: "v1",
+			kind: "Secret",
+			name: "$" + "{schema.spec.profile == 'dedicated' ? 'evidence-reader' : 'objects'}",
+			namespace: "selected-task-objects-system",
+		});
+	});
+
 	it("rehydrates a bounded handler-safe store handle from the graph contract", async () => {
 		const requests: unknown[] = [];
 		const uninstall = installApplicationObjectStorageRuntimeResolver((identity) =>

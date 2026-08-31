@@ -162,6 +162,12 @@ default. Retryable effect steps retain their own independently bounded
 execution timeouts; an HTTP or client observation timeout never shortens the
 durable run.
 
+Task-scoped object-store bindings may select a least-privilege Kubernetes
+Secret through an installation-derived value. Applik8s normalizes that value
+into the portable graph before validating it, so each selected profile retains
+one concrete workload credential without exposing secret material to the task
+contract.
+
 ## Canonical state access
 
 A managed closure does not receive database, JetStream, gateway, or

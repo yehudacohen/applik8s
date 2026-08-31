@@ -81,6 +81,9 @@ Current foundation increment:
   allowing a durable application to return retained output or reject unsafe
   redispatch before the provider is invoked; application lifecycle policy and
   accounting remain outside Applik8s.
+- Preserved installation-selected task object-store credentials through the
+  graph boundary, allowing profile-specific least privilege while keeping
+  Secret values outside application contracts.
 
 - Live-qualified the Kubernetes CronJob scheduler on OrbStack. The exact
   function-native path now runs from an event callback through the admitted

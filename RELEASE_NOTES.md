@@ -68,6 +68,12 @@ The existing sink remains the provider-neutral observation boundary; leases,
 budgets, accounting, reconciliation, and product terminality remain
 application-owned.
 
+Task-local object-store credentials now accept installation-derived Secret
+names and namespaces. The authoring boundary normalizes them into portable
+graph expressions before validation, preserving profile-specific
+least-privilege credentials instead of forcing one Secret identity across all
+deployments.
+
 Workflow tasks can now declare the maintained Usage module's
 `usage.providerAccounting` handle. The compiler injects a provider-neutral,
 scope-bound accounting capability backed by the task's selected PostgreSQL

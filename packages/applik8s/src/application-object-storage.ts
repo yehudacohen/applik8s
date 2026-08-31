@@ -340,17 +340,7 @@ export function registerApplicationObjectStore(
 					? { credentialsSecret: Object.freeze({ ...credentialsSecret }) }
 					: {}),
 				usingCredentials(secret: ApplicationResourceRef) {
-					if (
-						secret.apiVersion !== "v1"
-						|| secret.kind !== "Secret"
-						|| typeof secret.name !== "string"
-						|| !secret.name.trim()
-					) {
-						throw new Error(
-							`Application object store ${name} task credentials must reference a named v1 Secret.`,
-						);
-					}
-					return taskBinding(secret);
+					return taskBinding(taskCredentialsSecret(name, secret));
 				},
 			});
 			return taskBinding();
@@ -407,6 +397,35 @@ function isSerializedBooleanExpression(
 	value: unknown,
 ): value is `\${${string}}` {
 	return typeof value === "string" && /^\$\{.+\}$/.test(value);
+}
+
+function taskCredentialsSecret(
+	store: string,
+	secret: ApplicationResourceRef,
+): ApplicationResourceRef {
+	const normalized = applicationTypeKroGraphValue(secret);
+	const candidate = normalized && typeof normalized === "object" && !Array.isArray(normalized)
+		? normalized as Readonly<Record<string, unknown>>
+		: undefined;
+	const name = candidate?.name;
+	const namespace = candidate?.namespace;
+	if (
+		candidate?.apiVersion !== "v1"
+		|| candidate.kind !== "Secret"
+		|| typeof name !== "string"
+		|| !name.trim()
+		|| (namespace !== undefined && (typeof namespace !== "string" || !namespace.trim()))
+	) {
+		throw new Error(
+			`Application object store ${store} task credentials must reference a named v1 Secret.`,
+		);
+	}
+	return Object.freeze({
+		apiVersion: "v1",
+		kind: "Secret",
+		name,
+		...(typeof namespace === "string" ? { namespace } : {}),
+	});
 }
 
 function objectStorageImplementation(
