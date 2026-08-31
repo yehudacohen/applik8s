@@ -186,6 +186,11 @@
       "import": "./dist/application-job-durable-runtime.js",
       "default": "./dist/application-job-durable-runtime.js"
     },
+    "./job-runtime-remote": {
+      "types": "./dist/application-job-remote-runtime.d.ts",
+      "import": "./dist/application-job-remote-runtime.js",
+      "default": "./dist/application-job-remote-runtime.js"
+    },
     "./workflow-runtime-resolvers": {
       "types": "./dist/workflow-runtime-resolvers.d.ts",
       "import": "./dist/workflow-runtime-resolvers.js",
