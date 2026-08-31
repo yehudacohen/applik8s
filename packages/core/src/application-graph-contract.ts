@@ -168,6 +168,8 @@ export type ApplicationBuiltInProviderInterfaceKind =
   | 'CredentialStore'
   | 'WorkflowEngine'
   | 'JobRuntime'
+  | 'ManagedModelStore'
+  | 'OperatorRuntime'
   | 'Scheduler'
   | 'Observability'
   | 'LakehouseDataset'
@@ -202,6 +204,8 @@ export const applicationProviderInterfaceKinds = [
   'CredentialStore',
   'WorkflowEngine',
   'JobRuntime',
+  'ManagedModelStore',
+  'OperatorRuntime',
   'Scheduler',
   'Observability',
   'LakehouseDataset',
@@ -343,7 +347,43 @@ export interface ApplicationModelNode extends ApplicationGraphNodeBase<'model'> 
   /** Provider-neutral identity, revision, relationship, and change semantics. */
   readonly common?: ApplicationCommonModelContract;
   readonly runtime?: ApplicationModelRuntimeContract;
+  /** Provider-neutral desired-state lifecycle layered on the existing model authority. */
+  readonly managed?: ApplicationManagedModelContract;
   readonly generatedResources?: readonly ApplicationGeneratedResourceContract[];
+}
+
+export interface ApplicationManagedModelContract {
+  readonly status: ApplicationMessageContractSchema;
+  readonly statusSchemaVersion: string;
+  readonly store: ApplicationProviderRef<'ManagedModelStore'>;
+  readonly runtime: ApplicationProviderRef<'OperatorRuntime'>;
+  readonly lifecycle: {
+    readonly generation: 'desiredValueDigest';
+    readonly notification: 'invalidationHint';
+    readonly resync: { readonly intervalSeconds: number; readonly maximumItems: number };
+    readonly lease: { readonly durationSeconds: number; readonly fencing: 'monotonicToken' };
+    readonly status: 'schemaCompleteCompareAndSet';
+    readonly conditions: 'singleWriterPerStaticType';
+    readonly nextDue: 'operatorOwned';
+    readonly deletion: 'intentThenFinalize';
+  };
+  readonly reconcile?: {
+    readonly handlerSource: string;
+    readonly handlerDependencies?: ApplicationHandlerDependencies;
+    readonly handlerLocation?: SourceLocation;
+    readonly handlerUnresolved?: readonly string[];
+    readonly conditionTypes: readonly string[];
+  };
+  readonly finalizers: readonly {
+    readonly name: string;
+    readonly handlerSource: string;
+    readonly handlerDependencies?: ApplicationHandlerDependencies;
+    readonly handlerLocation?: SourceLocation;
+    readonly handlerUnresolved?: readonly string[];
+    readonly conditionTypes: readonly string[];
+  }[];
+  readonly portability: 'portable' | 'kubernetesConstrained';
+  readonly activation: 'migrationRequiredForExistingRows';
 }
 
 export interface ApplicationNativeModelContract {

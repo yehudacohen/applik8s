@@ -5,7 +5,7 @@ import {
   type ApplicationOperation,
   getApplicationOperationContract,
 } from '@applik8s/client';
-import type { AnyResourceDefinition, ApplicationGeneratedResourceContract, ApplicationGraph, ApplicationObservabilityContract, ApplicationOperationAuthorityGraphContract, ApplicationProfileProviderSelectionContract, ApplicationProviderInterfaceKind, HandlerRegistration, JsonObject, JsonValue, NormalizedOperationPlan, OperationTarget, OperatorDeploymentOptions, PermissionRule, PlanTargetOptions, ResourceDefinition, ResourceIndex, ResourceObject, Result } from '@applik8s/core';
+import type { AnyResourceDefinition, ApplicationGeneratedResourceContract, ApplicationGraph, ApplicationManagedModelContract, ApplicationMessageContractSchema, ApplicationModelNode, ApplicationObservabilityContract, ApplicationOperationAuthorityGraphContract, ApplicationProfileProviderSelectionContract, ApplicationProviderInterfaceKind, HandlerRegistration, JsonObject, JsonValue, NormalizedOperationPlan, OperationTarget, OperatorDeploymentOptions, PermissionRule, PlanTargetOptions, ResourceDefinition, ResourceIndex, ResourceObject, Result } from '@applik8s/core';
 import { applicationGraphMetadataProperty, applicationImplementationPlanSet, applicationImplementationPlansMetadataProperty, applicationInstallationMetadataProperty, applicationOperationId, applicationTypeKroDefinitionProperty, normalizeApplicationGraph } from '@applik8s/core';
 import type { CrdOptions, SchemaInput } from '@applik8s/sdk';
 import { sdk as baseSdk, normalizeSchema, setOperatorDeploymentInterceptor } from '@applik8s/sdk';
@@ -39,7 +39,7 @@ import {
   type ApplicationAuthorityRegistrar,
   applicationAuthorityRegistrar,
 } from './application-authority.js';
-import { expandApplicationCallbackDependencies } from './application-callback.js';
+import { expandApplicationCallbackDependencies, serializeApplicationCallback } from './application-callback.js';
 import { recordApplicationCrdGraph } from './application-crd-graph.js';
 import {
   type ApplicationEventCatalog,
@@ -86,6 +86,13 @@ import {
 } from './application-mcp.js';
 import type { ApplicationModelBinding, ApplicationModelOptions, ApplicationModelRuntimeBinding, ApplicationModelSchemaIndexOptions, ApplicationRuntimeModelContract } from './application-models.js';
 import { applicationModelBinding, applicationModelCommandRegistrar, applicationRuntimeModelContract, bindApplicationModelCommandRegistrar, prepareApplicationModelCommandReplacement, recordApplicationAnalyticalNativeModelGraph, recordApplicationModelCommandGraph, recordApplicationModelGraph, recordApplicationNativeModelGraph, resolveApplicationTransactionalDatabase } from './application-models.js';
+import {
+  type ApplicationManagedModelFacet,
+  type ApplicationManagedModelHandler,
+  type ApplicationManagedModelOptions,
+  managedModelDurationSeconds,
+  managedModelStoreRequirement,
+} from './application-managed-models.js';
 import {
   type ApplicationModuleReference,
   applicationModuleMetadataFor,
@@ -159,7 +166,7 @@ import {
 } from './drizzle.js';
 import { workflow as defineWorkflow, type EntityDefinition, type EventDefinition, type StreamDefinition, type WorkflowDefinition } from './dsl.js';
 import { applicationNativeModelMethodDependencyFor } from './native-model-execution.js';
-import { type ApplicationKubernetesCreatePolicy, applicationModelCommandBindingForOperation, applicationModelViewRegistrar, bindApplicationModelViews, bindNativeApplicationModelBeforeCommit, bindNativeApplicationModelBinding, bindNativeApplicationModelCommands, bindNativeApplicationModelLifecycle, bindNativeKubernetesLifecycle, type DrizzleAnalyticalApplicationModelFacet, getApplicationModelFacet, getRequiredDrizzleApplicationModelFacet, nativeApplicationModelBeforeCommitRegistrar, nativeApplicationModelCommandRegistrar, nativeApplicationModelLifecycleRegistrar, nativeKubernetesLifecycleRegistrar, type PromoteAnalyticalDrizzleTableOptions, type PromoteDrizzleTableOptions, type PromotedAnalyticalDrizzleTable, type PromotedDrizzleTable, type PromotedKubernetesResource, promoteAnalyticalDrizzleTable, promoteDrizzleTable, promoteKubernetesResource } from './native-models.js';
+import { type ApplicationKubernetesCreatePolicy, applicationModelCommandBindingForOperation, applicationModelViewRegistrar, bindApplicationModelViews, bindNativeApplicationManagedModel, bindNativeApplicationModelBeforeCommit, bindNativeApplicationModelBinding, bindNativeApplicationModelCommands, bindNativeApplicationModelLifecycle, bindNativeKubernetesLifecycle, type DrizzleAnalyticalApplicationModelFacet, getApplicationModelFacet, getRequiredDrizzleApplicationModelFacet, nativeApplicationManagedModelRegistrar, nativeApplicationModelBeforeCommitRegistrar, nativeApplicationModelCommandRegistrar, nativeApplicationModelLifecycleRegistrar, nativeKubernetesLifecycleRegistrar, type PromoteAnalyticalDrizzleTableOptions, type PromoteDrizzleTableOptions, type PromotedAnalyticalDrizzleTable, type PromotedDrizzleTable, type PromotedKubernetesResource, promoteAnalyticalDrizzleTable, promoteDrizzleTable, promoteKubernetesResource } from './native-models.js';
 import {
   type ApplicationDatabaseHandle,
   applicationDatabaseHandle,
@@ -187,8 +194,8 @@ export { installApplicationObjectStorageRuntimeResolver } from './application-ob
 export type { ApplicationProcessorOptions } from './application-processor-policy.js';
 export type { ApplicationProfile, ApplicationProfileBranchOptions, ApplicationProfileVariant, ApplicationProfileVariantOverride, ApplicationQualifiedProviderBinding } from './application-profiles.js';
 export { installApplicationProjectionRuntimeResolver } from './application-projection-binding.js';
-export type { ApplicationActorRuntimeProvider, ApplicationActorRuntimeProviderToken, ApplicationAnalyticalDatabaseProvider, ApplicationAnalyticalDatabaseProviderToken, ApplicationAnalyticsConstructors, ApplicationAthenaLakehouseQueryProvider, ApplicationAuthorizationDecision, ApplicationAuthorizationProvider, ApplicationAuthorizationProviderToken, ApplicationAuthorizationRequest, ApplicationAwsAccount, ApplicationAwsFiniteExecutionHostProvider, ApplicationAwsJobRuntimeProvider, ApplicationCelldActorRuntimeProvider, ApplicationCertificateProvider, ApplicationCertificateProviderToken, ApplicationCertManagerCertificateProvider, ApplicationClickHouseAnalyticalDatabaseProvider, ApplicationClickStackObservabilityProvider, ApplicationCloudWatchObservabilityProvider, ApplicationContainerRegistryCredentialSecret, ApplicationContainerRegistryEndpoint, ApplicationContainerRegistryProvider, ApplicationContainerRegistryProviderToken, ApplicationContainerRegistrySecretRef, ApplicationContainerRegistryTls, ApplicationCounterStoreProvider, ApplicationCredentialStoreProvider, ApplicationCurrentKubernetesCluster, ApplicationDatabaseConstructors, ApplicationDefaults, ApplicationDefaultsBinding, ApplicationDnsPublicationProvider, ApplicationDnsPublicationProviderToken, ApplicationDuckDbLakehouseDatasetProvider, ApplicationDuckDbLakehouseQueryProvider, ApplicationEventBridgeSchedulerProvider, ApplicationEventLogProvider, ApplicationEventSourceProvider, ApplicationExternalClickHouseConnection, ApplicationExternalClickHouseOptions, ApplicationExternalDnsPublicationProvider, ApplicationExternalKubernetesCluster, ApplicationExternalPostgresDatabaseOptions, ApplicationFiniteExecutionHostProvider, ApplicationFiniteExecutionHostProviderToken, ApplicationGeneratedTransactionalDatabaseMigrationJobOptions, ApplicationHarborContainerRegistryOptions, ApplicationHarborContainerRegistryProvider, ApplicationHarborProjectManagement, ApplicationHatchetSchedulerProvider, ApplicationHatchetWorkflowEngineProvider, ApplicationHostBinding, ApplicationHostProvider, ApplicationHostProviderToken, ApplicationHttpExposureProvider, ApplicationHttpExposureProviderToken, ApplicationIdentityInfrastructure, ApplicationIdentityProvider, ApplicationIdentityProviderToken, ApplicationIndexBackend, ApplicationIndexStoreProviderToken, ApplicationIngressHttpExposureProvider, ApplicationJetStreamQueueProvider, ApplicationJobResultStoreProvider, ApplicationJobResultStoreProviderToken, ApplicationJobRuntimeProvider, ApplicationJobRuntimeProviderToken, ApplicationKubernetesCluster, ApplicationKubernetesConfigMapObjectStorageProvider, ApplicationKubernetesConfigMapQueueProvider, ApplicationKubernetesCredentialStoreProvider, ApplicationKubernetesCronJobSchedulerProvider, ApplicationKubernetesFiniteExecutionHostProvider, ApplicationKubernetesHostProvider, ApplicationKubernetesJobRuntimeProvider, ApplicationKubernetesResourceCounterStoreProvider, ApplicationKubernetesSecretProvider, ApplicationKubernetesWatchEventSourceProvider, ApplicationLakehouseDatasetProvider, ApplicationLakehouseDatasetProviderToken, ApplicationLakehouseQueryProvider, ApplicationLakehouseQueryProviderToken, ApplicationLocalActorRuntimeProvider, ApplicationLocalJobRuntimeProvider, ApplicationLocalObservabilityProvider, ApplicationLocalSchedulerProvider, ApplicationManagedHostProvider, ApplicationNatsJetStreamEventLogProvider, ApplicationNodePortHttpExposureProvider, ApplicationOAuthAuthorizationServerProvider, ApplicationOAuthAuthorizationServerProviderToken, ApplicationObjectStorageProvider, ApplicationObservabilityProvider, ApplicationObservabilityProviderToken, ApplicationOciContainerRegistryProvider, ApplicationOpenSearchProvider, ApplicationOrbstackContainerRegistryProvider, ApplicationOtlpObservabilityProvider, ApplicationPostgresAnalyticalDatabaseProvider, ApplicationPostgresBackupPolicy, ApplicationPostgresClusterSpec, ApplicationPostgresJobResultStoreProvider, ApplicationPostgresReadinessPolicy, ApplicationPostgresSchedulerProvider, ApplicationPostgresSearchProvider, ApplicationPostgresTransactionalDatabaseOptions, ApplicationPostgresTransactionalDatabaseProvider, ApplicationProviderBinding, ApplicationProviderConfigString, ApplicationProviderConfigUrl, ApplicationProviderQualification, ApplicationProviderToken, ApplicationQualifiableProviderToken, ApplicationQualifiedLakehouseDatasetProviderToken, ApplicationQualifiedLakehouseProviderRequired, ApplicationQualifiedProviderToken, ApplicationQueueProvider, ApplicationQueueProviderToken, ApplicationRequestAdmission, ApplicationRivetActorRuntimeProvider, ApplicationS3LakehouseDatasetProvider, ApplicationSchedulerProvider, ApplicationSchedulerProviderToken, ApplicationSearchCapability, ApplicationSearchProvider, ApplicationSearchProviderToken, ApplicationSecretProvider, ApplicationSqsQueueProvider, ApplicationStructuredGenerationDeterministicProvider, ApplicationStructuredGenerationHttpProvider, ApplicationStructuredGenerationProvider, ApplicationStructuredGenerationProviderToken, ApplicationTelemetryPolicy, ApplicationTelemetryPolicyOptions, ApplicationTransactionalDatabaseMigrationPolicy, ApplicationTransactionalDatabaseProvider, ApplicationTransactionalDatabaseProviderToken, ApplicationTypedProviderContract, ApplicationValkeyIndexBackend, ApplicationWorkflowEngineProvider, ApplicationWorkflowEngineProviderToken } from './application-providers.js';
-export { ActorRuntime, AnalyticalDatabase, Analytics, ApplicationHost, Authorization, AWS, Certificate, ContainerRegistry, CounterStore, CredentialStore, Database, DnsPublication, defaultApplicationEventLogProvider, defaultApplicationProviders, defaultApplicationWorkflowEngineProvider, defineApplicationProvider, EventLog, EventSource, FiniteExecutionHost, HttpExposure, IdentityProvider, IndexStore, JobResultStore, JobRuntime, KubernetesCluster, Lakehouse, LakehouseDataset, LakehouseQuery, OAuthAuthorizationServer, ObjectStorage, Observability, providers, Queue, Scheduler, Search, Secret, StructuredGeneration, TransactionalDatabase, telemetryPolicy, WorkflowEngine } from './application-providers.js';
+export type { ApplicationActorRuntimeProvider, ApplicationActorRuntimeProviderToken, ApplicationAnalyticalDatabaseProvider, ApplicationAnalyticalDatabaseProviderToken, ApplicationAnalyticsConstructors, ApplicationAthenaLakehouseQueryProvider, ApplicationAuthorizationDecision, ApplicationAuthorizationProvider, ApplicationAuthorizationProviderToken, ApplicationAuthorizationRequest, ApplicationAwsAccount, ApplicationAwsFiniteExecutionHostProvider, ApplicationAwsJobRuntimeProvider, ApplicationCelldActorRuntimeProvider, ApplicationCertificateProvider, ApplicationCertificateProviderToken, ApplicationCertManagerCertificateProvider, ApplicationClickHouseAnalyticalDatabaseProvider, ApplicationClickStackObservabilityProvider, ApplicationCloudWatchObservabilityProvider, ApplicationContainerRegistryCredentialSecret, ApplicationContainerRegistryEndpoint, ApplicationContainerRegistryProvider, ApplicationContainerRegistryProviderToken, ApplicationContainerRegistrySecretRef, ApplicationContainerRegistryTls, ApplicationCounterStoreProvider, ApplicationCredentialStoreProvider, ApplicationCurrentKubernetesCluster, ApplicationDatabaseConstructors, ApplicationDefaults, ApplicationDefaultsBinding, ApplicationDistributedOperatorRuntimeProvider, ApplicationDnsPublicationProvider, ApplicationDnsPublicationProviderToken, ApplicationDuckDbLakehouseDatasetProvider, ApplicationDuckDbLakehouseQueryProvider, ApplicationEventBridgeSchedulerProvider, ApplicationEventLogProvider, ApplicationEventSourceProvider, ApplicationExternalClickHouseConnection, ApplicationExternalClickHouseOptions, ApplicationExternalDnsPublicationProvider, ApplicationExternalKubernetesCluster, ApplicationExternalPostgresDatabaseOptions, ApplicationFiniteExecutionHostProvider, ApplicationFiniteExecutionHostProviderToken, ApplicationGeneratedTransactionalDatabaseMigrationJobOptions, ApplicationHarborContainerRegistryOptions, ApplicationHarborContainerRegistryProvider, ApplicationHarborProjectManagement, ApplicationHatchetSchedulerProvider, ApplicationHatchetWorkflowEngineProvider, ApplicationHostBinding, ApplicationHostProvider, ApplicationHostProviderToken, ApplicationHttpExposureProvider, ApplicationHttpExposureProviderToken, ApplicationIdentityInfrastructure, ApplicationIdentityProvider, ApplicationIdentityProviderToken, ApplicationIndexBackend, ApplicationIndexStoreProviderToken, ApplicationIngressHttpExposureProvider, ApplicationJetStreamQueueProvider, ApplicationJobResultStoreProvider, ApplicationJobResultStoreProviderToken, ApplicationJobRuntimeProvider, ApplicationJobRuntimeProviderToken, ApplicationKubernetesCluster, ApplicationKubernetesConfigMapObjectStorageProvider, ApplicationKubernetesConfigMapQueueProvider, ApplicationKubernetesCredentialStoreProvider, ApplicationKubernetesCronJobSchedulerProvider, ApplicationKubernetesFiniteExecutionHostProvider, ApplicationKubernetesHostProvider, ApplicationKubernetesJobRuntimeProvider, ApplicationKubernetesManagedModelStoreProvider, ApplicationKubernetesOperatorRuntimeProvider, ApplicationKubernetesResourceCounterStoreProvider, ApplicationKubernetesSecretProvider, ApplicationKubernetesWatchEventSourceProvider, ApplicationLakehouseDatasetProvider, ApplicationLakehouseDatasetProviderToken, ApplicationLakehouseQueryProvider, ApplicationLakehouseQueryProviderToken, ApplicationLocalActorRuntimeProvider, ApplicationLocalJobRuntimeProvider, ApplicationLocalObservabilityProvider, ApplicationLocalSchedulerProvider, ApplicationManagedHostProvider, ApplicationManagedModelStoreProvider, ApplicationManagedModelStoreProviderToken, ApplicationNatsJetStreamEventLogProvider, ApplicationNodePortHttpExposureProvider, ApplicationOAuthAuthorizationServerProvider, ApplicationOAuthAuthorizationServerProviderToken, ApplicationObjectStorageProvider, ApplicationObservabilityProvider, ApplicationObservabilityProviderToken, ApplicationOciContainerRegistryProvider, ApplicationOpenSearchProvider, ApplicationOperatorRuntimeProvider, ApplicationOperatorRuntimeProviderToken, ApplicationOrbstackContainerRegistryProvider, ApplicationOtlpObservabilityProvider, ApplicationPostgresAnalyticalDatabaseProvider, ApplicationPostgresBackupPolicy, ApplicationPostgresClusterSpec, ApplicationPostgresJobResultStoreProvider, ApplicationPostgresManagedModelStoreProvider, ApplicationPostgresReadinessPolicy, ApplicationPostgresSchedulerProvider, ApplicationPostgresSearchProvider, ApplicationPostgresTransactionalDatabaseOptions, ApplicationPostgresTransactionalDatabaseProvider, ApplicationProviderBinding, ApplicationProviderConfigString, ApplicationProviderConfigUrl, ApplicationProviderQualification, ApplicationProviderToken, ApplicationQualifiableProviderToken, ApplicationQualifiedLakehouseDatasetProviderToken, ApplicationQualifiedLakehouseProviderRequired, ApplicationQualifiedProviderToken, ApplicationQueueProvider, ApplicationQueueProviderToken, ApplicationRequestAdmission, ApplicationRivetActorRuntimeProvider, ApplicationS3LakehouseDatasetProvider, ApplicationSchedulerProvider, ApplicationSchedulerProviderToken, ApplicationSearchCapability, ApplicationSearchProvider, ApplicationSearchProviderToken, ApplicationSecretProvider, ApplicationSqsQueueProvider, ApplicationStructuredGenerationDeterministicProvider, ApplicationStructuredGenerationHttpProvider, ApplicationStructuredGenerationProvider, ApplicationStructuredGenerationProviderToken, ApplicationTelemetryPolicy, ApplicationTelemetryPolicyOptions, ApplicationTransactionalDatabaseMigrationPolicy, ApplicationTransactionalDatabaseProvider, ApplicationTransactionalDatabaseProviderToken, ApplicationTypedProviderContract, ApplicationValkeyIndexBackend, ApplicationWorkflowEngineProvider, ApplicationWorkflowEngineProviderToken } from './application-providers.js';
+export { ActorRuntime, AnalyticalDatabase, Analytics, ApplicationHost, Authorization, AWS, Certificate, ContainerRegistry, CounterStore, CredentialStore, Database, DnsPublication, defaultApplicationEventLogProvider, defaultApplicationProviders, defaultApplicationWorkflowEngineProvider, defineApplicationProvider, EventLog, EventSource, FiniteExecutionHost, HttpExposure, IdentityProvider, IndexStore, JobResultStore, JobRuntime, KubernetesCluster, Lakehouse, LakehouseDataset, LakehouseQuery, ManagedModelStore, OAuthAuthorizationServer, ObjectStorage, Observability, OperatorRuntime, providers, Queue, Scheduler, Search, Secret, StructuredGeneration, TransactionalDatabase, telemetryPolicy, WorkflowEngine } from './application-providers.js';
 export type { ApplicationKubernetesModelSelection, ApplicationKubernetesModelSelectionContext, ApplicationKubernetesModelViewContract, ApplicationKubernetesModelViewImplementation, ApplicationKubernetesModelViewOptions, ApplicationKubernetesModelViewSchemaContract, ApplicationModelViewContext, ApplicationModelViewContract, ApplicationModelViewImplementation, ApplicationModelViewOptions, ApplicationOnlineProjectionQueryBinding, ApplicationOnlineQueryRuntimeSource, ApplicationOnlineQuerySource, ApplicationQueryAuthorizationRequest, ApplicationQuerySourceBinding } from './application-queries.js';
 export type { ApplicationAnalyticalProjectionBinding, ApplicationAnalyticalProjectionOptions, ApplicationEventBatch, ApplicationEventEnvelope, ApplicationGatewayAdmission, ApplicationGatewayBinding, ApplicationGatewayOptions, ApplicationOnlineProjectionBinding, ApplicationOnlineProjectionOptions, ApplicationProjectionBinding, ApplicationProjectionOptions, ApplicationStreamBatchContext, ApplicationStreamBatchHandler, ApplicationStreamBatchOptions, ApplicationStreamBinding, ApplicationStreamOptions, ApplicationStreamProcessContext, ApplicationStreamProcessHandler, ApplicationStreamProcessOptions, ApplicationStreamProcessorBinding, ApplicationStreamScheduleFunctions, ApplicationStreamScheduleTargets, ApplicationStreamTaskFunctions, ApplicationStreamTaskTargets, ApplicationSubscriptionBinding, ApplicationSubscriptionOptions } from './application-reactive.js';
 export type { ApplicationSearchComparison, ApplicationSearchDocument, ApplicationSearchFacetBucket, ApplicationSearchField, ApplicationSearchFieldHandle, ApplicationSearchHit, ApplicationSearchIndexBinding, ApplicationSearchIndexOptions, ApplicationSearchPath, ApplicationSearchRequest, ApplicationSearchResult, ApplicationSearchRootOptions, ApplicationSearchSort, ApplicationSearchSource, ApplicationUnaliasedSearchField } from './application-search.js';
@@ -201,11 +208,250 @@ export { applicationValueDefault, applicationValueString } from './application-t
 export type { ApplicationDurableErrorDescriptor, ApplicationDurableErrorUnion, ApplicationTaskBinding, ApplicationTaskContext, ApplicationTaskHandler, ApplicationTaskObjectFunctions, ApplicationTaskObjectStores, ApplicationTaskOperationFunctions, ApplicationTaskOperations, ApplicationTaskOptions, ApplicationTaskProjectionFunctions, ApplicationTaskProjections, ApplicationTaskProjectionTarget, ApplicationTaskProviderAccounting, ApplicationTaskProviderAccountingFunctions, ApplicationTaskQueries, ApplicationTaskQueryFunctions, ApplicationTaskReference, ApplicationTaskServicePrincipal, ApplicationWorkflowBinding, ApplicationWorkflowContext, ApplicationWorkflowExecutionFailure, ApplicationWorkflowExecutionObservation, ApplicationWorkflowExecutionReference, ApplicationWorkflowHandler, ApplicationWorkflowOptions, ApplicationWorkflowPhase, ApplicationWorkflowReference, ApplicationWorkflowResultOptions, ApplicationWorkflowRun, ApplicationWorkflowWorkerOptions } from './application-workflows.js';
 export { ApplicationDurableError, installApplicationWorkflowRuntimeResolver, isApplicationDurableError } from './application-workflows.js';
 export type { ApplicationEventConsumerBinding, RunningApplicationEventConsumer } from './event-log-runtime.js';
-export type { ApplicationKubernetesCreatePlacement, ApplicationKubernetesCreatePolicy, ApplicationKubernetesCreateRequest, ApplicationModelBeforeCommitHandler, ApplicationModelBeforeCommitOptions, ApplicationModelCreateEvent, ApplicationModelCreateEventHandler, ApplicationModelDeleteEvent, ApplicationModelDeleteEventHandler, ApplicationModelDeleteInput, ApplicationModelEvent, ApplicationModelEventKind, ApplicationModelLifecycleRegistrar, ApplicationModelMutationOperation, ApplicationModelUpdateEvent, ApplicationModelUpdateEventHandler, ApplicationModelUpdateInput, DrizzleAnalyticalApplicationModelFacet, ModelEvent, PromotedAnalyticalDrizzleTable } from './native-models.js';
+export type { ApplicationKubernetesCreatePlacement, ApplicationKubernetesCreatePolicy, ApplicationKubernetesCreateRequest, ApplicationModelBeforeCommitHandler, ApplicationModelBeforeCommitOptions, ApplicationModelCreateEvent, ApplicationModelCreateEventHandler, ApplicationModelDeleteEvent, ApplicationModelDeleteEventHandler, ApplicationModelDeleteInput, ApplicationModelEvent, ApplicationModelEventKind, ApplicationModelLifecycleRegistrar, ApplicationModelMutationOperation, ApplicationModelUpdateEvent, ApplicationModelUpdateEventHandler, ApplicationModelUpdateInput, DrizzleAnalyticalApplicationModelFacet, ManagedApplicationRelationalModel, ModelEvent, PromotedAnalyticalDrizzleTable } from './native-models.js';
+export type * from './application-managed-models.js';
 
 export interface ApplicationInfrastructureOptions {
   /** Stable graph identity for a nested composition instance. */
   readonly name?: string;
+}
+
+function registerApplicationManagedRelationalModel<
+  TStatus extends object,
+>(
+  state: ApplicationGraphState,
+  model: PromotedDrizzleTable<AnyPgTable>,
+  modelName: string,
+  options: ApplicationManagedModelOptions<TStatus>,
+): ApplicationManagedModelFacet<unknown, object, TStatus> {
+  const modelNodeId = `model.${kubernetesNameSegment(modelName)}`;
+  const modelNodeIndex = state.graphNodes.findIndex((node) => node.id === modelNodeId);
+  const existingNode = state.graphNodes[modelNodeIndex];
+  if (modelNodeIndex < 0 || existingNode?.kind !== 'model') {
+    throw new Error(`Managed model ${modelName} has no registered model graph node.`);
+  }
+  if (existingNode.managed) {
+    throw new Error(`Managed model ${modelName} is already configured.`);
+  }
+  const emittedStatus = normalizeSchema(options.status, `${modelName}.managed.status`).emitJsonSchema();
+  if (!emittedStatus.ok) {
+    throw new Error(
+      `Managed model ${modelName} status schema cannot be serialized: ${emittedStatus.error.message}`,
+    );
+  }
+  const status: ApplicationMessageContractSchema = {
+    kind: 'declared',
+    runtime: 'arktype',
+    jsonSchema: emittedStatus.value.schema,
+  };
+  const store = managedModelStoreRequirement(modelName);
+  const storeNodeId = applicationProviderGraphNodeId(
+    'ManagedModelStore',
+    store.qualification,
+  );
+  const runtimeNodeId = applicationProviderGraphNodeId('OperatorRuntime');
+  let contract: ApplicationManagedModelContract = {
+    status,
+    statusSchemaVersion: options.statusSchemaVersion ?? '1',
+    store: { interface: 'ManagedModelStore', nodeId: storeNodeId },
+    runtime: { interface: 'OperatorRuntime', nodeId: runtimeNodeId },
+    lifecycle: {
+      generation: 'desiredValueDigest',
+      notification: 'invalidationHint',
+      resync: {
+        intervalSeconds: managedModelDurationSeconds(
+          options.resync?.interval ?? '5m',
+          `${modelName}.managed.resync.interval`,
+        ),
+        maximumItems: options.resync?.maximumItems ?? 500,
+      },
+      lease: {
+        durationSeconds: managedModelDurationSeconds(
+          options.lease?.duration ?? '60s',
+          `${modelName}.managed.lease.duration`,
+        ),
+        fencing: 'monotonicToken',
+      },
+      status: 'schemaCompleteCompareAndSet',
+      conditions: 'singleWriterPerStaticType',
+      nextDue: 'operatorOwned',
+      deletion: 'intentThenFinalize',
+    },
+    finalizers: [],
+    portability: 'portable',
+    activation: 'migrationRequiredForExistingRows',
+  };
+  const publish = (): void => {
+    state.graphNodes[modelNodeIndex] = {
+      ...(state.graphNodes[modelNodeIndex] as ApplicationModelNode),
+      managed: contract,
+    };
+    state.onChange?.();
+  };
+  publish();
+  addApplicationProviderRequirement(state, {
+    id: `${modelNodeId}.managed-store`,
+    interface: 'ManagedModelStore',
+    consumer: { nodeId: modelNodeId },
+    provider: { interface: 'ManagedModelStore', nodeId: storeNodeId },
+    required: true,
+    purpose: 'managedModelStore',
+    diagnostics: {
+      missing: `Managed model ${modelName} requires ${modelName}.store to be provided with ManagedModelStore.postgres(...) or ManagedModelStore.kubernetes(...).`,
+      ambiguous: `Managed model ${modelName} has more than one store binding. Provide exactly ${modelName}.store.`,
+    },
+  });
+  addApplicationProviderRequirement(state, {
+    id: `${modelNodeId}.operator-runtime`,
+    interface: 'OperatorRuntime',
+    consumer: { nodeId: modelNodeId },
+    provider: { interface: 'OperatorRuntime', nodeId: runtimeNodeId },
+    required: true,
+    purpose: 'operatorRuntime',
+    diagnostics: {
+      missing: `Managed model ${modelName} requires an OperatorRuntime provider.`,
+      ambiguous: `Managed model ${modelName} has more than one unqualified OperatorRuntime provider.`,
+    },
+  });
+  addApplicationGraphEdge(state, {
+    from: { nodeId: storeNodeId },
+    to: { nodeId: modelNodeId },
+    relationship: 'provides',
+  });
+  addApplicationGraphEdge(state, {
+    from: { nodeId: runtimeNodeId },
+    to: { nodeId: modelNodeId },
+    relationship: 'provides',
+  });
+
+  const serialize = (
+    event: 'reconcile' | 'finalize',
+    handler: ApplicationManagedModelHandler<unknown, object, TStatus>,
+  ) => {
+    const serialized = serializeApplicationCallback({
+      registrar: event === 'reconcile' ? 'Model.on.reconcile' : 'Model.on.finalize',
+      argumentIndex: event === 'reconcile' ? 0 : 0,
+      property: 'handler',
+      label: `Managed model ${modelName} ${event} handler`,
+      callback: handler as (...args: never[]) => unknown,
+      allowDeferredResolution: true,
+    });
+    return {
+      serialized,
+      conditionTypes: applicationManagedModelConditionTypes(
+        modelName,
+        event,
+        serialized.source,
+      ),
+    };
+  };
+  let reconcileRegistered = false;
+  const finalizers = new Set<string>();
+  const facet: ApplicationManagedModelFacet<unknown, object, TStatus> = Object.freeze({
+    protocol: 'applik8s.managed-model/v1alpha1',
+    status: options.status,
+    statusSchemaVersion: contract.statusSchemaVersion,
+    store,
+    on: Object.freeze({
+      reconcile(handler: ApplicationManagedModelHandler<unknown, object, TStatus>) {
+        if (reconcileRegistered) {
+          throw new Error(`Managed model ${modelName} may declare only one reconcile handler.`);
+        }
+        const { serialized, conditionTypes } = serialize('reconcile', handler);
+        assertManagedModelConditionOwnership(modelName, contract, conditionTypes);
+        reconcileRegistered = true;
+        contract = {
+          ...contract,
+          reconcile: {
+            handlerSource: serialized.source,
+            ...(serialized.dependencies ? { handlerDependencies: serialized.dependencies } : {}),
+            ...(serialized.location ? { handlerLocation: serialized.location } : {}),
+            ...(serialized.unresolved ? { handlerUnresolved: serialized.unresolved } : {}),
+            conditionTypes,
+          },
+        };
+        publish();
+        return Object.freeze({
+          kind: 'applicationManagedModelRegistration' as const,
+          model: modelName,
+          event: 'reconcile' as const,
+        });
+      },
+      finalize(
+        handler: ApplicationManagedModelHandler<unknown, object, TStatus>,
+        finalizerOptions: { readonly finalizer: string },
+      ) {
+        const finalizer = finalizerOptions.finalizer.trim();
+        if (!/^[a-z0-9](?:[-a-z0-9.]*[a-z0-9])?\/[a-z0-9](?:[-a-z0-9.]*[a-z0-9])?$/u.test(finalizer)) {
+          throw new Error(`Managed model ${modelName} finalizer must be a qualified DNS-style name.`);
+        }
+        if (finalizers.has(finalizer)) {
+          throw new Error(`Managed model ${modelName} finalizer ${finalizer} is already registered.`);
+        }
+        const { serialized, conditionTypes } = serialize('finalize', handler);
+        assertManagedModelConditionOwnership(modelName, contract, conditionTypes);
+        finalizers.add(finalizer);
+        contract = {
+          ...contract,
+          finalizers: [
+            ...contract.finalizers,
+            {
+              name: finalizer,
+              handlerSource: serialized.source,
+              ...(serialized.dependencies ? { handlerDependencies: serialized.dependencies } : {}),
+              ...(serialized.location ? { handlerLocation: serialized.location } : {}),
+              ...(serialized.unresolved ? { handlerUnresolved: serialized.unresolved } : {}),
+              conditionTypes,
+            },
+          ],
+        };
+        publish();
+        return Object.freeze({
+          kind: 'applicationManagedModelRegistration' as const,
+          model: modelName,
+          event: 'finalize' as const,
+          finalizer,
+        });
+      },
+    }),
+  });
+  void model;
+  return facet;
+}
+
+function applicationManagedModelConditionTypes(
+  modelName: string,
+  event: 'reconcile' | 'finalize',
+  source: string,
+): readonly string[] {
+  const calls = source.match(/\.conditions\s*\.\s*(?:set|remove)\s*\(/gu) ?? [];
+  const types = [
+    ...source.matchAll(/\.conditions\s*\.\s*set\s*\(\s*\{[\s\S]{0,1200}?\btype\s*:\s*(['"])([^'"]+)\1/gu),
+    ...source.matchAll(/\.conditions\s*\.\s*remove\s*\(\s*(['"])([^'"]+)\1/gu),
+  ].map((match) => match[2] as string);
+  if (calls.length !== types.length) {
+    throw new Error(
+      `Managed model ${modelName} ${event} handler condition types must be statically discoverable string literals.`,
+    );
+  }
+  return Object.freeze([...new Set(types)].sort());
+}
+
+function assertManagedModelConditionOwnership(
+  modelName: string,
+  contract: ApplicationManagedModelContract,
+  next: readonly string[],
+): void {
+  const owned = new Set([
+    ...(contract.reconcile?.conditionTypes ?? []),
+    ...contract.finalizers.flatMap((finalizer) => finalizer.conditionTypes),
+  ]);
+  const collision = next.find((type) => owned.has(type));
+  if (collision) {
+    throw new Error(
+      `Managed model ${modelName} condition ${collision} has more than one writer. Factor it through one reconcile or finalize handler.`,
+    );
+  }
 }
 
 function isSingleStepWorkflowOptions(options: object): boolean {
@@ -2480,6 +2726,8 @@ function createKubernetesApplicationBuilder<TSpec extends KroCompatibleType = Re
         if (!previewRegistrar) throw new Error(`Native model ${previewFacet.name} did not install its application command registrar.`);
         const previewLifecycleRegistrar = nativeApplicationModelLifecycleRegistrar(previewModel);
         if (!previewLifecycleRegistrar) throw new Error(`Native model ${previewFacet.name} did not install its application lifecycle registrar.`);
+        const previewManagedRegistrar = nativeApplicationManagedModelRegistrar(previewModel);
+        if (!previewManagedRegistrar) throw new Error(`Native model ${previewFacet.name} did not install its managed-model registrar.`);
         const previewCreatePolicyRegistrar = nativeApplicationModelBeforeCommitRegistrar(previewApi.create);
         const previewUpdatePolicyRegistrar = nativeApplicationModelBeforeCommitRegistrar(previewApi.update);
         const previewDeletePolicyRegistrar = nativeApplicationModelBeforeCommitRegistrar(previewApi.delete);
@@ -2503,6 +2751,52 @@ function createKubernetesApplicationBuilder<TSpec extends KroCompatibleType = Re
           previewModel,
           invalidate,
         );
+        type ManagedReplay = {
+          readonly options: ApplicationManagedModelOptions<object>;
+          reconcile?: ApplicationManagedModelHandler<unknown, object, object>;
+          readonly finalizers: Array<{
+            readonly handler: ApplicationManagedModelHandler<unknown, object, object>;
+            readonly options: { readonly finalizer: string };
+          }>;
+        };
+        let managedReplay: ManagedReplay | undefined;
+        bindNativeApplicationManagedModel(previewModel, {
+          register(managedOptions) {
+            if (managedReplay) {
+              throw new Error(`Managed model ${previewFacet.name} is already configured.`);
+            }
+            const facet = previewManagedRegistrar.register(managedOptions);
+            const replay = {
+              options: managedOptions as ApplicationManagedModelOptions<object>,
+              finalizers: [],
+            } as ManagedReplay;
+            managedReplay = replay;
+            invalidate();
+            return {
+              ...facet,
+              on: {
+                reconcile(handler: ApplicationManagedModelHandler<unknown, object, object>) {
+                  const registration = facet.on.reconcile(handler);
+                  replay.reconcile = handler as ApplicationManagedModelHandler<unknown, object, object>;
+                  invalidate();
+                  return registration;
+                },
+                finalize(
+                  handler: ApplicationManagedModelHandler<unknown, object, object>,
+                  finalizerOptions: { readonly finalizer: string },
+                ) {
+                  const registration = facet.on.finalize(handler, finalizerOptions);
+                  replay.finalizers.push({
+                    handler: handler as ApplicationManagedModelHandler<unknown, object, object>,
+                    options: finalizerOptions,
+                  });
+                  invalidate();
+                  return registration;
+                },
+              },
+            } as never;
+          },
+        });
         bindNativeApplicationModelCommands(previewModel, ((command: Parameters<typeof previewRegistrar>[0], commandOptions: Parameters<typeof previewRegistrar>[1], handler: Parameters<typeof previewRegistrar>[2]) => {
           const binding = previewRegistrar(command, commandOptions, handler);
           const replay: {
@@ -2581,6 +2875,15 @@ function createKubernetesApplicationBuilder<TSpec extends KroCompatibleType = Re
           for (const declaration of createLifecycleReplays) lifecycleRegistrar.create(...declaration);
           for (const declaration of updateLifecycleReplays) lifecycleRegistrar.update(...declaration);
           for (const declaration of deleteLifecycleReplays) lifecycleRegistrar.delete(...declaration);
+          if (managedReplay) {
+            const managed = replayedApi.managed(managedReplay.options);
+            if (managedReplay.reconcile) {
+              managed.on.reconcile(managedReplay.reconcile);
+            }
+            for (const declaration of managedReplay.finalizers) {
+              managed.on.finalize(declaration.handler, declaration.options);
+            }
+          }
           const createPolicyRegistrar = nativeApplicationModelBeforeCommitRegistrar(replayedApi.create);
           const updatePolicyRegistrar = nativeApplicationModelBeforeCommitRegistrar(replayedApi.update);
           const deletePolicyRegistrar = nativeApplicationModelBeforeCommitRegistrar(replayedApi.delete);
@@ -4668,6 +4971,14 @@ function createApplicationContext<TSpec extends KroCompatibleType, TStatus exten
             : {},
           databaseBinding.qualification,
         );
+        bindNativeApplicationManagedModel(promoted, {
+          register: (managedOptions) => registerApplicationManagedRelationalModel(
+            state,
+            promoted,
+            promotedFacet.name,
+            managedOptions,
+          ) as never,
+        });
         bindSearch(promoted);
         state.models[runtimeModel.name] = runtimeModel;
         const commandModel = applicationNativeCommandModelBinding(promoted, runtimeModel);

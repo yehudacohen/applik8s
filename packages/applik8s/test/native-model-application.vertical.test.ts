@@ -48,6 +48,107 @@ function catalogSchema() {
 }
 
 describe('v0.6 app-scoped native model promotion', () => {
+  test('enriches one native model with function-native portable reconciliation', () => {
+    const workspaces = pgTable('managed_workspaces', {
+      id: uuid('id').primaryKey(),
+      version: text('version').notNull(),
+    });
+    const application = app('managed-workspace');
+    const Database = application.database.postgres('catalog', { schema: { workspaces } });
+    const Workspace = application.model(workspaces, {
+      name: 'Workspace',
+      database: Database,
+    }).managed({
+      status: type({
+        observedGeneration: 'number.integer >= 0',
+        phase: "'Pending' | 'Ready' | 'Degraded'",
+      }),
+      resync: { interval: '2m', maximumItems: 250 },
+      lease: { duration: '45s' },
+    });
+
+    const registration = Workspace.on.reconcile(async (workspace, context) => {
+      expectTypeOf(workspace.value.version).toEqualTypeOf<string>();
+      await workspace.status.update({
+        observedGeneration: workspace.metadata.generation,
+        phase: 'Ready',
+      });
+      await workspace.conditions.set({
+        type: 'Ready',
+        status: 'True',
+        reason: 'Converged',
+        message: 'Workspace is ready',
+      });
+      return context.requeueAfter('30s');
+    });
+    const finalizer = Workspace.on.finalize(async workspace => {
+      await workspace.conditions.remove('CleanupBlocked');
+    }, { finalizer: 'workspaces.applik8s.dev/application-deployment' });
+
+    expect(registration).toMatchObject({
+      model: 'Workspace',
+      event: 'reconcile',
+    });
+    expect(finalizer).toMatchObject({
+      model: 'Workspace',
+      event: 'finalize',
+      finalizer: 'workspaces.applik8s.dev/application-deployment',
+    });
+    expect(Workspace.store.qualification.name).toBe('workspace');
+    const node = applicationGraphFor(application.composition)?.nodes.find(
+      candidate => candidate.kind === 'model' && candidate.name === 'Workspace',
+    );
+    expect(node && node.kind === 'model' ? node.managed : undefined).toMatchObject({
+      statusSchemaVersion: '1',
+      store: { interface: 'ManagedModelStore' },
+      runtime: { interface: 'OperatorRuntime' },
+      lifecycle: {
+        resync: { intervalSeconds: 120, maximumItems: 250 },
+        lease: { durationSeconds: 45, fencing: 'monotonicToken' },
+      },
+      reconcile: { conditionTypes: ['Ready'] },
+      finalizers: [{
+        name: 'workspaces.applik8s.dev/application-deployment',
+        conditionTypes: ['CleanupBlocked'],
+      }],
+      portability: 'portable',
+    });
+  });
+
+  test('fails graph construction for dynamic or multiply-owned condition types', () => {
+    const records = pgTable('managed_condition_records', {
+      id: text('id').primaryKey(),
+      value: text('value').notNull(),
+    });
+    const application = app('managed-condition-ownership');
+    const Database = application.database.postgres('catalog', { schema: { records } });
+    const status = type({ phase: "'Pending' | 'Ready'" });
+    const Record = application.model(records, { name: 'ManagedRecord', database: Database })
+      .managed({ status });
+    Record.on.reconcile(async record => {
+      await record.conditions.set({
+        type: 'Ready',
+        status: 'True',
+        reason: 'Ready',
+        message: 'ready',
+      });
+    });
+    expect(() => Record.on.finalize(async record => {
+      await record.conditions.remove('Ready');
+    }, { finalizer: 'records.applik8s.dev/cleanup' })).toThrow(/more than one writer/u);
+
+    const other = pgTable('managed_dynamic_conditions', {
+      id: text('id').primaryKey(),
+      value: text('value').notNull(),
+    });
+    const Dynamic = application.model(other, { name: 'DynamicCondition', database: Database })
+      .managed({ status });
+    expect(() => Dynamic.on.reconcile(async record => {
+      const conditionType = record.value.value;
+      await record.conditions.remove(conditionType);
+    })).toThrow(/statically discoverable string literals/u);
+  });
+
   test('derives defaultRandom model identity from the durable message without browser ceremony', () => {
     const requests = relationalModel('default_random_requests', {
       id: field.uuid('id').defaultRandom().primaryKey(),

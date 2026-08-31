@@ -46,6 +46,12 @@ import {
   stagedApplicationCommandResult,
 } from './application-managed-effects-api.js';
 import type {
+  ApplicationManagedModelFacet,
+  ApplicationManagedModelLifecycleRegistrar,
+  ApplicationManagedModelOptions,
+  ApplicationManagedModelRegistrar,
+} from './application-managed-models.js';
+import type {
   ApplicationModelBinding,
   ApplicationModelCommandBinding,
   ApplicationModelCommandHandler,
@@ -408,6 +414,9 @@ export interface DrizzleApplicationModelApi<TTable extends AnyPgTable, TIdentity
   >;
   readonly on: FunctionNativeApplicationModelLifecycleRegistrar<InferSelectModel<TTable>, TIdentity>;
   readonly events: ApplicationModelLifecycleEvents<InferSelectModel<TTable>, TIdentity>;
+  managed<TStatus extends object>(
+    options: ApplicationManagedModelOptions<TStatus>,
+  ): ManagedApplicationRelationalModel<TTable, TIdentity, TStatus>;
   query<
     TInputSchema extends ApplicationQuerySchemaSource,
     TOutputSchema extends ApplicationQuerySchemaSource,
@@ -495,6 +504,18 @@ type DrizzleApplicationModelDirectMembers<TTable extends AnyPgTable, TIdentity> 
     ...fields: TFields
   ): ApplicationSearchIndexBinding<ApplicationSearchDocument<TFields>>;
 } & DrizzleApplicationModelApi<TTable, TIdentity>;
+
+export type ManagedApplicationRelationalModel<
+  TTable extends AnyPgTable,
+  TIdentity,
+  TStatus extends object,
+> = ApplicationRelationalModel<TTable, TIdentity> & {
+  readonly store: ApplicationManagedModelFacet<TIdentity, InferSelectModel<TTable>, TStatus>['store'];
+  readonly on: FunctionNativeApplicationModelLifecycleRegistrar<
+    InferSelectModel<TTable>,
+    TIdentity
+  > & ApplicationManagedModelLifecycleRegistrar<TIdentity, InferSelectModel<TTable>, TStatus>;
+};
 
 /**
  * Public model surface returned from `model()`.
@@ -731,6 +752,9 @@ const nativeModelCommandRegistrars = new WeakMap<object, NativeModelCommandRegis
 const nativeModelBeforeCommitRegistrars = new WeakMap<object, NativeModelBeforeCommitRegistrar>();
 type NativeModelLifecycleRegistrar = ApplicationModelLifecycleRegistrar<object, unknown>;
 const nativeModelLifecycleRegistrars = new WeakMap<object, NativeModelLifecycleRegistrar>();
+type NativeManagedModelRegistrar = ApplicationManagedModelRegistrar<unknown, object>;
+const nativeManagedModelRegistrars = new WeakMap<object, NativeManagedModelRegistrar>();
+const nativeManagedModelFacets = new WeakMap<object, ApplicationManagedModelFacet<unknown, object, object>>();
 const nativeApplicationModelBindings = new WeakMap<object, ApplicationModelBinding<object, object>>();
 const applicationModelViewRegistrars = new WeakMap<object, ApplicationModelViewRegistrar>();
 const applicationModelCommandOperationBindings = new WeakMap<object, ApplicationModelCommandBinding>();
@@ -1246,6 +1270,8 @@ export function promoteDrizzleTable<TTable extends AnyPgTable>(
     'events',
     'query',
     'view',
+    'managed',
+    'store',
   ] as const;
   const directMemberCollisions = Object.freeze(directMemberNames.filter((member) => member in table));
 
@@ -1514,6 +1540,66 @@ export function promoteDrizzleTable<TTable extends AnyPgTable>(
     },
   };
 
+  const managedModel = <TStatus extends object>(
+    managedOptions: ApplicationManagedModelOptions<TStatus>,
+  ): ManagedApplicationRelationalModel<
+    TTable,
+    ConventionalTableIdentity<TTable>,
+    TStatus
+  > => {
+    const existingManaged = nativeManagedModelFacets.get(table);
+    if (existingManaged) {
+      if (existingManaged.status !== managedOptions.status) {
+        throw new Error(`Managed model ${name} is already configured with a different status schema.`);
+      }
+      return table as ManagedApplicationRelationalModel<
+        TTable,
+        ConventionalTableIdentity<TTable>,
+        TStatus
+      >;
+    }
+    const registrar = nativeManagedModelRegistrars.get(table);
+    if (!registrar) {
+      throw new Error(`Native model ${name} must be registered through app.model(table) before calling .managed(...).`);
+    }
+    const managedFacet = registrar.register(managedOptions) as ApplicationManagedModelFacet<
+      ConventionalTableIdentity<TTable>,
+      InferSelectModel<TTable>,
+      TStatus
+    >;
+    nativeManagedModelFacets.set(
+      table,
+      managedFacet as ApplicationManagedModelFacet<unknown, object, object>,
+    );
+    Object.defineProperties(lifecycleRegistrars, {
+      reconcile: {
+        value: managedFacet.on.reconcile,
+        enumerable: true,
+        configurable: true,
+        writable: false,
+      },
+      finalize: {
+        value: managedFacet.on.finalize,
+        enumerable: true,
+        configurable: true,
+        writable: false,
+      },
+    });
+    if (!directMemberCollisions.includes('store') && !Object.hasOwn(table, 'store')) {
+      Object.defineProperty(table, 'store', {
+        value: managedFacet.store,
+        enumerable: false,
+        configurable: false,
+        writable: false,
+      });
+    }
+    return table as ManagedApplicationRelationalModel<
+      TTable,
+      ConventionalTableIdentity<TTable>,
+      TStatus
+    >;
+  };
+
   const viewModel = (
     nameOrOptions: string | ApplicationModelViewOptions<unknown, unknown, ApplicationQueryPrincipal>,
     maybeOptions?:
@@ -1644,6 +1730,7 @@ export function promoteDrizzleTable<TTable extends AnyPgTable>(
     events: lifecycleEvents,
     query: queryModel,
     view: viewModel,
+    managed: managedModel,
   }) as DrizzleApplicationModelApi<TTable>;
 
   Object.defineProperty(table, applicationModelFacet, {
@@ -1668,6 +1755,7 @@ export function promoteDrizzleTable<TTable extends AnyPgTable>(
     events: collisionSafeApi.events,
     query: collisionSafeApi.query,
     view: collisionSafeApi.view,
+    managed: collisionSafeApi.managed,
   };
   for (const [member, value] of Object.entries(directMembers)) {
     if (directMemberCollisions.some((collision) => collision === member)) continue;
@@ -1737,6 +1825,32 @@ export function bindNativeApplicationModelLifecycle<TTable extends AnyPgTable>(
   registrar: ApplicationModelLifecycleRegistrar<InferSelectModel<TTable>, ConventionalTableIdentity<TTable>>,
 ): void {
   nativeModelLifecycleRegistrars.set(model, registrar as NativeModelLifecycleRegistrar);
+}
+
+export function bindNativeApplicationManagedModel<TTable extends AnyPgTable>(
+  model: PromotedDrizzleTable<TTable>,
+  registrar: ApplicationManagedModelRegistrar<
+    ConventionalTableIdentity<TTable>,
+    InferSelectModel<TTable>
+  >,
+): void {
+  // One Drizzle table object is replayed through preview and materialization
+  // scopes. The scope-owned registrar is authoritative; managed declaration
+  // state must therefore be rebuilt rather than leaking between graph passes.
+  nativeManagedModelFacets.delete(model);
+  nativeManagedModelRegistrars.set(model, registrar as NativeManagedModelRegistrar);
+}
+
+export function nativeApplicationManagedModelRegistrar<TTable extends AnyPgTable>(
+  model: PromotedDrizzleTable<TTable>,
+): ApplicationManagedModelRegistrar<
+  ConventionalTableIdentity<TTable>,
+  InferSelectModel<TTable>
+> | undefined {
+  return nativeManagedModelRegistrars.get(model) as ApplicationManagedModelRegistrar<
+    ConventionalTableIdentity<TTable>,
+    InferSelectModel<TTable>
+  > | undefined;
 }
 
 export function nativeApplicationModelLifecycleRegistrar<TTable extends AnyPgTable>(

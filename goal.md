@@ -65,8 +65,8 @@ deployment machinery.
 
 ## Current checkpoint
 
-The branch `codex/v0.9-semantic-completion` is pushed through `a4e5e05` before
-the current Query batching slice. Completed foundations include concrete
+The branch `codex/v0.9-semantic-completion` is pushed through `b994f1f` before
+the current managed-model slice. Completed foundations include concrete
 provider planning, deployment migration proposals, journey declarations, the
 documentation site foundation, shared effect-safety primitives, Job vocabulary
 and runtime contracts, deterministic and durable PostgreSQL Job execution,
@@ -89,8 +89,18 @@ rejection. PostgreSQL is truthfully the only maintained repeatable-snapshot
 lowering; unqualified consistency modes fail closed.
 
 Full Kubernetes Job interruption qualification and AWS finite execution remain
-open. After this Query batching slice is committed, continue with managed model
-and `Resource.on.reconcile` parity, then beta Saga coordination.
+open. The managed-model slice now freezes and implements the public
+`application.model(table).managed({ status })` enrichment, qualified
+`Model.store`, `Model.on.reconcile`, and `Model.on.finalize` surface; persists
+that declaration through preview/materialization replay; serializes its exact
+status, lease, resync, provider, callback, finalizer, and static condition-writer
+contract into the application graph; and fails closed for dynamic or conflicting
+condition ownership. A provider-neutral deterministic runtime proves desired
+generation, schema-complete status, observed-generation conditions, monotonic
+lease fencing, durable next-due intent, restart-safe finalizers, and stale-write
+rejection. PostgreSQL lifecycle authority, generated operator lowering, and
+Kubernetes parity remain the next work in this slice before beta Saga
+coordination.
 
 Continue in the sequence above until every stable-candidate gate is implemented
 and evidenced. Keep beta/preview surfaces truthful; do not expand the frozen

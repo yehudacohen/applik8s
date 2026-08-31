@@ -350,6 +350,42 @@ export type ApplicationJobRuntimeProvider =
   | ApplicationKubernetesJobRuntimeProvider
   | ApplicationAwsJobRuntimeProvider;
 
+export interface ApplicationPostgresManagedModelStoreProvider {
+  readonly kind: 'postgres-managed-model-store';
+  readonly database: ApplicationImplementationInput<ApplicationTransactionalDatabaseProvider>;
+  readonly schema?: string;
+}
+
+export interface ApplicationKubernetesManagedModelStoreProvider {
+  readonly kind: 'kubernetes-managed-model-store';
+  readonly cluster: ApplicationKubernetesCluster;
+}
+
+export type ApplicationManagedModelStoreProvider =
+  | ApplicationPostgresManagedModelStoreProvider
+  | ApplicationKubernetesManagedModelStoreProvider;
+
+export interface ApplicationDistributedOperatorRuntimeProvider {
+  readonly kind: 'distributed-operator-runtime';
+  readonly database: ApplicationImplementationInput<ApplicationTransactionalDatabaseProvider>;
+  readonly scheduler: ApplicationImplementationInput<ApplicationSchedulerProvider>;
+  readonly queue?: ApplicationImplementationInput<ApplicationQueueProvider>;
+  readonly leaseDuration?: string;
+  readonly resyncInterval?: string;
+}
+
+export interface ApplicationKubernetesOperatorRuntimeProvider {
+  readonly kind: 'kubernetes-operator-runtime';
+  readonly cluster: ApplicationKubernetesCluster;
+  readonly namespace?: string;
+  readonly leaseDuration?: string;
+  readonly resyncInterval?: string;
+}
+
+export type ApplicationOperatorRuntimeProvider =
+  | ApplicationDistributedOperatorRuntimeProvider
+  | ApplicationKubernetesOperatorRuntimeProvider;
+
 export interface ApplicationLocalSchedulerProvider {
   readonly kind: 'local-scheduler';
   readonly clock?: 'system' | 'controlled';
@@ -1588,6 +1624,16 @@ export interface ApplicationJobRuntimeProviderToken extends ApplicationQualifiab
   aws(options: Omit<ApplicationAwsJobRuntimeProvider, 'kind'>): ApplicationCapabilityImplementation<ApplicationAwsJobRuntimeProvider>;
 }
 
+export interface ApplicationManagedModelStoreProviderToken extends ApplicationQualifiableProviderToken<ApplicationManagedModelStoreProvider> {
+  postgres(options: Omit<ApplicationPostgresManagedModelStoreProvider, 'kind'>): ApplicationCapabilityImplementation<ApplicationPostgresManagedModelStoreProvider>;
+  kubernetes(options: Omit<ApplicationKubernetesManagedModelStoreProvider, 'kind'>): ApplicationCapabilityImplementation<ApplicationKubernetesManagedModelStoreProvider>;
+}
+
+export interface ApplicationOperatorRuntimeProviderToken extends ApplicationQualifiableProviderToken<ApplicationOperatorRuntimeProvider> {
+  distributed(options: Omit<ApplicationDistributedOperatorRuntimeProvider, 'kind'>): ApplicationCapabilityImplementation<ApplicationDistributedOperatorRuntimeProvider>;
+  kubernetes(options: Omit<ApplicationKubernetesOperatorRuntimeProvider, 'kind'>): ApplicationCapabilityImplementation<ApplicationKubernetesOperatorRuntimeProvider>;
+}
+
 export interface ApplicationQueueProviderToken extends ApplicationQualifiableProviderToken<ApplicationQueueProvider> {
   jetStream(options: Omit<ApplicationJetStreamQueueProvider, 'kind'>): ApplicationCapabilityImplementation<ApplicationJetStreamQueueProvider>;
   sqs(options: Omit<ApplicationSqsQueueProvider, 'kind'>): ApplicationCapabilityImplementation<ApplicationSqsQueueProvider>;
@@ -2441,6 +2487,127 @@ export const JobRuntime: ApplicationJobRuntimeProviderToken = applicationQualifi
   },
 });
 
+export const ManagedModelStore: ApplicationManagedModelStoreProviderToken = applicationQualifiableProviderToken({
+  name: 'ManagedModelStore',
+  description: 'Provider-neutral desired-state, lifecycle, status, condition, and deletion authority for one managed model.',
+  contract: {
+    apiVersion: 'applik8s.provider/v1alpha1',
+    interface: 'ManagedModelStore',
+    version: 'v1alpha1',
+    requirements: ['stableIdentity', 'generation', 'lifecycleState', 'boundedResync'],
+    guarantees: ['separateDesiredAndStatusAuthority', 'compareAndSet', 'durableDeletionIntent'],
+  },
+  accepts: isApplicationManagedModelStoreProvider,
+  postgres(options) {
+    const provider: ApplicationPostgresManagedModelStoreProvider = {
+      kind: 'postgres-managed-model-store',
+      ...options,
+    };
+    return maintainedBuiltInImplementation(ManagedModelStore, 'ManagedModelStore.postgres', provider, {
+      runtimeAdapter: '@applik8s/runtime-postgres/managed-model-store',
+      readiness: 'applik8s.managed-model-store.postgres.readiness/v1alpha1',
+      lifecycle: 'application',
+      migration: 'applik8s.managed-model-store.postgres.migration/v1alpha1',
+      maturity: 'experimental',
+      dependencies: [{
+        slot: 'database',
+        requirement: TransactionalDatabase as ApplicationProviderToken<object>,
+        requiredGuarantees: ['transactions', 'strongReads'],
+        operations: ['database.read', 'database.write'],
+        input: maintainedDependencyInput(
+          options.database as object,
+          TransactionalDatabase as ApplicationProviderToken<object>,
+        ),
+      }],
+    });
+  },
+  kubernetes(options) {
+    const provider: ApplicationKubernetesManagedModelStoreProvider = {
+      kind: 'kubernetes-managed-model-store',
+      ...options,
+    };
+    return maintainedBuiltInImplementation(ManagedModelStore, 'ManagedModelStore.kubernetes', provider, {
+      runtimeAdapter: '@applik8s/runtime-kubernetes/managed-model-store',
+      readiness: 'applik8s.managed-model-store.kubernetes.readiness/v1alpha1',
+      lifecycle: 'external',
+      migration: 'applik8s.managed-model-store.kubernetes.migration/v1alpha1',
+      maturity: 'experimental',
+    });
+  },
+});
+
+export const OperatorRuntime: ApplicationOperatorRuntimeProviderToken = applicationQualifiableProviderToken({
+  name: 'OperatorRuntime',
+  description: 'Provider-neutral fenced continuous reconciliation with resync, wakeup, status, and finalization semantics.',
+  contract: {
+    apiVersion: 'applik8s.provider/v1alpha1',
+    interface: 'OperatorRuntime',
+    version: 'v1alpha1',
+    requirements: ['fencedLease', 'boundedResync', 'durableWakeup', 'restartSafeFinalization'],
+    guarantees: ['singleCommitter', 'staleWorkerRejection', 'notificationIndependentRecovery'],
+  },
+  accepts: isApplicationOperatorRuntimeProvider,
+  distributed(options) {
+    const provider: ApplicationDistributedOperatorRuntimeProvider = {
+      kind: 'distributed-operator-runtime',
+      ...options,
+    };
+    return maintainedBuiltInImplementation(OperatorRuntime, 'OperatorRuntime.distributed', provider, {
+      runtimeAdapter: '@applik8s/runtime-postgres/operator-runtime',
+      readiness: 'applik8s.operator-runtime.distributed.readiness/v1alpha1',
+      lifecycle: 'application',
+      migration: 'applik8s.operator-runtime.distributed.migration/v1alpha1',
+      maturity: 'experimental',
+      dependencies: [
+        {
+          slot: 'database',
+          requirement: TransactionalDatabase as ApplicationProviderToken<object>,
+          requiredGuarantees: ['transactions', 'strongReads'],
+          operations: ['database.read', 'database.write'],
+          input: maintainedDependencyInput(
+            options.database as object,
+            TransactionalDatabase as ApplicationProviderToken<object>,
+          ),
+        },
+        {
+          slot: 'scheduler',
+          requirement: Scheduler as ApplicationProviderToken<object>,
+          requiredGuarantees: ['durableOccurrenceIdentity', 'boundedMisfire'],
+          operations: ['schedule.manage'],
+          input: maintainedDependencyInput(
+            options.scheduler as object,
+            Scheduler as ApplicationProviderToken<object>,
+          ),
+        },
+        ...(options.queue ? [{
+          slot: 'queue',
+          requirement: Queue as ApplicationProviderToken<object>,
+          requiredGuarantees: ['durableDelivery'],
+          operations: ['queue.publish', 'queue.consume'],
+          input: maintainedDependencyInput(
+            options.queue as object,
+            Queue as ApplicationProviderToken<object>,
+          ),
+        }] : []),
+      ],
+    });
+  },
+  kubernetes(options) {
+    const provider: ApplicationKubernetesOperatorRuntimeProvider = {
+      kind: 'kubernetes-operator-runtime',
+      ...options,
+    };
+    return maintainedBuiltInImplementation(OperatorRuntime, 'OperatorRuntime.kubernetes', provider, {
+      runtimeAdapter: '@applik8s/runtime-kubernetes/operator-runtime',
+      deploymentContributor: '@applik8s/deployment-compiler/providers/operator-runtime-kubernetes',
+      readiness: 'applik8s.operator-runtime.kubernetes.readiness/v1alpha1',
+      lifecycle: 'application',
+      migration: 'applik8s.operator-runtime.kubernetes.migration/v1alpha1',
+      maturity: 'experimental',
+    });
+  },
+});
+
 export const Scheduler: ApplicationSchedulerProviderToken = applicationQualifiableProviderToken({
   name: 'Scheduler',
   description: 'Provider-neutral fixed, dynamic, and one-time function-native scheduling.',
@@ -3138,7 +3305,7 @@ function builtInProviderContract(providerInterface: string, guarantees: readonly
 }
 
 // typecast: provider registry names are literal public API keys used for app.provide(...) inference.
-export const providers = { IndexStore, Search, TransactionalDatabase, AnalyticalDatabase, CounterStore, EventSource, EventLog, Secret, Queue, ObjectStorage, HttpExposure, Certificate, DnsPublication, CredentialStore, WorkflowEngine, JobRuntime, Scheduler, ActorRuntime, Observability, LakehouseDataset, LakehouseQuery, ApplicationHost, ContainerRegistry, IdentityProvider, OAuthAuthorizationServer, Authorization, StructuredGeneration } as const;
+export const providers = { IndexStore, Search, TransactionalDatabase, AnalyticalDatabase, CounterStore, EventSource, EventLog, Secret, Queue, ObjectStorage, HttpExposure, Certificate, DnsPublication, CredentialStore, WorkflowEngine, JobRuntime, ManagedModelStore, OperatorRuntime, Scheduler, ActorRuntime, Observability, LakehouseDataset, LakehouseQuery, ApplicationHost, ContainerRegistry, IdentityProvider, OAuthAuthorizationServer, Authorization, StructuredGeneration } as const;
 
 export function applicationTypedProviderContract(name: string | undefined): ApplicationTypedProviderContract | undefined {
   if (!name) return undefined;
@@ -3227,6 +3394,63 @@ export function isApplicationJobRuntimeProvider(value: unknown): value is Applic
   } catch {
     return false;
   }
+}
+
+export function isApplicationManagedModelStoreProvider(value: unknown): value is ApplicationManagedModelStoreProvider {
+  if (!value || typeof value !== 'object') return false;
+  const kind = Reflect.get(value, 'kind');
+  if (kind === 'postgres-managed-model-store') {
+    try {
+      assertApplicationImplementationInput(
+        Reflect.get(value, 'database'),
+        TransactionalDatabase,
+        'ManagedModelStore PostgreSQL database',
+      );
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  if (kind !== 'kubernetes-managed-model-store') return false;
+  const cluster = Reflect.get(value, 'cluster');
+  return Boolean(
+    cluster
+      && typeof cluster === 'object'
+      && ['current-kubernetes-cluster', 'external-kubernetes-cluster'].includes(String(Reflect.get(cluster, 'kind'))),
+  );
+}
+
+export function isApplicationOperatorRuntimeProvider(value: unknown): value is ApplicationOperatorRuntimeProvider {
+  if (!value || typeof value !== 'object') return false;
+  const kind = Reflect.get(value, 'kind');
+  if (kind === 'distributed-operator-runtime') {
+    try {
+      assertApplicationImplementationInput(
+        Reflect.get(value, 'database'),
+        TransactionalDatabase,
+        'OperatorRuntime distributed database',
+      );
+      assertApplicationImplementationInput(
+        Reflect.get(value, 'scheduler'),
+        Scheduler,
+        'OperatorRuntime distributed scheduler',
+      );
+      const queue = Reflect.get(value, 'queue');
+      if (queue !== undefined) {
+        assertApplicationImplementationInput(queue, Queue, 'OperatorRuntime distributed queue');
+      }
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  if (kind !== 'kubernetes-operator-runtime') return false;
+  const cluster = Reflect.get(value, 'cluster');
+  return Boolean(
+    cluster
+      && typeof cluster === 'object'
+      && ['current-kubernetes-cluster', 'external-kubernetes-cluster'].includes(String(Reflect.get(cluster, 'kind'))),
+  );
 }
 
 function assertApplicationJobRuntimeProvider(value: unknown): asserts value is ApplicationJobRuntimeProvider {
@@ -3983,6 +4207,22 @@ export function applyApplicationProvider<TImplementation>(state: ApplicationProv
     }
     if (!state.providers.extensions) state.providers.extensions = {};
     state.providers.extensions['JobRuntime@v1alpha1'] = implementation;
+    return;
+  }
+  if (applicationProviderTokensMatch(token, ManagedModelStore)) {
+    if (!isApplicationManagedModelStoreProvider(implementation)) {
+      throw new Error('app.provide(ManagedModelStore, ...) requires ManagedModelStore.postgres(...) or .kubernetes(...).');
+    }
+    if (!state.providers.extensions) state.providers.extensions = {};
+    state.providers.extensions['ManagedModelStore@v1alpha1'] = implementation;
+    return;
+  }
+  if (applicationProviderTokensMatch(token, OperatorRuntime)) {
+    if (!isApplicationOperatorRuntimeProvider(implementation)) {
+      throw new Error('app.provide(OperatorRuntime, ...) requires OperatorRuntime.distributed(...) or .kubernetes(...).');
+    }
+    if (!state.providers.extensions) state.providers.extensions = {};
+    state.providers.extensions['OperatorRuntime@v1alpha1'] = implementation;
     return;
   }
   if (applicationProviderTokensMatch(token, Scheduler)) {
