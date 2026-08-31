@@ -189,6 +189,17 @@ export type ApplicationJobRuntimeResolver = (
   providerNodeId: string,
 ) => ApplicationJobRuntime | undefined;
 
+export class ApplicationJobProviderUnsupportedError extends Error {
+  readonly code = 'JOB_PROVIDER_UNSUPPORTED' as const;
+
+  constructor(readonly providerNodeId: string) {
+    super(
+      `No JobRuntime adapter is installed for ${providerNodeId}. Compile the application for its selected target or install a matching runtime resolver.`,
+    );
+    this.name = new.target.name;
+  }
+}
+
 const applicationJobRuntimeResolvers: ApplicationJobRuntimeResolver[] = [];
 let defaultApplicationJobRuntime: ApplicationJobRuntime | undefined;
 
@@ -211,9 +222,7 @@ export function applicationJobRuntime(
     if (runtime) return runtime;
   }
   if (options.allowLocalFallback === false) {
-    throw new Error(
-      `No JobRuntime adapter is installed for ${providerNodeId}. Compile the application for its selected target or install a matching runtime resolver.`,
-    );
+    throw new ApplicationJobProviderUnsupportedError(providerNodeId);
   }
   defaultApplicationJobRuntime ??= createDeterministicApplicationJobRuntime();
   return defaultApplicationJobRuntime;

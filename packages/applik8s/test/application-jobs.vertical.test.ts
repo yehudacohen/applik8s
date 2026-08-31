@@ -6,6 +6,7 @@ import {
   ApplicationJobIdempotencyConflictError,
   ApplicationJobInvocationTimeoutError,
   ApplicationJobProgressExpiredError,
+  ApplicationJobProviderUnsupportedError,
   ApplicationJobResultExpiredError,
   ApplicationJobRunError,
   createApplicationJobBinding,
@@ -116,7 +117,10 @@ describe('application finite Job runtime', () => {
     ]));
     expect(() => JobRuntime.local({ maximumConcurrency: 0 })).toThrow('maximumConcurrency');
     expect(() => JobRuntime.aws({ account: {}, maximumDuration: '' })).toThrow('maximumDuration');
-    await expect(job({ value: 2 })).rejects.toThrow('No JobRuntime adapter is installed');
+    await expect(job({ value: 2 })).rejects.toMatchObject({
+      code: 'JOB_PROVIDER_UNSUPPORTED',
+      providerNodeId: 'provider.job-runtime',
+    } satisfies Partial<ApplicationJobProviderUnsupportedError>);
 
     const runtime = createDeterministicApplicationJobRuntime();
     const uninstall = installApplicationJobRuntimeResolver((providerNodeId) =>

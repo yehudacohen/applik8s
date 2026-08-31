@@ -3233,6 +3233,105 @@ describe("Application deployment compiler", () => {
     }));
   });
 
+  it('reports an unsupported finite Job provider with the stable Job diagnostic', () => {
+    const base = request();
+    const providerNode = {
+      id: 'provider.job-runtime',
+      kind: 'provider' as const,
+      name: 'JobRuntime',
+      stability: 'experimental' as const,
+      interface: 'JobRuntime',
+      implementation: 'kubernetes-job-runtime',
+      config: { namespace: 'application-jobs' },
+    };
+    const jobNode = {
+      id: 'job.reports-export-v1',
+      kind: 'job' as const,
+      name: 'reports.export.v1',
+      stability: 'experimental' as const,
+      contract: {
+        name: 'reports.export',
+        version: 'v1',
+        input: { kind: 'declared' as const, runtime: 'arktype' as const, jsonSchema: { type: 'object' } },
+        output: { kind: 'declared' as const, runtime: 'arktype' as const, jsonSchema: { type: 'object' } },
+      },
+      handlerSource: 'async () => ({})',
+      retry: { maxAttempts: 1, wholeAttempt: true as const },
+      idempotency: {
+        scope: 'applicationDeploymentContractContextAuthority' as const,
+        keySource: 'invocation' as const,
+        conflict: 'failClosed' as const,
+      },
+      cancellation: {
+        request: 'durableReceipt' as const,
+        terminal: 'firstTransitionWins' as const,
+        behavior: 'cooperativeThenProviderBounded' as const,
+      },
+      retention: { source: 'profileWithAuthoredOverrides' as const },
+      runtime: {
+        interface: 'JobRuntime' as const,
+        selection: 'profile' as const,
+        protocol: 'applik8s.jobRuntime/v1alpha1' as const,
+      },
+    };
+    const graph: ApplicationGraph = {
+      ...base.graph,
+      nodes: [...base.graph.nodes, providerNode, jobNode],
+      edges: [{ from: { nodeId: providerNode.id }, to: { nodeId: jobNode.id }, relationship: 'provides' }],
+      providerRequirements: [{
+        id: 'requirement.job.reports-export-v1.runtime',
+        consumer: { nodeId: jobNode.id },
+        interface: 'JobRuntime',
+        purpose: 'finiteJobRuntime',
+        required: true,
+        provider: { nodeId: providerNode.id, interface: 'JobRuntime' },
+        diagnostics: {
+          missing: 'Finite Job reports.export.v1 requires a JobRuntime provider.',
+          ambiguous: 'Finite Job reports.export.v1 has more than one JobRuntime provider.',
+        },
+      }],
+    };
+    const deployment = compileApplicationDeploymentGraph({ ...base, graph: base.graph }).graph;
+    const provider = applicationProviderIdentity({
+      application: graph.metadata.name,
+      capabilityInterface: 'JobRuntime',
+      nodeId: providerNode.id,
+    });
+
+    const plan = compileApplicationPlan({
+      graph,
+      deployment,
+      target: 'kubernetes',
+      lifecycleAuthority: 'alchemy',
+      generatedAt: '2026-08-30T00:00:00.000Z',
+      providerGuarantees: [{
+        apiVersion: 'applik8s.providerGuarantees/v1alpha1',
+        provider,
+        capability: { interface: 'JobRuntime', implementation: 'kubernetes-job-runtime', version: '0.9.0' },
+        targets: ['kubernetes'],
+        maturity: 'experimental',
+        guarantees: [{
+          id: 'finite-job-execution',
+          category: 'consistency',
+          statement: 'Kubernetes finite Job execution is not yet qualified.',
+          disposition: 'unsupported',
+          evidence: [],
+        }],
+        limitations: ['Install a qualified Kubernetes JobRuntime adapter before deployment.'],
+        evidenceLevel: 'none',
+      }],
+    });
+
+    expect(plan.diagnostics).toContainEqual(expect.objectContaining({
+      code: 'JOB_PROVIDER_UNSUPPORTED',
+      severity: 'error',
+      message: expect.stringContaining('reports.export.v1'),
+    }));
+    expect(plan.diagnostics.find(({ code }) => code === 'JOB_PROVIDER_UNSUPPORTED')?.message).toContain(
+      'Install a qualified Kubernetes JobRuntime adapter before deployment.',
+    );
+  });
+
   it('embeds the recursive concrete implementation graph in the canonical ApplicationPlan', () => {
     const base = request();
     const graph: ApplicationGraph = {

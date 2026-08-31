@@ -180,10 +180,21 @@ export function compileApplicationPlan(request: CompileApplicationPlanRequest): 
           ? 'supported' as const
           : 'incompatible' as const;
     if (disposition !== 'supported') {
+      const isUnsupportedJobProvider = consumerNode.kind === 'job';
       diagnostics.push({
         severity: 'error',
-        code: disposition === 'unresolved' ? 'PLAN_PROVIDER_GUARANTEES_UNRESOLVED' : 'PLAN_PROVIDER_TARGET_INCOMPATIBLE',
-        message: !providerNode
+        code: isUnsupportedJobProvider
+          ? 'JOB_PROVIDER_UNSUPPORTED'
+          : disposition === 'unresolved'
+            ? 'PLAN_PROVIDER_GUARANTEES_UNRESOLVED'
+            : 'PLAN_PROVIDER_TARGET_INCOMPATIBLE',
+        message: isUnsupportedJobProvider
+          ? providerNode && manifest
+            ? `Job ${consumerNode.name} selects ${providerNode.interface}/${providerNode.implementation} through ${providerNode.id}, which is not qualified for target ${request.target}.${manifest.limitations.length > 0 ? ` ${manifest.limitations.join(' ')}` : ''}`
+            : providerNode
+              ? `Job ${consumerNode.name} selects ${providerNode.interface}/${providerNode.implementation} through ${providerNode.id}, but that provider has no guarantee manifest for target ${request.target}.`
+              : `Job ${consumerNode.name} has no resolved ${requirement.interface} provider for target ${request.target}. ${requirement.diagnostics.missing}`
+          : !providerNode
           ? requirement.diagnostics.missing
           : !manifest
             ? `Provider ${providerNode.id} has no v0.8 guarantee manifest.`
