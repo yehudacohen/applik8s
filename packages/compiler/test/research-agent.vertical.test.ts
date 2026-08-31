@@ -67,7 +67,7 @@ export const Researcher = application.include(researchAgent('market-research.v1'
   search: Search,
   retrieve: Retrieve,
   evidence: Evidence,
-  tools: [Report.create],
+  publish: Report.create,
 }));
 export const researchStack = application.composition;
 `);
@@ -80,6 +80,7 @@ export const researchStack = application.composition;
         expect.objectContaining({ operation: expect.objectContaining({ member: 'search' }) }),
         expect.objectContaining({ operation: expect.objectContaining({ member: 'retrieve' }) }),
         expect.objectContaining({ operation: expect.objectContaining({ member: 'commit' }) }),
+        expect.objectContaining({ operation: expect.objectContaining({ member: 'linkArtifact' }) }),
       ]),
     );
     const catalog = compileApplicationOperationCatalog(discovered.value.graph);
@@ -99,6 +100,7 @@ export const researchStack = application.composition;
     expect(handler).toContain('searchSources');
     expect(handler).toContain('retrieveSource');
     expect(handler).toContain('commitEvidence');
+    expect(handler).toContain('linkArtifact');
     expect(handler).not.toContain('application.inject');
     expect(runtime).toContain("@applik8s/web-search/runtime");
     expect(runtime).toContain("@applik8s/web-search/source-runtime");

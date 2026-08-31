@@ -3,6 +3,9 @@ import type { ApplicationAIAgentRuntimeContext } from '@applik8s/ai';
 import type {
   ApplicationTanStackAgentRuntime,
   ApplicationTanStackAIAgentRequest,
+  ApplicationTanStackToolInvocation,
+  ApplicationTanStackToolOperation,
+  ApplicationTanStackToolExecutionContext,
 } from '@applik8s/ai-tanstack';
 import type { JsonValue } from '@applik8s/core';
 import type {
@@ -26,12 +29,14 @@ export interface ApplicationResearchAgentRuntimePolicy {
     readonly maximumCharactersPerSource: number;
     readonly snapshotPolicy: 'digest-only' | 'licensed-reference';
   };
+  readonly publicationOperationId: string;
 }
 
 export interface ApplicationResearchAgentRuntimeDependencies {
   readonly searchSources: ApplicationWebSearchProvider['search'];
   readonly retrieveSource: ApplicationSourceRetrieverProvider['retrieve'];
   readonly commitEvidence: ApplicationResearchEvidenceProvider['commit'];
+  readonly linkArtifact: ApplicationResearchEvidenceProvider['linkArtifact'];
 }
 
 export type ApplicationResearchAgentRuntimeContext =
@@ -138,6 +143,14 @@ export async function executeApplicationResearchAgent(
       ].join('\n\n'),
     }],
   }];
+  const publicationExecution = researchPublicationExecution({
+    execution: runtime.tanstack.execution,
+    publicationOperationId: policy.publicationOperationId,
+    principalScope,
+    runId: runtime.runId,
+    evidenceIds: successful.map(({ evidence }) => evidence.id),
+    linkArtifact: dependencies.linkArtifact,
+  });
   return chat({
     adapter: runtime.tanstack.adapter,
     messages: [...systemMessages, ...request.messages],
@@ -145,8 +158,76 @@ export async function executeApplicationResearchAgent(
     runId: runtime.runId,
     tools: runtime.tanstack.tools,
     middleware: [withApplicationTanStackPersistence(runtime.tanstack.persistence)],
-    context: runtime.tanstack.execution,
+    context: publicationExecution,
   });
+}
+
+export function researchPublicationExecution(options: {
+  readonly execution: ApplicationTanStackToolExecutionContext;
+  readonly publicationOperationId: string;
+  readonly principalScope: string;
+  readonly runId: string;
+  readonly evidenceIds: readonly string[];
+  readonly linkArtifact: ApplicationResearchEvidenceProvider['linkArtifact'];
+}): ApplicationTanStackToolExecutionContext {
+  return Object.freeze({
+    principal: options.execution.principal,
+    invocationId: options.execution.invocationId,
+    attemptId: options.execution.attemptId,
+    async invoke<TInput, TOutput>(
+      operation: ApplicationTanStackToolOperation<TInput, TOutput>,
+      input: TInput,
+      invocation: ApplicationTanStackToolInvocation,
+    ): Promise<TOutput> {
+      const result = await options.execution.invoke(operation, input, invocation);
+      if (operation.operation.id !== options.publicationOperationId) return result;
+      const artifactId = researchArtifactId(result);
+      if (!artifactId) {
+        throw new ApplicationResearchAgentError(
+          'RESEARCH_EVIDENCE_INCOMPLETE',
+          `Research publication ${operation.operation.id} returned no authoritative artifact ID.`,
+        );
+      }
+      await options.linkArtifact({
+        principalScope: options.principalScope,
+        runId: options.runId,
+        artifactId,
+        evidenceIds: options.evidenceIds,
+        claims: [{
+          claim: researchPublicationClaim(input, artifactId),
+          evidenceIds: options.evidenceIds,
+        }],
+      });
+      return result;
+    },
+  });
+}
+
+function researchArtifactId(value: unknown): string | undefined {
+  const direct = nonEmptyString(value && typeof value === 'object'
+    ? Reflect.get(value, 'id')
+    : undefined);
+  if (direct) return direct;
+  const nested = value && typeof value === 'object'
+    ? Reflect.get(value, 'value')
+    : undefined;
+  return nonEmptyString(nested && typeof nested === 'object'
+    ? Reflect.get(nested, 'id')
+    : undefined);
+}
+
+function researchPublicationClaim(input: unknown, artifactId: string): string {
+  if (input && typeof input === 'object') {
+    for (const key of ['summary', 'title', 'body']) {
+      const value = nonEmptyString(Reflect.get(input, key));
+      if (value) return value.slice(0, 8_000);
+    }
+  }
+  return `Research artifact ${artifactId} was produced from the committed evidence set.`;
+}
+
+function nonEmptyString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
 
 function latestUserQuestion(messages: readonly unknown[]): string {

@@ -74,7 +74,8 @@ export const MarketResearcher = application.include(
     search: WebSearch.named("research"),
     retrieve: SourceRetriever.named("research"),
     evidence: ResearchEvidence,
-    tools: [FetchDocument, SaveArtifact],
+    publish: SaveArtifact,
+    tools: [FetchDocument],
   }),
 );
 

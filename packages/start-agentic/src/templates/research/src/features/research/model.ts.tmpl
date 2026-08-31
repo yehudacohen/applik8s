@@ -45,7 +45,8 @@ const research = module(
           evidence: AgenticResearch.evidence,
           scope: AgenticPrincipalScope,
           instructions: 'Research public sources and save a concise note whose claims are grounded in committed evidence.',
-          tools: [ResearchNoteTable.create, ResearchNotes.search],
+          publish: ResearchNoteTable.create,
+          tools: [ResearchNotes.search],
           query: {
             maximumResults: 8,
             maximumSources: 4,

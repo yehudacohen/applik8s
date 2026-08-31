@@ -4,12 +4,18 @@ import { type } from '@applik8s/applik8s/dsl';
 import { LocalSourceRetriever, LocalWebSearch, SourceRetriever, WebSearch } from '@applik8s/web-search';
 import { pgTable, text } from 'drizzle-orm/pg-core';
 import { describe, expect, it } from 'vitest';
+import type {
+  ApplicationTanStackToolExecutionContext,
+  ApplicationTanStackToolInvocation,
+  ApplicationTanStackToolOperation,
+} from '@applik8s/ai-tanstack';
 import {
   ApplicationResearchAgentError,
   LocalResearchEvidence,
   ResearchEvidence,
   researchAgent,
 } from '../src/index.js';
+import { researchPublicationExecution } from '../src/agent-runtime.js';
 
 describe('maintained researchAgent composition', () => {
   it('expands search, retrieval, evidence, model, identity, and publication authority into ordinary graph nodes', async () => {
@@ -60,7 +66,7 @@ describe('maintained researchAgent composition', () => {
       search: Search,
       retrieve: Retrieve,
       evidence: Evidence,
-      tools: [Report.create],
+      publish: Report.create,
     }));
     identity.can(Report.create);
 
@@ -89,6 +95,10 @@ describe('maintained researchAgent composition', () => {
         }),
         expect.objectContaining({
           operation: expect.objectContaining({ member: 'commit' }),
+          provider: expect.objectContaining({ nodeId: expect.stringContaining('research-evidence') }),
+        }),
+        expect.objectContaining({
+          operation: expect.objectContaining({ member: 'linkArtifact' }),
           provider: expect.objectContaining({ nodeId: expect.stringContaining('research-evidence') }),
         }),
       ]),
@@ -124,7 +134,7 @@ describe('maintained researchAgent composition', () => {
       search: WebSearch.named('research'),
       retrieve: SourceRetriever.named('research'),
       evidence: ResearchEvidence.named('research'),
-      tools: [(() => undefined) as never],
+      publish: (() => undefined) as never,
     };
     expect(() => researchAgent('research' as never, options)).toThrow(/stable version/u);
     const module = researchAgent('research.v1', { ...options, query: { maximumSources: 100 } });
@@ -137,3 +147,135 @@ describe('maintained researchAgent composition', () => {
     expect(() => invalidSafeSearch(application as never)).toThrow(/safeSearch/u);
   });
 });
+
+describe('research publication evidence linkage', () => {
+  const principal = { id: 'person:one', kind: 'human' } as unknown as ApplicationTanStackToolInvocation['principal'];
+  const invocation: ApplicationTanStackToolInvocation = {
+    principal,
+    invocationId: 'invocation-1',
+    attemptId: 'attempt-1',
+    providerToolCallId: 'tool-call-1',
+  };
+
+  it('links committed evidence before returning a successful publication result', async () => {
+    const events: string[] = [];
+    const execution: ApplicationTanStackToolExecutionContext = {
+      principal,
+      invocationId: 'invocation-1',
+      attemptId: 'attempt-1',
+      async invoke<TInput, TOutput>() {
+        events.push('publish');
+        return { value: { id: 'artifact-1' } } as TOutput;
+      },
+    };
+    const wrapped = researchPublicationExecution({
+      execution,
+      publicationOperationId: 'applik8s://models/ResearchReport/operations/create',
+      principalScope: 'workspace:one',
+      runId: 'run-1',
+      evidenceIds: ['evidence-1', 'evidence-2'],
+      async linkArtifact(input) {
+        events.push('link');
+        expect(input).toEqual({
+          principalScope: 'workspace:one',
+          runId: 'run-1',
+          artifactId: 'artifact-1',
+          evidenceIds: ['evidence-1', 'evidence-2'],
+          claims: [{
+            claim: 'Grounded report',
+            evidenceIds: ['evidence-1', 'evidence-2'],
+          }],
+        });
+        return {
+          apiVersion: 'applik8s.researchArtifactEvidence/v1alpha1',
+          id: 'link-1',
+          ...input,
+          linkedAt: '2026-08-31T00:00:00.000Z',
+        };
+      },
+    });
+
+    const result = await wrapped.invoke(
+      toolOperation('applik8s://models/ResearchReport/operations/create'),
+      { title: 'Grounded report' },
+      invocation,
+    );
+    expect(result).toEqual({ value: { id: 'artifact-1' } });
+    expect(events).toEqual(['publish', 'link']);
+  });
+
+  it('does not link supporting tools and fails closed for an unidentifiable publication', async () => {
+    let links = 0;
+    const execution: ApplicationTanStackToolExecutionContext = {
+      principal,
+      invocationId: 'invocation-1',
+      attemptId: 'attempt-1',
+      async invoke<TInput, TOutput>(
+        operation: ApplicationTanStackToolOperation<TInput, TOutput>,
+      ) {
+        return (operation.operation.id.endsWith('/search')
+          ? { values: [] }
+          : { accepted: true }) as TOutput;
+      },
+    };
+    const wrapped = researchPublicationExecution({
+      execution,
+      publicationOperationId: 'applik8s://models/ResearchReport/operations/create',
+      principalScope: 'workspace:one',
+      runId: 'run-1',
+      evidenceIds: ['evidence-1'],
+      async linkArtifact() {
+        links += 1;
+        throw new Error('must not be reached');
+      },
+    });
+
+    await expect(wrapped.invoke(
+      toolOperation('applik8s://models/ResearchReport/operations/search'),
+      {},
+      invocation,
+    )).resolves.toEqual({ values: [] });
+    await expect(wrapped.invoke(
+      toolOperation('applik8s://models/ResearchReport/operations/create'),
+      { body: 'report' },
+      invocation,
+    )).rejects.toMatchObject({ code: 'RESEARCH_EVIDENCE_INCOMPLETE' });
+    expect(links).toBe(0);
+  });
+
+  it('does not report publication success when durable evidence linkage fails', async () => {
+    const execution: ApplicationTanStackToolExecutionContext = {
+      principal,
+      invocationId: 'invocation-1',
+      attemptId: 'attempt-1',
+      async invoke<TInput, TOutput>() {
+        return { id: 'artifact-1' } as TOutput;
+      },
+    };
+    const wrapped = researchPublicationExecution({
+      execution,
+      publicationOperationId: 'publish',
+      principalScope: 'workspace:one',
+      runId: 'run-1',
+      evidenceIds: ['evidence-1'],
+      async linkArtifact() {
+        throw new Error('evidence store unavailable');
+      },
+    });
+
+    await expect(wrapped.invoke(
+      toolOperation('publish'),
+      { body: 'report' },
+      invocation,
+    )).rejects.toThrow('evidence store unavailable');
+  });
+});
+
+function toolOperation<TInput = unknown, TOutput = unknown>(
+  id: string,
+): ApplicationTanStackToolOperation<TInput, TOutput> {
+  return Object.assign(
+    async () => undefined,
+    { operation: { id } },
+  ) as ApplicationTanStackToolOperation<TInput, TOutput>;
+}

@@ -29,8 +29,10 @@ export interface ApplicationResearchAgentOptions {
   readonly search: ApplicationQualifiedProviderToken<ApplicationWebSearchProvider>;
   readonly retrieve: ApplicationQualifiedProviderToken<ApplicationSourceRetrieverProvider>;
   readonly evidence: ApplicationQualifiedProviderToken<ApplicationResearchEvidenceProvider>;
-  /** Application-owned artifact/publication operations exposed to synthesis. */
-  readonly tools: readonly ApplicationAgentTool[];
+  /** The application-owned operation whose successful result becomes the research artifact. */
+  readonly publish: ApplicationAgentTool;
+  /** Optional application tools available during research; these do not imply publication. */
+  readonly tools?: readonly ApplicationAgentTool[];
   readonly scope?: ApplicationTrustedContext<string>;
   readonly instructions?: string;
   readonly query?: {
@@ -73,14 +75,14 @@ export function researchAgent(
   ): ApplicationResearchAgentBinding => {
     const query = normalizeQueryPolicy(options.query);
     const contextPolicy = normalizeContextPolicy(options.context);
+    const publicationOperationId = applicationResearchToolOperationId(options.publish);
+    const tools = Object.freeze([options.publish, ...(options.tools ?? [])]);
     const runtimePolicy: ApplicationResearchAgentRuntimePolicy = Object.freeze({
       name,
       query,
       context: contextPolicy,
+      publicationOperationId,
     });
-    if (options.tools.length === 0) {
-      throw new Error(`Research agent ${name} requires at least one application-owned artifact or publication tool.`);
-    }
     const search = application.inject(options.search);
     const retriever = application.inject(options.retrieve);
     const evidence = application.inject(options.evidence);
@@ -97,7 +99,7 @@ export function researchAgent(
           'Use an application-owned publication tool for every completed deliverable.',
           'Do not claim completion when no evidence was committed.',
         ].join(' '),
-        tools: options.tools,
+        tools,
         ...(options.budgets ? { budgets: options.budgets } : {}),
         executionPolicy: {
           callerDelegation: 'forbidden',
@@ -105,14 +107,15 @@ export function researchAgent(
         },
         // Maintained modules know these captures without asking an application
         // entrypoint transform to rediscover implementation-private source.
-        __generatedCalls: [search.search, retriever.retrieve, evidence.commit],
+        __generatedCalls: [search.search, retriever.retrieve, evidence.commit, evidence.linkArtifact],
         __generatedBindings: {
           searchSources: search.search,
           retrieveSource: retriever.retrieve,
           commitEvidence: evidence.commit,
+          linkArtifact: evidence.linkArtifact,
         },
       },
-      researchAgentHandler(runtimePolicy, search.search, retriever.retrieve, evidence.commit),
+      researchAgentHandler(runtimePolicy, search.search, retriever.retrieve, evidence.commit, evidence.linkArtifact),
     );
     return Object.freeze({ ...binding,
       specialization: 'research' as const,
@@ -166,12 +169,14 @@ function researchAgentHandler(
   searchSources: ApplicationWebSearchProvider['search'],
   retrieveSource: ApplicationSourceRetrieverProvider['retrieve'],
   commitEvidence: ApplicationResearchEvidenceProvider['commit'],
+  linkArtifact: ApplicationResearchEvidenceProvider['linkArtifact'],
 ) {
   const handler = async (request: Parameters<ApplicationAgentBinding['handler'] & Function>[0], runtime: Parameters<ApplicationAgentBinding['handler'] & Function>[1]) =>
     executeApplicationResearchAgent(request, runtime, policy, {
       searchSources,
       retrieveSource,
       commitEvidence,
+      linkArtifact,
     });
   Object.defineProperty(handler, Symbol.for('applik8s.applicationCallbackSource'), {
     enumerable: false,
@@ -180,10 +185,21 @@ function researchAgentHandler(
       line: 1,
       column: 1,
       generated: true,
-      source: `async (request, runtime) => (await import('@applik8s/research/agent-runtime')).executeApplicationResearchAgent(request, runtime, ${JSON.stringify(policy)}, { searchSources, retrieveSource, commitEvidence })`,
+      source: `async (request, runtime) => (await import('@applik8s/research/agent-runtime')).executeApplicationResearchAgent(request, runtime, ${JSON.stringify(policy)}, { searchSources, retrieveSource, commitEvidence, linkArtifact })`,
     }),
   });
   return handler as NonNullable<ApplicationAgentBinding['handler']>;
+}
+
+function applicationResearchToolOperationId(tool: ApplicationAgentTool): string {
+  const operation = Reflect.get(tool, 'operation');
+  const id = operation && typeof operation === 'object'
+    ? Reflect.get(operation, 'id')
+    : undefined;
+  if (typeof id !== 'string' || !id.trim()) {
+    throw new Error('researchAgent() publish must expose one stable application operation ID.');
+  }
+  return id;
 }
 
 function boundedInteger(value: number, minimum: number, maximum: number, label: string): number {

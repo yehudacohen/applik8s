@@ -157,6 +157,7 @@ describe('Agentic Start generator', () => {
     expect(researchModel).toContain("const research = module(");
     expect(researchModel).toContain("import { researchAgent } from '@applik8s/research';");
     expect(researchModel).toContain("application.include(researchAgent(");
+    expect(researchModel).toContain('publish: ResearchNoteTable.create');
     expect(researchModel).toContain("'researcher.v1'");
     expect(researchModel).toContain('search: AgenticResearch.search');
     expect(researchModel).toContain('retrieve: AgenticResearch.retrieve');
