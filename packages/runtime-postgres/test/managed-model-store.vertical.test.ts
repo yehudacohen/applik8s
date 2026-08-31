@@ -116,6 +116,9 @@ live('PostgreSQL managed-model store', () => {
       model: 'WorkspaceDeletion',
       statusSchemaVersion: '1',
       readValue: async id => values.get(id),
+      deleteValue: async id => {
+        values.delete(id);
+      },
     });
     const initialStatus = { observedGeneration: 0, phase: 'Pending' } as const;
     const originalValue = { version: '1.0.0' };
@@ -142,8 +145,6 @@ live('PostgreSQL managed-model store', () => {
       now: '2026-01-02T00:00:02.000Z',
       value: originalValue,
     });
-    values.delete(identity);
-
     const deleting = await deletionStore.read(identity);
     expect(deleting).toMatchObject({
       value: originalValue,
@@ -182,6 +183,7 @@ live('PostgreSQL managed-model store', () => {
       deletionTimestamp: '2026-01-02T00:00:02.000Z',
       finalizers: [],
     });
+    expect(values.has(identity)).toBe(false);
 
     const replacementValue = { version: '2.0.0' };
     values.set(identity, replacementValue);

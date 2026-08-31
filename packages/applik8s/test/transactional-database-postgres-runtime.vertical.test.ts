@@ -1643,7 +1643,21 @@ describe.runIf(liveDatabaseUrl)('Postgres TransactionalDatabase script runtime l
         model: deleted.model,
         events: [],
       });
-      await expect(sql.unsafe(`SELECT count(*)::int AS count FROM ${quoteIdentifier(directTableName)}`)).resolves.toEqual([{ count: 0 }]);
+      await expect(sql.unsafe(`SELECT count(*)::int AS count FROM ${quoteIdentifier(directTableName)}`)).resolves.toEqual([{ count: 1 }]);
+      const managedReaders = await applicationPostgresModelReadClients(
+        liveDatabaseUrl,
+        [model.runtime],
+        admittedContext,
+      );
+      await expect(managedReaders[model.runtime.name]?.get({ id: 'card-1' })).resolves.toBeUndefined();
+      await expect(managedReaders[model.runtime.name]?.query({ limit: 10 })).resolves.toEqual({ items: [] });
+      await expect(create.execute({ id: 'card-1', title: 'premature-recreate', revision: 'input-r3' }, {
+        id: 'direct-create-before-finalization',
+        targetKey: 'card-1',
+        idempotencyKey: 'direct-create-before-finalization',
+        context: admittedContext,
+        databaseUrl: liveDatabaseUrl,
+      })).rejects.toThrow(/cannot be recreated until terminal finalization/);
       await expect(sql.unsafe(
         'SELECT generation::int, resource_version::int, deletion_timestamp IS NOT NULL AS deleting, deletion_value->>\'title\' AS deleted_title FROM applik8s_managed_model_lifecycle WHERE application_id = $1 AND model_name = $2',
         [`direct-native-${process.pid}`, `DirectCard${process.pid}`],

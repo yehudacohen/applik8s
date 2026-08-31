@@ -107,7 +107,10 @@ deletion intent, and a finalization-safe value snapshot in the same PostgreSQL
 transaction as the domain write. The durable store uses an explicit
 advisory-locked lifecycle state machine, clears ordinary leases when deletion
 begins, retains tombstones through finalization, rejects premature recreation,
-and starts a fresh UID/generation only after finalizers complete. Lower-level
+and starts a fresh UID/generation only after finalizers complete. Framework
+reads hide deletion intent immediately, while the authoritative relational row
+is retained until terminal finalizer completion removes it in the same
+transaction as lifecycle completion. Lower-level
 script mutation clients fail closed rather than bypassing this authority. Unit
 and OrbStack PostgreSQL evidence cover mutation isolation, process replacement,
 fencing, physical row deletion, snapshot-backed cleanup, and fresh-incarnation

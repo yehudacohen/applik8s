@@ -517,6 +517,11 @@ export async function executePostgresModelCommand<
         revision: commandDeterministicId(scope, 'initial-revision'),
       };
       initializedTarget = true;
+      await assertManagedModelCreationAllowed(
+        transaction,
+        execution.model,
+        effectiveTargetKey,
+      );
       const initialized = await insertModelObject(transaction, execution.model, before, !serial);
       if (!serial && initialized.length === 0) throw concurrentCommandModification();
       if (execution.model.storageShape === 'native-relational' && initialized[0] && typeof initialized[0] === 'object') {
@@ -864,7 +869,9 @@ export async function executePostgresModelCommand<
       );
     }
     const updated = deleteTarget
-      ? await deleteModelObject(transaction, execution.model, before, serial)
+      ? execution.model.managed
+        ? [{ retainedForFinalization: true }]
+        : await deleteModelObject(transaction, execution.model, before, serial)
       : await updateModelObject(
           transaction,
           execution.model,
@@ -2094,6 +2101,9 @@ async function lockedModelObject<TSpec extends object, TStatus extends object>(
     if (!row) return undefined;
     const value = nativeRowToProperties(model, row) as TSpec;
     const identity = Reflect.get(value, native.identity.property);
+    if (await managedModelDeletionPending(transaction, model, String(identity))) {
+      return undefined;
+    }
     const revision = native.revision ? Reflect.get(value, native.revision.property) : undefined;
     return {
       id: String(identity),
@@ -2105,6 +2115,9 @@ async function lockedModelObject<TSpec extends object, TStatus extends object>(
   // typecast: this fixed projection reads an Applik8s-owned model table contract.
   const row = rows[0] as ModelRow | undefined;
   if (!row) {
+    return undefined;
+  }
+  if (await managedModelDeletionPending(transaction, model, row.id)) {
     return undefined;
   }
   return {
@@ -2138,26 +2151,75 @@ async function lockedModelObjects<TSpec extends object, TStatus extends object>(
     });
     const where = predicates.length > 0 ? ` WHERE ${predicates.join(' AND ')}` : '';
     const rows = await transaction.unsafe(`SELECT * FROM ${qualifiedModelTable(model)}${where} ORDER BY ${quoteIdentifier(native.identity.column)} ASC LIMIT ${query.limit}${lock ? ' FOR UPDATE' : ''}`, parameters as never[]);
-    return {
-      items: rows.map((row) => {
+    const items = rows.map((row) => {
         const value = nativeRowToProperties(model, row as NativeModelRow) as TSpec;
         const identity = Reflect.get(value, native.identity.property);
         const revision = native.revision ? Reflect.get(value, native.revision.property) : undefined;
         return { id: String(identity), spec: value, ...(typeof revision === 'string' ? { revision } : {}) };
-      }),
-    };
+      });
+    return { items: await visibleManagedModelItems(transaction, model, items) };
   }
   const where = query.where && Object.keys(query.where).length > 0 ? ' WHERE spec @> $1::jsonb' : '';
   const parameters = where ? [JSON.stringify(query.where)] : [];
   const rows = await transaction.unsafe(`SELECT id, spec, status, revision FROM ${qualifiedModelTable(model)}${where} ORDER BY id ASC LIMIT ${query.limit}${lock ? ' FOR UPDATE' : ''}`, parameters);
-  return {
-    items: rows.map((row) => {
+  const items = rows.map((row) => {
       // postgres.js deliberately exposes a broad Row & Iterable<Row> result
       // shape; this query selects the complete durable model-row contract.
       const modelRow = row as unknown as ModelRow;
       return { id: modelRow.id, spec: modelRow.spec as TSpec, ...(modelRow.status ? { status: modelRow.status as TStatus } : {}), revision: modelRow.revision };
-    }),
-  };
+    });
+  return { items: await visibleManagedModelItems(transaction, model, items) };
+}
+
+async function assertManagedModelCreationAllowed(
+  transaction: Pick<ApplicationPostgresTransactionSql, 'unsafe'>,
+  model: ApplicationRuntimeModelContract,
+  identity: string,
+): Promise<void> {
+  if (!model.managed) return;
+  const rows = await transaction.unsafe(
+    `SELECT deletion_timestamp, finalizers
+     FROM applik8s_managed_model_lifecycle
+     WHERE application_id = $1 AND model_name = $2 AND identity_key = $3`,
+    [model.managed.applicationId, model.name, applicationManagedModelIdentityKey(identity)],
+  );
+  if (!rows[0]) return;
+  throw new Error(
+    `applik8s-managed-model-deletion-in-progress: ${model.name}/${identity} cannot be recreated until terminal finalization removes its retained domain row.`,
+  );
+}
+
+async function managedModelDeletionPending(
+  transaction: Pick<ApplicationPostgresTransactionSql, 'unsafe'>,
+  model: ApplicationRuntimeModelContract,
+  identity: string,
+): Promise<boolean> {
+  if (!model.managed) return false;
+  const rows = await transaction.unsafe(
+    `SELECT 1 FROM applik8s_managed_model_lifecycle
+     WHERE application_id = $1 AND model_name = $2 AND identity_key = $3
+       AND deletion_timestamp IS NOT NULL
+     LIMIT 1`,
+    [model.managed.applicationId, model.name, applicationManagedModelIdentityKey(identity)],
+  );
+  return Boolean(rows[0]);
+}
+
+async function visibleManagedModelItems<TSpec extends object, TStatus extends object>(
+  transaction: Pick<ApplicationPostgresTransactionSql, 'unsafe'>,
+  model: ApplicationRuntimeModelContract,
+  items: readonly ApplicationModelObject<TSpec, TStatus>[],
+): Promise<readonly ApplicationModelObject<TSpec, TStatus>[]> {
+  if (!model.managed || items.length === 0) return items;
+  const identityKeys = items.map((item) => applicationManagedModelIdentityKey(item.id));
+  const rows = await transaction.unsafe(
+    `SELECT identity_key FROM applik8s_managed_model_lifecycle
+     WHERE application_id = $1 AND model_name = $2
+       AND identity_key = ANY($3::text[]) AND deletion_timestamp IS NOT NULL`,
+    [model.managed.applicationId, model.name, identityKeys],
+  );
+  const deleting = new Set(rows.map((row) => String(row.identity_key)));
+  return items.filter((item) => !deleting.has(applicationManagedModelIdentityKey(item.id)));
 }
 
 function commandTarget<TSpec extends object, TStatus extends object>(

@@ -38,6 +38,11 @@ export interface PostgresApplicationManagedModelStoreOptions<
   readonly decodeStatus?: (value: unknown) => TStatus;
   /** Framework metadata fields, such as a revision column, may be excluded here. */
   readonly desiredDigest?: (value: TValue) => string;
+  /** Removes the retained domain row in the same transaction as terminal finalizer completion. */
+  readonly deleteValue?: (
+    identity: TIdentity,
+    transaction: ApplicationPostgresTransactionSql,
+  ) => Promise<void>;
 }
 
 export interface PostgresApplicationManagedModelStore<
@@ -155,8 +160,9 @@ export function createPostgresApplicationManagedModelStore<
     precondition: ApplicationManagedModelCommitPrecondition<TIdentity>,
     assignments: string,
     parameters: readonly unknown[],
+    executor: ApplicationPostgresSql | ApplicationPostgresTransactionSql = sql,
   ) => {
-    const rows = await sql.unsafe(
+    const rows = await executor.unsafe(
       `UPDATE ${lifecycle} SET ${assignments}, resource_version = resource_version + 1
        WHERE application_id = $1 AND model_name = $2 AND identity_key = $3
          AND uid = $4::uuid AND generation = $5 AND resource_version = $6 AND lease_fence = $7
@@ -365,8 +371,27 @@ export function createPostgresApplicationManagedModelStore<
       return mutate(precondition, 'finalizers = $8::jsonb', [JSON.stringify(current.metadata.finalizers.filter((value) => value !== finalizer))]);
     },
     async complete(precondition, completeOptions) {
-      const record = await mutate(precondition, 'invalidated = false, next_due_at = $8::timestamptz, lease_expires_at = NULL, reconcile_id = NULL, last_error = NULL', [completeOptions.nextDueAt ?? null]);
-      return record;
+      return sql.begin(async (transaction) => {
+        const record = await mutate(
+          precondition,
+          'invalidated = false, next_due_at = $8::timestamptz, lease_expires_at = NULL, reconcile_id = NULL, last_error = NULL',
+          [completeOptions.nextDueAt ?? null],
+          transaction,
+        );
+        if (
+          record.metadata.deletionTimestamp
+          && record.metadata.finalizers.length === 0
+          && !completeOptions.nextDueAt
+        ) {
+          if (!options.deleteValue) {
+            throw new Error(
+              `Managed-model ${model}/${identityKey(precondition.id)} completed finalizers but has no transactional domain-row deletion binding.`,
+            );
+          }
+          await options.deleteValue(precondition.id, transaction);
+        }
+        return record;
+      });
     },
     async release(precondition, releaseOptions) {
       await mutate(precondition, 'invalidated = false, next_due_at = $8::timestamptz, lease_expires_at = NULL, reconcile_id = NULL, last_error = $9', [releaseOptions.retryAt ?? null, releaseOptions.error ?? null]);
