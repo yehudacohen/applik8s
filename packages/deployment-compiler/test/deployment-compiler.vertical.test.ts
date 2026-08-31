@@ -3256,6 +3256,23 @@ describe("Application deployment compiler", () => {
         output: { kind: 'declared' as const, runtime: 'arktype' as const, jsonSchema: { type: 'object' } },
       },
       handlerSource: 'async () => ({})',
+      queryBatch: {
+        query: { nodeId: 'query.reports-export-v1' },
+        selectionDigest: `sha256:${'e'.repeat(64)}`,
+        consistency: { mode: 'repeatableSnapshot' as const },
+        batch: { maxItems: 500, concurrency: 4 },
+        lowering: {
+          provider: 'postgres' as const,
+          strategy: 'materializedSnapshotRelation' as const,
+          checkpointAuthority: 'sourceDatabase' as const,
+          maximumSnapshotItems: 100_000,
+          maximumSnapshotAgeSeconds: 86_400,
+          stableKeyset: true as const,
+          durableWindowReceipts: true as const,
+          contiguousFrontier: true as const,
+        },
+        handlerSource: 'async () => undefined',
+      },
       events: Object.fromEntries(
         ['started', 'progressed', 'succeeded', 'failed', 'cancelled', 'timedOut'].map((kind) => [kind, {
           id: `jobs.reports.export.${kind}.v1`,
@@ -3339,6 +3356,24 @@ describe("Application deployment compiler", () => {
     expect(plan.diagnostics.find(({ code }) => code === 'JOB_PROVIDER_UNSUPPORTED')?.message).toContain(
       'Install a qualified Kubernetes JobRuntime adapter before deployment.',
     );
+    expect(plan.semantic.state).toContainEqual(expect.objectContaining({
+      authority: 'postgres:sourceDatabase',
+      consistency: 'repeatableSnapshot',
+      retention: '86400s',
+      recovery: 'durable-window-receipts-contiguous-frontier',
+    }));
+    expect(plan.estimates).toContainEqual(expect.objectContaining({
+      name: 'query-batch-window',
+      value: 500,
+      unit: 'items',
+      assumptions: expect.arrayContaining([
+        'concurrency=4',
+        'strategy=materializedSnapshotRelation',
+        'checkpointAuthority=sourceDatabase',
+        'maximumSnapshotItems=100000',
+        'maximumSnapshotAgeSeconds=86400',
+      ]),
+    }));
   });
 
   it('embeds the recursive concrete implementation graph in the canonical ApplicationPlan', () => {

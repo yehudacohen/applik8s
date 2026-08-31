@@ -799,6 +799,9 @@ async function emitGateway(
       }
       gatewaySearchContract(graph, query);
       assertSecretNamespace(query.database, gatewayNamespace, `gateway ${gateway.id}`);
+    } else if (query.selection) {
+      if (!query.database) throw new Error(`Generated application gateway ${gateway.id} selection query ${query.id} has no PostgreSQL snapshot authority.`);
+      assertSecretNamespace(query.database, gatewayNamespace, `gateway ${gateway.id}`);
     } else {
       assertResolved(query.id, 'handler', query.handlerUnresolved);
       if (!query.database) throw new Error(`Generated application gateway ${gateway.id} query ${query.id} has no PostgreSQL or Kubernetes snapshot authority.`);
@@ -877,7 +880,7 @@ async function emitGateway(
       for (const [property, callback] of kubernetesQueryCallbacks(query)) {
         await writeQueryCallbackModule(artifactDir, callbackName(query.id, kubernetesCallbackRole(property)), callback.source, callback.dependencies, query, graph);
       }
-    } else if (!query.search) {
+    } else if (!query.search && !query.selection) {
       await writeQueryCallbackModule(artifactDir, callbackName(query.id, 'run'), query.handlerSource, query.handlerDependencies, query, graph);
     }
   }
@@ -1624,7 +1627,7 @@ function generatedGatewaySource(
     "import postgres from 'postgres';",
     "import { drizzle } from 'drizzle-orm/postgres-js';",
     "import { normalizeSchema } from '@applik8s/sdk/schema-runtime';",
-    `import { applicationAdmittedContextDigest, applicationRequestContextValues, createApplicationQueryGateway, createApplicationQueryGatewayHttpHandler, createApplicationRelationalContext, createApplicationSubscriptionLimiter, withApplicationDatabaseRuntimeResolver${relationalQueries.length > 0 && kubernetesQueries.length > 0 ? ', proxyApplicationQueryMultiplex' : ''} } from '@applik8s/applik8s/query-runtime';`,
+    `import { applicationAdmittedContextDigest, applicationRequestContextValues, createApplicationQueryGateway, createApplicationQueryGatewayHttpHandler, createApplicationQuerySelection, createApplicationRelationalContext, createApplicationSubscriptionLimiter, withApplicationDatabaseRuntimeResolver${relationalQueries.length > 0 && kubernetesQueries.length > 0 ? ', proxyApplicationQueryMultiplex' : ''} } from '@applik8s/applik8s/query-runtime';`,
     ...(acceptsTaskQueryAdmission
       ? ["import { verifyApplicationTaskQueryAdmission } from '@applik8s/applik8s/task-query-runtime';"]
       : []),
@@ -1636,6 +1639,9 @@ function generatedGatewaySource(
           "import { createApplicationRelationalSearchSources } from '@applik8s/search';",
           "import { createOpenSearchApplicationSearchRuntime } from '@applik8s/runtime-opensearch';",
         ]
+      : []),
+    ...(relationalQueries.some((query) => Boolean(query.selection))
+      ? ["import { materializePostgresApplicationQuerySelection } from '@applik8s/runtime-postgres/query-selection';"]
       : []),
     ...(commands.length > 0 ? ["import { createApplicationCommandGateway } from '@applik8s/applik8s/command-gateway-runtime';"] : []),
     ...(eventLogPublisher ? [eventLogPublisher.importSource] : []),
@@ -1684,7 +1690,7 @@ function generatedGatewaySource(
     ...(gateway.authorizationReadinessSource ? ["import { callback as verifyAuthorizationReadiness } from './authorization-readiness.generated.js';"] : []),
     ...queries.flatMap((query) => [
       ...(!query.search ? [`import { callback as ${callbackVariable(query.id, 'authorize')} } from './${callbackName(query.id, 'authorize')}.generated.js';`] : []),
-      ...(!query.kubernetes && !query.search ? [`import { callback as ${callbackVariable(query.id, 'run')} } from './${callbackName(query.id, 'run')}.generated.js';`] : []),
+      ...(!query.kubernetes && !query.search && !query.selection ? [`import { callback as ${callbackVariable(query.id, 'run')} } from './${callbackName(query.id, 'run')}.generated.js';`] : []),
       ...kubernetesQueryCallbacks(query).map(([property]) => {
         const role = kubernetesCallbackRole(property);
         return `import { callback as ${callbackVariable(query.id, role)} } from './${callbackName(query.id, role)}.generated.js';`;
@@ -1730,6 +1736,7 @@ function generatedGatewaySource(
           query,
           graphReadNames(graph, query),
           projectionSourceByQuery.get(query.id),
+          graph,
         )).join(',\n');
   const kubernetesQueryDeclarations = kubernetesQueries.map((query) => generatedKubernetesQueryBinding(query, graph, gatewayNamespace)).join(',\n');
   const authorityDatabaseEnvironment = gatewayAuthorityDatabaseEnvironment(queries, commands, subscriptions);
@@ -2044,7 +2051,12 @@ await loopTask;
 `;
 }
 
-function generatedQueryBinding(query: ApplicationQueryNode, modelNames: readonly string[], projectionSource?: string): string {
+function generatedQueryBinding(
+  query: ApplicationQueryNode,
+  modelNames: readonly string[],
+  projectionSource: string | undefined,
+  graph: ApplicationGraph,
+): string {
   const id = query.publicId ?? `${query.name}.${query.version}`;
   const database = query.database;
   if (!database) throw new Error(`Generated query ${query.id} has no database runtime.`);
@@ -2054,11 +2066,33 @@ function generatedQueryBinding(query: ApplicationQueryNode, modelNames: readonly
     if (!contextSchema) throw new Error(`Generated query ${query.id} trusted context ${name} has no serializable admission schema.`);
     return `{ kind: 'applicationTrustedContext', name: ${JSON.stringify(name)}, schema: schema(${JSON.stringify(contextSchema)}, ${JSON.stringify(name)}), contract: { source: 'identity-provider', trust: 'server-admitted', jsonSchema: ${JSON.stringify(contextSchema)} } }`;
   });
-  const callbackInvocation = query.handlerInvocation === 'input-context'
-    ? `${callbackVariable(query.id, 'run')}(input, Object.assign(context, { principal${projectionSource ? ', source' : ''} }))`
+  const selection = query.selection
+    ? generatedQuerySelectionContract(query, graph)
+    : undefined;
+  const callbackInvocation = selection
+    ? `context.run(${databaseVariable(database.name)}Binding, () => materializePostgresApplicationQuerySelection({ selection: ${JSON.stringify(selection)}, input, database: context.database(${databaseVariable(database.name)}Binding), maximumRows: ${query.budgets.maxRows} }))`
+    : query.handlerInvocation === 'input-context'
+    ? `${callbackVariable(query.id, 'run')}(input, Object.assign(context, { principal, select: createApplicationQuerySelection${projectionSource ? ', source' : ''} }))`
     : `${callbackVariable(query.id, 'run')}({ context, principal, input, database: ${databaseVariable(database.name)}Binding${projectionSource ? ', source' : ''} })`;
-  const invocation = `withApplicationDatabaseRuntimeResolver((binding) => context.database(binding), () => ${callbackInvocation})`;
-  return `{ kind: 'applicationQuery', id: ${JSON.stringify(id)}, name: ${JSON.stringify(query.name)}, version: ${JSON.stringify(query.version)}, input: schema(${JSON.stringify(query.input.jsonSchema)}, ${JSON.stringify(`${id}.input`)}), output: schema(${JSON.stringify(query.output.jsonSchema)}, ${JSON.stringify(`${id}.output`)}), database: ${databaseVariable(database.name)}Binding, ${projectionSource ? `sourceRuntime: ${projectionSource},` : ''} trustedContext: [${contexts.join(', ')}], reads: ${JSON.stringify(modelNames.map((name) => ({ $model: { name } })))}, budgets: ${JSON.stringify(query.budgets)}, authorize: async (principal, input, context = {}) => ${callbackVariable(query.id, 'authorize')}({ principal, context, input }), run: async (context, principal, input, source) => ${invocation} }`;
+  const invocation = selection
+    ? callbackInvocation
+    : `withApplicationDatabaseRuntimeResolver((binding) => context.database(binding), () => ${callbackInvocation})`;
+  return `{ kind: 'applicationQuery', id: ${JSON.stringify(id)}, name: ${JSON.stringify(query.name)}, version: ${JSON.stringify(query.version)}, input: schema(${JSON.stringify(query.input.jsonSchema)}, ${JSON.stringify(`${id}.input`)}), output: schema(${JSON.stringify(query.output.jsonSchema)}, ${JSON.stringify(`${id}.output`)}), database: ${databaseVariable(database.name)}Binding, ${projectionSource ? `sourceRuntime: ${projectionSource},` : ''}${selection ? ` selection: ${JSON.stringify(selection)},` : ''} trustedContext: [${contexts.join(', ')}], reads: ${JSON.stringify(modelNames.map((name) => ({ $model: { name } })))}, budgets: ${JSON.stringify(query.budgets)}, authorize: async (principal, input, context = {}) => ${callbackVariable(query.id, 'authorize')}({ principal, context, input }), run: async (context, principal, input, source) => ${invocation} }`;
+}
+
+function generatedQuerySelectionContract(
+  query: ApplicationQueryNode,
+  graph: ApplicationGraph,
+): Readonly<Record<string, unknown>> {
+  if (!query.selection) throw new Error(`Generated query ${query.id} has no portable selection.`);
+  const nodes = graphNodes(graph);
+  const source = requiredNode(nodes, query.selection.sourceModel.nodeId, 'model', query.id);
+  return {
+    ...query.selection,
+    sourceModel: source.name,
+    relationshipReads: query.selection.relationshipReads.map((reference) =>
+      requiredNode(nodes, reference.nodeId, 'model', query.id).name),
+  };
 }
 
 function gatewaySearchContract(
@@ -5542,7 +5576,23 @@ function queryModelExports(modulePath: string): ReadonlyMap<string, ImportedQuer
 }
 
 function queryRuntimeModelFacet(model: ApplicationModelNode): Readonly<Record<string, unknown>> {
-  return { name: model.name, native: 'drizzle-table', database: model.runtime?.database, identity: model.common?.identity, revision: model.common?.revision, relationships: model.common?.relationships ?? [] };
+  return {
+    kind: 'applicationModelFacet',
+    name: model.name,
+    provider: model.runtime?.provider,
+    native: 'drizzle-table',
+    database: model.runtime?.database,
+    table: {
+      name: model.runtime?.tableName,
+      ...(model.runtime?.nativeRelational?.schema
+        ? { schema: model.runtime.nativeRelational.schema }
+        : {}),
+      columns: model.runtime?.nativeRelational?.columns ?? [],
+    },
+    identity: model.common?.identity,
+    revision: model.common?.revision,
+    relationships: model.common?.relationships ?? [],
+  };
 }
 
 /**

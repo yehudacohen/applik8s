@@ -65,20 +65,32 @@ deployment machinery.
 
 ## Current checkpoint
 
-The branch `codex/v0.9-semantic-completion` is pushed through `d79af16`.
-Completed foundations include concrete provider planning, deployment migration
-proposals, journey declarations, the documentation site foundation, shared
-effect-safety primitives, Job vocabulary and runtime contracts, deterministic
-and durable PostgreSQL Job execution, Kubernetes Job dispatch, the private
-controller/client boundary, and compiler-generated controller/worker artifacts.
+The branch `codex/v0.9-semantic-completion` is pushed through `a4e5e05` before
+the current Query batching slice. Completed foundations include concrete
+provider planning, deployment migration proposals, journey declarations, the
+documentation site foundation, shared effect-safety primitives, Job vocabulary
+and runtime contracts, deterministic and durable PostgreSQL Job execution,
+Kubernetes Job dispatch, the private controller/client boundary,
+compiler-generated controller/worker artifacts, shared Job scheduling,
+framework-owned Job lifecycle facts, and source-authoritative typed
+`application.events` catalog selections.
 
-The Kubernetes Job vertical currently proves provider-neutral dynamic
-`batch/v1 Job` creation with immutable image references, exact-run worker
-claims, durable outcomes, UID-safe cancellation, signed framework admission,
-raw-admission rejection, automatic HTTP closure hydration, framework
-credentials, and TypeKro resource emission in focused tests and package
-typechecks. Full live interruption qualification, lifecycle event publication,
-shared Job scheduling, and AWS execution remain open.
+The current Query batching slice implements the function-native
+`context.select(Model)` algebra and `Query.onBatch(...)` Job surface, shared
+one-shot/batch query meaning, deterministic local execution, safe PostgreSQL
+lowering, transactionally materialized repeatable snapshots, durable
+out-of-order window receipts with a contiguous frontier, authority-context
+admission pinning, stale-attempt fencing, compiler-generated Kubernetes Job
+runtime hydration, explicit graph lowering, and semantic plan state/capacity
+evidence. The affected package builds and typechecks, 102 focused tests pass,
+and an OrbStack PostgreSQL run proves mutation isolation, restart recovery,
+out-of-order completion, authority-conflict rejection, and stale-fence
+rejection. PostgreSQL is truthfully the only maintained repeatable-snapshot
+lowering; unqualified consistency modes fail closed.
+
+Full Kubernetes Job interruption qualification and AWS finite execution remain
+open. After this Query batching slice is committed, continue with managed model
+and `Resource.on.reconcile` parity, then beta Saga coordination.
 
 Continue in the sequence above until every stable-candidate gate is implemented
 and evidenced. Keep beta/preview surfaces truthful; do not expand the frozen

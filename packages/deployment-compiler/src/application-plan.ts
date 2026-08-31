@@ -665,7 +665,14 @@ function stateContract(node: ApplicationGraphNode): { readonly authority: string
   if (node.kind === 'index' || node.kind === 'projection') return { authority: 'derived-projection', consistency: 'eventual', recovery: 'rebuild' };
   if (node.kind === 'workflow' || node.kind === 'task') return { authority: 'workflow-engine', consistency: 'durable-history', recovery: 'history-replay' };
   if (node.kind === 'schedule') return { authority: node.scheduler.interface, consistency: 'idempotent-occurrence-receipt', retention: 'provider-defined', recovery: 'prior-receipt-and-misfire-policy' };
-  if (node.kind === 'job') return { authority: node.runtime.interface, consistency: 'single-terminal-transition', retention: 'profile-defined', recovery: 'provider-attempt-retry' };
+  if (node.kind === 'job') return node.queryBatch
+    ? {
+        authority: `${node.queryBatch.lowering.provider}:${node.queryBatch.lowering.checkpointAuthority}`,
+        consistency: node.queryBatch.consistency.mode,
+        retention: `${node.queryBatch.lowering.maximumSnapshotAgeSeconds}s`,
+        recovery: 'durable-window-receipts-contiguous-frontier',
+      }
+    : { authority: node.runtime.interface, consistency: 'single-terminal-transition', retention: 'profile-defined', recovery: 'provider-attempt-retry' };
   if (node.kind === 'lakehousePublication') return { authority: node.dataset.interface, consistency: node.semantics.publication, retention: 'immutable-snapshots', recovery: 'frontier-replay-and-manifest-republish' };
   if (node.kind === 'actor') return { authority: node.runtime.interface, consistency: node.semantics.serialization, retention: 'provider-defined', recovery: 'admission-receipt-state-and-outbox' };
   if (node.kind === 'aggregate' || node.kind === 'counter') return { authority: 'provider-defined', consistency: 'atomic', recovery: 'source-rebuild' };
@@ -706,8 +713,27 @@ function semanticEstimates(
         costClass: node.definition.requirements.cardinality === 'high' ? 'medium' : 'low',
         assumptions: [`configuration=${node.definition.configuration}`, `precision=${node.definition.requirements.precision}`, `maximumLatenessSeconds=${node.definition.maximumLatenessSeconds}`, `maximumCatchUp=${node.definition.maximumCatchUp ?? 0}`],
         fact: 'estimated',
+      provenance,
+    });
+    if (node.kind === 'job' && node.queryBatch) {
+      estimates.push({
+        id: recordId('estimate', [subjectId, 'query-batch-window']),
+        subjectId,
+        name: 'query-batch-window',
+        value: node.queryBatch.batch.maxItems,
+        unit: 'items',
+        costClass: node.queryBatch.batch.maxItems > 1_000 ? 'medium' : 'low',
+        assumptions: [
+          `concurrency=${node.queryBatch.batch.concurrency}`,
+          `strategy=${node.queryBatch.lowering.strategy}`,
+          `checkpointAuthority=${node.queryBatch.lowering.checkpointAuthority}`,
+          `maximumSnapshotItems=${node.queryBatch.lowering.maximumSnapshotItems}`,
+          `maximumSnapshotAgeSeconds=${node.queryBatch.lowering.maximumSnapshotAgeSeconds}`,
+        ],
+        fact: 'estimated',
         provenance,
       });
+    }
     if (node.kind === 'lakehousePublication') estimates.push({
         id: recordId('estimate', [subjectId, 'snapshot-storage']),
         subjectId,

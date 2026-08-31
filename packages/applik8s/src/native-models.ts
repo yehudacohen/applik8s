@@ -68,6 +68,8 @@ import type {
   ApplicationQuerySchemaValue,
   ApplicationQuerySourceBinding,
 } from './application-queries.js';
+import type { ApplicationBatchableQueryOperation } from './application-query-batching.js';
+import { captureApplicationQuerySelection, type ApplicationQuerySelection } from './application-query-selection.js';
 import type {
   ApplicationStreamProcessContext,
   ApplicationStreamProcessOptions,
@@ -345,6 +347,12 @@ export interface DrizzleApplicationModelFacet<TTable extends AnyPgTable, TIdenti
   readonly table: {
     readonly name: string;
     readonly schema?: string;
+    readonly columns: readonly {
+      readonly property: string;
+      readonly column: string;
+      readonly logicalType?: string;
+      readonly nullable: boolean;
+    }[];
   };
   /**
    * Native table members that prevented installation of the corresponding
@@ -400,6 +408,19 @@ export interface DrizzleApplicationModelApi<TTable extends AnyPgTable, TIdentity
   >;
   readonly on: FunctionNativeApplicationModelLifecycleRegistrar<InferSelectModel<TTable>, TIdentity>;
   readonly events: ApplicationModelLifecycleEvents<InferSelectModel<TTable>, TIdentity>;
+  query<
+    TInputSchema extends ApplicationQuerySchemaSource,
+    TOutputSchema extends ApplicationQuerySchemaSource,
+    TPrincipal extends ApplicationQueryPrincipal = ApplicationQueryPrincipal,
+    TSource extends ApplicationQuerySourceBinding | undefined = undefined,
+    TItem extends object = ApplicationQuerySchemaValue<TOutputSchema> extends readonly (infer TValue extends object)[] ? TValue : never,
+  >(
+    contract: ApplicationModelQuerySchemaContract<TInputSchema, TOutputSchema, TPrincipal, TSource>,
+    implementation: (
+      input: ApplicationQuerySchemaValue<TInputSchema>,
+      context: import('./application-queries.js').ApplicationModelViewContext<TPrincipal, TSource>,
+    ) => ApplicationQuerySelection<TItem, TIdentity>,
+  ): ApplicationBatchableQueryOperation<ApplicationQuerySchemaValue<TInputSchema>, TItem>;
   query<
     TInputSchema extends ApplicationQuerySchemaSource,
     TOutputSchema extends ApplicationQuerySchemaSource,
@@ -1264,6 +1285,12 @@ export function promoteDrizzleTable<TTable extends AnyPgTable>(
     table: {
       name: tableConfig.name,
       ...(tableConfig.schema ? { schema: tableConfig.schema } : {}),
+      columns: Object.entries(getTableColumns(table)).map(([property, column]) => ({
+        property,
+        column: column.name,
+        logicalType: column.dataType,
+        nullable: !column.notNull,
+      })),
     },
     directMemberCollisions,
     get api() {
@@ -2021,6 +2048,18 @@ function installFunctionNativeApplicationModelView<
   const kubernetesContract = 'select' in contract
     ? contract as ApplicationKubernetesModelViewContract<TInput, object, TOutput, TPrincipal>
     : undefined;
+  const callback = implementation
+    ?? ('run' in contract ? contract.run : undefined)
+    ?? ('kubernetes' in contract ? contract.kubernetes?.project : undefined);
+  const instrumentedSource = typeof callback === 'function'
+    ? instrumentedApplicationCallbackSource(callback as (...args: never[]) => unknown)
+    : undefined;
+  const selection = operationKind === 'query' && typeof implementation === 'function'
+    ? captureApplicationQuerySelection(
+        implementation as (input: unknown, context: unknown) => unknown,
+        instrumentedSource?.source ?? implementation.toString(),
+      )
+    : undefined;
   const options = kubernetesContract && implementation
     ? functionNativeKubernetesViewOptions(
         kubernetesContract,
@@ -2034,12 +2073,9 @@ function installFunctionNativeApplicationModelView<
         // and module closure for generated runtimes.
         run: implementation as ApplicationModelViewImplementation<TInput, TOutput, TPrincipal, TSource>,
         __handlerInvocation: 'input-context',
+        ...(selection ? { __selection: selection, __queryBatches: [] } : {}),
       } as ApplicationModelViewOptions<TInput, TOutput, TPrincipal, TSource>)
     : (contract as ApplicationModelViewOptions<TInput, TOutput, TPrincipal, TSource>);
-  const callback = implementation ?? options.run ?? options.kubernetes?.project;
-  const instrumentedSource = typeof callback === 'function'
-    ? instrumentedApplicationCallbackSource(callback as (...args: never[]) => unknown)
-    : undefined;
   const name = instrumentedSource?.name ?? callback?.name;
   if (
     typeof callback !== 'function' ||

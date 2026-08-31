@@ -5,6 +5,7 @@ import type {
   ApplicationGraph,
   ApplicationJobNode,
   ApplicationProviderNode,
+  ApplicationQueryNode,
 } from '@applik8s/core';
 import type { ApplicationFrameworkCredentialDependency } from '@applik8s/deployment-contract';
 import { build } from 'esbuild';
@@ -57,6 +58,15 @@ interface JobControllerContract {
     readonly secretName: string;
     readonly secretKey: string;
   };
+  readonly queryBatches: readonly {
+    readonly jobId: string;
+    readonly selection: Readonly<Record<string, unknown>> & { readonly digest: string };
+    readonly lowering: NonNullable<ApplicationJobNode['queryBatch']>['lowering'];
+    readonly query: ApplicationQueryNode & {
+      readonly selection: NonNullable<ApplicationQueryNode['selection']>;
+      readonly database: NonNullable<ApplicationQueryNode['database']>;
+    };
+  }[];
   readonly jobs: readonly ApplicationJobNode[];
 }
 
@@ -183,18 +193,38 @@ async function writeJobCallbackModule(
   job: ApplicationJobNode,
 ): Promise<void> {
   await writeFile(join(outDir, `${jobModuleName(job)}.generated.ts`), generatedCallbackFactoryModule({
-    source: job.handlerSource,
-    ...(job.handlerDependencies ? { dependencies: job.handlerDependencies } : {}),
+    source: job.queryBatch?.handlerSource ?? job.handlerSource,
+    ...((job.queryBatch?.handlerDependencies ?? job.handlerDependencies)
+      ? { dependencies: job.queryBatch?.handlerDependencies ?? job.handlerDependencies }
+      : {}),
     injectedIdentifiers: [],
     exportName: 'createCallback',
   }));
 }
 
 function generatedJobControllerSource(contract: JobControllerContract): string {
+  const runtimeQueries = uniqueQueryBatchSources(contract.queryBatches);
   const imports = contract.jobs.map((job, index) =>
     `import { createCallback as createJob${index} } from './${jobModuleName(job)}.generated.js';`,
   ).join('\n');
-  const definitions = contract.jobs.map((job, index) => `{
+  const definitions = contract.jobs.map((job, index) => {
+    const queryBatch = contract.queryBatches.find((candidate) => candidate.jobId === job.id);
+    const batch = job.queryBatch;
+    if (queryBatch && !batch) {
+      throw new Error(`Generated query-batch contract ${job.id} lost its batch policy.`);
+    }
+    let handler = `createJob${index}({})`;
+    if (queryBatch && batch) {
+      handler = `async (input, execution) => executeApplicationQueryBatch({ selection: ${JSON.stringify(queryBatch.selection)}, input, policy: ${JSON.stringify({
+          consistency: batch.consistency,
+          batch: { maxItems: batch.batch.maxItems },
+          concurrency: batch.batch.concurrency,
+          ...(job.retry.maxAttempts > 1 ? { retries: job.retry.maxAttempts - 1 } : {}),
+          ...(job.executionDeadlineSeconds ? { timeout: `${job.executionDeadlineSeconds}s` } : {}),
+          ...(batch.resources ? { resources: batch.resources } : {}),
+        })}, handler: createJob${index}({}), execution })`;
+    }
+    return `{
     id: ${JSON.stringify(job.name)},
     contract: {
       input: jsonSchema(${JSON.stringify(job.contract.input.jsonSchema)}, ${JSON.stringify(`${job.name}.input`)}),
@@ -208,8 +238,30 @@ function generatedJobControllerSource(contract: JobControllerContract): string {
       ${job.idempotency.expression?.source ? `idempotencyKey: (${job.idempotency.expression.source}),` : ''}
       retention: ${JSON.stringify(retentionOptions(job))},
     },
-    handler: createJob${index}({}),
-  }`).join(',\n');
+    handler: ${handler},
+  }`;
+  }).join(',\n');
+  const batchRuntimeDeclarations = runtimeQueries.map(({ query, lowering }, index) => `
+const queryBatchRuntime${index} = createPostgresApplicationQueryBatchRuntime({
+  databaseUrl: requiredEnv(${JSON.stringify(query.database.connectionEnvName)}),
+  applicationId,
+  deploymentId,
+  maximumSnapshotItems: ${lowering.maximumSnapshotItems},
+  snapshotRetentionSeconds: ${lowering.maximumSnapshotAgeSeconds},
+  ${query.database?.access ? `access: ${JSON.stringify({ context: query.database.access.context, setting: query.database.access.setting })},` : ''}
+});`).join('\n');
+  const batchRuntimeResolver = runtimeQueries.length > 0
+    ? `const removeQueryBatchRuntimeResolver = installApplicationQueryBatchRuntimeResolver((selection) => {\n${runtimeQueries.map(({ selection }, index) => `  if (selection.digest === ${JSON.stringify(selection.digest)}) return queryBatchRuntime${index};`).join('\n')}\n  return undefined;\n});`
+    : '';
+  const batchRuntimeEnvironment = uniqueQueryBatchDatabases(runtimeQueries).map(({ query }) =>
+    `{ name: ${JSON.stringify(query.database.connectionEnvName)}, valueFrom: { secretKeyRef: { name: ${JSON.stringify(query.database.secretName)}, key: ${JSON.stringify(query.database.secretKey)}, optional: false } } },`,
+  ).join('\n    ');
+  const batchRuntimeImports = runtimeQueries.length > 0
+    ? `import { executeApplicationQueryBatch, installApplicationQueryBatchRuntimeResolver } from '@applik8s/applik8s/query-batch-runtime';\nimport { createPostgresApplicationQueryBatchRuntime } from '@applik8s/runtime-postgres/query-batch';`
+    : '';
+  const batchRuntimeClose = runtimeQueries.length > 0
+    ? `removeQueryBatchRuntimeResolver(); await Promise.all([${runtimeQueries.map((_, index) => `queryBatchRuntime${index}.close()`).join(', ')}]);`
+    : '';
   return `
 import { createServer } from 'node:http';
 import { createApplicationJobControllerHandler } from '@applik8s/applik8s/job-controller-runtime';
@@ -217,6 +269,7 @@ import { validateApplicationAdmissionContextV1 } from '@applik8s/core';
 import { createSignedEnvelopeCodec, signedEnvelopeUtf8Key, staticSignedEnvelopeKeyProvider } from '@applik8s/runtime';
 import { createPostgresApplicationJobStore } from '@applik8s/runtime-postgres/job-store';
 import { createKubernetesApplicationJobRuntime } from '@applik8s/runtime-kubernetes/job-runtime';
+${batchRuntimeImports}
 ${imports}
 
 function requiredEnv(name) { const value = process.env[name]; if (!value) throw new Error('Missing required environment variable ' + name); return value; }
@@ -224,6 +277,8 @@ function jsonSchema(schema, name) { return Object.freeze({ kind: 'jsonSchema', r
 const databaseUrl = requiredEnv('DATABASE_URL');
 const applicationId = ${JSON.stringify(contract.graphName)};
 const deploymentId = requiredEnv('APPLIK8S_DEPLOYMENT_ID');
+${batchRuntimeDeclarations}
+${batchRuntimeResolver}
 const workerRunId = process.env.APPLIK8S_JOB_RUN_ID || process.argv[process.argv.indexOf('--applik8s-job-run') + 1];
 const store = createPostgresApplicationJobStore({ databaseUrl, applicationId, deploymentId });
 const runtime = await createKubernetesApplicationJobRuntime({
@@ -241,12 +296,13 @@ const runtime = await createKubernetesApplicationJobRuntime({
     { name: 'DATABASE_URL', valueFrom: { secretKeyRef: { name: ${JSON.stringify(contract.database.secretName)}, key: ${JSON.stringify(contract.database.secretKey)}, optional: false } } },
     { name: 'APPLIK8S_DEPLOYMENT_ID', value: deploymentId },
     { name: 'APPLIK8S_JOB_IMAGE', value: requiredEnv('APPLIK8S_JOB_IMAGE') },
+    ${batchRuntimeEnvironment}
   ],
 });
 const definitions = [${definitions}];
 for (const definition of definitions) runtime.register(definition);
 
-async function close() { await runtime.close(); await store.close(); }
+async function close() { ${batchRuntimeClose} await runtime.close(); await store.close(); }
 if (workerRunId) {
   const stored = await store.read(workerRunId);
   if (!stored) throw new Error('Durable Job run ' + workerRunId + ' was not found.');
@@ -316,6 +372,34 @@ function jobControllerContract(
     ?? applicationGraphStringValue(databaseProvider.name);
   if (!databaseName) throw new Error(`JobRuntime ${provider.id} PostgreSQL result store has no concrete database identity.`);
   const connectionSecret = record(databaseProvider.connectionSecret);
+  const queryBatches = jobs.flatMap((job) => {
+    if (!job.queryBatch) return [];
+    const query = graph.nodes.find((candidate) => candidate.id === job.queryBatch?.query.nodeId);
+    if (query?.kind !== 'query' || !query.selection || !query.database) {
+      throw new Error(`Application query batch Job ${job.id} references an incomplete selection-backed PostgreSQL Query.`);
+    }
+    const queryNamespace = applicationGraphStringValue(query.database.secretNamespace) ?? namespace;
+    if (queryNamespace !== namespace) {
+      throw new Error(
+        `Application query batch Job ${job.id} is deployed to ${namespace}, but Query ${query.id} uses a PostgreSQL Secret in ${queryNamespace}.`,
+      );
+    }
+    if (job.queryBatch.consistency.mode !== 'repeatableSnapshot') {
+      throw new Error(
+        `PostgreSQL query batch Job ${job.id} requests ${job.queryBatch.consistency.mode}, but the maintained v0.9 provider currently qualifies repeatableSnapshot only.`,
+      );
+    }
+    const batchQuery = query as ApplicationQueryNode & {
+      readonly selection: NonNullable<ApplicationQueryNode['selection']>;
+      readonly database: NonNullable<ApplicationQueryNode['database']>;
+    };
+    return [{
+      jobId: job.id,
+      selection: jobQuerySelectionContract(graph, batchQuery),
+      lowering: job.queryBatch.lowering,
+      query: batchQuery,
+    }];
+  });
   return {
     graphName: graph.metadata.name,
     provider,
@@ -333,6 +417,7 @@ function jobControllerContract(
       secretName: applicationGraphStringValue(connectionSecret.name) ?? `${databaseName}-app`,
       secretKey: applicationGraphStringValue(databaseProvider.connectionSecretKey) ?? 'uri',
     },
+    queryBatches,
     jobs,
   };
 }
@@ -409,6 +494,10 @@ function jobControllerResources(
                 { name: 'APPLIK8S_DEPLOYMENT_ID', value: contract.namespace },
                 { name: 'APPLIK8S_JOB_IMAGE', value: image },
                 { name: 'APPLIK8S_INTERNAL_OPERATION_SECRET', valueFrom: { secretKeyRef: { name: `${contract.graphName}-internal-operation`, key: 'key', optional: false } } },
+                ...uniqueQueryBatchDatabases(contract.queryBatches).map(({ query }) => ({
+                  name: query.database.connectionEnvName,
+                  valueFrom: { secretKeyRef: { name: query.database.secretName, key: query.database.secretKey, optional: false } },
+                })),
               ],
               readinessProbe: { httpGet: { path: '/readyz', port: 'http' }, periodSeconds: 5, timeoutSeconds: 2 },
               livenessProbe: { httpGet: { path: '/healthz', port: 'http' }, periodSeconds: 10, timeoutSeconds: 2 },
@@ -429,6 +518,50 @@ function retentionOptions(job: ApplicationJobNode): Record<string, string> {
     ...(job.retention.applicationFactsSeconds ? { applicationFacts: `${job.retention.applicationFactsSeconds}s` } : {}),
     ...(job.retention.providerAttemptsSeconds ? { providerAttempts: `${job.retention.providerAttemptsSeconds}s` } : {}),
   };
+}
+
+function uniqueQueryBatchSources(
+  queryBatches: JobControllerContract['queryBatches'],
+): JobControllerContract['queryBatches'] {
+  const seen = new Set<string>();
+  return queryBatches.filter(({ selection }) => {
+    if (seen.has(selection.digest)) return false;
+    seen.add(selection.digest);
+    return true;
+  });
+}
+
+function jobQuerySelectionContract(
+  graph: ApplicationGraph,
+  query: ApplicationQueryNode & { readonly selection: NonNullable<ApplicationQueryNode['selection']> },
+): Readonly<Record<string, unknown>> & { readonly digest: string } {
+  const source = graph.nodes.find((candidate) => candidate.id === query.selection.sourceModel.nodeId);
+  if (source?.kind !== 'model') {
+    throw new Error(`Application query batch ${query.id} references missing source model ${query.selection.sourceModel.nodeId}.`);
+  }
+  return {
+    ...query.selection,
+    sourceModel: source.name,
+    relationshipReads: query.selection.relationshipReads.map((reference) => {
+      const related = graph.nodes.find((candidate) => candidate.id === reference.nodeId);
+      if (related?.kind !== 'model') {
+        throw new Error(`Application query batch ${query.id} references missing related model ${reference.nodeId}.`);
+      }
+      return related.name;
+    }),
+  };
+}
+
+function uniqueQueryBatchDatabases(
+  queryBatches: JobControllerContract['queryBatches'],
+): JobControllerContract['queryBatches'] {
+  const seen = new Set<string>();
+  return queryBatches.filter(({ query }) => {
+    const environmentName = query.database?.connectionEnvName;
+    if (!environmentName || seen.has(environmentName)) return false;
+    seen.add(environmentName);
+    return true;
+  });
 }
 
 function unwrapApplicationProvider(value: Record<string, unknown>): Record<string, unknown> {

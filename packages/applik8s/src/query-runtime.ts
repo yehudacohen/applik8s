@@ -5,6 +5,8 @@ export { proxyApplicationQueryMultiplex } from './application-query-multiplex-pr
 export { applicationRequestContextValues } from './command-principal.js';
 export { createApplicationQueryGateway, createApplicationQueryGatewayHttpHandler, createApplicationSubscriptionLimiter } from './query-gateway.js';
 export type { ApplicationGatewayIdentity, ApplicationQueryGateway, ApplicationQueryGatewayOptions, ApplicationQuerySignalCapability } from './query-gateway.js';
+export { createApplicationQuerySelection, createDeterministicApplicationQuerySelectionRuntime, evaluateApplicationQuerySelection, installApplicationQuerySelectionRuntimeResolver, materializeApplicationQuerySelection } from './application-query-selection.js';
+export type { ApplicationQuerySelection, ApplicationQuerySelectionContract, ApplicationQuerySelectionMaterializationRequest, ApplicationQuerySelectionRuntime } from './application-query-selection.js';
 export {
   applicationAdmittedContextDigest,
   applicationDatabaseHandle,

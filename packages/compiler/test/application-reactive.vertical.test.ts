@@ -334,6 +334,66 @@ describe('generated v0.6 reactive workloads', () => {
     expect(JSON.stringify(consolidated)).toContain('"targetPort":"http-1"');
   }, 120_000);
 
+  it('lowers a function-native portable selection without replaying its authoring callback', async () => {
+    const cards = pgTable('portable_query_cards', {
+      id: text('id').primaryKey(),
+      organizationId: text('organization_id').notNull(),
+      name: text('display_name').notNull(),
+      revision: text('revision').notNull(),
+    });
+    const application = app('portable-query-selection', { namespace: 'portable-query-selection' });
+    application.provide(
+      IdentityProvider,
+      IdentityProvider.deterministic({
+        mode: 'starter',
+        application: 'portable-query-selection',
+        subject: 'reader',
+        audience: ['portable-query-selection'],
+        catalogRevision: 'catalog-v1',
+        authorityRevision: 'authority-v1',
+      }),
+    );
+    const Database = application.database.postgres('catalog', { schema: { cards } });
+    const Card = application.model(cards, { name: 'Card', database: Database });
+    const CardsForOrganization = Card.query(
+      {
+        input: type({ organizationId: 'string' }),
+        output: Card.schema.select.array(),
+        database: Database,
+        authorize: () => true,
+      },
+      function cardsForOrganization(input, context) {
+        return context.select(Card)
+          .where(card => card.organizationId.eq(input.organizationId))
+          .orderBy(card => card.name.asc());
+      },
+    );
+    application.gateway('public', {
+      queries: [CardsForOrganization],
+      deployment: {
+        namespace: 'portable-query-selection',
+        cursorSecret: { name: 'portable-query-cursor', key: 'secret' },
+      },
+    });
+    const graph = applicationGraphFor(application.composition);
+    if (!graph) throw new Error('Expected portable query graph.');
+    const outDir = await mkdtemp(join(tmpdir(), 'applik8s-portable-query-'));
+    const artifacts = await emitGeneratedApplicationReactive({
+      graph,
+      outDir,
+      entrypoint: import.meta.filename,
+    });
+    const artifact = artifacts.find((candidate) => candidate.kind === 'queryGateway');
+    const directory = dirname(artifact?.sourcePath ?? '');
+    const generated = await readFile(join(directory, 'gateway.generated.ts'), 'utf8');
+    const files = await readdir(directory);
+    expect(generated).toContain('materializePostgresApplicationQuerySelection');
+    expect(generated).toContain('"column":"organization_id"');
+    expect(generated).toContain('"column":"display_name"');
+    expect(generated).toMatch(/context\.run\(database_[a-f0-9]+Binding/);
+    expect(files.some((name) => name.includes('cardsfororganization-run'))).toBe(false);
+  }, 120_000);
+
   it('emits a frozen whole-batch processor runtime instead of event-by-event delivery', async () => {
     const graph = reactiveGraph([
       {

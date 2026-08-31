@@ -40,6 +40,16 @@
       "types": "./dist/job-store.d.ts",
       "import": "./dist/job-store.js",
       "default": "./dist/job-store.js"
+    },
+    "./query-selection": {
+      "types": "./dist/query-selection.d.ts",
+      "import": "./dist/query-selection.js",
+      "default": "./dist/query-selection.js"
+    },
+    "./query-batch": {
+      "types": "./dist/query-batch.d.ts",
+      "import": "./dist/query-batch.js",
+      "default": "./dist/query-batch.js"
     }
   },
   "dependencies": {

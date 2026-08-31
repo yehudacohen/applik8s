@@ -21,7 +21,7 @@ import type {
   ApplicationScopeExpression,
   ApplicationStaticAuthorityManifest,
 } from './application-operation-authority.js';
-import type { ApiVersion, Condition, Diagnostic, JsonObject, KubernetesName, NamespaceName, ObjectRef, ResourceScope, SourceLocation } from './common.js';
+import type { ApiVersion, Condition, Diagnostic, JsonObject, JsonValue, KubernetesName, NamespaceName, ObjectRef, ResourceScope, SourceLocation } from './common.js';
 import type { PermissionRule } from './resource.js';
 
 export type {
@@ -1265,6 +1265,56 @@ export interface ApplicationMcpClientNode
 /** A graph number can remain installation-derived until TypeKro instance evaluation. */
 export type ApplicationGraphNumberValue = number | `\${${string}}`;
 
+export type ApplicationPortableQueryValueExpression =
+  | { readonly kind: 'field'; readonly path: readonly string[] }
+  | { readonly kind: 'input'; readonly path: readonly string[] }
+  | { readonly kind: 'literal'; readonly value: JsonValue };
+
+export type ApplicationPortableQueryPredicate =
+  | {
+      readonly kind: 'comparison';
+      readonly operation: 'eq' | 'notEq' | 'lessThan' | 'lessThanOrEqual' | 'greaterThan' | 'greaterThanOrEqual';
+      readonly left: ApplicationPortableQueryValueExpression;
+      readonly right: ApplicationPortableQueryValueExpression;
+    }
+  | {
+      readonly kind: 'membership';
+      readonly operation: 'in';
+      readonly value: ApplicationPortableQueryValueExpression;
+      readonly candidates: ApplicationPortableQueryValueExpression;
+    }
+  | {
+      readonly kind: 'logical';
+      readonly operation: 'and' | 'or';
+      readonly operands: readonly ApplicationPortableQueryPredicate[];
+    };
+
+export interface ApplicationPortableQuerySelectionContract {
+  readonly protocol: 'applik8s.query-selection/v1alpha1';
+  readonly sourceModel: ApplicationGraphNodeRef;
+  readonly source: {
+    readonly provider: 'postgres';
+    readonly database: string;
+    readonly table: string;
+    readonly schema?: string;
+    readonly columns: readonly {
+      readonly property: string;
+      readonly column: string;
+      readonly logicalType?: string;
+      readonly nullable: boolean;
+    }[];
+  };
+  readonly predicate?: ApplicationPortableQueryPredicate;
+  readonly order: readonly {
+    readonly expression: ApplicationPortableQueryValueExpression;
+    readonly direction: 'asc' | 'desc';
+  }[];
+  readonly identity: readonly ApplicationPortableQueryValueExpression[];
+  readonly relationshipReads: readonly ApplicationGraphNodeRef[];
+  readonly sourceAuthority: string;
+  readonly digest: string;
+}
+
 export interface ApplicationQueryNode extends ApplicationGraphNodeBase<'query'> {
   readonly publicId?: string;
   readonly modelOperation?: {
@@ -1301,6 +1351,8 @@ export interface ApplicationQueryNode extends ApplicationGraphNodeBase<'query'> 
     readonly nodeId: string;
     readonly storage: 'online' | 'analytical';
   };
+  /** Portable ordered selection shared by one-shot invocation and Query.onBatch. */
+  readonly selection?: ApplicationPortableQuerySelectionContract;
   readonly authorizationSource: string;
   readonly authorizationDependencies?: ApplicationHandlerDependencies;
   readonly authorizationLocation?: SourceLocation;
@@ -1516,6 +1568,31 @@ export interface ApplicationJobNode extends ApplicationGraphNodeBase<'job'> {
     readonly error?: ApplicationMessageContractSchema;
   };
   readonly handlerSource: string;
+  readonly queryBatch?: {
+    readonly query: ApplicationGraphNodeRef;
+    readonly selectionDigest: string;
+    readonly consistency:
+      | { readonly mode: 'repeatableSnapshot' }
+      | { readonly mode: 'versionPinned'; readonly version: string }
+      | { readonly mode: 'monotonicFrontier' }
+      | { readonly mode: 'bestEffort'; readonly acceptsMembershipDrift: true; readonly idempotency: 'handlerDeclared' };
+    readonly batch: { readonly maxItems: number; readonly concurrency: number };
+    readonly lowering: {
+      readonly provider: 'postgres';
+      readonly strategy: 'materializedSnapshotRelation';
+      readonly checkpointAuthority: 'sourceDatabase';
+      readonly maximumSnapshotItems: number;
+      readonly maximumSnapshotAgeSeconds: number;
+      readonly stableKeyset: true;
+      readonly durableWindowReceipts: true;
+      readonly contiguousFrontier: true;
+    };
+    readonly resources?: { readonly cpu?: string; readonly memory?: string };
+    readonly handlerSource: string;
+    readonly handlerDependencies?: ApplicationHandlerDependencies;
+    readonly handlerLocation?: SourceLocation;
+    readonly handlerUnresolved?: readonly string[];
+  };
   readonly events: Readonly<Record<'started' | 'progressed' | 'succeeded' | 'failed' | 'cancelled' | 'timedOut', {
     readonly id: string;
     readonly contract: ApplicationMessageContractSchema;
@@ -3658,7 +3735,7 @@ function applicationGraphNodeStructureDiagnostics(node: ApplicationGraphNode, gr
     case 'model':
       return applicationModelNodeStructureDiagnostics(node, graph);
     case 'job':
-      return applicationFiniteJobNodeStructureDiagnostics(node);
+      return applicationFiniteJobNodeStructureDiagnostics(node, graph);
     case 'workloadJob':
       return applicationWorkloadJobNodeStructureDiagnostics(node);
     case 'provider':
@@ -3778,7 +3855,10 @@ function applicationGraphNodeStructureDiagnostics(node: ApplicationGraphNode, gr
   }
 }
 
-function applicationFiniteJobNodeStructureDiagnostics(node: ApplicationJobNode): readonly Diagnostic[] {
+function applicationFiniteJobNodeStructureDiagnostics(
+  node: ApplicationJobNode,
+  graph: ApplicationGraph,
+): readonly Diagnostic[] {
   const diagnostics: Diagnostic[] = [];
   if (!node.contract.name.trim() || !/^v[1-9][0-9]*$/u.test(node.contract.version)) {
     diagnostics.push(applicationGraphStructureDiagnostic(`Application Job ${node.id} must retain a stable versioned contract identity.`));
@@ -3801,6 +3881,48 @@ function applicationFiniteJobNodeStructureDiagnostics(node: ApplicationJobNode):
   }
   if (node.runtime.interface !== 'JobRuntime' || node.runtime.selection !== 'profile' || node.runtime.protocol !== 'applik8s.jobRuntime/v1alpha1') {
     diagnostics.push(applicationGraphStructureDiagnostic(`Application Job ${node.id} must select a profile-owned JobRuntime using the supported protocol.`));
+  }
+  if (node.queryBatch) {
+    const query = graph.nodes.find((candidate) => candidate.id === node.queryBatch?.query.nodeId);
+    if (query?.kind !== 'query' || !query.selection) {
+      diagnostics.push(applicationGraphStructureDiagnostic(`Application query batch Job ${node.id} must reference one selection-backed Query.`));
+    } else if (query.selection.digest !== node.queryBatch.selectionDigest) {
+      diagnostics.push(applicationGraphStructureDiagnostic(`Application query batch Job ${node.id} must pin the exact Query selection digest.`));
+    }
+    if (
+      !Number.isSafeInteger(node.queryBatch.batch.maxItems)
+      || node.queryBatch.batch.maxItems < 1
+      || !Number.isSafeInteger(node.queryBatch.batch.concurrency)
+      || node.queryBatch.batch.concurrency < 1
+    ) {
+      diagnostics.push(applicationGraphStructureDiagnostic(`Application query batch Job ${node.id} must declare positive bounded batch and concurrency limits.`));
+    }
+    if (
+      node.queryBatch.lowering.provider !== 'postgres'
+      || node.queryBatch.lowering.strategy !== 'materializedSnapshotRelation'
+      || node.queryBatch.lowering.checkpointAuthority !== 'sourceDatabase'
+      || !Number.isSafeInteger(node.queryBatch.lowering.maximumSnapshotItems)
+      || node.queryBatch.lowering.maximumSnapshotItems < 1
+      || !Number.isSafeInteger(node.queryBatch.lowering.maximumSnapshotAgeSeconds)
+      || node.queryBatch.lowering.maximumSnapshotAgeSeconds < 1
+      || node.queryBatch.lowering.stableKeyset !== true
+      || node.queryBatch.lowering.durableWindowReceipts !== true
+      || node.queryBatch.lowering.contiguousFrontier !== true
+    ) {
+      diagnostics.push(applicationGraphStructureDiagnostic(`Application query batch Job ${node.id} must retain its complete bounded PostgreSQL frontier lowering.`));
+    }
+    if (!node.queryBatch.handlerSource.trim()) {
+      diagnostics.push(applicationGraphStructureDiagnostic(`Application query batch Job ${node.id} must retain its managed batch handler source.`));
+    }
+    if (
+      node.queryBatch.consistency.mode === 'bestEffort'
+      && (
+        node.queryBatch.consistency.acceptsMembershipDrift !== true
+        || node.queryBatch.consistency.idempotency !== 'handlerDeclared'
+      )
+    ) {
+      diagnostics.push(applicationGraphStructureDiagnostic(`Application query batch Job ${node.id} best-effort consistency must acknowledge membership drift and handler idempotency.`));
+    }
   }
   return diagnostics;
 }

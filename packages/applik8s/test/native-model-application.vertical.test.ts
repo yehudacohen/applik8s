@@ -1,5 +1,5 @@
 // typecast-file-boundary: negative fixtures cross overload boundaries deliberately to assert fail-closed diagnostics.
-import { type ApplicationModelCreateEvent, app, applicationGraphFor, applicationModelFacet, defineApplicationProvider, type ModelEvent, postgres, trustedContext } from '@applik8s/applik8s';
+import { type ApplicationModelCreateEvent, app, applicationGraphFor, applicationModelFacet, defineApplicationProvider, type ModelEvent, postgres, QueryConsistency, trustedContext } from '@applik8s/applik8s';
 import {
   authenticatedPrincipalId,
   causalPrincipalId,
@@ -538,6 +538,80 @@ describe('v0.6 app-scoped native model promotion', () => {
         kind: 'query',
       },
       budgets: { timeoutMs: 2_000, maxRows: 100 },
+    });
+    expectTypeOf(PublishedCards).not.toHaveProperty('onBatch');
+    expect('onBatch' in PublishedCards).toBe(false);
+  });
+
+  test('offers Query.onBatch only for one portable ordered selection', () => {
+    const schema = catalogSchema();
+    const catalog = app('function-native-query-batch-fixture');
+    const Database = catalog.database.postgres('catalog', { schema });
+    const Card = catalog.model(schema.cards, { name: 'Card', database: Database });
+    const CardsForSet = Card.query(
+      {
+        input: type({ setId: 'string' }),
+        output: Card.schema.select.array(),
+        database: Database,
+        authorize: () => true,
+      },
+      function cardsForSet(input, context) {
+        return context.select(Card)
+          .where(card => card.setId.eq(input.setId))
+          .orderBy(card => card.name.asc());
+      },
+    );
+    const ReindexCardsForSet = CardsForSet.onBatch(
+      {
+        batch: { maxItems: 250 },
+        concurrency: 4,
+        consistency: QueryConsistency.monotonicFrontier,
+        retries: 2,
+        timeout: '30m',
+        resources: { cpu: '2', memory: '4Gi' },
+      },
+      async batch => {
+        expectTypeOf(batch.items).toEqualTypeOf<readonly (typeof Card.$inferSelect)[]>();
+      },
+    );
+
+    expectTypeOf(CardsForSet.onBatch).toBeFunction();
+    expectTypeOf(ReindexCardsForSet.start).toBeFunction();
+    const graph = applicationGraphFor(catalog.composition);
+    const query = graph?.nodes.find(
+      (node) => node.kind === 'query' && node.publicId === 'Card.cardsForSet',
+    );
+    expect(query).toMatchObject({
+      selection: {
+        protocol: 'applik8s.query-selection/v1alpha1',
+        sourceModel: { nodeId: 'model.card' },
+        source: {
+          provider: 'postgres',
+          database: 'catalog',
+          table: 'cards',
+        },
+        predicate: {
+          kind: 'comparison',
+          operation: 'eq',
+          left: { kind: 'field', path: ['setId'] },
+          right: { kind: 'input', path: ['setId'] },
+        },
+        order: [
+          { expression: { kind: 'field', path: ['name'] }, direction: 'asc' },
+          { expression: { kind: 'field', path: ['id'] }, direction: 'asc' },
+        ],
+      },
+    });
+    expect(graph?.nodes.find(
+      (node) => node.kind === 'job' && node.queryBatch !== undefined,
+    )).toMatchObject({
+      queryBatch: {
+        query: { nodeId: 'query.Card.cardsForSet' },
+        selectionDigest: query?.kind === 'query' ? query.selection?.digest : undefined,
+        consistency: { mode: 'monotonicFrontier' },
+        batch: { maxItems: 250, concurrency: 4 },
+        resources: { cpu: '2', memory: '4Gi' },
+      },
     });
   });
 

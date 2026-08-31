@@ -1,6 +1,8 @@
 import type {
   ApplicationGatewayNode,
   ApplicationGraph,
+  ApplicationPortableQueryPredicate,
+  ApplicationPortableQueryValueExpression,
   ApplicationProjectionNode,
   ApplicationQueryNode,
   ApplicationStreamNode,
@@ -62,6 +64,41 @@ function queryMessages(node: ApplicationQueryNode, graph: ApplicationGraph): rea
     if (projection?.kind !== 'projection' || projection.storage !== node.projection.storage) messages.push(`Application query ${node.id} references an incompatible projection authority ${node.projection.nodeId}.`);
     if (!node.database) messages.push(`Application query ${node.id} projection authority must retain its source database for authorization and invalidation sequencing.`);
   }
+  if (node.selection) {
+    const selection = node.selection;
+    const source = graph.nodes.find((candidate) => candidate.id === selection.sourceModel.nodeId);
+    if (
+      selection.protocol !== 'applik8s.query-selection/v1alpha1'
+      || source?.kind !== 'model'
+      || source.runtime?.provider !== 'postgres'
+      || source.runtime.database !== selection.source.database
+      || source.runtime.tableName !== selection.source.table
+    ) {
+      messages.push(`Application query ${node.id} portable selection must reference its exact promoted PostgreSQL source authority.`);
+    }
+    const columns = new Set(selection.source.columns.map((column) => column.property));
+    if (
+      columns.size === 0
+      || columns.size !== selection.source.columns.length
+      || selection.source.columns.some((column) => !column.property.trim() || !column.column.trim())
+    ) {
+      messages.push(`Application query ${node.id} portable selection must retain unique physical column metadata.`);
+    }
+    if (!selection.digest.trim() || selection.order.length === 0 || selection.identity.length === 0) {
+      messages.push(`Application query ${node.id} portable selection must retain its digest, total order, and stable identity.`);
+    }
+    for (const item of [...selection.order.map(({ expression }) => expression), ...selection.identity]) {
+      if (item.kind !== 'field' || item.path.length !== 1 || !columns.has(item.path[0] ?? '')) {
+        messages.push(`Application query ${node.id} portable selection order and identity must use known direct source fields.`);
+      }
+    }
+    validatePortableSelectionPredicate(node.id, selection.predicate, columns, messages);
+    for (const relationship of selection.relationshipReads) {
+      if (graph.nodes.find((candidate) => candidate.id === relationship.nodeId)?.kind !== 'model') {
+        messages.push(`Application query ${node.id} portable selection references missing related model ${relationship.nodeId}.`);
+      }
+    }
+  }
   const actorIdentifiers = new Set<string>();
   for (const binding of node.actorBindings ?? []) {
     if (!binding.identifier.trim() || actorIdentifiers.has(binding.identifier)) {
@@ -77,6 +114,51 @@ function queryMessages(node: ApplicationQueryNode, graph: ApplicationGraph): rea
     }
   }
   return messages;
+}
+
+function validatePortableSelectionPredicate(
+  queryId: string,
+  predicate: ApplicationPortableQueryPredicate | undefined,
+  columns: ReadonlySet<string>,
+  messages: string[],
+): void {
+  if (!predicate) return;
+  if (predicate.kind === 'logical') {
+    if (predicate.operands.length < 2) {
+      messages.push(`Application query ${queryId} portable selection logical predicates require at least two operands.`);
+    }
+    for (const operand of predicate.operands) {
+      validatePortableSelectionPredicate(queryId, operand, columns, messages);
+    }
+    return;
+  }
+  if (predicate.kind === 'membership') {
+    validatePortableSelectionValue(queryId, predicate.value, columns, messages);
+    validatePortableSelectionValue(queryId, predicate.candidates, columns, messages);
+  } else {
+    validatePortableSelectionValue(queryId, predicate.left, columns, messages);
+    validatePortableSelectionValue(queryId, predicate.right, columns, messages);
+  }
+}
+
+function validatePortableSelectionValue(
+  queryId: string,
+  expression: ApplicationPortableQueryValueExpression,
+  columns: ReadonlySet<string>,
+  messages: string[],
+): void {
+  if (expression.kind === 'field' && (
+    expression.path.length !== 1
+    || !columns.has(expression.path[0] ?? '')
+  )) {
+    messages.push(`Application query ${queryId} portable selection predicate must use known direct source fields.`);
+  }
+  if (expression.kind === 'input' && (
+    expression.path.length === 0
+    || expression.path.some((part) => !part.trim())
+  )) {
+    messages.push(`Application query ${queryId} portable selection predicate contains an invalid input path.`);
+  }
 }
 
 function gatewayMessages(node: ApplicationGatewayNode, graph: ApplicationGraph): readonly string[] {

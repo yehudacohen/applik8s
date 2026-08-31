@@ -11,6 +11,7 @@ import {
 import type {
   ApplicationKubernetesQueryAuthorityContract,
   ApplicationMessageContractSchema,
+  ApplicationPortableQuerySelectionContract,
   ApplicationPrincipal,
   ApplicationSerializedCallbackContract,
   JsonObject,
@@ -31,8 +32,18 @@ import {
 import type { ApplicationGraphState } from './application-graph-state.js';
 import { addApplicationGraphEdge, addApplicationGraphNode } from './application-graph-state.js';
 import { applicationTypeKroSerializedValue } from './application-typekro-values.js';
+import {
+  createApplicationQuerySelection,
+  type ApplicationQuerySelectionContext,
+  type ApplicationQuerySelectionContract,
+  materializeApplicationQuerySelection,
+} from './application-query-selection.js';
 import type { ApplicationModelRelationshipContract, CommonApplicationModelFacet } from './native-models.js';
 import { getApplicationModelFacet } from './native-models.js';
+import {
+  decorateApplicationBatchableQueryOperation,
+  type ApplicationQueryBatchReplay,
+} from './application-query-batching.js';
 import type { ApplicationRelationalContext } from './relational-runtime.js';
 import type { ApplicationTrustedContext } from './trusted-context.js';
 
@@ -386,6 +397,10 @@ export interface ApplicationQueryOptions<
   readonly __handlerInvocation?: 'request' | 'input-context';
   /** Compiler-owned calling convention for model-native Kubernetes selectors. */
   readonly __kubernetesInvocation?: 'request' | 'model-native';
+  /** Compiler-owned selection captured from synchronous context.select(...). */
+  readonly __selection?: ApplicationQuerySelectionContract;
+  /** Compiler-owned replay list for Query.onBatch declarations. */
+  readonly __queryBatches?: ApplicationQueryBatchReplay[];
 }
 
 export type ApplicationModelViewOptions<
@@ -462,6 +477,7 @@ export type ApplicationModelViewContext<
   TPrincipal extends ApplicationQueryPrincipal = ApplicationQueryPrincipal,
   TSource extends ApplicationQuerySourceBinding | undefined = undefined,
 > = ApplicationRelationalContext
+  & ApplicationQuerySelectionContext
   & { readonly principal: TPrincipal }
   & (TSource extends ApplicationQuerySourceBinding
     ? { readonly source: ApplicationQuerySourceForBinding<TSource> }
@@ -491,6 +507,7 @@ export interface ApplicationQueryBinding<
     readonly maxRows: number;
   };
   readonly kubernetes?: ApplicationKubernetesQueryAuthorityContract;
+  readonly selection?: ApplicationQuerySelectionContract;
   authorize(principal: TPrincipal, input: TInput, context?: Readonly<Record<string, unknown>>): Promise<boolean>;
   run(
     context: ApplicationRelationalContext,
@@ -574,6 +591,9 @@ export function registerApplicationQuery<
   const database = source?.source.database ?? options.database;
   const normalizedDependencies = options.reads.map((dependency) => normalizeQueryReadDependency(state, dependency));
   const reads = normalizedDependencies.map((dependency) => queryReadContract(state, dependency, id));
+  const selection = options.__selection
+    ? applicationGraphQuerySelection(state, id, options.__selection, reads)
+    : undefined;
   const budgets = {
     timeoutMs: options.budgets?.timeoutMs ?? 5_000,
     maxResultBytes: options.budgets?.maxResultBytes ?? 1_048_576,
@@ -671,6 +691,7 @@ export function registerApplicationQuery<
     ...(database ? { database: reactiveDatabaseRuntime(database) } : {}),
     ...(kubernetes ? { kubernetes } : {}),
     ...(projection ? { projection } : {}),
+    ...(selection ? { selection } : {}),
     authorizationSource: authorization.source,
     ...(authorization.dependencies ? { authorizationDependencies: authorization.dependencies } : {}),
     ...(authorization.location ? { authorizationLocation: authorization.location } : {}),
@@ -722,6 +743,7 @@ export function registerApplicationQuery<
     ...(database ? { database } : {}),
     ...(source ? { source } : {}),
     ...(kubernetes ? { kubernetes } : {}),
+    ...(options.__selection ? { selection: options.__selection } : {}),
     trustedContext: options.context ?? [],
     reads: normalizedDependencies,
     budgets,
@@ -734,6 +756,15 @@ export function registerApplicationQuery<
       input: TInput,
       runtimeSource?: ApplicationProjectionQuerySource<object>,
     ) {
+      if (options.__selection) {
+        return materializeApplicationQuerySelection({
+          selection: options.__selection,
+          input,
+          principal,
+          trustedContext: context.trustedContext,
+          maximumRows: budgets.maxRows,
+        }) as unknown as Promise<TOutput>;
+      }
       if (!options.run)
         throw new Error(`Application query ${id} executes through its Kubernetes snapshot/watch authority.`);
       if (source && !runtimeSource)
@@ -746,8 +777,9 @@ export function registerApplicationQuery<
           input,
           Object.assign(context, {
             principal,
+            select: createApplicationQuerySelection,
             ...(source ? { source: runtimeSource } : {}),
-          }) as ApplicationModelViewContext<TPrincipal, TSource>,
+          }) as unknown as ApplicationModelViewContext<TPrincipal, TSource>,
         );
       }
       // typecast: the source discriminant above supplies the provider-neutral projection source only for projection-backed options.
@@ -823,7 +855,15 @@ export function registerApplicationModelView<
       throw new Error(`Application model ${operationKind} ${id} cannot classify a missing query graph node.`);
     addApplicationGraphNode(state, { ...query, authority });
   });
-  return operation;
+  return binding.selection
+    ? decorateApplicationBatchableQueryOperation({
+        state,
+        operation: operation as unknown as ApplicationQueryOperation<object, readonly object[]>,
+        query: binding as unknown as ApplicationQueryBinding<object, readonly object[]>,
+        selection: binding.selection,
+        ...(options.__queryBatches ? { replays: options.__queryBatches } : {}),
+      }) as unknown as ApplicationQueryOperation<TInput, TOutput>
+    : operation;
 }
 
 function authorityStateFor(value: object): ApplicationQueryAuthorityState {
@@ -1063,6 +1103,48 @@ function isRelationship(value: object): value is ApplicationModelRelationshipCon
     typeof Reflect.get(value, 'target') === 'string' &&
     typeof Reflect.get(value, 'integrity') === 'string'
   );
+}
+
+function applicationGraphQuerySelection(
+  state: ApplicationGraphState,
+  queryId: string,
+  selection: ApplicationQuerySelectionContract,
+  reads: readonly { readonly model: { readonly nodeId: string } }[],
+): ApplicationPortableQuerySelectionContract {
+  const sourceRead = reads.find(({ model }) => {
+    const node = state.graphNodes.find((candidate) => candidate.id === model.nodeId);
+    return node?.kind === 'model' && node.name === selection.sourceModel;
+  });
+  if (!sourceRead) {
+    throw new Error(
+      `Batchable query ${queryId} selects ${selection.sourceModel}, but that model is not one of its declared read authorities.`,
+    );
+  }
+  const sourceNode = state.graphNodes.find(
+    (candidate) => candidate.id === sourceRead.model.nodeId,
+  );
+  if (
+    sourceNode?.kind !== 'model'
+    || sourceNode.runtime?.provider !== 'postgres'
+    || sourceNode.runtime.tableName !== selection.source.table
+    || sourceNode.runtime.database !== selection.source.database
+  ) {
+    throw new Error(
+      `Batchable query ${queryId} selection does not match the promoted PostgreSQL authority for ${selection.sourceModel}.`,
+    );
+  }
+  const relationshipReads = selection.relationshipReads.map((name) => {
+    const node = state.graphNodes.find(
+      (candidate) => candidate.kind === 'model' && candidate.name === name,
+    );
+    if (!node) throw new Error(`Batchable query ${queryId} reads unknown related model ${name}.`);
+    return { nodeId: node.id };
+  });
+  return {
+    ...selection,
+    sourceModel: sourceRead.model,
+    relationshipReads,
+  };
 }
 
 function querySchema<TValue>(schema: ApplicationQuerySchema<TValue>): ApplicationMessageContractSchema {

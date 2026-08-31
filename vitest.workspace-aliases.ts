@@ -28,6 +28,7 @@ export function workspaceAliases(): Record<string, string> {
     '@applik8s/applik8s/structured-generation-runtime': fileURLToPath(new URL('./packages/applik8s/src/structured-generation-runtime.ts', import.meta.url)),
     '@applik8s/applik8s/task-operation-runtime': fileURLToPath(new URL('./packages/applik8s/src/task-operation-runtime.ts', import.meta.url)),
     '@applik8s/applik8s/task-query-runtime': fileURLToPath(new URL('./packages/applik8s/src/task-query-runtime.ts', import.meta.url)),
+    '@applik8s/applik8s/query-batch-runtime': fileURLToPath(new URL('./packages/applik8s/src/query-batch-runtime.ts', import.meta.url)),
     '@applik8s/applik8s/search-cursor-codec': fileURLToPath(new URL('./packages/applik8s/src/search-cursor-codec.ts', import.meta.url)),
     '@applik8s/applik8s/search-integrity': fileURLToPath(new URL('./packages/applik8s/src/search-integrity.ts', import.meta.url)),
     '@applik8s/applik8s/workflow-runtime-resolvers': fileURLToPath(new URL('./packages/applik8s/src/workflow-runtime-resolvers.ts', import.meta.url)),

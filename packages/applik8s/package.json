@@ -96,6 +96,11 @@
       "import": "./dist/query-runtime.js",
       "default": "./dist/query-runtime.js"
     },
+    "./query-batch-runtime": {
+      "types": "./dist/query-batch-runtime.d.ts",
+      "import": "./dist/query-batch-runtime.js",
+      "default": "./dist/query-batch-runtime.js"
+    },
     "./search-runtime": {
       "types": "./dist/search-runtime-entry.d.ts",
       "import": "./dist/search-runtime-entry.js",

@@ -14,17 +14,99 @@ import {
   JobResultStore,
   JobRuntime,
   KubernetesCluster,
+  QueryConsistency,
   Queue,
   Scheduler,
   TransactionalDatabase,
 } from '@applik8s/applik8s';
 import { type } from 'arktype';
+import { pgTable, text } from 'drizzle-orm/pg-core';
 import { describe, expect, test } from 'vitest';
-import { emitGeneratedApplicationJobs } from '../src/application-jobs/index.js';
 import { emitGeneratedApplicationHttpServers } from '../src/application-http/index.js';
+import { emitGeneratedApplicationJobs } from '../src/application-jobs/index.js';
 import { emitGeneratedApplicationReactive } from '../src/application-reactive/index.js';
 
 describe('generated Kubernetes finite Job controller', () => {
+  test('lowers Query.onBatch through the durable PostgreSQL scan runtime', async () => {
+    const rows = pgTable('batch_documents', {
+      id: text('id').primaryKey(),
+      workspaceId: text('workspace_id').notNull(),
+      body: text('body').notNull(),
+    });
+    const application = app('query-batch-jobs', { namespace: 'query-batch-jobs' });
+    const cluster = KubernetesCluster.current();
+    const database = application.provide(TransactionalDatabase, Database.postgres({
+      name: 'catalog', namespace: 'query-batch-jobs', database: 'catalog',
+    }));
+    const DatabaseBinding = application.database.bind('catalog', {
+      provider: database, schema: { rows },
+    });
+    const eventLog = application.provide(EventLog, {
+      kind: 'nats-jetstream', name: 'job-events', namespace: 'query-batch-jobs',
+    });
+    const registry = application.provide(ContainerRegistry, ContainerRegistry.oci({
+      endpoint: ContainerRegistry.origin('https://registry.example.test'),
+      repositoryPrefix: 'query-batch-jobs',
+    }));
+    application.provide(JobRuntime, JobRuntime.kubernetes({
+      cluster,
+      namespace: 'query-batch-jobs',
+      maximumConcurrency: 4,
+      queue: Queue.jetStream({ eventLog }),
+      executionHost: FiniteExecutionHost.kubernetes({ cluster, registry }),
+      results: JobResultStore.postgres({ database }),
+      scheduler: Scheduler.postgres({ database }),
+      events: eventLog,
+    }));
+    const Document = application.model(rows, { name: 'Document', database: DatabaseBinding });
+    const DocumentsForWorkspace = Document.query(
+      {
+        input: type({ workspaceId: 'string' }),
+        output: Document.schema.select.array(),
+        database: DatabaseBinding,
+        authorize: () => true,
+      },
+      function documentsForWorkspace(input, context) {
+        return context.select(Document)
+          .where(document => document.workspaceId.eq(input.workspaceId))
+          .orderBy(document => document.id.asc());
+      },
+    );
+    DocumentsForWorkspace.onBatch(
+      {
+        batch: { maxItems: 250 },
+        concurrency: 4,
+        consistency: QueryConsistency.repeatableSnapshot,
+        retries: 2,
+      },
+      async function indexDocumentBatch(batch) {
+        void batch.items.map(document => document.id);
+      },
+    );
+    const graph = applicationGraphFor(application.composition);
+    if (!graph) throw new Error('Expected query-batch application graph.');
+    const outDir = await mkdtemp(join(tmpdir(), 'applik8s-query-batch-jobs-'));
+    try {
+      const [artifact] = await emitGeneratedApplicationJobs({
+        graph, outDir, entrypoint: import.meta.filename, executionTarget: 'kubernetes',
+      });
+      expect(artifact).toBeDefined();
+      if (!artifact) throw new Error('Expected generated query-batch Job artifact.');
+      const generated = await readFile(join(outDir, 'job-controller.generated.ts'), 'utf8');
+      expect(generated).toContain("from '@applik8s/applik8s/query-batch-runtime'");
+      expect(generated).toContain("from '@applik8s/runtime-postgres/query-batch'");
+      expect(generated).toContain('executeApplicationQueryBatch({ selection:');
+      expect(generated).toContain('"sourceModel":"Document"');
+      expect(generated).not.toContain('"sourceModel":{"nodeId"');
+      expect(generated).toContain('installApplicationQueryBatchRuntimeResolver');
+      expect(generated).toContain('APPLIK8S_DATABASE_CATALOG_URL');
+      expect(generated).not.toContain('executeQueryBatchJob');
+      expect(JSON.stringify(artifact.resources)).toContain('catalog-app');
+    } finally {
+      await rm(outDir, { recursive: true, force: true });
+    }
+  }, 60_000);
+
   test('bundles immutable definitions and emits controller, RBAC, service, and worker configuration', async () => {
     const application = app('finite-jobs', {
       namespace: 'finite-jobs',
