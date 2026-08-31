@@ -1516,6 +1516,13 @@ export interface ApplicationJobNode extends ApplicationGraphNodeBase<'job'> {
     readonly terminal: 'firstTransitionWins';
     readonly behavior: 'cooperativeThenProviderBounded';
   };
+  readonly retention: {
+    readonly source: 'profileWithAuthoredOverrides';
+    readonly resultSeconds?: number;
+    readonly progressSeconds?: number;
+    readonly applicationFactsSeconds?: number;
+    readonly providerAttemptsSeconds?: number;
+  };
   readonly runtime: {
     readonly interface: 'JobRuntime';
     readonly selection: 'profile';

@@ -5,6 +5,8 @@ import { app, applicationGraphFor } from '../src/application-builder.js';
 import {
   ApplicationJobIdempotencyConflictError,
   ApplicationJobInvocationTimeoutError,
+  ApplicationJobProgressExpiredError,
+  ApplicationJobResultExpiredError,
   ApplicationJobRunError,
   createApplicationJobBinding,
   createDeterministicApplicationJobRuntime,
@@ -26,7 +28,12 @@ describe('application finite Job runtime', () => {
     const job = application.job(
       'numbers.double.v1',
       { input: Input, output: Output, progress: Progress, error: Failure },
-      { retries: 2, timeout: '30s', idempotencyKey: (input) => String(input.value) },
+      {
+        retries: 2,
+        timeout: '30s',
+        idempotencyKey: (input) => String(input.value),
+        retention: { result: '2d', progress: '1h' },
+      },
       async (input, execution) => {
         await execution.progress({ completed: 1 });
         return { doubled: input.value * 2 };
@@ -50,6 +57,11 @@ describe('application finite Job runtime', () => {
           interface: 'JobRuntime',
           selection: 'profile',
           protocol: 'applik8s.jobRuntime/v1alpha1',
+        },
+        retention: {
+          source: 'profileWithAuthoredOverrides',
+          resultSeconds: 172_800,
+          progressSeconds: 3_600,
         },
       }),
     ]));
@@ -292,5 +304,37 @@ describe('application finite Job runtime', () => {
     release();
     await new Promise((resolve) => setTimeout(resolve, 0));
     await expect(run.outcome()).resolves.toMatchObject({ status: 'timedOut' });
+  });
+
+  test('expires result and progress payloads without erasing terminal identity', async () => {
+    let milliseconds = Date.parse('2027-01-01T00:00:00.000Z');
+    const runtime = createDeterministicApplicationJobRuntime({
+      now: () => new Date(milliseconds),
+      resultRetentionSeconds: 60,
+      progressRetentionSeconds: 30,
+    });
+    const binding = createApplicationJobBinding({
+      id: 'retention.test.v1',
+      contract: { input: Input, output: Output, progress: Progress },
+      options: {},
+      handler: async (input, execution) => {
+        await execution.progress({ completed: 1 });
+        return { doubled: input.value * 2 };
+      },
+    }, runtime);
+    const run = await binding.start({ value: 3 });
+    await expect(run.result()).resolves.toEqual({ doubled: 6 });
+    expect((await run.progress())?.value).toEqual({ completed: 1 });
+
+    milliseconds += 31_000;
+    await expect(run.progress()).rejects.toBeInstanceOf(ApplicationJobProgressExpiredError);
+    expect((await run.outcome()).status).toBe('succeeded');
+
+    milliseconds += 30_000;
+    await expect(run.result()).rejects.toMatchObject({
+      code: 'JOB_RESULT_EXPIRED',
+      run: run.reference,
+    } satisfies Partial<ApplicationJobResultExpiredError>);
+    await expect(binding.attach(run.reference)).resolves.toMatchObject({ reference: run.reference });
   });
 });

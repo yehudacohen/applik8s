@@ -33,6 +33,12 @@ export interface ApplicationJobOptions<TInput extends object> {
   /** Managed execution deadline. This is distinct from a caller wait timeout. */
   readonly timeout?: string;
   readonly idempotencyKey?: (input: TInput) => string;
+  readonly retention?: {
+    readonly result?: string;
+    readonly progress?: string;
+    readonly applicationFacts?: string;
+    readonly providerAttempts?: string;
+  };
 }
 
 export interface ApplicationJobInvocationOptions {
@@ -171,6 +177,8 @@ export interface DeterministicApplicationJobRuntimeOptions {
   readonly application?: string;
   readonly deployment?: string;
   readonly maximumConcurrency?: number;
+  readonly resultRetentionSeconds?: number;
+  readonly progressRetentionSeconds?: number;
   readonly now?: () => Date;
   readonly id?: () => string;
 }
@@ -241,6 +249,22 @@ export class ApplicationJobCancelledError extends Error {
   }
 }
 
+export class ApplicationJobResultExpiredError extends Error {
+  readonly code = 'JOB_RESULT_EXPIRED';
+  constructor(readonly run: ApplicationJobReference, readonly expiredAt: string) {
+    super(`Job ${run.job} run ${run.runId} result expired at ${expiredAt}.`);
+    this.name = new.target.name;
+  }
+}
+
+export class ApplicationJobProgressExpiredError extends Error {
+  readonly code = 'JOB_PROGRESS_EXPIRED';
+  constructor(readonly run: ApplicationJobReference, readonly expiredAt: string) {
+    super(`Job ${run.job} run ${run.runId} progress expired at ${expiredAt}.`);
+    this.name = new.target.name;
+  }
+}
+
 class ApplicationJobAuthoredFailure<TError extends object> extends Error {
   constructor(readonly value: TError) {
     super('Application Job reported a typed failure.');
@@ -261,6 +285,7 @@ interface LocalJobRecord<TInput extends object, TOutput extends object, TProgres
   progress?: ApplicationJobProgressSnapshot<TProgress>;
   cancellation?: ApplicationJobCancellationReceipt;
   controller?: AbortController;
+  terminalAt?: string;
 }
 
 /** Deterministic local conformance runtime; persistence/provider adapters implement this same contract. */
@@ -270,6 +295,8 @@ export function createDeterministicApplicationJobRuntime(
   const application = options.application?.trim() || 'application';
   const deployment = options.deployment?.trim() || 'local';
   const maximumConcurrency = positiveInteger(options.maximumConcurrency ?? 4, 'Job maximumConcurrency');
+  const defaultResultRetentionSeconds = positiveInteger(options.resultRetentionSeconds ?? 86_400, 'Job resultRetentionSeconds');
+  const defaultProgressRetentionSeconds = positiveInteger(options.progressRetentionSeconds ?? 86_400, 'Job progressRetentionSeconds');
   const now = options.now ?? (() => new Date());
   const id = options.id ?? randomUUID;
   const records = new Map<string, LocalJobRecord<object, object, object, object>>();
@@ -284,6 +311,7 @@ export function createDeterministicApplicationJobRuntime(
     if (record.outcome) return false;
     record.outcome = outcome;
     record.phase = 'terminal';
+    record.terminalAt = now().toISOString();
     record.resolve(outcome);
     return true;
   };
@@ -381,13 +409,24 @@ export function createDeterministicApplicationJobRuntime(
 
   const runFor = <TOutput extends object, TProgress extends object, TError extends object>(
     record: LocalJobRecord<object, object, object, object>,
-  ): ApplicationJobRun<TOutput, TProgress, TError> => ({
+  ): ApplicationJobRun<TOutput, TProgress, TError> => {
+    const expiresAt = (retention: string | undefined, fallbackSeconds: number, from: string): string =>
+      new Date(Date.parse(from) + (retention ? parseApplicationScheduleDuration(retention) : fallbackSeconds) * 1_000).toISOString();
+    const assertResultRetained = (): void => {
+      if (!record.terminalAt) return;
+      const expiredAt = expiresAt(record.definition.options.retention?.result, defaultResultRetentionSeconds, record.terminalAt);
+      if (now().getTime() >= Date.parse(expiredAt)) throw new ApplicationJobResultExpiredError(record.reference, expiredAt);
+    };
+    return ({
     reference: record.reference,
     async outcome() {
-      return await record.completion as ApplicationJobTerminalOutcome<TOutput, TError>;
+      const outcome = await record.completion as ApplicationJobTerminalOutcome<TOutput, TError>;
+      assertResultRetained();
+      return outcome;
     },
     async result() {
       const outcome = await record.completion as ApplicationJobTerminalOutcome<TOutput, TError>;
+      assertResultRetained();
       if (outcome.status === 'succeeded') return outcome.output;
       throw new ApplicationJobRunError(record.reference, outcome);
     },
@@ -408,9 +447,14 @@ export function createDeterministicApplicationJobRuntime(
       return { status: 'requested', receipt };
     },
     async progress() {
+      if (record.progress) {
+        const expiredAt = expiresAt(record.definition.options.retention?.progress, defaultProgressRetentionSeconds, record.progress.recordedAt);
+        if (now().getTime() >= Date.parse(expiredAt)) throw new ApplicationJobProgressExpiredError(record.reference, expiredAt);
+      }
       return record.progress as ApplicationJobProgressSnapshot<TProgress> | undefined;
     },
-  });
+    });
+  };
 
   return {
     protocol: applicationJobRuntimeProtocol,
@@ -550,6 +594,12 @@ export function registerApplicationJob<
   const timeoutSeconds = options.timeout
     ? parseApplicationScheduleDuration(options.timeout)
     : undefined;
+  const retentionSeconds = Object.fromEntries(
+    Object.entries(options.retention ?? {}).map(([name, duration]) => [
+      name,
+      parseApplicationScheduleDuration(duration),
+    ]),
+  ) as Partial<Record<'result' | 'progress' | 'applicationFacts' | 'providerAttempts', number>>;
   const nodeId = `job.${kubernetesNameSegment(id)}`;
   const providerNodeId = applicationProviderGraphNodeId('JobRuntime');
   const selectedRuntime = state.graphNodes.find(
@@ -585,6 +635,13 @@ export function registerApplicationJob<
       request: 'durableReceipt',
       terminal: 'firstTransitionWins',
       behavior: 'cooperativeThenProviderBounded',
+    },
+    retention: {
+      source: 'profileWithAuthoredOverrides',
+      ...(retentionSeconds.result === undefined ? {} : { resultSeconds: retentionSeconds.result }),
+      ...(retentionSeconds.progress === undefined ? {} : { progressSeconds: retentionSeconds.progress }),
+      ...(retentionSeconds.applicationFacts === undefined ? {} : { applicationFactsSeconds: retentionSeconds.applicationFacts }),
+      ...(retentionSeconds.providerAttempts === undefined ? {} : { providerAttemptsSeconds: retentionSeconds.providerAttempts }),
     },
     runtime: {
       interface: 'JobRuntime',
