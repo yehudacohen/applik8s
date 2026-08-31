@@ -4,10 +4,17 @@ import {
   app,
   config,
   createApplicationAssemblyProfileCatalog,
+  ContainerRegistry,
   Database as MaintainedDatabase,
   defineApplicationCapabilityImplementation,
   defineApplicationProvider,
+  EventLog,
+  FiniteExecutionHost,
+  JobResultStore,
+  JobRuntime,
+  KubernetesCluster,
   profileFragment,
+  Queue,
   Scheduler as MaintainedScheduler,
   Search as MaintainedSearch,
   secret,
@@ -229,6 +236,79 @@ describe('application assembly profiles', () => {
       resolution: 'implementation',
       visibility: 'private',
     });
+  });
+
+  it('resolves the complete finite Job implementation graph while reusing shared authorities', () => {
+    const application = app('finite-job-provider-graph');
+    const database = MaintainedDatabase.postgres({
+      name: 'jobs',
+      database: 'jobs',
+    }).identified('jobs-database.v1');
+    const eventLog = defineApplicationCapabilityImplementation(EventLog, {
+      provider: { package: '@example/event-log', export: 'jetstream', version: '1.0.0' },
+      configurationDigest: digest('f'),
+      runtimeAdapter: '@example/event-log/runtime',
+      deploymentContributor: '@example/event-log/deployment',
+      readiness: 'event-log.ready.v1',
+      lifecycle: 'application',
+      migration: 'event-log.migration.v1',
+      evidence: ['event-log.conformance'],
+      maturity: 'beta',
+      value: { kind: 'nats-jetstream', name: 'jobs-events' },
+    }).identified('jobs-events.v1');
+    const registry = defineApplicationCapabilityImplementation(ContainerRegistry, {
+      provider: { package: '@example/registry', export: 'oci', version: '1.0.0' },
+      configurationDigest: digest('1'),
+      runtimeAdapter: '@example/registry/runtime',
+      readiness: 'registry.ready.v1',
+      lifecycle: 'external',
+      migration: 'registry.migration.v1',
+      evidence: ['registry.conformance'],
+      maturity: 'external',
+      value: {
+        kind: 'oci-container-registry',
+        endpoint: ContainerRegistry.origin('https://registry.example.test'),
+      },
+    }).identified('jobs-registry.v1');
+    const cluster = KubernetesCluster.current({ namespace: 'application-jobs' });
+    const queue = Queue.jetStream({ eventLog });
+    const executionHost = FiniteExecutionHost.kubernetes({ cluster, registry });
+    const results = JobResultStore.postgres({ database });
+    const schedule = MaintainedScheduler.postgres({ database });
+    const runtime = JobRuntime.kubernetes({
+      cluster,
+      queue,
+      executionHost,
+      results,
+      scheduler: schedule,
+      events: eventLog,
+      maximumConcurrency: 32,
+    });
+
+    application.profile('production-kubernetes', profile => {
+      profile.provide(TransactionalDatabase, database);
+      profile.provide(EventLog, eventLog);
+      profile.provide(ContainerRegistry, registry);
+      profile.provide(JobRuntime, runtime);
+    });
+
+    const plan = application.implementationPlan('production-kubernetes');
+    expect(plan.implementations.map(({ identity }) => identity.provider.export).sort()).toEqual([
+      'Database.postgres',
+      'FiniteExecutionHost.kubernetes',
+      'JobResultStore.postgres',
+      'JobRuntime.kubernetes',
+      'Queue.jetStream',
+      'Scheduler.postgres',
+      'jetstream',
+      'oci',
+    ]);
+    expect(plan.dependencies).toHaveLength(9);
+    expect(plan.dependencies.filter(({ slot }) => slot === 'database')).toHaveLength(2);
+    expect(plan.dependencies.filter(({ slot }) => slot === 'event-log')).toHaveLength(1);
+    expect(plan.dependencies.filter(({ slot }) => slot === 'events')).toHaveLength(1);
+    expect(plan.dependencies.every(({ visibility }) => visibility === 'private')).toBe(true);
+    expect(plan.bindings).toHaveLength(4);
   });
 
   it('records typed config and Secret provenance without resolving or serializing values', () => {

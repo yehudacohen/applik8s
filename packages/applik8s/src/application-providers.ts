@@ -2325,6 +2325,16 @@ export const FiniteExecutionHost: ApplicationFiniteExecutionHostProviderToken = 
       lifecycle: 'application',
       migration: 'applik8s.finite-execution-host.kubernetes.migration/v1alpha1',
       maturity: 'experimental',
+      dependencies: [{
+        slot: 'registry',
+        requirement: ContainerRegistry as ApplicationProviderToken<object>,
+        requiredGuarantees: ['immutableDigest', 'executionTimeCredentials'],
+        operations: ['artifact.read'],
+        input: maintainedDependencyInput(
+          options.registry as object,
+          ContainerRegistry as ApplicationProviderToken<object>,
+        ),
+      }],
     });
   },
   aws(options) {
@@ -2339,6 +2349,16 @@ export const FiniteExecutionHost: ApplicationFiniteExecutionHostProviderToken = 
       lifecycle: 'application',
       migration: 'applik8s.finite-execution-host.aws.migration/v1alpha1',
       maturity: 'experimental',
+      dependencies: [{
+        slot: 'registry',
+        requirement: ContainerRegistry as ApplicationProviderToken<object>,
+        requiredGuarantees: ['immutableDigest', 'executionTimeCredentials'],
+        operations: ['artifact.read'],
+        input: maintainedDependencyInput(
+          options.registry as object,
+          ContainerRegistry as ApplicationProviderToken<object>,
+        ),
+      }],
     });
   },
 });
