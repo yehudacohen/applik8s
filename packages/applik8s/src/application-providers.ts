@@ -9,6 +9,11 @@ import { createDeterministicApplicationAdmission } from '@applik8s/identity';
 import { Cel } from 'typekro';
 import type { OryIdentityStackConfig, OryPlatformStackConfig } from 'typekro/ory';
 import {
+  type ApplicationConfigSourceBinding,
+  type ApplicationSecretSourceBinding,
+  isApplicationConfigurationBinding,
+} from './application-configuration.js';
+import {
   type ApplicationCapabilityImplementation,
   applicationCapabilityImplementationMetadata,
   maintainedApplicationCapabilityImplementation,
@@ -49,6 +54,19 @@ export interface ApplicationKubernetesResourceCounterStoreProvider { readonly ki
 export interface ApplicationKubernetesWatchEventSourceProvider { readonly kind: 'kubernetes-watch'; readonly resyncSeconds?: number }
 export interface ApplicationKubernetesSecretProvider { readonly kind: 'kubernetes-secret'; readonly defaultOwnership?: 'external' | 'generated' }
 export interface ApplicationKubernetesConfigMapQueueProvider { readonly kind: 'kubernetes-configmap-queue'; readonly maxDepth?: number; readonly maxMessageBytes?: number }
+export interface ApplicationJetStreamQueueProvider {
+  readonly kind: 'jetstream-job-queue';
+  readonly eventLog: ApplicationCapabilityImplementation<ApplicationEventLogProvider> | ApplicationProviderBinding<ApplicationEventLogProvider>;
+  readonly subjectPrefix?: string;
+  readonly maximumDeliveries?: number;
+}
+export interface ApplicationSqsQueueProvider {
+  readonly kind: 'sqs-job-queue';
+  readonly account: ApplicationAwsAccount;
+  readonly queueName?: string;
+  readonly visibilityTimeout?: string;
+  readonly deadLetterMaximumReceives?: number;
+}
 export interface ApplicationKubernetesConfigMapObjectStorageProvider { readonly kind: 'kubernetes-configmap-objects'; readonly maxObjectBytes?: number }
 export interface ApplicationS3ObjectStorageProvider {
   readonly kind: 's3';
@@ -146,7 +164,10 @@ export interface ApplicationNatsJetStreamEventLogProvider {
 export type ApplicationCounterStoreProvider = ApplicationKubernetesResourceCounterStoreProvider;
 export type ApplicationEventSourceProvider = ApplicationKubernetesWatchEventSourceProvider;
 export type ApplicationSecretProvider = ApplicationKubernetesSecretProvider;
-export type ApplicationQueueProvider = ApplicationKubernetesConfigMapQueueProvider;
+export type ApplicationQueueProvider =
+  | ApplicationKubernetesConfigMapQueueProvider
+  | ApplicationJetStreamQueueProvider
+  | ApplicationSqsQueueProvider;
 export type ApplicationObjectStorageProvider = ApplicationKubernetesConfigMapObjectStorageProvider | ApplicationS3ObjectStorageProvider;
 export type ApplicationCredentialStoreProvider = ApplicationKubernetesCredentialStoreProvider;
 export type ApplicationEventLogProvider = ApplicationNatsJetStreamEventLogProvider;
@@ -206,6 +227,88 @@ export interface ApplicationHatchetWorkflowEngineProvider {
 
 export type ApplicationWorkflowEngineProvider = ApplicationHatchetWorkflowEngineProvider;
 
+export type ApplicationProviderConfigString =
+  | string
+  | ApplicationConfigSourceBinding<string>;
+export type ApplicationProviderConfigUrl =
+  | string
+  | ApplicationConfigSourceBinding<URL>;
+
+export interface ApplicationAwsAccount {
+  readonly kind: 'aws-account';
+  readonly accountId: ApplicationProviderConfigString;
+  readonly region: ApplicationProviderConfigString;
+  readonly credentials: ApplicationSecretSourceBinding<unknown>;
+}
+
+export interface ApplicationCurrentKubernetesCluster {
+  readonly kind: 'current-kubernetes-cluster';
+  readonly namespace?: ApplicationProviderConfigString;
+}
+
+export interface ApplicationExternalKubernetesCluster {
+  readonly kind: 'external-kubernetes-cluster';
+  readonly endpoint: ApplicationProviderConfigUrl;
+  readonly credentials: ApplicationSecretSourceBinding<unknown>;
+  readonly namespace?: ApplicationProviderConfigString;
+}
+
+export type ApplicationKubernetesCluster =
+  | ApplicationCurrentKubernetesCluster
+  | ApplicationExternalKubernetesCluster;
+
+export const AWS = Object.freeze({
+  account(options: Omit<ApplicationAwsAccount, 'kind'>): ApplicationAwsAccount {
+    requireProviderConfigString(options.accountId, 'AWS accountId');
+    requireProviderConfigString(options.region, 'AWS region');
+    requireSecretConfigurationBinding(options.credentials, 'AWS credentials');
+    return Object.freeze({ kind: 'aws-account', ...options });
+  },
+});
+
+export const KubernetesCluster = Object.freeze({
+  current(options: Omit<ApplicationCurrentKubernetesCluster, 'kind'> = {}): ApplicationCurrentKubernetesCluster {
+    if (options.namespace !== undefined) requireProviderConfigString(options.namespace, 'Kubernetes namespace');
+    return Object.freeze({ kind: 'current-kubernetes-cluster', ...options });
+  },
+  external(options: Omit<ApplicationExternalKubernetesCluster, 'kind'>): ApplicationExternalKubernetesCluster {
+    requireProviderConfigUrl(options.endpoint, 'Kubernetes endpoint');
+    requireSecretConfigurationBinding(options.credentials, 'Kubernetes credentials');
+    if (options.namespace !== undefined) requireProviderConfigString(options.namespace, 'Kubernetes namespace');
+    return Object.freeze({ kind: 'external-kubernetes-cluster', ...options });
+  },
+});
+
+export interface ApplicationKubernetesFiniteExecutionHostProvider {
+  readonly kind: 'kubernetes-finite-execution-host';
+  readonly cluster: ApplicationKubernetesCluster;
+  readonly registry: ApplicationContainerRegistryProvider | ApplicationProviderBinding<ApplicationContainerRegistryProvider>;
+  readonly namespace?: string;
+}
+
+export interface ApplicationAwsFiniteExecutionHostProvider {
+  readonly kind: 'aws-finite-execution-host';
+  readonly account: ApplicationAwsAccount;
+  readonly registry: ApplicationContainerRegistryProvider | ApplicationProviderBinding<ApplicationContainerRegistryProvider>;
+  readonly mode?: 'lambda' | 'fargate' | 'batch' | 'automatic';
+}
+
+export type ApplicationFiniteExecutionHostProvider =
+  | ApplicationKubernetesFiniteExecutionHostProvider
+  | ApplicationAwsFiniteExecutionHostProvider;
+
+export interface ApplicationPostgresJobResultStoreProvider {
+  readonly kind: 'postgres-job-result-store';
+  readonly database: ApplicationCapabilityImplementation<ApplicationTransactionalDatabaseProvider> | ApplicationProviderBinding<ApplicationTransactionalDatabaseProvider>;
+  readonly schema?: string;
+}
+
+export type ApplicationJobResultStoreProvider = ApplicationPostgresJobResultStoreProvider;
+
+type ApplicationImplementationInput<T extends object> =
+  | ApplicationCapabilityImplementation<T>
+  | ApplicationProviderBinding<T>;
+
 export interface ApplicationLocalJobRuntimeProvider {
   readonly kind: 'local-job-runtime';
   readonly maximumConcurrency?: number;
@@ -215,30 +318,31 @@ export interface ApplicationLocalJobRuntimeProvider {
 
 export interface ApplicationKubernetesJobRuntimeProvider {
   readonly kind: 'kubernetes-job-runtime';
+  readonly cluster: ApplicationKubernetesCluster;
   readonly namespace?: string;
   readonly maximumConcurrency?: number;
   readonly maximumDuration?: string;
   readonly resultRetentionSeconds?: number;
   /** Typed implementation dependencies remain graph-visible and private to this implementation. */
-  readonly queue?: object;
-  readonly executionHost?: object;
-  readonly results?: object;
-  readonly scheduler?: object;
-  readonly events?: object;
+  readonly queue: ApplicationImplementationInput<ApplicationQueueProvider>;
+  readonly executionHost: ApplicationImplementationInput<ApplicationFiniteExecutionHostProvider>;
+  readonly results: ApplicationImplementationInput<ApplicationJobResultStoreProvider>;
+  readonly scheduler: ApplicationImplementationInput<ApplicationSchedulerProvider>;
+  readonly events: ApplicationImplementationInput<ApplicationEventLogProvider>;
 }
 
 export interface ApplicationAwsJobRuntimeProvider {
   readonly kind: 'aws-job-runtime';
-  readonly account: object;
+  readonly account: ApplicationAwsAccount;
   readonly maximumConcurrency?: number;
   readonly maximumDuration?: string;
   readonly resultRetentionSeconds?: number;
   /** Typed implementation dependencies remain graph-visible and private to this implementation. */
-  readonly queue?: object;
-  readonly executionHost?: object;
-  readonly results?: object;
-  readonly scheduler?: object;
-  readonly events?: object;
+  readonly queue: ApplicationImplementationInput<ApplicationQueueProvider>;
+  readonly executionHost: ApplicationImplementationInput<ApplicationFiniteExecutionHostProvider>;
+  readonly results: ApplicationImplementationInput<ApplicationJobResultStoreProvider>;
+  readonly scheduler: ApplicationImplementationInput<ApplicationSchedulerProvider>;
+  readonly events: ApplicationImplementationInput<ApplicationEventLogProvider>;
 }
 
 export type ApplicationJobRuntimeProvider =
@@ -269,11 +373,18 @@ export interface ApplicationEventBridgeSchedulerProvider {
   readonly roleArn?: string;
 }
 
+export interface ApplicationPostgresSchedulerProvider {
+  readonly kind: 'postgres-scheduler';
+  readonly database: ApplicationCapabilityImplementation<ApplicationTransactionalDatabaseProvider> | ApplicationProviderBinding<ApplicationTransactionalDatabaseProvider>;
+  readonly pollIntervalSeconds?: number;
+}
+
 export type ApplicationSchedulerProvider =
   | ApplicationLocalSchedulerProvider
   | ApplicationKubernetesCronJobSchedulerProvider
   | ApplicationHatchetSchedulerProvider
-  | ApplicationEventBridgeSchedulerProvider;
+  | ApplicationEventBridgeSchedulerProvider
+  | ApplicationPostgresSchedulerProvider;
 
 export interface ApplicationLocalActorRuntimeProvider {
   readonly kind: 'deterministic-local-actors';
@@ -1473,8 +1584,22 @@ export interface ApplicationWorkflowEngineProviderToken extends ApplicationQuali
 
 export interface ApplicationJobRuntimeProviderToken extends ApplicationQualifiableProviderToken<ApplicationJobRuntimeProvider> {
   local(options?: Omit<ApplicationLocalJobRuntimeProvider, 'kind'>): ApplicationCapabilityImplementation<ApplicationLocalJobRuntimeProvider>;
-  kubernetes(options?: Omit<ApplicationKubernetesJobRuntimeProvider, 'kind'>): ApplicationCapabilityImplementation<ApplicationKubernetesJobRuntimeProvider>;
+  kubernetes(options: Omit<ApplicationKubernetesJobRuntimeProvider, 'kind'>): ApplicationCapabilityImplementation<ApplicationKubernetesJobRuntimeProvider>;
   aws(options: Omit<ApplicationAwsJobRuntimeProvider, 'kind'>): ApplicationCapabilityImplementation<ApplicationAwsJobRuntimeProvider>;
+}
+
+export interface ApplicationQueueProviderToken extends ApplicationQualifiableProviderToken<ApplicationQueueProvider> {
+  jetStream(options: Omit<ApplicationJetStreamQueueProvider, 'kind'>): ApplicationCapabilityImplementation<ApplicationJetStreamQueueProvider>;
+  sqs(options: Omit<ApplicationSqsQueueProvider, 'kind'>): ApplicationCapabilityImplementation<ApplicationSqsQueueProvider>;
+}
+
+export interface ApplicationFiniteExecutionHostProviderToken extends ApplicationQualifiableProviderToken<ApplicationFiniteExecutionHostProvider> {
+  kubernetes(options: Omit<ApplicationKubernetesFiniteExecutionHostProvider, 'kind'>): ApplicationCapabilityImplementation<ApplicationKubernetesFiniteExecutionHostProvider>;
+  aws(options: Omit<ApplicationAwsFiniteExecutionHostProvider, 'kind'>): ApplicationCapabilityImplementation<ApplicationAwsFiniteExecutionHostProvider>;
+}
+
+export interface ApplicationJobResultStoreProviderToken extends ApplicationQualifiableProviderToken<ApplicationJobResultStoreProvider> {
+  postgres(options: Omit<ApplicationPostgresJobResultStoreProvider, 'kind'>): ApplicationCapabilityImplementation<ApplicationPostgresJobResultStoreProvider>;
 }
 
 export interface ApplicationQualifiedSchedulerProviderToken<TName extends string = string>
@@ -1489,6 +1614,7 @@ export interface ApplicationSchedulerProviderToken extends ApplicationQualifiabl
   cronJob(options?: Omit<ApplicationKubernetesCronJobSchedulerProvider, 'kind'>): ApplicationCapabilityImplementation<ApplicationKubernetesCronJobSchedulerProvider>;
   hatchet(options?: Omit<ApplicationHatchetSchedulerProvider, 'kind'>): ApplicationCapabilityImplementation<ApplicationHatchetSchedulerProvider>;
   eventBridge(options?: Omit<ApplicationEventBridgeSchedulerProvider, 'kind'>): ApplicationCapabilityImplementation<ApplicationEventBridgeSchedulerProvider>;
+  postgres(options: Omit<ApplicationPostgresSchedulerProvider, 'kind'>): ApplicationCapabilityImplementation<ApplicationPostgresSchedulerProvider>;
 }
 
 export interface ApplicationActorRuntimeProviderToken extends ApplicationQualifiableProviderToken<ApplicationActorRuntimeProvider> {
@@ -1708,6 +1834,48 @@ function maintainedDependencyInput(
     return value.token as ApplicationProviderToken<object>;
   }
   return fallback;
+}
+
+function applicationJobRuntimeDependencies(
+  provider: ApplicationKubernetesJobRuntimeProvider | ApplicationAwsJobRuntimeProvider,
+): readonly import('./application-capability-implementation.js').ApplicationCapabilityImplementationDependency[] {
+  return [
+    {
+      slot: 'queue',
+      requirement: Queue as ApplicationProviderToken<object>,
+      requiredGuarantees: ['boundedDelivery'],
+      operations: ['queue.submit', 'queue.cancel'],
+      input: maintainedDependencyInput(provider.queue as object, Queue as ApplicationProviderToken<object>),
+    },
+    {
+      slot: 'execution-host',
+      requirement: FiniteExecutionHost as ApplicationProviderToken<object>,
+      requiredGuarantees: ['finiteExecution', 'boundedCancellation'],
+      operations: ['job.attempt.start', 'job.attempt.cancel'],
+      input: maintainedDependencyInput(provider.executionHost as object, FiniteExecutionHost as ApplicationProviderToken<object>),
+    },
+    {
+      slot: 'results',
+      requirement: JobResultStore as ApplicationProviderToken<object>,
+      requiredGuarantees: ['terminalCompareAndSet', 'progressRetention'],
+      operations: ['job.result.read', 'job.result.write', 'job.progress.write'],
+      input: maintainedDependencyInput(provider.results as object, JobResultStore as ApplicationProviderToken<object>),
+    },
+    {
+      slot: 'scheduler',
+      requirement: Scheduler as ApplicationProviderToken<object>,
+      requiredGuarantees: ['stableDefinitionIdentity', 'stableOccurrenceIdentity'],
+      operations: ['schedule.submit', 'schedule.cancel'],
+      input: maintainedDependencyInput(provider.scheduler as object, Scheduler as ApplicationProviderToken<object>),
+    },
+    {
+      slot: 'events',
+      requirement: EventLog as ApplicationProviderToken<object>,
+      requiredGuarantees: ['atLeastOnce', 'stableMessageIds'],
+      operations: ['event.publish'],
+      input: maintainedDependencyInput(provider.events as object, EventLog as ApplicationProviderToken<object>),
+    },
+  ];
 }
 
 export const IndexStore: ApplicationIndexStoreProviderToken = applicationQualifiableProviderToken({
@@ -1934,10 +2102,46 @@ export const Secret: ApplicationQualifiableProviderToken<ApplicationSecretProvid
   contract: builtInProviderContract('Secret', ['secretReferences']),
 });
 
-export const Queue: ApplicationQualifiableProviderToken<ApplicationQueueProvider> = applicationQualifiableProviderToken({
+export const Queue: ApplicationQueueProviderToken = applicationQualifiableProviderToken({
   name: 'Queue',
   description: 'Default app-scoped queue provider.',
   contract: builtInProviderContract('Queue', ['boundedDelivery']),
+  jetStream(options) {
+    return maintainedBuiltInImplementation(Queue, 'Queue.jetStream', {
+      kind: 'jetstream-job-queue',
+      ...options,
+    }, {
+      runtimeAdapter: '@applik8s/runtime-nats/job-queue',
+      deploymentContributor: '@applik8s/deployment-compiler/providers/job-queue-jetstream',
+      readiness: 'applik8s.job-queue.jetstream.readiness/v1alpha1',
+      lifecycle: 'application',
+      migration: 'applik8s.job-queue.jetstream.migration/v1alpha1',
+      maturity: 'experimental',
+      dependencies: [{
+        slot: 'event-log',
+        requirement: EventLog as ApplicationProviderToken<object>,
+        requiredGuarantees: ['atLeastOnce', 'stableMessageIds'],
+        operations: ['event.publish', 'event.consume'],
+        input: maintainedDependencyInput(
+          options.eventLog as object,
+          EventLog as ApplicationProviderToken<object>,
+        ),
+      }],
+    });
+  },
+  sqs(options) {
+    return maintainedBuiltInImplementation(Queue, 'Queue.sqs', {
+      kind: 'sqs-job-queue',
+      ...options,
+    }, {
+      runtimeAdapter: '@applik8s/runtime-aws/job-queue',
+      deploymentContributor: '@applik8s/deployment-alchemy/providers/sqs-job-queue',
+      readiness: 'applik8s.job-queue.sqs.readiness/v1alpha1',
+      lifecycle: 'application',
+      migration: 'applik8s.job-queue.sqs.migration/v1alpha1',
+      maturity: 'experimental',
+    });
+  },
 });
 
 export const ObjectStorage: ApplicationObjectStorageProviderToken = applicationQualifiableProviderToken({
@@ -2106,6 +2310,67 @@ export const WorkflowEngine: ApplicationWorkflowEngineProviderToken = applicatio
   },
 });
 
+export const FiniteExecutionHost: ApplicationFiniteExecutionHostProviderToken = applicationQualifiableProviderToken({
+  name: 'FiniteExecutionHost',
+  description: 'Provider-private finite workload host selected by a JobRuntime implementation.',
+  contract: builtInProviderContract('FiniteExecutionHost', ['finiteExecution', 'boundedCancellation']),
+  kubernetes(options) {
+    return maintainedBuiltInImplementation(FiniteExecutionHost, 'FiniteExecutionHost.kubernetes', {
+      kind: 'kubernetes-finite-execution-host',
+      ...options,
+    }, {
+      runtimeAdapter: '@applik8s/runtime-kubernetes/finite-execution-host',
+      deploymentContributor: '@applik8s/deployment-compiler/providers/finite-execution-host-kubernetes',
+      readiness: 'applik8s.finite-execution-host.kubernetes.readiness/v1alpha1',
+      lifecycle: 'application',
+      migration: 'applik8s.finite-execution-host.kubernetes.migration/v1alpha1',
+      maturity: 'experimental',
+    });
+  },
+  aws(options) {
+    return maintainedBuiltInImplementation(FiniteExecutionHost, 'FiniteExecutionHost.aws', {
+      kind: 'aws-finite-execution-host',
+      mode: 'automatic',
+      ...options,
+    }, {
+      runtimeAdapter: '@applik8s/runtime-aws/finite-execution-host',
+      deploymentContributor: '@applik8s/deployment-alchemy/providers/finite-execution-host-aws',
+      readiness: 'applik8s.finite-execution-host.aws.readiness/v1alpha1',
+      lifecycle: 'application',
+      migration: 'applik8s.finite-execution-host.aws.migration/v1alpha1',
+      maturity: 'experimental',
+    });
+  },
+});
+
+export const JobResultStore: ApplicationJobResultStoreProviderToken = applicationQualifiableProviderToken({
+  name: 'JobResultStore',
+  description: 'Provider-private durable Job result and progress authority.',
+  contract: builtInProviderContract('JobResultStore', ['terminalCompareAndSet', 'progressRetention']),
+  postgres(options) {
+    return maintainedBuiltInImplementation(JobResultStore, 'JobResultStore.postgres', {
+      kind: 'postgres-job-result-store',
+      ...options,
+    }, {
+      runtimeAdapter: '@applik8s/runtime-postgres/job-result-store',
+      readiness: 'applik8s.job-result-store.postgres.readiness/v1alpha1',
+      lifecycle: 'application',
+      migration: 'applik8s.job-result-store.postgres.migration/v1alpha1',
+      maturity: 'experimental',
+      dependencies: [{
+        slot: 'database',
+        requirement: TransactionalDatabase as ApplicationProviderToken<object>,
+        requiredGuarantees: ['transactions', 'strongReads'],
+        operations: ['database.read', 'database.write'],
+        input: maintainedDependencyInput(
+          options.database as object,
+          TransactionalDatabase as ApplicationProviderToken<object>,
+        ),
+      }],
+    });
+  },
+});
+
 export const JobRuntime: ApplicationJobRuntimeProviderToken = applicationQualifiableProviderToken({
   name: 'JobRuntime',
   description: 'Provider-neutral finite managed execution with durable run, result, progress, cancellation, and retry semantics.',
@@ -2128,7 +2393,7 @@ export const JobRuntime: ApplicationJobRuntimeProviderToken = applicationQualifi
       maturity: 'experimental',
     });
   },
-  kubernetes(options = {}) {
+  kubernetes(options) {
     const provider: ApplicationKubernetesJobRuntimeProvider = { kind: 'kubernetes-job-runtime', ...options };
     assertApplicationJobRuntimeProvider(provider);
     return maintainedBuiltInImplementation(JobRuntime, 'JobRuntime.kubernetes', provider, {
@@ -2138,6 +2403,7 @@ export const JobRuntime: ApplicationJobRuntimeProviderToken = applicationQualifi
       lifecycle: 'application',
       migration: 'applik8s.job-runtime.kubernetes.migration/v1alpha1',
       maturity: 'experimental',
+      dependencies: applicationJobRuntimeDependencies(provider),
     });
   },
   aws(options) {
@@ -2150,6 +2416,7 @@ export const JobRuntime: ApplicationJobRuntimeProviderToken = applicationQualifi
       lifecycle: 'application',
       migration: 'applik8s.job-runtime.aws.migration/v1alpha1',
       maturity: 'experimental',
+      dependencies: applicationJobRuntimeDependencies(provider),
     });
   },
 });
@@ -2229,6 +2496,28 @@ export const Scheduler: ApplicationSchedulerProviderToken = applicationQualifiab
       readiness: 'applik8s.scheduler.event-bridge.readiness/v1alpha1',
       lifecycle: 'application',
       migration: 'applik8s.scheduler.event-bridge.migration/v1alpha1',
+    });
+  },
+  postgres(options) {
+    return maintainedBuiltInImplementation(Scheduler, 'Scheduler.postgres', {
+      kind: 'postgres-scheduler',
+      ...options,
+    }, {
+      runtimeAdapter: '@applik8s/runtime-postgres/scheduler',
+      readiness: 'applik8s.scheduler.postgres.readiness/v1alpha1',
+      lifecycle: 'application',
+      migration: 'applik8s.scheduler.postgres.migration/v1alpha1',
+      maturity: 'experimental',
+      dependencies: [{
+        slot: 'database',
+        requirement: TransactionalDatabase as ApplicationProviderToken<object>,
+        requiredGuarantees: ['transactions', 'strongReads'],
+        operations: ['database.read', 'database.write'],
+        input: maintainedDependencyInput(
+          options.database as object,
+          TransactionalDatabase as ApplicationProviderToken<object>,
+        ),
+      }],
     });
   },
 });
@@ -2944,9 +3233,76 @@ function assertApplicationJobRuntimeProvider(value: unknown): asserts value is A
   }
   if (kind === 'aws-job-runtime') {
     const account = Reflect.get(value, 'account');
-    if (!account || typeof account !== 'object') {
+    if (!account || typeof account !== 'object' || Reflect.get(account, 'kind') !== 'aws-account') {
       throw new TypeError('JobRuntime.aws(...) requires a typed AWS account implementation.');
     }
+  }
+  if (kind === 'kubernetes-job-runtime') {
+    const cluster = Reflect.get(value, 'cluster');
+    if (!cluster || typeof cluster !== 'object' || !['current-kubernetes-cluster', 'external-kubernetes-cluster'].includes(String(Reflect.get(cluster, 'kind')))) {
+      throw new TypeError('JobRuntime.kubernetes(...) requires KubernetesCluster.current() or KubernetesCluster.external(...).');
+    }
+  }
+  if (kind === 'kubernetes-job-runtime' || kind === 'aws-job-runtime') {
+    assertApplicationImplementationInput(Reflect.get(value, 'queue'), Queue, 'JobRuntime queue');
+    assertApplicationImplementationInput(Reflect.get(value, 'executionHost'), FiniteExecutionHost, 'JobRuntime executionHost');
+    assertApplicationImplementationInput(Reflect.get(value, 'results'), JobResultStore, 'JobRuntime results');
+    assertApplicationImplementationInput(Reflect.get(value, 'scheduler'), Scheduler, 'JobRuntime scheduler');
+    assertApplicationImplementationInput(Reflect.get(value, 'events'), EventLog, 'JobRuntime events');
+  }
+}
+
+function assertApplicationImplementationInput(
+  value: unknown,
+  token: ApplicationProviderToken<object>,
+  label: string,
+): void {
+  if (!value || typeof value !== 'object') {
+    throw new TypeError(`${label} requires a typed capability implementation.`);
+  }
+  const metadata = applicationCapabilityImplementationMetadata(value);
+  if (metadata && applicationProviderTokensMatch(metadata.token, token)) return;
+  if (isApplicationProviderBinding(value) && applicationProviderTokensMatch(value.token, token)) return;
+  throw new TypeError(`${label} requires a typed ${token.name} implementation or binding.`);
+}
+
+function requireProviderConfigString(
+  value: ApplicationProviderConfigString,
+  label: string,
+): void {
+  if (typeof value === 'string') {
+    if (!value.trim()) throw new TypeError(`${label} must not be empty.`);
+    return;
+  }
+  if (!isApplicationConfigurationBinding(value) || value.kind !== 'config' || value.valueType !== 'string') {
+    throw new TypeError(`${label} requires a string literal or config.env(...) binding.`);
+  }
+}
+
+function requireSecretConfigurationBinding(
+  value: ApplicationSecretSourceBinding<unknown>,
+  label: string,
+): void {
+  if (!isApplicationConfigurationBinding(value) || value.kind !== 'secret') {
+    throw new TypeError(`${label} requires a secret.env(...) binding.`);
+  }
+}
+
+function requireProviderConfigUrl(
+  value: ApplicationProviderConfigUrl,
+  label: string,
+): void {
+  if (typeof value === 'string') {
+    if (!value.trim()) throw new TypeError(`${label} must not be empty.`);
+    try {
+      new URL(value);
+    } catch {
+      throw new TypeError(`${label} must be an absolute URL or config.env.url(...) binding.`);
+    }
+    return;
+  }
+  if (!isApplicationConfigurationBinding(value) || value.kind !== 'config' || value.valueType !== 'url') {
+    throw new TypeError(`${label} requires an absolute URL or config.env.url(...) binding.`);
   }
 }
 
@@ -2978,6 +3334,7 @@ export function isApplicationSchedulerProvider(value: unknown): value is Applica
     'kubernetes-cronjob-scheduler',
     'hatchet-scheduler',
     'eventbridge-scheduler',
+    'postgres-scheduler',
   ].includes(String(Reflect.get(value, 'kind')));
 }
 

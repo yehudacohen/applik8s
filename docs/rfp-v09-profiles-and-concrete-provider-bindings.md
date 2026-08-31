@@ -32,7 +32,11 @@ The target-free authoring and immutable planning vertical is implemented on the 
   tampered plan artifacts before infrastructure mutation.
 - finite Jobs now require the experimental `JobRuntime` capability; validated `local`, `kubernetes`, and
   `aws` constructors participate in the same provider graph and profile planning algebra rather than
-  branching inside the Job declaration.
+  branching inside the Job declaration;
+- `AWS.account(...)` and `KubernetesCluster.current()`/`.external(...)` are typed, Secret-safe reusable
+  configuration values, while `Queue.jetStream()`/`.sqs()`, `FiniteExecutionHost.kubernetes()`/`.aws()`,
+  `JobResultStore.postgres()`, and `Scheduler.postgres()` form the first complete typed private dependency
+  graph beneath a semantic provider.
 
 Remaining provider-constructor coverage, runtime-adapter target parity, and deployment migration qualification remain subsequent
 implementation phases. Deployment-state mutation remains blocked until the exact released v0.8 baseline

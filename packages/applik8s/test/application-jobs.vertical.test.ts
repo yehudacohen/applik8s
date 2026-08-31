@@ -13,7 +13,21 @@ import {
   createDeterministicApplicationJobRuntime,
   installApplicationJobRuntimeResolver,
 } from '../src/application-finite-jobs.js';
-import { JobRuntime } from '../src/application-providers.js';
+import {
+  AWS,
+  ContainerRegistry,
+  Database,
+  EventLog,
+  FiniteExecutionHost,
+  JobResultStore,
+  JobRuntime,
+  KubernetesCluster,
+  Queue,
+  Scheduler,
+  TransactionalDatabase,
+} from '../src/application-providers.js';
+import { config, secret } from '../src/application-configuration.js';
+import { applicationCapabilityImplementationMetadata } from '../src/application-capability-implementation.js';
 
 const Input = type({ value: 'number.integer' });
 const Output = type({ doubled: 'number.integer' });
@@ -90,12 +104,39 @@ describe('application finite Job runtime', () => {
       spec: type({}),
       status: type({ ready: 'boolean' }),
     });
-    application.provide(JobRuntime, JobRuntime.kubernetes({
+    const cluster = KubernetesCluster.current();
+    const database = application.provide(TransactionalDatabase, Database.postgres({
+      name: 'jobs',
+      namespace: 'application-jobs',
+      database: 'jobs',
+    }));
+    const eventLog = application.provide(EventLog, {
+      kind: 'nats-jetstream',
+      name: 'jobs-events',
+      namespace: 'application-jobs',
+    });
+    const registry = application.provide(ContainerRegistry, ContainerRegistry.oci({
+      endpoint: ContainerRegistry.origin('https://registry.example.test'),
+      repositoryPrefix: 'application-jobs',
+    }));
+    const queue = Queue.jetStream({ eventLog });
+    const executionHost = FiniteExecutionHost.kubernetes({ cluster, registry });
+    const results = JobResultStore.postgres({ database });
+    const scheduler = Scheduler.postgres({ database });
+    const runtimeOptions = {
+      cluster,
+      queue,
+      executionHost,
+      results,
+      scheduler,
+      events: eventLog,
       namespace: 'application-jobs',
       maximumConcurrency: 12,
       maximumDuration: '30m',
       resultRetentionSeconds: 86_400,
-    }));
+    };
+    const selectedJobRuntime = JobRuntime.kubernetes(runtimeOptions);
+    application.provide(JobRuntime, selectedJobRuntime);
     const job = application.job(
       'search.rebuild.v1',
       { input: Input, output: Output },
@@ -116,7 +157,28 @@ describe('application finite Job runtime', () => {
       }),
     ]));
     expect(() => JobRuntime.local({ maximumConcurrency: 0 })).toThrow('maximumConcurrency');
-    expect(() => JobRuntime.aws({ account: {}, maximumDuration: '' })).toThrow('maximumDuration');
+    expect(() => JobRuntime.kubernetes({ ...runtimeOptions, maximumDuration: '' })).toThrow('maximumDuration');
+    expect(() => AWS.account({
+      accountId: '',
+      region: 'us-east-1',
+      credentials: secret.env('AWS_CREDENTIALS'),
+    })).toThrow('accountId');
+    expect(KubernetesCluster.external({
+      endpoint: config.env.url('KUBERNETES_ENDPOINT'),
+      credentials: secret.env('KUBERNETES_CREDENTIALS'),
+      namespace: config.env('KUBERNETES_NAMESPACE'),
+    })).toMatchObject({
+      kind: 'external-kubernetes-cluster',
+      endpoint: { kind: 'config', valueType: 'url' },
+      credentials: { kind: 'secret' },
+    });
+    expect(applicationCapabilityImplementationMetadata(selectedJobRuntime)?.dependencies).toEqual([
+      expect.objectContaining({ slot: 'queue', requirement: expect.objectContaining({ name: 'Queue' }) }),
+      expect.objectContaining({ slot: 'execution-host', requirement: expect.objectContaining({ name: 'FiniteExecutionHost' }) }),
+      expect.objectContaining({ slot: 'results', requirement: expect.objectContaining({ name: 'JobResultStore' }) }),
+      expect.objectContaining({ slot: 'scheduler', requirement: expect.objectContaining({ name: 'Scheduler' }) }),
+      expect.objectContaining({ slot: 'events', requirement: expect.objectContaining({ name: 'EventLog' }) }),
+    ]);
     await expect(job({ value: 2 })).rejects.toMatchObject({
       code: 'JOB_PROVIDER_UNSUPPORTED',
       providerNodeId: 'provider.job-runtime',

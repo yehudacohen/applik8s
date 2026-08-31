@@ -97,4 +97,37 @@ describe('application configuration provenance', () => {
       },
     });
   });
+
+  it('canonicalizes direct provider bindings without hashing executable token methods', () => {
+    const binding = {
+      kind: 'applicationProvider',
+      token: {
+        name: 'EventLog',
+        named() { return undefined; },
+        accepts() { return true; },
+      },
+      implementation: {
+        kind: 'nats-jetstream',
+        namespace: config.env('EVENT_NAMESPACE'),
+      },
+    };
+
+    expect(applicationConfigurationValueForDigest({ eventLog: binding })).toEqual({
+      eventLog: {
+        kind: 'applicationProvider',
+        capability: 'EventLog',
+        implementation: {
+          kind: 'nats-jetstream',
+          namespace: {
+            apiVersion: 'applik8s.configurationBinding/v1alpha1',
+            kind: 'config',
+            reference: 'EVENT_NAMESPACE',
+            required: true,
+            source: 'environment',
+            valueType: 'string',
+          },
+        },
+      },
+    });
+  });
 });

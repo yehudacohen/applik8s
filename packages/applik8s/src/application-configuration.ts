@@ -242,6 +242,33 @@ function normalizeConfigurationValue(
       ) as JsonValue,
     };
   }
+  if (
+    Reflect.get(value, 'kind') === 'applicationProvider'
+    && Reflect.get(value, 'token')
+    && typeof Reflect.get(value, 'token') === 'object'
+  ) {
+    const token = Reflect.get(value, 'token') as object;
+    const tokenName = Reflect.get(token, 'name');
+    if (typeof tokenName !== 'string' || !tokenName.trim()) {
+      throw new TypeError('Provider binding configuration requires a stable capability token name.');
+    }
+    return {
+      kind: 'applicationProvider',
+      capability: tokenName,
+      ...(Reflect.get(token, 'qualification')
+        ? {
+            qualification: normalizeConfigurationValue(
+              Reflect.get(token, 'qualification'),
+              ancestors,
+            ) as JsonValue,
+          }
+        : {}),
+      implementation: normalizeConfigurationValue(
+        Reflect.get(value, 'implementation'),
+        ancestors,
+      ) as JsonValue,
+    };
+  }
   if (ancestors.has(value)) throw new TypeError('Provider configuration must not contain cycles.');
   ancestors.add(value);
   try {

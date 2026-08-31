@@ -47,14 +47,17 @@ The provider-neutral typed Job handle, deterministic local runtime, application-
 semantic graph/plan node are implemented. They establish
 schema-validated input/output/progress/application errors, scoped idempotency, bounded concurrency,
 whole-attempt retry, cancellation, execution deadlines, caller timeout with a rejoinable run reference,
-and first-terminal-transition semantics. The semantic `job` node is deliberately experimental and remains
-distinct from the stable `workloadJob` infrastructure node. Durable deployed providers, profile-selected
-runtime adapter lowering, scheduling integration, retention, events/telemetry, and cross-provider
-conformance evidence remain implementation work. `JobRuntime.local()`, `.kubernetes()`, and `.aws()` now
-produce validated, graph-visible implementation values and each Job declares one required `JobRuntime`;
-the Kubernetes and AWS constructors remain release-gated until their adapters and lifecycle evidence are
-complete. The local runtime is a behavioral kernel, not a claim that the complete Job contract is
-deployment-ready yet.
+and first-terminal-transition semantics. Result and progress retention now expire payload availability
+without erasing terminal identity, and unsupported deployed providers fail through the stable
+`JOB_PROVIDER_UNSUPPORTED` diagnostic in both invocation and planning. The semantic `job` node is
+deliberately experimental and remains distinct from the stable `workloadJob` infrastructure node.
+`JobRuntime.local()`, `.kubernetes()`, and `.aws()` produce validated, graph-visible implementation values;
+the deployed constructors now require typed private queue, execution-host, result-store, scheduler, and
+event-publication dependencies instead of accepting structural objects. Scheduling integration,
+application-fact publication, deployed runtime adapters, and cross-provider conformance evidence remain
+implementation work. The Kubernetes and AWS constructors remain release-gated until their adapters and
+lifecycle evidence are complete. The local runtime is a behavioral kernel, not a claim that the complete
+Job contract is deployment-ready yet.
 
 This RFP owns logical run identity, attempt identity, input/result/progress/cancellation contracts,
 idempotency scope, retry and interruption semantics, authority and causal attribution, scheduling

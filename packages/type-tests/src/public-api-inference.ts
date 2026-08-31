@@ -1,6 +1,7 @@
 // @ts-expect-error The application-centric v0.6 controller-options name was removed rather than aliased.
 import type { ApplicationReconcileOptions, Applik8sTypeKroAdapterApi as TopLevelTypeKroAdapterApi } from '@applik8s/applik8s';
 import { AnalyticalDatabase, Analytics, type ApplicationAnalyticalProjectionOptions, type ApplicationConfigBinding, type ApplicationExposureBinding, type ApplicationJobBinding, type ApplicationModelBinding, type ApplicationModelObject, type ApplicationOAuthClientIdentityBinding, type ApplicationResourceControllerOptions, type ApplicationResourceEventHandler, type ApplicationSecretBinding, type ApplicationTransactionalDatabaseProvider, type ApplicationWorkflowBinding, type ApplicationWorkloadJobBinding, applicationModelFacet, sdk as appSdk, Certificate, CounterStore, CredentialStore, command, Database, DnsPublication, app as defineApplication, EventSource, event, HttpExposure, IndexStore, JobRuntime, ObjectStorage, Queue, Secret, TransactionalDatabase, WorkflowEngine, workflow } from '@applik8s/applik8s';
+import { ContainerRegistry, EventLog, FiniteExecutionHost, JobResultStore, KubernetesCluster, Scheduler } from '@applik8s/applik8s';
 import * as applicationDsl from '@applik8s/applik8s/dsl';
 import { entity as appEntity, type as appSchemaType } from '@applik8s/applik8s/dsl';
 import type {
@@ -521,7 +522,19 @@ appSdk.kubernetesComposition({
 }, (spec, app) => {
   const store = app.provide(TransactionalDatabase, accountTransactionalDatabase);
   app.provide(WorkflowEngine, WorkflowEngine.hatchet({ namespace: spec.namespace, provision: false, workerTokenSecret: { apiVersion: 'v1', kind: 'Secret', name: 'hatchet-worker', namespace: spec.namespace } }));
-  app.provide(JobRuntime, JobRuntime.kubernetes({ namespace: spec.namespace, maximumConcurrency: 12 }));
+  const cluster = KubernetesCluster.current({ namespace: spec.namespace });
+  const eventLog = app.provide(EventLog, { kind: 'nats-jetstream', namespace: spec.namespace });
+  const registry = app.provide(ContainerRegistry, ContainerRegistry.orbstack());
+  app.provide(JobRuntime, JobRuntime.kubernetes({
+    cluster,
+    namespace: spec.namespace,
+    maximumConcurrency: 12,
+    queue: Queue.jetStream({ eventLog }),
+    executionHost: FiniteExecutionHost.kubernetes({ cluster, registry }),
+    results: JobResultStore.postgres({ database: store }),
+    scheduler: Scheduler.postgres({ database: store }),
+    events: eventLog,
+  }));
   const modelDefaults = app.defaults({ database: accountTransactionalDatabase });
   const maintenanceJob: ApplicationWorkloadJobBinding = app.workload.job('compact-accounts', { taskKind: 'maintenance', image: 'busybox:1.36', command: ['sh', '-c'], args: ['echo compact'] });
   const maintenanceSchedule: ApplicationWorkloadJobBinding = app.workload.cronJob('compact-accounts-hourly', { taskKind: 'maintenance', cron: '0 * * * *', concurrencyPolicy: 'forbid', missedRunPolicy: 'failClosed' });
