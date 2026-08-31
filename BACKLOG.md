@@ -76,6 +76,9 @@ Status: implementation started on `codex/v0.8-rfps`; no release is authorized.
 
 Current foundation increment:
 
+- Closed the generated workflow-gateway Kubernetes SDK boundary with a focused
+  runtime-kubernetes export; clean Agentic Start consumers no longer depend on
+  workspace hoisting of a transitive `@kubernetes/client-node` package.
 - Aligned task service-identity validation with generated function-native model
   execution: write transactions consume the authenticated principal, while
   read-only model scopes, object stores, and callable providers keep their own

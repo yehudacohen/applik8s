@@ -752,6 +752,12 @@ export const pipelineHttpStack = application.composition;
     );
     expect(workflowGeneratedSource).toContain('gatewayCallerContracts');
     expect(workflowGeneratedSource).toContain(
+      "from '@applik8s/runtime-kubernetes/workflow-gateway-admission'",
+    );
+    expect(workflowGeneratedSource).not.toContain(
+      "from '@kubernetes/client-node'",
+    );
+    expect(workflowGeneratedSource).toContain(
       "audiences: ['https://kubernetes.default.svc']",
     );
     expect(workflowGeneratedSource).toContain(

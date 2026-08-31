@@ -454,6 +454,11 @@ Read-only model scopes, object-store credentials, and callable provider calls
 do not consume that identity; they retain their admitted context and declared
 provider/object authority instead.
 
+Generated workflow-gateway admission imports Kubernetes token-review and lease
+primitives through the focused `@applik8s/runtime-kubernetes/workflow-gateway-admission`
+boundary. Applications declare the maintained runtime package; generated code
+does not rely on its private Kubernetes SDK dependency being hoisted.
+
 The initial provider is pinned Hatchet in PostgreSQL-only mode with CNPG and no RabbitMQ. Generated worker groups include a self-contained bundle, health, graceful drain, bounded slots, disruption policy, explicit egress, fixed replicas, and optional KEDA task-stat scaling. Hatchet is operational workflow authority; canonical application transitions still commit through the v0.4 PostgreSQL transaction boundary. See `docs/workflows.md`.
 
 There are two distinct status ownership cases:

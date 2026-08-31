@@ -71,6 +71,11 @@ an authenticated consumer of its task service identity. Read-only model scopes,
 object stores, and callable providers remain separate authority boundaries and
 do not justify an otherwise unused service principal.
 
+Generated workflow-gateway admission now consumes Kubernetes token-review and
+lease primitives through a focused `@applik8s/runtime-kubernetes` export. Clean
+isolated application installs no longer need an undeclared direct dependency
+on the runtime adapter's private Kubernetes SDK.
+
 The native TanStack physical-call middleware now accepts an optional
 application-owned pre-dispatch admission. Durable applications can atomically
 admit a new call, join an equivalent call before deciding, replay bounded

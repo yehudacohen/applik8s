@@ -439,7 +439,7 @@ import { applicationOperationInputDigest } from '@applik8s/applik8s/operation-ru
     ? `import { applicationCommandPrincipalValues, applicationPostgresModelReadClients, applicationRelationalChangeScopes, bindApplicationFunctionNativeOperationHandle, createApplicationFunctionNativeEventHandle, createApplicationFunctionNativeOperationHandle, editApplicationNativeModelObject, executeFunctionNativePostgresModelEdit, findApplicationNativeModelObjects, getApplicationNativeModelObject, requireApplicationNativeModelObject, withApplicationNativeModelReadClients, withApplicationNativeModelTransactionRuntime } from '@applik8s/applik8s/stream-worker-runtime';${contract.operationEffects?.operations.some(({ handler }) => Boolean(handler.beforeCommit)) ? "\nimport { runApplicationModelBeforeCommit } from '@applik8s/applik8s/processor-runtime';" : ''}`
     : '';
   const gatewayImports = contract.gatewayCallers.length > 0
-    ? `import { AuthenticationV1Api, CoordinationV1Api, KubeConfig, V1MicroTime } from '@kubernetes/client-node';
+    ? `import { AuthenticationV1Api, CoordinationV1Api, KubeConfig, V1MicroTime } from '@applik8s/runtime-kubernetes/workflow-gateway-admission';
 import { createHatchetWorkflowRuntimeFromClient, observeHatchetWorkflowRun } from '@applik8s/runtime-hatchet';
 import { createSignedEnvelopeCodec, signedEnvelopeUtf8Key, staticSignedEnvelopeKeyProvider } from '@applik8s/runtime';`
     : '';

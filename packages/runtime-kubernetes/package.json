@@ -40,6 +40,11 @@
       "types": "./dist/cluster-capability.d.ts",
       "import": "./dist/cluster-capability.js",
       "default": "./dist/cluster-capability.js"
+    },
+    "./workflow-gateway-admission": {
+      "types": "./dist/workflow-gateway-admission.d.ts",
+      "import": "./dist/workflow-gateway-admission.js",
+      "default": "./dist/workflow-gateway-admission.js"
     }
   },
   "dependencies": {
