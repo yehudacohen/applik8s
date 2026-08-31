@@ -122,6 +122,8 @@ describe('Agentic Start generator', () => {
     expect(providers).not.toContain('migrations:');
     expect(providers).toContain('application.include(agenticProfiles)');
     expect(providers).toContain('host,');
+    expect(providers).toContain('sourceRetriever,');
+    expect(providers).toContain('researchEvidence,');
     expect(providers).not.toContain('ApplicationHost.kubernetes');
     expect(providers).not.toContain('.exhaustive()');
     expect(providers).not.toContain('application.profile(');
@@ -153,6 +155,14 @@ describe('Agentic Start generator', () => {
       "import { ResearchNote as ResearchNoteTable } from './schema';",
     );
     expect(researchModel).toContain("const research = module(");
+    expect(researchModel).toContain("import { researchAgent } from '@applik8s/research';");
+    expect(researchModel).toContain("application.include(researchAgent(");
+    expect(researchModel).toContain("'researcher.v1'");
+    expect(researchModel).toContain('search: AgenticResearch.search');
+    expect(researchModel).toContain('retrieve: AgenticResearch.retrieve');
+    expect(researchModel).toContain('evidence: AgenticResearch.evidence');
+    expect(researchModel).not.toContain('application.agent(');
+    expect(researchModel).not.toContain('@tanstack/ai');
     expect(researchModel).not.toContain('defineApplicationModule');
     expect(researchModel).not.toContain('throw new Error');
     expect(researchModel).toContain('application.include(research)');
@@ -407,6 +417,8 @@ describe('Agentic Start generator', () => {
     expect(manifest.dependencies['@applik8s/runtime-postgres']).toBe('workspace:*');
     expect(manifest.dependencies['@applik8s/identity-ory']).toBe('workspace:*');
     expect(manifest.dependencies['@applik8s/notifications-smtp']).toBe('workspace:*');
+    expect(manifest.dependencies['@applik8s/research']).toBe('workspace:*');
+    expect(manifest.dependencies['@applik8s/web-retrieval-http']).toBe('workspace:*');
     expect(manifest.dependencies['@tanstack/ai-react']).toBe('0.19.3');
     expect(manifest.dependencies['@tanstack/ai-persistence']).toBe('0.1.5');
     expect(
@@ -1912,7 +1924,7 @@ describe('Agentic Start generator', () => {
           .filter((node) => node.kind === 'aiAgent')
           .map((agent) => agent.name),
       ).toContain(
-        'researcher',
+        'researcher.v1',
       );
       // install:false deliberately skips the generator's drizzle-kit step.
       // Seed the committed artifact boundary so this test can exercise the
@@ -2066,7 +2078,7 @@ describe('Agentic Start generator', () => {
       const searchGateway = compiled.value.artifacts.reactiveArtifacts.find(
         (artifact) =>
           artifact.kind === 'queryGateway'
-          && artifact.name.includes('researcher-tool'),
+          && artifact.name.includes('researcher.v1-tool'),
       );
       expect(searchGateway).toBeDefined();
       const searchGatewayEntrypoint = await readFile(

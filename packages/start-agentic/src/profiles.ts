@@ -45,10 +45,20 @@ import {
 } from '@applik8s/notifications';
 import { SmtpNotificationDelivery } from '@applik8s/notifications-smtp';
 import {
+  type ApplicationResearchEvidenceProvider,
+  LocalResearchEvidence,
+  PostgresResearchEvidence,
+  ResearchEvidence,
+} from '@applik8s/research';
+import {
+  type ApplicationSourceRetrieverProvider,
   type ApplicationWebSearchProvider,
+  LocalSourceRetriever,
   LocalWebSearch,
+  SourceRetriever,
   WebSearch,
 } from '@applik8s/web-search';
+import { BoundedHttpSourceRetriever } from '@applik8s/web-retrieval-http';
 import { SearxngWebSearch } from '@applik8s/web-search-searxng';
 import { type } from 'arktype';
 
@@ -319,6 +329,24 @@ export interface ConfigureAgenticProfilesOptions<
   readonly externalWebSearch?: (
     spec: Extract<AgenticInstallationSpec, { readonly profile: 'external' }>,
   ) => ApplicationWebSearchProvider;
+  readonly developerSourceRetriever?: (
+    spec: Extract<AgenticInstallationSpec, { readonly profile: 'developer' }>,
+  ) => ApplicationSourceRetrieverProvider;
+  readonly dedicatedSourceRetriever?: (
+    spec: Extract<AgenticInstallationSpec, { readonly profile: 'dedicated' }>,
+  ) => ApplicationSourceRetrieverProvider;
+  readonly externalSourceRetriever?: (
+    spec: Extract<AgenticInstallationSpec, { readonly profile: 'external' }>,
+  ) => ApplicationSourceRetrieverProvider;
+  readonly developerResearchEvidence?: (
+    spec: Extract<AgenticInstallationSpec, { readonly profile: 'developer' }>,
+  ) => ApplicationResearchEvidenceProvider;
+  readonly dedicatedResearchEvidence?: (
+    spec: Extract<AgenticInstallationSpec, { readonly profile: 'dedicated' }>,
+  ) => ApplicationResearchEvidenceProvider;
+  readonly externalResearchEvidence?: (
+    spec: Extract<AgenticInstallationSpec, { readonly profile: 'external' }>,
+  ) => ApplicationResearchEvidenceProvider;
 }
 
 export type AgenticProfilesOptions = Pick<
@@ -336,6 +364,12 @@ export type AgenticProfilesOptions = Pick<
   | 'developerWebSearch'
   | 'dedicatedWebSearch'
   | 'externalWebSearch'
+  | 'developerSourceRetriever'
+  | 'dedicatedSourceRetriever'
+  | 'externalSourceRetriever'
+  | 'developerResearchEvidence'
+  | 'dedicatedResearchEvidence'
+  | 'externalResearchEvidence'
 >;
 
 type DatabaseBinding =
@@ -346,6 +380,13 @@ export type AgenticProfileName =
   | 'developer'
   | 'dedicated'
   | 'external';
+
+/** Stable qualifications consumed by maintained research specializations. */
+export const AgenticResearch = Object.freeze({
+  search: WebSearch.named('research'),
+  retrieve: SourceRetriever.named('research'),
+  evidence: ResearchEvidence.named('research'),
+});
 
 /** Canonical server-admitted workspace boundary shared by profiles and models. */
 export const AgenticWorkspaceId = trustedContext('workspaceId', {
@@ -453,6 +494,15 @@ export function agenticCapacity(
 export const AgenticProfiles = Object.freeze({
   capacity: agenticCapacity,
 });
+
+const starterResearchUrl = 'https://docs.applik8s.dev/research/starter-evidence';
+const starterResearchText = [
+  'Maintained research agents separate web discovery, bounded source retrieval,',
+  'durable evidence, and application-owned publication. Retrieved text is',
+  'untrusted data and completed deliverables cite committed evidence.',
+].join(' ');
+const starterResearchDigest =
+  'sha256:e8419574064727e90ee29c44a127ecc797908f3dec6789ee4482c48843cc8eb7' as const;
 
 /** Credential-free constructors backed by the same production-shaped contracts. */
 export const AgenticStarter = Object.freeze({
@@ -583,7 +633,41 @@ export const AgenticStarter = Object.freeze({
     return LocalNotificationDelivery.inspectable();
   },
   webSearch() {
-    return LocalWebSearch.deterministic();
+    return LocalWebSearch.deterministic({
+      results: [{
+        title: 'Maintained research-agent evidence fixture',
+        url: starterResearchUrl,
+        snippet: starterResearchText,
+        source: 'Applik8s Starter',
+        score: 1,
+      }],
+    });
+  },
+  sourceRetriever() {
+    return LocalSourceRetriever.deterministic({
+      sources: [{
+        requestedUrl: starterResearchUrl,
+        canonicalUrl: starterResearchUrl,
+        mediaType: 'text/plain',
+        title: 'Maintained research-agent evidence fixture',
+        text: starterResearchText,
+        contentDigest: starterResearchDigest,
+        sizeBytes: new TextEncoder().encode(starterResearchText).byteLength,
+        retrievedAt: new Date(0).toISOString(),
+        provider: 'agentic-starter',
+        receipt: {
+          redirects: [],
+          networkPolicy: 'deterministic-fixture',
+          contentPolicy: 'text-only',
+        },
+      }],
+      provider: 'agentic-starter',
+    });
+  },
+  researchEvidence() {
+    return LocalResearchEvidence.deterministic({
+      storeIdentity: 'agentic-starter-research',
+    });
   },
 });
 
@@ -1057,6 +1141,40 @@ function agenticManagedWebSearch(
   });
 }
 
+function agenticManagedResearchEvidence(
+  context: AgenticProfileContext,
+): ApplicationResearchEvidenceProvider {
+  return PostgresResearchEvidence.create({
+    connectionEnvName: 'APPLIK8S_RESEARCH_DATABASE_URL',
+    schema: 'applik8s_research',
+    storeIdentity: `postgres:${context.application}:research`,
+    connectionSecret: {
+      name: `${context.application}-db-app`,
+      namespace: context.namespace,
+      key: 'uri',
+    },
+  });
+}
+
+function agenticExternalResearchEvidence(
+  spec: Extract<AgenticInstallationSpec, { readonly profile: 'external' }>,
+  context: AgenticProfileContext,
+): ApplicationResearchEvidenceProvider {
+  return PostgresResearchEvidence.create({
+    connectionEnvName: 'APPLIK8S_RESEARCH_DATABASE_URL',
+    schema: 'applik8s_research',
+    storeIdentity: `postgres:${context.application}:research`,
+    connectionSecret: {
+      name: spec.providers.database.connectionSecretName,
+      namespace: context.namespace,
+      key: applicationValueDefault(
+        spec.providers.database.connectionSecretKey,
+        'uri',
+      ),
+    },
+  });
+}
+
 /**
  * Maintained exhaustive profile wiring for the Agentic Start.
  *
@@ -1095,7 +1213,9 @@ export function configureAgenticProfiles<
   const PrimaryIdentity = IdentityProvider.named('primary');
   const PrimaryPayments = PaymentProvider.named('primary');
   const TransactionalNotifications = NotificationDelivery.named('transactional');
-  const ResearchWeb = WebSearch.named('research');
+  const ResearchWeb = AgenticResearch.search;
+  const ResearchSources = AgenticResearch.retrieve;
+  const ResearchRecords = AgenticResearch.evidence;
   const Inference = AI.named('inference');
   const HistoricalDataset = LakehouseDataset.named('historical-usage');
   const HistoricalQueries = LakehouseQuery.named('historical-usage');
@@ -1373,6 +1493,60 @@ export function configureAgenticProfiles<
     )
     .exhaustive();
 
+  deployment
+    .provide(ResearchSources)
+    .starter(() => AgenticStarter.sourceRetriever())
+    .developer((spec) =>
+      options.developerSourceRetriever?.(spec)
+        ?? application.selectTarget({
+          local: () => AgenticStarter.sourceRetriever(),
+          awsLocal: () => AgenticStarter.sourceRetriever(),
+          aws: () => AgenticStarter.sourceRetriever(),
+          kubernetes: () => BoundedHttpSourceRetriever.create(),
+        }),
+    )
+    .dedicated((spec) =>
+      options.dedicatedSourceRetriever?.(spec)
+        ?? application.selectTarget({
+          local: () => AgenticStarter.sourceRetriever(),
+          awsLocal: () => AgenticStarter.sourceRetriever(),
+          aws: () => AgenticStarter.sourceRetriever(),
+          kubernetes: () => BoundedHttpSourceRetriever.create(),
+        }),
+    )
+    .external((spec) =>
+      options.externalSourceRetriever?.(spec)
+        ?? BoundedHttpSourceRetriever.create(),
+    )
+    .exhaustive();
+
+  deployment
+    .provide(ResearchRecords)
+    .starter(() => AgenticStarter.researchEvidence())
+    .developer((spec) =>
+      options.developerResearchEvidence?.(spec)
+        ?? application.selectTarget({
+          local: () => AgenticStarter.researchEvidence(),
+          awsLocal: () => AgenticStarter.researchEvidence(),
+          aws: () => AgenticStarter.researchEvidence(),
+          kubernetes: () => agenticManagedResearchEvidence(profileContext),
+        }),
+    )
+    .dedicated((spec) =>
+      options.dedicatedResearchEvidence?.(spec)
+        ?? application.selectTarget({
+          local: () => AgenticStarter.researchEvidence(),
+          awsLocal: () => AgenticStarter.researchEvidence(),
+          aws: () => AgenticStarter.researchEvidence(),
+          kubernetes: () => agenticManagedResearchEvidence(profileContext),
+        }),
+    )
+    .external((spec) =>
+      options.externalResearchEvidence?.(spec)
+        ?? agenticExternalResearchEvidence(spec, profileContext),
+    )
+    .exhaustive();
+
   const analytics = application.inject(AnalyticsStore);
   const eventLog = application.inject(EventTransport);
   const objects = application.inject(ApplicationObjects);
@@ -1383,6 +1557,8 @@ export function configureAgenticProfiles<
   const payments = application.inject(PrimaryPayments);
   const notifications = application.inject(TransactionalNotifications);
   const webSearch = application.inject(ResearchWeb);
+  const sourceRetriever = application.inject(ResearchSources);
+  const researchEvidence = application.inject(ResearchRecords);
   application.defaults({
     database: primaryDatabase,
     analytics,
@@ -1431,6 +1607,8 @@ export function configureAgenticProfiles<
     payments,
     notifications,
     webSearch,
+    sourceRetriever,
+    researchEvidence,
     observability,
     historicalDataset: HistoricalDataset,
     historicalQueries: HistoricalQueries,

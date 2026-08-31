@@ -8,6 +8,73 @@ import {
 } from '../src/index.js';
 
 describe('v0.8 target-selected provider lowering', () => {
+  it('ignores the callable facade marker beside authoritative profile branches', () => {
+    const provider: ApplicationProviderNode = {
+      id: 'provider.source-retriever.v1alpha1.research',
+      kind: 'provider',
+      name: 'SourceRetriever',
+      stability: 'stable',
+      interface: 'SourceRetriever',
+      implementation: 'application-provider-selection',
+      config: {
+        sourceRetriever: { kind: 'application-provider-selection' },
+        profile: {
+          branches: [{
+            variant: 'starter',
+            implementation: 'source-retriever-deterministic',
+            config: {
+              provider: 'fixture',
+              kind: 'source-retriever-deterministic',
+              mode: 'deterministic',
+            },
+          }],
+        },
+      },
+    };
+    expect(resolveApplicationProviderForTarget(provider, context('local'))).toMatchObject({
+      implementation: 'source-retriever-deterministic',
+      config: {
+        provider: 'fixture',
+        kind: 'source-retriever-deterministic',
+        mode: 'deterministic',
+      },
+    });
+  });
+
+  it('resolves a target selection carried by a newly defined provider profile branch', () => {
+    const provider: ApplicationProviderNode = {
+      id: 'provider.research-evidence.v1alpha1.research',
+      kind: 'provider',
+      name: 'ResearchEvidence',
+      stability: 'stable',
+      interface: 'ResearchEvidence',
+      implementation: 'application-provider-selection',
+      config: {
+        researchEvidence: { kind: 'application-provider-selection' },
+        profile: {
+          branches: [{
+            variant: 'developer',
+            implementation: 'application-target-provider-selection',
+            config: {
+              kind: 'application-target-provider-selection',
+              targets: {
+                local: { provider: 'memory', kind: 'research-evidence-memory' },
+                aws: { provider: 'memory', kind: 'research-evidence-memory' },
+              },
+            },
+          }],
+        },
+      },
+    };
+    expect(resolveApplicationProviderForTarget(provider, {
+      ...context('aws'),
+      profile: 'developer',
+    })).toMatchObject({
+      implementation: 'research-evidence-memory',
+      config: expect.objectContaining({ kind: 'research-evidence-memory' }),
+    });
+  });
+
   it('lowers managed and external WebSearch providers without leaking provider policy', () => {
     const contributor = builtinApplicationDeploymentContributors().find(
       (candidate) => candidate.interface === 'WebSearch' && candidate.implementation === 'searxng',

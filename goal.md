@@ -199,10 +199,7 @@ revalidation, DNS-pinned connections, response and deadline bounds,
 identity-only content encoding, accepted media types, normalized text, and
 content-addressed receipts. Deterministic fixtures hydrate through the same
 managed-worker contract, and the application graph records the selected
-retriever and its safe policy independently from search. Durable
-`ResearchEvidence`, artifact/citation linkage, the `researchAgent()`
-composition, interruption qualification, and Agentic Start's evidence journey
-remain the next release-blocking research work.
+retriever and its safe policy independently from search.
 
 `@applik8s/research` now supplies the separate `ResearchEvidence` capability
 with local deterministic and PostgreSQL durable providers. Evidence commits
@@ -211,10 +208,11 @@ mutable pages, and retain normalized query, retrieval, search-receipt,
 citation, visibility, snapshot, and causal-artifact provenance. Artifact links
 are independently append-safe and refuse absent or cross-scope evidence. The
 selected profile, portable runtime binding, store identity, and PostgreSQL
-connection environment (never a URL) are plan-visible. Five focused semantic
-tests, the package typecheck, package build, package catalog, public-contract
-inventory, and documentation checks pass. A live PostgreSQL interruption
-vertical and Agentic Start integration remain open.
+connection environment (never a URL) are plan-visible. Kubernetes runtime
+placement now projects that connection through an explicit Secret/key
+contract rather than guessing or serializing a URL. Focused semantic tests,
+the package typecheck, package build, package catalog, public-contract
+inventory, and documentation checks pass.
 
 The first maintained `researchAgent()` orchestration slice now composes the
 normal AI agent, service identity, qualified `WebSearch`, qualified
@@ -233,7 +231,7 @@ This is not yet the RFP's terminal research contract: the exported composition
 still returns the existing non-callable conversation agent binding, has not yet
 added its actor-backed typed input/output and completed/partial/failed result,
 does not automatically verify/link the publication artifact receipt, and lacks
-PostgreSQL interruption plus Agentic Start end-to-end qualification.
+a complete browser-to-publication Agentic Start research-run qualification.
 
 The durable evidence provider now also passes a real disposable-PostgreSQL
 replacement gate: a committed record survives provider shutdown/recreation,
@@ -247,6 +245,21 @@ and optional empty provenance remains absent. The gate owns and removes a
 disposable native PostgreSQL instance. Kubernetes/managed-PostgreSQL placement,
 mid-transaction process termination, and the complete research run remain
 separate evidence.
+
+The maintained Agentic Start now qualifies and injects all three research
+authorities. Starter and non-Kubernetes development use coherent deterministic
+search, source, and evidence fixtures; Kubernetes development/dedicated use
+managed SearXNG, bounded HTTP retrieval, and the selected PostgreSQL Secret;
+external mode consumes explicit SearXNG and PostgreSQL authorities. The
+generated research feature now declares `researchAgent('researcher.v1', ...)`
+with only its identity, model, application-owned publication/search tools, and
+bounded policy instead of rebuilding TanStack orchestration. Generic
+deployment lowering was extended so newly defined callable providers receive
+the same profile/target selection semantics as built-ins. Real generator,
+compiler, local, AWS, and Kubernetes planning evidence passes. A full live
+research conversation that commits evidence, publishes a note, and verifies
+the artifact/evidence receipt remains open alongside the callable durable
+terminal contract above.
 
 Continue in the sequence above until every stable-candidate gate is implemented
 and evidenced. Keep beta/preview surfaces truthful; do not expand the frozen

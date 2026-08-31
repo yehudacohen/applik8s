@@ -79,7 +79,11 @@ describe('durable research evidence', () => {
     application.profile(application.installation.spec, 'profile')
       .provide(Evidence)
       .starter(() => LocalResearchEvidence.deterministic())
-      .dedicated(() => PostgresResearchEvidence.create({ connectionEnvName: 'RESEARCH_DATABASE_URL', schema: 'research' }))
+      .dedicated(() => PostgresResearchEvidence.create({
+        connectionEnvName: 'RESEARCH_DATABASE_URL',
+        connectionSecret: { name: 'research-db-app', namespace: 'research-system', key: 'uri' },
+        schema: 'research',
+      }))
       .external(() => PostgresResearchEvidence.create({ connectionEnvName: 'EXTERNAL_RESEARCH_DATABASE_URL', schema: 'research' }))
       .exhaustive();
     const evidence = application.inject(Evidence);
@@ -99,6 +103,8 @@ describe('durable research evidence', () => {
       }),
     });
     expect(JSON.stringify(node)).not.toContain('postgres://');
+    expect(JSON.stringify(node)).toContain('research-db-app');
+    expect(JSON.stringify(node)).toContain('RESEARCH_DATABASE_URL');
   });
 
   it('fails closed on malformed retained snapshots and citation spans', async () => {

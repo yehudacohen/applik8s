@@ -81,9 +81,19 @@ export const applicationAgenticStartDefinition = Object.freeze({
       '@applik8s/web-search',
       'bounded provider-neutral web retrieval with deterministic Starter execution',
     ),
+    packageContribution(
+      '@applik8s/research',
+      'maintained evidence-grounded research agents and durable citation authority',
+    ),
     {
       package: '@applik8s/web-search-searxng',
       purpose: 'server-only external and TypeKro-managed SearXNG adapter',
+      dependencyZone: 'server-only',
+      required: true,
+    },
+    {
+      package: '@applik8s/web-retrieval-http',
+      purpose: 'server-only bounded public-source retrieval with SSRF and response limits',
       dependencyZone: 'server-only',
       required: true,
     },

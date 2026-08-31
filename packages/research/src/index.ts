@@ -92,6 +92,23 @@ export const PostgresResearchEvidence = Object.freeze({
         APPLIK8S_RESEARCH_EVIDENCE_CONNECTION_ENV: provider.connectionEnvName,
         APPLIK8S_RESEARCH_EVIDENCE_SCHEMA: provider.schema,
       },
+      ...(options.connectionSecret
+        ? {
+            secretEnv: {
+              [provider.connectionEnvName]: {
+                secret: {
+                  apiVersion: 'v1',
+                  kind: 'Secret',
+                  name: options.connectionSecret.name,
+                  ...(options.connectionSecret.namespace
+                    ? { namespace: options.connectionSecret.namespace }
+                    : {}),
+                },
+                key: options.connectionSecret.key ?? 'uri',
+              },
+            },
+          }
+        : {}),
     }));
   },
 });

@@ -83,6 +83,14 @@ describe('maintained Agentic Start profiles', () => {
       kind: 'web-search-deterministic',
       mode: 'deterministic',
     });
+    expect(AgenticStarter.sourceRetriever()).toMatchObject({
+      kind: 'source-retriever-deterministic',
+      mode: 'deterministic',
+    });
+    expect(AgenticStarter.researchEvidence()).toMatchObject({
+      kind: 'research-evidence-memory',
+      mode: 'deterministic',
+    });
   });
 
   it('keeps dedicated state retained, redundant, and production-shaped', () => {

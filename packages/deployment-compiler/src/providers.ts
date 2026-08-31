@@ -61,6 +61,10 @@ const builtinProviderRegistrations: readonly BuiltinProviderRegistration[] = [
   { interface: "NotificationDelivery", implementation: "smtp", execution: "runtime-only" },
   { interface: "WebSearch", implementation: "web-search-deterministic", execution: "runtime-only" },
   { interface: "WebSearch", implementation: "searxng", execution: "external-controller" },
+  { interface: "SourceRetriever", implementation: "source-retriever-deterministic", execution: "runtime-only" },
+  { interface: "SourceRetriever", implementation: "bounded-http-source-retriever", execution: "runtime-only" },
+  { interface: "ResearchEvidence", implementation: "research-evidence-memory", execution: "runtime-only" },
+  { interface: "ResearchEvidence", implementation: "research-evidence-postgres", execution: "runtime-only" },
   { interface: "PaymentProvider", implementation: "local-simulated", execution: "runtime-only" },
   { interface: "PaymentProvider", implementation: "stripe", execution: "runtime-only" },
   { interface: "AnalyticalDatabase", implementation: "clickhouse", execution: "root-composition" },
@@ -566,7 +570,10 @@ function selectedTargetProvider(
     ? nestedConfiguration
     : undefined;
   const targetSelection = optionalObject(provider.config?.targetSelection)
-    ?? nestedTargetSelection;
+    ?? nestedTargetSelection
+    ?? (provider.config?.kind === 'application-target-provider-selection'
+      ? provider.config
+      : undefined);
   const targets = optionalObject(targetSelection?.targets);
   const selected = optionalObject(
     targets?.[context.target]
@@ -747,6 +754,12 @@ function selectedProviderValue(
   if (!object) return value;
   if (object.kind === "application-provider-selection") {
     const cases = optionalObject(object.cases);
+    // Callable provider-selection facades retain a single-key marker beside
+    // the authoritative profile metadata. It is authoring identity, not a
+    // second deployment selection, and therefore contributes no config.
+    if (!cases && object.default === undefined && Object.keys(object).length === 1) {
+      return undefined;
+    }
     const selected = cases?.[context.profile] ?? object.default;
     if (selected === undefined) {
       throw new Error(

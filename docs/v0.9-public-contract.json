@@ -9332,7 +9332,9 @@
         "@applik8s/operations",
         "@applik8s/operations-ui",
         "@applik8s/react",
+        "@applik8s/research",
         "@applik8s/usage",
+        "@applik8s/web-retrieval-http",
         "@applik8s/web-search",
         "@applik8s/web-search-searxng"
       ],
@@ -9369,6 +9371,7 @@
             "AgenticProfileName",
             "AgenticProfiles",
             "AgenticProfilesOptions",
+            "AgenticResearch",
             "AgenticSmtpNotifications",
             "AgenticStarter",
             "AgenticStripePayments",

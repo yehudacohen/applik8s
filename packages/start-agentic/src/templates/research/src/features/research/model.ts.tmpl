@@ -1,8 +1,7 @@
 import { AI } from '@applik8s/ai';
 import { module, search } from '@applik8s/applik8s';
-import { AgenticPrincipalScope } from '@applik8s/start-agentic';
-import { withApplicationTanStackPersistence } from '@applik8s/ai-tanstack';
-import { chat } from '@tanstack/ai';
+import { researchAgent } from '@applik8s/research';
+import { AgenticPrincipalScope, AgenticResearch } from '@applik8s/start-agentic';
 import { application } from '../../app';
 import { inference, webSearch } from '../../providers';
 import { ResearchNote as ResearchNoteTable } from './schema';
@@ -36,27 +35,24 @@ const research = module(
         search.text(ResearchNoteTable.body, { boost: 2 }).as('body'),
         search.filter(ResearchNoteTable.createdAt).as('createdAt'),
       );
-      const Researcher = application.agent(
-        'researcher',
+      const Researcher = application.include(researchAgent(
+        'researcher.v1',
         {
           identity: ResearcherIdentity,
           model: FastModel,
+          search: AgenticResearch.search,
+          retrieve: AgenticResearch.retrieve,
+          evidence: AgenticResearch.evidence,
           scope: AgenticPrincipalScope,
-          instructions: 'Help the user organize research notes with explicit evidence.',
+          instructions: 'Research public sources and save a concise note whose claims are grounded in committed evidence.',
           tools: [ResearchNoteTable.create, ResearchNotes.search],
+          query: {
+            maximumResults: 8,
+            maximumSources: 4,
+            maximumConcurrency: 2,
+          },
         },
-        async (request, context) => chat({
-          adapter: context.tanstack.adapter,
-          messages: request.messages,
-          threadId: request.threadId,
-          runId: context.runId,
-          tools: context.tanstack.tools,
-          middleware: [
-            withApplicationTanStackPersistence(context.tanstack.persistence),
-          ],
-          context: context.tanstack.execution,
-        }),
-      );
+      ));
       ResearcherIdentity.can(ResearchNoteTable.create, ResearchNotes.search);
       return {
         ResearchNote: ResearchNoteTable,

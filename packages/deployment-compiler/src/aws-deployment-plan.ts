@@ -1414,7 +1414,7 @@ function awsRuntimeOnlyProvider(provider: ApplicationProviderNode): boolean {
   if (provider.interface === 'AI' && provider.implementation === 'envoy-ai-gateway') {
     return providerConfig(provider).provision === false;
   }
-  return ['Authorization', 'IdentityProvider', 'OAuthAuthorizationServer', 'StructuredGeneration', 'Search', 'WebSearch', 'AnalyticalDatabase', 'NotificationDelivery', 'PaymentProvider'].includes(provider.interface)
+  return ['Authorization', 'IdentityProvider', 'OAuthAuthorizationServer', 'StructuredGeneration', 'Search', 'WebSearch', 'SourceRetriever', 'ResearchEvidence', 'AnalyticalDatabase', 'NotificationDelivery', 'PaymentProvider'].includes(provider.interface)
     && !['opensearch', 'clickhouse'].includes(provider.implementation);
 }
 

@@ -21,6 +21,15 @@ import {
 
 export interface PostgresResearchEvidenceOptions {
   readonly connectionEnvName?: string;
+  /**
+   * Kubernetes Secret projection for managed workers. The value never enters
+   * the application graph; only Secret identity and key metadata are stored.
+   */
+  readonly connectionSecret?: {
+    readonly name: string;
+    readonly namespace?: string;
+    readonly key?: string;
+  };
   readonly schema?: string;
   readonly provider?: string;
   readonly storeIdentity?: string;
