@@ -1,5 +1,4 @@
 // typecast-file-boundary: Runtime telemetry context is validated by the canonical carrier owner before this adapter restores execution-specific generics.
-import { AsyncLocalStorage } from 'node:async_hooks';
 import type {
   ApplicationTelemetryBoundaryKind,
   ApplicationTelemetryEnvelopeV1,
@@ -50,7 +49,8 @@ const telemetryRuntimeResolvers: Array<() => ApplicationTelemetryRuntime | undef
 export const applicationTelemetryCarrierHeaderName = 'x-applik8s-telemetry';
 export const maximumApplicationTelemetryCarrierBytes = 8_192;
 
-function currentApplicationTelemetryRuntime(): ApplicationTelemetryRuntime | undefined {
+/** @internal Handler-safe runtime lookup used by focused runtime adapters. */
+export function currentApplicationTelemetryRuntime(): ApplicationTelemetryRuntime | undefined {
   for (let index = telemetryRuntimeResolvers.length - 1; index >= 0; index -= 1) {
     const runtime = telemetryRuntimeResolvers[index]?.();
     if (runtime) return runtime;
@@ -67,85 +67,6 @@ export async function runApplicationTelemetryBoundary<TResult>(boundary: Applica
   const runtime = currentApplicationTelemetryRuntime();
   if (runtime) return runtime.run(boundary, execute);
   return execute();
-}
-
-export interface ApplicationProviderTelemetryOperation {
-  readonly interface: string;
-  readonly nodeId: string;
-  readonly member: string;
-}
-
-const applicationProviderOperationScope =
-  new AsyncLocalStorage<ApplicationProviderTelemetryOperation>();
-
-/**
- * Returns the exact compiler-hydrated provider operation active in this async
- * call chain. Provider runtime exports use this identity to select their
- * qualified configuration without accepting author-controlled routing data.
- *
- * @internal Generated/provider runtime seam.
- */
-export function currentApplicationProviderOperation():
-  ApplicationProviderTelemetryOperation | undefined {
-  return applicationProviderOperationScope.getStore();
-}
-
-/**
- * Records one actual provider call as a synchronous child of the active
- * semantic operation. Arguments, results, credentials, and exception messages
- * never enter the boundary contract.
- *
- * @internal Framework/compiler runtime seam.
- */
-export function runApplicationProviderTelemetryBoundary<TResult>(
-  operation: ApplicationProviderTelemetryOperation,
-  execute: () => TResult,
-): TResult {
-  return applicationProviderOperationScope.run(operation, () => {
-    const runtime = currentApplicationTelemetryRuntime();
-    if (!runtime?.runValue) return execute();
-    return runtime.runValue(providerTelemetryBoundary(operation), execute);
-  });
-}
-
-/**
- * Wraps a compiler-hydrated public provider export while preserving its exact
- * call signature and synchronous/Promise return behavior.
- *
- * @internal Generated-runtime seam.
- */
-export function instrumentApplicationProviderOperation<
-  TOperation extends CallableFunction,
->(
-  operation: ApplicationProviderTelemetryOperation,
-  callable: TOperation,
-): TOperation {
-  const instrumented = function applicationProviderOperation(
-    this: unknown,
-    ...args: unknown[]
-  ): unknown {
-    return runApplicationProviderTelemetryBoundary(
-      operation,
-      () => Reflect.apply(callable, this, args),
-    );
-  };
-  Object.defineProperty(instrumented, 'name', {
-    configurable: true,
-    value: callable.name,
-  });
-  return instrumented as unknown as TOperation;
-}
-
-function providerTelemetryBoundary(
-  operation: ApplicationProviderTelemetryOperation,
-): ApplicationTelemetryBoundary {
-  return {
-    kind: 'provider',
-    identity: `${operation.interface}.${operation.member}`,
-    provider: operation.nodeId,
-    definition: operation.member,
-    relationship: 'synchronous',
-  };
 }
 
 /** Captures the bounded, serialization-safe carrier for an explicit asynchronous handoff. */

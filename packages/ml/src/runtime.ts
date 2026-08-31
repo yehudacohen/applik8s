@@ -1,5 +1,5 @@
 // typecast-file-boundary: model-owned runtime schemas validate all inputs and outputs before restoring their generic types.
-import { currentApplicationProviderOperation } from '@applik8s/applik8s/telemetry-runtime';
+import { currentApplicationProviderOperation } from '@applik8s/applik8s/provider-telemetry-runtime';
 import type { JsonObject, RuntimeSchema } from '@applik8s/core';
 import { toRuntimeSchema } from '@applik8s/sdk/schema-runtime';
 import type {

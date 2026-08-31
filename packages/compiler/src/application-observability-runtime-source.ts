@@ -26,15 +26,15 @@ export function generatedApplicationTelemetryImports(options?: {
 		...(options?.carrierTransport
 			? ["applicationTelemetryCarrierHeaderName", "decodeApplicationTelemetryCarrier", "encodeApplicationTelemetryCarrier"]
 			: []),
-		...(options?.providerOperationInstrumentation
-			? ["instrumentApplicationProviderOperation"]
-			: []),
 		...(options?.runtimeIntegrityObserver
 			? ["observeApplicationRuntimeIntegrityEnvelope"]
 			: []),
 	];
 	return [
 		`import { ${applik8sImports.join(", ")} } from '@applik8s/applik8s/telemetry-runtime';`,
+		...(options?.providerOperationInstrumentation
+			? ["import { instrumentApplicationProviderOperation } from '@applik8s/applik8s/provider-telemetry-runtime';"]
+			: []),
 		...(options?.runtimeImplementation === false
 			? []
 			: ["import { createApplicationOpenTelemetryRuntime, startApplicationOpenTelemetryRuntime } from '@applik8s/runtime-otel';"]),

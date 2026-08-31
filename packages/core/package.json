@@ -30,6 +30,11 @@
       "types": "./dist/application-admission.d.ts",
       "import": "./dist/application-admission.js",
       "default": "./dist/application-admission.js"
+    },
+    "./managed-model": {
+      "types": "./dist/managed-model.d.ts",
+      "import": "./dist/managed-model.js",
+      "default": "./dist/managed-model.js"
     }
   }
 }

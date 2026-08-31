@@ -17,7 +17,7 @@ import {
   type ApplicationProviderSelectionValue,
   applicationProviderSelectionFor,
 } from './application-providers.js';
-import { runApplicationProviderTelemetryBoundary } from './application-telemetry-runtime.js';
+import { runApplicationProviderTelemetryBoundary } from './application-provider-telemetry-runtime.js';
 
 /** @internal Creates the lazy, compiler-visible handle returned by application.inject(). */
 export function createApplicationQualifiedProviderBinding<TImplementation>(

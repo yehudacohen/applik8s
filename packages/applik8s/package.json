@@ -226,6 +226,11 @@
       "import": "./dist/application-telemetry-runtime.js",
       "default": "./dist/application-telemetry-runtime.js"
     },
+    "./provider-telemetry-runtime": {
+      "types": "./dist/application-provider-telemetry-runtime.d.ts",
+      "import": "./dist/application-provider-telemetry-runtime.js",
+      "default": "./dist/application-provider-telemetry-runtime.js"
+    },
     "./schedule-runtime-local": {
       "types": "./dist/application-schedule-local-runtime.d.ts",
       "import": "./dist/application-schedule-local-runtime.js",

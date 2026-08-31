@@ -1,10 +1,12 @@
 // typecast-file-boundary: validated model payloads are narrowed to the declared moderation states before domain decisions.
-import { entity, type } from '@applik8s/applik8s/dsl';
+import { ManagedModelStore, OperatorRuntime, Scheduler } from '@applik8s/applik8s';
+import { type } from '@applik8s/applik8s/dsl';
 import { desc, eq } from 'drizzle-orm';
-import { app, namespace, workflow } from '../domain-app';
+import { app, workflow } from '../domain-app';
 import { AutomationPostReview } from '../automation/workflow';
 import { Database } from '../providers/database';
-import { moderationCases, reports } from '../schema/moderation';
+import { databaseProvider } from '../providers';
+import { moderationCases, moderationPolicies, reports } from '../schema/moderation';
 import { ModerationCaseChanged, ReportSubmitted } from './events';
 
 const ReportBase = reports;
@@ -197,46 +199,75 @@ export const ModerationCaseQueue = ModerationCase.view(
   },
 );
 
-export const moderationPolicyApiVersion = 'chirp.applik8s.dev/v1alpha1';
-export const moderationPolicyKind = 'ModerationPolicy';
-
-const ModerationPolicyResource = app.crd(
-  entity(moderationPolicyKind, {
-    spec: type({ maxRisk: 'number', blockedTerms: 'string[]' }),
-    status: type({ 'phase?': "'Applying' | 'Ready' | 'Invalid'", 'message?': 'string' }),
+const ModerationPolicy = moderationPolicies.managed({
+  status: type({
+    phase: "'Applying' | 'Ready' | 'Invalid'",
+    message: 'string',
   }),
-  { apiVersion: moderationPolicyApiVersion },
+  initialStatus: {
+    phase: 'Applying',
+    message: 'Policy has not reconciled yet.',
+  },
+  resync: { interval: '2m', maximumItems: 100 },
+  lease: { duration: '45s' },
+});
+
+app.provide(
+  ModerationPolicy.store,
+  ManagedModelStore.postgres({ database: databaseProvider }),
+);
+app.provide(
+  OperatorRuntime,
+  OperatorRuntime.distributed({
+    database: databaseProvider,
+    scheduler: Scheduler.postgres({ database: databaseProvider }),
+  }),
 );
 
-export const ModerationPolicy = ModerationPolicyResource;
+export { ModerationPolicy };
 export const ModerationPolicyCurrent = ModerationPolicy.view({
   input: type({}),
   output: type({
     name: 'string',
     maxRisk: 'number',
     blockedTerms: 'string[]',
-    phase: "'Applying' | 'Ready' | 'Invalid'",
-    message: 'string',
   }).array(),
+  database: Database,
   authorize: ({ principal }) => principal.roles?.includes('moderator') === true,
-  kubernetes: {
-    namespace,
-    fieldSelector: () => 'metadata.name=default',
-    project: function current({ value }) {
-      return {
-        name: value.metadata.name,
-        maxRisk: value.spec.maxRisk,
-        blockedTerms: value.spec.blockedTerms,
-        phase: value.status?.phase ?? 'Invalid',
-        message: value.status?.message ?? 'Policy has not reconciled yet.',
-      };
-    },
-    limit: () => 1,
-    pageSize: 10,
-    maxPages: 2,
-    maxItems: 10,
-  },
   budgets: { maxRows: 1, maxResultBytes: 16_000, timeoutMs: 2_000 },
+}, async function currentPolicy() {
+  return Database
+    .select({
+      name: ModerationPolicy.id,
+      maxRisk: ModerationPolicy.maxRisk,
+      blockedTerms: ModerationPolicy.blockedTerms,
+    })
+    .from(ModerationPolicy)
+    .where(eq(ModerationPolicy.id, 'default'))
+    .limit(1);
+});
+
+ModerationPolicy.create.beforeCommit({ history: true }, async (policy, input, context) => {
+  if (!context.principal?.roles?.includes('moderator')) {
+    throw new Error('Only a moderator can create a moderation policy.');
+  }
+  if (input.revision !== undefined) {
+    throw new Error('Moderation policy revisions are server-owned.');
+  }
+  if (policy.value.maxRisk < 0 || policy.value.maxRisk > 1) {
+    throw new Error('maxRisk must be between zero and one.');
+  }
+});
+ModerationPolicy.update.beforeCommit({ history: true }, async (policy, input, context) => {
+  if (!context.principal?.roles?.includes('moderator')) {
+    throw new Error('Only a moderator can update a moderation policy.');
+  }
+  if ('id' in input.patch || 'revision' in input.patch) {
+    throw new Error('Moderation policy identity and revisions are server-owned.');
+  }
+  if (policy.value.maxRisk < 0 || policy.value.maxRisk > 1) {
+    throw new Error('maxRisk must be between zero and one.');
+  }
 });
 
 const ApplyModerationPolicy = workflow(
@@ -257,36 +288,20 @@ const ApplyModerationPolicy = workflow(
 );
 
 ModerationPolicy.on.reconcile(async function reconcileModerationPolicy(policy) {
-  const run = await ApplyModerationPolicy.start(
-    {
-      name: policy.metadata.name,
-      maxRisk: policy.spec.maxRisk,
-      blockedTerms: policy.spec.blockedTerms,
-    },
-    { idempotencyKey: `${policy.metadata.uid}:${policy.metadata.generation}` },
-  );
-  const observation = await policy.track('apply-policy', run, {
-    onGenerationChange: 'supersede',
-    onDelete: { action: 'cancel', timeout: '30s', onTimeout: 'detach' },
-    updates: { phases: true, minInterval: '1s' },
+  const result = await ApplyModerationPolicy({
+    name: policy.id,
+    maxRisk: policy.value.maxRisk,
+    blockedTerms: [...policy.value.blockedTerms],
+  }, {
+    idempotencyKey: `${policy.metadata.uid}:${policy.metadata.generation}`,
   });
-  if (observation.phase === 'Succeeded' && observation.result) {
-    policy.status.phase = observation.result.phase;
-    policy.status.message = observation.result.message;
-    return;
-  }
-  if (
-    observation.phase === 'Failed'
-    || observation.phase === 'Cancelled'
-    || observation.phase === 'TimedOut'
-  ) {
-    policy.status.phase = 'Invalid';
-    policy.status.message = observation.error?.message
-      ?? `Policy workflow ${observation.phase.toLowerCase()}.`;
-    return;
-  }
-  policy.status.phase = 'Applying';
-  policy.status.message = 'Policy workflow is still running.';
+  await policy.status.update(result);
+  await policy.conditions.set({
+    type: 'Ready',
+    status: result.phase === 'Ready' ? 'True' : 'False',
+    reason: result.phase === 'Ready' ? 'PolicyApplied' : 'PolicyInvalid',
+    message: result.message,
+  });
 });
 
 /**

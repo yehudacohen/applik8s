@@ -53,7 +53,7 @@ import {
   portableManagedModelStatus,
   removePortableManagedModelCondition,
   setPortableManagedModelCondition,
-} from '@applik8s/core';
+} from '@applik8s/core/managed-model';
 import {
   canonicalJsonCompatibleV1Policy,
   canonicalJsonV1String,

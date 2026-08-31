@@ -30,10 +30,16 @@ for (let shard = startShard; shard <= shards; shard += 1) {
     `--shard=${shard}/${shards}`,
     `--maxWorkers=${workers}`,
     '--exclude=packages/compiler/test/application-workflows.vertical.test.ts',
+    '--exclude=packages/compiler/test/compiler-artifacts.vertical.test.ts',
     '--passWithNoTests',
   ]);
   if (code !== 0) process.exit(code);
 }
+
+const compilerArtifactCode = await run(process.execPath, [
+  resolve('scripts/run-compiler-artifact-tests.mjs'),
+]);
+if (compilerArtifactCode !== 0) process.exit(compilerArtifactCode);
 
 const workflowCompilerCode = await run(process.execPath, [
   resolve('scripts/run-workflow-compiler-tests.mjs'),

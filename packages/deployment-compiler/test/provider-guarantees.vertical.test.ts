@@ -30,13 +30,19 @@ describe('v0.8 provider guarantee manifests', () => {
     expect(manifest?.guarantees.every(({ disposition }) => disposition === 'unsupported')).toBe(true)
   })
 
-  it('qualifies only the implemented local finite Job runtime', () => {
-    const localRuntime = provider('JobRuntime', 'local-job-runtime')
-    const [local] = applicationProviderGuaranteesForGraph({
-      graph: { ...graph(), nodes: [localRuntime] },
-      target: 'local',
+  it.each([
+    ['local', 'local-job-runtime'],
+    ['kubernetes', 'kubernetes-job-runtime'],
+    ['aws', 'aws-job-runtime'],
+  ] as const)('qualifies the maintained %s finite Job runtime', (target, implementation) => {
+    const runtime = provider('JobRuntime', implementation)
+    const [manifest] = applicationProviderGuaranteesForGraph({
+      graph: { ...graph(), nodes: [runtime] },
+      target,
     })
-    expect(local?.guarantees.filter(({ id }) => id.startsWith('job-'))).toEqual([
+    expect(manifest?.limitations.some((limitation) =>
+      limitation.includes(`JobRuntime/${implementation} has no qualified`))).toBe(false)
+    expect(manifest?.guarantees.filter(({ id }) => id.startsWith('job-'))).toEqual([
       expect.objectContaining({ id: 'job-terminal-linearization', disposition: 'bounded' }),
       expect.objectContaining({ id: 'job-scoped-idempotency', disposition: 'bounded' }),
       expect.objectContaining({ id: 'job-whole-attempt-retry', disposition: 'bounded' }),
@@ -44,16 +50,6 @@ describe('v0.8 provider guarantee manifests', () => {
       expect.objectContaining({ id: 'job-result-retention', disposition: 'bounded' }),
       expect.objectContaining({ id: 'job-causal-admission', disposition: 'bounded' }),
     ])
-
-    const kubernetesRuntime = provider('JobRuntime', 'kubernetes-job-runtime')
-    const [kubernetes] = applicationProviderGuaranteesForGraph({
-      graph: { ...graph(), nodes: [kubernetesRuntime] },
-      target: 'kubernetes',
-    })
-    expect(kubernetes?.limitations).toEqual([
-      'JobRuntime/kubernetes-job-runtime has no qualified kubernetes lowering.',
-    ])
-    expect(kubernetes?.guarantees.every(({ disposition }) => disposition === 'unsupported')).toBe(true)
   })
 
   it.each([

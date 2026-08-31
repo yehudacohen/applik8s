@@ -4530,6 +4530,16 @@
           ]
         },
         {
+          "name": "./provider-telemetry-runtime",
+          "source": "packages/applik8s/src/application-provider-telemetry-runtime.ts",
+          "symbols": [
+            "ApplicationProviderTelemetryOperation",
+            "currentApplicationProviderOperation",
+            "instrumentApplicationProviderOperation",
+            "runApplicationProviderTelemetryBoundary"
+          ]
+        },
+        {
           "name": "./query-batch-runtime",
           "source": "packages/applik8s/src/query-batch-runtime.ts",
           "symbols": [
@@ -4885,22 +4895,19 @@
           "name": "./telemetry-runtime",
           "source": "packages/applik8s/src/application-telemetry-runtime.ts",
           "symbols": [
-            "ApplicationProviderTelemetryOperation",
             "ApplicationTelemetryBoundary",
             "ApplicationTelemetryRuntime",
             "applicationTelemetryCarrierHeaderName",
             "captureApplicationTelemetryContext",
             "countApplicationTelemetry",
-            "currentApplicationProviderOperation",
+            "currentApplicationTelemetryRuntime",
             "decodeApplicationTelemetryCarrier",
             "encodeApplicationTelemetryCarrier",
             "installApplicationTelemetryRuntimeResolver",
-            "instrumentApplicationProviderOperation",
             "logApplicationTelemetry",
             "maximumApplicationTelemetryCarrierBytes",
             "observeApplicationRuntimeIntegrityEnvelope",
             "recordApplicationTelemetry",
-            "runApplicationProviderTelemetryBoundary",
             "runApplicationTelemetryBoundary"
           ]
         },
@@ -6805,6 +6812,15 @@
             "canonicalJsonV1String",
             "canonicalJsonV1Value",
             "canonicalJsonVersion"
+          ]
+        },
+        {
+          "name": "./managed-model",
+          "source": "packages/core/src/managed-model.ts",
+          "symbols": [
+            "portableManagedModelStatus",
+            "removePortableManagedModelCondition",
+            "setPortableManagedModelCondition"
           ]
         }
       ]

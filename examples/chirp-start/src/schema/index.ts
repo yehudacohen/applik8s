@@ -2,7 +2,7 @@ import { relations } from '@applik8s/applik8s/drizzle';
 import { accounts, credentialLinks, installationSettings } from './accounts';
 import { automationControls, automationRuns, automations } from './automation';
 import { engagementBatches } from './engagement';
-import { moderationCases, reports } from './moderation';
+import { moderationCases, moderationPolicies, reports } from './moderation';
 import { mediaAttachments, posts } from './posts';
 import { blocks, bookmarks, follows, mutes, notifications, reactions } from './social';
 
@@ -59,13 +59,13 @@ export const automationRunsRelations = relations(automationRuns, ({ one }) => ({
 
 export {
   accounts, automationControls, automationRuns, automations, blocks, bookmarks, credentialLinks, follows,
-  engagementBatches, installationSettings, mediaAttachments, moderationCases, mutes, notifications, posts,
+  engagementBatches, installationSettings, mediaAttachments, moderationCases, moderationPolicies, mutes, notifications, posts,
   reactions, reports,
 };
 
 export const chirpSchema = {
   accounts, credentialLinks, installationSettings, posts, Media: mediaAttachments, follows, reactions,
-  bookmarks, notifications, blocks, mutes, reports, moderationCases, automations, automationRuns, automationControls,
+  bookmarks, notifications, blocks, mutes, reports, moderationCases, moderationPolicies, automations, automationRuns, automationControls,
   engagementBatches,
   accountsRelations, postsRelations, followsRelations, reactionsRelations, bookmarksRelations,
   notificationsRelations, mediaAttachmentsRelations, automationsRelations, automationRunsRelations,

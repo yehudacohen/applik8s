@@ -27,3 +27,15 @@ export const moderationCases = model('moderation_cases', {
   resolvedAt: field.text('resolved_at'),
   revision: field.text('revision').notNull().default(''),
 }, (table) => [index('moderation_cases_state_opened').on(table.state, table.openedAt)]);
+
+/**
+ * Low-cardinality desired application policy. Managed-model lifecycle and
+ * status remain framework-owned; this table is only the authored desired
+ * value and therefore remains portable across deployment profiles.
+ */
+export const moderationPolicies = model('moderation_policies', {
+  id: field.text('id').primaryKey(),
+  maxRisk: field.real('max_risk').notNull(),
+  blockedTerms: field.jsonb('blocked_terms').$type<readonly string[]>().notNull().default([]),
+  revision: field.text('revision').notNull().default(''),
+});

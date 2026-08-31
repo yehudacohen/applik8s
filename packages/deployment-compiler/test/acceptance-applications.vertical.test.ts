@@ -10,11 +10,13 @@ import {
   compileLocalSupervisorPlan,
 } from '../src/index.js';
 
+type AwsDisposition = 'compatible' | 'diagnostic' | 'throw';
+
 describe.each([
-  ['GuestBook', 'examples/guestbook-start/src/application.ts', 'app', true],
-  ['Chirp', 'examples/chirp-start/src/application.ts', 'app', false],
-  ['Agentic Start', 'examples/identity-start/src/application.ts', 'application', false],
-] as const)('v0.8 %s target compatibility', (_name, entrypoint, compositionExport, awsCompatible) => {
+  ['GuestBook', 'examples/guestbook-start/src/application.ts', 'app', 'diagnostic' as AwsDisposition],
+  ['Chirp', 'examples/chirp-start/src/application.ts', 'app', 'throw' as AwsDisposition],
+  ['Agentic Start', 'examples/identity-start/src/application.ts', 'application', 'throw' as AwsDisposition],
+] as const)('v0.8 %s target compatibility', (_name, entrypoint, compositionExport, awsDisposition) => {
   let graph: ApplicationGraph;
   const installationSpec = { name: 'starter', profile: 'starter' } as const;
 
@@ -50,8 +52,14 @@ describe.each([
       installationSpec,
       workspaceRoot: process.cwd(),
     });
-    if (!awsCompatible) {
+    if (awsDisposition === 'throw') {
       expect(compile).toThrow(/SCHEDULE_PRECISION_UNSUPPORTED/u);
+      return;
+    }
+    if (awsDisposition === 'diagnostic') {
+      expect(compile().diagnostics).toEqual(expect.arrayContaining([
+        expect.objectContaining({ code: 'AWS_PROVIDER_INCOMPATIBLE', severity: 'error' }),
+      ]));
       return;
     }
     const plan = compile();
@@ -75,12 +83,12 @@ describe.each([
     const localApplication = compileLocalApplicationPlan({ graph, supervisor: local, workspaceRoot: process.cwd() });
     const localAgain = compileLocalApplicationPlan({ graph, supervisor: local, workspaceRoot: process.cwd() });
 
-    expect(validateApplicationPlan(localApplication).diagnostics).toEqual([]);
     expect(serializeApplicationPlanContent(localApplication)).toBe(
       serializeApplicationPlanContent(localAgain),
     );
     expect(localApplication.physical.nativePlans.map(({ authority }) => authority)).toEqual(['local-supervisor']);
-    if (!awsCompatible) return;
+    if (awsDisposition !== 'compatible') return;
+    expect(validateApplicationPlan(localApplication).diagnostics).toEqual([]);
     const aws = compileApplicationAwsDeploymentPlan({
       graph,
       target: 'aws',

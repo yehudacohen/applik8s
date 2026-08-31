@@ -8,7 +8,7 @@ import {
 } from '@applik8s/ml';
 import { installApplicationMLRuntimeResolver } from '@applik8s/ml/runtime';
 import { predictApplicationML } from '@applik8s/ml/runtime';
-import { runApplicationProviderTelemetryBoundary } from '@applik8s/applik8s/telemetry-runtime';
+import { runApplicationProviderTelemetryBoundary } from '@applik8s/applik8s/provider-telemetry-runtime';
 import { afterEach, describe, expect, it } from 'vitest';
 
 const artifact = ML.artifact({
