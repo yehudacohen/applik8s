@@ -403,6 +403,7 @@ describe('application finite Job runtime', () => {
 
     milliseconds += 31_000;
     await expect(run.progress()).rejects.toBeInstanceOf(ApplicationJobProgressExpiredError);
+    await expect(run.progress()).rejects.toBeInstanceOf(ApplicationJobProgressExpiredError);
     expect((await run.outcome()).status).toBe('succeeded');
 
     milliseconds += 30_000;
@@ -410,6 +411,15 @@ describe('application finite Job runtime', () => {
       code: 'JOB_RESULT_EXPIRED',
       run: run.reference,
     } satisfies Partial<ApplicationJobResultExpiredError>);
-    await expect(binding.attach(run.reference)).resolves.toMatchObject({ reference: run.reference });
+    await expect(run.cancel('too late')).rejects.toMatchObject({
+      code: 'JOB_RESULT_EXPIRED',
+      run: run.reference,
+    } satisfies Partial<ApplicationJobResultExpiredError>);
+    const attached = await binding.attach(run.reference);
+    expect(attached.reference).toEqual(run.reference);
+    await expect(attached.outcome()).rejects.toMatchObject({
+      code: 'JOB_RESULT_EXPIRED',
+      run: run.reference,
+    } satisfies Partial<ApplicationJobResultExpiredError>);
   });
 });

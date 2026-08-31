@@ -288,12 +288,16 @@ interface LocalJobRecord<TInput extends object, TOutput extends object, TProgres
   readonly input: TInput;
   readonly inputDigest: string;
   readonly admission: ApplicationAdmissionInvocationContextV1;
-  readonly completion: Promise<ApplicationJobTerminalOutcome<TOutput, TError>>;
-  resolve(outcome: ApplicationJobTerminalOutcome<TOutput, TError>): void;
+  readonly completion: Promise<void>;
+  resolve(): void;
   phase: 'queued' | 'running' | 'terminal';
   attempt: number;
   outcome?: ApplicationJobTerminalOutcome<TOutput, TError>;
+  terminalStatus?: ApplicationJobTerminalOutcome<TOutput, TError>['status'];
+  terminalDigest?: string;
   progress?: ApplicationJobProgressSnapshot<TProgress>;
+  progressRecordedAt?: string;
+  progressDigest?: string;
   cancellation?: ApplicationJobCancellationReceipt;
   controller?: AbortController;
   terminalAt?: string;
@@ -319,11 +323,13 @@ export function createDeterministicApplicationJobRuntime(
     record: LocalJobRecord<object, object, object, object>,
     outcome: ApplicationJobTerminalOutcome<object, object>,
   ): boolean => {
-    if (record.outcome) return false;
+    if (record.terminalAt) return false;
     record.outcome = outcome;
+    record.terminalStatus = outcome.status;
+    record.terminalDigest = digest(outcome);
     record.phase = 'terminal';
     record.terminalAt = now().toISOString();
-    record.resolve(outcome);
+    record.resolve();
     return true;
   };
 
@@ -331,7 +337,7 @@ export function createDeterministicApplicationJobRuntime(
     while (running < maximumConcurrency) {
       const record = queue.shift();
       if (!record) return;
-      if (record.outcome) continue;
+      if (record.terminalAt) continue;
       running += 1;
       record.phase = 'running';
       void execute(record).finally(() => {
@@ -354,7 +360,7 @@ export function createDeterministicApplicationJobRuntime(
       terminalize(record, { status: 'timedOut', deadline });
     }, timeoutSeconds * 1_000);
     try {
-      for (let attempt = 1; attempt <= retries + 1 && !record.outcome; attempt += 1) {
+      for (let attempt = 1; attempt <= retries + 1 && !record.terminalAt; attempt += 1) {
         record.attempt = attempt;
         const controller = new AbortController();
         record.controller = controller;
@@ -378,6 +384,8 @@ export function createDeterministicApplicationJobRuntime(
                 value: validated,
               };
               record.progress = snapshot;
+              record.progressRecordedAt = snapshot.recordedAt;
+              record.progressDigest = digest(snapshot.value);
               return snapshot;
             },
             throwIfCancelled: () => {
@@ -393,7 +401,7 @@ export function createDeterministicApplicationJobRuntime(
           const validated = validateMessage(record.definition.contract.output, output, `${record.definition.id}.output`);
           terminalize(record, { status: 'succeeded', output: validated });
         } catch (error) {
-          if (record.outcome) break;
+          if (record.terminalAt) break;
           if (record.cancellation || error instanceof ApplicationJobCancelledError || controller.signal.aborted) {
             terminalize(record, {
               status: 'cancelled',
@@ -425,27 +433,35 @@ export function createDeterministicApplicationJobRuntime(
   ): ApplicationJobRun<TOutput, TProgress, TError> => {
     const expiresAt = (retention: string | undefined, fallbackSeconds: number, from: string): string =>
       new Date(Date.parse(from) + (retention ? parseApplicationScheduleDuration(retention) : fallbackSeconds) * 1_000).toISOString();
-    const assertResultRetained = (): void => {
-      if (!record.terminalAt) return;
+    const retainedOutcome = (): ApplicationJobTerminalOutcome<TOutput, TError> => {
+      if (!record.terminalAt || !record.terminalStatus || !record.terminalDigest) {
+        throw new Error(`Job ${record.reference.job} run ${record.reference.runId} has no terminal identity.`);
+      }
       const expiredAt = expiresAt(record.definition.options.retention?.result, defaultResultRetentionSeconds, record.terminalAt);
-      if (now().getTime() >= Date.parse(expiredAt)) throw new ApplicationJobResultExpiredError(record.reference, expiredAt);
+      if (now().getTime() >= Date.parse(expiredAt)) {
+        delete record.outcome;
+        throw new ApplicationJobResultExpiredError(record.reference, expiredAt);
+      }
+      if (!record.outcome) {
+        throw new Error(`Job ${record.reference.job} run ${record.reference.runId} retained no terminal payload before ${expiredAt}.`);
+      }
+      return record.outcome as ApplicationJobTerminalOutcome<TOutput, TError>;
     };
     return ({
     reference: record.reference,
     async outcome() {
-      const outcome = await record.completion as ApplicationJobTerminalOutcome<TOutput, TError>;
-      assertResultRetained();
-      return outcome;
+      await record.completion;
+      return retainedOutcome();
     },
     async result() {
-      const outcome = await record.completion as ApplicationJobTerminalOutcome<TOutput, TError>;
-      assertResultRetained();
+      await record.completion;
+      const outcome = retainedOutcome();
       if (outcome.status === 'succeeded') return outcome.output;
       throw new ApplicationJobRunError(record.reference, outcome);
     },
     async cancel(reason) {
-      if (record.outcome) {
-        return { status: 'alreadyTerminal', outcome: record.outcome as ApplicationJobTerminalOutcome<TOutput, TError> };
+      if (record.terminalAt) {
+        return { status: 'alreadyTerminal', outcome: retainedOutcome() };
       }
       const receipt = record.cancellation ?? {
         run: record.reference,
@@ -460,9 +476,12 @@ export function createDeterministicApplicationJobRuntime(
       return { status: 'requested', receipt };
     },
     async progress() {
-      if (record.progress) {
-        const expiredAt = expiresAt(record.definition.options.retention?.progress, defaultProgressRetentionSeconds, record.progress.recordedAt);
-        if (now().getTime() >= Date.parse(expiredAt)) throw new ApplicationJobProgressExpiredError(record.reference, expiredAt);
+      if (record.progressRecordedAt && record.progressDigest) {
+        const expiredAt = expiresAt(record.definition.options.retention?.progress, defaultProgressRetentionSeconds, record.progressRecordedAt);
+        if (now().getTime() >= Date.parse(expiredAt)) {
+          delete record.progress;
+          throw new ApplicationJobProgressExpiredError(record.reference, expiredAt);
+        }
       }
       return record.progress as ApplicationJobProgressSnapshot<TProgress> | undefined;
     },
@@ -501,8 +520,8 @@ export function createDeterministicApplicationJobRuntime(
         runId: id(),
         admittedAt: now().toISOString(),
       } satisfies ApplicationJobReference;
-      let resolve!: (outcome: ApplicationJobTerminalOutcome<TOutput, TError>) => void;
-      const completion = new Promise<ApplicationJobTerminalOutcome<TOutput, TError>>((resolved) => {
+      let resolve!: () => void;
+      const completion = new Promise<void>((resolved) => {
         resolve = resolved;
       });
       const record: LocalJobRecord<TInput, TOutput, TProgress, TError> = {
