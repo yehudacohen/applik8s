@@ -255,7 +255,7 @@ export function isAwsRuntimeAccessSecurityGroupQualified(
     if (target && peer.endpoint.target !== target) return true;
     const targetResource = resourcesById.get(peer.endpoint.resourceId);
     return !targetResource || !(
-      (targetResource.service === 'rds' && targetResource.resourceType === 'postgresql-instance')
+      (targetResource.service === 'rds' && ['postgresql-instance', 'aurora-postgresql-cluster'].includes(targetResource.resourceType))
       || (targetResource.service === 'elasticache' && targetResource.resourceType === 'valkey-replication-group')
     );
   })) return false;

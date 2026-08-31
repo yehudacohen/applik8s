@@ -192,6 +192,9 @@ export function applicationAlchemyArtifactRegistry(
   if (resolved.provider.kind === 'orbstack-container-registry') {
     return { type: 'orbstack' };
   }
+  if (resolved.provider.kind === 'ecr') {
+    throw new Error('ContainerRegistry.ecr(...) is materialized by the native AWS deployment plan and cannot be used as an OCI endpoint registry.');
+  }
   if (!resolved.origin) {
     throw new Error('Remote ContainerRegistry has no deployment-host publication origin.');
   }
@@ -267,7 +270,7 @@ function applicationAlchemyArtifactProvider(): ApplicationContainerArtifactProvi
 function applicationAlchemyRegistryTls(
   provider: Exclude<
     ApplicationContainerRegistryProvider,
-    { readonly kind: 'orbstack-container-registry' }
+    { readonly kind: 'orbstack-container-registry' | 'ecr' }
   >,
 ): {
   readonly caFile?: string;

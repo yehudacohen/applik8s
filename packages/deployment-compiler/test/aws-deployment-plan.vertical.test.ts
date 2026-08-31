@@ -5,6 +5,51 @@ import { describe, expect, it } from 'vitest';
 import { compileApplicationAwsDeploymentPlan, validateAwsRuntimeAccessParity } from '../src/index.js';
 
 describe('v0.8 AWS deployment planning', () => {
+  it('lowers the concrete Aurora provider to the native retained cluster contract', () => {
+    const base = awsGraph();
+    const graph: ApplicationGraph = {
+      ...base,
+      nodes: base.nodes.map((node) => node.kind === 'provider' && node.interface === 'TransactionalDatabase'
+        ? {
+            ...node,
+            implementation: 'aurora-postgresql',
+            config: {
+              kind: 'aurora-postgresql',
+              database: 'documents',
+              retention: 'retain',
+              readers: 2,
+              minimumCapacity: 1,
+              maximumCapacity: 16,
+            },
+          }
+        : node),
+    };
+    const plan = compileApplicationAwsDeploymentPlan({
+      graph,
+      environment: 'production',
+      region: 'us-east-1',
+      accountId: '123456789012',
+      availabilityZones: ['us-east-1a', 'us-east-1b'],
+    });
+
+    expect(plan.resources).toContainEqual(expect.objectContaining({
+      id: 'provider.provider.TransactionalDatabase',
+      service: 'rds',
+      resourceType: 'aurora-postgresql-cluster',
+      lifecycle: expect.objectContaining({ deletion: 'retain' }),
+      configuration: expect.objectContaining({
+        databaseName: 'documents',
+        readers: 2,
+        minimumCapacity: 1,
+        maximumCapacity: 16,
+      }),
+    }));
+    expect(plan.runtimeBindings).toContainEqual(expect.objectContaining({
+      kind: 'postgresUrl',
+      resourceId: 'provider.provider.TransactionalDatabase',
+    }));
+  });
+
   it('lowers one semantic graph into a deterministic, exact-access Alchemy plan without mutating it', () => {
     const graph = awsGraph();
     const before = JSON.stringify(graph);
@@ -109,6 +154,37 @@ describe('v0.8 AWS deployment planning', () => {
         message: expect.stringMatching(/ListTagsForResource/u),
       }),
     ]);
+  });
+
+  it('rejects Aurora before Alchemy can mutate AWS-local state', () => {
+    const base = awsGraph();
+    const graph: ApplicationGraph = {
+      ...base,
+      nodes: base.nodes.map((node) => node.kind === 'provider' && node.interface === 'TransactionalDatabase'
+        ? {
+            ...node,
+            implementation: 'aurora-postgresql',
+            config: { kind: 'aurora-postgresql', database: 'application', retention: 'retain' },
+          }
+        : node),
+    };
+    const plan = compileApplicationAwsDeploymentPlan({
+      graph,
+      environment: 'review',
+      region: 'us-east-1',
+      accountId: '000000000000',
+      target: 'aws-local',
+      includeApplicationHosts: false,
+    });
+    expect(plan.resources.some(({ resourceType }) => resourceType === 'aurora-postgresql-cluster')).toBe(false);
+    expect(plan.diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        severity: 'error',
+        code: 'AWS_PROVIDER_INCOMPATIBLE',
+        subjectId: 'provider.TransactionalDatabase',
+        message: expect.stringMatching(/real AWS RDS Aurora lifecycle APIs/u),
+      }),
+    ]));
   });
 
   it('lowers a default provider alias through its canonical authority without duplicating infrastructure', () => {

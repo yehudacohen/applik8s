@@ -41,7 +41,9 @@ export interface ApplicationIndexBackendSelectionOptions {
 
 export type ApplicationIndexBackend = ApplicationValkeyIndexBackend;
 
-export type ApplicationTransactionalDatabaseProvider = ApplicationPostgresTransactionalDatabaseProvider;
+export type ApplicationTransactionalDatabaseProvider =
+  | ApplicationPostgresTransactionalDatabaseProvider
+  | ApplicationAuroraPostgresTransactionalDatabaseProvider;
 
 export type ApplicationHttpExposureProvider =
   | 'ingress'
@@ -161,6 +163,13 @@ export interface ApplicationNatsJetStreamEventLogProvider {
   readonly passwordKey?: string;
 }
 
+export interface ApplicationKinesisEventLogProvider extends Omit<ApplicationNatsJetStreamEventLogProvider, 'kind'> {
+  readonly kind: 'kinesis';
+  readonly account: ApplicationAwsAccount;
+  readonly streamName?: string;
+  readonly retentionHours?: number;
+}
+
 export type ApplicationCounterStoreProvider = ApplicationKubernetesResourceCounterStoreProvider;
 export type ApplicationEventSourceProvider = ApplicationKubernetesWatchEventSourceProvider;
 export type ApplicationSecretProvider = ApplicationKubernetesSecretProvider;
@@ -170,7 +179,9 @@ export type ApplicationQueueProvider =
   | ApplicationSqsQueueProvider;
 export type ApplicationObjectStorageProvider = ApplicationKubernetesConfigMapObjectStorageProvider | ApplicationS3ObjectStorageProvider;
 export type ApplicationCredentialStoreProvider = ApplicationKubernetesCredentialStoreProvider;
-export type ApplicationEventLogProvider = ApplicationNatsJetStreamEventLogProvider;
+export type ApplicationEventLogProvider =
+  | ApplicationNatsJetStreamEventLogProvider
+  | ApplicationKinesisEventLogProvider;
 
 export interface ApplicationWorkflowAdmissionPolicy {
   /** Duration during which a repeated caller/contract/idempotency tuple reattaches to the original run. */
@@ -265,6 +276,15 @@ export const AWS = Object.freeze({
     return Object.freeze({ kind: 'aws-account', ...options });
   },
 });
+
+function assertApplicationAwsAccount(value: unknown, constructorName: string): asserts value is ApplicationAwsAccount {
+  if (!value || typeof value !== 'object' || Reflect.get(value, 'kind') !== 'aws-account') {
+    throw new TypeError(`${constructorName}(...) requires AWS.account(...).`);
+  }
+  requireProviderConfigString(Reflect.get(value, 'accountId'), `${constructorName} AWS accountId`);
+  requireProviderConfigString(Reflect.get(value, 'region'), `${constructorName} AWS region`);
+  requireSecretConfigurationBinding(Reflect.get(value, 'credentials'), `${constructorName} AWS credentials`);
+}
 
 export const KubernetesCluster = Object.freeze({
   current(options: Omit<ApplicationCurrentKubernetesCluster, 'kind'> = {}): ApplicationCurrentKubernetesCluster {
@@ -405,6 +425,7 @@ export interface ApplicationHatchetSchedulerProvider {
 
 export interface ApplicationEventBridgeSchedulerProvider {
   readonly kind: 'eventbridge-scheduler';
+  readonly account?: ApplicationAwsAccount;
   readonly groupName?: string;
   readonly roleArn?: string;
 }
@@ -760,6 +781,12 @@ export interface ApplicationOrbstackContainerRegistryProvider {
   readonly kind: 'orbstack-container-registry';
 }
 
+export interface ApplicationEcrContainerRegistryProvider extends Partial<Omit<ApplicationOciContainerRegistryProvider, 'kind'>> {
+  readonly kind: 'ecr';
+  readonly account: ApplicationAwsAccount;
+  readonly repositoryPrefix?: string;
+}
+
 export interface ApplicationOciContainerRegistryProvider {
   readonly kind: 'oci-container-registry';
   readonly endpoint: ApplicationContainerRegistryEndpoint;
@@ -789,6 +816,7 @@ export type ApplicationHarborContainerRegistryOptions =
 
 export type ApplicationContainerRegistryProvider =
   | ApplicationOrbstackContainerRegistryProvider
+  | ApplicationEcrContainerRegistryProvider
   | ApplicationOciContainerRegistryProvider
   | ApplicationHarborContainerRegistryProvider;
 
@@ -933,6 +961,20 @@ export interface ApplicationPostgresTransactionalDatabaseProvider {
   readonly migrations?: ApplicationTransactionalDatabaseMigrationPolicy;
   readonly runtime?: ApplicationProviderRuntimeContract;
   readonly readiness?: ApplicationPostgresReadinessPolicy;
+}
+
+/** Maintained AWS Aurora PostgreSQL implementation selected by an AWS profile. */
+export interface ApplicationAuroraPostgresTransactionalDatabaseProvider extends Omit<ApplicationPostgresTransactionalDatabaseProvider, 'kind'> {
+  readonly kind: 'aurora-postgresql';
+  readonly account: ApplicationAwsAccount;
+  readonly name?: string;
+  readonly database?: string;
+  readonly engineVersion?: string;
+  readonly readers?: number;
+  readonly minimumCapacity?: number;
+  readonly maximumCapacity?: number;
+  readonly retention?: 'retain' | 'delete';
+  readonly migrations?: ApplicationTransactionalDatabaseMigrationPolicy;
 }
 
 export interface ApplicationPostgresBackupPolicy {
@@ -1597,8 +1639,14 @@ export interface ApplicationTransactionalDatabaseProviderToken extends Applicati
 
 export interface ApplicationDatabaseConstructors {
   postgres(options?: ApplicationPostgresTransactionalDatabaseOptions): ApplicationCapabilityImplementation<ApplicationPostgresTransactionalDatabaseProvider>;
+  auroraPostgres(options: Omit<ApplicationAuroraPostgresTransactionalDatabaseProvider, 'kind'>): ApplicationCapabilityImplementation<ApplicationAuroraPostgresTransactionalDatabaseProvider>;
   externalPostgres(options: ApplicationExternalPostgresDatabaseOptions): ApplicationCapabilityImplementation<ApplicationPostgresTransactionalDatabaseProvider>;
   readonly migrations: ApplicationTransactionalDatabaseProviderToken['migrations'];
+}
+
+export interface ApplicationEventLogProviderToken extends ApplicationQualifiableProviderToken<ApplicationEventLogProvider> {
+  jetStream(options?: Omit<ApplicationNatsJetStreamEventLogProvider, 'kind'>): ApplicationCapabilityImplementation<ApplicationNatsJetStreamEventLogProvider>;
+  kinesis(options: Omit<ApplicationKinesisEventLogProvider, 'kind'>): ApplicationCapabilityImplementation<ApplicationKinesisEventLogProvider>;
 }
 
 export interface ApplicationCertificateProviderToken extends ApplicationQualifiableProviderToken<ApplicationCertificateProvider> {
@@ -1730,6 +1778,7 @@ export interface ApplicationAnalyticsConstructors {
 
 export interface ApplicationContainerRegistryProviderToken extends ApplicationQualifiableProviderToken<ApplicationContainerRegistryProvider> {
   orbstack(): ApplicationOrbstackContainerRegistryProvider;
+  ecr(options: Omit<ApplicationEcrContainerRegistryProvider, 'kind'>): ApplicationCapabilityImplementation<ApplicationEcrContainerRegistryProvider>;
   oci(options: Omit<ApplicationOciContainerRegistryProvider, 'kind'>): ApplicationOciContainerRegistryProvider;
   harbor(options: ApplicationHarborContainerRegistryOptions): ApplicationHarborContainerRegistryProvider;
   origin(origin: string): ApplicationContainerRegistryEndpoint;
@@ -2076,6 +2125,43 @@ export const Database: ApplicationDatabaseConstructors = Object.freeze({
       migration: 'applik8s.database.postgres.migration/v1alpha1',
     });
   },
+  auroraPostgres(options: Omit<ApplicationAuroraPostgresTransactionalDatabaseProvider, 'kind'>) {
+    assertApplicationAwsAccount(options.account, 'Database.auroraPostgres');
+    if (options.database !== undefined && !applicationProviderRequiredString(options.database)) {
+      throw new Error('Database.auroraPostgres({ database }) must not be empty.');
+    }
+    if (options.readers !== undefined && (!Number.isSafeInteger(options.readers) || options.readers < 0)) {
+      throw new Error('Database.auroraPostgres({ readers }) must be a non-negative safe integer.');
+    }
+    for (const [field, value] of [
+      ['minimumCapacity', options.minimumCapacity],
+      ['maximumCapacity', options.maximumCapacity],
+    ] as const) {
+      if (value !== undefined && (!Number.isFinite(value) || value <= 0)) {
+        throw new Error(`Database.auroraPostgres({ ${field} }) must be positive.`);
+      }
+    }
+    if (
+      options.minimumCapacity !== undefined
+      && options.maximumCapacity !== undefined
+      && options.minimumCapacity > options.maximumCapacity
+    ) {
+      throw new Error('Database.auroraPostgres minimumCapacity cannot exceed maximumCapacity.');
+    }
+    const provider: ApplicationAuroraPostgresTransactionalDatabaseProvider = {
+      kind: 'aurora-postgresql',
+      retention: 'retain',
+      ...options,
+    };
+    return maintainedBuiltInImplementation(TransactionalDatabase, 'Database.auroraPostgres', provider, {
+      runtimeAdapter: '@applik8s/runtime-postgres',
+      deploymentContributor: '@applik8s/deployment-alchemy/providers/aurora-postgres',
+      readiness: 'applik8s.database.aurora-postgres.readiness/v1alpha1',
+      lifecycle: provider.retention === 'retain' ? 'retained' : 'application',
+      migration: 'applik8s.database.aurora-postgres.migration/v1alpha1',
+      maturity: 'experimental',
+    });
+  },
   externalPostgres(options: ApplicationExternalPostgresDatabaseOptions) {
     const {
       connection,
@@ -2136,10 +2222,43 @@ export const EventSource: ApplicationQualifiableProviderToken<ApplicationEventSo
   contract: builtInProviderContract('EventSource', ['watch']),
 });
 
-export const EventLog: ApplicationQualifiableProviderToken<ApplicationEventLogProvider> = applicationQualifiableProviderToken({
+export const EventLog: ApplicationEventLogProviderToken = applicationQualifiableProviderToken({
   name: 'EventLog',
   description: 'Durable app-scoped command and committed-event transport provider.',
   contract: builtInProviderContract('EventLog', ['atLeastOnce', 'stableMessageIds', 'replay']),
+  accepts: isApplicationEventLogProvider,
+  jetStream(options = {}) {
+    return maintainedBuiltInImplementation(EventLog, 'EventLog.jetStream', {
+      kind: 'nats-jetstream',
+      ...options,
+    }, {
+      runtimeAdapter: '@applik8s/runtime-nats/event-log',
+      deploymentContributor: '@applik8s/deployment-compiler/providers/nats-jetstream',
+      readiness: 'applik8s.event-log.jetstream.readiness/v1alpha1',
+      lifecycle: options.provision === false ? 'external' : 'application',
+      migration: 'applik8s.event-log.jetstream.migration/v1alpha1',
+    });
+  },
+  kinesis(options) {
+    assertApplicationAwsAccount(options.account, 'EventLog.kinesis');
+    if (options.streamName !== undefined && !options.streamName.trim()) {
+      throw new Error('EventLog.kinesis({ streamName }) must not be empty.');
+    }
+    if (options.retentionHours !== undefined && (!Number.isSafeInteger(options.retentionHours) || options.retentionHours < 24)) {
+      throw new Error('EventLog.kinesis({ retentionHours }) must be a safe integer of at least 24.');
+    }
+    return maintainedBuiltInImplementation(EventLog, 'EventLog.kinesis', {
+      kind: 'kinesis',
+      ...options,
+    }, {
+      runtimeAdapter: '@applik8s/runtime-aws/kinesis',
+      deploymentContributor: '@applik8s/deployment-alchemy/providers/kinesis',
+      readiness: 'applik8s.event-log.kinesis.readiness/v1alpha1',
+      lifecycle: 'application',
+      migration: 'applik8s.event-log.kinesis.migration/v1alpha1',
+      maturity: 'experimental',
+    });
+  },
 });
 
 export const Secret: ApplicationQualifiableProviderToken<ApplicationSecretProvider> = applicationQualifiableProviderToken({
@@ -2674,6 +2793,7 @@ export const Scheduler: ApplicationSchedulerProviderToken = applicationQualifiab
     });
   },
   eventBridge(options = {}) {
+    if (options.account) assertApplicationAwsAccount(options.account, 'Scheduler.eventBridge');
     return maintainedBuiltInImplementation(Scheduler, 'Scheduler.eventBridge', {
       kind: 'eventbridge-scheduler',
       ...options,
@@ -3057,6 +3177,23 @@ export const ContainerRegistry: ApplicationContainerRegistryProviderToken = appl
   accepts: isApplicationContainerRegistryProvider,
   orbstack() {
     return { kind: 'orbstack-container-registry' };
+  },
+  ecr(options) {
+    assertApplicationAwsAccount(options.account, 'ContainerRegistry.ecr');
+    if (options.repositoryPrefix !== undefined && !options.repositoryPrefix.trim()) {
+      throw new Error('ContainerRegistry.ecr({ repositoryPrefix }) must not be empty.');
+    }
+    return maintainedBuiltInImplementation(ContainerRegistry, 'ContainerRegistry.ecr', {
+      kind: 'ecr',
+      ...options,
+    }, {
+      runtimeAdapter: '@applik8s/runtime-aws/container-registry',
+      deploymentContributor: '@applik8s/deployment-alchemy/providers/ecr',
+      readiness: 'applik8s.container-registry.ecr.readiness/v1alpha1',
+      lifecycle: 'application',
+      migration: 'applik8s.container-registry.ecr.migration/v1alpha1',
+      maturity: 'experimental',
+    });
   },
   oci(options) {
     assertApplicationContainerRegistryEndpoint(options.endpoint);
@@ -4159,8 +4296,8 @@ export function applyApplicationProvider<TImplementation>(state: ApplicationProv
     return;
   }
   if (applicationProviderTokenName(token) === 'TransactionalDatabase') {
-    if (!isPostgresTransactionalDatabaseProvider(implementation)) {
-      throw new Error('app.provide(TransactionalDatabase, ...) currently supports only the typed PostgreSQL database provider declaration. Use TransactionalDatabase.postgres(...).');
+    if (!isApplicationTransactionalDatabaseProvider(implementation)) {
+      throw new Error('app.provide(TransactionalDatabase, ...) requires Database.postgres(...), Database.externalPostgres(...), or Database.auroraPostgres(...).');
     }
     state.providers.database = implementation;
     return;
@@ -4459,7 +4596,7 @@ function isSupportedDefaultProvider(tokenName: string | undefined, implementatio
   const kind = implementation && typeof implementation === 'object' ? Reflect.get(implementation, 'kind') : undefined;
   return (tokenName === 'CounterStore' && kind === 'kubernetes-resource-counter')
     || (tokenName === 'EventSource' && kind === 'kubernetes-watch')
-    || (tokenName === 'EventLog' && kind === 'nats-jetstream')
+    || (tokenName === 'EventLog' && (kind === 'nats-jetstream' || kind === 'kinesis'))
     || (tokenName === 'Secret' && kind === 'kubernetes-secret')
     || (tokenName === 'Queue' && kind === 'kubernetes-configmap-queue')
     || (tokenName === 'ObjectStorage' && (kind === 'kubernetes-configmap-objects' || kind === 's3'))
@@ -4539,17 +4676,32 @@ export function isPostgresTransactionalDatabaseProvider(value: unknown): value i
   return Boolean(value && typeof value === 'object' && Reflect.get(value, 'kind') === 'postgres');
 }
 
+export function isAuroraPostgresTransactionalDatabaseProvider(value: unknown): value is ApplicationAuroraPostgresTransactionalDatabaseProvider {
+  if (!value || typeof value !== 'object' || Reflect.get(value, 'kind') !== 'aurora-postgresql') return false;
+  const account = Reflect.get(value, 'account');
+  return Boolean(account && typeof account === 'object' && Reflect.get(account, 'kind') === 'aws-account');
+}
+
+export function isApplicationTransactionalDatabaseProvider(value: unknown): value is ApplicationTransactionalDatabaseProvider {
+  return isPostgresTransactionalDatabaseProvider(value)
+    || isAuroraPostgresTransactionalDatabaseProvider(value);
+}
+
 export function applicationTransactionalDatabaseImplementation(store: unknown): ApplicationTransactionalDatabaseProvider | undefined {
   if (isPostgresTransactionalDatabaseProvider(store)) {
     assertApplicationPostgresTransactionalDatabaseLifecycle(store);
     return store;
   }
+  if (isAuroraPostgresTransactionalDatabaseProvider(store)) return store;
   if (
     isApplicationProviderBinding(store)
     && applicationProviderTokensMatch(store.token, TransactionalDatabase)
   ) {
     if (isPostgresTransactionalDatabaseProvider(store.implementation)) {
       assertApplicationPostgresTransactionalDatabaseLifecycle(store.implementation);
+      return store.implementation;
+    }
+    if (isAuroraPostgresTransactionalDatabaseProvider(store.implementation)) {
       return store.implementation;
     }
     if (
@@ -5388,7 +5540,7 @@ function isApplicationEventLogProvider(
   return Boolean(
     value
     && typeof value === 'object'
-    && Reflect.get(value, 'kind') === 'nats-jetstream',
+    && ['nats-jetstream', 'kinesis'].includes(String(Reflect.get(value, 'kind'))),
   );
 }
 
@@ -5544,6 +5696,10 @@ export function isApplicationContainerRegistryProvider(value: unknown): value is
   if (!value || typeof value !== 'object') return false;
   const kind = Reflect.get(value, 'kind');
   if (kind === 'orbstack-container-registry') return true;
+  if (kind === 'ecr') {
+    const account = Reflect.get(value, 'account');
+    return Boolean(account && typeof account === 'object' && Reflect.get(account, 'kind') === 'aws-account');
+  }
   const endpoint = Reflect.get(value, 'endpoint');
   if (!isApplicationContainerRegistryEndpoint(endpoint)) return false;
   if (kind === 'oci-container-registry') return true;

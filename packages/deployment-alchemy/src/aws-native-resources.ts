@@ -18,6 +18,7 @@ import { fromEnvironment as awsRegionFromEnvironment } from "alchemy/AWS/Region"
 import { DockerLive } from "alchemy/Docker";
 import * as Output from "alchemy/Output";
 import * as Provider from "alchemy/Provider";
+import * as RemovalPolicy from "alchemy/RemovalPolicy";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Redacted from "effect/Redacted";
@@ -67,6 +68,35 @@ export interface ApplicationAwsNativeMaterialization {
   readonly outputs: Readonly<Record<string, Readonly<Record<string, unknown>>>>;
 }
 
+function withApplicationAwsNativeRemovalPolicy<R, E, A>(
+  effect: Effect.Effect<R, E, A>,
+  resource: Pick<ApplicationAwsPlanResource, "lifecycle">,
+): Effect.Effect<R, E, A> {
+  // typecast: Alchemy's RemovalPolicy decorator is typed for infallible
+  // declaration effects even though native resource compositions retain
+  // their provider error channel at this adapter boundary.
+  const decorate = (
+    resource.lifecycle.deletion === "retain"
+      ? RemovalPolicy.retain()
+      : RemovalPolicy.destroy()
+  ) as unknown as (
+    value: Effect.Effect<R, E, A>,
+  ) => Effect.Effect<R, E, A>;
+  return decorate(effect);
+}
+
+/** @internal Contract probe proving portable lifecycle reaches Alchemy. */
+export function applicationAwsNativeRemovalPolicyForTest(
+  resource: Pick<ApplicationAwsPlanResource, "lifecycle">,
+): "destroy" | "retain" {
+  return Effect.runSync(withApplicationAwsNativeRemovalPolicy(
+    Effect.gen(function* () {
+      return yield* RemovalPolicy.RemovalPolicy;
+    }),
+    resource,
+  ) as Effect.Effect<"destroy" | "retain", never, never>);
+}
+
 const nativeTypeByPlanKind: Readonly<Record<string, string>> = {
   "acm/certificate": "AWS.ACM.Certificate",
   "cloudwatch/log-group": "AWS.Logs.LogGroup",
@@ -96,6 +126,7 @@ const nativeTypeByPlanKind: Readonly<Record<string, string>> = {
   "iam/role": "AWS.IAM.Role",
   "kinesis/stream": "AWS.Kinesis.Stream",
   "rds/postgresql-instance": "AWS.RDS.DBInstance",
+  "rds/aurora-postgresql-cluster": "AWS.RDS.Aurora",
   "route53/record-publication": "AWS.Route53.Record",
   "s3/bucket": "AWS.S3.Bucket",
   "s3/lakehouse-dataset": "AWS.S3.Bucket",
@@ -167,6 +198,7 @@ export function applicationAwsNativeProviders(options: ApplicationAwsNativeProvi
       AWS.IAM.Role,
       AWS.Kinesis.Stream,
       AWS.RDS.DBInstance,
+      AWS.RDS.DBCluster,
       AWS.RDS.DBSubnetGroup,
       AWS.Route53.Record,
       AWS.S3.Bucket,
@@ -212,6 +244,7 @@ export function applicationAwsNativeProviders(options: ApplicationAwsNativeProvi
       AWS.IAM.RoleProvider(),
       AWS.Kinesis.StreamProvider(),
       AWS.RDS.DBInstanceProvider(),
+      AWS.RDS.DBClusterProvider(),
       AWS.RDS.DBSubnetGroupProvider(),
       AWS.Route53.RecordProvider(),
       AWS.S3.BucketProvider(),
@@ -673,6 +706,34 @@ function instantiateNativeResource(
       }) as never;
       break;
     }
+    case "rds/aurora-postgresql-cluster": {
+      effect = Effect.gen(function* () {
+        const database = yield* AWS.RDS.Aurora(resource.id, {
+          databaseName: stringConfig(config, "databaseName") ?? "application",
+          engine: "aurora-postgresql",
+          engineVersion: stringConfig(config, "engineVersion"),
+          subnetIds: privateSubnets(),
+          securityGroupIds: runtimeSecurityGroupIds(resource, outputs),
+          readers: numberConfig(config, "readers") ?? 0,
+          scaling: {
+            minCapacity: numberConfig(config, "minimumCapacity") ?? 0.5,
+            maxCapacity: numberConfig(config, "maximumCapacity") ?? 1,
+          },
+          port: numberConfig(config, "port") ?? 5432,
+          storageEncrypted: booleanConfig(config, "encrypted") ?? true,
+          deletionProtection: booleanConfig(config, "deletionProtection") ?? false,
+          tags,
+        } as never);
+        return {
+          ...database,
+          endpoint: database.cluster.endpoint,
+          readerEndpoint: database.cluster.readerEndpoint,
+          port: database.cluster.port,
+          secretArn: database.secret.secretArn,
+        };
+      }) as never;
+      break;
+    }
     case "efs/shared-filesystem": {
       effect = Effect.gen(function* () {
         const fileSystem = yield* AWS.EFS.FileSystem(`${resource.id}.filesystem`, {
@@ -850,7 +911,9 @@ function instantiateNativeResource(
         + "The target refuses to fall back to CloudFormation or an aggregate AWS stack resource.",
       ));
   }
-  return effect.pipe(Effect.map((value) => objectValue(value)));
+  return withApplicationAwsNativeRemovalPolicy(effect, resource).pipe(
+    Effect.map((value) => objectValue(value)),
+  );
 }
 
 function readDatabaseCredential(secretArn: string) {

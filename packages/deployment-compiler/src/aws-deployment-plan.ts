@@ -731,6 +731,9 @@ export function compileApplicationAwsDeploymentPlan(request: CompileApplicationA
 }
 
 function awsLocalProviderIncompatibility(provider: ApplicationProviderNode): string | undefined {
+  if (provider.interface === 'TransactionalDatabase' && provider.implementation === 'aurora-postgresql') {
+    return 'Provider TransactionalDatabase/aurora-postgresql requires real AWS RDS Aurora lifecycle APIs and is not qualified on the pinned AWS-local MiniStack target. Select Database.postgres(...) for AWS-local or deploy this profile to AWS.';
+  }
   if (
     (provider.interface === 'EventLog' || provider.interface === 'EventSource')
     && provider.implementation === 'kinesis'
@@ -1044,7 +1047,7 @@ function lowerAwsScheduleFoundation(
   schedules: readonly Extract<ApplicationGraphNode, { kind: 'schedule' }>[],
 ): void {
   if (schedules.length === 0) return;
-  const existingPostgres = [...resources.values()].find(({ service, resourceType }) => service === 'rds' && resourceType === 'postgresql-instance');
+  const existingPostgres = [...resources.values()].find(isAwsPostgresResource);
   if (!existingPostgres) {
     add(resource('scheduler.receipts', 'rds', 'postgresql-instance', name('schedule-receipts'), {
       engineVersion: '17', storageGiB: 20, multiAz: request.environment === 'production', encrypted: true,
@@ -1195,8 +1198,7 @@ function awsRuntimeBindings(
     && node.interface === 'JobRuntime'
     && node.implementation === 'aws-job-runtime');
   if (awsJobRuntime) {
-    const databaseResource = [...resources.values()].find(({ service, resourceType }) =>
-      service === 'rds' && resourceType === 'postgresql-instance');
+    const databaseResource = [...resources.values()].find(isAwsPostgresResource);
     if (!databaseResource) {
       throw new Error(`AWS JobRuntime ${awsJobRuntime.id} requires a PostgreSQL result authority, but no RDS resource was planned.`);
     }
@@ -1218,7 +1220,7 @@ function awsRuntimeBindings(
     });
   }
   if (graph.nodes.some(({ kind }) => kind === 'schedule')) {
-    const resourceId = [...resources.values()].find(({ service, resourceType }) => service === 'rds' && resourceType === 'postgresql-instance')?.id;
+    const resourceId = [...resources.values()].find(isAwsPostgresResource)?.id;
     if (!resourceId) throw new Error('AWS Scheduler requires a PostgreSQL occurrence authority, but no RDS resource was planned.');
     bindings.set('APPLIK8S_SCHEDULE_DATABASE_URL', {
       id: 'postgres-url.schedule-receipts',
@@ -1329,11 +1331,42 @@ function awsProviderResources(provider: ApplicationProviderNode, request: Compil
   const config = providerConfig(provider);
   const semantic = provider.id;
   if (provider.interface === 'TransactionalDatabase' && ['postgres', 'rds-postgresql'].includes(provider.implementation)) return [resource(`provider.${semantic}`, 'rds', 'postgresql-instance', name(`postgres-${hash(semantic, 8)}`), { engineVersion: stringValue(config.engineVersion) ?? '17', port: 5432, storageGiB: numberValue(config.storageGiB) ?? 20, multiAz: request.environment === 'production', encrypted: true, deletionProtection: request.environment === 'production' }, semantic, 'private', ['endpoint', 'port', 'secretArn'])];
+  if (provider.interface === 'TransactionalDatabase' && provider.implementation === 'aurora-postgresql') {
+    const retention = stringValue(config.retention) ?? 'retain';
+    const database = resource(
+      `provider.${semantic}`,
+      'rds',
+      'aurora-postgresql-cluster',
+      name(`aurora-${hash(semantic, 8)}`),
+      {
+        ...(stringValue(config.engineVersion)
+          ? { engineVersion: stringValue(config.engineVersion)! }
+          : {}),
+        databaseName: stringValue(config.database) ?? 'application',
+        readers: numberValue(config.readers) ?? (request.environment === 'production' ? 1 : 0),
+        minimumCapacity: numberValue(config.minimumCapacity) ?? 0.5,
+        maximumCapacity: numberValue(config.maximumCapacity) ?? (request.environment === 'production' ? 8 : 1),
+        port: 5432,
+        encrypted: true,
+        deletionProtection: retention === 'retain' || request.environment === 'production',
+      },
+      semantic,
+      'private',
+      ['endpoint', 'readerEndpoint', 'port', 'secretArn'],
+    );
+    return [{
+      ...database,
+      lifecycle: {
+        ...database.lifecycle,
+        deletion: retention === 'retain' ? 'retain' : 'delete',
+      },
+    }];
+  }
   if (provider.interface === 'AnalyticalDatabase' && provider.implementation === 'postgres-analytics') return [];
   if (provider.interface === 'IndexStore' && ['valkey', 'elasticache-valkey'].includes(provider.implementation)) return [resource(`provider.${semantic}`, 'elasticache', 'valkey-replication-group', name(`valkey-${hash(semantic, 8)}`), { engine: 'valkey', port: 6379, encryptedAtRest: true, encryptedInTransit: true, replicas: request.environment === 'production' ? 2 : 1 }, semantic, 'private', ['endpoint', 'port', 'secretArn'])];
   if (provider.interface === 'ObjectStorage' && ['s3', 'kubernetes-configmap-objects'].includes(provider.implementation)) return [resource(`provider.${semantic}`, 's3', 'bucket', bucketName(request, semantic), { versioning: true, publicAccessBlock: true, encryption: 'AES256', forceDestroy: false, prefix: stringValue(config.prefix) ?? '' }, semantic, 'none', ['bucketName', 'bucketArn'])];
   if (provider.interface === 'Queue' && ['sqs', 'kubernetes-configmap-queue'].includes(provider.implementation)) return [resource(`provider.${semantic}`, 'sqs', 'queue', name(`queue-${hash(semantic, 8)}`), { encrypted: true, visibilityTimeoutSeconds: 300 }, semantic, 'private', ['queueArn', 'queueUrl'])];
-  if ((provider.interface === 'EventSource' || provider.interface === 'EventLog') && ['kinesis', 'kubernetes-watch', 'nats-jetstream'].includes(provider.implementation)) return [resource(`provider.${semantic}`, 'kinesis', 'stream', name(`stream-${hash(semantic, 8)}`), { mode: 'ON_DEMAND', retentionHours: 24, encrypted: true }, semantic, 'private', ['streamArn', 'streamName'])];
+  if ((provider.interface === 'EventSource' || provider.interface === 'EventLog') && ['kinesis', 'kubernetes-watch', 'nats-jetstream'].includes(provider.implementation)) return [resource(`provider.${semantic}`, 'kinesis', 'stream', name(`stream-${hash(semantic, 8)}`), { mode: 'ON_DEMAND', retentionHours: numberValue(config.retentionHours) ?? 24, encrypted: true }, semantic, 'private', ['streamArn', 'streamName'])];
   if (provider.interface === 'Scheduler' && ['target-selected', 'eventbridge-scheduler'].includes(provider.implementation)) return [];
   if (provider.interface === 'Observability' && ['cloudwatch', 'local-otel', 'clickstack'].includes(provider.implementation)) return [];
   if (provider.interface === 'LakehouseDataset' && ['s3-dataset', 'duckdb-dataset'].includes(provider.implementation)) {
@@ -1469,6 +1502,12 @@ function awsRuntimeOnlyProvider(provider: ApplicationProviderNode): boolean {
     && !['opensearch', 'clickhouse'].includes(provider.implementation);
 }
 
+function isAwsPostgresResource(resource: ApplicationAwsPlanResource): boolean {
+  return resource.service === 'rds'
+    && (resource.resourceType === 'postgresql-instance'
+      || resource.resourceType === 'aurora-postgresql-cluster');
+}
+
 function resource(id: string, service: ApplicationAwsService, resourceType: string, physicalName: string, configuration: ApplicationAwsPlanResource['configuration'], semanticNodeId: string | undefined, network: ApplicationAwsPlanResource['network'], outputNames: readonly string[]): ApplicationAwsPlanResource {
   return {
     id, service, resourceType, ...(semanticNodeId ? { semanticNodeId } : {}), physicalName,
@@ -1547,7 +1586,7 @@ function awsRuntimeAccessBindings(
     else if (provider.interface === 'Queue' && primary?.resourceType === 'queue') bindings[provider.id] = { queueArn: `arn:aws:sqs:${request.region}:${request.accountId}:${primary.physicalName}` };
     else if ((provider.interface === 'EventLog' || provider.interface === 'EventSource') && primary?.resourceType === 'stream') bindings[provider.id] = { streamArn: `arn:aws:kinesis:${request.region}:${request.accountId}:stream/${primary.physicalName}` };
     else if (provider.interface === 'TransactionalDatabase') {
-      const database = candidates.find(({ service, resourceType }) => service === 'rds' && resourceType === 'postgresql-instance');
+      const database = candidates.find(isAwsPostgresResource);
       if (database) bindings[provider.id] = {
         secretArn: `output://${database.id}/secretArn`,
         networkResourceId: database.id,

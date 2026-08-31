@@ -331,7 +331,7 @@ const localProviders: Readonly<Record<string, readonly string[]>> = {
 };
 
 const awsProviders: Readonly<Record<string, readonly string[]>> = {
-  TransactionalDatabase: ['rds-postgresql'],
+  TransactionalDatabase: ['rds-postgresql', 'aurora-postgresql'],
   IndexStore: ['elasticache-valkey'],
   EventSource: ['kinesis'],
   EventLog: ['kinesis'],

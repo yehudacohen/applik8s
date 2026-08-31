@@ -20,6 +20,7 @@ export function emitApplicationEventLogResources(
   state: ApplicationEventLogResourceState,
   provider: ApplicationEventLogProvider,
 ): void {
+  if (provider.kind !== 'nats-jetstream') return;
   if (provider.provision === false) return;
   const name = provider.name ?? 'applik8s-events';
   // TypeKro schema refs copied into nested Flux sourceRef objects otherwise

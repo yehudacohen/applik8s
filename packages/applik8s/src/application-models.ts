@@ -1319,6 +1319,19 @@ function applicationCommandRetention(input: Partial<ApplicationCommandRetentionC
 }
 
 function applicationEventLogRuntime(provider: ApplicationEventLogProvider): ApplicationProviderRuntimeContract {
+  if (provider.kind === 'kinesis') {
+    return {
+      env: {
+        APPLIK8S_EVENT_LOG_PROVIDER: 'kinesis',
+        APPLIK8S_KINESIS_STREAM: provider.streamName ?? 'applik8s-events',
+      },
+      readiness: {
+        dependencies: [],
+        condition: 'Kinesis stream is ACTIVE and reachable through the selected AWS runtime authority',
+        timeoutSeconds: 120,
+      },
+    };
+  }
   const serviceName = provider.name ?? 'applik8s-events';
   const servers = provider.servers ?? [applicationTypeKroString('nats://', serviceName, provider.namespace ? '.' : '', provider.namespace, '.svc:4222')];
   return {
@@ -1443,6 +1456,7 @@ function applicationCommandProcessorGeneratedResources(
   eventLog: ApplicationEventLogProvider,
   deployment: ApplicationProcessorNode['deployment'],
 ): readonly ApplicationGeneratedResourceContract[] {
+  if (eventLog.kind === 'kinesis') return [];
   const name = kubernetesNameSegment(processorName);
   const namespace = model.secretNamespace ?? eventLog.namespace;
   const nodeId = applicationGraphNodeId('processor', processorName);

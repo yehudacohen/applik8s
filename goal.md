@@ -113,7 +113,21 @@ Job attempt start/cancel into exact ECS/PassRole runtime-access grants. Focused
 compiler, plan, access, Alchemy-boundary, SDK, and artifact-loader tests pass.
 Real-AWS create/update/interruption/cancellation/teardown evidence remains open;
 the implementation is not promoted on deterministic SDK evidence alone. The
-managed-model slice now freezes and implements the public
+frozen AWS profile can now be authored without generic-provider escape hatches:
+`Database.auroraPostgres(...)`, `EventLog.kinesis(...)`, and
+`ContainerRegistry.ecr(...)` retain their typed account/configuration inputs
+through the application graph and lower to native Alchemy Aurora, Kinesis, and
+ECR resources. Aurora uses the shared PostgreSQL runtime-binding contract,
+Kinesis preserves authored retention, and ECR is kept out of the Kubernetes
+OCI endpoint path. The native AWS adapter now applies every portable
+delete/retain policy through Alchemy's removal-policy scope, closing a prior
+gap between declared and executed lifecycle. MiniStack-incomplete Aurora and
+Kinesis profiles fail before mutation. Thirty-nine focused authoring, planning,
+and native-resource tests plus the affected package typechecks pass. Real AWS
+Aurora/Kinesis lifecycle qualification remains open and is not implied by this
+compiler/adapter evidence.
+
+The managed-model slice now freezes and implements the public
 `application.model(table).managed({ status })` enrichment, qualified
 `Model.store`, `Model.on.reconcile`, and `Model.on.finalize` surface; persists
 that declaration through preview/materialization replay; serializes its exact

@@ -1,4 +1,5 @@
 import { validateApplicationGraphCompatibilityPolicy } from '@applik8s/core';
+import { compileApplicationAwsDeploymentPlan } from '@applik8s/deployment-compiler';
 import { type } from 'arktype';
 import { describe, expect, test } from 'vitest';
 import { app, applicationGraphFor } from '../src/application-builder.js';
@@ -258,6 +259,93 @@ describe('application finite Job runtime', () => {
     const nodes = applicationGraphFor(application.composition)?.nodes ?? [];
     expect(nodes.some((node) => node.kind === 'job')).toBe(true);
     expect(nodes.some((node) => node.kind === 'workloadJob')).toBe(true);
+  });
+
+  test('authors the frozen AWS Job profile through typed concrete providers', () => {
+    const application = app('aws-finite-jobs', {
+      spec: type({}),
+      status: type({ ready: 'boolean' }),
+    });
+    const account = AWS.account({
+      accountId: config.env('AWS_ACCOUNT_ID'),
+      region: config.env('AWS_REGION'),
+      credentials: secret.env('AWS_CREDENTIALS'),
+    });
+    const database = Database.auroraPostgres({
+      account,
+      database: 'application',
+      retention: 'retain',
+    });
+    const registry = ContainerRegistry.ecr({ account });
+    const events = EventLog.kinesis({ account, retentionHours: 48 });
+    const queue = Queue.sqs({ account });
+    const executionHost = FiniteExecutionHost.aws({ account, registry });
+    const results = JobResultStore.postgres({ database });
+    const scheduler = Scheduler.eventBridge({ account });
+    const runtime = JobRuntime.aws({
+      account,
+      queue,
+      executionHost,
+      results,
+      scheduler,
+      events,
+      maximumDuration: '20m',
+    });
+
+    application.provide(TransactionalDatabase, database);
+    application.provide(ContainerRegistry, registry);
+    application.provide(EventLog, events);
+    application.provide(JobRuntime, runtime);
+    application.job(
+      'aws.double.v1',
+      { input: Input, output: Output },
+      {},
+      (input) => ({ doubled: input.value * 2 }),
+    );
+
+    const providers = (applicationGraphFor(application.composition)?.nodes ?? [])
+      .filter((node) => node.kind === 'provider');
+    expect(providers).toEqual(expect.arrayContaining([
+      expect.objectContaining({ interface: 'TransactionalDatabase', implementation: 'aurora-postgresql' }),
+      expect.objectContaining({ interface: 'ContainerRegistry', implementation: 'ecr' }),
+      expect.objectContaining({ interface: 'EventLog', implementation: 'kinesis' }),
+      expect.objectContaining({ interface: 'JobRuntime', implementation: 'aws-job-runtime' }),
+    ]));
+    expect(applicationCapabilityImplementationMetadata(database)).toMatchObject({
+      provider: { export: 'Database.auroraPostgres' },
+      lifecycle: 'retained',
+    });
+    expect(applicationCapabilityImplementationMetadata(events)).toMatchObject({
+      provider: { export: 'EventLog.kinesis' },
+    });
+    expect(applicationCapabilityImplementationMetadata(registry)).toMatchObject({
+      provider: { export: 'ContainerRegistry.ecr' },
+    });
+    expect(applicationCapabilityImplementationMetadata(runtime)?.dependencies).toEqual([
+      expect.objectContaining({ slot: 'queue', input: expect.objectContaining({ kind: 'sqs-job-queue' }) }),
+      expect.objectContaining({ slot: 'execution-host', input: expect.objectContaining({ kind: 'aws-finite-execution-host' }) }),
+      expect.objectContaining({ slot: 'results', input: expect.objectContaining({ kind: 'postgres-job-result-store' }) }),
+      expect.objectContaining({ slot: 'scheduler', input: expect.objectContaining({ kind: 'eventbridge-scheduler' }) }),
+      expect.objectContaining({ slot: 'events', input: expect.objectContaining({ kind: 'kinesis' }) }),
+    ]);
+    const graph = applicationGraphFor(application.composition);
+    expect(graph).toBeDefined();
+    const plan = compileApplicationAwsDeploymentPlan({
+      graph: graph!,
+      environment: 'production',
+      region: 'us-east-1',
+      accountId: '123456789012',
+      availabilityZones: ['us-east-1a', 'us-east-1b'],
+    });
+    expect(plan.resources).toEqual(expect.arrayContaining([
+      expect.objectContaining({ service: 'rds', resourceType: 'aurora-postgresql-cluster' }),
+      expect.objectContaining({ service: 'ecr', resourceType: 'repository' }),
+      expect.objectContaining({
+        service: 'kinesis',
+        resourceType: 'stream',
+        configuration: expect.objectContaining({ retentionHours: 48 }),
+      }),
+    ]));
   });
 
   test('returns one typed result for direct and durable invocation', async () => {

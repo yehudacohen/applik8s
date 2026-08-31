@@ -5,7 +5,10 @@ import {
 } from "@applik8s/deployment-contract";
 import { describe, expect, test } from "vitest";
 import { applicationAwsNativeResourceDeclarations } from "../src/index.js";
-import { applicationAwsNativeWorkloadEnvironmentForTest } from "../src/aws-native-resources.js";
+import {
+  applicationAwsNativeRemovalPolicyForTest,
+  applicationAwsNativeWorkloadEnvironmentForTest,
+} from "../src/aws-native-resources.js";
 
 describe("AWS native Alchemy resource graph", () => {
   test("maps each portable resource to a concrete Alchemy resource identity", () => {
@@ -35,6 +38,32 @@ describe("AWS native Alchemy resource graph", () => {
       expect.objectContaining({ id: "provider.query", type: "AWS.Athena.WorkGroup" }),
       expect.objectContaining({ id: "foundation.discovery", type: "AWS.CloudMap.PrivateDnsNamespace" }),
     ]));
+  });
+
+  test("maps Aurora PostgreSQL directly to Alchemy's native Aurora composition", () => {
+    const plan = fixturePlan([
+      resource(
+        "provider.aurora",
+        "rds",
+        "aurora-postgresql-cluster",
+        "demo-aurora",
+        { databaseName: "application", readers: 1, minimumCapacity: 0.5, maximumCapacity: 4 },
+        ["endpoint", "readerEndpoint", "port", "secretArn"],
+      ),
+    ]);
+    expect(applicationAwsNativeResourceDeclarations(plan)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "provider.aurora", type: "AWS.RDS.Aurora", logicalRole: "primary" }),
+    ]));
+  });
+
+  test("projects portable deletion policy onto every native Alchemy declaration", () => {
+    const deleted = resource("delete-me", "s3", "bucket", "delete-me", {}, ["bucketName"]);
+    const retained = {
+      ...resource("retain-me", "rds", "aurora-postgresql-cluster", "retain-me", {}, ["endpoint"]),
+      lifecycle: { ownership: "application", deletion: "retain", adoption: "createOrAdoptExact" } as const,
+    };
+    expect(applicationAwsNativeRemovalPolicyForTest(deleted)).toBe("destroy");
+    expect(applicationAwsNativeRemovalPolicyForTest(retained)).toBe("retain");
   });
 
   test("expands stateful services into independently owned native identities", () => {

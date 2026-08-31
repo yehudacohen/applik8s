@@ -65,6 +65,12 @@ export async function resolveApplicationContainerRegistry(
   if (provider.kind === 'orbstack-container-registry') {
     return { provider, remote: false };
   }
+  if (provider.kind === 'ecr') {
+    throw new Error('ContainerRegistry.ecr(...) is resolved by the native AWS deployment backend, not by a Kubernetes/OCI registry endpoint resolver.');
+  }
+  if (!provider.endpoint) {
+    throw new Error(`ContainerRegistry ${provider.kind} has no publication endpoint.`);
+  }
   const resolvedOrigin = provider.endpoint.kind === 'origin'
     ? provider.endpoint.origin
     : await resolveNodePort(provider.endpoint);
