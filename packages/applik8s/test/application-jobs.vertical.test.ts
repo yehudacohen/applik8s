@@ -15,14 +15,19 @@ import {
   installApplicationJobRuntimeResolver,
 } from '../src/application-finite-jobs.js';
 import {
+  ApplicationHost,
   AWS,
+  Certificate,
   ContainerRegistry,
   Database,
+  DnsPublication,
   EventLog,
   FiniteExecutionHost,
   JobResultStore,
   JobRuntime,
   KubernetesCluster,
+  HttpExposure,
+  ObjectStorage,
   Queue,
   Scheduler,
   TransactionalDatabase,
@@ -277,6 +282,11 @@ describe('application finite Job runtime', () => {
       retention: 'retain',
     });
     const registry = ContainerRegistry.ecr({ account });
+    const hostImplementation = ApplicationHost.aws({ account, registry });
+    const certificate = Certificate.acm({ account, domain: 'jobs.example.test' });
+    const dns = DnsPublication.route53({ account, zone: 'Z0123456789ABC', hostname: 'jobs.example.test' });
+    const http = HttpExposure.aws({ account, host: hostImplementation, certificate, dns });
+    const attachments = ObjectStorage.s3({ account, bucket: 'jobs-example-attachments', retention: 'retain' });
     const events = EventLog.kinesis({ account, retentionHours: 48 });
     const queue = Queue.sqs({ account });
     const executionHost = FiniteExecutionHost.aws({ account, registry });
@@ -296,6 +306,17 @@ describe('application finite Job runtime', () => {
     application.provide(ContainerRegistry, registry);
     application.provide(EventLog, events);
     application.provide(JobRuntime, runtime);
+    const host = application.provide(ApplicationHost, hostImplementation);
+    application.provide(Certificate, certificate);
+    application.provide(DnsPublication, dns);
+    application.provide(HttpExposure, http);
+    application.provide(ObjectStorage, attachments);
+    application.expose('web', {
+      service: host,
+      hostnames: ['jobs.example.test'],
+      tls: { mode: 'managed' },
+      dns: { mode: 'managed' },
+    });
     application.job(
       'aws.double.v1',
       { input: Input, output: Output },
@@ -310,6 +331,11 @@ describe('application finite Job runtime', () => {
       expect.objectContaining({ interface: 'ContainerRegistry', implementation: 'ecr' }),
       expect.objectContaining({ interface: 'EventLog', implementation: 'kinesis' }),
       expect.objectContaining({ interface: 'JobRuntime', implementation: 'aws-job-runtime' }),
+      expect.objectContaining({ interface: 'ApplicationHost', implementation: 'aws-application-host' }),
+      expect.objectContaining({ interface: 'Certificate', implementation: 'acm-certificate' }),
+      expect.objectContaining({ interface: 'DnsPublication', implementation: 'route53-dns-publication' }),
+      expect.objectContaining({ interface: 'HttpExposure', implementation: 'aws-http-exposure' }),
+      expect.objectContaining({ interface: 'ObjectStorage', implementation: 's3' }),
     ]));
     expect(applicationCapabilityImplementationMetadata(database)).toMatchObject({
       provider: { export: 'Database.auroraPostgres' },
@@ -329,15 +355,16 @@ describe('application finite Job runtime', () => {
       expect.objectContaining({ slot: 'events', input: expect.objectContaining({ kind: 'kinesis' }) }),
     ]);
     const graph = applicationGraphFor(application.composition);
-    expect(graph).toBeDefined();
+    if (!graph) throw new Error('Expected the authored AWS Job application graph.');
     const plan = compileApplicationAwsDeploymentPlan({
-      graph: graph!,
+      graph,
       environment: 'production',
       region: 'us-east-1',
       accountId: '123456789012',
       availabilityZones: ['us-east-1a', 'us-east-1b'],
     });
-    expect(plan.resources).toEqual(expect.arrayContaining([
+    expect(plan.diagnostics.filter(({ code }) => code === 'AWS_CONFIGURATION_UNRESOLVED')).toEqual([]);
+    for (const expected of [
       expect.objectContaining({ service: 'rds', resourceType: 'aurora-postgresql-cluster' }),
       expect.objectContaining({ service: 'ecr', resourceType: 'repository' }),
       expect.objectContaining({
@@ -345,7 +372,18 @@ describe('application finite Job runtime', () => {
         resourceType: 'stream',
         configuration: expect.objectContaining({ retentionHours: 48 }),
       }),
-    ]));
+      expect.objectContaining({
+        service: 's3',
+        resourceType: 'bucket',
+        physicalName: 'jobs-example-attachments',
+        lifecycle: expect.objectContaining({ deletion: 'retain' }),
+      }),
+      expect.objectContaining({ service: 'elastic-load-balancing', resourceType: 'application-load-balancer' }),
+      expect.objectContaining({ service: 'acm', resourceType: 'certificate' }),
+      expect.objectContaining({ service: 'route53', resourceType: 'record-publication' }),
+    ]) {
+      expect(plan.resources).toContainEqual(expected);
+    }
   });
 
   test('returns one typed result for direct and durable invocation', async () => {

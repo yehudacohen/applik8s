@@ -257,7 +257,7 @@ describe('integrated TypeKro package surface', () => {
       spec: type({}),
       status: type({ ready: 'boolean' }),
     }, (_spec, app) => {
-      app.defaults({ expose: 'ingress' });
+      app.defaults({ expose: HttpExposure.ingress() });
       return { ready: true };
     });
     expect(applicationGraphFor(exposureDefaultComposition)?.nodes).toEqual(expect.arrayContaining([
@@ -623,7 +623,7 @@ describe('integrated TypeKro package surface', () => {
     }, (_spec, app) => {
       app.provide(untypedTransactionalDatabaseToken, 'postgres');
       return { ready: true };
-    })).toThrow(/app\.provide\(TransactionalDatabase, \.\.\.\) currently supports only the typed PostgreSQL database provider declaration/);
+    })).toThrow(/app\.provide\(TransactionalDatabase, \.\.\.\) requires Database\.postgres\(\.\.\.\), Database\.externalPostgres\(\.\.\.\), or Database\.auroraPostgres\(\.\.\.\)/);
 
     expect(() => sdk.kubernetesComposition({
       name: 'notes-counter-provider-app',
@@ -668,7 +668,7 @@ describe('integrated TypeKro package surface', () => {
       // typecast: force an unsupported HttpExposure alias to verify fail-closed provider validation.
       app.provide(HttpExposure, 'gateway' as never);
       return { ready: true };
-    })).toThrow(/app\.provide\(HttpExposure, \.\.\.\) requires HttpExposure\.ingress\(\.\.\.\) or HttpExposure\.nodePort\(\.\.\.\)/);
+    })).toThrow(/app\.provide\(HttpExposure, \.\.\.\) requires HttpExposure\.ingress\(\.\.\.\), \.nodePort\(\.\.\.\), or \.aws\(\.\.\.\)/);
 
     const jobComposition = sdk.kubernetesComposition({
       name: 'notes-job-app',
@@ -2242,6 +2242,7 @@ describe('integrated TypeKro package surface', () => {
       ['provider.HttpExposure', 'implemented'],
       ['provider.IndexStore', 'implemented'],
       ['provider.JobRuntime', 'failClosedReserved'],
+      ['provider.MLModel', 'implemented'],
       ['provider.ManagedModelStore', 'implemented'],
       ['provider.ObjectStorage', 'implemented'],
       ['provider.OperatorRuntime', 'implemented'],

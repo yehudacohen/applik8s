@@ -25,7 +25,7 @@ export function normalizeApplicationTlsIntent(name: string, options: Application
 }
 
 export function applicationExternalDnsAnnotations(provider: ApplicationDnsPublicationProvider, hostnames: readonly string[], intent: ApplicationDnsIntent): Readonly<Record<string, string>> {
-  if (intent.mode !== 'managed') return {};
+  if (intent.mode !== 'managed' || provider.kind !== 'external-dns') return {};
   const prefix = provider.annotationPrefix ?? 'external-dns.alpha.kubernetes.io';
   return { [`${prefix}/hostname`]: hostnames.join(','), ...(intent.ttlSeconds === undefined ? {} : { [`${prefix}/ttl`]: String(intent.ttlSeconds) }) };
 }

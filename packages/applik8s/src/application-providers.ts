@@ -46,11 +46,15 @@ export type ApplicationTransactionalDatabaseProvider =
   | ApplicationAuroraPostgresTransactionalDatabaseProvider;
 
 export type ApplicationHttpExposureProvider =
-  | 'ingress'
   | ApplicationIngressHttpExposureProvider
-  | ApplicationNodePortHttpExposureProvider;
-export type ApplicationCertificateProvider = ApplicationCertManagerCertificateProvider;
-export type ApplicationDnsPublicationProvider = ApplicationExternalDnsPublicationProvider;
+  | ApplicationNodePortHttpExposureProvider
+  | ApplicationAwsHttpExposureProvider;
+export type ApplicationCertificateProvider =
+  | ApplicationCertManagerCertificateProvider
+  | ApplicationAcmCertificateProvider;
+export type ApplicationDnsPublicationProvider =
+  | ApplicationExternalDnsPublicationProvider
+  | ApplicationRoute53DnsPublicationProvider;
 
 export interface ApplicationKubernetesResourceCounterStoreProvider { readonly kind: 'kubernetes-resource-counter'; readonly flushMs?: number }
 export interface ApplicationKubernetesWatchEventSourceProvider { readonly kind: 'kubernetes-watch'; readonly resyncSeconds?: number }
@@ -72,13 +76,16 @@ export interface ApplicationSqsQueueProvider {
 export interface ApplicationKubernetesConfigMapObjectStorageProvider { readonly kind: 'kubernetes-configmap-objects'; readonly maxObjectBytes?: number }
 export interface ApplicationS3ObjectStorageProvider {
   readonly kind: 's3';
+  /** Present when AWS owns the bucket lifecycle rather than an external S3-compatible service. */
+  readonly account?: ApplicationAwsAccount;
   /** Typed desired-state switch. Disabled providers are omitted and do not block installation readiness. */
   readonly enabled?: boolean;
   readonly name?: string;
-  readonly bucket: string;
+  readonly bucket?: ApplicationProviderConfigString;
+  readonly retention?: 'retain' | 'delete';
   /** Provider-level prefix. Logical store names are appended beneath it. */
   readonly prefix?: string;
-  readonly region: string;
+  readonly region: ApplicationProviderConfigString;
   readonly endpoint?: string;
   readonly forcePathStyle?: boolean;
   readonly credentialsSecret?: ApplicationResourceRef;
@@ -278,12 +285,16 @@ export const AWS = Object.freeze({
 });
 
 function assertApplicationAwsAccount(value: unknown, constructorName: string): asserts value is ApplicationAwsAccount {
-  if (!value || typeof value !== 'object' || Reflect.get(value, 'kind') !== 'aws-account') {
+  if (!isApplicationAwsAccount(value)) {
     throw new TypeError(`${constructorName}(...) requires AWS.account(...).`);
   }
   requireProviderConfigString(Reflect.get(value, 'accountId'), `${constructorName} AWS accountId`);
   requireProviderConfigString(Reflect.get(value, 'region'), `${constructorName} AWS region`);
   requireSecretConfigurationBinding(Reflect.get(value, 'credentials'), `${constructorName} AWS credentials`);
+}
+
+function isApplicationAwsAccount(value: unknown): value is ApplicationAwsAccount {
+  return Boolean(value && typeof value === 'object' && Reflect.get(value, 'kind') === 'aws-account');
 }
 
 export const KubernetesCluster = Object.freeze({
@@ -923,9 +934,18 @@ export interface ApplicationManagedHostProvider {
   readonly resources?: ApplicationKubernetesHostProvider['resources'];
 }
 
+/** Native AWS application hosting selected beneath the semantic host capability. */
+export interface ApplicationAwsHostProvider
+  extends Omit<ApplicationManagedHostProvider, 'kind' | 'namespace'> {
+  readonly kind: 'aws-application-host';
+  readonly account: ApplicationAwsAccount;
+  readonly registry: ApplicationImplementationInput<ApplicationContainerRegistryProvider>;
+}
+
 export type ApplicationHostProvider =
   | ApplicationManagedHostProvider
-  | ApplicationKubernetesHostProvider;
+  | ApplicationKubernetesHostProvider
+  | ApplicationAwsHostProvider;
 
 export type ApplicationPostgresTransactionalDatabaseOptions = Omit<ApplicationPostgresTransactionalDatabaseProvider, 'kind'>;
 
@@ -1192,6 +1212,14 @@ export interface ApplicationNodePortHttpExposureProvider {
   readonly nodePort: number | `\${${string}}`;
 }
 
+export interface ApplicationAwsHttpExposureProvider {
+  readonly kind: 'aws-http-exposure';
+  readonly account: ApplicationAwsAccount;
+  readonly host: ApplicationImplementationInput<ApplicationHostProvider>;
+  readonly certificate: ApplicationImplementationInput<ApplicationCertificateProvider>;
+  readonly dns: ApplicationImplementationInput<ApplicationDnsPublicationProvider>;
+}
+
 export interface ApplicationCertManagerCertificateProvider {
   readonly kind: 'cert-manager';
   readonly issuerRef: {
@@ -1202,9 +1230,23 @@ export interface ApplicationCertManagerCertificateProvider {
   readonly renewBefore?: string;
 }
 
+export interface ApplicationAcmCertificateProvider {
+  readonly kind: 'acm-certificate';
+  readonly account: ApplicationAwsAccount;
+  readonly domain: ApplicationProviderConfigString;
+}
+
 export interface ApplicationExternalDnsPublicationProvider {
   readonly kind: 'external-dns';
   readonly annotationPrefix?: string;
+}
+
+export interface ApplicationRoute53DnsPublicationProvider {
+  readonly kind: 'route53-dns-publication';
+  readonly account: ApplicationAwsAccount;
+  /** Hosted-zone ID, resolved from configuration before AWS planning. */
+  readonly zone: ApplicationProviderConfigString;
+  readonly hostname: ApplicationProviderConfigString;
 }
 
 export interface ApplicationDefaults {
@@ -1651,15 +1693,18 @@ export interface ApplicationEventLogProviderToken extends ApplicationQualifiable
 
 export interface ApplicationCertificateProviderToken extends ApplicationQualifiableProviderToken<ApplicationCertificateProvider> {
   certManager(options: Omit<ApplicationCertManagerCertificateProvider, 'kind'>): ApplicationCertManagerCertificateProvider;
+  acm(options: Omit<ApplicationAcmCertificateProvider, 'kind'>): ApplicationCapabilityImplementation<ApplicationAcmCertificateProvider>;
 }
 
 export interface ApplicationHttpExposureProviderToken extends ApplicationQualifiableProviderToken<ApplicationHttpExposureProvider> {
   ingress(options?: Omit<ApplicationIngressHttpExposureProvider, 'kind'>): ApplicationIngressHttpExposureProvider;
   nodePort(options: Omit<ApplicationNodePortHttpExposureProvider, 'kind'>): ApplicationNodePortHttpExposureProvider;
+  aws(options: Omit<ApplicationAwsHttpExposureProvider, 'kind'>): ApplicationCapabilityImplementation<ApplicationAwsHttpExposureProvider>;
 }
 
 export interface ApplicationDnsPublicationProviderToken extends ApplicationQualifiableProviderToken<ApplicationDnsPublicationProvider> {
   externalDns(options?: Omit<ApplicationExternalDnsPublicationProvider, 'kind'>): ApplicationExternalDnsPublicationProvider;
+  route53(options: Omit<ApplicationRoute53DnsPublicationProvider, 'kind'>): ApplicationCapabilityImplementation<ApplicationRoute53DnsPublicationProvider>;
 }
 
 export interface ApplicationWorkflowEngineProviderToken extends ApplicationQualifiableProviderToken<ApplicationWorkflowEngineProvider> {
@@ -1786,7 +1831,7 @@ export interface ApplicationContainerRegistryProviderToken extends ApplicationQu
 }
 
 export interface ApplicationObjectStorageProviderToken extends ApplicationQualifiableProviderToken<ApplicationObjectStorageProvider> {
-  s3(options: Omit<ApplicationS3ObjectStorageProvider, 'kind'>): ApplicationCapabilityImplementation<ApplicationS3ObjectStorageProvider>;
+  s3(options: Omit<ApplicationS3ObjectStorageProvider, 'kind' | 'region'> & { readonly region?: string }): ApplicationCapabilityImplementation<ApplicationS3ObjectStorageProvider>;
   configMap(options?: Omit<ApplicationKubernetesConfigMapObjectStorageProvider, 'kind'>): ApplicationCapabilityImplementation<ApplicationKubernetesConfigMapObjectStorageProvider>;
   /**
    * Bind a database backup destination to one declared object-storage
@@ -1809,6 +1854,7 @@ export interface ApplicationObjectStorageProviderToken extends ApplicationQualif
 export interface ApplicationHostProviderToken extends ApplicationQualifiableProviderToken<ApplicationHostProvider> {
   managed(options?: Omit<ApplicationManagedHostProvider, 'kind'>): ApplicationManagedHostProvider;
   kubernetes(options?: Omit<ApplicationKubernetesHostProvider, 'kind'>): ApplicationKubernetesHostProvider;
+  aws(options: Omit<ApplicationAwsHostProvider, 'kind'>): ApplicationCapabilityImplementation<ApplicationAwsHostProvider>;
 }
 
 export interface ApplicationIdentityProviderToken extends ApplicationQualifiableProviderToken<ApplicationIdentityProvider> {
@@ -1845,10 +1891,13 @@ export interface ApplicationProviderBindingBase<TImplementation = unknown> {
 
 export interface ApplicationHostBinding extends Omit<ApplicationProviderBindingBase<ApplicationHostProvider>, 'kind'> {
   readonly kind: 'applicationHost';
-  readonly service: { readonly name: string; readonly namespace: string; readonly port: number };
+  readonly service: { readonly name: string; readonly namespace?: string; readonly port: number };
+  readonly placement:
+    | { readonly kind: 'kubernetes'; readonly namespace: string }
+    | { readonly kind: 'aws' };
   readonly status: { readonly state: 'pendingBuild'; readonly ready: false };
   readonly image: { readonly state: 'pendingBuild' };
-  readonly url: { readonly internal: string };
+  readonly url: { readonly internal?: string };
 }
 
 export type ApplicationProviderBinding<TImplementation = unknown> =
@@ -2315,8 +2364,20 @@ export const ObjectStorage: ApplicationObjectStorageProviderToken = applicationQ
   contract: builtInProviderContract('ObjectStorage', ['objectReadWrite', 'boundedObjects', 'serverOnlyCredentials']),
   accepts: isApplicationObjectStorageProvider,
   s3(options) {
-    if (!applicationProviderRequiredString(options.bucket)) throw new Error('ObjectStorage.s3({ bucket }) must not be empty.');
-    if (!applicationProviderRequiredString(options.region)) throw new Error('ObjectStorage.s3({ region }) must not be empty.');
+    if (options.account) {
+      assertApplicationAwsAccount(options.account, 'ObjectStorage.s3');
+      if (options.endpoint || options.credentialsSecret || options.provisioning || options.ownership) {
+        throw new Error('ObjectStorage.s3({ account }) uses native AWS lifecycle and cannot also declare endpoint, credentialsSecret, provisioning, or ownership.');
+      }
+    }
+    if (options.bucket === undefined && !options.account) throw new Error('ObjectStorage.s3(...) requires bucket for an external S3-compatible service.');
+    if (options.bucket !== undefined) requireProviderConfigString(options.bucket, 'ObjectStorage.s3 bucket');
+    const region = options.region ?? options.account?.region;
+    if (region === undefined) throw new Error('ObjectStorage.s3(...) requires region or AWS.account(...).');
+    requireProviderConfigString(region, 'ObjectStorage.s3 region');
+    if (options.retention !== undefined && options.retention !== 'retain' && options.retention !== 'delete') {
+      throw new Error('ObjectStorage.s3({ retention }) must be "retain" or "delete".');
+    }
     const dynamicOwnership = applicationTypeKroExpressionValue(options.ownership);
     if (!dynamicOwnership && options.ownership === 'direct-provisioned' && !options.credentialsSecret) {
       throw new Error('ObjectStorage.s3({ ownership: "direct-provisioned" }) requires the Secret reference produced by the direct provisioning boundary.');
@@ -2337,17 +2398,30 @@ export const ObjectStorage: ApplicationObjectStorageProviderToken = applicationQ
     if (!dynamicOwnership && options.ownership !== 'direct-provisioned' && options.provisioning) {
       throw new Error('ObjectStorage.s3({ provisioning }) is valid only with ownership: "direct-provisioned".');
     }
-    const provider: ApplicationS3ObjectStorageProvider = { kind: 's3', ...options };
-    const external = provider.ownership !== 'direct-provisioned';
+    const provider: ApplicationS3ObjectStorageProvider = {
+      kind: 's3',
+      ...options,
+      region,
+    };
+    const awsManaged = provider.account !== undefined;
+    const external = !awsManaged && provider.ownership !== 'direct-provisioned';
     return maintainedBuiltInImplementation(ObjectStorage, 'ObjectStorage.s3', provider, {
       runtimeAdapter: '@applik8s/runtime/object-storage-s3',
-      ...(external
-        ? {}
-        : { deploymentContributor: '@applik8s/deployment-compiler/providers/object-storage' }),
+      ...(external ? {} : {
+        deploymentContributor: awsManaged
+          ? '@applik8s/deployment-alchemy/providers/s3-object-storage'
+          : '@applik8s/deployment-compiler/providers/object-storage',
+      }),
       readiness: external
         ? 'applik8s.object-storage.s3.external-readiness/v1alpha1'
-        : 'applik8s.object-storage.s3.readiness/v1alpha1',
-      lifecycle: external ? 'external' : 'application',
+        : awsManaged
+          ? 'applik8s.object-storage.s3.aws-readiness/v1alpha1'
+          : 'applik8s.object-storage.s3.readiness/v1alpha1',
+      lifecycle: external
+        ? 'external'
+        : provider.retention === 'retain'
+          ? 'retained'
+          : 'application',
       migration: 'applik8s.object-storage.s3.migration/v1alpha1',
     });
   },
@@ -2418,6 +2492,45 @@ export const HttpExposure: ApplicationHttpExposureProviderToken = applicationQua
     }
     return { kind: 'node-port', ...options };
   },
+  aws(options) {
+    assertApplicationAwsAccount(options.account, 'HttpExposure.aws');
+    assertApplicationImplementationInput(options.host, ApplicationHost, 'HttpExposure.aws host');
+    assertApplicationImplementationInput(options.certificate, Certificate, 'HttpExposure.aws certificate');
+    assertApplicationImplementationInput(options.dns, DnsPublication, 'HttpExposure.aws dns');
+    return maintainedBuiltInImplementation(HttpExposure, 'HttpExposure.aws', {
+      kind: 'aws-http-exposure',
+      ...options,
+    }, {
+      runtimeAdapter: '@applik8s/runtime-aws/http-exposure',
+      deploymentContributor: '@applik8s/deployment-alchemy/providers/http-exposure',
+      readiness: 'applik8s.http-exposure.aws.readiness/v1alpha1',
+      lifecycle: 'application',
+      migration: 'applik8s.http-exposure.aws.migration/v1alpha1',
+      dependencies: [
+        {
+          slot: 'host',
+          requirement: ApplicationHost as ApplicationProviderToken<object>,
+          requiredGuarantees: ['immutableArtifact', 'readiness'],
+          operations: ['endpoint.read'],
+          input: maintainedDependencyInput(options.host as object, ApplicationHost as ApplicationProviderToken<object>),
+        },
+        {
+          slot: 'certificate',
+          requirement: Certificate as ApplicationProviderToken<object>,
+          requiredGuarantees: ['managedCertificate'],
+          operations: ['certificate.read'],
+          input: maintainedDependencyInput(options.certificate as object, Certificate as ApplicationProviderToken<object>),
+        },
+        {
+          slot: 'dns',
+          requirement: DnsPublication as ApplicationProviderToken<object>,
+          requiredGuarantees: ['dnsPublication'],
+          operations: ['dns.write'],
+          input: maintainedDependencyInput(options.dns as object, DnsPublication as ApplicationProviderToken<object>),
+        },
+      ],
+    });
+  },
 });
 
 export const Certificate: ApplicationCertificateProviderToken = applicationQualifiableProviderToken({
@@ -2427,6 +2540,20 @@ export const Certificate: ApplicationCertificateProviderToken = applicationQuali
   certManager(options) {
     return { kind: 'cert-manager', ...options };
   },
+  acm(options) {
+    assertApplicationAwsAccount(options.account, 'Certificate.acm');
+    requireProviderConfigString(options.domain, 'Certificate.acm domain');
+    return maintainedBuiltInImplementation(Certificate, 'Certificate.acm', {
+      kind: 'acm-certificate',
+      ...options,
+    }, {
+      runtimeAdapter: '@applik8s/runtime-aws/certificate',
+      deploymentContributor: '@applik8s/deployment-alchemy/providers/acm-certificate',
+      readiness: 'applik8s.certificate.acm.readiness/v1alpha1',
+      lifecycle: 'application',
+      migration: 'applik8s.certificate.acm.migration/v1alpha1',
+    });
+  },
 });
 
 export const DnsPublication: ApplicationDnsPublicationProviderToken = applicationQualifiableProviderToken({
@@ -2435,6 +2562,21 @@ export const DnsPublication: ApplicationDnsPublicationProviderToken = applicatio
   contract: builtInProviderContract('DnsPublication', ['dnsPublication']),
   externalDns(options = {}) {
     return { kind: 'external-dns', ...options };
+  },
+  route53(options) {
+    assertApplicationAwsAccount(options.account, 'DnsPublication.route53');
+    requireProviderConfigString(options.zone, 'DnsPublication.route53 zone');
+    requireProviderConfigString(options.hostname, 'DnsPublication.route53 hostname');
+    return maintainedBuiltInImplementation(DnsPublication, 'DnsPublication.route53', {
+      kind: 'route53-dns-publication',
+      ...options,
+    }, {
+      runtimeAdapter: '@applik8s/runtime-aws/dns-publication',
+      deploymentContributor: '@applik8s/deployment-alchemy/providers/route53-dns-publication',
+      readiness: 'applik8s.dns.route53.readiness/v1alpha1',
+      lifecycle: 'application',
+      migration: 'applik8s.dns.route53.migration/v1alpha1',
+    });
   },
 });
 
@@ -3260,7 +3402,7 @@ export const ContainerRegistry: ApplicationContainerRegistryProviderToken = appl
 });
 
 function assertApplicationHostOptions(
-  factoryName: 'ApplicationHost.managed' | 'ApplicationHost.kubernetes',
+  factoryName: 'ApplicationHost.managed' | 'ApplicationHost.kubernetes' | 'ApplicationHost.aws',
   options: Omit<ApplicationManagedHostProvider, 'kind'> | Omit<ApplicationKubernetesHostProvider, 'kind'>,
 ): void {
   if (options.replicas !== undefined && !applicationTypeKroExpressionValue(options.replicas) && (!Number.isInteger(options.replicas) || options.replicas < 1)) {
@@ -3292,6 +3434,28 @@ export const ApplicationHost: ApplicationHostProviderToken = applicationQualifia
       throw new Error('ApplicationHost.kubernetes({ cursorSecret.key }) must not be empty.');
     }
     return { kind: 'kubernetes-application-host', ...options };
+  },
+  aws(options) {
+    assertApplicationAwsAccount(options.account, 'ApplicationHost.aws');
+    assertApplicationImplementationInput(options.registry, ContainerRegistry, 'ApplicationHost.aws registry');
+    assertApplicationHostOptions('ApplicationHost.aws', options);
+    return maintainedBuiltInImplementation(ApplicationHost, 'ApplicationHost.aws', {
+      kind: 'aws-application-host',
+      ...options,
+    }, {
+      runtimeAdapter: '@applik8s/runtime-aws/application-host',
+      deploymentContributor: '@applik8s/deployment-alchemy/providers/application-host',
+      readiness: 'applik8s.application-host.aws.readiness/v1alpha1',
+      lifecycle: 'application',
+      migration: 'applik8s.application-host.aws.migration/v1alpha1',
+      dependencies: [{
+        slot: 'registry',
+        requirement: ContainerRegistry as ApplicationProviderToken<object>,
+        requiredGuarantees: ['immutableDigest', 'executionTimeCredentials'],
+        operations: ['artifact.read'],
+        input: maintainedDependencyInput(options.registry as object, ContainerRegistry as ApplicationProviderToken<object>),
+      }],
+    });
   },
 });
 
@@ -3658,6 +3822,16 @@ function requireProviderConfigString(
   if (!isApplicationConfigurationBinding(value) || value.kind !== 'config' || value.valueType !== 'string') {
     throw new TypeError(`${label} requires a string literal or config.env(...) binding.`);
   }
+}
+
+function isApplicationProviderConfigString(value: unknown): value is ApplicationProviderConfigString {
+  return typeof value === 'string'
+    ? value.trim().length > 0
+    : Boolean(
+        isApplicationConfigurationBinding(value)
+        && value.kind === 'config'
+        && value.valueType === 'string',
+      );
 }
 
 function requireSecretConfigurationBinding(
@@ -4192,8 +4366,8 @@ export function applyApplicationProvider<TImplementation>(state: ApplicationProv
       return;
     }
     if (applicationProviderTokenName(token) === 'TransactionalDatabase') {
-      if (candidates.some((candidate) => !isPostgresTransactionalDatabaseProvider(candidate))) {
-        throw new Error('Application profile TransactionalDatabase branches must each satisfy the transactional PostgreSQL provider contract.');
+      if (candidates.some((candidate) => !isApplicationTransactionalDatabaseProvider(candidate))) {
+        throw new Error('Application profile TransactionalDatabase branches must each satisfy the transactional database provider contract.');
       }
       state.providers.database = implementation;
       return;
@@ -4207,7 +4381,7 @@ export function applyApplicationProvider<TImplementation>(state: ApplicationProv
     }
     if (applicationProviderTokenName(token) === 'EventLog') {
       if (candidates.some((candidate) => !isApplicationEventLogProvider(candidate))) {
-        throw new Error('Application profile EventLog branches must each satisfy the NATS JetStream event-log contract.');
+        throw new Error('Application profile EventLog branches must each satisfy the event-log contract.');
       }
       state.providers.eventLogs = implementation;
       return;
@@ -4217,6 +4391,27 @@ export function applyApplicationProvider<TImplementation>(state: ApplicationProv
         throw new Error('Application profile ObjectStorage branches must each satisfy the object-storage contract.');
       }
       state.providers.objects = implementation;
+      return;
+    }
+    if (applicationProviderTokenName(token) === 'HttpExposure') {
+      if (candidates.some((candidate) => !isApplicationHttpExposureProvider(candidate))) {
+        throw new Error('Application profile HttpExposure branches must each satisfy the HTTP exposure contract.');
+      }
+      state.providers.expose = implementation;
+      return;
+    }
+    if (applicationProviderTokenName(token) === 'Certificate') {
+      if (candidates.some((candidate) => !isApplicationCertificateProvider(candidate))) {
+        throw new Error('Application profile Certificate branches must each satisfy the managed-certificate contract.');
+      }
+      state.providers.certificates = implementation;
+      return;
+    }
+    if (applicationProviderTokenName(token) === 'DnsPublication') {
+      if (candidates.some((candidate) => !isApplicationDnsPublicationProvider(candidate))) {
+        throw new Error('Application profile DnsPublication branches must each satisfy the DNS-publication contract.');
+      }
+      state.providers.dns = implementation;
       return;
     }
     if (applicationProviderTokensMatch(token, WorkflowEngine)) {
@@ -4269,6 +4464,14 @@ export function applyApplicationProvider<TImplementation>(state: ApplicationProv
       state.providers.extensions['ContainerRegistry@v1alpha1'] = implementation;
       return;
     }
+    if (applicationProviderTokensMatch(token, ApplicationHost)) {
+      if (candidates.some((candidate) => !isApplicationHostProvider(candidate))) {
+        throw new Error('Application profile ApplicationHost branches must each satisfy the application-host contract.');
+      }
+      if (!state.providers.extensions) state.providers.extensions = {};
+      state.providers.extensions['ApplicationHost@v1alpha1'] = implementation;
+      return;
+    }
     if (applicationProviderTokensMatch(token, StructuredGeneration)) {
       if (candidates.some((candidate) => !isApplicationStructuredGenerationProvider(candidate))) {
         throw new Error('app.selectProvider(...) StructuredGeneration branches must each be StructuredGeneration.http(...) or .deterministic(...).');
@@ -4303,22 +4506,22 @@ export function applyApplicationProvider<TImplementation>(state: ApplicationProv
     return;
   }
   if (applicationProviderTokenName(token) === 'HttpExposure') {
-    if (!isIngressHttpExposureProvider(implementation) && !isNodePortHttpExposureProvider(implementation)) {
-      throw new Error('app.provide(HttpExposure, ...) requires HttpExposure.ingress(...) or HttpExposure.nodePort(...).');
+    if (!isApplicationHttpExposureProvider(implementation)) {
+      throw new Error('app.provide(HttpExposure, ...) requires HttpExposure.ingress(...), .nodePort(...), or .aws(...).');
     }
     state.providers.expose = implementation;
     return;
   }
   if (applicationProviderTokenName(token) === 'Certificate') {
-    if (!isCertManagerCertificateProvider(implementation)) {
-      throw new Error('app.provide(Certificate, ...) currently supports only the cert-manager certificate provider. Use Certificate.certManager({ issuerRef: ... }).');
+    if (!isApplicationCertificateProvider(implementation)) {
+      throw new Error('app.provide(Certificate, ...) requires Certificate.certManager(...) or .acm(...).');
     }
     state.providers.certificates = implementation;
     return;
   }
   if (applicationProviderTokenName(token) === 'DnsPublication') {
-    if (!isExternalDnsPublicationProvider(implementation)) {
-      throw new Error('app.provide(DnsPublication, ...) currently supports only the external-dns publication provider. Use DnsPublication.externalDns().');
+    if (!isApplicationDnsPublicationProvider(implementation)) {
+      throw new Error('app.provide(DnsPublication, ...) requires DnsPublication.externalDns(...) or .route53(...).');
     }
     state.providers.dns = implementation;
     return;
@@ -4388,7 +4591,7 @@ export function applyApplicationProvider<TImplementation>(state: ApplicationProv
   }
   if (applicationProviderTokensMatch(token, ApplicationHost)) {
     if (!isApplicationHostProvider(implementation)) {
-      throw new Error('app.provide(ApplicationHost, ...) requires ApplicationHost.managed(...) or ApplicationHost.kubernetes(...).');
+      throw new Error('app.provide(ApplicationHost, ...) requires ApplicationHost.managed(...), .kubernetes(...), or .aws(...).');
     }
     if (!state.providers.extensions) state.providers.extensions = {};
     state.providers.extensions['ApplicationHost@v1alpha1'] = implementation;
@@ -4603,8 +4806,8 @@ function isSupportedDefaultProvider(tokenName: string | undefined, implementatio
     || (tokenName === 'CredentialStore' && kind === 'kubernetes-secret-credentials');
 }
 
-export function isIngressHttpExposureProvider(value: unknown): value is 'ingress' | ApplicationIngressHttpExposureProvider {
-  return value === 'ingress' || Boolean(value && typeof value === 'object' && Reflect.get(value, 'kind') === 'ingress');
+export function isIngressHttpExposureProvider(value: unknown): value is ApplicationIngressHttpExposureProvider {
+  return Boolean(value && typeof value === 'object' && Reflect.get(value, 'kind') === 'ingress');
 }
 
 export function isNodePortHttpExposureProvider(value: unknown): value is ApplicationNodePortHttpExposureProvider {
@@ -4615,6 +4818,21 @@ export function isNodePortHttpExposureProvider(value: unknown): value is Applica
     && typeof Reflect.get(value, 'host') === 'string'
     && applicationProviderNodePort(Reflect.get(value, 'nodePort')),
   );
+}
+
+export function isAwsHttpExposureProvider(value: unknown): value is ApplicationAwsHttpExposureProvider {
+  return Boolean(
+    value
+    && typeof value === 'object'
+    && Reflect.get(value, 'kind') === 'aws-http-exposure'
+    && isApplicationAwsAccount(Reflect.get(value, 'account')),
+  );
+}
+
+export function isApplicationHttpExposureProvider(value: unknown): value is ApplicationHttpExposureProvider {
+  return isIngressHttpExposureProvider(value)
+    || isNodePortHttpExposureProvider(value)
+    || isAwsHttpExposureProvider(value);
 }
 
 function applicationProviderNodePort(value: unknown): boolean {
@@ -4629,11 +4847,9 @@ function applicationProviderRequiredString(value: unknown): boolean {
 }
 
 export function applicationHttpExposureImplementation(value: unknown): ApplicationHttpExposureProvider | undefined {
-  if (isIngressHttpExposureProvider(value) || isNodePortHttpExposureProvider(value)) {
-    return value;
-  }
+  if (isApplicationHttpExposureProvider(value)) return value;
   if (isApplicationProviderBinding(value) && value.token === HttpExposure
-    && (isIngressHttpExposureProvider(value.implementation) || isNodePortHttpExposureProvider(value.implementation))) {
+    && isApplicationHttpExposureProvider(value.implementation)) {
     return value.implementation;
   }
   return undefined;
@@ -4652,9 +4868,23 @@ export function isCertManagerCertificateProvider(value: unknown): value is Appli
   );
 }
 
+export function isAcmCertificateProvider(value: unknown): value is ApplicationAcmCertificateProvider {
+  return Boolean(
+    value
+    && typeof value === 'object'
+    && Reflect.get(value, 'kind') === 'acm-certificate'
+    && isApplicationAwsAccount(Reflect.get(value, 'account'))
+    && isApplicationProviderConfigString(Reflect.get(value, 'domain')),
+  );
+}
+
+export function isApplicationCertificateProvider(value: unknown): value is ApplicationCertificateProvider {
+  return isCertManagerCertificateProvider(value) || isAcmCertificateProvider(value);
+}
+
 export function applicationCertificateImplementation(value: unknown): ApplicationCertificateProvider | undefined {
-  if (isCertManagerCertificateProvider(value)) return value;
-  if (isApplicationProviderBinding(value) && value.token === Certificate && isCertManagerCertificateProvider(value.implementation)) {
+  if (isApplicationCertificateProvider(value)) return value;
+  if (isApplicationProviderBinding(value) && value.token === Certificate && isApplicationCertificateProvider(value.implementation)) {
     return value.implementation;
   }
   return undefined;
@@ -4664,9 +4894,24 @@ export function isExternalDnsPublicationProvider(value: unknown): value is Appli
   return Boolean(value && typeof value === 'object' && Reflect.get(value, 'kind') === 'external-dns');
 }
 
+export function isRoute53DnsPublicationProvider(value: unknown): value is ApplicationRoute53DnsPublicationProvider {
+  return Boolean(
+    value
+    && typeof value === 'object'
+    && Reflect.get(value, 'kind') === 'route53-dns-publication'
+    && isApplicationAwsAccount(Reflect.get(value, 'account'))
+    && isApplicationProviderConfigString(Reflect.get(value, 'zone'))
+    && isApplicationProviderConfigString(Reflect.get(value, 'hostname')),
+  );
+}
+
+export function isApplicationDnsPublicationProvider(value: unknown): value is ApplicationDnsPublicationProvider {
+  return isExternalDnsPublicationProvider(value) || isRoute53DnsPublicationProvider(value);
+}
+
 export function applicationDnsPublicationImplementation(value: unknown): ApplicationDnsPublicationProvider | undefined {
-  if (isExternalDnsPublicationProvider(value)) return value;
-  if (isApplicationProviderBinding(value) && value.token === DnsPublication && isExternalDnsPublicationProvider(value.implementation)) {
+  if (isApplicationDnsPublicationProvider(value)) return value;
+  if (isApplicationProviderBinding(value) && value.token === DnsPublication && isApplicationDnsPublicationProvider(value.implementation)) {
     return value.implementation;
   }
   return undefined;
@@ -5650,8 +5895,8 @@ export function isApplicationObjectStorageProvider(value: unknown): value is App
   if (!value || typeof value !== 'object') return false;
   if (Reflect.get(value, 'kind') === 'kubernetes-configmap-objects') return true;
   return Reflect.get(value, 'kind') === 's3'
-    && applicationProviderRequiredString(Reflect.get(value, 'bucket'))
-    && applicationProviderRequiredString(Reflect.get(value, 'region'));
+    && (isApplicationAwsAccount(Reflect.get(value, 'account')) || applicationProviderRequiredString(Reflect.get(value, 'bucket')))
+    && isApplicationProviderConfigString(Reflect.get(value, 'region'));
 }
 
 function isApplicationS3ObjectStorageProvider(
@@ -5684,11 +5929,20 @@ export function isKubernetesApplicationHostProvider(value: unknown): value is Ap
   return Boolean(value && typeof value === 'object' && Reflect.get(value, 'kind') === 'kubernetes-application-host');
 }
 
+export function isAwsApplicationHostProvider(value: unknown): value is ApplicationAwsHostProvider {
+  return Boolean(
+    value
+    && typeof value === 'object'
+    && Reflect.get(value, 'kind') === 'aws-application-host'
+    && isApplicationAwsAccount(Reflect.get(value, 'account')),
+  );
+}
+
 export function isApplicationHostProvider(value: unknown): value is ApplicationHostProvider {
   return Boolean(
     value
     && typeof value === 'object'
-    && ['managed-application-host', 'kubernetes-application-host'].includes(String(Reflect.get(value, 'kind'))),
+    && ['managed-application-host', 'kubernetes-application-host', 'aws-application-host'].includes(String(Reflect.get(value, 'kind'))),
   );
 }
 
@@ -5899,13 +6153,26 @@ export function applicationHostBinding(
   defaultNamespace?: string,
 ): ApplicationHostBinding {
   const name = implementation.name ?? `${applicationName}-web`;
-  const namespace = implementation.namespace ?? defaultNamespace ?? 'default';
   const port = implementation.port ?? 3000;
+  if (implementation.kind === 'aws-application-host') {
+    return {
+      kind: 'applicationHost',
+      token,
+      implementation,
+      service: { name, port },
+      placement: { kind: 'aws' },
+      status: { state: 'pendingBuild', ready: false },
+      image: { state: 'pendingBuild' },
+      url: {},
+    };
+  }
+  const namespace = implementation.namespace ?? defaultNamespace ?? 'default';
   return {
     kind: 'applicationHost',
     token,
     implementation,
     service: { name, namespace, port },
+    placement: { kind: 'kubernetes', namespace },
     status: { state: 'pendingBuild', ready: false },
     image: { state: 'pendingBuild' },
     url: { internal: applicationTypeKroString('http://', name, '.', namespace, '.svc:', port) },

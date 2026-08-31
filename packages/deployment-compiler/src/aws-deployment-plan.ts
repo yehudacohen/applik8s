@@ -262,7 +262,7 @@ export function compileApplicationAwsDeploymentPlan(request: CompileApplicationA
       connect({ from: 'foundation.logs', to: base, relationship: 'requiresReady' });
     }
   }
-  lowerAwsExposures(request, resources, diagnostics, add, connect, name);
+  lowerAwsExposures(request, selectedProviders, resources, diagnostics, add, connect, name);
   const foundation = deriveApplicationGraphFoundation(
     request.graph,
     request.workspaceRoot ? { workspaceRoot: request.workspaceRoot } : {},
@@ -1236,6 +1236,7 @@ function awsRuntimeBindings(
 
 function lowerAwsExposures(
   request: CompileApplicationAwsDeploymentPlanRequest,
+  selectedProviders: readonly ApplicationProviderNode[],
   resources: ReadonlyMap<string, ApplicationAwsPlanResource>,
   diagnostics: ApplicationAwsDeploymentPlan['diagnostics'][number][],
   add: (entry: ApplicationAwsPlanResource) => void,
@@ -1244,6 +1245,20 @@ function lowerAwsExposures(
 ): void {
   const loadBalancer = resources.get('provider.provider.HttpExposure')
     ?? [...resources.values()].find(({ service, resourceType }) => service === 'elastic-load-balancing' && resourceType === 'application-load-balancer');
+  const certificateProvider = selectedProviders.find(({ interface: providerInterface }) => providerInterface === 'Certificate');
+  const dnsProvider = selectedProviders.find(({ interface: providerInterface }) => providerInterface === 'DnsPublication');
+  const certificateDomain = certificateProvider?.implementation === 'acm-certificate'
+    ? stringValue(providerConfig(certificateProvider).domain)
+    : undefined;
+  const dnsConfig = dnsProvider?.implementation === 'route53-dns-publication'
+    ? providerConfig(dnsProvider)
+    : undefined;
+  const dnsHostname = stringValue(dnsConfig?.hostname);
+  const dnsZone = stringValue(dnsConfig?.zone);
+  const providerHostedZones = dnsHostname && dnsZone
+    ? { [dnsHostname]: dnsZone }
+    : {};
+  const hostedZones = { ...(request.hostedZones ?? {}), ...providerHostedZones };
   for (const exposure of request.graph.nodes.filter((node) => node.kind === 'exposure')) {
     if (exposure.enabled === false) continue;
     if (!loadBalancer) {
@@ -1261,7 +1276,21 @@ function lowerAwsExposures(
       });
       continue;
     }
-    const zones = hostnames.map((hostname) => resolveAwsHostedZone(hostname, request.hostedZones));
+    if (certificateDomain && !hostnames.includes(normalizeHostname(certificateDomain))) {
+      diagnostics.push({
+        severity: 'error', code: 'AWS_CONFIGURATION_UNRESOLVED', subjectId: exposure.id,
+        message: `Exposure ${exposure.name} does not include Certificate.acm domain ${certificateDomain}.`,
+      });
+      continue;
+    }
+    if (dnsHostname && !hostnames.includes(normalizeHostname(dnsHostname))) {
+      diagnostics.push({
+        severity: 'error', code: 'AWS_CONFIGURATION_UNRESOLVED', subjectId: exposure.id,
+        message: `Exposure ${exposure.name} does not include DnsPublication.route53 hostname ${dnsHostname}.`,
+      });
+      continue;
+    }
+    const zones = hostnames.map((hostname) => resolveAwsHostedZone(hostname, hostedZones));
     const missingZones = hostnames.filter((_, index) => !zones[index]);
     const needsHostedZone = exposure.tlsIntent.mode === 'managed' || exposure.dnsIntent?.mode === 'managed';
     if (needsHostedZone && missingZones.length > 0) {
@@ -1271,6 +1300,10 @@ function lowerAwsExposures(
       });
       continue;
     }
+    const resolvedZones = needsHostedZone ? zones.map((zone, index) => {
+      if (!zone) throw new Error(`AWS exposure ${exposure.name} did not retain the validated hosted-zone binding for ${hostnames[index]}.`);
+      return zone;
+    }) : [];
     if (exposure.tlsIntent.mode === 'external') {
       diagnostics.push({
         severity: 'error', code: 'AWS_CONFIGURATION_UNRESOLVED', subjectId: exposure.id,
@@ -1286,21 +1319,29 @@ function lowerAwsExposures(
       continue;
     }
     if (exposure.tlsIntent.mode === 'managed') {
+      const primaryHostname = hostnames[0];
+      if (!primaryHostname) throw new Error(`AWS exposure ${exposure.name} lost its validated primary hostname.`);
       const certificateId = `exposure.${exposure.id}.certificate`;
       add(resource(certificateId, 'acm', 'certificate', name(`certificate-${hash(exposure.id, 8)}`), {
         validation: 'DNS',
-        domainName: hostnames[0]!,
+        domainName: primaryHostname,
         subjectAlternativeNames: hostnames.slice(1),
-        domainValidationOptions: hostnames.map((domainName, index) => ({ domainName, hostedZoneId: zones[index]! })),
+        domainValidationOptions: hostnames.map((domainName, index) => {
+          const hostedZoneId = resolvedZones[index];
+          if (!hostedZoneId) throw new Error(`AWS exposure ${exposure.name} lost its hosted-zone binding for ${domainName}.`);
+          return { domainName, hostedZoneId };
+        }),
       }, exposure.id, 'public', ['certificateArn', 'validationRecords']));
       connect({ from: certificateId, to: loadBalancer.id, relationship: 'requiresReady' });
     }
     if (exposure.dnsIntent?.mode === 'managed') {
       for (const [index, hostname] of hostnames.entries()) {
+        const hostedZoneId = resolvedZones[index];
+        if (!hostedZoneId) throw new Error(`AWS exposure ${exposure.name} lost its hosted-zone binding for ${hostname}.`);
         const recordId = `exposure.${exposure.id}.dns.${hash(hostname, 12)}`;
         add(resource(recordId, 'route53', 'record-publication', name(`dns-${hash(`${exposure.id}:${hostname}`, 8)}`), {
           recordName: hostname,
-          hostedZoneId: zones[index]!,
+          hostedZoneId,
           recordType: 'A',
           alias: true,
           loadBalancerResourceId: loadBalancer.id,
@@ -1333,14 +1374,15 @@ function awsProviderResources(provider: ApplicationProviderNode, request: Compil
   if (provider.interface === 'TransactionalDatabase' && ['postgres', 'rds-postgresql'].includes(provider.implementation)) return [resource(`provider.${semantic}`, 'rds', 'postgresql-instance', name(`postgres-${hash(semantic, 8)}`), { engineVersion: stringValue(config.engineVersion) ?? '17', port: 5432, storageGiB: numberValue(config.storageGiB) ?? 20, multiAz: request.environment === 'production', encrypted: true, deletionProtection: request.environment === 'production' }, semantic, 'private', ['endpoint', 'port', 'secretArn'])];
   if (provider.interface === 'TransactionalDatabase' && provider.implementation === 'aurora-postgresql') {
     const retention = stringValue(config.retention) ?? 'retain';
+    const engineVersion = stringValue(config.engineVersion);
     const database = resource(
       `provider.${semantic}`,
       'rds',
       'aurora-postgresql-cluster',
       name(`aurora-${hash(semantic, 8)}`),
       {
-        ...(stringValue(config.engineVersion)
-          ? { engineVersion: stringValue(config.engineVersion)! }
+        ...(engineVersion
+          ? { engineVersion }
           : {}),
         databaseName: stringValue(config.database) ?? 'application',
         readers: numberValue(config.readers) ?? (request.environment === 'production' ? 1 : 0),
@@ -1364,7 +1406,34 @@ function awsProviderResources(provider: ApplicationProviderNode, request: Compil
   }
   if (provider.interface === 'AnalyticalDatabase' && provider.implementation === 'postgres-analytics') return [];
   if (provider.interface === 'IndexStore' && ['valkey', 'elasticache-valkey'].includes(provider.implementation)) return [resource(`provider.${semantic}`, 'elasticache', 'valkey-replication-group', name(`valkey-${hash(semantic, 8)}`), { engine: 'valkey', port: 6379, encryptedAtRest: true, encryptedInTransit: true, replicas: request.environment === 'production' ? 2 : 1 }, semantic, 'private', ['endpoint', 'port', 'secretArn'])];
-  if (provider.interface === 'ObjectStorage' && ['s3', 'kubernetes-configmap-objects'].includes(provider.implementation)) return [resource(`provider.${semantic}`, 's3', 'bucket', bucketName(request, semantic), { versioning: true, publicAccessBlock: true, encryption: 'AES256', forceDestroy: false, prefix: stringValue(config.prefix) ?? '' }, semantic, 'none', ['bucketName', 'bucketArn'])];
+  if (provider.interface === 'ObjectStorage' && ['s3', 'kubernetes-configmap-objects'].includes(provider.implementation)) {
+    const retention = stringValue(config.retention) ?? 'delete';
+    const bucket = resource(
+      `provider.${semantic}`,
+      's3',
+      'bucket',
+      stringValue(config.bucket) ?? bucketName(request, semantic),
+      {
+        versioning: true,
+        publicAccessBlock: true,
+        encryption: 'AES256',
+        // Never empty application data implicitly. Delete lifecycle fails
+        // closed on a non-empty bucket; retain deliberately leaves it live.
+        forceDestroy: false,
+        prefix: stringValue(config.prefix) ?? '',
+      },
+      semantic,
+      'none',
+      ['bucketName', 'bucketArn'],
+    );
+    return [{
+      ...bucket,
+      lifecycle: {
+        ...bucket.lifecycle,
+        deletion: retention === 'retain' ? 'retain' : 'delete',
+      },
+    }];
+  }
   if (provider.interface === 'Queue' && ['sqs', 'kubernetes-configmap-queue'].includes(provider.implementation)) return [resource(`provider.${semantic}`, 'sqs', 'queue', name(`queue-${hash(semantic, 8)}`), { encrypted: true, visibilityTimeoutSeconds: 300 }, semantic, 'private', ['queueArn', 'queueUrl'])];
   if ((provider.interface === 'EventSource' || provider.interface === 'EventLog') && ['kinesis', 'kubernetes-watch', 'nats-jetstream'].includes(provider.implementation)) return [resource(`provider.${semantic}`, 'kinesis', 'stream', name(`stream-${hash(semantic, 8)}`), { mode: 'ON_DEMAND', retentionHours: numberValue(config.retentionHours) ?? 24, encrypted: true }, semantic, 'private', ['streamArn', 'streamName'])];
   if (provider.interface === 'Scheduler' && ['target-selected', 'eventbridge-scheduler'].includes(provider.implementation)) return [];

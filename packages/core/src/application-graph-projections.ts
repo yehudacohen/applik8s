@@ -269,6 +269,7 @@ export interface ApplicationExposureNode
 
 export type ApplicationExposureTransportContract =
 	| { readonly kind: "ingress"; readonly ingressClassName?: string }
+	| { readonly kind: "aws-alb" }
 	| {
 			readonly kind: "node-port";
 			readonly host: string;
@@ -281,7 +282,7 @@ export type ApplicationTlsIntentContract =
 	| {
 			readonly mode: "managed";
 			readonly secretName: string;
-			readonly issuerRef: {
+			readonly issuerRef?: {
 				readonly name: string;
 				readonly kind: "Issuer" | "ClusterIssuer";
 			};

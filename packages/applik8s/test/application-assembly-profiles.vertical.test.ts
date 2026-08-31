@@ -2,6 +2,9 @@
 import { describe, expect, it } from 'vitest';
 import {
   app,
+  ApplicationHost,
+  AWS,
+  Certificate,
   config,
   createApplicationAssemblyProfileCatalog,
   ContainerRegistry,
@@ -12,8 +15,11 @@ import {
   FiniteExecutionHost,
   JobResultStore,
   JobRuntime,
+  DnsPublication,
+  HttpExposure,
   KubernetesCluster,
   profileFragment,
+  ObjectStorage,
   Queue,
   Scheduler as MaintainedScheduler,
   Search as MaintainedSearch,
@@ -309,6 +315,56 @@ describe('application assembly profiles', () => {
     expect(plan.dependencies.filter(({ slot }) => slot === 'events')).toHaveLength(1);
     expect(plan.dependencies.every(({ visibility }) => visibility === 'private')).toBe(true);
     expect(plan.bindings).toHaveLength(4);
+  });
+
+  it('assembles the frozen AWS hosting profile from recursive typed implementations', () => {
+    const application = app('aws-hosting-profile');
+    const account = AWS.account({
+      accountId: config.env('AWS_ACCOUNT_ID'),
+      region: config.env('AWS_REGION'),
+      credentials: secret.env('AWS_CREDENTIALS'),
+    });
+    const registry = ContainerRegistry.ecr({ account });
+    const host = ApplicationHost.aws({ account, registry });
+    const certificate = Certificate.acm({ account, domain: config.env('APPLICATION_DOMAIN') });
+    const dns = DnsPublication.route53({
+      account,
+      zone: config.env('ROUTE53_ZONE'),
+      hostname: config.env('APPLICATION_DOMAIN'),
+    });
+    const exposure = HttpExposure.aws({ account, host, certificate, dns });
+    const attachments = ObjectStorage.s3({
+      account,
+      retention: 'retain',
+    });
+
+    application.profile('production-aws', profile => {
+      profile.provide(ContainerRegistry, registry);
+      profile.provide(ApplicationHost, host);
+      profile.provide(Certificate, certificate);
+      profile.provide(DnsPublication, dns);
+      profile.provide(HttpExposure, exposure);
+      profile.provide(ObjectStorage, attachments);
+    });
+
+    const plan = application.implementationPlan('production-aws');
+    expect(plan.implementations.map(({ identity }) => identity.provider.export).sort()).toEqual([
+      'ApplicationHost.aws',
+      'Certificate.acm',
+      'ContainerRegistry.ecr',
+      'DnsPublication.route53',
+      'HttpExposure.aws',
+      'ObjectStorage.s3',
+    ]);
+    expect(plan.dependencies.map(({ slot }) => slot).sort()).toEqual([
+      'certificate',
+      'dns',
+      'host',
+      'registry',
+    ]);
+    expect(plan.implementations.find(({ identity }) => identity.provider.export === 'ObjectStorage.s3'))
+      .toMatchObject({ lifecycle: 'retained' });
+    expect(plan.implementations.every(({ configurationSources }) => configurationSources.length > 0)).toBe(true);
   });
 
   it('records typed config and Secret provenance without resolving or serializing values', () => {

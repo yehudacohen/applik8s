@@ -127,6 +127,19 @@ and native-resource tests plus the affected package typechecks pass. Real AWS
 Aurora/Kinesis lifecycle qualification remains open and is not implied by this
 compiler/adapter evidence.
 
+The remaining frozen AWS profile vocabulary is now concrete as well:
+`ApplicationHost.aws(...)`, `ObjectStorage.s3(...)`, `HttpExposure.aws(...)`,
+`Certificate.acm(...)`, and `DnsPublication.route53(...)` preserve their typed
+account, lifecycle, hostname, certificate, and hosted-zone configuration in the
+semantic graph. Managed AWS exposure lowers to ALB, ACM, and Route 53 resources;
+authored S3 names and retain/delete intent lower without implicitly emptying a
+bucket. AWS host bindings no longer invent a Kubernetes namespace or service
+URL. Kubernetes Ingress continues to require cert-manager and external-dns,
+while the AWS path fails closed unless ACM and Route 53 own managed TLS/DNS.
+Focused profile, graph, plan, and TypeKro integration tests plus the affected
+package typechecks pass. This is compiler/adapter evidence; real AWS lifecycle
+qualification is still outstanding.
+
 The managed-model slice now freezes and implements the public
 `application.model(table).managed({ status })` enrichment, qualified
 `Model.store`, `Model.on.reconcile`, and `Model.on.finalize` surface; persists

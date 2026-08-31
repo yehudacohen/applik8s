@@ -43,6 +43,8 @@ import {
   applicationProviderSelectionFor,
   applicationTargetProviderSelectionFor,
   applicationTypedProviderContract,
+  isAwsHttpExposureProvider,
+  isCertManagerCertificateProvider,
   isIngressHttpExposureProvider,
   isNodePortHttpExposureProvider,
 } from './application-providers.js';
@@ -330,6 +332,9 @@ export function emitApplicationExposure(
   if (isNodePortHttpExposureProvider(provider)) {
     return emitApplicationNodePortExposure(state, name, options, provider, exposedService, exposedNamespace);
   }
+  if (isAwsHttpExposureProvider(provider)) {
+    return emitApplicationAwsExposure(state, name, options, provider, exposedService);
+  }
   if (!isIngressHttpExposureProvider(provider)) {
     throw new Error(`app.expose(${JSON.stringify(name)}, ...) received an unsupported HttpExposure provider.`);
   }
@@ -352,9 +357,18 @@ export function emitApplicationExposure(
   if (tlsIntent.mode === 'managed' && !certificateProvider) {
     throw new Error(`app.expose(${JSON.stringify(name)}, ...) with tls: { mode: "managed" } requires a Certificate provider.`);
   }
+  if (tlsIntent.mode === 'managed' && certificateProvider && !isCertManagerCertificateProvider(certificateProvider)) {
+    throw new Error(`app.expose(${JSON.stringify(name)}, ...) with Kubernetes Ingress requires Certificate.certManager(...).`);
+  }
   if (dnsIntent.mode === 'managed' && !dnsProvider) {
     throw new Error(`app.expose(${JSON.stringify(name)}, ...) with dns: { mode: "managed" } requires a DnsPublication provider.`);
   }
+  if (dnsIntent.mode === 'managed' && dnsProvider?.kind !== 'external-dns') {
+    throw new Error(`app.expose(${JSON.stringify(name)}, ...) with Kubernetes Ingress requires DnsPublication.externalDns(...).`);
+  }
+  const certManagerProvider = certificateProvider && isCertManagerCertificateProvider(certificateProvider)
+    ? certificateProvider
+    : undefined;
   ensureProviderGraph(state, 'HttpExposure', options.provider ? 'provided' : 'generated', provider);
   if (certificateProvider) ensureProviderGraph(state, 'Certificate', 'provided', certificateProvider);
   if (dnsProvider) ensureProviderGraph(state, 'DnsPublication', 'provided', dnsProvider);
@@ -393,7 +407,7 @@ export function emitApplicationExposure(
   const generatedResources: ApplicationGeneratedResourceContract[] = [
     { role: 'exposure', graphNode: { nodeId }, resource, artifact: { kind: 'kubernetesManifest', name: resourceName } },
   ];
-  if (tlsIntent.mode === 'managed' && certificateProvider) {
+  if (tlsIntent.mode === 'managed' && certManagerProvider) {
     const certificateName = `${kubernetesNameSegment(name)}-certificate`;
     const certificateResource = { apiVersion: 'cert-manager.io/v1', kind: 'Certificate', name: certificateName, ...(namespace ? { namespace } : {}) };
     const certificate = typeKroCertificate({
@@ -403,9 +417,9 @@ export function emitApplicationExposure(
       spec: {
         secretName: tlsIntent.secretName,
         dnsNames: hostnames,
-        issuerRef: certificateProvider.issuerRef,
-        ...(certificateProvider.duration ? { duration: certificateProvider.duration } : {}),
-        ...(certificateProvider.renewBefore ? { renewBefore: certificateProvider.renewBefore } : {}),
+        issuerRef: certManagerProvider.issuerRef,
+        ...(certManagerProvider.duration ? { duration: certManagerProvider.duration } : {}),
+        ...(certManagerProvider.renewBefore ? { renewBefore: certManagerProvider.renewBefore } : {}),
       },
     });
     applyApplicationTypeKroIncludeWhen(certificate, options.enabled ?? true);
@@ -428,10 +442,10 @@ export function emitApplicationExposure(
   };
   const graphTlsIntent = (() => {
     if (tlsIntent.mode !== 'managed') return tlsIntent;
-    if (!certificateProvider) {
+    if (!certManagerProvider) {
       throw new Error(`app.expose(${JSON.stringify(name)}, ...) lost its managed Certificate provider during graph lowering.`);
     }
-    return { ...tlsIntent, issuerRef: certificateProvider.issuerRef };
+    return { ...tlsIntent, issuerRef: certManagerProvider.issuerRef };
   })();
   addApplicationGraphNode(state, {
     id: nodeId,
@@ -457,6 +471,87 @@ export function emitApplicationExposure(
   return {
     kind: 'applicationExposure', name, provider: 'HttpExposure', resourceName, ...(namespace ? { namespace } : {}), hostnames,
     tlsIntent, dnsIntent, publicUrl, readiness, statusPath: `exposure/${name}`,
+  };
+}
+
+function emitApplicationAwsExposure(
+  state: ApplicationInfrastructureState,
+  name: string,
+  options: ApplicationExposureOptions,
+  provider: import('./application-providers.js').ApplicationAwsHttpExposureProvider,
+  exposedService: string,
+): ApplicationExposureBinding {
+  if (!options.service || typeof options.service !== 'object' || !('kind' in options.service) || options.service.kind !== 'applicationHost') {
+    throw new Error(`app.expose(${JSON.stringify(name)}, ...) with HttpExposure.aws(...) requires an ApplicationHost binding.`);
+  }
+  if (!options.hostnames || options.hostnames.length === 0) {
+    throw new Error(`app.expose(${JSON.stringify(name)}, ...) with HttpExposure.aws(...) requires at least one hostname.`);
+  }
+  const tlsIntent = normalizeApplicationTlsIntent(name, options);
+  const dnsIntent = options.dns ?? { mode: 'disabled' };
+  const certificateProvider = tlsIntent.mode === 'managed'
+    ? applicationCertificateImplementation(state.providers.certificates) ?? applicationCertificateImplementation(state.defaults.certificates)
+    : undefined;
+  const dnsProvider = dnsIntent.mode === 'managed'
+    ? applicationDnsPublicationImplementation(state.providers.dns) ?? applicationDnsPublicationImplementation(state.defaults.dns)
+    : undefined;
+  if (tlsIntent.mode === 'external') {
+    throw new Error(`app.expose(${JSON.stringify(name)}, ...) with HttpExposure.aws(...) cannot consume a Kubernetes TLS Secret; use Certificate.acm(...).`);
+  }
+  if (tlsIntent.mode === 'managed' && certificateProvider?.kind !== 'acm-certificate') {
+    throw new Error(`app.expose(${JSON.stringify(name)}, ...) with HttpExposure.aws(...) requires Certificate.acm(...).`);
+  }
+  if (dnsIntent.mode === 'managed' && dnsProvider?.kind !== 'route53-dns-publication') {
+    throw new Error(`app.expose(${JSON.stringify(name)}, ...) with HttpExposure.aws(...) requires DnsPublication.route53(...).`);
+  }
+  ensureProviderGraph(state, 'HttpExposure', options.provider ? 'provided' : 'generated', provider);
+  if (certificateProvider) ensureProviderGraph(state, 'Certificate', 'provided', certificateProvider);
+  if (dnsProvider) ensureProviderGraph(state, 'DnsPublication', 'provided', dnsProvider);
+
+  const hostnames = options.hostnames.map((hostname) => applicationTypeKroString(hostname));
+  const nodeId = applicationGraphNodeId('exposure', name);
+  const resourceName = `${kubernetesNameSegment(name)}-load-balancer`;
+  const publicUrl = applicationTypeKroString(tlsIntent.mode === 'managed' ? 'https://' : 'http://', hostnames[0]);
+  const readiness: ApplicationExposureReadinessContract = {
+    ingress: 'notRequested',
+    service: 'notRequested',
+    loadBalancer: 'statusObserved',
+    certificate: tlsIntent.mode === 'managed' ? 'readyCondition' : 'notRequested',
+    dns: dnsIntent.mode === 'managed' ? 'propagationUnverified' : 'notRequested',
+    publicUrl: 'derived',
+  };
+  addApplicationGraphNode(state, {
+    id: nodeId,
+    kind: 'exposure',
+    name,
+    stability: 'stable',
+    ...(options.enabled === undefined ? {} : { enabled: applicationTypeKroGraphValue(options.enabled) as boolean | `\${${string}}` }),
+    provider: { interface: 'HttpExposure', nodeId: applicationProviderGraphNodeId('HttpExposure') },
+    service: exposedService,
+    hostnames,
+    tlsIntent,
+    dnsIntent,
+    publicUrl,
+    transport: { kind: 'aws-alb' },
+    readiness,
+    ...(certificateProvider ? { certificate: { interface: 'Certificate', nodeId: applicationProviderGraphNodeId('Certificate') } } : {}),
+    ...(dnsProvider ? { dnsPublication: { interface: 'DnsPublication', nodeId: applicationProviderGraphNodeId('DnsPublication') } } : {}),
+    generatedResources: [],
+  });
+  addApplicationGraphEdge(state, { from: { nodeId: applicationProviderGraphNodeId('HttpExposure') }, to: { nodeId }, relationship: 'provides' });
+  if (certificateProvider) addApplicationGraphEdge(state, { from: { nodeId: applicationProviderGraphNodeId('Certificate') }, to: { nodeId }, relationship: 'provides' });
+  if (dnsProvider) addApplicationGraphEdge(state, { from: { nodeId: applicationProviderGraphNodeId('DnsPublication') }, to: { nodeId }, relationship: 'provides' });
+  return {
+    kind: 'applicationExposure',
+    name,
+    provider: 'HttpExposure',
+    resourceName,
+    hostnames,
+    tlsIntent,
+    dnsIntent,
+    publicUrl,
+    readiness,
+    statusPath: `exposure/${name}`,
   };
 }
 
@@ -672,6 +767,12 @@ export function recordApplicationProviderGraph(
       } : {}),
       ...(tokenName === 'HttpExposure' && implementation && typeof implementation === 'object'
         ? { httpExposure: applicationTypeKroGraphValue(implementation) as JsonValue }
+        : {}),
+      ...(tokenName === 'Certificate' && implementation && typeof implementation === 'object'
+        ? { certificate: applicationTypeKroGraphValue(implementation) as JsonValue }
+        : {}),
+      ...(tokenName === 'DnsPublication' && implementation && typeof implementation === 'object'
+        ? { dnsPublication: applicationTypeKroGraphValue(implementation) as JsonValue }
         : {}),
       ...(providerInterface === 'Scheduler' && !targetSelection && implementation && typeof implementation === 'object'
         ? { scheduler: applicationTypeKroGraphValue(implementation) as JsonValue }
