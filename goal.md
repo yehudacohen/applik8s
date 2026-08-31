@@ -191,6 +191,19 @@ the authoring-package typecheck, public-contract regeneration, and documentation
 checks pass. A first-class `decision()` registrar is rejected from the v0.9/1.0
 foundational vocabulary.
 
+The research vertical now has separate provider-neutral `WebSearch` and
+`SourceRetriever` authorities. `@applik8s/web-retrieval-http` implements the
+maintained server-only retrieval boundary with HTTPS and port policy, DNS
+resolution that rejects every non-public answer, per-hop redirect
+revalidation, DNS-pinned connections, response and deadline bounds,
+identity-only content encoding, accepted media types, normalized text, and
+content-addressed receipts. Deterministic fixtures hydrate through the same
+managed-worker contract, and the application graph records the selected
+retriever and its safe policy independently from search. Durable
+`ResearchEvidence`, artifact/citation linkage, the `researchAgent()`
+composition, interruption qualification, and Agentic Start's evidence journey
+remain the next release-blocking research work.
+
 Continue in the sequence above until every stable-candidate gate is implemented
 and evidenced. Keep beta/preview surfaces truthful; do not expand the frozen
 scope merely to make a scorecard look complete.

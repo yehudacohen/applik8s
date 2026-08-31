@@ -1,6 +1,8 @@
 import { defineApplicationProvider } from '@applik8s/applik8s';
 import {
+  applicationSourceRetrieverRuntime,
   applicationWebSearchProviderRuntime,
+  bindApplicationSourceRetrieverRuntime,
   bindApplicationWebSearchProviderRuntime,
 } from './runtime-contract.js';
 
@@ -239,3 +241,165 @@ function absoluteHttpUrl(value: unknown, label: string): string {
 }
 
 export { bindApplicationWebSearchProviderRuntime } from './runtime-contract.js';
+
+export interface ApplicationSourceRetrievalRequest {
+  readonly url: string;
+  readonly timeoutMs?: number;
+  readonly maximumBytes?: number;
+  readonly acceptedContentTypes?: readonly string[];
+}
+
+export interface ApplicationRetrievedSource {
+  readonly requestedUrl: string;
+  readonly canonicalUrl: string;
+  readonly mediaType: string;
+  readonly title?: string;
+  readonly text: string;
+  readonly contentDigest: `sha256:${string}`;
+  readonly sizeBytes: number;
+  readonly retrievedAt: string;
+  readonly provider: string;
+  readonly receipt: {
+    readonly redirects: readonly string[];
+    readonly networkPolicy: string;
+    readonly contentPolicy: string;
+  };
+}
+
+export interface ApplicationSourceRetrieverProvider {
+  readonly provider: string;
+  readonly kind: string;
+  readonly mode: 'deterministic' | 'live';
+  retrieve(input: ApplicationSourceRetrievalRequest): Promise<ApplicationRetrievedSource>;
+}
+
+export const SourceRetriever = defineApplicationProvider<ApplicationSourceRetrieverProvider>({
+  interface: 'SourceRetriever',
+  version: 'v1alpha1',
+  description: 'Bounded retrieval of explicitly selected public web sources with content provenance.',
+  requirements: [
+    'search authority never implies source retrieval authority',
+    'redirects, addresses, response bytes, time, and content types are bounded',
+    'private, link-local, loopback, and cloud-metadata destinations fail closed',
+  ],
+  guarantees: [
+    'retrieved source text remains untrusted application data',
+    'every result carries a canonical URL and content digest',
+    'provider transport payloads and credentials never enter the result',
+  ],
+  runtime: {
+    operations: {
+      retrieve: {
+        module: '@applik8s/web-search/source-runtime',
+        export: 'retrieveApplicationSource',
+        access: { kind: 'provider', operations: ['network.connect'] },
+      },
+    },
+    bind(implementation) {
+      const runtime = applicationSourceRetrieverRuntime(implementation);
+      if (!runtime) throw new Error(`Source retriever ${implementation.kind} has no portable managed-worker runtime binding.`);
+      return runtime;
+    },
+  },
+  accepts(value): value is ApplicationSourceRetrieverProvider {
+    return Boolean(
+      value
+      && typeof value === 'object'
+      && typeof Reflect.get(value, 'provider') === 'string'
+      && (Reflect.get(value, 'mode') === 'deterministic' || Reflect.get(value, 'mode') === 'live')
+      && typeof Reflect.get(value, 'retrieve') === 'function',
+    );
+  },
+});
+
+export interface DeterministicSourceRetrieverOptions {
+  readonly sources: readonly ApplicationRetrievedSource[];
+  readonly provider?: string;
+}
+
+export const LocalSourceRetriever = Object.freeze({
+  deterministic(options: DeterministicSourceRetrieverOptions): ApplicationSourceRetrieverProvider {
+    const provider = options.provider ?? 'local-deterministic';
+    const sources = new Map(options.sources.map((source) => {
+      const normalized = normalizeApplicationRetrievedSource(source, provider);
+      return [normalized.requestedUrl, normalized];
+    }));
+    const implementation: ApplicationSourceRetrieverProvider = {
+      provider,
+      kind: 'source-retriever-deterministic',
+      mode: 'deterministic',
+      async retrieve(input) {
+        const request = normalizeApplicationSourceRetrievalRequest(input);
+        const source = sources.get(request.url);
+        if (!source) throw new Error(`Deterministic source retriever has no fixture for ${request.url}.`);
+        return structuredClone(source);
+      },
+    };
+    return Object.freeze(bindApplicationSourceRetrieverRuntime(implementation, {
+      env: {
+        APPLIK8S_SOURCE_RETRIEVER_KIND: 'deterministic',
+        APPLIK8S_SOURCE_RETRIEVER_PROVIDER: provider,
+        APPLIK8S_SOURCE_RETRIEVER_FIXTURES: JSON.stringify([...sources.values()]),
+      },
+    }));
+  },
+});
+
+export interface NormalizedApplicationSourceRetrievalRequest {
+  readonly url: string;
+  readonly timeoutMs: number;
+  readonly maximumBytes: number;
+  readonly acceptedContentTypes: readonly string[];
+}
+
+export function normalizeApplicationSourceRetrievalRequest(
+  input: ApplicationSourceRetrievalRequest,
+): NormalizedApplicationSourceRetrievalRequest {
+  if (!input || typeof input !== 'object') throw new Error('Source retrieval input must be an object.');
+  const url = absoluteHttpUrl(input.url, 'Source retrieval URL');
+  const timeoutMs = input.timeoutMs ?? 15_000;
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 100 || timeoutMs > 60_000) {
+    throw new Error('Source retrieval timeoutMs must be an integer between 100 and 60000.');
+  }
+  const maximumBytes = input.maximumBytes ?? 2_000_000;
+  if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 1_024 || maximumBytes > 8_000_000) {
+    throw new Error('Source retrieval maximumBytes must be an integer between 1024 and 8000000.');
+  }
+  const acceptedContentTypes = Object.freeze([...(input.acceptedContentTypes ?? ['text/html', 'text/plain', 'application/xhtml+xml'])].map((value) => {
+    const normalized = value.trim().toLowerCase();
+    if (!/^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/u.test(normalized)) {
+      throw new Error(`Source retrieval content type ${JSON.stringify(value)} is invalid.`);
+    }
+    return normalized;
+  }));
+  return Object.freeze({ url, timeoutMs, maximumBytes, acceptedContentTypes });
+}
+
+export function normalizeApplicationRetrievedSource(
+  source: ApplicationRetrievedSource,
+  provider = source.provider,
+): ApplicationRetrievedSource {
+  if (!source || typeof source !== 'object') throw new Error('Retrieved source must be an object.');
+  if (!/^sha256:[a-f0-9]{64}$/u.test(source.contentDigest)) throw new Error('Retrieved source must carry a complete sha256 content digest.');
+  if (!Number.isSafeInteger(source.sizeBytes) || source.sizeBytes < 0 || source.sizeBytes > 8_000_000) throw new Error('Retrieved source sizeBytes is invalid.');
+  if (Number.isNaN(Date.parse(source.retrievedAt))) throw new Error('Retrieved source retrievedAt must be an ISO-compatible timestamp.');
+  const text = boundedText(source.text, 'Retrieved source text', 0, 8_000_000);
+  return Object.freeze({
+    requestedUrl: absoluteHttpUrl(source.requestedUrl, 'Retrieved source requestedUrl'),
+    canonicalUrl: absoluteHttpUrl(source.canonicalUrl, 'Retrieved source canonicalUrl'),
+    mediaType: boundedText(source.mediaType, 'Retrieved source mediaType', 1, 200).toLowerCase(),
+    ...(source.title ? { title: boundedText(source.title, 'Retrieved source title', 1, 1_000) } : {}),
+    text,
+    contentDigest: source.contentDigest,
+    sizeBytes: source.sizeBytes,
+    retrievedAt: new Date(source.retrievedAt).toISOString(),
+    provider: boundedText(provider, 'Retrieved source provider', 1, 200),
+    receipt: Object.freeze({
+      redirects: Object.freeze(source.receipt.redirects.map((url) => absoluteHttpUrl(url, 'Retrieved source redirect'))),
+      networkPolicy: boundedText(source.receipt.networkPolicy, 'Retrieved source network policy', 1, 200),
+      contentPolicy: boundedText(source.receipt.contentPolicy, 'Retrieved source content policy', 1, 200),
+    }),
+  });
+}
+
+export { bindApplicationSourceRetrieverRuntime } from './runtime-contract.js';

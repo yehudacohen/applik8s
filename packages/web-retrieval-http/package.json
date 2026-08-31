@@ -1,0 +1,29 @@
+{
+  "name": "@applik8s/web-retrieval-http",
+  "version": "0.8.0",
+  "description": "Server-only bounded public HTTP source retrieval with DNS-pinned SSRF protection for Applik8s research agents.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "files": ["dist"],
+  "publishConfig": { "access": "public" },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yehudacohen/applik8s.git",
+    "directory": "packages/web-retrieval-http"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./runtime": {
+      "types": "./dist/runtime.d.ts",
+      "import": "./dist/runtime.js",
+      "default": "./dist/runtime.js"
+    }
+  },
+  "dependencies": {
+    "@applik8s/web-search": "0.8.0"
+  }
+}

@@ -30,6 +30,11 @@
       "types": "./dist/runtime-contract.d.ts",
       "import": "./dist/runtime-contract.js",
       "default": "./dist/runtime-contract.js"
+    },
+    "./source-runtime": {
+      "types": "./dist/source-runtime.d.ts",
+      "import": "./dist/source-runtime.js",
+      "default": "./dist/source-runtime.js"
     }
   },
   "dependencies": {

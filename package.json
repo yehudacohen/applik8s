@@ -26,6 +26,7 @@
     "packages/notifications-smtp",
     "packages/web-search",
     "packages/web-search-searxng",
+    "packages/web-retrieval-http",
     "packages/conversations",
     "packages/data-lifecycle",
     "packages/dev",

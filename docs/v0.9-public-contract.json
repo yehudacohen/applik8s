@@ -9846,6 +9846,40 @@
       ]
     },
     {
+      "name": "@applik8s/web-retrieval-http",
+      "version": "0.8.0",
+      "directory": "packages/web-retrieval-http",
+      "description": "Server-only bounded public HTTP source retrieval with DNS-pinned SSRF protection for Applik8s research agents.",
+      "owner": "package:@applik8s/web-retrieval-http",
+      "maturity": "candidate-review-required",
+      "documentation": "docs/packages.md",
+      "commands": [],
+      "dependencies": [
+        "@applik8s/web-search"
+      ],
+      "entrypoints": [
+        {
+          "name": ".",
+          "source": "packages/web-retrieval-http/src/index.ts",
+          "symbols": [
+            "BoundedHttpSourceRetriever",
+            "BoundedHttpSourceRetrieverOptions",
+            "BoundedHttpSourceRetrieverProvider",
+            "normalizeBoundedHttpSourceRetrieverOptions"
+          ]
+        },
+        {
+          "name": "./runtime",
+          "source": "packages/web-retrieval-http/src/runtime.ts",
+          "symbols": [
+            "createBoundedHttpSourceRetriever",
+            "isPublicAddress",
+            "retrieveBoundedHttpSource"
+          ]
+        }
+      ]
+    },
+    {
       "name": "@applik8s/web-search",
       "version": "0.8.0",
       "directory": "packages/web-search",
@@ -9864,17 +9898,27 @@
           "name": ".",
           "source": "packages/web-search/src/index.ts",
           "symbols": [
+            "ApplicationRetrievedSource",
+            "ApplicationSourceRetrievalRequest",
+            "ApplicationSourceRetrieverProvider",
             "ApplicationWebSearchProvider",
             "ApplicationWebSearchRequest",
             "ApplicationWebSearchResponse",
             "ApplicationWebSearchResult",
             "ApplicationWebSearchSafeSearch",
             "ApplicationWebSearchTimeRange",
+            "DeterministicSourceRetrieverOptions",
             "DeterministicWebSearchOptions",
+            "LocalSourceRetriever",
             "LocalWebSearch",
+            "NormalizedApplicationSourceRetrievalRequest",
             "NormalizedApplicationWebSearchRequest",
+            "SourceRetriever",
             "WebSearch",
+            "bindApplicationSourceRetrieverRuntime",
             "bindApplicationWebSearchProviderRuntime",
+            "normalizeApplicationRetrievedSource",
+            "normalizeApplicationSourceRetrievalRequest",
             "normalizeApplicationWebSearchRequest",
             "normalizeApplicationWebSearchResults"
           ]
@@ -9890,8 +9934,17 @@
           "name": "./runtime-contract",
           "source": "packages/web-search/src/runtime-contract.ts",
           "symbols": [
+            "applicationSourceRetrieverRuntime",
             "applicationWebSearchProviderRuntime",
+            "bindApplicationSourceRetrieverRuntime",
             "bindApplicationWebSearchProviderRuntime"
+          ]
+        },
+        {
+          "name": "./source-runtime",
+          "source": "packages/web-search/src/source-runtime.ts",
+          "symbols": [
+            "retrieveApplicationSource"
           ]
         }
       ]

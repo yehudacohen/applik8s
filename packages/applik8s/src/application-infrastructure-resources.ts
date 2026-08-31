@@ -715,6 +715,16 @@ export function recordApplicationProviderGraph(
       ...(providerInterface === 'WebSearch' && !targetSelection && implementation && typeof implementation === 'object'
         ? { webSearch: applicationTypeKroGraphValue(implementation) as JsonValue }
         : {}),
+      ...(providerInterface === 'SourceRetriever' && !targetSelection && implementation && typeof implementation === 'object'
+        ? {
+            sourceRetriever: applicationTypeKroGraphValue({
+              provider: Reflect.get(implementation, 'provider'),
+              kind: Reflect.get(implementation, 'kind'),
+              mode: Reflect.get(implementation, 'mode'),
+              policy: Reflect.get(implementation, 'policy'),
+            }) as JsonValue,
+          }
+        : {}),
       ...(providerInterface === 'AI' && !targetSelection && implementation && typeof implementation === 'object'
         ? { ai: applicationTypeKroGraphValue(implementation) as JsonValue }
         : {}),

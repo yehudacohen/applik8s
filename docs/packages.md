@@ -62,6 +62,7 @@ Install only the providers selected by the application profile.
 | `@applik8s/billing-stripe` | Server-only Stripe implementation of the billing capability. |
 | `@applik8s/notifications-smtp` | Server-only SMTP implementation of notification delivery. |
 | `@applik8s/web-search-searxng` | Optional SearXNG runtime and TypeKro-managed web-search provider. |
+| `@applik8s/web-retrieval-http` | Server-only DNS-pinned, redirect-bounded public HTTP source retrieval with SSRF and response-size protection. |
 | `@applik8s/identity-ory` | Ory Kratos and Hydra identity/OAuth adapter. |
 | `@applik8s/identity-postgres` | PostgreSQL persistence for identity admission and OAuth flows. |
 | `@applik8s/runtime-s3` | S3-compatible object storage and signed object intents. |

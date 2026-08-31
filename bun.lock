@@ -956,6 +956,14 @@
         "vite": ">=7 <9",
       },
     },
+    "packages/web-retrieval-http": {
+      "name": "@applik8s/web-retrieval-http",
+      "version": "0.8.0",
+      "dependencies": {
+        "@applik8s/core": "0.8.0",
+        "@applik8s/web-search": "0.8.0",
+      },
+    },
     "packages/web-search": {
       "name": "@applik8s/web-search",
       "version": "0.8.0",
@@ -1130,6 +1138,8 @@
     "@applik8s/usage": ["@applik8s/usage@workspace:packages/usage"],
 
     "@applik8s/vite": ["@applik8s/vite@workspace:packages/vite"],
+
+    "@applik8s/web-retrieval-http": ["@applik8s/web-retrieval-http@workspace:packages/web-retrieval-http"],
 
     "@applik8s/web-search": ["@applik8s/web-search@workspace:packages/web-search"],
 

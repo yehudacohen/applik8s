@@ -3,6 +3,8 @@ import { app, applicationGraphFor } from '@applik8s/applik8s';
 import { type } from 'arktype';
 import {
   LocalWebSearch,
+  LocalSourceRetriever,
+  SourceRetriever,
   WebSearch,
   normalizeApplicationWebSearchRequest,
 } from '../src/index.js';
@@ -81,5 +83,47 @@ describe('provider-neutral web search', () => {
       provider: 'fixture-runtime',
       results: [{ title: 'Runtime' }],
     });
+  });
+
+  it('keeps search and selected-source retrieval as separately injected authorities', async () => {
+    const source = {
+      requestedUrl: 'https://example.test/source',
+      canonicalUrl: 'https://example.test/source',
+      mediaType: 'text/plain',
+      title: 'Source',
+      text: 'Untrusted source text.',
+      contentDigest: `sha256:${'b'.repeat(64)}` as const,
+      sizeBytes: 22,
+      retrievedAt: new Date(0).toISOString(),
+      provider: 'fixture',
+      receipt: {
+        redirects: [],
+        networkPolicy: 'fixture',
+        contentPolicy: 'fixture',
+      },
+    };
+    const provider = LocalSourceRetriever.deterministic({ sources: [source] });
+    expect(SourceRetriever.accepts?.(provider)).toBe(true);
+    await expect(provider.retrieve({ url: source.requestedUrl })).resolves.toMatchObject({
+      canonicalUrl: source.canonicalUrl,
+      contentDigest: source.contentDigest,
+      text: source.text,
+    });
+
+    const application = app('source-retriever-proof');
+    application.provide(SourceRetriever.named('research'), provider);
+    const graph = applicationGraphFor(application.composition);
+    expect(graph?.nodes).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: 'provider',
+        interface: 'SourceRetriever',
+        config: expect.objectContaining({
+          sourceRetriever: expect.objectContaining({
+            kind: 'source-retriever-deterministic',
+            mode: 'deterministic',
+          }),
+        }),
+      }),
+    ]));
   });
 });
