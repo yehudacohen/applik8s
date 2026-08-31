@@ -1571,6 +1571,11 @@ export interface ApplicationModelRuntimeContract {
   readonly constraints: readonly ApplicationModelConstraint[];
   readonly indexes: readonly ApplicationModelIndex[];
   readonly retention: ApplicationRetentionPolicy;
+  readonly managed?: {
+    readonly applicationId: string;
+    readonly statusSchemaVersion: string;
+    readonly initialStatus: JsonObject;
+  };
   readonly storageShape?: 'jsonb-envelope' | 'native-relational';
   readonly nativeRelational?: {
     readonly schema?: string;

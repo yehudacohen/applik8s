@@ -102,9 +102,18 @@ rejection. The PostgreSQL adapter now adds versioned framework-owned lifecycle
 and invalidation tables, transactional desired observation, generation digests,
 bounded resync, `SKIP LOCKED` claims, monotonic fences, CAS status/condition/
 finalizer writes, restart-safe next-due state, and an optional live vertical.
-Wiring native model mutations into this authority, generated operator lowering,
-and Kubernetes parity remain the next work in this slice before beta Saga
-coordination.
+Native relational mutations now commit desired-state generation, invalidation,
+deletion intent, and a finalization-safe value snapshot in the same PostgreSQL
+transaction as the domain write. The durable store uses an explicit
+advisory-locked lifecycle state machine, clears ordinary leases when deletion
+begins, retains tombstones through finalization, rejects premature recreation,
+and starts a fresh UID/generation only after finalizers complete. Lower-level
+script mutation clients fail closed rather than bypassing this authority. Unit
+and OrbStack PostgreSQL evidence cover mutation isolation, process replacement,
+fencing, physical row deletion, snapshot-backed cleanup, and fresh-incarnation
+recreation. Generated distributed-operator lowering, activation/backfill of
+pre-existing rows, and Kubernetes parity remain the next work in this slice
+before beta Saga coordination.
 
 Continue in the sequence above until every stable-candidate gate is implemented
 and evidenced. Keep beta/preview surfaces truthful; do not expand the frozen

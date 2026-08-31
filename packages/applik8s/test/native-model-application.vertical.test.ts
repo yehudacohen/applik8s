@@ -115,6 +115,11 @@ describe('v0.6 app-scoped native model promotion', () => {
       }],
       portability: 'portable',
     });
+    expect(node && node.kind === 'model' ? node.runtime?.managed : undefined).toEqual({
+      applicationId: 'managed-workspace',
+      statusSchemaVersion: '1',
+      initialStatus: { observedGeneration: 0, phase: 'Pending' },
+    });
   });
 
   test('fails before planning when a required managed status has no initial value', () => {

@@ -4391,7 +4391,10 @@
             "ApplicationPostgresClientOptions",
             "ApplicationPostgresEndOptions",
             "ApplicationPostgresSql",
-            "ApplicationPostgresTransactionSql"
+            "ApplicationPostgresTransactionSql",
+            "applicationManagedModelDesiredDigest",
+            "applicationManagedModelIdentityKey",
+            "applicationManagedModelPostgresMigrationSql"
           ]
         },
         {

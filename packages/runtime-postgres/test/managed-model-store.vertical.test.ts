@@ -103,4 +103,94 @@ live('PostgreSQL managed-model store', () => {
     expect(updated.metadata.generation).toBe(2);
     await replacement.close();
   });
+
+  test('retains deletion state across row removal and starts a fresh incarnation only after finalization', async () => {
+    if (!databaseUrl) throw new Error('APPLIK8S_JOB_POSTGRES_URL is required.');
+    const identity = 'workspace-deletion';
+    const deletionStore = createPostgresApplicationManagedModelStore<string, { version: string }, {
+      observedGeneration: number;
+      phase: 'Pending' | 'Ready';
+    }>({
+      databaseUrl: requiredDatabaseUrl,
+      applicationId,
+      model: 'WorkspaceDeletion',
+      statusSchemaVersion: '1',
+      readValue: async id => values.get(id),
+    });
+    const initialStatus = { observedGeneration: 0, phase: 'Pending' } as const;
+    const originalValue = { version: '1.0.0' };
+    values.set(identity, originalValue);
+    const original = await deletionStore.observeDesired(identity, originalValue, initialStatus, {
+      now: '2026-01-02T00:00:00.000Z',
+    });
+    const lease = await deletionStore.claimNext({
+      model: 'WorkspaceDeletion',
+      now: '2026-01-02T00:00:01.000Z',
+      leaseDurationSeconds: 60,
+    });
+    if (!lease || lease.record.id !== identity) throw new Error('expected deletion lifecycle lease');
+    const precondition = {
+      model: 'WorkspaceDeletion',
+      id: identity,
+      uid: lease.record.metadata.uid,
+      generation: lease.record.metadata.generation,
+      resourceVersion: lease.record.metadata.resourceVersion,
+      fence: lease.fence,
+    };
+    await deletionStore.ensureFinalizers(precondition, ['workspaces.applik8s.dev/cleanup'], '2026-01-02T00:00:01.000Z');
+    await deletionStore.markDeletion(identity, {
+      now: '2026-01-02T00:00:02.000Z',
+      value: originalValue,
+    });
+    values.delete(identity);
+
+    const deleting = await deletionStore.read(identity);
+    expect(deleting).toMatchObject({
+      value: originalValue,
+      metadata: {
+        uid: original.metadata.uid,
+        deletionTimestamp: '2026-01-02T00:00:02.000Z',
+        finalizers: ['workspaces.applik8s.dev/cleanup'],
+      },
+    });
+    await expect(deletionStore.observeDesired(identity, { version: '2.0.0' }, initialStatus))
+      .rejects.toThrow(/still finalizing deletion/);
+
+    const cleanupLease = await deletionStore.claimNext({
+      model: 'WorkspaceDeletion',
+      now: '2026-01-02T00:00:03.000Z',
+      leaseDurationSeconds: 60,
+    });
+    if (!cleanupLease || cleanupLease.record.id !== identity) throw new Error('expected cleanup lease');
+    const cleanupPrecondition = {
+      model: 'WorkspaceDeletion',
+      id: identity,
+      uid: cleanupLease.record.metadata.uid,
+      generation: cleanupLease.record.metadata.generation,
+      resourceVersion: cleanupLease.record.metadata.resourceVersion,
+      fence: cleanupLease.fence,
+    };
+    const withoutFinalizer = await deletionStore.removeFinalizer(
+      cleanupPrecondition,
+      'workspaces.applik8s.dev/cleanup',
+      '2026-01-02T00:00:03.000Z',
+    );
+    const completedDeletion = await deletionStore.complete({ ...cleanupPrecondition, resourceVersion: withoutFinalizer.metadata.resourceVersion }, {
+      now: '2026-01-02T00:00:03.000Z',
+    });
+    expect(completedDeletion.metadata).toMatchObject({
+      deletionTimestamp: '2026-01-02T00:00:02.000Z',
+      finalizers: [],
+    });
+
+    const replacementValue = { version: '2.0.0' };
+    values.set(identity, replacementValue);
+    const replacement = await deletionStore.observeDesired(identity, replacementValue, initialStatus, {
+      now: '2026-01-02T00:00:04.000Z',
+    });
+    expect(replacement.metadata).toMatchObject({ generation: 1, resourceVersion: '1', finalizers: [] });
+    expect(replacement.metadata.uid).not.toBe(original.metadata.uid);
+    expect(replacement.metadata.deletionTimestamp).toBeUndefined();
+    await deletionStore.close();
+  });
 });

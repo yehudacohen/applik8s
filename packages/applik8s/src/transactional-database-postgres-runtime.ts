@@ -40,6 +40,7 @@ export async function closePostgresModelClients(): Promise<void> {
 export function createPostgresModelClient<TSpec extends object, TStatus extends object = Record<string, never>>(model: ApplicationRuntimeModelContract, databaseOverride?: PostgresJsDatabase): PostgresModelClient<TSpec, TStatus> {
   const client: PostgresModelClient<TSpec, TStatus> = {
     async create(input: ApplicationModelCreateInput<TSpec> | TSpec): Promise<ApplicationModelObject<TSpec, TStatus>> {
+      assertUnmanagedScriptMutation(model, 'create');
       const table = modelTableFor(model);
       const object = modelObjectFromInput<TSpec, TStatus>(input);
       try {
@@ -63,6 +64,7 @@ export function createPostgresModelClient<TSpec extends object, TStatus extends 
       return queryPostgresModel<TSpec, TStatus>(model, query, {}, databaseOverride);
     },
     async patch(ref: ApplicationModelRef, patch: ApplicationModelPatch<TSpec, TStatus>): Promise<ApplicationModelObject<TSpec, TStatus>> {
+      assertUnmanagedScriptMutation(model, 'patch');
       const existing = await client.get(ref);
       if (!existing) {
         throw new Error(`Model ${model.name} object ${ref.id} was not found.`);
@@ -82,6 +84,7 @@ export function createPostgresModelClient<TSpec extends object, TStatus extends 
       return next;
     },
     async delete(ref: ApplicationModelRef): Promise<void> {
+      assertUnmanagedScriptMutation(model, 'delete');
       const table = modelTableFor(model);
       try {
         await (await modelDatabaseForClient(model, databaseOverride)).delete(table).where(eq(table.id, ref.id));
@@ -109,6 +112,7 @@ export function createPostgresModelClient<TSpec extends object, TStatus extends 
       };
     },
     async transaction<TResult>(handler: (model: ApplicationModelTransactionClient<TSpec, TStatus>) => TResult | Promise<TResult>): Promise<TResult> {
+      assertUnmanagedScriptMutation(model, 'transaction');
       return (await modelDatabase(model)).transaction(async (transaction) => {
         // typecast: Drizzle transaction clients expose the same query-builder surface used by the generated TransactionalDatabase client.
         const transactionalClient = createPostgresModelClient<TSpec, TStatus>(model, transaction as unknown as PostgresJsDatabase);
@@ -117,6 +121,13 @@ export function createPostgresModelClient<TSpec extends object, TStatus extends 
     },
   };
   return client;
+}
+
+function assertUnmanagedScriptMutation(model: ApplicationRuntimeModelContract, operation: string): void {
+  if (!model.managed) return;
+  throw new Error(
+    `applik8s-managed-model-script-mutation-unsupported: ${model.name}.${operation}() cannot bypass the managed-model lifecycle authority. Invoke the model from a generated function-native closure so Applik8s can commit the domain mutation and reconciliation intent atomically.`,
+  );
 }
 
 async function queryPostgresModel<TSpec extends object, TStatus extends object>(model: ApplicationRuntimeModelContract, query: ApplicationModelQueryOptions<TSpec> = {}, options: { readonly allowedOrderBy?: readonly string[]; readonly defaultOrderBy?: readonly string[] } = {}, databaseOverride?: PostgresJsDatabase): Promise<ApplicationModelQueryPage<TSpec, TStatus>> {

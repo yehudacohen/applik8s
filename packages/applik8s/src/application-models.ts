@@ -1,7 +1,7 @@
 // typecast-file-boundary: schema-normalized model contracts cross erased runtime registries here; casts restore their declaration-time generics after identity checks.
 import { createHash } from 'node:crypto';
 import type { ApplicationMutationOperation, ApplicationOperationAuthorizationContract, ApplicationOperationLike } from '@applik8s/client';
-import type { ApplicationAuthorizationReceipt, ApplicationCommandHandlerNode, ApplicationCommandRetentionContract, ApplicationExpressionContract, ApplicationGeneratedResourceContract, ApplicationMessageContractSchema, ApplicationMigrationContract, ApplicationModelConstraint, ApplicationModelIndex, ApplicationModelNode, ApplicationModelOperationGraphContract, ApplicationProcessorNode, ApplicationProviderInterfaceContract, ApplicationProviderInterfaceKind, ApplicationProviderRuntimeContract, ApplicationResourceRef, ApplicationRetentionPolicy, ApplicationRetryPolicy, ApplicationTransactionalDatabaseGuaranteesContract, ApplicationTransactionalDatabaseSemanticsContract, JsonValue } from '@applik8s/core';
+import type { ApplicationAuthorizationReceipt, ApplicationCommandHandlerNode, ApplicationCommandRetentionContract, ApplicationExpressionContract, ApplicationGeneratedResourceContract, ApplicationMessageContractSchema, ApplicationMigrationContract, ApplicationModelConstraint, ApplicationModelIndex, ApplicationModelNode, ApplicationModelOperationGraphContract, ApplicationProcessorNode, ApplicationProviderInterfaceContract, ApplicationProviderInterfaceKind, ApplicationProviderRuntimeContract, ApplicationResourceRef, ApplicationRetentionPolicy, ApplicationRetryPolicy, ApplicationTransactionalDatabaseGuaranteesContract, ApplicationTransactionalDatabaseSemanticsContract, JsonObject, JsonValue } from '@applik8s/core';
 import { applicationAuthorityPostgresSchemaStatements } from '@applik8s/operations';
 import { normalizeSchema, type SchemaInput } from '@applik8s/sdk';
 import { type as arkType } from 'arktype';
@@ -22,6 +22,7 @@ import { canonicalApplicationCommandKey, executePostgresModelCommand } from './m
 import type { ApplicationModelUpdatePatch } from './application-model-update-contract.js';
 import { applicationModelCommandBindingForOperation, applicationModelFacet, type DrizzleAnalyticalApplicationModelFacet, type DrizzleApplicationModelFacet, getApplicationModelFacet, nativeApplicationModelBindingFor } from './native-models.js';
 import { createPostgresModelClient } from './transactional-database-postgres-runtime.js';
+import { applicationManagedModelPostgresMigrationSql } from './postgres-runtime-contract.js';
 
 const applicationModelCommandAuthorities = new WeakMap<object, Map<string, ApplicationOperationAuthorizationContract>>();
 
@@ -283,6 +284,11 @@ export interface ApplicationRuntimeModelContract {
   readonly constraints: readonly ApplicationModelConstraint[];
   readonly indexes: readonly ApplicationModelIndex[];
   readonly retention: ApplicationRetentionPolicy;
+  readonly managed?: {
+    readonly applicationId: string;
+    readonly statusSchemaVersion: string;
+    readonly initialStatus: JsonObject;
+  };
   readonly storageShape?: 'jsonb-envelope' | 'native-relational';
   readonly nativeRelational?: {
     readonly schema?: string;
@@ -1713,6 +1719,7 @@ export function applicationModelMigrationSql(model: ApplicationRuntimeModelContr
   const migrationPlan = applicationModelMigrationPlan(model);
   const statements = [
     ...applicationAuthorityPostgresSchemaStatements.map((statement) => `${statement.trimEnd()};`),
+    ...applicationManagedModelPostgresMigrationSql().map((statement) => `${statement.trimEnd()};`),
     `CREATE TABLE IF NOT EXISTS ${quoteSqlIdentifier('applik8s_model_migrations')} (\n  id text PRIMARY KEY,\n  model text NOT NULL,\n  revision text NOT NULL,\n  plan jsonb NOT NULL,\n  applied_at timestamptz NOT NULL DEFAULT now()\n);`,
     `CREATE TABLE IF NOT EXISTS ${quoteSqlIdentifier('applik8s_command_admissions')} (\n  scope text PRIMARY KEY,\n  command text NOT NULL,\n  binding_id text NOT NULL,\n  command_id text NOT NULL,\n  authorization_receipt jsonb NOT NULL,\n  admitted_at timestamptz NOT NULL DEFAULT now()\n);`,
     `CREATE INDEX IF NOT EXISTS ${quoteSqlIdentifier('applik8s_command_admissions_cleanup')} ON ${quoteSqlIdentifier('applik8s_command_admissions')} (binding_id, admitted_at);`,

@@ -1,6 +1,6 @@
 // typecast-file-boundary: PostgreSQL rows and schema-normalized command payloads are validated before restoring declaration-time model generics.
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import type { ApplicationMutationOperation } from '@applik8s/client';
 import type { ApplicationAuthorizationReceipt, ApplicationRetryPolicy, ApplicationTelemetryEnvelopeV1, JsonObject, JsonValue } from '@applik8s/core';
 import { normalizeSchema } from '@applik8s/sdk/schema-runtime';
@@ -34,7 +34,12 @@ import {
   applicationNativeModelMutableColumns,
   applyApplicationModelUpdatePatch,
 } from './native-model-update.js';
-import type { ApplicationPostgresSql, ApplicationPostgresTransactionSql } from './postgres-runtime-contract.js';
+import {
+  applicationManagedModelDesiredDigest,
+  applicationManagedModelIdentityKey,
+  type ApplicationPostgresSql,
+  type ApplicationPostgresTransactionSql,
+} from './postgres-runtime-contract.js';
 import { createApplicationPostgresSql } from './postgres-runtime-loader.js';
 import type { ApplicationDatabaseClient } from './relational-runtime.js';
 import { applicationRelationalChangeScopeDigest } from './relational-runtime.js';
@@ -849,6 +854,15 @@ export async function executePostgresModelCommand<
       });
     }
 
+    if (deleteTarget) {
+      await recordManagedModelDeletion(
+        transaction,
+        execution.model,
+        effectiveTargetKey,
+        before.spec,
+        recordedAt,
+      );
+    }
     const updated = deleteTarget
       ? await deleteModelObject(transaction, execution.model, before, serial)
       : await updateModelObject(
@@ -860,6 +874,15 @@ export async function executePostgresModelCommand<
           clearedSpecProperties,
         );
     if (!serial && updated.length === 0) throw concurrentCommandModification();
+    if (!deleteTarget) {
+      await recordManagedModelDesired(
+        transaction,
+        execution.model,
+        effectiveTargetKey,
+        after.spec,
+        recordedAt,
+      );
+    }
     await transaction.unsafe(
       'INSERT INTO applik8s_model_transitions (id, scope, model, target_key, before_state, after_state, model_revision) VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7)',
       [commandDeterministicId(scope, 'transition'), scope, execution.model.name, effectiveTargetKey, postgresJson(transaction, before), postgresJson(transaction, deleteTarget ? { id: after.id, deleted: true, revision } : after), revision],
@@ -1740,6 +1763,7 @@ function commandParticipantClients(
           revision,
         };
         await insertModelObject(transaction, model, created, false);
+        await recordManagedModelDesired(transaction, model, created.id, created.spec, execution.message.recordedAt ?? new Date().toISOString());
         await transition({ id: created.id, spec: {}, revision: nextRevision('missing-before-create') }, created, revision);
         await recordGenericModelChange(transaction, model, created.id, revision, execution.message.context, {}, created.spec, 'insert');
         return created;
@@ -1761,6 +1785,7 @@ function commandParticipantClients(
           revision,
         };
         await updateModelObject(transaction, model, before, after, true, clearedProperties);
+        await recordManagedModelDesired(transaction, model, after.id, after.spec, execution.message.recordedAt ?? new Date().toISOString());
         await transition(before, after, revision);
         await recordGenericModelChange(transaction, model, after.id, revision, execution.message.context, before.spec, after.spec, 'update', clearedProperties);
         return after;
@@ -1769,6 +1794,7 @@ function commandParticipantClients(
         const before = await lockedModelObject<object, object>(transaction, model, ref.id, true);
         if (!before) return;
         const revision = nextRevision('delete');
+        await recordManagedModelDeletion(transaction, model, before.id, before.spec, execution.message.recordedAt ?? new Date().toISOString());
         const identityColumn = model.nativeRelational?.identity.column ?? 'id';
         await transaction.unsafe(`DELETE FROM ${qualifiedModelTable(model)} WHERE ${quoteIdentifier(identityColumn)} = $1`, [ref.id]);
         await transition(before, { id: before.id, spec: {}, revision }, revision);
@@ -2344,6 +2370,146 @@ function modelSpecAtTrustedAccess<TSpec extends object>(
     );
   }
   return { ...spec, [access.property]: value };
+}
+
+interface ManagedModelLifecycleRow {
+  readonly uid: unknown;
+  readonly generation: unknown;
+  readonly resource_version: unknown;
+  readonly desired_digest: unknown;
+  readonly status_schema_version: unknown;
+  readonly deletion_timestamp: unknown;
+  readonly finalizers: unknown;
+}
+
+async function recordManagedModelDesired(
+  transaction: ApplicationPostgresTransactionSql,
+  model: ApplicationRuntimeModelContract,
+  identity: string,
+  value: object,
+  now: string,
+): Promise<void> {
+  const managed = model.managed;
+  if (!managed) return;
+  const identityKey = applicationManagedModelIdentityKey(identity);
+  const desired = managedModelDesiredValue(model, value);
+  const desiredDigest = applicationManagedModelDesiredDigest(desired);
+  const rows = await transaction.unsafe(
+    `SELECT uid, generation, resource_version, desired_digest, status_schema_version, deletion_timestamp, finalizers
+     FROM applik8s_managed_model_lifecycle
+     WHERE application_id = $1 AND model_name = $2 AND identity_key = $3
+     FOR UPDATE`,
+    [managed.applicationId, model.name, identityKey],
+  );
+  const current = rows[0] as ManagedModelLifecycleRow | undefined;
+  if (!current) {
+    const inserted = await transaction.unsafe(
+      `INSERT INTO applik8s_managed_model_lifecycle (
+        application_id, model_name, identity_key, identity, uid, generation,
+        desired_digest, resource_version, status_schema_version, status, created_at, invalidated
+      ) VALUES ($1, $2, $3, $4::jsonb, $5::uuid, 1, $6, 1, $7, $8::jsonb, $9::timestamptz, true)
+      RETURNING generation, resource_version`,
+      [managed.applicationId, model.name, identityKey, postgresJson(transaction, identity), randomUUID(), desiredDigest, managed.statusSchemaVersion, postgresJson(transaction, managed.initialStatus), now],
+    );
+    await recordManagedModelInvalidation(transaction, managed.applicationId, model.name, identityKey, inserted[0], now);
+    return;
+  }
+  if (String(current.status_schema_version) !== managed.statusSchemaVersion) {
+    throw new Error(
+      `applik8s-managed-model-status-migration-required: ${model.name}/${identityKey} has status schema ${String(current.status_schema_version)}, but ${managed.statusSchemaVersion} is required.`,
+    );
+  }
+  if (current.deletion_timestamp) {
+    const finalizers = postgresStringArray(current.finalizers, 'managed-model finalizers');
+    if (finalizers.length > 0) {
+      throw new Error(
+        `applik8s-managed-model-deletion-in-progress: ${model.name}/${identityKey} cannot be recreated while finalizers remain.`,
+      );
+    }
+    const replaced = await transaction.unsafe(
+      `UPDATE applik8s_managed_model_lifecycle SET
+        identity = $4::jsonb, uid = $5::uuid, generation = 1, desired_digest = $6,
+        resource_version = 1, status = $7::jsonb, conditions = '[]'::jsonb,
+        finalizers = '[]'::jsonb, created_at = $8::timestamptz,
+        deletion_timestamp = NULL, deletion_value = NULL, next_due_at = NULL,
+        invalidated = true, lease_fence = 0, lease_expires_at = NULL,
+        reconcile_id = NULL, attempt = 0, last_error = NULL
+       WHERE application_id = $1 AND model_name = $2 AND identity_key = $3
+       RETURNING generation, resource_version`,
+      [managed.applicationId, model.name, identityKey, postgresJson(transaction, identity), randomUUID(), desiredDigest, postgresJson(transaction, managed.initialStatus), now],
+    );
+    await recordManagedModelInvalidation(transaction, managed.applicationId, model.name, identityKey, replaced[0], now);
+    return;
+  }
+  if (String(current.desired_digest) === desiredDigest) return;
+  const updated = await transaction.unsafe(
+    `UPDATE applik8s_managed_model_lifecycle SET
+      identity = $4::jsonb, desired_digest = $5, generation = generation + 1,
+      resource_version = resource_version + 1, invalidated = true,
+      next_due_at = NULL, lease_expires_at = NULL, reconcile_id = NULL
+     WHERE application_id = $1 AND model_name = $2 AND identity_key = $3
+     RETURNING generation, resource_version`,
+    [managed.applicationId, model.name, identityKey, postgresJson(transaction, identity), desiredDigest],
+  );
+  await recordManagedModelInvalidation(transaction, managed.applicationId, model.name, identityKey, updated[0], now);
+}
+
+async function recordManagedModelDeletion(
+  transaction: ApplicationPostgresTransactionSql,
+  model: ApplicationRuntimeModelContract,
+  identity: string,
+  value: object,
+  now: string,
+): Promise<void> {
+  const managed = model.managed;
+  if (!managed) return;
+  await recordManagedModelDesired(transaction, model, identity, value, now);
+  const identityKey = applicationManagedModelIdentityKey(identity);
+  const rows = await transaction.unsafe(
+    `UPDATE applik8s_managed_model_lifecycle SET
+      deletion_timestamp = COALESCE(deletion_timestamp, $4::timestamptz),
+      deletion_value = COALESCE(deletion_value, $5::jsonb), invalidated = true,
+      resource_version = CASE WHEN deletion_timestamp IS NULL THEN resource_version + 1 ELSE resource_version END,
+      next_due_at = NULL, lease_expires_at = NULL, reconcile_id = NULL
+     WHERE application_id = $1 AND model_name = $2 AND identity_key = $3
+     RETURNING generation, resource_version`,
+    [managed.applicationId, model.name, identityKey, now, postgresJson(transaction, value)],
+  );
+  await recordManagedModelInvalidation(transaction, managed.applicationId, model.name, identityKey, rows[0], now);
+}
+
+async function recordManagedModelInvalidation(
+  transaction: ApplicationPostgresTransactionSql,
+  applicationId: string,
+  model: string,
+  identityKey: string,
+  row: Readonly<Record<string, unknown>> | undefined,
+  now: string,
+): Promise<void> {
+  if (!row) throw new Error(`applik8s-managed-model-lifecycle-write-missing: ${model}/${identityKey} was not persisted.`);
+  await transaction.unsafe(
+    `INSERT INTO applik8s_managed_model_invalidations
+      (application_id, model_name, identity_key, generation, resource_version, recorded_at)
+     VALUES ($1, $2, $3, $4, $5, $6::timestamptz)
+     ON CONFLICT DO NOTHING`,
+    [applicationId, model, identityKey, Number(row.generation), Number(row.resource_version), now],
+  );
+}
+
+function managedModelDesiredValue(model: ApplicationRuntimeModelContract, value: object): object {
+  const revisionProperty = model.nativeRelational?.revision?.property;
+  if (!revisionProperty || !(revisionProperty in value)) return value;
+  const desired = { ...value };
+  Reflect.deleteProperty(desired, revisionProperty);
+  return desired;
+}
+
+function postgresStringArray(value: unknown, label: string): readonly string[] {
+  const decoded = typeof value === 'string' ? JSON.parse(value) as unknown : value;
+  if (!Array.isArray(decoded) || decoded.some((entry) => typeof entry !== 'string')) {
+    throw new Error(`${label} must be a JSON string array.`);
+  }
+  return decoded;
 }
 
 async function recordGenericModelChange(

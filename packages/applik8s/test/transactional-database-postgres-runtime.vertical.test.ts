@@ -63,8 +63,12 @@ describe('Postgres TransactionalDatabase script runtime', () => {
     expect(migration).toContain('CREATE TABLE IF NOT EXISTS "applik8s_model_history"');
     expect(migration).toContain('CREATE TABLE IF NOT EXISTS "applik8s_event_outbox"');
     expect(migration).toContain('CREATE TABLE IF NOT EXISTS "applik8s_command_outbox"');
+    expect(migration).toContain('CREATE TABLE IF NOT EXISTS "public".applik8s_managed_model_lifecycle');
+    expect(migration).toContain('deletion_value jsonb');
+    expect(migration).toContain('UNIQUE (application_id, model_name, identity_key, resource_version)');
     expect(migration).toContain('PRIMARY KEY (application, revision, kind, reference_id)\n  );\n\nALTER TABLE applik8s_operation_catalog_references');
-    expect(migration).toContain("ADD COLUMN IF NOT EXISTS operation_ids jsonb NOT NULL DEFAULT '[]'::jsonb;\n\nCREATE TABLE IF NOT EXISTS \"applik8s_model_migrations\"");
+    expect(migration).toContain("ADD COLUMN IF NOT EXISTS operation_ids jsonb NOT NULL DEFAULT '[]'::jsonb;");
+    expect(migration).toContain('CREATE TABLE IF NOT EXISTS "applik8s_model_migrations"');
     expect(migration).toContain('WHERE published_at IS NULL');
     expect(migration).toContain('applik8s_command_inbox_cleanup');
     expect(migration).toContain('applik8s_event_outbox_cleanup');
@@ -331,12 +335,34 @@ describe('Postgres TransactionalDatabase script runtime', () => {
     expect(generated).toContain('unsupported filters fail closed');
     expect(generated).toContain('unsupported index filters fail closed');
     expect(generated).toContain('async transaction(handler)');
+    expect(generated).toContain('applik8s-managed-model-script-mutation-unsupported');
     expect(generated).toContain('return modelDatabase(model).transaction');
     expect(generated).toContain('modelRetentionClauses(model)');
     expect(generated).toContain("model.retention?.mode !== 'ttl'");
     expect(generated).not.toContain('CREATE TABLE');
     expect(generated).not.toContain('CREATE TABLE IF NOT EXISTS');
     expect(generated).not.toContain('ensureModelTable');
+  });
+
+  it('fails closed before a script mutation can bypass managed-model lifecycle authority', async () => {
+    const model: ApplicationRuntimeModelContract = {
+      ...scriptNoteModel('applik8s_script_managed_note_contracts'),
+      managed: {
+        applicationId: 'managed-script-test',
+        statusSchemaVersion: 'status-v1',
+        initialStatus: { phase: 'Pending' },
+      },
+    };
+    const client = createPostgresModelClient<{ readonly message: string }>(model);
+
+    await expect(client.create({ id: 'note-1', spec: { message: 'unsafe' } }))
+      .rejects.toThrow(/cannot bypass the managed-model lifecycle authority/);
+    await expect(client.patch({ id: 'note-1' }, { spec: { message: 'unsafe' } }))
+      .rejects.toThrow(/cannot bypass the managed-model lifecycle authority/);
+    await expect(client.delete({ id: 'note-1' }))
+      .rejects.toThrow(/cannot bypass the managed-model lifecycle authority/);
+    await expect(client.transaction(async () => undefined))
+      .rejects.toThrow(/cannot bypass the managed-model lifecycle authority/);
   });
 
   it('implements transaction API while still failing closed for unsupported retention and undeclared index assumptions', async () => {
@@ -1328,6 +1354,10 @@ describe.runIf(liveDatabaseUrl)('Postgres TransactionalDatabase script runtime l
     const direct = app(`direct-native-${process.pid}`);
     const Database = direct.database.postgres('direct-native', { schema: { cards } });
     const CardBase = direct.model(cards, { name: `DirectCard${process.pid}`, database: Database, revision: 'revision' });
+    CardBase.managed({
+      status: type({ phase: "'Pending' | 'Ready'" }),
+      initialStatus: { phase: 'Pending' },
+    });
     CardBase.create.beforeCommit({ history: true }, async (_card, input) => {
       if (input.title === 'policy-rejected') {
         throw new Error('Card title is rejected by policy.');
@@ -1456,6 +1486,15 @@ describe.runIf(liveDatabaseUrl)('Postgres TransactionalDatabase script runtime l
         model: created.model,
         events: [],
       });
+      await expect(sql.unsafe(
+        'SELECT generation::int, resource_version::int, status, deletion_timestamp FROM applik8s_managed_model_lifecycle WHERE application_id = $1 AND model_name = $2',
+        [`direct-native-${process.pid}`, `DirectCard${process.pid}`],
+      )).resolves.toEqual([{
+        generation: 1,
+        resource_version: 1,
+        status: { phase: 'Pending' },
+        deletion_timestamp: null,
+      }]);
 
       const rejectedDelivery = {
         id: 'direct-create-policy-rejected',
@@ -1516,19 +1555,21 @@ describe.runIf(liveDatabaseUrl)('Postgres TransactionalDatabase script runtime l
         context: admittedContext,
         databaseUrl: liveDatabaseUrl,
       });
-      expect(updated).toMatchObject({
-        replayed: false,
-        output: { identity: 'card-1', value: { id: 'card-1', title: 'updated' }, revision: expect.any(String) },
-        events: [expect.objectContaining({
-          contract: { name: `models.DirectCard${process.pid}.updated`, version: 'v1' },
-          payload: {
-            operation: 'update',
-            identity: 'card-1',
-            previous: expect.objectContaining({ title: 'created' }),
-            current: expect.objectContaining({ title: 'updated' }),
-            revision: expect.any(String),
-          },
-        })],
+      expect(updated).toMatchObject({ replayed: false });
+      expect(updated.output).toMatchObject({
+        identity: 'card-1',
+        value: { id: 'card-1', title: 'updated' },
+        revision: expect.any(String),
+      });
+      expect(updated.events[0]).toMatchObject({
+        contract: { name: `models.DirectCard${process.pid}.updated`, version: 'v1' },
+        payload: {
+          operation: 'update',
+          identity: 'card-1',
+          previous: expect.objectContaining({ title: 'created' }),
+          current: expect.objectContaining({ title: 'updated' }),
+          revision: expect.any(String),
+        },
       });
 
       const archived = await archive.execute({ cardId: 'card-1' }, {
@@ -1561,6 +1602,10 @@ describe.runIf(liveDatabaseUrl)('Postgres TransactionalDatabase script runtime l
           },
         })],
       });
+      await expect(sql.unsafe(
+        'SELECT generation::int, resource_version::int FROM applik8s_managed_model_lifecycle WHERE application_id = $1 AND model_name = $2',
+        [`direct-native-${process.pid}`, `DirectCard${process.pid}`],
+      )).resolves.toEqual([{ generation: 3, resource_version: 3 }]);
 
       const deleted = await remove.execute({ identity: 'card-1' }, {
         id: 'direct-delete-1',
@@ -1599,7 +1644,24 @@ describe.runIf(liveDatabaseUrl)('Postgres TransactionalDatabase script runtime l
         events: [],
       });
       await expect(sql.unsafe(`SELECT count(*)::int AS count FROM ${quoteIdentifier(directTableName)}`)).resolves.toEqual([{ count: 0 }]);
+      await expect(sql.unsafe(
+        'SELECT generation::int, resource_version::int, deletion_timestamp IS NOT NULL AS deleting, deletion_value->>\'title\' AS deleted_title FROM applik8s_managed_model_lifecycle WHERE application_id = $1 AND model_name = $2',
+        [`direct-native-${process.pid}`, `DirectCard${process.pid}`],
+      )).resolves.toEqual([{
+        generation: 3,
+        resource_version: 4,
+        deleting: true,
+        deleted_title: 'archived',
+      }]);
     } finally {
+      await sql.unsafe(
+        'DELETE FROM applik8s_managed_model_invalidations WHERE application_id = $1 AND model_name = $2',
+        [`direct-native-${process.pid}`, `DirectCard${process.pid}`],
+      );
+      await sql.unsafe(
+        'DELETE FROM applik8s_managed_model_lifecycle WHERE application_id = $1 AND model_name = $2',
+        [`direct-native-${process.pid}`, `DirectCard${process.pid}`],
+      );
       await sql.unsafe(
         'DELETE FROM applik8s_public_stream_events WHERE contract_name LIKE $1',
         [`models.DirectCard${process.pid}.%`],

@@ -1,5 +1,5 @@
 // typecast-file-boundary: JSONB lifecycle rows are validated and decoded at this PostgreSQL provider boundary before regaining model identity, value, and status generics.
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import {
   ApplicationManagedModelConflictError,
   type ApplicationManagedModelCommitPrecondition,
@@ -13,6 +13,11 @@ import {
 import type {
   ApplicationPostgresSql,
   ApplicationPostgresTransactionSql,
+} from '@applik8s/applik8s/postgres-runtime-contract';
+import {
+  applicationManagedModelDesiredDigest,
+  applicationManagedModelIdentityKey,
+  applicationManagedModelPostgresMigrationSql,
 } from '@applik8s/applik8s/postgres-runtime-contract';
 import { createApplicationPostgresSql } from './sql.js';
 
@@ -31,6 +36,8 @@ export interface PostgresApplicationManagedModelStoreOptions<
   readonly readValue: (identity: TIdentity) => Promise<TValue | undefined>;
   readonly decodeIdentity?: (value: unknown) => TIdentity;
   readonly decodeStatus?: (value: unknown) => TStatus;
+  /** Framework metadata fields, such as a revision column, may be excluded here. */
+  readonly desiredDigest?: (value: TValue) => string;
 }
 
 export interface PostgresApplicationManagedModelStore<
@@ -47,7 +54,12 @@ export interface PostgresApplicationManagedModelStore<
   ): Promise<ApplicationManagedModelStoreRecord<TIdentity, TValue, TStatus>>;
   markDeletion(
     identity: TIdentity,
-    options?: { readonly now?: string; readonly transaction?: ApplicationPostgresTransactionSql },
+    options?: {
+      readonly now?: string;
+      readonly transaction?: ApplicationPostgresTransactionSql;
+      /** Snapshot read in the caller's transaction before the domain row is removed. */
+      readonly value?: TValue;
+    },
   ): Promise<void>;
   requestResync(maximumItems: number, now?: string): Promise<number>;
   read(identity: TIdentity): Promise<ApplicationManagedModelStoreRecord<TIdentity, TValue, TStatus> | undefined>;
@@ -64,6 +76,7 @@ interface ManagedRow {
   readonly finalizers: unknown;
   readonly status: unknown;
   readonly conditions: unknown;
+  readonly deletion_value: unknown;
   readonly next_due_at: unknown;
   readonly invalidated: unknown;
   readonly lease_fence: unknown;
@@ -73,48 +86,7 @@ interface ManagedRow {
 }
 
 export function postgresApplicationManagedModelMigrationSql(schema = 'public'): readonly string[] {
-  const namespace = postgresIdentifier(schema, 'schema');
-  const lifecycle = `${namespace}.applik8s_managed_model_lifecycle`;
-  const invalidations = `${namespace}.applik8s_managed_model_invalidations`;
-  return [
-    `CREATE SCHEMA IF NOT EXISTS ${namespace}`,
-    `CREATE TABLE IF NOT EXISTS ${lifecycle} (
-      application_id text NOT NULL,
-      model_name text NOT NULL,
-      identity_key text NOT NULL,
-      identity jsonb NOT NULL,
-      uid uuid NOT NULL,
-      generation bigint NOT NULL CHECK (generation > 0),
-      desired_digest text NOT NULL,
-      resource_version bigint NOT NULL CHECK (resource_version > 0),
-      status_schema_version text NOT NULL,
-      status jsonb NOT NULL,
-      conditions jsonb NOT NULL DEFAULT '[]'::jsonb,
-      finalizers jsonb NOT NULL DEFAULT '[]'::jsonb,
-      created_at timestamptz NOT NULL,
-      deletion_timestamp timestamptz,
-      next_due_at timestamptz,
-      invalidated boolean NOT NULL DEFAULT true,
-      lease_fence bigint NOT NULL DEFAULT 0,
-      lease_expires_at timestamptz,
-      reconcile_id uuid,
-      attempt integer NOT NULL DEFAULT 0,
-      last_error text,
-      PRIMARY KEY (application_id, model_name, identity_key),
-      UNIQUE (application_id, model_name, uid)
-    )`,
-    `CREATE INDEX IF NOT EXISTS applik8s_managed_model_due_idx
-      ON ${lifecycle} (application_id, model_name, invalidated, next_due_at, identity_key)`,
-    `CREATE TABLE IF NOT EXISTS ${invalidations} (
-      sequence bigserial PRIMARY KEY,
-      application_id text NOT NULL,
-      model_name text NOT NULL,
-      identity_key text NOT NULL,
-      generation bigint NOT NULL,
-      recorded_at timestamptz NOT NULL,
-      UNIQUE (application_id, model_name, identity_key, generation)
-    )`,
-  ];
+  return applicationManagedModelPostgresMigrationSql(schema);
 }
 
 export function createPostgresApplicationManagedModelStore<
@@ -134,7 +106,8 @@ export function createPostgresApplicationManagedModelStore<
   const namespace = postgresIdentifier(options.schema ?? 'public', 'schema');
   const lifecycle = `${namespace}.applik8s_managed_model_lifecycle`;
   const invalidations = `${namespace}.applik8s_managed_model_invalidations`;
-  const identityKey = options.identityKey ?? ((identity: TIdentity) => digest(identity));
+  const identityKey = options.identityKey ?? applicationManagedModelIdentityKey;
+  const desiredDigest = options.desiredDigest ?? applicationManagedModelDesiredDigest;
   const decodeIdentity = options.decodeIdentity ?? ((value: unknown) => value as TIdentity);
   const decodeStatus = options.decodeStatus ?? ((value: unknown) => value as TStatus);
   let initialized: Promise<void> | undefined;
@@ -144,10 +117,14 @@ export function createPostgresApplicationManagedModelStore<
     }
   })());
 
-  const hydrate = async (row: ManagedRow): Promise<ApplicationManagedModelStoreRecord<TIdentity, TValue, TStatus>> => {
+  const hydrate = async (row: ManagedRow, valueOverride?: TValue): Promise<ApplicationManagedModelStoreRecord<TIdentity, TValue, TStatus>> => {
     const identity = decodeIdentity(jsonValue(row.identity));
-    const value = await options.readValue(identity);
-    if (!value) throw new Error(`Managed-model desired value ${model}/${identityKey(identity)} is absent without deletion intent.`);
+    const currentValue = valueOverride ?? await options.readValue(identity);
+    const deletionValue = row.deletion_timestamp && row.deletion_value
+      ? jsonValue(row.deletion_value) as TValue
+      : undefined;
+    const value = currentValue ?? deletionValue;
+    if (!value) throw new Error(`Managed-model desired value ${model}/${identityKey(identity)} is absent without a retained deletion snapshot.`);
     return {
       model,
       id: identity,
@@ -203,47 +180,108 @@ export function createPostgresApplicationManagedModelStore<
     async initialize() { await initialize(); },
     async observeDesired(identity, value, initialStatus, observeOptions = {}) {
       await initialize();
-      const executor = observeOptions.transaction ?? sql;
       const now = observeOptions.now ?? new Date().toISOString();
       const key = identityKey(identity);
-      const valueDigest = digest(value);
-      const rows = await executor.unsafe(
-        `INSERT INTO ${lifecycle} AS target (
-          application_id, model_name, identity_key, identity, uid, generation,
-          desired_digest, resource_version, status_schema_version, status, created_at, invalidated
-        ) VALUES ($1, $2, $3, $4::jsonb, $5::uuid, 1, $6, 1, $7, $8::jsonb, $9::timestamptz, true)
-        ON CONFLICT (application_id, model_name, identity_key) DO UPDATE SET
-          identity = EXCLUDED.identity,
-          generation = CASE WHEN target.desired_digest = EXCLUDED.desired_digest THEN target.generation ELSE target.generation + 1 END,
-          desired_digest = EXCLUDED.desired_digest,
-          resource_version = CASE WHEN target.desired_digest = EXCLUDED.desired_digest THEN target.resource_version ELSE target.resource_version + 1 END,
-          invalidated = target.invalidated OR target.desired_digest <> EXCLUDED.desired_digest,
-          deletion_timestamp = NULL
-        RETURNING ${managedColumns}`,
-        [applicationId, model, key, JSON.stringify(identity), randomUUID(), valueDigest, statusSchemaVersion, JSON.stringify(initialStatus), now],
-      );
-      const row = rows[0];
-      if (!row) throw new Error(`PostgreSQL did not return managed-model ${model}/${key}.`);
-      const hydrated = await hydrate(row as unknown as ManagedRow);
-      await executor.unsafe(
-        `INSERT INTO ${invalidations} (application_id, model_name, identity_key, generation, recorded_at)
-         VALUES ($1, $2, $3, $4, $5::timestamptz)
-         ON CONFLICT DO NOTHING`,
-        [applicationId, model, key, hydrated.metadata.generation, now],
-      );
-      return hydrated;
+      const valueDigest = desiredDigest(value);
+      const observe = async (executor: ApplicationPostgresTransactionSql) => {
+        await executor.unsafe('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [
+          JSON.stringify([applicationId, model, key]),
+        ]);
+        const currentRows = await executor.unsafe(
+          `SELECT ${managedColumns}, desired_digest, status_schema_version
+           FROM ${lifecycle}
+           WHERE application_id = $1 AND model_name = $2 AND identity_key = $3
+           FOR UPDATE`,
+          [applicationId, model, key],
+        );
+        const current = currentRows[0];
+        let row: Readonly<Record<string, unknown>> | undefined;
+        if (!current) {
+          const inserted = await executor.unsafe(
+            `INSERT INTO ${lifecycle} (
+              application_id, model_name, identity_key, identity, uid, generation,
+              desired_digest, resource_version, status_schema_version, status, created_at, invalidated
+            ) VALUES ($1, $2, $3, $4::jsonb, $5::uuid, 1, $6, 1, $7, $8::jsonb, $9::timestamptz, true)
+            RETURNING ${managedColumns}`,
+            [applicationId, model, key, JSON.stringify(identity), randomUUID(), valueDigest, statusSchemaVersion, JSON.stringify(initialStatus), now],
+          );
+          row = inserted[0];
+        } else if (current.deletion_timestamp) {
+          const finalizers = stringArray(jsonValue(current.finalizers), 'finalizers');
+          if (finalizers.length > 0) {
+            throw new Error(
+              `Managed-model ${model}/${key} is still finalizing deletion with finalizers ${JSON.stringify(finalizers)}.`,
+            );
+          }
+          const replaced = await executor.unsafe(
+            `UPDATE ${lifecycle} SET
+              identity = $4::jsonb, uid = $5::uuid, generation = 1,
+              desired_digest = $6, resource_version = 1,
+              status_schema_version = $7, status = $8::jsonb,
+              conditions = '[]'::jsonb, finalizers = '[]'::jsonb,
+              created_at = $9::timestamptz, deletion_timestamp = NULL,
+              deletion_value = NULL, next_due_at = NULL, invalidated = true,
+              lease_fence = 0, lease_expires_at = NULL, reconcile_id = NULL,
+              attempt = 0, last_error = NULL
+             WHERE application_id = $1 AND model_name = $2 AND identity_key = $3
+             RETURNING ${managedColumns}`,
+            [applicationId, model, key, JSON.stringify(identity), randomUUID(), valueDigest, statusSchemaVersion, JSON.stringify(initialStatus), now],
+          );
+          row = replaced[0];
+        } else {
+          if (String(current.status_schema_version) !== statusSchemaVersion) {
+            throw new Error(
+              `Managed-model ${model}/${key} requires status schema ${String(current.status_schema_version)} to migrate to ${statusSchemaVersion}.`,
+            );
+          }
+          if (String(current.desired_digest) === valueDigest) {
+            row = current;
+          } else {
+            const updated = await executor.unsafe(
+              `UPDATE ${lifecycle} SET
+                identity = $4::jsonb, desired_digest = $5,
+                generation = generation + 1, resource_version = resource_version + 1,
+                invalidated = true, next_due_at = NULL,
+                lease_expires_at = NULL, reconcile_id = NULL, last_error = NULL
+               WHERE application_id = $1 AND model_name = $2 AND identity_key = $3
+               RETURNING ${managedColumns}`,
+              [applicationId, model, key, JSON.stringify(identity), valueDigest],
+            );
+            row = updated[0];
+          }
+        }
+        if (!row) throw new Error(`Managed-model ${model}/${key} lifecycle transition did not persist a row.`);
+        const hydrated = await hydrate(row as unknown as ManagedRow, value);
+        await executor.unsafe(
+          `INSERT INTO ${invalidations} (application_id, model_name, identity_key, generation, resource_version, recorded_at)
+           VALUES ($1, $2, $3, $4, $5, $6::timestamptz)
+           ON CONFLICT DO NOTHING`,
+          [applicationId, model, key, hydrated.metadata.generation, Number(hydrated.metadata.resourceVersion), now],
+        );
+        return hydrated;
+      };
+      if (observeOptions.transaction) return observe(observeOptions.transaction);
+      return sql.begin(observe);
     },
     async markDeletion(identity, deletionOptions = {}) {
       await initialize();
       const executor = deletionOptions.transaction ?? sql;
       const now = deletionOptions.now ?? new Date().toISOString();
+      const currentValue = deletionOptions.value ?? await options.readValue(identity);
       const rows = await executor.unsafe(
-        `UPDATE ${lifecycle} SET deletion_timestamp = COALESCE(deletion_timestamp, $4::timestamptz), invalidated = true,
-          resource_version = CASE WHEN deletion_timestamp IS NULL THEN resource_version + 1 ELSE resource_version END
-         WHERE application_id = $1 AND model_name = $2 AND identity_key = $3 RETURNING generation`,
-        [applicationId, model, identityKey(identity), now],
+        `UPDATE ${lifecycle} SET deletion_timestamp = COALESCE(deletion_timestamp, $4::timestamptz),
+          deletion_value = COALESCE(deletion_value, $5::jsonb), invalidated = true,
+          resource_version = CASE WHEN deletion_timestamp IS NULL THEN resource_version + 1 ELSE resource_version END,
+          next_due_at = NULL, lease_expires_at = NULL, reconcile_id = NULL
+         WHERE application_id = $1 AND model_name = $2 AND identity_key = $3 RETURNING generation, resource_version`,
+        [applicationId, model, identityKey(identity), now, currentValue ? JSON.stringify(currentValue) : null],
       );
       if (!rows[0]) throw new Error(`Managed-model ${model}/${identityKey(identity)} does not exist.`);
+      await executor.unsafe(
+        `INSERT INTO ${invalidations} (application_id, model_name, identity_key, generation, resource_version, recorded_at)
+         VALUES ($1, $2, $3, $4, $5, $6::timestamptz) ON CONFLICT DO NOTHING`,
+        [applicationId, model, identityKey(identity), Number(rows[0].generation), Number(rows[0].resource_version), now],
+      );
     },
     async requestResync(maximumItems, now = new Date().toISOString()) {
       await initialize();
@@ -318,7 +356,7 @@ export function createPostgresApplicationManagedModelStore<
       const current = await select(precondition.id);
       if (!current) throw stale(precondition);
       const next = [...new Set([...current.metadata.finalizers, ...finalizers])].sort();
-      if (digest(next) === digest(current.metadata.finalizers)) return current;
+      if (applicationManagedModelDesiredDigest(next) === applicationManagedModelDesiredDigest(current.metadata.finalizers)) return current;
       return mutate(precondition, 'finalizers = $8::jsonb', [JSON.stringify(next)]);
     },
     async removeFinalizer(precondition, finalizer) {
@@ -337,21 +375,11 @@ export function createPostgresApplicationManagedModelStore<
   };
 }
 
-const managedColumns = `identity, uid, generation, resource_version, created_at, deletion_timestamp,
+const managedColumns = `identity, uid, generation, resource_version, created_at, deletion_timestamp, deletion_value,
   finalizers, status, conditions, next_due_at, invalidated, lease_fence, lease_expires_at, reconcile_id, attempt`;
 
 function stale<TIdentity>(precondition: ApplicationManagedModelCommitPrecondition<TIdentity>) {
-  return new ApplicationManagedModelConflictError(`Managed-model ${precondition.model}/${digest(precondition.id)} rejected a stale UID, generation, resource version, or fence.`);
-}
-
-function digest(value: unknown): string {
-  return createHash('sha256').update(canonical(value)).digest('hex');
-}
-
-function canonical(value: unknown): string {
-  if (value === null || typeof value !== 'object') return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`;
-  return `{${Object.entries(value as Record<string, unknown>).filter(([, entry]) => entry !== undefined).sort(([left], [right]) => left.localeCompare(right)).map(([name, entry]) => `${JSON.stringify(name)}:${canonical(entry)}`).join(',')}}`;
+  return new ApplicationManagedModelConflictError(`Managed-model ${precondition.model}/${applicationManagedModelIdentityKey(precondition.id)} rejected a stale UID, generation, resource version, or fence.`);
 }
 
 function required(value: string, label: string): string {

@@ -222,6 +222,8 @@ function registerApplicationManagedRelationalModel<
   state: ApplicationGraphState,
   model: PromotedDrizzleTable<AnyPgTable>,
   modelName: string,
+  applicationId: string,
+  runtimeModel: ApplicationRuntimeModelContract,
   options: ApplicationManagedModelOptions<TStatus>,
 ): ApplicationManagedModelFacet<unknown, object, TStatus> {
   const modelNodeId = `model.${kubernetesNameSegment(modelName)}`;
@@ -289,10 +291,18 @@ function registerApplicationManagedRelationalModel<
     portability: 'portable',
     activation: 'migrationRequiredForExistingRows',
   };
+  Object.assign(runtimeModel, {
+    managed: {
+      applicationId,
+      statusSchemaVersion: contract.statusSchemaVersion,
+      initialStatus: contract.initialStatus,
+    },
+  });
   const publish = (): void => {
     state.graphNodes[modelNodeIndex] = {
       ...(state.graphNodes[modelNodeIndex] as ApplicationModelNode),
       managed: contract,
+      runtime: runtimeModel,
     };
     state.onChange?.();
   };
@@ -4984,6 +4994,8 @@ function createApplicationContext<TSpec extends KroCompatibleType, TStatus exten
             state,
             promoted,
             promotedFacet.name,
+            state.authorityApplicationName,
+            runtimeModel,
             managedOptions,
           ) as never,
         });

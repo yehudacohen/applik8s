@@ -85,6 +85,7 @@ const transactionalDatabaseTables = new Map();
 export function createPostgresModelClient(model, databaseOverride) {
   const client = {
     async create(input) {
+      assertUnmanagedScriptMutation(model, 'create');
       const table = modelTableFor(model);
       const object = modelObjectFromInput(input);
       try {
@@ -108,6 +109,7 @@ export function createPostgresModelClient(model, databaseOverride) {
       return queryPostgresModel(model, query, {}, databaseOverride);
     },
     async patch(ref, patch) {
+      assertUnmanagedScriptMutation(model, 'patch');
       const existing = await client.get(ref);
       if (!existing) {
         throw new Error('Model ' + model.name + ' object ' + ref.id + ' was not found.');
@@ -127,6 +129,7 @@ export function createPostgresModelClient(model, databaseOverride) {
       return next;
     },
     async delete(ref) {
+      assertUnmanagedScriptMutation(model, 'delete');
       const table = modelTableFor(model);
       try {
         await modelDatabaseForClient(model, databaseOverride).delete(table).where(eq(table.id, ref.id));
@@ -152,10 +155,18 @@ export function createPostgresModelClient(model, databaseOverride) {
       };
     },
     async transaction(handler) {
+      assertUnmanagedScriptMutation(model, 'transaction');
       return modelDatabase(model).transaction(async (transaction) => handler(createPostgresModelClient(model, transaction)));
     },
   };
   return client;
+}
+
+function assertUnmanagedScriptMutation(model, operation) {
+  if (!model.managed) return;
+  throw new Error(
+    'applik8s-managed-model-script-mutation-unsupported: ' + model.name + '.' + operation + '() cannot bypass the managed-model lifecycle authority. Invoke the model from a generated function-native closure so Applik8s can commit the domain mutation and reconciliation intent atomically.',
+  );
 }
 
 function queryPostgresModel(model, query = {}, options = {}, databaseOverride) {
