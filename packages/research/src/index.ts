@@ -16,6 +16,7 @@ import {
 } from './runtime-contract.js';
 
 export * from './contracts.js';
+export * from './research-agent.js';
 export type { DeterministicResearchEvidenceOptions } from './memory.js';
 export type { PostgresResearchEvidenceOptions } from './postgres.js';
 export { createDeterministicResearchEvidenceProvider } from './memory.js';

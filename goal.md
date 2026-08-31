@@ -214,8 +214,26 @@ selected profile, portable runtime binding, store identity, and PostgreSQL
 connection environment (never a URL) are plan-visible. Five focused semantic
 tests, the package typecheck, package build, package catalog, public-contract
 inventory, and documentation checks pass. A live PostgreSQL interruption
-vertical, `researchAgent()` orchestration, and Agentic Start integration remain
-open.
+vertical and Agentic Start integration remain open.
+
+The first maintained `researchAgent()` orchestration slice now composes the
+normal AI agent, service identity, qualified `WebSearch`, qualified
+`SourceRetriever`, qualified `ResearchEvidence`, bounded concurrency/context,
+untrusted-source isolation, evidence-before-synthesis ordering, and
+application-owned publication tools. The package preserves a generated,
+closure-free handler source across the package boundary, and compiler evidence
+proves that a thin external application hydrates only the three public runtime
+operations without replaying profile setup or `application.inject()`. A core
+callback fix also treats a public provider operation as the executable leaf,
+so multiple maintained provider calls no longer collide through their private
+`providerDependency1` metadata. Fourteen affected agent/research/compiler tests,
+the three affected package typechecks, the complete publishable-package build,
+catalog/docs checks, and the 65-package/219-entrypoint public inventory pass.
+This is not yet the RFP's terminal research contract: the exported composition
+still returns the existing non-callable conversation agent binding, has not yet
+added its actor-backed typed input/output and completed/partial/failed result,
+does not automatically verify/link the publication artifact receipt, and lacks
+PostgreSQL interruption plus Agentic Start end-to-end qualification.
 
 Continue in the sequence above until every stable-candidate gate is implemented
 and evidenced. Keep beta/preview surfaces truthful; do not expand the frozen

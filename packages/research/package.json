@@ -17,6 +17,11 @@
       "import": "./dist/index.js",
       "default": "./dist/index.js"
     },
+    "./agent-runtime": {
+      "types": "./dist/agent-runtime.d.ts",
+      "import": "./dist/agent-runtime.js",
+      "default": "./dist/agent-runtime.js"
+    },
     "./runtime": {
       "types": "./dist/runtime.d.ts",
       "import": "./dist/runtime.js",
@@ -30,7 +35,11 @@
   },
   "dependencies": {
     "@applik8s/applik8s": "0.8.0",
+    "@applik8s/ai": "0.8.0",
+    "@applik8s/ai-tanstack": "0.8.0",
     "@applik8s/core": "0.8.0",
+    "@applik8s/web-search": "0.8.0",
+    "@tanstack/ai": "0.45.1",
     "arktype": "2.2.1",
     "postgres": "^3.4.7"
   }

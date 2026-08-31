@@ -8247,14 +8247,21 @@
       "documentation": "docs/packages.md",
       "commands": [],
       "dependencies": [
+        "@applik8s/ai",
+        "@applik8s/ai-tanstack",
         "@applik8s/applik8s",
-        "@applik8s/core"
+        "@applik8s/core",
+        "@applik8s/web-search"
       ],
       "entrypoints": [
         {
           "name": ".",
           "source": "packages/research/src/index.ts",
           "symbols": [
+            "ApplicationResearchAgentBinding",
+            "ApplicationResearchAgentError",
+            "ApplicationResearchAgentErrorCode",
+            "ApplicationResearchAgentOptions",
             "ApplicationResearchArtifactLink",
             "ApplicationResearchArtifactLinkInput",
             "ApplicationResearchCitationSpan",
@@ -8272,7 +8279,20 @@
             "ResearchEvidence",
             "applicationResearchEvidenceProtocol",
             "createDeterministicResearchEvidenceProvider",
-            "createPostgresResearchEvidenceProvider"
+            "createPostgresResearchEvidenceProvider",
+            "researchAgent"
+          ]
+        },
+        {
+          "name": "./agent-runtime",
+          "source": "packages/research/src/agent-runtime.ts",
+          "symbols": [
+            "ApplicationResearchAgentError",
+            "ApplicationResearchAgentErrorCode",
+            "ApplicationResearchAgentRuntimeContext",
+            "ApplicationResearchAgentRuntimeDependencies",
+            "ApplicationResearchAgentRuntimePolicy",
+            "executeApplicationResearchAgent"
           ]
         },
         {
@@ -11876,6 +11896,22 @@
       "owner": "package:@applik8s/core",
       "sources": [
         "packages/core/src/common.ts"
+      ],
+      "maturity": "candidate-review-required"
+    },
+    {
+      "code": "RESEARCH_EVIDENCE_INCOMPLETE",
+      "owner": "package:@applik8s/research",
+      "sources": [
+        "packages/research/src/agent-runtime.ts"
+      ],
+      "maturity": "candidate-review-required"
+    },
+    {
+      "code": "RESEARCH_QUERY_INVALID",
+      "owner": "package:@applik8s/research",
+      "sources": [
+        "packages/research/src/agent-runtime.ts"
       ],
       "maturity": "candidate-review-required"
     },

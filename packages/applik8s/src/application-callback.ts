@@ -120,11 +120,10 @@ export function expandApplicationCallbackDependencies(options: {
     inheritedAwaited: boolean,
     helperPath: readonly string[],
   ): void => {
-    providerBindings.push(
-      ...applicationCallableProviderDependencies({
-        [dependency.identifier]: dependency.value,
-      }),
-    );
+    const directProviderBindings = applicationCallableProviderDependencies({
+      [dependency.identifier]: dependency.value,
+    });
+    providerBindings.push(...directProviderBindings);
     const declarationSource = instrumentedApplicationCallbackDeclarationSource(dependency.value);
     if (declarationSource) {
       provenance.push({
@@ -136,7 +135,13 @@ export function expandApplicationCallbackDependencies(options: {
     const metadata = instrumentedApplicationCallbackDependencies(
       dependency.value,
     );
-    if (!metadata) {
+    // A public provider operation is already the executable leaf. Its
+    // callback metadata points back to the provider binding solely so the
+    // operation can carry portable ownership metadata. Recursing into that
+    // implementation detail both exposes a value the generated worker never
+    // executes and aliases every provider's first dependency as
+    // `providerDependency1`, making two ordinary provider calls collide.
+    if (!metadata || directProviderBindings.some((binding) => binding.operation)) {
       leaves.push({
         ...dependency,
         awaited: dependency.awaited || inheritedAwaited,
