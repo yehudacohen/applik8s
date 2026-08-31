@@ -28,6 +28,11 @@ interface ApplicationHttpWorkflowBinding {
   readonly definition: { readonly id: string };
 }
 
+interface ApplicationHttpJobBinding {
+  readonly kind: 'applicationJob';
+  readonly id: string;
+}
+
 export interface ApplicationHttpOptions
   extends Pick<
     ApplicationServerOptions,
@@ -201,6 +206,8 @@ export interface ApplicationHttpRouteDeclaration {
   readonly workflowBindings: Readonly<
     Record<string, ApplicationHttpWorkflowBinding>
   >;
+  /** @internal Finite Job leaves reconstructed by the generated worker. */
+  readonly jobBindings: Readonly<Record<string, ApplicationHttpJobBinding>>;
   /** @internal Original function identity retained only until compilation. */
   readonly handler: ApplicationHttpHandler<object, object>;
   authority?: ApplicationOperationAuthorityGraphContract;
@@ -235,6 +242,7 @@ export function createApplicationHttpServer(
       const workflowBindings = applicationHttpWorkflowBindings(
         handlerDependencies,
       );
+      const jobBindings = applicationHttpJobBindings(handlerDependencies);
       const serializedHandler = serializeApplicationCallback({
         registrar: 'app.http',
         argumentIndex: 3,
@@ -244,6 +252,7 @@ export function createApplicationHttpServer(
         allowDeferredResolution: true,
         injectedIdentifiers: applicationHttpInjectedIdentifiers(
           workflowBindings,
+          jobBindings,
         ),
       });
       const serializedAuthorize = contract.authorize
@@ -292,6 +301,7 @@ export function createApplicationHttpServer(
           : {}),
         handlerDependencyGraph: handlerDependencies,
         workflowBindings,
+        jobBindings,
       };
       const operation = createApplicationRuntimeOperation<
         TInput,
@@ -358,6 +368,7 @@ export function createApplicationHttpServer(
       const workflowBindings = applicationHttpWorkflowBindings(
         handlerDependencies,
       );
+      const jobBindings = applicationHttpJobBindings(handlerDependencies);
       const serializedHandler = serializeApplicationCallback({
         registrar: 'app.http.webhook',
         argumentIndex: 3,
@@ -367,6 +378,7 @@ export function createApplicationHttpServer(
         allowDeferredResolution: true,
         injectedIdentifiers: applicationHttpInjectedIdentifiers(
           workflowBindings,
+          jobBindings,
         ),
       });
       const authority: ApplicationOperationAuthorityGraphContract = {
@@ -413,6 +425,7 @@ export function createApplicationHttpServer(
           }>,
         handlerDependencyGraph: handlerDependencies,
         workflowBindings,
+        jobBindings,
         authority,
       };
       const operation = createApplicationRuntimeOperation<TEvent, TOutput>({
@@ -457,6 +470,28 @@ function applicationHttpWorkflowBindings(
   );
 }
 
+function applicationHttpJobBindings(
+  dependencies: ExpandedApplicationCallbackDependencies,
+): Readonly<Record<string, ApplicationHttpJobBinding>> {
+  const inferred = dependencies.calls.filter(isApplicationHttpJobBinding);
+  return Object.fromEntries(inferred.flatMap((binding) => {
+    const identifiers = Object.entries(dependencies.bindings)
+      .filter(([identifier, candidate]) =>
+        candidate === binding && !/^generatedCall\d+$/.test(identifier))
+      .map(([identifier]) => identifier);
+    return (identifiers.length > 0
+      ? identifiers
+      : [applicationGeneratedDependencyAlias(binding.id)])
+      .map((identifier) => [identifier, binding] as const);
+  }));
+}
+
+function isApplicationHttpJobBinding(value: unknown): value is ApplicationHttpJobBinding {
+  return typeof value === 'function'
+    && Reflect.get(value, 'kind') === 'applicationJob'
+    && typeof Reflect.get(value, 'id') === 'string';
+}
+
 function isApplicationHttpWorkflowBinding(
   value: unknown,
 ): value is ApplicationHttpWorkflowBinding {
@@ -469,8 +504,9 @@ function isApplicationHttpWorkflowBinding(
 
 function applicationHttpInjectedIdentifiers(
   bindings: Readonly<Record<string, ApplicationHttpWorkflowBinding>>,
+  jobs: Readonly<Record<string, ApplicationHttpJobBinding>> = {},
 ): readonly string[] {
-  return Object.keys(bindings)
+  return [...Object.keys(bindings), ...Object.keys(jobs)]
     .flatMap((identifier) => [identifier, identifier.split('.')[0] ?? identifier])
     .filter(
       (identifier, index, identifiers) =>

@@ -19,6 +19,7 @@ import { emitGeneratedApplicationAgents } from '../application-agents/index.js';
 import { applicationGraphWithEntrypointPublicSurface } from '../application-facade/public-surface.js';
 import { applicationGraphWithInferredApplicationHost, applicationHostFrameworkCredentialDependencies } from '../application-host/index.js';
 import { emitGeneratedApplicationHttpServers } from '../application-http/index.js';
+import { emitGeneratedApplicationJobs } from '../application-jobs/index.js';
 import { emitGeneratedApplicationLakehousePublishers } from '../application-lakehouse-publishers/index.js';
 import { emitGeneratedApplicationMcpServers } from '../application-mcp/index.js';
 import { emitGeneratedApplicationMigrations } from '../application-migrations/index.js';
@@ -559,6 +560,14 @@ async function emitTypeKroCompositionArtifacts(request: EmitTypeKroCompositionAr
     const processorArtifacts = request.applicationGraph
       ? await emitGeneratedApplicationProcessors({ graph: request.applicationGraph, ...(operationCatalog ? { operationCatalog } : {}), outDir: join(request.outDir, 'processors'), entrypoint: request.entrypoint, executionTarget: request.executionTarget ?? 'kubernetes' })
       : [];
+    const jobArtifacts = request.applicationGraph
+      ? await emitGeneratedApplicationJobs({
+          graph: request.applicationGraph,
+          outDir: join(request.outDir, 'jobs'),
+          entrypoint: request.entrypoint,
+          executionTarget: request.executionTarget ?? 'kubernetes',
+        })
+      : [];
     const lakehousePublisherArtifacts = request.applicationGraph
       ? await emitGeneratedApplicationLakehousePublishers({ graph: request.applicationGraph, outDir: join(request.outDir, 'lakehouse-publishers'), entrypoint: request.entrypoint, executionTarget: request.executionTarget ?? 'kubernetes' })
       : [];
@@ -587,6 +596,7 @@ async function emitTypeKroCompositionArtifacts(request: EmitTypeKroCompositionAr
       : [];
     // typecast: generated processor resources are concrete Kubernetes JSON objects and are validated by the same serialization path as composition resources.
     const processorResources = processorArtifacts.flatMap((artifact) => artifact.resources) as unknown as readonly TypeKroCompositionResource[];
+    const jobResources = jobArtifacts.flatMap((artifact) => artifact.resources) as unknown as readonly TypeKroCompositionResource[];
     const lakehousePublisherResources = lakehousePublisherArtifacts.flatMap((artifact) => artifact.resources) as unknown as readonly TypeKroCompositionResource[];
     // typecast: generated migration resources are concrete Kubernetes JSON objects and use the shared TypeKro serialization path.
     const migrationResources = migrationArtifacts.flatMap((artifact) => artifact.resources) as unknown as readonly TypeKroCompositionResource[];
@@ -613,7 +623,7 @@ async function emitTypeKroCompositionArtifacts(request: EmitTypeKroCompositionAr
       (artifact) => artifact.resources,
     ) as unknown as readonly TypeKroCompositionResource[];
     // typecast: generated host resources are concrete Kubernetes JSON objects and share the TypeKro emission contract.
-    const generatedResources = [...migrationResources, ...processorResources, ...lakehousePublisherResources, ...workflowResources, ...reactiveResources, ...mcpResources, ...agentResources, ...httpResources, ...hostResources as unknown as readonly TypeKroCompositionResource[]];
+    const generatedResources = [...migrationResources, ...processorResources, ...jobResources, ...lakehousePublisherResources, ...workflowResources, ...reactiveResources, ...mcpResources, ...agentResources, ...httpResources, ...hostResources as unknown as readonly TypeKroCompositionResource[]];
     const baseFactoryArtifacts = typeKroFactoryArtifacts(request.composition, request.applicationGraph?.metadata, request.applicationInstallation);
     const factoryArtifacts = request.applicationGraph
       ? injectGeneratedResourcesIntoApplicationRgd(baseFactoryArtifacts, generatedResources, request.applicationGraph.metadata.name, request.applicationInstallation, request.applicationGraph)
@@ -632,6 +642,7 @@ async function emitTypeKroCompositionArtifacts(request: EmitTypeKroCompositionAr
         : compositionEmissionResources,
       migrations: migrationResources,
       processors: processorResources,
+      jobs: jobResources,
       workflows: workflowResources,
       reactive: reactiveResources,
       mcp: mcpResources,
@@ -736,6 +747,7 @@ async function emitTypeKroCompositionArtifacts(request: EmitTypeKroCompositionAr
           outDir: dirname(compiled.artifacts.manifestJsonPath),
         })),
         ...(processorArtifacts.length > 0 ? { processors: processorArtifacts.map((artifact) => ({ name: artifact.name, nodeId: artifact.processorId, ...typeKroExecutionNodeReferences(request.applicationGraph, artifact.processorId), manifest: artifact.manifestPath, source: artifact.sourcePath, digest: artifact.digest, sizeBytes: artifact.sizeBytes, container: typeKroContainerArtifactReference(artifact.container), ...typeKroFrameworkCredentialReferences(artifact.frameworkCredentials) })) } : {}),
+        ...(jobArtifacts.length > 0 ? { jobs: jobArtifacts.map((artifact) => ({ name: artifact.name, nodeId: artifact.providerId, ...typeKroExecutionNodeReferences(request.applicationGraph, artifact.providerId), jobIds: [...artifact.jobIds], manifest: artifact.manifestPath, source: artifact.sourcePath, digest: artifact.digest, sizeBytes: artifact.sizeBytes, container: typeKroContainerArtifactReference(artifact.container), ...typeKroFrameworkCredentialReferences(artifact.frameworkCredentials) })) } : {}),
         ...(lakehousePublisherArtifacts.length > 0 ? { lakehousePublishers: lakehousePublisherArtifacts.map((artifact) => ({ name: artifact.name, nodeId: artifact.publicationId, ...typeKroExecutionNodeReferences(request.applicationGraph, artifact.publicationId), manifest: artifact.manifestPath, source: artifact.sourcePath, digest: artifact.digest, sizeBytes: artifact.sizeBytes, localSource: artifact.localSourcePath, localDigest: artifact.localDigest, localSizeBytes: artifact.localSizeBytes, container: typeKroContainerArtifactReference(artifact.container), ...typeKroFrameworkCredentialReferences(artifact.frameworkCredentials) })) } : {}),
         ...(workflowArtifacts.length > 0 ? { workflows: workflowArtifacts.map((artifact) => ({ name: artifact.name, nodeId: artifact.workerId, ...typeKroExecutionNodeReferences(request.applicationGraph, artifact.workerId), manifest: artifact.manifestPath, source: artifact.sourcePath, digest: artifact.digest, sizeBytes: artifact.sizeBytes, container: typeKroContainerArtifactReference(artifact.container), ...(artifact.runtimeEndpoints.length ? { runtimeEndpoints: typeKroRuntimeEndpointReferences(artifact.runtimeEndpoints) } : {}), credentialProjections: artifact.credentialProjections, kubernetesPermissions: artifact.kubernetesPermissions, ...typeKroFrameworkCredentialReferences(artifact.frameworkCredentials) })) } : {}),
         ...(reactiveArtifacts.length > 0 ? { reactive: reactiveArtifacts.map((artifact) => ({ name: artifact.name, nodeId: artifact.nodeId, kind: artifact.kind, ...typeKroExecutionNodeReferences(request.applicationGraph, artifact.nodeId, artifact.kind), manifest: artifact.manifestPath, source: artifact.sourcePath, digest: artifact.digest, sizeBytes: artifact.sizeBytes, container: typeKroContainerArtifactReference(artifact.container), credentialProjections: artifact.credentialProjections, kubernetesPermissions: artifact.kubernetesPermissions, ...typeKroFrameworkCredentialReferences(artifact.frameworkCredentials) })) } : {}),
@@ -802,6 +814,7 @@ async function emitTypeKroCompositionArtifacts(request: EmitTypeKroCompositionAr
         mcpArtifacts,
         migrationArtifacts,
         processorArtifacts,
+        jobArtifacts,
         lakehousePublisherArtifacts,
         workflowArtifacts,
         reactiveArtifacts,

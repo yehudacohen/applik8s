@@ -18,6 +18,7 @@ export function workspaceAliases(): Record<string, string> {
     '@applik8s/applik8s/job': fileURLToPath(new URL('./packages/applik8s/src/application-finite-jobs.ts', import.meta.url)),
     '@applik8s/applik8s/job-runtime-durable': fileURLToPath(new URL('./packages/applik8s/src/application-job-durable-runtime.ts', import.meta.url)),
     '@applik8s/applik8s/job-runtime-remote': fileURLToPath(new URL('./packages/applik8s/src/application-job-remote-runtime.ts', import.meta.url)),
+    '@applik8s/applik8s/job-controller-runtime': fileURLToPath(new URL('./packages/applik8s/src/application-job-controller-runtime.ts', import.meta.url)),
     '@applik8s/applik8s/job-store': fileURLToPath(new URL('./packages/applik8s/src/application-job-store.ts', import.meta.url)),
     '@applik8s/applik8s/actor-runtime': fileURLToPath(new URL('./packages/applik8s/src/application-actors.ts', import.meta.url)),
     '@applik8s/applik8s/lakehouse-runtime': fileURLToPath(new URL('./packages/applik8s/src/application-lakehouse.ts', import.meta.url)),

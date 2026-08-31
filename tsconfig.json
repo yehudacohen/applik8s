@@ -103,6 +103,7 @@
       "@applik8s/applik8s/job-store": ["packages/applik8s/src/application-job-store.ts"],
       "@applik8s/applik8s/job-runtime-durable": ["packages/applik8s/src/application-job-durable-runtime.ts"],
       "@applik8s/applik8s/job-runtime-remote": ["packages/applik8s/src/application-job-remote-runtime.ts"],
+      "@applik8s/applik8s/job-controller-runtime": ["packages/applik8s/src/application-job-controller-runtime.ts"],
       "@applik8s/applik8s/postgres-runtime-contract": ["packages/applik8s/src/postgres-runtime-contract.ts"],
       "@applik8s/applik8s/reactive-runtime": ["packages/applik8s/src/reactive-runtime.ts"],
       "@applik8s/applik8s/structured-generation": ["packages/applik8s/src/structured-generation.ts"],

@@ -1237,6 +1237,7 @@ async function applicationArtifactRequirements(
   for (const [collection, artifactClass] of [
     ["migrations", "migration"],
     ["processors", "processor"],
+    ["jobs", "job-controller"],
     ["lakehousePublishers", "lakehouse-publisher"],
     ["workflows", "workflow"],
     ["reactive", "reactive"],

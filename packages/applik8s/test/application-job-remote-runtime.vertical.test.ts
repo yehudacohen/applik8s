@@ -1,4 +1,5 @@
 import { type } from 'arktype';
+import type { ApplicationAdmissionInvocationContextV1 } from '@applik8s/core';
 import { describe, expect, test } from 'vitest';
 import type { ApplicationJobReference } from '../src/application-finite-jobs.js';
 import { createApplicationJobBinding } from '../src/application-finite-jobs.js';
@@ -15,12 +16,17 @@ describe('remote finite Job runtime', () => {
       endpoint: 'http://jobs.application-system.svc.cluster.local/v1/jobs',
       authorization: 'internal-job-token',
       pollIntervalMs: 1,
+      async encodeAdmission(value) {
+        expect(value).toBe(admission);
+        return 'signed-admission';
+      },
       async fetch(_input, init) {
         expect(init?.headers).toMatchObject({ authorization: 'Bearer internal-job-token' });
         const body = JSON.parse(String(init?.body));
         actions.push(body.action);
         if (body.action === 'start') {
           expect(body).toMatchObject({ job: 'reports.export.v1', input: { value: 4 } });
+          expect(body.invocation).toEqual({ admissionEnvelope: 'signed-admission' });
           expect(body).not.toHaveProperty('handler');
           return json({ ok: true, result: reference });
         }
@@ -54,7 +60,7 @@ describe('remote finite Job runtime', () => {
       handler: () => ({ doubled: -1 }),
     };
     const job = createApplicationJobBinding(definition, runtime);
-    const run = await job.start({ value: 4 });
+    const run = await job.start({ value: 4 }, { admission });
     await expect(run.progress()).resolves.toMatchObject({ value: { completed: 1 } });
     await expect(run.result()).resolves.toEqual({ doubled: 8 });
     await expect(job.attach(reference)).resolves.toMatchObject({ reference });
@@ -87,6 +93,27 @@ const reference: ApplicationJobReference = {
   job: 'reports.export.v1',
   runId: 'run-1',
   admittedAt: '2026-01-01T00:00:00.000Z',
+};
+
+const admission: ApplicationAdmissionInvocationContextV1 = {
+  apiVersion: 'applik8s.admission/v1',
+  principal: {
+    id: 'principal:test',
+    identity: { id: 'identity:test', kind: 'service', issuer: 'test', subject: 'test' },
+    kind: 'service',
+    authenticationMethod: 'framework',
+    audience: ['test'],
+    trustedContextDigest: 'sha256:test',
+    catalogRevision: 'test',
+    authorityRevision: 'test',
+    admittedAt: '2026-01-01T00:00:00.000Z',
+    expiresAt: '2026-01-02T00:00:00.000Z',
+  },
+  authorityRevision: 'test',
+  trustedContext: { values: {}, digest: 'sha256:test' },
+  operation: { id: 'test', transport: 'framework' },
+  correlationId: 'test',
+  deadline: '2026-01-02T00:00:00.000Z',
 };
 
 function json(value: object, status = 200): Response {

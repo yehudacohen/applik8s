@@ -1,5 +1,6 @@
 // typecast-file-boundary: authenticated, bounded controller responses are
 // discriminated and validated before restoring generic Job handle payloads.
+import type { ApplicationAdmissionInvocationContextV1 } from '@applik8s/core';
 import type {
   ApplicationJobCancellationResult,
   ApplicationJobDefinition,
@@ -25,6 +26,10 @@ export interface RemoteApplicationJobRuntimeOptions {
   readonly providerNodeId?: string;
   readonly timeoutMs?: number;
   readonly pollIntervalMs?: number;
+  /** Signs framework-derived admission before it crosses the private boundary. */
+  readonly encodeAdmission?: (
+    admission: ApplicationAdmissionInvocationContextV1,
+  ) => Promise<string>;
   readonly fetch?: (
     input: string | URL,
     init?: RequestInit,
@@ -123,11 +128,12 @@ export function createRemoteApplicationJobRuntime(
       input: TInput,
       invocation?: Omit<ApplicationJobInvocationOptions, 'wait'>,
     ) {
+      const controllerInvocation = await encodedInvocation(invocation, options.encodeAdmission);
       const reference = await invoke<ApplicationJobReference>({
         action: 'start',
         job: definition.id,
         input,
-        ...(invocation ? { invocation } : {}),
+        ...(controllerInvocation ? { invocation: controllerInvocation } : {}),
       });
       assertReference(reference, definition.id);
       return runFor<TOutput, TProgress, TError>(reference);
@@ -142,6 +148,25 @@ export function createRemoteApplicationJobRuntime(
       return runFor<TOutput, TProgress, TError>(attached);
     },
   });
+}
+
+async function encodedInvocation(
+  invocation: Omit<ApplicationJobInvocationOptions, 'wait'> | undefined,
+  encodeAdmission: RemoteApplicationJobRuntimeOptions['encodeAdmission'],
+): Promise<Readonly<Record<string, unknown>> | undefined> {
+  if (!invocation) return undefined;
+  const { admission, ...publicInvocation } = invocation;
+  if (!admission) return publicInvocation;
+  if (!encodeAdmission) {
+    throw new ApplicationJobControllerRequestError(
+      'Remote Job runtime cannot transmit trusted admission without an admission envelope codec.',
+      'admission_codec_missing',
+    );
+  }
+  return {
+    ...publicInvocation,
+    admissionEnvelope: await encodeAdmission(admission),
+  };
 }
 
 export class ApplicationJobControllerRequestError extends Error {

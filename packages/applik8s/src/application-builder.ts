@@ -176,10 +176,8 @@ export { installApplicationObjectStorageRuntimeResolver } from './application-ob
 export type { ApplicationProcessorOptions } from './application-processor-policy.js';
 export type { ApplicationProfile, ApplicationProfileBranchOptions, ApplicationProfileVariant, ApplicationProfileVariantOverride, ApplicationQualifiedProviderBinding } from './application-profiles.js';
 export { installApplicationProjectionRuntimeResolver } from './application-projection-binding.js';
-export type { ApplicationActorRuntimeProvider, ApplicationActorRuntimeProviderToken, ApplicationAnalyticalDatabaseProvider, ApplicationAnalyticalDatabaseProviderToken, ApplicationAnalyticsConstructors, ApplicationAthenaLakehouseQueryProvider, ApplicationAuthorizationDecision, ApplicationAuthorizationProvider, ApplicationAuthorizationProviderToken, ApplicationAuthorizationRequest, ApplicationAwsJobRuntimeProvider, ApplicationCelldActorRuntimeProvider, ApplicationCertificateProvider, ApplicationCertificateProviderToken, ApplicationCertManagerCertificateProvider, ApplicationClickHouseAnalyticalDatabaseProvider, ApplicationClickStackObservabilityProvider, ApplicationCloudWatchObservabilityProvider, ApplicationContainerRegistryCredentialSecret, ApplicationContainerRegistryEndpoint, ApplicationContainerRegistryProvider, ApplicationContainerRegistryProviderToken, ApplicationContainerRegistrySecretRef, ApplicationContainerRegistryTls, ApplicationCounterStoreProvider, ApplicationCredentialStoreProvider, ApplicationDatabaseConstructors, ApplicationDefaults, ApplicationDefaultsBinding, ApplicationDnsPublicationProvider, ApplicationDnsPublicationProviderToken, ApplicationDuckDbLakehouseDatasetProvider, ApplicationDuckDbLakehouseQueryProvider, ApplicationEventBridgeSchedulerProvider, ApplicationEventLogProvider, ApplicationEventSourceProvider, ApplicationExternalClickHouseConnection, ApplicationExternalClickHouseOptions, ApplicationExternalDnsPublicationProvider, ApplicationExternalPostgresDatabaseOptions, ApplicationGeneratedTransactionalDatabaseMigrationJobOptions, ApplicationHarborContainerRegistryOptions, ApplicationHarborContainerRegistryProvider, ApplicationHarborProjectManagement, ApplicationHatchetSchedulerProvider, ApplicationHatchetWorkflowEngineProvider, ApplicationHostBinding, ApplicationHostProvider, ApplicationHostProviderToken, ApplicationHttpExposureProvider, ApplicationHttpExposureProviderToken, ApplicationIdentityInfrastructure, ApplicationIdentityProvider, ApplicationIdentityProviderToken, ApplicationIndexBackend, ApplicationIndexStoreProviderToken, ApplicationIngressHttpExposureProvider, ApplicationJobRuntimeProvider, ApplicationJobRuntimeProviderToken, ApplicationKubernetesConfigMapObjectStorageProvider, ApplicationKubernetesConfigMapQueueProvider, ApplicationKubernetesCredentialStoreProvider, ApplicationKubernetesCronJobSchedulerProvider, ApplicationKubernetesHostProvider, ApplicationKubernetesJobRuntimeProvider, ApplicationKubernetesResourceCounterStoreProvider, ApplicationKubernetesSecretProvider, ApplicationKubernetesWatchEventSourceProvider, ApplicationLakehouseDatasetProvider, ApplicationLakehouseDatasetProviderToken, ApplicationLakehouseQueryProvider, ApplicationLakehouseQueryProviderToken, ApplicationLocalActorRuntimeProvider, ApplicationLocalJobRuntimeProvider, ApplicationLocalObservabilityProvider, ApplicationLocalSchedulerProvider, ApplicationManagedHostProvider, ApplicationNatsJetStreamEventLogProvider, ApplicationNodePortHttpExposureProvider, ApplicationOAuthAuthorizationServerProvider, ApplicationOAuthAuthorizationServerProviderToken, ApplicationObjectStorageProvider, ApplicationObservabilityProvider, ApplicationObservabilityProviderToken, ApplicationOciContainerRegistryProvider, ApplicationOpenSearchProvider, ApplicationOrbstackContainerRegistryProvider, ApplicationOtlpObservabilityProvider, ApplicationPostgresAnalyticalDatabaseProvider, ApplicationPostgresBackupPolicy, ApplicationPostgresClusterSpec, ApplicationPostgresReadinessPolicy, ApplicationPostgresSearchProvider, ApplicationPostgresTransactionalDatabaseOptions, ApplicationPostgresTransactionalDatabaseProvider, ApplicationProviderBinding, ApplicationProviderQualification, ApplicationProviderToken, ApplicationQualifiableProviderToken, ApplicationQualifiedLakehouseDatasetProviderToken, ApplicationQualifiedLakehouseProviderRequired, ApplicationQualifiedProviderToken, ApplicationQueueProvider, ApplicationRequestAdmission, ApplicationRivetActorRuntimeProvider, ApplicationS3LakehouseDatasetProvider, ApplicationSchedulerProvider, ApplicationSchedulerProviderToken, ApplicationSearchCapability, ApplicationSearchProvider, ApplicationSearchProviderToken, ApplicationSecretProvider, ApplicationStructuredGenerationDeterministicProvider, ApplicationStructuredGenerationHttpProvider, ApplicationStructuredGenerationProvider, ApplicationStructuredGenerationProviderToken, ApplicationTelemetryPolicy, ApplicationTelemetryPolicyOptions, ApplicationTransactionalDatabaseMigrationPolicy, ApplicationTransactionalDatabaseProvider, ApplicationTransactionalDatabaseProviderToken, ApplicationTypedProviderContract, ApplicationValkeyIndexBackend, ApplicationWorkflowEngineProvider, ApplicationWorkflowEngineProviderToken } from './application-providers.js';
-export { ActorRuntime, AnalyticalDatabase, Analytics, ApplicationHost, Authorization, Certificate, ContainerRegistry, CounterStore, CredentialStore, Database, DnsPublication, defaultApplicationEventLogProvider, defaultApplicationProviders, defaultApplicationWorkflowEngineProvider, defineApplicationProvider, EventLog, EventSource, HttpExposure, IdentityProvider, IndexStore, JobRuntime, Lakehouse, LakehouseDataset, LakehouseQuery, OAuthAuthorizationServer, ObjectStorage, Observability, providers, Queue, Scheduler, Search, Secret, StructuredGeneration, TransactionalDatabase, telemetryPolicy, WorkflowEngine } from './application-providers.js';
-export type { ApplicationAwsAccount, ApplicationAwsFiniteExecutionHostProvider, ApplicationCurrentKubernetesCluster, ApplicationExternalKubernetesCluster, ApplicationFiniteExecutionHostProvider, ApplicationFiniteExecutionHostProviderToken, ApplicationJetStreamQueueProvider, ApplicationJobResultStoreProvider, ApplicationJobResultStoreProviderToken, ApplicationKubernetesCluster, ApplicationKubernetesFiniteExecutionHostProvider, ApplicationPostgresJobResultStoreProvider, ApplicationPostgresSchedulerProvider, ApplicationProviderConfigString, ApplicationProviderConfigUrl, ApplicationQueueProviderToken, ApplicationSqsQueueProvider } from './application-providers.js';
-export { AWS, FiniteExecutionHost, JobResultStore, KubernetesCluster } from './application-providers.js';
+export type { ApplicationActorRuntimeProvider, ApplicationActorRuntimeProviderToken, ApplicationAnalyticalDatabaseProvider, ApplicationAnalyticalDatabaseProviderToken, ApplicationAnalyticsConstructors, ApplicationAthenaLakehouseQueryProvider, ApplicationAuthorizationDecision, ApplicationAuthorizationProvider, ApplicationAuthorizationProviderToken, ApplicationAuthorizationRequest, ApplicationAwsAccount, ApplicationAwsFiniteExecutionHostProvider, ApplicationAwsJobRuntimeProvider, ApplicationCelldActorRuntimeProvider, ApplicationCertificateProvider, ApplicationCertificateProviderToken, ApplicationCertManagerCertificateProvider, ApplicationClickHouseAnalyticalDatabaseProvider, ApplicationClickStackObservabilityProvider, ApplicationCloudWatchObservabilityProvider, ApplicationContainerRegistryCredentialSecret, ApplicationContainerRegistryEndpoint, ApplicationContainerRegistryProvider, ApplicationContainerRegistryProviderToken, ApplicationContainerRegistrySecretRef, ApplicationContainerRegistryTls, ApplicationCounterStoreProvider, ApplicationCredentialStoreProvider, ApplicationCurrentKubernetesCluster, ApplicationDatabaseConstructors, ApplicationDefaults, ApplicationDefaultsBinding, ApplicationDnsPublicationProvider, ApplicationDnsPublicationProviderToken, ApplicationDuckDbLakehouseDatasetProvider, ApplicationDuckDbLakehouseQueryProvider, ApplicationEventBridgeSchedulerProvider, ApplicationEventLogProvider, ApplicationEventSourceProvider, ApplicationExternalClickHouseConnection, ApplicationExternalClickHouseOptions, ApplicationExternalDnsPublicationProvider, ApplicationExternalKubernetesCluster, ApplicationExternalPostgresDatabaseOptions, ApplicationFiniteExecutionHostProvider, ApplicationFiniteExecutionHostProviderToken, ApplicationGeneratedTransactionalDatabaseMigrationJobOptions, ApplicationHarborContainerRegistryOptions, ApplicationHarborContainerRegistryProvider, ApplicationHarborProjectManagement, ApplicationHatchetSchedulerProvider, ApplicationHatchetWorkflowEngineProvider, ApplicationHostBinding, ApplicationHostProvider, ApplicationHostProviderToken, ApplicationHttpExposureProvider, ApplicationHttpExposureProviderToken, ApplicationIdentityInfrastructure, ApplicationIdentityProvider, ApplicationIdentityProviderToken, ApplicationIndexBackend, ApplicationIndexStoreProviderToken, ApplicationIngressHttpExposureProvider, ApplicationJetStreamQueueProvider, ApplicationJobResultStoreProvider, ApplicationJobResultStoreProviderToken, ApplicationJobRuntimeProvider, ApplicationJobRuntimeProviderToken, ApplicationKubernetesCluster, ApplicationKubernetesConfigMapObjectStorageProvider, ApplicationKubernetesConfigMapQueueProvider, ApplicationKubernetesCredentialStoreProvider, ApplicationKubernetesCronJobSchedulerProvider, ApplicationKubernetesFiniteExecutionHostProvider, ApplicationKubernetesHostProvider, ApplicationKubernetesJobRuntimeProvider, ApplicationKubernetesResourceCounterStoreProvider, ApplicationKubernetesSecretProvider, ApplicationKubernetesWatchEventSourceProvider, ApplicationLakehouseDatasetProvider, ApplicationLakehouseDatasetProviderToken, ApplicationLakehouseQueryProvider, ApplicationLakehouseQueryProviderToken, ApplicationLocalActorRuntimeProvider, ApplicationLocalJobRuntimeProvider, ApplicationLocalObservabilityProvider, ApplicationLocalSchedulerProvider, ApplicationManagedHostProvider, ApplicationNatsJetStreamEventLogProvider, ApplicationNodePortHttpExposureProvider, ApplicationOAuthAuthorizationServerProvider, ApplicationOAuthAuthorizationServerProviderToken, ApplicationObjectStorageProvider, ApplicationObservabilityProvider, ApplicationObservabilityProviderToken, ApplicationOciContainerRegistryProvider, ApplicationOpenSearchProvider, ApplicationOrbstackContainerRegistryProvider, ApplicationOtlpObservabilityProvider, ApplicationPostgresAnalyticalDatabaseProvider, ApplicationPostgresBackupPolicy, ApplicationPostgresClusterSpec, ApplicationPostgresJobResultStoreProvider, ApplicationPostgresReadinessPolicy, ApplicationPostgresSchedulerProvider, ApplicationPostgresSearchProvider, ApplicationPostgresTransactionalDatabaseOptions, ApplicationPostgresTransactionalDatabaseProvider, ApplicationProviderBinding, ApplicationProviderConfigString, ApplicationProviderConfigUrl, ApplicationProviderQualification, ApplicationProviderToken, ApplicationQualifiableProviderToken, ApplicationQualifiedLakehouseDatasetProviderToken, ApplicationQualifiedLakehouseProviderRequired, ApplicationQualifiedProviderToken, ApplicationQueueProvider, ApplicationQueueProviderToken, ApplicationRequestAdmission, ApplicationRivetActorRuntimeProvider, ApplicationS3LakehouseDatasetProvider, ApplicationSchedulerProvider, ApplicationSchedulerProviderToken, ApplicationSearchCapability, ApplicationSearchProvider, ApplicationSearchProviderToken, ApplicationSecretProvider, ApplicationSqsQueueProvider, ApplicationStructuredGenerationDeterministicProvider, ApplicationStructuredGenerationHttpProvider, ApplicationStructuredGenerationProvider, ApplicationStructuredGenerationProviderToken, ApplicationTelemetryPolicy, ApplicationTelemetryPolicyOptions, ApplicationTransactionalDatabaseMigrationPolicy, ApplicationTransactionalDatabaseProvider, ApplicationTransactionalDatabaseProviderToken, ApplicationTypedProviderContract, ApplicationValkeyIndexBackend, ApplicationWorkflowEngineProvider, ApplicationWorkflowEngineProviderToken } from './application-providers.js';
+export { ActorRuntime, AnalyticalDatabase, Analytics, ApplicationHost, Authorization, AWS, Certificate, ContainerRegistry, CounterStore, CredentialStore, Database, DnsPublication, defaultApplicationEventLogProvider, defaultApplicationProviders, defaultApplicationWorkflowEngineProvider, defineApplicationProvider, EventLog, EventSource, FiniteExecutionHost, HttpExposure, IdentityProvider, IndexStore, JobResultStore, JobRuntime, KubernetesCluster, Lakehouse, LakehouseDataset, LakehouseQuery, OAuthAuthorizationServer, ObjectStorage, Observability, providers, Queue, Scheduler, Search, Secret, StructuredGeneration, TransactionalDatabase, telemetryPolicy, WorkflowEngine } from './application-providers.js';
 export type { ApplicationKubernetesModelSelection, ApplicationKubernetesModelSelectionContext, ApplicationKubernetesModelViewContract, ApplicationKubernetesModelViewImplementation, ApplicationKubernetesModelViewOptions, ApplicationKubernetesModelViewSchemaContract, ApplicationModelViewContext, ApplicationModelViewContract, ApplicationModelViewImplementation, ApplicationModelViewOptions, ApplicationOnlineProjectionQueryBinding, ApplicationOnlineQueryRuntimeSource, ApplicationOnlineQuerySource, ApplicationQueryAuthorizationRequest, ApplicationQuerySourceBinding } from './application-queries.js';
 export type { ApplicationAnalyticalProjectionBinding, ApplicationAnalyticalProjectionOptions, ApplicationEventBatch, ApplicationEventEnvelope, ApplicationGatewayAdmission, ApplicationGatewayBinding, ApplicationGatewayOptions, ApplicationOnlineProjectionBinding, ApplicationOnlineProjectionOptions, ApplicationProjectionBinding, ApplicationProjectionOptions, ApplicationStreamBatchContext, ApplicationStreamBatchHandler, ApplicationStreamBatchOptions, ApplicationStreamBinding, ApplicationStreamOptions, ApplicationStreamProcessContext, ApplicationStreamProcessHandler, ApplicationStreamProcessOptions, ApplicationStreamProcessorBinding, ApplicationStreamScheduleFunctions, ApplicationStreamScheduleTargets, ApplicationStreamTaskFunctions, ApplicationStreamTaskTargets, ApplicationSubscriptionBinding, ApplicationSubscriptionOptions } from './application-reactive.js';
 export type { ApplicationSearchComparison, ApplicationSearchDocument, ApplicationSearchFacetBucket, ApplicationSearchField, ApplicationSearchFieldHandle, ApplicationSearchHit, ApplicationSearchIndexBinding, ApplicationSearchIndexOptions, ApplicationSearchPath, ApplicationSearchRequest, ApplicationSearchResult, ApplicationSearchRootOptions, ApplicationSearchSort, ApplicationSearchSource, ApplicationUnaliasedSearchField } from './application-search.js';
@@ -858,6 +856,12 @@ export interface ApplicationServerRoute {
         'workflowBindings'
       ]
     >;
+    readonly jobBindings?: NonNullable<
+      import('@applik8s/core').ApplicationFunctionNativeHttpRouteContract[
+        'jobBindings'
+      ]
+    >;
+    readonly jobRuntime?: import('@applik8s/core').ApplicationProviderRef<'JobRuntime'>;
     readonly workflowEngine?: import('@applik8s/core').ApplicationProviderRef<'WorkflowEngine'>;
     readonly transaction?: import('@applik8s/core').ApplicationFunctionNativeTransactionContract;
   };
@@ -3482,6 +3486,30 @@ function applicationFunctionNativeHttpServerRoute(
   if (workflowBindings.length > 0) {
     recordApplicationWorkflowEngine(state as ApplicationWorkflowState);
   }
+  const jobBindings = Object.entries(route.jobBindings)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([identifier, binding]) => {
+      const node = state.graphNodes.find(
+        (candidate) => candidate.kind === 'job' && candidate.name === binding.id,
+      );
+      if (node?.kind !== 'job') {
+        throw new Error(
+          `HTTP route ${serverName}.${route.id} Job ${identifier} references unregistered Job ${binding.id}.`,
+        );
+      }
+      return {
+        identifier,
+        target: { nodeId: node.id },
+        contract: {
+          name: node.contract.name,
+          version: node.contract.version,
+          input: node.contract.input,
+          output: node.contract.output,
+          ...(node.contract.progress ? { progress: node.contract.progress } : {}),
+          ...(node.contract.error ? { error: node.contract.error } : {}),
+        },
+      };
+    });
   return {
     id: route.id,
     named: true,
@@ -3510,6 +3538,15 @@ function applicationFunctionNativeHttpServerRoute(
             workflowEngine: {
               interface: 'WorkflowEngine' as const,
               nodeId: applicationGraphNodeId('provider', 'WorkflowEngine'),
+            },
+          }
+        : {}),
+      ...(jobBindings.length > 0
+        ? {
+            jobBindings,
+            jobRuntime: {
+              interface: 'JobRuntime' as const,
+              nodeId: applicationGraphNodeId('provider', 'JobRuntime'),
             },
           }
         : {}),
@@ -5520,6 +5557,12 @@ function recordApplicationServerGraph(state: ApplicationScopeState, name: string
                     workflowEngine: route.functionNative.workflowEngine,
                   }
                 : {}),
+              ...(route.functionNative.jobBindings
+                ? {
+                    jobBindings: route.functionNative.jobBindings,
+                    jobRuntime: route.functionNative.jobRuntime,
+                  }
+                : {}),
               ...(route.functionNative.transaction
                 ? { transaction: route.functionNative.transaction }
                 : {}),
@@ -5585,9 +5628,28 @@ function recordApplicationServerGraph(state: ApplicationScopeState, name: string
       relationship: 'dependsOn',
     });
   }
+  for (const job of routes.flatMap(
+    (route) => route.functionNative?.jobBindings ?? [],
+  )) {
+    addApplicationGraphEdge(state, {
+      from: { nodeId },
+      to: job.target,
+      relationship: 'dependsOn',
+    });
+  }
   for (const provider of routes.flatMap((route) =>
     route.functionNative?.workflowEngine
       ? [route.functionNative.workflowEngine]
+      : [])) {
+    addApplicationGraphEdge(state, {
+      from: { nodeId: provider.nodeId },
+      to: { nodeId },
+      relationship: 'provides',
+    });
+  }
+  for (const provider of routes.flatMap((route) =>
+    route.functionNative?.jobRuntime
+      ? [route.functionNative.jobRuntime]
       : [])) {
     addApplicationGraphEdge(state, {
       from: { nodeId: provider.nodeId },

@@ -2198,6 +2198,21 @@ export interface ApplicationFunctionNativeHttpRouteContract {
       }[];
     };
   }[];
+  /** Finite Job handles captured from the ordinary route closure. */
+  readonly jobBindings?: readonly {
+    readonly identifier: string;
+    readonly target: ApplicationGraphNodeRef;
+    readonly contract: {
+      readonly name: string;
+      readonly version: string;
+      readonly input: ApplicationMessageContractSchema;
+      readonly output: ApplicationMessageContractSchema;
+      readonly progress?: ApplicationMessageContractSchema;
+      readonly error?: ApplicationMessageContractSchema;
+    };
+  }[];
+  /** Selected finite execution authority for captured Job handles. */
+  readonly jobRuntime?: ApplicationProviderRef<'JobRuntime'>;
   /** Selected runtime authority for the captured durable handles. */
   readonly workflowEngine?: ApplicationProviderRef<'WorkflowEngine'>;
   readonly transaction?: ApplicationFunctionNativeTransactionContract;

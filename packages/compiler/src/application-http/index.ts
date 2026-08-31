@@ -8,6 +8,7 @@ import type {
   ApplicationCallableProviderRuntimeOperation,
   ApplicationGraph,
   ApplicationHandlerDependencies,
+  ApplicationJobNode,
   ApplicationMessageContractSchema,
   ApplicationModelNode,
   ApplicationObjectStoreNode,
@@ -20,7 +21,6 @@ import type {
 import type { ApplicationFrameworkCredentialDependency } from '@applik8s/deployment-contract';
 import { build } from 'esbuild';
 import { applicationCallableProviderEnvironment } from '../application-callable-provider-runtime.js';
-import { applicationObjectStorageEnvironment } from '../application-object-storage-environment.js';
 import { generatedCallbackFactoryModule } from '../application-callback-module.js';
 import {
   emitGeneratedApplicationContainer,
@@ -36,6 +36,7 @@ import {
   applicationGraphJsonStringArray,
   applicationGraphStringValue,
 } from '../application-installation-values.js';
+import { applicationObjectStorageEnvironment } from '../application-object-storage-environment.js';
 import {
   applicationGraphHasObservabilityRuntime,
   generatedApplicationTelemetryImports,
@@ -110,6 +111,19 @@ interface HttpWorkflowBinding {
   };
 }
 
+interface HttpJobBinding {
+  readonly identifier: string;
+  readonly target: ApplicationJobNode;
+  readonly contract: {
+    readonly name: string;
+    readonly version: string;
+    readonly input: ApplicationMessageContractSchema;
+    readonly output: ApplicationMessageContractSchema;
+    readonly progress?: ApplicationMessageContractSchema;
+    readonly error?: ApplicationMessageContractSchema;
+  };
+}
+
 interface HttpRouteCompilerContract {
   readonly route: ApplicationRouteContract & {
     readonly functionNative: NonNullable<
@@ -119,6 +133,7 @@ interface HttpRouteCompilerContract {
   readonly operation: ApplicationOperationCatalog['operations'][number];
   readonly operationBindings: readonly HttpOperationBinding[];
   readonly workflowBindings: readonly HttpWorkflowBinding[];
+  readonly jobBindings: readonly HttpJobBinding[];
 }
 
 interface HttpObjectStoreBinding {
@@ -136,6 +151,13 @@ interface HttpServerCompilerContract {
   readonly callableProviders: readonly ApplicationProviderNode[];
   readonly eventLog?: ApplicationProviderNode;
   readonly workflowEngine?: ApplicationProviderNode;
+  readonly jobRuntime?: ApplicationProviderNode;
+  readonly jobController?: {
+    readonly endpoint: string;
+    readonly databaseEnvName: string;
+    readonly databaseSecretName: string;
+    readonly databaseSecretKey: string;
+  };
   readonly operationCatalog: ApplicationOperationCatalog;
   readonly executionTarget: ApplicationRuntimeExecutionTarget;
   readonly namespace: string;
@@ -283,11 +305,34 @@ function applicationHttpCompilerContract(
           contract: binding.contract,
         };
       });
+    const jobBindings = (route.functionNative.jobBindings ?? [])
+      .map((binding): HttpJobBinding => {
+        const target = nodes.get(binding.target.nodeId);
+        if (target?.kind !== 'job') {
+          throw new Error(
+            `Generated typed HTTP route ${server.id}.${route.id} Job ${binding.identifier} references missing Job ${binding.target.nodeId}.`,
+          );
+        }
+        if (
+          target.contract.name !== binding.contract.name
+          || target.contract.version !== binding.contract.version
+          || JSON.stringify(target.contract.input) !== JSON.stringify(binding.contract.input)
+          || JSON.stringify(target.contract.output) !== JSON.stringify(binding.contract.output)
+          || JSON.stringify(target.contract.progress) !== JSON.stringify(binding.contract.progress)
+          || JSON.stringify(target.contract.error) !== JSON.stringify(binding.contract.error)
+        ) {
+          throw new Error(
+            `Generated typed HTTP route ${server.id}.${route.id} Job ${binding.identifier} contract drifted from ${binding.target.nodeId}.`,
+          );
+        }
+        return { identifier: binding.identifier, target, contract: binding.contract };
+      });
     return {
       route: { ...route, functionNative: route.functionNative },
       operation,
       operationBindings,
       workflowBindings,
+      jobBindings,
     };
   });
   const operationHandlers = new Set(
@@ -326,6 +371,58 @@ function applicationHttpCompilerContract(
     workflowEngine = provider;
   }
   const namespace = applicationServerNamespace(graph, server);
+  const jobRuntimeIds = new Set(
+    routes.flatMap((route) =>
+      route.jobBindings.length > 0
+        ? [route.route.functionNative.jobRuntime?.nodeId ?? '']
+        : []),
+  );
+  let jobRuntime: ApplicationProviderNode | undefined;
+  let jobController: HttpServerCompilerContract['jobController'];
+  if (jobRuntimeIds.size > 0) {
+    if (jobRuntimeIds.size !== 1 || jobRuntimeIds.has('')) {
+      throw new Error(
+        `Generated typed HTTP server ${server.id} Job routes require one JobRuntime provider.`,
+      );
+    }
+    const [jobRuntimeId] = jobRuntimeIds;
+    const provider = jobRuntimeId ? nodes.get(jobRuntimeId) : undefined;
+    if (
+      provider?.kind !== 'provider'
+      || provider.interface !== 'JobRuntime'
+      || provider.implementation !== 'kubernetes-job-runtime'
+    ) {
+      throw new Error(
+        `Generated typed HTTP server ${server.id} finite Jobs require the selected Kubernetes JobRuntime adapter.`,
+      );
+    }
+    const providerNamespace = applicationGraphStringValue(provider.config?.namespace)
+      ?? graph.metadata.namespace
+      ?? namespace;
+    if (providerNamespace !== namespace) {
+      throw new Error(
+        `Generated typed HTTP server ${server.id} is in namespace ${namespace}, but JobRuntime ${provider.id} is in ${providerNamespace}; private Job handles require a shared namespace.`,
+      );
+    }
+    const databaseProvider = unwrapApplicationProviderConfig(
+      objectValue(objectValue(provider.config?.results).database),
+    );
+    const databaseName = applicationGraphStringValue(databaseProvider.clusterName)
+      ?? applicationGraphStringValue(databaseProvider.name);
+    if (!databaseName) {
+      throw new Error(`Generated typed HTTP server ${server.id} JobRuntime has no concrete PostgreSQL result-store identity.`);
+    }
+    const connectionSecret = objectValue(databaseProvider.connectionSecret);
+    jobRuntime = provider;
+    jobController = {
+      endpoint: `http://${kubernetesName(`${graph.metadata.name}-jobs`)}.${namespace}.svc:8091/v1/jobs`,
+      databaseEnvName: 'APPLIK8S_JOB_DATABASE_URL',
+      databaseSecretName:
+        applicationGraphStringValue(connectionSecret.name) ?? `${databaseName}-app`,
+      databaseSecretKey:
+        applicationGraphStringValue(databaseProvider.connectionSecretKey) ?? 'uri',
+    };
+  }
   const providerProfileSelectors = new Set(
     routes.flatMap((route) =>
       (route.route.functionNative.providerBindings ?? []).flatMap((binding) => {
@@ -378,6 +475,8 @@ function applicationHttpCompilerContract(
     executionTarget,
     ...(eventLog ? { eventLog } : {}),
     ...(workflowEngine ? { workflowEngine } : {}),
+    ...(jobRuntime ? { jobRuntime } : {}),
+    ...(jobController ? { jobController } : {}),
     operationCatalog,
     namespace,
     replicas: server.deployment?.replicas ?? 1,
@@ -413,6 +512,7 @@ async function emitHttpServer(
         httpObjectStoreBindings(contract.graph, route).map(({ binding }) =>
           bindingRoot(binding.identifier)),
       )
+      .concat(route.jobBindings.map((binding) => bindingRoot(binding.identifier)))
       .filter((identifier, rootIndex, identifiers) =>
         identifiers.indexOf(identifier) === rootIndex
       );
@@ -508,6 +608,8 @@ async function emitHttpServer(
           operations: route.operationBindings.map((binding) => binding.operationId),
           workflows: route.workflowBindings.map((binding) =>
             `${binding.contract.name}.${binding.contract.version}`),
+          jobs: route.jobBindings.map((binding) =>
+            `${binding.contract.name}.${binding.contract.version}`),
         })),
         runtime: {
           entrypoint: sourcePath,
@@ -564,6 +666,7 @@ ${route.route.functionNative.webhookAuthentication
   const hasWorkflows = contract.routes.some(
     (route) => route.workflowBindings.length > 0,
   );
+  const hasJobs = contract.routes.some((route) => route.jobBindings.length > 0);
   const objectStores = uniqueHttpObjectStoreBindings(contract);
   const hasObjectStores = objectStores.length > 0;
   const workflowGateways = [...new Set(contract.routes.flatMap((route) =>
@@ -640,8 +743,11 @@ ${hasOperations
 ${hasTransactions
     ? "import { applicationPostgresModelReadClients, applicationRelationalChangeScopes, applicationRequestContextValues, createApplicationFunctionNativeEventHandle, editApplicationNativeModelObject, executeFunctionNativePostgresModelEdit, findApplicationNativeModelObjects, getApplicationNativeModelObject, requireApplicationNativeModelObject, withApplicationNativeModelReadClients, withApplicationNativeModelTransactionRuntime } from '@applik8s/applik8s/stream-worker-runtime';"
     : ''}
-${hasWorkflows
+${hasWorkflows || hasJobs
     ? "import { readFile } from 'node:fs/promises';\nimport { createSignedEnvelopeCodec, signedEnvelopeUtf8Key, staticSignedEnvelopeKeyProvider } from '@applik8s/runtime';"
+    : ''}
+${hasJobs
+    ? "import { createApplicationJobBinding } from '@applik8s/applik8s/job';\nimport { createRemoteApplicationJobRuntime } from '@applik8s/applik8s/job-runtime-remote';"
     : ''}
 ${hasObjectStores
     ? "import { createApplicationObjectStoreRuntimeHandle, installApplicationObjectStorageRuntimeResolver } from '@applik8s/applik8s/workflow-runtime-resolvers';\nimport { createS3ApplicationObjectStorageRuntime } from '@applik8s/runtime-s3';"
@@ -662,6 +768,7 @@ const contract = ${JSON.stringify({
 ${observability ? generatedApplicationTelemetryRuntimeSource({ application: contract.graph.metadata.name, service: `http-server:${contract.server.name}` }) : ''}
 const routes = [${routeDefinitions}];
 const workflowGateways = Object.freeze(${JSON.stringify(workflowGateways)});
+const jobControllerEndpoint = ${JSON.stringify(contract.jobController?.endpoint)};
 const routeMatchers = routes.map(route => ({
   route,
   segments: route.path.split('/').filter(Boolean),
@@ -687,6 +794,62 @@ const operationAuthority = createApplicationOperationAuthorityRuntime({
 const directOperationScope = new AsyncLocalStorage();
 installApplicationOperationRuntimeResolver(() => directOperationScope.getStore());
 installApplicationInvocationAdmissionResolver(() => directOperationScope.getStore()?.admission);
+${hasJobs ? `const remoteJobRuntime = createRemoteApplicationJobRuntime({
+  endpoint: ${JSON.stringify(contract.jobController?.endpoint)},
+  authorization: requiredEnv('APPLIK8S_INTERNAL_OPERATION_SECRET'),
+  providerNodeId: ${JSON.stringify(contract.jobRuntime?.id)},
+  encodeAdmission: admission => jobControllerAdmission.sign(
+    admission,
+    { expiresInMs: 60_000 },
+  ),
+});
+const scopedJobRuntime = Object.freeze({
+  ...remoteJobRuntime,
+  async start(definition, input, invocation = {}) {
+    const context = directOperationScope.getStore();
+    if (!context) {
+      throw new Error('Typed HTTP Job escaped its authenticated request scope.');
+    }
+    return remoteJobRuntime.start(definition, input, {
+      ...invocation,
+      admission: invocation.admission ?? context.admission,
+    });
+  },
+});
+function jobHandle(id, contract, options) {
+  return createApplicationJobBinding({
+    id,
+    contract: {
+      input: schema(contract.input, id + '.input'),
+      output: schema(contract.output, id + '.output'),
+      ...(contract.progress
+        ? { progress: schema(contract.progress, id + '.progress') }
+        : {}),
+      ...(contract.error
+        ? { error: schema(contract.error, id + '.error') }
+        : {}),
+    },
+    options,
+    async handler() {
+      throw new Error('HTTP Job handles execute only through the private Job controller.');
+    },
+  }, scopedJobRuntime);
+}
+const jobControllerAdmission = createSignedEnvelopeCodec({
+  purpose: 'applik8s.job-controller-admission/v1',
+  keys: staticSignedEnvelopeKeyProvider({
+    current: {
+      id: 'application-internal-operation',
+      key: signedEnvelopeUtf8Key(
+        requiredEnv('APPLIK8S_INTERNAL_OPERATION_SECRET'),
+      ),
+    },
+  }),
+  validatePayload: value => validateApplicationAdmissionContextV1(value),
+  observe: observeApplicationRuntimeIntegrityEnvelope,
+  maximumEncodedBytes: 32_768,
+  maximumLifetimeMs: 60_000,
+});` : ''}
 ${generatedHttpObjectStorageRuntime(objectStores)}
 ${hasWorkflows ? `const directWorkflowScope = new AsyncLocalStorage();
 const workflowGatewayAdmission = createSignedEnvelopeCodec({
@@ -1545,6 +1708,9 @@ async function initialize() {
       ${hasWorkflows
         ? "await Promise.all(workflowGateways.map(endpoint => workflowGatewayRequest(endpoint, '/readyz', { timeoutMs: 5_000 })));"
         : ''}
+      ${hasJobs
+        ? "{ const response = await fetch(new URL('/readyz', jobControllerEndpoint), { signal: AbortSignal.timeout(5_000) }); if (!response.ok) throw new Error('Job controller readiness failed with HTTP ' + response.status + '.'); }"
+        : ''}
       initializationError = undefined;
       ready = true;
     } catch (error) {
@@ -1595,6 +1761,22 @@ function applicationHttpRouteBindingsSource(
     entries.push({
       path: binding.identifier,
       value: `workflowHandle(${JSON.stringify(binding.target.kind)}, ${JSON.stringify(`${binding.contract.name}.${binding.contract.version}`)}, ${JSON.stringify(binding.contract.version)}, ${JSON.stringify(binding.contract.input.jsonSchema)}, ${JSON.stringify(binding.contract.output.jsonSchema)}, ${JSON.stringify(Object.fromEntries(binding.contract.signals.map((signal) => [signal.name, signal.schema.jsonSchema])))}, ${JSON.stringify(gateway.endpoint)})`,
+      target: binding.target.id,
+    });
+  }
+  for (const binding of route.jobBindings) {
+    entries.push({
+      path: binding.identifier,
+      value: `jobHandle(${JSON.stringify(binding.target.name)}, ${JSON.stringify({
+        input: binding.contract.input.jsonSchema,
+        output: binding.contract.output.jsonSchema,
+        ...(binding.contract.progress
+          ? { progress: binding.contract.progress.jsonSchema }
+          : {}),
+        ...(binding.contract.error
+          ? { error: binding.contract.error.jsonSchema }
+          : {}),
+      })}, {})`,
       target: binding.target.id,
     });
   }
@@ -1729,6 +1911,7 @@ function applicationHttpRouteBindingPaths(
   return [
     ...route.operationBindings.map((binding) => binding.identifier),
     ...route.workflowBindings.map((binding) => binding.identifier),
+    ...route.jobBindings.map((binding) => binding.identifier),
     ...(route.route.functionNative.providerBindings ?? [])
       .map((binding) => binding.identifier),
     ...(route.route.functionNative.transaction?.modelBindings ?? []).map(
@@ -2013,6 +2196,7 @@ function generatedHttpResources(
     ...applicationHttpDatabaseEnvironment(contract),
     ...applicationHttpEventLogEnvironment(contract.eventLog),
     ...applicationHttpWorkflowEnvironment(contract),
+    ...applicationHttpJobEnvironment(contract),
     ...applicationCallableProviderEnvironment(
       contract.callableProviders,
       { target: contract.executionTarget, namespace: contract.namespace },
@@ -2125,6 +2309,24 @@ function applicationHttpWorkflowEnvironment(
   ];
 }
 
+function applicationHttpJobEnvironment(
+  contract: HttpServerCompilerContract,
+): readonly Record<string, unknown>[] {
+  if (!contract.jobController) return [];
+  return [
+    {
+      name: 'APPLIK8S_INTERNAL_OPERATION_SECRET',
+      valueFrom: {
+        secretKeyRef: {
+          name: `${kubernetesName(contract.graph.metadata.name)}-internal-operation`,
+          key: 'key',
+          optional: false,
+        },
+      },
+    },
+  ];
+}
+
 function applicationHttpDatabaseEnvironment(
   contract: HttpServerCompilerContract,
 ): readonly Record<string, unknown>[] {
@@ -2159,7 +2361,7 @@ function applicationHttpDatabaseEnvironment(
       if (runtime) runtimes.set(runtime.connectionEnvName, runtime);
     }
   }
-  return [...runtimes.values()].sort((left, right) =>
+  const environment: Record<string, unknown>[] = [...runtimes.values()].sort((left, right) =>
     left.connectionEnvName.localeCompare(right.connectionEnvName))
     .map((runtime) => ({
       name: runtime.connectionEnvName,
@@ -2171,13 +2373,30 @@ function applicationHttpDatabaseEnvironment(
         },
       },
     }));
+  if (contract.jobController) {
+    environment.push({
+      name: contract.jobController.databaseEnvName,
+      valueFrom: {
+        secretKeyRef: {
+          name: contract.jobController.databaseSecretName,
+          key: contract.jobController.databaseSecretKey,
+          optional: false,
+        },
+      },
+    });
+  }
+  return environment;
 }
 
 function applicationHttpAuthorityDatabase(
   contract: HttpServerCompilerContract,
 ): string {
-  const names = applicationHttpDatabaseEnvironment(contract).map((entry) =>
-    String(entry.name));
+  const names = applicationHttpDatabaseEnvironment(contract).map((entry) => String(entry.name));
+  const modelNames = names.filter((name) => name !== contract.jobController?.databaseEnvName);
+  if (modelNames.length === 1) return modelNames[0]!;
+  if (modelNames.length === 0 && contract.jobController) {
+    return contract.jobController.databaseEnvName;
+  }
   if (names.length !== 1) {
     throw new Error(
       `Generated typed HTTP server ${contract.server.id} requires one transactional authority database; resolved ${names.length}.`,
@@ -2541,6 +2760,14 @@ function kubernetesName(value: string): string {
 
 function objectValue(value: unknown): Readonly<Record<string, unknown>> {
   return isJsonObject(value) ? value : {};
+}
+
+function unwrapApplicationProviderConfig(
+  value: Readonly<Record<string, unknown>>,
+): Readonly<Record<string, unknown>> {
+  return value.kind === 'applicationProvider'
+    ? objectValue(value.implementation)
+    : value;
 }
 
 function isJsonObject(value: unknown): value is JsonObject {
