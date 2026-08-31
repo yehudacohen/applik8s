@@ -14,10 +14,10 @@ import {
   type ApplicationJobDefinition,
   ApplicationJobIdempotencyConflictError,
   type ApplicationJobInvocationOptions,
+  ApplicationJobProgressExpiredError,
   type ApplicationJobProgressSnapshot,
   type ApplicationJobReference,
   ApplicationJobResultExpiredError,
-  ApplicationJobProgressExpiredError,
   type ApplicationJobRun,
   ApplicationJobRunError,
   type ApplicationJobRuntime,
@@ -25,10 +25,10 @@ import {
   applicationJobRuntimeProtocol,
 } from './application-finite-jobs.js';
 import {
+  ApplicationJobLeaseLostError,
   type ApplicationJobLeaseToken,
   type ApplicationJobStore,
   type ApplicationJobStoredRun,
-  ApplicationJobLeaseLostError,
   createApplicationJobReference,
 } from './application-job-store.js';
 import { parseApplicationScheduleDuration } from './application-schedule.js';
@@ -48,6 +48,12 @@ export interface DurableApplicationJobRuntimeOptions {
   readonly progressRetentionSeconds?: number;
   readonly now?: () => Date;
   readonly id?: () => string;
+  /** Controller mode persists and dispatches runs without executing closures in the caller. */
+  readonly executeWorkers?: boolean;
+  /** Exact run selected for a finite provider workload. */
+  readonly claimRunId?: string;
+  /** Idempotent physical-dispatch convergence invoked after every nonterminal admission. */
+  readonly dispatch?: (run: ApplicationJobStoredRun) => void | Promise<void>;
 }
 
 export interface DurableApplicationJobRuntime extends ApplicationJobRuntime {
@@ -80,6 +86,7 @@ export function createDurableApplicationJobRuntime(
   const progressRetentionSeconds = positiveInteger(options.progressRetentionSeconds ?? 86_400, 'Job progressRetentionSeconds');
   const now = options.now ?? (() => new Date());
   const id = options.id ?? randomUUID;
+  const executeWorkers = options.executeWorkers ?? true;
   const definitions = new Map<string, AnyJobDefinition>();
   const controllers = new Map<string, AbortController>();
   let running = 0;
@@ -97,7 +104,7 @@ export function createDurableApplicationJobRuntime(
   };
 
   const wake = (): void => {
-    if (closed || drainScheduled) return;
+    if (closed || !executeWorkers || drainScheduled) return;
     drainScheduled = true;
     queueMicrotask(() => {
       drainScheduled = false;
@@ -112,6 +119,7 @@ export function createDurableApplicationJobRuntime(
         now: now().toISOString(),
         leaseSeconds,
         jobs: [...definitions.keys()],
+        ...(options.claimRunId ? { runId: options.claimRunId } : {}),
       });
       if (!claimed) {
         later();
@@ -383,6 +391,7 @@ export function createDurableApplicationJobRuntime(
         ...(scope ? { idempotencyScope: scope } : {}),
       });
       if (result.status === 'conflict') throw new ApplicationJobIdempotencyConflictError(definition.id);
+      if (result.run.phase !== 'terminal') await options.dispatch?.(result.run);
       wake();
       return runFor(result.run.reference);
     },

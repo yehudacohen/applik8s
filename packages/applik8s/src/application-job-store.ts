@@ -67,6 +67,8 @@ export interface ApplicationJobClaimRequest {
   readonly now: string;
   readonly leaseSeconds: number;
   readonly jobs?: readonly string[];
+  /** Exact logical run selected by a provider-owned finite workload. */
+  readonly runId?: string;
 }
 
 export interface ApplicationJobTerminalWrite {
@@ -260,9 +262,13 @@ export function createDeterministicApplicationJobStore(): DeterministicApplicati
       return mutate(() => {
         positiveInteger(request.leaseSeconds, 'Job leaseSeconds');
         if (!request.owner.trim()) throw new ApplicationJobStoreInvariantError('Job lease owner must be non-empty.');
+        if (request.runId !== undefined && !request.runId.trim()) {
+          throw new ApplicationJobStoreInvariantError('Job run ID must be non-empty when supplied.');
+        }
         const now = timestamp(request.now, 'Job claim time');
         const eligible = [...runs.values()]
           .filter((run) => run.phase !== 'terminal')
+          .filter((run) => !request.runId || run.reference.runId === request.runId)
           .filter((run) => !request.jobs || request.jobs.includes(run.reference.job))
           .filter((run) => Date.parse(run.availableAt) <= now)
           .filter((run) => run.phase === 'queued' || !run.lease || Date.parse(run.lease.expiresAt) <= now)

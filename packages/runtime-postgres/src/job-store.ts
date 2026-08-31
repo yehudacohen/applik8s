@@ -10,8 +10,8 @@ import {
   type ApplicationJobStore,
   type ApplicationJobStoreAdmission,
   type ApplicationJobStoreAdmissionResult,
-  ApplicationJobStoreInvariantError,
   type ApplicationJobStoredRun,
+  ApplicationJobStoreInvariantError,
   applicationJobStoreProtocol,
 } from '@applik8s/applik8s/job-store';
 import {
@@ -131,7 +131,34 @@ export function createPostgresApplicationJobStore(
       await ensure();
       validateClaim(request);
       return sql.begin(async (transaction) => {
-        const rows = request.jobs
+        const rows = request.runId && request.jobs
+          ? await transaction<{ readonly run_id: string }[]>`
+              SELECT run_id
+              FROM applik8s_job_runs
+              WHERE application_id = ${applicationId}
+                AND deployment_id = ${deploymentId}
+                AND run_id = ${request.runId}
+                AND job_id = ANY(${transaction.array([...request.jobs])}::text[])
+                AND phase <> 'terminal'
+                AND available_at <= ${request.now}
+                AND (phase = 'queued' OR lease_expires_at IS NULL OR lease_expires_at <= ${request.now})
+              FOR UPDATE SKIP LOCKED
+              LIMIT 1
+            `
+          : request.runId
+          ? await transaction<{ readonly run_id: string }[]>`
+              SELECT run_id
+              FROM applik8s_job_runs
+              WHERE application_id = ${applicationId}
+                AND deployment_id = ${deploymentId}
+                AND run_id = ${request.runId}
+                AND phase <> 'terminal'
+                AND available_at <= ${request.now}
+                AND (phase = 'queued' OR lease_expires_at IS NULL OR lease_expires_at <= ${request.now})
+              FOR UPDATE SKIP LOCKED
+              LIMIT 1
+            `
+          : request.jobs
           ? await transaction<{ readonly run_id: string }[]>`
               SELECT run_id
               FROM applik8s_job_runs
@@ -467,6 +494,7 @@ function jsonValue(value: unknown): never {
 
 function validateClaim(request: ApplicationJobClaimRequest): void {
   nonEmpty(request.owner, 'Job lease owner');
+  if (request.runId !== undefined) nonEmpty(request.runId, 'Job run ID');
   positiveInteger(request.leaseSeconds, 'Job leaseSeconds');
   if (!Number.isFinite(Date.parse(request.now))) throw new TypeError('Job claim time must be an ISO timestamp.');
 }

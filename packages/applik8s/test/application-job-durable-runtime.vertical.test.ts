@@ -1,9 +1,9 @@
-import { inspectApplicationJobRuntimeConformance } from '../../testing/src/job-runtime-conformance.js';
-import { describe, expect, test } from 'vitest';
-import { createDurableApplicationJobRuntime } from '../src/application-job-durable-runtime.js';
-import { createApplicationJobBinding } from '../src/application-finite-jobs.js';
-import { createDeterministicApplicationJobStore } from '../src/application-job-store.js';
 import { type } from 'arktype';
+import { describe, expect, test } from 'vitest';
+import { inspectApplicationJobRuntimeConformance } from '../../testing/src/job-runtime-conformance.js';
+import { createApplicationJobBinding } from '../src/application-finite-jobs.js';
+import { createDurableApplicationJobRuntime } from '../src/application-job-durable-runtime.js';
+import { createDeterministicApplicationJobStore } from '../src/application-job-store.js';
 
 describe('durable finite Job runtime', () => {
   test('passes the provider-neutral JobRuntime contract', async () => {
@@ -69,6 +69,44 @@ describe('durable finite Job runtime', () => {
     });
     await second.close();
   }, 10_000);
+
+  test('separates controller admission from one exact-run worker', async () => {
+    const store = createDeterministicApplicationJobStore();
+    const dispatched: string[] = [];
+    let executions = 0;
+    const definition = {
+      id: 'exports.controller-worker.v1',
+      contract: { input: type({ value: 'number' }), output: type({ doubled: 'number' }) },
+      options: { idempotencyKey: () => 'one-run' },
+      handler: (input: { readonly value: number }) => {
+        executions += 1;
+        return { doubled: input.value * 2 };
+      },
+    };
+    const controller = createDurableApplicationJobRuntime({
+      store,
+      executeWorkers: false,
+      dispatch: (run) => { dispatched.push(run.reference.runId); },
+    });
+    const job = createApplicationJobBinding(definition, controller);
+    const run = await job.start({ value: 4 });
+    const duplicate = await job.start({ value: 4 });
+    expect(executions).toBe(0);
+    expect(dispatched).toEqual([run.reference.runId, run.reference.runId]);
+    expect(duplicate.reference).toEqual(run.reference);
+
+    const worker = createDurableApplicationJobRuntime({
+      store,
+      workerId: 'finite-workload',
+      claimRunId: run.reference.runId,
+      pollIntervalMs: 5,
+    });
+    createApplicationJobBinding(definition, worker);
+    await expect(worker.attach(definition.id, run.reference).then((attached) => attached.result())).resolves.toEqual({ doubled: 8 });
+    expect(executions).toBe(1);
+    await controller.close();
+    await worker.close();
+  });
 });
 
 async function waitFor(predicate: () => Promise<boolean>, timeoutMs = 2_000): Promise<void> {

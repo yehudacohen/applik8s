@@ -93,6 +93,28 @@ describe('durable finite Job store contract', () => {
     });
   });
 
+  test('claims an exact run only when the worker also owns its Job definition', async () => {
+    const store = createDeterministicApplicationJobStore();
+    await store.admit(admissionFor('run-1', { report: 1 }));
+    await expect(store.claim({
+      owner: 'wrong-worker',
+      now: at(1),
+      leaseSeconds: 5,
+      runId: 'run-1',
+      jobs: ['another.job.v1'],
+    })).resolves.toBeUndefined();
+    await expect(store.claim({
+      owner: 'right-worker',
+      now: at(1),
+      leaseSeconds: 5,
+      runId: 'run-1',
+      jobs: ['reports.export.v1'],
+    })).resolves.toMatchObject({
+      reference: { runId: 'run-1', job: 'reports.export.v1' },
+      lease: { owner: 'right-worker', epoch: 1 },
+    });
+  });
+
   test('converges cancellation and completion through one first terminal transition', async () => {
     const store = createDeterministicApplicationJobStore();
     await store.admit(admissionFor('queued', { report: 1 }));

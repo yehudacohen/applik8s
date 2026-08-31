@@ -1,9 +1,9 @@
-import { createDurableApplicationJobRuntime } from '../../applik8s/src/application-job-durable-runtime.js';
-import { createApplicationJobBinding } from '../../applik8s/src/application-finite-jobs.js';
-import { inspectApplicationJobRuntimeConformance } from '../../testing/src/job-runtime-conformance.js';
 import { type } from 'arktype';
 import postgres from 'postgres';
 import { afterAll, describe, expect, test } from 'vitest';
+import { createApplicationJobBinding } from '../../applik8s/src/application-finite-jobs.js';
+import { createDurableApplicationJobRuntime } from '../../applik8s/src/application-job-durable-runtime.js';
+import { inspectApplicationJobRuntimeConformance } from '../../testing/src/job-runtime-conformance.js';
 import { createPostgresApplicationJobStore } from '../src/job-store.js';
 
 const databaseUrl = process.env.APPLIK8S_JOB_POSTGRES_URL;
@@ -82,4 +82,55 @@ live('PostgreSQL finite Job store', () => {
     await expect(duplicate.result()).resolves.toEqual({ accepted: true });
     expect(executions).toBe(1);
   }, 15_000);
+
+  test('does not let an exact-run worker claim a Job definition it does not contain', async () => {
+    if (!databaseUrl) throw new Error('APPLIK8S_JOB_POSTGRES_URL is required.');
+    const store = createPostgresApplicationJobStore({ databaseUrl, applicationId, deploymentId: 'exact-worker' });
+    stores.push(store);
+    await store.admit({
+      reference: {
+        protocol: 'applik8s.jobRuntime/v1alpha1',
+        job: 'reports.export.v1',
+        runId: 'exact-run',
+        admittedAt: new Date('2026-01-01T00:00:00.000Z').toISOString(),
+      },
+      input: { report: 'monthly' },
+      admission: {
+        apiVersion: 'applik8s.admission/v1',
+        principal: {
+          id: 'principal:test:postgres-job',
+          identity: { id: 'identity:test:postgres-job', kind: 'service', issuer: 'applik8s://test', subject: 'postgres-job' },
+          kind: 'service',
+          authenticationMethod: 'test',
+          audience: ['applik8s://jobs/reports.export.v1/operations/run'],
+          trustedContextDigest: 'sha256:postgres-job',
+          catalogRevision: 'catalog-v1',
+          authorityRevision: 'authority-v1',
+          admittedAt: '2026-01-01T00:00:00.000Z',
+          expiresAt: '2026-01-01T00:01:00.000Z',
+        },
+        authorityRevision: 'authority-v1',
+        trustedContext: { values: {}, digest: 'sha256:postgres-job' },
+        operation: { id: 'applik8s://jobs/reports.export.v1/operations/run', transport: 'framework' },
+        correlationId: 'postgres-job',
+        deadline: '2026-01-01T00:01:00.000Z',
+      },
+      maximumAttempts: 1,
+      availableAt: '2026-01-01T00:00:00.000Z',
+    });
+    await expect(store.claim({
+      owner: 'wrong-worker',
+      now: '2026-01-01T00:00:01.000Z',
+      leaseSeconds: 5,
+      runId: 'exact-run',
+      jobs: ['another.job.v1'],
+    })).resolves.toBeUndefined();
+    await expect(store.claim({
+      owner: 'right-worker',
+      now: '2026-01-01T00:00:01.000Z',
+      leaseSeconds: 5,
+      runId: 'exact-run',
+      jobs: ['reports.export.v1'],
+    })).resolves.toMatchObject({ reference: { runId: 'exact-run' }, lease: { owner: 'right-worker' } });
+  });
 });
