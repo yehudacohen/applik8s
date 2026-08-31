@@ -153,11 +153,16 @@ describe('application finite Job runtime', () => {
 
   test('returns one typed result for direct and durable invocation', async () => {
     const runtime = createDeterministicApplicationJobRuntime({ id: () => 'run-1' });
+    const executions: Array<{ readonly invocationId: string; readonly deadline?: string }> = [];
     const job = createApplicationJobBinding({
       id: 'numbers.double.v1',
       contract: { input: Input, output: Output, progress: Progress, error: Failure },
-      options: {},
+      options: { timeout: '1h' },
       handler: async (input, execution) => {
+        executions.push({
+          invocationId: execution.invocationId,
+          ...(execution.deadline ? { deadline: execution.deadline } : {}),
+        });
         await execution.progress({ completed: 1 });
         return { doubled: input.value * 2 };
       },
@@ -168,6 +173,10 @@ describe('application finite Job runtime', () => {
     await expect(run.result()).resolves.toEqual({ doubled: 8 });
     await expect(run.progress()).resolves.toMatchObject({ sequence: 1, value: { completed: 1 } });
     await expect(job.attach(run.reference).then((attached) => attached.result())).resolves.toEqual({ doubled: 8 });
+    expect(executions).toEqual([
+      expect.objectContaining({ invocationId: expect.any(String), deadline: expect.any(String) }),
+      expect.objectContaining({ invocationId: 'run-1', deadline: expect.any(String) }),
+    ]);
   });
 
   test('deduplicates only an identical input within the complete scoped key', async () => {

@@ -106,7 +106,9 @@ export interface ApplicationJobExecution<
 > {
   readonly admission: ApplicationAdmissionInvocationContextV1;
   readonly run: ApplicationJobReference;
+  readonly invocationId: string;
   readonly attempt: number;
+  readonly deadline?: string;
   readonly signal: AbortSignal;
   progress(value: TProgress): Promise<ApplicationJobProgressSnapshot<TProgress>>;
   throwIfCancelled(): void;
@@ -352,7 +354,9 @@ export function createDeterministicApplicationJobRuntime(
           const output = await record.definition.handler(record.input, {
             admission: record.admission,
             run: record.reference,
+            invocationId: record.reference.runId,
             attempt,
+            ...(deadline ? { deadline } : {}),
             signal: controller.signal,
             progress: async (value) => {
               const validated = record.definition.contract.progress
