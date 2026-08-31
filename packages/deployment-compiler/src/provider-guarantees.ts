@@ -327,6 +327,7 @@ const localProviders: Readonly<Record<string, readonly string[]>> = {
   LakehouseDataset: ['duckdb-dataset'],
   LakehouseQuery: ['duckdb-queries'],
   ActorRuntime: ['deterministic-local-actors'],
+  JobRuntime: ['local-job-runtime'],
 };
 
 const awsProviders: Readonly<Record<string, readonly string[]>> = {
@@ -428,9 +429,38 @@ function baselineGuarantees(
     ...(provider.interface === 'Scheduler'
       ? scheduleGuarantees(graph, provider, implementation, target, supported)
       : []),
+    ...(provider.interface === 'JobRuntime'
+      ? jobRuntimeGuarantees(implementation, target, supported)
+      : []),
     ...((provider.interface === 'LakehouseDataset' || provider.interface === 'LakehouseQuery')
       ? lakehouseGuarantees(provider.interface as 'LakehouseDataset' | 'LakehouseQuery', implementation, target, supported)
       : []),
+  ];
+}
+
+function jobRuntimeGuarantees(
+  implementation: string,
+  target: ApplicationDeploymentTargetKind,
+  supported: boolean,
+): readonly ApplicationProviderGuarantee[] {
+  const guarantee = (
+    id: string,
+    category: ApplicationProviderGuarantee['category'],
+    statement: string,
+  ): ApplicationProviderGuarantee => ({
+    id: `job-${id}`,
+    category,
+    statement,
+    disposition: supported ? 'bounded' : 'unsupported',
+    evidence: supported ? [`conformance:v1:${target}:JobRuntime:${implementation}:${id}`] : [],
+  });
+  return [
+    guarantee('terminal-linearization', 'consistency', 'Each logical run permits exactly one immutable terminal transition.'),
+    guarantee('scoped-idempotency', 'replay-retention-acknowledgement-duplicates', 'Idempotency is scoped by application, deployment, contract, trusted context, authority revision, and authored key.'),
+    guarantee('whole-attempt-retry', 'replay-retention-acknowledgement-duplicates', 'Infrastructure retries create provider attempts under one logical run and never a second result authority.'),
+    guarantee('cancellation', 'lifecycle', 'Cancellation is a durable request that races honestly with success, failure, and deadline terminalization.'),
+    guarantee('result-retention', 'lifecycle', 'Terminal results and progress snapshots use explicit provider-visible retention.'),
+    guarantee('causal-admission', 'runtime-access-enforcement', 'Every attempt receives framework-admitted principal, causal principal, authority revision, and trusted context.'),
   ];
 }
 

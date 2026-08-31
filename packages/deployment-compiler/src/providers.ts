@@ -66,6 +66,9 @@ const builtinProviderRegistrations: readonly BuiltinProviderRegistration[] = [
   { interface: "AnalyticalDatabase", implementation: "clickhouse", execution: "root-composition" },
   { interface: "Queue", implementation: "kubernetes-configmap-queue", execution: "runtime-only" },
   { interface: "IdentityProvider", implementation: "identity-provider", execution: "runtime-only" },
+  { interface: "JobRuntime", implementation: "local-job-runtime", execution: "runtime-only" },
+  { interface: "JobRuntime", implementation: "kubernetes-job-runtime", execution: "runtime-only" },
+  { interface: "JobRuntime", implementation: "aws-job-runtime", execution: "runtime-only" },
   { interface: "OAuthAuthorizationServer", implementation: "oauth-authorization-server", execution: "runtime-only" },
   { interface: "Search", implementation: "opensearch", execution: "external-controller" },
   { interface: "Search", implementation: "postgres-search", execution: "runtime-only" },
@@ -653,6 +656,8 @@ function providerGraphConfigurationKey(
       return "containerRegistry";
     case "IndexStore":
       return "indexStore";
+    case "JobRuntime":
+      return "jobRuntime";
     case "ObjectStorage":
       return "objectStorage";
     case "Scheduler":

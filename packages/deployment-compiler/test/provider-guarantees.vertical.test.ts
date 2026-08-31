@@ -30,6 +30,32 @@ describe('v0.8 provider guarantee manifests', () => {
     expect(manifest?.guarantees.every(({ disposition }) => disposition === 'unsupported')).toBe(true)
   })
 
+  it('qualifies only the implemented local finite Job runtime', () => {
+    const localRuntime = provider('JobRuntime', 'local-job-runtime')
+    const [local] = applicationProviderGuaranteesForGraph({
+      graph: { ...graph(), nodes: [localRuntime] },
+      target: 'local',
+    })
+    expect(local?.guarantees.filter(({ id }) => id.startsWith('job-'))).toEqual([
+      expect.objectContaining({ id: 'job-terminal-linearization', disposition: 'bounded' }),
+      expect.objectContaining({ id: 'job-scoped-idempotency', disposition: 'bounded' }),
+      expect.objectContaining({ id: 'job-whole-attempt-retry', disposition: 'bounded' }),
+      expect.objectContaining({ id: 'job-cancellation', disposition: 'bounded' }),
+      expect.objectContaining({ id: 'job-result-retention', disposition: 'bounded' }),
+      expect.objectContaining({ id: 'job-causal-admission', disposition: 'bounded' }),
+    ])
+
+    const kubernetesRuntime = provider('JobRuntime', 'kubernetes-job-runtime')
+    const [kubernetes] = applicationProviderGuaranteesForGraph({
+      graph: { ...graph(), nodes: [kubernetesRuntime] },
+      target: 'kubernetes',
+    })
+    expect(kubernetes?.limitations).toEqual([
+      'JobRuntime/kubernetes-job-runtime has no qualified kubernetes lowering.',
+    ])
+    expect(kubernetes?.guarantees.every(({ disposition }) => disposition === 'unsupported')).toBe(true)
+  })
+
   it.each([
     ['NotificationDelivery', 'smtp'],
     ['NotificationDelivery', 'local-inspectable'],
