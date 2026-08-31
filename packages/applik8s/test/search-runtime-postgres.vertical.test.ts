@@ -379,6 +379,41 @@ live('PostgreSQL search runtime live provider', () => {
     });
   });
 
+  it('advances an exhausted filtered source across shared-log gaps while direct apply stays strict', async () => {
+    documents.set('article-gap', {
+      title: 'Filtered source gap',
+      tenant: 'tenant-a',
+      category: 'engineering',
+      rank: 6,
+    });
+    const filteredChange = change(14, 'article-gap', 'create');
+    const filtered = await createPostgresApplicationSearchRuntime<SearchDocument>({
+      ...runtimeOptions(administrativeSql),
+      logicalIndex: 'Article.filtered-gap',
+      initialCheckpoint: 10,
+      changes: {
+        async read() {
+          return {
+            items: [filteredChange],
+            retentionFloor: 0,
+            highWatermark: 20,
+            exhausted: true,
+          };
+        },
+      },
+    });
+
+    await expect(filtered.synchronize()).resolves.toMatchObject({
+      applied: 1,
+      checkpoint: 20,
+      exhausted: true,
+    });
+    expect(filtered.state()).toMatchObject({ checkpoint: 20, state: 'current' });
+    await expect(filtered.apply(change(22, 'article-gap'))).rejects.toThrow(
+      /non-contiguous commit position/u,
+    );
+  });
+
   it('cleans durable rebuilding state when snapshot acquisition fails', async () => {
     const failingOptions = runtimeOptions(administrativeSql);
     const failing =

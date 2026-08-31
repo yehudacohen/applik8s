@@ -328,6 +328,7 @@ export function createDeterministicApplicationSearchRuntime<
     generation: SearchGeneration<TDocument>,
     change: ApplicationSearchCommittedChange,
     updateActiveState = true,
+    allowSourceGaps = false,
   ): Promise<boolean> => {
     validateChange(change);
     if (change.commitPosition <= generation.checkpoint) {
@@ -337,7 +338,7 @@ export function createDeterministicApplicationSearchRuntime<
         `Search index ${options.logicalIndex} commit position ${change.commitPosition} was already applied as ${appliedId ?? '<retired evidence>'}, not ${change.id}.`,
       );
     }
-    if (change.commitPosition !== generation.checkpoint + 1) {
+    if (!allowSourceGaps && change.commitPosition !== generation.checkpoint + 1) {
       throw new Error(
         `Search index ${options.logicalIndex} cannot advance from checkpoint ${generation.checkpoint} to non-contiguous commit position ${change.commitPosition}.`,
       );
@@ -435,9 +436,14 @@ export function createDeterministicApplicationSearchRuntime<
         }
         retentionFloor = page.retentionFloor;
         for (const change of page.items) {
-          if (await applyToGeneration(generation, change)) applied += 1;
+          if (await applyToGeneration(generation, change, true, true)) applied += 1;
         }
         if (page.exhausted) {
+          generation.checkpoint = Math.max(
+            generation.checkpoint,
+            page.highWatermark,
+          );
+          projectionState = 'current';
           return {
             applied,
             checkpoint: generation.checkpoint,
@@ -546,7 +552,13 @@ export function createDeterministicApplicationSearchRuntime<
             markHistoryLoss(generation.checkpoint, page.retentionFloor);
           }
           for (const change of page.items) {
-            await applyToGeneration(generation, change, false);
+            await applyToGeneration(generation, change, false, true);
+          }
+          if (page.exhausted) {
+            generation.checkpoint = Math.max(
+              generation.checkpoint,
+              page.highWatermark,
+            );
           }
           if (page.exhausted && generation.checkpoint >= page.highWatermark) {
             caughtUp = true;

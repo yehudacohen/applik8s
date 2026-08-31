@@ -55,6 +55,9 @@ function fixture(options: {
   readonly changes?: ApplicationSearchCommittedChange[];
   readonly retentionFloor?: number;
   readonly fanOutCeiling?: number;
+  readonly initialCheckpoint?: number;
+  readonly sourceHighWatermark?: number;
+  readonly filteredSource?: boolean;
 } = {}) {
   const documents = new Map<string, ProductDocument>([
     [
@@ -108,14 +111,17 @@ function fixture(options: {
         .filter(({ commitPosition }) => commitPosition > after)
         .sort((left, right) => left.commitPosition - right.commitPosition)
         .slice(0, limit);
-      const highWatermark = sourceChanges.at(-1)?.commitPosition ?? after;
+      const highWatermark = options.sourceHighWatermark
+        ?? sourceChanges.at(-1)?.commitPosition
+        ?? after;
       return {
         items,
         retentionFloor,
         highWatermark,
-        exhausted:
-          items.length === 0
-          || (items.at(-1)?.commitPosition ?? after) >= highWatermark,
+        exhausted: options.filteredSource
+          ? items.length < limit
+          : items.length === 0
+            || (items.at(-1)?.commitPosition ?? after) >= highWatermark,
       };
     },
   };
@@ -169,6 +175,9 @@ function fixture(options: {
     changes,
     snapshot,
     fanOutCeiling: options.fanOutCeiling ?? 100,
+    ...(options.initialCheckpoint === undefined
+      ? {}
+      : { initialCheckpoint: options.initialCheckpoint }),
   });
   return {
     runtime,
@@ -240,6 +249,29 @@ describe('search projection runtime', () => {
       ApplicationSearchHistoryLossError,
     );
     expect(retained.runtime.state().state).toBe('rebuildRequired');
+  });
+
+  test('advances an exhausted filtered change source across shared-log gaps', async () => {
+    const state = fixture({
+      changes: [change(14)],
+      retentionFloor: 0,
+      initialCheckpoint: 10,
+      sourceHighWatermark: 20,
+      filteredSource: true,
+    });
+
+    await expect(state.runtime.synchronize()).resolves.toEqual({
+      applied: 1,
+      checkpoint: 20,
+      exhausted: true,
+    });
+    expect(state.runtime.state()).toMatchObject({
+      checkpoint: 20,
+      state: 'current',
+    });
+    await expect(state.runtime.apply(change(22))).rejects.toThrow(
+      /non-contiguous commit position/u,
+    );
   });
 
   test('rebuilds an inactive generation, catches up, validates, and cuts over atomically', async () => {

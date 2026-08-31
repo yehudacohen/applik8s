@@ -381,6 +381,7 @@ export async function createPostgresApplicationSearchRuntime<
     change: ApplicationSearchCommittedChange,
     hydrated: readonly ApplicationSearchHydratedDocument<TDocument>[],
     updateActiveState: boolean,
+    allowSourceGaps = false,
   ): Promise<boolean> => {
     const applied = await sql.begin(async (transaction) => {
       await acquireSearchLock(transaction, lockIdentity);
@@ -460,7 +461,7 @@ export async function createPostgresApplicationSearchRuntime<
           `Search index ${options.logicalIndex} commit position ${change.commitPosition} was already applied as ${appliedId}, not ${change.id}.`,
         );
       }
-      if (change.commitPosition !== checkpoint + 1) {
+      if (!allowSourceGaps && change.commitPosition !== checkpoint + 1) {
         throw new Error(
           `Search index ${options.logicalIndex} cannot advance generation ${generation} from checkpoint ${checkpoint} to non-contiguous commit position ${change.commitPosition}.`,
         );
@@ -525,6 +526,42 @@ export async function createPostgresApplicationSearchRuntime<
     return applied;
   };
 
+  // Generated relational change sources are filtered to the models that feed
+  // one index, but their commit positions and high watermark belong to the
+  // shared transaction log. An exhausted page therefore proves that no
+  // relevant change exists through its high watermark, including positions
+  // occupied only by unrelated models.
+  const advanceGenerationThrough = async (
+    generation: string,
+    checkpoint: number,
+    updateActiveState: boolean,
+  ): Promise<void> => {
+    await sql.begin(async (transaction) => {
+      await acquireSearchLock(transaction, lockIdentity);
+      await transaction.unsafe(
+        `UPDATE ${tables.generations}
+        SET checkpoint = GREATEST(checkpoint, $4::bigint)
+        WHERE logical_index = $1
+          AND index_revision = $2
+          AND generation = $3`,
+        [...identityParameters, generation, checkpoint],
+      );
+      if (updateActiveState) {
+        await transaction.unsafe(
+          `UPDATE ${tables.indexes}
+          SET state = CASE
+                WHEN $3::bigint >= source_high_watermark THEN 'current'
+                ELSE 'lagging'
+              END,
+              updated_at = now()
+          WHERE logical_index = $1 AND index_revision = $2`,
+          [...identityParameters, checkpoint],
+        );
+      }
+    });
+    await refresh();
+  };
+
   const runtime: PostgresApplicationSearchRuntime<TDocument> = {
     state() {
       return { ...cachedState, previousGenerations: [...cachedState.previousGenerations] };
@@ -582,13 +619,18 @@ export async function createPostgresApplicationSearchRuntime<
               change,
               hydrated,
               true,
+              true,
             )
           ) {
             applied += 1;
           }
         }
-        await refresh();
         if (page.exhausted) {
+          await advanceGenerationThrough(
+            state.activeGeneration,
+            page.highWatermark,
+            true,
+          );
           return {
             applied,
             checkpoint: cachedState.checkpoint,
@@ -766,8 +808,20 @@ export async function createPostgresApplicationSearchRuntime<
               change,
               hydrated,
               false,
+              true,
             );
             rebuildingCheckpoint = change.commitPosition;
+          }
+          if (page.exhausted) {
+            await advanceGenerationThrough(
+              rebuildOptions.generation,
+              page.highWatermark,
+              false,
+            );
+            rebuildingCheckpoint = Math.max(
+              rebuildingCheckpoint,
+              page.highWatermark,
+            );
           }
           if (
             page.exhausted

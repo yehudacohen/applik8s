@@ -60,6 +60,13 @@ independently open.
 
 ## v0.8.0
 
+Search projection synchronization now distinguishes filtered change-source
+pages from direct change application. A source page may contain gaps from
+unrelated models and, once exhausted, advances the projection through its
+shared committed-log high watermark. Direct `apply()` remains strictly
+contiguous. Deterministic and PostgreSQL runtimes share this behavior, including
+rebuild catch-up, so a quiet filtered index does not remain permanently lagging.
+
 Function-native workflows with explicit task capabilities now remain
 single-step effect workflows even when their compiler-captured closure invokes
 ordinary child workflows. This preserves the authored retry, capability,

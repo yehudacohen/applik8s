@@ -76,6 +76,10 @@ Status: implementation started on `codex/v0.8-rfps`; no release is authorized.
 
 Current foundation increment:
 
+- Restored filtered search-source frontier semantics across deterministic and
+  PostgreSQL runtimes. Source synchronization tolerates positions owned by
+  unrelated models and advances only through an exhausted page's authoritative
+  high watermark; direct application still rejects non-contiguous changes.
 - Closed the generated workflow-gateway Kubernetes SDK boundary with a focused
   runtime-kubernetes export; clean Agentic Start consumers no longer depend on
   workspace hoisting of a transitive `@kubernetes/client-node` package.
