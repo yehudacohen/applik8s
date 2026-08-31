@@ -61,6 +61,10 @@ export const Workspace = application.model(workspaces).managed({
     phase: "'Pending' | 'Ready' | 'Degraded'",
     endpoint: "string?",
   }),
+  initialStatus: {
+    observedGeneration: 0,
+    phase: "Pending",
+  },
 });
 
 Workspace.on.reconcile(async (workspace, context) => {
@@ -217,6 +221,11 @@ The portable reconcile callback receives `ManagedModelObject`. `value` is the mo
 value: a Drizzle row for a relational model and the resource `spec` for a Kubernetes model. The status
 schema is declared once by `.managed({ status })`. Relationships remain attached to the original model
 handle and are not copied into a framework schema.
+
+`initialStatus` is omitted when the declared schema can derive a complete value from its own defaults.
+Otherwise it is required, validated during graph construction, and used by the idempotent activation/backfill
+migration and new lifecycle rows. The framework never invents provider-specific zero values or expose a
+schema-invalid partial status before the first reconcile.
 
 `status.update(...)` is intentionally schema-complete. v0.9 does not freeze a public `Partial<TStatus>`
 patch whose nested merge, omission, `undefined`, and deletion semantics differ across PostgreSQL and

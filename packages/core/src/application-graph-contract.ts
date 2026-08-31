@@ -354,6 +354,7 @@ export interface ApplicationModelNode extends ApplicationGraphNodeBase<'model'> 
 
 export interface ApplicationManagedModelContract {
   readonly status: ApplicationMessageContractSchema;
+  readonly initialStatus: JsonObject;
   readonly statusSchemaVersion: string;
   readonly store: ApplicationProviderRef<'ManagedModelStore'>;
   readonly runtime: ApplicationProviderRef<'OperatorRuntime'>;

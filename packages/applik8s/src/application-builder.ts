@@ -244,6 +244,13 @@ function registerApplicationManagedRelationalModel<
     runtime: 'arktype',
     jsonSchema: emittedStatus.value.schema,
   };
+  const initialStatus = normalizeSchema(options.status, `${modelName}.managed.status`)
+    .validate((options.initialStatus ?? {}) as JsonValue);
+  if (!initialStatus.ok) {
+    throw new Error(
+      `Managed model ${modelName} requires initialStatus because its status schema cannot derive a complete default: ${initialStatus.error.message}`,
+    );
+  }
   const store = managedModelStoreRequirement(modelName);
   const storeNodeId = applicationProviderGraphNodeId(
     'ManagedModelStore',
@@ -252,6 +259,7 @@ function registerApplicationManagedRelationalModel<
   const runtimeNodeId = applicationProviderGraphNodeId('OperatorRuntime');
   let contract: ApplicationManagedModelContract = {
     status,
+    initialStatus: initialStatus.value as JsonObject,
     statusSchemaVersion: options.statusSchemaVersion ?? '1',
     store: { interface: 'ManagedModelStore', nodeId: storeNodeId },
     runtime: { interface: 'OperatorRuntime', nodeId: runtimeNodeId },

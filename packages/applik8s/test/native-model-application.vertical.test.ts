@@ -63,6 +63,7 @@ describe('v0.6 app-scoped native model promotion', () => {
         observedGeneration: 'number.integer >= 0',
         phase: "'Pending' | 'Ready' | 'Degraded'",
       }),
+      initialStatus: { observedGeneration: 0, phase: 'Pending' },
       resync: { interval: '2m', maximumItems: 250 },
       lease: { duration: '45s' },
     });
@@ -99,6 +100,7 @@ describe('v0.6 app-scoped native model promotion', () => {
       candidate => candidate.kind === 'model' && candidate.name === 'Workspace',
     );
     expect(node && node.kind === 'model' ? node.managed : undefined).toMatchObject({
+      initialStatus: { observedGeneration: 0, phase: 'Pending' },
       statusSchemaVersion: '1',
       store: { interface: 'ManagedModelStore' },
       runtime: { interface: 'OperatorRuntime' },
@@ -115,6 +117,21 @@ describe('v0.6 app-scoped native model promotion', () => {
     });
   });
 
+  test('fails before planning when a required managed status has no initial value', () => {
+    const records = pgTable('managed_missing_initial_status', {
+      id: text('id').primaryKey(),
+    });
+    const application = app('managed-missing-initial-status');
+    const Database = application.database.postgres('catalog', { schema: { records } });
+
+    expect(() => application.model(records, {
+      name: 'MissingInitialStatus',
+      database: Database,
+    }).managed({
+      status: type({ phase: "'Pending' | 'Ready'" }),
+    })).toThrow(/requires initialStatus/u);
+  });
+
   test('fails graph construction for dynamic or multiply-owned condition types', () => {
     const records = pgTable('managed_condition_records', {
       id: text('id').primaryKey(),
@@ -124,7 +141,7 @@ describe('v0.6 app-scoped native model promotion', () => {
     const Database = application.database.postgres('catalog', { schema: { records } });
     const status = type({ phase: "'Pending' | 'Ready'" });
     const Record = application.model(records, { name: 'ManagedRecord', database: Database })
-      .managed({ status });
+      .managed({ status, initialStatus: { phase: 'Pending' } });
     Record.on.reconcile(async record => {
       await record.conditions.set({
         type: 'Ready',
@@ -142,7 +159,7 @@ describe('v0.6 app-scoped native model promotion', () => {
       value: text('value').notNull(),
     });
     const Dynamic = application.model(other, { name: 'DynamicCondition', database: Database })
-      .managed({ status });
+      .managed({ status, initialStatus: { phase: 'Pending' } });
     expect(() => Dynamic.on.reconcile(async record => {
       const conditionType = record.value.value;
       await record.conditions.remove(conditionType);

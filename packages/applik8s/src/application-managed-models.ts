@@ -11,6 +11,8 @@ export const applicationManagedModelProtocol = 'applik8s.managed-model/v1alpha1'
 
 export interface ApplicationManagedModelOptions<TStatus extends object> {
   readonly status: SchemaInput<TStatus>;
+  /** Required only when the status schema cannot derive a complete value from its own defaults. */
+  readonly initialStatus?: TStatus;
   readonly statusSchemaVersion?: string;
   readonly resync?: {
     readonly interval?: string;
