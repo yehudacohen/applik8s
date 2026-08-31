@@ -681,6 +681,16 @@
         "react": ">=18.3.0 <20",
       },
     },
+    "packages/research": {
+      "name": "@applik8s/research",
+      "version": "0.8.0",
+      "dependencies": {
+        "@applik8s/applik8s": "0.8.0",
+        "@applik8s/core": "0.8.0",
+        "arktype": "2.2.1",
+        "postgres": "^3.4.7",
+      },
+    },
     "packages/runtime": {
       "name": "@applik8s/runtime",
       "version": "0.8.0",
@@ -960,7 +970,6 @@
       "name": "@applik8s/web-retrieval-http",
       "version": "0.8.0",
       "dependencies": {
-        "@applik8s/core": "0.8.0",
         "@applik8s/web-search": "0.8.0",
       },
     },
@@ -1090,6 +1099,8 @@
     "@applik8s/operations-ui": ["@applik8s/operations-ui@workspace:packages/operations-ui"],
 
     "@applik8s/react": ["@applik8s/react@workspace:packages/react"],
+
+    "@applik8s/research": ["@applik8s/research@workspace:packages/research"],
 
     "@applik8s/runtime": ["@applik8s/runtime@workspace:packages/runtime"],
 

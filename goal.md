@@ -204,6 +204,19 @@ retriever and its safe policy independently from search. Durable
 composition, interruption qualification, and Agentic Start's evidence journey
 remain the next release-blocking research work.
 
+`@applik8s/research` now supplies the separate `ResearchEvidence` capability
+with local deterministic and PostgreSQL durable providers. Evidence commits
+are content-addressed, immutable, idempotent, scope/run bounded, versioned for
+mutable pages, and retain normalized query, retrieval, search-receipt,
+citation, visibility, snapshot, and causal-artifact provenance. Artifact links
+are independently append-safe and refuse absent or cross-scope evidence. The
+selected profile, portable runtime binding, store identity, and PostgreSQL
+connection environment (never a URL) are plan-visible. Five focused semantic
+tests, the package typecheck, package build, package catalog, public-contract
+inventory, and documentation checks pass. A live PostgreSQL interruption
+vertical, `researchAgent()` orchestration, and Agentic Start integration remain
+open.
+
 Continue in the sequence above until every stable-candidate gate is implemented
 and evidenced. Keep beta/preview surfaces truthful; do not expand the frozen
 scope merely to make a scorecard look complete.

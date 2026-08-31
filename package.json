@@ -27,6 +27,7 @@
     "packages/web-search",
     "packages/web-search-searxng",
     "packages/web-retrieval-http",
+    "packages/research",
     "packages/conversations",
     "packages/data-lifecycle",
     "packages/dev",

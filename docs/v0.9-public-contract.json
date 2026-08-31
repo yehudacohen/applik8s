@@ -8238,6 +8238,63 @@
       ]
     },
     {
+      "name": "@applik8s/research",
+      "version": "0.8.0",
+      "directory": "packages/research",
+      "description": "Provider-neutral durable research evidence, citation provenance, and specialized research-agent composition for Applik8s.",
+      "owner": "package:@applik8s/research",
+      "maturity": "candidate-review-required",
+      "documentation": "docs/packages.md",
+      "commands": [],
+      "dependencies": [
+        "@applik8s/applik8s",
+        "@applik8s/core"
+      ],
+      "entrypoints": [
+        {
+          "name": ".",
+          "source": "packages/research/src/index.ts",
+          "symbols": [
+            "ApplicationResearchArtifactLink",
+            "ApplicationResearchArtifactLinkInput",
+            "ApplicationResearchCitationSpan",
+            "ApplicationResearchEvidenceCommit",
+            "ApplicationResearchEvidenceConflictError",
+            "ApplicationResearchEvidenceListInput",
+            "ApplicationResearchEvidencePage",
+            "ApplicationResearchEvidenceProvider",
+            "ApplicationResearchEvidenceRecord",
+            "ApplicationResearchSnapshotPolicy",
+            "DeterministicResearchEvidenceOptions",
+            "LocalResearchEvidence",
+            "PostgresResearchEvidence",
+            "PostgresResearchEvidenceOptions",
+            "ResearchEvidence",
+            "applicationResearchEvidenceProtocol",
+            "createDeterministicResearchEvidenceProvider",
+            "createPostgresResearchEvidenceProvider"
+          ]
+        },
+        {
+          "name": "./postgres",
+          "source": "packages/research/src/postgres.ts",
+          "symbols": [
+            "PostgresResearchEvidenceOptions",
+            "createPostgresResearchEvidenceProvider"
+          ]
+        },
+        {
+          "name": "./runtime",
+          "source": "packages/research/src/runtime.ts",
+          "symbols": [
+            "commitResearchEvidence",
+            "linkResearchArtifactEvidence",
+            "listResearchEvidence"
+          ]
+        }
+      ]
+    },
+    {
       "name": "@applik8s/runtime",
       "version": "0.8.0",
       "directory": "packages/runtime",

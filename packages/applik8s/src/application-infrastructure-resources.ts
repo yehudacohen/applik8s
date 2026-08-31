@@ -725,6 +725,18 @@ export function recordApplicationProviderGraph(
             }) as JsonValue,
           }
         : {}),
+      ...(providerInterface === 'ResearchEvidence' && !targetSelection && implementation && typeof implementation === 'object'
+        ? {
+            researchEvidence: applicationTypeKroGraphValue({
+              provider: Reflect.get(implementation, 'provider'),
+              kind: Reflect.get(implementation, 'kind'),
+              mode: Reflect.get(implementation, 'mode'),
+              storeIdentity: Reflect.get(implementation, 'storeIdentity'),
+              connectionEnvName: Reflect.get(implementation, 'connectionEnvName'),
+              schema: Reflect.get(implementation, 'schema'),
+            }) as JsonValue,
+          }
+        : {}),
       ...(providerInterface === 'AI' && !targetSelection && implementation && typeof implementation === 'object'
         ? { ai: applicationTypeKroGraphValue(implementation) as JsonValue }
         : {}),
