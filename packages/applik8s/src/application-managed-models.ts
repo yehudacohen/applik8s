@@ -1,5 +1,5 @@
 // typecast-file-boundary: schema-generic managed-model facets retain their declaration-time types across erased application replay registries.
-import type { JsonValue, SourceLocation } from '@applik8s/core';
+import type { ApplicationManagedModelContract, JsonValue, SourceLocation } from '@applik8s/core';
 import type { SchemaInput } from '@applik8s/sdk';
 import type { ApplicationQualifiedProviderToken } from './application-providers.js';
 import {
@@ -54,7 +54,9 @@ export interface ApplicationManagedModelWriteReceipt {
   readonly generation: number;
   readonly resourceVersion: string;
   readonly fence: string;
-  readonly committedAt: string;
+  /** Admission proves the write joined the fenced reconcile attempt; provider completion remains authoritative. */
+  readonly disposition: 'accepted';
+  readonly recordedAt: string;
 }
 
 export interface ApplicationManagedModelObject<
@@ -184,4 +186,41 @@ export function managedModelDurationSeconds(value: string, label: string): numbe
     throw new TypeError(`${label} must be at least 1s and remain within a safe integer range.`);
   }
   return milliseconds / 1_000;
+}
+
+/** @internal Statically discovers the condition types owned by one managed callback. */
+export function applicationManagedModelConditionTypes(
+  modelName: string,
+  event: 'reconcile' | 'finalize',
+  source: string,
+): readonly string[] {
+  const calls = source.match(/\.conditions\s*\.\s*(?:set|remove)\s*\(/gu) ?? [];
+  const types = [
+    ...source.matchAll(/\.conditions\s*\.\s*set\s*\(\s*\{[\s\S]{0,1200}?\btype\s*:\s*(['"])([^'"]+)\1/gu),
+    ...source.matchAll(/\.conditions\s*\.\s*remove\s*\(\s*(['"])([^'"]+)\1/gu),
+  ].map((match) => match[2] as string);
+  if (calls.length !== types.length) {
+    throw new Error(
+      `Managed model ${modelName} ${event} handler condition types must be statically discoverable string literals.`,
+    );
+  }
+  return Object.freeze([...new Set(types)].sort());
+}
+
+/** @internal Enforces the single-writer condition contract across managed callbacks. */
+export function assertApplicationManagedModelConditionOwnership(
+  modelName: string,
+  contract: ApplicationManagedModelContract,
+  next: readonly string[],
+): void {
+  const owned = new Set([
+    ...(contract.reconcile?.conditionTypes ?? []),
+    ...contract.finalizers.flatMap((finalizer) => finalizer.conditionTypes),
+  ]);
+  const collision = next.find((type) => owned.has(type));
+  if (collision) {
+    throw new Error(
+      `Managed model ${modelName} condition ${collision} has more than one writer. Factor it through one reconcile or finalize handler.`,
+    );
+  }
 }

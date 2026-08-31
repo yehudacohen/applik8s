@@ -65,7 +65,7 @@ deployment machinery.
 
 ## Current checkpoint
 
-The branch `codex/v0.9-semantic-completion` is pushed through `b994f1f` before
+The branch `codex/v0.9-semantic-completion` is pushed through `c8f49ab` before
 the current managed-model slice. Completed foundations include concrete
 provider planning, deployment migration proposals, journey declarations, the
 documentation site foundation, shared effect-safety primitives, Job vocabulary
@@ -123,8 +123,24 @@ commit with a durable cursor, resume after process replacement, preserve
 existing UIDs, reject status-schema drift, and coexist with lifecycle rows
 created by concurrent framework mutations. OrbStack evidence covers
 interrupted resume, idempotent completion, schema rejection, and the complete
-relational lifecycle. Kubernetes managed-model parity remains the next work in
-this slice before beta Saga coordination.
+relational lifecycle.
+
+The Kubernetes parity slice now maps the same provider-neutral managed-model
+object and reconcile context onto native CRD identity, `spec`, status,
+conditions, UID/generation/resource-version fencing, finalizers, work-queue
+wakeup, and bounded resync without introducing a second controller. Managed
+graph membership is declaration-driven: a plain CRD remains plain, while
+`Resource.on.reconcile` and `.on.finalize` record their serialized callbacks,
+static condition ownership, provider requirements, and the integrated
+Kubernetes store/runtime implementations. `@applik8s/runtime-kubernetes` now
+publishes the previously reserved `managed-model-store` and `operator-runtime`
+adapters, with exact identity/fence and lifecycle policy tests. The canonical
+generated-operator OrbStack suite passes all nine cases using
+`status.update(...)`, `conditions.set(...)`, and `context.requeueAfter(...)`,
+including current-generation status, child ownership, restart/resync,
+finalization, RBAC denial, apply/status conflicts, malformed output, timeout,
+and teardown. Workspace typecheck passes across 64 packages and all package
+artifacts build. Beta Saga coordination is the next semantic increment.
 
 Continue in the sequence above until every stable-candidate gate is implemented
 and evidenced. Keep beta/preview surfaces truthful; do not expand the frozen

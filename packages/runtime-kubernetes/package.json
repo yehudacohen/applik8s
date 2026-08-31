@@ -25,6 +25,16 @@
       "types": "./dist/job-runtime.d.ts",
       "import": "./dist/job-runtime.js",
       "default": "./dist/job-runtime.js"
+    },
+    "./managed-model-store": {
+      "types": "./dist/managed-model-store.d.ts",
+      "import": "./dist/managed-model-store.js",
+      "default": "./dist/managed-model-store.js"
+    },
+    "./operator-runtime": {
+      "types": "./dist/operator-runtime.d.ts",
+      "import": "./dist/operator-runtime.js",
+      "default": "./dist/operator-runtime.js"
     }
   },
   "dependencies": {

@@ -1,5 +1,5 @@
 // typecast-file-boundary: negative fixtures cross overload boundaries deliberately to assert fail-closed diagnostics.
-import { type ApplicationModelCreateEvent, app, applicationGraphFor, applicationModelFacet, defineApplicationProvider, type ModelEvent, postgres, QueryConsistency, trustedContext } from '@applik8s/applik8s';
+import { type ApplicationManagedModelHandler, type ApplicationModelCreateEvent, app, applicationGraphFor, applicationModelFacet, defineApplicationProvider, type ModelEvent, postgres, QueryConsistency, trustedContext } from '@applik8s/applik8s';
 import {
   authenticatedPrincipalId,
   causalPrincipalId,
@@ -48,6 +48,46 @@ function catalogSchema() {
 }
 
 describe('v0.6 app-scoped native model promotion', () => {
+  test('reuses one portable reconcile closure for relational and Kubernetes-backed models', () => {
+    type WorkspaceValue = { readonly id: string; readonly version: string };
+    type WorkspaceStatus = { readonly observedGeneration: number; readonly phase: string };
+    const workspaces = pgTable('portable_managed_workspaces', {
+      id: text('id').primaryKey(),
+      version: text('version').notNull(),
+    });
+    const application = app('portable-managed-workspace');
+    const Database = application.database.postgres('catalog', { schema: { workspaces } });
+    const RelationalWorkspace = application.model(workspaces, {
+      name: 'RelationalWorkspace',
+      database: Database,
+    }).managed({
+      status: type({ observedGeneration: 'number.integer >= 0', phase: "'Pending' | 'Ready'" }),
+      initialStatus: { observedGeneration: 0, phase: 'Pending' },
+    });
+    const KubernetesWorkspace = application.crd('KubernetesWorkspace', {
+      apiVersion: 'workspaces.applik8s.dev/v1alpha1',
+      spec: type({ id: 'string', version: 'string' }),
+      status: type({ observedGeneration: 'number.integer >= 0', phase: "'Pending' | 'Ready'" }),
+    });
+    const reconcile: ApplicationManagedModelHandler<string, WorkspaceValue, WorkspaceStatus> = async (workspace) => {
+      await workspace.status.update({
+        observedGeneration: workspace.metadata.generation,
+        phase: 'Ready',
+      });
+      await workspace.conditions.set({
+        type: 'Ready',
+        status: 'True',
+        reason: 'Converged',
+        message: `Workspace ${workspace.id} is running ${workspace.value.version}.`,
+      });
+    };
+
+    RelationalWorkspace.on.reconcile(reconcile);
+    KubernetesWorkspace.on.reconcile(reconcile);
+
+    expect(application.operatorInstalls).toHaveLength(1);
+  });
+
   test('enriches one native model with function-native portable reconciliation', () => {
     const workspaces = pgTable('managed_workspaces', {
       id: uuid('id').primaryKey(),

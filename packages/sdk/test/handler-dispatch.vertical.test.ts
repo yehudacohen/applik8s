@@ -38,6 +38,107 @@ const statusSchema = {
 } satisfies JsonSchemaSource<ImageStatus>;
 
 describe('generated handler dispatcher', () => {
+  it('presents Kubernetes reconciliation through the portable managed-model envelope', async () => {
+    const ImageJob = sdk.crd<ImageSpec, ImageStatus>({
+      apiVersion: 'media.applik8s.dev/v1alpha1',
+      kind: 'ImageJob',
+      spec: specSchema,
+      status: statusSchema,
+      statusConvention: {
+        ownership: 'handlerAuthoritative',
+        observedGenerationField: 'observedGeneration',
+        conditionsField: 'conditions',
+      },
+    });
+    const operator = sdk.operator({
+      name: 'portable-managed-model',
+      resources: { ImageJob },
+      handlers: [
+        ImageJob.on.reconcile(async (job, context) => {
+          expect(job.id).toBe('hero');
+          expect(job.value).toEqual({ sourceUrl: 's3://bucket/hero.png' });
+          expect(job.spec).toBe(job.value);
+          expect(job.metadata).toMatchObject({
+            uid: 'uid-hero',
+            generation: 7,
+            resourceVersion: '41',
+            createdAt: '2026-08-31T12:00:00.000Z',
+            finalizers: ['media.applik8s.dev/archive'],
+          });
+          expect(job.status.current).toEqual({ phase: 'Pending' });
+          const statusReceipt = await job.status.update({ phase: 'Processing' });
+          expect(statusReceipt).toMatchObject({
+            protocol: 'applik8s.managed-model/v1alpha1',
+            uid: 'uid-hero',
+            generation: 7,
+            resourceVersion: '41',
+            fence: 'reconcile-7',
+          });
+          await job.conditions.set({
+            type: 'Ready',
+            status: 'False',
+            reason: 'Processing',
+            message: 'The image is still processing.',
+          });
+          expect(context).toMatchObject({
+            protocol: 'applik8s.managed-model/v1alpha1',
+            reconcileId: 'reconcile-7',
+            fence: 'reconcile-7',
+            attempt: 3,
+            causalPrincipalId: 'principal-1',
+          });
+          return context.requeueAfter('30s');
+        }),
+      ],
+    });
+
+    const output = await dispatchOperatorHandler(operator.definition, JSON.stringify({
+      handlerId: 'ImageJob.reconcile.0',
+      event: 'reconcile',
+      object: {
+        apiVersion: 'media.applik8s.dev/v1alpha1',
+        kind: 'ImageJob',
+        metadata: {
+          name: 'hero',
+          namespace: 'media',
+          uid: 'uid-hero',
+          generation: 7,
+          resourceVersion: '41',
+          creationTimestamp: '2026-08-31T12:00:00.000Z',
+          finalizers: ['media.applik8s.dev/archive'],
+        },
+        spec: { sourceUrl: 's3://bucket/hero.png' },
+        status: { phase: 'Pending' },
+      },
+      runtime: {
+        reconcileId: 'reconcile-7',
+        identityEnvelope: {
+          causalPrincipalId: 'principal-1',
+          telemetry: { identity: { attempt: 3 } },
+        },
+      },
+    }));
+
+    expect(JSON.parse(output)).toMatchObject({
+      operations: [
+        {
+          kind: 'status',
+          status: {
+            phase: 'Processing',
+            conditions: [{
+              type: 'Ready',
+              status: 'False',
+              observedGeneration: 7,
+              reason: 'Processing',
+              message: 'The image is still processing.',
+            }],
+          },
+        },
+        { kind: 'requeue', policy: { afterSeconds: 30 } },
+      ],
+    });
+  });
+
   it('infers Kubernetes connection aliases in operator-scoped handlers', () => {
     const ImageJob = sdk.crd<ImageSpec, ImageStatus>({
       apiVersion: 'media.applik8s.dev/v1alpha1', kind: 'ImageJob', spec: specSchema, status: statusSchema,

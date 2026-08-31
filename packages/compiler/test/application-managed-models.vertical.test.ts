@@ -115,14 +115,20 @@ describe('generated distributed managed-model operator', () => {
     const graph = applicationGraphFor(application.composition);
     if (!graph) throw new Error('Expected graph.');
     const model = graph.nodes.find(node => node.kind === 'model' && node.name === 'Record');
-    if (model?.kind !== 'model' || !model.managed?.reconcile) throw new Error('Expected managed model.');
+    if (model?.kind !== 'model' || !model.managed) throw new Error('Expected managed model.');
     const managed = model.managed;
     const reconcile = managed.reconcile;
+    if (!reconcile) throw new Error('Expected managed reconcile callback.');
     const brokenModel: typeof model = {
       ...model,
       managed: {
         ...managed,
-        reconcile: { ...reconcile, handlerUnresolved: ['missingHelper'] },
+        reconcile: {
+          ...reconcile,
+          handlerSource: reconcile.handlerSource,
+          conditionTypes: reconcile.conditionTypes,
+          handlerUnresolved: ['missingHelper'],
+        },
       },
     };
     const broken = {

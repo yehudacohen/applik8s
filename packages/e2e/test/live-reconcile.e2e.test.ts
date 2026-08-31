@@ -1,9 +1,8 @@
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterAll, beforeAll, expect, it } from 'vitest';
-
 import { buildImplicitRuntimeImage, createCompilerPipeline } from '@applik8s/compiler';
+import { afterAll, beforeAll, expect, it } from 'vitest';
 
 import {
   assertExpectedKubectlContext,
@@ -125,8 +124,23 @@ spec:
 
   afterAll(async () => {
     if (process.env.APPLIK8S_E2E_LIVE === '1') {
-      await kubectl(['delete', 'namespace', namespace, '--ignore-not-found=true', '--wait=false']);
-      await kubectl(['delete', 'crd', `imagejobs.${group}`, '--ignore-not-found=true', '--wait=false']);
+      await kubectl(['delete', `imagejobs.${group}`, '--all', '--namespace', namespace, '--ignore-not-found=true', '--wait=false']);
+      try {
+        await kubectl(['wait', '--for=delete', `imagejobs.${group}`, '--all', '--namespace', namespace, '--timeout=60s']);
+      } catch {
+        const remaining = (await kubectl(['get', `imagejobs.${group}`, '--namespace', namespace, '--ignore-not-found=true', '--output=name'])).stdout
+          .split('\n')
+          .map(value => value.trim())
+          .filter(Boolean);
+        for (const identity of remaining) {
+          await kubectl(['patch', identity, '--namespace', namespace, '--type=merge', '--patch', '{"metadata":{"finalizers":[]}}']);
+        }
+        if (remaining.length > 0) {
+          await kubectl(['wait', '--for=delete', `imagejobs.${group}`, '--all', '--namespace', namespace, '--timeout=60s']);
+        }
+      }
+      await kubectl(['delete', 'namespace', namespace, '--ignore-not-found=true', '--wait=true', '--timeout=180s']);
+      await kubectl(['delete', 'crd', `imagejobs.${group}`, '--ignore-not-found=true', '--wait=true', '--timeout=180s']);
     }
     if (tempDir) {
       await rm(tempDir, { recursive: true, force: true });
@@ -142,6 +156,8 @@ spec:
 
     await waitForStatusWithDiagnostics();
     await waitForReadyCondition('hero-image', 'True', 'ReconcileSucceeded', 1);
+    expect((await kubectl(['get', `imagejobs.${group}/hero-image`, '--namespace', namespace, '--output=jsonpath={.status.conditions[?(@.type=="Converged")].status}'])).stdout.trim()).toBe('True');
+    expect((await kubectl(['get', `imagejobs.${group}/hero-image`, '--namespace', namespace, '--output=jsonpath={.status.conditions[?(@.type=="Converged")].observedGeneration}'])).stdout.trim()).toBe('1');
     expect((await kubectl(['get', `imagejobs.${group}/hero-image`, '--namespace', namespace, '--output=jsonpath={.metadata.finalizers[0]}'])).stdout.trim()).toBe('media.applik8s.dev/imagejob');
     expect((await kubectl(['get', 'configmap/hero-image-output', '--namespace', namespace, '--output=jsonpath={.data.sourceUrl}'])).stdout.trim()).toBe('s3://bucket/hero.png');
     expect((await kubectl(['get', 'configmap/hero-image-output', '--namespace', namespace, '--output=jsonpath={.metadata.ownerReferences[0].apiVersion}'])).stdout.trim()).toBe(`${group}/v1alpha1`);
@@ -208,9 +224,12 @@ spec:
       throw new Error('Live reconcile artifacts were not generated.');
     }
 
+    await kubectl(['scale', 'deployment/image-pipeline', '--namespace', namespace, '--replicas=0']);
+    await kubectl(['wait', '--for=delete', 'pod', '--namespace', namespace, '--selector', 'app.kubernetes.io/name=image-pipeline', '--timeout=180s']);
     await kubectl(['apply', '--server-side', '--field-manager=applik8s-live-e2e', '--filename', statusConflictSamplePath]);
-    await kubectl(['apply', '--server-side', '--field-manager=external-status-owner', '--subresource=status', '--filename', statusConflictPatchPath]);
-    await kubectl(['annotate', `imagejobs.${group}/status-conflict-image`, '--namespace', namespace, 'applik8s.dev/status-conflict-trigger=true', '--overwrite']);
+    await kubectl(['apply', '--server-side', '--force-conflicts', '--field-manager=external-status-owner', '--subresource=status', '--filename', statusConflictPatchPath]);
+    await kubectl(['scale', 'deployment/image-pipeline', '--namespace', namespace, '--replicas=1']);
+    await rolloutStatusWithDiagnostics();
     await waitForStatusConflictDiagnostics();
     await waitForReadyCondition('status-conflict-image', 'False', 'StatusPatchFailed');
 
@@ -481,7 +500,7 @@ export const imagePipeline = sdk.operator({
     { apiGroups: [''], resources: ['events'], verbs: ['create', 'patch', 'update'] },
   ],
   resources: { ImageJob },
-  handlers: [ImageJob.on.created((job) => {
+  handlers: [ImageJob.on.created(async (job, context) => {
     if (job.event !== 'created') {
       throw new Error('Expected created event routing.');
     }
@@ -489,7 +508,7 @@ export const imagePipeline = sdk.operator({
     if (job.metadata.name === 'rbac-denied-image') {
       job.apply({ apiVersion: 'v1', kind: 'ConfigMap', metadata: { name: childName, namespace: job.metadata.namespace }, data: { sourceUrl: job.spec.sourceUrl } });
       job.apply({ apiVersion: 'v1', kind: 'Secret', metadata: { name: 'rbac-denied-image-secret', namespace: job.metadata.namespace }, data: { sourceUrl: 'czM6Ly9idWNrZXQvcmJhYy1kZW5pZWQucG5n' } });
-      job.status.phase = 'Processing';
+      await job.status.update({ phase: 'Processing', outputUrls: [], requeueAfterSeconds: 30 });
       job.events.normal('ImageJobAccepted', 'Image job accepted for processing');
       return;
     }
@@ -503,12 +522,16 @@ export const imagePipeline = sdk.operator({
     if (job.metadata.name === 'timeout-image') {
       while (true) {}
     }
-    job.status.phase = 'Processing';
-    job.status.outputUrls = [];
-    job.status.requeueAfterSeconds = 30;
+    await job.status.update({ phase: 'Processing', outputUrls: [], requeueAfterSeconds: 30 });
+    await job.conditions.set({
+      type: 'Converged',
+      status: 'True',
+      reason: 'ImageJobAccepted',
+      message: 'The portable managed-model callback admitted the current generation.',
+    });
     job.apply({ apiVersion: 'v1', kind: 'ConfigMap', metadata: { name: childName, namespace: job.metadata.namespace }, data: { sourceUrl: job.spec.sourceUrl } });
     job.events.normal('ImageJobAccepted', 'Image job accepted for processing');
-    job.requeue({ afterSeconds: 30, reason: 'verify-live-requeue' });
+    return context.requeueAfter('30s');
   }), ImageJob.on.updated((job) => {
     if (job.event !== 'updated') {
       throw new Error('Expected updated event routing.');

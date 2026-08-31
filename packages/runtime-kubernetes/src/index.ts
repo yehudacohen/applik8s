@@ -5,6 +5,8 @@ import type { ResourceObject, WatchEvent } from '@applik8s/core';
 import type { KubeConfig } from '@kubernetes/client-node';
 
 export * from './job-runtime.js';
+export * from './managed-model-store.js';
+export * from './operator-runtime.js';
 export * from './schedule.js';
 
 export interface KubernetesApplicationInstallationTransportOptions {

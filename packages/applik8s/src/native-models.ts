@@ -45,11 +45,12 @@ import {
   currentApplicationManagedEffects,
   stagedApplicationCommandResult,
 } from './application-managed-effects-api.js';
-import type {
-  ApplicationManagedModelFacet,
-  ApplicationManagedModelLifecycleRegistrar,
-  ApplicationManagedModelOptions,
-  ApplicationManagedModelRegistrar,
+import {
+  type ApplicationManagedModelFacet,
+  type ApplicationManagedModelLifecycleRegistrar,
+  type ApplicationManagedModelOptions,
+  type ApplicationManagedModelRegistrar,
+  managedModelStoreRequirement,
 } from './application-managed-models.js';
 import type {
   ApplicationModelBinding,
@@ -75,7 +76,7 @@ import type {
   ApplicationQuerySourceBinding,
 } from './application-queries.js';
 import type { ApplicationBatchableQueryOperation } from './application-query-batching.js';
-import { captureApplicationQuerySelection, type ApplicationQuerySelection } from './application-query-selection.js';
+import { type ApplicationQuerySelection, captureApplicationQuerySelection } from './application-query-selection.js';
 import type {
   ApplicationStreamProcessContext,
   ApplicationStreamProcessOptions,
@@ -87,7 +88,7 @@ import type {
   ApplicationSearchIndexBinding,
 } from './application-search.js';
 import { runApplicationTelemetryBoundary } from './application-telemetry-runtime.js';
-import { event, type CommandDefinition, type EventDefinition } from './dsl.js';
+import { type CommandDefinition, type EventDefinition, event } from './dsl.js';
 import {
   type ApplicationNativeModelEditTarget,
   bindApplicationNativeModelMethod,
@@ -897,6 +898,7 @@ export interface KubernetesApplicationModelFacet<TSpec extends object, TStatus e
     readonly namespaceLabel: string;
   };
   readonly create?: ApplicationKubernetesCreatePolicy<TSpec>;
+  readonly store: ApplicationManagedModelFacet<string, TSpec, TStatus>['store'];
   readonly __status?: TStatus;
 }
 
@@ -984,6 +986,7 @@ export type PromotedKubernetesResource<
   readonly $model: KubernetesApplicationModelFacet<TSpec, TStatus>;
   readonly [applicationModelFacet]: KubernetesApplicationModelFacet<TSpec, TStatus>;
   readonly relations: KubernetesApplicationModelFacet<TSpec, TStatus>['relations'];
+  readonly store: KubernetesApplicationModelFacet<TSpec, TStatus>['store'];
   ref(): ApplicationModelReferenceSchema<string>;
   index<const TFields extends readonly ApplicationSearchField[]>(
     name: string,
@@ -2003,6 +2006,7 @@ export function promoteKubernetesResource<TSpec extends object, TStatus extends 
       Object.fromEntries(relationships.map((relationship) => [relationship.name, relationship])),
     ),
     resource: { apiVersion: resource.apiVersion, kind: resource.kind, plural: resource.plural, scope: resource.scope },
+    store: managedModelStoreRequirement(name),
     ...(options.access ? { access: Object.freeze({ ...options.access }) } : {}),
     ...(options.create ? { create: options.create } : {}),
     ref() {
@@ -2013,6 +2017,7 @@ export function promoteKubernetesResource<TSpec extends object, TStatus extends 
     [applicationModelFacet]: { value: facet, enumerable: false, configurable: false, writable: false },
     $model: { value: facet, enumerable: false, configurable: false, writable: false },
     relations: { value: facet.relations, enumerable: false, configurable: false, writable: false },
+    store: { value: facet.store, enumerable: false, configurable: false, writable: false },
     ref: { value: () => facet.ref(), enumerable: false, configurable: false, writable: false },
     query: {
       value: (

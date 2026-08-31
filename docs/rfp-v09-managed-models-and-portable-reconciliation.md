@@ -201,6 +201,18 @@ interface ManagedModelConditionInput {
   message: string;
 }
 
+interface ManagedStatusWriteReceipt {
+  readonly protocol: "applik8s.managed-model/v1alpha1";
+  readonly uid: string;
+  readonly generation: number;
+  readonly resourceVersion: string;
+  readonly fence: string;
+  readonly disposition: "accepted";
+  readonly recordedAt: string;
+}
+
+type ManagedConditionWriteReceipt = ManagedStatusWriteReceipt;
+
 interface ManagedModelObject<TIdentity, TValue, TStatus> {
   readonly id: TIdentity;
   readonly value: Readonly<TValue>;
@@ -232,6 +244,11 @@ patch whose nested merge, omission, `undefined`, and deletion semantics differ a
 Kubernetes. Providers may lower one complete update to an efficient compare-and-set patch internally, but
 the resulting authoritative status must validate against the declared schema and preserve nested-field
 fidelity.
+
+The returned receipt proves that the write was accepted into the current fenced reconcile attempt. It is
+not provider-completion evidence: Kubernetes applies the atomic operation plan after the closure returns,
+while a relational provider may commit during the awaited call. Callbacks therefore receive the same
+`disposition: "accepted"` contract on every provider and never infer completion from the receipt timestamp.
 
 `conditions.set(...)` stamps the current object's `generation` as `observedGeneration` and computes
 `lastTransitionTime` from the previous condition of the same type. An unchanged `{ status, reason,

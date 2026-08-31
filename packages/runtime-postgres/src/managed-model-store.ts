@@ -1,9 +1,9 @@
 // typecast-file-boundary: JSONB lifecycle rows are validated and decoded at this PostgreSQL provider boundary before regaining model identity, value, and status generics.
 import { randomUUID } from 'node:crypto';
 import {
-  ApplicationManagedModelConflictError,
   type ApplicationManagedModelCommitPrecondition,
   type ApplicationManagedModelCondition,
+  ApplicationManagedModelConflictError,
   type ApplicationManagedModelLease,
   type ApplicationManagedModelStore,
   type ApplicationManagedModelStoreRecord,
@@ -194,7 +194,8 @@ export function createPostgresApplicationManagedModelStore<
     generation: record.metadata.generation,
     resourceVersion: record.metadata.resourceVersion,
     fence,
-    committedAt: now,
+    disposition: 'accepted',
+    recordedAt: now,
   });
 
   const store: PostgresApplicationManagedModelStore<TIdentity, TValue, TStatus> = {

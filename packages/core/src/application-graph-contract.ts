@@ -333,6 +333,8 @@ export interface ApplicationCrdNode extends ApplicationGraphNodeBase<'crd'> {
   readonly native?: ApplicationNativeModelContract;
   readonly common?: ApplicationCommonModelContract;
   readonly create?: ApplicationKubernetesCreateAuthorityContract;
+  /** Provider-neutral desired-state semantics supplied by the Kubernetes resource authority. */
+  readonly managed?: ApplicationManagedModelContract;
 }
 
 export interface ApplicationModelNode extends ApplicationGraphNodeBase<'model'> {
@@ -354,15 +356,15 @@ export interface ApplicationModelNode extends ApplicationGraphNodeBase<'model'> 
 
 export interface ApplicationManagedModelContract {
   readonly status: ApplicationMessageContractSchema;
-  readonly initialStatus: JsonObject;
+  readonly initialStatus?: JsonObject;
   readonly statusSchemaVersion: string;
   readonly store: ApplicationProviderRef<'ManagedModelStore'>;
   readonly runtime: ApplicationProviderRef<'OperatorRuntime'>;
   readonly lifecycle: {
-    readonly generation: 'desiredValueDigest';
+    readonly generation: 'desiredValueDigest' | 'kubernetesMetadataGeneration';
     readonly notification: 'invalidationHint';
     readonly resync: { readonly intervalSeconds: number; readonly maximumItems: number };
-    readonly lease: { readonly durationSeconds: number; readonly fencing: 'monotonicToken' };
+    readonly lease: { readonly durationSeconds: number; readonly fencing: 'monotonicToken' | 'uidGenerationResourceVersion' };
     readonly status: 'schemaCompleteCompareAndSet';
     readonly conditions: 'singleWriterPerStaticType';
     readonly nextDue: 'operatorOwned';
@@ -384,7 +386,7 @@ export interface ApplicationManagedModelContract {
     readonly conditionTypes: readonly string[];
   }[];
   readonly portability: 'portable' | 'kubernetesConstrained';
-  readonly activation: 'migrationRequiredForExistingRows';
+  readonly activation: 'migrationRequiredForExistingRows' | 'providerNative';
 }
 
 export interface ApplicationNativeModelContract {

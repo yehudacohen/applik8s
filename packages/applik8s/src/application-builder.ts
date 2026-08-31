@@ -40,7 +40,7 @@ import {
   applicationAuthorityRegistrar,
 } from './application-authority.js';
 import { expandApplicationCallbackDependencies, serializeApplicationCallback } from './application-callback.js';
-import { recordApplicationCrdGraph } from './application-crd-graph.js';
+import { recordApplicationCrdGraph, recordApplicationCrdManagedHandler } from './application-crd-graph.js';
 import {
   type ApplicationEventCatalog,
   type ApplicationEventCatalogSource,
@@ -77,6 +77,15 @@ import {
 } from './application-infrastructure-resources.js';
 import { type ApplicationInstallationClient, type ApplicationInstallationConnectOptions, createApplicationInstallationClient } from './application-installation-client.js';
 import {
+  type ApplicationManagedModelFacet,
+  type ApplicationManagedModelHandler,
+  type ApplicationManagedModelOptions,
+  applicationManagedModelConditionTypes,
+  assertApplicationManagedModelConditionOwnership,
+  managedModelDurationSeconds,
+  managedModelStoreRequirement,
+} from './application-managed-models.js';
+import {
   type ApplicationMcpClientBinding,
   type ApplicationMcpClientOptions,
   type ApplicationMcpRegistrar,
@@ -86,13 +95,6 @@ import {
 } from './application-mcp.js';
 import type { ApplicationModelBinding, ApplicationModelOptions, ApplicationModelRuntimeBinding, ApplicationModelSchemaIndexOptions, ApplicationRuntimeModelContract } from './application-models.js';
 import { applicationModelBinding, applicationModelCommandRegistrar, applicationRuntimeModelContract, bindApplicationModelCommandRegistrar, prepareApplicationModelCommandReplacement, recordApplicationAnalyticalNativeModelGraph, recordApplicationModelCommandGraph, recordApplicationModelGraph, recordApplicationNativeModelGraph, resolveApplicationTransactionalDatabase } from './application-models.js';
-import {
-  type ApplicationManagedModelFacet,
-  type ApplicationManagedModelHandler,
-  type ApplicationManagedModelOptions,
-  managedModelDurationSeconds,
-  managedModelStoreRequirement,
-} from './application-managed-models.js';
 import {
   type ApplicationModuleReference,
   applicationModuleMetadataFor,
@@ -183,6 +185,7 @@ export type { ApplicationLakehouseAuthorityManifest, ApplicationLakehouseCompari
 export { ApplicationLakehouseQueryTerminalError, applicationLakehouseAuthorityManifest, applicationLakehouseQueryIdentity, applicationLakehouseQueryTerminalError, classifyApplicationLakehouseSchemaEvolution, compareApplicationLakehouseRows, compileApplicationLakehouseQuery, createDeterministicApplicationLakehouseRuntime, evaluateApplicationLakehouseFilter, executeApplicationLakehousePublication, installApplicationLakehousePublicationRuntimeResolver, installApplicationLakehouseQueryRuntimeResolver, verifyApplicationLakehouseAuthorityManifest, verifyApplicationLakehouseManifest } from './application-lakehouse.js';
 export type { ApplicationLakehouseConformanceCase, ApplicationLakehouseConformanceReport, ApplicationLakehouseConformanceRow } from './application-lakehouse-conformance.js';
 export { applicationLakehouseConformanceCases, applicationLakehouseConformanceRows, runApplicationLakehouseConformance } from './application-lakehouse-conformance.js';
+export type * from './application-managed-models.js';
 export type { ApplicationMcpClientBinding, ApplicationMcpClientOptions, ApplicationMcpRegistrar, ApplicationMcpServerBinding, ApplicationMcpServerOptions, ApplicationMcpToolSelection } from './application-mcp.js';
 export type { ApplicationModelClearIntent, ApplicationModelUpdatePatch } from './application-model-update-contract.js';
 export { clear } from './application-model-update-contract.js';
@@ -209,7 +212,6 @@ export type { ApplicationDurableErrorDescriptor, ApplicationDurableErrorUnion, A
 export { ApplicationDurableError, installApplicationWorkflowRuntimeResolver, isApplicationDurableError } from './application-workflows.js';
 export type { ApplicationEventConsumerBinding, RunningApplicationEventConsumer } from './event-log-runtime.js';
 export type { ApplicationKubernetesCreatePlacement, ApplicationKubernetesCreatePolicy, ApplicationKubernetesCreateRequest, ApplicationModelBeforeCommitHandler, ApplicationModelBeforeCommitOptions, ApplicationModelCreateEvent, ApplicationModelCreateEventHandler, ApplicationModelDeleteEvent, ApplicationModelDeleteEventHandler, ApplicationModelDeleteInput, ApplicationModelEvent, ApplicationModelEventKind, ApplicationModelLifecycleRegistrar, ApplicationModelMutationOperation, ApplicationModelUpdateEvent, ApplicationModelUpdateEventHandler, ApplicationModelUpdateInput, DrizzleAnalyticalApplicationModelFacet, ManagedApplicationRelationalModel, ModelEvent, PromotedAnalyticalDrizzleTable } from './native-models.js';
-export type * from './application-managed-models.js';
 
 export interface ApplicationInfrastructureOptions {
   /** Stable graph identity for a nested composition instance. */
@@ -376,7 +378,7 @@ function registerApplicationManagedRelationalModel<
           throw new Error(`Managed model ${modelName} may declare only one reconcile handler.`);
         }
         const { serialized, conditionTypes } = serialize('reconcile', handler);
-        assertManagedModelConditionOwnership(modelName, contract, conditionTypes);
+        assertApplicationManagedModelConditionOwnership(modelName, contract, conditionTypes);
         reconcileRegistered = true;
         contract = {
           ...contract,
@@ -407,7 +409,7 @@ function registerApplicationManagedRelationalModel<
           throw new Error(`Managed model ${modelName} finalizer ${finalizer} is already registered.`);
         }
         const { serialized, conditionTypes } = serialize('finalize', handler);
-        assertManagedModelConditionOwnership(modelName, contract, conditionTypes);
+        assertApplicationManagedModelConditionOwnership(modelName, contract, conditionTypes);
         finalizers.add(finalizer);
         contract = {
           ...contract,
@@ -435,41 +437,6 @@ function registerApplicationManagedRelationalModel<
   });
   void model;
   return facet;
-}
-
-function applicationManagedModelConditionTypes(
-  modelName: string,
-  event: 'reconcile' | 'finalize',
-  source: string,
-): readonly string[] {
-  const calls = source.match(/\.conditions\s*\.\s*(?:set|remove)\s*\(/gu) ?? [];
-  const types = [
-    ...source.matchAll(/\.conditions\s*\.\s*set\s*\(\s*\{[\s\S]{0,1200}?\btype\s*:\s*(['"])([^'"]+)\1/gu),
-    ...source.matchAll(/\.conditions\s*\.\s*remove\s*\(\s*(['"])([^'"]+)\1/gu),
-  ].map((match) => match[2] as string);
-  if (calls.length !== types.length) {
-    throw new Error(
-      `Managed model ${modelName} ${event} handler condition types must be statically discoverable string literals.`,
-    );
-  }
-  return Object.freeze([...new Set(types)].sort());
-}
-
-function assertManagedModelConditionOwnership(
-  modelName: string,
-  contract: ApplicationManagedModelContract,
-  next: readonly string[],
-): void {
-  const owned = new Set([
-    ...(contract.reconcile?.conditionTypes ?? []),
-    ...contract.finalizers.flatMap((finalizer) => finalizer.conditionTypes),
-  ]);
-  const collision = next.find((type) => owned.has(type));
-  if (collision) {
-    throw new Error(
-      `Managed model ${modelName} condition ${collision} has more than one writer. Factor it through one reconcile or finalize handler.`,
-    );
-  }
 }
 
 function isSingleStepWorkflowOptions(options: object): boolean {
@@ -1499,6 +1466,9 @@ function bindApplicationResourceEvents<TSpec extends object, TStatus extends obj
         recordApplicationOperatorGraph(state, controllerState.controller.operator);
         for (const observer of controllerState.observers) {
           observer({ style, method, args });
+        }
+        if (method === 'reconcile' || method === 'finalize') {
+          recordApplicationCrdManagedHandler(state, resource, method, args);
         }
         state.onChange?.();
         return registration;
@@ -4642,6 +4612,7 @@ function createApplicationContext<TSpec extends KroCompatibleType, TStatus exten
       ...resourceOptions,
       apiVersion: resourceOptions.apiVersion ?? applicationDefinitionApiVersion(definition),
       kind: resourceOptions.kind ?? name,
+      statusConvention: resourceOptions.statusConvention ?? applicationManagedKubernetesStatusConvention,
       // App-owned resources always reserve the status subresource for
       // framework-owned restart-safe state (for example job.track()). Domain
       // authors do not need to invent a status field merely to opt into
@@ -4684,6 +4655,7 @@ function createApplicationContext<TSpec extends KroCompatibleType, TStatus exten
       ...crdOptions,
       kind: normalizedOptions.kind ?? entity.name,
       spec: entity.spec,
+      statusConvention: crdOptions.statusConvention ?? applicationManagedKubernetesStatusConvention,
       // Promoted Kubernetes models share the same invisible framework-status
       // envelope as app.resource(...), even when they have no authored status.
       status: entity.status ?? emptyApplicationStatusSchema<TStatus>(),
@@ -5713,6 +5685,12 @@ function emptyApplicationStatusSchema<TStatus extends object>(): SchemaInput<TSt
   // representation used to reserve the framework-owned status subresource.
   return arkType({}) as unknown as SchemaInput<TStatus>;
 }
+
+const applicationManagedKubernetesStatusConvention = Object.freeze({
+  ownership: 'handlerAuthoritative' as const,
+  observedGenerationField: 'observedGeneration' as const,
+  conditionsField: 'conditions' as const,
+});
 
 function applicationStoragePostgresMigrations(migrations: ApplicationStoragePostgresOptions['migrations']): ApplicationPostgresTransactionalDatabaseOptions['migrations'] | undefined {
   if (migrations === undefined) {

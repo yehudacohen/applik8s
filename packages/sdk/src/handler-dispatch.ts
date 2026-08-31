@@ -34,6 +34,7 @@ import type {
   OperatorDefinition,
   PatchTargetOptions,
   PlanTargetOptions,
+  PortableReconcileContext,
   RemoteApplyTargetOptions,
   RemoteDeleteTargetOptions,
   RemotePatchTargetOptions,
@@ -47,6 +48,11 @@ import type {
   TrackableExecutionRun,
   TrackExecutionOptions,
   TrackedExecutionObservation,
+} from '@applik8s/core';
+import {
+  portableManagedModelStatus,
+  removePortableManagedModelCondition,
+  setPortableManagedModelCondition,
 } from '@applik8s/core';
 import {
   canonicalJsonCompatibleV1Policy,
@@ -135,7 +141,7 @@ interface InvocationResult {
 }
 
 async function invokeRunnableHandler(registration: RunnableHandlerRegistration, object: AnyKubernetesObject, event: HandlerEventType, reconcileId: string, capabilities: CapabilityClientSet, capabilityDescriptors: Readonly<Record<string, CapabilityDescriptor>>, resources: Readonly<Record<string, Pick<AnyResourceDefinition, 'apiVersion' | 'kind' | 'plural' | 'scope'>>>, kubernetesRead?: KubernetesReadImport, runtime?: HandlerInputPayload['runtime']): Promise<Result<InvocationResult>> {
-  const recorder = createRecorder(toResourceObject(object), { event, reconcileId, capabilities, capabilityDescriptors, resources, ...(kubernetesRead ? { kubernetesRead } : {}) });
+  const recorder = createRecorder(toResourceObject(object), { event, reconcileId, capabilities, capabilityDescriptors, resources, ...(registration.resource.statusConvention ? { statusConvention: registration.resource.statusConvention } : {}), ...(runtime ? { runtime } : {}), ...(kubernetesRead ? { kubernetesRead } : {}) });
   const restoreWorkflowRuntime = installWorkflowGatewayRuntime(capabilities, object, event, runtime);
   try {
     if (registration.handlerStyle === 'context') {
@@ -148,7 +154,7 @@ async function invokeRunnableHandler(registration: RunnableHandlerRegistration, 
       return ok({ result, plan: normalizeHandlerResult(result) });
     }
 
-    const returned = await registration.handler(recorder.scope);
+    const returned = await registration.handler(recorder.scope, recorder.managedContext);
     const explicit = normalizeReturnedHandlerResult(returned);
     if (!explicit.ok) {
       return explicit;
@@ -163,7 +169,7 @@ async function invokeRunnableHandler(registration: RunnableHandlerRegistration, 
 }
 
 function invokeRunnableHandlerSync(registration: RunnableHandlerRegistration, object: AnyKubernetesObject, event: HandlerEventType, reconcileId: string, capabilities: CapabilityClientSet, capabilityDescriptors: Readonly<Record<string, CapabilityDescriptor>>, resources: Readonly<Record<string, Pick<AnyResourceDefinition, 'apiVersion' | 'kind' | 'plural' | 'scope'>>>, kubernetesRead?: KubernetesReadImport, runtime?: HandlerInputPayload['runtime']): Result<InvocationResult> {
-  const recorder = createRecorder(toResourceObject(object), { event, reconcileId, capabilities, capabilityDescriptors, resources, ...(kubernetesRead ? { kubernetesRead } : {}) });
+  const recorder = createRecorder(toResourceObject(object), { event, reconcileId, capabilities, capabilityDescriptors, resources, ...(registration.resource.statusConvention ? { statusConvention: registration.resource.statusConvention } : {}), ...(runtime ? { runtime } : {}), ...(kubernetesRead ? { kubernetesRead } : {}) });
   const restoreWorkflowRuntime = installWorkflowGatewayRuntime(capabilities, object, event, runtime);
   try {
     if (registration.handlerStyle === 'context') {
@@ -179,7 +185,7 @@ function invokeRunnableHandlerSync(registration: RunnableHandlerRegistration, ob
       return ok({ result, plan: normalizeHandlerResult(result) });
     }
 
-    const returned = registration.handler(recorder.scope);
+    const returned = registration.handler(recorder.scope, recorder.managedContext);
     if (isPromiseLike(returned)) {
       throw new Error('Async handlers are not supported by the wasm component dispatcher in v0.1.');
     }
@@ -717,6 +723,7 @@ function readClient<TSpec extends object, TStatus extends object>(resource: Pick
 
 interface Recorder<TSpec extends object = object, TStatus extends object = object> {
   readonly scope: HandlerProxyScope<TSpec, TStatus>;
+  readonly managedContext: PortableReconcileContext;
   result(): HandlerResult<TStatus>;
 }
 
@@ -726,6 +733,8 @@ interface RecorderOptions {
   readonly capabilities: CapabilityClientSet;
   readonly capabilityDescriptors: Readonly<Record<string, CapabilityDescriptor>>;
   readonly resources: Readonly<Record<string, Pick<AnyResourceDefinition, 'apiVersion' | 'kind' | 'plural' | 'scope'>>>;
+  readonly statusConvention?: import('@applik8s/core').StatusConvention;
+  readonly runtime?: HandlerInputPayload['runtime'];
   readonly kubernetesRead?: KubernetesReadImport;
 }
 
@@ -742,6 +751,52 @@ function createRecorder<TSpec extends object, TStatus extends object>(object: Re
     status,
     canonicalJsonCompatibleV1Policy,
   );
+  const conditionsField = options.statusConvention?.conditionsField ?? 'conditions';
+  const managedMetadata = Object.freeze({
+    ...object.metadata,
+    uid: object.metadata.uid ?? `${object.apiVersion}:${object.kind}:${object.metadata.namespace ?? ''}:${object.metadata.name}`,
+    generation: object.metadata.generation ?? 1,
+    resourceVersion: object.metadata.resourceVersion ?? 'unobserved',
+    createdAt: object.metadata.creationTimestamp ?? 'unobserved',
+    finalizers: Object.freeze([...(object.metadata.finalizers ?? [])]),
+  });
+  const managedWriteReceipt = () => Object.freeze({
+    protocol: 'applik8s.managed-model/v1alpha1' as const,
+    uid: managedMetadata.uid,
+    generation: managedMetadata.generation,
+    resourceVersion: managedMetadata.resourceVersion,
+    fence: options.reconcileId,
+    disposition: 'accepted' as const,
+    recordedAt: new Date().toISOString(),
+  });
+  const replaceManagedStatus = (next: TStatus): void => {
+    const replacement = portableManagedModelStatus(status, next, conditionsField);
+    for (const key of Object.keys(status)) {
+      Reflect.deleteProperty(status, key);
+    }
+    Object.assign(status, replacement);
+  };
+  const readConditions = (): import('@applik8s/core').PortableManagedModelCondition[] => {
+    const value = Reflect.get(status, conditionsField);
+    return Array.isArray(value)
+      ? value.filter(isPortableManagedCondition).map((condition) => ({ ...condition }))
+      : [];
+  };
+  Object.defineProperties(status, {
+    current: {
+      enumerable: false,
+      configurable: false,
+      get: () => cloneJson(status),
+    },
+    update: {
+      enumerable: false,
+      configurable: false,
+      value: async (next: TStatus) => {
+        replaceManagedStatus(next);
+        return managedWriteReceipt();
+      },
+    },
+  });
 
   const k8s = {
     Job: (config: KubernetesFactoryConfig) => kubernetesFactory('batch/v1', 'Job', config),
@@ -775,9 +830,11 @@ function createRecorder<TSpec extends object, TStatus extends object>(object: Re
 
   // typecast: the literal object implements the overloaded HandlerProxyScope surface used by generated dispatcher calls.
   const scope = {
+    id: object.metadata.name,
+    value: object.spec,
     object,
     spec: object.spec,
-    metadata: object.metadata,
+    metadata: managedMetadata,
     event: options.event,
     reconcileId: options.reconcileId,
     capabilities: options.capabilities,
@@ -794,6 +851,24 @@ function createRecorder<TSpec extends object, TStatus extends object>(object: Re
     k8s,
     batch: k8s,
     status,
+    conditions: {
+      get current() {
+        return readConditions();
+      },
+      async set(next: import('@applik8s/core').PortableManagedModelConditionInput) {
+        Reflect.set(status, conditionsField, setPortableManagedModelCondition(
+          readConditions(),
+          next,
+          managedMetadata.generation,
+          new Date().toISOString(),
+        ));
+        return managedWriteReceipt();
+      },
+      async remove(type: string) {
+        Reflect.set(status, conditionsField, removePortableManagedModelCondition(readConditions(), type));
+        return managedWriteReceipt();
+      },
+    },
     resources: {
       apply(resource: AnyKubernetesObject, options?: ApplyTargetOptions) {
         apply.push(applyInput(resource, options));
@@ -1001,8 +1076,27 @@ function createRecorder<TSpec extends object, TStatus extends object>(object: Re
     }
   }
 
+  const managedContext: PortableReconcileContext = Object.freeze({
+    protocol: 'applik8s.managed-model/v1alpha1' as const,
+    reconcileId: options.reconcileId,
+    fence: options.reconcileId,
+    attempt: Number(options.runtime?.identityEnvelope?.telemetry?.identity?.attempt ?? 1),
+    signal: new AbortController().signal,
+    ...(options.runtime?.identityEnvelope?.causalPrincipalId
+      ? { causalPrincipalId: options.runtime.identityEnvelope.causalPrincipalId }
+      : {}),
+    trustedContext: Object.freeze({}),
+    requeueAfter(duration: string) {
+      return { kind: 'managedModelRequeue' as const, afterSeconds: managedDurationSeconds(duration) };
+    },
+    throwIfCancelled() {
+      if (this.signal.aborted) throw new Error(`Reconcile ${options.reconcileId} was cancelled.`);
+    },
+  });
+
   return {
     scope,
+    managedContext,
     result() {
       const result: MutableHandlerResult<TStatus> = {};
       if (apply.length > 0) {
@@ -1561,6 +1655,9 @@ function normalizeReturnedHandlerResult(value: unknown): Result<HandlerResult | 
   if (value === undefined) {
     return ok(undefined);
   }
+  if (isPortableManagedModelRequeue(value)) {
+    return ok({ requeue: { afterSeconds: value.afterSeconds } });
+  }
   if (isResult(value)) {
     return value;
   }
@@ -1569,6 +1666,42 @@ function normalizeReturnedHandlerResult(value: unknown): Result<HandlerResult | 
     return ok(value as HandlerResult);
   }
   return err('HANDLER_OUTPUT_INVALID', 'Handler returned a non-object value.');
+}
+
+function isPortableManagedModelRequeue(value: unknown): value is import('@applik8s/core').PortableManagedModelRequeue {
+  return Boolean(
+    value
+    && typeof value === 'object'
+    && Reflect.get(value, 'kind') === 'managedModelRequeue'
+    && typeof Reflect.get(value, 'afterSeconds') === 'number'
+    && Number.isFinite(Reflect.get(value, 'afterSeconds'))
+    && Number(Reflect.get(value, 'afterSeconds')) > 0,
+  );
+}
+
+function isPortableManagedCondition(value: unknown): value is import('@applik8s/core').PortableManagedModelCondition {
+  return Boolean(
+    value
+    && typeof value === 'object'
+    && typeof Reflect.get(value, 'type') === 'string'
+    && ['True', 'False', 'Unknown'].includes(String(Reflect.get(value, 'status')))
+    && typeof Reflect.get(value, 'observedGeneration') === 'number'
+    && typeof Reflect.get(value, 'reason') === 'string'
+    && typeof Reflect.get(value, 'message') === 'string'
+    && typeof Reflect.get(value, 'lastTransitionTime') === 'string',
+  );
+}
+
+function managedDurationSeconds(value: string): number {
+  const match = /^(\d+)(ms|s|m|h|d)$/u.exec(value.trim());
+  if (!match) throw new TypeError(`Reconcile delay must be a whole-number duration such as 30s, 5m, or 1h.`);
+  const amount = Number(match[1]);
+  const unit = match[2] ?? '';
+  const milliseconds = amount * ({ ms: 1, s: 1_000, m: 60_000, h: 3_600_000, d: 86_400_000 }[unit] ?? 0);
+  if (!Number.isSafeInteger(milliseconds) || milliseconds < 1_000) {
+    throw new TypeError('Reconcile delay must be at least 1s and remain within a safe integer range.');
+  }
+  return milliseconds / 1_000;
 }
 
 function isPromiseLike(value: unknown): value is PromiseLike<unknown> {

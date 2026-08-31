@@ -6,7 +6,7 @@ import {
   bindApplicationProviderDependencies,
   bindApplicationProviderOperation,
 } from '../src/application-provider-runtime.js';
-import { app, defineApplicationProvider, sdk } from '../src/index.js';
+import { app, applicationGraphFor, defineApplicationProvider, KubernetesCluster, ManagedModelStore, OperatorRuntime, sdk } from '../src/index.js';
 
 describe('application-native Kubernetes lifecycle handlers', () => {
   it('groups resource-owned events into one inferred operator and preserves finalizer metadata', () => {
@@ -61,6 +61,15 @@ describe('application-native Kubernetes lifecycle handlers', () => {
     expect(installation?.operator?.permissions).toEqual(expect.arrayContaining([
       { apiGroups: [''], resources: ['namespaces'], verbs: ['get'] },
     ]));
+    const graph = applicationGraphFor(application.composition);
+    const widgetNode = graph?.nodes.find(candidate => candidate.kind === 'crd' && candidate.name === 'Widget');
+    expect(widgetNode && widgetNode.kind === 'crd' ? widgetNode.managed?.finalizers : undefined).toMatchObject([
+      { name: 'widgets.example/cleanup' },
+    ]);
+    expect(graph?.providerRequirements.filter(requirement => requirement.consumer.nodeId === widgetNode?.id).map(requirement => requirement.interface).sort()).toEqual([
+      'ManagedModelStore',
+      'OperatorRuntime',
+    ]);
   });
 
   it('does not expose application-level lifecycle or reconciliation aliases', () => {
@@ -73,10 +82,66 @@ describe('application-native Kubernetes lifecycle handlers', () => {
     expect(Widget.statusSubresource).toBe(true);
     expect('on' in application).toBe(false);
     expect('reconcile' in application).toBe(false);
+    const node = applicationGraphFor(application.composition)?.nodes.find(candidate => candidate.kind === 'crd' && candidate.name === 'Widget');
+    expect(node && node.kind === 'crd' ? node.managed : undefined).toBeUndefined();
     // @ts-expect-error Resource.on.* is the only public Kubernetes lifecycle registration surface.
     void application.on;
     // @ts-expect-error Resource.on.reconcile(...) is the only public continuous-reconciliation surface.
     void application.reconcile;
+  });
+
+  it('uses one provider-neutral reconcile view for Kubernetes-backed models', () => {
+    const application = app('portable-kubernetes-model', { namespace: 'portable' });
+    const Workspace = application.crd('Workspace', {
+      apiVersion: 'workspaces.example/v1alpha1',
+      spec: type({ version: 'string' }),
+      status: type({ phase: "'Pending' | 'Ready'" }),
+    });
+    application.provide(
+      Workspace.store,
+      ManagedModelStore.kubernetes({ cluster: KubernetesCluster.current() }),
+    );
+    application.provide(
+      OperatorRuntime,
+      OperatorRuntime.kubernetes({ cluster: KubernetesCluster.current() }),
+    );
+
+    Workspace.on.reconcile(async (workspace, context) => {
+      expect(workspace.id).toBeTypeOf('string');
+      expect(workspace.value.version).toBeTypeOf('string');
+      await workspace.status.update({ phase: 'Ready' });
+      await workspace.conditions.set({
+        type: 'Ready',
+        status: 'True',
+        reason: 'Converged',
+        message: 'Workspace is ready.',
+      });
+      return context.requeueAfter('5m');
+    });
+
+    expect(Workspace.statusConvention).toEqual({
+      ownership: 'handlerAuthoritative',
+      observedGenerationField: 'observedGeneration',
+      conditionsField: 'conditions',
+    });
+    expect(Workspace.store.qualification.name).toBe('workspace');
+    expect(application.operatorInstalls).toHaveLength(1);
+    const node = applicationGraphFor(application.composition)?.nodes.find(
+      candidate => candidate.kind === 'crd' && candidate.name === 'Workspace',
+    );
+    expect(node && node.kind === 'crd' ? node.managed : undefined).toMatchObject({
+      statusSchemaVersion: 'kubernetes-resource-status-v1',
+      store: { interface: 'ManagedModelStore' },
+      runtime: { interface: 'OperatorRuntime' },
+      lifecycle: {
+        generation: 'kubernetesMetadataGeneration',
+        lease: { fencing: 'uidGenerationResourceVersion' },
+        status: 'schemaCompleteCompareAndSet',
+        deletion: 'intentThenFinalize',
+      },
+      activation: 'providerNative',
+    });
+    expect(node && node.kind === 'crd' ? node.managed?.reconcile?.handlerSource : undefined).toContain('workspace.status.update');
   });
 
   it('internalizes narrowly scoped tracking-finalizer authority for resource-native handlers', () => {

@@ -130,6 +130,11 @@ export {
   workflowGatewayServiceAccountTokenProjection,
 } from './capability.js';
 export type * from './dns.js';
+export {
+  portableManagedModelStatus,
+  removePortableManagedModelCondition,
+  setPortableManagedModelCondition,
+} from './managed-model.js';
 export type * from './signed-envelope.js';
 export {
   SignedEnvelopeV1ValidationError,

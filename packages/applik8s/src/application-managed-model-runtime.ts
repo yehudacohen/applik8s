@@ -409,7 +409,8 @@ export function createDeterministicApplicationManagedModelStore<
     generation: record.metadata.generation,
     resourceVersion: record.metadata.resourceVersion,
     fence: record.lease?.fence ?? '',
-    committedAt: now,
+    disposition: 'accepted',
+    recordedAt: now,
   });
   return {
     putDesired(model, id, value, initialStatus, now = new Date().toISOString()) {

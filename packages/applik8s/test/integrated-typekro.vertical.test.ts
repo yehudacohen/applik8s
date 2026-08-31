@@ -2242,7 +2242,9 @@ describe('integrated TypeKro package surface', () => {
       ['provider.HttpExposure', 'implemented'],
       ['provider.IndexStore', 'implemented'],
       ['provider.JobRuntime', 'failClosedReserved'],
+      ['provider.ManagedModelStore', 'implemented'],
       ['provider.ObjectStorage', 'implemented'],
+      ['provider.OperatorRuntime', 'implemented'],
       ['provider.Queue', 'implemented'],
       ['provider.Secret', 'implemented'],
       ['provider.StructuredGeneration', 'implemented'],
@@ -2307,8 +2309,11 @@ describe('integrated TypeKro package surface', () => {
       'Model.create',
       'Model.delete',
       'Model.edit',
+      'Model.managed',
       'Model.on.create',
       'Model.on.delete',
+      'Model.on.finalize',
+      'Model.on.reconcile',
       'Model.on.update',
       'Model.require',
       'Model.update',
@@ -2365,7 +2370,9 @@ describe('integrated TypeKro package surface', () => {
       'provider.EventSource',
       'provider.HttpExposure',
       'provider.IndexStore',
+      'provider.ManagedModelStore',
       'provider.ObjectStorage',
+      'provider.OperatorRuntime',
       'provider.Queue',
       'provider.Secret',
       'provider.StructuredGeneration',
@@ -3012,10 +3019,10 @@ describe('integrated TypeKro package surface', () => {
     const adapterPackage = JSON.parse(await readFile('packages/typekro-adapter/package.json', 'utf8'));
     const installedPackage = JSON.parse(await readFile('node_modules/typekro/package.json', 'utf8'));
 
-    expect(workspacePackage.dependencies.typekro).toBe('0.33.8');
-    expect(applik8sPackage.dependencies.typekro).toBe('0.33.8');
-    expect(adapterPackage.dependencies.typekro).toBe('0.33.8');
-    expect(installedPackage.version).toBe('0.33.8');
+    expect(workspacePackage.dependencies.typekro).toBe('0.33.9');
+    expect(applik8sPackage.dependencies.typekro).toBe('0.33.9');
+    expect(adapterPackage.dependencies.typekro).toBe('0.33.9');
+    expect(installedPackage.version).toBe('0.33.9');
   });
 
   it('builds generated app infrastructure on existing TypeKro Kubernetes factories', async () => {
