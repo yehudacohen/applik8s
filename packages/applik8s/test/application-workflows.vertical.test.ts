@@ -437,6 +437,7 @@ describe('v0.5 durable task and workflow contracts', () => {
 
   it('infers one atomic model transaction for a durable workflow step', () => {
     const platform = app('function-native-workflow-models');
+    const worker = platform.serviceIdentity('records-writer');
     const records = pgTable('workflow_native_records', {
       id: text('id').primaryKey(),
       body: text('body').notNull(),
@@ -458,6 +459,7 @@ describe('v0.5 durable task and workflow contracts', () => {
         output: type({ id: 'string' }),
       },
       {
+        identity: worker,
         __generatedCalls: [
           RecordModel.edit,
           RecordModel.require,
@@ -477,6 +479,7 @@ describe('v0.5 durable task and workflow contracts', () => {
       expect.objectContaining({
         kind: 'taskHandler',
         name: 'records.edit.v1.step',
+        serviceIdentity: worker.identity,
         functionNativeTransaction: expect.objectContaining({
           primaryModel: { nodeId: 'model.record' },
           models: [{ nodeId: 'model.record' }],

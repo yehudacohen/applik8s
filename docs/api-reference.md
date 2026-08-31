@@ -448,6 +448,12 @@ dependencies. The complete authored handler is lowered to one retryable task;
 captured workflow calls remain injected task effects rather than causing the
 handler itself to be classified as deterministic orchestration.
 
+An explicit task service identity is authority for authenticated operations,
+queries, actor calls, provider accounting, and function-native model writes.
+Read-only model scopes, object-store credentials, and callable provider calls
+do not consume that identity; they retain their admitted context and declared
+provider/object authority instead.
+
 The initial provider is pinned Hatchet in PostgreSQL-only mode with CNPG and no RabbitMQ. Generated worker groups include a self-contained bundle, health, graceful drain, bounded slots, disruption policy, explicit egress, fixed replicas, and optional KEDA task-stat scaling. Hatchet is operational workflow authority; canonical application transitions still commit through the v0.4 PostgreSQL transaction boundary. See `docs/workflows.md`.
 
 There are two distinct status ownership cases:

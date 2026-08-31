@@ -66,6 +66,11 @@ ordinary child workflows. This preserves the authored retry, capability,
 identity, object-store, and accounting boundary and prevents effectful handlers
 from being misclassified as deterministic orchestration.
 
+Graph validation now recognizes a function-native model write transaction as
+an authenticated consumer of its task service identity. Read-only model scopes,
+object stores, and callable providers remain separate authority boundaries and
+do not justify an otherwise unused service principal.
+
 The native TanStack physical-call middleware now accepts an optional
 application-owned pre-dispatch admission. Durable applications can atomically
 admit a new call, join an equivalent call before deciding, replay bounded

@@ -76,6 +76,10 @@ Status: implementation started on `codex/v0.8-rfps`; no release is authorized.
 
 Current foundation increment:
 
+- Aligned task service-identity validation with generated function-native model
+  execution: write transactions consume the authenticated principal, while
+  read-only model scopes, object stores, and callable providers keep their own
+  admitted authority and cannot retain an unused task identity.
 - Preserved explicit function-native task boundaries when compiler-captured
   dependencies include child workflows. Task capabilities and retry policy now
   win classification; the child remains an injected task effect, and the

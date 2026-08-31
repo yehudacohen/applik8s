@@ -4871,9 +4871,13 @@ function applicationTaskHandlerNodeStructureDiagnostics(node: ApplicationTaskHan
     if (!binding.id.trim() || !binding.name.trim() || !/^v[1-9][0-9]*$/.test(binding.version)) diagnostics.push(applicationGraphStructureDiagnostic(`Application task handler ${node.id} signal ${binding.alias} must retain a stable versioned contract identity.`));
     if (binding.actions.length === 0 || new Set(binding.actions.map((action) => action.name)).size !== binding.actions.length) diagnostics.push(applicationGraphStructureDiagnostic(`Application task handler ${node.id} signal ${binding.alias} must declare unique terminal actions.`));
   }
-  const effectCount = (node.operations?.length ?? 0) + (node.queries?.length ?? 0) + (node.actors?.length ?? 0) + (node.providerAccounting?.length ?? 0);
+  const authenticatedEffectCount = (node.operations?.length ?? 0)
+    + (node.queries?.length ?? 0)
+    + (node.actors?.length ?? 0)
+    + (node.providerAccounting?.length ?? 0)
+    + (node.functionNativeTransaction?.mode === 'write' ? 1 : 0);
   if (
-    effectCount > 0
+    authenticatedEffectCount > 0
     && !node.serviceIdentity
     && !node.operationPrincipalSource?.trim()
   ) {
@@ -4882,11 +4886,11 @@ function applicationTaskHandlerNodeStructureDiagnostics(node: ApplicationTaskHan
     ));
   }
   if (
-    effectCount === 0
+    authenticatedEffectCount === 0
     && (node.serviceIdentity || node.operationPrincipalSource)
   ) {
     diagnostics.push(applicationGraphStructureDiagnostic(
-      `Application task handler ${node.id} declares a service principal without durable operations, authenticated queries, actor invocations, or provider accounting.`,
+      `Application task handler ${node.id} declares a service principal without durable operations, authenticated queries, actor invocations, provider accounting, or a function-native write transaction.`,
     ));
   }
   if (!node.handlerSource.trim()) diagnostics.push(applicationGraphStructureDiagnostic(`Application task handler ${node.id} must retain handler source for generated worker lowering.`));
