@@ -1,3 +1,4 @@
+// typecast-file-boundary: symbol-backed search and retrieval providers are checked against versioned runtime contracts before hydration.
 import type { ApplicationProviderRuntimeContract } from '@applik8s/core';
 import type { ApplicationSourceRetrieverProvider, ApplicationWebSearchProvider } from './index.js';
 

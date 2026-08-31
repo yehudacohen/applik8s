@@ -38,6 +38,11 @@ export interface ApplicationFacadeSignalManifest {
 
 export interface ApplicationFacadeAgentManifest {
   readonly name: string;
+  readonly invocation?: {
+    readonly input: ApplicationMessageContractSchema;
+    readonly output: ApplicationMessageContractSchema;
+    readonly key: string;
+  };
   readonly exportNames: readonly string[];
 }
 
@@ -346,7 +351,11 @@ export function applicationFacadeManifest(
       node.kind === 'aiAgent')
     .flatMap((agent): ApplicationFacadeAgentManifest[] => {
       const exportNames = [...new Set(agentExports.get(agent.name) ?? [])];
-      return exportNames.length > 0 ? [{ name: agent.name, exportNames }] : [];
+      return exportNames.length > 0 ? [{
+        name: agent.name,
+        ...(agent.invocation ? { invocation: agent.invocation } : {}),
+        exportNames,
+      }] : [];
     })
     .sort((left, right) => left.name.localeCompare(right.name));
   const actorExports = new Map<string, string[]>();
@@ -401,14 +410,18 @@ export function generatedApplicationFacadeSource(
 ): string {
   const hasQueries = manifest.models.some((model) => model.operations.some((operation) => operation.transport === 'query'))
     || manifest.operations.some((operation) => operation.transport === 'query');
-  const imports = ['createApplicationMutationOperation', ...(manifest.objectStores.length + manifest.operations.length > 0 ? ['createApplicationRuntimeOperation'] : []), ...(manifest.signals.length > 0 ? ['createApplicationSignalOperation'] : []), ...(manifest.actors.length > 0 ? ['createApplicationActorClient'] : []), ...(target === 'browser' && hasQueries ? ['createApplicationQueryOperation'] : []), ...(target === 'browser' && options.browserBaseUrl ? ['configureDefaultApplicationBrowserRuntime'] : [])];
+  const hasCallableAgents = manifest.agents.some((agent) => agent.invocation);
+  const imports = ['createApplicationMutationOperation', ...(manifest.objectStores.length + manifest.operations.length > 0 ? ['createApplicationRuntimeOperation'] : []), ...(manifest.signals.length > 0 ? ['createApplicationSignalOperation'] : []), ...(manifest.actors.length > 0 ? ['createApplicationActorClient'] : []), ...(target === 'browser' && hasCallableAgents ? ['createApplicationAgentClient'] : []), ...(target === 'browser' && hasQueries ? ['createApplicationQueryOperation'] : []), ...(target === 'browser' && options.browserBaseUrl ? ['configureDefaultApplicationBrowserRuntime'] : [])];
   const lines = [
     ...(target === 'browser' && options.browserAdapterModule
       ? [`import ${JSON.stringify(options.browserAdapterModule)};`]
       : []),
     `import { ${imports.sort().join(', ')} } from '@applik8s/client';`,
-    ...(target === 'server' && hasQueries
-      ? ["import { createApplik8sServerQueryOperation } from '@applik8s/server';"]
+    ...(target === 'server' && (hasQueries || hasCallableAgents)
+      ? [`import { ${[
+          ...(hasQueries ? ['createApplik8sServerQueryOperation'] : []),
+          ...(hasCallableAgents ? ['createApplik8sServerAgentOperation'] : []),
+        ].join(', ')} } from '@applik8s/server';`]
       : []),
   ];
   if (target === 'browser' && options.browserBaseUrl) lines.push(`configureDefaultApplicationBrowserRuntime({ baseUrl: ${JSON.stringify(options.browserBaseUrl)} });`);
@@ -468,7 +481,9 @@ export function generatedApplicationFacadeSource(
   for (const agent of manifest.agents) {
     for (const exportName of agent.exportNames) {
       assertUniqueFacadeExport(emittedExports, exportName, `agent ${agent.name}`);
-      lines.push(`export const ${exportName} = Object.freeze({ kind: 'applicationAgent', name: ${JSON.stringify(agent.name)} });`);
+      lines.push(agent.invocation
+        ? `export const ${exportName} = Object.assign(${target === 'server' ? 'createApplik8sServerAgentOperation' : 'createApplicationAgentClient'}(${JSON.stringify({ name: agent.name, key: agent.invocation.key })}${target === 'browser' && options.browserBaseUrl ? `, { baseUrl: ${JSON.stringify(options.browserBaseUrl)} }` : ''}), { kind: 'applicationAgent', name: ${JSON.stringify(agent.name)} });`
+        : `export const ${exportName} = Object.freeze({ kind: 'applicationAgent', name: ${JSON.stringify(agent.name)} });`);
     }
   }
   for (const actor of manifest.actors) {

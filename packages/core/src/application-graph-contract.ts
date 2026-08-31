@@ -1190,6 +1190,17 @@ export interface ApplicationAIAgentNode extends ApplicationGraphNodeBase<'aiAgen
   readonly inference: ApplicationProviderRef<'AI'>;
   /** Durable authority for conversations, invocations, attempts, and usage. */
   readonly state: ApplicationProviderRef<'TransactionalDatabase'>;
+  /**
+   * Optional function-native invocation contract. Interactive chat agents may
+   * omit it; callable agents expose exactly this schema through the generated
+   * facade and validate it again inside the worker.
+   */
+  readonly invocation?: {
+    readonly input: ApplicationMessageContractSchema;
+    readonly output: ApplicationMessageContractSchema;
+    /** Stable input field whose value owns the durable actor/conversation key. */
+    readonly key: string;
+  };
   /** Function-native provider operations captured by the agent execution closure. */
   readonly providerBindings?: readonly ApplicationCallableProviderBinding[];
   readonly instructions:

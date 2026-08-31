@@ -63,6 +63,7 @@ export type ApplicationAITextProvider =
   | {
       readonly kind: 'deterministic';
       readonly response?: string;
+      readonly structuredResponse?: JsonValue;
       readonly latencyMs?: number;
       readonly tool?: {
         readonly index?: number;
@@ -176,6 +177,8 @@ export interface ApplicationAIAgentAttemptLifecycle {
 export interface ApplicationAIAgentRequestBody
   extends ApplicationTanStackAIAgentRequest {
   readonly runId: string;
+  /** Function-native input for callable agents. */
+  readonly input?: Readonly<Record<string, unknown>>;
   readonly data?: Readonly<Record<string, unknown>>;
 }
 
@@ -457,6 +460,7 @@ export function createApplicationAIAgentRequestHandler<TResult>(
               {
                 threadId: body.threadId,
                 messages: body.messages,
+                ...(body.input !== undefined ? { input: body.input } : {}),
                 ...(body.resume !== undefined ? { resume: body.resume } : {}),
               },
               {
@@ -816,6 +820,9 @@ function terminalAttemptResponse(
   attempt: ApplicationAIAttemptRecord,
 ): Response {
   if (attempt.state === 'canonical-committed') {
+    if (attempt.canonicalResult !== undefined) {
+      return Response.json({ result: attempt.canonicalResult });
+    }
     const deltas = observation.deltas
       .filter((delta) => delta.attemptId === reservation.attemptId)
       .sort((left, right) => left.sequence - right.sequence);
@@ -1567,7 +1574,10 @@ function deterministicTextAdapter(
         };
         return;
       }
-      const response = deterministicResponse(provider, options.messages);
+      const response = Reflect.get(options, 'outputSchema') !== undefined
+        && provider.structuredResponse !== undefined
+        ? JSON.stringify(provider.structuredResponse)
+        : deterministicResponse(provider, options.messages);
       const messageId = `message-${crypto.randomUUID()}`;
       yield { type: EventType.TEXT_MESSAGE_START, messageId, role: 'assistant', model: adapter.model, timestamp };
       yield { type: EventType.TEXT_MESSAGE_CONTENT, messageId, delta: response, model: adapter.model, timestamp };
@@ -1575,6 +1585,12 @@ function deterministicTextAdapter(
       yield { type: EventType.RUN_FINISHED, runId, threadId, model: adapter.model, timestamp, finishReason: 'stop' };
     },
     async structuredOutput() {
+      if (provider.structuredResponse !== undefined) {
+        return {
+          data: structuredClone(provider.structuredResponse),
+          rawText: JSON.stringify(provider.structuredResponse),
+        };
+      }
       const response = provider.response ?? 'Deterministic Applik8s AI response.';
       const parsed = JSON.parse(response) as unknown;
       return { data: parsed, rawText: response };

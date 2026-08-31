@@ -585,6 +585,9 @@ export const AgenticStarter = Object.freeze({
     return AI.deterministic({
       fixture: {
         response: 'I created a launch-readiness brief with an objective, execution plan, success measures, risks, and a concrete next action. The saved Document is the authoritative result.',
+        structuredResponse: {
+          body: 'Primary-source evidence supports a bounded, observable rollout with an explicit owner, acceptance criteria, and rollback decision.',
+        },
         tool: {
           index: 0,
           required: false,
@@ -656,6 +659,8 @@ export const AgenticStarter = Object.freeze({
         retrievedAt: new Date(0).toISOString(),
         provider: 'agentic-starter',
         receipt: {
+          retrievalId: 'starter-research-source',
+          idempotencyKey: 'starter-research-source',
           redirects: [],
           networkPolicy: 'deterministic-fixture',
           contentPolicy: 'text-only',

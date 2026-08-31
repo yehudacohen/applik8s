@@ -17,9 +17,10 @@ import {
   type UIMessage,
 } from '@tanstack/ai';
 
-export interface ApplicationTanStackAIAgentRequest
+export interface ApplicationTanStackAIAgentRequest<TInput extends object = object>
   extends ApplicationAIAgentRequest {
   readonly messages: Array<UIMessage | ModelMessage>;
+  readonly input?: TInput;
 }
 
 export type ApplicationTanStackToolOperation<TInput, TOutput> =

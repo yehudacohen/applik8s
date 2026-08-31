@@ -42,9 +42,13 @@
     "@applik8s/core": "0.8.0"
   },
   "peerDependencies": {
+    "@applik8s/web-retrieval-http": "0.8.0",
     "@applik8s/web-search-searxng": "0.8.0"
   },
   "peerDependenciesMeta": {
+    "@applik8s/web-retrieval-http": {
+      "optional": true
+    },
     "@applik8s/web-search-searxng": {
       "optional": true
     }

@@ -1,3 +1,4 @@
+// typecast-file-boundary: query-batch fixtures deliberately erase selection generics to test durable snapshot validation.
 import type { ApplicationQuerySelectionContract } from '@applik8s/applik8s/query-runtime';
 import postgres from 'postgres';
 import { afterAll, beforeAll, describe, expect, test } from 'vitest';

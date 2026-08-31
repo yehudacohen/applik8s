@@ -1,3 +1,4 @@
+// typecast-file-boundary: environment configuration is validated before constructing the Kubernetes operator runtime binding.
 export const kubernetesApplicationOperatorRuntimeProtocol = 'applik8s.operator-runtime.kubernetes/v1alpha1' as const;
 
 export interface KubernetesApplicationOperatorRuntimeOptions {

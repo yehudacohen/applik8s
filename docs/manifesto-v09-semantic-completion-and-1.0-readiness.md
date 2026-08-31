@@ -1901,7 +1901,11 @@ Conceptually:
 const Web = WebSearch.named("research");
 
 export const Research = application.include(
-  researchAgent("researcher", {
+  researchAgent("researcher.v1", {
+    contract: {
+      input: ResearchRequest,
+      output: ResearchReport,
+    },
     actor: {
       key: ResearchThreadId,
     },
@@ -1909,13 +1913,16 @@ export const Research = application.include(
     model: ResearchModel,
     search: Web,
     retrieve: SourceRetriever.named("research"),
-    tools: [
-      Source.observe,
-      Evidence.record,
-      Artifact.create,
-    ],
+    evidence: ResearchEvidence.named("research"),
+    publish: Artifact.create,
+    tools: [Source.observe],
   }),
 );
+
+const terminal = await Research({
+  threadId,
+  question: "Which claims have the strongest primary-source evidence?",
+});
 ```
 
 A Kubernetes `WebSearch` provider may lower to TypeKro's SearXNG composition.

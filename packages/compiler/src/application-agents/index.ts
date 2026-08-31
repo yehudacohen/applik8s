@@ -790,7 +790,7 @@ import { createHandler } from './handler.generated.js';
 ${telemetryImports.join('\n')}
 ${providerRuntimeImports}
 ${localToolImports}
-${contract.tools.some((tool) => tool.local) || contract.usage
+${contract.tools.some((tool) => tool.local) || contract.usage || contract.agent.invocation
     ? "import { normalizeSchema } from '@applik8s/sdk/schema-runtime';\nimport { applicationPostgresModelReadClients, applicationRelationalChangeScopes, applicationRequestContextValues, createApplicationFunctionNativeEventHandle, editApplicationNativeModelObject, executeFunctionNativePostgresModelEdit, executePostgresModelCommand, findApplicationNativeModelObjects, getApplicationNativeModelObject, requireApplicationNativeModelObject, withApplicationNativeModelReadClients, withApplicationNativeModelTransactionRuntime } from '@applik8s/applik8s/stream-worker-runtime';"
     : ''}
 ${contract.agent.instructions.kind === 'closure'
@@ -814,6 +814,7 @@ const contract = ${JSON.stringify({
     provider: contract.providerConfig,
     route: contract.route,
     state: contract.state,
+    ...(contract.agent.invocation ? { invocation: contract.agent.invocation } : {}),
     ...(contract.conversationAccess
       ? { conversationAccess: contract.conversationAccess }
       : {}),
@@ -962,6 +963,14 @@ function focusedAgentBindings(flat) {
   return bindings;
 }
 const handler = (request, context) => {
+  if (contract.invocation) {
+    const normalized = normalizeSchema(
+      { kind: 'jsonSchema', ref: { kind: 'jsonSchema', exportName: contract.name + '.input' }, schema: contract.invocation.input.jsonSchema },
+      contract.name + '.input',
+    ).validate(request.input);
+    if (!normalized.ok) throw normalized.error;
+    request = { ...request, input: normalized.value };
+  }
   let directOperationOrdinal = 0;
   let directActorOrdinal = 0;
   const runtime = Object.freeze({
@@ -1026,9 +1035,18 @@ const handler = (request, context) => {
       ${contract.observability ? 'captureApplicationTelemetryContext()' : 'undefined'},
     );
   }]));
-  return directOperationScope.run(runtime, () => createHandler(
+  const result = directOperationScope.run(runtime, () => createHandler(
     focusedAgentBindings({ ...providerBindings, ...queryBindings, ...actorBindings }),
   )(request, context));
+  if (!contract.invocation) return result;
+  return Promise.resolve(result).then((value) => {
+    const normalized = normalizeSchema(
+      { kind: 'jsonSchema', ref: { kind: 'jsonSchema', exportName: contract.name + '.output' }, schema: contract.invocation.output.jsonSchema },
+      contract.name + '.output',
+    ).validate(value);
+    if (!normalized.ok) throw normalized.error;
+    return normalized.value;
+  });
 };
 ${generatedApplicationActorInvocationClientSource()}
 function requiredProviderString(value, label) {
@@ -1295,6 +1313,7 @@ const handle = createApplicationAIAgentRequestHandler({
         response: typeof selectedProvider.fixture?.response === 'string'
           ? selectedProvider.fixture.response
           : undefined,
+        structuredResponse: selectedProvider.fixture?.structuredResponse,
         latencyMs: selectedProvider.latencyMs,
         ...(selectedProvider.fixture?.tool
           ? { tool: selectedProvider.fixture.tool }
@@ -1548,6 +1567,7 @@ const handle = createApplicationAIAgentRequestHandler({
         reservation.invocationId,
         reservation.attemptId,
         terminal.messageId,
+        ${contract.agent.invocation ? 'JSON.parse(terminal.content)' : 'undefined'},
       );
       await operationAuthority.observe({
         id: ${JSON.stringify(`ai-agent:${contract.agent.id}`)},

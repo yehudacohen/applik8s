@@ -10,9 +10,16 @@ import type {
 } from '@applik8s/ai-tanstack';
 import { applicationTanStackAICompatibility } from '@applik8s/ai-tanstack';
 import {
+  invokeApplicationAgent,
+  type ApplicationAgentInvocationOptions,
   type ApplicationOperationLike,
   getApplicationOperationContract,
   getApplicationOperationSchemas,
+} from '@applik8s/client';
+export {
+  installApplicationAgentInvocationRuntimeResolver,
+  type ApplicationAgentInvocationRuntime,
+  type ApplicationAgentInvocationOptions,
 } from '@applik8s/client';
 import {
   type ApplicationAIAgentNode,
@@ -36,7 +43,7 @@ import {
 } from './application-graph-state.js';
 import { applicationProviderGraphNodeId, kubernetesNameSegment } from './application-identifiers.js';
 import { applicationQueryBindingForOperation } from './application-queries.js';
-import { declaredSchema } from './application-workflow-serialization.js';
+import { declaredSchema, validateMessage } from './application-workflow-serialization.js';
 import { applicationModelCommandBindingForOperation } from './native-models.js';
 import type { ApplicationTrustedContext } from './trusted-context.js';
 
@@ -63,6 +70,13 @@ export interface ApplicationAgentOptions {
    * no operation/tool wrapper is authored by the application.
    */
   readonly tools: readonly ApplicationAgentTool[];
+  /** Function-native request/result contract for a callable agent. */
+  readonly contract?: {
+    readonly input: SchemaInput<object>;
+    readonly output: SchemaInput<object>;
+    /** Input property that supplies the stable conversation/actor key. */
+    readonly key: string;
+  };
   readonly responseSchemaDigest?: string;
   readonly budgets?: {
     readonly maximumInputTokens?: number;
@@ -85,11 +99,12 @@ export type ApplicationAgentTool =
   | ApplicationOperationLike
   | ((...args: never[]) => unknown);
 
-export interface ApplicationAgentBinding<
+export type ApplicationAgentBinding<
   TName extends string = string,
   TRequest extends ApplicationTanStackAIAgentRequest = ApplicationTanStackAIAgentRequest,
   TResult = unknown,
-> {
+  TInput extends object = object,
+> = ((input: TInput, options?: ApplicationAgentInvocationOptions) => Promise<TResult>) & {
   readonly kind: 'applicationAgent';
   readonly name: TName;
   readonly model: ApplicationAIModelDefinition;
@@ -100,7 +115,7 @@ export interface ApplicationAgentBinding<
     TResult,
     ApplicationTanStackAgentRuntime
   >;
-}
+};
 
 export type ApplicationAgentHandler<
   TRequest extends ApplicationTanStackAIAgentRequest = ApplicationTanStackAIAgentRequest,
@@ -221,6 +236,13 @@ export function registerApplicationAgent<
       interface: 'TransactionalDatabase',
       nodeId: stateProviderNodeId,
     },
+    ...(options.contract ? {
+      invocation: {
+        input: declaredSchema(options.contract.input, `${normalizedName}.input`),
+        output: declaredSchema(options.contract.output, `${normalizedName}.output`),
+        key: nonEmpty(options.contract.key, 'agent invocation key'),
+      },
+    } : {}),
     ...(providerBindings.length > 0 ? { providerBindings } : {}),
     instructions,
     tools,
@@ -371,13 +393,41 @@ export function registerApplicationAgent<
     },
   });
 
-  return Object.freeze({
-    kind: 'applicationAgent',
-    name,
-    model: options.model,
-    identity: options.identity,
-    handler,
+  const invoke = async (input: object, invocation: ApplicationAgentInvocationOptions = {}) => {
+    if (!options.contract) {
+      throw new Error(`Application agent ${normalizedName} has no function-native invocation contract.`);
+    }
+    const admittedInput = validateMessage(
+      options.contract.input,
+      input,
+      `${normalizedName}.input`,
+    );
+    const key = Reflect.get(admittedInput, options.contract.key);
+    if (typeof key !== 'string' || !key.trim()) {
+      throw new Error(
+        `Application agent ${normalizedName} input field ${options.contract.key} must be a non-empty string.`,
+      );
+    }
+    const result = await invokeApplicationAgent<object, TResult>({
+      agent: normalizedName,
+      input: admittedInput,
+      key: key.trim(),
+      ...(invocation.idempotencyKey ? { idempotencyKey: invocation.idempotencyKey } : {}),
+    });
+    return validateMessage(
+      options.contract.output,
+      result,
+      `${normalizedName}.output`,
+    ) as TResult;
+  };
+  Object.defineProperties(invoke, {
+    kind: { enumerable: true, value: 'applicationAgent' },
+    name: { enumerable: true, configurable: true, value: name },
+    model: { enumerable: true, value: options.model },
+    identity: { enumerable: true, value: options.identity },
+    handler: { enumerable: true, value: handler },
   });
+  return invoke as ApplicationAgentBinding<TName, TRequest, TResult>;
 }
 
 function applicationAgentOperations(

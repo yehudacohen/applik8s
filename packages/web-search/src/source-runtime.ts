@@ -1,3 +1,4 @@
+// typecast-file-boundary: configured deterministic fixtures and optional HTTP adapter results are validated by the source-retrieval provider contract.
 import type {
   ApplicationRetrievedSource,
   ApplicationSourceRetrievalRequest,

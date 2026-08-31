@@ -1,3 +1,4 @@
+// typecast-file-boundary: managed-model tests use focused PostgreSQL row fixtures to exercise durable lifecycle validation.
 import {
   runApplicationManagedModelOnce,
   type ApplicationManagedModelRuntimeBinding,

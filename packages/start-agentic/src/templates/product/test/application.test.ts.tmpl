@@ -23,10 +23,9 @@ describe('generated application', () => {
 
     expect(Document.create).toBeTypeOf('function');
     expect(DocumentList).toBeTypeOf('function');
-    expect(WorkspaceAssistant).toMatchObject({
-      kind: 'applicationAgent',
-      name: 'workspace-assistant',
-    });
+    expect(WorkspaceAssistant).toBeTypeOf('function');
+    expect(WorkspaceAssistant.kind).toBe('applicationAgent');
+    expect(WorkspaceAssistant.name).toBe('workspace-assistant');
     expect(WorkspaceAssistant.handler).toBeTypeOf('function');
     expect(graph?.nodes).toEqual(expect.arrayContaining([
       expect.objectContaining({ kind: 'model', id: 'model.document' }),

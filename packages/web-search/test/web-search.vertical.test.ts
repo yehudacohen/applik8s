@@ -1,3 +1,4 @@
+// typecast-file-boundary: provider tests inspect deterministic fixture receipts after public request and response validation.
 import { describe, expect, it } from 'vitest';
 import { app, applicationGraphFor } from '@applik8s/applik8s';
 import { type } from 'arktype';
@@ -50,7 +51,7 @@ describe('provider-neutral web search', () => {
       }],
     });
     expect(WebSearch.accepts?.(provider)).toBe(true);
-    await expect(provider.search({ query: '  applik8s  ', limit: 1 })).resolves.toMatchObject({
+    await expect(provider.search({ admissionId: 'search-1', idempotencyKey: 'search-1', query: '  applik8s  ', limit: 1 })).resolves.toMatchObject({
       query: 'applik8s',
       provider: 'local-deterministic',
       partial: false,
@@ -63,15 +64,15 @@ describe('provider-neutral web search', () => {
   });
 
   it('fails closed on unbounded requests and unsafe result URLs', async () => {
-    expect(() => normalizeApplicationWebSearchRequest({ query: 'x', limit: 21 })).toThrow(/between 1 and 20/u);
-    expect(() => normalizeApplicationWebSearchRequest({ query: 'x', timeoutMs: 60_000 })).toThrow(/between 100 and 30000/u);
+    expect(() => normalizeApplicationWebSearchRequest({ admissionId: 'search-limit', idempotencyKey: 'search-limit', query: 'x', limit: 21 })).toThrow(/between 1 and 20/u);
+    expect(() => normalizeApplicationWebSearchRequest({ admissionId: 'search-timeout', idempotencyKey: 'search-timeout', query: 'x', timeoutMs: 60_000 })).toThrow(/between 100 and 30000/u);
     expect(() => LocalWebSearch.deterministic({
       results: [{ title: 'unsafe', url: 'file:///etc/passwd', snippet: '' }],
     })).toThrow(/HTTP or HTTPS/u);
   });
 
   it('hydrates the deterministic implementation from its portable runtime binding', async () => {
-    await expect(searchApplicationWeb({ query: 'runtime' }, {
+    await expect(searchApplicationWeb({ admissionId: 'search-runtime', idempotencyKey: 'search-runtime', query: 'runtime' }, {
       APPLIK8S_WEB_SEARCH_KIND: 'deterministic',
       APPLIK8S_WEB_SEARCH_PROVIDER: 'fixture-runtime',
       APPLIK8S_WEB_SEARCH_FIXTURES: JSON.stringify([{
@@ -97,6 +98,8 @@ describe('provider-neutral web search', () => {
       retrievedAt: new Date(0).toISOString(),
       provider: 'fixture',
       receipt: {
+        retrievalId: 'fixture-retrieval',
+        idempotencyKey: 'fixture-retrieval',
         redirects: [],
         networkPolicy: 'fixture',
         contentPolicy: 'fixture',
@@ -104,10 +107,11 @@ describe('provider-neutral web search', () => {
     };
     const provider = LocalSourceRetriever.deterministic({ sources: [source] });
     expect(SourceRetriever.accepts?.(provider)).toBe(true);
-    await expect(provider.retrieve({ url: source.requestedUrl })).resolves.toMatchObject({
+    await expect(provider.retrieve({ retrievalId: 'retrieval-1', idempotencyKey: 'retrieval-1', url: source.requestedUrl })).resolves.toMatchObject({
       canonicalUrl: source.canonicalUrl,
       contentDigest: source.contentDigest,
       text: source.text,
+      receipt: { retrievalId: 'retrieval-1', idempotencyKey: 'retrieval-1' },
     });
 
     const application = app('source-retriever-proof');

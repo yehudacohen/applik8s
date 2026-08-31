@@ -1,3 +1,4 @@
+// typecast-file-boundary: compiler-owned Job manifests validate graph discriminants before restoring callback and provider-specific artifact contracts.
 import { createHash } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';

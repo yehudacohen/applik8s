@@ -1,3 +1,4 @@
+// typecast-file-boundary: Kubernetes objects are decoded through the portable managed-model status contract before adapter exposure.
 import {
   portableManagedModelStatus,
   type ResourceObject,

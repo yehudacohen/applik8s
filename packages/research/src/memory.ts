@@ -1,3 +1,4 @@
+// typecast-file-boundary: the deterministic evidence provider validates stored protocol records before returning typed immutable evidence.
 import { canonicalJsonV1String } from '@applik8s/core';
 import {
   ApplicationResearchEvidenceConflictError,

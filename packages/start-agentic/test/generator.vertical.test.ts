@@ -19,6 +19,7 @@ import {
   deriveApplicationGraphFoundation,
 } from '@applik8s/core';
 import {
+  applicationCelldRuntimeManifest,
   compileApplicationAwsDeploymentPlan,
   compileApplicationDeploymentGraph,
   compileLocalApplicationPlan,
@@ -271,10 +272,11 @@ describe('Agentic Start generator', () => {
       await readFile(join(target, 'src/routes/workspaces.index.tsx'), 'utf8'),
     ).toContain("createFileRoute('/workspaces/')");
     expect(researchView).toContain('Researcher,');
-    expect(researchView).toContain('agent: Researcher');
-    expect(researchView).not.toContain("agent: 'researcher'");
+    expect(researchView).toContain('const terminal = await Researcher(');
+    expect(researchView).toContain('{ threadId: conversationId, question: message }');
+    expect(researchView).toContain('Research and publish');
     expect(researchView).not.toContain('useId');
-    expect(researchView).toContain('persistence: true');
+    expect(researchView).not.toContain('useChat(');
     expect(researchView).not.toContain(
       'hydrateApplicationConversationMessage',
     );
@@ -1908,6 +1910,14 @@ describe('Agentic Start generator', () => {
         })),
       ).toEqual([
         {
+          compositionId: 'applik8s-celld-operator-bootstrap',
+          semanticNodeId: 'provider.actor-runtime',
+        },
+        {
+          compositionId: 'applik8s-celld-fleet-installation',
+          semanticNodeId: 'provider.actor-runtime',
+        },
+        {
           compositionId: 'clickhouse-operator-bootstrap',
           semanticNodeId: 'provider.observability.v1alpha1.primary',
         },
@@ -2132,6 +2142,9 @@ function kubernetesRuntimeFixture(graph: ApplicationGraph, workspaceRoot: string
   )].sort();
   const namespace = graph.metadata.namespace ?? graph.metadata.name;
   const logicalReference = 'artifact://agentic-start-application-host';
+  const celldRuntimeManifest = applicationCelldRuntimeManifest(
+    `sha256:${'c'.repeat(64)}`,
+  );
   const generatedSecretEnvironment = graph.nodes.flatMap((node, index) =>
     node.kind === 'gateway'
     && node.materialization === 'generatedDeployment'
@@ -2174,6 +2187,29 @@ function kubernetesRuntimeFixture(graph: ApplicationGraph, workspaceRoot: string
       sourceDigest: `sha256:${'e'.repeat(64)}`,
       sourceDescriptor: { logicalReference },
       executionNodeIds,
+    }, {
+      id: 'artifact.celld-runtime',
+      artifactType: 'containerImage' as const,
+      name: 'celld-actor-runtime',
+      sourceDigest: celldRuntimeManifest.manifestDigest,
+      sourceDescriptor: {
+        logicalReference: 'artifact://celld-actor-runtime',
+        // typecast: the runtime manifest is round-tripped through its exact
+        // deployment JSON boundary before entering the generic artifact fixture.
+        runtimeManifest: JSON.parse(JSON.stringify(celldRuntimeManifest)),
+      },
+      executionNodeIds: graph.nodes
+        .filter((node) => node.kind === 'actor')
+        .map(({ id }) => id),
+    }, {
+      id: 'artifact.operator.applik8s-celld-operator',
+      artifactType: 'containerImage' as const,
+      name: 'applik8s-celld-operator',
+      sourceDigest: `sha256:${'d'.repeat(64)}`,
+      sourceDescriptor: {
+        logicalReference: 'artifact://applik8s-celld-operator',
+      },
+      executionNodeIds: [],
     }],
     materializedComposition: {
       resources: [{
@@ -2195,6 +2231,21 @@ function kubernetesRuntimeFixture(graph: ApplicationGraph, workspaceRoot: string
                 }],
               },
             },
+          },
+        },
+      }, {
+        id: 'applicationHostService',
+        template: {
+          apiVersion: 'v1',
+          kind: 'Service',
+          metadata: {
+            name: 'agentic-start',
+            namespace,
+            labels: { 'app.kubernetes.io/component': 'application-host' },
+          },
+          spec: {
+            selector: { 'app.kubernetes.io/name': 'agentic-start' },
+            ports: [{ name: 'http', port: 80, targetPort: 3000 }],
           },
         },
       }],

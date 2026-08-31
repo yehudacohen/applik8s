@@ -1,3 +1,4 @@
+// typecast-file-boundary: Saga steps preserve heterogeneous input/output associations only after stable step identity and terminal records are validated.
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { createHash } from 'node:crypto';
 import {

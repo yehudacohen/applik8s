@@ -65,6 +65,12 @@ export function createSearxngApplicationWebSearch(
         results,
         observedAt: clock().toISOString(),
         partial: (payload.unresponsive_engines?.length ?? 0) > 0,
+        receipt: Object.freeze({
+          kind: 'searxng-search',
+          admissionId: request.admissionId,
+          idempotencyKey: request.idempotencyKey,
+          resultCount: results.length,
+        }),
       });
     } catch (error) {
       if (controller.signal.aborted) {

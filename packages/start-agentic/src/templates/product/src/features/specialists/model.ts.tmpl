@@ -40,6 +40,8 @@ export const ProduceResearchBrief = application.workflow(
   async (input, context) => {
     const search = input.mode === 'web-research'
       ? await webSearch.search({
+          admissionId: `${input.requestId}:web-search`,
+          idempotencyKey: `${input.requestId}:web-search`,
           query: input.topic,
           limit: 8,
           safeSearch: 'moderate',

@@ -623,9 +623,30 @@ function kubernetesRuntimeAccessWorkloadPlacements(
 function mergeRuntimeAccessWorkloadPlacements(
   placements: readonly ApplicationRuntimeAccessWorkloadPlacement[],
 ): readonly ApplicationRuntimeAccessWorkloadPlacement[] {
+  // Provider-owned runtimes may package semantic executions in the same build
+  // artifact as the application host while materializing them into a distinct
+  // workload (Celld actors are the canonical example). The explicit provider
+  // placement is authoritative; the application-root image match is only a
+  // conservative inference and must not create a second execution owner.
+  const explicitExecutionOwners = new Map<string, string>();
+  for (const placement of placements) {
+    if (placement.kubernetes?.materialization.authority === 'application-root') continue;
+    for (const nodeId of placement.executionNodeIds) {
+      const previous = explicitExecutionOwners.get(nodeId);
+      if (previous && previous !== placement.workloadIdentity) {
+        throw new Error(`Runtime-access execution ${nodeId} is assigned to both ${previous} and ${placement.workloadIdentity}.`);
+      }
+      explicitExecutionOwners.set(nodeId, placement.workloadIdentity);
+    }
+  }
+  const normalizedPlacements = placements.flatMap((placement): readonly ApplicationRuntimeAccessWorkloadPlacement[] => {
+    if (placement.kubernetes?.materialization.authority !== 'application-root') return [placement];
+    const executionNodeIds = placement.executionNodeIds.filter((nodeId) => !explicitExecutionOwners.has(nodeId));
+    return executionNodeIds.length > 0 ? [{ ...placement, executionNodeIds }] : [];
+  });
   const identities = new Map<string, ApplicationRuntimeAccessWorkloadPlacement>();
   const executionOwners = new Map<string, string>();
-  for (const placement of placements) {
+  for (const placement of normalizedPlacements) {
     const previous = identities.get(placement.workloadIdentity);
     if (previous) {
       throw new Error(`Runtime-access workload identity ${placement.workloadIdentity} is declared more than once.`);

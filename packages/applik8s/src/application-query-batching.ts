@@ -1,3 +1,4 @@
+// typecast-file-boundary: selection schemas and durable batch cursors are validated before generic query values cross the batching boundary.
 import { createHash } from 'node:crypto';
 import type { ApplicationQueryOperation } from '@applik8s/client';
 import { canonicalJsonV1String, type JsonObject, type JsonValue } from '@applik8s/core';

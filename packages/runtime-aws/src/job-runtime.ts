@@ -10,7 +10,6 @@ import type {
   ApplicationJobStore,
   ApplicationJobStoredRun,
 } from '@applik8s/applik8s/job-store';
-import { createPostgresApplicationJobStore } from '@applik8s/runtime-postgres/job-store';
 import {
   DescribeTasksCommand,
   ECSClient,
@@ -75,8 +74,8 @@ export interface AwsApplicationJobDispatcher {
 }
 
 export interface AwsApplicationJobRuntimeOptions extends AwsApplicationJobDispatcherOptions {
-  readonly databaseUrl?: string;
-  readonly store?: ApplicationJobStore;
+  /** Durable provider-neutral authority supplied by the composition root. */
+  readonly store: ApplicationJobStore;
   readonly dispatcher?: AwsApplicationJobDispatcher;
   readonly workerRunId?: string;
   readonly workerId?: string;
@@ -137,12 +136,7 @@ export async function resolveAwsApplicationJobTaskIdentity(options: {
 export async function createAwsApplicationJobRuntime(
   options: AwsApplicationJobRuntimeOptions,
 ): Promise<AwsApplicationJobRuntime> {
-  const store = options.store ?? createPostgresApplicationJobStore({
-    databaseUrl: required(options.databaseUrl, 'AWS Job PostgreSQL state authority'),
-    applicationId: options.applicationId,
-    deploymentId: options.deploymentId,
-  });
-  const ownsStore = !options.store;
+  const store = options.store;
   const workerMode = options.workerRunId !== undefined;
   const dispatcher = workerMode
     ? options.dispatcher
@@ -167,7 +161,6 @@ export async function createAwsApplicationJobRuntime(
     ...durable,
     async close() {
       await durable.close();
-      if (ownsStore && 'close' in store && typeof store.close === 'function') await store.close();
     },
   };
 }

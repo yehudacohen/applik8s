@@ -1,4 +1,11 @@
 export type { HttpApplicationCommandTransportOptions } from './command-http-transport.js';
+export type * from './agents.js';
+export {
+  createApplicationAgentClient,
+  createApplicationAgentHttpRuntime,
+  installApplicationAgentInvocationRuntimeResolver,
+  invokeApplicationAgent,
+} from './agents.js';
 export type * from './actors.js';
 export { createApplicationActorClient } from './actors.js';
 export { createHttpApplicationCommandTransport } from './command-http-transport.js';

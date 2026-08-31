@@ -1,3 +1,4 @@
+// typecast-file-boundary: evidence fixtures intentionally reconstruct narrowed immutable records to test conflicts and scope isolation.
 import { app, applicationGraphFor } from '@applik8s/applik8s';
 import { canonicalJsonV1String } from '@applik8s/core';
 import { type } from 'arktype';

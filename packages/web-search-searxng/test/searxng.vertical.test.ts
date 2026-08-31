@@ -27,7 +27,7 @@ describe('SearXNG web-search adapter', () => {
       fetch: fetch as unknown as typeof globalThis.fetch, // typecast: mock implements the invoked Fetch subset.
       clock: () => new Date('2026-08-29T00:00:00.000Z'),
     });
-    await expect(search({ query: 'durable actors', safeSearch: 'strict' })).resolves.toEqual({
+    await expect(search({ admissionId: 'search-1', idempotencyKey: 'search-1', query: 'durable actors', safeSearch: 'strict' })).resolves.toEqual({
       query: 'durable actors',
       provider: 'searxng',
       results: [{
@@ -39,6 +39,12 @@ describe('SearXNG web-search adapter', () => {
       }],
       observedAt: '2026-08-29T00:00:00.000Z',
       partial: true,
+      receipt: {
+        kind: 'searxng-search',
+        admissionId: 'search-1',
+        idempotencyKey: 'search-1',
+        resultCount: 1,
+      },
     });
   });
 
@@ -53,7 +59,7 @@ describe('SearXNG web-search adapter', () => {
       timeoutMs: 100,
       fetch: hangingFetch as unknown as typeof globalThis.fetch, // typecast: mock implements the invoked Fetch subset.
     });
-    await expect(timed({ query: 'deadline', timeoutMs: 100 })).rejects.toThrow(/100ms deadline/u);
+    await expect(timed({ admissionId: 'deadline', idempotencyKey: 'deadline', query: 'deadline', timeoutMs: 100 })).rejects.toThrow(/100ms deadline/u);
 
     // typecast: the response-size fixture implements the invoked Fetch subset; Bun's fetch.preconnect extension is irrelevant.
     const oversized = createSearxngApplicationWebSearch({
@@ -61,7 +67,7 @@ describe('SearXNG web-search adapter', () => {
       maximumResponseBytes: 1_024,
       fetch: (async () => new Response(JSON.stringify({ payload: 'x'.repeat(2_000) }))) as unknown as typeof globalThis.fetch, // typecast: fixture implements the invoked Fetch subset.
     });
-    await expect(oversized({ query: 'bounded' })).rejects.toThrow(/exceeded 1024 bytes/u);
+    await expect(oversized({ admissionId: 'bounded', idempotencyKey: 'bounded', query: 'bounded' })).rejects.toThrow(/exceeded 1024 bytes/u);
   });
 
   it('keeps managed topology reference-only and external transport fail-closed', () => {

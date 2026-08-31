@@ -1,3 +1,4 @@
+// typecast-file-boundary: managed-model status and condition values are normalized through their portable schema before generic model contracts are restored.
 import type {
   PortableManagedModelCondition,
   PortableManagedModelConditionInput,

@@ -1,3 +1,4 @@
+// typecast-file-boundary: symbol-backed provider bindings are checked for the versioned research runtime contract before hydration.
 import type { ApplicationProviderRuntimeContract } from '@applik8s/core';
 import type { ApplicationResearchEvidenceProvider } from './contracts.js';
 

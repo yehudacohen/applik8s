@@ -103,7 +103,7 @@ export function exportedApplicationSignalId(value: unknown): string | undefined 
 }
 
 export function exportedApplicationAgentName(value: unknown): string | undefined {
-  if (typeof value !== 'object' || value === null || Reflect.get(value, 'kind') !== 'applicationAgent') return undefined;
+  if ((typeof value !== 'object' && typeof value !== 'function') || value === null || Reflect.get(value, 'kind') !== 'applicationAgent') return undefined;
   const name = Reflect.get(value, 'name');
   return typeof name === 'string' && name.trim() ? name : undefined;
 }

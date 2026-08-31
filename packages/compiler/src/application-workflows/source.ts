@@ -1198,6 +1198,7 @@ function nativeAITaskProviderSource(contract: WorkflowContract): string {
     return {
       kind: 'deterministic',
       response: typeof provider.fixture?.response === 'string' ? provider.fixture.response : undefined,
+      structuredResponse: provider.fixture?.structuredResponse,
       latencyMs: provider.latencyMs,
       ...(provider.fixture?.tool ? { tool: provider.fixture.tool } : {}),
     };

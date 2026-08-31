@@ -1,4 +1,5 @@
 import { defineApplicationProvider } from '@applik8s/applik8s';
+import type { JsonObject } from '@applik8s/core';
 import {
   applicationSourceRetrieverRuntime,
   applicationWebSearchProviderRuntime,
@@ -10,6 +11,10 @@ export type ApplicationWebSearchSafeSearch = 'off' | 'moderate' | 'strict';
 export type ApplicationWebSearchTimeRange = 'day' | 'week' | 'month' | 'year';
 
 export interface ApplicationWebSearchRequest {
+  /** Stable logical admission identity for this search across process retries. */
+  readonly admissionId: string;
+  /** Provider-visible idempotency identity scoped to the admitted research run. */
+  readonly idempotencyKey: string;
   readonly query: string;
   readonly limit?: number;
   readonly language?: string;
@@ -35,6 +40,8 @@ export interface ApplicationWebSearchResponse {
   readonly results: readonly ApplicationWebSearchResult[];
   readonly observedAt: string;
   readonly partial: boolean;
+  /** Opaque normalized provider receipt; raw transport payloads never cross this boundary. */
+  readonly receipt: JsonObject;
 }
 
 export interface ApplicationWebSearchProvider {
@@ -122,6 +129,11 @@ export const LocalWebSearch = Object.freeze({
           results: Object.freeze(fixtures.slice(0, request.limit)),
           observedAt: clock().toISOString(),
           partial: false,
+          receipt: Object.freeze({
+            kind: 'deterministic-web-search',
+            admissionId: request.admissionId,
+            idempotencyKey: request.idempotencyKey,
+          }),
         });
       },
     };
@@ -136,6 +148,8 @@ export const LocalWebSearch = Object.freeze({
 });
 
 export interface NormalizedApplicationWebSearchRequest {
+  readonly admissionId: string;
+  readonly idempotencyKey: string;
   readonly query: string;
   readonly limit: number;
   readonly language?: string;
@@ -151,6 +165,8 @@ export function normalizeApplicationWebSearchRequest(
     throw new Error('Web search input must be an object.');
   }
   const query = boundedText(input.query, 'Web search query', 1, 500);
+  const admissionId = boundedText(input.admissionId, 'Web search admissionId', 1, 500);
+  const idempotencyKey = boundedText(input.idempotencyKey, 'Web search idempotencyKey', 1, 500);
   const limit = input.limit ?? 10;
   if (!Number.isSafeInteger(limit) || limit < 1 || limit > 20) {
     throw new Error('Web search limit must be an integer between 1 and 20.');
@@ -171,6 +187,8 @@ export function normalizeApplicationWebSearchRequest(
     throw new Error('Web search timeRange must be day, week, month, or year.');
   }
   return Object.freeze({
+    admissionId,
+    idempotencyKey,
     query,
     limit,
     ...(language ? { language } : {}),
@@ -243,6 +261,9 @@ function absoluteHttpUrl(value: unknown, label: string): string {
 export { bindApplicationWebSearchProviderRuntime } from './runtime-contract.js';
 
 export interface ApplicationSourceRetrievalRequest {
+  /** Stable logical retrieval identity retained across retries. */
+  readonly retrievalId: string;
+  readonly idempotencyKey: string;
   readonly url: string;
   readonly timeoutMs?: number;
   readonly maximumBytes?: number;
@@ -260,6 +281,8 @@ export interface ApplicationRetrievedSource {
   readonly retrievedAt: string;
   readonly provider: string;
   readonly receipt: {
+    readonly retrievalId: string;
+    readonly idempotencyKey: string;
     readonly redirects: readonly string[];
     readonly networkPolicy: string;
     readonly contentPolicy: string;
@@ -332,7 +355,14 @@ export const LocalSourceRetriever = Object.freeze({
         const request = normalizeApplicationSourceRetrievalRequest(input);
         const source = sources.get(request.url);
         if (!source) throw new Error(`Deterministic source retriever has no fixture for ${request.url}.`);
-        return structuredClone(source);
+        return structuredClone({
+          ...source,
+          receipt: {
+            ...source.receipt,
+            retrievalId: request.retrievalId,
+            idempotencyKey: request.idempotencyKey,
+          },
+        });
       },
     };
     return Object.freeze(bindApplicationSourceRetrieverRuntime(implementation, {
@@ -346,6 +376,8 @@ export const LocalSourceRetriever = Object.freeze({
 });
 
 export interface NormalizedApplicationSourceRetrievalRequest {
+  readonly retrievalId: string;
+  readonly idempotencyKey: string;
   readonly url: string;
   readonly timeoutMs: number;
   readonly maximumBytes: number;
@@ -356,6 +388,8 @@ export function normalizeApplicationSourceRetrievalRequest(
   input: ApplicationSourceRetrievalRequest,
 ): NormalizedApplicationSourceRetrievalRequest {
   if (!input || typeof input !== 'object') throw new Error('Source retrieval input must be an object.');
+  const retrievalId = boundedText(input.retrievalId, 'Source retrieval retrievalId', 1, 500);
+  const idempotencyKey = boundedText(input.idempotencyKey, 'Source retrieval idempotencyKey', 1, 500);
   const url = absoluteHttpUrl(input.url, 'Source retrieval URL');
   const timeoutMs = input.timeoutMs ?? 15_000;
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 100 || timeoutMs > 60_000) {
@@ -372,7 +406,7 @@ export function normalizeApplicationSourceRetrievalRequest(
     }
     return normalized;
   }));
-  return Object.freeze({ url, timeoutMs, maximumBytes, acceptedContentTypes });
+  return Object.freeze({ retrievalId, idempotencyKey, url, timeoutMs, maximumBytes, acceptedContentTypes });
 }
 
 export function normalizeApplicationRetrievedSource(
@@ -395,6 +429,8 @@ export function normalizeApplicationRetrievedSource(
     retrievedAt: new Date(source.retrievedAt).toISOString(),
     provider: boundedText(provider, 'Retrieved source provider', 1, 200),
     receipt: Object.freeze({
+      retrievalId: boundedText(source.receipt.retrievalId, 'Retrieved source receipt retrievalId', 1, 500),
+      idempotencyKey: boundedText(source.receipt.idempotencyKey, 'Retrieved source receipt idempotencyKey', 1, 500),
       redirects: Object.freeze(source.receipt.redirects.map((url) => absoluteHttpUrl(url, 'Retrieved source redirect'))),
       networkPolicy: boundedText(source.receipt.networkPolicy, 'Retrieved source network policy', 1, 200),
       contentPolicy: boundedText(source.receipt.contentPolicy, 'Retrieved source content policy', 1, 200),

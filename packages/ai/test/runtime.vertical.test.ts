@@ -355,13 +355,17 @@ describe('durable AI attempts', () => {
       'invocation-1',
       completed.id,
       'message-1',
+      { status: 'completed', value: { body: 'Grounded' } },
     );
     await expect(runtime.observe('invocation-1')).resolves.toMatchObject({
       invocation: {
         state: 'completed',
         canonicalMessageId: 'message-1',
       },
-      attempts: [{ state: 'canonical-committed' }],
+      attempts: [{
+        state: 'canonical-committed',
+        canonicalResult: { status: 'completed', value: { body: 'Grounded' } },
+      }],
     });
   });
 

@@ -26,7 +26,7 @@ describe('maintained researchAgent compiler integration', () => {
     const entrypoint = join(directory, 'entrypoint.ts');
     await writeFile(entrypoint, `
 import { AI } from '@applik8s/ai';
-import { app, IdentityProvider } from '@applik8s/applik8s';
+import { app, ApplicationHost, IdentityProvider } from '@applik8s/applik8s';
 import { type } from '@applik8s/applik8s/dsl';
 import { conversations } from '@applik8s/conversations';
 import { LocalResearchEvidence, ResearchEvidence, researchAgent } from '@applik8s/research';
@@ -39,6 +39,7 @@ const application = app('research-compiler-proof', {
   status: type({ ready: 'boolean' }),
 });
 application.provide(AI, AI.deterministic({ fixture: { response: 'fixture' } }));
+application.provide(ApplicationHost, ApplicationHost.managed({ replicas: 1, port: 3000 }));
 application.provide(IdentityProvider, IdentityProvider.deterministic({
   mode: 'starter', application: 'research-compiler-proof', subject: 'member',
   audience: ['research-compiler-proof'], catalogRevision: 'catalog-test', authorityRevision: 'authority-test',
@@ -62,8 +63,13 @@ application.profile(application.installation.spec, 'profile').provide(Evidence)
 const identity = application.serviceIdentity('researcher');
 identity.can(Report.create);
 export const Researcher = application.include(researchAgent('market-research.v1', {
+  contract: {
+    input: type({ threadId: 'string', question: 'string' }),
+    output: type({ body: 'string' }),
+  },
+  actor: { key: type('string') },
   identity,
-  model: AI.model('research', { capabilities: [AI.chat, AI.tools, AI.streaming] }),
+  model: AI.model('research', { capabilities: [AI.chat, AI.tools, AI.structuredOutput] }),
   search: Search,
   retrieve: Retrieve,
   evidence: Evidence,
@@ -101,9 +107,13 @@ export const researchStack = application.composition;
     expect(handler).toContain('retrieveSource');
     expect(handler).toContain('commitEvidence');
     expect(handler).toContain('linkArtifact');
+    expect(handler).toContain('beginResearchRun');
+    expect(handler).toContain('settleResearchRun');
     expect(handler).not.toContain('application.inject');
     expect(runtime).toContain("@applik8s/web-search/runtime");
     expect(runtime).toContain("@applik8s/web-search/source-runtime");
     expect(runtime).toContain("@applik8s/research/runtime");
+    expect(runtime).toContain('contract.invocation.output.jsonSchema');
+    expect(runtime).toContain('invokeApplicationActorBinding');
   }, 60_000);
 });

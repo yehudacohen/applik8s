@@ -260,11 +260,15 @@ function inferredKubernetesCelldConfiguration(
   for (const candidate of objectStorageProviders) {
     if (optionalObject(candidate.config?.qualification)) continue;
     const authorityId = canonicalProviderAuthorityId(candidate, providersById);
-    // Prefer the default/unqualified spelling. Resolving that node retains the
-    // canonical provider's selected configuration while preserving the source
-    // binding that made the authority eligible for implicit selection.
+    // Resolve the canonical authority itself. The default alias intentionally
+    // contains KRO-wide CEL projections for every profile; executable Celld
+    // access must instead use the exact physical branch selected for this
+    // concrete installation.
     if (!candidatesByAuthority.has(authorityId)) {
-      candidatesByAuthority.set(authorityId, candidate);
+      candidatesByAuthority.set(
+        authorityId,
+        providersById.get(authorityId) ?? candidate,
+      );
     }
   }
   const candidates = [...candidatesByAuthority.values()];
@@ -508,7 +512,13 @@ function selectedProfileProvider(
         ? {
             ...mergedConfig,
             [branchConfigKey]: mergeProviderBranchConfiguration(
-              optionalObject(mergedConfig[branchConfigKey]) ?? {},
+              // A profile branch is the concrete provider-native authority.
+              // The unqualified alias contains a CEL projection spanning all
+              // profiles; inheriting it here would retain fields deliberately
+              // absent from this branch (for example an endpoint on an OBC
+              // whose endpoint is hydrated later). Only common configuration
+              // authored on the selection node itself may be inherited.
+              optionalObject(selectedConfig?.[branchConfigKey]) ?? {},
               branchConfig,
             ),
           }
@@ -1448,9 +1458,18 @@ function celldActorRuntimeDirectContribution(
   provider: ApplicationProviderNode,
   context: ApplicationDeploymentPlanningContext,
 ): ProviderDirectContribution {
-  const config = nestedObject(provider.config, "actorRuntime") ?? {};
+  // Actor state-store access is executable runtime identity, not a KRO value
+  // expression. Resolve the selected profile/target branch before deriving
+  // URLs, Secrets, and NetworkPolicy authority.
+  const concreteProvider = resolveApplicationProviderForTarget(provider, context);
+  const config = nestedObject(concreteProvider.config, "actorRuntime") ?? {};
   const namespace = optionalString(config.namespace) ?? applicationNamespace(context);
-  const stateStoreBinding = optionalObject(config.stateStore);
+  const targetDefault = concreteProvider.config?.bindingKind === 'targetDefault'
+    && concreteProvider.config?.provider === 'target-selected';
+  const inferredStateStore = targetDefault
+    ? optionalObject(inferredKubernetesCelldConfiguration(context).stateStore)
+    : undefined;
+  const stateStoreBinding = inferredStateStore ?? optionalObject(config.stateStore);
   const stateStore = optionalObject(stateStoreBinding?.implementation) ?? stateStoreBinding;
   if (!stateStore || stateStore.kind !== "s3") {
     throw new Error("ActorRuntime.celld(...) on Kubernetes requires an S3-compatible stateStore provider.");

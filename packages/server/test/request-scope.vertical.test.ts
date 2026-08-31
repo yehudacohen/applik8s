@@ -1,6 +1,8 @@
+// typecast-file-boundary: request-scope tests use focused authenticated runtime doubles to prove resolver installation and cleanup.
 import { describe, expect, it } from 'vitest';
 import { ApplicationCommandClient, ApplicationQueryClient, type ApplicationOperationContract } from '@applik8s/client';
 import {
+  createApplik8sServerAgentOperation,
   createApplik8sServerQueryOperation,
   installApplik8sServerRequestRuntimeResolver,
   runWithApplik8sServerRequest,
@@ -17,6 +19,33 @@ const contract = {
 } satisfies ApplicationOperationContract;
 
 describe('framework-neutral authenticated server request scope', () => {
+  it('executes callable agents through the authenticated same-origin request transport', async () => {
+    const requests: Request[] = [];
+    const runtime = {
+      ...requestRuntime('agent'),
+      request: new Request('https://application.example.test/app'),
+      fetch: Object.assign(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const request = new Request(input, init);
+        requests.push(request);
+        return Response.json({ result: { status: 'completed', value: { body: 'grounded' } } });
+      }, { preconnect() {} }) as typeof globalThis.fetch,
+    };
+    const operation = createApplik8sServerAgentOperation<
+      { readonly threadId: string; readonly question: string },
+      { readonly status: 'completed'; readonly value: { readonly body: string } }
+    >({ name: 'researcher.v1', key: 'threadId' });
+
+    const result = await runWithApplik8sServerRequest(runtime, () => operation(
+      { threadId: 'research-1', question: 'What changed?' },
+      { idempotencyKey: 'request-1' },
+    ));
+
+    expect(result).toEqual({ status: 'completed', value: { body: 'grounded' } });
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.url).toBe('https://application.example.test/__applik8s/v1/ai/chat');
+    expect(requests[0]?.headers.get('idempotency-key')).toBe('request-1');
+  });
+
   it('uses the active request client and never falls back to an unauthenticated loopback fetch', async () => {
     const operation = createApplik8sServerQueryOperation<{ tenant: string }, readonly string[]>(contract);
     await expect(operation({ tenant: 'missing' }).snapshot()).rejects.toThrow(/no authenticated request runtime/);

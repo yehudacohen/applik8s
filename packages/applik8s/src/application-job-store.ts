@@ -1,3 +1,4 @@
+// typecast-file-boundary: versioned Job-store records are schema-checked and normalized before their persisted JSON is restored to typed run contracts.
 import { createHash, randomUUID } from 'node:crypto';
 import {
   type ApplicationAdmissionInvocationContextV1,

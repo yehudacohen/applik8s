@@ -11,8 +11,10 @@ import { WebSearch } from '@applik8s/web-search';
 const ResearchSearch = WebSearch.named('research');
 const webSearch = application.inject(ResearchSearch);
 
-export async function findPublicSources(query: string) {
+export async function findPublicSources(query: string, requestId: string) {
   return webSearch.search({
+    admissionId: `${requestId}:web-search`,
+    idempotencyKey: `${requestId}:web-search`,
     query,
     limit: 8,
     safeSearch: 'moderate',

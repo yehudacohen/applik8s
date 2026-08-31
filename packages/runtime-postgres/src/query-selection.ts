@@ -1,3 +1,4 @@
+// typecast-file-boundary: SQL selection rows and cursor components are validated against the compiled selection contract before generic result hydration.
 import type {
   ApplicationQuerySelectionContract,
   ApplicationQuerySelectionMaterializationRequest,

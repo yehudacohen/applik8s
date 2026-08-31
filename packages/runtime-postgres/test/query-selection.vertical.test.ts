@@ -1,3 +1,4 @@
+// typecast-file-boundary: selection tests use focused SQL row fixtures after compiled query-contract validation.
 import type { ApplicationQuerySelectionContract } from '@applik8s/applik8s/query-runtime';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { describe, expect, test } from 'vitest';

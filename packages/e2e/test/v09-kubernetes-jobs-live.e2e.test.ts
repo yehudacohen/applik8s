@@ -1,3 +1,4 @@
+// typecast-file-boundary: the live Job fixture narrows Kubernetes responses only after identity and lifecycle assertions.
 import { defaultApplicationJobLifecycleFactContracts, type ApplicationJobStoredRun } from '@applik8s/applik8s/job-store';
 import { createKubernetesApplicationJobDispatcher } from '@applik8s/runtime-kubernetes/job-runtime';
 import { KubeConfig } from '@kubernetes/client-node';

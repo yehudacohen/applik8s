@@ -1,3 +1,4 @@
+// typecast-file-boundary: native AWS deployment tests inspect deliberately partial provider declarations after lifecycle normalization.
 import {
   normalizeApplicationAwsDeploymentPlan,
   type ApplicationAwsDeploymentPlan,

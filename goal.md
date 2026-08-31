@@ -276,7 +276,7 @@ contract rather than guessing or serializing a URL. Focused semantic tests,
 the package typecheck, package build, package catalog, public-contract
 inventory, and documentation checks pass.
 
-The first maintained `researchAgent()` orchestration slice now composes the
+The maintained `researchAgent()` orchestration now composes the
 normal AI agent, service identity, qualified `WebSearch`, qualified
 `SourceRetriever`, qualified `ResearchEvidence`, bounded concurrency/context,
 untrusted-source isolation, evidence-before-synthesis ordering, and
@@ -295,11 +295,14 @@ authoritative artifact ID. The generated worker links every committed evidence
 record to that artifact before allowing the tool call to return success;
 supporting reads cannot trigger linkage, missing artifact identity fails closed,
 and evidence-store failure prevents false completion while retaining the
-idempotent application artifact for retry/adoption. This is not yet the RFP's
-terminal research contract: the exported composition still returns the existing
-non-callable conversation agent binding, has not yet added its actor-backed typed
-input/output and completed/partial/failed result, and lacks a complete
-browser-to-publication Agentic Start research-run qualification.
+idempotent application artifact for retry/adoption. The exported composition is
+now a callable typed agent with actor-keyed execution and a discriminated
+`completed`/`partial`/`failed` terminal. Browser calls, authenticated server
+requests, and the application facade hydrate the same invocation contract.
+Actor-owned run state provides terminal reattachment and durable phase
+checkpoints for search, evidence commit, and synthesis; a lost checkpoint
+response remains an unknown outcome, and replay uses the same provider
+idempotency identities instead of falsely settling the run as failed.
 
 The durable evidence provider now also passes a real disposable-PostgreSQL
 replacement gate: a committed record survives provider shutdown/recreation,
@@ -323,11 +326,19 @@ generated research feature now declares `researchAgent('researcher.v1', ...)`
 with only its identity, model, application-owned publication/search tools, and
 bounded policy instead of rebuilding TanStack orchestration. Generic
 deployment lowering was extended so newly defined callable providers receive
-the same profile/target selection semantics as built-ins. Real generator,
-compiler, local, AWS, and Kubernetes planning evidence passes. A full live
-research conversation that commits evidence, publishes a note, and verifies
-the artifact/evidence receipt remains open alongside the callable durable
-terminal contract above.
+the same profile/target selection semantics as built-ins. The generated
+application now supplies its application Service and immutable Celld/operator
+artifacts, and real generator, compiler, local, AWS, and Kubernetes planning
+evidence passes without assigning actor execution to both the application
+Deployment and Celld StatefulSet. Search and retrieval requests carry stable
+run-derived admission/idempotency identities, while provider receipts flow
+unchanged into committed evidence. A single live browser-to-publication run
+that crosses the generated HTTP surface, managed actor runtime, SearXNG,
+retrieval, durable evidence, model synthesis, publication, and artifact/evidence
+receipt remains the strictest open research qualification. Universal direct
+agent invocation from every managed closure family also remains to be proven;
+the current evidence covers browser, authenticated server request, generated
+worker execution, and actor-backed research execution.
 
 Continue in the sequence above until every stable-candidate gate is implemented
 and evidenced. Keep beta/preview surfaces truthful; do not expand the frozen

@@ -346,6 +346,33 @@ describe('entrypoint-driven application public surface', () => {
     );
   });
 
+  it('emits callable agent exports from their function-native invocation contract', () => {
+    const manifest = {
+      apiVersion: 'applik8s.facade/v1alpha1',
+      application: 'research',
+      models: [], operations: [], objectStores: [], signals: [], actors: [],
+      agents: [{
+        name: 'market-research.v1',
+        invocation: {
+          key: 'threadId',
+          input: { kind: 'declared', runtime: 'arktype', jsonSchema: { type: 'object' } },
+          output: { kind: 'declared', runtime: 'arktype', jsonSchema: { type: 'object' } },
+        },
+        exportNames: ['MarketResearcher'],
+      }],
+    } as const;
+    const source = generatedApplicationFacadeSource(manifest, 'browser', { browserBaseUrl: 'https://app.example.test' });
+    const serverSource = generatedApplicationFacadeSource(manifest, 'server');
+
+    expect(source).toContain('createApplicationAgentClient');
+    expect(source).toContain('export const MarketResearcher = Object.assign');
+    expect(source).toContain('"key":"threadId"');
+    expect(source).toContain('https://app.example.test');
+    expect(serverSource).toContain("import { createApplik8sServerAgentOperation } from '@applik8s/server'");
+    expect(serverSource).toContain('export const MarketResearcher = Object.assign(createApplik8sServerAgentOperation');
+    expect(serverSource).not.toContain('createApplicationAgentClient');
+  });
+
   it('does not provision a dynamic scheduler for an immediate HTTP workflow call', () => {
     const authored = workflowScheduleGraph();
     const published = applicationGraphWithEntrypointPublicSurface({

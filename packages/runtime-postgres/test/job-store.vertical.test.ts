@@ -1,3 +1,4 @@
+// typecast-file-boundary: Job-store tests inspect intentionally partial PostgreSQL records after schema and fence validation.
 import { type } from 'arktype';
 import postgres from 'postgres';
 import { afterAll, describe, expect, test } from 'vitest';

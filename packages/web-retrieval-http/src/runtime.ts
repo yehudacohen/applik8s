@@ -111,6 +111,8 @@ async function retrieve(
     retrievedAt: new Date().toISOString(),
     provider: 'bounded-http',
     receipt: {
+      retrievalId: input.retrievalId,
+      idempotencyKey: input.idempotencyKey,
       redirects,
       networkPolicy: 'dns-pinned-public-addresses-v1',
       contentPolicy: 'identity-bounded-text-v1',

@@ -7,6 +7,7 @@ import {
   canonicalJsonCompatibleV1Policy,
   canonicalJsonV1String,
   type JsonObject,
+  type JsonValue,
   validateApplicationAdmissionContextV1,
   validateApplicationTelemetryEnvelopeV1,
 } from '@applik8s/core';
@@ -348,6 +349,7 @@ export function createApplicationAIAttemptRuntime(options: {
       invocationId: string,
       attemptId: string,
       messageId: string,
+      result?: JsonValue,
     ): Promise<ApplicationAIAttemptRecord> {
       return options.store.transact(invocationId, (transaction) => {
         const invocation = requireInvocation(transaction, invocationId);
@@ -367,6 +369,7 @@ export function createApplicationAIAttemptRuntime(options: {
           ...attempt,
           state: 'canonical-committed',
           recovery: 'terminal',
+          ...(result !== undefined ? { canonicalResult: structuredClone(result) } : {}),
           version: attempt.version + 1,
           updatedAt: now,
         });

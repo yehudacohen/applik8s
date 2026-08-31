@@ -1,3 +1,4 @@
+// typecast-file-boundary: AWS Job tests use focused SDK response doubles and erased runtime fixtures to verify ownership and lifecycle rejection.
 import { createApplicationJobBinding } from '@applik8s/applik8s/job';
 import {
   createDeterministicApplicationJobStore,

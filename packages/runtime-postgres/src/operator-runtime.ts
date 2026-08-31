@@ -1,3 +1,4 @@
+// typecast-file-boundary: PostgreSQL lifecycle rows and generated operator bindings are validated before generic managed-model execution.
 import {
   runApplicationManagedModelOnce,
   type ApplicationManagedModelRunResult,

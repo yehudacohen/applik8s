@@ -689,6 +689,7 @@
         "@applik8s/ai-tanstack": "0.8.0",
         "@applik8s/applik8s": "0.8.0",
         "@applik8s/core": "0.8.0",
+        "@applik8s/sdk": "0.8.0",
         "@applik8s/web-search": "0.8.0",
         "@tanstack/ai": "0.45.1",
         "arktype": "2.2.1",
@@ -988,9 +989,11 @@
         "@applik8s/core": "0.8.0",
       },
       "peerDependencies": {
+        "@applik8s/web-retrieval-http": "0.8.0",
         "@applik8s/web-search-searxng": "0.8.0",
       },
       "optionalPeers": [
+        "@applik8s/web-retrieval-http",
         "@applik8s/web-search-searxng",
       ],
     },

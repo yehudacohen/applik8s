@@ -5,6 +5,7 @@ import {
   type ApplicationExecutionPrincipal,
   type ApplicationOperationDescriptor,
   type ApplicationWorkloadAuthorityEnvelope,
+  type JsonValue,
   createApplicationAdmissionContextV1,
   createApplicationTelemetryEnvelopeV1,
   withApplicationAdmissionExecutionV1,
@@ -21,6 +22,19 @@ import {
 } from '../src/index.js';
 
 describe('generated application AI runtime', () => {
+  it('returns an exact deterministic structured fixture instead of parsing the chat transcript', async () => {
+    const adapter = applicationAITextAdapter({
+      kind: 'deterministic',
+      response: 'human-readable chat response',
+      structuredResponse: { body: 'typed research result' },
+    });
+
+    await expect(adapter.structuredOutput({ messages: [] } as never)).resolves.toEqual({
+      data: { body: 'typed research result' },
+      rawText: '{"body":"typed research result"}',
+    });
+  });
+
   it('links one durable agent attempt to its producer and nests provider and tool attempts', async () => {
     const boundaries: Array<{
       readonly boundary: ApplicationAIAgentTelemetryBoundary;
@@ -694,6 +708,36 @@ describe('generated application AI runtime', () => {
     expect(telemetryBoundaries).toEqual([]);
   });
 
+  it('returns the canonical structured result when a callable retry reaches terminal state', async () => {
+    let invoked = false;
+    const handler = createApplicationAIAgentRequestHandler({
+      name: 'researcher', logicalModel: 'fast', instructions: 'Do work.',
+      provider: { kind: 'deterministic' }, tools: [], persistence: persistence(),
+      tanstackPersistence: memoryPersistence, timeoutMs: 5_000, maximumConcurrency: 1,
+      admit: () => admission(),
+      reserveAttempt: ({ runId }) => ({
+        action: 'return-terminal', runId, invocationId: 'invocation-join',
+        attemptId: 'attempt-join', ordinal: 1, version: 3,
+      }),
+      recovery: {
+        async observe() {
+          return recoveryObservation('canonical-committed', {
+            status: 'completed', value: { body: 'Grounded' },
+          });
+        },
+      },
+      attemptLifecycle: attemptLifecycle([]), invoke: async () => ({}),
+      handler: async () => { invoked = true; return {}; },
+    });
+
+    const response = await handler(agentRequest());
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      result: { status: 'completed', value: { body: 'Grounded' } },
+    });
+    expect(invoked).toBe(false);
+  });
+
   it('returns a stable escalation response for completion-uncertain attempts', async () => {
     const handler = createApplicationAIAgentRequestHandler({
       name: 'researcher',
@@ -817,6 +861,7 @@ function unavailableRecovery() {
 
 function recoveryObservation(
   state: 'streaming' | 'canonical-committed' | 'completion-uncertain',
+  canonicalResult?: JsonValue,
 ) {
   const now = new Date().toISOString();
   const context = admission().context;
@@ -887,6 +932,7 @@ function recoveryObservation(
       ...(state === 'completion-uncertain'
         ? { terminalReason: 'provider outcome cannot be observed' }
         : {}),
+      ...(canonicalResult ? { canonicalResult } : {}),
       version: 3,
       createdAt: now,
       updatedAt: now,

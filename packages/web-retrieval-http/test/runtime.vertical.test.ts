@@ -24,7 +24,7 @@ describe('bounded HTTP source retrieval', () => {
     ]) {
       expect(isPublicAddress(address)).toBe(false);
       const host = address.includes(':') ? `[${address}]` : address;
-      await expect(provider.retrieve({ url: `http://${host}/` }))
+      await expect(provider.retrieve({ retrievalId: `blocked-${address}`, idempotencyKey: `blocked-${address}`, url: `http://${host}/` }))
         .rejects.toThrow(/rejects non-public address/u);
     }
     expect(isPublicAddress('8.8.8.8')).toBe(true);
@@ -33,8 +33,8 @@ describe('bounded HTTP source retrieval', () => {
 
   it('fails closed for plaintext defaults, unsafe ports, and unbounded policies', async () => {
     const provider = BoundedHttpSourceRetriever.create();
-    await expect(provider.retrieve({ url: 'http://example.com' })).rejects.toThrow(/requires HTTPS/u);
-    await expect(provider.retrieve({ url: 'https://example.com:8443' })).rejects.toThrow(/port 8443/u);
+    await expect(provider.retrieve({ retrievalId: 'plaintext', idempotencyKey: 'plaintext', url: 'http://example.com' })).rejects.toThrow(/requires HTTPS/u);
+    await expect(provider.retrieve({ retrievalId: 'unsafe-port', idempotencyKey: 'unsafe-port', url: 'https://example.com:8443' })).rejects.toThrow(/port 8443/u);
     expect(() => normalizeBoundedHttpSourceRetrieverOptions({ maximumBytes: 50_000_000 })).toThrow(/maximumBytes/u);
     expect(() => normalizeBoundedHttpSourceRetrieverOptions({ maximumRedirects: 100 })).toThrow(/maximumRedirects/u);
   });

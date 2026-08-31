@@ -1,3 +1,4 @@
+// typecast-file-boundary: live evidence tests inspect versioned PostgreSQL records after exercising provider validation and replacement.
 import { describe, expect, it } from 'vitest';
 import {
   ApplicationResearchEvidenceConflictError,

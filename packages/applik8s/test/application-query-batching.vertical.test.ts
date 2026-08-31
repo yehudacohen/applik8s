@@ -1,3 +1,4 @@
+// typecast-file-boundary: batching tests deliberately assemble erased and adversarial query fixtures to exercise runtime validation and fencing.
 import { describe, expect, test } from 'vitest';
 import type { ApplicationJobExecution } from '../src/application-finite-jobs.js';
 import {

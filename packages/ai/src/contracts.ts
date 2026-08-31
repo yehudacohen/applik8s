@@ -129,6 +129,8 @@ export interface ApplicationAIDeterministicProvider {
 
 export type ApplicationAIDeterministicFixture = JsonObject & {
   readonly response?: string;
+  /** Exact credential-free result returned from a structured-output call. */
+  readonly structuredResponse?: JsonValue;
   /**
    * Optional first-turn tool proposal used only by the credential-free,
    * explicitly non-production provider. `index` selects one of the agent's
@@ -561,6 +563,8 @@ export interface ApplicationAIAttemptRecord {
   readonly deliveryLogReference?: string;
   readonly usage?: ApplicationAIUsageRecord;
   readonly terminalReason?: string;
+  /** Canonical JSON result retained for non-streaming callable agents. */
+  readonly canonicalResult?: JsonValue;
   readonly version: number;
   readonly createdAt: string;
   readonly updatedAt: string;

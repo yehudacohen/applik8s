@@ -2,6 +2,11 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import {
   type ApplicationCommandClient,
+  createApplicationAgentClient,
+  createApplicationAgentHttpRuntime,
+  type ApplicationAgentClientContract,
+  type ApplicationAgentInvocationOptions,
+  installApplicationAgentInvocationRuntimeResolver,
   type ApplicationOperationContract,
   type ApplicationOperationRuntime,
   type ApplicationQueryClient,
@@ -58,6 +63,14 @@ installApplicationOperationRuntimeResolver(() => {
     },
   };
 });
+installApplicationAgentInvocationRuntimeResolver(() => {
+  const runtime = resolvedServerRequestRuntime();
+  if (!runtime) return undefined;
+  return createApplicationAgentHttpRuntime({
+    baseUrl: runtime.request.url,
+    ...(runtime.fetch ? { fetch: runtime.fetch } : {}),
+  });
+});
 
 export function runWithApplik8sServerRequest<TResult>(runtime: Applik8sServerRequestRuntime, handler: () => TResult): TResult {
   return requestScope.run(runtime, handler);
@@ -101,6 +114,30 @@ export function createApplik8sServerQueryOperation<TInput, TValue>(
       );
     },
   });
+}
+
+/**
+ * Reconstructs a function-native application agent inside authenticated SSR.
+ * The request adapter supplies an in-process, same-origin transport carrying
+ * the active principal and trusted context; no public ingress round trip or
+ * browser global is required.
+ */
+export function createApplik8sServerAgentOperation<TInput extends object, TResult>(
+  contract: ApplicationAgentClientContract,
+): (input: TInput, invocation?: ApplicationAgentInvocationOptions) => Promise<TResult> {
+  return async (input, invocation) => {
+    const runtime = resolvedServerRequestRuntime();
+    if (!runtime) {
+      throw new Error(
+        `Server agent ${contract.name} has no authenticated request runtime. `
+        + 'Run inside runWithApplik8sServerRequest() or install the adapter for your server framework.',
+      );
+    }
+    return createApplicationAgentClient<TInput, TResult>(contract, {
+      baseUrl: runtime.request.url,
+      ...(runtime.fetch ? { fetch: runtime.fetch } : {}),
+    })(input, invocation);
+  };
 }
 
 function resolvedServerRequestRuntime(): Applik8sServerRequestRuntime | undefined {

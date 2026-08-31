@@ -1,5 +1,6 @@
 import { AI } from '@applik8s/ai';
 import { module, search } from '@applik8s/applik8s';
+import { type } from '@applik8s/applik8s/dsl';
 import { researchAgent } from '@applik8s/research';
 import { AgenticPrincipalScope, AgenticResearch } from '@applik8s/start-agentic';
 import { application } from '../../app';
@@ -10,8 +11,10 @@ import { ResearchNote as ResearchNoteTable } from './schema';
  * Ordinary provider-neutral retrieval. The application still owns durable
  * evidence, source classification, disclosure, and citation policy.
  */
-export async function findPublicSources(query: string) {
+export async function findPublicSources(query: string, requestId: string) {
   return webSearch.search({
+    admissionId: `${requestId}:web-search`,
+    idempotencyKey: `${requestId}:web-search`,
     query,
     limit: 8,
     safeSearch: 'moderate',
@@ -28,7 +31,7 @@ const research = module(
       const ResearcherIdentity = application.serviceIdentity('researcher');
       const FastModel = AI.model('fast', {
         inference,
-        capabilities: [AI.chat, AI.tools, AI.streaming],
+        capabilities: [AI.chat, AI.tools, AI.structuredOutput],
       });
       const ResearchNotes = ResearchNoteTable.index(
         'research-notes',
@@ -38,6 +41,11 @@ const research = module(
       const Researcher = application.include(researchAgent(
         'researcher.v1',
         {
+          contract: {
+            input: type({ threadId: 'string', question: 'string' }),
+            output: type({ body: 'string' }),
+          },
+          actor: { key: type('string') },
           identity: ResearcherIdentity,
           model: FastModel,
           search: AgenticResearch.search,

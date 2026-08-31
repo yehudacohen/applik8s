@@ -231,6 +231,55 @@ describe('v0.8 target-selected provider lowering', () => {
     ]));
   });
 
+  it('derives Celld state from the concrete profile authority rather than the alias-wide CEL projection', () => {
+    const actor = providerNode('ActorRuntime');
+    const canonical: ApplicationProviderNode = {
+      id: 'provider.object-storage.v1alpha1.primary', kind: 'provider', name: 'ObjectStorage', stability: 'stable',
+      interface: 'ObjectStorage', implementation: 'application-provider-selection',
+      config: {
+        qualification: { name: 'primary', compatibilityRevision: 'v1alpha1' },
+        profile: { branches: [{
+          variant: 'dedicated',
+          implementation: 's3/objects',
+          config: {
+            kind: 's3', bucket: 'actor-state', region: 'us-east-1', forcePathStyle: true,
+            credentialsSecret: { apiVersion: 'v1', kind: 'Secret', name: 'actor-state', namespace: 'proof-system' },
+            ownership: 'direct-provisioned',
+            provisioning: { kind: 'object-bucket-claim', enabled: true, claimName: 'actor-state' },
+          },
+        }] },
+      },
+    };
+    const alias: ApplicationProviderNode = {
+      id: 'provider.object-storage', kind: 'provider', name: 'ObjectStorage', stability: 'stable',
+      interface: 'ObjectStorage', implementation: 's3',
+      config: {
+        bindingKind: 'default', aliasOf: canonical.id,
+        objectStorage: {
+          kind: 's3', bucket: 'actor-state', region: 'us-east-1', forcePathStyle: true,
+          endpoint: '${schema.spec.profile == "starter" ? "http://local-s3:8333" : omit()}',
+          credentialsSecret: { apiVersion: 'v1', kind: 'Secret', name: 'actor-state', namespace: 'proof-system' },
+        },
+      },
+    };
+    const graph: ApplicationGraph = { ...emptyGraph(), nodes: [canonical, alias, actor] };
+    const contributor = builtinApplicationDeploymentContributors().find((candidate) =>
+      candidate.interface === 'ActorRuntime' && candidate.implementation === 'target-selected');
+    const contribution = contributor!.contribute(actor, {
+      ...context('kubernetes'), graph, profile: 'dedicated', installationSpec: { profile: 'dedicated' },
+    });
+    const fleet = contribution.nodes.find((node) => node.id === 'direct.provider.ActorRuntime.celld');
+    expect(JSON.stringify(fleet)).not.toContain('schema.spec.profile');
+    expect(fleet).toMatchObject({
+      spec: { configuration: { fleet: { objectStore: {
+        bucket: 'actor-state',
+        credentials: { type: 'secret', secretRef: { name: 'actor-state' } },
+      } } } },
+    });
+    const objectStore = jsonObject(jsonObject(jsonObject(jsonObject(fleet?.spec).configuration).fleet).objectStore);
+    expect(objectStore).not.toHaveProperty('endpoint');
+  });
+
   it('orders the Celld fleet after its application-owned local S3 authority', () => {
     const storage: ApplicationProviderNode = {
       id: 'provider.ObjectStorage', kind: 'provider', name: 'ObjectStorage', stability: 'stable',

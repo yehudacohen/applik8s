@@ -1,4 +1,30 @@
+// typecast-file-boundary: research protocol constructors validate immutable evidence and terminal discriminants before restoring narrowed public contracts.
 import type { JsonObject } from '@applik8s/core';
+
+export interface ApplicationResearchArtifactReference {
+  readonly id: string;
+}
+
+export type ApplicationResearchAgentResult<TOutput extends object> =
+  | {
+      readonly status: 'completed';
+      readonly value: TOutput;
+      readonly artifact: ApplicationResearchArtifactReference;
+      readonly evidenceIds: readonly string[];
+    }
+  | {
+      readonly status: 'partial';
+      readonly value?: TOutput;
+      readonly artifact?: ApplicationResearchArtifactReference;
+      readonly evidenceIds: readonly string[];
+      readonly unresolvedClaims: readonly string[];
+      readonly reason: string;
+    }
+  | {
+      readonly status: 'failed';
+      readonly evidenceIds: readonly string[];
+      readonly reason: string;
+    };
 
 export const applicationResearchEvidenceProtocol = 'applik8s.researchEvidence/v1alpha1' as const;
 

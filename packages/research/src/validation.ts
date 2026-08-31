@@ -1,3 +1,4 @@
+// typecast-file-boundary: research evidence and artifact-link payloads are fully normalized before their versioned contract types are restored.
 import { createHash } from 'node:crypto';
 import { canonicalJsonV1String, type JsonObject, type JsonValue } from '@applik8s/core';
 import {
