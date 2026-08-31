@@ -71,6 +71,62 @@ describe('v0.5 durable task and workflow contracts', () => {
     ]));
   });
 
+  it('keeps an explicitly task-scoped workflow single-step when its handler captures a child workflow', () => {
+    const platform = app('native-ai-task-child-workflow');
+    const Inference = AI.named('inference');
+    platform.provide(Inference, AI.deterministic({ fixture: { response: 'bounded' } }));
+    const inspect = platform.workflow(
+      'source.inspect.v1',
+      {
+        input: type({ sourceId: 'string' }),
+        output: type({ accepted: 'boolean' }),
+      },
+      async () => ({ accepted: true }),
+    );
+    const options = {
+      requires: [Inference],
+      retries: 2,
+      __generatedCalls: [inspect],
+      __generatedBindings: { inspect },
+    };
+    platform.workflow(
+      'source.research.v1',
+      {
+        input: type({ sourceId: 'string' }),
+        output: type({ accepted: 'boolean', recordedAt: 'string' }),
+      },
+      options,
+      async (input) => ({
+        ...(await inspect(input, { idempotencyKey: input.sourceId })),
+        recordedAt: new Date().toISOString(),
+      }),
+    );
+
+    const graph = applicationGraphFor(platform.composition);
+    expect(graph?.nodes).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: 'task',
+        name: 'source.research.v1.step',
+      }),
+      expect.objectContaining({
+        kind: 'taskHandler',
+        name: 'source.research.v1.step',
+        childWorkflowBindings: [{
+          alias: 'inspect',
+          workflow: { nodeId: 'workflow.source.inspect.v1' },
+        }],
+      }),
+      expect.objectContaining({
+        kind: 'workflowHandler',
+        name: 'source.research.v1',
+        taskBindings: [{
+          alias: 'run',
+          task: { nodeId: 'task.source.research.v1.step' },
+        }],
+      }),
+    ]));
+  });
+
   it('binds one qualified AI capability across nested profile and deployment-target selections', () => {
     const platform = app('profile-native-ai-task', {
       spec: type({ profile: "'starter' | 'dedicated'" }),

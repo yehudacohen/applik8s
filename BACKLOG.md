@@ -76,6 +76,11 @@ Status: implementation started on `codex/v0.8-rfps`; no release is authorized.
 
 Current foundation increment:
 
+- Preserved explicit function-native task boundaries when compiler-captured
+  dependencies include child workflows. Task capabilities and retry policy now
+  win classification; the child remains an injected task effect, and the
+  authored handler is not incorrectly subjected to deterministic-orchestration
+  restrictions.
 - Added an optional replay-safe admission at the native TanStack physical
   adapter boundary. It composes with the existing observation sink while
   allowing a durable application to return retained output or reject unsafe

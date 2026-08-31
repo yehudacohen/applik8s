@@ -557,6 +557,22 @@ function isSingleStepWorkflowOptions(options: object): boolean {
       })
     : undefined;
   const expandedGeneratedCalls = expandedDependencies?.calls ?? [];
+  const explicitTaskBoundary = [
+    'retries',
+    'retryBackoff',
+    'executionTimeoutSeconds',
+    'scheduleTimeoutSeconds',
+    'requires',
+    'authority',
+    'operations',
+    'queries',
+    'projections',
+    'objects',
+    'providerAccounting',
+    'identity',
+    'principal',
+  ].some((key) => key in options);
+  if (explicitTaskBoundary) return true;
   if (
     expandedGeneratedCalls.some(
       (value) =>
@@ -597,20 +613,7 @@ function isSingleStepWorkflowOptions(options: object): boolean {
     return true;
   }
   return [
-    'retries',
-    'retryBackoff',
-    'executionTimeoutSeconds',
-    'scheduleTimeoutSeconds',
     'idempotencyKey',
-    'requires',
-    'authority',
-    'operations',
-    'queries',
-    'projections',
-    'objects',
-    'providerAccounting',
-    'identity',
-    'principal',
   ].some((key) => key in options);
 }
 

@@ -60,6 +60,12 @@ independently open.
 
 ## v0.8.0
 
+Function-native workflows with explicit task capabilities now remain
+single-step effect workflows even when their compiler-captured closure invokes
+ordinary child workflows. This preserves the authored retry, capability,
+identity, object-store, and accounting boundary and prevents effectful handlers
+from being misclassified as deterministic orchestration.
+
 The native TanStack physical-call middleware now accepts an optional
 application-owned pre-dispatch admission. Durable applications can atomically
 admit a new call, join an equivalent call before deciding, replay bounded
