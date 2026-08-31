@@ -32,6 +32,11 @@
       "import": "./dist/lakehouse.js",
       "default": "./dist/lakehouse.js"
     },
+    "./job-runtime": {
+      "types": "./dist/job-runtime.d.ts",
+      "import": "./dist/job-runtime.js",
+      "default": "./dist/job-runtime.js"
+    },
     "./schedule": {
       "types": "./dist/schedule.d.ts",
       "import": "./dist/schedule.js",
@@ -47,6 +52,7 @@
     "@aws-sdk/client-glue": "3.1113.0",
     "@aws-sdk/client-kinesis": "3.1113.0",
     "@aws-sdk/client-dynamodb": "3.1113.0",
+    "@aws-sdk/client-ecs": "3.1113.0",
     "@aws-sdk/client-s3": "3.1113.0",
     "@aws-sdk/client-scheduler": "3.1113.0",
     "@aws-sdk/client-secrets-manager": "3.1113.0",

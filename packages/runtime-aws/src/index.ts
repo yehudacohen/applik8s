@@ -2,6 +2,7 @@
 import { GetSecretValueCommand, SecretsManagerClient, type SecretsManagerClientConfig } from '@aws-sdk/client-secrets-manager';
 
 export * from './kinesis.js';
+export * from './job-runtime.js';
 export * from './lakehouse.js';
 export * from './schedule.js';
 

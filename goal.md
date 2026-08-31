@@ -96,8 +96,16 @@ not inherit a false terminal phase from historical Pod failures, and UID-fenced
 teardown removes the workload. The provider-neutral durable-store suite
 separately proves lease expiry, reattachment, stale-attempt fencing, and one
 terminal result. A single live PostgreSQL-backed run that crosses both seams in
-one process-loss scenario remains the strictest outstanding Job evidence, and
-AWS finite execution remains open. The managed-model slice now freezes and implements the public
+one process-loss scenario remains the strictest outstanding Kubernetes Job
+evidence. AWS finite execution now has its provider-side runtime foundation:
+`@applik8s/runtime-aws/job-runtime` composes the same durable PostgreSQL kernel
+with an identity-tagged ECS/Fargate dispatcher, bounded network placement,
+attempt-scoped SDK idempotency, stopped-attempt history, duplicate-active-owner
+rejection, exact-task cancellation, and normalized physical observation. Its
+deterministic SDK suite proves create/adopt, retry, collision, cancellation,
+terminal classification, and controller/exact-task-worker composition. AWS
+compiler/deployment lowering and real-AWS lifecycle/interruption evidence remain
+open. The managed-model slice now freezes and implements the public
 `application.model(table).managed({ status })` enrichment, qualified
 `Model.store`, `Model.on.reconcile`, and `Model.on.finalize` surface; persists
 that declaration through preview/materialization replay; serializes its exact
