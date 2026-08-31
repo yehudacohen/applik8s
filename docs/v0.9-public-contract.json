@@ -597,7 +597,9 @@
             "ApplicationJobBinding",
             "ApplicationJobCancellationReceipt",
             "ApplicationJobCancellationResult",
+            "ApplicationJobCancellationWrite",
             "ApplicationJobCancelledError",
+            "ApplicationJobClaimRequest",
             "ApplicationJobContract",
             "ApplicationJobDefinition",
             "ApplicationJobExecution",
@@ -608,16 +610,23 @@
             "ApplicationJobIdempotencyContract",
             "ApplicationJobInvocationOptions",
             "ApplicationJobInvocationTimeoutError",
+            "ApplicationJobLease",
+            "ApplicationJobLeaseLostError",
+            "ApplicationJobLeaseToken",
             "ApplicationJobNode",
             "ApplicationJobOptions",
+            "ApplicationJobPayloadPurgeRequest",
+            "ApplicationJobPayloadPurgeResult",
             "ApplicationJobProgressExpiredError",
             "ApplicationJobProgressSnapshot",
+            "ApplicationJobProgressWrite",
             "ApplicationJobProviderUnsupportedError",
             "ApplicationJobReference",
             "ApplicationJobRegistrar",
             "ApplicationJobResultExpiredError",
             "ApplicationJobResultStoreProvider",
             "ApplicationJobResultStoreProviderToken",
+            "ApplicationJobRetryWrite",
             "ApplicationJobRun",
             "ApplicationJobRunError",
             "ApplicationJobRuntime",
@@ -627,9 +636,16 @@
             "ApplicationJobRuntimeResolver",
             "ApplicationJobStatusConflictResolutionContract",
             "ApplicationJobStatusLifecycleContract",
+            "ApplicationJobStore",
+            "ApplicationJobStoreAdmission",
+            "ApplicationJobStoreAdmissionResult",
+            "ApplicationJobStoreInvariantError",
+            "ApplicationJobStorePhase",
+            "ApplicationJobStoredRun",
             "ApplicationJobTaskContract",
             "ApplicationJobTerminalFailureContract",
             "ApplicationJobTerminalOutcome",
+            "ApplicationJobTerminalWrite",
             "ApplicationKubernetesCluster",
             "ApplicationKubernetesConfigMapObjectStorageProvider",
             "ApplicationKubernetesConfigMapQueueProvider",
@@ -1454,6 +1470,7 @@
             "DeriveApplicationGraphFoundationOptions",
             "DeterministicApplicationActorRuntime",
             "DeterministicApplicationJobRuntimeOptions",
+            "DeterministicApplicationJobStore",
             "DeterministicApplicationLakehouseRuntime",
             "DeterministicApplicationScheduleRuntime",
             "DeterministicApplicationScheduleStateAuthority",
@@ -1489,6 +1506,8 @@
             "DrizzleAnalyticalApplicationModelFacet",
             "DrizzleApplicationModelFacet",
             "DrizzleApplicationSchema",
+            "DurableApplicationJobRuntime",
+            "DurableApplicationJobRuntimeOptions",
             "EffectExecutionMode",
             "EffectPolicy",
             "EndpointCapabilityOptions",
@@ -1910,6 +1929,7 @@
             "applicationInstallationSpecEnvironmentVariable",
             "applicationJobRuntime",
             "applicationJobRuntimeProtocol",
+            "applicationJobStoreProtocol",
             "applicationLakehouseAuthorityManifest",
             "applicationLakehouseConformanceCases",
             "applicationLakehouseConformanceRows",
@@ -1987,6 +2007,7 @@
             "createApplicationFetchGateway",
             "createApplicationInstallationClient",
             "createApplicationJobBinding",
+            "createApplicationJobReference",
             "createApplicationModelContext",
             "createApplicationQueryGateway",
             "createApplicationQueryGatewayHttpHandler",
@@ -2003,11 +2024,13 @@
             "createClickHouseAnalyticalProjectionWriter",
             "createDeterministicApplicationActorRuntime",
             "createDeterministicApplicationJobRuntime",
+            "createDeterministicApplicationJobStore",
             "createDeterministicApplicationLakehouseRuntime",
             "createDeterministicApplicationScheduleRuntime",
             "createDeterministicApplicationScheduleStateAuthority",
             "createDeterministicApplicationSearchRuntime",
             "createDeterministicStructuredGenerationCapability",
+            "createDurableApplicationJobRuntime",
             "createGraphAdapter",
             "createHttpStructuredGenerationCapability",
             "createMemoryApplicationSignalStore",
@@ -3133,6 +3156,41 @@
             "bindApplicationProviderDependencies",
             "bindApplicationProviderOperation",
             "resolveApplicationProviderRuntimeImplementation"
+          ]
+        },
+        {
+          "name": "./job-runtime-durable",
+          "source": "packages/applik8s/src/application-job-durable-runtime.ts",
+          "symbols": [
+            "DurableApplicationJobRuntime",
+            "DurableApplicationJobRuntimeOptions",
+            "createDurableApplicationJobRuntime"
+          ]
+        },
+        {
+          "name": "./job-store",
+          "source": "packages/applik8s/src/application-job-store.ts",
+          "symbols": [
+            "ApplicationJobCancellationWrite",
+            "ApplicationJobClaimRequest",
+            "ApplicationJobLease",
+            "ApplicationJobLeaseLostError",
+            "ApplicationJobLeaseToken",
+            "ApplicationJobPayloadPurgeRequest",
+            "ApplicationJobPayloadPurgeResult",
+            "ApplicationJobProgressWrite",
+            "ApplicationJobRetryWrite",
+            "ApplicationJobStore",
+            "ApplicationJobStoreAdmission",
+            "ApplicationJobStoreAdmissionResult",
+            "ApplicationJobStoreInvariantError",
+            "ApplicationJobStorePhase",
+            "ApplicationJobStoredRun",
+            "ApplicationJobTerminalWrite",
+            "DeterministicApplicationJobStore",
+            "applicationJobStoreProtocol",
+            "createApplicationJobReference",
+            "createDeterministicApplicationJobStore"
           ]
         },
         {
@@ -10391,7 +10449,8 @@
       "code": "JOB_EXECUTION_DEADLINE_EXCEEDED",
       "owner": "package:@applik8s/applik8s",
       "sources": [
-        "packages/applik8s/src/application-finite-jobs.ts"
+        "packages/applik8s/src/application-finite-jobs.ts",
+        "packages/applik8s/src/application-job-durable-runtime.ts"
       ],
       "maturity": "candidate-review-required"
     },
@@ -10399,7 +10458,16 @@
       "code": "JOB_EXECUTION_FAILED",
       "owner": "package:@applik8s/applik8s",
       "sources": [
-        "packages/applik8s/src/application-finite-jobs.ts"
+        "packages/applik8s/src/application-finite-jobs.ts",
+        "packages/applik8s/src/application-job-durable-runtime.ts"
+      ],
+      "maturity": "candidate-review-required"
+    },
+    {
+      "code": "JOB_WORKER_STOPPED",
+      "owner": "package:@applik8s/applik8s",
+      "sources": [
+        "packages/applik8s/src/application-job-durable-runtime.ts"
       ],
       "maturity": "candidate-review-required"
     },

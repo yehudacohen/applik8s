@@ -171,6 +171,16 @@
       "import": "./dist/application-operation-runtime.js",
       "default": "./dist/application-operation-runtime.js"
     },
+    "./job-store": {
+      "types": "./dist/application-job-store.d.ts",
+      "import": "./dist/application-job-store.js",
+      "default": "./dist/application-job-store.js"
+    },
+    "./job-runtime-durable": {
+      "types": "./dist/application-job-durable-runtime.d.ts",
+      "import": "./dist/application-job-durable-runtime.js",
+      "default": "./dist/application-job-durable-runtime.js"
+    },
     "./workflow-runtime-resolvers": {
       "types": "./dist/workflow-runtime-resolvers.d.ts",
       "import": "./dist/workflow-runtime-resolvers.js",

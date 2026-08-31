@@ -29,6 +29,8 @@ export {
   secret,
 } from './application-configuration.js';
 export * from './application-finite-jobs.js';
+export * from './application-job-store.js';
+export * from './application-job-durable-runtime.js';
 export type { ApplicationFetchGateway, ApplicationFetchGatewayOptions } from './application-gateway.js';
 export { createApplicationFetchGateway } from './application-gateway.js';
 export type * from './application-installation-client.js';

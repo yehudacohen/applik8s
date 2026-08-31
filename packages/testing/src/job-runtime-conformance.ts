@@ -234,7 +234,7 @@ export async function inspectApplicationJobRuntimeConformance(
     const run = await job.start({ value: 9 }, { admission });
     equal(await run.result(), { doubled: 18 }, 'Context result');
     equal(observed, admission, 'Framework admission context');
-    if (!observed || observed.principal.kind !== 'execution') {
+    if (observed?.principal.kind !== 'execution') {
       throw new Error('Job execution did not retain its framework execution principal.');
     }
     exact(observed.principal.executionKind, 'job', 'Managed execution kind');
@@ -243,12 +243,13 @@ export async function inspectApplicationJobRuntimeConformance(
     exact((await run.progress())?.sequence, 1, 'Latest progress sequence');
   });
 
-  return Object.freeze({
-    protocol: 'applik8s.jobRuntimeConformance/v1alpha1' as const,
+  const report: ApplicationJobRuntimeConformanceReport = Object.freeze({
+    protocol: 'applik8s.jobRuntimeConformance/v1alpha1',
     provider: adapter.name,
     ok: checks.every(({ passed }) => passed),
     checks: Object.freeze(checks.map((item) => Object.freeze(item))),
   });
+  return report;
 }
 
 /** Bridges a conformance-selected runtime into an application resolver safely. */

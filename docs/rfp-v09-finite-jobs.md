@@ -44,17 +44,21 @@ Plans and compatibility reports therefore cannot silently collapse a Kubernetes 
 application behavior.
 
 The provider-neutral typed Job handle, deterministic local runtime, application-owned registrar, and
-semantic graph/plan node are implemented. They establish
+semantic graph/plan node are implemented. A provider-neutral durable state machine and worker kernel now
+sit beneath that handle as focused `@applik8s/applik8s/job-store` and
+`@applik8s/applik8s/job-runtime-durable` entrypoints. They establish
 schema-validated input/output/progress/application errors, scoped idempotency, bounded concurrency,
 whole-attempt retry, cancellation, execution deadlines, caller timeout with a rejoinable run reference,
-and first-terminal-transition semantics. Result and progress retention now expire payload availability
-without erasing terminal identity, and unsupported deployed providers fail through the stable
+first-terminal-transition semantics, expiring attempt leases, monotonically fenced worker epochs, and
+restart-safe reattachment. Result and progress retention now expire payload availability without erasing
+terminal or progress identity, and unsupported deployed providers fail through the stable
 `JOB_PROVIDER_UNSUPPORTED` diagnostic in both invocation and planning. The semantic `job` node is
 deliberately experimental and remains distinct from the stable `workloadJob` infrastructure node.
 `JobRuntime.local()`, `.kubernetes()`, and `.aws()` produce validated, graph-visible implementation values;
 the deployed constructors now require typed private queue, execution-host, result-store, scheduler, and
 event-publication dependencies instead of accepting structural objects. Scheduling integration,
-application-fact publication, deployed runtime adapters, and cross-provider conformance evidence remain
+application-fact publication, a transactional PostgreSQL store, deployed runtime adapters, and deployed
+cross-provider conformance evidence remain
 implementation work. The Kubernetes and AWS constructors remain release-gated until their adapters and
 lifecycle evidence are complete. The local runtime is a behavioral kernel, not a claim that the complete
 Job contract is deployment-ready yet.
@@ -67,6 +71,9 @@ semantic reference passes that exact suite. `job` is also a canonical managed ex
 kind, with cataloged start/cancel/result/progress operation kinds; providers cannot represent a Job as an
 ordinary service principal and silently lose original causal lineage. Interruption recovery and
 deployment lifecycle remain provider-specific additions to the shared suite and are not yet qualified.
+The shared durable kernel itself passes the same black-box suite and an adversarial worker-loss test: a
+second worker reclaims the expired lease, increments the attempt, commits the result, and rejects the late
+first attempt without replacing the durable run identity.
 
 This RFP owns logical run identity, attempt identity, input/result/progress/cancellation contracts,
 idempotency scope, retry and interruption semantics, authority and causal attribution, scheduling

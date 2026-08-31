@@ -164,6 +164,9 @@ export interface ApplicationJobDefinition<
 
 export interface ApplicationJobRuntime {
   readonly protocol: typeof applicationJobRuntimeProtocol;
+  register?<TInput extends object, TOutput extends object, TProgress extends object, TError extends object>(
+    definition: ApplicationJobDefinition<TInput, TOutput, TProgress, TError>,
+  ): void;
   start<TInput extends object, TOutput extends object, TProgress extends object, TError extends object>(
     definition: ApplicationJobDefinition<TInput, TOutput, TProgress, TError>,
     input: TInput,
@@ -570,6 +573,7 @@ export function createApplicationJobBinding<
   definition: ApplicationJobDefinition<TInput, TOutput, TProgress, TError>,
   runtime: ApplicationJobRuntime,
 ): ApplicationJobBinding<TInput, TOutput, TProgress, TError> {
+  runtime.register?.(definition);
   const callable = async (
     input: TInput,
     options: ApplicationJobInvocationOptions = {},
