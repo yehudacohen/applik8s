@@ -5454,6 +5454,7 @@
             "ApplicationActorClientOptions",
             "ApplicationActorClientWebSocket",
             "ApplicationActorDeliveryReceipt",
+            "ApplicationAgentClient",
             "ApplicationAgentClientContract",
             "ApplicationAgentClientOptions",
             "ApplicationAgentInvocationOptions",
