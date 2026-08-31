@@ -40,6 +40,10 @@ export type ApplicationOperationKind =
   | 'actor.connection'
   | 'actor.disconnection'
   | 'actor.alarm'
+  | 'job.start'
+  | 'job.cancel'
+  | 'job.result'
+  | 'job.progress'
   | 'task'
   | 'http.route'
   | 'http.raw'
@@ -189,6 +193,7 @@ export interface ApplicationIdentityReference {
 export type ApplicationExecutionKind =
   | 'actor'
   | 'agent'
+  | 'job'
   | 'task'
   | 'workflow'
   | 'processor'

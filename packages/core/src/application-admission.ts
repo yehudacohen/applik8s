@@ -665,7 +665,7 @@ export function applicationAdmissionInvocationView(
 }
 
 const admissionTransports = '|actor|broker|control-plane|direct|framework|http|mcp|schedule|webhook|workflow|';
-const executionKinds = '|actor|agent|task|workflow|processor|reconcile|';
+const executionKinds = '|actor|agent|job|task|workflow|processor|reconcile|';
 
 function nonEmpty(value: unknown, name: string): string {
   if (typeof value !== 'string' || !value.trim()) {

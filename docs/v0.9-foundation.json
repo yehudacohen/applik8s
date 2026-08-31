@@ -142,7 +142,7 @@
       "schemaVersion": "applik8s.jobRuntime/v1alpha1",
       "maturity": "experimental",
       "owner": "finite-jobs",
-      "evidence": ["typed-direct-and-start", "scoped-idempotency", "retry-cancel-deadline-races", "caller-timeout-rejoin"]
+      "evidence": ["typed-direct-and-start", "scoped-idempotency", "retry-cancel-deadline-races", "caller-timeout-rejoin", "job-execution-causal-admission", "provider-black-box-conformance"]
     }
   ],
   "foundationGates": [

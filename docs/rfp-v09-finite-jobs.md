@@ -59,6 +59,15 @@ implementation work. The Kubernetes and AWS constructors remain release-gated un
 lifecycle evidence are complete. The local runtime is a behavioral kernel, not a claim that the complete
 Job contract is deployment-ready yet.
 
+The provider-author conformance boundary is now executable at
+`@applik8s/testing/job-runtime`. It exercises direct/start/attach parity, scoped idempotency and conflict,
+whole-attempt retry, typed application failure, queued and late cancellation, bounded caller wait with
+reattachment, deadline/late-completion races, progress, and framework-derived causal admission. The local
+semantic reference passes that exact suite. `job` is also a canonical managed execution and telemetry
+kind, with cataloged start/cancel/result/progress operation kinds; providers cannot represent a Job as an
+ordinary service principal and silently lose original causal lineage. Interruption recovery and
+deployment lifecycle remain provider-specific additions to the shared suite and are not yet qualified.
+
 This RFP owns logical run identity, attempt identity, input/result/progress/cancellation contracts,
 idempotency scope, retry and interruption semantics, authority and causal attribution, scheduling
 integration, graph/plan representation, and provider conformance. It does not own workflow history,

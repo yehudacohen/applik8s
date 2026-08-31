@@ -523,6 +523,46 @@ describe('Admission Context v1', () => {
     });
   });
 
+  it('admits finite Jobs as first-class managed executions with original causal lineage', () => {
+    const execution = createApplicationExecutionPrincipalV1({
+      application: 'demo',
+      executionKind: 'job',
+      executionId: 'search-rebuild-run-1',
+      attempt: 2,
+      workloadIdentity: {
+        id: 'identity:demo:workload:job.search-rebuild',
+        kind: 'workload',
+        issuer: 'applik8s://demo',
+        subject: 'job.search-rebuild',
+      },
+      causalPrincipal: {
+        id: principal.id,
+        identity: principal.identity,
+        grantIds: ['grant:search-rebuild'],
+      },
+      envelopes: [],
+      trustedContextDigest: context.trustedContext.digest,
+      audience: ['job-worker'],
+      catalogRevision: 'catalog-v1',
+      authorityRevision: 'authority-v1',
+      admittedAt: '2026-08-21T12:00:00.000Z',
+      deadline: '2026-08-21T12:01:00.000Z',
+      cancellationRevision: 'cancel-v1',
+      authenticationMethod: 'job-runtime-delivery',
+    });
+
+    expect(execution).toMatchObject({
+      kind: 'execution',
+      executionKind: 'job',
+      executionId: 'search-rebuild-run-1',
+      attempt: 2,
+      causalPrincipalId: principal.id,
+      causalPrincipal: principal.identity,
+      causalGrantIds: ['grant:search-rebuild'],
+      authenticationMethod: 'job-runtime-delivery',
+    });
+  });
+
   it('requires complete framework-derived coordinates for actor execution principals', () => {
     const workloadIdentity = {
       id: 'identity:demo:workload:actor.workspace',

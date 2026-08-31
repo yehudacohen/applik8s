@@ -7,6 +7,7 @@ export type ApplicationTelemetryBoundaryKind =
   | "agent"
   | "event"
   | "http"
+  | "job"
   | "model"
   | "operation"
   | "processor"

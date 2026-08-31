@@ -8881,6 +8881,7 @@
       "documentation": "docs/packages.md",
       "commands": [],
       "dependencies": [
+        "@applik8s/applik8s",
         "@applik8s/core",
         "@applik8s/sdk"
       ],
@@ -8951,6 +8952,17 @@
             "runJourney",
             "testOperator",
             "testing"
+          ]
+        },
+        {
+          "name": "./job-runtime",
+          "source": "packages/testing/src/job-runtime-conformance.ts",
+          "symbols": [
+            "ApplicationJobRuntimeConformanceAdapter",
+            "ApplicationJobRuntimeConformanceCheck",
+            "ApplicationJobRuntimeConformanceReport",
+            "applicationJobRuntimeConformanceResolver",
+            "inspectApplicationJobRuntimeConformance"
           ]
         }
       ]
@@ -11820,7 +11832,9 @@
         "typed-direct-and-start",
         "scoped-idempotency",
         "retry-cancel-deadline-races",
-        "caller-timeout-rejoin"
+        "caller-timeout-rejoin",
+        "job-execution-causal-admission",
+        "provider-black-box-conformance"
       ]
     }
   ]

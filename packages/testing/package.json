@@ -20,10 +20,17 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "default": "./dist/index.js"
+    },
+    "./job-runtime": {
+      "types": "./dist/job-runtime-conformance.d.ts",
+      "import": "./dist/job-runtime-conformance.js",
+      "default": "./dist/job-runtime-conformance.js"
     }
   },
   "dependencies": {
+    "@applik8s/applik8s": "0.8.0",
     "@applik8s/core": "0.8.0",
-    "@applik8s/sdk": "0.8.0"
+    "@applik8s/sdk": "0.8.0",
+    "arktype": "2.2.1"
   }
 }

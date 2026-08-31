@@ -902,8 +902,10 @@
       "name": "@applik8s/testing",
       "version": "0.8.0",
       "dependencies": {
+        "@applik8s/applik8s": "0.8.0",
         "@applik8s/core": "0.8.0",
         "@applik8s/sdk": "0.8.0",
+        "arktype": "2.2.1",
       },
     },
     "packages/type-tests": {
