@@ -98,8 +98,12 @@ contract into the application graph; and fails closed for dynamic or conflicting
 condition ownership. A provider-neutral deterministic runtime proves desired
 generation, schema-complete status, observed-generation conditions, monotonic
 lease fencing, durable next-due intent, restart-safe finalizers, and stale-write
-rejection. PostgreSQL lifecycle authority, generated operator lowering, and
-Kubernetes parity remain the next work in this slice before beta Saga
+rejection. The PostgreSQL adapter now adds versioned framework-owned lifecycle
+and invalidation tables, transactional desired observation, generation digests,
+bounded resync, `SKIP LOCKED` claims, monotonic fences, CAS status/condition/
+finalizer writes, restart-safe next-due state, and an optional live vertical.
+Wiring native model mutations into this authority, generated operator lowering,
+and Kubernetes parity remain the next work in this slice before beta Saga
 coordination.
 
 Continue in the sequence above until every stable-candidate gate is implemented

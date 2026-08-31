@@ -29,7 +29,7 @@ export {
   secret,
 } from './application-configuration.js';
 export * from './application-finite-jobs.js';
-export type * from './application-managed-models.js';
+export * from './application-managed-models.js';
 export * from './application-managed-model-runtime.js';
 export type { ApplicationCatalogEvent, ApplicationCatalogEventFor, ApplicationEventCatalog, ApplicationEventProducer, ApplicationEventSelectionBinding } from './application-event-catalog.js';
 export type { ApplicationFetchGateway, ApplicationFetchGatewayOptions } from './application-gateway.js';

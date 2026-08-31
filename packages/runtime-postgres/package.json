@@ -41,6 +41,11 @@
       "import": "./dist/job-store.js",
       "default": "./dist/job-store.js"
     },
+    "./managed-model-store": {
+      "types": "./dist/managed-model-store.d.ts",
+      "import": "./dist/managed-model-store.js",
+      "default": "./dist/managed-model-store.js"
+    },
     "./query-selection": {
       "types": "./dist/query-selection.d.ts",
       "import": "./dist/query-selection.js",

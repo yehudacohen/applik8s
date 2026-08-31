@@ -8717,14 +8717,18 @@
             "ApplicationPostgresQuerySelectionDatabase",
             "PostgresApplicationJobStore",
             "PostgresApplicationJobStoreOptions",
+            "PostgresApplicationManagedModelStore",
+            "PostgresApplicationManagedModelStoreOptions",
             "PostgresApplicationQueryBatchRuntime",
             "PostgresApplicationQueryBatchRuntimeOptions",
             "createApplicationPostgresDrizzle",
             "createApplicationPostgresSql",
             "createPostgresApplicationJobStore",
+            "createPostgresApplicationManagedModelStore",
             "createPostgresApplicationQueryBatchRuntime",
             "createPostgresApplicationQuerySelectionRuntime",
-            "materializePostgresApplicationQuerySelection"
+            "materializePostgresApplicationQuerySelection",
+            "postgresApplicationManagedModelMigrationSql"
           ]
         },
         {
@@ -8734,6 +8738,16 @@
             "PostgresApplicationJobStore",
             "PostgresApplicationJobStoreOptions",
             "createPostgresApplicationJobStore"
+          ]
+        },
+        {
+          "name": "./managed-model-store",
+          "source": "packages/runtime-postgres/src/managed-model-store.ts",
+          "symbols": [
+            "PostgresApplicationManagedModelStore",
+            "PostgresApplicationManagedModelStoreOptions",
+            "createPostgresApplicationManagedModelStore",
+            "postgresApplicationManagedModelMigrationSql"
           ]
         },
         {
