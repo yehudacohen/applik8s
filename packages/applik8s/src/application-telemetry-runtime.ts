@@ -1,4 +1,5 @@
 // typecast-file-boundary: Runtime telemetry context is validated by the canonical carrier owner before this adapter restores execution-specific generics.
+import { AsyncLocalStorage } from 'node:async_hooks';
 import type {
   ApplicationTelemetryBoundaryKind,
   ApplicationTelemetryEnvelopeV1,
@@ -74,6 +75,21 @@ export interface ApplicationProviderTelemetryOperation {
   readonly member: string;
 }
 
+const applicationProviderOperationScope =
+  new AsyncLocalStorage<ApplicationProviderTelemetryOperation>();
+
+/**
+ * Returns the exact compiler-hydrated provider operation active in this async
+ * call chain. Provider runtime exports use this identity to select their
+ * qualified configuration without accepting author-controlled routing data.
+ *
+ * @internal Generated/provider runtime seam.
+ */
+export function currentApplicationProviderOperation():
+  ApplicationProviderTelemetryOperation | undefined {
+  return applicationProviderOperationScope.getStore();
+}
+
 /**
  * Records one actual provider call as a synchronous child of the active
  * semantic operation. Arguments, results, credentials, and exception messages
@@ -85,9 +101,11 @@ export function runApplicationProviderTelemetryBoundary<TResult>(
   operation: ApplicationProviderTelemetryOperation,
   execute: () => TResult,
 ): TResult {
-  const runtime = currentApplicationTelemetryRuntime();
-  if (!runtime?.runValue) return execute();
-  return runtime.runValue(providerTelemetryBoundary(operation), execute);
+  return applicationProviderOperationScope.run(operation, () => {
+    const runtime = currentApplicationTelemetryRuntime();
+    if (!runtime?.runValue) return execute();
+    return runtime.runValue(providerTelemetryBoundary(operation), execute);
+  });
 }
 
 /**

@@ -170,12 +170,17 @@ identity, and receipt/redaction posture. The deterministic provider validates
 inputs and outputs, emits artifact-bound redacted receipts, preserves every
 batch position, distinguishes collected from rejecting partial failures, and
 fails closed for incompatible providers, missing hydration, and deadlines.
-Four focused tests, the affected core/authoring/ML typechecks, the 63-package
+The deterministic implementation now also publishes a portable managed-worker
+runtime binding. Compiler-generated HTTP workers replace direct `Model(...)`
+and `Model.batch(...)` calls with the static `@applik8s/ml/runtime` operations,
+project the exact content-addressed model/provider configuration, and select it
+from the compiler-authenticated qualified provider identity. Concurrent models
+remain isolated rather than sharing a process-global resolver. Six focused ML
+tests, a real generated HTTP-worker compile, the affected typechecks, package
 build, package catalog, public-contract inventory, and documentation checks
-pass. The surface remains truthfully beta/fail-closed for deployment:
-compiler-generated provider hydration, a deployed local/open provider,
-failure-injection/cancellation evidence, and the second materially different
-provider required for maturity promotion remain open.
+pass. The surface remains truthfully beta: a materially different deployed
+provider, broader cancellation/failure injection, and provider-replacement
+compatibility evidence remain open for maturity promotion.
 
 The explainable-domain-decision investigation is closed with an explicit
 library-only disposition. Three representative prototypes showed that an
@@ -227,11 +232,17 @@ so multiple maintained provider calls no longer collide through their private
 `providerDependency1` metadata. Fourteen affected agent/research/compiler tests,
 the three affected package typechecks, the complete publishable-package build,
 catalog/docs checks, and the 65-package/219-entrypoint public inventory pass.
-This is not yet the RFP's terminal research contract: the exported composition
-still returns the existing non-callable conversation agent binding, has not yet
-added its actor-backed typed input/output and completed/partial/failed result,
-does not automatically verify/link the publication artifact receipt, and lacks
-a complete browser-to-publication Agentic Start research-run qualification.
+The publication operation is now distinct from optional supporting tools:
+`publish` is the one application-owned operation whose result must expose an
+authoritative artifact ID. The generated worker links every committed evidence
+record to that artifact before allowing the tool call to return success;
+supporting reads cannot trigger linkage, missing artifact identity fails closed,
+and evidence-store failure prevents false completion while retaining the
+idempotent application artifact for retry/adoption. This is not yet the RFP's
+terminal research contract: the exported composition still returns the existing
+non-callable conversation agent binding, has not yet added its actor-backed typed
+input/output and completed/partial/failed result, and lacks a complete
+browser-to-publication Agentic Start research-run qualification.
 
 The durable evidence provider now also passes a real disposable-PostgreSQL
 replacement gate: a committed record survives provider shutdown/recreation,

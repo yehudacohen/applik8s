@@ -1141,4 +1141,90 @@ export const providerHttpStack = application.composition;
       }),
     ).rejects.toThrow(/has no callable operation metadata/);
   }, 120_000);
+
+  it('hydrates a direct ML.model call through the qualified managed-worker provider', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'applik8s-ml-http-'));
+    directories.push(directory);
+    await mkdir(join(directory, 'migrations'));
+    await writeFile(join(directory, 'migrations', '0000_http.sql'), '-- fixture\n');
+    const entrypoint = join(directory, 'entrypoint.ts');
+    await writeFile(entrypoint, `
+import { app, IdentityProvider } from '@applik8s/applik8s';
+import { type } from '@applik8s/applik8s/dsl';
+import { ML } from '@applik8s/ml';
+import { pgTable, text } from 'drizzle-orm/pg-core';
+
+const application = app('ml-http', { namespace: 'ml-http' });
+application.provide(IdentityProvider, IdentityProvider.deterministic({
+  mode: 'starter', application: 'ml-http', subject: 'member', audience: ['ml-http'],
+  catalogRevision: 'catalog-v1', authorityRevision: 'authority-v1',
+}));
+const requests = pgTable('ml_requests', { id: text('id').primaryKey() });
+const database = application.database.postgres('application', {
+  schema: { requests }, migrations: { path: './migrations' },
+});
+application.model(requests, { name: 'MLRequest', database });
+const artifact = ML.artifact({
+  digest: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+  format: 'fixture',
+  mediaType: 'application/vnd.applik8s.ml.fixture+json',
+  sizeBytes: 128,
+  modelVersion: '2026-08-31',
+});
+const RiskScore = ML.model('risk-score.v1', {
+  input: type({ accountAgeDays: 'number.integer >= 0', amount: 'number >= 0' }),
+  output: type({ score: '0 <= number <= 1', version: 'string' }),
+}, {
+  capabilities: [ML.predict, ML.batchPrediction],
+  requirements: { deterministic: true, locality: 'local', maximumBatchSize: 8 },
+});
+application.provide(RiskScore, ML.deterministic({
+  artifact, output: { score: 0.25, version: '2026-08-31' },
+}));
+const api = application.http('public-api');
+api.post('risk-score', '/risk-score', {
+  input: type({ accountAgeDays: 'number.integer >= 0', amount: 'number >= 0' }),
+  output: type({ score: '0 <= number <= 1', version: 'string', batchScore: '0 <= number <= 1' }),
+}, async ({ input }) => {
+  const prediction = await RiskScore(input);
+  const batch = await RiskScore.batch([input], { partialFailure: 'fail' });
+  const first = batch.items[0];
+  if (!first || first.status !== 'succeeded') throw new Error('ML batch result is incomplete.');
+  return { ...prediction.output, batchScore: first.output.score };
+}).public();
+export const mlHttpStack = application.composition;
+`);
+    const result = await compileTypeKroComposition({
+      entrypoint,
+      compositionName: 'mlHttpStack',
+      outDir: join(directory, 'dist'),
+      runtimeVersionRange: '^0.8.0',
+      handlerAbiVersion: 'applik8s.handler/v1alpha1',
+      adapter: 'wasmComponent',
+      portability: {
+        deterministicBuild: true,
+        allowEnvironmentAccess: false,
+        allowFilesystemAccess: false,
+        allowNetworkAccess: false,
+        allowedHostImports: [],
+        sourceMaps: { emit: true, includeSourceContent: false, redactPaths: false },
+      },
+    });
+    expect(result.ok, result.ok ? undefined : result.error.message).toBe(true);
+    if (!result.ok) return;
+    const artifact = result.value.artifacts.httpArtifacts.find(
+      (candidate) => candidate.serverId === 'server.public-api',
+    );
+    if (!artifact) throw new Error('Expected a generated ML HTTP worker.');
+    const source = await readFile(artifact.sourcePath, 'utf8');
+    expect(source).toContain('predictApplicationML');
+    expect(source).toContain('batchApplicationML');
+    expect(source).toContain('instrumentApplicationProviderOperation');
+    expect(source).toMatch(/(?:"interface"|interface):"MLModel"/u);
+    expect(source).toMatch(/(?:"member"|member):"predict"/u);
+    const deployment = artifact.resources.find((resource) => resource.kind === 'Deployment');
+    expect(JSON.stringify(deployment)).toContain(
+      'APPLIK8S_ML_PROVIDER_MLMODEL_V1ALPHA1_RISK_SCORE_V1',
+    );
+  }, 120_000);
 });

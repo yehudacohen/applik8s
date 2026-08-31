@@ -596,16 +596,18 @@ export function recordApplicationProviderGraph(
       contract: {
         ...resolvedContract,
         surface: !applicationProviderInterface(providerInterface) || providerInterface === 'JobRuntime' ? 'experimentalSurface' : 'stablePublicApi',
-        support: providerInterface === 'MLModel' ? 'failClosedReserved' : 'implemented',
+        support: providerInterface === 'MLModel' && !callableRuntime
+          ? 'failClosedReserved'
+          : 'implemented',
         implementation: { name: applicationProviderImplementationName(implementation) },
-        diagnostics: providerInterface === 'MLModel'
+        diagnostics: providerInterface === 'MLModel' && !callableRuntime
           ? [{
               event: 'applik8s-provider-requirement-missing',
               severity: 'error',
               subject: { nodeId },
               reason: 'MLProviderDeploymentReserved',
-              message: 'The v0.9 MLModel beta has local conformance semantics but no qualified generated deployment provider yet.',
-              likelyFix: 'Use local qualification evidence or bind a deployed provider only after its compiler/runtime adapter is available.',
+              message: 'The selected v0.9 MLModel beta provider has no qualified generated runtime binding.',
+              likelyFix: 'Bind an ML provider that publishes a managed-worker runtime contract.',
               retryable: false,
             }]
           : [],

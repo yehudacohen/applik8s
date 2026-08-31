@@ -8,6 +8,7 @@ import {
 import {
   canonicalJsonV1String,
   type ApplicationMessageContractSchema,
+  type ApplicationProviderRuntimeContract,
   type JsonObject,
   type JsonValue,
 } from '@applik8s/core';
@@ -17,6 +18,10 @@ import {
   invokeApplicationMLBatch,
   invokeApplicationMLPrediction,
 } from './runtime.js';
+import {
+  applicationMLProviderNodeId,
+  applicationMLRuntimeEnvironmentName,
+} from './runtime-contract.js';
 
 export const applicationMLProtocolRevision = 'applik8s.ml/v1alpha1' as const;
 
@@ -166,6 +171,19 @@ export interface ApplicationMLDeterministicOptions<TInput extends object, TOutpu
 }
 
 const modelMetadataSymbol = Symbol.for('applik8s.ml.model');
+const modelProviderRuntimeSymbol = Symbol.for('applik8s.ml.providerRuntime');
+
+interface ApplicationMLPortableProviderConfiguration {
+  readonly kind: 'deterministic';
+  readonly artifact: ApplicationMLArtifact;
+  readonly output?: object;
+  readonly cases: readonly { readonly input: object; readonly output: object }[];
+  readonly provider: string;
+  readonly providerVersion: string;
+  readonly servingIdentity: string;
+  readonly maximumBatchSize: number;
+  readonly latencyMs: number;
+}
 
 export const ML = Object.freeze({
   predict,
@@ -199,15 +217,15 @@ export const ML = Object.freeze({
     const cases = new Map(
       (options.cases ?? []).map((entry) => [canonicalJsonV1String(entry.input as JsonValue), structuredClone(entry.output)]),
     );
-    return Object.freeze({
-      kind: 'ml-deterministic',
+    const provider: ApplicationMLProvider<TInput, TOutput> = {
+      kind: 'ml-deterministic' as const,
       provider: options.provider ?? 'local-deterministic',
       providerVersion: options.providerVersion ?? 'v1',
       servingIdentity: options.servingIdentity ?? options.artifact.digest,
       artifact: structuredClone(options.artifact),
-      capabilities: [predict, batchPrediction],
-      deterministic: true,
-      locality: 'local',
+      capabilities: [predict, batchPrediction] as const,
+      deterministic: true as const,
+      locality: 'local' as const,
       maximumBatchSize,
       async predict(input: TInput, context: ApplicationMLPredictionContext): Promise<TOutput> {
         if (latencyMs > 0) await abortableDelay(latencyMs, context.signal);
@@ -222,7 +240,25 @@ export const ML = Object.freeze({
         }
         return structuredClone(output);
       },
+    };
+    Object.defineProperty(provider, modelProviderRuntimeSymbol, {
+      enumerable: false,
+      value: Object.freeze({
+        kind: 'deterministic' as const,
+        artifact: structuredClone(options.artifact),
+        ...(options.output === undefined ? {} : { output: structuredClone(options.output) }),
+        cases: Object.freeze((options.cases ?? []).map((entry) => Object.freeze({
+          input: structuredClone(entry.input),
+          output: structuredClone(entry.output),
+        }))),
+        provider: options.provider ?? 'local-deterministic',
+        providerVersion: options.providerVersion ?? 'v1',
+        servingIdentity: options.servingIdentity ?? options.artifact.digest,
+        maximumBatchSize,
+        latencyMs,
+      } satisfies ApplicationMLPortableProviderConfiguration),
     });
+    return Object.freeze(provider);
   },
 });
 
@@ -236,17 +272,6 @@ function defineApplicationMLModel<TInput extends object, TOutput extends object>
   const requirements = normalizeRequirements(options.requirements ?? {});
   const input = normalizeMLSchema(contract.input, `${id}.input`);
   const output = normalizeMLSchema(contract.output, `${id}.output`);
-  const base = defineApplicationProvider<ApplicationMLProvider<TInput, TOutput>>({
-    interface: 'MLModel',
-    version: 'v1alpha1',
-    description: `Predictive provider for ${id}.`,
-    requirements: ['content-addressed artifact', 'typed prediction receipts', ...capabilities],
-    guarantees: ['input/output schema validation', 'redacted provenance evidence'],
-    accepts(value): value is ApplicationMLProvider<TInput, TOutput> {
-      return isApplicationMLProvider(value, capabilities, requirements);
-    },
-  });
-  const token = base.named(id);
   const definitionValue = {
     apiVersion: 'applik8s.mlModel/v1alpha1',
     id,
@@ -262,14 +287,64 @@ function defineApplicationMLModel<TInput extends object, TOutput extends object>
     enumerable: false,
   });
   const definition = Object.freeze(definitionValue);
+  const base = defineApplicationProvider<ApplicationMLProvider<TInput, TOutput>>({
+    interface: 'MLModel',
+    version: 'v1alpha1',
+    description: `Predictive provider for ${id}.`,
+    requirements: ['content-addressed artifact', 'typed prediction receipts', ...capabilities],
+    guarantees: ['input/output schema validation', 'redacted provenance evidence'],
+    runtime: {
+      operations: {
+        predict: {
+          module: '@applik8s/ml/runtime',
+          export: 'predictApplicationML',
+          access: 'none',
+        },
+        batch: {
+          module: '@applik8s/ml/runtime',
+          export: 'batchApplicationML',
+          access: 'none',
+        },
+      },
+      bind(implementation) {
+        const provider = applicationMLPortableProviderConfiguration(implementation);
+        if (!provider) {
+          throw new Error(`ML provider ${implementation.kind} has no portable managed-worker runtime binding.`);
+        }
+        const runtime: ApplicationProviderRuntimeContract = {
+          env: {
+            [applicationMLRuntimeEnvironmentName(applicationMLProviderNodeId(id))]: JSON.stringify({
+              definition,
+              provider,
+            }),
+          },
+        };
+        return runtime;
+      },
+    },
+    accepts(value): value is ApplicationMLProvider<TInput, TOutput> {
+      return isApplicationMLProvider(value, capabilities, requirements);
+    },
+  });
+  const token = base.named(id);
   const call = async (value: TInput, invocationOptions?: { readonly timeoutMs?: number }) =>
     invokeApplicationMLPrediction(definition, value, invocationOptions);
   const batch = async (values: readonly TInput[], batchOptions: ApplicationMLBatchOptions) =>
     invokeApplicationMLBatch(definition, values, batchOptions);
   bindApplicationProviderDependencies(call, [token]);
-  bindApplicationProviderOperation(call, { member: 'predict' });
+  bindApplicationProviderOperation(call, {
+    member: 'predict',
+    ...(token.callableRuntime?.operations.predict
+      ? { runtime: token.callableRuntime.operations.predict }
+      : {}),
+  });
   bindApplicationProviderDependencies(batch, [token]);
-  bindApplicationProviderOperation(batch, { member: 'batch' });
+  bindApplicationProviderOperation(batch, {
+    member: 'batch',
+    ...(token.callableRuntime?.operations.batch
+      ? { runtime: token.callableRuntime.operations.batch }
+      : {}),
+  });
   Object.defineProperties(call, {
     kind: { value: token.kind, enumerable: true },
     name: { value: token.name, configurable: true },
@@ -285,6 +360,15 @@ function defineApplicationMLModel<TInput extends object, TOutput extends object>
     __runtimeSchemas: { value: Object.freeze({ input: input.runtime, output: output.runtime }) },
   });
   return Object.freeze(call) as ApplicationMLModel<TInput, TOutput>;
+}
+
+function applicationMLPortableProviderConfiguration(
+  provider: ApplicationMLProvider,
+): ApplicationMLPortableProviderConfiguration | undefined {
+  const value = Reflect.get(provider, modelProviderRuntimeSymbol);
+  return value && typeof value === 'object'
+    ? value as ApplicationMLPortableProviderConfiguration
+    : undefined;
 }
 
 function normalizeMLSchema<T extends object>(schema: ApplicationMLSchema<T>, name: string) {

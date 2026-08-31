@@ -4879,6 +4879,7 @@
             "applicationTelemetryCarrierHeaderName",
             "captureApplicationTelemetryContext",
             "countApplicationTelemetry",
+            "currentApplicationProviderOperation",
             "decodeApplicationTelemetryCarrier",
             "encodeApplicationTelemetryCarrier",
             "installApplicationTelemetryRuntimeResolver",
@@ -7868,9 +7869,11 @@
           "name": "./runtime",
           "source": "packages/ml/src/runtime.ts",
           "symbols": [
+            "batchApplicationML",
             "installApplicationMLRuntimeResolver",
             "invokeApplicationMLBatch",
-            "invokeApplicationMLPrediction"
+            "invokeApplicationMLPrediction",
+            "predictApplicationML"
           ]
         }
       ]
@@ -8292,7 +8295,8 @@
             "ApplicationResearchAgentRuntimeContext",
             "ApplicationResearchAgentRuntimeDependencies",
             "ApplicationResearchAgentRuntimePolicy",
-            "executeApplicationResearchAgent"
+            "executeApplicationResearchAgent",
+            "researchPublicationExecution"
           ]
         },
         {
