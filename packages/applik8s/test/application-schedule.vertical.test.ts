@@ -1,6 +1,8 @@
 // typecast-file-boundary: Test fixtures intentionally exercise generic schedule schemas and transport admissions.
 import {
   applicationScheduleProjectedDesiredState,
+  createApplicationJobBinding,
+  createDeterministicApplicationJobRuntime,
   createDeterministicApplicationScheduleRuntime,
   createDeterministicApplicationScheduleStateAuthority,
   executeApplicationScheduleAdmission,
@@ -81,6 +83,50 @@ afterEach(() => {
 });
 
 describe('v0.8 function-native schedules', () => {
+  it('schedules a one-time Job through the shared desired-state and occurrence authority', async () => {
+    const clock = { now: new Date('2026-01-01T00:00:00.000Z') };
+    const scheduleRuntime = createDeterministicApplicationScheduleRuntime({
+      applicationId: 'schedule-test',
+      environmentId: 'jobs',
+      now: () => clock.now,
+    });
+    disposers.push(installApplicationScheduleRuntimeResolver(() => scheduleRuntime));
+    disposers.push(installApplicationInvocationAdmissionResolver(() => admittedCaller()));
+    const observed: number[] = [];
+    const job = createApplicationJobBinding({
+      id: 'numbers.double.v1',
+      contract: {
+        input: type({ value: 'number.integer' }),
+        output: type({ doubled: 'number.integer' }),
+      },
+      options: {},
+      handler(input) {
+        observed.push(input.value);
+        return { doubled: input.value * 2 };
+      },
+    }, createDeterministicApplicationJobRuntime({
+      now: () => clock.now,
+      id: () => 'scheduled-job-run',
+    }));
+
+    await expect(job.schedule(
+      { value: 21 },
+      { at: '2026-01-01T00:01:00.000Z' },
+    )).resolves.toMatchObject({ state: 'created' });
+    expect(observed).toEqual([]);
+    clock.now = new Date('2026-01-01T00:01:00.000Z');
+    await scheduleRuntime.tick(clock.now);
+    expect(observed).toEqual([21]);
+    expect(scheduleRuntime.occurrences()).toContainEqual(expect.objectContaining({
+      state: 'succeeded',
+      result: expect.objectContaining({
+        protocol: 'applik8s.jobRuntime/v1alpha1',
+        job: 'numbers.double.v1',
+        runId: 'scheduled-job-run',
+      }),
+    }));
+  });
+
   it('declares an inert fixed schedule and executes it only through an installed runtime', async () => {
     const clock = { now: new Date('2026-01-01T00:00:00.000Z') };
     const runtime = createDeterministicApplicationScheduleRuntime({

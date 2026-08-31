@@ -75,7 +75,7 @@ export interface EntrypointApplicationObjectStoreExport {
 
 export interface EntrypointApplicationDurableExport {
   readonly name: string;
-  readonly kind: 'workflow' | 'task';
+  readonly kind: 'workflow' | 'task' | 'job';
   readonly id: string;
 }
 

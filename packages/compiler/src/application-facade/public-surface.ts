@@ -24,7 +24,7 @@ export interface ApplicationEntrypointPublicSurface {
   readonly signalIds?: readonly string[];
   /** Durable handles explicitly exported from the application entrypoint. */
   readonly durables?: readonly {
-    readonly kind: 'workflow' | 'task';
+    readonly kind: 'workflow' | 'task' | 'job';
     readonly id: string;
   }[];
   /** The selected artifact contains the generated application control boundary. */
@@ -48,14 +48,14 @@ export function applicationGraphWithEntrypointPublicSurface(
   graph: ApplicationGraph,
   surface: ApplicationEntrypointPublicSurface,
 ): ApplicationGraph {
-  const graphWithWorkflowSchedules = applicationGraphWithWorkflowSchedules(
+  const graphWithExecutionSchedules = applicationGraphWithExecutionSchedules(
     graph,
     surface.durables ?? [],
   );
   const graphWithSchedules = applicationGraphWithEntrypointSchedules(
-    graphWithWorkflowSchedules.graph,
+    graphWithExecutionSchedules.graph,
     [
-      ...graphWithWorkflowSchedules.schedules,
+      ...graphWithExecutionSchedules.schedules,
       ...(surface.schedules ?? []),
     ],
   );
@@ -304,9 +304,9 @@ function applicationGraphWithNativeModelGatewayPermissions(
  * an ordinary typed invocation. The authored trigger is cleared from the
  * compiled workflow node so a provider cannot register a second native cron.
  */
-function applicationGraphWithWorkflowSchedules(
+function applicationGraphWithExecutionSchedules(
   graph: ApplicationGraph,
-  exported: readonly { readonly kind: 'workflow' | 'task'; readonly id: string }[],
+  exported: readonly { readonly kind: 'workflow' | 'task' | 'job'; readonly id: string }[],
 ): {
   readonly graph: ApplicationGraph;
   readonly schedules: readonly ApplicationScheduleNode[];
@@ -314,7 +314,7 @@ function applicationGraphWithWorkflowSchedules(
   const durableNodeIds = reachableDurableScheduleTargets(graph, exported);
   const schedules: ApplicationScheduleNode[] = [];
   const nodes = graph.nodes.map((node) => {
-    if (node.kind !== 'workflow' && node.kind !== 'task') return node;
+    if (node.kind !== 'workflow' && node.kind !== 'task' && node.kind !== 'job') return node;
     if (durableNodeIds.has(node.id)) {
       const durableStartIdentity = durableStartScheduleIdentity(node.kind, node.id);
       schedules.push({
@@ -352,7 +352,7 @@ function applicationGraphWithWorkflowSchedules(
         functionNative: true,
       });
     }
-    if (node.kind === 'task') return node;
+    if (node.kind === 'task' || node.kind === 'job') return node;
     const identities = new Set<string>();
     for (const cron of node.triggers.crons) {
       const identity = workflowCronScheduleIdentity(node.id, cron.name);
@@ -409,7 +409,7 @@ function applicationGraphWithWorkflowSchedules(
 
 function reachableDurableScheduleTargets(
   graph: ApplicationGraph,
-  exported: readonly { readonly kind: 'workflow' | 'task'; readonly id: string }[],
+  exported: readonly { readonly kind: 'workflow' | 'task' | 'job'; readonly id: string }[],
 ): ReadonlySet<string> {
   const targets = new Set(
     exported.map(({ kind, id }) => `${kind}.${id}`),
@@ -424,7 +424,7 @@ function reachableDurableScheduleTargets(
   return targets;
 }
 
-function durableStartScheduleIdentity(kind: 'workflow' | 'task', nodeId: string): string {
+function durableStartScheduleIdentity(kind: 'workflow' | 'task' | 'job', nodeId: string): string {
   const prefix = `${kind}.`;
   const durableId = nodeId.startsWith(prefix)
     ? nodeId.slice(prefix.length)

@@ -7,7 +7,7 @@ import type {
 import type { TypeKroCompositionExport } from './entrypoint-discovery.js';
 
 export function exportedApplicationDurable(value: unknown): {
-  readonly kind: 'workflow' | 'task';
+  readonly kind: 'workflow' | 'task' | 'job';
   readonly id: string;
 } | undefined {
   if (typeof value !== 'function') return undefined;
@@ -16,6 +16,8 @@ export function exportedApplicationDurable(value: unknown): {
     ? 'workflow'
     : bindingKind === 'applicationTask'
       ? 'task'
+      : bindingKind === 'applicationJob'
+        ? 'job'
       : undefined;
   if (!kind) return undefined;
   const definition = Reflect.get(value, 'definition');

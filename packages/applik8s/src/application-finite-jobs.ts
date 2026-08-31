@@ -9,7 +9,13 @@ import type { SchemaInput } from '@applik8s/sdk';
 import { serializeApplicationCallback } from './application-callback.js';
 import { type ApplicationGraphState, addApplicationGraphEdge, addApplicationGraphNode, addApplicationProviderRequirement } from './application-graph-state.js';
 import { applicationProviderGraphNodeId, kubernetesNameSegment } from './application-identifiers.js';
-import { parseApplicationScheduleDuration } from './application-schedule.js';
+import {
+  type ApplicationFixedScheduleHandle,
+  type ApplicationScheduleConvergenceResult,
+  type ApplicationScheduleHandle,
+  parseApplicationScheduleDuration,
+  schedule as applicationSchedule,
+} from './application-schedule.js';
 import { declaredSchema, validateMessage } from './application-schema-runtime.js';
 import { functionExpression } from './application-workflow-serialization.js';
 
@@ -46,6 +52,41 @@ export interface ApplicationJobInvocationOptions {
   readonly wait?: { readonly timeout: string };
   /** Framework-admitted execution identity. Transport adapters supply this; clients do not author it. */
   readonly admission?: ApplicationAdmissionInvocationContextV1;
+}
+
+export interface ApplicationJobOneTimeScheduleOptions {
+  readonly at: string | Date;
+  /** Stable desired-state identity. Omission derives one from Job, input, and instant. */
+  readonly id?: string;
+  readonly timezone?: string;
+}
+
+export type ApplicationJobRecurringScheduleOptions = {
+  readonly timezone?: string;
+  readonly overlap?: 'allow' | 'skip';
+  readonly misfire?:
+    | { readonly policy: 'skip'; readonly grace?: string }
+    | { readonly policy: 'runOnce'; readonly grace?: string }
+    | { readonly policy: 'catchUp'; readonly grace?: string; readonly maximumOccurrences: number };
+} & (
+  | { readonly cron: string; readonly every?: never }
+  | { readonly cron?: never; readonly every: string }
+);
+
+export interface ApplicationJobDynamicSchedule<TInput extends object> {
+  readonly id: string;
+  readonly input: TInput;
+  readonly revision?: string;
+  readonly cron?: string;
+  readonly every?: string;
+  readonly at?: string | Date;
+  readonly timezone?: string;
+  readonly enabled?: boolean;
+}
+
+export interface ApplicationJobSchedules<TInput extends object> {
+  reconcile(schedule: ApplicationJobDynamicSchedule<TInput>): Promise<ApplicationScheduleConvergenceResult>;
+  remove(id: string): Promise<ApplicationScheduleConvergenceResult>;
 }
 
 export interface ApplicationJobReference {
@@ -146,8 +187,17 @@ export interface ApplicationJobBinding<
   (input: TInput, options?: ApplicationJobInvocationOptions): Promise<TOutput>;
   readonly kind: 'applicationJob';
   readonly id: string;
+  /** Immutable authoring contract used by compiler discovery and typed schedule lowering. */
+  readonly definition: ApplicationJobDefinition<TInput, TOutput, TProgress, TError>;
   start(input: TInput, options?: Omit<ApplicationJobInvocationOptions, 'wait'>): Promise<ApplicationJobRun<TOutput, TProgress, TError>>;
   attach(reference: ApplicationJobReference): Promise<ApplicationJobRun<TOutput, TProgress, TError>>;
+  schedule(input: TInput, options: ApplicationJobOneTimeScheduleOptions): Promise<ApplicationScheduleConvergenceResult>;
+  schedule(
+    id: string,
+    input: TInput,
+    options: ApplicationJobRecurringScheduleOptions,
+  ): ApplicationFixedScheduleHandle<ApplicationJobReference>;
+  readonly schedules: ApplicationJobSchedules<TInput>;
 }
 
 export interface ApplicationJobDefinition<
@@ -595,14 +645,197 @@ export function createApplicationJobBinding<
       if (timer !== undefined) clearTimeout(timer);
     }
   };
+  const scheduleDefinitionId = `job-start.${kubernetesNameSegment(definition.id)}`;
+  const dynamicSchedule = applicationSchedule(
+    {
+      id: scheduleDefinitionId,
+      input: definition.contract.input,
+      timezone: 'UTC',
+      overlap: 'allow',
+      misfires: 'latest',
+      maximumLateness: '15m',
+      retry: { maxAttempts: 5, maximumAge: '6h' },
+      requirements: {
+        configuration: 'dynamic',
+        cardinality: 'high',
+        precision: 'second',
+      },
+    },
+    async (input, context) => {
+      const run = await runtime.start(definition, input, {
+        idempotencyKey: context.occurrenceId,
+        admission: context.admission,
+      });
+      return run.reference;
+    },
+  ) as ApplicationScheduleHandle<TInput, ApplicationJobReference>;
+  const recurringSchedule = (
+    id: string,
+    input: TInput,
+    options: ApplicationJobRecurringScheduleOptions,
+  ): ApplicationFixedScheduleHandle<ApplicationJobReference> => {
+    const normalized = recurringJobScheduleOptions(id, options);
+    const admittedInput = validateMessage(
+      definition.contract.input,
+      input,
+      `${definition.id}.schedule.input`,
+    );
+    const handle = applicationSchedule(
+      {
+        id,
+        ...normalized,
+      },
+      async (context) => {
+        const run = await runtime.start(definition, admittedInput, {
+          idempotencyKey: context.occurrenceId,
+          admission: context.admission,
+        });
+        return run.reference;
+      },
+    ) as ApplicationFixedScheduleHandle<ApplicationJobReference>;
+    return applicationJobTargetSchedule(handle, definition, admittedInput);
+  };
+  function scheduleJob(
+    input: TInput,
+    options: ApplicationJobOneTimeScheduleOptions,
+  ): Promise<ApplicationScheduleConvergenceResult>;
+  function scheduleJob(
+    id: string,
+    input: TInput,
+    options: ApplicationJobRecurringScheduleOptions,
+  ): ApplicationFixedScheduleHandle<ApplicationJobReference>;
+  function scheduleJob(
+    inputOrId: TInput | string,
+    optionsOrInput: ApplicationJobOneTimeScheduleOptions | TInput,
+    recurring?: ApplicationJobRecurringScheduleOptions,
+  ): Promise<ApplicationScheduleConvergenceResult> | ApplicationFixedScheduleHandle<ApplicationJobReference> {
+    if (typeof inputOrId === 'string') {
+      if (!recurring) throw new TypeError(`Recurring Job schedule ${inputOrId} requires timing options.`);
+      return recurringSchedule(inputOrId, optionsOrInput as TInput, recurring);
+    }
+    const options = optionsOrInput as ApplicationJobOneTimeScheduleOptions;
+    const at = normalizedJobScheduleInstant(options.at);
+    const instanceId = options.id?.trim() || `once.${createHash('sha256')
+      .update(canonicalJsonV1String({ job: definition.id, input: inputOrId, at }))
+      .digest('hex')
+      .slice(0, 24)}`;
+    const revision = createHash('sha256')
+      .update(canonicalJsonV1String({ input: inputOrId, at, timezone: options.timezone ?? 'UTC' }))
+      .digest('hex');
+    return dynamicSchedule.schedule({
+      id: instanceId,
+      revision,
+      input: inputOrId,
+      at,
+      timezone: options.timezone ?? 'UTC',
+      deleteAfterCompletion: true,
+    });
+  }
   return Object.assign(callable, {
     kind: 'applicationJob' as const,
     id: definition.id,
+    definition,
     start: (input: TInput, options?: Omit<ApplicationJobInvocationOptions, 'wait'>) =>
       runtime.start(definition, input, options),
     attach: (reference: ApplicationJobReference) =>
       runtime.attach<TOutput, TProgress, TError>(definition.id, reference),
+    schedule: scheduleJob,
+    schedules: Object.freeze({
+      reconcile(schedule: ApplicationJobDynamicSchedule<TInput>) {
+        return dynamicSchedule.schedule({
+          ...schedule,
+          revision: schedule.revision ?? createHash('sha256')
+            .update(canonicalJsonV1String(schedule))
+            .digest('hex'),
+          deleteAfterCompletion: schedule.at !== undefined,
+        });
+      },
+      remove(id: string) {
+        return dynamicSchedule.unschedule(id);
+      },
+    }),
   });
+}
+
+function applicationJobTargetSchedule<
+  TInput extends object,
+  TOutput extends object,
+  TProgress extends object,
+  TError extends object,
+>(
+  handle: ApplicationFixedScheduleHandle<ApplicationJobReference>,
+  definition: ApplicationJobDefinition<TInput, TOutput, TProgress, TError>,
+  input: TInput,
+): ApplicationFixedScheduleHandle<ApplicationJobReference> {
+  const identity = finiteJobIdentity(definition.id);
+  const target = {
+    kind: 'durableStart' as const,
+    durable: {
+      kind: 'job' as const,
+      nodeId: `job.${kubernetesNameSegment(definition.id)}`,
+    },
+    contract: {
+      name: identity.name,
+      version: identity.version,
+      input: declaredSchema(definition.contract.input, `${definition.id}.input`),
+    },
+    input: { kind: 'literal' as const, value: input },
+  };
+  return Object.assign(handle, {
+    graphNode: Object.freeze({
+      ...handle.graphNode,
+      handler: undefined,
+      target,
+    }),
+  });
+}
+
+function recurringJobScheduleOptions(
+  id: string,
+  options: ApplicationJobRecurringScheduleOptions,
+): {
+  readonly cron?: string;
+  readonly every?: string;
+  readonly timezone: string;
+  readonly overlap: 'allow' | 'skip';
+  readonly misfires: 'skip' | 'latest' | 'all-bounded';
+  readonly maximumLateness: string;
+  readonly maximumCatchUp?: number;
+  readonly retry: { readonly maxAttempts: number; readonly maximumAge: string };
+  readonly requirements: { readonly configuration: 'fixed'; readonly cardinality: 'bounded'; readonly precision: 'minute' | 'second' };
+} {
+  if (!id.trim()) throw new TypeError('Recurring Job schedule id must be non-empty.');
+  const misfire = options.misfire ?? { policy: 'runOnce' as const, grace: '15m' };
+  const grace = misfire.grace ?? '15m';
+  const timing = 'cron' in options && typeof options.cron === 'string'
+    ? { cron: options.cron }
+    : { every: options.every };
+  return {
+    ...timing,
+    timezone: options.timezone ?? 'UTC',
+    overlap: options.overlap ?? 'skip',
+    misfires: misfire.policy === 'skip'
+      ? 'skip'
+      : misfire.policy === 'catchUp'
+        ? 'all-bounded'
+        : 'latest',
+    maximumLateness: grace,
+    ...(misfire.policy === 'catchUp'
+      ? { maximumCatchUp: misfire.maximumOccurrences }
+      : {}),
+    retry: { maxAttempts: 5, maximumAge: '6h' },
+    requirements: {
+      configuration: 'fixed',
+      cardinality: 'bounded',
+      precision: options.cron ? 'minute' : 'second',
+    },
+  };
+}
+
+function normalizedJobScheduleInstant(value: string | Date): string {
+  const instant = value instanceof Date ? value : new Date(value);
+  if (!Number.isFinite(instant.getTime())) throw new TypeError('Job schedule at must be a valid instant.');
+  return instant.toISOString();
 }
 
 /** Registers one application-owned finite Job and returns its function-native handle. */

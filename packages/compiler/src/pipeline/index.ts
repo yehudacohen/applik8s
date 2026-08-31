@@ -192,7 +192,7 @@ export interface DiscoveredApplicationGraph {
   readonly signalExports: readonly { readonly name: string; readonly signalId: string }[];
   readonly agentExports: readonly { readonly name: string; readonly agentName: string }[];
   readonly objectStoreExports: readonly { readonly name: string; readonly objectStoreName: string }[];
-  readonly durableExports: readonly { readonly name: string; readonly kind: 'workflow' | 'task'; readonly id: string }[];
+  readonly durableExports: readonly { readonly name: string; readonly kind: 'workflow' | 'task' | 'job'; readonly id: string }[];
   readonly scheduleExports: readonly { readonly name: string; readonly id: string }[];
   readonly lakehousePublicationExports: readonly { readonly name: string; readonly id: string }[];
   readonly actorExports: readonly { readonly name: string; readonly actorId: string }[];

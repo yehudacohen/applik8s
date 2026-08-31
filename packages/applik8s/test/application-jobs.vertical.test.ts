@@ -97,6 +97,35 @@ describe('application finite Job runtime', () => {
       }),
     ]));
     expect(graph ? validateApplicationGraphCompatibilityPolicy(graph) : []).toEqual([]);
+
+    const nightly = job.schedule(
+      'numbers.double.nightly.v1',
+      { value: 9 },
+      {
+        cron: '0 2 * * *',
+        timezone: 'America/New_York',
+        overlap: 'skip',
+        misfire: { policy: 'runOnce', grace: '2h' },
+      },
+    );
+    expect(nightly.graphNode).toMatchObject({
+      kind: 'schedule',
+      definition: {
+        id: 'numbers.double.nightly.v1',
+        configuration: 'fixed',
+        cron: '0 2 * * *',
+        timezone: 'America/New_York',
+        overlap: 'skip',
+        misfires: 'latest',
+        maximumLatenessSeconds: 7_200,
+      },
+      target: {
+        kind: 'durableStart',
+        durable: { kind: 'job', nodeId: 'job.numbers.double.v1' },
+        contract: { name: 'numbers.double', version: 'v1' },
+        input: { kind: 'literal', value: { value: 9 } },
+      },
+    });
   });
 
   test('selects maintained JobRuntime implementations and fails closed without their adapter', async () => {

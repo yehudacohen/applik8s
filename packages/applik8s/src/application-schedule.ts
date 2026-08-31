@@ -45,6 +45,9 @@ import {
   validateMessage,
 } from './application-workflow-serialization.js';
 import type {
+  ApplicationJobBinding,
+} from './application-finite-jobs.js';
+import type {
   ApplicationTaskBinding,
   ApplicationWorkflowBinding,
 } from './application-workflow-types.js';
@@ -689,7 +692,8 @@ export function createApplicationSchedule<TInput extends object, TResult>(
 
 type ApplicationScheduleDurableBinding =
   | ApplicationTaskBinding<object, object>
-  | ApplicationWorkflowBinding<object, object>;
+  | ApplicationWorkflowBinding<object, object>
+  | ApplicationJobBinding<object, object>;
 
 /**
  * A transparent `schedule(..., input => Durable(input))` wrapper has no
@@ -709,6 +713,7 @@ function directApplicationScheduleDurableTarget(
       && (
         Reflect.get(candidate, 'kind') === 'applicationTask'
         || Reflect.get(candidate, 'kind') === 'applicationWorkflow'
+        || Reflect.get(candidate, 'kind') === 'applicationJob'
       ),
   );
   for (const binding of durableBindings) {
@@ -721,20 +726,36 @@ function directApplicationScheduleDurableTarget(
       .sort();
     for (const alias of aliases) {
       if (!isDirectApplicationScheduleDurableInvocation(source, alias)) continue;
-      const kind: 'task' | 'workflow' =
-        binding.kind === 'applicationTask' ? 'task' : 'workflow';
+      const kind: 'task' | 'workflow' | 'job' =
+        binding.kind === 'applicationTask'
+          ? 'task'
+          : binding.kind === 'applicationWorkflow'
+            ? 'workflow'
+            : 'job';
+      const definition = binding.kind === 'applicationJob'
+        ? {
+            id: binding.definition.id,
+            name: binding.definition.id.includes('.')
+              ? binding.definition.id.slice(0, binding.definition.id.lastIndexOf('.'))
+              : binding.definition.id,
+            version: binding.definition.id.includes('.')
+              ? binding.definition.id.slice(binding.definition.id.lastIndexOf('.') + 1)
+              : 'v1',
+            input: binding.definition.contract.input,
+          }
+        : binding.definition;
       return Object.freeze({
         kind: 'durableStart' as const,
         durable: {
           kind,
-          nodeId: `${kind}.${kubernetesNameSegment(binding.definition.id)}`,
+          nodeId: `${kind}.${kubernetesNameSegment(definition.id)}`,
         },
         contract: {
-          name: binding.definition.name,
-          version: binding.definition.version,
+          name: definition.name,
+          version: definition.version,
           input: declaredSchema(
-            binding.definition.input,
-            `${binding.definition.id}.input`,
+            definition.input,
+            `${definition.id}.input`,
           ),
         },
         input: { kind: 'scheduleInput' as const },

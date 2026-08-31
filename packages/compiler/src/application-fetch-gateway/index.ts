@@ -8,6 +8,7 @@ import type {
 	ApplicationCrdNode,
 	ApplicationGatewayNode,
 	ApplicationGraph,
+	ApplicationJobNode,
 	ApplicationLakehousePublicationNode,
 	ApplicationObjectStoreNode,
 	ApplicationProfiledCallbackContract,
@@ -180,9 +181,15 @@ export function generatedApplicationFetchGatewayModules(
 					&& !provider.config?.qualification))
 		.map(({ id }) => id)
 		.sort();
-	const workflowScheduleTargets = schedules.filter(
+	const durableScheduleTargets = schedules.filter(
 		(schedule): schedule is ApplicationScheduleNode & { readonly target: NonNullable<ApplicationScheduleNode["target"]> } =>
 			schedule.target?.kind === "durableStart",
+	);
+	const workflowScheduleTargets = durableScheduleTargets.filter(
+		(schedule) => schedule.target.durable.kind === "workflow" || schedule.target.durable.kind === "task",
+	);
+	const jobScheduleTargets = durableScheduleTargets.filter(
+		(schedule) => schedule.target.durable.kind === "job",
 	);
 	const actors = schedulesOnly ? [] : graph.nodes.filter(
 		(node): node is ApplicationActorNode => node.kind === "actor",
@@ -338,12 +345,13 @@ export function generatedApplicationFetchGatewayModules(
 		imports.push(
 			"import { createHatchetApplicationScheduleRuntime } from '@applik8s/runtime-hatchet';",
 		);
-	if (workflowScheduleTargets.length > 0)
+	if (durableScheduleTargets.length > 0)
 		imports.push(
-			"import { readFile } from 'node:fs/promises';",
 			"import { validateApplicationAdmissionContextV1 } from '@applik8s/core';",
 			"import { createSignedEnvelopeCodec, signedEnvelopeUtf8Key, staticSignedEnvelopeKeyProvider } from '@applik8s/runtime';",
 		);
+	if (workflowScheduleTargets.length > 0)
+		imports.push("import { readFile } from 'node:fs/promises';");
 	if (actors.length > 0)
 		imports.push(
 			"import { actor, actorState, createApplicationActor, createApplicationActorTurnAuthority, executeApplicationActorAlarm, executeApplicationActorInvocation, executeApplicationActorRealtime, installApplicationActorInvocationAuthorityResolver, installApplicationActorRuntimeResolver, withApplicationActorTurnAuthority } from '@applik8s/applik8s/actor-runtime';",
@@ -371,7 +379,7 @@ export function generatedApplicationFetchGatewayModules(
 			carrierCapture: agents.length > 0 || (observability && hasRemoteQueries),
 			carrierTransport: observability && hasRemoteQueries,
 			providerOperationInstrumentation: hasCallableProviderOperations,
-			runtimeIntegrityObserver: observability && (queries.length > 0 || commands.length > 0 || workflowScheduleTargets.length > 0),
+			runtimeIntegrityObserver: observability && (queries.length > 0 || commands.length > 0 || durableScheduleTargets.length > 0),
 			runtimeImplementation: observability,
 		}));
 	if (identity.length === 1)
@@ -392,6 +400,20 @@ export function generatedApplicationFetchGatewayModules(
 			? graphScheduleCallback(files, imports, scheduleNode, scheduleNode.handler)
 			: scheduleNode.target?.kind === "durableStart"
 				? (() => {
+					if (scheduleNode.target.durable.kind === "job") {
+						const target = applicationScheduleJobControllerTarget(
+							graph,
+							scheduleNode,
+							options.scheduleHost,
+						);
+						if (scheduleNode.target.input.kind === "literal") {
+							return `async (context) => startScheduledJob(${JSON.stringify({
+								...target,
+								input: scheduleNode.target.input.value,
+							})}, context)`;
+						}
+						return `async (input, context) => startScheduledJob({ ...${JSON.stringify(target)}, input }, context)`;
+					}
 					const target = {
 						contract: `${scheduleNode.target.contract.name}.${scheduleNode.target.contract.version}`,
 						endpoint: applicationScheduleWorkflowGatewayEndpoint(
@@ -1005,6 +1027,74 @@ async function startScheduledWorkflow(target, context) {
     await new Promise(resolve => setTimeout(resolve, Math.min(1_000, attempt * 100)));
   }
   throw lastFailure ?? new Error('Scheduled workflow gateway request failed.');
+}` : ''}
+
+${jobScheduleTargets.length > 0 ? `const scheduledJobAdmission = createSignedEnvelopeCodec({
+  purpose: 'applik8s.job-controller-admission/v1',
+  keys: staticSignedEnvelopeKeyProvider({
+    current: {
+      id: 'application-internal-operation',
+      key: signedEnvelopeUtf8Key(requiredEnv('APPLIK8S_INTERNAL_OPERATION_SECRET')),
+    },
+  }),
+  validatePayload: value => validateApplicationAdmissionContextV1(value),
+  ${observability ? 'observe: observeApplicationRuntimeIntegrityEnvelope,' : ''}
+  maximumEncodedBytes: 32_768,
+  maximumLifetimeMs: 60_000,
+});
+
+async function startScheduledJob(target, context) {
+  const idempotencyKey = context.occurrenceId;
+  let lastFailure;
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      const response = await fetch(target.endpoint, {
+        method: 'POST',
+        headers: {
+          accept: 'application/json',
+          authorization: 'Bearer ' + requiredEnv('APPLIK8S_INTERNAL_OPERATION_SECRET'),
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          apiVersion: 'applik8s.jobControllerRequest/v1alpha1',
+          providerNodeId: target.providerNodeId,
+          action: 'start',
+          job: target.job,
+          input: target.input,
+          invocation: {
+            idempotencyKey,
+            admissionEnvelope: await scheduledJobAdmission.sign(
+              context.admission,
+              { expiresInMs: 60_000 },
+            ),
+          },
+        }),
+        signal: AbortSignal.any([context.signal, AbortSignal.timeout(15_000)]),
+      });
+      const envelope = await response.json().catch(() => ({}));
+      const value = envelope?.result;
+      if (response.ok && envelope?.ok === true) {
+        if (!value || typeof value !== 'object' || value.job !== target.job
+          || typeof value.runId !== 'string' || typeof value.admittedAt !== 'string') {
+          throw new Error('Job controller returned an invalid scheduled run reference.');
+        }
+        return Object.freeze({ ...value, occurrenceId: context.occurrenceId });
+      }
+      if (![502, 503, 504].includes(response.status) || attempt === 3) {
+        throw new Error(
+          'Scheduled Job controller request failed with HTTP ' + response.status
+            + ': ' + String(envelope?.error ?? 'request-failed'),
+        );
+      }
+      lastFailure = new Error('Scheduled Job controller temporarily unavailable.');
+    } catch (error) {
+      if (context.signal.aborted) throw context.signal.reason ?? error;
+      lastFailure = error;
+      if (attempt === 3) throw error;
+    }
+    await new Promise(resolve => setTimeout(resolve, Math.min(1_000, attempt * 100)));
+  }
+  throw lastFailure ?? new Error('Scheduled Job controller request failed.');
 }` : ''}
 
 ${actors.length > 0 || lakehousePublications.length > 0 ? `function runtimeJsonSchema(schema, exportName) {
@@ -2597,6 +2687,62 @@ function applicationScheduleWorkflowGatewayEndpoint(
 		);
 	}
 	return `http://${kubernetesName(worker.name)}.${namespace}.svc:${worker.deployment.healthPort + 1}`;
+}
+
+function applicationScheduleJobControllerTarget(
+	graph: ApplicationGraph,
+	schedule: ApplicationScheduleNode,
+	hostOverride?: {
+		readonly name: string;
+		readonly namespace: string;
+		readonly port: number;
+	},
+): {
+	readonly endpoint: string;
+	readonly providerNodeId: string;
+	readonly job: string;
+} {
+	if (schedule.target?.kind !== "durableStart" || schedule.target.durable.kind !== "job") {
+		throw new Error(`Schedule ${schedule.definition.id} has no Job execution target.`);
+	}
+	const job = graph.nodes.find(
+		(node): node is ApplicationJobNode =>
+			node.kind === "job" && node.id === schedule.target?.durable.nodeId,
+	);
+	if (!job) {
+		throw new Error(
+			`Schedule ${schedule.definition.id} references missing Job ${schedule.target.durable.nodeId}.`,
+		);
+	}
+	const providerEdge = graph.edges.find(
+		(edge) => edge.to.nodeId === job.id && edge.relationship === "provides",
+	);
+	const provider = providerEdge
+		? graph.nodes.find((node) => node.id === providerEdge.from.nodeId)
+		: undefined;
+	if (
+		provider?.kind !== "provider"
+		|| provider.interface !== "JobRuntime"
+		|| provider.implementation !== "kubernetes-job-runtime"
+	) {
+		throw new Error(
+			`Schedule ${schedule.definition.id} Job ${job.id} requires one Kubernetes JobRuntime provider.`,
+		);
+	}
+	const host = applicationScheduleHost(graph, hostOverride);
+	const namespace = applicationGraphStringValue(provider.config?.namespace)
+		?? applicationGraphStringValue(graph.metadata.namespace)
+		?? host.namespace;
+	if (namespace !== host.namespace) {
+		throw new Error(
+			`Schedule ${schedule.definition.id} runs in ${host.namespace}, but Job ${job.id} runs in ${namespace}; the private Job controller requires a shared namespace.`,
+		);
+	}
+	return {
+		endpoint: `http://${kubernetesName(`${graph.metadata.name}-jobs`)}.${namespace}.svc:8091/v1/jobs`,
+		providerNodeId: provider.id,
+		job: job.name,
+	};
 }
 
 function objectStoreGatewaySource(store: ApplicationObjectStoreNode): string {

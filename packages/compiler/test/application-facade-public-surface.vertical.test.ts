@@ -587,7 +587,96 @@ describe('entrypoint-driven application public surface', () => {
     }));
     expect(validateApplicationGraphStructure(published)).toEqual([]);
   });
+
+  it('lowers exported Jobs through the shared scheduler into the private Job controller', () => {
+    const authored = jobScheduleGraph();
+    const published = applicationGraphWithEntrypointPublicSurface(authored, {
+      operationIds: [],
+      modelNames: [],
+      durables: [{ kind: 'job', id: 'search.rebuild.v1' }],
+    });
+    const scheduled = published.nodes.find(
+      (node) => node.id === 'schedule.job-start.search.rebuild.v1',
+    );
+    expect(scheduled).toMatchObject({
+      kind: 'schedule',
+      definition: {
+        configuration: 'dynamic',
+        requirements: { configuration: 'dynamic', cardinality: 'high', precision: 'second' },
+      },
+      target: {
+        kind: 'durableStart',
+        durable: { kind: 'job', nodeId: 'job.search.rebuild.v1' },
+        contract: { name: 'search.rebuild', version: 'v1' },
+        input: { kind: 'scheduleInput' },
+      },
+    });
+    expect(published.edges).toContainEqual({
+      from: { nodeId: scheduled?.id },
+      to: { nodeId: 'job.search.rebuild.v1' },
+      relationship: 'dependsOn',
+    });
+    expect(validateApplicationGraphStructure(published)).toEqual([]);
+
+    const source = generatedApplicationFetchGatewayModules(published)
+      ?.files['gateway.generated.ts'] ?? '';
+    expect(source).toContain('startScheduledJob');
+    expect(source).toContain('applik8s.jobControllerRequest/v1alpha1');
+    expect(source).toContain("purpose: 'applik8s.job-controller-admission/v1'");
+    expect(source).toContain('agentic-start-jobs.workflow-system.svc:8091/v1/jobs');
+    expect(source).toContain('context.occurrenceId');
+    expect(source).not.toContain('async input => ({ rebuilt: input.workspaceId })');
+  });
 });
+
+function jobScheduleGraph(): ApplicationGraph {
+  const authored = workflowScheduleGraph();
+  return {
+    ...authored,
+    nodes: [
+      ...authored.nodes.filter((node) =>
+        node.kind !== 'workflow'
+        && node.kind !== 'workflowHandler'
+        && node.kind !== 'workflowWorker'
+        && !(node.kind === 'provider' && node.interface === 'WorkflowEngine')),
+      {
+        id: 'provider.job-runtime',
+        kind: 'provider',
+        name: 'JobRuntime',
+        stability: 'experimental',
+        interface: 'JobRuntime',
+        implementation: 'kubernetes-job-runtime',
+        config: { namespace: 'workflow-system' },
+      },
+      {
+        id: 'job.search.rebuild.v1',
+        kind: 'job',
+        name: 'search.rebuild.v1',
+        stability: 'experimental',
+        contract: {
+          name: 'search.rebuild',
+          version: 'v1',
+          input: { jsonSchema: { type: 'object', properties: { workspaceId: { type: 'string' } }, required: ['workspaceId'] } },
+          output: { jsonSchema: { type: 'object', properties: { rebuilt: { type: 'string' } }, required: ['rebuilt'] } },
+        },
+        handlerSource: 'async input => ({ rebuilt: input.workspaceId })',
+        retry: { maxAttempts: 1, wholeAttempt: true },
+        idempotency: { scope: 'applicationDeploymentContractContextAuthority', keySource: 'invocation', conflict: 'failClosed' },
+        cancellation: { request: 'durableReceipt', terminal: 'firstTransitionWins', behavior: 'cooperativeThenProviderBounded' },
+        retention: { source: 'profileWithAuthoredOverrides' },
+        runtime: { interface: 'JobRuntime', selection: 'profile', protocol: 'applik8s.jobRuntime/v1alpha1' },
+      },
+    ],
+    edges: [
+      ...authored.edges,
+      {
+        from: { nodeId: 'provider.job-runtime' },
+        to: { nodeId: 'job.search.rebuild.v1' },
+        relationship: 'provides',
+      },
+    ],
+  } as unknown as ApplicationGraph;
+}
 
 function workflowScheduleGraph(): ApplicationGraph {
   const authored = graph();

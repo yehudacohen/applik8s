@@ -942,10 +942,10 @@ export interface ApplicationScheduleNode extends ApplicationGraphNodeBase<'sched
    * execution family's identity and durability outside Scheduler ownership.
    */
   readonly handler?: ApplicationSerializedCallbackContract;
-  /** Compiler-owned lowering for a schedule occurrence that admits a workflow run. */
+  /** Compiler-owned lowering for a schedule occurrence that admits a typed execution run. */
   readonly target?: {
     readonly kind: 'durableStart';
-    readonly durable: ApplicationGraphNodeRef & { readonly kind: 'workflow' | 'task' };
+    readonly durable: ApplicationGraphNodeRef & { readonly kind: 'workflow' | 'task' | 'job' };
     readonly contract: {
       readonly name: string;
       readonly version: string;
