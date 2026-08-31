@@ -152,6 +152,7 @@ export function applicationProviderRefsForNode(node: ApplicationGraphNode): read
         ...(node.capabilities ?? []),
         ...(node.providerBindings ?? []).map(({ provider }) => provider),
       ];
+    case 'saga':
     case 'workflowHandler':
     case 'workflowWorker':
       return [node.workflowEngine];

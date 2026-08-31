@@ -39,6 +39,7 @@ const executionNodeKinds = new Set<ApplicationGraphNodeKind>([
   'taskHandler',
   'workflowHandler',
   'workflowWorker',
+  'saga',
   'aiAgent',
   'mcpServer',
   'mcpClient',
@@ -374,6 +375,10 @@ function addNodeSpecificRequirements(
     for (const task of node.tasks) add(node, 'workflow.invoke', task.nodeId, resourceScope(task));
     for (const workflow of node.childWorkflows) add(node, 'workflow.invoke', workflow.nodeId, resourceScope(workflow));
     if (node.workflowEngine?.interface) add(node, 'connection.use', node.workflowEngine.interface, { kind: 'capability', capabilityId: node.workflowEngine.interface }, 'framework');
+    return;
+  }
+  if (node.kind === 'saga') {
+    add(node, 'connection.use', node.workflowEngine.interface, { kind: 'capability', capabilityId: node.workflowEngine.interface }, 'framework');
     return;
   }
   if (node.kind === 'aiAgent') {

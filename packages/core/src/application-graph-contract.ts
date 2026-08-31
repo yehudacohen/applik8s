@@ -86,6 +86,7 @@ export type ApplicationGraphNodeKind =
   | 'workflow'
   | 'workflowHandler'
   | 'workflowWorker'
+  | 'saga'
   | 'schedule'
   | 'lakehousePublication'
   | 'actor'
@@ -128,6 +129,7 @@ export const applicationGraphNodeKinds = [
   'workflow',
   'workflowHandler',
   'workflowWorker',
+  'saga',
   'schedule',
   'lakehousePublication',
   'actor',
@@ -294,6 +296,7 @@ export type ApplicationGraphNode =
   | ApplicationWorkflowNode
   | ApplicationWorkflowHandlerNode
   | ApplicationWorkflowWorkerNode
+  | ApplicationSagaNode
   | ApplicationScheduleNode
   | ApplicationLakehousePublicationNode
   | ApplicationActorNode
@@ -921,6 +924,31 @@ export interface ApplicationWorkflowHandlerNode extends ApplicationGraphNodeBase
   readonly orchestrationBoundary: 'durableEffectsThroughTasks';
   readonly deterministicOperations: readonly ('task' | 'childWorkflow' | 'sleep' | 'externalEvent' | 'now' | 'cancellation')[];
   readonly sourceAnalysis: 'closedWorkflowAllowlist';
+}
+
+export interface ApplicationSagaNode extends ApplicationGraphNodeBase<'saga'> {
+  readonly contract: {
+    readonly name: string;
+    readonly version: string;
+    readonly input: ApplicationMessageContractSchema;
+    readonly output: ApplicationMessageContractSchema;
+  };
+  readonly workflowEngine: ApplicationProviderRef<'WorkflowEngine'>;
+  readonly handlerSource: string;
+  readonly handlerDependencies?: ApplicationHandlerDependencies;
+  readonly sourceLocation?: SourceLocation;
+  readonly steps: readonly {
+    readonly id: string;
+    readonly kind: 'step' | 'commit' | 'irreversible';
+    readonly order: number;
+    readonly compensation: 'required' | 'forbidden';
+    readonly reason?: string;
+  }[];
+  readonly deadlineSeconds: number;
+  readonly recoveryDeadlineSeconds: number;
+  readonly cancellation: 'recoverThenCompensate';
+  readonly atomicity: 'compensatingNoIsolation';
+  readonly maturity: 'beta';
 }
 
 export interface ApplicationWorkflowWorkerNode extends ApplicationGraphNodeBase<'workflowWorker'> {
@@ -3802,6 +3830,8 @@ function applicationGraphNodeStructureDiagnostics(node: ApplicationGraphNode, gr
       return applicationDurableContractNodeStructureDiagnostics('task', node.id, node.contract);
     case 'workflow':
       return applicationDurableContractNodeStructureDiagnostics('workflow', node.id, node.contract);
+    case 'saga':
+      return applicationSagaNodeStructureDiagnostics(node, graph);
     case 'taskHandler':
       return applicationTaskHandlerNodeStructureDiagnostics(node, graph);
     case 'workflowHandler':
@@ -4838,6 +4868,78 @@ function applicationWorkflowHandlerNodeStructureDiagnostics(node: ApplicationWor
     if (binding.actions.length === 0 || new Set(binding.actions.map((action) => action.name)).size !== binding.actions.length) diagnostics.push(applicationGraphStructureDiagnostic(`Application workflow handler ${node.id} signal ${binding.alias} must declare unique terminal actions.`));
   }
   if (!node.handlerSource.trim() || node.orchestrationBoundary !== 'durableEffectsThroughTasks' || node.sourceAnalysis !== 'closedWorkflowAllowlist') diagnostics.push(applicationGraphStructureDiagnostic(`Application workflow handler ${node.id} must retain closed provider-neutral durable orchestration source.`));
+  return diagnostics;
+}
+
+function applicationSagaNodeStructureDiagnostics(
+  node: ApplicationSagaNode,
+  graph: ApplicationGraph,
+): readonly Diagnostic[] {
+  const diagnostics: Diagnostic[] = [];
+  const provider = graph.nodes.find(
+    (candidate) => candidate.id === node.workflowEngine.nodeId,
+  );
+  if (
+    provider?.kind !== 'provider'
+    || provider.interface !== 'WorkflowEngine'
+  ) {
+    diagnostics.push(applicationGraphStructureDiagnostic(
+      `Application Saga ${node.id} must reference one WorkflowEngine provider.`,
+    ));
+  }
+  if (
+    !node.contract.name.trim()
+    || !/^v[1-9][0-9]*$/.test(node.contract.version)
+  ) {
+    diagnostics.push(applicationGraphStructureDiagnostic(
+      `Application Saga ${node.id} must retain a stable versioned contract identity.`,
+    ));
+  }
+  if (!node.handlerSource.trim()) {
+    diagnostics.push(applicationGraphStructureDiagnostic(
+      `Application Saga ${node.id} must retain handler source for generated worker lowering.`,
+    ));
+  }
+  if (
+    !Number.isSafeInteger(node.deadlineSeconds)
+    || node.deadlineSeconds < 1
+    || !Number.isSafeInteger(node.recoveryDeadlineSeconds)
+    || node.recoveryDeadlineSeconds < node.deadlineSeconds
+  ) {
+    diagnostics.push(applicationGraphStructureDiagnostic(
+      `Application Saga ${node.id} requires positive deadlines with recoveryDeadline >= deadline.`,
+    ));
+  }
+  const stepIds = new Set<string>();
+  for (const [index, step] of node.steps.entries()) {
+    if (
+      !step.id.trim()
+      || stepIds.has(step.id)
+      || step.order !== index
+    ) {
+      diagnostics.push(applicationGraphStructureDiagnostic(
+        `Application Saga ${node.id} requires unique ordered durable step identities.`,
+      ));
+    }
+    stepIds.add(step.id);
+    if (
+      (step.kind === 'step' && step.compensation !== 'required')
+      || (step.kind !== 'step' && step.compensation !== 'forbidden')
+    ) {
+      diagnostics.push(applicationGraphStructureDiagnostic(
+        `Application Saga ${node.id} step ${step.id} has an invalid compensation classification.`,
+      ));
+    }
+  }
+  if (
+    node.atomicity !== 'compensatingNoIsolation'
+    || node.cancellation !== 'recoverThenCompensate'
+    || node.maturity !== 'beta'
+  ) {
+    diagnostics.push(applicationGraphStructureDiagnostic(
+      `Application Saga ${node.id} must retain the beta compensating, non-isolated recovery contract.`,
+    ));
+  }
   return diagnostics;
 }
 

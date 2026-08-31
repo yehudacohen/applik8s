@@ -133,6 +133,15 @@ import type { ApplicationRouteSourceLocation, ApplicationServerRouteSourceAnalys
 import { analyzeApplicationServerRouteSource, normalizeSerializableFunctionSource, routeAnalysisCallsMethod, serializedCallbackClosureMessage, unsupportedRouteFreeIdentifiers } from './application-route-source.js';
 import { generatedApplicationRuntimeModuleBundle } from './application-runtime-modules.js';
 import {
+  type ApplicationSagaBinding,
+  type ApplicationSagaContract,
+  type ApplicationSagaHandler,
+  type ApplicationSagaOptions,
+  type ApplicationSagaRegistrar,
+  type ApplicationTransactionRegistrar,
+  createApplicationTransactionRegistrar,
+} from './application-sagas.js';
+import {
   type ApplicationSearchDocument,
   type ApplicationSearchField,
   type ApplicationSearchIndexBinding,
@@ -684,6 +693,8 @@ export interface KubernetesApplicationScope extends ApplicationAuthorityRegistra
   aggregate<TStats extends object, TEvent extends object>(name: string, options: ApplicationAggregateOptions<TStats, TEvent>): ApplicationAggregateBinding<TStats, TEvent>;
   readonly job: ApplicationJobRegistrar;
   readonly workflow: ApplicationWorkflowRegistrar;
+  /** Explicit compensating coordination for distributed effects; never implies distributed ACID. */
+  readonly transaction: ApplicationTransactionRegistrar;
   /** Select a scalar graph value from a typed installation field without authoring raw CEL. */
   select<TInput extends string, TOutput extends ApplicationGraphScalar>(
     input: TInput,
@@ -3422,6 +3433,19 @@ function createKubernetesApplicationBuilder<TSpec extends KroCompatibleType = Re
       invalidate();
       return binding;
     }) as KubernetesApplicationScope['workflow'],
+    transaction: {
+      saga: ((id: `${string}.v${number}`, contract: ApplicationSagaContract<object, object>, optionsOrHandler: ApplicationSagaOptions<object> | ApplicationSagaHandler<object, object>, maybeHandler?: ApplicationSagaHandler<object, object>) => {
+        const args = maybeHandler
+          ? [id, contract, optionsOrHandler, maybeHandler]
+          : [id, contract, optionsOrHandler];
+        const binding = Reflect.apply(preview.transaction.saga, preview.transaction, args) as ApplicationSagaBinding<object, object>;
+        replays.push((scope) => {
+          Reflect.apply(scope.transaction.saga, scope.transaction, args);
+        });
+        invalidate();
+        return binding;
+      }) as ApplicationSagaRegistrar,
+    },
     // typecast-boundary: these generic helpers return TypeKro expression proxies
     // typed as the selected scalar, matching the public graph DSL contract.
     select: applicationGraphSelect as KubernetesApplicationScope['select'],
@@ -5287,6 +5311,7 @@ function createApplicationContext<TSpec extends KroCompatibleType, TStatus exten
         ? registerApplicationSingleStepWorkflow(state, definition as never, options as never, handler as never)
         : registerApplicationWorkflow(state, definition as never, options as never, handler as never);
     }) as KubernetesApplicationScope['workflow'],
+    transaction: createApplicationTransactionRegistrar(state),
     // typecast-boundary: these generic helpers return TypeKro expression proxies
     // typed as the selected scalar, matching the public graph DSL contract.
     select: applicationGraphSelect as KubernetesApplicationScope['select'],

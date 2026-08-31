@@ -65,8 +65,8 @@ deployment machinery.
 
 ## Current checkpoint
 
-The branch `codex/v0.9-semantic-completion` is pushed through `c8f49ab` before
-the current managed-model slice. Completed foundations include concrete
+The branch `codex/v0.9-semantic-completion` is pushed through `d023005` before
+the current Saga slice. Completed foundations include concrete
 provider planning, deployment migration proposals, journey declarations, the
 documentation site foundation, shared effect-safety primitives, Job vocabulary
 and runtime contracts, deterministic and durable PostgreSQL Job execution,
@@ -140,7 +140,23 @@ generated-operator OrbStack suite passes all nine cases using
 including current-generation status, child ownership, restart/resync,
 finalization, RBAC denial, apply/status conflicts, malformed output, timeout,
 and teardown. Workspace typecheck passes across 64 packages and all package
-artifacts build. Beta Saga coordination is the next semantic increment.
+artifacts build.
+
+The beta Saga slice now establishes the exact
+`application.transaction.saga(...)` public spelling, a first-class Saga graph
+node, ordered stable `step`/`commit`/`irreversible` boundaries, its
+WorkflowEngine requirement, an explicit compensating/no-isolation maturity
+contract, and graph structure/foundation validation. Its deterministic
+conformance runtime proves reverse compensation, commit-frontier isolation,
+honest unknown outcomes with later observation, distinct compensation-failure
+evidence, idempotent result adoption, and runtime rejection of effects outside
+a Saga boundary or nested compensation authorities. Registration fails closed
+for dynamic or duplicate durable step IDs. The focused suite passes six cases
+and affected core, compiler, and authoring-package typechecks pass. This is a
+truthful semantic foundation, not deployed-provider qualification:
+compiler-enforced effect classification, a durable WorkflowEngine lowering,
+interruption/upgrade matrices, application facts, and operations evidence
+remain open before Saga satisfies its beta definition of done.
 
 Continue in the sequence above until every stable-candidate gate is implemented
 and evidenced. Keep beta/preview surfaces truthful; do not expand the frozen
