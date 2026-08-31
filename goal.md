@@ -114,9 +114,17 @@ transaction as lifecycle completion. Lower-level
 script mutation clients fail closed rather than bypassing this authority. Unit
 and OrbStack PostgreSQL evidence cover mutation isolation, process replacement,
 fencing, physical row deletion, snapshot-backed cleanup, and fresh-incarnation
-recreation. Generated distributed-operator lowering, activation/backfill of
-pre-existing rows, and Kubernetes parity remain the next work in this slice
-before beta Saga coordination.
+recreation. The distributed OperatorRuntime lowering is now generated as a
+two-replica, bounded-concurrency workload with readiness held behind a
+checkpointed activation migration, health/failure reporting, compiler-owned
+callback bundling, focused model-read hydration, transactional terminal
+deletion, and provider-selected PostgreSQL Secret bindings. Activation pages
+commit with a durable cursor, resume after process replacement, preserve
+existing UIDs, reject status-schema drift, and coexist with lifecycle rows
+created by concurrent framework mutations. OrbStack evidence covers
+interrupted resume, idempotent completion, schema rejection, and the complete
+relational lifecycle. Kubernetes managed-model parity remains the next work in
+this slice before beta Saga coordination.
 
 Continue in the sequence above until every stable-candidate gate is implemented
 and evidenced. Keep beta/preview surfaces truthful; do not expand the frozen

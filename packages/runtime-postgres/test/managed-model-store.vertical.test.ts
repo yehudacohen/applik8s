@@ -22,6 +22,8 @@ describe('PostgreSQL managed-model migration', () => {
     expect(sql).toContain('lease_fence');
     expect(sql).toContain('conditions jsonb');
     expect(sql).toContain('applik8s_managed_model_invalidations');
+    expect(sql).toContain('applik8s_managed_model_activations');
+    expect(sql).toContain('activated_count bigint');
   });
 });
 
@@ -44,6 +46,7 @@ live('PostgreSQL managed-model store', () => {
     if (!databaseUrl) return;
     const sql = postgres(databaseUrl, { max: 1 });
     try {
+      await sql`DELETE FROM applik8s_managed_model_activations WHERE application_id = ${applicationId}`;
       await sql`DELETE FROM applik8s_managed_model_invalidations WHERE application_id = ${applicationId}`;
       await sql`DELETE FROM applik8s_managed_model_lifecycle WHERE application_id = ${applicationId}`;
     } finally {
@@ -194,5 +197,61 @@ live('PostgreSQL managed-model store', () => {
     expect(replacement.metadata.uid).not.toBe(original.metadata.uid);
     expect(replacement.metadata.deletionTimestamp).toBeUndefined();
     await deletionStore.close();
+  });
+
+  test('activates existing rows through a durable cursor and resumes idempotently after process replacement', async () => {
+    if (!databaseUrl) throw new Error('APPLIK8S_JOB_POSTGRES_URL is required.');
+    const activationValues = new Map([
+      ['activation-a', { version: '1.0.0' }],
+      ['activation-b', { version: '1.0.0' }],
+      ['activation-c', { version: '1.0.0' }],
+    ]);
+    const createActivationStore = (statusSchemaVersion = '1') => createPostgresApplicationManagedModelStore<string, { version: string }, {
+      observedGeneration: number;
+      phase: 'Pending' | 'Ready';
+    }>({
+      databaseUrl: requiredDatabaseUrl,
+      applicationId,
+      model: 'WorkspaceActivation',
+      statusSchemaVersion,
+      readValue: async id => activationValues.get(id),
+    });
+    const initialStatus = { observedGeneration: 0, phase: 'Pending' } as const;
+    const scanPage = async ({ cursor, limit }: { readonly cursor?: string; readonly limit: number }) => {
+      const entries = [...activationValues.entries()].sort(([left], [right]) => left.localeCompare(right));
+      const offset = cursor === undefined ? 0 : entries.findIndex(([identity]) => identity === cursor) + 1;
+      const page = entries.slice(offset, offset + limit);
+      const last = page.at(-1);
+      return {
+        items: page.map(([identity, value]) => ({ identity, value })),
+        ...(offset + page.length < entries.length && last
+          ? { nextCursor: last[0] }
+          : {}),
+      };
+    };
+
+    const first = createActivationStore();
+    expect(await first.activateExisting({ initialStatus, scanPage, pageSize: 1, maximumPages: 1 }))
+      .toEqual({ activated: 1, completed: false });
+    const firstRecord = await first.read('activation-a');
+    expect(firstRecord?.metadata).toMatchObject({ generation: 1, resourceVersion: '1' });
+    await first.close();
+
+    const replacement = createActivationStore();
+    expect(await replacement.activateExisting({ initialStatus, scanPage, pageSize: 1 }))
+      .toEqual({ activated: 2, completed: true });
+    expect(await replacement.activateExisting({ initialStatus, scanPage, pageSize: 1 }))
+      .toEqual({ activated: 0, completed: true });
+    expect((await replacement.read('activation-a'))?.metadata.uid).toBe(firstRecord?.metadata.uid);
+    expect(await replacement.read('activation-c')).toMatchObject({
+      id: 'activation-c',
+      metadata: { generation: 1, resourceVersion: '1' },
+    });
+    await replacement.close();
+
+    const incompatible = createActivationStore('2');
+    await expect(incompatible.activateExisting({ initialStatus, scanPage, pageSize: 1 }))
+      .rejects.toThrow(/requires status schema 1 to migrate to 2/);
+    await incompatible.close();
   });
 });

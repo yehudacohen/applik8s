@@ -46,6 +46,11 @@
       "import": "./dist/managed-model-store.js",
       "default": "./dist/managed-model-store.js"
     },
+    "./operator-runtime": {
+      "types": "./dist/operator-runtime.d.ts",
+      "import": "./dist/operator-runtime.js",
+      "default": "./dist/operator-runtime.js"
+    },
     "./query-selection": {
       "types": "./dist/query-selection.d.ts",
       "import": "./dist/query-selection.js",

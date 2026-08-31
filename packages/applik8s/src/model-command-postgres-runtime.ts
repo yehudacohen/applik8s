@@ -1495,6 +1495,77 @@ export async function applicationPostgresModelReadClients(
   return Object.freeze(clients);
 }
 
+/** Framework-owned point read used by generated PostgreSQL managed-model workers. */
+export async function readPostgresApplicationManagedModelValue(
+  transaction: Pick<ApplicationPostgresTransactionSql, 'unsafe'>,
+  model: ApplicationRuntimeModelContract,
+  identity: unknown,
+): Promise<object | undefined> {
+  const current = await lockedModelObject<object, object>(
+    transaction,
+    model,
+    String(identity),
+    false,
+  );
+  return current?.spec;
+}
+
+/**
+ * Stable keyset scan used only by the explicit managed-model activation
+ * migration. Ordinary reconciliation is driven by lifecycle rows, not by
+ * repeatedly walking the application table.
+ */
+export async function scanPostgresApplicationManagedModelValues(
+  transaction: Pick<ApplicationPostgresTransactionSql, 'unsafe'>,
+  model: ApplicationRuntimeModelContract,
+  request: { readonly cursor?: unknown; readonly limit: number },
+): Promise<{
+  readonly items: readonly { readonly identity: unknown; readonly value: object }[];
+  readonly nextCursor?: unknown;
+}> {
+  if (!Number.isSafeInteger(request.limit) || request.limit < 1 || request.limit > 10_000) {
+    throw new Error(`Managed-model activation scan for ${model.name} requires a limit between 1 and 10000.`);
+  }
+  if (model.storageShape === 'native-relational') {
+    const native = requiredNativeRelationalContract(model);
+    const identity = quoteIdentifier(native.identity.column);
+    const parameters = request.cursor === undefined ? [] : [request.cursor];
+    const where = request.cursor === undefined ? '' : ` WHERE ${identity} > $1`;
+    const rows = await transaction.unsafe(
+      `SELECT * FROM ${qualifiedModelTable(model)}${where} ORDER BY ${identity} ASC LIMIT ${request.limit + 1}`,
+      parameters,
+    );
+    const page = rows.slice(0, request.limit).map((row) => {
+      const value = nativeRowToProperties(model, row as NativeModelRow);
+      return { identity: Reflect.get(value, native.identity.property), value };
+    });
+    const last = page.at(-1);
+    return {
+      items: page,
+      ...(rows.length > request.limit && last
+        ? { nextCursor: last.identity }
+        : {}),
+    };
+  }
+  const parameters = request.cursor === undefined ? [] : [request.cursor];
+  const where = request.cursor === undefined ? '' : ' WHERE id > $1';
+  const rows = await transaction.unsafe(
+    `SELECT id, spec FROM ${qualifiedModelTable(model)}${where} ORDER BY id ASC LIMIT ${request.limit + 1}`,
+    parameters,
+  );
+  const page = rows.slice(0, request.limit).map((row) => ({
+    identity: Reflect.get(row, 'id'),
+    value: Reflect.get(row, 'spec') as object,
+  }));
+  const last = page.at(-1);
+  return {
+    items: page,
+    ...(rows.length > request.limit && last
+      ? { nextCursor: last.identity }
+      : {}),
+  };
+}
+
 function applicationEventPartitionKey(
   definition: PostgresModelCommandEventDefinition,
   payload: object,
@@ -2359,6 +2430,26 @@ async function deleteModelObject<TSpec extends object, TStatus extends object>(
     predicate += ` AND ${quoteIdentifier(native.revision.column)} = $${parameters.length}`;
   }
   return transaction.unsafe(`DELETE FROM ${qualifiedModelTable(model)} WHERE ${predicate} RETURNING ${quoteIdentifier(native.identity.column)}`, parameters as never[]);
+}
+
+/** Framework-owned terminal deletion used by the PostgreSQL managed-model store. */
+export async function deletePostgresApplicationManagedModelValue(
+  transaction: ApplicationPostgresTransactionSql,
+  model: ApplicationRuntimeModelContract,
+  identity: unknown,
+): Promise<void> {
+  if (model.storageShape === 'native-relational') {
+    const native = requiredNativeRelationalContract(model);
+    await transaction.unsafe(
+      `DELETE FROM ${qualifiedModelTable(model)} WHERE ${quoteIdentifier(native.identity.column)} = $1`,
+      [identity],
+    );
+    return;
+  }
+  await transaction.unsafe(
+    `DELETE FROM ${qualifiedModelTable(model)} WHERE id = $1`,
+    [identity],
+  );
 }
 
 function durableModelSnapshot<TSpec extends object, TStatus extends object>(value: unknown, id: string, revision: string): ApplicationModelObject<TSpec, TStatus> | undefined {

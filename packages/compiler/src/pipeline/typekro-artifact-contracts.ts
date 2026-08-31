@@ -10,6 +10,7 @@ import type {
 import type { GeneratedApplicationAgentArtifact } from '../application-agents/index.js';
 import type { GeneratedApplicationHttpArtifact } from '../application-http/index.js';
 import type { GeneratedApplicationJobArtifact } from '../application-jobs/index.js';
+import type { GeneratedApplicationManagedModelArtifact } from '../application-managed-models/index.js';
 import type { GeneratedApplicationLakehousePublisherArtifact } from '../application-lakehouse-publishers/index.js';
 import type { GeneratedApplicationMcpArtifact } from '../application-mcp/index.js';
 import type { GeneratedApplicationMigrationArtifact } from '../application-migrations/index.js';
@@ -58,6 +59,7 @@ export interface TypeKroCompositionBundleManifest extends JsonObject {
     readonly migrations?: readonly TypeKroCompositionMigrationArtifactReference[];
     readonly processors?: readonly TypeKroCompositionProcessorArtifactReference[];
     readonly jobs?: readonly TypeKroCompositionJobArtifactReference[];
+    readonly managedModels?: readonly TypeKroCompositionManagedModelArtifactReference[];
     readonly lakehousePublishers?: readonly TypeKroCompositionLakehousePublisherArtifactReference[];
     readonly workflows?: readonly TypeKroCompositionWorkflowArtifactReference[];
     readonly reactive?: readonly TypeKroCompositionReactiveArtifactReference[];
@@ -96,6 +98,19 @@ export interface TypeKroCompositionJobArtifactReference extends JsonObject {
   readonly nodeId: string;
   readonly executionNodeIds?: readonly string[];
   readonly jobIds: readonly string[];
+  readonly manifest: string;
+  readonly source: string;
+  readonly digest: string;
+  readonly sizeBytes: number;
+  readonly container: TypeKroCompositionContainerArtifactReference;
+  readonly frameworkCredentials?: readonly TypeKroCompositionFrameworkCredentialReference[];
+}
+
+export interface TypeKroCompositionManagedModelArtifactReference extends JsonObject {
+  readonly name: string;
+  readonly nodeId: string;
+  readonly executionNodeIds?: readonly string[];
+  readonly modelIds: readonly string[];
   readonly manifest: string;
   readonly source: string;
   readonly digest: string;
@@ -250,6 +265,7 @@ export interface TypeKroCompositionArtifacts {
   readonly migrationArtifacts: readonly GeneratedApplicationMigrationArtifact[];
   readonly processorArtifacts: readonly GeneratedApplicationProcessorArtifact[];
   readonly jobArtifacts: readonly GeneratedApplicationJobArtifact[];
+  readonly managedModelArtifacts: readonly GeneratedApplicationManagedModelArtifact[];
   readonly lakehousePublisherArtifacts: readonly GeneratedApplicationLakehousePublisherArtifact[];
   readonly workflowArtifacts: readonly GeneratedApplicationWorkflowArtifact[];
   readonly reactiveArtifacts: readonly GeneratedApplicationReactiveArtifact[];

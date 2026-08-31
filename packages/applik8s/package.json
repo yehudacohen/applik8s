@@ -86,6 +86,11 @@
       "import": "./dist/postgres-runtime-contract.js",
       "default": "./dist/postgres-runtime-contract.js"
     },
+    "./managed-model-postgres-runtime": {
+      "types": "./dist/managed-model-postgres-runtime.d.ts",
+      "import": "./dist/managed-model-postgres-runtime.js",
+      "default": "./dist/managed-model-postgres-runtime.js"
+    },
     "./reactive-runtime": {
       "types": "./dist/reactive-runtime.d.ts",
       "import": "./dist/reactive-runtime.js",

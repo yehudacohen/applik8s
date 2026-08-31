@@ -11,6 +11,7 @@ describe('TypeKro compiler lowering plan', () => {
       migrations: [],
       processors: [resource('Deployment', 'processor', 'app')],
       jobs: [],
+      managedModels: [resource('Deployment', 'managed-models', 'app')],
       workflows: [resource('Deployment', 'worker', 'app')],
       reactive: [resource('Deployment', 'gateway', 'app')],
       mcp: [resource('Deployment', 'mcp', 'app')],
@@ -18,8 +19,8 @@ describe('TypeKro compiler lowering plan', () => {
       http: [resource('Deployment', 'http', 'app')],
     });
     expect(plan.apiVersion).toBe('applik8s.compiler.typekro-plan/v1alpha1');
-    expect(plan.resources.map((item) => `${item.kind}/${item.metadata.name}`)).toEqual(['ConfigMap/shared', 'Service/api', 'Deployment/processor', 'Deployment/worker', 'Deployment/gateway', 'Deployment/mcp', 'Deployment/researcher', 'Deployment/http']);
-    expect(plan.sources).toEqual({ factory: 1, composition: 2, migrations: 0, processors: 1, jobs: 0, workflows: 1, reactive: 1, mcp: 1, agents: 1, http: 1 });
+    expect(plan.resources.map((item) => `${item.kind}/${item.metadata.name}`)).toEqual(['ConfigMap/shared', 'Service/api', 'Deployment/processor', 'Deployment/managed-models', 'Deployment/worker', 'Deployment/gateway', 'Deployment/mcp', 'Deployment/researcher', 'Deployment/http']);
+    expect(plan.sources).toEqual({ factory: 1, composition: 2, migrations: 0, processors: 1, jobs: 0, managedModels: 1, workflows: 1, reactive: 1, mcp: 1, agents: 1, http: 1 });
   });
 
   it('bounds generated KRO node ids to Kubernetes label-safe lengths without collisions', () => {

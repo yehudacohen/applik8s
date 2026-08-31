@@ -49,6 +49,7 @@ export function applicationManagedModelPostgresMigrationSql(schema = 'public'): 
   const namespace = postgresIdentifier(schema, 'managed-model schema');
   const lifecycle = `${namespace}.applik8s_managed_model_lifecycle`;
   const invalidations = `${namespace}.applik8s_managed_model_invalidations`;
+  const activations = `${namespace}.applik8s_managed_model_activations`;
   return [
     `CREATE SCHEMA IF NOT EXISTS ${namespace}`,
     `CREATE TABLE IF NOT EXISTS ${lifecycle} (
@@ -95,6 +96,16 @@ export function applicationManagedModelPostgresMigrationSql(schema = 'public'): 
     `ALTER TABLE ${invalidations} ALTER COLUMN resource_version SET NOT NULL`,
     `CREATE UNIQUE INDEX IF NOT EXISTS applik8s_managed_model_invalidation_version_uq
       ON ${invalidations} (application_id, model_name, identity_key, resource_version)`,
+    `CREATE TABLE IF NOT EXISTS ${activations} (
+      application_id text NOT NULL,
+      model_name text NOT NULL,
+      status_schema_version text NOT NULL,
+      cursor jsonb,
+      activated_count bigint NOT NULL DEFAULT 0,
+      completed boolean NOT NULL DEFAULT false,
+      updated_at timestamptz NOT NULL,
+      PRIMARY KEY (application_id, model_name)
+    )`,
   ];
 }
 

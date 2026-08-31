@@ -67,6 +67,20 @@ export interface PostgresApplicationManagedModelStore<
     },
   ): Promise<void>;
   requestResync(maximumItems: number, now?: string): Promise<number>;
+  activateExisting(options: {
+    readonly initialStatus: TStatus;
+    readonly pageSize?: number;
+    readonly maximumPages?: number;
+    readonly now?: () => Date;
+    readonly scanPage: (request: {
+      readonly cursor?: TIdentity;
+      readonly limit: number;
+      readonly transaction: ApplicationPostgresTransactionSql;
+    }) => Promise<{
+      readonly items: readonly { readonly identity: TIdentity; readonly value: TValue }[];
+      readonly nextCursor?: TIdentity;
+    }>;
+  }): Promise<{ readonly activated: number; readonly completed: boolean }>;
   read(identity: TIdentity): Promise<ApplicationManagedModelStoreRecord<TIdentity, TValue, TStatus> | undefined>;
   close(): Promise<void>;
 }
@@ -111,6 +125,7 @@ export function createPostgresApplicationManagedModelStore<
   const namespace = postgresIdentifier(options.schema ?? 'public', 'schema');
   const lifecycle = `${namespace}.applik8s_managed_model_lifecycle`;
   const invalidations = `${namespace}.applik8s_managed_model_invalidations`;
+  const activations = `${namespace}.applik8s_managed_model_activations`;
   const identityKey = options.identityKey ?? applicationManagedModelIdentityKey;
   const desiredDigest = options.desiredDigest ?? applicationManagedModelDesiredDigest;
   const decodeIdentity = options.decodeIdentity ?? ((value: unknown) => value as TIdentity);
@@ -182,7 +197,7 @@ export function createPostgresApplicationManagedModelStore<
     committedAt: now,
   });
 
-  return {
+  const store: PostgresApplicationManagedModelStore<TIdentity, TValue, TStatus> = {
     async initialize() { await initialize(); },
     async observeDesired(identity, value, initialStatus, observeOptions = {}) {
       await initialize();
@@ -304,6 +319,90 @@ export function createPostgresApplicationManagedModelStore<
       );
       return rows.length;
     },
+    async activateExisting(activationOptions) {
+      await initialize();
+      const pageSize = positiveInteger(activationOptions.pageSize ?? 500, 'activation pageSize');
+      const maximumPages = positiveInteger(activationOptions.maximumPages ?? 10_000, 'activation maximumPages');
+      const clock = activationOptions.now ?? (() => new Date());
+      let activated = 0;
+      for (let page = 0; page < maximumPages; page += 1) {
+        const result = await sql.begin(async (transaction) => {
+          await transaction.unsafe('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [
+            JSON.stringify([applicationId, model, 'activation']),
+          ]);
+          const instant = clock().toISOString();
+          await transaction.unsafe(
+            `INSERT INTO ${activations} (
+              application_id, model_name, status_schema_version, updated_at
+            ) VALUES ($1, $2, $3, $4::timestamptz)
+            ON CONFLICT (application_id, model_name) DO NOTHING`,
+            [applicationId, model, statusSchemaVersion, instant],
+          );
+          const stateRows = await transaction.unsafe(
+            `SELECT status_schema_version, cursor, activated_count, completed
+             FROM ${activations}
+             WHERE application_id = $1 AND model_name = $2
+             FOR UPDATE`,
+            [applicationId, model],
+          );
+          const state = stateRows[0];
+          if (!state) throw new Error(`Managed-model ${model} activation state was not persisted.`);
+          if (String(state.status_schema_version) !== statusSchemaVersion) {
+            throw new Error(
+              `Managed-model ${model} activation requires status schema ${String(state.status_schema_version)} to migrate to ${statusSchemaVersion}.`,
+            );
+          }
+          if (state.completed === true) return { activated: 0, completed: true };
+          const cursor = state.cursor === null || state.cursor === undefined
+            ? undefined
+            : decodeIdentity(jsonValue(state.cursor));
+          const scanned = await activationOptions.scanPage({
+            ...(cursor === undefined ? {} : { cursor }),
+            limit: pageSize,
+            transaction,
+          });
+          if (scanned.items.length > pageSize) {
+            throw new Error(`Managed-model ${model} activation scan exceeded its requested page size.`);
+          }
+          for (const item of scanned.items) {
+            const existingRows = await transaction.unsafe(
+              `SELECT status_schema_version FROM ${lifecycle}
+               WHERE application_id = $1 AND model_name = $2 AND identity_key = $3`,
+              [applicationId, model, identityKey(item.identity)],
+            );
+            const existing = existingRows[0];
+            if (existing) {
+              if (String(existing.status_schema_version) !== statusSchemaVersion) {
+                throw new Error(
+                  `Managed-model ${model}/${identityKey(item.identity)} requires status schema ${String(existing.status_schema_version)} to migrate to ${statusSchemaVersion}.`,
+                );
+              }
+              continue;
+            }
+            await store.observeDesired(item.identity, item.value, activationOptions.initialStatus, {
+              now: instant,
+              transaction,
+            });
+          }
+          const nextCursor = scanned.nextCursor;
+          if (nextCursor !== undefined && cursor !== undefined && identityKey(nextCursor) === identityKey(cursor)) {
+            throw new Error(`Managed-model ${model} activation scan did not advance its cursor.`);
+          }
+          const completed = nextCursor === undefined;
+          await transaction.unsafe(
+            `UPDATE ${activations} SET cursor = $3::jsonb,
+              activated_count = activated_count + $4,
+              completed = $5, updated_at = $6::timestamptz
+             WHERE application_id = $1 AND model_name = $2`,
+            [applicationId, model, nextCursor === undefined ? null : JSON.stringify(nextCursor), scanned.items.length, completed, instant],
+          );
+          return { activated: scanned.items.length, completed };
+        });
+        activated += result.activated;
+        if (result.completed) return { activated, completed: true };
+      }
+      return { activated, completed: false };
+    },
     async read(identity) { await initialize(); return select(identity); },
     async claimNext({ model: requestedModel, now, leaseDurationSeconds }) {
       await initialize();
@@ -398,6 +497,7 @@ export function createPostgresApplicationManagedModelStore<
     },
     async close() { if (ownsSql) await sql.end(); },
   };
+  return store;
 }
 
 const managedColumns = `identity, uid, generation, resource_version, created_at, deletion_timestamp, deletion_value,
@@ -416,6 +516,13 @@ function required(value: string, label: string): string {
 function postgresIdentifier(value: string, label: string): string {
   if (!/^[a-z_][a-z0-9_]*$/u.test(value)) throw new Error(`${label} must be a PostgreSQL identifier.`);
   return `"${value}"`;
+}
+
+function positiveInteger(value: number, label: string): number {
+  if (!Number.isSafeInteger(value) || value < 1) {
+    throw new Error(`PostgreSQL managed-model ${label} must be a positive integer.`);
+  }
+  return value;
 }
 
 function stringValue(value: unknown, label: string): string {
