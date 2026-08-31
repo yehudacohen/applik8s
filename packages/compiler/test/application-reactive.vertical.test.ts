@@ -217,11 +217,13 @@ describe('generated v0.6 reactive workloads', () => {
   it('generates bounded collision-resistant container names for long workload identities', () => {
     const first = kubernetesContainerName(`agentic-product-${'document-projection-'.repeat(5)}primary`);
     const second = kubernetesContainerName(`agentic-product-${'document-projection-'.repeat(5)}secondary`);
+    const versioned = kubernetesContainerName('agentic-product-researcher.v1-tool-receiver');
 
     expect(first).toMatch(/^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$/u);
     expect(first.length).toBeLessThanOrEqual(63);
     expect(second.length).toBeLessThanOrEqual(63);
     expect(first).not.toBe(second);
+    expect(versioned).toBe('agentic-product-researcher-v1-tool-receiver');
   });
 
   it('preserves module-local Drizzle captures through CLI-style discovery and singleton-owns shared ClickHouse infrastructure', async () => {

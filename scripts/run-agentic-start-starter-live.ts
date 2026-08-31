@@ -10,6 +10,7 @@ import {
 } from './generated-agentic-start-live-support';
 import {
   captureIdentityStartCommand,
+  captureIdentityStartContainerLogs,
   type IdentityStartServiceTunnel,
   identityStartResourceExists,
   identityStartServiceTunnel,
@@ -31,6 +32,7 @@ const root = process.cwd();
 const context = process.env.APPLIK8S_E2E_CONTEXT ?? 'orbstack';
 const managedResearch =
   process.env.APPLIK8S_AGENTIC_START_LIVE_PROFILE === 'managed-research';
+const browserTestName = process.env.APPLIK8S_AGENTIC_START_BROWSER_TEST?.trim();
 const environmentFile = process.env.APPLIK8S_AGENTIC_START_ENV_FILE?.trim();
 const projectName = managedResearch
   ? 'agentic-start-v09-research-evidence'
@@ -266,11 +268,37 @@ try {
     namespace,
     3000,
   );
+  const preflight = await fetch(new URL('/workspaces', tunnel.url), {
+    headers: { accept: 'text/html' },
+  });
+  if (!preflight.ok) {
+    throw new Error(
+      `Generated application preflight GET /workspaces failed with HTTP ${preflight.status}: ${(await preflight.text()).slice(0, 2_000)}`,
+    );
+  }
+  const expectedBrowserTests = [
+    'bootstraps a local owner and admits only server-validated workspace selection',
+    'calls the bounded public assistant through its generated function-native facade',
+    'renders provider-neutral billing and executes simulated checkout and portal calls',
+    'persists, reloads, renames, and archives a generated research conversation',
+    'researches public sources and publishes an evidence-linked artifact',
+    'runs a workspace-scoped durable review from SSE signal to immutable artifact',
+  ];
+  if (browserTestName && !expectedBrowserTests.includes(browserTestName)) {
+    throw new Error(
+      `APPLIK8S_AGENTIC_START_BROWSER_TEST must name one canonical Agentic Start journey; received ${browserTestName}.`,
+    );
+  }
   await runIdentityStartCommand(
     execution,
     'execute the generated owner/workspace/conversation browser journeys',
     join(root, 'node_modules/.bin/playwright'),
-    ['test', '--config', 'playwright.agentic.config.ts'],
+    [
+      'test',
+      '--config',
+      'playwright.agentic.config.ts',
+      ...(browserTestName ? ['--grep', escapeRegularExpression(browserTestName)] : []),
+    ],
     root,
     { APPLIK8S_AGENTIC_START_BASE_URL: tunnel.url },
   );
@@ -280,14 +308,7 @@ try {
       '.applik8s-tmp/evidence/v0.7/agentic-start-browser-results.json',
     ),
   );
-  const expected = [
-    'bootstraps a local owner and admits only server-validated workspace selection',
-    'calls the bounded public assistant through its generated function-native facade',
-    'renders provider-neutral billing and executes simulated checkout and portal calls',
-    'persists, reloads, renames, and archives a generated research conversation',
-    'researches public sources and publishes an evidence-linked artifact',
-    'runs a workspace-scoped durable review from SSE signal to immutable artifact',
-  ];
+  const expected = browserTestName ? [browserTestName] : expectedBrowserTests;
   if (
     results.size !== expected.length
     || expected.some((name) => !results.has(name))
@@ -394,6 +415,44 @@ try {
     ),
   ).exists();
   if (deployed && deploymentGraphExists) {
+    for (const diagnostic of [
+      {
+        label: 'application host',
+        component: 'application-host',
+        container: 'application',
+      },
+      {
+        label: 'query gateway',
+        component: 'query-gateway',
+        container: `${projectName}-web`,
+      },
+      {
+        label: 'command processor',
+        component: 'command-processor',
+        container: 'processor',
+      },
+      {
+        label: 'research agent',
+        component: 'ai-agent',
+        container: 'agent',
+      },
+      {
+        label: 'Celld actor runtime',
+        component: 'actor-runtime',
+        container: 'celld',
+      },
+    ]) {
+      const logs = await captureIdentityStartContainerLogs(execution, {
+        namespace,
+        graph: projectName,
+        component: diagnostic.component,
+        container: diagnostic.container,
+      });
+      if (!logs.stdout.trim() && !logs.stderr.trim()) continue;
+      console.error(`\n[${execution.label}] ${diagnostic.label} diagnostics`);
+      process.stderr.write(logs.stdout);
+      process.stderr.write(logs.stderr);
+    }
     try {
       await runIdentityStartCommand(
         execution,
@@ -427,6 +486,10 @@ try {
     );
   }
   throw error;
+}
+
+function escapeRegularExpression(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
 }
 
 async function resetManagedResearchFixture(): Promise<void> {

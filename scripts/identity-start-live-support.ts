@@ -29,6 +29,81 @@ export interface PassedBrowserProjectTest extends PassedBrowserTest {
   readonly title: string;
 }
 
+export async function captureIdentityStartContainerLogs(
+  execution: IdentityStartLiveContext,
+  options: {
+    readonly namespace: string;
+    readonly graph: string;
+    readonly component: string;
+    readonly container: string;
+    readonly tail?: number;
+  },
+): Promise<CapturedProcess> {
+  const pods = await captureIdentityStartCommand(
+    'kubectl',
+    [
+      '--context',
+      execution.context,
+      'get',
+      'pods',
+      '--namespace',
+      options.namespace,
+      '--selector',
+      `applik8s.dev/graph=${options.graph},app.kubernetes.io/component=${options.component}`,
+      '--output=json',
+    ],
+    execution.root,
+  );
+  if (pods.code !== 0) return pods;
+
+  let selectedPod: string | undefined;
+  try {
+    const value: unknown = JSON.parse(pods.stdout);
+    const items = value && typeof value === 'object'
+      ? Reflect.get(value, 'items')
+      : undefined;
+    if (!Array.isArray(items)) return pods;
+    for (const item of items) {
+      if (!item || typeof item !== 'object') continue;
+      const spec = Reflect.get(item, 'spec');
+      const containers = spec && typeof spec === 'object'
+        ? Reflect.get(spec, 'containers')
+        : undefined;
+      if (!Array.isArray(containers) || !containers.some(
+        (candidate) => candidate
+          && typeof candidate === 'object'
+          && Reflect.get(candidate, 'name') === options.container,
+      )) continue;
+      const metadata = Reflect.get(item, 'metadata');
+      const name = metadata && typeof metadata === 'object'
+        ? Reflect.get(metadata, 'name')
+        : undefined;
+      if (typeof name === 'string') {
+        selectedPod = name;
+        break;
+      }
+    }
+  } catch {
+    return pods;
+  }
+  if (!selectedPod) return pods;
+  return captureIdentityStartCommand(
+    'kubectl',
+    [
+      '--context',
+      execution.context,
+      'logs',
+      selectedPod,
+      '--namespace',
+      options.namespace,
+      '--container',
+      options.container,
+      `--tail=${options.tail ?? 200}`,
+    ],
+    execution.root,
+  );
+}
+
 export async function runIdentityStartCommand(
   execution: IdentityStartLiveContext,
   label: string,

@@ -1,8 +1,8 @@
 // typecast-file-boundary: profile conformance fixtures intentionally materialize schema-derived and invalid provider selections across erased branches.
 import {
-  type ApplicationAnalyticalDatabaseProvider,
   AnalyticalDatabase,
   Analytics,
+  type ApplicationAnalyticalDatabaseProvider,
   ApplicationHost,
   Authorization,
   app,
@@ -12,8 +12,8 @@ import {
   CounterStore,
   CredentialStore,
   Database,
-  defineApplicationProvider,
   DnsPublication,
+  defineApplicationProvider,
   EventLog,
   EventSource,
   event,
@@ -27,17 +27,17 @@ import {
   WorkflowEngine,
 } from '@applik8s/applik8s';
 import {
-  applicationClickHouseAnalyticalDatabaseImplementation,
-  applicationEventLogImplementation,
-  applicationWorkflowEngineImplementation,
-} from '../src/application-providers';
-import {
   type ApplicationProviderNode,
   validateApplicationGraph,
 } from '@applik8s/core';
 import { type } from 'arktype';
 import { pgTable, text } from 'drizzle-orm/pg-core';
 import { describe, expect, it } from 'vitest';
+import {
+  applicationClickHouseAnalyticalDatabaseImplementation,
+  applicationEventLogImplementation,
+  applicationWorkflowEngineImplementation,
+} from '../src/application-providers';
 
 const Installation = type({
   name: 'string',
@@ -795,6 +795,21 @@ describe('application deployment profiles', () => {
     const graph = applicationGraphFor(application.composition);
     expect(graph).toBeDefined();
     expect(validateApplicationGraph(graph as NonNullable<typeof graph>)).toEqual([]);
+    expect(graph?.providerRequirements).toContainEqual(
+      expect.objectContaining({
+        id: 'requirement.actor.workspace-activity.v1.event-log',
+        consumer: { nodeId: 'actor.workspace-activity.v1' },
+        provider: {
+          interface: 'EventLog',
+          nodeId: 'provider.event-log',
+        },
+      }),
+    );
+    expect(graph?.edges).toContainEqual({
+      from: { nodeId: 'provider.event-log' },
+      to: { nodeId: 'actor.workspace-activity.v1' },
+      relationship: 'provides',
+    });
   });
 
   it('preserves qualified logical roles when they explicitly share one physical provider binding', () => {

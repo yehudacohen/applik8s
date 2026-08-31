@@ -365,11 +365,13 @@ describe('entrypoint-driven application public surface', () => {
     const serverSource = generatedApplicationFacadeSource(manifest, 'server');
 
     expect(source).toContain('createApplicationAgentClient');
-    expect(source).toContain('export const MarketResearcher = Object.assign');
+    expect(source).toContain('export const MarketResearcher = createApplicationAgentClient');
+    expect(source).not.toContain('Object.assign(createApplicationAgentClient');
     expect(source).toContain('"key":"threadId"');
     expect(source).toContain('https://app.example.test');
     expect(serverSource).toContain("import { createApplik8sServerAgentOperation } from '@applik8s/server'");
-    expect(serverSource).toContain('export const MarketResearcher = Object.assign(createApplik8sServerAgentOperation');
+    expect(serverSource).toContain('export const MarketResearcher = createApplik8sServerAgentOperation');
+    expect(serverSource).not.toContain('Object.assign(createApplik8sServerAgentOperation');
     expect(serverSource).not.toContain('createApplicationAgentClient');
   });
 
@@ -687,6 +689,15 @@ function jobScheduleGraph(): ApplicationGraph {
           output: { jsonSchema: { type: 'object', properties: { rebuilt: { type: 'string' } }, required: ['rebuilt'] } },
         },
         handlerSource: 'async input => ({ rebuilt: input.workspaceId })',
+        events: Object.fromEntries(
+          ['started', 'progressed', 'succeeded', 'failed', 'cancelled', 'timedOut'].map((name) => [
+            name,
+            {
+              id: `jobs.search.rebuild.${name}.v1`,
+              contract: { kind: 'declared', runtime: 'arktype', jsonSchema: { type: 'object' } },
+            },
+          ]),
+        ),
         retry: { maxAttempts: 1, wholeAttempt: true },
         idempotency: { scope: 'applicationDeploymentContractContextAuthority', keySource: 'invocation', conflict: 'failClosed' },
         cancellation: { request: 'durableReceipt', terminal: 'firstTransitionWins', behavior: 'cooperativeThenProviderBounded' },

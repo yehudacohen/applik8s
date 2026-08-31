@@ -6924,12 +6924,23 @@ function absoluteDependencyImports(source: string, resolveDir: string): string {
 // typecast: the object and non-array guards establish the read-only configuration record boundary.
 function objectConfig(value: unknown): Readonly<Record<string, unknown>> { return value && typeof value === 'object' && !Array.isArray(value) ? value as Readonly<Record<string, unknown>> : {}; }
 function stringConfig(value: unknown): string { return typeof value === 'string' ? value : ''; }
-function kubernetesName(value: string): string { return value.replace(/([a-z0-9])([A-Z])/g, '$1-$2').toLowerCase().replace(/[^a-z0-9.-]+/g, '-').replace(/^-+|-+$/g, '') || 'app'; }
+function kubernetesName(value: string): string {
+  const normalized = value
+    .replace(/([a-z0-9])([A-Z])/g, '$1-$2')
+    .toLowerCase()
+    // Reactive identities become Deployments, Services, ServiceAccounts, and
+    // container names. Use their shared DNS-label subset rather than the more
+    // permissive DNS-subdomain grammar (which admits dots that Services and
+    // containers reject).
+    .replace(/[^a-z0-9-]+/g, '-')
+    .replace(/-{2,}/g, '-')
+    .replace(/^-+|-+$/g, '') || 'app';
+  if (normalized.length <= 63) return normalized;
+  const digest = createHash('sha256').update(value).digest('hex').slice(0, 8);
+  return `${normalized.slice(0, 54).replace(/-+$/g, '')}-${digest}`;
+}
 
 export function kubernetesContainerName(value: string): string {
   const normalized = kubernetesName(value);
-  if (normalized.length <= 63) return normalized;
-  const digest = createHash('sha256').update(normalized).digest('hex').slice(0, 8);
-  const prefix = normalized.slice(0, 54).replace(/[-.]+$/g, '');
-  return `${prefix}-${digest}`;
+  return normalized;
 }

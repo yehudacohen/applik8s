@@ -21,6 +21,14 @@ export interface ApplicationAgentInvocationRuntime {
   }): Promise<TResult>;
 }
 
+/** Callable application-agent handle with stable framework metadata. */
+export type ApplicationAgentClient<TInput extends object, TResult> = (
+  (input: TInput, invocation?: ApplicationAgentInvocationOptions) => Promise<TResult>
+) & {
+  readonly kind: 'applicationAgent';
+  readonly name: string;
+};
+
 const runtimeResolversKey = Symbol.for('@applik8s/client/agent-invocation-runtime-resolvers');
 type AgentRuntimeResolver = () => ApplicationAgentInvocationRuntime | undefined;
 
@@ -85,10 +93,10 @@ export function createApplicationAgentHttpRuntime(
 export function createApplicationAgentClient<TInput extends object, TResult>(
   contract: ApplicationAgentClientContract,
   options: ApplicationAgentClientOptions = {},
-): (input: TInput, invocation?: ApplicationAgentInvocationOptions) => Promise<TResult> {
+): ApplicationAgentClient<TInput, TResult> {
   const name = required(contract.name, 'agent name');
   const keyField = required(contract.key, 'agent key field');
-  return async (input, invocation = {}) => {
+  const invoke = async (input: TInput, invocation: ApplicationAgentInvocationOptions = {}) => {
     const key = Reflect.get(input, keyField);
     if (typeof key !== 'string' || !key.trim()) {
       throw new Error(`Application agent ${name} input field ${keyField} must be a non-empty string.`);
@@ -100,6 +108,11 @@ export function createApplicationAgentClient<TInput extends object, TResult>(
       ...(invocation.idempotencyKey ? { idempotencyKey: invocation.idempotencyKey } : {}),
     }, options);
   };
+  Object.defineProperties(invoke, {
+    kind: { value: 'applicationAgent', enumerable: true },
+    name: { value: name, enumerable: true },
+  });
+  return invoke as ApplicationAgentClient<TInput, TResult>; // typecast: defineProperties installed the immutable callable-handle facets.
 }
 
 async function requestApplicationAgent<TInput extends object, TResult>(
@@ -127,7 +140,14 @@ async function requestApplicationAgent<TInput extends object, TResult>(
       threadId: invocation.key,
       runId,
       input: invocation.input,
-      messages: [],
+      messages: [{
+        id: `message:${runId}:input`,
+        role: 'user',
+        parts: [{
+          type: 'text',
+          content: functionNativeAgentInputText(invocation.input),
+        }],
+      }],
       forwardedProps: { applik8s: { agent: invocation.agent } },
     }),
   });
@@ -145,6 +165,14 @@ async function requestApplicationAgent<TInput extends object, TResult>(
   }
   // typecast: the HTTP envelope was validated above; TResult is supplied by the typed agent facade.
   return Reflect.get(envelope, 'result') as TResult;
+}
+
+function functionNativeAgentInputText(input: object): string {
+  for (const field of ['question', 'prompt', 'message', 'text']) {
+    const value = Reflect.get(input, field);
+    if (typeof value === 'string' && value.trim()) return value.trim();
+  }
+  return JSON.stringify(input);
 }
 
 function browserBaseUrl(): string {

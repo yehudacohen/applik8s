@@ -280,9 +280,10 @@ describe('Agentic Start generator', () => {
     expect(researchView).toContain('Research and publish');
     expect(researchView).not.toContain('useId');
     expect(researchView).not.toContain('useChat(');
-    expect(researchView).not.toContain(
+    expect(researchView).toContain(
       'hydrateApplicationConversationMessage',
     );
+    expect(researchView).toContain('aria-label="Research conversation"');
     expect(researchView).toContain(
       "to: '/conversations/$conversationId'",
     );
@@ -2092,9 +2093,26 @@ describe('Agentic Start generator', () => {
       const searchGateway = compiled.value.artifacts.reactiveArtifacts.find(
         (artifact) =>
           artifact.kind === 'queryGateway'
-          && artifact.name.includes('researcher.v1-tool'),
+          && artifact.name.includes('researcher-v1-tool'),
       );
       expect(searchGateway).toBeDefined();
+      expect(
+        searchGateway?.resources
+          .filter((resource) =>
+            ['Deployment', 'Service', 'ServiceAccount'].includes(resource.kind),
+          )
+          .map((resource) => resource.metadata.name),
+      ).toEqual(
+        expect.arrayContaining([
+          expect.stringMatching(/^[a-z][a-z0-9-]*[a-z0-9]$/u),
+        ]),
+      );
+      for (const resource of searchGateway?.resources ?? []) {
+        if (!['Deployment', 'Service', 'ServiceAccount'].includes(resource.kind)) {
+          continue;
+        }
+        expect(resource.metadata.name).not.toContain('.');
+      }
       const searchGatewayEntrypoint = await readFile(
         join(
           searchGateway?.sourcePath ? dirname(searchGateway.sourcePath) : '',

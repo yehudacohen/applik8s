@@ -166,40 +166,25 @@ test(
     );
 
     await page.getByLabel('Research prompt').fill(prompt);
-    await page.getByRole('button', { name: 'Send' }).click();
+    await page.getByRole('button', { name: 'Research and publish' }).click();
+    const result = page.getByRole('region', { name: 'Research result' });
+    await expect(result.locator('article[data-status="completed"]')).toBeVisible({
+      timeout: 150_000,
+    });
     const conversation = page.getByRole('region', {
       name: 'Research conversation',
     });
     await expect(conversation.locator('[data-role="user"]')).toContainText(
       prompt,
     );
-    const assistant = conversation.locator('[data-role="assistant"]');
-    await expect(assistant).toHaveCount(1);
-    const authoritativeResponse = assistant.filter({
-      hasText: 'authoritative result',
-    });
-    await expect(authoritativeResponse).toContainText(
-      'authoritative result',
-    );
-    // Assistant tokens are intentionally visible while the durable stream is
-    // still running. Wait for the terminal UI state so this reload verifies
-    // committed conversation history rather than cancelling an active run.
+    await expect(conversation.locator('article[data-status="completed"]')).toBeVisible();
     await expect(page.getByLabel('Research prompt')).toBeEnabled();
-    await expect(page.getByRole('button', { name: 'Stop' })).toHaveCount(0);
 
     await page.reload();
     await expect(conversation.locator('[data-role="user"]')).toContainText(
       prompt,
     );
-    await expect(authoritativeResponse).toHaveCount(1);
-    await expect(authoritativeResponse).toContainText(
-      'authoritative result',
-    );
-    expect(
-      (await assistant.allTextContents()).every(
-        text => text.trim().toLowerCase() !== 'assistant',
-      ),
-    ).toBe(true);
+    await expect(conversation.locator('article[data-status="completed"]')).toBeVisible();
 
     await page.getByLabel('Conversation title').fill(title);
     await page.getByRole('button', { name: 'Rename' }).click();

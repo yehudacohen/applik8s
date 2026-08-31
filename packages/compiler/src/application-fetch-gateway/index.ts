@@ -2142,8 +2142,14 @@ const applicationGatewayCore = {
           ...(expectedKind === 'actorCommand' ? { result: executed.result } : { receipt: executed.receipt }),
           authorizationReceiptId: admission.authorizationReceiptId,
         }), { status: expectedKind === 'actorCommand' ? 200 : 202, headers: { 'content-type': 'application/json' } });
-      } catch {
-        console.error(JSON.stringify({ event: 'applik8s-internal-actor-invocation-failed', error: 'actor_invocation_failed' }));
+      } catch (cause) {
+        console.error(JSON.stringify({
+          event: 'applik8s-internal-actor-invocation-failed',
+          error: 'actor_invocation_failed',
+          cause: cause instanceof Error
+            ? { name: cause.name, message: cause.message, ...(typeof Reflect.get(cause, 'code') === 'string' ? { code: Reflect.get(cause, 'code') } : {}) }
+            : { name: 'UnknownError', message: String(cause) },
+        }));
         return new Response(JSON.stringify({ error: 'actor_invocation_failed' }), { status: 500, headers: { 'content-type': 'application/json' } });
       }
     }` : ""}

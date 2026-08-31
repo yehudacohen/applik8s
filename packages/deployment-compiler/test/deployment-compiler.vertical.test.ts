@@ -2333,6 +2333,14 @@ describe("Application deployment compiler", () => {
                     bucket: "identity-start-objects",
                     region: "us-east-1",
                     ownership: "direct-provisioned",
+                    credentialsSecret: {
+                      namespace: "identity-start-system",
+                      name: "identity-start-objects-credentials",
+                    },
+                    provisioning: {
+                      kind: "local-s3",
+                      name: "identity-start-objects",
+                    },
                   },
                   resources: [],
                   credentialReferences: [],
@@ -3231,6 +3239,115 @@ describe("Application deployment compiler", () => {
     })).toThrowError(expect.objectContaining({
       code: "PLAN_COMPARISON_APPLICATION_MISMATCH",
     }));
+  });
+
+  it("does not require ActorRuntime guarantees from an actor's EventLog dependency", () => {
+    const base = request();
+    const eventLogNode = {
+      id: 'provider.event-log',
+      kind: 'provider',
+      name: 'EventLog',
+      stability: 'stable',
+      interface: 'EventLog',
+      implementation: 'nats-jetstream',
+      config: {},
+    } as const;
+    const actorNode = {
+      id: 'actor.researcher.v1-run',
+      kind: 'actor',
+      name: 'researcher.v1-run',
+      stability: 'experimental',
+      definition: {
+        id: 'researcher.v1-run',
+        key: { kind: 'declared', runtime: 'arktype', jsonSchema: { type: 'string' } },
+        state: { kind: 'declared', runtime: 'arktype', jsonSchema: { type: 'object' } },
+        stateVersion: 1,
+        migrations: [],
+        migrationDigest: 'actor-migrations',
+        protocol: [],
+        requirements: {
+          durableState: true,
+          serializedTurns: true,
+          transactionalOutbox: true,
+          durableAlarms: false,
+          realtimeConnections: false,
+          connectionLeases: false,
+          realtimeMessages: false,
+          realtimeBroadcast: false,
+        },
+      },
+      runtime: { interface: 'ActorRuntime', nodeId: 'provider.actor-runtime' },
+      semantics: {
+        admission: 'idempotentReceipt',
+        references: 'inertAddress',
+        serialization: 'fullTurnPerIdentity',
+      },
+      handlers: [],
+    } as const;
+    const graph = {
+      ...base.graph,
+      nodes: [eventLogNode, actorNode],
+      edges: [{
+        from: { nodeId: eventLogNode.id },
+        to: { nodeId: actorNode.id },
+        relationship: 'provides',
+      }],
+      providerRequirements: [{
+        id: 'requirement.actor.researcher.v1-run.event-log',
+        interface: 'EventLog',
+        consumer: { nodeId: actorNode.id },
+        provider: { interface: 'EventLog', nodeId: eventLogNode.id },
+        required: true,
+        purpose: 'eventLog',
+        diagnostics: { missing: 'missing', ambiguous: 'ambiguous' },
+      }],
+      providerBindings: [],
+    } as ApplicationGraph;
+    const withActorWorkload = runtimeWorkloadRequest(
+      { ...base, graph },
+      'researcher-actor-worker',
+      [actorNode.id],
+    );
+    const deployment = compileApplicationDeploymentGraph(withActorWorkload).graph;
+    const provider = applicationProviderIdentity({
+      application: 'guestbook',
+      capabilityInterface: 'EventLog',
+      nodeId: eventLogNode.id,
+    });
+    const plan = compileApplicationPlan({
+      graph,
+      deployment,
+      target: 'kubernetes',
+      lifecycleAuthority: 'alchemy',
+      generatedAt: '2026-08-31T00:00:00.000Z',
+      providerGuarantees: [{
+        apiVersion: 'applik8s.providerGuarantees/v1alpha1',
+        provider,
+        capability: {
+          interface: 'EventLog',
+          implementation: 'nats-jetstream',
+          version: 'unknown',
+        },
+        targets: ['kubernetes'],
+        maturity: 'stable',
+        guarantees: [{
+          id: 'runtime-access',
+          category: 'runtime-access-enforcement',
+          statement: 'Runtime access is projected.',
+          disposition: 'bounded',
+          evidence: ['event-log-runtime'],
+        }],
+        limitations: [],
+        evidenceLevel: 'target-live',
+      }],
+    });
+
+    expect(plan.diagnostics).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: 'PLAN_PROVIDER_TARGET_INCOMPATIBLE',
+        subjectId: 'requirement.actor.researcher.v1-run.event-log',
+      }),
+    ]));
   });
 
   it('reports an unsupported finite Job provider with the stable Job diagnostic', () => {

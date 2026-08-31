@@ -160,6 +160,7 @@ export function compileApplicationPlan(request: CompileApplicationPlanRequest): 
     if (providerIdentity) resolvedProviderIdentities.push(providerIdentity);
     const manifest = providerIdentity ? providerGuaranteeFor(guarantees, providerIdentity.id) : undefined;
     const requiredGuarantees = consumerNode.kind === 'actor'
+      && requirement.interface === 'ActorRuntime'
       ? Object.entries(consumerNode.definition.requirements)
           .filter(([, required]) => required)
           .map(([name]) => `actor-${name}`)

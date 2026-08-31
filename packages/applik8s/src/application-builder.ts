@@ -5317,11 +5317,21 @@ function createApplicationContext<TSpec extends KroCompatibleType, TStatus exten
             relationship: 'provides',
           });
         }
+        const eventLogProviderNodeId = applicationProviderGraphNodeId('EventLog');
         const requirementId = `requirement.actor.${id}.event-log`;
+        addApplicationGraphEdge(state, {
+          from: { nodeId: eventLogProviderNodeId },
+          to: { nodeId: actorNode.id },
+          relationship: 'provides',
+        });
         addApplicationProviderRequirement(state, {
           id: requirementId,
           interface: 'EventLog',
           consumer: { nodeId: actorNode.id },
+          provider: {
+            interface: 'EventLog',
+            nodeId: eventLogProviderNodeId,
+          },
           required: true,
           purpose: 'eventLog',
           diagnostics: {

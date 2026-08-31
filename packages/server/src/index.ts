@@ -1,18 +1,19 @@
 // typecast-file-boundary: symbol-keyed process registries bridge separately bundled server chunks while preserving request-runtime identity.
 import { AsyncLocalStorage } from 'node:async_hooks';
 import {
-  type ApplicationCommandClient,
-  createApplicationAgentClient,
-  createApplicationAgentHttpRuntime,
+  type ApplicationAgentClient,
   type ApplicationAgentClientContract,
   type ApplicationAgentInvocationOptions,
-  installApplicationAgentInvocationRuntimeResolver,
+  type ApplicationCommandClient,
   type ApplicationOperationContract,
   type ApplicationOperationRuntime,
   type ApplicationQueryClient,
   type ApplicationQueryOperation,
   type ApplicationQuerySnapshot,
+  createApplicationAgentClient,
+  createApplicationAgentHttpRuntime,
   createApplicationQueryOperation,
+  installApplicationAgentInvocationRuntimeResolver,
   installApplicationOperationRuntimeResolver,
 } from '@applik8s/client';
 
@@ -124,8 +125,8 @@ export function createApplik8sServerQueryOperation<TInput, TValue>(
  */
 export function createApplik8sServerAgentOperation<TInput extends object, TResult>(
   contract: ApplicationAgentClientContract,
-): (input: TInput, invocation?: ApplicationAgentInvocationOptions) => Promise<TResult> {
-  return async (input, invocation) => {
+): ApplicationAgentClient<TInput, TResult> {
+  const invoke = async (input: TInput, invocation?: ApplicationAgentInvocationOptions) => {
     const runtime = resolvedServerRequestRuntime();
     if (!runtime) {
       throw new Error(
@@ -138,6 +139,11 @@ export function createApplik8sServerAgentOperation<TInput extends object, TResul
       ...(runtime.fetch ? { fetch: runtime.fetch } : {}),
     })(input, invocation);
   };
+  Object.defineProperties(invoke, {
+    kind: { value: 'applicationAgent', enumerable: true },
+    name: { value: contract.name, enumerable: true },
+  });
+  return invoke as ApplicationAgentClient<TInput, TResult>;
 }
 
 function resolvedServerRequestRuntime(): Applik8sServerRequestRuntime | undefined {

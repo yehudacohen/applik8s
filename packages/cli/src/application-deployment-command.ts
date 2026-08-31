@@ -146,15 +146,11 @@ export async function runApplicationDeploy(
   const effectful = plan.changes.filter((change) => change.action !== 'noop');
   io.stdout(`Alchemy plan: ${plan.changes.length} resources, ${effectful.length} changes, ${plan.declarationCount} TypeKro declarations`);
   for (const change of effectful) io.stdout(`  ${change.action} ${change.type} ${change.id}`);
+  const applicationPlan = JSON.parse(
+    await readFile(emitted.applicationPlanPath, 'utf8'),
+  ) as Parameters<typeof validateApplicationPlan>[0];
+  assertDeployableApplicationPlan(applicationPlan, io);
   if (options.planOnly) {
-    const applicationPlan = JSON.parse(await readFile(emitted.applicationPlanPath, 'utf8')) as Parameters<typeof validateApplicationPlan>[0];
-    const applicationPlanValidation = validateApplicationPlan(applicationPlan);
-    if (!applicationPlanValidation.valid) {
-      for (const diagnostic of applicationPlanValidation.diagnostics) {
-        io.stderr(`${diagnostic.code}: ${diagnostic.message}`);
-      }
-      throw new Error('Canonical ApplicationPlan is not deployable; resolve its structured diagnostics before applying effects.');
-    }
     io.stdout(renderCanonicalApplicationPlan(applicationPlan, options.planFormat ?? 'text'));
     if (options.planDiff) {
       const previous = await readPriorApplicationPlan(resolve(io.cwd, options.planDiff));
@@ -215,6 +211,20 @@ export async function runApplicationDeploy(
   });
   io.stdout(`Application ready: ${instance.apiVersion}/${instance.kind}/${instance.name}${readiness.url ? ` at ${readiness.url}` : ''}`);
   return 0;
+}
+
+export function assertDeployableApplicationPlan(
+  applicationPlan: Parameters<typeof validateApplicationPlan>[0],
+  io: Pick<ApplicationDeploymentCommandIo, 'stderr'>,
+): void {
+  const validation = validateApplicationPlan(applicationPlan);
+  if (validation.valid) return;
+  for (const diagnostic of validation.diagnostics) {
+    io.stderr(`${diagnostic.code}: ${diagnostic.message}`);
+  }
+  throw new Error(
+    'Canonical ApplicationPlan is not deployable; resolve its structured diagnostics before applying effects.',
+  );
 }
 
 export async function runApplicationDelete(

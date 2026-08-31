@@ -482,7 +482,7 @@ export function generatedApplicationFacadeSource(
     for (const exportName of agent.exportNames) {
       assertUniqueFacadeExport(emittedExports, exportName, `agent ${agent.name}`);
       lines.push(agent.invocation
-        ? `export const ${exportName} = Object.assign(${target === 'server' ? 'createApplik8sServerAgentOperation' : 'createApplicationAgentClient'}(${JSON.stringify({ name: agent.name, key: agent.invocation.key })}${target === 'browser' && options.browserBaseUrl ? `, { baseUrl: ${JSON.stringify(options.browserBaseUrl)} }` : ''}), { kind: 'applicationAgent', name: ${JSON.stringify(agent.name)} });`
+        ? `export const ${exportName} = ${target === 'server' ? 'createApplik8sServerAgentOperation' : 'createApplicationAgentClient'}(${JSON.stringify({ name: agent.name, key: agent.invocation.key })}${target === 'browser' && options.browserBaseUrl ? `, { baseUrl: ${JSON.stringify(options.browserBaseUrl)} }` : ''});`
         : `export const ${exportName} = Object.freeze({ kind: 'applicationAgent', name: ${JSON.stringify(agent.name)} });`);
     }
   }

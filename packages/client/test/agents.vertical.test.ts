@@ -50,13 +50,19 @@ describe('function-native application agent client', () => {
       { threadId: 'research/one', question: 'What is supported?' },
       { idempotencyKey: 'research-run-1' },
     )).resolves.toEqual({ status: 'completed', value: { body: 'Grounded' } });
+    expect(Researcher.kind).toBe('applicationAgent');
+    expect(Researcher.name).toBe('market-research.v1');
     expect(observed).toBeDefined();
     expect(new URL(observed!.url).pathname).toBe('/__applik8s/v1/ai/chat');
     expect(await observed!.json()).toEqual({
       threadId: 'research/one',
       runId: 'research-run-1',
       input: { threadId: 'research/one', question: 'What is supported?' },
-      messages: [],
+      messages: [{
+        id: 'message:research-run-1:input',
+        role: 'user',
+        parts: [{ type: 'text', content: 'What is supported?' }],
+      }],
       forwardedProps: { applik8s: { agent: 'market-research.v1' } },
     });
   });
