@@ -12,6 +12,7 @@
     "packages/vite",
     "packages/tanstack-start",
     "packages/ai",
+    "packages/ml",
     "packages/ai-tanstack",
     "packages/approvals",
     "packages/artifacts",

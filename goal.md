@@ -158,6 +158,25 @@ compiler-enforced effect classification, a durable WorkflowEngine lowering,
 interruption/upgrade matrices, application facts, and operations evidence
 remain open before Saga satisfies its beta definition of done.
 
+The beta predictive-model slice now adds the independently prunable
+`@applik8s/ml` package and the intended direct-call surface:
+`ML.model(...)`, `await Model(input)`, `Model.batch(...)`, and
+`application.provide(Model, provider)`. A logical model is simultaneously a
+callable typed value and its generated qualified implementation token; no
+separate registry or string-based provider lookup is exposed to application
+authors. The application graph records the logical schema/version,
+capabilities, provider qualification, requirements, content-addressed artifact
+identity, and receipt/redaction posture. The deterministic provider validates
+inputs and outputs, emits artifact-bound redacted receipts, preserves every
+batch position, distinguishes collected from rejecting partial failures, and
+fails closed for incompatible providers, missing hydration, and deadlines.
+Four focused tests, the affected core/authoring/ML typechecks, the 63-package
+build, package catalog, public-contract inventory, and documentation checks
+pass. The surface remains truthfully beta/fail-closed for deployment:
+compiler-generated provider hydration, a deployed local/open provider,
+failure-injection/cancellation evidence, and the second materially different
+provider required for maturity promotion remain open.
+
 Continue in the sequence above until every stable-candidate gate is implemented
 and evidenced. Keep beta/preview surfaces truthful; do not expand the frozen
 scope merely to make a scorecard look complete.

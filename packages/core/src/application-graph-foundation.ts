@@ -381,6 +381,10 @@ function addNodeSpecificRequirements(
     add(node, 'connection.use', node.workflowEngine.interface, { kind: 'capability', capabilityId: node.workflowEngine.interface }, 'framework');
     return;
   }
+  if (node.kind === 'mlModel') {
+    add(node, 'connection.use', node.inference.interface, { kind: 'capability', capabilityId: node.inference.interface }, 'framework');
+    return;
+  }
   if (node.kind === 'aiAgent') {
     add(node, 'ai.invoke', node.inference.nodeId, resourceScope(node.inference));
     add(node, 'model.read', node.state.nodeId, resourceScope(node.state), 'framework');

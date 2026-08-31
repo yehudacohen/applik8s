@@ -257,6 +257,8 @@ export function applik8sWorkspaceSourcePlugin(): Plugin {
     ['@applik8s/runtime-opensearch', resolve(workspaceRoot, 'packages/runtime-opensearch/src/index.ts')],
     ['@applik8s/runtime-ai', resolve(workspaceRoot, 'packages/runtime-ai/src/index.ts')],
     ['@applik8s/ai', resolve(workspaceRoot, 'packages/ai/src/index.ts')],
+    ['@applik8s/ml/runtime', resolve(workspaceRoot, 'packages/ml/src/runtime.ts')],
+    ['@applik8s/ml', resolve(workspaceRoot, 'packages/ml/src/index.ts')],
     ['@applik8s/ai-tanstack', resolve(workspaceRoot, 'packages/ai-tanstack/src/index.ts')],
     ['@applik8s/approvals', resolve(workspaceRoot, 'packages/approvals/src/index.ts')],
     ['@applik8s/approvals/schema', resolve(workspaceRoot, 'packages/approvals/src/schema.ts')],

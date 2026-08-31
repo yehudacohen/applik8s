@@ -607,6 +607,16 @@
         "@modelcontextprotocol/sdk": "1.30.0",
       },
     },
+    "packages/ml": {
+      "name": "@applik8s/ml",
+      "version": "0.8.0",
+      "dependencies": {
+        "@applik8s/applik8s": "0.8.0",
+        "@applik8s/core": "0.8.0",
+        "@applik8s/sdk": "0.8.0",
+        "arktype": "2.2.1",
+      },
+    },
     "packages/notifications": {
       "name": "@applik8s/notifications",
       "version": "0.8.0",
@@ -1060,6 +1070,8 @@
     "@applik8s/knowledge": ["@applik8s/knowledge@workspace:packages/knowledge"],
 
     "@applik8s/mcp": ["@applik8s/mcp@workspace:packages/mcp"],
+
+    "@applik8s/ml": ["@applik8s/ml@workspace:packages/ml"],
 
     "@applik8s/notifications": ["@applik8s/notifications@workspace:packages/notifications"],
 

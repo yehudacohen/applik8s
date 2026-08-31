@@ -87,6 +87,7 @@ export type ApplicationGraphNodeKind =
   | 'workflowHandler'
   | 'workflowWorker'
   | 'saga'
+  | 'mlModel'
   | 'schedule'
   | 'lakehousePublication'
   | 'actor'
@@ -130,6 +131,7 @@ export const applicationGraphNodeKinds = [
   'workflowHandler',
   'workflowWorker',
   'saga',
+  'mlModel',
   'schedule',
   'lakehousePublication',
   'actor',
@@ -297,6 +299,7 @@ export type ApplicationGraphNode =
   | ApplicationWorkflowHandlerNode
   | ApplicationWorkflowWorkerNode
   | ApplicationSagaNode
+  | ApplicationMLModelNode
   | ApplicationScheduleNode
   | ApplicationLakehousePublicationNode
   | ApplicationActorNode
@@ -948,6 +951,31 @@ export interface ApplicationSagaNode extends ApplicationGraphNodeBase<'saga'> {
   readonly recoveryDeadlineSeconds: number;
   readonly cancellation: 'recoverThenCompensate';
   readonly atomicity: 'compensatingNoIsolation';
+  readonly maturity: 'beta';
+}
+
+/** Provider-neutral predictive model contract. This surface is beta in v0.9. */
+export interface ApplicationMLModelNode extends ApplicationGraphNodeBase<'mlModel'> {
+  readonly contract: {
+    readonly name: string;
+    readonly version: string;
+    readonly input: ApplicationMessageContractSchema;
+    readonly output: ApplicationMessageContractSchema;
+  };
+  readonly capabilities: readonly ('predict' | 'batchPrediction')[];
+  readonly inference: ApplicationProviderRef;
+  readonly requirements: {
+    readonly deterministic?: boolean;
+    readonly locality?: 'local' | 'cluster' | 'remote';
+    readonly dataResidency?: readonly string[];
+    readonly maximumBatchSize?: number;
+    readonly timeoutMs?: number;
+  };
+  readonly provenance: {
+    readonly artifactIdentity: 'contentAddressed';
+    readonly receipt: 'required';
+    readonly sensitiveValues: 'redacted';
+  };
   readonly maturity: 'beta';
 }
 
@@ -3832,6 +3860,8 @@ function applicationGraphNodeStructureDiagnostics(node: ApplicationGraphNode, gr
       return applicationDurableContractNodeStructureDiagnostics('workflow', node.id, node.contract);
     case 'saga':
       return applicationSagaNodeStructureDiagnostics(node, graph);
+    case 'mlModel':
+      return applicationMLModelNodeStructureDiagnostics(node, graph);
     case 'taskHandler':
       return applicationTaskHandlerNodeStructureDiagnostics(node, graph);
     case 'workflowHandler':
@@ -4938,6 +4968,66 @@ function applicationSagaNodeStructureDiagnostics(
   ) {
     diagnostics.push(applicationGraphStructureDiagnostic(
       `Application Saga ${node.id} must retain the beta compensating, non-isolated recovery contract.`,
+    ));
+  }
+  return diagnostics;
+}
+
+function applicationMLModelNodeStructureDiagnostics(
+  node: ApplicationMLModelNode,
+  graph: ApplicationGraph,
+): readonly Diagnostic[] {
+  const diagnostics: Diagnostic[] = [];
+  const provider = graph.nodes.find(
+    (candidate) => candidate.id === node.inference.nodeId,
+  );
+  if (provider?.kind !== 'provider' || provider.interface !== node.inference.interface) {
+    diagnostics.push(applicationGraphStructureDiagnostic(
+      `Application ML model ${node.id} must reference its selected inference provider.`,
+    ));
+  }
+  if (!node.contract.name.trim() || !/^v[1-9][0-9]*$/.test(node.contract.version)) {
+    diagnostics.push(applicationGraphStructureDiagnostic(
+      `Application ML model ${node.id} must retain a stable versioned logical identity.`,
+    ));
+  }
+  if (
+    node.capabilities.length === 0
+    || new Set(node.capabilities).size !== node.capabilities.length
+    || node.capabilities.some(
+      (capability) => capability !== 'predict' && capability !== 'batchPrediction',
+    )
+  ) {
+    diagnostics.push(applicationGraphStructureDiagnostic(
+      `Application ML model ${node.id} must declare unique supported prediction capabilities.`,
+    ));
+  }
+  if (
+    node.requirements.maximumBatchSize !== undefined
+    && (!Number.isSafeInteger(node.requirements.maximumBatchSize)
+      || node.requirements.maximumBatchSize < 1)
+  ) {
+    diagnostics.push(applicationGraphStructureDiagnostic(
+      `Application ML model ${node.id} maximumBatchSize must be a positive integer.`,
+    ));
+  }
+  if (
+    node.requirements.timeoutMs !== undefined
+    && (!Number.isSafeInteger(node.requirements.timeoutMs)
+      || node.requirements.timeoutMs < 1)
+  ) {
+    diagnostics.push(applicationGraphStructureDiagnostic(
+      `Application ML model ${node.id} timeoutMs must be a positive integer.`,
+    ));
+  }
+  if (
+    node.maturity !== 'beta'
+    || node.provenance.artifactIdentity !== 'contentAddressed'
+    || node.provenance.receipt !== 'required'
+    || node.provenance.sensitiveValues !== 'redacted'
+  ) {
+    diagnostics.push(applicationGraphStructureDiagnostic(
+      `Application ML model ${node.id} must retain the beta content-addressed, receipt-bearing, redacted contract.`,
     ));
   }
   return diagnostics;

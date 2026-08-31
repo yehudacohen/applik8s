@@ -28,7 +28,7 @@ function isApplicationQualifiedProviderToken(value: unknown): value is {
 } {
   return Boolean(
     value
-    && typeof value === 'object'
+    && (typeof value === 'object' || typeof value === 'function')
     && Reflect.get(value, 'kind') === 'applicationQualifiedProvider'
     && Reflect.get(value, 'base')
     && Reflect.get(value, 'qualification'),

@@ -589,16 +589,26 @@ export function recordApplicationProviderGraph(
     id: nodeId,
     kind: 'provider',
     name: providerInterface,
-    stability: providerInterface === 'JobRuntime' ? 'experimental' : 'stable',
+    stability: providerInterface === 'JobRuntime' || providerInterface === 'MLModel' ? 'experimental' : 'stable',
     interface: providerInterface,
     implementation: applicationProviderImplementationName(implementation),
     ...(resolvedContract ? {
       contract: {
         ...resolvedContract,
         surface: !applicationProviderInterface(providerInterface) || providerInterface === 'JobRuntime' ? 'experimentalSurface' : 'stablePublicApi',
-        support: 'implemented',
+        support: providerInterface === 'MLModel' ? 'failClosedReserved' : 'implemented',
         implementation: { name: applicationProviderImplementationName(implementation) },
-        diagnostics: [],
+        diagnostics: providerInterface === 'MLModel'
+          ? [{
+              event: 'applik8s-provider-requirement-missing',
+              severity: 'error',
+              subject: { nodeId },
+              reason: 'MLProviderDeploymentReserved',
+              message: 'The v0.9 MLModel beta has local conformance semantics but no qualified generated deployment provider yet.',
+              likelyFix: 'Use local qualification evidence or bind a deployed provider only after its compiler/runtime adapter is available.',
+              retryable: false,
+            }]
+          : [],
       },
     } : {}),
     config: {
@@ -707,6 +717,21 @@ export function recordApplicationProviderGraph(
         : {}),
       ...(providerInterface === 'AI' && !targetSelection && implementation && typeof implementation === 'object'
         ? { ai: applicationTypeKroGraphValue(implementation) as JsonValue }
+        : {}),
+      ...(providerInterface === 'MLModel' && !targetSelection && implementation && typeof implementation === 'object'
+        ? {
+            mlModel: applicationTypeKroGraphValue({
+              kind: Reflect.get(implementation, 'kind'),
+              provider: Reflect.get(implementation, 'provider'),
+              providerVersion: Reflect.get(implementation, 'providerVersion'),
+              servingIdentity: Reflect.get(implementation, 'servingIdentity'),
+              artifact: Reflect.get(implementation, 'artifact'),
+              capabilities: Reflect.get(implementation, 'capabilities'),
+              deterministic: Reflect.get(implementation, 'deterministic'),
+              locality: Reflect.get(implementation, 'locality'),
+              maximumBatchSize: Reflect.get(implementation, 'maximumBatchSize'),
+            }) as JsonValue,
+          }
         : {}),
       ...(providerInterface === 'StructuredGeneration' && !targetSelection && implementation && typeof implementation === 'object'
         ? applicationTypeKroGraphValue(implementation) as JsonObject

@@ -4385,7 +4385,7 @@ export function isApplicationQualifiedProviderToken<TImplementation = unknown>(
 ): value is ApplicationQualifiedProviderToken<TImplementation> {
   return Boolean(
     value
-    && typeof value === 'object'
+    && (typeof value === 'object' || typeof value === 'function')
     && Reflect.get(value, 'kind') === 'applicationQualifiedProvider'
     && Reflect.get(value, 'base')
     && Reflect.get(value, 'qualification'),
@@ -4400,7 +4400,7 @@ export function applicationProviderQualificationFor(
   }
   if (
     value
-    && typeof value === 'object'
+    && (typeof value === 'object' || typeof value === 'function')
     && Reflect.get(value, 'kind') === 'applicationProvider'
   ) {
     const token = Reflect.get(value, 'token');

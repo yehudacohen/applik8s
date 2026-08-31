@@ -739,6 +739,7 @@
             "ApplicationLocalJobRuntimeProvider",
             "ApplicationLocalObservabilityProvider",
             "ApplicationLocalSchedulerProvider",
+            "ApplicationMLModelNode",
             "ApplicationManagedHostProvider",
             "ApplicationManagedModelCommitPrecondition",
             "ApplicationManagedModelCondition",
@@ -1151,6 +1152,25 @@
             "ApplicationRuntimeModuleRef",
             "ApplicationS3LakehouseDatasetProvider",
             "ApplicationS3ObjectStorageProvider",
+            "ApplicationSagaBinding",
+            "ApplicationSagaBoundaryError",
+            "ApplicationSagaCommitOptions",
+            "ApplicationSagaContext",
+            "ApplicationSagaContract",
+            "ApplicationSagaDefinition",
+            "ApplicationSagaExecutionError",
+            "ApplicationSagaHandler",
+            "ApplicationSagaIrreversibleOptions",
+            "ApplicationSagaNode",
+            "ApplicationSagaObservation",
+            "ApplicationSagaOptions",
+            "ApplicationSagaOutcome",
+            "ApplicationSagaOutcomeUnknownError",
+            "ApplicationSagaRegistrar",
+            "ApplicationSagaRuntime",
+            "ApplicationSagaStepObservation",
+            "ApplicationSagaStepOptions",
+            "ApplicationSagaStepPhase",
             "ApplicationScheduleAdmission",
             "ApplicationScheduleAdmissionRunner",
             "ApplicationScheduleContext",
@@ -1383,6 +1403,7 @@
             "ApplicationTerminalFailure",
             "ApplicationTlsIntent",
             "ApplicationTlsIntentContract",
+            "ApplicationTransactionRegistrar",
             "ApplicationTransactionalDatabaseGuaranteesContract",
             "ApplicationTransactionalDatabaseMigrationPolicy",
             "ApplicationTransactionalDatabaseProvider",
@@ -1550,6 +1571,7 @@
             "DeterministicApplicationJobStore",
             "DeterministicApplicationLakehouseRuntime",
             "DeterministicApplicationManagedModelStore",
+            "DeterministicApplicationSagaRuntime",
             "DeterministicApplicationScheduleRuntime",
             "DeterministicApplicationScheduleStateAuthority",
             "DeterministicApplicationSearchRuntimeOptions",
@@ -1797,6 +1819,12 @@
             "PluralName",
             "PortabilityMetadata",
             "PortabilitySecurityContract",
+            "PortableManagedModelCondition",
+            "PortableManagedModelConditionInput",
+            "PortableManagedModelMetadata",
+            "PortableManagedModelRequeue",
+            "PortableManagedModelWriteReceipt",
+            "PortableReconcileContext",
             "PostgresApplicationProjectionSnapshotOptions",
             "PostgresApplicationSearchRuntime",
             "PostgresApplicationSearchRuntimeOptions",
@@ -2021,6 +2049,7 @@
             "applicationLakehouseConformanceRows",
             "applicationLakehouseQueryIdentity",
             "applicationLakehouseQueryTerminalError",
+            "applicationManagedModelConditionTypes",
             "applicationManagedModelDesiredDigest",
             "applicationManagedModelProtocol",
             "applicationModelFacet",
@@ -2039,6 +2068,7 @@
             "applicationRelationalFrameworkMigrationSql",
             "applicationRequestContextValues",
             "applicationRuntimeAccessRequirement",
+            "applicationSagaProtocol",
             "applicationScheduleControlIdentity",
             "applicationScheduleDesiredStateDigest",
             "applicationScheduleDesiredStateRecord",
@@ -2067,7 +2097,10 @@
             "applicationWorkloadAuthorityArtifactFileName",
             "asComposition",
             "asOperationTargetFactory",
+            "assertApplicationManagedModelConditionOwnership",
             "bindApplicationModelViews",
+            "bindApplicationProviderDependencies",
+            "bindApplicationProviderOperation",
             "canonicalJsonCompatibleV1Policy",
             "canonicalJsonStrictV1Policy",
             "canonicalJsonV1Bytes",
@@ -2110,6 +2143,7 @@
             "createApplicationStreamSubscriptionGateway",
             "createApplicationSubscriptionLimiter",
             "createApplicationTelemetryEnvelopeV1",
+            "createApplicationTransactionRegistrar",
             "createApplicationWorkflowSignalRuntime",
             "createClickHouseAnalyticalProjectionReader",
             "createClickHouseAnalyticalProjectionWriter",
@@ -2120,6 +2154,7 @@
             "createDeterministicApplicationManagedModelStore",
             "createDeterministicApplicationQueryBatchRuntime",
             "createDeterministicApplicationQuerySelectionRuntime",
+            "createDeterministicApplicationSagaRuntime",
             "createDeterministicApplicationScheduleRuntime",
             "createDeterministicApplicationScheduleStateAuthority",
             "createDeterministicApplicationSearchRuntime",
@@ -2187,6 +2222,7 @@
             "installApplicationProjectionRuntimeResolver",
             "installApplicationQueryBatchRuntimeResolver",
             "installApplicationQuerySelectionRuntimeResolver",
+            "installApplicationSagaRuntimeResolver",
             "installApplicationScheduleRuntimeResolver",
             "installApplicationTelemetryRuntimeResolver",
             "installApplicationWorkflowRuntimeResolver",
@@ -2222,6 +2258,7 @@
             "parseApplicationScheduleDuration",
             "permissions",
             "planApplicationProfileTransitions",
+            "portableManagedModelStatus",
             "postgres",
             "postgresApplicationSearchMigrationSql",
             "profileFragment",
@@ -2237,7 +2274,9 @@
             "readyCondition",
             "redactApplicationTelemetryValue",
             "registerApplicationJob",
+            "registerApplicationSaga",
             "registerFixedApplicationSchedule",
+            "removePortableManagedModelCondition",
             "renderApplicationPlanGraph",
             "renderApplicationPlanText",
             "resolveApplicationActorInvocationAuthority",
@@ -2273,6 +2312,7 @@
             "setCondition",
             "setExternalEffect",
             "setOperatorDeploymentInterceptor",
+            "setPortableManagedModelCondition",
             "signedEnvelopeAlgorithm",
             "signedEnvelopeVersion",
             "sourceProvenance",
@@ -3435,6 +3475,17 @@
           ]
         },
         {
+          "name": "./managed-model-postgres-runtime",
+          "source": "packages/applik8s/src/managed-model-postgres-runtime.ts",
+          "symbols": [
+            "applicationPostgresModelReadClients",
+            "deletePostgresApplicationManagedModelValue",
+            "readPostgresApplicationManagedModelValue",
+            "scanPostgresApplicationManagedModelValues",
+            "withApplicationNativeModelReadClients"
+          ]
+        },
+        {
           "name": "./operation-runtime",
           "source": "packages/applik8s/src/application-operation-runtime.ts",
           "symbols": [
@@ -3609,6 +3660,7 @@
             "ApplicationKubernetesQueryAuthorityContract",
             "ApplicationLakehousePublicationNode",
             "ApplicationLegacyDeploymentNode",
+            "ApplicationMLModelNode",
             "ApplicationManagedModelContract",
             "ApplicationMcpClientNode",
             "ApplicationMcpExternalToolContract",
@@ -3771,6 +3823,7 @@
             "ApplicationRuntimeModuleManifestContract",
             "ApplicationRuntimeModuleManifestEntryContract",
             "ApplicationRuntimeModuleRef",
+            "ApplicationSagaNode",
             "ApplicationScheduleContract",
             "ApplicationScheduleControlIdentity",
             "ApplicationScheduleCronCompatibilityError",
@@ -4138,6 +4191,12 @@
             "PluralName",
             "PortabilityMetadata",
             "PortabilitySecurityContract",
+            "PortableManagedModelCondition",
+            "PortableManagedModelConditionInput",
+            "PortableManagedModelMetadata",
+            "PortableManagedModelRequeue",
+            "PortableManagedModelWriteReceipt",
+            "PortableReconcileContext",
             "PrinterColumn",
             "ProxyHandler",
             "ProxyHandlerReturn",
@@ -4321,11 +4380,13 @@
             "objectRefFor",
             "operator",
             "planApplicationProfileTransitions",
+            "portableManagedModelStatus",
             "profileTransitionAcknowledgement",
             "proposeApplicationDeploymentMigration",
             "providerGuaranteeFor",
             "readyCondition",
             "redactApplicationTelemetryValue",
+            "removePortableManagedModelCondition",
             "renderApplicationPlanGraph",
             "renderApplicationPlanText",
             "resolveApplicationCallableProviderRuntimeEnvironment",
@@ -4343,6 +4404,7 @@
             "setCondition",
             "setExternalEffect",
             "setOperatorDeploymentInterceptor",
+            "setPortableManagedModelCondition",
             "signedEnvelopeAlgorithm",
             "signedEnvelopeVersion",
             "sourceProvenance",
@@ -5607,6 +5669,7 @@
             "TypeKroCompositionContainerArtifactReference",
             "TypeKroCompositionHttpArtifactReference",
             "TypeKroCompositionLakehousePublisherArtifactReference",
+            "TypeKroCompositionManagedModelArtifactReference",
             "TypeKroCompositionMcpArtifactReference",
             "TypeKroCompositionMigrationArtifactReference",
             "TypeKroCompositionOperatorArtifactReference",
@@ -5963,6 +6026,7 @@
             "ApplicationKubernetesQueryAuthorityContract",
             "ApplicationLakehousePublicationNode",
             "ApplicationLegacyDeploymentNode",
+            "ApplicationMLModelNode",
             "ApplicationManagedModelContract",
             "ApplicationMcpClientNode",
             "ApplicationMcpExternalToolContract",
@@ -6125,6 +6189,7 @@
             "ApplicationRuntimeModuleManifestContract",
             "ApplicationRuntimeModuleManifestEntryContract",
             "ApplicationRuntimeModuleRef",
+            "ApplicationSagaNode",
             "ApplicationScheduleContract",
             "ApplicationScheduleControlIdentity",
             "ApplicationScheduleCronCompatibilityError",
@@ -6453,6 +6518,12 @@
             "PluralName",
             "PortabilityMetadata",
             "PortabilitySecurityContract",
+            "PortableManagedModelCondition",
+            "PortableManagedModelConditionInput",
+            "PortableManagedModelMetadata",
+            "PortableManagedModelRequeue",
+            "PortableManagedModelWriteReceipt",
+            "PortableReconcileContext",
             "PrinterColumn",
             "ProxyHandler",
             "ProxyHandlerReturn",
@@ -6606,10 +6677,12 @@
             "normalizeApplicationPlan",
             "normalizeApplicationScope",
             "planApplicationProfileTransitions",
+            "portableManagedModelStatus",
             "profileTransitionAcknowledgement",
             "proposeApplicationDeploymentMigration",
             "providerGuaranteeFor",
             "redactApplicationTelemetryValue",
+            "removePortableManagedModelCondition",
             "renderApplicationPlanGraph",
             "renderApplicationPlanText",
             "resolveApplicationCallableProviderRuntimeEnvironment",
@@ -6622,6 +6695,7 @@
             "serializeApplicationImplementationPlanSet",
             "serializeApplicationPlan",
             "serializeApplicationPlanContent",
+            "setPortableManagedModelCondition",
             "signedEnvelopeAlgorithm",
             "signedEnvelopeVersion",
             "sourceProvenance",
@@ -7745,6 +7819,61 @@
       ]
     },
     {
+      "name": "@applik8s/ml",
+      "version": "0.8.0",
+      "directory": "packages/ml",
+      "description": "Provider-neutral typed predictive models, provenance receipts, and deterministic conformance execution for Applik8s.",
+      "owner": "package:@applik8s/ml",
+      "maturity": "candidate-review-required",
+      "documentation": "docs/packages.md",
+      "commands": [],
+      "dependencies": [
+        "@applik8s/applik8s",
+        "@applik8s/core",
+        "@applik8s/sdk"
+      ],
+      "entrypoints": [
+        {
+          "name": ".",
+          "source": "packages/ml/src/index.ts",
+          "symbols": [
+            "ApplicationMLArtifact",
+            "ApplicationMLBatchItem",
+            "ApplicationMLBatchOptions",
+            "ApplicationMLBatchPartialFailureError",
+            "ApplicationMLBatchResult",
+            "ApplicationMLCapability",
+            "ApplicationMLDeterministicOptions",
+            "ApplicationMLModel",
+            "ApplicationMLModelDefinition",
+            "ApplicationMLPrediction",
+            "ApplicationMLPredictionContext",
+            "ApplicationMLPredictionError",
+            "ApplicationMLPredictionFailure",
+            "ApplicationMLPredictionFailureCode",
+            "ApplicationMLPredictionReceipt",
+            "ApplicationMLProvider",
+            "ApplicationMLRequirements",
+            "ApplicationMLSchema",
+            "ML",
+            "applicationMLModelDefinition",
+            "applicationMLProtocolRevision",
+            "batchPrediction",
+            "predict"
+          ]
+        },
+        {
+          "name": "./runtime",
+          "source": "packages/ml/src/runtime.ts",
+          "symbols": [
+            "installApplicationMLRuntimeResolver",
+            "invokeApplicationMLBatch",
+            "invokeApplicationMLPrediction"
+          ]
+        }
+      ]
+    },
+    {
       "name": "@applik8s/notifications",
       "version": "0.8.0",
       "directory": "packages/notifications",
@@ -8540,10 +8669,17 @@
             "KubernetesApplicationJobObservation",
             "KubernetesApplicationJobRuntime",
             "KubernetesApplicationJobRuntimeOptions",
+            "KubernetesApplicationManagedModelCondition",
+            "KubernetesApplicationManagedModelConditionInput",
+            "KubernetesApplicationManagedModelFenceError",
+            "KubernetesApplicationManagedModelIdentity",
+            "KubernetesApplicationOperatorRuntimeContract",
+            "KubernetesApplicationOperatorRuntimeOptions",
             "KubernetesApplicationScheduleRuntime",
             "KubernetesApplicationScheduleRuntimeOptions",
             "KubernetesScheduleAdmissionAuthorityOptions",
             "KubernetesScheduleOccurrenceBusyError",
+            "assertKubernetesApplicationManagedModelFence",
             "createKubernetesApplicationJobDispatcher",
             "createKubernetesApplicationJobRuntime",
             "createKubernetesApplicationScheduleRuntime",
@@ -8551,9 +8687,16 @@
             "kubernetesApplicationInstallationTransport",
             "kubernetesApplicationJobDispatchProtocol",
             "kubernetesApplicationJobName",
+            "kubernetesApplicationManagedModelIdentity",
+            "kubernetesApplicationManagedModelProtocol",
+            "kubernetesApplicationManagedModelStatus",
+            "kubernetesApplicationOperatorRuntime",
+            "kubernetesApplicationOperatorRuntimeProtocol",
             "kubernetesApplicationScheduleAdmissionContainer",
             "kubernetesApplicationScheduleCronJob",
-            "kubernetesScheduleResourceMatches"
+            "kubernetesScheduleResourceMatches",
+            "removeKubernetesApplicationManagedModelCondition",
+            "setKubernetesApplicationManagedModelCondition"
           ]
         },
         {
@@ -8572,6 +8715,32 @@
             "createKubernetesApplicationJobRuntime",
             "kubernetesApplicationJobDispatchProtocol",
             "kubernetesApplicationJobName"
+          ]
+        },
+        {
+          "name": "./managed-model-store",
+          "source": "packages/runtime-kubernetes/src/managed-model-store.ts",
+          "symbols": [
+            "KubernetesApplicationManagedModelCondition",
+            "KubernetesApplicationManagedModelConditionInput",
+            "KubernetesApplicationManagedModelFenceError",
+            "KubernetesApplicationManagedModelIdentity",
+            "assertKubernetesApplicationManagedModelFence",
+            "kubernetesApplicationManagedModelIdentity",
+            "kubernetesApplicationManagedModelProtocol",
+            "kubernetesApplicationManagedModelStatus",
+            "removeKubernetesApplicationManagedModelCondition",
+            "setKubernetesApplicationManagedModelCondition"
+          ]
+        },
+        {
+          "name": "./operator-runtime",
+          "source": "packages/runtime-kubernetes/src/operator-runtime.ts",
+          "symbols": [
+            "KubernetesApplicationOperatorRuntimeContract",
+            "KubernetesApplicationOperatorRuntimeOptions",
+            "kubernetesApplicationOperatorRuntime",
+            "kubernetesApplicationOperatorRuntimeProtocol"
           ]
         }
       ]
@@ -8722,16 +8891,22 @@
             "PostgresApplicationJobStoreOptions",
             "PostgresApplicationManagedModelStore",
             "PostgresApplicationManagedModelStoreOptions",
+            "PostgresApplicationOperatorRuntime",
+            "PostgresApplicationOperatorRuntimeOptions",
+            "PostgresApplicationOperatorRuntimeSnapshot",
+            "PostgresApplicationOperatorWorkItem",
             "PostgresApplicationQueryBatchRuntime",
             "PostgresApplicationQueryBatchRuntimeOptions",
             "createApplicationPostgresDrizzle",
             "createApplicationPostgresSql",
             "createPostgresApplicationJobStore",
             "createPostgresApplicationManagedModelStore",
+            "createPostgresApplicationOperatorRuntime",
             "createPostgresApplicationQueryBatchRuntime",
             "createPostgresApplicationQuerySelectionRuntime",
             "materializePostgresApplicationQuerySelection",
-            "postgresApplicationManagedModelMigrationSql"
+            "postgresApplicationManagedModelMigrationSql",
+            "postgresApplicationOperatorWorkItem"
           ]
         },
         {
@@ -8751,6 +8926,18 @@
             "PostgresApplicationManagedModelStoreOptions",
             "createPostgresApplicationManagedModelStore",
             "postgresApplicationManagedModelMigrationSql"
+          ]
+        },
+        {
+          "name": "./operator-runtime",
+          "source": "packages/runtime-postgres/src/operator-runtime.ts",
+          "symbols": [
+            "PostgresApplicationOperatorRuntime",
+            "PostgresApplicationOperatorRuntimeOptions",
+            "PostgresApplicationOperatorRuntimeSnapshot",
+            "PostgresApplicationOperatorWorkItem",
+            "createPostgresApplicationOperatorRuntime",
+            "postgresApplicationOperatorWorkItem"
           ]
         },
         {
@@ -11161,6 +11348,68 @@
       "maturity": "candidate-review-required"
     },
     {
+      "code": "ML_ARTIFACT_INTEGRITY_FAILED",
+      "owner": "package:@applik8s/ml",
+      "sources": [
+        "packages/ml/src/index.ts"
+      ],
+      "maturity": "candidate-review-required"
+    },
+    {
+      "code": "ML_DATA_RESIDENCY_UNSATISFIED",
+      "owner": "package:@applik8s/ml",
+      "sources": [
+        "packages/ml/src/index.ts",
+        "packages/ml/src/runtime.ts"
+      ],
+      "maturity": "candidate-review-required"
+    },
+    {
+      "code": "ML_INPUT_INVALID",
+      "owner": "package:@applik8s/ml",
+      "sources": [
+        "packages/ml/src/index.ts",
+        "packages/ml/src/runtime.ts"
+      ],
+      "maturity": "candidate-review-required"
+    },
+    {
+      "code": "ML_MODEL_VERSION_UNAVAILABLE",
+      "owner": "package:@applik8s/ml",
+      "sources": [
+        "packages/ml/src/index.ts",
+        "packages/ml/src/runtime.ts"
+      ],
+      "maturity": "candidate-review-required"
+    },
+    {
+      "code": "ML_OUTPUT_INVALID",
+      "owner": "package:@applik8s/ml",
+      "sources": [
+        "packages/ml/src/index.ts",
+        "packages/ml/src/runtime.ts"
+      ],
+      "maturity": "candidate-review-required"
+    },
+    {
+      "code": "ML_PROVIDER_FAILED",
+      "owner": "package:@applik8s/ml",
+      "sources": [
+        "packages/ml/src/index.ts",
+        "packages/ml/src/runtime.ts"
+      ],
+      "maturity": "candidate-review-required"
+    },
+    {
+      "code": "ML_TIMEOUT",
+      "owner": "package:@applik8s/ml",
+      "sources": [
+        "packages/ml/src/index.ts",
+        "packages/ml/src/runtime.ts"
+      ],
+      "maturity": "candidate-review-required"
+    },
+    {
       "code": "OAUTH_AUDIENCE_DENIED",
       "owner": "package:@applik8s/identity",
       "sources": [
@@ -11760,6 +12009,46 @@
       "owner": "package:@applik8s/core",
       "sources": [
         "packages/core/src/common.ts"
+      ],
+      "maturity": "candidate-review-required"
+    },
+    {
+      "code": "SAGA_COMPENSATED",
+      "owner": "package:@applik8s/applik8s",
+      "sources": [
+        "packages/applik8s/src/application-sagas.ts"
+      ],
+      "maturity": "candidate-review-required"
+    },
+    {
+      "code": "SAGA_COMPENSATION_FAILED",
+      "owner": "package:@applik8s/applik8s",
+      "sources": [
+        "packages/applik8s/src/application-sagas.ts"
+      ],
+      "maturity": "candidate-review-required"
+    },
+    {
+      "code": "SAGA_EFFECT_OUTSIDE_BOUNDARY",
+      "owner": "package:@applik8s/applik8s",
+      "sources": [
+        "packages/applik8s/src/application-sagas.ts"
+      ],
+      "maturity": "candidate-review-required"
+    },
+    {
+      "code": "SAGA_NESTING_UNSUPPORTED",
+      "owner": "package:@applik8s/applik8s",
+      "sources": [
+        "packages/applik8s/src/application-sagas.ts"
+      ],
+      "maturity": "candidate-review-required"
+    },
+    {
+      "code": "SAGA_OUTCOME_UNKNOWN",
+      "owner": "package:@applik8s/applik8s",
+      "sources": [
+        "packages/applik8s/src/application-sagas.ts"
       ],
       "maturity": "candidate-review-required"
     },

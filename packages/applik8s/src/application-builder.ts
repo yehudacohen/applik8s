@@ -4537,6 +4537,7 @@ function createApplicationContext<TSpec extends KroCompatibleType, TStatus exten
           )),
       applicationCallableProviderRuntimeBinding(token, recordedImplementation),
     );
+    recordApplicationMLModelGraph(state, token);
     if ((token as unknown) === ApplicationHost) {
       return applicationHostBinding(
         ApplicationHost,
@@ -6375,6 +6376,93 @@ function applicationExpressionKind(kind: string): 'field' | 'label' | 'literal' 
 
 function applicationProviderNodeId(providerInterface: ApplicationProviderInterfaceKind): string {
   return applicationProviderGraphNodeId(providerInterface);
+}
+
+const applicationMLModelMetadataSymbol = Symbol.for('applik8s.ml.model');
+
+/** Records an optional extension model without importing @applik8s/ml. */
+function recordApplicationMLModelGraph(
+  state: ApplicationGraphState,
+  token: ApplicationProviderToken<unknown>,
+): void {
+  if (typeof token !== 'function') return;
+  const definition = Reflect.get(token, applicationMLModelMetadataSymbol);
+  if (
+    !definition
+    || typeof definition !== 'object'
+    || Reflect.get(definition, 'apiVersion') !== 'applik8s.mlModel/v1alpha1'
+  ) return;
+  const qualification = applicationProviderQualificationFor(token);
+  if (!qualification || qualification.capability !== 'MLModel') {
+    throw new Error('ML.model(...) lost its qualified MLModel provider identity.');
+  }
+  const id = Reflect.get(definition, 'id');
+  const name = Reflect.get(definition, 'name');
+  const version = Reflect.get(definition, 'version');
+  const input = Reflect.get(definition, 'input');
+  const output = Reflect.get(definition, 'output');
+  const capabilities = Reflect.get(definition, 'capabilities');
+  const requirements = Reflect.get(definition, 'requirements');
+  if (
+    typeof id !== 'string'
+    || typeof name !== 'string'
+    || typeof version !== 'string'
+    || !input
+    || typeof input !== 'object'
+    || !output
+    || typeof output !== 'object'
+    || !Array.isArray(capabilities)
+    || !requirements
+    || typeof requirements !== 'object'
+  ) {
+    throw new Error('ML.model(...) graph metadata is incomplete.');
+  }
+  const nodeId = applicationGraphNodeId('mlModel', id);
+  const providerNodeId = applicationProviderGraphNodeId('MLModel', qualification);
+  addApplicationGraphNode(state, {
+    id: nodeId,
+    kind: 'mlModel',
+    name,
+    stability: 'experimental',
+    contract: {
+      name,
+      version,
+      input: input as ApplicationMessageContractSchema,
+      output: output as ApplicationMessageContractSchema,
+    },
+    capabilities: capabilities as readonly ('predict' | 'batchPrediction')[],
+    inference: { interface: 'MLModel', nodeId: providerNodeId },
+    requirements: requirements as {
+      readonly deterministic?: boolean;
+      readonly locality?: 'local' | 'cluster' | 'remote';
+      readonly dataResidency?: readonly string[];
+      readonly maximumBatchSize?: number;
+      readonly timeoutMs?: number;
+    },
+    provenance: {
+      artifactIdentity: 'contentAddressed',
+      receipt: 'required',
+      sensitiveValues: 'redacted',
+    },
+    maturity: 'beta',
+  });
+  addApplicationGraphEdge(state, {
+    from: { nodeId: providerNodeId },
+    to: { nodeId },
+    relationship: 'provides',
+  });
+  addApplicationProviderRequirement(state, {
+    id: `${nodeId}.inference`,
+    interface: 'MLModel',
+    consumer: { nodeId },
+    provider: { interface: 'MLModel', nodeId: providerNodeId },
+    required: true,
+    purpose: 'mlInference',
+    diagnostics: {
+      missing: `ML model ${id} requires a compatible inference provider.`,
+      ambiguous: `ML model ${id} must resolve exactly one qualified inference provider.`,
+    },
+  });
 }
 
 function applicationCompositionResourceTarget<TSpec extends KroCompatibleType, TStatus extends KroCompatibleType>(definition: TypeKroListenerCompositionDefinition<TSpec, TStatus>): ApplicationCompositionResourceTarget {

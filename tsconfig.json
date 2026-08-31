@@ -19,6 +19,8 @@
     "baseUrl": ".",
     "paths": {
       "@applik8s/ai": ["packages/ai/src/index.ts"],
+      "@applik8s/ml": ["packages/ml/src/index.ts"],
+      "@applik8s/ml/runtime": ["packages/ml/src/runtime.ts"],
       "@applik8s/ai-tanstack": ["packages/ai-tanstack/src/index.ts"],
       "@applik8s/approvals": ["packages/approvals/src/index.ts"],
       "@applik8s/artifacts": ["packages/artifacts/src/index.ts"],
