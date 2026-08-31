@@ -207,6 +207,12 @@
       "diagnostic": "JOB_SEMANTIC_GRAPH_UNAVAILABLE"
     },
     {
+      "id": "finite-job-provider-selection",
+      "implemented": true,
+      "blocking": true,
+      "diagnostic": "JOB_PROVIDER_SELECTION_UNAVAILABLE"
+    },
+    {
       "id": "read-only-v0.8-migration-proposal",
       "implemented": true,
       "blocking": true,

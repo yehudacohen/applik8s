@@ -2241,6 +2241,7 @@ describe('integrated TypeKro package surface', () => {
       ['provider.EventSource', 'implemented'],
       ['provider.HttpExposure', 'implemented'],
       ['provider.IndexStore', 'implemented'],
+      ['provider.JobRuntime', 'failClosedReserved'],
       ['provider.ObjectStorage', 'implemented'],
       ['provider.Queue', 'implemented'],
       ['provider.Secret', 'implemented'],
@@ -2248,7 +2249,7 @@ describe('integrated TypeKro package surface', () => {
       ['provider.TransactionalDatabase', 'implemented'],
       ['provider.WorkflowEngine', 'implemented'],
     ]));
-    expect(graph?.compatibility.labels.filter((label) => label.name.startsWith('provider.')).every((label) => label.implementation === 'implemented')).toBe(true);
+    expect(graph?.compatibility.labels.filter((label) => label.name.startsWith('provider.') && label.surface === 'stablePublicApi').every((label) => label.implementation === 'implemented')).toBe(true);
     const stableLabels = new Set(graph?.compatibility.labels.filter((label) => label.surface === 'stablePublicApi').map((label) => label.name));
     expect(graph?.compatibility.stablePublicApis.every((api) => stableLabels.has(api))).toBe(true);
     expect(graph?.compatibility.stablePublicApis).toEqual(expect.arrayContaining(['provider.Secret', 'provider.Queue', 'provider.ObjectStorage', 'provider.HttpExposure', 'provider.CredentialStore']));

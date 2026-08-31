@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
-  config,
-  secret,
-} from '../src/index.js';
-import {
   applicationConfigurationProvenance,
   applicationConfigurationValueForDigest,
 } from '../src/application-configuration.js';
+import {
+  config,
+  secret,
+} from '../src/index.js';
 
 describe('application configuration provenance', () => {
   it('models typed environment configuration without reading process.env', () => {
@@ -68,5 +68,33 @@ describe('application configuration provenance', () => {
     cyclic.self = cyclic;
     expect(() => applicationConfigurationValueForDigest(cyclic)).toThrow(/must not contain cycles/u);
     expect(() => applicationConfigurationProvenance(cyclic)).toThrow(/must not contain cycles/u);
+  });
+
+  it('canonicalizes qualified provider handles without traversing callable token methods', () => {
+    const binding = {
+      kind: 'applicationProvider',
+      token: { name: 'Database', local() { return undefined; } },
+      qualification: {
+        apiVersion: 'applik8s.providerQualification/v1alpha1',
+        capability: 'Database',
+        name: 'primary',
+        compatibilityRevision: 'v1alpha1',
+        key: 'Database@v1alpha1:primary',
+      },
+      profile: {
+        apiVersion: 'applik8s.profileSelection/v1alpha1',
+        profileId: 'production',
+      },
+      implementation: { kind: 'postgres', name: 'application' },
+    };
+
+    expect(applicationConfigurationValueForDigest({ database: binding })).toEqual({
+      database: {
+        kind: 'applicationProvider',
+        qualification: binding.qualification,
+        profile: binding.profile,
+        implementation: binding.implementation,
+      },
+    });
   });
 });

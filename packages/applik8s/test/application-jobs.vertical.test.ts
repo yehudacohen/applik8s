@@ -1,6 +1,6 @@
-import { describe, expect, test } from 'bun:test';
 import { validateApplicationGraphCompatibilityPolicy } from '@applik8s/core';
 import { type } from 'arktype';
+import { describe, expect, test } from 'vitest';
 import { app, applicationGraphFor } from '../src/application-builder.js';
 import {
   ApplicationJobIdempotencyConflictError,
@@ -9,6 +9,7 @@ import {
   createApplicationJobBinding,
   createDeterministicApplicationJobRuntime,
 } from '../src/application-finite-jobs.js';
+import { JobRuntime } from '../src/application-providers.js';
 
 const Input = type({ value: 'number.integer' });
 const Output = type({ doubled: 'number.integer' });
@@ -52,7 +53,56 @@ describe('application finite Job runtime', () => {
       }),
     ]));
     expect(graph?.compatibility.experimentalSurfaces).toContain('app.job');
+    expect(graph?.nodes).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: 'provider',
+        interface: 'JobRuntime',
+        implementation: 'local-job-runtime',
+        stability: 'experimental',
+      }),
+    ]));
+    expect(graph?.providerRequirements).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        interface: 'JobRuntime',
+        consumer: expect.objectContaining({ nodeId: expect.stringContaining('job.') }),
+        purpose: 'finiteExecution',
+      }),
+    ]));
     expect(graph ? validateApplicationGraphCompatibilityPolicy(graph) : []).toEqual([]);
+  });
+
+  test('selects maintained JobRuntime implementations without changing Job handles', () => {
+    const application = app('kubernetes-finite-jobs', {
+      spec: type({}),
+      status: type({ ready: 'boolean' }),
+    });
+    application.provide(JobRuntime, JobRuntime.kubernetes({
+      namespace: 'application-jobs',
+      maximumConcurrency: 12,
+      maximumDuration: '30m',
+      resultRetentionSeconds: 86_400,
+    }));
+    application.job(
+      'search.rebuild.v1',
+      { input: Input, output: Output },
+      {},
+      (input) => ({ doubled: input.value * 2 }),
+    );
+
+    expect(applicationGraphFor(application.composition)?.nodes).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: 'provider',
+        interface: 'JobRuntime',
+        implementation: 'kubernetes-job-runtime',
+        config: expect.objectContaining({
+          maximumConcurrency: 12,
+          maximumDuration: '30m',
+          namespace: 'application-jobs',
+        }),
+      }),
+    ]));
+    expect(() => JobRuntime.local({ maximumConcurrency: 0 })).toThrow('maximumConcurrency');
+    expect(() => JobRuntime.aws({ account: {}, maximumDuration: '' })).toThrow('maximumDuration');
   });
 
   test('keeps semantic Jobs distinct from explicit Kubernetes workload Jobs', () => {

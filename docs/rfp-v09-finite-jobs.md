@@ -49,9 +49,12 @@ schema-validated input/output/progress/application errors, scoped idempotency, b
 whole-attempt retry, cancellation, execution deadlines, caller timeout with a rejoinable run reference,
 and first-terminal-transition semantics. The semantic `job` node is deliberately experimental and remains
 distinct from the stable `workloadJob` infrastructure node. Durable deployed providers, profile-selected
-runtime resolution, scheduling integration, retention, events/telemetry, and cross-provider conformance
-evidence remain implementation work. The local runtime is a behavioral kernel, not a claim that the
-complete Job contract is deployment-ready yet.
+runtime adapter lowering, scheduling integration, retention, events/telemetry, and cross-provider
+conformance evidence remain implementation work. `JobRuntime.local()`, `.kubernetes()`, and `.aws()` now
+produce validated, graph-visible implementation values and each Job declares one required `JobRuntime`;
+the Kubernetes and AWS constructors remain release-gated until their adapters and lifecycle evidence are
+complete. The local runtime is a behavioral kernel, not a claim that the complete Job contract is
+deployment-ready yet.
 
 This RFP owns logical run identity, attempt identity, input/result/progress/cancellation contracts,
 idempotency scope, retry and interruption semantics, authority and causal attribution, scheduling

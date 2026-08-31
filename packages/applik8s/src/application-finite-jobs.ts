@@ -7,8 +7,8 @@ import {
 } from '@applik8s/core';
 import type { SchemaInput } from '@applik8s/sdk';
 import { serializeApplicationCallback } from './application-callback.js';
-import { type ApplicationGraphState, addApplicationGraphNode } from './application-graph-state.js';
-import { kubernetesNameSegment } from './application-identifiers.js';
+import { type ApplicationGraphState, addApplicationGraphEdge, addApplicationGraphNode, addApplicationProviderRequirement } from './application-graph-state.js';
+import { applicationProviderGraphNodeId, kubernetesNameSegment } from './application-identifiers.js';
 import { parseApplicationScheduleDuration } from './application-schedule.js';
 import { declaredSchema, validateMessage } from './application-schema-runtime.js';
 import { functionExpression } from './application-workflow-serialization.js';
@@ -538,8 +538,10 @@ export function registerApplicationJob<
   const timeoutSeconds = options.timeout
     ? parseApplicationScheduleDuration(options.timeout)
     : undefined;
+  const nodeId = `job.${kubernetesNameSegment(id)}`;
+  const providerNodeId = applicationProviderGraphNodeId('JobRuntime');
   addApplicationGraphNode(state, {
-    id: `job.${kubernetesNameSegment(id)}`,
+    id: nodeId,
     kind: 'job',
     name: id,
     stability: 'experimental',
@@ -571,6 +573,23 @@ export function registerApplicationJob<
       interface: 'JobRuntime',
       selection: 'profile',
       protocol: applicationJobRuntimeProtocol,
+    },
+  });
+  addApplicationGraphEdge(state, {
+    from: { nodeId: providerNodeId },
+    to: { nodeId },
+    relationship: 'provides',
+  });
+  addApplicationProviderRequirement(state, {
+    id: `requirement.${nodeId}.job-runtime`,
+    interface: 'JobRuntime',
+    consumer: { nodeId },
+    provider: { interface: 'JobRuntime', nodeId: providerNodeId },
+    required: true,
+    purpose: 'finiteExecution',
+    diagnostics: {
+      missing: `Application Job ${id} requires one JobRuntime provider. Bind JobRuntime.local(), .kubernetes(), or .aws() through the selected application profile.`,
+      ambiguous: `Application Job ${id} resolves more than one JobRuntime provider. Bind exactly one implementation in the selected application profile.`,
     },
   });
   return createApplicationJobBinding({ id, contract, options, handler }, applicationJobRuntime());

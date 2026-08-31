@@ -221,6 +221,27 @@ function normalizeConfigurationValue(
         : {}),
     };
   }
+  if (
+    Reflect.get(value, 'kind') === 'applicationProvider'
+    && Reflect.get(value, 'qualification')
+    && Reflect.get(value, 'profile')
+  ) {
+    return {
+      kind: 'applicationProvider',
+      qualification: normalizeConfigurationValue(
+        Reflect.get(value, 'qualification'),
+        ancestors,
+      ) as JsonValue,
+      profile: normalizeConfigurationValue(
+        Reflect.get(value, 'profile'),
+        ancestors,
+      ) as JsonValue,
+      implementation: normalizeConfigurationValue(
+        Reflect.get(value, 'implementation'),
+        ancestors,
+      ) as JsonValue,
+    };
+  }
   if (ancestors.has(value)) throw new TypeError('Provider configuration must not contain cycles.');
   ancestors.add(value);
   try {

@@ -9,16 +9,16 @@ import { createDeterministicApplicationAdmission } from '@applik8s/identity';
 import { Cel } from 'typekro';
 import type { OryIdentityStackConfig, OryPlatformStackConfig } from 'typekro/ory';
 import {
+  type ApplicationCapabilityImplementation,
+  applicationCapabilityImplementationMetadata,
+  maintainedApplicationCapabilityImplementation,
+} from './application-capability-implementation.js';
+import {
   type ApplicationLakehouseDatasetQueryContract,
   type ApplicationLakehouseQueryRegistrar,
   createApplicationLakehouseDatasetQuery,
   createApplicationLakehouseQuery,
 } from './application-lakehouse.js';
-import {
-  type ApplicationCapabilityImplementation,
-  applicationCapabilityImplementationMetadata,
-  maintainedApplicationCapabilityImplementation,
-} from './application-capability-implementation.js';
 import { applicationQualifiableProviderToken } from './application-provider-qualification.js';
 import {
   type ApplicationScheduleRegistrar,
@@ -205,6 +205,46 @@ export interface ApplicationHatchetWorkflowEngineProvider {
 }
 
 export type ApplicationWorkflowEngineProvider = ApplicationHatchetWorkflowEngineProvider;
+
+export interface ApplicationLocalJobRuntimeProvider {
+  readonly kind: 'local-job-runtime';
+  readonly maximumConcurrency?: number;
+  readonly persistence?: 'memory' | 'application-database';
+  readonly resultRetentionSeconds?: number;
+}
+
+export interface ApplicationKubernetesJobRuntimeProvider {
+  readonly kind: 'kubernetes-job-runtime';
+  readonly namespace?: string;
+  readonly maximumConcurrency?: number;
+  readonly maximumDuration?: string;
+  readonly resultRetentionSeconds?: number;
+  /** Typed implementation dependencies remain graph-visible and private to this implementation. */
+  readonly queue?: object;
+  readonly executionHost?: object;
+  readonly results?: object;
+  readonly scheduler?: object;
+  readonly events?: object;
+}
+
+export interface ApplicationAwsJobRuntimeProvider {
+  readonly kind: 'aws-job-runtime';
+  readonly account: object;
+  readonly maximumConcurrency?: number;
+  readonly maximumDuration?: string;
+  readonly resultRetentionSeconds?: number;
+  /** Typed implementation dependencies remain graph-visible and private to this implementation. */
+  readonly queue?: object;
+  readonly executionHost?: object;
+  readonly results?: object;
+  readonly scheduler?: object;
+  readonly events?: object;
+}
+
+export type ApplicationJobRuntimeProvider =
+  | ApplicationLocalJobRuntimeProvider
+  | ApplicationKubernetesJobRuntimeProvider
+  | ApplicationAwsJobRuntimeProvider;
 
 export interface ApplicationLocalSchedulerProvider {
   readonly kind: 'local-scheduler';
@@ -1431,6 +1471,12 @@ export interface ApplicationWorkflowEngineProviderToken extends ApplicationQuali
   hatchet(options?: Omit<ApplicationHatchetWorkflowEngineProvider, 'kind'>): ApplicationCapabilityImplementation<ApplicationHatchetWorkflowEngineProvider>;
 }
 
+export interface ApplicationJobRuntimeProviderToken extends ApplicationQualifiableProviderToken<ApplicationJobRuntimeProvider> {
+  local(options?: Omit<ApplicationLocalJobRuntimeProvider, 'kind'>): ApplicationCapabilityImplementation<ApplicationLocalJobRuntimeProvider>;
+  kubernetes(options?: Omit<ApplicationKubernetesJobRuntimeProvider, 'kind'>): ApplicationCapabilityImplementation<ApplicationKubernetesJobRuntimeProvider>;
+  aws(options: Omit<ApplicationAwsJobRuntimeProvider, 'kind'>): ApplicationCapabilityImplementation<ApplicationAwsJobRuntimeProvider>;
+}
+
 export interface ApplicationQualifiedSchedulerProviderToken<TName extends string = string>
   extends ApplicationQualifiedProviderToken<ApplicationSchedulerProvider, TName> {
   readonly schedule: ApplicationScheduleRegistrar;
@@ -2056,6 +2102,54 @@ export const WorkflowEngine: ApplicationWorkflowEngineProviderToken = applicatio
         : 'applik8s.workflow.hatchet.readiness/v1alpha1',
       lifecycle: provider.provision === false ? 'external' : 'application',
       migration: 'applik8s.workflow.hatchet.migration/v1alpha1',
+    });
+  },
+});
+
+export const JobRuntime: ApplicationJobRuntimeProviderToken = applicationQualifiableProviderToken({
+  name: 'JobRuntime',
+  description: 'Provider-neutral finite managed execution with durable run, result, progress, cancellation, and retry semantics.',
+  contract: {
+    apiVersion: 'applik8s.provider/v1alpha1',
+    interface: 'JobRuntime',
+    version: 'v1alpha1',
+    requirements: ['finiteExecution', 'durableAdmission', 'resultProgressAuthority', 'cancellation'],
+    guarantees: ['scopedIdempotency', 'wholeAttemptRetry', 'firstTerminalTransition', 'callerTimeoutRejoin'],
+  },
+  accepts: isApplicationJobRuntimeProvider,
+  local(options = {}) {
+    const provider: ApplicationLocalJobRuntimeProvider = { kind: 'local-job-runtime', ...options };
+    assertApplicationJobRuntimeProvider(provider);
+    return maintainedBuiltInImplementation(JobRuntime, 'JobRuntime.local', provider, {
+      runtimeAdapter: '@applik8s/applik8s/job-runtime-local',
+      readiness: 'applik8s.job-runtime.local.readiness/v1alpha1',
+      lifecycle: 'application',
+      migration: 'applik8s.job-runtime.local.migration/v1alpha1',
+      maturity: 'experimental',
+    });
+  },
+  kubernetes(options = {}) {
+    const provider: ApplicationKubernetesJobRuntimeProvider = { kind: 'kubernetes-job-runtime', ...options };
+    assertApplicationJobRuntimeProvider(provider);
+    return maintainedBuiltInImplementation(JobRuntime, 'JobRuntime.kubernetes', provider, {
+      runtimeAdapter: '@applik8s/runtime-kubernetes/job-runtime',
+      deploymentContributor: '@applik8s/deployment-compiler/providers/job-runtime-kubernetes',
+      readiness: 'applik8s.job-runtime.kubernetes.readiness/v1alpha1',
+      lifecycle: 'application',
+      migration: 'applik8s.job-runtime.kubernetes.migration/v1alpha1',
+      maturity: 'experimental',
+    });
+  },
+  aws(options) {
+    const provider: ApplicationAwsJobRuntimeProvider = { kind: 'aws-job-runtime', ...options };
+    assertApplicationJobRuntimeProvider(provider);
+    return maintainedBuiltInImplementation(JobRuntime, 'JobRuntime.aws', provider, {
+      runtimeAdapter: '@applik8s/runtime-aws/job-runtime',
+      deploymentContributor: '@applik8s/deployment-compiler/providers/job-runtime-aws',
+      readiness: 'applik8s.job-runtime.aws.readiness/v1alpha1',
+      lifecycle: 'application',
+      migration: 'applik8s.job-runtime.aws.migration/v1alpha1',
+      maturity: 'experimental',
     });
   },
 });
@@ -2735,7 +2829,7 @@ function builtInProviderContract(providerInterface: string, guarantees: readonly
 }
 
 // typecast: provider registry names are literal public API keys used for app.provide(...) inference.
-export const providers = { IndexStore, Search, TransactionalDatabase, AnalyticalDatabase, CounterStore, EventSource, EventLog, Secret, Queue, ObjectStorage, HttpExposure, Certificate, DnsPublication, CredentialStore, WorkflowEngine, Scheduler, ActorRuntime, Observability, LakehouseDataset, LakehouseQuery, ApplicationHost, ContainerRegistry, IdentityProvider, OAuthAuthorizationServer, Authorization, StructuredGeneration } as const;
+export const providers = { IndexStore, Search, TransactionalDatabase, AnalyticalDatabase, CounterStore, EventSource, EventLog, Secret, Queue, ObjectStorage, HttpExposure, Certificate, DnsPublication, CredentialStore, WorkflowEngine, JobRuntime, Scheduler, ActorRuntime, Observability, LakehouseDataset, LakehouseQuery, ApplicationHost, ContainerRegistry, IdentityProvider, OAuthAuthorizationServer, Authorization, StructuredGeneration } as const;
 
 export function applicationTypedProviderContract(name: string | undefined): ApplicationTypedProviderContract | undefined {
   if (!name) return undefined;
@@ -2784,6 +2878,7 @@ export const defaultApplicationProviders: {
   readonly DnsPublication: undefined;
   readonly CredentialStore: ApplicationCredentialStoreProvider;
   readonly WorkflowEngine: ApplicationWorkflowEngineProvider;
+  readonly JobRuntime: ApplicationJobRuntimeProvider;
 } = {
   IndexStore: { kind: 'valkey' },
   Search: {
@@ -2803,6 +2898,7 @@ export const defaultApplicationProviders: {
   DnsPublication: undefined,
   CredentialStore: { kind: 'kubernetes-secret-credentials', defaultOwnership: 'external' },
   WorkflowEngine: defaultApplicationWorkflowEngineProvider,
+  JobRuntime: { kind: 'local-job-runtime', maximumConcurrency: 4, persistence: 'memory', resultRetentionSeconds: 86_400 },
 };
 
 export function isHatchetWorkflowEngineProvider(value: unknown): value is ApplicationHatchetWorkflowEngineProvider {
@@ -2812,6 +2908,45 @@ export function isHatchetWorkflowEngineProvider(value: unknown): value is Applic
     return true;
   } catch {
     return false;
+  }
+}
+
+export function isApplicationJobRuntimeProvider(value: unknown): value is ApplicationJobRuntimeProvider {
+  try {
+    assertApplicationJobRuntimeProvider(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function assertApplicationJobRuntimeProvider(value: unknown): asserts value is ApplicationJobRuntimeProvider {
+  if (!value || typeof value !== 'object') {
+    throw new TypeError('JobRuntime implementation must be an object.');
+  }
+  const kind = Reflect.get(value, 'kind');
+  if (kind !== 'local-job-runtime' && kind !== 'kubernetes-job-runtime' && kind !== 'aws-job-runtime') {
+    throw new TypeError('JobRuntime implementation must be created by JobRuntime.local(), .kubernetes(), or .aws().');
+  }
+  for (const field of ['maximumConcurrency', 'resultRetentionSeconds'] as const) {
+    const candidate = Reflect.get(value, field);
+    if (candidate !== undefined && (!Number.isSafeInteger(candidate) || Number(candidate) < 1)) {
+      throw new TypeError(`JobRuntime ${field} must be a positive safe integer when provided.`);
+    }
+  }
+  const maximumDuration = Reflect.get(value, 'maximumDuration');
+  if (maximumDuration !== undefined && (typeof maximumDuration !== 'string' || !maximumDuration.trim())) {
+    throw new TypeError('JobRuntime maximumDuration must be a non-empty duration when provided.');
+  }
+  const namespace = Reflect.get(value, 'namespace');
+  if (namespace !== undefined && (typeof namespace !== 'string' || !namespace.trim())) {
+    throw new TypeError('JobRuntime namespace must not be empty when provided.');
+  }
+  if (kind === 'aws-job-runtime') {
+    const account = Reflect.get(value, 'account');
+    if (!account || typeof account !== 'object') {
+      throw new TypeError('JobRuntime.aws(...) requires a typed AWS account implementation.');
+    }
   }
 }
 
@@ -3463,6 +3598,14 @@ export function applyApplicationProvider<TImplementation>(state: ApplicationProv
     }
     if (!state.providers.extensions) state.providers.extensions = {};
     state.providers.extensions['WorkflowEngine@v1alpha1'] = implementation;
+    return;
+  }
+  if (applicationProviderTokensMatch(token, JobRuntime)) {
+    if (!isApplicationJobRuntimeProvider(implementation)) {
+      throw new Error('app.provide(JobRuntime, ...) requires JobRuntime.local(), .kubernetes(), or .aws().');
+    }
+    if (!state.providers.extensions) state.providers.extensions = {};
+    state.providers.extensions['JobRuntime@v1alpha1'] = implementation;
     return;
   }
   if (applicationProviderTokensMatch(token, Scheduler)) {
@@ -4672,7 +4815,7 @@ export function applicationProviderTokenName(token: ApplicationProviderToken<unk
 }
 
 export function applicationProviderInterface(tokenName: string | undefined): ApplicationProviderInterfaceKind | undefined {
-  if (tokenName === 'IndexStore' || tokenName === 'Search' || tokenName === 'TransactionalDatabase' || tokenName === 'AnalyticalDatabase' || tokenName === 'CounterStore' || tokenName === 'EventSource' || tokenName === 'EventLog' || tokenName === 'Secret' || tokenName === 'Queue' || tokenName === 'ObjectStorage' || tokenName === 'HttpExposure' || tokenName === 'Certificate' || tokenName === 'DnsPublication' || tokenName === 'CredentialStore' || tokenName === 'WorkflowEngine' || tokenName === 'Scheduler' || tokenName === 'ActorRuntime' || tokenName === 'Observability' || tokenName === 'LakehouseDataset' || tokenName === 'LakehouseQuery' || tokenName === 'ApplicationHost' || tokenName === 'ContainerRegistry' || tokenName === 'IdentityProvider' || tokenName === 'OAuthAuthorizationServer' || tokenName === 'Authorization' || tokenName === 'StructuredGeneration') {
+  if (tokenName === 'IndexStore' || tokenName === 'Search' || tokenName === 'TransactionalDatabase' || tokenName === 'AnalyticalDatabase' || tokenName === 'CounterStore' || tokenName === 'EventSource' || tokenName === 'EventLog' || tokenName === 'Secret' || tokenName === 'Queue' || tokenName === 'ObjectStorage' || tokenName === 'HttpExposure' || tokenName === 'Certificate' || tokenName === 'DnsPublication' || tokenName === 'CredentialStore' || tokenName === 'WorkflowEngine' || tokenName === 'JobRuntime' || tokenName === 'Scheduler' || tokenName === 'ActorRuntime' || tokenName === 'Observability' || tokenName === 'LakehouseDataset' || tokenName === 'LakehouseQuery' || tokenName === 'ApplicationHost' || tokenName === 'ContainerRegistry' || tokenName === 'IdentityProvider' || tokenName === 'OAuthAuthorizationServer' || tokenName === 'Authorization' || tokenName === 'StructuredGeneration') {
     return tokenName;
   }
   return undefined;

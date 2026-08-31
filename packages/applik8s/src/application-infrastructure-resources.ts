@@ -589,13 +589,13 @@ export function recordApplicationProviderGraph(
     id: nodeId,
     kind: 'provider',
     name: providerInterface,
-    stability: 'stable',
+    stability: providerInterface === 'JobRuntime' ? 'experimental' : 'stable',
     interface: providerInterface,
     implementation: applicationProviderImplementationName(implementation),
     ...(resolvedContract ? {
       contract: {
         ...resolvedContract,
-        surface: !applicationProviderInterface(providerInterface) ? 'experimentalSurface' : 'stablePublicApi',
+        surface: !applicationProviderInterface(providerInterface) || providerInterface === 'JobRuntime' ? 'experimentalSurface' : 'stablePublicApi',
         support: 'implemented',
         implementation: { name: applicationProviderImplementationName(implementation) },
         diagnostics: [],
@@ -711,7 +711,7 @@ export function recordApplicationProviderGraph(
       ...(providerInterface === 'StructuredGeneration' && !targetSelection && implementation && typeof implementation === 'object'
         ? applicationTypeKroGraphValue(implementation) as JsonObject
         : {}),
-      ...((providerInterface === 'EventLog' || providerInterface === 'WorkflowEngine')
+      ...((providerInterface === 'EventLog' || providerInterface === 'WorkflowEngine' || providerInterface === 'JobRuntime')
         && !targetSelection
         && implementation
         && typeof implementation === 'object'

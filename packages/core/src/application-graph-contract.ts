@@ -167,6 +167,7 @@ export type ApplicationBuiltInProviderInterfaceKind =
   | 'DnsPublication'
   | 'CredentialStore'
   | 'WorkflowEngine'
+  | 'JobRuntime'
   | 'Scheduler'
   | 'Observability'
   | 'LakehouseDataset'
@@ -200,6 +201,7 @@ export const applicationProviderInterfaceKinds = [
   'DnsPublication',
   'CredentialStore',
   'WorkflowEngine',
+  'JobRuntime',
   'Scheduler',
   'Observability',
   'LakehouseDataset',
