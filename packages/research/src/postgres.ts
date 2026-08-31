@@ -73,8 +73,8 @@ export function createPostgresResearchEvidenceProvider(
           (id, principal_scope, run_id, query_id, retrieval_id, canonical_url,
            search_receipt, retrieved_at, content_digest, snapshot_policy,
            snapshot_artifact_id, citations, visibility, causal_artifact_ids)
-         VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::timestamptz, $9,
-                 $10, $11, $12::jsonb, $13::jsonb, $14::jsonb)
+         VALUES ($1, $2, $3, $4, $5, $6, $7::text::jsonb, $8::timestamptz, $9,
+                 $10, $11, $12::text::jsonb, $13::text::jsonb, $14::text::jsonb)
          ON CONFLICT (id) DO NOTHING
          RETURNING *, search_receipt::text AS search_receipt_json,
                    citations::text AS citations_json,
@@ -139,7 +139,7 @@ export function createPostgresResearchEvidenceProvider(
         const rows = await transaction.unsafe(
           `INSERT INTO ${linkTable}
             (id, principal_scope, run_id, artifact_id, evidence_ids, claims)
-           VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb)
+           VALUES ($1, $2, $3, $4, $5::text::jsonb, $6::text::jsonb)
            ON CONFLICT (id) DO NOTHING
            RETURNING *, evidence_ids::text AS evidence_ids_json,
                      claims::text AS claims_json`,
@@ -212,6 +212,9 @@ async function prepareStore(sql: Sql, schema: string, table: string, linkTable: 
 function researchEvidenceRow(row: unknown): ApplicationResearchEvidenceRecord | undefined {
   if (!row || typeof row !== 'object') return undefined;
   const value = row as Record<string, unknown>;
+  const causalArtifactIds = jsonArray(
+    value.causal_artifact_ids_json ?? value.causal_artifact_ids,
+  ).map(String);
   const input = normalizeResearchEvidenceCommit({
     principalScope: stringValue(value.principal_scope),
     runId: stringValue(value.run_id),
@@ -225,7 +228,7 @@ function researchEvidenceRow(row: unknown): ApplicationResearchEvidenceRecord | 
     ...(value.snapshot_artifact_id ? { snapshotArtifactId: stringValue(value.snapshot_artifact_id) } : {}),
     citations: jsonArray(value.citations_json ?? value.citations) as ApplicationResearchEvidenceRecord['citations'],
     visibility: jsonObject(value.visibility_json ?? value.visibility),
-    causalArtifactIds: jsonArray(value.causal_artifact_ids_json ?? value.causal_artifact_ids).map(String),
+    ...(causalArtifactIds.length > 0 ? { causalArtifactIds } : {}),
   });
   const version = Number(value.version);
   if (!Number.isSafeInteger(version) || version < 1) throw new Error('PostgreSQL research evidence version is invalid.');

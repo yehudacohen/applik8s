@@ -235,6 +235,19 @@ added its actor-backed typed input/output and completed/partial/failed result,
 does not automatically verify/link the publication artifact receipt, and lacks
 PostgreSQL interruption plus Agentic Start end-to-end qualification.
 
+The durable evidence provider now also passes a real disposable-PostgreSQL
+replacement gate: a committed record survives provider shutdown/recreation,
+concurrent retries adopt the same immutable version, listing recovers the exact
+frontier, an artifact link with missing evidence rolls back, and the corrected
+link is idempotent. The gate exposed and fixed two live-only codec defects:
+Postgres.js string parameters previously stored serialized JSON as JSON string
+scalars, and round-tripping an omitted `causalArtifactIds` field as `[]` broke
+retry equality. JSON parameters now cross an explicit text-to-JSONB boundary,
+and optional empty provenance remains absent. The gate owns and removes a
+disposable native PostgreSQL instance. Kubernetes/managed-PostgreSQL placement,
+mid-transaction process termination, and the complete research run remain
+separate evidence.
+
 Continue in the sequence above until every stable-candidate gate is implemented
 and evidenced. Keep beta/preview surfaces truthful; do not expand the frozen
 scope merely to make a scorecard look complete.
