@@ -3141,6 +3141,7 @@ Mitigation: repeated confusion triggers simplification/rename/deletion while pre
 - Saga effects outside explicit `step`/`commit`/`irreversible` boundaries fail closed.
 - Saga and `ML.model()` are beta/non-blocking for 1.0.
 - `decision()` is investigated but not assumed to be a core primitive.
+- The completed investigation rejects a first-class `decision()` graph primitive; ordinary typed functions use the library-only `domainDecision` result algebra and inherit authority, durability, invalidation, and evidence from their enclosing semantic surface.
 - `journey()` is a development/testing acceptance artifact.
 - `researchAgent()` is a release-qualified composition rather than a foundational runtime;
   `codeAgent()` remains preview.

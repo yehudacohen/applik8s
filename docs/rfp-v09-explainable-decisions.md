@@ -1,6 +1,6 @@
 # RFP: Explainable Domain Decisions — Bounded Investigation
 
-**Status:** Accepted bounded investigation; architecture frozen; no new primitive is authorized by this RFP
+**Status:** Complete; library-only disposition accepted; no first-class primitive
 
 **Audience:** Applik8s maintainers, implementing agents, security reviewers, and application authors
 
@@ -9,6 +9,8 @@
 **Revised:** 2026-08-30
 
 **Target:** A closed v0.9 design decision; implementation is non-blocking for 1.0
+
+**Disposition:** See [Explainable domain decisions: library-only disposition](./v0.9-explainable-decision-disposition.md).
 
 ## Executive summary
 

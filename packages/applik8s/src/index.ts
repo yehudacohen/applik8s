@@ -30,6 +30,7 @@ export {
 } from './application-configuration.js';
 export * from './application-finite-jobs.js';
 export * from './application-sagas.js';
+export * from './application-domain-decisions.js';
 export * from './application-managed-models.js';
 export * from './application-managed-model-runtime.js';
 export type { ApplicationCatalogEvent, ApplicationCatalogEventFor, ApplicationEventCatalog, ApplicationEventProducer, ApplicationEventSelectionBinding } from './application-event-catalog.js';

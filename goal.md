@@ -177,6 +177,20 @@ compiler-generated provider hydration, a deployed local/open provider,
 failure-injection/cancellation evidence, and the second materially different
 provider required for maturity promotion remain open.
 
+The explainable-domain-decision investigation is closed with an explicit
+library-only disposition. Three representative prototypes showed that an
+ordinary typed function is clearer and more reusable than a new graph
+primitive; the existing query, operation, Job, workflow, reconcile, and event
+surfaces already add invalidation, authority, durability, and evidence when
+those semantics are actually required. The additive `domainDecision.allow()` /
+`.deny(code, details?)` / `.match(...)` algebra standardizes discriminated
+outcomes and stable reason codes without granting authority or creating state.
+The weighted disposition, compatibility consequence, and canonical usage are
+recorded in `docs/v0.9-explainable-decision-disposition.md`; three focused tests,
+the authoring-package typecheck, public-contract regeneration, and documentation
+checks pass. A first-class `decision()` registrar is rejected from the v0.9/1.0
+foundational vocabulary.
+
 Continue in the sequence above until every stable-candidate gate is implemented
 and evidenced. Keep beta/preview surfaces truthful; do not expand the frozen
 scope merely to make a scorecard look complete.
