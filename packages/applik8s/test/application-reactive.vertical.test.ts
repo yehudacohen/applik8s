@@ -13,6 +13,72 @@ const AccountChanged = stream('accounts.changed.v1', {
 });
 
 describe('v0.6 streams, subscriptions, and projections', () => {
+  it('builds a revision-pinned event catalog over explicit and model lifecycle facts', () => {
+    const posts = pgTable('catalog_posts', {
+      id: text('id').primaryKey(),
+      state: text('state').notNull(),
+      revision: text('revision').notNull(),
+    });
+    const PostPublished = event('posts.published.v1', {
+      payload: type({ postId: 'string', state: "'published'" }),
+    });
+    const application = app('event-catalog');
+    const database = application.database.postgres('catalog', { schema: { posts } });
+    const Post = application.model(posts, { name: 'Post', database });
+
+    application.events
+      .of(PostPublished, Post.events.updated)
+      .where((fact) => fact.contract.id !== '')
+      .onEvent(async function auditApplicationFact(fact) {
+        void fact.contract.id;
+        void fact.detail;
+      });
+
+    const graph = applicationGraphFor(application.composition);
+    const selection = graph?.nodes.find(
+      (node) => node.kind === 'stream' && node.catalog?.selection === 'of' && node.catalog.predicateSource,
+    );
+    expect(selection).toMatchObject({
+      kind: 'stream',
+      catalog: {
+        lowering: 'postgres-native-filter',
+        sources: [
+          expect.objectContaining({ contract: expect.objectContaining({ id: 'models.Post.updated.v1' }), producer: { kind: 'model', id: 'Post' } }),
+          expect.objectContaining({ contract: expect.objectContaining({ id: 'posts.published.v1' }), producer: { kind: 'event', id: 'posts.published.v1' } }),
+        ],
+      },
+    });
+    expect(graph?.nodes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: 'stream', name: 'models.Post.updated' }),
+      expect.objectContaining({ kind: 'stream', name: 'posts.published' }),
+      expect.objectContaining({ kind: 'streamProcessor', name: 'audit-application-fact', source: { nodeId: selection?.id } }),
+    ]));
+    expect(graph?.edges).toEqual(expect.arrayContaining([
+      expect.objectContaining({ from: { nodeId: selection?.id }, relationship: 'reads' }),
+    ]));
+    expect(graph && validateApplicationGraph(graph)).toEqual([]);
+
+    const malformed = {
+      ...graph!,
+      nodes: graph!.nodes.map((node) => node.id === selection?.id && node.kind === 'stream' && node.catalog
+        ? {
+            ...node,
+            catalog: {
+              ...node.catalog,
+              sources: node.catalog.sources.map((source, index) => index === 0
+                ? { ...source, contract: { ...source.contract, version: 'v999' } }
+                : source),
+            },
+          }
+        : node),
+    };
+    const malformedSelection = malformed.nodes.find((node) => node.id === selection?.id);
+    if (malformedSelection?.kind !== 'stream' || !malformedSelection.catalog) throw new Error('Expected catalog selection fixture.');
+    expect(validateApplicationGraph(malformed).map((diagnostic) => diagnostic.message)).toContain(
+      `Application event-catalog stream ${selection?.id} source ${malformedSelection.catalog.sources[0]!.contract.id} must reference the exact pinned physical stream contract.`,
+    );
+  });
+
   it('binds an immutable Kubernetes application host with hydrateable service facts', () => {
     const guestbook = app('hosted-guestbook', { namespace: 'guestbook' });
     const host = guestbook.provide(ApplicationHost, ApplicationHost.managed({ replicas: 2, port: 3000 }));

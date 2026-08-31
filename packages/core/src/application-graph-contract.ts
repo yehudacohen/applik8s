@@ -1415,6 +1415,24 @@ export interface ApplicationStreamNode extends ApplicationGraphNodeBase<'stream'
   readonly authorizationDependencies?: ApplicationHandlerDependencies;
   readonly authorizationUnresolved?: readonly string[];
   /**
+   * Compiler-owned logical event-catalog selection. The selected contracts
+   * remain the physical authorities; this node records the stable consumer
+   * identity and the native-filter/materialization decision explicitly.
+   */
+  readonly catalog?: {
+    readonly revision: string;
+    readonly selection: 'of' | 'from' | 'all';
+    readonly sources: readonly {
+      readonly stream: ApplicationGraphNodeRef;
+      readonly contract: { readonly id: string; readonly name: string; readonly version: string };
+      readonly producer: { readonly kind: string; readonly id: string };
+    }[];
+    readonly lowering: 'postgres-native-filter';
+    readonly predicateSource?: string;
+    readonly predicateDependencies?: ApplicationHandlerDependencies;
+    readonly predicateUnresolved?: readonly string[];
+  };
+  /**
    * Framework-owned signal metadata. Signal issuance remains an ordinary
    * replayable stream, while action hydration and exact-instance visibility
    * require the declared terminal-action schemas.

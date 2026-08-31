@@ -373,7 +373,12 @@ export async function runApplicationStreamBatchProcessor<
         options.maxBytes,
         options.concurrency,
       );
-      if (!frozen) return { processed, deadLettered, checkpoint, exhausted: true };
+      if (!frozen) {
+        checkpoint = page.nextSequence;
+        await options.store.advance(options.processor, options.streamName, checkpoint);
+        if (page.exhausted) return { processed, deadLettered, checkpoint, exhausted: true };
+        continue;
+      }
       exhausted = page.exhausted && frozen.lastSequence === page.nextSequence;
       group = await options.store.freezeBatchGroup(
         options.processor,

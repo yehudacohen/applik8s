@@ -79,7 +79,7 @@ import type {
   ApplicationSearchIndexBinding,
 } from './application-search.js';
 import { runApplicationTelemetryBoundary } from './application-telemetry-runtime.js';
-import type { CommandDefinition } from './dsl.js';
+import { event, type CommandDefinition, type EventDefinition } from './dsl.js';
 import {
   type ApplicationNativeModelEditTarget,
   bindApplicationNativeModelMethod,
@@ -125,6 +125,8 @@ export interface ApplicationModelUpdateEvent<TValue, TIdentity = string> {
   readonly identity: TIdentity;
   readonly previous: TValue;
   readonly current: TValue;
+  /** Stable, lexically sorted top-level fields whose committed values changed. */
+  readonly changed: readonly (Extract<keyof TValue, string>)[];
   readonly revision?: string;
 }
 
@@ -134,6 +136,12 @@ export interface ApplicationModelDeleteEvent<TValue, TIdentity = string> {
   readonly previous: TValue;
   readonly tombstone: { readonly identity: TIdentity; readonly deleted: true };
   readonly revision?: string;
+}
+
+export interface ApplicationModelLifecycleEvents<TValue, TIdentity = string> {
+  readonly created: EventDefinition<ApplicationModelCreateEvent<TValue, TIdentity>>;
+  readonly updated: EventDefinition<ApplicationModelUpdateEvent<TValue, TIdentity>>;
+  readonly deleted: EventDefinition<ApplicationModelDeleteEvent<TValue, TIdentity>>;
 }
 
 export type ApplicationModelCreateEventHandler<TValue, TIdentity = string> = (
@@ -349,6 +357,7 @@ export interface DrizzleApplicationModelFacet<TTable extends AnyPgTable, TIdenti
     InferSelectModel<TTable>,
     TIdentity
   >;
+  readonly events: ApplicationModelLifecycleEvents<InferSelectModel<TTable>, TIdentity>;
 }
 
 export type ApplicationModelEditTarget<TValue extends object, TIdentity> =
@@ -390,6 +399,7 @@ export interface DrizzleApplicationModelApi<TTable extends AnyPgTable, TIdentity
     InferSelectModel<TTable>
   >;
   readonly on: FunctionNativeApplicationModelLifecycleRegistrar<InferSelectModel<TTable>, TIdentity>;
+  readonly events: ApplicationModelLifecycleEvents<InferSelectModel<TTable>, TIdentity>;
   query<
     TInputSchema extends ApplicationQuerySchemaSource,
     TOutputSchema extends ApplicationQuerySchemaSource,
@@ -1212,6 +1222,7 @@ export function promoteDrizzleTable<TTable extends AnyPgTable>(
     'update',
     'delete',
     'on',
+    'events',
     'query',
     'view',
   ] as const;
@@ -1275,6 +1286,12 @@ export function promoteDrizzleTable<TTable extends AnyPgTable>(
       }
       return collisionSafeApi.on;
     },
+    get events() {
+      if (!collisionSafeApi) {
+        throw new Error(`Drizzle model ${name} is not fully promoted yet.`);
+      }
+      return collisionSafeApi.events;
+    },
     ref() {
       const identitySchema = arktypePropertySchema(selectSchema, identityFields[0] as string);
       const reference: ApplicationModelReferenceContract = {
@@ -1300,6 +1317,20 @@ export function promoteDrizzleTable<TTable extends AnyPgTable>(
   });
   const deleteInputSchema = arkType({ identity: identitySchema });
   const tombstoneSchema = arkType({ identity: identitySchema, deleted: 'true' });
+  const lifecycleEvents: ApplicationModelLifecycleEvents<
+    InferSelectModel<TTable>,
+    ConventionalTableIdentity<TTable>
+  > = Object.freeze({
+    created: event<ApplicationModelCreateEvent<InferSelectModel<TTable>, ConventionalTableIdentity<TTable>>>(`models.${name}.created.v1`, {
+      payload: arkType({ operation: "'create'", identity: identitySchema, value: selectSchema, 'revision?': 'string' }) as unknown as import('@applik8s/sdk').SchemaInput<ApplicationModelCreateEvent<InferSelectModel<TTable>, ConventionalTableIdentity<TTable>>>,
+    }),
+    updated: event<ApplicationModelUpdateEvent<InferSelectModel<TTable>, ConventionalTableIdentity<TTable>>>(`models.${name}.updated.v1`, {
+      payload: arkType({ operation: "'update'", identity: identitySchema, previous: selectSchema, current: selectSchema, changed: 'string[]', 'revision?': 'string' }) as unknown as import('@applik8s/sdk').SchemaInput<ApplicationModelUpdateEvent<InferSelectModel<TTable>, ConventionalTableIdentity<TTable>>>,
+    }),
+    deleted: event<ApplicationModelDeleteEvent<InferSelectModel<TTable>, ConventionalTableIdentity<TTable>>>(`models.${name}.deleted.v1`, {
+      payload: arkType({ operation: "'delete'", identity: identitySchema, previous: selectSchema, tombstone: { identity: identitySchema, deleted: 'true' }, 'revision?': 'string' }) as unknown as import('@applik8s/sdk').SchemaInput<ApplicationModelDeleteEvent<InferSelectModel<TTable>, ConventionalTableIdentity<TTable>>>,
+    }),
+  });
 
   const createOperation = applicationModelMutationOperation<
     InferInsertModel<TTable>,
@@ -1583,6 +1614,7 @@ export function promoteDrizzleTable<TTable extends AnyPgTable>(
     update: updateOperation,
     delete: deleteOperation,
     on: lifecycleRegistrars,
+    events: lifecycleEvents,
     query: queryModel,
     view: viewModel,
   }) as DrizzleApplicationModelApi<TTable>;
@@ -1606,6 +1638,7 @@ export function promoteDrizzleTable<TTable extends AnyPgTable>(
     update: collisionSafeApi.update,
     delete: collisionSafeApi.delete,
     on: collisionSafeApi.on,
+    events: collisionSafeApi.events,
     query: collisionSafeApi.query,
     view: collisionSafeApi.view,
   };

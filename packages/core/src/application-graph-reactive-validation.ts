@@ -17,7 +17,7 @@ export function applicationReactiveNodeStructureMessages(node: ReactiveNode, gra
     case 'gateway':
       return gatewayMessages(node, graph);
     case 'stream':
-      return streamMessages(node);
+      return streamMessages(node, graph);
     case 'subscription':
       return subscriptionMessages(node, graph);
     case 'projection':
@@ -107,13 +107,59 @@ function validProfiledCallback(
     && cases.every(([variant, callback]) => variant.trim().length > 0 && callback.source.trim().length > 0);
 }
 
-function streamMessages(node: ApplicationStreamNode): readonly string[] {
+function streamMessages(node: ApplicationStreamNode, graph: ApplicationGraph): readonly string[] {
   const messages: string[] = [];
   if (!node.version || node.retention.maxAgeSeconds < 1) messages.push(`Application stream ${node.id} must declare a version and positive retention.`);
   if (node.retention.maxMessages !== undefined && node.retention.maxMessages < 1) messages.push(`Application stream ${node.id} maxMessages must be positive when declared.`);
   if (node.authority !== 'postgres-outbox' || node.replay !== 'supported') messages.push(`Application stream ${node.id} uses an authority or replay mode not implemented in v0.6.`);
   if (!node.partitionSource?.trim() || !node.authorizationSource?.trim()) messages.push(`Application stream ${node.id} must retain serializable partition and authorization callbacks.`);
+  const catalog = node.catalog;
+  if (catalog) {
+    if (!catalog.revision.trim() || catalog.sources.length === 0) {
+      messages.push(`Application event-catalog stream ${node.id} must pin a non-empty revision and at least one source contract.`);
+    }
+    const contractIds = new Set<string>();
+    const streamIds = new Set<string>();
+    for (const source of catalog.sources) {
+      const sourceNode = graph.nodes.find((candidate) => candidate.id === source.stream.nodeId);
+      if (
+        sourceNode?.kind !== 'stream'
+        || sourceNode.catalog
+        || sourceNode.name !== source.contract.name
+        || sourceNode.version !== source.contract.version
+      ) {
+        messages.push(`Application event-catalog stream ${node.id} source ${source.contract.id} must reference the exact pinned physical stream contract.`);
+      } else if (!sameReactiveDatabase(node.database, sourceNode.database)) {
+        messages.push(`Application event-catalog stream ${node.id} cannot use PostgreSQL-native filtering across different database authorities.`);
+      }
+      if (contractIds.has(source.contract.id) || streamIds.has(source.stream.nodeId)) {
+        messages.push(`Application event-catalog stream ${node.id} must not contain duplicate source contracts.`);
+      }
+      contractIds.add(source.contract.id);
+      streamIds.add(source.stream.nodeId);
+      if (!source.producer.kind.trim() || !source.producer.id.trim()) {
+        messages.push(`Application event-catalog stream ${node.id} source ${source.contract.id} must retain its producer identity.`);
+      }
+    }
+    if (catalog.predicateSource !== undefined && !catalog.predicateSource.trim()) {
+      messages.push(`Application event-catalog stream ${node.id} predicate source must be non-empty when declared.`);
+    }
+    if ((catalog.predicateUnresolved?.length ?? 0) > 0) {
+      messages.push(`Application event-catalog stream ${node.id} predicate contains unresolved dependencies: ${catalog.predicateUnresolved?.join(', ')}.`);
+    }
+  }
   return messages;
+}
+
+function sameReactiveDatabase(
+  left: ApplicationStreamNode['database'],
+  right: ApplicationStreamNode['database'],
+): boolean {
+  return left.name === right.name
+    && left.connectionEnvName === right.connectionEnvName
+    && left.secretName === right.secretName
+    && left.secretKey === right.secretKey
+    && left.secretNamespace === right.secretNamespace;
 }
 
 function subscriptionMessages(node: ApplicationSubscriptionNode, graph: ApplicationGraph): readonly string[] {

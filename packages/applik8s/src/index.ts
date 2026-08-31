@@ -29,6 +29,7 @@ export {
   secret,
 } from './application-configuration.js';
 export * from './application-finite-jobs.js';
+export type { ApplicationCatalogEvent, ApplicationCatalogEventFor, ApplicationEventCatalog, ApplicationEventProducer, ApplicationEventSelectionBinding } from './application-event-catalog.js';
 export type { ApplicationFetchGateway, ApplicationFetchGatewayOptions } from './application-gateway.js';
 export { createApplicationFetchGateway } from './application-gateway.js';
 export type * from './application-installation-client.js';
@@ -108,7 +109,7 @@ export { applicationSignalAccessAllows, applicationSignalIsActionable, applicati
 export type { ApplicationFrozenStreamBatch, ApplicationFrozenStreamBatchGroup, ApplicationStreamDeliveryAdmissionRequest, ApplicationStreamDeliveryAdmitter, ApplicationStreamPayloadDecoder, ApplicationStreamProcessorStore, PostgresApplicationStreamProcessorStoreOptions, RunApplicationStreamBatchProcessorOptions, RunApplicationStreamProcessorOptions } from './stream-processor-runtime.js';
 export { ApplicationStreamProcessorPausedError, ApplicationStreamProcessorRetentionGapError, createPostgresApplicationStreamProcessorStore, runApplicationStreamBatchProcessor, runApplicationStreamProcessor } from './stream-processor-runtime.js';
 export type { PostgresApplicationStream, PostgresApplicationStreamOptions, PostgresApplicationStreamRetentionOptions } from './stream-runtime-postgres.js';
-export { ApplicationStreamAuthorizationError, createPostgresApplicationStream, enforcePostgresApplicationStreamRetention } from './stream-runtime-postgres.js';
+export { ApplicationStreamAuthorizationError, createPostgresApplicationCatalogStream, createPostgresApplicationStream, enforcePostgresApplicationStreamRetention } from './stream-runtime-postgres.js';
 export type { ApplicationAuthorizedReplayableStreamOptions, ApplicationStreamSubscriptionGatewayOptions, ApplicationStreamSubscriptionIdentity, ApplicationStreamSubscriptionRuntimeBinding } from './stream-subscription-gateway.js';
 export { createApplicationAuthorizedReplayableStream, createApplicationStreamSubscriptionGateway } from './stream-subscription-gateway.js';
 export type { ApplicationStructuredGenerationCapability, ApplicationStructuredGenerationRequest, ApplicationStructuredGenerationResult, ApplicationStructuredGenerationUsage, DeterministicStructuredGenerationRuntimeOptions, HttpStructuredGenerationRuntimeOptions } from './structured-generation-runtime.js';

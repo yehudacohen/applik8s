@@ -852,6 +852,10 @@ async function emitGateway(
     if (!stream.signal) {
       await writeCallbackModule(artifactDir, callbackName(stream.id, 'authorize-stream'), stream.authorizationSource, stream.authorizationDependencies);
     }
+    if (stream.catalog?.predicateSource) {
+      assertResolved(stream.id, 'catalog predicate', stream.catalog.predicateUnresolved);
+      await writeCallbackModule(artifactDir, callbackName(stream.id, 'catalog-predicate'), stream.catalog.predicateSource, stream.catalog.predicateDependencies);
+    }
   }
   for (const query of queries) {
     if (!query.search) {
@@ -907,6 +911,9 @@ async function emitProjection(graph: ApplicationGraph, projection: ApplicationPr
   const stream = requiredNode(nodes, projection.source.nodeId, 'stream', projection.id);
   assertResolved(stream.id, 'partition', stream.partitionUnresolved);
   assertResolved(stream.id, 'authorization', stream.authorizationUnresolved);
+  if (stream.catalog?.predicateSource) {
+    assertResolved(stream.id, 'catalog predicate', stream.catalog.predicateUnresolved);
+  }
   const provider = requiredProvider(nodes, projection.provider.nodeId, projection.id);
   if (projection.storage === 'online' || projection.online) return emitOnlineProjection(graph, projection, stream, provider, outDir, applicationEntrypoint);
   const config = clickHouseAnalyticalProviderConfig(
@@ -924,6 +931,7 @@ async function emitProjection(graph: ApplicationGraph, projection: ApplicationPr
   const artifactDir = join(outDir, name);
   await mkdir(artifactDir, { recursive: true });
   await writeCallbackModule(artifactDir, 'project', projection.handlerSource, projection.handlerDependencies);
+  if (stream.catalog?.predicateSource) await writeCallbackModule(artifactDir, 'catalog-predicate', stream.catalog.predicateSource, stream.catalog.predicateDependencies);
   const entrypoint = join(artifactDir, 'projection.generated.ts');
   await writeFile(entrypoint, generatedProjectionSource(projection, stream, provider));
   const env = projectionEnvironment(stream, config);
@@ -970,6 +978,7 @@ async function emitOnlineProjection(
   const artifactDir = join(outDir, name);
   await mkdir(artifactDir, { recursive: true });
   await writeCallbackModule(artifactDir, 'project', projection.handlerSource, projection.handlerDependencies);
+  if (stream.catalog?.predicateSource) await writeCallbackModule(artifactDir, 'catalog-predicate', stream.catalog.predicateSource, stream.catalog.predicateDependencies);
   await writeCallbackModule(artifactDir, 'partition', projection.online.partitionSource, projection.online.partitionDependencies);
   await writeCallbackModule(artifactDir, 'key', projection.online.keySource, projection.online.keyDependencies);
   await writeCallbackModule(artifactDir, 'score', projection.online.scoreSource, projection.online.scoreDependencies);
@@ -1074,6 +1083,14 @@ async function emitStreamProcessor(
   const artifactDir = join(outDir, name);
   await mkdir(artifactDir, { recursive: true });
   await writeStreamHandlerModule(artifactDir, processor, operations, queries);
+  if (stream.catalog?.predicateSource) {
+    await writeCallbackModule(
+      artifactDir,
+      'catalog-predicate',
+      stream.catalog.predicateSource,
+      stream.catalog.predicateDependencies,
+    );
+  }
   for (const binding of queries) {
     await writeQueryCallbackModule(
       artifactDir,
@@ -1623,7 +1640,8 @@ function generatedGatewaySource(
     ...(internalPlacementRoutes.length > 0
       ? ["import { createApplicationInternalOperationHandler } from '@applik8s/operations';"]
       : []),
-    ...(subscriptions.length > 0 ? ["import { createApplicationStreamSubscriptionGateway, createPostgresApplicationStream } from '@applik8s/applik8s/subscription-runtime';"] : []),
+    ...(subscriptions.length > 0 ? [`import { createApplicationStreamSubscriptionGateway, ${[...new Set(subscriptions.map(({ stream }) => stream.catalog ? 'createPostgresApplicationCatalogStream' : 'createPostgresApplicationStream'))].join(', ')} } from '@applik8s/applik8s/subscription-runtime';`] : []),
+    ...[...new Map(subscriptions.filter(({ stream }) => Boolean(stream.catalog?.predicateSource)).map(({ stream }) => [stream.id, stream])).values()].map((stream) => `import { callback as ${callbackVariable(stream.id, 'catalogPredicate')} } from './${callbackName(stream.id, 'catalog-predicate')}.generated.js';`),
     ...(signalStreams.length > 0 || hasActorQueries
       ? [
           ...(signalStreams.length > 0 ? [
@@ -2844,11 +2862,11 @@ function generatedStreamSubscriptionGateway(
     const streamAuthorize = stream.signal
       ? 'async () => true'
       : `async (principal, action) => ${callbackVariable(stream.id, 'streamAuthorize')}({ principal, action })`;
-    const source = `createPostgresApplicationStream({ stream: streamSubscriptions[${JSON.stringify(subscription.name)}].stream, databaseUrl: requiredEnv(${JSON.stringify(stream.database.connectionEnvName)}), principal: identity.principal${stream.signal ? '' : ', contextDigest: identity.contextDigest'} })`;
+    const source = `${stream.catalog ? 'createPostgresApplicationCatalogStream' : 'createPostgresApplicationStream'}({ stream: streamSubscriptions[${JSON.stringify(subscription.name)}].stream, databaseUrl: requiredEnv(${JSON.stringify(stream.database.connectionEnvName)}), principal: identity.principal${stream.signal ? '' : ', contextDigest: identity.contextDigest'} })`;
     const open = stream.signal
       ? `createApplicationAuthorizedReplayableStream({ source: ${source}, authorize: (event) => authorizeSignalIssuance(identity, event) })`
       : source;
-    return `{ name: ${JSON.stringify(subscription.name)}, stream: { kind: 'applicationStream', definition: { kind: 'stream', id: ${JSON.stringify(streamId)}, name: ${JSON.stringify(stream.name)}, version: ${JSON.stringify(stream.version)}, payload: schema(${JSON.stringify(stream.payload.jsonSchema)}, ${JSON.stringify(`${streamId}.payload`)}) }, retention: ${JSON.stringify(stream.retention)}, authority: 'postgres-outbox', replay: 'supported', database: ${databaseBindingSource(stream.database)}, partition: () => { throw new Error('Subscription replay never repartitions persisted events.'); }, authorize: ${streamAuthorize} }, authorize: async (principal) => ${callbackVariable(subscription.id, 'authorize')}({ principal }), open: (identity) => ${open} }`;
+    return `{ name: ${JSON.stringify(subscription.name)}, stream: { kind: 'applicationStream', definition: { kind: 'stream', id: ${JSON.stringify(streamId)}, name: ${JSON.stringify(stream.name)}, version: ${JSON.stringify(stream.version)}, payload: schema(${JSON.stringify(stream.payload.jsonSchema)}, ${JSON.stringify(`${streamId}.payload`)}) }, retention: ${JSON.stringify(stream.retention)}, authority: 'postgres-outbox', replay: 'supported', database: ${databaseBindingSource(stream.database)}, partition: () => { throw new Error('Subscription replay never repartitions persisted events.'); }, authorize: ${streamAuthorize}${generatedCatalogBinding(stream, stream.catalog?.predicateSource ? callbackVariable(stream.id, 'catalogPredicate') : undefined)} }, authorize: async (principal) => ${callbackVariable(subscription.id, 'authorize')}({ principal }), open: (identity) => ${open} }`;
   }).join(',\n');
   const index = subscriptions.map(({ subscription }, position) => `${JSON.stringify(subscription.name)}: streamSubscriptionBindings[${position}]`).join(', ');
   const operationContracts = operationCatalog && hasOperationAuthority
@@ -3125,13 +3143,15 @@ function signalInputSchema(
 
 function generatedProjectionSource(projection: ApplicationProjectionNode, stream: ApplicationStreamNode, _provider: ApplicationProviderNode): string {
   const table = kubernetesName(projection.name).replace(/-/g, '_');
+  const catalogImport = stream.catalog?.predicateSource ? "import { callback as catalogPredicate } from './catalog-predicate.generated.js';" : '';
   return `import { createServer } from 'node:http';
-import { createClickHouseAnalyticalProjectionWriter, createPostgresApplicationStream, enforcePostgresApplicationStreamRetention, runApplicationProjection } from '@applik8s/applik8s/projection-worker-runtime';
+ import { createClickHouseAnalyticalProjectionWriter, ${stream.catalog ? 'createPostgresApplicationCatalogStream as createPostgresApplicationStream' : 'createPostgresApplicationStream'}, enforcePostgresApplicationStreamRetention, runApplicationProjection } from '@applik8s/applik8s/projection-worker-runtime';
 import { callback as project } from './project.generated.js';
+${catalogImport}
 function requiredEnv(name) { const value = process.env[name]; if (!value) throw new Error('Missing required environment variable ' + name); return value; }
 function schema(json) { return { kind: 'jsonSchema', ref: { kind: 'jsonSchema', uri: 'generated:projection' }, schema: json }; }
 const database = ${databaseBindingSource(stream.database)};
-const stream = { kind: 'applicationStream', definition: { kind: 'stream', id: ${JSON.stringify(`${stream.name}.${stream.version}`)}, name: ${JSON.stringify(stream.name)}, version: ${JSON.stringify(stream.version)}, payload: schema(${JSON.stringify(stream.payload.jsonSchema)}) }, retention: ${JSON.stringify(stream.retention)}, authority: 'postgres-outbox', replay: 'supported', database, partition: () => { throw new Error('Projection replay never repartitions persisted events.'); }, authorize: async () => false };
+const stream = { kind: 'applicationStream', definition: { kind: 'stream', id: ${JSON.stringify(`${stream.name}.${stream.version}`)}, name: ${JSON.stringify(stream.name)}, version: ${JSON.stringify(stream.version)}, payload: schema(${JSON.stringify(stream.payload.jsonSchema)}) }, retention: ${JSON.stringify(stream.retention)}, authority: 'postgres-outbox', replay: 'supported', database, partition: () => { throw new Error('Projection replay never repartitions persisted events.'); }, authorize: async () => false${generatedCatalogBinding(stream, stream.catalog?.predicateSource ? 'catalogPredicate' : undefined)} };
 const databaseUrl = requiredEnv(${JSON.stringify(stream.database.connectionEnvName)});
 const createSource = () => createPostgresApplicationStream({ stream, databaseUrl, principal: { id: ${JSON.stringify(`applik8s:projection:${projection.name}`)} }, internalConsumer: { kind: 'projection', name: ${JSON.stringify(projection.name)} } });
 let source = createSource();
@@ -3151,18 +3171,20 @@ await loopTask;
 
 function generatedValkeyProjectionSource(graphName: string, projection: ApplicationProjectionNode, stream: ApplicationStreamNode, _config: Readonly<Record<string, unknown>>): string {
   if (!projection.online) throw new Error(`Generated online projection ${projection.id} is missing its online contract.`);
+  const catalogImport = stream.catalog?.predicateSource ? "import { callback as catalogPredicate } from './catalog-predicate.generated.js';" : '';
   return `import { createServer } from 'node:http';
-import { createPostgresApplicationStream, createValkeyOnlineProjectionWriter, enforcePostgresApplicationStreamRetention, runApplicationProjection } from '@applik8s/applik8s/projection-worker-runtime';
+ import { ${stream.catalog ? 'createPostgresApplicationCatalogStream as createPostgresApplicationStream' : 'createPostgresApplicationStream'}, createValkeyOnlineProjectionWriter, enforcePostgresApplicationStreamRetention, runApplicationProjection } from '@applik8s/applik8s/projection-worker-runtime';
 import { callback as project } from './project.generated.js';
 import { callback as partitionBy } from './partition.generated.js';
 import { callback as key } from './key.generated.js';
 import { callback as score } from './score.generated.js';
 import { callback as value } from './value.generated.js';
+${catalogImport}
 ${projection.online.removeSource ? "import { callback as removeWhen } from './remove.generated.js';" : 'const removeWhen = undefined;'}
 function requiredEnv(name) { const value = process.env[name]; if (!value) throw new Error('Missing required environment variable ' + name); return value; }
 function schema(json) { return { kind: 'jsonSchema', ref: { kind: 'jsonSchema', uri: 'generated:online-projection' }, schema: json }; }
 const database = ${databaseBindingSource(stream.database)};
-const stream = { kind: 'applicationStream', definition: { kind: 'stream', id: ${JSON.stringify(`${stream.name}.${stream.version}`)}, name: ${JSON.stringify(stream.name)}, version: ${JSON.stringify(stream.version)}, payload: schema(${JSON.stringify(stream.payload.jsonSchema)}) }, retention: ${JSON.stringify(stream.retention)}, authority: 'postgres-outbox', replay: 'supported', database, partition: () => { throw new Error('Projection replay never repartitions persisted events.'); }, authorize: async () => false };
+const stream = { kind: 'applicationStream', definition: { kind: 'stream', id: ${JSON.stringify(`${stream.name}.${stream.version}`)}, name: ${JSON.stringify(stream.name)}, version: ${JSON.stringify(stream.version)}, payload: schema(${JSON.stringify(stream.payload.jsonSchema)}) }, retention: ${JSON.stringify(stream.retention)}, authority: 'postgres-outbox', replay: 'supported', database, partition: () => { throw new Error('Projection replay never repartitions persisted events.'); }, authorize: async () => false${generatedCatalogBinding(stream, stream.catalog?.predicateSource ? 'catalogPredicate' : undefined)} };
 const databaseUrl = requiredEnv(${JSON.stringify(stream.database.connectionEnvName)});
 const createSource = () => createPostgresApplicationStream({ stream, databaseUrl, principal: { id: ${JSON.stringify(`applik8s:projection:${projection.name}`)} }, internalConsumer: { kind: 'projection', name: ${JSON.stringify(projection.name)} } });
 let source = createSource();
@@ -3522,8 +3544,15 @@ import { applicationSignalAccessAllows, createApplicationSignalIssuanceDecoder, 
     stream,
     operationCatalog,
   );
+  const catalogPredicateImport = stream.catalog?.predicateSource
+    ? "import { callback as catalogPredicate } from './catalog-predicate.generated.js';"
+    : '';
+  const catalogBinding = generatedCatalogBinding(
+    stream,
+    stream.catalog?.predicateSource ? 'catalogPredicate' : undefined,
+  );
   return `import { createServer } from 'node:http';
-import { createPostgresApplicationStream, createPostgresApplicationStreamProcessorStore, enforcePostgresApplicationStreamRetention, ${runtimeFunction} } from '@applik8s/applik8s/stream-worker-runtime';
+ import { ${stream.catalog ? 'createPostgresApplicationCatalogStream as createPostgresApplicationStream' : 'createPostgresApplicationStream'}, createPostgresApplicationStreamProcessorStore, enforcePostgresApplicationStreamRetention, ${runtimeFunction} } from '@applik8s/applik8s/stream-worker-runtime';
 ${observability || streamProcessorProviderRuntimeOperations(processor).length > 0 ? generatedApplicationTelemetryImports({ carrierCapture: observability && (processor.actorBindings?.length ?? 0) > 0, providerOperationInstrumentation: streamProcessorProviderRuntimeOperations(processor).length > 0, runtimeImplementation: observability }).join('\n') : ''}
 ${postgresImport}
 ${admissionImport}
@@ -3534,13 +3563,14 @@ ${functionNativeImport}
 ${callableImports}
 ${signalImports}
 ${objectStorageImports}
+${catalogPredicateImport}
 import { createCallback as createHandleEvent } from './handle.generated.js';
 ${queryCallbackImports}
 function requiredEnv(name) { const value = process.env[name]; if (!value) throw new Error('Missing required environment variable ' + name); return value; }
 function requiredIntegerEnv(name, minimum, maximum) { const value = Number(requiredEnv(name)); if (!Number.isInteger(value) || value < minimum || value > maximum) throw new RangeError(name + ' must be ' + minimum + '..' + maximum); return value; }
 function schema(json) { return { kind: 'jsonSchema', ref: { kind: 'jsonSchema', uri: 'generated:stream-processor' }, schema: json }; }
 const database = ${databaseBindingSource(stream.database)};
-const stream = { kind: 'applicationStream', definition: { kind: 'stream', id: ${JSON.stringify(`${stream.name}.${stream.version}`)}, name: ${JSON.stringify(stream.name)}, version: ${JSON.stringify(stream.version)}, payload: schema(${JSON.stringify(stream.payload.jsonSchema)}) }, retention: ${JSON.stringify(stream.retention)}, authority: 'postgres-outbox', replay: 'supported', database, partition: () => { throw new Error('Processor replay never repartitions persisted events.'); }, authorize: async () => false };
+const stream = { kind: 'applicationStream', definition: { kind: 'stream', id: ${JSON.stringify(`${stream.name}.${stream.version}`)}, name: ${JSON.stringify(stream.name)}, version: ${JSON.stringify(stream.version)}, payload: schema(${JSON.stringify(stream.payload.jsonSchema)}) }, retention: ${JSON.stringify(stream.retention)}, authority: 'postgres-outbox', replay: 'supported', database, partition: () => { throw new Error('Processor replay never repartitions persisted events.'); }, authorize: async () => false${catalogBinding} };
 const databaseUrl = requiredEnv(${JSON.stringify(stream.database.connectionEnvName)});
 const processorAuthoritySql = postgres(databaseUrl, { max: 4, idle_timeout: 20, connect_timeout: 10, prepare: false });
 const processorOperationAuthority = createApplicationOperationAuthorityRuntime({
@@ -3581,6 +3611,17 @@ async function shutdown() { if (stopping) return; stopping = true; ready = false
 process.once('SIGTERM', () => { void shutdown(); }); process.once('SIGINT', () => { void shutdown(); });
 await loopTask;
 `;
+}
+
+function generatedCatalogBinding(
+  stream: ApplicationStreamNode,
+  predicateVariable?: string,
+): string {
+  if (!stream.catalog) return '';
+  const sources = stream.catalog.sources.map((source) =>
+    `{ id: ${JSON.stringify(source.contract.id)}, name: ${JSON.stringify(source.contract.name)}, version: ${JSON.stringify(source.contract.version)}, producer: ${JSON.stringify(source.producer)}, payload: schema(${JSON.stringify(stream.payload.jsonSchema)}) }`)
+    .join(', ');
+  return `, catalog: Object.freeze({ revision: ${JSON.stringify(stream.catalog.revision)}, sources: Object.freeze([${sources}])${predicateVariable ? `, predicate: ${predicateVariable}` : ''} })`;
 }
 
 function generatedFunctionNativeStreamTransaction(

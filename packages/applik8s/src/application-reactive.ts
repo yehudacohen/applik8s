@@ -122,6 +122,18 @@ export interface ApplicationStreamBinding<TPayload extends object = object, TPri
   readonly authority: 'postgres-outbox' | 'kubernetes-watch' | 'provider';
   readonly replay: 'supported' | 'reset-only';
   readonly database: ApplicationDatabaseBinding;
+  /** Framework-owned event-catalog lowering metadata. */
+  readonly catalog?: {
+    readonly revision: string;
+    readonly sources: readonly {
+      readonly id: string;
+      readonly name: string;
+      readonly version: string;
+      readonly payload: SchemaInput<object>;
+      readonly producer: { readonly kind: string; readonly id: string };
+    }[];
+    readonly predicate?: (event: TPayload) => boolean;
+  };
   partition(payload: TPayload): string;
   authorize(principal: TPrincipal, action: 'read' | 'replay'): Promise<boolean>;
   /** Declares a derived store directly from this stream while retaining app.projection compatibility. */
@@ -500,7 +512,18 @@ export interface ApplicationGatewayBinding {
   httpHandler<TPrincipal extends ApplicationQueryPrincipal = ApplicationQueryPrincipal>(options: Omit<ApplicationQueryGatewayRuntimeOptions<Request, TPrincipal>, 'queries' | 'subscriptionLimits'>, http?: Omit<ApplicationQueryGatewayHttpOptions, 'basePath'>): (request: Request) => Promise<Response>;
 }
 
-export function registerApplicationStream<TPayload extends object, TPrincipal extends ApplicationQueryPrincipal>(state: ApplicationReactiveState, definition: ApplicationReplayDefinition<TPayload>, options: ApplicationStreamOptions<TPayload, TPrincipal>, registrars?: ApplicationStreamRegistrars<TPayload>): ApplicationStreamBinding<TPayload, TPrincipal> {
+export function registerApplicationStream<TPayload extends object, TPrincipal extends ApplicationQueryPrincipal>(state: ApplicationReactiveState, definition: ApplicationReplayDefinition<TPayload>, options: ApplicationStreamOptions<TPayload, TPrincipal>, registrars?: ApplicationStreamRegistrars<TPayload>, catalog?: {
+  readonly revision: string;
+  readonly selection: 'of' | 'from' | 'all';
+  readonly sources: readonly {
+    readonly stream: { readonly nodeId: string };
+    readonly contract: { readonly id: string; readonly name: string; readonly version: string };
+    readonly payload: SchemaInput<object>;
+    readonly producer: { readonly kind: string; readonly id: string };
+  }[];
+  readonly lowering: 'postgres-native-filter';
+  readonly predicate?: (event: TPayload) => boolean;
+}): ApplicationStreamBinding<TPayload, TPrincipal> {
   const nodeId = reactiveNodeId('stream', definition.id);
   if (state.graphNodes.some((node) => node.id === nodeId)) throw new Error(`Application stream ${definition.id} is already registered.`);
   if (!Number.isSafeInteger(options.retention.maxAgeSeconds) || options.retention.maxAgeSeconds < 1) throw new Error(`Application stream ${definition.id} maxAgeSeconds must be a positive safe integer.`);
@@ -514,6 +537,9 @@ export function registerApplicationStream<TPayload extends object, TPrincipal ex
   // typecast: authorization input is reconstructed by the generated gateway and checked against the stream's declared principal boundary.
   const authorization = serializeApplicationCallback({ registrar: 'stream', argumentIndex: 1, property: 'authorize', label: `Application stream ${definition.id} authorization`, callback: options.authorize as (...args: never[]) => unknown, allowDeferredResolution: true });
   const applicationSignal = applicationSignalGraphContract(options);
+  const catalogPredicate = catalog?.predicate
+    ? serializeApplicationCallback({ registrar: 'eventCatalog', argumentIndex: 0, property: 'where', label: `Application event selection ${definition.id} predicate`, callback: catalog.predicate, allowDeferredResolution: true })
+    : undefined;
   addApplicationGraphNode(state, {
     id: nodeId,
     kind: 'stream',
@@ -536,7 +562,21 @@ export function registerApplicationStream<TPayload extends object, TPrincipal ex
     ...(authorization.dependencies ? { authorizationDependencies: authorization.dependencies } : {}),
     ...(authorization.unresolved ? { authorizationUnresolved: authorization.unresolved } : {}),
     ...(applicationSignal ? { signal: applicationSignal } : {}),
+    ...(catalog ? { catalog: {
+      revision: catalog.revision,
+      selection: catalog.selection,
+      sources: catalog.sources.map(({ stream, contract, producer }) => ({ stream, contract, producer })),
+      lowering: catalog.lowering,
+      ...(catalogPredicate ? {
+        predicateSource: catalogPredicate.source,
+        ...(catalogPredicate.dependencies ? { predicateDependencies: catalogPredicate.dependencies } : {}),
+        ...(catalogPredicate.unresolved ? { predicateUnresolved: catalogPredicate.unresolved } : {}),
+      } : {}),
+    } } : {}),
   });
+  for (const source of catalog?.sources ?? []) {
+    addApplicationGraphEdge(state, { from: { nodeId }, to: source.stream, relationship: 'reads' });
+  }
   return {
     kind: 'applicationStream',
     definition,
@@ -544,6 +584,11 @@ export function registerApplicationStream<TPayload extends object, TPrincipal ex
     authority: 'postgres-outbox',
     replay: 'supported',
     database: options.database,
+    ...(catalog ? { catalog: {
+      revision: catalog.revision,
+      sources: catalog.sources.map(({ contract, payload, producer }) => ({ ...contract, payload, producer })),
+      ...(catalog.predicate ? { predicate: catalog.predicate } : {}),
+    } } : {}),
     partition(payloadValue) {
       const validated = validateSchema(definition.payload, payloadValue, `${definition.id}.payload`);
       const partition = options.partitionBy(validated);
@@ -2443,9 +2488,11 @@ function validateSchema<TValue extends object>(schema: SchemaInput<TValue>, valu
   return result.value;
 }
 
-function reactiveNodeId(kind: string, name: string): string {
+export function applicationReactiveNodeId(kind: string, name: string): string {
   return `${kind}.${reactiveName(name)}`;
 }
+
+const reactiveNodeId = applicationReactiveNodeId;
 
 function reactiveName(value: string): string {
   return value.replace(/([a-z0-9])([A-Z])/g, '$1-$2').toLowerCase().replace(/[^a-z0-9.-]+/g, '-').replace(/^-+|-+$/g, '') || 'app';

@@ -42,7 +42,11 @@ const database = { name: 'catalog', connectionEnvName: 'APPLIK8S_DATABASE_CATALO
 // or provider-runtime capture.
 // Includes bounded query and signal SSE lease/reconnect support. Keep this close
 // to the measured release candidate so future runtime growth remains explicit.
-const reactiveRuntimeBundleBudgetBytes = 608_000;
+// v0.9's unified execution admission and schedule authority raised the measured
+// gateway baseline to 623,149 bytes before the event-catalog work. Reserve less
+// than 3 KiB above that baseline; catalog-only SQL must remain opt-in and must
+// not consume this ordinary-gateway ceiling.
+const reactiveRuntimeBundleBudgetBytes = 626_000;
 
 describe('generated v0.6 reactive workloads', () => {
   it('emits collision-safe variables for inferred dotted outbox model operations', async () => {
@@ -539,6 +543,46 @@ describe('generated v0.6 reactive workloads', () => {
         },
       },
     });
+  }, 120_000);
+
+  it('emits pinned PostgreSQL catalog filtering and a pure where predicate', async () => {
+    const source = {
+      id: 'stream.posts.published.v1', kind: 'stream', name: 'posts.published', version: 'v1', stability: 'stable',
+      payload: schema({ type: 'object', required: ['postId'], properties: { postId: { type: 'string' } } }),
+      authority: 'postgres-outbox', delivery: 'at-least-once', replay: 'supported', retention: { maxAgeSeconds: 86_400 },
+      partitioning: 'declared', compatibility: 'versioned-schema', authorization: 'application-defined', database,
+      partitionSource: '(event) => event.postId', authorizationSource: '() => false',
+    } as const;
+    const selection = {
+      ...source,
+      id: 'stream.catalog.posts.v1', name: 'catalog.posts',
+      payload: schema({ type: 'object', required: ['id', 'contract', 'source', 'occurredAt', 'recordedAt', 'detail'], properties: {
+        id: { type: 'string' }, contract: { type: 'object' }, source: { type: 'object' }, occurredAt: { type: 'string' }, recordedAt: { type: 'string' }, detail: { type: 'object' },
+      } }),
+      catalog: {
+        revision: 'catalog-v1', selection: 'of', lowering: 'postgres-native-filter',
+        sources: [{ stream: { nodeId: source.id }, contract: { id: 'posts.published.v1', name: 'posts.published', version: 'v1' }, producer: { kind: 'event', id: 'posts.published.v1' } }],
+        predicateSource: '(event) => event.contract.id === "posts.published.v1"',
+      },
+    } as const;
+    const processor = {
+      id: 'streamProcessor.audit-catalog', kind: 'streamProcessor', name: 'audit-catalog', stability: 'stable', source: { nodeId: selection.id }, database,
+      handlerSource: 'async function auditCatalog(event) { globalThis.__catalogEvent = event.contract.id; }', delivery: 'at-least-once', invocation: 'event', idempotency: 'source-event-id', checkpoint: 'postgres', failure: 'pause',
+      retry: { mode: 'boundedExponentialBackoff', maxAttempts: 5, initialDelayMs: 100, maxDelayMs: 5_000, factor: 2 },
+      deployment: { image: 'node:22-alpine', replicas: 1, concurrency: 1, maxAckPending: 100, healthPort: 8_080, gracefulShutdownSeconds: 30, resources: {}, scaling: { mode: 'fixed' } },
+      budgets: { timeoutMs: 30_000, maxInputBytes: 1_048_576 },
+    } as const;
+    const graph = reactiveGraph([source, selection, processor] as unknown as ApplicationGraphNode[]);
+    const outDir = await mkdtemp(join(tmpdir(), 'applik8s-event-catalog-'));
+    const [artifact] = await emitGeneratedApplicationReactive({ graph, outDir, entrypoint: import.meta.filename });
+    const generated = await readFile(join(dirname(artifact?.sourcePath ?? ''), 'stream-processor.generated.ts'), 'utf8');
+
+    expect(generated).toContain("from './catalog-predicate.generated.js'");
+    expect(generated).toContain('createPostgresApplicationCatalogStream as createPostgresApplicationStream');
+    expect(generated).toContain("revision: \"catalog-v1\"");
+    expect(generated).toContain("id: \"posts.published.v1\"");
+    expect(generated).toContain('predicate: catalogPredicate');
+    expect(await readFile(join(dirname(artifact?.sourcePath ?? ''), 'catalog-predicate.generated.ts'), 'utf8')).toContain('posts.published.v1');
   }, 120_000);
 
   it('fails closed when a captured provider operation has no portable worker runtime', async () => {

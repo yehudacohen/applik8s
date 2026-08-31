@@ -54,16 +54,16 @@ export interface CommandDefinition<
   readonly errors: { readonly [TName in keyof TErrors]: SchemaInput<TErrors[TName]> };
 }
 
-export interface EventDefinition<TPayload extends object> {
+export interface EventDefinition<TPayload extends object, TId extends string = string> {
   readonly kind: 'applik8sEvent';
-  readonly id: string;
+  readonly id: TId;
   readonly name: string;
   readonly version: string;
   readonly payload: SchemaInput<TPayload>;
   emit(payload: TPayload): ApplicationStagedEffectReference;
 }
 
-export interface PublishedEventDefinition<TPayload extends object> extends EventDefinition<TPayload> {
+export interface PublishedEventDefinition<TPayload extends object, TId extends string = string> extends EventDefinition<TPayload, TId> {
   publish<TRow extends object>(
     dataset: ApplicationQualifiedProviderToken<ApplicationLakehouseDatasetProvider>,
     row: SchemaInput<TRow>,
@@ -208,14 +208,14 @@ export function command<
   };
 }
 
-export function event<TPayload extends object>(
-  id: string,
+export function event<TPayload extends object, const TId extends string = string>(
+  id: TId,
   options: { readonly payload: SchemaInput<TPayload> }
-): PublishedEventDefinition<TPayload> {
+): PublishedEventDefinition<TPayload, TId> {
   const identity = applicationContractIdentity('event', id);
   const emit = (payload: TPayload) =>
     emitApplicationManagedEvent(definition, payload);
-  const definition: PublishedEventDefinition<TPayload> = {
+  const definition: PublishedEventDefinition<TPayload, TId> = {
     kind: 'applik8sEvent',
     id,
     ...identity,

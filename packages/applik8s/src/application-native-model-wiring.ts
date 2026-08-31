@@ -243,7 +243,7 @@ export function applicationNativeUpdateContracts<TTable extends AnyPgTable>(
   const identity = facet.ref();
   const input = arkType({ identity, patch: facet.schema.update });
   const snapshot = arkType({ identity, value: facet.schema.select, 'revision?': 'string' });
-  const updated = arkType({ operation: "'update'", identity, previous: facet.schema.select, current: facet.schema.select, 'revision?': 'string' });
+  const updated = arkType({ operation: "'update'", identity, previous: facet.schema.select, current: facet.schema.select, changed: 'string[]', 'revision?': 'string' });
   return {
     command: command<TInput, import('./native-models.js').ApplicationModelSnapshot<TValue, TIdentity>, ApplicationNativeModelPolicyErrors>(`models.${facet.name}.update.v1`, {
       input: input as unknown as SchemaInput<TInput>,
@@ -427,7 +427,8 @@ export function bindApplicationNativeUpdateOperation<TTable extends AnyPgTable>(
   model.patch({ spec: input.patch });
   ${policyCallback ? 'await __applik8sRunBeforeCommit(() => __applik8sBeforeCommit(model, input, context));' : ''}
   const current = model.value;
-  context.emit(ModelUpdated, { operation: 'update', identity: model.identity, previous, current });
+  const changed = Object.keys(current).filter((key) => JSON.stringify(previous[key]) !== JSON.stringify(current[key])).sort();
+  context.emit(ModelUpdated, { operation: 'update', identity: model.identity, previous, current, changed });
   return { identity: model.identity, value: current };
 }`,
       },
@@ -442,12 +443,23 @@ export function bindApplicationNativeUpdateOperation<TTable extends AnyPgTable>(
       const current = target.value;
       context.emit(contracts.event, {
         operation: 'update', identity: target.identity as TIdentity, previous, current,
+        changed: applicationChangedModelFields(previous, current),
       });
       return { identity: target.identity as TIdentity, value: current };
     },
   );
   bindApplicationModelCommandOperation(facet.api.update, binding);
   observeApplicationOperationAuthority(facet.api.update, (authority) => binding.classify(authority));
+}
+
+function applicationChangedModelFields<TValue extends object>(
+  previous: TValue,
+  current: TValue,
+): readonly Extract<keyof TValue, string>[] {
+  const keys = Object.keys(current) as Extract<keyof TValue, string>[];
+  return keys
+    .filter((key) => JSON.stringify(Reflect.get(previous, key)) !== JSON.stringify(Reflect.get(current, key)))
+    .sort((left, right) => left.localeCompare(right));
 }
 
 export function bindApplicationNativeDeleteOperation<TTable extends AnyPgTable>(

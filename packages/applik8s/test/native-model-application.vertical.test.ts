@@ -727,6 +727,7 @@ describe('v0.6 app-scoped native model promotion', () => {
       expectTypeOf(updated.identity).toEqualTypeOf<string>();
       expectTypeOf(updated.previous.name).toEqualTypeOf<string>();
       expectTypeOf(updated.current.name).toEqualTypeOf<string>();
+      expectTypeOf(updated.changed).toEqualTypeOf<readonly ('id' | 'name' | 'organizationId' | 'revision' | 'setId')[]>();
     });
     const Removed = Card.on.delete('remove-card-index', {
       processor: { replicas: 1, concurrency: 4 },
@@ -766,7 +767,12 @@ describe('v0.6 app-scoped native model promotion', () => {
     });
     expect(graph?.nodes.find((node) => node.kind === 'command' && node.name === 'models.Card.create.v1')).toBeDefined();
     expect(graph?.nodes.find((node) => node.kind === 'event' && node.name === 'models.Card.created.v1')).toBeDefined();
-    expect(graph?.nodes.find((node) => node.kind === 'event' && node.name === 'models.Card.updated.v1')).toBeDefined();
+    expect(graph?.nodes.find((node) => node.kind === 'event' && node.name === 'models.Card.updated.v1')).toMatchObject({
+      contract: { payload: { jsonSchema: { properties: { changed: { type: 'array', items: { type: 'string' } } } } } },
+    });
+    expect(graph?.nodes.find((node) => node.kind === 'commandHandler' && node.name === 'Card-models.Card.update.v1')).toMatchObject({
+      handlerSource: expect.stringContaining('const changed = Object.keys(current)'),
+    });
     expect(graph?.nodes.find((node) => node.kind === 'event' && node.name === 'models.Card.deleted.v1')).toBeDefined();
     expect(graph?.nodes.find((node) => node.kind === 'stream' && node.name === 'models.Card.created')).toBeDefined();
     expect(graph?.nodes.find((node) => node.kind === 'streamProcessor' && node.name === 'initialize-card')).toMatchObject({

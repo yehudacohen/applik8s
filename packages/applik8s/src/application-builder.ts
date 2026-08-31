@@ -80,6 +80,16 @@ import {
   applicationModuleMetadataFor,
 } from './application-modules.js';
 import {
+  type ApplicationEventCatalog,
+  type ApplicationEventCatalogSource,
+  type ApplicationEventSelectionBinding,
+  applicationCatalogSourceOptions,
+  bindApplicationEventCatalogSource,
+  bindApplicationEventProducer,
+  createApplicationEventCatalog,
+  createApplicationEventCatalogRegistry,
+} from './application-event-catalog.js';
+import {
   applicationNativeCommandModelBinding,
   applicationNativeCreateContracts,
   applicationNativeDeleteContracts,
@@ -108,7 +118,7 @@ import { createApplicationQualifiedProviderBinding } from './application-provide
 import type { ApplicationAnalyticalDatabaseProvider, ApplicationDefaults, ApplicationDefaultsBinding, ApplicationHostBinding, ApplicationHostProvider, ApplicationHttpExposureProvider, ApplicationIndexBackend, ApplicationPostgresTransactionalDatabaseOptions, ApplicationProviderBinding, ApplicationProviderDeploymentTarget, ApplicationProviderQualification, ApplicationProviderState, ApplicationProviderToken, ApplicationQualifiedProviderToken, ApplicationTargetProviderSelectionValue, ApplicationTransactionalDatabaseProvider, ApplicationValkeyIndexBackend } from './application-providers.js';
 import { ActorRuntime, ApplicationHost, applicationAnalyticalDatabaseImplementation, applicationCallableProviderRuntimeBinding, applicationCertificateImplementation, applicationDnsPublicationImplementation, applicationEventLogImplementation, applicationHostBinding, applicationHttpExposureImplementation, applicationIndexBackend, applicationObjectStorageImplementation, applicationPostgresClusterSpec, applicationProviderQualificationFor, applicationProviderSelectionFor, applicationProviderSelectionSatisfies, applicationProviderTokenName, applicationSearchProviderImplementation, applicationTargetProviderSelectionFor, applicationTransactionalDatabaseImplementation, applyApplicationProvider, defaultApplicationEventLogProvider, defaultApplicationIndexBackend, defaultApplicationIndexProvider, defaultApplicationProviders, IndexStore, isApplicationProviderSelection, isApplicationQualifiedProviderToken, isValkeyIndexDefault, TransactionalDatabase } from './application-providers.js';
 import { type ApplicationCallableQueryBinding, type ApplicationQueryOptions, type ApplicationQueryPrincipal, type ApplicationQuerySourceBinding, applicationQueryBindingForOperation, registerApplicationModelView, registerApplicationQuery } from './application-queries.js';
-import { type ApplicationAnalyticalProjectionBinding, type ApplicationAnalyticalProjectionOptions, type ApplicationGatewayBinding, type ApplicationGatewayOptions, type ApplicationOnlineProjectionBinding, type ApplicationOnlineProjectionDraft, type ApplicationOnlineProjectionOptions, type ApplicationOnlineProjectionRetentionPolicy, type ApplicationOnlineProjectionTransform, type ApplicationProjectionOptions, type ApplicationProjectionOutput, type ApplicationProjectionRebuildModel, type ApplicationProjectionRebuildScope, type ApplicationProjectionTransform, type ApplicationStreamBatchHandler, type ApplicationStreamBatchOptions, type ApplicationStreamBinding, type ApplicationStreamOptions, type ApplicationStreamProcessHandler, type ApplicationStreamProcessOptions, type ApplicationSubscriptionBinding, type ApplicationSubscriptionOptions, registerApplicationGateway, registerApplicationProjection, registerApplicationStream, registerApplicationStreamBatchProcessor, registerApplicationStreamProcessor, registerApplicationSubscription } from './application-reactive.js';
+import { type ApplicationAnalyticalProjectionBinding, type ApplicationAnalyticalProjectionOptions, type ApplicationGatewayBinding, type ApplicationGatewayOptions, type ApplicationOnlineProjectionBinding, type ApplicationOnlineProjectionDraft, type ApplicationOnlineProjectionOptions, type ApplicationOnlineProjectionRetentionPolicy, type ApplicationOnlineProjectionTransform, type ApplicationProjectionOptions, type ApplicationProjectionOutput, type ApplicationProjectionRebuildModel, type ApplicationProjectionRebuildScope, type ApplicationProjectionTransform, type ApplicationStreamBatchHandler, type ApplicationStreamBatchOptions, type ApplicationStreamBinding, type ApplicationStreamOptions, type ApplicationStreamProcessHandler, type ApplicationStreamProcessOptions, type ApplicationSubscriptionBinding, type ApplicationSubscriptionOptions, applicationReactiveNodeId, registerApplicationGateway, registerApplicationProjection, registerApplicationStream, registerApplicationStreamBatchProcessor, registerApplicationStreamProcessor, registerApplicationSubscription } from './application-reactive.js';
 import type { ApplicationRouteSourceLocation, ApplicationServerRouteSourceAnalysis, SerializedApplicationServerRouteWithDependencies } from './application-route-source.js';
 import { analyzeApplicationServerRouteSource, normalizeSerializableFunctionSource, routeAnalysisCallsMethod, serializedCallbackClosureMessage, unsupportedRouteFreeIdentifiers } from './application-route-source.js';
 import { generatedApplicationRuntimeModuleBundle } from './application-runtime-modules.js';
@@ -381,6 +391,8 @@ export interface KubernetesApplicationScope extends ApplicationAuthorityRegistra
   readonly storage: ApplicationStorageRegistrar;
   readonly database: ApplicationDatabaseRegistrar;
   readonly mcp: ApplicationMcpRegistrar;
+  /** Logical typed catalog of application-significant facts. */
+  readonly events: ApplicationEventCatalog;
   agent<
     const TName extends string,
     TRequest extends ApplicationTanStackAIAgentRequest,
@@ -1760,6 +1772,82 @@ function createKubernetesApplicationBuilder<TSpec extends KroCompatibleType = Re
     });
     return binding;
   };
+  const wrapEventSelection = <TEvent extends import('./application-event-catalog.js').ApplicationCatalogEvent>(
+    previewBinding: ApplicationEventSelectionBinding<TEvent>,
+    replaySelection: (scope: KubernetesApplicationScope) => ApplicationEventSelectionBinding<TEvent>,
+  ): ApplicationEventSelectionBinding<TEvent> => {
+    let replayedBinding: ApplicationEventSelectionBinding<TEvent> | undefined;
+    const behavior: ((binding: ApplicationEventSelectionBinding<TEvent>) => void)[] = [];
+    replays.push((scope) => { replayedBinding = replaySelection(scope); });
+    behaviorReplays.push(() => {
+      if (!replayedBinding) throw new Error(`Event selection ${previewBinding.definition.id} replay declaration did not run before its derived behavior.`);
+      for (const replay of behavior) replay(replayedBinding);
+    });
+    const wrapped = {
+      ...previewBinding,
+      where(predicate: (event: TEvent) => boolean) {
+        return wrapEventSelection(
+          previewBinding.where(predicate),
+          () => {
+            if (!replayedBinding) throw new Error(`Event selection ${previewBinding.definition.id} must replay before its where(...) refinement.`);
+            return replayedBinding.where(predicate);
+          },
+        );
+      },
+      project: ((...args: readonly unknown[]) => {
+        const result = Reflect.apply(previewBinding.project, previewBinding, args);
+        behavior.push((binding) => { Reflect.apply(binding.project, binding, args); });
+        invalidate();
+        return result;
+      }) as ApplicationEventSelectionBinding<TEvent>['project'],
+      subscribe(name: string, options: Omit<ApplicationSubscriptionOptions, 'source'>) {
+        const result = previewBinding.subscribe(name, options);
+        behavior.push((binding) => { binding.subscribe(name, options); });
+        invalidate();
+        return result;
+      },
+      onEvent: ((...args: readonly unknown[]) => {
+        const result = Reflect.apply(previewBinding.onEvent, previewBinding, args);
+        behavior.push((binding) => { Reflect.apply(binding.onEvent, binding, args); });
+        invalidate();
+        return result;
+      }) as ApplicationEventSelectionBinding<TEvent>['onEvent'],
+      onBatch: ((...args: readonly unknown[]) => {
+        const result = Reflect.apply(previewBinding.onBatch, previewBinding, args);
+        behavior.push((binding) => { Reflect.apply(binding.onBatch, binding, args); });
+        invalidate();
+        return result;
+      }) as ApplicationEventSelectionBinding<TEvent>['onBatch'],
+      process: ((...args: readonly unknown[]) => {
+        const result = Reflect.apply(previewBinding.process, previewBinding, args);
+        behavior.push((binding) => { Reflect.apply(binding.process, binding, args); });
+        invalidate();
+        return result;
+      }) as ApplicationEventSelectionBinding<TEvent>['process'],
+    };
+    invalidate();
+    return wrapped;
+  };
+  const eventCatalog: ApplicationEventCatalog = {
+    of(...definitions) {
+      return wrapEventSelection(
+        preview.events.of(...definitions),
+        (scope) => scope.events.of(...definitions),
+      );
+    },
+    from(...producers) {
+      return wrapEventSelection(
+        preview.events.from(...producers),
+        (scope) => scope.events.from(...producers),
+      );
+    },
+    all() {
+      return wrapEventSelection(
+        preview.events.all(),
+        (scope) => scope.events.all(),
+      );
+    },
+  };
   const builder = {
     name,
     installation,
@@ -2093,6 +2181,7 @@ function createKubernetesApplicationBuilder<TSpec extends KroCompatibleType = Re
     storage,
     database,
     mcp,
+    events: eventCatalog,
     role(roleName) {
       return preview.role(roleName);
     },
@@ -4278,6 +4367,78 @@ function createApplicationContext<TSpec extends KroCompatibleType, TStatus exten
       routes.push(route);
     });
   };
+  const eventCatalogRegistry = createApplicationEventCatalogRegistry();
+  const registerScopedStream = <TPayload extends object, TPrincipal extends ApplicationQueryPrincipal = ApplicationQueryPrincipal>(
+    definition: StreamDefinition<TPayload> | EventDefinition<TPayload>,
+    options: ApplicationStreamOptions<TPayload, TPrincipal>,
+    catalog?: Parameters<typeof registerApplicationStream<TPayload, TPrincipal>>[4],
+  ): ApplicationStreamBinding<TPayload, TPrincipal> => {
+    let binding: ApplicationStreamBinding<TPayload, TPrincipal>;
+    binding = registerApplicationStream(state, definition, options, {
+      project: ((name: string, projectionOptions: Omit<ApplicationAnalyticalProjectionOptions<object, object>, 'source'> | Omit<ApplicationOnlineProjectionOptions<object, object, object>, 'source'>) => {
+        if (!('store' in projectionOptions)) emitApplicationAnalyticalDatabaseResources(state, projectionOptions.provider ?? state.providers.analytics ?? state.defaults.analytics);
+        return registerApplicationProjection(state, name, { ...projectionOptions, source: binding } as never);
+      }) as unknown as ApplicationStreamBinding<TPayload, TPrincipal>['project'],
+      subscribe(name, subscriptionOptions) {
+        return registerApplicationSubscription(state, name, { ...subscriptionOptions, source: binding });
+      },
+      process(name, processOptions, handler) {
+        return registerApplicationStreamProcessor(state, name, binding, processOptions, handler);
+      },
+      batch(name, batchOptions, handler) {
+        return registerApplicationStreamBatchProcessor(state, name, binding, batchOptions, handler);
+      },
+    }, catalog);
+    return binding;
+  };
+  const events = createApplicationEventCatalog({
+    registry: eventCatalogRegistry,
+    databases: state.databases,
+    promote(definition) {
+      const databases = [...state.databases.values()];
+      if (databases.length !== 1 || !databases[0]) {
+        throw new Error(`Application event ${definition.id} needs exactly one default transactional database or an explicit app.stream(...) promotion.`);
+      }
+      let binding: ApplicationStreamBinding<object> | undefined;
+      const source: ApplicationEventCatalogSource = {
+        definition,
+        database: databases[0],
+        producer: { kind: 'event', id: definition.id },
+        stream() {
+          binding ??= registerScopedStream(definition, applicationCatalogSourceOptions(source));
+          return binding;
+        },
+      };
+      bindApplicationEventCatalogSource(eventCatalogRegistry, source);
+      return source;
+    },
+    register(input) {
+      const binding = registerScopedStream(input.definition, {
+        database: input.database,
+        retention: { maxAgeSeconds: 30 * 24 * 60 * 60, maxMessages: 10_000_000 },
+        partitionBy: (event) => event.id,
+        authorize: () => false,
+      }, {
+        revision: `catalog-${input.definition.id}`,
+        selection: input.selection,
+        sources: input.sources.map((source) => ({
+          stream: { nodeId: applicationReactiveNodeId('stream', source.definition.id) },
+          contract: {
+            id: source.definition.id,
+            name: source.definition.name,
+            version: source.definition.version,
+          },
+          payload: source.definition.payload,
+          producer: source.producer,
+        })),
+        lowering: 'postgres-native-filter',
+        ...(input.predicate ? { predicate: input.predicate } : {}),
+      });
+      // typecast: this binding was created from the exact catalog envelope
+      // schema supplied by the generic registration callback.
+      return binding as unknown as ApplicationEventSelectionBinding<typeof input extends { definition: StreamDefinition<infer TEvent> } ? TEvent : never>;
+    },
+  });
   const scope: KubernetesApplicationScope = {
     // typecast: app.api is the application-context name for the same generated HTTP workload registrar as app.server.
     api: server as ApplicationServerRegistrar & Record<string, ApplicationServerBinding>,
@@ -4287,6 +4448,7 @@ function createApplicationContext<TSpec extends KroCompatibleType, TStatus exten
     storage,
     database,
     mcp,
+    events,
     ...authority,
     operator(operator, options) {
       collectApplicationResources(state, applicationOperatorResources(operator));
@@ -4460,6 +4622,21 @@ function createApplicationContext<TSpec extends KroCompatibleType, TStatus exten
             lifecycleHandler,
           ),
         });
+        const modelEventSources = Object.values(promotedFacet.events).map((definition) => {
+          let stream: ApplicationStreamBinding<object> | undefined;
+          const source: ApplicationEventCatalogSource = {
+            definition,
+            database: databaseBinding,
+            producer: { kind: 'model', id: promotedFacet.name },
+            stream() {
+              stream ??= registerScopedStream(definition, applicationCatalogSourceOptions(source));
+              return stream;
+            },
+          };
+          bindApplicationEventCatalogSource(eventCatalogRegistry, source);
+          return source;
+        });
+        bindApplicationEventProducer(eventCatalogRegistry, promoted, modelEventSources);
         return promoted;
       }
       const { entity, modelOptions } = applicationModelInput(
@@ -4528,23 +4705,16 @@ function createApplicationContext<TSpec extends KroCompatibleType, TStatus exten
       return registerApplicationQuery(state, id, options);
     },
     stream(definition, options) {
-      let binding: ApplicationStreamBinding<typeof definition extends StreamDefinition<infer TPayload> | EventDefinition<infer TPayload> ? TPayload : never>;
-      binding = registerApplicationStream(state, definition, options, {
-        project: ((name: string, projectionOptions: Omit<ApplicationAnalyticalProjectionOptions<object, object>, 'source'> | Omit<ApplicationOnlineProjectionOptions<object, object, object>, 'source'>) => {
-          if (!('store' in projectionOptions)) emitApplicationAnalyticalDatabaseResources(state, projectionOptions.provider ?? state.providers.analytics ?? state.defaults.analytics);
-          // typecast: the overload discriminant is preserved by spreading the stream source into the selected analytical/online option branch.
-          return registerApplicationProjection(state, name, { ...projectionOptions, source: binding } as never);
-        }) as unknown as ApplicationStreamBinding<typeof definition extends StreamDefinition<infer TPayload> | EventDefinition<infer TPayload> ? TPayload : never>['project'],
-        subscribe(name, subscriptionOptions) {
-          return registerApplicationSubscription(state, name, { ...subscriptionOptions, source: binding });
-        },
-        process(name, processOptions, handler) {
-          return registerApplicationStreamProcessor(state, name, binding, processOptions, handler);
-        },
-        batch(name, batchOptions, handler) {
-          return registerApplicationStreamBatchProcessor(state, name, binding, batchOptions, handler);
-        },
-      });
+      const binding = registerScopedStream(definition, options);
+      if (definition.kind === 'applik8sEvent') {
+        const source: ApplicationEventCatalogSource<typeof definition extends EventDefinition<infer TPayload> ? TPayload : never> = {
+          definition,
+          database: options.database,
+          producer: { kind: 'event', id: definition.id },
+          stream: () => binding,
+        };
+        bindApplicationEventCatalogSource(eventCatalogRegistry, source);
+      }
       return binding;
     },
     subscription(name, options) {

@@ -6,7 +6,7 @@ import type { ApplicationQueryPrincipal } from './application-queries.js';
 import type { ApplicationStreamBinding } from './application-reactive.js';
 import { applicationPublicStreamCommitScope } from './application-stream-commit.js';
 import { applicationCommandPrincipal, applicationCommandTrustedContext } from './command-principal.js';
-import type { ApplicationPostgresSql } from './postgres-runtime-contract.js';
+import type { ApplicationPostgresSql, ApplicationPostgresTransactionSql } from './postgres-runtime-contract.js';
 import { createApplicationPostgresSql } from './postgres-runtime-loader.js';
 import type { ApplicationReplayableStream, ApplicationReplayPage, ApplicationStreamEnvelope } from './projection-runtime-clickhouse.js';
 
@@ -41,6 +41,25 @@ export interface PostgresApplicationStreamRetentionOptions<TPayload extends obje
 /** Durable PostgreSQL outbox replay authority for an explicit public stream. */
 // typecast-boundary: the PostgreSQL client is selected after the sql-or-URL invariant and payloads are schema-validated.
 export function createPostgresApplicationStream<TPayload extends object, TPrincipal extends ApplicationQueryPrincipal>(options: PostgresApplicationStreamOptions<TPayload, TPrincipal>): PostgresApplicationStream<TPayload> {
+  if (options.stream.catalog) throw new Error(`Catalog stream ${options.stream.definition.id} requires createPostgresApplicationCatalogStream().`);
+  return createPostgresApplicationStreamRuntime(options, readPostgresApplicationStreamPage);
+}
+
+/** Native PostgreSQL reader for one compiler-pinned event-catalog revision. */
+export function createPostgresApplicationCatalogStream<TPayload extends object, TPrincipal extends ApplicationQueryPrincipal>(options: PostgresApplicationStreamOptions<TPayload, TPrincipal>): PostgresApplicationStream<TPayload> {
+  if (!options.stream.catalog) throw new Error(`Stream ${options.stream.definition.id} is not an event-catalog selection.`);
+  return createPostgresApplicationStreamRuntime(options, readPostgresApplicationCatalogPage);
+}
+
+function createPostgresApplicationStreamRuntime<TPayload extends object, TPrincipal extends ApplicationQueryPrincipal>(
+  options: PostgresApplicationStreamOptions<TPayload, TPrincipal>,
+  readPage: (
+    options: PostgresApplicationStreamOptions<TPayload, TPrincipal>,
+    transaction: ApplicationPostgresTransactionSql,
+    afterSequence: number,
+    limit: number,
+  ) => Promise<ApplicationReplayPage<TPayload>>,
+): PostgresApplicationStream<TPayload> {
   if (options.stream.authority !== 'postgres-outbox') throw new Error(`Stream ${options.stream.definition.id} is not backed by the PostgreSQL outbox authority.`);
   if (!options.sql && !options.databaseUrl) throw new Error(`Stream ${options.stream.definition.id} requires sql or databaseUrl.`);
   const ownsClient = !options.sql;
@@ -55,27 +74,76 @@ export function createPostgresApplicationStream<TPayload extends object, TPrinci
       } else if (!await options.stream.authorize(options.principal, 'replay')) {
         throw new ApplicationStreamAuthorizationError(options.stream.definition.id);
       }
-      const [name, version] = [options.stream.definition.name, options.stream.definition.version];
-      return (await client).begin(async (transaction) => {
-        await transaction.unsafe('SELECT pg_advisory_xact_lock_shared(hashtextextended($1, 0))', [applicationPublicStreamCommitScope(name, version)]);
-        const contextClause = options.contextDigest ? ' AND context_digest = $5' : '';
-        const parameters = [name, version, afterSequence, limit + 1, ...(options.contextDigest ? [options.contextDigest] : [])];
-        const floorParameters = [name, version, options.contextDigest ?? ''];
-        const [floorRows, rows] = await Promise.all([
-          transaction.unsafe('SELECT coalesce(max(deleted_through), 0) AS retention_floor FROM applik8s_public_stream_retention_floors WHERE contract_name = $1 AND contract_version = $2 AND context_digest = $3', floorParameters),
-          transaction.unsafe(`SELECT id, sequence, partition_key, recorded_at, context_digest, payload${options.includeTrustedContext ? ', envelope' : ''} FROM applik8s_public_stream_events WHERE contract_name = $1 AND contract_version = $2 AND sequence > $3${contextClause} ORDER BY sequence ASC LIMIT $4`, parameters),
-        ]);
-        const pageRows = rows.slice(0, limit);
-        const items = pageRows.map((row) => streamEnvelope<TPayload>(options.stream, row, options.includeTrustedContext === true));
-        const retentionFloor = Number(floorRows[0]?.retention_floor ?? 0);
-        if (!Number.isSafeInteger(retentionFloor) || retentionFloor < 0) throw new Error(`PostgreSQL returned an invalid ${options.stream.definition.id} retention floor.`);
-        return { items, nextSequence: items.at(-1)?.sequence ?? afterSequence, exhausted: rows.length <= limit, retentionFloor } satisfies ApplicationReplayPage<TPayload>;
-      });
+      return (await client).begin((transaction) => readPage(options, transaction, afterSequence, limit));
     },
     async close() {
       if (ownsClient) await (await client).end({ timeout: 5 });
     },
   };
+}
+
+async function readPostgresApplicationStreamPage<TPayload extends object, TPrincipal extends ApplicationQueryPrincipal>(
+  options: PostgresApplicationStreamOptions<TPayload, TPrincipal>,
+  transaction: ApplicationPostgresTransactionSql,
+  afterSequence: number,
+  limit: number,
+): Promise<ApplicationReplayPage<TPayload>> {
+  const [name, version] = [options.stream.definition.name, options.stream.definition.version];
+  await transaction.unsafe('SELECT pg_advisory_xact_lock_shared(hashtextextended($1, 0))', [applicationPublicStreamCommitScope(name, version)]);
+  const contextClause = options.contextDigest ? ' AND context_digest = $5' : '';
+  const parameters = [name, version, afterSequence, limit + 1, ...(options.contextDigest ? [options.contextDigest] : [])];
+  const [floorRows, rows] = await Promise.all([
+    transaction.unsafe('SELECT coalesce(max(deleted_through), 0) AS retention_floor FROM applik8s_public_stream_retention_floors WHERE contract_name = $1 AND contract_version = $2 AND context_digest = $3', [name, version, options.contextDigest ?? '']),
+    transaction.unsafe(`SELECT id, sequence, partition_key, recorded_at, context_digest, payload${options.includeTrustedContext ? ', envelope' : ''} FROM applik8s_public_stream_events WHERE contract_name = $1 AND contract_version = $2 AND sequence > $3${contextClause} ORDER BY sequence ASC LIMIT $4`, parameters),
+  ]);
+  const pageRows = rows.slice(0, limit);
+  const items = pageRows.map((row) => streamEnvelope<TPayload>(options.stream, row, options.includeTrustedContext === true));
+  return postgresReplayPage(options.stream, rows, pageRows, items, afterSequence, limit, floorRows);
+}
+
+async function readPostgresApplicationCatalogPage<TPayload extends object, TPrincipal extends ApplicationQueryPrincipal>(
+  options: PostgresApplicationStreamOptions<TPayload, TPrincipal>,
+  transaction: ApplicationPostgresTransactionSql,
+  afterSequence: number,
+  limit: number,
+): Promise<ApplicationReplayPage<TPayload>> {
+  const catalog = options.stream.catalog;
+  if (!catalog) throw new Error(`Stream ${options.stream.definition.id} is not an event-catalog selection.`);
+  for (const contract of catalog.sources) {
+    await transaction.unsafe('SELECT pg_advisory_xact_lock_shared(hashtextextended($1, 0))', [applicationPublicStreamCommitScope(contract.name, contract.version)]);
+  }
+  const selectedJson = JSON.stringify(catalog.sources.map(({ name, version }) => ({ name, version })));
+  const contextClause = options.contextDigest ? ' AND events.context_digest = $4' : '';
+  const parameters = [selectedJson, afterSequence, limit + 1, ...(options.contextDigest ? [options.contextDigest] : [])];
+  const [floorRows, rows] = await Promise.all([
+    transaction.unsafe(`SELECT coalesce(max(floors.deleted_through), 0) AS retention_floor
+FROM applik8s_public_stream_retention_floors floors
+WHERE EXISTS (SELECT 1 FROM jsonb_to_recordset($1::jsonb) AS selected(name text, version text) WHERE selected.name = floors.contract_name AND selected.version = floors.contract_version)
+  AND floors.context_digest = $2`, [selectedJson, options.contextDigest ?? '']),
+    transaction.unsafe(`SELECT events.id, events.sequence, events.contract_name, events.contract_version, events.partition_key, events.recorded_at, events.context_digest, events.payload${options.includeTrustedContext ? ', events.envelope' : ''}
+FROM applik8s_public_stream_events events
+WHERE EXISTS (SELECT 1 FROM jsonb_to_recordset($1::jsonb) AS selected(name text, version text) WHERE selected.name = events.contract_name AND selected.version = events.contract_version)
+  AND events.sequence > $2${contextClause}
+ORDER BY events.sequence ASC LIMIT $3`, parameters),
+  ]);
+  const pageRows = rows.slice(0, limit);
+  const hydrated = pageRows.map((row) => catalogStreamEnvelope<TPayload>(options.stream, row, options.includeTrustedContext === true));
+  const items = catalog.predicate ? hydrated.filter((event) => catalog.predicate?.(event.payload) === true) : hydrated;
+  return postgresReplayPage(options.stream, rows, pageRows, items, afterSequence, limit, floorRows);
+}
+
+function postgresReplayPage<TPayload extends object>(
+  stream: ApplicationStreamBinding<TPayload>,
+  rows: readonly Record<string, unknown>[],
+  pageRows: readonly Record<string, unknown>[],
+  items: readonly ApplicationStreamEnvelope<TPayload>[],
+  afterSequence: number,
+  limit: number,
+  floorRows: readonly Record<string, unknown>[],
+): ApplicationReplayPage<TPayload> {
+  const retentionFloor = Number(floorRows[0]?.retention_floor ?? 0);
+  if (!Number.isSafeInteger(retentionFloor) || retentionFloor < 0) throw new Error(`PostgreSQL returned an invalid ${stream.definition.id} retention floor.`);
+  return { items, nextSequence: pageRows.at(-1) ? Number(pageRows.at(-1)?.sequence) : afterSequence, exhausted: rows.length <= limit, retentionFloor };
 }
 
 /**
@@ -141,11 +209,32 @@ export class ApplicationStreamAuthorizationError extends Error {
 
 // typecast-boundary: normalizeSchema validates the opaque PostgreSQL JSON payload before it enters the stream envelope.
 function streamEnvelope<TPayload extends object>(stream: ApplicationStreamBinding<TPayload>, row: Record<string, unknown>, includeTrustedContext: boolean): ApplicationStreamEnvelope<TPayload> {
+  const rawPayload = postgresStreamJsonValue(row.payload);
+  return validatedStreamEnvelope(stream, row, includeTrustedContext, rawPayload);
+}
+
+function catalogStreamEnvelope<TPayload extends object>(stream: ApplicationStreamBinding<TPayload>, row: Record<string, unknown>, includeTrustedContext: boolean): ApplicationStreamEnvelope<TPayload> {
+  const rawPayload = postgresStreamJsonValue(row.payload);
+  const recordedAt = row.recorded_at instanceof Date ? row.recorded_at.toISOString() : String(row.recorded_at);
+  const contractName = typeof row.contract_name === 'string' ? row.contract_name : stream.definition.name;
+  const contractVersion = typeof row.contract_version === 'string' ? row.contract_version : stream.definition.version;
+  const selectedContract = stream.catalog?.sources.find((candidate) => candidate.name === contractName && candidate.version === contractVersion);
+  if (!selectedContract) throw new Error(`PostgreSQL returned an event outside ${stream.definition.id}'s pinned catalog revision.`);
+  return validatedStreamEnvelope(stream, row, includeTrustedContext, {
+    id: row.id,
+    contract: { id: selectedContract.id, name: contractName, version: contractVersion },
+    source: selectedContract.producer,
+    occurredAt: recordedAt,
+    recordedAt,
+    detail: rawPayload,
+  });
+}
+
+function validatedStreamEnvelope<TPayload extends object>(stream: ApplicationStreamBinding<TPayload>, row: Record<string, unknown>, includeTrustedContext: boolean, candidatePayload: unknown): ApplicationStreamEnvelope<TPayload> {
   const sequence = Number(row.sequence);
   const recordedAt = row.recorded_at instanceof Date ? row.recorded_at.toISOString() : String(row.recorded_at);
-  const rawPayload = postgresStreamJsonValue(row.payload);
-  if (typeof row.id !== 'string' || !Number.isSafeInteger(sequence) || sequence < 1 || typeof row.partition_key !== 'string' || !rawPayload || typeof rawPayload !== 'object' || Array.isArray(rawPayload)) throw new Error(`PostgreSQL returned an invalid ${stream.definition.id} outbox row.`);
-  const payload = normalizeSchema(stream.definition.payload, `${stream.definition.id}.payload`).validate(rawPayload as never);
+  if (typeof row.id !== 'string' || !Number.isSafeInteger(sequence) || sequence < 1 || typeof row.partition_key !== 'string' || !candidatePayload || typeof candidatePayload !== 'object' || Array.isArray(candidatePayload)) throw new Error(`PostgreSQL returned an invalid ${stream.definition.id} outbox row.`);
+  const payload = normalizeSchema(stream.definition.payload, `${stream.definition.id}.payload`).validate(candidatePayload as never);
   if (!payload.ok) throw new Error(`PostgreSQL returned an invalid ${stream.definition.id} payload: ${payload.error.message}`);
   const contextDigest = typeof row.context_digest === 'string' && row.context_digest.length > 0 ? row.context_digest : undefined;
   const durableContext = includeTrustedContext

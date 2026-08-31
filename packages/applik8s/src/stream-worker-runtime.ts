@@ -45,7 +45,7 @@ export type {
   ApplicationStreamDeliveryAdmitter,
 } from './stream-processor-runtime.js';
 export { createPostgresApplicationStreamProcessorStore, runApplicationStreamBatchProcessor, runApplicationStreamProcessor } from './stream-processor-runtime.js';
-export { createPostgresApplicationStream, enforcePostgresApplicationStreamRetention } from './stream-runtime-postgres.js';
+export { createPostgresApplicationCatalogStream, createPostgresApplicationStream, enforcePostgresApplicationStreamRetention } from './stream-runtime-postgres.js';
 
 /**
  * Rehydrates an inferred event emitter inside the generated worker's single

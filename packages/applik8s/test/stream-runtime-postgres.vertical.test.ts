@@ -1,12 +1,49 @@
 // typecast-file-boundary: PostgreSQL stream doubles return untyped rows that the production runtime must validate.
-import { app, createPostgresApplicationStream, enforcePostgresApplicationStreamRetention } from '@applik8s/applik8s';
-import { stream, type } from '@applik8s/applik8s/dsl';
+import { app, createPostgresApplicationCatalogStream, createPostgresApplicationStream, enforcePostgresApplicationStreamRetention } from '@applik8s/applik8s';
+import { event, stream, type } from '@applik8s/applik8s/dsl';
 import { createApplicationTelemetryEnvelopeV1 } from '@applik8s/core';
 import { describe, expect, test, vi } from 'vitest';
 import { testApplicationPrincipal } from '../../../test-support/application-principal.js';
 import { applicationRequestContextValues } from '../src/command-principal.js';
 
 describe('PostgreSQL replayable application stream', () => {
+  test('reads a pinned catalog selection and advances across filtered facts', async () => {
+    const application = app('catalog-runtime');
+    application.database.postgres('catalog', { schema: {} });
+    const Published = event('posts.catalog-published.v1', { payload: type({ postId: 'string', visible: 'boolean' }) });
+    const selection = application.events.of(Published).where((fact) => fact.detail.visible);
+    const unsafe = vi.fn(async (query: string) => query.includes('retention_floors')
+      ? [{ retention_floor: 0 }]
+      : query.includes('SELECT events.id')
+        ? [
+            { id: 'hidden', sequence: 11, contract_name: 'posts.catalog-published', contract_version: 'v1', partition_key: 'post-1', recorded_at: '2026-08-30T00:00:00.000Z', payload: { postId: 'post-1', visible: false } },
+            { id: 'visible', sequence: 12, contract_name: 'posts.catalog-published', contract_version: 'v1', partition_key: 'post-2', recorded_at: '2026-08-30T00:00:01.000Z', payload: { postId: 'post-2', visible: true } },
+          ]
+        : []);
+    const source = createPostgresApplicationCatalogStream({
+      stream: selection,
+      sql: transactionalSql(unsafe),
+      principal: testApplicationPrincipal('applik8s:processor:audit'),
+      internalConsumer: { kind: 'processor', name: 'audit' },
+    });
+
+    await expect(source.read(0, 10)).resolves.toMatchObject({
+      items: [{
+        id: 'visible',
+        sequence: 12,
+        payload: {
+          id: 'visible',
+          contract: { id: 'posts.catalog-published.v1', name: 'posts.catalog-published', version: 'v1' },
+          source: { kind: 'event', id: 'posts.catalog-published.v1' },
+          detail: { postId: 'post-2', visible: true },
+        },
+      }],
+      nextSequence: 12,
+      exhausted: true,
+    });
+    expect(unsafe).toHaveBeenCalledWith(expect.stringContaining('jsonb_to_recordset'), expect.any(Array));
+  });
+
   test('reads a bounded, context-scoped, schema-validated outbox page', async () => {
     const catalog = app('stream-runtime');
     const database = catalog.database.postgres('catalog', { schema: {} });

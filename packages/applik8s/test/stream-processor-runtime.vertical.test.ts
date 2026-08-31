@@ -883,4 +883,49 @@ describe('durable replay stream processor runtime', () => {
     expect(handledAdmission).toBe(decodedAdmission);
     expect(persisted.pending()).toBeUndefined();
   });
+
+  it('advances across empty filtered pages without inventing a frozen batch', async () => {
+    const persisted = batchStore();
+    const reads: number[] = [];
+    const source = {
+      async read(after: number): Promise<ApplicationReplayPage<{ postId: string }>> {
+        reads.push(after);
+        if (after === 0) {
+          return { items: [], nextSequence: 4, exhausted: false, retentionFloor: 0 };
+        }
+        return {
+          items: [{ ...envelope(5), partitionKey: 'author-a' }],
+          nextSequence: 5,
+          exhausted: true,
+          retentionFloor: 0,
+        };
+      },
+    };
+    const handled: string[] = [];
+
+    const result = await runApplicationStreamBatchProcessor({
+      processor: 'filtered-batch',
+      streamName: 'catalog.v1',
+      source,
+      store: persisted.value,
+      admit: admitStreamDelivery,
+      handle: async (batch) => {
+        handled.push(...batch.events.map((event) => event.value.postId));
+      },
+      concurrency: 1,
+      retry: { maxAttempts: 1, initialDelayMs: 1, maxDelayMs: 1, factor: 2 },
+      failure: 'pause',
+      timeoutMs: 1_000,
+      maxInputBytes: 10_000,
+      maxItems: 10,
+      maxBytes: 5_000,
+      maxBatches: 2,
+    });
+
+    expect(reads).toEqual([0, 4]);
+    expect(handled).toEqual(['post-5']);
+    expect(result).toEqual({ processed: 1, deadLettered: 0, checkpoint: 5, exhausted: true });
+    expect(persisted.checkpoint()).toBe(5);
+    expect(persisted.pending()).toBeUndefined();
+  });
 });
