@@ -8,6 +8,7 @@ import {
   ApplicationJobRunError,
   createApplicationJobBinding,
   createDeterministicApplicationJobRuntime,
+  installApplicationJobRuntimeResolver,
 } from '../src/application-finite-jobs.js';
 import { JobRuntime } from '../src/application-providers.js';
 
@@ -71,7 +72,7 @@ describe('application finite Job runtime', () => {
     expect(graph ? validateApplicationGraphCompatibilityPolicy(graph) : []).toEqual([]);
   });
 
-  test('selects maintained JobRuntime implementations without changing Job handles', () => {
+  test('selects maintained JobRuntime implementations and fails closed without their adapter', async () => {
     const application = app('kubernetes-finite-jobs', {
       spec: type({}),
       status: type({ ready: 'boolean' }),
@@ -82,7 +83,7 @@ describe('application finite Job runtime', () => {
       maximumDuration: '30m',
       resultRetentionSeconds: 86_400,
     }));
-    application.job(
+    const job = application.job(
       'search.rebuild.v1',
       { input: Input, output: Output },
       {},
@@ -103,6 +104,16 @@ describe('application finite Job runtime', () => {
     ]));
     expect(() => JobRuntime.local({ maximumConcurrency: 0 })).toThrow('maximumConcurrency');
     expect(() => JobRuntime.aws({ account: {}, maximumDuration: '' })).toThrow('maximumDuration');
+    await expect(job({ value: 2 })).rejects.toThrow('No JobRuntime adapter is installed');
+
+    const runtime = createDeterministicApplicationJobRuntime();
+    const uninstall = installApplicationJobRuntimeResolver((providerNodeId) =>
+      providerNodeId === 'provider.job-runtime' ? runtime : undefined);
+    try {
+      await expect(job({ value: 2 })).resolves.toEqual({ doubled: 4 });
+    } finally {
+      uninstall();
+    }
   });
 
   test('keeps semantic Jobs distinct from explicit Kubernetes workload Jobs', () => {

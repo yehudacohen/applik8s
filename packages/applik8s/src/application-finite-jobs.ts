@@ -175,11 +175,15 @@ export interface DeterministicApplicationJobRuntimeOptions {
   readonly id?: () => string;
 }
 
-const applicationJobRuntimeResolvers: Array<() => ApplicationJobRuntime | undefined> = [];
+export type ApplicationJobRuntimeResolver = (
+  providerNodeId: string,
+) => ApplicationJobRuntime | undefined;
+
+const applicationJobRuntimeResolvers: ApplicationJobRuntimeResolver[] = [];
 let defaultApplicationJobRuntime: ApplicationJobRuntime | undefined;
 
 export function installApplicationJobRuntimeResolver(
-  resolver: () => ApplicationJobRuntime | undefined,
+  resolver: ApplicationJobRuntimeResolver,
 ): () => void {
   applicationJobRuntimeResolvers.push(resolver);
   return () => {
@@ -188,10 +192,18 @@ export function installApplicationJobRuntimeResolver(
   };
 }
 
-export function applicationJobRuntime(): ApplicationJobRuntime {
+export function applicationJobRuntime(
+  providerNodeId = applicationProviderGraphNodeId('JobRuntime'),
+  options: { readonly allowLocalFallback?: boolean } = {},
+): ApplicationJobRuntime {
   for (const resolver of [...applicationJobRuntimeResolvers].reverse()) {
-    const runtime = resolver();
+    const runtime = resolver(providerNodeId);
     if (runtime) return runtime;
+  }
+  if (options.allowLocalFallback === false) {
+    throw new Error(
+      `No JobRuntime adapter is installed for ${providerNodeId}. Compile the application for its selected target or install a matching runtime resolver.`,
+    );
   }
   defaultApplicationJobRuntime ??= createDeterministicApplicationJobRuntime();
   return defaultApplicationJobRuntime;
@@ -540,6 +552,11 @@ export function registerApplicationJob<
     : undefined;
   const nodeId = `job.${kubernetesNameSegment(id)}`;
   const providerNodeId = applicationProviderGraphNodeId('JobRuntime');
+  const selectedRuntime = state.graphNodes.find(
+    (node) => node.kind === 'provider' && node.id === providerNodeId,
+  );
+  const allowLocalFallback = selectedRuntime?.kind === 'provider'
+    && selectedRuntime.implementation === 'local-job-runtime';
   addApplicationGraphNode(state, {
     id: nodeId,
     kind: 'job',
@@ -592,7 +609,18 @@ export function registerApplicationJob<
       ambiguous: `Application Job ${id} resolves more than one JobRuntime provider. Bind exactly one implementation in the selected application profile.`,
     },
   });
-  return createApplicationJobBinding({ id, contract, options, handler }, applicationJobRuntime());
+  const resolvedRuntime: ApplicationJobRuntime = {
+    protocol: applicationJobRuntimeProtocol,
+    start: (definition, input, invocation) => applicationJobRuntime(
+      providerNodeId,
+      { allowLocalFallback },
+    ).start(definition, input, invocation),
+    attach: (job, reference) => applicationJobRuntime(
+      providerNodeId,
+      { allowLocalFallback },
+    ).attach(job, reference),
+  };
+  return createApplicationJobBinding({ id, contract, options, handler }, resolvedRuntime);
 }
 
 function localJobAdmission(
