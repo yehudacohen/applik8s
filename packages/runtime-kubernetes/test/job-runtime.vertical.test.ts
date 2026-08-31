@@ -157,7 +157,7 @@ describe('Kubernetes finite Job dispatcher', () => {
     await worker.close();
   });
 
-  test('converges a digest-pinned, non-retrying Job for one durable run', async () => {
+  test('converges a digest-pinned, bounded-retrying Job for one durable run', async () => {
     const fake = fakeBatchApi();
     const run = storedRun();
     const dispatcher = await createKubernetesApplicationJobDispatcher({
@@ -175,9 +175,11 @@ describe('Kubernetes finite Job dispatcher', () => {
       resource: { namespace: 'reports-system', uid: 'uid-run-1' },
       specDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/u),
     });
+    const existing = await dispatcher.dispatch(run);
+    expect(existing).toMatchObject({ state: 'existing', specDigest: created.specDigest });
     expect(fake.live()).toMatchObject({
       spec: {
-        backoffLimit: 0,
+        backoffLimit: 1,
         activeDeadlineSeconds: 1_800,
         template: {
           spec: {
@@ -195,7 +197,41 @@ describe('Kubernetes finite Job dispatcher', () => {
         },
       },
     });
-    await expect(dispatcher.dispatch(run)).resolves.toMatchObject({ state: 'existing', specDigest: created.specDigest });
+  });
+
+  test('projects the logical attempt budget into bounded infrastructure replacement', async () => {
+    const fake = fakeBatchApi();
+    const dispatcher = await createKubernetesApplicationJobDispatcher({
+      applicationId: 'reports',
+      deploymentId: 'production',
+      namespace: 'reports-system',
+      image,
+      api: fake.api,
+    });
+    await dispatcher.dispatch(storedRun({ maximumAttempts: 4 }));
+    expect(fake.live()?.spec?.backoffLimit).toBe(3);
+  });
+
+  test('reports an active replacement attempt as running despite prior pod failure', async () => {
+    const fake = fakeBatchApi();
+    const run = storedRun({ maximumAttempts: 2 });
+    const dispatcher = await createKubernetesApplicationJobDispatcher({
+      applicationId: 'reports',
+      deploymentId: 'production',
+      namespace: 'reports-system',
+      image,
+      api: fake.api,
+    });
+    await dispatcher.dispatch(run);
+    fake.replace({
+      ...fake.live(),
+      status: { active: 1, failed: 1, succeeded: 0 },
+    });
+    await expect(dispatcher.observe(run)).resolves.toMatchObject({
+      phase: 'running',
+      active: 1,
+      failed: 1,
+    });
   });
 
   test('refuses to adopt a colliding or drifted Job', async () => {

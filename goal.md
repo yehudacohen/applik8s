@@ -88,8 +88,16 @@ out-of-order completion, authority-conflict rejection, and stale-fence
 rejection. PostgreSQL is truthfully the only maintained repeatable-snapshot
 lowering; unqualified consistency modes fail closed.
 
-Full Kubernetes Job interruption qualification and AWS finite execution remain
-open. The managed-model slice now freezes and implements the public
+Kubernetes Job interruption now has deployed-provider evidence for the physical
+recovery boundary: the generated `batch/v1` Job projects the logical attempt
+budget into a bounded `backoffLimit`, a killed OrbStack worker Pod is replaced
+under the same digest-pinned Job/run identity, active replacement attempts do
+not inherit a false terminal phase from historical Pod failures, and UID-fenced
+teardown removes the workload. The provider-neutral durable-store suite
+separately proves lease expiry, reattachment, stale-attempt fencing, and one
+terminal result. A single live PostgreSQL-backed run that crosses both seams in
+one process-loss scenario remains the strictest outstanding Job evidence, and
+AWS finite execution remains open. The managed-model slice now freezes and implements the public
 `application.model(table).managed({ status })` enrichment, qualified
 `Model.store`, `Model.on.reconcile`, and `Model.on.finalize` surface; persists
 that declaration through preview/materialization replay; serializes its exact

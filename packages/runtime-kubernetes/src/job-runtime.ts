@@ -352,10 +352,10 @@ export async function createKubernetesApplicationJobDispatcher(
           ? 'terminating'
           : succeeded > 0
             ? 'succeeded'
-            : failed > 0
-              ? 'failed'
-              : active > 0
-                ? 'running'
+            : active > 0
+              ? 'running'
+              : failed > 0
+                ? 'failed'
                 : 'pending',
         active,
         succeeded,
@@ -403,7 +403,12 @@ function kubernetesJob(
       },
     },
     spec: {
-      backoffLimit: 0,
+      // Kubernetes restarts only infrastructure-lost worker Pods. The durable
+      // store remains authoritative for logical attempts, leases, fencing,
+      // authored failures, and terminal uniqueness. Giving the Job the same
+      // bounded retry budget lets a replacement Pod reattach to the exact run
+      // after the previous worker lease expires without creating a new run.
+      backoffLimit: Math.max(0, run.maximumAttempts - 1),
       ...(deadlineSeconds ? { activeDeadlineSeconds: deadlineSeconds } : {}),
       ...(options.ttlSecondsAfterFinished === undefined
         ? { ttlSecondsAfterFinished: 3_600 }

@@ -57,15 +57,62 @@ describeLive('v0.9 Kubernetes finite Job provider', () => {
     });
     await waitFor(async () => await dispatcher.observe(run) === undefined ? true : undefined, 60_000);
   }, 150_000);
+
+  test('replaces an interrupted worker pod within the logical attempt budget', async () => {
+    const kubeConfig = new KubeConfig();
+    kubeConfig.loadFromDefault();
+    kubeConfig.setCurrentContext(process.env.APPLIK8S_E2E_CONTEXT ?? 'orbstack');
+    const run = liveRun({
+      runId: 'interrupted-run',
+      maximumAttempts: 2,
+    });
+    const dispatcher = await createKubernetesApplicationJobDispatcher({
+      applicationId: 'v09-live',
+      deploymentId: 'orbstack',
+      namespace,
+      image,
+      kubeConfig,
+      workerCommand: ['sh', '-c'],
+      workerArguments: ['sleep 300'],
+      ttlSecondsAfterFinished: 300,
+    });
+    const created = await dispatcher.dispatch(run);
+    const firstPod = await waitFor(
+      () => workerPodFor(created.resource.name),
+      60_000,
+    );
+    await kubectl([
+      'delete',
+      `pod/${firstPod.name}`,
+      '--namespace',
+      namespace,
+      '--wait=true',
+    ]);
+    const replacement = await waitFor(async () => {
+      const pod = await workerPodFor(created.resource.name);
+      return pod && pod.uid !== firstPod.uid ? pod : undefined;
+    }, 90_000);
+    expect(replacement.uid).not.toBe(firstPod.uid);
+    await expect(dispatcher.observe(run)).resolves.toMatchObject({
+      phase: 'running',
+      resource: { uid: created.resource.uid },
+    });
+    await dispatcher.cancel(run);
+    await waitFor(async () => await dispatcher.observe(run) === undefined ? true : undefined, 60_000);
+  }, 180_000);
 });
 
-function liveRun(): ApplicationJobStoredRun {
+function liveRun(options: {
+  readonly runId?: string;
+  readonly maximumAttempts?: number;
+} = {}): ApplicationJobStoredRun {
   const admittedAt = new Date().toISOString();
+  const runId = options.runId ?? 'live-run';
   return {
     reference: {
       protocol: 'applik8s.jobRuntime/v1alpha1',
       job: 'live.echo.v1',
-      runId: 'live-run',
+      runId,
       admittedAt,
     },
     input: { message: 'live' },
@@ -98,11 +145,36 @@ function liveRun(): ApplicationJobStoredRun {
     events: defaultApplicationJobLifecycleFactContracts('live.echo.v1'),
     phase: 'queued',
     attempt: 0,
-    maximumAttempts: 1,
+    maximumAttempts: options.maximumAttempts ?? 1,
     admittedAt,
     availableAt: admittedAt,
     deadline: new Date(Date.parse(admittedAt) + 120_000).toISOString(),
   };
+}
+
+async function workerPodFor(jobName: string): Promise<{
+  readonly name: string;
+  readonly uid: string;
+} | undefined> {
+  const response = await kubectl([
+    'get',
+    'pods',
+    '--namespace',
+    namespace,
+    '--selector',
+    `job-name=${jobName}`,
+    '--output=json',
+  ]);
+  const payload = JSON.parse(response.stdout) as {
+    readonly items?: readonly {
+      readonly metadata?: { readonly name?: string; readonly uid?: string; readonly deletionTimestamp?: string };
+    }[];
+  };
+  const pod = payload.items?.find(({ metadata }) =>
+    metadata?.name && metadata.uid && !metadata.deletionTimestamp);
+  return pod?.metadata?.name && pod.metadata.uid
+    ? { name: pod.metadata.name, uid: pod.metadata.uid }
+    : undefined;
 }
 
 async function waitFor<T>(read: () => Promise<T | undefined>, timeoutMs: number): Promise<T> {
