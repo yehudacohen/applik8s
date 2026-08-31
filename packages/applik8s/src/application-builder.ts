@@ -81,6 +81,7 @@ import {
 } from './application-modules.js';
 import {
   type ApplicationEventCatalog,
+  type ApplicationEventProducer,
   type ApplicationEventCatalogSource,
   type ApplicationEventSelectionBinding,
   applicationCatalogSourceOptions,
@@ -116,7 +117,7 @@ import {
 } from './application-profiles.js';
 import { createApplicationQualifiedProviderBinding } from './application-provider-handle.js';
 import type { ApplicationAnalyticalDatabaseProvider, ApplicationDefaults, ApplicationDefaultsBinding, ApplicationHostBinding, ApplicationHostProvider, ApplicationHttpExposureProvider, ApplicationIndexBackend, ApplicationPostgresTransactionalDatabaseOptions, ApplicationProviderBinding, ApplicationProviderDeploymentTarget, ApplicationProviderQualification, ApplicationProviderState, ApplicationProviderToken, ApplicationQualifiedProviderToken, ApplicationTargetProviderSelectionValue, ApplicationTransactionalDatabaseProvider, ApplicationValkeyIndexBackend } from './application-providers.js';
-import { ActorRuntime, ApplicationHost, applicationAnalyticalDatabaseImplementation, applicationCallableProviderRuntimeBinding, applicationCertificateImplementation, applicationDnsPublicationImplementation, applicationEventLogImplementation, applicationHostBinding, applicationHttpExposureImplementation, applicationIndexBackend, applicationObjectStorageImplementation, applicationPostgresClusterSpec, applicationProviderQualificationFor, applicationProviderSelectionFor, applicationProviderSelectionSatisfies, applicationProviderTokenName, applicationSearchProviderImplementation, applicationTargetProviderSelectionFor, applicationTransactionalDatabaseImplementation, applyApplicationProvider, defaultApplicationEventLogProvider, defaultApplicationIndexBackend, defaultApplicationIndexProvider, defaultApplicationProviders, IndexStore, isApplicationProviderSelection, isApplicationQualifiedProviderToken, isValkeyIndexDefault, TransactionalDatabase } from './application-providers.js';
+import { ActorRuntime, ApplicationHost, applicationAnalyticalDatabaseImplementation, applicationCallableProviderRuntimeBinding, applicationCertificateImplementation, applicationDnsPublicationImplementation, applicationEventLogImplementation, applicationHostBinding, applicationHttpExposureImplementation, applicationIndexBackend, applicationObjectStorageImplementation, applicationPostgresClusterSpec, applicationProviderQualificationFor, applicationProviderSelectionFor, applicationProviderSelectionSatisfies, applicationProviderTokenName, applicationSearchProviderImplementation, applicationTargetProviderSelectionFor, applicationTransactionalDatabaseImplementation, applyApplicationProvider, defaultApplicationEventLogProvider, defaultApplicationIndexBackend, defaultApplicationIndexProvider, defaultApplicationProviders, IndexStore, isApplicationJobRuntimeProvider, isApplicationProviderSelection, isApplicationQualifiedProviderToken, isValkeyIndexDefault, TransactionalDatabase } from './application-providers.js';
 import { type ApplicationCallableQueryBinding, type ApplicationQueryOptions, type ApplicationQueryPrincipal, type ApplicationQuerySourceBinding, applicationQueryBindingForOperation, registerApplicationModelView, registerApplicationQuery } from './application-queries.js';
 import { type ApplicationAnalyticalProjectionBinding, type ApplicationAnalyticalProjectionOptions, type ApplicationGatewayBinding, type ApplicationGatewayOptions, type ApplicationOnlineProjectionBinding, type ApplicationOnlineProjectionDraft, type ApplicationOnlineProjectionOptions, type ApplicationOnlineProjectionRetentionPolicy, type ApplicationOnlineProjectionTransform, type ApplicationProjectionOptions, type ApplicationProjectionOutput, type ApplicationProjectionRebuildModel, type ApplicationProjectionRebuildScope, type ApplicationProjectionTransform, type ApplicationStreamBatchHandler, type ApplicationStreamBatchOptions, type ApplicationStreamBinding, type ApplicationStreamOptions, type ApplicationStreamProcessHandler, type ApplicationStreamProcessOptions, type ApplicationSubscriptionBinding, type ApplicationSubscriptionOptions, applicationReactiveNodeId, registerApplicationGateway, registerApplicationProjection, registerApplicationStream, registerApplicationStreamBatchProcessor, registerApplicationStreamProcessor, registerApplicationSubscription } from './application-reactive.js';
 import type { ApplicationRouteSourceLocation, ApplicationServerRouteSourceAnalysis, SerializedApplicationServerRouteWithDependencies } from './application-route-source.js';
@@ -919,6 +920,65 @@ interface ApplicationContext {
   finalize(): void;
 }
 
+function applicationJobCatalogDatabase(
+  state: ApplicationScopeState,
+  jobId: string,
+): ApplicationDatabaseBinding {
+  const selectedValue = state.providers.extensions?.['JobRuntime@v1alpha1']
+    ?? defaultApplicationProviders.JobRuntime;
+  const selected = selectedValue
+    && typeof selectedValue === 'object'
+    && Reflect.get(selectedValue, 'kind') === 'applicationProvider'
+      ? Reflect.get(selectedValue, 'implementation')
+      : selectedValue;
+  if (!isApplicationJobRuntimeProvider(selected)) {
+    throw new Error(`Application Job ${jobId} cannot resolve its selected JobRuntime lifecycle-fact authority.`);
+  }
+  if (selected.kind === 'local-job-runtime') {
+    if (selected.persistence !== 'application-database') {
+      throw new Error(
+        `Application Job ${jobId} lifecycle facts require JobRuntime.local({ persistence: 'application-database' }) or a maintained durable JobRuntime.`,
+      );
+    }
+    return soleApplicationDatabase(state, `Application Job ${jobId} lifecycle facts`);
+  }
+  const resultsValue = Reflect.get(selected.results, 'kind') === 'applicationProvider'
+    ? Reflect.get(selected.results, 'implementation')
+    : selected.results;
+  if (!resultsValue || typeof resultsValue !== 'object' || Reflect.get(resultsValue, 'kind') !== 'postgres-job-result-store') {
+    throw new Error(`Application Job ${jobId} selected a JobRuntime without a PostgreSQL lifecycle-fact authority.`);
+  }
+  const databaseValue = Reflect.get(resultsValue, 'database');
+  const databaseProvider = applicationTransactionalDatabaseImplementation(databaseValue);
+  if (!databaseProvider) {
+    throw new Error(`Application Job ${jobId} selected an invalid PostgreSQL Job result-store database.`);
+  }
+  const matches = [...state.databases.values()].filter((database) => database.provider === databaseProvider);
+  if (matches.length > 1) {
+    throw new Error(
+      `Application Job ${jobId} lifecycle facts found more than one binding for the selected JobResultStore PostgreSQL authority.`,
+    );
+  }
+  if (matches[0]) return matches[0];
+  const baseName = kubernetesNameSegment(
+    `job-results-${databaseProvider.database ?? databaseProvider.name ?? 'postgres'}`,
+  );
+  let name = baseName;
+  let suffix = 2;
+  while (state.databases.has(name)) {
+    name = `${baseName}-${suffix}`;
+    suffix += 1;
+  }
+  const binding = applicationDatabaseHandle({
+    kind: 'applicationDatabase',
+    name,
+    provider: databaseProvider,
+    schema: {},
+  });
+  state.databases.set(name, binding);
+  return binding;
+}
+
 interface ApplicationGeneratedWorkloadBinding {
   readonly deployment: Enhanced<ApplicationDeploymentSpecProjection, ApplicationDeploymentStatusProjection>;
 }
@@ -1422,6 +1482,7 @@ function createKubernetesApplicationBuilder<TSpec extends KroCompatibleType = Re
   const previewContext = createApplicationContext(definition, invalidate);
   const preview = previewContext.scope;
   const replays: ApplicationBuilderReplay[] = [];
+  const replayedEventProducers = new WeakMap<object, ApplicationEventProducer>();
   const behaviorReplays: ApplicationBuilderReplay[] = [];
   const terminalReplays: ApplicationBuilderReplay[] = [];
   const inferredGatewayReplays: ((state: ApplicationScopeState) => void)[] = [];
@@ -1838,7 +1899,12 @@ function createKubernetesApplicationBuilder<TSpec extends KroCompatibleType = Re
     from(...producers) {
       return wrapEventSelection(
         preview.events.from(...producers),
-        (scope) => scope.events.from(...producers),
+        (scope) => {
+          // typecast: replay preserves the producer tuple's public event types;
+          // only its declaration-time object identities are translated.
+          const replayed = producers.map((producer) => replayedEventProducers.get(producer) ?? producer) as unknown as typeof producers;
+          return scope.events.from(...replayed);
+        },
       );
     },
     all() {
@@ -2806,7 +2872,8 @@ function createKubernetesApplicationBuilder<TSpec extends KroCompatibleType = Re
     job: ((jobId: `${string}.v${number}`, jobContract: ApplicationJobContract<object, object, object, object>, jobOptions: ApplicationJobOptions<object>, handler: ApplicationJobHandler<object, object, object, object>) => {
       const binding = preview.job(jobId, jobContract, jobOptions, handler);
       replays.push((scope) => {
-        scope.job(jobId, jobContract, jobOptions, handler);
+        const replayed = scope.job(jobId, jobContract, jobOptions, handler);
+        replayedEventProducers.set(binding, replayed);
       });
       invalidate();
       return binding;
@@ -4439,6 +4506,44 @@ function createApplicationContext<TSpec extends KroCompatibleType, TStatus exten
       return binding as unknown as ApplicationEventSelectionBinding<typeof input extends { definition: StreamDefinition<infer TEvent> } ? TEvent : never>;
     },
   });
+  const registerScopedJob = <
+    TInput extends object,
+    TOutput extends object,
+    TProgress extends object = Record<string, never>,
+    TError extends object = never,
+  >(
+    jobId: `${string}.v${number}`,
+    jobContract: ApplicationJobContract<TInput, TOutput, TProgress, TError>,
+    jobOptions: ApplicationJobOptions<TInput>,
+    handler: ApplicationJobHandler<TInput, TOutput, TProgress, TError>,
+  ): ApplicationJobBinding<TInput, TOutput, TProgress, TError> => {
+    const binding = registerApplicationJob(state, jobId, jobContract, jobOptions, handler);
+    const jobNodeId = `job.${kubernetesNameSegment(jobId)}`;
+    const catalogDatabase = () => applicationJobCatalogDatabase(state, jobId);
+    const sources = Object.values(binding.events).map((definition) => {
+      let stream: ApplicationStreamBinding<object> | undefined;
+      const source: ApplicationEventCatalogSource = {
+        definition: definition as EventDefinition<object>,
+        get database() { return catalogDatabase(); },
+        producer: { kind: 'job', id: jobId },
+        stream() {
+          if (!stream) {
+            stream = registerScopedStream(source.definition, applicationCatalogSourceOptions(source));
+            addApplicationGraphEdge(state, {
+              from: { nodeId: jobNodeId },
+              to: { nodeId: applicationReactiveNodeId('stream', source.definition.id) },
+              relationship: 'emits',
+            });
+          }
+          return stream;
+        },
+      };
+      bindApplicationEventCatalogSource(eventCatalogRegistry, source);
+      return source;
+    });
+    bindApplicationEventProducer(eventCatalogRegistry, binding, sources);
+    return binding;
+  };
   const scope: KubernetesApplicationScope = {
     // typecast: app.api is the application-context name for the same generated HTTP workload registrar as app.server.
     api: server as ApplicationServerRegistrar & Record<string, ApplicationServerBinding>,
@@ -4774,8 +4879,7 @@ function createApplicationContext<TSpec extends KroCompatibleType, TStatus exten
     expose(name, options) {
       return emitApplicationExposure(state, name, options);
     },
-    job: ((jobId: `${string}.v${number}`, jobContract: ApplicationJobContract<object, object, object, object>, jobOptions: ApplicationJobOptions<object>, handler: ApplicationJobHandler<object, object, object, object>) =>
-      registerApplicationJob(state, jobId, jobContract, jobOptions, handler)) as ApplicationJobRegistrar,
+    job: registerScopedJob as ApplicationJobRegistrar,
     workload: Object.freeze({
       job(name: string, options?: ApplicationWorkloadJobOptions) {
         return emitApplicationGeneratedJob(state, name, options ?? {}, undefined, applicationBindingPlan);

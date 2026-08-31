@@ -7,7 +7,7 @@ import {
   createDeterministicApplicationJobRuntime,
 } from '../src/application-finite-jobs.js';
 import { createApplicationJobControllerHandler } from '../src/application-job-controller-runtime.js';
-import type { ApplicationJobStore, ApplicationJobStoredRun } from '../src/application-job-store.js';
+import { defaultApplicationJobLifecycleFactContracts, type ApplicationJobStore, type ApplicationJobStoredRun } from '../src/application-job-store.js';
 
 const Input = type({ value: 'number.integer' });
 const Output = type({ doubled: 'number.integer' });
@@ -29,6 +29,7 @@ describe('application Job private controller', () => {
       input: { value: 4 },
       inputDigest: 'sha256:test',
       admission: admission(),
+      events: defaultApplicationJobLifecycleFactContracts(definition.id),
       phase: 'terminal',
       attempt: 1,
       maximumAttempts: 1,

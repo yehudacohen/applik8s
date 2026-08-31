@@ -23,6 +23,7 @@ import {
   type ApplicationJobRuntime,
   type ApplicationJobTerminalOutcome,
   applicationJobRuntimeProtocol,
+  applicationJobLifecycleEvents,
 } from './application-finite-jobs.js';
 import {
   ApplicationJobLeaseLostError,
@@ -384,10 +385,17 @@ export function createDurableApplicationJobRuntime(
         ? parseApplicationScheduleDuration(definition.options.timeout)
         : undefined;
       const reference = createApplicationJobReference(definition.id, admittedAt, id());
+      const lifecycleEvents = definition.events
+        ?? applicationJobLifecycleEvents(definition.id, definition.contract);
       const result = await store.admit({
         reference,
         input,
         admission,
+        events: Object.fromEntries(Object.entries(lifecycleEvents).map(([kind, fact]) => [kind, {
+          id: fact.id,
+          name: fact.name,
+          version: fact.version,
+        }])) as import('./application-job-store.js').ApplicationJobLifecycleFactContracts,
         maximumAttempts: (definition.options.retries ?? 0) + 1,
         availableAt: admittedAt,
         ...(timeout ? { deadline: new Date(Date.parse(admittedAt) + timeout * 1_000).toISOString() } : {}),

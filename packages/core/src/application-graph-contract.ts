@@ -1516,6 +1516,10 @@ export interface ApplicationJobNode extends ApplicationGraphNodeBase<'job'> {
     readonly error?: ApplicationMessageContractSchema;
   };
   readonly handlerSource: string;
+  readonly events: Readonly<Record<'started' | 'progressed' | 'succeeded' | 'failed' | 'cancelled' | 'timedOut', {
+    readonly id: string;
+    readonly contract: ApplicationMessageContractSchema;
+  }>>;
   readonly handlerDependencies?: { readonly source: string; readonly resolveDir: string };
   readonly sourceLocation?: SourceLocation;
   readonly retry: {
@@ -3780,6 +3784,12 @@ function applicationFiniteJobNodeStructureDiagnostics(node: ApplicationJobNode):
     diagnostics.push(applicationGraphStructureDiagnostic(`Application Job ${node.id} must retain a stable versioned contract identity.`));
   }
   if (!node.handlerSource.trim()) diagnostics.push(applicationGraphStructureDiagnostic(`Application Job ${node.id} must retain its managed closure source.`));
+  for (const name of ['started', 'progressed', 'succeeded', 'failed', 'cancelled', 'timedOut'] as const) {
+    const fact = node.events[name];
+    if (!fact?.id.trim() || fact.contract.kind !== 'declared') {
+      diagnostics.push(applicationGraphStructureDiagnostic(`Application Job ${node.id} must declare its ${name} lifecycle fact contract.`));
+    }
+  }
   if (!Number.isSafeInteger(node.retry.maxAttempts) || node.retry.maxAttempts < 1 || node.retry.wholeAttempt !== true) {
     diagnostics.push(applicationGraphStructureDiagnostic(`Application Job ${node.id} must declare a positive whole-attempt retry budget.`));
   }

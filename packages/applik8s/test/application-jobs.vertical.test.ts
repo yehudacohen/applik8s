@@ -40,6 +40,8 @@ describe('application finite Job runtime', () => {
       spec: type({}),
       status: type({ ready: 'boolean' }),
     });
+    application.database.postgres('catalog', { schema: {} });
+    application.provide(JobRuntime, JobRuntime.local({ persistence: 'application-database' }));
     const job = application.job(
       'numbers.double.v1',
       { input: Input, output: Output, progress: Progress, error: Failure },
@@ -54,6 +56,9 @@ describe('application finite Job runtime', () => {
         return { doubled: input.value * 2 };
       },
     );
+    application.events.from(job).onEvent(async function observeJobFacts(fact) {
+      expect(fact.source).toEqual({ kind: 'job', id: 'numbers.double.v1' });
+    });
 
     await expect(job({ value: 9 })).resolves.toEqual({ doubled: 18 });
     const graph = applicationGraphFor(application.composition);
@@ -61,6 +66,10 @@ describe('application finite Job runtime', () => {
       expect.objectContaining({
         kind: 'job',
         contract: expect.objectContaining({ name: 'numbers.double', version: 'v1' }),
+        events: expect.objectContaining({
+          succeeded: expect.objectContaining({ id: 'jobs.numbers.double.succeeded.v1' }),
+          timedOut: expect.objectContaining({ id: 'jobs.numbers.double.timedOut.v1' }),
+        }),
         retry: { maxAttempts: 3, wholeAttempt: true },
         executionDeadlineSeconds: 30,
         idempotency: expect.objectContaining({
@@ -81,6 +90,11 @@ describe('application finite Job runtime', () => {
       }),
     ]));
     expect(graph?.compatibility.experimentalSurfaces).toContain('app.job');
+    expect(job.events.succeeded.id).toBe('jobs.numbers.double.succeeded.v1');
+    expect(graph?.nodes.filter((node) => node.kind === 'stream' && node.name.startsWith('jobs.numbers.double.'))).toHaveLength(6);
+    expect(graph?.edges).toEqual(expect.arrayContaining([
+      expect.objectContaining({ from: { nodeId: 'job.numbers.double.v1' }, relationship: 'emits' }),
+    ]));
     expect(graph?.nodes).toEqual(expect.arrayContaining([
       expect.objectContaining({
         kind: 'provider',

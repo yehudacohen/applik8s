@@ -14,6 +14,30 @@ import type {
 export const applicationJobStoreProtocol: 'applik8s.jobStore/v1alpha1' = 'applik8s.jobStore/v1alpha1';
 
 export type ApplicationJobStorePhase = 'queued' | 'running' | 'terminal';
+export type ApplicationJobLifecycleFactKind = 'started' | 'progressed' | 'succeeded' | 'failed' | 'cancelled' | 'timedOut';
+
+export interface ApplicationJobLifecycleFactContract {
+  readonly id: string;
+  readonly name: string;
+  readonly version: string;
+}
+
+export type ApplicationJobLifecycleFactContracts = Readonly<Record<
+  ApplicationJobLifecycleFactKind,
+  ApplicationJobLifecycleFactContract
+>>;
+
+export interface ApplicationJobStoredFact {
+  readonly id: string;
+  readonly kind: ApplicationJobLifecycleFactKind;
+  readonly contract: ApplicationJobLifecycleFactContract;
+  readonly run: ApplicationJobReference;
+  readonly partitionKey: string;
+  readonly payload: object;
+  readonly envelope: object;
+  readonly contextDigest: string;
+  readonly recordedAt: string;
+}
 
 export interface ApplicationJobLeaseToken {
   readonly owner: string;
@@ -29,6 +53,7 @@ export interface ApplicationJobStoredRun {
   readonly input: object;
   readonly inputDigest: string;
   readonly admission: ApplicationAdmissionInvocationContextV1;
+  readonly events: ApplicationJobLifecycleFactContracts;
   readonly phase: ApplicationJobStorePhase;
   readonly attempt: number;
   readonly maximumAttempts: number;
@@ -51,6 +76,7 @@ export interface ApplicationJobStoreAdmission {
   readonly reference: ApplicationJobReference;
   readonly input: object;
   readonly admission: ApplicationAdmissionInvocationContextV1;
+  readonly events?: ApplicationJobLifecycleFactContracts;
   readonly maximumAttempts: number;
   readonly availableAt: string;
   readonly deadline?: string;
@@ -145,6 +171,7 @@ interface MutableJobRun {
   input: object;
   inputDigest: string;
   admission: ApplicationAdmissionInvocationContextV1;
+  events: ApplicationJobLifecycleFactContracts;
   phase: ApplicationJobStorePhase;
   attempt: number;
   maximumAttempts: number;
@@ -165,6 +192,7 @@ interface MutableJobRun {
 
 export interface DeterministicApplicationJobStore extends ApplicationJobStore {
   snapshot(): readonly ApplicationJobStoredRun[];
+  facts(): readonly ApplicationJobStoredFact[];
 }
 
 /**
@@ -174,6 +202,7 @@ export interface DeterministicApplicationJobStore extends ApplicationJobStore {
  */
 export function createDeterministicApplicationJobStore(): DeterministicApplicationJobStore {
   const runs = new Map<string, MutableJobRun>();
+  const facts = new Map<string, ApplicationJobStoredFact>();
   const idempotency = new Map<string, string>();
   let mutation = Promise.resolve();
 
@@ -245,6 +274,7 @@ export function createDeterministicApplicationJobStore(): DeterministicApplicati
           input: structuredClone(value.input),
           inputDigest,
           admission: structuredClone(value.admission),
+          events: structuredClone(value.events ?? defaultApplicationJobLifecycleFactContracts(value.reference.job)),
           phase: 'queued',
           attempt: 0,
           maximumAttempts: value.maximumAttempts,
@@ -282,6 +312,13 @@ export function createDeterministicApplicationJobStore(): DeterministicApplicati
           epoch,
           expiresAt: new Date(now + request.leaseSeconds * 1_000).toISOString(),
         };
+        if (eligible.attempt === 1) {
+          recordFact(facts, lifecycleFact(eligible, 'started', {
+            run: eligible.reference,
+            attempt: eligible.attempt,
+            startedAt: request.now,
+          }, request.now));
+        }
         return freeze(eligible);
       });
     },
@@ -313,6 +350,7 @@ export function createDeterministicApplicationJobStore(): DeterministicApplicati
         run.progress = snapshot;
         run.progressDigest = digest(write.value);
         run.progressExpiresAt = write.expiresAt;
+        recordFact(facts, lifecycleFact(run, 'progressed', snapshot, write.recordedAt));
         return freeze(run);
       });
     },
@@ -336,6 +374,7 @@ export function createDeterministicApplicationJobStore(): DeterministicApplicati
         if (run.phase === 'terminal') return freeze(run);
         assertLease(run, write.lease);
         terminalize(run, write.outcome, write.terminalAt, write.resultExpiresAt);
+        recordTerminalFact(facts, run, write.outcome, write.terminalAt);
         return freeze(run);
       });
     },
@@ -350,10 +389,12 @@ export function createDeterministicApplicationJobStore(): DeterministicApplicati
           ...(write.reason?.trim() ? { reason: write.reason.trim() } : {}),
         };
         if (run.phase === 'queued') {
-          terminalize(run, {
+          const outcome = {
             status: 'cancelled',
             ...(run.cancellation.reason ? { reason: run.cancellation.reason } : {}),
-          }, write.requestedAt, write.resultExpiresAt);
+          } as const;
+          terminalize(run, outcome, write.requestedAt, write.resultExpiresAt);
+          recordTerminalFact(facts, run, outcome, write.requestedAt);
         }
         return freeze(run);
       });
@@ -386,7 +427,113 @@ export function createDeterministicApplicationJobStore(): DeterministicApplicati
         .sort((left, right) => left.admittedAt.localeCompare(right.admittedAt) || left.reference.runId.localeCompare(right.reference.runId))
         .map(freeze);
     },
+    facts() {
+      return [...facts.values()]
+        .sort((left, right) => left.recordedAt.localeCompare(right.recordedAt) || left.id.localeCompare(right.id))
+        .map((fact) => structuredClone(fact));
+    },
   };
+}
+
+export function applicationJobLifecycleFact(
+  run: ApplicationJobStoredRun,
+  kind: ApplicationJobLifecycleFactKind,
+  payload: object,
+  recordedAt: string,
+): ApplicationJobStoredFact {
+  return lifecycleFact(run, kind, payload, recordedAt);
+}
+
+export function defaultApplicationJobLifecycleFactContracts(jobId: string): ApplicationJobLifecycleFactContracts {
+  const match = /^(.*)\.(v[1-9][0-9]*)$/u.exec(jobId);
+  if (!match?.[1] || !match[2]) {
+    throw new ApplicationJobStoreInvariantError(`Job ${jobId} does not have a versioned identity.`);
+  }
+  const name = match[1];
+  const version = match[2];
+  const contract = (kind: ApplicationJobLifecycleFactKind): ApplicationJobLifecycleFactContract => ({
+    id: `jobs.${name}.${kind}.${version}`,
+    name: `jobs.${name}.${kind}`,
+    version,
+  });
+  return Object.freeze({
+    started: contract('started'),
+    progressed: contract('progressed'),
+    succeeded: contract('succeeded'),
+    failed: contract('failed'),
+    cancelled: contract('cancelled'),
+    timedOut: contract('timedOut'),
+  });
+}
+
+function lifecycleFact(
+  run: Pick<MutableJobRun, 'reference' | 'admission' | 'events'>,
+  kind: ApplicationJobLifecycleFactKind,
+  payload: object,
+  recordedAt: string,
+): ApplicationJobStoredFact {
+  const contract = run.events[kind];
+  const id = `${run.reference.runId}:${kind}:${kind === 'progressed' ? 'latest' : '1'}`;
+  const envelope = {
+    id,
+    contract: { name: contract.name, version: contract.version },
+    payload,
+    recordedAt,
+    correlationId: run.admission.correlationId,
+    causationId: run.admission.causationId ?? run.admission.correlationId,
+    partitionKey: run.reference.runId,
+    source: { kind: 'job', id: run.reference.job },
+    trustedContext: run.admission.trustedContext,
+    ...(run.admission.authorizationReceipt
+      ? { authorizationReceipt: run.admission.authorizationReceipt }
+      : {}),
+    ...(run.admission.trace?.traceparent
+      ? { traceparent: run.admission.trace.traceparent }
+      : {}),
+  };
+  return {
+    id,
+    kind,
+    contract: structuredClone(contract),
+    run: structuredClone(run.reference),
+    partitionKey: run.reference.runId,
+    payload: structuredClone(payload),
+    envelope,
+    contextDigest: run.admission.trustedContext.digest,
+    recordedAt,
+  };
+}
+
+function recordFact(
+  facts: Map<string, ApplicationJobStoredFact>,
+  fact: ApplicationJobStoredFact,
+): void {
+  if (fact.kind === 'progressed') {
+    for (const [id, existing] of facts) {
+      if (existing.kind === 'progressed' && existing.run.runId === fact.run.runId) facts.delete(id);
+    }
+  }
+  const existing = facts.get(fact.id);
+  if (existing && digest(existing) !== digest(fact)) {
+    throw new ApplicationJobStoreInvariantError(`Job lifecycle fact ${fact.id} conflicts with its previously committed payload.`);
+  }
+  facts.set(fact.id, structuredClone(fact));
+}
+
+function recordTerminalFact(
+  facts: Map<string, ApplicationJobStoredFact>,
+  run: MutableJobRun,
+  outcome: ApplicationJobTerminalOutcome<object, object>,
+  completedAt: string,
+): void {
+  const payload = outcome.status === 'succeeded'
+    ? { run: run.reference, completedAt, output: outcome.output }
+    : outcome.status === 'failed'
+      ? { run: run.reference, completedAt, failure: outcome.failure }
+      : outcome.status === 'cancelled'
+        ? { run: run.reference, completedAt, ...(outcome.reason ? { reason: outcome.reason } : {}) }
+        : { run: run.reference, completedAt, deadline: outcome.deadline };
+  recordFact(facts, lifecycleFact(run, outcome.status, payload, completedAt));
 }
 
 export function createApplicationJobReference(job: string, admittedAt: string, runId: string = randomUUID()): ApplicationJobReference {

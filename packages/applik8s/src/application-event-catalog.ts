@@ -27,7 +27,7 @@ export interface ApplicationCatalogEvent<
 }
 
 export interface ApplicationEventProducer<
-  TEvents extends Readonly<Record<string, EventDefinition<object>>> = Readonly<Record<string, EventDefinition<object>>>,
+  TEvents extends object = object,
 > {
   readonly events: TEvents;
 }
@@ -45,7 +45,7 @@ export type ApplicationCatalogEventFor<TEvent> = TEvent extends EventDefinition<
   : never;
 
 type ProducerEvents<TProducer> = TProducer extends ApplicationEventProducer<infer TEvents>
-  ? TEvents[keyof TEvents]
+  ? Extract<TEvents[keyof TEvents], EventDefinition<object, string>>
   : never;
 
 export interface ApplicationEventSelectionBinding<TEvent extends ApplicationCatalogEvent>
@@ -132,6 +132,10 @@ export function createApplicationEventCatalog(
     }
     const unique = [...new Map(sources.map((source) => [source.definition.id, source])).values()]
       .sort((left, right) => left.definition.id.localeCompare(right.definition.id));
+    const primary = unique[0];
+    if (!primary) {
+      throw new Error(`application.events.${selection}(...) selected no catalog event contracts.`);
+    }
     const databaseNames = new Set(unique.map((source) => source.database.name));
     if (databaseNames.size !== 1) {
       throw new Error('EVENT_MATERIALIZATION_REQUIRED: This event selection spans multiple authoritative databases and requires the normalized-stream provider.');
@@ -153,7 +157,7 @@ export function createApplicationEventCatalog(
     return registration.register({
       definition,
       schema: definition.payload,
-      database: unique[0]!.database,
+      database: primary.database,
       sources: unique,
       selection,
       ...(predicate ? { predicate } : {}),
@@ -188,7 +192,7 @@ export function createApplicationEventCatalog(
       const sources = [...registration.registry.eventSources.values()].filter((source) => databaseNames.has(source.database.name));
       return bindWhere(select(sources, 'all'), sources, 'all');
     },
-  }) as ApplicationEventCatalog;
+  }) as unknown as ApplicationEventCatalog;
 }
 
 function catalogEnvelopeSchema<TEvent extends ApplicationCatalogEvent>(

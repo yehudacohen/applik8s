@@ -91,6 +91,20 @@ describe('durable finite Job store contract', () => {
       phase: 'terminal',
       outcome: { status: 'succeeded', output: { current: true } },
     });
+    expect(store.facts()).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: 'run-1:started:1',
+        kind: 'started',
+        payload: expect.objectContaining({ attempt: 1 }),
+      }),
+      expect.objectContaining({
+        id: 'run-1:succeeded:1',
+        kind: 'succeeded',
+        contract: expect.objectContaining({ id: 'jobs.reports.export.succeeded.v1' }),
+        payload: expect.objectContaining({ output: { current: true } }),
+      }),
+    ]));
+    expect(store.facts().filter((fact) => fact.kind === 'started')).toHaveLength(1);
   });
 
   test('claims an exact run only when the worker also owns its Job definition', async () => {
@@ -147,14 +161,22 @@ describe('durable finite Job store contract', () => {
     const running = await store.claim({ owner: 'worker-a', now: at(1), leaseSeconds: 5 });
     const lease = running?.lease ?? { owner: 'missing', epoch: 0, expiresAt: at(0) };
     await store.recordProgress({ runId: 'run-1', lease, value: { rows: 4 }, recordedAt: at(2), expiresAt: at(4) });
+    await store.recordProgress({ runId: 'run-1', lease, value: { rows: 8 }, recordedAt: at(3), expiresAt: at(5) });
     await store.terminalize({
       runId: 'run-1',
       lease,
       outcome: { status: 'succeeded', output: { uri: 'object://report' } },
-      terminalAt: at(3),
-      resultExpiresAt: at(5),
+      terminalAt: at(4),
+      resultExpiresAt: at(6),
     });
-    await expect(store.purge({ now: at(6) })).resolves.toEqual({ outcomes: 1, progress: 1 });
+    expect(store.facts()).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'run-1:progressed:latest', kind: 'progressed' }),
+      expect.objectContaining({ id: 'run-1:succeeded:1', kind: 'succeeded' }),
+    ]));
+    expect(store.facts().filter((fact) => fact.kind === 'progressed')).toEqual([
+      expect.objectContaining({ payload: expect.objectContaining({ sequence: 2, value: { rows: 8 } }) }),
+    ]);
+    await expect(store.purge({ now: at(7) })).resolves.toEqual({ outcomes: 1, progress: 1 });
     const retained = await store.read('run-1');
     expect(retained).toMatchObject({ phase: 'terminal', outcomeDigest: expect.stringMatching(/^sha256:/), progressDigest: expect.stringMatching(/^sha256:/) });
     expect(retained?.outcome).toBeUndefined();

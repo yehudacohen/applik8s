@@ -2,10 +2,11 @@
 import { createHash, randomUUID } from 'node:crypto';
 import {
   type ApplicationAdmissionInvocationContextV1,
+  type JsonObject,
   applicationAdmissionContextVersion,
   canonicalJsonV1String,
 } from '@applik8s/core';
-import type { SchemaInput } from '@applik8s/sdk';
+import { normalizeSchema, type SchemaInput } from '@applik8s/sdk';
 import { serializeApplicationCallback } from './application-callback.js';
 import { type ApplicationGraphState, addApplicationGraphEdge, addApplicationGraphNode, addApplicationProviderRequirement } from './application-graph-state.js';
 import { applicationProviderGraphNodeId, kubernetesNameSegment } from './application-identifiers.js';
@@ -18,6 +19,7 @@ import {
 } from './application-schedule.js';
 import { declaredSchema, validateMessage } from './application-schema-runtime.js';
 import { functionExpression } from './application-workflow-serialization.js';
+import { event, type EventDefinition } from './dsl.js';
 
 export const applicationJobRuntimeProtocol = 'applik8s.jobRuntime/v1alpha1' as const;
 
@@ -134,6 +136,43 @@ export type ApplicationJobTerminalOutcome<
   | { readonly status: 'cancelled'; readonly reason?: string }
   | { readonly status: 'timedOut'; readonly deadline: string };
 
+export interface ApplicationJobStartedFact {
+  readonly run: ApplicationJobReference;
+  readonly attempt: number;
+  readonly startedAt: string;
+}
+
+export type ApplicationJobProgressedFact<TProgress extends object> = ApplicationJobProgressSnapshot<TProgress>;
+export interface ApplicationJobSucceededFact<TOutput extends object> {
+  readonly run: ApplicationJobReference;
+  readonly completedAt: string;
+  readonly output: TOutput;
+}
+export interface ApplicationJobFailedFact<TError extends object = never> {
+  readonly run: ApplicationJobReference;
+  readonly completedAt: string;
+  readonly failure: ApplicationJobFailure<TError>;
+}
+export interface ApplicationJobCancelledFact {
+  readonly run: ApplicationJobReference;
+  readonly completedAt: string;
+  readonly reason?: string;
+}
+export interface ApplicationJobTimedOutFact {
+  readonly run: ApplicationJobReference;
+  readonly completedAt: string;
+  readonly deadline: string;
+}
+
+export interface ApplicationJobEvents<TOutput extends object, TProgress extends object, TError extends object> {
+  readonly started: EventDefinition<ApplicationJobStartedFact>;
+  readonly progressed: EventDefinition<ApplicationJobProgressedFact<TProgress>>;
+  readonly succeeded: EventDefinition<ApplicationJobSucceededFact<TOutput>>;
+  readonly failed: EventDefinition<ApplicationJobFailedFact<TError>>;
+  readonly cancelled: EventDefinition<ApplicationJobCancelledFact>;
+  readonly timedOut: EventDefinition<ApplicationJobTimedOutFact>;
+}
+
 export type ApplicationJobCancellationResult<
   TOutput extends object,
   TError extends object = never,
@@ -189,6 +228,7 @@ export interface ApplicationJobBinding<
   readonly id: string;
   /** Immutable authoring contract used by compiler discovery and typed schedule lowering. */
   readonly definition: ApplicationJobDefinition<TInput, TOutput, TProgress, TError>;
+  readonly events: ApplicationJobEvents<TOutput, TProgress, TError>;
   start(input: TInput, options?: Omit<ApplicationJobInvocationOptions, 'wait'>): Promise<ApplicationJobRun<TOutput, TProgress, TError>>;
   attach(reference: ApplicationJobReference): Promise<ApplicationJobRun<TOutput, TProgress, TError>>;
   schedule(input: TInput, options: ApplicationJobOneTimeScheduleOptions): Promise<ApplicationScheduleConvergenceResult>;
@@ -210,6 +250,7 @@ export interface ApplicationJobDefinition<
   readonly contract: ApplicationJobContract<TInput, TOutput, TProgress, TError>;
   readonly options: ApplicationJobOptions<TInput>;
   readonly handler: ApplicationJobHandler<TInput, TOutput, TProgress, TError>;
+  readonly events?: ApplicationJobEvents<TOutput, TProgress, TError>;
 }
 
 export interface ApplicationJobRuntime {
@@ -327,6 +368,101 @@ export class ApplicationJobProgressExpiredError extends Error {
     super(`Job ${run.job} run ${run.runId} progress expired at ${expiredAt}.`);
     this.name = new.target.name;
   }
+}
+
+export function applicationJobLifecycleEvents<
+  TInput extends object,
+  TOutput extends object,
+  TProgress extends object,
+  TError extends object,
+>(
+  id: string,
+  contract: ApplicationJobContract<TInput, TOutput, TProgress, TError>,
+): ApplicationJobEvents<TOutput, TProgress, TError> {
+  const identity = finiteJobIdentity(id);
+  const prefix = `jobs.${identity.name}`;
+  const version = identity.version;
+  const output = emittedJobSchema(contract.output, `${id}.output`);
+  const progress = contract.progress
+    ? emittedJobSchema(contract.progress, `${id}.progress`)
+    : { type: 'object', additionalProperties: false, properties: {} } satisfies JsonObject;
+  const applicationFailure = contract.error
+    ? [{
+        type: 'object',
+        additionalProperties: false,
+        required: ['kind', 'error'],
+        properties: { kind: { const: 'application' }, error: emittedJobSchema(contract.error, `${id}.error`) },
+      } satisfies JsonObject]
+    : [];
+  const failure = {
+    oneOf: [
+      ...applicationFailure,
+      {
+        type: 'object', additionalProperties: false, required: ['kind', 'code', 'message', 'retryable'],
+        properties: { kind: { const: 'execution' }, code: { type: 'string' }, message: { type: 'string' }, retryable: { type: 'boolean' } },
+      },
+      {
+        type: 'object', additionalProperties: false, required: ['kind', 'provider', 'code', 'message', 'retryable'],
+        properties: { kind: { const: 'provider' }, provider: { type: 'string' }, code: { type: 'string' }, message: { type: 'string' }, retryable: { type: 'boolean' } },
+      },
+    ],
+  } satisfies JsonObject;
+  const run = applicationJobReferenceJsonSchema();
+  const timestamp = { type: 'string', format: 'date-time' } satisfies JsonObject;
+  return Object.freeze({
+    started: applicationJobEvent<ApplicationJobStartedFact>(`${prefix}.started.${version}`, {
+      run, attempt: { type: 'integer', minimum: 1 }, startedAt: timestamp,
+    }, ['run', 'attempt', 'startedAt']),
+    progressed: applicationJobEvent<ApplicationJobProgressedFact<TProgress>>(`${prefix}.progressed.${version}`, {
+      run, sequence: { type: 'integer', minimum: 1 }, recordedAt: timestamp, value: progress,
+    }, ['run', 'sequence', 'recordedAt', 'value']),
+    succeeded: applicationJobEvent<ApplicationJobSucceededFact<TOutput>>(`${prefix}.succeeded.${version}`, {
+      run, completedAt: timestamp, output,
+    }, ['run', 'completedAt', 'output']),
+    failed: applicationJobEvent<ApplicationJobFailedFact<TError>>(`${prefix}.failed.${version}`, {
+      run, completedAt: timestamp, failure,
+    }, ['run', 'completedAt', 'failure']),
+    cancelled: applicationJobEvent<ApplicationJobCancelledFact>(`${prefix}.cancelled.${version}`, {
+      run, completedAt: timestamp, reason: { type: 'string' },
+    }, ['run', 'completedAt']),
+    timedOut: applicationJobEvent<ApplicationJobTimedOutFact>(`${prefix}.timedOut.${version}`, {
+      run, completedAt: timestamp, deadline: timestamp,
+    }, ['run', 'completedAt', 'deadline']),
+  });
+}
+
+function applicationJobEvent<TPayload extends object>(
+  id: string,
+  properties: Readonly<Record<string, JsonObject>>,
+  required: readonly string[],
+): EventDefinition<TPayload> {
+  return event<TPayload>(id, {
+    payload: {
+      kind: 'jsonSchema',
+      ref: { kind: 'jsonSchema', exportName: id },
+      schema: { type: 'object', additionalProperties: false, properties, required },
+    },
+  });
+}
+
+function emittedJobSchema<TValue extends object>(schema: SchemaInput<TValue>, label: string): JsonObject {
+  const emitted = normalizeSchema(schema, label).emitJsonSchema();
+  if (!emitted.ok) throw new Error(`Application Job schema ${label} cannot be emitted: ${emitted.error.message}`);
+  return emitted.value.schema;
+}
+
+function applicationJobReferenceJsonSchema(): JsonObject {
+  return {
+    type: 'object',
+    additionalProperties: false,
+    required: ['protocol', 'job', 'runId', 'admittedAt'],
+    properties: {
+      protocol: { const: applicationJobRuntimeProtocol },
+      job: { type: 'string', minLength: 1 },
+      runId: { type: 'string', minLength: 1 },
+      admittedAt: { type: 'string', format: 'date-time' },
+    },
+  };
 }
 
 class ApplicationJobAuthoredFailure<TError extends object> extends Error {
@@ -623,12 +759,17 @@ export function createApplicationJobBinding<
   definition: ApplicationJobDefinition<TInput, TOutput, TProgress, TError>,
   runtime: ApplicationJobRuntime,
 ): ApplicationJobBinding<TInput, TOutput, TProgress, TError> {
-  runtime.register?.(definition);
+  const events = definition.events ?? applicationJobLifecycleEvents(definition.id, definition.contract);
+  const registeredDefinition: ApplicationJobDefinition<TInput, TOutput, TProgress, TError> = {
+    ...definition,
+    events,
+  };
+  runtime.register?.(registeredDefinition);
   const callable = async (
     input: TInput,
     options: ApplicationJobInvocationOptions = {},
   ): Promise<TOutput> => {
-    const run = await runtime.start(definition, input, options);
+    const run = await runtime.start(registeredDefinition, input, options);
     if (!options.wait) return run.result();
     const milliseconds = parseApplicationScheduleDuration(options.wait.timeout) * 1_000;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -662,7 +803,7 @@ export function createApplicationJobBinding<
       },
     },
     async (input, context) => {
-      const run = await runtime.start(definition, input, {
+      const run = await runtime.start(registeredDefinition, input, {
         idempotencyKey: context.occurrenceId,
         admission: context.admission,
       });
@@ -686,7 +827,7 @@ export function createApplicationJobBinding<
         ...normalized,
       },
       async (context) => {
-        const run = await runtime.start(definition, admittedInput, {
+        const run = await runtime.start(registeredDefinition, admittedInput, {
           idempotencyKey: context.occurrenceId,
           admission: context.admission,
         });
@@ -733,10 +874,11 @@ export function createApplicationJobBinding<
   }
   return Object.assign(callable, {
     kind: 'applicationJob' as const,
-    id: definition.id,
-    definition,
+    id: registeredDefinition.id,
+    definition: registeredDefinition,
+    events,
     start: (input: TInput, options?: Omit<ApplicationJobInvocationOptions, 'wait'>) =>
-      runtime.start(definition, input, options),
+      runtime.start(registeredDefinition, input, options),
     attach: (reference: ApplicationJobReference) =>
       runtime.attach<TOutput, TProgress, TError>(definition.id, reference),
     schedule: scheduleJob,
@@ -870,6 +1012,7 @@ export function registerApplicationJob<
     ]),
   ) as Partial<Record<'result' | 'progress' | 'applicationFacts' | 'providerAttempts', number>>;
   const nodeId = `job.${kubernetesNameSegment(id)}`;
+  const lifecycleEvents = applicationJobLifecycleEvents(id, contract);
   const providerNodeId = applicationProviderGraphNodeId('JobRuntime');
   const selectedRuntime = state.graphNodes.find(
     (node) => node.kind === 'provider' && node.id === providerNodeId,
@@ -890,6 +1033,10 @@ export function registerApplicationJob<
       ...(contract.error ? { error: declaredSchema(contract.error, `${id}.error`) } : {}),
     },
     handlerSource: serialized.source,
+    events: Object.fromEntries(Object.entries(lifecycleEvents).map(([name, definition]) => [name, {
+      id: definition.id,
+      contract: declaredSchema(definition.payload, `${definition.id}.payload`),
+    }])) as import('@applik8s/core').ApplicationJobNode['events'],
     ...(serialized.dependencies ? { handlerDependencies: serialized.dependencies } : {}),
     ...(serialized.location ? { sourceLocation: serialized.location } : {}),
     retry: { maxAttempts: nonNegativeInteger(options.retries ?? 0, `Job ${id} retries`) + 1, wholeAttempt: true },
@@ -946,7 +1093,7 @@ export function registerApplicationJob<
       { allowLocalFallback },
     ).attach(job, reference),
   };
-  return createApplicationJobBinding({ id, contract, options, handler }, resolvedRuntime);
+  return createApplicationJobBinding({ id, contract, options, handler, events: lifecycleEvents }, resolvedRuntime);
 }
 
 function localJobAdmission(

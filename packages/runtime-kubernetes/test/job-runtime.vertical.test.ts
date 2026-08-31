@@ -1,6 +1,5 @@
 import { createApplicationJobBinding } from '@applik8s/applik8s/job';
-import type { ApplicationJobStoredRun } from '@applik8s/applik8s/job-store';
-import { createDeterministicApplicationJobStore } from '@applik8s/applik8s/job-store';
+import { createDeterministicApplicationJobStore, defaultApplicationJobLifecycleFactContracts, type ApplicationJobStoredRun } from '@applik8s/applik8s/job-store';
 import type { V1Job, V1Status } from '@kubernetes/client-node';
 import { type } from 'arktype';
 import { describe, expect, test } from 'vitest';
@@ -50,6 +49,7 @@ function storedRun(overrides: Partial<ApplicationJobStoredRun> = {}): Applicatio
       correlationId: 'kubernetes-job',
       deadline: '2026-01-01T01:00:00.000Z',
     },
+    events: defaultApplicationJobLifecycleFactContracts('reports.export.v1'),
     phase: 'queued',
     attempt: 0,
     maximumAttempts: 2,

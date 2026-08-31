@@ -22,6 +22,7 @@ import { type } from 'arktype';
 import { describe, expect, test } from 'vitest';
 import { emitGeneratedApplicationJobs } from '../src/application-jobs/index.js';
 import { emitGeneratedApplicationHttpServers } from '../src/application-http/index.js';
+import { emitGeneratedApplicationReactive } from '../src/application-reactive/index.js';
 
 describe('generated Kubernetes finite Job controller', () => {
   test('bundles immutable definitions and emits controller, RBAC, service, and worker configuration', async () => {
@@ -77,6 +78,11 @@ describe('generated Kubernetes finite Job controller', () => {
       async (input, execution) => {
         await execution.progress({ completed: 1 });
         return { doubled: input.value * 2 };
+      },
+    );
+    application.events.of(Double.events.succeeded).onEvent(
+      async function observeCompletedDouble(fact) {
+        void fact.detail.output.doubled;
       },
     );
     application.http('job-api').post(
@@ -145,6 +151,18 @@ describe('generated Kubernetes finite Job controller', () => {
       ).toBe(true);
       expect(JSON.stringify(http?.resources)).toContain('APPLIK8S_INTERNAL_OPERATION_SECRET');
       expect(JSON.stringify(http?.resources)).toContain('job-state-app');
+      const reactive = await emitGeneratedApplicationReactive({
+        graph: graph!,
+        outDir: join(outDir, 'reactive'),
+        entrypoint: import.meta.filename,
+        executionTarget: 'kubernetes',
+      });
+      const lifecycleProcessor = reactive.find((candidate) => candidate.kind === 'streamProcessorWorker');
+      expect(lifecycleProcessor).toBeDefined();
+      const lifecycleSource = await readFile(lifecycleProcessor!.sourcePath, 'utf8');
+      expect(lifecycleSource).toContain('jobs.numbers.double.succeeded');
+      expect(lifecycleSource).toContain('createPostgresApplicationCatalogStream');
+      expect(JSON.stringify(lifecycleProcessor!.resources)).toContain('job-state-app');
     } finally {
       await rm(outDir, { recursive: true, force: true });
     }

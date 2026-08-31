@@ -1,4 +1,4 @@
-import type { ApplicationJobStoredRun } from '@applik8s/applik8s/job-store';
+import { defaultApplicationJobLifecycleFactContracts, type ApplicationJobStoredRun } from '@applik8s/applik8s/job-store';
 import { createKubernetesApplicationJobDispatcher } from '@applik8s/runtime-kubernetes/job-runtime';
 import { KubeConfig } from '@kubernetes/client-node';
 import { afterAll, beforeAll, expect, test } from 'vitest';
@@ -95,6 +95,7 @@ function liveRun(): ApplicationJobStoredRun {
       correlationId: 'v09-job-live',
       deadline: new Date(Date.parse(admittedAt) + 300_000).toISOString(),
     },
+    events: defaultApplicationJobLifecycleFactContracts('live.echo.v1'),
     phase: 'queued',
     attempt: 0,
     maximumAttempts: 1,

@@ -11,8 +11,11 @@ import {
   type ApplicationJobStoreAdmission,
   type ApplicationJobStoreAdmissionResult,
   type ApplicationJobStoredRun,
+  type ApplicationJobStoredFact,
   ApplicationJobStoreInvariantError,
+  applicationJobLifecycleFact,
   applicationJobStoreProtocol,
+  defaultApplicationJobLifecycleFactContracts,
 } from '@applik8s/applik8s/job-store';
 import {
   canonicalJsonCompatibleV1Policy,
@@ -38,6 +41,7 @@ interface JobRow {
   readonly input: object;
   readonly input_digest: string;
   readonly admission: ApplicationJobStoredRun['admission'];
+  readonly events: ApplicationJobStoredRun['events'] | null;
   readonly phase: ApplicationJobStoredRun['phase'];
   readonly attempt: number;
   readonly maximum_attempts: number;
@@ -110,13 +114,15 @@ export function createPostgresApplicationJobStore(
         const rows = await transaction<JobRow[]>`
           INSERT INTO applik8s_job_runs (
             application_id, deployment_id, run_id, job_id, admitted_at,
-            input, input_digest, admission, phase, attempt, maximum_attempts,
+            input, input_digest, admission, events, phase, attempt, maximum_attempts,
             available_at, deadline, idempotency_scope
           ) VALUES (
             ${applicationId}, ${deploymentId}, ${admission.reference.runId},
             ${admission.reference.job}, ${admission.reference.admittedAt},
             ${transaction.json(jsonValue(admission.input))}, ${digestInput(admission)},
-            ${transaction.json(jsonValue(admission.admission))}, 'queued', 0,
+            ${transaction.json(jsonValue(admission.admission))},
+            ${transaction.json(jsonValue(admission.events ?? defaultApplicationJobLifecycleFactContracts(admission.reference.job)))},
+            'queued', 0,
             ${admission.maximumAttempts}, ${admission.availableAt},
             ${admission.deadline ?? null}, ${admission.idempotencyScope ?? null}
           )
@@ -199,7 +205,17 @@ export function createPostgresApplicationJobStore(
             AND run_id = ${candidate.run_id}
           RETURNING ${transaction.unsafe(jobColumns)}
         `;
-        return claimed[0] ? storedRun(claimed[0]) : undefined;
+        const row = claimed[0];
+        if (!row) return undefined;
+        const run = storedRun(row);
+        if (run.attempt === 1) {
+          await insertJobFact(transaction, applicationId, deploymentId, applicationJobLifecycleFact(run, 'started', {
+            run: run.reference,
+            attempt: run.attempt,
+            startedAt: request.now,
+          }, request.now));
+        }
+        return run;
       });
     },
     async heartbeat(runId, lease, now, leaseSeconds) {
@@ -223,7 +239,8 @@ export function createPostgresApplicationJobStore(
     async recordProgress(write) {
       await ensure();
       assertChronology(write.recordedAt, write.expiresAt, 'Job progress expiry');
-      const rows = await sql<JobRow[]>`
+      return sql.begin(async (transaction) => {
+      const rows = await transaction<JobRow[]>`
         UPDATE applik8s_job_runs
         SET progress = jsonb_build_object(
               'run', jsonb_build_object(
@@ -234,7 +251,7 @@ export function createPostgresApplicationJobStore(
               ),
               'sequence', COALESCE((progress->>'sequence')::int, 0) + 1,
               'recordedAt', ${write.recordedAt}::text,
-              'value', ${sql.json(jsonValue(write.value))}
+              'value', ${transaction.json(jsonValue(write.value))}
             ),
             progress_digest = ${digestValue(write.value)},
             progress_expires_at = ${write.expiresAt},
@@ -245,9 +262,20 @@ export function createPostgresApplicationJobStore(
           AND phase <> 'terminal'
           AND lease_owner = ${write.lease.owner}
           AND lease_epoch = ${write.lease.epoch}
-        RETURNING ${sql.unsafe(jobColumns)}
+        RETURNING ${transaction.unsafe(jobColumns)}
       `;
-      return rows[0] ? storedRun(rows[0]) : terminalOrLeaseLost(write.runId, write.lease);
+      const row = rows[0];
+      if (!row) return terminalOrLeaseLost(write.runId, write.lease, transaction);
+      const run = storedRun(row);
+      if (!run.progress) throw new ApplicationJobStoreInvariantError(`Job run ${write.runId} did not retain its committed progress snapshot.`);
+      await insertJobFact(transaction, applicationId, deploymentId, applicationJobLifecycleFact(
+        run,
+        'progressed',
+        run.progress,
+        write.recordedAt,
+      ));
+      return run;
+      });
     },
     async retry(write) {
       await ensure();
@@ -270,9 +298,10 @@ export function createPostgresApplicationJobStore(
     async terminalize(write) {
       await ensure();
       assertChronology(write.terminalAt, write.resultExpiresAt, 'Job result expiry');
-      const rows = await sql<JobRow[]>`
+      return sql.begin(async (transaction) => {
+      const rows = await transaction<JobRow[]>`
         UPDATE applik8s_job_runs
-        SET phase = 'terminal', outcome = ${sql.json(jsonValue(write.outcome))},
+        SET phase = 'terminal', outcome = ${transaction.json(jsonValue(write.outcome))},
             outcome_digest = ${digestValue(write.outcome)}, terminal_at = ${write.terminalAt},
             result_expires_at = ${write.resultExpiresAt}, lease_owner = NULL,
             lease_expires_at = NULL, updated_at = now()
@@ -282,9 +311,14 @@ export function createPostgresApplicationJobStore(
           AND phase <> 'terminal'
           AND lease_owner = ${write.lease.owner}
           AND lease_epoch = ${write.lease.epoch}
-        RETURNING ${sql.unsafe(jobColumns)}
+        RETURNING ${transaction.unsafe(jobColumns)}
       `;
-      return rows[0] ? storedRun(rows[0]) : terminalOrLeaseLost(write.runId, write.lease);
+      const row = rows[0];
+      if (!row) return terminalOrLeaseLost(write.runId, write.lease, transaction);
+      const run = storedRun(row);
+      await insertJobFact(transaction, applicationId, deploymentId, terminalJobFact(run, write.outcome, write.terminalAt));
+      return run;
+      });
     },
     async cancel(write) {
       await ensure();
@@ -328,7 +362,11 @@ export function createPostgresApplicationJobStore(
         `;
         const row = rows[0];
         if (!row) throw new ApplicationJobStoreInvariantError(`Job run ${write.runId} disappeared during cancellation.`);
-        return storedRun(row);
+        const run = storedRun(row);
+        if (queuedOutcome) {
+          await insertJobFact(transaction, applicationId, deploymentId, terminalJobFact(run, queuedOutcome, write.requestedAt));
+        }
+        return run;
       });
     },
     async read(runId) {
@@ -366,7 +404,7 @@ export function createPostgresApplicationJobStore(
 }
 
 const jobColumns = `
-  run_id, job_id, admitted_at, input, input_digest, admission, phase,
+  run_id, job_id, admitted_at, input, input_digest, admission, events, phase,
   attempt, maximum_attempts, available_at, deadline, idempotency_scope,
   lease_owner, lease_epoch, lease_expires_at, progress, progress_digest,
   progress_expires_at, cancellation, outcome, outcome_digest, terminal_at,
@@ -384,6 +422,7 @@ async function ensureJobStore(sql: Sql): Promise<void> {
       input jsonb NOT NULL,
       input_digest text NOT NULL,
       admission jsonb NOT NULL,
+      events jsonb,
       phase text NOT NULL CHECK (phase IN ('queued', 'running', 'terminal')),
       attempt integer NOT NULL DEFAULT 0 CHECK (attempt >= 0),
       maximum_attempts integer NOT NULL CHECK (maximum_attempts >= 1),
@@ -408,10 +447,113 @@ async function ensureJobStore(sql: Sql): Promise<void> {
       CHECK (phase = 'terminal' OR outcome IS NULL)
     )
   `;
+  await sql`ALTER TABLE applik8s_job_runs ADD COLUMN IF NOT EXISTS events jsonb`;
+  await ensurePublicStreamStore(sql);
   await sql`
     CREATE INDEX IF NOT EXISTS applik8s_job_runs_claim
     ON applik8s_job_runs (application_id, deployment_id, phase, available_at, lease_expires_at, admitted_at)
   `;
+}
+
+async function ensurePublicStreamStore(sql: Sql): Promise<void> {
+  await sql`
+    CREATE TABLE IF NOT EXISTS applik8s_public_stream_events (
+      id text PRIMARY KEY,
+      sequence bigint GENERATED ALWAYS AS IDENTITY UNIQUE,
+      contract_name text NOT NULL,
+      contract_version text NOT NULL,
+      partition_key text NOT NULL,
+      envelope jsonb NOT NULL,
+      payload jsonb NOT NULL,
+      context_digest text,
+      recorded_at timestamptz NOT NULL
+    )
+  `;
+  await sql`
+    CREATE UNIQUE INDEX IF NOT EXISTS applik8s_public_stream_events_sequence
+    ON applik8s_public_stream_events (sequence)
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS applik8s_public_stream_events_contract_sequence
+    ON applik8s_public_stream_events (contract_name, contract_version, sequence)
+  `;
+}
+
+async function insertJobFact(
+  transaction: TransactionSql,
+  applicationId: string,
+  deploymentId: string,
+  fact: ApplicationJobStoredFact,
+): Promise<void> {
+  const id = scopedJobFactId(applicationId, deploymentId, fact.id);
+  const envelope = {
+    ...fact.envelope,
+    id,
+    authority: { applicationId, deploymentId },
+  };
+  if (fact.kind === 'progressed') {
+    await transaction`
+      DELETE FROM applik8s_public_stream_events
+      WHERE contract_name = ${fact.contract.name}
+        AND contract_version = ${fact.contract.version}
+        AND partition_key = ${fact.partitionKey}
+        AND envelope->'authority'->>'applicationId' = ${applicationId}
+        AND envelope->'authority'->>'deploymentId' = ${deploymentId}
+    `;
+  }
+  const rows = await transaction<{ readonly id: string }[]>`
+    INSERT INTO applik8s_public_stream_events (
+      id, contract_name, contract_version, partition_key, envelope, payload,
+      context_digest, recorded_at
+    ) VALUES (
+      ${id}, ${fact.contract.name}, ${fact.contract.version},
+      ${fact.partitionKey}, ${transaction.json(jsonValue(envelope))},
+      ${transaction.json(jsonValue(fact.payload))}, ${fact.contextDigest},
+      ${fact.recordedAt}
+    )
+    ON CONFLICT (id) DO UPDATE SET id = EXCLUDED.id
+    WHERE applik8s_public_stream_events.contract_name = EXCLUDED.contract_name
+      AND applik8s_public_stream_events.contract_version = EXCLUDED.contract_version
+      AND applik8s_public_stream_events.partition_key = EXCLUDED.partition_key
+      AND applik8s_public_stream_events.envelope = EXCLUDED.envelope
+      AND applik8s_public_stream_events.payload = EXCLUDED.payload
+      AND applik8s_public_stream_events.context_digest IS NOT DISTINCT FROM EXCLUDED.context_digest
+      AND applik8s_public_stream_events.recorded_at = EXCLUDED.recorded_at
+    RETURNING id
+  `;
+  if (!rows[0]) {
+    throw new ApplicationJobStoreInvariantError(
+      `Job lifecycle fact ${id} conflicts with a previously committed event.`,
+    );
+  }
+}
+
+function scopedJobFactId(
+  applicationId: string,
+  deploymentId: string,
+  factId: string,
+): string {
+  return `job-fact:${createHash('sha256')
+    .update(canonicalJsonV1String(
+      { applicationId, deploymentId, factId },
+      canonicalJsonCompatibleV1Policy,
+    ))
+    .digest('hex')}`;
+}
+
+function terminalJobFact(
+  run: ApplicationJobStoredRun,
+  outcome: NonNullable<ApplicationJobStoredRun['outcome']>,
+  completedAt: string,
+): ApplicationJobStoredFact {
+  const payload = outcome.status === 'succeeded'
+    ? { run: run.reference, completedAt, output: outcome.output }
+    : outcome.status === 'failed'
+      ? { run: run.reference, completedAt, failure: outcome.failure }
+      : outcome.status === 'cancelled'
+        ? { run: run.reference, completedAt, ...(outcome.reason ? { reason: outcome.reason } : {}) }
+        : { run: run.reference, completedAt, deadline: outcome.deadline };
+  return applicationJobLifecycleFact(run, outcome.status, payload, completedAt);
 }
 
 async function lockIdempotency(
@@ -455,6 +597,7 @@ function storedRun(row: JobRow): ApplicationJobStoredRun {
     input: row.input,
     inputDigest: row.input_digest,
     admission: row.admission,
+    events: row.events ?? defaultApplicationJobLifecycleFactContracts(row.job_id),
     phase: row.phase,
     attempt: Number(row.attempt),
     maximumAttempts: Number(row.maximum_attempts),

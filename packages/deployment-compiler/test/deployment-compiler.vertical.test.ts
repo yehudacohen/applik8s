@@ -3256,6 +3256,15 @@ describe("Application deployment compiler", () => {
         output: { kind: 'declared' as const, runtime: 'arktype' as const, jsonSchema: { type: 'object' } },
       },
       handlerSource: 'async () => ({})',
+      events: Object.fromEntries(
+        ['started', 'progressed', 'succeeded', 'failed', 'cancelled', 'timedOut'].map((kind) => [kind, {
+          id: `jobs.reports.export.${kind}.v1`,
+          contract: { kind: 'declared' as const, runtime: 'arktype' as const, jsonSchema: { type: 'object' } },
+        }]),
+      ) as Record<'started' | 'progressed' | 'succeeded' | 'failed' | 'cancelled' | 'timedOut', {
+        readonly id: string;
+        readonly contract: { readonly kind: 'declared'; readonly runtime: 'arktype'; readonly jsonSchema: { readonly type: string } };
+      }>,
       retry: { maxAttempts: 1, wholeAttempt: true as const },
       idempotency: {
         scope: 'applicationDeploymentContractContextAuthority' as const,
