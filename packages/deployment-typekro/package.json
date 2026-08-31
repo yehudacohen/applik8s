@@ -27,6 +27,6 @@
     "@applik8s/deployment-compiler": "0.8.0",
     "@applik8s/deployment-contract": "0.8.0",
     "arktype": "2.2.1",
-    "typekro": "0.33.8"
+    "typekro": "0.33.9"
   }
 }
