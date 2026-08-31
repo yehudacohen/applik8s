@@ -132,13 +132,19 @@ The remaining frozen AWS profile vocabulary is now concrete as well:
 `Certificate.acm(...)`, and `DnsPublication.route53(...)` preserve their typed
 account, lifecycle, hostname, certificate, and hosted-zone configuration in the
 semantic graph. Managed AWS exposure lowers to ALB, ACM, and Route 53 resources;
-authored S3 names and retain/delete intent lower without implicitly emptying a
-bucket. AWS host bindings no longer invent a Kubernetes namespace or service
-URL. Kubernetes Ingress continues to require cert-manager and external-dns,
-while the AWS path fails closed unless ACM and Route 53 own managed TLS/DNS.
-Focused profile, graph, plan, and TypeKro integration tests plus the affected
-package typechecks pass. This is compiler/adapter evidence; real AWS lifecycle
-qualification is still outstanding.
+S3 accepts the account-only frozen spelling, derives an application-scoped name
+when no bucket is authored, and preserves retain/delete intent without
+implicitly emptying a bucket. Native AWS desired state is separated from the
+concrete S3 runtime binding so unresolved configuration sources never enter the
+AWS SDK adapter. AWS host bindings no longer invent a Kubernetes namespace or
+service URL. Kubernetes Ingress continues to require cert-manager and
+external-dns, while the AWS path fails closed unless ACM and Route 53 own
+managed TLS/DNS. Event-catalog sources are now captured before TypeKro probing
+and restored at the durable graph boundary; malformed source contracts diagnose
+fail-closed rather than crashing validation. Focused profile, graph, plan,
+TypeKro integration, and reactive tests plus the affected package typechecks
+pass. This is compiler/adapter evidence; real AWS lifecycle qualification is
+still outstanding.
 
 The managed-model slice now freezes and implements the public
 `application.model(table).managed({ status })` enrichment, qualified

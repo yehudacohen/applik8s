@@ -35,32 +35,31 @@ describe('v0.6 streams, subscriptions, and projections', () => {
       });
 
     const graph = applicationGraphFor(application.composition);
-    const selection = graph?.nodes.find(
+    if (!graph) throw new Error('Expected event-catalog application graph.');
+    const selection = graph.nodes.find(
       (node) => node.kind === 'stream' && node.catalog?.selection === 'of' && node.catalog.predicateSource,
     );
-    expect(selection).toMatchObject({
-      kind: 'stream',
-      catalog: {
-        lowering: 'postgres-native-filter',
-        sources: [
-          expect.objectContaining({ contract: expect.objectContaining({ id: 'models.Post.updated.v1' }), producer: { kind: 'model', id: 'Post' } }),
-          expect.objectContaining({ contract: expect.objectContaining({ id: 'posts.published.v1' }), producer: { kind: 'event', id: 'posts.published.v1' } }),
-        ],
-      },
-    });
-    expect(graph?.nodes).toEqual(expect.arrayContaining([
-      expect.objectContaining({ kind: 'stream', name: 'models.Post.updated' }),
-      expect.objectContaining({ kind: 'stream', name: 'posts.published' }),
-      expect.objectContaining({ kind: 'streamProcessor', name: 'audit-application-fact', source: { nodeId: selection?.id } }),
-    ]));
-    expect(graph?.edges).toEqual(expect.arrayContaining([
-      expect.objectContaining({ from: { nodeId: selection?.id }, relationship: 'reads' }),
-    ]));
-    expect(graph && validateApplicationGraph(graph)).toEqual([]);
+    expect(selection?.kind).toBe('stream');
+    if (selection?.kind !== 'stream' || !selection.catalog) throw new Error('Expected filtered event-catalog selection.');
+    expect(selection.catalog.lowering).toBe('postgres-native-filter');
+    expect(selection.catalog.sources.map((source) => ({
+      contractId: source.contract.id,
+      producer: source.producer,
+    }))).toEqual([
+      { contractId: 'models.Post.updated.v1', producer: { kind: 'model', id: 'Post' } },
+      { contractId: 'posts.published.v1', producer: { kind: 'event', id: 'posts.published.v1' } },
+    ]);
+    expect(graph.nodes.some((node) => node.kind === 'stream' && node.name === 'models.Post.updated')).toBe(true);
+    expect(graph.nodes.some((node) => node.kind === 'stream' && node.name === 'posts.published')).toBe(true);
+    expect(graph.nodes.some((node) => node.kind === 'streamProcessor'
+      && node.name === 'audit-application-fact'
+      && node.source.nodeId === selection.id)).toBe(true);
+    expect(graph.edges.some((edge) => edge.from.nodeId === selection.id && edge.relationship === 'reads')).toBe(true);
+    expect(validateApplicationGraph(graph)).toEqual([]);
 
     const malformed = {
-      ...graph!,
-      nodes: graph!.nodes.map((node) => node.id === selection?.id && node.kind === 'stream' && node.catalog
+      ...graph,
+      nodes: graph.nodes.map((node) => node.id === selection.id && node.kind === 'stream' && node.catalog
         ? {
             ...node,
             catalog: {
@@ -74,8 +73,26 @@ describe('v0.6 streams, subscriptions, and projections', () => {
     };
     const malformedSelection = malformed.nodes.find((node) => node.id === selection?.id);
     if (malformedSelection?.kind !== 'stream' || !malformedSelection.catalog) throw new Error('Expected catalog selection fixture.');
+    const malformedContract = malformedSelection.catalog.sources[0];
+    if (!malformedContract) throw new Error('Expected malformed catalog contract fixture.');
     expect(validateApplicationGraph(malformed).map((diagnostic) => diagnostic.message)).toContain(
-      `Application event-catalog stream ${selection?.id} source ${malformedSelection.catalog.sources[0]!.contract.id} must reference the exact pinned physical stream contract.`,
+      `Application event-catalog stream ${selection.id} source ${malformedContract.contract.id} must reference the exact pinned physical stream contract.`,
+    );
+
+    const malformedSource = {
+      ...graph,
+      nodes: graph.nodes.map((node) => node.id === selection.id && node.kind === 'stream' && node.catalog
+        ? {
+            ...node,
+            catalog: {
+              ...node.catalog,
+              sources: [{} as never, ...node.catalog.sources.slice(1)],
+            },
+          }
+        : node),
+    };
+    expect(validateApplicationGraph(malformedSource).map((diagnostic) => diagnostic.message)).toContain(
+      `Application event-catalog stream ${selection.id} contains a malformed source contract.`,
     );
   });
 

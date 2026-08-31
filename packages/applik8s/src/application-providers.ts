@@ -9,15 +9,15 @@ import { createDeterministicApplicationAdmission } from '@applik8s/identity';
 import { Cel } from 'typekro';
 import type { OryIdentityStackConfig, OryPlatformStackConfig } from 'typekro/ory';
 import {
-  type ApplicationConfigSourceBinding,
-  type ApplicationSecretSourceBinding,
-  isApplicationConfigurationBinding,
-} from './application-configuration.js';
-import {
   type ApplicationCapabilityImplementation,
   applicationCapabilityImplementationMetadata,
   maintainedApplicationCapabilityImplementation,
 } from './application-capability-implementation.js';
+import {
+  type ApplicationConfigSourceBinding,
+  type ApplicationSecretSourceBinding,
+  isApplicationConfigurationBinding,
+} from './application-configuration.js';
 import {
   type ApplicationLakehouseDatasetQueryContract,
   type ApplicationLakehouseQueryRegistrar,
@@ -76,16 +76,13 @@ export interface ApplicationSqsQueueProvider {
 export interface ApplicationKubernetesConfigMapObjectStorageProvider { readonly kind: 'kubernetes-configmap-objects'; readonly maxObjectBytes?: number }
 export interface ApplicationS3ObjectStorageProvider {
   readonly kind: 's3';
-  /** Present when AWS owns the bucket lifecycle rather than an external S3-compatible service. */
-  readonly account?: ApplicationAwsAccount;
   /** Typed desired-state switch. Disabled providers are omitted and do not block installation readiness. */
   readonly enabled?: boolean;
   readonly name?: string;
-  readonly bucket?: ApplicationProviderConfigString;
-  readonly retention?: 'retain' | 'delete';
+  readonly bucket: string;
   /** Provider-level prefix. Logical store names are appended beneath it. */
   readonly prefix?: string;
-  readonly region: ApplicationProviderConfigString;
+  readonly region: string;
   readonly endpoint?: string;
   readonly forcePathStyle?: boolean;
   readonly credentialsSecret?: ApplicationResourceRef;
@@ -144,6 +141,18 @@ export interface ApplicationS3ObjectStorageProvider {
       };
   readonly publicBaseUrl?: string;
 }
+
+/** Native AWS bucket desired state. Runtime code receives its concrete deployed binding, never these unresolved configuration sources. */
+export interface ApplicationAwsS3ObjectStorageProvider {
+  readonly kind: 's3';
+  readonly account: ApplicationAwsAccount;
+  readonly enabled?: boolean;
+  readonly name?: string;
+  readonly bucket?: ApplicationProviderConfigString;
+  readonly retention?: 'retain' | 'delete';
+  readonly prefix?: string;
+  readonly region: ApplicationProviderConfigString;
+}
 export interface ApplicationKubernetesCredentialStoreProvider { readonly kind: 'kubernetes-secret-credentials'; readonly defaultOwnership?: 'external' | 'generated' }
 export interface ApplicationNatsJetStreamEventLogProvider {
   readonly kind: 'nats-jetstream';
@@ -184,7 +193,7 @@ export type ApplicationQueueProvider =
   | ApplicationKubernetesConfigMapQueueProvider
   | ApplicationJetStreamQueueProvider
   | ApplicationSqsQueueProvider;
-export type ApplicationObjectStorageProvider = ApplicationKubernetesConfigMapObjectStorageProvider | ApplicationS3ObjectStorageProvider;
+export type ApplicationObjectStorageProvider = ApplicationKubernetesConfigMapObjectStorageProvider | ApplicationS3ObjectStorageProvider | ApplicationAwsS3ObjectStorageProvider;
 export type ApplicationCredentialStoreProvider = ApplicationKubernetesCredentialStoreProvider;
 export type ApplicationEventLogProvider =
   | ApplicationNatsJetStreamEventLogProvider
@@ -1831,7 +1840,10 @@ export interface ApplicationContainerRegistryProviderToken extends ApplicationQu
 }
 
 export interface ApplicationObjectStorageProviderToken extends ApplicationQualifiableProviderToken<ApplicationObjectStorageProvider> {
-  s3(options: Omit<ApplicationS3ObjectStorageProvider, 'kind' | 'region'> & { readonly region?: string }): ApplicationCapabilityImplementation<ApplicationS3ObjectStorageProvider>;
+  s3(options:
+    | Omit<ApplicationS3ObjectStorageProvider, 'kind'>
+    | (Omit<ApplicationAwsS3ObjectStorageProvider, 'kind' | 'region'> & { readonly region?: ApplicationProviderConfigString })
+  ): ApplicationCapabilityImplementation<ApplicationS3ObjectStorageProvider | ApplicationAwsS3ObjectStorageProvider>;
   configMap(options?: Omit<ApplicationKubernetesConfigMapObjectStorageProvider, 'kind'>): ApplicationCapabilityImplementation<ApplicationKubernetesConfigMapObjectStorageProvider>;
   /**
    * Bind a database backup destination to one declared object-storage
@@ -2364,64 +2376,50 @@ export const ObjectStorage: ApplicationObjectStorageProviderToken = applicationQ
   contract: builtInProviderContract('ObjectStorage', ['objectReadWrite', 'boundedObjects', 'serverOnlyCredentials']),
   accepts: isApplicationObjectStorageProvider,
   s3(options) {
-    if (options.account) {
+    if ('account' in options) {
       assertApplicationAwsAccount(options.account, 'ObjectStorage.s3');
-      if (options.endpoint || options.credentialsSecret || options.provisioning || options.ownership) {
-        throw new Error('ObjectStorage.s3({ account }) uses native AWS lifecycle and cannot also declare endpoint, credentialsSecret, provisioning, or ownership.');
+      if (options.bucket !== undefined) requireProviderConfigString(options.bucket, 'ObjectStorage.s3 bucket');
+      const region = options.region ?? options.account.region;
+      requireProviderConfigString(region, 'ObjectStorage.s3 region');
+      if (options.retention !== undefined && options.retention !== 'retain' && options.retention !== 'delete') {
+        throw new Error('ObjectStorage.s3({ retention }) must be "retain" or "delete".');
       }
+      const provider: ApplicationAwsS3ObjectStorageProvider = { kind: 's3', ...options, region };
+      return maintainedBuiltInImplementation(ObjectStorage, 'ObjectStorage.s3', provider, {
+        runtimeAdapter: '@applik8s/runtime/object-storage-s3',
+        deploymentContributor: '@applik8s/deployment-alchemy/providers/s3-object-storage',
+        readiness: 'applik8s.object-storage.s3.aws-readiness/v1alpha1',
+        lifecycle: provider.retention === 'retain' ? 'retained' : 'application',
+        migration: 'applik8s.object-storage.s3.migration/v1alpha1',
+      });
     }
-    if (options.bucket === undefined && !options.account) throw new Error('ObjectStorage.s3(...) requires bucket for an external S3-compatible service.');
-    if (options.bucket !== undefined) requireProviderConfigString(options.bucket, 'ObjectStorage.s3 bucket');
-    const region = options.region ?? options.account?.region;
-    if (region === undefined) throw new Error('ObjectStorage.s3(...) requires region or AWS.account(...).');
-    requireProviderConfigString(region, 'ObjectStorage.s3 region');
-    if (options.retention !== undefined && options.retention !== 'retain' && options.retention !== 'delete') {
-      throw new Error('ObjectStorage.s3({ retention }) must be "retain" or "delete".');
-    }
+    if (!applicationProviderRequiredString(options.bucket)) throw new Error('ObjectStorage.s3(...) requires bucket for an external S3-compatible service.');
+    if (!applicationProviderRequiredString(options.region)) throw new Error('ObjectStorage.s3(...) requires region for an external S3-compatible service.');
     const dynamicOwnership = applicationTypeKroExpressionValue(options.ownership);
     if (!dynamicOwnership && options.ownership === 'direct-provisioned' && !options.credentialsSecret) {
       throw new Error('ObjectStorage.s3({ ownership: "direct-provisioned" }) requires the Secret reference produced by the direct provisioning boundary.');
     }
-    if (
-      !dynamicOwnership
-      && options.ownership === 'direct-provisioned'
-      && options.provisioning?.kind !== 'local-s3'
-      && !applicationTypeKroExpressionValue(
-        options.provisioning?.storageClassName,
-      )
-      && !applicationProviderRequiredString(
-        options.provisioning?.storageClassName,
-      )
-    ) {
+    if (!dynamicOwnership && options.ownership === 'direct-provisioned' && options.provisioning?.kind !== 'local-s3'
+      && !applicationTypeKroExpressionValue(options.provisioning?.storageClassName)
+      && !applicationProviderRequiredString(options.provisioning?.storageClassName)) {
       throw new Error('ObjectStorage.s3({ ownership: "direct-provisioned" }) requires provisioning.storageClassName for an ObjectBucketClaim.');
     }
     if (!dynamicOwnership && options.ownership !== 'direct-provisioned' && options.provisioning) {
       throw new Error('ObjectStorage.s3({ provisioning }) is valid only with ownership: "direct-provisioned".');
     }
-    const provider: ApplicationS3ObjectStorageProvider = {
-      kind: 's3',
-      ...options,
-      region,
-    };
-    const awsManaged = provider.account !== undefined;
-    const external = !awsManaged && provider.ownership !== 'direct-provisioned';
+    const provider: ApplicationS3ObjectStorageProvider = { kind: 's3', ...options };
+    const external = provider.ownership !== 'direct-provisioned';
     return maintainedBuiltInImplementation(ObjectStorage, 'ObjectStorage.s3', provider, {
       runtimeAdapter: '@applik8s/runtime/object-storage-s3',
       ...(external ? {} : {
-        deploymentContributor: awsManaged
-          ? '@applik8s/deployment-alchemy/providers/s3-object-storage'
-          : '@applik8s/deployment-compiler/providers/object-storage',
+        deploymentContributor: '@applik8s/deployment-compiler/providers/object-storage',
       }),
       readiness: external
         ? 'applik8s.object-storage.s3.external-readiness/v1alpha1'
-        : awsManaged
-          ? 'applik8s.object-storage.s3.aws-readiness/v1alpha1'
-          : 'applik8s.object-storage.s3.readiness/v1alpha1',
+        : 'applik8s.object-storage.s3.readiness/v1alpha1',
       lifecycle: external
         ? 'external'
-        : provider.retention === 'retain'
-          ? 'retained'
-          : 'application',
+        : 'application',
       migration: 'applik8s.object-storage.s3.migration/v1alpha1',
     });
   },
@@ -2439,10 +2437,13 @@ export const ObjectStorage: ApplicationObjectStorageProviderToken = applicationQ
   },
   backup(provider, options) {
     const storage = applicationObjectStorageImplementation(provider);
-    if (!storage || storage.kind !== 's3') {
+    if (storage?.kind !== 's3') {
       throw new Error(
         'ObjectStorage.backup(provider, ...) requires an S3 object-storage provider.',
       );
+    }
+    if ('account' in storage) {
+      throw new Error('ObjectStorage.backup(provider, ...) requires an external S3-compatible provider with a concrete credentials Secret.');
     }
     if (!applicationProviderRequiredString(options.prefix)) {
       throw new Error('ObjectStorage.backup(..., { prefix }) must not be empty.');
@@ -5894,9 +5895,16 @@ function assertApplicationIdentityInfrastructure(value: unknown): asserts value 
 export function isApplicationObjectStorageProvider(value: unknown): value is ApplicationObjectStorageProvider {
   if (!value || typeof value !== 'object') return false;
   if (Reflect.get(value, 'kind') === 'kubernetes-configmap-objects') return true;
-  return Reflect.get(value, 'kind') === 's3'
-    && (isApplicationAwsAccount(Reflect.get(value, 'account')) || applicationProviderRequiredString(Reflect.get(value, 'bucket')))
-    && isApplicationProviderConfigString(Reflect.get(value, 'region'));
+  if (Reflect.get(value, 'kind') !== 's3') return false;
+  const account = Reflect.get(value, 'account');
+  if (account !== undefined) {
+    const bucket = Reflect.get(value, 'bucket');
+    return isApplicationAwsAccount(account)
+      && isApplicationProviderConfigString(Reflect.get(value, 'region'))
+      && (bucket === undefined || isApplicationProviderConfigString(bucket));
+  }
+  return applicationProviderRequiredString(Reflect.get(value, 'bucket'))
+    && applicationProviderRequiredString(Reflect.get(value, 'region'));
 }
 
 function isApplicationS3ObjectStorageProvider(
@@ -5904,7 +5912,8 @@ function isApplicationS3ObjectStorageProvider(
 ): value is ApplicationS3ObjectStorageProvider {
   return Boolean(
     isApplicationObjectStorageProvider(value)
-    && Reflect.get(value, 'kind') === 's3',
+    && Reflect.get(value, 'kind') === 's3'
+    && Reflect.get(value, 'account') === undefined,
   );
 }
 

@@ -17,10 +17,6 @@ import {
 	addApplicationProviderBinding,
 	addApplicationProviderRequirement,
 } from "./application-graph-state.js";
-import {
-	installApplicationObjectStorageRuntimeResolver,
-	setApplicationObjectStorageRuntimeFactory,
-} from "./application-object-storage-runtime-resolver.js";
 import type {
 	ApplicationObjectMetadata,
 	ApplicationObjectPutRequest,
@@ -28,6 +24,10 @@ import type {
 	ApplicationSignedObjectIntent,
 } from "./application-object-storage-runtime-contract.js";
 import { createApplicationObjectStoreRuntimeHandle } from "./application-object-storage-runtime-handle.js";
+import {
+	installApplicationObjectStorageRuntimeResolver,
+	setApplicationObjectStorageRuntimeFactory,
+} from "./application-object-storage-runtime-resolver.js";
 import type {
 	ApplicationObjectStorageProvider,
 	ApplicationProviderBinding,
@@ -291,7 +291,7 @@ export function registerApplicationObjectStore(
 		generatedResources: [],
 		runtime: {
 			secretRefs:
-				provider.kind === "s3" && provider.credentialsSecret
+				provider.kind === "s3" && 'credentialsSecret' in provider && provider.credentialsSecret
 					? [provider.credentialsSecret]
 					: [],
 		},

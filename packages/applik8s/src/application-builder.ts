@@ -206,7 +206,7 @@ export { installApplicationObjectStorageRuntimeResolver } from './application-ob
 export type { ApplicationProcessorOptions } from './application-processor-policy.js';
 export type { ApplicationProfile, ApplicationProfileBranchOptions, ApplicationProfileVariant, ApplicationProfileVariantOverride, ApplicationQualifiedProviderBinding } from './application-profiles.js';
 export { installApplicationProjectionRuntimeResolver } from './application-projection-binding.js';
-export type { ApplicationAcmCertificateProvider, ApplicationActorRuntimeProvider, ApplicationActorRuntimeProviderToken, ApplicationAnalyticalDatabaseProvider, ApplicationAnalyticalDatabaseProviderToken, ApplicationAnalyticsConstructors, ApplicationAthenaLakehouseQueryProvider, ApplicationAuroraPostgresTransactionalDatabaseProvider, ApplicationAuthorizationDecision, ApplicationAuthorizationProvider, ApplicationAuthorizationProviderToken, ApplicationAuthorizationRequest, ApplicationAwsAccount, ApplicationAwsFiniteExecutionHostProvider, ApplicationAwsHostProvider, ApplicationAwsHttpExposureProvider, ApplicationAwsJobRuntimeProvider, ApplicationCelldActorRuntimeProvider, ApplicationCertificateProvider, ApplicationCertificateProviderToken, ApplicationCertManagerCertificateProvider, ApplicationClickHouseAnalyticalDatabaseProvider, ApplicationClickStackObservabilityProvider, ApplicationCloudWatchObservabilityProvider, ApplicationContainerRegistryCredentialSecret, ApplicationContainerRegistryEndpoint, ApplicationContainerRegistryProvider, ApplicationContainerRegistryProviderToken, ApplicationContainerRegistrySecretRef, ApplicationContainerRegistryTls, ApplicationCounterStoreProvider, ApplicationCredentialStoreProvider, ApplicationCurrentKubernetesCluster, ApplicationDatabaseConstructors, ApplicationDefaults, ApplicationDefaultsBinding, ApplicationDistributedOperatorRuntimeProvider, ApplicationDnsPublicationProvider, ApplicationDnsPublicationProviderToken, ApplicationDuckDbLakehouseDatasetProvider, ApplicationDuckDbLakehouseQueryProvider, ApplicationEcrContainerRegistryProvider, ApplicationEventBridgeSchedulerProvider, ApplicationEventLogProvider, ApplicationEventLogProviderToken, ApplicationEventSourceProvider, ApplicationExternalClickHouseConnection, ApplicationExternalClickHouseOptions, ApplicationExternalDnsPublicationProvider, ApplicationExternalKubernetesCluster, ApplicationExternalPostgresDatabaseOptions, ApplicationFiniteExecutionHostProvider, ApplicationFiniteExecutionHostProviderToken, ApplicationGeneratedTransactionalDatabaseMigrationJobOptions, ApplicationHarborContainerRegistryOptions, ApplicationHarborContainerRegistryProvider, ApplicationHarborProjectManagement, ApplicationHatchetSchedulerProvider, ApplicationHatchetWorkflowEngineProvider, ApplicationHostBinding, ApplicationHostProvider, ApplicationHostProviderToken, ApplicationHttpExposureProvider, ApplicationHttpExposureProviderToken, ApplicationIdentityInfrastructure, ApplicationIdentityProvider, ApplicationIdentityProviderToken, ApplicationIndexBackend, ApplicationIndexStoreProviderToken, ApplicationIngressHttpExposureProvider, ApplicationJetStreamQueueProvider, ApplicationJobResultStoreProvider, ApplicationJobResultStoreProviderToken, ApplicationJobRuntimeProvider, ApplicationJobRuntimeProviderToken, ApplicationKinesisEventLogProvider, ApplicationKubernetesCluster, ApplicationKubernetesConfigMapObjectStorageProvider, ApplicationKubernetesConfigMapQueueProvider, ApplicationKubernetesCredentialStoreProvider, ApplicationKubernetesCronJobSchedulerProvider, ApplicationKubernetesFiniteExecutionHostProvider, ApplicationKubernetesHostProvider, ApplicationKubernetesJobRuntimeProvider, ApplicationKubernetesManagedModelStoreProvider, ApplicationKubernetesOperatorRuntimeProvider, ApplicationKubernetesResourceCounterStoreProvider, ApplicationKubernetesSecretProvider, ApplicationKubernetesWatchEventSourceProvider, ApplicationLakehouseDatasetProvider, ApplicationLakehouseDatasetProviderToken, ApplicationLakehouseQueryProvider, ApplicationLakehouseQueryProviderToken, ApplicationLocalActorRuntimeProvider, ApplicationLocalJobRuntimeProvider, ApplicationLocalObservabilityProvider, ApplicationLocalSchedulerProvider, ApplicationManagedHostProvider, ApplicationManagedModelStoreProvider, ApplicationManagedModelStoreProviderToken, ApplicationNatsJetStreamEventLogProvider, ApplicationNodePortHttpExposureProvider, ApplicationOAuthAuthorizationServerProvider, ApplicationOAuthAuthorizationServerProviderToken, ApplicationObjectStorageProvider, ApplicationObservabilityProvider, ApplicationObservabilityProviderToken, ApplicationOciContainerRegistryProvider, ApplicationOpenSearchProvider, ApplicationOperatorRuntimeProvider, ApplicationOperatorRuntimeProviderToken, ApplicationOrbstackContainerRegistryProvider, ApplicationOtlpObservabilityProvider, ApplicationPostgresAnalyticalDatabaseProvider, ApplicationPostgresBackupPolicy, ApplicationPostgresClusterSpec, ApplicationPostgresJobResultStoreProvider, ApplicationPostgresManagedModelStoreProvider, ApplicationPostgresReadinessPolicy, ApplicationPostgresSchedulerProvider, ApplicationPostgresSearchProvider, ApplicationPostgresTransactionalDatabaseOptions, ApplicationPostgresTransactionalDatabaseProvider, ApplicationProviderBinding, ApplicationProviderConfigString, ApplicationProviderConfigUrl, ApplicationProviderQualification, ApplicationProviderToken, ApplicationQualifiableProviderToken, ApplicationQualifiedLakehouseDatasetProviderToken, ApplicationQualifiedLakehouseProviderRequired, ApplicationQualifiedProviderToken, ApplicationQueueProvider, ApplicationQueueProviderToken, ApplicationRequestAdmission, ApplicationRivetActorRuntimeProvider, ApplicationRoute53DnsPublicationProvider, ApplicationS3LakehouseDatasetProvider, ApplicationSchedulerProvider, ApplicationSchedulerProviderToken, ApplicationSearchCapability, ApplicationSearchProvider, ApplicationSearchProviderToken, ApplicationSecretProvider, ApplicationSqsQueueProvider, ApplicationStructuredGenerationDeterministicProvider, ApplicationStructuredGenerationHttpProvider, ApplicationStructuredGenerationProvider, ApplicationStructuredGenerationProviderToken, ApplicationTelemetryPolicy, ApplicationTelemetryPolicyOptions, ApplicationTransactionalDatabaseMigrationPolicy, ApplicationTransactionalDatabaseProvider, ApplicationTransactionalDatabaseProviderToken, ApplicationTypedProviderContract, ApplicationValkeyIndexBackend, ApplicationWorkflowEngineProvider, ApplicationWorkflowEngineProviderToken } from './application-providers.js';
+export type { ApplicationAcmCertificateProvider, ApplicationActorRuntimeProvider, ApplicationActorRuntimeProviderToken, ApplicationAnalyticalDatabaseProvider, ApplicationAnalyticalDatabaseProviderToken, ApplicationAnalyticsConstructors, ApplicationAthenaLakehouseQueryProvider, ApplicationAuroraPostgresTransactionalDatabaseProvider, ApplicationAuthorizationDecision, ApplicationAuthorizationProvider, ApplicationAuthorizationProviderToken, ApplicationAuthorizationRequest, ApplicationAwsAccount, ApplicationAwsFiniteExecutionHostProvider, ApplicationAwsHostProvider, ApplicationAwsHttpExposureProvider, ApplicationAwsJobRuntimeProvider, ApplicationAwsS3ObjectStorageProvider, ApplicationCelldActorRuntimeProvider, ApplicationCertificateProvider, ApplicationCertificateProviderToken, ApplicationCertManagerCertificateProvider, ApplicationClickHouseAnalyticalDatabaseProvider, ApplicationClickStackObservabilityProvider, ApplicationCloudWatchObservabilityProvider, ApplicationContainerRegistryCredentialSecret, ApplicationContainerRegistryEndpoint, ApplicationContainerRegistryProvider, ApplicationContainerRegistryProviderToken, ApplicationContainerRegistrySecretRef, ApplicationContainerRegistryTls, ApplicationCounterStoreProvider, ApplicationCredentialStoreProvider, ApplicationCurrentKubernetesCluster, ApplicationDatabaseConstructors, ApplicationDefaults, ApplicationDefaultsBinding, ApplicationDistributedOperatorRuntimeProvider, ApplicationDnsPublicationProvider, ApplicationDnsPublicationProviderToken, ApplicationDuckDbLakehouseDatasetProvider, ApplicationDuckDbLakehouseQueryProvider, ApplicationEcrContainerRegistryProvider, ApplicationEventBridgeSchedulerProvider, ApplicationEventLogProvider, ApplicationEventLogProviderToken, ApplicationEventSourceProvider, ApplicationExternalClickHouseConnection, ApplicationExternalClickHouseOptions, ApplicationExternalDnsPublicationProvider, ApplicationExternalKubernetesCluster, ApplicationExternalPostgresDatabaseOptions, ApplicationFiniteExecutionHostProvider, ApplicationFiniteExecutionHostProviderToken, ApplicationGeneratedTransactionalDatabaseMigrationJobOptions, ApplicationHarborContainerRegistryOptions, ApplicationHarborContainerRegistryProvider, ApplicationHarborProjectManagement, ApplicationHatchetSchedulerProvider, ApplicationHatchetWorkflowEngineProvider, ApplicationHostBinding, ApplicationHostProvider, ApplicationHostProviderToken, ApplicationHttpExposureProvider, ApplicationHttpExposureProviderToken, ApplicationIdentityInfrastructure, ApplicationIdentityProvider, ApplicationIdentityProviderToken, ApplicationIndexBackend, ApplicationIndexStoreProviderToken, ApplicationIngressHttpExposureProvider, ApplicationJetStreamQueueProvider, ApplicationJobResultStoreProvider, ApplicationJobResultStoreProviderToken, ApplicationJobRuntimeProvider, ApplicationJobRuntimeProviderToken, ApplicationKinesisEventLogProvider, ApplicationKubernetesCluster, ApplicationKubernetesConfigMapObjectStorageProvider, ApplicationKubernetesConfigMapQueueProvider, ApplicationKubernetesCredentialStoreProvider, ApplicationKubernetesCronJobSchedulerProvider, ApplicationKubernetesFiniteExecutionHostProvider, ApplicationKubernetesHostProvider, ApplicationKubernetesJobRuntimeProvider, ApplicationKubernetesManagedModelStoreProvider, ApplicationKubernetesOperatorRuntimeProvider, ApplicationKubernetesResourceCounterStoreProvider, ApplicationKubernetesSecretProvider, ApplicationKubernetesWatchEventSourceProvider, ApplicationLakehouseDatasetProvider, ApplicationLakehouseDatasetProviderToken, ApplicationLakehouseQueryProvider, ApplicationLakehouseQueryProviderToken, ApplicationLocalActorRuntimeProvider, ApplicationLocalJobRuntimeProvider, ApplicationLocalObservabilityProvider, ApplicationLocalSchedulerProvider, ApplicationManagedHostProvider, ApplicationManagedModelStoreProvider, ApplicationManagedModelStoreProviderToken, ApplicationNatsJetStreamEventLogProvider, ApplicationNodePortHttpExposureProvider, ApplicationOAuthAuthorizationServerProvider, ApplicationOAuthAuthorizationServerProviderToken, ApplicationObjectStorageProvider, ApplicationObservabilityProvider, ApplicationObservabilityProviderToken, ApplicationOciContainerRegistryProvider, ApplicationOpenSearchProvider, ApplicationOperatorRuntimeProvider, ApplicationOperatorRuntimeProviderToken, ApplicationOrbstackContainerRegistryProvider, ApplicationOtlpObservabilityProvider, ApplicationPostgresAnalyticalDatabaseProvider, ApplicationPostgresBackupPolicy, ApplicationPostgresClusterSpec, ApplicationPostgresJobResultStoreProvider, ApplicationPostgresManagedModelStoreProvider, ApplicationPostgresReadinessPolicy, ApplicationPostgresSchedulerProvider, ApplicationPostgresSearchProvider, ApplicationPostgresTransactionalDatabaseOptions, ApplicationPostgresTransactionalDatabaseProvider, ApplicationProviderBinding, ApplicationProviderConfigString, ApplicationProviderConfigUrl, ApplicationProviderQualification, ApplicationProviderToken, ApplicationQualifiableProviderToken, ApplicationQualifiedLakehouseDatasetProviderToken, ApplicationQualifiedLakehouseProviderRequired, ApplicationQualifiedProviderToken, ApplicationQueueProvider, ApplicationQueueProviderToken, ApplicationRequestAdmission, ApplicationRivetActorRuntimeProvider, ApplicationRoute53DnsPublicationProvider, ApplicationS3LakehouseDatasetProvider, ApplicationSchedulerProvider, ApplicationSchedulerProviderToken, ApplicationSearchCapability, ApplicationSearchProvider, ApplicationSearchProviderToken, ApplicationSecretProvider, ApplicationSqsQueueProvider, ApplicationStructuredGenerationDeterministicProvider, ApplicationStructuredGenerationHttpProvider, ApplicationStructuredGenerationProvider, ApplicationStructuredGenerationProviderToken, ApplicationTelemetryPolicy, ApplicationTelemetryPolicyOptions, ApplicationTransactionalDatabaseMigrationPolicy, ApplicationTransactionalDatabaseProvider, ApplicationTransactionalDatabaseProviderToken, ApplicationTypedProviderContract, ApplicationValkeyIndexBackend, ApplicationWorkflowEngineProvider, ApplicationWorkflowEngineProviderToken } from './application-providers.js';
 export { ActorRuntime, AnalyticalDatabase, Analytics, ApplicationHost, Authorization, AWS, Certificate, ContainerRegistry, CounterStore, CredentialStore, Database, DnsPublication, defaultApplicationEventLogProvider, defaultApplicationProviders, defaultApplicationWorkflowEngineProvider, defineApplicationProvider, EventLog, EventSource, FiniteExecutionHost, HttpExposure, IdentityProvider, IndexStore, JobResultStore, JobRuntime, KubernetesCluster, Lakehouse, LakehouseDataset, LakehouseQuery, ManagedModelStore, OAuthAuthorizationServer, ObjectStorage, Observability, OperatorRuntime, providers, Queue, Scheduler, Search, Secret, StructuredGeneration, TransactionalDatabase, telemetryPolicy, WorkflowEngine } from './application-providers.js';
 export type { ApplicationKubernetesModelSelection, ApplicationKubernetesModelSelectionContext, ApplicationKubernetesModelViewContract, ApplicationKubernetesModelViewImplementation, ApplicationKubernetesModelViewOptions, ApplicationKubernetesModelViewSchemaContract, ApplicationModelViewContext, ApplicationModelViewContract, ApplicationModelViewImplementation, ApplicationModelViewOptions, ApplicationOnlineProjectionQueryBinding, ApplicationOnlineQueryRuntimeSource, ApplicationOnlineQuerySource, ApplicationQueryAuthorizationRequest, ApplicationQuerySourceBinding } from './application-queries.js';
 export type { ApplicationAnalyticalProjectionBinding, ApplicationAnalyticalProjectionOptions, ApplicationEventBatch, ApplicationEventEnvelope, ApplicationGatewayAdmission, ApplicationGatewayBinding, ApplicationGatewayOptions, ApplicationOnlineProjectionBinding, ApplicationOnlineProjectionOptions, ApplicationProjectionBinding, ApplicationProjectionOptions, ApplicationStreamBatchContext, ApplicationStreamBatchHandler, ApplicationStreamBatchOptions, ApplicationStreamBinding, ApplicationStreamOptions, ApplicationStreamProcessContext, ApplicationStreamProcessHandler, ApplicationStreamProcessOptions, ApplicationStreamProcessorBinding, ApplicationStreamScheduleFunctions, ApplicationStreamScheduleTargets, ApplicationStreamTaskFunctions, ApplicationStreamTaskTargets, ApplicationSubscriptionBinding, ApplicationSubscriptionOptions } from './application-reactive.js';
@@ -1384,6 +1384,10 @@ export interface KubernetesApplicationFunction extends KubernetesApplicationComp
 }
 
 const applicationGraphByComposition = new WeakMap<object, ApplicationGraph>();
+const applicationGraphFinalizerByComposition = new WeakMap<
+  object,
+  (graph: ApplicationGraph) => ApplicationGraph
+>();
 const applicationStateByScope = new WeakMap<KubernetesApplicationScope, ApplicationScopeState>();
 const applicationResourceControllerByResource = new WeakMap<object, ApplicationResourceControllerState>();
 let lastApplicationGraph: ApplicationGraph | undefined;
@@ -1414,7 +1418,9 @@ interface ApplicationResourceControllerState {
 
 export function applicationGraphFor(composition: object): ApplicationGraph | undefined {
   const attached = Reflect.get(composition, applicationGraphMetadataProperty);
-  return isApplicationGraph(attached) ? attached : applicationGraphByComposition.get(composition);
+  const graph = isApplicationGraph(attached) ? attached : applicationGraphByComposition.get(composition);
+  const finalize = applicationGraphFinalizerByComposition.get(composition);
+  return graph && finalize ? finalize(graph) : graph;
 }
 
 function attachApplicationGraph(composition: object, graph: ApplicationGraph): void {
@@ -1724,7 +1730,35 @@ function createKubernetesApplicationBuilder<TSpec extends KroCompatibleType = Re
   const invalidate = () => {
     materialized = undefined;
   };
-  const previewContext = createApplicationContext(definition, invalidate);
+  const staticEventCatalogSources = new Map<
+    string,
+    string
+  >();
+  const withStaticEventCatalogSources = (graph: ApplicationGraph): ApplicationGraph => ({
+    ...graph,
+    nodes: graph.nodes.map((node) => {
+      if (node.kind !== 'stream' || !node.catalog) return node;
+      const serializedSources = staticEventCatalogSources.get(String(node.id));
+      return serializedSources
+        ? {
+            ...node,
+            catalog: {
+              ...node.catalog,
+              // typecast-boundary: declaration-time catalog sources are
+              // serialized before TypeKro probing and decoded only at the
+              // durable graph boundary, so schema proxies cannot masquerade
+              // as application event contracts.
+              sources: JSON.parse(serializedSources) as NonNullable<typeof node.catalog>['sources'],
+            },
+          }
+        : node;
+    }),
+  });
+  const previewContext = createApplicationContext(definition, invalidate, {
+    onEventCatalogSources(nodeId, sources) {
+      staticEventCatalogSources.set(String(nodeId), JSON.stringify(sources));
+    },
+  });
   const preview = previewContext.scope;
   const replays: ApplicationBuilderReplay[] = [];
   const replayedEventProducers = new WeakMap<object, ApplicationEventProducer>();
@@ -1890,9 +1924,16 @@ function createKubernetesApplicationBuilder<TSpec extends KroCompatibleType = Re
         enumerable: false,
         configurable: false,
       });
+      applicationGraphFinalizerByComposition.set(materialized, withStaticEventCatalogSources);
       const graph = applicationGraphFor(materialized);
-      if (graph && defaultNamespace) {
-        attachApplicationGraph(materialized, normalizeApplicationGraph({ ...graph, metadata: { ...graph.metadata, namespace: defaultNamespace } }));
+      if (graph) {
+        const authoritativeGraph = withStaticEventCatalogSources(graph);
+        attachApplicationGraph(
+          materialized,
+          defaultNamespace
+            ? normalizeApplicationGraph({ ...authoritativeGraph, metadata: { ...authoritativeGraph.metadata, namespace: defaultNamespace } })
+            : authoritativeGraph,
+        );
       }
     }
     return materialized;
@@ -3556,7 +3597,7 @@ function createKubernetesApplicationBuilder<TSpec extends KroCompatibleType = Re
       for (const replay of inferredGatewayReplays) {
         replay(finalizedPreviewState);
       }
-      const preview = applicationGraphFromState(name, finalizedPreviewState);
+      const preview = withStaticEventCatalogSources(applicationGraphFromState(name, finalizedPreviewState));
       return defaultNamespace
         ? normalizeApplicationGraph({
             ...preview,
@@ -4098,6 +4139,12 @@ function applicationQualifiedProviderAliasNodeId(
 function createApplicationContext<TSpec extends KroCompatibleType, TStatus extends KroCompatibleType>(
   definition: TypeKroListenerCompositionDefinition<TSpec, TStatus>,
   onChange?: () => void,
+  hooks: {
+    readonly onEventCatalogSources?: (
+      nodeId: string,
+      sources: NonNullable<Extract<ApplicationGraph['nodes'][number], { readonly kind: 'stream' }>['catalog']>['sources'],
+    ) => void;
+  } = {},
 ): ApplicationContext {
   const servers: Record<string, ApplicationServerBinding> = {};
   const state: ApplicationScopeState = {
@@ -4813,6 +4860,10 @@ function createApplicationContext<TSpec extends KroCompatibleType, TStatus exten
             stream.authorize(principal, action),
         };
       });
+      hooks.onEventCatalogSources?.(
+        applicationReactiveNodeId('stream', input.definition.id),
+        sources.map(({ stream, contract, producer }) => ({ stream, contract, producer })),
+      );
       const binding = registerScopedStream(input.definition, {
         database: input.database,
         retention: { maxAgeSeconds: 30 * 24 * 60 * 60, maxMessages: 10_000_000 },

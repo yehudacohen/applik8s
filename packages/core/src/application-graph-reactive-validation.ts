@@ -203,6 +203,19 @@ function streamMessages(node: ApplicationStreamNode, graph: ApplicationGraph): r
     const contractIds = new Set<string>();
     const streamIds = new Set<string>();
     for (const source of catalog.sources) {
+      if (
+        !source
+        || typeof source !== 'object'
+        || !source.stream?.nodeId?.trim()
+        || !source.contract?.id?.trim()
+        || !source.contract.name?.trim()
+        || !source.contract.version?.trim()
+        || !source.producer?.kind?.trim()
+        || !source.producer.id?.trim()
+      ) {
+        messages.push(`Application event-catalog stream ${node.id} contains a malformed source contract.`);
+        continue;
+      }
       const sourceNode = graph.nodes.find((candidate) => candidate.id === source.stream.nodeId);
       if (
         sourceNode?.kind !== 'stream'
