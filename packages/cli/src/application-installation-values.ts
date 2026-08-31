@@ -101,7 +101,9 @@ function resolveString(value: string, spec: Readonly<Record<string, unknown>>, o
   }
   const computed = /^\$\{(.+)\}$/.exec(value);
   if (computed?.[1]) {
-    if (supportedApplicationSchemaExpression(computed[1])) {
+    if (supportedApplicationSchemaExpression(
+      concretizeApplicationHasExpressions(computed[1], spec),
+    )) {
       try {
         return resolveApplicationSchemaExpression(computed[1], spec);
       } catch (error) {
@@ -135,15 +137,16 @@ function resolveString(value: string, spec: Readonly<Record<string, unknown>>, o
  */
 function resolveApplicationSchemaExpression(expression: string, spec: Readonly<Record<string, unknown>>): unknown {
   if (directInstallationPathPattern.test(expression)) return installationSpecPath(spec, expression);
-  if (!supportedApplicationSchemaExpression(expression)) {
+  const concretizedExpression = concretizeApplicationHasExpressions(expression, spec);
+  if (!supportedApplicationSchemaExpression(concretizedExpression)) {
     throw new Error(`Unsupported Application installation expression ${expression}.`);
   }
   try {
     const resolved = evaluate(
-      expression,
+      concretizedExpression,
       {
         schema: {
-          spec: installationSpecWithAbsentReferences(expression, spec),
+          spec: installationSpecWithAbsentReferences(concretizedExpression, spec),
         },
       },
       {
@@ -157,6 +160,75 @@ function resolveApplicationSchemaExpression(expression: string, spec: Readonly<R
   } catch (error) {
     throw new MissingApplicationInstallationValueError(expression, error);
   }
+}
+
+/**
+ * TypeKro lowers optional JavaScript access into CEL `has(schema.spec.path)`
+ * guards. Deployment planning must choose the same concrete branch before a
+ * nested composition sees the value, but it must not gain a general CEL
+ * reflection surface. Concretize only exact direct installation paths and do
+ * not inspect quoted fallback data.
+ */
+function concretizeApplicationHasExpressions(
+  expression: string,
+  spec: Readonly<Record<string, unknown>>,
+): string {
+  let resolved = '';
+  let index = 0;
+  let quote: '"' | "'" | undefined;
+  let escaped = false;
+  while (index < expression.length) {
+    const character = expression[index] ?? '';
+    if (quote) {
+      resolved += character;
+      if (escaped) escaped = false;
+      else if (character === '\\') escaped = true;
+      else if (character === quote) quote = undefined;
+      index += 1;
+      continue;
+    }
+    if (character === '"' || character === "'") {
+      quote = character;
+      resolved += character;
+      index += 1;
+      continue;
+    }
+    const previous = index === 0 ? '' : expression[index - 1] ?? '';
+    if (
+      expression.startsWith('has', index)
+      && !/[A-Za-z0-9_]/.test(previous)
+    ) {
+      const match = /^has\s*\(\s*(schema\.spec(?:\.[A-Za-z_][A-Za-z0-9_]*)+)\s*\)/.exec(
+        expression.slice(index),
+      );
+      if (match?.[1]) {
+        resolved += installationSpecHasPath(spec, match[1]) ? 'true' : 'false';
+        index += match[0].length;
+        continue;
+      }
+    }
+    resolved += character;
+    index += 1;
+  }
+  return resolved;
+}
+
+function installationSpecHasPath(
+  spec: Readonly<Record<string, unknown>>,
+  path: string,
+): boolean {
+  if (!directInstallationPath(path)) return false;
+  let current: unknown = spec;
+  for (const segment of path.split('.').slice(2)) {
+    if (
+      !current
+      || typeof current !== 'object'
+      || Array.isArray(current)
+      || !Object.hasOwn(current, segment)
+    ) return false;
+    current = Reflect.get(current, segment);
+  }
+  return true;
 }
 
 /**

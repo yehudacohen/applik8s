@@ -228,6 +228,32 @@ test(
 );
 
 test(
+  'researches public sources and publishes an evidence-linked artifact',
+  async ({ page }) => {
+    test.setTimeout(180_000);
+    const suffix = Date.now().toString(36);
+    const conversationId = crypto.randomUUID();
+
+    await page.goto(`/conversations/${conversationId}`);
+    await expect(
+      page.getByRole('heading', { name: 'New research conversation' }),
+    ).toBeVisible();
+    await page.getByLabel('Research prompt').fill(
+      `Explain what a Kubernetes Pod is and ground the answer in public sources. Evidence run ${suffix}.`,
+    );
+    await page.getByRole('button', { name: 'Research and publish' }).click();
+
+    const result = page.getByRole('region', { name: 'Research result' });
+    const completed = result.locator('article[data-status="completed"]');
+    await expect(completed).toBeVisible({ timeout: 150_000 });
+    await expect(completed).toContainText('Grounded artifact ready');
+    await expect(completed).toContainText(/Artifact .+ · [1-9]\d* evidence records/u);
+    await expect(result.locator('article[data-status="partial"]')).toHaveCount(0);
+    await expect(result.locator('article[data-status="failed"]')).toHaveCount(0);
+  },
+);
+
+test(
   'runs a workspace-scoped durable review from SSE signal to immutable artifact',
   async ({ page }) => {
     test.setTimeout(180_000);

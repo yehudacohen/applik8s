@@ -676,7 +676,7 @@ export function applicationProviderConsumerWorkloads(
       if (node.kind === "streamProcessor") {
         return [kubernetesName(`${graph.metadata.name}-${node.name}`)];
       }
-      if (node.kind === "aiAgent") return [kubernetesName(node.name)];
+      if (node.kind === "aiAgent") return [kubernetesWorkloadName(node.name)];
       if (node.kind === "taskHandler") {
         return graph.nodes.flatMap((candidate) =>
           candidate.kind === "workflowWorker"
@@ -1166,6 +1166,25 @@ function kubernetesName(value: string): string {
     || "app";
 }
 
+/**
+ * Pod-producing compiler emitters use DNS-label identities rather than the
+ * broader DNS-subdomain spelling accepted by some Kubernetes metadata. Keep
+ * consumer attribution on that exact identity so versioned semantic names
+ * such as `researcher.v1` resolve to the Deployment `researcher-v1`.
+ */
+function kubernetesWorkloadName(value: string): string {
+  const normalized = value
+    .replace(/([a-z0-9])([A-Z])/g, "$1-$2")
+    .toLowerCase()
+    .replace(/[^a-z0-9-]+/g, "-")
+    .replace(/-{2,}/g, "-")
+    .replace(/^-+|-+$/g, "");
+  if (!normalized) return "app";
+  if (normalized.length <= 63) return normalized;
+  const hash = createHash("sha256").update(value).digest("hex").slice(0, 10);
+  return `${normalized.slice(0, 52).replace(/-+$/g, "")}-${hash}`;
+}
+
 async function applicationArtifactRequirements(
   bundle: DeploymentJsonObject,
   bundlePath: string,
@@ -1598,6 +1617,12 @@ async function celldActorRuntimeArtifact(
     format: "esm",
     platform: "browser",
     target: "es2022",
+    // Celld executes the generated worker in workerd. Keep the small set of
+    // Node-compatible runtime primitives (notably AsyncLocalStorage) as native
+    // imports instead of either polyfilling them incorrectly or pulling their
+    // implementation into the browser bundle. The generated Wrangler contract
+    // opts into the corresponding workerd compatibility surface below.
+    external: ["node:*"],
     sourcemap: false,
     legalComments: "none",
     define: {
@@ -1608,6 +1633,7 @@ async function celldActorRuntimeArtifact(
     name: "applik8s-actor-authority",
     main: "worker.mjs",
     compatibility_date: "2026-08-01",
+    compatibility_flags: ["nodejs_compat"],
     durable_objects: {
       bindings: [{ name: "APPLIK8S_ACTOR_CELLS", class_name: "Applik8sActorCell" }],
     },

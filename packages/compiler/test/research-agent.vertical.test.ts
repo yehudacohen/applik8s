@@ -8,6 +8,7 @@ import {
   compileApplicationOperationCatalog,
   compileApplicationWorkloadAuthority,
 } from '../src/application-operations/index.js';
+import { applicationProviderConsumerWorkloads } from '../src/application-deployment-graph.js';
 import { discoverApplicationGraphWithExports } from '../src/pipeline/index.js';
 
 const temporaryDirectories: string[] = [];
@@ -89,7 +90,36 @@ export const researchStack = application.composition;
         expect.objectContaining({ operation: expect.objectContaining({ member: 'linkArtifact' }) }),
       ]),
     );
-    const catalog = compileApplicationOperationCatalog(discovered.value.graph);
+    for (const providerInterface of ['SourceRetriever', 'ResearchEvidence']) {
+      const provider = discovered.value.graph.nodes.find(
+        (node) => node.kind === 'provider' && node.interface === providerInterface,
+      );
+      expect(provider?.kind).toBe('provider');
+      if (provider?.kind !== 'provider') continue;
+      expect(provider.config).toHaveProperty('profile');
+      expect(provider.config).not.toHaveProperty(
+        providerInterface === 'SourceRetriever' ? 'sourceRetriever' : 'researchEvidence',
+      );
+    }
+    const inference = discovered.value.graph.nodes.find(
+      (node) => node.kind === 'provider' && node.interface === 'AI',
+    );
+    expect(inference?.kind).toBe('provider');
+    if (inference?.kind === 'provider') {
+      expect([...applicationProviderConsumerWorkloads(
+        discovered.value.graph,
+        new Set([inference.id]),
+      )]).toContain('market-research-v1');
+    }
+    const catalog = compileApplicationOperationCatalog(discovered.value.graph, {
+      requireClassified: true,
+    });
+    for (const member of ['begin', 'checkpoint', 'settle']) {
+      expect(catalog.operations).toContainEqual(expect.objectContaining({
+        id: `applik8s://actors/market-research.v1-run/operations/${member}`,
+        authority: expect.objectContaining({ classification: 'assigned' }),
+      }));
+    }
     const authority = compileApplicationWorkloadAuthority(discovered.value.graph, catalog);
     const output = join(directory, 'generated');
     const [artifact] = await emitGeneratedApplicationAgents({

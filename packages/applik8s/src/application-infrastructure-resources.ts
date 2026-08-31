@@ -680,6 +680,7 @@ export function recordApplicationProviderGraph(
     : undefined;
   const nodeId = applicationProviderGraphNodeId(providerInterface, qualification);
   const targetSelection = applicationTargetProviderSelectionFor(implementation);
+  const profileSelection = applicationProviderSelectionFor(implementation);
   addApplicationGraphNode(state, {
     id: nodeId,
     kind: 'provider',
@@ -818,7 +819,7 @@ export function recordApplicationProviderGraph(
       ...(providerInterface === 'WebSearch' && !targetSelection && implementation && typeof implementation === 'object'
         ? { webSearch: applicationTypeKroGraphValue(implementation) as JsonValue }
         : {}),
-      ...(providerInterface === 'SourceRetriever' && !targetSelection && implementation && typeof implementation === 'object'
+      ...(providerInterface === 'SourceRetriever' && !targetSelection && !profileSelection && implementation && typeof implementation === 'object'
         ? {
             sourceRetriever: applicationTypeKroGraphValue({
               provider: Reflect.get(implementation, 'provider'),
@@ -828,7 +829,7 @@ export function recordApplicationProviderGraph(
             }) as JsonValue,
           }
         : {}),
-      ...(providerInterface === 'ResearchEvidence' && !targetSelection && implementation && typeof implementation === 'object'
+      ...(providerInterface === 'ResearchEvidence' && !targetSelection && !profileSelection && implementation && typeof implementation === 'object'
         ? {
             researchEvidence: applicationTypeKroGraphValue({
               provider: Reflect.get(implementation, 'provider'),

@@ -1,7 +1,7 @@
 // typecast-file-boundary: the release runner validates generated manifests,
 // Kubernetes objects, and Playwright reports before using their fields.
 import { randomUUID } from 'node:crypto';
-import { readdir, rm } from 'node:fs/promises';
+import { copyFile, readdir, rename, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createApplicationAgenticStart } from '../packages/start-agentic/src/index.js';
 import {
@@ -9,6 +9,7 @@ import {
   writeOfficialTanStackScaffold,
 } from './generated-agentic-start-live-support';
 import {
+  captureIdentityStartCommand,
   type IdentityStartServiceTunnel,
   identityStartResourceExists,
   identityStartServiceTunnel,
@@ -28,19 +29,36 @@ import {
 
 const root = process.cwd();
 const context = process.env.APPLIK8S_E2E_CONTEXT ?? 'orbstack';
-const projectName = 'agentic-start-evidence';
+const managedResearch =
+  process.env.APPLIK8S_AGENTIC_START_LIVE_PROFILE === 'managed-research';
+const environmentFile = process.env.APPLIK8S_AGENTIC_START_ENV_FILE?.trim();
+const projectName = managedResearch
+  ? 'agentic-start-v09-research-evidence'
+  : 'agentic-start-evidence';
 const target = join(root, '.applik8s-tmp', projectName);
 const namespace = `${projectName}-system`;
+const searchNamespace = `${projectName}-web-search-system`;
+const searchSecret = `${projectName}-web-search`;
+const installationName = managedResearch
+  ? `${projectName}-research-live`
+  : projectName;
+const installationResource = managedResearch
+  ? 'agenticstartv09researchevidence'
+  : 'agenticstartevidence';
 const execution = {
   root,
   context,
-  label: 'agentic-start-starter',
+  label: managedResearch
+    ? 'agentic-start-managed-research'
+    : 'agentic-start-starter',
 } as const;
 const cli = join(root, 'packages/cli/dist/bin.js');
 const timeoutMs = 20 * 60_000;
 const evidencePath = join(
   root,
-  '.applik8s-tmp/evidence/v0.7/agentic-start-starter.json',
+  managedResearch
+    ? '.applik8s-tmp/evidence/v0.9/agentic-start-managed-research.json'
+    : '.applik8s-tmp/evidence/v0.7/agentic-start-starter.json',
 );
 const deploymentGraphPath = join(
   target,
@@ -53,7 +71,9 @@ const observed = new Map<
   { readonly test: string; readonly observedAt: string }
 >();
 let deployed = false;
+let searchFixture = false;
 let tunnel: IdentityStartServiceTunnel | undefined;
+const preservedEnvironmentFiles = new Map<string, string>();
 
 await discardV06Evidence(evidencePath);
 
@@ -102,6 +122,13 @@ try {
     );
   }
 
+  for (const name of ['.env', '.env.local']) {
+    const generatedEnvironmentPath = join(target, name);
+    if (!await Bun.file(generatedEnvironmentPath).exists()) continue;
+    const preservedEnvironmentPath = `${target}.${runId}.${name.slice(1)}.preserved`;
+    await rename(generatedEnvironmentPath, preservedEnvironmentPath);
+    preservedEnvironmentFiles.set(name, preservedEnvironmentPath);
+  }
   await rm(target, { recursive: true, force: true });
   await createApplicationAgenticStart({
     targetDirectory: target,
@@ -125,6 +152,42 @@ try {
     workspaceRoot: root,
     targetDirectory: target,
   });
+  if (managedResearch) {
+    // The live lane deliberately reuses the maintainer-provided operation-host
+    // bindings without parsing, logging, or embedding their values. The CLI
+    // admits only variables named by the installation's credential sources.
+    if (preservedEnvironmentFiles.size > 0) {
+      for (const [name, preservedEnvironmentPath] of preservedEnvironmentFiles) {
+        await rename(preservedEnvironmentPath, join(target, name));
+      }
+      preservedEnvironmentFiles.clear();
+      observed.set('environment-preservation', {
+        test: 'existing generated-project environment files were mechanically preserved across regeneration without reading, logging, or overwriting them',
+        observedAt: new Date().toISOString(),
+      });
+    } else if (environmentFile) {
+      if (!await Bun.file(environmentFile).exists()) {
+        throw new Error(`The requested mechanical environment source does not exist: ${environmentFile}`);
+      }
+      await copyFile(environmentFile, join(target, '.env.local'));
+      observed.set('environment-copy', {
+        test: 'the requested environment file was mechanically copied for qualification without inspecting or logging its values',
+        observedAt: new Date().toISOString(),
+      });
+    } else {
+      await copyFile(join(root, '.env'), join(target, '.env'));
+    }
+    await copyFile(
+      join(target, 'kubernetes/application.research-live.yaml'),
+      join(target, 'kubernetes/application.yaml'),
+    );
+    await resetManagedResearchFixture();
+    searchFixture = true;
+    observed.set('managed-search-prerequisite', {
+      test: 'reference-only SearXNG Secret and external namespace fixture',
+      observedAt: new Date().toISOString(),
+    });
+  }
   await runIdentityStartCommand(
     execution,
     'generate relational migrations from the generated model declarations',
@@ -222,7 +285,8 @@ try {
     'calls the bounded public assistant through its generated function-native facade',
     'renders provider-neutral billing and executes simulated checkout and portal calls',
     'persists, reloads, renames, and archives a generated research conversation',
-  'runs a workspace-scoped durable review from SSE signal to immutable artifact',
+    'researches public sources and publishes an evidence-linked artifact',
+    'runs a workspace-scoped durable review from SSE signal to immutable artifact',
   ];
   if (
     results.size !== expected.length
@@ -245,7 +309,7 @@ try {
     collectV06ClusterIdentity(context),
     collectV06InstallationIdentity({
       context,
-      resource: `agenticstartevidence/${projectName}`,
+      resource: `${installationResource}/${installationName}`,
       namespace: 'default',
     }),
     collectV06ArtifactIdentity(deploymentGraphPath),
@@ -273,6 +337,11 @@ try {
     undefined,
     timeoutMs,
   );
+  if (managedResearch) {
+    await assertManagedResearchTeardown();
+    await deleteManagedResearchFixture();
+    searchFixture = false;
+  }
   observed.set('graph-backed-destroy', {
     test:
       'Applik8s destroy removed the root instance, RGD, and owned application namespace',
@@ -283,6 +352,7 @@ try {
     'production-build',
     'graph-backed-deploy',
     'graph-noop-redeploy',
+    ...(managedResearch ? ['managed-search-prerequisite'] : []),
     ...expected.map((name) => `browser:${name}`),
     'graph-backed-destroy',
   ];
@@ -296,7 +366,7 @@ try {
       controlPlaneNamespace: 'default',
       installation: projectName,
       applicationNamespace: namespace,
-      profile: 'starter',
+      profile: managedResearch ? 'developer-managed-research' : 'starter',
       deployment: 'ApplicationDeploymentGraph -> Alchemy -> TypeKro',
     },
     assertionEvidence: createV06AssertionEvidence(
@@ -316,6 +386,7 @@ try {
 } catch (error) {
   await discardV06Evidence(evidencePath);
   await tunnel?.close();
+  const cleanupErrors: unknown[] = [];
   const deploymentGraphExists = await Bun.file(
     join(
       target,
@@ -331,12 +402,118 @@ try {
         ['destroy', '--context', context],
         target,
       );
+      deployed = false;
     } catch (cleanupError) {
-      throw new AggregateError(
-        [error, cleanupError],
-        'Generated Agentic Start qualification and graph-backed cleanup both failed.',
-      );
+      cleanupErrors.push(cleanupError);
     }
   }
+  if (searchFixture) {
+    try {
+      await deleteManagedResearchFixture();
+      searchFixture = false;
+    } catch (cleanupError) {
+      cleanupErrors.push(cleanupError);
+    }
+  }
+  for (const [name, preservedEnvironmentPath] of preservedEnvironmentFiles) {
+    if (await Bun.file(preservedEnvironmentPath).exists()) {
+      await rename(preservedEnvironmentPath, join(target, name));
+    }
+  }
+  if (cleanupErrors.length > 0) {
+    throw new AggregateError(
+      [error, ...cleanupErrors],
+      'Generated Agentic Start qualification failed and one or more cleanup operations also failed.',
+    );
+  }
   throw error;
+}
+
+async function resetManagedResearchFixture(): Promise<void> {
+  await runIdentityStartCommand(
+    execution,
+    'remove a stale managed-research prerequisite namespace',
+    'kubectl',
+    [
+      '--context',
+      context,
+      'delete',
+      `namespace/${searchNamespace}`,
+      '--ignore-not-found=true',
+      '--wait=true',
+      '--timeout=180s',
+    ],
+    root,
+  );
+  await runIdentityStartCommand(
+    execution,
+    'create the disposable managed-research prerequisite namespace',
+    'kubectl',
+    ['--context', context, 'create', 'namespace', searchNamespace],
+    root,
+  );
+  await runIdentityStartCommand(
+    execution,
+    'create the reference-only managed SearXNG settings Secret',
+    'kubectl',
+    [
+      '--context',
+      context,
+      '--namespace',
+      searchNamespace,
+      'create',
+      'secret',
+      'generic',
+      searchSecret,
+      `--from-literal=secret_key=${randomUUID()}`,
+    ],
+    root,
+  );
+}
+
+async function assertManagedResearchTeardown(): Promise<void> {
+  const remaining = await captureIdentityStartCommand(
+    'kubectl',
+    [
+      '--context',
+      context,
+      '--namespace',
+      searchNamespace,
+      'get',
+      'deployment,statefulset,service,networkpolicy,configmap',
+      '--ignore-not-found=true',
+      '--output=name',
+      '--selector',
+      `app.kubernetes.io/instance=${projectName}-web-search`,
+    ],
+    root,
+  );
+  if (remaining.code !== 0) {
+    throw new Error(
+      `Unable to verify managed SearXNG teardown: ${remaining.stderr || remaining.stdout}`,
+    );
+  }
+  if (remaining.stdout.trim()) {
+    throw new Error(
+      `Managed SearXNG teardown retained graph-owned resources:\n${remaining.stdout.trim()}`,
+    );
+  }
+}
+
+async function deleteManagedResearchFixture(): Promise<void> {
+  await runIdentityStartCommand(
+    execution,
+    'delete the disposable managed-research prerequisite namespace',
+    'kubectl',
+    [
+      '--context',
+      context,
+      'delete',
+      `namespace/${searchNamespace}`,
+      '--ignore-not-found=true',
+      '--wait=true',
+      '--timeout=180s',
+    ],
+    root,
+  );
 }

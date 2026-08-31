@@ -1,0 +1,24 @@
+apiVersion: applik8s-template-project.applik8s.dev/v1alpha1
+kind: Applik8sTemplateProject
+metadata:
+  name: applik8s-template-project-research-live
+  namespace: default
+spec:
+  name: applik8s-template-project
+  profile: developer
+  providers:
+    inference:
+      endpoint: https://openrouter.ai/api/v1
+      model: nvidia/nemotron-3-ultra-550b-a55b:free
+      credentialSecretName: applik8s-template-project-inference
+      credentialKey: apiKey
+      credentialSource:
+        kind: hostEnvironment
+        variable: OPENROUTER_API_KEY
+    # SearXNG itself is graph-owned. Its cryptographic settings remain a
+    # reference-only prerequisite so values never enter rendered YAML or
+    # deployment state. The live qualification runner creates and removes this
+    # disposable Secret and namespace around the graph lifecycle.
+    webSearch:
+      secretName: applik8s-template-project-web-search
+      secretKey: secret_key

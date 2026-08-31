@@ -205,6 +205,7 @@
     "generate:v09:public-contracts": "bun run scripts/generate-v09-public-contract-inventory.ts --write",
     "check:v09:public-contracts": "bun run scripts/generate-v09-public-contract-inventory.ts",
     "test:v09:research-postgres-live": "bash scripts/run-v09-research-postgres-live.sh",
+    "test:v09:research-agentic-start-live": "APPLIK8S_E2E_CONTEXT=orbstack APPLIK8S_AGENTIC_START_LIVE_PROFILE=managed-research bun scripts/run-agentic-start-starter-live.ts",
     "check:v07:scorecard:release": "TYPEKRO_LOG_LEVEL=fatal bun run scripts/check-v07-scorecard.ts --require-release && bun run scripts/check-v07-live-evidence.ts",
     "check:v07:profile-graphs": "TYPEKRO_LOG_LEVEL=fatal bun run scripts/check-v07-profile-graphs.ts",
     "check:v07:profile-graphs:record": "TYPEKRO_LOG_LEVEL=fatal bun run scripts/check-v07-profile-graphs.ts --record",

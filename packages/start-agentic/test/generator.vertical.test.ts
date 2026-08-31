@@ -102,7 +102,10 @@ describe('Agentic Start generator', () => {
       version: '0.70.1',
     });
     expect(result.example).toBe('research');
-    expect(result.files).toHaveLength(43);
+    expect(result.files).toHaveLength(44);
+    expect(result.files).toContain(
+      'kubernetes/application.research-live.yaml',
+    );
     const productCatalog = await readFile(
       join(target, 'drizzle/zzzz_agentic_product_catalog.sql'),
       'utf8',

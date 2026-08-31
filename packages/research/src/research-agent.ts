@@ -1,36 +1,35 @@
 // typecast-file-boundary: the maintained composition narrows the generic module builder only after its declared provider and agent contracts are validated.
 import type { ApplicationAIModelDefinition } from '@applik8s/ai';
+import type { ApplicationTanStackAIAgentRequest } from '@applik8s/ai-tanstack';
 import {
-  actor,
-  defineApplicationModule,
   type ApplicationAgentBinding,
   type ApplicationAgentTool,
   type ApplicationQualifiedProviderToken,
   type ApplicationServiceIdentityBinding,
   type ApplicationTrustedContext,
+  actor,
+  defineApplicationModule,
   type KubernetesApplicationBuilder,
 } from '@applik8s/applik8s';
 import type { ApplicationActorKeySchema } from '@applik8s/applik8s/actor-runtime';
-import type { ApplicationTanStackAIAgentRequest } from '@applik8s/ai-tanstack';
 import type { JsonObject } from '@applik8s/core';
 import { normalizeSchema, type SchemaInput } from '@applik8s/sdk';
-import { type as schema } from 'arktype';
 import type {
   ApplicationSourceRetrieverProvider,
   ApplicationWebSearchProvider,
 } from '@applik8s/web-search';
+import { type as schema } from 'arktype';
+import {
+  type ApplicationResearchAgentRuntimePolicy,
+  executeApplicationResearchAgent,
+} from './agent-runtime.js';
 import type {
   ApplicationResearchAgentResult,
   ApplicationResearchEvidenceProvider,
 } from './contracts.js';
-import {
-  ApplicationResearchAgentError,
-  executeApplicationResearchAgent,
-  type ApplicationResearchAgentRuntimePolicy,
-} from './agent-runtime.js';
 
-export { ApplicationResearchAgentError } from './agent-runtime.js';
 export type { ApplicationResearchAgentErrorCode } from './agent-runtime.js';
+export { ApplicationResearchAgentError } from './agent-runtime.js';
 
 export interface ApplicationResearchAgentOptions<TInput extends object, TOutput extends object> {
   readonly contract: {
@@ -174,6 +173,11 @@ export function researchAgent<TInput extends object, TOutput extends object>(
       });
       return { committed: true };
     });
+    // The maintained research service owns its durable run actor. Granting
+    // these internal commands here keeps the composed module production-ready
+    // without making every consuming application understand implementation-
+    // private checkpoint operations.
+    options.identity.can(run.begin, run.checkpoint, run.settle);
     const terminalSchema = researchTerminalSchema(
       options.contract.output as unknown as SchemaInput<object>,
     );

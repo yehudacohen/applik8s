@@ -53,7 +53,7 @@ describe("compiler deployment graph emission", () => {
         {
           id: "aiAgent.assistant",
           kind: "aiAgent",
-          name: "assistant",
+          name: "assistant.v1",
         },
       ],
       edges: [{
@@ -64,7 +64,7 @@ describe("compiler deployment graph emission", () => {
     } as unknown as ApplicationGraph;
     const deployment = generatedDeployment(
       "assistantAgent",
-      "assistant",
+      "assistant-v1",
       "ai-agent",
       "agent",
       "immutable",
@@ -97,7 +97,7 @@ describe("compiler deployment graph emission", () => {
       "developer",
     );
 
-    const environment = deploymentEnvironment(bound.resources, "assistant");
+    const environment = deploymentEnvironment(bound.resources, "assistant-v1");
     expect(environment).toEqual(expect.arrayContaining([{
       name: "APPLIK8S_AI_GATEWAY_API_KEY",
       valueFrom: {
@@ -504,12 +504,16 @@ describe("compiler deployment graph emission", () => {
     const dockerfilePath = String(artifact.spec.sourceDescriptor.dockerfilePath);
     const dockerfile = await readFile(dockerfilePath, "utf8");
     const worker = await readFile(join(dockerfilePath, '..', 'worker.mjs'), 'utf8');
+    const wrangler = JSON.parse(
+      await readFile(join(dockerfilePath, '..', 'wrangler.jsonc'), 'utf8'),
+    ) as { readonly compatibility_flags?: readonly string[] };
     expect(dockerfile).toContain("AS esbuild");
     expect(dockerfile).toContain("npm install --global --ignore-scripts=false esbuild@0.28.1");
     expect(dockerfile).toContain("COPY --from=esbuild --chmod=0555");
     expect(dockerfile).toContain(`FROM ${applicationCelldRuntimeRelease.image}`);
     expect(dockerfile.trimEnd()).toMatch(/USER 65532:65532$/u);
-    expect(worker).not.toContain('node:');
+    expect(worker).toContain('node:async_hooks');
+    expect(wrangler.compatibility_flags).toContain('nodejs_compat');
     expect(worker).not.toContain('@kubernetes/client-node');
     expect(emitted.graph.edges).toContainEqual({
       from: "artifact.celld-runtime",
