@@ -16,6 +16,7 @@ import {
   validateApplicationDeploymentGraph,
 } from "@applik8s/deployment-contract";
 import { validateKubernetesRuntimeAccessParity } from './kubernetes-runtime-access-parity.js';
+import { materializeInstallationValue } from './installation-materialization.js';
 import { assertApplicationScheduleProviderCompatibility } from './provider-guarantees.js';
 import {
   applicationDeploymentRuntimeAccessTargetRecord,
@@ -47,7 +48,8 @@ export function compileApplicationDeploymentGraph(
     target: request.target ?? deploymentTargetFromConnection(request.identity.connection.provider),
     connection: request.identity.connection,
     instance: request.identity.instance,
-    profile: request.identity.profile,
+    profile: request.providerProfile ?? request.identity.profile,
+    assemblyProfile: request.identity.profile,
     strategy: request.strategy,
     installationSpec: request.installationSpec,
     artifacts: request.artifacts,
@@ -236,9 +238,10 @@ export function compileApplicationDeploymentGraph(
       }
     : undefined;
   if (context.target === 'kubernetes' && request.materializedComposition) {
+    const parityResources = materializedCompositionResources(request);
     const parityFindings = validateKubernetesRuntimeAccessParity(
       runtimeAccess,
-      materializedComposition?.resources ?? [],
+      [...parityResources, ...runtimeAccessNetworkPolicies],
       { materializationAuthority: 'application-root' },
     );
     if (parityFindings.length > 0) {
@@ -351,6 +354,7 @@ export function compileApplicationDeploymentGraph(
     graph,
     contributorKeys: [...contributorKeys].sort(compareStrings),
     runtimeAccess,
+    excludedExecutionNodeIds: [...unavailableExecutionNodeIds].sort(),
   };
 }
 
@@ -372,10 +376,18 @@ function unavailableTargetExecutionNodeIds(
       ? [node.id]
       : [];
   }));
-  return [...new Set(graph.providerRequirements.flatMap((requirement) =>
+  const unavailableConsumers = new Set(graph.providerRequirements.flatMap((requirement) =>
     requirement.provider && unavailableProviders.has(requirement.provider.nodeId)
       ? [requirement.consumer.nodeId]
-      : []))].sort();
+      : []));
+  for (const node of graph.nodes) {
+    if (!('providerBindings' in node) || !Array.isArray(node.providerBindings)) continue;
+    if (node.providerBindings.some((binding) =>
+      unavailableProviders.has(binding.provider.nodeId))) {
+      unavailableConsumers.add(node.id);
+    }
+  }
+  return [...unavailableConsumers].sort();
 }
 
 function kubernetesDnsBootstrapEgress() {
@@ -564,7 +576,7 @@ function kubernetesRuntimeAccessWorkloadPlacements(
     const logicalReference = artifact.spec.sourceDescriptor.logicalReference;
     if (typeof logicalReference === 'string' && logicalReference) byImage.set(logicalReference, artifact);
   }
-  return (request.materializedComposition?.resources ?? []).flatMap((resourceRecord) => {
+  return materializedCompositionResources(request).flatMap((resourceRecord) => {
     const resource = portableRecord(resourceRecord.template) ?? resourceRecord;
     const kind = resource.kind;
     if (kind !== 'Deployment' && kind !== 'Job' && kind !== 'CronJob') return [];
@@ -617,6 +629,20 @@ function kubernetesRuntimeAccessWorkloadPlacements(
           : 'default',
       },
     }];
+  });
+}
+
+function materializedCompositionResources(
+  request: CompileApplicationDeploymentGraphRequest,
+): readonly DeploymentJsonObject[] {
+  return (request.validationComposition?.resources
+    ?? request.materializedComposition?.resources
+    ?? []).map((resource) => {
+    const materialized = materializeInstallationValue(resource, request.installationSpec);
+    if (!materialized || typeof materialized !== 'object' || Array.isArray(materialized)) {
+      throw new Error('Materialized Kubernetes composition resource must remain an object.');
+    }
+    return materialized as DeploymentJsonObject;
   });
 }
 

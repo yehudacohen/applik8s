@@ -31,7 +31,6 @@ export function applicationObjectStorageEnvironment(
       name: 'APPLIK8S_OBJECT_STORAGE_ENABLED',
       value: environmentScalar(config.enabled, 'true'),
     },
-    { name: 'APPLIK8S_OBJECT_STORAGE_BUCKET', value: bucket },
     { name: 'APPLIK8S_OBJECT_STORAGE_REGION', value: region },
     {
       name: 'APPLIK8S_OBJECT_STORAGE_FORCE_PATH_STYLE',
@@ -40,8 +39,7 @@ export function applicationObjectStorageEnvironment(
   ];
   const provisioning = objectValue(config.provisioning);
   const objectBucketClaim =
-    !stringValue(provisioning.kind)
-    || stringValue(provisioning.kind) === 'object-bucket-claim';
+    stringValue(provisioning.kind) === 'object-bucket-claim';
   const connectionConfigMapName = objectBucketClaim
     ? stringValue(provisioning.claimName)
       ?? stringValue(config.name)
@@ -67,6 +65,21 @@ export function applicationObjectStorageEnvironment(
       },
     );
   }
+  if (connectionConfigMapName) {
+    // ObjectBucketClaim provisioners choose the physical bucket identity and
+    // publish it through the standard connection ConfigMap. The authored
+    // provider bucket is a stable logical name, not authority for the random
+    // Rook/Ceph bucket name.
+    environment.push(
+      configMapEnvironment(
+        'APPLIK8S_OBJECT_STORAGE_BUCKET',
+        connectionConfigMapName,
+        'BUCKET_NAME',
+      ),
+    );
+  } else {
+    environment.push({ name: 'APPLIK8S_OBJECT_STORAGE_BUCKET', value: bucket });
+  }
   for (const [name, value] of [
     ['APPLIK8S_OBJECT_STORAGE_ENDPOINT', config.endpoint],
     ['APPLIK8S_OBJECT_STORAGE_PREFIX', config.prefix],
@@ -87,7 +100,11 @@ export function applicationObjectStorageEnvironment(
       `${owner} cannot mount ObjectStorage credentials Secret ${secretName} from namespace ${secretNamespace}; the workload runs in ${workloadNamespace}.`,
     );
   }
-  const optional = config.enabled !== true;
+  // An omitted switch means enabled by default and credentials must fail
+  // closed. Only an explicitly disabled or installation-derived provider can
+  // make its Secret optional because the workload may legitimately start
+  // while that branch is inactive.
+  const optional = config.enabled === false || typeof config.enabled === 'string';
   environment.push(
     secretEnvironment(
       'AWS_ACCESS_KEY_ID',

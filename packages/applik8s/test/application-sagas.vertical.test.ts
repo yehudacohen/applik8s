@@ -2,9 +2,13 @@ import {
   ApplicationSagaBoundaryError,
   ApplicationSagaExecutionError,
   ApplicationSagaOutcomeUnknownError,
+  type ApplicationSagaDurableLease,
+  type ApplicationSagaDurableRecord,
+  type ApplicationSagaDurableStore,
   app,
   applicationGraphFor,
   createDeterministicApplicationSagaRuntime,
+  createDurableApplicationSagaRuntime,
   installApplicationSagaRuntimeResolver,
 } from '@applik8s/applik8s';
 import { type } from '@applik8s/applik8s/dsl';
@@ -193,6 +197,129 @@ describe('v0.9 compensating Saga coordination', () => {
     });
   });
 
+  it('retries an interrupted durable compensation without re-running the forward effect', async () => {
+    const store = new MemorySagaStore();
+    let interruptAfterCompensationIntent = true;
+    store.beforeWriteReturn = (record) => {
+      if (
+        interruptAfterCompensationIntent
+        && record.steps.some((step) => step.phase === 'compensating')
+      ) {
+        interruptAfterCompensationIntent = false;
+        throw new Error('simulated worker loss after durable compensation intent');
+      }
+    };
+    const firstRuntime = createDurableApplicationSagaRuntime({
+      store,
+      owner: 'worker-one',
+      leaseSeconds: 30,
+    });
+    disposers.push(installApplicationSagaRuntimeResolver(() => firstRuntime));
+    let forwardAttempts = 0;
+    let compensationAttempts = 0;
+    const application = app('durable-compensation-recovery');
+    const saga = application.transaction.saga(
+      'durable.compensation.v1',
+      { input: type({ id: 'string' }), output: type({ ok: 'boolean' }) },
+      async (_input, tx) => {
+        await tx.step('reserve', async () => {
+          forwardAttempts += 1;
+          return { reservationId: 'reservation-one' };
+        }, {
+          compensate: async () => {
+            compensationAttempts += 1;
+          },
+        });
+        throw new Error('force compensation');
+      },
+    );
+
+    await expect(saga({ id: 'one' }, { idempotencyKey: 'recovery' }))
+      .rejects.toThrow('simulated worker loss');
+    expect(await store.inspect('durable.compensation.v1:recovery')).toMatchObject({
+      outcome: 'running',
+      steps: [expect.objectContaining({ phase: 'compensating', compensationAttempts: 1 })],
+    });
+
+    disposers.pop()?.();
+    const replacementRuntime = createDurableApplicationSagaRuntime({
+      store,
+      owner: 'worker-two',
+      leaseSeconds: 30,
+    });
+    disposers.push(installApplicationSagaRuntimeResolver(() => replacementRuntime));
+    await expect(saga({ id: 'one' }, { idempotencyKey: 'recovery' }))
+      .rejects.toMatchObject({ code: 'SAGA_COMPENSATED' });
+    expect(forwardAttempts).toBe(1);
+    expect(compensationAttempts).toBe(1);
+    expect(await store.inspect('durable.compensation.v1:recovery')).toMatchObject({
+      outcome: 'compensated',
+      steps: [expect.objectContaining({ phase: 'compensated', compensationAttempts: 2 })],
+    });
+  });
+
+  it('recovers an invoked effect only through an authored observer with a typed result', async () => {
+    const store = new MemorySagaStore();
+    let interruptAfterInvocationIntent = true;
+    store.beforeWriteReturn = (record) => {
+      if (
+        interruptAfterInvocationIntent
+        && record.steps.some((step) => step.phase === 'invoked')
+      ) {
+        interruptAfterInvocationIntent = false;
+        throw new Error('simulated worker loss after durable invocation intent');
+      }
+    };
+    const firstRuntime = createDurableApplicationSagaRuntime({
+      store,
+      owner: 'observer-worker-one',
+      leaseSeconds: 30,
+    });
+    disposers.push(installApplicationSagaRuntimeResolver(() => firstRuntime));
+    let effects = 0;
+    let observations = 0;
+    const application = app('durable-observer-recovery');
+    const saga = application.transaction.saga(
+      'durable.observer.v1',
+      { input: type({ id: 'string' }), output: type({ reservationId: 'string' }) },
+      async (_input, tx) => {
+        const reservation = await tx.step('reserve', async () => {
+          effects += 1;
+          return { reservationId: 'forward-result' };
+        }, {
+          compensate: async () => undefined,
+          observe: async (result) => {
+            observations += 1;
+            return result
+              ? { status: 'committed', result }
+              : { status: 'committed', result: { reservationId: 'observed-result' } };
+          },
+        });
+        return reservation;
+      },
+    );
+
+    await expect(saga({ id: 'one' }, { idempotencyKey: 'observer' }))
+      .rejects.toThrow('simulated worker loss');
+    expect(effects).toBe(0);
+    expect(await store.inspect('durable.observer.v1:observer')).toMatchObject({
+      outcome: 'running',
+      steps: [expect.objectContaining({ phase: 'invoked' })],
+    });
+
+    disposers.pop()?.();
+    const replacementRuntime = createDurableApplicationSagaRuntime({
+      store,
+      owner: 'observer-worker-two',
+      leaseSeconds: 30,
+    });
+    disposers.push(installApplicationSagaRuntimeResolver(() => replacementRuntime));
+    await expect(saga({ id: 'one' }, { idempotencyKey: 'observer' }))
+      .resolves.toEqual({ reservationId: 'observed-result' });
+    expect(effects).toBe(0);
+    expect(observations).toBe(1);
+  });
+
   it('rejects Saga effects outside a boundary and nested compensation authorities', async () => {
     const runtime = createDeterministicApplicationSagaRuntime();
     disposers.push(installApplicationSagaRuntimeResolver(() => runtime));
@@ -224,3 +351,69 @@ describe('v0.9 compensating Saga coordination', () => {
     expect(nestedFailure.cause).toMatchObject({ code: 'SAGA_NESTING_UNSUPPORTED' });
   });
 });
+
+class MemorySagaStore implements ApplicationSagaDurableStore {
+  readonly records = new Map<string, ApplicationSagaDurableRecord>();
+  readonly leases = new Map<string, ApplicationSagaDurableLease>();
+  beforeWriteReturn?: (record: ApplicationSagaDurableRecord) => void;
+
+  async claim(
+    initial: ApplicationSagaDurableRecord,
+    request: { readonly owner: string; readonly now: string; readonly leaseSeconds: number },
+  ): Promise<{ readonly record: ApplicationSagaDurableRecord; readonly lease: ApplicationSagaDurableLease }> {
+    const previousLease = this.leases.get(initial.invocationId);
+    if (previousLease && Date.parse(previousLease.expiresAt) > Date.parse(request.now) && previousLease.owner !== request.owner) {
+      throw new Error('SAGA_LEASE_BUSY');
+    }
+    const lease = {
+      owner: request.owner,
+      epoch: (previousLease?.epoch ?? 0) + 1,
+      expiresAt: new Date(Date.parse(request.now) + request.leaseSeconds * 1_000).toISOString(),
+    };
+    const record = structuredClone(this.records.get(initial.invocationId) ?? initial);
+    this.records.set(initial.invocationId, structuredClone(record));
+    this.leases.set(initial.invocationId, lease);
+    return { record, lease };
+  }
+
+  async write(record: ApplicationSagaDurableRecord, lease: ApplicationSagaDurableLease): Promise<ApplicationSagaDurableLease> {
+    this.assertLease(record.invocationId, lease);
+    this.records.set(record.invocationId, structuredClone(record));
+    this.beforeWriteReturn?.(record);
+    return lease;
+  }
+
+  async heartbeat(
+    lease: ApplicationSagaDurableLease,
+    invocationId: string,
+    now: string,
+    leaseSeconds: number,
+  ): Promise<ApplicationSagaDurableLease> {
+    this.assertLease(invocationId, lease);
+    const next = {
+      ...lease,
+      expiresAt: new Date(Date.parse(now) + leaseSeconds * 1_000).toISOString(),
+    };
+    this.leases.set(invocationId, next);
+    return next;
+  }
+
+  async release(invocationId: string, lease: ApplicationSagaDurableLease): Promise<void> {
+    const current = this.leases.get(invocationId);
+    if (!current) return;
+    this.assertLease(invocationId, lease);
+    this.leases.delete(invocationId);
+  }
+
+  async inspect(invocationId: string): Promise<ApplicationSagaDurableRecord | undefined> {
+    const record = this.records.get(invocationId);
+    return record ? structuredClone(record) : undefined;
+  }
+
+  private assertLease(invocationId: string, lease: ApplicationSagaDurableLease): void {
+    const current = this.leases.get(invocationId);
+    if (!current || current.owner !== lease.owner || current.epoch !== lease.epoch) {
+      throw new Error(`SAGA_LEASE_LOST:${invocationId}:${current?.owner ?? 'none'}/${current?.epoch ?? 0}:${lease.owner}/${lease.epoch}`);
+    }
+  }
+}

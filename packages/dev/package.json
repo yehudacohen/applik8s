@@ -17,9 +17,11 @@
     "./ui": { "types": "./dist/ui.d.ts", "import": "./dist/ui.js", "default": "./dist/ui.js" },
     "./agent": { "types": "./dist/agent/index.d.ts", "import": "./dist/agent/index.js", "default": "./dist/agent/index.js" },
     "./agent/opencode": { "types": "./dist/agent/opencode.d.ts", "import": "./dist/agent/opencode.js", "default": "./dist/agent/opencode.js" },
+    "./agent/opencode-code-harness": { "types": "./dist/agent/opencode-code-harness.d.ts", "import": "./dist/agent/opencode-code-harness.js", "default": "./dist/agent/opencode-code-harness.js" },
     "./skills": { "types": "./dist/skills.d.ts", "import": "./dist/skills.js", "default": "./dist/skills.js" }
   },
   "dependencies": {
+    "@applik8s/code-agent": "0.8.0",
     "@applik8s/core": "0.8.0",
     "@libsql/client": "^0.17.4"
   }

@@ -56,6 +56,7 @@ const execution = {
 } as const;
 const cli = join(root, 'packages/cli/dist/bin.js');
 const timeoutMs = 20 * 60_000;
+const deploymentProfile = 'developer';
 const evidencePath = join(
   root,
   managedResearch
@@ -240,7 +241,12 @@ try {
     execution,
     'deploy the generated Start through Alchemy and TypeKro',
     cli,
-    ['deploy', '--context', context, '--skip-app-build'],
+    [
+      'deploy',
+      '--context', context,
+      '--profile', deploymentProfile,
+      '--skip-app-build',
+    ],
     target,
     { NODE_OPTIONS: '--max-old-space-size=8192' },
   );
@@ -252,7 +258,12 @@ try {
     execution,
     'reapply the exact generated Start to prove migration and graph idempotency',
     cli,
-    ['deploy', '--context', context, '--skip-app-build'],
+    [
+      'deploy',
+      '--context', context,
+      '--profile', deploymentProfile,
+      '--skip-app-build',
+    ],
     target,
     { NODE_OPTIONS: '--max-old-space-size=8192' },
   );

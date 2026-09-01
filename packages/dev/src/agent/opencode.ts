@@ -21,6 +21,13 @@ export interface OpenCodeAgentProviderOptions {
   readonly host?: '127.0.0.1';
   readonly port: number;
   readonly protocolVersion: string;
+  /** Explicit provider environment. Ambient process credentials are never inherited. */
+  readonly environment?: Readonly<Record<string, string>>;
+  /** Exact OpenCode provider/model selected for every bounded Builder turn. */
+  readonly model?: {
+    readonly providerID: string;
+    readonly modelID: string;
+  };
   readonly fetch?: typeof globalThis.fetch;
   readonly spawn?: typeof spawn;
 }
@@ -95,6 +102,7 @@ export class OpenCodeAgentProvider implements DevelopmentAgentProvider {
       method: 'POST',
       body: JSON.stringify({
         parts: [{ type: 'text', text: prompt }],
+        ...(this.options.model ? { model: this.options.model } : {}),
         // Provider tools cannot mutate or read beyond the context Applik8s
         // explicitly admitted into this turn.
         tools: { bash: false, edit: false, write: false, patch: false, read: false, glob: false, grep: false },
@@ -114,7 +122,12 @@ export class OpenCodeAgentProvider implements DevelopmentAgentProvider {
     if (!this.#process) {
       this.#process = this.#spawn(this.options.executable ?? 'opencode', ['serve', '--pure', '--hostname', '127.0.0.1', '--port', String(this.options.port)], {
         cwd: workspaceRoot,
-        env: { PATH: process.env.PATH, OPENCODE_SERVER_PASSWORD: this.#password }, stdio: 'ignore', detached: false,
+        env: {
+          PATH: process.env.PATH,
+          ...this.options.environment,
+          OPENCODE_SERVER_PASSWORD: this.#password,
+        },
+        stdio: 'ignore', detached: false,
       });
     }
     const deadline = Date.now() + 15_000;

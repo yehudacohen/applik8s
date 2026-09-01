@@ -1,3 +1,5 @@
+// typecast-file-boundary: Test fixtures intentionally model invalid and partial
+// implementation-plan records to prove validation and migration behavior.
 import { describe, expect, it } from 'vitest';
 import {
   applicationImplementationPlanSet,
@@ -34,6 +36,7 @@ function implementation(
       module: 'src/profiles/production.ts',
       symbol: key,
     }),
+    configuration: { kind: `${key}-test-provider` },
     configurationDigest: sha(key[0] ?? 'a'),
     configurationSources: [],
     guarantees: ['ready'],
@@ -120,6 +123,19 @@ describe('application implementation planning', () => {
     expect(plan.dependencies.filter(({ dependency }) => dependency === database?.id)).toHaveLength(2);
     expect(plan.bindings.find(({ id }) => id === 'binding:database')?.implementation).toBe(database?.id);
     expect(plan.dependencies.find(({ slot, resolution }) => slot === 'database' && resolution === 'capability-reference')).toBeDefined();
+  });
+
+  it('preserves provider-declared deployment family in the canonical plan', () => {
+    const source = input();
+    const database = source.declarations.find(({ key }) => key === 'database') as ApplicationImplementationDeclaration;
+    const plan = resolveApplicationImplementationPlan(input({
+      declarations: source.declarations.map((entry) => entry.key === 'database'
+        ? { ...database, deploymentFamily: 'kubernetes' }
+        : entry),
+    }));
+
+    expect(plan.implementations.find(({ identity }) => identity.provider.export === 'databaseProvider'))
+      .toMatchObject({ deploymentFamily: 'kubernetes' });
   });
 
   it('keeps implementation identity independent of profile selection and input ordering', () => {

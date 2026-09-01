@@ -1,0 +1,154 @@
+{
+  "schemaVersion": 1,
+  "release": "0.9.0-alpha.1",
+  "status": "candidate-review-ready",
+  "documentation": "docs/packages.md",
+  "groups": [
+    {
+      "id": "foundation-authoring",
+      "owner": "framework-authoring",
+      "maturity": "stable-1.0-candidate",
+      "compatibility": ["authoring", "runtime"],
+      "stability": "stable",
+      "evidence": ["workspace-typecheck", "clean-package-consumer", "public-contract-freeze"],
+      "packages": [
+        "@applik8s/applik8s",
+        "@applik8s/ai",
+        "@applik8s/core",
+        "@applik8s/identity",
+        "@applik8s/mcp",
+        "@applik8s/operations",
+        "@applik8s/sdk"
+      ]
+    },
+    {
+      "id": "web-integration",
+      "owner": "web-integration",
+      "maturity": "stable-1.0-candidate",
+      "compatibility": ["authoring", "runtime", "generated-source"],
+      "stability": "stable",
+      "evidence": ["clean-package-consumer", "agentic-start-browser", "public-contract-freeze"],
+      "packages": [
+        "@applik8s/ai-tanstack",
+        "@applik8s/client",
+        "@applik8s/react",
+        "@applik8s/server",
+        "@applik8s/tanstack-start",
+        "@applik8s/vite"
+      ]
+    },
+    {
+      "id": "application-modules",
+      "owner": "application-modules",
+      "maturity": "stable-1.0-candidate",
+      "compatibility": ["authoring", "runtime"],
+      "stability": "stable",
+      "evidence": ["workspace-typecheck", "agentic-start-browser", "public-contract-freeze"],
+      "packages": [
+        "@applik8s/agents",
+        "@applik8s/approvals",
+        "@applik8s/artifacts",
+        "@applik8s/billing",
+        "@applik8s/conversations",
+        "@applik8s/data-lifecycle",
+        "@applik8s/documents",
+        "@applik8s/evals",
+        "@applik8s/integrations",
+        "@applik8s/knowledge",
+        "@applik8s/notifications",
+        "@applik8s/search",
+        "@applik8s/usage",
+        "@applik8s/web-search"
+      ]
+    },
+    {
+      "id": "maintained-providers",
+      "owner": "provider-runtime",
+      "maturity": "stable-1.0-candidate",
+      "compatibility": ["provider", "runtime", "lifecycle"],
+      "stability": "stable",
+      "evidence": ["provider-conformance", "workspace-typecheck", "public-contract-freeze"],
+      "packages": [
+        "@applik8s/billing-stripe",
+        "@applik8s/identity-ory",
+        "@applik8s/identity-postgres",
+        "@applik8s/notifications-smtp",
+        "@applik8s/research",
+        "@applik8s/runtime-ai",
+        "@applik8s/runtime-hatchet",
+        "@applik8s/runtime-kubernetes",
+        "@applik8s/runtime-nats",
+        "@applik8s/runtime-otel",
+        "@applik8s/runtime-postgres",
+        "@applik8s/runtime-s3",
+        "@applik8s/web-retrieval-http",
+        "@applik8s/web-search-searxng"
+      ]
+    },
+    {
+      "id": "beta-providers",
+      "owner": "provider-runtime",
+      "maturity": "beta",
+      "compatibility": ["provider", "runtime", "lifecycle"],
+      "stability": "experimental",
+      "evidence": ["provider-conformance", "public-contract-freeze"],
+      "packages": [
+        "@applik8s/celld-operator",
+        "@applik8s/deployment-provider-harbor",
+        "@applik8s/ml",
+        "@applik8s/runtime-aws",
+        "@applik8s/runtime-celld",
+        "@applik8s/runtime-duckdb",
+        "@applik8s/runtime-opensearch"
+      ]
+    },
+    {
+      "id": "release-preview",
+      "owner": "development-experience",
+      "maturity": "preview",
+      "compatibility": ["authoring", "runtime", "generated-source"],
+      "stability": "experimental",
+      "evidence": ["real-provider-preview-journey", "public-contract-freeze"],
+      "packages": [
+        "@applik8s/code-agent",
+        "@applik8s/dev",
+        "@applik8s/operations-ui"
+      ]
+    },
+    {
+      "id": "maintained-starts",
+      "owner": "start-distribution",
+      "maturity": "stable-1.0-candidate",
+      "compatibility": ["authoring", "generated-source", "lifecycle"],
+      "stability": "stable",
+      "evidence": ["clean-generated-consumer", "agentic-start-browser", "public-contract-freeze"],
+      "packages": [
+        "@applik8s/start-agentic",
+        "create-applik8s"
+      ]
+    },
+    {
+      "id": "compiler-and-deployment",
+      "owner": "compiler-and-deployment",
+      "maturity": "stable-1.0-candidate",
+      "compatibility": ["artifact", "generated-source", "provider", "lifecycle"],
+      "stability": "stable",
+      "evidence": ["workspace-typecheck", "clean-package-consumer", "deployment-lifecycle", "public-contract-freeze"],
+      "packages": [
+        "@applik8s/cli",
+        "@applik8s/compiler",
+        "@applik8s/deployment-alchemy",
+        "@applik8s/deployment-compiler",
+        "@applik8s/deployment-contract",
+        "@applik8s/deployment-provider-kubernetes",
+        "@applik8s/deployment-provider-oci",
+        "@applik8s/deployment-typekro",
+        "@applik8s/runtime",
+        "@applik8s/runtime-contract",
+        "@applik8s/testing",
+        "@applik8s/typekro-adapter",
+        "@applik8s/typetainer"
+      ]
+    }
+  ]
+}

@@ -74,7 +74,19 @@ describe('generated distributed managed-model operator', () => {
       expect(artifact?.modelIds).toEqual([expect.stringContaining('model')]);
       expect(artifact?.resources.map(({ kind }) => kind)).toEqual(['NetworkPolicy', 'Deployment']);
       const deployment = artifact?.resources.find(({ kind }) => kind === 'Deployment');
-      expect(deployment?.spec).toMatchObject({ replicas: 2 });
+      expect(deployment?.spec).toMatchObject({
+        replicas: 2,
+        template: {
+          spec: {
+            containers: [{
+              resources: {
+                requests: { cpu: '50m', memory: '96Mi' },
+                limits: { cpu: '500m', memory: '256Mi' },
+              },
+            }],
+          },
+        },
+      });
       expect(JSON.stringify(deployment)).toContain('catalog-app');
       expect(JSON.stringify(deployment)).toContain('APPLIK8S_DATABASE_CATALOG_URL');
       const generated = await readFile(join(outDir, 'managed-operator-managed-models', 'managed-model-operator.generated.ts'), 'utf8');

@@ -166,6 +166,69 @@ describe('v0.8 runtime-access lowering', () => {
     ]));
   });
 
+  it('scopes lakehouse writes and catalog creation while gating destructive cleanup explicitly', () => {
+    const base = accessGraph();
+    const derived = deriveApplicationGraphFoundation(base);
+    const source = derived.runtimeAccess[0];
+    if (!source) throw new Error('Expected one source-attributed execution fixture.');
+    const dataset = {
+      id: 'provider.LakehouseDataset', kind: 'provider' as const, name: 'LakehouseDataset', stability: 'stable' as const,
+      interface: 'LakehouseDataset', implementation: 's3-dataset',
+    };
+    const query = {
+      id: 'provider.LakehouseQuery', kind: 'provider' as const, name: 'LakehouseQuery', stability: 'stable' as const,
+      interface: 'LakehouseQuery', implementation: 'athena-queries',
+    };
+    const requirement = (capabilityId: string, operation: 'object.write' | 'connection.use') => applicationRuntimeAccessRequirement({
+      ...source,
+      target: { capabilityId, operation, scope: { kind: 'capability', capabilityId } },
+      origin: 'provider-required',
+    });
+    const graph: ApplicationGraph = {
+      ...base,
+      nodes: [base.nodes[0]!, dataset, query],
+      edges: [],
+      foundation: {
+        ...derived,
+        runtimeAccess: [
+          requirement(dataset.id, 'object.write'),
+          requirement(query.id, 'connection.use'),
+        ],
+      },
+    };
+    const targets = (forceDeleteUnretainedData: boolean) => ({
+      [dataset.id]: {
+        bucket: 'history-bucket', prefix: 'lakehouse/history',
+        catalogArn: 'arn:aws:glue:us-east-1:123456789012:catalog',
+        databaseArn: 'arn:aws:glue:us-east-1:123456789012:database/history',
+        tableArn: 'arn:aws:glue:us-east-1:123456789012:table/history/*',
+        forceDeleteUnretainedData,
+      },
+      [query.id]: {
+        workgroupArn: 'arn:aws:athena:us-east-1:123456789012:workgroup/history',
+        resultBucketArn: 'arn:aws:s3:::history-query-results',
+      },
+    });
+    const retained = compileApplicationRuntimeAccessPlan({ graph, target: 'aws', targetResources: targets(false) });
+    expect(retained.diagnostics).toEqual([]);
+    const retainedStatements = retained.executions[0]?.aws?.statements ?? [];
+    expect(retainedStatements).toEqual(expect.arrayContaining([
+      expect.objectContaining({ actions: ['s3:DeleteObject'], resources: ['arn:aws:s3:::history-bucket/lakehouse/history/staging/*'] }),
+      expect.objectContaining({ actions: expect.arrayContaining(['glue:CreateTable']), resources: expect.arrayContaining(['arn:aws:glue:us-east-1:123456789012:database/history']) }),
+      expect.objectContaining({ actions: expect.arrayContaining(['athena:StartQueryExecution']), resources: ['arn:aws:athena:us-east-1:123456789012:workgroup/history'] }),
+      expect.objectContaining({ actions: ['s3:GetObject', 's3:PutObject'], resources: ['arn:aws:s3:::history-query-results/*'] }),
+    ]));
+    expect(retainedStatements.some(({ actions, resources }) =>
+      actions.includes('glue:DeleteTable') || (actions.includes('s3:DeleteObject') && resources.includes('arn:aws:s3:::history-bucket/lakehouse/history/*')))).toBe(false);
+
+    const destructive = compileApplicationRuntimeAccessPlan({ graph, target: 'aws', targetResources: targets(true) });
+    expect(destructive.diagnostics).toEqual([]);
+    expect(destructive.executions[0]?.aws?.statements).toEqual(expect.arrayContaining([
+      expect.objectContaining({ actions: expect.arrayContaining(['s3:DeleteObject']), resources: ['arn:aws:s3:::history-bucket/lakehouse/history/*'] }),
+      expect.objectContaining({ actions: expect.arrayContaining(['glue:DeleteTable']) }),
+    ]));
+  });
+
   it('resolves a processor event requirement through its exact bound EventLog', () => {
     const graph = eventAccessGraph(['provider.events']);
     const aws = compileApplicationRuntimeAccessPlan({
@@ -375,6 +438,12 @@ describe('v0.8 runtime-access lowering', () => {
     const policyResource = root.spec.materialized?.resources.find((resource) =>
       materializedManifest(resource).kind === 'CiliumNetworkPolicy');
     const policy = policyResource ? materializedManifest(policyResource) : undefined;
+    // Validate the concrete resource before asymmetric nested matchers inspect
+    // it; Bun currently mutates arrays traversed by arrayContaining().
+    expect(validateKubernetesRuntimeAccessParity(
+      cilium.runtimeAccess,
+      root.spec.materialized?.resources ?? [],
+    )).toEqual([]);
     expect(policyResource).toMatchObject({
       id: expect.stringMatching(/^runtimeAccessEgress[0-9a-f]{12}$/),
       template: { kind: 'CiliumNetworkPolicy' },
@@ -405,10 +474,6 @@ describe('v0.8 runtime-access lowering', () => {
         ]),
       },
     });
-    expect(validateKubernetesRuntimeAccessParity(
-      cilium.runtimeAccess,
-      root.spec.materialized?.resources ?? [],
-    )).toEqual([]);
     const policyWithoutDnsProxy = JSON.parse(
       JSON.stringify(policy),
       (key, value) => key === 'rules' ? undefined : value,
@@ -495,6 +560,13 @@ describe('v0.8 runtime-access lowering', () => {
     const networkPolicy = networkPolicyResource
       ? materializedManifest(networkPolicyResource)
       : undefined;
+    const resources = structuredClone(root.spec.materialized?.resources ?? []);
+    // Validate the unmodified policy before asymmetric nested matcher
+    // traversal for the same reason as the Cilium fixture above.
+    expect(validateKubernetesRuntimeAccessParity(
+      result.runtimeAccess,
+      resources,
+    )).toEqual([]);
     expect(networkPolicyResource).toMatchObject({
       id: expect.stringMatching(/^runtimeAccessEgress[0-9a-f]{12}$/),
       template: { kind: 'NetworkPolicy' },
@@ -523,11 +595,6 @@ describe('v0.8 runtime-access lowering', () => {
         ]),
       },
     });
-    expect(validateKubernetesRuntimeAccessParity(
-      result.runtimeAccess,
-      root.spec.materialized?.resources ?? [],
-    )).toEqual([]);
-    const resources = root.spec.materialized?.resources ?? [];
     expect(validateKubernetesRuntimeAccessParity(
       result.runtimeAccess,
       resources.filter((resource) => materializedManifest(resource).kind !== 'NetworkPolicy'),

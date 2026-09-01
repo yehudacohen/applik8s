@@ -37,6 +37,7 @@ import {
   type GeneratedApplicationContainerArtifact,
 } from '../application-containers/index.js';
 import { applicationFrameworkCredentialDependencies } from '../application-framework-credentials.js';
+import { generatedRuntimeNodePaths } from '../node-module-resolution.js';
 import { applicationGraphStringValue } from '../application-installation-values.js';
 import {
   type ApplicationOperationPlacementReceiver,
@@ -616,7 +617,7 @@ async function emitAgent(
     sourcemap: 'external',
     sourcesContent: false,
     metafile: true,
-    nodePaths: [join(process.cwd(), 'node_modules')],
+    nodePaths: [...generatedRuntimeNodePaths()],
     banner: {
       js: "import { createRequire as __applik8sCreateRequire } from 'node:module'; const require = __applik8sCreateRequire(import.meta.url);",
     },

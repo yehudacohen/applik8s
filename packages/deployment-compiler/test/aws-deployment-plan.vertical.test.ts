@@ -110,6 +110,62 @@ describe('v0.8 AWS deployment planning', () => {
     ]));
   });
 
+  it('uses PostgreSQL as the complete schedule authority without provisioning EventBridge or SQS', () => {
+    const base = awsGraph();
+    const graph: ApplicationGraph = {
+      ...base,
+      nodes: base.nodes.map((node) => node.kind === 'provider' && node.interface === 'Scheduler'
+        ? { ...node, implementation: 'postgres-scheduler' }
+        : node),
+      edges: [
+        ...base.edges,
+        { from: { nodeId: 'provider.Scheduler' }, to: { nodeId: 'schedule.cleanup' }, relationship: 'provides' },
+      ],
+      providerRequirements: [{
+        id: 'requirement.schedule.cleanup.scheduler',
+        interface: 'Scheduler',
+        consumer: { nodeId: 'schedule.cleanup' },
+        provider: { interface: 'Scheduler', nodeId: 'provider.Scheduler' },
+        required: true,
+        purpose: 'schedule admission',
+        diagnostics: { missing: 'missing scheduler', ambiguous: 'ambiguous scheduler' },
+      }],
+      providerBindings: [{
+        requirement: 'requirement.schedule.cleanup.scheduler',
+        provider: { interface: 'Scheduler', nodeId: 'provider.Scheduler' },
+        generatedResources: [],
+        runtime: {},
+      }],
+    };
+    const plan = compileApplicationAwsDeploymentPlan({
+      graph,
+      environment: 'production',
+      region: 'us-east-1',
+      accountId: '123456789012',
+      availabilityZones: ['us-east-1a', 'us-east-1b'],
+    });
+
+    expect(plan.diagnostics).toEqual([]);
+    expect(plan.resources.some(({ service }) => service === 'eventbridge-scheduler' || service === 'sqs')).toBe(false);
+    expect(plan.runtimeBindings).toContainEqual(expect.objectContaining({
+      environmentName: 'APPLIK8S_SCHEDULE_DATABASE_URL',
+      resourceId: 'provider.provider.TransactionalDatabase',
+    }));
+    const host = plan.resources.find(({ resourceType }) => resourceType === 'fargate-service');
+    expect(host?.configuration).toMatchObject({
+      scheduleAccess: true,
+      runtimeBindingEnvironmentNames: expect.arrayContaining(['APPLIK8S_SCHEDULE_DATABASE_URL']),
+    });
+    const executionRole = plan.resources.find(({ id }) => id === host?.configuration.executionRoleResourceId);
+    expect(executionRole?.configuration.statements).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        actions: ['secretsmanager:GetSecretValue'],
+        resources: ['output://provider.provider.TransactionalDatabase/secretArn'],
+      }),
+    ]));
+    expect(JSON.stringify(executionRole)).not.toMatch(/scheduler:|sqs:|iam:PassRole/u);
+  });
+
   it('fails closed in the plan when an authored provider has no qualified AWS implementation', () => {
     const base = awsGraph();
     const graph: ApplicationGraph = { ...base, nodes: [...base.nodes, {
@@ -211,6 +267,78 @@ describe('v0.8 AWS deployment planning', () => {
     expect(buckets).toHaveLength(1);
     expect(buckets[0]?.semanticNodeId).toBe(canonicalId);
     expect(plan.diagnostics.filter(({ severity }) => severity === 'error')).toEqual([]);
+  });
+
+  it('materializes secret.env provider credentials as an exact Secrets Manager and ECS bootstrap binding', () => {
+    const base = awsGraph();
+    const structuredGeneration = {
+      id: 'provider.StructuredGeneration',
+      kind: 'provider' as const,
+      name: 'StructuredGeneration',
+      stability: 'stable' as const,
+      interface: 'StructuredGeneration',
+      implementation: 'structured-generation-http',
+      config: {
+        kind: 'structured-generation-http',
+        endpoint: 'https://generation.example.com/v1',
+        credential: {
+          apiVersion: 'applik8s.configurationBinding/v1alpha1',
+          kind: 'secret',
+          source: 'environment',
+          reference: 'STRUCTURED_GENERATION_API_KEY',
+          required: true,
+        },
+      },
+    };
+    const graph: ApplicationGraph = {
+      ...base,
+      nodes: [...base.nodes, structuredGeneration],
+      edges: [
+        ...base.edges,
+        { from: { nodeId: 'server.web' }, to: { nodeId: structuredGeneration.id }, relationship: 'dependsOn' },
+      ],
+    };
+    const plan = compileApplicationAwsDeploymentPlan({
+      graph,
+      environment: 'production',
+      region: 'us-east-1',
+      accountId: '123456789012',
+      availabilityZones: ['us-east-1a', 'us-east-1b'],
+    });
+
+    expect(plan.diagnostics).toEqual([]);
+    const secret = plan.resources.find(({ semanticNodeId, configuration }) =>
+      semanticNodeId === structuredGeneration.id && configuration.sourceKind === 'secret.env');
+    expect(secret).toMatchObject({
+      service: 'secrets-manager',
+      resourceType: 'secret-authority',
+      configuration: {
+        values: 'deployment-environment',
+        environmentEntries: [{
+          secretField: 'apiKey',
+          environmentReference: 'STRUCTURED_GENERATION_API_KEY',
+        }],
+        sourceReference: 'STRUCTURED_GENERATION_API_KEY',
+      },
+    });
+    const host = plan.resources.find(({ resourceType }) => resourceType === 'fargate-service');
+    expect(host?.configuration.callableProviderSecretEnvironment).toEqual([
+      {
+        providerId: structuredGeneration.id,
+        name: 'APPLIK8S_STRUCTURED_GENERATION_API_KEY',
+        resourceId: secret?.id,
+        key: 'apiKey',
+        optional: false,
+      },
+    ]);
+    const executionRole = plan.resources.find(({ id }) => id === host?.configuration.executionRoleResourceId);
+    expect(executionRole?.configuration.statements).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        actions: ['secretsmanager:GetSecretValue'],
+        resources: [`output://${secret?.id}/secretArn`],
+      }),
+    ]));
+    expect(JSON.stringify(plan)).not.toContain('server-side-key');
   });
 
   it('materializes exact per-workload and per-target security groups for a database-only runtime', () => {

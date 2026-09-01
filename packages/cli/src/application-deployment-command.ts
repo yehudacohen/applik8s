@@ -53,6 +53,7 @@ import {
   renderApplicationPlanDiff,
   renderCanonicalApplicationPlan,
 } from './application-plan-rendering.js';
+import { assertRequestedDeploymentProfile } from './application-deployment-profile.js';
 
 export async function runApplicationDeploy(
   entrypoint: string,
@@ -77,12 +78,18 @@ export async function runApplicationDeploy(
     if (buildCode !== 0) throw processError('application-build', buildCode);
   }
   const outDir = options.outDir ?? '.applik8s/deploy';
+  const installationSpecPath = options.instance
+    ? resolve(io.cwd, options.instance)
+    : undefined;
   const buildCode = await runPhase('composition-compile', io, () => runtime.runBuild(entrypoint, {
     outDir,
     typekro: true,
     // Deploy is a production boundary: externally reachable operations must
     // never reach a cluster with the development-only unclassified default.
     production: true,
+    ...(options.profile ? { profile: options.profile } : {}),
+    ...(installationSpecPath ? { installationSpecPath } : {}),
+    executionTarget: 'kubernetes',
     compositionName: options.compositionName ?? 'app',
     ...(options.connectionBindings ? { connectionBindings: options.connectionBindings } : {}),
   }, io));
@@ -107,6 +114,7 @@ export async function runApplicationDeploy(
     options.strategy ?? 'kro',
     previousInstallationSpec,
     options.acknowledge ?? [],
+    options.profile,
   ));
   io.stdout(`Application deployment graph: ${emitted.nodeCount} nodes, ${emitted.artifactCount} artifacts, ${emitted.digest}`);
   io.stdout(`Canonical application plan: ${emitted.applicationPlanPath}`);
@@ -250,6 +258,7 @@ export async function runApplicationDelete(
     // static-import-exception: keep Alchemy and provider implementations out of the thin CLI/router.
   } = await import('./application-alchemy-deployment.js');
   const graph = await readApplicationDeploymentGraph(graphPath);
+  assertRequestedDeploymentProfile(graph.metadata.identity.profile, options.profile, 'Destroy');
   if (
     graph.metadata.identity.instance !== target.instanceName ||
     graph.metadata.identity.controlPlaneNamespace !== target.controlPlaneNamespace
@@ -304,6 +313,7 @@ async function emitDeploymentGraph(
   strategy: 'direct' | 'kro',
   previousInstallationSpec: DeploymentJsonObject | undefined,
   acknowledgements: readonly string[],
+  assemblyProfile?: string,
 ): Promise<{
   readonly path: string;
   readonly digest: string;
@@ -347,9 +357,9 @@ async function emitDeploymentGraph(
     context,
     controlPlaneNamespace: instance.namespace,
     instance: instance.name,
-    profile: typeof instance.spec.profile === 'string' && instance.spec.profile.trim()
+    profile: assemblyProfile?.trim() || (typeof instance.spec.profile === 'string' && instance.spec.profile.trim()
       ? instance.spec.profile
-      : 'default',
+      : 'default'),
     strategy,
     installationSpec: instance.spec,
     profileTransition: profileTransition.identityInput,

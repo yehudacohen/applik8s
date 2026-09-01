@@ -186,7 +186,7 @@ function applicationProviderLifecycleGraph(
     if (
       chart === 'nats'
       || candidate.id === 'applik8sEventsNatsHelmRelease'
-      || candidate.id?.startsWith('applik8sEventsNatsHelmRelease_')
+      || candidate.id?.startsWith('applik8sEventsNatsHelmReleaseVariant')
     ) {
       const repositoryName = applicationHelmReleaseRepositoryName(template);
       depend(candidate, namespaceResources.find((other) =>
@@ -197,22 +197,22 @@ function applicationProviderLifecycleGraph(
     if (
       chart === 'nack'
       || candidate.id === 'applik8sEventsNackHelmRelease'
-      || candidate.id?.startsWith('applik8sEventsNackHelmRelease_')
+      || candidate.id?.startsWith('applik8sEventsNackHelmReleaseVariant')
     ) {
       depend(candidate, namespaceResources.find((other) =>
         applicationHelmReleaseChart(other.template) === 'nats'
         || other.id === 'applik8sEventsNatsHelmRelease'
-        || other.id?.startsWith('applik8sEventsNatsHelmRelease_')));
+        || other.id?.startsWith('applik8sEventsNatsHelmReleaseVariant')));
       continue;
     }
     if (applicationTemplateKind(template) === 'Stream') {
       const namespaceController = namespaceResources.find((other) =>
         applicationHelmReleaseChart(other.template) === 'nack'
         || other.id === 'applik8sEventsNackHelmRelease'
-        || other.id?.startsWith('applik8sEventsNackHelmRelease_'));
+        || other.id?.startsWith('applik8sEventsNackHelmReleaseVariant'));
       const singletonController = indexed.find((other) =>
         (other.id === 'applik8sEventsNackHelmRelease'
-          || other.id?.startsWith('applik8sEventsNackHelmRelease_'))
+          || other.id?.startsWith('applik8sEventsNackHelmReleaseVariant'))
         && applicationTemplateKind(other.template) === 'HelmRelease'
         && applicationTemplateName(other.template) === 'nack'
         && applicationTemplateNamespace(other.template) === 'typekro-nack-system');
@@ -686,7 +686,7 @@ function applicationRequiredExternalReferences(graph: ApplicationGraph): readonl
       ?? applicationGraphStringValue(graph.metadata.namespace);
     const identitySuffix = eventLog.id === 'provider.event-log'
       ? ''
-      : `_${createHash('sha256').update(eventLog.id).digest('hex').slice(0, 10)}`;
+      : `Variant${createHash('sha256').update(eventLog.id).digest('hex').slice(0, 10)}`;
     const reference = (
       id: string,
       releaseName: string,

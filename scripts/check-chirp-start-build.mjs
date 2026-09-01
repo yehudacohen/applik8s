@@ -4,6 +4,7 @@ import { cpus, platform } from 'node:os';
 import { dirname, join, relative } from 'node:path';
 import { promisify } from 'node:util';
 import { gzipSync } from 'node:zlib';
+import { applicationDeploymentGraphForImplementationPlan } from '@applik8s/deployment-compiler';
 import { collectV06GitIdentity } from './v06-evidence.ts';
 
 const execFileAsync = promisify(execFile);
@@ -49,6 +50,67 @@ const compilerBuildDurationMs = performance.now() - compilerBuildStarted;
 
 const graph = await json(join(output, 'typekro/application-graph.json'));
 assert(!JSON.stringify(graph).includes('[object Object]'), 'Chirp ApplicationGraph must preserve installation-derived values instead of coercing TypeKro references to [object Object].');
+const implementationPlanSet = await json(join(output, 'typekro/application-implementation-plans.json'));
+assert(
+  implementationPlanSet.apiVersion === 'applik8s.implementationPlanSet/v1alpha1'
+    && implementationPlanSet.application === 'chirp'
+    && implementationPlanSet.plans?.length === 2,
+  'Chirp must emit exactly the production-kubernetes and production-aws implementation plans for one unchanged semantic application.',
+);
+const implementationPlans = new Map(
+  implementationPlanSet.plans.map((plan) => [plan.profile.id, plan]),
+);
+const kubernetesPlan = implementationPlans.get('production-kubernetes');
+const awsPlan = implementationPlans.get('production-aws');
+const capabilityKey = (binding) => `${binding.capability.interface}${binding.capability.qualifier ? `#${binding.capability.qualifier}` : ''}`;
+const boundCapabilities = (plan) => plan.bindings.map(capabilityKey).sort();
+assert(
+  kubernetesPlan
+    && awsPlan
+    && JSON.stringify(boundCapabilities(kubernetesPlan)) === JSON.stringify(boundCapabilities(awsPlan)),
+  'Chirp production profiles must preserve the same qualified semantic capability set.',
+);
+const providerExports = (plan) => new Set(plan.implementations.map((implementation) => implementation.identity.provider.export));
+for (const expected of [
+  'ApplicationHost.kubernetes',
+  'Certificate.certManager',
+  'ContainerRegistry.harbor',
+  'Database.postgres',
+  'DnsPublication.externalDns',
+  'EventLog.jetStream',
+  'HttpExposure.kubernetes',
+  'ObjectStorage.rookCeph',
+  'OperatorRuntime.kubernetes',
+]) {
+  assert(providerExports(kubernetesPlan).has(expected), `Chirp production-kubernetes plan is missing ${expected}.`);
+}
+const selectedKubernetesGraph = applicationDeploymentGraphForImplementationPlan(graph, kubernetesPlan);
+const selectedAwsGraph = applicationDeploymentGraphForImplementationPlan(graph, awsPlan);
+const providerSelection = (selectedGraph, id) => selectedGraph.nodes.find((node) => node.kind === 'provider' && node.id === id)?.implementation;
+assert(providerSelection(selectedKubernetesGraph, 'provider.application-host') === 'kubernetes-application-host', 'Chirp production-kubernetes must physically select the Kubernetes ApplicationHost.');
+assert(providerSelection(selectedAwsGraph, 'provider.application-host') === 'aws-application-host', 'Chirp production-aws must physically select the AWS ApplicationHost.');
+assert(providerSelection(selectedKubernetesGraph, 'provider.transactional-database.v1alpha1.primary') === 'postgres', 'Chirp production-kubernetes must physically select PostgreSQL.');
+assert(providerSelection(selectedAwsGraph, 'provider.transactional-database.v1alpha1.primary') === 'aurora-postgresql', 'Chirp production-aws must physically select Aurora PostgreSQL.');
+assert(providerSelection(selectedKubernetesGraph, 'provider.object-storage.v1alpha1.media') === 's3', 'Chirp production-kubernetes must lower Rook/Ceph through the S3 ObjectStorage contract.');
+assert(providerSelection(selectedAwsGraph, 'provider.object-storage.v1alpha1.media') === 's3', 'Chirp production-aws must physically select S3 ObjectStorage.');
+assert(!JSON.stringify(selectedKubernetesGraph).includes('[object Object]') && !JSON.stringify(selectedAwsGraph).includes('[object Object]'), 'Profile-selected deployment graphs must remain portable JSON without coerced provider references.');
+for (const expected of [
+  'ApplicationHost.aws',
+  'Certificate.acm',
+  'ContainerRegistry.ecr',
+  'Database.auroraPostgres',
+  'DnsPublication.route53',
+  'EventLog.kinesis',
+  'HttpExposure.aws',
+  'ObjectStorage.s3',
+  'OperatorRuntime.distributed',
+]) {
+  assert(providerExports(awsPlan).has(expected), `Chirp production-aws plan is missing ${expected}.`);
+}
+assert(
+  !/(password|privateKey|secretValue|accessKeyId)\s*"?\s*:/iu.test(JSON.stringify(implementationPlanSet)),
+  'Chirp implementation plans may contain configuration authority references but must not serialize credential values.',
+);
 const workflowGatewaySource = await readFile(
   join(output, 'typekro/workflows/chirp-workflows/workflow-worker.generated.ts'),
   'utf8',
@@ -78,7 +140,7 @@ const commandProcessors = graph.nodes.filter((node) => node.kind === 'processor'
 assert(commandProcessors.length === 1, `Chirp must consolidate its transactional model commands into one bounded pool; found ${commandProcessors.length}.`);
 assert(commandProcessors[0]?.name === 'chirp-commands' && commandProcessors[0]?.handlers?.length >= 45, 'Chirp command pool must retain every generated typed model mutation handler.');
 const kinds = new Set(graph.nodes.map((node) => node.kind));
-for (const kind of ['model', 'command', 'commandHandler', 'query', 'stream', 'streamProcessor', 'projection', 'objectStore', 'task', 'workflow', 'crd', 'operator', 'gateway', 'provider']) {
+for (const kind of ['model', 'command', 'commandHandler', 'query', 'stream', 'streamProcessor', 'projection', 'objectStore', 'task', 'workflow', 'gateway', 'provider']) {
   assert(kinds.has(kind), `Chirp ApplicationGraph is missing ${kind}.`);
 }
 for (const projection of ['post-analytics-hourly', 'follow-analytics-hourly', 'reaction-analytics-hourly']) {
@@ -113,30 +175,29 @@ for (const [name, forbidden] of [
   const properties = Object.keys(query.input.jsonSchema.properties ?? {});
   assert(forbidden.every((field) => !properties.includes(field)), `${name} must derive its actor from the gateway principal instead of accepting ${forbidden.join(', ')}.`);
 }
-const moderationPolicyQuery = graph.nodes.find((node) => node.kind === 'query' && node.name === 'ModerationPolicy.current');
+const moderationPolicy = graph.nodes.find((node) => node.kind === 'model' && node.name === 'ModerationPolicy');
+const moderationPolicyQuery = graph.nodes.find((node) => node.kind === 'query' && node.name === 'ModerationPolicy.currentPolicy');
 assert(
-  moderationPolicyQuery?.kubernetes?.kind === 'kubernetes-list-watch'
-    && moderationPolicyQuery.kubernetes.namespace === installationNamespace
-    && moderationPolicyQuery.kubernetes.pageSize === 10
-    && moderationPolicyQuery.kubernetes.maxPages === 2
-    && moderationPolicyQuery.kubernetes.maxItems === 10
+  moderationPolicy?.native?.authority === 'postgres'
+    && moderationPolicy.native.artifact?.name === 'moderation_policies'
+    && moderationPolicy.managed?.portability === 'portable'
+    && moderationPolicy.managed.store?.interface === 'ManagedModelStore'
+    && moderationPolicy.managed.runtime?.interface === 'OperatorRuntime'
+    && moderationPolicy.managed.reconcile?.handlerSource?.includes('ApplyModerationPolicy')
+    && moderationPolicyQuery?.database?.connectionEnvName === 'APPLIK8S_DATABASE_CHIRP_URL'
+    && moderationPolicyQuery.reads?.some((read) => read.model?.nodeId === moderationPolicy.id)
     && moderationPolicyQuery.budgets?.timeoutMs === 2_000
     && moderationPolicyQuery.budgets?.maxRows === 1,
-  'ModerationPolicy.current must use one installation-scoped, bounded Kubernetes snapshot/watch authority.',
-);
-const moderationPolicyOperator = graph.nodes.find(
-  (node) => node.kind === 'operator' && node.name === 'moderation-policy-controller',
+  'ModerationPolicy must use the portable PostgreSQL managed-model contract, bounded relational reads, and the distributed reconciliation runtime.',
 );
 const moderationPolicyWorkflow = graph.nodes.find(
   (node) => node.kind === 'workflowHandler' && node.name === 'moderation.apply-policy.v1',
 );
 assert(
-  moderationPolicyOperator?.resources?.some(
-    (resource) =>
-      resource.apiVersion === 'chirp.applik8s.dev/v1alpha1'
-      && resource.kind === 'ModerationPolicy',
-  ) && moderationPolicyWorkflow,
-  'ModerationPolicy.on.reconcile(...) must lower to one inferred operator that invokes its typed durable workflow.',
+  moderationPolicyWorkflow
+    && !graph.nodes.some((node) => node.kind === 'crd' && node.name === 'ModerationPolicy')
+    && !graph.nodes.some((node) => node.kind === 'operator' && JSON.stringify(node).includes('ModerationPolicy')),
+  'ModerationPolicy.on.reconcile(...) must lower through the provider-neutral managed-model runtime and typed durable workflow without retaining a Kubernetes CRD/operator path.',
 );
 for (const processor of ['validate-published-post-create', 'validate-updated-post-update', 'validate-deleted-post-delete']) {
   assert(graph.nodes.some((node) => node.kind === 'streamProcessor' && node.name === processor), `Post.${processor} must lower through the canonical typed lifecycle-event processor path.`);
@@ -302,6 +363,10 @@ assert(
 );
 
 const resources = await json(join(output, 'typekro/resources.json'));
+assert(
+  !JSON.stringify(resources).includes('[object Object]'),
+  'Chirp generated resources must preserve dynamic installation values without JavaScript object coercion.',
+);
 const chirpRgd = resources.find((resource) => resource.apiVersion === 'kro.run/v1alpha1' && resource.kind === 'ResourceGraphDefinition' && resource.metadata?.name === 'chirp');
 assert(chirpRgd?.spec?.schema?.kind === 'ChirpInstallation', 'Chirp must compile to the typed ChirpInstallation ResourceGraphDefinition.');
 assert(!containsExpressionDescriptor(chirpRgd), 'Chirp RGD templates must contain serialized KRO expressions rather than JavaScript expression descriptor objects.');
@@ -452,26 +517,27 @@ assert(installationProfileValue(applicationHost?.spec?.replicas), 'ChirpInstalla
 const queryGateways = chirpRgd.spec.resources.map((resource) => resource.template).filter((resource) => resource?.kind === 'Deployment' && resource.metadata?.labels?.['app.kubernetes.io/component'] === 'query-gateway');
 const queryGatewayContainers = queryGateways.flatMap((resource) => resource.spec?.template?.spec?.containers ?? []);
 assert(
-  queryGateways.length === 2
+  queryGateways.length === 1
     && queryGateways.every((resource) => installationProfileValue(resource.spec?.replicas))
-    && queryGatewayContainers.map((container) => container.name).sort().join(',') === 'chirp-account,chirp-social,chirp-system,runtime',
-  'ChirpInstallation.spec.profile must drive both the dedicated Kubernetes gateway and the compatible three-gateway workload envelope.',
+    && queryGatewayContainers.map((container) => container.name).sort().join(',') === 'chirp-account,chirp-administration,chirp-social,chirp-system',
+  'ChirpInstallation.spec.profile must drive the consolidated relational query-gateway workload and all four audience-scoped servers.',
 );
-const administrationGateway = queryGateways.find((resource) => resource.metadata?.name === 'chirp-administration');
-const administrationNamespaceEnvironment = administrationGateway?.spec?.template?.spec?.containers?.[0]?.env?.find((entry) => entry.name?.startsWith('APPLIK8S_KUBERNETES_QUERY_'));
-assert(administrationNamespaceEnvironment?.value === installationNamespace, 'The administration gateway must receive its evaluated installation namespace at deployment time.');
-const administrationQueryRoles = chirpRgd.spec.resources.filter((resource) =>
-  ['Role', 'ClusterRole'].includes(resource.template?.kind)
-  && resource.template?.metadata?.name === 'chirp-administration');
+const managedModelOperator = chirpRgd.spec.resources.find((resource) =>
+  resource.template?.kind === 'Deployment'
+  && resource.template?.metadata?.name === 'chirp-managed-models');
+const managedModelOperatorContainer = managedModelOperator?.template?.spec?.template?.spec?.containers?.find(
+  (container) => container.name === 'operator',
+);
 assert(
-  administrationQueryRoles.length === 1
-    && administrationQueryRoles[0]?.template?.kind === 'Role'
-    && administrationQueryRoles[0]?.template?.metadata?.namespace === installationNamespace
-    && administrationQueryRoles[0]?.template?.rules?.some((rule) =>
-      rule.apiGroups?.join(',') === 'chirp.applik8s.dev'
-      && rule.resources?.join(',') === 'moderationpolicies'
-      && rule.verbs?.join(',') === 'get,list,watch'),
-  'The Kubernetes query gateway must receive only namespaced get/list/watch access to ModerationPolicy.',
+  managedModelOperatorContainer?.env?.some(
+    (entry) => entry.name === 'APPLIK8S_DATABASE_CHIRP_URL'
+      && entry.valueFrom?.secretKeyRef?.optional === false,
+  )
+    && managedModelOperator?.template?.spec?.replicas === 2
+    && !chirpRgd.spec.resources.some((resource) =>
+      ['CustomResourceDefinition', 'Role', 'ClusterRole'].includes(resource.template?.kind)
+      && JSON.stringify(resource.template).includes('moderationpolic')),
+  'The generated managed-model operator must receive only its PostgreSQL Secret reference and must not retain ModerationPolicy CRD or Kubernetes query RBAC.',
 );
 const analyticsCluster = chirpRgd.spec.resources.map((resource) => resource.template).find((resource) => resource?.kind === 'ClickHouseInstallation' && resource.metadata?.name === 'chirp-analytics');
 assert(installationProfileValue(analyticsCluster?.spec?.templates?.volumeClaimTemplates?.[0]?.spec?.resources?.requests?.storage), 'ChirpInstallation.spec.profile must drive analytics storage.');
@@ -599,7 +665,7 @@ for (const artifact of executableArtifacts) {
 }
 
 const generated = await recursiveFiles(join(output, 'typekro'));
-const chirpRgdPath = generated.find((path) => path.endsWith('/resources/04-resourcegraphdefinition-chirp.yaml'));
+const chirpRgdPath = generated.find((path) => /\/resources\/\d+-resourcegraphdefinition-chirp\.yaml$/u.test(path));
 assert(chirpRgdPath, 'Chirp build must emit its ResourceGraphDefinition as a standalone artifact.');
 const resourceGraphDefinitionBytes = (await stat(chirpRgdPath)).size;
 assert(
@@ -713,7 +779,13 @@ assert(
 );
 assert(!socialGatewaySource.includes('typekro') && !accountGatewaySource.includes('typekro'), 'Focused query gateways must not bundle TypeKro or other authoring-only infrastructure modules.');
 const administrationGatewaySource = await readFile(join(output, 'typekro/reactive/chirp-administration/runtime.mjs'), 'utf8');
-assert(administrationGatewaySource.includes('APPLIK8S_KUBERNETES_QUERY_') && administrationGatewaySource.includes('moderationpolicies') && administrationGatewaySource.includes('/__applik8s/v1'), 'The administration gateway must bundle its Kubernetes snapshot/watch authority behind the ordinary query protocol.');
+assert(
+  administrationGatewaySource.includes('APPLIK8S_DATABASE_CHIRP_URL')
+    && administrationGatewaySource.includes('moderation_policies')
+    && administrationGatewaySource.includes('/__applik8s/v1')
+    && !administrationGatewaySource.includes('APPLIK8S_KUBERNETES_QUERY_'),
+  'The administration gateway must bundle its bounded PostgreSQL moderation view behind the ordinary query protocol without retaining Kubernetes snapshot/watch authority.',
+);
 
 const artifactReport = {
   schemaVersion: 1,

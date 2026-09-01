@@ -48,6 +48,7 @@ export interface LocalDevelopmentCommandRuntime {
     readonly compositionName: string;
     readonly localDevelopment: true;
     readonly executionTarget: 'local' | 'aws-local';
+    readonly profile: string;
   }, io: LocalSupervisorIo): Promise<number>;
   readonly supervisor?: LocalSupervisorOptions;
   /** Test seam for resuming the retained MiniStack container during offline reset. */
@@ -134,6 +135,14 @@ export async function runLocalDevelopmentCommand(
   process.once('SIGINT', stop);
   process.once('SIGTERM', stop);
   const outDir = options.outDir ?? '.applik8s/local-build';
+  const installationSpec = await configuredInstallationSpec(
+    configuration.instance ? resolve(io.cwd, configuration.instance) : undefined,
+  );
+  const profile = options.profile
+    ?? (typeof installationSpec?.profile === 'string' && installationSpec.profile.trim()
+      ? installationSpec.profile
+      : undefined)
+    ?? 'starter';
   const previousDevelopmentEnvironment = developmentEnvironment
     ? Object.fromEntries(Object.keys(developmentEnvironment).map((name) => [name, process.env[name]]))
     : undefined;
@@ -145,6 +154,7 @@ export async function runLocalDevelopmentCommand(
       compositionName: options.compositionName ?? configuration.compositionName ?? 'app',
       localDevelopment: true,
       executionTarget: target,
+      profile,
     }, io);
     if (buildCode !== 0) {
       developmentState.application = { state: 'failed', message: `Application compilation failed with exit code ${buildCode}. Fix source while the Builder portal remains available.` };
@@ -162,14 +172,6 @@ export async function runLocalDevelopmentCommand(
       target,
     );
     const applicationHostFrameworkCredentials = await readLocalApplicationHostFrameworkCredentials(bundlePath);
-    const installationSpec = await configuredInstallationSpec(
-      configuration.instance ? resolve(io.cwd, configuration.instance) : undefined,
-    );
-    const profile = options.profile
-      ?? (typeof installationSpec?.profile === 'string' && installationSpec.profile.trim()
-        ? installationSpec.profile
-        : undefined)
-      ?? 'starter';
     const generatedSecrets = installationSpec
       ? await applicationGeneratedSecretRequirements(
           bundlePath,
@@ -311,6 +313,7 @@ export async function runLocalDevelopmentCommand(
           compositionName: options.compositionName ?? configuration.compositionName ?? 'app',
           localDevelopment: true,
           executionTarget: target,
+          profile,
         }, io);
         if (nextBuildCode !== 0) {
           developmentState.application = { state: 'failed', message: `Rebuild failed with exit code ${nextBuildCode}; the last healthy runtime remains active.` };

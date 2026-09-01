@@ -2,6 +2,10 @@
 import { createHash } from 'node:crypto';
 import { applicationOptionalDeploymentOutputReference } from '@applik8s/deployment-contract';
 import { applicationCallableProviderEnvironment } from '../application-callable-provider-runtime.js';
+import {
+  applicationStructuredGenerationAuthorityId,
+  applicationStructuredGenerationEnvironmentCredential,
+} from '../application-structured-generation-credentials.js';
 import { applicationGraphAllConditions, applicationGraphBooleanCondition, applicationGraphJsonStringArray, applicationGraphStringValue } from '../application-installation-values.js';
 import { structuredGenerationSelectedScalar, structuredGenerationSelection, type WorkflowContract, type WorkflowTaskProjectionContract } from './contracts.js';
 import {
@@ -45,11 +49,24 @@ function workflowCapabilityEnvironment(contract: WorkflowContract): readonly Rec
     if (provider.implementation !== 'structured-generation-http') return [];
     const secret = objectConfig(config.credentialSecret);
     const secretName = stringConfig(secret.name);
+    // Resolve the alias for fail-closed graph validation; credential identity
+    // itself is derived from the source binding so partial compiler views
+    // cannot mint a second Secret.
+    applicationStructuredGenerationAuthorityId(contract.graph, provider);
+    const environmentCredential = applicationStructuredGenerationEnvironmentCredential(provider);
     return [
       { name: 'APPLIK8S_STRUCTURED_GENERATION_ENDPOINT', value: applicationGraphStringValue(config.endpoint) },
       { name: 'APPLIK8S_STRUCTURED_GENERATION_AUTHORIZATION', value: applicationGraphStringValue(config.authorization) || 'bearer' },
       ...(config.defaultProfile !== undefined ? [{ name: 'APPLIK8S_STRUCTURED_GENERATION_DEFAULT_PROFILE', value: applicationGraphStringValue(config.defaultProfile) }] : []),
       ...(secretName ? [{ name: 'APPLIK8S_STRUCTURED_GENERATION_API_KEY', valueFrom: { secretKeyRef: { name: secretName, key: stringConfig(config.credentialKey) || 'apiKey', optional: false } } }] : []),
+      ...(!secretName && environmentCredential ? [{
+        name: 'APPLIK8S_STRUCTURED_GENERATION_API_KEY',
+        valueFrom: { secretKeyRef: {
+          name: environmentCredential.secretName,
+          key: environmentCredential.secretKey,
+          optional: !environmentCredential.required,
+        } },
+      }] : []),
     ];
   });
 }
@@ -84,6 +101,23 @@ function workflowProfileSelectorValue(selector: string): string {
     );
   }
   return `\${${expression}}`;
+}
+
+function workflowSagaEnvironment(
+  contract: WorkflowContract,
+): readonly Record<string, unknown>[] {
+  return contract.sagaStore
+    ? [{
+        name: contract.sagaStore.connectionEnvironmentName,
+        valueFrom: {
+          secretKeyRef: {
+            name: contract.sagaStore.secret.name,
+            key: contract.sagaStore.secret.key,
+            optional: false,
+          },
+        },
+      }]
+    : [];
 }
 
 export function workflowResources(contract: WorkflowContract, name: string, image: string, digest: string, _ownsProvider: boolean): GeneratedApplicationWorkflowResource[] {
@@ -147,6 +181,7 @@ export function workflowResources(contract: WorkflowContract, name: string, imag
 							...workflowObjectEnvironment(contract),
               ...workflowActorEnvironment(contract),
               ...workflowSignalEnvironment(contract),
+              ...workflowSagaEnvironment(contract),
               ...workflowProviderAccountingEnvironment(contract),
               ...privateProviderResources.environment,
             ]),

@@ -36,7 +36,21 @@ function resolveValue(value: unknown, spec: Readonly<Record<string, unknown>>, s
     const branch = Object.hasOwn(providerSelection.cases, selected)
       ? providerSelection.cases[selected]
       : providerSelection.default;
-    return resolveValue(branch, spec, seen, options);
+    const resolvedBranch = resolveValue(branch, spec, seen, options);
+    if (!resolvedBranch || typeof resolvedBranch !== 'object' || Array.isArray(resolvedBranch)) {
+      return resolvedBranch;
+    }
+    // Provider-selection wrappers also carry semantic identity metadata. The
+    // selected branch is the runtime configuration, while qualification and
+    // alias ownership still distinguish the provider node during physical
+    // implementation-plan binding.
+    const metadata = Object.fromEntries(
+      ['qualification', 'bindingKind', 'aliasOf']
+        .flatMap((key) => Object.hasOwn(value, key)
+          ? [[key, resolveValue(Reflect.get(value, key), spec, seen, options)] as const]
+          : []),
+    );
+    return { ...resolvedBranch, ...metadata };
   }
   const descriptorExpression = applicationInstallationExpression(value);
   if (descriptorExpression) {

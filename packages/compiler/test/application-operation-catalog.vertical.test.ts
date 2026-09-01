@@ -1180,5 +1180,96 @@ describe('application operation catalog compilation', () => {
         }),
       ]),
     );
+
+    const actor = actorGraph.nodes[0];
+    if (actor?.kind !== 'actor') throw new Error('Actor fixture is unavailable.');
+    const renameOperation = 'applik8s://actors/workspace.v1/operations/rename' as const;
+    const serviceIdentity = {
+      id: 'identity:chirp:service:workspace-controller',
+      kind: 'service' as const,
+      issuer: 'applik8s://chirp',
+      subject: 'workspace-controller',
+    };
+    const assignedActorGraph = {
+      ...actorGraph,
+      nodes: [
+        {
+          ...actor,
+          definition: {
+            ...actor.definition,
+            protocol: actor.definition.protocol.map((member) =>
+              member.name === 'rename'
+                ? {
+                    ...member,
+                    authority: {
+                      classification: 'unclassified' as const,
+                      permissionIds: [],
+                      grantable: false,
+                      delegable: false,
+                      scope: { kind: 'none' as const, reason: 'assigned by manifest' },
+                    },
+                  }
+                : member),
+          },
+        },
+        {
+          id: 'authority-manifest.application',
+          kind: 'authorityManifest' as const,
+          name: 'application-authority',
+          stability: 'stable' as const,
+          manifest: {
+            apiVersion: 'applik8s.authorityManifest/v1alpha1' as const,
+            application: 'chirp',
+            revision: 'sha256:actor-service',
+            identities: [serviceIdentity],
+            permissions: [{
+              id: 'permission:chirp:workspace-rename',
+              name: 'workspace-rename',
+              operationIds: [renameOperation],
+              scope: { kind: 'all' as const },
+              grantable: false,
+            }],
+            roles: [],
+            grants: [{
+              id: 'grant:chirp:workspace-controller:rename',
+              identity: serviceIdentity,
+              permissionId: 'permission:chirp:workspace-rename',
+              operationIds: [renameOperation],
+              scope: { kind: 'all' as const },
+              issuedBy: {
+                id: 'identity:chirp:application',
+                kind: 'service' as const,
+                issuer: 'applik8s://chirp',
+                subject: 'application-authority',
+              },
+              reason: 'Exact actor turn authority.',
+            }],
+            outcomes: [],
+          },
+        },
+      ],
+    } satisfies ApplicationGraph;
+    const assignedCatalog = compileApplicationOperationCatalog(
+      assignedActorGraph,
+      { requireClassified: true },
+    );
+    const assignedAuthority = compileApplicationWorkloadAuthority(
+      assignedActorGraph,
+      assignedCatalog,
+    ).filter(({ workloadIdentity }) =>
+      workloadIdentity.subject === 'actor.workspace.v1:rename');
+    expect(assignedAuthority).toHaveLength(3);
+    expect(assignedAuthority).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          operationId: renameOperation,
+          serviceIdentity,
+        }),
+      ]),
+    );
+    expect(assignedAuthority.every((envelope) =>
+      envelope.serviceIdentity?.id === serviceIdentity.id)).toBe(true);
+    expect(assignedAuthority.some(({ operationId }) =>
+      operationId === 'applik8s://actors/workspace.v1/operations/connect')).toBe(false);
   });
 });

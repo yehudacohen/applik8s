@@ -37,12 +37,19 @@ export interface CompileApplicationDeploymentGraphRequest {
     readonly instance: string;
     readonly profile: string;
   };
+  /** Legacy/application installation variant used only inside unbound provider selections. */
+  readonly providerProfile?: string;
   readonly mode?: ApplicationDeploymentGraphMode;
   readonly strategy: ApplicationDeploymentStrategy;
   readonly installationSpec: DeploymentJsonObject;
   readonly profileTransition?: DeploymentJsonObject;
   readonly artifacts: readonly ApplicationArtifactRequirement[];
   readonly materializedComposition?: {
+    readonly resources: readonly DeploymentJsonObject[];
+    readonly status: DeploymentJsonObject;
+  };
+  /** Concrete instance view used only for validation; never emitted as the reusable RGD graph. */
+  readonly validationComposition?: {
     readonly resources: readonly DeploymentJsonObject[];
     readonly status: DeploymentJsonObject;
   };
@@ -138,6 +145,8 @@ export interface ApplicationDeploymentPlanningContext {
   readonly connection: ApplicationDeploymentConnectionIdentity;
   readonly instance: string;
   readonly profile: string;
+  /** Canonical v0.9 assembly profile recorded in deployment identity. */
+  readonly assemblyProfile?: string;
   readonly strategy: ApplicationDeploymentStrategy;
   readonly installationSpec: DeploymentJsonObject;
   /**
@@ -229,4 +238,6 @@ export interface CompileApplicationDeploymentGraphResult {
   readonly contributorKeys: readonly string[];
   /** Source-attributed, target-specific least-privilege grants for every managed execution. */
   readonly runtimeAccess: ApplicationRuntimeAccessPlan;
+  /** Semantic executions deliberately unavailable for this concrete target. */
+  readonly excludedExecutionNodeIds: readonly string[];
 }

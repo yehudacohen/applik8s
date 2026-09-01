@@ -160,6 +160,8 @@ Focused v0.9 decisions include:
 - `workflow()` versus `application.transaction.saga()`;
 - `AI.model()` versus `ML.model()`;
 - `agent()` versus `actor()` and specialized compositions;
+- **Builder** as the independent repository-development daemon/portal, distinct from product-owned agent
+  administration such as **Agent Studio** or **Configure** inside a generated application;
 - profile, concrete provider configuration, physical-resource, execution-host, provider, and
   implementation vocabulary; target/placement/substrate are not independent selectors.
 
@@ -410,8 +412,11 @@ in advance as `additive` may advance the RC without resetting unrelated evidence
 RC. Editorial corrections and informational fields do not reset the contract freeze.
 
 The machine-readable v0.9 scorecard lists every RFP/workstream, maturity, blocking status, required
-evidence, current disposition, and canonical contract owner. Release checks derive blocking gates from
-that file; beta/preview failures remain visible but cannot accidentally become stable-core blockers.
+evidence, current disposition, and canonical contract owner. Release checks derive blockers from that
+file. Maturity controls post-release compatibility promises; it does not make an accepted v0.9 beta or
+preview optional. `codeAgent()`, Builder, Saga, and the maintained profile capabilities named by the v0.9
+program must satisfy their evidence before release and may not be removed, hidden, or relabeled to make the
+scorecard pass.
 
 ## Diagnostics
 

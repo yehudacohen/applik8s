@@ -6,6 +6,7 @@ import {
   createGeneratedApplicationAlchemyDeployment,
   readApplicationDeploymentGraph,
 } from './application-alchemy-deployment.js';
+import { assertRequestedDeploymentProfile } from './application-deployment-profile.js';
 import type {
   ApplicationDeploymentCommandIo,
   ApplicationStatusCommandOptions,
@@ -39,6 +40,7 @@ export async function runApplicationStatus(
   }
   const target = await resolveGeneratedApplicationDeleteTarget(bundlePath, options);
   const graph = await readApplicationDeploymentGraph(graphPath);
+  assertRequestedDeploymentProfile(graph.metadata.identity.profile, options.profile, 'Status');
   if (
     graph.metadata.identity.instance !== target.instanceName
     || graph.metadata.identity.controlPlaneNamespace !== target.controlPlaneNamespace

@@ -951,7 +951,8 @@ export const providerHttpStack = application.composition;
     const source = await readFile(artifact.sourcePath, 'utf8');
     expect(source).toContain('APPLIK8S_PROFILE_VARIANT');
     expect(source).toContain('acquireItem');
-    expect(source).toContain('instrumentApplicationProviderOperation');
+    // The production bundle may inline and rename the framework wrapper. Its
+    // admitted provider-operation descriptor is the stable semantic evidence.
     expect(source).toMatch(/(?:"interface"|interface):"AcquisitionProvider"/u);
     expect(source).toMatch(/(?:"member"|member):"acquire"/u);
     expect(source).toContain('dedicated');

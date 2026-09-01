@@ -1,6 +1,7 @@
 # RFP: Specialized Code and Research Agent Compositions
 
-**Status:** Accepted mixed-maturity contract; research vertical release-blocking, code vertical preview;
+**Status:** Accepted mixed-maturity contract; research vertical release-blocking, code vertical
+release-blocking preview with deterministic-local and Celld/OpenCode qualification passing;
 architecture frozen on 2026-08-30
 
 **Audience:** Applik8s maintainers, Agentic Start authors, implementing agents, and provider authors
@@ -108,9 +109,10 @@ underlying contracts.
 8. Workspace, repository, shell/process, browser, network, and evidence capabilities remain separable.
 9. Human approvals use existing signal/event authority; no special approval channel is invented.
 10. Specialized lifecycle facts enter `application.events` only according to declared contracts.
-11. `researchAgent()`, `WebSearch`, `ResearchEvidence`, and the maintained SearXNG provider block v0.9
-    release qualification. `codeAgent()`, OpenCode, Builder, and other specialized compositions remain
-    non-blocking preview surfaces.
+11. `researchAgent()`, `WebSearch`, `ResearchEvidence`, the maintained SearXNG provider, `codeAgent()`,
+    OpenCode, and Builder block v0.9 release qualification. The code and Builder surfaces remain preview
+    maturity, but each must pass its complete real-provider journey; preview maturity is not an omission
+    mechanism.
 
 ## Architectural boundary
 
@@ -193,8 +195,11 @@ A code-agent run leases or resumes a workspace, hydrates repository and process 
 normal agent/actor loop, emits inspectable changes and evidence, and releases or retains the workspace
 according to policy.
 
-The durable identity is the normal actor/agent identity plus a serializable workspace reference. Replacing
-a pod or harness does not create a new logical agent. Workspace loss is an explicit terminal/recovery event.
+The durable identity is the repository-scoped actor identity plus a per-request stable run identity and a
+serializable workspace reference. The actor serializes turns for one repository, while effect receipts
+preserve each admitted run independently and the workspace lease fences the single active writer.
+Replacing a pod or harness does not create a new logical agent or run. Workspace loss is an explicit
+terminal/recovery event.
 
 ## Research-agent lifecycle
 
@@ -253,12 +258,16 @@ The maintained v0.9 research vertical includes:
 - safe, bounded retrieval of selected result documents;
 - durable `ResearchEvidence` persistence and artifact/citation linkage.
 
-The preview code vertical may include:
+The maintained preview code vertical includes:
 
 - an OpenCode-backed `AgentHarness`;
 - a local/worktree `CodeWorkspace`;
 - Git source operations;
 - a bounded process runner.
+
+These provider-neutral contracts are published from `@applik8s/code-agent`. The maintained OpenCode
+adapter remains in `@applik8s/dev/agent/opencode-code-harness`, so importing the composition does not make
+OpenCode part of application semantics or pull a development harness into unrelated runtimes.
 
 A direct HTTP search adapter may be supplied when explicitly configured, but it is not a substitute for
 the managed and external SearXNG qualification gates.
@@ -312,6 +321,16 @@ The independent Builder daemon is a separate deployment mode. It may run OpenCod
 behind `AgentHarness` and must remain usable without Celld or a healthy generated application. Builder's
 thread, attachments, mutation journal, approval state, preview, evidence, and undo remain daemon-owned and
 provider-neutral.
+
+These are two independent qualification paths:
+
+- **distributed code-agent preview:** `codeAgent()` → actor runtime → Celld worker → separately authorized
+  OpenCode harness, with durable actor/workspace/run identity and retry reattachment; and
+- **Builder preview:** independent Builder daemon → loopback OpenCode harness, with Builder-owned journal,
+  workspace lease, approval, evidence, apply, and undo authority.
+
+Builder inclusion never depends on Celld availability. Passing the loopback Builder journey does not
+qualify distributed `codeAgent()`, and passing the Celld vertical does not qualify Builder product behavior.
 
 `ApplicationPlan` and runtime evidence show the actor provider, harness provider, workspace provider,
 execution identities, network/process/filesystem authority, placement constraints, retention, and
@@ -386,16 +405,22 @@ consumer value.
 - Swapping a maintained harness/search provider does not change agent domain code.
 - Expanded plans expose every powerful capability and scope.
 - Workspace and agent identity survive runtime replacement correctly.
-- A Celld-backed code agent retries a lost harness response by reattaching to the same stable run, preserves
-  actor and workspace identity across OpenCode replacement, and never runs OpenCode inside the general
-  Celld worker authority by default.
-- Celld-worker, OpenCode-harness, and workspace lifecycle tests prove readiness, cancellation, restart,
-  retention, and ordered teardown without leaked processes, leases, volumes, or actor state.
-- Builder's loopback OpenCode mode remains functional when Celld and the generated application are absent.
+- A real public `codeAgent()` runs through deterministic-local and Celld-backed execution against a real
+  OpenCode process rather than a protocol double.
+- The Celld-backed code agent retries a lost harness response by reattaching to the same stable run,
+  serializes concurrent turns, preserves actor and workspace identity across worker restart or relocation,
+  and never runs OpenCode inside the general Celld worker authority by default.
+- The preview explicitly scopes shell, filesystem, repository, network, Secret, and Git authority;
+  cancellation and ordered teardown leave no actor, process, lease, workspace, volume, or authorization
+  residue.
+- OpenCode-provider replacement preserves conversation/workspace identity and is demonstrated explicitly;
+  it cannot be inferred from protocol compatibility.
+- Builder's loopback OpenCode mode is qualified separately and remains functional when Celld and the
+  generated application are absent.
 - Approval and event behavior use the same framework contracts as other applications.
-- Agentic Start demonstrates the research journey end to end and may demonstrate the code journey as
-  preview.
-- Research-vertical failure blocks v0.9; code-agent, OpenCode, and Builder preview failures do not.
+- Agentic Start demonstrates both the research journey and code journey end to end, with the code journey
+  clearly labeled preview maturity.
+- Research-vertical, code-agent, or Builder qualification failure blocks v0.9.
 
 ## Non-goals
 
@@ -409,5 +434,6 @@ consumer value.
 
 The research vertical is complete when it feels batteries-included in Agentic Start, passes its managed
 and external provider lifecycle gates, and its expanded graph proves that every behavior is ordinary
-Applik8s composition with replaceable providers and explicit authority. The code vertical is credible
-preview when it preserves the same architectural boundaries without blocking release.
+Applik8s composition with replaceable providers and explicit authority. The code vertical may ship as a
+credible preview only after the complete real-OpenCode local/Celld evidence above; otherwise v0.9 is not
+ready.

@@ -1,6 +1,6 @@
 # RFP: Saga Coordination
 
-**Status:** Accepted beta contract; architecture frozen on 2026-08-30
+**Status:** Accepted release-blocking beta contract; architecture frozen on 2026-08-30
 
 **Audience:** Applik8s maintainers, implementing agents, provider authors, and reliability reviewers
 
@@ -22,8 +22,11 @@ This RFP introduces `application.transaction.saga(...)`. It is not distributed A
 two-phase commit. A Saga records each effect inside an explicit `step`, records its compensator before the
 effect may become externally visible, and compensates committed steps in reverse order after failure.
 
-The surface is beta in v0.9. It may ship only with crash-recovery, idempotency, authority, upgrade, and
-unknown-outcome evidence. Failure to qualify it does not block the stable v0.9/1.0 core.
+The surface is beta in v0.9, but it is a committed release deliverable. It may ship only with one realistic
+deployed durable-provider scenario proving crash recovery, idempotency, compensation, irreversible
+boundaries, authority, upgrade, and honest unknown outcomes. Failure to qualify it blocks v0.9. Removing
+the Saga export, graph disposition, documentation, examples, diagnostics, or maturity claim is not an
+acceptable substitute. A reserved or ordinary-use fail-closed public node is not a beta implementation.
 
 ## Existing functionality that must not be duplicated
 
@@ -301,4 +304,4 @@ and remaining operator action without exposing secret inputs.
 
 The beta may ship when one maintained provider passes the full interruption/compensation matrix and the UI,
 plan, and diagnostics state exactly what happened. Promotion beyond beta requires materially broader
-provider evidence.
+provider evidence. If that qualification gate is not met, v0.9 is not ready.

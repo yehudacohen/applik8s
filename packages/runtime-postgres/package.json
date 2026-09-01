@@ -60,6 +60,11 @@
       "types": "./dist/query-batch.d.ts",
       "import": "./dist/query-batch.js",
       "default": "./dist/query-batch.js"
+    },
+    "./saga-store": {
+      "types": "./dist/saga-store.d.ts",
+      "import": "./dist/saga-store.js",
+      "default": "./dist/saga-store.js"
     }
   },
   "dependencies": {

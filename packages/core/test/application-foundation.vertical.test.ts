@@ -689,4 +689,63 @@ describe('v0.8 canonical foundation', () => {
     expect(access.filter(({ target }) => target.operation === 'secret.read')
       .every(({ provenance: [entry] }) => entry?.module === 'src/app.ts')).toBe(true);
   });
+
+  it('derives connection authority for captured qualified provider tokens', () => {
+    const queryId = 'query.engagement.history.v1';
+    const datasetId = 'provider.lakehouse-dataset.v1alpha1.history';
+    const graph = {
+      apiVersion: 'applik8s.applicationGraph/v1alpha1',
+      kind: 'ApplicationGraph',
+      metadata: { name: 'fixture' },
+      nodes: [
+        {
+          id: datasetId,
+          kind: 'provider',
+          interface: 'LakehouseDataset',
+          implementation: 's3-dataset',
+          config: {},
+        },
+        {
+          id: queryId,
+          kind: 'query',
+          name: 'engagement.history',
+          input: { jsonSchema: { type: 'object' } },
+          output: { jsonSchema: { type: 'object' } },
+          reads: [],
+          run: { source: 'async input => input' },
+          providerBindings: [{
+            identifier: 'historyDataset',
+            placement: 'providerDependency',
+            projection: 'token',
+            provider: {
+              interface: 'LakehouseDataset',
+              nodeId: datasetId,
+            },
+          }],
+        },
+      ],
+      edges: [],
+      providerRequirements: [],
+      providerBindings: [],
+      compatibility: {
+        stablePublicApis: [],
+        documentedInternalContracts: [],
+        experimentalSurfaces: [],
+        postV3Surfaces: [],
+        labels: [],
+      },
+    } as unknown as ApplicationGraph;
+
+    const foundation = deriveApplicationGraphFoundation(graph);
+    expect(foundation.runtimeAccess).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        consumer: expect.objectContaining({ nodeId: queryId }),
+        target: {
+          capabilityId: datasetId,
+          operation: 'connection.use',
+          scope: { kind: 'resource', resourceId: datasetId },
+        },
+      }),
+    ]));
+  });
 });

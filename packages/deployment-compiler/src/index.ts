@@ -19,12 +19,18 @@ export {
 export { compileApplicationDeploymentGraph } from "./compiler.js";
 export type { KubernetesRuntimeAccessParityFinding } from './kubernetes-runtime-access-parity.js';
 export { validateKubernetesRuntimeAccessParity } from './kubernetes-runtime-access-parity.js';
+export {
+  applicationDeploymentGraphForImplementationPlan,
+  applicationImplementationConfigurationValues,
+  applicationProviderGraphConfigurationKey,
+} from './implementation-plan-graph.js';
 export type { ApplicationLocalRuntimeArtifact, CompileLocalSupervisorPlanRequest } from './local-supervisor-plan.js';
 export { awsLocalOutputBindingId, awsLocalOutputEnvironmentName, awsLocalRuntimeBindingId, compileLocalApplicationPlan, compileLocalSupervisorPlan } from './local-supervisor-plan.js';
 export type { ApplicationProviderGuaranteeRegistryRequest, ApplicationScheduleProviderCompatibilityFinding } from './provider-guarantees.js';
 export { applicationProviderGuaranteesForGraph, applicationScheduleProviderCompatibilityFindings, assertApplicationScheduleProviderCompatibility } from './provider-guarantees.js';
 export {
   type ApplicationProviderExecution,
+  applicationProviderExecution,
   applicationProviderSelectionDeploymentContributor,
   builtinApplicationDeploymentContributors,
   clickStackCredentialsSecretName,

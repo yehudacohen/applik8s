@@ -31,4 +31,30 @@ describe('Application installation TypeKro expression materialization', () => {
       providers: { webSearch: { namespace: 'managed-search' } },
     })).toBe(expression);
   });
+
+  it('preserves provider qualification and alias identity after selecting a branch', () => {
+    expect(resolveApplicationInstallationValues({
+      kind: 'application-provider-selection',
+      selector: 'schema.spec.profile',
+      cases: {
+        production: { kind: 'structured-generation-http', endpoint: 'https://ai.example.test' },
+      },
+      default: { kind: 'structured-generation-deterministic' },
+      bindingKind: 'provided',
+      aliasOf: 'provider.structured-generation.content',
+      qualification: {
+        apiVersion: 'applik8s.providerQualification/v1alpha1',
+        name: 'content',
+      },
+    }, { profile: 'production' })).toEqual({
+      kind: 'structured-generation-http',
+      endpoint: 'https://ai.example.test',
+      bindingKind: 'provided',
+      aliasOf: 'provider.structured-generation.content',
+      qualification: {
+        apiVersion: 'applik8s.providerQualification/v1alpha1',
+        name: 'content',
+      },
+    });
+  });
 });

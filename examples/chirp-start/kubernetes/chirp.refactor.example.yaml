@@ -7,6 +7,9 @@ spec:
   name: chirp-refactor
   hostname: chirp-refactor.localhost
   profile: starter
+  generation:
+    endpoint: https://openrouter.ai/api/v1
+    defaultProfile: nvidia/nemotron-3-ultra-550b-a55b:free
   version: 0.7.0-dev
   features:
     automatedAccounts: true

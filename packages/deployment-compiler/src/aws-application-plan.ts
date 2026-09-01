@@ -3,6 +3,7 @@
 // source or making this adapter a lifecycle owner.
 import {
   type ApplicationGraph,
+  type ApplicationImplementationPlan,
   type ApplicationNativePlanRecord,
   type ApplicationPlan,
   applicationCanonicalIdentity,
@@ -18,10 +19,12 @@ import {
 } from '@applik8s/deployment-contract';
 import { compileApplicationPlan } from './application-plan.js';
 import { applicationProviderGuaranteesForGraph } from './provider-guarantees.js';
+import { applicationDeploymentGraphForImplementationPlan } from './implementation-plan-graph.js';
 
 export interface CompileApplicationAwsApplicationPlanRequest {
   readonly graph: ApplicationGraph;
   readonly aws: ApplicationAwsDeploymentPlan;
+  readonly implementationPlan?: ApplicationImplementationPlan;
   readonly workspaceRoot?: string;
 }
 
@@ -33,6 +36,13 @@ export interface CompileApplicationAwsApplicationPlanRequest {
 export function compileApplicationAwsApplicationPlan(
   request: CompileApplicationAwsApplicationPlanRequest,
 ): ApplicationPlan {
+  // Capability qualification needs only the profile-selected implementation
+  // identity. Keep environment-derived configuration out of the canonical
+  // explanation artifact; the native AWS plan separately owns its concrete
+  // public configuration and all Secret values remain external.
+  const providerGraph = request.implementationPlan
+    ? applicationDeploymentGraphForImplementationPlan(request.graph, request.implementationPlan)
+    : request.graph;
   const connectionDigest = digestApplicationDeploymentValue({
     provider: 'aws',
     accountId: request.aws.accountId ?? 'unresolved',
@@ -52,7 +62,7 @@ export function compileApplicationAwsApplicationPlan(
         application: request.aws.application,
         controlPlaneNamespace: request.aws.region,
         instance: request.aws.environment,
-        profile: request.aws.environment,
+        profile: request.implementationPlan?.profile.id ?? request.aws.environment,
       },
       mode: 'fresh',
       strategy: 'direct',
@@ -143,17 +153,18 @@ export function compileApplicationAwsApplicationPlan(
     },
   };
   return compileApplicationPlan({
-    graph: request.graph,
+    graph: providerGraph,
     deployment,
     target: 'aws',
     lifecycleAuthority: 'alchemy',
     generatedAt: new Date(0).toISOString(),
     providerGuarantees: applicationProviderGuaranteesForGraph({
-      graph: request.graph,
+      graph: providerGraph,
       target: 'aws',
-      profile: request.aws.environment,
+      profile: request.implementationPlan?.profile.id ?? request.aws.environment,
     }),
     nativePlans: [nativePlan],
+    ...(request.implementationPlan ? { implementationPlan: request.implementationPlan } : {}),
     ...(request.workspaceRoot ? { workspaceRoot: request.workspaceRoot } : {}),
   });
 }

@@ -1,18 +1,32 @@
+// typecast-file-boundary: Public provider constructors validate the bounded
+// structural configuration before branding it as a callable provider token.
 import type { ApplicationResourceRef } from '@applik8s/core';
 import type {
+  ApplicationSecretSourceBinding,
+} from './application-configuration.js';
+import type {
+  ApplicationProviderConfigString,
+  ApplicationProviderConfigUrl,
+  ApplicationProviderToken,
   ApplicationQualifiableProviderToken,
   ApplicationTypedProviderContract,
 } from './application-providers.js';
+import {
+  type ApplicationCapabilityImplementation,
+  maintainedApplicationCapabilityImplementation,
+} from './application-capability-implementation.js';
 import { applicationQualifiableProviderToken } from './application-provider-qualification.js';
 
 export interface ApplicationStructuredGenerationHttpProvider {
   readonly kind: 'structured-generation-http';
   /** Provider-neutral JSON generation endpoint. HTTPS is required unless explicitly limited to a local test profile. */
-  readonly endpoint: string;
+  readonly endpoint: ApplicationProviderConfigUrl;
   readonly credentialSecret?: ApplicationResourceRef;
+  /** Provider-neutral deployment secret source. It is projected into the selected runtime without entering the plan or application graph as plaintext. */
+  readonly credential?: ApplicationSecretSourceBinding;
   readonly credentialKey?: string;
   readonly authorization?: 'bearer' | 'x-api-key';
-  readonly defaultProfile?: string;
+  readonly defaultProfile?: ApplicationProviderConfigString;
   readonly timeoutSeconds?: number;
   readonly maxResponseBytes?: number;
   readonly allowInsecureHttp?: boolean;
@@ -31,8 +45,8 @@ export type ApplicationStructuredGenerationProvider =
   | ApplicationStructuredGenerationDeterministicProvider;
 
 export interface ApplicationStructuredGenerationProviderToken extends ApplicationQualifiableProviderToken<ApplicationStructuredGenerationProvider> {
-  http(options: Omit<ApplicationStructuredGenerationHttpProvider, 'kind'>): ApplicationStructuredGenerationHttpProvider;
-  deterministic(options: Omit<ApplicationStructuredGenerationDeterministicProvider, 'kind'>): ApplicationStructuredGenerationDeterministicProvider;
+  http(options: Omit<ApplicationStructuredGenerationHttpProvider, 'kind'>): ApplicationCapabilityImplementation<ApplicationStructuredGenerationHttpProvider>;
+  deterministic(options: Omit<ApplicationStructuredGenerationDeterministicProvider, 'kind'>): ApplicationCapabilityImplementation<ApplicationStructuredGenerationDeterministicProvider>;
 }
 
 const contract: ApplicationTypedProviderContract = {
@@ -50,6 +64,9 @@ export const StructuredGeneration: ApplicationStructuredGenerationProviderToken 
   contract,
   accepts: isApplicationStructuredGenerationProvider,
   http(options) {
+    if (options.credential && options.credentialSecret) {
+      throw new Error('StructuredGeneration.http(...) accepts credential or credentialSecret, not both.');
+    }
     if (typeof options.endpoint === 'string') {
       const endpoint = options.endpoint.trim();
       if (!endpoint) throw new Error('StructuredGeneration.http({ endpoint }) must not be empty.');
@@ -64,13 +81,33 @@ export const StructuredGeneration: ApplicationStructuredGenerationProviderToken 
     if (options.maxResponseBytes !== undefined && (!Number.isInteger(options.maxResponseBytes) || options.maxResponseBytes < 1_024 || options.maxResponseBytes > 10_000_000)) {
       throw new Error('StructuredGeneration.http({ maxResponseBytes }) must be between 1 KiB and 10 MB.');
     }
-    return { kind: 'structured-generation-http', ...options };
+    return maintainedApplicationCapabilityImplementation(
+      StructuredGeneration as ApplicationProviderToken<ApplicationStructuredGenerationHttpProvider>, {
+      provider: { package: '@applik8s/applik8s', export: 'StructuredGeneration.http', version: '0.9.0-alpha.1' },
+      value: { kind: 'structured-generation-http', ...options },
+      runtimeAdapter: '@applik8s/runtime-ai',
+      readiness: 'applik8s.structured-generation.http.readiness/v1alpha1',
+      lifecycle: 'external',
+      migration: 'applik8s.structured-generation.http.migration/v1alpha1',
+      maturity: 'experimental',
+      },
+    );
   },
   deterministic(options) {
     if (!options.output || typeof options.output !== 'object' || Array.isArray(options.output)) {
       throw new Error('StructuredGeneration.deterministic({ output }) requires one JSON object fixture.');
     }
-    return { kind: 'structured-generation-deterministic', ...options };
+    return maintainedApplicationCapabilityImplementation(
+      StructuredGeneration as ApplicationProviderToken<ApplicationStructuredGenerationDeterministicProvider>, {
+      provider: { package: '@applik8s/applik8s', export: 'StructuredGeneration.deterministic', version: '0.9.0-alpha.1' },
+      value: { kind: 'structured-generation-deterministic', ...options },
+      runtimeAdapter: '@applik8s/runtime-ai',
+      readiness: 'applik8s.structured-generation.deterministic.readiness/v1alpha1',
+      lifecycle: 'application',
+      migration: 'applik8s.structured-generation.deterministic.migration/v1alpha1',
+      maturity: 'stable',
+      },
+    );
   },
 });
 

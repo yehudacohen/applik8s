@@ -40,6 +40,11 @@ interface OperatorImplementation {
   readonly kind: 'operator';
 }
 
+interface CallableImplementation {
+  readonly kind: 'callable';
+  invoke(input: string): Promise<string>;
+}
+
 const Database = defineApplicationProvider<DatabaseImplementation>({
   interface: 'ProfileDatabase',
   version: 'v1',
@@ -62,6 +67,16 @@ const Operator = defineApplicationProvider<OperatorImplementation>({
   guarantees: ['reconciliation'],
   accepts: (value): value is OperatorImplementation => Boolean(
     value && typeof value === 'object' && Reflect.get(value, 'kind') === 'operator',
+  ),
+});
+const Callable = defineApplicationProvider<CallableImplementation>({
+  interface: 'ProfileCallable',
+  version: 'v1',
+  guarantees: ['callable'],
+  accepts: (value): value is CallableImplementation => Boolean(
+    value && typeof value === 'object'
+    && Reflect.get(value, 'kind') === 'callable'
+    && typeof Reflect.get(value, 'invoke') === 'function',
   ),
 });
 
@@ -100,6 +115,41 @@ function scheduler() {
 }
 
 describe('application assembly profiles', () => {
+  it('separates callable runtime values from Secret-safe deployment configuration', async () => {
+    const application = app('callable-provider');
+    const callable = defineApplicationCapabilityImplementation(Callable, {
+      provider: { package: '@example/callable', export: 'create', version: '1.0.0' },
+      configuration: {
+        kind: 'callable',
+        endpoint: 'https://service.example.test',
+      },
+      runtimeAdapter: '@example/callable/runtime',
+      readiness: 'callable.ready.v1',
+      lifecycle: 'external',
+      migration: 'callable.migration.v1',
+      evidence: ['callable.conformance'],
+      maturity: 'beta',
+      value: {
+        kind: 'callable',
+        async invoke(input) {
+          return `called:${input}`;
+        },
+      },
+    });
+
+    application.profile('production', profile => {
+      profile.provide(Callable, callable);
+    });
+
+    const plan = application.implementationPlan('production');
+    expect(plan.implementations[0]?.configuration).toEqual({
+      kind: 'callable',
+      endpoint: 'https://service.example.test',
+    });
+    expect(JSON.stringify(plan)).not.toContain('invoke');
+    await expect(callable.invoke('input')).resolves.toBe('called:input');
+  });
+
   it('authors and resolves target-free profiles from the canonical application builder', () => {
     const application = app('profiled-application');
     const definition = application.profile('production', profile => {
@@ -135,7 +185,8 @@ describe('application assembly profiles', () => {
     expect(plan.bindings).toHaveLength(2);
     expect(plan.implementations).toHaveLength(2);
     expect(plan.implementations.every(({ identity }) => identity.source === 'binding')).toBe(true);
-    expect(JSON.stringify(plan)).not.toContain('"endpoint"');
+    expect(plan.implementations.find(({ identity }) => identity.provider.export === 'postgres')?.configuration)
+      .toEqual({ kind: 'database', endpoint: 'external' });
     expect(JSON.stringify(plan)).not.toContain('DATABASE_ENDPOINT=');
   });
 
@@ -152,6 +203,21 @@ describe('application assembly profiles', () => {
 
     expect(second.implementations[0]?.id).toBe(first.implementations[0]?.id);
     expect(second.implementations[0]?.identity.explicitName).toBe('control-database.v1');
+  });
+
+  it('reuses one implementation identity across default and qualified capability bindings', () => {
+    const catalog = createApplicationAssemblyProfileCatalog('chirp');
+    const postgres = database('external');
+    const plan = catalog.profile('production', (profile) => {
+      profile.provide(Database, postgres);
+      profile.provide(Database.named('models'), postgres);
+    }).plan();
+
+    expect(plan.bindings).toHaveLength(2);
+    expect(new Set(plan.bindings.map(({ implementation }) => implementation)).size).toBe(1);
+    expect(plan.implementations).toHaveLength(1);
+    expect(plan.bindings.map(({ capability }) => capability.qualifier ?? 'default').sort())
+      .toEqual(['default', 'models']);
   });
 
   it('retains reusable and inline dependency topology without exposing private authority', () => {
@@ -365,6 +431,81 @@ describe('application assembly profiles', () => {
     expect(plan.implementations.find(({ identity }) => identity.provider.export === 'ObjectStorage.s3'))
       .toMatchObject({ lifecycle: 'retained' });
     expect(plan.implementations.every(({ configurationSources }) => configurationSources.length > 0)).toBe(true);
+  });
+
+  it('assembles the frozen Kubernetes hosting vocabulary and preserves a qualified root binding', () => {
+    const application = app('kubernetes-hosting-profile');
+    const PrimaryDatabase = TransactionalDatabase.named('primary');
+    const cluster = KubernetesCluster.current({ namespace: 'application' });
+    const database = MaintainedDatabase.postgres({
+      name: 'application',
+      database: 'application',
+      namespace: 'application',
+      ownership: 'direct-provisioned',
+      lifecycle: { deletionPolicy: 'retain' },
+      storage: { size: '20Gi' },
+    });
+    const registry = ContainerRegistry.harbor({
+      endpoint: ContainerRegistry.origin('https://registry.example.test'),
+      project: 'application',
+      pushCredentials: {
+        apiVersion: 'v1', kind: 'Secret', namespace: 'application', name: 'registry-push', dockerConfigJsonKey: '.dockerconfigjson',
+      },
+      pullSecret: {
+        apiVersion: 'v1', kind: 'Secret', namespace: 'application', name: 'registry-pull',
+      },
+    });
+    const host = ApplicationHost.kubernetes({ cluster, registry, namespace: 'application' });
+    const certificate = Certificate.certManager({
+      cluster,
+      issuerRef: { name: 'letsencrypt', kind: 'ClusterIssuer' },
+    });
+    const dns = DnsPublication.externalDns({
+      cluster,
+      hostname: config.env('APPLICATION_DOMAIN'),
+    });
+    const exposure = HttpExposure.kubernetes({ cluster, host, certificate, dns });
+    const objects = ObjectStorage.rookCeph({
+      cluster,
+      namespace: 'application',
+      bucket: 'application-objects',
+      endpoint: 'http://rook-ceph-rgw.rook-ceph.svc:80',
+      credentialsSecret: {
+        apiVersion: 'v1', kind: 'Secret', namespace: 'application', name: 'application-objects',
+      },
+      storageClassName: 'ceph-bucket-retain',
+    });
+
+    application.profile('production-kubernetes-hosting', profile => {
+      profile.provide(PrimaryDatabase, database);
+      profile.provide(ContainerRegistry, registry);
+      profile.provide(ApplicationHost, host);
+      profile.provide(Certificate, certificate);
+      profile.provide(DnsPublication, dns);
+      profile.provide(HttpExposure, exposure);
+      profile.provide(ObjectStorage, objects);
+    });
+
+    const plan = application.implementationPlan('production-kubernetes-hosting');
+    expect(plan.bindings.find(({ capability }) => capability.interface === 'TransactionalDatabase@v1alpha1'))
+      .toMatchObject({ capability: { qualifier: 'primary' } });
+    expect(plan.implementations.map(({ identity }) => identity.provider.export).sort()).toEqual([
+      'ApplicationHost.kubernetes',
+      'Certificate.certManager',
+      'ContainerRegistry.harbor',
+      'Database.postgres',
+      'DnsPublication.externalDns',
+      'HttpExposure.kubernetes',
+      'ObjectStorage.rookCeph',
+    ]);
+    expect(plan.dependencies.map(({ slot }) => slot).sort()).toEqual([
+      'certificate',
+      'dns',
+      'host',
+      'registry',
+    ]);
+    expect(plan.implementations.find(({ identity }) => identity.provider.export === 'ApplicationHost.kubernetes'))
+      .toMatchObject({ deploymentFamily: 'kubernetes' });
   });
 
   it('records typed config and Secret provenance without resolving or serializing values', () => {

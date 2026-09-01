@@ -105,6 +105,37 @@ api.webhook(
     expect(instrumented).toContain('property: "authenticate"');
   });
 
+  it('captures maintained provider calls from app.query implementations', () => {
+    const source = `
+application.query('engagement.history.v1', {
+  input: QueryInput,
+  output: QueryOutput,
+  database,
+  reads: [Reaction],
+  authorize: () => true,
+  run: async ({ input }) => historicalQueries.query({
+    dataset: historicalDataset,
+    where: row => row.postId.eq(input.postId),
+  }),
+});
+`;
+    const instrumented = instrumentApplicationCallbackRegistrations(
+      source,
+      '/workspace/src/history.ts',
+      true,
+      'src/history.ts',
+    );
+
+    expect(instrumented).toContain(
+      '__generatedCalls: [historicalQueries.query, historicalQueries, historicalDataset]',
+    );
+    expect(instrumented).toContain(
+      '__generatedBindings: { "historicalQueries.query": historicalQueries.query, "historicalQueries": historicalQueries, "historicalDataset": historicalDataset }',
+    );
+    expect(instrumented).toContain('registrar: "query"');
+    expect(instrumented).toContain('property: "run"');
+  });
+
   it('decorates an ordinary typed domain function before same-module authority and tool registration', () => {
     const source = `
 const PublishInput = type({ postId: "string" });

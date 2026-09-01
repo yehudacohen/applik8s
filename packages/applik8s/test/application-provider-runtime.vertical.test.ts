@@ -20,6 +20,27 @@ import type {
 } from '../src/application-telemetry-runtime.js';
 
 describe('managed provider runtime selection', () => {
+  it('retains an inert qualified provider token captured as a structured operation argument', () => {
+    const DatasetProvider = defineApplicationProvider({
+      interface: 'DatasetProvider',
+      version: 'v1alpha1',
+      accepts: (candidate): candidate is { readonly kind: 'dataset' } =>
+        Boolean(candidate && typeof candidate === 'object' && Reflect.get(candidate, 'kind') === 'dataset'),
+    }).named('history');
+
+    expect(applicationCallableProviderDependencies({ DatasetProvider })).toEqual([
+      expect.objectContaining({
+        identifier: 'DatasetProvider',
+        projection: 'token',
+        placement: 'providerDependency',
+        provider: expect.objectContaining({
+          interface: 'DatasetProvider',
+          nodeId: 'provider.dataset-provider.v1alpha1.history',
+        }),
+      }),
+    ]);
+  });
+
   it('records only actual provider calls and preserves synchronous, asynchronous, and failure semantics', async () => {
     const failure = new Error('private provider credential failure');
     interface FixtureProvider {

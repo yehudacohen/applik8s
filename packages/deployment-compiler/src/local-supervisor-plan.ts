@@ -1123,6 +1123,7 @@ function awsLocalLakehouseBindings(
         prefix: typeof dataset.configuration.prefix === 'string' ? dataset.configuration.prefix : 'lakehouse',
         region: typeof dataset.configuration.region === 'string' ? dataset.configuration.region : plan.region,
         catalogDatabase: catalog.physicalName,
+        forceDeleteUnretainedData: dataset.configuration.forceDeleteUnretainedData === true,
       }];
     })),
     queries: Object.fromEntries(queries.map((query) => {

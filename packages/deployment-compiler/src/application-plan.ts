@@ -26,9 +26,14 @@ import {
   type ApplicationDeploymentNode,
   digestApplicationDeploymentGraph,
 } from '@applik8s/deployment-contract';
+import { applicationProviderExecution } from './providers.js';
 
 export interface CompileApplicationPlanRequest {
   readonly graph: ApplicationGraph;
+  /** Concrete provider graph used only for target resolution and diagnostics. */
+  readonly resolutionGraph?: ApplicationGraph;
+  /** Semantic executions intentionally unavailable rather than misconfigured. */
+  readonly excludedExecutionNodeIds?: readonly string[];
   readonly deployment: ApplicationDeploymentGraph;
   readonly target: 'local' | 'aws-local' | 'aws' | 'kubernetes';
   readonly lifecycleAuthority: 'local-supervisor' | 'alchemy' | 'external';
@@ -141,13 +146,15 @@ export function compileApplicationPlan(request: CompileApplicationPlanRequest): 
     });
   }
   const implementationBindings = implementationPlan?.bindings ?? [];
+  const resolutionGraph = request.resolutionGraph ?? request.graph;
+  const excludedExecutionNodeIds = new Set(request.excludedExecutionNodeIds ?? []);
   const resolvedProviderIdentities: ApplicationCanonicalIdentity[] = [];
-  const resolutions = request.graph.providerRequirements.map((requirement) => {
-    const consumerNode = requiredNode(request.graph, requirement.consumer.nodeId);
-    const binding = request.graph.providerBindings.find(({ requirement: id }) => id === requirement.id);
+  const resolutions = resolutionGraph.providerRequirements.map((requirement) => {
+    const consumerNode = requiredNode(resolutionGraph, requirement.consumer.nodeId);
+    const binding = resolutionGraph.providerBindings.find(({ requirement: id }) => id === requirement.id);
     const providerReference = binding?.provider ?? requirement.provider;
     const providerNode = providerReference
-      ? request.graph.nodes.find((node): node is Extract<ApplicationGraphNode, { kind: 'provider' }> => node.kind === 'provider' && node.id === providerReference.nodeId)
+      ? resolutionGraph.nodes.find((node): node is Extract<ApplicationGraphNode, { kind: 'provider' }> => node.kind === 'provider' && node.id === providerReference.nodeId)
       : undefined;
     const providerIdentity = providerNode
       ? applicationProviderIdentity({
@@ -171,7 +178,10 @@ export function compileApplicationPlan(request: CompileApplicationPlanRequest): 
     const provenance = [
       providerNode ? nodeProvenance(providerNode, request.workspaceRoot) : nodeProvenance(requiredNode(request.graph, requirement.consumer.nodeId), request.workspaceRoot),
     ];
-    const disposition = !providerNode
+    const explicitlyUnavailable = excludedExecutionNodeIds.has(requirement.consumer.nodeId);
+    const disposition = explicitlyUnavailable
+      ? 'degraded' as const
+      : !providerNode
       ? 'unresolved' as const
       : !manifest
         ? 'unresolved' as const
@@ -180,7 +190,7 @@ export function compileApplicationPlan(request: CompileApplicationPlanRequest): 
           && missingRequiredGuarantees.length === 0
           ? 'supported' as const
           : 'incompatible' as const;
-    if (disposition !== 'supported') {
+    if (disposition === 'unresolved' || disposition === 'incompatible') {
       const isUnsupportedJobProvider = consumerNode.kind === 'job';
       diagnostics.push({
         severity: 'error',
@@ -211,7 +221,11 @@ export function compileApplicationPlan(request: CompileApplicationPlanRequest): 
     const implementationBinding = implementationCandidates.length === 1
       ? implementationCandidates[0]
       : implementationCandidates.find(({ capability }) => capability.qualifier === undefined);
-    if (implementationPlan && !implementationBinding) {
+    if (
+      implementationPlan
+      && !implementationBinding
+      && (!providerNode || requiresProfileImplementationBinding(providerNode))
+    ) {
       diagnostics.push({
         severity: 'error',
         code: implementationCandidates.length > 1
@@ -238,13 +252,19 @@ export function compileApplicationPlan(request: CompileApplicationPlanRequest): 
       maturity: manifest?.maturity ?? 'experimental',
       disposition,
       guarantees: manifest?.guarantees.filter(({ disposition: guaranteeDisposition }) => guaranteeDisposition === 'guaranteed' || guaranteeDisposition === 'bounded').map(({ id }) => id) ?? [],
-      gaps: manifest
+      gaps: explicitlyUnavailable
+        ? ['target-execution-unavailable']
+        : manifest
         ? manifest.guarantees
             .filter(({ id, disposition: guaranteeDisposition }) => guaranteeDisposition === 'unsupported' && (requiredGuarantees.length === 0 || requiredGuarantees.includes(id)))
             .map(({ id }) => id)
         : ['provider-guarantees-unresolved'],
-      externalResponsibilities: manifest?.guarantees.filter(({ disposition: guaranteeDisposition }) => guaranteeDisposition === 'external').map(({ statement }) => statement) ?? [],
-      fact: providerNode && manifest ? 'resolved' as const : 'unknown' as const,
+      externalResponsibilities: explicitlyUnavailable
+        ? [targetUnavailableReason(providerNode)]
+        : manifest?.guarantees.filter(({ disposition: guaranteeDisposition }) => guaranteeDisposition === 'external').map(({ statement }) => statement) ?? [],
+      fact: explicitlyUnavailable
+        ? 'external' as const
+        : providerNode && manifest ? 'resolved' as const : 'unknown' as const,
       provenance,
     };
   });
@@ -373,8 +393,10 @@ function implementationAttributionsForDeploymentNode(
   for (const providerId of providerIds) {
     const semantic = graph.nodes.find(({ id }) => id === providerId);
     if (semantic?.kind !== 'provider') continue;
+    const qualification = semanticProviderQualification(semantic);
     const candidates = implementationPlan.bindings.filter(({ capability }) =>
-      implementationCapabilityInterface(capability.interface) === semantic.interface);
+      implementationCapabilityInterface(capability.interface) === semantic.interface
+      && capability.qualifier === qualification);
     if (candidates.length === 0) continue;
     if (candidates.length > 1) {
       diagnostics.push({
@@ -398,7 +420,20 @@ function implementationAttributionsForDeploymentNode(
       });
       continue;
     }
-    if (node.lifecycle.ownership !== 'external' && !implementation.deploymentContributor) {
+    const execution = deploymentNodeProviderExecution(node, semantic.id)
+      ?? applicationProviderExecution(
+        semantic.interface,
+        requiredImplementationKind(implementation.configuration),
+      );
+    // Runtime-only providers participate in semantic resolution and runtime
+    // binding, but they do not own a physical resource. Attributing the root
+    // composition to them would invent a lifecycle contributor that does not
+    // exist and would make the portable plan claim shared ownership.
+    if (execution === 'runtime-only') continue;
+    if (
+      node.lifecycle.ownership !== 'external'
+      && !implementation.deploymentContributor
+    ) {
       diagnostics.push({
         severity: 'error',
         code: 'PLAN_PHYSICAL_CONTRIBUTOR_UNDECLARED',
@@ -417,6 +452,53 @@ function implementationAttributionsForDeploymentNode(
   }
   return [...new Map(attributions.map((attribution) => [attribution.identity, attribution])).values()]
     .sort((left, right) => left.identity.localeCompare(right.identity));
+}
+
+function deploymentNodeProviderExecution(
+  node: ApplicationDeploymentNode,
+  providerId: string,
+): ReturnType<typeof applicationProviderExecution> | undefined {
+  if (node.kind !== 'kubernetesComposition') return undefined;
+  const fragments = node.spec.fragments;
+  if (!Array.isArray(fragments)) return undefined;
+  for (const fragment of fragments) {
+    if (!fragment || typeof fragment !== 'object' || Array.isArray(fragment)) continue;
+    if (Reflect.get(fragment, 'sourceNodeId') !== providerId) continue;
+    const execution = Reflect.get(fragment, 'execution');
+    if (
+      execution === 'root-composition'
+      || execution === 'direct-provider'
+      || execution === 'runtime-only'
+      || execution === 'external-controller'
+    ) {
+      return execution;
+    }
+  }
+  return undefined;
+}
+
+function semanticProviderQualification(provider: Extract<ApplicationGraphNode, { readonly kind: 'provider' }>): string | undefined {
+  const config = provider.config;
+  if (!config || typeof config !== 'object' || Array.isArray(config)) return undefined;
+  const qualification = Reflect.get(config, 'qualification');
+  if (!qualification || typeof qualification !== 'object' || Array.isArray(qualification)) return undefined;
+  const name = Reflect.get(qualification, 'name');
+  return typeof name === 'string' && name.trim() ? name : undefined;
+}
+
+function requiresProfileImplementationBinding(
+  provider: Extract<ApplicationGraphNode, { readonly kind: 'provider' }>,
+): boolean {
+  return provider.implementation === 'application-provider-selection'
+    || provider.implementation === 'application-target-provider-selection'
+    || provider.implementation === 'target-selected'
+    || provider.implementation === 'unresolved-profile-implementation';
+}
+
+function requiredImplementationKind(configuration: ApplicationImplementationPlan['implementations'][number]['configuration']): string {
+  if (!configuration || typeof configuration !== 'object' || Array.isArray(configuration)) return '';
+  const kind = Reflect.get(configuration, 'kind');
+  return typeof kind === 'string' ? kind : '';
 }
 
 function deploymentNodeProviderIds(
@@ -863,6 +945,19 @@ function requiredNode(graph: ApplicationGraph, id: string): ApplicationGraphNode
   const node = graph.nodes.find((candidate) => candidate.id === id);
   if (!node) throw new Error(`Application plan provider requirement references missing graph node ${id}.`);
   return node;
+}
+
+function targetUnavailableReason(
+  provider: Extract<ApplicationGraphNode, { kind: 'provider' }> | undefined,
+): string {
+  const config = provider?.config;
+  if (config && typeof config === 'object' && !Array.isArray(config)) {
+    const reason = Reflect.get(config, 'reason');
+    if (typeof reason === 'string' && reason.trim()) return reason;
+  }
+  return provider
+    ? `${provider.interface} requires an externally qualified implementation for this target.`
+    : 'This execution requires an externally qualified implementation for this target.';
 }
 
 function lifecycleIntent(lifecycle: ApplicationDeploymentLifecycle): ApplicationNativePlanRecord['actions'][number] {

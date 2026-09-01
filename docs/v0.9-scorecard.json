@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "release": "0.9.0",
+  "status": "implementation-in-progress",
+  "manifesto": "manifesto-v09-semantic-completion-and-1.0-readiness.md",
+  "acceptanceManifest": "v0.9-acceptance.json",
+  "foundationManifest": "v0.9-foundation.json",
+  "pillars": [
+    { "id": "semantic-foundation", "maturity": "stable-candidate", "rfp": "rfp-v09-public-contract-and-compatibility-freeze.md", "acceptance": ["foundation", "released-v08-upgrade", "public-contract-freeze"] },
+    { "id": "profiles-and-provider-bindings", "maturity": "stable-candidate", "rfp": "rfp-v09-profiles-and-concrete-provider-bindings.md", "acceptance": ["chirp-production-aws", "chirp-production-kubernetes"] },
+    { "id": "managed-models", "maturity": "stable-candidate", "rfp": "rfp-v09-managed-models-and-portable-reconciliation.md", "acceptance": ["managed-model-matrix"] },
+    { "id": "scheduling", "maturity": "stable-candidate", "rfp": "rfp-v09-scheduling-semantics-and-convergence.md", "acceptance": ["scheduling-matrix"] },
+    { "id": "effect-safety", "maturity": "stable-candidate", "rfp": "rfp-v09-effect-receipts-fencing-and-unknown-outcomes.md", "acceptance": ["effect-crash-matrix", "saga-deployed-provider"] },
+    { "id": "application-events", "maturity": "stable-candidate", "rfp": "rfp-v09-application-event-catalog.md", "acceptance": ["application-events"] },
+    { "id": "query-batching", "maturity": "stable-candidate", "rfp": "rfp-v09-query-batching.md", "acceptance": ["query-batching"] },
+    { "id": "research-agent", "maturity": "stable-candidate", "rfp": "rfp-v09-specialized-agents.md", "acceptance": ["research-agent-managed", "research-agent-external"] },
+    { "id": "code-agent", "maturity": "release-blocking-preview", "rfp": "rfp-v09-specialized-agents.md", "acceptance": ["code-agent-local", "code-agent-celld"] },
+    { "id": "builder", "maturity": "release-blocking-preview", "rfp": "rfp-v09-builder-development-environment.md", "acceptance": ["builder-opencode"] },
+    { "id": "journeys", "maturity": "stable-candidate", "rfp": "rfp-v09-journeys.md", "acceptance": ["agentic-start-browser"] },
+    { "id": "documentation", "maturity": "stable-candidate", "rfp": "rfp-v09-documentation-and-product-legibility.md", "acceptance": ["documentation"] }
+  ],
+  "acceptanceApplications": [
+    { "id": "guestbook", "role": "readability-floor" },
+    { "id": "chirp", "role": "unchanged-source-production-provider-qualification" },
+    { "id": "agentic-start", "role": "clean-generated-product-and-preview-journeys" }
+  ],
+  "releasePolicy": {
+    "stable": "all-normative-provider-and-compatibility-evidence-required",
+    "beta": "one-real-deployed-provider-and-semantic-failure-recovery-evidence-required",
+    "release-blocking-preview": "one-complete-real-provider-user-journey-with-authority-recovery-and-cleanup-required",
+    "omission": "forbidden-for-accepted-v0.9-deliverables"
+  }
+}

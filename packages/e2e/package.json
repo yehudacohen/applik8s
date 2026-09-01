@@ -1,5 +1,9 @@
 {
   "name": "@applik8s/e2e",
   "private": true,
-  "type": "module"
+  "type": "module",
+  "dependencies": {
+    "@aws-sdk/client-glue": "3.1113.0",
+    "@aws-sdk/client-s3": "3.1113.0"
+  }
 }

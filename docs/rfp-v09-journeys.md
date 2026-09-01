@@ -230,7 +230,9 @@ discarded rather than copied into the portable result.
 2. Implement local mode over existing application clients.
 3. Add compiler dependency discovery and Builder impact selection.
 4. Add deployed mode and portable evidence bundles.
-5. Add optional browser adapter and accessibility/visual assertions.
+5. Add one bounded browser-backed Agentic Start adapter and accessibility/diagnostic assertions. The
+   adapter API may remain internal or experimental; trustworthy browser evidence is release-blocking even
+   when a general public browser-testing platform is not.
 6. Qualify cleanup, parallel isolation, and failure recovery.
 
 ## Acceptance
@@ -246,6 +248,14 @@ discarded rather than copied into the portable result.
 - Local, deployed, and browser adapters return one versioned result/evidence contract and never mark an
   unsupported assertion as passing.
 - Journey code reads as product behavior rather than infrastructure choreography.
+- The release-blocking Agentic Start browser journey starts from a clean generated consumer, establishes a
+  real authenticated session, visits every claimed primary route, verifies streaming and reconnection,
+  completes one approval/result path, and performs accessibility smoke checks.
+- Browser failure evidence includes the visited-route ledger, screenshots, console output, failed requests,
+  stream/reconnect state, and runtime diagnostics. A route absent from the visited ledger cannot pass.
+- Builder's browser journey additionally exercises Conversation, Plan, Changes, Preview, Evidence, scoped
+  approval, validation, apply/discard, and conflict-safe undo. These assertions are release-blocking and
+  cannot be removed by omitting Builder from generated output.
 
 ## Non-goals
 

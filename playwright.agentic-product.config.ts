@@ -12,10 +12,10 @@ export default defineConfig({
     ['list'],
     ['json', {
       outputFile:
-        '.applik8s-tmp/evidence/v0.7/agentic-product-browser-results.json',
+        '.applik8s-tmp/evidence/v0.9/agentic-product-browser-results.json',
     }],
   ],
-  outputDir: '.applik8s-tmp/evidence/v0.7/agentic-product-browser-artifacts',
+  outputDir: '.applik8s-tmp/evidence/v0.9/agentic-product-browser-artifacts',
   use: {
     baseURL:
       process.env.APPLIK8S_AGENTIC_PRODUCT_BASE_URL

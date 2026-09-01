@@ -1,7 +1,7 @@
 // typecast-file-boundary: reactive vertical fixtures inspect erased graph metadata after checking node identities and discriminators.
 import { AnalyticalDatabase, ApplicationHost, actor, app, applicationGraphFor, Certificate, DnsPublication, defineApplicationProvider, event, HttpExposure, IdentityProvider, IndexStore, stream, WorkflowEngine, workflow } from '@applik8s/applik8s';
 import { bindApplicationCallableDependencies } from '@applik8s/applik8s/internal/provider-runtime';
-import { validateApplicationGraph, validateApplicationGraphCompatibilityPolicy } from '@applik8s/core';
+import { validateApplicationGraph, validateApplicationGraphCompatibilityPolicy, withDerivedApplicationGraphFoundation } from '@applik8s/core';
 import { type } from 'arktype';
 import { pgTable, text } from 'drizzle-orm/pg-core';
 import { describe, expect, it } from 'vitest';
@@ -206,6 +206,109 @@ describe('v0.6 streams, subscriptions, and projections', () => {
     expect(guestbook.composition.resources).toEqual(expect.arrayContaining([
       expect.objectContaining({ kind: 'Ingress', spec: expect.objectContaining({ rules: [expect.objectContaining({ http: { paths: [expect.objectContaining({ backend: { service: { name: 'reactive-guestbook-public', port: { number: 8443 } } } })] } })] }) }),
       expect.objectContaining({ apiVersion: 'cert-manager.io/v1', kind: 'Certificate', spec: expect.objectContaining({ secretName: 'public-tls', issuerRef: expect.objectContaining({ name: 'letsencrypt-prod', kind: 'ClusterIssuer' }) }) }),
+    ]));
+  });
+
+  it('retains provider captures on query nodes for placement and least-privilege runtime access', () => {
+    const records = pgTable('provider_query_records', {
+      id: text('id').primaryKey(),
+      revision: text('revision').notNull(),
+    });
+    const application = app('provider-query-captures', {
+      spec: type({ profile: "'starter' | 'dedicated'" }),
+      status: type({ ready: 'boolean' }),
+    });
+    const database = application.database.postgres('records', { schema: { records } });
+    const Record = application.model(records, { name: 'ProviderQueryRecord', database });
+    const AcquisitionProvider = defineApplicationProvider({
+      interface: 'QueryAcquisitionProvider',
+      version: 'v1alpha1',
+      runtime: {
+        operations: {
+          acquire: {
+            module: '@fixture/acquisition/runtime',
+            export: 'acquireItem',
+            access: {
+              kind: 'provider',
+              operations: ['connection.use', 'network.connect'],
+            },
+          },
+        },
+      },
+      accepts: (candidate): candidate is {
+        readonly kind: 'query-acquisition';
+        acquire(input: { readonly id: string }): Promise<{ readonly value: string }>;
+      } => Boolean(
+        candidate
+          && typeof candidate === 'object'
+          && Reflect.get(candidate, 'kind') === 'query-acquisition'
+          && typeof Reflect.get(candidate, 'acquire') === 'function',
+      ),
+    }).named('history');
+    application.profile(application.installation.spec, 'profile')
+      .provide(AcquisitionProvider)
+      .starter(() => ({
+        kind: 'query-acquisition' as const,
+        async acquire({ id }: { readonly id: string }) {
+          return { value: id };
+        },
+      }))
+      .dedicated(() => ({
+        kind: 'query-acquisition' as const,
+        async acquire({ id }: { readonly id: string }) {
+          return { value: `dedicated:${id}` };
+        },
+      }))
+      .exhaustive();
+    const acquire = application.inject(AcquisitionProvider).acquire;
+    const run = async ({ input }: { readonly input: { readonly id: string } }) => {
+      const result = await acquire(input);
+      return { value: result.value };
+    };
+    bindApplicationCallableDependencies(run, [
+      { identifier: 'acquire', value: acquire },
+    ]);
+
+    application.query('records.acquired.v1', {
+      input: type({ id: 'string' }),
+      output: type({ value: 'string' }),
+      database,
+      reads: [Record],
+      authorize: () => true,
+      run,
+    });
+
+    const graph = applicationGraphFor(application.composition);
+    if (!graph) throw new Error('Expected provider query graph.');
+    const query = graph.nodes.find(
+      (node) => node.kind === 'query' && node.name === 'records.acquired',
+    );
+    // Derive the foundation before matcher traversal. Bun's asymmetric nested
+    // matcher currently mutates the inspected array in place.
+    const founded = withDerivedApplicationGraphFoundation(graph);
+    expect(query).toMatchObject({
+      providerBindings: [expect.objectContaining({
+        identifier: 'acquire',
+        provider: expect.objectContaining({
+          interface: 'QueryAcquisitionProvider',
+          nodeId: 'provider.query-acquisition-provider.v1alpha1.history',
+        }),
+        operation: expect.objectContaining({ member: 'acquire' }),
+      })],
+    });
+    expect(graph.edges).toContainEqual({
+      from: { nodeId: 'provider.query-acquisition-provider.v1alpha1.history' },
+      to: { nodeId: 'query.records.acquired.v1' },
+      relationship: 'provides',
+    });
+    expect(founded.foundation?.runtimeAccess).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        consumer: expect.objectContaining({ nodeId: 'query.records.acquired.v1' }),
+        target: expect.objectContaining({
+          operation: 'network.connect',
+          capabilityId: 'provider.query-acquisition-provider.v1alpha1.history',
+        }),
+      }),
     ]));
   });
 

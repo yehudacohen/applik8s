@@ -13,9 +13,14 @@ import type {
   Result,
 } from '@applik8s/core';
 import { applicationGraphArtifactFileName, applicationImplementationPlansArtifactFileName, applicationOperationCatalogArtifactFileName, applicationWorkloadAuthorityArtifactFileName, serializeApplicationGraph, serializeApplicationImplementationPlanSet, validateApplicationGraph } from '@applik8s/core';
+import {
+  applicationDeploymentGraphForImplementationPlan,
+  applicationImplementationConfigurationValues,
+} from '@applik8s/deployment-compiler';
 import type { ApplicationFrameworkCredentialDependency } from '@applik8s/deployment-contract';
 import { stringify } from 'yaml';
 import { emitGeneratedApplicationAgents } from '../application-agents/index.js';
+import { materializeApplicationInstallationValue } from '../application-deployment-graph.js';
 import { applicationGraphWithEntrypointPublicSurface } from '../application-facade/public-surface.js';
 import { applicationGraphWithInferredApplicationHost, applicationHostFrameworkCredentialDependencies } from '../application-host/index.js';
 import { emitGeneratedApplicationHttpServers } from '../application-http/index.js';
@@ -170,6 +175,12 @@ export interface CompileOperatorPipeline {
 export interface CompileTypeKroCompositionRequest extends CompileOperatorRequest {
   readonly compositionName?: string;
   readonly operationCatalogPolicy?: 'development' | 'production';
+  /** Assembly profile whose concrete provider graph must drive emitted runtime artifacts. */
+  readonly profile?: string;
+  /** Explicit environment-backed non-secret configuration values. Secret bindings remain references. */
+  readonly configuration?: Readonly<Record<string, string | undefined>>;
+  /** Concrete authored installation input for instance-aware profile compilation. */
+  readonly installationSpec?: Readonly<Record<string, unknown>>;
   /** Local execution emits runnable boundaries without Kubernetes host artifacts. */
   readonly executionTarget?: 'kubernetes' | 'local' | 'aws-local' | 'aws';
   readonly operatorKubernetesConnectionBindings?: Readonly<Record<string, NonNullable<CompileOptions['kubernetesConnectionBindings']>>>;
@@ -257,6 +268,8 @@ interface EmitTypeKroCompositionArtifactsRequest {
   readonly composition: CompiledTypeKroComposition;
   readonly operatorCompiles: readonly CompileResult[];
   readonly applicationGraph?: ApplicationGraph;
+  /** Profile-selected graph used only for physical artifact generation. */
+  readonly executionGraph?: ApplicationGraph;
   readonly implementationPlans?: ApplicationImplementationPlanSet;
   readonly applicationInstallation?: ApplicationInstallationArtifactContract;
   readonly operationCatalogPolicy?: 'development' | 'production';
@@ -324,7 +337,16 @@ export async function compileTypeKroComposition(request: CompileTypeKroCompositi
     return error('BUNDLE_INVALID', `TypeKro composition captures operator ${missingOperator}, but the captured install does not include an applik8s operator definition and the entrypoint does not export one with that name.`);
   }
 
-  const { compositionName: _compositionName, outDir: _outDir, operatorName: _operatorName, operatorKubernetesConnectionBindings, ...operatorRequest } = request;
+  const {
+    compositionName: _compositionName,
+    outDir: _outDir,
+    operatorName: _operatorName,
+    operatorKubernetesConnectionBindings,
+    profile: _profile,
+    configuration: _configuration,
+    installationSpec: _installationSpec,
+    ...operatorRequest
+  } = request;
   const operatorCompiles: CompileResult[] = [];
   for (const operatorName of installNames) {
     const operatorDefinition = capturedOperators.get(operatorName) ?? exportedOperators.get(operatorName);
@@ -393,10 +415,50 @@ export async function compileTypeKroComposition(request: CompileTypeKroCompositi
   const applicationGraph = publicApplicationGraph
     ? applicationGraphWithCompiledOperatorPermissions(publicApplicationGraph, operatorCompiles)
     : undefined;
+  let executionGraph = applicationGraph;
+  if (request.profile) {
+    if (!applicationGraph || !implementationPlans) {
+      return error('BUNDLE_INVALID', `Assembly profile ${request.profile} requires an Applik8s application graph and implementation plan set.`);
+    }
+    const implementationPlan = implementationPlans.plans.find(
+      (candidate) => candidate.profile.id === request.profile,
+    );
+    if (!implementationPlan) {
+      return error(
+        'BUNDLE_INVALID',
+        `Application ${applicationGraph.metadata.name} has no assembly profile ${request.profile}. Available profiles: ${implementationPlans.plans.map((candidate) => candidate.profile.id).sort().join(', ') || '<none>'}.`,
+      );
+    }
+    try {
+      const selectedExecutionGraph = applicationDeploymentGraphForImplementationPlan(
+        applicationGraph,
+        implementationPlan,
+        {
+          configuration: applicationImplementationConfigurationValues(
+            implementationPlan,
+            (reference) => request.configuration?.[reference],
+          ),
+        },
+      );
+      executionGraph = request.installationSpec
+        ? await materializeApplicationInstallationValue(
+            selectedExecutionGraph,
+            request.installationSpec,
+          )
+        : selectedExecutionGraph;
+    } catch (cause) {
+      return error(
+        'BUNDLE_INVALID',
+        cause instanceof Error
+          ? `Assembly profile ${request.profile} could not be materialized: ${cause.message}`
+          : `Assembly profile ${request.profile} could not be materialized.`,
+      );
+    }
+  }
   if (
-    applicationGraph
+    executionGraph
     && (request.executionTarget === undefined || request.executionTarget === 'kubernetes')
-    && applicationGraph.nodes.some((node) => node.kind === 'actor')
+    && executionGraph.nodes.some((node) => node.kind === 'actor')
     && !operatorCompiles.some((compiled) => compiled.manifest.metadata.name === celldOperator.definition.name)
   ) {
     const compileRequest: CompileOperatorRequestWithDefinition = {
@@ -424,6 +486,7 @@ export async function compileTypeKroComposition(request: CompileTypeKroCompositi
     composition: resolvedComposition.value,
     operatorCompiles,
     ...(applicationGraph ? { applicationGraph } : {}),
+    ...(executionGraph ? { executionGraph } : {}),
     ...(implementationPlans ? { implementationPlans } : {}),
     ...(applicationInstallation ? { applicationInstallation } : {}),
     ...(request.operationCatalogPolicy ? { operationCatalogPolicy: request.operationCatalogPolicy } : {}),
@@ -522,68 +585,69 @@ function permissionRuleIdentity(rule: {
 
 async function emitTypeKroCompositionArtifacts(request: EmitTypeKroCompositionArtifactsRequest): Promise<Result<TypeKroCompositionArtifacts>> {
   try {
-    const operationCatalog = request.applicationGraph
-      ? compileApplicationOperationCatalog(request.applicationGraph, {
+    const executionGraph = request.executionGraph ?? request.applicationGraph;
+    const operationCatalog = executionGraph
+      ? compileApplicationOperationCatalog(executionGraph, {
           requireClassified: request.operationCatalogPolicy === 'production',
         })
       : undefined;
-    const workloadAuthority = request.applicationGraph && operationCatalog
-      ? compileApplicationWorkloadAuthority(request.applicationGraph, operationCatalog)
+    const workloadAuthority = executionGraph && operationCatalog
+      ? compileApplicationWorkloadAuthority(executionGraph, operationCatalog)
       : [];
-    const agentArtifacts = request.applicationGraph
+    const agentArtifacts = executionGraph
       ? await emitGeneratedApplicationAgents({
-          graph: request.applicationGraph,
+          graph: executionGraph,
           ...(operationCatalog ? { operationCatalog } : {}),
           workloadAuthority,
           outDir: join(request.outDir, 'agents'),
           entrypoint: request.entrypoint,
         })
       : [];
-    const httpArtifacts = request.applicationGraph
+    const httpArtifacts = executionGraph
       ? await emitGeneratedApplicationHttpServers({
-          graph: request.applicationGraph,
+          graph: executionGraph,
           ...(operationCatalog ? { operationCatalog } : {}),
           outDir: join(request.outDir, 'http'),
           entrypoint: request.entrypoint,
           executionTarget: request.executionTarget ?? 'kubernetes',
         })
       : [];
-    const migrationArtifacts = request.applicationGraph
-      ? await emitGeneratedApplicationMigrations({ graph: request.applicationGraph, outDir: join(request.outDir, 'migrations'), entrypoint: request.entrypoint })
+    const migrationArtifacts = executionGraph
+      ? await emitGeneratedApplicationMigrations({ graph: executionGraph, outDir: join(request.outDir, 'migrations'), entrypoint: request.entrypoint })
       : [];
-    const mcpArtifacts = request.applicationGraph
+    const mcpArtifacts = executionGraph
       ? await emitGeneratedApplicationMcpServers({
-          graph: request.applicationGraph,
+          graph: executionGraph,
           ...(operationCatalog ? { operationCatalog } : {}),
           outDir: join(request.outDir, 'mcp'),
           entrypoint: request.entrypoint,
         })
       : [];
-    const processorArtifacts = request.applicationGraph
-      ? await emitGeneratedApplicationProcessors({ graph: request.applicationGraph, ...(operationCatalog ? { operationCatalog } : {}), outDir: join(request.outDir, 'processors'), entrypoint: request.entrypoint, executionTarget: request.executionTarget ?? 'kubernetes' })
+    const processorArtifacts = executionGraph
+      ? await emitGeneratedApplicationProcessors({ graph: executionGraph, ...(operationCatalog ? { operationCatalog } : {}), outDir: join(request.outDir, 'processors'), entrypoint: request.entrypoint, executionTarget: request.executionTarget ?? 'kubernetes' })
       : [];
-    const jobArtifacts = request.applicationGraph
+    const jobArtifacts = executionGraph
       ? await emitGeneratedApplicationJobs({
-          graph: request.applicationGraph,
+          graph: executionGraph,
           outDir: join(request.outDir, 'jobs'),
           entrypoint: request.entrypoint,
           executionTarget: request.executionTarget ?? 'kubernetes',
         })
       : [];
-    const managedModelArtifacts = request.applicationGraph
+    const managedModelArtifacts = executionGraph
       ? await emitGeneratedApplicationManagedModels({
-          graph: request.applicationGraph,
+          graph: executionGraph,
           outDir: join(request.outDir, 'managed-models'),
           entrypoint: request.entrypoint,
           executionTarget: request.executionTarget ?? 'kubernetes',
         })
       : [];
-    const lakehousePublisherArtifacts = request.applicationGraph
-      ? await emitGeneratedApplicationLakehousePublishers({ graph: request.applicationGraph, outDir: join(request.outDir, 'lakehouse-publishers'), entrypoint: request.entrypoint, executionTarget: request.executionTarget ?? 'kubernetes' })
+    const lakehousePublisherArtifacts = executionGraph
+      ? await emitGeneratedApplicationLakehousePublishers({ graph: executionGraph, outDir: join(request.outDir, 'lakehouse-publishers'), entrypoint: request.entrypoint, executionTarget: request.executionTarget ?? 'kubernetes' })
       : [];
-    const workflowArtifacts = request.applicationGraph
+    const workflowArtifacts = executionGraph
       ? await emitGeneratedApplicationWorkflows({
-          graph: request.applicationGraph,
+          graph: executionGraph,
           ...(operationCatalog ? { operationCatalog } : {}),
           workloadAuthority,
           operatorManifests: request.operatorCompiles.map((compiled) => compiled.manifest),
@@ -592,17 +656,17 @@ async function emitTypeKroCompositionArtifacts(request: EmitTypeKroCompositionAr
           executionTarget: request.executionTarget ?? 'kubernetes',
         })
       : [];
-    const reactiveArtifacts = request.applicationGraph
-      ? await emitGeneratedApplicationReactive({ graph: request.applicationGraph, ...(operationCatalog ? { operationCatalog } : {}), outDir: join(request.outDir, 'reactive'), entrypoint: request.entrypoint, executionTarget: request.executionTarget ?? 'kubernetes' })
+    const reactiveArtifacts = executionGraph
+      ? await emitGeneratedApplicationReactive({ graph: executionGraph, ...(operationCatalog ? { operationCatalog } : {}), outDir: join(request.outDir, 'reactive'), entrypoint: request.entrypoint, executionTarget: request.executionTarget ?? 'kubernetes' })
       : [];
-    const hostResources = request.applicationGraph && (request.executionTarget === undefined || request.executionTarget === 'kubernetes')
-      ? await generatedApplicationHostResources({ graph: request.applicationGraph, entrypoint: request.entrypoint, outDir: join(request.outDir, 'application-host') })
+    const hostResources = executionGraph && (request.executionTarget === undefined || request.executionTarget === 'kubernetes')
+      ? await generatedApplicationHostResources({ graph: executionGraph, entrypoint: request.entrypoint, outDir: join(request.outDir, 'application-host') })
       : [];
-    const applicationHost = request.applicationGraph?.nodes.find(
+    const applicationHost = executionGraph?.nodes.find(
       (node) => node.kind === 'provider' && node.interface === 'ApplicationHost',
     );
-    const applicationHostFrameworkCredentials = request.applicationGraph && applicationHost
-      ? applicationHostFrameworkCredentialDependencies(request.applicationGraph)
+    const applicationHostFrameworkCredentials = executionGraph && applicationHost
+      ? applicationHostFrameworkCredentialDependencies(executionGraph)
       : [];
     // typecast: generated processor resources are concrete Kubernetes JSON objects and are validated by the same serialization path as composition resources.
     const processorResources = processorArtifacts.flatMap((artifact) => artifact.resources) as unknown as readonly TypeKroCompositionResource[];
@@ -614,9 +678,9 @@ async function emitTypeKroCompositionArtifacts(request: EmitTypeKroCompositionAr
     // typecast: generated workflow resources are concrete Kubernetes JSON objects and pass through the shared TypeKro serialization path.
     const workflowResources = workflowArtifacts.flatMap((artifact) => artifact.resources) as unknown as readonly TypeKroCompositionResource[];
     // typecast: generated reactive resources are concrete Kubernetes JSON objects and use the shared TypeKro serialization path.
-    const reactiveResources = request.applicationGraph
+    const reactiveResources = executionGraph
       ? consolidateGeneratedApplicationReactiveResources({
-          graphName: request.applicationGraph.metadata.name,
+          graphName: executionGraph.metadata.name,
           artifacts: reactiveArtifacts,
         }) as unknown as readonly TypeKroCompositionResource[]
       : [];
@@ -635,9 +699,9 @@ async function emitTypeKroCompositionArtifacts(request: EmitTypeKroCompositionAr
     ) as unknown as readonly TypeKroCompositionResource[];
     // typecast: generated host resources are concrete Kubernetes JSON objects and share the TypeKro emission contract.
     const generatedResources = [...migrationResources, ...processorResources, ...jobResources, ...managedModelResources, ...lakehousePublisherResources, ...workflowResources, ...reactiveResources, ...mcpResources, ...agentResources, ...httpResources, ...hostResources as unknown as readonly TypeKroCompositionResource[]];
-    const baseFactoryArtifacts = typeKroFactoryArtifacts(request.composition, request.applicationGraph?.metadata, request.applicationInstallation);
-    const factoryArtifacts = request.applicationGraph
-      ? injectGeneratedResourcesIntoApplicationRgd(baseFactoryArtifacts, generatedResources, request.applicationGraph.metadata.name, request.applicationInstallation, request.applicationGraph)
+    const baseFactoryArtifacts = typeKroFactoryArtifacts(request.composition, executionGraph?.metadata, request.applicationInstallation);
+    const factoryArtifacts = executionGraph
+      ? injectGeneratedResourcesIntoApplicationRgd(baseFactoryArtifacts, generatedResources, executionGraph.metadata.name, request.applicationInstallation, executionGraph)
       : baseFactoryArtifacts;
     const compositionEmissionResources = compositionResources(
       request.composition,
@@ -645,10 +709,10 @@ async function emitTypeKroCompositionArtifacts(request: EmitTypeKroCompositionAr
     );
     const emissionPlan = planTypeKroEmission({
       factory: factoryArtifacts.resources,
-      composition: request.applicationGraph
+      composition: executionGraph
         ? filterReplacedFunctionNativeServerResources(
             compositionEmissionResources,
-            request.applicationGraph,
+            executionGraph,
           )
         : compositionEmissionResources,
       migrations: migrationResources,

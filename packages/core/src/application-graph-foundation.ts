@@ -165,7 +165,22 @@ export function deriveApplicationGraphFoundation(
     const runtimeSecrets = providerRuntimeSecretRefs(node, graph);
     for (const binding of callableProviderBindings(node)) {
       const access = binding.operation?.runtime?.access;
-      if (!access || access === 'none') continue;
+      // A captured qualified provider token is itself an exact dependency even
+      // when the callback does not invoke a particular provider method at the
+      // capture site (for example, a lakehouse query receives its dataset as a
+      // structured argument). Preserve that dependency as connection.use so
+      // target lowering can derive the provider's network and IAM authority.
+      if (!access) {
+        add(
+          node,
+          'connection.use',
+          binding.provider.nodeId,
+          resourceScope(binding.provider),
+          'framework',
+        );
+        continue;
+      }
+      if (access === 'none') continue;
       for (const operation of access.operations) {
         if (operation === 'secret.read' && runtimeSecrets.length > 0) continue;
         add(
@@ -288,7 +303,22 @@ function callableProviderBindings(
   if (!('providerBindings' in node) || !Array.isArray(node.providerBindings)) {
     return [];
   }
-  return node.providerBindings;
+  // Some provider configuration objects have a domain field named
+  // providerBindings. Only the graph contract carrying a canonical provider
+  // reference is a callable binding; never interpret provider-owned config as
+  // framework dependency metadata merely because the property names match.
+  return node.providerBindings.filter(
+    (binding): binding is ApplicationCallableProviderBinding =>
+      Boolean(
+        binding
+        && typeof binding === 'object'
+        && 'provider' in binding
+        && binding.provider
+        && typeof binding.provider === 'object'
+        && typeof binding.provider.interface === 'string'
+        && typeof binding.provider.nodeId === 'string',
+      ),
+  );
 }
 
 function providerRuntimeSecretRefs(

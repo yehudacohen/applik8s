@@ -1462,6 +1462,53 @@ function nativeWorkloadEnvironment(
     environment[`${prefix}_PREFIX`] = "";
     environment[`${prefix}_FORCE_PATH_STYLE`] = "false";
   }
+  const lakehouseResourceIds = new Set(stringArrayConfig(config, "lakehouseResourceIds"));
+  if (lakehouseResourceIds.size > 0) {
+    const datasets = plan.resources
+      .filter(({ id, service, resourceType }) =>
+        lakehouseResourceIds.has(id) && service === "s3" && resourceType === "lakehouse-dataset")
+      .sort((left, right) => left.id.localeCompare(right.id));
+    const queries = plan.resources
+      .filter(({ id, service, resourceType }) =>
+        lakehouseResourceIds.has(id) && service === "athena" && resourceType === "workgroup")
+      .sort((left, right) => left.id.localeCompare(right.id));
+    const resolvedInputs: unknown[] = [];
+    for (const dataset of datasets) {
+      const catalogResourceId = requiredStringConfig(dataset, "catalogResourceId");
+      if (!lakehouseResourceIds.has(catalogResourceId)) {
+        throw new Error(`AWS lakehouse dataset ${dataset.id} requires catalog ${catalogResourceId}, but that catalog is not in the workload's exact binding set.`);
+      }
+      resolvedInputs.push(
+        outputValue(outputs, dataset.id, "bucketName"),
+        outputValue(outputs, catalogResourceId, "databaseName"),
+      );
+    }
+    for (const query of queries) resolvedInputs.push(outputValue(outputs, query.id, "workgroupName"));
+    environment.APPLIK8S_AWS_LAKEHOUSE_BINDINGS = mapStringInputs(resolvedInputs, (resolved) => {
+      let offset = 0;
+      return JSON.stringify({
+        datasets: Object.fromEntries(datasets.map((dataset) => {
+          const qualification = stringConfig(dataset.configuration, "qualification") ?? dataset.semanticNodeId ?? dataset.id;
+          const bucket = String(resolved[offset++]);
+          const catalogDatabase = String(resolved[offset++]);
+          return [qualification, {
+            bucket,
+            prefix: stringConfig(dataset.configuration, "prefix") ?? "lakehouse",
+            region: stringConfig(dataset.configuration, "region") ?? plan.region,
+            catalogDatabase,
+            forceDeleteUnretainedData: booleanConfig(dataset.configuration, "forceDeleteUnretainedData") === true,
+          }];
+        })),
+        queries: Object.fromEntries(queries.map((query) => {
+          const qualification = stringConfig(query.configuration, "qualification") ?? query.semanticNodeId ?? query.id;
+          return [qualification, {
+            workgroup: String(resolved[offset++]),
+            region: stringConfig(query.configuration, "region") ?? plan.region,
+          }];
+        })),
+      });
+    });
+  }
   if (resource.resourceType === "hatchet-service") {
     const databaseId = requiredStringConfig(resource, "databaseResourceId");
     const discoveryNamespaceId = requiredStringConfig(resource, "discoveryNamespaceResourceId");
@@ -1617,6 +1664,23 @@ function secretProps(
   tags: Readonly<Record<string, string>>,
 ): Readonly<Record<string, unknown>> {
   const config = resource.configuration;
+  const environmentEntries = arrayObjects(config.environmentEntries);
+  if (environmentEntries.length > 0) {
+    const payload = Object.fromEntries(environmentEntries.map((entry) => {
+      const secretField = stringConfig(entry, "secretField");
+      const environmentReference = stringConfig(entry, "environmentReference");
+      if (!secretField || !environmentReference) {
+        throw new Error(`AWS Secret ${resource.id} contains an invalid deployment-environment entry.`);
+      }
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/u.test(environmentReference)) {
+        throw new Error(`AWS Secret ${resource.id} environment reference ${JSON.stringify(environmentReference)} is invalid.`);
+      }
+      const value = options.environment?.[environmentReference] ?? process.env[environmentReference];
+      if (!value) throw new Error(`AWS Secret ${resource.id} requires environment variable ${environmentReference}.`);
+      return [secretField, value];
+    }));
+    return { name: resource.physicalName, secretString: Redacted.make(JSON.stringify(payload)), tags };
+  }
   const environmentKeys = objectValue(config.environmentKeys);
   if (environmentKeys) {
     const payload = Object.fromEntries(Object.entries(environmentKeys).map(([secretKey, environmentName]) => {

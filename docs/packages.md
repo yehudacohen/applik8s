@@ -46,6 +46,7 @@ still own their product vocabulary, policy, routes, and presentation.
 | `@applik8s/integrations` | Provider-neutral connection intent, scopes, and safe lifecycle state. |
 | `@applik8s/billing` | Provider-neutral plans, subscriptions, checkout, portal, and entitlement models. |
 | `@applik8s/notifications` | Transactional notification contracts, durable requests, and local inspection. |
+| `@applik8s/code-agent` | Preview provider-neutral `codeAgent()` composition, harness/workspace/repository/process capability contracts, fenced local providers, and authenticated provider transport. OpenCode remains a replaceable adapter in `@applik8s/dev`. |
 | `@applik8s/web-search` | Bounded provider-neutral web retrieval, deterministic local execution, and source provenance. |
 | `@applik8s/conversations` | Conversations, messages, protocol runs, run events, memory, and TanStack persistence. |
 | `@applik8s/data-lifecycle` | Provider-neutral lifecycle request state and progress vocabulary; applications own deletion policy. |

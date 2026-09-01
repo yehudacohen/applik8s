@@ -140,6 +140,46 @@ describe("AWS native Alchemy resource graph", () => {
     });
   });
 
+  test("hydrates exact lakehouse bindings from native S3, Glue, and Athena outputs", () => {
+    const dataset = resource("provider.history", "s3", "lakehouse-dataset", "native-history", {
+      qualification: "history",
+      prefix: "history/events",
+      region: "us-east-1",
+      catalogResourceId: "provider.history.catalog",
+      forceDeleteUnretainedData: true,
+    }, ["bucketName", "bucketArn"]);
+    const catalog = resource("provider.history.catalog", "glue", "catalog-database", "native-history-catalog", {
+      qualification: "history",
+    }, ["databaseName", "databaseArn"]);
+    const query = resource("provider.history.query", "athena", "workgroup", "native-history-query", {
+      qualification: "history-queries",
+      region: "us-east-1",
+    }, ["workgroupName", "workgroupArn"]);
+    const plan = fixturePlan([dataset, catalog, query]);
+    const workload = resource("runtime.history", "ecs", "fargate-worker", "native-history-worker", {
+      lakehouseResourceIds: [dataset.id, catalog.id, query.id],
+    }, ["serviceArn"]);
+    const environment = applicationAwsNativeWorkloadEnvironmentForTest(workload, plan, {
+      [dataset.id]: { bucketName: "resolved-history-bucket" },
+      [catalog.id]: { databaseName: "resolved_history_catalog" },
+      [query.id]: { workgroupName: "resolved-history-query" },
+    });
+    expect(JSON.parse(String(environment.APPLIK8S_AWS_LAKEHOUSE_BINDINGS))).toEqual({
+      datasets: {
+        history: {
+          bucket: "resolved-history-bucket",
+          prefix: "history/events",
+          region: "us-east-1",
+          catalogDatabase: "resolved_history_catalog",
+          forceDeleteUnretainedData: true,
+        },
+      },
+      queries: {
+        "history-queries": { workgroup: "resolved-history-query", region: "us-east-1" },
+      },
+    });
+  });
+
   test("rejects dependency cycles before creating an Alchemy stack", () => {
     const plan = normalizeApplicationAwsDeploymentPlan({
       ...fixturePlan(),

@@ -17,6 +17,39 @@ export interface StagedApplicationInstance {
 
 const typeKroArtifactBindingsSpecField = 'typekroArtifactBindings';
 
+/**
+ * Read the authored installation input before composition compilation.
+ *
+ * This intentionally does not infer a resource kind: the full staging pass
+ * verifies that against the emitted RGD after compilation. The precompile
+ * view exists only so profile-selected runtime artifacts can be validated
+ * against the same concrete schema.spec values as the eventual instance.
+ */
+export async function readExplicitApplicationInstallationSpec(
+  explicitPath: string,
+): Promise<Readonly<Record<string, unknown>>> {
+  const documents = parseAllDocuments(await readFile(explicitPath, 'utf8'))
+    .map((document) => document.toJSON() as unknown)
+    .filter((value): value is Record<string, unknown> => Boolean(
+      value
+      && typeof value === 'object'
+      && !Array.isArray(value)
+      && Reflect.get(value, 'spec')
+      && typeof Reflect.get(value, 'spec') === 'object'
+      && !Array.isArray(Reflect.get(value, 'spec')),
+    ));
+  if (documents.length !== 1) {
+    throw new Error(
+      `Expected exactly one authored Application resource with an object spec in ${explicitPath}, found ${documents.length}.`,
+    );
+  }
+  const authored = applicationAuthoredSpec(
+    documents[0]?.spec as Readonly<Record<string, unknown>>,
+    explicitPath,
+  );
+  return authored;
+}
+
 export async function stageExplicitApplicationInstance(
   entrypoint: string,
   bundlePath: string,

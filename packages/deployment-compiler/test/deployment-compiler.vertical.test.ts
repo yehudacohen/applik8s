@@ -21,6 +21,10 @@ import {
 import { describe, expect, it } from "vitest";
 
 import {
+  applicationDeploymentGraphForImplementationPlan,
+  applicationImplementationConfigurationValues,
+  applicationProviderExecution,
+  applicationProviderGuaranteesForGraph,
   type ApplicationDeploymentContributor,
   clickStackCredentialsSecretName,
   compileApplicationDeploymentGraph,
@@ -31,9 +35,317 @@ const sourceGraphDigest = `sha256:${"a".repeat(64)}`;
 const connectionDigest = `sha256:${"b".repeat(64)}`;
 
 describe("Application deployment compiler", () => {
+  it('classifies PostgreSQL analytical adapters as runtime-only database reuse', () => {
+    expect(applicationProviderExecution('AnalyticalDatabase', 'postgres-analytics')).toBe('runtime-only');
+    expect(applicationProviderExecution('AnalyticalDatabase', 'clickhouse')).toBe('root-composition');
+  });
+
+  it('derives physical provider selection from a Secret-safe implementation plan without mutating the semantic graph', () => {
+    const provenance = sourceProvenance({
+      origin: 'authored',
+      module: 'src/providers.ts',
+      symbol: 'productionAws',
+    });
+    const plan = resolveApplicationImplementationPlan({
+      application: 'guestbook',
+      profile: { id: 'production-aws', digest: `sha256:${'c'.repeat(64)}`, provenance: [provenance] },
+      declarations: [{
+        key: 'database',
+        capability: { interface: 'TransactionalDatabase@v1alpha1' },
+        provider: { package: '@applik8s/applik8s', export: 'Database.auroraPostgres', version: '0.9.0' },
+        identity: { kind: 'named', name: 'primary-database' },
+        provenance,
+        configuration: {
+          kind: 'aurora-postgresql',
+          account: {
+            accountId: { apiVersion: 'applik8s.configurationBinding/v1alpha1', kind: 'config', source: 'environment', reference: 'AWS_ACCOUNT_ID', valueType: 'string', required: true },
+            credentials: { apiVersion: 'applik8s.configurationBinding/v1alpha1', kind: 'secret', source: 'environment', reference: 'AWS_CREDENTIALS', required: true },
+          },
+        },
+        configurationDigest: `sha256:${'d'.repeat(64)}`,
+        configurationSources: [
+          { kind: 'config', reference: 'AWS_ACCOUNT_ID', required: true },
+          { kind: 'secret', reference: 'AWS_CREDENTIALS', required: true },
+        ],
+        guarantees: ['transaction-boundary'],
+        runtimeAdapter: '@applik8s/runtime-postgres',
+        deploymentContributor: '@applik8s/deployment-alchemy/providers/aurora-postgresql',
+        readiness: 'aurora.ready/v1',
+        lifecycle: 'retained',
+        migration: 'aurora.migration/v1',
+        evidence: [],
+        maturity: 'experimental',
+        dependencies: [],
+      }],
+      bindings: [{ id: 'binding.database', capability: { interface: 'TransactionalDatabase@v1alpha1' }, implementation: 'database', provenance }],
+    });
+    const baseSemantic = applicationGraph();
+    const semantic = {
+      ...baseSemantic,
+      nodes: baseSemantic.nodes.map((node) => node.kind === 'provider'
+        ? {
+            ...node,
+            config: {
+              aliasOf: 'provider.transactional-database.primary',
+              bindingKind: 'provided',
+              runtimeContract: { admission: 'portable-callback-source' },
+              callableRuntime: { resolver: 'portable-provider-callback' },
+              identity: {
+                authenticationProfile: {
+                  selector: 'schema.spec.profile',
+                  cases: { starter: { authenticationSource: 'authenticateStarter' } },
+                  default: { authenticationSource: 'authenticateStarter' },
+                },
+              },
+              identityRuntime: { databaseProvider: { nodeId: 'provider.transactional-database.primary' } },
+              profile: {
+                selectedBy: 'schema.spec.profile',
+                branches: [{ variant: 'starter', implementation: 'postgres' }],
+              },
+            },
+          }
+        : node),
+    } as ApplicationGraph;
+    const physical = applicationDeploymentGraphForImplementationPlan(semantic, plan);
+    const selected = physical.nodes.find((node) => node.kind === 'provider');
+
+    expect(selected).toMatchObject({
+      implementation: 'aurora-postgresql',
+      config: {
+        provider: 'aurora-postgresql',
+        aliasOf: 'provider.transactional-database.primary',
+        bindingKind: 'provided',
+        runtimeContract: { admission: 'portable-callback-source' },
+        callableRuntime: { resolver: 'portable-provider-callback' },
+        identity: {
+          authenticationProfile: {
+            selector: 'schema.spec.profile',
+            cases: { starter: { authenticationSource: 'authenticateStarter' } },
+            default: { authenticationSource: 'authenticateStarter' },
+          },
+        },
+        identityRuntime: { databaseProvider: { nodeId: 'provider.transactional-database.primary' } },
+        transactionalDatabase: {
+          kind: 'aurora-postgresql',
+          account: { credentials: { kind: 'secret', reference: 'AWS_CREDENTIALS' } },
+        },
+      },
+    });
+    expect(semantic.nodes[0]).toMatchObject({
+      implementation: 'postgres',
+      config: {
+        aliasOf: 'provider.transactional-database.primary',
+        bindingKind: 'provided',
+        runtimeContract: { admission: 'portable-callback-source' },
+        callableRuntime: { resolver: 'portable-provider-callback' },
+        identity: {
+          authenticationProfile: {
+            selector: 'schema.spec.profile',
+            cases: { starter: { authenticationSource: 'authenticateStarter' } },
+            default: { authenticationSource: 'authenticateStarter' },
+          },
+        },
+        identityRuntime: { databaseProvider: { nodeId: 'provider.transactional-database.primary' } },
+      },
+    });
+    expect(JSON.stringify(physical)).not.toContain('resolved-credential');
+    expect(selected?.config).not.toHaveProperty('profile');
+    const selectedValues = applicationImplementationConfigurationValues(plan, (reference) => ({
+      AWS_ACCOUNT_ID: '123456789012',
+      AWS_CREDENTIALS: 'must-never-be-selected',
+    })[reference]);
+    expect(selectedValues).toEqual({ AWS_ACCOUNT_ID: '123456789012' });
+    const resolved = applicationDeploymentGraphForImplementationPlan(semantic, plan, {
+      configuration: selectedValues,
+    });
+    expect(JSON.stringify(resolved)).toContain('123456789012');
+    expect(JSON.stringify(resolved)).not.toContain('must-never-be-selected');
+  });
+
+  it('does not retain flattened physical values from a superseded provider selection', () => {
+    const provenance = sourceProvenance({
+      origin: 'framework-generated',
+      generatedBy: 'application.profile',
+      symbol: 'production-kubernetes',
+    });
+    const plan = resolveApplicationImplementationPlan({
+      application: 'guestbook',
+      profile: { id: 'production-kubernetes', digest: `sha256:${'c'.repeat(64)}`, provenance: [provenance] },
+      declarations: [{
+        key: 'events',
+        capability: { interface: 'EventLog@v1alpha1' },
+        provider: { package: '@applik8s/applik8s', export: 'EventLog.jetStream', version: '0.9.0' },
+        identity: { kind: 'named', name: 'events' },
+        provenance,
+        configuration: {
+          kind: 'jetstream',
+          name: 'guestbook-events',
+          namespace: 'guestbook',
+          servers: 'nats://guestbook-events.guestbook.svc:4222',
+          replicas: 3,
+        },
+        configurationDigest: `sha256:${'d'.repeat(64)}`,
+        configurationSources: [],
+        guarantees: ['durable-event-log'],
+        runtimeAdapter: '@applik8s/runtime-nats',
+        deploymentContributor: '@applik8s/deployment-typekro/providers/jetstream',
+        readiness: 'jetstream.ready/v1',
+        lifecycle: 'retained',
+        migration: 'jetstream.migration/v1',
+        evidence: [],
+        maturity: 'experimental',
+        dependencies: [],
+      }],
+      bindings: [{
+        id: 'binding.events',
+        capability: { interface: 'EventLog@v1alpha1' },
+        implementation: 'events',
+        provenance,
+      }],
+    });
+    const base = applicationGraph();
+    const semantic = {
+      ...base,
+      nodes: base.nodes.map((node) => node.kind === 'provider'
+        ? {
+            ...node,
+            interface: 'EventLog',
+            implementation: 'legacy-jetstream',
+            config: {
+              aliasOf: 'provider.event-log.primary',
+              bindingKind: 'provided',
+              runtimeContract: { admission: 'portable-event-source' },
+              profile: { selectedBy: 'schema.spec.profile' },
+              name: 'applik8s-events',
+              servers: 'nats://applik8s-events.legacy.svc:4222',
+              replicas: 1,
+              stream: 'legacy-events',
+            },
+          }
+        : node),
+    } as ApplicationGraph;
+
+    const physical = applicationDeploymentGraphForImplementationPlan(semantic, plan);
+    const selected = physical.nodes.find((node) => node.kind === 'provider');
+
+    expect(selected).toMatchObject({
+      implementation: 'jetstream',
+      config: {
+        provider: 'jetstream',
+        aliasOf: 'provider.event-log.primary',
+        bindingKind: 'provided',
+        runtimeContract: { admission: 'portable-event-source' },
+        name: 'guestbook-events',
+        namespace: 'guestbook',
+        servers: 'nats://guestbook-events.guestbook.svc:4222',
+        replicas: 3,
+      },
+    });
+    expect(selected?.config).not.toHaveProperty('profile');
+    expect(selected?.config).not.toHaveProperty('stream');
+    expect(JSON.stringify(selected)).not.toContain('applik8s-events');
+  });
+
+  it('aliases multiple logical capability bindings that share one implementation identity', () => {
+    const provenance = sourceProvenance({
+      origin: 'framework-generated',
+      generatedBy: 'application.profile',
+      symbol: 'developer',
+    });
+    const plan = resolveApplicationImplementationPlan({
+      application: 'guestbook',
+      profile: { id: 'developer', digest: `sha256:${'c'.repeat(64)}`, provenance: [provenance] },
+      declarations: [{
+        key: 'inference',
+        capability: { interface: 'AI@v1alpha1' },
+        provider: { package: '@applik8s/ai', export: 'AI.envoy', version: '0.9.0' },
+        identity: { kind: 'named', name: 'shared-inference' },
+        provenance,
+        configuration: { kind: 'envoy-ai-gateway', name: 'shared-inference' },
+        configurationDigest: `sha256:${'d'.repeat(64)}`,
+        configurationSources: [],
+        guarantees: ['chat'],
+        runtimeAdapter: '@applik8s/runtime-ai',
+        deploymentContributor: '@applik8s/deployment-typekro/providers/envoy-ai-gateway',
+        readiness: 'envoy.ready/v1',
+        lifecycle: 'application',
+        migration: 'envoy.migration/v1',
+        evidence: [],
+        maturity: 'experimental',
+        dependencies: [],
+      }],
+      bindings: [
+        { id: 'binding.ai.default', capability: { interface: 'AI@v1alpha1' }, implementation: 'inference', provenance },
+        { id: 'binding.ai.inference', capability: { interface: 'AI@v1alpha1', qualifier: 'inference' }, implementation: 'inference', provenance },
+      ],
+    });
+    const semanticBase = applicationGraph();
+    const semantic: ApplicationGraph = {
+      ...semanticBase,
+      nodes: [
+        ...semanticBase.nodes,
+        {
+          id: 'provider.ai.v1alpha1.inference',
+          kind: 'provider',
+          name: 'AI.inference',
+          stability: 'experimental',
+          interface: 'AI',
+          implementation: 'application-provider-selection',
+          config: {
+            qualification: {
+              apiVersion: 'applik8s.providerQualification/v1alpha1',
+              name: 'inference',
+            },
+          },
+        },
+      ],
+    };
+
+    const physical = applicationDeploymentGraphForImplementationPlan(semantic, plan);
+    const providers = physical.nodes.filter(
+      (node): node is Extract<typeof node, { kind: 'provider' }> => node.kind === 'provider' && node.interface === 'AI',
+    );
+    expect(providers).toHaveLength(2);
+    expect(providers.find((provider) => provider.id === 'provider.implementation.ai')).toMatchObject({
+      implementation: 'envoy-ai-gateway',
+      config: { aliasOf: 'provider.ai.v1alpha1.inference' },
+    });
+    expect(providers.find((provider) => provider.id === 'provider.ai.v1alpha1.inference')).toMatchObject({
+      implementation: 'envoy-ai-gateway',
+      config: { ai: { kind: 'envoy-ai-gateway', name: 'shared-inference' } },
+    });
+
+    const withExistingDefaultAlias: ApplicationGraph = {
+      ...semantic,
+      nodes: [
+        ...semantic.nodes,
+        {
+          id: 'provider.ai',
+          kind: 'provider',
+          name: 'AI',
+          stability: 'experimental',
+          interface: 'AI',
+          implementation: 'application-provider-selection',
+          config: { aliasOf: 'provider.ai.v1alpha1.inference' },
+        },
+      ],
+    };
+    const existingAliasPhysical = applicationDeploymentGraphForImplementationPlan(
+      withExistingDefaultAlias,
+      plan,
+    );
+    expect(existingAliasPhysical.nodes.find((node) => node.id === 'provider.ai')).toMatchObject({
+      config: { aliasOf: 'provider.ai.v1alpha1.inference' },
+    });
+    expect(existingAliasPhysical.nodes.find(
+      (node) => node.id === 'provider.ai.v1alpha1.inference',
+    )).not.toMatchObject({ config: { aliasOf: 'provider.ai' } });
+  });
+
   it('omits unavailable target-selected lakehouse execution and its generated cursor Secret', () => {
     const providerId = 'provider.lakehouse-dataset.v1alpha1.history';
     const publicationId = 'lakehouse-publication.usage.v1.history';
+    const queryId = 'query.historical.usage.v1';
     const graph = {
       ...applicationGraph(),
       nodes: [
@@ -69,6 +381,30 @@ describe("Application deployment compiler", () => {
           eventLog: { nodeId: 'provider.event-log', interface: 'EventLog' },
           semantics: { frontier: 'sourceEvent', publication: 'atomicManifest', schemaEvolution: 'explicitRevision' },
         },
+        {
+          id: queryId,
+          kind: 'query',
+          name: 'historical.usage',
+          version: 'v1',
+          stability: 'stable',
+          input: { kind: 'declared', runtime: 'arktype', jsonSchema: { type: 'object' } },
+          output: { kind: 'declared', runtime: 'arktype', jsonSchema: { type: 'array', items: { type: 'object' } } },
+          reads: [],
+          authorization: 'application-defined',
+          trustedContext: [],
+          budgets: { timeoutMs: 1_000, maxResultBytes: 10_000, maxRows: 100 },
+          snapshotResume: 'unsupported',
+          incremental: 'invalidation-requery',
+          cursor: 'opaque-query-version-context-scoped',
+          authorizationSource: '() => true',
+          handlerSource: 'async () => []',
+          providerBindings: [{
+            identifier: 'historicalDataset',
+            placement: 'providerDependency',
+            projection: 'token',
+            provider: { nodeId: providerId, interface: 'LakehouseDataset' },
+          }],
+        },
       ],
       edges: [{ from: { nodeId: publicationId }, to: { nodeId: providerId }, relationship: 'dependsOn' }],
       providerRequirements: [{
@@ -97,7 +433,46 @@ describe("Application deployment compiler", () => {
 
     expect(compiled.runtimeAccess.executions).toEqual([]);
     expect(compiled.runtimeAccess.diagnostics).toEqual([]);
+    expect(compiled.excludedExecutionNodeIds).toEqual([publicationId, queryId]);
     expect(compiled.graph.nodes.some((node) => node.id === 'external.generated-secret.lakehouse.cursor')).toBe(false);
+
+    const resolutionGraph = {
+      ...graph,
+      nodes: graph.nodes.map((node) => node.id === providerId
+        ? {
+            ...node,
+            implementation: 'qualified-lakehouse-provider-required',
+            config: {
+              kind: 'qualified-lakehouse-provider-required',
+              reason: 'Install a qualified Kubernetes lakehouse.',
+            },
+          }
+        : node),
+    } as ApplicationGraph;
+    const plan = compileApplicationPlan({
+      graph,
+      resolutionGraph,
+      excludedExecutionNodeIds: compiled.excludedExecutionNodeIds,
+      deployment: compiled.graph,
+      target: 'kubernetes',
+      lifecycleAuthority: 'alchemy',
+      generatedAt: new Date(0).toISOString(),
+      providerGuarantees: applicationProviderGuaranteesForGraph({
+        graph: resolutionGraph,
+        target: 'kubernetes',
+        profile: 'default',
+      }),
+    });
+    expect(plan.resolution.capabilities).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        requirementId: `requirement.${publicationId}.dataset`,
+        disposition: 'degraded',
+        fact: 'external',
+        gaps: ['target-execution-unavailable'],
+      }),
+    ]));
+    expect(plan.diagnostics).toEqual([]);
+    expect(validateApplicationPlan(plan).valid).toBe(true);
   });
 
   it('does not mistake a schedule-admission CronJob for the scheduled closure workload', () => {
@@ -603,6 +978,15 @@ describe("Application deployment compiler", () => {
     expect(result.graph.nodes).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: "direct.provider.workflow-engine.hatchet" }),
     ]));
+    const root = result.graph.nodes.find((node) => node.kind === "kubernetesComposition");
+    expect(root?.kind === "kubernetesComposition" ? root.spec.fragments : []).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          sourceNodeId: "provider.scheduler.v1alpha1.source-polling",
+          execution: "runtime-only",
+        }),
+      ]),
+    );
   });
 
   it("lowers compiler-owned CRDs into retained API prerequisites before the application", () => {
@@ -3532,6 +3916,16 @@ describe("Application deployment compiler", () => {
         provider: { package: '@applik8s/runtime-postgres', export: 'postgres', version: '0.9.0' },
         identity: { kind: 'named', name: 'primary-database' },
         provenance: implementationProvenance,
+        configuration: {
+          kind: 'postgres',
+          connection: {
+            apiVersion: 'applik8s.configurationBinding/v1alpha1',
+            kind: 'secret',
+            source: 'environment',
+            reference: 'DATABASE_URL',
+            required: true,
+          },
+        },
         configurationDigest: `sha256:${'d'.repeat(64)}`,
         configurationSources: [{ kind: 'secret', reference: 'DATABASE_URL', required: true }],
         guarantees: ['transaction-boundary'],
@@ -3600,6 +3994,45 @@ describe("Application deployment compiler", () => {
     expect(renderApplicationPlanGraph(plan)).toContain('implementation: postgres');
     expect(renderApplicationPlanGraph(plan)).toContain('@applik8s/deployment-typekro/postgres');
     expect(validateApplicationPlan(plan)).toEqual({ valid: true, diagnostics: [] });
+
+    const baseAssemblyPlan = compileApplicationPlan({
+      graph,
+      deployment,
+      target: 'kubernetes',
+      lifecycleAuthority: 'alchemy',
+      generatedAt: '2026-08-30T00:00:00.000Z',
+      implementationPlan: {
+        ...implementationPlan,
+        bindings: [],
+        implementations: [],
+        dependencies: [],
+      },
+      providerGuarantees: [{
+        apiVersion: 'applik8s.providerGuarantees/v1alpha1',
+        provider,
+        capability: { interface: 'TransactionalDatabase', implementation: 'postgres', version: '0.9.0' },
+        targets: ['kubernetes'],
+        maturity: 'stable',
+        guarantees: [{
+          id: 'transaction-boundary',
+          category: 'transaction-outbox',
+          statement: 'One database transaction is authoritative.',
+          disposition: 'guaranteed',
+          evidence: ['postgres-runtime-live'],
+        }],
+        limitations: [],
+        evidenceLevel: 'target-live',
+      }],
+    });
+    expect(baseAssemblyPlan.diagnostics).not.toContainEqual(expect.objectContaining({
+      code: 'PLAN_IMPLEMENTATION_BINDING_UNRESOLVED',
+    }));
+    expect(baseAssemblyPlan.resolution.capabilities).toEqual([
+      expect.objectContaining({
+        requirementId: 'requirement.database',
+        implementation: 'postgres',
+      }),
+    ]);
 
     const attributed = plan.physical.nodes.find(({ implementations }) => implementations?.length);
     expect(attributed).toBeDefined();

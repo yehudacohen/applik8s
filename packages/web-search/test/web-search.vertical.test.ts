@@ -63,6 +63,28 @@ describe('provider-neutral web search', () => {
     });
   });
 
+  it('supports query-scoped deterministic evidence without leaking unrelated fixtures', async () => {
+    const provider = LocalWebSearch.deterministic({
+      responsesByQuery: {
+        'Applik8s Agentic Start': [{
+          title: 'Agentic Start',
+          url: 'https://example.test/agentic-start',
+          snippet: 'Maintained evidence for the exact fixture query.',
+        }],
+      },
+    });
+    await expect(provider.search({
+      admissionId: 'search-known',
+      idempotencyKey: 'search-known',
+      query: '  APPLIK8S AGENTIC START ',
+    })).resolves.toMatchObject({ results: [{ title: 'Agentic Start' }] });
+    await expect(provider.search({
+      admissionId: 'search-unknown',
+      idempotencyKey: 'search-unknown',
+      query: 'facts not present in local fixtures',
+    })).resolves.toMatchObject({ results: [] });
+  });
+
   it('fails closed on unbounded requests and unsafe result URLs', async () => {
     expect(() => normalizeApplicationWebSearchRequest({ admissionId: 'search-limit', idempotencyKey: 'search-limit', query: 'x', limit: 21 })).toThrow(/between 1 and 20/u);
     expect(() => normalizeApplicationWebSearchRequest({ admissionId: 'search-timeout', idempotencyKey: 'search-timeout', query: 'x', timeoutMs: 60_000 })).toThrow(/between 100 and 30000/u);
@@ -84,6 +106,31 @@ describe('provider-neutral web search', () => {
       provider: 'fixture-runtime',
       results: [{ title: 'Runtime' }],
     });
+  });
+
+  it('hydrates query-scoped deterministic responses through the managed-worker runtime', async () => {
+    const environment = {
+      APPLIK8S_WEB_SEARCH_KIND: 'deterministic',
+      APPLIK8S_WEB_SEARCH_PROVIDER: 'fixture-runtime',
+      APPLIK8S_WEB_SEARCH_FIXTURES: '[]',
+      APPLIK8S_WEB_SEARCH_RESPONSES_BY_QUERY: JSON.stringify({
+        runtime: [{
+          title: 'Runtime route',
+          url: 'https://example.test/runtime-route',
+          snippet: 'Query-scoped portable evidence.',
+        }],
+      }),
+    };
+    await expect(searchApplicationWeb({
+      admissionId: 'search-runtime-route',
+      idempotencyKey: 'search-runtime-route',
+      query: 'Runtime',
+    }, environment)).resolves.toMatchObject({ results: [{ title: 'Runtime route' }] });
+    await expect(searchApplicationWeb({
+      admissionId: 'search-runtime-miss',
+      idempotencyKey: 'search-runtime-miss',
+      query: 'missing',
+    }, environment)).resolves.toMatchObject({ results: [] });
   });
 
   it('keeps search and selected-source retrieval as separately injected authorities', async () => {

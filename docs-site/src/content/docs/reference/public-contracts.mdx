@@ -4,9 +4,17 @@ description: The generated package, entrypoint, symbol, diagnostic, and maturity
 ---
 
 The canonical public inventory is generated from publishable package manifests, export maps, TypeScript
-module exports, and typed diagnostic positions. It is checked for drift by `bun run check:v09:public-contracts`.
+module exports, typed diagnostic positions, Commander declarations, runtime environment reads, and the
+explicit v0.9 disposition policy. It is checked for drift by `bun run check:v09:public-contracts`.
 
 The checked-in source is [`docs/v0.9-public-contract.json`](https://github.com/yehudacohen/applik8s/blob/codex/v0.9-semantic-completion/docs/v0.9-public-contract.json).
 
-Per-symbol maturity review remains in progress. A symbol appearing in the inventory does not upgrade its
-provider maturity or evidence level.
+Every package has exactly one owner, maturity, compatibility set, stability class, evidence set, and
+replacement policy. Entrypoints inherit that package contract and their exported symbols inherit the
+entrypoint contract unless a narrower override is recorded. The inventory currently has
+`candidate-review-ready` status: the mechanical disposition is complete, while explicit maintainer review
+is still required before it becomes the frozen 1.0 candidate.
+
+Package maturity is a compatibility disposition, not invented provider evidence. Inventory membership
+does not upgrade provider maturity or evidence. A beta provider remains beta, and a stable-candidate
+provider still cannot pass a release gate until its required lifecycle and conformance evidence exists.

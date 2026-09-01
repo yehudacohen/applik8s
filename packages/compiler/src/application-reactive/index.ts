@@ -1,6 +1,6 @@
 // typecast-file-boundary: normalized reactive graph nodes are discriminator-checked before generated runtime contracts regain their specific shapes.
 import { createHash } from 'node:crypto';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { gzipSync } from 'node:zlib';
@@ -24,6 +24,7 @@ import { emitGeneratedApplicationContainer } from '../application-containers/ind
 import { generatedApplicationEventLogPublisherSource } from '../application-event-log-runtime-source.js';
 import { generatedApplicationFetchGatewayModules } from '../application-fetch-gateway/index.js';
 import { applicationFrameworkCredentialDependencies } from '../application-framework-credentials.js';
+import { generatedRuntimeNodePaths } from '../node-module-resolution.js';
 import {
   applicationKubernetesFixedScheduleResources,
   applicationScheduleDatabaseEnvironment,
@@ -1488,7 +1489,7 @@ async function bundleReactive(options: BundleReactiveOptions): Promise<Generated
   const manifestPath = join(options.artifactDir, 'runtime.manifest.json');
   const result = await build({
     entryPoints: [options.entrypoint], outfile: sourcePath, bundle: true, format: 'esm', platform: 'node', target: 'node22', minify: true, keepNames: true,
-    legalComments: 'none', sourcemap: 'external', sourcesContent: false, metafile: true, nodePaths: [join(process.cwd(), 'node_modules')], plugins: [handlerSourceMetadataPlugin(options.applicationEntrypoint, { includeMaintainedPackages: false }), hatchetSingleFileHeartbeatPlugin(), applik8sWorkspaceSourcePlugin()],
+    legalComments: 'none', sourcemap: 'external', sourcesContent: false, metafile: true, nodePaths: [...generatedRuntimeNodePaths()], plugins: [handlerSourceMetadataPlugin(options.applicationEntrypoint, { includeMaintainedPackages: false }), hatchetSingleFileHeartbeatPlugin(), applik8sWorkspaceSourcePlugin()],
     banner: { js: "import { createRequire as __applik8sCreateRequire } from 'node:module'; const require = __applik8sCreateRequire(import.meta.url);" },
   });
   const source = await readFile(sourcePath, 'utf8');
@@ -5659,7 +5660,14 @@ function resolveTypeScriptImport(resolveDir: string, specifier: string): string 
     base.replace(/\.m?js$/, '.ts'), base.replace(/\.cjs$/, '.cts'),
     join(base, 'index.ts'), join(base, 'index.tsx'),
   ];
-  return candidates.find((candidate) => existsSync(candidate));
+  return candidates.find((candidate) => {
+    if (!existsSync(candidate)) return false;
+    try {
+      return statSync(candidate).isFile();
+    } catch {
+      return false;
+    }
+  });
 }
 
 function assertSupportedQueryRuntimeFacetCapture(source: string, queryId: string): void {

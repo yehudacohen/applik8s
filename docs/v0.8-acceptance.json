@@ -181,12 +181,12 @@
       "owner": "independent-development-environment",
       "maturity": "developer-preview",
       "command": "bun run check:v08:development-agent",
-      "implemented": true,
+      "implemented": false,
       "cadence": ["per-pr", "nightly"],
       "environments": ["clean-generated-agentic-start", "broken-application"],
-      "evidence": ["visual-product-selection", "source-graph-plan-resolution", "persistent-referents", "attachment-redaction", "plan-diff-approval", "truthful-validation", "journal-recovery", "undo", "source-governance"],
+      "evidence": ["visual-product-selection", "source-graph-plan-resolution", "persistent-referents", "attachment-redaction", "plan-diff-approval", "truthful-validation", "journal-recovery", "undo", "source-governance", "real-opencode-process", "streaming-reconnection", "complete-closed-change-journey", "broken-application-recovery", "unrelated-dirty-change-preservation", "secret-and-egress-refusal"],
       "qualifiedEvidence": ["visual-product-selection", "source-graph-plan-resolution", "persistent-referents", "attachment-redaction", "plan-diff-approval", "truthful-validation", "journal-recovery", "undo", "source-governance"],
-      "remainingEvidence": []
+      "remainingEvidence": ["real-opencode-process", "streaming-reconnection", "complete-closed-change-journey", "broken-application-recovery", "unrelated-dirty-change-preservation", "secret-and-egress-refusal"]
     },
     {
       "id": "release",

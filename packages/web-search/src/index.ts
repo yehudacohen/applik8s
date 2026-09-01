@@ -103,6 +103,13 @@ export const WebSearch =
 
 export interface DeterministicWebSearchOptions {
   readonly results?: readonly ApplicationWebSearchResult[];
+  /**
+   * Exact, case-insensitive query fixtures. When supplied, an unlisted query
+   * intentionally returns no results instead of leaking a fixture from an
+   * unrelated query. This is the preferred shape for acceptance environments
+   * that need to prove evidence-unavailable behavior.
+   */
+  readonly responsesByQuery?: Readonly<Record<string, readonly ApplicationWebSearchResult[]>>;
   readonly provider?: string;
   readonly clock?: () => Date;
 }
@@ -117,6 +124,9 @@ export const LocalWebSearch = Object.freeze({
       options.results ?? [],
       20,
     );
+    const responsesByQuery = normalizeDeterministicWebSearchResponses(
+      options.responsesByQuery,
+    );
     const implementation: ApplicationWebSearchProvider = {
       provider,
       kind: 'web-search-deterministic',
@@ -126,7 +136,10 @@ export const LocalWebSearch = Object.freeze({
         return Object.freeze({
           query: request.query,
           provider,
-          results: Object.freeze(fixtures.slice(0, request.limit)),
+          results: Object.freeze(
+            (responsesByQuery?.[normalizedDeterministicQuery(request.query)] ?? fixtures)
+              .slice(0, request.limit),
+          ),
           observedAt: clock().toISOString(),
           partial: false,
           receipt: Object.freeze({
@@ -142,10 +155,35 @@ export const LocalWebSearch = Object.freeze({
         APPLIK8S_WEB_SEARCH_KIND: 'deterministic',
         APPLIK8S_WEB_SEARCH_PROVIDER: provider,
         APPLIK8S_WEB_SEARCH_FIXTURES: JSON.stringify(fixtures),
+        ...(responsesByQuery
+          ? { APPLIK8S_WEB_SEARCH_RESPONSES_BY_QUERY: JSON.stringify(responsesByQuery) }
+          : {}),
       },
     }));
   },
 });
+
+function normalizedDeterministicQuery(query: string): string {
+  return query.trim().toLocaleLowerCase('en-US');
+}
+
+function normalizeDeterministicWebSearchResponses(
+  responses: DeterministicWebSearchOptions['responsesByQuery'],
+): Readonly<Record<string, readonly ApplicationWebSearchResult[]>> | undefined {
+  if (responses === undefined) return undefined;
+  const normalized: Record<string, readonly ApplicationWebSearchResult[]> = {};
+  for (const [query, results] of Object.entries(responses)) {
+    const key = normalizedDeterministicQuery(query);
+    if (key.length === 0) {
+      throw new Error('Deterministic web search response queries must not be empty.');
+    }
+    if (Object.hasOwn(normalized, key)) {
+      throw new Error(`Deterministic web search query ${JSON.stringify(query)} is duplicated after normalization.`);
+    }
+    normalized[key] = Object.freeze(normalizeApplicationWebSearchResults(results, 20));
+  }
+  return Object.freeze(normalized);
+}
 
 export interface NormalizedApplicationWebSearchRequest {
   readonly admissionId: string;

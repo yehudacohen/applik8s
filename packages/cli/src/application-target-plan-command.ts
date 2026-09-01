@@ -1,15 +1,20 @@
 // typecast-file-boundary: CLI JSON and discovered graph values are validated before conversion into typed target plans.
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { dirname, resolve } from 'node:path';
 import {
   diffApplicationPlans,
   serializeApplicationPlan,
   validateApplicationGraph,
   validateApplicationPlan,
+  serializeApplicationGraph,
   type ApplicationGraph,
+  type ApplicationImplementationPlan,
+  type ApplicationImplementationPlanSet,
   type ApplicationPlan,
 } from '@applik8s/core';
 import {
+  applicationImplementationConfigurationValues,
   compileApplicationAwsApplicationPlan,
   compileApplicationAwsDeploymentPlan,
 } from '@applik8s/deployment-compiler';
@@ -17,8 +22,11 @@ import {
   serializeApplicationAwsDeploymentPlan,
   validateApplicationAwsDeploymentPlan,
   type ApplicationAwsDeploymentPlan,
+  type DeploymentJsonObject,
 } from '@applik8s/deployment-contract';
 import { resolveApplicationBuildPackage } from './application-build-package.js';
+import { stageExplicitApplicationInstance } from './application-deployment-files.js';
+import { resolveApplicationInstallationValues } from './application-installation-values.js';
 import { readLocalRuntimeArtifacts } from './local-development-command.js';
 import type {
   ApplicationDeploymentCommandIo,
@@ -32,6 +40,8 @@ import {
 
 export interface ApplicationTargetPlanCommandOptions {
   readonly target: 'aws';
+  /** Canonical v0.9 assembly profile. */
+  readonly profile?: string;
   readonly environment: string;
   readonly region: string;
   readonly accountId: string;
@@ -40,6 +50,7 @@ export interface ApplicationTargetPlanCommandOptions {
   readonly outDir?: string;
   readonly compositionName?: string;
   readonly connectionBindings?: string;
+  readonly instance?: string;
   readonly skipAppBuild?: boolean;
   readonly format?: 'text' | 'json' | 'graph';
   readonly diff?: string;
@@ -98,30 +109,64 @@ export async function compileApplicationTargetPlan(
     typekro: true,
     production: true,
     executionTarget: 'aws',
+    ...(options.profile ? { profile: options.profile } : {}),
+    ...(options.instance
+      ? { installationSpecPath: resolve(io.cwd, options.instance) }
+      : {}),
     compositionName: options.compositionName ?? 'app',
     ...(options.connectionBindings ? { connectionBindings: options.connectionBindings } : {}),
   }, io);
   if (code !== 0) throw new Error(`Application graph compilation failed with exit code ${code}.`);
 
   const graphPath = resolve(compileOutDir, 'typekro', 'application-graph.json');
-  const graph = JSON.parse(await readFile(graphPath, 'utf8')) as ApplicationGraph;
-  const graphDiagnostics = validateApplicationGraph(graph);
+  const sourceGraph = JSON.parse(await readFile(graphPath, 'utf8')) as ApplicationGraph;
+  const graphDiagnostics = validateApplicationGraph(sourceGraph);
   if (graphDiagnostics.length > 0) {
     for (const diagnostic of graphDiagnostics) io.stderr(`${diagnostic.code}: ${diagnostic.message}`);
     throw new Error('The semantic ApplicationGraph is invalid; AWS planning did not run.');
   }
+  const implementationPlan = options.profile
+    ? await readImplementationPlan(
+        resolve(compileOutDir, 'typekro', 'application-implementation-plans.json'),
+        options.profile,
+        sourceGraph.metadata.name,
+      )
+    : undefined;
+  const bundlePath = resolve(compileOutDir, 'typekro', 'typekro-composition.json');
+  const instance = await stageExplicitApplicationInstance(
+    applicationEntrypoint,
+    bundlePath,
+    options.instance ? resolve(io.cwd, options.instance) : undefined,
+  );
+  const graph = resolveApplicationInstallationValues(sourceGraph, instance.spec, {
+    preserveUnknownReferences: true,
+  });
+  const sourceGraphDigest = `sha256:${createHash('sha256')
+    .update(serializeApplicationGraph(sourceGraph))
+    .digest('hex')}` as const;
 
   const runtimeArtifacts = await readLocalRuntimeArtifacts(
-    resolve(compileOutDir, 'typekro', 'typekro-composition.json'),
+    bundlePath,
     compileOutDir,
     'aws',
   );
   const plan = compileApplicationAwsDeploymentPlan({
     graph,
+    sourceGraphDigest,
+    ...(implementationPlan ? { implementationPlan } : {}),
+    ...(implementationPlan
+      ? {
+          configuration: applicationImplementationConfigurationValues(
+            implementationPlan,
+            (reference) => process.env[reference],
+          ),
+        }
+      : {}),
     environment: options.environment,
     region: options.region,
     accountId: options.accountId,
     runtimeArtifacts,
+    installationSpec: deploymentSpec(instance.spec),
     workspaceRoot: io.cwd,
     ...(options.availabilityZones?.length ? { availabilityZones: options.availabilityZones } : {}),
     ...(options.hostedZones && Object.keys(options.hostedZones).length > 0 ? { hostedZones: options.hostedZones } : {}),
@@ -130,6 +175,7 @@ export async function compileApplicationTargetPlan(
   const applicationPlan = compileApplicationAwsApplicationPlan({
     graph,
     aws: plan,
+    ...(implementationPlan ? { implementationPlan } : {}),
     workspaceRoot: io.cwd,
   });
   const applicationPlanPath = resolve(io.cwd, outDir, `${options.environment}.application-plan.json`);
@@ -146,6 +192,33 @@ export async function compileApplicationTargetPlan(
     throw new Error(applicationValidation.diagnostics.map(({ code, message }) => `${code}: ${message}`).join('\n'));
   }
   return { plan, planPath, applicationPlan, applicationPlanPath, compileOutDir };
+}
+
+function deploymentSpec(value: Readonly<Record<string, unknown>>): DeploymentJsonObject {
+  const serialized = JSON.stringify(value);
+  const parsed = JSON.parse(serialized) as unknown;
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('Application installation spec must be a JSON object.');
+  }
+  return parsed as DeploymentJsonObject;
+}
+
+async function readImplementationPlan(
+  path: string,
+  profile: string,
+  application: string,
+): Promise<ApplicationImplementationPlan> {
+  const value = JSON.parse(await readFile(path, 'utf8')) as ApplicationImplementationPlanSet;
+  if (value.apiVersion !== 'applik8s.implementationPlanSet/v1alpha1' || value.application !== application) {
+    throw new Error(`Implementation plan set ${path} does not describe application ${application}.`);
+  }
+  const plan = value.plans.find((candidate) => candidate.profile.id === profile);
+  if (!plan) {
+    throw new Error(
+      `Application ${application} has no assembly profile ${profile}. Available profiles: ${value.plans.map((candidate) => candidate.profile.id).sort().join(', ') || '<none>'}.`,
+    );
+  }
+  return plan;
 }
 
 export function renderAwsPlanText(plan: ApplicationAwsDeploymentPlan, previous?: ApplicationAwsDeploymentPlan): string {

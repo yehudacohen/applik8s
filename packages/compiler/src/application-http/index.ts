@@ -35,6 +35,7 @@ import {
   generatedApplicationEventLogPublisherSource,
 } from '../application-event-log-runtime-source.js';
 import { applicationFrameworkCredentialDependencies } from '../application-framework-credentials.js';
+import { generatedRuntimeNodePaths } from '../node-module-resolution.js';
 import {
   applicationGraphInterpolate,
   applicationGraphJsonStringArray,
@@ -572,7 +573,7 @@ async function emitHttpServer(
     sourcemap: 'external',
     sourcesContent: false,
     metafile: true,
-    nodePaths: [join(process.cwd(), 'node_modules')],
+    nodePaths: [...generatedRuntimeNodePaths()],
     banner: {
       js: "import { createRequire as __applik8sCreateRequire } from 'node:module'; const require = __applik8sCreateRequire(import.meta.url);",
     },
@@ -2219,6 +2220,7 @@ function generatedHttpResources(
       { target: contract.executionTarget, namespace: contract.namespace },
     ),
     ...(uniqueHttpObjectStoreBindings(contract).length > 0
+      || applicationHttpUsesObjectStorageLakehouse(contract.graph)
       ? applicationObjectStorageEnvironment(
           contract.graph,
           contract.namespace,
@@ -2758,6 +2760,19 @@ function requiredString(value: unknown, owner: string): string {
 
 function stringValue(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value : undefined;
+}
+
+function applicationHttpUsesObjectStorageLakehouse(graph: ApplicationGraph): boolean {
+  const containsObjectStorageDataset = (value: unknown): boolean => {
+    if (Array.isArray(value)) return value.some(containsObjectStorageDataset);
+    if (!value || typeof value !== 'object') return false;
+    if (Reflect.get(value, 'kind') === 'object-storage-dataset') return true;
+    return Object.values(value).some(containsObjectStorageDataset);
+  };
+  return graph.nodes.some((node) =>
+    node.kind === 'provider'
+    && node.interface === 'LakehouseDataset'
+    && containsObjectStorageDataset(node.config));
 }
 
 function kubernetesName(value: string): string {

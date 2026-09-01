@@ -45,7 +45,11 @@ function applicationProviderQualificationFor(value: unknown) {
 }
 
 function applicationProviderTokenName(token: unknown): string {
-  if (!token || typeof token !== 'object' || typeof Reflect.get(token, 'name') !== 'string') {
+  if (
+    !token
+    || (typeof token !== 'object' && typeof token !== 'function')
+    || typeof Reflect.get(token, 'name') !== 'string'
+  ) {
     throw new Error('Application provider dependency lost its token identity.');
   }
   return Reflect.get(token, 'name') as string;
@@ -366,6 +370,7 @@ export function applicationCallableProviderDependencies(
     const dependencies = [
       ...(isApplicationProviderBinding(callable) ? [callable] : []),
       ...(applicationProviderPrivateRuntimeFor(callable) ? [callable] : []),
+      ...(isApplicationQualifiedProviderToken(callable) ? [callable] : []),
       ...applicationProviderDependenciesFor(callable),
     ];
     for (const dependency of dependencies) {

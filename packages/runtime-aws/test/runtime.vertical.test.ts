@@ -245,13 +245,28 @@ describe('AWS lakehouse runtime', () => {
     const runtime = createAwsApplicationLakehouseDatasetRuntime({
       datasetId: 'retained', bucket: 'retained-bucket', prefix: 'retained', catalogDatabase: 'retained', schemaRevision: 'v1',
       schema: type({ id: 'string' }), cursorKey: 'lifecycle-key'.repeat(3), retainedSnapshots: 1, maximumObjectsPerSnapshot: 1,
+      forceDeleteUnretainedData: true,
       lifecycleLeaseMs: 60_000, now: () => clock,
       s3Client: s3 as unknown as S3Client, glueClient: glue as unknown as GlueClient,
     });
     await runtime.append({ frontier: 'one', rows: [{ id: 'one' }] });
     await runtime.append({ frontier: 'two', rows: [{ id: 'two' }] });
     const current = await runtime.append({ frontier: 'three', rows: [{ id: 'three' }] });
-    expect(glue.tables).toHaveLength(3);
+    s3.objects.set('retained/application-neighbor.json', {
+      etag: 'neighbor',
+      body: '{"owner":"another-resource"}\n',
+    });
+    glue.tables.push({
+      DatabaseName: 'retained',
+      TableInput: {
+        Name: 'retained_snapshot_aaaaaaaaaaaaaaaa',
+        Parameters: {
+          'applik8s.dataset': 'another-dataset',
+          'applik8s.snapshot': 'snapshot_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        },
+      },
+    });
+    expect(glue.tables).toHaveLength(4);
     expect([...s3.objects.keys()].filter((key) => key.includes('/staging/'))).toEqual([]);
 
     const activeLeaseKey = 'retained/staging/lease-00000000-0000-0000-0000-000000000000.json';
@@ -263,20 +278,50 @@ describe('AWS lakehouse runtime', () => {
       })}\n`,
     });
     await expect(runtime.reconcileLifecycle()).resolves.toMatchObject({ state: 'publication-active', deletedObjects: 0, deletedSnapshotArtifacts: 0, deletedCatalogTables: 0 });
-    expect(glue.tables).toHaveLength(3);
+    expect(glue.tables).toHaveLength(4);
 
     clock = new Date(clock.getTime() + 120_000);
     await expect(runtime.reconcileLifecycle()).resolves.toMatchObject({
       state: 'reconciled', retainedSnapshots: 1, retainedObjects: 1,
       deletedObjects: 2, deletedSnapshotArtifacts: 4, deletedCatalogTables: 2, expiredStagingLeases: 1,
     });
-    expect(glue.tables).toHaveLength(1);
+    expect(glue.tables).toHaveLength(2);
+    expect(glue.tables).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        TableInput: expect.objectContaining({
+          Name: 'retained_snapshot_aaaaaaaaaaaaaaaa',
+          Parameters: expect.objectContaining({ 'applik8s.dataset': 'another-dataset' }),
+        }),
+      }),
+    ]));
     expect([...s3.objects.keys()]).toEqual(expect.arrayContaining([
       'retained/authority.json',
+      'retained/application-neighbor.json',
       expect.stringMatching(new RegExp(`retained/manifests/${current.snapshotId}`)),
       expect.stringMatching(new RegExp(`retained/snapshot-links/${current.snapshotId}`)),
     ]));
     expect([...s3.objects.keys()].filter((key) => key.includes('/staging/'))).toEqual([]);
+  });
+
+  it('keeps unretained dataset and catalog resources unless destructive cleanup is explicitly authorized', async () => {
+    const s3 = new MemoryS3();
+    const glue = new MemoryGlue();
+    const runtime = createAwsApplicationLakehouseDatasetRuntime({
+      datasetId: 'retained-default', bucket: 'retained-default-bucket', prefix: 'retained-default', catalogDatabase: 'retained-default', schemaRevision: 'v1',
+      schema: type({ id: 'string' }), cursorKey: 'non-destructive-lifecycle-key'.repeat(2), retainedSnapshots: 1, maximumObjectsPerSnapshot: 1,
+      s3Client: s3 as unknown as S3Client, glueClient: glue as unknown as GlueClient,
+    });
+    await runtime.append({ frontier: 'one', rows: [{ id: 'one' }] });
+    await runtime.append({ frontier: 'two', rows: [{ id: 'two' }] });
+    await runtime.append({ frontier: 'three', rows: [{ id: 'three' }] });
+
+    const receipt = await runtime.reconcileLifecycle();
+    expect(receipt).toMatchObject({
+      state: 'reconciled', destructiveCleanupAuthorized: false,
+      deletedObjects: 0, deletedSnapshotArtifacts: 0, deletedCatalogTables: 0,
+    });
+    expect(glue.tables).toHaveLength(3);
+    expect([...s3.objects.keys()].filter((key) => key.includes('/objects/'))).toHaveLength(3);
   });
 
   it('retains an interrupted publication lease until expiry and then removes its staged state', async () => {
@@ -285,6 +330,7 @@ describe('AWS lakehouse runtime', () => {
     const configuration = {
       datasetId: 'interrupted', bucket: 'interrupted-bucket', prefix: 'interrupted', catalogDatabase: 'interrupted', schemaRevision: 'v1',
       schema: type({ id: 'string' }), cursorKey: 'interrupted-lifecycle-key'.repeat(2), lifecycleLeaseMs: 1_000, now: () => clock,
+      forceDeleteUnretainedData: true,
       s3Client: s3 as unknown as S3Client,
     };
     const failed = createAwsApplicationLakehouseDatasetRuntime({ ...configuration, glueClient: new ConflictingGlue() as unknown as GlueClient });

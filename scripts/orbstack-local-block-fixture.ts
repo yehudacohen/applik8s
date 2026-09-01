@@ -15,7 +15,11 @@ import {
   persistentVolume,
   storageClass,
 } from 'typekro/kubernetes';
-import { rookCephOperatorBootstrap } from 'typekro/rook';
+import {
+  rookCephExternalOperatorSingleNodePlatform,
+  rookCephOperatorBootstrap,
+  rookCephSingleNodePlatform,
+} from 'typekro/rook';
 
 const command = process.argv[2];
 if (command !== 'prepare' && command !== 'cleanup') {
@@ -47,6 +51,7 @@ const options = Object.freeze({
   rookClusterName: 'applik8s-rook',
   rookClusterNamespace: 'applik8s-rook-ceph',
   rookOperatorNamespace: 'applik8s-rook-ceph-operator',
+  rookPlatformControlNamespace: 'applik8s-rook-platform-control',
   image: 'quay.io/ceph/ceph:v20.2.2',
 });
 
@@ -59,6 +64,12 @@ if (kubeConfig.getCurrentContext() !== context) {
 }
 
 const prepareFactory = fixture.prepare.factory('direct', {
+  namespace: options.namespace,
+  waitForReady: true,
+  timeout: 180_000,
+  kubeConfig,
+});
+const repairFactory = fixture.repair.factory('direct', {
   namespace: options.namespace,
   waitForReady: true,
   timeout: 180_000,
@@ -95,6 +106,19 @@ const retainedRookOperatorRecoveryFactory = rookCephOperatorBootstrap.factory(
     kubeConfig,
   },
 );
+const ownedRookPlatformFactory = rookCephSingleNodePlatform.factory('kro', {
+  namespace: options.rookPlatformControlNamespace,
+  waitForReady: true,
+  timeout: 1_200_000,
+  kubeConfig,
+});
+const externalRookPlatformFactory =
+  rookCephExternalOperatorSingleNodePlatform.factory('kro', {
+    namespace: options.rookPlatformControlNamespace,
+    waitForReady: true,
+    timeout: 1_200_000,
+    kubeConfig,
+  });
 
 try {
   if (command === 'prepare') {
@@ -120,12 +144,6 @@ try {
           `Refusing to reuse CephCluster ${options.rookClusterNamespace}/${options.rookClusterName} without the TypeKro single-node-development profile label.`,
         );
       }
-      const phase = objectString(liveRookCluster, 'status', 'phase');
-      if (phase !== 'Ready') {
-        throw new Error(
-          `Retained CephCluster ${options.rookClusterNamespace}/${options.rookClusterName} is ${JSON.stringify(phase ?? 'Unknown')}; run the explicit local-block fixture cleanup before preparing it again.`,
-        );
-      }
       if (existingVolume?.status?.phase !== 'Bound') {
         throw new Error(
           `Ready retained CephCluster ${options.rookClusterNamespace}/${options.rookClusterName} does not own the expected bound PersistentVolume ${options.persistentVolumeName}.`,
@@ -137,9 +155,40 @@ try {
           `Refusing to reuse ${options.persistentVolumeName}: the retained Ceph cluster does not own its claim.`,
         );
       }
+      const repairInstanceName = `repair-${Date.now()}`;
+      const repaired = await repairFactory.deploy({
+        name: repairInstanceName,
+        revision: String(Date.now()),
+      });
+      if (repaired.status.ready !== true) {
+        throw new Error(
+          `Local-block fixture recovery did not report ready: ${JSON.stringify(repaired.status)}`,
+        );
+      }
+      await waitForKubernetesObjectPhase(
+        kubeConfig.makeApiClient(KubernetesObjectApi),
+        {
+          apiVersion: 'ceph.rook.io/v1',
+          kind: 'CephObjectStore',
+          metadata: {
+            name: 'applik8s-object-store',
+            namespace: options.rookClusterNamespace,
+          },
+        },
+        'Ready',
+        600_000,
+      );
+      const repairDeletion = await repairFactory.deleteInstance(
+        repairInstanceName,
+      );
+      if (repairDeletion.status !== 'complete') {
+        throw new Error(
+          `Local-block fixture recovery cleanup did not complete: ${JSON.stringify(repairDeletion)}`,
+        );
+      }
       console.log(JSON.stringify({
         fixture: 'applik8s-v07-orbstack-local-block',
-        action: 'reused',
+        action: 'recovered',
         context,
         status: {
           ready: true,
@@ -206,22 +255,6 @@ try {
     }
   } else {
     const objectApi = kubeConfig.makeApiClient(KubernetesObjectApi);
-    const retainedClusterNamespace = await readOptionalKubernetesObject(
-      objectApi,
-      {
-        apiVersion: 'v1',
-        kind: 'Namespace',
-        metadata: { name: options.rookClusterNamespace, namespace: '' },
-      },
-    );
-    const retainedOperatorNamespace = await readOptionalKubernetesObject(
-      objectApi,
-      {
-        apiVersion: 'v1',
-        kind: 'Namespace',
-        metadata: { name: options.rookOperatorNamespace, namespace: '' },
-      },
-    );
     const retainedRookCluster = await readOptionalKubernetesObject(objectApi, {
       apiVersion: 'ceph.rook.io/v1',
       kind: 'CephCluster',
@@ -253,6 +286,35 @@ try {
         });
       }
     }
+    for (const [label, platformFactory] of [
+      ['external-operator', externalRookPlatformFactory],
+      ['owned-operator', ownedRookPlatformFactory],
+    ] as const) {
+      const platformDeletion = await platformFactory.deleteInstance(
+        options.rookClusterName,
+      );
+      if (platformDeletion.status !== 'complete') {
+        throw new Error(
+          `${label} Rook platform cleanup did not complete: ${JSON.stringify(platformDeletion)}`,
+        );
+      }
+    }
+    const retainedClusterNamespace = await readOptionalKubernetesObject(
+      objectApi,
+      {
+        apiVersion: 'v1',
+        kind: 'Namespace',
+        metadata: { name: options.rookClusterNamespace, namespace: '' },
+      },
+    );
+    const retainedOperatorNamespace = await readOptionalKubernetesObject(
+      objectApi,
+      {
+        apiVersion: 'v1',
+        kind: 'Namespace',
+        metadata: { name: options.rookOperatorNamespace, namespace: '' },
+      },
+    );
     let recoveryOperatorDeployed = false;
     if (retainedClusterNamespace && !retainedOperatorNamespace) {
       const recovered = await retainedRookOperatorRecoveryFactory.deploy({
@@ -413,10 +475,13 @@ try {
 } finally {
   await Promise.all([
     prepareFactory.dispose(),
+    repairFactory.dispose(),
     cleanupFactory.dispose(),
     retainedRookClusterCleanupFactory.dispose(),
     retainedRookOperatorCleanupFactory.dispose(),
     retainedRookOperatorRecoveryFactory.dispose(),
+    ownedRookPlatformFactory.dispose(),
+    externalRookPlatformFactory.dispose(),
   ]);
 }
 
@@ -433,6 +498,7 @@ interface OrbStackLocalBlockFixtureOptions {
   readonly rookClusterName: string;
   readonly rookClusterNamespace: string;
   readonly rookOperatorNamespace: string;
+  readonly rookPlatformControlNamespace: string;
   readonly image: string;
 }
 
@@ -631,6 +697,120 @@ test -s '/run/udev/data/b7:${fixtureOptions.loopDeviceNumber}'`,
     },
   );
 
+  const repair = kubernetesComposition(
+    {
+      name: `${fixtureOptions.name}-repair`,
+      kind: 'Applik8sOrbStackLocalBlockRepair',
+      spec: type({ name: 'string', revision: 'string' }),
+      status: type({ ready: 'boolean', devicePath: 'string' }),
+    },
+    (spec) => {
+      const fixtureNamespace = namespace({
+        id: 'fixtureNamespace',
+        metadata: {
+          name: fixtureOptions.namespace,
+          labels,
+        },
+      });
+      const repairJob = job({
+        id: 'repairJob',
+        metadata: {
+          name: `${fixtureOptions.name}-repair-${spec.revision}`,
+          namespace: fixtureOptions.namespace,
+          labels,
+        },
+        spec: {
+          backoffLimit: 1,
+          template: {
+            metadata: { labels },
+            spec: {
+              nodeName: fixtureOptions.nodeName,
+              restartPolicy: 'Never',
+              containers: [
+                {
+                  name: 'repair',
+                  image: fixtureOptions.image,
+                  securityContext: { privileged: true, runAsUser: 0 },
+                  command: ['/bin/sh', '-ec'],
+                  args: [
+                    `set -eu
+device='${devicePath}'
+backing='${mountedBackingFile}'
+test -f "$backing"
+if [ ! -b "$device" ]; then
+  mknod "$device" b 7 '${fixtureOptions.loopDeviceNumber}'
+fi
+attached="$(losetup -n -O BACK-FILE "$device" 2>/dev/null | xargs || true)"
+if [ -n "$attached" ]; then
+  case "$attached" in
+    *'/${fixtureOptions.name}.img') ;;
+    *) echo "refusing to reuse $device attached to $attached" >&2; exit 1 ;;
+  esac
+else
+  losetup "$device" "$backing"
+fi
+blockdev --rereadpt "$device" || true
+udevadm trigger --action=change --subsystem-match=block
+udevadm settle --timeout=30
+mkdir -p /run/udev/data
+find -L /sys/block -name dev -type f | while IFS= read -r dev_file; do
+  block_sys_device="\${dev_file%/dev}"
+  major_minor="$(cat "$dev_file")"
+  udev_record="/run/udev/data/b$major_minor"
+  if [ ! -s "$udev_record" ]; then
+    temporary_record="$udev_record.applik8s.$$"
+    {
+      printf 'I:0\\n'
+      udevadm info --query=property --path="$block_sys_device" | sed 's/^/E:/'
+      printf 'G:systemd\\nQ:systemd\\nV:1\\n'
+    } > "$temporary_record"
+    chmod 0644 "$temporary_record"
+    mv "$temporary_record" "$udev_record"
+  fi
+  test -s "$udev_record"
+done
+udev_properties="$(udevadm info --query=property --path='/sys/block/loop${fixtureOptions.loopDeviceNumber}')"
+printf '%s\\n' "$udev_properties" | grep -Fx 'DEVNAME=${devicePath}'
+test -s '/run/udev/data/b7:${fixtureOptions.loopDeviceNumber}'`,
+                  ],
+                  volumeMounts: [
+                    { name: 'dev', mountPath: '/dev' },
+                    { name: 'sys', mountPath: '/sys' },
+                    { name: 'udev', mountPath: '/run/udev' },
+                    { name: 'data', mountPath: '/host-data' },
+                  ],
+                },
+              ],
+              volumes: [
+                { name: 'dev', hostPath: { path: '/dev', type: 'Directory' } },
+                { name: 'sys', hostPath: { path: '/sys', type: 'Directory' } },
+                {
+                  name: 'udev',
+                  hostPath: {
+                    path: '/run/udev',
+                    type: 'DirectoryOrCreate',
+                  },
+                },
+                {
+                  name: 'data',
+                  hostPath: {
+                    path: fixtureOptions.hostDataDirectory,
+                    type: 'DirectoryOrCreate',
+                  },
+                },
+              ],
+            },
+          },
+        },
+      });
+      repairJob.dependsOn(fixtureNamespace);
+      return {
+        ready: repairJob.status.succeeded === 1,
+        devicePath,
+      };
+    },
+  );
+
   const cleanup = kubernetesComposition(
     {
       name: `${fixtureOptions.name}-cleanup`,
@@ -756,6 +936,7 @@ rm -rf '${mountedRookDataDirectory}'`,
 
   return Object.freeze({
     prepare,
+    repair,
     cleanup,
     retainedRookClusterCleanup,
     retainedRookOperatorCleanup,
@@ -804,6 +985,31 @@ async function waitForKubernetesObjectAbsent(
   }
   throw new Error(
     `Timed out waiting for ${identity.kind ?? 'resource'} ${identity.metadata.name} to disappear.`,
+  );
+}
+
+async function waitForKubernetesObjectPhase(
+  api: KubernetesObjectApi,
+  identity: KubernetesObject & {
+    readonly metadata: { readonly name: string; readonly namespace: string };
+  },
+  expectedPhase: string,
+  timeoutMs: number,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  let lastPhase: string | undefined;
+  while (Date.now() < deadline) {
+    const resource = await readOptionalKubernetesObject(api, identity);
+    lastPhase = resource
+      ? objectString(resource, 'status', 'phase')
+      : undefined;
+    if (lastPhase === expectedPhase) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+  }
+  throw new Error(
+    `Timed out waiting for ${identity.kind ?? 'resource'} ${identity.metadata.namespace}/${identity.metadata.name} to report phase ${expectedPhase}; last phase was ${JSON.stringify(lastPhase ?? 'Absent')}.`,
   );
 }
 

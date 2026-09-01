@@ -8,6 +8,9 @@ spec:
   hostname: chirp.localhost
   profile: starter
   version: 0.7.0-dev
+  generation:
+    endpoint: https://openrouter.ai/api/v1
+    defaultProfile: nvidia/nemotron-3-ultra-550b-a55b:free
   features:
     automatedAccounts: true
     analytics: true

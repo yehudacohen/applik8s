@@ -147,7 +147,7 @@ function recordIntegratedKubernetesManagedModelProviders(
       name: 'ManagedModelStore',
       stability: 'stable',
       interface: 'ManagedModelStore',
-      implementation: 'ManagedModelStore.kubernetes',
+      implementation: 'kubernetes-managed-model-store',
       config: { kind: 'kubernetes-managed-model-store', cluster },
     });
   }
@@ -158,7 +158,7 @@ function recordIntegratedKubernetesManagedModelProviders(
       name: 'OperatorRuntime',
       stability: 'stable',
       interface: 'OperatorRuntime',
-      implementation: 'OperatorRuntime.kubernetes',
+      implementation: 'kubernetes-operator-runtime',
       config: { kind: 'kubernetes-operator-runtime', cluster },
     });
   }

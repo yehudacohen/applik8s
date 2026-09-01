@@ -15,6 +15,7 @@ import { Route as ModerationRouteImport } from './routes/moderation'
 import { Route as ExploreRouteImport } from './routes/explore'
 import { Route as BookmarksRouteImport } from './routes/bookmarks'
 import { Route as AutomationRouteImport } from './routes/automation'
+import { Route as AnalyticsRouteImport } from './routes/analytics'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as ProfileHandleRouteImport } from './routes/profile.$handle'
 
@@ -48,6 +49,11 @@ const AutomationRoute = AutomationRouteImport.update({
   path: '/automation',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AnalyticsRoute = AnalyticsRouteImport.update({
+  id: '/analytics',
+  path: '/analytics',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
@@ -61,6 +67,7 @@ const ProfileHandleRoute = ProfileHandleRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/analytics': typeof AnalyticsRoute
   '/automation': typeof AutomationRoute
   '/bookmarks': typeof BookmarksRoute
   '/explore': typeof ExploreRoute
@@ -71,6 +78,7 @@ export interface FileRoutesByFullPath {
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/analytics': typeof AnalyticsRoute
   '/automation': typeof AutomationRoute
   '/bookmarks': typeof BookmarksRoute
   '/explore': typeof ExploreRoute
@@ -82,6 +90,7 @@ export interface FileRoutesByTo {
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/analytics': typeof AnalyticsRoute
   '/automation': typeof AutomationRoute
   '/bookmarks': typeof BookmarksRoute
   '/explore': typeof ExploreRoute
@@ -94,6 +103,7 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
+    | '/analytics'
     | '/automation'
     | '/bookmarks'
     | '/explore'
@@ -104,6 +114,7 @@ export interface FileRouteTypes {
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
+    | '/analytics'
     | '/automation'
     | '/bookmarks'
     | '/explore'
@@ -114,6 +125,7 @@ export interface FileRouteTypes {
   id:
     | '__root__'
     | '/'
+    | '/analytics'
     | '/automation'
     | '/bookmarks'
     | '/explore'
@@ -125,6 +137,7 @@ export interface FileRouteTypes {
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  AnalyticsRoute: typeof AnalyticsRoute
   AutomationRoute: typeof AutomationRoute
   BookmarksRoute: typeof BookmarksRoute
   ExploreRoute: typeof ExploreRoute
@@ -178,6 +191,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AutomationRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/analytics': {
+      id: '/analytics'
+      path: '/analytics'
+      fullPath: '/analytics'
+      preLoaderRoute: typeof AnalyticsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/': {
       id: '/'
       path: '/'
@@ -197,6 +217,7 @@ declare module '@tanstack/react-router' {
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  AnalyticsRoute: AnalyticsRoute,
   AutomationRoute: AutomationRoute,
   BookmarksRoute: BookmarksRoute,
   ExploreRoute: ExploreRoute,

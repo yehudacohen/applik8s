@@ -4,6 +4,7 @@ import type {
   ApplicationProviderMaturity,
   ApplicationSourceProvenance,
 } from './application-foundation.js';
+import type { JsonValue } from './common.js';
 import { applicationProviderIdentity } from './application-foundation.js';
 import { canonicalJsonV1String } from './canonical-json.js';
 
@@ -48,6 +49,11 @@ export interface ApplicationImplementationDeclaration {
   readonly provider: ApplicationProviderConstructorReference;
   readonly identity: ApplicationImplementationIdentitySource;
   readonly provenance: ApplicationSourceProvenance;
+  /**
+   * Canonical, Secret-safe provider configuration. Environment-backed values
+   * remain typed references; resolved Secret material is never admissible.
+   */
+  readonly configuration: JsonValue;
   /** Digest of configuration shape and non-secret values; Secret values are forbidden. */
   readonly configurationDigest: string;
   readonly configurationSources: readonly {
@@ -57,6 +63,8 @@ export interface ApplicationImplementationDeclaration {
   }[];
   readonly guarantees: readonly string[];
   readonly runtimeAdapter: string;
+  /** Physical deployment family selected by this concrete implementation. */
+  readonly deploymentFamily?: 'aws' | 'kubernetes';
   readonly deploymentContributor?: string;
   readonly readiness: string;
   readonly lifecycle: 'application' | 'shared' | 'external' | 'retained';
@@ -115,9 +123,11 @@ export interface ApplicationImplementationDependencyPlan {
 export interface ApplicationImplementationPlanNode {
   readonly id: ApplicationCanonicalIdentity['id'];
   readonly identity: ApplicationCapabilityImplementationIdentity;
+  readonly configuration: JsonValue;
   readonly configurationSources: ApplicationImplementationDeclaration['configurationSources'];
   readonly guarantees: readonly string[];
   readonly runtimeAdapter: string;
+  readonly deploymentFamily?: 'aws' | 'kubernetes';
   readonly deploymentContributor?: string;
   readonly readiness: string;
   readonly lifecycle: ApplicationImplementationDeclaration['lifecycle'];
@@ -310,7 +320,7 @@ export function resolveApplicationImplementationPlan(
           dependency.slot,
         );
       }
-      if (capabilityKey(targetDeclaration.capability) !== capabilityKey(dependency.requirement)) {
+      if (!implementationSatisfiesCapability(targetDeclaration.capability, dependency.requirement)) {
         throw resolutionError(
           'PROVIDER_DEPENDENCY_INCOMPATIBLE',
           `Implementation ${targetKey} satisfies ${capabilityKey(targetDeclaration.capability)}, not required ${capabilityKey(dependency.requirement)}.`,
@@ -377,7 +387,7 @@ export function resolveApplicationImplementationPlan(
 
   const bindings = input.bindings.map((binding) => {
     const declaration = declarations.get(binding.implementation) as ApplicationImplementationDeclaration;
-    if (capabilityKey(declaration.capability) !== capabilityKey(binding.capability)) {
+    if (declaration.capability.interface !== binding.capability.interface) {
       throw resolutionError(
         'PROVIDER_DEPENDENCY_INCOMPATIBLE',
         `Profile binding ${binding.id} selects ${capabilityKey(declaration.capability)} for ${capabilityKey(binding.capability)}.`,
@@ -397,9 +407,11 @@ export function resolveApplicationImplementationPlan(
     return {
       id: identity.canonical.id,
       identity,
+      configuration: declaration.configuration,
       configurationSources: sortedConfigurationSources(declaration.configurationSources),
       guarantees: [...new Set(declaration.guarantees)].sort(),
       runtimeAdapter: declaration.runtimeAdapter,
+      ...(declaration.deploymentFamily ? { deploymentFamily: declaration.deploymentFamily } : {}),
       ...(declaration.deploymentContributor ? { deploymentContributor: declaration.deploymentContributor } : {}),
       readiness: declaration.readiness,
       lifecycle: declaration.lifecycle,
@@ -585,6 +597,15 @@ function assertAcyclic(edges: readonly ApplicationImplementationDependencyPlan[]
 
 function capabilityKey(capability: ApplicationCapabilityReference): string {
   return `${capability.interface}${capability.qualifier ? `#${capability.qualifier}` : ''}`;
+}
+
+/** A qualified implementation remains a valid private dependency for its base capability. */
+function implementationSatisfiesCapability(
+  implementation: ApplicationCapabilityReference,
+  requirement: ApplicationCapabilityReference,
+): boolean {
+  return implementation.interface === requirement.interface
+    && (requirement.qualifier === undefined || implementation.qualifier === requirement.qualifier);
 }
 
 function dependencyPlanId(consumer: string, slot: string, dependency: string): string {

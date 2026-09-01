@@ -129,7 +129,7 @@ describe('generated ApplicationHost', () => {
           spec: {
             containers: [expect.objectContaining({
               image: expect.stringMatching(/^applik8s\.local\/guestbook-web:sha256-/),
-              imagePullPolicy: 'Never',
+              imagePullPolicy: 'IfNotPresent',
               command: ['node', '/app/server/index.mjs'],
               startupProbe: { httpGet: { path: '/__applik8s/v1/healthz', port: 'http' }, periodSeconds: 2, failureThreshold: 30 },
               readinessProbe: { httpGet: { path: '/__applik8s/v1/readyz', port: 'http' }, periodSeconds: 5, failureThreshold: 6 },
@@ -217,7 +217,7 @@ describe('generated ApplicationHost', () => {
     expect(resources.find((resource) => resource.kind === 'Deployment')).toMatchObject({
       spec: { template: { spec: { containers: [expect.objectContaining({ env: expect.arrayContaining([
         { name: 'APPLIK8S_OBJECT_STORAGE_ENABLED', value: 'true' },
-        { name: 'APPLIK8S_OBJECT_STORAGE_BUCKET', value: 'guestbook-media' },
+        { name: 'APPLIK8S_OBJECT_STORAGE_BUCKET', valueFrom: { configMapKeyRef: { name: 'guestbook-media', key: 'BUCKET_NAME' } } },
         { name: 'APPLIK8S_OBJECT_STORAGE_REGION', value: 'us-east-1' },
         { name: 'APPLIK8S_OBJECT_STORAGE_HOST', valueFrom: { configMapKeyRef: { name: 'guestbook-media', key: 'BUCKET_HOST' } } },
         { name: 'APPLIK8S_OBJECT_STORAGE_PORT', valueFrom: { configMapKeyRef: { name: 'guestbook-media', key: 'BUCKET_PORT' } } },

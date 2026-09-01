@@ -26,6 +26,11 @@ const compilerUrl = workspaceRoot
   : import.meta.resolve('@applik8s/compiler');
 // static-import-exception: the isolated build host selects workspace TypeScript or published JavaScript without bundling a second compiler copy.
 const { compileTypeKroComposition, createCompilerPipeline } = await import(compilerUrl);
+const installationSpec = options.installationSpecPath
+  ? await readInstallationSpec(
+      resolve(cwd, options.installationSpecPath),
+    )
+  : undefined;
 const connectionBindings = options.connectionBindings
   ? JSON.parse(await readFile(resolve(cwd, options.connectionBindings), 'utf8'))
   : undefined;
@@ -42,6 +47,10 @@ const compileRequest = {
     : options.localDevelopment
       ? { executionTarget: 'local' }
       : {}),
+  ...(options.profile
+    ? { profile: options.profile, configuration: process.env }
+    : {}),
+  ...(installationSpec ? { installationSpec } : {}),
   runtimeVersionRange: '^0.1.0',
   handlerAbiVersion: 'applik8s.handler/v1alpha1',
   adapter: 'wasmComponent',
@@ -102,6 +111,17 @@ async function fileExists(path) {
   } catch {
     return false;
   }
+}
+
+async function readInstallationSpec(path) {
+  const sourceUrl = new URL('./application-deployment-instance-files.ts', import.meta.url);
+  const moduleUrl = await fileExists(fileURLToPath(sourceUrl))
+    ? sourceUrl
+    : new URL('./application-deployment-instance-files.js', import.meta.url);
+  // static-import-exception: The source runner and published runner have
+  // different extensions; select the one that exists without two code paths.
+  const { readExplicitApplicationInstallationSpec } = await import(moduleUrl.href); // static-import-exception: source/published extension selection
+  return readExplicitApplicationInstallationSpec(path);
 }
 
 function run(command, args) {

@@ -7,6 +7,9 @@ spec:
   name: chirp-dedicated
   hostname: chirp.example.com
   profile: dedicated
+  generation:
+    endpoint: https://openrouter.ai/api/v1
+    defaultProfile: nvidia/nemotron-3-ultra-550b-a55b:free
   version: 0.7.0-dev
   features:
     automatedAccounts: true
@@ -27,6 +30,8 @@ spec:
   identity:
     mode: ory
     issuer: https://identity.example.com
+    # Managed Ory redirects browser flows through the application-owned UI.
+    browserEndpoint: https://chirp.example.com
     authorizationVersion: chirp-production-policy-v1
     infrastructure:
       mode: managed-production

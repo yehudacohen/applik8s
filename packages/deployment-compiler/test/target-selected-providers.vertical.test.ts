@@ -8,6 +8,37 @@ import {
 } from '../src/index.js';
 
 describe('v0.8 target-selected provider lowering', () => {
+  it('materializes installation references after an implementation plan selects a concrete provider', () => {
+    const provider: ApplicationProviderNode = {
+      id: 'provider.generation',
+      kind: 'provider',
+      name: 'generation',
+      stability: 'stable',
+      interface: 'StructuredGeneration',
+      implementation: 'structured-generation-http',
+      config: {
+        endpoint: '${schema.spec.generation.endpoint}',
+        defaultProfile: '${schema.spec.generation.defaultProfile}',
+      },
+    };
+
+    expect(resolveApplicationProviderForTarget(provider, {
+      ...context('aws'),
+      installationSpec: {
+        generation: {
+          endpoint: 'https://generation.example.com/v1',
+          defaultProfile: 'safe-v1',
+        },
+      },
+    })).toMatchObject({
+      implementation: 'structured-generation-http',
+      config: {
+        endpoint: 'https://generation.example.com/v1',
+        defaultProfile: 'safe-v1',
+      },
+    });
+  });
+
   it('ignores the callable facade marker beside authoritative profile branches', () => {
     const provider: ApplicationProviderNode = {
       id: 'provider.source-retriever.v1alpha1.research',
@@ -127,6 +158,38 @@ describe('v0.8 target-selected provider lowering', () => {
     expect(externalContribution.runtimeAccessTargets).toEqual([
       expect.objectContaining({ target: 'external', port: 443 }),
     ]);
+  });
+
+  it('records bounded dynamic source retrieval as an explicit external contract', () => {
+    const contributor = builtinApplicationDeploymentContributors().find(
+      (candidate) => candidate.interface === 'SourceRetriever'
+        && candidate.implementation === 'bounded-http-source-retriever',
+    );
+    const provider: ApplicationProviderNode = {
+      id: 'provider.source-retriever.v1alpha1.research',
+      kind: 'provider',
+      name: 'SourceRetriever',
+      stability: 'stable',
+      interface: 'SourceRetriever',
+      implementation: 'bounded-http-source-retriever',
+      config: {
+        provider: 'bounded-http',
+        kind: 'bounded-http-source-retriever',
+        mode: 'live',
+      },
+    };
+
+    expect(contributor?.contribute(provider, context('kubernetes')).runtimeAccessTargets)
+      .toEqual([expect.objectContaining({
+        capabilityId: provider.id,
+        target: 'external',
+        protocol: 'TCP',
+        destination: {
+          kind: 'externalContract',
+          responsibility: 'bounded source retrieval destinations admitted by the provider URL policy',
+        },
+        fidelity: 'not-introspectable',
+      })]);
   });
 
   it.each([

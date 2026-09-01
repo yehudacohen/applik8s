@@ -3,6 +3,7 @@ import { app } from '../domain-app';
 import { Database } from '../providers/database';
 import { recordEngagementBatch } from '../domain/engagement';
 import { FollowChanged, ReactionChanged } from '../domain/events';
+import { historicalEngagementDataset } from '../providers';
 
 export const FollowChanges = app.stream(FollowChanged, {
   database: Database,
@@ -44,6 +45,32 @@ export const ReactionAnalytics = ReactionChanges.project(
     });
   },
 );
+
+export const HistoricalEngagementRow = type({
+  reactionId: 'string',
+  accountId: 'string',
+  postId: 'string',
+  kind: "'like' | 'repost'",
+  state: "'active' | 'deleted'",
+  changedAt: 'string',
+});
+
+/**
+ * Immutable product history. The same declaration publishes to DuckDB for
+ * local development and S3/Glue for AWS or hybrid Kubernetes profiles.
+ * ClickHouse remains the rebuildable operational aggregate, so the two stores
+ * have distinct, honest lifecycle authority.
+ */
+export const HistoricalEngagementPublication = ReactionChanged.publish(
+  historicalEngagementDataset,
+  HistoricalEngagementRow,
+  function appendHistoricalEngagement(event, output) {
+    return output.append(event);
+  },
+).partitionBy((row) => ({
+  postId: row.postId,
+  month: row.changedAt.slice(0, 7),
+}));
 
 /**
  * The flagship batch path freezes exact per-post membership before invoking

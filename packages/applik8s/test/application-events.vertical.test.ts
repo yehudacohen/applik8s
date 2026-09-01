@@ -142,6 +142,18 @@ describe('application-native Kubernetes lifecycle handlers', () => {
       activation: 'providerNative',
     });
     expect(node && node.kind === 'crd' ? node.managed?.reconcile?.handlerSource : undefined).toContain('workspace.status.update');
+    expect(applicationGraphFor(application.composition)?.nodes).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: 'provider',
+        interface: 'ManagedModelStore',
+        implementation: 'kubernetes-managed-model-store',
+      }),
+      expect.objectContaining({
+        kind: 'provider',
+        interface: 'OperatorRuntime',
+        implementation: 'kubernetes-operator-runtime',
+      }),
+    ]));
   });
 
   it('internalizes narrowly scoped tracking-finalizer authority for resource-native handlers', () => {

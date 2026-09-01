@@ -1,9 +1,12 @@
+// typecast-file-boundary: Test fixtures intentionally narrow structural DSL
+// values to exercise the compiler's public configuration boundary.
 import { describe, expect, it } from 'vitest';
 import {
   applicationConfigurationProvenance,
   applicationConfigurationValueForDigest,
 } from '../src/application-configuration.js';
 import {
+  ContainerRegistry,
   config,
   secret,
 } from '../src/index.js';
@@ -70,6 +73,23 @@ describe('application configuration provenance', () => {
     expect(() => applicationConfigurationProvenance(cyclic)).toThrow(/must not contain cycles/u);
   });
 
+  it('preserves typed installation references in inspectable provider configuration', () => {
+    const namespace = {
+      [Symbol.for('TypeKro.KubernetesRef')]: true,
+      resourceId: '__schema__',
+      fieldPath: 'spec.name',
+    };
+    const replicas = {
+      [Symbol.for('TypeKro.CelExpression')]: true,
+      expression: 'schema.spec.capacity.replicas',
+    };
+
+    expect(applicationConfigurationValueForDigest({ namespace, replicas })).toEqual({
+      namespace: '${schema.spec.name}',
+      replicas: '${schema.spec.capacity.replicas}',
+    });
+  });
+
   it('canonicalizes qualified provider handles without traversing callable token methods', () => {
     const binding = {
       kind: 'applicationProvider',
@@ -128,6 +148,25 @@ describe('application configuration provenance', () => {
           },
         },
       },
+    });
+  });
+
+  it('allows required configuration bindings in Kubernetes-scoped provider identities', () => {
+    const namespace = config.env('APPLICATION_NAMESPACE') as unknown as string;
+    const registry = ContainerRegistry.harbor({
+      endpoint: ContainerRegistry.origin('https://registry.example.com'),
+      project: namespace,
+      pushCredentials: {
+        apiVersion: 'v1', kind: 'Secret', namespace,
+        name: 'registry-push', dockerConfigJsonKey: '.dockerconfigjson',
+      },
+      pullSecret: {
+        apiVersion: 'v1', kind: 'Secret', namespace, name: 'registry-pull',
+      },
+    });
+
+    expect(applicationConfigurationProvenance(registry)).toContainEqual({
+      kind: 'config', reference: 'APPLICATION_NAMESPACE', required: true,
     });
   });
 });

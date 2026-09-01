@@ -1,5 +1,8 @@
 // typecast-file-boundary: Configuration normalization recursively validates the supported canonical JSON algebra before restoring its closed public type.
-import type { JsonValue } from '@applik8s/core';
+import {
+  adaptApplicationGraphCanonicalJsonV1,
+  type JsonValue,
+} from '@applik8s/core';
 
 export const applicationConfigurationBindingVersion =
   'applik8s.configurationBinding/v1alpha1' as const;
@@ -205,6 +208,8 @@ function normalizeConfigurationValue(
   if (typeof value !== 'object') {
     throw new TypeError(`Provider configuration cannot contain ${typeof value}.`);
   }
+  const graphReference = adaptApplicationGraphCanonicalJsonV1(value);
+  if (typeof graphReference === 'string') return graphReference;
   if (isApplicationConfigurationBinding(value)) {
     return {
       apiVersion: value.apiVersion,

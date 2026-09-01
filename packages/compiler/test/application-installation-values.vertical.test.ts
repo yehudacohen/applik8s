@@ -3,9 +3,88 @@
 import type { ApplicationGraph } from '@applik8s/core';
 import { describe, expect, test } from 'vitest';
 import { applicationGraphAllConditions, applicationGraphBooleanCondition, applicationGraphInterpolate, applicationGraphJsonStringArray, applicationGraphServiceHost, applicationGraphStringValue, applicationKroIncludeWhen } from '../src/application-installation-values.js';
+import {
+  materializeApplicationInstallationValue,
+  materializeInstallationComposition,
+} from '../src/application-deployment-graph.js';
 import { injectGeneratedResourcesIntoApplicationRgd } from '../src/pipeline/application-artifacts.js';
 
 describe('installation-derived compiler values', () => {
+  test('concretizes profile execution identities before generated artifact validation', async () => {
+    const graph = {
+      metadata: { name: 'chirp' },
+      nodes: [{
+        id: 'workflow.rebuild',
+        kind: 'workflow',
+        name: 'rebuild',
+        namespace: {
+          [Symbol.for('TypeKro.KubernetesRef')]: true,
+          resourceId: '__schema__',
+          fieldPath: 'spec.name',
+        },
+        storage: {
+          secret: {
+            expression: 'schema.spec.providers.storage.secretName',
+          },
+          secretNamespace: '${schema.spec.name}',
+        },
+      }],
+      edges: [],
+    };
+
+    await expect(materializeApplicationInstallationValue(graph, {
+      name: 'chirp-system',
+      providers: { storage: { secretName: 'chirp-storage' } },
+    })).resolves.toMatchObject({
+      nodes: [{
+        namespace: 'chirp-system',
+        storage: {
+          secret: 'chirp-storage',
+          secretNamespace: 'chirp-system',
+        },
+      }],
+    });
+    expect(graph.nodes[0]?.namespace).toMatchObject({
+      resourceId: '__schema__',
+      fieldPath: 'spec.name',
+    });
+  });
+
+  test('uses TypeKro evaluation for a concrete validation view while preserving resource expressions', async () => {
+    const symbolic = {
+      resources: [{
+        apiVersion: 'v1',
+        kind: 'Secret',
+        metadata: {
+          namespace: '${schema.spec.name}',
+          name: '${schema.spec.profile == "dedicated" ? "managed" : schema.spec.external.name}',
+        },
+        data: {
+          observed: '${database.status.connection}',
+          selected: {
+            expression: 'schema.spec.profile == "dedicated" ? "yes" : "no"',
+          },
+        },
+      }],
+      status: {},
+      clusterApiPrerequisites: [],
+    } as const;
+    const concrete = await materializeInstallationComposition(symbolic, {
+      name: 'chirp-dedicated',
+      profile: 'dedicated',
+      external: { name: 'unused' },
+    });
+    expect(concrete.resources[0]?.metadata).toEqual({
+      namespace: 'chirp-dedicated',
+      name: 'managed',
+    });
+    expect(concrete.resources[0]?.data).toEqual({
+      observed: '${database.status.connection}',
+      selected: 'yes',
+    });
+    expect(symbolic.resources[0]?.metadata.namespace).toBe('${schema.spec.name}');
+  });
+
   test('preserves live and JSON-normalized TypeKro references', () => {
     expect(applicationGraphStringValue({ expression: 'schema.spec.name' })).toBe(`$${'{schema.spec.name}'}`);
     expect(applicationGraphStringValue({

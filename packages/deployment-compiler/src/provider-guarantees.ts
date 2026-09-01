@@ -324,7 +324,7 @@ const localProviders: Readonly<Record<string, readonly string[]>> = {
   StructuredGeneration: ['structured-generation-deterministic', 'structured-generation-http'],
   WorkflowEngine: ['hatchet'],
   ApplicationHost: ['local-process'],
-  Scheduler: ['local-scheduler', 'hatchet-scheduler'],
+  Scheduler: ['local-scheduler', 'hatchet-scheduler', 'postgres-scheduler'],
   Observability: ['local-otel', 'otlp'],
   LakehouseDataset: ['duckdb-dataset'],
   LakehouseQuery: ['duckdb-queries'],
@@ -339,8 +339,9 @@ const awsProviders: Readonly<Record<string, readonly string[]>> = {
   EventLog: ['kinesis'],
   Queue: ['sqs'],
   ObjectStorage: ['s3'],
+  AnalyticalDatabase: ['postgres-analytics'],
   ApplicationHost: ['ecs-fargate'],
-  Scheduler: ['eventbridge-scheduler'],
+  Scheduler: ['eventbridge-scheduler', 'postgres-scheduler'],
   HttpExposure: ['alb'],
   DnsPublication: ['route53'],
   Certificate: ['acm'],
@@ -348,6 +349,7 @@ const awsProviders: Readonly<Record<string, readonly string[]>> = {
   LakehouseDataset: ['s3-dataset'],
   LakehouseQuery: ['athena-queries'],
   WorkflowEngine: ['hatchet'],
+  StructuredGeneration: ['structured-generation-deterministic', 'structured-generation-http'],
   ActorRuntime: ['celld-actors', 'deterministic-local-actors'],
   AI: ['envoy-ai-gateway'],
   Search: ['postgres-search'],
@@ -355,6 +357,8 @@ const awsProviders: Readonly<Record<string, readonly string[]>> = {
   PaymentProvider: ['local-simulated', 'stripe'],
   JobRuntime: ['aws-job-runtime'],
   FiniteExecutionHost: ['aws-finite-execution-host'],
+  ManagedModelStore: ['postgres-managed-model-store'],
+  OperatorRuntime: ['distributed-operator-runtime'],
 };
 
 /**
@@ -382,6 +386,9 @@ const kubernetesProviders: Readonly<Record<string, readonly string[]>> = {
   OAuthAuthorizationServer: ['oauth-authorization-server'],
   PaymentProvider: ['local-simulated', 'stripe'],
   Search: ['opensearch', 'postgres-search'],
+  WebSearch: ['web-search-deterministic', 'searxng'],
+  SourceRetriever: ['source-retriever-deterministic', 'bounded-http-source-retriever'],
+  ResearchEvidence: ['research-evidence-memory', 'research-evidence-postgres'],
   StructuredGeneration: [
     'structured-generation-deterministic',
     'structured-generation-http',
@@ -390,18 +397,20 @@ const kubernetesProviders: Readonly<Record<string, readonly string[]>> = {
   HttpExposure: ['ingress', 'node-port'],
   DnsPublication: ['external-dns'],
   Certificate: ['cert-manager'],
-  Scheduler: ['kubernetes-cronjob-scheduler', 'hatchet-scheduler'],
+  Scheduler: ['kubernetes-cronjob-scheduler', 'hatchet-scheduler', 'postgres-scheduler'],
   WorkflowEngine: ['hatchet'],
   Observability: ['clickstack', 'otlp'],
   // Kubernetes workloads can consume externally managed S3/Athena through
   // workload identity or explicit Secret projections. The provider remains
   // external-controller owned; support here records the bounded runtime
   // contract rather than claiming Kubernetes lifecycle ownership of AWS.
-  LakehouseDataset: ['s3-dataset'],
-  LakehouseQuery: ['athena-queries'],
+  LakehouseDataset: ['s3-dataset', 'object-storage-dataset'],
+  LakehouseQuery: ['athena-queries', 'object-storage-queries'],
   ActorRuntime: ['celld-actors'],
   JobRuntime: ['kubernetes-job-runtime'],
   FiniteExecutionHost: ['kubernetes-finite-execution-host'],
+  ManagedModelStore: ['postgres-managed-model-store', 'kubernetes-managed-model-store'],
+  OperatorRuntime: ['distributed-operator-runtime', 'kubernetes-operator-runtime'],
 };
 
 function providerMaturity(target: ApplicationDeploymentTargetKind, stability: ApplicationProviderNode['stability']): ApplicationProviderGuaranteeManifest['maturity'] {
@@ -576,7 +585,7 @@ function scheduleProviderFindings(
         message: `Schedule ${schedule.definition.id} selects hatchet-scheduler, whose maintained provider projection is qualified only for local and Kubernetes targets.`,
       }];
     }
-    if (!['local-scheduler', 'eventbridge-scheduler', 'kubernetes-cronjob-scheduler', 'hatchet-scheduler'].includes(implementation)) {
+    if (!['local-scheduler', 'eventbridge-scheduler', 'kubernetes-cronjob-scheduler', 'hatchet-scheduler', 'postgres-scheduler'].includes(implementation)) {
       return [{
         ...details,
         code: 'SCHEDULE_PROVIDER_UNIMPLEMENTED' as const,
@@ -610,6 +619,7 @@ function scheduleProviderFindings(
       && !schedule.definition.cron
       && !schedule.definition.every;
     if (implementation !== 'local-scheduler'
+      && implementation !== 'postgres-scheduler'
       && !exactHatchetOneTime
       && schedule.definition.requirements.precision === 'second') {
       findings.push({
@@ -635,7 +645,9 @@ function scheduleProviderFindings(
         message: `Schedule ${schedule.definition.id} permits ${schedule.definition.maximumLatenessSeconds}s lateness, but Kubernetes CronJob reconciliation cannot reliably preserve a starting deadline below 10 seconds.`,
       });
     }
-    if (implementation !== 'local-scheduler' && schedule.definition.misfires === 'all-bounded') {
+    if (implementation !== 'local-scheduler'
+      && implementation !== 'postgres-scheduler'
+      && schedule.definition.misfires === 'all-bounded') {
       findings.push({
         ...details,
         code: 'SCHEDULE_MISFIRE_UNSUPPORTED',

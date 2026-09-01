@@ -9,6 +9,7 @@ import type {
   ApplicationCommandNode,
   ApplicationEventNode,
   ApplicationGraph,
+  ApplicationSagaNode,
   ApplicationStreamNode,
   ApplicationTaskHandlerNode,
   ApplicationWorkflowHandlerNode,
@@ -97,7 +98,11 @@ export function generatedWorkerSource(
   contract: WorkflowContract,
   executionTarget: ApplicationRuntimeExecutionTarget = 'kubernetes',
 ): string {
-  const handlers = [...contract.tasks.map((entry) => entry.handler), ...contract.workflows.map((entry) => entry.handler)];
+  const handlers = [
+    ...contract.tasks.map((entry) => entry.handler),
+    ...contract.workflows.map((entry) => entry.handler),
+    ...contract.sagas,
+  ];
   const handlerImports = handlers
     .map((handler) => `import { createHandler as ${handlerVariable(handler.id)} } from ${JSON.stringify(`./${handlerModuleFile(handler.id)}`)};`)
     .concat(contract.tasks.flatMap(({ handler }) => handler.operationPrincipalSource
@@ -337,10 +342,55 @@ const ${jsName(workflow.id)} = hatchet.durableTask({
   },
 });`;
   }).join('\n');
-  const declarationNames = [...contract.tasks.map(({ task }) => jsName(task.id)), ...contract.workflows.map(({ workflow }) => jsName(workflow.id))];
+  const sagaDeclarations = contract.sagas.map((saga) => `
+const ${jsName(saga.id)} = hatchet.task({
+  name: ${JSON.stringify(saga.name)},
+  retries: 8,
+  backoff: { factor: 2, maxSeconds: 60 },
+  executionTimeout: ${JSON.stringify(`${saga.recoveryDeadlineSeconds}s`)},
+  scheduleTimeout: ${JSON.stringify(`${Math.max(saga.recoveryDeadlineSeconds, saga.deadlineSeconds)}s`)},
+  fn: async (transportInput, context) => {
+    const delivery = workflowDelivery(transportInput, context);
+    return runApplicationTelemetryBoundary(
+      workflowTelemetryBoundary(context, 'task', ${JSON.stringify(saga.id)}, ${JSON.stringify(saga.name)}, delivery.metadata),
+      async () => {
+        const validInput = validate(${JSON.stringify(saga.contract.input.jsonSchema)}, delivery.input, ${JSON.stringify(`${saga.name}.input`)});
+        const admitted = await canonicalWorkflowAdmission(context, ${JSON.stringify(saga.id)}, ${JSON.stringify(saga.name)}, delivery.metadata);
+        const authoredHandler = ${handlerVariable(saga.id)}({});
+        const definition = Object.freeze({
+          protocol: 'applik8s.saga/v1alpha1',
+          id: ${JSON.stringify(saga.name)},
+          name: ${JSON.stringify(saga.contract.name)},
+          version: ${JSON.stringify(saga.contract.version)},
+          contract: Object.freeze({
+            input: runtimeJsonSchema(${JSON.stringify(saga.contract.input.jsonSchema)}, ${JSON.stringify(`${saga.name}.input`)}),
+            output: runtimeJsonSchema(${JSON.stringify(saga.contract.output.jsonSchema)}, ${JSON.stringify(`${saga.name}.output`)}),
+          }),
+          options: Object.freeze({
+            deadline: ${JSON.stringify(`${saga.deadlineSeconds}s`)},
+            recoveryDeadline: ${JSON.stringify(`${saga.recoveryDeadlineSeconds}s`)},
+          }),
+          handler: authoredHandler,
+        });
+        const output = await sagaRuntime.run(definition, validInput, {
+          ...delivery.metadata,
+          idempotencyKey: delivery.metadata.idempotencyKey ?? delivery.invocationId,
+          causalPrincipal: admitted.execution.causalPrincipal,
+        });
+        return validate(${JSON.stringify(saga.contract.output.jsonSchema)}, output, ${JSON.stringify(`${saga.name}.output`)});
+      },
+    );
+  },
+});`).join('\n');
+  const declarationNames = [
+    ...contract.tasks.map(({ task }) => jsName(task.id)),
+    ...contract.workflows.map(({ workflow }) => jsName(workflow.id)),
+    ...contract.sagas.map((saga) => jsName(saga.id)),
+  ];
   const declarationEntries = [
     ...contract.tasks.map(({ task }) => `${JSON.stringify(task.name)}: ${jsName(task.id)}`),
     ...contract.workflows.map(({ workflow }) => `${JSON.stringify(workflow.name)}: ${jsName(workflow.id)}`),
+    ...contract.sagas.map((saga) => `${JSON.stringify(saga.name)}: ${jsName(saga.id)}`),
   ];
   const cronRegistrations = contract.workflows.flatMap(({ workflow }) => workflow.triggers.crons.map((cron) => `${jsName(workflow.id)}.cron(${JSON.stringify(cron.name)}, ${JSON.stringify(cron.expression)}, encodeHatchetWorkflowTransportInput(${JSON.stringify(cron.input)}))`));
   const structuredGenerationCapability = contract.capabilities.some(
@@ -397,6 +447,10 @@ import { createSignedEnvelopeCodec, signedEnvelopeUtf8Key, staticSignedEnvelopeK
     && !(contract.operationEffects || contract.signalEffects || contract.nativeAI || contract.providerAccountingEffects)
     ? `import postgres from 'postgres';`
     : '';
+  const sagaImports = contract.sagas.length > 0
+    ? `import { createDurableApplicationSagaRuntime } from '@applik8s/applik8s';
+import { createPostgresApplicationSagaStore } from '@applik8s/runtime-postgres';`
+    : '';
   const capabilityInitializers = generatedWorkflowCapabilities(contract);
   const nativeAIStateInitializer = generatedWorkflowNativeAIState(contract);
   const operationInitializer = generatedWorkflowOperationRuntime(
@@ -441,6 +495,7 @@ ${signalImports}
 ${functionNativeImports}
 ${gatewayImports}
 ${privateProviderImports}
+${sagaImports}
 ${handlerImports}
 
 if (process.argv.includes('--credential-preflight')) {
@@ -451,6 +506,14 @@ if (process.argv.includes('--credential-preflight')) {
 const hatchet = HatchetClient.init();
 ${contract.observability ? generatedApplicationTelemetryRuntimeSource({ application: contract.graphName, service: `workflow-worker:${contract.worker.name}` }) : ''}
 const declarations = Object.create(null);
+${contract.sagas.length > 0
+  ? `const sagaStore = createPostgresApplicationSagaStore({
+  databaseUrl: requiredEnv('APPLIK8S_SAGA_DATABASE_URL'),
+  applicationId: ${JSON.stringify(contract.graphName)},
+  deploymentId: ${JSON.stringify(contract.worker.id)},
+});
+const sagaRuntime = createDurableApplicationSagaRuntime({ store: sagaStore });`
+  : 'const sagaStore = undefined;\nconst sagaRuntime = undefined;'}
 	const directWorkflowScope = new AsyncLocalStorage();
 	const directTaskEffectScope = new AsyncLocalStorage();
 	const directOperationScope = new AsyncLocalStorage();
@@ -560,6 +623,9 @@ function requiredEnv(name) {
   const value = process.env[name];
   if (!value) throw new Error('Missing required workflow runtime environment variable ' + name);
   return value;
+}
+function runtimeJsonSchema(schema, name) {
+  return { kind: 'jsonSchema', ref: { kind: 'jsonSchema', uri: 'generated:' + name }, schema };
 }
 function runtimeEndpoint(baseUrl, environmentName, path) {
   let selected = process.env[environmentName] || baseUrl;
@@ -1143,6 +1209,7 @@ function resolveDeclaration(registry, bindings, kind, alias) { const name = bind
 function missing(kind, alias) { throw new Error('Unknown declared workflow ' + kind + ' alias ' + JSON.stringify(alias)); }
 ${taskDeclarations}
 ${workflowDeclarations}
+${sagaDeclarations}
 Object.assign(declarations, { ${declarationEntries.join(', ')} });
 await Promise.all([
   waitForTcpEndpoint('Hatchet engine', process.env.HATCHET_CLIENT_HOST_PORT),
@@ -1172,6 +1239,7 @@ async function shutdown() {
   if (nativeAIStateSql && nativeAIStateSql !== operationAuthoritySql) await nativeAIStateSql.end({ timeout: 5 });
   await Promise.all(providerPrivateSqlClients.map((sql) => sql.end({ timeout: 5 })));
   if (signalStore) await signalStore.close();
+  if (sagaStore) await sagaStore.close();
   await Promise.all(projectionSources.map((source) => source.close()));
   if (gatewayAdmissionCleanupTimer) clearInterval(gatewayAdmissionCleanupTimer);
   if (gatewayServer) await new Promise((resolve) => gatewayServer.close(resolve));
@@ -2898,6 +2966,17 @@ export function generatedHandlerModule(
   });
 }
 
+export function generatedSagaHandlerModule(handler: ApplicationSagaNode): string {
+  return generatedCallbackFactoryModule({
+    source: handler.handlerSource,
+    ...(handler.handlerDependencies
+      ? { dependencies: handler.handlerDependencies }
+      : {}),
+    injectedIdentifiers: [],
+    exportName: 'createHandler',
+  });
+}
+
 interface WorkflowTaskProviderRuntimeOperation {
   readonly binding: ApplicationCallableProviderBinding;
   readonly runtime: ApplicationCallableProviderRuntimeOperation;
@@ -3513,7 +3592,7 @@ function generatedWorkflowCapabilities(contract: WorkflowContract): string {
       })});`;
     }
     if (provider.implementation !== 'structured-generation-http') throw new Error(`StructuredGeneration provider ${provider.id} has unsupported implementation ${provider.implementation}.`);
-    return `capabilities.StructuredGeneration = createHttpStructuredGenerationCapability({ endpoint: requiredEnv('APPLIK8S_STRUCTURED_GENERATION_ENDPOINT'), ...(process.env.APPLIK8S_STRUCTURED_GENERATION_API_KEY ? { apiKey: process.env.APPLIK8S_STRUCTURED_GENERATION_API_KEY } : {}), authorization: process.env.APPLIK8S_STRUCTURED_GENERATION_AUTHORIZATION ?? ${JSON.stringify(stringConfig(config.authorization) || 'bearer')}, defaultProfile: process.env.APPLIK8S_STRUCTURED_GENERATION_DEFAULT_PROFILE || ${JSON.stringify(stringConfig(config.defaultProfile))}, timeoutSeconds: ${numberConfig(config.timeoutSeconds) || 45}, maxResponseBytes: ${numberConfig(config.maxResponseBytes) || 1_000_000}, allowInsecureHttp: ${String(config.allowInsecureHttp === true)} });`;
+    return `capabilities.StructuredGeneration = createHttpStructuredGenerationCapability({ endpoint: requiredEnv('APPLIK8S_STRUCTURED_GENERATION_ENDPOINT'), ...(${String(Boolean(config.credentialSecret || config.credential))} ? { apiKey: requiredEnv('APPLIK8S_STRUCTURED_GENERATION_API_KEY') } : (process.env.APPLIK8S_STRUCTURED_GENERATION_API_KEY ? { apiKey: process.env.APPLIK8S_STRUCTURED_GENERATION_API_KEY } : {})), authorization: process.env.APPLIK8S_STRUCTURED_GENERATION_AUTHORIZATION ?? ${JSON.stringify(stringConfig(config.authorization) || 'bearer')}, defaultProfile: process.env.APPLIK8S_STRUCTURED_GENERATION_DEFAULT_PROFILE || ${JSON.stringify(stringConfig(config.defaultProfile))}, timeoutSeconds: ${numberConfig(config.timeoutSeconds) || 45}, maxResponseBytes: ${numberConfig(config.maxResponseBytes) || 1_000_000}, allowInsecureHttp: ${String(config.allowInsecureHttp === true)} });`;
   }).join('\n');
 }
 

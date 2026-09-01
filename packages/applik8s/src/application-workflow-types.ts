@@ -320,4 +320,5 @@ export interface ApplicationWorkflowBinding<
 
 export type ApplicationWorkflowHandlerRegistration =
   | { readonly kind: 'task'; readonly id: string; readonly source: string }
-  | { readonly kind: 'workflow'; readonly id: string; readonly source: string; readonly tasks: Readonly<Record<string, string>>; readonly workflows: Readonly<Record<string, string>> };
+  | { readonly kind: 'workflow'; readonly id: string; readonly source: string; readonly tasks: Readonly<Record<string, string>>; readonly workflows: Readonly<Record<string, string>> }
+  | { readonly kind: 'saga'; readonly id: string; readonly source: string };

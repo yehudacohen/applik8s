@@ -138,6 +138,12 @@ export type ApplicationRuntimeAccessOperation =
   | 'actor.broadcast'
   | 'actor.admin'
   | 'ai.invoke'
+  | 'filesystem.read'
+  | 'filesystem.write'
+  | 'filesystem.delete'
+  | 'repository.read'
+  | 'repository.write'
+  | 'process.execute'
   | 'search.read'
   | 'search.write'
   | 'secret.read'
@@ -179,6 +185,12 @@ const applicationRuntimeAccessOperations = new Set<string>([
   'actor.broadcast',
   'actor.admin',
   'ai.invoke',
+  'filesystem.read',
+  'filesystem.write',
+  'filesystem.delete',
+  'repository.read',
+  'repository.write',
+  'process.execute',
   'search.read',
   'search.write',
   'secret.read',

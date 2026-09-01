@@ -12,6 +12,7 @@ export {
 export { Account, AccountByHandle, AccountCreationGuard, AccountMe, CredentialLink, AccountDiscover, InstallationSetting } from './domain/accounts';
 export { Automation, AutomationControl, AutomationRun, AutomationControlCurrent, AutomationMine, AutomationRunRecent } from './domain/automation';
 export { EngagementBatchRecent, recordEngagementBatch } from './domain/engagement';
+export { HistoricalEngagement } from './domain/history';
 export * from './domain/events';
 export { Media, MediaForPosts } from './domain/media';
 export { ModerationPolicyCurrent, ModerationCase, ModerationPolicy, ModerationCaseQueue, ReportOpenQueue, Report } from './domain/moderation';
@@ -25,7 +26,7 @@ export { Attachments, Avatars } from './media/objects';
 export { Database } from './providers/database';
 export { RebuildHomeTimelines } from './recovery/timeline';
 export { AutomationScheduleChanges, AutomationScheduleReconciler } from './streams/automation';
-export { FollowAnalytics, FollowChanges, ReactionAnalytics, ReactionBatchReceipts, ReactionChanges } from './streams/engagement';
+export { FollowAnalytics, FollowChanges, HistoricalEngagementPublication, HistoricalEngagementRow, ReactionAnalytics, ReactionBatchReceipts, ReactionChanges } from './streams/engagement';
 export { MediaUploads, MediaVerification } from './streams/media';
 export { PostTimelineChanges, PublishedPosts } from './streams/post-stream';
 export { PostAnalytics, PostDeletionLifecycle, PostPublicationLifecycle, PostUpdateLifecycle } from './streams/publication';

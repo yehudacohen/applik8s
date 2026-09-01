@@ -393,6 +393,10 @@ export interface ApplicationQueryOptions<
       readonly invocation?: 'request' | 'input-context';
     };
   };
+  /** Compiler-owned exact capability leaves called by the query implementation. */
+  readonly __generatedCalls?: readonly unknown[];
+  /** Compiler-owned stable source aliases for the exact capability leaves. */
+  readonly __generatedBindings?: Readonly<Record<string, unknown>>;
   /** Compiler-owned calling convention for function-native view callbacks. */
   readonly __handlerInvocation?: 'request' | 'input-context';
   /** Compiler-owned calling convention for model-native Kubernetes selectors. */
@@ -605,8 +609,21 @@ export function registerApplicationQuery<
   const outputSchema = runtimeQuerySchema(options.output, `${id}.output`);
   const registrar = options.modelOperation?.kind ?? 'query';
   const inferredHandlerDependencies = options.run
-    ? expandApplicationCallbackDependencies({ calls: [options.run] })
+    ? expandApplicationCallbackDependencies({
+        calls: [options.run, ...(options.__generatedCalls ?? [])],
+        bindings: options.__generatedBindings,
+      })
     : { calls: [], bindings: {}, awaited: {}, callables: [], providerBindings: [] };
+  const capturedProviderBindings = inferredHandlerDependencies.providerBindings;
+  const providerBindings = capturedProviderBindings.filter(
+    (binding) =>
+      binding.operation !== undefined
+      || !capturedProviderBindings.some(
+        (candidate) =>
+          candidate.operation !== undefined
+          && candidate.provider.nodeId === binding.provider.nodeId,
+      ),
+  );
   const actorBindings = applicationActorDependencyBindings(
     state,
     `Application query ${id}`,
@@ -640,7 +657,10 @@ export function registerApplicationQuery<
           // typecast: serialization needs only the callback's executable shape; the public binding retains its input/output generics.
           callback: options.run as (...args: never[]) => unknown,
           allowDeferredResolution: true,
-          injectedIdentifiers: actorBindings.flatMap(({ identifier }) => [
+          injectedIdentifiers: [
+            ...actorBindings.map(({ identifier }) => identifier),
+            ...providerBindings.map(({ identifier }) => identifier),
+          ].flatMap((identifier) => [
             identifier,
             identifier.split('.')[0] ?? identifier,
           ]),
@@ -706,6 +726,7 @@ export function registerApplicationQuery<
       : {}),
     ...(handler.dependencies ? { handlerDependencies: handler.dependencies } : {}),
     ...(actorBindings.length > 0 ? { actorBindings } : {}),
+    ...(providerBindings.length > 0 ? { providerBindings } : {}),
     ...(handler.location ? { handlerLocation: handler.location } : {}),
     ...(handler.unresolved ? { handlerUnresolved: handler.unresolved } : {}),
   });
@@ -715,6 +736,13 @@ export function registerApplicationQuery<
       from: { nodeId },
       to: actor.actor,
       relationship: 'dependsOn',
+    });
+  }
+  for (const provider of providerBindings) {
+    addApplicationGraphEdge(state, {
+      from: { nodeId: provider.provider.nodeId },
+      to: { nodeId },
+      relationship: 'provides',
     });
   }
   const execution = createApplicationQueryOperation<TInput, TOutput>({

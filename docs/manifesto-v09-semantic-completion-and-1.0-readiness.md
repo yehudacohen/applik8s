@@ -163,6 +163,11 @@ The semantic-completeness pass distinguishes what must block 1.0 from what may r
 - Builder repo-aware visual development environment;
 - other specialized durable-agent compositions.
 
+Preview maturity does not permit a documented or exported assembly of disconnected component tests. The
+preview surfaces accepted into the closed v0.9 program are committed release deliverables: each must pass
+one complete executable journey proving its public entrypoint, real selected providers, authority boundary,
+recovery behavior, and cleanup. They are not removed, hidden, or relabeled to make the release pass.
+
 ### Development/testing product surface
 
 - `journey()` as a discoverable acceptance artifact for Builder, testing, and clean-context validation.
@@ -252,14 +257,39 @@ v0.9 does not automatically promote v0.8 beta, preview, or experimental features
 | `ML.model()` | Beta and non-blocking unless materially different providers pass shared conformance |
 | `researchAgent()` / `WebSearch` / `SourceRetriever` / `ResearchEvidence` | Stable candidate after the complete research lifecycle, authority, evidence, restart, replacement, and provider-conformance gates pass |
 | SearXNG `WebSearch` provider | Maintained v0.9 provider; release-blocking after TypeKro/Alchemy deployment, external binding, safe retrieval, readiness, upgrade, and teardown qualification |
-| `codeAgent()` | Preview maintained composition; never required for stable 1.0 core |
-| Builder development environment | Preview development integration; independent and excluded from production by default; never required for stable 1.0 core |
+| `codeAgent()` | Release-blocking preview maintained composition; requires one real OpenCode-backed deterministic-local vertical and one Celld-backed vertical with stable run/workspace identity, explicit authority, retry reattachment, cancellation, provider replacement, and ordered cleanup |
+| Builder development environment | Release-blocking preview development integration; requires the complete closed loopback-OpenCode change journey while remaining independent from Celld and a healthy generated application |
 | `journey()` | Development/testing contract; may stabilize independently from runtime semantics |
 | Stable v0.8 authoring/runtime contracts | 1.0 candidates unless explicitly deprecated during v0.9 |
 | Existing beta/preview features | Remain beta/preview unless separately promoted through evidence |
 | Website/docs | Version matched, acceptance tested, and truthful for the exact package train |
 
 Maturity is structured release data. Website copy cannot silently promote a provider or feature.
+
+## Release blockers and maturity
+
+Maturity controls compatibility promises, not whether an accepted v0.9 deliverable may be incomplete.
+
+### Global release blockers
+
+- every stable semantic-core and migration gate named by this manifesto;
+- the complete maintained research-agent and SearXNG lifecycle;
+- the complete real `codeAgent()` deterministic-local and Celld/OpenCode lifecycle;
+- Builder's independent real-OpenCode closed change journey;
+- the deployed-provider Saga interruption, compensation, irreversible-boundary, unknown-outcome, and
+  upgrade matrix;
+- truthful unchanged-source Chirp production profiles, including every capability those profiles and the
+  product actually advertise;
+- one clean generated Agentic Start browser journey through real public boundaries, including session
+  establishment, primary navigation, streaming/reconnection, approval/result visibility, accessibility
+  smoke checks, and failure evidence that identifies every unvisited or failed page;
+- exact released-v0.8 migration, public-contract, package, documentation, and clean-context evidence.
+
+Evidence is proportional to maturity. Stable surfaces require the complete provider and compatibility
+matrix. Beta surfaces require at least one realistic deployed provider and the failure/recovery behavior
+that defines their semantic claim. Preview surfaces require one complete real-provider user journey plus
+authority and cleanup evidence. For the explicitly accepted v0.9 previews above, failure of that evidence
+blocks v0.9 rather than removing the surface.
 
 ---
 
@@ -1945,7 +1975,7 @@ instructions or grants follow-up network authority.
 
 ## Builder development environment
 
-The optional Builder refines the accepted v0.8 Independent Development Environment contract; it does not
+The development-only Builder refines the accepted v0.8 Independent Development Environment contract; it does not
 replace it with a chat page hosted by the generated application. Its independent daemon/portal remains
 usable through source, compile, startup, and route failure. The v0.8 visual-selection provenance,
 persistent attachment/referent, mutation journal, undo, recovery, and security contracts remain normative.
@@ -2558,7 +2588,7 @@ It may exercise:
 - one complete `researchAgent()` journey using the maintained `WebSearch` and `ResearchEvidence`
   contracts;
 - the existing Builder;
-- an optional code-agent preview module.
+- one complete code-agent preview module and journey.
 
 The Start must not become a feature catalogue.
 
@@ -2760,9 +2790,9 @@ Documentation is not “done” if it papers over an awkward API that can still 
   production-qualified researchAgent(), WebSearch, SourceRetriever, ResearchEvidence, and SearXNG provider
   managed-Kubernetes and external-SearXNG lifecycle/conformance evidence
   end-to-end search → retrieval → evidence → artifact acceptance journey
-  specialized code-agent preview modules/providers
-  Builder v0.8-contract reconciliation and initial visual development integration
-    (preview, non-blocking, may slip without holding the core train)
+  complete specialized code-agent deterministic-local and Celld/OpenCode preview qualification
+  complete independent Builder real-OpenCode closed change journey
+    (release-blocking previews; maturity permits evolution, not omission)
   third clean-context review across the complete candidate semantic surface
 
 0.9.0-alpha.8
@@ -2886,7 +2916,7 @@ alphas.
 - an unknown commit cannot trigger compensation until absence is proven;
 - unknown external outcomes remain unknown;
 - `ApplicationPlan` states compensating atomicity and lack of isolation;
-- Saga failure does not block 1.0 if correctly labeled beta and isolated from stable core.
+- Saga remains beta after v0.9, but its v0.9 deployed-provider qualification is release-blocking.
 
 ## ML beta
 
@@ -3021,7 +3051,8 @@ migration guidance.
 - `computer()` as a foundational primitive;
 - OpenCode as durable identity;
 - SearXNG as research-agent semantics;
-- code-agent, Builder, or other specialized-agent previews blocking 1.0;
+- promoting code-agent, Builder, or other specialized-agent previews to stable 1.0 contracts without the
+  required broader promotion evidence;
 - broad parity with another cloud provider;
 - replacing TypeKro or Alchemy;
 - proprietary APM;
@@ -3146,7 +3177,7 @@ Mitigation: repeated confusion triggers simplification/rename/deletion while pre
 - bare distributed `transaction()` is not introduced.
 - the initial distributed coordination surface is `application.transaction.saga(...)`.
 - Saga effects outside explicit `step`/`commit`/`irreversible` boundaries fail closed.
-- Saga and `ML.model()` are beta/non-blocking for 1.0.
+- Saga is release-blocking beta for v0.9; `ML.model()` remains beta/non-blocking for 1.0.
 - `decision()` is investigated but not assumed to be a core primitive.
 - The completed investigation rejects a first-class `decision()` graph primitive; ordinary typed functions use the library-only `domainDecision` result algebra and inherit authority, durability, invalidation, and evidence from their enclosing semantic surface.
 - `journey()` is a development/testing acceptance artifact.
@@ -3192,17 +3223,20 @@ Applik8s v0.9.0 is ready only when:
     unnecessary duplicate publication;
 11. obvious event cycles fail where provable and dynamic cycles remain bounded and inspectable;
 12. `application.transaction.saga(...)` demonstrates one realistic compensating workflow with explicit
-    `step`/`commit`/`irreversible` semantics or remains correctly beta without blocking 1.0;
+    `step`/`commit`/`irreversible` semantics plus deployed-provider interruption and unknown-outcome
+    evidence;
 13. Saga effectful calls outside explicit recovery boundaries fail closed;
 14. `ML.model()` demonstrates typed provider-neutral inference or remains explicitly beta/non-blocking;
 15. `journey()` provides a source-owned acceptance artifact that Builder/testing can discover and can
     assert application events without knowing physical providers;
 16. `researchAgent()`, its search/retrieval/evidence contracts, and the maintained SearXNG `WebSearch`
-    provider pass the complete research lifecycle,
-    authority, evidence, recovery, replacement, and teardown gates, while code-agent and other
-    specialized-agent previews preserve actor/agent/capability ownership without becoming 1.0 blockers;
-17. Builder can prompt, plan, review, preview, verify, and apply an isolated application change through
-    replaceable agent/workspace/source capabilities, or remains correctly preview without blocking 1.0;
+    provider pass the complete research lifecycle, authority, evidence, recovery, replacement, and teardown
+    gates, while `codeAgent()` passes real deterministic-local and Celld/OpenCode execution, authority,
+    reattachment, cancellation, provider-replacement, and ordered-cleanup gates without becoming a stable
+    1.0 contract;
+17. Builder can prompt, plan, review, preview, verify, apply, and conflict-safely undo an isolated
+    application change through replaceable agent/workspace/source capabilities while surviving a broken
+    generated application;
 18. the website explains the product, intended users, programming model, application-event model, and
     application-to-infrastructure thesis without requiring TypeKro, Alchemy, Kubernetes, or repository
     history;
@@ -3211,48 +3245,52 @@ Applik8s v0.9.0 is ready only when:
     reference, and upgrade journeys;
 20. a clean TypeScript developer can generate Agentic Start, run it locally, and reach useful UI through
     published instructions and packed packages;
-21. the developer can make a meaningful source-owned change and understand the resulting semantic behavior
+21. a real browser-backed acceptance journey visits the maintained Agentic Start routes, establishes an
+    authenticated session, observes streaming and reconnect behavior, completes one approval/result path,
+    performs accessibility smoke checks, and captures screenshots plus console/network/runtime diagnostics
+    on failure without reporting unvisited pages as passing;
+22. the developer can make a meaningful source-owned change and understand the resulting semantic behavior
     and application facts;
-22. `applik8s explain` and `applik8s plan` provide source-attributed explanations matching docs and portal;
-23. one intentionally broken application can be diagnosed and repaired from maintained diagnostics and
+23. `applik8s explain` and `applik8s plan` provide source-attributed explanations matching docs and portal;
+24. one intentionally broken application can be diagnosed and repaired from maintained diagnostics and
     troubleshooting guidance without maintainer interpretation;
-24. local, AWS, and Kubernetes documentation preserves profile/provider maturity under one application
+25. local, AWS, and Kubernetes documentation preserves profile/provider maturity under one application
     mental model;
-25. GuestBook, Chirp, and Agentic Start teach one vocabulary while retaining distinct acceptance roles;
-26. every public package, export, CLI command, graph/artifact schema, event/frontier schema, generated
+26. GuestBook, Chirp, and Agentic Start teach one vocabulary while retaining distinct acceptance roles;
+27. every public package, export, CLI command, graph/artifact schema, event/frontier schema, generated
     convention, provider surface, and semantic primitive has a 1.0 maturity disposition;
-27. the candidate 1.0 vocabulary and package boundaries receive explicit maintainer review;
-28. compatibility, deprecation, Start-lineage, artifact-versioning, provider-maturity, event-frontier, and
+28. the candidate 1.0 vocabulary and package boundaries receive explicit maintainer review;
+29. compatibility, deprecation, Start-lineage, artifact-versioning, provider-maturity, event-frontier, and
     upgrade policies are published and exercised on representative upgrades;
-29. canonical code samples and complete tutorials pass clean packed-consumer gates;
-30. the public website/docs pass responsive, accessibility, link, versioning, search, performance, and
+30. canonical code samples and complete tutorials pass clean packed-consumer gates;
+31. the public website/docs pass responsive, accessibility, link, versioning, search, performance, and
     security review;
-31. clean-context developers have completed at least alpha.1, alpha.3, alpha.7, and RC qualification rounds without
+32. clean-context developers have completed at least alpha.1, alpha.3, alpha.7, and RC qualification rounds without
     unresolved maintainer-only knowledge;
-32. no release-blocking ambiguity is papered over with prose when the public surface can still be
+33. no release-blocking ambiguity is papered over with prose when the public surface can still be
     simplified; and
-33. the maintainer explicitly authorizes `1.0.0-rc.1`;
-34. managed-model reconciliation proves generation, fenced lease, resync, delayed wakeup, schema-complete
+34. the maintainer explicitly authorizes `1.0.0-rc.1`;
+35. managed-model reconciliation proves generation, fenced lease, resync, delayed wakeup, schema-complete
     nested status, per-type conditions, deletion, and handle-owned finalization semantics on Kubernetes and
     one non-Kubernetes provider;
-35. the scheduling kernel proves normalized defaults, occurrence identity, timezone, precision,
+36. the scheduling kernel proves normalized defaults, occurrence identity, timezone, precision,
     daylight-saving behavior, overlap, misfire, delivery retry, cancellation, history, dynamic convergence,
     lifecycle-owned timers, and provider migration without semantic-owner confusion;
-36. Kubernetes-cluster and external-service DI prove that runtime use does not imply provisioning,
+37. Kubernetes-cluster and external-service DI prove that runtime use does not imply provisioning,
     deletion, ambient credentials, or eager deployment-tool imports;
-37. every maintained provider family represents higher-level prerequisites as typed recursive
+38. every maintained provider family represents higher-level prerequisites as typed recursive
     implementation dependencies, with stable identity, explicit sharing, cycle detection, one physical
     lifecycle owner, recursive readiness/migration, and dependency-ordered creation and teardown;
-38. nested implementation dependencies remain private unless explicitly provided, and generated callback
+39. nested implementation dependencies remain private unless explicitly provided, and generated callback
     authority proves that provider-internal access never becomes transitive application authority; and
-39. Chirp passes the normative `production-aws` and `production-kubernetes` profiles with unchanged
+40. Chirp passes the normative `production-aws` and `production-kubernetes` profiles with unchanged
     semantic source, the frozen provider-constructor vocabulary, live readiness, update/reconcile/delete
     evidence, package isolation, and the required TypeKro/Alchemy boundaries;
-40. an exact released-v0.8 fixture upgrades through the versioned deployment-state protocol in imperative
+41. an exact released-v0.8 fixture upgrades through the versioned deployment-state protocol in imperative
     and declarative paths, including interruption, retry, conflict, rollback, forward recovery, and
     deletion with at most one active lifecycle authority, resumable quiescent handoff, no duplicate
     physical owners, and no silent replacement; and
-41. every stable effectful execution surface classifies its guarantees through the shared effect contract
+42. every stable effectful execution surface classifies its guarantees through the shared effect contract
     and passes the applicable receipt, observation, proven-absence, administrative-resolution, fencing,
     cancellation, retry, and unknown-outcome crash matrix.
 

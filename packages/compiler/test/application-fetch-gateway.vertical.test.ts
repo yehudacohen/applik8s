@@ -54,6 +54,61 @@ describe("application host Fetch gateway", () => {
 		expect(source).toContain('"targets":["aws"]');
 		expect(source).toContain("process.env.APPLIK8S_DEPLOYMENT_TARGET === 'aws-local'");
 	});
+	it("installs a provider-neutral ObjectStorage lakehouse for Kubernetes", () => {
+		const application = app("portable-object-lakehouse");
+		const History = LakehouseDataset.named("history");
+		const Queries = LakehouseQuery.named("history");
+		const storage = ObjectStorage.s3({
+			name: "objects",
+			bucket: "logical-history",
+			region: "us-east-1",
+			endpoint: "http://rook-rgw.history.svc:80",
+			forcePathStyle: true,
+			credentialsSecret: {
+				apiVersion: "v1",
+				kind: "Secret",
+				name: "history-objects",
+				namespace: "portable-object-lakehouse",
+			},
+			ownership: "external",
+		});
+		application.provide(ObjectStorage, storage);
+		application.provide(History)
+			.local(() => Lakehouse.duckdbDataset({ root: ".applik8s/state/history" }))
+			.kubernetes(() => Lakehouse.objectStorageDataset({
+				storage,
+				prefix: "lakehouse/history",
+				maximumRowsPerQuery: 500,
+				maximumScannedBytes: 1_000_000,
+			}));
+		application.provide(Queries)
+			.local(() => Lakehouse.duckdbQueries())
+			.kubernetes(() => Lakehouse.objectStorageQueries({
+				maximumRows: 500,
+				maximumScannedBytes: 1_000_000,
+			}));
+		const Changed = event("history.object.changed.v1", {
+			payload: type({ id: "string", value: "number" }),
+		});
+		const publication = Changed.publish(
+			History,
+			type({ id: "string", value: "number" }),
+			(change, output) => output.append(change),
+		);
+		const base = applicationGraphFor(application.composition);
+		if (!base) throw new Error("Expected object lakehouse graph.");
+		const graph = applicationGraphWithEntrypointPublicSurface(base, {
+			operationIds: [],
+			modelNames: [],
+			lakehousePublications: [publication.graphNode],
+		});
+		const source = generatedApplicationFetchGatewayModules(graph)?.files["gateway.generated.ts"] ?? "";
+		expect(source).toContain("createObjectStorageApplicationLakehouseRuntime");
+		expect(source).toContain("createS3ApplicationObjectStorageRuntime");
+		expect(source).toContain("object-storage-dataset");
+		expect(source).toContain("object-storage-queries");
+		expect(source).not.toContain("CHIRP_HISTORY_");
+	});
 	it("installs one local DuckDB authority and internal event admission for typed lakehouse publications", () => {
 		const application = app("lakehouse-host");
 		const History = LakehouseDataset.named("history");
@@ -181,6 +236,7 @@ describe("application host Fetch gateway", () => {
 		expect(source).toContain("applicationCausalPrincipalContext");
 		expect(source).toContain("actorWorkloadEnvelopes");
 		expect(source).toContain("executionKind: 'actor'");
+		expect(source).toContain('serviceIdentity: selfEnvelope.serviceIdentity');
 		expect(source).toContain("principal: actorAuthorization.principal");
 		expect(source).toContain("request.phase === 'enqueue'");
 		expect(source).toContain("return createApplicationActorTurnAuthority({");

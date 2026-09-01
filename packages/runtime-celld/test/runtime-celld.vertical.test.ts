@@ -490,6 +490,46 @@ describe('celld actor runtime', () => {
     await expect(withApplicationActorTurnAuthority(turnAuthority('celld-runtime-fixture', 'counter.v1', 'add', { input: { by: 9 } }), () => Counter.add('one', { by: 9 }, { idempotencyKey: 'add-1' }))).rejects.toThrow('idempotency_fingerprint_conflict');
   });
 
+  it('recovers the committed receipt when the commit response is lost', async () => {
+    const service = authority();
+    const application = app('celld-commit-recovery-fixture');
+    const Counter = application.actor('counter-recovery.v1', {
+      key: type('string'),
+      state: type({ count: 'number.integer >= 0' }),
+      protocol: { add: actor.command({ input: type({ by: 'number.integer > 0' }), output: type({ count: 'number.integer >= 0' }) }) },
+    });
+    Counter.on.initialize(() => ({ count: 0 }));
+    let executions = 0;
+    Counter.on.add(async (turn, input) => {
+      executions += 1;
+      const current = await turn.state();
+      const count = current.count + input.by;
+      await turn.setState({ count });
+      return { count };
+    });
+    let dropCommitResponse = true;
+    const interruptedFetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      const response = await service.fetch(input, init);
+      if (dropCommitResponse && String(input).endsWith('/turns:commit')) {
+        dropCommitResponse = false;
+        throw new Error('simulated committed-response loss');
+      }
+      return response;
+    }) as typeof fetch;
+    const runtime = createCelldApplicationActorRuntime({
+      endpoint: 'http://celld.test/', authorization: service.authorization, fetch: interruptedFetch,
+      retryDelay: '1ms', leaseDuration: '2s', heartbeatInterval: '100ms', admissionTimeout: '2s',
+    });
+    disposers.push(installApplicationActorRuntimeResolver(() => runtime));
+    const invoke = () => withApplicationActorTurnAuthority(
+      turnAuthority('celld-commit-recovery-fixture', 'counter-recovery.v1', 'add', { input: { by: 1 } }),
+      () => Counter.add('one', { by: 1 }, { idempotencyKey: 'recovered-add' }),
+    );
+    await expect(invoke()).resolves.toEqual({ count: 1 });
+    await expect(invoke()).resolves.toEqual({ count: 1 });
+    expect(executions).toBe(1);
+  });
+
   it('persists durable alarm authority without executing application code in celld', async () => {
     const service = authority();
     const application = app('celld-alarm-fixture');

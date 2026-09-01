@@ -2,6 +2,7 @@ import type { ApplicationDnsIntent, ApplicationExposureOptions, ApplicationServe
 import { kubernetesNameSegment } from './application-identifiers.js';
 import type { ApplicationDnsPublicationProvider, ApplicationHostBinding } from './application-providers.js';
 import type { ApplicationGatewayBinding } from './application-reactive.js';
+import { applicationTypeKroString } from './application-typekro-values.js';
 
 export type NormalizedApplicationTlsIntent =
   | { readonly mode: 'disabled' }
@@ -27,7 +28,10 @@ export function normalizeApplicationTlsIntent(name: string, options: Application
 export function applicationExternalDnsAnnotations(provider: ApplicationDnsPublicationProvider, hostnames: readonly string[], intent: ApplicationDnsIntent): Readonly<Record<string, string>> {
   if (intent.mode !== 'managed' || provider.kind !== 'external-dns') return {};
   const prefix = provider.annotationPrefix ?? 'external-dns.alpha.kubernetes.io';
-  return { [`${prefix}/hostname`]: hostnames.join(','), ...(intent.ttlSeconds === undefined ? {} : { [`${prefix}/ttl`]: String(intent.ttlSeconds) }) };
+  const hostnameAnnotation = applicationTypeKroString(
+    ...hostnames.flatMap((hostname, index) => index === 0 ? [hostname] : [',', hostname]),
+  );
+  return { [`${prefix}/hostname`]: hostnameAnnotation, ...(intent.ttlSeconds === undefined ? {} : { [`${prefix}/ttl`]: String(intent.ttlSeconds) }) };
 }
 
 type ApplicationExposureService = string | ApplicationServerBinding | ApplicationGatewayBinding | ApplicationHostBinding | undefined;

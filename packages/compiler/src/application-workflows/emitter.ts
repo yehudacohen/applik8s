@@ -8,11 +8,13 @@ import type { ApplicationRuntimeExecutionTarget } from '../application-event-log
 import { applicationFrameworkCredentialDependencies } from '../application-framework-credentials.js';
 import { applik8sWorkspaceSourcePlugin } from '../bundling/index.js';
 import { handlerSourceMetadataPlugin } from '../pipeline/entrypoint-handler-instrumentation.js';
+import { generatedRuntimeNodePaths } from '../node-module-resolution.js';
 import type { WorkflowContract } from './contracts.js';
 import { workflowResources } from './resources.js';
 import {
   generatedHandlerModule,
   generatedOperationPrincipalModule,
+  generatedSagaHandlerModule,
   generatedWorkerSource,
   handlerModuleFile,
   hatchetSingleFileHeartbeatPlugin,
@@ -62,6 +64,12 @@ export async function emitWorkflowWorker(
       await writeFile(join(workerDir, operationPrincipalModuleFile(handler.id)), generatedOperationPrincipalModule(handler));
     }
   }
+  for (const saga of contract.sagas) {
+    await writeFile(
+      join(workerDir, handlerModuleFile(saga.id)),
+      generatedSagaHandlerModule(saga),
+    );
+  }
   await writeWorkflowFunctionNativeOperationCallbackModules(workerDir, contract);
   for (const effect of uniqueWorkflowProjectionEffects(contract)) await writeWorkflowProjectionCallbackModules(workerDir, effect);
   await writeWorkflowPrivateProviderModules(workerDir, contract);
@@ -80,7 +88,7 @@ export async function emitWorkflowWorker(
     sourcesContent: false,
     metafile: true,
     banner: { js: "import { createRequire as __applik8sCreateRequire } from 'node:module'; const require = __applik8sCreateRequire(import.meta.url);" },
-    nodePaths: [join(process.cwd(), 'node_modules')],
+    nodePaths: [...generatedRuntimeNodePaths()],
     plugins: [
       handlerSourceMetadataPlugin(applicationEntrypoint, { includeMaintainedPackages: false }),
       hatchetSingleFileHeartbeatPlugin(),
@@ -116,10 +124,11 @@ export async function emitWorkflowWorker(
       provider: { interface: 'WorkflowEngine', implementation: 'hatchet', version: stringConfig(contract.providerConfig.serverVersion) },
       tasks: contract.tasks.map(({ task }) => task.id),
       workflows: contract.workflows.map(({ workflow }) => workflow.id),
+      sagas: contract.sagas.map((saga) => saga.id),
       runtimeEndpoints,
       runtime: { entrypoint: sourcePath, sourceMap: sourceMapPath, digest, sizeBytes, distribution: 'ociImage', packageManagerAtStartup: false, image: container.image, baseImage: container.baseImage, hatchetHeartbeat: 'inProcessPinnedSdkAdapter' },
       container,
-      guarantees: { tasks: 'atLeastOnceRetrySafe', workflows: 'durableHistory', externalEffects: 'tasksOnly', operationalAuthority: 'hatchetPostgres', canonicalAuthority: 'applik8sModelTransactions' },
+      guarantees: { tasks: 'atLeastOnceRetrySafe', workflows: 'durableHistory', sagas: contract.sagas.length > 0 ? 'fencedPostgresReceiptsAndReverseCompensation' : 'unused', externalEffects: 'declaredDurableBoundariesOnly', operationalAuthority: 'hatchetPostgres', canonicalAuthority: 'applik8sModelTransactions' },
       deployment: contract.worker.deployment,
     },
   };

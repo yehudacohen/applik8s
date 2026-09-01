@@ -1,0 +1,42 @@
+{
+  "name": "@applik8s/code-agent",
+  "version": "0.8.0",
+  "description": "Provider-neutral code-agent composition, workspace leases, repository authority, and agent-harness contracts for Applik8s.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "files": ["dist"],
+  "publishConfig": { "access": "public" },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yehudacohen/applik8s.git",
+    "directory": "packages/code-agent"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./runtime": {
+      "types": "./dist/runtime.d.ts",
+      "import": "./dist/runtime.js",
+      "default": "./dist/runtime.js"
+    },
+    "./runtime-contract": {
+      "types": "./dist/runtime-contract.d.ts",
+      "import": "./dist/runtime-contract.js",
+      "default": "./dist/runtime-contract.js"
+    },
+    "./http": {
+      "types": "./dist/http.d.ts",
+      "import": "./dist/http.js",
+      "default": "./dist/http.js"
+    }
+  },
+  "dependencies": {
+    "@applik8s/applik8s": "0.8.0",
+    "@applik8s/core": "0.8.0",
+    "@applik8s/sdk": "0.8.0",
+    "arktype": "2.2.1"
+  }
+}

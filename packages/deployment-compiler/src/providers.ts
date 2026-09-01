@@ -12,6 +12,8 @@ import {
 } from "@applik8s/deployment-contract";
 import { celldProviderRuntimeAccess } from './celld-runtime-access.js';
 import type { ApplicationCelldRuntimeManifest } from './celld-runtime-artifact.js';
+import { applicationProviderGraphConfigurationKey } from './implementation-plan-graph.js';
+import { materializeInstallationValue } from './installation-materialization.js';
 import type { ApplicationRuntimeAccessWorkloadPlacement } from './runtime-access-plan.js';
 import type {
   ApplicationDeploymentContribution,
@@ -36,6 +38,11 @@ interface BuiltinProviderRegistration {
 const builtinProviderRegistrations: readonly BuiltinProviderRegistration[] = [
   { interface: "AI", implementation: "ai-deterministic", execution: "runtime-only" },
   { interface: "AI", implementation: "envoy-ai-gateway", execution: "external-controller" },
+  { interface: "AgentHarness", implementation: "agent-harness-deterministic", execution: "runtime-only" },
+  { interface: "AgentHarness", implementation: "opencode-harness", execution: "runtime-only" },
+  { interface: "CodeWorkspace", implementation: "local-code-workspace", execution: "runtime-only" },
+  { interface: "SourceRepository", implementation: "local-source-repository", execution: "runtime-only" },
+  { interface: "ProcessRunner", implementation: "local-process-runner", execution: "runtime-only" },
   { interface: "ApplicationHost", implementation: "kubernetes-application-host", execution: "root-composition" },
   { interface: "ApplicationHost", implementation: "managed-application-host", execution: "root-composition" },
   { interface: "ApplicationHost", implementation: "aws-application-host", execution: "external-controller" },
@@ -60,6 +67,10 @@ const builtinProviderRegistrations: readonly BuiltinProviderRegistration[] = [
   { interface: "HttpExposure", implementation: "node-port", execution: "root-composition" },
   { interface: "HttpExposure", implementation: "aws-http-exposure", execution: "external-controller" },
   { interface: "IndexStore", implementation: "valkey", execution: "root-composition" },
+  { interface: "ManagedModelStore", implementation: "postgres-managed-model-store", execution: "runtime-only" },
+  { interface: "ManagedModelStore", implementation: "kubernetes-managed-model-store", execution: "runtime-only" },
+  { interface: "OperatorRuntime", implementation: "distributed-operator-runtime", execution: "runtime-only" },
+  { interface: "OperatorRuntime", implementation: "kubernetes-operator-runtime", execution: "runtime-only" },
   { interface: "TransactionalDatabase", implementation: "postgres", execution: "root-composition" },
   { interface: "TransactionalDatabase", implementation: "aurora-postgresql", execution: "external-controller" },
   { interface: "ObjectStorage", implementation: "kubernetes-configmap-objects", execution: "runtime-only" },
@@ -75,6 +86,7 @@ const builtinProviderRegistrations: readonly BuiltinProviderRegistration[] = [
   { interface: "PaymentProvider", implementation: "local-simulated", execution: "runtime-only" },
   { interface: "PaymentProvider", implementation: "stripe", execution: "runtime-only" },
   { interface: "AnalyticalDatabase", implementation: "clickhouse", execution: "root-composition" },
+  { interface: "AnalyticalDatabase", implementation: "postgres-analytics", execution: "runtime-only" },
   { interface: "Queue", implementation: "kubernetes-configmap-queue", execution: "runtime-only" },
   { interface: "IdentityProvider", implementation: "identity-provider", execution: "runtime-only" },
   { interface: "JobRuntime", implementation: "local-job-runtime", execution: "runtime-only" },
@@ -93,6 +105,7 @@ const builtinProviderRegistrations: readonly BuiltinProviderRegistration[] = [
   { interface: "Scheduler", implementation: "kubernetes-cronjob-scheduler", execution: "root-composition" },
   { interface: "Scheduler", implementation: "hatchet-scheduler", execution: "direct-provider" },
   { interface: "Scheduler", implementation: "eventbridge-scheduler", execution: "external-controller" },
+  { interface: "Scheduler", implementation: "postgres-scheduler", execution: "runtime-only" },
   { interface: "ActorRuntime", implementation: "target-selected", execution: "runtime-only" },
   { interface: "ActorRuntime", implementation: "deterministic-local-actors", execution: "runtime-only" },
   { interface: "ActorRuntime", implementation: "celld-actors", execution: "direct-provider" },
@@ -103,9 +116,11 @@ const builtinProviderRegistrations: readonly BuiltinProviderRegistration[] = [
   { interface: "Observability", implementation: "otlp", execution: "runtime-only" },
   { interface: "LakehouseDataset", implementation: "duckdb-dataset", execution: "runtime-only" },
   { interface: "LakehouseDataset", implementation: "s3-dataset", execution: "external-controller" },
+  { interface: "LakehouseDataset", implementation: "object-storage-dataset", execution: "runtime-only" },
   { interface: "LakehouseDataset", implementation: "qualified-lakehouse-provider-required", execution: "runtime-only" },
   { interface: "LakehouseQuery", implementation: "duckdb-queries", execution: "runtime-only" },
   { interface: "LakehouseQuery", implementation: "athena-queries", execution: "external-controller" },
+  { interface: "LakehouseQuery", implementation: "object-storage-queries", execution: "runtime-only" },
   { interface: "LakehouseQuery", implementation: "qualified-lakehouse-provider-required", execution: "runtime-only" },
 ];
 
@@ -170,7 +185,7 @@ export function builtinApplicationDeploymentContributors(): readonly Application
           providerFragment(
             concreteProvider,
             context,
-            providerExecution(concreteProvider.interface, concreteProvider.implementation),
+            applicationProviderExecutionForContext(concreteProvider, context),
           ),
         ],
       };
@@ -449,7 +464,7 @@ export function applicationProviderSelectionDeploymentContributor(
           providerFragment(
             selected,
             context,
-            providerExecution(selected.interface, selected.implementation),
+            applicationProviderExecutionForContext(selected, context),
           ),
         ],
       };
@@ -505,7 +520,7 @@ function selectedProfileProvider(
     ...(selectedConfig ?? {}),
     ...(aliasConfig ?? {}),
   };
-  const branchConfigKey = providerGraphConfigurationKey(provider.interface);
+  const branchConfigKey = applicationProviderGraphConfigurationKey(provider.interface);
   const config =
     selectedConfig || aliasConfig || branchConfig
       ? branchConfig && branchConfigKey
@@ -567,7 +582,12 @@ function resolveApplicationProviderForTargetInternal(
   const targeted = profiled.implementation === 'application-target-provider-selection'
     ? selectedTargetProvider(profiled, context)
     : profiled;
-  return targetSelectedProvider(targeted, context);
+  const selected = targetSelectedProvider(targeted, context);
+  const config = selectedProviderConfiguration(selected.config, context);
+  return {
+    ...selected,
+    ...(config ? { config } : { config: {} }),
+  };
 }
 
 function providerHasProfileBranches(provider: ApplicationProviderNode): boolean {
@@ -579,7 +599,7 @@ function selectedTargetProvider(
   provider: ApplicationProviderNode,
   context: ApplicationDeploymentPlanningContext,
 ): ApplicationProviderNode {
-  const configurationKey = providerGraphConfigurationKey(provider.interface);
+  const configurationKey = applicationProviderGraphConfigurationKey(provider.interface);
   const nestedConfiguration = configurationKey
     ? optionalObject(provider.config?.[configurationKey])
     : undefined;
@@ -606,7 +626,7 @@ function selectedTargetProvider(
     `Application provider ${provider.id} target ${context.target} implementation`,
   );
   const configuration = optionalObject(selected.configuration) ?? selected;
-  const key = providerGraphConfigurationKey(provider.interface);
+  const key = applicationProviderGraphConfigurationKey(provider.interface);
   const { targetSelection: _targetSelection, ...baseConfig } = provider.config ?? {};
   const normalizedBaseConfig = nestedTargetSelection && configurationKey
     ? Object.fromEntries(Object.entries(baseConfig).filter(([candidate]) => candidate !== configurationKey))
@@ -666,45 +686,6 @@ function mergeProviderBranchConfiguration(
  * boundary so nested topology/lifecycle configuration replaces CEL-merged
  * aliases rather than being stranded at the root of `config`.
  */
-function providerGraphConfigurationKey(
-  providerInterface: string,
-): string | undefined {
-  switch (providerInterface) {
-    case "AI":
-      return "ai";
-    case "AnalyticalDatabase":
-      return "analyticalDatabase";
-    case "ApplicationHost":
-      return "host";
-    case "ContainerRegistry":
-      return "containerRegistry";
-    case "IndexStore":
-      return "indexStore";
-    case "JobRuntime":
-      return "jobRuntime";
-    case "ObjectStorage":
-      return "objectStorage";
-    case "Scheduler":
-      return "scheduler";
-    case "ActorRuntime":
-      return "actorRuntime";
-    case "Observability":
-      return "observability";
-    case "LakehouseDataset":
-      return "lakehouseDataset";
-    case "LakehouseQuery":
-      return "lakehouseQuery";
-    case "Search":
-      return "search";
-    case "WebSearch":
-      return "webSearch";
-    case "TransactionalDatabase":
-      return "transactionalDatabase";
-    default:
-      return undefined;
-  }
-}
-
 /**
  * A qualified profile binding can also be installed as an application's
  * unqualified default. That derived alias carries the complete provider-native
@@ -760,7 +741,7 @@ function selectedProviderValue(
   context: ApplicationDeploymentPlanningContext,
 ): DeploymentJsonValue | undefined {
   if (typeof value === "string") {
-    return materializedInstallationValue(value, context.installationSpec);
+    return materializeInstallationValue(value, context.installationSpec);
   }
   if (Array.isArray(value)) {
     return value
@@ -796,47 +777,6 @@ function selectedProviderValue(
   ) as DeploymentJsonObject;
 }
 
-function materializedInstallationValue(
-  value: string,
-  installationSpec: DeploymentJsonObject,
-): DeploymentJsonValue | undefined {
-  const exact = /^\$\{schema\.spec((?:\.[A-Za-z_][A-Za-z0-9_]*)*)\}$/.exec(
-    value,
-  );
-  if (exact) {
-    return installationPathValue(installationSpec, exact[1] ?? "");
-  }
-  return value.replace(
-    /\$\{schema\.spec((?:\.[A-Za-z_][A-Za-z0-9_]*)*)\}/g,
-    (_marker, path: string) => {
-      const resolved = installationPathValue(installationSpec, path);
-      if (
-        resolved === undefined
-        || resolved === null
-        || typeof resolved === "object"
-      ) {
-        throw new Error(
-          `Application provider configuration cannot interpolate installation path schema.spec${path} as text.`,
-        );
-      }
-      return String(resolved);
-    },
-  );
-}
-
-function installationPathValue(
-  installationSpec: DeploymentJsonObject,
-  path: string,
-): DeploymentJsonValue | undefined {
-  let current: DeploymentJsonValue | undefined = installationSpec;
-  for (const segment of path.split(".").filter(Boolean)) {
-    const object = optionalObject(current);
-    if (!object) return undefined;
-    current = object[segment];
-  }
-  return current;
-}
-
 function selectedProviderImplementationFromConfig(
   config: ApplicationProviderNode["config"],
 ): string | undefined {
@@ -857,7 +797,7 @@ function selectedProviderImplementationFromConfig(
   return undefined;
 }
 
-function providerExecution(
+export function applicationProviderExecution(
   providerInterface: string,
   implementation: string,
 ): ApplicationProviderExecution {
@@ -866,6 +806,34 @@ function providerExecution(
       registration.interface === providerInterface
       && registration.implementation === implementation,
   )?.execution ?? "root-composition";
+}
+
+function applicationProviderExecutionForContext(
+  provider: ApplicationProviderNode,
+  context: ApplicationDeploymentPlanningContext,
+): ApplicationProviderExecution {
+  if (
+    provider.interface === "Scheduler"
+    && provider.implementation === "hatchet-scheduler"
+  ) {
+    const scheduler = nestedObject(provider.config, "scheduler");
+    const explicitWorkflowEngine = optionalObject(scheduler?.workflowEngine);
+    const sharedWorkflowEngine = context.graph.nodes.some(
+      (node) =>
+        node.kind === "provider"
+        && node.interface === "WorkflowEngine"
+        && node.implementation === "hatchet"
+        && !node.config?.qualification,
+    );
+    if (!explicitWorkflowEngine && sharedWorkflowEngine) {
+      // This binding contributes runtime scheduling behavior but deliberately
+      // reuses the WorkflowEngine provider's physical Hatchet installation.
+      // Record that contextual ownership decision in the fragment so portable
+      // plans do not invent a second infrastructure contributor.
+      return "runtime-only";
+    }
+  }
+  return applicationProviderExecution(provider.interface, provider.implementation);
 }
 
 interface ProviderDirectContribution {
@@ -889,6 +857,10 @@ export function applicationProviderRuntimeAccessTargets(
     (provider.interface === 'NotificationDelivery' && provider.implementation === 'local-inspectable')
     || (provider.interface === 'PaymentProvider' && provider.implementation === 'local-simulated')
     || (provider.interface === 'AI' && provider.implementation === 'ai-deterministic')
+    || (provider.interface === 'AgentHarness' && provider.implementation === 'agent-harness-deterministic')
+    || (provider.interface === 'CodeWorkspace' && provider.implementation === 'local-code-workspace')
+    || (provider.interface === 'SourceRepository' && provider.implementation === 'local-source-repository')
+    || (provider.interface === 'ProcessRunner' && provider.implementation === 'local-process-runner')
     || (provider.interface === 'StructuredGeneration' && provider.implementation === 'structured-generation-deterministic')
   ) {
     return [{ capabilityId: provider.id, target: 'embedded' }];
@@ -958,6 +930,28 @@ export function applicationProviderRuntimeAccessTargets(
         responsibility: 'external SearXNG web-search endpoint',
       })];
     }
+  }
+  if (
+    provider.interface === 'SourceRetriever'
+    && provider.implementation === 'source-retriever-deterministic'
+  ) {
+    return [{ capabilityId: provider.id, target: 'embedded' }];
+  }
+  if (
+    provider.interface === 'SourceRetriever'
+    && provider.implementation === 'bounded-http-source-retriever'
+  ) {
+    return [externalHttpRuntimeAccessTarget({
+      capabilityId: provider.id,
+      endpoint: undefined,
+      responsibility: 'bounded source retrieval destinations admitted by the provider URL policy',
+    })];
+  }
+  if (
+    provider.interface === 'ResearchEvidence'
+    && provider.implementation === 'research-evidence-memory'
+  ) {
+    return [{ capabilityId: provider.id, target: 'embedded' }];
   }
   if (provider.interface === 'Observability' && provider.implementation === 'otlp') {
     const observability = optionalObject(provider.config?.observability) ?? provider.config;

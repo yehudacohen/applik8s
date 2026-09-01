@@ -267,6 +267,19 @@ describe('applik8s CLI', () => {
     expect(output.join('\n')).not.toContain('legacy');
   });
 
+  it('accepts the assembly profile on status and destruction lifecycle commands', async () => {
+    for (const command of ['status', 'destroy', 'delete'] as const) {
+      const output: string[] = [];
+      const code = await runCli([command, '--help'], {
+        cwd: process.cwd(),
+        stdout: (message) => output.push(message),
+        stderr: (message) => output.push(message),
+      });
+      expect(code).toBe(0);
+      expect(output.join('\n')).toContain('--profile <profile>');
+    }
+  });
+
   it('fails closed when delete has no scoped deployment graph', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'applik8s-cli-delete-without-graph-'));
     const output: string[] = [];
@@ -351,12 +364,16 @@ describe('applik8s CLI', () => {
   }, 15_000);
 
   it('fails closed for unknown diagnostic reasons', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'applik8s-cli-explain-unknown-'));
     const output: string[] = [];
+    try {
+      const code = await runCli(['explain', 'NotAReason'], { cwd: dir, stdout: (message) => output.push(message), stderr: (message) => output.push(message) });
 
-    const code = await runCli(['explain', 'NotAReason'], { cwd: process.cwd(), stdout: (message) => output.push(message), stderr: (message) => output.push(message) });
-
-    expect(code).toBe(1);
-    expect(output.join('\n')).toContain('No application entrypoint');
+      expect(code).toBe(1);
+      expect(output.join('\n')).toContain('No application entrypoint');
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 
   it('explains an operation from the same normalized graph and catalog used by build', async () => {

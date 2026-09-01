@@ -340,6 +340,57 @@ agent invocation from every managed closure family also remains to be proven;
 the current evidence covers browser, authenticated server request, generated
 worker execution, and actor-backed research execution.
 
+The deployed-provider Saga gate is now complete on OrbStack. Three live cases
+cross the generated Hatchet/controller boundary and prove schedule repair,
+worker replacement, durable waits and signals, correlation, compensation,
+intervention, cancellation, fenced recovery, reverse compensation, and managed
+cleanup. The gate does not promote Saga beyond its accepted beta contract.
+
+The unchanged-source Chirp AWS-local qualification now builds the production
+AWS plan through native Alchemy resources and exercises the S3/Glue/Athena
+lakehouse lifecycle. Destructive cleanup remains impossible by default.
+`forceDeleteUnretainedData` adds full-prefix S3 deletion and Glue table deletion
+only for the exact application dataset; the live fixture proves that a
+neighboring object beneath the owned prefix and a foreign Glue table survive.
+Test fixtures may clean only their own identity-tagged resources. Real AWS
+qualification remains blocked on explicit account, region, confirmation, and
+credential inputs and is not inferred from AWS-local evidence.
+
+The generated Agentic Start product gate now passes a fresh 77-resource
+OrbStack deployment, authoritative readiness, an exact 77-resource no-op
+reapply, 49 browser cases across Chromium, Firefox, WebKit, and mobile, and
+ordered Alchemy/TypeKro teardown. The v0.9 evidence contract is independent
+from the historical v0.7 receipt and requires every current product journey,
+including route reliability, provider-neutral billing, account security, and
+durable decisions. Future receipts are written beneath
+`.applik8s-tmp/evidence/v0.9`.
+
+The public-contract inventory has advanced from discovery-only to
+candidate-review-ready. All 66 publishable packages belong to exactly one
+checked-in disposition group; their 228 entrypoints and 7,777 exported symbols
+inherit explicit owner, maturity, compatibility, stability, documentation,
+evidence, and replacement policy. The inventory also classifies 291 public
+diagnostics, 18 CLI commands, 112 visible CLI options, and 109 runtime environment
+names. Release mode now requires the maintainer to mark the disposition frozen
+and verifies that every acceptance evidence path exists. This explicit review
+decision remains open and is not silently converted into a passing freeze.
+
+The canonical repository test harness is green across all sixteen ordinary
+shards, the isolated compiler-artifact groups, and all seven process-isolated
+workflow-compiler cases. Workspace typecheck passes for 68 packages, four
+script shards, and the root TypeScript configurations. Lint, release checks,
+documentation generation, the v0.9 foundation gate, the contract-mode
+scorecard, and `git diff --check` also pass. The scorecard remains deliberately
+at 13 of 18 passing gates because environment-bound qualification and the
+maintainer-owned public freeze have not been reclassified from local evidence.
+
+The remaining environment-bound gates are exact released-v0.8 migration, the
+managed research journey requiring an explicitly authorized inference
+credential projection, real AWS lifecycle qualification, and the final Chirp
+Kubernetes lifecycle. The source candidate is not substituted for the missing
+released v0.8 baseline, and credentials are not copied into OrbStack without
+explicit destination authorization.
+
 Continue in the sequence above until every stable-candidate gate is implemented
 and evidenced. Keep beta/preview surfaces truthful; do not expand the frozen
 scope merely to make a scorecard look complete.

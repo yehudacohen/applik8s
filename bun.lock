@@ -380,6 +380,16 @@
         "@applik8s/core": "0.8.0",
       },
     },
+    "packages/code-agent": {
+      "name": "@applik8s/code-agent",
+      "version": "0.8.0",
+      "dependencies": {
+        "@applik8s/applik8s": "0.8.0",
+        "@applik8s/core": "0.8.0",
+        "@applik8s/sdk": "0.8.0",
+        "arktype": "2.2.1",
+      },
+    },
     "packages/compiler": {
       "name": "@applik8s/compiler",
       "version": "0.8.0",
@@ -412,6 +422,7 @@
         "esbuild": "^0.28.1",
         "pino-pretty": "^13.1.1",
         "postgres": "^3.4.7",
+        "typekro": "0.33.9",
         "typescript": "^5.3.0",
         "yaml": "^2.9.0",
       },
@@ -523,6 +534,7 @@
       "name": "@applik8s/dev",
       "version": "0.8.0",
       "dependencies": {
+        "@applik8s/code-agent": "0.8.0",
         "@applik8s/core": "0.8.0",
         "@libsql/client": "^0.17.4",
       },
@@ -1047,6 +1059,8 @@
     "@applik8s/cli": ["@applik8s/cli@workspace:packages/cli"],
 
     "@applik8s/client": ["@applik8s/client@workspace:packages/client"],
+
+    "@applik8s/code-agent": ["@applik8s/code-agent@workspace:packages/code-agent"],
 
     "@applik8s/compiler": ["@applik8s/compiler@workspace:packages/compiler"],
 

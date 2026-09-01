@@ -1199,6 +1199,30 @@ function recordWorkflowWorker(state: ApplicationWorkflowState, engine: Applicati
   });
 }
 
+/** Internal Saga lowering seam. Sagas share the selected durable worker and never create a second executor. */
+export function recordApplicationSagaWorkflowWorker(
+  state: ApplicationWorkflowState,
+  nodeId: string,
+  id: string,
+  source: string,
+): ApplicationWorkflowEngineProvider {
+  const engine = recordApplicationWorkflowEngine(state);
+  const existing = [...state.workflowHandlers.values()].find(
+    (handler) => handler.id === id,
+  );
+  if (existing) {
+    throw new Error(
+      existing.source === source
+        ? `Durable contract ${id} already has an application handler.`
+        : `Durable contract ${id} already has a different application handler.`,
+    );
+  }
+  state.workflowHandlers.set(nodeId, { kind: 'saga', id, source });
+  state.workflowHandlerGroups.set(nodeId, workflowWorkerGroup(engine, undefined));
+  recordWorkflowWorker(state, engine, undefined);
+  return engine;
+}
+
 function workflowEngineRuntime(engine: ApplicationWorkflowEngineProvider): ApplicationProviderRuntimeContract {
   const name = kubernetesName(engine.name ?? 'applik8s-hatchet');
   const namespace = engine.namespace;

@@ -3,9 +3,11 @@ import {
   app,
   applicationGraphFor,
   createDeterministicApplicationLakehouseRuntime,
+  createObjectStorageApplicationLakehouseRuntime,
   applicationLakehouseConformanceRows,
   runApplicationLakehouseConformance,
   classifyApplicationLakehouseSchemaEvolution,
+  config,
   executeApplicationLakehousePublication,
   event,
   installApplicationLakehouseQueryRuntimeResolver,
@@ -15,6 +17,7 @@ import {
   LakehouseQuery,
   type,
   type ApplicationLakehouseRowExpression,
+  type ApplicationObjectStorageRuntime,
 } from '@applik8s/applik8s';
 import { createApplicationLakehouseCursorCodec } from '@applik8s/applik8s/lakehouse-runtime';
 import { installApplicationInvocationAdmissionResolver } from '@applik8s/client';
@@ -69,14 +72,77 @@ function lakehouseAdmission(
 
 describe('v0.8 published lakehouse snapshots', () => {
   type UsageRow = { organizationId: string; occurredAt: string; quantity: number };
+  it('persists immutable snapshots through ObjectStorage and restores query authority after restart', async () => {
+    const objects = new Map<string, Uint8Array>();
+    const storage: ApplicationObjectStorageRuntime = {
+      async put(request) {
+        const body = typeof request.body === 'string'
+          ? new TextEncoder().encode(request.body)
+          : request.body;
+        if (request.ifAbsent && objects.has(request.key)) {
+          const existing = objects.get(request.key)!;
+          if (new TextDecoder().decode(existing) !== new TextDecoder().decode(body)) {
+            throw new Error(`immutable conflict ${request.key}`);
+          }
+        } else objects.set(request.key, body);
+        return {
+          store: 'history', key: request.key, size: body.byteLength,
+          contentType: request.contentType, sha256: '0'.repeat(64),
+        };
+      },
+      async get(key) { return objects.get(key); },
+      async head(key) {
+        const body = objects.get(key);
+        return body ? { store: 'history', key, size: body.byteLength, contentType: 'application/json', sha256: '0'.repeat(64) } : undefined;
+      },
+      async delete(key) { objects.delete(key); },
+      async signUpload() { throw new Error('not used'); },
+      async signDownload() { throw new Error('not used'); },
+    };
+    const options = {
+      datasetId: 'usage-history', schemaRevision: 'v1',
+      schema: type({ organizationId: 'string', occurredAt: 'string', quantity: 'number' }),
+      cursorKey: 'object-storage-lakehouse-cursor-key', storage,
+      retainedSnapshots: 1, forceDeleteUnretainedData: true,
+    } as const;
+    const first = await createObjectStorageApplicationLakehouseRuntime(options);
+    const initial = await first.append({ frontier: 'event-one', rows: [{ organizationId: 'acme', occurredAt: '2026-09-01T00:00:00.000Z', quantity: 1 }] });
+    const second = await first.append({ frontier: 'event-two', rows: [{ organizationId: 'acme', occurredAt: '2026-09-01T00:01:00.000Z', quantity: 2 }] });
+    expect(second.parentSnapshotId).toBe(initial.snapshotId);
+    expect(objects.has(`manifests/${initial.snapshotId}.json`)).toBe(false);
+
+    const restored = await createObjectStorageApplicationLakehouseRuntime(options);
+    await expect(restored.query({
+      dataset: LakehouseDataset.named('usage-history'),
+      orderBy: (row: ApplicationLakehouseRowExpression<UsageRow>) => [row.occurredAt.asc()],
+      page: { size: 10 },
+    })).resolves.toMatchObject({
+      snapshot: second.snapshotId,
+      rows: [
+        { quantity: 1 },
+        { quantity: 2 },
+      ],
+      receipt: { provider: 'object-storage' },
+      evidence: { provider: 'object-storage' },
+    });
+  });
   it('represents a qualified-provider-required target without fabricating a runtime', () => {
-    expect(Lakehouse.qualifiedProviderRequired({
+    expect(Lakehouse.datasetProviderRequired({
       reason: 'Kubernetes requires an independently qualified lakehouse provider.',
     })).toEqual({
       kind: 'qualified-lakehouse-provider-required',
       reason: 'Kubernetes requires an independently qualified lakehouse provider.',
     });
-    expect(() => Lakehouse.qualifiedProviderRequired({ reason: '  ' })).toThrow(
+    expect(Lakehouse.queryProviderRequired({
+      reason: 'Kubernetes requires an independently qualified lakehouse query provider.',
+    })).toEqual({
+      kind: 'qualified-lakehouse-provider-required',
+      reason: 'Kubernetes requires an independently qualified lakehouse query provider.',
+    });
+    expect(() => Lakehouse.datasetProviderRequired({ reason: '  ' })).toThrow(
+      'requires an actionable reason',
+    );
+    expect(() => Lakehouse.queryProviderRequired({ reason: '  ' })).toThrow(
       'requires an actionable reason',
     );
   });
@@ -137,6 +203,27 @@ describe('v0.8 published lakehouse snapshots', () => {
         }),
       }),
     ]));
+  });
+  it('keeps deployment-owned lakehouse coordinates as typed config references', () => {
+    expect(Lakehouse.s3Dataset({
+      bucket: config.env('HISTORY_BUCKET'),
+      prefix: config.env('HISTORY_PREFIX'),
+      catalog: config.env('HISTORY_CATALOG'),
+      region: config.env('AWS_REGION'),
+    })).toMatchObject({
+      kind: 's3-dataset',
+      bucket: { kind: 'config', reference: 'HISTORY_BUCKET', valueType: 'string' },
+      catalog: { kind: 'config', reference: 'HISTORY_CATALOG', valueType: 'string' },
+    });
+    expect(Lakehouse.athenaQueries({
+      workgroup: config.env('HISTORY_WORKGROUP'),
+      region: config.env('AWS_REGION'),
+      resultLocation: config.env('HISTORY_RESULTS'),
+    })).toMatchObject({
+      kind: 'athena-queries',
+      workgroup: { kind: 'config', reference: 'HISTORY_WORKGROUP', valueType: 'string' },
+      resultLocation: { kind: 'config', reference: 'HISTORY_RESULTS', valueType: 'string' },
+    });
   });
   it('declares one typed event publication without provider-shaped application code', () => {
     const UsageHistory = LakehouseDataset.named('historical-usage');

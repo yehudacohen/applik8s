@@ -8,6 +8,8 @@ import { build } from 'esbuild';
 import { generatedCallbackFactoryModule } from '../application-callback-module.js';
 import { emitGeneratedApplicationContainer, type GeneratedApplicationContainerArtifact } from '../application-containers/index.js';
 import { applicationFrameworkCredentialDependencies } from '../application-framework-credentials.js';
+import { applicationObjectStorageEnvironment } from '../application-object-storage-environment.js';
+import { generatedRuntimeNodePaths } from '../node-module-resolution.js';
 import { applicationGraphBooleanCondition, applicationGraphInterpolate, applicationGraphJsonStringArray, applicationGraphStringValue } from '../application-installation-values.js';
 import { jetStreamConsumerName } from '../application-nats-naming.js';
 import { applicationGraphHasObservabilityRuntime, generatedApplicationTelemetryImports, generatedApplicationTelemetryRuntimeSource } from '../application-observability-runtime-source.js';
@@ -41,7 +43,7 @@ export interface GeneratedApplicationLakehousePublisherResource {
 }
 
 interface DatasetConfiguration {
-  readonly kind: 'duckdb-dataset' | 's3-dataset';
+  readonly kind: 'duckdb-dataset' | 's3-dataset' | 'object-storage-dataset';
   readonly targets?: readonly ('local' | 'aws-local' | 'aws' | 'kubernetes')[];
   readonly root?: string;
   readonly bucket?: string;
@@ -52,6 +54,10 @@ interface DatasetConfiguration {
   readonly cursorSecretEnvironment: string;
   readonly maximumObjectsPerSnapshot?: number;
   readonly retainedSnapshots?: number;
+  readonly forceDeleteUnretainedData?: boolean;
+  readonly storage?: Readonly<Record<string, unknown>>;
+  readonly maximumRows?: number;
+  readonly maximumScannedBytes?: number;
 }
 
 interface PublisherContract {
@@ -145,14 +151,14 @@ async function emitPublisher(
   await build({
     entryPoints: [generated], outfile: sourcePath, bundle: true, format: 'esm', platform: 'node', target: 'node22',
     legalComments: 'none', minify: true, keepNames: true, lineLimit: 120, sourcemap: 'external', sourcesContent: false,
-    nodePaths: [join(process.cwd(), 'node_modules')],
+    nodePaths: [...generatedRuntimeNodePaths()],
     banner: { js: "import { createRequire as __applik8sCreateRequire } from 'node:module'; const require = __applik8sCreateRequire(import.meta.url);" },
     supported: { 'template-literal': false }, plugins: [handlerSourceMetadataPlugin(applicationEntrypoint, { includeMaintainedPackages: false }), applik8sWorkspaceSourcePlugin()],
   });
   await build({
     entryPoints: [localGenerated], outfile: localSourcePath, bundle: true, format: 'esm', platform: 'node', target: 'node22',
     legalComments: 'none', minify: true, keepNames: true, lineLimit: 120, sourcemap: 'external', sourcesContent: false,
-    nodePaths: [join(process.cwd(), 'node_modules')], external: ['@duckdb/node-api', '@duckdb/node-bindings', '@duckdb/node-bindings-*'],
+    nodePaths: [...generatedRuntimeNodePaths()], external: ['@duckdb/node-api', '@duckdb/node-bindings', '@duckdb/node-bindings-*'],
     banner: { js: "import { createRequire as __applik8sCreateRequire } from 'node:module'; const require = __applik8sCreateRequire(import.meta.url);" },
     supported: { 'template-literal': false }, plugins: [handlerSourceMetadataPlugin(applicationEntrypoint, { includeMaintainedPackages: false }), applik8sWorkspaceSourcePlugin()],
   });
@@ -206,7 +212,7 @@ ${runtimeTarget === 'local'
   ? "import { createDuckDbApplicationLakehouseRuntime } from '@applik8s/runtime-duckdb';\nimport { startJetStreamEventConsumer } from '@applik8s/runtime-nats/event-consumer';"
   : runtimeTarget === 'aws'
     ? "import { createAwsApplicationLakehouseDatasetRuntime } from '@applik8s/runtime-aws/lakehouse';\nimport { startKinesisEventConsumer } from '@applik8s/runtime-aws/kinesis';"
-    : "import { createAwsApplicationLakehouseDatasetRuntime } from '@applik8s/runtime-aws/lakehouse';\nimport { startJetStreamEventConsumer } from '@applik8s/runtime-nats/event-consumer';"}
+    : "import { createAwsApplicationLakehouseDatasetRuntime } from '@applik8s/runtime-aws/lakehouse';\nimport { createS3ApplicationObjectStorageRuntime } from '@applik8s/runtime-s3';\nimport { createObjectStorageApplicationLakehouseRuntime } from '@applik8s/applik8s/lakehouse-runtime';\nimport { startJetStreamEventConsumer } from '@applik8s/runtime-nats/event-consumer';"}
 import { normalizeSchema } from '@applik8s/sdk';
 ${contract.observability ? generatedApplicationTelemetryImports({ runtimeImplementation: true }).join('\n') : ''}
 import { createCallback as createTransform } from './${transformModule}.js';
@@ -253,12 +259,37 @@ const runtime = ${runtimeTarget === 'local' ? `selected.kind === 'duckdb-dataset
         datasetId: ${JSON.stringify(contract.qualification)}, bucket: override.bucket ?? selected.bucket,
         prefix: override.prefix ?? selected.prefix, region: override.region ?? selected.region ?? process.env.AWS_REGION,
         catalogDatabase: override.catalogDatabase ?? selected.catalog, schemaRevision: selected.schemaRevision,
+        forceDeleteUnretainedData: selected.forceDeleteUnretainedData === true,
         schema: rowSchema,
         cursorKey: requiredEnv(selected.cursorSecretEnvironment),
         maximumObjectsPerSnapshot: selected.maximumObjectsPerSnapshot, retainedSnapshots: selected.retainedSnapshots,
       });
     })()
-  : (() => { throw new Error('Cloud lakehouse publishers require an S3 dataset branch.'); })()`};
+  : selected.kind === 'object-storage-dataset'
+    ? await createObjectStorageApplicationLakehouseRuntime({
+        datasetId: ${JSON.stringify(contract.qualification)}, schemaRevision: selected.schemaRevision,
+        schema: rowSchema, cursorKey: requiredEnv(selected.cursorSecretEnvironment),
+        storage: createS3ApplicationObjectStorageRuntime({
+          store: 'lakehouse-' + ${JSON.stringify(contract.qualification)},
+          provider: {
+            ...selected.storage,
+            kind: 's3',
+            bucket: process.env.APPLIK8S_OBJECT_STORAGE_BUCKET || selected.storage.bucket,
+            region: process.env.APPLIK8S_OBJECT_STORAGE_REGION || selected.storage.region,
+            endpoint: process.env.APPLIK8S_OBJECT_STORAGE_ENDPOINT || selected.storage.endpoint,
+            prefix: [process.env.APPLIK8S_OBJECT_STORAGE_PREFIX || selected.storage.prefix, selected.prefix].filter(Boolean).join('/'),
+            forcePathStyle: process.env.APPLIK8S_OBJECT_STORAGE_FORCE_PATH_STYLE
+              ? process.env.APPLIK8S_OBJECT_STORAGE_FORCE_PATH_STYLE === 'true'
+              : selected.storage.forcePathStyle,
+          },
+        }),
+        maximumObjectsPerSnapshot: selected.maximumObjectsPerSnapshot,
+        retainedSnapshots: selected.retainedSnapshots,
+        maximumRows: selected.maximumRows,
+        maximumScannedBytes: selected.maximumScannedBytes,
+        forceDeleteUnretainedData: selected.forceDeleteUnretainedData === true,
+      })
+    : (() => { throw new Error('Cloud lakehouse publishers require an S3 or ObjectStorage dataset branch.'); })()`};
 const disposeRuntime = installApplicationLakehousePublicationRuntimeResolver((qualification) => qualification === ${JSON.stringify(contract.qualification)} ? runtime : undefined);
 ${contract.observability ? generatedApplicationTelemetryRuntimeSource({ application: contract.graph.metadata.name, service: `lakehouse-publisher:${contract.consumer}` }) : ''}
 const binding = {
@@ -318,11 +349,13 @@ function publisherContract(
   const datasets: DatasetConfiguration[] = targetConfigurations(dataset).flatMap(({ configuration, targets }) => {
     const kind = stringValue(configuration.kind);
     if (kind === 'qualified-lakehouse-provider-required') return [];
-    if (kind !== 'duckdb-dataset' && kind !== 's3-dataset') throw new Error(`Lakehouse publisher ${publication.id} cannot run dataset implementation ${kind || '<unknown>'}.`);
+    if (kind !== 'duckdb-dataset' && kind !== 's3-dataset' && kind !== 'object-storage-dataset') throw new Error(`Lakehouse publisher ${publication.id} cannot run dataset implementation ${kind || '<unknown>'}.`);
     const cursorSecretEnvironment = stringValue(configuration.cursorSecretEnvironment) || 'APPLIK8S_CURSOR_SECRET';
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/u.test(cursorSecretEnvironment)) throw new Error(`Lakehouse publisher ${publication.id} has invalid cursor Secret environment ${cursorSecretEnvironment}.`);
     const maximumObjectsPerSnapshot = positiveInteger(configuration.maximumObjectsPerSnapshot);
     const retainedSnapshots = positiveInteger(configuration.retainedSnapshots);
+    const maximumRows = positiveInteger(configuration.maximumRowsPerQuery ?? configuration.maximumRows);
+    const maximumScannedBytes = positiveInteger(configuration.maximumScannedBytes);
     return [{
       kind,
       ...(targets ? { targets } : {}),
@@ -332,6 +365,10 @@ function publisherContract(
       schemaRevision: stringValue(configuration.schemaRevision) || 'v1', cursorSecretEnvironment,
       ...(maximumObjectsPerSnapshot ? { maximumObjectsPerSnapshot } : {}),
       ...(retainedSnapshots ? { retainedSnapshots } : {}),
+      ...(configuration.forceDeleteUnretainedData === true ? { forceDeleteUnretainedData: true } : {}),
+      ...(kind === 'object-storage-dataset' ? { storage: objectConfig(configuration.storage) } : {}),
+      ...(maximumRows ? { maximumRows } : {}),
+      ...(maximumScannedBytes ? { maximumScannedBytes } : {}),
     } satisfies DatasetConfiguration];
   });
   const namespace = applicationGraphStringValue(eventConfig.namespace) || applicationGraphStringValue(graph.metadata.namespace) || undefined;
@@ -370,6 +407,13 @@ function publisherResources(contract: PublisherContract, image: string, digest: 
     { name: 'APPLIK8S_NATS_STREAM', value: contract.stream }, { name: 'APPLIK8S_NATS_SUBJECT_PREFIX', value: contract.subjectPrefix },
     ...cursorEnvironments.map((name) => ({ name, valueFrom: { secretKeyRef: { name: `${kubernetesName(contract.graph.metadata.name)}-lakehouse-cursor`, key: 'key', optional: false } } })),
   ];
+  if (contract.datasets.some(({ kind }) => kind === 'object-storage-dataset')) {
+    env.push(...applicationObjectStorageEnvironment(
+      contract.graph,
+      contract.namespace ?? 'default',
+      `Lakehouse publisher ${contract.publication.id}`,
+    ));
+  }
   if (contract.connectionSecret?.authMode === 'token') env.push({ name: 'APPLIK8S_NATS_TOKEN', valueFrom: { secretKeyRef: { name: contract.connectionSecret.name, key: contract.connectionSecret.tokenKey, optional: false } } });
   if (contract.connectionSecret?.authMode === 'userPassword') env.push(
     { name: 'APPLIK8S_NATS_USER', valueFrom: { secretKeyRef: { name: contract.connectionSecret.name, key: contract.connectionSecret.userKey, optional: false } } },
@@ -385,14 +429,14 @@ function publisherResources(contract: PublisherContract, image: string, digest: 
     { apiVersion: 'jetstream.nats.io/v1beta2', kind: 'Consumer', metadata, spec: { durableName: contract.consumer, streamName: contract.stream, ackPolicy: 'explicit', ackWait: '60s', maxDeliver: 5, maxAckPending: 16, filterSubjects: [filter], servers: contract.servers } },
     { apiVersion: 'networking.k8s.io/v1', kind: 'NetworkPolicy', metadata, spec: { podSelector: { matchLabels: labels }, policyTypes: ['Ingress', 'Egress'], egress: [
       { to: [{ namespaceSelector: { matchLabels: { 'kubernetes.io/metadata.name': 'kube-system' } }, podSelector: { matchLabels: { 'k8s-app': 'kube-dns' } } }], ports: [{ protocol: 'UDP', port: 53 }, { protocol: 'TCP', port: 53 }] },
-      { ports: [{ protocol: 'TCP', port: 4222 }, { protocol: 'TCP', port: 443 }] },
+      { ports: [{ protocol: 'TCP', port: 4222 }, { protocol: 'TCP', port: 443 }, { protocol: 'TCP', port: 80 }] },
     ] } },
     { apiVersion: 'apps/v1', kind: 'Deployment', metadata, spec: { replicas: 1, selector: { matchLabels: labels }, strategy: { type: 'RollingUpdate', rollingUpdate: { maxUnavailable: 1, maxSurge: 0 } }, template: { metadata: { labels, annotations: { 'applik8s.dev/runtime-digest': digest } }, spec: {
       automountServiceAccountToken: false, terminationGracePeriodSeconds: 60,
       securityContext: { runAsNonRoot: true, runAsUser: 1000, runAsGroup: 1000, fsGroup: 1000, seccompProfile: { type: 'RuntimeDefault' } },
       containers: [{ name: 'publisher', image, imagePullPolicy: 'IfNotPresent', command: ['node', '/app/publisher.mjs'], env,
         securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: ['ALL'] } },
-        resources: { requests: { cpu: '50m', memory: '128Mi' }, limits: { memory: '512Mi' } },
+        resources: { requests: { cpu: '50m', memory: '128Mi' }, limits: { cpu: '500m', memory: '512Mi' } },
         readinessProbe: { exec: { command: ['test', '-f', '/tmp/applik8s-lakehouse-publisher-ready'] }, periodSeconds: 5, failureThreshold: 3 },
         livenessProbe: { exec: { command: ['node', '-e', "const {mtimeMs}=require('node:fs').statSync('/tmp/applik8s-lakehouse-publisher-heartbeat');process.exit(Date.now()-mtimeMs<60000?0:1)"] }, periodSeconds: 20, failureThreshold: 3 },
         volumeMounts: [{ name: 'tmp', mountPath: '/tmp' }],

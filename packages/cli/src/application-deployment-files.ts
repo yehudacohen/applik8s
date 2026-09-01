@@ -3,7 +3,10 @@ import { readdir, readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { parse } from 'yaml';
-export { stageExplicitApplicationInstance } from './application-deployment-instance-files.js';
+export {
+  readExplicitApplicationInstallationSpec,
+  stageExplicitApplicationInstance,
+} from './application-deployment-instance-files.js';
 export type { StagedApplicationInstance } from './application-deployment-instance-files.js';
 
 export interface GeneratedApplicationDeleteOptions {

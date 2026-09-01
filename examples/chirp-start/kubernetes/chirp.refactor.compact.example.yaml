@@ -7,6 +7,9 @@ spec:
   name: chirp-refactor
   hostname: chirp-refactor.localhost
   profile: starter
+  generation:
+    endpoint: https://openrouter.ai/api/v1
+    defaultProfile: nvidia/nemotron-3-ultra-550b-a55b:free
   version: 0.7.0-dev
   # Qualification on a shared single-node cluster keeps the full provider
   # topology but disables optional feature workers. The full flagship profile

@@ -14,6 +14,7 @@ import { generatedCallbackFactoryModule } from '../application-callback-module.j
 import type { GeneratedApplicationContainerArtifact } from '../application-containers/index.js';
 import { emitGeneratedApplicationContainer } from '../application-containers/index.js';
 import { applicationFrameworkCredentialDependencies } from '../application-framework-credentials.js';
+import { generatedRuntimeNodePaths } from '../node-module-resolution.js';
 import { applicationGraphStringValue } from '../application-installation-values.js';
 import { applik8sWorkspaceSourcePlugin } from '../bundling/index.js';
 import { handlerSourceMetadataPlugin } from '../pipeline/entrypoint-handler-instrumentation.js';
@@ -128,7 +129,7 @@ export async function emitGeneratedApplicationJobs(options: {
     sourcemap: 'external',
     sourcesContent: false,
     metafile: true,
-    nodePaths: [join(process.cwd(), 'node_modules')],
+    nodePaths: [...generatedRuntimeNodePaths()],
     banner: { js: "import { createRequire as __applik8sCreateRequire } from 'node:module'; const require = __applik8sCreateRequire(import.meta.url);" },
     supported: { 'template-literal': false },
     plugins: [

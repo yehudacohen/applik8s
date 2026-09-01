@@ -10,6 +10,116 @@ import { discoverApplicationGraphWithExports } from '../src/pipeline/index.js';
 const lakehouseEntrypoint = new URL('./fixtures/v08-lakehouse-app.ts', import.meta.url).pathname;
 
 describe('v0.8 lakehouse publication discovery', () => {
+  it('lowers a Kubernetes ObjectStorage dataset without AWS catalog credentials', async () => {
+    const discovered = await discoverApplicationGraphWithExports(
+      lakehouseEntrypoint,
+      'lakehouseProof',
+    );
+    expect(discovered.ok, discovered.ok ? undefined : discovered.error.message).toBe(true);
+    if (!discovered.ok) return;
+    const graph: ApplicationGraph = {
+      ...discovered.value.graph,
+      nodes: [
+        ...discovered.value.graph.nodes.map((node) =>
+          node.kind === 'provider' && node.id === 'provider.lakehouse-dataset.v1alpha1.historical-usage'
+            ? {
+                ...node,
+                config: {
+                  ...node.config,
+                  targetSelection: {
+                    ...node.config?.targetSelection as object,
+                    targets: {
+                      ...(node.config?.targetSelection as { readonly targets?: object } | undefined)?.targets,
+                      kubernetes: {
+                        implementation: 'object-storage-dataset',
+                        configuration: {
+                          kind: 'object-storage-dataset',
+                          storage: {
+                            kind: 's3',
+                            name: 'history-objects',
+                            bucket: 'logical-history',
+                            region: 'us-east-1',
+                            endpoint: 'http://rook-rgw.history.svc:80',
+                            forcePathStyle: true,
+                            ownership: 'external',
+                            credentialsSecret: {
+                              apiVersion: 'v1',
+                              kind: 'Secret',
+                              name: 'history-objects',
+                              namespace: 'lakehouse-proof',
+                            },
+                          },
+                          prefix: 'lakehouse/historical-usage',
+                          schemaRevision: 'v1',
+                        },
+                      },
+                    },
+                  },
+                },
+              }
+            : node),
+        {
+          id: 'provider.object-storage',
+          kind: 'provider',
+          name: 'ObjectStorage',
+          stability: 'stable',
+          interface: 'ObjectStorage',
+          implementation: 's3',
+          config: {
+            objectStorage: {
+              kind: 's3',
+              name: 'history-objects',
+              bucket: 'logical-history',
+              region: 'us-east-1',
+              endpoint: 'http://rook-rgw.history.svc:80',
+              forcePathStyle: true,
+              ownership: 'external',
+              credentialsSecret: {
+                apiVersion: 'v1',
+                kind: 'Secret',
+                name: 'history-objects',
+                namespace: 'lakehouse-proof',
+              },
+            },
+          },
+        },
+      ],
+    };
+    const [artifact] = await emitGeneratedApplicationLakehousePublishers({
+      entrypoint: lakehouseEntrypoint,
+      graph,
+      outDir: await mkdtemp(join(tmpdir(), 'applik8s-object-lakehouse-publisher-')),
+      executionTarget: 'kubernetes',
+    });
+    expect(artifact).toBeDefined();
+    if (!artifact) return;
+    const generated = await readFile(
+      join(artifact.sourcePath, '..', 'publisher.cloud.generated.ts'),
+      'utf8',
+    );
+    expect(generated).toContain('createObjectStorageApplicationLakehouseRuntime');
+    expect(generated).toContain('createS3ApplicationObjectStorageRuntime');
+    expect(generated).toContain("selected.kind === 'object-storage-dataset'");
+    const deployment = artifact.resources.find((resource) => resource.kind === 'Deployment');
+    const environment = (deployment as unknown as {
+      readonly spec: {
+        readonly template: {
+          readonly spec: {
+            readonly containers: readonly [{ readonly env: readonly Readonly<Record<string, unknown>>[] }];
+          };
+        };
+      };
+    }).spec.template.spec.containers[0].env;
+    expect(environment).toEqual(expect.arrayContaining([
+      { name: 'APPLIK8S_OBJECT_STORAGE_BUCKET', value: 'logical-history' },
+      { name: 'APPLIK8S_OBJECT_STORAGE_ENDPOINT', value: 'http://rook-rgw.history.svc:80' },
+      { name: 'AWS_ACCESS_KEY_ID', valueFrom: { secretKeyRef: { name: 'history-objects', key: 'AWS_ACCESS_KEY_ID' } } },
+      { name: 'AWS_SECRET_ACCESS_KEY', valueFrom: { secretKeyRef: { name: 'history-objects', key: 'AWS_SECRET_ACCESS_KEY' } } },
+    ]));
+    const policy = artifact.resources.find((resource) => resource.kind === 'NetworkPolicy');
+    expect(JSON.stringify(policy)).toContain('"port":80');
+  }, 60_000);
+
   it('omits a Kubernetes publisher when the target explicitly requires an external qualified provider', async () => {
     const discovered = await discoverApplicationGraphWithExports(
       lakehouseEntrypoint,
@@ -143,7 +253,21 @@ describe('v0.8 lakehouse publication discovery', () => {
           durableName: artifact.name,
         }),
       }),
-      expect.objectContaining({ kind: 'Deployment' }),
+      expect.objectContaining({
+        kind: 'Deployment',
+        spec: expect.objectContaining({
+          template: expect.objectContaining({
+            spec: expect.objectContaining({
+              containers: [expect.objectContaining({
+                resources: {
+                  requests: { cpu: '50m', memory: '128Mi' },
+                  limits: { cpu: '500m', memory: '512Mi' },
+                },
+              })],
+            }),
+          }),
+        }),
+      }),
     ]));
     const bundled = await readFile(artifact.sourcePath, 'utf8');
     const generated = await readFile(

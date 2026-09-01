@@ -257,11 +257,12 @@ export function createCelldApplicationActorRuntime(
             : [turn, call.input]))),
         );
         if (heartbeatFailure) throw new CelldActorLeaseLostError(call.definition.id, call.key, call.member, { cause: heartbeatFailure });
-        const committed = await actorRequest<{
+        type CommittedTurn = {
           readonly result?: object;
           readonly receipt: ApplicationActorAdmissionReceipt;
           readonly effects?: readonly ApplicationActorOutboxEvent[];
-        }>(request, endpoint, options.authorization, `${identity}/turns:commit`, {
+        };
+        const commitBody = {
           operationId,
           fingerprint,
           lease: begin.lease,
@@ -274,7 +275,63 @@ export function createCelldApplicationActorRuntime(
           alarms,
           effects,
           ephemeral,
-        }, [200]);
+        };
+        let committed:
+          | { readonly statusCode: number; readonly value: CommittedTurn }
+          | undefined;
+        try {
+          committed = await actorRequest<CommittedTurn>(request, endpoint, options.authorization, `${identity}/turns:commit`, commitBody, [200]);
+        } catch (commitCause) {
+          const recoveryDeadline = now().getTime() + admissionMilliseconds;
+          let latestRecoveryCause: unknown = commitCause;
+          while (now().getTime() < recoveryDeadline) {
+            try {
+              const recovery = await actorRequest<CelldActorBegin | CelldActorRejected>(request, endpoint, options.authorization, `${identity}/turns:begin`, {
+                operationId,
+                fingerprint,
+                member: call.member,
+                leaseMilliseconds,
+              }, [200, 409]);
+              if (recovery.statusCode === 200) {
+                const value = recovery.value as CelldActorBegin;
+                if (value.status === 'prior') {
+                  committed = {
+                    statusCode: 200,
+                    value: {
+                      ...(value.result ? { result: value.result } : {}),
+                      receipt: value.receipt,
+                      ...(value.effects ? { effects: value.effects } : {}),
+                    },
+                  };
+                  break;
+                }
+                await actorRequest(request, endpoint, options.authorization, `${identity}/turns:abort`, {
+                  operationId,
+                  lease: value.lease,
+                }, [200, 409]).catch(() => undefined);
+                throw new Error(
+                  `celld actor ${call.definition.id}.${call.member} could not prove whether the prior commit completed; `
+                  + 'the same stable operation may be retried.',
+                  { cause: commitCause },
+                );
+              }
+              const rejected = recovery.value as CelldActorRejected;
+              if (rejected.error !== 'actor_turn_busy') {
+                throw new Error(`celld actor commit recovery was rejected: ${rejected.error}.`, { cause: commitCause });
+              }
+            } catch (recoveryCause) {
+              latestRecoveryCause = recoveryCause;
+              if (recoveryCause instanceof Error && /could not prove|was rejected/u.test(recoveryCause.message)) throw recoveryCause;
+            }
+            await delay(retryMilliseconds);
+          }
+          if (!committed) {
+            throw new Error(
+              `celld actor ${call.definition.id}.${call.member} could not recover its commit receipt before the admission deadline.`,
+              { cause: latestRecoveryCause },
+            );
+          }
+        }
         await deliverCommittedEffects(committed.value.effects ?? [], identity, operationId);
         return committed.value;
       } catch (cause) {

@@ -51,6 +51,14 @@ The CLI never adopts kubectl's ambient context. Generate with
 `--context <name>`, add `applik8s.context` to `package.json`, or pass
 `--context <name>` to deployment commands.
 
+The generated commands also select the `developer` **assembly profile**. That
+profile chooses the concrete Kubernetes implementation graph (host, database,
+queue, workflows, and other providers). It is independent of the
+`spec.profile` **product profile** below, which chooses Starter, Developer,
+Dedicated, or External product behavior. The distinction is intentional: the
+same product installation can be planned for a different infrastructure
+assembly without changing application code or silently guessing a provider.
+
 ## Profiles
 
 - **Starter** is a local, credential-free, non-production system.

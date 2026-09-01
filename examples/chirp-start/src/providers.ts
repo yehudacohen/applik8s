@@ -1,16 +1,34 @@
 // typecast-file-boundary: inactive external profile branches are validated before graph materialization.
 import {
   type ApplicationAnalyticalDatabaseProvider,
-  AnalyticalDatabase,
   Analytics,
+  AnalyticalDatabase,
+  ApplicationHost,
+  AWS,
+  Certificate,
   ContainerRegistry,
-  defaultApplicationEventLogProvider,
+  Database,
+  DnsPublication,
   EventLog,
+  FiniteExecutionHost,
+  HttpExposure,
   IndexStore,
+  JobResultStore,
+  JobRuntime,
+  KubernetesCluster,
+  Lakehouse,
+  LakehouseDataset,
+  LakehouseQuery,
+  ManagedModelStore,
   ObjectStorage,
+  OperatorRuntime,
+  Queue,
+  Scheduler,
   StructuredGeneration,
   TransactionalDatabase,
   WorkflowEngine,
+  config,
+  secret,
 } from '@applik8s/applik8s';
 import {
   externalInfrastructureProviders,
@@ -42,6 +60,14 @@ const DurableWorkflows = WorkflowEngine.named('durable');
 const GeneratedContent = StructuredGeneration.named('content');
 const ApplicationImages = ContainerRegistry.named('images');
 const OnlineIndex = IndexStore.named('online');
+export const HistoricalEngagementDataset = LakehouseDataset.named('historical-engagement');
+export const HistoricalEngagementQueries = LakehouseQuery.named('historical-engagement');
+
+// Domain code captures the inert qualified handles. Profile assembly above
+// supplies their concrete implementations; application callbacks never
+// receive or inspect provider configuration.
+export const historicalEngagementDataset = HistoricalEngagementDataset;
+export const historicalEngagementQueries = HistoricalEngagementQueries;
 
 function externalProviders(spec: {
   readonly providers: ExternalProviderInputs;
@@ -50,7 +76,7 @@ function externalProviders(spec: {
 }
 
 function managedDatabase() {
-  return TransactionalDatabase.postgres({
+  return Database.postgres({
     name: 'chirp',
     clusterName: 'chirp-models',
     namespace,
@@ -77,13 +103,12 @@ function managedDatabase() {
 }
 
 function managedEvents() {
-  return {
-    ...defaultApplicationEventLogProvider,
+  return EventLog.jetStream({
     namespace,
     replicas: capacity.eventLogReplicas,
     storageSize: capacity.eventLogStorage,
     storageClassName: capacity.eventLogStorageClass,
-  };
+  });
 }
 
 function managedObjects() {
@@ -174,6 +199,67 @@ deployment
   .exhaustive();
 
 export const objectStorageProvider = app.inject(MediaObjects);
+
+app
+  .provide(HistoricalEngagementDataset)
+  .local(() => Lakehouse.duckdbDataset({
+    root: '.applik8s/state/lakehouse/historical-engagement',
+    schemaRevision: 'v1',
+    retainedSnapshots: 256,
+  }))
+  .awsLocal(() => Lakehouse.s3Dataset({
+    bucket: 'managed',
+    prefix: 'lakehouse/historical-engagement',
+    region: config.env('AWS_REGION'),
+    catalog: 'chirp_historical_engagement',
+    schemaRevision: 'v1',
+    retainedSnapshots: 256,
+    forceDeleteUnretainedData: true,
+  }))
+  .aws(() => Lakehouse.s3Dataset({
+    bucket: 'managed',
+    prefix: 'lakehouse/historical-engagement',
+    region: config.env('AWS_REGION'),
+    catalog: 'chirp_historical_engagement',
+    schemaRevision: 'v1',
+    retainedSnapshots: 256,
+    forceDeleteUnretainedData: true,
+  }))
+  .kubernetes(() => Lakehouse.objectStorageDataset({
+    storage: objectStorageProvider,
+    prefix: 'lakehouse/historical-engagement',
+    schemaRevision: 'v1',
+    retainedSnapshots: 256,
+  }));
+
+app
+  .provide(HistoricalEngagementQueries)
+  .local(() => Lakehouse.duckdbQueries({
+    maximumConcurrentQueries: 4,
+    maximumRows: 1_000,
+    maximumScannedBytes: 64 * 1024 * 1024,
+  }))
+  .awsLocal(() => Lakehouse.athenaQueries({
+    workgroup: 'managed',
+    region: config.env('AWS_REGION'),
+    resultLocation: 'managed',
+    maximumConcurrentQueries: 8,
+    maximumRows: 1_000,
+    maximumScannedBytes: 10_000_000_000,
+  }))
+  .aws(() => Lakehouse.athenaQueries({
+    workgroup: 'managed',
+    region: config.env('AWS_REGION'),
+    resultLocation: 'managed',
+    maximumConcurrentQueries: 8,
+    maximumRows: 1_000,
+    maximumScannedBytes: 10_000_000_000,
+  }))
+  .kubernetes(() => Lakehouse.objectStorageQueries({
+    maximumConcurrentQueries: 8,
+    maximumRows: 1_000,
+    maximumScannedBytes: 10_000_000_000,
+  }));
 
 deployment
   .provide(PrimaryDatabase)
@@ -355,3 +441,276 @@ app.provide(WorkflowEngine, workflows);
 app.provide(StructuredGeneration, generation);
 app.provide(ContainerRegistry, registry);
 app.provide(IndexStore, index);
+
+/**
+ * Target-free production assemblies. The domain modules above retain one
+ * semantic graph; these profiles select inspectable physical implementations
+ * without teaching domain code about AWS or Kubernetes.
+ */
+export const productionKubernetesProfile = app.profile(
+  'production-kubernetes',
+  (profile) => {
+    // The workload namespace is part of the authored installation contract,
+    // not a second ambient deployment input. Keeping one authority prevents a
+    // manifest and the deployment environment from selecting different
+    // Kubernetes identities for the same installation.
+    const profileNamespace = namespace;
+    const profileMediaBucket = mediaBucket;
+    const cluster = KubernetesCluster.current({ namespace: profileNamespace });
+    const database = Database.postgres({
+      name: 'chirp',
+      database: 'chirp',
+      namespace: profileNamespace,
+      ownership: 'direct-provisioned',
+      lifecycle: { deletionPolicy: 'retain' },
+      storage: { size: '100Gi' },
+    });
+    const events = EventLog.jetStream({
+      name: 'chirp-events',
+      namespace: profileNamespace,
+      replicas: 3,
+      storageSize: '50Gi',
+      pvcRetentionPolicy: 'retain',
+    });
+    const queue = Queue.jetStream({ eventLog: events });
+    const scheduler = Scheduler.postgres({ database });
+    const results = JobResultStore.postgres({ database });
+    const registry = ContainerRegistry.harbor({
+      endpoint: ContainerRegistry.origin('https://registry.chirp.internal'),
+      project: profileNamespace,
+      pushCredentials: {
+        apiVersion: 'v1',
+        kind: 'Secret',
+        namespace: profileNamespace,
+        name: 'chirp-registry-push',
+        dockerConfigJsonKey: '.dockerconfigjson',
+      },
+      pullSecret: {
+        apiVersion: 'v1',
+        kind: 'Secret',
+        namespace: profileNamespace,
+        name: 'chirp-registry-pull',
+      },
+    });
+    const jobHost = FiniteExecutionHost.kubernetes({ cluster, registry });
+    const host = ApplicationHost.kubernetes({
+      cluster,
+      registry,
+      namespace: profileNamespace,
+      name: 'chirp-web',
+      replicas: 3,
+    });
+    const certificate = Certificate.certManager({
+      cluster,
+      issuerRef: {
+        name: app.installation.spec.exposure.certificateIssuerName,
+        kind: 'ClusterIssuer',
+      },
+    });
+    const dns = DnsPublication.externalDns({
+      cluster,
+      hostname: app.installation.spec.hostname,
+    });
+    const exposure = HttpExposure.kubernetes({
+      cluster,
+      host,
+      certificate,
+      dns,
+      ingressClassName: 'nginx',
+    });
+    const objects = ObjectStorage.rookCeph({
+      cluster,
+      name: 'chirp-media',
+      namespace: profileNamespace,
+      bucket: profileMediaBucket,
+      endpoint: 'http://rook-ceph-rgw-applik8s-object-store.applik8s-rook-ceph.svc:80',
+      credentialsSecret: {
+        apiVersion: 'v1',
+        kind: 'Secret',
+        namespace: profileNamespace,
+        name: 'chirp-media',
+      },
+      storageClassName: 'ceph-bucket-retain',
+      retention: 'retain',
+    });
+    const historyDataset = Lakehouse.objectStorageDataset({
+      storage: objects,
+      prefix: 'lakehouse/historical-engagement',
+      schemaRevision: 'v1',
+      retainedSnapshots: 256,
+    });
+    const historyQueries = Lakehouse.objectStorageQueries({
+      maximumConcurrentQueries: 8,
+      maximumRows: 1_000,
+      maximumScannedBytes: 10_000_000_000,
+    });
+    const analytics = managedAnalytics();
+    const workflows = managedWorkflows();
+    const generation = StructuredGeneration.http({
+      endpoint: app.installation.spec.generation.endpoint,
+      credential: secret.env('OPENROUTER_API_KEY'),
+      authorization: 'bearer',
+      defaultProfile: app.installation.spec.generation.defaultProfile,
+    });
+    const index = managedIndex();
+
+    profile.defaults({ retention: 'retain', deletionApproval: 'required' });
+    profile.qualify({ id: 'chirp-production-kubernetes' });
+    profile.provide(PrimaryDatabase, database);
+    profile.provide(TransactionalDatabase, database);
+    profile.provide(PrimaryAnalytics, analytics);
+    profile.provide(AnalyticalDatabase, analytics);
+    profile.provide(
+      ManagedModelStore.named('moderation-policy'),
+      ManagedModelStore.postgres({ database }),
+    );
+    profile.provide(OperatorRuntime, OperatorRuntime.kubernetes({ cluster }));
+    profile.provide(JobRuntime, JobRuntime.kubernetes({
+      cluster,
+      queue,
+      executionHost: jobHost,
+      results,
+      scheduler,
+      events,
+    }));
+    // The same scheduler powers JobRuntime internals and the application's
+    // public schedules. Reusing one implementation preserves a single
+    // lifecycle identity while binding both capability surfaces.
+    profile.provide(Scheduler, scheduler);
+    profile.provide(ApplicationHost, host);
+    profile.provide(MediaObjects, objects);
+    profile.provide(ObjectStorage, objects);
+    profile.provide(HistoricalEngagementDataset, historyDataset);
+    profile.provide(HistoricalEngagementQueries, historyQueries);
+    profile.provide(PrimaryEvents, events);
+    profile.provide(EventLog, events);
+    profile.provide(DurableWorkflows, workflows);
+    profile.provide(WorkflowEngine, workflows);
+    profile.provide(GeneratedContent, generation);
+    profile.provide(StructuredGeneration, generation);
+    profile.provide(ApplicationImages, registry);
+    profile.provide(ContainerRegistry, registry);
+    profile.provide(OnlineIndex, index);
+    profile.provide(IndexStore, index);
+    profile.provide(Certificate, certificate);
+    profile.provide(DnsPublication, dns);
+    profile.provide(HttpExposure, exposure);
+  },
+);
+
+export const productionAwsProfile = app.profile('production-aws', (profile) => {
+  const account = AWS.account({
+    accountId: config.env('AWS_ACCOUNT_ID'),
+    region: config.env('AWS_REGION'),
+    credentials: secret.env('AWS_CREDENTIALS'),
+  });
+  const database = Database.auroraPostgres({
+    account,
+    name: 'chirp',
+    database: 'chirp',
+    retention: 'retain',
+  });
+  // EventBridge is the private finite-job admission scheduler. Chirp's public
+  // schedules require second precision, so they use the database-backed
+  // scheduler instead of silently weakening their authored contract.
+  const jobScheduler = Scheduler.eventBridge({ account });
+  const scheduler = Scheduler.postgres({ database });
+  const queue = Queue.sqs({ account, queueName: 'chirp-jobs' });
+  const results = JobResultStore.postgres({ database });
+  const registry = ContainerRegistry.ecr({ account, repositoryPrefix: 'chirp' });
+  const events = EventLog.kinesis({ account, streamName: 'chirp-events' });
+  const jobHost = FiniteExecutionHost.aws({ account, registry, mode: 'fargate' });
+  const host = ApplicationHost.aws({ account, registry, name: 'chirp-web', replicas: 3 });
+  const certificate = Certificate.acm({
+    account,
+    domain: config.env('APPLICATION_DOMAIN'),
+  });
+  const dns = DnsPublication.route53({
+    account,
+    zone: config.env('ROUTE53_ZONE'),
+    hostname: config.env('APPLICATION_DOMAIN'),
+  });
+  const exposure = HttpExposure.aws({ account, host, certificate, dns });
+  const objects = ObjectStorage.s3({
+    account,
+    bucket: config.env('CHIRP_MEDIA_BUCKET'),
+    retention: 'retain',
+  });
+  const historyDataset = Lakehouse.s3Dataset({
+    bucket: 'managed',
+    prefix: 'lakehouse/historical-engagement',
+    region: config.env('AWS_REGION'),
+    catalog: 'chirp_historical_engagement',
+    schemaRevision: 'v1',
+    retainedSnapshots: 256,
+    forceDeleteUnretainedData: true,
+  });
+  const historyQueries = Lakehouse.athenaQueries({
+    workgroup: 'managed',
+    region: config.env('AWS_REGION'),
+    resultLocation: 'managed',
+    maximumConcurrentQueries: 8,
+    maximumRows: 1_000,
+    maximumScannedBytes: 10_000_000_000,
+  });
+  const analytics = Analytics.postgres({ database, schema: 'analytics' });
+  const workflows = WorkflowEngine.hatchet({
+    name: 'chirp-workflows',
+    provision: true,
+    mode: 'ha',
+  });
+  const generation = StructuredGeneration.http({
+    endpoint: app.installation.spec.generation.endpoint,
+    credential: secret.env('OPENROUTER_API_KEY'),
+    defaultProfile: app.installation.spec.generation.defaultProfile,
+    authorization: 'bearer',
+  });
+  const index = IndexStore.valkey({
+    name: 'chirp-online-index',
+    port: 6379,
+    provision: true,
+    resources: {
+      requests: { cpu: '100m', memory: '128Mi' },
+      limits: { cpu: '1', memory: '512Mi' },
+    },
+  });
+
+  profile.defaults({ retention: 'retain', deletionApproval: 'required' });
+  profile.qualify({ id: 'chirp-production-aws' });
+  profile.provide(PrimaryDatabase, database);
+  profile.provide(TransactionalDatabase, database);
+  profile.provide(PrimaryAnalytics, analytics);
+  profile.provide(AnalyticalDatabase, analytics);
+  profile.provide(
+    ManagedModelStore.named('moderation-policy'),
+    ManagedModelStore.postgres({ database }),
+  );
+  profile.provide(OperatorRuntime, OperatorRuntime.distributed({ database, scheduler, queue }));
+  profile.provide(JobRuntime, JobRuntime.aws({
+    account,
+    queue,
+    executionHost: jobHost,
+    results,
+    scheduler: jobScheduler,
+    events,
+  }));
+  profile.provide(Scheduler, scheduler);
+  profile.provide(ApplicationHost, host);
+  profile.provide(MediaObjects, objects);
+  profile.provide(ObjectStorage, objects);
+  profile.provide(HistoricalEngagementDataset, historyDataset);
+  profile.provide(HistoricalEngagementQueries, historyQueries);
+  profile.provide(PrimaryEvents, events);
+  profile.provide(EventLog, events);
+  profile.provide(DurableWorkflows, workflows);
+  profile.provide(WorkflowEngine, workflows);
+  profile.provide(GeneratedContent, generation);
+  profile.provide(StructuredGeneration, generation);
+  profile.provide(ApplicationImages, registry);
+  profile.provide(ContainerRegistry, registry);
+  profile.provide(OnlineIndex, index);
+  profile.provide(IndexStore, index);
+  profile.provide(Certificate, certificate);
+  profile.provide(DnsPublication, dns);
+  profile.provide(HttpExposure, exposure);
+});

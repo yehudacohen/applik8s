@@ -18,6 +18,8 @@ import {
   type ApplicationKubernetesRuntimeAccessNetworkPolicyProvider,
   applicationCelldRuntimeManifest,
   applicationCelldRuntimeRelease,
+  applicationDeploymentGraphForImplementationPlan,
+  applicationImplementationConfigurationValues,
   applicationProviderGuaranteesForGraph,
   clickStackCredentialsSecretName,
   compileApplicationDeploymentGraph,
@@ -28,11 +30,21 @@ import {
   type ApplicationDeploymentStrategy,
   applicationDeploymentOutputReference,
   type DeploymentJsonObject,
+  type DeploymentJsonValue,
   digestApplicationDeploymentGraph,
   digestApplicationDeploymentValue,
   serializeApplicationDeploymentGraph,
 } from "@applik8s/deployment-contract";
 import { build } from "esbuild";
+import {
+  evaluateExpressionIR,
+  expressionIR,
+} from 'typekro/experimental/planning';
+import { applicationGraphStringValue } from './application-installation-values.js';
+import {
+  applicationStructuredGenerationAuthorityId,
+  applicationStructuredGenerationEnvironmentCredential,
+} from './application-structured-generation-credentials.js';
 
 const celldRuntimeArtifactId = "artifact.celld-runtime";
 const celldRuntimeBuildImage =
@@ -88,6 +100,20 @@ export async function emitApplicationDeploymentGraph(
       request.profile,
     );
   const installationSpec = jsonObject(request.installationSpec, "installation spec");
+  const physicalImplementationPlan = implementationPlan
+    ? await materializeImplementationPlanForDeployment(
+        implementationPlan,
+        installationSpec,
+      )
+    : undefined;
+  const deploymentGraph = physicalImplementationPlan
+    ? applicationDeploymentGraphForImplementationPlan(request.graph, physicalImplementationPlan, {
+        configuration: applicationImplementationConfigurationValues(
+          physicalImplementationPlan,
+          (reference) => process.env[reference],
+        ),
+      })
+    : request.graph;
   const materialized = withInstallationRuntimeBindings(
     await applicationMaterializedComposition(
     request.bundlePath,
@@ -97,6 +123,10 @@ export async function emitApplicationDeploymentGraph(
     request.graph,
     request.profile,
   );
+  const validationMaterialized = await materializeInstallationComposition(
+    materialized,
+    installationSpec,
+  );
   const artifacts = await applicationArtifactRequirements(
     bundle,
     request.bundlePath,
@@ -104,12 +134,12 @@ export async function emitApplicationDeploymentGraph(
     request.graph,
     request.sourceGraphDigest,
     request.celldRuntimeRelease ?? applicationCelldRuntimeRelease,
-    materialized.resources,
+    validationMaterialized.resources,
   );
   const generatedSecrets = await applicationGeneratedSecretRequirements(
     request.bundlePath,
-    request.graph.metadata.namespace,
-    request.graph,
+    deploymentGraph.metadata.namespace,
+    deploymentGraph,
     request.installationSpec,
   );
   const profileTransition = request.profileTransition
@@ -122,7 +152,7 @@ export async function emitApplicationDeploymentGraph(
     context: request.context,
   });
   const result = compileApplicationDeploymentGraph({
-    graph: request.graph,
+    graph: deploymentGraph,
     workspaceRoot: request.projectRoot,
     sourceGraphDigest: request.sourceGraphDigest,
     compilerVersion: request.compilerVersion,
@@ -137,6 +167,10 @@ export async function emitApplicationDeploymentGraph(
       instance: request.instance,
       profile: request.profile,
     },
+    // The CLI-selected implementation profile is the sole provider-selection
+    // authority. installationSpec.profile is retained only as a compatibility
+    // projection for older generated CRDs and must not reselect infrastructure.
+    providerProfile: request.profile,
     strategy: request.strategy,
     installationSpec,
     ...(profileTransition ? { profileTransition } : {}),
@@ -144,6 +178,10 @@ export async function emitApplicationDeploymentGraph(
     materializedComposition: {
       resources: materialized.resources,
       status: materialized.status,
+    },
+    validationComposition: {
+      resources: validationMaterialized.resources,
+      status: validationMaterialized.status,
     },
     clusterApiPrerequisites: materialized.clusterApiPrerequisites,
     generatedSecrets,
@@ -156,13 +194,15 @@ export async function emitApplicationDeploymentGraph(
   const applicationPlanPath = join(dirname(request.bundlePath), "application-plan.json");
   await writeFile(applicationPlanPath, serializeApplicationPlan(compileApplicationPlan({
     graph: request.graph,
+    resolutionGraph: deploymentGraph,
+    excludedExecutionNodeIds: result.excludedExecutionNodeIds,
     deployment: result.graph,
     target: "kubernetes",
     lifecycleAuthority: "alchemy",
     generatedAt: new Date(0).toISOString(),
     workspaceRoot: request.projectRoot,
     providerGuarantees: applicationProviderGuaranteesForGraph({
-      graph: request.graph,
+      graph: deploymentGraph,
       target: 'kubernetes',
       profile: request.profile,
     }),
@@ -174,6 +214,22 @@ export async function emitApplicationDeploymentGraph(
     graph: result.graph,
     artifactCount: artifacts.length,
     applicationPlanPath,
+  };
+}
+
+async function materializeImplementationPlanForDeployment(
+  plan: ApplicationImplementationPlan,
+  installationSpec: DeploymentJsonObject,
+): Promise<ApplicationImplementationPlan> {
+  return {
+    ...plan,
+    implementations: await Promise.all(plan.implementations.map(async (implementation) => ({
+      ...implementation,
+      configuration: await materializeKroValue(
+        implementation.configuration as DeploymentJsonValue,
+        installationSpec,
+      ) as typeof implementation.configuration,
+    }))),
   };
 }
 
@@ -546,6 +602,176 @@ export function withInstallationRuntimeBindings(
   return { ...materialized, resources };
 }
 
+/**
+ * Build the concrete instance view used by deployment validation. TypeKro's
+ * evaluator remains the single CEL authority; the reusable RGD resources are
+ * never replaced by this instance projection.
+ */
+export async function materializeInstallationComposition(
+  materialized: {
+    readonly resources: readonly DeploymentJsonObject[];
+    readonly status: DeploymentJsonObject;
+    readonly clusterApiPrerequisites: readonly DeploymentJsonObject[];
+  },
+  installationSpec: DeploymentJsonObject,
+): Promise<{
+  readonly resources: readonly DeploymentJsonObject[];
+  readonly status: DeploymentJsonObject;
+  readonly clusterApiPrerequisites: readonly DeploymentJsonObject[];
+}> {
+  const materializeObject = async (value: DeploymentJsonObject): Promise<DeploymentJsonObject> => {
+    const result = await materializeKroValue(value, installationSpec);
+    if (!result || typeof result !== 'object' || Array.isArray(result)) {
+      throw new Error('A materialized TypeKro object must remain an object.');
+    }
+    return result as DeploymentJsonObject;
+  };
+  return {
+    resources: await Promise.all(materialized.resources.map(materializeObject)),
+    status: await materializeObject(materialized.status),
+    clusterApiPrerequisites: await Promise.all(
+      materialized.clusterApiPrerequisites.map(materializeObject),
+    ),
+  };
+}
+
+async function materializeKroValue(
+  value: DeploymentJsonValue,
+  installationSpec: DeploymentJsonObject,
+): Promise<DeploymentJsonValue | undefined> {
+  if (typeof value === 'string') return materializeKroString(value, installationSpec);
+  if ((typeof value === 'object' || typeof value === 'function') && value !== null) {
+    const liveReference = applicationGraphStringValue(value);
+    if (liveReference !== undefined) {
+      return materializeKroString(liveReference, installationSpec);
+    }
+  }
+  if (Array.isArray(value)) {
+    const entries = await Promise.all(
+      value.map((entry) => materializeKroValue(entry, installationSpec)),
+    );
+    return entries.filter((entry): entry is DeploymentJsonValue => entry !== undefined);
+  }
+  if (value === null || typeof value !== 'object') return value;
+  const objectValue = value as DeploymentJsonObject;
+  const expression = objectValue.expression;
+  if (
+    typeof expression === 'string'
+    && Object.keys(objectValue).every((key) => key === 'expression' || key === '__isTemplate')
+  ) {
+    return materializeKroString('${' + expression + '}', installationSpec);
+  }
+  const entries = await Promise.all(Object.entries(value).map(async ([key, entry]) => {
+    const next = await materializeKroValue(entry, installationSpec);
+    return next === undefined ? undefined : [key, next] as const;
+  }));
+  return Object.fromEntries(
+    entries.filter((entry): entry is readonly [string, DeploymentJsonValue] => entry !== undefined),
+  ) as DeploymentJsonObject;
+}
+
+/**
+ * Materialize a JSON-compatible compiler value against one concrete
+ * installation without mutating the authored graph. This is shared by the
+ * early profile compiler and the later deployment-graph emitter so both
+ * validate identical Kubernetes identities.
+ */
+export async function materializeApplicationInstallationValue<T>(
+  value: T,
+  installationSpec: Readonly<Record<string, unknown>>,
+): Promise<T> {
+  return await materializeKroValue(
+    value as DeploymentJsonValue,
+    installationSpec as DeploymentJsonObject,
+  ) as T;
+}
+
+async function materializeKroString(
+  value: string,
+  installationSpec: DeploymentJsonObject,
+): Promise<DeploymentJsonValue | undefined> {
+  const segments = kroTemplateSegments(value);
+  if (!segments.some((segment) => segment.kind === 'expression')) return value;
+  const evaluated = await Promise.all(segments.map(async (segment) => {
+    if (segment.kind === 'literal') return segment.value;
+    const expression = expressionIR(segment.value);
+    if (expression.references.some((reference) => reference.source !== 'spec')) {
+      return `\${${segment.value}}`;
+    }
+    try {
+      return await evaluateExpressionIR(expression, {
+        resources: new Map([['schema', { spec: installationSpec }]]),
+      });
+    } catch {
+      // KRO-only functions such as json.marshal have no portable direct
+      // evaluator. Preserve them symbolically; downstream identity checks
+      // still fail closed if a concrete field depends on one.
+      return `\${${segment.value}}`;
+    }
+  }));
+  if (segments.length === 1 && segments[0]?.kind === 'expression') {
+    return evaluated[0] as DeploymentJsonValue | undefined;
+  }
+  return evaluated.map((entry) => {
+    if (entry === undefined || entry === null) return '';
+    if (typeof entry === 'object') {
+      throw new Error('A structured TypeKro expression cannot be interpolated into deployment text.');
+    }
+    return String(entry);
+  }).join('');
+}
+
+function kroTemplateSegments(value: string): readonly (
+  | { readonly kind: 'literal'; readonly value: string }
+  | { readonly kind: 'expression'; readonly value: string }
+)[] {
+  const segments: Array<
+    | { readonly kind: 'literal'; readonly value: string }
+    | { readonly kind: 'expression'; readonly value: string }
+  > = [];
+  let cursor = 0;
+  while (cursor < value.length) {
+    const start = value.indexOf('${', cursor);
+    if (start < 0) {
+      segments.push({ kind: 'literal', value: value.slice(cursor) });
+      break;
+    }
+    if (start > cursor) segments.push({ kind: 'literal', value: value.slice(cursor, start) });
+    const end = kroInterpolationEnd(value, start);
+    segments.push({ kind: 'expression', value: value.slice(start + 2, end) });
+    cursor = end + 1;
+  }
+  return segments;
+}
+
+function kroInterpolationEnd(value: string, start: number): number {
+  let depth = 1;
+  let quote: '"' | "'" | undefined;
+  let escaped = false;
+  for (let index = start + 2; index < value.length; index++) {
+    const character = value[index];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (character === '\\') {
+      escaped = true;
+      continue;
+    }
+    if (quote) {
+      if (character === quote) quote = undefined;
+      continue;
+    }
+    if (character === '"' || character === "'") {
+      quote = character;
+      continue;
+    }
+    if (character === '{') depth++;
+    if (character === '}' && --depth === 0) return index;
+  }
+  throw new Error(`Unterminated TypeKro expression at offset ${start}.`);
+}
+
 export function withPublishedActorIngressRoutes(
   resources: readonly DeploymentJsonObject[],
   graph: ApplicationGraph,
@@ -808,6 +1034,9 @@ export async function applicationGeneratedSecretRequirements(
   installationSpec: Readonly<Record<string, unknown>>,
 ): Promise<readonly ApplicationGeneratedSecretRequirement[]> {
   const requirements: ApplicationGeneratedSecretRequirement[] = [];
+  const generatedGatewayConsumers = await generatedGatewayInternalOperationConsumers(
+    bundlePath,
+  );
   let applicationHostConsumer: string | undefined;
   const hostPath = join(
     dirname(bundlePath),
@@ -886,13 +1115,6 @@ export async function applicationGeneratedSecretRequirements(
       resolvedApplicationNamespace ?? graph.metadata.namespace ?? "default",
       "Application MCP namespace",
     );
-    const gatewayConsumers = graph.nodes
-      .filter(
-        (node) =>
-          node.kind === "gateway"
-          && node.materialization === "generatedDeployment",
-      )
-      .map((node) => node.id);
     requirements.push({
       namespace,
       name: `${kubernetesName(graph.metadata.name)}-internal-operation`,
@@ -911,18 +1133,87 @@ export async function applicationGeneratedSecretRequirements(
         ...agents.map((agent) => agent.id),
         ...internalCallbacks.map((node) => node.id),
         ...workflowGatewayServers.map((server) => server.id),
-        ...gatewayConsumers,
+        ...generatedGatewayConsumers,
       ].sort(),
     });
   }
   return [
     ...requirements,
+    ...structuredGenerationEnvironmentSecretRequirements(
+      graph,
+      resolvedApplicationNamespace ?? graph.metadata.namespace ?? 'default',
+    ),
     ...hostEnvironmentSecretRequirements(
       installationSpec,
       resolvedApplicationNamespace ?? graph.metadata.namespace ?? "default",
       applicationHostConsumer,
     ),
   ];
+}
+
+function structuredGenerationEnvironmentSecretRequirements(
+  graph: ApplicationGraph,
+  namespaceValue: unknown,
+): readonly ApplicationGeneratedSecretRequirement[] {
+  const namespace = stringValue(namespaceValue, 'StructuredGeneration runtime namespace');
+  const consumers = graph.nodes
+    .filter((node) => node.kind === 'workflowWorker')
+    .map((node) => node.id)
+    .sort();
+  if (consumers.length === 0) return [];
+  const requirements = new Map<string, ApplicationGeneratedSecretRequirement>();
+  for (const node of graph.nodes) {
+    if (node.kind !== 'provider' || node.interface !== 'StructuredGeneration') continue;
+    applicationStructuredGenerationAuthorityId(graph, node);
+    const credential = applicationStructuredGenerationEnvironmentCredential(node);
+    if (!credential) continue;
+    const existing = requirements.get(credential.secretName);
+    if (existing) continue;
+    requirements.set(credential.secretName, {
+      id: `structured-generation.${createHash('sha256').update(credential.secretName).digest('hex').slice(0, 12)}`,
+      namespace,
+      name: credential.secretName,
+      referenceMode: 'staticIdentity' as const,
+      values: {
+        [credential.secretKey]: {
+          kind: 'hostEnvironment' as const,
+          name: credential.reference,
+        },
+      },
+      consumers,
+    });
+  }
+  return [...requirements.values()].sort((left, right) => left.name.localeCompare(right.name));
+}
+
+/**
+ * Generated gateways receive the internal-operation capability only when the
+ * emitted executable actually references it. Placement routing, tree shaking,
+ * and gateway coalescing can all make the authored graph broader than the
+ * runtime credential surface, so the immutable artifact contract is the
+ * authority at this boundary.
+ */
+async function generatedGatewayInternalOperationConsumers(
+  bundlePath: string,
+): Promise<readonly string[]> {
+  const bundle = await readJson(bundlePath);
+  const spec = objectValue(bundle.spec, "TypeKro bundle spec");
+  return arrayValue(spec.reactive)
+    .flatMap((value) => {
+      const entry = objectValue(value, "reactive bundle entry");
+      if (optionalString(entry.kind) !== "queryGateway") return [];
+      const consumesInternalOperations = arrayValue(entry.frameworkCredentials)
+        .some((credentialValue) => {
+          const credential = objectValue(
+            credentialValue,
+            "reactive framework credential",
+          );
+          return optionalString(credential.kind) === "internal-operation";
+        });
+      if (!consumesInternalOperations) return [];
+      return [stringValue(entry.nodeId, "query gateway nodeId")];
+    })
+    .sort();
 }
 
 /**

@@ -25,9 +25,58 @@ interface ResolvedEntrypoint {
   readonly source: string;
 }
 
+type PublicContractMaturity =
+  | 'stable-1.0-candidate'
+  | 'beta'
+  | 'preview'
+  | 'experimental'
+  | 'deprecated'
+  | 'internal';
+type PublicContractCompatibility =
+  | 'authoring'
+  | 'artifact'
+  | 'runtime'
+  | 'generated-source'
+  | 'provider'
+  | 'lifecycle';
+type PublicContractStability =
+  | 'stable'
+  | 'additive'
+  | 'informational'
+  | 'experimental'
+  | 'opaque';
+
+interface PublicContractDispositionGroup {
+  readonly id: string;
+  readonly owner: string;
+  readonly maturity: PublicContractMaturity;
+  readonly compatibility: readonly PublicContractCompatibility[];
+  readonly stability: PublicContractStability;
+  readonly evidence: readonly string[];
+  readonly packages: readonly string[];
+}
+
+interface PublicContractDispositionManifest {
+  readonly schemaVersion: 1;
+  readonly release: '0.9.0-alpha.1';
+  readonly status: 'candidate-review-ready' | 'frozen';
+  readonly documentation: string;
+  readonly groups: readonly PublicContractDispositionGroup[];
+}
+
 const root = resolve(new URL('..', import.meta.url).pathname);
 const outputPath = resolve(root, 'docs/v0.9-public-contract.json');
 const packageCatalog = await readFile(resolve(root, 'docs/packages.md'), 'utf8');
+const dispositionManifest = JSON.parse(
+  await readFile(resolve(root, 'docs/v0.9-public-contract-dispositions.json'), 'utf8'),
+) as PublicContractDispositionManifest;
+if (
+  dispositionManifest.schemaVersion !== 1
+  || dispositionManifest.release !== '0.9.0-alpha.1'
+  || !['candidate-review-ready', 'frozen'].includes(dispositionManifest.status)
+) {
+  throw new Error('PUBLIC_CONTRACT_DISPOSITION_IDENTITY_INVALID');
+}
 const manifests = await Promise.all(publishablePackageManifestPaths.map(async (manifestPath) => {
   const manifest = JSON.parse(await readFile(resolve(root, manifestPath), 'utf8')) as PackageManifest;
   if (!manifest.name?.startsWith('@applik8s/') && manifest.name !== 'create-applik8s') {
@@ -46,29 +95,44 @@ const sourcePaths = [...new Set(manifests.flatMap(({ entrypoints }) => entrypoin
 const program = ts.createProgram(sourcePaths, compilerOptions);
 const checker = program.getTypeChecker();
 const packageByDirectory = new Map(manifests.map(({ directory, manifest }) => [directory, manifest.name as string]));
+const dispositionByPackage = packageDispositions(
+  dispositionManifest,
+  manifests.map(({ manifest }) => manifest.name as string),
+);
 
 const packages = manifests
-  .map(({ directory, manifest, entrypoints }) => ({
-    name: manifest.name as string,
-    version: manifest.version as string,
-    directory,
-    description: manifest.description as string,
-    owner: `package:${manifest.name}`,
-    maturity: 'candidate-review-required',
-    documentation: 'docs/packages.md',
-    commands: typeof manifest.bin === 'string'
-      ? [manifest.name as string]
-      : Object.keys(manifest.bin ?? {}).sort(),
-    dependencies: [...new Set([
-      ...Object.keys(manifest.dependencies ?? {}),
-      ...Object.keys(manifest.peerDependencies ?? {}),
-    ].filter((name) => name.startsWith('@applik8s/')))].sort(),
-    entrypoints: entrypoints.map(({ name, source }) => ({
+  .map(({ directory, manifest, entrypoints }) => {
+    const name = manifest.name as string;
+    const disposition = dispositionByPackage.get(name);
+    if (!disposition) throw new Error(`PUBLIC_CONTRACT_PACKAGE_UNCLASSIFIED:${name}`);
+    const contract = inheritedContract(disposition, dispositionManifest.documentation);
+    return {
       name,
-      source,
-      symbols: exportedSymbols(resolve(root, source)),
-    })),
-  }))
+      version: manifest.version as string,
+      directory,
+      description: manifest.description as string,
+      contract,
+      replacement: { status: 'canonical', aliases: [] as readonly string[] },
+      commands: typeof manifest.bin === 'string'
+        ? [manifest.name as string]
+        : Object.keys(manifest.bin ?? {}).sort(),
+      dependencies: [...new Set([
+        ...Object.keys(manifest.dependencies ?? {}),
+        ...Object.keys(manifest.peerDependencies ?? {}),
+      ].filter((dependency) => dependency.startsWith('@applik8s/')))].sort(),
+      entrypoints: entrypoints.map(({ name: entrypoint, source }) => {
+        const symbols = exportedSymbols(resolve(root, source));
+        return {
+          name: entrypoint,
+          source,
+          kind: symbols.length === 0 ? 'side-effect' : 'module',
+          contract: { inherits: `package:${name}` },
+          symbols,
+          symbolContract: { inherits: `entrypoint:${name}:${entrypoint}` },
+        };
+      }),
+    };
+  })
   .sort((left, right) => left.name.localeCompare(right.name));
 
 for (const entry of packages) {
@@ -80,6 +144,8 @@ for (const entry of packages) {
 
 const diagnostics = [...collectDiagnostics()]
   .sort((left, right) => left.code.localeCompare(right.code));
+const cli = collectCliContracts();
+const environmentVariables = collectEnvironmentVariableContracts();
 const foundation = JSON.parse(await readFile(resolve(root, 'docs/v0.9-foundation.json'), 'utf8')) as {
   readonly contracts?: readonly unknown[];
 };
@@ -87,20 +153,25 @@ const foundation = JSON.parse(await readFile(resolve(root, 'docs/v0.9-foundation
 const inventory = {
   schemaVersion: 1,
   release: '0.9.0-alpha.1',
-  status: 'foundation-in-progress',
+  status: dispositionManifest.status,
   derivation: {
     packages: 'scripts/publishable-packages.mjs + packages/*/package.json',
     entrypoints: 'package export maps',
     symbols: 'TypeScript module exports resolved from entrypoint source',
     diagnostics: 'typed literal diagnostic/error positions in public package source',
+    cli: 'Commander command and option declarations in the public CLI source',
+    environmentVariables: 'process.env property reads reachable from public package source',
+    dispositions: 'docs/v0.9-public-contract-dispositions.json',
     documentation: 'docs/packages.md',
   },
   compatibility: {
-    defaultMaturity: 'candidate-review-required',
-    note: 'Package, entrypoint, symbol, and diagnostic discovery is complete; per-symbol owner, maturity, docs, compatibility, and evidence review remains an alpha.1 gate.',
+    inheritance: 'Every entrypoint inherits its package contract and every exported symbol inherits its entrypoint contract unless a future explicit symbol override is recorded.',
+    disposition: 'Every public package is assigned exactly one owner, maturity, compatibility set, stability class, documentation authority, evidence set, and replacement policy. Maintainer approval is still required before the candidate becomes frozen.',
   },
   packages,
   diagnostics,
+  cli,
+  environmentVariables,
   contracts: foundation.contracts ?? [],
 };
 
@@ -118,8 +189,48 @@ if (process.argv.includes('--write')) {
     entrypoints: packages.reduce((count, entry) => count + entry.entrypoints.length, 0),
     symbols: packages.reduce((count, entry) => count + entry.entrypoints.reduce((sum, item) => sum + item.symbols.length, 0), 0),
     diagnostics: diagnostics.length,
+    cliCommands: cli.commands.length,
+    cliOptions: cli.options.length,
+    environmentVariables: environmentVariables.length,
     status: inventory.status,
   }, null, 2));
+}
+
+function packageDispositions(
+  manifest: PublicContractDispositionManifest,
+  packageNames: readonly string[],
+): ReadonlyMap<string, PublicContractDispositionGroup> {
+  const known = new Set(packageNames);
+  const output = new Map<string, PublicContractDispositionGroup>();
+  for (const group of manifest.groups) {
+    if (!group.id || !group.owner || group.compatibility.length === 0 || group.evidence.length === 0) {
+      throw new Error(`PUBLIC_CONTRACT_DISPOSITION_INCOMPLETE:${group.id || '<empty>'}`);
+    }
+    for (const name of group.packages) {
+      if (!known.has(name)) throw new Error(`PUBLIC_CONTRACT_DISPOSITION_UNKNOWN_PACKAGE:${name}`);
+      if (output.has(name)) throw new Error(`PUBLIC_CONTRACT_DISPOSITION_DUPLICATED:${name}`);
+      output.set(name, group);
+    }
+  }
+  for (const name of known) {
+    if (!output.has(name)) throw new Error(`PUBLIC_CONTRACT_PACKAGE_UNCLASSIFIED:${name}`);
+  }
+  return output;
+}
+
+function inheritedContract(
+  disposition: PublicContractDispositionGroup,
+  documentation: string,
+) {
+  return {
+    disposition: disposition.id,
+    owner: disposition.owner,
+    maturity: disposition.maturity,
+    compatibility: [...disposition.compatibility],
+    stability: disposition.stability,
+    documentation,
+    evidence: [...disposition.evidence],
+  } as const;
 }
 
 function readCompilerOptions(): ts.CompilerOptions {
@@ -171,7 +282,11 @@ function collectDiagnostics(): readonly {
   readonly code: string;
   readonly owner: string;
   readonly sources: readonly string[];
-  readonly maturity: 'candidate-review-required';
+  readonly maturity: PublicContractMaturity;
+  readonly compatibility: readonly PublicContractCompatibility[];
+  readonly stability: PublicContractStability;
+  readonly documentation: string;
+  readonly evidence: readonly string[];
 }[] {
   const sourcesByCode = new Map<string, Set<string>>();
   for (const source of program.getSourceFiles()) {
@@ -180,12 +295,18 @@ function collectDiagnostics(): readonly {
     visit(source, source);
   }
   return [...sourcesByCode.entries()].map(([code, sources]) => {
-    const packagesForDiagnostic = [...new Set([...sources].map(packageForSource))];
+    const packagesForDiagnostic = [...new Set([...sources].map(packageForSource))]
+      .filter((name) => name !== 'unknown');
+    const disposition = mostConservativeDisposition(packagesForDiagnostic);
     return {
       code,
       owner: packagesForDiagnostic.length === 1 ? `package:${packagesForDiagnostic[0]}` : 'workspace:cross-package',
       sources: [...sources].sort(),
-      maturity: 'candidate-review-required' as const,
+      maturity: disposition.maturity,
+      compatibility: ['runtime'] as const,
+      stability: disposition.stability,
+      documentation: dispositionManifest.documentation,
+      evidence: [...disposition.evidence],
     };
   });
 
@@ -197,6 +318,121 @@ function collectDiagnostics(): readonly {
     }
     ts.forEachChild(node, (child) => visit(child, source));
   }
+}
+
+function collectCliContracts(): {
+  readonly commands: readonly {
+    readonly name: string;
+    readonly source: string;
+    readonly line: number;
+    readonly contract: ReturnType<typeof inheritedContract>;
+  }[];
+  readonly options: readonly {
+    readonly flags: string;
+    readonly required: boolean;
+    readonly source: string;
+    readonly line: number;
+    readonly contract: ReturnType<typeof inheritedContract>;
+  }[];
+} {
+  const disposition = dispositionByPackage.get('@applik8s/cli');
+  if (!disposition) throw new Error('PUBLIC_CONTRACT_PACKAGE_UNCLASSIFIED:@applik8s/cli');
+  const contract = inheritedContract(disposition, dispositionManifest.documentation);
+  const commands = new Map<string, { name: string; source: string; line: number; contract: typeof contract }>();
+  const options = new Map<string, { flags: string; required: boolean; source: string; line: number; contract: typeof contract }>();
+  for (const source of program.getSourceFiles()) {
+    const path = relative(root, source.fileName);
+    if (!path.startsWith('packages/cli/src/') || path.includes('/dist/')) continue;
+    visit(source, source, path);
+  }
+  return {
+    commands: [...commands.values()].sort((left, right) => left.name.localeCompare(right.name) || left.source.localeCompare(right.source) || left.line - right.line),
+    options: [...options.values()].sort((left, right) => left.flags.localeCompare(right.flags) || left.source.localeCompare(right.source) || left.line - right.line),
+  };
+
+  function visit(node: ts.Node, source: ts.SourceFile, path: string): void {
+    if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)) {
+      const method = node.expression.name.text;
+      const first = node.arguments[0];
+      if (first && ts.isStringLiteralLike(first)) {
+        const line = source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1;
+        if (method === 'command') {
+          const key = `${first.text}\0${path}\0${line}`;
+          commands.set(key, { name: first.text, source: path, line, contract });
+        }
+        if (method === 'option' || method === 'requiredOption') {
+          const key = `${first.text}\0${path}\0${line}`;
+          options.set(key, { flags: first.text, required: method === 'requiredOption', source: path, line, contract });
+        }
+      }
+    }
+    ts.forEachChild(node, (child) => visit(child, source, path));
+  }
+}
+
+function collectEnvironmentVariableContracts(): readonly {
+  readonly name: string;
+  readonly owners: readonly string[];
+  readonly sources: readonly string[];
+  readonly maturity: PublicContractMaturity;
+  readonly compatibility: readonly ['runtime'];
+  readonly stability: PublicContractStability;
+  readonly documentation: string;
+  readonly evidence: readonly string[];
+}[] {
+  const sourcesByName = new Map<string, Set<string>>();
+  const propertyPattern = /process\.env\.([A-Z][A-Z0-9_]*)/gu;
+  const elementPattern = /process\.env\[['"]([A-Z][A-Z0-9_]*)['"]\]/gu;
+  for (const source of program.getSourceFiles()) {
+    const path = relative(root, source.fileName);
+    if (!path.startsWith('packages/') || path.includes('/dist/') || path.includes('/test/')) continue;
+    for (const pattern of [propertyPattern, elementPattern]) {
+      pattern.lastIndex = 0;
+      for (const match of source.text.matchAll(pattern)) {
+        const name = match[1];
+        if (!name) continue;
+        const sources = sourcesByName.get(name) ?? new Set<string>();
+        sources.add(path);
+        sourcesByName.set(name, sources);
+      }
+    }
+  }
+  return [...sourcesByName.entries()].map(([name, sources]) => {
+    const owners = [...new Set([...sources].map(packageForSource))]
+      .filter((owner) => owner !== 'unknown')
+      .sort();
+    const disposition = mostConservativeDisposition(owners);
+    return {
+      name,
+      owners,
+      sources: [...sources].sort(),
+      maturity: disposition.maturity,
+      compatibility: ['runtime'] as const,
+      stability: disposition.stability,
+      documentation: dispositionManifest.documentation,
+      evidence: [...disposition.evidence],
+    };
+  }).sort((left, right) => left.name.localeCompare(right.name));
+}
+
+function mostConservativeDisposition(
+  packageNames: readonly string[],
+): PublicContractDispositionGroup {
+  const dispositions = packageNames
+    .map((name) => dispositionByPackage.get(name))
+    .filter((value): value is PublicContractDispositionGroup => value !== undefined);
+  if (dispositions.length === 0) {
+    throw new Error(`PUBLIC_CONTRACT_OWNER_UNAVAILABLE:${packageNames.join(',') || '<none>'}`);
+  }
+  const rank: Readonly<Record<PublicContractMaturity, number>> = {
+    internal: 0,
+    deprecated: 1,
+    experimental: 2,
+    preview: 3,
+    beta: 4,
+    'stable-1.0-candidate': 5,
+  };
+  return [...dispositions].sort((left, right) => rank[left.maturity] - rank[right.maturity])[0] as PublicContractDispositionGroup;
 }
 
 function isDiagnosticPosition(node: ts.StringLiteralLike): boolean {

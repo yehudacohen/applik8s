@@ -75,7 +75,7 @@ export interface GeneratedApplicationFetchGatewayOptions {
 interface ApplicationLakehouseDatasetBinding {
 	readonly providerId: string;
 	readonly qualification: string;
-	readonly kind: "duckdb-dataset" | "s3-dataset";
+	readonly kind: "duckdb-dataset" | "s3-dataset" | "object-storage-dataset";
 	readonly rowSchema: unknown;
 	readonly schemaRevision: string;
 	readonly root: string;
@@ -86,6 +86,10 @@ interface ApplicationLakehouseDatasetBinding {
 	readonly prefix?: string;
 	readonly region?: string;
 	readonly catalog?: string;
+	readonly forceDeleteUnretainedData?: boolean;
+	readonly storage?: Readonly<Record<string, unknown>>;
+	readonly maximumRows?: number;
+	readonly maximumScannedBytes?: number;
 }
 
 /**
@@ -207,6 +211,9 @@ export function generatedApplicationFetchGatewayModules(
 		lakehousePublications,
 	);
 	const lakehouseQueries = applicationLakehouseQueries(graph);
+	const hasObjectStorageLakehouse = lakehouseDatasets.some(
+		(dataset) => dataset.kind === "object-storage-dataset",
+	);
 	const observability = !schedulesOnly && applicationGraphHasObservabilityRuntime(graph);
 	const hasCallableProviderOperations = [...actors, ...schedules].some((node) =>
 		(node.providerBindings ?? []).some((binding) => binding.operation));
@@ -308,7 +315,7 @@ export function generatedApplicationFetchGatewayModules(
 		imports.push(
 			"import { proxyApplicationQueryMultiplex } from '@applik8s/applik8s/query-runtime';",
 		);
-	if (objectStores.length > 0)
+	if (objectStores.length > 0 || hasObjectStorageLakehouse)
 		imports.push(
 			"import { createApplicationFetchGateway } from '@applik8s/applik8s/reactive-runtime';",
 			"import { createS3ApplicationObjectStorageRuntime } from '@applik8s/runtime-s3';",
@@ -365,7 +372,7 @@ export function generatedApplicationFetchGatewayModules(
 	if (publicActors.length > 0) imports.push("import { randomUUID } from 'node:crypto';");
 	if (lakehousePublications.length > 0)
 		imports.push(
-			"import { createApplicationLakehousePublication, executeApplicationLakehousePublication, installApplicationLakehousePublicationRuntimeResolver, installApplicationLakehouseQueryRuntimeResolver } from '@applik8s/applik8s/lakehouse-runtime';",
+			"import { createApplicationLakehousePublication, createObjectStorageApplicationLakehouseRuntime, executeApplicationLakehousePublication, installApplicationLakehousePublicationRuntimeResolver, installApplicationLakehouseQueryRuntimeResolver } from '@applik8s/applik8s/lakehouse-runtime';",
 			"import { createAwsApplicationLakehouseDatasetRuntime, createAwsApplicationLakehouseQueryRuntime } from '@applik8s/runtime-aws/lakehouse';",
 			...(actors.length > 0
 				? []
@@ -1588,6 +1595,7 @@ const disposeActorInvocationAuthority = installApplicationActorInvocationAuthori
     executionId: turnId,
     attempt: 1,
     workloadIdentity: selfEnvelope.workloadIdentity,
+    ...(selfEnvelope.serviceIdentity ? { serviceIdentity: selfEnvelope.serviceIdentity } : {}),
     executionContext: {
       kind: 'actor',
       actor: request.actor,
@@ -1729,6 +1737,50 @@ const disposeLocalLakehousePublicationRuntime = localLakehouseRuntimes.size > 0
 const disposeLocalLakehouseQueryRuntime = localLakehouseRuntimes.size > 0
   ? installApplicationLakehouseQueryRuntimeResolver(() => localLakehouseQueryRuntime)
   : undefined;
+const objectStorageLakehouseRuntimeEntries = process.env.APPLIK8S_DEPLOYMENT_TARGET === 'kubernetes'
+  ? await Promise.all(${JSON.stringify(lakehouseDatasets)}.filter((dataset) => dataset.kind === 'object-storage-dataset' && (!dataset.targets || dataset.targets.includes('kubernetes'))).map(async (dataset) => {
+      const query = ${JSON.stringify(lakehouseQueries)}.find((candidate) => candidate.qualification === dataset.qualification && candidate.kind === 'object-storage-queries' && (!candidate.targets || candidate.targets.includes('kubernetes')));
+      return [dataset.qualification, await createObjectStorageApplicationLakehouseRuntime({
+        datasetId: dataset.qualification,
+        schemaRevision: dataset.schemaRevision,
+        schema: runtimeJsonSchema(dataset.rowSchema, dataset.qualification + '.row'),
+        cursorKey: requiredEnv(dataset.cursorSecretEnvironment),
+        storage: createS3ApplicationObjectStorageRuntime({
+          store: 'lakehouse-' + dataset.qualification,
+          provider: {
+            ...dataset.storage,
+            kind: 's3',
+            bucket: process.env.APPLIK8S_OBJECT_STORAGE_BUCKET || dataset.storage.bucket,
+            region: process.env.APPLIK8S_OBJECT_STORAGE_REGION || dataset.storage.region,
+            endpoint: process.env.APPLIK8S_OBJECT_STORAGE_ENDPOINT || dataset.storage.endpoint,
+            prefix: [process.env.APPLIK8S_OBJECT_STORAGE_PREFIX || dataset.storage.prefix, dataset.prefix].filter(Boolean).join('/'),
+            forcePathStyle: process.env.APPLIK8S_OBJECT_STORAGE_FORCE_PATH_STYLE
+              ? process.env.APPLIK8S_OBJECT_STORAGE_FORCE_PATH_STYLE === 'true'
+              : dataset.storage.forcePathStyle,
+          },
+        }),
+        maximumRows: query?.maximumRows ?? dataset.maximumRows,
+        maximumScannedBytes: query?.maximumScannedBytes ?? dataset.maximumScannedBytes,
+        maximumConcurrentQueries: query?.maximumConcurrentQueries ?? dataset.maximumConcurrentQueries,
+        forceDeleteUnretainedData: dataset.forceDeleteUnretainedData === true,
+      })];
+    }))
+  : [];
+const objectStorageLakehouseRuntimes = new Map(objectStorageLakehouseRuntimeEntries);
+const objectStorageLakehouseQueryRuntime = {
+  query(request) {
+    const qualification = request.dataset?.qualification?.name;
+    const runtime = qualification ? objectStorageLakehouseRuntimes.get(qualification) : undefined;
+    if (!runtime) throw new Error('No ObjectStorage lakehouse runtime is installed for dataset ' + String(qualification ?? '<unqualified>') + '.');
+    return runtime.query(request);
+  },
+};
+const disposeObjectStorageLakehousePublicationRuntime = objectStorageLakehouseRuntimes.size > 0
+  ? installApplicationLakehousePublicationRuntimeResolver((qualification) => objectStorageLakehouseRuntimes.get(qualification))
+  : undefined;
+const disposeObjectStorageLakehouseQueryRuntime = objectStorageLakehouseRuntimes.size > 0
+  ? installApplicationLakehouseQueryRuntimeResolver(() => objectStorageLakehouseQueryRuntime)
+  : undefined;
 const awsLakehouseBindingOverrides = process.env.APPLIK8S_AWS_LAKEHOUSE_BINDINGS
   ? JSON.parse(process.env.APPLIK8S_AWS_LAKEHOUSE_BINDINGS)
   : { datasets: {}, queries: {} };
@@ -1742,6 +1794,7 @@ const awsLakehouseRuntimeEntries = ['aws', 'aws-local', 'kubernetes'].includes(p
         region: override.region ?? dataset.region ?? process.env.AWS_REGION,
         catalogDatabase: override.catalogDatabase ?? dataset.catalog,
         schemaRevision: dataset.schemaRevision,
+        forceDeleteUnretainedData: dataset.forceDeleteUnretainedData === true,
         schema: runtimeJsonSchema(dataset.rowSchema, dataset.qualification + '.row'),
         cursorKey: requiredEnv(dataset.cursorSecretEnvironment),
       };
@@ -1770,6 +1823,8 @@ const disposeAwsLakehouseQueryRuntime = awsLakehouseQueryRuntimes.size > 0
   : undefined;
 void disposeLocalLakehousePublicationRuntime;
 void disposeLocalLakehouseQueryRuntime;
+void disposeObjectStorageLakehousePublicationRuntime;
+void disposeObjectStorageLakehouseQueryRuntime;
 void disposeAwsLakehousePublicationRuntime;
 void disposeAwsLakehouseQueryRuntime;
 
@@ -3082,7 +3137,7 @@ function applicationLakehouseDatasets(
 			const configuration = selected.configuration;
 			const kind = stringConfig(configuration.kind);
 			if (kind === "qualified-lakehouse-provider-required") continue;
-			if (kind !== "duckdb-dataset" && kind !== "s3-dataset") throw new Error(`Generated Fetch gateway cannot materialize LakehouseDataset ${qualification} from provider ${kind || "<unknown>"}.`);
+			if (kind !== "duckdb-dataset" && kind !== "s3-dataset" && kind !== "object-storage-dataset") throw new Error(`Generated Fetch gateway cannot materialize LakehouseDataset ${qualification} from provider ${kind || "<unknown>"}.`);
 		const cursorSecretEnvironment =
 			stringConfig(configuration.cursorSecretEnvironment) ||
 			"APPLIK8S_CURSOR_SECRET";
@@ -3131,6 +3186,12 @@ function applicationLakehouseDatasets(
 				prefix: stringConfig(configuration.prefix) || `lakehouse/${qualification}`,
 				region: stringConfig(configuration.region),
 				catalog: stringConfig(configuration.catalog),
+				...(configuration.forceDeleteUnretainedData === true ? { forceDeleteUnretainedData: true } : {}),
+			} : kind === "object-storage-dataset" ? {
+				storage: objectConfig(configuration.storage),
+				...(typeof configuration.maximumRowsPerQuery === "number" ? { maximumRows: configuration.maximumRowsPerQuery } : {}),
+				...(typeof configuration.maximumScannedBytes === "number" ? { maximumScannedBytes: configuration.maximumScannedBytes } : {}),
+				...(configuration.forceDeleteUnretainedData === true ? { forceDeleteUnretainedData: true } : {}),
 			} : {}),
 			});
 			}

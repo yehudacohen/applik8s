@@ -3,11 +3,13 @@
 import {
   type ApplicationCommandHandlerNode,
   type ApplicationGraph,
+  type ApplicationImplementationPlan,
   type ApplicationGraphNode,
   type ApplicationLakehousePublicationNode,
   type ApplicationModelNode,
   type ApplicationProcessorNode,
   type ApplicationProviderNode,
+  applicationGraphNodeIdentity,
   deriveApplicationGraphFoundation,
   resolveApplicationCallableProviderRuntimeEnvironment,
 } from '@applik8s/core';
@@ -29,6 +31,7 @@ import {
 } from '@applik8s/deployment-contract';
 import { isAwsRuntimeAccessSecurityGroupQualified, validateAwsRuntimeAccessParity } from './aws-runtime-access-parity.js';
 import { applicationCelldRuntimeRelease } from './celld-runtime-artifact.js';
+import { applicationDeploymentGraphForImplementationPlan } from './implementation-plan-graph.js';
 import { assertApplicationScheduleProviderCompatibility } from './provider-guarantees.js';
 import {
   applicationDeploymentRuntimeAccessTargetRecord,
@@ -42,12 +45,18 @@ import {
   compileApplicationRuntimeAccessPlan,
 } from './runtime-access-plan.js';
 import { applicationWorkloadProviderNodeIds } from './workload-provider-references.js';
+import { materializeInstallationValue } from './installation-materialization.js';
 
 const awsHatchetImage = 'ghcr.io/hatchet-dev/hatchet/hatchet-lite@sha256:5405c7f3991e85b7490b4e9fd7187bf5699f7cdd5b6e0c9a751751164b801aa9';
 const awsHatchetTenantId = '707d0855-80ab-4e1f-a156-f1c4546cbf52';
 
 export interface CompileApplicationAwsDeploymentPlanRequest {
   readonly graph: ApplicationGraph;
+  /** Canonical authored graph digest when graph is a concrete installation projection. */
+  readonly sourceGraphDigest?: `sha256:${string}`;
+  readonly implementationPlan?: ApplicationImplementationPlan;
+  /** Values for declared config sources only; never pass process-wide Secret values. */
+  readonly configuration?: Readonly<Record<string, string | undefined>>;
   readonly environment: string;
   readonly region: string;
   readonly accountId: string;
@@ -67,6 +76,15 @@ export interface CompileApplicationAwsDeploymentPlanRequest {
 
 /** Pure semantic graph -> reviewable AWS resource planning. Alchemy owns all effects. */
 export function compileApplicationAwsDeploymentPlan(request: CompileApplicationAwsDeploymentPlanRequest): ApplicationAwsDeploymentPlan {
+	if (request.implementationPlan) {
+		const { implementationPlan, configuration, ...rest } = request;
+		return compileApplicationAwsDeploymentPlan({
+			...rest,
+			graph: applicationDeploymentGraphForImplementationPlan(request.graph, implementationPlan, {
+				...(configuration ? { configuration } : {}),
+			}),
+		});
+	}
 	assertApplicationScheduleProviderCompatibility({
 		graph: request.graph,
 		target: request.target ?? 'aws',
@@ -302,6 +320,21 @@ export function compileApplicationAwsDeploymentPlan(request: CompileApplicationA
       ...(Object.keys(environmentKeys).length > 0 ? { environmentKeys } : {}),
     }, secretIdentity, 'none', ['secretArn']));
   }
+  for (const provider of selectedProviders) {
+    const credential = providerSecretEnvironmentBinding(provider);
+    if (!credential) continue;
+    const id = providerEnvironmentSecretResourceId(provider.id, credential.reference);
+    add(resource(id, 'secrets-manager', 'secret-authority', name(`provider-secret-${hash(`${provider.id}\0${credential.reference}`, 8)}`), {
+      values: 'deployment-environment',
+      environmentEntries: [{
+        secretField: 'apiKey',
+        environmentReference: credential.reference,
+      }],
+      sourceKind: 'secret.env',
+      sourceReference: credential.reference,
+      required: credential.required,
+    }, provider.id, 'none', ['secretArn']));
+  }
   if ([...resources.values()].some(({ service, resourceType }) => service === 's3' && resourceType === 'lakehouse-dataset')) {
     add(resource('lakehouse.cursor-signing', 'secrets-manager', 'secret-authority', name('lakehouse-cursor-signing'), {
       values: 'runtime-injected-only', passwordLength: 48, purpose: 'signed-snapshot-cursors',
@@ -361,7 +394,8 @@ export function compileApplicationAwsDeploymentPlan(request: CompileApplicationA
   }
 
   const schedules = request.graph.nodes.filter((node) => node.kind === 'schedule');
-  lowerAwsScheduleFoundation(request, resources, add, connect, name, schedules);
+  const schedulerProvider = selectedProviders.find(({ interface: providerInterface }) => providerInterface === 'Scheduler');
+  lowerAwsScheduleFoundation(request, resources, add, connect, name, schedules, schedulerProvider);
   const runtimeBindings = awsRuntimeBindings(request.graph, resources);
   const managedHosts = selectedProviders.filter(({ interface: providerInterface }) => providerInterface === 'ApplicationHost');
   const serverHosts = managedHosts.length > 0
@@ -394,6 +428,7 @@ export function compileApplicationAwsDeploymentPlan(request: CompileApplicationA
 
   const runtimeAccess = compileApplicationRuntimeAccessPlan({
     graph: request.graph,
+    ...(request.sourceGraphDigest ? { sourceGraphDigest: request.sourceGraphDigest } : {}),
     target: request.target ?? 'aws',
     profile: request.profile ?? request.environment,
     ...(request.workspaceRoot ? { workspaceRoot: request.workspaceRoot } : {}),
@@ -409,6 +444,12 @@ export function compileApplicationAwsDeploymentPlan(request: CompileApplicationA
       ? awsDnsBootstrapEgress(request.target ?? 'aws')
       : [],
     workloadPlacements,
+    credentialRequirements: awsProviderEnvironmentCredentialRequirements(
+      workloadPlacements,
+      request.graph,
+      runtimeArtifacts,
+      request.workspaceRoot,
+    ),
     ...(includedExecutionNodeIds ? { includedExecutionNodeIds } : {}),
   });
   for (const diagnostic of runtimeAccess.diagnostics) diagnostics.push({ severity: diagnostic.severity, code: 'AWS_RUNTIME_ACCESS_UNRESOLVED', message: diagnostic.message, subjectId: diagnostic.requirementId });
@@ -448,6 +489,15 @@ export function compileApplicationAwsDeploymentPlan(request: CompileApplicationA
       : undefined, 'control-plane', ['roleArn']);
     add(role);
     runtimeRolesByWorkloadResourceId.set(workload.aws.resourceId, role);
+    const providerSecretResources = workloadProviderSecretResources(
+      workload.executionIdentities.flatMap((identity) => {
+        const execution = runtimeAccess.executions.find(({ executionIdentity }) => executionIdentity === identity);
+        return execution ? [execution.nodeId] : [];
+      }),
+      request.graph,
+      resources,
+      request.workspaceRoot,
+    );
     const executionRole = resource(`runtime-execution-role.${hash(workload.workloadIdentity, 16)}`, 'iam', 'role', workload.aws.executionRoleName ?? name(`bootstrap-${hash(workload.workloadIdentity, 12)}`, 64), {
       assumeService: 'ecs-tasks.amazonaws.com',
       managedPolicyArns: ['arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy'],
@@ -461,6 +511,9 @@ export function compileApplicationAwsDeploymentPlan(request: CompileApplicationA
       : undefined, 'control-plane', ['roleArn']);
     add(executionRole);
     executionRolesByWorkloadResourceId.set(workload.aws.resourceId, executionRole);
+    for (const secret of providerSecretResources) {
+      connect({ from: secret.id, to: executionRole.id, relationship: 'requiresOutput', output: 'secretArn' });
+    }
   }
   for (const workload of runtimeAccess.workloads) {
     if (!workload.aws) continue;
@@ -503,7 +556,11 @@ export function compileApplicationAwsDeploymentPlan(request: CompileApplicationA
     }
     const id = `runtime-artifact.${hash(artifactId, 20)}`;
     const placement = runtimeArtifactPlacement(artifact, request.graph);
-    const runtimeConfiguration = workloadRuntimeConfiguration(artifact.nodeId, request, resources);
+    const runtimeConfiguration = workloadRuntimeConfiguration(
+      [...new Set([artifact.nodeId, ...(artifact.executionNodeIds ?? [])])],
+      request,
+      resources,
+    );
     const runtimeEndpointBindings = (artifact.runtimeEndpoints ?? []).flatMap((endpoint) => {
       const resourceId = runtimeServiceResourceIds.get(endpoint.nodeId);
       if (!resourceId) {
@@ -522,22 +579,39 @@ export function compileApplicationAwsDeploymentPlan(request: CompileApplicationA
     const role = runtimeRolesByWorkloadResourceId.get(id);
     const executionRole = executionRolesByWorkloadResourceId.get(id);
     const workloadAccess = runtimeAccess.workloads.find((workload) => workload.aws?.resourceId === id)?.aws;
-    const processor = artifact.role === 'processor'
-      ? request.graph.nodes.find((node): node is ApplicationProcessorNode => node.id === artifact.nodeId && node.kind === 'processor')
-      : undefined;
+    const processors = artifact.role === 'processor'
+      ? [...new Set([artifact.nodeId, ...(artifact.executionNodeIds ?? [])])]
+          .flatMap((nodeId) => {
+            const node = request.graph.nodes.find((candidate) => candidate.id === nodeId);
+            return node?.kind === 'processor' ? [node] : [];
+          })
+      : [];
+    const processor = processors[0];
     const lakehousePublisher = artifact.role === 'lakehouse'
       ? request.graph.nodes.find((node): node is ApplicationLakehousePublicationNode => node.id === artifact.nodeId && node.kind === 'lakehousePublication')
       : undefined;
-    const eventLogNodeId = processor?.eventLog?.nodeId ?? lakehousePublisher?.eventLog?.nodeId;
-    const stream = eventLogNodeId
-      ? [...resources.values()].find(({ service, resourceType, semanticNodeId }) => service === 'kinesis' && resourceType === 'stream' && semanticNodeId === eventLogNodeId)
-      : undefined;
-    const checkpoint = artifact.role === 'processor' || artifact.role === 'lakehouse' ? resources.get('framework.kinesis-checkpoints') : undefined;
-    if (artifact.role === 'processor' && (!processor || !stream || !checkpoint)) {
+    const processorEventLogNodeIds = new Set(processors.map(({ eventLog }) => eventLog?.nodeId).filter((nodeId): nodeId is string => Boolean(nodeId)));
+    if (processorEventLogNodeIds.size > 1) {
       diagnostics.push({
         severity: 'error',
         code: 'AWS_RUNTIME_ACCESS_UNRESOLVED',
-        message: `AWS processor artifact ${artifactId} requires one exact processor node, Kinesis EventLog, and DynamoDB checkpoint authority.`,
+        message: `AWS processor artifact ${artifactId} combines processors backed by multiple EventLog authorities: ${[...processorEventLogNodeIds].sort().join(', ')}.`,
+        subjectId: artifact.nodeId,
+      });
+    }
+    const eventLogNodeId = [...processorEventLogNodeIds][0] ?? lakehousePublisher?.eventLog?.nodeId;
+    const canonicalEventLogNodeId = eventLogNodeId
+      ? canonicalApplicationProviderId(request.graph, eventLogNodeId)
+      : undefined;
+    const stream = eventLogNodeId
+      ? [...resources.values()].find(({ service, resourceType, semanticNodeId }) => service === 'kinesis' && resourceType === 'stream' && semanticNodeId === canonicalEventLogNodeId)
+      : undefined;
+    const checkpoint = artifact.role === 'processor' || artifact.role === 'lakehouse' ? resources.get('framework.kinesis-checkpoints') : undefined;
+    if (processors.length > 0 && (!stream || !checkpoint)) {
+      diagnostics.push({
+        severity: 'error',
+        code: 'AWS_RUNTIME_ACCESS_UNRESOLVED',
+        message: `AWS processor artifact ${artifactId} requires one exact Kinesis EventLog and DynamoDB checkpoint authority for all contained stream processors.`,
         subjectId: artifact.nodeId,
       });
     }
@@ -605,7 +679,9 @@ export function compileApplicationAwsDeploymentPlan(request: CompileApplicationA
         eventStreamResourceId: stream.id,
         checkpointTableResourceId: checkpoint.id,
         consumer: processor?.name ?? lakehousePublisher?.name ?? artifactId,
-        processorConcurrency: processor ? numericDeploymentValue(processor.deployment.concurrency, 1) : 1,
+        processorConcurrency: processors.length > 0
+          ? Math.max(...processors.map((entry) => numericDeploymentValue(entry.deployment.concurrency, 1)))
+          : 1,
         ...(databaseEnvironmentName ? { databaseEnvironmentName } : {}),
       } : {}),
     }, artifact.nodeId, 'private', placement.kind === 'service' ? ['serviceArn', 'endpoint'] : ['serviceArn']));
@@ -627,16 +703,23 @@ export function compileApplicationAwsDeploymentPlan(request: CompileApplicationA
     if (executionRole) connect({ from: executionRole.id, to: id, relationship: 'assumesRole', output: 'ecs-execution' });
     if (stream) connect({ from: stream.id, to: id, relationship: 'requiresReady' });
     if (checkpoint) connect({ from: checkpoint.id, to: id, relationship: 'requiresReady' });
+    for (const resourceId of deploymentStringArray(runtimeConfiguration.lakehouseResourceIds)) {
+      if (resources.has(resourceId)) connect({ from: resourceId, to: id, relationship: 'requiresOutput', output: 'lakehouse-runtime-binding' });
+    }
+    for (const binding of deploymentObjectArray(runtimeConfiguration.callableProviderSecretEnvironment)) {
+      const resourceId = stringValue(binding.resourceId);
+      if (resourceId && resources.has(resourceId)) connect({ from: resourceId, to: id, relationship: 'requiresOutput', output: 'secretArn' });
+    }
   }
 
   for (const host of applicationHosts) {
     const id = `application-host.${hash(host.id, 16)}`;
-    const runtimeConfiguration = {
+    const runtimeConfiguration: DeploymentJsonObject = {
       ...workloadRuntimeConfiguration(host.id, request, resources),
       // The generated ApplicationHost owns schedule admission and occurrence
       // execution; schedule nodes do not become an implicit second worker.
       scheduleAccess: schedules.length > 0,
-    } satisfies DeploymentJsonObject;
+    };
     const runtimeEndpointBindings = runtimeArtifacts.flatMap((artifact) => {
       const node = request.graph.nodes.find(({ id: nodeId }) => nodeId === artifact.nodeId);
       const exposed = artifact.role === 'agent'
@@ -688,6 +771,13 @@ export function compileApplicationAwsDeploymentPlan(request: CompileApplicationA
     if (role) connect({ from: role.id, to: id, relationship: 'assumesRole' });
     if (executionRole) connect({ from: executionRole.id, to: id, relationship: 'assumesRole', output: 'ecs-execution' });
     for (const endpoint of runtimeEndpointBindings) connect({ from: String(endpoint.resourceId), to: id, relationship: 'requiresReady' });
+    for (const resourceId of deploymentStringArray(runtimeConfiguration.lakehouseResourceIds)) {
+      if (resources.has(resourceId)) connect({ from: resourceId, to: id, relationship: 'requiresOutput', output: 'lakehouse-runtime-binding' });
+    }
+    for (const binding of deploymentObjectArray(runtimeConfiguration.callableProviderSecretEnvironment)) {
+      const resourceId = stringValue(binding.resourceId);
+      if (resourceId && resources.has(resourceId)) connect({ from: resourceId, to: id, relationship: 'requiresOutput', output: 'secretArn' });
+    }
   }
 
   const actorFleet = [...resources.values()].find(({ service, resourceType }) => service === 'ecs' && resourceType === 'celld-fleet');
@@ -945,14 +1035,16 @@ function providerIdsForWorkload(nodeId: string, graph: ApplicationGraph, workspa
 }
 
 function workloadRuntimeConfiguration(
-  nodeId: string,
+  nodeIds: string | readonly string[],
   request: CompileApplicationAwsDeploymentPlanRequest,
   resources: ReadonlyMap<string, ApplicationAwsPlanResource>,
 ): DeploymentJsonObject {
+  const executionNodeIds = typeof nodeIds === 'string' ? [nodeIds] : [...new Set(nodeIds)];
+  const workloadLabel = executionNodeIds.join(', ');
   const graph = request.graph;
   const workspaceRoot = request.workspaceRoot;
-  const reachable = workloadNodeIds(nodeId, graph, workspaceRoot);
-  const providerIds = providerIdsForWorkload(nodeId, graph, workspaceRoot);
+  const reachable = new Set(executionNodeIds.flatMap((nodeId) => [...workloadNodeIds(nodeId, graph, workspaceRoot)]));
+  const providerIds = new Set(executionNodeIds.flatMap((nodeId) => [...providerIdsForWorkload(nodeId, graph, workspaceRoot)]));
   const providers = graph.nodes
     .filter((node): node is ApplicationProviderNode => node.kind === 'provider' && providerIds.has(node.id))
     .map((provider) => resolveApplicationProviderForTarget(provider, {
@@ -996,6 +1088,35 @@ function workloadRuntimeConfiguration(
     }
     return [{ providerId, name, resourceId, key: source.key, optional: source.optional }];
   });
+  for (const provider of providers) {
+    if (provider.interface !== 'StructuredGeneration' || provider.implementation !== 'structured-generation-http') continue;
+    const credential = providerSecretEnvironmentBinding(provider);
+    if (!credential) continue;
+    callableProviderSecretEnvironment.push({
+      providerId: provider.id,
+      name: 'APPLIK8S_STRUCTURED_GENERATION_API_KEY',
+      resourceId: providerEnvironmentSecretResourceId(provider.id, credential.reference),
+      key: 'apiKey',
+      optional: !credential.required,
+    });
+  }
+  const frameworkCredentialSecretEnvironment = (request.runtimeArtifacts ?? [])
+    .filter((artifact) => executionNodeIds.includes(artifact.nodeId)
+      || (artifact.executionNodeIds ?? []).some((nodeId) => executionNodeIds.includes(nodeId)))
+    .flatMap(({ frameworkCredentials }) => frameworkCredentials ?? [])
+    .flatMap((credential) => {
+      if (credential.kind !== 'cursor') return [];
+      if (!resources.has('lakehouse.cursor-signing')) {
+        throw new Error(`AWS workload ${workloadLabel} requires cursor credential ${credential.environmentName}, but no managed lakehouse cursor authority was planned.`);
+      }
+      return [{
+        providerId: 'framework.lakehouse-cursor',
+        name: credential.environmentName,
+        resourceId: 'lakehouse.cursor-signing',
+        key: 'value',
+        optional: false,
+      }];
+    });
   return {
     runtimePublicOutputResourceIds: exactResources.map(({ id }) => id).sort(),
     eventStreamResourceIds,
@@ -1005,10 +1126,101 @@ function workloadRuntimeConfiguration(
     workflowEngineResourceIds,
     runtimeSecretResourceIds,
     callableProviderEnvironment,
-    callableProviderSecretEnvironment,
+    callableProviderSecretEnvironment: [
+      ...callableProviderSecretEnvironment,
+      ...frameworkCredentialSecretEnvironment,
+    ],
     objectStorageBindings,
     scheduleAccess: [...reachable].some((id) => graph.nodes.some((node) => node.id === id && node.kind === 'schedule')),
   };
+}
+
+function providerSecretEnvironmentBinding(
+  provider: ApplicationProviderNode,
+): { readonly reference: string; readonly required: boolean } | undefined {
+  const credential = objectValue(providerConfig(provider).credential);
+  if (!credential) return undefined;
+  if (
+    credential.apiVersion !== 'applik8s.configurationBinding/v1alpha1'
+    || credential.kind !== 'secret'
+    || credential.source !== 'environment'
+    || typeof credential.reference !== 'string'
+    || !/^[A-Za-z_][A-Za-z0-9_]*$/u.test(credential.reference)
+  ) {
+    throw new Error(`AWS provider ${provider.id} contains an invalid secret.env(...) credential binding.`);
+  }
+  return { reference: credential.reference, required: credential.required !== false };
+}
+
+function providerEnvironmentSecretResourceId(providerId: string, reference: string): string {
+  return `provider-secret.${hash(`${providerId}\0${reference}`, 16)}`;
+}
+
+function awsProviderEnvironmentCredentialRequirements(
+  workloadPlacements: readonly ApplicationRuntimeAccessWorkloadPlacement[],
+  graph: ApplicationGraph,
+  runtimeArtifacts: readonly ApplicationRuntimeArtifact[],
+  workspaceRoot?: string,
+): readonly { readonly consumerNodeId: string; readonly resourceId: string; readonly keys: readonly string[] }[] {
+  const requirements = new Map<string, { readonly consumerNodeId: string; readonly resourceId: string; readonly keys: readonly string[] }>();
+  const foundation = deriveApplicationGraphFoundation(
+    graph,
+    workspaceRoot ? { workspaceRoot } : {},
+  );
+  const executionNodeIds = new Set(graph.nodes.flatMap((node) => {
+    const identity = applicationGraphNodeIdentity({
+      application: graph.metadata.name,
+      nodeKind: node.kind,
+      nodeId: node.id,
+    });
+    return foundation.identities.some((candidate) =>
+      candidate.kind === 'execution-boundary' && candidate.parentId === identity.id)
+      ? [node.id]
+      : [];
+  }));
+  for (const placement of workloadPlacements) {
+    for (const consumerNodeId of placement.executionNodeIds) {
+      if (!executionNodeIds.has(consumerNodeId)) continue;
+      for (const providerId of providerIdsForWorkload(consumerNodeId, graph, workspaceRoot)) {
+        const provider = graph.nodes.find((node): node is ApplicationProviderNode =>
+          node.kind === 'provider' && node.id === providerId);
+        if (!provider || !providerSecretEnvironmentBinding(provider)) continue;
+        const key = `${consumerNodeId}\0${provider.id}`;
+        requirements.set(key, { consumerNodeId, resourceId: provider.id, keys: ['apiKey'] });
+      }
+    }
+  }
+  for (const artifact of runtimeArtifacts) {
+    if (!artifact.frameworkCredentials?.some(({ kind }) => kind === 'cursor')) continue;
+    if (!executionNodeIds.has(artifact.nodeId)) continue;
+    requirements.set(`${artifact.nodeId}\0framework.lakehouse-cursor`, {
+      consumerNodeId: artifact.nodeId,
+      resourceId: 'framework.lakehouse-cursor',
+      keys: ['value'],
+    });
+  }
+  return [...requirements.values()].sort((left, right) =>
+    left.consumerNodeId.localeCompare(right.consumerNodeId)
+    || left.resourceId.localeCompare(right.resourceId));
+}
+
+function workloadProviderSecretResources(
+  executionNodeIds: readonly string[],
+  graph: ApplicationGraph,
+  resources: ReadonlyMap<string, ApplicationAwsPlanResource>,
+  workspaceRoot?: string,
+): readonly ApplicationAwsPlanResource[] {
+  const providerIds = new Set<string>();
+  for (const nodeId of executionNodeIds) {
+    for (const providerId of providerIdsForWorkload(nodeId, graph, workspaceRoot)) providerIds.add(providerId);
+  }
+  return [...resources.values()]
+    .filter(({ service, resourceType, semanticNodeId }) =>
+      service === 'secrets-manager'
+      && resourceType === 'secret-authority'
+      && Boolean(semanticNodeId && providerIds.has(semanticNodeId)))
+    .filter(({ configuration }) => configuration.sourceKind === 'secret.env')
+    .sort((left, right) => left.id.localeCompare(right.id));
 }
 
 function workloadObjectStorageBindings(
@@ -1045,8 +1257,10 @@ function lowerAwsScheduleFoundation(
   connect: (edge: ApplicationAwsPlanEdge) => void,
   name: (suffix: string, limit?: number) => string,
   schedules: readonly Extract<ApplicationGraphNode, { kind: 'schedule' }>[],
+  schedulerProvider: ApplicationProviderNode | undefined,
 ): void {
   if (schedules.length === 0) return;
+  if (!schedulerProvider) throw new Error('AWS schedules require one selected Scheduler provider.');
   const existingPostgres = [...resources.values()].find(isAwsPostgresResource);
   if (!existingPostgres) {
     add(resource('scheduler.receipts', 'rds', 'postgresql-instance', name('schedule-receipts'), {
@@ -1056,6 +1270,14 @@ function lowerAwsScheduleFoundation(
     connect({ from: 'foundation.subnet.private.1', to: 'scheduler.receipts', relationship: 'networkAccess' });
     connect({ from: 'foundation.subnet.private.2', to: 'scheduler.receipts', relationship: 'networkAccess' });
     connect({ from: 'foundation.security-group.application', to: 'scheduler.receipts', relationship: 'networkAccess' });
+  }
+  // The PostgreSQL scheduler is admitted and converged by the generated
+  // ApplicationHost against the occurrence authority above. EventBridge and
+  // SQS belong exclusively to the eventbridge-scheduler implementation; they
+  // must not appear merely because the semantic graph contains a schedule.
+  if (schedulerProvider.implementation === 'postgres-scheduler') return;
+  if (schedulerProvider.implementation !== 'eventbridge-scheduler') {
+    throw new Error(`AWS Scheduler implementation ${schedulerProvider.implementation} has no schedule foundation lowering.`);
   }
   add(resource('scheduler.group', 'eventbridge-scheduler', 'schedule-group', name('schedules'), {}, undefined, 'none', ['groupArn']));
   add(resource('scheduler.admission', 'sqs', 'queue', name('schedule-admission'), { visibilityTimeoutSeconds: 300, receiveWaitTimeSeconds: 20, encrypted: true }, undefined, 'private', ['queueArn', 'queueUrl']));
@@ -1130,7 +1352,9 @@ function awsRuntimeAccessWorkloadPlacements(
   const hostPlacements = applicationHostNodeIds.map((nodeId): ApplicationRuntimeAccessWorkloadPlacement => {
     const resourceId = `application-host.${hash(nodeId, 16)}`;
     const executionNodeIds = new Set(workloadNodeIds(nodeId, request.graph, request.workspaceRoot));
-    for (const scheduleNodeId of scheduleNodeIds) executionNodeIds.add(scheduleNodeId);
+    for (const scheduleNodeId of scheduleNodeIds) {
+      if (!artifactExecutionNodeIds.has(scheduleNodeId)) executionNodeIds.add(scheduleNodeId);
+    }
     // A graph can be planned before compiler-owned worker artifacts have been
     // emitted. In that phase the sole ApplicationHost is the honest fallback
     // execution boundary for every unclaimed semantic node. Once artifacts
@@ -1260,7 +1484,17 @@ function lowerAwsExposures(
     : {};
   const hostedZones = { ...(request.hostedZones ?? {}), ...providerHostedZones };
   for (const exposure of request.graph.nodes.filter((node) => node.kind === 'exposure')) {
-    if (exposure.enabled === false) continue;
+    const enabled = request.installationSpec
+      ? materializeInstallationValue(deploymentJson(exposure.enabled), request.installationSpec)
+      : exposure.enabled;
+    if (enabled === false) continue;
+    if (enabled !== true && enabled !== undefined) {
+      diagnostics.push({
+        severity: 'error', code: 'AWS_CONFIGURATION_UNRESOLVED', subjectId: exposure.id,
+        message: `Exposure ${exposure.name} enabled condition did not resolve to a concrete boolean for AWS lowering.`,
+      });
+      continue;
+    }
     if (!loadBalancer) {
       diagnostics.push({
         severity: 'error', code: 'AWS_CONFIGURATION_UNRESOLVED', subjectId: exposure.id,
@@ -1268,8 +1502,14 @@ function lowerAwsExposures(
       });
       continue;
     }
-    const hostnames = [...new Set(exposure.hostnames.map(normalizeHostname))].filter(Boolean);
-    if (hostnames.length === 0 || hostnames.length !== exposure.hostnames.length) {
+    const materializedHostnames = request.installationSpec
+      ? materializeInstallationValue(deploymentJson(exposure.hostnames), request.installationSpec)
+      : exposure.hostnames;
+    const concreteHostnames: readonly string[] = Array.isArray(materializedHostnames)
+      ? materializedHostnames.filter((hostname): hostname is string => typeof hostname === 'string')
+      : [];
+    const hostnames = [...new Set(concreteHostnames.map(normalizeHostname))].filter(Boolean);
+    if (hostnames.length === 0 || hostnames.length !== concreteHostnames.length) {
       diagnostics.push({
         severity: 'error', code: 'AWS_CONFIGURATION_UNRESOLVED', subjectId: exposure.id,
         message: `Exposure ${exposure.name} must contain concrete DNS hostnames for AWS lowering.`,
@@ -1405,6 +1645,10 @@ function awsProviderResources(provider: ApplicationProviderNode, request: Compil
     }];
   }
   if (provider.interface === 'AnalyticalDatabase' && provider.implementation === 'postgres-analytics') return [];
+  if (provider.interface === 'ManagedModelStore' && provider.implementation === 'postgres-managed-model-store') return [];
+  if (provider.interface === 'OperatorRuntime' && provider.implementation === 'distributed-operator-runtime') return [];
+  if (provider.interface === 'Scheduler' && provider.implementation === 'postgres-scheduler') return [];
+  if (provider.interface === 'StructuredGeneration' && ['structured-generation-deterministic', 'structured-generation-http'].includes(provider.implementation)) return [];
   if (provider.interface === 'IndexStore' && ['valkey', 'elasticache-valkey'].includes(provider.implementation)) return [resource(`provider.${semantic}`, 'elasticache', 'valkey-replication-group', name(`valkey-${hash(semantic, 8)}`), { engine: 'valkey', port: 6379, encryptedAtRest: true, encryptedInTransit: true, replicas: request.environment === 'production' ? 2 : 1 }, semantic, 'private', ['endpoint', 'port', 'secretArn'])];
   if (provider.interface === 'ObjectStorage' && ['s3', 'kubernetes-configmap-objects'].includes(provider.implementation)) {
     const retention = stringValue(config.retention) ?? 'delete';
@@ -1448,6 +1692,7 @@ function awsProviderResources(provider: ApplicationProviderNode, request: Compil
         prefix: stringValue(config.prefix) ?? `lakehouse/${hash(semantic, 12)}`,
         qualification,
         schemaRevision: stringValue(config.schemaRevision) ?? 'v1',
+        forceDeleteUnretainedData: config.forceDeleteUnretainedData === true,
         region: stringValue(config.region) ?? request.region,
         catalogResourceId: catalogId,
       }, semantic, 'none', ['bucketName', 'bucketArn', 'prefix']),
@@ -1651,7 +1896,34 @@ function awsRuntimeAccessBindings(
     });
     const candidates = [...resources.values()].filter(({ semanticNodeId }) => semanticNodeId === canonicalProviderId);
     const primary = candidates.find(({ resourceType }) => ['bucket', 'lakehouse-dataset', 'queue', 'stream'].includes(resourceType));
-    if ((provider.interface === 'ObjectStorage' || provider.interface === 'LakehouseDataset') && (primary?.resourceType === 'bucket' || primary?.resourceType === 'lakehouse-dataset')) bindings[provider.id] = { bucket: primary.physicalName, prefix: primary.configuration.prefix };
+    if (provider.interface === 'LakehouseDataset' && primary?.resourceType === 'lakehouse-dataset') {
+      const catalogResourceId = stringValue(primary.configuration.catalogResourceId);
+      const catalog = catalogResourceId ? resources.get(catalogResourceId) : undefined;
+      if (!catalog || catalog.service !== 'glue' || catalog.resourceType !== 'catalog-database') {
+        throw new Error(`AWS LakehouseDataset ${provider.id} has no exact Glue catalog authority.`);
+      }
+      bindings[provider.id] = {
+        bucket: primary.physicalName,
+        prefix: primary.configuration.prefix,
+        catalogDatabase: catalog.physicalName,
+        catalogArn: `arn:aws:glue:${request.region}:${request.accountId}:catalog`,
+        databaseArn: `arn:aws:glue:${request.region}:${request.accountId}:database/${catalog.physicalName}`,
+        tableArn: `arn:aws:glue:${request.region}:${request.accountId}:table/${catalog.physicalName}/*`,
+        forceDeleteUnretainedData: primary.configuration.forceDeleteUnretainedData === true,
+      };
+    }
+    else if (provider.interface === 'LakehouseQuery') {
+      const query = candidates.find(({ service, resourceType }) => service === 'athena' && resourceType === 'workgroup');
+      const resultResourceId = query ? stringValue(query.configuration.resultBucketResourceId) : undefined;
+      const results = resultResourceId ? resources.get(resultResourceId) : undefined;
+      if (query && results?.service === 's3' && results.resourceType === 'bucket') {
+        bindings[provider.id] = {
+          workgroupArn: `arn:aws:athena:${request.region}:${request.accountId}:workgroup/${query.physicalName}`,
+          resultBucketArn: `arn:aws:s3:::${results.physicalName}`,
+        };
+      }
+    }
+    else if (provider.interface === 'ObjectStorage' && (primary?.resourceType === 'bucket' || primary?.resourceType === 'lakehouse-dataset')) bindings[provider.id] = { bucket: primary.physicalName, prefix: primary.configuration.prefix };
     else if (provider.interface === 'Queue' && primary?.resourceType === 'queue') bindings[provider.id] = { queueArn: `arn:aws:sqs:${request.region}:${request.accountId}:${primary.physicalName}` };
     else if ((provider.interface === 'EventLog' || provider.interface === 'EventSource') && primary?.resourceType === 'stream') bindings[provider.id] = { streamArn: `arn:aws:kinesis:${request.region}:${request.accountId}:stream/${primary.physicalName}` };
     else if (provider.interface === 'TransactionalDatabase') {
@@ -1672,13 +1944,32 @@ function awsRuntimeAccessBindings(
       };
     }
     else if (provider.interface === 'Scheduler') {
-      const queue = resources.get('scheduler.admission');
-      const group = resources.get('scheduler.group');
-      const executionRole = resources.get('scheduler.execution-role');
-      if (queue && group && executionRole) bindings[provider.id] = {
-        queueArn: `arn:aws:sqs:${request.region}:${request.accountId}:${queue.physicalName}`,
-        scheduleArn: `arn:aws:scheduler:${request.region}:${request.accountId}:schedule/${group.physicalName}/*`,
-        executionRoleArn: `output://${executionRole.id}/roleArn`,
+      if (provider.implementation === 'postgres-scheduler') {
+        const database = [...resources.values()].find(isAwsPostgresResource);
+        if (database) bindings[provider.id] = {
+          secretArn: `output://${database.id}/secretArn`,
+          networkResourceId: database.id,
+          networkProtocol: 'TCP',
+          networkPort: numberValue(database.configuration.port) ?? 5432,
+        };
+      } else {
+        const queue = resources.get('scheduler.admission');
+        const group = resources.get('scheduler.group');
+        const executionRole = resources.get('scheduler.execution-role');
+        if (queue && group && executionRole) bindings[provider.id] = {
+          queueArn: `arn:aws:sqs:${request.region}:${request.accountId}:${queue.physicalName}`,
+          scheduleArn: `arn:aws:scheduler:${request.region}:${request.accountId}:schedule/${group.physicalName}/*`,
+          executionRoleArn: `output://${executionRole.id}/roleArn`,
+        };
+      }
+    }
+    else if (provider.interface === 'AnalyticalDatabase' && provider.implementation === 'postgres-analytics') {
+      const database = [...resources.values()].find(isAwsPostgresResource);
+      if (database) bindings[provider.id] = {
+        secretArn: `output://${database.id}/secretArn`,
+        networkResourceId: database.id,
+        networkProtocol: 'TCP',
+        networkPort: numberValue(database.configuration.port) ?? 5432,
       };
     }
     else if ((provider.interface === 'FiniteExecutionHost' && provider.implementation === 'aws-finite-execution-host')
@@ -1752,6 +2043,10 @@ function awsRuntimeAccessBindings(
   const checkpoint = resources.get('framework.kinesis-checkpoints');
   if (checkpoint) bindings['framework.processor-checkpoints'] = {
     tableArn: `arn:aws:dynamodb:${request.region}:${request.accountId}:table/${checkpoint.physicalName}`,
+  };
+  const cursorSecret = resources.get('lakehouse.cursor-signing');
+  if (cursorSecret) bindings['framework.lakehouse-cursor'] = {
+    secretArn: `arn:aws:secretsmanager:${request.region}:${request.accountId}:secret:${cursorSecret.physicalName}-*`,
   };
   return bindings;
 }
@@ -1995,6 +2290,8 @@ function hash(value: string, length: number): string { return sha256Hex(value).s
 function objectValue(value: unknown): Record<string, unknown> | undefined { return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined; }
 function stringValue(value: unknown): string | undefined { return typeof value === 'string' && value.trim() ? value : undefined; }
 function numberValue(value: unknown): number | undefined { return typeof value === 'number' && Number.isFinite(value) ? value : undefined; }
+function deploymentStringArray(value: unknown): readonly string[] { return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === 'string') : []; }
+function deploymentObjectArray(value: unknown): readonly Readonly<Record<string, unknown>>[] { return Array.isArray(value) ? value.filter((entry): entry is Readonly<Record<string, unknown>> => Boolean(entry) && typeof entry === 'object' && !Array.isArray(entry)) : []; }
 // typecast-file-boundary: provider/runtime-access records are serialized and
 // parsed through JSON before entering the closed deployment-plan contract.
 function deploymentJson(value: unknown): DeploymentJsonValue { return JSON.parse(stableJson(value)) as DeploymentJsonValue; }

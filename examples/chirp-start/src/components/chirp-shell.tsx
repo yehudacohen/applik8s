@@ -17,6 +17,7 @@ export function ChirpShell({ title, status, children, rail }: { readonly title: 
         <Link aria-label="Notifications" to="/notifications">♢ <span>Notifications</span></Link>
         <Link aria-label="Bookmarks" to="/bookmarks">⌑ <span>Bookmarks</span></Link>
         <Link aria-label="Automation" to="/automation">✦ <span>Automation</span></Link>
+        <Link aria-label="Analytics" to="/analytics">⌁ <span>Analytics</span></Link>
         {account?.roles.includes('moderator') ? <Link aria-label="Moderation" to="/moderation">⚑ <span>Moderation</span></Link> : null}
         <Link aria-label="Settings" to="/settings">⚙ <span>Settings</span></Link>
       </nav>
@@ -37,7 +38,7 @@ export function ChirpShell({ title, status, children, rail }: { readonly title: 
 export function ArchitectureRail() {
   return <div className="inspector">
     <p className="eyebrow">Runtime topology</p><h2>One application graph</h2>
-    <ul><li><b>Postgres</b><span>product authority</span></li><li><b>JetStream</b><span>durable replay</span></li><li><b>Valkey</b><span>online projection target</span></li><li><b>ClickHouse</b><span>rebuildable analytics</span></li><li><b>S3</b><span>media bytes</span></li><li><b>Hatchet</b><span>durable workflows</span></li><li><b>Kubernetes</b><span>installation + policy</span></li></ul>
+    <ul><li><b>Postgres</b><span>product authority</span></li><li><b>JetStream / Kinesis</b><span>durable replay</span></li><li><b>Valkey</b><span>online projection target</span></li><li><b>ClickHouse</b><span>rebuildable analytics</span></li><li><b>DuckDB / Athena</b><span>immutable history</span></li><li><b>S3</b><span>media + lakehouse bytes</span></li><li><b>Hatchet</b><span>durable workflows</span></li><li><b>TypeKro / Alchemy</b><span>selected implementation plan</span></li></ul>
   </div>;
 }
 

@@ -1478,6 +1478,8 @@ export interface ApplicationQueryNode extends ApplicationGraphNodeBase<'query'> 
     readonly member: string;
     readonly memberKind: 'command' | 'message' | 'alarm';
   }[];
+  /** Exact qualified provider values and operations captured by the function-native query callback. */
+  readonly providerBindings?: readonly ApplicationCallableProviderBinding[];
   readonly handlerLocation?: SourceLocation;
   readonly handlerUnresolved?: readonly string[];
 }
@@ -5045,9 +5047,12 @@ function applicationMLModelNodeStructureDiagnostics(
 }
 
 function applicationWorkflowWorkerNodeStructureDiagnostics(node: ApplicationWorkflowWorkerNode, graph: ApplicationGraph): readonly Diagnostic[] {
-  const handlerIds = new Set(graph.nodes.filter((candidate) => candidate.kind === 'taskHandler' || candidate.kind === 'workflowHandler').map((candidate) => candidate.id));
+  const handlerIds = new Set(graph.nodes.filter((candidate) =>
+    candidate.kind === 'taskHandler'
+    || candidate.kind === 'workflowHandler'
+    || candidate.kind === 'saga').map((candidate) => candidate.id));
   const diagnostics: Diagnostic[] = [];
-  if (node.handlers.length === 0) diagnostics.push(applicationGraphStructureDiagnostic(`Application workflow worker ${node.id} must include at least one task or workflow handler.`));
+  if (node.handlers.length === 0) diagnostics.push(applicationGraphStructureDiagnostic(`Application workflow worker ${node.id} must include at least one task, workflow, or Saga handler.`));
   for (const handler of node.handlers) if (!handlerIds.has(handler.nodeId)) diagnostics.push(applicationGraphStructureDiagnostic(`Application workflow worker ${node.id} references missing handler ${handler.nodeId}.`));
   if (!applicationGraphPositiveInteger(node.deployment.replicas) || !applicationGraphPositiveInteger(node.deployment.taskSlots) || !applicationGraphPositiveInteger(node.deployment.durableSlots)) diagnostics.push(applicationGraphStructureDiagnostic(`Application workflow worker ${node.id} requires positive replica, task-slot, and durable-slot counts.`));
   if (node.deployment.egress !== 'allowAll' && node.deployment.egress !== 'sameNamespace') diagnostics.push(applicationGraphStructureDiagnostic(`Application workflow worker ${node.id} requires an explicit supported egress posture.`));

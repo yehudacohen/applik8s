@@ -62,6 +62,10 @@ const CommonInstallation = type({
   name: 'string',
   hostname: 'string',
   version: 'string',
+  generation: {
+    endpoint: 'string',
+    defaultProfile: 'string',
+  },
   features: {
     automatedAccounts: 'boolean',
     analytics: 'boolean',

@@ -8,6 +8,7 @@ import { generatedCallbackFactoryModule } from '../application-callback-module.j
 import type { GeneratedApplicationContainerArtifact } from '../application-containers/index.js';
 import { emitGeneratedApplicationContainer } from '../application-containers/index.js';
 import { applicationFrameworkCredentialDependencies } from '../application-framework-credentials.js';
+import { generatedRuntimeNodePaths } from '../node-module-resolution.js';
 import { applicationGraphBooleanCondition, applicationGraphInterpolate, applicationGraphJsonStringArray, applicationGraphStringValue } from '../application-installation-values.js';
 import { jetStreamConsumerName } from '../application-nats-naming.js';
 import { applicationGraphHasObservabilityRuntime, generatedApplicationTelemetryImports, generatedApplicationTelemetryRuntimeSource } from '../application-observability-runtime-source.js';
@@ -104,7 +105,7 @@ async function emitProcessor(graph: ApplicationGraph, processor: ApplicationProc
     sourcemap: 'external',
     sourcesContent: false,
     metafile: true,
-    nodePaths: [join(process.cwd(), 'node_modules')],
+    nodePaths: [...generatedRuntimeNodePaths()],
     banner: { js: "import { createRequire as __applik8sCreateRequire } from 'node:module'; const require = __applik8sCreateRequire(import.meta.url);" },
     supported: { 'template-literal': false },
     plugins: [

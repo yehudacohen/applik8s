@@ -16,9 +16,20 @@ describe('target-native planning', () => {
     const stderr: string[] = [];
     let childCalls = 0;
     let buildExecutionTarget: string | undefined;
+    const instancePath = join(cwd, 'application.yaml');
+    await writeFile(instancePath, [
+      'apiVersion: applications.applik8s.dev/v1alpha1',
+      'kind: PlanProofInstallation',
+      'metadata:',
+      '  name: plan-proof',
+      '  namespace: plan-proof-system',
+      'spec: {}',
+      '',
+    ].join('\n'));
     const result = await runApplicationTargetPlan('src/app.ts', {
       target: 'aws', environment: 'production', region: 'us-east-1', accountId: '123456789012',
       availabilityZones: ['us-east-1a', 'us-east-1b'], outDir: '.plans', skipAppBuild: true, format: 'text',
+      instance: instancePath,
     }, { cwd, stdout: (message) => stdout.push(message), stderr: (message) => stderr.push(message) }, {
       runChild: async () => { childCalls += 1; return 0; },
       runBuild: async (_entrypoint, options) => {
@@ -27,8 +38,26 @@ describe('target-native planning', () => {
         await mkdir(directory, { recursive: true });
         await writeFile(join(directory, 'application-graph.json'), JSON.stringify(graph()), 'utf8');
         await writeFile(join(directory, 'typekro-composition.json'), JSON.stringify({
-          apiVersion: 'applik8s.dev/v1alpha1', kind: 'TypeKroCompositionBundle', spec: {},
+          apiVersion: 'applik8s.dev/v1alpha1',
+          kind: 'TypeKroCompositionBundle',
+          spec: {
+            applicationGraph: {
+              path: join(directory, 'application-graph.json'),
+            },
+          },
         }), 'utf8');
+        await writeFile(join(directory, 'resources.json'), JSON.stringify([{
+          apiVersion: 'kro.run/v1alpha1',
+          kind: 'ResourceGraphDefinition',
+          metadata: { name: 'plan-proof' },
+          spec: {
+            schema: {
+              group: 'applications.applik8s.dev',
+              apiVersion: 'v1alpha1',
+              kind: 'PlanProofInstallation',
+            },
+          },
+        }]), 'utf8');
         return 0;
       },
     });

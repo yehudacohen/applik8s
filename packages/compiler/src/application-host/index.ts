@@ -122,7 +122,10 @@ export async function emitGeneratedApplicationHost(options: {
   const replicas = applicationGraphNumberValue(config.replicas) ?? 1;
   const serviceAccountName = stringValue(config.serviceAccountName) ?? name;
   const image = stringValue(config.image) ?? `applik8s.local/${name}:sha256-${manifest.digest.slice('sha256:'.length, 'sha256:'.length + 16)}`;
-  const imagePullPolicy = stringValue(config.imagePullPolicy) ?? (config.image ? 'IfNotPresent' : 'Never');
+  // Compiler-produced images can be loaded into a local cluster or published
+  // to the selected registry. IfNotPresent supports both paths; Never makes a
+  // successfully published immutable artifact unusable on remote nodes.
+  const imagePullPolicy = stringValue(config.imagePullPolicy) ?? 'IfNotPresent';
   const cursorSecret = objectValue(config.cursorSecret);
   const sharedGatewayCursor = applicationSharedGatewayCursorSecret(options.graph, namespace);
   const cursorSecretName = stringValue(cursorSecret.name) ?? sharedGatewayCursor?.name ?? `${name}-gateway-cursor`;

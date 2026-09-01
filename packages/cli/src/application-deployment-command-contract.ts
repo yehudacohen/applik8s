@@ -6,6 +6,8 @@ export interface ApplicationDeploymentCommandIo {
 
 export interface ApplicationDeployCommandOptions {
   readonly context: string;
+  /** Canonical v0.9 assembly profile; independent of installation capacity/profile fields. */
+  readonly profile?: string;
   readonly strategy?: 'direct' | 'kro';
   readonly outDir?: string;
   readonly compositionName?: string;
@@ -33,6 +35,8 @@ export interface ApplicationDeployCommandOptions {
 
 export interface ApplicationDeleteCommandOptions {
   readonly context: string;
+  /** Assembly profile recorded by the deployment being observed or destroyed. */
+  readonly profile?: string;
   readonly outDir?: string;
   readonly compositionName?: string;
   readonly instanceName?: string;
@@ -59,6 +63,13 @@ export interface ApplicationDeploymentCommandRuntime {
       readonly connectionBindings?: string;
       readonly production?: boolean;
       readonly executionTarget?: 'kubernetes' | 'local' | 'aws-local' | 'aws';
+      readonly profile?: string;
+      /**
+       * Authored installation manifest used to concretize schema.spec values
+       * before profile-specific artifact validation. The isolated compiler
+       * receives the path, never the manifest contents, in its process argv.
+       */
+      readonly installationSpecPath?: string;
     },
     io: ApplicationDeploymentCommandIo,
   ): Promise<number>;

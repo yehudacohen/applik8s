@@ -37,7 +37,10 @@ import {
   discardV06Evidence,
   writeV06EvidenceReceipt,
 } from './v06-evidence.js';
-import { v07ReleaseEvidenceContract } from './v07-release-evidence-contract.js';
+import {
+  v09EvidenceDirectory,
+  v09ReleaseEvidenceContract,
+} from './v09-release-evidence-contract.js';
 
 const root = process.cwd();
 const context = process.env.APPLIK8S_E2E_CONTEXT ?? 'orbstack';
@@ -46,6 +49,7 @@ const target = join(root, '.applik8s-tmp', projectName);
 const namespace = `${projectName}-system`;
 const environmentFile = process.env.APPLIK8S_AGENTIC_PRODUCT_ENV_FILE;
 const developerProfile = environmentFile !== undefined;
+const assemblyProfile = developerProfile ? 'developer' : 'starter';
 const instancePath = developerProfile
   ? 'kubernetes/application.developer.yaml'
   : 'kubernetes/application.yaml';
@@ -59,11 +63,12 @@ const cli = join(root, 'packages/cli/dist/bin.js');
 const timeoutMs = 20 * 60_000;
 const evidencePath = join(
   root,
-  '.applik8s-tmp/evidence/v0.7/agentic-product-starter.json',
+  v09EvidenceDirectory,
+  'agentic-product-starter.json',
 );
-const requiredAssertions = v07ReleaseEvidenceContract['agentic-product-starter'];
+const requiredAssertions = v09ReleaseEvidenceContract['agentic-product-starter'];
 if (!requiredAssertions) {
-  throw new Error('The v0.7 evidence contract must define the Agentic product suite.');
+  throw new Error('The v0.9 evidence contract must define the Agentic product suite.');
 }
 const deploymentGraphPath = join(
   target,
@@ -280,7 +285,8 @@ async function preserveGeneratedDiagnostic(
 ): Promise<void> {
   const directory = join(
     root,
-    '.applik8s-tmp/evidence/v0.7/agentic-product-diagnostics',
+    v09EvidenceDirectory,
+    'agentic-product-diagnostics',
   );
   await mkdir(directory, { recursive: true });
   await writeFile(
@@ -690,7 +696,7 @@ try {
     execution,
     'deploy the generated product through Alchemy and TypeKro',
     cli,
-    ['deploy', '--context', context, '--instance', instancePath, '--skip-app-build'],
+    ['deploy', '--profile', assemblyProfile, '--context', context, '--instance', instancePath, '--skip-app-build'],
     target,
     { NODE_OPTIONS: '--max-old-space-size=8192' },
   );
@@ -706,7 +712,7 @@ try {
   );
   const reapply = await captureIdentityStartCommand(
     cli,
-    ['deploy', '--context', context, '--instance', instancePath, '--skip-app-build'],
+    ['deploy', '--profile', assemblyProfile, '--context', context, '--instance', instancePath, '--skip-app-build'],
     target,
     { NODE_OPTIONS: '--max-old-space-size=8192' },
   );
@@ -780,7 +786,8 @@ try {
   );
   const visualArtifactsRoot = join(
     root,
-    '.applik8s-tmp/evidence/v0.7/agentic-product-browser-artifacts',
+    v09EvidenceDirectory,
+    'agentic-product-browser-artifacts',
   );
   const visualArtifacts = (await readdir(visualArtifactsRoot, { recursive: true }))
     .filter(path => path.endsWith('.png'));
@@ -801,7 +808,8 @@ try {
   const results = await passedIdentityStartBrowserTests(
     join(
       root,
-      '.applik8s-tmp/evidence/v0.7/agentic-product-browser-results.json',
+      v09EvidenceDirectory,
+      'agentic-product-browser-results.json',
     ),
   );
   if (
@@ -828,7 +836,8 @@ try {
   const projectResults = await passedIdentityStartBrowserProjectTests(
     join(
       root,
-      '.applik8s-tmp/evidence/v0.7/agentic-product-browser-results.json',
+      v09EvidenceDirectory,
+      'agentic-product-browser-results.json',
     ),
   );
   const qualityJourneys = [

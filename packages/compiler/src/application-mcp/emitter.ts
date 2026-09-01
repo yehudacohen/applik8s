@@ -16,6 +16,7 @@ import {
   type GeneratedApplicationContainerArtifact,
 } from '../application-containers/index.js';
 import { applicationFrameworkCredentialDependencies } from '../application-framework-credentials.js';
+import { generatedRuntimeNodePaths } from '../node-module-resolution.js';
 import { applicationGraphStringValue } from '../application-installation-values.js';
 import {
   applicationStaticAuthorityManifest,
@@ -168,7 +169,7 @@ async function emitMcpServer(
     sourcemap: 'external',
     sourcesContent: false,
     metafile: true,
-    nodePaths: [join(process.cwd(), 'node_modules')],
+    nodePaths: [...generatedRuntimeNodePaths()],
     plugins: [
       handlerSourceMetadataPlugin(applicationEntrypoint, { includeMaintainedPackages: false }),
       applik8sWorkspaceSourcePlugin(),

@@ -1006,7 +1006,7 @@ const redis = defineApplicationCapabilityImplementation(Cache, {
 });
 const platform = app('profile-artifact');
 platform.profile('production', profile => profile.provide(Cache, redis));
-export const profileArtifact = platform;
+export const profileArtifact = platform.composition;
 `);
       const result = await compileTypeKroComposition({
         entrypoint,
@@ -1049,7 +1049,7 @@ export const profileArtifact = platform;
     try {
       const entrypoint = join(dir, 'application.ts');
       await writeFile(entrypoint, `
-import { app } from '@applik8s/applik8s';
+import { app, EventLog } from '@applik8s/applik8s';
 import { type } from '@applik8s/applik8s/dsl';
 import { namespace } from 'typekro/kubernetes';
 const platform = app('installable-proof', {
@@ -1061,6 +1061,13 @@ const platform = app('installable-proof', {
   status: type({ ready: 'boolean' }),
 });
 platform.infra(() => namespace({ metadata: { name: 'installable-proof' } }));
+platform.provide(EventLog.named('audit'), {
+  kind: 'nats-jetstream',
+  name: 'audit-events',
+  provision: true,
+  stream: 'AUDIT_EVENTS',
+  subjectPrefix: 'audit',
+});
 export const installableProof = platform;
 `);
       const result = await compileTypeKroComposition({
@@ -1085,6 +1092,11 @@ export const installableProof = platform;
       // graph materialization creates the application Namespace before applying an
       // installation instance.
       const definitionResources = definition?.spec && typeof definition.spec === 'object' ? Reflect.get(definition.spec, 'resources') : undefined;
+      expect(definitionResources.every((resource: { readonly id?: unknown }) =>
+        typeof resource.id !== 'string' || /^[a-z][A-Za-z0-9]*$/.test(resource.id))).toBe(true);
+      expect(definitionResources).toEqual(expect.arrayContaining([
+        expect.objectContaining({ id: expect.stringMatching(/^applik8sEventsNatsHelmReleaseVariant[a-f0-9]{10}$/) }),
+      ]));
       expect(definitionResources).toEqual(expect.arrayContaining([
         expect.objectContaining({
           id: 'applik8sEventsNatsHelmRelease',

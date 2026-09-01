@@ -294,6 +294,13 @@ Secret-safe provenance. They may contain:
 - provider sizing, durability, retention, and lifecycle policy;
 - references to other typed provider configurations.
 
+Maintained provider implementations also declare their physical deployment family as provider metadata.
+The CLI derives a headless profile's AWS or Kubernetes deployment connection from that metadata, so a
+workflow-only, operator-only, or batch-only application never has to declare a fictitious
+`ApplicationHost`. If reachable implementations declare conflicting physical families and no canonical
+host resolves the connection, planning fails closed rather than asking the application author for a
+duplicate target selector.
+
 They must not contain resolved credentials, ambient SDK clients, live sockets, process-global mutation, or
 unbounded provider-private objects.
 
@@ -647,8 +654,37 @@ The minimum shared capability set is:
 - `ApplicationHost` with immutable artifact, readiness, and graceful shutdown;
 - object storage;
 - durable application event log;
+- analytical database and lakehouse query/dataset capabilities used by Chirp's maintained product
+  experience;
 - container registry;
 - HTTP exposure, certificate, and DNS publication.
+
+The shared set is derived from Chirp's unchanged semantic source and user-visible product behavior, not
+from whichever constructors are easiest to lower. A profile may not leave an authored analytics handle
+bound to an older ambient/default provider while claiming complete AWS or Kubernetes production parity.
+
+For the maintained profiles:
+
+- local analytics requires real DuckDB publication/query evidence;
+- Kubernetes analytics requires a maintained provider such as ClickHouse with live readiness, query,
+  update, recovery, schema-evolution, cancellation, pagination, and teardown evidence; and
+- AWS analytics requires real Athena/Glue/S3 IAM, encryption, catalog-propagation, query, cancellation,
+  retention, cost-boundary, drift, and cleanup evidence.
+
+AWS cleanup authority is resource-scoped and fail-closed. A dataset publisher may always remove its own
+exact staging lease objects, but unretained snapshot objects and Glue tables remain intact unless the
+application explicitly opts into `forceDeleteUnretainedData`. Qualification fixtures use that same public
+flag with a unique per-run dataset prefix and catalog identity; there is no ambient test-mode bypass. The
+opt-in grants `s3:DeleteObject` only beneath the dataset's canonical prefix and `glue:DeleteTable` only for
+its exact catalog database/table scope. Runtime cleanup additionally requires the deterministic snapshot
+table identity and matching Applik8s dataset ownership metadata. Tests must prove neighboring S3 keys and
+foreign Glue tables survive. Query workloads remain read-only against dataset objects and Glue metadata
+regardless of the publisher's cleanup policy.
+
+Chirp's maintained production profiles commit v0.9 to these analytical/lakehouse capabilities. They may not
+be removed from the product behavior, plan, tutorial, or maturity claim to make the release pass. A
+deterministic or simulated provider cannot qualify a real AWS or Kubernetes claim; failure of either live
+production profile blocks v0.9.
 
 ### Frozen provider-constructor vocabulary
 
@@ -665,6 +701,7 @@ JobResultStore.postgres(...)       shared portable implementation
 ApplicationHost.aws(...)           ApplicationHost.kubernetes(...)
 ObjectStorage.s3(...)              ObjectStorage.rookCeph(...)
 EventLog.kinesis(...)              EventLog.jetStream(...)
+Lakehouse.athenaQueries(...)       AnalyticalDatabase.clickhouse(...)
 ContainerRegistry.ecr(...)         ContainerRegistry.harbor(...)
 HttpExposure.aws(...)              HttpExposure.kubernetes(...)
 Certificate.acm(...)               Certificate.certManager(...)

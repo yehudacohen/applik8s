@@ -31,6 +31,7 @@ let outDir: string | undefined;
 let entrypointPath: string | undefined;
 let kubeContext: string | undefined;
 let durableProof: WorkflowBinding | undefined;
+let sagaProof: SagaBinding | undefined;
 let dynamicScheduleProof: ScheduleBinding | undefined;
 let instanceDeployed = false;
 
@@ -61,12 +62,14 @@ describeLive('v0.5 Hatchet durable workflow proof', () => {
     const exports = await import(entrypointPath) as {
       readonly workflowProof?: unknown;
       readonly durableProof?: WorkflowBinding;
+      readonly sagaProof?: SagaBinding;
       readonly dynamicScheduleProof?: ScheduleBinding;
     };
-    if (!exports.workflowProof || !exports.durableProof || !exports.dynamicScheduleProof) {
-      throw new Error('Generated workflow proof entrypoint did not export its composition, workflow binding, and dynamic schedule binding.');
+    if (!exports.workflowProof || !exports.durableProof || !exports.sagaProof || !exports.dynamicScheduleProof) {
+      throw new Error('Generated workflow proof entrypoint did not export its composition, workflow binding, Saga binding, and dynamic schedule binding.');
     }
     durableProof = exports.durableProof;
+    sagaProof = exports.sagaProof;
     dynamicScheduleProof = exports.dynamicScheduleProof;
     await deployApplicationWithAlchemy();
     instanceDeployed = true;
@@ -76,17 +79,17 @@ describeLive('v0.5 Hatchet durable workflow proof', () => {
     const cleanupErrors: unknown[] = [];
     try {
       if (process.env.APPLIK8S_E2E_LIVE === '1') {
-        for (const cleanup of [
-          deleteResourceWorkflowFixtures,
-          deleteApplicationWithTypeKro,
-          deleteTestFixtures,
-          deleteNamespaceEvents,
-          deleteDisposableNamespace,
-        ]) {
+        for (const [name, cleanup] of [
+          ['resource workflow fixtures', deleteResourceWorkflowFixtures],
+          ['TypeKro application', deleteApplicationWithTypeKro],
+          ['test fixtures', deleteTestFixtures],
+          ['namespace events', deleteNamespaceEvents],
+          ['disposable namespace', deleteDisposableNamespace],
+        ] as const) {
           try {
             await cleanup();
           } catch (cause) {
-            cleanupErrors.push(cause);
+            cleanupErrors.push(new Error(`Failed to clean up ${name}.`, { cause }));
           }
         }
       }
@@ -303,6 +306,61 @@ describeLive('v0.5 Hatchet durable workflow proof', () => {
       await apiForward.close();
     }
   }, 900_000);
+
+  it('resumes a fenced Saga after worker loss and compensates the open frontier in reverse', async () => {
+    await waitForCnpgReady();
+    await waitForHelmReleaseReady();
+    const apiForward = await startPortForward(`service/${engineName}-api`, 8080);
+    let workerForward: PortForward | undefined;
+    let restoreRuntime: (() => void) | undefined;
+    const previousToken = process.env.HATCHET_CLIENT_TOKEN;
+    try {
+      const token = await generatedWorkerToken();
+      process.env.HATCHET_CLIENT_TOKEN = token;
+      await waitForDeploymentReady(workerName);
+      workerForward = await startPortForward(`service/${engineName}-engine`, 7070);
+      restoreRuntime = setApplicationWorkflowRuntimeFactory(async () => createHatchetWorkflowRuntime({
+        kind: 'hatchet',
+        provision: false,
+        hostPort: `127.0.0.1:${workerForward?.port}`,
+        apiUrl: apiForward.endpoint,
+        tls: false,
+      }));
+
+      const binding = requiredSagaBinding();
+      const recoveryId = `saga-recovery-${process.pid}`;
+      const recovering = binding({
+        effectEndpoint: `http://${effectServiceName}.${namespace}.svc:8080`,
+        proofId: recoveryId,
+        mode: 'recover',
+      }, { idempotencyKey: recoveryId });
+      await waitForEffectCount(`slow:${recoveryId}`, 1);
+      const oldPod = await runningWorkerPod();
+      await kubectl(['delete', `pod/${oldPod}`, '--namespace', namespace, '--wait=false', '--grace-period=0', '--force']);
+      await waitForReplacementWorker(oldPod);
+      await expect(recovering).resolves.toEqual({ phase: 'Committed' });
+      const recoveryState = await effectState();
+      expect(recoveryState.counts[`reserve:${recoveryId}`]).toBe(1);
+      expect(recoveryState.counts[`slow:${recoveryId}`]).toBeGreaterThanOrEqual(1);
+
+      const compensationId = `saga-compensation-${process.pid}`;
+      await expect(binding({
+        effectEndpoint: `http://${effectServiceName}.${namespace}.svc:8080`,
+        proofId: compensationId,
+        mode: 'compensate',
+      }, { idempotencyKey: compensationId })).rejects.toThrow();
+      await waitForEffectCount(`compensate:${compensationId}`, 1);
+      const compensationState = await effectState();
+      expect(compensationState.records.filter((record) =>
+        record.key === `compensate:${compensationId}`)).toHaveLength(1);
+    } finally {
+      restoreRuntime?.();
+      if (previousToken === undefined) delete process.env.HATCHET_CLIENT_TOKEN;
+      else process.env.HATCHET_CLIENT_TOKEN = previousToken;
+      await workerForward?.close();
+      await apiForward.close();
+    }
+  }, 900_000);
 });
 
 interface WorkflowBinding {
@@ -313,6 +371,17 @@ interface WorkflowBinding {
 interface ScheduleBinding {
   readonly definition: { readonly id: string };
   readonly graphNode: { readonly scheduler: { readonly nodeId: string } };
+}
+
+interface SagaBinding {
+  (
+    input: {
+      readonly effectEndpoint: string;
+      readonly proofId: string;
+      readonly mode: 'recover' | 'compensate';
+    },
+    metadata?: { readonly idempotencyKey?: string },
+  ): Promise<{ readonly phase: 'Committed' }>;
 }
 
 interface WorkflowInput {
@@ -377,6 +446,11 @@ function requiredWorkflowBinding(): WorkflowBinding {
   return durableProof;
 }
 
+function requiredSagaBinding(): SagaBinding {
+  if (!sagaProof) throw new Error('Saga binding is unavailable.');
+  return sagaProof;
+}
+
 function requiredDynamicScheduleBinding(): ScheduleBinding {
   if (!dynamicScheduleProof) throw new Error('Dynamic schedule binding is unavailable.');
   return dynamicScheduleProof;
@@ -412,13 +486,16 @@ platform.provide(Observability, Observability.otlp({
     serverName: ${JSON.stringify(`${telemetryCollectorName}.${namespace}.svc`)},
   },
 }));
-platform.provide(WorkflowEngine, WorkflowEngine.hatchet({
+const workflowEngine = WorkflowEngine.hatchet({
   name: ${JSON.stringify(engineName)},
   namespace: ${JSON.stringify(namespace)},
   adminCredentialsSecret: { apiVersion: 'v1', kind: 'Secret', name: ${JSON.stringify(credentialsSecret)}, namespace: ${JSON.stringify(namespace)} },
   database: { clusterName: 'hatchet-db', database: 'hatchet', instances: 1, storageSize: '1Gi', storageClass: ${JSON.stringify(storageClass)} },
   worker: { replicas: 1, taskSlots: 4, durableSlots: 8, gracefulShutdownSeconds: 30, scaling: { mode: 'fixed' } },
-}));
+});
+platform.profile('developer', (profile) => {
+  profile.provide(WorkflowEngine, workflowEngine);
+});
 platform.provide(Scheduler, Scheduler.hatchet());
 export const fixedScheduleProof = Scheduler.schedule({
   id: 'proof.fixed-schedule.v1',
@@ -482,6 +559,46 @@ export const durableProof = platform.workflow(DurableProof, { worker: { group: $
   await effect({ ...input, operation: 'commit' }, { idempotencyKey: input.proofId + ':commit', correlationId: context.correlationId, causationId: context.invocationId, traceparent: context.traceparent });
   return { phase: 'Ready', attempts: provisioned.attempts };
 });
+export const sagaProof = platform.transaction.saga(
+  'proof.saga.v1',
+  {
+    input: type({ effectEndpoint: 'string', proofId: 'string', mode: "'recover' | 'compensate'" }),
+    output: type({ phase: "'Committed'" }),
+  },
+  { deadline: '2m', recoveryDeadline: '10m' },
+  async (input, saga) => {
+    const invoke = async (operation) => {
+      const body = new URLSearchParams({ proofId: input.proofId, operation, compensationFails: 'false' });
+      const response = await fetch(input.effectEndpoint + '/effect', {
+        method: 'POST',
+        headers: { 'content-type': 'application/x-www-form-urlencoded', 'idempotency-key': input.proofId + ':' + operation },
+        body,
+        signal: saga.signal,
+      });
+      if (!response.ok) throw new Error('Saga effect failed with HTTP ' + response.status);
+      return await response.json();
+    };
+    await saga.step('reserve', () => invoke('reserve'), {
+      compensate: () => invoke('compensate'),
+    });
+    if (input.mode === 'compensate') throw new Error('requested compensation');
+    await saga.step('slow-boundary', () => invoke('slow'), {
+      compensate: () => invoke('compensate-slow'),
+      observe: async (result) => {
+        if (result) return { status: 'committed', result };
+        const response = await fetch(input.effectEndpoint + '/state', { signal: saga.signal });
+        if (!response.ok) return 'unknown';
+        const state = await response.json();
+        const attempts = Number(state.counts?.['slow:' + input.proofId] ?? 0);
+        return attempts > 0
+          ? { status: 'committed', result: { attempts } }
+          : 'absent';
+      },
+    });
+    await saga.commit('commit-proof', () => invoke('commit'));
+    return { phase: 'Committed' };
+  },
+);
 const resourceProof = platform.workflow(ResourceProof, { worker: { group: ${JSON.stringify(workerName)}, replicas: 1, taskSlots: 4, durableSlots: 8 } }, async (input, context) => {
   const provisioned = await effect({ ...input, operation: 'provision', compensationFails: false }, { idempotencyKey: input.proofId + ':provision', causationId: context.invocationId });
   return { phase: 'Ready', attempts: provisioned.attempts };
@@ -677,7 +794,7 @@ spec:
 }
 
 async function installEffectService(): Promise<void> {
-  const source = `const http=require('node:http');const counts={};const records=[];http.createServer((req,res)=>{if(req.method==='GET'&&req.url==='/state'){res.writeHead(200,{'content-type':'application/json'});return res.end(JSON.stringify({counts,records}));}let body='';req.on('data',c=>body+=c);req.on('end',()=>{const p=new URLSearchParams(body);const proofId=p.get('proofId');const operation=p.get('operation');const key=operation+':'+proofId;counts[key]=(counts[key]||0)+1;records.push({key,correlationId:req.headers['x-correlation-id'],scheduledAt:p.get('scheduledAt')||undefined});const fail=(operation==='provision'&&counts[key]===1)||(operation==='compensate'&&p.get('compensationFails')==='true');res.writeHead(fail?503:200,{'content-type':'application/json'});res.end(JSON.stringify({attempts:counts[key]}));});}).listen(8080,'0.0.0.0');`;
+  const source = `const http=require('node:http');const counts={};const records=[];http.createServer((req,res)=>{if(req.method==='GET'&&req.url==='/state'){res.writeHead(200,{'content-type':'application/json'});return res.end(JSON.stringify({counts,records}));}let body='';req.on('data',c=>body+=c);req.on('end',()=>{const p=new URLSearchParams(body);const proofId=p.get('proofId');const operation=p.get('operation');const key=operation+':'+proofId;counts[key]=(counts[key]||0)+1;records.push({key,correlationId:req.headers['x-correlation-id'],scheduledAt:p.get('scheduledAt')||undefined});const fail=(operation==='provision'&&counts[key]===1)||(operation==='compensate'&&p.get('compensationFails')==='true');const respond=()=>{res.writeHead(fail?503:200,{'content-type':'application/json'});res.end(JSON.stringify({attempts:counts[key]}));};if(operation==='slow')setTimeout(respond,15000);else respond();});}).listen(8080,'0.0.0.0');`;
   const manifest = `apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: ${effectServiceName}\n  namespace: ${namespace}\ndata:\n  server.js: ${JSON.stringify(source)}\n---\napiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: ${effectServiceName}\n  namespace: ${namespace}\nspec:\n  replicas: 1\n  selector:\n    matchLabels:\n      app: ${effectServiceName}\n  template:\n    metadata:\n      labels:\n        app: ${effectServiceName}\n    spec:\n      containers:\n        - name: server\n          image: node:22-alpine@sha256:16e22a550f3863206a3f701448c45f7912c6896a62de43add43bb9c86130c3e2\n          command: [node, /app/server.js]\n          ports:\n            - containerPort: 8080\n          volumeMounts:\n            - name: source\n              mountPath: /app\n              readOnly: true\n      volumes:\n        - name: source\n          configMap:\n            name: ${effectServiceName}\n---\napiVersion: v1\nkind: Service\nmetadata:\n  name: ${effectServiceName}\n  namespace: ${namespace}\nspec:\n  selector:\n    app: ${effectServiceName}\n  ports:\n    - port: 8080\n      targetPort: 8080\n`;
   const path = join(requiredTempDir(), 'effect-service.yaml');
   await writeFile(path, manifest);
@@ -1186,6 +1303,8 @@ async function deleteApplicationWithTypeKro(): Promise<void> {
     requiredEntrypointPath(),
     '--context',
     requiredKubeContext(),
+    '--profile',
+    'developer',
     '--composition-name',
     'workflowProof',
     '--out-dir',
@@ -1207,6 +1326,8 @@ async function deployApplicationWithAlchemy(): Promise<void> {
     'build',
     entrypoint,
     '--typekro',
+    '--profile',
+    'developer',
     '--composition-name',
     'workflowProof',
     '--out-dir',
@@ -1229,6 +1350,8 @@ async function deployApplicationWithAlchemy(): Promise<void> {
     entrypoint,
     '--context',
     requiredKubeContext(),
+    '--profile',
+    'developer',
     '--composition-name',
     'workflowProof',
     '--out-dir',

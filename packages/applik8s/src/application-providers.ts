@@ -76,6 +76,7 @@ export interface ApplicationSqsQueueProvider {
 export interface ApplicationKubernetesConfigMapObjectStorageProvider { readonly kind: 'kubernetes-configmap-objects'; readonly maxObjectBytes?: number }
 export interface ApplicationS3ObjectStorageProvider {
   readonly kind: 's3';
+  readonly cluster?: ApplicationKubernetesCluster;
   /** Typed desired-state switch. Disabled providers are omitted and do not block installation readiness. */
   readonly enabled?: boolean;
   readonly name?: string;
@@ -91,6 +92,7 @@ export interface ApplicationS3ObjectStorageProvider {
   readonly sessionTokenKey?: string;
   /** External providers are referenced; direct provisioners may prepare a bucket before the Application instance exists. */
   readonly ownership?: 'external' | 'direct-provisioned';
+  readonly retention?: 'retain' | 'delete';
   readonly provisioning?:
     | {
         /**
@@ -615,14 +617,40 @@ export interface ApplicationDuckDbLakehouseDatasetProvider {
 
 export interface ApplicationS3LakehouseDatasetProvider {
   readonly kind: 's3-dataset';
-  readonly bucket: string;
-  readonly prefix?: string;
-  readonly region: string;
-  readonly catalog: string;
+  readonly bucket: ApplicationProviderConfigString;
+  readonly prefix?: ApplicationProviderConfigString;
+  readonly region: ApplicationProviderConfigString;
+  readonly catalog: ApplicationProviderConfigString;
   readonly schemaRevision?: string;
   readonly cursorSecretEnvironment?: string;
   readonly maximumObjectsPerSnapshot?: number;
   readonly retainedSnapshots?: number;
+  /**
+   * Explicitly authorizes retention cleanup to delete unretained immutable
+   * dataset objects and their Glue snapshot tables. Publication itself never
+   * implies this destructive lifecycle authority.
+   */
+  readonly forceDeleteUnretainedData?: boolean;
+}
+
+/**
+ * Provider-neutral immutable lakehouse storage over an already selected
+ * ObjectStorage implementation. Kubernetes can therefore reuse Rook/MinIO
+ * credentials and endpoint bindings without pretending those services are
+ * AWS Glue or Athena.
+ */
+export interface ApplicationObjectStorageLakehouseDatasetProvider {
+  readonly kind: 'object-storage-dataset';
+  readonly storage: ApplicationObjectStorageProvider;
+  readonly prefix?: string;
+  readonly schemaRevision?: string;
+  readonly cursorSecretEnvironment?: string;
+  readonly maximumObjectsPerSnapshot?: number;
+  readonly retainedSnapshots?: number;
+  readonly maximumRowsPerQuery?: number;
+  readonly maximumScannedBytes?: number;
+  /** Explicitly authorizes pruning this dataset's own unretained objects. */
+  readonly forceDeleteUnretainedData?: boolean;
 }
 
 export interface ApplicationDuckDbLakehouseQueryProvider {
@@ -634,9 +662,16 @@ export interface ApplicationDuckDbLakehouseQueryProvider {
 
 export interface ApplicationAthenaLakehouseQueryProvider {
   readonly kind: 'athena-queries';
-  readonly workgroup: string;
-  readonly region: string;
-  readonly resultLocation: string;
+  readonly workgroup: ApplicationProviderConfigString;
+  readonly region: ApplicationProviderConfigString;
+  readonly resultLocation: ApplicationProviderConfigString;
+  readonly maximumConcurrentQueries?: number;
+  readonly maximumRows?: number;
+  readonly maximumScannedBytes?: number;
+}
+
+export interface ApplicationObjectStorageLakehouseQueryProvider {
+  readonly kind: 'object-storage-queries';
   readonly maximumConcurrentQueries?: number;
   readonly maximumRows?: number;
   readonly maximumScannedBytes?: number;
@@ -652,8 +687,8 @@ export interface ApplicationQualifiedLakehouseProviderRequired {
   readonly reason: string;
 }
 
-export type ApplicationLakehouseDatasetProvider = ApplicationDuckDbLakehouseDatasetProvider | ApplicationS3LakehouseDatasetProvider | ApplicationQualifiedLakehouseProviderRequired;
-export type ApplicationLakehouseQueryProvider = ApplicationDuckDbLakehouseQueryProvider | ApplicationAthenaLakehouseQueryProvider | ApplicationQualifiedLakehouseProviderRequired;
+export type ApplicationLakehouseDatasetProvider = ApplicationDuckDbLakehouseDatasetProvider | ApplicationS3LakehouseDatasetProvider | ApplicationObjectStorageLakehouseDatasetProvider | ApplicationQualifiedLakehouseProviderRequired;
+export type ApplicationLakehouseQueryProvider = ApplicationDuckDbLakehouseQueryProvider | ApplicationAthenaLakehouseQueryProvider | ApplicationObjectStorageLakehouseQueryProvider | ApplicationQualifiedLakehouseProviderRequired;
 
 export interface ApplicationClickHouseAnalyticalDatabaseProvider {
   readonly kind: 'clickhouse';
@@ -916,6 +951,8 @@ export interface ApplicationAuthorizationProvider {
 
 export interface ApplicationKubernetesHostProvider {
   readonly kind: 'kubernetes-application-host';
+  readonly cluster?: ApplicationKubernetesCluster;
+  readonly registry?: ApplicationImplementationInput<ApplicationContainerRegistryProvider>;
   readonly namespace?: string;
   readonly name?: string;
   /** Immutable target image reference. Omit for a locally built digest-tagged image. */
@@ -1208,6 +1245,11 @@ export interface ApplicationIngressHttpExposureProvider {
   readonly ingressClassName?: string;
   /** Namespace containing the ingress controller that may reach authenticated framework backends. */
   readonly controllerNamespace?: string;
+  /** Present on the inspectable production-kubernetes composition constructor. */
+  readonly cluster?: ApplicationKubernetesCluster;
+  readonly host?: ApplicationImplementationInput<ApplicationHostProvider>;
+  readonly certificate?: ApplicationImplementationInput<ApplicationCertificateProvider>;
+  readonly dns?: ApplicationImplementationInput<ApplicationDnsPublicationProvider>;
 }
 
 /**
@@ -1231,6 +1273,7 @@ export interface ApplicationAwsHttpExposureProvider {
 
 export interface ApplicationCertManagerCertificateProvider {
   readonly kind: 'cert-manager';
+  readonly cluster?: ApplicationKubernetesCluster;
   readonly issuerRef: {
     readonly name: string;
     readonly kind: 'Issuer' | 'ClusterIssuer';
@@ -1247,6 +1290,8 @@ export interface ApplicationAcmCertificateProvider {
 
 export interface ApplicationExternalDnsPublicationProvider {
   readonly kind: 'external-dns';
+  readonly cluster?: ApplicationKubernetesCluster;
+  readonly hostname?: ApplicationProviderConfigString;
   readonly annotationPrefix?: string;
 }
 
@@ -1701,18 +1746,19 @@ export interface ApplicationEventLogProviderToken extends ApplicationQualifiable
 }
 
 export interface ApplicationCertificateProviderToken extends ApplicationQualifiableProviderToken<ApplicationCertificateProvider> {
-  certManager(options: Omit<ApplicationCertManagerCertificateProvider, 'kind'>): ApplicationCertManagerCertificateProvider;
+  certManager(options: Omit<ApplicationCertManagerCertificateProvider, 'kind'>): ApplicationCapabilityImplementation<ApplicationCertManagerCertificateProvider>;
   acm(options: Omit<ApplicationAcmCertificateProvider, 'kind'>): ApplicationCapabilityImplementation<ApplicationAcmCertificateProvider>;
 }
 
 export interface ApplicationHttpExposureProviderToken extends ApplicationQualifiableProviderToken<ApplicationHttpExposureProvider> {
   ingress(options?: Omit<ApplicationIngressHttpExposureProvider, 'kind'>): ApplicationIngressHttpExposureProvider;
   nodePort(options: Omit<ApplicationNodePortHttpExposureProvider, 'kind'>): ApplicationNodePortHttpExposureProvider;
+  kubernetes(options: Required<Pick<ApplicationIngressHttpExposureProvider, 'cluster' | 'host' | 'certificate' | 'dns'>> & Omit<ApplicationIngressHttpExposureProvider, 'kind' | 'cluster' | 'host' | 'certificate' | 'dns'>): ApplicationCapabilityImplementation<ApplicationIngressHttpExposureProvider>;
   aws(options: Omit<ApplicationAwsHttpExposureProvider, 'kind'>): ApplicationCapabilityImplementation<ApplicationAwsHttpExposureProvider>;
 }
 
 export interface ApplicationDnsPublicationProviderToken extends ApplicationQualifiableProviderToken<ApplicationDnsPublicationProvider> {
-  externalDns(options?: Omit<ApplicationExternalDnsPublicationProvider, 'kind'>): ApplicationExternalDnsPublicationProvider;
+  externalDns(options?: Omit<ApplicationExternalDnsPublicationProvider, 'kind'>): ApplicationCapabilityImplementation<ApplicationExternalDnsPublicationProvider>;
   route53(options: Omit<ApplicationRoute53DnsPublicationProvider, 'kind'>): ApplicationCapabilityImplementation<ApplicationRoute53DnsPublicationProvider>;
 }
 
@@ -1812,11 +1858,14 @@ export interface ApplicationLakehouseQueryProviderToken extends ApplicationQuali
 }
 
 export interface ApplicationLakehouseConstructors {
-  duckdbDataset(options?: Omit<ApplicationDuckDbLakehouseDatasetProvider, 'kind'>): ApplicationDuckDbLakehouseDatasetProvider;
-  s3Dataset(options: Omit<ApplicationS3LakehouseDatasetProvider, 'kind'>): ApplicationS3LakehouseDatasetProvider;
-  duckdbQueries(options?: Omit<ApplicationDuckDbLakehouseQueryProvider, 'kind'>): ApplicationDuckDbLakehouseQueryProvider;
-  athenaQueries(options: Omit<ApplicationAthenaLakehouseQueryProvider, 'kind'>): ApplicationAthenaLakehouseQueryProvider;
-  qualifiedProviderRequired(options: Omit<ApplicationQualifiedLakehouseProviderRequired, 'kind'>): ApplicationQualifiedLakehouseProviderRequired;
+  duckdbDataset(options?: Omit<ApplicationDuckDbLakehouseDatasetProvider, 'kind'>): ApplicationCapabilityImplementation<ApplicationDuckDbLakehouseDatasetProvider>;
+  s3Dataset(options: Omit<ApplicationS3LakehouseDatasetProvider, 'kind'>): ApplicationCapabilityImplementation<ApplicationS3LakehouseDatasetProvider>;
+  objectStorageDataset(options: Omit<ApplicationObjectStorageLakehouseDatasetProvider, 'kind' | 'storage'> & { readonly storage: ApplicationCapabilityImplementation<ApplicationObjectStorageProvider> | ApplicationProviderBinding<ApplicationObjectStorageProvider> | ApplicationObjectStorageProvider }): ApplicationCapabilityImplementation<ApplicationObjectStorageLakehouseDatasetProvider>;
+  duckdbQueries(options?: Omit<ApplicationDuckDbLakehouseQueryProvider, 'kind'>): ApplicationCapabilityImplementation<ApplicationDuckDbLakehouseQueryProvider>;
+  athenaQueries(options: Omit<ApplicationAthenaLakehouseQueryProvider, 'kind'>): ApplicationCapabilityImplementation<ApplicationAthenaLakehouseQueryProvider>;
+  objectStorageQueries(options?: Omit<ApplicationObjectStorageLakehouseQueryProvider, 'kind'>): ApplicationCapabilityImplementation<ApplicationObjectStorageLakehouseQueryProvider>;
+  datasetProviderRequired(options: Omit<ApplicationQualifiedLakehouseProviderRequired, 'kind'>): ApplicationCapabilityImplementation<ApplicationQualifiedLakehouseProviderRequired>;
+  queryProviderRequired(options: Omit<ApplicationQualifiedLakehouseProviderRequired, 'kind'>): ApplicationCapabilityImplementation<ApplicationQualifiedLakehouseProviderRequired>;
 }
 
 export interface ApplicationAnalyticalDatabaseProviderToken extends ApplicationQualifiableProviderToken<ApplicationAnalyticalDatabaseProvider> {
@@ -1834,7 +1883,7 @@ export interface ApplicationContainerRegistryProviderToken extends ApplicationQu
   orbstack(): ApplicationOrbstackContainerRegistryProvider;
   ecr(options: Omit<ApplicationEcrContainerRegistryProvider, 'kind'>): ApplicationCapabilityImplementation<ApplicationEcrContainerRegistryProvider>;
   oci(options: Omit<ApplicationOciContainerRegistryProvider, 'kind'>): ApplicationOciContainerRegistryProvider;
-  harbor(options: ApplicationHarborContainerRegistryOptions): ApplicationHarborContainerRegistryProvider;
+  harbor(options: ApplicationHarborContainerRegistryOptions): ApplicationCapabilityImplementation<ApplicationHarborContainerRegistryProvider>;
   origin(origin: string): ApplicationContainerRegistryEndpoint;
   nodePort(options: Omit<Extract<ApplicationContainerRegistryEndpoint, { readonly kind: 'kubernetes-node-port' }>, 'kind'>): ApplicationContainerRegistryEndpoint;
 }
@@ -1844,6 +1893,17 @@ export interface ApplicationObjectStorageProviderToken extends ApplicationQualif
     | Omit<ApplicationS3ObjectStorageProvider, 'kind'>
     | (Omit<ApplicationAwsS3ObjectStorageProvider, 'kind' | 'region'> & { readonly region?: ApplicationProviderConfigString })
   ): ApplicationCapabilityImplementation<ApplicationS3ObjectStorageProvider | ApplicationAwsS3ObjectStorageProvider>;
+  rookCeph(options: {
+    readonly cluster: ApplicationKubernetesCluster;
+    readonly name?: string;
+    readonly namespace: string;
+    readonly bucket: string;
+    readonly endpoint: string;
+    readonly region?: string;
+    readonly credentialsSecret: ApplicationResourceRef;
+    readonly storageClassName: string;
+    readonly retention?: 'retain' | 'delete';
+  }): ApplicationCapabilityImplementation<ApplicationS3ObjectStorageProvider>;
   configMap(options?: Omit<ApplicationKubernetesConfigMapObjectStorageProvider, 'kind'>): ApplicationCapabilityImplementation<ApplicationKubernetesConfigMapObjectStorageProvider>;
   /**
    * Bind a database backup destination to one declared object-storage
@@ -1865,7 +1925,7 @@ export interface ApplicationObjectStorageProviderToken extends ApplicationQualif
 
 export interface ApplicationHostProviderToken extends ApplicationQualifiableProviderToken<ApplicationHostProvider> {
   managed(options?: Omit<ApplicationManagedHostProvider, 'kind'>): ApplicationManagedHostProvider;
-  kubernetes(options?: Omit<ApplicationKubernetesHostProvider, 'kind'>): ApplicationKubernetesHostProvider;
+  kubernetes(options?: Omit<ApplicationKubernetesHostProvider, 'kind'>): ApplicationCapabilityImplementation<ApplicationKubernetesHostProvider>;
   aws(options: Omit<ApplicationAwsHostProvider, 'kind'>): ApplicationCapabilityImplementation<ApplicationAwsHostProvider>;
 }
 
@@ -1923,7 +1983,7 @@ export interface ApplicationProviderState {
 }
 
 export interface ApplicationIndexStoreProviderToken extends ApplicationQualifiableProviderToken<ApplicationIndexBackend | 'valkey'> {
-  valkey(options?: Omit<ApplicationValkeyIndexBackend, 'kind'>): ApplicationValkeyIndexBackend;
+  valkey(options?: Omit<ApplicationValkeyIndexBackend, 'kind'>): ApplicationCapabilityImplementation<ApplicationValkeyIndexBackend>;
 }
 
 export interface ApplicationSearchProviderToken
@@ -1947,6 +2007,7 @@ function maintainedBuiltInImplementation<TImplementation extends object>(
   value: TImplementation,
   options: {
     readonly runtimeAdapter: string;
+    readonly deploymentFamily?: 'aws' | 'kubernetes';
     readonly deploymentContributor?: string;
     readonly readiness: string;
     readonly lifecycle: 'application' | 'shared' | 'external' | 'retained';
@@ -1965,6 +2026,7 @@ function maintainedBuiltInImplementation<TImplementation extends object>(
         version: '0.9.0-alpha.1',
       },
       runtimeAdapter: options.runtimeAdapter,
+      ...(options.deploymentFamily ? { deploymentFamily: options.deploymentFamily } : {}),
       ...(options.deploymentContributor
         ? { deploymentContributor: options.deploymentContributor }
         : {}),
@@ -2039,7 +2101,18 @@ export const IndexStore: ApplicationIndexStoreProviderToken = applicationQualifi
   description: 'Default app-scoped index backend provider.',
   contract: builtInProviderContract('IndexStore', ['typedIndexes']),
   valkey(options = {}) {
-    return { kind: 'valkey', ...options };
+    const provider: ApplicationValkeyIndexBackend = { kind: 'valkey', ...options };
+    return maintainedBuiltInImplementation(IndexStore, 'IndexStore.valkey', provider, {
+      runtimeAdapter: '@applik8s/runtime',
+      ...(provider.provision === false
+        ? {}
+        : { deploymentContributor: '@applik8s/deployment-compiler/providers/valkey' }),
+      readiness: provider.provision === false
+        ? 'applik8s.index.valkey.external-readiness/v1alpha1'
+        : 'applik8s.index.valkey.readiness/v1alpha1',
+      lifecycle: provider.provision === false ? 'external' : 'application',
+      migration: 'applik8s.index.valkey.migration/v1alpha1',
+    });
   },
 });
 
@@ -2423,6 +2496,44 @@ export const ObjectStorage: ApplicationObjectStorageProviderToken = applicationQ
       migration: 'applik8s.object-storage.s3.migration/v1alpha1',
     });
   },
+  rookCeph(options) {
+    if (
+      !applicationProviderRequiredString(options.namespace)
+      || !applicationProviderRequiredString(options.bucket)
+      || !applicationProviderRequiredString(options.endpoint)
+    ) {
+      throw new Error('ObjectStorage.rookCeph(...) requires non-empty namespace, bucket, and endpoint values.');
+    }
+    if (!options.storageClassName.trim()) {
+      throw new Error('ObjectStorage.rookCeph({ storageClassName }) must not be empty.');
+    }
+    const provider: ApplicationS3ObjectStorageProvider = {
+      kind: 's3',
+      cluster: options.cluster,
+      name: options.name ?? 'object-storage',
+      bucket: options.bucket,
+      region: options.region ?? 'us-east-1',
+      endpoint: options.endpoint,
+      forcePathStyle: true,
+      credentialsSecret: options.credentialsSecret,
+      ownership: 'direct-provisioned',
+      retention: options.retention ?? 'retain',
+      provisioning: {
+        kind: 'object-bucket-claim',
+        claimName: options.name ?? 'object-storage',
+        storageClassName: options.storageClassName,
+        claimLifecycle: 'application',
+      },
+    };
+    return maintainedBuiltInImplementation(ObjectStorage, 'ObjectStorage.rookCeph', provider, {
+      runtimeAdapter: '@applik8s/runtime/object-storage-s3',
+      deploymentContributor: '@applik8s/deployment-typekro/providers/rook-ceph-object-storage',
+      readiness: 'applik8s.object-storage.rook-ceph.readiness/v1alpha1',
+      lifecycle: provider.retention === 'retain' ? 'retained' : 'application',
+      migration: 'applik8s.object-storage.rook-ceph.migration/v1alpha1',
+      maturity: 'experimental',
+    });
+  },
   configMap(options = {}) {
     return maintainedBuiltInImplementation(ObjectStorage, 'ObjectStorage.configMap', {
       kind: 'kubernetes-configmap-objects',
@@ -2493,6 +2604,43 @@ export const HttpExposure: ApplicationHttpExposureProviderToken = applicationQua
     }
     return { kind: 'node-port', ...options };
   },
+  kubernetes(options) {
+    assertApplicationImplementationInput(options.host, ApplicationHost, 'HttpExposure.kubernetes host');
+    assertApplicationImplementationInput(options.certificate, Certificate, 'HttpExposure.kubernetes certificate');
+    assertApplicationImplementationInput(options.dns, DnsPublication, 'HttpExposure.kubernetes dns');
+    const provider: ApplicationIngressHttpExposureProvider = { kind: 'ingress', ...options };
+    return maintainedBuiltInImplementation(HttpExposure, 'HttpExposure.kubernetes', provider, {
+      runtimeAdapter: '@applik8s/runtime-kubernetes/http-exposure',
+      deploymentContributor: '@applik8s/deployment-compiler/providers/http-exposure-kubernetes',
+      readiness: 'applik8s.http-exposure.kubernetes.readiness/v1alpha1',
+      lifecycle: 'application',
+      migration: 'applik8s.http-exposure.kubernetes.migration/v1alpha1',
+      maturity: 'experimental',
+      dependencies: [
+        {
+          slot: 'host',
+          requirement: ApplicationHost as ApplicationProviderToken<object>,
+          requiredGuarantees: ['immutableArtifact', 'readiness'],
+          operations: ['endpoint.read'],
+          input: maintainedDependencyInput(options.host as object, ApplicationHost as ApplicationProviderToken<object>),
+        },
+        {
+          slot: 'certificate',
+          requirement: Certificate as ApplicationProviderToken<object>,
+          requiredGuarantees: ['managedCertificate'],
+          operations: ['certificate.read'],
+          input: maintainedDependencyInput(options.certificate as object, Certificate as ApplicationProviderToken<object>),
+        },
+        {
+          slot: 'dns',
+          requirement: DnsPublication as ApplicationProviderToken<object>,
+          requiredGuarantees: ['dnsPublication'],
+          operations: ['dns.write'],
+          input: maintainedDependencyInput(options.dns as object, DnsPublication as ApplicationProviderToken<object>),
+        },
+      ],
+    });
+  },
   aws(options) {
     assertApplicationAwsAccount(options.account, 'HttpExposure.aws');
     assertApplicationImplementationInput(options.host, ApplicationHost, 'HttpExposure.aws host');
@@ -2539,7 +2687,18 @@ export const Certificate: ApplicationCertificateProviderToken = applicationQuali
   description: 'Managed TLS certificate provider for public application exposure.',
   contract: builtInProviderContract('Certificate', ['managedCertificate']),
   certManager(options) {
-    return { kind: 'cert-manager', ...options };
+    if (!applicationProviderStringOrInstallationReference(options.issuerRef.name)) {
+      throw new Error('Certificate.certManager({ issuerRef.name }) must not be empty.');
+    }
+    const provider: ApplicationCertManagerCertificateProvider = { kind: 'cert-manager', ...options };
+    return maintainedBuiltInImplementation(Certificate, 'Certificate.certManager', provider, {
+      runtimeAdapter: '@applik8s/runtime-kubernetes/certificate',
+      deploymentContributor: '@applik8s/deployment-compiler/providers/cert-manager-certificate',
+      readiness: 'applik8s.certificate.cert-manager.readiness/v1alpha1',
+      lifecycle: 'application',
+      migration: 'applik8s.certificate.cert-manager.migration/v1alpha1',
+      maturity: 'experimental',
+    });
   },
   acm(options) {
     assertApplicationAwsAccount(options.account, 'Certificate.acm');
@@ -2562,7 +2721,18 @@ export const DnsPublication: ApplicationDnsPublicationProviderToken = applicatio
   description: 'Managed DNS publication provider for public application exposure.',
   contract: builtInProviderContract('DnsPublication', ['dnsPublication']),
   externalDns(options = {}) {
-    return { kind: 'external-dns', ...options };
+    if (options.hostname !== undefined) {
+      requireProviderConfigString(options.hostname, 'DnsPublication.externalDns hostname');
+    }
+    const provider: ApplicationExternalDnsPublicationProvider = { kind: 'external-dns', ...options };
+    return maintainedBuiltInImplementation(DnsPublication, 'DnsPublication.externalDns', provider, {
+      runtimeAdapter: '@applik8s/runtime-kubernetes/dns-publication',
+      deploymentContributor: '@applik8s/deployment-compiler/providers/external-dns-publication',
+      readiness: 'applik8s.dns.external-dns.readiness/v1alpha1',
+      lifecycle: 'application',
+      migration: 'applik8s.dns.external-dns.migration/v1alpha1',
+      maturity: 'experimental',
+    });
   },
   route53(options) {
     assertApplicationAwsAccount(options.account, 'DnsPublication.route53');
@@ -2606,6 +2776,7 @@ export const WorkflowEngine: ApplicationWorkflowEngineProviderToken = applicatio
     };
     return maintainedBuiltInImplementation(WorkflowEngine, 'WorkflowEngine.hatchet', provider, {
       runtimeAdapter: '@applik8s/runtime-hatchet',
+      deploymentFamily: 'kubernetes',
       ...(provider.provision === false
         ? {}
         : { deploymentContributor: '@applik8s/deployment-compiler/providers/hatchet' }),
@@ -2834,7 +3005,7 @@ export const OperatorRuntime: ApplicationOperatorRuntimeProviderToken = applicat
         {
           slot: 'scheduler',
           requirement: Scheduler as ApplicationProviderToken<object>,
-          requiredGuarantees: ['durableOccurrenceIdentity', 'boundedMisfire'],
+          requiredGuarantees: ['stableDefinitionIdentity', 'stableOccurrenceIdentity'],
           operations: ['schedule.manage'],
           input: maintainedDependencyInput(
             options.scheduler as object,
@@ -2844,7 +3015,7 @@ export const OperatorRuntime: ApplicationOperatorRuntimeProviderToken = applicat
         ...(options.queue ? [{
           slot: 'queue',
           requirement: Queue as ApplicationProviderToken<object>,
-          requiredGuarantees: ['durableDelivery'],
+          requiredGuarantees: ['boundedDelivery'],
           operations: ['queue.publish', 'queue.consume'],
           input: maintainedDependencyInput(
             options.queue as object,
@@ -3160,17 +3331,123 @@ export const LakehouseQuery: ApplicationLakehouseQueryProviderToken = applicatio
 export const Lakehouse: ApplicationLakehouseConstructors = Object.freeze({
   duckdbDataset(options = {}) {
     assertLakehouseDatasetOptions(options);
-    return { kind: 'duckdb-dataset' as const, ...options };
+    return maintainedBuiltInImplementation(LakehouseDataset, 'Lakehouse.duckdbDataset', {
+      kind: 'duckdb-dataset' as const,
+      ...options,
+    }, {
+      runtimeAdapter: '@applik8s/runtime-duckdb',
+      readiness: 'applik8s.lakehouse.duckdb.readiness/v1alpha1',
+      lifecycle: 'application',
+      migration: 'applik8s.lakehouse.duckdb.migration/v1alpha1',
+    });
   },
   s3Dataset(options: Omit<ApplicationS3LakehouseDatasetProvider, 'kind'>) {
     assertLakehouseDatasetOptions(options);
-    return { kind: 's3-dataset' as const, ...options };
+    requireProviderConfigString(options.bucket, 'Lakehouse.s3Dataset bucket');
+    requireProviderConfigString(options.region, 'Lakehouse.s3Dataset region');
+    requireProviderConfigString(options.catalog, 'Lakehouse.s3Dataset catalog');
+    if (options.prefix !== undefined) requireProviderConfigString(options.prefix, 'Lakehouse.s3Dataset prefix');
+    return maintainedBuiltInImplementation(LakehouseDataset, 'Lakehouse.s3Dataset', {
+      kind: 's3-dataset' as const,
+      ...options,
+    }, {
+      runtimeAdapter: '@applik8s/runtime-aws/lakehouse',
+      deploymentContributor: '@applik8s/deployment-compiler',
+      readiness: 'applik8s.lakehouse.s3.readiness/v1alpha1',
+      lifecycle: 'application',
+      migration: 'applik8s.lakehouse.s3.migration/v1alpha1',
+    });
   },
-  duckdbQueries(options = {}) { return { kind: 'duckdb-queries' as const, ...options }; },
-  athenaQueries(options: Omit<ApplicationAthenaLakehouseQueryProvider, 'kind'>) { return { kind: 'athena-queries' as const, ...options }; },
-  qualifiedProviderRequired(options: Omit<ApplicationQualifiedLakehouseProviderRequired, 'kind'>) {
-    if (!options.reason.trim()) throw new Error('Lakehouse.qualifiedProviderRequired(...) requires an actionable reason.');
-    return { kind: 'qualified-lakehouse-provider-required' as const, ...options };
+  objectStorageDataset(
+    options: Omit<ApplicationObjectStorageLakehouseDatasetProvider, 'kind' | 'storage'> & {
+      readonly storage: ApplicationCapabilityImplementation<ApplicationObjectStorageProvider>
+        | ApplicationProviderBinding<ApplicationObjectStorageProvider>
+        | ApplicationObjectStorageProvider;
+    },
+  ) {
+    assertLakehouseDatasetOptions(options);
+    const storage = applicationObjectStorageImplementation(options.storage);
+    if (!storage || storage.kind !== 's3') {
+      throw new TypeError(
+        'Lakehouse.objectStorageDataset(...) requires an S3-compatible ObjectStorage implementation.',
+      );
+    }
+    if (options.prefix !== undefined && !options.prefix.trim()) {
+      throw new TypeError('Lakehouse.objectStorageDataset prefix must not be empty.');
+    }
+    return maintainedBuiltInImplementation(LakehouseDataset, 'Lakehouse.objectStorageDataset', {
+      kind: 'object-storage-dataset' as const,
+      ...options,
+      storage,
+    }, {
+      runtimeAdapter: '@applik8s/applik8s/lakehouse-runtime',
+      readiness: 'applik8s.lakehouse.object-storage.readiness/v1alpha1',
+      lifecycle: 'application',
+      migration: 'applik8s.lakehouse.object-storage.migration/v1alpha1',
+    });
+  },
+  duckdbQueries(options = {}) {
+    return maintainedBuiltInImplementation(LakehouseQuery, 'Lakehouse.duckdbQueries', {
+      kind: 'duckdb-queries' as const,
+      ...options,
+    }, {
+      runtimeAdapter: '@applik8s/runtime-duckdb',
+      readiness: 'applik8s.lakehouse-query.duckdb.readiness/v1alpha1',
+      lifecycle: 'application',
+      migration: 'applik8s.lakehouse-query.duckdb.migration/v1alpha1',
+    });
+  },
+  athenaQueries(options: Omit<ApplicationAthenaLakehouseQueryProvider, 'kind'>) {
+    requireProviderConfigString(options.workgroup, 'Lakehouse.athenaQueries workgroup');
+    requireProviderConfigString(options.region, 'Lakehouse.athenaQueries region');
+    requireProviderConfigString(options.resultLocation, 'Lakehouse.athenaQueries resultLocation');
+    return maintainedBuiltInImplementation(LakehouseQuery, 'Lakehouse.athenaQueries', {
+      kind: 'athena-queries' as const,
+      ...options,
+    }, {
+      runtimeAdapter: '@applik8s/runtime-aws/lakehouse',
+      deploymentContributor: '@applik8s/deployment-compiler',
+      readiness: 'applik8s.lakehouse-query.athena.readiness/v1alpha1',
+      lifecycle: 'application',
+      migration: 'applik8s.lakehouse-query.athena.migration/v1alpha1',
+    });
+  },
+  objectStorageQueries(options = {}) {
+    return maintainedBuiltInImplementation(LakehouseQuery, 'Lakehouse.objectStorageQueries', {
+      kind: 'object-storage-queries' as const,
+      ...options,
+    }, {
+      runtimeAdapter: '@applik8s/applik8s/lakehouse-runtime',
+      readiness: 'applik8s.lakehouse-query.object-storage.readiness/v1alpha1',
+      lifecycle: 'application',
+      migration: 'applik8s.lakehouse-query.object-storage.migration/v1alpha1',
+    });
+  },
+  datasetProviderRequired(options: Omit<ApplicationQualifiedLakehouseProviderRequired, 'kind'>) {
+    if (!options.reason.trim()) throw new Error('Lakehouse.datasetProviderRequired(...) requires an actionable reason.');
+    return maintainedBuiltInImplementation(LakehouseDataset, 'Lakehouse.datasetProviderRequired', {
+      kind: 'qualified-lakehouse-provider-required' as const,
+      ...options,
+    }, {
+      runtimeAdapter: '@applik8s/applik8s/lakehouse-runtime',
+      readiness: 'applik8s.lakehouse.qualified-provider-required/v1alpha1',
+      lifecycle: 'external',
+      migration: 'applik8s.lakehouse.qualified-provider-required/v1alpha1',
+      maturity: 'external',
+    });
+  },
+  queryProviderRequired(options: Omit<ApplicationQualifiedLakehouseProviderRequired, 'kind'>) {
+    if (!options.reason.trim()) throw new Error('Lakehouse.queryProviderRequired(...) requires an actionable reason.');
+    return maintainedBuiltInImplementation(LakehouseQuery, 'Lakehouse.queryProviderRequired', {
+      kind: 'qualified-lakehouse-provider-required' as const,
+      ...options,
+    }, {
+      runtimeAdapter: '@applik8s/applik8s/lakehouse-runtime',
+      readiness: 'applik8s.lakehouse-query.qualified-provider-required/v1alpha1',
+      lifecycle: 'external',
+      migration: 'applik8s.lakehouse-query.qualified-provider-required/v1alpha1',
+      maturity: 'external',
+    });
   },
 });
 
@@ -3351,6 +3628,7 @@ export const ContainerRegistry: ApplicationContainerRegistryProviderToken = appl
     if (!applicationProviderStringOrInstallationReference(options.project)) {
       throw new Error('ContainerRegistry.harbor({ project }) must be a non-empty value or typed installation reference.');
     }
+    let provider: ApplicationHarborContainerRegistryProvider;
     if ('management' in options && options.management) {
       assertApplicationHarborProjectManagement(options.management);
       if (typeof options.project !== 'string' && (!options.management.pushSecretName || !options.management.pullSecretName)) {
@@ -3358,7 +3636,7 @@ export const ContainerRegistry: ApplicationContainerRegistryProviderToken = appl
       }
       const pushSecretName = options.management.pushSecretName ?? `${options.project}-registry-push`;
       const pullSecretName = options.management.pullSecretName ?? `${options.project}-registry-pull`;
-      return {
+      provider = {
         kind: 'harbor-container-registry',
         ...options,
         pushCredentials: {
@@ -3375,10 +3653,21 @@ export const ContainerRegistry: ApplicationContainerRegistryProviderToken = appl
           name: pullSecretName,
         },
       };
+    } else {
+      assertApplicationContainerRegistryCredentials(options.pushCredentials);
+      assertApplicationContainerRegistrySecret(options.pullSecret, 'pullSecret');
+      provider = { kind: 'harbor-container-registry', ...options };
     }
-    assertApplicationContainerRegistryCredentials(options.pushCredentials);
-    assertApplicationContainerRegistrySecret(options.pullSecret, 'pullSecret');
-    return { kind: 'harbor-container-registry', ...options };
+    return maintainedBuiltInImplementation(ContainerRegistry, 'ContainerRegistry.harbor', provider, {
+      runtimeAdapter: '@applik8s/runtime/oci-container-registry',
+      deploymentContributor: '@applik8s/deployment-typekro/providers/harbor',
+      readiness: 'applik8s.container-registry.harbor.readiness/v1alpha1',
+      lifecycle: provider.management?.projectLifecycle?.deletionPolicy === 'delete'
+        ? 'application'
+        : 'retained',
+      migration: 'applik8s.container-registry.harbor.migration/v1alpha1',
+      maturity: 'experimental',
+    });
   },
   origin(origin) {
     if (!applicationProviderStringOrInstallationReference(origin)) throw new Error('ContainerRegistry.origin(...) requires a non-empty registry origin or typed installation reference.');
@@ -3428,13 +3717,34 @@ export const ApplicationHost: ApplicationHostProviderToken = applicationQualifia
   },
   kubernetes(options = {}) {
     assertApplicationHostOptions('ApplicationHost.kubernetes', options);
+    if (options.registry) {
+      assertApplicationImplementationInput(options.registry, ContainerRegistry, 'ApplicationHost.kubernetes registry');
+    }
     if (options.cursorSecret?.name !== undefined && !options.cursorSecret.name.trim()) {
       throw new Error('ApplicationHost.kubernetes({ cursorSecret.name }) must not be empty.');
     }
     if (options.cursorSecret?.key !== undefined && !options.cursorSecret.key.trim()) {
       throw new Error('ApplicationHost.kubernetes({ cursorSecret.key }) must not be empty.');
     }
-    return { kind: 'kubernetes-application-host', ...options };
+    const provider: ApplicationKubernetesHostProvider = { kind: 'kubernetes-application-host', ...options };
+    return maintainedBuiltInImplementation(ApplicationHost, 'ApplicationHost.kubernetes', provider, {
+      runtimeAdapter: '@applik8s/runtime-kubernetes/application-host',
+      deploymentFamily: 'kubernetes',
+      deploymentContributor: '@applik8s/deployment-typekro/providers/application-host',
+      readiness: 'applik8s.application-host.kubernetes.readiness/v1alpha1',
+      lifecycle: 'application',
+      migration: 'applik8s.application-host.kubernetes.migration/v1alpha1',
+      maturity: 'experimental',
+      dependencies: options.registry
+        ? [{
+            slot: 'registry',
+            requirement: ContainerRegistry as ApplicationProviderToken<object>,
+            requiredGuarantees: ['immutableDigest', 'executionTimeCredentials'],
+            operations: ['artifact.read'],
+            input: maintainedDependencyInput(options.registry as object, ContainerRegistry as ApplicationProviderToken<object>),
+          }]
+        : [],
+    });
   },
   aws(options) {
     assertApplicationAwsAccount(options.account, 'ApplicationHost.aws');
@@ -3445,6 +3755,7 @@ export const ApplicationHost: ApplicationHostProviderToken = applicationQualifia
       ...options,
     }, {
       runtimeAdapter: '@applik8s/runtime-aws/application-host',
+      deploymentFamily: 'aws',
       deploymentContributor: '@applik8s/deployment-alchemy/providers/application-host',
       readiness: 'applik8s.application-host.aws.readiness/v1alpha1',
       lifecycle: 'application',
@@ -3820,18 +4131,29 @@ function requireProviderConfigString(
     if (!value.trim()) throw new TypeError(`${label} must not be empty.`);
     return;
   }
-  if (!isApplicationConfigurationBinding(value) || value.kind !== 'config' || value.valueType !== 'string') {
-    throw new TypeError(`${label} requires a string literal or config.env(...) binding.`);
-  }
+  if (
+    applicationProviderInstallationReference(value)
+    || (
+      isApplicationConfigurationBinding(value)
+      && value.kind === 'config'
+      && value.valueType === 'string'
+    )
+  ) return;
+  throw new TypeError(
+    `${label} requires a string literal, typed installation reference, or config.env(...) binding.`,
+  );
 }
 
 function isApplicationProviderConfigString(value: unknown): value is ApplicationProviderConfigString {
   return typeof value === 'string'
     ? value.trim().length > 0
     : Boolean(
-        isApplicationConfigurationBinding(value)
-        && value.kind === 'config'
-        && value.valueType === 'string',
+        applicationProviderInstallationReference(value)
+        || (
+          isApplicationConfigurationBinding(value)
+          && value.kind === 'config'
+          && value.valueType === 'string'
+        ),
       );
 }
 
@@ -3992,22 +4314,25 @@ export function isApplicationLakehouseDatasetProvider(value: unknown): value is 
   if (!value || typeof value !== 'object') return false;
   const kind = Reflect.get(value, 'kind');
   return kind === 'duckdb-dataset'
+    || (kind === 'object-storage-dataset'
+      && isApplicationS3ObjectStorageProvider(Reflect.get(value, 'storage')))
     || (kind === 'qualified-lakehouse-provider-required'
       && typeof Reflect.get(value, 'reason') === 'string'
       && String(Reflect.get(value, 'reason')).trim().length > 0)
     || (kind === 's3-dataset'
-      && ['bucket', 'region', 'catalog'].every((field) => typeof Reflect.get(value, field) === 'string' && String(Reflect.get(value, field)).trim()));
+      && ['bucket', 'region', 'catalog'].every((field) => isApplicationProviderConfigString(Reflect.get(value, field))));
 }
 
 export function isApplicationLakehouseQueryProvider(value: unknown): value is ApplicationLakehouseQueryProvider {
   if (!value || typeof value !== 'object') return false;
   const kind = Reflect.get(value, 'kind');
   return kind === 'duckdb-queries'
+    || kind === 'object-storage-queries'
     || (kind === 'qualified-lakehouse-provider-required'
       && typeof Reflect.get(value, 'reason') === 'string'
       && String(Reflect.get(value, 'reason')).trim().length > 0)
     || (kind === 'athena-queries'
-      && ['workgroup', 'region', 'resultLocation'].every((field) => typeof Reflect.get(value, field) === 'string' && String(Reflect.get(value, field)).trim()));
+      && ['workgroup', 'region', 'resultLocation'].every((field) => isApplicationProviderConfigString(Reflect.get(value, field))));
 }
 
 export function isClickHouseAnalyticalDatabaseProvider(value: unknown): value is ApplicationClickHouseAnalyticalDatabaseProvider {
@@ -4844,7 +5169,8 @@ function applicationProviderNodePort(value: unknown): boolean {
 function applicationProviderRequiredString(value: unknown): boolean {
   return typeof value === 'string'
     ? value.trim().length > 0
-    : applicationTypeKroExpressionValue(value) !== undefined;
+    : isApplicationProviderConfigString(value)
+      || applicationTypeKroExpressionValue(value) !== undefined;
 }
 
 export function applicationHttpExposureImplementation(value: unknown): ApplicationHttpExposureProvider | undefined {
@@ -6137,6 +6463,12 @@ function applicationProviderNumberOrInstallationReference(value: unknown): boole
 
 function applicationProviderStringOrInstallationReference(value: unknown): boolean {
   if (typeof value === 'string') return Boolean(value.trim());
+  if (
+    isApplicationConfigurationBinding(value)
+    && value.kind === 'config'
+    && value.valueType === 'string'
+    && value.required
+  ) return true;
   return applicationProviderInstallationReference(value);
 }
 

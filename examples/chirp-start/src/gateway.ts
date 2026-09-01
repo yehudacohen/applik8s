@@ -6,6 +6,7 @@ import { AutomationPostReviewRequests } from './automation/workflow';
 import { Account, AccountByHandle, AccountDiscover, AccountMe, CredentialLink, InstallationSetting } from './domain/accounts';
 import { Automation, AutomationControl, AutomationControlCurrent, AutomationMine, AutomationRun, AutomationRunRecent } from './domain/automation';
 import { EngagementBatch, EngagementBatchRecent } from './domain/engagement';
+import { HistoricalEngagement } from './domain/history';
 import { Media, MediaForPosts } from './domain/media';
 import { ModerationCase, ModerationCaseQueue, ModerationPolicyCurrent, Report, ReportOpenQueue } from './domain/moderation';
 import { Notification, NotificationInbox } from './domain/notifications';
@@ -56,7 +57,7 @@ function systemAdmission({ principal }: { readonly principal: ApplicationPrincip
 
 /** The route multiplexer keeps these workload boundaries invisible to clients. */
 export const socialGateway = app.gateway('social', {
-  queries: [PostHomeTimeline, PostConversation, PostSearch, PostByAuthor, PostByAuthorHandle, PostTrending, FollowFollowers, FollowFollowing, FollowViewerState, BlockViewerState, MuteViewerState, BookmarkMine],
+  queries: [PostHomeTimeline, PostConversation, PostSearch, PostByAuthor, PostByAuthorHandle, PostTrending, HistoricalEngagement, FollowFollowers, FollowFollowing, FollowViewerState, BlockViewerState, MuteViewerState, BookmarkMine],
   commands: [Post.create, Post.update, Post.delete, Follow.create, Follow.update, Follow.delete, Reaction.create, Reaction.update, Reaction.delete, Bookmark.create, Bookmark.update, Bookmark.delete, Block.create, Block.update, Block.delete, Mute.create, Mute.update, Mute.delete, Report.create],
   authorizeCommand: authenticatedAdmission,
   deployment: {

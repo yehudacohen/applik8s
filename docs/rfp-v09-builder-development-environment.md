@@ -8,7 +8,7 @@
 
 **Revised:** 2026-08-30
 
-**Target:** Applik8s v0.9 preview; optional in Agentic Start and non-blocking for 1.0
+**Target:** Applik8s v0.9 release-blocking preview; development-only in Agentic Start and non-stable for 1.0
 
 **Contract lineage:** Refines and supersedes the accepted v0.8 Independent Development Environment and
 Coding Agent RFP only where this document says so explicitly. Its independent daemon/portal,
@@ -32,9 +32,10 @@ in the running product; inspect the resolved source, graph, trace, runtime, and 
 semantic diffs; run targeted journeys; open a live preview; and explicitly apply, undo, or reject the
 change.
 
-Agentic Start includes optional Builder development integration and configuration. The independent Builder
-daemon and portal are excluded from production bundles and routes unless an application deliberately
-productizes them. OpenCode may implement the initial
+Agentic Start includes Builder development integration and configuration in its development experience.
+Applications may disable the disposable bridge after generation, and the independent Builder daemon and
+portal are excluded from production bundles and routes unless an application deliberately productizes
+them. OpenCode may implement the initial
 `AgentHarness`; it is not the public API or durable identity.
 
 ## Existing functionality that must not be duplicated
@@ -125,9 +126,16 @@ Packaging is deliberately dense rather than fragmented:
 - generated applications contain only `builder({ application, agent, journeys, policy? })`, product-owned
   journeys/tools/copy, and the disposable development toolbar.
 
-Builder is preview and non-blocking for the stable v0.9 semantic core. Shipping the preview still requires
-the complete closed journey above; preview maturity permits API evolution, not a collection of disconnected
-screens or unverifiable success states.
+Builder remains preview rather than a stable 1.0 contract. Shipping v0.9 still requires the complete closed
+journey above; preview maturity permits API evolution, not a collection of disconnected screens or
+unverifiable success states.
+
+Builder is a committed, release-blocking v0.9 preview. The closed journey must pass against a real loopback
+OpenCode process before v0.9 may ship. Protocol doubles remain useful component evidence but cannot qualify
+the preview. Preview maturity permits compatibility evolution after v0.9; it does not permit removing,
+hiding, relabeling, or partially shipping Builder to make the release pass. The separately qualified
+distributed `codeAgent()` → Celld → OpenCode path is neither a prerequisite nor a substitute for this
+independent Builder journey.
 
 ## Architecture
 
@@ -377,6 +385,10 @@ A product-anchored journey begins from the running application:
 15. Builder is assembled from the same composable implementation values as the rest of Applik8s. Agent,
     harness, repository, workspace, process, preview, and journey implementations may be inline or
     separately provided without leaking their private capabilities into generated applications.
+16. **Builder** names only the independent repository-development daemon/portal and its change journey.
+    Generated application administration for agents, knowledge, evaluations, or integrations uses a
+    product-owned label such as **Agent Studio** or **Configure**; it must not reuse Builder for a distinct
+    in-application authority surface.
 
 ## Architectural boundary
 
@@ -547,6 +559,8 @@ tools, product copy, and visual overrides.
 
 - The complete closed journey passes from a clean packed `@applik8s/dev` consumer without workspace
   hoisting or unpublished source.
+- The journey uses a real managed loopback OpenCode process; protocol/process doubles cannot satisfy the
+  preview inclusion gate.
 - A clean generated Agentic Start opens Builder through `applik8s dev`.
 - A user can prompt a cross-layer feature and understand the proposed graph consequences before mutation.
 - Diff, preview, targeted journeys, and evidence agree on actual state.
@@ -562,6 +576,9 @@ tools, product copy, and visual overrides.
 - OpenCode can be replaced behind `AgentHarness` without changing Builder's domain model.
 - Protocol-version mismatch enters an actionable recovery/upgrade state rather than guessing compatibility.
 - Production builds omit Builder development integration and configuration by default.
+- A bounded browser run visits every primary Builder view used by the closed journey, records navigation,
+  console, request, streaming/reconnection, accessibility-smoke, screenshot, and runtime evidence, and
+  never marks an unvisited page as passing.
 
 Three product-level scenarios are mandatory:
 
@@ -592,4 +609,4 @@ The preview is ready when a new user can safely prompt or select the relevant ru
 control resolved source/graph/trace/plan attachments and stable named referents, understand, review,
 preview, verify, apply, and undo a real Applik8s feature while the independent portal survives application
 failure and every mutation, capability, provider, lifecycle transition, and piece of evidence remains
-explicit and replaceable.
+explicit and replaceable. If that complete journey is unavailable, v0.9 is not ready.

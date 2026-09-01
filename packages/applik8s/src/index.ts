@@ -41,7 +41,7 @@ export { applicationInstallationSpecEnvironmentVariable, readApplicationInstalla
 export * from './application-job-durable-runtime.js';
 export * from './application-job-remote-runtime.js';
 export * from './application-job-store.js';
-export { ApplicationLakehouseQueryTerminalError, applicationLakehouseAuthorityManifest, applicationLakehouseQueryIdentity, applicationLakehouseQueryTerminalError, classifyApplicationLakehouseSchemaEvolution, compareApplicationLakehouseRows, compileApplicationLakehouseQuery, evaluateApplicationLakehouseFilter, executeApplicationLakehousePublication, installApplicationLakehousePublicationRuntimeResolver, verifyApplicationLakehouseAuthorityManifest, verifyApplicationLakehouseManifest } from './application-lakehouse.js';
+export { ApplicationLakehouseQueryTerminalError, applicationLakehouseAuthorityManifest, applicationLakehouseQueryIdentity, applicationLakehouseQueryTerminalError, classifyApplicationLakehouseSchemaEvolution, compareApplicationLakehouseRows, compileApplicationLakehouseQuery, createObjectStorageApplicationLakehouseRuntime, evaluateApplicationLakehouseFilter, executeApplicationLakehousePublication, installApplicationLakehousePublicationRuntimeResolver, verifyApplicationLakehouseAuthorityManifest, verifyApplicationLakehouseManifest } from './application-lakehouse.js';
 export type { ApplicationLakehouseConformanceCase, ApplicationLakehouseConformanceReport, ApplicationLakehouseConformanceRow } from './application-lakehouse-conformance.js';
 export { applicationLakehouseConformanceCases, applicationLakehouseConformanceRows, runApplicationLakehouseConformance } from './application-lakehouse-conformance.js';
 export * from './application-managed-model-runtime.js';

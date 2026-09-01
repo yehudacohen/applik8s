@@ -539,7 +539,67 @@ export function decorateApplicationCallbackArguments(
     // typecast: the TypeScript visitor preserves expression arguments while recursively instrumenting their children.
     const visited = ts.visitNode(argument, visit) as ts.Expression;
     if (index !== optionsIndex || !ts.isObjectLiteralExpression(visited)) return visited;
-    return decorateApplicationCallbackObject(visited, properties, file, sourceFile, registrar);
+    const decorated = decorateApplicationCallbackObject(
+      visited,
+      properties,
+      file,
+      sourceFile,
+      registrar,
+    );
+    if (
+      registrar !== 'query'
+      && registrar !== 'view'
+    ) return decorated;
+    const original = node.arguments[optionsIndex];
+    if (!original || !ts.isObjectLiteralExpression(original)) return decorated;
+    const run = original.properties.find(
+      (property): property is ts.PropertyAssignment =>
+        ts.isPropertyAssignment(property)
+        && objectPropertyName(property.name) === 'run'
+        && isApplicationCallbackExpression(property.initializer),
+    )?.initializer;
+    if (!run) return decorated;
+    const analysis = directApplicationCallAnalysis(
+      run,
+      file,
+      sourceFile,
+      registrar,
+    );
+    const captureCandidates = [
+      ...analysis.calls,
+      ...applicationQueryProviderArgumentCaptures(run),
+    ].filter(
+      (candidate, index, candidates) =>
+        candidates.findIndex(
+          (other) => other.getText(file) === candidate.getText(file),
+        ) === index,
+    );
+    const captures = captureCandidates.map(
+      (candidate) => ts.visitNode(candidate, visit) as ts.Expression,
+    );
+    if (
+      captures.length === 0
+      || decorated.properties.some(
+        (property) => objectPropertyName(property.name) === '__generatedCalls',
+      )
+    ) return decorated;
+    return ts.factory.updateObjectLiteralExpression(decorated, [
+      ...decorated.properties,
+      ts.factory.createPropertyAssignment(
+        '__generatedCalls',
+        ts.factory.createArrayLiteralExpression(captures),
+      ),
+      ts.factory.createPropertyAssignment(
+        '__generatedBindings',
+        ts.factory.createObjectLiteralExpression(
+          captures.map((capture) =>
+            ts.factory.createPropertyAssignment(
+              ts.factory.createStringLiteral(capture.getText(file)),
+              capture,
+            )),
+        ),
+      ),
+    ]);
   });
 }
 
@@ -629,6 +689,46 @@ interface DirectApplicationCallAnalysis {
   readonly calls: readonly ts.Expression[];
   readonly awaited: readonly ts.Expression[];
   readonly returned: readonly ts.Expression[];
+}
+
+/**
+ * Provider operations may receive another qualified provider as structured
+ * input. Lakehouse queries use this to select the exact dataset without a
+ * second dependency declaration. Preserve that inert handle alongside the
+ * called operation so placement and target IAM remain resource-scoped.
+ */
+function applicationQueryProviderArgumentCaptures(
+  callback: ts.Expression,
+): readonly ts.Expression[] {
+  const captures: ts.Expression[] = [];
+  const visit = (node: ts.Node): void => {
+    if (ts.isCallExpression(node)) {
+      if (
+        ts.isPropertyAccessExpression(node.expression)
+        && node.expression.name.text === 'query'
+        && (
+          ts.isIdentifier(node.expression.expression)
+          || ts.isPropertyAccessExpression(node.expression.expression)
+        )
+      ) captures.push(node.expression.expression);
+      for (const argument of node.arguments) {
+        if (!ts.isObjectLiteralExpression(argument)) continue;
+        for (const property of argument.properties) {
+          if (
+            !ts.isPropertyAssignment(property)
+            || objectPropertyName(property.name) !== 'dataset'
+          ) continue;
+          if (
+            ts.isIdentifier(property.initializer)
+            || ts.isPropertyAccessExpression(property.initializer)
+          ) captures.push(property.initializer);
+        }
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(callback);
+  return captures;
 }
 
 type AnalyzableApplicationCallback =

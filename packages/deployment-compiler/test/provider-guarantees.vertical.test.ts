@@ -69,6 +69,9 @@ describe('v0.8 provider guarantee manifests', () => {
     ['NotificationDelivery', 'smtp'],
     ['PaymentProvider', 'stripe'],
     ['StructuredGeneration', 'structured-generation-http'],
+    ['WebSearch', 'searxng'],
+    ['SourceRetriever', 'bounded-http-source-retriever'],
+    ['ResearchEvidence', 'research-evidence-postgres'],
   ] as const)('qualifies the maintained Kubernetes %s/%s adapter', (providerInterface, implementation) => {
     const candidate = provider(providerInterface, implementation)
     const [manifest] = applicationProviderGuaranteesForGraph({ graph: { ...graph(), nodes: [candidate] }, target: 'kubernetes' })
@@ -136,6 +139,8 @@ describe('v0.8 provider guarantee manifests', () => {
     ['local', 'LakehouseQuery', 'duckdb-queries'],
     ['kubernetes', 'LakehouseDataset', 's3-dataset'],
     ['kubernetes', 'LakehouseQuery', 'athena-queries'],
+    ['kubernetes', 'LakehouseDataset', 'object-storage-dataset'],
+    ['kubernetes', 'LakehouseQuery', 'object-storage-queries'],
     ['aws', 'LakehouseDataset', 's3-dataset'],
     ['aws', 'LakehouseQuery', 'athena-queries'],
   ] as const)('emits the complete %s %s conformance vocabulary', (target, providerInterface, implementation) => {
@@ -297,6 +302,26 @@ describe('v0.8 provider guarantee manifests', () => {
 			]))
 		expect(() => assertApplicationScheduleProviderCompatibility({ graph: incompatible, target: 'kubernetes' }))
 			.toThrow(/SCHEDULE_CARDINALITY_UNSUPPORTED/u)
+	})
+
+	it('accepts durable high-cardinality second-precision schedules on the PostgreSQL scheduler', () => {
+		const source = graph()
+		const scheduler = {
+			...provider('Scheduler', 'postgres-scheduler'),
+			id: 'provider.scheduler.postgres',
+		}
+		const schedule = scheduleNode(scheduler.id, {
+			cardinality: 'high', precision: 'second', misfires: 'all-bounded',
+		})
+		const selected = { ...source, nodes: [...source.nodes, scheduler, schedule] }
+		expect(applicationScheduleProviderCompatibilityFindings({
+			graph: selected,
+			target: 'kubernetes',
+		})).toEqual([])
+		expect(() => assertApplicationScheduleProviderCompatibility({
+			graph: selected,
+			target: 'kubernetes',
+		})).not.toThrow()
 	})
 
 	it('rejects Kubernetes skip windows below the controller scheduling floor', () => {

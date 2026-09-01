@@ -40,6 +40,12 @@ export interface AwsApplicationLakehouseDatasetConfiguration<TRow extends object
   readonly region?: string;
   readonly maximumObjectsPerSnapshot?: number;
   readonly retainedSnapshots?: number;
+  /**
+   * Explicit application authority to prune unretained immutable objects and
+   * Glue snapshot tables. Staging leases created by this runtime remain
+   * cleanup-safe independently; all other deletes fail closed by default.
+   */
+  readonly forceDeleteUnretainedData?: boolean;
   /** Lease duration for publication and lifecycle reconciliation. */
   readonly lifecycleLeaseMs?: number;
   readonly now?: () => Date;
@@ -95,6 +101,7 @@ export interface AwsApplicationLakehouseLifecycleReceipt {
   readonly deletedSnapshotArtifacts: number;
   readonly deletedCatalogTables: number;
   readonly expiredStagingLeases: number;
+  readonly destructiveCleanupAuthorized: boolean;
 }
 
 export interface AwsApplicationLakehouseDatasetRuntime<TRow extends object>
@@ -433,6 +440,7 @@ async function reconcileAwsApplicationLakehouseLifecycle<TRow extends object>(
     datasetId: configuration.datasetId,
     retainedSnapshots: current.authority.manifests.length,
     retainedObjects: new Set(current.authority.manifests.flatMap(({ objects }) => objects.map(({ objectId }) => objectId))).size,
+    destructiveCleanupAuthorized: configuration.forceDeleteUnretainedData === true,
   };
   if (activeMaintenanceLease(current.authority, now)) throw new AwsApplicationLakehouseLifecycleBusyError(configuration.datasetId);
   const maintenanceLease: AwsLakehouseMaintenanceLease = {
@@ -464,6 +472,17 @@ async function reconcileAwsApplicationLakehouseLifecycle<TRow extends object>(
       return {
         ...baseReceipt,
         state: 'publication-active',
+        deletedObjects: 0,
+        deletedSnapshotArtifacts: 0,
+        deletedCatalogTables: 0,
+        expiredStagingLeases,
+      };
+    }
+
+    if (configuration.forceDeleteUnretainedData !== true) {
+      return {
+        ...baseReceipt,
+        state: 'reconciled',
         deletedObjects: 0,
         deletedSnapshotArtifacts: 0,
         deletedCatalogTables: 0,

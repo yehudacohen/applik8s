@@ -382,6 +382,157 @@ describe("compiler deployment graph emission", () => {
     );
   });
 
+  it('materializes a StructuredGeneration environment credential only for workflow consumers', async () => {
+    const directory = await mkdtemp(
+      join(process.env.TMPDIR ?? '/tmp', 'applik8s-generation-secret-'),
+    );
+    temporaryDirectories.push(directory);
+    const bundlePath = join(directory, 'typekro-bundle.json');
+    await writeFile(bundlePath, JSON.stringify({ spec: {} }));
+    const graph = {
+      apiVersion: 'applik8s.applicationGraph/v1alpha1',
+      kind: 'ApplicationGraph',
+      metadata: { name: 'generation-proof', namespace: 'generation-proof' },
+      nodes: [{
+        id: 'provider.structured-generation.v1alpha1.content',
+        kind: 'provider',
+        name: 'StructuredGeneration.content',
+        stability: 'experimental',
+        interface: 'StructuredGeneration',
+        implementation: 'structured-generation-http',
+        config: {
+          kind: 'structured-generation-http',
+          endpoint: 'https://openrouter.ai/api/v1',
+          credential: {
+            apiVersion: 'applik8s.configurationBinding/v1alpha1',
+            kind: 'secret',
+            source: 'environment',
+            reference: 'OPENROUTER_API_KEY',
+            required: true,
+          },
+        },
+      }, {
+        id: 'provider.structured-generation',
+        kind: 'provider',
+        name: 'StructuredGeneration',
+        stability: 'experimental',
+        interface: 'StructuredGeneration',
+        implementation: 'structured-generation-http',
+        config: {
+          aliasOf: 'provider.structured-generation.v1alpha1.content',
+          kind: 'structured-generation-http',
+          endpoint: 'https://openrouter.ai/api/v1',
+          credential: {
+            apiVersion: 'applik8s.configurationBinding/v1alpha1',
+            kind: 'secret',
+            source: 'environment',
+            reference: 'OPENROUTER_API_KEY',
+            required: true,
+          },
+        },
+      }, {
+        id: 'workflow-worker.generation-proof',
+        kind: 'workflowWorker',
+        name: 'generation-proof',
+      }, {
+        id: 'server.public',
+        kind: 'server',
+        name: 'public',
+        routes: [],
+      }],
+      edges: [],
+      providerRequirements: [],
+      providerBindings: [],
+    } as unknown as ApplicationGraph;
+
+    const requirements = await applicationGeneratedSecretRequirements(
+      bundlePath,
+      graph.metadata.namespace,
+      graph,
+      {},
+    );
+
+    expect(requirements).toContainEqual({
+      id: expect.stringMatching(/^structured-generation\.[a-f0-9]{12}$/),
+      namespace: 'generation-proof',
+      name: expect.stringMatching(/^applik8s-structured-generation-[a-f0-9]{12}$/),
+      referenceMode: 'staticIdentity',
+      values: {
+        apiKey: { kind: 'hostEnvironment', name: 'OPENROUTER_API_KEY' },
+      },
+      consumers: ['workflow-worker.generation-proof'],
+    });
+    expect(requirements.filter((requirement) =>
+      requirement.values.apiKey?.kind === 'hostEnvironment')).toHaveLength(1);
+    expect(JSON.stringify(requirements)).not.toContain('resolved-secret-value');
+  });
+
+  it("binds internal-operation authority only to generated gateways whose artifacts consume it", async () => {
+    const directory = await mkdtemp(
+      join(process.env.TMPDIR ?? "/tmp", "applik8s-gateway-secret-"),
+    );
+    temporaryDirectories.push(directory);
+    const bundlePath = join(directory, "typekro-bundle.json");
+    await writeFile(bundlePath, JSON.stringify({
+      spec: {
+        reactive: [
+          {
+            name: "public",
+            nodeId: "gateway.public",
+            kind: "queryGateway",
+            frameworkCredentials: [
+              { kind: "context", environmentName: "APPLIK8S_CONTEXT_SECRET" },
+            ],
+          },
+          {
+            name: "internal",
+            nodeId: "gateway.internal",
+            kind: "queryGateway",
+            frameworkCredentials: [
+              {
+                kind: "internal-operation",
+                environmentName: "APPLIK8S_INTERNAL_OPERATION_SECRET",
+              },
+            ],
+          },
+        ],
+      },
+    }));
+    const graph = {
+      apiVersion: "applik8s.applicationGraph/v1alpha1",
+      kind: "ApplicationGraph",
+      metadata: { name: "gateway-proof", namespace: "gateway-proof" },
+      nodes: [
+        { id: "actor.worker", kind: "actor", name: "worker" },
+        {
+          id: "gateway.public",
+          kind: "gateway",
+          materialization: "generatedDeployment",
+        },
+        {
+          id: "gateway.internal",
+          kind: "gateway",
+          materialization: "generatedDeployment",
+        },
+      ],
+      edges: [],
+      providerRequirements: [],
+      providerBindings: [],
+    } as unknown as ApplicationGraph;
+
+    const requirements = await applicationGeneratedSecretRequirements(
+      bundlePath,
+      graph.metadata.namespace,
+      graph,
+      {},
+    );
+
+    expect(requirements).toContainEqual(expect.objectContaining({
+      name: "gateway-proof-internal-operation",
+      consumers: ["actor.worker", "gateway.internal"],
+    }));
+  });
+
   it("gives lakehouse publishers only their publication cursor", async () => {
     const directory = await mkdtemp(
       join(process.env.TMPDIR ?? "/tmp", "applik8s-lakehouse-secret-"),
@@ -512,7 +663,7 @@ describe("compiler deployment graph emission", () => {
     expect(dockerfile).toContain("COPY --from=esbuild --chmod=0555");
     expect(dockerfile).toContain(`FROM ${applicationCelldRuntimeRelease.image}`);
     expect(dockerfile.trimEnd()).toMatch(/USER 65532:65532$/u);
-    expect(worker).toContain('node:async_hooks');
+    expect(worker).not.toContain('node:async_hooks');
     expect(wrangler.compatibility_flags).toContain('nodejs_compat');
     expect(worker).not.toContain('@kubernetes/client-node');
     expect(emitted.graph.edges).toContainEqual({

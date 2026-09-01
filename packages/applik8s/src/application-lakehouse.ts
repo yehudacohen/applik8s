@@ -9,6 +9,7 @@ import {
   staticSignedEnvelopeKeyProvider,
 } from '@applik8s/runtime/signed-envelope';
 import type { SchemaInput } from '@applik8s/sdk';
+import type { ApplicationObjectStorageRuntime } from './application-object-storage-runtime-contract.js';
 import type {
   ApplicationLakehouseQueryProvider,
   ApplicationQualifiedProviderToken,
@@ -195,7 +196,7 @@ export interface ApplicationLakehouseQueryReceipt {
   readonly state: ApplicationLakehouseQueryTerminalState;
   readonly snapshot?: string;
   readonly schemaRevision?: string;
-  readonly provider?: 'deterministic' | 'duckdb' | 'athena';
+  readonly provider?: 'deterministic' | 'duckdb' | 'athena' | 'object-storage';
   readonly providerQueryId?: string;
   readonly diagnostic?: string;
 }
@@ -235,7 +236,7 @@ export interface ApplicationLakehouseQueryResult<TRow extends object> {
     readonly schemaRevision: string;
   };
   readonly evidence?: {
-    readonly provider: 'deterministic' | 'duckdb' | 'athena';
+    readonly provider: 'deterministic' | 'duckdb' | 'athena' | 'object-storage';
     readonly target?: 'local' | 'aws-local' | 'aws' | 'kubernetes';
     readonly durationMs: number;
     readonly cost: { readonly kind: 'unavailable' | 'scanned-bytes'; readonly scannedBytes: number };
@@ -891,6 +892,240 @@ export function createDeterministicApplicationLakehouseRuntime<TRow extends obje
     },
     current: () => current,
     snapshots: () => [...manifests.values()],
+  };
+}
+
+export interface ObjectStorageApplicationLakehouseRuntimeOptions<TRow extends object> {
+  readonly datasetId: string;
+  readonly schemaRevision: string;
+  readonly schema: SchemaInput<TRow>;
+  readonly cursorKey: string;
+  readonly storage: ApplicationObjectStorageRuntime;
+  readonly maximumObjectsPerSnapshot?: number;
+  readonly retainedSnapshots?: number;
+  readonly maximumRows?: number;
+  readonly maximumScannedBytes?: number;
+  readonly maximumConcurrentQueries?: number;
+  /** Explicit authority to remove only this dataset runtime's unretained keys. */
+  readonly forceDeleteUnretainedData?: boolean;
+}
+
+/**
+ * Durable provider-neutral lakehouse runtime over an application ObjectStorage
+ * capability. The generated workload receives only that provider's scoped
+ * credentials; no AWS catalog or ambient cloud credential is implied.
+ *
+ * Publication is deliberately single-writer. Generated stream consumers own
+ * one durable consumer and one replica, while immutable objects and manifests
+ * make retries idempotent across process replacement.
+ */
+export async function createObjectStorageApplicationLakehouseRuntime<TRow extends object>(
+  options: ObjectStorageApplicationLakehouseRuntimeOptions<TRow>,
+): Promise<DeterministicApplicationLakehouseRuntime<TRow>> {
+  const authorityKey = 'authority.json';
+  const priorAuthority = await readObjectStorageLakehouseAuthority<TRow>(
+    options.storage,
+    authorityKey,
+    options.datasetId,
+  );
+  const restored = await Promise.all(priorAuthority.map(async (authority) => {
+    const rows: TRow[] = [];
+    const rowIdentities: string[] = [];
+    for (const object of authority.objects) {
+      const bytes = await options.storage.get(`objects/${object.objectId}.json`);
+      if (!bytes) {
+        throw new Error(
+          `Lakehouse dataset ${options.datasetId} is missing immutable object ${object.objectId}.`,
+        );
+      }
+      const payload = parseObjectStorageLakehouseObject<TRow>(bytes, object.objectId);
+      rows.push(...payload.rows);
+      rowIdentities.push(...payload.rowIdentities);
+    }
+    return verifyApplicationLakehouseManifest({
+      ...authority,
+      rows,
+      rowIdentities,
+    }, options.datasetId);
+  }));
+  const previousKeys = new Set(priorAuthority.flatMap((manifest) => [
+    `manifests/${manifest.snapshotId}.json`,
+    ...manifest.objects.map((object) => `objects/${object.objectId}.json`),
+  ]));
+  const runtime = createDeterministicApplicationLakehouseRuntime({
+    datasetId: options.datasetId,
+    schemaRevision: options.schemaRevision,
+    schema: options.schema,
+    cursorKey: options.cursorKey,
+    snapshots: restored,
+    ...(options.maximumObjectsPerSnapshot
+      ? { maximumObjectsPerSnapshot: options.maximumObjectsPerSnapshot }
+      : {}),
+    ...(options.retainedSnapshots ? { retainedSnapshots: options.retainedSnapshots } : {}),
+    persist: async (snapshots) => {
+      const authorities = snapshots.map(applicationLakehouseAuthorityManifest);
+      const retainedKeys = new Set<string>();
+      for (const snapshot of snapshots) {
+        for (const object of snapshot.objects) {
+          const key = `objects/${object.objectId}.json`;
+          retainedKeys.add(key);
+          const start = object.rowOffset;
+          const end = start + object.rowCount;
+          await options.storage.put({
+            key,
+            body: `${JSON.stringify({
+              schemaVersion: 'applik8s.objectStorageLakehouseObject/v1alpha1',
+              datasetId: options.datasetId,
+              objectId: object.objectId,
+              rows: snapshot.rows.slice(start, end),
+              rowIdentities: snapshot.rowIdentities.slice(start, end),
+            })}\n`,
+            contentType: 'application/json',
+            ifAbsent: true,
+          });
+        }
+        const manifestKey = `manifests/${snapshot.snapshotId}.json`;
+        retainedKeys.add(manifestKey);
+        await options.storage.put({
+          key: manifestKey,
+          body: `${JSON.stringify(applicationLakehouseAuthorityManifest(snapshot))}\n`,
+          contentType: 'application/json',
+          ifAbsent: true,
+        });
+      }
+      await options.storage.put({
+        key: authorityKey,
+        body: `${JSON.stringify({
+          schemaVersion: 'applik8s.objectStorageLakehouseAuthority/v1alpha1',
+          datasetId: options.datasetId,
+          manifests: authorities,
+        })}\n`,
+        contentType: 'application/json',
+      });
+      if (options.forceDeleteUnretainedData === true) {
+        for (const key of [...previousKeys].sort()) {
+          if (!retainedKeys.has(key)) {
+            await options.storage.delete(key);
+            previousKeys.delete(key);
+          }
+        }
+      }
+      for (const key of retainedKeys) previousKeys.add(key);
+    },
+  });
+  const maximumRows = lakehouseBoundedInteger(
+    options.maximumRows ?? 1_000,
+    1,
+    100_000,
+    'object-storage maximumRows',
+  );
+  const maximumScannedBytes = lakehouseBoundedInteger(
+    options.maximumScannedBytes ?? 64 * 1024 * 1024,
+    1,
+    Number.MAX_SAFE_INTEGER,
+    'object-storage maximumScannedBytes',
+  );
+  const maximumConcurrentQueries = lakehouseBoundedInteger(
+    options.maximumConcurrentQueries ?? 4,
+    1,
+    1_000,
+    'object-storage maximumConcurrentQueries',
+  );
+  let activeQueries = 0;
+  return {
+    ...runtime,
+    async query(request) {
+      if ((request.page?.size ?? 200) > maximumRows) {
+        throw new Error(
+          `Object-storage lakehouse query page size exceeds configured maximumRows ${maximumRows}.`,
+        );
+      }
+      if (activeQueries >= maximumConcurrentQueries) {
+        throw new Error(
+          `Object-storage lakehouse query concurrency exceeds configured maximumConcurrentQueries ${maximumConcurrentQueries}.`,
+        );
+      }
+      activeQueries += 1;
+      try {
+        const result = await runtime.query(request);
+        if (result.scannedBytes > maximumScannedBytes) {
+          throw applicationLakehouseQueryTerminalError({
+            queryId: result.queryId,
+            dataset: options.datasetId,
+            snapshot: result.snapshot,
+            schemaRevision: result.schemaRevision,
+            provider: 'object-storage',
+            state: 'failed',
+            diagnostic: `Object-storage lakehouse query exceeded maximumScannedBytes ${maximumScannedBytes}.`,
+          });
+        }
+        return {
+          ...result,
+          receipt: { ...result.receipt, provider: 'object-storage' },
+          evidence: {
+            provider: 'object-storage',
+            durationMs: result.evidence?.durationMs ?? 0,
+            cost: result.evidence?.cost ?? {
+              kind: 'scanned-bytes',
+              scannedBytes: result.scannedBytes,
+            },
+            ...(result.evidence?.target ? { target: result.evidence.target } : {}),
+          },
+        };
+      } finally {
+        activeQueries -= 1;
+      }
+    },
+  };
+}
+
+async function readObjectStorageLakehouseAuthority<TRow extends object>(
+  storage: ApplicationObjectStorageRuntime,
+  key: string,
+  datasetId: string,
+): Promise<readonly ApplicationLakehouseAuthorityManifest<TRow>[]> {
+  const bytes = await storage.get(key);
+  if (!bytes) return [];
+  let value: unknown;
+  try {
+    value = JSON.parse(new TextDecoder().decode(bytes));
+  } catch (cause) {
+    throw new Error(`Lakehouse dataset ${datasetId} has invalid object-storage authority JSON.`, { cause });
+  }
+  if (
+    !value
+    || typeof value !== 'object'
+    || Reflect.get(value, 'schemaVersion') !== 'applik8s.objectStorageLakehouseAuthority/v1alpha1'
+    || Reflect.get(value, 'datasetId') !== datasetId
+    || !Array.isArray(Reflect.get(value, 'manifests'))
+  ) {
+    throw new Error(`Lakehouse dataset ${datasetId} has invalid object-storage authority.`);
+  }
+  return (Reflect.get(value, 'manifests') as ApplicationLakehouseAuthorityManifest<TRow>[])
+    .map((manifest) => verifyApplicationLakehouseAuthorityManifest(manifest, datasetId));
+}
+
+function parseObjectStorageLakehouseObject<TRow extends object>(
+  bytes: Uint8Array,
+  objectId: string,
+): { readonly rows: readonly TRow[]; readonly rowIdentities: readonly string[] } {
+  let value: unknown;
+  try {
+    value = JSON.parse(new TextDecoder().decode(bytes));
+  } catch (cause) {
+    throw new Error(`Lakehouse object ${objectId} is not valid JSON.`, { cause });
+  }
+  if (
+    !value
+    || typeof value !== 'object'
+    || Reflect.get(value, 'schemaVersion') !== 'applik8s.objectStorageLakehouseObject/v1alpha1'
+    || Reflect.get(value, 'objectId') !== objectId
+    || !Array.isArray(Reflect.get(value, 'rows'))
+    || !Array.isArray(Reflect.get(value, 'rowIdentities'))
+  ) throw new Error(`Lakehouse object ${objectId} has an invalid envelope.`);
+  return {
+    rows: Reflect.get(value, 'rows') as TRow[],
+    rowIdentities: Reflect.get(value, 'rowIdentities') as string[],
   };
 }
 

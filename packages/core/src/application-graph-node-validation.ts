@@ -176,6 +176,8 @@ export function applicationProviderRefsForNode(node: ApplicationGraphNode): read
         node.state,
         ...(node.providerBindings ?? []).map(({ provider }) => provider),
       ];
+    case 'query':
+      return (node.providerBindings ?? []).map(({ provider }) => provider);
     case 'projection':
       return [node.provider];
     case 'objectStore':

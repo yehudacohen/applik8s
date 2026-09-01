@@ -69,6 +69,23 @@ function graphExpression(value: unknown): string {
 }
 
 describe('application deployment profiles', () => {
+  it('rejects ambiguous StructuredGeneration credential ownership', () => {
+    expect(() => StructuredGeneration.http({
+      endpoint: 'https://generation.example.test',
+      credential: {
+        apiVersion: 'applik8s.configurationBinding/v1alpha1',
+        kind: 'secret',
+        source: 'environment',
+        reference: 'GENERATION_API_KEY',
+        required: true,
+      },
+      credentialSecret: {
+        apiVersion: 'v1',
+        kind: 'Secret',
+        name: 'generation',
+      },
+    })).toThrow(/credential or credentialSecret/);
+  });
   it('composes profile and target provider selection without source casts or duplicate registration', () => {
     const application = app('profile-target-matrix', {
       spec: Installation,

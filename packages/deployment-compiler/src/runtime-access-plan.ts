@@ -550,6 +550,77 @@ function awsStatementsForRequirement(
     ? { ...(provider.config ?? {}), ...(targetResources?.[provider.id] ?? {}), ...(scopedTarget ?? {}) }
     : scopedTarget;
   const operation = requirement.target.operation;
+  if ((operation === 'object.write' || operation === 'connection.use') && provider?.interface === 'LakehouseDataset') {
+    const bucket = stringValue(config?.bucket);
+    const prefix = stringValue(config?.prefix)?.replace(/^\/+|\/+$/gu, '');
+    const catalogArn = stringValue(config?.catalogArn);
+    const databaseArn = stringValue(config?.databaseArn);
+    const tableArn = stringValue(config?.tableArn);
+    if (!bucket || !prefix || !catalogArn || !databaseArn || !tableArn) return [];
+    const bucketArn = `arn:aws:s3:::${bucket}`;
+    const objectArn = `${bucketArn}/${prefix}/*`;
+    const stagingArn = `${bucketArn}/${prefix}/staging/*`;
+    const destructiveCleanup = config?.forceDeleteUnretainedData === true;
+    const consumer = graph.nodes.find(({ id }) => id === requirement.consumer.nodeId);
+    const writesDataset = operation === 'object.write' || consumer?.kind === 'lakehousePublication';
+    if (!writesDataset) {
+      return [{
+        effect: 'Allow',
+        actions: ['s3:ListBucket'],
+        resources: [bucketArn],
+        conditions: { StringLike: { 's3:prefix': [prefix, `${prefix}/*`] } },
+      }, {
+        effect: 'Allow',
+        actions: ['s3:GetObject'],
+        resources: [objectArn],
+      }, {
+        effect: 'Allow',
+        actions: ['glue:GetTable', 'glue:GetTables'],
+        resources: [catalogArn, databaseArn, tableArn],
+      }];
+    }
+    return [{
+      effect: 'Allow',
+      actions: ['s3:ListBucket'],
+      resources: [bucketArn],
+      conditions: { StringLike: { 's3:prefix': [prefix, `${prefix}/*`] } },
+    }, {
+      effect: 'Allow',
+      actions: ['s3:GetObject', 's3:PutObject'],
+      resources: [objectArn],
+    }, {
+      effect: 'Allow',
+      actions: ['s3:DeleteObject'],
+      resources: destructiveCleanup ? [objectArn] : [stagingArn],
+    }, {
+      effect: 'Allow',
+      actions: [
+        'glue:CreateTable',
+        'glue:GetTable',
+        'glue:GetTables',
+        ...(destructiveCleanup ? ['glue:DeleteTable'] : []),
+      ],
+      resources: [catalogArn, databaseArn, tableArn],
+    }];
+  }
+  if (operation === 'connection.use' && provider?.interface === 'LakehouseQuery') {
+    const workgroupArn = exactArn(config, ['workgroupArn']);
+    const resultBucketArn = exactArn(config, ['resultBucketArn']);
+    if (!workgroupArn || !resultBucketArn) return [];
+    return [{
+      effect: 'Allow',
+      actions: ['athena:GetQueryExecution', 'athena:GetQueryResults', 'athena:StartQueryExecution', 'athena:StopQueryExecution'],
+      resources: [workgroupArn],
+    }, {
+      effect: 'Allow',
+      actions: ['s3:GetBucketLocation', 's3:ListBucket'],
+      resources: [resultBucketArn],
+    }, {
+      effect: 'Allow',
+      actions: ['s3:GetObject', 's3:PutObject'],
+      resources: [`${resultBucketArn}/*`],
+    }];
+  }
   if ((operation === 'object.list' || operation === 'object.read' || operation === 'object.write' || operation === 'object.delete') && provider?.interface === 'ObjectStorage') {
     // Physical target bindings must win over semantic nested configuration.
     // This lets a target planner allocate the bucket while preserving an
@@ -653,6 +724,14 @@ function awsStatementsForRequirement(
     }] : [];
   }
   if (operation === 'schedule.admit') {
+    if (provider?.interface === 'Scheduler' && provider.implementation === 'postgres-scheduler') {
+      const secretArn = exactArn(config, ['secretArn']);
+      return secretArn ? [{
+        effect: 'Allow',
+        actions: ['secretsmanager:GetSecretValue'],
+        resources: [secretArn],
+      }] : [];
+    }
     const queueArn = exactArn(config, ['queueArn']);
     const scheduleArn = exactArn(config, ['scheduleArn']);
     const executionRoleArn = exactArn(config, ['executionRoleArn']);
@@ -701,6 +780,7 @@ function runtimePrivatePeer(
   if (target?.networkMode === 'embedded') return [];
   const needsConnection = requirement.target.operation === 'network.connect'
     || requirement.target.operation === 'connection.use'
+    || (requirement.target.operation === 'schedule.admit' && provider?.interface === 'Scheduler')
     || ((requirement.target.operation === 'model.read'
       || requirement.target.operation === 'model.write'
       || requirement.target.operation === 'model.delete')
@@ -1009,6 +1089,8 @@ function requiresAwsStatement(
     const config = targetResources?.[requirement.target.capabilityId]
       ?? (provider ? targetResources?.[provider.id] : undefined);
     return provider?.interface === 'TransactionalDatabase'
+      || provider?.interface === 'LakehouseDataset'
+      || provider?.interface === 'LakehouseQuery'
       || config?.runtimeKind === 'celld-actors'
       || Boolean(exactArn(config, ['secretArn', 'tableArn']));
   }

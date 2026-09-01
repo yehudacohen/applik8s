@@ -8,7 +8,7 @@
     "generate-routes": "tsr generate",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "build": "vite build",
-    "deploy:local": "bun run --cwd ../.. build:packages && bun run ../../packages/cli/src/bin.ts deploy src/application.ts --context orbstack --instance kubernetes/chirp.example.yaml",
+    "deploy:local": "bun run --cwd ../.. build:packages && bun run ../../packages/cli/src/bin.ts deploy src/application.ts --profile production-kubernetes --context orbstack --instance kubernetes/chirp.example.yaml",
     "preview": "vite preview"
   },
   "dependencies": {

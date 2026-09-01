@@ -3,6 +3,7 @@ import {
   type ApplicationImplementationDeclaration,
   type ApplicationProviderConstructorReference,
   type ApplicationProviderMaturity,
+  type JsonValue,
   canonicalJsonCompatibleV1Policy,
   canonicalJsonV1String,
 } from '@applik8s/core';
@@ -17,10 +18,21 @@ const implementationMetadata = new WeakMap<object, ApplicationCapabilityImplemen
 
 export interface ApplicationCapabilityImplementationOptions<TImplementation extends object> {
   readonly provider: ApplicationProviderConstructorReference;
-  readonly configurationDigest: string;
+  /**
+   * Secret-safe deployment/runtime configuration when the implementation
+   * value also contains callable methods. Omit for data-only providers.
+   */
+  readonly configuration?: JsonValue;
+  /**
+   * Optional precomputed digest for generated/provider-tooling callers. Normal
+   * provider constructors should omit it and let the framework derive the
+   * canonical Secret-safe configuration digest and provenance.
+   */
+  readonly configurationDigest?: string;
   readonly configurationSources?: ApplicationImplementationDeclaration['configurationSources'];
   readonly guarantees?: readonly string[];
   readonly runtimeAdapter: string;
+  readonly deploymentFamily?: 'aws' | 'kubernetes';
   readonly deploymentContributor?: string;
   readonly readiness: string;
   readonly lifecycle: ApplicationImplementationDeclaration['lifecycle'];
@@ -49,10 +61,12 @@ export type ApplicationCapabilityImplementation<TImplementation extends object> 
 export interface ApplicationCapabilityImplementationMetadata {
   readonly token: ApplicationProviderToken<object>;
   readonly provider: ApplicationProviderConstructorReference;
+  readonly configuration: JsonValue;
   readonly configurationDigest: string;
   readonly configurationSources: ApplicationImplementationDeclaration['configurationSources'];
   readonly guarantees: readonly string[];
   readonly runtimeAdapter: string;
+  readonly deploymentFamily?: 'aws' | 'kubernetes';
   readonly deploymentContributor?: string;
   readonly readiness: string;
   readonly lifecycle: ApplicationImplementationDeclaration['lifecycle'];
@@ -93,14 +107,22 @@ export function defineApplicationCapabilityImplementation<TImplementation extend
       `Capability implementation does not satisfy ${contract.interface}/${contract.version}.`,
     );
   }
-  requireDigest(options.configurationDigest, 'Capability implementation configuration digest');
+  const configurationInput = options.configuration ?? options.value;
+  const configuration = applicationConfigurationValueForDigest(configurationInput);
+  const configurationDigest = options.configurationDigest ?? `sha256:${sha256Hex(canonicalJsonV1String(
+    configuration,
+    canonicalJsonCompatibleV1Policy,
+  ))}`;
+  requireDigest(configurationDigest, 'Capability implementation configuration digest');
   return implementationProxy(options.value, Object.freeze({
     token: token as ApplicationProviderToken<object>,
     provider: Object.freeze({ ...options.provider }),
-    configurationDigest: options.configurationDigest,
-    configurationSources: Object.freeze([...(options.configurationSources ?? [])]),
+    configuration,
+    configurationDigest,
+    configurationSources: Object.freeze([...(options.configurationSources ?? applicationConfigurationProvenance(configurationInput))]),
     guarantees: Object.freeze([...(options.guarantees ?? contract.guarantees)]),
     runtimeAdapter: requiredText(options.runtimeAdapter, 'runtime adapter'),
+    ...(options.deploymentFamily ? { deploymentFamily: options.deploymentFamily } : {}),
     ...(options.deploymentContributor
       ? { deploymentContributor: requiredText(options.deploymentContributor, 'deployment contributor') }
       : {}),

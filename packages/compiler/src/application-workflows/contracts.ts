@@ -13,6 +13,7 @@ import type {
   ApplicationProviderNode,
   ApplicationProviderPrivateRuntimeContract,
   ApplicationQueryNode,
+  ApplicationSagaNode,
   ApplicationStaticAuthorityManifest,
   ApplicationStreamNode,
   ApplicationTaskHandlerNode,
@@ -41,6 +42,11 @@ export interface WorkflowContract {
   readonly providerConfig: Readonly<Record<string, unknown>>;
   readonly tasks: readonly { readonly handler: ApplicationTaskHandlerNode; readonly task: ApplicationTaskNode }[];
   readonly workflows: readonly { readonly handler: ApplicationWorkflowHandlerNode; readonly workflow: ApplicationWorkflowNode }[];
+  readonly sagas: readonly ApplicationSagaNode[];
+  readonly sagaStore?: {
+    readonly connectionEnvironmentName: 'APPLIK8S_SAGA_DATABASE_URL';
+    readonly secret: { readonly name: string; readonly key: string; readonly namespace: string };
+  };
   readonly capabilities: readonly ApplicationProviderNode[];
   readonly nativeAI?: WorkflowNativeAIContract;
   readonly callableProviders?: readonly ApplicationProviderNode[];
@@ -282,6 +288,7 @@ export function workflowContract(
   }
   const tasks: { handler: ApplicationTaskHandlerNode; task: ApplicationTaskNode }[] = [];
   const workflows: { handler: ApplicationWorkflowHandlerNode; workflow: ApplicationWorkflowNode }[] = [];
+  const sagas: ApplicationSagaNode[] = [];
   const capabilities = new Map<string, ApplicationProviderNode>();
   const callableProviders = new Map<string, ApplicationProviderNode>();
   for (const reference of worker.handlers) {
@@ -311,6 +318,8 @@ export function workflowContract(
       const workflow = nodes.get(handler.workflow.nodeId);
       if (workflow?.kind !== 'workflow') throw new Error(`Workflow handler ${handler.id} references missing workflow ${handler.workflow.nodeId}.`);
       workflows.push({ handler, workflow });
+    } else if (handler?.kind === 'saga') {
+      sagas.push(handler);
     } else {
       throw new Error(`Generated workflow worker ${worker.id} references invalid handler ${reference.nodeId}.`);
     }
@@ -339,6 +348,9 @@ export function workflowContract(
   }
   const namespace = applicationGraphStringValue(config.namespace) || 'default';
   const engineName = kubernetesName(stringConfig(config.name) || 'applik8s-hatchet');
+  const sagaStore = sagas.length === 0
+    ? undefined
+    : workflowSagaStoreContract(config, namespace, engineName, worker);
   const adminCredentials = objectConfig(config.adminCredentialsSecret);
   const workerToken = objectConfig(config.workerTokenSecret);
   for (const credentials of [adminCredentials, workerToken]) {
@@ -433,6 +445,8 @@ export function workflowContract(
     providerConfig: config,
     tasks,
     workflows,
+    sagas,
+    ...(sagaStore ? { sagaStore } : {}),
     capabilities: [...capabilities.values()].sort((left, right) => left.id.localeCompare(right.id)),
     ...(nativeAI ? { nativeAI } : {}),
     callableProviders: [...callableProviders.values()].sort((left, right) =>
@@ -456,12 +470,44 @@ export function workflowContract(
     workerTokenSecret: stringConfig(workerToken.name) || (config.provision === false ? `${engineName}-worker` : 'hatchet-client-config'),
     tokenKey: stringConfig(config.tokenKey) || (stringConfig(workerToken.name) || config.provision !== false ? 'HATCHET_CLIENT_TOKEN' : 'token'),
     image: stringConfig(objectConfig(config.worker).image) || DEFAULT_WORKER_IMAGE,
-    contractNames: Object.fromEntries(graph.nodes.flatMap((node) => node.kind === 'task' || node.kind === 'workflow' ? [[node.id, node.name]] : [])),
+    contractNames: Object.fromEntries(graph.nodes.flatMap((node) => node.kind === 'task' || node.kind === 'workflow' || node.kind === 'saga' ? [[node.id, node.name]] : [])),
     gatewayCallers: normalizedGatewayCallers.sort((left, right) =>
       `${left.namespace}/${left.serviceAccount}/${left.operator}`.localeCompare(
         `${right.namespace}/${right.serviceAccount}/${right.operator}`,
       )),
     gatewayAdmission,
+  };
+}
+
+function workflowSagaStoreContract(
+  providerConfig: Readonly<Record<string, unknown>>,
+  namespace: string,
+  engineName: string,
+  worker: ApplicationWorkflowWorkerNode,
+): NonNullable<WorkflowContract['sagaStore']> {
+  const database = objectConfig(providerConfig.database);
+  const secret = objectConfig(database.connectionSecret);
+  const secretName = applicationGraphStringValue(secret.name)
+    || (providerConfig.provision === false ? '' : `${engineName}-database`);
+  const secretNamespace = applicationGraphStringValue(secret.namespace)
+    || namespace;
+  if (!secretName) {
+    throw new Error(
+      `Generated workflow worker ${worker.id} has Sagas but its external WorkflowEngine database does not declare an exact connectionSecret.`,
+    );
+  }
+  assertWorkflowSecretNamespace(
+    secretNamespace,
+    namespace,
+    `Workflow worker ${worker.id} Saga receipt store`,
+  );
+  return {
+    connectionEnvironmentName: 'APPLIK8S_SAGA_DATABASE_URL',
+    secret: {
+      name: secretName,
+      key: applicationGraphStringValue(database.connectionSecretKey) || 'DATABASE_URL',
+      namespace: secretNamespace,
+    },
   };
 }
 
@@ -1443,6 +1489,9 @@ function validateStructuredGenerationCandidate(
   if (implementation === 'structured-generation-deterministic') return;
   if (implementation !== 'structured-generation-http') throw new Error(`StructuredGeneration provider ${label} has unsupported implementation ${implementation}.`);
   const secret = objectConfig(config.credentialSecret);
+  if (Object.keys(secret).length > 0 && Object.keys(objectConfig(config.credential)).length > 0) {
+    throw new Error(`StructuredGeneration provider ${label} must choose credential or credentialSecret, not both.`);
+  }
   const secretNamespace = applicationGraphStringValue(secret.namespace);
   if (secretNamespace && secretNamespace !== namespace) throw new Error(`Workflow worker ${worker.id} cannot read StructuredGeneration Secret ${secretNamespace}/${stringConfig(secret.name)} from namespace ${namespace}.`);
   const endpoint = applicationGraphStringValue(config.endpoint);

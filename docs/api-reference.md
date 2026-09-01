@@ -74,6 +74,23 @@ validation, path/symlink confinement, secret redaction, or agent-owned undo.
 The portal and journal remain usable while the generated application fails to
 compile or start.
 
+### Code-agent preview
+
+`@applik8s/code-agent` owns the provider-neutral `codeAgent()` composition and
+the small `AgentHarness`, `CodeWorkspace`, `SourceRepository`, and
+`ProcessRunner` capability contracts. Its `/runtime` subpath hydrates selected
+providers, while `/http` exposes the authenticated, bounded provider boundary
+used when actor execution and the harness/workspace processes have separate
+execution identities. The package also includes deterministic and fenced local
+providers for tests and development.
+
+The repository-scoped actor serializes turns. Every request has a distinct
+stable run identity and idempotency receipt, and the workspace lease fences one
+active writer. Repository changes use compare-and-swap digests and validation
+commands use stable receipt identities. `@applik8s/dev/agent/opencode-code-harness`
+is the maintained OpenCode adapter; it is deliberately outside the semantic
+package so another harness can replace it without changing application code.
+
 The umbrella package is the normal application-authoring and integration surface. Code that must be captured inside a minimal WASM reconciliation closure should import focused handler-safe APIs from `@applik8s/sdk` or an explicitly documented handler-safe subpath. The compiler follows the reachable closure and fails closed on unsupported Node or integration dependencies; it does not promise that importing the umbrella entrypoint from inside a handler is minimal or portable.
 
 Generated browser facades use the same-origin `/__applik8s/v1` authority for route-loader preloads even

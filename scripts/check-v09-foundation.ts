@@ -59,8 +59,39 @@ const publicContractInventory = JSON.parse(
 ) as {
   readonly schemaVersion?: number;
   readonly release?: string;
-  readonly packages?: readonly unknown[];
-  readonly diagnostics?: readonly unknown[];
+  readonly status?: string;
+  readonly packages?: readonly {
+    readonly name?: string;
+    readonly contract?: {
+      readonly owner?: string;
+      readonly maturity?: string;
+      readonly compatibility?: readonly string[];
+      readonly stability?: string;
+      readonly documentation?: string;
+      readonly evidence?: readonly string[];
+    };
+    readonly replacement?: { readonly status?: string };
+    readonly entrypoints?: readonly {
+      readonly kind?: 'module' | 'side-effect';
+      readonly contract?: { readonly inherits?: string };
+      readonly symbols?: readonly string[];
+      readonly symbolContract?: { readonly inherits?: string };
+    }[];
+  }[];
+  readonly diagnostics?: readonly {
+    readonly code?: string;
+    readonly owner?: string;
+    readonly maturity?: string;
+    readonly compatibility?: readonly string[];
+    readonly stability?: string;
+    readonly documentation?: string;
+    readonly evidence?: readonly string[];
+  }[];
+  readonly cli?: {
+    readonly commands?: readonly unknown[];
+    readonly options?: readonly unknown[];
+  };
+  readonly environmentVariables?: readonly unknown[];
   readonly contracts?: readonly { readonly id?: string }[];
 };
 const findings: string[] = [];
@@ -77,10 +108,51 @@ if (
   manifest.publicContractInventory !== 'v0.9-public-contract.json'
   || publicContractInventory.schemaVersion !== 1
   || publicContractInventory.release !== manifest.release
+  || !['candidate-review-ready', 'frozen'].includes(publicContractInventory.status ?? '')
   || (publicContractInventory.packages?.length ?? 0) === 0
   || (publicContractInventory.diagnostics?.length ?? 0) === 0
+  || (publicContractInventory.cli?.commands?.length ?? 0) === 0
+  || (publicContractInventory.cli?.options?.length ?? 0) === 0
+  || (publicContractInventory.environmentVariables?.length ?? 0) === 0
 ) {
   findings.push('PUBLIC_CONTRACT_INVENTORY_INCOMPLETE: package, export, symbol, diagnostic, or release identity is missing.');
+}
+for (const entry of publicContractInventory.packages ?? []) {
+  const contract = entry.contract;
+  if (
+    !entry.name
+    || !contract?.owner
+    || !contract.maturity
+    || !contract.stability
+    || !contract.documentation
+    || (contract.compatibility?.length ?? 0) === 0
+    || (contract.evidence?.length ?? 0) === 0
+    || entry.replacement?.status !== 'canonical'
+  ) {
+    findings.push(`PUBLIC_CONTRACT_PACKAGE_UNDISPOSITIONED: ${entry.name ?? '<unknown>'}.`);
+  }
+  for (const entrypoint of entry.entrypoints ?? []) {
+    if (
+      !entrypoint.contract?.inherits
+      || !entrypoint.symbolContract?.inherits
+      || (!entrypoint.kind || (entrypoint.kind === 'module' && (entrypoint.symbols?.length ?? 0) === 0))
+    ) {
+      findings.push(`PUBLIC_CONTRACT_ENTRYPOINT_UNDISPOSITIONED: ${entry.name ?? '<unknown>'}.`);
+    }
+  }
+}
+for (const diagnostic of publicContractInventory.diagnostics ?? []) {
+  if (
+    !diagnostic.code
+    || !diagnostic.owner
+    || !diagnostic.maturity
+    || !diagnostic.stability
+    || !diagnostic.documentation
+    || (diagnostic.compatibility?.length ?? 0) === 0
+    || (diagnostic.evidence?.length ?? 0) === 0
+  ) {
+    findings.push(`PUBLIC_CONTRACT_DIAGNOSTIC_UNDISPOSITIONED: ${diagnostic.code ?? '<unknown>'}.`);
+  }
 }
 
 const gateIds = new Set<string>();

@@ -288,6 +288,11 @@ export function compileApplicationWorkloadAuthority(
             transport: 'control-plane' as const,
           })),
       ];
+      const serviceIdentity = inferredActorExecutionServiceIdentity(
+        graph,
+        dependencies.map(({ operation }) => operation),
+        `Application actor ${actor.definition.id}.${handler.member}`,
+      );
       return dependencies.map(({ alias, operation, transport }) => ({
         apiVersion: 'applik8s.workloadAuthority/v1alpha1' as const,
         id: `workload-authority:${digestJson({
@@ -300,6 +305,7 @@ export function compileApplicationWorkloadAuthority(
           catalogRevision: catalog.revision,
         }).slice('sha256:'.length)}`,
         workloadIdentity,
+        ...(serviceIdentity ? { serviceIdentity } : {}),
         operationId: operation.id,
         catalogRevision: catalog.revision,
         restrictions: {
@@ -346,6 +352,48 @@ function inferredProcessorActorServiceIdentity(
     throw new Error(
       `Stream processor ${processorId} has ambiguous service authority for actor operations: ${candidates.map((identity) => identity.id).join(', ')}.`,
     );
+  }
+  return candidates[0];
+}
+
+/**
+ * Actor turns execute as framework-owned workloads, but assigned operations
+ * still need one stable service principal in the canonical authority store.
+ * Infer that principal only from exact static grants for every assigned
+ * operation captured by the handler. Public and application-policy
+ * dependencies do not need a grant and therefore do not participate.
+ */
+function inferredActorExecutionServiceIdentity(
+  graph: ApplicationGraph,
+  operations: readonly ApplicationOperationDescriptor[],
+  owner: string,
+) {
+  const assigned = new Set(
+    operations
+      .filter((operation) => operation.authority.classification === 'assigned')
+      .map((operation) => operation.id),
+  );
+  if (assigned.size === 0) return undefined;
+  const manifest = applicationStaticAuthorityManifest(graph);
+  if (!manifest) {
+    throw new Error(`${owner} has assigned actor operations without a static authority manifest.`);
+  }
+  const candidates = manifest.identities.filter((identity) =>
+    identity.kind === 'service'
+    && identity.subject !== 'application-authority'
+    && (() => {
+      const granted = new Set(
+        manifest.grants
+          .filter((grant) => grant.identity.id === identity.id)
+          .flatMap((grant) => grant.operationIds),
+      );
+      return [...assigned].every((operationId) => granted.has(operationId));
+    })());
+  if (candidates.length !== 1) {
+    const detail = candidates.length === 0
+      ? 'no service identity owns every assigned operation'
+      : `multiple service identities do: ${candidates.map((identity) => identity.id).join(', ')}`;
+    throw new Error(`${owner} cannot derive one execution service identity because ${detail}.`);
   }
   return candidates[0];
 }

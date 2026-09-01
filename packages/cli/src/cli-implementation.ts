@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 // typecast-file-boundary: CLI arguments, generated manifests, and deployment observations are validated before command-specific typed dispatch.
-import { access } from 'node:fs/promises';
+import { access, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { Command, CommanderError } from 'commander';
+import { Command, CommanderError, Option } from 'commander';
 import { resolveApplicationBuildPackage } from './application-build-package.js';
 import { loadApplicationEnvironmentFile } from './application-environment-file.mjs';
 import type {
@@ -35,6 +36,10 @@ interface BuildCommandOptions {
   readonly localDevelopment?: boolean;
   /** Internal compiler target used to emit target-specific runtime artifacts. */
   readonly executionTarget?: 'kubernetes' | 'local' | 'aws-local' | 'aws';
+  /** Assembly profile used to specialize physical runtime artifacts. */
+  readonly profile?: string;
+  /** Internal authored installation path used for instance-aware compilation. */
+  readonly installationSpecPath?: string;
 }
 
 interface ApplicationDeployCliOptions
@@ -298,6 +303,7 @@ function createProgram(io: CliIo): Command {
     .option('--composition-name <name>', 'TypeKro composition export name')
     .option('--connection-bindings <path>', 'JSON connection bindings')
     .option('--production', 'enforce production operation classification and release contracts')
+    .option('--profile <profile>', 'specialize physical artifacts for one assembly profile')
     .action(async (entrypoint: string, options: BuildCommandOptions) => {
       const code = await runBuild(entrypoint, options, io);
       if (code !== 0) throw new CommanderError(code, 'applik8s.build.failed', 'Build failed.');
@@ -307,7 +313,8 @@ function createProgram(io: CliIo): Command {
     .command('plan')
     .description('Compile and preview one graph-native target plan without applying effects.')
     .argument('[entrypoint]', 'application entrypoint module; defaults to package.json applik8s.entrypoint')
-    .option('--target <target>', 'deployment target: kubernetes or aws', 'kubernetes')
+    .option('--profile <profile>', 'canonical application assembly profile')
+    .addOption(new Option('--target <target>').hideHelp())
     .option('--environment <environment>', 'stable deployment environment identity')
     .option('--region <region>', 'AWS region; defaults to AWS_REGION')
     .option('--account-id <accountId>', '12-digit AWS account id; defaults to APPLIK8S_AWS_ACCOUNT_ID')
@@ -329,9 +336,27 @@ function createProgram(io: CliIo): Command {
       [],
     )
     .action(async (entrypoint: string | undefined, options: ApplicationPlanCliOptions) => {
-      if (options.target === 'aws') {
-        const configuration = await readApplicationProjectConfiguration(io.cwd);
-        const resolvedEntrypoint = resolveApplicationEntrypoint(entrypoint, configuration);
+      assertDeploymentStrategy(options.strategy);
+      if (options.target !== undefined) {
+        throw new Error('LEGACY_TARGET_SELECTOR_FORBIDDEN: applik8s plan selects implementations exclusively through --profile.');
+      }
+      const configuration = await readApplicationProjectConfiguration(io.cwd);
+      const resolvedEntrypoint = resolveApplicationEntrypoint(entrypoint, configuration);
+      const profile = requiredAssemblyProfile(options.profile, 'plan');
+      await loadApplicationEnvironmentFile(io.cwd);
+      const deploymentFamily = await resolveProfileDeploymentFamily(
+        resolvedEntrypoint,
+        profile,
+        {
+          ...options,
+          ...(options.instance ?? configuration.instance
+            ? { instance: options.instance ?? configuration.instance }
+            : {}),
+        },
+        options.compositionName ?? configuration.compositionName ?? 'app',
+        io,
+      );
+      if (deploymentFamily === 'aws') {
         const environment = options.environment?.trim();
         const region = options.region?.trim() || process.env.AWS_REGION?.trim();
         const accountId = options.accountId?.trim() || process.env.APPLIK8S_AWS_ACCOUNT_ID?.trim();
@@ -339,17 +364,20 @@ function createProgram(io: CliIo): Command {
         if (!region) throw new Error('applik8s plan --target aws requires --region or AWS_REGION.');
         if (!accountId) throw new Error('applik8s plan --target aws requires --account-id or APPLIK8S_AWS_ACCOUNT_ID.');
         if (options.format !== 'text' && options.format !== 'json' && options.format !== 'graph') throw new Error(`Unknown AWS plan format ${JSON.stringify(options.format)}.`);
-        await loadApplicationEnvironmentFile(io.cwd);
         const hostedZones = resolveAwsHostedZones(options.hostedZone, process.env.APPLIK8S_AWS_HOSTED_ZONES);
         // static-import-exception: target-selected AWS planning must not load Kubernetes deployment machinery.
         const { runApplicationTargetPlan } = await import('./application-target-plan-command.js');
         const code = await runApplicationTargetPlan(resolvedEntrypoint, {
           target: 'aws', environment, region, accountId,
+          profile,
           ...(options.availabilityZone?.length ? { availabilityZones: options.availabilityZone } : {}),
           ...(Object.keys(hostedZones).length > 0 ? { hostedZones } : {}),
           outDir: options.outDir ?? '.applik8s/plans',
           compositionName: options.compositionName ?? configuration.compositionName ?? 'app',
           ...(options.connectionBindings ? { connectionBindings: options.connectionBindings } : {}),
+          ...(options.instance ?? configuration.instance
+            ? { instance: options.instance ?? configuration.instance }
+            : {}),
           ...(options.skipAppBuild ? { skipAppBuild: true } : {}),
           ...(options.skipImageBuild ? { skipImageBuild: true } : {}),
           format: options.format,
@@ -358,11 +386,11 @@ function createProgram(io: CliIo): Command {
         if (code !== 0) throw new CommanderError(code, 'applik8s.plan.failed', 'Plan failed.');
         return;
       }
-      if (options.target !== undefined && options.target !== 'kubernetes') throw new Error(`applik8s plan --target must be "kubernetes" or "aws", received ${JSON.stringify(options.target)}.`);
       if (options.format !== 'text' && options.format !== 'json' && options.format !== 'graph') throw new Error(`Unknown Kubernetes plan format ${JSON.stringify(options.format)}.`);
       const resolved = await resolveDeployCommand(entrypoint, options, io);
       const code = await runDeploy(resolved.entrypoint, {
         ...resolved.options,
+        profile,
         planOnly: true,
         planFormat: options.format,
         ...(options.diff ? { planDiff: options.diff } : {}),
@@ -374,7 +402,8 @@ function createProgram(io: CliIo): Command {
     .command('deploy')
     .description('Build, plan, and reconcile an Application through the target-selected Alchemy lifecycle.')
     .argument('[entrypoint]', 'application entrypoint module; defaults to package.json applik8s.entrypoint')
-    .option('--target <target>', 'deployment target: kubernetes or aws', 'kubernetes')
+    .option('--profile <profile>', 'canonical application assembly profile')
+    .addOption(new Option('--target <target>').hideHelp())
     .option('--environment <environment>', 'stable deployment environment identity')
     .option('--region <region>', 'AWS region; defaults to AWS_REGION')
     .option('--account-id <accountId>', '12-digit AWS account id; defaults to APPLIK8S_AWS_ACCOUNT_ID')
@@ -407,22 +436,45 @@ function createProgram(io: CliIo): Command {
       [],
     )
     .option('--runtime-entrypoint <path>', 'internal prebuilt application module used by the Node deployment host')
+    .addOption(new Option('--plan-format <format>').hideHelp())
+    .addOption(new Option('--plan-diff <path>').hideHelp())
     .action(async (entrypoint: string | undefined, options: ApplicationDeployCliOptions) => {
-      if (options.target === 'aws') {
-        const configuration = await readApplicationProjectConfiguration(io.cwd);
-        const resolvedEntrypoint = resolveApplicationEntrypoint(entrypoint, configuration);
+      assertDeploymentStrategy(options.strategy);
+      if (options.target !== undefined) {
+        throw new Error('LEGACY_TARGET_SELECTOR_FORBIDDEN: applik8s deploy selects implementations exclusively through --profile.');
+      }
+      const configuration = await readApplicationProjectConfiguration(io.cwd);
+      const resolvedEntrypoint = resolveApplicationEntrypoint(entrypoint, configuration);
+      const profile = requiredAssemblyProfile(options.profile, 'deploy');
+      await loadApplicationEnvironmentFile(io.cwd);
+      const deploymentFamily = await resolveProfileDeploymentFamily(
+        resolvedEntrypoint,
+        profile,
+        {
+          ...options,
+          ...(options.instance ?? configuration.instance
+            ? { instance: options.instance ?? configuration.instance }
+            : {}),
+        },
+        options.compositionName ?? configuration.compositionName ?? 'app',
+        io,
+      );
+      if (deploymentFamily === 'aws') {
         const aws = resolveAwsDeploymentOptions(options);
-        await loadApplicationEnvironmentFile(io.cwd);
         const hostedZones = resolveAwsHostedZones(options.hostedZone, process.env.APPLIK8S_AWS_HOSTED_ZONES);
         // static-import-exception: selected AWS deployment must not initialize Kubernetes machinery.
         const { runApplicationAwsDeploy } = await import('./application-aws-command.js');
         const code = await runApplicationAwsDeploy(resolvedEntrypoint, {
           target: 'aws', ...aws,
+          profile,
           ...(options.availabilityZone?.length ? { availabilityZones: options.availabilityZone } : {}),
           ...(Object.keys(hostedZones).length > 0 ? { hostedZones } : {}),
           outDir: options.outDir ?? '.applik8s/plans',
           compositionName: options.compositionName ?? configuration.compositionName ?? 'app',
           ...(options.connectionBindings ? { connectionBindings: options.connectionBindings } : {}),
+          ...(options.instance ?? configuration.instance
+            ? { instance: options.instance ?? configuration.instance }
+            : {}),
           ...(options.skipAppBuild ? { skipAppBuild: true } : {}),
           ...(options.imageUri ? { imageUri: options.imageUri } : {}),
           ...(options.endpoint ? { endpoint: options.endpoint } : {}),
@@ -432,9 +484,8 @@ function createProgram(io: CliIo): Command {
         if (code !== 0) throw new CommanderError(code, 'applik8s.deploy.failed', 'AWS deploy failed.');
         return;
       }
-      if (options.target !== undefined && options.target !== 'kubernetes') throw new Error(`applik8s deploy --target must be "kubernetes" or "aws", received ${JSON.stringify(options.target)}.`);
       const resolved = await resolveDeployCommand(entrypoint, options, io);
-      const code = await runDeploy(resolved.entrypoint, resolved.options, io);
+      const code = await runDeploy(resolved.entrypoint, { ...resolved.options, profile }, io);
       if (code !== 0) throw new CommanderError(code, 'applik8s.deploy.failed', 'Deploy failed.');
     });
 
@@ -448,6 +499,7 @@ function createProgram(io: CliIo): Command {
     .option('--aws-profile <profile>', 'AWS credential profile')
     .option('--image-uri <uri>', 'immutable image identity used by the stored AWS deployment')
     .option('--context <context>', 'explicit kubeconfig context; defaults to APPLIK8S_CONTEXT or package configuration')
+    .option('--profile <profile>', 'assembly profile recorded by the deployed application graph')
     .option('--out-dir <dir>', 'existing deployment artifact directory')
     .option('--composition-name <name>', 'TypeKro composition export name')
     .option('--instance-name <name>', 'instance name when selection is ambiguous')
@@ -478,6 +530,7 @@ function createProgram(io: CliIo): Command {
     .option('--aws-profile <profile>', 'AWS credential profile')
     .option('--image-uri <uri>', 'immutable image identity used by the stored AWS deployment')
     .option('--context <context>', 'explicit kubeconfig context; defaults to APPLIK8S_CONTEXT or package configuration')
+    .option('--profile <profile>', 'assembly profile recorded by the deployed application graph')
     .option('--out-dir <dir>', 'existing deployment artifact directory')
     .option('--composition-name <name>', 'TypeKro composition export name')
     .option('--instance-name <name>', 'instance name when selection is ambiguous')
@@ -502,6 +555,7 @@ function createProgram(io: CliIo): Command {
     .description('Deprecated alias for destroy.')
     .argument('[entrypoint]', 'application entrypoint module; defaults to package.json applik8s.entrypoint')
     .option('--context <context>', 'explicit kubeconfig context; defaults to APPLIK8S_CONTEXT or package configuration')
+    .option('--profile <profile>', 'assembly profile recorded by the deployed application graph')
     .option('--out-dir <dir>', 'existing deployment artifact directory')
     .option('--composition-name <name>', 'TypeKro composition export name')
     .option('--instance-name <name>', 'instance name when selection is ambiguous')
@@ -581,6 +635,90 @@ async function resolveDeployCommand(
         : {}),
     },
   };
+}
+
+function requiredAssemblyProfile(value: string | undefined, command: 'plan' | 'deploy'): string {
+  const profile = value?.trim();
+  if (!profile) {
+    throw new Error(`PROFILE_NOT_SELECTED: applik8s ${command} requires --profile <assembly-profile>.`);
+  }
+  if (!/^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$/u.test(profile)) {
+    throw new Error(`Assembly profile ${JSON.stringify(value)} must be a stable lowercase identifier.`);
+  }
+  return profile;
+}
+
+function assertDeploymentStrategy(value: string | undefined): asserts value is 'direct' | 'kro' | undefined {
+  if (value !== undefined && value !== 'direct' && value !== 'kro') {
+    throw new Error(
+      `applik8s deploy --strategy must be "direct" or "kro", received ${JSON.stringify(value)}.`,
+    );
+  }
+}
+
+async function resolveProfileDeploymentFamily(
+  entrypoint: string,
+  profile: string,
+  options: Pick<ApplicationDeployCliOptions, 'connectionBindings' | 'instance'>,
+  compositionName: string,
+  io: CliIo,
+  build: typeof runBuild = runBuild,
+): Promise<'aws' | 'kubernetes'> {
+  const outDir = await mkdtemp(resolve(tmpdir(), `applik8s-profile-${profile}-`));
+  try {
+    const code = await build(entrypoint, {
+      outDir,
+      typekro: true,
+      production: true,
+      profile,
+      ...(options.instance
+        ? { installationSpecPath: resolve(io.cwd, options.instance) }
+        : {}),
+      compositionName,
+      ...(options.connectionBindings ? { connectionBindings: options.connectionBindings } : {}),
+    }, io);
+    if (code !== 0) throw new Error(`Profile discovery build failed with exit code ${code}.`);
+    const path = resolve(outDir, 'typekro', 'application-implementation-plans.json');
+    const set = JSON.parse(await readFile(path, 'utf8')) as {
+    readonly apiVersion?: string;
+    readonly plans?: readonly {
+      readonly profile?: { readonly id?: string };
+      readonly bindings?: readonly { readonly capability?: { readonly interface?: string }; readonly implementation?: string }[];
+      readonly implementations?: readonly {
+        readonly id?: string;
+        readonly deploymentFamily?: 'aws' | 'kubernetes';
+        readonly identity?: { readonly provider?: { readonly export?: string } };
+      }[];
+    }[];
+    };
+    if (set.apiVersion !== 'applik8s.implementationPlanSet/v1alpha1' || !Array.isArray(set.plans)) {
+      throw new Error(`Profile discovery artifact ${path} is not an ApplicationImplementationPlanSet.`);
+    }
+    const selected = set.plans.find((candidate) => candidate.profile?.id === profile);
+    if (!selected) {
+      throw new Error(
+        `PROFILE_NOT_SELECTED: application has no profile ${profile}. Available profiles: ${set.plans.map((candidate) => candidate.profile?.id).filter(Boolean).sort().join(', ') || '<none>'}.`,
+      );
+    }
+    type DiscoveredBinding = NonNullable<typeof selected.bindings>[number];
+    type DiscoveredImplementation = NonNullable<typeof selected.implementations>[number];
+    const hostBinding = selected.bindings?.find((binding: DiscoveredBinding) => binding.capability?.interface?.startsWith('ApplicationHost@'));
+    const host = selected.implementations?.find((implementation: DiscoveredImplementation) => implementation.id === hostBinding?.implementation);
+    const providerConstructor = host?.identity?.provider?.export;
+    if (providerConstructor === 'ApplicationHost.aws') return 'aws';
+    if (providerConstructor === 'ApplicationHost.kubernetes') return 'kubernetes';
+    const families = new Set(
+      (selected.implementations ?? [])
+        .map((implementation: DiscoveredImplementation) => implementation.deploymentFamily)
+        .filter((family: 'aws' | 'kubernetes' | undefined): family is 'aws' | 'kubernetes' => family === 'aws' || family === 'kubernetes'),
+    );
+    if (families.size === 1) return [...families][0] as 'aws' | 'kubernetes';
+    throw new Error(
+      `PROFILE_DEPLOYMENT_CONNECTION_AMBIGUOUS: profile ${profile} must select one physical deployment family through ApplicationHost or its concrete provider implementations; discovered ${[...families].sort().join(', ') || '<none>'}.`,
+    );
+  } finally {
+    await rm(outDir, { recursive: true, force: true });
+  }
 }
 
 function resolveAwsDeploymentOptions(options: ApplicationDeployCliOptions): {

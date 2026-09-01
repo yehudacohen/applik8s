@@ -37,7 +37,7 @@ export interface ApplicationProfileFragment {
 
 export interface ApplicationAssemblyProfileBuilder {
   provide<TImplementation extends object>(
-    token: ApplicationProviderToken<TImplementation>,
+    token: ApplicationProviderToken<unknown>,
     implementation: ApplicationCapabilityImplementation<TImplementation>,
   ): void;
   include(fragment: ApplicationProfileFragment): void;
@@ -99,7 +99,7 @@ export function createApplicationAssemblyProfileCatalog(
         generatedBy: 'application.profile',
       });
       const bindings = new Map<string, {
-        readonly token: ApplicationProviderToken<object>;
+        readonly token: ApplicationProviderToken<unknown>;
         readonly implementation: ApplicationCapabilityImplementation<object>;
       }>();
       const fragments = new Set<string>();
@@ -120,13 +120,14 @@ export function createApplicationAssemblyProfileCatalog(
               `Application profile ${name} provider ${key} is not an inspectable capability implementation. Maintained constructors must preserve provider metadata.`,
             );
           }
-          if (capabilityKey(capabilityReference(metadata.token)) !== key) {
+          const implementationCapability = capabilityReference(metadata.token);
+          if (implementationCapability.interface !== capability.interface) {
             throw new Error(
-              `Application profile ${name} cannot bind ${capabilityKey(capabilityReference(metadata.token))} to ${key}.`,
+              `Application profile ${name} cannot bind ${capabilityKey(implementationCapability)} to ${key}.`,
             );
           }
           bindings.set(key, {
-            token: token as ApplicationProviderToken<object>,
+            token,
             implementation: implementation as ApplicationCapabilityImplementation<object>,
           });
         },
@@ -204,7 +205,7 @@ function profileResolutionInput(input: {
   readonly name: string;
   readonly provenance: ApplicationSourceProvenance;
   readonly bindings: ReadonlyMap<string, {
-    readonly token: ApplicationProviderToken<object>;
+    readonly token: ApplicationProviderToken<unknown>;
     readonly implementation: ApplicationCapabilityImplementation<object>;
   }>;
   readonly fragments: readonly string[];
@@ -214,7 +215,6 @@ function profileResolutionInput(input: {
   const declarations: ApplicationImplementationDeclaration[] = [];
   const bindings: ApplicationImplementationResolutionInput['bindings'][number][] = [];
   const keys = new Map<object, string>();
-
   const visit = (
     implementation: ApplicationCapabilityImplementation<object>,
     identity: ApplicationImplementationDeclaration['identity'],
@@ -260,6 +260,7 @@ function profileResolutionInput(input: {
       key,
       capability: capabilityReference(metadata.token),
       provider: metadata.provider,
+      configuration: metadata.configuration,
       identity: metadata.explicitIdentity
         ? { kind: 'named', name: metadata.explicitIdentity }
         : identity,
@@ -268,6 +269,7 @@ function profileResolutionInput(input: {
       configurationSources: metadata.configurationSources,
       guarantees: metadata.guarantees,
       runtimeAdapter: metadata.runtimeAdapter,
+      ...(metadata.deploymentFamily ? { deploymentFamily: metadata.deploymentFamily } : {}),
       ...(metadata.deploymentContributor ? { deploymentContributor: metadata.deploymentContributor } : {}),
       readiness: metadata.readiness,
       lifecycle: metadata.lifecycle,

@@ -375,13 +375,13 @@ describe('Agentic Start generator', () => {
       readonly imports: Readonly<Record<string, string>>;
       readonly applik8s: Readonly<Record<string, string>>;
     };
-    expect(manifest.scripts.plan).toBe('bun run build && applik8s plan');
-    expect(manifest.scripts.deploy).toBe('bun run build && applik8s deploy');
+    expect(manifest.scripts.plan).toBe('bun run build && applik8s plan --profile developer');
+    expect(manifest.scripts.deploy).toBe('bun run build && applik8s deploy --profile developer');
     expect(manifest.scripts['dev:cluster']).toBe(
-      'bun run build && applik8s deploy --development --instance kubernetes/application.yaml',
+      'bun run build && applik8s deploy --profile developer --development --instance kubernetes/application.yaml',
     );
     expect(manifest.scripts['dev:live']).toBe(
-      'bun run build && applik8s deploy --development --instance kubernetes/application.developer.yaml',
+      'bun run build && applik8s deploy --profile developer --development --instance kubernetes/application.developer.yaml',
     );
     expect(manifest.scripts.status).toBe('applik8s status');
     expect(manifest.scripts.destroy).toBe('applik8s destroy');

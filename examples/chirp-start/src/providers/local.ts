@@ -1,4 +1,4 @@
-import { AnalyticalDatabase, ContainerRegistry, ObjectStorage, WorkflowEngine } from '@applik8s/applik8s';
+import { Analytics, ContainerRegistry, ObjectStorage, WorkflowEngine } from '@applik8s/applik8s';
 
 interface LocalCapacity {
   readonly workflowDatabaseInstances: number;
@@ -139,7 +139,7 @@ export function localAnalyticalDatabase(namespace: string, capacity: LocalCapaci
   readonly database?: string;
   readonly credentialsSecretName?: string;
 } = {}) {
-  return AnalyticalDatabase.clickhouse({
+  return Analytics.clickHouse({
     enabled,
     name: 'chirp-analytics',
     namespace,
