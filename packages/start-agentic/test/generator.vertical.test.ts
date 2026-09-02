@@ -678,9 +678,16 @@ describe('Agentic Start generator', () => {
     expect(
       await readFile(join(target, 'components.json'), 'utf8'),
     ).toContain('"style": "base-nova"');
-    expect(
-      await readFile(join(target, 'src/components/ui/button.tsx'), 'utf8'),
-    ).toContain('buttonVariants = cva(');
+    const generatedButton = await readFile(
+      join(target, 'src/components/ui/button.tsx'),
+      'utf8',
+    );
+    expect(generatedButton).toContain('buttonVariants = cva(');
+    expect(generatedButton).toContain('disabled,');
+    expect(generatedButton).toContain("inert: !hydrated || undefined");
+    expect(generatedButton).toContain("'aria-disabled': !hydrated || disabled || undefined");
+    expect(generatedButton).toContain("'aria-busy': !hydrated || undefined");
+    expect(generatedButton).not.toContain('disabled:opacity-50');
     const environment = await readFile(join(target, '.env.example'), 'utf8');
     expect(environment).not.toContain('APPLIK8S_PROFILE=');
     expect(environment).not.toContain('APPLIK8S_CONTEXT=');

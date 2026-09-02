@@ -821,6 +821,26 @@ workflow('media.verify.v1', Contract, async input => {
     expect(instrumented).not.toContain('value: expected.toLowerCase');
   });
 
+  it('infers the exact object-store methods used by function-native workflows', () => {
+    const source = `
+workflow('media.verify.v1', Contract, async input => {
+  const metadata = await Attachments.head(input.objectKey);
+  const body = await Attachments.get(input.objectKey);
+  return { metadata, body };
+});
+`;
+    const instrumented = instrumentApplicationCallbackRegistrations(
+      source,
+      '/workspace/src/media.ts',
+    );
+
+    expect(instrumented).toContain('__generatedCalls: [Attachments]');
+    expect(instrumented).toContain('__generatedObjectOperations: { "Attachments": ["get", "head"] }');
+    expect(instrumented).toContain('objectOperations: ["get", "head"]');
+    expect(instrumented).not.toContain('"put"');
+    expect(instrumented).not.toContain('"delete"');
+  });
+
   it('leaves browser-global calls as runtime lookups in SSR-safe modules', () => {
     const source = `
 export function WorkspaceSwitcher() {

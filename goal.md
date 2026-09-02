@@ -375,21 +375,48 @@ names. Release mode now requires the maintainer to mark the disposition frozen
 and verifies that every acceptance evidence path exists. This explicit review
 decision remains open and is not silently converted into a passing freeze.
 
-The canonical repository test harness is green across all sixteen ordinary
-shards, the isolated compiler-artifact groups, and all seven process-isolated
-workflow-compiler cases. Workspace typecheck passes for 68 packages, four
-script shards, and the root TypeScript configurations. Lint, release checks,
-documentation generation, the v0.9 foundation gate, the contract-mode
-scorecard, and `git diff --check` also pass. The scorecard remains deliberately
-at 13 of 18 passing gates because environment-bound qualification and the
-maintainer-owned public freeze have not been reclassified from local evidence.
+The final local qualification pass is green across all sixteen ordinary test
+shards, all six isolated compiler-artifact groups, and all seven
+process-isolated workflow-compiler cases. Workspace typecheck passes for 68
+packages, four script shards, and the root TypeScript configurations. Lint,
+release checks, documentation generation, the v0.9 foundation gate, the
+contract-mode scorecard, Rust formatting/clippy/tests, package catalog,
+publish dry-run, clean packed-consumer smoke, quick performance benchmark,
+performance-history validation, and `git diff --check` pass.
 
-The remaining environment-bound gates are exact released-v0.8 migration, the
-managed research journey requiring an explicitly authorized inference
-credential projection, real AWS lifecycle qualification, and the final Chirp
-Kubernetes lifecycle. The source candidate is not substituted for the missing
-released v0.8 baseline, and credentials are not copied into OrbStack without
-explicit destination authorization.
+The generated Agentic Start gate now includes a fresh 77-resource
+OrbStack/Alchemy/TypeKro deployment, 30 immutable artifacts, 38 TypeKro
+declarations, authoritative readiness held stable for 30 seconds, an exact
+77-resource no-op reapply, 50 passing browser journeys across Chromium,
+Firefox, WebKit, and mobile with one intentional skip, and complete ordered
+teardown. Hydration-sensitive account controls are inert until the browser
+owns them, and a stale workspace selector preserves only authenticated identity
+while failing closed for every workspace-scoped role and trusted-context field.
+
+The callback compiler now preserves exact object-store method authority through
+recursive same-file and imported-helper metadata. `head`/`get` remain read
+authority, `put`/`delete` remain write authority, an uncalled captured store
+grants nothing, and any object-store effect forces a durable task boundary
+rather than executing in workflow history. Chirp's media verification uses this
+function-native path and its pure signature helpers remain independently
+importable without initializing the application graph.
+
+The contract-mode v0.9 scorecard has 22 gates: 18 passing, one intentionally
+in progress, and three blocked. The public-contract inventory is
+`candidate-review-ready`, but the maintainer-owned freeze remains open and must
+not be promoted implicitly. Exact released-v0.8 migration remains blocked
+because no authoritative released v0.8 baseline is available. The managed
+research journey remains blocked on explicit OpenRouter credential authority,
+and real AWS lifecycle qualification remains blocked on explicit account,
+region, credentials, and cost/destructive-action authority. Chirp's production
+Kubernetes lifecycle and the named Kubernetes-cluster capability are now
+passing. The source candidate is not substituted for the missing release
+baseline, and credentials are not copied into OrbStack without explicit
+destination authorization.
+
+The npm audit gate was not executed because its registry request transmits the
+candidate dependency graph and execution authority was not granted. This is an
+explicit evidence gap, not a hidden pass.
 
 Continue in the sequence above until every stable-candidate gate is implemented
 and evidenced. Keep beta/preview surfaces truthful; do not expand the frozen

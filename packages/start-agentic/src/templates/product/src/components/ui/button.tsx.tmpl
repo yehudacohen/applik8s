@@ -1,10 +1,10 @@
 import { Slot } from 'radix-ui';
 import { cva, type VariantProps } from 'class-variance-authority';
-import type { ButtonHTMLAttributes } from 'react';
+import { type ButtonHTMLAttributes, useSyncExternalStore } from 'react';
 import { cn } from '#lib/utils';
 
 export const buttonVariants = cva(
-  'inline-flex min-h-10 shrink-0 items-center justify-center gap-2 whitespace-nowrap rounded-xl px-4 py-2 text-sm font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600 focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:size-4',
+  'inline-flex min-h-10 shrink-0 items-center justify-center gap-2 whitespace-nowrap rounded-xl px-4 py-2 text-sm font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600 focus-visible:ring-offset-2 disabled:pointer-events-none disabled:cursor-not-allowed [&_svg]:pointer-events-none [&_svg]:size-4',
   {
     variants: {
       variant: {
@@ -28,7 +28,28 @@ export const buttonVariants = cva(
   },
 );
 
-export function Button({ className, variant, size, asChild = false, ...props }: ButtonHTMLAttributes<HTMLButtonElement> & VariantProps<typeof buttonVariants> & { readonly asChild?: boolean }) {
+export function Button({ className, variant, size, asChild = false, disabled, ...props }: ButtonHTMLAttributes<HTMLButtonElement> & VariantProps<typeof buttonVariants> & { readonly asChild?: boolean }) {
+  const hydrated = useSyncExternalStore(subscribeHydration, hydratedSnapshot, serverHydrationSnapshot);
   const Component = asChild ? Slot.Root : 'button';
-  return <Component data-slot="button" className={cn(buttonVariants({ variant, size }), className)} {...props} />;
+  const hydrationProps = asChild
+    ? {}
+    : {
+        disabled,
+        inert: !hydrated || undefined,
+        'aria-disabled': !hydrated || disabled || undefined,
+        'aria-busy': !hydrated || undefined,
+      };
+  return <Component data-slot="button" className={cn(buttonVariants({ variant, size }), className)} {...props} {...hydrationProps} />;
+}
+
+function subscribeHydration(): () => void {
+  return () => undefined;
+}
+
+function hydratedSnapshot(): true {
+  return true;
+}
+
+function serverHydrationSnapshot(): false {
+  return false;
 }

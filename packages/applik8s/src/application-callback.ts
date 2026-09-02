@@ -42,6 +42,8 @@ export interface InstrumentedApplicationCallbackDependency {
   readonly value: unknown;
   readonly awaited: boolean;
   readonly returned: boolean;
+  /** Exact object-store methods invoked through this dependency. */
+  readonly objectOperations?: readonly ('put' | 'get' | 'head' | 'delete')[];
 }
 
 export interface ExpandedApplicationCallbackDependencies {
@@ -55,6 +57,10 @@ export interface ExpandedApplicationCallbackDependencies {
   }[];
   /** Exact provider-operation aliases observed before helper expansion. */
   readonly providerBindings: readonly ApplicationCallableProviderDependency[];
+  /** Exact object-store method authority preserved through helper expansion. */
+  readonly objectOperations: Readonly<
+    Record<string, readonly ('put' | 'get' | 'head' | 'delete')[]>
+  >;
   readonly provenance: readonly {
     readonly identifier: string;
     readonly helperPath: readonly string[];
@@ -184,6 +190,10 @@ export function expandApplicationCallbackDependencies(options: {
   const calls: unknown[] = [];
   const bindings: Record<string, unknown> = {};
   const awaited: Record<string, unknown> = {};
+  const objectOperations = new Map<
+    string,
+    Set<'put' | 'get' | 'head' | 'delete'>
+  >();
   const seenValues = new Set<unknown>();
   for (const leaf of leaves) {
     if (!seenValues.has(leaf.value)) {
@@ -198,6 +208,11 @@ export function expandApplicationCallbackDependencies(options: {
     }
     bindings[leaf.identifier] = leaf.value;
     if (leaf.awaited) awaited[leaf.identifier] = leaf.value;
+    if (leaf.objectOperations) {
+      const operations = objectOperations.get(leaf.identifier) ?? new Set();
+      for (const operation of leaf.objectOperations) operations.add(operation);
+      objectOperations.set(leaf.identifier, operations);
+    }
   }
   return {
     calls: Object.freeze(calls),
@@ -227,6 +242,14 @@ export function expandApplicationCallbackDependencies(options: {
               && candidate.operation?.runtime?.export
                 === binding.operation?.runtime?.export,
           ) === index,
+      ),
+    ),
+    objectOperations: Object.freeze(
+      Object.fromEntries(
+        [...objectOperations.entries()].map(([identifier, operations]) => [
+          identifier,
+          Object.freeze([...operations].sort()),
+        ]),
       ),
     ),
     provenance: Object.freeze(
@@ -276,10 +299,24 @@ function instrumentedApplicationCallbackDependencies(
     const dependency = Reflect.get(candidate, 'value');
     const awaited = Reflect.get(candidate, 'awaited');
     const returned = Reflect.get(candidate, 'returned');
+    const objectOperations = Reflect.get(candidate, 'objectOperations');
     if (
       typeof identifier !== 'string'
       || typeof awaited !== 'boolean'
       || typeof returned !== 'boolean'
+      || (
+        objectOperations !== undefined
+        && (
+          !Array.isArray(objectOperations)
+          || objectOperations.some(
+            (operation) =>
+              operation !== 'put'
+              && operation !== 'get'
+              && operation !== 'head'
+              && operation !== 'delete',
+          )
+        )
+      )
     ) {
       return undefined;
     }
@@ -288,6 +325,13 @@ function instrumentedApplicationCallbackDependencies(
       value: dependency,
       awaited,
       returned,
+      ...(objectOperations
+        ? {
+            objectOperations: Object.freeze(
+              [...objectOperations] as ('put' | 'get' | 'head' | 'delete')[],
+            ),
+          }
+        : {}),
     });
   }
   return dependencies;

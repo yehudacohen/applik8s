@@ -318,7 +318,6 @@ test('recovers an authenticated session from a stale workspace selector', async 
   const response = await page.goto('/app', { waitUntil: 'domcontentloaded' });
   expect(response?.status()).toBeLessThan(500);
   await expect(page.getByRole('heading', { name: 'What should we accomplish?' })).toBeVisible();
-  await expect(page.locator('[data-slot="skeleton"]')).toHaveCount(0, { timeout: 15_000 });
   await expect.poll(async () => (
     await page.context().cookies(origin)
   ).some(cookie => cookie.name === 'applik8s_workspace')).toBe(false);
@@ -333,6 +332,13 @@ test('recovers an authenticated session from a stale workspace selector', async 
     return result.status;
   });
   expect(queryStatus).toBe(200);
+  await expect(page.locator('[data-slot="skeleton"]')).toHaveCount(0, {
+    // The release matrix deliberately runs one application replica while four
+    // browser engines exercise the full route inventory serially. Recovery is
+    // still bounded, but Firefox needs enough headroom for the two live-query
+    // reconnects after the stale selector is cleared.
+    timeout: 30_000,
+  });
   await expect(page.locator('body')).not.toContainText('HTTP 403');
   await expect(page.locator('body')).not.toContainText('Reconnecting…');
 });

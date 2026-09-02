@@ -1133,4 +1133,91 @@ describe('v0.5 durable task and workflow contracts', () => {
 		if (!graph) throw new Error('Expected task object graph.');
 		expect(validateApplicationGraphStructure(graph)).toEqual([]);
 	});
+
+  it('preserves exact object-store authority through imported helper metadata', () => {
+    const platform = app('helper-object-platform', { namespace: 'helper-object-system' });
+    platform.provide(WorkflowEngine, WorkflowEngine.hatchet({ namespace: 'helper-object-system' }));
+    platform.provide(ObjectStorage, ObjectStorage.s3({
+      name: 'media',
+      bucket: 'media',
+      region: 'us-east-1',
+      endpoint: 'http://objects.helper-object-system.svc',
+      credentialsSecret: {
+        apiVersion: 'v1',
+        kind: 'Secret',
+        name: 'media-credentials',
+        namespace: 'helper-object-system',
+      },
+    }));
+    const attachments = platform.objectStore('attachments', {
+      mode: 'immutable',
+      maxObjectBytes: 1_000_000,
+      contentTypes: ['image/png'],
+      deletion: 'explicit',
+    });
+    const inspectAttachment = async (key: string) => attachments.head(key);
+    Object.defineProperty(
+      inspectAttachment,
+      Symbol.for('applik8s.applicationCallbackDependencies'),
+      {
+        value: [{
+          identifier: 'attachments',
+          value: attachments,
+          awaited: true,
+          returned: false,
+          objectOperations: ['head'],
+        }],
+      },
+    );
+    const Inspect = workflow('media.helper-inspect.v1', {
+      input: type({ key: 'string' }),
+      output: type({ found: 'boolean' }),
+    });
+    const handler = async ({ key }: { readonly key: string }) => ({
+      found: (await inspectAttachment(key)) !== undefined,
+    });
+    Object.defineProperty(
+      handler,
+      Symbol.for('applik8s.applicationCallbackSource'),
+      {
+        value: {
+          file: '/workspace/src/workflows.ts',
+          line: 1,
+          column: 1,
+          source: 'async ({ key }) => ({ found: Boolean(key) })',
+          generated: true,
+        },
+      },
+    );
+    platform.workflow(
+      Inspect,
+      {
+        __generatedCalls: [inspectAttachment],
+        __generatedBindings: { inspectAttachment },
+      },
+      handler,
+    );
+
+    const graph = applicationGraphFor(platform.composition);
+    expect(graph?.nodes).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: 'taskHandler',
+        objects: [{
+          alias: 'attachments',
+          store: { nodeId: 'objectStore.attachments' },
+          operations: ['head'],
+        }],
+      }),
+    ]));
+    expect(graph?.edges).toContainEqual({
+      from: { nodeId: 'task-handler.media.helper-inspect.v1.step' },
+      to: { nodeId: 'objectStore.attachments' },
+      relationship: 'reads',
+    });
+    expect(graph?.edges).not.toContainEqual({
+      from: { nodeId: 'task-handler.media.helper-inspect.v1.step' },
+      to: { nodeId: 'objectStore.attachments' },
+      relationship: 'writes',
+    });
+  });
 });

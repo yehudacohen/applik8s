@@ -1,9 +1,9 @@
 // typecast-file-boundary: browser acceptance narrows the framework query
 // response only after the live generated application returns JSON.
 import { pathToFileURL } from 'node:url';
+import { defineJourneyAdapter, type JourneyBrowserTarget, runJourney } from '@applik8s/testing';
 import AxeBuilder from '@axe-core/playwright';
-import { defineJourneyAdapter, runJourney, type JourneyBrowserTarget } from '@applik8s/testing';
-import { expect, test, type Page } from '@playwright/test';
+import { expect, type Page, test } from '@playwright/test';
 import { agenticProductEvidenceJourneys } from './agentic-product-evidence-contract.js';
 
 test.describe.configure({ mode: 'serial' });
@@ -22,6 +22,24 @@ interface BrowserDocument {
   readonly createdByPrincipalId: string;
   readonly sourceConversationId?: string;
   readonly sourceRunId?: string;
+}
+
+async function gotoProductRoute(page: Page, path: string): Promise<void> {
+  try {
+    await page.goto(path, { waitUntil: 'domcontentloaded' });
+  } catch (cause) {
+    const message = cause instanceof Error ? cause.message : String(cause);
+    if (!/(?:ERR_EMPTY_RESPONSE|ERR_CONNECTION_RESET|NS_BINDING_ABORTED)/u.test(message)) {
+      throw cause;
+    }
+
+    // A freshly established kubectl port-forward can drop its first browser
+    // connection while the service tunnel is settling. Retry that transport
+    // failure exactly once; the repeated navigation and all journey assertions
+    // below remain fail-closed.
+    await new Promise(resolve => setTimeout(resolve, 250));
+    await page.goto(path, { waitUntil: 'domcontentloaded' });
+  }
 }
 
 test('executes the generated source-owned document journey through the browser adapter', async ({ page }) => {
@@ -78,7 +96,7 @@ function playwrightJourneyBrowser(page: Page): import('@applik8s/testing').Journ
     }
   };
   return {
-    goto: async path => { await page.goto(path, { waitUntil: 'domcontentloaded' }); },
+    goto: async path => gotoProductRoute(page, path),
     click: async target => { await locator(target).click(); },
     fill: async (target, value) => { await locator(target).fill(value); },
     visible: async target => locator(target).isVisible(),

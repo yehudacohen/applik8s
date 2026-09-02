@@ -590,6 +590,7 @@ function isSingleStepWorkflowOptions(options: object): boolean {
     (expandedDependencies?.providerBindings.some(
       (binding) => binding.operation !== undefined,
     ) ?? false)
+    || Object.keys(expandedDependencies?.objectOperations ?? {}).length > 0
     || [
       ...expandedGeneratedCalls,
       ...(

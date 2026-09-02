@@ -1,4 +1,7 @@
+import { applicationIdentityHttpProtocol } from '@applik8s/identity/client';
+import { ApplicationIdentityProvider } from '@applik8s/react/identity';
 import {
+  AgenticAccountSession,
   AgenticAccountSettings,
   AgenticStartOnboarding,
   clearAgenticWorkspaceSelection,
@@ -14,6 +17,26 @@ afterEach(() => {
 });
 
 describe('Agentic Start onboarding', () => {
+  it('keeps server-rendered account actions inert until hydration', () => {
+    const html = renderToStaticMarkup(createElement(
+      ApplicationIdentityProvider,
+      {
+        initialSession: {
+          protocol: applicationIdentityHttpProtocol,
+          kind: 'session',
+          authenticated: false,
+          assurance: [],
+        },
+      },
+      createElement(AgenticAccountSession),
+    ));
+
+    expect(html).toContain('aria-busy="true"');
+    expect(html.match(/inert=""/gu)).toHaveLength(4);
+    expect(html.match(/aria-disabled="true"/gu)).toHaveLength(4);
+    expect(html).not.toContain('disabled=""');
+  });
+
   it('owns provider-neutral account security without generated provider plumbing', () => {
     const html = renderToStaticMarkup(createElement(AgenticAccountSettings));
 

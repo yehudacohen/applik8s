@@ -10,6 +10,7 @@ import type {
   ApplicationAdmissionInvocationContextV1,
   ApplicationIdentityReference,
   ApplicationPrincipal,
+  ApplicationTaskObjectOperation,
   JsonObject,
 } from '@applik8s/core';
 import type { ApplicationAIProviderToken } from '@applik8s/ai';
@@ -227,6 +228,10 @@ export interface ApplicationTaskOptions<
   readonly __generatedCalls?: readonly unknown[];
   /** Compiler-owned source identifiers for direct callable captures. */
   readonly __generatedBindings?: Readonly<Record<string, unknown>>;
+  /** Compiler-owned object-store method authority inferred from direct calls. */
+  readonly __generatedObjectOperations?: Readonly<
+    Record<string, readonly ApplicationTaskObjectOperation[]>
+  >;
 }
 
 export interface ApplicationWorkflowWorkerOptions {

@@ -14,6 +14,7 @@ import {
   useEffect,
   useMemo,
   useState,
+  useSyncExternalStore,
 } from 'react';
 
 export interface AgenticAccountSettingsProps {
@@ -47,6 +48,11 @@ export function AgenticAccountSession(
   const [password, setPassword] = useState('');
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string>();
+  const hydrated = useSyncExternalStore(
+    subscribeHydration,
+    hydratedSnapshot,
+    serverHydrationSnapshot,
+  );
 
   if (session.phase === 'loading') {
     return <span aria-label="Account session">Checking session…</span>;
@@ -96,6 +102,9 @@ export function AgenticAccountSession(
           autoComplete="email"
           value={email}
           onChange={(event) => setEmail(event.currentTarget.value)}
+          inert={!hydrated || undefined}
+          aria-disabled={!hydrated || undefined}
+          aria-busy={!hydrated || undefined}
           required
         />
         <label htmlFor="account-password">Password</label>
@@ -105,14 +114,27 @@ export function AgenticAccountSession(
           autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
           value={password}
           onChange={(event) => setPassword(event.currentTarget.value)}
+          inert={!hydrated || undefined}
+          aria-disabled={!hydrated || undefined}
+          aria-busy={!hydrated || undefined}
           required
         />
-        <button className="button-link border-0" type="submit" disabled={pending}>
+        <button
+          className="button-link border-0"
+          type="submit"
+          disabled={pending}
+          inert={!hydrated || undefined}
+          aria-disabled={!hydrated || pending || undefined}
+          aria-busy={!hydrated || pending || undefined}
+        >
           {pending ? 'Working…' : mode === 'login' ? 'Sign in' : 'Sign up'}
         </button>
         <button
           className="bg-transparent text-sm font-semibold text-emerald-800"
           type="button"
+          inert={!hydrated || undefined}
+          aria-disabled={!hydrated || undefined}
+          aria-busy={!hydrated || undefined}
           onClick={() => setMode(mode === 'login' ? 'register' : 'login')}
         >
           {mode === 'login' ? 'Need an account?' : 'Already registered?'}
@@ -124,11 +146,23 @@ export function AgenticAccountSession(
   return (
     <span aria-label="Account session" className="grid gap-2 text-xs text-stone-600">
       Signed in as <strong className="truncate text-stone-900">{session.data.principal.identity.subject}</strong>
-      <button className="text-left font-semibold text-emerald-800" type="button" onClick={() => void session.logout().then(() => globalThis.location?.assign(props.signedOutHref ?? '/sign-in'))}>
+      <button className="text-left font-semibold text-emerald-800" type="button" inert={!hydrated || undefined} aria-disabled={!hydrated || undefined} aria-busy={!hydrated || undefined} onClick={() => void session.logout().then(() => globalThis.location?.assign(props.signedOutHref ?? '/sign-in'))}>
         Sign out
       </button>
     </span>
   );
+}
+
+function subscribeHydration(): () => void {
+  return () => undefined;
+}
+
+function hydratedSnapshot(): true {
+  return true;
+}
+
+function serverHydrationSnapshot(): false {
+  return false;
 }
 
 /**

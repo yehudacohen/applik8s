@@ -2,7 +2,7 @@
 import { createHash } from 'node:crypto';
 import { AI, type ApplicationAIProvider, isApplicationAIProvider } from '@applik8s/ai';
 import { type ApplicationOperationLike, getApplicationOperationContract, isApplicationBoundOperation, isApplicationScopedOperation } from '@applik8s/client';
-import { type ApplicationOperationInvocationDependency, type ApplicationProviderRuntimeContract, type ApplicationResourceRef, applicationOperationId, canonicalJsonV1String } from '@applik8s/core';
+import { type ApplicationOperationInvocationDependency, type ApplicationProviderRuntimeContract, type ApplicationResourceRef, type ApplicationTaskObjectOperation, applicationOperationId, canonicalJsonV1String } from '@applik8s/core';
 import {
   expandApplicationCallbackDependencies,
   serializeApplicationCallback,
@@ -161,6 +161,7 @@ export function registerApplicationTask<
     options.authority ?? [],
     options.__generatedCalls ?? [],
     options.__generatedBindings,
+    options.__generatedObjectOperations,
   );
   const inferredDependencies = expandApplicationCallbackDependencies({
     // The callback itself may be supplied by a clean external module whose
@@ -492,6 +493,9 @@ function normalizeTaskDirectDependencies(
   authority: readonly ApplicationTaskOperationDependency[],
   generatedCalls: readonly unknown[],
   generatedBindings?: Readonly<Record<string, unknown>>,
+  generatedObjectOperations?: Readonly<
+    Record<string, readonly ApplicationTaskObjectOperation[]>
+  >,
 ): {
   readonly operations: ApplicationTaskOperations;
   readonly queries: ApplicationTaskQueries;
@@ -508,6 +512,21 @@ function normalizeTaskDirectDependencies(
     calls: generatedCalls,
     bindings: generatedBindings,
   });
+  for (const [identifier, operations] of Object.entries(
+    mergeTaskObjectOperations(expanded.objectOperations, generatedObjectOperations),
+  )) {
+    const candidate = expanded.bindings[identifier];
+    if (
+      !candidate
+      || typeof candidate !== 'object'
+      || Reflect.get(candidate, 'kind') !== 'applicationObjectStore'
+      || operations.length === 0
+    ) continue;
+    const binding = candidate as import('./application-object-storage.js').ApplicationObjectStoreBinding;
+    objects[identifier] = binding.allow(
+      ...operations as import('./application-object-storage.js').ApplicationTaskObjectOperationList,
+    );
+  }
   const identifiersFor = (value: unknown, fallback: string): readonly string[] => {
     const identifiers = Object.entries(expanded.bindings)
       .filter(
@@ -568,12 +587,21 @@ function normalizeTaskDirectDependencies(
     if (
       candidate
       && typeof candidate === 'object'
-			&& Reflect.get(candidate, 'kind') === 'applicationTaskObjectStore'
-		) {
-			const binding = candidate as ApplicationTaskObjectStoreBinding;
-			for (const identifier of identifiersFor(candidate, binding.store.name)) {
-				objects[identifier] = binding;
-			}
+      && Reflect.get(candidate, 'kind') === 'applicationTaskObjectStore'
+    ) {
+      const binding = candidate as ApplicationTaskObjectStoreBinding;
+      for (const identifier of identifiersFor(candidate, binding.store.name)) {
+        objects[identifier] = binding;
+      }
+      continue;
+    }
+    if (
+      candidate
+      && typeof candidate === 'object'
+      && Reflect.get(candidate, 'kind') === 'applicationObjectStore'
+    ) {
+      // A bare store capture carries no method authority. Compiler-authored
+      // method metadata above is the only function-native implicit grant.
       continue;
     }
     const query = applicationQueryBindingForOperation(candidate);
@@ -594,6 +622,30 @@ function normalizeTaskDirectDependencies(
     objects: Object.freeze(objects),
     actors: Object.freeze(actors),
   };
+}
+
+function mergeTaskObjectOperations(
+  ...sources: readonly (
+    | Readonly<Record<string, readonly ApplicationTaskObjectOperation[]>>
+    | undefined
+  )[]
+): Readonly<Record<string, readonly ApplicationTaskObjectOperation[]>> {
+  const merged = new Map<string, Set<ApplicationTaskObjectOperation>>();
+  for (const source of sources) {
+    for (const [identifier, operations] of Object.entries(source ?? {})) {
+      const collected = merged.get(identifier) ?? new Set();
+      for (const operation of operations) collected.add(operation);
+      merged.set(identifier, collected);
+    }
+  }
+  return Object.freeze(
+    Object.fromEntries(
+      [...merged.entries()].map(([identifier, operations]) => [
+        identifier,
+        Object.freeze([...operations].sort()),
+      ]),
+    ),
+  );
 }
 
 function contractForCandidate(candidate: unknown): ReturnType<typeof getApplicationOperationContract> {

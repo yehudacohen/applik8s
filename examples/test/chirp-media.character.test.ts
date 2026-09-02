@@ -50,7 +50,7 @@ describe.sequential('Chirp durable media processing', () => {
 
 	it('recognizes supported media signatures and the standard harmless malware-test marker', async () => {
 		// static-import-exception: preserve the compiler-first module-isolation order established by this sequential character suite.
-		const { containsAscii, matchesMediaSignature } = await import('../chirp-start/src/domain/media');
+		const { containsAscii, matchesMediaSignature } = await import('../chirp-start/src/domain/media-validation');
 		expect(matchesMediaSignature('image/png', Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))).toBe(true);
 		expect(matchesMediaSignature('image/jpeg', Uint8Array.from([0xff, 0xd8, 0xff, 0x00]))).toBe(true);
 		expect(matchesMediaSignature('image/png', Uint8Array.from([0xff, 0xd8, 0xff, 0x00]))).toBe(false);

@@ -63,6 +63,20 @@ export function decorateApplicationCallbackArguments(
               )),
         ),
       );
+      const generatedObjectOperations = analysis.objectOperations.size > 0
+        ? ts.factory.createPropertyAssignment(
+            '__generatedObjectOperations',
+            ts.factory.createObjectLiteralExpression(
+              [...analysis.objectOperations.entries()].map(([identifier, operations]) =>
+                ts.factory.createPropertyAssignment(
+                  ts.factory.createStringLiteral(identifier),
+                  ts.factory.createArrayLiteralExpression(
+                    operations.map((operation) => ts.factory.createStringLiteral(operation)),
+                  ),
+                )),
+            ),
+          )
+        : undefined;
       if (optionsIndex === -1) {
         argumentsWithCallbacks.splice(
           callbackIndex,
@@ -70,6 +84,7 @@ export function decorateApplicationCallbackArguments(
           ts.factory.createObjectLiteralExpression([
             generatedProperty,
             generatedBindings,
+            ...(generatedObjectOperations ? [generatedObjectOperations] : []),
           ]),
         );
       } else {
@@ -86,6 +101,7 @@ export function decorateApplicationCallbackArguments(
               ...options.properties,
               generatedProperty,
               generatedBindings,
+              ...(generatedObjectOperations ? [generatedObjectOperations] : []),
             ]);
         }
       }
@@ -400,12 +416,29 @@ export function decorateApplicationCallbackArguments(
                 ),
               )
             : undefined;
+        const generatedObjectOperations =
+          (registrar === 'workflow' || registrar === 'task')
+          && analysis.objectOperations.size > 0
+            ? ts.factory.createPropertyAssignment(
+                '__generatedObjectOperations',
+                ts.factory.createObjectLiteralExpression(
+                  [...analysis.objectOperations.entries()].map(([identifier, operations]) =>
+                    ts.factory.createPropertyAssignment(
+                      ts.factory.createStringLiteral(identifier),
+                      ts.factory.createArrayLiteralExpression(
+                        operations.map((operation) => ts.factory.createStringLiteral(operation)),
+                      ),
+                    )),
+                ),
+              )
+            : undefined;
         if (capturePositions.options === -1) {
           argumentsWithCallbacks.unshift(ts.factory.createObjectLiteralExpression([
             generatedProperty,
             generatedBindings,
             ...(generatedModelBindings ? [generatedModelBindings] : []),
             ...(generatedAwaitedCalls ? [generatedAwaitedCalls] : []),
+            ...(generatedObjectOperations ? [generatedObjectOperations] : []),
           ]));
         } else if (capturePositions.options === -2) {
           argumentsWithCallbacks.splice(
@@ -416,6 +449,7 @@ export function decorateApplicationCallbackArguments(
               generatedBindings,
               ...(generatedModelBindings ? [generatedModelBindings] : []),
               ...(generatedAwaitedCalls ? [generatedAwaitedCalls] : []),
+              ...(generatedObjectOperations ? [generatedObjectOperations] : []),
             ]),
           );
         } else {
@@ -431,6 +465,7 @@ export function decorateApplicationCallbackArguments(
               generatedBindings,
               ...(generatedModelBindings ? [generatedModelBindings] : []),
               ...(generatedAwaitedCalls ? [generatedAwaitedCalls] : []),
+              ...(generatedObjectOperations ? [generatedObjectOperations] : []),
             ]);
           }
         }
@@ -689,6 +724,7 @@ interface DirectApplicationCallAnalysis {
   readonly calls: readonly ts.Expression[];
   readonly awaited: readonly ts.Expression[];
   readonly returned: readonly ts.Expression[];
+  readonly objectOperations: ReadonlyMap<string, readonly string[]>;
 }
 
 /**
@@ -799,6 +835,10 @@ export function applicationCallbackDependencyMetadataStatementsByName(
           returned.has(identifier)
             ? ts.factory.createTrue()
             : ts.factory.createFalse(),
+        ),
+        ...applicationObjectOperationsMetadata(
+          identifier,
+          analysis.objectOperations,
         ),
       ]);
     });
@@ -1120,14 +1160,14 @@ function directApplicationCallAnalysis(
         sourceFile,
       );
       if (importedProvenance) {
-        return { calls: [callback], awaited: [], returned: [] };
+        return { calls: [callback], awaited: [], returned: [], objectOperations: new Map() };
       }
       const position = importedApplicationBindingPosition(callback.text, file);
       throw new Error(
         `${registrar} callback ${callback.getText(file) || callback.text} at ${sourceFile}:${position.line + 1}:${position.character + 1} cannot be analyzed for application dependencies. Import it from a statically resolvable local module, declare it inline or in the same file, or provide an explicit authority envelope.`,
       );
     }
-    return { calls: [], awaited: [], returned: [] };
+    return { calls: [], awaited: [], returned: [], objectOperations: new Map() };
   }
   const localNames = new Set<string>();
   for (const parameter of resolved.parameters) collectBindingNames(parameter.name, localNames);
@@ -1143,6 +1183,7 @@ function directApplicationCallAnalysis(
   const candidates = new Map<string, ts.Expression>();
   const awaited = new Map<string, ts.Expression>();
   const returned = new Map<string, ts.Expression>();
+  const objectOperations = new Map<string, Set<string>>();
   const topLevelCallables = topLevelApplicationCallables(file);
   const mutableModuleState = ignoreMutableModuleState
     ? topLevelMutableApplicationBindings(file)
@@ -1224,6 +1265,15 @@ function directApplicationCallAnalysis(
         && !knownRuntimeGlobal(root.text)
       ) {
         if (
+          ts.isPropertyAccessExpression(node.expression)
+          && ['put', 'get', 'head', 'delete'].includes(node.expression.name.text)
+        ) {
+          const identity = applicationNodeText(node.expression.expression, file);
+          const operations = objectOperations.get(identity) ?? new Set<string>();
+          operations.add(node.expression.name.text);
+          objectOperations.set(identity, operations);
+        }
+        if (
           ts.isPropertyAccessExpression(candidate)
           && candidate.name.text === 'delete'
         ) {
@@ -1285,7 +1335,30 @@ function directApplicationCallAnalysis(
     calls: [...candidates.values()],
     awaited: [...awaited.values()],
     returned: [...returned.values()],
+    objectOperations: new Map(
+      [...objectOperations.entries()].map(([identifier, operations]) => [
+        identifier,
+        [...operations].sort(),
+      ]),
+    ),
   };
+}
+
+function applicationObjectOperationsMetadata(
+  identifier: string,
+  operationsByIdentifier: ReadonlyMap<string, readonly string[]>,
+): readonly ts.ObjectLiteralElementLike[] {
+  const operations = operationsByIdentifier.get(identifier);
+  return operations && operations.length > 0
+    ? [
+        ts.factory.createPropertyAssignment(
+          'objectOperations',
+          ts.factory.createArrayLiteralExpression(
+            operations.map((operation) => ts.factory.createStringLiteral(operation)),
+          ),
+        ),
+      ]
+    : [];
 }
 
 function importedApplicationBindingPosition(
@@ -1877,34 +1950,38 @@ function decorateApplicationCallbackExpression(
                 undefined,
                 ts.factory.createToken(ts.SyntaxKind.EqualsGreaterThanToken),
                 ts.factory.createArrayLiteralExpression(
-                dependencyAnalysis.calls.map((dependency) =>
-                  ts.factory.createObjectLiteralExpression([
-                    ts.factory.createPropertyAssignment(
-                      'identifier',
-                      ts.factory.createStringLiteral(applicationNodeText(dependency, file)),
-                    ),
-                    ts.factory.createPropertyAssignment('value', dependency),
-                    ts.factory.createPropertyAssignment(
-                      'awaited',
-                      dependencyAnalysis.awaited.some(
-                        (candidate) =>
-                          applicationNodeText(candidate, file) === applicationNodeText(dependency, file),
-                      )
-                        ? ts.factory.createTrue()
-                        : ts.factory.createFalse(),
-                    ),
-                    ts.factory.createPropertyAssignment(
-                      'returned',
-                      dependencyAnalysis.returned.some(
-                        (candidate) =>
-                          applicationNodeText(candidate, file) === applicationNodeText(dependency, file),
-                      )
-                        ? ts.factory.createTrue()
-                        : ts.factory.createFalse(),
-                    ),
-                  ]),
+                  dependencyAnalysis.calls.map((dependency) =>
+                    ts.factory.createObjectLiteralExpression([
+                      ts.factory.createPropertyAssignment(
+                        'identifier',
+                        ts.factory.createStringLiteral(applicationNodeText(dependency, file)),
+                      ),
+                      ts.factory.createPropertyAssignment('value', dependency),
+                      ts.factory.createPropertyAssignment(
+                        'awaited',
+                        dependencyAnalysis.awaited.some(
+                          (candidate) =>
+                            applicationNodeText(candidate, file) === applicationNodeText(dependency, file),
+                        )
+                          ? ts.factory.createTrue()
+                          : ts.factory.createFalse(),
+                      ),
+                      ts.factory.createPropertyAssignment(
+                        'returned',
+                        dependencyAnalysis.returned.some(
+                          (candidate) =>
+                            applicationNodeText(candidate, file) === applicationNodeText(dependency, file),
+                        )
+                          ? ts.factory.createTrue()
+                          : ts.factory.createFalse(),
+                      ),
+                      ...applicationObjectOperationsMetadata(
+                        applicationNodeText(dependency, file),
+                        dependencyAnalysis.objectOperations,
+                      ),
+                    ]),
+                  ),
                 ),
-              ),
               ),
             ),
           ]),

@@ -87,6 +87,38 @@ describe('Agentic Start identity runtime', () => {
     });
   });
 
+  it('preserves authentication but no workspace authority when the session membership store is unavailable', async () => {
+    vi.stubEnv('APPLIK8S_APPLICATION_NAME', 'research');
+    const workspaceId = '9d389c54-4e6e-4e69-995f-c663946cef3e';
+
+    const admission = await authenticateAgenticStarterRequest(
+      new Request(
+        'http://research.example.test/__applik8s/v1/identity/session',
+        { headers: { cookie: `applik8s_workspace=${workspaceId}` } },
+      ),
+      { lookup: async () => { throw new Error('database unavailable'); } },
+    );
+
+    expect(admission.principal.roles).toEqual(['authenticated']);
+    expect(admission.trustedContext).toEqual({
+      issuer: 'applik8s://research/identity/deterministic',
+      principalScope: 'principal:research:deterministic:local-developer',
+    });
+    expect(admission.trustedContext).not.toHaveProperty('workspaceId');
+  });
+
+  it('fails closed when a non-session request cannot verify workspace membership', async () => {
+    vi.stubEnv('APPLIK8S_APPLICATION_NAME', 'research');
+    const workspaceId = '9d389c54-4e6e-4e69-995F-C663946CEF3E';
+
+    await expect(authenticateAgenticStarterRequest(
+      new Request('http://research.example.test/app', {
+        headers: { cookie: `applik8s_workspace=${workspaceId}` },
+      }),
+      { lookup: async () => { throw new Error('database unavailable'); } },
+    )).rejects.toThrow('database unavailable');
+  });
+
   it('preserves authenticated identity when the session endpoint receives a malformed workspace selector', async () => {
     vi.stubEnv('APPLIK8S_APPLICATION_NAME', 'research');
 

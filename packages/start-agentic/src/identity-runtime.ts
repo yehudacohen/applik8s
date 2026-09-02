@@ -89,10 +89,13 @@ export async function authenticateAgenticStarterRequest(
         options.lookup ?? lookupAgenticWorkspaceAccess,
       );
     } catch (error) {
-      if (!isApplicationIdentitySessionRequest(request)
-        || !(error instanceof AgenticWorkspaceAdmissionError)) {
+      if (!isApplicationIdentitySessionRequest(request)) {
         throw error;
       }
+      // A session read proves authentication, not workspace authority. If the
+      // selected workspace is stale or its authority store is temporarily
+      // unavailable, preserve the authenticated principal while deliberately
+      // withholding every workspace-scoped role and trusted-context field.
       return authenticatedAgenticStarterAdmission(admission);
     }
   }
@@ -176,11 +179,17 @@ export async function authenticateAgenticProfileRequest(
       { ...trustedContext, principalScope: principal.id },
     );
   }
-  return admitAgenticWorkspaceRequest(
-    request,
-    Object.freeze({ principal, trustedContext }),
-    lookupAgenticWorkspaceAccess,
-  );
+  const admission = Object.freeze({ principal, trustedContext });
+  try {
+    return await admitAgenticWorkspaceRequest(
+      request,
+      admission,
+      lookupAgenticWorkspaceAccess,
+    );
+  } catch (error) {
+    if (!isApplicationIdentitySessionRequest(request)) throw error;
+    return authenticatedAgenticStarterAdmission(admission);
+  }
 }
 
 /**
