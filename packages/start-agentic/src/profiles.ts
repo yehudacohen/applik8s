@@ -6,12 +6,13 @@ import {
   type ApplicationAIProvider,
 } from '@applik8s/ai';
 import {
+  ActorRuntime,
   AnalyticalDatabase,
   Analytics,
   ApplicationHost,
-  ActorRuntime,
   type ApplicationIdentityInfrastructure,
   type ApplicationIdentityProvider,
+  type ApplicationProfileFragment,
   type ApplicationProviderBinding,
   type ApplicationTransactionalDatabaseProvider,
   applicationValueDefault,
@@ -28,8 +29,8 @@ import {
   ObjectStorage,
   Observability,
   postgres,
-  Search,
   Scheduler,
+  Search,
   TransactionalDatabase,
   trustedContext,
   WorkflowEngine,
@@ -57,6 +58,7 @@ import {
   PostgresResearchEvidence,
   ResearchEvidence,
 } from '@applik8s/research';
+import { BoundedHttpSourceRetriever } from '@applik8s/web-retrieval-http';
 import {
   type ApplicationSourceRetrieverProvider,
   type ApplicationWebSearchProvider,
@@ -65,7 +67,6 @@ import {
   SourceRetriever,
   WebSearch,
 } from '@applik8s/web-search';
-import { BoundedHttpSourceRetriever } from '@applik8s/web-retrieval-http';
 import { SearxngWebSearch } from '@applik8s/web-search-searxng';
 import { type } from 'arktype';
 
@@ -377,7 +378,18 @@ export type AgenticProfilesOptions = Pick<
   | 'developerResearchEvidence'
   | 'dedicatedResearchEvidence'
   | 'externalResearchEvidence'
->;
+> & {
+  /**
+   * Product-owned capability fragments composed into the maintained,
+   * target-free Agentic Start assembly profiles. Fragments are the extension
+   * boundary for application capabilities; installation-spec profiles remain
+   * a compatibility runtime and must not be copied into new product modules.
+   */
+  readonly assemblyProfileFragments?: Readonly<{
+    readonly starter?: readonly ApplicationProfileFragment[];
+    readonly developer?: readonly ApplicationProfileFragment[];
+  }>;
+};
 
 type DatabaseBinding =
   ApplicationProviderBinding<ApplicationTransactionalDatabaseProvider>;
@@ -2149,6 +2161,9 @@ export function agenticProfilesWith(
       profile.provide(LakehouseQuery.named('historical-usage'), developerHistoryQueries);
       profile.provide(ActorRuntime, developerActorRuntime);
       profile.provide(ApplicationHost, developerHost);
+      for (const fragment of options.assemblyProfileFragments?.starter ?? []) {
+        profile.include(fragment);
+      }
     });
 
     application.profile('developer', (profile) => {
@@ -2181,6 +2196,9 @@ export function agenticProfilesWith(
       profile.provide(LakehouseQuery.named('historical-usage'), developerHistoryQueries);
       profile.provide(ActorRuntime, developerActorRuntime);
       profile.provide(ApplicationHost, developerHost);
+      for (const fragment of options.assemblyProfileFragments?.developer ?? []) {
+        profile.include(fragment);
+      }
     });
     const host = application.provide(
       ApplicationHost,
