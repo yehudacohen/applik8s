@@ -1880,7 +1880,7 @@ export const rebuildProof = platform.composition;
         { name: 'APPLIK8S_TASK_OBJECT_HOST', valueFrom: { configMapKeyRef: { name: 'object-credentials', key: 'BUCKET_HOST' } } },
         { name: 'APPLIK8S_TASK_OBJECT_PORT', valueFrom: { configMapKeyRef: { name: 'object-credentials', key: 'BUCKET_PORT' } } },
         { name: 'APPLIK8S_TASK_OBJECT_ENDPOINT', value: 'http://$(APPLIK8S_TASK_OBJECT_HOST):$(APPLIK8S_TASK_OBJECT_PORT)' },
-        { name: 'AWS_ACCESS_KEY_ID', valueFrom: { secretKeyRef: { name: 'object-credentials', key: 'AWS_ACCESS_KEY_ID', optional: true } } },
+        { name: 'AWS_ACCESS_KEY_ID', valueFrom: { secretKeyRef: { name: 'object-credentials', key: 'AWS_ACCESS_KEY_ID' } } },
       ]) })] } } });
     } finally {
       await rm(dir, { recursive: true, force: true });

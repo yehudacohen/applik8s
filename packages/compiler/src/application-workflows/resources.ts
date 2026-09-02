@@ -2,11 +2,11 @@
 import { createHash } from 'node:crypto';
 import { applicationOptionalDeploymentOutputReference } from '@applik8s/deployment-contract';
 import { applicationCallableProviderEnvironment } from '../application-callable-provider-runtime.js';
+import { applicationGraphAllConditions, applicationGraphBooleanCondition, applicationGraphJsonStringArray, applicationGraphStringValue } from '../application-installation-values.js';
 import {
   applicationStructuredGenerationAuthorityId,
   applicationStructuredGenerationEnvironmentCredential,
 } from '../application-structured-generation-credentials.js';
-import { applicationGraphAllConditions, applicationGraphBooleanCondition, applicationGraphJsonStringArray, applicationGraphStringValue } from '../application-installation-values.js';
 import { structuredGenerationSelectedScalar, structuredGenerationSelection, type WorkflowContract, type WorkflowTaskProjectionContract } from './contracts.js';
 import {
   privateProviderMountDirectory,
@@ -652,7 +652,10 @@ function workflowObjectEnvironment(contract: WorkflowContract): readonly Record<
 	if (!bucket || !region) throw new Error(`Workflow worker ${contract.worker.id} task ObjectStorage requires bucket and region values.`);
 	const credentials = first.credentialsSecret;
 	const credentialsName = applicationGraphStringValue(credentials.name);
-	const optionalCredentials = config.enabled !== true;
+	// Object stores are enabled by default. Only an explicitly disabled or
+	// installation-selected store may omit its credential Secret while the
+	// worker starts; an omitted switch must fail closed.
+	const optionalCredentials = config.enabled === false || typeof config.enabled === 'string';
 	const provisionedConnection = workflowObjectBucketConnection(config);
 	return uniqueWorkflowEnvironment([
 		{ name: 'APPLIK8S_TASK_OBJECT_BUCKET', value: bucket },
@@ -729,7 +732,7 @@ function workflowProjectionEnvironment(contract: WorkflowContract): readonly Rec
   const credentials = objectConfig(object.credentialsSecret);
   const credentialsName = applicationGraphStringValue(credentials.name);
   const objectEnabled = workflowEnvironmentScalar(object.enabled, 'true');
-  const optionalObjectCredentials = object.enabled !== true;
+  const optionalObjectCredentials = object.enabled === false || typeof object.enabled === 'string';
   const provisionedConnection = workflowObjectBucketConnection(object);
   return uniqueWorkflowEnvironment([
     ...effects.map((effect) => ({ name: effect.stream.database.connectionEnvName, valueFrom: { secretKeyRef: { name: effect.stream.database.secretName, key: effect.stream.database.secretKey } } })),
