@@ -29,6 +29,42 @@ describe("Alchemy generated-Secret graph contract", () => {
     expect(JSON.stringify(decoded)).not.toContain("provider-value");
   });
 
+  it('preserves JSON extraction and URI-component transforms', () => {
+    const decoded = decodeGeneratedSecretConfiguration({
+      namespace: 'application',
+      name: 'external-database',
+      consumers: ['provider.TransactionalDatabase.primary'],
+      values: {
+        username: {
+          kind: 'hostEnvironmentJson',
+          name: 'DATABASE_CREDENTIALS',
+          property: 'username',
+        },
+        uri: {
+          kind: 'template',
+          segments: [
+            { kind: 'literal', value: 'postgresql://' },
+            { kind: 'value', key: 'username', transform: 'uriComponent' },
+          ],
+        },
+      },
+    }, 'external.generated-secret.database');
+    expect(decoded.values).toEqual({
+      username: {
+        kind: 'hostEnvironmentJson',
+        name: 'DATABASE_CREDENTIALS',
+        property: 'username',
+      },
+      uri: {
+        kind: 'template',
+        segments: [
+          { kind: 'literal', value: 'postgresql://' },
+          { kind: 'value', key: 'username', transform: 'uriComponent' },
+        ],
+      },
+    });
+  });
+
   it("preserves provider-bounded random value length", () => {
     expect(
       decodeGeneratedSecretConfiguration(

@@ -1845,7 +1845,7 @@ const Rebuild = workflow('records.rebuild.v1', { input: type({ generation: 'stri
 platform.workflow(Rebuild, { projections: { timeline: { projection: timeline, artifacts, bounds: { batchSize: 250, maxSegments: 1000 } } }, objects: { artifacts: artifacts.allow('put', 'get', 'head') } }, async (input, context) => {
   await context.objects.artifacts.head('rebuild/' + input.generation + '/manifest.json');
   return { watermark: (await context.projections.timeline.rebuild({ generation: input.generation })).publishedWatermark };
-});
+  });
 export const rebuildProof = platform.composition;
 `);
       const result = await compileTypeKroComposition({
@@ -1882,6 +1882,50 @@ export const rebuildProof = platform.composition;
         { name: 'APPLIK8S_TASK_OBJECT_ENDPOINT', value: 'http://$(APPLIK8S_TASK_OBJECT_HOST):$(APPLIK8S_TASK_OBJECT_PORT)' },
         { name: 'AWS_ACCESS_KEY_ID', valueFrom: { secretKeyRef: { name: 'object-credentials', key: 'AWS_ACCESS_KEY_ID', optional: true } } },
       ]) })] } } });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }, 240_000);
+
+  it('imports the S3 runtime for projection rebuilds without separate object effects', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'applik8s-workflow-rebuild-import-'));
+    const entrypoint = join(dir, 'application.ts');
+    await writeFile(entrypoint, `
+import { app, event, IndexStore, ObjectStorage, workflow, WorkflowEngine } from '@applik8s/applik8s';
+import { type } from '@applik8s/applik8s/dsl';
+import { pgTable, text } from 'drizzle-orm/pg-core';
+const platform = app('rebuild-import-proof', { namespace: 'rebuild-import-proof' });
+platform.provide(WorkflowEngine, WorkflowEngine.hatchet({ provision: false, namespace: 'rebuild-import-proof', hostPort: 'hatchet:7070', apiUrl: 'http://hatchet:8080', workerTokenSecret: { apiVersion: 'v1', kind: 'Secret', name: 'hatchet-worker', namespace: 'rebuild-import-proof' } }));
+platform.provide(IndexStore, IndexStore.valkey({ name: 'online', namespace: 'rebuild-import-proof', host: 'online.rebuild-import-proof.svc', port: 6379, provision: false, authentication: { mode: 'password', secret: { apiVersion: 'v1', kind: 'Secret', name: 'online-password', namespace: 'rebuild-import-proof' }, key: 'password' } }));
+platform.provide(ObjectStorage, ObjectStorage.s3({ name: 'artifacts', bucket: 'projection-artifacts', region: 'us-east-1', ownership: 'direct-provisioned', provisioning: { kind: 'object-bucket-claim', claimName: 'object-credentials', storageClassName: 'rook-ceph-bucket' }, credentialsSecret: { apiVersion: 'v1', kind: 'Secret', name: 'object-credentials', namespace: 'rebuild-import-proof' } }));
+const records = pgTable('records', { id: text('id').primaryKey() });
+const database = platform.database.postgres('records', { schema: { records }, migrations: { path: './migrations' } });
+const RecordModel = platform.model(records, { name: 'Record', database });
+const Changed = event('records.changed.v1', { payload: type({ id: 'string', score: 'number' }) });
+const changes = platform.stream(Changed, { database, retention: { maxAgeSeconds: 86400 }, partitionBy: ({ id }) => id, authorize: () => false });
+const timeline = changes.project('timeline', { store: IndexStore, output: type({ id: 'string', score: 'number' }), map: (payload) => payload, partitionBy: () => 'all', key: ({ id }) => id, score: ({ score }) => score, value: (row) => row, retention: { maxItemsPerPartition: 1000 }, generationScoped: true, rebuild: { source: RecordModel, map: (record) => ({ id: record.id, score: 0 }), checkpoint: 'durable' } });
+const artifacts = platform.objectStore('projection-artifacts', { mode: 'immutable', maxObjectBytes: 4000000, contentTypes: ['application/vnd.applik8s.projection-segment+json', 'application/vnd.applik8s.projection-rebuild+json'] });
+const Rebuild = workflow('records.rebuild.v1', { input: type({ generation: 'string' }), output: type({ watermark: 'number' }) });
+platform.workflow(Rebuild, { projections: { timeline: { projection: timeline, artifacts } } }, async (input, context) => ({ watermark: (await context.projections.timeline.rebuild({ generation: input.generation })).publishedWatermark }));
+export const rebuildImportProof = platform.composition;
+`);
+    try {
+      await mkdir(join(dir, 'migrations'));
+      await writeFile(join(dir, 'migrations/0001_records.sql'), 'CREATE TABLE records (id text PRIMARY KEY);\n');
+      const result = await compileTypeKroComposition({
+        entrypoint,
+        compositionName: 'rebuildImportProof',
+        outDir: join(dir, 'dist'),
+        runtimeVersionRange: '^0.9.0',
+        handlerAbiVersion: 'applik8s.handler/v1alpha1',
+        adapter: 'wasmComponent',
+        portability: { deterministicBuild: true, allowEnvironmentAccess: false, allowFilesystemAccess: false, allowNetworkAccess: true, allowedHostImports: [], sourceMaps: { emit: true, includeSourceContent: false, redactPaths: false } },
+      });
+      expect(result.ok, result.ok ? undefined : result.error.message).toBe(true);
+      if (!result.ok) return;
+      const artifact = result.value.artifacts.workflowArtifacts[0];
+      const source = await readFile(artifact?.sourcePath ?? '', 'utf8');
+      expect(source).toContain('createS3ApplicationObjectStorageRuntime');
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

@@ -54,6 +54,8 @@ export {
   adaptApplicationQueryInputCanonicalJsonV1,
   ApplicationQueryClient,
   applicationQueryInputCanonicalJsonV1Policy,
+  installApplicationQueryClientResolver,
   queryCacheKey,
   queryInputKey,
+  resolveApplicationQueryClient,
 } from './store.js';

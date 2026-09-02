@@ -5,6 +5,8 @@ export interface ApplicationPostgresEndOptions {
 export interface ApplicationPostgresSql {
   unsafe(query: string, parameters?: readonly unknown[]): Promise<readonly Record<string, unknown>[]>;
   begin<TResult>(operation: (transaction: ApplicationPostgresTransactionSql) => Promise<TResult>): Promise<TResult>;
+  /** Provider-owned JSONB parameter encoder. Runtime adapters should expose it when available. */
+  json?(value: unknown): unknown;
   end(options?: ApplicationPostgresEndOptions): Promise<void>;
 }
 
@@ -81,6 +83,19 @@ export function applicationManagedModelPostgresMigrationSql(schema = 'public'): 
     `CREATE INDEX IF NOT EXISTS applik8s_managed_model_due_idx
       ON ${lifecycle} (application_id, model_name, invalidated, next_due_at, identity_key)`,
     `ALTER TABLE ${lifecycle} ADD COLUMN IF NOT EXISTS deletion_value jsonb`,
+    `UPDATE ${lifecycle} SET
+      status = CASE WHEN jsonb_typeof(status) = 'string' THEN (status #>> '{}')::jsonb ELSE status END,
+      conditions = CASE WHEN jsonb_typeof(conditions) = 'string' THEN (conditions #>> '{}')::jsonb ELSE conditions END,
+      finalizers = CASE WHEN jsonb_typeof(finalizers) = 'string' THEN (finalizers #>> '{}')::jsonb ELSE finalizers END,
+      deletion_value = CASE
+        WHEN deletion_value IS NOT NULL AND jsonb_typeof(deletion_value) = 'string'
+          THEN (deletion_value #>> '{}')::jsonb
+        ELSE deletion_value
+      END
+      WHERE jsonb_typeof(status) = 'string'
+         OR jsonb_typeof(conditions) = 'string'
+         OR jsonb_typeof(finalizers) = 'string'
+         OR (deletion_value IS NOT NULL AND jsonb_typeof(deletion_value) = 'string')`,
     `CREATE TABLE IF NOT EXISTS ${invalidations} (
       sequence bigserial PRIMARY KEY,
       application_id text NOT NULL,

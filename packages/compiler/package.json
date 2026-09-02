@@ -62,7 +62,7 @@
     "pino-pretty": "^13.1.1",
     "postgres": "^3.4.7",
     "typescript": "^5.3.0",
-    "typekro": "0.33.9",
+    "typekro": "0.33.10",
     "yaml": "^2.9.0"
   }
 }

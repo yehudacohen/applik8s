@@ -4,11 +4,13 @@ import { createHash, randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { setApplicationWorkflowRuntimeFactory } from '@applik8s/applik8s';
+import { applicationManagedModelIdentityKey } from '@applik8s/applik8s/postgres-runtime-contract';
 import { S3Client } from '@aws-sdk/client-s3';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { RebuildHomeTimelines } from '../../../examples/chirp-start/src/recovery/timeline';
 import { createS3ApplicationObjectStorageRuntime } from '@applik8s/runtime-s3';
 import { createHatchetWorkflowRuntime } from '@applik8s/runtime-hatchet';
+import postgres from 'postgres';
 import {
   collectV06ArtifactIdentity,
   collectV06ClusterIdentity,
@@ -25,14 +27,18 @@ const namespace = process.env.APPLIK8S_NAMESPACE ?? 'chirp';
 const controlPlaneNamespace = process.env.APPLIK8S_CONTROL_PLANE_NAMESPACE ?? 'chirp-control';
 const installationName = process.env.APPLIK8S_CHIRP_INSTANCE ?? 'chirp';
 const onlineIndexName = process.env.APPLIK8S_CHIRP_INDEX ?? 'chirp-online-index';
+const testOwnsProjectionStore = process.env.APPLIK8S_E2E_CHIRP_TEST_OWNED === '1';
 const headers = { 'content-type': 'application/json', 'x-chirp-user': 'demo-user' };
 
 let web: PortForward | undefined;
 let clickhouse: PortForward | undefined;
 let workflowApi: PortForward | undefined;
 let workflowEngine: PortForward | undefined;
+let modelDatabase: PortForward | undefined;
+let modelSql: ReturnType<typeof postgres> | undefined;
 let restoreWorkflowRuntime: (() => void) | undefined;
 let previousWorkflowToken: string | undefined;
+let createdModerationPolicy = false;
 const evidencePath = join(process.cwd(), '.applik8s-tmp/evidence/v0.6/chirp.json');
 const evidenceRunId = randomUUID();
 const evidenceStartedAt = new Date().toISOString();
@@ -42,6 +48,11 @@ let recoveryEvidence: { readonly result: ProjectionRebuildResult; readonly evide
 
 (enabled ? describe : describe.skip)('Chirp public golden path on OrbStack', () => {
   beforeAll(async () => {
+    if (testOwnsProjectionStore && (namespace === 'chirp' || onlineIndexName === 'chirp-online-index')) {
+      throw new Error(
+        'APPLIK8S_E2E_CHIRP_TEST_OWNED requires a non-default, test-created Chirp namespace and online-index identity.',
+      );
+    }
     await discardV06Evidence(evidencePath);
     await assertExpectedKubectlContext();
     const installedUrl = await installationStatusUrl();
@@ -50,6 +61,14 @@ let recoveryEvidence: { readonly result: ProjectionRebuildResult; readonly evide
     const workflowEndpoints = await deployedWorkflowEndpoints();
     workflowApi = await portForwardClusterServiceEndpoint(workflowEndpoints.apiUrl);
     workflowEngine = await portForwardClusterServiceEndpoint(workflowEndpoints.hostPort);
+    const modelDatabaseUrl = new URL(await secretValue(namespace, 'chirp-models-app', 'uri'));
+    const databaseService = modelDatabaseUrl.hostname.split('.')[0];
+    const databaseNamespace = modelDatabaseUrl.hostname.split('.')[1] || namespace;
+    if (!databaseService) throw new Error('Chirp model database Secret has no Kubernetes service host.');
+    modelDatabase = await startPortForward(`service/${databaseService}`, Number(modelDatabaseUrl.port || 5432), databaseNamespace);
+    modelDatabaseUrl.hostname = '127.0.0.1';
+    modelDatabaseUrl.port = String(required(modelDatabase).port);
+    modelSql = postgres(modelDatabaseUrl.href, { max: 1 });
     previousWorkflowToken = process.env.HATCHET_CLIENT_TOKEN;
     process.env.HATCHET_CLIENT_TOKEN = await secretValue(namespace, 'hatchet-client-config', 'HATCHET_CLIENT_TOKEN');
     restoreWorkflowRuntime = setApplicationWorkflowRuntimeFactory(async () => createHatchetWorkflowRuntime({
@@ -62,15 +81,37 @@ let recoveryEvidence: { readonly result: ProjectionRebuildResult; readonly evide
   }, 60_000);
 
   afterAll(async () => {
+    const cleanupErrors: Error[] = [];
     try {
       if (completedEvidenceTests.size === 3) await writeCompleteChirpEvidenceReceipt();
-    } finally {
-      restoreWorkflowRuntime?.();
-      if (previousWorkflowToken === undefined) delete process.env.HATCHET_CLIENT_TOKEN;
-      else process.env.HATCHET_CLIENT_TOKEN = previousWorkflowToken;
-      await Promise.all([web?.close(), clickhouse?.close(), workflowApi?.close(), workflowEngine?.close()]);
+    } catch (cause) {
+      cleanupErrors.push(asError(cause));
     }
-  });
+    restoreWorkflowRuntime?.();
+    if (previousWorkflowToken === undefined) delete process.env.HATCHET_CLIENT_TOKEN;
+    else process.env.HATCHET_CLIENT_TOKEN = previousWorkflowToken;
+    if (createdModerationPolicy && web) {
+      try {
+        const commandId = `delete-policy-${evidenceRunId}`;
+        const deletion = await postJson(`${web.endpoint}/__applik8s/v1/commands/models.ModerationPolicy.delete.v1/submit`, {
+          input: { identity: 'default' }, commandId, idempotencyKey: commandId,
+        });
+        await waitForCommand(
+          web.endpoint,
+          stringField(deletion, 'progressCursor'),
+          'models.ModerationPolicy.delete.v1',
+        );
+      } catch (cause) {
+        cleanupErrors.push(asError(cause));
+      }
+    }
+    await modelSql?.end({ timeout: 5 }).catch((cause: unknown) => cleanupErrors.push(asError(cause)));
+    const settled = await Promise.allSettled([
+      web?.close(), clickhouse?.close(), workflowApi?.close(), workflowEngine?.close(), modelDatabase?.close(),
+    ]);
+    for (const result of settled) if (result.status === 'rejected') cleanupErrors.push(asError(result.reason));
+    if (cleanupErrors.length > 0) throw new AggregateError(cleanupErrors, 'Chirp live-test cleanup failed.');
+  }, 90_000);
 
   it('runs SSR, JetStream command delivery, durable mutation, Valkey projection, SSE invalidation, authoritative requery, and ClickHouse projection', async () => {
     const endpoint = required(web).endpoint;
@@ -80,39 +121,36 @@ let recoveryEvidence: { readonly result: ProjectionRebuildResult; readonly evide
     expect(html).toContain('Chirp · built with Applik8s');
     expect(html).toContain('Why this feed matters');
 
-    const initialPolicy = await waitForModerationPolicyTracking();
-    const initialTracking = required(moderationPolicyTracking(initialPolicy));
-    expect(objectField(initialPolicy, 'status')).toMatchObject({
-      phase: 'Ready',
-      applik8s: { trackedExecutions: { 'apply-policy': {
-        phase: 'Succeeded',
-        workflow: 'moderation.apply-policy.v1',
-        resourceGeneration: numberField(objectField(initialPolicy, 'metadata'), 'generation'),
-      } } },
+    const policySnapshot = await querySnapshot(endpoint, 'ModerationPolicy.currentPolicy', {}, headers);
+    const policies = Array.isArray(policySnapshot.value) ? policySnapshot.value : [];
+    if (policies.length === 0) {
+      const commandId = `create-policy-${evidenceRunId}`;
+      const created = await postJson(`${endpoint}/__applik8s/v1/commands/models.ModerationPolicy.create.v1/submit`, {
+        input: { id: 'default', maxRisk: 0.7, blockedTerms: [] }, commandId, idempotencyKey: commandId,
+      });
+      await waitForCommand(
+        endpoint,
+        stringField(created, 'progressCursor'),
+        'models.ModerationPolicy.create.v1',
+      );
+      createdModerationPolicy = true;
+    }
+    const initialPolicy = await waitForManagedModerationPolicy();
+    const currentMaxRisk = await currentModerationRisk(endpoint);
+    const commandId = `update-policy-${evidenceRunId}`;
+    const updated = await postJson(`${endpoint}/__applik8s/v1/commands/models.ModerationPolicy.update.v1/submit`, {
+      input: { identity: 'default', patch: { maxRisk: currentMaxRisk === 0.7 ? 0.8 : 0.7 } },
+      commandId,
+      idempotencyKey: commandId,
     });
-    const currentMaxRisk = numberField(objectField(initialPolicy, 'spec'), 'maxRisk');
-    const patchedPolicy = jsonObject((await kubectl([
-      'patch', 'moderationpolicy/default', '--namespace', namespace,
-      '--type=merge', '--patch', JSON.stringify({ spec: { maxRisk: currentMaxRisk === 0.7 ? 0.8 : 0.7 } }),
-      '--output=json',
-    ])).stdout);
-    const patchedGeneration = numberField(objectField(patchedPolicy, 'metadata'), 'generation');
-    const reconciledPolicy = await waitForModerationPolicyTracking(patchedGeneration);
-    const reconciledTracking = required(moderationPolicyTracking(reconciledPolicy));
-    const reconciledGeneration = numberField(objectField(reconciledPolicy, 'metadata'), 'generation');
-    // The policy is an owned TypeKro child. The deliberate live drift above
-    // can therefore be followed immediately by a second generation when KRO
-    // restores the graph-authored spec. Tracking must converge to whichever
-    // generation is current, never remain attached to the transient one.
-    expect(reconciledGeneration).toBeGreaterThanOrEqual(patchedGeneration);
-    expect(reconciledTracking).toMatchObject({
-      phase: 'Succeeded',
-      workflow: 'moderation.apply-policy.v1',
-      resourceGeneration: reconciledGeneration,
-      onGenerationChange: 'supersede',
-      onDelete: { action: 'cancel', onTimeout: 'detach' },
-    });
-    expect(reconciledTracking.run).not.toBe(initialTracking.run);
+    await waitForCommand(
+      endpoint,
+      stringField(updated, 'progressCursor'),
+      'models.ModerationPolicy.update.v1',
+    );
+    const reconciledPolicy = await waitForManagedModerationPolicy(initialPolicy.generation + 1);
+    expect(reconciledPolicy.generation).toBeGreaterThan(initialPolicy.generation);
+    expect(reconciledPolicy.resource_version).toBeGreaterThan(initialPolicy.resource_version);
 
     const registrationPrincipal = `live-account-${Date.now()}`;
     const registrationHeaders = { 'content-type': 'application/json', 'x-chirp-user': registrationPrincipal };
@@ -236,7 +274,7 @@ let recoveryEvidence: { readonly result: ProjectionRebuildResult; readonly evide
     completedEvidenceTests.add('runtime');
   }, 180_000);
 
-  it('recovers complete Valkey loss from an authoritative snapshot without blocking foreground commits', async () => {
+  (testOwnsProjectionStore ? it : it.skip)('recovers complete Valkey loss from an authoritative snapshot without blocking foreground commits', async () => {
     const endpoint = required(web).endpoint;
     const baselineId = `rebuild-baseline-${Date.now()}`;
     const baselineBody = `Chirp rebuild baseline ${new Date().toISOString()}`;
@@ -247,6 +285,9 @@ let recoveryEvidence: { readonly result: ProjectionRebuildResult; readonly evide
     // PostgreSQL model remains the authority and the workflow below must
     // reconstruct a new generation rather than falling back to relational
     // query execution or silently serving an empty feed.
+    // This case is admitted only for a non-default Chirp installation whose
+    // namespace and Valkey identity were created for the test run. Shared
+    // developer installations never cross this destructive boundary.
     await valkeyCommand(['FLUSHDB']);
     const root = timelineProjectionRoot();
     const activeGenerationKey = `${metadataTag(root)}:active-generation`;
@@ -843,9 +884,11 @@ async function validateProjectionRebuildArtifacts(
   }
 }
 
-function jsonObject(value: string): Record<string, unknown> {
-  const parsed: unknown = JSON.parse(value);
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error(`Expected a JSON object, received ${value}.`);
+function jsonObject(value: unknown): Record<string, unknown> {
+  const parsed: unknown = typeof value === 'string' ? JSON.parse(value) as unknown : value;
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error(`Expected a JSON object, received ${JSON.stringify(value)}.`);
+  }
   return parsed as Record<string, unknown>;
 }
 
@@ -879,6 +922,10 @@ function collectStrings(value: unknown): string[] {
 function required<T>(value: T | undefined): T {
   if (value === undefined) throw new Error('Chirp live E2E setup did not complete.');
   return value;
+}
+
+function asError(cause: unknown): Error {
+  return cause instanceof Error ? cause : new Error(String(cause));
 }
 
 async function collectRuntimeEvidence(
@@ -981,49 +1028,62 @@ async function writeCompleteChirpEvidenceReceipt(): Promise<void> {
   });
 }
 
-async function waitForModerationPolicyTracking(minimumGeneration?: number): Promise<Record<string, unknown>> {
-  let last: Record<string, unknown> | undefined;
+async function waitForManagedModerationPolicy(minimumGeneration = 1): Promise<ManagedModerationPolicyRow> {
+  let last: ManagedModerationPolicyRow | undefined;
   for (let attempt = 0; attempt < 120; attempt += 1) {
-    last = jsonObject((await kubectl([
-      'get', 'moderationpolicy/default', '--namespace', namespace, '--output=json',
-    ])).stdout);
-    const metadata = objectField(last, 'metadata');
-    const statusValue = last.status;
-    const status = statusValue && typeof statusValue === 'object' && !Array.isArray(statusValue)
-      ? statusValue as Record<string, unknown>
-      : {};
-    const tracking = moderationPolicyTracking(last, false);
-    const currentGeneration = numberField(metadata, 'generation');
-    if (
-      status.phase === 'Ready'
-      && tracking?.phase === 'Succeeded'
-      && tracking.resourceGeneration === currentGeneration
-      && (minimumGeneration === undefined
-        || currentGeneration >= minimumGeneration)
-    ) return last;
+    const rows = await required(modelSql).unsafe<ManagedModerationPolicyRow[]>(
+      `SELECT generation::int, resource_version::int, status::text, conditions::text
+       FROM applik8s_managed_model_lifecycle
+       WHERE application_id = $1 AND model_name = $2 AND identity_key = $3`,
+      ['chirp', 'ModerationPolicy', applicationManagedModelIdentityKey('default')],
+    );
+    last = rows[0] ? {
+      ...rows[0],
+      status: managedJsonObject(rows[0].status, 'status'),
+      conditions: managedJsonArray(rows[0].conditions, 'conditions'),
+    } : undefined;
+    const ready = last?.conditions.find((condition) => condition.type === 'Ready');
+    if (last && last.generation >= minimumGeneration && last.status.phase === 'Ready' && ready?.status === 'True') return last;
     await sleep(1_000);
   }
-  throw new Error(`ModerationPolicy did not converge through canonical workflow tracking: ${JSON.stringify(last)}`);
+  throw new Error(`Managed ModerationPolicy did not converge through the distributed OperatorRuntime: ${JSON.stringify(last)}`);
 }
 
-function moderationPolicyTracking(
-  policy: Record<string, unknown>,
-  required = true,
-): Record<string, unknown> | undefined {
-  const statusValue = policy.status;
-  const status = statusValue && typeof statusValue === 'object' && !Array.isArray(statusValue)
-    ? statusValue as Record<string, unknown>
-    : {};
-  const applik8s = status.applik8s;
-  const trackedExecutions = applik8s && typeof applik8s === 'object' && !Array.isArray(applik8s)
-    ? Reflect.get(applik8s, 'trackedExecutions')
-    : undefined;
-  const tracking = trackedExecutions && typeof trackedExecutions === 'object' && !Array.isArray(trackedExecutions)
-    ? Reflect.get(trackedExecutions, 'apply-policy')
-    : undefined;
-  if (tracking && typeof tracking === 'object' && !Array.isArray(tracking)) {
-    return tracking as Record<string, unknown>;
+async function currentModerationRisk(endpoint: string): Promise<number> {
+  const snapshot = await querySnapshot(endpoint, 'ModerationPolicy.currentPolicy', {}, headers);
+  if (!Array.isArray(snapshot.value) || snapshot.value.length !== 1) {
+    throw new Error(`Expected one managed moderation policy, received ${JSON.stringify(snapshot.value)}.`);
   }
-  if (required) throw new Error(`ModerationPolicy is missing canonical apply-policy tracking state: ${JSON.stringify(policy)}`);
-  return undefined;
+  return numberField(jsonObject(snapshot.value[0]), 'maxRisk');
+}
+
+interface ManagedModerationPolicyRow {
+  readonly generation: number;
+  readonly resource_version: number;
+  readonly status: { readonly phase?: string; readonly message?: string };
+  readonly conditions: readonly { readonly type?: string; readonly status?: string; readonly reason?: string }[];
+}
+
+function managedJsonObject(value: unknown, label: string): ManagedModerationPolicyRow['status'] {
+  const decoded = managedJsonValue(value, label);
+  if (!decoded || typeof decoded !== 'object' || Array.isArray(decoded)) {
+    throw new Error(`Managed ModerationPolicy ${label} is not a JSON object.`);
+  }
+  return decoded as ManagedModerationPolicyRow['status'];
+}
+
+function managedJsonArray(value: unknown, label: string): ManagedModerationPolicyRow['conditions'] {
+  const decoded = managedJsonValue(value, label);
+  if (!Array.isArray(decoded)) throw new Error(`Managed ModerationPolicy ${label} is not a JSON array.`);
+  return decoded as ManagedModerationPolicyRow['conditions'];
+}
+
+function managedJsonValue(value: unknown, label: string): unknown {
+  if (typeof value !== 'string') return value;
+  try {
+    const decoded: unknown = JSON.parse(value);
+    return typeof decoded === 'string' ? JSON.parse(decoded) as unknown : decoded;
+  } catch (error) {
+    throw new Error(`Managed ModerationPolicy ${label} is not valid JSON.`, { cause: error });
+  }
 }

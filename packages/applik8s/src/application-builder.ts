@@ -357,6 +357,27 @@ function registerApplicationManagedRelationalModel<
     event: 'reconcile' | 'finalize',
     handler: ApplicationManagedModelHandler<unknown, object, TStatus>,
   ) => {
+    const inferred = expandApplicationCallbackDependencies({ calls: [handler] });
+    const workflowBindings = inferred.calls.flatMap((value) => {
+      if (typeof value !== 'function') return [];
+      const runtimeKind = Reflect.get(value, 'kind');
+      if (runtimeKind !== 'applicationTask' && runtimeKind !== 'applicationWorkflow') return [];
+      const definition = Reflect.get(value, 'definition');
+      const id = definition && typeof definition === 'object'
+        ? Reflect.get(definition, 'id')
+        : undefined;
+      if (typeof id !== 'string' || id.length === 0) {
+        throw new Error(`Managed model ${modelName} ${event} captured a durable handle without a stable definition id.`);
+      }
+      const kind = runtimeKind === 'applicationTask' ? 'task' as const : 'workflow' as const;
+      const identifiers = Object.entries(inferred.bindings)
+        .filter(([identifier, candidate]) => candidate === value && !/^generatedCall\d+$/u.test(identifier))
+        .map(([identifier]) => identifier);
+      if (identifiers.length === 0) {
+        throw new Error(`Managed model ${modelName} ${event} durable dependency ${id} has no capturable callback identifier.`);
+      }
+      return identifiers.map((identifier) => ({ identifier, kind, target: { nodeId: `${kind}.${kubernetesNameSegment(id)}` } }));
+    });
     const serialized = serializeApplicationCallback({
       registrar: event === 'reconcile' ? 'Model.on.reconcile' : 'Model.on.finalize',
       argumentIndex: event === 'reconcile' ? 0 : 0,
@@ -367,12 +388,48 @@ function registerApplicationManagedRelationalModel<
     });
     return {
       serialized,
+      workflowBindings,
       conditionTypes: applicationManagedModelConditionTypes(
         modelName,
         event,
         serialized.source,
       ),
     };
+  };
+  const bindManagedWorkflows = (
+    bindings: readonly { readonly identifier: string; readonly kind: 'task' | 'workflow'; readonly target: { readonly nodeId: string } }[],
+  ): readonly { readonly identifier: string; readonly kind: 'task' | 'workflow'; readonly target: { readonly nodeId: string } }[] => {
+    if (bindings.length === 0) return contract.workflowBindings ?? [];
+    if (!contract.workflowEngine) {
+      recordApplicationWorkflowEngine(state as ApplicationWorkflowState);
+      addApplicationProviderRequirement(state, {
+        id: `${modelNodeId}.workflow-engine`,
+        interface: 'WorkflowEngine',
+        consumer: { nodeId: modelNodeId },
+        provider: { interface: 'WorkflowEngine', nodeId: 'provider.workflow-engine' },
+        required: true,
+        purpose: 'managedModelDurableExecution',
+        diagnostics: {
+          missing: `Managed model ${modelName} durable callbacks require a WorkflowEngine provider.`,
+          ambiguous: `Managed model ${modelName} durable callbacks require exactly one unqualified WorkflowEngine provider.`,
+        },
+      });
+      addApplicationGraphEdge(state, {
+        from: { nodeId: 'provider.workflow-engine' },
+        to: { nodeId: modelNodeId },
+        relationship: 'provides',
+      });
+    }
+    const merged = mergeManagedModelWorkflowBindings(contract.workflowBindings, bindings);
+    for (const binding of merged) {
+      if ((contract.workflowBindings ?? []).some((candidate) => candidate.target.nodeId === binding.target.nodeId)) continue;
+      addApplicationGraphEdge(state, {
+        from: { nodeId: modelNodeId },
+        to: binding.target,
+        relationship: 'dependsOn',
+      });
+    }
+    return merged;
   };
   let reconcileRegistered = false;
   const finalizers = new Set<string>();
@@ -386,11 +443,18 @@ function registerApplicationManagedRelationalModel<
         if (reconcileRegistered) {
           throw new Error(`Managed model ${modelName} may declare only one reconcile handler.`);
         }
-        const { serialized, conditionTypes } = serialize('reconcile', handler);
+        const { serialized, conditionTypes, workflowBindings } = serialize('reconcile', handler);
         assertApplicationManagedModelConditionOwnership(modelName, contract, conditionTypes);
+        const boundWorkflows = bindManagedWorkflows(workflowBindings);
         reconcileRegistered = true;
         contract = {
           ...contract,
+          ...(workflowBindings.length > 0
+            ? {
+                workflowEngine: { interface: 'WorkflowEngine', nodeId: 'provider.workflow-engine' },
+                workflowBindings: boundWorkflows,
+              }
+            : {}),
           reconcile: {
             handlerSource: serialized.source,
             ...(serialized.dependencies ? { handlerDependencies: serialized.dependencies } : {}),
@@ -417,11 +481,18 @@ function registerApplicationManagedRelationalModel<
         if (finalizers.has(finalizer)) {
           throw new Error(`Managed model ${modelName} finalizer ${finalizer} is already registered.`);
         }
-        const { serialized, conditionTypes } = serialize('finalize', handler);
+        const { serialized, conditionTypes, workflowBindings } = serialize('finalize', handler);
         assertApplicationManagedModelConditionOwnership(modelName, contract, conditionTypes);
+        const boundWorkflows = bindManagedWorkflows(workflowBindings);
         finalizers.add(finalizer);
         contract = {
           ...contract,
+          ...(workflowBindings.length > 0
+            ? {
+                workflowEngine: { interface: 'WorkflowEngine', nodeId: 'provider.workflow-engine' },
+                workflowBindings: boundWorkflows,
+              }
+            : {}),
           finalizers: [
             ...contract.finalizers,
             {
@@ -446,6 +517,25 @@ function registerApplicationManagedRelationalModel<
   });
   void model;
   return facet;
+}
+
+function mergeManagedModelWorkflowBindings(
+  current: ApplicationManagedModelContract['workflowBindings'],
+  additions: readonly {
+    readonly identifier: string;
+    readonly kind: 'task' | 'workflow';
+    readonly target: { readonly nodeId: string };
+  }[],
+): NonNullable<ApplicationManagedModelContract['workflowBindings']> {
+  const merged = new Map<string, NonNullable<ApplicationManagedModelContract['workflowBindings']>[number]>();
+  for (const binding of [...(current ?? []), ...additions]) {
+    const existing = merged.get(binding.identifier);
+    if (existing && (existing.kind !== binding.kind || existing.target.nodeId !== binding.target.nodeId)) {
+      throw new Error(`Managed model durable dependency ${binding.identifier} resolves to conflicting task/workflow identities.`);
+    }
+    merged.set(binding.identifier, binding);
+  }
+  return [...merged.values()].sort((left, right) => left.identifier.localeCompare(right.identifier));
 }
 
 function isSingleStepWorkflowOptions(options: object): boolean {

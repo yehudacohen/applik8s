@@ -120,6 +120,7 @@
       "@applik8s/applik8s/job-runtime-remote": ["packages/applik8s/src/application-job-remote-runtime.ts"],
       "@applik8s/applik8s/job-controller-runtime": ["packages/applik8s/src/application-job-controller-runtime.ts"],
       "@applik8s/applik8s/postgres-runtime-contract": ["packages/applik8s/src/postgres-runtime-contract.ts"],
+      "@applik8s/applik8s/managed-model-runtime": ["packages/applik8s/src/managed-model-runtime.ts"],
       "@applik8s/applik8s/query-runtime": ["packages/applik8s/src/query-runtime.ts"],
       "@applik8s/applik8s/query-batch-runtime": ["packages/applik8s/src/query-batch-runtime.ts"],
       "@applik8s/applik8s/reactive-runtime": ["packages/applik8s/src/reactive-runtime.ts"],

@@ -24,7 +24,7 @@ describe("Kubernetes generated-Secret deployment provider", () => {
         kind: "hostEnvironment",
         name: "SYNTHETIC_PROVIDER_API_KEY",
       },
-    } as const;
+    } satisfies ApplicationGeneratedSecretProps['values'];
     expect(() =>
       validateApplicationGeneratedSecretProps({ ...base, values }),
     ).not.toThrow();
@@ -39,6 +39,41 @@ describe("Kubernetes generated-Secret deployment provider", () => {
     expect(JSON.stringify({ ...base, values })).not.toContain(
       "provider-value",
     );
+  });
+
+  it('extracts structured credentials and encodes derived URI components', () => {
+    const values: ApplicationGeneratedSecretProps['values'] = {
+      username: {
+        kind: 'hostEnvironmentJson',
+        name: 'CLICKHOUSE_CREDENTIALS',
+        property: 'username',
+      },
+      password: {
+        kind: 'hostEnvironment',
+        name: 'POSTGRES_PASSWORD',
+      },
+      uri: {
+        kind: 'template',
+        segments: [
+          { kind: 'literal', value: 'postgresql://user:' },
+          { kind: 'value', key: 'password', transform: 'uriComponent' },
+          { kind: 'literal', value: '@postgres.example.test/application' },
+        ],
+      },
+    };
+    expect(() => validateApplicationGeneratedSecretProps({ ...base, values })).not.toThrow();
+    expect(materializeApplicationGeneratedSecretValues(values, {
+      CLICKHOUSE_CREDENTIALS: JSON.stringify({ username: 'analytics', password: 'unused' }),
+      POSTGRES_PASSWORD: 'p@ss/word',
+    })).toEqual({
+      username: 'analytics',
+      password: 'p@ss/word',
+      uri: 'postgresql://user:p%40ss%2Fword@postgres.example.test/application',
+    });
+    expect(() => materializeApplicationGeneratedSecretValues(values, {
+      CLICKHOUSE_CREDENTIALS: JSON.stringify({ username: 42 }),
+      POSTGRES_PASSWORD: 'configured',
+    })).toThrow(/username/u);
   });
 
   it("accepts random credentials and explicitly public metadata", () => {

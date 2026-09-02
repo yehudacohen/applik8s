@@ -2003,6 +2003,9 @@ function applicationTransactionalDatabaseProviderResources(provider: Application
   if (runtimeProvider.cluster) {
     return [runtimeProvider.cluster];
   }
+  if (runtimeProvider.externalConnection) {
+    return [];
+  }
   const clusterName = runtimeProvider.clusterName ?? runtimeProvider.name ?? `${kubernetesNameSegment(modelName)}-db`;
   return [{ apiVersion: 'postgresql.cnpg.io/v1', kind: 'Cluster', name: clusterName, ...(runtimeProvider.namespace ? { namespace: runtimeProvider.namespace } : {}) }];
 }
@@ -2018,11 +2021,17 @@ function applicationTransactionalDatabaseRuntime(provider: ApplicationTransactio
     ...(runtimeProvider.runtime ?? {}),
     env: { DATABASE_URL_SECRET: secret.name ?? `${kubernetesNameSegment(modelName)}-db-app`, ...(runtimeProvider.runtime?.env ?? {}) },
     secretRefs: uniqueApplicationResourceRefs([secret, ...(runtimeProvider.runtime?.secretRefs ?? [])]),
-    readiness: runtimeProvider.runtime?.readiness ?? {
-      dependencies: resources,
-      condition: runtimeProvider.readiness?.condition ?? 'Ready',
-      timeoutSeconds: runtimeProvider.readiness?.timeoutSeconds ?? 300,
-    },
+    ...(runtimeProvider.runtime?.readiness
+      ? { readiness: runtimeProvider.runtime.readiness }
+      : resources.length > 0
+        ? {
+            readiness: {
+              dependencies: resources,
+              condition: runtimeProvider.readiness?.condition ?? 'Ready',
+              timeoutSeconds: runtimeProvider.readiness?.timeoutSeconds ?? 300,
+            },
+          }
+        : {}),
   };
 }
 

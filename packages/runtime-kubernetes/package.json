@@ -35,6 +35,11 @@
       "types": "./dist/operator-runtime.d.ts",
       "import": "./dist/operator-runtime.js",
       "default": "./dist/operator-runtime.js"
+    },
+    "./cluster-capability": {
+      "types": "./dist/cluster-capability.d.ts",
+      "import": "./dist/cluster-capability.js",
+      "default": "./dist/cluster-capability.js"
     }
   },
   "dependencies": {

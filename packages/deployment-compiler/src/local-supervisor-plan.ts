@@ -562,6 +562,20 @@ function localProviderResource(
   if (target === 'aws-local' && awsCompatibleInterface(provider.interface)) return { bindings: [] };
 
   if (provider.interface === 'TransactionalDatabase' && provider.implementation === 'postgres') {
+    const config = localProviderConfig(provider);
+    if (config.provision === false || config.ownership === 'external') {
+      return {
+        resource: {
+          ...common,
+          kind: 'external',
+          provider: 'postgres',
+          responsibility: 'The caller owns PostgreSQL availability, schema authority, retention, and deletion.',
+          lifecycle: { ownership: 'external', retention: 'external' },
+          health: { kind: 'external', timeoutMs: 30_000 },
+        },
+        bindings: [],
+      };
+    }
     const password = credential('password');
     const port = endpoint('postgres');
     return { resource: container({ image: 'postgres:17-alpine', ports: [{ name: 'postgres', containerPort: 5432, protocol: 'tcp' }], environment: [{ name: 'POSTGRES_PASSWORD', binding: password.id }, { name: 'POSTGRES_USER', binding: 'literal:applik8s' }, { name: 'POSTGRES_DB', binding: 'literal:applik8s' }], volumes: [{ name: `${provider.id}-data`, mountPath: '/var/lib/postgresql/data', retained: true }], health: { kind: 'tcp', portBinding: port.id, timeoutMs: 60_000 } }), bindings: [password, port] };
@@ -581,6 +595,20 @@ function localProviderResource(
     return { resource: container({ image: 'minio/minio:RELEASE.2025-07-23T15-54-02Z', command: ['server', '/data', '--address', ':9000'], ports: [{ name: 'api', containerPort: 9000, protocol: 'http' }], environment: [{ name: 'MINIO_ROOT_USER', binding: accessKey.id }, { name: 'MINIO_ROOT_PASSWORD', binding: secretKey.id }], volumes: [{ name: `${provider.id}-data`, mountPath: '/data', retained: true }], health: { kind: 'http', path: '/minio/health/ready', portBinding: api.id, timeoutMs: 60_000 } }), bindings: [accessKey, secretKey, api] };
   }
   if (provider.interface === 'AnalyticalDatabase' && provider.implementation === 'clickhouse') {
+    const config = localProviderConfig(provider);
+    if (config.provision === false) {
+      return {
+        resource: {
+          ...common,
+          kind: 'external',
+          provider: 'clickhouse',
+          responsibility: 'The caller owns ClickHouse availability, storage, retention, and deletion.',
+          lifecycle: { ownership: 'external', retention: 'external' },
+          health: { kind: 'external', timeoutMs: 30_000 },
+        },
+        bindings: [],
+      };
+    }
     const http = endpoint('http');
     const password = credential('password');
     return { resource: container({ image: 'clickhouse/clickhouse-server:25.7-alpine', ports: [{ name: 'http', containerPort: 8123, protocol: 'http' }], environment: [{ name: 'CLICKHOUSE_USER', binding: 'literal:applik8s' }, { name: 'CLICKHOUSE_PASSWORD', binding: password.id }, { name: 'CLICKHOUSE_DB', binding: 'literal:applik8s' }, { name: 'CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT', binding: 'literal:1' }], volumes: [{ name: `${provider.id}-data`, mountPath: '/var/lib/clickhouse', retained: true }], health: { kind: 'http', path: '/ping', portBinding: http.id, timeoutMs: 60_000 } }), bindings: [http, password] };
@@ -885,6 +913,7 @@ interface LocalHostEnvironmentCredential {
   readonly secretName: string;
   readonly key: string;
   readonly sourceEnvironment: string;
+  readonly sourceProperty?: string;
   readonly binding: string;
 }
 
@@ -914,6 +943,7 @@ function localHostEnvironmentCredentialAuthority(
       kind: 'hostEnvironment',
       sensitivity: 'sensitive',
       sourceEnvironment: source.sourceEnvironment,
+      ...(source.sourceProperty ? { sourceProperty: source.sourceProperty } : {}),
     })),
   };
 }
@@ -924,7 +954,7 @@ function localHostEnvironmentCredentials(
   const candidates: Array<Omit<LocalHostEnvironmentCredential, 'binding'>> = [];
   for (const requirement of generatedSecrets) {
     for (const [key, value] of Object.entries(requirement.values)) {
-      if (value.kind !== 'hostEnvironment') continue;
+      if (value.kind !== 'hostEnvironment' && value.kind !== 'hostEnvironmentJson') continue;
       if (!/^[A-Za-z_][A-Za-z0-9_]*$/u.test(value.name)) {
         throw new Error(`Generated Secret ${requirement.namespace}/${requirement.name}/${key} has invalid host environment variable ${value.name}.`);
       }
@@ -933,6 +963,7 @@ function localHostEnvironmentCredentials(
         secretName: requirement.name,
         key,
         sourceEnvironment: value.name,
+        ...(value.kind === 'hostEnvironmentJson' ? { sourceProperty: value.property } : {}),
       });
     }
   }
@@ -940,7 +971,10 @@ function localHostEnvironmentCredentials(
   for (const candidate of candidates) {
     const key = localSecretKey(candidate.namespace, candidate.secretName, candidate.key);
     const prior = bySecretKey.get(key);
-    if (prior && prior.sourceEnvironment !== candidate.sourceEnvironment) {
+    if (prior && (
+      prior.sourceEnvironment !== candidate.sourceEnvironment
+      || prior.sourceProperty !== candidate.sourceProperty
+    )) {
       throw new Error(`Local host environment maps Secret ${candidate.namespace}/${candidate.secretName}/${candidate.key} to both ${prior.sourceEnvironment} and ${candidate.sourceEnvironment}.`);
     }
     bySecretKey.set(key, candidate);
@@ -948,7 +982,7 @@ function localHostEnvironmentCredentials(
   return [...bySecretKey.values()]
     .map((candidate) => ({
       ...candidate,
-      binding: `host-environment:${sha256Hex(`${candidate.namespace}\0${candidate.secretName}\0${candidate.key}\0${candidate.sourceEnvironment}`).slice(0, 24)}`,
+      binding: `host-environment:${sha256Hex(`${candidate.namespace}\0${candidate.secretName}\0${candidate.key}\0${candidate.sourceEnvironment}\0${candidate.sourceProperty ?? ''}`).slice(0, 24)}`,
     }))
     .sort((left, right) => left.binding.localeCompare(right.binding));
 }
@@ -1184,6 +1218,27 @@ function localRuntimeEnvironment(
     const selected = provider('TransactionalDatabase', model.database.nodeId);
     if (!selected) continue;
     databaseProviders.set(selected.id, selected);
+    const selectedConfig = localProviderConfig(selected);
+    if (jsonObject(selectedConfig.externalConnection)?.kind === 'environment') {
+      const namespace = model.runtime?.secretNamespace
+        ?? request.graph.metadata.namespace
+        ?? request.graph.metadata.name;
+      const requirement = (request.generatedSecrets ?? []).find((candidate) =>
+        candidate.namespace === namespace && candidate.name === model.runtime?.secretName);
+      if (!requirement || !model.runtime) {
+        diagnostics.push({
+          severity: 'error',
+          code: 'LOCAL_PROVIDER_UNRESOLVED',
+          subjectId: selected.id,
+          message: `Local external PostgreSQL provider ${selected.id} has no generated connection projection.`,
+        });
+        continue;
+      }
+      add(model.runtime.connectionEnvName, {
+        template: localGeneratedSecretTemplate(requirement, 'uri', hostCredentials),
+      });
+      continue;
+    }
     const password = `credential:${selected.id}:password`;
     const endpoint = `endpoint:${selected.id}:postgres`;
     if (!bindingExists(password) || !bindingExists(endpoint)) continue;
@@ -1219,6 +1274,47 @@ function localRuntimeEnvironment(
       add('APPLIK8S_SIGNAL_DATABASE_URL', { template: databaseTemplate });
       if (providers.some(({ interface: providerInterface }) => providerInterface === 'Scheduler')) {
         add('APPLIK8S_SCHEDULE_DATABASE_URL', { template: databaseTemplate });
+      }
+    }
+  }
+  const externalAnalyticsProvider = provider('AnalyticalDatabase');
+  const analyticsConfig = externalAnalyticsProvider ? localProviderConfig(externalAnalyticsProvider) : undefined;
+  if (externalAnalyticsProvider && jsonObject(analyticsConfig?.externalConnection)?.kind === 'environment') {
+    const credentials = jsonObject(analyticsConfig?.credentialsSecret);
+    const secretName = typeof credentials?.name === 'string' ? credentials.name : undefined;
+    const namespace = typeof credentials?.namespace === 'string'
+      ? credentials.namespace
+      : request.graph.metadata.namespace ?? request.graph.metadata.name;
+    const requirement = secretName
+      ? (request.generatedSecrets ?? []).find((candidate) =>
+          candidate.namespace === namespace && candidate.name === secretName)
+      : undefined;
+    if (!requirement) {
+      diagnostics.push({
+        severity: 'error',
+        code: 'LOCAL_PROVIDER_UNRESOLVED',
+        subjectId: externalAnalyticsProvider.id,
+        message: `Local external ClickHouse provider ${externalAnalyticsProvider.id} has no generated credential projection.`,
+      });
+    } else {
+      const endpoint = analyticsConfig?.endpoint;
+      const database = analyticsConfig?.database;
+      if (typeof endpoint !== 'string' || !endpoint.trim()) {
+        diagnostics.push({
+          severity: 'error',
+          code: 'LOCAL_PROVIDER_UNRESOLVED',
+          subjectId: externalAnalyticsProvider.id,
+          message: `Local external ClickHouse provider ${externalAnalyticsProvider.id} has no resolved endpoint.`,
+        });
+      } else {
+        add('APPLIK8S_CLICKHOUSE_ENDPOINT', { binding: `literal:${endpoint}` });
+        add('APPLIK8S_CLICKHOUSE_DATABASE', { binding: `literal:${typeof database === 'string' && database ? database : 'default'}` });
+        add('APPLIK8S_CLICKHOUSE_USERNAME', {
+          template: localGeneratedSecretTemplate(requirement, 'username', hostCredentials),
+        });
+        add('APPLIK8S_CLICKHOUSE_PASSWORD', {
+          template: localGeneratedSecretTemplate(requirement, 'password', hostCredentials),
+        });
       }
     }
   }
@@ -1347,6 +1443,42 @@ function localRuntimeEnvironment(
   add('APPLIK8S_PROCESSOR_CONCURRENCY', { binding: 'literal:16' });
   add('APPLIK8S_PROCESSOR_MAX_ACK_PENDING', { binding: 'literal:16' });
   return environment;
+}
+
+function localGeneratedSecretTemplate(
+  requirement: ApplicationGeneratedSecretRequirement,
+  key: string,
+  hostCredentials: ReadonlyMap<string, LocalHostEnvironmentCredential>,
+  stack: ReadonlySet<string> = new Set(),
+): readonly LocalSupervisorEnvironmentSegment[] {
+  if (stack.has(key)) {
+    throw new Error(`Local generated Secret ${requirement.namespace}/${requirement.name} has a cyclic template at ${key}.`);
+  }
+  const contract = requirement.values[key];
+  if (!contract) {
+    throw new Error(`Local generated Secret ${requirement.namespace}/${requirement.name} is missing key ${key}.`);
+  }
+  if (contract.kind === 'publicLiteral') {
+    return [{ kind: 'literal', value: contract.value }];
+  }
+  if (contract.kind === 'hostEnvironment' || contract.kind === 'hostEnvironmentJson') {
+    const binding = hostCredentials.get(localSecretKey(requirement.namespace, requirement.name, key));
+    if (!binding) {
+      throw new Error(`Local generated Secret ${requirement.namespace}/${requirement.name}/${key} has no host binding.`);
+    }
+    return [{ kind: 'binding', binding: binding.binding }];
+  }
+  if (contract.kind !== 'template') {
+    throw new Error(`Local generated Secret ${requirement.namespace}/${requirement.name}/${key} is not reproducible from declared environment inputs.`);
+  }
+  const nextStack = new Set([...stack, key]);
+  return contract.segments.flatMap((segment): readonly LocalSupervisorEnvironmentSegment[] =>
+    segment.kind === 'literal'
+      ? [{ kind: 'literal', value: segment.value }]
+      : localGeneratedSecretTemplate(requirement, segment.key, hostCredentials, nextStack).map((nested) =>
+          nested.kind === 'binding' && segment.transform
+            ? { ...nested, transform: segment.transform }
+            : nested));
 }
 
 /**

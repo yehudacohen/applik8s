@@ -53,6 +53,20 @@ interface ManagedModelContract {
     readonly managed: NonNullable<ApplicationModelNode['managed']>;
   })[];
   readonly storeSchemas: Readonly<Record<string, string | undefined>>;
+  readonly workflow?: {
+    readonly provider: ApplicationProviderNode<'WorkflowEngine'>;
+    readonly targets: readonly {
+      readonly identifier: string;
+      readonly nodeId: string;
+      readonly contract: {
+        readonly name: string;
+        readonly version: string;
+        readonly input: Readonly<Record<string, unknown>>;
+        readonly output: Readonly<Record<string, unknown>>;
+      };
+    }[];
+    readonly credential: { readonly secretName: string; readonly key: string };
+  };
 }
 
 /** Emits the maintained PostgreSQL-backed distributed OperatorRuntime. */
@@ -82,7 +96,19 @@ export async function emitGeneratedApplicationManagedModels(options: {
     if (!provider) {
       throw new Error(`Managed models reference missing OperatorRuntime provider ${providerId}.`);
     }
-    if (provider.implementation === 'kubernetes-operator-runtime') continue;
+    if (provider.implementation === 'kubernetes-operator-runtime') {
+      const incompatible = models.filter(({ managed }) => managed.runtime.nodeId === providerId).filter((model) => {
+        const store = options.graph.nodes.find((node) => node.kind === 'provider' && node.id === model.managed.store.nodeId);
+        return store?.kind !== 'provider' || store.implementation !== 'kubernetes-managed-model-store';
+      });
+      if (incompatible.length > 0) {
+        throw new Error(
+          `Kubernetes OperatorRuntime cannot reconcile non-Kubernetes managed model(s) ${incompatible.map(({ name }) => name).sort().join(', ')}. `
+          + 'Bind OperatorRuntime.distributed(...) for PostgreSQL managed models.',
+        );
+      }
+      continue;
+    }
     if (provider.implementation !== 'distributed-operator-runtime') {
       throw new Error(`Kubernetes compilation cannot lower OperatorRuntime implementation ${provider.implementation}.`);
     }
@@ -202,13 +228,37 @@ async function writeCallback(
     generatedCallbackFactoryModule({
       source: callback.handlerSource,
       ...(callback.handlerDependencies ? { dependencies: callback.handlerDependencies } : {}),
-      injectedIdentifiers: [],
+      injectedIdentifiers: model.managed.workflowBindings?.map(({ identifier }) => identifier) ?? [],
+      replacedCapturedIdentifiers: model.managed.workflowBindings?.map(({ identifier }) => identifier) ?? [],
       exportName: 'createCallback',
     }),
   );
 }
 
 function generatedManagedModelSource(contract: ManagedModelContract): string {
+  const workflowImports = contract.workflow
+    ? `import { AsyncLocalStorage } from 'node:async_hooks';
+import { installApplicationWorkflowRuntimeResolver } from '@applik8s/applik8s/workflow-runtime-resolvers';
+import { createHatchetWorkflowRuntime } from '@applik8s/runtime-hatchet';`
+    : '';
+  const workflowRuntime = contract.workflow
+    ? `const workflowRuntime = createHatchetWorkflowRuntime({ kind: 'hatchet', tls: process.env.HATCHET_CLIENT_TLS_STRATEGY === 'tls' });
+const directWorkflowScope = new AsyncLocalStorage();
+installApplicationWorkflowRuntimeResolver(() => directWorkflowScope.getStore());
+function managedWorkflowValue(schema, value, name, role) { const normalized = normalizedSchema(schema, name + '.' + role); const result = normalized.validate(value); if (!result.ok) throw new Error('applik8s-workflow-' + role + '-invalid: ' + name + ': ' + result.error.message); return result.value; }
+function managedWorkflowHandle(contract) { const name = contract.name + '.' + contract.version; return Object.assign(
+  async (input, metadata) => managedWorkflowValue(contract.output, await workflowRuntime.run(name, managedWorkflowValue(contract.input, input, name, 'input'), metadata), name, 'output'),
+  {
+    start: (input, metadata) => workflowRuntime.start(name, managedWorkflowValue(contract.input, input, name, 'input'), metadata),
+    schedule: (input, at, metadata) => workflowRuntime.schedule(name, managedWorkflowValue(contract.input, input, name, 'input'), at, metadata),
+    reconcile: (schedule, metadata) => workflowRuntime.reconcileSchedule(name, { ...schedule, input: managedWorkflowValue(contract.input, schedule.input, name, 'input') }, metadata),
+  },
+); }
+const managedWorkflows = Object.freeze({
+${contract.workflow.targets.map((target) => `  ${JSON.stringify(target.identifier)}: managedWorkflowHandle(${JSON.stringify(target.contract)}),`).join('\n')}
+});
+const withWorkflowRuntime = handler => async (...args) => directWorkflowScope.run(workflowRuntime, () => handler(...args));`
+    : 'const managedWorkflows = Object.freeze({});\nconst withWorkflowRuntime = handler => handler;';
   const imports = contract.models.flatMap((model, modelIndex) => [
     ...(model.managed.reconcile
       ? [`import { createCallback as createReconcile${modelIndex} } from './${callbackFile(model, 'reconcile').replace(/\.ts$/u, '.js')}';`]
@@ -252,11 +302,11 @@ function generatedManagedModelSource(contract: ManagedModelContract): string {
   status: normalizedSchema(${JSON.stringify(model.managed.status.jsonSchema)}, ${JSON.stringify(`${model.name}.status`)}),
   leaseDurationSeconds: ${model.managed.lifecycle.lease.durationSeconds},
   conditionTypes: ${JSON.stringify([...new Set(conditionTypes)].sort())},
-  ${model.managed.reconcile ? `reconcile: withReads(createReconcile${index}({})),` : ''}
+  ${model.managed.reconcile ? `reconcile: withReads(createReconcile${index}(managedWorkflows)),` : ''}
   finalizers: [${model.managed.finalizers.map((finalizer, finalizerIndex) => `{
     name: ${JSON.stringify(finalizer.name)},
     conditionTypes: ${JSON.stringify(finalizer.conditionTypes)},
-    handler: withReads(createFinalizer${index}_${finalizerIndex}({})),
+    handler: withReads(createFinalizer${index}_${finalizerIndex}(managedWorkflows)),
   }`).join(',')}],
 });`;
   }).join('\n');
@@ -289,6 +339,7 @@ import {
 import { createApplicationPostgresSql } from '@applik8s/runtime-postgres/sql';
 import { createPostgresApplicationManagedModelStore } from '@applik8s/runtime-postgres/managed-model-store';
 import { createPostgresApplicationOperatorRuntime, postgresApplicationOperatorWorkItem } from '@applik8s/runtime-postgres/operator-runtime';
+${workflowImports}
 ${imports}
 
 function requiredEnv(name) { const value = process.env[name]; if (!value) throw new Error('Missing required environment variable ' + name); return value; }
@@ -296,7 +347,8 @@ function normalizedSchema(schema, name) { return normalizeSchema({ kind: 'jsonSc
 ${connections}
 ${modelDefinitions}
 const readClients = Object.freeze(Object.assign({}, ${readClientGroups.join(', ')}));
-const withReads = handler => async (...args) => withApplicationNativeModelReadClients(readClients, () => handler(...args));
+${workflowRuntime}
+const withReads = handler => withWorkflowRuntime(async (...args) => withApplicationNativeModelReadClients(readClients, () => handler(...args)));
 ${stores}
 ${bindings}
 let ready = false;
@@ -350,6 +402,8 @@ function managedModelContract(
 ): ManagedModelContract {
   const namespace = applicationGraphStringValue(graph.metadata.namespace) ?? 'default';
   const storeSchemas: Record<string, string | undefined> = {};
+  const workflowTargets = new Map<string, NonNullable<ManagedModelContract['workflow']>['targets'][number]>();
+  const workflowEngineIds = new Set<string>();
   for (const model of models) {
     const secretNamespace = applicationGraphStringValue(model.runtime.secretNamespace) ?? namespace;
     if (secretNamespace !== namespace) {
@@ -366,6 +420,54 @@ function managedModelContract(
       throw new Error(`Distributed OperatorRuntime cannot lower ${store.implementation} for managed model ${model.name}.`);
     }
     storeSchemas[model.id] = applicationGraphStringValue(store.config?.schema);
+    for (const binding of model.managed.workflowBindings ?? []) {
+      const target = graph.nodes.find((node) => node.id === binding.target.nodeId);
+      if (!target || target.kind !== binding.kind) {
+        throw new Error(`Managed model ${model.name} durable callback references missing ${binding.kind} ${binding.target.nodeId}.`);
+      }
+      workflowTargets.set(binding.identifier, {
+        identifier: binding.identifier,
+        nodeId: binding.target.nodeId,
+        contract: {
+          name: target.contract.name,
+          version: target.contract.version,
+          input: target.contract.input.jsonSchema,
+          output: target.contract.output.jsonSchema,
+        },
+      });
+    }
+    if ((model.managed.workflowBindings?.length ?? 0) > 0) {
+      if (!model.managed.workflowEngine) {
+        throw new Error(`Managed model ${model.name} durable callback has no WorkflowEngine binding.`);
+      }
+      workflowEngineIds.add(model.managed.workflowEngine.nodeId);
+    }
+  }
+  let workflow: ManagedModelContract['workflow'];
+  if (workflowTargets.size > 0) {
+    if (workflowEngineIds.size !== 1) {
+      throw new Error(`Generated managed-model operator ${provider.id} durable callbacks require exactly one WorkflowEngine provider.`);
+    }
+    const [workflowEngineId] = workflowEngineIds;
+    const workflowProvider = graph.nodes.find(
+      (node): node is ApplicationProviderNode<'WorkflowEngine'> =>
+        node.kind === 'provider'
+        && node.interface === 'WorkflowEngine'
+        && node.id === workflowEngineId,
+    );
+    if (!workflowProvider || workflowProvider.implementation !== 'hatchet') {
+      throw new Error(`Generated managed-model operator ${provider.id} durable callbacks require the selected Hatchet WorkflowEngine adapter.`);
+    }
+    const worker = objectConfig(workflowProvider.config?.workerTokenSecret);
+    const workerNamespace = applicationGraphStringValue(worker.namespace) ?? applicationGraphStringValue(workflowProvider.config?.namespace) ?? namespace;
+    if (workerNamespace !== namespace) {
+      throw new Error(`Generated managed-model operator ${provider.id} is deployed to ${namespace}, but its WorkflowEngine worker Secret is in ${workerNamespace}.`);
+    }
+    workflow = {
+      provider: workflowProvider,
+      targets: [...workflowTargets.values()].sort((left, right) => left.identifier.localeCompare(right.identifier)),
+      credential: managedModelWorkflowCredential(workflowProvider),
+    };
   }
   return {
     graphName: graph.metadata.name,
@@ -375,6 +477,7 @@ function managedModelContract(
     port: 8092,
     models,
     storeSchemas,
+    ...(workflow ? { workflow } : {}),
   };
 }
 
@@ -395,7 +498,7 @@ function managedModelResources(
     'app.kubernetes.io/managed-by': 'applik8s',
   };
   const metadata = { name: contract.name, namespace: contract.namespace, labels };
-  const environments = uniqueConnections(contract.models).map(({ environmentName }) => {
+  const environments: Record<string, unknown>[] = uniqueConnections(contract.models).map(({ environmentName }) => {
     const model = contract.models.find(({ runtime }) => runtime.connectionEnvName === environmentName);
     if (!model) throw new Error(`Managed-model connection ${environmentName} has no model.`);
     return {
@@ -409,6 +512,7 @@ function managedModelResources(
       },
     };
   });
+  if (contract.workflow) environments.push(...managedModelWorkflowEnvironment(contract.workflow));
   return [
     {
       apiVersion: 'networking.k8s.io/v1',
@@ -420,7 +524,11 @@ function managedModelResources(
         ingress: [{ ports: [{ protocol: 'TCP', port: contract.port }] }],
         egress: [
           { to: [{ namespaceSelector: { matchLabels: { 'kubernetes.io/metadata.name': 'kube-system' } }, podSelector: { matchLabels: { 'k8s-app': 'kube-dns' } } }], ports: [{ protocol: 'UDP', port: 53 }, { protocol: 'TCP', port: 53 }] },
-          { ports: [{ protocol: 'TCP', port: 5432 }, { protocol: 'TCP', port: 443 }] },
+          { ports: [
+            { protocol: 'TCP', port: 5432 },
+            { protocol: 'TCP', port: 443 },
+            ...(contract.workflow ? [{ protocol: 'TCP', port: 7070 }, { protocol: 'TCP', port: 8080 }] : []),
+          ] },
         ],
       },
     },
@@ -459,6 +567,52 @@ function managedModelResources(
 
 function callbackFile(model: ApplicationModelNode, role: string): string {
   return `managed-${createHash('sha256').update(`${model.id}:${role}`).digest('hex').slice(0, 16)}.generated.ts`;
+}
+
+function managedModelWorkflowEnvironment(
+  workflow: NonNullable<ManagedModelContract['workflow']>,
+): Record<string, unknown>[] {
+  const config = workflow.provider.config ?? {};
+  const namespace = applicationGraphStringValue(config.namespace) ?? 'default';
+  return [
+    { name: 'HATCHET_CLIENT_TOKEN', valueFrom: { secretKeyRef: { name: workflow.credential.secretName, key: workflow.credential.key, optional: false } } },
+    { name: 'HATCHET_CLIENT_HOST_PORT', value: applicationGraphStringValue(config.hostPort) ?? `hatchet-engine.${namespace}.svc:7070` },
+    { name: 'HATCHET_CLIENT_API_URL', value: applicationGraphStringValue(config.apiUrl) ?? `http://hatchet-api.${namespace}.svc:8080` },
+    { name: 'HATCHET_CLIENT_TLS_STRATEGY', value: managedModelWorkflowTlsStrategy(config.tls) },
+  ];
+}
+
+function managedModelWorkflowCredential(
+  provider: ApplicationProviderNode<'WorkflowEngine'>,
+): { readonly secretName: string; readonly key: string } {
+  const config = provider.config ?? {};
+  const worker = objectConfig(config.workerTokenSecret);
+  const explicitName = applicationGraphStringValue(worker.name);
+  const engineName = kubernetesName(stringConfig(config.name) || 'applik8s-hatchet');
+  return {
+    secretName: explicitName || (config.provision === false ? `${engineName}-worker` : 'hatchet-client-config'),
+    key: stringConfig(config.tokenKey) || (explicitName || config.provision !== false ? 'HATCHET_CLIENT_TOKEN' : 'token'),
+  };
+}
+
+function managedModelWorkflowTlsStrategy(value: unknown): string {
+  if (value === true) return 'tls';
+  if (value === false || value === undefined) return 'none';
+  const expression = applicationGraphStringValue(value);
+  if (!expression?.startsWith('${') || !expression.endsWith('}')) {
+    throw new Error('Generated managed-model WorkflowEngine tls must be boolean or an installation expression.');
+  }
+  return `\${(${expression.slice(2, -1)}) ? "tls" : "none"}`;
+}
+
+function objectConfig(value: unknown): Readonly<Record<string, unknown>> {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? Object.fromEntries(Object.entries(value))
+    : {};
+}
+
+function stringConfig(value: unknown): string {
+  return typeof value === 'string' ? value : '';
 }
 
 function kubernetesName(value: string): string {

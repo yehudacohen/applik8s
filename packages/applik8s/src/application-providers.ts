@@ -1,5 +1,5 @@
 // typecast-file-boundary: provider constructors validate structural runtime input before restoring provider-specific discriminated contracts.
-import { type ApplicationCallableProviderRuntimeBinding, type ApplicationCallableProviderRuntimeOperation, type ApplicationMigrationContract, type ApplicationProviderInterfaceKind, type ApplicationProviderPrivateRuntimeContract, type ApplicationProviderRuntimeContract, type ApplicationResourceRef, isApplicationRuntimeAccessOperation } from '@applik8s/core';
+import { type ApplicationCallableProviderRuntimeBinding, type ApplicationCallableProviderRuntimeOperation, type ApplicationMigrationContract, type ApplicationProviderInterfaceKind, type ApplicationProviderPrivateRuntimeContract, type ApplicationProviderRuntimeContract, type ApplicationResourceRef, type KubernetesEndpointPolicy, isApplicationRuntimeAccessOperation } from '@applik8s/core';
 import type {
   ApplicationDeterministicIdentityOptions,
   ApplicationOAuthAuthorizationFlowRecord,
@@ -24,6 +24,10 @@ import {
   createApplicationLakehouseDatasetQuery,
   createApplicationLakehouseQuery,
 } from './application-lakehouse.js';
+import {
+  type ApplicationKubernetesClusterHandle,
+  createApplicationKubernetesClusterHandle,
+} from './application-kubernetes-cluster.js';
 import { applicationQualifiableProviderToken } from './application-provider-qualification.js';
 import {
   type ApplicationScheduleRegistrar,
@@ -275,12 +279,58 @@ export interface ApplicationCurrentKubernetesCluster {
   readonly namespace?: ApplicationProviderConfigString;
 }
 
-export interface ApplicationExternalKubernetesCluster {
+export interface ApplicationKubernetesBearerTokenCredentialContract {
+  readonly version: 'v1';
+  readonly kind: 'bearerToken';
+  readonly keys: { readonly token: 'token'; readonly ca?: 'ca.crt' };
+}
+
+export interface ApplicationKubernetesClientCertificateCredentialContract {
+  readonly version: 'v1';
+  readonly kind: 'clientCertificate';
+  readonly keys: {
+    readonly certificate: 'client.crt';
+    readonly privateKey: 'client.key';
+    readonly ca: 'ca.crt';
+  };
+}
+
+export type ApplicationKubernetesCredentialContract =
+  | ApplicationKubernetesBearerTokenCredentialContract
+  | ApplicationKubernetesClientCertificateCredentialContract;
+
+interface ApplicationExternalKubernetesClusterCommon {
+  readonly namespace?: ApplicationProviderConfigString;
+  readonly endpointPolicy?: KubernetesEndpointPolicy;
+}
+
+export interface ApplicationExternalKubeconfigKubernetesCluster
+  extends ApplicationExternalKubernetesClusterCommon {
+  readonly kind: 'external-kubernetes-cluster';
+  readonly kubeconfig: ApplicationSecretSourceBinding<{
+    readonly version: 'v1';
+    readonly keys: { readonly kubeconfig: 'kubeconfig' };
+  }>;
+  readonly context?: ApplicationProviderConfigString;
+  readonly endpoint?: never;
+  readonly credentials?: never;
+}
+
+export interface ApplicationExternalEndpointKubernetesCluster
+  extends ApplicationExternalKubernetesClusterCommon {
   readonly kind: 'external-kubernetes-cluster';
   readonly endpoint: ApplicationProviderConfigUrl;
-  readonly credentials: ApplicationSecretSourceBinding<unknown>;
-  readonly namespace?: ApplicationProviderConfigString;
+  readonly credentials: ApplicationSecretSourceBinding<ApplicationKubernetesCredentialContract>;
+  readonly kubeconfig?: never;
+  readonly context?: never;
 }
+
+export type ApplicationExternalKubernetesCluster =
+  | ApplicationExternalKubeconfigKubernetesCluster
+  | ApplicationExternalEndpointKubernetesCluster;
+export type ApplicationExternalKubernetesClusterOptions =
+  | Omit<ApplicationExternalKubeconfigKubernetesCluster, 'kind'>
+  | Omit<ApplicationExternalEndpointKubernetesCluster, 'kind'>;
 
 export type ApplicationKubernetesCluster =
   | ApplicationCurrentKubernetesCluster
@@ -308,18 +358,114 @@ function isApplicationAwsAccount(value: unknown): value is ApplicationAwsAccount
   return Boolean(value && typeof value === 'object' && Reflect.get(value, 'kind') === 'aws-account');
 }
 
+const applicationKubernetesClusterProviderToken = defineApplicationProvider<ApplicationKubernetesCluster>({
+  interface: 'KubernetesCluster',
+  version: 'v1alpha1',
+  description: 'Named, bounded, host-mediated access to one Kubernetes cluster.',
+  requirements: [
+    'exact API resources, verbs, namespaces, and mutation ownership',
+    'finite list/watch limits and host-enforced deadlines',
+    'credentials and transports remain outside managed closures',
+  ],
+  guarantees: [
+    'external bindings never imply cluster lifecycle ownership',
+    'current and external implementations share one versioned capability protocol',
+  ],
+  runtime: {
+    operations: {
+      resources: {
+        module: '@applik8s/applik8s/kubernetes-cluster-runtime',
+        export: 'resourcesApplicationKubernetesCluster',
+        access: { kind: 'provider', operations: ['connection.use'] },
+      },
+    },
+    bind: () => ({}),
+  },
+  accepts(value): value is ApplicationKubernetesCluster {
+    return Boolean(
+      value
+      && typeof value === 'object'
+      && (
+        Reflect.get(value, 'kind') === 'current-kubernetes-cluster'
+        || Reflect.get(value, 'kind') === 'external-kubernetes-cluster'
+      ),
+    );
+  },
+});
+
 export const KubernetesCluster = Object.freeze({
+  named<const TName extends string>(name: TName): ApplicationKubernetesClusterHandle<ApplicationKubernetesCluster, TName> {
+    return createApplicationKubernetesClusterHandle(
+      applicationKubernetesClusterProviderToken.named(name),
+    );
+  },
   current(options: Omit<ApplicationCurrentKubernetesCluster, 'kind'> = {}): ApplicationCurrentKubernetesCluster {
     if (options.namespace !== undefined) requireProviderConfigString(options.namespace, 'Kubernetes namespace');
     return Object.freeze({ kind: 'current-kubernetes-cluster', ...options });
   },
-  external(options: Omit<ApplicationExternalKubernetesCluster, 'kind'>): ApplicationExternalKubernetesCluster {
-    requireProviderConfigUrl(options.endpoint, 'Kubernetes endpoint');
-    requireSecretConfigurationBinding(options.credentials, 'Kubernetes credentials');
-    if (options.namespace !== undefined) requireProviderConfigString(options.namespace, 'Kubernetes namespace');
-    return Object.freeze({ kind: 'external-kubernetes-cluster', ...options });
+  external(options: ApplicationExternalKubernetesClusterOptions): ApplicationExternalKubernetesCluster {
+    const kubeconfig = Reflect.get(options, 'kubeconfig');
+    const endpoint = Reflect.get(options, 'endpoint');
+    const credentials = Reflect.get(options, 'credentials');
+    const context = Reflect.get(options, 'context');
+    const hasKubeconfig = kubeconfig !== undefined;
+    const hasEndpoint = endpoint !== undefined || credentials !== undefined;
+    if (hasKubeconfig === hasEndpoint) {
+      throw new TypeError('KubernetesCluster.external(...) requires exactly one of kubeconfig or endpoint + credentials.');
+    }
+    if (hasKubeconfig) {
+      requireSecretConfigurationBinding(kubeconfig, 'Kubernetes kubeconfig');
+      if (endpoint !== undefined || credentials !== undefined) {
+        throw new TypeError('Kubernetes kubeconfig cannot be combined with endpoint or credentials.');
+      }
+      if (context !== undefined) requireProviderConfigString(context, 'Kubernetes context');
+      if (options.namespace !== undefined) requireProviderConfigString(options.namespace, 'Kubernetes namespace');
+      if (options.endpointPolicy !== undefined) assertKubernetesEndpointPolicy(options.endpointPolicy);
+      return Object.freeze({
+        kind: 'external-kubernetes-cluster',
+        kubeconfig,
+        ...(context !== undefined ? { context } : {}),
+        ...(options.namespace !== undefined ? { namespace: options.namespace } : {}),
+        ...(options.endpointPolicy !== undefined ? { endpointPolicy: options.endpointPolicy } : {}),
+      }) as ApplicationExternalKubeconfigKubernetesCluster;
+    } else {
+      if (endpoint === undefined || credentials === undefined) {
+        throw new TypeError('Kubernetes endpoint and credentials must be supplied together.');
+      }
+      requireProviderConfigUrl(endpoint, 'Kubernetes endpoint');
+      requireSecretConfigurationBinding(credentials, 'Kubernetes credentials');
+      if (context !== undefined) throw new TypeError('Kubernetes context is valid only with kubeconfig.');
+      if (options.namespace !== undefined) requireProviderConfigString(options.namespace, 'Kubernetes namespace');
+      if (options.endpointPolicy !== undefined) assertKubernetesEndpointPolicy(options.endpointPolicy);
+      return Object.freeze({
+        kind: 'external-kubernetes-cluster',
+        endpoint,
+        credentials,
+        ...(options.namespace !== undefined ? { namespace: options.namespace } : {}),
+        ...(options.endpointPolicy !== undefined ? { endpointPolicy: options.endpointPolicy } : {}),
+      }) as ApplicationExternalEndpointKubernetesCluster;
+    }
   },
 });
+
+function assertKubernetesEndpointPolicy(value: KubernetesEndpointPolicy): void {
+  if (
+    !value
+    || typeof value !== 'object'
+    || !value.name?.trim()
+    || !value.version?.trim()
+    || value.scheme !== 'https'
+    || !Array.isArray(value.hosts)
+    || value.hosts.length === 0
+    || value.hosts.some(host => typeof host !== 'string' || !host.trim())
+    || !Array.isArray(value.ports)
+    || value.ports.length === 0
+    || value.ports.some(port => !Number.isSafeInteger(port) || port < 1 || port > 65_535)
+    || value.redirects !== 'deny'
+  ) {
+    throw new TypeError('Kubernetes endpointPolicy must be a bounded HTTPS KubernetesEndpointPolicy with redirects denied.');
+  }
+}
 
 export interface ApplicationKubernetesFiniteExecutionHostProvider {
   readonly kind: 'kubernetes-finite-execution-host';
@@ -700,11 +846,13 @@ export interface ApplicationClickHouseAnalyticalDatabaseProvider {
   readonly version?: string;
   readonly storageSize?: string;
   readonly storageClassName?: string;
-  readonly endpoint?: string;
-  readonly database?: string;
+  readonly endpoint?: string | ApplicationConfigSourceBinding<URL>;
+  readonly database?: ApplicationExternalPostgresConfigString;
   readonly credentialsSecret?: ApplicationResourceRef;
   readonly usernameKey?: string;
   readonly passwordKey?: string;
+  /** Secret-safe external connection provenance retained for deployment projection. */
+  readonly externalConnection?: ApplicationExternalClickHouseEnvironmentConnection;
 }
 
 export interface ApplicationPostgresAnalyticalDatabaseProvider {
@@ -724,7 +872,7 @@ export type ApplicationAnalyticalDatabaseProvider =
   | ApplicationClickHouseAnalyticalDatabaseProvider
   | ApplicationPostgresAnalyticalDatabaseProvider;
 
-export interface ApplicationExternalPostgresDatabaseOptions
+export interface ApplicationExternalPostgresSecretConnectionOptions
   extends Omit<
     ApplicationPostgresTransactionalDatabaseOptions,
     'ownership' | 'provision' | 'connectionSecret' | 'connectionSecretKey'
@@ -736,6 +884,34 @@ export interface ApplicationExternalPostgresDatabaseOptions
   };
 }
 
+export type ApplicationExternalPostgresConfigString =
+  | string
+  | ApplicationConfigSourceBinding<string>;
+
+export type ApplicationExternalPostgresConfigInteger =
+  | number
+  | ApplicationConfigSourceBinding<number>;
+
+export interface ApplicationExternalPostgresEnvironmentConnection {
+  readonly kind: 'environment';
+  readonly host: ApplicationExternalPostgresConfigString;
+  readonly port: ApplicationExternalPostgresConfigInteger;
+  readonly database: ApplicationExternalPostgresConfigString;
+  readonly user: ApplicationSecretSourceBinding<unknown>;
+  readonly password: ApplicationSecretSourceBinding<unknown>;
+  readonly tls?: {
+    readonly mode: 'disable' | 'require' | 'verify-ca' | 'verify-full';
+    readonly ca?: ApplicationSecretSourceBinding<unknown>;
+  };
+}
+
+export type ApplicationExternalPostgresDatabaseOptions =
+  | ApplicationExternalPostgresSecretConnectionOptions
+  | (Omit<
+      ApplicationPostgresTransactionalDatabaseOptions,
+      'ownership' | 'provision' | 'connectionSecret' | 'connectionSecretKey' | 'database'
+    > & Omit<ApplicationExternalPostgresEnvironmentConnection, 'kind'>);
+
 export interface ApplicationExternalClickHouseConnection {
   readonly endpoint: string;
   readonly database?: string;
@@ -745,7 +921,25 @@ export interface ApplicationExternalClickHouseConnection {
   readonly passwordKey?: string;
 }
 
+export interface ApplicationExternalClickHouseEnvironmentConnection {
+  readonly kind: 'environment';
+  readonly endpoint: string | ApplicationConfigSourceBinding<URL>;
+  readonly database?: ApplicationExternalPostgresConfigString;
+  /** JSON object with non-empty `username` and `password` string properties. */
+  readonly credentials: ApplicationSecretSourceBinding<{
+    readonly format: 'json';
+    readonly properties: readonly ['username', 'password'];
+  }>;
+}
+
 export type ApplicationExternalClickHouseOptions =
+  | {
+      readonly name?: string;
+      readonly namespace?: string;
+      readonly endpoint: ApplicationExternalClickHouseEnvironmentConnection['endpoint'];
+      readonly database?: ApplicationExternalClickHouseEnvironmentConnection['database'];
+      readonly credentials: ApplicationExternalClickHouseEnvironmentConnection['credentials'];
+    }
   | {
       readonly name?: string;
       readonly namespace?: string;
@@ -1024,6 +1218,8 @@ export interface ApplicationPostgresTransactionalDatabaseProvider {
   readonly cluster?: ApplicationResourceRef;
   readonly connectionSecret?: ApplicationResourceRef;
   readonly connectionSecretKey?: string;
+  /** Secret-safe external connection provenance retained for deployment projection. */
+  readonly externalConnection?: ApplicationExternalPostgresEnvironmentConnection;
   readonly migrations?: ApplicationTransactionalDatabaseMigrationPolicy;
   readonly runtime?: ApplicationProviderRuntimeContract;
   readonly readiness?: ApplicationPostgresReadinessPolicy;
@@ -2297,6 +2493,70 @@ export const Database: ApplicationDatabaseConstructors = Object.freeze({
     });
   },
   externalPostgres(options: ApplicationExternalPostgresDatabaseOptions) {
+    if ('host' in options) {
+      assertExternalConfigString(options.host, 'Database.externalPostgres({ host })');
+      assertExternalConfigInteger(options.port, 'Database.externalPostgres({ port })');
+      assertExternalConfigString(options.database, 'Database.externalPostgres({ database })');
+      assertExternalSecretBinding(options.user, 'Database.externalPostgres({ user })');
+      assertExternalSecretBinding(options.password, 'Database.externalPostgres({ password })');
+      if (options.tls?.ca) {
+        assertExternalSecretBinding(options.tls.ca, 'Database.externalPostgres({ tls.ca })');
+      }
+      if (
+        (options.tls?.mode === 'verify-ca' || options.tls?.mode === 'verify-full')
+        && !options.tls.ca
+      ) {
+        throw new Error(
+          `Database.externalPostgres({ tls: { mode: ${JSON.stringify(options.tls.mode)} } }) requires a CA Secret binding.`,
+        );
+      }
+      const {
+        host,
+        port,
+        database,
+        user,
+        password,
+        tls,
+        ...providerOptions
+      } = options;
+      const name = externalProviderName(providerOptions.name, 'external-postgres');
+      const namespace = providerOptions.namespace;
+      const connectionSecretName = `${name}-connection`;
+      const provider = TransactionalDatabase.postgres({
+        ...providerOptions,
+        name,
+        ownership: 'external',
+        provision: false,
+        database: typeof database === 'string' ? database : name,
+        connectionSecret: {
+          apiVersion: 'v1',
+          kind: 'Secret',
+          name: connectionSecretName,
+          ...(namespace ? { namespace } : {}),
+        },
+        connectionSecretKey: 'uri',
+        externalConnection: {
+          kind: 'environment',
+          host,
+          port,
+          database,
+          user,
+          password,
+          ...(tls ? { tls } : {}),
+        },
+      });
+      return maintainedBuiltInImplementation(
+        TransactionalDatabase,
+        'Database.externalPostgres',
+        provider,
+        {
+          runtimeAdapter: '@applik8s/runtime-postgres',
+          readiness: 'applik8s.database.postgres.external-readiness/v1alpha1',
+          lifecycle: 'external',
+          migration: 'applik8s.database.postgres.external-migration/v1alpha1',
+        },
+      );
+    }
     const {
       connection,
       ...providerOptions
@@ -3529,6 +3789,46 @@ export const Analytics: ApplicationAnalyticsConstructors = Object.freeze({
     });
   },
   externalClickHouse(options: ApplicationExternalClickHouseOptions) {
+    if ('credentials' in options) {
+      assertExternalConfigUrl(options.endpoint, 'Analytics.externalClickHouse({ endpoint })');
+      if (options.database !== undefined) {
+        assertExternalConfigString(options.database, 'Analytics.externalClickHouse({ database })');
+      }
+      assertExternalSecretBinding(
+        options.credentials,
+        'Analytics.externalClickHouse({ credentials })',
+      );
+      const name = externalProviderName(options.name, 'external-clickhouse');
+      const credentialsSecretName = `${name}-credentials`;
+      const provider: ApplicationClickHouseAnalyticalDatabaseProvider = {
+        kind: 'clickhouse' as const,
+        name,
+        ...(options.namespace ? { namespace: options.namespace } : {}),
+        provision: false,
+        endpoint: options.endpoint,
+        ...(options.database ? { database: options.database } : {}),
+        credentialsSecret: {
+          apiVersion: 'v1',
+          kind: 'Secret',
+          name: credentialsSecretName,
+          ...(options.namespace ? { namespace: options.namespace } : {}),
+        },
+        usernameKey: 'username',
+        passwordKey: 'password',
+        externalConnection: {
+          kind: 'environment',
+          endpoint: options.endpoint,
+          ...(options.database ? { database: options.database } : {}),
+          credentials: options.credentials,
+        },
+      };
+      return maintainedBuiltInImplementation(AnalyticalDatabase, 'Analytics.externalClickHouse', provider, {
+        runtimeAdapter: '@applik8s/runtime/clickhouse',
+        readiness: 'applik8s.analytics.clickhouse.external-readiness/v1alpha1',
+        lifecycle: 'external',
+        migration: 'applik8s.analytics.clickhouse.external-migration/v1alpha1',
+      });
+    }
     const connection =
       'connection' in options ? options.connection : options;
     if (!applicationProviderRequiredString(connection.endpoint)) {
@@ -6435,6 +6735,64 @@ function assertApplicationHarborProjectManagement(management: ApplicationHarborP
       throw new Error('ContainerRegistry.harbor management.projectLifecycle.timeoutMs must be an integer of at least 1000 milliseconds.');
     }
   }
+}
+
+function assertExternalConfigString(value: unknown, label: string): void {
+  if (typeof value === 'string' && value.trim()) return;
+  if (
+    isApplicationConfigurationBinding(value)
+    && value.kind === 'config'
+    && value.valueType === 'string'
+  ) return;
+  throw new Error(`${label} must be a non-empty string or config.env(...) binding.`);
+}
+
+function assertExternalConfigInteger(value: unknown, label: string): void {
+  if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 1 && value <= 65_535) return;
+  if (
+    isApplicationConfigurationBinding(value)
+    && value.kind === 'config'
+    && value.valueType === 'integer'
+  ) return;
+  throw new Error(`${label} must be an integer from 1 through 65535 or config.env.integer(...) binding.`);
+}
+
+function assertExternalConfigUrl(value: unknown, label: string): void {
+  if (typeof value === 'string') {
+    try {
+      const parsed = new URL(value);
+      if (parsed.protocol === 'http:' || parsed.protocol === 'https:') return;
+    } catch {
+      // Fall through to the stable public diagnostic.
+    }
+  }
+  if (
+    isApplicationConfigurationBinding(value)
+    && value.kind === 'config'
+    && value.valueType === 'url'
+  ) return;
+  throw new Error(`${label} must be an absolute HTTP(S) URL or config.env.url(...) binding.`);
+}
+
+function assertExternalSecretBinding(
+  value: unknown,
+  label: string,
+): asserts value is ApplicationSecretSourceBinding<unknown> {
+  if (isApplicationConfigurationBinding(value) && value.kind === 'secret') return;
+  throw new Error(`${label} must use secret.env(...); plaintext credentials are forbidden.`);
+}
+
+function externalProviderName(value: string | undefined, fallback: string): string {
+  const name = value ?? fallback;
+  if (
+    name.length > 42
+    || !/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/u.test(name)
+  ) {
+    throw new Error(
+      `External provider name ${JSON.stringify(name)} must be a lowercase DNS label of at most 42 characters.`,
+    );
+  }
+  return name;
 }
 
 function applicationProviderBooleanOrInstallationReference(value: unknown): boolean {

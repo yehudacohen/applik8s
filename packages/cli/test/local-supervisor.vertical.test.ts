@@ -504,6 +504,7 @@ describe('local supervisor', () => {
       PATH: process.env.PATH,
       HOME: process.env.HOME,
       DECLARED_CREDENTIAL: 'declared-value',
+      DECLARED_JSON_CREDENTIAL: JSON.stringify({ username: 'user@example.test' }),
       UNDECLARED_CREDENTIAL: 'must-not-cross-boundary',
     };
 
@@ -517,7 +518,7 @@ describe('local supervisor', () => {
       hostEnvironment,
     });
     const observed = await readJsonEventually(output);
-    expect(observed).toEqual({ declared: 'declared-value', pathPresent: true });
+    expect(observed).toEqual({ declared: 'declared-value', encodedUser: 'user%40example.test', pathPresent: true });
     expect(JSON.stringify(session.state)).not.toContain('declared-value');
     expect(JSON.stringify(session.state)).not.toContain('must-not-cross-boundary');
     const credentials = await readFile(join(root, 'state', 'credentials.json'), 'utf8');
@@ -573,6 +574,13 @@ function hostEnvironmentPlan(root: string, output: string): LocalSupervisorPlan 
       kind: 'hostEnvironment',
       sensitivity: 'sensitive',
       sourceEnvironment: 'DECLARED_CREDENTIAL',
+    }, {
+      id: 'host-environment:json-username',
+      owner: 'authority:host-environment',
+      kind: 'hostEnvironment',
+      sensitivity: 'sensitive',
+      sourceEnvironment: 'DECLARED_JSON_CREDENTIAL',
+      sourceProperty: 'username',
     }],
     resources: [
       {
@@ -582,9 +590,12 @@ function hostEnvironmentPlan(root: string, output: string): LocalSupervisorPlan 
       },
       {
         id: 'probe', kind: 'process', command: process.execPath,
-        args: ['-e', `require('node:fs').writeFileSync(process.argv[1], JSON.stringify({ declared: process.env.DECLARED, leaked: process.env.UNDECLARED_CREDENTIAL, pathPresent: Boolean(process.env.PATH) })); setInterval(() => {}, 1000);`, output],
+        args: ['-e', `require('node:fs').writeFileSync(process.argv[1], JSON.stringify({ declared: process.env.DECLARED, encodedUser: process.env.ENCODED_USER, leaked: process.env.UNDECLARED_CREDENTIAL, pathPresent: Boolean(process.env.PATH) })); setInterval(() => {}, 1000);`, output],
         cwd: root,
-        environment: [{ name: 'DECLARED', binding: 'host-environment:declared' }],
+        environment: [
+          { name: 'DECLARED', binding: 'host-environment:declared' },
+          { name: 'ENCODED_USER', template: [{ kind: 'binding', binding: 'host-environment:json-username', transform: 'uriComponent' }] },
+        ],
         watch: [], reloadGroup: 'probe', dependsOn: [], lifecycle: { ownership: 'application', retention: 'ephemeral' },
         health: { kind: 'process', timeoutMs: 1_000 }, provenance: { graphNodeId: 'probe' },
       },

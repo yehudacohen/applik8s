@@ -209,6 +209,13 @@
     "check:v09:effects": "bunx vitest run packages/operations/test/effect-contracts.vertical.test.ts packages/applik8s/test/application-sagas.vertical.test.ts",
     "check:v09:events": "bunx vitest run packages/core/test/application-foundation.vertical.test.ts packages/applik8s/test/application-events.vertical.test.ts",
     "check:v09:query-batching": "bash scripts/run-v09-postgres-runtime-live.sh query-batching",
+    "check:v09:finite-jobs": "bunx vitest run packages/testing/test/job-runtime-conformance.vertical.test.ts packages/applik8s/test/application-jobs.vertical.test.ts packages/applik8s/test/application-job-durable-runtime.vertical.test.ts packages/runtime-postgres/test/job-store.vertical.test.ts packages/runtime-kubernetes/test/job-runtime.vertical.test.ts packages/runtime-aws/test/job-runtime.vertical.test.ts packages/compiler/test/application-jobs.vertical.test.ts && bun run test:v09:finite-jobs-live",
+    "test:v09:finite-jobs-live": "APPLIK8S_E2E_LIVE=1 APPLIK8S_E2E_CONTEXT=orbstack bunx vitest run --config vitest.e2e.config.ts --maxWorkers=1 packages/e2e/test/v09-kubernetes-jobs-live.e2e.test.ts",
+    "check:v09:kubernetes-clusters": "bunx vitest run --maxWorkers=1 packages/applik8s/test/application-kubernetes-cluster.vertical.test.ts packages/runtime-kubernetes/test/cluster-capability.vertical.test.ts packages/compiler/test/application-kubernetes-cluster.vertical.test.ts packages/applik8s/test/application-jobs.vertical.test.ts packages/applik8s/test/kubernetes-query-authority.vertical.test.ts packages/sdk/test/handler-dispatch.vertical.test.ts packages/server/test/kubernetes-gateway.vertical.test.ts packages/compiler/test/application-jobs.vertical.test.ts packages/deployment-compiler/test/provider-guarantees.vertical.test.ts && bun run test:v09:kubernetes-clusters-live",
+    "test:v09:kubernetes-clusters-live": "APPLIK8S_E2E_LIVE=1 APPLIK8S_E2E_CONTEXT=orbstack bunx vitest run --config vitest.e2e.config.ts --maxWorkers=1 packages/e2e/test/v09-kubernetes-cluster-capability-live.e2e.test.ts",
+    "check:v09:external-bindings": "bunx vitest run packages/applik8s/test/application-assembly-profiles.vertical.test.ts packages/applik8s/test/application-profiles.vertical.test.ts packages/compiler/test/application-installation-values.vertical.test.ts packages/compiler/test/application-deployment-graph.vertical.test.ts packages/deployment-compiler/test/installation-materialization.vertical.test.ts packages/deployment-compiler/test/provider-guarantees.vertical.test.ts packages/deployment-compiler/test/target-selected-providers.vertical.test.ts packages/deployment-compiler/test/local-supervisor-plan.vertical.test.ts packages/deployment-provider-kubernetes/test/deployment-provider-kubernetes.vertical.test.ts packages/deployment-alchemy/test/generated-secret-contract.vertical.test.ts && bunx vitest run packages/cli/test/local-supervisor.vertical.test.ts -t \"forwards declared host credentials\"",
+    "check:v09:ml": "bunx vitest run packages/ml/test/ml.vertical.test.ts packages/compiler/test/application-http.vertical.test.ts",
+    "check:v09:decisions": "bunx vitest run packages/applik8s/test/application-domain-decisions.vertical.test.ts",
     "test:v09:saga-live": "APPLIK8S_E2E_LIVE=1 APPLIK8S_E2E_CONTEXT=orbstack bunx vitest run --config vitest.e2e.config.ts --maxWorkers=1 packages/e2e/test/v09-saga-live.e2e.test.ts",
     "test:v09:code-agent-local": "APPLIK8S_E2E_OPENCODE=1 bunx vitest run --config vitest.e2e.config.ts packages/e2e/test/v09-code-agent-local.e2e.test.ts",
     "test:v09:code-agent-celld": "APPLIK8S_E2E_CELLD=1 APPLIK8S_E2E_OPENCODE=1 bunx vitest run --config vitest.e2e.config.ts packages/e2e/test/v09-code-agent-celld.e2e.test.ts",
@@ -348,7 +355,7 @@
     "hono": "^4.10.7",
     "nats": "^2.29.3",
     "postgres": "^3.4.7",
-    "typekro": "0.33.9"
+    "typekro": "0.33.10"
   },
   "devDependencies": {
     "@applik8s/cli": "workspace:*",

@@ -13,6 +13,7 @@ import {
   createApplicationAgentClient,
   createApplicationAgentHttpRuntime,
   createApplicationQueryOperation,
+  installApplicationQueryClientResolver,
   installApplicationAgentInvocationRuntimeResolver,
   installApplicationOperationRuntimeResolver,
 } from '@applik8s/client';
@@ -64,6 +65,7 @@ installApplicationOperationRuntimeResolver(() => {
     },
   };
 });
+installApplicationQueryClientResolver(() => resolvedServerRequestRuntime()?.queryClient);
 installApplicationAgentInvocationRuntimeResolver(() => {
   const runtime = resolvedServerRequestRuntime();
   if (!runtime) return undefined;

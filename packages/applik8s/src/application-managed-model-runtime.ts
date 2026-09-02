@@ -3,18 +3,17 @@ import { createHash, randomUUID } from 'node:crypto';
 import type { JsonValue } from '@applik8s/core';
 import type { SchemaInput } from '@applik8s/sdk';
 import { normalizeSchema } from '@applik8s/sdk';
-import {
-  type ApplicationManagedModelCondition,
-  type ApplicationManagedModelConditionInput,
-  type ApplicationManagedModelHandler,
-  type ApplicationManagedModelMetadata,
-  type ApplicationManagedModelObject,
-  type ApplicationManagedModelReconcileContext,
-  type ApplicationManagedModelRequeue,
-  type ApplicationManagedModelWriteReceipt,
-  applicationManagedModelProtocol,
-  managedModelDurationSeconds,
+import type {
+  ApplicationManagedModelCondition,
+  ApplicationManagedModelConditionInput,
+  ApplicationManagedModelHandler,
+  ApplicationManagedModelMetadata,
+  ApplicationManagedModelObject,
+  ApplicationManagedModelReconcileContext,
+  ApplicationManagedModelRequeue,
+  ApplicationManagedModelWriteReceipt,
 } from './application-managed-models.js';
+import { applicationManagedModelProtocol, managedModelDurationSeconds } from './managed-model-protocol.js';
 
 export interface ApplicationManagedModelStoreRecord<
   TIdentity,

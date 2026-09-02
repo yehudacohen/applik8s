@@ -1,5 +1,5 @@
 import type { ApplicationCommandHandle, ApplicationCommandState, ApplicationMutationHookOptions, ApplicationMutationState, ApplicationOperationArguments, ApplicationOperationContract, ApplicationQueryExternalStore, ApplicationQueryOperationState, ApplicationQuerySnapshot, ApplicationQueryState, ApplicationQuerySuspenseResult } from '@applik8s/client';
-import { ApplicationCommandClient, ApplicationQueryClient, createHttpApplicationCommandTransport, createHttpApplicationQueryTransport, createHttpApplicationRuntimeTransport, installApplicationMutationHook, installApplicationOperationRuntime, installApplicationQueryHook, queryInputKey, waitForApplicationCommand } from '@applik8s/client';
+import { ApplicationCommandClient, ApplicationQueryClient, createHttpApplicationCommandTransport, createHttpApplicationQueryTransport, createHttpApplicationRuntimeTransport, installApplicationMutationHook, installApplicationOperationRuntime, installApplicationQueryHook, queryInputKey, resolveApplicationQueryClient, waitForApplicationCommand } from '@applik8s/client';
 import { createContext, createElement, useCallback, useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 
 const ApplicationQueryClientContext = createContext<ApplicationQueryClient | undefined>(undefined);
@@ -138,7 +138,9 @@ export interface Applik8sProviderProps {
 export function Applik8sProvider(props: Applik8sProviderProps): ReactNode {
   const baseUrl = props.baseUrl ?? '/__applik8s/v1';
   const clients = useMemo(() => {
-    const queryClient = props.queryClient ?? new ApplicationQueryClient(createHttpApplicationQueryTransport({ baseUrl }));
+    const queryClient = props.queryClient
+      ?? resolveApplicationQueryClient()
+      ?? new ApplicationQueryClient(createHttpApplicationQueryTransport({ baseUrl }));
     return {
       queryClient,
       commandClient: props.commandClient ?? new ApplicationCommandClient(createHttpApplicationCommandTransport({ baseUrl })),

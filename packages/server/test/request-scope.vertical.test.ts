@@ -1,6 +1,6 @@
 // typecast-file-boundary: request-scope tests use focused authenticated runtime doubles to prove resolver installation and cleanup.
 import { describe, expect, it } from 'vitest';
-import { ApplicationCommandClient, ApplicationQueryClient, type ApplicationOperationContract } from '@applik8s/client';
+import { ApplicationCommandClient, ApplicationQueryClient, resolveApplicationQueryClient, type ApplicationOperationContract } from '@applik8s/client';
 import {
   createApplik8sServerAgentOperation,
   createApplik8sServerQueryOperation,
@@ -52,6 +52,13 @@ describe('framework-neutral authenticated server request scope', () => {
     const runtime = requestRuntime('tenant-a');
     await expect(runWithApplik8sServerRequest(runtime, () => operation({ tenant: 'tenant-a' }).snapshot()))
       .resolves.toMatchObject({ value: ['tenant-a'] });
+  });
+
+  it('publishes the exact request-scoped query client to rendering adapters', () => {
+    const runtime = requestRuntime('render');
+    expect(resolveApplicationQueryClient()).toBeUndefined();
+    expect(runWithApplik8sServerRequest(runtime, () => resolveApplicationQueryClient())).toBe(runtime.queryClient);
+    expect(resolveApplicationQueryClient()).toBeUndefined();
   });
 
   it('supports adapter-provided request contexts and out-of-order uninstallation', async () => {

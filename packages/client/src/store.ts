@@ -5,6 +5,21 @@ import {
 } from '@applik8s/core/canonical-json';
 import type { ApplicationQueryEvent, ApplicationQuerySnapshot, ApplicationQueryTransport } from './protocol.js';
 
+const applicationQueryClientResolversKey = Symbol.for('@applik8s/client/query-client-resolvers');
+type ApplicationQueryClientResolver = () => ApplicationQueryClient | undefined;
+
+function applicationQueryClientResolvers(): ApplicationQueryClientResolver[] {
+  // typecast: Symbol.for provides the cross-bundle registry key; this narrows globalThis only to that optional, framework-owned slot.
+  const state = globalThis as typeof globalThis & {
+    [applicationQueryClientResolversKey]?: ApplicationQueryClientResolver[];
+  };
+  const existing = state[applicationQueryClientResolversKey];
+  if (existing) return existing;
+  const resolvers: ApplicationQueryClientResolver[] = [];
+  state[applicationQueryClientResolversKey] = resolvers;
+  return resolvers;
+}
+
 export const applicationQueryInputCanonicalJsonV1Policy: CanonicalJsonV1Policy = Object.freeze({
   ...canonicalJsonStrictV1Policy,
   name: 'application-query-input',
@@ -284,6 +299,35 @@ export class ApplicationQueryClient {
       this.#entries.delete(entry.key);
     }
   }
+}
+
+/**
+ * Installs a framework-adapter resolver for the query client active in the
+ * current execution scope. Server adapters use this to let React consume the
+ * exact request-scoped cache hydrated by route loaders during SSR.
+ */
+export function installApplicationQueryClientResolver(
+  resolver: ApplicationQueryClientResolver,
+): () => void {
+  const resolvers = applicationQueryClientResolvers();
+  resolvers.push(resolver);
+  let active = true;
+  return () => {
+    if (!active) return;
+    active = false;
+    const index = resolvers.lastIndexOf(resolver);
+    if (index >= 0) resolvers.splice(index, 1);
+  };
+}
+
+/** Returns the query client active in the current framework request, if any. */
+export function resolveApplicationQueryClient(): ApplicationQueryClient | undefined {
+  const resolvers = applicationQueryClientResolvers();
+  for (let index = resolvers.length - 1; index >= 0; index -= 1) {
+    const client = resolvers[index]?.();
+    if (client) return client;
+  }
+  return undefined;
 }
 
 function snapshotTimestamp(snapshot: ApplicationQuerySnapshot): number {

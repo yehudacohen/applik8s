@@ -437,6 +437,92 @@ describe('local supervisor plan compiler', () => {
     expect(serializedPlan).not.toContain('a-secret-value');
   });
 
+  it('assembles external database credentials locally without serializing values', () => {
+    const base = applicationGraph();
+    const graph = {
+      ...base,
+      metadata: { name: 'external-data', namespace: 'application' },
+      nodes: [
+        ...base.nodes.filter((node) => node.id !== 'provider.database'),
+        {
+          id: 'provider.database', kind: 'provider', name: 'database', stability: 'stable',
+          interface: 'TransactionalDatabase', implementation: 'postgres',
+          config: {
+            transactionalDatabase: {
+              kind: 'postgres', name: 'primary-external', namespace: 'application',
+              ownership: 'external', provision: false,
+              connectionSecret: { apiVersion: 'v1', kind: 'Secret', name: 'primary-external-connection', namespace: 'application' },
+              connectionSecretKey: 'uri',
+              externalConnection: { kind: 'environment', host: 'postgres.example.test', port: 5432, database: 'application' },
+            },
+          },
+        },
+        {
+          id: 'model.Note', kind: 'model', name: 'Note', stability: 'stable',
+          database: { interface: 'TransactionalDatabase', nodeId: 'provider.database' },
+          runtime: {
+            name: 'Note', tableName: 'notes', provider: 'postgres', database: 'application',
+            clusterName: 'primary-external', secretName: 'primary-external-connection',
+            secretNamespace: 'application', secretKey: 'uri',
+            connectionEnvName: 'APPLIK8S_TRANSACTIONAL_DATABASE_NOTE_DATABASE_URL',
+            constraints: [], indexes: [], retention: { mode: 'retain' },
+          },
+        },
+      ],
+      edges: [
+        ...base.edges,
+        { from: { nodeId: 'provider.database' }, to: { nodeId: 'server.web' }, relationship: 'provides' },
+      ],
+    } as unknown as ApplicationGraph;
+    const generatedSecrets = [{
+      id: 'provider.database.external-connection',
+      namespace: 'application',
+      name: 'primary-external-connection',
+      consumers: ['provider.database'],
+      referenceMode: 'staticIdentity' as const,
+      values: {
+        username: { kind: 'hostEnvironment' as const, name: 'POSTGRES_USER' },
+        password: { kind: 'hostEnvironment' as const, name: 'POSTGRES_PASSWORD' },
+        uri: {
+          kind: 'template' as const,
+          segments: [
+            { kind: 'literal' as const, value: 'postgresql://' },
+            { kind: 'value' as const, key: 'username', transform: 'uriComponent' as const },
+            { kind: 'literal' as const, value: ':' },
+            { kind: 'value' as const, key: 'password', transform: 'uriComponent' as const },
+            { kind: 'literal' as const, value: '@postgres.example.test:5432/application' },
+          ],
+        },
+      },
+    }];
+    const plan = compileLocalSupervisorPlan({
+      graph, target: 'local', profile: 'external', projectDigest: 'sha256:project', generatedSecrets,
+    });
+
+    expect(validateLocalSupervisorPlan(plan)).toEqual({ valid: true, diagnostics: [] });
+    const host = plan.resources.find(({ id }) => id === 'process:server.web');
+    expect(host).toMatchObject({
+      kind: 'process',
+      environment: expect.arrayContaining([
+        expect.objectContaining({
+          name: 'DATABASE_URL',
+          template: expect.arrayContaining([
+            expect.objectContaining({ kind: 'binding', transform: 'uriComponent' }),
+          ]),
+        }),
+      ]),
+    });
+    const serialized = serializeLocalSupervisorPlan(plan);
+    expect(serialized).toContain('POSTGRES_USER');
+    expect(serialized).toContain('POSTGRES_PASSWORD');
+    expect(serialized).not.toContain('resolved-user');
+    expect(serialized).not.toContain('resolved-password');
+    expect(plan.resources.find(({ id }) => id === 'provider:provider.database')).toMatchObject({
+      kind: 'external',
+      lifecycle: { ownership: 'external', retention: 'external' },
+    });
+  });
+
   it('hydrates only declared generated-runtime endpoints and orders the caller after its receiver', () => {
     const graph = applicationGraph();
     const endpointEnvironmentName = applicationRuntimeEndpointEnvironmentName('gateway.internal');

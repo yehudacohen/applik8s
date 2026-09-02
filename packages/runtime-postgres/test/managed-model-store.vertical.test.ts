@@ -22,6 +22,9 @@ describe('PostgreSQL managed-model migration', () => {
     expect(sql).toContain('desired_digest');
     expect(sql).toContain('lease_fence');
     expect(sql).toContain('conditions jsonb');
+    expect(sql).toContain("jsonb_typeof(status) = 'string'");
+    expect(sql).toContain("jsonb_typeof(conditions) = 'string'");
+    expect(sql).toContain("jsonb_typeof(finalizers) = 'string'");
     expect(sql).toContain('applik8s_managed_model_invalidations');
     expect(sql).toContain('applik8s_managed_model_activations');
     expect(sql).toContain('activated_count bigint');
@@ -85,6 +88,28 @@ live('PostgreSQL managed-model store', () => {
     };
     expect(await runApplicationManagedModelOnce({ store, binding, now: () => clock }))
       .toMatchObject({ kind: 'reconciled', generation: 1, nextDueAt: '2026-01-01T00:00:25.000Z' });
+    const verificationSql = postgres(requiredDatabaseUrl, { max: 1 });
+    try {
+      const [stored] = await verificationSql<readonly {
+        status_type: string;
+        conditions_type: string;
+        finalizers_type: string;
+      }[]>`
+        SELECT jsonb_typeof(status) AS status_type,
+               jsonb_typeof(conditions) AS conditions_type,
+               jsonb_typeof(finalizers) AS finalizers_type
+        FROM applik8s_managed_model_lifecycle
+        WHERE application_id = ${applicationId}
+          AND model_name = 'Workspace'
+      `;
+      expect(stored).toEqual({
+        status_type: 'object',
+        conditions_type: 'array',
+        finalizers_type: 'array',
+      });
+    } finally {
+      await verificationSql.end({ timeout: 5 });
+    }
 
     const replacement = createPostgresApplicationManagedModelStore<string, { version: string }, {
       observedGeneration: number;

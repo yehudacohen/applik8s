@@ -471,7 +471,19 @@ function resolveHostEnvironmentBindings(
         : entry.template.flatMap((segment) => segment.kind === 'binding' ? [segment.binding] : []))));
   for (const binding of plan.bindings.filter(({ kind, id }) => kind === 'hostEnvironment' && referenced.has(id))) {
     const source = binding.sourceEnvironment;
-    const value = source ? environment[source] : undefined;
+    const raw = source ? environment[source] : undefined;
+    let value = raw;
+    if (typeof raw === 'string' && binding.sourceProperty) {
+      try {
+        const parsed = JSON.parse(raw) as unknown;
+        const candidate = parsed && typeof parsed === 'object'
+          ? Reflect.get(parsed, binding.sourceProperty)
+          : undefined;
+        value = typeof candidate === 'string' ? candidate : undefined;
+      } catch {
+        value = undefined;
+      }
+    }
     if (!source || typeof value !== 'string' || value.length === 0) {
       throw new Error(`Required host environment variable ${source ?? '<invalid>'} for local binding ${binding.id} is unavailable.`);
     }
@@ -554,12 +566,13 @@ function resolveEnvironmentBinding(
   binding: string,
   values: Readonly<Record<string, string | number>>,
   runtime: 'process' | 'container',
-  transform?: 'authority' | 'hostname' | 'port',
+  transform?: 'authority' | 'hostname' | 'port' | 'uriComponent',
 ): string {
   if (binding.startsWith('literal:')) return binding.slice('literal:'.length);
   const value = values[binding];
   if (value === undefined) throw new Error(`Local environment binding ${binding} was not resolved.`);
   const serialized = String(value);
+  if (transform === 'uriComponent') return encodeURIComponent(serialized);
   if (transform === 'authority' || transform === 'hostname' || transform === 'port') {
     try {
       const url = new URL(serialized);

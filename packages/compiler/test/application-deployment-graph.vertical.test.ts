@@ -467,6 +467,119 @@ describe("compiler deployment graph emission", () => {
     expect(JSON.stringify(requirements)).not.toContain('resolved-secret-value');
   });
 
+  it('projects external database environment bindings without provider infrastructure or plaintext', async () => {
+    const directory = await mkdtemp(
+      join(process.env.TMPDIR ?? '/tmp', 'applik8s-external-database-secret-'),
+    );
+    temporaryDirectories.push(directory);
+    const bundlePath = join(directory, 'typekro-bundle.json');
+    await writeFile(bundlePath, JSON.stringify({ spec: {} }));
+    const secretBinding = (reference: string) => ({
+      apiVersion: 'applik8s.configurationBinding/v1alpha1',
+      kind: 'secret',
+      source: 'environment',
+      reference,
+      required: true,
+    });
+    const graph = {
+      apiVersion: 'applik8s.applicationGraph/v1alpha1',
+      kind: 'ApplicationGraph',
+      metadata: { name: 'external-data', namespace: 'application' },
+      nodes: [{
+        id: 'provider.TransactionalDatabase.primary',
+        kind: 'provider',
+        name: 'TransactionalDatabase.primary',
+        interface: 'TransactionalDatabase',
+        implementation: 'postgres',
+        config: {
+          transactionalDatabase: {
+            kind: 'postgres',
+            name: 'primary-external',
+            namespace: 'application',
+            provision: false,
+            ownership: 'external',
+            connectionSecret: {
+              apiVersion: 'v1',
+              kind: 'Secret',
+              name: 'primary-external-connection',
+              namespace: 'application',
+            },
+            externalConnection: {
+              kind: 'environment',
+              host: 'postgres.example.test',
+              port: 5432,
+              database: 'application',
+              user: secretBinding('POSTGRES_USER'),
+              password: secretBinding('POSTGRES_PASSWORD'),
+              tls: { mode: 'verify-full', ca: secretBinding('POSTGRES_CA') },
+            },
+          },
+        },
+      }, {
+        id: 'provider.AnalyticalDatabase.analytics',
+        kind: 'provider',
+        name: 'AnalyticalDatabase.analytics',
+        interface: 'AnalyticalDatabase',
+        implementation: 'clickhouse',
+        config: {
+          analyticalDatabase: {
+            kind: 'clickhouse',
+            name: 'analytics-external',
+            namespace: 'application',
+            provision: false,
+            endpoint: 'https://clickhouse.example.test',
+            credentialsSecret: {
+              apiVersion: 'v1',
+              kind: 'Secret',
+              name: 'analytics-external-credentials',
+              namespace: 'application',
+            },
+            externalConnection: {
+              kind: 'environment',
+              endpoint: 'https://clickhouse.example.test',
+              database: 'application',
+              credentials: secretBinding('CLICKHOUSE_CREDENTIALS'),
+            },
+          },
+        },
+      }],
+      edges: [],
+      providerRequirements: [],
+      providerBindings: [],
+    } as unknown as ApplicationGraph;
+
+    const requirements = await applicationGeneratedSecretRequirements(
+      bundlePath,
+      graph.metadata.namespace,
+      graph,
+      {},
+    );
+
+    expect(requirements).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: 'primary-external-connection',
+        consumers: ['provider.TransactionalDatabase.primary'],
+        values: expect.objectContaining({
+          username: { kind: 'hostEnvironment', name: 'POSTGRES_USER' },
+          password: { kind: 'hostEnvironment', name: 'POSTGRES_PASSWORD' },
+          'ca.pem': { kind: 'hostEnvironment', name: 'POSTGRES_CA' },
+          uri: expect.objectContaining({ kind: 'template' }),
+        }),
+      }),
+      expect.objectContaining({
+        name: 'analytics-external-credentials',
+        consumers: ['provider.AnalyticalDatabase.analytics'],
+        values: {
+          username: { kind: 'hostEnvironmentJson', name: 'CLICKHOUSE_CREDENTIALS', property: 'username' },
+          password: { kind: 'hostEnvironmentJson', name: 'CLICKHOUSE_CREDENTIALS', property: 'password' },
+        },
+      }),
+    ]));
+    const serialized = JSON.stringify(requirements);
+    expect(serialized).not.toContain('resolved-postgres-password');
+    expect(serialized).not.toContain('resolved-clickhouse-password');
+  });
+
   it("binds internal-operation authority only to generated gateways whose artifacts consume it", async () => {
     const directory = await mkdtemp(
       join(process.env.TMPDIR ?? "/tmp", "applik8s-gateway-secret-"),
@@ -1146,6 +1259,9 @@ describe("compiler deployment graph emission", () => {
           http: [
             generatedContainerEntry("public-api", "typed-http"),
           ],
+          managedModels: [
+            generatedContainerEntry("notes-managed-models", "managed-model-operator"),
+          ],
           operators: [
             {
               name: "notes-operator",
@@ -1227,12 +1343,13 @@ describe("compiler deployment graph emission", () => {
     const second = await emitApplicationDeploymentGraph(request);
 
     expect(validateApplicationDeploymentGraph(first.graph).valid).toBe(true);
-    expect(first.artifactCount).toBe(4);
+    expect(first.artifactCount).toBe(5);
     expect(first.digest).toBe(second.digest);
     expect(first.digest).toBe(digestApplicationDeploymentGraph(first.graph));
     expect(first.graph.nodes.map(({ id }) => id)).toEqual([
       "artifact.agent.researcher",
       "artifact.http.public-api",
+      "artifact.managed-model-operator.notes-managed-models",
       "artifact.mcp.tools",
       "artifact.operator.notes-operator",
       "direct.namespace.control-plane",

@@ -80,7 +80,7 @@ for (const expected of [
   'EventLog.jetStream',
   'HttpExposure.kubernetes',
   'ObjectStorage.rookCeph',
-  'OperatorRuntime.kubernetes',
+  'OperatorRuntime.distributed',
 ]) {
   assert(providerExports(kubernetesPlan).has(expected), `Chirp production-kubernetes plan is missing ${expected}.`);
 }
@@ -657,8 +657,26 @@ assert(
 const embeddedRuntimeBundle = chirpRgd.spec.resources.find((resource) => resource.template?.kind === 'ConfigMap' && Object.keys({ ...resource.template.data, ...resource.template.binaryData }).some((key) => /\.(?:mjs|cjs|js)(?:\.gz)?$/.test(key)));
 assert(!embeddedRuntimeBundle, 'Chirp must not transport executable JavaScript through ConfigMaps.');
 const bundleManifest = await json(join(output, 'typekro/typekro-composition.json'));
-const executableArtifacts = [...(bundleManifest.spec.migrations ?? []), ...(bundleManifest.spec.processors ?? []), ...(bundleManifest.spec.workflows ?? []), ...(bundleManifest.spec.reactive ?? [])];
+const executableArtifacts = [
+  ...(bundleManifest.spec.migrations ?? []),
+  ...(bundleManifest.spec.processors ?? []),
+  ...(bundleManifest.spec.jobs ?? []),
+  ...(bundleManifest.spec.managedModels ?? []),
+  ...(bundleManifest.spec.lakehousePublishers ?? []),
+  ...(bundleManifest.spec.workflows ?? []),
+  ...(bundleManifest.spec.reactive ?? []),
+  ...(bundleManifest.spec.mcp ?? []),
+  ...(bundleManifest.spec.agents ?? []),
+  ...(bundleManifest.spec.http ?? []),
+];
 assert(executableArtifacts.length > 0, 'Chirp must emit generated executable workload artifacts.');
+const managedModelArtifact = (bundleManifest.spec.managedModels ?? [])[0];
+assert(
+  managedModelArtifact
+    && JSON.stringify(managedModelArtifact.executionNodeIds) === JSON.stringify(managedModelArtifact.modelIds)
+    && managedModelArtifact.modelIds?.includes('model.moderation-policy'),
+  'The managed-model operator artifact must be placed on its executable model nodes rather than its non-executable provider.',
+);
 for (const artifact of executableArtifacts) {
   assert(artifact.container?.image?.startsWith('applik8s/') && /^sha-[0-9a-f]{64}$/.test(artifact.container?.tag ?? ''), `${artifact.name} must use a content-tagged generated OCI image.`);
   assert((await readFile(artifact.container.dockerfilePath, 'utf8')).includes('COPY --chown=1000:1000'), `${artifact.name} must emit an immutable OCI Dockerfile.`);

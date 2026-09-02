@@ -94,7 +94,7 @@ export function deriveApplicationGraphFoundation(
         parentId: application.id,
       }));
     }
-    if (executionNodeKinds.has(node.kind)) {
+    if (executionNodeKinds.has(node.kind) || (node.kind === 'model' && node.managed !== undefined)) {
       const execution = applicationExecutionBoundaryIdentity({
         application: graph.metadata.name,
         boundaryKind: executionBoundaryKind(node),

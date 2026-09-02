@@ -8,6 +8,7 @@ export * from './job-runtime.js';
 export * from './managed-model-store.js';
 export * from './operator-runtime.js';
 export * from './schedule.js';
+export * from './cluster-capability.js';
 
 export interface KubernetesApplicationInstallationTransportOptions {
   readonly apiVersion: string;

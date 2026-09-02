@@ -91,6 +91,11 @@
       "import": "./dist/managed-model-postgres-runtime.js",
       "default": "./dist/managed-model-postgres-runtime.js"
     },
+    "./managed-model-runtime": {
+      "types": "./dist/managed-model-runtime.d.ts",
+      "import": "./dist/managed-model-runtime.js",
+      "default": "./dist/managed-model-runtime.js"
+    },
     "./reactive-runtime": {
       "types": "./dist/reactive-runtime.d.ts",
       "import": "./dist/reactive-runtime.js",
@@ -231,6 +236,11 @@
       "import": "./dist/application-provider-telemetry-runtime.js",
       "default": "./dist/application-provider-telemetry-runtime.js"
     },
+    "./kubernetes-cluster-runtime": {
+      "types": "./dist/kubernetes-cluster-runtime.d.ts",
+      "import": "./dist/kubernetes-cluster-runtime.js",
+      "default": "./dist/kubernetes-cluster-runtime.js"
+    },
     "./schedule-runtime-local": {
       "types": "./dist/application-schedule-local-runtime.d.ts",
       "import": "./dist/application-schedule-local-runtime.js",
@@ -304,7 +314,7 @@
     "drizzle-orm": "^0.45.1",
     "esbuild": "^0.28.1",
     "hono": "^4.10.7",
-    "typekro": "0.33.9"
+    "typekro": "0.33.10"
   },
   "peerDependencies": {
     "@applik8s/runtime-aws": "0.8.0",

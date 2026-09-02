@@ -9,12 +9,13 @@ import { bundleApplicationCompositionRuntimeEntrypoint } from '../src/pipeline/r
 
 const temporaryDirectories: string[] = [];
 const execFileAsync = promisify(execFile);
-const quietExperimentalLoaderWarnings = {
+const quietKnownDependencyWarnings = {
   env: {
     ...process.env,
     NODE_OPTIONS: [
       process.env.NODE_OPTIONS,
       '--disable-warning=ExperimentalWarning',
+      '--disable-warning=DEP0040',
     ].filter(Boolean).join(' '),
   },
 };
@@ -51,7 +52,7 @@ describe('application composition runtime entrypoint', () => {
       '--eval',
       'const loaded = await import(process.argv[1]); if (!loaded.v06GeneratedApp) process.exitCode = 2;',
       `${pathToFileURL(output).href}?proof=${Date.now()}`,
-    ], quietExperimentalLoaderWarnings);
+    ], quietKnownDependencyWarnings);
     expect(loaded.stderr).toBe('');
   }, 30_000);
 
@@ -78,7 +79,7 @@ describe('application composition runtime entrypoint', () => {
       '--eval',
       'const loaded = await import(process.argv[1]); if (!loaded.application) process.exitCode = 2;',
       `${pathToFileURL(output).href}?proof=${Date.now()}`,
-    ], quietExperimentalLoaderWarnings);
+    ], quietKnownDependencyWarnings);
     expect(loaded.stderr).toBe('');
   }, 60_000);
 });

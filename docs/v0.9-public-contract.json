@@ -613,10 +613,12 @@
             "ApplicationExposureTransportContract",
             "ApplicationExpressionContract",
             "ApplicationExternalClickHouseConnection",
+            "ApplicationExternalClickHouseEnvironmentConnection",
             "ApplicationExternalClickHouseOptions",
             "ApplicationExternalDnsPublicationProvider",
             "ApplicationExternalKubernetesCluster",
             "ApplicationExternalPostgresDatabaseOptions",
+            "ApplicationExternalPostgresEnvironmentConnection",
             "ApplicationFetchGateway",
             "ApplicationFetchGatewayOptions",
             "ApplicationFieldSelectorWatchScope",
@@ -791,7 +793,17 @@
             "ApplicationJobTerminalWrite",
             "ApplicationJobTimedOutFact",
             "ApplicationKinesisEventLogProvider",
+            "ApplicationKubernetesCapabilityAuthorityContext",
+            "ApplicationKubernetesCapabilityError",
+            "ApplicationKubernetesCapabilityFailureCode",
+            "ApplicationKubernetesCapabilityHost",
+            "ApplicationKubernetesCapabilityIntent",
+            "ApplicationKubernetesCapabilityOperation",
+            "ApplicationKubernetesCapabilityRequest",
+            "ApplicationKubernetesCapabilityResource",
+            "ApplicationKubernetesCapabilityResponse",
             "ApplicationKubernetesCluster",
+            "ApplicationKubernetesClusterHandle",
             "ApplicationKubernetesConfigMapObjectStorageProvider",
             "ApplicationKubernetesConfigMapQueueProvider",
             "ApplicationKubernetesCreateAuthorityContract",
@@ -800,11 +812,15 @@
             "ApplicationKubernetesCreateRequest",
             "ApplicationKubernetesCredentialStoreProvider",
             "ApplicationKubernetesCronJobSchedulerProvider",
+            "ApplicationKubernetesDeletePreconditions",
             "ApplicationKubernetesFiniteExecutionHostProvider",
             "ApplicationKubernetesHostProvider",
+            "ApplicationKubernetesIdentity",
             "ApplicationKubernetesInvalidation",
             "ApplicationKubernetesJobRuntimeProvider",
             "ApplicationKubernetesListPage",
+            "ApplicationKubernetesListQuery",
+            "ApplicationKubernetesListResult",
             "ApplicationKubernetesManagedModelStoreProvider",
             "ApplicationKubernetesModelReader",
             "ApplicationKubernetesModelSelection",
@@ -813,18 +829,23 @@
             "ApplicationKubernetesModelViewImplementation",
             "ApplicationKubernetesModelViewOptions",
             "ApplicationKubernetesModelViewSchemaContract",
+            "ApplicationKubernetesMutationOwnership",
             "ApplicationKubernetesOperatorRuntimeProvider",
+            "ApplicationKubernetesPageBounds",
             "ApplicationKubernetesQueryAuthorityContract",
             "ApplicationKubernetesRbacRule",
             "ApplicationKubernetesResourceCounterStoreProvider",
+            "ApplicationKubernetesResourceFamily",
             "ApplicationKubernetesSecretProvider",
             "ApplicationKubernetesSnapshot",
             "ApplicationKubernetesSnapshotBoundError",
             "ApplicationKubernetesSnapshotWatchAuthority",
             "ApplicationKubernetesSnapshotWatchClient",
             "ApplicationKubernetesSnapshotWatchOptions",
+            "ApplicationKubernetesWatchBounds",
             "ApplicationKubernetesWatchEvent",
             "ApplicationKubernetesWatchEventSourceProvider",
+            "ApplicationKubernetesWatchResult",
             "ApplicationLakehouseAuthorityManifest",
             "ApplicationLakehouseComparisonExpression",
             "ApplicationLakehouseConformanceCase",
@@ -2177,6 +2198,7 @@
             "applicationJobRuntime",
             "applicationJobRuntimeProtocol",
             "applicationJobStoreProtocol",
+            "applicationKubernetesCapabilityProtocol",
             "applicationLakehouseAuthorityManifest",
             "applicationLakehouseConformanceCases",
             "applicationLakehouseConformanceRows",
@@ -2264,6 +2286,8 @@
             "createApplicationInstallationClient",
             "createApplicationJobBinding",
             "createApplicationJobReference",
+            "createApplicationKubernetesCapabilityRequest",
+            "createApplicationKubernetesClusterHandle",
             "createApplicationModelContext",
             "createApplicationQueryGateway",
             "createApplicationQueryGatewayHttpHandler",
@@ -2353,6 +2377,7 @@
             "installApplicationActorRuntimeResolver",
             "installApplicationAgentInvocationRuntimeResolver",
             "installApplicationJobRuntimeResolver",
+            "installApplicationKubernetesCapabilityHostResolver",
             "installApplicationLakehousePublicationRuntimeResolver",
             "installApplicationLakehouseQueryRuntimeResolver",
             "installApplicationObjectStorageRuntimeResolver",
@@ -2423,6 +2448,7 @@
             "resolveOperatorInstalls",
             "resource",
             "resources",
+            "resourcesApplicationKubernetesCluster",
             "retireApplicationOnlineProjectionGeneration",
             "runApplicationLakehouseConformance",
             "runApplicationManagedModelOnce",
@@ -3795,6 +3821,32 @@
           }
         },
         {
+          "name": "./kubernetes-cluster-runtime",
+          "source": "packages/applik8s/src/kubernetes-cluster-runtime.ts",
+          "kind": "module",
+          "contract": {
+            "inherits": "package:@applik8s/applik8s"
+          },
+          "symbols": [
+            "ApplicationKubernetesCapabilityAuthorityContext",
+            "ApplicationKubernetesCapabilityError",
+            "ApplicationKubernetesCapabilityFailureCode",
+            "ApplicationKubernetesCapabilityHost",
+            "ApplicationKubernetesCapabilityIntent",
+            "ApplicationKubernetesCapabilityOperation",
+            "ApplicationKubernetesCapabilityRequest",
+            "ApplicationKubernetesCapabilityResource",
+            "ApplicationKubernetesCapabilityResponse",
+            "applicationKubernetesCapabilityProtocol",
+            "createApplicationKubernetesCapabilityRequest",
+            "installApplicationKubernetesCapabilityHostResolver",
+            "resourcesApplicationKubernetesCluster"
+          ],
+          "symbolContract": {
+            "inherits": "entrypoint:@applik8s/applik8s:./kubernetes-cluster-runtime"
+          }
+        },
+        {
           "name": "./lakehouse-conformance",
           "source": "packages/applik8s/src/application-lakehouse-conformance.ts",
           "kind": "module",
@@ -3891,6 +3943,41 @@
           ],
           "symbolContract": {
             "inherits": "entrypoint:@applik8s/applik8s:./managed-model-postgres-runtime"
+          }
+        },
+        {
+          "name": "./managed-model-runtime",
+          "source": "packages/applik8s/src/managed-model-runtime.ts",
+          "kind": "module",
+          "contract": {
+            "inherits": "package:@applik8s/applik8s"
+          },
+          "symbols": [
+            "ApplicationManagedModelCommitPrecondition",
+            "ApplicationManagedModelCondition",
+            "ApplicationManagedModelConditionInput",
+            "ApplicationManagedModelConflictError",
+            "ApplicationManagedModelHandler",
+            "ApplicationManagedModelLease",
+            "ApplicationManagedModelMetadata",
+            "ApplicationManagedModelObject",
+            "ApplicationManagedModelReconcileContext",
+            "ApplicationManagedModelRequeue",
+            "ApplicationManagedModelRunResult",
+            "ApplicationManagedModelRuntimeBinding",
+            "ApplicationManagedModelStore",
+            "ApplicationManagedModelStoreRecord",
+            "ApplicationManagedModelWriteReceipt",
+            "DeterministicApplicationManagedModelStore",
+            "RunApplicationManagedModelOptions",
+            "applicationManagedModelDesiredDigest",
+            "applicationManagedModelProtocol",
+            "createDeterministicApplicationManagedModelStore",
+            "managedModelDurationSeconds",
+            "runApplicationManagedModelOnce"
+          ],
+          "symbolContract": {
+            "inherits": "entrypoint:@applik8s/applik8s:./managed-model-runtime"
           }
         },
         {
@@ -6399,6 +6486,7 @@
             "installApplicationMutationHook",
             "installApplicationOperationRuntime",
             "installApplicationOperationRuntimeResolver",
+            "installApplicationQueryClientResolver",
             "installApplicationQueryHook",
             "invokeApplicationAgent",
             "isApplicationBoundOperation",
@@ -6408,6 +6496,7 @@
             "queryCacheKey",
             "queryInputKey",
             "requireApplicationInvocationAdmission",
+            "resolveApplicationQueryClient",
             "waitForApplicationCommand"
           ],
           "symbolContract": {
@@ -10970,7 +11059,10 @@
             "inherits": "package:@applik8s/runtime-kubernetes"
           },
           "symbols": [
+            "ApplicationKubernetesCapabilityObjectClient",
+            "ApplicationKubernetesCapabilityWatchClient",
             "DEFAULT_KUBERNETES_SCHEDULE_INSTANCE_CEILING",
+            "KubernetesApplicationCapabilityHostOptions",
             "KubernetesApplicationInstallationTransportOptions",
             "KubernetesApplicationJobCancellationReceipt",
             "KubernetesApplicationJobDispatchError",
@@ -10991,6 +11083,7 @@
             "KubernetesScheduleAdmissionAuthorityOptions",
             "KubernetesScheduleOccurrenceBusyError",
             "assertKubernetesApplicationManagedModelFence",
+            "createKubernetesApplicationCapabilityHost",
             "createKubernetesApplicationJobDispatcher",
             "createKubernetesApplicationJobRuntime",
             "createKubernetesApplicationScheduleRuntime",
@@ -11011,6 +11104,23 @@
           ],
           "symbolContract": {
             "inherits": "entrypoint:@applik8s/runtime-kubernetes:."
+          }
+        },
+        {
+          "name": "./cluster-capability",
+          "source": "packages/runtime-kubernetes/src/cluster-capability.ts",
+          "kind": "module",
+          "contract": {
+            "inherits": "package:@applik8s/runtime-kubernetes"
+          },
+          "symbols": [
+            "ApplicationKubernetesCapabilityObjectClient",
+            "ApplicationKubernetesCapabilityWatchClient",
+            "KubernetesApplicationCapabilityHostOptions",
+            "createKubernetesApplicationCapabilityHost"
+          ],
+          "symbolContract": {
+            "inherits": "entrypoint:@applik8s/runtime-kubernetes:./cluster-capability"
           }
         },
         {
@@ -15527,6 +15637,299 @@
       "owner": "package:@applik8s/core",
       "sources": [
         "packages/core/src/common.ts"
+      ],
+      "maturity": "stable-1.0-candidate",
+      "compatibility": [
+        "runtime"
+      ],
+      "stability": "stable",
+      "documentation": "docs/packages.md",
+      "evidence": [
+        "workspace-typecheck",
+        "clean-package-consumer",
+        "public-contract-freeze"
+      ]
+    },
+    {
+      "code": "KUBERNETES_CLUSTER_AUTHORITY_UNDECLARED",
+      "owner": "package:@applik8s/applik8s",
+      "sources": [
+        "packages/applik8s/src/kubernetes-cluster-runtime.ts"
+      ],
+      "maturity": "stable-1.0-candidate",
+      "compatibility": [
+        "runtime"
+      ],
+      "stability": "stable",
+      "documentation": "docs/packages.md",
+      "evidence": [
+        "workspace-typecheck",
+        "clean-package-consumer",
+        "public-contract-freeze"
+      ]
+    },
+    {
+      "code": "KUBERNETES_CLUSTER_BINDING_MISSING",
+      "owner": "package:@applik8s/applik8s",
+      "sources": [
+        "packages/applik8s/src/kubernetes-cluster-runtime.ts"
+      ],
+      "maturity": "stable-1.0-candidate",
+      "compatibility": [
+        "runtime"
+      ],
+      "stability": "stable",
+      "documentation": "docs/packages.md",
+      "evidence": [
+        "workspace-typecheck",
+        "clean-package-consumer",
+        "public-contract-freeze"
+      ]
+    },
+    {
+      "code": "KUBERNETES_CLUSTER_CANCELLED",
+      "owner": "package:@applik8s/applik8s",
+      "sources": [
+        "packages/applik8s/src/kubernetes-cluster-runtime.ts"
+      ],
+      "maturity": "stable-1.0-candidate",
+      "compatibility": [
+        "runtime"
+      ],
+      "stability": "stable",
+      "documentation": "docs/packages.md",
+      "evidence": [
+        "workspace-typecheck",
+        "clean-package-consumer",
+        "public-contract-freeze"
+      ]
+    },
+    {
+      "code": "KUBERNETES_CLUSTER_CONFLICT",
+      "owner": "workspace:cross-package",
+      "sources": [
+        "packages/applik8s/src/kubernetes-cluster-runtime.ts",
+        "packages/runtime-kubernetes/src/cluster-capability.ts"
+      ],
+      "maturity": "stable-1.0-candidate",
+      "compatibility": [
+        "runtime"
+      ],
+      "stability": "stable",
+      "documentation": "docs/packages.md",
+      "evidence": [
+        "workspace-typecheck",
+        "clean-package-consumer",
+        "public-contract-freeze"
+      ]
+    },
+    {
+      "code": "KUBERNETES_CLUSTER_CONTINUATION_INVALID",
+      "owner": "package:@applik8s/applik8s",
+      "sources": [
+        "packages/applik8s/src/kubernetes-cluster-runtime.ts"
+      ],
+      "maturity": "stable-1.0-candidate",
+      "compatibility": [
+        "runtime"
+      ],
+      "stability": "stable",
+      "documentation": "docs/packages.md",
+      "evidence": [
+        "workspace-typecheck",
+        "clean-package-consumer",
+        "public-contract-freeze"
+      ]
+    },
+    {
+      "code": "KUBERNETES_CLUSTER_DEADLINE",
+      "owner": "workspace:cross-package",
+      "sources": [
+        "packages/applik8s/src/kubernetes-cluster-runtime.ts",
+        "packages/runtime-kubernetes/src/cluster-capability.ts"
+      ],
+      "maturity": "stable-1.0-candidate",
+      "compatibility": [
+        "runtime"
+      ],
+      "stability": "stable",
+      "documentation": "docs/packages.md",
+      "evidence": [
+        "workspace-typecheck",
+        "clean-package-consumer",
+        "public-contract-freeze"
+      ]
+    },
+    {
+      "code": "KUBERNETES_CLUSTER_ENDPOINT_FORBIDDEN",
+      "owner": "package:@applik8s/applik8s",
+      "sources": [
+        "packages/applik8s/src/kubernetes-cluster-runtime.ts"
+      ],
+      "maturity": "stable-1.0-candidate",
+      "compatibility": [
+        "runtime"
+      ],
+      "stability": "stable",
+      "documentation": "docs/packages.md",
+      "evidence": [
+        "workspace-typecheck",
+        "clean-package-consumer",
+        "public-contract-freeze"
+      ]
+    },
+    {
+      "code": "KUBERNETES_CLUSTER_FORBIDDEN",
+      "owner": "workspace:cross-package",
+      "sources": [
+        "packages/applik8s/src/kubernetes-cluster-runtime.ts",
+        "packages/runtime-kubernetes/src/cluster-capability.ts"
+      ],
+      "maturity": "stable-1.0-candidate",
+      "compatibility": [
+        "runtime"
+      ],
+      "stability": "stable",
+      "documentation": "docs/packages.md",
+      "evidence": [
+        "workspace-typecheck",
+        "clean-package-consumer",
+        "public-contract-freeze"
+      ]
+    },
+    {
+      "code": "KUBERNETES_CLUSTER_LIST_UNBOUNDED",
+      "owner": "package:@applik8s/applik8s",
+      "sources": [
+        "packages/applik8s/src/kubernetes-cluster-runtime.ts"
+      ],
+      "maturity": "stable-1.0-candidate",
+      "compatibility": [
+        "runtime"
+      ],
+      "stability": "stable",
+      "documentation": "docs/packages.md",
+      "evidence": [
+        "workspace-typecheck",
+        "clean-package-consumer",
+        "public-contract-freeze"
+      ]
+    },
+    {
+      "code": "KUBERNETES_CLUSTER_MUTATION_OWNERSHIP_REQUIRED",
+      "owner": "package:@applik8s/applik8s",
+      "sources": [
+        "packages/applik8s/src/kubernetes-cluster-runtime.ts"
+      ],
+      "maturity": "stable-1.0-candidate",
+      "compatibility": [
+        "runtime"
+      ],
+      "stability": "stable",
+      "documentation": "docs/packages.md",
+      "evidence": [
+        "workspace-typecheck",
+        "clean-package-consumer",
+        "public-contract-freeze"
+      ]
+    },
+    {
+      "code": "KUBERNETES_CLUSTER_NOT_FOUND",
+      "owner": "workspace:cross-package",
+      "sources": [
+        "packages/applik8s/src/kubernetes-cluster-runtime.ts",
+        "packages/runtime-kubernetes/src/cluster-capability.ts"
+      ],
+      "maturity": "stable-1.0-candidate",
+      "compatibility": [
+        "runtime"
+      ],
+      "stability": "stable",
+      "documentation": "docs/packages.md",
+      "evidence": [
+        "workspace-typecheck",
+        "clean-package-consumer",
+        "public-contract-freeze"
+      ]
+    },
+    {
+      "code": "KUBERNETES_CLUSTER_PROTOCOL_INCOMPATIBLE",
+      "owner": "package:@applik8s/applik8s",
+      "sources": [
+        "packages/applik8s/src/kubernetes-cluster-runtime.ts"
+      ],
+      "maturity": "stable-1.0-candidate",
+      "compatibility": [
+        "runtime"
+      ],
+      "stability": "stable",
+      "documentation": "docs/packages.md",
+      "evidence": [
+        "workspace-typecheck",
+        "clean-package-consumer",
+        "public-contract-freeze"
+      ]
+    },
+    {
+      "code": "KUBERNETES_CLUSTER_RESPONSE_LIMIT",
+      "owner": "package:@applik8s/applik8s",
+      "sources": [
+        "packages/applik8s/src/kubernetes-cluster-runtime.ts"
+      ],
+      "maturity": "stable-1.0-candidate",
+      "compatibility": [
+        "runtime"
+      ],
+      "stability": "stable",
+      "documentation": "docs/packages.md",
+      "evidence": [
+        "workspace-typecheck",
+        "clean-package-consumer",
+        "public-contract-freeze"
+      ]
+    },
+    {
+      "code": "KUBERNETES_CLUSTER_SCHEMA_MISMATCH",
+      "owner": "package:@applik8s/applik8s",
+      "sources": [
+        "packages/applik8s/src/kubernetes-cluster-runtime.ts"
+      ],
+      "maturity": "stable-1.0-candidate",
+      "compatibility": [
+        "runtime"
+      ],
+      "stability": "stable",
+      "documentation": "docs/packages.md",
+      "evidence": [
+        "workspace-typecheck",
+        "clean-package-consumer",
+        "public-contract-freeze"
+      ]
+    },
+    {
+      "code": "KUBERNETES_CLUSTER_SCOPE_UNBOUNDED",
+      "owner": "package:@applik8s/applik8s",
+      "sources": [
+        "packages/applik8s/src/kubernetes-cluster-runtime.ts"
+      ],
+      "maturity": "stable-1.0-candidate",
+      "compatibility": [
+        "runtime"
+      ],
+      "stability": "stable",
+      "documentation": "docs/packages.md",
+      "evidence": [
+        "workspace-typecheck",
+        "clean-package-consumer",
+        "public-contract-freeze"
+      ]
+    },
+    {
+      "code": "KUBERNETES_CLUSTER_UNAVAILABLE",
+      "owner": "workspace:cross-package",
+      "sources": [
+        "packages/applik8s/src/kubernetes-cluster-runtime.ts",
+        "packages/runtime-kubernetes/src/cluster-capability.ts"
       ],
       "maturity": "stable-1.0-candidate",
       "compatibility": [
@@ -23906,6 +24309,7 @@
         "@applik8s/compiler"
       ],
       "sources": [
+        "packages/compiler/src/application-managed-models/index.ts",
         "packages/compiler/src/application-reactive/index.ts"
       ],
       "maturity": "stable-1.0-candidate",

@@ -68,7 +68,7 @@ for (const pillar of scorecard.pillars) {
 for (const required of ['guestbook', 'chirp', 'agentic-start']) {
   if (!scorecard.acceptanceApplications.some(({ id }) => id === required)) findings.push(`V09_ACCEPTANCE_APPLICATION_MISSING:${required}`);
 }
-for (const required of ['released-v08-upgrade', 'saga-deployed-provider', 'research-agent-managed', 'code-agent-local', 'code-agent-celld', 'builder-opencode', 'chirp-production-aws', 'chirp-production-kubernetes', 'agentic-start-browser']) {
+for (const required of ['released-v08-upgrade', 'finite-jobs', 'kubernetes-cluster-capability', 'external-capability-bindings', 'ml-models', 'explainable-decisions', 'saga-deployed-provider', 'research-agent-managed', 'code-agent-local', 'code-agent-celld', 'builder-opencode', 'chirp-production-aws', 'chirp-production-kubernetes', 'agentic-start-browser']) {
   if (!gateIds.has(required)) findings.push(`V09_GLOBAL_RELEASE_GATE_MISSING:${required}`);
 }
 if (requireRelease && (scorecard.status !== 'release-candidate' || acceptance.status !== 'release-candidate')) {

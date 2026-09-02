@@ -68,7 +68,11 @@ function run(command, args) {
   return new Promise((resolveCode, reject) => {
     const child = spawn(command, args, {
       cwd: process.cwd(),
-      env: { ...process.env, TYPEKRO_LOG_LEVEL: process.env.TYPEKRO_LOG_LEVEL ?? 'fatal' },
+      env: {
+        ...process.env,
+        NODE_OPTIONS: nodeOptionsWithMemoryLimit(process.env.NODE_OPTIONS, maxOldSpaceSizeMb),
+        TYPEKRO_LOG_LEVEL: process.env.TYPEKRO_LOG_LEVEL ?? 'fatal',
+      },
       stdio: 'inherit',
     });
     child.once('error', reject);
@@ -80,4 +84,13 @@ function run(command, args) {
       resolveCode(code ?? 1);
     });
   });
+}
+
+function nodeOptionsWithMemoryLimit(existing, memoryMb) {
+  const withoutExistingLimit = (existing ?? '')
+    .replace(/(?:^|\s)--max-old-space-size(?:=|\s+)\d+(?=\s|$)/gu, ' ')
+    .trim();
+  return [withoutExistingLimit, `--max-old-space-size=${memoryMb}`]
+    .filter(Boolean)
+    .join(' ');
 }

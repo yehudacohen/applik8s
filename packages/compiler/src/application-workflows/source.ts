@@ -423,7 +423,7 @@ ${contract.nativeAI ? "import postgres from 'postgres';" : ''}`;
   const projectionImports = contract.projectionEffects
     ? `import { createPostgresApplicationProjectionSnapshotSource, createPostgresApplicationStream, createValkeyOnlineProjectionWriter, retireApplicationOnlineProjectionGeneration, runApplicationOnlineProjectionRebuild } from '@applik8s/applik8s/projection-worker-runtime';`
     : '';
-	const objectImports = contract.objectEffects
+	const objectImports = contract.objectEffects || contract.projectionEffects
 		? `import { createS3ApplicationObjectStorageRuntime } from '@applik8s/runtime-s3';`
 		: '';
   const providerAccountingImports = contract.providerAccountingEffects

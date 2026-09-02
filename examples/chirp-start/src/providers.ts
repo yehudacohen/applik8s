@@ -564,7 +564,11 @@ export const productionKubernetesProfile = app.profile(
       ManagedModelStore.named('moderation-policy'),
       ManagedModelStore.postgres({ database }),
     );
-    profile.provide(OperatorRuntime, OperatorRuntime.kubernetes({ cluster }));
+    // ModerationPolicy is a PostgreSQL-backed managed model. Its reconciler is
+    // a generated distributed worker even when the application itself runs on
+    // Kubernetes; the Kubernetes OperatorRuntime is reserved for CRD-backed
+    // managed resources.
+    profile.provide(OperatorRuntime, OperatorRuntime.distributed({ database, scheduler, queue }));
     profile.provide(JobRuntime, JobRuntime.kubernetes({
       cluster,
       queue,

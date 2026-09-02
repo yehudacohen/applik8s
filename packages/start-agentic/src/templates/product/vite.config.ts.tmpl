@@ -5,6 +5,24 @@ import tailwindcss from '@tailwindcss/vite';
 import { defineConfig } from 'vite';
 
 export default defineConfig({
+  build: {
+    rollupOptions: {
+      output: {
+        // React is stable across the application route graph. Keeping it in a
+        // focused vendor chunk prevents the entry chunk from growing whenever
+        // an independently loaded product module gains UI behavior.
+        manualChunks(id) {
+          const moduleId = id.replaceAll('\\', '/');
+          if (
+            moduleId.includes('/node_modules/react/')
+            || moduleId.includes('/node_modules/react-dom/')
+            || moduleId.includes('/node_modules/scheduler/')
+          ) return 'react-vendor';
+          return undefined;
+        },
+      },
+    },
+  },
   server: {
     host: process.env.HOST ?? '127.0.0.1',
     port: Number(process.env.PORT ?? '3000'),

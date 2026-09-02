@@ -2,12 +2,14 @@
 import { mkdtemp, readdir, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { gunzipSync } from 'node:zlib';
 import { app, applicationGraphFor, EventLog, event, IdentityProvider, Observability } from '@applik8s/applik8s';
 import { bindApplicationCallableDependencies } from '@applik8s/applik8s/internal/provider-runtime';
 import type { ApplicationGraph, ApplicationGraphNode, JsonObject } from '@applik8s/core';
 import { type } from 'arktype';
 import { pgTable, text } from 'drizzle-orm/pg-core';
+import { build } from 'esbuild';
 import { describe, expect, it } from 'vitest';
 import { emitGeneratedApplicationProcessors } from '../src/application-processors/index.js';
 import {
@@ -1494,6 +1496,90 @@ describe('generated v0.6 reactive workloads', () => {
     );
     expect(callback).not.toContain("from \"@applik8s/applik8s\"");
     expect(callback).not.toMatch(/import\s*\{[^}]*\bmodule\b/);
+  }, 120_000);
+
+  it('retains ArkType runtime schemas captured through the focused DSL import', async () => {
+    const graph = await nativeQueryFixtureGraph();
+    const query = graph.nodes.find((node) => node.kind === 'query');
+    if (query?.kind !== 'query') throw new Error('Native query fixture did not expose its query node.');
+    const schemaGraph: ApplicationGraph = {
+      ...graph,
+      nodes: graph.nodes.map((node) => node.id === query.id ? {
+        ...query,
+        handlerSource: 'async () => RuntimeStatus({ ready: true })',
+        handlerDependencies: {
+          source: `import { type } from '@applik8s/applik8s/dsl';
+const RuntimeStatus = type({ ready: 'boolean' });`,
+          resolveDir: process.cwd(),
+        },
+      } : node),
+    };
+    const artifacts = await emitGeneratedApplicationReactive({
+      graph: schemaGraph,
+      outDir: await mkdtemp(join(tmpdir(), 'applik8s-query-runtime-schema-')),
+      entrypoint: new URL('./fixtures/v06-native-query-app.ts', import.meta.url).pathname,
+    });
+    const gateway = artifacts.find((artifact) => artifact.kind === 'queryGateway');
+    const directory = dirname(gateway?.sourcePath ?? '');
+    const generated = await Promise.all(
+      (await readdir(directory))
+        .filter((name) => name.startsWith('run-') && name.endsWith('.generated.ts'))
+        .map((name) => readFile(join(directory, name), 'utf8')),
+    );
+    const runtimeSchemaModule = generated.find((source) => source.includes('RuntimeStatus'));
+    expect(runtimeSchemaModule).toContain("import { type } from 'arktype';");
+    expect(runtimeSchemaModule).not.toContain('@applik8s/applik8s/dsl');
+  }, 120_000);
+
+  it('lowers captured managed models to focused runtime facets', async () => {
+    const graph = await nativeQueryFixtureGraph();
+    const query = graph.nodes.find((node) => node.kind === 'query');
+    if (query?.kind !== 'query') throw new Error('Native query fixture did not expose its query node.');
+    const managedGraph: ApplicationGraph = {
+      ...graph,
+      nodes: graph.nodes.map((node) => node.id === query.id ? {
+        ...query,
+        handlerSource: 'async () => Card.$model.name',
+        handlerDependencies: {
+          source: `import { type } from '@applik8s/applik8s/dsl';
+import { pgTable, text } from 'drizzle-orm/pg-core';
+const cards = pgTable('cards', { id: text('id').primaryKey() });
+const Card = cards.managed({
+  status: type({ ready: 'boolean' }),
+  initialStatus: { ready: false },
+});`,
+          resolveDir: process.cwd(),
+        },
+      } : node),
+    };
+    const artifacts = await emitGeneratedApplicationReactive({
+      graph: managedGraph,
+      outDir: await mkdtemp(join(tmpdir(), 'applik8s-query-managed-model-')),
+      entrypoint: new URL('./fixtures/v06-native-query-app.ts', import.meta.url).pathname,
+    });
+    const gateway = artifacts.find((artifact) => artifact.kind === 'queryGateway');
+    const directory = dirname(gateway?.sourcePath ?? '');
+    const generated = await Promise.all(
+      (await readdir(directory))
+        .filter((name) => name.startsWith('run-') && name.endsWith('.generated.ts'))
+        .map(async (name) => ({ name, source: await readFile(join(directory, name), 'utf8') })),
+    );
+    const managedModule = generated.find(({ source }) => source.includes('const Card'));
+    expect(managedModule?.source).toContain('const Card = Object.assign(cards, { $model:');
+    expect(managedModule?.source).not.toContain('.managed(');
+    const bundled = join(await mkdtemp(join(tmpdir(), 'applik8s-query-managed-model-bundle-')), 'callback.mjs');
+    await build({
+      entryPoints: [join(directory, managedModule?.name ?? '')],
+      outfile: bundled,
+      bundle: true,
+      platform: 'node',
+      format: 'esm',
+      absWorkingDir: process.cwd(),
+      nodePaths: [join(process.cwd(), 'node_modules')],
+      logLevel: 'silent',
+    });
+    // static-import-exception: the test must execute the newly generated temporary ESM bundle whose path is only known at runtime.
+    await expect(import(pathToFileURL(bundled).href)).resolves.toMatchObject({ callback: expect.any(Function) });
   }, 120_000);
 
   it('bundles an authenticated HTTP/SSE gateway with Secret-backed PostgreSQL and cursor authority', async () => {

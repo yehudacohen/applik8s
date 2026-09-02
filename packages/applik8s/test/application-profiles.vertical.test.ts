@@ -9,6 +9,7 @@ import {
   applicationGraphFor,
   Certificate,
   ContainerRegistry,
+  config,
   CounterStore,
   CredentialStore,
   Database,
@@ -22,6 +23,7 @@ import {
   ObjectStorage,
   Queue,
   Secret,
+  secret,
   StructuredGeneration,
   TransactionalDatabase,
   WorkflowEngine,
@@ -603,6 +605,76 @@ describe('application deployment profiles', () => {
         endpoint: ' ',
       }),
     ).toThrow(/non-empty endpoint/);
+  });
+
+  it('accepts function-native external database bindings without admitting plaintext', () => {
+    const postgres = Database.externalPostgres({
+      name: 'primary-external',
+      namespace: 'application',
+      host: config.env('POSTGRES_HOST'),
+      port: config.env.integer('POSTGRES_PORT', { default: 5432 }),
+      database: config.env('POSTGRES_DATABASE'),
+      user: secret.env('POSTGRES_USER'),
+      password: secret.env('POSTGRES_PASSWORD'),
+      tls: {
+        mode: 'verify-full',
+        ca: secret.env('POSTGRES_CA'),
+      },
+    });
+    const clickhouse = Analytics.externalClickHouse({
+      name: 'analytics-external',
+      namespace: 'application',
+      endpoint: config.env.url('CLICKHOUSE_ENDPOINT'),
+      database: config.env('CLICKHOUSE_DATABASE'),
+      credentials: secret.env('CLICKHOUSE_CREDENTIALS', {
+        contract: {
+          format: 'json',
+          properties: ['username', 'password'],
+        },
+      }),
+    });
+
+    expect(postgres).toMatchObject({
+      kind: 'postgres',
+      ownership: 'external',
+      provision: false,
+      connectionSecret: {
+        apiVersion: 'v1',
+        kind: 'Secret',
+        namespace: 'application',
+        name: 'primary-external-connection',
+      },
+      connectionSecretKey: 'uri',
+      externalConnection: {
+        kind: 'environment',
+        host: { kind: 'config', reference: 'POSTGRES_HOST' },
+        user: { kind: 'secret', reference: 'POSTGRES_USER' },
+      },
+    });
+    expect(clickhouse).toMatchObject({
+      kind: 'clickhouse',
+      provision: false,
+      credentialsSecret: {
+        namespace: 'application',
+        name: 'analytics-external-credentials',
+      },
+      externalConnection: {
+        kind: 'environment',
+        endpoint: { kind: 'config', reference: 'CLICKHOUSE_ENDPOINT' },
+        credentials: { kind: 'secret', reference: 'CLICKHOUSE_CREDENTIALS' },
+      },
+    });
+    const serialized = JSON.stringify({ postgres, clickhouse });
+    expect(serialized).not.toContain('postgres-password');
+    expect(serialized).not.toContain('clickhouse-password');
+    expect(() => Database.externalPostgres({
+      host: 'postgres.example.test',
+      port: 5432,
+      database: 'application',
+      // @ts-expect-error Plaintext credentials are forbidden by the public contract.
+      user: 'postgres',
+      password: secret.env('POSTGRES_PASSWORD'),
+    })).toThrow(/secret\.env/u);
   });
 
   it('derives literal variants and records one exhaustive qualified provider selection', () => {

@@ -5411,6 +5411,7 @@ function rewriteQueryRuntimeDependencies(source: string, query: ApplicationQuery
     if (!ts.isVariableStatement(statement) || statement.declarationList.declarations.length !== 1) continue;
     const declaration = statement.declarationList.declarations[0];
     if (!declaration?.initializer || !ts.isIdentifier(declaration.name)) continue;
+    const declarationName = declaration.name.text;
     const initializer = declaration.initializer;
     if (!ts.isCallExpression(initializer)) continue;
     const callee = initializer.expression.getText(file);
@@ -5427,9 +5428,26 @@ function rewriteQueryRuntimeDependencies(source: string, query: ApplicationQuery
       if (!table) throw new Error(`Generated query ${query.id} contains an application model capture without a native table argument.`);
       const declaredName = objectLiteralStringProperty(initializer.arguments[1], 'name');
       const model = models.find((candidate) => candidate.name === declaredName) ?? models.find((candidate) => candidate.runtime?.tableName === table);
-      if (!model) throw new Error(`Generated query ${query.id} cannot map captured model ${declaration.name.text} to a native model graph node.`);
+      if (!model) throw new Error(`Generated query ${query.id} cannot map captured model ${declarationName} to a native model graph node.`);
       const facet = queryRuntimeModelFacet(model);
       edits.push({ start: initializer.getStart(file), end: initializer.getEnd(), replacement: `Object.assign(${table}, { $model: ${JSON.stringify(facet)} })` });
+      continue;
+    }
+    if (/\.managed$/.test(callee) && ts.isPropertyAccessExpression(initializer.expression)) {
+      const table = initializer.expression.expression.getText(file);
+      const model = models.find((candidate) => candidate.name === declarationName)
+        ?? models.find((candidate) => candidate.runtime?.tableName === table);
+      if (!model) {
+        throw new Error(
+          `Generated query ${query.id} cannot map captured managed model ${declarationName} to a native model graph node.`,
+        );
+      }
+      const facet = queryRuntimeModelFacet(model);
+      edits.push({
+        start: initializer.getStart(file),
+        end: initializer.getEnd(),
+        replacement: `Object.assign(${table}, { $model: ${JSON.stringify(facet)} })`,
+      });
     }
   }
   let rewritten = importedModelsRewritten;
@@ -5451,12 +5469,26 @@ function focusedQueryRuntimeImport(
 ): string {
   if (
     !ts.isStringLiteral(statement.moduleSpecifier)
-    || statement.moduleSpecifier.text !== '@applik8s/applik8s'
+    || !statement.moduleSpecifier.text.startsWith('@applik8s/applik8s')
   ) return '';
   const clause = statement.importClause;
   if (!clause?.namedBindings || !ts.isNamedImports(clause.namedBindings)) {
     return '';
   }
+  if (statement.moduleSpecifier.text === '@applik8s/applik8s/dsl') {
+    const arktype = clause.namedBindings.elements.flatMap((element) => {
+      if (element.isTypeOnly) return [];
+      const imported = element.propertyName?.text ?? element.name.text;
+      if (imported !== 'type') return [];
+      return [element.propertyName
+        ? `${imported} as ${element.name.text}`
+        : imported];
+    });
+    return arktype.length > 0
+      ? `import { ${arktype.join(', ')} } from 'arktype';`
+      : '';
+  }
+  if (statement.moduleSpecifier.text !== '@applik8s/applik8s') return '';
   const typeImports: string[] = [];
   const focusedImports = new Map<string, string[]>();
   const runtimeModules = new Map<string, string>([

@@ -9,7 +9,7 @@ import {
   type ApplicationManagedModelStoreRecord,
   type ApplicationManagedModelWriteReceipt,
   applicationManagedModelProtocol,
-} from '@applik8s/applik8s';
+} from '@applik8s/applik8s/managed-model-runtime';
 import type {
   ApplicationPostgresSql,
   ApplicationPostgresTransactionSql,
@@ -225,7 +225,7 @@ export function createPostgresApplicationManagedModelStore<
               desired_digest, resource_version, status_schema_version, status, created_at, invalidated
             ) VALUES ($1, $2, $3, $4::jsonb, $5::uuid, 1, $6, 1, $7, $8::jsonb, $9::timestamptz, true)
             RETURNING ${managedColumns}`,
-            [applicationId, model, key, JSON.stringify(identity), randomUUID(), valueDigest, statusSchemaVersion, JSON.stringify(initialStatus), now],
+            [applicationId, model, key, jsonParameter(executor, identity), randomUUID(), valueDigest, statusSchemaVersion, jsonParameter(executor, initialStatus), now],
           );
           row = inserted[0];
         } else if (current.deletion_timestamp) {
@@ -247,7 +247,7 @@ export function createPostgresApplicationManagedModelStore<
               attempt = 0, last_error = NULL
              WHERE application_id = $1 AND model_name = $2 AND identity_key = $3
              RETURNING ${managedColumns}`,
-            [applicationId, model, key, JSON.stringify(identity), randomUUID(), valueDigest, statusSchemaVersion, JSON.stringify(initialStatus), now],
+            [applicationId, model, key, jsonParameter(executor, identity), randomUUID(), valueDigest, statusSchemaVersion, jsonParameter(executor, initialStatus), now],
           );
           row = replaced[0];
         } else {
@@ -267,7 +267,7 @@ export function createPostgresApplicationManagedModelStore<
                 lease_expires_at = NULL, reconcile_id = NULL, last_error = NULL
                WHERE application_id = $1 AND model_name = $2 AND identity_key = $3
                RETURNING ${managedColumns}`,
-              [applicationId, model, key, JSON.stringify(identity), valueDigest],
+              [applicationId, model, key, jsonParameter(executor, identity), valueDigest],
             );
             row = updated[0];
           }
@@ -296,7 +296,7 @@ export function createPostgresApplicationManagedModelStore<
           resource_version = CASE WHEN deletion_timestamp IS NULL THEN resource_version + 1 ELSE resource_version END,
           next_due_at = NULL, lease_expires_at = NULL, reconcile_id = NULL
          WHERE application_id = $1 AND model_name = $2 AND identity_key = $3 RETURNING generation, resource_version`,
-        [applicationId, model, identityKey(identity), now, currentValue ? JSON.stringify(currentValue) : null],
+        [applicationId, model, identityKey(identity), now, currentValue ? jsonParameter(executor, currentValue) : null],
       );
       if (!rows[0]) throw new Error(`Managed-model ${model}/${identityKey(identity)} does not exist.`);
       await executor.unsafe(
@@ -437,7 +437,7 @@ export function createPostgresApplicationManagedModelStore<
       } satisfies ApplicationManagedModelLease<TIdentity, TValue, TStatus>;
     },
     async writeStatus(precondition, status, now) {
-      const record = await mutate(precondition, 'status = $8::jsonb', [JSON.stringify(status)]);
+      const record = await mutate(precondition, 'status = $8::jsonb', [jsonParameter(sql, status)]);
       return { record, receipt: receipt(record, precondition.fence, now) };
     },
     async writeCondition(precondition, condition, now) {
@@ -455,7 +455,7 @@ export function createPostgresApplicationManagedModelStore<
         };
         conditions = [...conditions.filter((entry) => entry.type !== condition.type), next].sort((left, right) => left.type.localeCompare(right.type));
       }
-      const record = await mutate(precondition, 'conditions = $8::jsonb', [JSON.stringify(conditions)]);
+      const record = await mutate(precondition, 'conditions = $8::jsonb', [jsonParameter(sql, conditions)]);
       return { record, receipt: receipt(record, precondition.fence, now) };
     },
     async ensureFinalizers(precondition, finalizers) {
@@ -463,12 +463,12 @@ export function createPostgresApplicationManagedModelStore<
       if (!current) throw stale(precondition);
       const next = [...new Set([...current.metadata.finalizers, ...finalizers])].sort();
       if (applicationManagedModelDesiredDigest(next) === applicationManagedModelDesiredDigest(current.metadata.finalizers)) return current;
-      return mutate(precondition, 'finalizers = $8::jsonb', [JSON.stringify(next)]);
+      return mutate(precondition, 'finalizers = $8::jsonb', [jsonParameter(sql, next)]);
     },
     async removeFinalizer(precondition, finalizer) {
       const current = await select(precondition.id);
       if (!current) throw stale(precondition);
-      return mutate(precondition, 'finalizers = $8::jsonb', [JSON.stringify(current.metadata.finalizers.filter((value) => value !== finalizer))]);
+      return mutate(precondition, 'finalizers = $8::jsonb', [jsonParameter(sql, current.metadata.finalizers.filter((value) => value !== finalizer))]);
     },
     async complete(precondition, completeOptions) {
       return sql.begin(async (transaction) => {
@@ -561,4 +561,12 @@ function jsonValue(value: unknown): unknown {
   } catch {
     return value;
   }
+}
+
+function jsonParameter(
+  executor: ApplicationPostgresSql | ApplicationPostgresTransactionSql,
+  value: unknown,
+): unknown {
+  const normalized = JSON.parse(JSON.stringify(value)) as unknown;
+  return executor.json ? executor.json(normalized) : JSON.stringify(normalized);
 }

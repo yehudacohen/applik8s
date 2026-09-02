@@ -1,6 +1,6 @@
 // typecast-file-boundary: router adapters expose distinct context generics reconciled only inside this portability fixture.
-import { ApplicationQueryClient, queryInputKey, type ApplicationQuerySnapshot, type ApplicationQueryTransport } from '@applik8s/client';
-import { ApplicationQueryClientProvider, useApplicationQuery } from '@applik8s/react';
+import { ApplicationQueryClient, installApplicationQueryClientResolver, queryInputKey, type ApplicationQuerySnapshot, type ApplicationQueryTransport } from '@applik8s/client';
+import { Applik8sProvider, ApplicationQueryClientProvider, useApplicationQuery } from '@applik8s/react';
 import { hydrateApplicationQueries, preloadApplicationQuery, type ApplicationQueryLoaderResult } from '@applik8s/client';
 import { createMemoryHistory, createRootRouteWithContext, createRoute, createRouter } from '@tanstack/react-router';
 import { createElement } from 'react';
@@ -64,6 +64,21 @@ describe('router-independent React query integration', () => {
 
     expect(html).toContain('Portable');
     expect(loaderCalls).toBe(1);
+  });
+
+  it('reuses an adapter-provided request client for SSR without route-level hydration ceremony', () => {
+    const requestClient = new ApplicationQueryClient({
+      async snapshot() { throw new Error('SSR must reuse the already hydrated request client.'); },
+      subscribe() {},
+    });
+    requestClient.hydrate([snapshot('cards.for-set.v1', { setId: 'set-1' }, [{ id: 'card-1', name: 'Request scoped' }])]);
+    const dispose = installApplicationQueryClientResolver(() => requestClient);
+    try {
+      const html = renderToString(createElement(Applik8sProvider, undefined, createElement(CardList)));
+      expect(html).toContain('Request scoped');
+    } finally {
+      dispose();
+    }
   });
 });
 

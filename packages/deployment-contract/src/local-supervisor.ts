@@ -63,7 +63,7 @@ export type LocalSupervisorEnvironment =
 
 export type LocalSupervisorEnvironmentSegment =
   | { readonly kind: 'literal'; readonly value: string }
-  | { readonly kind: 'binding'; readonly binding: string; readonly transform?: 'authority' | 'hostname' | 'port' };
+  | { readonly kind: 'binding'; readonly binding: string; readonly transform?: 'authority' | 'hostname' | 'port' | 'uriComponent' };
 
 export interface LocalSupervisorExternalResource extends LocalSupervisorResourceBase {
   readonly kind: 'external';
@@ -84,6 +84,8 @@ export interface LocalSupervisorBinding {
    * serialized into the plan, state, or generated credential store.
    */
   readonly sourceEnvironment?: string;
+  /** Optional string property extracted from a JSON environment object. */
+  readonly sourceProperty?: string;
   /** Controls endpoint presentation to consumers without changing health semantics. */
   readonly format?: 'url' | 'authority';
 }

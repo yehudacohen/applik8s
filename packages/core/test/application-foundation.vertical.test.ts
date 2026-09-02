@@ -355,6 +355,30 @@ describe('v0.8 canonical foundation', () => {
     }));
   });
 
+  it('treats only managed models as execution owners of their generated reconciler', () => {
+    const graph = {
+      apiVersion: 'applik8s.appGraph/v1alpha1',
+      kind: 'ApplicationGraph',
+      metadata: { name: 'managed-models' },
+      nodes: [
+        {
+          id: 'model.policy', kind: 'model', name: 'Policy', stability: 'stable',
+          managed: { runtime: { interface: 'OperatorRuntime', nodeId: 'provider.operator-runtime' } },
+        },
+        { id: 'model.note', kind: 'model', name: 'Note', stability: 'stable' },
+      ],
+      edges: [], providerRequirements: [], providerBindings: [],
+      compatibility: {
+        stablePublicApis: [], documentedInternalContracts: [], experimentalSurfaces: [], postV3Surfaces: [], labels: [],
+      },
+    } as unknown as ApplicationGraph;
+
+    const foundation = deriveApplicationGraphFoundation(graph);
+    const executions = foundation.identities.filter((identity) => identity.kind === 'execution-boundary');
+    expect(executions).toHaveLength(1);
+    expect(executions[0]?.semanticKey).toContain('model.policy');
+  });
+
   it('derives callable-provider access from function-native HTTP routes', () => {
     const providerId = 'provider.acquisition-provider.v1alpha1.primary';
     const graph = {

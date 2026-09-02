@@ -120,7 +120,7 @@ export async function emitApplicationDeploymentGraph(
     request.graph.metadata.name,
     ),
     installationSpec,
-    request.graph,
+    deploymentGraph,
     request.profile,
   );
   const validationMaterialized = await materializeInstallationComposition(
@@ -351,6 +351,23 @@ export function withInstallationRuntimeBindings(
     graph,
     "NotificationDelivery",
   );
+  const externalPostgresCaBindings = graph.nodes.flatMap((node) => {
+    if (node.kind !== 'provider' || node.interface !== 'TransactionalDatabase') return [];
+    const config = optionalObject(node.config?.transactionalDatabase) ?? optionalObject(node.config);
+    const external = optionalObject(config?.externalConnection);
+    const tls = optionalObject(external?.tls);
+    if (external?.kind !== 'environment' || !tls?.ca) return [];
+    const secret = optionalObject(config?.connectionSecret);
+    const secretName = optionalString(secret?.name);
+    if (!secretName) {
+      throw new Error(`External PostgreSQL provider ${node.id} with a custom CA has no connection Secret identity.`);
+    }
+    return [{
+      providerId: node.id,
+      secretName,
+      consumers: applicationProviderConsumerWorkloads(graph, new Set([node.id])),
+    }];
+  });
   const profiledProviderIds = new Set(
     graph.nodes.flatMap((node) =>
       node.kind === "provider"
@@ -474,6 +491,8 @@ export function withInstallationRuntimeBindings(
       : undefined);
     if (!workloadName) return resource;
     const component = applicationRuntimeComponent(template);
+    const postgresCaBindings = externalPostgresCaBindings.filter(({ consumers }) =>
+      consumers.has(workloadName));
     const actorRuntimeId = actorRuntime?.id;
     const deploymentConsumesActorRuntime = Boolean(
       actorRuntimeId
@@ -572,6 +591,13 @@ export function withInstallationRuntimeBindings(
         ...(containerNeedsActorRuntime ? actorEnvironment : []),
       ];
       const projectedNames = new Set(projectedEnvironment.map(({ name }) => name));
+      const existingMounts = arrayValue(container.volumeMounts).map((entry) =>
+        objectValue(entry, 'application runtime volume mount'));
+      const caMounts = postgresCaBindings.map(({ providerId, secretName }) => ({
+        name: externalPostgresCaVolumeName(providerId),
+        mountPath: `/var/run/secrets/applik8s/database/${secretName}`,
+        readOnly: true,
+      }));
       return {
         ...container,
         env: [
@@ -580,8 +606,26 @@ export function withInstallationRuntimeBindings(
           ),
           ...projectedEnvironment,
         ],
+        ...(caMounts.length > 0
+          ? {
+              volumeMounts: [
+                ...existingMounts.filter((mount) =>
+                  !caMounts.some(({ name }) => mount.name === name)),
+                ...caMounts,
+              ],
+            }
+          : {}),
       };
     });
+    const existingVolumes = arrayValue(podSpec.volumes).map((entry) =>
+      objectValue(entry, 'application runtime volume'));
+    const caVolumes = postgresCaBindings.map(({ providerId, secretName }) => ({
+      name: externalPostgresCaVolumeName(providerId),
+      secret: {
+        secretName,
+        items: [{ key: 'ca.pem', path: 'ca.pem' }],
+      },
+    }));
     return {
       ...resource,
       template: {
@@ -593,6 +637,15 @@ export function withInstallationRuntimeBindings(
             spec: {
               ...podSpec,
               containers,
+              ...(caVolumes.length > 0
+                ? {
+                    volumes: [
+                      ...existingVolumes.filter((volume) =>
+                        !caVolumes.some(({ name }) => volume.name === name)),
+                      ...caVolumes,
+                    ],
+                  }
+                : {}),
             },
           },
         },
@@ -600,6 +653,10 @@ export function withInstallationRuntimeBindings(
     };
   });
   return { ...materialized, resources };
+}
+
+function externalPostgresCaVolumeName(providerId: string): string {
+  return `postgres-ca-${createHash('sha256').update(providerId).digest('hex').slice(0, 10)}`;
 }
 
 /**
@@ -1143,12 +1200,125 @@ export async function applicationGeneratedSecretRequirements(
       graph,
       resolvedApplicationNamespace ?? graph.metadata.namespace ?? 'default',
     ),
+    ...externalCapabilityEnvironmentSecretRequirements(
+      graph,
+      resolvedApplicationNamespace ?? graph.metadata.namespace ?? 'default',
+    ),
     ...hostEnvironmentSecretRequirements(
       installationSpec,
       resolvedApplicationNamespace ?? graph.metadata.namespace ?? "default",
       applicationHostConsumer,
     ),
   ];
+}
+
+function externalCapabilityEnvironmentSecretRequirements(
+  graph: ApplicationGraph,
+  namespaceValue: unknown,
+): readonly ApplicationGeneratedSecretRequirement[] {
+  const defaultNamespace = stringValue(namespaceValue, 'External capability runtime namespace');
+  const requirements: ApplicationGeneratedSecretRequirement[] = [];
+  for (const node of graph.nodes) {
+    if (node.kind !== 'provider') continue;
+    if (node.interface === 'TransactionalDatabase') {
+      const config = optionalObject(node.config?.transactionalDatabase) ?? optionalObject(node.config);
+      const external = optionalObject(config?.externalConnection);
+      if (external?.kind !== 'environment') continue;
+      const connectionSecret = optionalObject(config?.connectionSecret);
+      const namespace = optionalString(connectionSecret?.namespace)
+        ?? optionalString(config?.namespace)
+        ?? defaultNamespace;
+      const name = stringValue(connectionSecret?.name, `${node.id} external PostgreSQL connection Secret name`);
+      const host = stringValue(external.host, `${node.id} external PostgreSQL host`);
+      const port = Number(external.port);
+      if (!Number.isSafeInteger(port) || port < 1 || port > 65_535) {
+        throw new Error(`${node.id} external PostgreSQL port must be an integer from 1 through 65535.`);
+      }
+      const database = stringValue(external.database, `${node.id} external PostgreSQL database`);
+      const user = externalSecretEnvironmentReference(external.user, `${node.id} external PostgreSQL user`);
+      const password = externalSecretEnvironmentReference(external.password, `${node.id} external PostgreSQL password`);
+      const tls = optionalObject(external.tls);
+      const tlsMode = optionalString(tls?.mode) ?? 'require';
+      const ca = tls?.ca === undefined
+        ? undefined
+        : externalSecretEnvironmentReference(tls.ca, `${node.id} external PostgreSQL CA`);
+      const query = tlsMode === 'disable'
+        ? ''
+        : `?sslmode=${encodeURIComponent(tlsMode)}${ca ? `&sslrootcert=${encodeURIComponent(`/var/run/secrets/applik8s/database/${name}/ca.pem`)}` : ''}`;
+      requirements.push({
+        id: `${node.id}.external-connection`,
+        namespace,
+        name,
+        referenceMode: 'staticIdentity',
+        values: {
+          username: { kind: 'hostEnvironment', name: user },
+          password: { kind: 'hostEnvironment', name: password },
+          ...(ca ? { 'ca.pem': { kind: 'hostEnvironment' as const, name: ca } } : {}),
+          uri: {
+            kind: 'template',
+            segments: [
+              { kind: 'literal', value: 'postgresql://' },
+              { kind: 'value', key: 'username', transform: 'uriComponent' },
+              { kind: 'literal', value: ':' },
+              { kind: 'value', key: 'password', transform: 'uriComponent' },
+              { kind: 'literal', value: `@${externalPostgresAuthority(host, port)}/${encodeURIComponent(database)}${query}` },
+            ],
+          },
+        },
+        consumers: [node.id],
+      });
+      continue;
+    }
+    if (node.interface === 'AnalyticalDatabase') {
+      const config = optionalObject(node.config?.analyticalDatabase) ?? optionalObject(node.config);
+      const external = optionalObject(config?.externalConnection);
+      if (external?.kind !== 'environment') continue;
+      const credentialsSecret = optionalObject(config?.credentialsSecret);
+      const namespace = optionalString(credentialsSecret?.namespace)
+        ?? optionalString(config?.namespace)
+        ?? defaultNamespace;
+      const name = stringValue(credentialsSecret?.name, `${node.id} external ClickHouse credential Secret name`);
+      const credentials = externalSecretEnvironmentReference(
+        external.credentials,
+        `${node.id} external ClickHouse credentials`,
+      );
+      requirements.push({
+        id: `${node.id}.external-credentials`,
+        namespace,
+        name,
+        referenceMode: 'staticIdentity',
+        values: {
+          username: { kind: 'hostEnvironmentJson', name: credentials, property: 'username' },
+          password: { kind: 'hostEnvironmentJson', name: credentials, property: 'password' },
+        },
+        consumers: [node.id],
+      });
+    }
+  }
+  return requirements;
+}
+
+function externalSecretEnvironmentReference(value: unknown, label: string): string {
+  const binding = optionalObject(value);
+  if (
+    binding?.apiVersion !== 'applik8s.configurationBinding/v1alpha1'
+    || binding.kind !== 'secret'
+    || binding.source !== 'environment'
+  ) {
+    throw new Error(`${label} must use secret.env(...).`);
+  }
+  return stringValue(binding.reference, `${label} environment reference`);
+}
+
+function externalPostgresAuthority(host: string, port: number): string {
+  const normalized = host.includes(':') && !host.startsWith('[') ? `[${host}]` : host;
+  try {
+    const parsed = new URL(`postgresql://placeholder@${normalized}:${port}/database`);
+    if (!parsed.hostname || parsed.username !== 'placeholder') throw new Error('invalid authority');
+  } catch {
+    throw new Error(`External PostgreSQL host ${JSON.stringify(host)} is not a valid hostname or IP address.`);
+  }
+  return `${normalized}:${port}`;
 }
 
 function structuredGenerationEnvironmentSecretRequirements(
@@ -1548,6 +1718,7 @@ async function applicationArtifactRequirements(
     ["migrations", "migration"],
     ["processors", "processor"],
     ["jobs", "job-controller"],
+    ["managedModels", "managed-model-operator"],
     ["lakehousePublishers", "lakehouse-publisher"],
     ["workflows", "workflow"],
     ["reactive", "reactive"],
@@ -1612,6 +1783,9 @@ async function applicationArtifactRequirements(
     const host = await readJson(hostPath);
     const hostSpec = objectValue(host.spec, "ApplicationHost artifact spec");
     const logicalReference = stringValue(hostSpec.image, "ApplicationHost image");
+    const applicationHostProvider = graph.nodes.find(
+      (node) => node.kind === "provider" && node.interface === "ApplicationHost",
+    );
     artifacts.push({
       id: artifactId("application-host", "web"),
       artifactType: "containerImage",
@@ -1631,7 +1805,7 @@ async function applicationArtifactRequirements(
         ),
       },
       logicalReference,
-      semanticNodeId: "provider.application-host",
+      ...(applicationHostProvider ? { semanticNodeId: applicationHostProvider.id } : {}),
       executionNodeIds: applicationHostExecutionNodeIds(graph),
       credentialProjections: applicationHostCredentialProjections(hostSpec),
     });

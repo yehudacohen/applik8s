@@ -4,7 +4,7 @@ import {
   type ApplicationManagedModelRunResult,
   type ApplicationManagedModelRuntimeBinding,
   type ApplicationManagedModelStore,
-} from '@applik8s/applik8s';
+} from '@applik8s/applik8s/managed-model-runtime';
 
 export interface PostgresApplicationOperatorWorkItem {
   readonly model: string;

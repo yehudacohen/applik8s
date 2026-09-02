@@ -35,6 +35,7 @@ function createApplicationPostgresSqlFromNative(
     // typecast: postgres-js exposes a wider variadic generic than the stable
     // Applik8s SQL boundary, while their runtime call signatures are identical.
     unsafe: native.unsafe.bind(native) as ApplicationPostgresSql['unsafe'],
+    json: native.json.bind(native),
     // typecast: adapt postgres-js's generic transaction callback once at the
     // provider boundary while preserving the framework's qualified contract.
     begin: ((operation: (

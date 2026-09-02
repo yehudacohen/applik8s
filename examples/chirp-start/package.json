@@ -30,7 +30,7 @@
     "drizzle-orm": "^0.45.1",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
-    "typekro": "0.33.9"
+    "typekro": "0.33.10"
   },
   "devDependencies": {
     "@applik8s/cli": "workspace:*",

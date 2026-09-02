@@ -23,9 +23,9 @@ export function hostEnvironmentSecretData(
         string,
         Extract<
           ApplicationGeneratedSecretProps["values"][string],
-          { readonly kind: "hostEnvironment" }
+          { readonly kind: "hostEnvironment" | "hostEnvironmentJson" }
         >,
-      ] => entry[1].kind === "hostEnvironment",
+      ] => entry[1].kind === "hostEnvironment" || entry[1].kind === "hostEnvironmentJson",
     ),
   );
   if (Object.keys(bindings).length === 0) return {};
@@ -38,8 +38,13 @@ export function hostEnvironmentSecretData(
     // operation-host source. A complete environment explicitly rotates them.
     return {};
   }
+  const allValuesAreReproducible = Object.values(props.values).every((value) =>
+    value.kind === "hostEnvironment"
+    || value.kind === "hostEnvironmentJson"
+    || value.kind === "publicLiteral"
+    || value.kind === "template");
   const values = materializeApplicationGeneratedSecretValues(
-    bindings,
+    allValuesAreReproducible ? props.values : bindings,
     process.env,
   );
   return Object.fromEntries(

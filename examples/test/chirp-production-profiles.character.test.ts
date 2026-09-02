@@ -43,7 +43,7 @@ describe('Chirp v0.9 production assembly profiles', () => {
     expect(kubernetes.implementations.map(({ identity }) => identity.provider.export)).toEqual(
       expect.arrayContaining([
         'Database.postgres',
-        'OperatorRuntime.kubernetes',
+        'OperatorRuntime.distributed',
         'JobRuntime.kubernetes',
         'Scheduler.postgres',
         'ApplicationHost.kubernetes',

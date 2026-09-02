@@ -82,7 +82,7 @@ export function assertGeneratedSecretHostEnvironmentAvailable(
     );
     for (const value of Object.values(configuration.values)) {
       if (
-        value.kind !== "hostEnvironment" ||
+        (value.kind !== "hostEnvironment" && value.kind !== "hostEnvironmentJson") ||
         environment[value.name]?.trim()
       ) {
         continue;

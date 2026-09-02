@@ -130,7 +130,11 @@ export function applicationProviderRefDiagnostics(owner: string, ref: Applicatio
 export function applicationProviderRefsForNode(node: ApplicationGraphNode): readonly ApplicationProviderRef[] {
   switch (node.kind) {
     case 'model':
-      return [node.database, node.materialization.provider];
+      return [
+        node.database,
+        node.materialization.provider,
+        ...(node.managed?.workflowEngine ? [node.managed.workflowEngine] : []),
+      ];
     case 'server':
       return [
         ...(node.exposure ? [node.exposure] : []),

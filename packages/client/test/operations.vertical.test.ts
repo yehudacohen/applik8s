@@ -204,6 +204,38 @@ describe('application operations', () => {
     }
   });
 
+  it('shares React operation adapters across separately evaluated bundle copies', async () => {
+    const restoreHook = installApplicationQueryHook((operation, input) => ({
+      phase: 'ready',
+      data: [{ operation: operation.id, input }],
+      error: undefined,
+      stale: false,
+      revision: 1,
+      async refresh() {},
+    }) as never);
+    try {
+      // SSR bundlers can emit generated operations and @applik8s/react into
+      // different chunks. Resetting Vitest's module graph creates the same
+      // second-copy boundary while retaining the realm-local symbol registry.
+      vi.resetModules();
+      // static-import-exception: this dynamic import intentionally creates a second module instance after resetModules to reproduce split SSR chunks.
+      const isolated = await import('../src/operations.js');
+      const published = isolated.createApplicationQueryOperation<
+        { guestbook: string },
+        readonly object[]
+      >(publishedContract);
+      expect(published({ guestbook: 'main' }).useQuery()).toMatchObject({
+        phase: 'ready',
+        data: [{
+          operation: 'GuestBookEntry.published',
+          input: { guestbook: 'main' },
+        }],
+      });
+    } finally {
+      restoreHook();
+    }
+  });
+
   it('normalizes empty-input operations so their public call is truly nullary', async () => {
     const observed: unknown[] = [];
     const restore = installApplicationOperationRuntime({

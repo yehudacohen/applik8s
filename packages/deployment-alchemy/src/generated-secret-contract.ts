@@ -68,6 +68,13 @@ function generatedSecretValue(
       name: requiredString(contract.name, `${label}.name`),
     };
   }
+  if (contract.kind === "hostEnvironmentJson") {
+    return {
+      kind: "hostEnvironmentJson",
+      name: requiredString(contract.name, `${label}.name`),
+      property: requiredString(contract.property, `${label}.property`),
+    };
+  }
   if (contract.kind === "publicLiteral") {
     return {
       kind: "publicLiteral",
@@ -132,9 +139,13 @@ function generatedSecretTemplateSegment(
     };
   }
   if (segment.kind === "value") {
+    if (segment.transform !== undefined && segment.transform !== "uriComponent") {
+      throw new Error(`${label}.transform must be uriComponent.`);
+    }
     return {
       kind: "value",
       key: requiredString(segment.key, `${label}.key`),
+      ...(segment.transform === "uriComponent" ? { transform: "uriComponent" as const } : {}),
     };
   }
   throw new Error(`${label} has an unsupported generated template segment.`);

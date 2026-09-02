@@ -10,6 +10,12 @@ export type ApplicationGeneratedSecretValue =
       readonly name: string;
     }
   | {
+      /** Extract one non-empty string property from a JSON environment value. */
+      readonly kind: "hostEnvironmentJson";
+      readonly name: string;
+      readonly property: string;
+    }
+  | {
       readonly kind: "random";
       readonly bytes: number;
       readonly encoding: "base64url";
@@ -27,7 +33,7 @@ export type ApplicationGeneratedSecretValue =
       readonly kind: "template";
       readonly segments: readonly (
         | { readonly kind: "literal"; readonly value: string }
-        | { readonly kind: "value"; readonly key: string }
+        | { readonly kind: "value"; readonly key: string; readonly transform?: "uriComponent" }
       )[];
     };
 export interface ApplicationGeneratedSecretProps {
@@ -84,6 +90,31 @@ function generatedValue(
     }
     return value;
   }
+  if (contract.kind === "hostEnvironmentJson") {
+    const source = environment[contract.name];
+    if (!source) {
+      throw new Error(
+        `Generated Secret requires non-empty operation-host environment variable ${contract.name}.`,
+      );
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(source);
+    } catch {
+      throw new Error(
+        `Generated Secret environment variable ${contract.name} must contain a JSON object.`,
+      );
+    }
+    const value = parsed && typeof parsed === "object"
+      ? Reflect.get(parsed, contract.property)
+      : undefined;
+    if (typeof value !== "string" || !value) {
+      throw new Error(
+        `Generated Secret environment variable ${contract.name} requires non-empty string property ${contract.property}.`,
+      );
+    }
+    return value;
+  }
   if (contract.kind === "publicLiteral") return contract.value;
   if (contract.kind === "jwkSet") {
     const { privateKey } = generateKeyPairSync("rsa", {
@@ -136,11 +167,16 @@ export function materializeApplicationGeneratedSecretValues(
     for (const [key, contract] of ready) {
       if (contract.kind !== "template") continue;
       generated[key] = contract.segments
-        .map((segment) =>
-          segment.kind === "literal"
-            ? segment.value
-            : generated[segment.key],
-        )
+        .map((segment) => {
+          if (segment.kind === "literal") return segment.value;
+          const sibling = generated[segment.key];
+          if (sibling === undefined) {
+            throw new Error(`Generated Secret template references unresolved sibling ${segment.key}.`);
+          }
+          return segment.transform === "uriComponent"
+            ? encodeURIComponent(sibling)
+            : sibling;
+        })
         .join("");
       pending.delete(key);
     }
@@ -190,6 +226,14 @@ function validateGeneratedSecretValue(props: ApplicationGeneratedSecretProps, ke
     );
   }
   if (
+    contract.kind === "hostEnvironmentJson" &&
+    (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(contract.name) || !contract.property.trim())
+  ) {
+    throw new Error(
+      `Generated Secret ${identity} has an invalid JSON host environment binding.`,
+    );
+  }
+  if (
     contract.kind === "publicLiteral" &&
     (!contract.value.trim() ||
       /(?:password|passwd|token|private[-_]?key|client[-_]?secret|credential)/i.test(
@@ -234,7 +278,9 @@ function validateGeneratedSecretValue(props: ApplicationGeneratedSecretProps, ke
       contract.segments.some((segment) =>
         segment.kind === "literal"
           ? segment.value.length === 0
-          : !segment.key.trim() || !Object.hasOwn(props.values, segment.key),
+          : !segment.key.trim()
+            || !Object.hasOwn(props.values, segment.key)
+            || (segment.transform !== undefined && segment.transform !== "uriComponent"),
       ))
   ) {
     throw new Error(
@@ -250,7 +296,7 @@ function validateTemplateDependencies(values: Readonly<Record<string, Applicatio
         key,
         contract.kind === "template"
           ? contract
-          : contract.kind === "hostEnvironment"
+          : contract.kind === "hostEnvironment" || contract.kind === "hostEnvironmentJson"
             ? { kind: "publicLiteral", value: `environment-${key}` }
           : { kind: "publicLiteral", value: `generated-${key}` },
       ]),

@@ -89,6 +89,11 @@ export type ApplicationGeneratedSecretValue =
       readonly name: string;
     }
   | {
+      readonly kind: "hostEnvironmentJson";
+      readonly name: string;
+      readonly property: string;
+    }
+  | {
       readonly kind: "random";
       readonly bytes: number;
       readonly encoding: "base64url";
@@ -114,7 +119,7 @@ export type ApplicationGeneratedSecretValue =
       readonly kind: "template";
       readonly segments: readonly (
         | { readonly kind: "literal"; readonly value: string }
-        | { readonly kind: "value"; readonly key: string }
+        | { readonly kind: "value"; readonly key: string; readonly transform?: "uriComponent" }
       )[];
     };
 

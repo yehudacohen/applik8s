@@ -8,7 +8,7 @@ import { Automation, AutomationControl, AutomationControlCurrent, AutomationMine
 import { EngagementBatch, EngagementBatchRecent } from './domain/engagement';
 import { HistoricalEngagement } from './domain/history';
 import { Media, MediaForPosts } from './domain/media';
-import { ModerationCase, ModerationCaseQueue, ModerationPolicyCurrent, Report, ReportOpenQueue } from './domain/moderation';
+import { ModerationCase, ModerationCaseQueue, ModerationPolicy, ModerationPolicyCurrent, Report, ReportOpenQueue } from './domain/moderation';
 import { Notification, NotificationInbox } from './domain/notifications';
 import { Post, PostByAuthor, PostByAuthorHandle, PostConversation, PostHomeTimeline, PostSearch, PostTrending } from './domain/post';
 import { Block, BlockViewerState, Follow, FollowFollowers, FollowFollowing, FollowViewerState, Mute, MuteViewerState } from './domain/relationships';
@@ -80,7 +80,7 @@ export const accountGateway = app.gateway('account', {
 
 export const administrationGateway = app.gateway('administration', {
   queries: [ReportOpenQueue, ModerationCaseQueue, ModerationPolicyCurrent, AutomationControlCurrent, EngagementBatchRecent],
-  commands: [Report.update, Report.delete, ModerationCase.create, ModerationCase.update, ModerationCase.delete, AutomationControl.update, AutomationControl.delete],
+  commands: [Report.update, Report.delete, ModerationCase.create, ModerationCase.update, ModerationCase.delete, ModerationPolicy.create, ModerationPolicy.update, ModerationPolicy.delete, AutomationControl.update, AutomationControl.delete],
   subscriptions: [AutomationPostReviewRequests],
   // Moderator workspaces keep several resumable views open together and may
   // be reloaded or opened in multiple tabs. Query leases are still bounded by

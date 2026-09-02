@@ -366,6 +366,14 @@ export interface ApplicationManagedModelContract {
   readonly statusSchemaVersion: string;
   readonly store: ApplicationProviderRef<'ManagedModelStore'>;
   readonly runtime: ApplicationProviderRef<'OperatorRuntime'>;
+  /** Durable execution authority captured by reconcile/finalizer closures. */
+  readonly workflowEngine?: ApplicationProviderRef<'WorkflowEngine'>;
+  /** Exact durable handles proven by recursive callback dependency discovery. */
+  readonly workflowBindings?: readonly {
+    readonly identifier: string;
+    readonly target: ApplicationGraphNodeRef;
+    readonly kind: 'task' | 'workflow';
+  }[];
   readonly lifecycle: {
     readonly generation: 'desiredValueDigest' | 'kubernetesMetadataGeneration';
     readonly notification: 'invalidationHint';

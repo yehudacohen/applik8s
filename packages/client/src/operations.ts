@@ -313,10 +313,37 @@ export type ApplicationQueryHook = <TInput, TValue>(
   suspense: boolean,
 ) => ApplicationQueryOperationState<TValue> | ApplicationQuerySuspenseResult<TValue>;
 
-const installedMutationHooks: ApplicationMutationHook[] = [];
-const installedQueryHooks: ApplicationQueryHook[] = [];
-const installedRuntimes: ApplicationOperationRuntime[] = [];
-const installedRuntimeResolvers: Array<() => ApplicationOperationRuntime | undefined> = [];
+const applicationOperationAdaptersKey = Symbol.for('@applik8s/client/operation-adapters');
+
+interface ApplicationOperationAdapterRegistry {
+  readonly mutationHooks: ApplicationMutationHook[];
+  readonly queryHooks: ApplicationQueryHook[];
+  readonly runtimes: ApplicationOperationRuntime[];
+  readonly runtimeResolvers: Array<() => ApplicationOperationRuntime | undefined>;
+}
+
+/**
+ * Generated operations and framework adapters can be emitted into distinct
+ * browser or SSR chunks, each with its own copy of this module. Keep only the
+ * adapter functions in a process/realm-local symbol registry so every copy
+ * observes the same React hooks and request runtime resolvers. Request data
+ * itself remains inside the adapter's AsyncLocalStorage/framework context.
+ */
+function applicationOperationAdapters(): ApplicationOperationAdapterRegistry {
+  const state = globalThis as typeof globalThis & {
+    [applicationOperationAdaptersKey]?: ApplicationOperationAdapterRegistry;
+  };
+  const existing = state[applicationOperationAdaptersKey];
+  if (existing) return existing;
+  const registry: ApplicationOperationAdapterRegistry = {
+    mutationHooks: [],
+    queryHooks: [],
+    runtimes: [],
+    runtimeResolvers: [],
+  };
+  state[applicationOperationAdaptersKey] = registry;
+  return registry;
+}
 const operationAuthorityObservers = new WeakMap<object, Set<(authority: ApplicationOperationAuthorizationContract) => void>>();
 let defaultBrowserRuntime: ApplicationOperationRuntime | undefined;
 let defaultBrowserBaseUrl = '/__applik8s/v1';
@@ -332,25 +359,29 @@ export function configureDefaultApplicationBrowserRuntime(options: { readonly ba
 }
 
 export function installApplicationMutationHook(hook: ApplicationMutationHook): () => void {
-  installedMutationHooks.push(hook);
-  return removableInstallation(installedMutationHooks, hook);
+  const hooks = applicationOperationAdapters().mutationHooks;
+  hooks.push(hook);
+  return removableInstallation(hooks, hook);
 }
 
 export function installApplicationQueryHook(hook: ApplicationQueryHook): () => void {
-  installedQueryHooks.push(hook);
-  return removableInstallation(installedQueryHooks, hook);
+  const hooks = applicationOperationAdapters().queryHooks;
+  hooks.push(hook);
+  return removableInstallation(hooks, hook);
 }
 
 export function installApplicationOperationRuntime(runtime: ApplicationOperationRuntime): () => void {
-  installedRuntimes.push(runtime);
-  return removableInstallation(installedRuntimes, runtime);
+  const runtimes = applicationOperationAdapters().runtimes;
+  runtimes.push(runtime);
+  return removableInstallation(runtimes, runtime);
 }
 
 export function installApplicationOperationRuntimeResolver(
   resolver: () => ApplicationOperationRuntime | undefined,
 ): () => void {
-  installedRuntimeResolvers.push(resolver);
-  return removableInstallation(installedRuntimeResolvers, resolver);
+  const resolvers = applicationOperationAdapters().runtimeResolvers;
+  resolvers.push(resolver);
+  return removableInstallation(resolvers, resolver);
 }
 
 /** Compiler-authoring bridge. Runtime adapters should consume the serialized catalog instead. */
@@ -441,14 +472,14 @@ export function createApplicationQueryOperation<TInput, TValue, TTarget = unknow
       return this.preload().then(onfulfilled, onrejected);
     },
     useQuery(): ApplicationQueryOperationState<TValue> {
-      const hook = installedQueryHooks.at(-1);
+      const hook = applicationOperationAdapters().queryHooks.at(-1);
       if (!hook) {
         throw new Error(`Application query ${contract.id} requires a React query adapter. Import @applik8s/react before calling useQuery().`);
       }
       return hook<TInput, TValue>(contract, input, false) as ApplicationQueryOperationState<TValue>;
     },
     useSuspenseQuery(): ApplicationQuerySuspenseResult<TValue> {
-      const hook = installedQueryHooks.at(-1);
+      const hook = applicationOperationAdapters().queryHooks.at(-1);
       if (!hook) {
         throw new Error(`Application query ${contract.id} requires a React query adapter. Import @applik8s/react before calling useSuspenseQuery().`);
       }
@@ -498,7 +529,7 @@ export function decorateApplicationMutationOperation<TInput, TOutput, TTarget = 
   Object.defineProperties(decorated, {
     useMutation: {
       value: (options?: ApplicationMutationHookOptions<TInput>) => {
-        const hook = installedMutationHooks.at(-1);
+        const hook = applicationOperationAdapters().mutationHooks.at(-1);
         if (!hook) {
           throw new Error(`Application operation ${contract.id} requires a React mutation adapter. Import @applik8s/react before calling useMutation().`);
         }
@@ -908,17 +939,18 @@ function freezeOperationContract(contract: ApplicationOperationContract): Applic
 }
 
 function currentOperationRuntime(): ApplicationOperationRuntime | undefined {
-  for (let index = installedRuntimeResolvers.length - 1; index >= 0; index -= 1) {
-    const runtime = installedRuntimeResolvers[index]?.();
+  const adapters = applicationOperationAdapters();
+  for (let index = adapters.runtimeResolvers.length - 1; index >= 0; index -= 1) {
+    const runtime = adapters.runtimeResolvers[index]?.();
     if (runtime) return runtime;
   }
-  if (installedRuntimes.length > 1) {
+  if (adapters.runtimes.length > 1) {
     throw new Error(
       'Application operation runtime is ambiguous because multiple browser authorities are active. '
       + 'Use the React-bound useMutation()/useQuery() operation or remove the overlapping provider.',
     );
   }
-  return installedRuntimes.at(-1) ?? browserOperationRuntime();
+  return adapters.runtimes.at(-1) ?? browserOperationRuntime();
 }
 
 function browserOperationRuntime(): ApplicationOperationRuntime | undefined {
